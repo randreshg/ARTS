@@ -222,7 +222,7 @@ bool flushMemStream(unsigned int gpuId, unsigned int *count,
 }
 
 bool flushKernelStream(unsigned int gpuId) {
-  bool ret = (kernelToDevCount > 0);
+  bool ret = (kernelToDevCount[gpuId] > 0);
   if (ret) {
     for (unsigned int i = 0; i < kernelToDevCount[gpuId]; i++) {
       void *kernelArgs[] = {
@@ -247,7 +247,7 @@ bool flushKernelStream(unsigned int gpuId) {
 }
 
 bool flushWrapUpStream(unsigned int gpuId) {
-  bool ret = (wrapUpCount > 0);
+  bool ret = (wrapUpCount[gpuId] > 0);
   for (unsigned int i = 0; i < wrapUpCount[gpuId]; i++) {
 #if CUDART_VERSION >= 10000
     CHECKCORRECT(cudaLaunchHostFunc(artsGpus[gpuId].stream, artsWrapUpHostFunc,
