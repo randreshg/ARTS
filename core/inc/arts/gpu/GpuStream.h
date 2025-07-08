@@ -97,6 +97,7 @@ void artsScheduleToGpu(artsEdt_t fnPtr, uint32_t paramc, uint64_t *paramv,
                        uint32_t depc, artsEdtDep_t *depv, void *edtPtr,
                        artsGpu_t *artsGpu);
 void CUDART_CB artsWrapUp(cudaStream_t stream, cudaError_t status, void *data);
+void CUDART_CB artsWrapUpHostFunc(void *data);
 void artsGpuSynchronize(artsGpu_t *artsGpu);
 void artsGpuStreamBusy(artsGpu_t *artsGpu);
 artsGpu_t *artsGpuScheduled(unsigned id);
