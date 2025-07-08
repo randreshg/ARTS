@@ -48,6 +48,7 @@
 #include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuStream.h"
 #include "arts/gpu/GpuStreamBuffer.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"

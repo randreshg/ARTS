@@ -36,13 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.h"
+#include "cublas_api.h"
+#include "cublas_v2.h"
+#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "arts/arts.h"
-#include "artsGpuRuntime.h"
-#include "cublas_v2.h"
-#include "cublas_api.h"
-#include <cuda_runtime.h>
 
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>

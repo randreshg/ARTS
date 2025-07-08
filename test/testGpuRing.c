@@ -37,11 +37,11 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
+#include "arts/arts.h"
+#include "arts/utils/ArrayList.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <arts.h>
-#include <artsArrayList.h>
 
 #define CHECKCORRECT(x) {                                   \
   cudaError_t err;                                          \

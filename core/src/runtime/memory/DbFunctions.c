@@ -57,7 +57,7 @@
 #include <assert.h>
 
 #ifdef USE_GPU
-#include "artsGpuRuntime.h"
+#include "arts/gpu/GpuRuntime.h"
 #endif
 
 #define DPRINTF(...)

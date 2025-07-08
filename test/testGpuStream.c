@@ -36,11 +36,11 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuStream.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include "arts/arts.h"
-#include "artsGpuStream.h"
-#include "artsGpuRuntime.h"
 
 #define SOMEARGS 10
 

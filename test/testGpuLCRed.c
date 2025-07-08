@@ -36,10 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/arts.h"
+#include "arts/gpu/GpuLCSyncFunctions.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include "arts/arts.h"
-#include "artsGpuLCSyncFunctions.h"
 
 extern "C"
 void initPerNode(unsigned int nodeId, int argc, char** argv)

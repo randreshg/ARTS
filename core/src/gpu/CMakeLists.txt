@@ -37,7 +37,7 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 if(CUDA_FOUND)
-    file(GLOB gpu_src "*.c")
+    file(GLOB gpu_src "*.c" "*.cu")
 
     set_source_files_properties(${gpu_src} PROPERTIES LANGUAGE CUDA)
     add_library(gpu OBJECT ${gpu_src})

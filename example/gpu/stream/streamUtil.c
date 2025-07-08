@@ -36,13 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include <stdio.h>
-#include <stdlib.h>
+#include "streamUtil.h"
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.h"
 #include "cublas_v2.h"
 #include <cuda_runtime.h>
-#include "arts/arts.h"
-#include "artsGpuRuntime.h"
-#include "streamUtil.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 void launch2KernelEdt(artsEdt_t funPtr, unsigned int tileSize, unsigned int totalSize, double scalar, artsGuidRange * aGuid, artsGuidRange * bGuid)
 { 

@@ -42,11 +42,11 @@
 extern "C" {
 #endif
 
-# include <math.h>
-# include <float.h>
-# include <limits.h>
-# include <sys/time.h>
-# include "artsGlobals.h"
+#include "arts/runtime/Globals.h"
+#include <float.h>
+#include <limits.h>
+#include <math.h>
+#include <sys/time.h>
 
 # define N	2000000
 # define NTIMES	10

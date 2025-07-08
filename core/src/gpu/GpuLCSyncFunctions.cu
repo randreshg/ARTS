@@ -38,6 +38,7 @@
 ******************************************************************************/
 #include "arts/gpu/GpuLCSyncFunctions.h"
 #include "arts/gas/RouteTable.h"
+#include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/memory/DbFunctions.h"

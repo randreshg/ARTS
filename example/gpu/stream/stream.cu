@@ -80,14 +80,14 @@
 /*  5. Absolutely no warranty is expressed or implied.                   */
 /*-----------------------------------------------------------------------*/
 
+#include "arts/arts.h"
+#include "arts/gas/Guid.h"
+#include "arts/gpu/GpuRuntime.h"
+#include "cublas_v2.h"
+#include "streamUtil.h"
+#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "arts/arts.h"
-#include "artsGpuRuntime.h"
-#include "artsGuid.h"
-#include "cublas_v2.h"
-#include <cuda_runtime.h>
-#include "streamUtil.h"
 
 // #define SAFE 1
 
