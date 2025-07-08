@@ -72,15 +72,32 @@ include(CheckLanguage)
 check_language(CUDA)
 if(CMAKE_CUDA_COMPILER)
     set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
-    #This is currently set for Volata.  To use other change sm_60
-    set(CMAKE_CUDA_FLAGS "-arch=sm_70") 
+    
+    # Set policy for CUDA architectures
+    if(POLICY CMP0104)
+        cmake_policy(SET CMP0104 NEW)
+    endif()
+    
     enable_language(CUDA)
+    
     find_package(CUDA REQUIRED)
     # find_package(CUDA 9)
     if(CUDA_FOUND)
         include_directories("${CUDA_INCLUDE_DIRS}")
         add_definitions(-DUSE_GPU)
         message("Using CUDA")
+        
+        # Auto-detect CUDA architecture
+        find_package(cudaArch)
+        if(CUDAARCH_FOUND)
+            set(CMAKE_CUDA_ARCHITECTURES "${CUDA_ARCHITECTURES}")
+            message(STATUS "Setting CMAKE_CUDA_ARCHITECTURES to: ${CMAKE_CUDA_ARCHITECTURES}")
+        else()
+            # Fallback to sm_70 if detection fails
+            set(CMAKE_CUDA_ARCHITECTURES "70")
+            message(STATUS "CUDA architecture detection failed, using fallback: 70")
+        endif()
+        
         find_package(cuBlas)
         if(CUBLAS_FOUND)
             include_directories(${CUBLAS_INCLUDE_DIRS})
@@ -91,7 +108,7 @@ if(CMAKE_CUDA_COMPILER)
         endif()
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")
           message("CUDA Debug Build")
-          set(CMAKE_CUDA_FLAGS " -G")
+          string(APPEND CMAKE_CUDA_FLAGS_DEBUG " -G")
         endif()
     else()
         set(CUDA_LIBRARIES "")
@@ -173,7 +190,7 @@ if(INSPECTOR)
     add_definitions(-DINSPECTOR)
 endif()
 
-if(DEFINED SMART_DB)
+if(NOT DEFINED SMART_DB OR SMART_DB)
     message("Smart DB on")
     add_definitions(-DSMART_DB)
 else()

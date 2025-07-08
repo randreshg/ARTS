@@ -36,19 +36,18 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/Graph.h"
+#include "arts/arts.h"
+#include "arts/runtime/Globals.h"
+#include <assert.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <inttypes.h>
 #include <string.h>
-#include <assert.h>
-#include "arts/arts.h"
-#include "artsGraph.h"
-#include "artsGlobals.h"
 
-#include "artsGpuRuntime.h"
-#include "cublas_v2.h"
-#include "cublas_api.h"
+#include "arts/gpu/GpuRuntime.h"
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
 
 #include <iostream>

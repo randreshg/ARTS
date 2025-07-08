@@ -36,11 +36,11 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.h"
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <assert.h>
-#include "arts/arts.h"
-#include "artsGpuRuntime.h"
 
 #define ARRAYSIZE 1024*1024
 #define TILESIZE 128

@@ -42,16 +42,16 @@
 extern "C" {
 #endif
 
+#include "arts/Graph.h"
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.h"
+#include "arts/runtime/Globals.h"
+#include <assert.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <inttypes.h>
 #include <string.h>
-#include <assert.h>
-#include "arts/arts.h"
-#include "artsGraph.h"
-#include "artsGlobals.h"
-#include "artsGpuRuntime.h"
 
 void createBuffersOnCpu(unsigned int size);
 void createBuffersOnGpu(unsigned int gpu, unsigned int size);

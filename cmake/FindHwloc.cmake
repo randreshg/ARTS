@@ -107,7 +107,7 @@ if (NOT DEFINED HWLOC_FOUND)
     message("Can't find hwloc-info Hint ${HWLOC_BINARY_DIR}")
   endif()
 
-  find_package_handle_standard_args(HWLOC
+  find_package_handle_standard_args(Hwloc
     FOUND_VAR HWLOC_FOUND
     REQUIRED_VARS HWLOC_INC HWLOC_LIB 
     HANDLE_COMPONENTS)

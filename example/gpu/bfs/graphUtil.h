@@ -1,11 +1,10 @@
-#include <string.h>
+#include "arts/BlockDistribution.h"
+#include "arts/Csr.h"
 #include <assert.h>
-#include <inttypes.h>
-#include "cublas_v2.h"
-#include "cublas_api.h"
+#include <cublas_v2.h>
 #include <cuda_runtime.h>
-#include "blockDistribution.h"
-#include "csr.h"
+#include <inttypes.h>
+#include <string.h>
 
 __device__ vertex_t* getRowPtrGpu(csr_graph_t * _csr);
 __device__ vertex_t* getColPtrGpu(csr_graph_t * _csr);
