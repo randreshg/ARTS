@@ -731,6 +731,7 @@ void **artsRouteTableGetOOList(artsGuid_t key,
     *list = &item->ooList;
     return &item->data;
   }
+  return NULL;
 }
 
 // This is just a wrapper for outside consumption...

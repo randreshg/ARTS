@@ -400,9 +400,7 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
     artsUpdatePerformanceMetric(artsEdtQueue, artsThread, 1, false);
   }
 }
-
-void artsRunEdt(void *edtPacket) {
-  struct artsEdt *edt = edtPacket;
+void artsRunEdt(struct artsEdt *edt) {
   uint32_t depc = edt->depc;
   artsEdtDep_t *depv = (artsEdtDep_t *)(((uint64_t *)(edt + 1)) + edt->paramc);
 
@@ -430,7 +428,7 @@ void artsRunEdt(void *edtPacket) {
 
   PRINTF("[artsRunEdt] EDT %u Finished\n", edt->currentEdt);
   releaseDbs(depc, depv, false);
-  artsEdtDelete(edtPacket);
+  artsEdtDelete(edt);
   // This is for debugging purposes
   decOustandingEdts(1);
 }
@@ -441,7 +439,7 @@ inline struct artsEdt *artsRuntimeStealFromNetwork() {
     unsigned int index = artsThreadInfo.threadId;
     for (unsigned int i = 0; i < artsNodeInfo.receiverThreadCount; i++) {
       index = (index + 1) % artsNodeInfo.receiverThreadCount;
-      if ((edt = artsDequePopBack(artsNodeInfo.receiverDeque[index])))
+      if ((edt = artsDequePopBack(artsNodeInfo.receiverDeque[index])) != NULL)
         break;
     }
   }

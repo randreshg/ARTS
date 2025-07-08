@@ -64,6 +64,7 @@ void artsRuntimePrivateCleanup();
 void artsRuntimeStop();
 void artsHandleReadyEdt(struct artsEdt *edt);
 void artsRehandleReadyEdt(struct artsEdt *edt);
+void artsRunEdt(struct artsEdt *edt);
 void artsHandleRemoteStolenEdt(struct artsEdt *edt);
 bool artsRuntimeSchedulerLoop();
 void artsThreadZeroNodeStart();
@@ -73,7 +74,6 @@ void artsRuntimePrivateInit(struct threadMask *unit, struct artsConfig *config);
 int artsRuntimeLoop();
 int artsRuntimeSchedulerLoopWait(volatile bool *waitForMe);
 bool artsDefaultSchedulerLoop();
-void artsRunEdt(void *edtPacket);
 struct artsEdt *artsFindEdt();
 
 bool artsRuntimeEdtLockDb(artsGuid_t dbGuid, struct artsDb *db, void *edtPacket,

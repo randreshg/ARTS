@@ -109,6 +109,49 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
   }
 }
 
+// This is run at the end of the epoch
+void epochEnd(uint32_t paramc, uint64_t *paramv, uint32_t depc,
+              artsEdtDep_t depv[]) {
+  unsigned int numInEpoch = depv[0].guid;
+  PRINTF("%u in Epoch\n", numInEpoch);
+  artsGatherArrayDb(array, check, 0, 1, paramv, 0);
+}
+
+void initPerNode(unsigned int nodeId, int argc, char **argv) {
+  elementsPerBlock = atoi(argv[1]);
+  blocks = artsGetTotalNodes();
+  numAdd = atoi(argv[2]);
+  arrayGuid = artsReserveGuidRoute(ARTS_DB_PIN, 0);
+  if (!nodeId)
+    PRINTF("ElementsPerBlock: %u Blocks: %u\n", elementsPerBlock, blocks);
+}
+
+void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
+                   char **argv) {
+
+  if (!workerId && !nodeId) {
+    // The end will get all the updates and a signal from the gather
+    artsGuid_t endGuid =
+        artsEdtCreate(end, 0, 0, NULL, numAdd * elementsPerBlock * blocks + 1);
+
+    artsGuid_t endEpochGuid =
+        artsEdtCreate(epochEnd, 0, 1, (uint64_t *)&endGuid, 1);
+    artsInitializeAndStartEpoch(endEpochGuid, 0);
+
+    array = artsNewArrayDbWithGuid(arrayGuid, sizeof(unsigned int),
+                                   elementsPerBlock * blocks);
+
+    for (unsigned int j = 0; j < numAdd; j++) {
+      for (unsigned int i = 0; i < elementsPerBlock * blocks; i++) {
+        PRINTF("i: %u Slot: %u edt: %lu\n", i,
+               j * elementsPerBlock * blocks + i, endGuid);
+        artsAtomicAddInArrayDb(array, i, 1, endGuid,
+                               j * elementsPerBlock * blocks + i);
+      }
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   artsRT(argc, argv);
   return 0;

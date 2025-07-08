@@ -795,7 +795,9 @@ void artsRemoteEpochInitSend(unsigned int rank, artsGuid_t epochGuid,
 void artsRemoteHandleEpochInitSend(void *pack) {
   DPRINTF("Net Epoch Init Rec\n");
   struct artsRemoteEpochInitPacket *packet = pack;
-  createEpoch(&packet->epochGuid, packet->edtGuid, packet->slot);
+  artsGuid_t local_epochGuid = packet->epochGuid;
+  createEpoch(&local_epochGuid, packet->edtGuid, packet->slot);
+  packet->epochGuid = local_epochGuid;
 }
 
 void artsRemoteEpochInitPoolSend(unsigned int rank, unsigned int poolSize,
@@ -816,7 +818,11 @@ void artsRemoteHandleEpochInitPoolSend(void *pack) {
   struct artsRemoteEpochInitPoolPacket *packet = pack;
   //    PRINTF("Net Epoch Init Pool Rec %lu %lu\n", packet->startGuid,
   //    packet->poolGuid);
-  createEpochPool(&packet->poolGuid, packet->poolSize, &packet->startGuid);
+  artsGuid_t local_poolGuid = packet->poolGuid;
+  artsGuid_t local_startGuid = packet->startGuid;
+  createEpochPool(&local_poolGuid, packet->poolSize, &local_startGuid);
+  packet->poolGuid = local_poolGuid;
+  packet->startGuid = local_startGuid;
 }
 
 void artsRemoteEpochReq(unsigned int rank, artsGuid_t guid) {
