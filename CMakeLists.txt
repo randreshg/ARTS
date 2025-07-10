@@ -40,6 +40,12 @@
 cmake_minimum_required(VERSION 3.8)
 project(arts LANGUAGES C CXX)
 
+# Set default build type to Debug if not specified
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build (Debug or Release)" FORCE)
+    message(STATUS "Build type not specified, defaulting to Debug")
+endif()
+
 #CMake Configuration
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake")
 
@@ -52,6 +58,7 @@ else()
         message("GLIBC Version Available: ${GLIBC_VERSION}")
         if((${GLIBC_VERSION} VERSION_EQUAL 2.19) OR (${GLIBC_VERSION} VERSION_GREATER 2.19))
             add_definitions(-DGLIBC_NEW)
+            message("Using new GLIBC, added -DGLIBC_NEW")
         endif()
     endif()
 endif()
@@ -81,14 +88,15 @@ if(CMAKE_CUDA_COMPILER)
     enable_language(CUDA)
     
     find_package(CUDA REQUIRED)
-    # find_package(CUDA 9)
+
     if(CUDA_FOUND)
         include_directories("${CUDA_INCLUDE_DIRS}")
         add_definitions(-DUSE_GPU)
-        message("Using CUDA")
-        
+        message("Using CUDA, added -DUSE_GPU")
+
         # Auto-detect CUDA architecture
         find_package(cudaArch)
+
         if(CUDAARCH_FOUND)
             set(CMAKE_CUDA_ARCHITECTURES "${CUDA_ARCHITECTURES}")
             message(STATUS "Setting CMAKE_CUDA_ARCHITECTURES to: ${CMAKE_CUDA_ARCHITECTURES}")
@@ -97,15 +105,17 @@ if(CMAKE_CUDA_COMPILER)
             set(CMAKE_CUDA_ARCHITECTURES "70")
             message(STATUS "CUDA architecture detection failed, using fallback: 70")
         endif()
-        
+
         find_package(cuBlas)
+
         if(CUBLAS_FOUND)
             include_directories(${CUBLAS_INCLUDE_DIRS})
             add_definitions(-DUSE_CUBLAS)
-            message("Using CUBLAS")
+            message("Using CUBLAS, added -DUSE_CUBLAS")
         else()
             set(CUBLAS_LIBRARIES "")
         endif()
+
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")
           message("CUDA Debug Build")
           string(APPEND CMAKE_CUDA_FLAGS_DEBUG " -G")
@@ -123,20 +133,20 @@ find_package(Threads)
 find_library(PTHREAD_LIB pthread)
 
 if(CONNECTION MATCHES "TCP")
-    message("Using TCP")
+    message("Using TCP, added -DUSE_TCP")
     add_definitions(-DUSE_TCP)
 else()
     find_library(RDMACM_LIB rdmacm)
     find_path(RSOCKET_INCLUDE rdma/rsocket.h)
     if(RDMACM_LIB)
         include_directories(${RSOCKET_INCLUDE})
-        message("Using RDMA RSockets")
+        message("Using RDMA RSockets, added -DUSE_RSOCKETS")
         add_definitions(-DUSE_RSOCKETS)
     else()
         set(RDMACM_LIB "")
         set(RSOCKET_INCLUDE "")
         set(CONNECTION "TCP")
-        message("Using TCP")
+        message("Using TCP, added -DUSE_TCP")
         add_definitions(-DUSE_TCP)
     endif()
 endif()
@@ -145,7 +155,7 @@ find_package(Hwloc)
 if(HWLOC_FOUND)
     include_directories(${HWLOC_INC})
     add_definitions(-DHWLOC)
-    message("Using HWLOC")
+    message("Using HWLOC, added -DHWLOC")
 else()
     set(HWLOC_LIB "")
     message("Not using HWLOC")
@@ -153,12 +163,13 @@ endif()
 
 #<-------------------------------------------
 
-if(SIMPLE_ARCH MATCHES "1")
-    message("Using simple CAS2 adn BIT_TEST_SET")
-    add_definitions(-DSIMPLE_ARCH=1)
+if(SIMPLE_ARCH)
+    message("Using simple CAS2 and BIT_TEST_AND_SET, added -DSIMPLE_ARCH")
+    add_definitions(-DSIMPLE_ARCH)
 endif()
 
 #DEFAULT SETTINGS
+# DEQUE can be set to "chase_lev" or "priority"
 if(NOT DEFINED DEQUE)
     set(DEQUE "chase_lev")
 endif(NOT DEFINED DEQUE)
@@ -176,22 +187,22 @@ else()
 endif()
 
 if(COUNT)
-    message("Counting on")
+    message("Counting on, added -DCOUNT")
     add_definitions(-DCOUNT)
 endif()
 
 if(MODELCOUNT)
-    message("Model Counting only")
+    message("Model Counting only, added -DMODELCOUNT")
     add_definitions(-DMODELCOUNT)
 endif()
 
 if(INSPECTOR)
-    message("Inspection on")
+    message("Inspection on, added -DINSPECTOR")
     add_definitions(-DINSPECTOR)
 endif()
 
-if(NOT DEFINED SMART_DB OR SMART_DB)
-    message("Smart DB on")
+if(SMART_DB)
+    message("Smart DB on, added -DSMART_DB")
     add_definitions(-DSMART_DB)
 else()
     message("Smart DB off")

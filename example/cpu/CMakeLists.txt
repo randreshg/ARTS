@@ -47,6 +47,7 @@ check_symbol_exists(alloca alloca.h HAVE_ALLOCA)
 
 if(HAVE_ALLOCA)
   add_definitions(-DHAVE_ALLOCA)
+  message("Using alloca, added -DHAVE_ALLOCA")
 endif()
 
 add_executable(fib fib.c)
