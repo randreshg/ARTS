@@ -258,7 +258,8 @@ Object dequeue(artsQueue *queue) {
 
       if (likely(!is_empty(val))) {
         if (likely(idx == h)) {
-          if (CAS2((uint64_t *)cell, val, cell_idx, -1, unsafe | h + RING_SIZE))
+          if (CAS2((uint64_t *)cell, val, cell_idx, -1,
+                   unsafe | (h + RING_SIZE)))
             return val;
         } else {
           if (CAS2((uint64_t *)cell, val, cell_idx, val, set_unsafe(idx))) {
@@ -276,7 +277,7 @@ Object dequeue(artsQueue *queue) {
         if (unlikely(unsafe)) // Nothing to do, move along
         {
           if (CAS2((uint64_t *)cell, val, cell_idx, val,
-                   unsafe | h + RING_SIZE))
+                   unsafe | (h + RING_SIZE)))
             break;
         } else if (t <= h + 1 || r > 200000 || crq_closed) {
           if (CAS2((uint64_t *)cell, val, idx, val, h + RING_SIZE))
