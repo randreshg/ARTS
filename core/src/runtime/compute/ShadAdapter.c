@@ -290,7 +290,7 @@ void artsShadAliasUnlock(volatile uint64_t *lock) {
 #define LITEGETOWNER(x) (x & LITEOWNERMAP)
 #define LITEGETCOUNT(x) (x & ALIASCOUNTMAP)
 
-inline bool artsTMTLiteTryLock(volatile uint64_t *lock) {
+static inline bool artsTMTLiteTryLock(volatile uint64_t *lock) {
   uint64_t local = *lock;
   if (!LITEGETOWNER(local)) {
     if (local == artsAtomicCswapU64(lock, local, local | LITEOWNERMAP))
@@ -299,7 +299,7 @@ inline bool artsTMTLiteTryLock(volatile uint64_t *lock) {
   return false;
 }
 
-inline void artsTMTLiteUnlock(volatile uint64_t *lock) {
+static inline void artsTMTLiteUnlock(volatile uint64_t *lock) {
   artsAtomicFetchAndU64(lock, LITECOUNTMAP);
 }
 
