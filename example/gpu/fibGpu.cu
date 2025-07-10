@@ -83,7 +83,7 @@ void fibFork(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t dep
         artsSignalEdt(joinGuid, 2, resGuid);
         
         //Create the forks which will run on the CPU
-        uint64_t args[2] = {joinGuid, 0};
+        uint64_t args[2] = {(uint64_t)joinGuid, 0};
         artsGuid_t forkGuidX = artsEdtCreate(fibFork, next, 2, args, 1);
         artsSignalEdt(forkGuidX, 0, xGuid);
         
@@ -122,8 +122,8 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
         *resPtr = atoi(argv[1]);
         
         artsGuid_t doneGuid = artsEdtCreate(fibDone, 0, 1, (uint64_t*)resPtr, 1);
-        
-        uint64_t args[] = {doneGuid, 0};
+
+        uint64_t args[] = {(uint64_t)doneGuid, 0};
         artsGuid_t fibGuid = artsEdtCreate(fibFork, 0, 2, args, 1);
         artsSignalEdt(fibGuid, 0, resGuid);
         start = artsGetTimeStamp();

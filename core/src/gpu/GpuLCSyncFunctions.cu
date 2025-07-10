@@ -364,7 +364,7 @@ int gpuTreeReductionRec(int root, unsigned int start, unsigned int stop,
                         unsigned int *maxLevel) {
   int localRoot = -1;
   // PRINTF("root: %u start: %u stop: %u\n", root, start, stop);
-  int gpuId[2] = {start, stop};
+  int gpuId[2] = {(int)start, (int)stop};
 
   if (stop - start > 1) // Recursive call
   {

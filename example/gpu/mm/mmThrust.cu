@@ -241,14 +241,17 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
         {
             if((i * numBlocks + j) % totalThreads == globalThreadId)
             {
-                uint64_t sumArgs[] = {doneGuid, i, j};
-                artsGuid_t sumGuid = artsEdtCreateGpuLib(sumMM, nodeId, 3, sumArgs, numBlocks, grid, threads);
-                for(unsigned int k=0; k<numBlocks; k++)
-                {
-                    uint64_t args[] = {sumGuid, i, j, k};
-                    artsGuid_t mulGuid = artsEdtCreateGpuLib(multiplyMM, nodeId, 4, args, 2, grid, threads);
-                    artsSignalEdt(mulGuid, 0, artsGetGuid(aTileGuids, i * numBlocks + k));
-                    artsSignalEdt(mulGuid, 1, artsGetGuid(bTileGuids, k * numBlocks + j));
+              uint64_t sumArgs[] = {(uint64_t)doneGuid, i, j};
+              artsGuid_t sumGuid = artsEdtCreateGpuLib(
+                  sumMM, nodeId, 3, sumArgs, numBlocks, grid, threads);
+              for (unsigned int k = 0; k < numBlocks; k++) {
+                uint64_t args[] = {(uint64_t)sumGuid, i, j, k};
+                artsGuid_t mulGuid = artsEdtCreateGpuLib(
+                    multiplyMM, nodeId, 4, args, 2, grid, threads);
+                artsSignalEdt(mulGuid, 0,
+                              artsGetGuid(aTileGuids, i * numBlocks + k));
+                artsSignalEdt(mulGuid, 1,
+                              artsGetGuid(bTileGuids, k * numBlocks + j));
                 }
             }
         }

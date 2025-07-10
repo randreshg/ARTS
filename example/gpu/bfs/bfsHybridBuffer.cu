@@ -244,7 +244,7 @@ void cpuBfs(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t depv
 void doPartionSync(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t depv[])
 {
     DPRINTF("Just Synced Partitions! %lu\n", paramv[0]);
-    artsSignalEdt(paramv[1], -1, NULL_GUID);
+    artsSignalEdt(paramv[1], (uint32_t)-1, NULL_GUID);
 }
 
 //There is only one of these per level.  It is signaled by the epoch containing the Bfs'es
@@ -269,7 +269,7 @@ void launchSort(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t 
     //We need the nextBfsEpoch and the nextLaunchBfsGuids to kick off launchBfs...
     dim3 threads(1, 1, 1);
     dim3 grid(1, 1, 1);
-    uint64_t args[] = {localLevel, nextLaunchBfsGuid};
+    uint64_t args[] = {localLevel, (uint64_t)nextLaunchBfsGuid};
     for(unsigned int j=0; j<artsGetTotalNodes(); j++)
     {
         for(uint64_t i=0; i<artsGetTotalGpus(); i++)
@@ -288,13 +288,12 @@ void launchSort(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t 
     {
         for(unsigned int i=0; i<artsGetTotalNodes(); i++)
         {
-            uint64_t syncArgs[] = {localLevel, nextLaunchBfsGuid};
-            artsGuid_t edtGuid = artsEdtCreate(doPartionSync, i, 2, syncArgs, partCount[i]);
+          uint64_t syncArgs[] = {localLevel, (uint64_t)nextLaunchBfsGuid};
+          artsGuid_t edtGuid =
+              artsEdtCreate(doPartionSync, i, 2, syncArgs, partCount[i]);
             unsigned int slot = 0;
-            for(unsigned int j=0; j<PARTS; j++)
-            {
-                if(i == artsGuidGetRank(visitedGuid[j]))
-                {
+          for (unsigned int j = 0; j < PARTS; j++) {
+            if (i == artsGuidGetRank(visitedGuid[j])) {
                     artsLCSync(edtGuid, slot++, visitedGuid[j]);
                 }
             }

@@ -354,10 +354,13 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
                 artsGuid_t * cGuid = redTree[i*numBlocks + j]->redDbGuids;
                 for(unsigned int k=0; k<numBlocks; k++)
                 {
-                    uint64_t args[] = {0, i, j, k, cGuid[k]};
-                    artsGuid_t mulGuid = artsEdtCreateGpuLib(multiplyMM, nodeId, 5, args, 2, grid, threads);
-                    artsSignalEdt(mulGuid, 0, artsGetGuid(aTileGuids, i * numBlocks + k));
-                    artsSignalEdt(mulGuid, 1, artsGetGuid(bTileGuids, k * numBlocks + j));
+                  uint64_t args[] = {0, i, j, k, (uint64_t)cGuid[k]};
+                  artsGuid_t mulGuid = artsEdtCreateGpuLib(
+                      multiplyMM, nodeId, 5, args, 2, grid, threads);
+                  artsSignalEdt(mulGuid, 0,
+                                artsGetGuid(aTileGuids, i * numBlocks + k));
+                  artsSignalEdt(mulGuid, 1,
+                                artsGetGuid(bTileGuids, k * numBlocks + j));
                 }
                 // fireBinaryReductionTree(redTree[i*numBlocks + j]);
             }

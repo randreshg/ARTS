@@ -222,7 +222,7 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
         }
     }
 
-    uint64_t sumArgs[] = {tileSize};
+    uint64_t sumArgs[] = {(uint64_t)tileSize};
     dim3 threads(SMTILE, SMTILE);
     dim3 grid((tileSize+SMTILE-1)/SMTILE, (tileSize+SMTILE-1)/SMTILE);
 
@@ -235,10 +235,13 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
                 artsGuid_t sumGuid = artsEdtCreateGpuPT (sumMMKernel, nodeId, 1, sumArgs, numBlocks, grid, threads, doneGuid, 3 + (i * numBlocks + j), 0);
                 for(unsigned int k=0; k<numBlocks; k++)
                 {
-                    uint64_t args[] = {sumGuid, i, j, k};
-                    artsGuid_t mulGuid = artsEdtCreateGpuLib(multiplyMM, nodeId, 4, args, 2, grid, threads);
-                    artsSignalEdt(mulGuid, 0, artsGetGuid(aTileGuids, i * numBlocks + k));
-                    artsSignalEdt(mulGuid, 1, artsGetGuid(bTileGuids, k * numBlocks + j));
+                  uint64_t args[] = {(uint64_t)sumGuid, i, j, k};
+                  artsGuid_t mulGuid = artsEdtCreateGpuLib(
+                      multiplyMM, nodeId, 4, args, 2, grid, threads);
+                  artsSignalEdt(mulGuid, 0,
+                                artsGetGuid(aTileGuids, i * numBlocks + k));
+                  artsSignalEdt(mulGuid, 1,
+                                artsGetGuid(bTileGuids, k * numBlocks + j));
                 }
             }
         }
