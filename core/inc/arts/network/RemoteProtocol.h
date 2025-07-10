@@ -105,7 +105,7 @@ struct __attribute__((__packed__)) artsRemotePacket {
 #endif
 };
 
-struct artsRemoteGuidOnlyPacket {
+struct __attribute__((__packed__)) artsRemoteGuidOnlyPacket {
   struct artsRemotePacket header;
   artsGuid_t guid;
 };
