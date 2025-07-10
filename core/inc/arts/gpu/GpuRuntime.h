@@ -46,7 +46,7 @@ extern "C" {
 #include "arts/gpu/GpuStream.h"
 #include "arts/runtime/RT.h"
 #include <cuda_runtime.h>
-#include <device_launch_parameters.h>
+// #include <device_launch_parameters.h>
 
 typedef struct {
   struct artsEdt wrapperEdt;

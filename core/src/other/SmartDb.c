@@ -39,13 +39,14 @@
 
 // #include "artsDb.h"x
 #include "arts/arts.h"
-#include "artsDbFunctions.h"
-#include "artsEdtFunctions.h"
-#include "artsGlobals.h"
-#include "artsGuid.h"
-#include "artsIntrospection.h"
-#include "artsRouteTable.h"
-#include "artsTerminationDetection.h"
+#include "arts/gas/Guid.h"
+#include "arts/gas/RouteTable.h"
+#include "arts/introspection/Introspection.h"
+#include "arts/runtime/Globals.h"
+#include "arts/runtime/compute/EdtFunctions.h"
+#include "arts/runtime/memory/DbFunctions.h"
+#include "arts/runtime/sync/TerminationDetection.h"
+#include "artsSmartDb.h"
 #include <assert.h>
 #include <math.h>
 #include <string.h>

@@ -56,10 +56,11 @@
 #define CORE_INC_ARTS_TMT_H_
 
 #include "arts/arts.h"
+#include "arts/runtime/Runtime.h"
 #include "arts/system/AbstractMachineModel.h"
 #include "arts/system/Config.h"
-#include "arts/runtime/Runtime.h"
 #include "arts/utils/Queue.h"
+#include <pthread.h>
 #include <semaphore.h>
 
 #define MAX_TOTAL_THREADS_PER_MAX 65536
