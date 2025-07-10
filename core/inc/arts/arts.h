@@ -547,10 +547,10 @@ void artsAtomicCompareAndSwapInArrayDb(artsArrayDb_t *array, unsigned int index,
 
 /*Util*************************************************************************/
 /// Returns the guid of the input edtDep
-inline artsGuid_t artsGetGuidFromEdtDep(artsEdtDep_t dep);
+inline artsGuid_t artsGetGuidFromEdtDep(artsEdtDep_t dep) { return dep.guid; }
 
 /// Returns the pointer to the data in the edtDep
-inline void *artsGetPtrFromEdtDep(artsEdtDep_t dep);
+inline void *artsGetPtrFromEdtDep(artsEdtDep_t dep) { return dep.ptr; }
 
 // Returns the guid of the current EDT running.
 artsGuid_t artsGetCurrentGuid();

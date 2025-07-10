@@ -64,10 +64,6 @@
 extern __thread struct artsEdt *currentEdt;
 extern unsigned int numNumaDomains;
 
-inline artsGuid_t artsGetGuidFromEdtDep(artsEdtDep_t dep) { return dep.guid; }
-
-inline void *artsGetPtrFromEdtDep(artsEdtDep_t dep) { return dep.ptr; }
-
 artsGuid_t artsGetCurrentGuid() {
   if (currentEdt) {
     return currentEdt->currentEdt;
