@@ -167,13 +167,12 @@ __global__ void triadKernal(uint32_t paramc, uint64_t * paramv, uint32_t depc, a
 
 void streamDriver(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t depv[])
 {
-    register int j, k;
+  int j, k;
     
     double times[4][NTIMES];
 
     double scalar = 3.0;
-    for (k=0; k<NTIMES; k++)
-	{
+  for (k = 0; k < NTIMES; k++) {
 	    times[0][k] = mysecond();
         launch2KernelEdt(copyKernel, tileSize, N, 0, aTileGuids, cTileGuids);
 	    times[0][k] = mysecond() - times[0][k];
@@ -183,11 +182,13 @@ void streamDriver(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_
 	    times[1][k] = mysecond() - times[1][k];
         
         times[2][k] = mysecond();
-        launch3KernelEdt(addKernel, tileSize, N, 0, aTileGuids, bTileGuids, cTileGuids);
+    launch3KernelEdt(addKernel, tileSize, N, 0, aTileGuids, bTileGuids,
+                     cTileGuids);
 	    times[2][k] = mysecond() - times[2][k];
         
         times[3][k] = mysecond();
-        launch3KernelEdt(triadKernal, tileSize, N, scalar, bTileGuids, cTileGuids, aTileGuids);
+    launch3KernelEdt(triadKernal, tileSize, N, scalar, bTileGuids, cTileGuids,
+                     aTileGuids);
         times[3][k] = mysecond() - times[3][k];
     }
 

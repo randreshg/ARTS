@@ -76,7 +76,7 @@ __global__ void mmKernel(uint32_t paramc, uint64_t * paramv, uint32_t depc, arts
     int col = blockDim.x * blockIdx.x + threadIdx.x;
     int row = blockDim.y * blockIdx.y + threadIdx.y;
 
-    register double sum = 0;
+    double sum = 0;
 
     for(unsigned int k=0; k<blk; k++)
         sum+=A[row * blk + k] * B[k * blk + col];
@@ -131,7 +131,7 @@ void multiplyMM(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t 
 #if GPUMM
     dim3 threads(SMTILE, SMTILE);
     dim3 grid((tileSize+SMTILE-1)/SMTILE, (tileSize+SMTILE-1)/SMTILE);
-    
+
     uint64_t args[] = {(uint64_t)tileSize};
     artsGuid_t    mulGpuGuid = artsEdtCreateGpu(mmKernel, artsGetCurrentNode(), 1, args, 3, grid, threads, toSignal, k, cTileGuid);
     artsSignalEdt(mulGpuGuid, 0, aTileGuid);

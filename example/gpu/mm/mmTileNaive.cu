@@ -69,7 +69,7 @@ __global__ void mmKernel(uint32_t paramc, uint64_t * paramv, uint32_t depc, arts
     int col = blockDim.x * blockIdx.x + threadIdx.x;
     int row = blockDim.y * blockIdx.y + threadIdx.y;
 
-    register double sum = 0;
+    double sum = 0;
 
     for(unsigned int k=0; k<blk; k++)
         sum+=A[row * blk + k] * B[k * blk + col];
@@ -129,7 +129,7 @@ void multiplyMM(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t 
 #if GPUMM
     dim3 threads(SMTILE, SMTILE);
     dim3 grid((tile_size+SMTILE-1)/SMTILE, (tile_size+SMTILE-1)/SMTILE);
-    
+
     uint64_t args[] = {(uint64_t)tile_size};
     artsGuid_t    mulGpuGuid = artsEdtCreateGpu(mmKernel, artsGetCurrentNode(), 1, args, 3, grid, threads, toSignal, k, cTileGuid);
     artsSignalEdt(mulGpuGuid, 0, aTileGuid);
@@ -292,8 +292,8 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
                   uint64_t args[] = {(uint64_t)sumGuid, i, j, k};
                   artsGuid_t mulGuid =
                       artsEdtCreate(multiplyMM, nodeId, 4, args, 2);
-                    artsSignalEdt(mulGuid, 0, aMatGuid);
-                    artsSignalEdt(mulGuid, 1, bMatGuid);
+                  artsSignalEdt(mulGuid, 0, aMatGuid);
+                  artsSignalEdt(mulGuid, 1, bMatGuid);
                 }
             }
     

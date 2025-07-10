@@ -870,7 +870,7 @@ void artsInternalReadInspectorConfigFile(char * filename)
             int paramRead = 0;
             sscanf(line, "%s", temp);
             size_t offset = strlen(temp);
-            unsigned int metricIndex = -1;
+            int metricIndex = -1;
             for(unsigned int i=0; i<artsLastMetricType; i++)
             {
                 if(!strcmp(temp, artsMetricName[i]))

@@ -212,7 +212,7 @@ struct artsDeque *artsDequeListNew(unsigned int listSize,
                                    unsigned int dequeSize) {
   struct artsDeque *dequeList =
       (struct artsDeque *)artsCalloc(listSize * sizeof(struct artsDeque));
-  int i = 0;
+  unsigned int i = 0;
   for (i = 0; i < listSize; i++)
     artsDequeNewInit(&dequeList[i], dequeSize);
 
