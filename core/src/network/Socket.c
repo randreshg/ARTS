@@ -49,8 +49,9 @@
 void artsPrintSocketAddr(struct sockaddr_in *sock) {
   // char crap[255];
   char *addr = inet_ntoa(sock->sin_addr);
-  if (addr != NULL)
+  if (addr != NULL) {
     DPRINTF("socket addr %s\n", addr);
+  }
 }
 
 unsigned int artsGetNewSocket() {

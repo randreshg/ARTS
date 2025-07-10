@@ -616,10 +616,11 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
           while (!dependent[j].doneWriting)
             ;
           if (dependent[j].type == ARTS_EDT) {
-            if (event->data != NULL_GUID)
+            if (event->data != NULL_GUID) {
               artsSignalEdt(dependent[j].addr, dependent[j].slot, event->data);
-            else
+            } else {
               DPRINTF("Event data is NULL_GUID for event %u\n", eventGuid);
+            }
           } else if (dependent[j].type == ARTS_EVENT) {
 #ifdef COUNT
             // THIS IS A TEMP FIX... problem is recursion...
