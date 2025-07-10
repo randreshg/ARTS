@@ -47,7 +47,7 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
     // for(unsigned int i=0; i<256; i++)
     {
         unsigned int i=1+2+4;
-        PRINTF("i: %u -> %p\n", i, (void*)i);
+        PRINTF("i: %u -> %p\n", i, (void *)&i);
         // unsigned int rem = artsSendTree(i);
         // PRINTF("REM: %u\n", rem);
     }
