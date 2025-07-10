@@ -66,27 +66,44 @@ endif()
 ## Compiler flags
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message("Debug Build")
-    set(CMAKE_C_FLAGS "-Werror -O0 -g -fsanitize=address -fsanitize=signed-integer-overflow -fPIC -Wno-error=no-stringop-overflow")
-    set(CMAKE_CXX_FLAGS "-Werror -O0 -g -fsanitize=address -fsanitize=signed-integer-overflow -fPIC -Wno-error=no-stringop-overflow")
+    # Do not use comma. If you do, this will cause errors because the flags will be passed to nvcc by -Xcompiler.
+    set(DEBUG_FLAGS "-O0 -fPIC -Wall -Wextra -Werror")
+    set(SANITIZER_FLAGS "-fsanitize=address -fsanitize=undefined -fsanitize=leak")
+    set(DEBUG_IGNORE_FLAGS "-Wno-unused -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-value -Wno-sign-compare -Wno-implicit-fallthrough")
+
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        set(DEBUG_IGNORE_FLAGS "${DEBUG_IGNORE_FLAGS} -Wno-stringop-truncation")
+    elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    endif()
+
+    # Apply compile flags
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${DEBUG_FLAGS} ${SANITIZER_FLAGS} ${DEBUG_IGNORE_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEBUG_FLAGS} ${SANITIZER_FLAGS} ${DEBUG_IGNORE_FLAGS}")
+
+    # Apply sanitizer flags to linker as well
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${SANITIZER_FLAGS}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${SANITIZER_FLAGS}")
 else()
     message("Release Build")
-    set(CMAKE_C_FLAGS "-std=gnu99 -O3 -g -ftree-vectorize -mtune=native -fPIC")
-    set(CMAKE_CXX_FLAGS " -O3 -g -ftree-vectorize -mtune=native -fPIC")
+
+    # Release flags for maximum performance
+    set(RELEASE_FLAGS "-fPIC -march=native -mtune=native")
+
+    # Apply compile flags
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${RELEASE_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${RELEASE_FLAGS}")
 endif()
 
+# Set C and C++ standards
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu17")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++17")
 
 include(CheckLanguage)
 check_language(CUDA)
+
 if(CMAKE_CUDA_COMPILER)
     set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
-    
-    # Set policy for CUDA architectures
-    if(POLICY CMP0104)
-        cmake_policy(SET CMP0104 NEW)
-    endif()
-    
     enable_language(CUDA)
-    
     find_package(CUDA REQUIRED)
 
     if(CUDA_FOUND)
@@ -98,12 +115,8 @@ if(CMAKE_CUDA_COMPILER)
         find_package(cudaArch)
 
         if(CUDAARCH_FOUND)
-            set(CMAKE_CUDA_ARCHITECTURES "${CUDA_ARCHITECTURES}")
-            message(STATUS "Setting CMAKE_CUDA_ARCHITECTURES to: ${CMAKE_CUDA_ARCHITECTURES}")
-        else()
-            # Fallback to sm_70 if detection fails
-            set(CMAKE_CUDA_ARCHITECTURES "70")
-            message(STATUS "CUDA architecture detection failed, using fallback: 70")
+            set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_${CUDA_ARCHITECTURES}")
+            message(STATUS "Setting CUDA architecture to: ${CUDA_ARCHITECTURES}")
         endif()
 
         find_package(cuBlas)
@@ -117,9 +130,12 @@ if(CMAKE_CUDA_COMPILER)
         endif()
 
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-          message("CUDA Debug Build")
-          string(APPEND CMAKE_CUDA_FLAGS_DEBUG " -G")
+            message("CUDA Debug Build")
+            set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G")
+        else()
+            message("CUDA Release Build")
         endif()
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -std=c++17 -ccbin=${CMAKE_CXX_COMPILER} -Xcompiler=\"${CMAKE_CXX_FLAGS}\"")
     else()
         set(CUDA_LIBRARIES "")
     endif()
@@ -137,14 +153,13 @@ if(CONNECTION MATCHES "TCP")
     add_definitions(-DUSE_TCP)
 else()
     find_library(RDMACM_LIB rdmacm)
-    find_path(RSOCKET_INCLUDE rdma/rsocket.h)
     if(RDMACM_LIB)
+        find_path(RSOCKET_INCLUDE rdma/rsocket.h)
         include_directories(${RSOCKET_INCLUDE})
         message("Using RDMA RSockets, added -DUSE_RSOCKETS")
         add_definitions(-DUSE_RSOCKETS)
     else()
         set(RDMACM_LIB "")
-        set(RSOCKET_INCLUDE "")
         set(CONNECTION "TCP")
         message("Using TCP, added -DUSE_TCP")
         add_definitions(-DUSE_TCP)
@@ -174,12 +189,6 @@ if(NOT DEFINED DEQUE)
     set(DEQUE "chase_lev")
 endif(NOT DEFINED DEQUE)
 
-if(NOT DEFINED MALLOC)
-    set(MALLOC "Standard")
-elseif(${MALLOC} MATCHES "FOA")
-    add_definitions(-DFOA)
-endif()
-
 if(APPLE)
     set(RT_LIB "")
 else()
@@ -205,10 +214,7 @@ if(SMART_DB)
     message("Smart DB on, added -DSMART_DB")
     add_definitions(-DSMART_DB)
 else()
-    message("Smart DB off")
 endif()
-
-message("Using ${MALLOC} malloc.")
 
 set(CORE_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/core/inc)
 
