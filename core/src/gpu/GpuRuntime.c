@@ -389,8 +389,8 @@ bool artsGpuSchedulerLoop() {
 }
 
 #define GCHARDLIMIT 2000000000000
-__thread unsigned int backoff = 1;
-__thread unsigned int gcCounter = 0;
+__thread uint64_t backoff = 1;
+__thread uint64_t gcCounter = 0;
 
 bool artsGpuSchedulerBackoffLoop() {
   artsGpu_t *artsGpu = NULL;
