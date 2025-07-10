@@ -43,6 +43,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// Undefine COUNT to avoid conflicts with Thrust library
+#ifdef COUNT
+#undef COUNT
+#endif
+
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 

@@ -52,6 +52,12 @@
 
 #include <algorithm>
 #include <iostream>
+
+// Undefine COUNT to avoid conflicts with Thrust library
+#ifdef COUNT
+#undef COUNT
+#endif
+
 #include <thrust/binary_search.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
@@ -291,12 +297,12 @@ void launchSort(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t 
           uint64_t syncArgs[] = {localLevel, (uint64_t)nextLaunchBfsGuid};
           artsGuid_t edtGuid =
               artsEdtCreate(doPartionSync, i, 2, syncArgs, partCount[i]);
-            unsigned int slot = 0;
+          unsigned int slot = 0;
           for (unsigned int j = 0; j < PARTS; j++) {
             if (i == artsGuidGetRank(visitedGuid[j])) {
-                    artsLCSync(edtGuid, slot++, visitedGuid[j]);
-                }
+              artsLCSync(edtGuid, slot++, visitedGuid[j]);
             }
+          }
         }
         nextLaunchBfsDepc+=artsGetTotalNodes();
     }

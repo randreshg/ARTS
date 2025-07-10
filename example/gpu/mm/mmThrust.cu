@@ -45,6 +45,11 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
+// Undefine COUNT to avoid conflicts with Thrust library
+#ifdef COUNT
+#undef COUNT
+#endif
+
 #include <thrust/device_vector.h>
 #include <thrust/copy.h>
 
@@ -252,7 +257,7 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
                               artsGetGuid(aTileGuids, i * numBlocks + k));
                 artsSignalEdt(mulGuid, 1,
                               artsGetGuid(bTileGuids, k * numBlocks + j));
-                }
+              }
             }
         }
     }
