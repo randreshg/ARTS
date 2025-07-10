@@ -565,7 +565,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
       DPRINTF("Data: NULL_GUID, avoiding signaling\n");
       artsDebugGenerateSegFault();
     }
-    unsigned int res;
+    unsigned int res = -1;
     struct artsPersistentEventVersion *version =
         artsGetFrontPersistentEventVersion(event);
     PRINTF("[PersistentEvent] Satisfying event %lu, version %u\n", eventGuid,
