@@ -36,12 +36,12 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/Graph.h"
+#include "arts/arts.h"
+#include "arts/runtime/Globals.h"
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "arts/arts.h"
-#include "artsGraph.h"
-#include "artsGlobals.h"
-#include <assert.h>
 
 int main(int argc, char** argv) {
 
@@ -49,29 +49,29 @@ int main(int argc, char** argv) {
   PRINTF("[WARN] asserts are disabled. Verification will not run.\n");
 #endif
 
-  arts_block_dist_t dist;
-  initBlockDistribution(&dist, 64, 32, 2);
-  assert(dist.num_vertices == 64);
-  assert(dist.num_ranks == 2);
-  assert(dist.block_sz == 32);
-  assert(getOwner(5, &dist) == 0);
-  assert(getOwner(31, &dist) == 0);
-  assert(getOwner(45, &dist) == 1);
-  assert(nodeStart(0, &dist) == 0);
-  assert(nodeEnd(0, &dist) == 31);
-  assert(nodeStart(1, &dist) == 32);
-  assert(nodeEnd(1, &dist) == 63);
+  arts_block_dist_t *dist = initBlockDistributionBlock(64, 0, 2, ARTS_DB_READ);
+  assert(dist->num_vertices == 64);
+  assert(dist->num_blocks == 2);
+  assert(dist->block_sz == 32);
+  assert(getOwnerDistr(5, dist) == 0);
+  assert(getOwnerDistr(31, dist) == 0);
+  assert(getOwnerDistr(45, dist) == 1);
+  assert(partitionStartDistr(0, dist) == 0);
+  assert(partitionEndDistr(0, dist) == 31);
+  assert(partitionStartDistr(1, dist) == 32);
+  assert(partitionEndDistr(1, dist) == 63);
+  freeDistribution(dist);
 
-  initBlockDistribution(&dist, 8, 5, 3);
-  assert(dist.num_vertices == 8);
-  assert(dist.num_ranks == 3);
-  assert(dist.block_sz == 3);
-  assert(getOwner(5, &dist) == 1);
-  assert(getOwner(6, &dist) == 2);
-  assert(getOwner(2, &dist) == 0);
-  assert(nodeStart(0, &dist) == 0);
-  assert(nodeEnd(0, &dist) == 2);
-  assert(nodeStart(2, &dist) == 6);
-  assert(nodeEnd(2, &dist) == 7);
-
+  dist = initBlockDistributionBlock(8, 0, 3, ARTS_DB_WRITE);
+  assert(dist->num_vertices == 8);
+  assert(dist->num_blocks == 3);
+  assert(dist->block_sz == 3);
+  assert(getOwnerDistr(5, dist) == 1);
+  assert(getOwnerDistr(6, dist) == 2);
+  assert(getOwnerDistr(2, dist) == 0);
+  assert(partitionStartDistr(0, dist) == 0);
+  assert(partitionEndDistr(0, dist) == 2);
+  assert(partitionStartDistr(2, dist) == 6);
+  assert(partitionEndDistr(2, dist) == 7);
+  freeDistribution(dist);
 }

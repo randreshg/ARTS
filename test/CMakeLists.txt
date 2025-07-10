@@ -54,8 +54,8 @@ target_link_libraries(testCDAG ${LIBS})
 add_executable(testCDAG2 testCDAG2.c)
 target_link_libraries(testCDAG2 ${LIBS})
 
-#add_executable(testOOList testOOList.c)
-#target_link_libraries(testOOList ${LIBS})
+add_executable(testOOList testOOList.c)
+target_link_libraries(testOOList ${LIBS})
 
 add_executable(testPinDB testPinDB.c)
 target_link_libraries(testPinDB ${LIBS})
@@ -78,8 +78,8 @@ target_link_libraries(testActiveMessageBuffer ${LIBS})
 add_executable(testCSR testCSR.c)
 target_link_libraries(testCSR arts-graph ${LIBS})
 
-#add_executable(testDistribution testDistribution.c)
-#target_link_libraries(testDistribution ${LIBS})
+add_executable(testDistribution testDistribution.c)
+target_link_libraries(testDistribution arts-graph ${LIBS})
 
 add_executable(testArrayDb testArrayDb.c)
 target_link_libraries(testArrayDb ${LIBS})

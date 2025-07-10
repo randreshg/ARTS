@@ -43,12 +43,12 @@
 #if !defined(__APPLE__)
   #include <sys/prctl.h>
 #endif
+#include "arts/arts.h"
+#include "arts/gas/OutOfOrderList.h"
+#include "arts/system/Debug.h"
+#include "arts/utils/Atomics.h"
 #include <sys/types.h>
 #include <unistd.h>
-#include "arts/arts.h"
-#include "artsAtomics.h"
-#include "artsOutOfOrderList.h"
-#include "artsDebug.h"
 
 #define NUMTHREADS 2
 
@@ -78,6 +78,7 @@ void * adder(void * data)
 //        printf("Print Added %u\n", i);
         artsAtomicAdd(&count, 1U);
     }
+    return NULL;
 }
 
 void * firer(void * data)
@@ -88,6 +89,7 @@ void * firer(void * data)
     while(count < 20);
     PRINTF("FIRE 2\n");
     artsOutOfOrderListFireCallback(&list, 0,  printer);
+    return NULL;
 }
 
 //pthread_create(&nodeThreadList[i], &attr, &artsThreadLoop, &mask[i]);
