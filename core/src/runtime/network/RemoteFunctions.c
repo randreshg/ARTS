@@ -399,6 +399,7 @@ void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t slot,
                              sizeof(packet));
 }
 
+#ifdef SMART_DB
 void artsRemoteDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
                                uint32_t edtSlot) {
   struct artsRemoteDbAddDependencePacket packet;
@@ -428,6 +429,7 @@ void artsRemoteDbDecrementLatch(artsGuid_t db) {
   artsRemoteSendRequestAsync(artsGuidGetRank(db), (char *)&packet,
                              sizeof(packet));
 }
+#endif
 
 void artsDbRequestCallback(struct artsEdt *edt, unsigned int slot,
                            struct artsDb *dbRes) {
