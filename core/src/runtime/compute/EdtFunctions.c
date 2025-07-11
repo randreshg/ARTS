@@ -174,7 +174,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
                            bool useEpoch, artsGuid_t epochGuid, bool hasDepv) {
   ARTSSETMEMSHOTTYPE(artsEdtMemorySize);
   if (!edt)
-    edt = (struct artsEdt *)artsCalloc(edtSpace);
+    edt = (struct artsEdt *)artsCallocAlign(edtSpace, 16);
   edt->header.type = mode;
   edt->header.size = edtSpace;
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
@@ -516,7 +516,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
       globalShutdownGuidIncFinished();
     } else
       PRINTF("Out-of-order buffers not supported\n");
-    } else {
+  } else {
     artsRemoteMemoryMove(rank, bufferGuid, buffer, size,
                          ARTS_REMOTE_BUFFER_SEND_MSG, artsFree);
   }

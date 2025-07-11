@@ -318,8 +318,8 @@ artsRouteTable_t *artsNewRouteTable(unsigned int routeTableSize,
                                     unsigned int shift) {
   artsRouteTable_t *routeTable =
       (artsRouteTable_t *)artsCalloc(sizeof(artsRouteTable_t));
-  routeTable->data = (artsRouteItem_t *)artsCalloc(
-      collisionResolves * routeTableSize * sizeof(artsRouteItem_t));
+  routeTable->data = (artsRouteItem_t *)artsCallocAlign(
+      collisionResolves * routeTableSize * sizeof(artsRouteItem_t), 16);
   routeTable->size = routeTableSize;
   routeTable->shift = shift;
   routeTable->setFunc = setItem;

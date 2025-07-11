@@ -81,8 +81,8 @@ artsRouteTable_t *artsGpuNewRouteTable(unsigned int routeTableSize,
   unsigned int totalElems = collisionResolves * routeTableSize;
   artsGpuRouteTable_t *gpuRouteTable =
       (artsGpuRouteTable_t *)artsCalloc(sizeof(artsGpuRouteTable_t));
-  gpuRouteTable->routingTable.data =
-      (artsRouteItem_t *)artsCalloc(totalElems * sizeof(artsRouteItem_t));
+  gpuRouteTable->routingTable.data = (artsRouteItem_t *)artsCallocAlign(
+      totalElems * sizeof(artsRouteItem_t), 16);
   gpuRouteTable->routingTable.size = routeTableSize;
   gpuRouteTable->routingTable.shift = shift;
   gpuRouteTable->routingTable.setFunc = setGpuItem;

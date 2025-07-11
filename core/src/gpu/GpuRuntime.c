@@ -563,7 +563,7 @@ void internalLCSyncGPU(artsGuid_t acqGuid, struct artsDb *db) {
 
     bool copyOnly = false;
     unsigned int size = db->header.size;
-    struct artsDb *tempSpace = (struct artsDb *)artsMalloc(size);
+    struct artsDb *tempSpace = (struct artsDb *)artsMallocAlign(size, 16);
 
     gpuGCWriteLock(); // Don't let the gc take our copies...
     DPRINTF("FUNCTION: %u\n", artsNodeInfo.gpuLCSync);
@@ -632,7 +632,7 @@ void internalLCSyncCPU(artsGuid_t acqGuid, struct artsDb *db) {
     // artsCudaSetDevice(-1, true);
 
     unsigned int size = db->header.size;
-    struct artsDb *tempSpace = (struct artsDb *)artsMalloc(size);
+    struct artsDb *tempSpace = (struct artsDb *)artsMallocAlign(size, 16);
     gpuGCWriteLock(); // Don't let the gc take our copies...
     for (int i = 0; i < artsNodeInfo.gpu; i++) {
       unsigned int gpuVersion;

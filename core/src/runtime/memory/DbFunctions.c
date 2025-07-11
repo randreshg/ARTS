@@ -76,7 +76,7 @@ void *artsDbMalloc(artsType_t mode, unsigned int size) {
   }
 #endif
   if (!ptr)
-    ptr = artsMalloc(size);
+    ptr = artsMallocAlign(size, 16);
   return ptr;
 }
 
@@ -229,7 +229,7 @@ void *artsDbResizePtr(struct artsDb *dbRes, unsigned int size, bool copy) {
     unsigned int oldSize = dbRes->header.size;
     unsigned int newSize = size + sizeof(struct artsDb);
     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-    struct artsDb *ptr = artsCalloc(size + sizeof(struct artsDb));
+    struct artsDb *ptr = artsCallocAlign(size + sizeof(struct artsDb), 16);
     ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
     if (ptr) {
       if (copy)

@@ -149,7 +149,10 @@ void artsInternalInitIntrospector(struct artsConfig * config)
         inspector = artsCalloc(sizeof(artsInspector));
         inspector->startPoint = startPoint;
         DPRINTF("inspector->coreMetric %u\n", sizeof(artsPerformanceUnit) * artsLastMetricType * artsNodeInfo.totalThreadCount);
-        inspector->coreMetric = artsCalloc(sizeof(artsPerformanceUnit) * artsLastMetricType * artsNodeInfo.totalThreadCount);
+        inspector->coreMetric =
+            artsCallocAlign(sizeof(artsPerformanceUnit) * artsLastMetricType *
+                                artsNodeInfo.totalThreadCount,
+                            64);
         for(unsigned int i=0; i<artsNodeInfo.totalThreadCount; i++)
         {
             for(unsigned int j=0; j<artsLastMetricType; j++)
@@ -158,15 +161,17 @@ void artsInternalInitIntrospector(struct artsConfig * config)
                 inspector->coreMetric[i*artsLastMetricType + j].timeMethod = localTimeStamp;
             }
         }
-        
-        inspector->nodeMetric = artsCalloc(sizeof(artsPerformanceUnit) * artsLastMetricType);
+
+        inspector->nodeMetric = artsCallocAlign(
+            sizeof(artsPerformanceUnit) * artsLastMetricType, 64);
         for(unsigned int j=0; j<artsLastMetricType; j++)
         {
             inspector->nodeMetric[j].maxTotal = maxTotal[j][1];
             inspector->nodeMetric[j].timeMethod = globalTimeStamp;
         }
-        
-        inspector->systemMetric = artsCalloc(sizeof(artsPerformanceUnit) * artsLastMetricType);
+
+        inspector->systemMetric = artsCallocAlign(
+            sizeof(artsPerformanceUnit) * artsLastMetricType, 64);
         for(unsigned int j=0; j<artsLastMetricType; j++)
         {
             inspector->systemMetric[j].maxTotal = maxTotal[j][2];

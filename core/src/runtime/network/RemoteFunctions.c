@@ -285,7 +285,7 @@ void artsRemoteHandleEdtMove(void *ptr) {
       packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
 
   ARTSSETMEMSHOTTYPE(artsEdtMemorySize);
-  struct artsEdt *edt = artsMalloc(size);
+  struct artsEdt *edt = artsMallocAlign(size, 16);
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 
   memcpy(edt, packet + 1, size);
@@ -306,7 +306,7 @@ void artsRemoteHandleDbMove(void *ptr) {
   unsigned int dbSize = dbHeader->header.size;
 
   ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-  struct artsHeader *memPacket = artsMalloc(dbSize);
+  struct artsHeader *memPacket = artsMallocAlign(dbSize, 16);
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 
   if (size == dbSize)
@@ -332,7 +332,7 @@ void artsRemoteHandleEventMove(void *ptr) {
       packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
 
   ARTSSETMEMSHOTTYPE(artsEventMemorySize);
-  struct artsHeader *memPacket = artsMalloc(size);
+  struct artsHeader *memPacket = artsMallocAlign(size, 16);
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 
   memcpy(memPacket, packet + 1, size);
@@ -347,7 +347,7 @@ void artsRemoteHandlePersistentEventMove(void *ptr) {
       packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
 
   ARTSSETMEMSHOTTYPE(artsPersistentEventMemorySize);
-  struct artsHeader *memPacket = artsMalloc(size);
+  struct artsHeader *memPacket = artsMallocAlign(size, 16);
   ARTSSETMEMSHOTTYPE(artsPersistentEventMemorySize);
 
   memcpy(memPacket, packet + 1, size);
@@ -531,7 +531,7 @@ void artsRemoteHandleDbRecieved(struct artsRemoteDbSendPacket *packet) {
 
   case reservedKey:
     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-    dbRes = artsMalloc(packetDb->header.size);
+    dbRes = artsMallocAlign(packetDb->header.size, 16);
     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
     memcpy(dbRes, packetDb, packetDb->header.size);
     if (artsIsGuidLocal(packetDb->guid))
@@ -636,7 +636,7 @@ void artsRemoteHandleDbFullRecieved(struct artsRemoteDbFullSendPacket *packet) {
       PRINTF("Did the DB do a remote resize...\n");
   } else {
     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-    dbRes = artsMalloc(packetDb->header.size);
+    dbRes = artsMallocAlign(packetDb->header.size, 16);
     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
     memcpy(dbRes, packetDb, packetDb->header.size);
     if (artsIsGuidLocal(packetDb->guid))

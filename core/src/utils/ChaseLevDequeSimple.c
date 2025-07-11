@@ -82,7 +82,7 @@ struct artsDeque {
 
 static inline struct circularArray *newCircularArray(unsigned int size) {
   struct circularArray *array =
-      artsCalloc(sizeof(struct circularArray) + sizeof(void *) * size);
+      artsCallocAlign(sizeof(struct circularArray) + sizeof(void *) * size, 64);
   //    memset(array,0,sizeof(struct circularArray) + sizeof(void*) * size);
   array->size = size;
   array->segment = (void **)(array + 1);
@@ -145,7 +145,7 @@ static inline void artsDequeNewInit(struct artsDeque *deque,
 }
 
 struct artsDeque *artsDequeNew(unsigned int size) {
-  struct artsDeque *deque = artsCalloc(sizeof(struct artsDeque));
+  struct artsDeque *deque = artsCallocAlign(sizeof(struct artsDeque), 64);
   artsDequeNewInit(deque, size);
   return deque;
 }
@@ -210,8 +210,8 @@ void *artsDequePopBack(struct artsDeque *deque) {
 
 struct artsDeque *artsDequeListNew(unsigned int listSize,
                                    unsigned int dequeSize) {
-  struct artsDeque *dequeList =
-      (struct artsDeque *)artsCalloc(listSize * sizeof(struct artsDeque));
+  struct artsDeque *dequeList = (struct artsDeque *)artsCallocAlign(
+      listSize * sizeof(struct artsDeque), 64);
   unsigned int i = 0;
   for (i = 0; i < listSize; i++)
     artsDequeNewInit(&dequeList[i], dequeSize);

@@ -280,7 +280,7 @@ void artsTMTNodeInit(unsigned int numThreads) {
   }
 
   if (artsNodeInfo.tMT) {
-    _arts_tMT_msi = (msi_t *)artsCalloc(numThreads * sizeof(msi_t));
+    _arts_tMT_msi = (msi_t *)artsCallocAlign(numThreads * sizeof(msi_t), 64);
   }
 }
 

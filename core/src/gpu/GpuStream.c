@@ -507,7 +507,7 @@ void freeGpuItem(artsRouteItem_t *item) {
         (struct artsDb *)artsRouteTableLookupDb(item->key, &validRank, false);
     if (db) {
       unsigned int size = db->header.size;
-      struct artsDb *tempSpace = (struct artsDb *)artsMalloc(size);
+      struct artsDb *tempSpace = (struct artsDb *)artsMallocAlign(size, 16);
 
       artsLCMeta_t host;
       host.guid = item->key;
