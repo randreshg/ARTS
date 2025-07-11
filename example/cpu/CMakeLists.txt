@@ -71,8 +71,11 @@ target_link_libraries(graphSearch arts-graph ${LIBS})
 add_executable(scanStatistics scanStatistics.cpp)
 target_link_libraries(scanStatistics arts-graph ${LIBS})
 
-#add_executable(triangleCount triangleCount.c)
-#target_link_libraries(triangleCount arts-graph ${LIBS})
+add_executable(triangleCount triangleCount.c)
+target_link_libraries(triangleCount arts-graph ${LIBS})
 
-#add_executable(triangleCount2 triangleCount2.c)
-#target_link_libraries(triangleCount2 arts-graph ${LIBS})
+add_executable(triangleCount2 triangleCount2.c)
+target_link_libraries(triangleCount2 arts-graph ${LIBS})
+
+add_executable(triangleCountPromise triangleCountPromise.c)
+target_link_libraries(triangleCountPromise arts-graph ${LIBS})

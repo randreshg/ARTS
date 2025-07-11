@@ -37,25 +37,25 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
+#include "arts/Graph.h"
+#include "arts/arts.h"
+#include "arts/utils/Atomics.h"
+#include <assert.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <inttypes.h>
 #include <string.h>
-#include <assert.h>
-#include "arts/arts.h"
-#include "artsGraph.h"
-#include "artsAtomics.h"
 
-arts_block_dist_t distribution;
-csr_graph_t graph;
+arts_block_dist_t *distribution;
+csr_graph_t *graph;
 
 artsGuid_t epochGuid       = NULL_GUID;
 artsGuid_t startReduceGuid = NULL_GUID;
 artsGuid_t finalReduceGuid = NULL_GUID;
 
-vertex distStart = 0;
-vertex distEnd   = 0;
+vertex_t distStart = 0;
+vertex_t distEnd = 0;
 uint64_t blockSize    = 0;
 uint64_t overSub      = 16;
 
@@ -73,13 +73,13 @@ void startReduce(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t
 void visitVertex(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t depv[]);
 
 //Only support up to 64 nodes
-inline unsigned int checkAndSet(uint64_t * mask, unsigned int index) {
-    uint64_t bit = 1 << index;
-    if(((*mask) & bit) == 0) {
-        (*mask)|=bit;
-        return 1;
-    }
-    return 0;
+static inline unsigned int checkAndSet(uint64_t *mask, unsigned int index) {
+  uint64_t bit = 1 << index;
+  if (((*mask) & bit) == 0) {
+    (*mask) |= bit;
+    return 1;
+  }
+  return 0;
 }
 
 void finalReduce(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t depv[]) {
@@ -103,72 +103,79 @@ void startReduce(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t
     }
 }
 
-inline uint64_t lowerBound(vertex value, uint64_t start, uint64_t end, vertex * edges) {
-    while ((start < end) && (edges[start] < value))
-        start++;
-    return start;
+static inline uint64_t lowerBound(vertex_t value, uint64_t start, uint64_t end,
+                                  vertex_t *edges) {
+  while ((start < end) && (edges[start] < value))
+    start++;
+  return start;
 }
 
-inline uint64_t upperBound(vertex value, uint64_t start, uint64_t end, vertex * edges) {
-    while ((start < end) && (value < edges[end - 1]))
-        end--;
-    return end;
+static inline uint64_t upperBound(vertex_t value, uint64_t start, uint64_t end,
+                                  vertex_t *edges) {
+  while ((start < end) && (value < edges[end - 1]))
+    end--;
+  return end;
 }
 
-inline uint64_t countTriangles(vertex * a, uint64_t a_start, uint64_t a_end, vertex * b, uint64_t b_start, uint64_t b_end) {
-    uint64_t count = 0;
-    while ((a_start < a_end) && (b_start < b_end)) {
-        if (a[a_start] < b[b_start])
-            a_start++;
-        else if (a[a_start] > b[b_start])
-            b_start++;
-        else {
-            count++;
-            a_start++;
-            b_start++;
-        }
+static inline uint64_t countTriangles(vertex_t *a, uint64_t a_start,
+                                      uint64_t a_end, vertex_t *b,
+                                      uint64_t b_start, uint64_t b_end) {
+  uint64_t count = 0;
+  while ((a_start < a_end) && (b_start < b_end)) {
+    if (a[a_start] < b[b_start])
+      a_start++;
+    else if (a[a_start] > b[b_start])
+      b_start++;
+    else {
+      count++;
+      a_start++;
+      b_start++;
     }
-    return count;
+  }
+  return count;
 }
 
-inline uint64_t processVertex(vertex i, vertex * neighbors, uint64_t neighborCount, uint64_t * visitMask, uint64_t * procLocal, uint64_t * procRemote) {
-    uint64_t localCount = 0;
-    
-    uint64_t firstPred = lowerBound(i, 0, neighborCount, neighbors);
-    uint64_t lastPred = neighborCount;
-    
-    for (uint64_t nextPred = firstPred + 1; nextPred < lastPred; nextPred++) {
-        vertex j = neighbors[nextPred];
-        unsigned int owner = getOwner(j, &distribution);
-        if (getOwner(j, &distribution) == artsGetCurrentNode()) {
-            vertex * jNeighbors = NULL;
-            uint64_t jNeighborCount = 0;
-            getNeighbors(&graph, j, &jNeighbors, &jNeighborCount);
-            uint64_t firstSucc = lowerBound(i, 0, jNeighborCount, jNeighbors);
-            uint64_t lastSucc = upperBound(j, 0, jNeighborCount, jNeighbors);
-            localCount += countTriangles(neighbors, firstPred, nextPred, jNeighbors, firstSucc, lastSucc);
-            (*procLocal)++;
-        }
-        else if(checkAndSet(visitMask, owner)) {
-            uint64_t args[3];
-            args[0] = i;
-            args[1] = i;
-            args[2] = neighborCount;
-            artsGuid_t guid = artsEdtCreate(visitVertex, owner, 3, args, 1);
-            artsSignalEdtPtr(guid, 0, neighbors, sizeof(vertex) * neighborCount);
-            (*procRemote)++;
-        }
+static inline uint64_t processVertex(vertex_t i, vertex_t *neighbors,
+                                     uint64_t neighborCount,
+                                     uint64_t *visitMask, uint64_t *procLocal,
+                                     uint64_t *procRemote) {
+  uint64_t localCount = 0;
+
+  uint64_t firstPred = lowerBound(i, 0, neighborCount, neighbors);
+  uint64_t lastPred = neighborCount;
+
+  for (uint64_t nextPred = firstPred + 1; nextPred < lastPred; nextPred++) {
+    vertex_t j = neighbors[nextPred];
+    unsigned int owner = getOwnerDistr(j, distribution);
+    if (getOwnerDistr(j, distribution) == artsGetCurrentNode()) {
+      vertex_t *jNeighbors = NULL;
+      uint64_t jNeighborCount = 0;
+      getNeighbors(graph, j, &jNeighbors, &jNeighborCount);
+      uint64_t firstSucc = lowerBound(i, 0, jNeighborCount, jNeighbors);
+      uint64_t lastSucc = upperBound(j, 0, jNeighborCount, jNeighbors);
+      localCount += countTriangles(neighbors, firstPred, nextPred, jNeighbors,
+                                   firstSucc, lastSucc);
+      (*procLocal)++;
+    } else if (checkAndSet(visitMask, owner)) {
+      uint64_t args[3];
+      args[0] = i;
+      args[1] = i;
+      args[2] = neighborCount;
+      artsGuid_t guid = artsEdtCreate(visitVertex, owner, 3, args, 1);
+      artsSignalEdtPtr(guid, 0, neighbors, sizeof(vertex_t) * neighborCount);
+      (*procRemote)++;
     }
-    return localCount;
+  }
+  return localCount;
 }
 
 void visitVertex(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t depv[]) {
     uint64_t localCount = 0;
-    
-    vertex start = paramv[0];
-    vertex end   = paramv[1];
-    
-    vertex * neighbors = NULL;
+
+    vertex_t start = paramv[0];
+    vertex_t end = paramv[1];
+
+    vertex_t *neighbors = NULL;
     uint64_t neighborCount = 0;
     
     uint64_t procLocal = 0;
@@ -184,11 +191,12 @@ void visitVertex(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t
         artsAtomicAddU64(&incoming, procIncoming);
     }
     else {
-        for(vertex i=start; i<end; i++) {
-            uint64_t visitMask = 0;
-            getNeighbors(&graph, i, &neighbors, &neighborCount);
-            localCount += processVertex(i, neighbors, neighborCount, &visitMask, &procLocal, &procRemote);
-        }
+      for (vertex_t i = start; i < end; i++) {
+        uint64_t visitMask = 0;
+        getNeighbors(graph, i, &neighbors, &neighborCount);
+        localCount += processVertex(i, neighbors, neighborCount, &visitMask,
+                                    &procLocal, &procRemote);
+      }
         artsAtomicAddU64(&localTriangleCount, localCount);
         artsAtomicAddU64(&local, procLocal);
         artsAtomicAddU64(&remote, procRemote);
@@ -198,18 +206,21 @@ void visitVertex(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t
 }
 
 void initPerNode(unsigned int nodeId, int argc, char** argv) {
-    initBlockDistributionWithCmdLineArgs(&distribution, argc, argv);
-    loadGraphUsingCmdLineArgs(&graph, &distribution, argc, argv);
+  distribution = initBlockDistributionWithCmdLineArgs(argc, argv);
+  loadGraphUsingCmdLineArgs(distribution, argc, argv);
+  graph = getGraphFromPartition(nodeId, distribution);
 
-    startReduceGuid = artsReserveGuidRoute(ARTS_EDT,   0);
-    finalReduceGuid = artsReserveGuidRoute(ARTS_EDT,   0);
-    epochGuid       = artsInitializeEpoch(0, startReduceGuid, 0);
+  startReduceGuid = artsReserveGuidRoute(ARTS_EDT, 0);
+  finalReduceGuid = artsReserveGuidRoute(ARTS_EDT, 0);
+  epochGuid = artsInitializeEpoch(0, startReduceGuid, 0);
 
-    distStart = nodeStart(nodeId, &distribution);
-    distEnd   = nodeEnd(nodeId, &distribution);
-    blockSize = (nodeEnd(nodeId, &distribution) - nodeStart(nodeId, &distribution)) / (artsGetTotalWorkers() * overSub);
-    if(!blockSize)
-        blockSize = 1;
+  distStart = partitionStartDistr(nodeId, distribution);
+  distEnd = partitionEndDistr(nodeId, distribution);
+  blockSize = (partitionEndDistr(nodeId, distribution) -
+               partitionStartDistr(nodeId, distribution)) /
+              (artsGetTotalWorkers() * overSub);
+  if (!blockSize)
+    blockSize = 1;
 }
 
 void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** argv) {
@@ -223,13 +234,13 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
     
     uint64_t args[2];
     uint64_t workerIndex = 0;
-    for (vertex i = distStart; i < distEnd; i+=blockSize) {
-        if(workerIndex % artsGetTotalWorkers() == workerId) {
-            args[0] = i;
-            args[1] = (i+blockSize < distEnd) ? i+blockSize : distEnd;
-            artsEdtCreate(visitVertex, nodeId, 2, args, 0);
-        }
-        workerIndex++;
+    for (vertex_t i = distStart; i < distEnd; i += blockSize) {
+      if (workerIndex % artsGetTotalWorkers() == workerId) {
+        args[0] = i;
+        args[1] = (i + blockSize < distEnd) ? i + blockSize : distEnd;
+        artsEdtCreate(visitVertex, nodeId, 2, args, 0);
+      }
+      workerIndex++;
     }
 }
 

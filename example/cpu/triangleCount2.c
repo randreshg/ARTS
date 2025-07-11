@@ -37,19 +37,19 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
+#include "arts/Graph.h"
+#include "arts/arts.h"
+#include "arts/runtime/sync/TerminationDetection.h"
+#include "arts/utils/Atomics.h"
+#include <assert.h>
+#include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
-#include <inttypes.h>
 #include <string.h>
-#include <assert.h>
-#include "arts/arts.h"
-#include "artsGraph.h"
-#include "artsTerminationDetection.h"
-#include "artsAtomics.h"
 
-arts_block_dist_t distribution;
-csr_graph_t graph;
+arts_block_dist_t *distribution;
+csr_graph_t *graph;
 
 artsGuid_t epochGuid    = NULL_GUID;
 artsGuid_t startReduceGuid = NULL_GUID;
@@ -127,27 +127,30 @@ uint64_t processBlock(uint64_t index) {
     uint64_t localCount = 0;
     
     uint64_t iStart = index*blockSize;
-    uint64_t iEnd   = (index+1 == numBlocks) ? nodeEnd(artsGetCurrentNode(), &distribution) : iStart + blockSize;
-    
+    uint64_t iEnd = (index + 1 == numBlocks)
+                        ? partitionEndDistr(artsGetCurrentNode(), distribution)
+                        : iStart + blockSize;
+
     for (vertex_t i=iStart; i<iEnd; i++) {
-        
-        getNeighbors(&graph, i, &neighbors, &neighborCount);
-        
-        uint64_t firstPred = lowerBound(i, 0, neighborCount, neighbors);
-        uint64_t lastPred = neighborCount;
-        
-        for (uint64_t nextPred = firstPred + 1; nextPred < lastPred; nextPred++) {
-            vertex_t j = neighbors[nextPred];
-            unsigned int owner = getOwner(j, &distribution);
-            if (getOwner(j, &distribution) == artsGetCurrentNode()) {
-                vertex_t * jNeighbors = NULL;
-                uint64_t jNeighborCount = 0;
-                getNeighbors(&graph, j, &jNeighbors, &jNeighborCount);
-                uint64_t firstSucc = lowerBound(i, 0, jNeighborCount, jNeighbors);
-                uint64_t lastSucc = upperBound(j, 0, jNeighborCount, jNeighbors);
-                localCount += count_triangles(neighbors, firstPred, nextPred, jNeighbors, firstSucc, lastSucc);
-            }
+
+      getNeighbors(graph, i, &neighbors, &neighborCount);
+
+      uint64_t firstPred = lowerBound(i, 0, neighborCount, neighbors);
+      uint64_t lastPred = neighborCount;
+
+      for (uint64_t nextPred = firstPred + 1; nextPred < lastPred; nextPred++) {
+        vertex_t j = neighbors[nextPred];
+        unsigned int owner = getOwnerDistr(j, distribution);
+        if (getOwnerDistr(j, distribution) == artsGetCurrentNode()) {
+          vertex_t *jNeighbors = NULL;
+          uint64_t jNeighborCount = 0;
+          getNeighbors(graph, j, &jNeighbors, &jNeighborCount);
+          uint64_t firstSucc = lowerBound(i, 0, jNeighborCount, jNeighbors);
+          uint64_t lastSucc = upperBound(j, 0, jNeighborCount, jNeighbors);
+          localCount += count_triangles(neighbors, firstPred, nextPred,
+                                        jNeighbors, firstSucc, lastSucc);
         }
+      }
     }
     return localCount;
 }
@@ -165,12 +168,13 @@ void visitNode(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t d
 }
 
 void initPerNode(unsigned int nodeId, int argc, char** argv) {
-    initBlockDistributionWithCmdLineArgs(&distribution, argc, argv);
-    loadGraphUsingCmdLineArgs(&graph, &distribution, argc, argv);
+  distribution = initBlockDistributionWithCmdLineArgs(argc, argv);
+  loadGraphUsingCmdLineArgs(distribution, argc, argv);
+  graph = getGraphFromPartition(nodeId, distribution);
 
-    startReduceGuid = artsReserveGuidRoute(ARTS_EDT,   0);
-    finalReduceGuid = artsReserveGuidRoute(ARTS_EDT,   0);
-    epochGuid       = artsInitializeEpoch(0, startReduceGuid, 0);
+  startReduceGuid = artsReserveGuidRoute(ARTS_EDT, 0);
+  finalReduceGuid = artsReserveGuidRoute(ARTS_EDT, 0);
+  epochGuid = artsInitializeEpoch(0, startReduceGuid, 0);
 }
 
 void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** argv) {
@@ -181,9 +185,9 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
     }
     
     artsStartEpoch(epochGuid);
-    vertex_t start = nodeStart(nodeId, &distribution);
-    vertex_t end   = nodeEnd(nodeId, &distribution);
-    
+    vertex_t start = partitionStartDistr(nodeId, distribution);
+    vertex_t end = partitionEndDistr(nodeId, distribution);
+
     uint64_t size = end - start;
     blockSize = size / (artsGetTotalWorkers() * 32 * 2);
     numBlocks = size / blockSize;
