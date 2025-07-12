@@ -211,7 +211,7 @@ if(INSPECTOR)
 endif()
 
 if(SMART_DB)
-    message("Smart DB on, added -DSMART_DB")
+    message("Smart DB on, added -DSMART_DB, currently SMART_DB is not supported")
     add_definitions(-DSMART_DB)
 else()
 endif()
