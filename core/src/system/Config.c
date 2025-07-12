@@ -1079,7 +1079,23 @@ struct artsConfig *artsConfigLoad() {
 
   DPRINTF("Config Parsed\n");
 
+  while (configVariables != NULL) {
+    struct artsConfigVariable *nextVar = configVariables->next;
+    artsFree(configVariables);
+    configVariables = nextVar;
+  }
+
   return config;
 }
 
-void artsConfigDestroy(void *config) { artsFree(config); }
+void artsConfigDestroy(struct artsConfig *config) {
+  artsFree(config->launcher);
+  artsFree(config->launcherData->launcherMemory);
+  artsFree(config->launcherData);
+  for (int i = 0; i < config->tableLength; i++)
+    artsFree(config->table[i].ipAddress);
+  artsFree(config->table);
+  artsFree(config->masterNode);
+  artsFree(config->protocol);
+  artsFree(config);
+}
