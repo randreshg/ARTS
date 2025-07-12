@@ -88,11 +88,11 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char** 
 {   
     if(!nodeId && !workerId)
     {
-        unsigned int num = atoi(argv[1]);
-        artsGuid_t doneGuid = artsEdtCreate(fibDone, 0, 1, (uint64_t*)&num, 1);
-        uint64_t args[3] = {doneGuid, 0, num};
-        start = artsGetTimeStamp();
-        artsGuid_t guid = artsEdtCreate(fibFork, 0, 3, args, 0);
+      uint64_t num = atoi(argv[1]);
+      artsGuid_t doneGuid = artsEdtCreate(fibDone, 0, 1, &num, 1);
+      uint64_t args[3] = {doneGuid, 0, num};
+      start = artsGetTimeStamp();
+      artsGuid_t guid = artsEdtCreate(fibFork, 0, 3, args, 0);
     }
 }
 
