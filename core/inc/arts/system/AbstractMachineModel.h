@@ -45,8 +45,19 @@ extern "C" {
 #include "arts/arts.h"
 #include "arts/system/Config.h"
 #include <assert.h>
+#include <unistd.h>
 
-struct artsCoreInfo;
+#ifdef HWLOC
+#include <hwloc.h>
+struct artsCoreInfo {
+  hwloc_cpuset_t cpuset;
+  hwloc_topology_t topology;
+};
+#else
+struct artsCoreInfo {
+  unsigned int cpuId;
+};
+#endif
 struct unitThread {
   unsigned int id;
   unsigned int groupId;
@@ -72,7 +83,7 @@ struct threadMask {
   bool networkReceive;
   bool statusSend;
   bool pin;
-  struct artsCoreInfo *coreInfo;
+  struct artsCoreInfo coreInfo;
 };
 
 struct unitMask {
@@ -83,7 +94,7 @@ struct unitMask {
   unsigned int threads;
   struct unitThread *listHead;
   struct unitThread *listTail;
-  struct artsCoreInfo *coreInfo;
+  struct artsCoreInfo coreInfo;
 };
 
 struct coreMask {
@@ -104,6 +115,7 @@ struct nodeMask {
 struct threadMask *getThreadMask(struct artsConfig *config);
 void printMask(struct threadMask *units, unsigned int numberOfUnits);
 void artsAbstractMachineModelPinThread(struct artsCoreInfo *coreInfo);
+void destroyThreadMask(struct threadMask *mask);
 
 #ifdef __cplusplus
 }

@@ -94,21 +94,14 @@ void addAThread(struct unitMask *mask, bool workOn, bool networkOutOn,
 
 #ifdef HWLOC
 
-#include <hwloc.h>
+hwloc_topology_t topology;
 
-struct artsCoreInfo {
-  hwloc_cpuset_t cpuset;
-  hwloc_topology_t topology;
-};
-
-hwloc_topology_t getTopology() {
-  hwloc_topology_t topology;
+void initTopology() {
   hwloc_topology_init(&topology);
 #ifndef HWLOC_V2
   hwloc_topology_set_flags(topology, HWLOC_TOPOLOGY_FLAG_IO_BRIDGES);
 #endif
   hwloc_topology_load(topology);
-  return topology;
 }
 
 unsigned int getNumberOfType(hwloc_topology_t topology, hwloc_obj_t obj,
@@ -148,9 +141,8 @@ void initClusterUnits(hwloc_topology_t topology, hwloc_obj_t obj,
 
     units[*unitIndex].listHead = NULL;
     units[*unitIndex].threads = 0;
-    units[*unitIndex].coreInfo = artsMalloc(sizeof(struct artsCoreInfo));
-    units[*unitIndex].coreInfo->topology = topology;
-    units[*unitIndex].coreInfo->cpuset = hwloc_bitmap_dup(obj->cpuset);
+    units[*unitIndex].coreInfo.topology = topology;
+    units[*unitIndex].coreInfo.cpuset = obj->cpuset;
     *unitIndex = (*unitIndex) + 1;
   } else {
     //        PRINTF("ARITY: %u\n", obj->arity);
@@ -160,9 +152,7 @@ void initClusterUnits(hwloc_topology_t topology, hwloc_obj_t obj,
   }
 }
 
-struct nodeMask *initTopology() {
-  hwloc_topology_t topology = getTopology();
-
+struct nodeMask *getNodeMask() {
   struct nodeMask *node =
       (struct nodeMask *)artsMalloc(sizeof(struct nodeMask));
   numNumaDomains = node->numClusters =
@@ -307,12 +297,15 @@ unsigned int flattenMask(struct artsConfig *config, struct nodeMask *node,
             (*flat)[count].groupPos = groupCount[next->groupId]++;
             (*flat)[count].id = count;
             ++count;
-            next = next->next;
+            struct unitThread *temp = next->next;
+            artsFree(next);
+            next = temp;
           }
         }
       }
     }
   }
+  artsFree(groupCount);
   for (i = 0; i < node->numClusters; i++) {
     for (j = 0; j < node->cluster[i].numCores; j++) {
       artsFree(node->cluster[i].core[j].unit);
@@ -335,17 +328,23 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
 
   bool networkOn = (artsGlobalRankCount > 1);
   struct threadMask *flat;
-  struct nodeMask *topology = initTopology();
+  initTopology();
+  struct nodeMask *node = getNodeMask();
 
-  defaultPolicy(workerThreads, config->senderCount, config->recieverCount,
-                topology, config);
-  totalThreads = flattenMask(config, topology, &flat);
+  defaultPolicy(workerThreads, config->senderCount, config->recieverCount, node,
+                config);
+  totalThreads = flattenMask(config, node, &flat);
 
   artsRuntimeNodeInit(workerThreads, 1, config->senderCount,
                       config->recieverCount, totalThreads, 0, config);
   if (config->printTopology)
     printMask(flat, totalThreads);
   return flat;
+}
+
+void destroyThreadMask(struct threadMask *mask) {
+  hwloc_topology_destroy(topology);
+  artsFree(mask);
 }
 
 void printTopology(struct nodeMask *node) {
@@ -369,12 +368,6 @@ void printTopology(struct nodeMask *node) {
   }
 }
 #else
-
-#include <unistd.h>
-
-struct artsCoreInfo {
-  unsigned int cpuId;
-};
 
 void artsAbstractMachineModelPinThread(struct artsCoreInfo *coreInfo) {
   artsPthreadAffinity(coreInfo->cpuId, true);
@@ -440,11 +433,10 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
   int max = -1;
   while (totalThreads < numberOfWorkers) {
     flat[i % workerCores].on = 1;
-    flat[i % workerCores].coreInfo = artsMalloc(sizeof(struct artsCoreInfo));
     int tempAffin =
         artsAffinityFromPthreadValid(i, validCpus, validCpuCount - networkCores,
                                      workerCores, stride); // i % numCores;
-    flat[i % workerCores].coreId = flat[i % workerCores].coreInfo->cpuId =
+    flat[i % workerCores].coreId = flat[i % workerCores].coreInfo.cpuId =
         tempAffin;
     addAThread(&flat[i % workerCores], 1, 0, 0, abstractWorker,
                workerThreadId++, config->pinThreads);
@@ -468,9 +460,7 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
     for (; next < numCores; next += config->coresPerNetworkThread) {
       if (validCpus[next] > -1) {
         flat[i + workerCores].on = 1;
-        flat[i + workerCores].coreInfo =
-            artsMalloc(sizeof(struct artsCoreInfo));
-        flat[i + workerCores].coreId = flat[i + workerCores].coreInfo->cpuId =
+        flat[i + workerCores].coreId = flat[i + workerCores].coreInfo.cpuId =
             validCpus[next];
         addAThread(&flat[i + workerCores], 0, 1, 0, abstractOutbound,
                    networkOutThreadId++, config->pinThreads);
@@ -483,10 +473,8 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
     for (; next < numCores; next += config->coresPerNetworkThread) {
       if (validCpus[next] > -1) {
         flat[i + workerCores + numberOfSenders].on = 1;
-        flat[i + workerCores + numberOfSenders].coreInfo =
-            artsMalloc(sizeof(struct artsCoreInfo));
         flat[i + workerCores + numberOfSenders].coreId =
-            flat[i + workerCores + numberOfSenders].coreInfo->cpuId =
+            flat[i + workerCores + numberOfSenders].coreInfo.cpuId =
                 validCpus[next];
         addAThread(&flat[i + workerCores + numberOfSenders], 0, 0, 1,
                    abstractInbound, networkInThreadId++, config->pinThreads);
@@ -523,11 +511,14 @@ unsigned int flattenMask(struct artsConfig *config, unsigned int numCores,
         (*flat)[count].groupPos = groupCount[next->groupId]++;
         (*flat)[count].id = count;
         ++count;
-        next = next->next;
+        struct unitThread *temp = next->next;
+        artsFree(next);
+        next = temp;
       }
     }
   }
   artsFree(groupCount);
+  artsFree(unit);
 
   return count;
 }
@@ -560,6 +551,8 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
                       config->recieverCount, totalThreads, 0, config);
   return flat;
 }
+
+void destroyThreadMask(struct threadMask *mask) { artsFree(mask); }
 
 #endif
 

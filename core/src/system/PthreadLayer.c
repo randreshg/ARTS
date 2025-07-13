@@ -56,12 +56,13 @@ unsigned int artsGlobalMasterRankId;
 struct artsConfig *gConfig;
 struct artsConfig *config;
 
+struct threadMask *mask;
 pthread_t *nodeThreadList;
 
 void *artsThreadLoop(void *data) {
   struct threadMask *unit = (struct threadMask *)data;
   if (unit->pin)
-    artsAbstractMachineModelPinThread(unit->coreInfo);
+    artsAbstractMachineModelPinThread(&unit->coreInfo);
   artsRuntimePrivateInit(unit, gConfig);
   artsRuntimeLoop();
   artsRuntimePrivateCleanup();
@@ -77,12 +78,13 @@ void artsThreadMainJoin() {
     pthread_join(nodeThreadList[i], NULL);
   artsRuntimeGlobalCleanup();
   // artsFree(args);
+  destroyThreadMask(mask);
   artsFree(nodeThreadList);
 }
 
 void artsThreadInit(struct artsConfig *config) {
   gConfig = config;
-  struct threadMask *mask = getThreadMask(config);
+  mask = getThreadMask(config);
   nodeThreadList =
       artsMalloc(sizeof(pthread_t) * artsNodeInfo.totalThreadCount);
   unsigned int i = 0, threadCount = artsNodeInfo.totalThreadCount;
@@ -104,7 +106,7 @@ void artsThreadInit(struct artsConfig *config) {
       pthread_create(&nodeThreadList[i], NULL, &artsThreadLoop, &mask[i]);
   }
   if (mask->pin)
-    artsAbstractMachineModelPinThread(mask->coreInfo);
+    artsAbstractMachineModelPinThread(&mask->coreInfo);
   artsRuntimePrivateInit(&mask[0], config);
 }
 
