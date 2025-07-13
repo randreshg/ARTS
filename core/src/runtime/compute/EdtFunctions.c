@@ -219,7 +219,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
     if (route != artsGlobalRankId)
       artsRemoteMemoryMove(route, *guid, (void *)edt,
                            (unsigned int)edt->header.size,
-                           ARTS_REMOTE_EDT_MOVE_MSG, artsFree);
+                           ARTS_REMOTE_EDT_MOVE_MSG, artsFreeAlign);
     else {
       // This is for debugging purposes...
       incOustandingEdts(1);
@@ -320,7 +320,7 @@ artsGuid_t artsEdtCreateWithEpoch(artsEdt_t funcPtr, unsigned int route,
 
 void artsEdtFree(struct artsEdt *edt) {
   artsThreadInfo.edtFree = 1;
-  artsFree(edt);
+  artsFreeAlign(edt);
   artsThreadInfo.edtFree = 0;
 }
 

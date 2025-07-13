@@ -540,7 +540,7 @@ void freeGpuItem(artsRouteItem_t *item) {
       lcSyncFunction[artsNodeInfo.gpuLCSync](&host, &dev);
 
       artsRouteTableReturnDb(item->key, false);
-      artsFree(tempSpace);
+      artsFreeAlign(tempSpace);
       artsCudaFree((void *)wrapper->realData);
 
       artsUpdatePerformanceMetric(artsGpuSyncDelete, artsThread, 1, false);

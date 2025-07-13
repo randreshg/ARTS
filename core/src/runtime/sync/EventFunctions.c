@@ -87,7 +87,7 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
       }
     } else
       artsRemoteMemoryMove(route, *guid, eventPacket, eventSize,
-                           ARTS_REMOTE_EVENT_MOVE_MSG, artsFree);
+                           ARTS_REMOTE_EVENT_MOVE_MSG, artsFreeAlign);
 
     return true;
   }
@@ -119,7 +119,7 @@ void artsEventFree(struct artsEvent *event) {
     current = current->next;
     artsFree(trail);
   }
-  artsFree(event);
+  artsFreeAlign(event);
 }
 
 void artsEventDestroy(artsGuid_t guid) {
@@ -470,7 +470,8 @@ bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
       }
     } else {
       artsRemoteMemoryMove(route, *guid, eventPacket, eventSize,
-                           ARTS_REMOTE_PERSISTENT_EVENT_MOVE_MSG, artsFree);
+                           ARTS_REMOTE_PERSISTENT_EVENT_MOVE_MSG,
+                           artsFreeAlign);
     }
     return true;
   }
@@ -536,7 +537,7 @@ void artsPersistentEventDestroy(artsGuid_t guid) {
     while (!artsPersistentEventFreeVersion(event))
       ;
     artsUnlock(&event->lock);
-    artsFree(event);
+    artsFreeAlign(event);
   }
 }
 

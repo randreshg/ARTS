@@ -607,7 +607,7 @@ void internalLCSyncGPU(artsGuid_t acqGuid, struct artsDb *db) {
       }
     }
     gpuGCWriteUnlock();
-    artsFree(tempSpace);
+    artsFreeAlign(tempSpace);
     artsCudaRestoreDevice();
   }
 }
@@ -666,7 +666,7 @@ void internalLCSyncCPU(artsGuid_t acqGuid, struct artsDb *db) {
       }
     }
     gpuGCWriteUnlock();
-    artsFree(tempSpace);
+    artsFreeAlign(tempSpace);
     // artsCudaRestoreDevice();
   }
 }

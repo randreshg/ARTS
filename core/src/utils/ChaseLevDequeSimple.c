@@ -155,9 +155,9 @@ void artsDequeDelete(struct artsDeque *deque) {
   while (current) {
     trail = current;
     current = current->next;
-    artsFree(trail);
+    artsFreeAlign(trail);
   }
-  //    free(deque);
+  artsFreeAlign(deque);
 }
 
 bool artsDequePushFront(struct artsDeque *deque, void *item,

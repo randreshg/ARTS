@@ -91,7 +91,7 @@ void artsDbFree(void *ptr) {
   }
 #endif
   if (ptr)
-    artsFree(ptr);
+    artsFreeAlign(ptr);
 }
 
 void artsDbCreateInternal(artsGuid_t guid, void *addr, uint64_t size,
@@ -236,7 +236,7 @@ void *artsDbResizePtr(struct artsDb *dbRes, unsigned int size, bool copy) {
         memcpy(ptr, dbRes, oldSize);
       else
         memcpy(ptr, dbRes, sizeof(struct artsDb));
-      artsFree(dbRes);
+      artsFreeAlign(dbRes);
       ptr->header.size = size + sizeof(struct artsDb);
       return (void *)(ptr + 1);
     }
