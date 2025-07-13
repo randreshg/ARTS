@@ -69,6 +69,7 @@
 #include "sys/types.h"
 #include <ifaddrs.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <unistd.h>
 // #include <linux/if_packet.h>
 // #include <linux/if_arp.h>
@@ -259,6 +260,7 @@ bool artsServerSetIP(struct artsConfig *config) {
         }
       }
     }
+    freeifaddrs(ifap);
   }
   return found;
 }

@@ -167,6 +167,8 @@ unsigned int artsConfigGetVariable(FILE *config, char *lookForMe) {
       return strtol(val, NULL, 10);
     }
   }
+  if (line)
+    free(line);
   return 4;
 }
 
@@ -216,6 +218,8 @@ struct artsConfigVariable *artsConfigGetVariables(FILE *config) {
       next = cVar;
     }
   }
+  if (line)
+    free(line);
   return head;
 }
 

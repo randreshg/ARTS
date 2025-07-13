@@ -171,7 +171,9 @@ void artsRuntimeGlobalCleanup() {
   artsIntrospectivePrintTotals(artsGlobalRankId);
   artsCleanUpDbs();
   artsFree(artsNodeInfo.deque);
+  artsFree(artsNodeInfo.receiverDeque);
   artsFree(artsNodeInfo.gpuDeque);
+  artsFree(artsNodeInfo.gpuRouteTable);
   artsFree((void *)artsNodeInfo.localSpin);
   artsFree(artsNodeInfo.memoryMoves);
   artsFree(artsNodeInfo.atomicWaits);
