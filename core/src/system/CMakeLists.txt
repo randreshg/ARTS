@@ -40,7 +40,6 @@
 file(GLOB system_src "*.c")
 
 add_library(system OBJECT ${system_src})
-if(HWLOC)
-    set(LIBS arts ${Hwloc_LIBRARIES})
-    target_link_libraries(system ${LIBS})
+if(HWLOC_FOUND)
+    target_link_libraries(system ${HWLOC_LIB})
 endif()
