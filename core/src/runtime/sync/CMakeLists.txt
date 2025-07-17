@@ -1,2 +1,4 @@
-file(GLOB sync_src "*.c")
-add_library(runtime_sync OBJECT ${sync_src}) 
+# Runtime sync submodule
+file(GLOB SYNC_SOURCES "*.c")
+add_library(arts_runtime_sync OBJECT ${SYNC_SOURCES})
+target_include_directories(arts_runtime_sync PRIVATE ${ARTS_CORE_INCLUDE_DIR}) 

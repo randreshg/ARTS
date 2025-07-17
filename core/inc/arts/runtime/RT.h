@@ -151,7 +151,7 @@ struct artsHeader {
 struct artsDb {
   struct artsHeader header;
   artsGuid_t guid;
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
   artsGuid_t eventGuid;
 #endif
   volatile unsigned int copyCount;

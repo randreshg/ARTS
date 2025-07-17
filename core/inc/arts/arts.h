@@ -407,7 +407,7 @@ bool artsDbRenameWithGuid(artsGuid_t newGuid, artsGuid_t oldGuid);
 
 artsGuid_t artsDbCopyToNewType(artsGuid_t oldGuid, artsType_t newType);
 
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
 // Increment the latch count associated with the persistent event of the DB
 void artsDbIncrementLatch(artsGuid_t guid);
 

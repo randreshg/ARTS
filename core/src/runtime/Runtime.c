@@ -40,9 +40,6 @@
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuRuntime.h"
-#include "arts/gpu/GpuStream.h"
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
@@ -60,6 +57,12 @@
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
+
+#ifdef USE_GPU
+#include "arts/gpu/GpuRouteTable.h"
+#include "arts/gpu/GpuRuntime.cuh"
+#include "arts/gpu/GpuStream.h"
+#endif
 
 #define DPRINTF(...)
 #define PACKET_SIZE 4096
@@ -343,7 +346,7 @@ void artsRuntimePrivateCleanup() {
     artsDequeDelete(artsThreadInfo.myNodeDeque);
   if (artsThreadInfo.myGpuDeque)
     artsDequeDelete(artsThreadInfo.myGpuDeque);
-#if defined(COUNT) || defined(MODELCOUNT)
+#if defined(USE_COUNT) || defined(USE_MODELCOUNT)
   artsWriteCountersToFile(artsThreadInfo.threadId, artsGlobalRankId);
 #endif
   artsWriteMetricShotFile(artsThreadInfo.threadId, artsGlobalRankId);

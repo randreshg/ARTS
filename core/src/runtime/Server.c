@@ -133,7 +133,7 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
     artsPersistentEventSatisfy(pack->event, pack->slot, pack->lock);
     break;
   }
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
   case ARTS_REMOTE_DB_INCREMENT_LATCH_MSG: {
     struct artsRemoteGuidOnlyPacket *pack =
         (struct artsRemoteGuidOnlyPacket *)(packet);

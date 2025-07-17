@@ -55,7 +55,7 @@
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-#ifdef SIMPLE_ARCH
+#ifdef USE_SIMPLE_ARCH
 
 #include <pthread.h>
 

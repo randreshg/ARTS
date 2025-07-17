@@ -37,197 +37,453 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-cmake_minimum_required(VERSION 3.8)
-project(arts LANGUAGES C CXX)
+cmake_minimum_required(VERSION 3.25)
+project(ARTS
+    VERSION 1.7.0
+    DESCRIPTION "ARTS - Abstract Runtime System"
+    LANGUAGES C CXX
+)
 
-# Set default build type to Debug if not specified
+# Modern CMake features
+set(CMAKE_C_STANDARD 17)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_CXX_EXTENSIONS ON)
+
+# Set global properties for all targets
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Set default install prefix if not specified
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "/usr/local" CACHE PATH "Install prefix" FORCE)
+    message(STATUS "Install prefix not specified, defaulting to ${CMAKE_INSTALL_PREFIX}")
+else()
+    message(STATUS "Install prefix: ${CMAKE_INSTALL_PREFIX}")
+endif()
+
+# Set default build type
 if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build (Debug or Release)" FORCE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build" FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
     message(STATUS "Build type not specified, defaulting to Debug")
 endif()
 
-#CMake Configuration
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/cmake")
-
-if("${CMAKE_C_COMPILER_ID}" STREQUAL "XL")
-    message("Using XL. Not loading new GLIBC")
-else()
-    include(glibc)
-    CHECK_GLIBC_VERSION()
-    if(GLIBC_VERSION)
-        message("GLIBC Version Available: ${GLIBC_VERSION}")
-        if((${GLIBC_VERSION} VERSION_EQUAL 2.19) OR (${GLIBC_VERSION} VERSION_GREATER 2.19))
-            add_definitions(-DGLIBC_NEW)
-            message("Using new GLIBC, added -DGLIBC_NEW")
-        endif()
-    endif()
-endif()
-
-## Compiler flags
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    message("Debug Build")
-    # Do not use comma. If you do, this will cause errors because the flags will be passed to nvcc by -Xcompiler.
-    set(DEBUG_FLAGS "-O0 -fPIC -Wall -Wextra -Werror")
-    set(SANITIZER_FLAGS "-fsanitize=address -fsanitize=undefined -fsanitize=leak")
-    set(DEBUG_IGNORE_FLAGS "-Wno-unused -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -Wno-unused-value -Wno-sign-compare -Wno-implicit-fallthrough")
-
-    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
-        set(DEBUG_IGNORE_FLAGS "${DEBUG_IGNORE_FLAGS} -Wno-stringop-truncation")
-    elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
-    endif()
-
-    # Apply compile flags
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${DEBUG_FLAGS} ${SANITIZER_FLAGS} ${DEBUG_IGNORE_FLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DEBUG_FLAGS} ${SANITIZER_FLAGS} ${DEBUG_IGNORE_FLAGS}")
-
-    # Apply sanitizer flags to linker as well
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${SANITIZER_FLAGS}")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${SANITIZER_FLAGS}")
-else()
-    message("Release Build")
-
-    # Release flags for maximum performance
-    set(RELEASE_FLAGS "-fPIC -march=native -mtune=native")
-
-    # Apply compile flags
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${RELEASE_FLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${RELEASE_FLAGS}")
-endif()
-
-# Set C and C++ standards
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu17")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++17")
-
+# Include utilities for modern CMake
+include(GNUInstallDirs)
 include(CheckLanguage)
+
+# Build options
+option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" ON)
+option(ARTS_BUILD_SHARED "Build shared library" ON)
+option(ARTS_BUILD_STATIC "Build static library" ON)
+option(ARTS_BUILD_EXAMPLES "Build example programs" ON)
+option(ARTS_BUILD_TESTS "Build test programs" ON)
+
+# Feature options (can be set via command line)
+option(USE_JUSTCOUNT "Enable just counting for introspection" OFF)
+option(USE_COUNT "Enable counting for introspection" OFF)
+option(USE_MODELCOUNT "Enable model counting for introspection" OFF)
+option(USE_INSPECTOR "Enable inspector for introspection" OFF)
+option(USE_RDMA "Force use of RDMA RSockets networking" OFF)
+option(USE_HWLOC "Force use of hwloc for hardware topology" OFF)
+option(USE_GPU "Force enable GPU support" OFF)
+option(USE_SIMPLE_ARCH "Use simple architecture implementations" OFF)
+option(USE_SMART_DB "Enable smart database features (currently not supported)" OFF)
+option(USE_PRIORITY_DEQUE "Use priority Chase-Lev deque implementation" OFF)
+option(USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON)
+
+# Compiler-specific settings
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Configuring Debug build")
+
+    # Common debug flags
+    add_compile_options(
+        -O0 -g3 -Wall -Wextra
+        -Wno-unused -Wno-unused-parameter -Wno-unused-variable
+        -Wno-unused-function -Wno-unused-value -Wno-sign-compare
+        -Wno-implicit-fallthrough
+    )
+
+    # Compiler-specific flags
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        add_compile_options(-Wno-stringop-truncation)
+    endif()
+
+    # Sanitizers
+    if(ARTS_USE_SANITIZERS)
+        add_compile_options(-fsanitize=address -fsanitize=undefined -fsanitize=leak)
+        add_link_options(-fsanitize=address -fsanitize=undefined -fsanitize=leak)
+        message(STATUS "Enabled sanitizers for Debug build")
+    endif()
+else()
+    message(STATUS "Configuring Release build")
+    add_compile_options(-march=native -mtune=native)
+endif()
+
+# CUDA support detection
 check_language(CUDA)
-
+set(CUDA_AVAILABLE OFF)
 if(CMAKE_CUDA_COMPILER)
-    if(POLICY CMP0104)
-        cmake_policy(SET CMP0104 OLD)
-    endif()
-    if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
-        set(CMAKE_CUDA_STANDARD 17)
-    endif()
-    set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
     enable_language(CUDA)
-    find_package(CUDA REQUIRED)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 
-    if(CUDA_FOUND)
-        include_directories("${CUDA_INCLUDE_DIRS}")
-        add_definitions(-DUSE_GPU)
-        message("Using CUDA, added -DUSE_GPU")
+    message(STATUS "CUDA compiler detected: ${CMAKE_CUDA_COMPILER}")
 
-        # Auto-detect CUDA architecture
-        find_package(cudaArch)
+    # Try to find CUDA toolkit - required for full CUDA support
+    # Fix for CUDA 12.0+ where nvToolsExt is no longer a library but header-only
+    if(NOT TARGET CUDA::nvToolsExt)
+        add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+    endif()
 
-        if(CUDAARCH_FOUND)
-            set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_${CUDA_ARCHITECTURES}")
-            message(STATUS "Setting CUDA architecture to: ${CUDA_ARCHITECTURES}")
-        endif()
-
-        find_package(cuBlas)
-
-        if(CUBLAS_FOUND)
-            include_directories(${CUBLAS_INCLUDE_DIRS})
-            add_definitions(-DUSE_CUBLAS)
-            message("Using CUBLAS, added -DUSE_CUBLAS")
-        else()
-            set(CUBLAS_LIBRARIES "")
-        endif()
-
-        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-            message("CUDA Debug Build")
-            set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G")
-        else()
-            message("CUDA Release Build")
-        endif()
-        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -std=c++17 -ccbin=${CMAKE_CXX_COMPILER} -Xcompiler=\"${CMAKE_CXX_FLAGS}\"")
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        message(STATUS "CUDA toolkit found: ${CUDAToolkit_VERSION}")
+        set(CUDA_AVAILABLE ON)
     else()
-        set(CUDA_LIBRARIES "")
+        message(STATUS "CUDA compiler available but CUDAToolkit not found")
+        message(STATUS "  CUDA support disabled - toolkit required for CUDA library")
+        set(CUDA_AVAILABLE OFF)
+    endif()
+
+    # Set CUDA architectures - auto-detect if explicitly requested
+    if(USE_LOCAL_CUDA_ARCHITECTURES)
+        # Try to auto-detect GPU compute capability using nvidia-smi
+        find_program(NVIDIA_SMI nvidia-smi)
+        if(NVIDIA_SMI)
+            execute_process(
+                COMMAND ${NVIDIA_SMI} --query-gpu=compute_cap --format=csv,noheader,nounits
+                OUTPUT_VARIABLE NVIDIA_SMI_OUTPUT
+                ERROR_QUIET
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+
+            if(NVIDIA_SMI_OUTPUT)
+                # Parse compute capabilities for all GPUs (e.g., "8.6\n7.5" -> "86;75")
+                string(REPLACE "\n" ";" GPU_CAPS ${NVIDIA_SMI_OUTPUT})
+                string(REPLACE "." "" CUDA_ARCH_NUMS "${GPU_CAPS}")
+
+                # Remove duplicates and sort
+                list(REMOVE_DUPLICATES CUDA_ARCH_NUMS)
+                list(SORT CUDA_ARCH_NUMS)
+
+                set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_NUMS})
+                message(STATUS "USE_LOCAL_CUDA_ARCHITECTURES enabled - detected CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+            else()
+                message(WARNING "USE_LOCAL_CUDA_ARCHITECTURES enabled but nvidia-smi detection failed - keeping default CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
+            endif()
+        else()
+            message(WARNING "USE_LOCAL_CUDA_ARCHITECTURES enabled but nvidia-smi not found - keeping default CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
+        endif()
+    else()
+        message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
+
+    # CUDA compiler flags
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-G>)
+    endif()
+
+    # Ensure NVCC uses the same host compiler and flags as the C++ compiler
+    set(CMAKE_CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
+    if(CMAKE_CXX_FLAGS)
+        string(REPLACE " " "," CUDA_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
+        add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${CUDA_HOST_FLAGS}>)
     endif()
 else()
-    message(STATUS "No CUDA support")
+    message(STATUS "CUDA compiler not found - CUDA support unavailable")
 endif()
 
-#Find Required Libs-------------------------->
-
-find_package(Threads)
-find_library(PTHREAD_LIB pthread)
-
-if(CONNECTION MATCHES "TCP")
-    message("Using TCP, added -DUSE_TCP")
-    add_definitions(-DUSE_TCP)
-else()
-    find_library(RDMACM_LIB rdmacm)
-    if(RDMACM_LIB)
-        find_path(RSOCKET_INCLUDE rdma/rsocket.h)
-        include_directories(${RSOCKET_INCLUDE})
-        message("Using RDMA RSockets, added -DUSE_RSOCKETS")
-        add_definitions(-DUSE_RSOCKETS)
+# Determine which libraries to build
+set(BUILD_CUDA_LIBRARY OFF)
+if(USE_GPU)
+    # User explicitly requested GPU support
+    if(CUDA_AVAILABLE)
+        set(BUILD_CUDA_LIBRARY ON)
+        message(STATUS "Will build both standard ARTS library and CUDA-enabled ARTS library (forced)")
     else()
-        set(RDMACM_LIB "")
-        set(CONNECTION "TCP")
-        message("Using TCP, added -DUSE_TCP")
-        add_definitions(-DUSE_TCP)
+        message(FATAL_ERROR "CUDA library requested with USE_GPU=ON but CUDA is not available")
+    endif()
+elseif(CUDA_AVAILABLE)
+    # CUDA is available and not explicitly disabled
+    set(BUILD_CUDA_LIBRARY ON)
+    message(STATUS "Will build both standard ARTS library and CUDA-enabled ARTS library (auto-detected)")
+else()
+    message(STATUS "Will build only standard ARTS library (no CUDA)")
+endif()
+
+# Find required system libraries
+find_package(Threads REQUIRED)
+if(NOT APPLE)
+    find_library(RT_LIBRARY rt REQUIRED)
+    find_library(M_LIBRARY m REQUIRED)
+else()
+    set(RT_LIBRARY "")
+    set(M_LIBRARY "")
+endif()
+
+# Network library detection and configuration
+if(USE_RDMA)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(RDMACM REQUIRED librdmacm)
+    if(RDMACM_FOUND)
+        add_compile_definitions(USE_RDMA)
+        message(STATUS "Network: Forced RDMA RSockets mode - USE_RDMA defined")
+    else()
+        message(FATAL_ERROR "RDMA libraries not found but USE_RDMA was requested")
+    endif()
+else()
+    # Auto-detect network library
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(RDMACM QUIET librdmacm)
+    endif()
+
+    if(RDMACM_FOUND)
+        add_compile_definitions(USE_RDMA)
+        message(STATUS "Network: Auto-detected RDMA RSockets - USE_RDMA defined")
+    else()
+        message(STATUS "Network: Using TCP (default) - no RDMA available")
+        set(RDMACM_LIBRARIES "")
+        set(RDMACM_INCLUDE_DIRS "")
     endif()
 endif()
 
-find_package(Hwloc)
-if(HWLOC_FOUND)
-    include_directories(${HWLOC_INC})
-    add_definitions(-DHWLOC)
-    message("Using HWLOC, added -DHWLOC")
+# Hardware locality (hwloc) detection
+if(USE_HWLOC)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(HWLOC REQUIRED hwloc)
+    if(HWLOC_FOUND)
+        add_compile_definitions(USE_HWLOC)
+        message(STATUS "Hardware topology: Forced hwloc mode - USE_HWLOC defined")
+
+        # Check hwloc version for v2 features
+        if(HWLOC_VERSION VERSION_GREATER_EQUAL "2.0")
+            add_compile_definitions(USE_HWLOC_V2)
+            message(STATUS "Hardware topology: hwloc v${HWLOC_VERSION} >= 2.0 - USE_HWLOC_V2 defined")
+        else()
+            message(STATUS "Hardware topology: hwloc v${HWLOC_VERSION} < 2.0")
+        endif()
+    else()
+        message(FATAL_ERROR "hwloc libraries not found but USE_HWLOC was requested")
+    endif()
 else()
-    set(HWLOC_LIB "")
-    message("Not using HWLOC")
+    # Auto-detect hwloc library
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(HWLOC QUIET hwloc)
+    endif()
+
+    if(HWLOC_FOUND)
+        add_compile_definitions(USE_HWLOC)
+        message(STATUS "Hardware topology: Auto-detected hwloc - USE_HWLOC defined")
+
+        # Check hwloc version for v2 features
+        if(HWLOC_VERSION VERSION_GREATER_EQUAL "2.0")
+            add_compile_definitions(USE_HWLOC_V2)
+            message(STATUS "Hardware topology: hwloc v${HWLOC_VERSION} >= 2.0 - USE_HWLOC_V2 defined")
+        else()
+            message(STATUS "Hardware topology: hwloc v${HWLOC_VERSION} < 2.0")
+        endif()
+    else()
+        message(STATUS "Hardware topology: No hwloc available (optional)")
+        set(HWLOC_LIBRARIES "")
+        set(HWLOC_INCLUDE_DIRS "")
+    endif()
 endif()
 
-#<-------------------------------------------
-
-if(SIMPLE_ARCH)
-    message("Using simple CAS2 and BIT_TEST_AND_SET, added -DSIMPLE_ARCH")
-    add_definitions(-DSIMPLE_ARCH)
+# Feature flags for introspection
+if(USE_JUSTCOUNT)
+    add_compile_definitions(USE_JUSTCOUNT)
+    message(STATUS "Introspection: Just counting enabled - USE_JUSTCOUNT defined")
 endif()
 
-#DEFAULT SETTINGS
-# DEQUE can be set to "chase_lev" or "priority"
-if(NOT DEFINED DEQUE)
-    set(DEQUE "chase_lev")
-endif(NOT DEFINED DEQUE)
-
-if(APPLE)
-    set(RT_LIB "")
-else()
-    find_library(RT_LIB rt)
+if(USE_COUNT)
+    add_compile_definitions(USE_COUNT)
+    message(STATUS "Introspection: Counting enabled - USE_COUNT defined")
 endif()
 
-if(COUNT)
-    message("Counting on, added -DCOUNT")
-    add_definitions(-DCOUNT)
+if(USE_MODELCOUNT)
+    add_compile_definitions(USE_MODELCOUNT)
+    message(STATUS "Introspection: Model counting enabled - USE_MODELCOUNT defined")
 endif()
 
-if(MODELCOUNT)
-    message("Model Counting only, added -DMODELCOUNT")
-    add_definitions(-DMODELCOUNT)
+if(USE_INSPECTOR)
+    add_compile_definitions(USE_INSPECTOR)
+    message(STATUS "Introspection: Inspector enabled - USE_INSPECTOR defined")
 endif()
 
-if(INSPECTOR)
-    message("Inspection on, added -DINSPECTOR")
-    add_definitions(-DINSPECTOR)
+# Architecture flags
+if(USE_SIMPLE_ARCH)
+    add_compile_definitions(USE_SIMPLE_ARCH)
+    message(STATUS "Architecture: Simple CAS2 and BIT_TEST_AND_SET enabled - USE_SIMPLE_ARCH defined")
 endif()
 
-if(SMART_DB)
-    message("Smart DB on, added -DSMART_DB, currently SMART_DB is not supported")
-    add_definitions(-DSMART_DB)
-else()
+# Smart database flags
+if(USE_SMART_DB)
+    message(FATAL_ERROR "Smart database features (USE_SMART_DB) are currently not supported. Please set USE_SMART_DB=OFF to continue.")
 endif()
 
-set(CORE_INCLUDE_DIR ${CMAKE_SOURCE_DIR}/core/inc)
-
-include_directories(core/inc)
-include_directories(graph/inc)
-add_subdirectory(sampleConfigs)
+# Create the main ARTS library target
 add_subdirectory(core)
-add_subdirectory(graph)
-add_subdirectory(test)
-add_subdirectory(example)
+
+# Build graph library only if examples or tests are being built
+if(ARTS_BUILD_EXAMPLES OR ARTS_BUILD_TESTS)
+    add_subdirectory(graph)
+endif()
+
+# Optional components
+if(ARTS_BUILD_EXAMPLES)
+    add_subdirectory(example)
+endif()
+
+if(ARTS_BUILD_TESTS)
+    add_subdirectory(test)
+endif()
+
+add_subdirectory(sampleConfigs)
+
+# Installation configuration
+if(BUILD_CUDA_LIBRARY)
+    # Install both C/C++ headers and CUDA headers when CUDA library is built
+    install(DIRECTORY core/inc/arts/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/arts
+        FILES_MATCHING
+        PATTERN "*.h"
+        PATTERN "*.cuh"
+    )
+else()
+    # Install only C/C++ headers when CUDA library is not built
+    install(DIRECTORY core/inc/arts/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/arts
+        FILES_MATCHING PATTERN "*.h"
+    )
+endif()
+
+# Install library targets
+if(ARTS_BUILD_STATIC)
+    install(TARGETS arts_static
+        EXPORT ARTSTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+    
+    if(BUILD_CUDA_LIBRARY)
+        install(TARGETS arts_cuda_static
+            EXPORT ARTSTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        )
+    endif()
+endif()
+
+if(ARTS_BUILD_SHARED)
+    install(TARGETS arts_shared
+        EXPORT ARTSTargets
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    
+    if(BUILD_CUDA_LIBRARY)
+        install(TARGETS arts_cuda_shared
+            EXPORT ARTSTargets
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
+endif()
+
+# Install the interface target
+install(TARGETS arts_interface
+    EXPORT ARTSTargets
+)
+
+# Generate and install CMake config files for find_package support
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ARTSConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/ARTSConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ARTS
+)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/ARTSConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/ARTSConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/ARTSConfigVersion.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ARTS
+)
+
+# Export targets (only export the main libraries, not object libraries)
+install(EXPORT ARTSTargets
+    FILE ARTSTargets.cmake
+    NAMESPACE ARTS::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/ARTS
+    EXPORT_LINK_INTERFACE_LIBRARIES
+)
+
+# Print configuration summary
+message(STATUS "")
+message(STATUS "=================== ARTS Configuration Summary ===================")
+message(STATUS "Build type:        ${CMAKE_BUILD_TYPE}")
+message(STATUS "Install prefix:    ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "C Compiler:        ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
+message(STATUS "CXX Compiler:      ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+if(CMAKE_CUDA_COMPILER)
+    message(STATUS "CUDA Compiler:     ${CMAKE_CUDA_COMPILER_VERSION}")
+    message(STATUS "CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+endif()
+message(STATUS "")
+message(STATUS "Features:")
+message(STATUS "  Standard Library: ON (always built)")
+if(BUILD_CUDA_LIBRARY)
+    message(STATUS "  CUDA Library:     ON (libarts_cuda)")
+else()
+    message(STATUS "  CUDA Library:     OFF")
+endif()
+if(RDMACM_FOUND)
+    message(STATUS "  Network:          RDMA RSockets")
+else()
+    message(STATUS "  Network:          TCP (default)")
+endif()
+if(HWLOC_FOUND)
+    message(STATUS "  Hardware Topo:    hwloc v${HWLOC_VERSION}")
+else()
+    message(STATUS "  Hardware Topo:    disabled")
+endif()
+message(STATUS "")
+message(STATUS "Build options:")
+if(ARTS_BUILD_SHARED)
+    message(STATUS "  Shared library:  libarts.so (standard)")
+    if(BUILD_CUDA_LIBRARY)
+        message(STATUS "                   libarts_cuda.so (CUDA-enabled)")
+    endif()
+else()
+    message(STATUS "  Shared library:  OFF")
+endif()
+if(ARTS_BUILD_STATIC)
+    message(STATUS "  Static library:  libarts.a (standard)")
+    if(BUILD_CUDA_LIBRARY)
+        message(STATUS "                   libarts_cuda.a (CUDA-enabled)")
+    endif()
+else()
+    message(STATUS "  Static library:  OFF")
+endif()
+message(STATUS "  Examples:        ${ARTS_BUILD_EXAMPLES}")
+message(STATUS "  Tests:           ${ARTS_BUILD_TESTS}")
+message(STATUS "")
+message(STATUS "Installation paths:")
+message(STATUS "  Libraries:       ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+message(STATUS "  Headers:         ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_INCLUDEDIR}")
+message(STATUS "  CMake config:    ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/cmake/ARTS")
+message(STATUS "=================================================================")
+message(STATUS "")
+message(STATUS "To specify a custom install prefix, use:")
+message(STATUS "  cmake -DCMAKE_INSTALL_PREFIX=/path/to/install ..")
+message(STATUS "=================================================================")

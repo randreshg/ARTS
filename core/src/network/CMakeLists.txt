@@ -37,6 +37,18 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
+# Collect all source files
+file(GLOB NETWORK_SOURCES "*.c")
 
-file(GLOB network_src "*.c")
-add_library(network OBJECT ${network_src})
+# Create object library for the network module
+add_library(arts_network OBJECT ${NETWORK_SOURCES})
+
+# Include directories
+target_include_directories(arts_network PRIVATE
+    ${ARTS_CORE_INCLUDE_DIR}
+)
+
+# Add RDMA include directories if available
+if(RDMACM_INCLUDE_DIRS)
+    target_include_directories(arts_network PRIVATE ${RDMACM_INCLUDE_DIRS})
+endif()

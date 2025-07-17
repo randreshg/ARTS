@@ -37,9 +37,18 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-file(GLOB system_src "*.c")
+# Collect all source files
+file(GLOB SYSTEM_SOURCES "*.c")
 
-add_library(system OBJECT ${system_src})
-if(HWLOC_FOUND)
-    target_link_libraries(system ${HWLOC_LIB})
+# Create object library for the system module
+add_library(arts_system OBJECT ${SYSTEM_SOURCES})
+
+# Include directories
+target_include_directories(arts_system PRIVATE
+    ${ARTS_CORE_INCLUDE_DIR}
+)
+
+# Add hwloc include directories if available
+if(HWLOC_INCLUDE_DIRS)
+    target_include_directories(arts_system PRIVATE ${HWLOC_INCLUDE_DIRS})
 endif()

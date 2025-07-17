@@ -1,2 +1,4 @@
-file(GLOB memory_src "*.c")
-add_library(runtime_memory OBJECT ${memory_src}) 
+# Runtime memory submodule
+file(GLOB MEMORY_SOURCES "*.c")
+add_library(arts_runtime_memory OBJECT ${MEMORY_SOURCES})
+target_include_directories(arts_runtime_memory PRIVATE ${ARTS_CORE_INCLUDE_DIR}) 

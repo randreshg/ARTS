@@ -399,7 +399,7 @@ void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t slot,
                              sizeof(packet));
 }
 
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
 void artsRemoteDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
                                uint32_t edtSlot) {
   struct artsRemoteDbAddDependencePacket packet;

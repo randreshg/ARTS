@@ -1,8 +1,7 @@
 #include "arts/BlockDistribution.h"
 #include "arts/Csr.h"
 #include <assert.h>
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 #include <inttypes.h>
 #include <string.h>
 

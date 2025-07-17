@@ -50,7 +50,7 @@
 #define DPRINTF(...)
 
 struct outList {
-#ifdef COUNT
+#ifdef USE_COUNT
   uint64_t timeStamp;
 #endif
   unsigned int offset;
@@ -129,7 +129,7 @@ void outInit(unsigned int size) {
 }
 
 static inline void outInsertNode(struct outList *node, unsigned int length) {
-#ifdef COUNT
+#ifdef USE_COUNT
   // This is for network queue sitting time...
 //    node->timeStamp = artsExtGetTimeStamp();
 #endif

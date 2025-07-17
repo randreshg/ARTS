@@ -196,7 +196,7 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
             if (dependent[j].type == ARTS_EDT) {
               artsSignalEdt(dependent[j].addr, dependent[j].slot, event->data);
             } else if (dependent[j].type == ARTS_EVENT) {
-#ifdef COUNT
+#ifdef USE_COUNT
               // THIS IS A TEMP FIX... problem is recursion...
               artsCounterTimerEndIncrement(artsGetCounter(
                   (artsThreadInfo.currentEdtGuid) ? signalEventCounterOn
@@ -207,7 +207,7 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
 #endif
               artsEventSatisfySlot(dependent[j].addr, event->data,
                                    dependent[j].slot);
-#ifdef COUNT
+#ifdef USE_COUNT
               // THIS IS A TEMP FIX... problem is recursion...
               artsCounterSetEndTime(
                   artsGetCounter((artsThreadInfo.currentEdtGuid)
@@ -623,7 +623,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
               DPRINTF("Event data is NULL_GUID for event %u\n", eventGuid);
             }
           } else if (dependent[j].type == ARTS_EVENT) {
-#ifdef COUNT
+#ifdef USE_COUNT
             // THIS IS A TEMP FIX... problem is recursion...
             artsCounterTimerEndIncrement(artsGetCounter(
                 (artsThreadInfo.currentEdtGuid) ? signalEventCounterOn
@@ -634,7 +634,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
 #endif
             artsPersistentEventSatisfy(dependent[j].addr, dependent[j].slot,
                                        false);
-#ifdef COUNT
+#ifdef USE_COUNT
             // THIS IS A TEMP FIX... problem is recursion...
             artsCounterSetEndTime(artsGetCounter((artsThreadInfo.currentEdtGuid)
                                                      ? signalEventCounterOn

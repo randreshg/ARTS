@@ -267,11 +267,11 @@ bool artsServerSetIP(struct artsConfig *config) {
 
 void artsLLServerSetup(struct artsConfig *config) {
   artsRemoteSetMessageTable(config);
-#if defined(USE_TCP)
-  if (config->table && config->ibNames)
+#ifdef USE_RDMA
+  if (config->table)
     artsServerFixIbNames(config);
 #else
-  if (config->table)
+  if (config->table && config->ibNames)
     artsServerFixIbNames(config);
 #endif
 
@@ -380,7 +380,7 @@ unsigned int artsRemoteSendRequest(int rank, unsigned int queue, char *message,
                                    unsigned int length) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef COUNT
+#ifdef USE_COUNT
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();
@@ -395,7 +395,7 @@ unsigned int artsRemoteSendPayloadRequest(int rank, unsigned int queue,
                                           char *payload, int length2) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef COUNT
+#ifdef USE_COUNT
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();

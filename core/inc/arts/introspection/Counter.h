@@ -44,15 +44,15 @@ extern "C" {
 
 #include "arts/arts.h"
 
-#ifdef JUSTCOUNT
+#ifdef USE_JUSTCOUNT
 #define COUNTERTIMESTAMP 0
-#elif defined(COUNT) || defined(MODELCOUNT)
+#elif defined(USE_COUNT) || defined(USE_MODELCOUNT)
 #define COUNTERTIMESTAMP artsGetTimeStamp()
 #else
 #define COUNTERTIMESTAMP 0
 #endif
 
-#ifdef MODELCOUNT
+#ifdef USE_MODELCOUNT
 
 #define COUNT_edtCounter(x) x
 #define COUNT_sleepCounter(x) x

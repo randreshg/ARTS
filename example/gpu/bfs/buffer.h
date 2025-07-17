@@ -44,7 +44,7 @@ extern "C" {
 
 #include "arts/Graph.h"
 #include "arts/arts.h"
-#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuRuntime.cuh"
 #include "arts/runtime/Globals.h"
 #include <assert.h>
 #include <inttypes.h>

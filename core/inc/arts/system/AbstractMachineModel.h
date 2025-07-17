@@ -47,7 +47,7 @@ extern "C" {
 #include <assert.h>
 #include <unistd.h>
 
-#ifdef HWLOC
+#ifdef USE_HWLOC
 #include <hwloc.h>
 struct artsCoreInfo {
   hwloc_cpuset_t cpuset;

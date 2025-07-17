@@ -46,25 +46,19 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "arts/gpu/GpuRuntime.h"
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
+#include "arts/gpu/GpuRuntime.cuh"
+#include <cuda_runtime_api.h>
 
 #include <iostream>
-
-// Undefine COUNT to avoid conflicts with Thrust library
-#ifdef COUNT
-#undef COUNT
-#endif
 
 #include <thrust/binary_search.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <thrust/unique.h>
 
-#include "graphUtil.h"
-#include "bins.h"
 #include "bfsDefs.h"
+#include "bins.h"
+#include "graphUtil.cuh"
 
 uint64_t start = 0; //Timer
 unsigned int ** devPtrRaw; //The pointers for our nextSearchFrontier on each gpu

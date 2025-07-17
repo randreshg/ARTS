@@ -83,11 +83,10 @@
 
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
-#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuRuntime.cuh"
 #include "arts/runtime/Globals.h"
 #include "randomAccessDefs.h"
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 
 artsGuidRange * updateFrontierGuids = NULL;
 

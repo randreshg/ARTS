@@ -42,12 +42,7 @@
 // https://github.com/NVIDIA-developer-blog/code-samples/blob/master/series/cuda-cpp/overlap-data-transfers/async.cu
 // Once this *class* works we will put a stream(s) in create a thread local
 // stream.  Then we will push stuff!
-#include "arts/gpu/GpuRuntime.h"
 #include "arts/gas/OutOfOrder.h"
-#include "arts/gpu/GpuLCSyncFunctions.h"
-#include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuStream.h"
-#include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
@@ -57,6 +52,12 @@
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Deque.h"
+
+#include "arts/gpu/GpuLCSyncFunctions.cuh"
+#include "arts/gpu/GpuRouteTable.h"
+#include "arts/gpu/GpuRuntime.cuh"
+#include "arts/gpu/GpuStream.h"
+#include "arts/gpu/GpuStreamBuffer.h"
 
 #define DPRINTF(...)
 // #define DPRINTF(...) PRINTF(__VA_ARGS__)
@@ -521,10 +522,6 @@ void artsPutInDbFromGpu(void *ptr, artsGuid_t dbGuid, unsigned int offset,
     if (freeData)
       artsGpuRouteTableAddItemToDeleteRace(ptr, 0, dbGuid, artsLocalGpuId);
   }
-}
-
-__device__ uint64_t internalGetGpuIndex(uint64_t *paramv) {
-  return *(paramv - 1);
 }
 
 artsLCSyncFunction_t lcSyncFunction[] = {

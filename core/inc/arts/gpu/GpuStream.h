@@ -48,7 +48,7 @@ extern "C" {
 #include "arts/system/Debug.h"
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
-#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 
 #define CHECKCORRECT(x)                                                        \
   {                                                                            \

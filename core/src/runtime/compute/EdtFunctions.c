@@ -52,7 +52,7 @@
 #include "arts/utils/Atomics.h"
 
 #ifdef USE_GPU
-#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuRuntime.cuh"
 #endif
 
 #define DPRINTF(...)

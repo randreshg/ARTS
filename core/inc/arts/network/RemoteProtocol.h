@@ -52,7 +52,7 @@ enum artsServerMessageType {
   ARTS_REMOTE_PERSISTENT_EVENT_SATISFY_SLOT_MSG,
   ARTS_REMOTE_ADD_DEPENDENCE_MSG,
   ARTS_REMOTE_ADD_DEPENDENCE_TO_PERSISTENT_EVENT_MSG,
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
   ARTS_REMOTE_DB_ADD_DEPENDENCE_MSG,
   ARTS_REMOTE_DB_INCREMENT_LATCH_MSG,
   ARTS_REMOTE_DB_DECREMENT_LATCH_MSG,
@@ -99,7 +99,7 @@ struct __attribute__((__packed__)) artsRemotePacket {
   unsigned int seqRank;
   uint64_t seqNum;
 #endif
-#ifdef COUNT
+#ifdef USE_COUNT
   uint64_t timeStamp;
   uint64_t procTimeStamp;
 #endif
@@ -140,7 +140,7 @@ struct __attribute__((__packed__)) artsRemotePersistentEventSatisfySlotPacket {
   bool lock;
 };
 
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
 struct __attribute__((__packed__)) artsRemoteDbAddDependencePacket {
   struct artsRemotePacket header;
   artsGuid_t dbSrc;

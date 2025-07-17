@@ -37,16 +37,14 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-
 #include <errno.h>
-#include <unistd.h>
+#include <inttypes.h>
+#include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
-#include <inttypes.h>
-#define __USE_GNU
-#include <pthread.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "arts/runtime/Globals.h"
 #include "arts/utils/Atomics.h"

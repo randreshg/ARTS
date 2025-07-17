@@ -37,16 +37,17 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#include "arts/gpu/GpuRouteTable.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
-#include "arts/gpu/GpuStream.h"
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/memory/DbList.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
+
+#include "arts/gpu/GpuRouteTable.h"
+#include "arts/gpu/GpuStream.h"
 
 #define DPRINTF(...)
 // #define DPRINTF(...) PRINTF(__VA_ARGS__)

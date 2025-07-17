@@ -42,7 +42,6 @@
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/gpu/GpuRuntime.h"
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
@@ -57,7 +56,7 @@
 #include <assert.h>
 
 #ifdef USE_GPU
-#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuRuntime.cuh"
 #endif
 
 #define DPRINTF(...)
@@ -113,7 +112,7 @@ void artsDbCreateInternal(artsGuid_t guid, void *addr, uint64_t size,
     void *shadowCopy = (void *)(((char *)addr) + packetSize);
     memcpy(shadowCopy, addr, sizeof(struct artsDb));
   }
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
   dbRes->eventGuid = artsPersistentEventCreate(artsGuidGetRank(guid), 0, guid);
 #endif
 }
@@ -346,7 +345,7 @@ void artsDbDestroySafe(artsGuid_t guid, bool remote) {
     artsRemoteDbDestroy(guid, artsGlobalRankId, 0);
 }
 
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
 void artsDbIncrementLatch(artsGuid_t guid) {
   struct artsDb *dbRes = artsRouteTableLookupItem(guid);
   if (dbRes != NULL)
@@ -546,7 +545,7 @@ void releaseDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {
   for (int i = 0; i < depc; i++) {
     DPRINTF("Releasing %u", depv[i].guid);
     unsigned int owner = artsGuidGetRank(depv[i].guid);
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
     /// Smart DBs automatically decrement the latch count when the db is
     /// released.
     if (depv[i].mode == ARTS_DB_PIN || depv[i].mode == ARTS_DB_WRITE) {

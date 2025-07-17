@@ -40,7 +40,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#if defined(USE_TCP)
+#ifdef USE_RDMA
+#include <rdma/rsocket.h>
+#else
 #include <sys/poll.h>
 #define rrecv recv
 #define rsend send
@@ -53,8 +55,6 @@ extern "C" {
 #define rconnect connect
 #define rsocket socket
 #define rshutdown shutdown
-#elif defined(USE_RSOCKETS)
-#include <rdma/rsocket.h>
 #endif
 #ifdef __cplusplus
 }

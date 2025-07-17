@@ -43,9 +43,9 @@
 extern "C" {
 #endif
 
-#include "arts/gpu/GpuLCSyncFunctions.h"
+#include "arts/gpu/GpuLCSyncFunctions.cuh"
 #include "arts/runtime/RT.h"
-#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 
 typedef struct {
   void *dst;

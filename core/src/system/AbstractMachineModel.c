@@ -92,13 +92,13 @@ void addAThread(struct unitMask *mask, bool workOn, bool networkOutOn,
   next->id = mask->coreId;
 }
 
-#ifdef HWLOC
+#ifdef USE_HWLOC
 
 hwloc_topology_t topology;
 
 void initTopology() {
   hwloc_topology_init(&topology);
-#ifndef HWLOC_V2
+#ifndef USE_HWLOC_V2
   hwloc_topology_set_flags(topology, HWLOC_TOPOLOGY_FLAG_IO_BRIDGES);
 #endif
   hwloc_topology_load(topology);
@@ -157,8 +157,9 @@ struct nodeMask *getNodeMask() {
       (struct nodeMask *)artsMalloc(sizeof(struct nodeMask));
   numNumaDomains = node->numClusters =
       hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_NODE);
-  bool isUMA = (numNumaDomains == 0); // true only when HWLOC_V1 and UMA system,
-                                      // false even through UMA when HWLOC_V2
+  bool isUMA =
+      (numNumaDomains == 0); // true only when USE_HWLOC_V1 and UMA system,
+                             // false even through UMA when USE_HWLOC_V2
   if (isUMA)
     numNumaDomains = node->numClusters = 1;
   node->cluster = (struct clusterMask *)artsMalloc(sizeof(struct clusterMask) *
@@ -170,11 +171,11 @@ struct nodeMask *getNodeMask() {
   for (clusterIndex = 0; clusterIndex < node->numClusters; clusterIndex++) {
     if (!isUMA)
       cluster = hwloc_get_next_obj_by_type(topology, HWLOC_OBJ_NODE, cluster);
-#ifdef HWLOC_V2
+#ifdef USE_HWLOC_V2
     node->cluster[clusterIndex].numCores =
         hwloc_get_nbobjs_inside_cpuset_by_type(topology, cluster->cpuset,
                                                HWLOC_OBJ_CORE);
-#else // HWLOC_V1
+#else
     node->cluster[clusterIndex].numCores =
         getNumberOfType(topology, cluster, HWLOC_OBJ_CORE);
 #endif

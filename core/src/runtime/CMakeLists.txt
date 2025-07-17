@@ -37,9 +37,18 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-file(GLOB runtime_src "*.c")
-add_library(runtime_main OBJECT ${runtime_src})
+# Collect main runtime source files
+file(GLOB RUNTIME_MAIN_SOURCES "*.c")
 
+# Create object library for the main runtime module
+add_library(arts_runtime OBJECT ${RUNTIME_MAIN_SOURCES})
+
+# Include directories
+target_include_directories(arts_runtime PRIVATE
+    ${ARTS_CORE_INCLUDE_DIR}
+)
+
+# Add runtime submodules
 add_subdirectory(compute)
 add_subdirectory(memory)
 add_subdirectory(sync)

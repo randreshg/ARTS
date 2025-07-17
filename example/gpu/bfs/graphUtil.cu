@@ -1,4 +1,4 @@
-#include "graphUtil.h"
+#include "graphUtil.cuh"
 
 __device__ vertex_t* getRowPtrGpu(csr_graph_t * _csr) 
 { 

@@ -36,15 +36,16 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/gpu/GpuLCSyncFunctions.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/memory/DbFunctions.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
-#include <cuda_runtime.h>
+
+#include "arts/gpu/GpuLCSyncFunctions.cuh"
+#include "arts/gpu/GpuRouteTable.h"
+#include "arts/gpu/GpuStreamBuffer.h"
+#include <cuda_runtime_api.h>
 
 #define DPRINTF(...)
 // #define DPRINTF(...) PRINTF(__VA_ARGS__)

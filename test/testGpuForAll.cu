@@ -37,16 +37,10 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/arts.h"
-#include "arts/gpu/GpuRuntime.h"
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
+#include "arts/gpu/GpuRuntime.cuh"
+#include <cuda_runtime_api.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-// Undefine COUNT to avoid conflicts with Thrust library
-#ifdef COUNT
-#undef COUNT
-#endif
 
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>

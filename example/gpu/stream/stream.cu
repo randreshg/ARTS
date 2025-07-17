@@ -82,10 +82,9 @@
 
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
-#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuRuntime.cuh"
 #include "streamUtil.h"
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 #include <stdio.h>
 #include <stdlib.h>
 

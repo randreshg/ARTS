@@ -38,9 +38,8 @@
 ******************************************************************************/
 #include "streamUtil.h"
 #include "arts/arts.h"
-#include "arts/gpu/GpuRuntime.h"
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
+#include "arts/gpu/GpuRuntime.cuh"
+#include <cuda_runtime_api.h>
 #include <stdio.h>
 #include <stdlib.h>
 

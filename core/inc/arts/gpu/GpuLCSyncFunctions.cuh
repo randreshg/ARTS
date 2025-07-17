@@ -38,12 +38,10 @@
 ******************************************************************************/
 #ifndef ARTSGPULCSYNCFUNCTIONS_H
 #define ARTSGPULCSYNCFUNCTIONS_H
-#include <device_types.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
 #include "arts/runtime/RT.h"
-
 
 typedef struct {
   uint64_t guid;

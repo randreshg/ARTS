@@ -37,9 +37,14 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-set(datastructure_src
-    EdgeVector.c
-    Csr.c
+# Data structures module source files
+file(GLOB DATASTRUCTURES_SOURCES "*.c")
+
+add_library(datastructures OBJECT ${DATASTRUCTURES_SOURCES})
+
+# Set include directories for the object library
+target_include_directories(datastructures PRIVATE
+    ${ARTS_GRAPH_INCLUDE_DIR}
+    ${ARTS_CORE_INCLUDE_DIR}
 )
 
-add_library(datastructures OBJECT ${datastructure_src})

@@ -45,8 +45,6 @@ extern "C" {
 
 #include "arts/gpu/GpuStream.h"
 #include "arts/runtime/RT.h"
-#include <cuda_runtime.h>
-// #include <device_launch_parameters.h>
 
 typedef struct {
   struct artsEdt wrapperEdt;
@@ -134,7 +132,9 @@ void internalLCSyncCPU(artsGuid_t acqGuid, struct artsDb *db);
 void internalLCSyncGPU(artsGuid_t acqGuid, struct artsDb *db);
 
 #define getGpuIndex() internalGetGpuIndex(paramv)
-__device__ uint64_t internalGetGpuIndex(uint64_t *paramv);
+__device__ static uint64_t internalGetGpuIndex(uint64_t *paramv) {
+  return *(paramv - 1);
+}
 
 #ifdef __cplusplus
 }

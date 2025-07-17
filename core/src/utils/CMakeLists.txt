@@ -37,21 +37,22 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-set(utils_dir "${CMAKE_CURRENT_SOURCE_DIR}")
+# Collect all source files
+file(GLOB UTILS_SOURCES "*.c")
 
-if(DEQUE MATCHES "chase_lev")
-    set(utils_src_exclude "${utils_dir}/ChaseLevDequePriority.c")
-    message("Using Simple Deque")
-elseif(DEQUE MATCHES "priority")
-    set(utils_src_exclude "${utils_dir}/ChaseLevDequeSimple.c")
-    message("Using Priority Deque")
+# Handle deque implementation selection based on USE_PRIORITY_DEQUE option
+if(USE_PRIORITY_DEQUE)
+    list(REMOVE_ITEM UTILS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ChaseLevDequeSimple.c")
+    message(STATUS "Utils: Using Priority Chase-Lev Deque")
 else()
-    message(FATAL_ERROR "Unsupported runtime deque chosen.")
+    list(REMOVE_ITEM UTILS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/ChaseLevDequePriority.c")
+    message(STATUS "Utils: Using Simple Chase-Lev Deque")
 endif()
 
-file(GLOB utils_src_local "${utils_dir}/*.c")
+# Create object library for the utils module
+add_library(arts_utils OBJECT ${UTILS_SOURCES})
 
-
-list(REMOVE_ITEM utils_src_local ${utils_src_exclude})
-
-add_library(utils OBJECT ${utils_src_local})
+# Include directories
+target_include_directories(arts_utils PRIVATE
+    ${ARTS_CORE_INCLUDE_DIR}
+)

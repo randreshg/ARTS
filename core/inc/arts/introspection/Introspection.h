@@ -329,7 +329,7 @@ double artsInternalGetPerformanceMetricTotalRate(artsMetricType type,
 double artsMetricTest(artsMetricType type, artsMetricLevel level, uint64_t num);
 void artsInternalToggleThread(void);
 
-#ifdef INSPECTOR
+#ifdef USE_INSPECTOR
 
 #define artsReadInspectorConfigFile(filename)                                  \
   artsInternalReadInspectorConfigFile(filename)

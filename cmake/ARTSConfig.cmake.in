@@ -37,13 +37,47 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Collect all source files
-file(GLOB INTROSPECTION_SOURCES "*.c")
+# ARTS CMake Configuration File
 
-# Create object library for the introspection module
-add_library(arts_introspection OBJECT ${INTROSPECTION_SOURCES})
+@PACKAGE_INIT@
 
-# Include directories
-target_include_directories(arts_introspection PRIVATE
-    ${ARTS_CORE_INCLUDE_DIR}
-)
+# Find required dependencies
+find_dependency(Threads REQUIRED)
+
+# Import ARTS targets
+include("${CMAKE_CURRENT_LIST_DIR}/ARTSTargets.cmake")
+
+# Set ARTS_FOUND
+set(ARTS_FOUND TRUE)
+
+# Provide information about available components
+set(ARTS_STATIC_AVAILABLE @ARTS_BUILD_STATIC@)
+set(ARTS_SHARED_AVAILABLE @ARTS_BUILD_SHARED@)
+set(ARTS_CUDA_AVAILABLE @BUILD_CUDA_LIBRARY@)
+
+# Create convenience variables for standard library
+if(ARTS_STATIC_AVAILABLE)
+    set(ARTS_STATIC_TARGET ARTS::static)
+endif()
+
+if(ARTS_SHARED_AVAILABLE)
+    set(ARTS_SHARED_TARGET ARTS::shared)
+endif()
+
+# Create convenience variables for CUDA library
+if(ARTS_CUDA_AVAILABLE)
+    if(ARTS_STATIC_AVAILABLE)
+        set(ARTS_CUDA_STATIC_TARGET ARTS::cuda_static)
+    endif()
+    if(ARTS_SHARED_AVAILABLE)
+        set(ARTS_CUDA_SHARED_TARGET ARTS::cuda_shared)
+    endif()
+    set(ARTS_CUDA_TARGET ARTS::arts_cuda)
+endif()
+
+# Default to the main target (standard library)
+if(TARGET ARTS::arts)
+    set(ARTS_TARGET ARTS::arts)
+endif()
+
+check_required_components(ARTS)

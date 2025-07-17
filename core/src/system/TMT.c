@@ -60,9 +60,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#define __USE_GNU
 #include <string.h>
+#include <unistd.h>
 
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/compute/EdtFunctions.h"
