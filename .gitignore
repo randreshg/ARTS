@@ -3,3 +3,7 @@ build/
 # Dependencies
 deps/
 .cache/
+test/**/*.cfg
+test/**/*.insp
+example/**/*.cfg
+example/**/*.insp
