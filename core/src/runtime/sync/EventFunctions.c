@@ -64,7 +64,7 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
   unsigned int eventSize =
       sizeof(struct artsEvent) + sizeof(struct artsDependent) * dependentCount;
   ARTSSETMEMSHOTTYPE(artsEventMemorySize);
-  void *eventPacket = artsCalloc(eventSize);
+  void *eventPacket = artsCalloc(1, eventSize);
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 
   if (eventSize) {
@@ -87,7 +87,7 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
       }
     } else
       artsRemoteMemoryMove(route, *guid, eventPacket, eventSize,
-                           ARTS_REMOTE_EVENT_MOVE_MSG, artsFreeAlign);
+                           ARTS_REMOTE_EVENT_MOVE_MSG, artsFree);
 
     return true;
   }
@@ -119,7 +119,7 @@ void artsEventFree(struct artsEvent *event) {
     current = current->next;
     artsFree(trail);
   }
-  artsFreeAlign(event);
+  artsFree(event);
 }
 
 void artsEventDestroy(artsGuid_t guid) {
@@ -253,8 +253,9 @@ struct artsDependent *artsDependentGet(struct artsDependentList *head,
     if (position >= list->size) {
       if (position - list->size == 0) {
         if (list->next == NULL) {
-          temp = artsCalloc(sizeof(struct artsDependentList) +
-                            sizeof(struct artsDependent) * list->size * 2);
+          temp =
+              artsCalloc(1, sizeof(struct artsDependentList) +
+                                sizeof(struct artsDependent) * list->size * 2);
           temp->size = list->size * 2;
           list->next = (struct artsDependentList *)temp;
         }
@@ -449,7 +450,7 @@ bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
   }
   const unsigned int eventSize = sizeof(struct artsPersistentEvent);
   ARTSSETMEMSHOTTYPE(artsPersistentEventMemorySize);
-  void *eventPacket = artsCalloc(eventSize);
+  void *eventPacket = artsCalloc(1, eventSize);
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 
   if (eventSize) {
@@ -470,8 +471,7 @@ bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
       }
     } else {
       artsRemoteMemoryMove(route, *guid, eventPacket, eventSize,
-                           ARTS_REMOTE_PERSISTENT_EVENT_MOVE_MSG,
-                           artsFreeAlign);
+                           ARTS_REMOTE_PERSISTENT_EVENT_MOVE_MSG, artsFree);
     }
     return true;
   }
@@ -537,7 +537,7 @@ void artsPersistentEventDestroy(artsGuid_t guid) {
     while (!artsPersistentEventFreeVersion(event))
       ;
     artsUnlock(&event->lock);
-    artsFreeAlign(event);
+    artsFree(event);
   }
 }
 

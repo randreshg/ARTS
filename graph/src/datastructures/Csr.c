@@ -255,8 +255,8 @@ int loadGraphNoWeight(const char *_file, arts_block_dist_t *_dist, bool _flip,
       numLocalParts++;
   }
 
-  partIndex = (unsigned int *)artsCalloc(sizeof(unsigned int) * numLocalParts);
-  vedges = (artsEdgeVector *)artsCalloc(sizeof(artsEdgeVector) * numLocalParts);
+  partIndex = (unsigned int *)artsCalloc(numLocalParts, sizeof(unsigned int));
+  vedges = (artsEdgeVector *)artsCalloc(numLocalParts, sizeof(artsEdgeVector));
 
   unsigned int j = 0;
   for (unsigned int i = 0; i < _dist->num_blocks; i++) {
@@ -368,8 +368,8 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
       numLocalParts++;
   }
 
-  partIndex = (unsigned int *)artsCalloc(sizeof(unsigned int) * numLocalParts);
-  vedges = (artsEdgeVector *)artsCalloc(sizeof(artsEdgeVector) * numLocalParts);
+  partIndex = (unsigned int *)artsCalloc(numLocalParts, sizeof(unsigned int));
+  vedges = (artsEdgeVector *)artsCalloc(numLocalParts, sizeof(artsEdgeVector));
 
   unsigned int j = 0;
   for (unsigned int i = 0; i < _dist->num_blocks; i++) {

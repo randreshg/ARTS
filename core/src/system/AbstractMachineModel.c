@@ -283,7 +283,7 @@ unsigned int flattenMask(struct artsConfig *config, struct nodeMask *node,
   }
   total = count;
   *flat = (struct threadMask *)artsMalloc(sizeof(struct threadMask) * total);
-  unsigned int *groupCount = artsCalloc(sizeof(unsigned int) * abstractMax);
+  unsigned int *groupCount = artsCalloc(abstractMax, sizeof(unsigned int));
   count = 0;
   struct unitThread *next;
   for (i = 0; i < node->numClusters; i++) {
@@ -498,8 +498,8 @@ unsigned int flattenMask(struct artsConfig *config, unsigned int numCores,
       maskSize += unit[i].threads;
     }
   }
-  *flat = (struct threadMask *)artsCalloc(sizeof(struct threadMask) * maskSize);
-  unsigned int *groupCount = artsCalloc(sizeof(unsigned int) * abstractMax);
+  *flat = (struct threadMask *)artsCalloc(maskSize, sizeof(struct threadMask));
+  unsigned int *groupCount = artsCalloc(abstractMax, sizeof(unsigned int));
   struct unitThread *next;
   unsigned int count = 0;
   for (int i = 0; i < numCores; i++) {
@@ -540,7 +540,7 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
   unsigned int coreCount =
       (config->coreCount) ? config->coreCount : sysconf(_SC_NPROCESSORS_ONLN);
 
-  unit = artsCalloc(sizeof(struct unitMask) * coreCount);
+  unit = artsCalloc(coreCount, sizeof(struct unitMask));
   defaultPolicy(workerThreads, config->senderCount, config->recieverCount, unit,
                 coreCount, config);
 

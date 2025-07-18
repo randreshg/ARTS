@@ -115,9 +115,9 @@ extern void cleanPerGpu(unsigned int nodeId, int devId, cudaStream_t *stream)
 bool **gpuAdjList = NULL;
 void artsFullyConnectGpus(bool p2p, bool disconnectP2P) {
   if (!gpuAdjList) {
-    gpuAdjList = (bool **)artsCalloc(sizeof(bool *) * artsNodeInfo.gpu);
+    gpuAdjList = (bool **)artsCalloc(artsNodeInfo.gpu, sizeof(bool *));
     for (unsigned int i = 0; i < artsNodeInfo.gpu; i++)
-      gpuAdjList[i] = (bool *)artsCalloc(sizeof(bool) * artsNodeInfo.gpu);
+      gpuAdjList[i] = (bool *)artsCalloc(artsNodeInfo.gpu, sizeof(bool));
   }
   if (p2p) {
     for (int src = 0; src < artsNodeInfo.gpu; src++) {
@@ -158,7 +158,7 @@ void artsNodeInitGpus() {
           artsNodeInfo.runGpuGcPreEdt, artsNodeInfo.deleteZerosGpuGc);
 
   DPRINTF("NUM DEV: %d\n", artsNodeInfo.gpu);
-  artsGpus = (artsGpu_t *)artsCalloc(sizeof(artsGpu_t) * artsNodeInfo.gpu);
+  artsGpus = (artsGpu_t *)artsCalloc(artsNodeInfo.gpu, sizeof(artsGpu_t));
 
   artsCudaSetDevice(-1, true);
 
@@ -200,7 +200,7 @@ void artsInitPerGpuWrapper(int argc, char **argv) {
 }
 
 void artsWorkerInitGpus() {
-  newEdtLock = (unsigned int *)artsCalloc(sizeof(unsigned int));
+  newEdtLock = (unsigned int *)artsCalloc(1, sizeof(unsigned int));
   newEdts = artsNewArrayList(sizeof(void *), 32);
 }
 
@@ -541,7 +541,7 @@ void freeGpuItem(artsRouteItem_t *item) {
       lcSyncFunction[artsNodeInfo.gpuLCSync](&host, &dev);
 
       artsRouteTableReturnDb(item->key, false);
-      artsFreeAlign(tempSpace);
+      artsFree(tempSpace);
       artsCudaFree((void *)wrapper->realData);
 
       artsUpdatePerformanceMetric(artsGpuSyncDelete, artsThread, 1, false);

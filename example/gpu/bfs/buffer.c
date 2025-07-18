@@ -54,15 +54,18 @@ void createBuffersOnCpu(unsigned int size)
     unsigned int numGpus = artsGetTotalGpus();
     unsigned int nodeId = artsGetCurrentNode();
 
-    cpuBufferPtr = (unsigned int**) artsCalloc(sizeof(unsigned int*) * NUMBUFFERS);
+    cpuBufferPtr =
+        (unsigned int **)artsCalloc(NUMBUFFERS, sizeof(unsigned int *));
     for(unsigned int i=0; i<NUMBUFFERS; i++)
-        cpuBufferPtr[i] = (unsigned int*) artsCalloc(sizeof(unsigned int) * size);
+      cpuBufferPtr[i] = (unsigned int *)artsCalloc(size, sizeof(unsigned int));
 
-    gpuBufferPtr = (unsigned int***) artsCalloc(sizeof(unsigned int**) * NUMBUFFERS);
+    gpuBufferPtr =
+        (unsigned int ***)artsCalloc(NUMBUFFERS, sizeof(unsigned int **));
     for(unsigned int i=0; i<NUMBUFFERS; i++)
-        gpuBufferPtr[i] = (unsigned int**) artsCalloc(sizeof(unsigned int*) * numGpus);
+      gpuBufferPtr[i] =
+          (unsigned int **)artsCalloc(numGpus, sizeof(unsigned int *));
 
-    masterBufferGuids = (artsGuid_t*) artsCalloc(sizeof(artsGuid_t) * numNodes);
+    masterBufferGuids = (artsGuid_t *)artsCalloc(numNodes, sizeof(artsGuid_t));
     for(unsigned int i=0; i<numNodes; i++)
         masterBufferGuids[i] = artsReserveGuidRoute(ARTS_DB_READ, i);
 
@@ -91,7 +94,8 @@ void createBufferDB()
     unsigned int numGpus = artsGetTotalGpus();
     unsigned int nodeId = artsGetCurrentNode();
 
-    bufferPtr = (unsigned int***) artsCalloc(sizeof(unsigned int**)*NUMBUFFERS);
+    bufferPtr =
+        (unsigned int ***)artsCalloc(NUMBUFFERS, sizeof(unsigned int **));
     for(unsigned int j=0; j<NUMBUFFERS; j++)
     {
         

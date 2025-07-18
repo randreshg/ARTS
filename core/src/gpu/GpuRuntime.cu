@@ -95,7 +95,7 @@ bool artsCudaRestoreDevice() {
 void *artsCudaMallocHost(unsigned int size) {
   void *ptr = NULL;
   CHECKCORRECT(cudaMallocHost(&ptr, size));
-  // ptr = artsCalloc(size);
+  // ptr = artsCalloc(1, size);
   if (!ptr) {
     artsDebugPrintStack();
     exit(1);
@@ -155,7 +155,7 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
   unsigned int edtSpace =
       sizeof(artsGpuEdt_t) + paramc * sizeof(uint64_t) + depSpace;
 
-  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCalloc(edtSpace);
+  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCalloc(1, edtSpace);
   edt->wrapperEdt.invalidateCount = 1;
   edt->grid = grid;
   edt->block = block;
@@ -604,7 +604,7 @@ void internalLCSyncGPU(artsGuid_t acqGuid, struct artsDb *db) {
       }
     }
     gpuGCWriteUnlock();
-    artsFreeAlign(tempSpace);
+    artsFree(tempSpace);
     artsCudaRestoreDevice();
   }
 }
@@ -663,7 +663,7 @@ void internalLCSyncCPU(artsGuid_t acqGuid, struct artsDb *db) {
       }
     }
     gpuGCWriteUnlock();
-    artsFreeAlign(tempSpace);
+    artsFree(tempSpace);
     // artsCudaRestoreDevice();
   }
 }

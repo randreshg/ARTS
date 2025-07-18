@@ -189,7 +189,7 @@
 //     unsigned int oldSize = dbRes->header.size;
 //     unsigned int newSize = size + sizeof(struct artsDb);
 //     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-//     struct artsDb *ptr = artsCalloc(size + sizeof(struct artsDb));
+//     struct artsDb *ptr = artsCalloc(1, size + sizeof(struct artsDb));
 //     ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 //     if (ptr) {
 //       if (copy)

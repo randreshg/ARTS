@@ -50,7 +50,7 @@ artsArrayList ** list;
 void initListRecord()
 {
     unsigned int size = artsGetTotalGpus() + 1;
-    list = artsCalloc(sizeof(artsArrayList*) * size);
+    list = artsCalloc(size, sizeof(artsArrayList *));
     for(unsigned int i=0; i<size; i++)
         list[i] = artsNewArrayList(sizeof(unsigned int), 32);
 }

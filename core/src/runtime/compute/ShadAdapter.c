@@ -217,7 +217,7 @@ artsGuid_t artsAllocateLocalBufferShad(void **buffer, uint32_t *sizeToWrite,
 }
 
 artsShadLock_t *artsShadCreateLock() {
-  artsShadLock_t *lock = artsCalloc(sizeof(artsShadLock_t));
+  artsShadLock_t *lock = artsCalloc(1, sizeof(artsShadLock_t));
   lock->queue = artsNewQueue();
   return lock;
 }

@@ -134,7 +134,7 @@ void finishBlockMM(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep
     double * aMat  = (double*) depv[1].ptr;
     double * bMat  = (double*) depv[2].ptr;
     printf("Verifying results...\n");
-    double *temp = (double*) artsCalloc(matSize * matSize * sizeof(double));
+    double *temp = (double *)artsCalloc(matSize * matSize, sizeof(double));
     for (unsigned int i=0; i< matSize; ++i)
         for (unsigned int j=0; j<matSize; ++j)
             for (unsigned int k=0; k<matSize; ++k)
@@ -261,7 +261,8 @@ extern "C"
 void initPerGpu(unsigned int nodeId, int devId, cudaStream_t * stream, int argc, char * argv)
 {
     if(!devId)
-        handle = (cublasHandle_t*) artsCalloc(sizeof(cublasHandle_t) * artsGetNumGpus());
+      handle = (cublasHandle_t *)artsCalloc(artsGetNumGpus(),
+                                            sizeof(cublasHandle_t));
     cublasStatus_t stat = cublasCreate(&handle[devId]);
 }
 

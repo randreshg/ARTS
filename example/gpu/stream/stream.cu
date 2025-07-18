@@ -257,22 +257,23 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
 
     if(!nodeId)
     {
-        aTile = (double**)artsCalloc(sizeof(double*)*numTiles);
-        bTile = (double**)artsCalloc(sizeof(double*)*numTiles);
-        cTile = (double**)artsCalloc(sizeof(double*)*numTiles);
+      aTile = (double **)artsCalloc(numTiles, sizeof(double *));
+      bTile = (double **)artsCalloc(numTiles, sizeof(double *));
+      cTile = (double **)artsCalloc(numTiles, sizeof(double *));
 
-        for(unsigned int i=0; i<numTiles; i++)
-        {
-            aTile[i] = (double*) artsDbCreateWithGuid(artsGetGuid(aTileGuids, i), tileSize * sizeof(double));
-            bTile[i] = (double*) artsDbCreateWithGuid(artsGetGuid(bTileGuids, i), tileSize * sizeof(double));
-            cTile[i] = (double*) artsDbCreateWithGuid(artsGetGuid(cTileGuids, i), tileSize * sizeof(double));
-            for(unsigned int j=0; j<tileSize; j++)
-            {
-                aTile[i][j] = 1.0;
-                bTile[i][j] = 2.0;
-                cTile[i][j] = 0.0;
-            }
+      for (unsigned int i = 0; i < numTiles; i++) {
+        aTile[i] = (double *)artsDbCreateWithGuid(artsGetGuid(aTileGuids, i),
+                                                  tileSize * sizeof(double));
+        bTile[i] = (double *)artsDbCreateWithGuid(artsGetGuid(bTileGuids, i),
+                                                  tileSize * sizeof(double));
+        cTile[i] = (double *)artsDbCreateWithGuid(artsGetGuid(cTileGuids, i),
+                                                  tileSize * sizeof(double));
+        for (unsigned int j = 0; j < tileSize; j++) {
+          aTile[i][j] = 1.0;
+          bTile[i][j] = 2.0;
+          cTile[i][j] = 0.0;
         }
+      }
 
         printf(HLINE);
         int BytesPerWord = sizeof(double);

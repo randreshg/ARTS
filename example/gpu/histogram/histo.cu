@@ -142,7 +142,8 @@ void finishHistogram(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtD
     uint64_t time = artsGetTimeStamp() - start;
 #if VERIFY
     unsigned int * histoObtained = (unsigned int *) depv[0].ptr;
-    unsigned int * histoExpected = (unsigned int *) artsCalloc(sizeof(unsigned int) * NUMBINS);
+    unsigned int *histoExpected =
+        (unsigned int *)artsCalloc(NUMBINS, sizeof(unsigned int));
 
     for(unsigned int i=0; i<inputArraySize; i++)
         histoExpected[inputArray[i]]++;
@@ -206,8 +207,9 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
         memset(finalHistogram, 0, NUMBINS * sizeof(unsigned int));
     }
 
-    inputArray = (unsigned int*) artsCalloc(inputArraySize * sizeof(unsigned int));
-    
+    inputArray =
+        (unsigned int *)artsCalloc(inputArraySize, sizeof(unsigned int));
+
     if(!nodeId)
         DPRINTF("Loading input array with seed 7\n");
         

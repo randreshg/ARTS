@@ -52,7 +52,7 @@ void dummy(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t depv[
     unsigned int bufferSize = paramv[2]/sizeof(unsigned int);
     unsigned int * buffer = depv[0].ptr;
     PRINTF("%lu %u %u %p\n", resultGuid, resultSize, bufferSize, buffer);
-    unsigned int * sum = artsCalloc(resultSize);
+    unsigned int *sum = artsCalloc(1, resultSize);
     for(unsigned int i=0; i<bufferSize; i++)
     {
         PRINTF("%u\n", buffer[i]);
@@ -72,7 +72,7 @@ void startEdt(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t de
     args[1] = sizeof(unsigned int);
     
     unsigned int bufferSize = sizeof(unsigned int)*5;
-    unsigned int * data = artsCalloc(bufferSize);
+    unsigned int *data = artsCalloc(1, bufferSize);
     for(unsigned int i=0; i<5; i++)
         data[i] = i;
     args[2] = bufferSize;

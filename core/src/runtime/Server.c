@@ -82,7 +82,7 @@ void artsServerSetup(struct artsConfig *config) {
   artsLLServerSetup(config);
   outInit(artsGlobalRankCount * config->ports);
 #ifdef SEQUENCENUMBERS
-  recSeqNumbers = artsCalloc(sizeof(uint64_t) * artsGlobalRankCount);
+  recSeqNumbers = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
 #endif
 }
 

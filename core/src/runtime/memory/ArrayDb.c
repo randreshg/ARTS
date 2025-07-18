@@ -57,7 +57,7 @@ unsigned int artsGetSizeArrayDb(artsArrayDb_t *array) {
 
 void *copyDb(void *ptr, unsigned int size, artsGuid_t guid) {
   struct artsDb *db = ((struct artsDb *)ptr) - 1;
-  struct artsDb *newDb = artsCallocAlign(size, 16);
+  struct artsDb *newDb = artsCallocAlign(1, size, 16);
   memcpy(newDb, db, size);
   newDb->guid = guid;
   return (void *)(newDb + 1);
@@ -85,7 +85,7 @@ artsArrayDb_t *artsNewArrayDbWithGuid(artsGuid_t guid, unsigned int elementSize,
     // We have to manually create the db so it isn't updated before we send
     // it...
     unsigned int dbSize = sizeof(struct artsDb) + allocSize;
-    struct artsDb *toSend = artsCallocAlign(dbSize, 16);
+    struct artsDb *toSend = artsCallocAlign(1, dbSize, 16);
     artsDbCreateInternal(guid, toSend, allocSize, dbSize, ARTS_DB_PIN);
 
     block = (artsArrayDb_t *)(toSend + 1);
@@ -120,7 +120,7 @@ artsArrayDb_t *artsNewLocalArrayDbWithGuid(artsGuid_t guid,
   artsArrayDb_t *block = NULL;
 
   unsigned int dbSize = sizeof(struct artsDb) + allocSize;
-  // struct artsDb *local = artsCalloc(dbSize);
+  // struct artsDb *local = artsCalloc(1, dbSize);
   struct artsDb *local = artsMallocAlign(dbSize, 16);
   artsDbCreateInternal(guid, local, allocSize, dbSize, ARTS_DB_PIN);
 

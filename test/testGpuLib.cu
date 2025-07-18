@@ -199,8 +199,9 @@ void initPerGpu(unsigned int nodeId, int devId, cudaStream_t * stream, int argc,
     PRINTF("DevId: %d\n", devId);
     if(!devId)
     {
-        handle = (cublasHandle_t*) artsCalloc(sizeof(cublasHandle_t) * artsGetNumGpus());
-        PRINTF("NUM GPUS: %u\n", artsGetNumGpus());
+      handle = (cublasHandle_t *)artsCalloc(artsGetNumGpus(),
+                                            sizeof(cublasHandle_t));
+      PRINTF("NUM GPUS: %u\n", artsGetNumGpus());
     }
     cublasStatus_t stat = cublasCreate(&handle[devId]);
 }

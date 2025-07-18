@@ -180,7 +180,7 @@ artsEpoch_t *createEpoch(artsGuid_t *guid, artsGuid_t edtGuid,
   if (*guid == NULL_GUID)
     *guid = artsGuidCreateForRank(artsGlobalRankId, ARTS_EDT);
 
-  artsEpoch_t *epoch = artsCalloc(sizeof(artsEpoch_t));
+  artsEpoch_t *epoch = artsCalloc(1, sizeof(artsEpoch_t));
   epoch->phase = PHASE_1;
   epoch->terminationExitGuid = edtGuid;
   epoch->terminationExitSlot = slot;
@@ -398,7 +398,7 @@ artsEpochPool_t *createEpochPool(artsGuid_t *epochPoolGuid,
   }
 
   artsEpochPool_t *epochPool =
-      artsCalloc(sizeof(artsEpochPool_t) + sizeof(artsEpoch_t) * poolSize);
+      artsCalloc(1, sizeof(artsEpochPool_t) + sizeof(artsEpoch_t) * poolSize);
   epochPool->index = 0;
   epochPool->outstanding = poolSize;
   epochPool->size = poolSize;

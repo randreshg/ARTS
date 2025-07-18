@@ -66,12 +66,12 @@ void *artsMallocAlign(size_t size, size_t align);
 // Allocates memory of size bytes and initializes the memory to zero.  Arts
 // applications should use this allocation method to give the runtime a full
 // view of resource utilization.
-void *artsCalloc(size_t size);
+void *artsCalloc(size_t nmemb, size_t size);
 
 // Allocates memory of size bytes with given alignment and initializes the
 // memory to zero.  Arts applications should use this allocation method to give
 // the runtime a full view of resource utilization.
-void *artsCallocAlign(size_t size, size_t allign);
+void *artsCallocAlign(size_t nmemb, size_t size, size_t align);
 
 // Resizes memory that was previously allocated using artsMalloc or artsCalloc.
 // This is here for completion but should probably not be used.
@@ -79,9 +79,6 @@ void *artsRealloc(void *ptr, size_t size);
 
 // Releases memory allocated by artsMalloc or artsCalloc.
 void artsFree(void *ptr);
-
-// Releases memory allocated by artsMallocAlign or artsCallocAlign.
-void artsFreeAlign(void *ptr);
 
 /*GUID*************************************************************************/
 

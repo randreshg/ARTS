@@ -188,7 +188,7 @@ artsGuidRange *artsNewGuidRangeNode(artsType_t type, unsigned int size,
                                     unsigned int route) {
   artsGuidRange *range = NULL;
   if (size && type > ARTS_NULL && type < ARTS_LAST_TYPE) {
-    range = artsCalloc(sizeof(artsGuidRange));
+    range = artsCalloc(1, sizeof(artsGuidRange));
     range->size = size;
     range->startGuid =
         artsGuidCreateForRankInternal(route, (unsigned int)type, size);
@@ -210,7 +210,7 @@ artsGuidRange *artsNewGuidRangeNodeHash(artsType_t type, unsigned int size,
                                         unsigned int hashSize) {
   artsGuidRange *range = NULL;
   if (size && type > ARTS_NULL && type < ARTS_LAST_TYPE) {
-    range = artsCalloc(sizeof(artsGuidRange));
+    range = artsCalloc(1, sizeof(artsGuidRange));
     range->size = size;
     range->startGuid = artsGuidCreateForRankInternal(route, (unsigned int)type,
                                                      size + hashSize);

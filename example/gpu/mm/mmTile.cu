@@ -207,7 +207,7 @@ void finishBlockMM(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep
     double * aMat  = (double*) depv[1].ptr;
     double * bMat  = (double*) depv[2].ptr;
     printf("Verifying results...\n");
-    double *temp = (double*) artsCalloc(matSize * matSize * sizeof(double));
+    double *temp = (double *)artsCalloc(matSize * matSize, sizeof(double));
     for (unsigned int i=0; i< matSize; ++i)
         for (unsigned int j=0; j<matSize; ++j)
             for (unsigned int k=0; k<matSize; ++k)

@@ -279,7 +279,7 @@ void artsTMTNodeInit(unsigned int numThreads) {
   }
 
   if (artsNodeInfo.tMT) {
-    _arts_tMT_msi = (msi_t *)artsCallocAlign(numThreads * sizeof(msi_t), 64);
+    _arts_tMT_msi = (msi_t *)artsCallocAlign(numThreads, sizeof(msi_t), 64);
   }
 }
 
@@ -289,22 +289,22 @@ void artsTMTConstructNewInternalMsi(msi_t *root, unsigned int numAT,
   unsigned int offset = 0;
   internalMsi_t *ptr = root->head;
   if (!root->head)
-    root->head = ptr = artsCalloc(sizeof(internalMsi_t));
+    root->head = ptr = artsCalloc(1, sizeof(internalMsi_t));
   else {
     offset = numAT;
     while (ptr->next) {
       offset += numAT;
       ptr = ptr->next;
     }
-    ptr->next = artsCalloc(sizeof(internalMsi_t));
+    ptr->next = artsCalloc(1, sizeof(internalMsi_t));
     ptr = ptr->next;
   }
 
   unsigned int total = (offset) ? numAT : numAT - 1;
   ptr->aliasThreads = (pthread_t *)artsMalloc(sizeof(pthread_t) * (total));
   ptr->sem = (sem_t *)artsMalloc(sizeof(sem_t) * (numAT));
-  ptr->alive = (volatile bool **)artsCalloc(sizeof(bool *) * numAT);
-  ptr->initShutdown = (volatile bool **)artsCalloc(sizeof(bool *) * numAT);
+  ptr->alive = (volatile bool **)artsCalloc(numAT, sizeof(bool *));
+  ptr->initShutdown = (volatile bool **)artsCalloc(numAT, sizeof(bool *));
   ptr->alias_running = (offset) ? 0UL : 1U; // MT is running on thread 0
 
   if (!offset)

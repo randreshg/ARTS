@@ -87,7 +87,7 @@ void artsEndCounters() {
 
 artsCounter *artsCreateCounter(unsigned int threadId, unsigned int nodeId,
                                const char *counterName) {
-  artsCounter *counter = (artsCounter *)artsCalloc(sizeof(artsCounter));
+  artsCounter *counter = (artsCounter *)artsCalloc(1, sizeof(artsCounter));
   counter->threadId = threadId;
   counter->nodeId = nodeId;
   counter->name = counterName;

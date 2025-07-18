@@ -131,20 +131,20 @@ bool frontierAddExclusiveLock(volatile unsigned int *lock) {
 
 struct artsDbElement *artsNewDbElement() {
   struct artsDbElement *ret =
-      (struct artsDbElement *)artsCalloc(sizeof(struct artsDbElement));
+      (struct artsDbElement *)artsCalloc(1, sizeof(struct artsDbElement));
   return ret;
 }
 
 struct artsDbFrontier *artsNewDbFrontier() {
   struct artsDbFrontier *ret =
-      (struct artsDbFrontier *)artsCalloc(sizeof(struct artsDbFrontier));
+      (struct artsDbFrontier *)artsCalloc(1, sizeof(struct artsDbFrontier));
   return ret;
 }
 
 // This should be done before being released into the wild
 struct artsDbList *artsNewDbList() {
   struct artsDbList *ret =
-      (struct artsDbList *)artsCalloc(sizeof(struct artsDbList));
+      (struct artsDbList *)artsCalloc(1, sizeof(struct artsDbList));
   ret->head = ret->tail = artsNewDbFrontier();
   return ret;
 }
@@ -207,7 +207,7 @@ void artsPushDelayedEdt(struct artsLocalDelayedEdt *head, unsigned int position,
   struct artsLocalDelayedEdt *current = head;
   for (unsigned int i = 0; i < numElements; i++) {
     if (!current->next)
-      current->next = artsCalloc(sizeof(struct artsLocalDelayedEdt));
+      current->next = artsCalloc(1, sizeof(struct artsLocalDelayedEdt));
     current = current->next;
   }
   current->edt[elementPos] = edt;
@@ -319,7 +319,7 @@ artsDbFrontierIterCreate(struct artsDbFrontier *frontier) {
   struct artsDbFrontierIterator *iter = NULL;
   if (frontier && frontier->position) {
     iter = (struct artsDbFrontierIterator *)artsCalloc(
-        sizeof(struct artsDbFrontierIterator));
+        1, sizeof(struct artsDbFrontierIterator));
     iter->frontier = frontier;
     iter->currentElement = &frontier->list;
   }

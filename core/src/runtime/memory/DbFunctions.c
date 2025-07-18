@@ -90,7 +90,7 @@ void artsDbFree(void *ptr) {
   }
 #endif
   if (ptr)
-    artsFreeAlign(ptr);
+    artsFree(ptr);
 }
 
 void artsDbCreateInternal(artsGuid_t guid, void *addr, uint64_t size,
@@ -228,14 +228,14 @@ void *artsDbResizePtr(struct artsDb *dbRes, unsigned int size, bool copy) {
     unsigned int oldSize = dbRes->header.size;
     unsigned int newSize = size + sizeof(struct artsDb);
     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-    struct artsDb *ptr = artsCallocAlign(size + sizeof(struct artsDb), 16);
+    struct artsDb *ptr = artsCallocAlign(1, size + sizeof(struct artsDb), 16);
     ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
     if (ptr) {
       if (copy)
         memcpy(ptr, dbRes, oldSize);
       else
         memcpy(ptr, dbRes, sizeof(struct artsDb));
-      artsFreeAlign(dbRes);
+      artsFree(dbRes);
       ptr->header.size = size + sizeof(struct artsDb);
       return (void *)(ptr + 1);
     }

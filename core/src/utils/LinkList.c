@@ -60,7 +60,7 @@ void artsLinkListDelete(void *linkList) {
 
 struct artsLinkList *artsLinkListGroupNew(unsigned int listSize) {
   struct artsLinkList *linkList =
-      (struct artsLinkList *)artsCalloc(sizeof(struct artsLinkList) * listSize);
+      (struct artsLinkList *)artsCalloc(listSize, sizeof(struct artsLinkList));
   for (int i = 0; i < listSize; i++) {
     artsLinkListNew(&linkList[i]);
   }
@@ -69,7 +69,7 @@ struct artsLinkList *artsLinkListGroupNew(unsigned int listSize) {
 
 void *artsLinkListNewItem(unsigned int size) {
   struct artsLinkListItem *newItem =
-      artsCalloc(sizeof(struct artsLinkListItem) + size);
+      artsCalloc(1, sizeof(struct artsLinkListItem) + size);
   newItem->next = NULL;
   if (size) {
     return (void *)(newItem + 1);

@@ -146,13 +146,12 @@ void artsInternalInitIntrospector(struct artsConfig * config)
         if(!artsGlobalRankId)
             printMetrics();
         DPRINTF("inspector %u\n", sizeof(artsInspector));
-        inspector = artsCalloc(sizeof(artsInspector));
+        inspector = artsCalloc(1, sizeof(artsInspector));
         inspector->startPoint = startPoint;
         DPRINTF("inspector->coreMetric %u\n", sizeof(artsPerformanceUnit) * artsLastMetricType * artsNodeInfo.totalThreadCount);
         inspector->coreMetric =
-            artsCallocAlign(sizeof(artsPerformanceUnit) * artsLastMetricType *
-                                artsNodeInfo.totalThreadCount,
-                            64);
+            artsCallocAlign(artsLastMetricType * artsNodeInfo.totalThreadCount,
+                            sizeof(artsPerformanceUnit), 64);
         for(unsigned int i=0; i<artsNodeInfo.totalThreadCount; i++)
         {
             for(unsigned int j=0; j<artsLastMetricType; j++)
@@ -163,7 +162,7 @@ void artsInternalInitIntrospector(struct artsConfig * config)
         }
 
         inspector->nodeMetric = artsCallocAlign(
-            sizeof(artsPerformanceUnit) * artsLastMetricType, 64);
+            artsLastMetricType, sizeof(artsPerformanceUnit), 64);
         for(unsigned int j=0; j<artsLastMetricType; j++)
         {
             inspector->nodeMetric[j].maxTotal = maxTotal[j][1];
@@ -171,7 +170,7 @@ void artsInternalInitIntrospector(struct artsConfig * config)
         }
 
         inspector->systemMetric = artsCallocAlign(
-            sizeof(artsPerformanceUnit) * artsLastMetricType, 64);
+            artsLastMetricType, sizeof(artsPerformanceUnit), 64);
         for(unsigned int j=0; j<artsLastMetricType; j++)
         {
             inspector->systemMetric[j].maxTotal = maxTotal[j][2];
@@ -179,9 +178,9 @@ void artsInternalInitIntrospector(struct artsConfig * config)
         }
         
         DPRINTF("stats %u\n", sizeof(artsInspectorStats));
-        stats = artsCalloc(sizeof(artsInspectorStats));
+        stats = artsCalloc(1, sizeof(artsInspectorStats));
         DPRINTF("packetInspector %u\n", sizeof(artsPacketInspector));
-        packetInspector = artsCalloc(sizeof(artsPacketInspector));
+        packetInspector = artsCalloc(1, sizeof(artsPacketInspector));
         packetInspector->minPacket = (uint64_t) -1;
         packetInspector->maxPacket = 0;
         packetInspector->intervalMin = (uint64_t) -1;
@@ -193,21 +192,27 @@ void artsInternalInitIntrospector(struct artsConfig * config)
             {
                 inspectorShots = artsMalloc(sizeof(artsInspectorShots));
                 DPRINTF("inspectorShots->coreMetric\n");
-                inspectorShots->coreMetric = artsCalloc(sizeof(artsArrayList*) * artsLastMetricType * artsNodeInfo.totalThreadCount);
+                inspectorShots->coreMetric = artsCalloc(
+                    artsLastMetricType * artsNodeInfo.totalThreadCount,
+                    sizeof(artsArrayList *));
                 for(unsigned int i = 0; i < artsLastMetricType * artsNodeInfo.totalThreadCount; i++)
                     inspectorShots->coreMetric[i] = artsNewArrayList(sizeof(artsMetricShot), 1024);
                 DPRINTF("inspectorShots->nodeMetric\n");
-                inspectorShots->nodeMetric = artsCalloc(sizeof(artsArrayList*) * artsLastMetricType);
+                inspectorShots->nodeMetric =
+                    artsCalloc(artsLastMetricType, sizeof(artsArrayList *));
                 for(unsigned int i = 0; i < artsLastMetricType; i++)
                     inspectorShots->nodeMetric[i] = artsNewArrayList(sizeof(artsMetricShot), 1024);
                 DPRINTF("inspectorShots->systemMetric\n");
-                inspectorShots->systemMetric = artsCalloc(sizeof(artsArrayList*) * artsLastMetricType);
+                inspectorShots->systemMetric =
+                    artsCalloc(artsLastMetricType, sizeof(artsArrayList *));
                 for(unsigned int i = 0; i < artsLastMetricType; i++)
                     inspectorShots->systemMetric[i] = artsNewArrayList(sizeof(artsMetricShot), 1024);
                 DPRINTF("inspectorShots->nodeLock %u\n", sizeof(unsigned int) * artsLastMetricType);
-                inspectorShots->nodeLock = artsCalloc(sizeof(unsigned int) * artsLastMetricType);
+                inspectorShots->nodeLock =
+                    artsCalloc(artsLastMetricType, sizeof(unsigned int));
                 DPRINTF("inspectorShots->systemLock %u\n", sizeof(unsigned int) * artsLastMetricType);
-                inspectorShots->systemLock = artsCalloc(sizeof(unsigned int) * artsLastMetricType);
+                inspectorShots->systemLock =
+                    artsCalloc(artsLastMetricType, sizeof(unsigned int));
                 inspectorShots->prefix = inspOutputPrefix;
                 inspectorShots->traceLevel = (artsMetricLevel) traceLevel;
             }

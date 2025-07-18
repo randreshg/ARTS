@@ -112,10 +112,10 @@ void artsRemotSetThreadOutboundQueues(unsigned int start, unsigned int stop) {
   threadStop = stop;
 
   unsigned int size = stop - start;
-  outResend = artsCalloc(sizeof(struct outList *) * size);
+  outResend = artsCalloc(size, sizeof(struct outList *));
 #ifdef SEQUENCENUMBERS
-  lastOut = artsCalloc(sizeof(uint64_t) * artsGlobalRankCount);
-  lastSent = artsCalloc(sizeof(uint64_t) * artsGlobalRankCount);
+  lastOut = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
+  lastSent = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
 #endif
 }
 
@@ -123,8 +123,8 @@ void outInit(unsigned int size) {
   nodeListSize = size;
   outHead = artsLinkListGroupNew(size);
 #ifdef SEQUENCENUMBERS
-  seqNumber = artsCalloc(sizeof(uint64_t) * artsGlobalRankCount);
-  seqNumLock = artsCalloc(sizeof(unsigned int) * size);
+  seqNumber = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
+  seqNumLock = artsCalloc(size, sizeof(unsigned int));
 #endif
 }
 

@@ -108,7 +108,7 @@ void done(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 
 extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
   devPtrRaw =
-      (unsigned int **)artsCalloc(sizeof(unsigned int *) * artsGetTotalGpus());
+      (unsigned int **)artsCalloc(artsGetTotalGpus(), sizeof(unsigned int *));
 }
 
 extern "C" void initPerGpu(unsigned int nodeId, int devId, cudaStream_t *stream,

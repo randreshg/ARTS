@@ -121,7 +121,7 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
   for (unsigned int i = 0; i < numElements; i++) {
     if (!current->next) {
       if (i + 1 == numElements && elementPos == 0) {
-        current->next = artsCalloc(sizeof(struct artsOutOfOrderElement));
+        current->next = artsCalloc(1, sizeof(struct artsOutOfOrderElement));
       } else
         while (!current->next)
           ;

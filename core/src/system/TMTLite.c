@@ -96,12 +96,16 @@ void artsInitTMTLitePerNode(unsigned int numWorkers)
 {
     long temp = sysconf(_SC_PAGESIZE);
     pageSize = temp;
-    threadToJoin = (artsArrayList**) artsCalloc(sizeof(artsArrayList*) * numWorkers);
-    aliasNumber = (unsigned int*) artsCalloc(sizeof(unsigned int) * numWorkers);
-    threadReaderLock = (volatile unsigned int*) artsCalloc(sizeof(unsigned int) * numWorkers);
-    threadWriterLock = (volatile unsigned int*) artsCalloc(sizeof(unsigned int) * numWorkers);
-    arrayListLock = (volatile unsigned int*) artsCalloc(sizeof(unsigned int) * numWorkers);
-    outstanding = (volatile uint64_t *) artsCalloc(sizeof(uint64_t) * numWorkers);
+    threadToJoin =
+        (artsArrayList **)artsCalloc(numWorkers, sizeof(artsArrayList *));
+    aliasNumber = (unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+    threadReaderLock =
+        (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+    threadWriterLock =
+        (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+    arrayListLock =
+        (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+    outstanding = (volatile uint64_t *)artsCalloc(numWorkers, sizeof(uint64_t));
 }
 
 void artsInitTMTLitePerWorker(unsigned int id)
@@ -171,7 +175,7 @@ void artsCreateLiteContexts(volatile uint64_t * toDec)
     unsigned int sourceId = artsThreadInfo.groupId;
     unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
     volatile unsigned int spinFlag = 1;
-    liteArgs_t * args = artsCalloc(sizeof(liteArgs_t));
+    liteArgs_t *args = artsCalloc(1, sizeof(liteArgs_t));
     args->aliasId = ++aliasNumber[sourceId];
     args->sourceId = sourceId;
     args->toDec = toDec;
@@ -228,7 +232,7 @@ void artsCreateLiteContexts2(volatile uint64_t * toDec, struct artsEdt * edt)
     unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
     artsAtomicAddU64(&outstanding[sourceId], 1);
     volatile unsigned int spinFlag = 1;
-    liteArgs_t * args = artsCalloc(sizeof(liteArgs_t));
+    liteArgs_t *args = artsCalloc(1, sizeof(liteArgs_t));
     args->aliasId = ++aliasNumber[sourceId];
     args->sourceId = sourceId;
     args->edtToRun = edt;

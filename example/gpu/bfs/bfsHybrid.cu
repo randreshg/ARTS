@@ -522,7 +522,7 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
     getProperties(fileName, &numVerts, &numEdges);
 
     //Create graph partitions
-    graph = (csr_graph_t*) artsCalloc(sizeof(csr_graph_t)* PARTS);
+    graph = (csr_graph_t *)artsCalloc(PARTS, sizeof(csr_graph_t));
     distribution = initBlockDistributionBlock(numVerts, numEdges, PARTS, ARTS_DB_GPU_READ);
     loadGraphNoWeightCsr(fileName, distribution, true, false);
 
@@ -534,13 +534,14 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
     }
 
     //Count the number of partitions per node for later...
-    partCount = (unsigned int*) artsCalloc(sizeof(unsigned int) * artsGetTotalNodes());
+    partCount =
+        (unsigned int *)artsCalloc(artsGetTotalNodes(), sizeof(unsigned int));
     for(unsigned int i=0; i<artsGetTotalNodes(); i++)
         partCount[i] = 0;
 
     //Create visited array per partition
-    visitedGuid = (artsGuid_t*) artsCalloc(sizeof(artsGuid_t) * PARTS);
-    visited = (unsigned int**)artsCalloc(sizeof(unsigned int*)*PARTS);
+    visitedGuid = (artsGuid_t *)artsCalloc(PARTS, sizeof(artsGuid_t));
+    visited = (unsigned int **)artsCalloc(PARTS, sizeof(unsigned int *));
     for(unsigned int i=0; i<PARTS; i++)
     {
         unsigned int numElements = getBlockSizeForPartition(i, distribution);
@@ -564,7 +565,8 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
         nextSearchFrontierAddrGuid[i] = artsReserveGuidRoute(ARTS_DB_GPU_READ, i);
     
     //Create an array to hold the addresses of next search frontier for each gpu
-    devPtrRaw = (unsigned int**) artsCalloc(sizeof(unsigned int*) * artsGetTotalGpus());
+    devPtrRaw =
+        (unsigned int **)artsCalloc(artsGetTotalGpus(), sizeof(unsigned int *));
 
     //Inits some data recording
     initListRecord();

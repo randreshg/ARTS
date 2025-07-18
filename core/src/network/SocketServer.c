@@ -418,14 +418,14 @@ bool artsRemoteSetupIncoming() {
 
   remoteSocketRecieveList = artsMalloc(sizeof(int) * (count + 1) * ports);
   remoteServerRecieveList =
-      artsCalloc(sizeof(struct sockaddr_in) * (count + 1) * ports);
+      artsCalloc((count + 1) * ports, sizeof(struct sockaddr_in));
   pollIncoming = artsMalloc(sizeof(struct pollfd) * (count + 1) * ports);
 
   struct sockaddr_in test;
 
   struct sockaddr_in *localServerAddr =
-      artsCalloc(ports * sizeof(struct sockaddr_in));
-  localSocketRecieve = artsCalloc(ports * sizeof(int));
+      artsCalloc(ports, sizeof(struct sockaddr_in));
+  localSocketRecieve = artsCalloc(ports, sizeof(int));
 
   int iSetOption;
   for (i = 0; i < artsGlobalMessageTable->ports; i++) {
@@ -520,9 +520,9 @@ void artsRemoteSetupOutgoing() {
   int pos;
 
   remoteSocketSendList = artsMalloc(sizeof(int) * count * ports);
-  remoteSocketSendLockList = artsCalloc(sizeof(int) * count * ports);
-  remoteServerSendList = artsCalloc(sizeof(struct sockaddr_in) * count * ports);
-  remoteConnectionAlive = artsCalloc(sizeof(bool) * count * ports);
+  remoteSocketSendLockList = artsCalloc(count * ports, sizeof(int));
+  remoteServerSendList = artsCalloc(count * ports, sizeof(struct sockaddr_in));
+  remoteConnectionAlive = artsCalloc(count * ports, sizeof(bool));
 
   for (i = 0; i < count; i++) {
     for (j = 0; j < ports; j++)
@@ -548,9 +548,9 @@ void artsRemotSetThreadInboundQueues(unsigned int start, unsigned int stop) {
   unsigned int size = stop - start;
   bypassBuf = artsMalloc(sizeof(char *) * size);
   bypassPacketSize = artsMalloc(sizeof(unsigned int) * size);
-  reRecieveRes = artsCalloc(sizeof(int) * size);
-  reRecievePacket = artsCalloc(sizeof(void *) * size);
-  maxIncoming = artsCalloc(sizeof(bool) * size);
+  reRecieveRes = artsCalloc(size, sizeof(int));
+  reRecievePacket = artsCalloc(size, sizeof(void *));
+  maxIncoming = artsCalloc(size, sizeof(bool));
   for (int i = 0; i < size; i++) {
     bypassBuf[i] = artsMalloc(PACKET_SIZE);
     bypassPacketSize[i] = PACKET_SIZE;

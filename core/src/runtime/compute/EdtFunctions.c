@@ -174,7 +174,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
                            bool useEpoch, artsGuid_t epochGuid, bool hasDepv) {
   ARTSSETMEMSHOTTYPE(artsEdtMemorySize);
   if (!edt)
-    edt = (struct artsEdt *)artsCallocAlign(edtSpace, 16);
+    edt = (struct artsEdt *)artsCallocAlign(1, edtSpace, 16);
   edt->header.type = mode;
   edt->header.size = edtSpace;
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
@@ -219,7 +219,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
     if (route != artsGlobalRankId)
       artsRemoteMemoryMove(route, *guid, (void *)edt,
                            (unsigned int)edt->header.size,
-                           ARTS_REMOTE_EDT_MOVE_MSG, artsFreeAlign);
+                           ARTS_REMOTE_EDT_MOVE_MSG, artsFree);
     else {
       // This is for debugging purposes...
       incOustandingEdts(1);
@@ -320,7 +320,7 @@ artsGuid_t artsEdtCreateWithEpoch(artsEdt_t funcPtr, unsigned int route,
 
 void artsEdtFree(struct artsEdt *edt) {
   artsThreadInfo.edtFree = 1;
-  artsFreeAlign(edt);
+  artsFree(edt);
   artsThreadInfo.edtFree = 0;
 }
 

@@ -73,8 +73,8 @@ bool setMaxCycle(unsigned int * cycle, unsigned int cycleSize)
             if(found != 1)
                 return false;
         }
-        
-        maxCycle = (unsigned int*) artsCalloc(sizeof(unsigned int)*(cycleSize));
+
+        maxCycle = (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
         for(unsigned int i=0; i<cycleSize; i++)
             maxCycle[i] = cycle[i];
         return true;
@@ -102,44 +102,39 @@ bool depthFirstRec(unsigned int vertex, unsigned int current, unsigned int cycle
 
 void depthFirst(unsigned int cycleSize)
 {
-    unsigned int * cycle = (unsigned int*) artsCalloc(sizeof(unsigned int)*(order+1));
-    for(unsigned int i=0; i<order; i++)
-    {
-        if(depthFirstRec(i, 0, cycleSize, cycle))
-        {
-            for(unsigned int i=0; i<cycleSize; i++)
-                printf("%u ", maxCycle[i]);
-            printf("\n");
-            return;
-        }
+  unsigned int *cycle =
+      (unsigned int *)artsCalloc(order + 1, sizeof(unsigned int));
+  for (unsigned int i = 0; i < order; i++) {
+    if (depthFirstRec(i, 0, cycleSize, cycle)) {
+      for (unsigned int i = 0; i < cycleSize; i++)
+        printf("%u ", maxCycle[i]);
+      printf("\n");
+      return;
     }
+  }
 }
 
 bool ** fullyConnect()
 {
-    bool ** adjList = (bool**) artsCalloc(sizeof(bool*)*order);
-    for(unsigned int i=0; i<order; i++)
-        adjList[i] = (bool*) artsCalloc(sizeof(bool)*order);
-        
-    uint64_t length = artsLengthArrayList(gpuList);
-    for(uint64_t i=0; i<length; i++)
-    {
-        int * src = (int*) artsGetFromArrayList(gpuList, i);
-        CHECKCORRECT(cudaSetDevice(*src));
-        for(uint64_t j=0; j<length; j++)
-        {
-            if(i != j)
-            {
-                int hasAccess = 0;
-                int * dst = (int*) artsGetFromArrayList(gpuList, j);
-                CHECKCORRECT(cudaDeviceCanAccessPeer(&hasAccess, *src, *dst));
-                if(hasAccess)
-                {
-                    adjList[*src][*dst] = 1;
-                    CHECKCORRECT(cudaDeviceEnablePeerAccess(*dst, 0));
-                }
-            }
+  bool **adjList = (bool **)artsCalloc(order, sizeof(bool *));
+  for (unsigned int i = 0; i < order; i++)
+    adjList[i] = (bool *)artsCalloc(order, sizeof(bool));
+
+  uint64_t length = artsLengthArrayList(gpuList);
+  for (uint64_t i = 0; i < length; i++) {
+    int *src = (int *)artsGetFromArrayList(gpuList, i);
+    CHECKCORRECT(cudaSetDevice(*src));
+    for (uint64_t j = 0; j < length; j++) {
+      if (i != j) {
+        int hasAccess = 0;
+        int *dst = (int *)artsGetFromArrayList(gpuList, j);
+        CHECKCORRECT(cudaDeviceCanAccessPeer(&hasAccess, *src, *dst));
+        if (hasAccess) {
+          adjList[*src][*dst] = 1;
+          CHECKCORRECT(cudaDeviceEnablePeerAccess(*dst, 0));
         }
+      }
+    }
     }
     return adjList;
 }

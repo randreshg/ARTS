@@ -492,9 +492,9 @@ unsigned int *gpuDepthFirst(unsigned int mask, unsigned int *maxSize) {
   }
 
   unsigned int *visited =
-      (unsigned int *)artsCalloc(sizeof(unsigned int) * cycleSize);
+      (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
   unsigned int *maxVisited =
-      (unsigned int *)artsCalloc(sizeof(unsigned int) * cycleSize);
+      (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
   for (unsigned int i = 0; i < artsGetTotalGpus(); i++) {
     if (mask & (1 << i)) {
       PRINTF("i: %u\n", i);

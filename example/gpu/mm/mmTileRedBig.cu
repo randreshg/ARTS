@@ -104,28 +104,31 @@ unsigned int reserveEdtGuids(artsGuid_t * allGuids, unsigned int index, artsType
 
 binaryReductionTree_t * initBinaryReductionTree(unsigned int numLeaves, artsEdt_t funPtr, artsType_t dbType, artsType_t edtType, uint32_t paramc, uint64_t * paramv, dim3 grid, dim3 block, artsGuid_t endGuid, uint32_t slot)
 {
-    binaryReductionTree_t * tree = (binaryReductionTree_t*) artsCalloc(sizeof(binaryReductionTree_t));
-    tree->numLeaves = numLeaves;
-    tree->totalNodes = 2 * numLeaves - 1;
-    tree->interiorNodes = tree->totalNodes - tree->numLeaves;
+  binaryReductionTree_t *tree =
+      (binaryReductionTree_t *)artsCalloc(1, sizeof(binaryReductionTree_t));
+  tree->numLeaves = numLeaves;
+  tree->totalNodes = 2 * numLeaves - 1;
+  tree->interiorNodes = tree->totalNodes - tree->numLeaves;
 
-    //Create space for all the guids
-    artsGuid_t * allGuids = (artsGuid_t*) artsCalloc(sizeof(artsGuid_t) * tree->totalNodes);
-    tree->redDbGuids = &allGuids[tree->interiorNodes];
-    tree->redEdtGuids = allGuids;
+  // Create space for all the guids
+  artsGuid_t *allGuids =
+      (artsGuid_t *)artsCalloc(tree->totalNodes, sizeof(artsGuid_t));
+  tree->redDbGuids = &allGuids[tree->interiorNodes];
+  tree->redEdtGuids = allGuids;
 
-    //Reserves the db guids
-    for(unsigned int i=0; i<tree->numLeaves; i++)
-        allGuids[tree->interiorNodes + i] = artsReserveGuidRoute(dbType, i % artsGetTotalNodes());
+  // Reserves the db guids
+  for (unsigned int i = 0; i < tree->numLeaves; i++)
+    allGuids[tree->interiorNodes + i] =
+        artsReserveGuidRoute(dbType, i % artsGetTotalNodes());
 
-    //Reserves the edt guids
-    reserveEdtGuids(allGuids, 0, edtType);
+  // Reserves the edt guids
+  reserveEdtGuids(allGuids, 0, edtType);
 
-    //Check all the guids
-    for(unsigned int i=0; i<tree->totalNodes; i++)
-    {
-        DPRINTF("i: %u guid: %lu rank: %u type: %u\n", i, allGuids[i], artsGuidGetRank(allGuids[i]), artsGuidGetType(allGuids[i]));
-    }
+  // Check all the guids
+  for (unsigned int i = 0; i < tree->totalNodes; i++) {
+    DPRINTF("i: %u guid: %lu rank: %u type: %u\n", i, allGuids[i],
+            artsGuidGetRank(allGuids[i]), artsGuidGetType(allGuids[i]));
+  }
 
     //Set up the signals
     for(unsigned int i=0; i<tree->interiorNodes; i++)
@@ -267,14 +270,16 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
 
     uint64_t sumArgs[] = {tileSize};
     dim3 threads(SMTILE, SMTILE);
-    dim3 grid((tileSize+SMTILE-1)/SMTILE, (tileSize+SMTILE-1)/SMTILE);
-    redTree = (binaryReductionTree_t**) artsCalloc(sizeof(binaryReductionTree_t*)*numBlocks*numBlocks);
-    for(unsigned int i=0; i<numBlocks; i++)
-    {
-        for(unsigned int j=0; j<numBlocks; j++)
-        {
-            redTree[i*numBlocks + j] = initBinaryReductionTree(numBlocks, sumMMKernel, ARTS_DB_GPU_WRITE, ARTS_GPU_EDT, 1, sumArgs, grid, threads, doneGuid, 3 + (i * numBlocks + j));
-        }
+    dim3 grid((tileSize + SMTILE - 1) / SMTILE,
+              (tileSize + SMTILE - 1) / SMTILE);
+    redTree = (binaryReductionTree_t **)artsCalloc(
+        numBlocks * numBlocks, sizeof(binaryReductionTree_t *));
+    for (unsigned int i = 0; i < numBlocks; i++) {
+      for (unsigned int j = 0; j < numBlocks; j++) {
+        redTree[i * numBlocks + j] = initBinaryReductionTree(
+            numBlocks, sumMMKernel, ARTS_DB_GPU_WRITE, ARTS_GPU_EDT, 1, sumArgs,
+            grid, threads, doneGuid, 3 + (i * numBlocks + j));
+      }
     }
     if(!nodeId)
         PRINTF("MatSize: %u TileSize: %u\n", matSize, tileSize);
@@ -350,7 +355,8 @@ extern "C"
 void initPerGpu(unsigned int nodeId, int devId, cudaStream_t * stream, int argc, char * argv)
 {
     if(!devId)
-        handle = (cublasHandle_t*) artsCalloc(sizeof(cublasHandle_t) * artsGetNumGpus());
+      handle = (cublasHandle_t *)artsCalloc(artsGetNumGpus(),
+                                            sizeof(cublasHandle_t));
     cublasStatus_t stat = cublasCreate(&handle[devId]);
 }
 

@@ -111,18 +111,18 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
       sizeof(struct artsDeque *) * receiverThreads);
   artsNodeInfo.gpuDeque = (struct artsDeque **)artsMalloc(
       sizeof(struct artsDeque *) * totalThreads);
-  artsNodeInfo.routeTable = (artsRouteTable_t **)artsCalloc(
-      sizeof(artsRouteTable_t *) * totalThreads);
+  artsNodeInfo.routeTable =
+      (artsRouteTable_t **)artsCalloc(totalThreads, sizeof(artsRouteTable_t *));
   artsNodeInfo.gpuRouteTable =
-      (artsRouteTable_t **)artsCalloc(sizeof(artsRouteTable_t *) * config->gpu);
+      (artsRouteTable_t **)artsCalloc(config->gpu, sizeof(artsRouteTable_t *));
   artsNodeInfo.remoteRouteTable =
       artsNewRouteTable(config->routeTableEntries, config->routeTableSize);
   artsNodeInfo.localSpin =
-      (volatile bool **)artsCalloc(sizeof(bool *) * totalThreads);
+      (volatile bool **)artsCalloc(totalThreads, sizeof(bool *));
   artsNodeInfo.memoryMoves =
-      (unsigned int **)artsCalloc(sizeof(unsigned int *) * totalThreads);
+      (unsigned int **)artsCalloc(totalThreads, sizeof(unsigned int *));
   artsNodeInfo.atomicWaits = (struct atomicCreateBarrierInfo **)artsCalloc(
-      sizeof(struct atomicCreateBarrierInfo *) * totalThreads);
+      totalThreads, sizeof(struct atomicCreateBarrierInfo *));
   artsNodeInfo.workerThreadCount = workerThreads;
   artsNodeInfo.senderThreadCount = senderThreads;
   artsNodeInfo.receiverThreadCount = receiverThreads;
@@ -159,8 +159,8 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.runGpuGcPreEdt = config->runGpuGcPreEdt;
   artsNodeInfo.deleteZerosGpuGc = config->deleteZerosGpuGc;
   artsNodeInfo.pinThreads = config->pinThreads;
-  artsNodeInfo.keys = artsCalloc(sizeof(uint64_t *) * totalThreads);
-  artsNodeInfo.globalGuidThreadId = artsCalloc(sizeof(uint64_t) * totalThreads);
+  artsNodeInfo.keys = artsCalloc(totalThreads, sizeof(uint64_t *));
+  artsNodeInfo.globalGuidThreadId = artsCalloc(totalThreads, sizeof(uint64_t));
   artsTMTNodeInit(workerThreads);
   artsInitTMTLitePerNode(workerThreads);
   artsInitIntrospector(config);
@@ -428,7 +428,7 @@ void artsRunEdt(struct artsEdt *edt) {
 
   // This is for a synchronous path
   if (edt->outputBuffer != NULL_GUID)
-    artsSetBuffer(edt->outputBuffer, artsCalloc(sizeof(unsigned int)),
+    artsSetBuffer(edt->outputBuffer, artsCalloc(1, sizeof(unsigned int)),
                   sizeof(unsigned int));
 
   PRINTF("[artsRunEdt] EDT %u Finished\n", edt->currentEdt);

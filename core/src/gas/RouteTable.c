@@ -317,9 +317,9 @@ static inline artsRouteTable_t *artsGetRouteTable(artsGuid_t guid) {
 artsRouteTable_t *artsNewRouteTable(unsigned int routeTableSize,
                                     unsigned int shift) {
   artsRouteTable_t *routeTable =
-      (artsRouteTable_t *)artsCalloc(sizeof(artsRouteTable_t));
+      (artsRouteTable_t *)artsCalloc(1, sizeof(artsRouteTable_t));
   routeTable->data = (artsRouteItem_t *)artsCallocAlign(
-      collisionResolves * routeTableSize * sizeof(artsRouteItem_t), 16);
+      collisionResolves * routeTableSize, sizeof(artsRouteItem_t), 16);
   routeTable->size = routeTableSize;
   routeTable->shift = shift;
   routeTable->setFunc = setItem;
@@ -775,7 +775,7 @@ void artsRouteTableDecItem(artsGuid_t key, void *data) {
 
 artsRouteTableIterator *artsNewRouteTableIterator(artsRouteTable_t *table) {
   artsRouteTableIterator *ret =
-      (artsRouteTableIterator *)artsCalloc(sizeof(artsRouteTableIterator));
+      (artsRouteTableIterator *)artsCalloc(1, sizeof(artsRouteTableIterator));
   ret->table = table;
   return ret;
 }

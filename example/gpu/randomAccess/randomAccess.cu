@@ -271,7 +271,7 @@ void randomEdt(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t d
 
         //Get random counts
         unsigned int elemsToCopy = numTiles; // + numRandom;
-        uint64_t * count = (uint64_t*)artsCalloc(sizeof(uint64_t) * elemsToCopy);
+        uint64_t *count = (uint64_t *)artsCalloc(elemsToCopy, sizeof(uint64_t));
         artsCudaMemCpyFromDev(count, rArray, sizeof(uint64_t) * elemsToCopy);
         // for(uint64_t i=0; i<numTiles; i++)
         //     PRINTF("count[%lu]: %lu\n", i, count[i]);
@@ -323,7 +323,7 @@ void syncEdt(uint32_t paramc, uint64_t * paramv, uint32_t depc, artsEdtDep_t dep
     uint64_t time = artsGetTimeStamp() - start;
     PRINTF("Time %lu\n", time);
 
-    uint64_t * Table = (uint64_t*) artsCalloc(sizeof(uint64_t)*TABLESIZE);
+    uint64_t *Table = (uint64_t *)artsCalloc(TABLESIZE, sizeof(uint64_t));
     for(uint64_t i=0; i<TABLESIZE; i++)
         Table[i] = i;
 
@@ -379,7 +379,7 @@ void initPerNode(unsigned int nodeId, int argc, char** argv)
 
     //Create tiled table
     tileGuids = artsNewGuidRangeNode(ARTS_DB_LC, numTiles, nodeId);
-    tile = (uint64_t**)artsCalloc(sizeof(uint64_t*)*numTiles);
+    tile = (uint64_t **)artsCalloc(numTiles, sizeof(uint64_t *));
     uint64_t counter = 0;
     for(unsigned int i=0; i<numTiles; i++)
     {

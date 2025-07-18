@@ -147,8 +147,8 @@ uint64_t tail_index(uint64_t t) { return (t & ~(1ull << 63)); }
 int crq_is_closed(uint64_t t) { return (t & (1ull << 63)) != 0; }
 
 artsQueue *artsNewQueue() {
-  artsQueue *queue = artsCallocAlign(sizeof(artsQueue), 128);
-  RingQueue *rq = artsCallocAlign(sizeof(RingQueue), 128);
+  artsQueue *queue = artsCallocAlign(1, sizeof(artsQueue), 128);
+  RingQueue *rq = artsCallocAlign(1, sizeof(RingQueue), 128);
   init_ring(rq);
   queue->head = queue->tail = rq;
   return queue;
@@ -209,7 +209,7 @@ void enqueue(Object arg, artsQueue *queue) {
         nrq = NULL;
         return;
       } else {
-        artsFreeAlign(nrq);
+        artsFree(nrq);
       }
       continue;
     }
