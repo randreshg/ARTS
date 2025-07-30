@@ -57,8 +57,8 @@ endforeach()
 
 # Function to copy config files to target directories
 function(copy_config_to_target source_file target_dir target_name)
-    if(IS_DIRECTORY ${CMAKE_SOURCE_DIR}/${target_dir})
-        configure_file(${source_file} ${CMAKE_SOURCE_DIR}/${target_dir}/${target_name} COPYONLY)
+    if(IS_DIRECTORY ${CMAKE_BINARY_DIR}/${target_dir})
+        configure_file(${source_file} ${CMAKE_BINARY_DIR}/${target_dir}/${target_name} COPYONLY)
     endif()
 endfunction()
 
@@ -87,6 +87,9 @@ endif()
 # Copy configuration files to test directory
 copy_config_to_target(arts.cfg test arts.cfg)
 copy_config_to_target(arts.insp test arts.insp)
+if(BUILD_CUDA_LIBRARY)
+    copy_config_to_target(artsGpu.cfg test artsGpu.cfg)
+endif()
 
 # Install configuration files
 install(FILES ${CONFIG_FILES}
