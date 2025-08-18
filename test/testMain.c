@@ -45,8 +45,13 @@
 
 void test(uint32_t paramc, uint64_t *paramv, uint32_t depc,
           artsEdtDep_t depv[]) {
+#ifdef __linux__
   PRINTF("Running edt %u on %u %u, %u\n", artsGetCurrentGuid(),
          artsGetCurrentNode(), artsGetCurrentWorker(), sched_getcpu());
+#else
+  PRINTF("Running edt %u on %u %u\n", artsGetCurrentGuid(),
+         artsGetCurrentNode(), artsGetCurrentWorker());
+#endif
 }
 
 void initPerNode(unsigned int nodeId, int argc, char **argv) {

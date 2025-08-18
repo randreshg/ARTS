@@ -121,6 +121,12 @@ void artsThreadSetOsThreadCount(unsigned int threads) {
 }
 
 void artsPthreadAffinity(unsigned int cpuCoreId, bool verbose) {
+#ifdef __APPLE__
+  // macOS doesn't support CPU affinity, so we just return
+  (void)cpuCoreId;
+  (void)verbose;
+  return;
+#else
   cpu_set_t cpuset;
   pthread_t thread;
   thread = pthread_self();
@@ -128,9 +134,17 @@ void artsPthreadAffinity(unsigned int cpuCoreId, bool verbose) {
   CPU_SET(cpuCoreId, &cpuset);
   if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) && verbose)
     PRINTF("Failed to set affinity %u\n", cpuCoreId);
+#endif
 }
 
 int *artsValidPthreadAffinity(unsigned int *size) {
+#ifdef __APPLE__
+  // macOS doesn't support CPU affinity, return a simple array
+  *size = 1;
+  int *affin = (int *)artsMalloc(sizeof(int));
+  affin[0] = 0; // Just return core 0
+  return affin;
+#else
   unsigned int count = 0;
   cpu_set_t cpuset;
   pthread_t thread = pthread_self();
@@ -148,4 +162,5 @@ int *artsValidPthreadAffinity(unsigned int *size) {
   }
   *size = count;
   return affin;
+#endif
 }

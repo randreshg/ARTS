@@ -98,6 +98,31 @@ pthread_mutex_t amtx = PTHREAD_MUTEX_INITIALIZER;
 
 #else
 
+#ifdef __aarch64__
+// ARM64 implementation using simpler atomic operations
+#define __CAS2(ptr, o1, o2, n1, n2)                                            \
+  ({                                                                           \
+    char __ret;                                                                \
+    __typeof__(o2) __junk;                                                     \
+    __typeof__(*(ptr)) __old1 = (o1);                                          \
+    __typeof__(o2) __old2 = (o2);                                              \
+    __typeof__(*(ptr)) __new1 = (n1);                                          \
+    __typeof__(o2) __new2 = (n2);                                              \
+    /* Use __sync_bool_compare_and_swap_16 for ARM64 */                        \
+    __ret = __sync_bool_compare_and_swap_16(ptr, __old1, __new1);              \
+    __ret;                                                                     \
+  })
+
+#define BIT_TEST_AND_SET(ptr, b)                                               \
+  ({                                                                           \
+    char __ret;                                                                \
+    uint64_t old_val = *ptr;                                                   \
+    uint64_t new_val = old_val | (1ULL << b);                                  \
+    __ret = __sync_bool_compare_and_swap_8(ptr, old_val, new_val);             \
+    __ret;                                                                     \
+  })
+#else
+// x86_64 implementation using cmpxchg16b
 #define __CAS2(ptr, o1, o2, n1, n2)                                            \
   ({                                                                           \
     char __ret;                                                                \
@@ -112,8 +137,6 @@ pthread_mutex_t amtx = PTHREAD_MUTEX_INITIALIZER;
     __ret;                                                                     \
   })
 
-#define CAS2(ptr, o1, o2, n1, n2) __CAS2(ptr, o1, o2, n1, n2)
-
 #define BIT_TEST_AND_SET(ptr, b)                                               \
   ({                                                                           \
     char __ret;                                                                \
@@ -123,8 +146,11 @@ pthread_mutex_t amtx = PTHREAD_MUTEX_INITIALIZER;
                  : "cc");                                                      \
     __ret;                                                                     \
   })
+#endif
 
 #endif
+
+#define CAS2(ptr, o1, o2, n1, n2) __CAS2(ptr, o1, o2, n1, n2)
 
 void initRing(RingQueue *r) {
   for (int i = 0; i < RING_SIZE; i++) {
