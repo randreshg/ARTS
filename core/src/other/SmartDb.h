@@ -150,7 +150,7 @@ typedef struct {
 } artsSmartDbMigrationMsg_t;
 
 // Migration handler prototype
-void artsSmartDbMigrationHandler(void *args, unsigned int size);
+void artsSmartDbMigrationHandler(void *args);
 
 // Create a new SmartDB with the given size and type
 artsSmartDb_t *artsSmartDbCreate(uint64_t size, artsType_t type,

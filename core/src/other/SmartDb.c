@@ -527,8 +527,8 @@ void artsSmartDbMigrateToNode(artsSmartDb_t *smartDb, unsigned int newNode) {
 }
 
 // Handler to reconstruct SmartDB on the destination node
-void artsSmartDbMigrationHandler(void *args, unsigned int size) {
-  if (!args || size < sizeof(artsSmartDbMigrationMsg_t))
+void artsSmartDbMigrationHandler(void *args) {
+  if (!args)
     return;
   artsSmartDbMigrationMsg_t *msg = (artsSmartDbMigrationMsg_t *)args;
   void *dataPtr = (void *)(msg + 1);

@@ -104,7 +104,7 @@ artsGuid_t artsGuidCast(artsGuid_t guid, artsType_t type);
 // with several fields, the actual value of guids may not be consecutive making
 // it cumbersome to handle many guids individually.  Guid ranges provide a way
 // of accessing many guids from one the start guid.
-artsGuidRange *artsNewGuidRangeNode(unsigned int type, unsigned int size,
+artsGuidRange *artsNewGuidRangeNode(artsType_t type, unsigned int size,
                                     unsigned int route);
 
 // Gets guid at index away from the start guid of the range.
