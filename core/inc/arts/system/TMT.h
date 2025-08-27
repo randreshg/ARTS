@@ -52,14 +52,15 @@
  *
  */
 
-#ifndef CORE_INC_ARTS_TMT_H_
-#define CORE_INC_ARTS_TMT_H_
+#ifndef ARTS_SYSTEM_TMT_H
+#define ARTS_SYSTEM_TMT_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#include "arts/arts.h"
-#include "arts/runtime/Runtime.h"
 #include "arts/system/AbstractMachineModel.h"
-#include "arts/system/Config.h"
 #include "arts/utils/Queue.h"
+
 #include <pthread.h>
 #include <semaphore.h>
 
@@ -88,7 +89,7 @@ typedef struct internalMsi {
                                               // track of outstanding promises
                                               // (we can only wait on one
                                               // context at a time)
-  volatile accst_t alias_running; // FIXME: right data structure?
+  volatile accst_t alias_running;             // FIXME: right data structure?
   volatile accst_t alias_avail;
   volatile unsigned int startUpCount;
   volatile unsigned int shutDownCount;
@@ -121,4 +122,7 @@ bool artsAvailContext();
 void artsNextContext();
 void artsWakeUpContext();
 
-#endif /* CORE_INC_ARTS_TMT_H_ */
+#ifdef __cplusplus
+}
+#endif
+#endif /* ARTS_SYSTEM_TMT_H */

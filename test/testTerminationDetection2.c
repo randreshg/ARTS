@@ -37,8 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/arts.h"
-#include "arts/utils/Atomics.h"
-#include <stdio.h>
+
 #include <stdlib.h>
 
 artsArrayDb_t *array = NULL;
@@ -48,7 +47,7 @@ unsigned int elements = 32;
 void check(uint32_t paramc, uint64_t *paramv, uint32_t depc,
            artsEdtDep_t depv[]) {
   for (unsigned int i = 0; i < depc; i++) {
-    unsigned int *data = depv[i].ptr;
+    unsigned int *data = (unsigned int *)depv[i].ptr;
     PRINTF("%u: %u\n", i, *data);
   }
 

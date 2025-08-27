@@ -37,7 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/arts.h"
-#include <stdio.h>
+
 #include <stdlib.h>
 
 unsigned int elementsPerBlock = 0;
@@ -59,7 +59,7 @@ void end(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 void check(uint32_t paramc, uint64_t *paramv, uint32_t depc,
            artsEdtDep_t depv[]) {
   for (unsigned int i = 0; i < blocks; i++) {
-    unsigned int *data = depv[i].ptr;
+    unsigned int *data = (unsigned int *)depv[i].ptr;
     for (unsigned int j = 0; j < elementsPerBlock; j++) {
       PRINTF("i: %u j: %u %u\n", i, j, data[j]);
     }

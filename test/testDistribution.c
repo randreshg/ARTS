@@ -4,7 +4,7 @@
 ** nor the United States Department of Energy, nor Battelle, nor any of      **
 ** their employees, nor any jurisdiction or organization that has cooperated **
 ** in the development of these materials, makes any warranty, express or     **
-** implied, or assumes any legal liability or responsibility for the accuracy,* 
+** implied, or assumes any legal liability or responsibility for the accuracy,*
 ** completeness, or usefulness or any information, apparatus, product,       **
 ** software, or process disclosed, or represents that its use would not      **
 ** infringe privately owned rights.                                          **
@@ -36,14 +36,11 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/Graph.h"
-#include "arts/arts.h"
-#include "arts/runtime/Globals.h"
-#include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include "arts/BlockDistribution.h"
 
-int main(int argc, char** argv) {
+#include <assert.h>
+
+int main(int argc, char **argv) {
 
 #ifdef NDEBUG
   PRINTF("[WARN] asserts are disabled. Verification will not run.\n");

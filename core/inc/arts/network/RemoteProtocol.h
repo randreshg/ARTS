@@ -36,12 +36,12 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSREMOTEPROTOCOL_H
-#define ARTSREMOTEPROTOCOL_H
-#include "arts/runtime/RT.h"
+#ifndef ARTS_NETWORK_REMOTEPROTOCOL_H
+#define ARTS_NETWORK_REMOTEPROTOCOL_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include "arts/runtime/RT.h"
 #define SEQUENCENUMBERS 1
 
 enum artsServerMessageType {

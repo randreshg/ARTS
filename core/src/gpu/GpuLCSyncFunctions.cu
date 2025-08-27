@@ -36,9 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/gas/RouteTable.h"
+#include "arts/arts.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/memory/DbFunctions.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
@@ -206,7 +205,7 @@ __global__ void artsNonZeroGpuDbUnsignedInt(struct artsDb *sink,
   unsigned int *sinkData = (unsigned int *)(sink + 1);
 
   int index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (sinkData > 0)
+  if (sinkData[index] > 0)
     sinkData[index] = srcData[index];
 }
 

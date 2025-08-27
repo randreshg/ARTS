@@ -38,14 +38,13 @@
 ******************************************************************************/
 #include "arts/network/RemoteProtocol.h"
 #include "arts/arts.h"
-#include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
-#include "arts/network/Server.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/LinkList.h"
+
 #include <string.h>
 #define DPRINTF(...)
 
@@ -112,10 +111,10 @@ void artsRemotSetThreadOutboundQueues(unsigned int start, unsigned int stop) {
   threadStop = stop;
 
   unsigned int size = stop - start;
-  outResend = artsCalloc(size, sizeof(struct outList *));
+  outResend = (struct outList **)artsCalloc(size, sizeof(struct outList *));
 #ifdef SEQUENCENUMBERS
-  lastOut = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
-  lastSent = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
+  lastOut = (uint64_t *)artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
+  lastSent = (uint64_t *)artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
 #endif
 }
 
@@ -123,8 +122,8 @@ void outInit(unsigned int size) {
   nodeListSize = size;
   outHead = artsLinkListGroupNew(size);
 #ifdef SEQUENCENUMBERS
-  seqNumber = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
-  seqNumLock = artsCalloc(size, sizeof(unsigned int));
+  seqNumber = (uint64_t *)artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
+  seqNumLock = (unsigned int *)artsCalloc(size, sizeof(unsigned int));
 #endif
 }
 
@@ -160,7 +159,7 @@ static inline struct outList *outPopNode(unsigned int threadId, void **freeMe) {
   struct outList *out;
   struct artsLinkList *list;
   list = artsLinkListGet(outHead, threadId);
-  out = artsLinkListPopFront(list, freeMe);
+  out = (struct outList *)artsLinkListPopFront(list, freeMe);
   if (out) {
     struct artsRemotePacket *packet = (struct artsRemotePacket *)(out + 1);
 #ifdef SEQUENCENUMBERS
@@ -221,7 +220,7 @@ bool artsRemoteAsyncSend() {
 
         if (lengthRemaining == -1)
           return false;
-        else if (lengthRemaining) {
+        if (lengthRemaining) {
           partialSendStore(out, lengthRemaining);
           outResend[i - threadStart] = out;
         } else {
@@ -262,7 +261,8 @@ static inline void sizeSendCheck(unsigned int size) {
 
 void artsRemoteSendRequestAsync(int rank, char *message, unsigned int length) {
   selfSendCheck(rank);
-  struct outList *next = artsLinkListNewItem(length + sizeof(struct outList));
+  struct outList *next =
+      (struct outList *)artsLinkListNewItem(length + sizeof(struct outList));
   next->offset = 0;
   next->offsetPayload = 0;
   next->length = length;
@@ -278,7 +278,8 @@ void artsRemoteSendRequestPayloadAsync(int rank, char *message,
   selfSendCheck(rank);
   sizeSendCheck(length);
   sizeSendCheck(size);
-  struct outList *next = artsLinkListNewItem(length + sizeof(struct outList));
+  struct outList *next =
+      (struct outList *)artsLinkListNewItem(length + sizeof(struct outList));
   next->offset = 0;
   next->offsetPayload = 0;
   next->length = length;
@@ -298,7 +299,8 @@ void artsRemoteSendRequestPayloadAsyncFree(int rank, char *message,
   selfSendCheck(rank);
   sizeSendCheck(length);
   sizeSendCheck(size);
-  struct outList *next = artsLinkListNewItem(length + sizeof(struct outList));
+  struct outList *next =
+      (struct outList *)artsLinkListNewItem(length + sizeof(struct outList));
   next->offset = 0;
   next->offsetPayload = offset;
   next->length = length;

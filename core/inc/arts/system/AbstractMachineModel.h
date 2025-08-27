@@ -37,12 +37,12 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#ifndef ARTSABSTRACTMACHINEMODEL_H
-#define ARTSABSTRACTMACHINEMODEL_H
+#ifndef ARTS_SYSTEM_ABSTRACTMACHINEMODEL_H
+#define ARTS_SYSTEM_ABSTRACTMACHINEMODEL_H
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "arts/arts.h"
+
 #include "arts/system/Config.h"
 #include <assert.h>
 #include <unistd.h>

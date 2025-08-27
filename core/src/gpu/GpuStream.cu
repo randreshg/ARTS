@@ -43,19 +43,17 @@
 // Once this *class* works we will put a stream(s) in create a thread local
 // stream.  Then we will push stuff!
 #include "arts/gas/Guid.h"
-#include "arts/introspection/Introspection.h"
-#include "arts/runtime/Globals.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/utils/Deque.h"
-
 #include "arts/gpu/GpuLCSyncFunctions.cuh"
 #include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuRuntime.cuh"
 #include "arts/gpu/GpuStream.h"
 #include "arts/gpu/GpuStreamBuffer.h"
+#include "arts/introspection/Introspection.h"
+#include "arts/runtime/Globals.h"
+#include "arts/runtime/compute/EdtFunctions.h"
+#include "arts/system/Debug.h"
+#include "arts/utils/Atomics.h"
+#include "arts/utils/Deque.h"
 
 #define DPRINTF(...)
 // #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
@@ -712,11 +710,11 @@ int allOrNothing(void *edtPacket) {
 
   DPRINTF("Mask: %p\n", mask);
 
-  if (mask) // All DBs in GPU
+  if (mask) { // All DBs in GPU
     return fit(mask, size,
                totalThreads); // No need to fit since all Dbs are in a GPU
-  else
-    return random(edtPacket);
+  }
+  return random(edtPacket);
 }
 
 int atleastOne(void *edtPacket) {
@@ -738,10 +736,10 @@ int atleastOne(void *edtPacket) {
 
   DPRINTF("Mask: %p\n", mask);
 
-  if (mask) // At least one DB in GPU
+  if (mask) { // At least one DB in GPU
     return fit(mask, size, totalThreads);
-  else
-    return random(edtPacket);
+  }
+  return random(edtPacket);
 }
 
 int hashOnDBZero(void *edtPacket) {

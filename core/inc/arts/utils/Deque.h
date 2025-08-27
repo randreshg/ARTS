@@ -36,13 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSDEQUE_H
-#define ARTSDEQUE_H
+#ifndef ARTS_UTILS_DEQUE_H
+#define ARTS_UTILS_DEQUE_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/arts.h"
+#include <stdbool.h>
+
 #define STEALSIZE 1024
 
 struct artsDeque;

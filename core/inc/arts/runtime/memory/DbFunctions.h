@@ -36,12 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSDBFUNCTIONS_H
-#define ARTSDBFUNCTIONS_H
+#ifndef ARTS_RUNTIME_MEMORY_DBFUNCTIONS_H
+#define ARTS_RUNTIME_MEMORY_DBFUNCTIONS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "arts/arts.h"
+
+#include "arts/runtime/RT.h"
 
 void artsDbCreateInternal(artsGuid_t guid, void *addr, uint64_t size,
                           uint64_t packetSize, artsType_t mode);

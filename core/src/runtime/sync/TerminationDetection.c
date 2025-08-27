@@ -41,12 +41,10 @@
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
+#include "arts/introspection/Counter.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/system/TMT.h"
-#include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
 
 #define DPRINTF(...)
@@ -98,7 +96,7 @@ bool decrementQueueEpoch(artsEpoch_t *epoch) {
 void incrementQueueEpoch(artsGuid_t epochGuid) {
   DPRINTF("Inc queue Epoch: %lu\n", epochGuid);
   if (epochGuid != NULL_GUID) {
-    artsEpoch_t *epoch = artsRouteTableLookupItem(epochGuid);
+    artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
     if (epoch) {
       artsAtomicAddU64(&epoch->queued, 1);
     } else {
@@ -110,7 +108,7 @@ void incrementQueueEpoch(artsGuid_t epochGuid) {
 
 void incrementActiveEpoch(artsGuid_t epochGuid) {
   DPRINTF("Inc active Epoch: %lu\n", epochGuid);
-  artsEpoch_t *epoch = artsRouteTableLookupItem(epochGuid);
+  artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
     artsAtomicAdd(&epoch->activeCount, 1);
   } else {
@@ -122,7 +120,7 @@ void incrementActiveEpoch(artsGuid_t epochGuid) {
 void incrementFinishedEpoch(artsGuid_t epochGuid) {
   DPRINTF("In finish Epoch: %lu\n", epochGuid);
   if (epochGuid != NULL_GUID) {
-    artsEpoch_t *epoch = artsRouteTableLookupItem(epochGuid);
+    artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
     if (epoch) {
       artsAtomicAdd(&epoch->finishedCount, 1);
       if (artsGlobalRankCount == 1) {
@@ -161,7 +159,7 @@ void incrementFinishedEpoch(artsGuid_t epochGuid) {
 }
 
 void sendEpoch(artsGuid_t epochGuid, unsigned int source, unsigned int dest) {
-  artsEpoch_t *epoch = artsRouteTableLookupItem(epochGuid);
+  artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
     artsAtomicFetchAndU64(&epoch->queued, EpochMask);
     if (!artsAtomicCswapU64(&epoch->queued, 0, EpochBit)) {
@@ -180,7 +178,7 @@ artsEpoch_t *createEpoch(artsGuid_t *guid, artsGuid_t edtGuid,
   if (*guid == NULL_GUID)
     *guid = artsGuidCreateForRank(artsGlobalRankId, ARTS_EDT);
 
-  artsEpoch_t *epoch = artsCalloc(1, sizeof(artsEpoch_t));
+  artsEpoch_t *epoch = (artsEpoch_t *)artsCalloc(1, sizeof(artsEpoch_t));
   epoch->phase = PHASE_1;
   epoch->terminationExitGuid = edtGuid;
   epoch->terminationExitSlot = slot;
@@ -207,7 +205,7 @@ bool createShutdownEpoch() {
 }
 
 void artsAddEdtToEpoch(artsGuid_t edtGuid, artsGuid_t epochGuid) {
-  struct artsEdt *edt = artsRouteTableLookupItem(edtGuid);
+  struct artsEdt *edt = (struct artsEdt *)artsRouteTableLookupItem(edtGuid);
   if (edt) {
     edt->epochGuid = epochGuid;
     incrementActiveEpoch(epochGuid);
@@ -272,7 +270,7 @@ artsGuid_t artsInitializeEpoch(unsigned int rank, artsGuid_t finishEdtGuid,
 }
 
 void artsStartEpoch(artsGuid_t epochGuid) {
-  artsEpoch_t *epoch = artsRouteTableLookupItem(epochGuid);
+  artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
     artsSetCurrentEpochGuid(epoch->guid);
     artsAtomicAdd(&epoch->activeCount, 1);
@@ -308,41 +306,39 @@ bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
         globalGuidShutdown(epoch->guid);
       }
       return false;
-    } else // We didn't match the last one so lets try again
-    {
-      epoch->lastActiveCount = totalActive;
-      epoch->lastFinishedCount = totalFinish;
-      epoch->phase = PHASE_2;
-      DPRINTF("%lu Starting phase 2 %u\n", epoch->guid,
-              epoch->lastFinishedCount);
-      if (artsGlobalRankCount == 1) {
-        epoch->phase = PHASE_3;
-        DPRINTF("%lu epoch done!!!!!!!\n", epoch->guid);
-        if (epoch->waitPtr)
-          *epoch->waitPtr = 0;
-        if (epoch->ticket)
-          artsSignalContext(epoch->ticket);
-        if (epoch->terminationExitGuid) {
-          DPRINTF("%lu Calling finalization continuation provided by the user "
-                  "%u !\n",
-                  epoch->guid, totalFinish);
-          artsSignalEdtValue(epoch->terminationExitGuid,
-                             epoch->terminationExitSlot, totalFinish);
-        } else {
-          globalGuidShutdown(epoch->guid);
-        }
-        return false;
-      } else
-        return true;
     }
-  } else
-    epoch->phase = PHASE_1;
+    // We didn't match the last one so lets try again
+    epoch->lastActiveCount = totalActive;
+    epoch->lastFinishedCount = totalFinish;
+    epoch->phase = PHASE_2;
+    DPRINTF("%lu Starting phase 2 %u\n", epoch->guid, epoch->lastFinishedCount);
+    if (artsGlobalRankCount == 1) {
+      epoch->phase = PHASE_3;
+      DPRINTF("%lu epoch done!!!!!!!\n", epoch->guid);
+      if (epoch->waitPtr)
+        *epoch->waitPtr = 0;
+      if (epoch->ticket)
+        artsSignalContext(epoch->ticket);
+      if (epoch->terminationExitGuid) {
+        DPRINTF("%lu Calling finalization continuation provided by the user "
+                "%u !\n",
+                epoch->guid, totalFinish);
+        artsSignalEdtValue(epoch->terminationExitGuid,
+                           epoch->terminationExitSlot, totalFinish);
+      } else {
+        globalGuidShutdown(epoch->guid);
+      }
+      return false;
+    }
+    return true;
+  }
+  epoch->phase = PHASE_1;
   return (epoch->queued == 0);
 }
 
 void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
                  unsigned int finish) {
-  artsEpoch_t *epoch = artsRouteTableLookupItem(epochGuid);
+  artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
     DPRINTF("%lu A: %u F: %u\n", epochGuid, active, finish);
     unsigned int totalActive = artsAtomicAdd(&epoch->globalActiveCount, active);
@@ -397,8 +393,8 @@ artsEpochPool_t *createEpochPool(artsGuid_t *epochPoolGuid,
     range = &temp;
   }
 
-  artsEpochPool_t *epochPool =
-      artsCalloc(1, sizeof(artsEpochPool_t) + sizeof(artsEpoch_t) * poolSize);
+  artsEpochPool_t *epochPool = (artsEpochPool_t *)artsCalloc(
+      1, sizeof(artsEpochPool_t) + sizeof(artsEpoch_t) * poolSize);
   epochPool->index = 0;
   epochPool->outstanding = poolSize;
   epochPool->size = poolSize;
@@ -429,10 +425,11 @@ artsEpochPool_t *createEpochPool(artsGuid_t *epochPoolGuid,
 void deleteEpoch(artsGuid_t epochGuid, artsEpoch_t *epoch) {
   // Can't call delete unless we already hit two barriers thus it must exit
   if (!epoch)
-    epoch = artsRouteTableLookupItem(epochGuid);
+    epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
 
   if (epoch->poolGuid) {
-    artsEpochPool_t *pool = artsRouteTableLookupItem(epoch->poolGuid);
+    artsEpochPool_t *pool =
+        (artsEpochPool_t *)artsRouteTableLookupItem(epoch->poolGuid);
     if (artsIsGuidLocal(epoch->poolGuid)) {
       artsRouteTableRemoveItem(epochGuid);
       if (!artsAtomicSub(&pool->outstanding, 1)) {
@@ -548,7 +545,7 @@ bool artsWaitOnHandle(artsGuid_t epochGuid) {
     artsGuid_t local = *guid;
     *guid = NULL_GUID; // Unset
     unsigned int flag = 1;
-    artsEpoch_t *epoch = artsRouteTableLookupItem(local);
+    artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(local);
     epoch->ticket = artsGetContextTicket();
     if (artsNodeInfo.tMT && epoch->ticket) {
       incrementFinishedEpoch(local);

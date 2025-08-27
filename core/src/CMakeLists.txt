@@ -153,9 +153,9 @@ if(BUILD_CUDA_LIBRARY)
             $<TARGET_OBJECTS:arts_gas>
             $<TARGET_OBJECTS:arts_network>  
             $<TARGET_OBJECTS:arts_introspection>
-            $<TARGET_OBJECTS:arts_runtime>
-            $<TARGET_OBJECTS:arts_runtime_compute>
-            $<TARGET_OBJECTS:arts_runtime_memory>
+            $<TARGET_OBJECTS:arts_runtime_gpu>
+            $<TARGET_OBJECTS:arts_runtime_compute_gpu>
+            $<TARGET_OBJECTS:arts_runtime_memory_gpu>
             $<TARGET_OBJECTS:arts_runtime_sync>
             $<TARGET_OBJECTS:arts_runtime_network>
             $<TARGET_OBJECTS:arts_system>
@@ -198,9 +198,9 @@ if(BUILD_CUDA_LIBRARY)
             $<TARGET_OBJECTS:arts_gas>
             $<TARGET_OBJECTS:arts_network>  
             $<TARGET_OBJECTS:arts_introspection>
-            $<TARGET_OBJECTS:arts_runtime>
-            $<TARGET_OBJECTS:arts_runtime_compute>
-            $<TARGET_OBJECTS:arts_runtime_memory>
+            $<TARGET_OBJECTS:arts_runtime_gpu>
+            $<TARGET_OBJECTS:arts_runtime_compute_gpu>
+            $<TARGET_OBJECTS:arts_runtime_memory_gpu>
             $<TARGET_OBJECTS:arts_runtime_sync>
             $<TARGET_OBJECTS:arts_runtime_network>
             $<TARGET_OBJECTS:arts_system>

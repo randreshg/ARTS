@@ -37,15 +37,14 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/arts.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include <stdio.h>
+
 #include <stdlib.h>
 
 unsigned int numElements = 0;
 
 void sendHandler(void *args) {
   bool pass = true;
-  unsigned int *data = args;
+  unsigned int *data = (unsigned int *)args;
   for (unsigned int i = 0; i < numElements; i++) {
     if (data[i] != i)
       pass = false;
@@ -64,7 +63,7 @@ void initPerNode(unsigned int nodeId, int argc, char **argv) {
   if (!nodeId) {
     unsigned int size = sizeof(unsigned int) * numElements;
     for (unsigned int i = 0; i < artsGetTotalNodes(); i++) {
-      unsigned int *data = artsMalloc(size);
+      unsigned int *data = (unsigned int *)artsMalloc(size);
       for (unsigned int j = 0; j < numElements; j++)
         data[j] = j;
       artsRemoteSend(i, sendHandler, data, size, true);

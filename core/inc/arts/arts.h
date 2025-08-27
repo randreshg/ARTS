@@ -36,14 +36,15 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_H
-#define ARTS_H
-#include <stdint.h>
+#ifndef ARTS_ARTS_H
+#define ARTS_ARTS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include "arts/runtime/RT.h"
+#include <stddef.h>
+#include <stdint.h>
 
 // This is the entry point to starting the ARTS runtime.  Call from main.
 int artsRT(int argc, char **argv);

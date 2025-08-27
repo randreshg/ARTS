@@ -36,16 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSGLOBALS_H
-#define ARTSGLOBALS_H
+#ifndef ARTS_RUNTIME_SYNC_GLOBALS_H
+#define ARTS_RUNTIME_SYNC_GLOBALS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/arts.h"
+#include "arts/runtime/RT.h"
 #include "arts/utils/ArrayList.h"
-#include "arts/introspection/Counter.h"
-#include "arts/utils/Queue.h"
 
 struct atomicCreateBarrierInfo {
   volatile unsigned int wait;

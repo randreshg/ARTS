@@ -38,10 +38,10 @@
 ******************************************************************************/
 #include "arts/arts.h"
 #include "arts/gpu/GpuRuntime.cuh"
+
 #include <cuda_runtime_api.h>
 #include <stdio.h>
 #include <stdlib.h>
-
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 

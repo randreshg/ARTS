@@ -43,10 +43,6 @@
 extern "C" {
 #endif
 
-#include "arts/BlockDistribution.h"
-#include "arts/Csr.h"
-#include "arts/EdgeVector.h"
-#include "arts/GraphDefs.h"
 #ifdef __cplusplus
 }
 #endif

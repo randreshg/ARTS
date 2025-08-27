@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSGPUSTREAMBUFFER_H
-#define ARTSGPUSTREAMBUFFER_H
+#ifndef ARTS_GPU_GPUSTREAMBUFFER_H
+#define ARTS_GPU_GPUSTREAMBUFFER_H
 
 #ifdef __cplusplus
 extern "C" {

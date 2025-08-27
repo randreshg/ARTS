@@ -36,18 +36,18 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSGPUSTREAM_H
-#define ARTSGPUSTREAM_H
+#ifndef ARTS_GPU_GPUSTREAM_H
+#define ARTS_GPU_GPUSTREAM_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/gpu/GpuRouteTable.h"
+#include "arts/gas/RouteTable.h"
 #include "arts/runtime/RT.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/ArrayList.h"
-#include "arts/utils/Atomics.h"
+
 #include <cuda_runtime_api.h>
 
 #define CHECKCORRECT(x)                                                        \

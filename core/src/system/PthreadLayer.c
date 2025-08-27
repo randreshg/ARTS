@@ -38,14 +38,12 @@
 ******************************************************************************/
 #define _GNU_SOURCE
 #include "arts/arts.h"
-#include "arts/gas/Guid.h"
-#include "arts/introspection/Counter.h"
 #include "arts/network/Remote.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/system/Config.h"
-#include "arts/system/TMT.h"
 #include "arts/system/Threads.h"
+
 #include "limits.h"
 #include <pthread.h>
 #include <unistd.h>
@@ -85,8 +83,8 @@ void artsThreadMainJoin() {
 void artsThreadInit(struct artsConfig *config) {
   gConfig = config;
   mask = getThreadMask(config);
-  nodeThreadList =
-      artsMalloc(sizeof(pthread_t) * artsNodeInfo.totalThreadCount);
+  nodeThreadList = (pthread_t *)artsMalloc(sizeof(pthread_t) *
+                                           artsNodeInfo.totalThreadCount);
   unsigned int i = 0, threadCount = artsNodeInfo.totalThreadCount;
 
   if (config->stackSize) {

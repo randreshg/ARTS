@@ -39,10 +39,12 @@
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/RT.h"
-#include "arts/system/Debug.h"
+#include "arts/utils/Queue.h"
 
-#define IS_POWER_OF_TWO(x) (!((x) & ((x)-1)))
+#include <stdlib.h>
+#include <string.h>
+
+#define IS_POWER_OF_TWO(x) (!((x) & ((x) - 1)))
 
 typedef struct header {
   size_t size;
@@ -60,7 +62,7 @@ void *artsMalloc(size_t size) {
   if (!size)
     return NULL;
 
-  header_t *base = malloc(size + sizeof(header_t));
+  header_t *base = (header_t *)malloc(size + sizeof(header_t));
   if (!base)
     return NULL;
 

@@ -36,14 +36,15 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/Graph.h"
+
+#include "arts/BlockDistribution.h"
+#include "arts/Csr.h"
 #include "arts/arts.h"
-#include "arts/runtime/sync/TerminationDetection.h"
+
 #include <assert.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define DPRINTF(...)
@@ -53,7 +54,7 @@ arts_block_dist_t *distribution;
 csr_graph_t *graph;
 uint64_t *level;
 
-void bfs_output() {
+void bfsOutput() {
   DPRINTF("Printing vertex levels....\n");
   uint64_t i;
   for (i = 0; i < graph->num_local_vertices; ++i) {
@@ -63,11 +64,11 @@ void bfs_output() {
 
 void exitProgram(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                  artsEdtDep_t depv[]) {
-  bfs_output();
+  bfsOutput();
   artsShutdown();
 }
 
-void bfs_send(vertex_t u, uint64_t ulevel);
+void bfsSend(vertex_t u, uint64_t ulevel);
 
 void relax(uint32_t paramc, uint64_t *paramv, uint32_t depc,
            artsEdtDep_t depv[]) {
@@ -103,12 +104,12 @@ void relax(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 
       // route message
       DPRINTF("sending u=%" PRIu64 ", level= %" PRIu64 "\n", u, neigbrlevel);
-      bfs_send(u, neigbrlevel);
+      bfsSend(u, neigbrlevel);
     }
   }
 }
 
-void bfs_send(vertex_t u, uint64_t ulevel) {
+void bfsSend(vertex_t u, uint64_t ulevel) {
   artsGuid_t neighbDbguid = getGuidForVertexDistr(u, distribution);
   uint64_t send[2];
   send[0] = u;
@@ -125,7 +126,7 @@ void kickoffTermination(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                         artsEdtDep_t depv[]) {
   PRINTF("Kick off\n");
   vertex_t source = (vertex_t)paramv[0];
-  bfs_send(source, 0);
+  bfsSend(source, 0);
 }
 
 void initPerNode(unsigned int nodeId, int argc, char **argv) {

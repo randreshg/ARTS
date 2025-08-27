@@ -36,14 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSCOUNTER_H
-#define ARTSCOUNTER_H
+#ifndef ARTS_INTROSPECTION_COUNTER_H
+#define ARTS_INTROSPECTION_COUNTER_H
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include "arts/arts.h"
-
+#include <stdint.h>
+#include <stdio.h>
 #ifdef USE_JUSTCOUNT
 #define COUNTERTIMESTAMP 0
 #elif defined(USE_COUNT) || defined(USE_MODELCOUNT)
@@ -269,8 +268,6 @@ extern "C" {
 #define ARTSCOUNTERNONEMPTY(counter)
 
 #endif
-
-#include "arts/utils/ArrayList.h"
 
 #define COUNTERNAMES                                                           \
   const char *const __counterName[] = {"edtCounter",                           \

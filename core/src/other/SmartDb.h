@@ -39,13 +39,15 @@
 
 #ifndef ARTS_SMART_DB_H
 #define ARTS_SMART_DB_H
-
-#include "arts/arts.h"
-#include <stdbool.h>
-
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include "arts/runtime/RT.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 // Memory placement hints for the memory sensor
 typedef enum {
@@ -87,17 +89,17 @@ typedef enum {
   ARTS_SMART_DB_READ_ONLY = 1 << 4,    // Data is read-only
   ARTS_SMART_DB_AUTO_MIGRATE = 1 << 5, // Enable automatic data migration
   ARTS_SMART_DB_REPLICATE = 1 << 6,    // Enable data replication
-} artsDbFlags_t;
+} artsSmartDbFlags_t;
 
 // SmartDB structure that combines a DataBlock with persistent events and memory
 // sensors
-typedef struct artsDb {
+typedef struct artsSmartDb {
   // Core DataBlock components
   artsGuid_t dbGuid;    // GUID of the underlying DataBlock
   artsGuid_t eventGuid; // GUID of the persistent event
-  artsGuid_t dataGuid;  // GUID for the data being tracked
-  uint64_t size;        // Size of the data
-  artsType_t type;      // Type of the DataBlock
+  // artsGuid_t dataGuid;  // GUID for the data being tracked
+  uint64_t size;   // Size of the data
+  artsType_t type; // Type of the DataBlock
 
   // Readiness sensor components
   unsigned int numProducers; // Number of producers
@@ -107,7 +109,7 @@ typedef struct artsDb {
   bool isReady;              // Current readiness state
 
   // Memory sensor components
-  artsDbFlags_t flags;     // Metadata flags
+  artsSmartDbFlags_t flags;     // Metadata flags
   artsMemPlacement_t placement; // Current memory placement
   artsMemMetrics_t metrics;     // Memory access metrics
   unsigned int numaNode;        // Current NUMA node
@@ -125,13 +127,13 @@ typedef struct artsDb {
   uint64_t accessOffsets[ARTS_SMART_DB_ACCESS_HISTORY];
   unsigned int accessHistoryIdx;
   unsigned int accessHistoryCount;
-} artsDb_t;
+} artsSmartDb_t;
 
 // Migration message for distributed migration
 typedef struct {
   uint64_t size;
   artsType_t type;
-  artsDbFlags_t flags;
+  artsSmartDbFlags_t flags;
   unsigned int version;
   unsigned int numProducers;
   unsigned int numConsumers;
@@ -145,67 +147,67 @@ typedef struct {
   size_t memRefSize;
   // For simplicity, we send the data inline after the struct
   // char data[];
-} artsDbMigrationMsg_t;
+} artsSmartDbMigrationMsg_t;
 
 // Migration handler prototype
-void artsDbMigrationHandler(void *args, unsigned int size);
+void artsSmartDbMigrationHandler(void *args, unsigned int size);
 
 // Create a new SmartDB with the given size and type
-artsDb_t *artsDbCreate(uint64_t size, artsType_t type,
-                                 artsDbFlags_t flags);
+artsSmartDb_t *artsSmartDbCreate(uint64_t size, artsType_t type,
+                                 artsSmartDbFlags_t flags);
 
 // Create a SmartDB with a specific GUID
-artsDb_t *artsDbCreateWithGuid(artsGuid_t guid, uint64_t size,
-                                         artsDbFlags_t flags);
+artsSmartDb_t *artsSmartDbCreateWithGuid(artsGuid_t guid, uint64_t size,
+                                         artsSmartDbFlags_t flags);
 
 // Destroy a SmartDB and its associated resources
-void artsDbDestroy(artsDb_t *smartDb);
+void artsSmartDbDestroy(artsSmartDb_t *smartDb);
 
 // Readiness sensor operations
-void artsDbAddProducer(artsDb_t *smartDb);
-void artsDbAddConsumer(artsDb_t *smartDb);
-void artsDbProducerComplete(artsDb_t *smartDb);
-void artsDbConsumerComplete(artsDb_t *smartDb);
-bool artsDbIsReady(artsDb_t *smartDb);
-unsigned int artsDbGetVersion(artsDb_t *smartDb);
-void artsDbIncrementVersion(artsDb_t *smartDb);
+void artsSmartDbAddProducer(artsSmartDb_t *smartDb);
+void artsSmartDbAddConsumer(artsSmartDb_t *smartDb);
+void artsSmartDbProducerComplete(artsSmartDb_t *smartDb);
+void artsSmartDbConsumerComplete(artsSmartDb_t *smartDb);
+bool artsSmartDbIsReady(artsSmartDb_t *smartDb);
+unsigned int artsSmartDbGetVersion(artsSmartDb_t *smartDb);
+void artsSmartDbIncrementVersion(artsSmartDb_t *smartDb);
 
 // Memory sensor operations
-void artsDbUpdateMetrics(artsDb_t *smartDb, uint64_t accessSize,
+void artsSmartDbUpdateMetrics(artsSmartDb_t *smartDb, uint64_t accessSize,
                               uint64_t latency);
-void artsDbSetPlacement(artsDb_t *smartDb,
+void artsSmartDbSetPlacement(artsSmartDb_t *smartDb,
                              artsMemPlacement_t placement);
-artsMemPlacement_t artsDbGetPlacement(artsDb_t *smartDb);
-void artsDbSetAccessPattern(artsDb_t *smartDb,
+artsMemPlacement_t artsSmartDbGetPlacement(artsSmartDb_t *smartDb);
+void artsSmartDbSetAccessPattern(artsSmartDb_t *smartDb,
                                  artsAccessPattern_t pattern);
-artsAccessPattern_t artsDbGetAccessPattern(artsDb_t *smartDb);
-float artsDbGetAccessCost(artsDb_t *smartDb);
-bool artsDbShouldMigrate(artsDb_t *smartDb);
-bool artsDbShouldReplicate(artsDb_t *smartDb);
+artsAccessPattern_t artsSmartDbGetAccessPattern(artsSmartDb_t *smartDb);
+float artsSmartDbGetAccessCost(artsSmartDb_t *smartDb);
+bool artsSmartDbShouldMigrate(artsSmartDb_t *smartDb);
+bool artsSmartDbShouldReplicate(artsSmartDb_t *smartDb);
 
 // Data operations with memory awareness
-void *artsDbGetData(artsDb_t *smartDb);
-void artsDbSetData(artsDb_t *smartDb, void *data, uint64_t size);
-void artsDbMigrate(artsDb_t *smartDb,
+void *artsSmartDbGetData(artsSmartDb_t *smartDb);
+void artsSmartDbSetData(artsSmartDb_t *smartDb, void *data, uint64_t size);
+void artsSmartDbMigrate(artsSmartDb_t *smartDb,
                         artsMemPlacement_t newPlacement);
-void artsDbReplicate(artsDb_t *smartDb, unsigned int numCopies);
+void artsSmartDbReplicate(artsSmartDb_t *smartDb, unsigned int numCopies);
 
 // Dependence management
-void artsDbAddDependence(artsDb_t *smartDb, artsGuid_t edtGuid,
+void artsSmartDbAddDependence(artsSmartDb_t *smartDb, artsGuid_t edtGuid,
                               uint32_t slot);
 
 // Metadata operations
-artsDbFlags_t artsDbGetFlags(artsDb_t *smartDb);
-void artsDbSetFlags(artsDb_t *smartDb, artsDbFlags_t flags);
-unsigned int artsDbGetNumProducers(artsDb_t *smartDb);
-unsigned int artsDbGetNumConsumers(artsDb_t *smartDb);
+artsSmartDbFlags_t artsSmartDbGetFlags(artsSmartDb_t *smartDb);
+void artsSmartDbSetFlags(artsSmartDb_t *smartDb, artsSmartDbFlags_t flags);
+unsigned int artsSmartDbGetNumProducers(artsSmartDb_t *smartDb);
+unsigned int artsSmartDbGetNumConsumers(artsSmartDb_t *smartDb);
 
 // Migration API
-void artsDbMigrateToNode(artsDb_t *smartDb, unsigned int newNode);
+void artsSmartDbMigrateToNode(artsSmartDb_t *smartDb, unsigned int newNode);
 
 // Sophisticated access pattern detection
-void artsDbRecordAccess(artsDb_t *smartDb, uint64_t offset);
-void artsDbAnalyzeAccessPattern(artsDb_t *smartDb);
+void artsSmartDbRecordAccess(artsSmartDb_t *smartDb, uint64_t offset);
+void artsSmartDbAnalyzeAccessPattern(artsSmartDb_t *smartDb);
 
 #ifdef __cplusplus
 }

@@ -36,11 +36,12 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSGPULCSYNCFUNCTIONS_H
-#define ARTSGPULCSYNCFUNCTIONS_H
+#ifndef ARTS_GPU_GPULCSYNCFUNCTIONS_H
+#define ARTS_GPU_GPULCSYNCFUNCTIONS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 #include "arts/runtime/RT.h"
 
 typedef struct {

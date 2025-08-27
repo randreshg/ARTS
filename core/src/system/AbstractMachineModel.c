@@ -39,7 +39,6 @@
 #include "arts/system/AbstractMachineModel.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
-#include "arts/system/Threads.h"
 
 unsigned int numNumaDomains = 1;
 
@@ -73,11 +72,12 @@ void addAThread(struct unitMask *mask, bool workOn, bool networkOutOn,
   struct unitThread *next;
   mask->threads++;
   if (mask->listHead == NULL) {
-    mask->listTail = mask->listHead = artsMalloc(sizeof(struct unitThread));
+    mask->listTail = mask->listHead =
+        (struct unitThread *)artsMalloc(sizeof(struct unitThread));
     next = mask->listHead;
   } else {
     next = mask->listTail;
-    next->next = artsMalloc(sizeof(struct unitThread));
+    next->next = (struct unitThread *)artsMalloc(sizeof(struct unitThread));
     next = next->next;
     mask->listTail = next;
   }
@@ -283,7 +283,8 @@ unsigned int flattenMask(struct artsConfig *config, struct nodeMask *node,
   }
   total = count;
   *flat = (struct threadMask *)artsMalloc(sizeof(struct threadMask) * total);
-  unsigned int *groupCount = artsCalloc(abstractMax, sizeof(unsigned int));
+  unsigned int *groupCount =
+      (unsigned int *)artsCalloc(abstractMax, sizeof(unsigned int));
   count = 0;
   struct unitThread *next;
   for (i = 0; i < node->numClusters; i++) {

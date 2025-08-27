@@ -56,10 +56,12 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
-#include <string.h>
 
+#include "arts/arts.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
+
+#include <string.h>
 
 struct circularArray {
   struct circularArray *next;
@@ -81,7 +83,7 @@ struct artsDeque {
 } __attribute__((aligned(64)));
 
 static inline struct circularArray *newCircularArray(unsigned int size) {
-  struct circularArray *array = artsCallocAlign(
+  struct circularArray *array = (struct circularArray *)artsCallocAlign(
       1, sizeof(struct circularArray) + sizeof(void *) * size, 64);
   //    memset(array,0,sizeof(struct circularArray) + sizeof(void*) * size);
   array->size = size;
@@ -145,7 +147,8 @@ static inline void artsDequeNewInit(struct artsDeque *deque,
 }
 
 struct artsDeque *artsDequeNew(unsigned int size) {
-  struct artsDeque *deque = artsCallocAlign(1, sizeof(struct artsDeque), 64);
+  struct artsDeque *deque =
+      (struct artsDeque *)artsCallocAlign(1, sizeof(struct artsDeque), 64);
   artsDequeNewInit(deque, size);
   return deque;
 }

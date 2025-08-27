@@ -38,14 +38,16 @@
 ******************************************************************************/
 
 #include "arts/gas/RouteTable.h"
+#include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
-#include "arts/introspection/Counter.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/memory/DbFunctions.h"
 #include "arts/runtime/memory/DbList.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
+
+#include <stdlib.h>
 
 #define DPRINTF
 // #define DPRINTF(...) PRINTF(__VA_ARGS__)
@@ -73,21 +75,20 @@ bool markReserve(artsRouteItem_t *item, bool markUse) {
   if (markUse) {
     uint64_t mask = reservedItem + 1;
     return !artsAtomicCswapU64(&item->lock, 0, mask);
-  } else
-    return !artsAtomicFetchOrU64(&item->lock, reservedItem);
+  }
+  return !artsAtomicFetchOrU64(&item->lock, reservedItem);
 }
 
 bool markRequested(artsRouteItem_t *item) {
   uint64_t local, temp;
   while (1) {
     local = item->lock;
-    if ((local & reservedItem) || (local & deleteItem))
+    if ((local & reservedItem) || (local & deleteItem)) {
       return false;
-    else {
-      temp = local | reservedItem;
-      if (local == artsAtomicCswapU64(&item->lock, local, temp))
-        return true;
     }
+    temp = local | reservedItem;
+    if (local == artsAtomicCswapU64(&item->lock, local, temp))
+      return true;
   }
 }
 
@@ -213,7 +214,7 @@ bool incItem(artsRouteItem_t *item, unsigned int count, artsGuid_t key,
       if (local == artsAtomicCswapU64(&item->lock, local, local + count)) {
         if (item->key != key) // This is for an ABA problem
         {
-          DPRINTF("The key changed on us from %lu -> %lu\n", key, item->key);
+          // DPRINTF("The key changed on us from %lu -> %lu\n", key, item->key);
           decItem(routeTable, item);
           return false;
         }
@@ -303,7 +304,7 @@ extern uint64_t minGlobalGuidThread;
 extern uint64_t maxGlobalGuidThread;
 
 static inline artsRouteTable_t *artsGetRouteTable(artsGuid_t guid) {
-  artsGuid raw = (artsGuid)guid;
+  artsGuid raw = (artsGuid){.bits = guid};
   uint64_t key = raw.fields.key;
   if (keysPerThread) {
     uint64_t globalThread = (key / keysPerThread);
@@ -362,7 +363,7 @@ artsRouteItem_t *artsRouteTableSearchForEmpty(artsRouteTable_t *routeTable,
       if (!current->data[keyVal].lock) {
         if (markReserve(&current->data[keyVal], markUsed)) {
           current->data[keyVal].key = key;
-          DPRINTF("Set Key: %lu %p %lu\n", key, current, keyVal);
+          // DPRINTF("Set Key: %lu %p %lu\n", key, current, keyVal);
           return &current->data[keyVal];
         }
       }
@@ -375,8 +376,8 @@ artsRouteItem_t *artsRouteTableSearchForEmpty(artsRouteTable_t *routeTable,
 
     if (!next) {
       if (artsWriterTryLock(&current->readerLock, &current->writerLock)) {
-        DPRINTF("LS Resize %d %d %p %p %d %ld\n", keyVal, 2 * current->size,
-                current, routeTable);
+        // DPRINTF("LS Resize %d %d %p %p %d %ld\n", keyVal, 2 * current->size,
+        //         current, routeTable);
         next = current->next =
             current->newFunc(2 * current->size, current->shift + 1);
         artsWriterUnlock(&current->writerLock);
@@ -465,8 +466,8 @@ artsRouteItem_t *internalRouteTableAddItemRace(bool *addedItem,
           } else if (usedAvail && checkItemState(found, availableKey))
             incItem(found, 1, found->key, routeTable);
         } else {
-          found =
-              internalRouteTableAddItem(routeTable, item, key, rank, usedRes);
+          found = (artsRouteItem_t *)internalRouteTableAddItem(
+              routeTable, item, key, rank, usedRes);
           if (toAddOnCreation)
             incItem(found, toAddOnCreation, found->key, routeTable);
           *addedItem = true;
@@ -526,7 +527,7 @@ bool artsRouteTableReserveItemRace(artsGuid_t key, artsRouteItem_t **item,
         if (!(*item)) {
           *item = artsRouteTableSearchForEmpty(routeTable, key, used);
           ret = true;
-          DPRINTF("RES: %lu %p\n", key, routeTable);
+          // DPRINTF("RES: %lu %p\n", key, routeTable);
         } else {
           if (used)
             incItem(*item, 1, (*item)->key, routeTable);
@@ -561,8 +562,8 @@ bool artsRouteTableAddSent(artsGuid_t key, void *edt, unsigned int slot,
     if (!sendReq && !incItem(item, 1, item->key, routeTable))
       PRINTF("Item marked for deletion before it has arrived %u...", sendReq);
   }
-  artsOutOfOrderHandleDbRequestWithOOList(&item->ooList, &item->data, edt,
-                                          slot);
+  artsOutOfOrderHandleDbRequestWithOOList(&item->ooList, &item->data,
+                                          (struct artsEdt *)edt, slot);
   return sendReq || !aggregate;
 }
 
@@ -622,7 +623,7 @@ void *artsRouteTableLookupDb(artsGuid_t key, int *rank, bool touch) {
   if (data) {
     if (touch)
       internalIncDbVersion(touched);
-    DPRINTF("db version: %u\n", *touched);
+    // DPRINTF("db version: %u\n", *touched);
   }
   return data;
 }
@@ -643,12 +644,13 @@ bool internalRouteTableReturnDb(artsRouteTable_t *routeTable, artsGuid_t key,
       return decItem(routeTable, location);
     }
     // True False
-    else if (markToDelete && !doDelete) {
+    if (markToDelete && !doDelete) {
       decItem(routeTable, location);
       tryMarkDelete(location, 0);
       return false;
-    } else // False True || False False
-      return decItem(routeTable, location);
+    }
+    // False True || False False
+    return decItem(routeTable, location);
   }
   return false;
 }
@@ -880,7 +882,7 @@ bool artsRouteTableInvalidateItem(artsGuid_t key) {
       routeTable->freeFunc(location);
       return true;
     }
-    DPRINTF("Marked %lu as invalid %lu\n", key, location->lock);
+    // DPRINTF("Marked %lu as invalid %lu\n", key, location->lock);
   }
   return false;
 }
@@ -899,8 +901,8 @@ artsRouteTableGetRankDuplicates(artsGuid_t key, unsigned int rank) {
       artsOutOfOrderListReset(&location->ooList);
       location->rank = rank;
     }
-    struct artsDb *db = location->data;
-    iter = artsCloseFrontier(db->dbList);
+    struct artsDb *db = (struct artsDb *)location->data;
+    iter = artsCloseFrontier((struct artsDbList *)db->dbList);
   }
   return iter;
 }

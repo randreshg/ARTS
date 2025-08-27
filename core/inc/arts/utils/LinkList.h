@@ -36,8 +36,11 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSLINKLIST_H
-#define ARTSLINKLIST_H
+#ifndef ARTS_UTILS_LINKLIST_H
+#define ARTS_UTILS_LINKLIST_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #include <stdint.h>
 struct artsLinkList;
@@ -64,4 +67,7 @@ void *artsLinkListPopFront(struct artsLinkList *list, void **freePos);
 void artsLinkListDeleteItem(void *toDelete);
 void *artsLinkListNewItem(unsigned int size);
 
+#ifdef __cplusplus
+}
+#endif
 #endif

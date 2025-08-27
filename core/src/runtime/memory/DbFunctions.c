@@ -46,14 +46,14 @@
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/RT.h"
-#include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/memory/DbList.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
-#include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
+
 #include <assert.h>
+#include <string.h>
 
 #ifdef USE_GPU
 #include "arts/gpu/GpuRuntime.cuh"
@@ -228,7 +228,8 @@ void *artsDbResizePtr(struct artsDb *dbRes, unsigned int size, bool copy) {
     unsigned int oldSize = dbRes->header.size;
     unsigned int newSize = size + sizeof(struct artsDb);
     ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-    struct artsDb *ptr = artsCallocAlign(1, size + sizeof(struct artsDb), 16);
+    struct artsDb *ptr =
+        (struct artsDb *)artsCallocAlign(1, size + sizeof(struct artsDb), 16);
     ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
     if (ptr) {
       if (copy)
@@ -246,7 +247,7 @@ void *artsDbResizePtr(struct artsDb *dbRes, unsigned int size, bool copy) {
 // Must be in write mode (or only copy) to update and alloced (no NO_ACQUIRE
 // nonsense), otherwise will be racy...
 void *artsDbResize(artsGuid_t guid, unsigned int size, bool copy) {
-  struct artsDb *dbRes = artsRouteTableLookupItem(guid);
+  struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(guid);
   void *ptr = artsDbResizePtr(dbRes, size, copy);
   if (ptr) {
     dbRes = ((struct artsDb *)ptr) - 1;
@@ -261,7 +262,7 @@ void artsDbMove(artsGuid_t dbGuid, unsigned int rank) {
     if (guidRank != artsGlobalRankId)
       artsDbMoveRequest(dbGuid, rank);
     else {
-      struct artsDb *dbRes = artsRouteTableLookupItem(dbGuid);
+      struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
       if (dbRes)
         artsRemoteMemoryMove(rank, dbGuid, dbRes, dbRes->header.size,
                              ARTS_REMOTE_DB_MOVE_MSG, artsDbFree);
@@ -275,7 +276,7 @@ void artsDbMove(artsGuid_t dbGuid, unsigned int rank) {
 
 void artsDbDestroy(artsGuid_t guid) {
   artsType_t mode = artsGuidGetType(guid);
-  struct artsDb *dbRes = artsRouteTableLookupItem(guid);
+  struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(guid);
   if (dbRes != NULL) {
     artsRemoteDbDestroy(guid, artsGlobalRankId, 0);
     artsDbFree(dbRes);
@@ -288,7 +289,7 @@ bool artsDbRenameWithGuid(artsGuid_t newGuid, artsGuid_t oldGuid) {
   bool ret = false;
   unsigned int rank = artsGuidGetRank(oldGuid);
   if (rank == artsGlobalRankId) {
-    struct artsDb *dbRes = artsRouteTableLookupItem(oldGuid);
+    struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(oldGuid);
     if (dbRes != NULL) {
       dbRes->guid = newGuid;
       // This is only being done by the owner...
@@ -311,7 +312,7 @@ artsGuid_t artsDbCopyToNewType(artsGuid_t oldGuid, artsType_t newType) {
   unsigned int rank = artsGuidGetRank(oldGuid);
   if (rank == artsGlobalRankId) {
     artsGuid_t newGuid = artsGuidCreateForRank(rank, artsGuidGetType(newType));
-    struct artsDb *dbRes = artsRouteTableLookupItem(oldGuid);
+    struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(oldGuid);
     if (dbRes != NULL) {
       artsAtomicAdd(&dbRes->copyCount, 1);
       dbRes->guid = newGuid;
@@ -334,7 +335,7 @@ artsGuid_t artsDbRename(artsGuid_t guid) {
 }
 
 void artsDbDestroySafe(artsGuid_t guid, bool remote) {
-  struct artsDb *dbRes = artsRouteTableLookupItem(guid);
+  struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(guid);
   if (dbRes != NULL) {
     if (remote)
       artsRemoteDbDestroy(guid, artsGlobalRankId, 0);
@@ -347,7 +348,7 @@ void artsDbDestroySafe(artsGuid_t guid, bool remote) {
 
 #ifdef USE_SMART_DB
 void artsDbIncrementLatch(artsGuid_t guid) {
-  struct artsDb *dbRes = artsRouteTableLookupItem(guid);
+  struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(guid);
   if (dbRes != NULL)
     artsPersistentEventIncrementLatch(dbRes->eventGuid);
   else
@@ -355,7 +356,7 @@ void artsDbIncrementLatch(artsGuid_t guid) {
 }
 
 void artsDbDecrementLatch(artsGuid_t guid) {
-  struct artsDb *dbRes = artsRouteTableLookupItem(guid);
+  struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(guid);
   if (dbRes != NULL)
     artsPersistentEventDecrementLatch(dbRes->eventGuid);
   else
@@ -364,7 +365,7 @@ void artsDbDecrementLatch(artsGuid_t guid) {
 
 void artsDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
                          uint32_t edtSlot) {
-  struct artsDb *dbRes = artsRouteTableLookupItem(dbSrc);
+  struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(dbSrc);
   if (dbRes != NULL)
     artsAddDependenceToPersistentEvent(dbRes->eventGuid, edtDest, edtSlot);
   else
@@ -377,7 +378,7 @@ void artsDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
 //   and launches out of order handleReadyEdt
 // Returns false on out of order and true otherwise
 void acquireDbs(struct artsEdt *edt) {
-  artsEdtDep_t *depv = artsGetDepv(edt);
+  artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
   edt->depcNeeded = edt->depc + 1;
   for (int i = 0; i < edt->depc; i++) {
     // PRINTF("MODE: %s -> %p\n", getTypeName(depv[i].mode), depv[i].ptr);
@@ -396,7 +397,8 @@ void acquireDbs(struct artsEdt *edt) {
         // else fall through to the local case :-p
       }
       case ARTS_DB_ONCE_LOCAL: {
-        struct artsDb *dbTemp = artsRouteTableLookupItem(depv[i].guid);
+        struct artsDb *dbTemp =
+            (struct artsDb *)artsRouteTableLookupItem(depv[i].guid);
         if (dbTemp) {
           dbFound = dbTemp;
           artsAtomicSub(&edt->depcNeeded, 1U);
@@ -406,8 +408,8 @@ void acquireDbs(struct artsEdt *edt) {
       }
       case ARTS_DB_PIN: {
         int validRank = -1;
-        struct artsDb *dbTemp =
-            artsRouteTableLookupDb(depv[i].guid, &validRank, true);
+        struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
+            depv[i].guid, &validRank, true);
         if (dbTemp) {
           dbFound = dbTemp;
           artsAtomicSub(&edt->depcNeeded, 1U);
@@ -420,8 +422,8 @@ void acquireDbs(struct artsEdt *edt) {
         // Owner Rank
         if (owner == artsGlobalRankId) {
           int validRank = -1;
-          struct artsDb *dbTemp =
-              artsRouteTableLookupDb(depv[i].guid, &validRank, false);
+          struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
+              depv[i].guid, &validRank, false);
           // We have found an entry
           if (dbTemp) {
             DPRINTF("MODE: %s -> %p\n", getTypeName(depv[i].mode), dbTemp);
@@ -448,8 +450,8 @@ void acquireDbs(struct artsEdt *edt) {
         // Owner Rank
         if (owner == artsGlobalRankId) {
           int validRank = -1;
-          struct artsDb *dbTemp =
-              artsRouteTableLookupDb(depv[i].guid, &validRank, true);
+          struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
+              depv[i].guid, &validRank, true);
           // We have found an entry
           if (dbTemp) {
             if (artsAddDbDuplicate(dbTemp, artsGlobalRankId, edt, i,
@@ -485,8 +487,8 @@ void acquireDbs(struct artsEdt *edt) {
           }
         } else {
           int validRank = -1;
-          struct artsDb *dbTemp =
-              artsRouteTableLookupDb(depv[i].guid, &validRank, true);
+          struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
+              depv[i].guid, &validRank, true);
           // We have found an entry
           if (dbTemp) {
             dbFound = dbTemp;
@@ -581,16 +583,16 @@ bool artsAddDbDuplicate(struct artsDb *db, unsigned int rank,
                         artsType_t mode) {
   bool write = (mode == ARTS_DB_WRITE);
   bool exclusive = false;
-  return artsPushDbToList(db->dbList, rank, write, exclusive,
-                          artsGuidGetRank(db->guid) == rank, false, edt, slot,
-                          mode);
+  return artsPushDbToList((struct artsDbList *)db->dbList, rank, write,
+                          exclusive, artsGuidGetRank(db->guid) == rank, false,
+                          edt, slot, mode);
 }
 
 void internalGetFromDb(artsGuid_t edtGuid, artsGuid_t dbGuid, unsigned int slot,
                        unsigned int offset, unsigned int size,
                        unsigned int rank) {
   if (rank == artsGlobalRankId) {
-    struct artsDb *db = artsRouteTableLookupItem(dbGuid);
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
     if (db) {
       void *data = (void *)(((char *)(db + 1)) + offset);
       void *ptr = artsMalloc(size);
@@ -631,7 +633,7 @@ void internalPutInDb(void *ptr, artsGuid_t edtGuid, artsGuid_t dbGuid,
                      unsigned int slot, unsigned int offset, unsigned int size,
                      artsGuid_t epochGuid, unsigned int rank) {
   if (rank == artsGlobalRankId) {
-    struct artsDb *db = artsRouteTableLookupItem(dbGuid);
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
     if (db) {
       // Do this so when we increment finished we can check the term status
       incrementQueueEpoch(epochGuid);

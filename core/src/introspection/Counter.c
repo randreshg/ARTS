@@ -38,9 +38,12 @@
 ******************************************************************************/
 
 #include "arts/introspection/Counter.h"
+#include "arts/arts.h"
 #include "arts/runtime/Globals.h"
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
+
+#include <string.h>
 #include <sys/stat.h>
 
 char *counterPrefix;
@@ -102,7 +105,7 @@ artsCounter *artsUserGetCounter(unsigned int index, char *name) {
     artsPushToArrayList(
         artsThreadInfo.counterList,
         artsCreateCounter(artsThreadInfo.coreId, artsGlobalRankId, NULL));
-  artsCounter *counter = artsGetCounter(index);
+  artsCounter *counter = artsGetCounter((artsCounterType)index);
   if (counter->name == NULL)
     counter->name = name;
   return counter;
@@ -197,17 +200,17 @@ void artsCounterSetEndTime(artsCounter *counter, uint64_t end) {
 }
 
 uint64_t artsCounterGetStartTime(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting)
+  if (counter && countersOn && artsThreadInfo.localCounting) {
     return counter->startTime;
-  else
-    return 0;
+  }
+  return 0;
 }
 
 uint64_t artsCounterGetEndTime(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting)
+  if (counter && countersOn && artsThreadInfo.localCounting) {
     return counter->endTime;
-  else
-    return 0;
+  }
+  return 0;
 }
 
 void artsCounterPrint(artsCounter *counter, FILE *stream) {
@@ -225,11 +228,11 @@ void artsWriteCountersToFile(unsigned int threadId, unsigned int nodeId) {
         mkdir(counterPrefix, 0755);
 
       unsigned int stringSize = strlen(counterPrefix) + COUNTERPREFIXSIZE;
-      filename = artsMalloc(sizeof(char) * stringSize);
+      filename = (char *)artsMalloc(sizeof(char) * stringSize);
       sprintf(filename, "%s/%s_%u_%u.ct", counterPrefix, "counter", nodeId,
               threadId);
     } else {
-      filename = artsMalloc(sizeof(char) * COUNTERPREFIXSIZE);
+      filename = (char *)artsMalloc(sizeof(char) * COUNTERPREFIXSIZE);
       sprintf(filename, "%s_%u_%u.ct", "counter", nodeId, threadId);
     }
 
@@ -239,7 +242,7 @@ void artsWriteCountersToFile(unsigned int threadId, unsigned int nodeId) {
       uint64_t length = artsLengthArrayList(artsThreadInfo.counterList);
       for (i = 0; i < length; i++) {
         artsCounter *counter =
-            artsGetFromArrayList(artsThreadInfo.counterList, i);
+            (artsCounter *)artsGetFromArrayList(artsThreadInfo.counterList, i);
         if (counter->name)
           artsCounterPrint(counter, fp);
       }

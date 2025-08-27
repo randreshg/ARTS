@@ -37,6 +37,9 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/utils/ArrayList.h"
+#include "arts/arts.h"
+
+#include <string.h>
 
 artsArrayListElement *artsNewArrayListElement(uint64_t start,
                                               size_t elementSize,
@@ -146,7 +149,8 @@ void *artsGetFromArrayList(artsArrayList *aList, uint64_t index) {
 }
 
 artsArrayListIterator *artsNewArrayListIterator(artsArrayList *aList) {
-  artsArrayListIterator *iter = artsMalloc(sizeof(artsArrayListIterator));
+  artsArrayListIterator *iter =
+      (artsArrayListIterator *)artsMalloc(sizeof(artsArrayListIterator));
   iter->index = 0;
   iter->last = aList->index;
   iter->elementSize = aList->elementSize;

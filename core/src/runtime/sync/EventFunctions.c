@@ -44,12 +44,11 @@
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/Runtime.h"
-#include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/LinkList.h"
+
 #include <assert.h>
 #include <time.h>
 
@@ -68,7 +67,7 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 
   if (eventSize) {
-    struct artsEvent *event = eventPacket;
+    struct artsEvent *event = (struct artsEvent *)eventPacket;
     event->header.type = ARTS_EVENT;
     event->header.size = eventSize;
     event->dependentCount = 0;
@@ -253,9 +252,9 @@ struct artsDependent *artsDependentGet(struct artsDependentList *head,
     if (position >= list->size) {
       if (position - list->size == 0) {
         if (list->next == NULL) {
-          temp =
-              artsCalloc(1, sizeof(struct artsDependentList) +
-                                sizeof(struct artsDependent) * list->size * 2);
+          temp = (volatile struct artsDependentList *)artsCalloc(
+              1, sizeof(struct artsDependentList) +
+                     sizeof(struct artsDependent) * list->size * 2);
           temp->size = list->size * 2;
           list->next = (struct artsDependentList *)temp;
         }
@@ -277,7 +276,8 @@ void artsAddDependence(artsGuid_t source, artsGuid_t destination,
                        uint32_t slot) {
   PRINTF("Add Dependence from %u to %u at %u\n", source, destination, slot);
   artsType_t mode = artsGuidGetType(destination);
-  struct artsHeader *sourceHeader = artsRouteTableLookupItem(source);
+  struct artsHeader *sourceHeader =
+      (struct artsHeader *)artsRouteTableLookupItem(source);
   if (sourceHeader == NULL) {
     unsigned int rank = artsGuidGetRank(source);
     if (rank != artsGlobalRankId) {
@@ -407,9 +407,10 @@ struct artsLinkList *artsGetEventVersions(struct artsPersistentEvent *event) {
 struct artsPersistentEventVersion *
 artsPushPersistentEventVersion(struct artsPersistentEvent *event) {
   struct artsLinkList *versions = artsGetEventVersions(event);
-  struct artsPersistentEventVersion *next = artsLinkListNewItem(
-      (sizeof(struct artsPersistentEventVersion) +
-       (sizeof(struct artsDependent) * INITIAL_DEPENDENT_SIZE)));
+  struct artsPersistentEventVersion *next =
+      (struct artsPersistentEventVersion *)artsLinkListNewItem(
+          (sizeof(struct artsPersistentEventVersion) +
+           (sizeof(struct artsDependent) * INITIAL_DEPENDENT_SIZE)));
   next->latchCount = 0;
   next->dependentCount = 0;
   next->dependent.size = INITIAL_DEPENDENT_SIZE;
@@ -454,7 +455,8 @@ bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
 
   if (eventSize) {
-    struct artsPersistentEvent *event = eventPacket;
+    struct artsPersistentEvent *event =
+        (struct artsPersistentEvent *)eventPacket;
     event->header.type = ARTS_PERSISTENT_EVENT;
     event->header.size = eventSize;
     event->versions = NULL;
@@ -688,7 +690,8 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
     return;
   }
   artsType_t mode = artsGuidGetType(edtDest);
-  struct artsHeader *sourceHeader = artsRouteTableLookupItem(eventSource);
+  struct artsHeader *sourceHeader =
+      (struct artsHeader *)artsRouteTableLookupItem(eventSource);
   if (sourceHeader == NULL) {
     unsigned int rank = artsGuidGetRank(eventSource);
     if (rank != artsGlobalRankId) {

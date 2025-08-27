@@ -4,7 +4,7 @@
 ** nor the United States Department of Energy, nor Battelle, nor any of      **
 ** their employees, nor any jurisdiction or organization that has cooperated **
 ** in the development of these materials, makes any warranty, express or     **
-** implied, or assumes any legal liability or responsibility for the accuracy,* 
+** implied, or assumes any legal liability or responsibility for the accuracy,*
 ** completeness, or usefulness or any information, apparatus, product,       **
 ** software, or process disclosed, or represents that its use would not      **
 ** infringe privately owned rights.                                          **
@@ -37,7 +37,12 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#include <errno.h>
+#include "arts/runtime/Globals.h"
+#include "arts/runtime/Runtime.h"
+#include "arts/system/Threads.h"
+#include "arts/utils/ArrayList.h"
+#include "arts/utils/Atomics.h"
+
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -46,235 +51,208 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "arts/runtime/Globals.h"
-#include "arts/utils/Atomics.h"
-#include "arts/utils/Deque.h"
-#include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Threads.h"
-#include "arts/system/Debug.h"
-#include "arts/system/TMT.h"
-#include "arts/utils/ArrayList.h"
-#include "arts/runtime/Runtime.h"
-
-#define DPRINTF( ... )
-//#define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
+#define DPRINTF(...)
+// #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
 
 __thread unsigned int tmtLiteAliasId = 0;
 
-size_t pageSize = 0; //Got this from andres' TMT... Not sure if we need it?
-artsArrayList ** threadToJoin;
-unsigned int * aliasNumber;
+size_t pageSize = 0; // Got this from andres' TMT... Not sure if we need it?
+artsArrayList **threadToJoin;
+unsigned int *aliasNumber;
 
 volatile unsigned int toCreateThreads = 0;
 volatile unsigned int doneCreateThreads = 0;
 volatile unsigned int doneThreads = 0;
-volatile uint64_t * outstanding;
+volatile uint64_t *outstanding;
 
-
-volatile unsigned int * threadReaderLock;
-volatile unsigned int * threadWriterLock;
-volatile unsigned int * arrayListLock;
+volatile unsigned int *threadReaderLock;
+volatile unsigned int *threadWriterLock;
+volatile unsigned int *arrayListLock;
 
 // volatile unsigned int threadCreateReader = 0;
 // volatile unsigned int threadCreateWriter = 0;
 
-void artsWriterLockYield(volatile unsigned int * readLock, volatile unsigned int * writeLock)
-{
-    unsigned int toSwap = tmtLiteAliasId + 1;
-    while (artsAtomicCswap(writeLock, 0U, toSwap) != 0U) {
-      sched_yield();
-    }
-    while ((*readLock)) {
-      sched_yield();
-    }
-    return;
+void artsWriterLockYield(volatile unsigned int *readLock,
+                         volatile unsigned int *writeLock) {
+  unsigned int toSwap = tmtLiteAliasId + 1;
+  while (artsAtomicCswap(writeLock, 0U, toSwap) != 0U) {
+    sched_yield();
+  }
+  while ((*readLock)) {
+    sched_yield();
+  }
+  return;
 }
 
-void artsInitTMTLitePerNode(unsigned int numWorkers)
-{
-    long temp = sysconf(_SC_PAGESIZE);
-    pageSize = temp;
-    threadToJoin =
-        (artsArrayList **)artsCalloc(numWorkers, sizeof(artsArrayList *));
-    aliasNumber = (unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
-    threadReaderLock =
-        (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
-    threadWriterLock =
-        (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
-    arrayListLock =
-        (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
-    outstanding = (volatile uint64_t *)artsCalloc(numWorkers, sizeof(uint64_t));
+void artsInitTMTLitePerNode(unsigned int numWorkers) {
+  long temp = sysconf(_SC_PAGESIZE);
+  pageSize = temp;
+  threadToJoin =
+      (artsArrayList **)artsCalloc(numWorkers, sizeof(artsArrayList *));
+  aliasNumber = (unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+  threadReaderLock =
+      (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+  threadWriterLock =
+      (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+  arrayListLock =
+      (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+  outstanding = (volatile uint64_t *)artsCalloc(numWorkers, sizeof(uint64_t));
 }
 
-void artsInitTMTLitePerWorker(unsigned int id)
-{
-    artsWriterLockYield(&threadReaderLock[id], &threadWriterLock[id]);
-    DPRINTF("EXECUTION LOCK: %p %u %u\n", &threadWriterLock[id], threadWriterLock[id], id);
-    threadToJoin[id] = artsNewArrayList(sizeof(pthread_t), 8);
+void artsInitTMTLitePerWorker(unsigned int id) {
+  artsWriterLockYield(&threadReaderLock[id], &threadWriterLock[id]);
+  DPRINTF("EXECUTION LOCK: %p %u %u\n", &threadWriterLock[id],
+          threadWriterLock[id], id);
+  threadToJoin[id] = artsNewArrayList(sizeof(pthread_t), 8);
 }
 
 void artsTMTLiteShutdown() {
-    DPRINTF("%u outstanding: %u\n",toCreateThreads, doneCreateThreads);
-    while(toCreateThreads!=doneCreateThreads);
-    
+  DPRINTF("%u outstanding: %u\n", toCreateThreads, doneCreateThreads);
+  while (toCreateThreads != doneCreateThreads)
+    ;
 }
 
-void artsTMTLitePrivateCleanUp(unsigned int id)
-{
-    DPRINTF("%u outstanding: %u\n",toCreateThreads, doneThreads);
-    while (toCreateThreads != doneThreads) {
-      sched_yield();
-    }
-    uint64_t outstanding = artsLengthArrayList(threadToJoin[id]);
-    for(uint64_t i=0; i<outstanding; i++)
-    {
-        pthread_t * thread = artsGetFromArrayList(threadToJoin[id], i);
-        pthread_join(*thread, NULL);
-    }
-    PRINTF("%u joined: %lu threads\n", id, outstanding);
+void artsTMTLitePrivateCleanUp(unsigned int id) {
+  DPRINTF("%u outstanding: %u\n", toCreateThreads, doneThreads);
+  while (toCreateThreads != doneThreads) {
+    sched_yield();
+  }
+  uint64_t outstanding = artsLengthArrayList(threadToJoin[id]);
+  for (uint64_t i = 0; i < outstanding; i++) {
+    pthread_t *thread = (pthread_t *)artsGetFromArrayList(threadToJoin[id], i);
+    pthread_join(*thread, NULL);
+  }
+  PRINTF("%u joined: %lu threads\n", id, outstanding);
 }
 
-typedef struct
-{
-  uint32_t aliasId;  // alias id
+typedef struct {
+  uint32_t aliasId; // alias id
   uint32_t sourceId;
-  struct artsEdt * edtToRun;
-  volatile uint64_t * toDec;
-  struct artsRuntimePrivate * tlToCopy; // we copy the master thread's TL
+  struct artsEdt *edtToRun;
+  volatile uint64_t *toDec;
+  struct artsRuntimePrivate *tlToCopy; // we copy the master thread's TL
 } liteArgs_t;
 
-void * artsAliasLiteThreadLoop(void * arg) 
-{
-    liteArgs_t * tArgs = (liteArgs_t*) arg;
-    tmtLiteAliasId = tArgs->aliasId;
-    uint32_t sourceId = tArgs->sourceId;
-    memcpy(&artsThreadInfo, tArgs->tlToCopy, sizeof(struct artsRuntimePrivate));
+void *artsAliasLiteThreadLoop(void *arg) {
+  liteArgs_t *tArgs = (liteArgs_t *)arg;
+  tmtLiteAliasId = tArgs->aliasId;
+  uint32_t sourceId = tArgs->sourceId;
+  memcpy(&artsThreadInfo, tArgs->tlToCopy, sizeof(struct artsRuntimePrivate));
 
-    if(artsNodeInfo.pinThreads)
-    {
-        DPRINTF("PINNING to %u:%u\n", artsThreadInfo.groupId, aliasId);
-        artsPthreadAffinity(artsThreadInfo.coreId, false);
-    }
+  if (artsNodeInfo.pinThreads) {
+    DPRINTF("PINNING to %u:%u\n", artsThreadInfo.groupId, aliasId);
+    artsPthreadAffinity(artsThreadInfo.coreId, false);
+  }
 
-    unsigned int res = artsAtomicAdd(&doneCreateThreads, 1);
-    artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
-    DPRINTF("GOT LOCK %u alias %u\n", sourceId, tmtLiteAliasId);
-    if(artsThreadInfo.alive)
-        artsNodeInfo.scheduler();
-    artsWriterUnlock(&threadWriterLock[sourceId]);
-    uint64_t tempRes = artsAtomicSubU64(tArgs->toDec, 1);
-    artsAtomicAdd(&doneThreads, 1);
-    artsFree(tArgs);
-    return NULL;
+  unsigned int res = artsAtomicAdd(&doneCreateThreads, 1);
+  artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
+  DPRINTF("GOT LOCK %u alias %u\n", sourceId, tmtLiteAliasId);
+  if (artsThreadInfo.alive)
+    artsNodeInfo.scheduler();
+  artsWriterUnlock(&threadWriterLock[sourceId]);
+  uint64_t tempRes = artsAtomicSubU64(tArgs->toDec, 1);
+  artsAtomicAdd(&doneThreads, 1);
+  artsFree(tArgs);
+  return NULL;
 }
 
-void artsCreateLiteContexts(volatile uint64_t * toDec) 
-{
-    unsigned int sourceId = artsThreadInfo.groupId;
-    unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
-    volatile unsigned int spinFlag = 1;
-    liteArgs_t *args = artsCalloc(1, sizeof(liteArgs_t));
-    args->aliasId = ++aliasNumber[sourceId];
-    args->sourceId = sourceId;
-    args->toDec = toDec;
-    args->tlToCopy = &artsThreadInfo; 
-    DPRINTF("threadsToCreate %u args to copy: %p\n", res, args.tlToCopy);
-    
-    
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, pageSize);
-    pthread_t * thread = (pthread_t*) artsNextFreeFromArrayList(threadToJoin[artsThreadInfo.groupId]);
-    
-    artsWriterUnlock(&threadWriterLock[sourceId]);
+void artsCreateLiteContexts(volatile uint64_t *toDec) {
+  unsigned int sourceId = artsThreadInfo.groupId;
+  unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
+  volatile unsigned int spinFlag = 1;
+  liteArgs_t *args = (liteArgs_t *)artsCalloc(1, sizeof(liteArgs_t));
+  args->aliasId = ++aliasNumber[sourceId];
+  args->sourceId = sourceId;
+  args->toDec = toDec;
+  args->tlToCopy = &artsThreadInfo;
+  DPRINTF("threadsToCreate %u args to copy: %p\n", res, args.tlToCopy);
 
-    pthread_create(thread, &attr, &artsAliasLiteThreadLoop, args);
-    
-    artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, pageSize);
+  pthread_t *thread = (pthread_t *)artsNextFreeFromArrayList(
+      threadToJoin[artsThreadInfo.groupId]);
+
+  artsWriterUnlock(&threadWriterLock[sourceId]);
+
+  pthread_create(thread, &attr, &artsAliasLiteThreadLoop, args);
+
+  artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
 }
 
-void * artsAliasLiteThreadLoop2(void * arg) 
-{
-    liteArgs_t * tArgs = (liteArgs_t*) arg;
-    tmtLiteAliasId = tArgs->aliasId;
-    uint32_t sourceId = tArgs->sourceId;
-    memcpy(&artsThreadInfo, tArgs->tlToCopy, sizeof(struct artsRuntimePrivate));
+void *artsAliasLiteThreadLoop2(void *arg) {
+  liteArgs_t *tArgs = (liteArgs_t *)arg;
+  tmtLiteAliasId = tArgs->aliasId;
+  uint32_t sourceId = tArgs->sourceId;
+  memcpy(&artsThreadInfo, tArgs->tlToCopy, sizeof(struct artsRuntimePrivate));
 
-    if(artsNodeInfo.pinThreads)
-    {
-        DPRINTF("PINNING to %u:%u\n", artsThreadInfo.groupId, aliasId);
-        artsPthreadAffinity(artsThreadInfo.coreId, false);
-    }
+  if (artsNodeInfo.pinThreads) {
+    DPRINTF("PINNING to %u:%u\n", artsThreadInfo.groupId, aliasId);
+    artsPthreadAffinity(artsThreadInfo.coreId, false);
+  }
 
-    DPRINTF("SourceId: %u vs %u -- %u\n", sourceId, artsThreadInfo.groupId, tmtLiteAliasId);
+  DPRINTF("SourceId: %u vs %u -- %u\n", sourceId, artsThreadInfo.groupId,
+          tmtLiteAliasId);
 
-    artsAtomicAdd(&doneCreateThreads, 1);
-    
-    artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
-    
-    DPRINTF("GOT LOCK %u alias %u\n", sourceId, tmtLiteAliasId);
-    artsRunEdt(tArgs->edtToRun);
-    
-    artsWriterUnlock(&threadWriterLock[sourceId]);
-    
-    artsAtomicSubU64(tArgs->toDec, 1);
-    artsAtomicSubU64(&outstanding[sourceId], 1);
-    artsAtomicAdd(&doneThreads, 1);
-    artsFree(tArgs);
-    return NULL;
+  artsAtomicAdd(&doneCreateThreads, 1);
+
+  artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
+
+  DPRINTF("GOT LOCK %u alias %u\n", sourceId, tmtLiteAliasId);
+  artsRunEdt(tArgs->edtToRun);
+
+  artsWriterUnlock(&threadWriterLock[sourceId]);
+
+  artsAtomicSubU64(tArgs->toDec, 1);
+  artsAtomicSubU64(&outstanding[sourceId], 1);
+  artsAtomicAdd(&doneThreads, 1);
+  artsFree(tArgs);
+  return NULL;
 }
 
-void artsCreateLiteContexts2(volatile uint64_t * toDec, struct artsEdt * edt)
-{
-    unsigned int sourceId = artsThreadInfo.groupId;
-    unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
-    artsAtomicAddU64(&outstanding[sourceId], 1);
-    volatile unsigned int spinFlag = 1;
-    liteArgs_t *args = artsCalloc(1, sizeof(liteArgs_t));
-    args->aliasId = ++aliasNumber[sourceId];
-    args->sourceId = sourceId;
-    args->edtToRun = edt;
-    args->toDec = toDec;
-    args->tlToCopy = &artsThreadInfo; 
-    DPRINTF("threadsToCreate %u args to copy: %p\n", res, args.tlToCopy);
-    
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, pageSize);
-    artsLock(&arrayListLock[artsThreadInfo.groupId]);
-    pthread_t * thread = (pthread_t*) artsNextFreeFromArrayList(threadToJoin[artsThreadInfo.groupId]);
-    artsUnlock(&arrayListLock[artsThreadInfo.groupId]);
-    pthread_create(thread, &attr, &artsAliasLiteThreadLoop2, args);
+void artsCreateLiteContexts2(volatile uint64_t *toDec, struct artsEdt *edt) {
+  unsigned int sourceId = artsThreadInfo.groupId;
+  unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
+  artsAtomicAddU64(&outstanding[sourceId], 1);
+  volatile unsigned int spinFlag = 1;
+  liteArgs_t *args = (liteArgs_t *)artsCalloc(1, sizeof(liteArgs_t));
+  args->aliasId = ++aliasNumber[sourceId];
+  args->sourceId = sourceId;
+  args->edtToRun = edt;
+  args->toDec = toDec;
+  args->tlToCopy = &artsThreadInfo;
+  DPRINTF("threadsToCreate %u args to copy: %p\n", res, args.tlToCopy);
+
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, pageSize);
+  artsLock(&arrayListLock[artsThreadInfo.groupId]);
+  pthread_t *thread = (pthread_t *)artsNextFreeFromArrayList(
+      threadToJoin[artsThreadInfo.groupId]);
+  artsUnlock(&arrayListLock[artsThreadInfo.groupId]);
+  pthread_create(thread, &attr, &artsAliasLiteThreadLoop2, args);
 }
 
-void artsYieldLiteContext()
-{
-    unsigned int sourceId = artsThreadInfo.groupId;
+void artsYieldLiteContext() {
+  unsigned int sourceId = artsThreadInfo.groupId;
+  artsWriterUnlock(&threadWriterLock[sourceId]);
+  sched_yield();
+}
+
+void artsResumeLiteContext() {
+  unsigned int sourceId = artsThreadInfo.groupId;
+  artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
+}
+
+unsigned int artsTMTLiteGetAlias() { return tmtLiteAliasId; }
+
+void artsTMTSchedulerYield() {
+  unsigned int sourceId = artsThreadInfo.groupId;
+  if (outstanding[sourceId]) {
+    // PRINTF("Scheduler Yield %u\n", outstanding[sourceId]);
     artsWriterUnlock(&threadWriterLock[sourceId]);
     sched_yield();
-}
-
-void artsResumeLiteContext()
-{
-    unsigned int sourceId = artsThreadInfo.groupId;
-    artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
-}
-
-unsigned int artsTMTLiteGetAlias()
-{
-    return tmtLiteAliasId;
-}
-
-void artsTMTSchedulerYield()
-{
-    unsigned int sourceId = artsThreadInfo.groupId;
-    if(outstanding[sourceId])
-    {
-        // PRINTF("Scheduler Yield %u\n", outstanding[sourceId]);
-        artsWriterUnlock(&threadWriterLock[sourceId]);
-        sched_yield();
-        artsWriterLockYield(&threadReaderLock[sourceId], &threadWriterLock[sourceId]);
-    }
+    artsWriterLockYield(&threadReaderLock[sourceId],
+                        &threadWriterLock[sourceId]);
+  }
 }

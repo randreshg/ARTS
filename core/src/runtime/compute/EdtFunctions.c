@@ -45,7 +45,6 @@
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/ArrayList.h"
@@ -81,7 +80,8 @@ artsGuid_t artsGetCurrentEpochGuid() {
   if (epochList) {
     uint64_t length = artsLengthArrayList(epochList);
     if (length) {
-      artsGuid_t *guid = artsGetFromArrayList(epochList, length - 1);
+      artsGuid_t *guid =
+          (artsGuid_t *)artsGetFromArrayList(epochList, length - 1);
       return *guid;
     }
   }
@@ -92,7 +92,7 @@ artsGuid_t *artsCheckEpochIsRoot(artsGuid_t toCheck) {
   if (epochList) {
     uint64_t length = artsLengthArrayList(epochList);
     for (uint64_t i = 0; i < length; i++) {
-      artsGuid_t *guid = artsGetFromArrayList(epochList, i);
+      artsGuid_t *guid = (artsGuid_t *)artsGetFromArrayList(epochList, i);
       if (*guid == toCheck)
         return guid;
     }
@@ -134,7 +134,7 @@ void artsRestoreThreadLocal(threadLocal_t *tl) {
   currentEdt = tl->currentEdt;
   if (epochList)
     artsDeleteArrayList(epochList);
-  epochList = tl->epochList;
+  epochList = (artsArrayList *)tl->epochList;
   ARTSCOUNTERTIMERENDINCREMENT(contextSwitch);
 
   ARTSCOUNTERTIMERSTART(edtCounter);
@@ -145,7 +145,7 @@ void artsIncrementFinishedEpochList() {
 
     unsigned int epochArrayLength = artsLengthArrayList(epochList);
     for (unsigned int i = 0; i < epochArrayLength; i++) {
-      artsGuid_t *guid = artsGetFromArrayList(epochList, i);
+      artsGuid_t *guid = (artsGuid_t *)artsGetFromArrayList(epochList, i);
       DPRINTF("%lu Unsetting guid: %lu\n", artsThreadInfo.currentEdtGuid, guid);
       if (*guid)
         incrementFinishedEpoch(*guid);
@@ -227,7 +227,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
       if (createdGuid) {
         artsRouteTableAddItem(edt, *guid, artsGlobalRankId, false);
         if (edt->depcNeeded == 0)
-          artsHandleReadyEdt((void *)edt);
+          artsHandleReadyEdt(edt);
       }
       // we are racing to add an edt
       else {
@@ -236,7 +236,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
           // Check the OO callback for EDT
           artsRouteTableFireOO(*guid, artsOutOfOrderHandler);
         } else
-          artsHandleReadyEdt((void *)edt);
+          artsHandleReadyEdt(edt);
       }
     }
 
@@ -324,7 +324,7 @@ void artsEdtFree(struct artsEdt *edt) {
   artsThreadInfo.edtFree = 0;
 }
 
-inline void artsEdtDelete(struct artsEdt *edt) {
+void artsEdtDelete(struct artsEdt *edt) {
   artsRouteTableRemoveItem(edt->currentEdt);
   artsEdtFree(edt);
 }
@@ -364,7 +364,8 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
   } else {
     unsigned int rank = artsGuidGetRank(edtPacket);
     if (rank == artsGlobalRankId) {
-      struct artsEdt *edt = artsRouteTableLookupItem(edtPacket);
+      struct artsEdt *edt =
+          (struct artsEdt *)artsRouteTableLookupItem(edtPacket);
       if (edt) {
         artsEdtDep_t *edtDep = (artsEdtDep_t *)artsGetDepv(edt);
         if (slot < edt->depc) {
@@ -455,12 +456,12 @@ artsGuid_t artsAllocateLocalBuffer(void **buffer, unsigned int size,
   unsigned int alloc = 0;
   if (size) {
     if (*buffer == NULL) {
-      *buffer = artsMalloc(sizeof(char) * size);
+      *buffer = (char *)artsMalloc(sizeof(char) * size);
       alloc = 1;
     }
   }
 
-  artsBuffer_t *stub = artsMalloc(sizeof(artsBuffer_t));
+  artsBuffer_t *stub = (artsBuffer_t *)artsMalloc(sizeof(artsBuffer_t));
   stub->buffer = (buffer) ? *buffer : NULL;
   stub->sizeToWrite = NULL;
   stub->size = size;
@@ -476,7 +477,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
   void *ret = NULL;
   unsigned int rank = artsGuidGetRank(bufferGuid);
   if (rank == artsGlobalRankId) {
-    artsBuffer_t *stub = artsRouteTableLookupItem(bufferGuid);
+    artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     if (stub) {
       artsGuid_t epochGuid = stub->epochGuid;
       if (epochGuid)
@@ -489,7 +490,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
                  stub->size);
           artsDebugPrintStack();
         } else if (stub->buffer == NULL) {
-          stub->buffer = artsMalloc(sizeof(char) * size);
+          stub->buffer = (char *)artsMalloc(sizeof(char) * size);
           stub->size = size;
         } else
           stub->size = size;
@@ -526,7 +527,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
 void *artsGetBuffer(artsGuid_t bufferGuid) {
   void *buffer = NULL;
   if (artsIsGuidLocal(bufferGuid)) {
-    artsBuffer_t *stub = artsRouteTableLookupItem(bufferGuid);
+    artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     buffer = stub->buffer;
     if (!artsAtomicSub(&stub->uses, 1)) {
       artsRouteTableRemoveItem(bufferGuid);
@@ -539,7 +540,7 @@ void *artsGetBuffer(artsGuid_t bufferGuid) {
 void *artsBlockForBuffer(artsGuid_t bufferGuid) {
   void *buffer = NULL;
   if (artsIsGuidLocal(bufferGuid)) {
-    artsBuffer_t *stub = artsRouteTableLookupItem(bufferGuid);
+    artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     while (stub->uses > 1) {
       DPRINTF("Yeild: %u\n", stub->uses);
       artsYield();

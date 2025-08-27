@@ -54,7 +54,13 @@
 
 #define PT_CONTEXTS // maintain contexts via PThreads
 
-#include <errno.h>
+#include "arts/system/TMT.h"
+#include "arts/runtime/Globals.h"
+#include "arts/runtime/Runtime.h"
+#include "arts/runtime/network/RemoteFunctions.h"
+#include "arts/system/Threads.h"
+#include "arts/utils/Atomics.h"
+
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -62,16 +68,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-#include "arts/runtime/Globals.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/system/TMT.h"
-#include "arts/system/Threads.h"
-#include "arts/utils/Atomics.h"
-#include "arts/utils/Deque.h"
 
 #define DPRINTF(...)
 // #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
@@ -94,7 +90,7 @@ static inline internalMsi_t *artsGetMsiOffsetPtr(internalMsi_t *head,
   return ptr;
 }
 
-static inline artsTicket GenTicket() {
+static inline artsTicket genTicket() {
   artsTicket ticket;
   ticket.fields.rank = artsGlobalRankId;
   ticket.fields.unit = artsThreadInfo.groupId;
@@ -272,10 +268,10 @@ static inline void artsDestroyContexts(internalMsi_t *ptr, bool head) {
 // RT visible functions
 // COMMENT: MasterThread (MT) is the original thread
 void artsTMTNodeInit(unsigned int numThreads) {
-  if (artsNodeInfo.tMT > 64) {
+  if (numThreads > 64) {
     PRINTF(
         "Temporal multi-threading can't run more than 64 threads per core\n");
-    artsNodeInfo.tMT = 64;
+    numThreads = 64;
   }
 
   if (artsNodeInfo.tMT) {
@@ -289,14 +285,14 @@ void artsTMTConstructNewInternalMsi(msi_t *root, unsigned int numAT,
   unsigned int offset = 0;
   internalMsi_t *ptr = root->head;
   if (!root->head)
-    root->head = ptr = artsCalloc(1, sizeof(internalMsi_t));
+    root->head = ptr = (internalMsi_t *)artsCalloc(1, sizeof(internalMsi_t));
   else {
     offset = numAT;
     while (ptr->next) {
       offset += numAT;
       ptr = ptr->next;
     }
-    ptr->next = artsCalloc(1, sizeof(internalMsi_t));
+    ptr->next = (internalMsi_t *)artsCalloc(1, sizeof(internalMsi_t));
     ptr = ptr->next;
   }
 
@@ -520,7 +516,7 @@ void artsOpenContextSwitch() {
 
 bool artsSignalContext(artsTicket_t waitTicket) {
   DPRINTF("SIGNAL CONTEXT %u\n", artsNodeInfo.tMT);
-  artsTicket ticket = (artsTicket)waitTicket;
+  artsTicket ticket = (artsTicket){.bits = waitTicket};
   unsigned int rank = (unsigned int)ticket.fields.rank;
   unsigned int unit = (unsigned int)ticket.fields.unit;
   unsigned int thread = (unsigned int)ticket.fields.thread;
@@ -555,7 +551,7 @@ artsTicket_t artsGetContextTicket() {
   artsTicket ticket;
   ticket.bits = 0;
   if (artsNodeInfo.tMT)
-    ticket = GenTicket();
+    ticket = genTicket();
   DPRINTF("%u r: %u u: %u t: %u v: %u\n", artsNodeInfo.tMT,
           (unsigned int)ticket.fields.rank, (unsigned int)ticket.fields.unit,
           (unsigned int)ticket.fields.thread,

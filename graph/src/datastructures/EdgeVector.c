@@ -37,7 +37,8 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/EdgeVector.h"
-#include "arts/runtime/Globals.h"
+#include "arts/arts.h"
+
 #include <assert.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -51,10 +52,9 @@ int compareBySource(const void *e1, const void *e2) {
 
   if (pe1->source < pe2->source)
     return -1;
-  else if (pe1->source == pe2->source)
+  if (pe1->source == pe2->source)
     return 0;
-  else
-    return 1;
+  return 1;
 }
 
 int compareBySourceAndTarget(const void *e1, const void *e2) {
@@ -63,21 +63,20 @@ int compareBySourceAndTarget(const void *e1, const void *e2) {
 
   if (pe1->source < pe2->source)
     return -1;
-  else if (pe1->source == pe2->source) {
+  if (pe1->source == pe2->source) {
     if (pe1->target < pe2->target)
       return -1;
-    else if (pe1->target == pe2->target)
+    if (pe1->target == pe2->target)
       return 0;
-    else
-      return 1;
-  } else
     return 1;
+  }
+  return 1;
 }
 
 // end comparators
 
 void initEdgeVector(artsEdgeVector *v, graph_sz_t initialSize) {
-  v->edge_array = artsMalloc(initialSize * sizeof(edge_t));
+  v->edge_array = (edge_t *)artsMalloc(initialSize * sizeof(edge_t));
   v->used = 0;
   v->size = initialSize;
 }
@@ -85,13 +84,14 @@ void initEdgeVector(artsEdgeVector *v, graph_sz_t initialSize) {
 void pushBackEdge(artsEdgeVector *v, vertex_t s, vertex_t t, edge_data_t d) {
   if (v->used == v->size) {
     v->size *= INCREASE_SZ_BY;
-    void *new = artsRealloc(v->edge_array, v->size * sizeof(edge_t));
-    if (!new) {
+    edge_t *newEdgeArray =
+        (edge_t *)artsRealloc(v->edge_array, v->size * sizeof(edge_t));
+    if (!newEdgeArray) {
       PRINTF("[ERROR] Unable to reallocate memory. Cannot continue\n.");
       assert(false);
       return;
     }
-    v->edge_array = new;
+    v->edge_array = newEdgeArray;
   }
 
   v->edge_array[v->used].source = s;

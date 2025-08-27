@@ -36,43 +36,28 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/network/SocketServer.h"
 #include "arts/arts.h"
-#include "arts/utils/Atomics.h"
-#include "arts/system/Config.h"
-#include "arts/utils/Deque.h"
-#include "arts/runtime/Globals.h"
-#include "arts/gas/Guid.h"
-#include "arts/network/Remote.h"
-#include "arts/network/RemoteProtocol.h"
-#include "arts/runtime/Runtime.h"
-
-#include "stdio.h"
-#include "stdlib.h"
-#include "string.h"
-
-#include "arpa/inet.h"
-#include "arts/gas/RouteTable.h"
-#include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Connection.h"
+#include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
 #include "arts/network/Server.h"
-#include "arts/network/SocketServer.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Debug.h"
-#include "errno.h"
-#include "net/if.h"
-#include "netdb.h"
-#include "netinet/in.h"
-#include "sys/ioctl.h"
-#include "sys/types.h"
+#include "arts/runtime/Globals.h"
+#include "arts/runtime/Runtime.h"
+#include "arts/system/Config.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
 #include <ifaddrs.h>
 #include <inttypes.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <poll.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
-// #include <linux/if_packet.h>
-// #include <linux/if_arp.h>
 
 // #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
 #define DPRINTF(...)
@@ -102,7 +87,6 @@ void artsRemoteSetMessageTable(struct artsConfig *table) {
   artsGlobalMessageTable = table;
   ports = table->ports;
 }
-
 bool hostnameToIp(char *hostName, char *ip) {
   int j;
   struct hostent *he;
@@ -110,7 +94,6 @@ bool hostnameToIp(char *hostName, char *ip) {
   struct addrinfo *result;
   int error = getaddrinfo(hostName, NULL, NULL, &result);
   if (error == 0) {
-
     if (result->ai_addr->sa_family == AF_INET) {
       struct sockaddr_in *res = (struct sockaddr_in *)result->ai_addr;
       inet_ntop(AF_INET, &res->sin_addr, ip, 100);
@@ -135,7 +118,7 @@ void artsRemoteFixNames(char *fix, unsigned int fixLength, bool isItPost,
     oldStr = *fixMe; // artsGlobalMessageTable->table[i].ipAddress;
     oldStrLength = strlen(oldStr);
 
-    newStr = artsMalloc(oldStrLength + fixLength + 1);
+    newStr = (char *)artsMalloc(oldStrLength + fixLength + 1);
 
     if (isItPost) {
       strncpy(newStr, oldStr, oldStrLength);
@@ -162,7 +145,7 @@ void artsServerFixIbNames(struct artsConfig *config) {
   for (int j = 0; j < config->tableLength; j++) {
     char *testStr = artsGlobalMessageTable->table[j].ipAddress;
     int testStrLength = strlen(testStr);
-    char *stringFixed = artsMalloc(testStrLength + 50);
+    char *stringFixed = (char *)artsMalloc(testStrLength + 50);
     struct addrinfo *result;
     bool found = false;
     int i = 0, error;
@@ -205,7 +188,7 @@ void artsServerFixIbNames(struct artsConfig *config) {
 }
 
 bool artsServerSetIP(struct artsConfig *config) {
-  ipList = artsMalloc(100 * sizeof(char) * config->tableLength);
+  ipList = (char *)artsMalloc(100 * sizeof(char) * config->tableLength);
   bool result;
   for (int i = 0; i < config->tableLength; i++) {
     result = hostnameToIp(config->table[i].ipAddress, ipList + 100 * i);
@@ -365,7 +348,7 @@ int artsActualSend(char *message, unsigned int length, int rank, int port) {
 
   if (res < 0) {
     if (errno != EAGAIN) {
-      struct artsRemotePacket *pk = (void *)message;
+      struct artsRemotePacket *pk = (struct artsRemotePacket *)message;
       PRINTF("artsRemoteSendRequest %u Socket appears to be closed to rank %d: "
              " %s\n",
              pk->messageType, rank, strerror(errno));
@@ -416,16 +399,18 @@ bool artsRemoteSetupIncoming() {
   socklen_t sLength = sizeof(struct sockaddr);
   int count = (artsGlobalMessageTable->tableLength - 1);
 
-  remoteSocketRecieveList = artsMalloc(sizeof(int) * (count + 1) * ports);
-  remoteServerRecieveList =
-      artsCalloc((count + 1) * ports, sizeof(struct sockaddr_in));
-  pollIncoming = artsMalloc(sizeof(struct pollfd) * (count + 1) * ports);
+  remoteSocketRecieveList =
+      (int *)artsMalloc(sizeof(int) * (count + 1) * ports);
+  remoteServerRecieveList = (struct sockaddr_in *)artsCalloc(
+      (count + 1) * ports, sizeof(struct sockaddr_in));
+  pollIncoming =
+      (struct pollfd *)artsMalloc(sizeof(struct pollfd) * (count + 1) * ports);
 
   struct sockaddr_in test;
 
   struct sockaddr_in *localServerAddr =
-      artsCalloc(ports, sizeof(struct sockaddr_in));
-  localSocketRecieve = artsCalloc(ports, sizeof(int));
+      (struct sockaddr_in *)artsCalloc(ports, sizeof(struct sockaddr_in));
+  localSocketRecieve = (int *)artsCalloc(ports, sizeof(int));
 
   int iSetOption;
   for (i = 0; i < artsGlobalMessageTable->ports; i++) {
@@ -519,10 +504,12 @@ void artsRemoteSetupOutgoing() {
   char ip[100];
   int pos;
 
-  remoteSocketSendList = artsMalloc(sizeof(int) * count * ports);
-  remoteSocketSendLockList = artsCalloc(count * ports, sizeof(int));
-  remoteServerSendList = artsCalloc(count * ports, sizeof(struct sockaddr_in));
-  remoteConnectionAlive = artsCalloc(count * ports, sizeof(bool));
+  remoteSocketSendList = (int *)artsMalloc(sizeof(int) * count * ports);
+  remoteSocketSendLockList =
+      (volatile unsigned int *)artsCalloc(count * ports, sizeof(int));
+  remoteServerSendList = (struct sockaddr_in *)artsCalloc(
+      count * ports, sizeof(struct sockaddr_in));
+  remoteConnectionAlive = (bool *)artsCalloc(count * ports, sizeof(bool));
 
   for (i = 0; i < count; i++) {
     for (j = 0; j < ports; j++)
@@ -546,13 +533,13 @@ void artsRemotSetThreadInboundQueues(unsigned int start, unsigned int stop) {
   threadStop = stop;
   // MASTER_PRINTF("%d %d\n", start, stop);
   unsigned int size = stop - start;
-  bypassBuf = artsMalloc(sizeof(char *) * size);
-  bypassPacketSize = artsMalloc(sizeof(unsigned int) * size);
-  reRecieveRes = artsCalloc(size, sizeof(int));
-  reRecievePacket = artsCalloc(size, sizeof(void *));
-  maxIncoming = artsCalloc(size, sizeof(bool));
+  bypassBuf = (char **)artsMalloc(sizeof(char *) * size);
+  bypassPacketSize = (unsigned int *)artsMalloc(sizeof(unsigned int) * size);
+  reRecieveRes = (unsigned int *)artsCalloc(size, sizeof(int));
+  reRecievePacket = (void **)artsCalloc(size, sizeof(void *));
+  maxIncoming = (bool *)artsCalloc(size, sizeof(bool));
   for (int i = 0; i < size; i++) {
-    bypassBuf[i] = artsMalloc(PACKET_SIZE);
+    bypassBuf[i] = (char *)artsMalloc(PACKET_SIZE);
     bypassPacketSize[i] = PACKET_SIZE;
   }
 }
@@ -738,7 +725,7 @@ bool artsServerTryToRecieve(char **inBuffer, int *inPacketSize,
 
               if (bypassPacketSize[pos] < packet->size) {
                 // PRINTF("Here5\n");
-                char *nextBuf = artsMalloc(packet->size * 4);
+                char *nextBuf = (char *)artsMalloc(packet->size * 4);
 
                 memcpy(nextBuf, bypassBuf[pos], bypassPacketSize[pos]);
 

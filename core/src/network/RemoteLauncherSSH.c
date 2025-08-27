@@ -39,9 +39,10 @@
 
 #include "arts/arts.h"
 #include "arts/network/RemoteLauncher.h"
-#include "arts/runtime/Globals.h"
 #include "arts/system/Config.h"
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -65,7 +66,7 @@ void artsRemoteLauncherSSHStartupProcesses(
     PRINTF("Getcwd Error.");
   cwdLength = strlen(cwd);
 
-  sshExecutions = artsMalloc(sizeof(FILE *) * config->tableLength - 1);
+  sshExecutions = (FILE **)artsMalloc(sizeof(FILE *) * config->tableLength - 1);
   launcher->launcherMemory = sshExecutions;
   DPRINTF("%s\n", argv[0]);
   char command[4096];

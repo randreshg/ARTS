@@ -36,10 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSTCPOVERIDE_H
+#ifndef ARTS_NETWORK_CONNECTION_H
+#define ARTS_NETWORK_CONNECTION_H
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 #ifdef USE_RDMA
 #include <rdma/rsocket.h>
 #else
@@ -56,7 +59,9 @@ extern "C" {
 #define rsocket socket
 #define rshutdown shutdown
 #endif
+
 #ifdef __cplusplus
 }
 #endif
+
 #endif

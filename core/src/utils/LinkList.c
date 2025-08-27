@@ -48,7 +48,7 @@ void artsLinkListNew(struct artsLinkList *list) {
 }
 
 void artsLinkListDelete(void *linkList) {
-  struct artsLinkList *list = linkList;
+  struct artsLinkList *list = (struct artsLinkList *)linkList;
   struct artsLinkListItem *last;
   while (list->headPtr != NULL) {
     last = (struct artsLinkListItem *)list->headPtr;
@@ -68,8 +68,8 @@ struct artsLinkList *artsLinkListGroupNew(unsigned int listSize) {
 }
 
 void *artsLinkListNewItem(unsigned int size) {
-  struct artsLinkListItem *newItem =
-      artsCalloc(1, sizeof(struct artsLinkListItem) + size);
+  struct artsLinkListItem *newItem = (struct artsLinkListItem *)artsCalloc(
+      1, sizeof(struct artsLinkListItem) + size);
   newItem->next = NULL;
   if (size) {
     return (void *)(newItem + 1);
@@ -125,7 +125,7 @@ void *artsLinkListGetTailData(struct artsLinkList *linkList) {
 }
 
 void artsLinkListPushBack(struct artsLinkList *list, void *item) {
-  struct artsLinkListItem *newItem = item;
+  struct artsLinkListItem *newItem = (struct artsLinkListItem *)item;
   newItem -= 1;
   artsLock(&list->lock);
   if (list->headPtr == NULL) {

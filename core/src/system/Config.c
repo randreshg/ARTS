@@ -41,14 +41,17 @@
 #include "arts/network/RemoteLauncher.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/Debug.h"
-#include "arts/utils/LinkList.h"
-#include "unistd.h"
+
 #include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #define DPRINTF(...)
 // #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
 
-char *extract_nodelist_lsf(char *envr, int stride, unsigned int *cnt) {
+char *extractNodelistLsf(const char *envr, int stride, unsigned int *cnt) {
   char *lsfNodes;
   char *resString;
   char *last;
@@ -59,7 +62,7 @@ char *extract_nodelist_lsf(char *envr, int stride, unsigned int *cnt) {
   if (stride <= 0)
     stride = 1;
   unsigned int nodesStrLen = strlen(lsfNodes) + 1;
-  char *nodeList = malloc(sizeof(char) * nodesStrLen);
+  char *nodeList = (char *)malloc(sizeof(char) * nodesStrLen);
   unsigned int count = 0;
   unsigned int listStrLength = 0;
   last = resString = strtok(lsfNodes, " ");
@@ -80,7 +83,7 @@ char *extract_nodelist_lsf(char *envr, int stride, unsigned int *cnt) {
 }
 
 struct artsConfigVariable *
-artsConfigFindVariable(struct artsConfigVariable **head, char *string) {
+artsConfigFindVariable(struct artsConfigVariable **head, const char *string) {
   struct artsConfigVariable *found = NULL;
   struct artsConfigVariable *last = NULL;
   struct artsConfigVariable *next = *head;
@@ -97,8 +100,8 @@ artsConfigFindVariable(struct artsConfigVariable **head, char *string) {
   char *overide = getenv(string);
   if (overide) {
     unsigned int size = strlen(overide);
-    struct artsConfigVariable *newVar =
-        artsMalloc(sizeof(struct artsConfigVariable) + size);
+    struct artsConfigVariable *newVar = (struct artsConfigVariable *)artsMalloc(
+        sizeof(struct artsConfigVariable) + size);
 
     newVar->size = size;
     strcpy(newVar->variable, string);
@@ -121,7 +124,7 @@ artsConfigFindVariable(struct artsConfigVariable **head, char *string) {
 }
 
 char *artsConfigFindVariableChar(struct artsConfigVariable *head,
-                                 char *string) {
+                                 const char *string) {
   struct artsConfigVariable *found = NULL;
   char *overide = getenv(string);
 
@@ -142,7 +145,7 @@ char *artsConfigFindVariableChar(struct artsConfigVariable *head,
   return NULL;
 }
 
-unsigned int artsConfigGetVariable(FILE *config, char *lookForMe) {
+unsigned int artsConfigGetVariable(FILE *config, const char *lookForMe) {
   char *line;
   size_t len = 0;
   ssize_t read;
@@ -200,7 +203,8 @@ struct artsConfigVariable *artsConfigGetVariables(FILE *config) {
       if (val[size - 1] == '\n')
         val[size - 1] = '\0';
 
-      cVar = artsMalloc(sizeof(struct artsConfigVariable) + size);
+      cVar = (struct artsConfigVariable *)artsMalloc(
+          sizeof(struct artsConfigVariable) + size);
       cVar->size = size;
 
       strncpy(cVar->variable, var, 255);
@@ -223,11 +227,11 @@ struct artsConfigVariable *artsConfigGetVariables(FILE *config) {
   return head;
 }
 
-char *artsConfigMakeNewVar(char *var) {
+char *artsConfigMakeNewVar(const char *var) {
   char *newVar;
   unsigned int size;
   size = strlen(var);
-  newVar = artsMalloc(size + 1);
+  newVar = (char *)artsMalloc(size + 1);
   strncpy(newVar, var, size);
   newVar[size] = '\0';
   DPRINTF("%s l\n", newVar);
@@ -268,7 +272,7 @@ char *artsConfigGetNodeName(char *start, char *stop) {
     PRINTF("artsConfigGetNodeName: No digits found in %s\n", start);
     artsDebugGenerateSegFault();
   }
-  name = artsMalloc(size);
+  name = (char *)artsMalloc(size);
   strncpy(name, start, size);
   return name;
 }
@@ -278,7 +282,7 @@ char *artsConfigGetHostname(char *name, unsigned int value) {
   unsigned int digits = 1;
   unsigned int temp = value;
   unsigned int stop;
-  char *outName = artsMalloc(length);
+  char *outName = (char *)artsMalloc(length);
 
   while (temp > 9) {
     temp /= 10;
@@ -329,7 +333,7 @@ char *artsConfigGetSlurmHostname(char *name, char *digitSample,
     prefixLength = strlen(prefix);
 
   nameLength = length + digitLength + 1 + prefixLength + suffixLength;
-  char *outName = artsMalloc(nameLength);
+  char *outName = (char *)artsMalloc(nameLength);
 
   if (prefix != NULL) {
     strncpy(outName, prefix, prefixLength);
@@ -441,7 +445,8 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
 
   nodeCount = (*config)->nodes;
   (*config)->tableLength = nodeCount;
-  table = artsMalloc(sizeof(struct artsConfigTable) * nodeCount);
+  table = (struct artsConfigTable *)artsMalloc(sizeof(struct artsConfigTable) *
+                                               nodeCount);
 
   if (!(*config)->masterBoot) {
     char *part;
@@ -490,7 +495,7 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
               unsigned int nameLength = strlen(name);
               strLength = strlen(nodeBegin) + nameLength;
               totalLength = strLength + 1 + prefixLength + suffixLength;
-              temp = artsMalloc(totalLength);
+              temp = (char *)artsMalloc(totalLength);
 
               if (prefix != NULL)
                 strncpy(temp, prefix, prefixLength);
@@ -514,7 +519,7 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
         // Single node
         strLength = strlen(nodeBegin);
         totalLength = strLength + 1 + prefixLength + suffixLength;
-        temp = artsMalloc(totalLength);
+        temp = (char *)artsMalloc(totalLength);
 
         if (prefix != NULL)
           strncpy(temp, prefix, prefixLength);
@@ -565,7 +570,7 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
         } else {
           table[currentNode].rank = currentNode;
           strLength = strlen(nodeBegin);
-          temp = artsMalloc(strLength + 1);
+          temp = (char *)artsMalloc(strLength + 1);
           strncpy(temp, nodeBegin, strLength + 1);
           table[currentNode].ipAddress = temp;
           currentNode++;
@@ -601,7 +606,7 @@ struct artsConfig *artsConfigLoad() {
 
   char *end = NULL;
 
-  config = artsMalloc(sizeof(struct artsConfig));
+  config = (struct artsConfig *)artsMalloc(sizeof(struct artsConfig));
 
   char *location = getenv("artsConfig");
   if (location)
@@ -937,7 +942,7 @@ struct artsConfig *artsConfigLoad() {
     artsConfigCreateRoutingTable(&config, nodeList);
 
     unsigned int length = strlen(config->table[0].ipAddress) + 1;
-    config->masterNode = artsMalloc(sizeof(char) * length);
+    config->masterNode = (char *)artsMalloc(sizeof(char) * length);
     strncpy(config->masterNode, config->table[0].ipAddress, length);
 
     for (int i = 0; i < config->tableLength; i++) {
@@ -951,16 +956,16 @@ struct artsConfig *artsConfigLoad() {
     ONCE_PRINTF("Using LSF\n");
     config->masterBoot = false;
     unsigned int count = 0;
-    char *nodeList = extract_nodelist_lsf("LSB_HOSTS", 1, &count);
+    char *nodeList = extractNodelistLsf("LSB_HOSTS", 1, &count);
     if (!nodeList) {
-      nodeList = extract_nodelist_lsf("LSB_MCPU_HOSTS", 2, &count);
+      nodeList = extractNodelistLsf("LSB_MCPU_HOSTS", 2, &count);
     }
     config->nodes = count;
 
     artsConfigCreateRoutingTable(&config, nodeList);
 
     unsigned int length = strlen(config->table[0].ipAddress) + 1;
-    config->masterNode = artsMalloc(sizeof(char) * length);
+    config->masterNode = (char *)artsMalloc(sizeof(char) * length);
 
     strncpy(config->masterNode, config->table[0].ipAddress, length);
 
@@ -990,7 +995,7 @@ struct artsConfig *artsConfigLoad() {
         config->nodes = artsConfigCountNodes(nodeList);
     } else {
       ONCE_PRINTF("No nodes given: defaulting to 1 node\n");
-      nodeList = artsMalloc(sizeof(char) * strlen("localhost\0"));
+      nodeList = (char *)artsMalloc(sizeof(char) * strlen("localhost\0"));
       strncpy(nodeList, "localhost\0", strlen("localhost\0") + 1);
       config->nodes = 1;
     }
@@ -1000,7 +1005,7 @@ struct artsConfig *artsConfigLoad() {
 
     if (config->masterNode == NULL) {
       unsigned int length = strlen(config->table[0].ipAddress) + 1;
-      config->masterNode = artsMalloc(sizeof(char) * length);
+      config->masterNode = (char *)artsMalloc(sizeof(char) * length);
       strncpy(config->masterNode, config->table[0].ipAddress, length);
     }
 

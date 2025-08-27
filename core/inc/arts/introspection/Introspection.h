@@ -36,16 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSINTROSPECTION_H
-#define ARTSINTROSPECTION_H
-#include "arts/runtime/RT.h"
+#ifndef ARTS_INTROSPECTION_INTROSPECTION_H
+#define ARTS_INTROSPECTION_INTROSPECTION_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/arts.h"
-#include "arts/utils/ArrayList.h"
 #include "arts/system/Config.h"
+#include "arts/utils/ArrayList.h"
 
 #define artsMETRICLEVELS 3
 #define artsMAXMETRICNAME 64

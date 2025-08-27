@@ -4,7 +4,7 @@
 ** nor the United States Department of Energy, nor Battelle, nor any of      **
 ** their employees, nor any jurisdiction or organization that has cooperated **
 ** in the development of these materials, makes any warranty, express or     **
-** implied, or assumes any legal liability or responsibility for the accuracy,* 
+** implied, or assumes any legal liability or responsibility for the accuracy,*
 ** completeness, or usefulness or any information, apparatus, product,       **
 ** software, or process disclosed, or represents that its use would not      **
 ** infringe privately owned rights.                                          **
@@ -52,19 +52,28 @@
  *
  */
 
-#ifndef ARTSTMTLITE_H_
-#define ARTSTMTLITE_H_
+#ifndef ARTS_SYSTEM_TMTLITE_H
+#define ARTS_SYSTEM_TMTLITE_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "arts/runtime/RT.h"
 
 #include <stdint.h>
+
 void artsInitTMTLitePerNode(unsigned int numWorkers);
 void artsInitTMTLitePerWorker(unsigned int id);
 void artsTMTLiteShutdown();
 void artsTMTLitePrivateCleanUp(unsigned int id);
-void artsCreateLiteContexts(volatile uint64_t * toDec);
+void artsCreateLiteContexts(volatile uint64_t *toDec);
 void artsYieldLiteContext();
 void artsResumeLiteContext();
 unsigned int artsTMTLiteGetAlias();
-void artsCreateLiteContexts2(volatile uint64_t * toDec, struct artsEdt * edt);
+void artsCreateLiteContexts2(volatile uint64_t *toDec, struct artsEdt *edt);
 void artsTMTSchedulerYield();
 
-#endif /* ARTSTMTLITE_H_ */
+#ifdef __cplusplus
+}
+#endif
+#endif /* ARTS_SYSTEM_TMTLITE_H */

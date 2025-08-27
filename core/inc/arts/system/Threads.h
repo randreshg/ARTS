@@ -37,8 +37,8 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#ifndef ARTSTHREADS_H
-#define ARTSTHREADS_H
+#ifndef ARTS_SYSTEM_THREADS_H
+#define ARTS_SYSTEM_THREADS_H
 #ifdef __cplusplus
 extern "C" {
 #endif

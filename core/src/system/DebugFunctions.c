@@ -42,7 +42,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #if !defined(__APPLE__)
 #include <sys/prctl.h>
 #include <sys/resource.h>

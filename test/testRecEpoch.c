@@ -37,8 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/arts.h"
-#include "arts/utils/Atomics.h"
-#include <stdio.h>
+
 #include <stdlib.h>
 
 unsigned int counter = 0;

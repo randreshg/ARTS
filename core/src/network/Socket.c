@@ -39,11 +39,10 @@
 
 #include "sys/socket.h"
 #include "arpa/inet.h"
-#include "arts/arts.h"
 #include "arts/network/Connection.h"
-#include "netinet/tcp.h"
-#include "string.h"
+
 #include <fcntl.h>
+#include <string.h>
 #define DPRINTF(...)
 
 void artsPrintSocketAddr(struct sockaddr_in *sock) {

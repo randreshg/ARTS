@@ -38,9 +38,13 @@
 ******************************************************************************/
 #include "arts/Csr.h"
 #include "arts/EdgeVector.h"
+#include "arts/arts.h"
 #include "arts/gas/RouteTable.h"
+
 #include <assert.h>
 #include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 vertex_t *getRowPtr(csr_graph_t *_csr) { return (vertex_t *)(_csr + 1); }
@@ -60,7 +64,7 @@ csr_graph_t *initCSR(partition_t partIndex, graph_sz_t _localv,
     graph_sz_t totsz = (_localv + 1) + _locale;
     unsigned int dbSize = sizeof(csr_graph_t) + totsz * sizeof(vertex_t);
 
-    _csr = artsDbCreateWithGuid(blockGuid, dbSize);
+    _csr = (csr_graph_t *)artsDbCreateWithGuid(blockGuid, dbSize);
     _csr->partGuid = blockGuid;
     _csr->num_local_vertices = _localv;
     _csr->num_local_edges = _locale;
@@ -144,9 +148,8 @@ vertex_t indexEndCSR(unsigned int index, const csr_graph_t *const part) {
   // is this the last node ?
   if (index == (part->num_blocks - 1)) {
     return (vertex_t)(part->num_local_vertices - 1);
-  } else {
-    return (indexStartCSR(index, part) + (part->block_sz - 1));
   }
+  return (indexStartCSR(index, part) + (part->block_sz - 1));
 }
 
 vertex_t partitionStartCSR(const csr_graph_t *const part) {
@@ -231,10 +234,10 @@ int loadGraphUsingCmdLineArgs(arts_block_dist_t *_dist, int argc, char **argv) {
   PRINTF("[INFO] Flip ? : %d\n", flip);
   PRINTF("[INFO] Keep Self-loops ? : %d\n", keep_self_loops);
   PRINTF("[INFO] Csr-format : %d\n", csr_format);
-  if (csr_format)
+  if (csr_format) {
     return loadGraphNoWeightCsr(file, _dist, flip, !keep_self_loops);
-  else
-    return loadGraphNoWeight(file, _dist, flip, !keep_self_loops);
+  }
+  return loadGraphNoWeight(file, _dist, flip, !keep_self_loops);
 }
 
 // If we want to read the graph as an undirected graph set _flip = True

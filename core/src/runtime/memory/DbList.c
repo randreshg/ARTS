@@ -37,8 +37,6 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/memory/DbList.h"
-#include "arts/gas/OutOfOrder.h"
-#include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
@@ -207,7 +205,8 @@ void artsPushDelayedEdt(struct artsLocalDelayedEdt *head, unsigned int position,
   struct artsLocalDelayedEdt *current = head;
   for (unsigned int i = 0; i < numElements; i++) {
     if (!current->next)
-      current->next = artsCalloc(1, sizeof(struct artsLocalDelayedEdt));
+      current->next = (struct artsLocalDelayedEdt *)artsCalloc(
+          1, sizeof(struct artsLocalDelayedEdt));
     current = current->next;
   }
   current->edt[elementPos] = edt;
@@ -284,16 +283,16 @@ bool artsPushDbToList(struct artsDbList *dbList, unsigned int data, bool write,
     DPRINTF("FRONT: %p, W: %u E: %u L: %u B: %u %p\n", frontier, write,
             exclusive, local, bypass, edt);
     if (artsPushDbToFrontier(frontier, data, write, exclusive, local, bypass,
-                             edt, slot, mode, &ret))
+                             edt, slot, mode, &ret)) {
       break;
-    else {
-      if (!frontier->next) {
-        struct artsDbFrontier *newFrontier = artsNewDbFrontier();
-        if (artsAtomicCswapPtr((void *)&frontier->next, NULL, newFrontier)) {
-          artsDeleteDbFrontier(newFrontier);
-          while (!frontier->next)
-            ;
-        }
+    }
+    if (!frontier->next) {
+      struct artsDbFrontier *newFrontier = artsNewDbFrontier();
+      if (artsAtomicCswapPtr((volatile void **)&frontier->next, NULL,
+                             newFrontier)) {
+        artsDeleteDbFrontier(newFrontier);
+        while (!frontier->next)
+          ;
       }
     }
     ret = false;
@@ -422,7 +421,7 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
   if (frontier->exEdt) {
     if (frontier->exNode == artsGlobalRankId) {
       struct artsEdt *edt = frontier->exEdt;
-      artsEdtDep_t *depv = artsGetDepv(edt);
+      artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
       depv[frontier->exSlot].ptr = db + 1;
       if (artsAtomicSub(&edt->depcNeeded, 1U) == 0)
         artsHandleRemoteStolenEdt(edt);
@@ -449,7 +448,7 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
       unsigned int pos = i % DBSPERELEMENT;
       struct artsEdt *edt = current->edt[pos];
       // This is prob wrong now with GPUs
-      artsEdtDep_t *depv = artsGetDepv(edt);
+      artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
       depv[current->slot[pos]].ptr = db + 1;
 
       if (artsAtomicSub(&edt->depcNeeded, 1U) == 0) {
@@ -464,7 +463,7 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
 }
 
 void artsProgressFrontier(struct artsDb *db, unsigned int rank) {
-  struct artsDbList *dbList = db->dbList;
+  struct artsDbList *dbList = (struct artsDbList *)db->dbList;
   artsWriterLock(&dbList->reader, &dbList->writer);
   struct artsDbFrontier *tail = dbList->head;
   if (dbList->head) {

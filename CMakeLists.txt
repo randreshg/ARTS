@@ -51,6 +51,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_CXX_EXTENSIONS ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Set global properties for all targets
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -300,7 +301,8 @@ endif()
 
 # Smart database flags
 if(USE_SMART_DB)
-    message(FATAL_ERROR "Smart database features (USE_SMART_DB) are currently not supported. Please set USE_SMART_DB=OFF to continue.")
+    add_compile_definitions(USE_SMART_DB)
+    message(STATUS "Smart database: Using smart database - USE_SMART_DB defined")
 endif()
 
 # Create the main ARTS library target

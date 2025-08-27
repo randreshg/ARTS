@@ -42,17 +42,11 @@
 // https://github.com/NVIDIA-developer-blog/code-samples/blob/master/series/cuda-cpp/overlap-data-transfers/async.cu
 // Once this *class* works we will put a stream(s) in create a thread local
 // stream.  Then we will push stuff!
+#include "arts/gpu/GpuRuntime.cuh"
+#include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/memory/DbFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/utils/Deque.h"
-
-#include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuRuntime.cuh"
-#include "arts/gpu/GpuStream.h"
-#include "arts/gpu/GpuStreamBuffer.h"
+#include "arts/utils/Atomics.h"
 
 #define DPRINTF(...)
 // #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )

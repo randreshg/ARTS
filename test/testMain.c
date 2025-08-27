@@ -38,8 +38,8 @@
 ******************************************************************************/
 #include "arts/arts.h"
 #include "arts/runtime/RT.h"
+
 #include <stdio.h>
-#include <stdlib.h>
 #define __USE_GNU
 #include <sched.h>
 

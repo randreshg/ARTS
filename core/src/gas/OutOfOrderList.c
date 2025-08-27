@@ -37,8 +37,8 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/gas/OutOfOrderList.h"
+#include "arts/arts.h"
 #include "arts/utils/Atomics.h"
-#include "arts/system/Debug.h"
 
 #define DPRINTF
 // #define DPRINTF(...) PRINTF(__VA_ARGS__)
@@ -113,7 +113,8 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
   }
   unsigned int pos = artsAtomicFetchAdd(&addToMe->count, 1U);
 
-  DPRINTF("ADDING to OO LIST %u %u %p\n", pos, addToMe->count, &addToMe->count);
+  // DPRINTF("ADDING to OO LIST %u %u %p\n", pos, addToMe->count,
+  // &addToMe->count);
   unsigned int numElements = pos / OOPERELEMENT;
   unsigned int elementPos = pos % OOPERELEMENT;
 
@@ -121,7 +122,8 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
   for (unsigned int i = 0; i < numElements; i++) {
     if (!current->next) {
       if (i + 1 == numElements && elementPos == 0) {
-        current->next = artsCalloc(1, sizeof(struct artsOutOfOrderElement));
+        current->next = (struct artsOutOfOrderElement *)artsCalloc(
+            1, sizeof(struct artsOutOfOrderElement));
       } else
         while (!current->next)
           ;
@@ -170,7 +172,7 @@ void artsOutOfOrderListFireCallback(struct artsOutOfOrderList *fireMe,
                                     void *localGuidAddress,
                                     void (*callback)(void *, void *)) {
   if (writerTryOOLock(fireMe, fireLock)) {
-    DPRINTF("FIRING OO LIST %u\n", fireMe->count);
+    // DPRINTF("FIRING OO LIST %u\n", fireMe->count);
     fireMe->isFired = true;
     unsigned int pos = fireMe->count;
     unsigned int j = 0;

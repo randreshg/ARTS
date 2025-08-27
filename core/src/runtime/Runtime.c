@@ -38,28 +38,23 @@
 ******************************************************************************/
 #include "arts/runtime/Runtime.h"
 #include "arts/gas/Guid.h"
-#include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
+#include "arts/network/RemoteProtocol.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/AbstractMachineModel.h"
-#include "arts/system/Debug.h"
 #include "arts/system/TMT.h"
 #include "arts/system/TMTLite.h"
 #include "arts/system/Threads.h"
-#include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
 
 #ifdef USE_GPU
-#include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuRuntime.cuh"
 #include "arts/gpu/GpuStream.h"
 #endif
@@ -138,7 +133,7 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.shutdownStarted = 0;
   artsNodeInfo.readyToShutdown = artsGlobalRankCount - 1;
   artsNodeInfo.stealRequestLock = !remoteStealingOn;
-  artsNodeInfo.buf = artsMalloc(PACKET_SIZE);
+  artsNodeInfo.buf = (char *)artsMalloc(PACKET_SIZE);
   artsNodeInfo.packetSize = PACKET_SIZE;
   artsNodeInfo.printNodeStats = config->printNodeStats;
   artsNodeInfo.shutdownEpoch = (config->shutdownEpoch) ? 1 : NULL_GUID;
@@ -159,8 +154,9 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.runGpuGcPreEdt = config->runGpuGcPreEdt;
   artsNodeInfo.deleteZerosGpuGc = config->deleteZerosGpuGc;
   artsNodeInfo.pinThreads = config->pinThreads;
-  artsNodeInfo.keys = artsCalloc(totalThreads, sizeof(uint64_t *));
-  artsNodeInfo.globalGuidThreadId = artsCalloc(totalThreads, sizeof(uint64_t));
+  artsNodeInfo.keys = (uint64_t **)artsCalloc(totalThreads, sizeof(uint64_t *));
+  artsNodeInfo.globalGuidThreadId =
+      (uint64_t *)artsCalloc(totalThreads, sizeof(uint64_t));
   artsTMTNodeInit(workerThreads);
   artsInitTMTLitePerNode(workerThreads);
   artsInitIntrospector(config);
@@ -444,7 +440,8 @@ inline struct artsEdt *artsRuntimeStealFromNetwork() {
     unsigned int index = artsThreadInfo.threadId;
     for (unsigned int i = 0; i < artsNodeInfo.receiverThreadCount; i++) {
       index = (index + 1) % artsNodeInfo.receiverThreadCount;
-      if ((edt = artsDequePopBack(artsNodeInfo.receiverDeque[index])) != NULL)
+      if ((edt = (struct artsEdt *)artsDequePopBack(
+               artsNodeInfo.receiverDeque[index])) != NULL)
         break;
     }
   }
@@ -459,7 +456,7 @@ inline struct artsEdt *artsRuntimeStealFromWorker() {
       stealLoc = jrand48(artsThreadInfo.drand_buf);
       stealLoc = stealLoc % artsNodeInfo.totalThreadCount;
     } while (stealLoc == artsThreadInfo.threadId);
-    edt = artsDequePopBack(artsNodeInfo.deque[stealLoc]);
+    edt = (struct artsEdt *)artsDequePopBack(artsNodeInfo.deque[stealLoc]);
   }
   return edt;
 }
@@ -467,8 +464,10 @@ inline struct artsEdt *artsRuntimeStealFromWorker() {
 bool artsNetworkFirstSchedulerLoop() {
   struct artsEdt *edtFound;
   if (!(edtFound = artsRuntimeStealFromNetwork())) {
-    if (!(edtFound = artsDequePopFront(artsThreadInfo.myNodeDeque))) {
-      if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque)))
+    if (!(edtFound = (struct artsEdt *)artsDequePopFront(
+              artsThreadInfo.myNodeDeque))) {
+      if (!(edtFound =
+                (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque)))
         edtFound = artsRuntimeStealFromWorker();
     }
   }
@@ -481,8 +480,10 @@ bool artsNetworkFirstSchedulerLoop() {
 
 bool artsNetworkBeforeStealSchedulerLoop() {
   struct artsEdt *edtFound;
-  if (!(edtFound = artsDequePopFront(artsThreadInfo.myNodeDeque))) {
-    if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque))) {
+  if (!(edtFound =
+            (struct artsEdt *)artsDequePopFront(artsThreadInfo.myNodeDeque))) {
+    if (!(edtFound =
+              (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque))) {
       if (!(edtFound = artsRuntimeStealFromNetwork()))
         edtFound = artsRuntimeStealFromWorker();
     }
@@ -497,7 +498,8 @@ bool artsNetworkBeforeStealSchedulerLoop() {
 
 struct artsEdt *artsFindEdt() {
   struct artsEdt *edtFound = NULL;
-  if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque))) {
+  if (!(edtFound =
+            (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque))) {
     if (!edtFound)
       if (!(edtFound = artsRuntimeStealFromWorker()))
         edtFound = artsRuntimeStealFromNetwork();
@@ -510,7 +512,8 @@ struct artsEdt *artsFindEdt() {
 
 bool artsDefaultSchedulerLoop() {
   struct artsEdt *edtFound = NULL;
-  if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque))) {
+  if (!(edtFound =
+            (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque))) {
     if (!edtFound)
       if (!(edtFound = artsRuntimeStealFromWorker()))
         edtFound = artsRuntimeStealFromNetwork();
@@ -523,12 +526,11 @@ bool artsDefaultSchedulerLoop() {
     artsRunEdt(edtFound);
     // artsWakeUpContext();
     return true;
-  } else {
-    checkOutstandingEdts(10000000);
-    artsNextContext();
-    artsTMTSchedulerYield();
-    //        usleep(1);
   }
+  checkOutstandingEdts(10000000);
+  artsNextContext();
+  artsTMTSchedulerYield();
+  //        usleep(1);
   return false;
 }
 

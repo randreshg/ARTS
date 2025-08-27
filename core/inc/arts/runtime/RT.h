@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSRT_H
-#define ARTSRT_H
+#ifndef ARTS_RUNTIME_SYNC_RT_H
+#define ARTS_RUNTIME_SYNC_RT_H
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,22 +46,8 @@ extern "C" {
 #include "arts/utils/LinkList.h"
 #include <inttypes.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-/* boolean support in C */
-#ifdef __cplusplus
-#define TRUE true
-#define FALSE false
-#else
-#define true 1
-#define TRUE 1
-#define false 0
-#define FALSE 0
-typedef uint8_t bool;
-#endif /* __cplusplus */
 
 typedef intptr_t artsGuid_t; /**< GUID type */
 #define NULL_GUID ((artsGuid_t)0x0)

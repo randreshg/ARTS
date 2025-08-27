@@ -38,7 +38,6 @@
  ******************************************************************************/
 #include "arts/network/Server.h"
 #include "arts/arts.h"
-#include "arts/gas/RouteTable.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
@@ -46,8 +45,7 @@
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
-#include "arts/utils/Atomics.h"
+
 #include <unistd.h>
 // #include "artsRemote.h"
 #define DPRINTF(...)
@@ -82,7 +80,7 @@ void artsServerSetup(struct artsConfig *config) {
   artsLLServerSetup(config);
   outInit(artsGlobalRankCount * config->ports);
 #ifdef SEQUENCENUMBERS
-  recSeqNumbers = artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
+  recSeqNumbers = (uint64_t *)artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
 #endif
 }
 

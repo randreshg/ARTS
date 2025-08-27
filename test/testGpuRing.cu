@@ -4,7 +4,7 @@
 ** nor the United States Department of Energy, nor Battelle, nor any of      **
 ** their employees, nor any jurisdiction or organization that has cooperated **
 ** in the development of these materials, makes any warranty, express or     **
-** implied, or assumes any legal liability or responsibility for the accuracy,* 
+** implied, or assumes any legal liability or responsibility for the accuracy,*
 ** completeness, or usefulness or any information, apparatus, product,       **
 ** software, or process disclosed, or represents that its use would not      **
 ** infringe privately owned rights.                                          **
@@ -39,69 +39,63 @@
 
 #include "arts/arts.h"
 #include "arts/utils/ArrayList.h"
+
 #include <cuda_runtime_api.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-#define CHECKCORRECT(x) {                                   \
-  cudaError_t err;                                          \
-  if( (err = (x)) != cudaSuccess )                          \
-    PRINTF("FAILED %s: %s\n", #x, cudaGetErrorString(err)); \
-}
+#define CHECKCORRECT(x)                                                        \
+  {                                                                            \
+    cudaError_t err;                                                           \
+    if ((err = (x)) != cudaSuccess)                                            \
+      PRINTF("FAILED %s: %s\n", #x, cudaGetErrorString(err));                  \
+  }
 
 #define MAX(a, b) ((a > b) ? a : b)
 
-unsigned int * maxCycle = NULL;
-artsArrayList * gpuList = NULL;
-bool ** adjList = NULL;
+unsigned int *maxCycle = NULL;
+artsArrayList *gpuList = NULL;
+bool **adjList = NULL;
 unsigned int order = 0;
 
-bool setMaxCycle(unsigned int * cycle, unsigned int cycleSize)
-{
-    uint64_t length = artsLengthArrayList(gpuList);
-    if(cycle[0] == cycle[cycleSize-1])
-    {
-        for(unsigned int i=0; i<cycleSize-1; i++)
-        {
-            unsigned int found = 0;
-            for(uint64_t j=0; j<length; j++)
-            {
-                int * temp = (int*) artsGetFromArrayList(gpuList, i);
-                if(cycle[j] == *temp)
-                    found++;
-            }
-            if(found != 1)
-                return false;
-        }
+bool setMaxCycle(unsigned int *cycle, unsigned int cycleSize) {
+  uint64_t length = artsLengthArrayList(gpuList);
+  if (cycle[0] == cycle[cycleSize - 1]) {
+    for (unsigned int i = 0; i < cycleSize - 1; i++) {
+      unsigned int found = 0;
+      for (uint64_t j = 0; j < length; j++) {
+        int *temp = (int *)artsGetFromArrayList(gpuList, i);
+        if (cycle[j] == *temp)
+          found++;
+      }
+      if (found != 1)
+        return false;
+    }
 
-        maxCycle = (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
-        for(unsigned int i=0; i<cycleSize; i++)
-            maxCycle[i] = cycle[i];
+    maxCycle = (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
+    for (unsigned int i = 0; i < cycleSize; i++)
+      maxCycle[i] = cycle[i];
+    return true;
+  }
+  return false;
+}
+
+bool depthFirstRec(unsigned int vertex, unsigned int current,
+                   unsigned int cycleSize, unsigned int *cycle) {
+  cycle[current] = vertex;
+
+  if (current + 1 == cycleSize) {
+    return setMaxCycle(cycle, cycleSize);
+  }
+  for (unsigned int i = 0; i < order; i++) {
+    if (adjList[vertex][i])
+      if (depthFirstRec(i, current + 1, cycleSize, cycle))
         return true;
-    }
-    return false;
+  }
+  return false;
 }
 
-bool depthFirstRec(unsigned int vertex, unsigned int current, unsigned int cycleSize, unsigned int * cycle)
-{
-    cycle[current] = vertex;
-
-    if(current + 1 == cycleSize)
-        return setMaxCycle(cycle, cycleSize);
-    else
-    {
-        for(unsigned int i=0; i<order; i++)
-        {
-            if(adjList[vertex][i])
-                if(depthFirstRec(i, current+1, cycleSize, cycle))
-                    return true;
-        }
-    }
-    return false;
-}
-
-void depthFirst(unsigned int cycleSize)
-{
+void depthFirst(unsigned int cycleSize) {
   unsigned int *cycle =
       (unsigned int *)artsCalloc(order + 1, sizeof(unsigned int));
   for (unsigned int i = 0; i < order; i++) {
@@ -114,8 +108,7 @@ void depthFirst(unsigned int cycleSize)
   }
 }
 
-bool ** fullyConnect()
-{
+bool **fullyConnect() {
   bool **adjList = (bool **)artsCalloc(order, sizeof(bool *));
   for (unsigned int i = 0; i < order; i++)
     adjList[i] = (bool *)artsCalloc(order, sizeof(bool));
@@ -135,45 +128,39 @@ bool ** fullyConnect()
         }
       }
     }
-    }
-    return adjList;
+  }
+  return adjList;
 }
 
-void printAdjList()
-{
-    for(unsigned int i=0; i<order; i++)
-    {
-        PRINTF("%u: ", i);
-        for(unsigned int j=0; j<order; j++)
-        {
-            printf("%u ", adjList[i][j]);
-        }
-        printf("\n");
+void printAdjList() {
+  for (unsigned int i = 0; i < order; i++) {
+    PRINTF("%u: ", i);
+    for (unsigned int j = 0; j < order; j++) {
+      printf("%u ", adjList[i][j]);
     }
+    printf("\n");
+  }
 }
 
-int main(int argc, char ** argv)
-{
-    if(argc < 4)
-    {
-        PRINTF("usage: bw gpu1 gpu2 ...\n");
-        return 0;
-    }
-
-    unsigned int bw = atoi(argv[1]);
-    gpuList = artsNewArrayList(sizeof(int), 8);
-    
-    for(unsigned int i=0; i<argc-2; i++)
-    {
-        unsigned int gpu = atoi(argv[2+i]);
-        order = MAX(order, gpu);
-        artsPushToArrayList(gpuList, &gpu);
-    }
-    unsigned int cycleSize = (unsigned int) artsLengthArrayList(gpuList) + 1;
-    order++;
-
-    adjList = fullyConnect();
-    printAdjList();
-    depthFirst(cycleSize);
+int main(int argc, char **argv) {
+  if (argc < 4) {
+    PRINTF("usage: bw gpu1 gpu2 ...\n");
     return 0;
+  }
+
+  unsigned int bw = atoi(argv[1]);
+  gpuList = artsNewArrayList(sizeof(int), 8);
+
+  for (unsigned int i = 0; i < argc - 2; i++) {
+    unsigned int gpu = atoi(argv[2 + i]);
+    order = MAX(order, gpu);
+    artsPushToArrayList(gpuList, &gpu);
+  }
+  unsigned int cycleSize = (unsigned int)artsLengthArrayList(gpuList) + 1;
+  order++;
+
+  adjList = fullyConnect();
+  printAdjList();
+  depthFirst(cycleSize);
+  return 0;
 }

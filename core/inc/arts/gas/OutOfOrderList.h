@@ -36,13 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSOUTOFORDERLIST_H
-#define ARTSOUTOFORDERLIST_H
+#ifndef ARTS_GAS_OUTOFORDERLIST_H
+#define ARTS_GAS_OUTOFORDERLIST_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/arts.h"
+#include <stdbool.h>
 #define OOPERELEMENT 4
 
 struct artsOutOfOrderElement {

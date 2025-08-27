@@ -44,7 +44,7 @@ extern "C" {
 #endif
 
 #include "arts/GraphDefs.h"
-#include "arts/runtime/Globals.h"
+#include "arts/runtime/RT.h"
 
 typedef struct {
   graph_sz_t num_vertices; // Complete number of vertices
