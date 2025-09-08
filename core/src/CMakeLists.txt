@@ -71,11 +71,11 @@ if(ARTS_BUILD_STATIC)
     if(HWLOC_INCLUDE_DIRS)
         target_include_directories(arts_static PRIVATE ${HWLOC_INCLUDE_DIRS})
     endif()
-    
+
     # Add object library contents directly to avoid export issues
     target_sources(arts_static PRIVATE
         $<TARGET_OBJECTS:arts_gas>
-        $<TARGET_OBJECTS:arts_network>  
+        $<TARGET_OBJECTS:arts_network>
         $<TARGET_OBJECTS:arts_introspection>
         $<TARGET_OBJECTS:arts_runtime>
         $<TARGET_OBJECTS:arts_runtime_compute>
@@ -85,9 +85,9 @@ if(ARTS_BUILD_STATIC)
         $<TARGET_OBJECTS:arts_system>
         $<TARGET_OBJECTS:arts_utils>
     )
-    
+
     target_link_libraries(arts_static PUBLIC arts_interface)
-    
+
     # Link external dependencies statically
     target_link_libraries(arts_static PRIVATE
         Threads::Threads
@@ -97,7 +97,7 @@ if(ARTS_BUILD_STATIC)
         ${RDMACM_LIBRARIES}
         ${HWLOC_LIBRARIES}
     )
-    
+
     # Set library properties
     set_target_properties(arts_static PROPERTIES
         OUTPUT_NAME arts
@@ -115,11 +115,11 @@ if(ARTS_BUILD_SHARED)
     if(HWLOC_INCLUDE_DIRS)
         target_include_directories(arts_shared PRIVATE ${HWLOC_INCLUDE_DIRS})
     endif()
-    
+
     # Add object library contents directly to avoid export issues
     target_sources(arts_shared PRIVATE
         $<TARGET_OBJECTS:arts_gas>
-        $<TARGET_OBJECTS:arts_network>  
+        $<TARGET_OBJECTS:arts_network>
         $<TARGET_OBJECTS:arts_introspection>
         $<TARGET_OBJECTS:arts_runtime>
         $<TARGET_OBJECTS:arts_runtime_compute>
@@ -129,9 +129,9 @@ if(ARTS_BUILD_SHARED)
         $<TARGET_OBJECTS:arts_system>
         $<TARGET_OBJECTS:arts_utils>
     )
-    
+
     target_link_libraries(arts_shared PUBLIC arts_interface)
-    
+
     # Link external dependencies statically into the shared library
     target_link_libraries(arts_shared PRIVATE
         Threads::Threads
@@ -141,7 +141,7 @@ if(ARTS_BUILD_SHARED)
         ${RDMACM_LIBRARIES}
         ${HWLOC_LIBRARIES}
     )
-    
+
     # Set library properties
     set_target_properties(arts_shared PROPERTIES
         OUTPUT_NAME arts
@@ -164,11 +164,11 @@ if(BUILD_CUDA_LIBRARY)
         if(HWLOC_INCLUDE_DIRS)
             target_include_directories(arts_cuda_static PRIVATE ${HWLOC_INCLUDE_DIRS})
         endif()
-        
+
         # Add object library contents directly to avoid export issues
         target_sources(arts_cuda_static PRIVATE
             $<TARGET_OBJECTS:arts_gas>
-            $<TARGET_OBJECTS:arts_network>  
+            $<TARGET_OBJECTS:arts_network>
             $<TARGET_OBJECTS:arts_introspection>
             $<TARGET_OBJECTS:arts_runtime_gpu>
             $<TARGET_OBJECTS:arts_runtime_compute_gpu>
@@ -179,12 +179,12 @@ if(BUILD_CUDA_LIBRARY)
             $<TARGET_OBJECTS:arts_utils>
             $<TARGET_OBJECTS:arts_gpu>
         )
-        
+
         target_link_libraries(arts_cuda_static PUBLIC arts_interface)
-        
+
         # Add CUDA compile definition for this target
         target_compile_definitions(arts_cuda_static PRIVATE USE_GPU)
-        
+
         # Link external dependencies and CUDA libraries
         target_link_libraries(arts_cuda_static PRIVATE
             Threads::Threads
@@ -197,7 +197,7 @@ if(BUILD_CUDA_LIBRARY)
             CUDA::cuda_driver
             CUDA::cublas
         )
-        
+
         # Set library properties
         set_target_properties(arts_cuda_static PROPERTIES
             OUTPUT_NAME arts_cuda
@@ -215,11 +215,11 @@ if(BUILD_CUDA_LIBRARY)
         if(HWLOC_INCLUDE_DIRS)
             target_include_directories(arts_cuda_shared PRIVATE ${HWLOC_INCLUDE_DIRS})
         endif()
-        
+
         # Add object library contents directly to avoid export issues
         target_sources(arts_cuda_shared PRIVATE
             $<TARGET_OBJECTS:arts_gas>
-            $<TARGET_OBJECTS:arts_network>  
+            $<TARGET_OBJECTS:arts_network>
             $<TARGET_OBJECTS:arts_introspection>
             $<TARGET_OBJECTS:arts_runtime_gpu>
             $<TARGET_OBJECTS:arts_runtime_compute_gpu>
@@ -230,12 +230,12 @@ if(BUILD_CUDA_LIBRARY)
             $<TARGET_OBJECTS:arts_utils>
             $<TARGET_OBJECTS:arts_gpu>
         )
-        
+
         target_link_libraries(arts_cuda_shared PUBLIC arts_interface)
-        
+
         # Add CUDA compile definition for this target
         target_compile_definitions(arts_cuda_shared PRIVATE USE_GPU)
-        
+
         # Link external dependencies and CUDA libraries
         target_link_libraries(arts_cuda_shared PRIVATE
             Threads::Threads
@@ -248,7 +248,7 @@ if(BUILD_CUDA_LIBRARY)
             CUDA::cuda_driver
             CUDA::cublas
         )
-        
+
         # Set library properties
         set_target_properties(arts_cuda_shared PROPERTIES
             OUTPUT_NAME arts_cuda

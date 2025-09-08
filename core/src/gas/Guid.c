@@ -162,7 +162,7 @@ artsGuid_t artsReserveGuidRoute(artsType_t type, unsigned int route) {
   route = route % artsGlobalRankCount;
   if (type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     guid = artsGuidCreateForRankInternal(route, (unsigned int)type, 1);
-    // PRINTF("Allocation Guid %u\n", guid);
+    PRINTF("Allocation Guid %u\n", guid);
   } else {
     PRINTF("Invalid type %u\n", type);
   }

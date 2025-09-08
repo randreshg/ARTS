@@ -59,18 +59,26 @@
 #include "arts/gpu/GpuStream.h"
 #endif
 
-#define DPRINTF(...)
+#define DPRINTF(...) PRINTF(__VA_ARGS__)
 #define PACKET_SIZE 4096
 #define NETWORK_BACKOFF_INCREMENT 0
 
 extern unsigned int numNumaDomains;
 extern int mainArgc;
 extern char **mainArgv;
+#if defined(__APPLE__)
+extern void initPerNode(unsigned int nodeId, int argc, char **argv)
+    __attribute__((weak_import));
+extern void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
+                          char **argv) __attribute__((weak_import));
+extern void artsMain(int argc, char **argv) __attribute__((weak_import));
+#else
 extern void initPerNode(unsigned int nodeId, int argc, char **argv)
     __attribute__((weak));
 extern void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
                           char **argv) __attribute__((weak));
 extern void artsMain(int argc, char **argv) __attribute__((weak));
+#endif
 
 struct artsRuntimeShared artsNodeInfo;
 __thread struct artsRuntimePrivate artsThreadInfo;
@@ -89,7 +97,10 @@ scheduler_t schedulerLoop[] = {artsDefaultSchedulerLoop,
 
 void artsMainEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                  artsEdtDep_t depv[]) {
-  artsMain(mainArgc, mainArgv);
+  DPRINTF("artsMainEdt called\n");
+  if (artsMain)
+    artsMain(mainArgc, mainArgv);
+  DPRINTF("artsMainEdt finished\n");
 }
 
 void artsRuntimeNodeInit(unsigned int workerThreads,

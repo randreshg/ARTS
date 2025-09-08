@@ -498,7 +498,7 @@ bool artsPersistentEventFreeVersion(struct artsPersistentEvent *event) {
   assert(version != NULL);
 
   /// Free dependencies for this version
-  PRINTF("   - Freeing dependencies for version %u\n", version->version);
+  DPRINTF("   - Freeing dependencies for version %u\n", version->version);
   struct artsDependentList *trail, *current = version->dependent.next;
   while (current) {
     trail = current;
@@ -510,9 +510,9 @@ bool artsPersistentEventFreeVersion(struct artsPersistentEvent *event) {
   if (last) {
     version->latchCount = 0;
     version->dependentCount = 0;
-    PRINTF("   - Resetting dependencies for version %u\n", version->version);
+    DPRINTF("   - Resetting dependencies for version %u\n", version->version);
   } else {
-    PRINTF("   - Popping version %u\n", version->version);
+    DPRINTF("   - Popping version %u\n", version->version);
     versions->headPtr = versions->headPtr->next;
     struct artsLinkListItem *item = ((struct artsLinkListItem *)version) - 1;
     artsFree(item);
@@ -575,7 +575,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
     unsigned int res = -1;
     struct artsPersistentEventVersion *version =
         artsGetFrontPersistentEventVersion(event);
-    PRINTF("[PersistentEvent] Satisfying event %lu, version %u\n", eventGuid,
+    DPRINTF("[PersistentEvent] Satisfying event %lu, version %u\n", eventGuid,
            version->version);
     assert(version != NULL);
     if (action == ARTS_EVENT_LATCH_INCR_SLOT) {
@@ -584,7 +584,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
         DPRINTF("Latch count is 1 for event %u, creating new version\n",
                 eventGuid);
         version = artsPushPersistentEventVersion(event);
-        PRINTF("    - Created version %u for event %lu\n", version->version,
+        DPRINTF("    - Created version %u for event %lu\n", version->version,
                eventGuid);
       }
       res = artsAtomicAdd(&version->latchCount, 1U);
@@ -595,7 +595,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
         DPRINTF("Latch count is -1 for event %u, creating new version\n",
                 eventGuid);
         version = artsPushPersistentEventVersion(event);
-        PRINTF("    - Created version %u for event %lu\n", version->version,
+        DPRINTF("    - Created version %u for event %lu\n", version->version,
                eventGuid);
       }
       res = artsAtomicSub(&version->latchCount, 1U);
@@ -603,7 +603,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
     } else if (action == ARTS_EVENT_UPDATE) {
       res = artsAtomicFetchAdd(&version->latchCount, 0U);
       DPRINTF("Update latch count to %d for event %u \n", res, eventGuid);
-      PRINTF("    - Updated event %lu\n", eventGuid);
+      DPRINTF("    - Updated event %lu\n", eventGuid);
     } else {
       DPRINTF("Bad latch slot %u\n", action);
       artsDebugGenerateSegFault();
@@ -665,7 +665,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
       }
 
       /// Free dependencies for this version
-      PRINTF("[PersistentEvent] Freeing dependencies for event %lu\n",
+      DPRINTF("[PersistentEvent] Freeing dependencies for event %lu\n",
              eventGuid);
       artsPersistentEventFreeVersion(event);
     }
@@ -689,7 +689,7 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
                                         artsGuid_t edtDest, uint32_t edtSlot) {
   /// Check that the eventSource is a persistent event
   if (artsGuidGetType(eventSource) != ARTS_PERSISTENT_EVENT) {
-    PRINTF("Event source %u is not a persistent event\n", eventSource);
+    DPRINTF("Event source %u is not a persistent event\n", eventSource);
     artsDebugGenerateSegFault();
     return;
   }
