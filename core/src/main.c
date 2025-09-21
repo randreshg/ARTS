@@ -53,7 +53,7 @@ int mainArgc = 0;
 char **mainArgv = NULL;
 
 int artsRT(int argc, char **argv) {
-  printf("Initializing ARTS...\n");
+  PRINTF("Initializing ARTS...\n");
   mainArgc = argc;
   mainArgv = argv;
   artsRemoteTryToBecomePrinter();

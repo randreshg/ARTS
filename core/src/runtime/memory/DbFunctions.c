@@ -59,8 +59,7 @@
 #include "arts/gpu/GpuRuntime.cuh"
 #endif
 
-#define DPRINTF(...)
-// PRINTF(__VA_ARGS__)
+#define DPRINTF(...) PRINTF(__VA_ARGS__)
 
 artsTypeName;
 
