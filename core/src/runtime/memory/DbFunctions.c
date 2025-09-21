@@ -59,7 +59,7 @@
 #include "arts/gpu/GpuRuntime.cuh"
 #endif
 
-#define DPRINTF(...) 
+#define DPRINTF(...)
 // PRINTF(__VA_ARGS__)
 
 artsTypeName;
@@ -179,7 +179,6 @@ void *artsDbCreateWithGuid(artsGuid_t guid, uint64_t size) {
   ARTSEDTCOUNTERTIMERSTART(dbCreateCounter);
   artsType_t mode = artsGuidGetType(guid);
 
-  PRINTF("Creating DB with guid: %lu and mode %s\n", guid, getTypeName(mode));
   void *ptr = NULL;
   if (artsIsGuidLocal(guid)) {
     unsigned int dbSize = size + sizeof(struct artsDb);
@@ -198,6 +197,8 @@ void *artsDbCreateWithGuid(artsGuid_t guid, uint64_t size) {
       ptr = (void *)((struct artsDb *)ptr + 1);
     }
   }
+  PRINTF("Creating DB [Guid: %lu] [Mode: %s] [Ptr: %p]\n", guid,
+         getTypeName(mode), ptr);
   ARTSEDTCOUNTERTIMERENDINCREMENT(dbCreateCounter);
   return ptr;
 }
@@ -383,12 +384,12 @@ void artsDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
 void acquireDbs(struct artsEdt *edt) {
   artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
   edt->depcNeeded = edt->depc + 1;
+  PRINTF("[acquireDbs] Acquiring %u DBs for EDT [Guid: %lu]\n", edt->depc,
+         edt->currentEdt);
   for (int i = 0; i < edt->depc; i++) {
-    // PRINTF("MODE: %s -> %p\n", getTypeName(depv[i].mode), depv[i].ptr);
     if (depv[i].guid && depv[i].ptr == NULL) {
       struct artsDb *dbFound = NULL;
       int owner = artsGuidGetRank(depv[i].guid);
-      // PRINTF("Owner: %u\n", owner);
       switch (depv[i].mode) {
       // This case assumes that the guid exists only on the owner
       case ARTS_DB_ONCE: {
@@ -517,12 +518,14 @@ void acquireDbs(struct artsEdt *edt) {
 
       if (dbFound)
         depv[i].ptr = dbFound + 1;
-      // Shouldn't there be an else return here...
+      PRINTF(" - DB [Guid: %lu - Ptr: %p] acquired\n", depv[i].guid,
+             depv[i].ptr);
     } else {
       artsAtomicSub(&edt->depcNeeded, 1U);
     }
   }
-  PRINTF("[acquireDbs] EDT %u has finished acquiring DBs\n", edt->currentEdt);
+  PRINTF("[acquireDbs] EDT [Guid: %lu] has finished acquiring DBs\n",
+         edt->currentEdt);
 }
 
 void prepDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {

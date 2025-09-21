@@ -409,9 +409,9 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
     {
       if (edt->header.type == ARTS_EDT) {
         artsDequePushFront(artsThreadInfo.myDeque, edt, 0);
-      }
-      if (edt->header.type == ARTS_GPU_EDT)
+      } else if (edt->header.type == ARTS_GPU_EDT) {
         artsDequePushFront(artsThreadInfo.myGpuDeque, edt, 0);
+      }
     }
 
     artsUpdatePerformanceMetric(artsEdtQueue, artsThread, 1, false);
@@ -429,8 +429,7 @@ void artsRunEdt(struct artsEdt *edt) {
 
   artsSetThreadLocalEdtInfo(edt);
   ARTSCOUNTERTIMERSTART(edtCounter);
-  /// DEBUG DepV
-  PRINTF("[artsRunEdt] Running EDT with GUID: %u\n", edt->currentEdt);
+  PRINTF("[artsRunEdt] Running EDT with GUID: %lu\n", edt->currentEdt);
   func(paramc, paramv, depc, depv);
 
   ARTSCOUNTERTIMERENDINCREMENT(edtCounter);

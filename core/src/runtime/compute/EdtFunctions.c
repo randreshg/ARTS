@@ -241,11 +241,14 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
     }
 
     /// DEBUG
+    // ! This may cause segfaults when free method is called for edt right after
+    // ! artsRemoteMemoryMove is performed
+
     // if (useEpoch) {
-    //   PRINTF("Creating EDT with guid %lu in epoch %lu and %u deps\n",
+    //   PRINTF("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u]\n",
     //          (unsigned)*guid, (unsigned)edt->epochGuid, (unsigned)edt->depc);
     // } else {
-    //   PRINTF("Created EDT with guid %lu\n", (unsigned)*guid);
+    //   PRINTF("Created EDT [Guid: %lu]\n", (unsigned)*guid);
     // }
 
     return true;
@@ -382,9 +385,12 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
           edtDep[slot].ptr = ptr;
         }
         unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-        // PRINTF("SIGNAL: %lu %lu %u %p %d\n", edt->currentEdt, dataGuid, slot,
-        // ptr, mode);
-        PRINTF("EDT %u signaled - DepCount %u \n", edt->currentEdt, res);
+        PRINTF("EDT [Guid: %lu - Slot: %u - DepCount: %d] signaled DB [Guid: "
+               "%lu]\n",
+               edt->currentEdt, slot, res, dataGuid);
+        // PRINTF("Signal EDT %u to slot %d and info: %f\n", edt->currentEdt,
+        // slot,
+        //        *(double *)ptr);
         if (res == 0)
           artsHandleReadyEdt(edt);
       } else {
@@ -408,16 +414,15 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
 void artsSignalEdt(artsGuid_t edtGuid, uint32_t slot, artsGuid_t dataGuid) {
   artsGuid_t acqGuid = dataGuid;
   artsType_t mode = artsGuidGetType(dataGuid);
-  if (mode == ARTS_DB_WRITE) {
+  if (mode == ARTS_DB_WRITE)
     acqGuid = artsGuidCast(dataGuid, ARTS_DB_READ);
-  }
-  PRINTF("[artsSignalEdt] Signal DB: %u to EDT %u in slot %u\n", dataGuid,
-         edtGuid, slot);
+  DPRINTF("Signal DB [Guid: %lu] to EDT [Guid: %lu] in slot %u\n", dataGuid,
+          edtGuid, slot);
   internalSignalEdt(edtGuid, slot, acqGuid, mode, NULL, 0);
 }
 
 void artsSignalEdtValue(artsGuid_t edtGuid, uint32_t slot, uint64_t value) {
-  PRINTF("Signal Value: %u to EDTGuid %u in slot %u\n", value, edtGuid, slot);
+  DPRINTF("Signal Value: %u to EDTGuid %u in slot %u\n", value, edtGuid, slot);
   internalSignalEdt(edtGuid, slot, value, ARTS_SINGLE_VALUE, NULL, 0);
 }
 
@@ -439,7 +444,7 @@ artsGuid_t artsActiveMessageWithDbAt(artsEdt_t funcPtr, uint32_t paramc,
                                      uint64_t *paramv, uint32_t depc,
                                      artsGuid_t dbGuid, unsigned int rank) {
   artsGuid_t guid = artsEdtCreate(funcPtr, rank, paramc, paramv, depc + 1);
-  PRINTF("AM -> %lu rank: %u depc: %u\n", guid, rank, depc + 1);
+  DPRINTF("AM -> %lu rank: %u depc: %u\n", guid, rank, depc + 1);
   artsSignalEdt(guid, 0, dbGuid);
   return guid;
 }

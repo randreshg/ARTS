@@ -41,6 +41,7 @@
 #include "arts/network/RemoteLauncher.h"
 #include "arts/system/Config.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,39 @@
 
 #define DPRINTF(...)
 // #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
+
+static int artsShellQuote(const char *input, char *output, size_t outputSize) {
+  size_t outIndex = 0;
+
+  if (outputSize < 3) {
+    return -1;
+  }
+
+  output[outIndex++] = '\'';
+  while (*input && outIndex + 1 < outputSize) {
+    if (*input == '\'') {
+      if (outIndex + 5 >= outputSize) {
+        return -1;
+      }
+      output[outIndex++] = '\'';
+      output[outIndex++] = '"';
+      output[outIndex++] = '\'';
+      output[outIndex++] = '"';
+      output[outIndex++] = '\'';
+    } else {
+      output[outIndex++] = *input;
+    }
+    input++;
+  }
+
+  if (outIndex + 2 > outputSize) {
+    return -1;
+  }
+
+  output[outIndex++] = '\'';
+  output[outIndex] = '\0';
+  return 0;
+}
 
 void artsRemoteLauncherSSHStartupProcesses(
     struct artsRemoteLauncher *launcher) {
@@ -61,74 +95,139 @@ void artsRemoteLauncherSSHStartupProcesses(
   int startNode = config->myRank;
 
   char cwd[1024];
-  int cwdLength;
-  if (getcwd(cwd, sizeof(cwd)) == NULL)
-    PRINTF("Getcwd Error.");
-  cwdLength = strlen(cwd);
+  if (getcwd(cwd, sizeof(cwd)) == NULL) {
+    return;
+  }
 
-  sshExecutions = (FILE **)artsMalloc(sizeof(FILE *) * config->tableLength - 1);
+  // Derive the current binary name so remote nodes can execute the same program
+  char selfExe[4096];
+  char binaryName[256];
+  binaryName[0] = '\0';
+
+  // Try to get the current executable path
+  ssize_t selfExeLen = readlink("/proc/self/exe", selfExe, sizeof(selfExe) - 1);
+  if (selfExeLen != -1) {
+    selfExe[selfExeLen] = '\0';
+  } else if (argc > 0 && argv && argv[0]) {
+    // Fallback to argv[0] if /proc/self/exe is unavailable
+    strncpy(selfExe, argv[0], sizeof(selfExe) - 1);
+    selfExe[sizeof(selfExe) - 1] = '\0';
+  } else {
+    selfExe[0] = '\0';
+  }
+
+  // Extract basename
+  const char *basePtr = selfExe;
+  char *slashPtr = (selfExe[0] != '\0') ? strrchr(selfExe, '/') : NULL;
+  if (slashPtr) {
+    basePtr = slashPtr + 1;
+  }
+  if (basePtr && basePtr[0] != '\0') {
+    snprintf(binaryName, sizeof(binaryName), "%s", basePtr);
+  }
+
+  // Allocate for all non-master nodes
+  sshExecutions =
+      (FILE **)artsMalloc(sizeof(FILE *) * (config->tableLength - 1));
   launcher->launcherMemory = sshExecutions;
-  DPRINTF("%s\n", argv[0]);
+
   char command[4096];
-  char directory[4096];
-  DPRINTF("%d \n", config->tableLength);
+  char quotedCommand[(sizeof(command) * 6) + 8];
+  char wrappedCommand[(sizeof(command) * 6) + 16];
   pid_t child;
+
   for (k = startNode + 1; k < config->tableLength + startNode; k++) {
     i = k % config->tableLength;
     unsigned int finalLength = 0;
-    unsigned int len = strlen(config->table[i].ipAddress);
 
     if (killMode) {
-      strncpy(command + finalLength, "\"\"pkill ", 8);
-      finalLength += 8;
+      // Kill any previously running instance by process name (basename, up to
+      // 15 chars)
+      if (binaryName[0] != '\0') {
+        finalLength +=
+            snprintf(command + finalLength, sizeof(command) - finalLength,
+                     "pkill %s", binaryName);
+      } else if (argc > 0 && argv && argv[0]) {
+        // Extract basename from argv[0] for pkill
+        const char *argvBase = argv[0];
+        char *argvSlash = strrchr(argv[0], '/');
+        if (argvSlash)
+          argvBase = argvSlash + 1;
 
-      if (k == startNode + 1) {
-        len = strlen(argv[0]);
-        char *lastSlash;
-        for (j = 0; j < len; j++)
-          if (argv[0][j] == '/')
-            lastSlash = argv[0] + j;
+        // Limit to 15 chars for pkill
+        char pkillName[16];
+        strncpy(pkillName, argvBase, 15);
+        pkillName[15] = '\0';
 
-        *lastSlash = '\0';
+        finalLength +=
+            snprintf(command + finalLength, sizeof(command) - finalLength,
+                     "pkill %s", pkillName);
+      } else {
+        continue;
       }
-
-      len = strlen(argv[0]);
-      int lastLen = len;
-      len = strlen(argv[0] + len + 1);
-      len = (len > 15) ? 15 : len;
-      strncpy(command + finalLength, argv[0] + lastLen + 1, len);
-      finalLength += len;
     } else {
-      strncpy(command + finalLength, "\"\"cd ", 5);
-      finalLength += 5;
-      strncpy(command + finalLength, cwd, cwdLength);
-      finalLength += cwdLength;
-      strncpy(command + finalLength, ";", 1);
-      finalLength += 1;
-
-      for (j = 0; j < argc; j++) {
-        *(command + finalLength++) = ' ';
-        len = strlen(argv[j]);
-        strncpy(command + finalLength, argv[j], len);
-        finalLength += len;
+      // Launch mode: ensure the remote shell changes to the same working
+      // directory and launches the binary
+      if (binaryName[0] != '\0') {
+        finalLength +=
+            snprintf(command + finalLength, sizeof(command) - finalLength,
+                     "cd %s && ./%s", cwd, binaryName);
+        // Pass through any arguments beyond argv[0] if provided
+        for (j = 1; j < (int)argc; j++) {
+          finalLength +=
+              snprintf(command + finalLength, sizeof(command) - finalLength,
+                       " %s", argv[j]);
+        }
+      } else {
+        // Fallback: attempt to use argv if available, otherwise just cd
+        finalLength += snprintf(command + finalLength,
+                                sizeof(command) - finalLength, "cd %s", cwd);
+        for (j = 0; j < (int)argc; j++) {
+          finalLength +=
+              snprintf(command + finalLength, sizeof(command) - finalLength,
+                       " %s", argv[j]);
+        }
       }
     }
 
-    strncpy(command + finalLength, "\"\"\0", 3);
-    finalLength += 3;
+    // Null-terminate
+    command[finalLength] = '\0';
+
+    if (artsShellQuote(command, quotedCommand, sizeof(quotedCommand)) != 0) {
+      continue;
+    }
+
+    int wrappedLength = snprintf(wrappedCommand, sizeof(wrappedCommand),
+                                 "sh -c %s", quotedCommand);
+    if (wrappedLength < 0 || (size_t)wrappedLength >= sizeof(wrappedCommand)) {
+      continue;
+    }
 
     child = fork();
 
     if (child == 0) {
-      execlp("ssh", "-f", config->table[i].ipAddress, command, (char *)NULL);
-      // execlp("ssh", "-f", config->table[i].ipAddress, "cd runLocal;
-      // /home/land350/intel/test/intel/inspector_xe_2016.1.1.435552/bin64/inspxe-cl
-      // -c mi3 /home/land350/new/dtcp/test/artsFib 20", (char *)NULL);
+      // Child process: execute SSH command
+      // Use a non-interactive ssh invocation and run the command via a shell
+      // Passing the command to `sh -c` avoids fragile local quoting
+      execlp("ssh", "ssh", "-f", "-o", "StrictHostKeyChecking=no", "-o",
+             "ConnectTimeout=10", "-o", "ServerAliveInterval=5", "-o",
+             "ServerAliveCountMax=3", config->table[i].ipAddress,
+             wrappedCommand, (char *)NULL);
+
+      // If execlp fails
+      exit(1);
     }
   }
-  if (killMode)
+
+  if (killMode) {
     exit(0);
+  }
 }
 
 void artsRemoteLauncherSSHCleanupProcesses(
-    struct artsRemoteLauncher *launcher) {}
+    struct artsRemoteLauncher *launcher) {
+  if (launcher && launcher->launcherMemory) {
+    artsFree(launcher->launcherMemory);
+    launcher->launcherMemory = NULL;
+  }
+}
