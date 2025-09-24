@@ -39,6 +39,7 @@
 #include "arts/BlockDistribution.h"
 #include "arts/arts.h"
 
+#include "arts/system/ArtsPrint.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -103,7 +104,7 @@ arts_block_dist_t *initBlockDistributionWithCmdLineArgs(int argc, char **argv) {
     internalInitBlockDistribution(dist, n, m, numBlocks);
     return dist;
   }
-  PRINTF("Must set --num-vertices and --num-edges\n");
+  ARTS_INFO("Must set --num-vertices and --num-edges");
   return NULL;
 }
 

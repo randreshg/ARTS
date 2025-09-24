@@ -196,18 +196,18 @@ void streamDriver(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     }
   }
 
-  printf("Function      Rate (MB/s)   Avg time     Min time     Max time\n");
+  PRINTF("Function      Rate (MB/s)   Avg time     Min time     Max time\n");
   for (j = 0; j < 4; j++) {
     avgtime[j] = avgtime[j] / (double)(NTIMES - 1);
 
-    printf("%s%11.4f  %11.4f  %11.4f  %11.4f\n", label[j],
+    PRINTF("%s%11.4f  %11.4f  %11.4f  %11.4f\n", label[j],
            1.0E-06 * bytes[j] / mintime[j], avgtime[j], mintime[j], maxtime[j]);
   }
-  printf(HLINE);
+  PRINTF(HLINE);
 
   /* --- Check Results --- */
   checkSTREAMresults(tileSize, N, aTile, bTile, cTile);
-  printf(HLINE);
+  PRINTF(HLINE);
   artsShutdown();
 }
 
@@ -267,25 +267,25 @@ extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
       }
     }
 
-    printf(HLINE);
+    PRINTF(HLINE);
     int BytesPerWord = sizeof(double);
-    printf("This system uses %d bytes per DOUBLE PRECISION word.\n",
+    PRINTF("This system uses %d bytes per DOUBLE PRECISION word.\n",
            BytesPerWord);
-    printf(HLINE);
+    PRINTF(HLINE);
 
-    printf("Array size = %d, Offset = %d\n", N, OFFSET);
-    printf("Total memory required = %.1f MB.\n",
+    PRINTF("Array size = %d, Offset = %d\n", N, OFFSET);
+    PRINTF("Total memory required = %.1f MB.\n",
            (3.0 * BytesPerWord) * ((double)N / 1048576.0));
-    printf("Each test is run %d times, but only\n", NTIMES);
-    printf("the *best* time for each is used.\n");
-    printf(HLINE);
+    PRINTF("Each test is run %d times, but only\n", NTIMES);
+    PRINTF("the *best* time for each is used.\n");
+    PRINTF(HLINE);
 
     if ((quantum = checktick()) >= 1)
-      printf(
+      PRINTF(
           "Your clock granularity/precision appears to be %d microseconds.\n",
           quantum);
     else
-      printf(
+      PRINTF(
           "Your clock granularity appears to be less than one microsecond.\n");
   }
 }
@@ -303,18 +303,18 @@ extern "C" void initPerWorker(unsigned int nodeId, unsigned int workerId,
     t = 1.0E6 * (mysecond() - t);
 
     if (!workerId) {
-      printf("Each test below will take on the order of %d microseconds.\n",
+      PRINTF("Each test below will take on the order of %d microseconds.\n",
              (int)t);
-      printf("   (= %d clock ticks)\n", (int)(t / quantum));
-      printf("Increase the size of the arrays if this shows that\n");
-      printf("you are not getting at least 20 clock ticks per test.\n");
+      PRINTF("   (= %d clock ticks)\n", (int)(t / quantum));
+      PRINTF("Increase the size of the arrays if this shows that\n");
+      PRINTF("you are not getting at least 20 clock ticks per test.\n");
 
-      printf(HLINE);
+      PRINTF(HLINE);
 
-      printf("WARNING -- The above is only a rough guideline.\n");
-      printf("For best results, please be sure you know the\n");
-      printf("precision of your system timer.\n");
-      printf(HLINE);
+      PRINTF("WARNING -- The above is only a rough guideline.\n");
+      PRINTF("For best results, please be sure you know the\n");
+      PRINTF("precision of your system timer.\n");
+      PRINTF(HLINE);
 
       artsEdtCreate(streamDriver, 0, 0, NULL, 0);
     }

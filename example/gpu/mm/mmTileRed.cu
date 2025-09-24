@@ -51,8 +51,8 @@
 // #define VERIFY 1
 #define SMTILE 32
 
-#define DPRINTF(...)
-// #define DPRINTF(...) PRINTF(__VA_ARGS__)
+#define PRINTF(...)
+// #define PRINTF(...) PRINTF(__VA_ARGS__)
 
 uint64_t start = 0;
 
@@ -97,7 +97,7 @@ unsigned int reserveEdtGuids(artsGuid_t *allGuids, unsigned int index,
   unsigned int rank = reserveEdtGuids(allGuids, left(index), edtType);
   // always reserve left rank
   allGuids[index] = artsReserveGuidRoute(edtType, rank);
-  DPRINTF("edt: %d -> %lu\n", index, allGuids[index]);
+  PRINTF("edt: %d -> %lu\n", index, allGuids[index]);
   // visit right rank
   reserveEdtGuids(allGuids, right(index), edtType);
   return rank;
@@ -130,16 +130,16 @@ initBinaryReductionTree(unsigned int numLeaves, artsEdt_t funPtr,
 
   // Check all the guids
   for (unsigned int i = 0; i < tree->totalNodes; i++) {
-    DPRINTF("i: %u guid: %lu rank: %u type: %u\n", i, allGuids[i],
-            artsGuidGetRank(allGuids[i]), artsGuidGetType(allGuids[i]));
+    PRINTF("i: %u guid: %lu rank: %u type: %u\n", i, allGuids[i],
+           artsGuidGetRank(allGuids[i]), artsGuidGetType(allGuids[i]));
   }
 
   // Set up the signals
   for (unsigned int i = 0; i < tree->interiorNodes; i++) {
     if (artsIsGuidLocal(tree->redEdtGuids[i])) {
       if (!i) {
-        DPRINTF("Last: %lu -> %lu slot: %u\n", tree->redEdtGuids[i], endGuid,
-                slot);
+        PRINTF("Last: %lu -> %lu slot: %u\n", tree->redEdtGuids[i], endGuid,
+               slot);
         artsEdtCreateGpuPTWithGuid(funPtr, tree->redEdtGuids[i], paramc, paramv,
                                    2, grid, block, endGuid, slot, 0);
       } else {
@@ -147,8 +147,8 @@ initBinaryReductionTree(unsigned int numLeaves, artsEdt_t funPtr,
         bool isRight = right(parentIndex) == i;
         artsGuid_t toSignal = tree->redEdtGuids[parentIndex];
         int toSignalSlot = (isRight) ? 1 : 0;
-        DPRINTF("%lu -> %lu slot: %u parent: %d\n", tree->redEdtGuids[i],
-                toSignal, toSignalSlot, parentIndex);
+        PRINTF("%lu -> %lu slot: %u parent: %d\n", tree->redEdtGuids[i],
+               toSignal, toSignalSlot, parentIndex);
         artsEdtCreateGpuPTWithGuid(funPtr, tree->redEdtGuids[i], paramc, paramv,
                                    2, grid, block, toSignal, toSignalSlot, 0);
       }
@@ -166,7 +166,7 @@ void fireBinaryReductionTree(binaryReductionTree_t *tree) {
     bool isRight = right(parentIndex) == index;
     artsGuid_t toSignal = tree->redEdtGuids[parentIndex];
     int toSignalSlot = (isRight) ? 1 : 0;
-    DPRINTF("ToSignal: %lu slot: %u\n", toSignal, toSignalSlot);
+    PRINTF("ToSignal: %lu slot: %u\n", toSignal, toSignalSlot);
     artsSignalEdt(toSignal, toSignalSlot, tree->redDbGuids[i]);
   }
 }
@@ -178,7 +178,7 @@ void fireDbFromReductionTree(binaryReductionTree_t *tree,
   bool isRight = right(parentIndex) == index;
   artsGuid_t toSignal = tree->redEdtGuids[parentIndex];
   int toSignalSlot = (isRight) ? 1 : 0;
-  DPRINTF("ToSignal: %lu slot: %u\n", toSignal, toSignalSlot);
+  PRINTF("ToSignal: %lu slot: %u\n", toSignal, toSignalSlot);
   artsSignalEdt(toSignal, toSignalSlot, tree->redDbGuids[whichDb]);
 }
 
@@ -237,7 +237,7 @@ void finishBlockMM(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 #if VERIFY
   double *aMat = (double *)depv[1].ptr;
   double *bMat = (double *)depv[2].ptr;
-  printf("Verifying results...\n");
+  PRINTF("Verifying results...\n");
   double *temp = (double *)artsCalloc(matSize * matSize, sizeof(double));
   for (unsigned int i = 0; i < matSize; ++i)
     for (unsigned int j = 0; j < matSize; ++j)
@@ -247,8 +247,8 @@ void finishBlockMM(uint32_t paramc, uint64_t *paramv, uint32_t depc,
   for (unsigned int i = 0; i < matSize; ++i)
     for (unsigned int j = 0; j < matSize; ++j)
       if (temp[i * matSize + j] != cMat[i * matSize + j]) {
-        printf("Failed at cMat[%u][%u]\n", i, j);
-        printf("Expected: %lf | Obtained: %lf\n", temp[i * matSize + j],
+        PRINTF("Failed at cMat[%u][%u]\n", i, j);
+        PRINTF("Expected: %lf | Obtained: %lf\n", temp[i * matSize + j],
                cMat[i * matSize + j]);
         artsFree(temp);
         artsShutdown();

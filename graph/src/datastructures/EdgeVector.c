@@ -38,6 +38,7 @@
 ******************************************************************************/
 #include "arts/EdgeVector.h"
 #include "arts/arts.h"
+#include "arts/system/ArtsPrint.h"
 
 #include <assert.h>
 #include <inttypes.h>
@@ -87,7 +88,7 @@ void pushBackEdge(artsEdgeVector *v, vertex_t s, vertex_t t, edge_data_t d) {
     edge_t *newEdgeArray =
         (edge_t *)artsRealloc(v->edge_array, v->size * sizeof(edge_t));
     if (!newEdgeArray) {
-      PRINTF("[ERROR] Unable to reallocate memory. Cannot continue\n.");
+      ARTS_INFO("[ERROR] Unable to reallocate memory. Cannot continue.");
       assert(false);
       return;
     }
@@ -101,10 +102,8 @@ void pushBackEdge(artsEdgeVector *v, vertex_t s, vertex_t t, edge_data_t d) {
 
 void printEdgeVector(const artsEdgeVector *v) {
   for (uint64_t i = 0; i < v->used; ++i) {
-    // PRINTF("(%" PRIu64 ", %" PRIu64 ", %" PRIu64 ")",
-    // v->edge_array[i].source, v->edge_array[i].target, v->edge_array[i].data);
-    PRINTF("(%" PRIu64 ", %" PRIu64 ")", v->edge_array[i].source,
-           v->edge_array[i].target);
+    ARTS_INFO("(%" PRIu64 ", %" PRIu64 ")", v->edge_array[i].source,
+              v->edge_array[i].target);
   }
 }
 

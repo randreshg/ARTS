@@ -39,6 +39,8 @@
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
+#include "arts/system/ArtsPrint.h"
+#include "arts/system/Debug.h"
 #include "arts/utils/Queue.h"
 
 #include <stdlib.h>
@@ -59,12 +61,16 @@ static inline void *alignPointer(void *ptr, size_t align) {
 void *artsMalloc(size_t size) {
   ARTSEDTCOUNTERTIMERSTART(mallocMemory);
 
-  if (!size)
-    return NULL;
+  if (!size) {
+    ARTS_INFO("Invalid Malloc request");
+    artsDebugGenerateSegFault();
+  }
 
   header_t *base = (header_t *)malloc(size + sizeof(header_t));
-  if (!base)
-    return NULL;
+  if (!base) {
+    ARTS_INFO("Out of Memory");
+    artsDebugGenerateSegFault();
+  }
 
   base->size = size;
   base->align = 0;
@@ -80,12 +86,16 @@ void *artsMalloc(size_t size) {
 void *artsMallocAlign(size_t size, size_t align) {
   ARTSEDTCOUNTERTIMERSTART(mallocMemory);
 
-  if (!size || align < ALIGNMENT || !IS_POWER_OF_TWO(align))
-    return NULL;
+  if (!size || align < ALIGNMENT || !IS_POWER_OF_TWO(align)) {
+    ARTS_INFO("Invalid MallocAlign request");
+    artsDebugGenerateSegFault();
+  }
 
   void *base = malloc(size + align - 1 + sizeof(header_t));
-  if (!base)
-    return NULL;
+  if (!base) {
+    ARTS_INFO("Out of Memory");
+    artsDebugGenerateSegFault();
+  }
 
   void *aligned = alignPointer((char *)base + sizeof(header_t), align);
   header_t *hdr = (header_t *)aligned - 1;
@@ -104,14 +114,13 @@ void *artsMallocAlign(size_t size, size_t align) {
 void *artsCalloc(size_t nmemb, size_t size) {
   ARTSEDTCOUNTERTIMERSTART(callocMemory);
 
-  if (!nmemb || !size || size > SIZE_MAX / nmemb)
-    return NULL;
+  if (!nmemb || !size || size > SIZE_MAX / nmemb) {
+    ARTS_INFO("Invalid Calloc request");
+    artsDebugGenerateSegFault();
+  }
 
   size_t totalSize = nmemb * size;
   void *ptr = artsMalloc(totalSize);
-  if (!ptr)
-    return NULL;
-
   memset(ptr, 0, totalSize);
 
   ARTSEDTCOUNTERTIMERENDINCREMENT(callocMemory);
@@ -123,14 +132,13 @@ void *artsCallocAlign(size_t nmemb, size_t size, size_t align) {
   ARTSEDTCOUNTERTIMERSTART(callocMemory);
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb || align < ALIGNMENT ||
-      !IS_POWER_OF_TWO(align))
-    return NULL;
+      !IS_POWER_OF_TWO(align)) {
+    ARTS_INFO("Invalid artsCallocAlign request");
+    artsDebugGenerateSegFault();
+  }
 
   size_t totalSize = nmemb * size;
   void *ptr = artsMallocAlign(totalSize, align);
-  if (!ptr)
-    return NULL;
-
   memset(ptr, 0, totalSize);
 
   ARTSEDTCOUNTERTIMERENDINCREMENT(callocMemory);

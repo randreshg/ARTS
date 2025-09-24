@@ -45,6 +45,7 @@
 #include "arts/runtime/memory/DbFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
@@ -74,8 +75,8 @@ artsArrayDb_t *artsNewArrayDbWithGuid(artsGuid_t guid, unsigned int elementSize,
     numElements = elementsPerBlock * numBlocks;
   }
 
-  PRINTF("Elements: %u Blocks: %u Element Size: %u\n", numElements, numBlocks,
-         elementSize);
+  ARTS_INFO("Elements: %u Blocks: %u Element Size: %u", numElements, numBlocks,
+            elementSize);
 
   unsigned int allocSize =
       sizeof(artsArrayDb_t) + elementSize * elementsPerBlock;
@@ -112,8 +113,8 @@ artsArrayDb_t *artsNewLocalArrayDbWithGuid(artsGuid_t guid,
   unsigned int numBlocks = 1;
   unsigned int elementsPerBlock = numElements;
 
-  PRINTF("Elements: %u Blocks: %u Element Size: %u\n", numElements, numBlocks,
-         elementSize);
+  ARTS_INFO("Elements: %u Blocks: %u Element Size: %u", numElements, numBlocks,
+            elementSize);
   unsigned int allocSize =
       sizeof(artsArrayDb_t) + elementSize * elementsPerBlock;
   artsArrayDb_t *block = NULL;
@@ -149,8 +150,8 @@ artsGuid_t getArrayDbGuid(artsArrayDb_t *array) {
 unsigned int getOffsetFromIndex(artsArrayDb_t *array, unsigned int index) {
   unsigned int base = sizeof(artsArrayDb_t);
   unsigned int local = (index % array->elementsPerBlock) * array->elementSize;
-  //    PRINTF("array: %p base: %u index: %u elementsPerBlock: %u mod: %u
-  //    elementSize: %u\n", array, base, index, array->elementsPerBlock,
+  //    ARTS_INFO("array: %p base: %u index: %u elementsPerBlock: %u mod: %u
+  //    elementSize: %u", array, base, index, array->elementsPerBlock,
   //    index%array->elementsPerBlock, array->elementSize);
   return base + local;
 }
@@ -171,12 +172,12 @@ void artsGetFromArrayDb(artsGuid_t edtGuid, unsigned int slot,
     artsGuid_t guid = getArrayDbGuid(array);
     unsigned int rank = getRankFromIndex(array, index);
     unsigned int offset = getOffsetFromIndex(array, index);
-    //        PRINTF("Get index: %u rank: %u offset: %u\n", index, rank,
+    //        ARTS_INFO("Get index: %u rank: %u offset: %u", index, rank,
     //        offset);
     artsGetFromDbAt(edtGuid, guid, slot, offset, array->elementSize, rank);
   } else {
-    PRINTF("Index >= Array Size: %u >= %u * %u\n", index,
-           array->elementsPerBlock, array->numBlocks);
+    ARTS_INFO("Index >= Array Size: %u >= %u * %u", index,
+              array->elementsPerBlock, array->numBlocks);
     artsDebugGenerateSegFault();
   }
 }
@@ -273,7 +274,7 @@ void artsForEachInArrayDbAtData(artsArrayDb_t *array, unsigned int stride,
   unsigned int blockSize = array->elementsPerBlock;
   unsigned int size = artsGetSizeArrayDb(array);
   if (size % stride) {
-    PRINTF("WARNING: Size is not divisible by stride!");
+    ARTS_INFO("WARNING: Size is not divisible by stride!");
   }
   artsGuid_t guid = getArrayDbGuid(array);
   uint64_t *args = (uint64_t *)artsMalloc(sizeof(uint64_t) * (paramc + 4));
@@ -301,10 +302,10 @@ void internalAtomicAddInArrayDb(artsGuid_t dbGuid, unsigned int index,
     unsigned int offset = getOffsetFromIndex(array, index);
     unsigned int *data = (unsigned int *)(((char *)array) + offset);
     unsigned int result = artsAtomicAdd(data, toAdd);
-    //        PRINTF("index: %u result: %u\n", index, result);
+    //        ARTS_INFO("index: %u result: %u", index, result);
 
     if (edtGuid) {
-      //            PRINTF("Signaling edtGuid: %lu\n", edtGuid);
+      //            ARTS_INFO("Signaling edtGuid: %lu", edtGuid);
       artsSignalEdtValue(edtGuid, slot, result);
     }
 
@@ -344,10 +345,10 @@ void internalAtomicCompareAndSwapInArrayDb(
     unsigned int offset = getOffsetFromIndex(array, index);
     unsigned int *data = (unsigned int *)(((char *)array) + offset);
     unsigned int result = artsAtomicCswap(data, oldValue, newValue);
-    //        PRINTF("index: %u result: %u\n", index, result);
+    //        ARTS_INFO("index: %u result: %u", index, result);
 
     if (edtGuid) {
-      //            PRINTF("Signaling edtGuid: %lu\n", edtGuid);
+      //            ARTS_INFO("Signaling edtGuid: %lu", edtGuid);
       artsSignalEdtValue(edtGuid, slot, result);
     }
 

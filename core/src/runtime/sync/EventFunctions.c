@@ -45,14 +45,13 @@
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/network/RemoteFunctions.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/LinkList.h"
 
 #include <assert.h>
 #include <time.h>
-
-#define DPRINTF(...)
 
 extern __thread struct artsEdt *currentEdt;
 
@@ -139,7 +138,7 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
                                    slot, true);
     return;
   }
-  PRINTF("Signal Event:%u, Data:%u at %u\n", eventGuid, dataGuid, slot);
+  ARTS_INFO("Signal Event:%u, Data:%u at %u", eventGuid, dataGuid, slot);
   struct artsEvent *event =
       (struct artsEvent *)artsRouteTableLookupItem(eventGuid);
   if (!event) {
@@ -152,8 +151,8 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
     }
   } else {
     if (event->fired) {
-      PRINTF("ARTS_EVENT_LATCH_T already fired guid: %lu data: %lu slot: %u\n",
-             eventGuid, dataGuid, slot);
+      ARTS_INFO("ARTS_EVENT_LATCH_T already fired guid: %lu data: %lu slot: %u",
+                eventGuid, dataGuid, slot);
       artsDebugGenerateSegFault();
     }
 
@@ -165,7 +164,7 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
         event->data = dataGuid;
       res = artsAtomicSub(&event->latchCount, 1U);
     } else {
-      PRINTF("Bad latch slot %u\n", slot);
+      ARTS_INFO("Bad latch slot %u", slot);
       artsDebugGenerateSegFault();
     }
 
@@ -173,9 +172,8 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
     if (!res) {
       /// If the event is already fired, we should not fire it again
       if (artsAtomicSwapBool(&event->fired, true)) {
-        PRINTF(
-            "ARTS_EVENT_LATCH_T already fired guid: %lu data: %lu slot: %u\n",
-            eventGuid, dataGuid, slot);
+        PRINTF("ARTS_EVENT_LATCH_T already fired guid: %lu data: %lu slot: %u",
+               eventGuid, dataGuid, slot);
         artsDebugGenerateSegFault();
       }
       /// If the event is not fired, we need to fire it
@@ -276,7 +274,7 @@ struct artsDependent *artsDependentGet(struct artsDependentList *head,
 
 void artsAddDependence(artsGuid_t source, artsGuid_t destination,
                        uint32_t slot) {
-  PRINTF("Add Dependence from %u to %u at %u\n", source, destination, slot);
+  ARTS_INFO("Add Dependence from %u to %u at %u", source, destination, slot);
   artsType_t mode = artsGuidGetType(destination);
   struct artsHeader *sourceHeader =
       (struct artsHeader *)artsRouteTableLookupItem(source);
@@ -448,7 +446,7 @@ artsGetLastPersistentEventVersion(struct artsPersistentEvent *event) {
 bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
                                        artsGuid_t eventData) {
   if (eventData == NULL_GUID) {
-    printf("Event data is NULL_GUID for persistent event\n");
+    ARTS_INFO("Event data is NULL_GUID for persistent event");
     artsDebugGenerateSegFault();
   }
   const unsigned int eventSize = sizeof(struct artsPersistentEvent);
@@ -479,7 +477,7 @@ bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
     }
     return true;
   }
-  PRINTF(" - Failed to create persistent event\n");
+  ARTS_INFO(" - Failed to create persistent event");
   return false;
 }
 
@@ -498,7 +496,7 @@ bool artsPersistentEventFreeVersion(struct artsPersistentEvent *event) {
   assert(version != NULL);
 
   /// Free dependencies for this version
-  DPRINTF("   - Freeing dependencies for version %u\n", version->version);
+  ARTS_DEBUG("   - Freeing dependencies for version %u", version->version);
   struct artsDependentList *trail, *current = version->dependent.next;
   while (current) {
     trail = current;
@@ -510,9 +508,9 @@ bool artsPersistentEventFreeVersion(struct artsPersistentEvent *event) {
   if (last) {
     version->latchCount = 0;
     version->dependentCount = 0;
-    DPRINTF("   - Resetting dependencies for version %u\n", version->version);
+    ARTS_DEBUG("   - Resetting dependencies for version %u", version->version);
   } else {
-    DPRINTF("   - Popping version %u\n", version->version);
+    ARTS_DEBUG("   - Popping version %u", version->version);
     versions->headPtr = versions->headPtr->next;
     struct artsLinkListItem *item = ((struct artsLinkListItem *)version) - 1;
     artsFree(item);
@@ -569,43 +567,43 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
     if (lock)
       artsLock(&event->lock);
     if (event->data == NULL_GUID) {
-      DPRINTF("Data: NULL_GUID, avoiding signaling\n");
+      ARTS_DEBUG("Data: NULL_GUID, avoiding signaling");
       artsDebugGenerateSegFault();
     }
     unsigned int res = -1;
     struct artsPersistentEventVersion *version =
         artsGetFrontPersistentEventVersion(event);
-    DPRINTF("[PersistentEvent] Satisfying event %lu, version %u\n", eventGuid,
-           version->version);
+    ARTS_DEBUG("[PersistentEvent] Satisfying event %lu, version %u", eventGuid,
+               version->version);
     assert(version != NULL);
     if (action == ARTS_EVENT_LATCH_INCR_SLOT) {
       res = artsAtomicFetchAdd(&version->latchCount, 0U);
       if (res == 1) {
-        DPRINTF("Latch count is 1 for event %u, creating new version\n",
-                eventGuid);
+        ARTS_DEBUG("Latch count is 1 for event %u, creating new version",
+                   eventGuid);
         version = artsPushPersistentEventVersion(event);
-        DPRINTF("    - Created version %u for event %lu\n", version->version,
-               eventGuid);
+        ARTS_DEBUG("    - Created version %u for event %lu", version->version,
+                   eventGuid);
       }
       res = artsAtomicAdd(&version->latchCount, 1U);
-      DPRINTF("Increment latch count to %d for event %u\n", res, eventGuid);
+      ARTS_DEBUG("Increment latch count to %d for event %u", res, eventGuid);
     } else if (action == ARTS_EVENT_LATCH_DECR_SLOT) {
       res = artsAtomicFetchAdd(&version->latchCount, 0U);
       if (res == (unsigned int)-1) {
-        DPRINTF("Latch count is -1 for event %u, creating new version\n",
-                eventGuid);
+        ARTS_DEBUG("Latch count is -1 for event %u, creating new version",
+                   eventGuid);
         version = artsPushPersistentEventVersion(event);
-        DPRINTF("    - Created version %u for event %lu\n", version->version,
-               eventGuid);
+        ARTS_DEBUG("    - Created version %u for event %lu", version->version,
+                   eventGuid);
       }
       res = artsAtomicSub(&version->latchCount, 1U);
-      DPRINTF("Decrement latch count to %d for event %u \n", res, eventGuid);
+      ARTS_DEBUG("Decrement latch count to %d for event %u ", res, eventGuid);
     } else if (action == ARTS_EVENT_UPDATE) {
       res = artsAtomicFetchAdd(&version->latchCount, 0U);
-      DPRINTF("Update latch count to %d for event %u \n", res, eventGuid);
-      DPRINTF("    - Updated event %lu\n", eventGuid);
+      ARTS_DEBUG("Update latch count to %d for event %u ", res, eventGuid);
+      ARTS_DEBUG("    - Updated event %lu", eventGuid);
     } else {
-      DPRINTF("Bad latch slot %u\n", action);
+      ARTS_DEBUG("Bad latch slot %u", action);
       artsDebugGenerateSegFault();
     }
 
@@ -626,7 +624,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
             if (event->data != NULL_GUID) {
               artsSignalEdt(dependent[j].addr, dependent[j].slot, event->data);
             } else {
-              DPRINTF("Event data is NULL_GUID for event %u\n", eventGuid);
+              ARTS_DEBUG("Event data is NULL_GUID for event %u", eventGuid);
             }
           } else if (dependent[j].type == ARTS_EVENT) {
 #ifdef USE_COUNT
@@ -665,8 +663,6 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
       }
 
       /// Free dependencies for this version
-      DPRINTF("[PersistentEvent] Freeing dependencies for event %lu\n",
-             eventGuid);
       artsPersistentEventFreeVersion(event);
     }
     if (lock)
@@ -689,7 +685,7 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
                                         artsGuid_t edtDest, uint32_t edtSlot) {
   /// Check that the eventSource is a persistent event
   if (artsGuidGetType(eventSource) != ARTS_PERSISTENT_EVENT) {
-    DPRINTF("Event source %u is not a persistent event\n", eventSource);
+    ARTS_DEBUG("Event source %u is not a persistent event", eventSource);
     artsDebugGenerateSegFault();
     return;
   }
@@ -708,8 +704,8 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
     return;
   }
 
-  DPRINTF("Add Dependence from persistent event %u to EDT %u at %u\n",
-          eventSource, edtDest, edtSlot);
+  ARTS_DEBUG("Add Dependence from persistent event %u to EDT %u at %u",
+             eventSource, edtDest, edtSlot);
   struct artsPersistentEvent *event =
       (struct artsPersistentEvent *)sourceHeader;
   artsLock(&event->lock);

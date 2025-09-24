@@ -94,19 +94,19 @@ void printDeviceList(thrust::device_ptr<unsigned int> devPtr,
   PRINTF("FRONTIER SIZE: %u\n", size);
   for (unsigned int i = 0; i < size; i++) {
     unsigned int temp = *(devPtr + i);
-    printf("%u, ", temp);
+    PRINTF("%u, ", temp);
   }
-  printf("\n");
+  PRINTF("\n");
 }
 
 void printResult() {
   for (unsigned int i = 0; i < PARTS; i++) {
     unsigned int size =
         sizeof(unsigned int) * getBlockSizeForPartition(i, distribution);
-    printf("%u: %u\n", i, size);
+    PRINTF("%u: %u\n", i, size);
     for (unsigned int j = 0; j < size; j++)
-      printf("%u, ", visited[i][j]);
-    printf("\n");
+      PRINTF("%u, ", visited[i][j]);
+    PRINTF("\n");
   }
 }
 
@@ -126,10 +126,9 @@ void createFirstRound(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                    ARTS_DB_GPU_READ);
   firstSearchFrontier[0] = 1;   // size of the frontier
   firstSearchFrontier[1] = src; // root
-  DPRINTF("ROOT: %u GRAPH GUID: %lu VISITED GUID: %lu\n",
-          firstSearchFrontier[1],
-          getGuidForVertexDistr(firstSearchFrontier[1], distribution),
-          visitedGuid[getOwnerDistr(firstSearchFrontier[1], distribution)]);
+  PRINTF("ROOT: %u GRAPH GUID: %lu VISITED GUID: %lu\n", firstSearchFrontier[1],
+         getGuidForVertexDistr(firstSearchFrontier[1], distribution),
+         visitedGuid[getOwnerDistr(firstSearchFrontier[1], distribution)]);
 
   // Create the first epoch
   artsGuid_t launchSortGuid =
@@ -243,7 +242,7 @@ void cpuBfs(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 // next epoch
 void doPartionSync(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                    artsEdtDep_t depv[]) {
-  DPRINTF("Just Synced Partitions! %lu\n", paramv[0]);
+  PRINTF("Just Synced Partitions! %lu\n", paramv[0]);
   artsSignalEdt(paramv[1], (uint32_t)-1, NULL_GUID);
 }
 
@@ -253,7 +252,7 @@ void launchSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                 artsEdtDep_t depv[]) {
   uint64_t localLevel = paramv[0];
   uint64_t edtsRan = depv[0].guid;
-  DPRINTF("%s Level: %lu Edts Ran: %lu\n", __func__, localLevel, edtsRan);
+  PRINTF("%s Level: %lu Edts Ran: %lu\n", __func__, localLevel, edtsRan);
 
   // This is tricky.  We need to create the epoch for the next round since
   // thrustSort will create the next rounds' Bfs'es.  In order to create the
@@ -296,7 +295,7 @@ void launchSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     }
     nextLaunchBfsDepc += artsGetTotalNodes();
   }
-  DPRINTF("nextLaunchBfsDepc: %lu\n", nextLaunchBfsDepc);
+  PRINTF("nextLaunchBfsDepc: %lu\n", nextLaunchBfsDepc);
   artsEdtCreateWithGuid(launchBfs, nextLaunchBfsGuid, 1, &nextLevel,
                         nextLaunchBfsDepc);
 }
@@ -305,7 +304,7 @@ void cpuSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
              artsEdtDep_t depv[]) {
   uint64_t localLevel =
       paramv[0]; // This can be the end if the frontier is empty
-  DPRINTF("%s Level: %lu\n", __func__, localLevel);
+  PRINTF("%s Level: %lu\n", __func__, localLevel);
   artsGuid_t nextLaunchBfsGuid = paramv[1]; // This is the next sync point.
   artsGuid_t edtGuidsToLaunchBfsGuid =
       NULL_GUID; // Where we will put a copy of all the new edts to start...
@@ -335,10 +334,10 @@ void cpuSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     // Get the size of each partition
     unsigned int sizePerBound[PARTS];
     sizePerBound[0] = upperIndexPerBound[0];
-    DPRINTF("Upper: %u Size: %u\n", bounds[0], sizePerBound[0]);
+    PRINTF("Upper: %u Size: %u\n", bounds[0], sizePerBound[0]);
     for (unsigned int i = 1; i < PARTS; i++) {
       sizePerBound[i] = upperIndexPerBound[i] - upperIndexPerBound[i - 1];
-      DPRINTF("Upper: %u Size: %u\n", bounds[i], sizePerBound[i]);
+      PRINTF("Upper: %u Size: %u\n", bounds[i], sizePerBound[i]);
     }
 
     // TODO: Clear old dbs (previous frontiers)...
@@ -371,15 +370,15 @@ void cpuSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
         {
           dim3 threads(SMTILE, 1, 1);
           dim3 grid((sizePerBound[i] + SMTILE - 1) / SMTILE, 1, 1); // Ceiling
-          DPRINTF("GPU PART: %u SMTILE: %u grid: %u\n", i, SMTILE,
-                  (sizePerBound[i] + SMTILE - 1) / SMTILE);
+          PRINTF("GPU PART: %u SMTILE: %u grid: %u\n", i, SMTILE,
+                 (sizePerBound[i] + SMTILE - 1) / SMTILE);
           edtGuidsToLaunchBfs[i] =
               artsEdtCreateGpu(gpuBfs, rank, 1, &nextLevel, 4, grid, threads,
                                NULL_GUID, 0, NULL_GUID);
 
         } else // Create CPU EDT
         {
-          DPRINTF("CPU PART: %u\n", i);
+          PRINTF("CPU PART: %u\n", i);
           edtGuidsToLaunchBfs[i] =
               artsEdtCreate(cpuBfs, rank, 1, &nextLevel, 4);
         }
@@ -403,7 +402,7 @@ void thrustSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                 artsEdtDep_t depv[]) {
   uint64_t localLevel =
       paramv[0]; // This can be the end if the frontier is empty
-  DPRINTF("%s Level: %lu Gpu: %d\n", __func__, localLevel, artsGetGpuId());
+  PRINTF("%s Level: %lu Gpu: %d\n", __func__, localLevel, artsGetGpuId());
   artsGuid_t nextLaunchBfsGuid = paramv[1]; // This is the next sync point.
   artsGuid_t edtGuidsToLaunchBfsGuid =
       NULL_GUID; // Where we will put a copy of all the new edts to start...
@@ -442,10 +441,10 @@ void thrustSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     // Get the size of each partition
     unsigned int sizePerBound[PARTS];
     sizePerBound[0] = upperIndexPerBound[0];
-    DPRINTF("Upper: %u Size: %u\n", bounds[0], sizePerBound[0]);
+    PRINTF("Upper: %u Size: %u\n", bounds[0], sizePerBound[0]);
     for (unsigned int i = 1; i < PARTS; i++) {
       sizePerBound[i] = upperIndexPerBound[i] - upperIndexPerBound[i - 1];
-      DPRINTF("Upper: %u Size: %u\n", bounds[i], sizePerBound[i]);
+      PRINTF("Upper: %u Size: %u\n", bounds[i], sizePerBound[i]);
     }
 
     // TODO: Clear old dbs (previous frontiers)...
@@ -479,15 +478,15 @@ void thrustSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
         {
           dim3 threads(SMTILE, 1, 1);
           dim3 grid((sizePerBound[i] + SMTILE - 1) / SMTILE, 1, 1); // Ceiling
-          DPRINTF("GPU PART: %u SMTILE: %u grid: %u\n", i, SMTILE,
-                  (sizePerBound[i] + SMTILE - 1) / SMTILE);
+          PRINTF("GPU PART: %u SMTILE: %u grid: %u\n", i, SMTILE,
+                 (sizePerBound[i] + SMTILE - 1) / SMTILE);
           edtGuidsToLaunchBfs[i] =
               artsEdtCreateGpu(gpuBfs, rank, 1, &nextLevel, 4, grid, threads,
                                NULL_GUID, 0, NULL_GUID);
 
         } else // Create CPU EDT
         {
-          DPRINTF("CPU PART: %u\n", i);
+          PRINTF("CPU PART: %u\n", i);
           edtGuidsToLaunchBfs[i] =
               artsEdtCreate(cpuBfs, rank, 1, &nextLevel, 4);
         }
@@ -512,7 +511,7 @@ void launchBfs(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                artsEdtDep_t depv[]) {
   uint64_t totalNewBfs = 0;
   uint64_t nextLevel = paramv[0];
-  DPRINTF("%s Level: %lu\n", __func__, nextLevel);
+  PRINTF("%s Level: %lu\n", __func__, nextLevel);
 
   if (nextLevel < MAXLEVEL) {
     // from each gpu, we get a bunch of bfs-es that need to be spawned
@@ -566,8 +565,8 @@ extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
   // Find the boundaries for sorting
   for (unsigned int i = 0; i < PARTS; i++) {
     bounds[i] = partitionEndDistr(i, distribution);
-    DPRINTF("Bounds[%u]: %lu guid: %lu\n", i, bounds[i],
-            distribution->graphGuid[i]);
+    PRINTF("Bounds[%u]: %lu guid: %lu\n", i, bounds[i],
+           distribution->graphGuid[i]);
   }
 
   // Count the number of partitions per node for later...

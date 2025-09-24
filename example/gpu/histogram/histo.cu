@@ -50,8 +50,8 @@
 #define SMTILE 32  // Hardcoded for Volta
 #define NUMBINS 10 // Make it a variable
 
-#define DPRINTF(...)
-//  #define DPRINTF(...) PRINTF(__VA_ARGS__)
+#define PRINTF(...)
+//  #define PRINTF(...) PRINTF(__VA_ARGS__)
 
 uint64_t start = 0;
 
@@ -88,10 +88,10 @@ __global__ void privateHistogram(uint32_t paramc, uint64_t *paramv,
   __syncthreads();
   if (index == 0) {
     for (unsigned int i = 0; i < numElements; i++)
-      printf("input[%u] = %u\n", i, tile[i]);
+      PRINTF("input[%u] = %u\n", i, tile[i]);
 
     for (unsigned int i = 0; i < NUMBINS; i++)
-      printf("\thisto[%u] = %u\n", i, localHisto[i]);
+      PRINTF("\thisto[%u] = %u\n", i, localHisto[i]);
   }
   __syncthreads();
 #endif
@@ -125,9 +125,9 @@ __global__ void reduceHistogram(uint32_t paramc, uint64_t *paramv,
   if (index == 0) {
     for (unsigned int i = 0; i < numLocalHistograms; i++) {
       unsigned int *localHisto = (unsigned int *)depv[1 + i].ptr;
-      printf("localHisto[%d]\n", i);
+      PRINTF("localHisto[%d]\n", i);
       for (unsigned int j = 0; j < NUMBINS; j++)
-        printf("\thisto[%d] = %d\n", j, localHisto[j]);
+        PRINTF("\thisto[%d] = %d\n", j, localHisto[j]);
     }
   }
 #endif
@@ -145,7 +145,7 @@ void finishHistogram(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     histoExpected[inputArray[i]]++;
 
   for (unsigned int i = 0; i < NUMBINS; i++)
-    printf("histo[%u] = %u | finalHisto[%u] = %u\n", i, histoExpected[i], i,
+    PRINTF("histo[%u] = %u | finalHisto[%u] = %u\n", i, histoExpected[i], i,
            histoObtained[i]);
 
   for (unsigned int i = 0; i < NUMBINS; i++) {
@@ -202,7 +202,7 @@ extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
   inputArray = (unsigned int *)artsCalloc(inputArraySize, sizeof(unsigned int));
 
   if (!nodeId)
-    DPRINTF("Loading input array with seed 7\n");
+    PRINTF("Loading input array with seed 7\n");
 
   srand(7);
   for (unsigned int elem = 0; elem < inputArraySize; elem++)

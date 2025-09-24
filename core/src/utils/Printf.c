@@ -37,6 +37,10 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
+#include <stdio.h>
+
+#include "arts/runtime/Globals.h"
+
 void PRINTF(const char *format, ...) {
   va_list arglist;
   printf(" [%u] ", artsGlobalRankId);

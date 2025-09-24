@@ -45,11 +45,10 @@
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
+#include "arts/system/ArtsPrint.h"
 
 #include <unistd.h>
 // #include "artsRemote.h"
-#define DPRINTF(...)
-// #define DPRINTF(...) PRINTF(__VA_ARGS__)
 
 #define EDT_MUG_SIZE 32
 
@@ -97,18 +96,18 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
   uint64_t expSeqNumber =
       __sync_fetch_and_add(&recSeqNumbers[packet->seqRank], 1U);
   if (expSeqNumber != packet->seqNum) {
-    DPRINTF(
-        "MESSAGE RECIEVED OUT OF ORDER exp: %lu rec: %lu source: %u type: %d\n",
+    ARTS_DEBUG(
+        "MESSAGE RECIEVED OUT OF ORDER exp: %lu rec: %lu source: %u type: %d",
         expSeqNumber, packet->seqNum, packet->rank, packet->messageType);
   }
 //    else
-//        PRINTF("Recv: %lu -> %lu = %lu\n", packet->seqRank, artsGlobalRankId,
+//        ARTS_INFO("Recv: %lu -> %lu = %lu", packet->seqRank, artsGlobalRankId,
 //        packet->seqNum);
 #endif
 
   switch (packet->messageType) {
   case ARTS_REMOTE_SHUTDOWN_MSG: {
-    DPRINTF("Remote Shutdown Request\n");
+    ARTS_DEBUG("Remote Shutdown Request");
     artsRuntimeStop();
     break;
   }
@@ -155,26 +154,26 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
     struct artsRemoteDbRequestPacket *pack =
         (struct artsRemoteDbRequestPacket *)(packet);
     if (packet->size != sizeof(*pack))
-      PRINTF("Error dbpacket insanity\n");
+      ARTS_INFO("Error dbpacket insanity");
     artsRemoteDbSend(pack);
     break;
   }
   case ARTS_REMOTE_DB_SEND_MSG: {
-    DPRINTF("Remote Db Recieved\n");
+    ARTS_DEBUG("Remote Db Recieved");
     struct artsRemoteDbSendPacket *pack =
         (struct artsRemoteDbSendPacket *)(packet);
     artsRemoteHandleDbRecieved(pack);
     break;
   }
   case ARTS_REMOTE_ADD_DEPENDENCE_MSG: {
-    DPRINTF("Dependence Recieved\n");
+    ARTS_DEBUG("Dependence Recieved");
     struct artsRemoteAddDependencePacket *pack =
         (struct artsRemoteAddDependencePacket *)(packet);
     artsAddDependence(pack->source, pack->destination, pack->slot);
     break;
   }
   case ARTS_REMOTE_ADD_DEPENDENCE_TO_PERSISTENT_EVENT_MSG: {
-    DPRINTF("Persistent Dependence Recieved\n");
+    ARTS_DEBUG("Persistent Dependence Recieved");
     struct artsRemoteAddDependencePacket *pack =
         (struct artsRemoteAddDependencePacket *)(packet);
     artsAddDependenceToPersistentEvent(pack->source, pack->destination,
@@ -182,7 +181,7 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
     break;
   }
   case ARTS_REMOTE_INVALIDATE_DB_MSG: {
-    DPRINTF("DB Invalidate Recieved\n");
+    ARTS_DEBUG("DB Invalidate Recieved");
     artsRemoteHandleInvalidateDb(packet);
     break;
   }
@@ -203,32 +202,32 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
     break;
   }
   case ARTS_REMOTE_DB_DESTROY_MSG: {
-    DPRINTF("DB Destroy Recieved\n");
+    ARTS_DEBUG("DB Destroy Recieved");
     artsRemoteHandleDbDestroy(packet);
     break;
   }
   case ARTS_REMOTE_DB_DESTROY_FORWARD_MSG: {
-    DPRINTF("DB Destroy Forward Recieved\n");
+    ARTS_DEBUG("DB Destroy Forward Recieved");
     artsRemoteHandleDbDestroyForward(packet);
     break;
   }
   case ARTS_REMOTE_DB_CLEAN_FORWARD_MSG: {
-    DPRINTF("DB Clean Forward Recieved\n");
+    ARTS_DEBUG("DB Clean Forward Recieved");
     artsRemoteHandleDbCleanForward(packet);
     break;
   }
   case ARTS_REMOTE_DB_UPDATE_GUID_MSG: {
-    DPRINTF("DB Guid Update Recieved\n");
+    ARTS_DEBUG("DB Guid Update Recieved");
     artsRemoteHandleUpdateDbGuid(packet);
     break;
   }
   case ARTS_REMOTE_EDT_MOVE_MSG: {
-    DPRINTF("EDT Move Recieved\n");
+    ARTS_DEBUG("EDT Move Recieved");
     artsRemoteHandleEdtMove(packet);
     break;
   }
   case ARTS_REMOTE_DB_MOVE_MSG: {
-    DPRINTF("DB Move Recieved\n");
+    ARTS_DEBUG("DB Move Recieved");
     artsRemoteHandleDbMove(packet);
     break;
   }
@@ -248,8 +247,8 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
 
     struct artsRemoteMetricUpdate *pack =
         (struct artsRemoteMetricUpdate *)(packet);
-    DPRINTF("Metric update Recieved %u -> %d %ld\n", artsGlobalRankId,
-            pack->type, pack->toAdd);
+    ARTS_DEBUG("Metric update Recieved %u -> %d %ld", artsGlobalRankId,
+               pack->type, pack->toAdd);
     artsHandleRemoteMetricUpdate(pack->type, artsSystem, pack->toAdd,
                                  pack->sub);
     break;
@@ -311,8 +310,8 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
     break;
   }
   default: {
-    PRINTF("Unknown Packet %d %d %d\n", packet->messageType, packet->size,
-           packet->rank);
+    ARTS_INFO("Unknown Packet %d %d %d", packet->messageType, packet->size,
+              packet->rank);
     artsShutdown();
     artsRuntimeStop();
   }

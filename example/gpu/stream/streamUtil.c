@@ -203,27 +203,27 @@ void checkSTREAMresults(unsigned int tileSize, unsigned int totalSize,
   }
 
 #ifdef VERBOSE
-  printf("Results Comparison: \n");
-  printf("        Expected  : %f %f %f \n", aj, bj, cj);
-  printf("        Observed  : %f %f %f \n", asum, bsum, csum);
+  PRINTF("Results Comparison: \n");
+  PRINTF("        Expected  : %f %f %f \n", aj, bj, cj);
+  PRINTF("        Observed  : %f %f %f \n", asum, bsum, csum);
 #endif
 
 #define abs(a) ((a) >= 0 ? (a) : -(a))
   epsilon = 1.e-8;
 
   if (abs(aj - asum) / asum > epsilon) {
-    printf("Failed Validation on array a[]\n");
-    printf("        Expected  : %f \n", aj);
-    printf("        Observed  : %f \n", asum);
+    PRINTF("Failed Validation on array a[]\n");
+    PRINTF("        Expected  : %f \n", aj);
+    PRINTF("        Observed  : %f \n", asum);
   } else if (abs(bj - bsum) / bsum > epsilon) {
-    printf("Failed Validation on array b[]\n");
-    printf("        Expected  : %f \n", bj);
-    printf("        Observed  : %f \n", bsum);
+    PRINTF("Failed Validation on array b[]\n");
+    PRINTF("        Expected  : %f \n", bj);
+    PRINTF("        Observed  : %f \n", bsum);
   } else if (abs(cj - csum) / csum > epsilon) {
-    printf("Failed Validation on array c[]\n");
-    printf("        Expected  : %f \n", cj);
-    printf("        Observed  : %f \n", csum);
+    PRINTF("Failed Validation on array c[]\n");
+    PRINTF("        Expected  : %f \n", cj);
+    PRINTF("        Observed  : %f \n", csum);
   } else {
-    printf("Solution Validates\n");
+    PRINTF("Solution Validates\n");
   }
 }

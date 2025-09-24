@@ -39,6 +39,7 @@
 #include "arts/system/AbstractMachineModel.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
+#include "arts/system/ArtsPrint.h"
 
 unsigned int numNumaDomains = 1;
 
@@ -118,7 +119,7 @@ unsigned int getNumberOfType(hwloc_topology_t topology, hwloc_obj_t obj,
 }
 
 void artsAbstractMachineModelPinThread(struct artsCoreInfo *coreInfo) {
-  //    PRINTF("BINDING\n");
+  //    ARTS_INFO("BINDING");
   hwloc_set_cpubind(coreInfo->topology, coreInfo->cpuset, HWLOC_CPUBIND_THREAD);
 }
 
@@ -128,15 +129,15 @@ void initClusterUnits(hwloc_topology_t topology, hwloc_obj_t obj,
   if (obj->type == HWLOC_OBJ_PU) {
     if (obj->parent->type == HWLOC_OBJ_CORE) {
       units[*unitIndex].coreId = obj->parent->os_index;
-      //            PRINTF("A CORE\n");
+      //            ARTS_INFO("A CORE");
     } else {
-      //            PRINTF("NOT A CORE...\n");
+      //            ARTS_INFO("NOT A CORE...");
     }
     units[*unitIndex].clusterId = cluster->os_index;
     units[*unitIndex].unitId = obj->os_index;
     units[*unitIndex].on = 0;
 
-    //        PRINTF("Cluster: %u Unit: %u\n", cluster->os_index,
+    //        ARTS_INFO("Cluster: %u Unit: %u", cluster->os_index,
     //        obj->os_index);
 
     units[*unitIndex].listHead = NULL;
@@ -145,7 +146,7 @@ void initClusterUnits(hwloc_topology_t topology, hwloc_obj_t obj,
     units[*unitIndex].coreInfo.cpuset = obj->cpuset;
     *unitIndex = (*unitIndex) + 1;
   } else {
-    //        PRINTF("ARITY: %u\n", obj->arity);
+    //        ARTS_INFO("ARITY: %u", obj->arity);
     int i;
     for (i = 0; i < obj->arity; i++)
       initClusterUnits(topology, obj->children[i], cluster, unitIndex, units);
@@ -205,7 +206,7 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
   unsigned int numClusters = node->numClusters;
   unsigned int numCores = node->cluster[0].numCores;
   unsigned int numUnits = node->cluster[0].core[0].numUnits;
-  //    PRINTF("%d %d %d\n", numClusters, numCores, numUnits);
+  //    ARTS_INFO("%d %d %d", numClusters, numCores, numUnits);
   unsigned int coresPerCluster = numCores * numUnits;
   unsigned int coreCount = numClusters * numCores * numUnits;
   unsigned int i = 0, j = 0, k = 0, totalThreads = 0;
@@ -351,19 +352,19 @@ void destroyThreadMask(struct threadMask *mask) {
 }
 
 void printTopology(struct nodeMask *node) {
-  PRINTF("Node %u\n", node->numClusters);
+  ARTS_INFO("Node %u", node->numClusters);
   unsigned int i, j, k;
   for (i = 0; i < node->numClusters; i++) {
-    PRINTF(" Cluster %u\n", node->cluster[i].numCores);
+    ARTS_INFO(" Cluster %u", node->cluster[i].numCores);
     for (j = 0; j < node->cluster[i].numCores; j++) {
-      PRINTF("  Core %u\n", node->cluster[i].core[j].numUnits);
+      ARTS_INFO("  Core %u", node->cluster[i].core[j].numUnits);
       for (k = 0; k < node->cluster[i].core[j].numUnits; k++) {
         struct unitMask *unit = &node->cluster[i].core[j].unit[k];
         struct unitThread *temp = unit->listHead;
         while (temp != NULL) {
-          PRINTF("   Unit %u %u %u %u %u %u %u\n", temp->id, unit->unitId,
-                 unit->on, temp->worker, temp->networkSend,
-                 temp->networkReceive, unit->coreId);
+          ARTS_INFO("   Unit %u %u %u %u %u %u %u", temp->id, unit->unitId,
+                    unit->on, temp->worker, temp->networkSend,
+                    temp->networkReceive, unit->coreId);
           temp = temp->next;
         }
       }
@@ -407,7 +408,7 @@ int artsAffinityFromPthreadValid(unsigned int i, int *validCpus,
     } while (res == -1);
     count++;
   } else
-    PRINTF("Valid set of processors is empty\n");
+    ARTS_INFO("Valid set of processors is empty");
   return res;
 }
 
@@ -429,9 +430,9 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
   unsigned int networkInThreadId = 0;
 
   if (numCores <= networkCores || validCpuCount <= networkCores)
-    PRINTF("Not enough cores. Required cores: %u Total cores: %u "
-           "validCpuCount: %u\n",
-           networkCores, numCores, validCpuCount);
+    ARTS_INFO("Not enough cores. Required cores: %u Total cores: %u "
+              "validCpuCount: %u",
+              networkCores, numCores, validCpuCount);
   unsigned int workerCores = numCores - networkCores;
   int max = -1;
   while (totalThreads < numberOfWorkers) {
@@ -445,7 +446,7 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
                workerThreadId++, config->pinThreads);
     max = (tempAffin > max) ? tempAffin : max;
     totalThreads++;
-    //        PRINTF("i: %u -> %u -> %u\n", i, i%workerCores,
+    //        ARTS_INFO("i: %u -> %u -> %u", i, i%workerCores,
     //        flat[i%workerCores].coreId);
     i += stride;
     if (i >= workerCores && stride > 1) {
@@ -562,14 +563,16 @@ void destroyThreadMask(struct threadMask *mask) { artsFree(mask); }
 
 void printMask(struct threadMask *units, unsigned int numberOfUnits) {
   unsigned int i;
-  MASTER_PRINTF(" Id   GroupId  GroupPos  Cluster  Core  Unit    On  Worker  "
-                "Send  Recv   Pin Status\n");
+  ARTS_INFO_MASTER(
+      " Id   GroupId  GroupPos  Cluster  Core  Unit    On  Worker  "
+      "Send  Recv   Pin Status");
   for (i = 0; i < numberOfUnits; i++) {
-    MASTER_PRINTF("%3u    %3u     %3u       %3u     %3u    %3u     %1u     %1u "
-                  "    %1u     %1u      %1u    %1u\n",
-                  units[i].id, units[i].groupId, units[i].groupPos,
-                  units[i].clusterId, units[i].coreId, units[i].unitId,
-                  units[i].on, units[i].worker, units[i].networkSend,
-                  units[i].networkReceive, units[i].pin, units[i].statusSend);
+    ARTS_INFO_MASTER(
+        "%3u    %3u     %3u       %3u     %3u    %3u     %1u     %1u "
+        "    %1u     %1u      %1u    %1u",
+        units[i].id, units[i].groupId, units[i].groupPos, units[i].clusterId,
+        units[i].coreId, units[i].unitId, units[i].on, units[i].worker,
+        units[i].networkSend, units[i].networkReceive, units[i].pin,
+        units[i].statusSend);
   }
 }

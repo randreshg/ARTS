@@ -47,18 +47,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DPRINTF(...)
-// #define DPRINTF(...) PRINTF(__VA_ARGS__)
-
 arts_block_dist_t *distribution;
 csr_graph_t *graph;
 uint64_t *level;
 
 void bfsOutput() {
-  DPRINTF("Printing vertex levels....\n");
+  PRINTF("Printing vertex levels....\n");
   uint64_t i;
   for (i = 0; i < graph->num_local_vertices; ++i) {
-    DPRINTF("Local vertex : %" PRIu64 ", Level : %" PRIu64 "\n", i, level[i]);
+    PRINTF("Local vertex : %" PRIu64 ", Level : %" PRIu64 "\n", i, level[i]);
   }
 }
 
@@ -72,7 +69,7 @@ void bfsSend(vertex_t u, uint64_t ulevel);
 
 void relax(uint32_t paramc, uint64_t *paramv, uint32_t depc,
            artsEdtDep_t depv[]) {
-  DPRINTF("calling relax\n");
+  PRINTF("calling relax\n");
   assert(paramc == 2);
   vertex_t v = (vertex_t)paramv[0];
   uint64_t vlevel = paramv[1];
@@ -103,7 +100,7 @@ void relax(uint32_t paramc, uint64_t *paramv, uint32_t depc,
       vertex_t u = neighbors[i];
 
       // route message
-      DPRINTF("sending u=%" PRIu64 ", level= %" PRIu64 "\n", u, neigbrlevel);
+      PRINTF("sending u=%" PRIu64 ", level= %" PRIu64 "\n", u, neigbrlevel);
       bfsSend(u, neigbrlevel);
     }
   }

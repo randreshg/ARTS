@@ -47,9 +47,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define DPRINTF(...)
-// #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
-
 static int artsShellQuote(const char *input, char *output, size_t outputSize) {
   size_t outIndex = 0;
 

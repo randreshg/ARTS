@@ -129,7 +129,7 @@ void finishBlockMM(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 #if VERIFY
   double *aMat = (double *)depv[1].ptr;
   double *bMat = (double *)depv[2].ptr;
-  printf("Verifying results...\n");
+  PRINTF("Verifying results...\n");
   double *temp = (double *)artsCalloc(matSize * matSize, sizeof(double));
   for (unsigned int i = 0; i < matSize; ++i)
     for (unsigned int j = 0; j < matSize; ++j)
@@ -139,8 +139,8 @@ void finishBlockMM(uint32_t paramc, uint64_t *paramv, uint32_t depc,
   for (unsigned int i = 0; i < matSize; ++i)
     for (unsigned int j = 0; j < matSize; ++j)
       if (temp[i * matSize + j] != cMat[i * matSize + j]) {
-        printf("Failed at cMat[%u][%u]\n", i, j);
-        printf("Expected: %lf | Obtained: %lf\n", temp[i * matSize + j],
+        PRINTF("Failed at cMat[%u][%u]\n", i, j);
+        PRINTF("Expected: %lf | Obtained: %lf\n", temp[i * matSize + j],
                cMat[i * matSize + j]);
         artsFree(temp);
         artsShutdown();

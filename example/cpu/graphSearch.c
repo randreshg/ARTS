@@ -90,7 +90,7 @@ void visitSource(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 void exitProgram(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                  artsEdtDep_t depv[]) {
   endTime = artsGetTimeStamp();
-  printf("Total execution time: %f s \n",
+  PRINTF("Total execution time: %f s \n",
          (double)(endTime - startTime) / 1000000000.0);
   artsStopIntroShad();
   artsShutdown();

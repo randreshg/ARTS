@@ -46,9 +46,7 @@
 #include "arts/runtime/memory/DbFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
-
-#define DPRINTF(...)
-// #define DPRINTF(...) PRINTF(__VA_ARGS__)
+#include "arts/system/ArtsPrint.h"
 
 enum artsOutOfOrderType {
   ooSignalEdt,
@@ -225,7 +223,7 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
   }
   case ooDbRequestSatisfy: {
     struct ooDbRequestSatisfy *req = (struct ooDbRequestSatisfy *)handleMe;
-    DPRINTF("FILL %lu %u %p\n", req->edt, req->slot, memoryPtr);
+    ARTS_DEBUG("FILL %lu %u %p", req->edt, req->slot, memoryPtr);
     artsDbRequestCallback(req->edt, req->slot, (struct artsDb *)memoryPtr);
     break;
   }
@@ -254,19 +252,19 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
     break;
   }
   case ooEpochActive: {
-    //            PRINTF("ooActveFire\n");
+    //            ARTS_INFO("ooActveFire");
     struct ooEpoch *req = (struct ooEpoch *)handleMe;
     incrementActiveEpoch(req->guid);
     break;
   }
   case ooEpochFinish: {
-    //            PRINTF("ooFinishFire\n");
+    //            ARTS_INFO("ooFinishFire");
     struct ooEpoch *req = (struct ooEpoch *)handleMe;
     incrementFinishedEpoch(req->guid);
     break;
   }
   case ooEpochSend: {
-    //            PRINTF("ooEpochSendFire\n");
+    //            ARTS_INFO("ooEpochSendFire");
     struct ooEpochSend *req = (struct ooEpochSend *)handleMe;
     sendEpoch(req->guid, req->source, req->dest);
     break;
@@ -295,7 +293,7 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
     break;
   }
   default:
-    PRINTF("OO Handler Error\n");
+    ARTS_INFO("OO Handler Error");
   }
   artsFree(handleMe);
 }
@@ -596,7 +594,7 @@ void artsOutOfOrderAtomicAddInArrayDb(artsGuid_t dbGuid, unsigned int index,
   req->toAdd = toAdd;
   bool res = artsRouteTableAddOO(dbGuid, req, false);
   if (!res) {
-    PRINTF("edtGuid OO2: %lu\n", req->edtGuid);
+    ARTS_INFO("edtGuid OO2: %lu", req->edtGuid);
     internalAtomicAddInArrayDb(req->dbGuid, req->index, req->toAdd,
                                req->edtGuid, req->slot, req->epochGuid);
     artsFree(req);
@@ -620,7 +618,7 @@ void artsOutOfOrderAtomicCompareAndSwapInArrayDb(
   req->newValue = newValue;
   bool res = artsRouteTableAddOO(dbGuid, req, false);
   if (!res) {
-    PRINTF("edtGuid OO2: %lu\n", req->edtGuid);
+    ARTS_INFO("edtGuid OO2: %lu", req->edtGuid);
     internalAtomicCompareAndSwapInArrayDb(
         req->dbGuid, req->index, req->oldValue, req->newValue, req->edtGuid,
         req->slot, req->epochGuid);

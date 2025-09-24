@@ -40,6 +40,7 @@
 #include "arts/EdgeVector.h"
 #include "arts/arts.h"
 #include "arts/gas/RouteTable.h"
+#include "arts/system/ArtsPrint.h"
 
 #include <assert.h>
 #include <inttypes.h>
@@ -114,7 +115,7 @@ csr_graph_t *initCSR(partition_t partIndex, graph_sz_t _localv,
 
         // new source
         // assert(_csr->row_indices[src_ind] == i);
-        // PRINTF("src_ind = %" PRIu64 ", ",  src_ind);
+        // ARTS_INFO("src_ind = %" PRIu64 ", ",  src_ind);
         row_indices[src_ind + 1] = i + 1;
         columns[i] = t;
         last_src = s;
@@ -126,7 +127,7 @@ csr_graph_t *initCSR(partition_t partIndex, graph_sz_t _localv,
     ++last_src_ind;
     vertex_t val = row_indices[last_src_ind];
     if (last_src_ind > _localv)
-      printf("lasr_src index: %lu _localv: %lu", last_src_ind, _localv);
+      ARTS_INFO("lasr_src index: %lu _localv: %lu", last_src_ind, _localv);
     assert(last_src_ind <= _localv);
     while (last_src_ind < _localv)
       row_indices[++last_src_ind] = val;
@@ -172,11 +173,11 @@ local_index_t getLocalIndexCSR(vertex_t v, const csr_graph_t *const part) {
 }
 
 void printCSR(csr_graph_t *_csr) {
-  // print metadata
-  PRINTF("\n=============================================\n");
-  PRINTF("[INFO] Number of local vertices : %" PRIu64 "\n",
-         _csr->num_local_vertices);
-  PRINTF("[INFO] Number of local edges : %" PRIu64 "\n", _csr->num_local_edges);
+  ARTS_INFO("=============================================");
+  ARTS_INFO("[INFO] Number of local vertices : %" PRIu64 "",
+            _csr->num_local_vertices);
+  ARTS_INFO("[INFO] Number of local edges : %" PRIu64 "",
+            _csr->num_local_edges);
 
   vertex_t *row_indices = getRowPtr(_csr);
   vertex_t *columns = getColPtr(_csr);
@@ -191,11 +192,11 @@ void printCSR(csr_graph_t *_csr) {
 
     for (j = row_indices[i]; j < row_indices[i + 1]; ++j) {
       vertex_t u = columns[j];
-      PRINTF("(%" PRIu64 ", %" PRIu64 ")\n", v, u);
+      ARTS_INFO("(%" PRIu64 ", %" PRIu64 ")", v, u);
       ++nedges;
     }
   }
-  PRINTF("\n=============================================\n");
+  ARTS_INFO("=============================================");
 }
 
 void getNeighbors(csr_graph_t *_csr, vertex_t v, vertex_t **_out,
@@ -229,11 +230,11 @@ int loadGraphUsingCmdLineArgs(arts_block_dist_t *_dist, int argc, char **argv) {
       csr_format = true;
   }
 
-  PRINTF("[INFO] Initializing GraphDB with following parameters ...\n");
-  PRINTF("[INFO] Graph file : %s\n", file);
-  PRINTF("[INFO] Flip ? : %d\n", flip);
-  PRINTF("[INFO] Keep Self-loops ? : %d\n", keep_self_loops);
-  PRINTF("[INFO] Csr-format : %d\n", csr_format);
+  ARTS_INFO("[INFO] Initializing GraphDB with following parameters ...");
+  ARTS_INFO("[INFO] Graph file : %s", file);
+  ARTS_INFO("[INFO] Flip ? : %d", flip);
+  ARTS_INFO("[INFO] Keep Self-loops ? : %d", keep_self_loops);
+  ARTS_INFO("[INFO] Csr-format : %d", csr_format);
   if (csr_format) {
     return loadGraphNoWeightCsr(file, _dist, flip, !keep_self_loops);
   }
@@ -245,7 +246,7 @@ int loadGraphNoWeight(const char *_file, arts_block_dist_t *_dist, bool _flip,
                       bool _ignore_self_loops) {
   FILE *file = fopen(_file, "r");
   if (file == NULL) {
-    PRINTF("[ERROR] File cannot be opened -- %s", _file);
+    ARTS_INFO("[ERROR] File cannot be opened -- %s", _file);
     return -1;
   }
 
@@ -300,7 +301,7 @@ int loadGraphNoWeight(const char *_file, arts_block_dist_t *_dist, bool _flip,
         i = 0;
       }
 
-      // printf("src=%lu, target=%lu\n", src, target);
+      // printf("src=%lu, target=%lu", src, target);
       token = strtok(NULL, " ");
     }
 
@@ -312,7 +313,7 @@ int loadGraphNoWeight(const char *_file, arts_block_dist_t *_dist, bool _flip,
     unsigned int owner = getOwnerDistr(src, _dist);
     for (unsigned int k = 0; k < numLocalParts; k++) {
       if (owner == partIndex[k]) {
-        // PRINTF("src = %lu owner = %u start = %lu end = %lu\n", src, owner,
+        // ARTS_INFO("src = %lu owner = %u start = %lu end = %lu", src, owner,
         // partitionStartDistr(owner, _dist), partitionEndDistr(owner, _dist));
         pushBackEdge(&vedges[k], src, target, 0 /*weight zeor for the moment*/);
       }
@@ -339,8 +340,8 @@ int loadGraphNoWeight(const char *_file, arts_block_dist_t *_dist, bool _flip,
   for (unsigned int k = 0; k < numLocalParts; k++) {
     // done loading edge -- sort them by source
     sortBySource(&vedges[k]);
-    // PRINTF("getBlockSizeForPartition(partIndex[k], _dist): %lu,
-    // vedges[k].used: %lu \n", getBlockSizeForPartition(partIndex[k], _dist),
+    // ARTS_INFO("getBlockSizeForPartition(partIndex[k], _dist): %lu,
+    // vedges[k].used: %lu ", getBlockSizeForPartition(partIndex[k], _dist),
     // vedges[k].used);
     initCSR(partIndex[k], getBlockSizeForPartition(partIndex[k], _dist),
             vedges[k].used, _dist, &vedges[k], true,
@@ -355,7 +356,7 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
                          bool _flip, bool _ignore_self_loops) {
   FILE *file = fopen(_file, "r");
   if (file == NULL) {
-    PRINTF("[ERROR] File cannot be opened -- %s", _file);
+    ARTS_INFO("[ERROR] File cannot be opened -- %s", _file);
     return -1;
   }
 
@@ -396,22 +397,22 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
   graph_sz_t src = 0;
   while (fgets(str, MAXCHAR, file) != NULL) {
     if (str[0] == '%') {
-      // PRINTF("%%%%%%\n");
+      // ARTS_INFO("%%%%%%");
       continue;
     }
 
     if (str[0] == '#') {
-      // PRINTF("#######\n");
+      // ARTS_INFO("#######");
       continue;
     }
 
-    char *token = strtok(str, " \t\n\\v\f\r");
+    char *token = strtok(str, " \t\\v\f\r");
     while (token != NULL) {
       graph_sz_t target = atoll(token) - 1;
-      token = strtok(NULL, " \t\n\\v\f\r");
+      token = strtok(NULL, " \t\\v\f\r");
 
       if (_ignore_self_loops && (src == target)) {
-        // PRINTF("SELF LOOP\n");
+        // ARTS_INFO("SELF LOOP");
         continue;
       }
 
@@ -442,8 +443,8 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
 
   if (src == numVerts) {
     for (unsigned int k = 0; k < numLocalParts; k++) {
-      // PRINTF("Sorting edges %lu local %lu vert %lu\n", edgeCount, localEdges,
-      // src); done loading edge -- sort them by source
+      // ARTS_INFO("Sorting edges %lu local %lu vert %lu", edgeCount,
+      // localEdges, src); done loading edge -- sort them by source
       sortBySource(&vedges[k]);
 
       initCSR(partIndex[k], getBlockSizeForPartition(partIndex[k], _dist),
@@ -452,7 +453,8 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
       freeEdgeVector(&vedges[k]);
     }
   } else
-    PRINTF("SRC: %lu != numVerts %lu.  Check the line length\n", src, numVerts);
+    ARTS_INFO("SRC: %lu != numVerts %lu.  Check the line length", src,
+              numVerts);
 
   return 0;
 }

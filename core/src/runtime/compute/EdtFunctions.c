@@ -46,6 +46,7 @@
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
@@ -53,8 +54,6 @@
 #ifdef USE_GPU
 #include "arts/gpu/GpuRuntime.cuh"
 #endif
-
-#define DPRINTF(...)
 
 #define maxEpochArrayList 32
 
@@ -97,7 +96,7 @@ artsGuid_t *artsCheckEpochIsRoot(artsGuid_t toCheck) {
         return guid;
     }
   }
-  PRINTF("ERROR %lu is not a valid epoch\n", toCheck);
+  ARTS_INFO("ERROR %lu is not a valid epoch", toCheck);
   return NULL;
 }
 
@@ -146,7 +145,8 @@ void artsIncrementFinishedEpochList() {
     unsigned int epochArrayLength = artsLengthArrayList(epochList);
     for (unsigned int i = 0; i < epochArrayLength; i++) {
       artsGuid_t *guid = (artsGuid_t *)artsGetFromArrayList(epochList, i);
-      DPRINTF("%lu Unsetting guid: %lu\n", artsThreadInfo.currentEdtGuid, guid);
+      ARTS_DEBUG("%lu Unsetting guid: %lu", artsThreadInfo.currentEdtGuid,
+                 *guid);
       if (*guid)
         incrementFinishedEpoch(*guid);
     }
@@ -212,7 +212,6 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
       unsigned int offset =
           edtSpace - (depc * sizeof(artsEdtDep_t) + paramc * sizeof(uint64_t));
       char *tmp = (char *)edt + offset;
-      //            PRINTF("CHECKING %p vs %p\n", tmp, (edt+1));
       memcpy(tmp, paramv, sizeof(uint64_t) * paramc);
     }
 
@@ -221,19 +220,14 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
                            (unsigned int)edt->header.size,
                            ARTS_REMOTE_EDT_MOVE_MSG, artsFree);
     else {
-      // This is for debugging purposes...
       incOustandingEdts(1);
-      // this is a brand new edt
       if (createdGuid) {
         artsRouteTableAddItem(edt, *guid, artsGlobalRankId, false);
         if (edt->depcNeeded == 0)
           artsHandleReadyEdt(edt);
-      }
-      // we are racing to add an edt
-      else {
+      } else {
         artsRouteTableAddItemRace(edt, *guid, artsGlobalRankId, false);
         if (edt->depcNeeded) {
-          // Check the OO callback for EDT
           artsRouteTableFireOO(*guid, artsOutOfOrderHandler);
         } else
           artsHandleReadyEdt(edt);
@@ -245,10 +239,11 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
     // ! artsRemoteMemoryMove is performed
 
     // if (useEpoch) {
-    //   PRINTF("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u]\n",
-    //          (unsigned)*guid, (unsigned)edt->epochGuid, (unsigned)edt->depc);
+    //   ARTS_INFO("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u]",
+    //             (unsigned)*guid, (unsigned)edt->epochGuid,
+    //             (unsigned)edt->depc);
     // } else {
-    //   PRINTF("Created EDT [Guid: %lu]\n", (unsigned)*guid);
+    //   ARTS_INFO("Created EDT [Guid: %lu]", (unsigned)*guid);
     // }
 
     return true;
@@ -385,12 +380,9 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
           edtDep[slot].ptr = ptr;
         }
         unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-        PRINTF("EDT [Guid: %lu - Slot: %u - DepCount: %d] signaled DB [Guid: "
-               "%lu]\n",
-               edt->currentEdt, slot, res, dataGuid);
-        // PRINTF("Signal EDT %u to slot %d and info: %f\n", edt->currentEdt,
-        // slot,
-        //        *(double *)ptr);
+        ARTS_INFO(
+            "EDT [Guid: %lu - Slot: %u - DepCount: %d] signaled DB [Guid: %lu]",
+            edt->currentEdt, slot, res, dataGuid);
         if (res == 0)
           artsHandleReadyEdt(edt);
       } else {
@@ -416,13 +408,13 @@ void artsSignalEdt(artsGuid_t edtGuid, uint32_t slot, artsGuid_t dataGuid) {
   artsType_t mode = artsGuidGetType(dataGuid);
   if (mode == ARTS_DB_WRITE)
     acqGuid = artsGuidCast(dataGuid, ARTS_DB_READ);
-  DPRINTF("Signal DB [Guid: %lu] to EDT [Guid: %lu] in slot %u\n", dataGuid,
-          edtGuid, slot);
+  ARTS_DEBUG("Signal DB [Guid: %lu] to EDT [Guid: %lu] in slot %u", dataGuid,
+             edtGuid, slot);
   internalSignalEdt(edtGuid, slot, acqGuid, mode, NULL, 0);
 }
 
 void artsSignalEdtValue(artsGuid_t edtGuid, uint32_t slot, uint64_t value) {
-  DPRINTF("Signal Value: %u to EDTGuid %u in slot %u\n", value, edtGuid, slot);
+  ARTS_DEBUG("Signal Value: %u to EDTGuid %u in slot %u", value, edtGuid, slot);
   internalSignalEdt(edtGuid, slot, value, ARTS_SINGLE_VALUE, NULL, 0);
 }
 
@@ -444,7 +436,7 @@ artsGuid_t artsActiveMessageWithDbAt(artsEdt_t funcPtr, uint32_t paramc,
                                      uint64_t *paramv, uint32_t depc,
                                      artsGuid_t dbGuid, unsigned int rank) {
   artsGuid_t guid = artsEdtCreate(funcPtr, rank, paramc, paramv, depc + 1);
-  DPRINTF("AM -> %lu rank: %u depc: %u\n", guid, rank, depc + 1);
+  ARTS_DEBUG("AM -> %lu rank: %u depc: %u", guid, rank, depc + 1);
   artsSignalEdt(guid, 0, dbGuid);
   return guid;
 }
@@ -501,8 +493,8 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
 
       if (size > stub->size) {
         if (stub->size) {
-          PRINTF("Truncating buffer data buffer size: %u stub size: %u\n", size,
-                 stub->size);
+          ARTS_INFO("Truncating buffer data buffer size: %u stub size: %u",
+                    size, stub->size);
           artsDebugPrintStack();
         } else if (stub->buffer == NULL) {
           stub->buffer = (char *)artsMalloc(sizeof(char) * size);
@@ -516,8 +508,8 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
 
       if (stub->buffer) {
         memcpy(stub->buffer, buffer, stub->size);
-        DPRINTF("Set buffer %p %u %u\n", stub->buffer,
-                *((unsigned int *)stub->buffer), stub->size);
+        ARTS_DEBUG("Set buffer %p %u %u", stub->buffer,
+                   *((unsigned int *)stub->buffer), stub->size);
         ret = stub->buffer;
       } else
         ret = NULL;
@@ -531,7 +523,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
         incrementFinishedEpoch(epochGuid);
       globalShutdownGuidIncFinished();
     } else
-      PRINTF("Out-of-order buffers not supported\n");
+      ARTS_INFO("Out-of-order buffers not supported");
   } else {
     artsRemoteMemoryMove(rank, bufferGuid, buffer, size,
                          ARTS_REMOTE_BUFFER_SEND_MSG, artsFree);
@@ -557,7 +549,7 @@ void *artsBlockForBuffer(artsGuid_t bufferGuid) {
   if (artsIsGuidLocal(bufferGuid)) {
     artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     while (stub->uses > 1) {
-      DPRINTF("Yeild: %u\n", stub->uses);
+      ARTS_DEBUG("Yield: %u", stub->uses);
       artsYield();
     }
     buffer = stub->buffer;

@@ -46,10 +46,8 @@
 #include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/utils/Atomics.h"
-
-#define DPRINTF(...)
-// #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
 
 #define CHECKSTREAM 4096
 #define MAXSTREAM 32
@@ -196,7 +194,7 @@ bool flushMemStream(unsigned int gpuId, unsigned int *count,
     uint64_t dataSize = 0;
     for (unsigned int i = 0; i < max; i++) {
       if (buff[i].src) {
-        // PRINTF("i: %u %p %p %u %p\n", i, buff[i].dst, buff[i].src,
+        // ARTS_INFO("i: %u %p %p %u %p\n", i, buff[i].dst, buff[i].src,
         // buff[i].count,  &artsGpus[gpuId].stream);
         CHECKCORRECT(cudaMemcpyAsync(buff[i].dst, buff[i].src, buff[i].count,
                                      kind, artsGpus[gpuId].stream));
@@ -257,8 +255,8 @@ bool flushWrapUpStream(unsigned int gpuId) {
 }
 
 bool flushStream(unsigned int gpuId) {
-  DPRINTF("%u %u %u %u\n", hostToDevCount[gpuId], kernelToDevCount[gpuId],
-          devToHostCount[gpuId], wrapUpCount[gpuId]);
+  ARTS_DEBUG("%u %u %u %u\n", hostToDevCount[gpuId], kernelToDevCount[gpuId],
+             devToHostCount[gpuId], wrapUpCount[gpuId]);
   if (hostToDevCount[gpuId] || kernelToDevCount[gpuId] ||
       devToHostCount[gpuId] || wrapUpCount[gpuId]) {
     artsCudaSetDevice(gpuId, true);
@@ -312,12 +310,12 @@ void doReductionNow(unsigned int gpuId, void *sink, void *src,
 
   // Next lets run the reduce function on the dbData and the shadow copy (dst)
   unsigned int tileSize = size / elementSize;
-  PRINTF("TileSize: %u\n", tileSize);
+  ARTS_INFO("TileSize: %u\n", tileSize);
   if (tileSize < 32) {
     dim3 block(tileSize, 1, 1); // For volta...
     dim3 grid(1, 1, 1);
     void *kernelArgs[] = {&sink, &src};
-    PRINTF("SRC: %p DST: %p\n", sink, src);
+    ARTS_INFO("SRC: %p DST: %p\n", sink, src);
     CHECKCORRECT(cudaLaunchKernel((const void *)fnPtr, grid, block,
                                   (void **)kernelArgs, (size_t)0,
                                   artsGpus[gpuId].stream));
@@ -338,7 +336,7 @@ void reduceDatafromGpus(void *dst, unsigned int dstGpuId, void *src,
                         unsigned int srcGpuId, unsigned int size,
                         artsLCSyncFunctionGpu_t fnPtr, unsigned int elementSize,
                         void *dbData) {
-  DPRINTF("ELEMENT SIZE: %lu\n", elementSize);
+  ARTS_DEBUG("ELEMENT SIZE: %lu\n", elementSize);
   // We need to lock in a fixed order, so smallest first
   unsigned int first = (dstGpuId < srcGpuId) ? dstGpuId : srcGpuId;
   unsigned int second = (dstGpuId == first) ? srcGpuId : dstGpuId;
@@ -364,12 +362,12 @@ void reduceDatafromGpus(void *dst, unsigned int dstGpuId, void *src,
 
   // Next lets run the reduce function on the dbData and the shadow copy (dst)
   unsigned int tileSize = size / elementSize;
-  DPRINTF("TileSize: %u\n", tileSize);
+  ARTS_DEBUG("TileSize: %u\n", tileSize);
   if (tileSize < 32) {
     dim3 block(tileSize, 1, 1); // For volta...
     dim3 grid(1, 1, 1);
     void *kernelArgs[] = {&dbData, &dst};
-    DPRINTF("SRC: %p DST: %p\n", dbData, dst);
+    ARTS_DEBUG("SRC: %p DST: %p\n", dbData, dst);
     CHECKCORRECT(cudaLaunchKernel((const void *)fnPtr, grid, block,
                                   (void **)kernelArgs, (size_t)0,
                                   artsGpus[dstGpuId].stream));
@@ -377,7 +375,7 @@ void reduceDatafromGpus(void *dst, unsigned int dstGpuId, void *src,
     dim3 block(32, 1, 1); // For volta...
     dim3 grid((tileSize + 32 - 1) / 32, 1, 1);
     void *kernelArgs[] = {&dbData, &dst};
-    DPRINTF("SRC: %p DST: %p\n", dbData, dst);
+    ARTS_DEBUG("SRC: %p DST: %p\n", dbData, dst);
     CHECKCORRECT(cudaLaunchKernel((const void *)fnPtr, grid, block,
                                   (void **)kernelArgs, (size_t)0,
                                   artsGpus[dstGpuId].stream))
@@ -399,7 +397,7 @@ void getDataFromStreamNow(unsigned int gpuId, void *dst, void *src,
     flushStream(gpuId);
     artsUnlock(&buffLock[gpuId]);
   }
-  DPRINTF("GETTING[%u]: %p %p size: %u\n", gpuId, dst, src, count);
+  ARTS_DEBUG("GETTING[%u]: %p %p size: %u\n", gpuId, dst, src, count);
   CHECKCORRECT(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToHost,
                                artsGpus[gpuId].stream));
   CHECKCORRECT(cudaStreamSynchronize(artsGpus[gpuId].stream));

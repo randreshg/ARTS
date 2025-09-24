@@ -37,17 +37,18 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "arts/runtime/RT.h"
 
 void printMatrix(unsigned int rowSize, double *mat) {
   unsigned int columnSize = rowSize;
   for (unsigned int i = 0; i < columnSize; i++) {
     for (unsigned int j = 0; j < rowSize; j++) {
-      printf("%5.2f ", mat[i * rowSize + j]);
+      PRINTF("%5.2f ", mat[i * rowSize + j]);
     }
-    printf("\n");
+    PRINTF("\n");
   }
 }
 

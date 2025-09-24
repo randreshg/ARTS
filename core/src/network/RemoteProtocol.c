@@ -41,12 +41,12 @@
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
 #include "arts/runtime/Globals.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/LinkList.h"
 
 #include <string.h>
-#define DPRINTF(...)
 
 struct outList {
 #ifdef USE_COUNT
@@ -79,29 +79,22 @@ __thread uint64_t *lastSent;
 #endif
 
 void partialSendStore(struct outList *out, unsigned int lengthRemaining) {
-  // PRINTF("Payload\n");
   if (out->payload == NULL) {
     out->offset = out->offset + (out->length - lengthRemaining);
     out->length = lengthRemaining;
   } else {
     unsigned int sent = out->length + out->payloadSize;
     sent -= lengthRemaining;
-    // PRINTF("Here %d\n", sent);
     if (sent >= out->length) {
       out->length = 0;
       out->offsetPayload =
           out->offsetPayload + (out->payloadSize - lengthRemaining);
       out->payloadSize = lengthRemaining;
-      // PRINTF("Here 1 %d %d %d %p\n", out->payloadSize, out->offsetPayload,
-      // lengthRemaining, out );
 
     } else {
-      // PRINTF("Here 2a %d %d %d %d\n", out->payloadSize, out->length, sent,
-      // lengthRemaining);
       out->offset =
           out->offset + (out->length - (lengthRemaining - out->payloadSize));
       out->length = lengthRemaining - out->payloadSize;
-      // PRINTF("Here 2b %d %d\n", out->offset, out->length);
     }
   }
 }
@@ -173,8 +166,6 @@ static inline void outInsertNode(struct outList *node, unsigned int length) {
   artsLinkListPushBack(list, node);
 #ifdef SEQUENCENUMBERS
   artsUnlock(&seqNumLock[listId]);
-  // PRINTF("Push: %u -> %u = %lu %p\n", artsGlobalRankId, node->rank,
-  // packet->seqNum, list);
 #endif
   //    nartsUpdatePerformanceMetric(artsNetworkQueuePush, artsThread,
   //    packet->size, false);
@@ -191,15 +182,13 @@ static inline struct outList *outPopNode(unsigned int threadId, void **freeMe) {
 #ifdef SEQUENCENUMBERS
     if (lastOut[packet->seqRank] &&
         packet->seqNum != lastOut[packet->seqRank] + 1) {
-      DPRINTF("POP OUT OF ORDER %u -> %u %lu vs %lu %p\n", packet->seqRank,
-              packet->rank, lastOut[packet->seqRank], packet->seqNum, list);
+      ARTS_DEBUG("POP OUT OF ORDER %u -> %u %lu vs %lu %p", packet->seqRank,
+                 packet->rank, lastOut[packet->seqRank], packet->seqNum, list);
     }
     lastOut[packet->seqRank] = packet->seqNum;
-    // DPRINTF("Pop : %u -> %u = %lu %p\n", artsGlobalRankId, out->rank,
-    // packet->seqNum, list);
 #endif
-    //        artsUpdatePerformanceMetric(artsNetworkQueuePop, artsThread,
-    //        packet->size, false);
+    // artsUpdatePerformanceMetric(artsNetworkQueuePop, artsThread,
+    // packet->size, false);
   }
   artsUpdatePerformanceMetric(artsNetworkQueuePop, artsThread, 1, false);
   return out;
@@ -228,8 +217,8 @@ bool artsRemoteAsyncSend() {
         struct artsRemotePacket *packet = (struct artsRemotePacket *)(out + 1);
         if (lastSent[packet->seqRank] != packet->seqNum &&
             packet->seqNum != lastSent[packet->seqRank] + 1) {
-          DPRINTF("SENT OUT OF ORDER %lu vs %lu\n", lastSent[packet->seqRank],
-                  packet->seqNum);
+          ARTS_DEBUG("SENT OUT OF ORDER %lu vs %lu", lastSent[packet->seqRank],
+                     packet->seqNum);
         }
         lastSent[packet->seqRank] = packet->seqNum;
 #endif
@@ -270,8 +259,8 @@ bool artsRemoteAsyncSend() {
 
 static inline void selfSendCheck(unsigned int rank) {
   if (rank == artsGlobalRankId || rank >= artsGlobalRankCount) {
-    PRINTF("Send error rank stack trace: %u of %u\n", rank,
-           artsGlobalRankCount);
+    ARTS_INFO("Send error rank stack trace: %u of %u", rank,
+              artsGlobalRankCount);
     artsDebugPrintStack();
     artsDebugGenerateSegFault();
   }
@@ -279,7 +268,7 @@ static inline void selfSendCheck(unsigned int rank) {
 
 static inline void sizeSendCheck(unsigned int size) {
   if (size == 0 || size > 1073741824) {
-    PRINTF("Send error size stack trace: %d\n", size);
+    ARTS_INFO("Send error size stack trace: %d", size);
     artsDebugPrintStack();
     artsDebugGenerateSegFault();
   }

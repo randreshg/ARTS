@@ -40,8 +40,6 @@
 #include "arts/arts.h"
 #include "arts/utils/Atomics.h"
 
-#define DPRINTF(...)
-// #define DPRINTF( ... ) PRINTF( __VA_ARGS__ )
 
 void artsLinkListNew(struct artsLinkList *list) {
   list->headPtr = list->tailPtr = NULL;

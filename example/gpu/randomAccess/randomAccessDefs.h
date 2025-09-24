@@ -43,8 +43,8 @@
 extern "C" {
 #endif
 
-#define DPRINTF(...)
-//  #define DPRINTF(...) PRINTF(__VA_ARGS__)
+#define PRINTF(...)
+//  #define PRINTF(...) PRINTF(__VA_ARGS__)
 #define TURNON(...)
 // #define TURNON(...) __VA_ARGS__
 

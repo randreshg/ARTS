@@ -80,7 +80,7 @@ typedef struct {
 
 // artsGuid_t exitProgram(uint32_t paramc, uint64_t * paramv, uint32_t depc,
 // artsEdtDep_t depv[]) {
-//   printf("Called exit\n");
+//   PRINTF("Called exit\n");
 //   artsShutdown();
 // }
 
@@ -101,7 +101,7 @@ void maxReducer(uint32_t paramc, uint64_t *paramv, uint32_t depc,
   std::cout << "Max vertex_t: " << maxVertex << " scanStat: " << maxScanStat
             << std::endl;
   endTime = artsGetTimeStamp();
-  printf("Total execution time: %f s \n",
+  PRINTF("Total execution time: %f s \n",
          (double)(endTime - startTime) / 1000000000.0);
   artsStopIntroShad();
   artsShutdown();
@@ -216,7 +216,7 @@ void visitSource(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 
 extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
   // distribution must be initialized in initPerNode
-  printf("Node %u argc %u\n", nodeId, argc);
+  PRINTF("Node %u argc %u\n", nodeId, argc);
   distribution = initBlockDistributionWithCmdLineArgs(argc, argv);
   graph = getGraphFromPartition(nodeId, distribution);
   // read the edgelist and construct the graph
@@ -228,7 +228,7 @@ extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
  * efficient max reduction?*/
 extern "C" void initPerWorker(unsigned int nodeId, unsigned int workerId,
                               int argc, char **argv) {
-  printf("Node %u argc %u\n", nodeId, argc);
+  PRINTF("Node %u argc %u\n", nodeId, argc);
   if (!nodeId && !workerId) {
     /*This edt will calculate which vertex_t has the maximally induced
      * subgraph.*/

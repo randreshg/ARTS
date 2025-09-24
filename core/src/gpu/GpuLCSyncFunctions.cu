@@ -38,6 +38,7 @@
 ******************************************************************************/
 #include "arts/arts.h"
 #include "arts/runtime/Globals.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
@@ -45,9 +46,6 @@
 #include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuStreamBuffer.h"
 #include <cuda_runtime_api.h>
-
-#define DPRINTF(...)
-// #define DPRINTF(...) PRINTF(__VA_ARGS__)
 
 // To use this lock the unlock must be an even number
 unsigned int versionLock(artsLCMeta_t *meta) {
@@ -79,10 +77,10 @@ void *makeLCShadowCopy(struct artsDb *db) {
 }
 
 inline void artsPrintDbMetaData(artsLCMeta_t *db) {
-  DPRINTF("guid: %lu ptr: %p dataSize: %lu hostVersion: %u gpuVersion: %u "
-          "gpuTimeStamp: %u gpu: %d\n",
-          db->guid, db->data, db->dataSize, *db->hostVersion,
-          *db->hostTimeStamp, db->gpuVersion, db->gpuTimeStamp, db->gpu);
+  ARTS_DEBUG("guid: %lu ptr: %p dataSize: %lu hostVersion: %u gpuVersion: %u "
+             "gpuTimeStamp: %u gpu: %d",
+             db->guid, db->data, db->dataSize, *db->hostVersion,
+             *db->hostTimeStamp, db->gpuVersion, db->gpuTimeStamp, db->gpu);
 }
 
 void artsMemcpyGpuDb(artsLCMeta_t *host, artsLCMeta_t *dev) {
@@ -127,7 +125,7 @@ void artsGetNonZerosUnsignedInt(artsLCMeta_t *host, artsLCMeta_t *dev) {
   unsigned int *src = (unsigned int *)dev->data;
   unsigned int hostVersion = versionLock(host);
   for (unsigned int i = 0; i < numElem; i++) {
-    DPRINTF("src: %u dest: %u\n", src[i], dst[i]);
+    ARTS_DEBUG("src: %u dest: %u", src[i], dst[i]);
     if (src[i])
       dst[i] = src[i];
   }
@@ -143,14 +141,14 @@ void artsGetMinDbUnsignedInt(artsLCMeta_t *host, artsLCMeta_t *dev) {
   unsigned int hostVersion = versionLock(host);
   for (unsigned int i = 0; i < numElem; i++) {
     if (src[i] < dst[i]) {
-      DPRINTF("src: %u dst: %u\n", src[i], dst[i]);
+      ARTS_DEBUG("src: %u dst: %u", src[i], dst[i]);
       dst[i] = src[i];
       count++;
     }
     if (src[i] != (unsigned int)-1)
       count2++;
   }
-  DPRINTF("%lu %u %u\n", host->guid, count, count2);
+  ARTS_DEBUG("%lu %u %u", host->guid, count, count2);
   versionUnlock(host);
 }
 
@@ -162,7 +160,7 @@ void artsAddDbUnsignedInt(artsLCMeta_t *host, artsLCMeta_t *dev) {
   for (unsigned int i = 0; i < numElem; i++) {
     dst[i] += src[i];
   }
-  DPRINTF("%lu %u %u\n", host->guid, count, count2);
+  ARTS_DEBUG("%lu %u %u", host->guid, count, count2);
   versionUnlock(host);
 }
 
@@ -172,10 +170,10 @@ void artsXorDbUint64(artsLCMeta_t *host, artsLCMeta_t *dev) {
   uint64_t *src = (uint64_t *)dev->data;
   uint64_t hostVersion = versionLock(host);
   for (unsigned int i = 0; i < numElem; i++) {
-    DPRINTF("xor[%u]: %lu -- %lu = %lu\n", i, dst[i], src[i], dst[i] ^ src[i]);
+    ARTS_DEBUG("xor[%u]: %lu -- %lu = %lu", i, dst[i], src[i], dst[i] ^ src[i]);
     dst[i] ^= src[i];
   }
-  DPRINTF("%lu %u %u\n", host->guid, count, count2);
+  ARTS_DEBUG("%lu %u %u", host->guid, count, count2);
   versionUnlock(host);
 }
 
@@ -238,22 +236,22 @@ void gpuReductionLaunch(int root, int a, int b, unsigned int *remMask,
     return;
 
   if (root != a && root != b) {
-    PRINTF("LC Reduction tree invalid root! %d %d %d\n", root, a, b);
+    ARTS_INFO("LC Reduction tree invalid root! %d %d %d", root, a, b);
     artsDebugGenerateSegFault();
   }
 
-  DPRINTF("A: %d B: %d -> Root: %d guid: %lu\n", a, b, root, guid);
+  ARTS_DEBUG("A: %d B: %d -> Root: %d guid: %lu", a, b, root, guid);
   unsigned int toRemove = (root == a) ? b : a;
   *remMask &= ~(1 << toRemove);
 
   void *dbData = artsGpuRouteTableLookupDbRes(guid, root, NULL, NULL, false);
   void *dst = (void *)(((char *)dbData) + size);
-  DPRINTF("%d %p %p\n", root, dbData, dst);
+  ARTS_DEBUG("%d %p %p", root, dbData, dst);
 
   void *src = artsGpuRouteTableLookupDbRes(guid, toRemove, NULL, NULL, false);
-  DPRINTF("%d %p\n", toRemove, src);
+  ARTS_DEBUG("%d %p", toRemove, src);
 
-  DPRINTF("src: %p dst: %p size: %u\n", src, dst, size);
+  ARTS_DEBUG("src: %p dst: %p size: %u", src, dst, size);
   reduceDatafromGpus(dst, root, src, toRemove, size, fnPtr,
                      lcSyncElementSize[artsNodeInfo.gpuLCSync], dbData);
 }
@@ -273,24 +271,24 @@ void gpuCopyLaunch(int root, int a, int b, bool srcShadow, bool dstShadow,
     return;
 
   if (root != a && root != b) {
-    PRINTF("LC Reduction tree invalid root! %d %d %d\n", root, a, b);
+    ARTS_INFO("LC Reduction tree invalid root! %d %d %d", root, a, b);
     artsDebugGenerateSegFault();
   }
 
-  DPRINTF("A: %d B: %d -> Root: %d\n", a, b, root);
+  ARTS_DEBUG("A: %d B: %d -> Root: %d", a, b, root);
   unsigned int toRemove = (root == a) ? b : a;
 
   void *dst = artsGpuRouteTableLookupDbRes(guid, root, NULL, NULL, false);
   if (dstShadow)
     dst = (void *)(((char *)dst) + size);
-  DPRINTF("%d %p %p\n", root, dbData, dst);
+  ARTS_DEBUG("%d %p %p", root, dbData, dst);
 
   void *src = artsGpuRouteTableLookupDbRes(guid, toRemove, NULL, NULL, false);
   if (srcShadow)
     src = (void *)(((char *)src) + size);
-  DPRINTF("%d %p\n", toRemove, src);
+  ARTS_DEBUG("%d %p", toRemove, src);
 
-  DPRINTF("src: %p dst: %p size: %u\n", src, dst, size);
+  ARTS_DEBUG("src: %p dst: %p size: %u", src, dst, size);
   copyGputoGpu(dst, root, src, toRemove, size);
 }
 
@@ -316,7 +314,7 @@ void findRoots(unsigned int local, int *roots) {
   // Recover the roots
   for (int i = 0; i < GPUGROUPSIZE; i++) {
     if (localRoots & (1 << i)) {
-      DPRINTF("FOUND MATCHING ROOTS\n");
+      ARTS_DEBUG("FOUND MATCHING ROOTS");
       for (unsigned int j = 0; j < GPUNUMGROUP; j++)
         roots[j] = i + j * GPUGROUPSIZE;
       return;
@@ -324,10 +322,10 @@ void findRoots(unsigned int local, int *roots) {
   }
 
   for (unsigned int i = 0; i < GPUNUMGROUP; i++) {
-    // PRINTF("i: %u\n", i);
+    // ARTS_INFO("i: %u", i);
     for (unsigned int j = 0; j < GPUGROUPSIZE; j++) {
       unsigned int bit = i * GPUGROUPSIZE + j;
-      // PRINTF("bit: %u\n", bit);
+      // ARTS_INFO("bit: %u", bit);
       if (local & (1 << bit)) {
         roots[i] = bit;
         break;
@@ -363,7 +361,7 @@ int gpuTreeReductionRec(int root, unsigned int start, unsigned int stop,
                         unsigned int *listSize, trav *list,
                         unsigned int *maxLevel) {
   int localRoot = -1;
-  // PRINTF("root: %u start: %u stop: %u\n", root, start, stop);
+  // ARTS_INFO("root: %u start: %u stop: %u", root, start, stop);
   int gpuId[2] = {(int)start, (int)stop};
 
   if (stop - start > 1) // Recursive call
@@ -408,7 +406,7 @@ void gpuTreeReductionStart(unsigned int mask, unsigned int *listSize,
   int root[GPUNUMGROUP];
   findRoots(mask, root);
   for (unsigned int i = 0; i < GPUNUMGROUP; i++) {
-    DPRINTF("Root[%d]: %d\n", i, root[i]);
+    ARTS_DEBUG("Root[%d]: %d", i, root[i]);
     gpuTreeReductionRec(root[i], i * GPUGROUPSIZE, ((i + 1) * GPUGROUPSIZE) - 1,
                         mask, 2, listSize, list, maxLevel);
   }
@@ -418,7 +416,7 @@ void gpuTreeReductionStart(unsigned int mask, unsigned int *listSize,
 unsigned int gpuTreeReduction(unsigned int mask, artsGuid_t guid,
                               unsigned int dbSize,
                               artsLCSyncFunctionGpu_t dbFn) {
-  DPRINTF("mask: %u\n", mask);
+  ARTS_DEBUG("mask: %u", mask);
   unsigned int maxLevel = 0;
   unsigned int listSize = 0;
   trav list[GPUNUMGROUP * GPUGROUPSIZE];
@@ -434,7 +432,7 @@ unsigned int gpuTreeReduction(unsigned int mask, artsGuid_t guid,
                            dbSize, dbFn);
     }
   }
-  DPRINTF("remMask: %u\n", remMask);
+  ARTS_DEBUG("remMask: %u", remMask);
   return remMask;
 }
 
@@ -472,7 +470,7 @@ unsigned int gpuDepthFirstRec(unsigned int vertex, unsigned int cycleSize,
   if (current < cycleSize) {
     for (unsigned int i = 0; i < order; i++) {
       if ((mask & (1 << i)) && gpuAdjList[vertex][i]) {
-        PRINTF("%u -> %u\n", vertex, i);
+        ARTS_INFO("%u -> %u", vertex, i);
         if (gpuDepthFirstRec(i, cycleSize, mask, current, visited, maxSize,
                              maxVisited))
           return true;
@@ -496,7 +494,7 @@ unsigned int *gpuDepthFirst(unsigned int mask, unsigned int *maxSize) {
       (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
   for (unsigned int i = 0; i < artsGetTotalGpus(); i++) {
     if (mask & (1 << i)) {
-      PRINTF("i: %u\n", i);
+      ARTS_INFO("i: %u", i);
       if (gpuDepthFirstRec(i, cycleSize, mask, 0, visited, maxSize,
                            maxVisited)) {
         ret = maxVisited;
@@ -517,7 +515,7 @@ bool gpuRingReduction(unsigned int mask, unsigned int guid, unsigned int dbSize,
   unsigned int *cycle = gpuDepthFirst(mask, &cycleSize);
   if (cycle && cycleSize > 1) {
     unsigned int numGpus = cycleSize - 1;
-    PRINTF("Cycle Size: %u\n", cycleSize);
+    ARTS_INFO("Cycle Size: %u", cycleSize);
     for (unsigned int i = 0; i < 1; i++) {
       for (unsigned int j = 1; j < cycleSize; j++)
         gpuCopyLaunch(cycle[j], cycle[j - 1], cycle[j], (i == 0) ? false : true,

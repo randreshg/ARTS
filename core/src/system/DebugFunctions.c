@@ -36,6 +36,7 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/system/ArtsPrint.h"
 #include <execinfo.h>
 #include <signal.h>
 #include <stdio.h>
@@ -57,12 +58,12 @@ void artsTurnOnCoreDumps() {
   limit.rlim_max = RLIM_INFINITY;
   pid_t pid = getpid();
   if (setrlimit(RLIMIT_CORE, &limit) != 0)
-    printf("Failed to force core dumps\n");
+    ARTS_INFO("Failed to force core dumps");
 }
 
 #else
 
-void artsTurnOnCoreDumps() { printf("Core dumps not supported on OS X.\n"); }
+void artsTurnOnCoreDumps() { ARTS_INFO("Core dumps not supported on OS X."); }
 
 #endif
 

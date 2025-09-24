@@ -42,8 +42,8 @@
 #include "arts/runtime/Globals.h"
 #include "arts/system/Debug.h"
 
-#define DPRINTF
-// #define DPRINTF(...) PRINTF(__VA_ARGS__)
+/// Debug
+#include "arts/system/ArtsPrint.h"
 
 uint64_t numTables = 0;
 uint64_t keysPerThread = 0;
@@ -67,7 +67,7 @@ artsGuid_t artsGuidCreateForRankInternal(unsigned int route, unsigned int type,
       guid.fields.key = globalGuidOn - guidCount;
       globalGuidOn -= guidCount;
     } else {
-      PRINTF("Parallel Start out of guid keys\n");
+      ARTS_INFO("Parallel Start out of guid keys");
       artsDebugGenerateSegFault();
     }
   } else {
@@ -79,16 +79,15 @@ artsGuid_t artsGuidCreateForRankInternal(unsigned int route, unsigned int type,
                       artsNodeInfo.globalGuidThreadId[artsThreadInfo.groupId];
       (*key) += guidCount;
     } else {
-      PRINTF("Out of guid keys\n");
+      ARTS_INFO("Out of guid keys");
       artsDebugGenerateSegFault();
     }
   }
   guid.fields.type = type;
   guid.fields.rank = route;
-  // DPRINTF("Key: %lu %lu %lu %p %lu sizeof(artsGuid): %u parallel start:
-  // %u\n",
-  //         guid.fields.type, guid.fields.rank, guid.fields.key, guid.bits,
-  //         (artsGuid_t)guid.bits, sizeof(artsGuid), (globalGuidOn != 0));
+  ARTS_DEBUG("Key: %lu %lu %lu %p %lu sizeof(artsGuid): %u parallel start: %u",
+             guid.fields.type, guid.fields.rank, guid.fields.key, guid.bits,
+             (artsGuid_t)guid.bits, sizeof(artsGuid), (globalGuidOn != 0));
   ARTSEDTCOUNTERINCREMENTBY(guidAllocCounter, guidCount);
   return (artsGuid_t)guid.bits;
 }
@@ -100,7 +99,7 @@ artsGuid_t artsGuidCreateForRank(unsigned int route, unsigned int type) {
 void setGuidGeneratorAfterParallelStart() {
   unsigned int numOfTables = artsNodeInfo.workerThreadCount + 1;
   keysPerThread = globalGuidOn / (numOfTables * artsGlobalRankCount);
-  // DPRINTF("Keys per thread %lu\n", keysPerThread);
+  ARTS_DEBUG("Keys per thread %lu", keysPerThread);
   globalGuidOn = 0;
 }
 
@@ -117,8 +116,8 @@ void artsGuidKeyGeneratorInit() {
   artsNodeInfo.globalGuidThreadId[artsThreadInfo.groupId] =
       minGlobalGuidThread + localId;
 
-  //    PRINTF("numTables: %lu localId: %lu minGlobalGuidThread: %lu
-  //    maxGlobalGuidThread: %lu globalGuidThreadId: %lu\n", numTables, localId,
+  //    ARTS_INFO("numTables: %lu localId: %lu minGlobalGuidThread: %lu
+  //    maxGlobalGuidThread: %lu globalGuidThreadId: %lu", numTables, localId,
   //    minGlobalGuidThread, maxGlobalGuidThread, globalGuidThreadId); keys =
   //    artsMalloc(sizeof(uint64_t) * ARTS_LAST_TYPE * artsGlobalRankCount);
   artsNodeInfo.keys[artsThreadInfo.groupId] = (uint64_t *)artsMalloc(
@@ -162,9 +161,9 @@ artsGuid_t artsReserveGuidRoute(artsType_t type, unsigned int route) {
   route = route % artsGlobalRankCount;
   if (type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     guid = artsGuidCreateForRankInternal(route, (unsigned int)type, 1);
-    // PRINTF("Allocation Guid %u\n", guid);
+    // ARTS_INFO("Allocation Guid %u", guid);
   } else {
-    PRINTF("Invalid type %u\n", type);
+    ARTS_INFO("Invalid type %u", type);
   }
   //    if(route == artsGlobalRankId)
   //        artsRouteTableAddItem(NULL, guid, artsGlobalRankId, false);
@@ -178,13 +177,13 @@ artsGuid_t *artsReserveGuidsRoundRobin(unsigned int size, artsType_t type) {
     for (unsigned int i = 0; i < size; i++) {
       unsigned int route = i % artsGlobalRankCount;
       guids[i] = artsGuidCreateForRank(route, (unsigned int)type);
-      // DPRINTF("GUID[%u]: %lu %p\n", i, guids[i]);
+      ARTS_DEBUG("GUID[%u]: %lu %p", i, guids[i]);
       //        if(route == artsGlobalRankId)
       //            artsRouteTableAddItem(NULL, guids[i], artsGlobalRankId,
       //            false);
     }
   }
-  // DPRINTF("guids: %p\n", guids);
+  ARTS_DEBUG("guids: %p", guids);
   return guids;
 }
 

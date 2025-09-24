@@ -40,6 +40,7 @@
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/network/RemoteFunctions.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
@@ -48,7 +49,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define DPRINTF(...)
 #define NANOSECS 1000000000
 #define localTimeStamp artsGetTimeStamp
 #define globalTimeStamp artsGetTimeStamp
@@ -69,7 +69,7 @@ __thread bool inspectorIgnore = 0;
 
 void artsInternalToggleThread(void) {
   inspectorIgnore = !inspectorIgnore;
-  DPRINTF("II: %u\n", inspectorIgnore);
+  ARTS_DEBUG("II: %u\n", inspectorIgnore);
 }
 
 uint64_t artsGetInspectorTime(void) { return inspector->startTimeStamp; }
@@ -80,7 +80,7 @@ void artsInternalStartInspector(unsigned int startPoint) {
   if (inspector && inspector->startPoint == startPoint) {
     inspectorOn = 1;
     inspector->startTimeStamp = globalTimeStamp();
-    //        PRINTF("TURNING INSPECTION ON Folder: %s %ld\n",
+    //        ARTS_INFO("TURNING INSPECTION ON Folder: %s %ld\n",
     //        printTotalsToFile, inspector->startTimeStamp);
   }
 }
@@ -94,10 +94,10 @@ void artsInternalStopInspector(void) {
 
 void printMetrics(void) {
   for (unsigned int i = 0; i < artsLastMetricType; i++) {
-    PRINTF("%35s %ld %ld %ld %ld %ld %ld %ld %ld %ld\n", artsMetricName[i],
-           countWindow[i][0], countWindow[i][1], countWindow[i][2],
-           timeWindow[i][0], timeWindow[i][1], timeWindow[i][2], maxTotal[i][0],
-           maxTotal[i][1], maxTotal[i][2]);
+    ARTS_INFO("%35s %ld %ld %ld %ld %ld %ld %ld %ld %ld\n", artsMetricName[i],
+              countWindow[i][0], countWindow[i][1], countWindow[i][2],
+              timeWindow[i][0], timeWindow[i][1], timeWindow[i][2],
+              maxTotal[i][0], maxTotal[i][1], maxTotal[i][2]);
   }
 }
 
@@ -108,24 +108,21 @@ void artsInternalInitIntrospector(struct artsConfig *config) {
   unsigned int startPoint = config->introspectiveStartPoint;
 
   if (inspFileName) {
-    DPRINTF("countWindow %u\n", sizeof(uint64_t *) * artsLastMetricType);
-    countWindow =
-        (uint64_t **)artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
-    DPRINTF("timeWindow %u\n", sizeof(uint64_t *) * artsLastMetricType);
-    timeWindow =
-        (uint64_t **)artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
-    DPRINTF("maxTotal %u\n", sizeof(uint64_t *) * artsLastMetricType);
-    maxTotal = (uint64_t **)artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
+    ARTS_DEBUG("countWindow %u\n", sizeof(uint64_t *) * artsLastMetricType);
+    countWindow = artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
+    ARTS_DEBUG("timeWindow %u\n", sizeof(uint64_t *) * artsLastMetricType);
+    timeWindow = artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
+    ARTS_DEBUG("maxTotal %u\n", sizeof(uint64_t *) * artsLastMetricType);
+    maxTotal = artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
 
     for (unsigned int i = 0; i < artsLastMetricType; i++) {
-      DPRINTF("countWindow[%u] %u\n", i, sizeof(uint64_t) * artsMETRICLEVELS);
-      countWindow[i] =
-          (uint64_t *)artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
-      DPRINTF("timeWindow[%u] %u\n", i, sizeof(uint64_t) * artsMETRICLEVELS);
-      timeWindow[i] =
-          (uint64_t *)artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
-      DPRINTF("maxTotal[%u] %u\n", i, sizeof(uint64_t) * artsMETRICLEVELS);
-      maxTotal[i] = (uint64_t *)artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
+      ARTS_DEBUG("countWindow[%u] %u\n", i,
+                 sizeof(uint64_t) * artsMETRICLEVELS);
+      countWindow[i] = artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
+      ARTS_DEBUG("timeWindow[%u] %u\n", i, sizeof(uint64_t) * artsMETRICLEVELS);
+      timeWindow[i] = artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
+      ARTS_DEBUG("maxTotal[%u] %u\n", i, sizeof(uint64_t) * artsMETRICLEVELS);
+      maxTotal[i] = artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
       for (unsigned int j = 0; j < artsMETRICLEVELS; j++) {
         countWindow[i][j] = -1;
         timeWindow[i][j] = -1;
@@ -136,12 +133,12 @@ void artsInternalInitIntrospector(struct artsConfig *config) {
     artsInternalReadInspectorConfigFile(inspFileName);
     if (!artsGlobalRankId)
       printMetrics();
-    DPRINTF("inspector %u\n", sizeof(artsInspector));
+    ARTS_DEBUG("inspector %u\n", sizeof(artsInspector));
     inspector = (artsInspector *)artsCalloc(1, sizeof(artsInspector));
     inspector->startPoint = startPoint;
-    DPRINTF("inspector->coreMetric %u\n", sizeof(artsPerformanceUnit) *
-                                              artsLastMetricType *
-                                              artsNodeInfo.totalThreadCount);
+    ARTS_DEBUG("inspector->coreMetric %u\n", sizeof(artsPerformanceUnit) *
+                                                 artsLastMetricType *
+                                                 artsNodeInfo.totalThreadCount);
     inspector->coreMetric = (artsPerformanceUnit *)artsCallocAlign(
         artsLastMetricType * artsNodeInfo.totalThreadCount,
         sizeof(artsPerformanceUnit), 64);
@@ -168,9 +165,9 @@ void artsInternalInitIntrospector(struct artsConfig *config) {
       inspector->systemMetric[j].timeMethod = globalTimeStamp;
     }
 
-    DPRINTF("stats %u\n", sizeof(artsInspectorStats));
+    ARTS_DEBUG("stats %u\n", sizeof(artsInspectorStats));
     stats = (artsInspectorStats *)artsCalloc(1, sizeof(artsInspectorStats));
-    DPRINTF("packetInspector %u\n", sizeof(artsPacketInspector));
+    ARTS_DEBUG("packetInspector %u\n", sizeof(artsPacketInspector));
     packetInspector =
         (artsPacketInspector *)artsCalloc(1, sizeof(artsPacketInspector));
     packetInspector->minPacket = (uint64_t)-1;
@@ -182,7 +179,7 @@ void artsInternalInitIntrospector(struct artsConfig *config) {
       if (traceLevel <= artsSystem) {
         inspectorShots =
             (artsInspectorShots *)artsMalloc(sizeof(artsInspectorShots));
-        DPRINTF("inspectorShots->coreMetric\n");
+        ARTS_DEBUG("inspectorShots->coreMetric\n");
         inspectorShots->coreMetric = (artsArrayList **)artsCalloc(
             artsLastMetricType * artsNodeInfo.totalThreadCount,
             sizeof(artsArrayList *));
@@ -190,24 +187,24 @@ void artsInternalInitIntrospector(struct artsConfig *config) {
              i < artsLastMetricType * artsNodeInfo.totalThreadCount; i++)
           inspectorShots->coreMetric[i] =
               artsNewArrayList(sizeof(artsMetricShot), 1024);
-        DPRINTF("inspectorShots->nodeMetric\n");
+        ARTS_DEBUG("inspectorShots->nodeMetric\n");
         inspectorShots->nodeMetric = (artsArrayList **)artsCalloc(
             artsLastMetricType, sizeof(artsArrayList *));
         for (unsigned int i = 0; i < artsLastMetricType; i++)
           inspectorShots->nodeMetric[i] =
               artsNewArrayList(sizeof(artsMetricShot), 1024);
-        DPRINTF("inspectorShots->systemMetric\n");
+        ARTS_DEBUG("inspectorShots->systemMetric\n");
         inspectorShots->systemMetric = (artsArrayList **)artsCalloc(
             artsLastMetricType, sizeof(artsArrayList *));
         for (unsigned int i = 0; i < artsLastMetricType; i++)
           inspectorShots->systemMetric[i] =
               artsNewArrayList(sizeof(artsMetricShot), 1024);
-        DPRINTF("inspectorShots->nodeLock %u\n",
-                sizeof(unsigned int) * artsLastMetricType);
+        ARTS_DEBUG("inspectorShots->nodeLock %u\n",
+                   sizeof(unsigned int) * artsLastMetricType);
         inspectorShots->nodeLock = (unsigned int *)artsCalloc(
             artsLastMetricType, sizeof(unsigned int));
-        DPRINTF("inspectorShots->systemLock %u\n",
-                sizeof(unsigned int) * artsLastMetricType);
+        ARTS_DEBUG("inspectorShots->systemLock %u\n",
+                   sizeof(unsigned int) * artsLastMetricType);
         inspectorShots->systemLock = (unsigned int *)artsCalloc(
             artsLastMetricType, sizeof(unsigned int));
         inspectorShots->prefix = inspOutputPrefix;
@@ -298,7 +295,7 @@ double artsInternalGetPerformanceMetricRate(artsMetricType type,
     if (localCurrentCountStamp && localCurrentTimeStamp) {
       double num = (double)(localCurrentCountStamp - localWindowCountStamp);
       double den = (double)(localCurrentTimeStamp - localWindowTimeStamp);
-      PRINTF("%u %s %lf / %lf\n", level, artsMetricName[type], num, den);
+      ARTS_INFO("%u %s %lf / %lf\n", level, artsMetricName[type], num, den);
       return num / den / 1E9;
     }
   }
@@ -311,7 +308,7 @@ double artsInternalGetPerformanceMetricTotalRate(artsMetricType type,
   if (metric) {
     double num = (double)metric->totalCount;
     double den = (double)metric->timeMethod() - inspector->startTimeStamp;
-    PRINTF("%u %s %lf / %lf\n", level, artsMetricName[type], num, den);
+    ARTS_INFO("%u %s %lf / %lf\n", level, artsMetricName[type], num, den);
     return num / den;
   }
   return 0;
@@ -325,7 +322,7 @@ double artsMetricTest(artsMetricType type, artsMetricLevel level,
     if (tot) {
       double dif = (double)metric->timeMethod() - inspector->startTimeStamp;
       double temp = ((double)num * dif) / tot;
-      //            PRINTF("%u %s (%lu * %lf / %lf\n", level,
+      //            ARTS_INFO("%u %s (%lu * %lf / %lf\n", level,
       //            artsMetricName[type], num, dif, tot);
       return temp;
     }
@@ -361,7 +358,7 @@ uint64_t artsInternalGetPerformanceMetricRateU64(artsMetricType type,
 
     if (localCurrentCountStamp && localCurrentTimeStamp &&
         localCurrentCountStamp > localWindowCountStamp) {
-      //            PRINTF("%lu / %lu = %lu\n", (localCurrentTimeStamp -
+      //            ARTS_INFO("%lu / %lu = %lu\n", (localCurrentTimeStamp -
       //            localWindowTimeStamp), (localCurrentCountStamp -
       //            localWindowCountStamp), ((localCurrentTimeStamp -
       //            localWindowTimeStamp) / (localCurrentCountStamp -
@@ -414,7 +411,7 @@ uint64_t artsInternalGetTotalMetricRateU64(artsMetricType type,
     uint64_t startTime = metric->firstTimeStamp;
     if (startTime && localCurrentCountStamp) {
       //            if(!artsGlobalRankId && !artsThreadInfo.threadId)
-      //                PRINTF("TIME: %lu COUNT: %lu RATE: %lu\n",
+      //                ARTS_INFO("TIME: %lu COUNT: %lu RATE: %lu\n",
       //                (localCurrentTimeStamp - startTime),
       //                localCurrentCountStamp, (localCurrentTimeStamp -
       //                startTime) / localCurrentCountStamp);
@@ -487,8 +484,9 @@ bool artsInternalSingleMetricUpdate(artsMetricType type, artsMetricLevel level,
       // can skip a level by setting a window to 0) It is unclear what a
       // negative result means...
       if (metric->totalCount < *toAdd) {
-        PRINTF("Potential Inspection Underflow Detected! Level: %s Type: %s\n",
-               level, artsMetricName[type]);
+        ARTS_INFO(
+            "Potential Inspection Underflow Detected! Level: %s Type: %s\n",
+            level, artsMetricName[type]);
         artsDebugPrintStack();
       }
       totalStamp = (level == artsThread)
@@ -529,12 +527,12 @@ bool artsInternalSingleMetricUpdate(artsMetricType type, artsMetricLevel level,
       metricUnlock(metric);
       return false;
     }
-    DPRINTF("Check metric %d %d %" PRIu64 " %" PRIu64 " vs %" PRIu64 " %" PRIu64
-            "\n",
-            level, type, last, elapsed, countWindow[type][level],
-            timeWindow[type][level]);
-    DPRINTF("Updating metric %d %d %" PRIu64 " %" PRIu64 "\n", level, type,
-            metric->windowCountStamp, metric->windowTimeStamp);
+    ARTS_DEBUG("Check metric %d %d %" PRIu64 " %" PRIu64 " vs %" PRIu64
+               " %" PRIu64 "\n",
+               level, type, last, elapsed, countWindow[type][level],
+               timeWindow[type][level]);
+    ARTS_DEBUG("Updating metric %d %d %" PRIu64 " %" PRIu64 "\n", level, type,
+               metric->windowCountStamp, metric->windowTimeStamp);
     // temp store the old
     metric->lastWindowTimeStamp = metric->windowTimeStamp;
     metric->lastWindowCountStamp = metric->windowCountStamp;
@@ -561,7 +559,7 @@ void takeRateShot(artsMetricType type, artsMetricLevel level, bool last) {
   if (inspectorShots && level >= inspectorShots->traceLevel) {
     if (!countWindow[type][level] || !timeWindow[type][level])
       return;
-    DPRINTF("TRACING LEVEL %d\n", level);
+    ARTS_DEBUG("TRACING LEVEL %d\n", level);
 
     int traceOn = artsThreadInfo.mallocTrace;
     artsThreadInfo.mallocTrace = 0;
@@ -645,7 +643,7 @@ artsMetricLevel artsInternalUpdatePerformanceCoreMetric(unsigned int core,
                                                         uint64_t toAdd,
                                                         bool sub) {
   if (type <= artsFirstMetricType || type >= artsLastMetricType) {
-    PRINTF("Wrong Introspection Type %d\n", type);
+    ARTS_INFO("Wrong Introspection Type %d\n", type);
     artsDebugGenerateSegFault();
   }
 
@@ -653,8 +651,8 @@ artsMetricLevel artsInternalUpdatePerformanceCoreMetric(unsigned int core,
   if (inspectorOn) {
     switch (level) {
     case artsThread:
-      DPRINTF("Thread updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
-              toAdd, sub, artsMetricName[type]);
+      ARTS_DEBUG("Thread updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
+                 toAdd, sub, artsMetricName[type]);
       if (!artsInternalSingleMetricUpdate(
               type, artsThread, &toAdd, &sub,
               &inspector->coreMetric[core * artsLastMetricType + type]))
@@ -663,8 +661,8 @@ artsMetricLevel artsInternalUpdatePerformanceCoreMetric(unsigned int core,
       updatedLevel = artsThread;
 
     case artsNode:
-      DPRINTF("Node   updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
-              toAdd, sub, artsMetricName[type]);
+      ARTS_DEBUG("Node   updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
+                 toAdd, sub, artsMetricName[type]);
       if (!artsInternalSingleMetricUpdate(type, artsNode, &toAdd, &sub,
                                           &inspector->nodeMetric[type]))
         break;
@@ -673,8 +671,8 @@ artsMetricLevel artsInternalUpdatePerformanceCoreMetric(unsigned int core,
       updatedLevel = artsNode;
 
     case artsSystem:
-      DPRINTF("System updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
-              toAdd, sub, artsMetricName[type]);
+      ARTS_DEBUG("System updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
+                 toAdd, sub, artsMetricName[type]);
       if (artsInternalSingleMetricUpdate(type, artsSystem, &toAdd, &sub,
                                          &inspector->systemMetric[type])) {
         uint64_t timeToSend = inspector->systemMetric[type].timeMethod();
@@ -725,7 +723,8 @@ void artsInternalSetThreadPerformanceMetric(artsMetricType type,
     if (shot) // && (elapsed >= timeWindow[type][artsThread] || last >=
               // countWindow[type][artsThread]))
     {
-      //            PRINTF("TAKING SHOT %s %lu\n", artsMetricName[type], value);
+      //            ARTS_INFO("TAKING SHOT %s %lu\n", artsMetricName[type],
+      //            value);
       takeRateShot(type, artsThread, true);
     }
   }
@@ -758,7 +757,7 @@ void internalMetricWriteToFile(artsMetricType type, artsMetricLevel level,
 
   FILE *fp = fopen(filename, "w");
   if (fp) {
-    DPRINTF("FILE: %s\n", filename);
+    ARTS_DEBUG("FILE: %s\n", filename);
     uint64_t last = 0;
     int traceOn = artsThreadInfo.mallocTrace;
     artsThreadInfo.mallocTrace = 0;
@@ -768,7 +767,7 @@ void internalMetricWriteToFile(artsMetricType type, artsMetricLevel level,
       shot = (artsMetricShot *)artsArrayListNext(iter);
       metricPrint(type, level, shot, fp);
       if (shot->currentTimeStamp < last) {
-        PRINTF("Out of order snap shot: %s %" PRIu64 "\n", filename, last);
+        ARTS_INFO("Out of order snap shot: %s %" PRIu64 "\n", filename, last);
         last = shot->currentTimeStamp;
       }
     }
@@ -782,7 +781,7 @@ void internalMetricWriteToFile(artsMetricType type, artsMetricLevel level,
     artsThreadInfo.mallocTrace = traceOn;
     fclose(fp);
   } else
-    PRINTF("Couldn't open %s\n", filename);
+    ARTS_INFO("Couldn't open %s\n", filename);
 }
 
 void artsInternalWriteMetricShotFile(unsigned int threadId,
@@ -844,7 +843,7 @@ void artsInternalReadInspectorConfigFile(char *filename) {
   char temp[artsMAXMETRICNAME];
 
   while (getline(&line, &length, fp) != -1) {
-    DPRINTF("%s", line);
+    ARTS_DEBUG("%s", line);
     if (line[0] != '#') {
       int paramRead = 0;
       sscanf(line, "%s", temp);
@@ -865,8 +864,8 @@ void artsInternalReadInspectorConfigFile(char *filename) {
                               &countWindow[metricIndex][i]);
           sscanf(&line[offset], "%s", temp);
           offset += strlen(temp);
-          DPRINTF("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
-                  offset, countWindow[metricIndex][i]);
+          ARTS_DEBUG("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
+                     offset, countWindow[metricIndex][i]);
         }
 
         for (unsigned int i = 0; i < artsMETRICLEVELS; i++) {
@@ -876,8 +875,8 @@ void artsInternalReadInspectorConfigFile(char *filename) {
               sscanf(&line[offset], "%" SCNu64 "", &timeWindow[metricIndex][i]);
           sscanf(&line[offset], "%s", temp);
           offset += strlen(temp);
-          DPRINTF("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
-                  offset, timeWindow[metricIndex][i]);
+          ARTS_DEBUG("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
+                     offset, timeWindow[metricIndex][i]);
         }
 
         for (unsigned int i = 0; i < artsMETRICLEVELS; i++) {
@@ -887,14 +886,14 @@ void artsInternalReadInspectorConfigFile(char *filename) {
               sscanf(&line[offset], "%" SCNu64 "", &maxTotal[metricIndex][i]);
           sscanf(&line[offset], "%s", temp);
           offset += strlen(temp);
-          DPRINTF("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
-                  offset, maxTotal[metricIndex][i]);
+          ARTS_DEBUG("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
+                     offset, maxTotal[metricIndex][i]);
         }
       }
 
       if (metricIndex < 0 || metricIndex >= artsLastMetricType ||
           paramRead < artsMETRICLEVELS * 2) {
-        PRINTF("FAILED to init metric %s\n", temp);
+        ARTS_INFO("FAILED to init metric %s\n", temp);
       }
     }
   }
@@ -964,7 +963,7 @@ void internalPrintTotals(unsigned int nodeId) {
               stats->nodeUpdates, stats->systemUpdates, stats->remoteUpdates,
               stats->systemMessages);
     } else
-      PRINTF("Couldn't open %s\n", filename);
+      ARTS_INFO("Couldn't open %s\n", filename);
   }
 }
 
@@ -995,7 +994,7 @@ void printModelTotalMetrics(artsMetricLevel level) {
         artsInternalGetPerformanceMetricTotal(artsMallocBW, level),
         artsInternalGetPerformanceMetricTotal(artsFreeBW, level));
   else if (level == artsThread) {
-    PRINTF(
+    ARTS_INFO(
         "Stat 1 Thread %u edt %" PRIu64 " edt_signal %" PRIu64
         " event_signal %" PRIu64 " network_sent %" PRIu64
         " network_recv %" PRIu64 " malloc %" PRIu64 " free %" PRIu64 "\n",
