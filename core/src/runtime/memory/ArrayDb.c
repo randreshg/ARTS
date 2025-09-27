@@ -206,6 +206,8 @@ void artsForEachInArrayDb(artsArrayDb_t *array, artsEdt_t funcPtr,
 void artsGatherArrayDb(artsArrayDb_t *array, artsEdt_t funcPtr,
                        unsigned int route, uint32_t paramc, uint64_t *paramv,
                        uint64_t depc) {
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int offset = getOffsetFromIndex(array, 0);
   unsigned int size = array->elementSize * array->elementsPerBlock;
   artsGuid_t arrayGuid = getArrayDbGuid(array);
@@ -221,6 +223,8 @@ void artsGatherArrayDbEpoch(artsArrayDb_t *array, artsEdt_t funcPtr,
                             unsigned int route, uint32_t paramc,
                             uint64_t *paramv, uint64_t depc,
                             artsGuid_t epochGuid) {
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int offset = getOffsetFromIndex(array, 0);
   unsigned int size = array->elementSize * array->elementsPerBlock;
   artsGuid_t arrayGuid = getArrayDbGuid(array);

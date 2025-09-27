@@ -120,6 +120,8 @@ void artsDbCreateInternal(artsGuid_t guid, void *addr, uint64_t size,
 artsGuid_t artsDbCreateRemote(unsigned int route, uint64_t size,
                               artsType_t mode) {
   ARTSEDTCOUNTERTIMERSTART(dbCreateCounter);
+  if (route == -1)
+    route = artsGlobalRankId;
   artsGuid_t guid = artsGuidCreateForRank(route, mode);
   void *ptr = artsDbMalloc(mode, sizeof(struct artsDb));
   struct artsDb *db = (struct artsDb *)ptr;

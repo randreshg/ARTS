@@ -157,6 +157,8 @@ uint64_t artsGetGuidKey(artsGuid_t guid) {
 
 artsGuid_t artsReserveGuidRoute(artsType_t type, unsigned int route) {
   artsGuid_t guid = NULL_GUID;
+  if (route == -1)
+    route = artsGlobalRankId;
   route = route % artsGlobalRankCount;
   if (type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     guid = artsGuidCreateForRankInternal(route, (unsigned int)type, 1);
@@ -188,6 +190,8 @@ artsGuid_t *artsReserveGuidsRoundRobin(unsigned int size, artsType_t type) {
 
 artsGuidRange *artsNewGuidRangeNode(artsType_t type, unsigned int size,
                                     unsigned int route) {
+  if (route == -1)
+    route = artsGlobalRankId;
   artsGuidRange *range = NULL;
   if (size && type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     range = (artsGuidRange *)artsCalloc(1, sizeof(artsGuidRange));

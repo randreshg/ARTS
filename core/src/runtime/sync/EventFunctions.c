@@ -95,6 +95,8 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
 
 artsGuid_t artsEventCreate(unsigned int route, unsigned int latchCount) {
   ARTSEDTCOUNTERTIMERSTART(eventCreateCounter);
+  if (route == -1)
+    route = artsGlobalRankId;
   artsGuid_t guid = NULL_GUID;
   artsEventCreateInternal(&guid, route, INITIAL_DEPENDENT_SIZE, latchCount,
                           false, NULL_GUID);
@@ -524,6 +526,8 @@ artsGuid_t artsPersistentEventCreate(unsigned int route,
                                      unsigned int latchCount,
                                      artsGuid_t dataGuid) {
   ARTSEDTCOUNTERTIMERSTART(persistentEventCreateCounter);
+  if (route == -1)
+    route = artsGlobalRankId;
   artsGuid_t guid = NULL_GUID;
   artsPersistentEventCreateInternal(&guid, route, dataGuid);
   ARTSEDTCOUNTERTIMERENDINCREMENT(persistentEventCreateCounter);

@@ -257,6 +257,8 @@ artsGuid_t artsEdtCreateDep(artsEdt_t funcPtr, unsigned int route,
                             uint32_t paramc, uint64_t *paramv, uint32_t depc,
                             bool hasDepv) {
   ARTSEDTCOUNTERTIMERSTART(edtCreateCounter);
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
   unsigned int edtSpace =
       sizeof(struct artsEdt) + paramc * sizeof(uint64_t) + depSpace;
@@ -289,6 +291,8 @@ artsGuid_t artsEdtCreateWithEpochDep(artsEdt_t funcPtr, unsigned int route,
                                      uint32_t depc, artsGuid_t epochGuid,
                                      bool hasDepv) {
   ARTSEDTCOUNTERTIMERSTART(edtCreateCounter);
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
   unsigned int edtSpace =
       sizeof(struct artsEdt) + paramc * sizeof(uint64_t) + depSpace;
@@ -302,6 +306,8 @@ artsGuid_t artsEdtCreateWithEpochDep(artsEdt_t funcPtr, unsigned int route,
 
 artsGuid_t artsEdtCreate(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
                          uint64_t *paramv, uint32_t depc) {
+  if (route == -1)
+    route = artsGlobalRankId;
   return artsEdtCreateDep(funcPtr, route, paramc, paramv, depc, true);
 }
 
@@ -314,6 +320,8 @@ artsGuid_t artsEdtCreateWithGuid(artsEdt_t funcPtr, artsGuid_t guid,
 artsGuid_t artsEdtCreateWithEpoch(artsEdt_t funcPtr, unsigned int route,
                                   uint32_t paramc, uint64_t *paramv,
                                   uint32_t depc, artsGuid_t epochGuid) {
+  if (route == -1)
+    route = artsGlobalRankId;
   return artsEdtCreateWithEpochDep(funcPtr, route, paramc, paramv, depc,
                                    epochGuid, true);
 }
@@ -440,6 +448,8 @@ artsGuid_t artsActiveMessageWithBuffer(artsEdt_t funcPtr, unsigned int route,
                                        uint32_t paramc, uint64_t *paramv,
                                        uint32_t depc, void *data,
                                        unsigned int size) {
+  if (route == -1)
+    route = artsGlobalRankId;
   void *ptr = artsMalloc(size);
   memcpy(ptr, data, size);
   artsGuid_t guid = artsEdtCreate(funcPtr, route, paramc, paramv, depc + 1);
