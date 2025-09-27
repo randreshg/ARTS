@@ -136,8 +136,10 @@ artsGuid_t artsEdtCreate(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
 
 /// Creates a parallel EDT to run on all the workers on the node. It then waits
 /// for all the EDTs to finish before continuing.
-void artsEdtParallel(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
-                     uint64_t *paramv, uint32_t depc);
+// ! Not implemented
+// void artsEdtParallel(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
+//                      uint64_t *paramv, uint32_t depc);
+
 // Creates an EDT with the given guid.  The guid will run on the home node of
 // the guid. Paramc are the number of static parameters. Paramv are the static
 // parameters that are copied into the EDT closure. Depc is the number of
