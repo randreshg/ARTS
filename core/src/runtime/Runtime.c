@@ -395,7 +395,7 @@ void artsHandleRemoteStolenEdt(struct artsEdt *edt) {
 }
 
 void artsHandleReadyEdt(struct artsEdt *edt) {
-  ARTS_INFO("EDT %u Ready", edt->currentEdt);
+  ARTS_INFO("EDT [Guid: %lu] is ready", edt->currentEdt);
   acquireDbs(edt);
   if (artsAtomicSub(&edt->depcNeeded, 1U) == 0) {
     incrementQueueEpoch(edt->epochGuid);
@@ -429,7 +429,7 @@ void artsRunEdt(struct artsEdt *edt) {
 
   artsSetThreadLocalEdtInfo(edt);
   ARTSCOUNTERTIMERSTART(edtCounter);
-  ARTS_INFO("Running EDT with GUID: %lu", edt->currentEdt);
+  ARTS_INFO("Running EDT [Guid: %lu]", edt->currentEdt);
   func(paramc, paramv, depc, depv);
 
   ARTSCOUNTERTIMERENDINCREMENT(edtCounter);
@@ -442,7 +442,7 @@ void artsRunEdt(struct artsEdt *edt) {
     artsSetBuffer(edt->outputBuffer, artsCalloc(1, sizeof(unsigned int)),
                   sizeof(unsigned int));
 
-  ARTS_INFO("EDT %u Finished", edt->currentEdt);
+  ARTS_INFO("EDT [Guid: %lu] Finished", edt->currentEdt);
   releaseDbs(depc, depv, false);
   artsEdtDelete(edt);
   // This is for debugging purposes
@@ -544,7 +544,7 @@ bool artsDefaultSchedulerLoop() {
   }
   checkOutstandingEdts(10000000);
   artsNextContext();
-  artsTMTSchedulerYield();
+  // artsTMTSchedulerYield();
   //        usleep(1);
   return false;
 }

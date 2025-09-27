@@ -88,7 +88,7 @@ void artsRemoteDbForward(int destRank, int sourceRank, artsGuid_t dataGuid,
 void artsRemoteDbSendNow(int rank, struct artsDb *db);
 void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsType_t mode);
 void artsRemoteDbSend(struct artsRemoteDbRequestPacket *pack);
-void artsRemoteHandleDbRecieved(struct artsRemoteDbSendPacket *packet);
+void artsRemoteHandleDbReceived(struct artsRemoteDbSendPacket *packet);
 void artsRemoteDbFullRequest(artsGuid_t dataGuid, int rank, struct artsEdt *edt,
                              int pos, artsType_t mode);
 void artsRemoteDbForwardFull(int destRank, int sourceRank, artsGuid_t dataGuid,

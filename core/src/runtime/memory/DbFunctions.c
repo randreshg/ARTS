@@ -192,8 +192,8 @@ void *artsDbCreateWithGuid(artsGuid_t guid, uint64_t size) {
       ptr = (void *)((struct artsDb *)ptr + 1);
     }
   }
-  ARTS_INFO("Creating DB [Guid: %lu] [Mode: %s] [Ptr: %p]", guid,
-            getTypeName(mode), ptr);
+  ARTS_INFO("Creating DB [Guid: %lu] [Mode: %s] [Ptr: %p] [Route: %d]", guid,
+            getTypeName(mode), ptr, artsGuidGetRank(guid));
   ARTSEDTCOUNTERTIMERENDINCREMENT(dbCreateCounter);
   return ptr;
 }

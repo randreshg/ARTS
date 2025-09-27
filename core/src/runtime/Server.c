@@ -162,7 +162,7 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
     ARTS_DEBUG("Remote Db Recieved");
     struct artsRemoteDbSendPacket *pack =
         (struct artsRemoteDbSendPacket *)(packet);
-    artsRemoteHandleDbRecieved(pack);
+    artsRemoteHandleDbReceived(pack);
     break;
   }
   case ARTS_REMOTE_ADD_DEPENDENCE_MSG: {

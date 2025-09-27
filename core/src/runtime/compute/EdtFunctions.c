@@ -215,11 +215,11 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
       memcpy(tmp, paramv, sizeof(uint64_t) * paramc);
     }
 
-    if (route != artsGlobalRankId)
+    if (route != artsGlobalRankId) {
       artsRemoteMemoryMove(route, *guid, (void *)edt,
                            (unsigned int)edt->header.size,
                            ARTS_REMOTE_EDT_MOVE_MSG, artsFree);
-    else {
+    } else {
       incOustandingEdts(1);
       if (createdGuid) {
         artsRouteTableAddItem(edt, *guid, artsGlobalRankId, false);
@@ -239,11 +239,13 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
     // ! artsRemoteMemoryMove is performed
 
     // if (useEpoch) {
-    //   ARTS_INFO("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u]",
+    //   ARTS_INFO("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u] [Route:
+    //   %d]",
     //             (unsigned)*guid, (unsigned)edt->epochGuid,
-    //             (unsigned)edt->depc);
+    //             (unsigned)edt->depc, route);
     // } else {
-    //   ARTS_INFO("Created EDT [Guid: %lu]", (unsigned)*guid);
+    //   ARTS_INFO("Created EDT [Guid: %lu] [Route: %d]", (unsigned)*guid,
+    //   route);
     // }
 
     return true;

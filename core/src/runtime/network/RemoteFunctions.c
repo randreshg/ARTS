@@ -281,7 +281,6 @@ void artsRemoteHandleEdtMove(void *ptr) {
       (struct artsRemoteGuidOnlyPacket *)ptr;
   unsigned int size =
       packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
-
   ARTSSETMEMSHOTTYPE(artsEdtMemorySize);
   struct artsEdt *edt = (struct artsEdt *)artsMallocAlign(size, 16);
   ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
@@ -289,6 +288,8 @@ void artsRemoteHandleEdtMove(void *ptr) {
   memcpy(edt, packet + 1, size);
   artsRouteTableAddItemRace(edt, (artsGuid_t)packet->guid, artsGlobalRankId,
                             false);
+  ARTS_INFO("EDT [Guid: %lu] Moved to Rank: %d", packet->guid,
+            artsGlobalRankId);
   if (edt->depcNeeded == 0)
     artsHandleReadyEdt(edt);
   else
@@ -321,6 +322,7 @@ void artsRemoteHandleDbMove(void *ptr) {
     newDb->dbList = artsNewDbList();
   }
 
+  ARTS_INFO("DB [Guid: %lu] Moved to Rank: %d", packet->guid, artsGlobalRankId);
   if (artsRouteTableAddItemRace(memPacket, (artsGuid_t)packet->guid,
                                 artsGlobalRankId, false))
     artsRouteTableFireOO(packet->guid, artsOutOfOrderHandler);
@@ -353,6 +355,8 @@ void artsRemoteHandlePersistentEventMove(void *ptr) {
   ARTSSETMEMSHOTTYPE(artsPersistentEventMemorySize);
 
   memcpy(memPacket, packet + 1, size);
+  ARTS_INFO("Persistent Event [Guid: %lu] Moved to Rank: %d", packet->guid,
+            artsGlobalRankId);
   artsRouteTableAddItemRace(memPacket, (artsGuid_t)packet->guid,
                             artsGlobalRankId, false);
   artsRouteTableFireOO(packet->guid, artsOutOfOrderHandler);
@@ -510,7 +514,7 @@ void artsRemoteDbSend(struct artsRemoteDbRequestPacket *pack) {
   }
 }
 
-void artsRemoteHandleDbRecieved(struct artsRemoteDbSendPacket *packet) {
+void artsRemoteHandleDbReceived(struct artsRemoteDbSendPacket *packet) {
   struct artsDb *packetDb = (struct artsDb *)(packet + 1);
   struct artsDb *dbRes = NULL;
   struct artsDb **dataPtr = NULL;
