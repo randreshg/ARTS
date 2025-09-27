@@ -380,9 +380,9 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
           edtDep[slot].ptr = ptr;
         }
         unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-        ARTS_INFO(
-            "EDT [Guid: %lu - Slot: %u - DepCount: %d] signaled DB [Guid: %lu]",
-            edt->currentEdt, slot, res, dataGuid);
+        ARTS_INFO("DB Signal [Guid: %lu] to EDT [Guid: %lu - Slot: %u - "
+                  "DepCount: %d]",
+                  dataGuid, edt->currentEdt, slot, res);
         if (res == 0)
           artsHandleReadyEdt(edt);
       } else {
