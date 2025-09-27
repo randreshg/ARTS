@@ -1099,8 +1099,10 @@ struct artsConfig *artsConfigLoad() {
 
 void artsConfigDestroy(struct artsConfig *config) {
   artsFree(config->launcher);
-  artsFree(config->launcherData->launcherMemory);
-  artsFree(config->launcherData);
+  if (config->launcherData) {
+    artsFree(config->launcherData->launcherMemory);
+    artsFree(config->launcherData);
+  }
   for (int i = 0; i < config->tableLength; i++)
     artsFree(config->table[i].ipAddress);
   artsFree(config->table);
