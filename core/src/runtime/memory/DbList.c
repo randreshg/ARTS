@@ -41,6 +41,7 @@
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
+#include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
 #define writeSet 0x80000000
@@ -123,19 +124,24 @@ bool frontierAddExclusiveLock(volatile unsigned int *lock) {
       if (temp == local)
         return true;
     }
-    return true;
   }
 }
 
 struct artsDbElement *artsNewDbElement() {
   struct artsDbElement *ret =
       (struct artsDbElement *)artsCalloc(1, sizeof(struct artsDbElement));
+  if (!ret) {
+    artsDebugGenerateSegFault();
+  }
   return ret;
 }
 
 struct artsDbFrontier *artsNewDbFrontier() {
   struct artsDbFrontier *ret =
       (struct artsDbFrontier *)artsCalloc(1, sizeof(struct artsDbFrontier));
+  if (!ret) {
+    artsDebugGenerateSegFault();
+  }
   return ret;
 }
 
@@ -143,6 +149,9 @@ struct artsDbFrontier *artsNewDbFrontier() {
 struct artsDbList *artsNewDbList() {
   struct artsDbList *ret =
       (struct artsDbList *)artsCalloc(1, sizeof(struct artsDbList));
+  if (!ret) {
+    artsDebugGenerateSegFault();
+  }
   ret->head = ret->tail = artsNewDbFrontier();
   return ret;
 }
@@ -204,9 +213,13 @@ void artsPushDelayedEdt(struct artsLocalDelayedEdt *head, unsigned int position,
   unsigned int elementPos = position % DBSPERELEMENT;
   struct artsLocalDelayedEdt *current = head;
   for (unsigned int i = 0; i < numElements; i++) {
-    if (!current->next)
+    if (!current->next) {
       current->next = (struct artsLocalDelayedEdt *)artsCalloc(
           1, sizeof(struct artsLocalDelayedEdt));
+      if (!current->next) {
+        artsDebugGenerateSegFault();
+      }
+    }
     current = current->next;
   }
   current->edt[elementPos] = edt;
@@ -319,6 +332,9 @@ artsDbFrontierIterCreate(struct artsDbFrontier *frontier) {
   if (frontier && frontier->position) {
     iter = (struct artsDbFrontierIterator *)artsCalloc(
         1, sizeof(struct artsDbFrontierIterator));
+    if (!iter) {
+      artsDebugGenerateSegFault();
+    }
     iter->frontier = frontier;
     iter->currentElement = &frontier->list;
   }
