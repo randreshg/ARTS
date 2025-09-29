@@ -247,7 +247,7 @@ void artsRemoteHandleUpdateDb(void *ptr) {
     struct artsDb *db = (dataPtr) ? *dataPtr : NULL;
     if (write) {
       void *ptr = (void *)(db + 1);
-      memcpy(ptr, packetDb, db->header.size - sizeof(struct artsDb));
+      memcpy(ptr, packetDb + 1, db->header.size - sizeof(struct artsDb));
       artsRouteTableSetRank(packet->guid, artsGlobalRankId);
       artsProgressFrontier(db, artsGlobalRankId);
     } else {
