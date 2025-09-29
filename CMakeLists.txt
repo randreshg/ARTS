@@ -252,15 +252,6 @@ if(NOT USE_HWLOC)
     set(HWLOC_LIBRARIES "")
     set(HWLOC_INCLUDE_DIRS "")
 else()
-    # Try to use hwloc - first check via pkg-config
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(HWLOC QUIET hwloc)
-    endif()
-
-    # If not found via pkg-config, the third-party CMakeLists.txt will handle building it
-    # HWLOC_FOUND will be set by third-party/CMakeLists.txt if hwloc was built or found
-
     if(HWLOC_FOUND)
         add_compile_definitions(USE_HWLOC)
         message(STATUS "Hardware topology: Using hwloc - USE_HWLOC defined")
