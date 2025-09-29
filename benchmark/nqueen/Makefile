@@ -20,10 +20,10 @@ all: nqueen_arts_local nqueen_arts_random
 # 	carts execute $< -o $@
 
 nqueen_arts_local: nqueen_arts_local.c
-	$(CC) $(CFLAGS) -o $@ $< -I../../.install/include -L../../.install/lib -larts
+	$(CC) $(CFLAGS) -o $@ $< -I../../.install/include -L../../.install/lib -L../../.install/lib64 -larts -lhwloc
 
 nqueen_arts_random: nqueen_arts_random.c
-	$(CC) $(CFLAGS) -o $@ $< -I../../.install/include -L../../.install/lib -larts
+	$(CC) $(CFLAGS) -o $@ $< -I../../.install/include -L../../.install/lib -L../../.install/lib64 -larts -lhwloc
 
 clean:
 	rm -f nqueen_arts_local nqueen_arts_random
