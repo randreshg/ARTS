@@ -44,6 +44,11 @@ file(GLOB RUNTIME_MAIN_SOURCES "*.c")
 add_library(arts_runtime OBJECT ${RUNTIME_MAIN_SOURCES})
 target_include_directories(arts_runtime PRIVATE ${ARTS_CORE_INCLUDE_DIR})
 
+# Add hwloc include directories if available
+if(HWLOC_INCLUDE_DIRS)
+    target_include_directories(arts_runtime PRIVATE ${HWLOC_INCLUDE_DIRS})
+endif()
+
 # GPU-specific object library (wrap Runtime.c to compile with nvcc)
 if(BUILD_CUDA_LIBRARY)
     set(RUNTIME_SOURCE_NAME "Runtime.c")
@@ -59,6 +64,11 @@ if(BUILD_CUDA_LIBRARY)
     add_library(arts_runtime_gpu OBJECT ${RUNTIME_GPU_SOURCES})
     target_include_directories(arts_runtime_gpu PRIVATE ${ARTS_CORE_INCLUDE_DIR})
     target_compile_definitions(arts_runtime_gpu PRIVATE USE_GPU)
+
+    # Add hwloc include directories if available
+    if(HWLOC_INCLUDE_DIRS)
+        target_include_directories(arts_runtime_gpu PRIVATE ${HWLOC_INCLUDE_DIRS})
+    endif()
 endif()
 
 # Add runtime submodules

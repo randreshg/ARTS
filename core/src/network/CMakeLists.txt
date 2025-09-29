@@ -52,3 +52,8 @@ target_include_directories(arts_network PRIVATE
 if(RDMACM_INCLUDE_DIRS)
     target_include_directories(arts_network PRIVATE ${RDMACM_INCLUDE_DIRS})
 endif()
+
+# Add hwloc include directories if available
+if(HWLOC_INCLUDE_DIRS)
+    target_include_directories(arts_network PRIVATE ${HWLOC_INCLUDE_DIRS})
+endif()

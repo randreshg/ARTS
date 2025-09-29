@@ -56,3 +56,8 @@ add_library(arts_utils OBJECT ${UTILS_SOURCES})
 target_include_directories(arts_utils PRIVATE
     ${ARTS_CORE_INCLUDE_DIR}
 )
+
+# Add hwloc include directories if available
+if(HWLOC_INCLUDE_DIRS)
+    target_include_directories(arts_utils PRIVATE ${HWLOC_INCLUDE_DIRS})
+endif()

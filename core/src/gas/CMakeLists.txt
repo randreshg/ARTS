@@ -47,3 +47,8 @@ add_library(arts_gas OBJECT ${GAS_SOURCES})
 target_include_directories(arts_gas PRIVATE
     ${ARTS_CORE_INCLUDE_DIR}
 )
+
+# Add hwloc include directories if available
+if(HWLOC_INCLUDE_DIRS)
+    target_include_directories(arts_gas PRIVATE ${HWLOC_INCLUDE_DIRS})
+endif()

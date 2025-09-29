@@ -66,6 +66,11 @@ file(GLOB ARTS_MAIN_SOURCES "*.c")
 # Create static library if requested
 if(ARTS_BUILD_STATIC)
     add_library(arts_static STATIC ${ARTS_MAIN_SOURCES})
+
+    # Add hwloc include directories if available
+    if(HWLOC_INCLUDE_DIRS)
+        target_include_directories(arts_static PRIVATE ${HWLOC_INCLUDE_DIRS})
+    endif()
     
     # Add object library contents directly to avoid export issues
     target_sources(arts_static PRIVATE
@@ -104,6 +109,11 @@ endif()
 # Create shared library if requested  
 if(ARTS_BUILD_SHARED)
     add_library(arts_shared SHARED ${ARTS_MAIN_SOURCES})
+
+    # Add hwloc include directories if available
+    if(HWLOC_INCLUDE_DIRS)
+        target_include_directories(arts_shared PRIVATE ${HWLOC_INCLUDE_DIRS})
+    endif()
     
     # Add object library contents directly to avoid export issues
     target_sources(arts_shared PRIVATE
@@ -147,6 +157,11 @@ if(BUILD_CUDA_LIBRARY)
     # Create static CUDA library if requested
     if(ARTS_BUILD_STATIC)
         add_library(arts_cuda_static STATIC ${ARTS_MAIN_SOURCES})
+
+        # Add hwloc include directories if available
+        if(HWLOC_INCLUDE_DIRS)
+            target_include_directories(arts_cuda_static PRIVATE ${HWLOC_INCLUDE_DIRS})
+        endif()
         
         # Add object library contents directly to avoid export issues
         target_sources(arts_cuda_static PRIVATE
@@ -192,6 +207,11 @@ if(BUILD_CUDA_LIBRARY)
     # Create shared CUDA library if requested  
     if(ARTS_BUILD_SHARED)
         add_library(arts_cuda_shared SHARED ${ARTS_MAIN_SOURCES})
+
+        # Add hwloc include directories if available
+        if(HWLOC_INCLUDE_DIRS)
+            target_include_directories(arts_cuda_shared PRIVATE ${HWLOC_INCLUDE_DIRS})
+        endif()
         
         # Add object library contents directly to avoid export issues
         target_sources(arts_cuda_shared PRIVATE
