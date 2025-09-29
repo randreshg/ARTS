@@ -482,7 +482,7 @@ void artsProgressFrontier(struct artsDb *db, unsigned int rank) {
   artsWriterLock(&dbList->reader, &dbList->writer);
   struct artsDbFrontier *tail = dbList->head;
   if (dbList->head) {
-    ARTS_INFO("HEAD: %p -> NEXT: %p", dbList->head, dbList->head->next);
+    ARTS_DEBUG("HEAD: %p -> NEXT: %p", dbList->head, dbList->head->next);
     dbList->head = (struct artsDbFrontier *)dbList->head->next;
     if (dbList->head) {
       if (rank == artsGlobalRankId)

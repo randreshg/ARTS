@@ -382,7 +382,7 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
           edtDep[slot].ptr = ptr;
         }
         unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-        ARTS_INFO("DB Signal [Guid: %lu] to EDT [Guid: %lu - Slot: %u - "
+        ARTS_INFO("Signal DB [Guid: %lu] to EDT [Guid: %lu - Slot: %u - "
                   "DepCount: %d]",
                   dataGuid, edt->currentEdt, slot, res);
         if (res == 0)
@@ -408,15 +408,14 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
 void artsSignalEdt(artsGuid_t edtGuid, uint32_t slot, artsGuid_t dataGuid) {
   artsGuid_t acqGuid = dataGuid;
   artsType_t mode = artsGuidGetType(dataGuid);
-  if (mode == ARTS_DB_WRITE)
-    acqGuid = artsGuidCast(dataGuid, ARTS_DB_READ);
   ARTS_DEBUG("Signal DB [Guid: %lu] to EDT [Guid: %lu] in slot %u", dataGuid,
              edtGuid, slot);
   internalSignalEdt(edtGuid, slot, acqGuid, mode, NULL, 0);
 }
 
 void artsSignalEdtValue(artsGuid_t edtGuid, uint32_t slot, uint64_t value) {
-  ARTS_DEBUG("Signal Value: %u to EDTGuid %u in slot %u", value, edtGuid, slot);
+  ARTS_DEBUG("Signal Value [%lu] to EDT [Guid: %lu, Slot: %u]", value, edtGuid,
+             slot);
   internalSignalEdt(edtGuid, slot, value, ARTS_SINGLE_VALUE, NULL, 0);
 }
 
@@ -438,7 +437,7 @@ artsGuid_t artsActiveMessageWithDbAt(artsEdt_t funcPtr, uint32_t paramc,
                                      uint64_t *paramv, uint32_t depc,
                                      artsGuid_t dbGuid, unsigned int rank) {
   artsGuid_t guid = artsEdtCreate(funcPtr, rank, paramc, paramv, depc + 1);
-  ARTS_DEBUG("AM -> %lu rank: %u depc: %u", guid, rank, depc + 1);
+  ARTS_DEBUG("AM -> [Guid: %lu, Rank: %u, Depc: %u]", guid, rank, depc + 1);
   artsSignalEdt(guid, 0, dbGuid);
   return guid;
 }
@@ -510,7 +509,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
 
       if (stub->buffer) {
         memcpy(stub->buffer, buffer, stub->size);
-        ARTS_DEBUG("Set buffer %p %u %u", stub->buffer,
+        ARTS_DEBUG("Set buffer [Ptr: %p, Size: %u, Uses: %u]", stub->buffer,
                    *((unsigned int *)stub->buffer), stub->size);
         ret = stub->buffer;
       } else
@@ -551,7 +550,7 @@ void *artsBlockForBuffer(artsGuid_t bufferGuid) {
   if (artsIsGuidLocal(bufferGuid)) {
     artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     while (stub->uses > 1) {
-      ARTS_DEBUG("Yield: %u", stub->uses);
+      ARTS_DEBUG("Yield: [Uses: %u]", stub->uses);
       artsYield();
     }
     buffer = stub->buffer;
