@@ -93,6 +93,7 @@ if(ARTS_BUILD_STATIC)
         Threads::Threads
         ${RT_LIBRARY}
         ${M_LIBRARY}
+        ${ANL_LIBRARY}
         ${RDMACM_LIBRARIES}
         ${HWLOC_LIBRARIES}
     )
@@ -136,6 +137,7 @@ if(ARTS_BUILD_SHARED)
         Threads::Threads
         ${RT_LIBRARY}
         ${M_LIBRARY}
+        ${ANL_LIBRARY}
         ${RDMACM_LIBRARIES}
         ${HWLOC_LIBRARIES}
     )
@@ -188,6 +190,7 @@ if(BUILD_CUDA_LIBRARY)
             Threads::Threads
             ${RT_LIBRARY}
             ${M_LIBRARY}
+            ${ANL_LIBRARY}
             ${RDMACM_LIBRARIES}
             ${HWLOC_LIBRARIES}
             CUDA::cudart
@@ -238,6 +241,7 @@ if(BUILD_CUDA_LIBRARY)
             Threads::Threads
             ${RT_LIBRARY}
             ${M_LIBRARY}
+            ${ANL_LIBRARY}
             ${RDMACM_LIBRARIES}
             ${HWLOC_LIBRARIES}
             CUDA::cudart

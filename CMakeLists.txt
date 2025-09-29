@@ -214,9 +214,11 @@ find_package(Threads REQUIRED)
 if(NOT APPLE)
     find_library(RT_LIBRARY rt REQUIRED)
     find_library(M_LIBRARY m REQUIRED)
+    find_library(ANL_LIBRARY anl REQUIRED)
 else()
     set(RT_LIBRARY "")
     set(M_LIBRARY "")
+    set(ANL_LIBRARY "")
 endif()
 
 # Network library detection and configuration

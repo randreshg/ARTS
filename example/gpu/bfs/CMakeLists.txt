@@ -51,8 +51,10 @@ function(add_bfs_cuda_example example_name)
     # Link with arts_graph and runtime libraries
     target_link_libraries(gpu${example_name} PRIVATE 
         arts_graph
+        Threads::Threads 
         ${RT_LIBRARY} 
         ${M_LIBRARY} 
+        ${ANL_LIBRARY} 
         CUDA::cudart 
         CUDA::cuda_driver 
         CUDA::cublas

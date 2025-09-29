@@ -48,8 +48,10 @@ target_include_directories(stream PRIVATE
 
 # Link with CUDA libraries
 target_link_libraries(stream PRIVATE 
+    Threads::Threads 
     ${RT_LIBRARY} 
     ${M_LIBRARY} 
+    ${ANL_LIBRARY} 
     CUDA::cudart 
     CUDA::cuda_driver 
     CUDA::cublas

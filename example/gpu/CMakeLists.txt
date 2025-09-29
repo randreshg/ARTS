@@ -54,8 +54,10 @@ endif()
 
 # Link with CUDA libraries
 target_link_libraries(fibGpu PRIVATE 
+    Threads::Threads 
     ${RT_LIBRARY} 
     ${M_LIBRARY} 
+    ${ANL_LIBRARY} 
     CUDA::cudart 
     CUDA::cuda_driver 
     CUDA::cublas

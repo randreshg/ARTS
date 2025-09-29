@@ -87,7 +87,7 @@ function(add_arts_test test_name)
     target_include_directories(${test_name} PRIVATE ${ARTS_CORE_INCLUDE_DIR})
     
     # Link with runtime libraries
-    target_link_libraries(${test_name} PRIVATE ${RT_LIBRARY} ${M_LIBRARY})
+    target_link_libraries(${test_name} PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
     
     # Use the appropriate ARTS library based on availability
     if(TARGET arts_shared)
@@ -112,7 +112,7 @@ function(add_arts_graph_test test_name)
     target_include_directories(${test_name} PRIVATE ${ARTS_CORE_INCLUDE_DIR} ${ARTS_GRAPH_INCLUDE_DIR})
     
     # Link with arts_graph and runtime libraries
-    target_link_libraries(${test_name} PRIVATE arts_graph ${RT_LIBRARY} ${M_LIBRARY})
+    target_link_libraries(${test_name} PRIVATE arts_graph Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
     
     # Use the appropriate ARTS library based on availability
     if(TARGET arts_shared)
@@ -149,8 +149,10 @@ if(BUILD_CUDA_LIBRARY)
         
         # Link with CUDA libraries
         target_link_libraries(${test_name} PRIVATE 
+            Threads::Threads 
             ${RT_LIBRARY} 
             ${M_LIBRARY} 
+            ${ANL_LIBRARY} 
             CUDA::cudart 
             CUDA::cuda_driver 
             CUDA::cublas

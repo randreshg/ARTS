@@ -59,8 +59,10 @@ function(add_mm_cuda_example example_name)
     
     # Link with CUDA libraries
     target_link_libraries(${example_name} PRIVATE 
+        Threads::Threads 
         ${RT_LIBRARY} 
         ${M_LIBRARY} 
+        ${ANL_LIBRARY} 
         CUDA::cudart 
         CUDA::cuda_driver 
         CUDA::cublas

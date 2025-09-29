@@ -74,7 +74,7 @@ function(add_cpu_example example_name)
     endif()
     
     # Link with runtime libraries
-    target_link_libraries(${example_name} PRIVATE ${RT_LIBRARY} ${M_LIBRARY})
+    target_link_libraries(${example_name} PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
 
 endfunction()
 
@@ -86,7 +86,7 @@ function(add_cpu_graph_example example_name)
     target_include_directories(${example_name} PRIVATE ${ARTS_CORE_INCLUDE_DIR} ${ARTS_GRAPH_INCLUDE_DIR})
     
     # Link with arts_graph, main ARTS library, and runtime libraries
-    target_link_libraries(${example_name} PRIVATE arts_graph ${RT_LIBRARY} ${M_LIBRARY})
+    target_link_libraries(${example_name} PRIVATE arts_graph Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
     
     # Link with the appropriate ARTS library based on availability
     if(TARGET arts_shared)
@@ -104,7 +104,7 @@ function(add_cpu_cxx_graph_example example_name)
     target_include_directories(${example_name} PRIVATE ${ARTS_CORE_INCLUDE_DIR} ${ARTS_GRAPH_INCLUDE_DIR})
     
     # Link with arts_graph, main ARTS library, and runtime libraries
-    target_link_libraries(${example_name} PRIVATE arts_graph ${RT_LIBRARY} ${M_LIBRARY})
+    target_link_libraries(${example_name} PRIVATE arts_graph Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
     
     # Link with the appropriate ARTS library based on availability
     if(TARGET arts_shared)

@@ -110,7 +110,36 @@ bool hostnameToIp(char *hostName, char *ip) {
   return false;
 }
 
+void artsRemoteFixNames(char *fix, unsigned int fixLength, bool isItPost,
+                        char **fixMe) {
+  char *oldStr, *newStr;
+  int oldStrLength;
+  // for(int i=0; i<artsGlobalMessageTable->tableLength; i++)
+  {
+    oldStr = *fixMe; // artsGlobalMessageTable->table[i].ipAddress;
+    oldStrLength = strlen(oldStr);
+
+    newStr = (char *)artsMalloc(oldStrLength + fixLength + 1);
+
+    if (isItPost) {
+      strncpy(newStr, oldStr, oldStrLength);
+      strncpy(newStr + oldStrLength, fix, fixLength);
+      *(newStr + fixLength + oldStrLength) = '\0';
+      *fixMe = newStr;
+      artsFree(oldStr);
+    } else {
+      strncpy(newStr, fix, fixLength);
+      strncpy(newStr + fixLength, oldStr, oldStrLength);
+      *(newStr + fixLength + oldStrLength) = '\0';
+      // artsGlobalMessageTable->table[i].ipAddress = newStr;
+      *fixMe = newStr;
+      artsFree(oldStr);
+    }
+  }
+}
+
 void artsServerFixIbNames(struct artsConfig *config) {
+#ifdef __linux__
   const char *hostnameFormats[] = {"ib-%s",    "ib%s",     "ib.%s",
                                    "%s-ib",    "%sib",     "%s.ib",
                                    "%s-ib.ib", "%s.ibnet", NULL};
@@ -177,6 +206,55 @@ void artsServerFixIbNames(struct artsConfig *config) {
     }
     artsFree((void *)gaicbRequests[i].ar_name);
   }
+#else
+  char post[6][10] = {"-ib\0", "ib\0", ".ib\0", "-ib.ib\0", ".ibnet\0", "\0"};
+  char pre[4][10] = {"ib-\0", "ib\0", "ib.\0", "\0"};
+
+  int curLength;
+  for (int j = 0; j < config->tableLength; j++) {
+    char *testStr = artsGlobalMessageTable->table[j].ipAddress;
+    int testStrLength = strlen(testStr);
+    char *stringFixed = (char *)artsMalloc(testStrLength + 50);
+    struct addrinfo *result;
+    bool found = false;
+    int i = 0, error;
+    while (pre[i][0] != '\0' && !found) {
+      curLength = strlen(pre[i]);
+      strncpy(stringFixed, pre[i], curLength);
+      strncpy(stringFixed + curLength, testStr, testStrLength);
+      *(stringFixed + curLength + testStrLength) = '\0';
+      error = getaddrinfo(stringFixed, NULL, NULL, &result);
+
+      if (error == 0) {
+        DPRINTF("%s\n", stringFixed);
+        artsRemoteFixNames(pre[i], curLength, false,
+                           &artsGlobalMessageTable->table[j].ipAddress);
+        artsFree(stringFixed);
+        freeaddrinfo(result);
+        found = true;
+      }
+      i++;
+    }
+
+    i = 0;
+    while (post[i][0] != '\0' && !found) {
+      curLength = strlen(post[i]);
+      strncpy(stringFixed, testStr, testStrLength);
+      strncpy(stringFixed + testStrLength, post[i], curLength);
+      *(stringFixed + curLength + testStrLength) = '\0';
+      error = getaddrinfo(stringFixed, NULL, NULL, &result);
+      if (error == 0) {
+        DPRINTF("%s\n", stringFixed);
+        artsRemoteFixNames(post[i], curLength, true,
+                           &artsGlobalMessageTable->table[j].ipAddress);
+        artsFree(stringFixed);
+        freeaddrinfo(result);
+        found = true;
+      }
+      i++;
+    }
+  }
+#endif
 }
 
 bool artsServerSetIP(struct artsConfig *config) {
