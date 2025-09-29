@@ -36,6 +36,7 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#define _GNU_SOURCE // Required for getaddrinfo_a()
 #include "arts/network/SocketServer.h"
 #include "arts/arts.h"
 #include "arts/introspection/Introspection.h"
@@ -109,81 +110,72 @@ bool hostnameToIp(char *hostName, char *ip) {
   return false;
 }
 
-void artsRemoteFixNames(char *fix, unsigned int fixLength, bool isItPost,
-                        char **fixMe) {
-  char *oldStr, *newStr;
-  int oldStrLength;
-  // for(int i=0; i<artsGlobalMessageTable->tableLength; i++)
-  {
-    oldStr = *fixMe; // artsGlobalMessageTable->table[i].ipAddress;
-    oldStrLength = strlen(oldStr);
+void artsServerFixIbNames(struct artsConfig *config) {
+  const char *hostnameFormats[] = {"ib-%s",    "ib%s",     "ib.%s",
+                                   "%s-ib",    "%sib",     "%s.ib",
+                                   "%s-ib.ib", "%s.ibnet", NULL};
+  const int requestCount = config->tableLength * 8;
 
-    newStr = (char *)artsMalloc(oldStrLength + fixLength + 1);
+  struct gaicb gaicbRequests[requestCount];
+  struct gaicb *gaicbPtrs[requestCount];
+  memset(gaicbRequests, 0, sizeof(gaicbRequests));
+  for (int i = 0; i < requestCount; i++) {
+    gaicbPtrs[i] = &gaicbRequests[i];
+  }
 
-    if (isItPost) {
-      strncpy(newStr, oldStr, oldStrLength);
-      strncpy(newStr + oldStrLength, fix, fixLength);
-      *(newStr + fixLength + oldStrLength) = '\0';
-      *fixMe = newStr;
-      artsFree(oldStr);
-    } else {
-      strncpy(newStr, fix, fixLength);
-      strncpy(newStr + fixLength, oldStr, oldStrLength);
-      *(newStr + fixLength + oldStrLength) = '\0';
-      // artsGlobalMessageTable->table[i].ipAddress = newStr;
-      *fixMe = newStr;
-      artsFree(oldStr);
+  for (int j = 0; j < config->tableLength; j++) {
+    char *hostName = artsGlobalMessageTable->table[j].ipAddress;
+    for (int i = 0; hostnameFormats[i] != NULL; i++) {
+      int bufferSize = snprintf(NULL, 0, hostnameFormats[i], hostName) + 1;
+      char *formattedHostname = (char *)artsMalloc(bufferSize);
+      sprintf(formattedHostname, hostnameFormats[i], hostName);
+      gaicbRequests[j * 8 + i].ar_name = formattedHostname;
     }
   }
-}
 
-void artsServerFixIbNames(struct artsConfig *config) {
-  char post[6][10] = {"-ib\0", "ib\0", ".ib\0", "-ib.ib\0", ".ibnet\0", "\0"};
-  char pre[4][10] = {"ib-\0", "ib\0", "ib.\0", "\0"};
-
-  int curLength;
-  for (int j = 0; j < config->tableLength; j++) {
-    char *testStr = artsGlobalMessageTable->table[j].ipAddress;
-    int testStrLength = strlen(testStr);
-    char *stringFixed = (char *)artsMalloc(testStrLength + 50);
-    struct addrinfo *result;
-    bool found = false;
-    int i = 0, error;
-    while (pre[i][0] != '\0' && !found) {
-      curLength = strlen(pre[i]);
-      strncpy(stringFixed, pre[i], curLength);
-      strncpy(stringFixed + curLength, testStr, testStrLength);
-      *(stringFixed + curLength + testStrLength) = '\0';
-      error = getaddrinfo(stringFixed, NULL, NULL, &result);
-
-      if (error == 0) {
-        DPRINTF("%s\n", stringFixed);
-        artsRemoteFixNames(pre[i], curLength, false,
-                           &artsGlobalMessageTable->table[j].ipAddress);
-        artsFree(stringFixed);
-        freeaddrinfo(result);
-        found = true;
+  int error = getaddrinfo_a(GAI_NOWAIT, gaicbPtrs, requestCount, NULL);
+  if (error) {
+    PRINTF("getaddrinfo_a failed: %s\n", gai_strerror(error));
+    exit(1);
+  }
+  bool allCompleted = false;
+  for (int try = 0; try < 3 && !allCompleted; try++) {
+    allCompleted = true;
+    sleep(1);
+    for (int i = 0; i < requestCount; i++) {
+      if (gai_error(&gaicbRequests[i]) == EAI_INPROGRESS) {
+        allCompleted = false;
+        break;
       }
-      i++;
     }
+  }
 
-    i = 0;
-    while (post[i][0] != '\0' && !found) {
-      curLength = strlen(post[i]);
-      strncpy(stringFixed, testStr, testStrLength);
-      strncpy(stringFixed + testStrLength, post[i], curLength);
-      *(stringFixed + curLength + testStrLength) = '\0';
-      error = getaddrinfo(stringFixed, NULL, NULL, &result);
-      if (error == 0) {
-        DPRINTF("%s\n", stringFixed);
-        artsRemoteFixNames(post[i], curLength, true,
-                           &artsGlobalMessageTable->table[j].ipAddress);
-        artsFree(stringFixed);
-        freeaddrinfo(result);
-        found = true;
-      }
-      i++;
+  bool nodeResolved[config->tableLength];
+  memset(nodeResolved, 0, sizeof(nodeResolved));
+  for (int i = 0; i < requestCount; i++) {
+    int nodeIdx = i / 8;
+    if (nodeResolved[nodeIdx]) {
+      continue;
     }
+    error = gai_error(&gaicbRequests[i]);
+    if (!error) {
+      DPRINTF("%s\n", gaicbRequests[i].ar_name);
+      char *oldHostname = artsGlobalMessageTable->table[nodeIdx].ipAddress;
+      char *newHostname =
+          (char *)artsMalloc(strlen(gaicbRequests[i].ar_name) + 1);
+      strcpy(newHostname, gaicbRequests[i].ar_name);
+      artsGlobalMessageTable->table[nodeIdx].ipAddress = newHostname;
+      artsFree(oldHostname);
+      nodeResolved[nodeIdx] = true;
+    }
+  }
+
+  gai_cancel(NULL);
+  for (int i = 0; i < requestCount; i++) {
+    if (gaicbRequests[i].ar_result) {
+      freeaddrinfo(gaicbRequests[i].ar_result);
+    }
+    artsFree((void *)gaicbRequests[i].ar_name);
   }
 }
 
