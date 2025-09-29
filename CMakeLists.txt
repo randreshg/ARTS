@@ -79,8 +79,9 @@ include(CheckLanguage)
 option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" ON)
 option(ARTS_BUILD_SHARED "Build shared library" ON)
 option(ARTS_BUILD_STATIC "Build static library" ON)
-option(ARTS_BUILD_EXAMPLES "Build example programs" OFF)
-option(ARTS_BUILD_TESTS "Build test programs" OFF)
+option(ARTS_BUILD_EXAMPLES "Build example programs" ON)
+option(ARTS_BUILD_TESTS "Build test programs" ON)
+option(ARTS_BUILD_BENCHMARK "Build benchmark programs" ON)
 
 # Feature options (can be set via command line)
 option(USE_JUSTCOUNT "Enable just counting for introspection" OFF)
@@ -322,6 +323,10 @@ if(ARTS_BUILD_TESTS)
     add_subdirectory(test)
 endif()
 
+if(ARTS_BUILD_BENCHMARK)
+    add_subdirectory(benchmark)
+endif()
+
 add_subdirectory(sampleConfigs)
 
 # Installation configuration
@@ -347,7 +352,7 @@ if(ARTS_BUILD_STATIC)
         EXPORT ARTSTargets
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     )
-    
+
     if(BUILD_CUDA_LIBRARY)
         install(TARGETS arts_cuda_static
             EXPORT ARTSTargets
@@ -362,7 +367,7 @@ if(ARTS_BUILD_SHARED)
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
-    
+
     if(BUILD_CUDA_LIBRARY)
         install(TARGETS arts_cuda_shared
             EXPORT ARTSTargets
@@ -455,6 +460,7 @@ else()
 endif()
 message(STATUS "  Examples:        ${ARTS_BUILD_EXAMPLES}")
 message(STATUS "  Tests:           ${ARTS_BUILD_TESTS}")
+message(STATUS "  Benchmark:       ${ARTS_BUILD_BENCHMARK}")
 message(STATUS "")
 message(STATUS "Installation paths:")
 message(STATUS "  Libraries:       ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
