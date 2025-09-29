@@ -252,7 +252,7 @@ artsGuid_t artsGuidRangeNext(artsGuidRange *range) {
 
 bool artsGuidRangeHasNext(artsGuidRange *range) {
   if (range)
-    return (range->size < range->index);
+    return (range->index < range->size);
   return false;
 }
 
