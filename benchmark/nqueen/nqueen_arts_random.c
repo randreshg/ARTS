@@ -97,10 +97,12 @@ void finalNqueens(uint32_t paramc, uint64_t *paramv, uint32_t depc,
   printf("Number of solutions: %d\n", solutions);
 
   // Print expected results for verification
-  int expected[] = {0,  1,   0,   0,    2,     10,    4,     40,
-                    92, 352, 724, 2680, 14200, 73712, 365596};
-  if (n < 15) {
-    printf("Expected solutions for %d-queens: %d\n", n, expected[n]);
+  uint64_t expected[] = {0,       1,        0,        0,        2,
+                         10,      4,        40,       92,       352,
+                         724,     2680,     14200,    73712,    365596,
+                         2279184, 14772512, 95815104, 666090624};
+  if (n < 19) {
+    printf("Expected solutions for %d-queens: %lu\n", n, expected[n]);
     if (solutions == expected[n]) {
       printf("✓ Result verified!\n");
     } else {
