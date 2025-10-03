@@ -176,6 +176,9 @@ void artsRuntimeGlobalCleanup() {
   artsFree((void *)artsNodeInfo.localSpin);
   artsFree(artsNodeInfo.memoryMoves);
   artsFree(artsNodeInfo.atomicWaits);
+  artsFree(artsNodeInfo.buf);
+  artsFree(artsNodeInfo.keys);
+  artsFree(artsNodeInfo.globalGuidThreadId);
 #ifdef USE_GPU
   if (artsNodeInfo.gpu)
     artsCleanupGpus();
@@ -243,10 +246,10 @@ void artsRuntimePrivateInit(struct threadMask *unit,
       unsigned int start;
       if (unit->groupPos < rem) {
         start = unit->groupPos * (size + 1);
-        artsRemotSetThreadOutboundQueues(start, start + size + 1);
+        artsRemoteSetThreadOutboundQueues(start, start + size + 1);
       } else {
         start = rem * (size + 1) + (unit->groupPos - rem) * size;
-        artsRemotSetThreadOutboundQueues(start, start + size);
+        artsRemoteSetThreadOutboundQueues(start, start + size);
       }
     }
     if (unit->networkReceive) {
@@ -259,11 +262,11 @@ void artsRuntimePrivateInit(struct threadMask *unit,
       if (unit->groupPos < rem) {
         start = unit->groupPos * (size + 1);
         // PRINTF("%d %d %d %d\n", start, size, unit->groupPos, rem);
-        artsRemotSetThreadInboundQueues(start, start + size + 1);
+        artsRemoteSetThreadInboundQueues(start, start + size + 1);
       } else {
         start = rem * (size + 1) + (unit->groupPos - rem) * size;
         // PRINTF("%d %d %d %d\n", start, size, unit->groupPos, rem);
-        artsRemotSetThreadInboundQueues(start, start + size);
+        artsRemoteSetThreadInboundQueues(start, start + size);
       }
     }
   }
@@ -336,6 +339,8 @@ void artsRuntimePrivateCleanup() {
   artsAtomicSub(&artsNodeInfo.readyToClean, 1U);
   while (artsNodeInfo.readyToClean) {
   };
+  artsRemoteThreadOutboundQueuesCleanup();
+  artsRemoteThreadInboundQueuesCleanup();
   if (artsThreadInfo.myDeque)
     artsDequeDelete(artsThreadInfo.myDeque);
   if (artsThreadInfo.myNodeDeque)

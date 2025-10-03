@@ -64,7 +64,8 @@ unsigned int artsRemoteDivision();
 void artsRemoteTryToBecomePrinter();
 void artsRemoteTryToClosePrinter();
 void artsServerPingPongTestRecieve(char *inBuffer, int inPacketSize);
-void artsRemotSetThreadInboundQueues(unsigned int start, unsigned int stop);
+void artsRemoteSetThreadInboundQueues(unsigned int start, unsigned int stop);
+void artsRemoteThreadInboundQueuesCleanup();
 void artsRemoteShutdownPing(unsigned int route);
 #ifdef __cplusplus
 }

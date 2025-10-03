@@ -106,7 +106,7 @@ void partialSendStore(struct outList *out, unsigned int lengthRemaining) {
   }
 }
 
-void artsRemotSetThreadOutboundQueues(unsigned int start, unsigned int stop) {
+void artsRemoteSetThreadOutboundQueues(unsigned int start, unsigned int stop) {
   threadStart = start;
   threadStop = stop;
 
@@ -115,6 +115,32 @@ void artsRemotSetThreadOutboundQueues(unsigned int start, unsigned int stop) {
 #ifdef SEQUENCENUMBERS
   lastOut = (uint64_t *)artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
   lastSent = (uint64_t *)artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
+#endif
+}
+
+void artsRemoteThreadOutboundQueuesCleanup() {
+  if (outResend) {
+    unsigned int size = threadStop - threadStart;
+    for (unsigned int i = 0; i < size; i++) {
+      if (outResend[i]) {
+        struct outList *out = outResend[i];
+        if (out->freeMethod)
+          out->freeMethod(out->payload);
+        artsLinkListDeleteItem(out);
+      }
+    }
+    artsFree(outResend);
+    outResend = NULL;
+  }
+#ifdef SEQUENCENUMBERS
+  if (lastOut) {
+    artsFree(lastOut);
+    lastOut = NULL;
+  }
+  if (lastSent) {
+    artsFree(lastSent);
+    lastSent = NULL;
+  }
 #endif
 }
 

@@ -510,6 +510,8 @@ bool artsRemoteSetupIncoming() {
     }
   }
 
+  artsFree(localServerAddr);
+
   FD_ZERO(&readSet);
   for (i = 0; i < artsGlobalMessageTable->tableLength; i++) {
     DPRINTF("%d %d\n", artsGlobalMessageTable->myRank,
@@ -598,7 +600,7 @@ static __thread void **reRecievePacket;
 static __thread bool *maxIncoming;
 static __thread bool maxOutWorking;
 
-void artsRemotSetThreadInboundQueues(unsigned int start, unsigned int stop) {
+void artsRemoteSetThreadInboundQueues(unsigned int start, unsigned int stop) {
   threadStart = start;
   threadStop = stop;
   // MASTER_PRINTF("%d %d\n", start, stop);
@@ -612,6 +614,18 @@ void artsRemotSetThreadInboundQueues(unsigned int start, unsigned int stop) {
     bypassBuf[i] = (char *)artsMalloc(PACKET_SIZE);
     bypassPacketSize[i] = PACKET_SIZE;
   }
+}
+
+void artsRemoteThreadInboundQueuesCleanup() {
+  unsigned int size = threadStop - threadStart;
+  for (int i = 0; i < size; i++) {
+    artsFree(bypassBuf[i]);
+  }
+  artsFree(bypassBuf);
+  artsFree(bypassPacketSize);
+  artsFree(reRecieveRes);
+  artsFree(reRecievePacket);
+  artsFree(maxIncoming);
 }
 
 bool maxOutBuffs(unsigned int ignore) {

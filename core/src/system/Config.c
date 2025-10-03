@@ -606,7 +606,7 @@ struct artsConfig *artsConfigLoad() {
 
   char *end = NULL;
 
-  config = (struct artsConfig *)artsMalloc(sizeof(struct artsConfig));
+  config = (struct artsConfig *)artsCalloc(1, sizeof(struct artsConfig));
 
   char *location = getenv("artsConfig");
   if (location)
@@ -747,9 +747,12 @@ struct artsConfig *artsConfigLoad() {
   }
 
   if ((foundVariable =
-           artsConfigFindVariable(&configVariables, "masterNode")) != NULL)
+           artsConfigFindVariable(&configVariables, "masterNode")) != NULL) {
+    if (config->masterNode) {
+      artsFree(config->masterNode);
+    }
     config->masterNode = artsConfigMakeNewVar(foundVariable->value);
-  else if (strncmp(config->launcher, "local", 5) != 0) {
+  } else if (strncmp(config->launcher, "local", 5) != 0) {
     if (strncmp(config->launcher, "slurm", 5) != 0)
       ONCE_PRINTF("No master given: defaulting to first node in node list\n");
 
@@ -942,6 +945,9 @@ struct artsConfig *artsConfigLoad() {
     artsConfigCreateRoutingTable(&config, nodeList);
 
     unsigned int length = strlen(config->table[0].ipAddress) + 1;
+    if (config->masterNode) {
+      artsFree(config->masterNode);
+    }
     config->masterNode = (char *)artsMalloc(sizeof(char) * length);
     strncpy(config->masterNode, config->table[0].ipAddress, length);
 
@@ -965,6 +971,9 @@ struct artsConfig *artsConfigLoad() {
     artsConfigCreateRoutingTable(&config, nodeList);
 
     unsigned int length = strlen(config->table[0].ipAddress) + 1;
+    if (config->masterNode) {
+      artsFree(config->masterNode);
+    }
     config->masterNode = (char *)artsMalloc(sizeof(char) * length);
 
     strncpy(config->masterNode, config->table[0].ipAddress, length);
@@ -1100,13 +1109,17 @@ struct artsConfig *artsConfigLoad() {
 void artsConfigDestroy(struct artsConfig *config) {
   artsFree(config->launcher);
   if (config->launcherData) {
-    artsFree(config->launcherData->launcherMemory);
+    if (config->launcherData->launcherMemory) {
+      artsFree(config->launcherData->launcherMemory);
+    }
     artsFree(config->launcherData);
   }
   for (int i = 0; i < config->tableLength; i++)
     artsFree(config->table[i].ipAddress);
   artsFree(config->table);
-  artsFree(config->masterNode);
+  if (config->masterNode) {
+    artsFree(config->masterNode);
+  }
   artsFree(config->protocol);
   artsFree(config);
 }

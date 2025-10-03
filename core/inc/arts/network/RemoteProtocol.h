@@ -269,7 +269,8 @@ void artsRemoteSendRequestPayloadAsyncFree(int rank, char *message,
                                            unsigned int offset,
                                            unsigned int size,
                                            void (*freeMethod)(void *));
-void artsRemotSetThreadOutboundQueues(unsigned int start, unsigned int stop);
+void artsRemoteSetThreadOutboundQueues(unsigned int start, unsigned int stop);
+void artsRemoteThreadOutboundQueuesCleanup();
 #ifdef __cplusplus
 }
 #endif
