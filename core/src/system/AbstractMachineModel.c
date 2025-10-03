@@ -325,7 +325,8 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
   if (config->recieverCount > (artsGlobalRankCount - 1) * config->ports)
     config->recieverCount = (artsGlobalRankCount - 1) * config->ports;
 
-  unsigned int workerThreads = config->threadCount;
+  unsigned int workerThreads =
+      config->threadCount - config->senderCount - config->recieverCount;
   unsigned int totalThreads = config->threadCount;
 
   bool networkOn = (artsGlobalRankCount > 1);
@@ -531,7 +532,8 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
   if (config->recieverCount > (artsGlobalRankCount - 1) * config->ports)
     config->recieverCount = (artsGlobalRankCount - 1) * config->ports;
 
-  unsigned int workerThreads = config->threadCount;
+  unsigned int workerThreads =
+      config->threadCount - config->senderCount - config->recieverCount;
   unsigned int totalThreads = config->threadCount;
 
   bool networkOn = (artsGlobalRankCount > 1);

@@ -241,12 +241,12 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
     }
 
     /// DEBUG
-    if (useEpoch) {
-      PRINTF("Creating EDT with guid %lu in epoch %lu and %u deps\n",
-             (unsigned)*guid, (unsigned)edt->epochGuid, (unsigned)edt->depc);
-    } else {
-      PRINTF("Created EDT with guid %lu\n", (unsigned)*guid);
-    }
+    // if (useEpoch) {
+    //   PRINTF("Creating EDT with guid %lu in epoch %lu and %u deps\n",
+    //          (unsigned)*guid, (unsigned)edt->epochGuid, (unsigned)edt->depc);
+    // } else {
+    //   PRINTF("Created EDT with guid %lu\n", (unsigned)*guid);
+    // }
 
     return true;
   }
