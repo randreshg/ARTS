@@ -49,7 +49,8 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef intptr_t artsGuid_t; /**< GUID type */
+/// GUID type
+typedef intptr_t artsGuid_t;
 #define NULL_GUID ((artsGuid_t)0x0)
 
 /// Pointer type

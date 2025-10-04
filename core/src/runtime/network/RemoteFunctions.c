@@ -259,12 +259,14 @@ void artsRemoteHandleUpdateDb(void *ptr) {
 void artsRemoteMemoryMove(unsigned int route, artsGuid_t guid, void *ptr,
                           unsigned int memSize, unsigned messageType,
                           void (*freeMethod)(void *)) {
+  artsCounterTriggerTimerEvent(remoteMemoryMove, true);
   struct artsRemoteGuidOnlyPacket packet;
   artsFillPacketHeader(&packet.header, sizeof(packet) + memSize, messageType);
   packet.guid = guid;
   artsRemoteSendRequestPayloadAsyncFree(route, (char *)&packet, sizeof(packet),
                                         (char *)ptr, 0, memSize, freeMethod);
   artsRouteTableRemoveItem(guid);
+  artsCounterTriggerTimerEvent(remoteMemoryMove, false);
 }
 
 void artsRemoteMemoryMoveNoFree(unsigned int route, artsGuid_t guid, void *ptr,
@@ -281,9 +283,8 @@ void artsRemoteHandleEdtMove(void *ptr) {
       (struct artsRemoteGuidOnlyPacket *)ptr;
   unsigned int size =
       packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
-  ARTSSETMEMSHOTTYPE(artsEdtMemorySize);
-  struct artsEdt *edt = (struct artsEdt *)artsMallocAlign(size, 16);
-  ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
+  struct artsEdt *edt =
+      (struct artsEdt *)artsMallocAlignWithType(size, 16, artsEdtMemorySize);
 
   memcpy(edt, packet + 1, size);
   artsRouteTableAddItemRace(edt, (artsGuid_t)packet->guid, artsGlobalRankId,
@@ -305,10 +306,8 @@ void artsRemoteHandleDbMove(void *ptr) {
   struct artsDb *dbHeader = (struct artsDb *)(packet + 1);
   unsigned int dbSize = dbHeader->header.size;
 
-  ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-  struct artsHeader *memPacket =
-      (struct artsHeader *)artsMallocAlign(dbSize, 16);
-  ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
+  struct artsHeader *memPacket = (struct artsHeader *)artsMallocAlignWithType(
+      dbSize, 16, artsDbMemorySize);
 
   if (size == dbSize)
     memcpy(memPacket, packet + 1, size);
@@ -334,9 +333,8 @@ void artsRemoteHandleEventMove(void *ptr) {
   unsigned int size =
       packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
 
-  ARTSSETMEMSHOTTYPE(artsEventMemorySize);
-  struct artsHeader *memPacket = (struct artsHeader *)artsMallocAlign(size, 16);
-  ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
+  struct artsHeader *memPacket = (struct artsHeader *)artsMallocAlignWithType(
+      size, 16, artsEventMemorySize);
 
   memcpy(memPacket, packet + 1, size);
   artsRouteTableAddItemRace(memPacket, (artsGuid_t)packet->guid,
@@ -350,9 +348,8 @@ void artsRemoteHandlePersistentEventMove(void *ptr) {
   unsigned int size =
       packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
 
-  ARTSSETMEMSHOTTYPE(artsPersistentEventMemorySize);
-  struct artsHeader *memPacket = (struct artsHeader *)artsMallocAlign(size, 16);
-  ARTSSETMEMSHOTTYPE(artsPersistentEventMemorySize);
+  struct artsHeader *memPacket = (struct artsHeader *)artsMallocAlignWithType(
+      size, 16, artsPersistentEventMemorySize);
 
   memcpy(memPacket, packet + 1, size);
   ARTS_INFO("Persistent Event [Guid: %lu] Moved to Rank: %d", packet->guid,
@@ -395,11 +392,11 @@ void artsRemoteEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
                              sizeof(packet));
 }
 
-void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t slot,
+void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t action,
                                           bool lock) {
   struct artsRemotePersistentEventSatisfySlotPacket packet;
   packet.event = eventGuid;
-  packet.slot = slot;
+  packet.action = action;
   packet.lock = lock;
   artsFillPacketHeader(&packet.header, sizeof(packet),
                        ARTS_REMOTE_PERSISTENT_EVENT_SATISFY_SLOT_MSG);
@@ -540,9 +537,8 @@ void artsRemoteHandleDbReceived(struct artsRemoteDbSendPacket *packet) {
     break;
 
   case reservedKey:
-    ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-    dbRes = (struct artsDb *)artsMallocAlign(packetDb->header.size, 16);
-    ARTSSETMEMSHOTTYPE(artsDbMemorySize);
+    dbRes = (struct artsDb *)artsMallocAlignWithType(packetDb->header.size, 16,
+                                                     artsDbMemorySize);
     memcpy(dbRes, packetDb, packetDb->header.size);
     if (artsIsGuidLocal(packetDb->guid))
       dbRes->dbList = artsNewDbList();
@@ -647,9 +643,8 @@ void artsRemoteHandleDbFullRecieved(struct artsRemoteDbFullSendPacket *packet) {
     } else
       ARTS_INFO("Did the DB do a remote resize...");
   } else {
-    ARTSSETMEMSHOTTYPE(artsDbMemorySize);
-    dbRes = (struct artsDb *)artsMallocAlign(packetDb->header.size, 16);
-    ARTSSETMEMSHOTTYPE(artsDbMemorySize);
+    dbRes = (struct artsDb *)artsMallocAlignWithType(packetDb->header.size, 16,
+                                                     artsDbMemorySize);
     memcpy(dbRes, packetDb, packetDb->header.size);
     if (artsIsGuidLocal(packetDb->guid))
       dbRes->dbList = artsNewDbList();

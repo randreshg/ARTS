@@ -41,6 +41,8 @@
 
 #include "arts/arts.h"
 #include "arts/gas/RouteTable.h"
+#include "arts/introspection/Counter.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 
 #include <assert.h>
@@ -96,9 +98,12 @@ static float calculateAccessCost(const artsMemMetrics_t *metrics,
 // Create a new SmartDB with the given size and type
 artsSmartDb_t *artsSmartDbCreate(uint64_t size, artsType_t type,
                                  artsSmartDbFlags_t flags) {
+  artsCounterTriggerTimerEvent(smartDbCreateCounter, true);
   artsSmartDb_t *smartDb = (artsSmartDb_t *)artsMalloc(sizeof(artsSmartDb_t));
-  if (!smartDb)
+  if (!smartDb) {
+    artsCounterTriggerTimerEvent(smartDbCreateCounter, false);
     return NULL;
+  }
 
   // Initialize core components
   smartDb->size = size;
@@ -147,6 +152,7 @@ artsSmartDb_t *artsSmartDbCreate(uint64_t size, artsType_t type,
   smartDb->memRef = data;
   smartDb->memRefSize = size;
 
+  artsCounterTriggerTimerEvent(smartDbCreateCounter, false);
   return smartDb;
 }
 

@@ -1,59 +1,58 @@
-artsEdtThroughput                   -1 -1 -1 -1 -1 -1 0 0 0
-artsEdtSignalThroughput             -1 -1 -1 -1 -1 -1 0 0 0
-artsEventSignalThroughput           -1 -1 -1 -1 -1 -1 0 0 0
-artsGetBW                           -1 -1 -1 -1 -1 -1 0 0 0
-artsPutBW                           -1 -1 -1 -1 -1 -1 0 0 0
-artsNetworkSendBW                   -1 -1 -1 -1 -1 -1 0 0 0
-artsNetworkRecieveBW                -1 -1 -1 -1 -1 -1 0 0 0
-artsNetworkQueuePush                -1 -1 -1 -1 -1 -1 0 0 0
-artsNetworkQueuePop                 -1 -1 -1 -1 -1 -1 0 0 0
-artsMallocBW                        -1 -1 -1 -1 -1 -1 0 0 0
-artsFreeBW                          -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteShutdownMsg               -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEdtStealMsg               -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEdtRecvMsg                -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEdtFailMsg                -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEdtSignalMsg              -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEventSatisfyMsg           -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEventSatisfySlotMsg       -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbRequestMsg              -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbsendMsg                 -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEdtMoveMsg                -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteGuidRouteMsg              -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteEventMoveMsg              -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteAddDependenceMsg          -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteInvalidateDbMsg           -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbMoveMsg                 -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbUpdateGuidMsg           -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbUpdateMsg               -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbDestroyMsg              -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbDestroyForwardMsg       -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbCleanForwardMsg         -1 -1 -1 -1 -1 -1 0 0 0
-artsRemotePingPongTestMsg           -1 -1 -1 -1 -1 -1 0 0 0
-artsDbLockMsg                       -1 -1 -1 -1 -1 -1 0 0 0
-artsDbUnlockMsg                     -1 -1 -1 -1 -1 -1 0 0 0
-artsDbLockAllDbsMsg                 -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteMetricUpdateMsg           -1 -1 -1 -1 -1 -1 0 0 0
-artsActiveMessageMsg                -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbFullRequestMsg          -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbFullSendMsg             -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbFullSendAlreadyLocalMsg -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteGetFromDbMsg              -1 -1 -1 -1 -1 -1 0 0 0
-artsRemotePutInDbMsg                -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteSignalEdtWithPtrMsg       -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteSendMsg                   -1 -1 -1 -1 -1 -1 0 0 0
-artsEpochInitMsg                    -1 -1 -1 -1 -1 -1 0 0 0
-artsEpochInitPoolMsg                -1 -1 -1 -1 -1 -1 0 0 0
-artsEpochReqMsg                     -1 -1 -1 -1 -1 -1 0 0 0
-artsEpochSendMsg                    -1 -1 -1 -1 -1 -1 0 0 0
-artsEpochDeleteMsg                  -1 -1 -1 -1 -1 -1 0 0 0
-artsAtomicAddArrayDbMsg             -1 -1 -1 -1 -1 -1 0 0 0
-artsAtomicCasArrayDbMsg             -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteBufferSendMsg             -1 -1 -1 -1 -1 -1 0 0 0
-artsRemoteDbMoveReqMsg              -1 -1 -1 -1 -1 -1 0 0 0
-artsDefaultMemorySize               -1 -1 -1 -1 -1 -1 0 0 0
-artsEdtMemorySize                   -1 -1 -1 -1 -1 -1 0 0 0
-artsEventMemorySize                 -1 -1 -1 -1 -1 -1 0 0 0
-artsDbMemorySize                    -1 -1 -1 -1 -1 -1 0 0 0
-artsBufferMemorySize                -1 -1 -1 -1 -1 -1 0 0 0
-artsDbCount                         -1 -1 -1 -1 -1 -1 0 0 0
+# =============================================================================
+# ARTS Introspection & Counter Configuration
+# =============================================================================
+# Directives:
+#   @introspectionFolder <path>          -> output directory for results
+#   @introspectionStartPoint <num>       -> when to start collecting (1,2,3)
+#   @introspectionTraceLevel <num>       -> trace detail level (0-2)
+#   @enableCounters <on|off>             -> enable/disable counter subsystem
+#   @enableMetrics <on|off>              -> enable/disable metrics subsystem
+#   @counterDefault <on|off>             -> default counter state
+#   
+#   metric-defaults <kv...>              -> define per-level defaults for metrics
+#   metric-group <pattern> <kv>          -> apply overrides to metric patterns
+#   metric <name> <kv...>                -> override a single metric
+#   counter <name> <on|off>              -> enable/disable specific counter
+#
+# Output Format:
+#   JSON format: introspection_nX_tY.json with both counters and metrics
+#   in a single machine-readable file. Includes ALL enabled counters/metrics
+#   (even if count is 0) for easier analysis.
+#
+# Values:
+#   default   - leave unchanged / inherit the runtime default
+#   disabled  - disable aggregation at that level
+#   <number>  - explicit threshold in events or nanoseconds
+# Patterns use shell-style globs (e.g. artsEdt*, *Bandwidth)
+# =============================================================================
+
+@introspectionFolder ./introspection
+@introspectionStartPoint 1
+@introspectionTraceLevel 2
+@enableCounters on
+@enableMetrics on
+@counterDefault on
+
+# Counter Configuration
+counter edtCounter on
+counter mallocMemory on
+counter callocMemory on
+counter freeMemory on
+counter signalEventCounter on
+counter signalEdtCounter on
+
+metric-defaults threadCount=1 nodeCount=1000000 systemCount=1000 threadTime=default nodeTime=default systemTime=default threadMax=0 nodeMax=0 systemMax=0
+
+metric-group artsEdt* nodeCount=1 systemCount=1
+metric-group artsYield* nodeCount=1 systemCount=1
+metric-group artsMemory* nodeCount=1 systemCount=1
+metric-group artsEvent* nodeCount=1000000 systemCount=1000
+metric-group artsPersistentEvent* nodeCount=1000000 systemCount=1000
+metric-group artsNetwork* nodeCount=1000000 systemCount=1000
+metric-group artsRemote* nodeCount=1000000 systemCount=1000
+metric-group artsDb* nodeCount=1000000 systemCount=1000
+metric-group artsGpu* threadCount=disabled nodeCount=disabled systemCount=disabled
+
+metric artsMemoryFootprint threadCount=default nodeCount=1 systemCount=1
+metric artsMemoryAllocatedBytes threadCount=default nodeCount=1 systemCount=1
+metric artsMemoryFreedBytes threadCount=default nodeCount=1 systemCount=1

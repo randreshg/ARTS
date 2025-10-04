@@ -281,8 +281,8 @@ uint64_t artsGpuCleanUpRouteTable(unsigned int sizeToClean, bool cleanZeros,
       }
       item = artsRouteTableIterate(&iter);
     }
-    artsUpdatePerformanceMetric(artsGpuGC, artsThread, 1, false);
-    artsUpdatePerformanceMetric(artsGpuGCBW, artsThread, freedSize, false);
+    artsMetricsTriggerEvent(artsGpuGC, artsThread, 1);
+    artsMetricsTriggerEvent(artsGpuGCBW, artsThread, freedSize);
     artsUnlock(&gpuRouteTable->gcLock);
   }
   gpuGCReadUnlock();

@@ -37,8 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/gas/Guid.h"
-#include "arts/arts.h"
-#include "arts/introspection/Counter.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/Debug.h"
 
@@ -88,7 +87,7 @@ artsGuid_t artsGuidCreateForRankInternal(unsigned int route, unsigned int type,
   ARTS_DEBUG("Key: %lu %lu %lu %p %lu sizeof(artsGuid): %u parallel start: %u",
              guid.fields.type, guid.fields.rank, guid.fields.key, guid.bits,
              (artsGuid_t)guid.bits, sizeof(artsGuid), (globalGuidOn != 0));
-  ARTSEDTCOUNTERINCREMENTBY(guidAllocCounter, guidCount);
+  artsCounterTriggerEvent(guidAllocCounter, guidCount);
   return (artsGuid_t)guid.bits;
 }
 
@@ -136,11 +135,13 @@ artsGuid_t artsGuidCast(artsGuid_t guid, artsType_t type) {
 }
 
 artsType_t artsGuidGetType(artsGuid_t guid) {
+  artsCounterTriggerEvent(guidLookupCounter, 1);
   artsGuid addressInfo = (artsGuid){.bits = guid};
   return (artsType_t)addressInfo.fields.type;
 }
 
 unsigned int artsGuidGetRank(artsGuid_t guid) {
+  artsCounterTriggerEvent(guidLookupCounter, 1);
   artsGuid addressInfo = (artsGuid){.bits = guid};
   return addressInfo.fields.rank;
 }

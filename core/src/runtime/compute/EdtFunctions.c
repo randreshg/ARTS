@@ -40,7 +40,6 @@
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
@@ -112,10 +111,10 @@ void artsSetThreadLocalEdtInfo(struct artsEdt *edt) {
 
 void artsSaveThreadLocal(threadLocal_t *tl) {
   if (currentEdt) {
-    ARTSCOUNTERTIMERENDINCREMENTBY(edtCounter, 0);
+    artsCounterTriggerTimerEvent(edtCounter, false);
   }
 
-  ARTSCOUNTERTIMERSTART(contextSwitch);
+  artsCounterTriggerTimerEvent(contextSwitch, true);
   tl->currentEdtGuid = artsThreadInfo.currentEdtGuid;
   tl->currentEdt = currentEdt;
   tl->epochList = (void *)epochList;
@@ -123,20 +122,20 @@ void artsSaveThreadLocal(threadLocal_t *tl) {
   artsThreadInfo.currentEdtGuid = NULL_GUID;
   currentEdt = NULL;
   epochList = NULL;
-  ARTSCOUNTERTIMERENDINCREMENTBY(contextSwitch, 0);
-  artsUpdatePerformanceMetric(artsYieldBW, artsThread, 1, false);
+  artsCounterTriggerTimerEvent(contextSwitch, false);
+  artsMetricsTriggerEvent(artsYieldBW, artsThread, 1);
 }
 
 void artsRestoreThreadLocal(threadLocal_t *tl) {
-  ARTSCOUNTERTIMERSTART(contextSwitch);
+  artsCounterTriggerTimerEvent(contextSwitch, true);
   artsThreadInfo.currentEdtGuid = tl->currentEdtGuid;
   currentEdt = tl->currentEdt;
   if (epochList)
     artsDeleteArrayList(epochList);
   epochList = (artsArrayList *)tl->epochList;
-  ARTSCOUNTERTIMERENDINCREMENT(contextSwitch);
+  artsCounterTriggerTimerEvent(contextSwitch, false);
 
-  ARTSCOUNTERTIMERSTART(edtCounter);
+  artsCounterTriggerTimerEvent(edtCounter, true);
 }
 
 void artsIncrementFinishedEpochList() {
@@ -172,12 +171,11 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
                            artsGuid_t outputBuffer, artsEdt_t funcPtr,
                            uint32_t paramc, uint64_t *paramv, uint32_t depc,
                            bool useEpoch, artsGuid_t epochGuid, bool hasDepv) {
-  ARTSSETMEMSHOTTYPE(artsEdtMemorySize);
   if (!edt)
-    edt = (struct artsEdt *)artsCallocAlign(1, edtSpace, 16);
+    edt = (struct artsEdt *)artsCallocAlignWithType(1, edtSpace, 16,
+                                                    artsEdtMemorySize);
   edt->header.type = mode;
   edt->header.size = edtSpace;
-  ARTSSETMEMSHOTTYPE(artsDefaultMemorySize);
   if (edt) {
     bool createdGuid = false;
     if (*guid == NULL_GUID) {
@@ -256,7 +254,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
 artsGuid_t artsEdtCreateDep(artsEdt_t funcPtr, unsigned int route,
                             uint32_t paramc, uint64_t *paramv, uint32_t depc,
                             bool hasDepv) {
-  ARTSEDTCOUNTERTIMERSTART(edtCreateCounter);
+  artsCounterTriggerTimerEvent(edtCreateCounter, true);
   if (route == -1)
     route = artsGlobalRankId;
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
@@ -264,17 +262,17 @@ artsGuid_t artsEdtCreateDep(artsEdt_t funcPtr, unsigned int route,
       sizeof(struct artsEdt) + paramc * sizeof(uint64_t) + depSpace;
   artsGuid_t guid = NULL_GUID;
   artsGuid_t *guidPtr = &guid;
-  artsEdtCreateInternal(NULL, ARTS_EDT, guidPtr, route,
-                        artsThreadInfo.clusterId, edtSpace, NULL_GUID, funcPtr,
-                        paramc, paramv, depc, true, NULL_GUID, hasDepv);
-  ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
+  bool created = artsEdtCreateInternal(
+      NULL, ARTS_EDT, guidPtr, route, artsThreadInfo.clusterId, edtSpace,
+      NULL_GUID, funcPtr, paramc, paramv, depc, true, NULL_GUID, hasDepv);
+  artsCounterTriggerTimerEvent(edtCreateCounter, false);
   return guid;
 }
 
 artsGuid_t artsEdtCreateWithGuidDep(artsEdt_t funcPtr, artsGuid_t guid,
                                     uint32_t paramc, uint64_t *paramv,
                                     uint32_t depc, bool hasDepv) {
-  ARTSEDTCOUNTERTIMERSTART(edtCreateCounter);
+  artsCounterTriggerTimerEvent(edtCreateCounter, true);
   unsigned int route = artsGuidGetRank(guid);
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
   unsigned int edtSpace =
@@ -282,7 +280,7 @@ artsGuid_t artsEdtCreateWithGuidDep(artsEdt_t funcPtr, artsGuid_t guid,
   bool ret = artsEdtCreateInternal(
       NULL, ARTS_EDT, &guid, route, artsThreadInfo.clusterId, edtSpace,
       NULL_GUID, funcPtr, paramc, paramv, depc, true, NULL_GUID, hasDepv);
-  ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
+  artsCounterTriggerTimerEvent(edtCreateCounter, false);
   return (ret) ? guid : NULL_GUID;
 }
 
@@ -290,17 +288,17 @@ artsGuid_t artsEdtCreateWithEpochDep(artsEdt_t funcPtr, unsigned int route,
                                      uint32_t paramc, uint64_t *paramv,
                                      uint32_t depc, artsGuid_t epochGuid,
                                      bool hasDepv) {
-  ARTSEDTCOUNTERTIMERSTART(edtCreateCounter);
+  artsCounterTriggerTimerEvent(edtCreateCounter, true);
   if (route == -1)
     route = artsGlobalRankId;
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
   unsigned int edtSpace =
       sizeof(struct artsEdt) + paramc * sizeof(uint64_t) + depSpace;
   artsGuid_t guid = NULL_GUID;
-  artsEdtCreateInternal(NULL, ARTS_EDT, &guid, route, artsThreadInfo.clusterId,
-                        edtSpace, NULL_GUID, funcPtr, paramc, paramv, depc,
-                        true, epochGuid, hasDepv);
-  ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
+  bool created = artsEdtCreateInternal(
+      NULL, ARTS_EDT, &guid, route, artsThreadInfo.clusterId, edtSpace,
+      NULL_GUID, funcPtr, paramc, paramv, depc, true, epochGuid, hasDepv);
+  artsCounterTriggerTimerEvent(edtCreateCounter, false);
   return guid;
 }
 
@@ -361,7 +359,7 @@ void *artsGetDepv(void *edtPtr) {
 
 void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
                        artsType_t mode, void *ptr, unsigned int size) {
-  ARTSEDTCOUNTERTIMERSTART(signalEdtCounter);
+  artsCounterTriggerTimerEvent(signalEdtCounter, true);
   // This is old CDAG code...
   if (currentEdt && currentEdt->invalidateCount > 0) {
     if (mode == ARTS_PTR)
@@ -401,8 +399,8 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
         artsRemoteSignalEdt(edtPacket, dataGuid, slot, mode);
     }
   }
-  artsUpdatePerformanceMetric(artsEdtSignalThroughput, artsThread, 1, false);
-  ARTSEDTCOUNTERTIMERENDINCREMENT(signalEdtCounter);
+  artsMetricsTriggerEvent(artsEdtSignalThroughput, artsThread, 1);
+  artsCounterTriggerTimerEvent(signalEdtCounter, false);
 }
 
 void artsSignalEdt(artsGuid_t edtGuid, uint32_t slot, artsGuid_t dataGuid) {

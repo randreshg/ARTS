@@ -99,7 +99,7 @@ struct __attribute__((__packed__)) artsRemotePacket {
   unsigned int seqRank;
   uint64_t seqNum;
 #endif
-#ifdef USE_COUNT
+#ifdef COUNTERS
   uint64_t timeStamp;
   uint64_t procTimeStamp;
 #endif
@@ -136,7 +136,7 @@ struct __attribute__((__packed__)) artsRemoteEventSatisfySlotPacket {
 struct __attribute__((__packed__)) artsRemotePersistentEventSatisfySlotPacket {
   struct artsRemotePacket header;
   artsGuid_t event;
-  uint32_t slot;
+  uint32_t action;
   bool lock;
 };
 

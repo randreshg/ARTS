@@ -163,9 +163,12 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
   edt->passthrough = passThrough;
   edt->lib = lib;
 
-  artsEdtCreateInternal((struct artsEdt *)edt, ARTS_GPU_EDT, guid, route,
-                        artsThreadInfo.clusterId, edtSpace, NULL_GUID, funcPtr,
-                        paramc, paramv, depc, true, NULL_GUID, hasDepv);
+  artsIntrospectionEdtCreateBegin();
+  bool created = artsEdtCreateInternal((struct artsEdt *)edt, ARTS_GPU_EDT,
+                                       guid, route, artsThreadInfo.clusterId,
+                                       edtSpace, NULL_GUID, funcPtr, paramc,
+                                       paramv, depc, true, NULL_GUID, hasDepv);
+  artsIntrospectionEdtCreateFinish(created);
   //    ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
   return *guid;
 }
@@ -594,7 +597,7 @@ void internalLCSyncGPU(artsGuid_t acqGuid, struct artsDb *db) {
           else
             lcSyncFunction[artsNodeInfo.gpuLCSync](&host, &dev);
 
-          artsUpdatePerformanceMetric(artsGpuSync, artsThread, 1, false);
+          artsMetricsTriggerEvent(artsGpuSync, artsThread, 1);
         }
       } else {
         ARTS_DEBUG("NO DB COPY ON GPU %d\n", i);

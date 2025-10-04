@@ -47,7 +47,7 @@ extern "C" {
 bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
                            artsGuid_t *guid, unsigned int route,
                            unsigned int cluster, unsigned int edtSpace,
-                           artsGuid_t eventGuid, artsEdt_t funcPtr,
+                           artsGuid_t outputBuffer, artsEdt_t funcPtr,
                            uint32_t paramc, uint64_t *paramv, uint32_t depc,
                            bool useEpoch, artsGuid_t epochGuid, bool hasDepv);
 void artsEdtDelete(struct artsEdt *edt);

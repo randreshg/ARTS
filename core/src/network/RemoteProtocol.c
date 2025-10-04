@@ -49,7 +49,7 @@
 #include <string.h>
 
 struct outList {
-#ifdef USE_COUNT
+#ifdef COUNTERS
   uint64_t timeStamp;
 #endif
   unsigned int offset;
@@ -147,7 +147,7 @@ void outInit(unsigned int size) {
 }
 
 static inline void outInsertNode(struct outList *node, unsigned int length) {
-#ifdef USE_COUNT
+#ifdef COUNTERS
   // This is for network queue sitting time...
 //    node->timeStamp = artsExtGetTimeStamp();
 #endif
@@ -169,7 +169,7 @@ static inline void outInsertNode(struct outList *node, unsigned int length) {
 #endif
   //    nartsUpdatePerformanceMetric(artsNetworkQueuePush, artsThread,
   //    packet->size, false);
-  artsUpdatePerformanceMetric(artsNetworkQueuePush, artsThread, 1, false);
+  artsMetricsTriggerEvent(artsNetworkQueuePush, artsThread, 1);
 }
 
 static inline struct outList *outPopNode(unsigned int threadId, void **freeMe) {
@@ -190,7 +190,7 @@ static inline struct outList *outPopNode(unsigned int threadId, void **freeMe) {
     // artsUpdatePerformanceMetric(artsNetworkQueuePop, artsThread,
     // packet->size, false);
   }
-  artsUpdatePerformanceMetric(artsNetworkQueuePop, artsThread, 1, false);
+  artsMetricsTriggerEvent(artsNetworkQueuePop, artsThread, 1);
   return out;
 }
 
@@ -242,8 +242,8 @@ bool artsRemoteAsyncSend() {
           struct artsRemotePacket *packet =
               (struct artsRemotePacket *)(out + 1);
           if (packet->messageType != ARTS_REMOTE_METRIC_UPDATE_MSG)
-            artsUpdatePerformanceMetric(artsNetworkSendBW, artsThread,
-                                        packet->size, false);
+            artsMetricsTriggerEvent(artsNetworkSendBW, artsThread,
+                                    packet->size);
 
           outResend[i - threadStart] = NULL;
           artsLinkListDeleteItem(out);

@@ -36,7 +36,6 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
@@ -59,7 +58,7 @@ static inline void *alignPointer(void *ptr, size_t align) {
 }
 
 void *artsMalloc(size_t size) {
-  ARTSEDTCOUNTERTIMERSTART(mallocMemory);
+  artsCounterTriggerTimerEvent(mallocMemory, true);
 
   if (!size) {
     ARTS_INFO("Invalid Malloc request");
@@ -77,14 +76,14 @@ void *artsMalloc(size_t size) {
   base->base = base;
 
   if (artsThreadInfo.mallocTrace)
-    artsUpdatePerformanceMetric(artsMallocBW, artsThread, size, false);
-  ARTSEDTCOUNTERTIMERENDINCREMENT(mallocMemory);
+    artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
+  artsCounterTriggerTimerEvent(mallocMemory, false);
 
   return base + 1;
 }
 
 void *artsMallocAlign(size_t size, size_t align) {
-  ARTSEDTCOUNTERTIMERSTART(mallocMemory);
+  artsCounterTriggerTimerEvent(mallocMemory, true);
 
   if (!size || align < ALIGNMENT || !IS_POWER_OF_TWO(align)) {
     ARTS_INFO("Invalid MallocAlign request");
@@ -105,14 +104,14 @@ void *artsMallocAlign(size_t size, size_t align) {
   hdr->base = base;
 
   if (artsThreadInfo.mallocTrace)
-    artsUpdatePerformanceMetric(artsMallocBW, artsThread, size, false);
-  ARTSEDTCOUNTERTIMERENDINCREMENT(mallocMemory);
+    artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
+  artsCounterTriggerTimerEvent(mallocMemory, false);
 
   return aligned;
 }
 
 void *artsCalloc(size_t nmemb, size_t size) {
-  ARTSEDTCOUNTERTIMERSTART(callocMemory);
+  artsCounterTriggerTimerEvent(callocMemory, true);
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb) {
     ARTS_INFO("Invalid Calloc request");
@@ -123,13 +122,15 @@ void *artsCalloc(size_t nmemb, size_t size) {
   void *ptr = artsMalloc(totalSize);
   memset(ptr, 0, totalSize);
 
-  ARTSEDTCOUNTERTIMERENDINCREMENT(callocMemory);
+  if (artsThreadInfo.mallocTrace)
+    artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
+  artsCounterTriggerTimerEvent(callocMemory, false);
 
   return ptr;
 }
 
 void *artsCallocAlign(size_t nmemb, size_t size, size_t align) {
-  ARTSEDTCOUNTERTIMERSTART(callocMemory);
+  artsCounterTriggerTimerEvent(callocMemory, true);
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb || align < ALIGNMENT ||
       !IS_POWER_OF_TWO(align)) {
@@ -141,7 +142,9 @@ void *artsCallocAlign(size_t nmemb, size_t size, size_t align) {
   void *ptr = artsMallocAlign(totalSize, align);
   memset(ptr, 0, totalSize);
 
-  ARTSEDTCOUNTERTIMERENDINCREMENT(callocMemory);
+  if (artsThreadInfo.mallocTrace)
+    artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
+  artsCounterTriggerTimerEvent(callocMemory, false);
 
   return ptr;
 }
@@ -172,12 +175,14 @@ void *artsRealloc(void *ptr, size_t size) {
 }
 
 void artsFree(void *ptr) {
-  ARTSEDTCOUNTERTIMERSTART(freeMemory);
+  artsCounterTriggerTimerEvent(freeMemory, true);
 
   if (!ptr)
     return;
   header_t *hdr = (header_t *)ptr - 1;
   free(hdr->base);
 
-  ARTSEDTCOUNTERTIMERENDINCREMENT(freeMemory);
+  if (artsThreadInfo.mallocTrace)
+    artsMetricsTriggerEvent(artsFreeBW, artsThread, size);
+  artsCounterTriggerTimerEvent(freeMemory, false);
 }

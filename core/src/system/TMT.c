@@ -133,10 +133,9 @@ static inline void artsPutToWork(unsigned int rank, internalMsi_t *ptr,
       artsAccessorState(&ptr->alias_avail, thread, true);
 
 #ifdef PT_CONTEXTS
-    if (sem_post(&ptr->sem[thread]) == -1) { // Wake avail thread up
-      ARTS_INFO("FAILED SEMI POST %u %u", artsThreadInfo.groupId, aliasId);
-      //            exit(EXIT_FAILURE);
-    }
+    pthread_mutex_lock(&ptr->mutex);
+    pthread_cond_signal(&ptr->cond[thread]);
+    pthread_mutex_unlock(&ptr->mutex);
 #endif
   }
 }
@@ -149,10 +148,9 @@ static inline void artsPutToSleep(unsigned int rank, internalMsi_t *ptr,
       artsAccessorState(&ptr->alias_avail, thread, true);
 
 #ifdef PT_CONTEXTS
-    if (sem_wait(&ptr->sem[thread]) == -1) {
-      ARTS_INFO("FAILED SEMI WAIT %u %u", artsThreadInfo.groupId, aliasId);
-      //            exit(EXIT_FAILURE);
-    }
+    pthread_mutex_lock(&ptr->mutex);
+    pthread_cond_wait(&ptr->cond[thread], &ptr->mutex);
+    pthread_mutex_unlock(&ptr->mutex);
 #endif
   }
 }
@@ -217,6 +215,11 @@ static inline void artsCreateContexts(struct artsRuntimePrivate *semiPrivate,
     }
   }
 
+  pthread_mutex_init(&ptr->mutex, NULL);
+  for (int i = 0; i < artsNodeInfo.tMT; i++) {
+    pthread_cond_init(&ptr->cond[i], NULL);
+  }
+
   tmask.tlToCopy = semiPrivate;
   tmask.localInternal = ptr;
   tmask.startUpSem = &localInternal->sem[aliasId % numAT];
@@ -262,6 +265,10 @@ static inline void artsDestroyContexts(internalMsi_t *ptr, bool head) {
   ARTS_DEBUG("SEM DESTROY: %u", artsThreadInfo.groupId);
   for (unsigned int i = 0; i < numAT; i++)
     sem_destroy(&ptr->sem[i]);
+  for (int i = 0; i < artsNodeInfo.tMT; i++) {
+    pthread_cond_destroy(&ptr->cond[i]);
+  }
+  pthread_mutex_destroy(&ptr->mutex);
 #endif
 }
 

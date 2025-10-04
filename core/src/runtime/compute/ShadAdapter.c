@@ -39,10 +39,9 @@
 
 #include "arts/runtime/compute/ShadAdapter.h"
 #include "arts/arts.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/introspection/Counter.h"
-#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
@@ -55,13 +54,11 @@
 
 artsGuid_t artsEdtCreateShad(artsEdt_t funcPtr, unsigned int route,
                              uint32_t paramc, uint64_t *paramv) {
-  ARTSEDTCOUNTERTIMERSTART(edtCreateCounter);
   unsigned int edtSpace = sizeof(struct artsEdt) + paramc * sizeof(uint64_t);
   artsGuid_t guid = NULL_GUID;
   artsEdtCreateInternal(NULL, ARTS_EDT, &guid, route, artsThreadInfo.clusterId,
                         edtSpace, NULL_GUID, funcPtr, paramc, paramv, 0, false,
                         NULL_GUID, false);
-  ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
   return guid;
 }
 
@@ -141,14 +138,10 @@ void artsCheckLockShad() {
 }
 
 void artsStartIntroShad(unsigned int start) {
-  artsStartInspector(start);
-  ARTSSTARTCOUNTING(start);
+  artsIntrospectionStart(start);
 }
 
-void artsStopIntroShad() {
-  artsStopInspector();
-  ARTSCOUNTERSOFF();
-}
+void artsStopIntroShad() { artsIntrospectionStop(); }
 
 unsigned int artsGetShadLoopStride() { return artsNodeInfo.shadLoopStride; }
 

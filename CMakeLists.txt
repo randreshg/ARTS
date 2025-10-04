@@ -288,11 +288,6 @@ if(USE_MODELCOUNT)
     message(STATUS "Introspection: Model counting enabled - USE_MODELCOUNT defined")
 endif()
 
-if(USE_INSPECTOR)
-    add_compile_definitions(USE_INSPECTOR)
-    message(STATUS "Introspection: Inspector enabled - USE_INSPECTOR defined")
-endif()
-
 # Architecture flags
 if(USE_SIMPLE_ARCH)
     add_compile_definitions(USE_SIMPLE_ARCH)
@@ -303,6 +298,16 @@ endif()
 if(USE_SMART_DB)
     add_compile_definitions(USE_SMART_DB)
     message(STATUS "Smart database: Using smart database - USE_SMART_DB defined")
+endif()
+
+if(COUNTERS)
+    message("Counters enabled")
+    add_definitions(-DCOUNTERS)
+endif()
+
+if(METRICS)
+    message("Metrics/Inspector enabled")
+    add_definitions(-DMETRICS)
 endif()
 
 # Create the main ARTS library target

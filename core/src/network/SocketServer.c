@@ -433,7 +433,7 @@ unsigned int artsRemoteSendRequest(int rank, unsigned int queue, char *message,
                                    unsigned int length) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef USE_COUNT
+#ifdef COUNTERS
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();
@@ -448,7 +448,7 @@ unsigned int artsRemoteSendPayloadRequest(int rank, unsigned int queue,
                                           char *payload, int length2) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef USE_COUNT
+#ifdef COUNTERS
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();
@@ -523,8 +523,6 @@ bool artsRemoteSetupIncoming() {
         for (int z = 0; z < ports; z++) {
           ARTS_DEBUG("%d", j);
           sLength = sizeof(struct sockaddr_in);
-          // remoteSocketRecieveList[j] = raccept(localSocketRecieve, (struct
-          // sockaddr *)&remoteServerRecieveList[j], &sLength );
           remoteSocketRecieveList[z + j * ports] = raccept(
               localSocketRecieve[z], (struct sockaddr *)&test, &sLength);
 
@@ -966,12 +964,11 @@ void artsServerPingPongTestRecieve(char *inBuffer, int inPacketSize) {
             }
             if (packet->messageType == ARTS_REMOTE_PINGPONG_TEST_MSG) {
               recieved = true;
-              artsUpdatePerformanceMetric(artsNetworkRecieveBW, artsThread,
-                                          packet->size, false);
-              artsUpdatePerformanceMetric(artsFreeBW + packet->messageType,
-                                          artsThread, 1, false);
-              artsUpdatePacketInfo(packet->size);
-              // ARTS_INFO("Recv Packet %d %d", res, packet->size);
+              artsMetricsTriggerEvent(artsNetworkRecieveBW, artsThread,
+                                      packet->size);
+              artsMetricsTriggerEvent(artsFreeBW + packet->messageType,
+                                      artsThread, 1);
+              artsMetricsUpdatePacketInfo(packet->size);
             } else {
               ARTS_INFO("Shit Packet %d %d %d", packet->messageType,
                         packet->size, packet->rank);

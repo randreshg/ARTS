@@ -79,7 +79,8 @@ typedef union {
   } fields;
 } artsTicket;
 
-typedef struct internalMsi {
+// Assume in TMT.c struct
+typedef struct internalMsi_t {
   pthread_t *aliasThreads;
   sem_t *sem;
   volatile bool **alive;
@@ -93,11 +94,13 @@ typedef struct internalMsi {
   volatile accst_t alias_avail;
   volatile unsigned int startUpCount;
   volatile unsigned int shutDownCount;
-  struct internalMsi *next;
+  struct internalMsi_t *next;
+  pthread_mutex_t mutex;
+  pthread_cond_t cond[64];
 } internalMsi_t;
 
 typedef struct msi {
-  internalMsi_t *head;
+  struct internalMsi_t *head;
   volatile unsigned int blocked;
   volatile unsigned int total;
   volatile unsigned int wakeUpNext;
@@ -107,7 +110,7 @@ typedef struct msi {
 typedef struct {
   uint32_t aliasId;                    // alias id
   struct artsRuntimePrivate *tlToCopy; // we copy the master thread's TL
-  internalMsi_t *localInternal;
+  struct internalMsi_t *localInternal;
   sem_t *startUpSem;
 } tmask_t; // per alias thread info
 

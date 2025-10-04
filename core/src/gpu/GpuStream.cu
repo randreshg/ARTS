@@ -451,7 +451,7 @@ void artsScheduleToGpuInternal(artsEdt_t fnPtr, uint32_t paramc,
     artsRouteTableResetOO(hostGCPtr->edt->currentEdt);
 
     hostGCPtr->edt->funcPtr(paramc, hostParamv, depc, hostDepv);
-    artsUpdatePerformanceMetric(artsGpuEdt, artsThread, 1, false);
+    artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
 
     artsUnsetThreadLocalEdtInfo();
   } else {
@@ -542,7 +542,7 @@ void freeGpuItem(artsRouteItem_t *item) {
       artsFree(tempSpace);
       artsCudaFree((void *)wrapper->realData);
 
-      artsUpdatePerformanceMetric(artsGpuSyncDelete, artsThread, 1, false);
+      artsMetricsTriggerEvent(artsGpuSyncDelete, artsThread, 1);
     } else
       ARTS_INFO("Trying to delete an LC but there is no DB to back up to\n");
   } else if (type > ARTS_BUFFER && type < ARTS_LAST_TYPE) // DBs

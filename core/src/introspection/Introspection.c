@@ -38,6 +38,10 @@
 ******************************************************************************/
 
 #include "arts/introspection/Introspection.h"
+
+#if defined(COUNTERS) || defined(METRICS)
+
+#include "arts/introspection/JsonWriter.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/system/ArtsPrint.h"
@@ -48,1029 +52,327 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
-#define NANOSECS 1000000000
-#define localTimeStamp artsGetTimeStamp
-#define globalTimeStamp artsGetTimeStamp
+artsIntrospectionConfig globalIntrospectionConfig = {0};
 
-artsMETRICNAME;
-uint64_t **countWindow;
-uint64_t **timeWindow;
-uint64_t **maxTotal;
+static void trimWhitespace(char *str) {
+  char *start = str;
+  char *end;
 
-char *printTotalsToFile = NULL;
-volatile unsigned int inspectorOn = 0;
-artsInspector *inspector = NULL;
-artsInspectorStats *stats = NULL;
-artsInspectorShots *inspectorShots = NULL;
-artsPacketInspector *packetInspector = NULL;
+  while (isspace((unsigned char)*start))
+    start++;
 
-__thread bool inspectorIgnore = 0;
-
-void artsInternalToggleThread(void) {
-  inspectorIgnore = !inspectorIgnore;
-  ARTS_DEBUG("II: %u\n", inspectorIgnore);
-}
-
-uint64_t artsGetInspectorTime(void) { return inspector->startTimeStamp; }
-
-bool artsInternalInspecting(void) { return (inspectorOn); }
-
-void artsInternalStartInspector(unsigned int startPoint) {
-  if (inspector && inspector->startPoint == startPoint) {
-    inspectorOn = 1;
-    inspector->startTimeStamp = globalTimeStamp();
-    //        ARTS_INFO("TURNING INSPECTION ON Folder: %s %ld\n",
-    //        printTotalsToFile, inspector->startTimeStamp);
-  }
-}
-
-void artsInternalStopInspector(void) {
-  if (inspector) {
-    inspectorOn = 0;
-    inspector->endTimeStamp = globalTimeStamp();
-  }
-}
-
-void printMetrics(void) {
-  for (unsigned int i = 0; i < artsLastMetricType; i++) {
-    ARTS_INFO("%35s %ld %ld %ld %ld %ld %ld %ld %ld %ld\n", artsMetricName[i],
-              countWindow[i][0], countWindow[i][1], countWindow[i][2],
-              timeWindow[i][0], timeWindow[i][1], timeWindow[i][2],
-              maxTotal[i][0], maxTotal[i][1], maxTotal[i][2]);
-  }
-}
-
-void artsInternalInitIntrospector(struct artsConfig *config) {
-  char *inspFileName = config->introspectiveConf;
-  char *inspOutputPrefix = config->introspectiveFolder;
-  unsigned int traceLevel = config->introspectiveTraceLevel;
-  unsigned int startPoint = config->introspectiveStartPoint;
-
-  if (inspFileName) {
-    ARTS_DEBUG("countWindow %u\n", sizeof(uint64_t *) * artsLastMetricType);
-    countWindow = artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
-    ARTS_DEBUG("timeWindow %u\n", sizeof(uint64_t *) * artsLastMetricType);
-    timeWindow = artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
-    ARTS_DEBUG("maxTotal %u\n", sizeof(uint64_t *) * artsLastMetricType);
-    maxTotal = artsMalloc(sizeof(uint64_t *) * artsLastMetricType);
-
-    for (unsigned int i = 0; i < artsLastMetricType; i++) {
-      ARTS_DEBUG("countWindow[%u] %u\n", i,
-                 sizeof(uint64_t) * artsMETRICLEVELS);
-      countWindow[i] = artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
-      ARTS_DEBUG("timeWindow[%u] %u\n", i, sizeof(uint64_t) * artsMETRICLEVELS);
-      timeWindow[i] = artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
-      ARTS_DEBUG("maxTotal[%u] %u\n", i, sizeof(uint64_t) * artsMETRICLEVELS);
-      maxTotal[i] = artsMalloc(sizeof(uint64_t) * artsMETRICLEVELS);
-      for (unsigned int j = 0; j < artsMETRICLEVELS; j++) {
-        countWindow[i][j] = -1;
-        timeWindow[i][j] = -1;
-        maxTotal[i][j] = -1;
-      }
-    }
-
-    artsInternalReadInspectorConfigFile(inspFileName);
-    if (!artsGlobalRankId)
-      printMetrics();
-    ARTS_DEBUG("inspector %u\n", sizeof(artsInspector));
-    inspector = (artsInspector *)artsCalloc(1, sizeof(artsInspector));
-    inspector->startPoint = startPoint;
-    ARTS_DEBUG("inspector->coreMetric %u\n", sizeof(artsPerformanceUnit) *
-                                                 artsLastMetricType *
-                                                 artsNodeInfo.totalThreadCount);
-    inspector->coreMetric = (artsPerformanceUnit *)artsCallocAlign(
-        artsLastMetricType * artsNodeInfo.totalThreadCount,
-        sizeof(artsPerformanceUnit), 64);
-    for (unsigned int i = 0; i < artsNodeInfo.totalThreadCount; i++) {
-      for (unsigned int j = 0; j < artsLastMetricType; j++) {
-        inspector->coreMetric[i * artsLastMetricType + j].maxTotal =
-            maxTotal[j][0];
-        inspector->coreMetric[i * artsLastMetricType + j].timeMethod =
-            localTimeStamp;
-      }
-    }
-
-    inspector->nodeMetric = (artsPerformanceUnit *)artsCallocAlign(
-        artsLastMetricType, sizeof(artsPerformanceUnit), 64);
-    for (unsigned int j = 0; j < artsLastMetricType; j++) {
-      inspector->nodeMetric[j].maxTotal = maxTotal[j][1];
-      inspector->nodeMetric[j].timeMethod = globalTimeStamp;
-    }
-
-    inspector->systemMetric = (artsPerformanceUnit *)artsCallocAlign(
-        artsLastMetricType, sizeof(artsPerformanceUnit), 64);
-    for (unsigned int j = 0; j < artsLastMetricType; j++) {
-      inspector->systemMetric[j].maxTotal = maxTotal[j][2];
-      inspector->systemMetric[j].timeMethod = globalTimeStamp;
-    }
-
-    ARTS_DEBUG("stats %u\n", sizeof(artsInspectorStats));
-    stats = (artsInspectorStats *)artsCalloc(1, sizeof(artsInspectorStats));
-    ARTS_DEBUG("packetInspector %u\n", sizeof(artsPacketInspector));
-    packetInspector =
-        (artsPacketInspector *)artsCalloc(1, sizeof(artsPacketInspector));
-    packetInspector->minPacket = (uint64_t)-1;
-    packetInspector->maxPacket = 0;
-    packetInspector->intervalMin = (uint64_t)-1;
-    packetInspector->intervalMax = 0;
-
-    if (inspOutputPrefix && traceLevel < artsMETRICLEVELS) {
-      if (traceLevel <= artsSystem) {
-        inspectorShots =
-            (artsInspectorShots *)artsMalloc(sizeof(artsInspectorShots));
-        ARTS_DEBUG("inspectorShots->coreMetric\n");
-        inspectorShots->coreMetric = (artsArrayList **)artsCalloc(
-            artsLastMetricType * artsNodeInfo.totalThreadCount,
-            sizeof(artsArrayList *));
-        for (unsigned int i = 0;
-             i < artsLastMetricType * artsNodeInfo.totalThreadCount; i++)
-          inspectorShots->coreMetric[i] =
-              artsNewArrayList(sizeof(artsMetricShot), 1024);
-        ARTS_DEBUG("inspectorShots->nodeMetric\n");
-        inspectorShots->nodeMetric = (artsArrayList **)artsCalloc(
-            artsLastMetricType, sizeof(artsArrayList *));
-        for (unsigned int i = 0; i < artsLastMetricType; i++)
-          inspectorShots->nodeMetric[i] =
-              artsNewArrayList(sizeof(artsMetricShot), 1024);
-        ARTS_DEBUG("inspectorShots->systemMetric\n");
-        inspectorShots->systemMetric = (artsArrayList **)artsCalloc(
-            artsLastMetricType, sizeof(artsArrayList *));
-        for (unsigned int i = 0; i < artsLastMetricType; i++)
-          inspectorShots->systemMetric[i] =
-              artsNewArrayList(sizeof(artsMetricShot), 1024);
-        ARTS_DEBUG("inspectorShots->nodeLock %u\n",
-                   sizeof(unsigned int) * artsLastMetricType);
-        inspectorShots->nodeLock = (unsigned int *)artsCalloc(
-            artsLastMetricType, sizeof(unsigned int));
-        ARTS_DEBUG("inspectorShots->systemLock %u\n",
-                   sizeof(unsigned int) * artsLastMetricType);
-        inspectorShots->systemLock = (unsigned int *)artsCalloc(
-            artsLastMetricType, sizeof(unsigned int));
-        inspectorShots->prefix = inspOutputPrefix;
-        inspectorShots->traceLevel = (artsMetricLevel)traceLevel;
-      }
-    }
-    if (inspOutputPrefix && traceLevel <= artsMETRICLEVELS)
-      printTotalsToFile = inspOutputPrefix;
-  }
-}
-
-bool metricTryLock(artsMetricLevel level, artsPerformanceUnit *metric) {
-  if (level == artsThread)
-    return true;
-
-  unsigned int local;
-  while (1) {
-    local = artsAtomicCswap(&metric->lock, 0U, 1U);
-    if (local != 2U)
-      break;
-  }
-  return (local == 0U);
-}
-
-void metricLock(artsMetricLevel level, artsPerformanceUnit *metric) {
-  if (level == artsThread)
+  if (*start == 0)
     return;
-  while (!artsAtomicCswap(&metric->lock, 0U, 1U))
-    ;
+
+  end = start + strlen(start) - 1;
+  while (end > start && isspace((unsigned char)*end))
+    end--;
+
+  end[1] = '\0';
+
+  memmove(str, start, end - start + 2);
 }
 
-void metricUnlock(artsPerformanceUnit *metric) { metric->lock = 0U; }
-
-artsPerformanceUnit *getMetric(artsMetricType type, artsMetricLevel level) {
-  artsPerformanceUnit *metric = NULL;
-  if (inspector) {
-    switch (level) {
-    case artsThread:
-      metric =
-          &inspector->coreMetric[artsThreadInfo.threadId * artsLastMetricType +
-                                 type];
-      break;
-    case artsNode:
-      metric = &inspector->nodeMetric[type];
-      break;
-    case artsSystem:
-      metric = &inspector->systemMetric[type];
-      break;
-    default:
-      metric = NULL;
-      break;
-    }
-  }
-  return metric;
-}
-
-uint64_t artsInternalGetPerformanceMetricTotal(artsMetricType type,
-                                               artsMetricLevel level) {
-
-  artsPerformanceUnit *metric = getMetric(type, level);
-  return (metric) ? metric->totalCount : 0;
-}
-
-double artsInternalGetPerformanceMetricRate(artsMetricType type,
-                                            artsMetricLevel level, bool last) {
-  artsPerformanceUnit *metric = getMetric(type, level);
-  if (metric) {
-    uint64_t localWindowTimeStamp;
-    uint64_t localWindowCountStamp;
-    uint64_t localCurrentCountStamp;
-    uint64_t localCurrentTimeStamp;
-
-    metricLock(level, metric);
-    if (last) {
-      localWindowTimeStamp = metric->lastWindowTimeStamp;
-      localWindowCountStamp = metric->lastWindowCountStamp;
-      localCurrentCountStamp = metric->windowCountStamp;
-      localCurrentTimeStamp = metric->windowTimeStamp;
-      metricUnlock(metric);
-    } else {
-      localWindowTimeStamp = metric->windowTimeStamp;
-      localWindowCountStamp = metric->windowCountStamp;
-      metricUnlock(metric);
-      localCurrentCountStamp = metric->totalCount;
-      localCurrentTimeStamp = metric->timeMethod();
-    }
-
-    if (localCurrentCountStamp && localCurrentTimeStamp) {
-      double num = (double)(localCurrentCountStamp - localWindowCountStamp);
-      double den = (double)(localCurrentTimeStamp - localWindowTimeStamp);
-      ARTS_INFO("%u %s %lf / %lf\n", level, artsMetricName[type], num, den);
-      return num / den / 1E9;
-    }
-  }
-  return 0;
-}
-
-double artsInternalGetPerformanceMetricTotalRate(artsMetricType type,
-                                                 artsMetricLevel level) {
-  artsPerformanceUnit *metric = getMetric(type, level);
-  if (metric) {
-    double num = (double)metric->totalCount;
-    double den = (double)metric->timeMethod() - inspector->startTimeStamp;
-    ARTS_INFO("%u %s %lf / %lf\n", level, artsMetricName[type], num, den);
-    return num / den;
-  }
-  return 0;
-}
-
-double artsMetricTest(artsMetricType type, artsMetricLevel level,
-                      uint64_t num) {
-  artsPerformanceUnit *metric = getMetric(type, level);
-  if (metric && num) {
-    double tot = (double)metric->totalCount;
-    if (tot) {
-      double dif = (double)metric->timeMethod() - inspector->startTimeStamp;
-      double temp = ((double)num * dif) / tot;
-      //            ARTS_INFO("%u %s (%lu * %lf / %lf\n", level,
-      //            artsMetricName[type], num, dif, tot);
-      return temp;
-    }
-    return 100000;
-  }
-  return 0;
-}
-
-uint64_t artsInternalGetPerformanceMetricRateU64(artsMetricType type,
-                                                 artsMetricLevel level,
-                                                 bool last) {
-  artsPerformanceUnit *metric = getMetric(type, level);
-  if (metric) {
-    uint64_t localWindowTimeStamp;
-    uint64_t localWindowCountStamp;
-    uint64_t localCurrentCountStamp;
-    uint64_t localCurrentTimeStamp;
-
-    metricLock(level, metric);
-    if (last) {
-      localWindowTimeStamp = metric->lastWindowTimeStamp;
-      localWindowCountStamp = metric->lastWindowCountStamp;
-      localCurrentCountStamp = metric->windowCountStamp;
-      localCurrentTimeStamp = metric->windowTimeStamp;
-      metricUnlock(metric);
-    } else {
-      localWindowTimeStamp = metric->windowTimeStamp;
-      localWindowCountStamp = metric->windowCountStamp;
-      metricUnlock(metric);
-      localCurrentCountStamp = metric->totalCount;
-      localCurrentTimeStamp = metric->timeMethod();
-    }
-
-    if (localCurrentCountStamp && localCurrentTimeStamp &&
-        localCurrentCountStamp > localWindowCountStamp) {
-      //            ARTS_INFO("%lu / %lu = %lu\n", (localCurrentTimeStamp -
-      //            localWindowTimeStamp), (localCurrentCountStamp -
-      //            localWindowCountStamp), ((localCurrentTimeStamp -
-      //            localWindowTimeStamp) / (localCurrentCountStamp -
-      //            localWindowCountStamp)));
-      return (localCurrentTimeStamp - localWindowTimeStamp) /
-             (localCurrentCountStamp - localWindowCountStamp);
-    }
-  }
-  return 0;
-}
-
-uint64_t artsInternalGetPerformanceMetricRateU64Diff(artsMetricType type,
-                                                     artsMetricLevel level,
-                                                     uint64_t *total) {
-  artsPerformanceUnit *metric = getMetric(type, level);
-  if (metric) {
-    metricLock(level, metric);
-    uint64_t localWindowTimeStamp = metric->windowTimeStamp;
-    uint64_t localWindowCountStamp = metric->windowCountStamp;
-    uint64_t lastWindowTimeStamp = metric->lastWindowTimeStamp;
-    uint64_t lastWindowCountStamp = metric->lastWindowCountStamp;
-    metricUnlock(metric);
-
-    uint64_t localCurrentCountStamp = metric->totalCount;
-    uint64_t localCurrentTimeStamp = metric->timeMethod();
-    *total = localCurrentCountStamp;
-    if (localCurrentCountStamp) {
-      uint64_t diff = localCurrentCountStamp - localWindowCountStamp;
-      if (diff && localWindowTimeStamp) {
-        return (localCurrentTimeStamp - localWindowTimeStamp) / diff;
-      }
-      diff = localWindowCountStamp - lastWindowCountStamp;
-      if (diff && localWindowCountStamp && lastWindowTimeStamp) {
-        return (localWindowCountStamp - lastWindowTimeStamp) / diff;
-      }
-    }
-  }
-  return 0;
-}
-
-uint64_t artsInternalGetTotalMetricRateU64(artsMetricType type,
-                                           artsMetricLevel level,
-                                           uint64_t *total,
-                                           uint64_t *timeStamp) {
-  artsPerformanceUnit *metric = getMetric(type, level);
-  if (metric) {
-    uint64_t localCurrentCountStamp = *total = metric->totalCount;
-    uint64_t localCurrentTimeStamp = metric->timeMethod();
-    *timeStamp = localCurrentTimeStamp;
-    uint64_t startTime = metric->firstTimeStamp;
-    if (startTime && localCurrentCountStamp) {
-      //            if(!artsGlobalRankId && !artsThreadInfo.threadId)
-      //                ARTS_INFO("TIME: %lu COUNT: %lu RATE: %lu\n",
-      //                (localCurrentTimeStamp - startTime),
-      //                localCurrentCountStamp, (localCurrentTimeStamp -
-      //                startTime) / localCurrentCountStamp);
-      return (localCurrentTimeStamp - startTime) / localCurrentCountStamp;
-    }
-  }
-  return 0;
-}
-
-void artsInternalHandleRemoteMetricUpdate(artsMetricType type,
-                                          artsMetricLevel level, uint64_t toAdd,
-                                          bool sub) {
-  artsPerformanceUnit *metric = getMetric(type, level);
-  if (metric) {
-    metricLock(level, metric);
-    if (sub) {
-      metric->windowCountStamp -= toAdd;
-      metric->totalCount -= toAdd;
-    } else {
-      metric->windowCountStamp += toAdd;
-      metric->totalCount += toAdd;
-    }
-    metricUnlock(metric);
-    artsAtomicAddU64(&stats->remoteUpdates, 1);
-  }
-}
-
-void internalUpdateMax(artsMetricLevel level, artsPerformanceUnit *metric,
-                       uint64_t total) {
-  uint64_t entry = metric->maxTotal;
-  uint64_t localMax = metric->maxTotal;
-  if (localMax > total)
-    return;
-  if (level == artsThread)
-    metric->maxTotal = total;
-  else {
-    while (localMax < total) {
-      localMax = artsAtomicCswapU64(&metric->maxTotal, localMax, total);
-    }
-  }
-}
-
-uint64_t internalObserveMax(artsMetricLevel level,
-                            artsPerformanceUnit *metric) {
-  uint64_t max = -1;
-  if (metric->maxTotal != -1) {
-    if (level == artsThread) {
-      max = metric->maxTotal;
-      metric->maxTotal = metric->totalCount;
-    } else {
-      max = artsAtomicSwapU64(&metric->maxTotal, metric->totalCount);
-    }
-  }
-  return max;
-}
-
-bool artsInternalSingleMetricUpdate(artsMetricType type, artsMetricLevel level,
-                                    uint64_t *toAdd, bool *sub,
-                                    artsPerformanceUnit *metric) {
-  if (!countWindow[type][level] || !timeWindow[type][level])
-    return true;
-
-  if (countWindow[type][level] == -1 && timeWindow[type][level] == -1)
+static bool parseDirective(const char *line, artsIntrospectionConfig *config) {
+  if (line[0] != '@')
     return false;
 
-  uint64_t totalStamp;
-  if (*toAdd) {
-    if (*sub) {
-      // Subtraction assumes a zero total sum at the level it is evaluating (you
-      // can skip a level by setting a window to 0) It is unclear what a
-      // negative result means...
-      if (metric->totalCount < *toAdd) {
-        ARTS_INFO(
-            "Potential Inspection Underflow Detected! Level: %s Type: %s\n",
-            level, artsMetricName[type]);
-        artsDebugPrintStack();
-      }
-      totalStamp = (level == artsThread)
-                       ? metric->totalCount -= *toAdd
-                       : artsAtomicSubU64(&metric->totalCount, *toAdd);
-      //        totalStamp = artsAtomicSubU64(&metric->totalCount, *toAdd);
-    } else {
-      totalStamp = (level == artsThread)
-                       ? metric->totalCount += *toAdd
-                       : artsAtomicAddU64(&metric->totalCount, *toAdd);
-      //        totalStamp = artsAtomicAddU64(&metric->totalCount, *toAdd);
-    }
-    internalUpdateMax(level, metric, totalStamp);
-  }
-  // Read local values to see if we need to update
-  uint64_t localWindowTimeStamp = metric->windowTimeStamp;
-  uint64_t localWindowCountStamp = metric->windowCountStamp;
+  char directive[256];
+  char value[256];
 
-  uint64_t timeStamp = metric->timeMethod();
-  // Check if it is the first timeStamp
-  if (!localWindowTimeStamp) {
-    if (!artsAtomicCswapU64(&metric->windowTimeStamp, 0, timeStamp))
-      metric->firstTimeStamp = metric->windowTimeStamp;
+  if (sscanf(line, "@%s %[^\n]", directive, value) != 2)
     return false;
-  }
-  // Compute the difference in time and counts
-  uint64_t elapsed =
-      (timeStamp > localWindowTimeStamp) ? timeStamp - localWindowTimeStamp : 0;
-  uint64_t last = (totalStamp > localWindowCountStamp)
-                      ? totalStamp - localWindowCountStamp
-                      : localWindowCountStamp - totalStamp;
 
-  if (last >= countWindow[type][level] || elapsed >= timeWindow[type][level]) {
-    if (!metricTryLock(level, metric))
+  trimWhitespace(value);
+
+  if (strcmp(directive, "introspectionFolder") == 0) {
+    config->introspectionFolder = strdup(value);
+  } else if (strcmp(directive, "introspectionStartPoint") == 0) {
+    config->introspectionStartPoint = atoi(value);
+  } else if (strcmp(directive, "introspectionTraceLevel") == 0) {
+    config->introspectionTraceLevel = atoi(value);
+  } else if (strcmp(directive, "counterDefault") == 0) {
+    config->counterDefault =
+        (strcasecmp(value, "on") == 0 || strcasecmp(value, "true") == 0 ||
+         strcmp(value, "1") == 0);
+  } else if (strcmp(directive, "enableCounters") == 0) {
+    config->enableCounters =
+        (strcasecmp(value, "on") == 0 || strcasecmp(value, "true") == 0 ||
+         strcmp(value, "1") == 0);
+  } else if (strcmp(directive, "enableMetrics") == 0) {
+    config->enableMetrics =
+        (strcasecmp(value, "on") == 0 || strcasecmp(value, "true") == 0 ||
+         strcmp(value, "1") == 0);
+  }
+
+  return true;
+}
+
+static bool matchPattern(const char *name, const char *pattern) {
+  while (*pattern) {
+    if (*pattern == '*') {
+      pattern++;
+      if (!*pattern)
+        return true;
+      while (*name) {
+        if (matchPattern(name, pattern))
+          return true;
+        name++;
+      }
       return false;
-    // Check and see if someone else already updated...
-    if (localWindowTimeStamp != metric->windowTimeStamp) {
-      metricUnlock(metric);
-      return false;
-    }
-    ARTS_DEBUG("Check metric %d %d %" PRIu64 " %" PRIu64 " vs %" PRIu64
-               " %" PRIu64 "\n",
-               level, type, last, elapsed, countWindow[type][level],
-               timeWindow[type][level]);
-    ARTS_DEBUG("Updating metric %d %d %" PRIu64 " %" PRIu64 "\n", level, type,
-               metric->windowCountStamp, metric->windowTimeStamp);
-    // temp store the old
-    metric->lastWindowTimeStamp = metric->windowTimeStamp;
-    metric->lastWindowCountStamp = metric->windowCountStamp;
-    metric->lastWindowMaxTotal = metric->windowMaxTotal;
-    // updated to the latest
-    metric->windowCountStamp = metric->totalCount;
-    metric->windowMaxTotal = internalObserveMax(level, metric);
-    metric->windowTimeStamp = metric->timeMethod(); // timeStamp;
-    // determine the waterfall
-    if (metric->windowCountStamp > metric->lastWindowCountStamp) {
-      *toAdd = metric->windowCountStamp - metric->lastWindowCountStamp;
-      *sub = false;
+    } else if (*pattern == *name) {
+      pattern++;
+      name++;
     } else {
-      *toAdd = metric->lastWindowCountStamp - metric->windowCountStamp;
-      *sub = true;
-    }
-    metricUnlock(metric);
-    return true;
-  }
-  return false;
-}
-
-void takeRateShot(artsMetricType type, artsMetricLevel level, bool last) {
-  if (inspectorShots && level >= inspectorShots->traceLevel) {
-    if (!countWindow[type][level] || !timeWindow[type][level])
-      return;
-    ARTS_DEBUG("TRACING LEVEL %d\n", level);
-
-    int traceOn = artsThreadInfo.mallocTrace;
-    artsThreadInfo.mallocTrace = 0;
-    artsPerformanceUnit *metric = metric = getMetric(type, level);
-    if (metric) {
-      artsArrayList *list = NULL;
-      unsigned int *lock = NULL;
-      switch (level) {
-      case artsThread:
-        list = inspectorShots
-                   ->coreMetric[artsThreadInfo.threadId * artsLastMetricType +
-                                type];
-        lock = NULL;
-        break;
-
-      case artsNode:
-        list = inspectorShots->nodeMetric[type];
-        lock = &inspectorShots->nodeLock[type];
-        break;
-
-      case artsSystem:
-        list = inspectorShots->systemMetric[type];
-        lock = &inspectorShots->systemLock[type];
-        break;
-
-      default:
-        list = NULL;
-        lock = NULL;
-        break;
-      }
-
-      if (list) {
-        if (lock) {
-          unsigned int local;
-          while (1) {
-            local = artsAtomicCswap(lock, 0U, 2U);
-            if (local == 2U) {
-              artsMEMTRACEON;
-              return;
-            }
-            if (!local)
-              break;
-          }
-        }
-        artsMetricShot shot;
-        if (last) {
-          metricLock(level, metric);
-          shot.maxTotal = metric->windowMaxTotal;
-          shot.windowTimeStamp = metric->lastWindowTimeStamp;
-          shot.windowCountStamp = metric->lastWindowCountStamp;
-          shot.currentTimeStamp = metric->windowTimeStamp;
-          shot.currentCountStamp = metric->windowCountStamp;
-          metricUnlock(metric);
-        } else {
-          metricLock(level, metric);
-          shot.windowTimeStamp = metric->windowTimeStamp;
-          shot.windowCountStamp = metric->windowCountStamp;
-          metricUnlock(metric);
-
-          shot.maxTotal = metric->maxTotal;
-          shot.currentCountStamp = metric->totalCount;
-          shot.currentTimeStamp = metric->timeMethod();
-        }
-
-        //                if(shot.windowCountStamp && shot.windowTimeStamp)
-        artsThreadInfo.mallocTrace = 0;
-        artsPushToArrayList(list, &shot);
-        artsThreadInfo.mallocTrace = 1;
-
-        if (lock)
-          *lock = 0U;
-      }
-    }
-    artsThreadInfo.mallocTrace = traceOn;
-  }
-}
-
-artsMetricLevel artsInternalUpdatePerformanceCoreMetric(unsigned int core,
-                                                        artsMetricType type,
-                                                        artsMetricLevel level,
-                                                        uint64_t toAdd,
-                                                        bool sub) {
-  if (type <= artsFirstMetricType || type >= artsLastMetricType) {
-    ARTS_INFO("Wrong Introspection Type %d\n", type);
-    artsDebugGenerateSegFault();
-  }
-
-  artsMetricLevel updatedLevel = artsNoLevel;
-  if (inspectorOn) {
-    switch (level) {
-    case artsThread:
-      ARTS_DEBUG("Thread updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
-                 toAdd, sub, artsMetricName[type]);
-      if (!artsInternalSingleMetricUpdate(
-              type, artsThread, &toAdd, &sub,
-              &inspector->coreMetric[core * artsLastMetricType + type]))
-        break;
-      takeRateShot(type, artsThread, true);
-      updatedLevel = artsThread;
-
-    case artsNode:
-      ARTS_DEBUG("Node   updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
-                 toAdd, sub, artsMetricName[type]);
-      if (!artsInternalSingleMetricUpdate(type, artsNode, &toAdd, &sub,
-                                          &inspector->nodeMetric[type]))
-        break;
-      artsAtomicAddU64(&stats->nodeUpdates, 1);
-      takeRateShot(type, artsNode, true);
-      updatedLevel = artsNode;
-
-    case artsSystem:
-      ARTS_DEBUG("System updated up to %d %" PRIu64 " %u %s\n", updatedLevel,
-                 toAdd, sub, artsMetricName[type]);
-      if (artsInternalSingleMetricUpdate(type, artsSystem, &toAdd, &sub,
-                                         &inspector->systemMetric[type])) {
-        uint64_t timeToSend = inspector->systemMetric[type].timeMethod();
-        int traceOn = artsThreadInfo.mallocTrace;
-        artsThreadInfo.mallocTrace = 0;
-        for (unsigned int i = 0; i < artsGlobalRankCount; i++)
-          if (i != artsGlobalRankId)
-            artsRemoteMetricUpdate(i, type, level, timeToSend, toAdd, sub);
-        artsThreadInfo.mallocTrace = traceOn;
-        artsAtomicAddU64(&stats->systemUpdates, 1);
-        if (artsGlobalRankCount > 1)
-          artsAtomicAddU64(&stats->systemMessages, artsGlobalRankCount - 1);
-        takeRateShot(type, artsSystem, true);
-        updatedLevel = artsSystem;
-      }
-    default:
-      break;
+      return false;
     }
   }
-  return updatedLevel;
+  return !*name;
 }
 
-void artsInternalSetThreadPerformanceMetric(artsMetricType type,
-                                            uint64_t value) {
-
-  if (countWindow[type][artsThread] == -1 && timeWindow[type][artsThread] == -1)
+static void applyMetricConfig(const char *name, const char *keyValue,
+                              bool isPattern) {
+  if (!keyValue)
     return;
 
-  artsPerformanceUnit *metric = getMetric(type, artsThread);
-  if (metric) {
-    bool shot = true;
-
-    metric->lastWindowCountStamp = metric->windowCountStamp;
-    metric->lastWindowTimeStamp = metric->windowTimeStamp;
-    metric->lastWindowMaxTotal = metric->maxTotal;
-
-    uint64_t localTime = metric->timeMethod();
-    if (!metric->firstTimeStamp) {
-      shot = false;
-      metric->firstTimeStamp = localTime;
+  if (isPattern) {
+    for (int i = 0; i < artsLastMetricType; i++) {
+      if (matchPattern(artsMetricName[i], name)) {
+        if (strstr(keyValue, "disabled") != NULL) {
+          artsMetricsConfigSetEnabled(artsMetricName[i], false);
+        }
+      }
     }
-
-    metric->totalCount = value;
-    metric->windowCountStamp = value;
-    metric->windowTimeStamp = localTime;
-    if (metric->maxTotal < value)
-      metric->maxTotal = value;
-    if (shot) // && (elapsed >= timeWindow[type][artsThread] || last >=
-              // countWindow[type][artsThread]))
-    {
-      //            ARTS_INFO("TAKING SHOT %s %lu\n", artsMetricName[type],
-      //            value);
-      takeRateShot(type, artsThread, true);
+  } else {
+    if (strstr(keyValue, "disabled") != NULL) {
+      artsMetricsConfigSetEnabled(name, false);
     }
   }
 }
 
-artsMetricLevel artsInternalUpdatePerformanceMetric(artsMetricType type,
-                                                    artsMetricLevel level,
-                                                    uint64_t toAdd, bool sub) {
-  if (inspectorIgnore && level == artsThread)
-    return artsInternalUpdatePerformanceCoreMetric(0, type, artsNode, toAdd,
-                                                   sub);
-  return artsInternalUpdatePerformanceCoreMetric(artsThreadInfo.threadId, type,
-                                                 level, toAdd, sub);
+static void parseCounterLine(const char *line) {
+  char name[256];
+  char value[256];
+
+  if (strncmp(line, "counter ", 8) == 0) {
+    if (sscanf(line, "counter %s %s", name, value) == 2) {
+      bool enabled =
+          (strcasecmp(value, "on") == 0 || strcasecmp(value, "enabled") == 0 ||
+           strcasecmp(value, "true") == 0 || strcmp(value, "1") == 0);
+      artsCounterConfigSetEnabled(name, enabled);
+    }
+  }
 }
 
-void metricPrint(artsMetricType type, artsMetricLevel level,
-                 artsMetricShot *shot, FILE *stream) {
-  fprintf(stream,
-          "%d,%d,%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
-          type, level, shot->windowCountStamp, shot->windowTimeStamp,
-          shot->currentCountStamp, shot->currentTimeStamp, shot->maxTotal);
+static void parseMetricLine(const char *line) {
+  char name[256];
+  char rest[512];
+
+  if (strncmp(line, "metric-defaults", 15) == 0) {
+    if (sscanf(line, "metric-defaults %[^\n]", rest) == 1) {
+      artsMetricsConfigSetDefaultEnabled(true);
+    }
+  } else if (strncmp(line, "metric-group", 12) == 0) {
+    if (sscanf(line, "metric-group %s %[^\n]", name, rest) == 2) {
+      applyMetricConfig(name, rest, true);
+    }
+  } else if (strncmp(line, "metric ", 7) == 0) {
+    if (sscanf(line, "metric %s %[^\n]", name, rest) == 2) {
+      applyMetricConfig(name, rest, false);
+    }
+  }
 }
 
-void internalMetricWriteToFile(artsMetricType type, artsMetricLevel level,
-                               char *filename, artsArrayList *list) {
-  if (!artsLengthArrayList(list)) {
-    remove(filename);
+void artsIntrospectionInit(const char *configFile) {
+  globalIntrospectionConfig.introspectionFolder = strdup("./introspection");
+  globalIntrospectionConfig.counterDefault = true;
+  globalIntrospectionConfig.introspectionStartPoint = 1;
+  globalIntrospectionConfig.introspectionTraceLevel = 0;
+
+#ifdef COUNTERS
+  globalIntrospectionConfig.enableCounters = true;
+#else
+  globalIntrospectionConfig.enableCounters = false;
+#endif
+
+#ifdef METRICS
+  globalIntrospectionConfig.enableMetrics = true;
+#else
+  globalIntrospectionConfig.enableMetrics = false;
+#endif
+
+  if (!configFile)
     return;
-  }
 
-  FILE *fp = fopen(filename, "w");
-  if (fp) {
-    ARTS_DEBUG("FILE: %s\n", filename);
-    uint64_t last = 0;
-    int traceOn = artsThreadInfo.mallocTrace;
-    artsThreadInfo.mallocTrace = 0;
-    artsArrayListIterator *iter = artsNewArrayListIterator(list);
-    artsMetricShot *shot;
-    while (artsArrayListHasNext(iter)) {
-      shot = (artsMetricShot *)artsArrayListNext(iter);
-      metricPrint(type, level, shot, fp);
-      if (shot->currentTimeStamp < last) {
-        ARTS_INFO("Out of order snap shot: %s %" PRIu64 "\n", filename, last);
-        last = shot->currentTimeStamp;
-      }
-    }
-    artsDeleteArrayListIterator(iter);
-    if (last < inspector->endTimeStamp) {
-      shot->windowCountStamp = shot->currentCountStamp;
-      shot->windowTimeStamp = shot->currentTimeStamp;
-      shot->currentTimeStamp = inspector->endTimeStamp;
-      metricPrint(type, level, shot, fp);
-    }
-    artsThreadInfo.mallocTrace = traceOn;
-    fclose(fp);
-  } else
-    ARTS_INFO("Couldn't open %s\n", filename);
-}
-
-void artsInternalWriteMetricShotFile(unsigned int threadId,
-                                     unsigned int nodeId) {
-  if (inspectorShots) {
-    struct stat st = {0};
-    if (stat(inspectorShots->prefix, &st) == -1)
-      mkdir(inspectorShots->prefix, 0755);
-
-    artsArrayList *list;
-    char filename[1024];
-
-    switch (inspectorShots->traceLevel) {
-    case artsThread:
-      for (unsigned int i = 0; i < artsLastMetricType; i++) {
-        list = inspectorShots->coreMetric[threadId * artsLastMetricType + i];
-        sprintf(filename, "%s/%s_%s_%u_%u.ct", inspectorShots->prefix,
-                "threadMetric", artsMetricName[i], nodeId, threadId);
-        internalMetricWriteToFile((artsMetricType)i, artsThread, filename,
-                                  (artsArrayList *)list);
-      }
-
-    case artsNode:
-      if (!threadId) {
-        for (unsigned int i = 0; i < artsLastMetricType; i++) {
-          list = inspectorShots->nodeMetric[i];
-          sprintf(filename, "%s/%s_%s_%u.ct", inspectorShots->prefix,
-                  "nodeMetric", artsMetricName[i], nodeId);
-          internalMetricWriteToFile((artsMetricType)i, artsNode, filename,
-                                    (artsArrayList *)list);
-        }
-      }
-
-    case artsSystem:
-      if (!threadId) // && !nodeId)
-      {
-        for (unsigned int i = 0; i < artsLastMetricType; i++) {
-          list = inspectorShots->systemMetric[i];
-          sprintf(filename, "%s/%s_%s_%u.ct", inspectorShots->prefix,
-                  "systemMetric", artsMetricName[i], nodeId);
-          internalMetricWriteToFile((artsMetricType)i, artsSystem, filename,
-                                    (artsArrayList *)list);
-        }
-      }
-
-    default:
-      break;
-    }
-  }
-}
-
-void artsInternalReadInspectorConfigFile(char *filename) {
-  char *line = NULL;
-  size_t length = 0;
-  FILE *fp = fopen(filename, "r");
+  FILE *fp = fopen(configFile, "r");
   if (!fp)
     return;
 
-  char temp[artsMAXMETRICNAME];
+  char *line = NULL;
+  size_t len = 0;
+  ssize_t read;
 
-  while (getline(&line, &length, fp) != -1) {
-    ARTS_DEBUG("%s", line);
-    if (line[0] != '#') {
-      int paramRead = 0;
-      sscanf(line, "%s", temp);
-      size_t offset = strlen(temp);
-      int metricIndex = -1;
-      for (unsigned int i = 0; i < artsLastMetricType; i++) {
-        if (!strcmp(temp, artsMetricName[i])) {
-          metricIndex = i;
-          break;
-        }
-      }
+  while ((read = getline(&line, &len, fp)) != -1) {
+    trimWhitespace(line);
 
-      if (metricIndex >= 0 && metricIndex < artsLastMetricType) {
-        for (unsigned int i = 0; i < artsMETRICLEVELS; i++) {
-          while (line[offset] == ' ')
-            offset++;
-          paramRead += sscanf(&line[offset], "%" SCNu64 "",
-                              &countWindow[metricIndex][i]);
-          sscanf(&line[offset], "%s", temp);
-          offset += strlen(temp);
-          ARTS_DEBUG("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
-                     offset, countWindow[metricIndex][i]);
-        }
+    if (line[0] == '#' || line[0] == '\0')
+      continue;
 
-        for (unsigned int i = 0; i < artsMETRICLEVELS; i++) {
-          while (line[offset] == ' ')
-            offset++;
-          paramRead +=
-              sscanf(&line[offset], "%" SCNu64 "", &timeWindow[metricIndex][i]);
-          sscanf(&line[offset], "%s", temp);
-          offset += strlen(temp);
-          ARTS_DEBUG("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
-                     offset, timeWindow[metricIndex][i]);
-        }
-
-        for (unsigned int i = 0; i < artsMETRICLEVELS; i++) {
-          while (line[offset] == ' ')
-            offset++;
-          paramRead +=
-              sscanf(&line[offset], "%" SCNu64 "", &maxTotal[metricIndex][i]);
-          sscanf(&line[offset], "%s", temp);
-          offset += strlen(temp);
-          ARTS_DEBUG("temp: %s %u %u %u %" PRIu64 "\n", temp, metricIndex, i,
-                     offset, maxTotal[metricIndex][i]);
-        }
-      }
-
-      if (metricIndex < 0 || metricIndex >= artsLastMetricType ||
-          paramRead < artsMETRICLEVELS * 2) {
-        ARTS_INFO("FAILED to init metric %s\n", temp);
-      }
+    if (!parseDirective(line, &globalIntrospectionConfig)) {
+      if (globalIntrospectionConfig.enableMetrics)
+        parseMetricLine(line);
+      if (globalIntrospectionConfig.enableCounters)
+        parseCounterLine(line);
     }
   }
+
   fclose(fp);
+
+  if (globalIntrospectionConfig.enableCounters) {
+    artsCounterConfigSetDefaultEnabled(
+        globalIntrospectionConfig.counterDefault);
+  }
+
+  if (globalIntrospectionConfig.enableMetrics) {
+    artsMetricsConfigSetDefaultEnabled(true);
+#ifdef METRICS
+    artsMetricsInitIntrospector(
+        globalIntrospectionConfig.introspectionStartPoint);
+#endif
+  }
 
   if (line)
     free(line);
 }
 
-void internalPrintTotals(unsigned int nodeId) {
-  if (printTotalsToFile) {
-    struct stat st = {0};
-    if (stat(printTotalsToFile, &st) == -1)
-      mkdir(printTotalsToFile, 0755);
+void artsIntrospectionStart(unsigned int startPoint) {
+#ifdef COUNTERS
+  artsCounterStart(startPoint);
+#endif
+#ifdef METRICS
+  artsMetricsStart(startPoint);
+#endif
+}
 
-    char filename[1024];
-    sprintf(filename, "%s/finalCounts_%u.ct", printTotalsToFile, nodeId);
-    FILE *fp = fopen(filename, "w");
-    if (fp) {
-      for (unsigned int i = 0; i < artsLastMetricType; i++) {
-        fprintf(fp, "%s, System, %" PRIu64 ", %" PRIu64 "\n", artsMetricName[i],
-                inspector->systemMetric[i].totalCount,
-                inspector->systemMetric[i].maxTotal);
-        fprintf(fp, "%s, Node, %" PRIu64 ", %" PRIu64 "\n", artsMetricName[i],
-                inspector->nodeMetric[i].totalCount,
-                inspector->nodeMetric[i].maxTotal);
-        for (unsigned int j = 0; j < artsNodeInfo.totalThreadCount; j++)
-          fprintf(fp, "%s, Core_%u, %" PRIu64 ", %" PRIu64 "\n",
-                  artsMetricName[i], j,
-                  inspector->coreMetric[j * artsLastMetricType + i].totalCount,
-                  inspector->coreMetric[j * artsLastMetricType + i].maxTotal);
-      }
+void artsIntrospectionStop() {
+#ifdef COUNTERS
+  if (globalIntrospectionConfig.enableCounters) {
+    artsCounterStop();
+  }
+#endif
+#ifdef METRICS
+  if (globalIntrospectionConfig.enableMetrics) {
+    artsMetricsStop();
+  }
+#endif
 
-      uint64_t counted = 0;
-      uint64_t posNotCounted = 0;
-      uint64_t negNotCounted = 0;
-      artsPerformanceUnit *metric;
-      for (unsigned int i = 0; i < artsLastMetricType; i++) {
-        counted = posNotCounted = negNotCounted = 0;
-        for (unsigned int j = 0; j < artsNodeInfo.totalThreadCount; j++) {
-          metric = &inspector->coreMetric[j * artsLastMetricType + i];
-          counted += metric->windowCountStamp;
-          if (metric->totalCount > metric->windowCountStamp)
-            posNotCounted += (metric->totalCount - metric->windowCountStamp);
-          else
-            negNotCounted += (metric->windowCountStamp - metric->totalCount);
+  if (globalIntrospectionConfig.introspectionFolder) {
+    for (unsigned int threadId = 0; threadId < artsNodeInfo.totalThreadCount;
+         threadId++) {
+      artsIntrospectionWriteOutput(
+          globalIntrospectionConfig.introspectionFolder, artsGlobalRankId,
+          threadId, globalIntrospectionConfig.enableCounters,
+          globalIntrospectionConfig.enableMetrics);
+    }
+  }
+}
+
+void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
+                                  unsigned int threadId, bool writeCounters,
+                                  bool writeMetrics) {
+  if (!outputFolder)
+    return;
+
+  struct stat st = {0};
+  if (stat(outputFolder, &st) == -1)
+    mkdir(outputFolder, 0755);
+
+  char filename[1024];
+  snprintf(filename, sizeof(filename), "%s/introspection_n%u_t%u.json",
+           outputFolder, nodeId, threadId);
+
+  FILE *fp = fopen(filename, "w");
+  if (!fp)
+    return;
+
+  artsJsonWriter writer;
+  artsJsonWriterInit(&writer, fp, 2);
+
+  artsJsonWriterBeginObject(&writer, NULL);
+
+  artsJsonWriterBeginObject(&writer, "metadata");
+  artsJsonWriterWriteUInt64(&writer, "nodeId", nodeId);
+  artsJsonWriterWriteUInt64(&writer, "threadId", threadId);
+  artsJsonWriterWriteUInt64(&writer, "timestamp", (uint64_t)time(NULL));
+  artsJsonWriterWriteString(&writer, "version", "1.0");
+  artsJsonWriterWriteUInt64(&writer, "traceLevel",
+                            globalIntrospectionConfig.introspectionTraceLevel);
+  artsJsonWriterWriteUInt64(&writer, "startPoint",
+                            globalIntrospectionConfig.introspectionStartPoint);
+  if (globalIntrospectionConfig.introspectionFolder) {
+    artsJsonWriterWriteString(&writer, "introspectionFolder",
+                              globalIntrospectionConfig.introspectionFolder);
+  }
+  artsJsonWriterEndObject(&writer);
+
+#ifdef COUNTERS
+  if (writeCounters && artsThreadInfo.counterList) {
+    artsJsonWriterBeginObject(&writer, "counters");
+    uint64_t length = artsLengthArrayList(artsThreadInfo.counterList);
+    for (uint64_t i = 0; i < length; i++) {
+      artsCounter *counter =
+          (artsCounter *)artsGetFromArrayList(artsThreadInfo.counterList, i);
+      if (counter && counter->name && counter->enabled) {
+        artsJsonWriterBeginObject(&writer, counter->name);
+        artsJsonWriterWriteUInt64(&writer, "count", counter->count);
+        artsJsonWriterWriteUInt64(&writer, "totalTime", counter->totalTime);
+        if (counter->count > 0) {
+          artsJsonWriterWriteUInt64(&writer, "avgTime",
+                                    counter->totalTime / counter->count);
+        } else {
+          artsJsonWriterWriteUInt64(&writer, "avgTime", 0);
         }
-        metric = &inspector->nodeMetric[i];
-        uint64_t sum = metric->totalCount + posNotCounted - negNotCounted;
-        if (metric->totalCount == counted &&
-            counted + posNotCounted >= negNotCounted)
-          fprintf(fp,
-                  "%s, Match, Sum, %" PRIu64 ", Total Counted, %" PRIu64
-                  ", +Rem, %" PRIu64 ", -Rem, %" PRIu64 "\n",
-                  artsMetricName[i], sum, metric->totalCount, posNotCounted,
-                  negNotCounted);
-        else
-          fprintf(fp,
-                  "%s, Error, Sum, %" PRIu64 ", Total Counted, %" PRIu64
-                  ", +Rem, %" PRIu64 ", -Rem, %" PRIu64 "\n",
-                  artsMetricName[i], sum, metric->totalCount, posNotCounted,
-                  negNotCounted);
+        artsJsonWriterEndObject(&writer);
       }
-      fprintf(fp,
-              "Node Updates, %" PRIu64 ", System Updates, %" PRIu64
-              ", Remote Updates,  %" PRIu64 ", System Messages, %" PRIu64 "\n",
-              stats->nodeUpdates, stats->systemUpdates, stats->remoteUpdates,
-              stats->systemMessages);
-    } else
-      ARTS_INFO("Couldn't open %s\n", filename);
-  }
-}
-
-void printInspectorTime(void) {
-  printf("Stat 0 Node %u Start %" PRIu64 " End %" PRIu64 "\n", artsGlobalRankId,
-         inspector->startTimeStamp, inspector->endTimeStamp);
-}
-
-void printInspectorStats(void) {
-  printf("Stat 3 Node %u Node_Updates %" PRIu64 " System_Updates %" PRIu64
-         " Remote_Updates  %" PRIu64 " System_Messages %" PRIu64 "\n",
-         artsGlobalRankId, stats->nodeUpdates, stats->systemUpdates,
-         stats->remoteUpdates, stats->systemMessages);
-}
-
-void printModelTotalMetrics(artsMetricLevel level) {
-  if (level == artsNode)
-    printf(
-        "Stat 1 Node %u edt %" PRIu64 " edt_signal %" PRIu64
-        " event_signal %" PRIu64 " network_sent %" PRIu64
-        " network_recv %" PRIu64 " malloc %" PRIu64 " free %" PRIu64 "\n",
-        artsGlobalRankId,
-        artsInternalGetPerformanceMetricTotal(artsEdtThroughput, level),
-        artsInternalGetPerformanceMetricTotal(artsEdtSignalThroughput, level),
-        artsInternalGetPerformanceMetricTotal(artsEventSignalThroughput, level),
-        artsInternalGetPerformanceMetricTotal(artsNetworkSendBW, level),
-        artsInternalGetPerformanceMetricTotal(artsNetworkRecieveBW, level),
-        artsInternalGetPerformanceMetricTotal(artsMallocBW, level),
-        artsInternalGetPerformanceMetricTotal(artsFreeBW, level));
-  else if (level == artsThread) {
-    ARTS_INFO(
-        "Stat 1 Thread %u edt %" PRIu64 " edt_signal %" PRIu64
-        " event_signal %" PRIu64 " network_sent %" PRIu64
-        " network_recv %" PRIu64 " malloc %" PRIu64 " free %" PRIu64 "\n",
-        artsThreadInfo.threadId,
-        artsInternalGetPerformanceMetricTotal(artsEdtThroughput, level),
-        artsInternalGetPerformanceMetricTotal(artsEdtSignalThroughput, level),
-        artsInternalGetPerformanceMetricTotal(artsEventSignalThroughput, level),
-        artsInternalGetPerformanceMetricTotal(artsNetworkSendBW, level),
-        artsInternalGetPerformanceMetricTotal(artsNetworkRecieveBW, level),
-        artsInternalGetPerformanceMetricTotal(artsMallocBW, level),
-        artsInternalGetPerformanceMetricTotal(artsFreeBW, level));
-  }
-}
-
-static inline void updatePacketExtreme(uint64_t val, volatile uint64_t *old,
-                                       bool min) {
-  uint64_t local = *old;
-  uint64_t res;
-  if (min) {
-    while (val < local) {
-      res = artsAtomicCswapU64(old, local, val);
-      if (res == local)
-        break;
-      local = res;
     }
-  } else {
-    while (val > local) {
-      res = artsAtomicCswapU64(old, local, val);
-      if (res == local)
-        break;
-      local = res;
+    artsJsonWriterEndObject(&writer);
+  }
+#endif
+
+#ifdef METRICS
+  if (writeMetrics) {
+    artsJsonWriterBeginObject(&writer, "metrics");
+    for (unsigned int i = 0; i < artsLastMetricType; i++) {
+      artsJsonWriterBeginObject(&writer, artsMetricName[i]);
+
+      uint64_t threadTotal = artsMetricsGetTotal(i, artsThread);
+      uint64_t nodeTotal = artsMetricsGetTotal(i, artsNode);
+      uint64_t systemTotal = artsMetricsGetTotal(i, artsSystem);
+
+      artsJsonWriterBeginObject(&writer, "thread");
+      artsJsonWriterWriteUInt64(&writer, "totalCount", threadTotal);
+      artsJsonWriterEndObject(&writer);
+
+      artsJsonWriterBeginObject(&writer, "node");
+      artsJsonWriterWriteUInt64(&writer, "totalCount", nodeTotal);
+      artsJsonWriterEndObject(&writer);
+
+      artsJsonWriterBeginObject(&writer, "system");
+      artsJsonWriterWriteUInt64(&writer, "totalCount", systemTotal);
+      artsJsonWriterEndObject(&writer);
+
+      artsJsonWriterEndObject(&writer);
     }
+    artsJsonWriterEndObject(&writer);
   }
+#endif
+
+  artsJsonWriterEndObject(&writer);
+  artsJsonWriterFinish(&writer);
+  fputc('\n', fp);
+  fclose(fp);
 }
 
-void artsInternalUpdatePacketInfo(uint64_t bytes) {
-  if (packetInspector) {
-    artsReaderLock(&packetInspector->reader, &packetInspector->writer);
-    artsAtomicAddU64(&packetInspector->totalBytes, bytes);
-    artsAtomicAddU64(&packetInspector->totalPackets, 1U);
-    updatePacketExtreme(bytes, &packetInspector->maxPacket, false);
-    updatePacketExtreme(bytes, &packetInspector->minPacket, true);
-    artsReaderUnlock(&packetInspector->reader);
-
-    artsReaderLock(&packetInspector->intervalReader,
-                   &packetInspector->intervalWriter);
-    artsAtomicAddU64(&packetInspector->intervalBytes, bytes);
-    artsAtomicAddU64(&packetInspector->intervalPackets, 1U);
-    updatePacketExtreme(bytes, &packetInspector->intervalMax, false);
-    updatePacketExtreme(bytes, &packetInspector->intervalMin, true);
-    artsReaderUnlock(&packetInspector->intervalReader);
-  }
-}
-
-void artsInternalPacketStats(uint64_t *totalBytes, uint64_t *totalPackets,
-                             uint64_t *minPacket, uint64_t *maxPacket) {
-  if (packetInspector) {
-    artsWriterLock(&packetInspector->reader, &packetInspector->writer);
-    (*totalBytes) = packetInspector->totalBytes;
-    (*totalPackets) = packetInspector->totalPackets;
-    (*minPacket) = packetInspector->minPacket;
-    (*maxPacket) = packetInspector->maxPacket;
-    artsWriterUnlock(&packetInspector->writer);
-  }
-}
-
-void artsInternalIntervalPacketStats(uint64_t *totalBytes,
-                                     uint64_t *totalPackets,
-                                     uint64_t *minPacket, uint64_t *maxPacket) {
-  if (packetInspector) {
-    artsWriterLock(&packetInspector->intervalReader,
-                   &packetInspector->intervalWriter);
-    (*totalBytes) = artsAtomicSwapU64(&packetInspector->totalBytes, 0);
-    (*totalPackets) = artsAtomicSwapU64(&packetInspector->totalPackets, 0);
-    (*minPacket) = artsAtomicSwapU64(&packetInspector->minPacket, 0);
-    (*maxPacket) = artsAtomicSwapU64(&packetInspector->maxPacket, 0);
-    artsWriterUnlock(&packetInspector->intervalWriter);
-  }
-}
+#endif

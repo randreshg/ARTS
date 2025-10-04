@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 #include "arts/introspection/Counter.h"
-#include "arts/arts.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/utils/ArrayList.h"
@@ -47,21 +47,130 @@
 #include <string.h>
 #include <sys/stat.h>
 
+const char *const artsCounterNames[] = {"edtCounter",
+                                        "sleepCounter",
+                                        "totalCounter",
+                                        "signalEventCounter",
+                                        "signalPersistentEventCounter",
+                                        "signalEdtCounter",
+                                        "edtCreateCounter",
+                                        "eventCreateCounter",
+                                        "persistentEventCreateCounter",
+                                        "dbCreateCounter",
+                                        "smartDbCreateCounter",
+                                        "mallocMemory",
+                                        "callocMemory",
+                                        "freeMemory",
+                                        "guidAllocCounter",
+                                        "guidLookupCounter",
+                                        "getDbCounter",
+                                        "putDbCounter",
+                                        "contextSwitch",
+                                        "yield",
+                                        "remoteMemoryMove"};
+
+static int counterDefaultEnabled = 1;
+static int counterEnabledOverride[lastCounter];
+static bool counterOverrideInitialized = false;
+
+// Event-based counter interface implementation
+void artsCounterTriggerEvent(artsCounterType counterType, uint64_t value) {
+  if (!ARTS_COUNTERS_IS_ACTIVE())
+    return;
+
+  artsCounter *counter = artsCounterGet(counterType);
+  if (counter) {
+    if (value == 1)
+      artsCounterIncrement(counter);
+    else
+      artsCounterIncrementBy(counter, value);
+  }
+}
+
+void artsCounterTriggerTimerEvent(artsCounterType counterType, bool start) {
+  if (!ARTS_COUNTERS_IS_ACTIVE())
+    return;
+
+  artsCounter *counter = artsCounterGet(counterType);
+  if (counter) {
+    if (start)
+      artsCounterTimerStart(counter);
+    else
+      artsCounterTimerEndIncrement(counter);
+  }
+}
+
+// Private methods
+static void ensureCounterOverrides(void) {
+  if (!counterOverrideInitialized) {
+    for (int i = 0; i < lastCounter; i++)
+      counterEnabledOverride[i] = -1;
+    counterOverrideInitialized = true;
+  }
+}
+
+static int counterIndexFromName(const char *name) {
+  if (!name)
+    return -1;
+  for (int i = 0; i < lastCounter; i++) {
+    const char *candidate = artsCounterNames[i];
+    if (candidate && !strcasecmp(candidate, name))
+      return i;
+  }
+  return -1;
+}
+
+void artsCounterConfigSetDefaultEnabled(bool enabled) {
+  ensureCounterOverrides();
+  counterDefaultEnabled = enabled ? 1 : 0;
+}
+
+void artsCounterConfigSetEnabled(const char *name, bool enabled) {
+  ensureCounterOverrides();
+  int index = counterIndexFromName(name);
+  if (index >= 0)
+    counterEnabledOverride[index] = enabled ? 1 : 0;
+}
+
+static inline bool counterIsActive(const artsCounter *counter) {
+  return counter && counter->enabled && countersOn &&
+         artsThreadInfo.localCounting;
+}
+
+static inline void counterRecordTiming(artsCounter *counter, uint64_t increment,
+                                       bool overwrite) {
+  if (!counterIsActive(counter))
+    return;
+
+  counter->endTime = COUNTERTIMESTAMP;
+  uint64_t elapsed = counter->endTime - counter->startTime;
+  if (overwrite)
+    counter->totalTime = elapsed;
+  else
+    counter->totalTime += elapsed;
+  counter->count += increment;
+}
+
 char *counterPrefix;
 uint64_t countersOn = 0;
 unsigned int printCounters = 0;
 unsigned int counterStartPoint = 0;
 
-void artsInitCounterList(unsigned int threadId, unsigned int nodeId,
-                         char *folder, unsigned int startPoint) {
-  counterPrefix = folder;
-  counterStartPoint = startPoint;
-  COUNTERNAMES;
+void artsCounterInitList(unsigned int threadId, unsigned int nodeId) {
+  counterPrefix = globalIntrospectionConfig.introspectionFolder;
+  counterStartPoint = globalIntrospectionConfig.introspectionStartPoint;
   artsThreadInfo.counterList =
       artsNewArrayList(sizeof(artsCounter), COUNTERARRAYBLOCKSIZE);
   for (int i = FIRSTCOUNTER; i < LASTCOUNTER; i++) {
     artsPushToArrayList(artsThreadInfo.counterList,
-                        artsCreateCounter(threadId, nodeId, GETCOUNTERNAME(i)));
+                        artsCounterCreate(threadId, nodeId, GETCOUNTERNAME(i)));
+  }
+  ensureCounterOverrides();
+  for (int i = FIRSTCOUNTER; i < LASTCOUNTER; i++) {
+    artsCounter *counter = artsGetFromArrayList(artsThreadInfo.counterList, i);
+    int override = counterEnabledOverride[i];
+    if (override != -1)
+      counter->enabled = override;
   }
   if (counterStartPoint == 1) {
     countersOn = COUNTERTIMESTAMP;
@@ -69,54 +178,54 @@ void artsInitCounterList(unsigned int threadId, unsigned int nodeId,
   }
 }
 
-void artsStartCounters(unsigned int startPoint) {
+void artsCounterStart(unsigned int startPoint) {
   if (counterStartPoint == startPoint) {
     uint64_t temp = COUNTERTIMESTAMP;
     if (!artsAtomicCswapU64(&countersOn, 0, temp)) {
       printCounters = 1;
-      ARTSCOUNTERTIMERSTART(edtCounter);
+      artsCounterTriggerTimerEvent(edtCounter, true);
     }
   }
 }
 
-unsigned int artsCountersOn() { return countersOn; }
-
-void artsEndCounters() {
+/// Private methods
+void artsCounterStop() {
   uint64_t temp = countersOn;
   countersOn = 0;
-  ARTS_INFO("COUNT TIME: %lu countersOn: %lu", COUNTERTIMESTAMP - temp,
+  ARTS_INFO("COUNTERS TIME: %lu countersOn: %lu", COUNTERTIMESTAMP - temp,
             countersOn);
 }
 
-artsCounter *artsCreateCounter(unsigned int threadId, unsigned int nodeId,
+artsCounter *artsCounterCreate(unsigned int threadId, unsigned int nodeId,
                                const char *counterName) {
   artsCounter *counter = (artsCounter *)artsCalloc(1, sizeof(artsCounter));
   counter->threadId = threadId;
   counter->nodeId = nodeId;
   counter->name = counterName;
-  artsResetCounter(counter);
+  counter->enabled = counterDefaultEnabled ? true : false;
+  artsCounterReset(counter);
   return counter;
 }
 
-artsCounter *artsUserGetCounter(unsigned int index, char *name) {
+artsCounter *artsCounterGetUser(unsigned int index, char *name) {
   unsigned int currentSize =
       (unsigned int)artsLengthArrayList(artsThreadInfo.counterList);
   for (unsigned int i = currentSize; i <= index; i++)
     artsPushToArrayList(
         artsThreadInfo.counterList,
-        artsCreateCounter(artsThreadInfo.coreId, artsGlobalRankId, NULL));
-  artsCounter *counter = artsGetCounter((artsCounterType)index);
+        artsCounterCreate(artsThreadInfo.coreId, artsGlobalRankId, NULL));
+  artsCounter *counter = artsCounterGet((artsCounterType)index);
   if (counter->name == NULL)
     counter->name = name;
   return counter;
 }
 
-artsCounter *artsGetCounter(artsCounterType counter) {
+artsCounter *artsCounterGet(artsCounterType counter) {
   return (artsCounter *)artsGetFromArrayList(artsThreadInfo.counterList,
                                              counter);
 }
 
-void artsResetCounter(artsCounter *counter) {
+void artsCounterReset(artsCounter *counter) {
   counter->count = 0;
   counter->totalTime = 0;
   counter->startTime = 0;
@@ -124,53 +233,41 @@ void artsResetCounter(artsCounter *counter) {
 }
 
 void artsCounterIncrement(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting)
+  if (counterIsActive(counter))
     counter->count++;
 }
 
 void artsCounterIncrementBy(artsCounter *counter, uint64_t num) {
-  if (counter && countersOn && artsThreadInfo.localCounting)
+  if (counterIsActive(counter))
     counter->count += num;
 }
 
 void artsCounterTimerStart(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting)
+  if (counterIsActive(counter))
     counter->startTime = COUNTERTIMESTAMP;
 }
 
 void artsCounterTimerEndIncrement(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
-    counter->endTime = COUNTERTIMESTAMP;
-    counter->totalTime += (counter->endTime - counter->startTime);
-    counter->count++;
-  }
+  counterRecordTiming(counter, 1, false);
 }
 
 void artsCounterTimerEndIncrementBy(artsCounter *counter, uint64_t num) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
-    counter->endTime = COUNTERTIMESTAMP;
-    counter->totalTime += (counter->endTime - counter->startTime);
-    counter->count += num;
-  }
+  counterRecordTiming(counter, num, false);
 }
 
 void artsCounterTimerEndOverwrite(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
-    counter->endTime = COUNTERTIMESTAMP;
-    counter->totalTime = (counter->endTime - counter->startTime);
-    counter->count++;
-  }
+  counterRecordTiming(counter, 1, true);
 }
 
 void artsCounterAddTime(artsCounter *counter, uint64_t time) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
+  if (counterIsActive(counter)) {
     counter->totalTime += time;
     counter->count++;
   }
 }
 
 void artsCounterAddEndTime(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
+  if (counterIsActive(counter)) {
     if (counter->startTime && counter->endTime) {
       counter->totalTime += counter->endTime - counter->startTime;
       counter->count++;
@@ -181,7 +278,7 @@ void artsCounterAddEndTime(artsCounter *counter) {
 }
 
 void artsCounterNonEmtpy(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
+  if (counterIsActive(counter)) {
     if (!counter->startTime) {
       counter->startTime = counter->endTime;
       counter->endTime = COUNTERTIMESTAMP;
@@ -190,64 +287,19 @@ void artsCounterNonEmtpy(artsCounter *counter) {
 }
 
 void artsCounterSetStartTime(artsCounter *counter, uint64_t start) {
-  if (counter && countersOn && artsThreadInfo.localCounting)
+  if (counterIsActive(counter))
     counter->startTime = start;
 }
 
 void artsCounterSetEndTime(artsCounter *counter, uint64_t end) {
-  if (counter && countersOn && artsThreadInfo.localCounting)
+  if (counterIsActive(counter))
     counter->endTime = end;
 }
 
 uint64_t artsCounterGetStartTime(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
-    return counter->startTime;
-  }
-  return 0;
+  return counterIsActive(counter) ? counter->startTime : 0;
 }
 
 uint64_t artsCounterGetEndTime(artsCounter *counter) {
-  if (counter && countersOn && artsThreadInfo.localCounting) {
-    return counter->endTime;
-  }
-  return 0;
-}
-
-void artsCounterPrint(artsCounter *counter, FILE *stream) {
-  fprintf(stream, "%s %u %u %" PRIu64 " %" PRIu64 "\n", counter->name,
-          counter->nodeId, counter->threadId, counter->count,
-          counter->totalTime);
-}
-
-void artsWriteCountersToFile(unsigned int threadId, unsigned int nodeId) {
-  if (printCounters) {
-    char *filename;
-    if (counterPrefix) {
-      struct stat st = {0};
-      if (stat(counterPrefix, &st) == -1)
-        mkdir(counterPrefix, 0755);
-
-      unsigned int stringSize = strlen(counterPrefix) + COUNTERPREFIXSIZE;
-      filename = (char *)artsMalloc(sizeof(char) * stringSize);
-      sprintf(filename, "%s/%s_%u_%u.ct", counterPrefix, "counter", nodeId,
-              threadId);
-    } else {
-      filename = (char *)artsMalloc(sizeof(char) * COUNTERPREFIXSIZE);
-      sprintf(filename, "%s_%u_%u.ct", "counter", nodeId, threadId);
-    }
-
-    FILE *fp = fopen(filename, "w");
-    if (fp) {
-      uint64_t i;
-      uint64_t length = artsLengthArrayList(artsThreadInfo.counterList);
-      for (i = 0; i < length; i++) {
-        artsCounter *counter =
-            (artsCounter *)artsGetFromArrayList(artsThreadInfo.counterList, i);
-        if (counter->name)
-          artsCounterPrint(counter, fp);
-      }
-      //        artsDeleteArrayList(artsThreadInfo.counterList);
-    } else
-      ARTS_INFO("Failed to open %s", filename);
-  }
+  return counterIsActive(counter) ? counter->endTime : 0;
 }

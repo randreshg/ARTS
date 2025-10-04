@@ -814,7 +814,7 @@ artsRouteItem_t *artsRouteTableIterate(artsRouteTableIterator *iter) {
 void artsPrintItem(artsRouteItem_t *item) {
   if (item) {
     uint64_t local = item->lock;
-    ARTS_INFO("GUID: %lu DATA: %p RANK: %u LOCK: %p COUNT: %lu Res: %u Req: %u "
+    ARTS_INFO("GUID: %lu DATA: %p RANK: %u LOCK: %p COUNTERS: %lu Res: %u Req: %u "
               "Avail: %u Del: %u",
               item->key, item->data, item->rank, local, getCount(local),
               isRes(local) != 0, isReq(local) != 0, isAvail(local) != 0,

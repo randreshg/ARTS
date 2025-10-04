@@ -36,91 +36,41 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_SYSTEM_CONFIG_H
-#define ARTS_SYSTEM_CONFIG_H
+#ifndef ARTS_JSON_WRITER_H
+#define ARTS_JSON_WRITER_H
+
+#include <stdint.h>
+#include <stdio.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/network/RemoteLauncher.h"
+#define ARTS_JSON_MAX_DEPTH 32
 
-struct artsConfigTable {
-  unsigned int rank;
-  char *ipAddress;
-};
+typedef struct {
+  FILE *fp;
+  unsigned indentSize;
+  unsigned depth;
+  uint8_t needComma[ARTS_JSON_MAX_DEPTH];
+} artsJsonWriter;
 
-struct artsConfigVariable {
-  unsigned int size;
-  struct artsConfigVariable *next;
-  char variable[255];
-  char value[];
-};
+void artsJsonWriterInit(artsJsonWriter *writer, FILE *fp, unsigned indentSize);
+void artsJsonWriterBeginObject(artsJsonWriter *writer, const char *key);
+void artsJsonWriterEndObject(artsJsonWriter *writer);
+void artsJsonWriterBeginArray(artsJsonWriter *writer, const char *key);
+void artsJsonWriterEndArray(artsJsonWriter *writer);
+void artsJsonWriterWriteUInt64(artsJsonWriter *writer, const char *key,
+                               uint64_t value);
+void artsJsonWriterWriteDouble(artsJsonWriter *writer, const char *key,
+                               double value);
+void artsJsonWriterWriteString(artsJsonWriter *writer, const char *key,
+                               const char *value);
+void artsJsonWriterWriteNull(artsJsonWriter *writer, const char *key);
+void artsJsonWriterFinish(artsJsonWriter *writer);
 
-struct artsConfig {
-  unsigned int myRank;
-  char *masterNode;
-  char *myIPAddress;
-  char *netInterface;
-  char *protocol;
-  char *launcher;
-  unsigned int ports;
-  unsigned int osThreadCount;
-  unsigned int threadCount;
-  unsigned int coreCount;
-  unsigned int recieverCount;
-  unsigned int senderCount;
-  unsigned int socketCount;
-  unsigned int nodes;
-  unsigned int masterRank;
-  unsigned int port;
-  unsigned int killMode;
-  unsigned int routeTableSize;
-  unsigned int routeTableEntries;
-  unsigned int dequeSize;
-  unsigned int introspectiveTraceLevel;
-  unsigned int introspectiveStartPoint;
-  unsigned int printNodeStats;
-  unsigned int scheduler;
-  unsigned int shutdownEpoch;
-  char *prefix;
-  char *suffix;
-  bool ibNames;
-  bool masterBoot;
-  bool coreDump;
-  unsigned int pinStride;
-  bool printTopology;
-  bool pinThreads;
-  unsigned int firstEdt;
-  unsigned int shadLoopStride;
-  uint64_t stackSize;
-  struct artsRemoteLauncher *launcherData;
-  char *introspectiveConf;
-  unsigned int tableLength;
-  unsigned int
-      tMT; // @awmm temporal MT; # of MT aliases per core thread; 0 if disabled
-  unsigned int coresPerNetworkThread;
-  unsigned int gpu;
-  unsigned int gpuLocality;
-  unsigned int gpuFit;
-  unsigned int gpuLCSync;
-  unsigned int gpuMaxEdts;
-  uint64_t gpuMaxMemory;
-  bool gpuP2P;
-  bool gpuBuffOn;
-  unsigned int gpuRouteTableSize;
-  unsigned int gpuRouteTableEntries;
-  bool freeDbAfterGpuRun;
-  bool runGpuGcPreEdt;
-  bool runGpuGcIdle;
-  bool deleteZerosGpuGc;
-  struct artsConfigTable *table;
-};
-
-struct artsConfig *artsConfigLoad();
-void artsConfigDestroy(struct artsConfig *config);
-unsigned int artsConfigGetNumberOfThreads(char *location);
 #ifdef __cplusplus
 }
 #endif
 
-#endif
+#endif /* ARTS_JSON_WRITER_H */

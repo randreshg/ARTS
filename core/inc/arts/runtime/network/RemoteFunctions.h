@@ -73,7 +73,7 @@ void artsRemoteSignalEdt(artsGuid_t edt, artsGuid_t db, uint32_t slot,
                          artsType_t mode);
 void artsRemoteEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
                                 uint32_t slot);
-void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t slot,
+void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t action,
                                           bool lock);
 void artsRemoteDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
                                uint32_t edtSlot);

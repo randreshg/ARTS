@@ -39,7 +39,6 @@
 #include "arts/runtime/Runtime.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
@@ -83,16 +82,18 @@ extern void artsMain(int argc, char **argv) __attribute__((weak));
 struct artsRuntimeShared artsNodeInfo;
 __thread struct artsRuntimePrivate artsThreadInfo;
 
-typedef bool (*scheduler_t)();
+typedef bool (*scheduler_t)(void);
 #ifdef USE_GPU
-scheduler_t schedulerLoop[] = {
-    artsDefaultSchedulerLoop,      artsNetworkBeforeStealSchedulerLoop,
-    artsNetworkFirstSchedulerLoop, artsGpuSchedulerLoop,
-    artsGpuSchedulerBackoffLoop,   artsGpuSchedulerDemandLoop};
+scheduler_t schedulerLoop[] = {(scheduler_t)artsDefaultSchedulerLoop,
+                               (scheduler_t)artsNetworkBeforeStealSchedulerLoop,
+                               (scheduler_t)artsNetworkFirstSchedulerLoop,
+                               (scheduler_t)artsGpuSchedulerLoop,
+                               (scheduler_t)artsGpuSchedulerBackoffLoop,
+                               (scheduler_t)artsGpuSchedulerDemandLoop};
 #else
-scheduler_t schedulerLoop[] = {artsDefaultSchedulerLoop,
-                               artsNetworkBeforeStealSchedulerLoop,
-                               artsNetworkFirstSchedulerLoop};
+scheduler_t schedulerLoop[] = {(scheduler_t)artsDefaultSchedulerLoop,
+                               (scheduler_t)artsNetworkBeforeStealSchedulerLoop,
+                               (scheduler_t)artsNetworkFirstSchedulerLoop};
 #endif
 
 void artsMainEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
@@ -170,7 +171,7 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
       (uint64_t *)artsCalloc(totalThreads, sizeof(uint64_t));
   artsTMTNodeInit(workerThreads);
   artsInitTMTLitePerNode(workerThreads);
-  artsInitIntrospector(config);
+  artsIntrospectionInit(config->introspectiveConf);
 #ifdef USE_GPU
   if (artsNodeInfo.gpu) // TODO: Multi-Node init
     artsNodeInitGpus();
@@ -178,7 +179,7 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
 }
 
 void artsRuntimeGlobalCleanup() {
-  artsIntrospectivePrintTotals(artsGlobalRankId);
+  artsIntrospectionStop();
   artsCleanUpDbs();
   artsFree(artsNodeInfo.deque);
   artsFree(artsNodeInfo.receiverDeque);
@@ -197,7 +198,7 @@ void artsRuntimeGlobalCleanup() {
 }
 
 void artsThreadZeroNodeStart() {
-  artsStartInspector(1);
+  artsIntrospectionStart(1);
 
   setGlobalGuidOn();
   createShutdownEpoch();
@@ -210,8 +211,7 @@ void artsThreadZeroNodeStart() {
 #endif
   setGuidGeneratorAfterParallelStart();
 
-  artsStartInspector(2);
-  ARTSSTARTCOUNTING(2);
+  artsIntrospectionStart(2);
   artsAtomicSub(&artsNodeInfo.readyToParallelStart, 1U);
   while (artsNodeInfo.readyToParallelStart) {
   }
@@ -226,8 +226,7 @@ void artsThreadZeroNodeStart() {
   artsAtomicSub(&artsNodeInfo.readyToInspect, 1U);
   while (artsNodeInfo.readyToInspect) {
   }
-  ARTSSTARTCOUNTING(3);
-  artsStartInspector(3);
+  artsIntrospectionStart(3);
   artsAtomicSub(&artsNodeInfo.readyToExecute, 1U);
   while (artsNodeInfo.readyToExecute) {
   }
@@ -302,8 +301,9 @@ void artsRuntimePrivateInit(struct threadMask *unit,
   artsThreadInfo.localCounting = 1;
   artsThreadInfo.shadLock = 0;
   artsGuidKeyGeneratorInit();
-  INITCOUNTERLIST(unit->id, artsGlobalRankId, config->counterFolder,
-                  config->counterStartPoint);
+#ifdef COUNTERS
+  artsCounterInitList(unit->id, artsGlobalRankId);
+#endif
 
   if (artsThreadInfo.worker) {
     if (artsNodeInfo.tMT && artsThreadInfo.worker) // @awmm
@@ -358,10 +358,6 @@ void artsRuntimePrivateCleanup() {
     artsDequeDelete(artsThreadInfo.myNodeDeque);
   if (artsThreadInfo.myGpuDeque)
     artsDequeDelete(artsThreadInfo.myGpuDeque);
-#if defined(USE_COUNT) || defined(USE_MODELCOUNT)
-  artsWriteCountersToFile(artsThreadInfo.threadId, artsGlobalRankId);
-#endif
-  artsWriteMetricShotFile(artsThreadInfo.threadId, artsGlobalRankId);
 }
 
 void artsRuntimeStop() {
@@ -373,7 +369,6 @@ void artsRuntimeStop() {
   }
   artsTMTRuntimeStop();
   artsTMTLiteShutdown();
-  artsStopInspector();
 }
 
 void artsHandleRemoteStolenEdt(struct artsEdt *edt) {
@@ -414,7 +409,7 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
       }
     }
 
-    artsUpdatePerformanceMetric(artsEdtQueue, artsThread, 1, false);
+    artsMetricsTriggerEvent(artsEdtQueue, artsThread, 1);
   }
 }
 void artsRunEdt(struct artsEdt *edt) {
@@ -428,12 +423,10 @@ void artsRunEdt(struct artsEdt *edt) {
   prepDbs(depc, depv, false);
 
   artsSetThreadLocalEdtInfo(edt);
-  ARTSCOUNTERTIMERSTART(edtCounter);
   ARTS_INFO("Running EDT [Guid: %lu]", edt->currentEdt);
   func(paramc, paramv, depc, depv);
 
-  ARTSCOUNTERTIMERENDINCREMENT(edtCounter);
-  artsUpdatePerformanceMetric(artsEdtThroughput, artsThread, 1, false);
+  artsMetricsTriggerEvent(artsEdtThroughput, artsThread, 1);
 
   artsUnsetThreadLocalEdtInfo();
 
@@ -520,7 +513,7 @@ struct artsEdt *artsFindEdt() {
         edtFound = artsRuntimeStealFromNetwork();
 
     if (edtFound)
-      artsUpdatePerformanceMetric(artsEdtSteal, artsThread, 1, false);
+      artsMetricsTriggerEvent(artsEdtSteal, artsThread, 1);
   }
   return edtFound;
 }
@@ -534,7 +527,7 @@ bool artsDefaultSchedulerLoop() {
         edtFound = artsRuntimeStealFromNetwork();
 
     if (edtFound)
-      artsUpdatePerformanceMetric(artsEdtSteal, artsThread, 1, false);
+      artsMetricsTriggerEvent(artsEdtSteal, artsThread, 1);
   }
 
   if (edtFound) {
@@ -550,7 +543,7 @@ bool artsDefaultSchedulerLoop() {
 }
 
 int artsRuntimeLoop() {
-  ARTSCOUNTERTIMERSTART(totalCounter);
+  artsCounterTriggerTimerEvent(totalCounter, true);
   if (artsThreadInfo.networkReceive) {
     while (artsThreadInfo.alive) {
       artsServerTryToRecieve(&artsNodeInfo.buf, &artsNodeInfo.packetSize,
@@ -569,6 +562,6 @@ int artsRuntimeLoop() {
       artsNodeInfo.scheduler();
     }
   }
-  ARTSCOUNTERTIMERENDINCREMENT(totalCounter);
+  artsCounterTriggerTimerEvent(totalCounter, false);
   return 0;
 }

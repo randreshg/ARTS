@@ -103,7 +103,7 @@ bool pushDataToStream(unsigned int gpuId, void *dst, void *src, size_t count,
   if (src) {
     CHECKCORRECT(cudaMemcpyAsync(dst, src, count, cudaMemcpyHostToDevice,
                                  artsGpus[gpuId].stream));
-    artsUpdatePerformanceMetric(artsGpuBWPush, artsThread, count, false);
+    artsMetricsTriggerEvent(artsGpuBWPush, artsThread, count);
   } else
     CHECKCORRECT(cudaMemsetAsync(dst, 0, count, artsGpus[gpuId].stream));
   return true;
@@ -126,7 +126,7 @@ bool getDataFromStream(unsigned int gpuId, void *dst, void *src, size_t count,
   }
   CHECKCORRECT(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToHost,
                                artsGpus[gpuId].stream));
-  artsUpdatePerformanceMetric(artsGpuBWPull, artsThread, count, false);
+  artsMetricsTriggerEvent(artsGpuBWPull, artsThread, count);
   return true;
 }
 
@@ -160,7 +160,7 @@ bool pushKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv,
                                 (void **)kernelArgs, (size_t)0,
                                 artsGpus[gpuId].stream));
   checkOccupancy(fnPtr, gpuId, block);
-  artsUpdatePerformanceMetric(artsGpuEdt, artsThread, 1, false);
+  artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
   return true;
 }
 
@@ -205,9 +205,9 @@ bool flushMemStream(unsigned int gpuId, unsigned int *count,
     }
     *count = 0;
     if (kind == cudaMemcpyHostToDevice) {
-      artsUpdatePerformanceMetric(artsGpuBWPush, artsThread, dataSize, false);
+      artsMetricsTriggerEvent(artsGpuBWPush, artsThread, dataSize);
     } else {
-      artsUpdatePerformanceMetric(artsGpuBWPull, artsThread, dataSize, false);
+      artsMetricsTriggerEvent(artsGpuBWPull, artsThread, dataSize);
     }
     return true;
   }
@@ -232,8 +232,7 @@ bool flushKernelStream(unsigned int gpuId) {
           (void **)kernelArgs, (size_t)0, artsGpus[gpuId].stream));
       checkOccupancy(kernelToDevBuff[gpuId][i].fnPtr, gpuId, block);
     }
-    artsUpdatePerformanceMetric(artsGpuEdt, artsThread, kernelToDevCount[gpuId],
-                                false);
+    artsMetricsTriggerEvent(artsGpuEdt, artsThread, kernelToDevCount[gpuId]);
     kernelToDevCount[gpuId] = 0;
   }
   return ret;
@@ -269,7 +268,7 @@ bool flushStream(unsigned int gpuId) {
     flushWrapUpStream(gpuId);
 
     artsCudaRestoreDevice();
-    artsUpdatePerformanceMetric(artsGpuBufferFlush, artsThread, 1, false);
+    artsMetricsTriggerEvent(artsGpuBufferFlush, artsThread, 1);
     return true;
   }
   return false;
