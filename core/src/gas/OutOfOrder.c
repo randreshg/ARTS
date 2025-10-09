@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/gas/OutOfOrder.h"
+
 #include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/RT.h"
@@ -45,10 +46,8 @@
 #include "arts/runtime/memory/ArrayDb.h"
 #include "arts/runtime/memory/DbFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
-#include "arts/utils/Atomics.h"
-
+#include "arts/system/ArtsPrint.h"
 
 enum artsOutOfOrderType {
   ooSignalEdt,
@@ -189,65 +188,65 @@ struct ooGeneric {
 };
 
 inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
-  struct ooGeneric *typePtr = handleMe;
+  struct ooGeneric *typePtr = (struct ooGeneric *)handleMe;
   switch (typePtr->type) {
   case ooSignalEdt: {
-    struct ooSignalEdt *edt = handleMe;
+    struct ooSignalEdt *edt = (struct ooSignalEdt *)handleMe;
     internalSignalEdt(edt->edtPacket, edt->slot, edt->dataGuid, edt->mode, NULL,
                       0);
     break;
   }
   case ooEventSatisfySlot: {
-    struct ooEventSatisfySlot *event = handleMe;
+    struct ooEventSatisfySlot *event = (struct ooEventSatisfySlot *)handleMe;
     artsEventSatisfySlot(event->eventGuid, event->dataGuid, event->slot);
     break;
   }
   case ooPersistentEventSatisfySlot: {
-    struct ooEventSatisfySlot *event = handleMe;
+    struct ooEventSatisfySlot *event = (struct ooEventSatisfySlot *)handleMe;
     artsPersistentEventSatisfy(event->eventGuid, event->slot, false);
     break;
   }
   case ooAddDependence: {
-    struct ooAddDependence *dep = handleMe;
+    struct ooAddDependence *dep = (struct ooAddDependence *)handleMe;
     artsAddDependence(dep->source, dep->destination, dep->slot);
     break;
   }
   case ooHandleReadyEdt: {
-    struct ooHandleReadyEdt *readyEdt = handleMe;
+    struct ooHandleReadyEdt *readyEdt = (struct ooHandleReadyEdt *)handleMe;
     artsHandleReadyEdt(readyEdt->edt);
     break;
   }
   case ooRemoteDbSend: {
-    struct ooRemoteDbSend *dbSend = handleMe;
+    struct ooRemoteDbSend *dbSend = (struct ooRemoteDbSend *)handleMe;
     artsRemoteDbSendCheck(dbSend->rank, (struct artsDb *)memoryPtr,
                           dbSend->mode);
     break;
   }
   case ooDbRequestSatisfy: {
-    struct ooDbRequestSatisfy *req = handleMe;
+    struct ooDbRequestSatisfy *req = (struct ooDbRequestSatisfy *)handleMe;
     ARTS_DEBUG("FILL %lu %u %p", req->edt, req->slot, memoryPtr);
     artsDbRequestCallback(req->edt, req->slot, (struct artsDb *)memoryPtr);
     break;
   }
   case ooDbFullSend: {
-    struct ooRemoteDbFullSend *dbSend = handleMe;
+    struct ooRemoteDbFullSend *dbSend = (struct ooRemoteDbFullSend *)handleMe;
     artsRemoteDbFullSendCheck(dbSend->rank, (struct artsDb *)memoryPtr,
                               dbSend->edt, dbSend->slot, dbSend->mode);
     break;
   }
   case ooGetFromDb: {
-    struct ooGetFromDb *req = handleMe;
+    struct ooGetFromDb *req = (struct ooGetFromDb *)handleMe;
     artsGetFromDbAt(req->edtGuid, req->dbGuid, req->slot, req->offset,
                     req->size, artsGlobalRankId);
     break;
   }
   case ooSignalEdtPtr: {
-    struct ooSignalEdtPtr *req = handleMe;
+    struct ooSignalEdtPtr *req = (struct ooSignalEdtPtr *)handleMe;
     artsSignalEdtPtr(req->edtGuid, req->slot, req->ptr, req->size);
     break;
   }
   case ooPutInDb: {
-    struct ooPutInDb *req = handleMe;
+    struct ooPutInDb *req = (struct ooPutInDb *)handleMe;
     internalPutInDb(req->ptr, req->edtGuid, req->dbGuid, req->slot, req->offset,
                     req->size, req->epochGuid, artsGlobalRankId);
     artsFree(req->ptr);
@@ -255,41 +254,42 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
   }
   case ooEpochActive: {
     //            ARTS_INFO("ooActveFire");
-    struct ooEpoch *req = handleMe;
+    struct ooEpoch *req = (struct ooEpoch *)handleMe;
     incrementActiveEpoch(req->guid);
     break;
   }
   case ooEpochFinish: {
     //            ARTS_INFO("ooFinishFire");
-    struct ooEpoch *req = handleMe;
+    struct ooEpoch *req = (struct ooEpoch *)handleMe;
     incrementFinishedEpoch(req->guid);
     break;
   }
   case ooEpochSend: {
     //            ARTS_INFO("ooEpochSendFire");
-    struct ooEpochSend *req = handleMe;
+    struct ooEpochSend *req = (struct ooEpochSend *)handleMe;
     sendEpoch(req->guid, req->source, req->dest);
     break;
   }
   case ooEpochIncQueue: {
-    struct ooEpoch *req = handleMe;
+    struct ooEpoch *req = (struct ooEpoch *)handleMe;
     incrementQueueEpoch(req->guid);
     break;
   }
   case ooAtomicAddInArrayDb: {
-    struct ooAtomicAddInArrayDb *req = handleMe;
+    struct ooAtomicAddInArrayDb *req = (struct ooAtomicAddInArrayDb *)handleMe;
     internalAtomicAddInArrayDb(req->dbGuid, req->index, req->toAdd,
                                req->edtGuid, req->slot, req->epochGuid);
     break;
   }
   case ooAtomicCompareAndSwapInArrayDb: {
-    struct ooAtomicCompareAndSwapInArrayDb *req = handleMe;
+    struct ooAtomicCompareAndSwapInArrayDb *req =
+        (struct ooAtomicCompareAndSwapInArrayDb *)handleMe;
     internalAtomicCompareAndSwapInArrayDb(
         req->dbGuid, req->index, req->oldValue, req->newValue, req->edtGuid,
         req->slot, req->epochGuid);
   }
   case ooDbMove: {
-    struct ooRemoteDbSend *req = handleMe;
+    struct ooRemoteDbSend *req = (struct ooRemoteDbSend *)handleMe;
     artsDbMove(req->dataGuid, req->rank);
     break;
   }
@@ -302,7 +302,8 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
 void artsOutOfOrderSignalEdt(artsGuid_t waitOn, artsGuid_t edtPacket,
                              artsGuid_t dataGuid, uint32_t slot,
                              artsType_t mode, bool force) {
-  struct ooSignalEdt *edt = artsMalloc(sizeof(struct ooSignalEdt));
+  struct ooSignalEdt *edt =
+      (struct ooSignalEdt *)artsMalloc(sizeof(struct ooSignalEdt));
   edt->type = ooSignalEdt;
   edt->edtPacket = edtPacket;
   edt->dataGuid = dataGuid;
@@ -322,8 +323,8 @@ void artsOutOfOrderSignalEdt(artsGuid_t waitOn, artsGuid_t edtPacket,
 void artsOutOfOrderEventSatisfySlot(artsGuid_t waitOn, artsGuid_t eventGuid,
                                     artsGuid_t dataGuid, uint32_t slot,
                                     bool force) {
-  struct ooEventSatisfySlot *event =
-      artsMalloc(sizeof(struct ooEventSatisfySlot));
+  struct ooEventSatisfySlot *event = (struct ooEventSatisfySlot *)artsMalloc(
+      sizeof(struct ooEventSatisfySlot));
   event->type = ooEventSatisfySlot;
   event->eventGuid = eventGuid;
   event->dataGuid = dataGuid;
@@ -343,8 +344,8 @@ void artsOutOfOrderEventSatisfySlot(artsGuid_t waitOn, artsGuid_t eventGuid,
 void artsOutOfOrderPersistentEventSatisfySlot(artsGuid_t waitOn,
                                               artsGuid_t eventGuid,
                                               uint32_t slot, bool force) {
-  struct ooEventSatisfySlot *event =
-      artsMalloc(sizeof(struct ooEventSatisfySlot));
+  struct ooEventSatisfySlot *event = (struct ooEventSatisfySlot *)artsMalloc(
+      sizeof(struct ooEventSatisfySlot));
   event->type = ooPersistentEventSatisfySlot;
   event->eventGuid = eventGuid;
   event->slot = slot;
@@ -363,7 +364,8 @@ void artsOutOfOrderPersistentEventSatisfySlot(artsGuid_t waitOn,
 void artsOutOfOrderAddDependence(artsGuid_t source, artsGuid_t destination,
                                  uint32_t slot, artsType_t mode,
                                  artsGuid_t waitOn) {
-  struct ooAddDependence *dep = artsMalloc(sizeof(struct ooAddDependence));
+  struct ooAddDependence *dep =
+      (struct ooAddDependence *)artsMalloc(sizeof(struct ooAddDependence));
   dep->type = ooAddDependence;
   dep->source = source;
   dep->destination = destination;
@@ -381,7 +383,8 @@ void artsOutOfOrderAddDependenceToPersistentEvent(artsGuid_t source,
                                                   uint32_t slot,
                                                   artsType_t mode,
                                                   artsGuid_t waitOn) {
-  struct ooAddDependence *dep = artsMalloc(sizeof(struct ooAddDependence));
+  struct ooAddDependence *dep =
+      (struct ooAddDependence *)artsMalloc(sizeof(struct ooAddDependence));
   dep->type = ooAddDependence;
   dep->source = source;
   dep->destination = destination;
@@ -396,7 +399,7 @@ void artsOutOfOrderAddDependenceToPersistentEvent(artsGuid_t source,
 
 void artsOutOfOrderHandleReadyEdt(artsGuid_t triggerGuid, struct artsEdt *edt) {
   struct ooHandleReadyEdt *readyEdt =
-      artsMalloc(sizeof(struct ooHandleReadyEdt));
+      (struct ooHandleReadyEdt *)artsMalloc(sizeof(struct ooHandleReadyEdt));
   readyEdt->type = ooHandleReadyEdt;
   readyEdt->edt = edt;
   bool res = artsRouteTableAddOO(triggerGuid, readyEdt, false);
@@ -408,14 +411,15 @@ void artsOutOfOrderHandleReadyEdt(artsGuid_t triggerGuid, struct artsEdt *edt) {
 
 void artsOutOfOrderHandleRemoteDbSend(int rank, artsGuid_t dbGuid,
                                       artsType_t mode) {
-  struct ooRemoteDbSend *readySend = artsMalloc(sizeof(struct ooRemoteDbSend));
+  struct ooRemoteDbSend *readySend =
+      (struct ooRemoteDbSend *)artsMalloc(sizeof(struct ooRemoteDbSend));
   readySend->type = ooRemoteDbSend;
   readySend->rank = rank;
   readySend->dataGuid = dbGuid;
   readySend->mode = mode;
   bool res = artsRouteTableAddOO(dbGuid, readySend, false);
   if (!res) {
-    struct artsDb *db = artsRouteTableLookupItem(dbGuid);
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
     artsRemoteDbSendCheck(readySend->rank, db, readySend->mode);
     artsFree(readySend);
   }
@@ -423,14 +427,14 @@ void artsOutOfOrderHandleRemoteDbSend(int rank, artsGuid_t dbGuid,
 
 void artsOutOfOrderHandleDbRequest(artsGuid_t dbGuid, struct artsEdt *edt,
                                    unsigned int slot, bool inc) {
-  struct ooDbRequestSatisfy *req =
-      artsMalloc(sizeof(struct ooDbRequestSatisfy));
+  struct ooDbRequestSatisfy *req = (struct ooDbRequestSatisfy *)artsMalloc(
+      sizeof(struct ooDbRequestSatisfy));
   req->type = ooDbRequestSatisfy;
   req->edt = edt;
   req->slot = slot;
   bool res = artsRouteTableAddOO(dbGuid, req, inc);
   if (!res) {
-    struct artsDb *db = artsRouteTableLookupItem(dbGuid);
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
     artsDbRequestCallback(req->edt, req->slot, db);
     artsFree(req);
   }
@@ -440,14 +444,14 @@ void artsOutOfOrderHandleDbRequest(artsGuid_t dbGuid, struct artsEdt *edt,
 void artsOutOfOrderHandleDbRequestWithOOList(struct artsOutOfOrderList *addToMe,
                                              void **data, struct artsEdt *edt,
                                              unsigned int slot) {
-  struct ooDbRequestSatisfy *req =
-      artsMalloc(sizeof(struct ooDbRequestSatisfy));
+  struct ooDbRequestSatisfy *req = (struct ooDbRequestSatisfy *)artsMalloc(
+      sizeof(struct ooDbRequestSatisfy));
   req->type = ooDbRequestSatisfy;
   req->edt = edt;
   req->slot = slot;
   bool res = artsOutOfOrderListAddItem(addToMe, req);
   if (!res) {
-    artsDbRequestCallback(req->edt, req->slot, *data);
+    artsDbRequestCallback(req->edt, req->slot, (struct artsDb *)(*data));
     artsFree(req);
   }
 }
@@ -455,8 +459,8 @@ void artsOutOfOrderHandleDbRequestWithOOList(struct artsOutOfOrderList *addToMe,
 void artsOutOfOrderHandleRemoteDbFullSend(artsGuid_t dbGuid, int rank,
                                           struct artsEdt *edt,
                                           unsigned int slot, artsType_t mode) {
-  struct ooRemoteDbFullSend *dbSend =
-      artsMalloc(sizeof(struct ooRemoteDbFullSend));
+  struct ooRemoteDbFullSend *dbSend = (struct ooRemoteDbFullSend *)artsMalloc(
+      sizeof(struct ooRemoteDbFullSend));
   dbSend->type = ooDbFullSend;
   dbSend->rank = rank;
   dbSend->edt = edt;
@@ -464,7 +468,7 @@ void artsOutOfOrderHandleRemoteDbFullSend(artsGuid_t dbGuid, int rank,
   dbSend->mode = mode;
   bool res = artsRouteTableAddOO(dbGuid, dbSend, false);
   if (!res) {
-    struct artsDb *db = artsRouteTableLookupItem(dbGuid);
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
     artsRemoteDbFullSendCheck(dbSend->rank, db, dbSend->edt, dbSend->slot,
                               dbSend->mode);
     artsFree(dbSend);
@@ -474,7 +478,8 @@ void artsOutOfOrderHandleRemoteDbFullSend(artsGuid_t dbGuid, int rank,
 void artsOutOfOrderGetFromDb(artsGuid_t edtGuid, artsGuid_t dbGuid,
                              unsigned int slot, unsigned int offset,
                              unsigned int size) {
-  struct ooGetFromDb *req = artsMalloc(sizeof(struct ooGetFromDb));
+  struct ooGetFromDb *req =
+      (struct ooGetFromDb *)artsMalloc(sizeof(struct ooGetFromDb));
   req->type = ooGetFromDb;
   req->edtGuid = edtGuid;
   req->dbGuid = dbGuid;
@@ -492,7 +497,8 @@ void artsOutOfOrderGetFromDb(artsGuid_t edtGuid, artsGuid_t dbGuid,
 void artsOutOfOrderSignalEdtWithPtr(artsGuid_t edtGuid, artsGuid_t dbGuid,
                                     void *ptr, unsigned int size,
                                     unsigned int slot) {
-  struct ooSignalEdtPtr *req = artsMalloc(sizeof(struct ooSignalEdtPtr));
+  struct ooSignalEdtPtr *req =
+      (struct ooSignalEdtPtr *)artsMalloc(sizeof(struct ooSignalEdtPtr));
   req->type = ooSignalEdtPtr;
   req->edtGuid = edtGuid;
   req->dbGuid = dbGuid;
@@ -509,7 +515,8 @@ void artsOutOfOrderSignalEdtWithPtr(artsGuid_t edtGuid, artsGuid_t dbGuid,
 void artsOutOfOrderPutInDb(void *ptr, artsGuid_t edtGuid, artsGuid_t dbGuid,
                            unsigned int slot, unsigned int offset,
                            unsigned int size, artsGuid_t epochGuid) {
-  struct ooPutInDb *req = artsMalloc(sizeof(struct ooPutInDb));
+  struct ooPutInDb *req =
+      (struct ooPutInDb *)artsMalloc(sizeof(struct ooPutInDb));
   req->type = ooPutInDb;
   req->ptr = ptr;
   req->edtGuid = edtGuid;
@@ -528,7 +535,7 @@ void artsOutOfOrderPutInDb(void *ptr, artsGuid_t edtGuid, artsGuid_t dbGuid,
 }
 
 void artsOutOfOrderIncActiveEpoch(artsGuid_t epochGuid) {
-  struct ooEpoch *req = artsMalloc(sizeof(struct ooEpoch));
+  struct ooEpoch *req = (struct ooEpoch *)artsMalloc(sizeof(struct ooEpoch));
   req->type = ooEpochActive;
   req->guid = epochGuid;
   bool res = artsRouteTableAddOO(epochGuid, req, false);
@@ -539,7 +546,7 @@ void artsOutOfOrderIncActiveEpoch(artsGuid_t epochGuid) {
 }
 
 void artsOutOfOrderIncFinishedEpoch(artsGuid_t epochGuid) {
-  struct ooEpoch *req = artsMalloc(sizeof(struct ooEpoch));
+  struct ooEpoch *req = (struct ooEpoch *)artsMalloc(sizeof(struct ooEpoch));
   req->type = ooEpochFinish;
   req->guid = epochGuid;
   bool res = artsRouteTableAddOO(epochGuid, req, false);
@@ -551,7 +558,8 @@ void artsOutOfOrderIncFinishedEpoch(artsGuid_t epochGuid) {
 
 void artsOutOfOrderSendEpoch(artsGuid_t epochGuid, unsigned int source,
                              unsigned int dest) {
-  struct ooEpochSend *req = artsMalloc(sizeof(struct ooEpochSend));
+  struct ooEpochSend *req =
+      (struct ooEpochSend *)artsMalloc(sizeof(struct ooEpochSend));
   req->type = ooEpochSend;
   req->source = source;
   req->dest = dest;
@@ -563,7 +571,7 @@ void artsOutOfOrderSendEpoch(artsGuid_t epochGuid, unsigned int source,
 }
 
 void artsOutOfOrderIncQueueEpoch(artsGuid_t epochGuid) {
-  struct ooEpoch *req = artsMalloc(sizeof(struct ooEpoch));
+  struct ooEpoch *req = (struct ooEpoch *)artsMalloc(sizeof(struct ooEpoch));
   req->type = ooEpochIncQueue;
   req->guid = epochGuid;
   bool res = artsRouteTableAddOO(epochGuid, req, false);
@@ -576,8 +584,8 @@ void artsOutOfOrderIncQueueEpoch(artsGuid_t epochGuid) {
 void artsOutOfOrderAtomicAddInArrayDb(artsGuid_t dbGuid, unsigned int index,
                                       unsigned int toAdd, artsGuid_t edtGuid,
                                       unsigned int slot, artsGuid_t epochGuid) {
-  struct ooAtomicAddInArrayDb *req =
-      artsMalloc(sizeof(struct ooAtomicAddInArrayDb));
+  struct ooAtomicAddInArrayDb *req = (struct ooAtomicAddInArrayDb *)artsMalloc(
+      sizeof(struct ooAtomicAddInArrayDb));
   req->type = ooAtomicAddInArrayDb;
   req->edtGuid = edtGuid;
   req->dbGuid = dbGuid;
@@ -599,7 +607,8 @@ void artsOutOfOrderAtomicCompareAndSwapInArrayDb(
     unsigned int newValue, artsGuid_t edtGuid, unsigned int slot,
     artsGuid_t epochGuid) {
   struct ooAtomicCompareAndSwapInArrayDb *req =
-      artsMalloc(sizeof(struct ooAtomicCompareAndSwapInArrayDb));
+      (struct ooAtomicCompareAndSwapInArrayDb *)artsMalloc(
+          sizeof(struct ooAtomicCompareAndSwapInArrayDb));
   req->type = ooAtomicAddInArrayDb;
   req->edtGuid = edtGuid;
   req->dbGuid = dbGuid;
@@ -619,7 +628,8 @@ void artsOutOfOrderAtomicCompareAndSwapInArrayDb(
 }
 
 void artsOutOfOrderDbMove(artsGuid_t dataGuid, unsigned int rank) {
-  struct ooRemoteDbSend *req = artsMalloc(sizeof(struct ooRemoteDbSend));
+  struct ooRemoteDbSend *req =
+      (struct ooRemoteDbSend *)artsMalloc(sizeof(struct ooRemoteDbSend));
   req->type = ooDbMove;
   req->dataGuid = dataGuid;
   req->rank = rank;

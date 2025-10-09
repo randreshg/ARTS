@@ -37,8 +37,9 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/gas/OutOfOrderList.h"
-#include "arts/runtime/Globals.h"
-#include "arts/system/Debug.h"
+
+#include "arts/arts.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/utils/Atomics.h"
 
 #define fireLock 1U
@@ -120,7 +121,8 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
   for (unsigned int i = 0; i < numElements; i++) {
     if (!current->next) {
       if (i + 1 == numElements && elementPos == 0) {
-        current->next = artsCalloc(sizeof(struct artsOutOfOrderElement));
+        current->next = (struct artsOutOfOrderElement *)artsCalloc(
+            1, sizeof(struct artsOutOfOrderElement));
       } else
         while (!current->next)
           ;

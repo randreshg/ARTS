@@ -67,9 +67,13 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef ARTSQUEUE_H
-#define ARTSQUEUE_H
-#include "arts/arts.h"
+#ifndef ARTS_UTILS_QUEUE_H
+#define ARTS_UTILS_QUEUE_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
 
 #define Object uint64_t
 #define RING_POW (6)
@@ -98,14 +102,17 @@ artsQueue *artsNewQueue();
 void enqueue(Object arg, artsQueue *queue);
 Object dequeue(artsQueue *queue);
 
-int close_crq(RingQueue *rq, const uint64_t t, const int tries);
-uint64_t node_index(uint64_t i) __attribute__((pure));
+int closeCrq(RingQueue *rq, const uint64_t t, const int tries);
+uint64_t nodeIndex(uint64_t i) __attribute__((pure));
 void fixState(RingQueue *rq);
-uint64_t set_unsafe(uint64_t i) __attribute__((pure));
-int is_empty(uint64_t v) __attribute__((pure));
-uint64_t node_unsafe(uint64_t i) __attribute__((pure));
-int crq_is_closed(uint64_t t) __attribute__((pure));
-void init_ring(RingQueue *r);
-uint64_t tail_index(uint64_t t) __attribute__((pure));
+uint64_t setUnsafe(uint64_t i) __attribute__((pure));
+int isEmpty(uint64_t v) __attribute__((pure));
+uint64_t nodeUnsafe(uint64_t i) __attribute__((pure));
+int crqIsClosed(uint64_t t) __attribute__((pure));
+void initRing(RingQueue *r);
+uint64_t tailIndex(uint64_t t) __attribute__((pure));
 
-#endif /* artsQUEUE_H */
+#ifdef __cplusplus
+}
+#endif
+#endif /* ARTS_UTILS_QUEUE_H */

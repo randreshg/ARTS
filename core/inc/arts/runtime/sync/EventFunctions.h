@@ -41,7 +41,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "arts/arts.h"
+#include "arts/runtime/RT.h"
 #define INITIAL_DEPENDENT_SIZE 4
 
 bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,

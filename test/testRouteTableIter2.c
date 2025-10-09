@@ -37,18 +37,17 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
+#include <stdio.h>
+
 #include "arts/arts.h"
 #include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
-#include "arts/utils/Atomics.h"
-#include <stdio.h>
-#include <stdlib.h>
 
 #define MYSIZE 10
 
 // Run with only 1 node 1 worker!
 
-void printRT(char *message) {
+void printRT(const char *message) {
   PRINTF("Start: %s\n", message);
   artsRouteTableIterator *iter =
       artsNewRouteTableIterator(artsNodeInfo.routeTable[0]);

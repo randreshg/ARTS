@@ -36,12 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/Graph.h"
-#include "arts/arts.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
-#include <stdlib.h>
+
+#include "arts//BlockDistribution.h"
+#include "arts/Csr.h"
+#include "arts/arts.h"
 
 void initPerNode(unsigned int nodeId, int argc, char **argv) {
   // Simple Graph, vertices = 8, edges = 11

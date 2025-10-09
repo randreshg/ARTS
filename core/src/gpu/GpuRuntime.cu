@@ -42,19 +42,22 @@
 // https://github.com/NVIDIA-developer-blog/code-samples/blob/master/series/cuda-cpp/overlap-data-transfers/async.cu
 // Once this *class* works we will put a stream(s) in create a thread local
 // stream.  Then we will push stuff!
-#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuRuntime.cuh"
+
 #include "arts/gas/OutOfOrder.h"
-#include "arts/gpu/GpuLCSyncFunctions.h"
+#include "arts/gpu/GpuLCSyncFunctions.cuh"
 #include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuStream.h"
 #include "arts/gpu/GpuStreamBuffer.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
+#include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
 
 __thread int artsSavedDeviceId = -1;
@@ -90,7 +93,7 @@ bool artsCudaRestoreDevice() {
 void *artsCudaMallocHost(unsigned int size) {
   void *ptr = NULL;
   CHECKCORRECT(cudaMallocHost(&ptr, size));
-  // ptr = artsCalloc(size);
+  // ptr = artsCalloc(1, size);
   if (!ptr) {
     artsDebugPrintStack();
     exit(1);
@@ -150,7 +153,7 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
   unsigned int edtSpace =
       sizeof(artsGpuEdt_t) + paramc * sizeof(uint64_t) + depSpace;
 
-  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCalloc(edtSpace);
+  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCalloc(1, edtSpace);
   edt->wrapperEdt.invalidateCount = 1;
   edt->grid = grid;
   edt->block = block;
@@ -161,12 +164,12 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
   edt->passthrough = passThrough;
   edt->lib = lib;
 
-  artsIntrospectionEdtCreateBegin();
+  // artsIntrospectionEdtCreateBegin();
   bool created = artsEdtCreateInternal((struct artsEdt *)edt, ARTS_GPU_EDT,
                                        guid, route, artsThreadInfo.clusterId,
                                        edtSpace, NULL_GUID, funcPtr, paramc,
                                        paramv, depc, true, NULL_GUID, hasDepv);
-  artsIntrospectionEdtCreateFinish(created);
+  // artsIntrospectionEdtCreateFinish(created);
   //    ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
   return *guid;
 }
@@ -343,7 +346,7 @@ struct artsEdt *artsRuntimeStealGpuTask() {
   return edt;
 }
 
-bool artsGpuSchedulerLoop(void) {
+bool artsGpuSchedulerLoop() {
   artsGpu_t *artsGpu = NULL;
   artsHandleNewEdts();
 
@@ -388,10 +391,10 @@ bool artsGpuSchedulerLoop(void) {
 }
 
 #define GCHARDLIMIT 2000000000000
-__thread unsigned int backoff = 1;
-__thread unsigned int gcCounter = 0;
+__thread uint64_t backoff = 1;
+__thread uint64_t gcCounter = 0;
 
-bool artsGpuSchedulerBackoffLoop(void) {
+bool artsGpuSchedulerBackoffLoop() {
   artsGpu_t *artsGpu = NULL;
   artsHandleNewEdts();
 
@@ -450,7 +453,7 @@ bool artsGpuSchedulerBackoffLoop(void) {
 
 extern __thread unsigned int runGCFlag;
 
-bool artsGpuSchedulerDemandLoop(void) {
+bool artsGpuSchedulerDemandLoop() {
   artsGpu_t *artsGpu = NULL;
   artsHandleNewEdts();
 
@@ -522,10 +525,6 @@ void artsPutInDbFromGpu(void *ptr, artsGuid_t dbGuid, unsigned int offset,
   }
 }
 
-__device__ uint64_t internalGetGpuIndex(uint64_t *paramv) {
-  return *(paramv - 1);
-}
-
 artsLCSyncFunction_t lcSyncFunction[] = {
     artsMemcpyGpuDb,         artsGetLatestGpuDb,
     artsGetRandomGpuDb,      artsGetNonZerosUnsignedInt,
@@ -562,7 +561,7 @@ void internalLCSyncGPU(artsGuid_t acqGuid, struct artsDb *db) {
 
     bool copyOnly = false;
     unsigned int size = db->header.size;
-    struct artsDb *tempSpace = (struct artsDb *)artsMalloc(size);
+    struct artsDb *tempSpace = (struct artsDb *)artsMallocAlign(size, 16);
 
     gpuGCWriteLock(); // Don't let the gc take our copies...
     ARTS_DEBUG("FUNCTION: %u\n", artsNodeInfo.gpuLCSync);
@@ -631,7 +630,7 @@ void internalLCSyncCPU(artsGuid_t acqGuid, struct artsDb *db) {
     // artsCudaSetDevice(-1, true);
 
     unsigned int size = db->header.size;
-    struct artsDb *tempSpace = (struct artsDb *)artsMalloc(size);
+    struct artsDb *tempSpace = (struct artsDb *)artsMallocAlign(size, 16);
     gpuGCWriteLock(); // Don't let the gc take our copies...
     for (int i = 0; i < artsNodeInfo.gpu; i++) {
       unsigned int gpuVersion;

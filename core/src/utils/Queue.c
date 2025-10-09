@@ -39,6 +39,8 @@
 
 #include "arts/utils/Queue.h"
 
+#include "arts/arts.h"
+
 #define CACHE_ALIGN __attribute__((aligned(64)))
 
 #define FAA64(ptr, inc) __sync_fetch_and_add((ptr), (inc))
@@ -55,7 +57,7 @@
 
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
-#ifdef SIMPLE_ARCH
+#ifdef USE_SIMPLE_ARCH
 
 #include <pthread.h>
 
@@ -108,7 +110,7 @@ pthread_mutex_t amtx = PTHREAD_MUTEX_INITIALIZER;
     __typeof__(*(ptr)) __new1 = (n1);                                          \
     __typeof__(o2) __new2 = (n2);                                              \
     /* Use __sync_bool_compare_and_swap_16 for ARM64 */                        \
-    __ret = __sync_bool_compare_and_swap_16(ptr, __old1, __new1);             \
+    __ret = __sync_bool_compare_and_swap_16(ptr, __old1, __new1);              \
     __ret;                                                                     \
   })
 
@@ -116,8 +118,8 @@ pthread_mutex_t amtx = PTHREAD_MUTEX_INITIALIZER;
   ({                                                                           \
     char __ret;                                                                \
     uint64_t old_val = *ptr;                                                   \
-    uint64_t new_val = old_val | (1ULL << b);                                 \
-    __ret = __sync_bool_compare_and_swap_8(ptr, old_val, new_val);            \
+    uint64_t new_val = old_val | (1ULL << b);                                  \
+    __ret = __sync_bool_compare_and_swap_8(ptr, old_val, new_val);             \
     __ret;                                                                     \
   })
 #else
@@ -151,7 +153,7 @@ pthread_mutex_t amtx = PTHREAD_MUTEX_INITIALIZER;
 
 #define CAS2(ptr, o1, o2, n1, n2) __CAS2(ptr, o1, o2, n1, n2)
 
-void init_ring(RingQueue *r) {
+void initRing(RingQueue *r) {
   for (int i = 0; i < RING_SIZE; i++) {
     r->array[i].val = -1;
     r->array[i].idx = i;
@@ -160,22 +162,22 @@ void init_ring(RingQueue *r) {
   r->next = NULL;
 }
 
-int is_empty(uint64_t v) { return (v == (uint64_t)-1); }
+int isEmpty(uint64_t v) { return (v == (uint64_t)-1); }
 
-uint64_t node_index(uint64_t i) { return (i & ~(1ull << 63)); }
+uint64_t nodeIndex(uint64_t i) { return (i & ~(1ull << 63)); }
 
-uint64_t set_unsafe(uint64_t i) { return (i | (1ull << 63)); }
+uint64_t setUnsafe(uint64_t i) { return (i | (1ull << 63)); }
 
-uint64_t node_unsafe(uint64_t i) { return (i & (1ull << 63)); }
+uint64_t nodeUnsafe(uint64_t i) { return (i & (1ull << 63)); }
 
-uint64_t tail_index(uint64_t t) { return (t & ~(1ull << 63)); }
+uint64_t tailIndex(uint64_t t) { return (t & ~(1ull << 63)); }
 
-int crq_is_closed(uint64_t t) { return (t & (1ull << 63)) != 0; }
+int crqIsClosed(uint64_t t) { return (t & (1ull << 63)) != 0; }
 
 artsQueue *artsNewQueue() {
-  artsQueue *queue = artsCallocAlign(sizeof(artsQueue), 128);
-  RingQueue *rq = artsCallocAlign(sizeof(RingQueue), 128);
-  init_ring(rq);
+  artsQueue *queue = (artsQueue *)artsCallocAlign(1, sizeof(artsQueue), 128);
+  RingQueue *rq = (RingQueue *)artsCallocAlign(1, sizeof(RingQueue), 128);
+  initRing(rq);
   queue->head = queue->tail = rq;
   return queue;
 }
@@ -198,11 +200,11 @@ void fixState(RingQueue *rq) {
   }
 }
 
-int close_crq(RingQueue *rq, const uint64_t t, const int tries) {
-  if (tries < 10)
+int closeCrq(RingQueue *rq, const uint64_t t, const int tries) {
+  if (tries < 10) {
     return CAS64(&rq->tail, t + 1, (t + 1) | (1ull << 63));
-  else
-    return BIT_TEST_AND_SET(&rq->tail, 63);
+  }
+  return BIT_TEST_AND_SET(&rq->tail, 63);
 }
 
 void enqueue(Object arg, artsQueue *queue) {
@@ -219,11 +221,11 @@ void enqueue(Object arg, artsQueue *queue) {
 
     uint64_t t = FAA64(&rq->tail, 1);
 
-    if (crq_is_closed(t)) {
+    if (crqIsClosed(t)) {
     alloc:
       //            ARTS_INFO("Allocing!");
-      nrq = artsMallocAlign(sizeof(RingQueue), 128);
-      init_ring(nrq);
+      nrq = (RingQueue *)artsMallocAlign(sizeof(RingQueue), 128);
+      initRing(nrq);
 
       // Solo enqueue
       nrq->tail = 1;
@@ -234,9 +236,8 @@ void enqueue(Object arg, artsQueue *queue) {
         CASPTR(&queue->tail, rq, nrq);
         nrq = NULL;
         return;
-      } else {
-        artsFreeAlign(nrq);
       }
+      artsFree(nrq);
       continue;
     }
 
@@ -246,9 +247,9 @@ void enqueue(Object arg, artsQueue *queue) {
     uint64_t idx = cell->idx;
     uint64_t val = cell->val;
 
-    if (likely(is_empty(val))) {
-      if (likely(node_index(idx) <= t)) {
-        if ((likely(!node_unsafe(idx)) || rq->head < t) &&
+    if (likely(isEmpty(val))) {
+      if (likely(nodeIndex(idx) <= t)) {
+        if ((likely(!nodeUnsafe(idx)) || rq->head < t) &&
             CAS2((uint64_t *)cell, -1, idx, arg, t)) {
           return;
         }
@@ -256,7 +257,7 @@ void enqueue(Object arg, artsQueue *queue) {
     }
 
     uint64_t h = rq->head;
-    if (unlikely(t >= RING_SIZE + h) && close_crq(rq, t, ++try_close)) {
+    if (unlikely(t >= RING_SIZE + h) && closeCrq(rq, t, ++try_close)) {
       goto alloc;
     }
   }
@@ -275,19 +276,20 @@ Object dequeue(artsQueue *queue) {
 
     while (1) {
       uint64_t cell_idx = cell->idx;
-      uint64_t unsafe = node_unsafe(cell_idx);
-      uint64_t idx = node_index(cell_idx);
+      uint64_t unsafe = nodeUnsafe(cell_idx);
+      uint64_t idx = nodeIndex(cell_idx);
       uint64_t val = cell->val;
 
       if (unlikely(idx > h))
         break;
 
-      if (likely(!is_empty(val))) {
+      if (likely(!isEmpty(val))) {
         if (likely(idx == h)) {
-          if (CAS2((uint64_t *)cell, val, cell_idx, -1, unsafe | h + RING_SIZE))
+          if (CAS2((uint64_t *)cell, val, cell_idx, -1,
+                   unsafe | (h + RING_SIZE)))
             return val;
         } else {
-          if (CAS2((uint64_t *)cell, val, cell_idx, val, set_unsafe(idx))) {
+          if (CAS2((uint64_t *)cell, val, cell_idx, val, setUnsafe(idx))) {
             break;
           }
         }
@@ -296,13 +298,13 @@ Object dequeue(artsQueue *queue) {
           tt = rq->tail;
 
         // Optimization: try to bail quickly if queue is closed.
-        int crq_closed = crq_is_closed(tt);
-        uint64_t t = tail_index(tt);
+        int crq_closed = crqIsClosed(tt);
+        uint64_t t = tailIndex(tt);
 
         if (unlikely(unsafe)) // Nothing to do, move along
         {
           if (CAS2((uint64_t *)cell, val, cell_idx, val,
-                   unsafe | h + RING_SIZE))
+                   unsafe | (h + RING_SIZE)))
             break;
         } else if (t <= h + 1 || r > 200000 || crq_closed) {
           if (CAS2((uint64_t *)cell, val, idx, val, h + RING_SIZE))
@@ -313,7 +315,7 @@ Object dequeue(artsQueue *queue) {
       }
     }
 
-    if (tail_index(rq->tail) <= h + 1) {
+    if (tailIndex(rq->tail) <= h + 1) {
       fixState(rq);
       // try to return empty
       next = rq->next;

@@ -46,7 +46,7 @@ extern "C" {
 #include "arts/BlockDistribution.h"
 #include "arts/EdgeVector.h"
 #include "arts/GraphDefs.h"
-#include "arts/arts.h"
+#include "arts/runtime/RT.h"
 
 #define MAXCHAR 1024 * 1024
 

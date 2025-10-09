@@ -37,12 +37,12 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#ifndef ARTSSOCKETSERVER_H
-#define ARTSSOCKETSERVER_H
-#include <netinet/in.h>
+#ifndef ARTS_NETWORK_SOCKETSERVER_H
+#define ARTS_NETWORK_SOCKETSERVER_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <netinet/in.h>
 unsigned int artsGetNewSocket();
 void artsServerSetSocketOptionsSender(unsigned int socket);
 void artsServerSetSocketOptionsReciever(unsigned int socket);

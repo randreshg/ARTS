@@ -36,10 +36,28 @@
 ## WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 ## License for the specific language governing permissions and limitations
 ###############################################################################
-if(CUDA_FOUND)
-    file(GLOB gpu_src "*.c")
 
-    set_source_files_properties(${gpu_src} PROPERTIES LANGUAGE CUDA)
-    add_library(gpu OBJECT ${gpu_src})
-    set_target_properties(gpu PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+## Modern CMake configuration for ARTS GPU module
+## Only built when CUDA library is being created
+###############################################################################
+
+# Only build if CUDA library is being built
+if(BUILD_CUDA_LIBRARY)
+    # Collect all CUDA source files
+    file(GLOB GPU_SOURCES "*.cu")
+
+    # Create object library for the GPU module
+    add_library(arts_gpu OBJECT ${GPU_SOURCES})
+    
+    # Add USE_GPU definition for this module
+    target_compile_definitions(arts_gpu PRIVATE USE_GPU)
+    
+    # Include directories
+    target_include_directories(arts_gpu PRIVATE
+        ${ARTS_CORE_INCLUDE_DIR}
+    )
+    
+    message(STATUS "GPU module configured with CUDA support")
+else()
+    message(STATUS "GPU module skipped - CUDA not available or disabled")
 endif()

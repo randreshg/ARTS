@@ -37,12 +37,12 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/gas/Guid.h"
+
+#include "arts/arts.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/system/Debug.h"
-
-/// Debug
 #include "arts/system/ArtsPrint.h"
+#include "arts/system/Debug.h"
 
 uint64_t numTables = 0;
 uint64_t keysPerThread = 0;
@@ -119,8 +119,8 @@ void artsGuidKeyGeneratorInit() {
   //    maxGlobalGuidThread: %lu globalGuidThreadId: %lu", numTables, localId,
   //    minGlobalGuidThread, maxGlobalGuidThread, globalGuidThreadId); keys =
   //    artsMalloc(sizeof(uint64_t) * ARTS_LAST_TYPE * artsGlobalRankCount);
-  artsNodeInfo.keys[artsThreadInfo.groupId] =
-      artsMalloc(sizeof(uint64_t) * ARTS_LAST_TYPE * artsGlobalRankCount);
+  artsNodeInfo.keys[artsThreadInfo.groupId] = (uint64_t *)artsMalloc(
+      sizeof(uint64_t) * ARTS_LAST_TYPE * artsGlobalRankCount);
   for (unsigned int i = 0; i < ARTS_LAST_TYPE * artsGlobalRankCount; i++)
     artsNodeInfo.keys[artsThreadInfo.groupId][i] = 1;
   //        keys[i] = 1;
@@ -129,20 +129,20 @@ void artsGuidKeyGeneratorInit() {
 // I think this might be a problem.  If all keys start at 1 then when we cast
 // type, it can override a legitimate guid of another type
 artsGuid_t artsGuidCast(artsGuid_t guid, artsType_t type) {
-  artsGuid addressInfo = (artsGuid)guid;
+  artsGuid addressInfo = (artsGuid){.bits = guid};
   addressInfo.fields.type = (unsigned int)type;
   return (artsGuid_t)addressInfo.bits;
 }
 
 artsType_t artsGuidGetType(artsGuid_t guid) {
   artsCounterTriggerEvent(guidLookupCounter, 1);
-  artsGuid addressInfo = (artsGuid)guid;
-  return addressInfo.fields.type;
+  artsGuid addressInfo = (artsGuid){.bits = guid};
+  return (artsType_t)addressInfo.fields.type;
 }
 
 unsigned int artsGuidGetRank(artsGuid_t guid) {
   artsCounterTriggerEvent(guidLookupCounter, 1);
-  artsGuid addressInfo = (artsGuid)guid;
+  artsGuid addressInfo = (artsGuid){.bits = guid};
   return addressInfo.fields.rank;
 }
 
@@ -151,12 +151,14 @@ bool artsIsGuidLocal(artsGuid_t guid) {
 }
 
 uint64_t artsGetGuidKey(artsGuid_t guid) {
-  artsGuid addressInfo = (artsGuid)guid;
+  artsGuid addressInfo = (artsGuid){.bits = guid};
   return addressInfo.fields.key;
 }
 
 artsGuid_t artsReserveGuidRoute(artsType_t type, unsigned int route) {
   artsGuid_t guid = NULL_GUID;
+  if (route == -1)
+    route = artsGlobalRankId;
   route = route % artsGlobalRankCount;
   if (type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     guid = artsGuidCreateForRankInternal(route, (unsigned int)type, 1);
@@ -188,9 +190,11 @@ artsGuid_t *artsReserveGuidsRoundRobin(unsigned int size, artsType_t type) {
 
 artsGuidRange *artsNewGuidRangeNode(artsType_t type, unsigned int size,
                                     unsigned int route) {
+  if (route == -1)
+    route = artsGlobalRankId;
   artsGuidRange *range = NULL;
   if (size && type > ARTS_NULL && type < ARTS_LAST_TYPE) {
-    range = artsCalloc(sizeof(artsGuidRange));
+    range = (artsGuidRange *)artsCalloc(1, sizeof(artsGuidRange));
     range->size = size;
     range->startGuid =
         artsGuidCreateForRankInternal(route, (unsigned int)type, size);
@@ -212,11 +216,11 @@ artsGuidRange *artsNewGuidRangeNodeHash(artsType_t type, unsigned int size,
                                         unsigned int hashSize) {
   artsGuidRange *range = NULL;
   if (size && type > ARTS_NULL && type < ARTS_LAST_TYPE) {
-    range = artsCalloc(sizeof(artsGuidRange));
+    range = (artsGuidRange *)artsCalloc(1, sizeof(artsGuidRange));
     range->size = size;
     range->startGuid = artsGuidCreateForRankInternal(route, (unsigned int)type,
                                                      size + hashSize);
-    artsGuid temp = (artsGuid)range->startGuid;
+    artsGuid temp = (artsGuid){.bits = range->startGuid};
     for (unsigned int i = 0; i < hashSize; i++) {
       if (temp.fields.key % hashSize == 0) {
         range->startGuid = (artsGuid_t)temp.bits;
@@ -232,7 +236,7 @@ artsGuid_t artsGetGuid(artsGuidRange *range, unsigned int index) {
   if (!range || index >= range->size) {
     return NULL_GUID;
   }
-  artsGuid ret = (artsGuid)range->startGuid;
+  artsGuid ret = (artsGuid){.bits = range->startGuid};
   ret.fields.key += index;
   return ret.bits;
 }
@@ -248,7 +252,7 @@ artsGuid_t artsGuidRangeNext(artsGuidRange *range) {
 
 bool artsGuidRangeHasNext(artsGuidRange *range) {
   if (range)
-    return (range->size < range->index);
+    return (range->index < range->size);
   return false;
 }
 
@@ -258,8 +262,8 @@ void artsGuidRangeResetIter(artsGuidRange *range) {
 }
 
 bool artsIsInGuidRange(artsGuidRange *range, artsGuid_t guid) {
-  artsGuid startGuid = (artsGuid)range->startGuid;
-  artsGuid toCheck = (artsGuid)guid;
+  artsGuid startGuid = (artsGuid){.bits = range->startGuid};
+  artsGuid toCheck = (artsGuid){.bits = guid};
 
   if (startGuid.fields.rank != toCheck.fields.rank)
     return false;

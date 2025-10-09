@@ -36,30 +36,24 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/system/TMTLite.h"
 
-#include <errno.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#define __USE_GNU
-#include <pthread.h>
-#include <sched.h>
 #include <string.h>
 
+#include <pthread.h>
+#include <unistd.h>
+
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/introspection/Introspection.h"
-#include "arts/system/TMT.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Threads.h"
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
-#include "arts/utils/Deque.h"
 
 __thread unsigned int tmtLiteAliasId = 0;
 
@@ -97,15 +91,15 @@ void artsInitTMTLitePerNode(unsigned int numWorkers) {
   long temp = sysconf(_SC_PAGESIZE);
   pageSize = temp;
   threadToJoin =
-      (artsArrayList **)artsCalloc(sizeof(artsArrayList *) * numWorkers);
-  aliasNumber = (unsigned int *)artsCalloc(sizeof(unsigned int) * numWorkers);
+      (artsArrayList **)artsCalloc(numWorkers, sizeof(artsArrayList *));
+  aliasNumber = (unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
   threadReaderLock =
-      (volatile unsigned int *)artsCalloc(sizeof(unsigned int) * numWorkers);
+      (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
   threadWriterLock =
-      (volatile unsigned int *)artsCalloc(sizeof(unsigned int) * numWorkers);
+      (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
   arrayListLock =
-      (volatile unsigned int *)artsCalloc(sizeof(unsigned int) * numWorkers);
-  outstanding = (volatile uint64_t *)artsCalloc(sizeof(uint64_t) * numWorkers);
+      (volatile unsigned int *)artsCalloc(numWorkers, sizeof(unsigned int));
+  outstanding = (volatile uint64_t *)artsCalloc(numWorkers, sizeof(uint64_t));
 }
 
 void artsInitTMTLitePerWorker(unsigned int id) {
@@ -129,7 +123,7 @@ void artsTMTLitePrivateCleanUp(unsigned int id) {
   }
   uint64_t outstanding = artsLengthArrayList(threadToJoin[id]);
   for (uint64_t i = 0; i < outstanding; i++) {
-    pthread_t *thread = artsGetFromArrayList(threadToJoin[id], i);
+    pthread_t *thread = (pthread_t *)artsGetFromArrayList(threadToJoin[id], i);
     pthread_join(*thread, NULL);
   }
   ARTS_INFO("%u joined: %lu threads", id, outstanding);
@@ -139,7 +133,7 @@ typedef struct {
   uint32_t aliasId; // alias id
   uint32_t sourceId;
   struct artsEdt *edtToRun;
-  volatile unsigned int *toDec;
+  volatile uint64_t *toDec;
   struct artsRuntimePrivate *tlToCopy; // we copy the master thread's TL
 } liteArgs_t;
 
@@ -160,16 +154,17 @@ void *artsAliasLiteThreadLoop(void *arg) {
   if (artsThreadInfo.alive)
     artsNodeInfo.scheduler();
   artsWriterUnlock(&threadWriterLock[sourceId]);
-  uint64_t tempRes = artsAtomicSub(tArgs->toDec, 1);
+  uint64_t tempRes = artsAtomicSubU64(tArgs->toDec, 1);
   artsAtomicAdd(&doneThreads, 1);
   artsFree(tArgs);
+  return NULL;
 }
 
 void artsCreateLiteContexts(volatile uint64_t *toDec) {
   unsigned int sourceId = artsThreadInfo.groupId;
   unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
   volatile unsigned int spinFlag = 1;
-  liteArgs_t *args = artsCalloc(sizeof(liteArgs_t));
+  liteArgs_t *args = (liteArgs_t *)artsCalloc(1, sizeof(liteArgs_t));
   args->aliasId = ++aliasNumber[sourceId];
   args->sourceId = sourceId;
   args->toDec = toDec;
@@ -212,10 +207,11 @@ void *artsAliasLiteThreadLoop2(void *arg) {
 
   artsWriterUnlock(&threadWriterLock[sourceId]);
 
-  artsAtomicSub(tArgs->toDec, 1);
+  artsAtomicSubU64(tArgs->toDec, 1);
   artsAtomicSubU64(&outstanding[sourceId], 1);
   artsAtomicAdd(&doneThreads, 1);
   artsFree(tArgs);
+  return NULL;
 }
 
 void artsCreateLiteContexts2(volatile uint64_t *toDec, struct artsEdt *edt) {
@@ -223,7 +219,7 @@ void artsCreateLiteContexts2(volatile uint64_t *toDec, struct artsEdt *edt) {
   unsigned int res = artsAtomicAdd(&toCreateThreads, 1);
   artsAtomicAddU64(&outstanding[sourceId], 1);
   volatile unsigned int spinFlag = 1;
-  liteArgs_t *args = artsCalloc(sizeof(liteArgs_t));
+  liteArgs_t *args = (liteArgs_t *)artsCalloc(1, sizeof(liteArgs_t));
   args->aliasId = ++aliasNumber[sourceId];
   args->sourceId = sourceId;
   args->edtToRun = edt;

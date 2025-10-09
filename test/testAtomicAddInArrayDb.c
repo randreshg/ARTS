@@ -36,9 +36,9 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
-#include <stdio.h>
 #include <stdlib.h>
+
+#include "arts/arts.h"
 
 unsigned int elementsPerBlock = 0;
 unsigned int blocks = 0;
@@ -59,7 +59,7 @@ void end(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 void check(uint32_t paramc, uint64_t *paramv, uint32_t depc,
            artsEdtDep_t depv[]) {
   for (unsigned int i = 0; i < blocks; i++) {
-    unsigned int *data = depv[i].ptr;
+    unsigned int *data = (unsigned int *)depv[i].ptr;
     for (unsigned int j = 0; j < elementsPerBlock; j++) {
       PRINTF("i: %u j: %u %u\n", i, j, data[j]);
     }
@@ -92,7 +92,8 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
     artsGuid_t endGuid =
         artsEdtCreate(end, 0, 0, NULL, numAdd * elementsPerBlock * blocks + 1);
 
-    artsGuid_t endEpochGuid = artsEdtCreate(epochEnd, 0, 1, &endGuid, 1);
+    artsGuid_t endEpochGuid =
+        artsEdtCreate(epochEnd, 0, 1, (uint64_t *)&endGuid, 1);
     artsInitializeAndStartEpoch(endEpochGuid, 0);
 
     array = artsNewArrayDbWithGuid(arrayGuid, sizeof(unsigned int),

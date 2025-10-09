@@ -37,16 +37,20 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/system/Config.h"
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <unistd.h>
+
 #include "arts/arts.h"
 #include "arts/network/RemoteLauncher.h"
-#include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
-#include "arts/utils/LinkList.h"
-#include "unistd.h"
-#include <ctype.h>
 
-char *extract_nodelist_lsf(char *envr, int stride, unsigned int *cnt) {
+char *extractNodelistLsf(const char *envr, int stride, unsigned int *cnt) {
   char *lsfNodes;
   char *resString;
   char *last;
@@ -57,7 +61,7 @@ char *extract_nodelist_lsf(char *envr, int stride, unsigned int *cnt) {
   if (stride <= 0)
     stride = 1;
   unsigned int nodesStrLen = strlen(lsfNodes) + 1;
-  char *nodeList = malloc(sizeof(char) * nodesStrLen);
+  char *nodeList = (char *)malloc(sizeof(char) * nodesStrLen);
   unsigned int count = 0;
   unsigned int listStrLength = 0;
   last = resString = strtok(lsfNodes, " ");
@@ -78,7 +82,7 @@ char *extract_nodelist_lsf(char *envr, int stride, unsigned int *cnt) {
 }
 
 struct artsConfigVariable *
-artsConfigFindVariable(struct artsConfigVariable **head, char *string) {
+artsConfigFindVariable(struct artsConfigVariable **head, const char *string) {
   struct artsConfigVariable *found = NULL;
   struct artsConfigVariable *last = NULL;
   struct artsConfigVariable *next = *head;
@@ -95,8 +99,8 @@ artsConfigFindVariable(struct artsConfigVariable **head, char *string) {
   char *overide = getenv(string);
   if (overide) {
     unsigned int size = strlen(overide);
-    struct artsConfigVariable *newVar =
-        artsMalloc(sizeof(struct artsConfigVariable) + size);
+    struct artsConfigVariable *newVar = (struct artsConfigVariable *)artsMalloc(
+        sizeof(struct artsConfigVariable) + size);
 
     newVar->size = size;
     strcpy(newVar->variable, string);
@@ -119,7 +123,7 @@ artsConfigFindVariable(struct artsConfigVariable **head, char *string) {
 }
 
 char *artsConfigFindVariableChar(struct artsConfigVariable *head,
-                                 char *string) {
+                                 const char *string) {
   struct artsConfigVariable *found = NULL;
   char *overide = getenv(string);
 
@@ -140,7 +144,7 @@ char *artsConfigFindVariableChar(struct artsConfigVariable *head,
   return NULL;
 }
 
-unsigned int artsConfigGetVariable(FILE *config, char *lookForMe) {
+unsigned int artsConfigGetVariable(FILE *config, const char *lookForMe) {
   char *line;
   size_t len = 0;
   ssize_t read;
@@ -165,6 +169,8 @@ unsigned int artsConfigGetVariable(FILE *config, char *lookForMe) {
       return strtol(val, NULL, 10);
     }
   }
+  if (line)
+    free(line);
   return 4;
 }
 
@@ -196,7 +202,8 @@ struct artsConfigVariable *artsConfigGetVariables(FILE *config) {
       if (val[size - 1] == '\n')
         val[size - 1] = '\0';
 
-      cVar = artsMalloc(sizeof(struct artsConfigVariable) + size);
+      cVar = (struct artsConfigVariable *)artsMalloc(
+          sizeof(struct artsConfigVariable) + size);
       cVar->size = size;
 
       strncpy(cVar->variable, var, 255);
@@ -214,55 +221,67 @@ struct artsConfigVariable *artsConfigGetVariables(FILE *config) {
       next = cVar;
     }
   }
+  if (line)
+    free(line);
   return head;
 }
 
-char *artsConfigMakeNewVar(char *var) {
+char *artsConfigMakeNewVar(const char *var) {
   char *newVar;
   unsigned int size;
   size = strlen(var);
-  newVar = artsMalloc(size + 1);
+  newVar = (char *)artsMalloc(size + 1);
   strncpy(newVar, var, size);
   newVar[size] = '\0';
   ARTS_DEBUG("%s l\n", newVar);
-  return var;
+  return newVar;
 }
 
 unsigned int artsConfigGetValue(char *start, char *stop) {
-  int value, size = stop - start;
-  for (int i = 0; i < size; i++) {
-    if (isdigit(start[i])) {
-      if (*stop == ':') {
-        *stop = '\0';
-        value = strtol(start + i, NULL, 10);
-        *stop = ':';
-      } else
-        value = strtol(start + i, NULL, 10);
+  int i, value, size = stop - start;
+  for (i = 0; i < size; i++) {
+    if (isdigit(start[i]))
       break;
-    }
+  }
+  if (i == size) {
+    // No digits found, raise an error
+    PRINTF("artsConfigGetValue: No digits found in %s\n", start);
+    artsDebugGenerateSegFault();
+  }
+  if (*stop == ':') {
+    *stop = '\0';
+    value = strtol(start + i, NULL, 10);
+    *stop = ':';
+  } else {
+    value = strtol(start + i, NULL, 10);
   }
   return value;
 }
 
 char *artsConfigGetNodeName(char *start, char *stop) {
-  int value, size = stop - start;
+  int i, value, size = stop - start;
   char *name;
 
-  for (int i = 0; i < size; i++) {
-    if (isdigit(start[i])) {
-      name = artsMalloc((stop - start));
-      strncpy(name, start, stop - start);
+  for (i = 0; i < size; i++) {
+    if (isdigit(start[i]))
       break;
-    }
   }
+  if (i == size) {
+    // No digits found, return the original string
+    PRINTF("artsConfigGetNodeName: No digits found in %s\n", start);
+    artsDebugGenerateSegFault();
+  }
+  name = (char *)artsMalloc(size);
+  strncpy(name, start, size);
   return name;
 }
+
 char *artsConfigGetHostname(char *name, unsigned int value) {
   unsigned int length = strlen(name);
   unsigned int digits = 1;
   unsigned int temp = value;
   unsigned int stop;
-  char *outName = artsMalloc(length);
+  char *outName = (char *)artsMalloc(length);
 
   while (temp > 9) {
     temp /= 10;
@@ -313,7 +332,7 @@ char *artsConfigGetSlurmHostname(char *name, char *digitSample,
     prefixLength = strlen(prefix);
 
   nameLength = length + digitLength + 1 + prefixLength + suffixLength;
-  char *outName = artsMalloc(nameLength);
+  char *outName = (char *)artsMalloc(nameLength);
 
   if (prefix != NULL) {
     strncpy(outName, prefix, prefixLength);
@@ -425,7 +444,8 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
 
   nodeCount = (*config)->nodes;
   (*config)->tableLength = nodeCount;
-  table = artsMalloc(sizeof(struct artsConfigTable) * nodeCount);
+  table = (struct artsConfigTable *)artsMalloc(sizeof(struct artsConfigTable) *
+                                               nodeCount);
 
   if (!(*config)->masterBoot) {
     char *part;
@@ -474,7 +494,7 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
               unsigned int nameLength = strlen(name);
               strLength = strlen(nodeBegin) + nameLength;
               totalLength = strLength + 1 + prefixLength + suffixLength;
-              temp = artsMalloc(totalLength);
+              temp = (char *)artsMalloc(totalLength);
 
               if (prefix != NULL)
                 strncpy(temp, prefix, prefixLength);
@@ -498,7 +518,7 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
         // Single node
         strLength = strlen(nodeBegin);
         totalLength = strLength + 1 + prefixLength + suffixLength;
-        temp = artsMalloc(totalLength);
+        temp = (char *)artsMalloc(totalLength);
 
         if (prefix != NULL)
           strncpy(temp, prefix, prefixLength);
@@ -549,7 +569,7 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
         } else {
           table[currentNode].rank = currentNode;
           strLength = strlen(nodeBegin);
-          temp = artsMalloc(strLength + 1);
+          temp = (char *)artsMalloc(strLength + 1);
           strncpy(temp, nodeBegin, strLength + 1);
           table[currentNode].ipAddress = temp;
           currentNode++;
@@ -585,7 +605,7 @@ struct artsConfig *artsConfigLoad() {
 
   char *end = NULL;
 
-  config = artsMalloc(sizeof(struct artsConfig));
+  config = (struct artsConfig *)artsCalloc(1, sizeof(struct artsConfig));
 
   char *location = getenv("artsConfig");
   if (location)
@@ -594,7 +614,7 @@ struct artsConfig *artsConfigLoad() {
     configFile = fopen("arts.cfg", "r");
 
   if (configFile == NULL) {
-    printf("No Config file found (./arts.cfg).");
+    ARTS_INFO("No Config file found (./arts.cfg).");
     configVariables = NULL;
     artsDebugGenerateSegFault();
   } else
@@ -726,11 +746,15 @@ struct artsConfig *artsConfigLoad() {
   }
 
   if ((foundVariable =
-           artsConfigFindVariable(&configVariables, "masterNode")) != NULL)
+           artsConfigFindVariable(&configVariables, "masterNode")) != NULL) {
+    if (config->masterNode) {
+      artsFree(config->masterNode);
+    }
     config->masterNode = artsConfigMakeNewVar(foundVariable->value);
-  else if (strncmp(config->launcher, "local", 5) != 0) {
-    if (strncmp(config->launcher, "slurm", 5) != 0)
+  } else if (strncmp(config->launcher, "local", 5) != 0) {
+    if (strncmp(config->launcher, "slurm", 5) != 0) {
       ARTS_DEBUG_ONCE("No master given: defaulting to first node in node list");
+    }
 
     config->masterNode = NULL;
   }
@@ -854,9 +878,10 @@ struct artsConfig *artsConfigLoad() {
   else
     config->freeDbAfterGpuRun = false;
 
-  if (config->freeDbAfterGpuRun)
+  if (config->freeDbAfterGpuRun) {
     ARTS_INFO("FreeDbAfterGpuRun is turned on... This mode is intended for "
               "testing not performance.");
+  }
 
   if ((foundVariable =
            artsConfigFindVariable(&configVariables, "runGpuGcIdle")) != NULL)
@@ -869,10 +894,11 @@ struct artsConfig *artsConfigLoad() {
     config->runGpuGcPreEdt = strtol(foundVariable->value, &end, 10) > 0;
   else
     config->runGpuGcPreEdt = false;
-  if (config->runGpuGcPreEdt)
+  if (config->runGpuGcPreEdt) {
     ARTS_INFO(
         "RunGpuGcPreEdt is turned on... This mode is intended for testing "
         "not performance.");
+  }
 
   if ((foundVariable = artsConfigFindVariable(&configVariables,
                                               "deleteZerosGpuGc")) != NULL)
@@ -903,7 +929,10 @@ struct artsConfig *artsConfigLoad() {
     artsConfigCreateRoutingTable(&config, nodeList);
 
     unsigned int length = strlen(config->table[0].ipAddress) + 1;
-    config->masterNode = artsMalloc(sizeof(char) * length);
+    if (config->masterNode) {
+      artsFree(config->masterNode);
+    }
+    config->masterNode = (char *)artsMalloc(sizeof(char) * length);
     strncpy(config->masterNode, config->table[0].ipAddress, length);
 
     for (int i = 0; i < config->tableLength; i++) {
@@ -917,16 +946,19 @@ struct artsConfig *artsConfigLoad() {
     ARTS_DEBUG_ONCE("Using LSF");
     config->masterBoot = false;
     unsigned int count = 0;
-    char *nodeList = extract_nodelist_lsf("LSB_HOSTS", 1, &count);
+    char *nodeList = extractNodelistLsf("LSB_HOSTS", 1, &count);
     if (!nodeList) {
-      nodeList = extract_nodelist_lsf("LSB_MCPU_HOSTS", 2, &count);
+      nodeList = extractNodelistLsf("LSB_MCPU_HOSTS", 2, &count);
     }
     config->nodes = count;
 
     artsConfigCreateRoutingTable(&config, nodeList);
 
     unsigned int length = strlen(config->table[0].ipAddress) + 1;
-    config->masterNode = artsMalloc(sizeof(char) * length);
+    if (config->masterNode) {
+      artsFree(config->masterNode);
+    }
+    config->masterNode = (char *)artsMalloc(sizeof(char) * length);
 
     strncpy(config->masterNode, config->table[0].ipAddress, length);
 
@@ -956,7 +988,7 @@ struct artsConfig *artsConfigLoad() {
         config->nodes = artsConfigCountNodes(nodeList);
     } else {
       ARTS_DEBUG_ONCE("No nodes given: defaulting to 1 node");
-      nodeList = artsMalloc(sizeof(char) * strlen("localhost\0"));
+      nodeList = (char *)artsMalloc(sizeof(char) * strlen("localhost\0"));
       strncpy(nodeList, "localhost\0", strlen("localhost\0") + 1);
       config->nodes = 1;
     }
@@ -966,7 +998,7 @@ struct artsConfig *artsConfigLoad() {
 
     if (config->masterNode == NULL) {
       unsigned int length = strlen(config->table[0].ipAddress) + 1;
-      config->masterNode = artsMalloc(sizeof(char) * length);
+      config->masterNode = (char *)artsMalloc(sizeof(char) * length);
       strncpy(config->masterNode, config->table[0].ipAddress, length);
     }
 
@@ -1049,7 +1081,26 @@ struct artsConfig *artsConfigLoad() {
 
   ARTS_DEBUG("Config Parsed");
 
+  while (configVariables != NULL) {
+    struct artsConfigVariable *nextVar = configVariables->next;
+    artsFree(configVariables);
+    configVariables = nextVar;
+  }
+
   return config;
 }
 
-void artsConfigDestroy(void *config) { artsFree(config); }
+void artsConfigDestroy(struct artsConfig *config) {
+  artsFree(config->launcher);
+  if (config->launcherData) {
+    artsFree(config->launcherData);
+  }
+  for (int i = 0; i < config->tableLength; i++)
+    artsFree(config->table[i].ipAddress);
+  artsFree(config->table);
+  if (config->masterNode) {
+    artsFree(config->masterNode);
+  }
+  artsFree(config->protocol);
+  artsFree(config);
+}

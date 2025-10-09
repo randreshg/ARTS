@@ -38,21 +38,18 @@
 ******************************************************************************/
 
 #include "arts/runtime/compute/ShadAdapter.h"
+
 #include "arts/arts.h"
-#include "arts/introspection/Introspection.h"
 #include "arts/gas/Guid.h"
-#include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
-#include "arts/system/TMT.h"
 #include "arts/system/TMTLite.h"
-#include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Queue.h"
 
@@ -141,9 +138,7 @@ void artsCheckLockShad() {
   }
 }
 
-void artsStartIntroShad(unsigned int start) {
-  artsIntrospectionStart(start);
-}
+void artsStartIntroShad(unsigned int start) { artsIntrospectionStart(start); }
 
 void artsStopIntroShad() { artsIntrospectionStop(); }
 
@@ -153,11 +148,12 @@ artsGuid_t artsAllocateLocalBufferShad(void **buffer, uint32_t *sizeToWrite,
                                        artsGuid_t epochGuid) {
   if (epochGuid) {
     incrementActiveEpoch(epochGuid);
-  } else
+  } else {
     ARTS_INFO("No EPOCH!!!");
+  }
   globalShutdownGuidIncActive();
 
-  artsBuffer_t *stub = artsMalloc(sizeof(artsBuffer_t));
+  artsBuffer_t *stub = (artsBuffer_t *)artsMalloc(sizeof(artsBuffer_t));
   stub->buffer = *buffer;
   stub->sizeToWrite = sizeToWrite;
   stub->size = 0;
@@ -170,7 +166,8 @@ artsGuid_t artsAllocateLocalBufferShad(void **buffer, uint32_t *sizeToWrite,
 }
 
 artsShadLock_t *artsShadCreateLock() {
-  artsShadLock_t *lock = artsCalloc(sizeof(artsShadLock_t));
+  artsShadLock_t *lock =
+      (artsShadLock_t *)artsCalloc(1, sizeof(artsShadLock_t));
   lock->queue = artsNewQueue();
   return lock;
 }
@@ -258,9 +255,8 @@ bool artsShadTMTLock2(volatile uint64_t *lock) {
     while (1) {
       if (artsTMTLiteTryLock(lock))
         break;
-      else
-        artsYieldLiteContext(); // Give up execution lock
-      artsResumeLiteContext();  // Has execution lock at end
+      artsYieldLiteContext();  // Give up execution lock
+      artsResumeLiteContext(); // Has execution lock at end
       if (counter > 1000000) {
         artsAtomicAddU64(lock, 1); // Inc the counter that we have created
                                    // thread

@@ -36,19 +36,69 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdio.h>
+#include <stdlib.h>
 
-#ifndef ARTSGRAPH_H
-#define ARTSGRAPH_H
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.cuh"
 
-#include "arts/BlockDistribution.h"
-#include "arts/Csr.h"
-#include "arts/EdgeVector.h"
-#include "arts/GraphDefs.h"
-#ifdef __cplusplus
+__global__ void temp(uint32_t paramc, uint64_t *paramv, uint32_t depc,
+                     artsEdtDep_t depv[]) {
+  uint64_t gpuId = getGpuIndex();
+  // printf("Hello from %lu\n", gpuId);
+  unsigned int *addr = (unsigned int *)depv[0].ptr;
+  int index = threadIdx.x + blockIdx.x * blockDim.x;
+  addr[index] = gpuId + 1;
 }
-#endif
 
-#endif
+void done(uint32_t paramc, uint64_t *paramv, uint32_t depc,
+          artsEdtDep_t depv[]) {
+  unsigned int *tile = (unsigned int *)depv[0].ptr;
+  for (unsigned int j = 0; j < artsGetTotalGpus(); j++)
+    printf("%u, ", tile[j]);
+  printf("\n");
+  artsShutdown();
+}
+
+extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {}
+
+extern "C" void initPerGpu(unsigned int nodeId, int devId, cudaStream_t *stream,
+                           int argc, char *argv) {}
+
+extern "C" void initPerWorker(unsigned int nodeId, unsigned int workerId,
+                              int argc, char **argv) {
+  if (!workerId) {
+    unsigned int *addr = NULL;
+    PRINTF("creating size: %u\n", sizeof(unsigned int) * artsGetTotalGpus());
+    artsGuid_t dbGuid = artsDbCreate(
+        (void **)&addr, sizeof(unsigned int) * artsGetTotalGpus(), ARTS_DB_LC);
+    for (uint64_t i = 0; i < artsGetTotalGpus(); i++)
+      addr[i] = (unsigned int)-1;
+
+    artsGuid_t doneGuid =
+        artsEdtCreate(done, 0, 0, NULL, artsGetTotalGpus() + 1);
+    artsLCSync(doneGuid, 0, dbGuid);
+    // artsSignalEdt(doneGuid, 0, dbGuid);
+
+    dim3 threads(artsGetTotalGpus(), 1, 1);
+    dim3 grid(1, 1, 1);
+    for (uint64_t i = 0; i < artsGetTotalGpus(); i++) {
+      if (i == 3 || i == 4 || i == 7) {
+        PRINTF("CREATING EDT for GPU: %lu\n", i);
+        artsGuid_t edtGuid =
+            artsEdtCreateGpuDirect(temp, nodeId, i, 0, NULL, 1, grid, threads,
+                                   doneGuid, i + 1, NULL_GUID, true);
+        artsSignalEdt(edtGuid, 0, dbGuid);
+      } else
+        artsSignalEdt(doneGuid, i + 1, NULL_GUID);
+    }
+  }
+}
+
+extern "C" void cleanPerGpu(unsigned int nodeId, int devId,
+                            cudaStream_t *stream) {}
+
+int main(int argc, char **argv) {
+  artsRT(argc, argv);
+  return 0;
+}

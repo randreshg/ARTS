@@ -39,9 +39,6 @@
 #ifndef ARTSMETRICS_H
 #define ARTSMETRICS_H
 
-#include "arts/arts.h"
-#include "arts/runtime/RT.h"
-#include "arts/system/Config.h"
 #include "arts/utils/ArrayList.h"
 
 #ifdef __cplusplus
@@ -61,11 +58,31 @@ extern "C" {
     __ptr;                                                                     \
   })
 
-#define artsCallocWithType(size, type)                                         \
+#define artsMallocAlignWithType(size, align, type)                             \
   ({                                                                           \
     if (artsMetricsIsActive())                                                 \
       artsThreadInfo.mallocType = type;                                        \
-    void *__ptr = artsCalloc(size);                                            \
+    void *__ptr = artsMallocAlign(size, align);                                \
+    if (artsMetricsIsActive())                                                 \
+      artsThreadInfo.mallocType = artsDefaultMemorySize;                       \
+    __ptr;                                                                     \
+  })
+
+#define artsCallocWithType(nmemb, size, type)                                  \
+  ({                                                                           \
+    if (artsMetricsIsActive())                                                 \
+      artsThreadInfo.mallocType = type;                                        \
+    void *__ptr = artsCalloc(nmemb, size);                                     \
+    if (artsMetricsIsActive())                                                 \
+      artsThreadInfo.mallocType = artsDefaultMemorySize;                       \
+    __ptr;                                                                     \
+  })
+
+#define artsCallocAlignWithType(nmemb, size, align, type)                      \
+  ({                                                                           \
+    if (artsMetricsIsActive())                                                 \
+      artsThreadInfo.mallocType = type;                                        \
+    void *__ptr = artsCallocAlign(nmemb, size, align);                         \
     if (artsMetricsIsActive())                                                 \
       artsThreadInfo.mallocType = artsDefaultMemorySize;                       \
     __ptr;                                                                     \
@@ -226,7 +243,7 @@ typedef struct {
   char *prefix;
 } artsInspectorShots;
 
-#ifdef METRICS
+#ifdef USE_METRICS
 
 void artsMetricsInitIntrospector(unsigned int startPoint);
 void artsMetricsStart(unsigned int startPoint);

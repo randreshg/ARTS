@@ -37,30 +37,28 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/Runtime.h"
+
 #include "arts/gas/Guid.h"
-#include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuRuntime.h"
-#include "arts/gpu/GpuStream.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
+#include "arts/network/RemoteProtocol.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/AbstractMachineModel.h"
-#include "arts/system/Debug.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/TMT.h"
 #include "arts/system/TMTLite.h"
 #include "arts/system/Threads.h"
-#include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
 
-/* */
+#ifdef USE_GPU
+#include "arts/gpu/GpuRuntime.cuh"
+#include "arts/gpu/GpuStream.h"
+#endif
 
 #define PACKET_SIZE 4096
 #define NETWORK_BACKOFF_INCREMENT 0
@@ -121,18 +119,18 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
       sizeof(struct artsDeque *) * receiverThreads);
   artsNodeInfo.gpuDeque = (struct artsDeque **)artsMalloc(
       sizeof(struct artsDeque *) * totalThreads);
-  artsNodeInfo.routeTable = (artsRouteTable_t **)artsCalloc(
-      sizeof(artsRouteTable_t *) * totalThreads);
+  artsNodeInfo.routeTable =
+      (artsRouteTable_t **)artsCalloc(totalThreads, sizeof(artsRouteTable_t *));
   artsNodeInfo.gpuRouteTable =
-      (artsRouteTable_t **)artsCalloc(sizeof(artsRouteTable_t *) * config->gpu);
+      (artsRouteTable_t **)artsCalloc(config->gpu, sizeof(artsRouteTable_t *));
   artsNodeInfo.remoteRouteTable =
       artsNewRouteTable(config->routeTableEntries, config->routeTableSize);
   artsNodeInfo.localSpin =
-      (volatile bool **)artsCalloc(sizeof(bool *) * totalThreads);
+      (volatile bool **)artsCalloc(totalThreads, sizeof(bool *));
   artsNodeInfo.memoryMoves =
-      (unsigned int **)artsCalloc(sizeof(unsigned int *) * totalThreads);
+      (unsigned int **)artsCalloc(totalThreads, sizeof(unsigned int *));
   artsNodeInfo.atomicWaits = (struct atomicCreateBarrierInfo **)artsCalloc(
-      sizeof(struct atomicCreateBarrierInfo *) * totalThreads);
+      totalThreads, sizeof(struct atomicCreateBarrierInfo *));
   artsNodeInfo.workerThreadCount = workerThreads;
   artsNodeInfo.senderThreadCount = senderThreads;
   artsNodeInfo.receiverThreadCount = receiverThreads;
@@ -148,7 +146,7 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.shutdownStarted = 0;
   artsNodeInfo.readyToShutdown = artsGlobalRankCount - 1;
   artsNodeInfo.stealRequestLock = !remoteStealingOn;
-  artsNodeInfo.buf = artsMalloc(PACKET_SIZE);
+  artsNodeInfo.buf = (char *)artsMalloc(PACKET_SIZE);
   artsNodeInfo.packetSize = PACKET_SIZE;
   artsNodeInfo.printNodeStats = config->printNodeStats;
   artsNodeInfo.shutdownEpoch = (config->shutdownEpoch) ? 1 : NULL_GUID;
@@ -169,8 +167,9 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.runGpuGcPreEdt = config->runGpuGcPreEdt;
   artsNodeInfo.deleteZerosGpuGc = config->deleteZerosGpuGc;
   artsNodeInfo.pinThreads = config->pinThreads;
-  artsNodeInfo.keys = artsCalloc(sizeof(uint64_t *) * totalThreads);
-  artsNodeInfo.globalGuidThreadId = artsCalloc(sizeof(uint64_t) * totalThreads);
+  artsNodeInfo.keys = (uint64_t **)artsCalloc(totalThreads, sizeof(uint64_t *));
+  artsNodeInfo.globalGuidThreadId =
+      (uint64_t *)artsCalloc(totalThreads, sizeof(uint64_t));
   artsTMTNodeInit(workerThreads);
   artsInitTMTLitePerNode(workerThreads);
   artsIntrospectionInit(config->introspectiveConf);
@@ -184,10 +183,15 @@ void artsRuntimeGlobalCleanup() {
   artsIntrospectionStop();
   artsCleanUpDbs();
   artsFree(artsNodeInfo.deque);
+  artsFree(artsNodeInfo.receiverDeque);
   artsFree(artsNodeInfo.gpuDeque);
+  artsFree(artsNodeInfo.gpuRouteTable);
   artsFree((void *)artsNodeInfo.localSpin);
   artsFree(artsNodeInfo.memoryMoves);
   artsFree(artsNodeInfo.atomicWaits);
+  artsFree(artsNodeInfo.buf);
+  artsFree(artsNodeInfo.keys);
+  artsFree(artsNodeInfo.globalGuidThreadId);
 #ifdef USE_GPU
   if (artsNodeInfo.gpu)
     artsCleanupGpus();
@@ -253,10 +257,10 @@ void artsRuntimePrivateInit(struct threadMask *unit,
       unsigned int start;
       if (unit->groupPos < rem) {
         start = unit->groupPos * (size + 1);
-        artsRemotSetThreadOutboundQueues(start, start + size + 1);
+        artsRemoteSetThreadOutboundQueues(start, start + size + 1);
       } else {
         start = rem * (size + 1) + (unit->groupPos - rem) * size;
-        artsRemotSetThreadOutboundQueues(start, start + size);
+        artsRemoteSetThreadOutboundQueues(start, start + size);
       }
     }
     if (unit->networkReceive) {
@@ -269,11 +273,11 @@ void artsRuntimePrivateInit(struct threadMask *unit,
       if (unit->groupPos < rem) {
         start = unit->groupPos * (size + 1);
         // ARTS_INFO("%d %d %d %d", start, size, unit->groupPos, rem);
-        artsRemotSetThreadInboundQueues(start, start + size + 1);
+        artsRemoteSetThreadInboundQueues(start, start + size + 1);
       } else {
         start = rem * (size + 1) + (unit->groupPos - rem) * size;
         // ARTS_INFO("%d %d %d %d", start, size, unit->groupPos, rem);
-        artsRemotSetThreadInboundQueues(start, start + size);
+        artsRemoteSetThreadInboundQueues(start, start + size);
       }
     }
   }
@@ -298,7 +302,7 @@ void artsRuntimePrivateInit(struct threadMask *unit,
   artsThreadInfo.localCounting = 1;
   artsThreadInfo.shadLock = 0;
   artsGuidKeyGeneratorInit();
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   artsCounterInitList(unit->id, artsGlobalRankId);
 #endif
 
@@ -347,6 +351,8 @@ void artsRuntimePrivateCleanup() {
   artsAtomicSub(&artsNodeInfo.readyToClean, 1U);
   while (artsNodeInfo.readyToClean) {
   };
+  artsRemoteThreadOutboundQueuesCleanup();
+  artsRemoteThreadInboundQueuesCleanup();
   if (artsThreadInfo.myDeque)
     artsDequeDelete(artsThreadInfo.myDeque);
   if (artsThreadInfo.myNodeDeque)
@@ -397,18 +403,17 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
     else
 #endif
     {
-      if (edt->header.type == ARTS_EDT)
+      if (edt->header.type == ARTS_EDT) {
         artsDequePushFront(artsThreadInfo.myDeque, edt, 0);
-      else if (edt->header.type == ARTS_GPU_EDT)
+      } else if (edt->header.type == ARTS_GPU_EDT) {
         artsDequePushFront(artsThreadInfo.myGpuDeque, edt, 0);
+      }
     }
 
     artsMetricsTriggerEvent(artsEdtQueue, artsThread, 1);
   }
 }
-
-void artsRunEdt(void *edtPacket) {
-  struct artsEdt *edt = edtPacket;
+void artsRunEdt(struct artsEdt *edt) {
   uint32_t depc = edt->depc;
   artsEdtDep_t *depv = (artsEdtDep_t *)(((uint64_t *)(edt + 1)) + edt->paramc);
 
@@ -428,12 +433,12 @@ void artsRunEdt(void *edtPacket) {
 
   // This is for a synchronous path
   if (edt->outputBuffer != NULL_GUID)
-    artsSetBuffer(edt->outputBuffer, artsCalloc(sizeof(unsigned int)),
+    artsSetBuffer(edt->outputBuffer, artsCalloc(1, sizeof(unsigned int)),
                   sizeof(unsigned int));
 
   ARTS_INFO("EDT [Guid: %lu] Finished", edt->currentEdt);
   releaseDbs(depc, depv, false);
-  artsEdtDelete(edtPacket);
+  artsEdtDelete(edt);
   // This is for debugging purposes
   decOustandingEdts(1);
 }
@@ -444,7 +449,8 @@ inline struct artsEdt *artsRuntimeStealFromNetwork() {
     unsigned int index = artsThreadInfo.threadId;
     for (unsigned int i = 0; i < artsNodeInfo.receiverThreadCount; i++) {
       index = (index + 1) % artsNodeInfo.receiverThreadCount;
-      if ((edt = artsDequePopBack(artsNodeInfo.receiverDeque[index])))
+      if ((edt = (struct artsEdt *)artsDequePopBack(
+               artsNodeInfo.receiverDeque[index])) != NULL)
         break;
     }
   }
@@ -459,7 +465,7 @@ inline struct artsEdt *artsRuntimeStealFromWorker() {
       stealLoc = jrand48(artsThreadInfo.drand_buf);
       stealLoc = stealLoc % artsNodeInfo.totalThreadCount;
     } while (stealLoc == artsThreadInfo.threadId);
-    edt = artsDequePopBack(artsNodeInfo.deque[stealLoc]);
+    edt = (struct artsEdt *)artsDequePopBack(artsNodeInfo.deque[stealLoc]);
   }
   return edt;
 }
@@ -467,8 +473,10 @@ inline struct artsEdt *artsRuntimeStealFromWorker() {
 bool artsNetworkFirstSchedulerLoop() {
   struct artsEdt *edtFound;
   if (!(edtFound = artsRuntimeStealFromNetwork())) {
-    if (!(edtFound = artsDequePopFront(artsThreadInfo.myNodeDeque))) {
-      if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque)))
+    if (!(edtFound = (struct artsEdt *)artsDequePopFront(
+              artsThreadInfo.myNodeDeque))) {
+      if (!(edtFound =
+                (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque)))
         edtFound = artsRuntimeStealFromWorker();
     }
   }
@@ -481,8 +489,10 @@ bool artsNetworkFirstSchedulerLoop() {
 
 bool artsNetworkBeforeStealSchedulerLoop() {
   struct artsEdt *edtFound;
-  if (!(edtFound = artsDequePopFront(artsThreadInfo.myNodeDeque))) {
-    if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque))) {
+  if (!(edtFound =
+            (struct artsEdt *)artsDequePopFront(artsThreadInfo.myNodeDeque))) {
+    if (!(edtFound =
+              (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque))) {
       if (!(edtFound = artsRuntimeStealFromNetwork()))
         edtFound = artsRuntimeStealFromWorker();
     }
@@ -497,7 +507,8 @@ bool artsNetworkBeforeStealSchedulerLoop() {
 
 struct artsEdt *artsFindEdt() {
   struct artsEdt *edtFound = NULL;
-  if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque))) {
+  if (!(edtFound =
+            (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque))) {
     if (!edtFound)
       if (!(edtFound = artsRuntimeStealFromWorker()))
         edtFound = artsRuntimeStealFromNetwork();
@@ -510,7 +521,8 @@ struct artsEdt *artsFindEdt() {
 
 bool artsDefaultSchedulerLoop() {
   struct artsEdt *edtFound = NULL;
-  if (!(edtFound = artsDequePopFront(artsThreadInfo.myDeque))) {
+  if (!(edtFound =
+            (struct artsEdt *)artsDequePopFront(artsThreadInfo.myDeque))) {
     if (!edtFound)
       if (!(edtFound = artsRuntimeStealFromWorker()))
         edtFound = artsRuntimeStealFromNetwork();
@@ -523,12 +535,11 @@ bool artsDefaultSchedulerLoop() {
     artsRunEdt(edtFound);
     // artsWakeUpContext();
     return true;
-  } else {
-    checkOutstandingEdts(10000000);
-    artsNextContext();
-    // artsTMTSchedulerYield();
-    //        usleep(1);
   }
+  checkOutstandingEdts(10000000);
+  artsNextContext();
+  // artsTMTSchedulerYield();
+  //        usleep(1);
   return false;
 }
 

@@ -37,18 +37,19 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #define _GNU_SOURCE
+#include "arts/system/Threads.h"
+
+#include <limits.h>
+
+#include <pthread.h>
+#include <unistd.h>
+
 #include "arts/arts.h"
-#include "arts/gas/Guid.h"
-#include "arts/introspection/Counter.h"
 #include "arts/network/Remote.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Config.h"
-#include "arts/system/TMT.h"
-#include "arts/system/Threads.h"
-#include "limits.h"
-#include <pthread.h>
-#include <unistd.h>
 
 unsigned int artsGlobalRankId;
 unsigned int artsGlobalRankCount;
@@ -56,12 +57,13 @@ unsigned int artsGlobalMasterRankId;
 struct artsConfig *gConfig;
 struct artsConfig *config;
 
+struct threadMask *mask;
 pthread_t *nodeThreadList;
 
 void *artsThreadLoop(void *data) {
   struct threadMask *unit = (struct threadMask *)data;
   if (unit->pin)
-    artsAbstractMachineModelPinThread(unit->coreInfo);
+    artsAbstractMachineModelPinThread(&unit->coreInfo);
   artsRuntimePrivateInit(unit, gConfig);
   artsRuntimeLoop();
   artsRuntimePrivateCleanup();
@@ -77,14 +79,15 @@ void artsThreadMainJoin() {
     pthread_join(nodeThreadList[i], NULL);
   artsRuntimeGlobalCleanup();
   // artsFree(args);
+  destroyThreadMask(mask);
   artsFree(nodeThreadList);
 }
 
 void artsThreadInit(struct artsConfig *config) {
   gConfig = config;
-  struct threadMask *mask = getThreadMask(config);
-  nodeThreadList =
-      artsMalloc(sizeof(pthread_t) * artsNodeInfo.totalThreadCount);
+  mask = getThreadMask(config);
+  nodeThreadList = (pthread_t *)artsMalloc(sizeof(pthread_t) *
+                                           artsNodeInfo.totalThreadCount);
   unsigned int i = 0, threadCount = artsNodeInfo.totalThreadCount;
 
   if (config->stackSize) {
@@ -104,7 +107,7 @@ void artsThreadInit(struct artsConfig *config) {
       pthread_create(&nodeThreadList[i], NULL, &artsThreadLoop, &mask[i]);
   }
   if (mask->pin)
-    artsAbstractMachineModelPinThread(mask->coreInfo);
+    artsAbstractMachineModelPinThread(&mask->coreInfo);
   artsRuntimePrivateInit(&mask[0], config);
 }
 
@@ -132,8 +135,9 @@ void artsPthreadAffinity(unsigned int cpuCoreId, bool verbose) {
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(cpuCoreId, &cpuset);
-  if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) && verbose)
+  if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) && verbose) {
     ARTS_INFO("Failed to set affinity %u", cpuCoreId);
+  }
 #endif
 }
 

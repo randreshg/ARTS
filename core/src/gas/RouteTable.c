@@ -38,12 +38,16 @@
 ******************************************************************************/
 
 #include "arts/gas/RouteTable.h"
+
+#include <stdlib.h>
+
+#include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
-#include "arts/introspection/Counter.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/memory/DbFunctions.h"
 #include "arts/runtime/memory/DbList.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
@@ -54,11 +58,11 @@ volatile unsigned int guidLock[guidLockSize] = {0};
 void setItem(artsRouteItem_t *item, void *data) { item->data = data; }
 
 void freeItem(artsRouteItem_t *item) {
-  artsType_t type = artsGuidGetType(item->key);
-  if (type > ARTS_BUFFER && type < ARTS_LAST_TYPE)
-    artsDbFree(item->data);
-  else
-    artsFree(item->data);
+  // artsType_t type = artsGuidGetType(item->key);
+  // if (type > ARTS_BUFFER && type < ARTS_LAST_TYPE)
+  //   artsDbFree(item->data);
+  // else
+  //   artsFree(item->data);
   artsOutOfOrderListDelete(&item->ooList);
   item->data = NULL;
   item->key = 0;
@@ -70,21 +74,20 @@ bool markReserve(artsRouteItem_t *item, bool markUse) {
   if (markUse) {
     uint64_t mask = reservedItem + 1;
     return !artsAtomicCswapU64(&item->lock, 0, mask);
-  } else
-    return !artsAtomicFetchOrU64(&item->lock, reservedItem);
+  }
+  return !artsAtomicFetchOrU64(&item->lock, reservedItem);
 }
 
 bool markRequested(artsRouteItem_t *item) {
   uint64_t local, temp;
   while (1) {
     local = item->lock;
-    if ((local & reservedItem) || (local & deleteItem))
+    if ((local & reservedItem) || (local & deleteItem)) {
       return false;
-    else {
-      temp = local | reservedItem;
-      if (local == artsAtomicCswapU64(&item->lock, local, temp))
-        return true;
     }
+    temp = local | reservedItem;
+    if (local == artsAtomicCswapU64(&item->lock, local, temp))
+      return true;
   }
 }
 
@@ -125,9 +128,10 @@ void printState(artsRouteItem_t *item) {
     } else if (isAvail(local)) {
       ARTS_INFO("%lu: available %p %s", item->key, local,
                 getTypeName(artsGuidGetType(item->key)));
-    } else if (isDel(local))
+    } else if (isDel(local)) {
       ARTS_INFO("%lu: deleted %p %s", item->key, local,
                 getTypeName(artsGuidGetType(item->key)));
+    }
   } else {
     ARTS_INFO("NULL ITEM");
   }
@@ -301,7 +305,7 @@ extern uint64_t minGlobalGuidThread;
 extern uint64_t maxGlobalGuidThread;
 
 static inline artsRouteTable_t *artsGetRouteTable(artsGuid_t guid) {
-  artsGuid raw = (artsGuid)guid;
+  artsGuid raw = (artsGuid){.bits = guid};
   uint64_t key = raw.fields.key;
   if (keysPerThread) {
     uint64_t globalThread = (key / keysPerThread);
@@ -315,9 +319,9 @@ static inline artsRouteTable_t *artsGetRouteTable(artsGuid_t guid) {
 artsRouteTable_t *artsNewRouteTable(unsigned int routeTableSize,
                                     unsigned int shift) {
   artsRouteTable_t *routeTable =
-      (artsRouteTable_t *)artsCalloc(sizeof(artsRouteTable_t));
-  routeTable->data = (artsRouteItem_t *)artsCalloc(
-      collisionResolves * routeTableSize * sizeof(artsRouteItem_t));
+      (artsRouteTable_t *)artsCalloc(1, sizeof(artsRouteTable_t));
+  routeTable->data = (artsRouteItem_t *)artsCallocAlign(
+      collisionResolves * routeTableSize, sizeof(artsRouteItem_t), 16);
   routeTable->size = routeTableSize;
   routeTable->shift = shift;
   routeTable->setFunc = setItem;
@@ -414,7 +418,8 @@ bool internalRouteTableRemoveItem(artsRouteTable_t *routeTable,
   artsRouteItem_t *item =
       artsRouteTableSearchForKey(routeTable, key, availableKey);
   if (item) {
-    if (markDelete(item)) {
+    markDelete(item);
+    if (shouldDelete(item->lock)) {
       routeTable->freeFunc(item);
     }
   }
@@ -422,8 +427,9 @@ bool internalRouteTableRemoveItem(artsRouteTable_t *routeTable,
 }
 
 bool artsRouteTableRemoveItem(artsGuid_t key) {
-  artsRouteTable_t *routeTable = artsGetRouteTable(key);
-  return internalRouteTableRemoveItem(routeTable, key);
+  // artsRouteTable_t *routeTable = artsGetRouteTable(key);
+  // return internalRouteTableRemoveItem(routeTable, key);
+  return artsRouteTableInvalidateItem(key);
 }
 
 // This just doesn't delete the item itself... It is for DB rename
@@ -463,8 +469,8 @@ artsRouteItem_t *internalRouteTableAddItemRace(bool *addedItem,
           } else if (usedAvail && checkItemState(found, availableKey))
             incItem(found, 1, found->key, routeTable);
         } else {
-          found =
-              internalRouteTableAddItem(routeTable, item, key, rank, usedRes);
+          found = (artsRouteItem_t *)internalRouteTableAddItem(
+              routeTable, item, key, rank, usedRes);
           if (toAddOnCreation)
             incItem(found, toAddOnCreation, found->key, routeTable);
           *addedItem = true;
@@ -560,8 +566,8 @@ bool artsRouteTableAddSent(artsGuid_t key, void *edt, unsigned int slot,
       ARTS_INFO("Item marked for deletion before it has arrived %u...",
                 sendReq);
   }
-  artsOutOfOrderHandleDbRequestWithOOList(&item->ooList, &item->data, edt,
-                                          slot);
+  artsOutOfOrderHandleDbRequestWithOOList(&item->ooList, &item->data,
+                                          (struct artsEdt *)edt, slot);
   return sendReq || !aggregate;
 }
 
@@ -642,12 +648,13 @@ bool internalRouteTableReturnDb(artsRouteTable_t *routeTable, artsGuid_t key,
       return decItem(routeTable, location);
     }
     // True False
-    else if (markToDelete && !doDelete) {
+    if (markToDelete && !doDelete) {
       decItem(routeTable, location);
       tryMarkDelete(location, 0);
       return false;
-    } else // False True || False False
-      return decItem(routeTable, location);
+    }
+    // False True || False False
+    return decItem(routeTable, location);
   }
   return false;
 }
@@ -655,7 +662,7 @@ bool internalRouteTableReturnDb(artsRouteTable_t *routeTable, artsGuid_t key,
 bool artsRouteTableReturnDb(artsGuid_t key, bool markToDelete) {
   artsRouteTable_t *routeTable = artsGetRouteTable(key);
   bool isRemote = artsGuidGetRank(key) != artsGlobalRankId;
-  return internalRouteTableReturnDb(routeTable, key, isRemote, isRemote);
+  return internalRouteTableReturnDb(routeTable, key, markToDelete, isRemote);
 }
 
 int artsRouteTableLookupRank(artsGuid_t key) {
@@ -730,6 +737,7 @@ void **artsRouteTableGetOOList(artsGuid_t key,
     *list = &item->ooList;
     return &item->data;
   }
+  return NULL;
 }
 
 // This is just a wrapper for outside consumption...
@@ -773,7 +781,7 @@ void artsRouteTableDecItem(artsGuid_t key, void *data) {
 
 artsRouteTableIterator *artsNewRouteTableIterator(artsRouteTable_t *table) {
   artsRouteTableIterator *ret =
-      (artsRouteTableIterator *)artsCalloc(sizeof(artsRouteTableIterator));
+      (artsRouteTableIterator *)artsCalloc(1, sizeof(artsRouteTableIterator));
   ret->table = table;
   return ret;
 }
@@ -808,11 +816,12 @@ artsRouteItem_t *artsRouteTableIterate(artsRouteTableIterator *iter) {
 void artsPrintItem(artsRouteItem_t *item) {
   if (item) {
     uint64_t local = item->lock;
-    ARTS_INFO("GUID: %lu DATA: %p RANK: %u LOCK: %p COUNTERS: %lu Res: %u Req: %u "
-              "Avail: %u Del: %u",
-              item->key, item->data, item->rank, local, getCount(local),
-              isRes(local) != 0, isReq(local) != 0, isAvail(local) != 0,
-              isDel(local) != 0);
+    ARTS_INFO(
+        "GUID: %lu DATA: %p RANK: %u LOCK: %p COUNTERS: %lu Res: %u Req: %u "
+        "Avail: %u Del: %u",
+        item->key, item->data, item->rank, local, getCount(local),
+        isRes(local) != 0, isReq(local) != 0, isAvail(local) != 0,
+        isDel(local) != 0);
   }
 }
 
@@ -831,6 +840,7 @@ uint64_t artsCleanUpRouteTable(artsRouteTable_t *routeTable) {
       if (db) {
         if (!artsAtomicSub(&db->copyCount, 1)) {
           freeSize += db->header.size;
+          artsDbFree(db);
           freeItem(item);
         }
       }
@@ -870,17 +880,18 @@ bool artsRouteTableUpdateItem(artsGuid_t key, void *data, unsigned int rank,
 
 bool artsRouteTableInvalidateItem(artsGuid_t key) {
   artsRouteTable_t *routeTable = artsGetRouteTable(key);
-  artsRouteItem_t *location =
-      artsRouteTableSearchForKey(routeTable, key, allocatedKey);
-  if (location) {
-    markDelete(location);
-    if (shouldDelete(location->lock)) {
-      routeTable->freeFunc(location);
-      return true;
-    }
-    ARTS_DEBUG("Marked %lu as invalid %lu", key, location->lock);
-  }
-  return false;
+  // artsRouteItem_t *location =
+  //     artsRouteTableSearchForKey(routeTable, key, allocatedKey);
+  // if (location) {
+  //   markDelete(location);
+  //   if (shouldDelete(location->lock)) {
+  //     routeTable->freeFunc(location);
+  //     return true;
+  //   }
+  //   ARTS_DEBUG("Marked %lu as invalid %lu", key, location->lock);
+  // }
+  // return false;
+  return internalRouteTableRemoveItem(routeTable, key);
 }
 
 void artsRouteTableAddRankDuplicate(artsGuid_t key, unsigned int rank) {}
@@ -897,8 +908,8 @@ artsRouteTableGetRankDuplicates(artsGuid_t key, unsigned int rank) {
       artsOutOfOrderListReset(&location->ooList);
       location->rank = rank;
     }
-    struct artsDb *db = location->data;
-    iter = artsCloseFrontier(db->dbList);
+    struct artsDb *db = (struct artsDb *)location->data;
+    iter = artsCloseFrontier((struct artsDbList *)db->dbList);
   }
   return iter;
 }

@@ -36,14 +36,15 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSOUTOFORDER_H
-#define ARTSOUTOFORDER_H
-#include "arts/arts.h"
+#ifndef ARTS_GAS_OUTOFORDER_H
+#define ARTS_GAS_OUTOFORDER_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include "arts/gas/OutOfOrderList.h"
+#include "arts/runtime/RT.h"
+
 void artsOutOfOrderSignalEdt(artsGuid_t waitOn, artsGuid_t edtPacket,
                              artsGuid_t dataGuid, uint32_t slot,
                              artsType_t mode, bool force);

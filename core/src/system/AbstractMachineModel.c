@@ -37,10 +37,10 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/system/AbstractMachineModel.h"
+
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/system/ArtsPrint.h"
-#include "arts/system/Threads.h"
 
 unsigned int numNumaDomains = 1;
 
@@ -74,11 +74,12 @@ void addAThread(struct unitMask *mask, bool workOn, bool networkOutOn,
   struct unitThread *next;
   mask->threads++;
   if (mask->listHead == NULL) {
-    mask->listTail = mask->listHead = artsMalloc(sizeof(struct unitThread));
+    mask->listTail = mask->listHead =
+        (struct unitThread *)artsMalloc(sizeof(struct unitThread));
     next = mask->listHead;
   } else {
     next = mask->listTail;
-    next->next = artsMalloc(sizeof(struct unitThread));
+    next->next = (struct unitThread *)artsMalloc(sizeof(struct unitThread));
     next = next->next;
     mask->listTail = next;
   }
@@ -93,23 +94,16 @@ void addAThread(struct unitMask *mask, bool workOn, bool networkOutOn,
   next->id = mask->coreId;
 }
 
-#ifdef HWLOC
+#ifdef USE_HWLOC
 
-#include <hwloc.h>
+hwloc_topology_t topology;
 
-struct artsCoreInfo {
-  hwloc_cpuset_t cpuset;
-  hwloc_topology_t topology;
-};
-
-hwloc_topology_t getTopology() {
-  hwloc_topology_t topology;
+void initTopology() {
   hwloc_topology_init(&topology);
-#ifndef HWLOC_V2
+#ifndef USE_HWLOC_V2
   hwloc_topology_set_flags(topology, HWLOC_TOPOLOGY_FLAG_IO_BRIDGES);
 #endif
   hwloc_topology_load(topology);
-  return topology;
 }
 
 unsigned int getNumberOfType(hwloc_topology_t topology, hwloc_obj_t obj,
@@ -149,9 +143,8 @@ void initClusterUnits(hwloc_topology_t topology, hwloc_obj_t obj,
 
     units[*unitIndex].listHead = NULL;
     units[*unitIndex].threads = 0;
-    units[*unitIndex].coreInfo = artsMalloc(sizeof(struct artsCoreInfo));
-    units[*unitIndex].coreInfo->topology = topology;
-    units[*unitIndex].coreInfo->cpuset = hwloc_bitmap_dup(obj->cpuset);
+    units[*unitIndex].coreInfo.topology = topology;
+    units[*unitIndex].coreInfo.cpuset = obj->cpuset;
     *unitIndex = (*unitIndex) + 1;
   } else {
     //        ARTS_INFO("ARITY: %u", obj->arity);
@@ -161,23 +154,33 @@ void initClusterUnits(hwloc_topology_t topology, hwloc_obj_t obj,
   }
 }
 
-struct nodeMask *initTopology() {
-  hwloc_topology_t topology = getTopology();
-
+struct nodeMask *getNodeMask() {
   struct nodeMask *node =
       (struct nodeMask *)artsMalloc(sizeof(struct nodeMask));
   numNumaDomains = node->numClusters =
       hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_NODE);
+  bool isUMA =
+      (numNumaDomains == 0); // true only when USE_HWLOC_V1 and UMA system,
+                             // false even through UMA when USE_HWLOC_V2
+  if (isUMA)
+    numNumaDomains = node->numClusters = 1;
   node->cluster = (struct clusterMask *)artsMalloc(sizeof(struct clusterMask) *
                                                    node->numClusters);
   unsigned int clusterIndex = 0;
   unsigned int coreIndex = 0;
-  hwloc_obj_t cluster = NULL;
+  hwloc_obj_t cluster = isUMA ? hwloc_get_root_obj(topology) : NULL;
   hwloc_obj_t core = NULL;
   for (clusterIndex = 0; clusterIndex < node->numClusters; clusterIndex++) {
-    cluster = hwloc_get_next_obj_by_type(topology, HWLOC_OBJ_NODE, cluster);
+    if (!isUMA)
+      cluster = hwloc_get_next_obj_by_type(topology, HWLOC_OBJ_NODE, cluster);
+#ifdef USE_HWLOC_V2
+    node->cluster[clusterIndex].numCores =
+        hwloc_get_nbobjs_inside_cpuset_by_type(topology, cluster->cpuset,
+                                               HWLOC_OBJ_CORE);
+#else
     node->cluster[clusterIndex].numCores =
         getNumberOfType(topology, cluster, HWLOC_OBJ_CORE);
+#endif
     node->cluster[clusterIndex].core = (struct coreMask *)artsMalloc(
         sizeof(struct coreMask) * node->cluster[clusterIndex].numCores);
     for (coreIndex = 0; coreIndex < node->cluster[clusterIndex].numCores;
@@ -282,7 +285,8 @@ unsigned int flattenMask(struct artsConfig *config, struct nodeMask *node,
   }
   total = count;
   *flat = (struct threadMask *)artsMalloc(sizeof(struct threadMask) * total);
-  unsigned int *groupCount = artsCalloc(sizeof(unsigned int) * abstractMax);
+  unsigned int *groupCount =
+      (unsigned int *)artsCalloc(abstractMax, sizeof(unsigned int));
   count = 0;
   struct unitThread *next;
   for (i = 0; i < node->numClusters; i++) {
@@ -297,12 +301,15 @@ unsigned int flattenMask(struct artsConfig *config, struct nodeMask *node,
             (*flat)[count].groupPos = groupCount[next->groupId]++;
             (*flat)[count].id = count;
             ++count;
-            next = next->next;
+            struct unitThread *temp = next->next;
+            artsFree(next);
+            next = temp;
           }
         }
       }
     }
   }
+  artsFree(groupCount);
   for (i = 0; i < node->numClusters; i++) {
     for (j = 0; j < node->cluster[i].numCores; j++) {
       artsFree(node->cluster[i].core[j].unit);
@@ -320,22 +327,29 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
   if (config->recieverCount > (artsGlobalRankCount - 1) * config->ports)
     config->recieverCount = (artsGlobalRankCount - 1) * config->ports;
 
-  unsigned int workerThreads = config->threadCount;
+  unsigned int workerThreads =
+      config->threadCount - config->senderCount - config->recieverCount;
   unsigned int totalThreads = config->threadCount;
 
   bool networkOn = (artsGlobalRankCount > 1);
   struct threadMask *flat;
-  struct nodeMask *topology = initTopology();
+  initTopology();
+  struct nodeMask *node = getNodeMask();
 
-  defaultPolicy(workerThreads, config->senderCount, config->recieverCount,
-                topology, config);
-  totalThreads = flattenMask(config, topology, &flat);
+  defaultPolicy(workerThreads, config->senderCount, config->recieverCount, node,
+                config);
+  totalThreads = flattenMask(config, node, &flat);
 
   artsRuntimeNodeInit(workerThreads, 1, config->senderCount,
                       config->recieverCount, totalThreads, 0, config);
   if (config->printTopology)
     printMask(flat, totalThreads);
   return flat;
+}
+
+void destroyThreadMask(struct threadMask *mask) {
+  hwloc_topology_destroy(topology);
+  artsFree(mask);
 }
 
 void printTopology(struct nodeMask *node) {
@@ -359,12 +373,6 @@ void printTopology(struct nodeMask *node) {
   }
 }
 #else
-
-#include <unistd.h>
-
-struct artsCoreInfo {
-  unsigned int cpuId;
-};
 
 void artsAbstractMachineModelPinThread(struct artsCoreInfo *coreInfo) {
   artsPthreadAffinity(coreInfo->cpuId, true);
@@ -430,11 +438,10 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
   int max = -1;
   while (totalThreads < numberOfWorkers) {
     flat[i % workerCores].on = 1;
-    flat[i % workerCores].coreInfo = artsMalloc(sizeof(struct artsCoreInfo));
     int tempAffin =
         artsAffinityFromPthreadValid(i, validCpus, validCpuCount - networkCores,
                                      workerCores, stride); // i % numCores;
-    flat[i % workerCores].coreId = flat[i % workerCores].coreInfo->cpuId =
+    flat[i % workerCores].coreId = flat[i % workerCores].coreInfo.cpuId =
         tempAffin;
     addAThread(&flat[i % workerCores], 1, 0, 0, abstractWorker,
                workerThreadId++, config->pinThreads);
@@ -458,9 +465,7 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
     for (; next < numCores; next += config->coresPerNetworkThread) {
       if (validCpus[next] > -1) {
         flat[i + workerCores].on = 1;
-        flat[i + workerCores].coreInfo =
-            artsMalloc(sizeof(struct artsCoreInfo));
-        flat[i + workerCores].coreId = flat[i + workerCores].coreInfo->cpuId =
+        flat[i + workerCores].coreId = flat[i + workerCores].coreInfo.cpuId =
             validCpus[next];
         addAThread(&flat[i + workerCores], 0, 1, 0, abstractOutbound,
                    networkOutThreadId++, config->pinThreads);
@@ -473,10 +478,8 @@ void defaultPolicy(unsigned int numberOfWorkers, unsigned int numberOfSenders,
     for (; next < numCores; next += config->coresPerNetworkThread) {
       if (validCpus[next] > -1) {
         flat[i + workerCores + numberOfSenders].on = 1;
-        flat[i + workerCores + numberOfSenders].coreInfo =
-            artsMalloc(sizeof(struct artsCoreInfo));
         flat[i + workerCores + numberOfSenders].coreId =
-            flat[i + workerCores + numberOfSenders].coreInfo->cpuId =
+            flat[i + workerCores + numberOfSenders].coreInfo.cpuId =
                 validCpus[next];
         addAThread(&flat[i + workerCores + numberOfSenders], 0, 0, 1,
                    abstractInbound, networkInThreadId++, config->pinThreads);
@@ -499,8 +502,8 @@ unsigned int flattenMask(struct artsConfig *config, unsigned int numCores,
       maskSize += unit[i].threads;
     }
   }
-  *flat = (struct threadMask *)artsCalloc(sizeof(struct threadMask) * maskSize);
-  unsigned int *groupCount = artsCalloc(sizeof(unsigned int) * abstractMax);
+  *flat = (struct threadMask *)artsCalloc(maskSize, sizeof(struct threadMask));
+  unsigned int *groupCount = artsCalloc(abstractMax, sizeof(unsigned int));
   struct unitThread *next;
   unsigned int count = 0;
   for (int i = 0; i < numCores; i++) {
@@ -513,11 +516,14 @@ unsigned int flattenMask(struct artsConfig *config, unsigned int numCores,
         (*flat)[count].groupPos = groupCount[next->groupId]++;
         (*flat)[count].id = count;
         ++count;
-        next = next->next;
+        struct unitThread *temp = next->next;
+        artsFree(next);
+        next = temp;
       }
     }
   }
   artsFree(groupCount);
+  artsFree(unit);
 
   return count;
 }
@@ -528,7 +534,8 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
   if (config->recieverCount > (artsGlobalRankCount - 1) * config->ports)
     config->recieverCount = (artsGlobalRankCount - 1) * config->ports;
 
-  unsigned int workerThreads = config->threadCount;
+  unsigned int workerThreads =
+      config->threadCount - config->senderCount - config->recieverCount;
   unsigned int totalThreads = config->threadCount;
 
   bool networkOn = (artsGlobalRankCount > 1);
@@ -538,7 +545,7 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
   unsigned int coreCount =
       (config->coreCount) ? config->coreCount : sysconf(_SC_NPROCESSORS_ONLN);
 
-  unit = artsCalloc(sizeof(struct unitMask) * coreCount);
+  unit = artsCalloc(coreCount, sizeof(struct unitMask));
   defaultPolicy(workerThreads, config->senderCount, config->recieverCount, unit,
                 coreCount, config);
 
@@ -550,6 +557,8 @@ struct threadMask *getThreadMask(struct artsConfig *config) {
                       config->recieverCount, totalThreads, 0, config);
   return flat;
 }
+
+void destroyThreadMask(struct threadMask *mask) { artsFree(mask); }
 
 #endif
 

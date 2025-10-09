@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSDEBUG_H
-#define ARTSDEBUG_H
+#ifndef ARTS_SYSTEM_DEBUG_H
+#define ARTS_SYSTEM_DEBUG_H
 #ifdef __cplusplus
 extern "C" {
 #endif

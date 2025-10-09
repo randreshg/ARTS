@@ -36,16 +36,18 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSCOUNTER_H
-#define ARTSCOUNTER_H
+#ifndef ARTS_INTROSPECTION_COUNTER_H
+#define ARTS_INTROSPECTION_COUNTER_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
+
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "arts/arts.h"
-#include "arts/runtime/Globals.h"
-#include "arts/utils/ArrayList.h"
 
 extern const char *const artsCounterNames[];
 extern uint64_t countersOn;

@@ -36,13 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSROUTETABLE_H
-#define ARTSROUTETABLE_H
+#ifndef ARTS_GAS_ROUTETABLE_H
+#define ARTS_GAS_ROUTETABLE_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include "arts/gas/OutOfOrderList.h"
+#include "arts/runtime/RT.h"
 
 // These are for the lock for each item in the RT
 #define reservedItem 0x8000000000000000

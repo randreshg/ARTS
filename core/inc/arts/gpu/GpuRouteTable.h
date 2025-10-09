@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSGPUROUTETABLE_H
-#define ARTSGPUROUTETABLE_H
+#ifndef ARTS_GPU_GPUROUTETABLE_H
+#define ARTS_GPU_GPUROUTETABLE_H
 #ifdef __cplusplus
 extern "C" {
 #endif

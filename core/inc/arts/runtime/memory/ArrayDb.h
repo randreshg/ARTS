@@ -37,12 +37,13 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#ifndef ARTSARRAYDB_H
-#define ARTSARRAYDB_H
+#ifndef ARTS_RUNTIME_MEMORY_ARRAYDB_H
+#define ARTS_RUNTIME_MEMORY_ARRAYDB_H
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "arts/arts.h"
+
+#include "arts/runtime/RT.h"
 
 unsigned int artsGetSizeArrayDb(artsArrayDb_t *array);
 unsigned int getOffsetFromIndex(artsArrayDb_t *array, unsigned int index);

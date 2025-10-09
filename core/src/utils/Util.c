@@ -37,35 +37,21 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/arts.h"
-#include "arts/gas/Guid.h"
-#include "arts/gas/OutOfOrder.h"
-#include "arts/gas/RouteTable.h"
-#include "arts/introspection/Counter.h"
-#include "arts/introspection/Introspection.h"
-#include "arts/network/Remote.h"
-#include "arts/runtime/Globals.h"
-#include "arts/runtime/Runtime.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/memory/DbFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/utils/Atomics.h"
-#include <fcntl.h>
+
 #include <inttypes.h>
 #include <stdarg.h>
-#include <string.h>
+
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "arts/runtime/Globals.h"
+#include "arts/runtime/Runtime.h"
 
 extern __thread struct artsEdt *currentEdt;
 extern unsigned int numNumaDomains;
-
-inline artsGuid_t artsGetGuidFromEdtDep(artsEdtDep_t dep) { return dep.guid; }
-
-inline void *artsGetPtrFromEdtDep(artsEdtDep_t dep) { return dep.ptr; }
 
 artsGuid_t artsGetCurrentGuid() {
   if (currentEdt) {

@@ -36,10 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
-#include "arts/system/ArtsPrint.h"
 #include <stdio.h>
-#include <stdlib.h>
+
+#include "arts/arts.h"
+
 artsGuid_t shutdownGuid;
 artsGuid_t *guids;
 
@@ -51,7 +51,7 @@ void shutdownEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 void acquireTest(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                  artsEdtDep_t depv[]) {
   for (unsigned int i = 0; i < depc; i++) {
-    unsigned int *num = depv[i].ptr;
+    unsigned int *num = (unsigned int *)depv[i].ptr;
     printf("%u %u i: %u %u\n", artsGetCurrentNode(), artsGetCurrentWorker(), i,
            *num);
   }
@@ -59,7 +59,7 @@ void acquireTest(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 }
 
 void initPerNode(unsigned int nodeId, int argc, char **argv) {
-  guids = artsMalloc(sizeof(artsGuid_t) * artsGetTotalNodes());
+  guids = (artsGuid_t *)artsMalloc(sizeof(artsGuid_t) * artsGetTotalNodes());
   for (unsigned int i = 0; i < artsGetTotalNodes(); i++) {
     guids[i] = artsReserveGuidRoute(ARTS_DB_READ, i);
     if (!nodeId)
@@ -73,8 +73,8 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
   if (!workerId) {
     for (unsigned int i = 0; i < artsGetTotalNodes(); i++) {
       if (artsIsGuidLocal(guids[i])) {
-        unsigned int *ptr =
-            artsDbCreateWithGuid(guids[i], sizeof(unsigned int));
+        unsigned int *ptr = (unsigned int *)artsDbCreateWithGuid(
+            guids[i], sizeof(unsigned int));
         *ptr = i;
         PRINTF("Created i: %u guid: %ld\n", i, guids[i]);
       }

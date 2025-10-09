@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/compute/EdtFunctions.h"
+
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
@@ -44,7 +45,6 @@
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
@@ -52,7 +52,7 @@
 #include "arts/utils/Atomics.h"
 
 #ifdef USE_GPU
-#include "arts/gpu/GpuRuntime.h"
+#include "arts/gpu/GpuRuntime.cuh"
 #endif
 
 #define maxEpochArrayList 32
@@ -79,7 +79,8 @@ artsGuid_t artsGetCurrentEpochGuid() {
   if (epochList) {
     uint64_t length = artsLengthArrayList(epochList);
     if (length) {
-      artsGuid_t *guid = artsGetFromArrayList(epochList, length - 1);
+      artsGuid_t *guid =
+          (artsGuid_t *)artsGetFromArrayList(epochList, length - 1);
       return *guid;
     }
   }
@@ -90,7 +91,7 @@ artsGuid_t *artsCheckEpochIsRoot(artsGuid_t toCheck) {
   if (epochList) {
     uint64_t length = artsLengthArrayList(epochList);
     for (uint64_t i = 0; i < length; i++) {
-      artsGuid_t *guid = artsGetFromArrayList(epochList, i);
+      artsGuid_t *guid = (artsGuid_t *)artsGetFromArrayList(epochList, i);
       if (*guid == toCheck)
         return guid;
     }
@@ -132,7 +133,7 @@ void artsRestoreThreadLocal(threadLocal_t *tl) {
   currentEdt = tl->currentEdt;
   if (epochList)
     artsDeleteArrayList(epochList);
-  epochList = tl->epochList;
+  epochList = (artsArrayList *)tl->epochList;
   artsCounterTriggerTimerEvent(contextSwitch, false);
 
   artsCounterTriggerTimerEvent(edtCounter, true);
@@ -143,7 +144,7 @@ void artsIncrementFinishedEpochList() {
 
     unsigned int epochArrayLength = artsLengthArrayList(epochList);
     for (unsigned int i = 0; i < epochArrayLength; i++) {
-      artsGuid_t *guid = artsGetFromArrayList(epochList, i);
+      artsGuid_t *guid = (artsGuid_t *)artsGetFromArrayList(epochList, i);
       ARTS_DEBUG("%lu Unsetting guid: %lu", artsThreadInfo.currentEdtGuid,
                  *guid);
       if (*guid)
@@ -172,7 +173,8 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
                            uint32_t paramc, uint64_t *paramv, uint32_t depc,
                            bool useEpoch, artsGuid_t epochGuid, bool hasDepv) {
   if (!edt)
-    edt = (struct artsEdt *)artsCallocWithType(edtSpace, artsEdtMemorySize);
+    edt = (struct artsEdt *)artsCallocAlignWithType(1, edtSpace, 16,
+                                                    artsEdtMemorySize);
   edt->header.type = mode;
   edt->header.size = edtSpace;
   if (edt) {
@@ -221,24 +223,29 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
       if (createdGuid) {
         artsRouteTableAddItem(edt, *guid, artsGlobalRankId, false);
         if (edt->depcNeeded == 0)
-          artsHandleReadyEdt((void *)edt);
+          artsHandleReadyEdt(edt);
       } else {
         artsRouteTableAddItemRace(edt, *guid, artsGlobalRankId, false);
-        if (edt->depcNeeded)
+        if (edt->depcNeeded) {
           artsRouteTableFireOO(*guid, artsOutOfOrderHandler);
-        else
-          artsHandleReadyEdt((void *)edt);
+        } else
+          artsHandleReadyEdt(edt);
       }
     }
 
     /// DEBUG
-    if (useEpoch) {
-      ARTS_INFO("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u] [Route: %d]",
-                (unsigned)*guid, (unsigned)edt->epochGuid, (unsigned)edt->depc,
-                route);
-    } else {
-      ARTS_INFO("Created EDT [Guid: %lu] [Route: %d]", (unsigned)*guid, route);
-    }
+    // ! This may cause segfaults when free method is called for edt right after
+    // ! artsRemoteMemoryMove is performed
+
+    // if (useEpoch) {
+    //   ARTS_INFO("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u] [Route:
+    //   %d]",
+    //             (unsigned)*guid, (unsigned)edt->epochGuid,
+    //             (unsigned)edt->depc, route);
+    // } else {
+    //   ARTS_INFO("Created EDT [Guid: %lu] [Route: %d]", (unsigned)*guid,
+    //   route);
+    // }
 
     return true;
   }
@@ -249,6 +256,8 @@ artsGuid_t artsEdtCreateDep(artsEdt_t funcPtr, unsigned int route,
                             uint32_t paramc, uint64_t *paramv, uint32_t depc,
                             bool hasDepv) {
   artsCounterTriggerTimerEvent(edtCreateCounter, true);
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
   unsigned int edtSpace =
       sizeof(struct artsEdt) + paramc * sizeof(uint64_t) + depSpace;
@@ -281,6 +290,8 @@ artsGuid_t artsEdtCreateWithEpochDep(artsEdt_t funcPtr, unsigned int route,
                                      uint32_t depc, artsGuid_t epochGuid,
                                      bool hasDepv) {
   artsCounterTriggerTimerEvent(edtCreateCounter, true);
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
   unsigned int edtSpace =
       sizeof(struct artsEdt) + paramc * sizeof(uint64_t) + depSpace;
@@ -294,6 +305,8 @@ artsGuid_t artsEdtCreateWithEpochDep(artsEdt_t funcPtr, unsigned int route,
 
 artsGuid_t artsEdtCreate(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
                          uint64_t *paramv, uint32_t depc) {
+  if (route == -1)
+    route = artsGlobalRankId;
   return artsEdtCreateDep(funcPtr, route, paramc, paramv, depc, true);
 }
 
@@ -306,6 +319,8 @@ artsGuid_t artsEdtCreateWithGuid(artsEdt_t funcPtr, artsGuid_t guid,
 artsGuid_t artsEdtCreateWithEpoch(artsEdt_t funcPtr, unsigned int route,
                                   uint32_t paramc, uint64_t *paramv,
                                   uint32_t depc, artsGuid_t epochGuid) {
+  if (route == -1)
+    route = artsGlobalRankId;
   return artsEdtCreateWithEpochDep(funcPtr, route, paramc, paramv, depc,
                                    epochGuid, true);
 }
@@ -316,7 +331,7 @@ void artsEdtFree(struct artsEdt *edt) {
   artsThreadInfo.edtFree = 0;
 }
 
-inline void artsEdtDelete(struct artsEdt *edt) {
+void artsEdtDelete(struct artsEdt *edt) {
   artsRouteTableRemoveItem(edt->currentEdt);
   artsEdtFree(edt);
 }
@@ -356,7 +371,8 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
   } else {
     unsigned int rank = artsGuidGetRank(edtPacket);
     if (rank == artsGlobalRankId) {
-      struct artsEdt *edt = artsRouteTableLookupItem(edtPacket);
+      struct artsEdt *edt =
+          (struct artsEdt *)artsRouteTableLookupItem(edtPacket);
       if (edt) {
         artsEdtDep_t *edtDep = (artsEdtDep_t *)artsGetDepv(edt);
         if (slot < edt->depc) {
@@ -429,6 +445,8 @@ artsGuid_t artsActiveMessageWithBuffer(artsEdt_t funcPtr, unsigned int route,
                                        uint32_t paramc, uint64_t *paramv,
                                        uint32_t depc, void *data,
                                        unsigned int size) {
+  if (route == -1)
+    route = artsGlobalRankId;
   void *ptr = artsMalloc(size);
   memcpy(ptr, data, size);
   artsGuid_t guid = artsEdtCreate(funcPtr, route, paramc, paramv, depc + 1);
@@ -442,15 +460,15 @@ artsGuid_t artsAllocateLocalBuffer(void **buffer, unsigned int size,
     incrementActiveEpoch(epochGuid);
   globalShutdownGuidIncActive();
 
-  unsigned int alloc = 0;
+  // unsigned int alloc = 0;
   if (size) {
     if (*buffer == NULL) {
-      *buffer = artsMalloc(sizeof(char) * size);
-      alloc = 1;
+      *buffer = (char *)artsMalloc(sizeof(char) * size);
+      // alloc = 1;
     }
   }
 
-  artsBuffer_t *stub = artsMalloc(sizeof(artsBuffer_t));
+  artsBuffer_t *stub = (artsBuffer_t *)artsMalloc(sizeof(artsBuffer_t));
   stub->buffer = (buffer) ? *buffer : NULL;
   stub->sizeToWrite = NULL;
   stub->size = size;
@@ -466,7 +484,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
   void *ret = NULL;
   unsigned int rank = artsGuidGetRank(bufferGuid);
   if (rank == artsGlobalRankId) {
-    artsBuffer_t *stub = artsRouteTableLookupItem(bufferGuid);
+    artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     if (stub) {
       artsGuid_t epochGuid = stub->epochGuid;
       if (epochGuid)
@@ -479,7 +497,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
                     size, stub->size);
           artsDebugPrintStack();
         } else if (stub->buffer == NULL) {
-          stub->buffer = artsMalloc(sizeof(char) * size);
+          stub->buffer = (char *)artsMalloc(sizeof(char) * size);
           stub->size = size;
         } else
           stub->size = size;
@@ -504,8 +522,9 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
       if (epochGuid)
         incrementFinishedEpoch(epochGuid);
       globalShutdownGuidIncFinished();
-    } else
+    } else {
       ARTS_INFO("Out-of-order buffers not supported");
+    }
   } else {
     artsRemoteMemoryMove(rank, bufferGuid, buffer, size,
                          ARTS_REMOTE_BUFFER_SEND_MSG, artsFree);
@@ -516,7 +535,7 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
 void *artsGetBuffer(artsGuid_t bufferGuid) {
   void *buffer = NULL;
   if (artsIsGuidLocal(bufferGuid)) {
-    artsBuffer_t *stub = artsRouteTableLookupItem(bufferGuid);
+    artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     buffer = stub->buffer;
     if (!artsAtomicSub(&stub->uses, 1)) {
       artsRouteTableRemoveItem(bufferGuid);
@@ -529,7 +548,7 @@ void *artsGetBuffer(artsGuid_t bufferGuid) {
 void *artsBlockForBuffer(artsGuid_t bufferGuid) {
   void *buffer = NULL;
   if (artsIsGuidLocal(bufferGuid)) {
-    artsBuffer_t *stub = artsRouteTableLookupItem(bufferGuid);
+    artsBuffer_t *stub = (artsBuffer_t *)artsRouteTableLookupItem(bufferGuid);
     while (stub->uses > 1) {
       ARTS_DEBUG("Yield: [Uses: %u]", stub->uses);
       artsYield();

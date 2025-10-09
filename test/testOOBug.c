@@ -36,9 +36,12 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
+
+#include <sys/types.h>
+
+#include "arts/arts.h"
 
 #define MATSIZE 3
 #define TILE 1
@@ -158,7 +161,7 @@ void multiplyMM(uint32_t paramc, uint64_t *paramv, uint32_t depc,
   unsigned int k = paramv[3];
 
   PRINTF("%s i: %u k: %u x % k: %u j: %u %lu %lu\n", __func__, i, k, k, j,
-            depv[0].guid, depv[1].guid);
+         depv[0].guid, depv[1].guid);
 
   float *aTile = (float *)depv[0].ptr;
   float *bTile = (float *)depv[1].ptr;
@@ -168,7 +171,7 @@ void multiplyMM(uint32_t paramc, uint64_t *paramv, uint32_t depc,
       (void **)&cTile, sizeof(float) * TILE * TILE, ARTS_DB_GPU_WRITE);
   initMatrix(rowSize, cTile, false, true);
 
-  uint64_t args[] = {TILE, toSignal, k, cTileGuid, i, j, k};
+  uint64_t args[] = {TILE, (uint64_t)toSignal, k, (uint64_t)cTileGuid, i, j, k};
   artsGuid_t mulGpuGuid = artsEdtCreate(mmKernelCPU, 0, 7, args, 3);
   artsSignalEdt(mulGpuGuid, 0, depv[0].guid);
   artsSignalEdt(mulGpuGuid, 1, depv[1].guid);
@@ -265,15 +268,15 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
         artsSignalEdt(initGuid, 0, aMatGuid);
         artsSignalEdt(initGuid, 1, bMatGuid);
 
-        uint64_t sumArgs[] = {doneGuid, i, j};
+        uint64_t sumArgs[] = {(uint64_t)doneGuid, i, j};
         artsGuid_t sumGuid = artsEdtCreate(sumMM, 0, 3, sumArgs, numBlocks);
         PRINTF("SUMGUID: i: %u j: %u %lu\n", i, j, sumGuid);
         for (unsigned int k = 0; k < numBlocks; k++) {
-          uint64_t args[] = {sumGuid, i, j, k};
+          uint64_t args[] = {(uint64_t)sumGuid, i, j, k};
           artsGuid_t mulGuid = artsEdtCreate(multiplyMM, 0, 4, args, 2);
-          PRINTF("%lu Signaling: i: %u k: %u %lu i: %u k: %u %lu\n", mulGuid,
-                    i, k, artsGetGuid(aTileGuids, i * numBlocks + k), k, j,
-                    artsGetGuid(bTileGuids, k * numBlocks + j));
+          PRINTF("%lu Signaling: i: %u k: %u %lu i: %u k: %u %lu\n", mulGuid, i,
+                 k, artsGetGuid(aTileGuids, i * numBlocks + k), k, j,
+                 artsGetGuid(bTileGuids, k * numBlocks + j));
           artsSignalEdt(mulGuid, 0, artsGetGuid(aTileGuids, i * numBlocks + k));
           artsSignalEdt(mulGuid, 1, artsGetGuid(bTileGuids, k * numBlocks + j));
         }

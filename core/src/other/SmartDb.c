@@ -37,18 +37,18 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-// #include "artsDb.h"x
-#include "arts/arts.h"
-#include "artsDbFunctions.h"
-#include "artsEdtFunctions.h"
-#include "artsGlobals.h"
-#include "artsGuid.h"
-#include "artsIntrospection.h"
-#include "artsRouteTable.h"
-#include "artsTerminationDetection.h"
+#include "SmartDb.h"
+
 #include <assert.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "arts/arts.h"
+#include "arts/gas/RouteTable.h"
+#include "arts/introspection/Counter.h"
+#include "arts/introspection/Introspection.h"
+#include "arts/runtime/Globals.h"
 
 // Constants for memory management
 #define HOT_ACCESS_THRESHOLD 1000 // Number of accesses to consider data "hot"
@@ -96,10 +96,10 @@ static float calculateAccessCost(const artsMemMetrics_t *metrics,
 }
 
 // Create a new SmartDB with the given size and type
-artsDb_t *artsDbCreate(uint64_t size, artsType_t type,
-                                 artsDbFlags_t flags) {
+artsSmartDb_t *artsSmartDbCreate(uint64_t size, artsType_t type,
+                                 artsSmartDbFlags_t flags) {
   artsCounterTriggerTimerEvent(smartDbCreateCounter, true);
-  artsDb_t *smartDb = (artsDb_t *)artsMalloc(sizeof(artsDb_t));
+  artsSmartDb_t *smartDb = (artsSmartDb_t *)artsMalloc(sizeof(artsSmartDb_t));
   if (!smartDb) {
     artsCounterTriggerTimerEvent(smartDbCreateCounter, false);
     return NULL;
@@ -148,7 +148,7 @@ artsDb_t *artsDbCreate(uint64_t size, artsType_t type,
     return NULL;
   }
 
-  smartDb->dataGuid = smartDb->dbGuid;
+  // smartDb->dataGuid = smartDb->dbGuid;
   smartDb->memRef = data;
   smartDb->memRefSize = size;
 
@@ -157,9 +157,9 @@ artsDb_t *artsDbCreate(uint64_t size, artsType_t type,
 }
 
 // Create a SmartDB with a specific GUID
-artsDb_t *artsDbCreateWithGuid(artsGuid_t guid, uint64_t size,
-                                         artsDbFlags_t flags) {
-  artsDb_t *smartDb = (artsDb_t *)artsMalloc(sizeof(artsDb_t));
+artsSmartDb_t *artsSmartDbCreateWithGuid(artsGuid_t guid, uint64_t size,
+                                         artsSmartDbFlags_t flags) {
+  artsSmartDb_t *smartDb = (artsSmartDb_t *)artsMalloc(sizeof(artsSmartDb_t));
   if (!smartDb)
     return NULL;
 
@@ -205,7 +205,7 @@ artsDb_t *artsDbCreateWithGuid(artsGuid_t guid, uint64_t size,
     return NULL;
   }
 
-  smartDb->dataGuid = guid;
+  // smartDb->dataGuid = guid;
   smartDb->memRef = data;
   smartDb->memRefSize = size;
 
@@ -213,7 +213,7 @@ artsDb_t *artsDbCreateWithGuid(artsGuid_t guid, uint64_t size,
 }
 
 // Destroy a SmartDB and its associated resources
-void artsDbDestroy(artsDb_t *smartDb) {
+void artsSmartDbDestroy(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return;
 
@@ -233,24 +233,24 @@ void artsDbDestroy(artsDb_t *smartDb) {
 }
 
 // Readiness sensor operations
-void artsDbAddProducer(artsDb_t *smartDb) {
+void artsSmartDbAddProducer(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return;
   smartDb->numProducers++;
   smartDb->latchCount++;
-  artsPersistentEventIncrementLatch(smartDb->eventGuid, smartDb->dataGuid);
+  artsPersistentEventIncrementLatch(smartDb->eventGuid);
 }
 
-void artsDbAddConsumer(artsDb_t *smartDb) {
+void artsSmartDbAddConsumer(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return;
   smartDb->numConsumers++;
 }
 
-void artsDbProducerComplete(artsDb_t *smartDb) {
+void artsSmartDbProducerComplete(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return;
-  artsPersistentEventDecrementLatch(smartDb->eventGuid, smartDb->dataGuid);
+  artsPersistentEventDecrementLatch(smartDb->eventGuid);
   smartDb->latchCount--;
   smartDb->version++;
 
@@ -258,21 +258,21 @@ void artsDbProducerComplete(artsDb_t *smartDb) {
   smartDb->isReady = (smartDb->latchCount == 0);
 }
 
-void artsDbConsumerComplete(artsDb_t *smartDb) {
+void artsSmartDbConsumerComplete(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return;
   // Update metrics for consumer completion
-  artsDbUpdateMetrics(smartDb, smartDb->size, 0);
+  artsSmartDbUpdateMetrics(smartDb, smartDb->size, 0);
 }
 
-bool artsDbIsReady(artsDb_t *smartDb) {
+bool artsSmartDbIsReady(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return false;
   return smartDb->isReady && !artsIsEventFired(smartDb->eventGuid);
 }
 
 // Memory sensor operations
-void artsDbUpdateMetrics(artsDb_t *smartDb, uint64_t accessSize,
+void artsSmartDbUpdateMetrics(artsSmartDb_t *smartDb, uint64_t accessSize,
                               uint64_t latency) {
   if (!smartDb)
     return;
@@ -302,7 +302,7 @@ void artsDbUpdateMetrics(artsDb_t *smartDb, uint64_t accessSize,
   smartDb->accessCost = calculateAccessCost(metrics, smartDb->placement);
 }
 
-void artsDbSetPlacement(artsDb_t *smartDb,
+void artsSmartDbSetPlacement(artsSmartDb_t *smartDb,
                              artsMemPlacement_t placement) {
   if (!smartDb || smartDb->isMigrating)
     return;
@@ -315,13 +315,13 @@ void artsDbSetPlacement(artsDb_t *smartDb,
   }
 }
 
-artsMemPlacement_t artsDbGetPlacement(artsDb_t *smartDb) {
+artsMemPlacement_t artsSmartDbGetPlacement(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return ARTS_MEM_PLACE_DEFAULT;
   return smartDb->placement;
 }
 
-void artsDbSetAccessPattern(artsDb_t *smartDb,
+void artsSmartDbSetAccessPattern(artsSmartDb_t *smartDb,
                                  artsAccessPattern_t pattern) {
   if (!smartDb)
     return;
@@ -330,19 +330,19 @@ void artsDbSetAccessPattern(artsDb_t *smartDb,
       calculateAccessCost(&smartDb->metrics, smartDb->placement);
 }
 
-artsAccessPattern_t artsDbGetAccessPattern(artsDb_t *smartDb) {
+artsAccessPattern_t artsSmartDbGetAccessPattern(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return ARTS_ACCESS_PATTERN_UNKNOWN;
   return smartDb->metrics.pattern;
 }
 
-float artsDbGetAccessCost(artsDb_t *smartDb) {
+float artsSmartDbGetAccessCost(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return 0.0f;
   return smartDb->accessCost;
 }
 
-bool artsDbShouldMigrate(artsDb_t *smartDb) {
+bool artsSmartDbShouldMigrate(artsSmartDb_t *smartDb) {
   if (!smartDb || !(smartDb->flags & ARTS_SMART_DB_AUTO_MIGRATE))
     return false;
 
@@ -359,7 +359,7 @@ bool artsDbShouldMigrate(artsDb_t *smartDb) {
   return shouldMigrate;
 }
 
-bool artsDbShouldReplicate(artsDb_t *smartDb) {
+bool artsSmartDbShouldReplicate(artsSmartDb_t *smartDb) {
   if (!smartDb || !(smartDb->flags & ARTS_SMART_DB_REPLICATE))
     return false;
 
@@ -377,7 +377,7 @@ bool artsDbShouldReplicate(artsDb_t *smartDb) {
 }
 
 // Data operations with memory awareness
-void *artsDbGetData(artsDb_t *smartDb) {
+void *artsSmartDbGetData(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return NULL;
 
@@ -387,16 +387,16 @@ void *artsDbGetData(artsDb_t *smartDb) {
   uint64_t latency = artsGetTimeStamp() - startTime;
 
   if (data) {
-    artsDbUpdateMetrics(smartDb, smartDb->size, latency);
+    artsSmartDbUpdateMetrics(smartDb, smartDb->size, latency);
     // Record access at offset 0 (whole DB)
-    artsDbRecordAccess(smartDb, 0);
-    artsDbAnalyzeAccessPattern(smartDb);
+    artsSmartDbRecordAccess(smartDb, 0);
+    artsSmartDbAnalyzeAccessPattern(smartDb);
   }
 
   return data;
 }
 
-void artsDbSetData(artsDb_t *smartDb, void *data, uint64_t size) {
+void artsSmartDbSetData(artsSmartDb_t *smartDb, void *data, uint64_t size) {
   if (!smartDb || !data || size > smartDb->size)
     return;
 
@@ -411,16 +411,16 @@ void artsDbSetData(artsDb_t *smartDb, void *data, uint64_t size) {
   uint64_t latency = artsGetTimeStamp() - startTime;
 
   // Update metrics
-  artsDbUpdateMetrics(smartDb, size, latency);
+  artsSmartDbUpdateMetrics(smartDb, size, latency);
   // Record access at offset 0 (whole DB)
-  artsDbRecordAccess(smartDb, 0);
-  artsDbAnalyzeAccessPattern(smartDb);
+  artsSmartDbRecordAccess(smartDb, 0);
+  artsSmartDbAnalyzeAccessPattern(smartDb);
 
   // Signal that the data has been updated
-  artsDbProducerComplete(smartDb);
+  artsSmartDbProducerComplete(smartDb);
 }
 
-void artsDbMigrate(artsDb_t *smartDb,
+void artsSmartDbMigrate(artsSmartDb_t *smartDb,
                         artsMemPlacement_t newPlacement) {
   if (!smartDb || smartDb->isMigrating)
     return;
@@ -438,7 +438,7 @@ void artsDbMigrate(artsDb_t *smartDb,
   smartDb->isMigrating = false;
 }
 
-void artsDbReplicate(artsDb_t *smartDb, unsigned int numCopies) {
+void artsSmartDbReplicate(artsSmartDb_t *smartDb, unsigned int numCopies) {
   if (!smartDb || !(smartDb->flags & ARTS_SMART_DB_REPLICATE))
     return;
 
@@ -450,41 +450,40 @@ void artsDbReplicate(artsDb_t *smartDb, unsigned int numCopies) {
 }
 
 // Dependence management
-void artsDbAddDependence(artsDb_t *smartDb, artsGuid_t edtGuid,
+void artsSmartDbAddDependence(artsSmartDb_t *smartDb, artsGuid_t edtGuid,
                               uint32_t slot) {
   if (!smartDb || edtGuid == NULL_GUID)
     return;
-  artsAddDependenceToPersistentEvent(smartDb->eventGuid, edtGuid, slot,
-                                     smartDb->dataGuid);
+  artsAddDependenceToPersistentEvent(smartDb->eventGuid, edtGuid, slot);
 }
 
 // Metadata operations
-artsDbFlags_t artsDbGetFlags(artsDb_t *smartDb) {
+artsSmartDbFlags_t artsSmartDbGetFlags(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return ARTS_SMART_DB_NONE;
   return smartDb->flags;
 }
 
-void artsDbSetFlags(artsDb_t *smartDb, artsDbFlags_t flags) {
+void artsSmartDbSetFlags(artsSmartDb_t *smartDb, artsSmartDbFlags_t flags) {
   if (!smartDb)
     return;
   smartDb->flags = flags;
 }
 
-unsigned int artsDbGetNumProducers(artsDb_t *smartDb) {
+unsigned int artsSmartDbGetNumProducers(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return 0;
   return smartDb->numProducers;
 }
 
-unsigned int artsDbGetNumConsumers(artsDb_t *smartDb) {
+unsigned int artsSmartDbGetNumConsumers(artsSmartDb_t *smartDb) {
   if (!smartDb)
     return 0;
   return smartDb->numConsumers;
 }
 
 // Migration API: Move SmartDB to a new node
-void artsDbMigrateToNode(artsDb_t *smartDb, unsigned int newNode) {
+void artsSmartDbMigrateToNode(artsSmartDb_t *smartDb, unsigned int newNode) {
   if (!smartDb || smartDb->isMigrating || smartDb->homeNode == newNode)
     return;
   smartDb->isMigrating = true;
@@ -493,9 +492,9 @@ void artsDbMigrateToNode(artsDb_t *smartDb, unsigned int newNode) {
   // (isMigrating flag is checked in all SmartDB accessors)
 
   // Marshall SmartDB metadata and data
-  size_t msgSize = sizeof(artsDbMigrationMsg_t) + smartDb->memRefSize;
+  size_t msgSize = sizeof(artsSmartDbMigrationMsg_t) + smartDb->memRefSize;
   char *buffer = (char *)artsMalloc(msgSize);
-  artsDbMigrationMsg_t *msg = (artsDbMigrationMsg_t *)buffer;
+  artsSmartDbMigrationMsg_t *msg = (artsSmartDbMigrationMsg_t *)buffer;
   msg->size = smartDb->size;
   msg->type = smartDb->type;
   msg->flags = smartDb->flags;
@@ -511,11 +510,11 @@ void artsDbMigrateToNode(artsDb_t *smartDb, unsigned int newNode) {
   msg->accessCost = smartDb->accessCost;
   msg->memRefSize = smartDb->memRefSize;
   if (smartDb->memRef && smartDb->memRefSize > 0)
-    memcpy(buffer + sizeof(artsDbMigrationMsg_t), smartDb->memRef,
+    memcpy(buffer + sizeof(artsSmartDbMigrationMsg_t), smartDb->memRef,
            smartDb->memRefSize);
 
   // Send to new node
-  artsRemoteSend(newNode, (sendHandler_t)artsDbMigrationHandler, buffer,
+  artsRemoteSend(newNode, (sendHandler_t)artsSmartDbMigrationHandler, buffer,
                  msgSize, true);
 
   // Update homeNode
@@ -525,7 +524,7 @@ void artsDbMigrateToNode(artsDb_t *smartDb, unsigned int newNode) {
   artsRouteTableRemoveItem(smartDb->dbGuid);
 
   // Destroy local SmartDB
-  artsDbDestroy(smartDb);
+  artsSmartDbDestroy(smartDb);
   // Note: buffer is freed by remote handler (artsRemoteSend with free=true)
 
   // Only actionable TODOs remain:
@@ -534,14 +533,14 @@ void artsDbMigrateToNode(artsDb_t *smartDb, unsigned int newNode) {
 }
 
 // Handler to reconstruct SmartDB on the destination node
-void artsDbMigrationHandler(void *args, unsigned int size) {
-  if (!args || size < sizeof(artsDbMigrationMsg_t))
+void artsSmartDbMigrationHandler(void *args) {
+  if (!args)
     return;
-  artsDbMigrationMsg_t *msg = (artsDbMigrationMsg_t *)args;
+  artsSmartDbMigrationMsg_t *msg = (artsSmartDbMigrationMsg_t *)args;
   void *dataPtr = (void *)(msg + 1);
 
   // Create new SmartDB and DataBlock
-  artsDb_t *smartDb = artsDbCreate(msg->size, msg->type, msg->flags);
+  artsSmartDb_t *smartDb = artsSmartDbCreate(msg->size, msg->type, msg->flags);
   if (!smartDb)
     return;
 
@@ -560,7 +559,7 @@ void artsDbMigrationHandler(void *args, unsigned int size) {
   smartDb->homeNode = artsGetCurrentNode();
 
   // Copy data
-  void *dbData = artsDbGetData(smartDb);
+  void *dbData = artsSmartDbGetData(smartDb);
   if (dbData && dataPtr && msg->memRefSize > 0) {
     memcpy(dbData, dataPtr, msg->memRefSize);
   }
@@ -577,7 +576,7 @@ void artsDbMigrationHandler(void *args, unsigned int size) {
 }
 
 // Sophisticated access pattern detection
-void artsDbRecordAccess(artsDb_t *smartDb, uint64_t offset) {
+void artsSmartDbRecordAccess(artsSmartDb_t *smartDb, uint64_t offset) {
   if (!smartDb)
     return;
   smartDb->accessOffsets[smartDb->accessHistoryIdx] = offset;
@@ -587,7 +586,7 @@ void artsDbRecordAccess(artsDb_t *smartDb, uint64_t offset) {
     smartDb->accessHistoryCount++;
 }
 
-void artsDbAnalyzeAccessPattern(artsDb_t *smartDb) {
+void artsSmartDbAnalyzeAccessPattern(artsSmartDb_t *smartDb) {
   if (!smartDb || smartDb->accessHistoryCount < 2)
     return;
   int sequential = 0, random = 0, streaming = 0, reuse = 0;

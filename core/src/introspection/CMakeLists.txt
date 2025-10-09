@@ -40,16 +40,22 @@
 # Conditionally add introspection source files
 set(introspection_src "IntrospectionStub.c")
 
-if(COUNTERS OR METRICS)
+if(USE_COUNTERS OR USE_METRICS)
     list(APPEND introspection_src "Introspection.c" "JsonWriter.c")
 endif()
 
-if(COUNTERS)
+if(USE_COUNTERS)
     list(APPEND introspection_src "Counter.c")
 endif()
 
-if(METRICS)
+if(USE_METRICS)
     list(APPEND introspection_src "Metrics.c")
 endif()
 
-add_library(introspection OBJECT ${introspection_src})
+# Create object library for the introspection module
+add_library(arts_introspection OBJECT ${introspection_src})
+
+# Include directories
+target_include_directories(arts_introspection PRIVATE
+    ${ARTS_CORE_INCLUDE_DIR}
+)

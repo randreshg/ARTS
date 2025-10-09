@@ -37,8 +37,10 @@
  ** License for the specific language governing permissions and limitations   **
  ******************************************************************************/
 #include "arts/network/Server.h"
+
+#include <unistd.h>
+
 #include "arts/arts.h"
-#include "arts/gas/RouteTable.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
@@ -46,10 +48,7 @@
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/runtime/sync/EventFunctions.h"
-#include "arts/utils/Atomics.h"
-#include <unistd.h>
-// #include "artsRemote.h"
+#include "arts/system/ArtsPrint.h"
 
 #define EDT_MUG_SIZE 32
 
@@ -80,12 +79,12 @@ void artsServerSetup(struct artsConfig *config) {
   artsLLServerSetup(config);
   outInit(artsGlobalRankCount * config->ports);
 #ifdef SEQUENCENUMBERS
-  recSeqNumbers = artsCalloc(sizeof(uint64_t) * artsGlobalRankCount);
+  recSeqNumbers = (uint64_t *)artsCalloc(artsGlobalRankCount, sizeof(uint64_t));
 #endif
 }
 
 void artsServerProcessPacket(struct artsRemotePacket *packet) {
-  if (packet->messageType != ARTS_REMOTE_METRIC_UPDATE_MSG ||
+  if (packet->messageType != ARTS_REMOTE_METRIC_UPDATE_MSG &&
       packet->messageType != ARTS_REMOTE_SHUTDOWN_MSG) {
     artsMetricsTriggerEvent(artsNetworkRecieveBW, artsThread, packet->size);
     artsMetricsTriggerEvent(artsFreeBW + packet->messageType, artsThread,
@@ -130,7 +129,7 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
     artsPersistentEventSatisfy(pack->event, pack->action, pack->lock);
     break;
   }
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
   case ARTS_REMOTE_DB_INCREMENT_LATCH_MSG: {
     struct artsRemoteGuidOnlyPacket *pack =
         (struct artsRemoteGuidOnlyPacket *)(packet);
@@ -153,8 +152,9 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
   case ARTS_REMOTE_DB_REQUEST_MSG: {
     struct artsRemoteDbRequestPacket *pack =
         (struct artsRemoteDbRequestPacket *)(packet);
-    if (packet->size != sizeof(*pack))
+    if (packet->size != sizeof(*pack)) {
       ARTS_INFO("Error dbpacket insanity");
+    }
     artsRemoteDbSend(pack);
     break;
   }

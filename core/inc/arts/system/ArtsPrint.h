@@ -41,13 +41,11 @@
 
 #include <stdarg.h>
 #include <stdio.h>
-#include <string.h>
 #include <unistd.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 
 /// ARTS atomic print helper
 static inline void artsAtomicPrint(const char *format, ...) {
@@ -69,7 +67,7 @@ static inline void artsAtomicPrint(const char *format, ...) {
 #define artsStream(format, ...)                                                \
   artsAtomicPrint("[%u] " format, artsGlobalRankId, ##__VA_ARGS__)
 
-/// ARTS print stream accessor 
+/// ARTS print stream accessor
 #define artsPrintStream(format, ...)                                           \
   artsAtomicPrint("[%u] " format, artsGlobalRankId, ##__VA_ARGS__)
 

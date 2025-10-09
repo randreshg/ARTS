@@ -1,6 +1,10 @@
 # Build
 build/
+.install/
 # Dependencies
 deps/
 .cache/
-CMakeFiles/
+test/**/*.cfg
+test/**/*.insp
+example/**/*.cfg
+example/**/*.insp

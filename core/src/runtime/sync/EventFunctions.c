@@ -37,20 +37,19 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/sync/EventFunctions.h"
+
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/Runtime.h"
-#include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/LinkList.h"
+
 #include <assert.h>
 #include <time.h>
 
@@ -62,10 +61,10 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
                              artsGuid_t eventData) {
   unsigned int eventSize =
       sizeof(struct artsEvent) + sizeof(struct artsDependent) * dependentCount;
-  void *eventPacket = artsCallocWithType(eventSize, artsEventMemorySize);
+  void *eventPacket = artsCallocWithType(1, eventSize, artsEventMemorySize);
 
   if (eventSize) {
-    struct artsEvent *event = eventPacket;
+    struct artsEvent *event = (struct artsEvent *)eventPacket;
     event->header.type = ARTS_EVENT;
     event->header.size = eventSize;
     event->dependentCount = 0;
@@ -93,6 +92,8 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
 
 artsGuid_t artsEventCreate(unsigned int route, unsigned int latchCount) {
   artsCounterTriggerTimerEvent(eventCreateCounter, true);
+  if (route == -1)
+    route = artsGlobalRankId;
   artsGuid_t guid = NULL_GUID;
   artsEventCreateInternal(&guid, route, INITIAL_DEPENDENT_SIZE, latchCount,
                           false, NULL_GUID);
@@ -153,7 +154,7 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
       artsDebugGenerateSegFault();
     }
 
-    unsigned int res;
+    unsigned int res = 0U;
     if (slot == ARTS_EVENT_LATCH_INCR_SLOT) {
       res = artsAtomicAdd(&event->latchCount, 1U);
     } else if (slot == ARTS_EVENT_LATCH_DECR_SLOT) {
@@ -234,8 +235,9 @@ struct artsDependent *artsDependentGet(struct artsDependentList *head,
     if (position >= list->size) {
       if (position - list->size == 0) {
         if (list->next == NULL) {
-          temp = artsCalloc(sizeof(struct artsDependentList) +
-                            sizeof(struct artsDependent) * list->size * 2);
+          temp = (volatile struct artsDependentList *)artsCalloc(
+              1, sizeof(struct artsDependentList) +
+                     sizeof(struct artsDependent) * list->size * 2);
           temp->size = list->size * 2;
           list->next = (struct artsDependentList *)temp;
         }
@@ -257,7 +259,8 @@ void artsAddDependence(artsGuid_t source, artsGuid_t destination,
                        uint32_t slot) {
   ARTS_INFO("Add Dependence from %u to %u at %u", source, destination, slot);
   artsType_t mode = artsGuidGetType(destination);
-  struct artsHeader *sourceHeader = artsRouteTableLookupItem(source);
+  struct artsHeader *sourceHeader =
+      (struct artsHeader *)artsRouteTableLookupItem(source);
   if (sourceHeader == NULL) {
     unsigned int rank = artsGuidGetRank(source);
     if (rank != artsGlobalRankId) {
@@ -387,9 +390,10 @@ struct artsLinkList *artsGetEventVersions(struct artsPersistentEvent *event) {
 struct artsPersistentEventVersion *
 artsPushPersistentEventVersion(struct artsPersistentEvent *event) {
   struct artsLinkList *versions = artsGetEventVersions(event);
-  struct artsPersistentEventVersion *next = artsLinkListNewItem(
-      (sizeof(struct artsPersistentEventVersion) +
-       (sizeof(struct artsDependent) * INITIAL_DEPENDENT_SIZE)));
+  struct artsPersistentEventVersion *next =
+      (struct artsPersistentEventVersion *)artsLinkListNewItem(
+          (sizeof(struct artsPersistentEventVersion) +
+           (sizeof(struct artsDependent) * INITIAL_DEPENDENT_SIZE)));
   next->latchCount = 0;
   next->dependentCount = 0;
   next->dependent.size = INITIAL_DEPENDENT_SIZE;
@@ -425,15 +429,16 @@ artsGetLastPersistentEventVersion(struct artsPersistentEvent *event) {
 bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
                                        artsGuid_t eventData) {
   if (eventData == NULL_GUID) {
-    printf("Event data is NULL_GUID for persistent event");
+    ARTS_INFO("Event data is NULL_GUID for persistent event");
     artsDebugGenerateSegFault();
   }
   const unsigned int eventSize = sizeof(struct artsPersistentEvent);
   void *eventPacket =
-      artsCallocWithType(eventSize, artsPersistentEventMemorySize);
+      artsCallocWithType(1, eventSize, artsPersistentEventMemorySize);
 
   if (eventSize) {
-    struct artsPersistentEvent *event = eventPacket;
+    struct artsPersistentEvent *event =
+        (struct artsPersistentEvent *)eventPacket;
     event->header.type = ARTS_PERSISTENT_EVENT;
     event->header.size = eventSize;
     event->versions = NULL;
@@ -501,6 +506,8 @@ artsGuid_t artsPersistentEventCreate(unsigned int route,
                                      unsigned int latchCount,
                                      artsGuid_t dataGuid) {
   artsCounterTriggerTimerEvent(persistentEventCreateCounter, true);
+  if (route == -1)
+    route = artsGlobalRankId;
   artsGuid_t guid = NULL_GUID;
   artsPersistentEventCreateInternal(&guid, route, dataGuid);
   artsCounterTriggerTimerEvent(persistentEventCreateCounter, false);
@@ -545,7 +552,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
       ARTS_DEBUG("Data: NULL_GUID, avoiding signaling");
       artsDebugGenerateSegFault();
     }
-    unsigned int res;
+    unsigned int res = -1;
     struct artsPersistentEventVersion *version =
         artsGetFrontPersistentEventVersion(event);
     ARTS_DEBUG("[PersistentEvent] Satisfying event %lu, version %u", eventGuid,
@@ -596,10 +603,11 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
           while (!dependent[j].doneWriting)
             ;
           if (dependent[j].type == ARTS_EDT) {
-            if (event->data != NULL_GUID)
+            if (event->data != NULL_GUID) {
               artsSignalEdt(dependent[j].addr, dependent[j].slot, event->data);
-            else
+            } else {
               ARTS_DEBUG("Event data is NULL_GUID for event %u", eventGuid);
+            }
           } else if (dependent[j].type == ARTS_EVENT) {
             artsCounterTriggerTimerEvent(signalEventCounter, true);
             artsPersistentEventSatisfy(dependent[j].addr, dependent[j].slot,
@@ -649,7 +657,8 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
     return;
   }
   artsType_t mode = artsGuidGetType(edtDest);
-  struct artsHeader *sourceHeader = artsRouteTableLookupItem(eventSource);
+  struct artsHeader *sourceHeader =
+      (struct artsHeader *)artsRouteTableLookupItem(eventSource);
   if (sourceHeader == NULL) {
     unsigned int rank = artsGuidGetRank(eventSource);
     if (rank != artsGlobalRankId) {

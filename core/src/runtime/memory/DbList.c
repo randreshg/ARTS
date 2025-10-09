@@ -37,18 +37,17 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/memory/DbList.h"
-#include "arts/gas/OutOfOrder.h"
-#include "arts/gas/RouteTable.h"
+
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/system/ArtsPrint.h"
+#include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
 #define writeSet 0x80000000
 #define exclusiveSet 0x40000000
-
 
 void frontierLock(volatile unsigned int *lock) {
   ARTS_DEBUG("Llocking frontier: >>>>>>> %p", lock);
@@ -125,33 +124,41 @@ bool frontierAddExclusiveLock(volatile unsigned int *lock) {
       if (temp == local)
         return true;
     }
-    return true;
   }
 }
 
 struct artsDbElement *artsNewDbElement() {
   struct artsDbElement *ret =
-      (struct artsDbElement *)artsCalloc(sizeof(struct artsDbElement));
+      (struct artsDbElement *)artsCalloc(1, sizeof(struct artsDbElement));
+  if (!ret) {
+    artsDebugGenerateSegFault();
+  }
   return ret;
 }
 
 struct artsDbFrontier *artsNewDbFrontier() {
   struct artsDbFrontier *ret =
-      (struct artsDbFrontier *)artsCalloc(sizeof(struct artsDbFrontier));
+      (struct artsDbFrontier *)artsCalloc(1, sizeof(struct artsDbFrontier));
+  if (!ret) {
+    artsDebugGenerateSegFault();
+  }
   return ret;
 }
 
 // This should be done before being released into the wild
 struct artsDbList *artsNewDbList() {
   struct artsDbList *ret =
-      (struct artsDbList *)artsCalloc(sizeof(struct artsDbList));
+      (struct artsDbList *)artsCalloc(1, sizeof(struct artsDbList));
+  if (!ret) {
+    artsDebugGenerateSegFault();
+  }
   ret->head = ret->tail = artsNewDbFrontier();
   return ret;
 }
 
 void artsDeleteDbElement(struct artsDbElement *head) {
   struct artsDbElement *trail;
-  struct artsDbElement *current;
+  struct artsDbElement *current = head;
   while (current) {
     trail = current;
     current = current->next;
@@ -161,7 +168,7 @@ void artsDeleteDbElement(struct artsDbElement *head) {
 
 void artsDeleteLocalDelayedEdt(struct artsLocalDelayedEdt *head) {
   struct artsLocalDelayedEdt *trail;
-  struct artsLocalDelayedEdt *current;
+  struct artsLocalDelayedEdt *current = head;
   while (current) {
     trail = current;
     current = current->next;
@@ -206,8 +213,13 @@ void artsPushDelayedEdt(struct artsLocalDelayedEdt *head, unsigned int position,
   unsigned int elementPos = position % DBSPERELEMENT;
   struct artsLocalDelayedEdt *current = head;
   for (unsigned int i = 0; i < numElements; i++) {
-    if (!current->next)
-      current->next = artsCalloc(sizeof(struct artsLocalDelayedEdt));
+    if (!current->next) {
+      current->next = (struct artsLocalDelayedEdt *)artsCalloc(
+          1, sizeof(struct artsLocalDelayedEdt));
+      if (!current->next) {
+        artsDebugGenerateSegFault();
+      }
+    }
     current = current->next;
   }
   current->edt[elementPos] = edt;
@@ -245,7 +257,7 @@ bool artsPushDbToFrontier(struct artsDbFrontier *frontier, unsigned int data,
   //    }
 
   ARTS_DEBUG("*unique %u w: %u e: %u l: %u b: %u rank: %u", *unique, write,
-          exclusive, local, bypass, data);
+             exclusive, local, bypass, data);
 
   if (exclusive || (write && !local)) {
     frontier->exNode = data;
@@ -282,18 +294,18 @@ bool artsPushDbToList(struct artsDbList *dbList, unsigned int data, bool write,
   for (struct artsDbFrontier *frontier = dbList->head; frontier;
        frontier = frontier->next) {
     ARTS_DEBUG("FRONT: %p, W: %u E: %u L: %u B: %u %p", frontier, write,
-            exclusive, local, bypass, edt);
+               exclusive, local, bypass, edt);
     if (artsPushDbToFrontier(frontier, data, write, exclusive, local, bypass,
-                             edt, slot, mode, &ret))
+                             edt, slot, mode, &ret)) {
       break;
-    else {
-      if (!frontier->next) {
-        struct artsDbFrontier *newFrontier = artsNewDbFrontier();
-        if (artsAtomicCswapPtr((void *)&frontier->next, NULL, newFrontier)) {
-          artsDeleteDbFrontier(newFrontier);
-          while (!frontier->next)
-            ;
-        }
+    }
+    if (!frontier->next) {
+      struct artsDbFrontier *newFrontier = artsNewDbFrontier();
+      if (artsAtomicCswapPtr((volatile void **)&frontier->next, NULL,
+                             newFrontier)) {
+        artsDeleteDbFrontier(newFrontier);
+        while (!frontier->next)
+          ;
       }
     }
     ret = false;
@@ -303,7 +315,7 @@ bool artsPushDbToList(struct artsDbList *dbList, unsigned int data, bool write,
 }
 
 unsigned int artsCurrentFrontierSize(struct artsDbList *dbList) {
-  unsigned int size;
+  unsigned int size = 0U;
   artsReaderLock(&dbList->reader, &dbList->writer);
   if (dbList->head) {
     frontierLock(&dbList->head->lock);
@@ -319,7 +331,10 @@ artsDbFrontierIterCreate(struct artsDbFrontier *frontier) {
   struct artsDbFrontierIterator *iter = NULL;
   if (frontier && frontier->position) {
     iter = (struct artsDbFrontierIterator *)artsCalloc(
-        sizeof(struct artsDbFrontierIterator));
+        1, sizeof(struct artsDbFrontierIterator));
+    if (!iter) {
+      artsDebugGenerateSegFault();
+    }
     iter->frontier = frontier;
     iter->currentElement = &frontier->list;
   }
@@ -422,7 +437,7 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
   if (frontier->exEdt) {
     if (frontier->exNode == artsGlobalRankId) {
       struct artsEdt *edt = frontier->exEdt;
-      artsEdtDep_t *depv = artsGetDepv(edt);
+      artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
       depv[frontier->exSlot].ptr = db + 1;
       if (artsAtomicSub(&edt->depcNeeded, 1U) == 0)
         artsHandleRemoteStolenEdt(edt);
@@ -449,7 +464,7 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
       unsigned int pos = i % DBSPERELEMENT;
       struct artsEdt *edt = current->edt[pos];
       // This is prob wrong now with GPUs
-      artsEdtDep_t *depv = artsGetDepv(edt);
+      artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
       depv[current->slot[pos]].ptr = db + 1;
 
       if (artsAtomicSub(&edt->depcNeeded, 1U) == 0) {
@@ -464,7 +479,7 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
 }
 
 void artsProgressFrontier(struct artsDb *db, unsigned int rank) {
-  struct artsDbList *dbList = db->dbList;
+  struct artsDbList *dbList = (struct artsDbList *)db->dbList;
   artsWriterLock(&dbList->reader, &dbList->writer);
   struct artsDbFrontier *tail = dbList->head;
   if (dbList->head) {

@@ -36,21 +36,19 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
-#include "arts/Graph.h"
-#include "arts/runtime/sync/TerminationDetection.h"
-#include "arts/runtime/compute/ShadAdapter.h"
 #include <algorithm>
-#include <assert.h>
-#include <inttypes.h>
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
-#include <set>
-#include <signal.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <vector>
+
+#include "arts/BlockDistribution.h"
+#include "arts/Csr.h"
+#include "arts/arts.h"
+#include "arts/runtime/compute/ShadAdapter.h"
 
 arts_block_dist_t *distribution;
 csr_graph_t *graph;

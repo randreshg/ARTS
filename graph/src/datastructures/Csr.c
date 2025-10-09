@@ -36,13 +36,17 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/Csr.h"
-#include "arts/EdgeVector.h"
-#include "arts/gas/RouteTable.h"
-#include "arts/system/ArtsPrint.h"
 #include <assert.h>
 #include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "arts/Csr.h"
+#include "arts/EdgeVector.h"
+#include "arts/arts.h"
+#include "arts/gas/RouteTable.h"
+#include "arts/system/ArtsPrint.h"
 
 vertex_t *getRowPtr(csr_graph_t *_csr) { return (vertex_t *)(_csr + 1); }
 
@@ -61,7 +65,7 @@ csr_graph_t *initCSR(partition_t partIndex, graph_sz_t _localv,
     graph_sz_t totsz = (_localv + 1) + _locale;
     unsigned int dbSize = sizeof(csr_graph_t) + totsz * sizeof(vertex_t);
 
-    _csr = artsDbCreateWithGuid(blockGuid, dbSize);
+    _csr = (csr_graph_t *)artsDbCreateWithGuid(blockGuid, dbSize);
     _csr->partGuid = blockGuid;
     _csr->num_local_vertices = _localv;
     _csr->num_local_edges = _locale;
@@ -122,8 +126,9 @@ csr_graph_t *initCSR(partition_t partIndex, graph_sz_t _localv,
     vertex_t last_src_ind = getLocalIndexDistr(last_src, _dist);
     ++last_src_ind;
     vertex_t val = row_indices[last_src_ind];
-    if (last_src_ind > _localv)
+    if (last_src_ind > _localv) {
       ARTS_INFO("lasr_src index: %lu _localv: %lu", last_src_ind, _localv);
+    }
     assert(last_src_ind <= _localv);
     while (last_src_ind < _localv)
       row_indices[++last_src_ind] = val;
@@ -145,9 +150,8 @@ vertex_t indexEndCSR(unsigned int index, const csr_graph_t *const part) {
   // is this the last node ?
   if (index == (part->num_blocks - 1)) {
     return (vertex_t)(part->num_local_vertices - 1);
-  } else {
-    return (indexStartCSR(index, part) + (part->block_sz - 1));
   }
+  return (indexStartCSR(index, part) + (part->block_sz - 1));
 }
 
 vertex_t partitionStartCSR(const csr_graph_t *const part) {
@@ -172,8 +176,9 @@ local_index_t getLocalIndexCSR(vertex_t v, const csr_graph_t *const part) {
 void printCSR(csr_graph_t *_csr) {
   ARTS_INFO("=============================================");
   ARTS_INFO("[INFO] Number of local vertices : %" PRIu64 "",
-         _csr->num_local_vertices);
-  ARTS_INFO("[INFO] Number of local edges : %" PRIu64 "", _csr->num_local_edges);
+            _csr->num_local_vertices);
+  ARTS_INFO("[INFO] Number of local edges : %" PRIu64 "",
+            _csr->num_local_edges);
 
   vertex_t *row_indices = getRowPtr(_csr);
   vertex_t *columns = getColPtr(_csr);
@@ -231,10 +236,10 @@ int loadGraphUsingCmdLineArgs(arts_block_dist_t *_dist, int argc, char **argv) {
   ARTS_INFO("[INFO] Flip ? : %d", flip);
   ARTS_INFO("[INFO] Keep Self-loops ? : %d", keep_self_loops);
   ARTS_INFO("[INFO] Csr-format : %d", csr_format);
-  if (csr_format)
+  if (csr_format) {
     return loadGraphNoWeightCsr(file, _dist, flip, !keep_self_loops);
-  else
-    return loadGraphNoWeight(file, _dist, flip, !keep_self_loops);
+  }
+  return loadGraphNoWeight(file, _dist, flip, !keep_self_loops);
 }
 
 // If we want to read the graph as an undirected graph set _flip = True
@@ -255,8 +260,8 @@ int loadGraphNoWeight(const char *_file, arts_block_dist_t *_dist, bool _flip,
       numLocalParts++;
   }
 
-  partIndex = (unsigned int *)artsCalloc(sizeof(unsigned int) * numLocalParts);
-  vedges = (artsEdgeVector *)artsCalloc(sizeof(artsEdgeVector) * numLocalParts);
+  partIndex = (unsigned int *)artsCalloc(numLocalParts, sizeof(unsigned int));
+  vedges = (artsEdgeVector *)artsCalloc(numLocalParts, sizeof(artsEdgeVector));
 
   unsigned int j = 0;
   for (unsigned int i = 0; i < _dist->num_blocks; i++) {
@@ -368,8 +373,8 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
       numLocalParts++;
   }
 
-  partIndex = (unsigned int *)artsCalloc(sizeof(unsigned int) * numLocalParts);
-  vedges = (artsEdgeVector *)artsCalloc(sizeof(artsEdgeVector) * numLocalParts);
+  partIndex = (unsigned int *)artsCalloc(numLocalParts, sizeof(unsigned int));
+  vedges = (artsEdgeVector *)artsCalloc(numLocalParts, sizeof(artsEdgeVector));
 
   unsigned int j = 0;
   for (unsigned int i = 0; i < _dist->num_blocks; i++) {
@@ -439,8 +444,8 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
 
   if (src == numVerts) {
     for (unsigned int k = 0; k < numLocalParts; k++) {
-      // ARTS_INFO("Sorting edges %lu local %lu vert %lu", edgeCount, localEdges,
-      // src); done loading edge -- sort them by source
+      // ARTS_INFO("Sorting edges %lu local %lu vert %lu", edgeCount,
+      // localEdges, src); done loading edge -- sort them by source
       sortBySource(&vedges[k]);
 
       initCSR(partIndex[k], getBlockSizeForPartition(partIndex[k], _dist),
@@ -448,8 +453,10 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
               _dist->graphGuid[partIndex[k]]);
       freeEdgeVector(&vedges[k]);
     }
-  } else
-    ARTS_INFO("SRC: %lu != numVerts %lu.  Check the line length", src, numVerts);
+  } else {
+    ARTS_INFO("SRC: %lu != numVerts %lu.  Check the line length", src,
+              numVerts);
+  }
 
   return 0;
 }

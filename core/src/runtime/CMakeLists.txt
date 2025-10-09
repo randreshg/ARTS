@@ -37,9 +37,41 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-file(GLOB runtime_src "*.c")
-add_library(runtime_main OBJECT ${runtime_src})
+# Collect main runtime source files
+file(GLOB RUNTIME_MAIN_SOURCES "*.c")
 
+# CPU-only object library
+add_library(arts_runtime OBJECT ${RUNTIME_MAIN_SOURCES})
+target_include_directories(arts_runtime PRIVATE ${ARTS_CORE_INCLUDE_DIR})
+
+# Add hwloc include directories if available
+if(HWLOC_INCLUDE_DIRS)
+    target_include_directories(arts_runtime PRIVATE ${HWLOC_INCLUDE_DIRS})
+endif()
+
+# GPU-specific object library (wrap Runtime.c to compile with nvcc)
+if(BUILD_CUDA_LIBRARY)
+    set(RUNTIME_SOURCE_NAME "Runtime.c")
+    set(RUNTIME_SOURCE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${RUNTIME_SOURCE_NAME}")
+
+    set(RUNTIME_WRAPPER ${CMAKE_CURRENT_BINARY_DIR}/Runtime_gpu.cu)
+    file(WRITE ${RUNTIME_WRAPPER} "#include \"${RUNTIME_SOURCE_PATH}\"\n")
+
+    set(RUNTIME_GPU_SOURCES ${RUNTIME_MAIN_SOURCES})
+    list(REMOVE_ITEM RUNTIME_GPU_SOURCES ${RUNTIME_SOURCE_PATH})
+    list(APPEND RUNTIME_GPU_SOURCES ${RUNTIME_WRAPPER})
+
+    add_library(arts_runtime_gpu OBJECT ${RUNTIME_GPU_SOURCES})
+    target_include_directories(arts_runtime_gpu PRIVATE ${ARTS_CORE_INCLUDE_DIR})
+    target_compile_definitions(arts_runtime_gpu PRIVATE USE_GPU)
+
+    # Add hwloc include directories if available
+    if(HWLOC_INCLUDE_DIRS)
+        target_include_directories(arts_runtime_gpu PRIVATE ${HWLOC_INCLUDE_DIRS})
+    endif()
+endif()
+
+# Add runtime submodules
 add_subdirectory(compute)
 add_subdirectory(memory)
 add_subdirectory(sync)

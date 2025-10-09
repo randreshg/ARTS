@@ -36,42 +36,32 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#define _GNU_SOURCE // Required for getaddrinfo_a()
+#include "arts/network/SocketServer.h"
+
+#include <errno.h>
+#include <inttypes.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <unistd.h>
+
 #include "arts/arts.h"
-#include "arts/gas/Guid.h"
+#include "arts/introspection/Introspection.h"
+#include "arts/network/Connection.h"
 #include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
 #include "arts/network/Server.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Config.h"
-#include "arts/utils/Atomics.h"
-#include "arts/utils/Deque.h"
-
-#include "stdio.h"
-#include "stdlib.h"
-#include "string.h"
-
-#include "arpa/inet.h"
-#include "arts/gas/RouteTable.h"
-#include "arts/introspection/Counter.h"
-#include "arts/introspection/Introspection.h"
-#include "arts/network/Connection.h"
-#include "arts/network/RemoteProtocol.h"
-#include "arts/network/SocketServer.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Debug.h"
-#include "errno.h"
-#include "net/if.h"
-#include "netdb.h"
-#include "netinet/in.h"
-#include "sys/ioctl.h"
-#include "sys/types.h"
-#include <ifaddrs.h>
-#include <inttypes.h>
-#include <unistd.h>
-// #include <linux/if_packet.h>
-// #include <linux/if_arp.h>
 
 struct artsConfig *artsGlobalMessageTable;
 unsigned int ports;
@@ -98,7 +88,6 @@ void artsRemoteSetMessageTable(struct artsConfig *table) {
   artsGlobalMessageTable = table;
   ports = table->ports;
 }
-
 bool hostnameToIp(char *hostName, char *ip) {
   int j;
   struct hostent *he;
@@ -106,7 +95,6 @@ bool hostnameToIp(char *hostName, char *ip) {
   struct addrinfo *result;
   int error = getaddrinfo(hostName, NULL, NULL, &result);
   if (error == 0) {
-
     if (result->ai_addr->sa_family == AF_INET) {
       struct sockaddr_in *res = (struct sockaddr_in *)result->ai_addr;
       inet_ntop(AF_INET, &res->sin_addr, ip, 100);
@@ -131,7 +119,7 @@ void artsRemoteFixNames(char *fix, unsigned int fixLength, bool isItPost,
     oldStr = *fixMe; // artsGlobalMessageTable->table[i].ipAddress;
     oldStrLength = strlen(oldStr);
 
-    newStr = artsMalloc(oldStrLength + fixLength + 1);
+    newStr = (char *)artsMalloc(oldStrLength + fixLength + 1);
 
     if (isItPost) {
       strncpy(newStr, oldStr, oldStrLength);
@@ -151,6 +139,74 @@ void artsRemoteFixNames(char *fix, unsigned int fixLength, bool isItPost,
 }
 
 void artsServerFixIbNames(struct artsConfig *config) {
+#ifdef __linux__
+  const char *hostnameFormats[] = {"ib-%s",    "ib%s",     "ib.%s",
+                                   "%s-ib",    "%sib",     "%s.ib",
+                                   "%s-ib.ib", "%s.ibnet", NULL};
+  const int requestCount = config->tableLength * 8;
+
+  struct gaicb gaicbRequests[requestCount];
+  struct gaicb *gaicbPtrs[requestCount];
+  memset(gaicbRequests, 0, sizeof(gaicbRequests));
+  for (int i = 0; i < requestCount; i++) {
+    gaicbPtrs[i] = &gaicbRequests[i];
+  }
+
+  for (int j = 0; j < config->tableLength; j++) {
+    char *hostName = artsGlobalMessageTable->table[j].ipAddress;
+    for (int i = 0; hostnameFormats[i] != NULL; i++) {
+      int bufferSize = snprintf(NULL, 0, hostnameFormats[i], hostName) + 1;
+      char *formattedHostname = (char *)artsMalloc(bufferSize);
+      sprintf(formattedHostname, hostnameFormats[i], hostName);
+      gaicbRequests[j * 8 + i].ar_name = formattedHostname;
+    }
+  }
+
+  int error = getaddrinfo_a(GAI_NOWAIT, gaicbPtrs, requestCount, NULL);
+  if (error) {
+    PRINTF("getaddrinfo_a failed: %s\n", gai_strerror(error));
+    exit(1);
+  }
+  bool allCompleted = false;
+  for (int try = 0; try < 3 && !allCompleted; try++) {
+    allCompleted = true;
+    sleep(1);
+    for (int i = 0; i < requestCount; i++) {
+      if (gai_error(&gaicbRequests[i]) == EAI_INPROGRESS) {
+        allCompleted = false;
+        break;
+      }
+    }
+  }
+
+  bool nodeResolved[config->tableLength];
+  memset(nodeResolved, 0, sizeof(nodeResolved));
+  for (int i = 0; i < requestCount; i++) {
+    int nodeIdx = i / 8;
+    if (nodeResolved[nodeIdx]) {
+      continue;
+    }
+    error = gai_error(&gaicbRequests[i]);
+    if (!error) {
+      ARTS_DEBUG("%s\n", gaicbRequests[i].ar_name);
+      char *oldHostname = artsGlobalMessageTable->table[nodeIdx].ipAddress;
+      char *newHostname =
+          (char *)artsMalloc(strlen(gaicbRequests[i].ar_name) + 1);
+      strcpy(newHostname, gaicbRequests[i].ar_name);
+      artsGlobalMessageTable->table[nodeIdx].ipAddress = newHostname;
+      artsFree(oldHostname);
+      nodeResolved[nodeIdx] = true;
+    }
+  }
+
+  gai_cancel(NULL);
+  for (int i = 0; i < requestCount; i++) {
+    if (gaicbRequests[i].ar_result) {
+      freeaddrinfo(gaicbRequests[i].ar_result);
+    }
+    artsFree((void *)gaicbRequests[i].ar_name);
+  }
+#else
   char post[6][10] = {"-ib\0", "ib\0", ".ib\0", "-ib.ib\0", ".ibnet\0", "\0"};
   char pre[4][10] = {"ib-\0", "ib\0", "ib.\0", "\0"};
 
@@ -158,7 +214,7 @@ void artsServerFixIbNames(struct artsConfig *config) {
   for (int j = 0; j < config->tableLength; j++) {
     char *testStr = artsGlobalMessageTable->table[j].ipAddress;
     int testStrLength = strlen(testStr);
-    char *stringFixed = artsMalloc(testStrLength + 50);
+    char *stringFixed = (char *)artsMalloc(testStrLength + 50);
     struct addrinfo *result;
     bool found = false;
     int i = 0, error;
@@ -198,10 +254,11 @@ void artsServerFixIbNames(struct artsConfig *config) {
       i++;
     }
   }
+#endif
 }
 
 bool artsServerSetIP(struct artsConfig *config) {
-  ipList = artsMalloc(100 * sizeof(char) * config->tableLength);
+  ipList = (char *)artsMalloc(100 * sizeof(char) * config->tableLength);
   bool result;
   for (int i = 0; i < config->tableLength; i++) {
     result = hostnameToIp(config->table[i].ipAddress, ipList + 100 * i);
@@ -256,17 +313,18 @@ bool artsServerSetIP(struct artsConfig *config) {
         }
       }
     }
+    freeifaddrs(ifap);
   }
   return found;
 }
 
 void artsLLServerSetup(struct artsConfig *config) {
   artsRemoteSetMessageTable(config);
-#if defined(USE_TCP)
-  if (config->table && config->ibNames)
+#ifdef USE_RDMA
+  if (config->table)
     artsServerFixIbNames(config);
 #else
-  if (config->table)
+  if (config->table && config->ibNames)
     artsServerFixIbNames(config);
 #endif
 
@@ -361,7 +419,7 @@ int artsActualSend(char *message, unsigned int length, int rank, int port) {
 
   if (res < 0) {
     if (errno != EAGAIN) {
-      struct artsRemotePacket *pk = (void *)message;
+      struct artsRemotePacket *pk = (struct artsRemotePacket *)message;
       ARTS_INFO(
           "artsRemoteSendRequest %u Socket appears to be closed to rank %d: "
           " %s",
@@ -377,7 +435,7 @@ unsigned int artsRemoteSendRequest(int rank, unsigned int queue, char *message,
                                    unsigned int length) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();
@@ -392,7 +450,7 @@ unsigned int artsRemoteSendPayloadRequest(int rank, unsigned int queue,
                                           char *payload, int length2) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();
@@ -413,16 +471,18 @@ bool artsRemoteSetupIncoming() {
   socklen_t sLength = sizeof(struct sockaddr);
   int count = (artsGlobalMessageTable->tableLength - 1);
 
-  remoteSocketRecieveList = artsMalloc(sizeof(int) * (count + 1) * ports);
-  remoteServerRecieveList =
-      artsCalloc(sizeof(struct sockaddr_in) * (count + 1) * ports);
-  pollIncoming = artsMalloc(sizeof(struct pollfd) * (count + 1) * ports);
+  remoteSocketRecieveList =
+      (int *)artsMalloc(sizeof(int) * (count + 1) * ports);
+  remoteServerRecieveList = (struct sockaddr_in *)artsCalloc(
+      (count + 1) * ports, sizeof(struct sockaddr_in));
+  pollIncoming =
+      (struct pollfd *)artsMalloc(sizeof(struct pollfd) * (count + 1) * ports);
 
   struct sockaddr_in test;
 
   struct sockaddr_in *localServerAddr =
-      artsCalloc(ports * sizeof(struct sockaddr_in));
-  localSocketRecieve = artsCalloc(ports * sizeof(int));
+      (struct sockaddr_in *)artsCalloc(ports, sizeof(struct sockaddr_in));
+  localSocketRecieve = (int *)artsCalloc(ports, sizeof(int));
 
   int iSetOption;
   for (i = 0; i < artsGlobalMessageTable->ports; i++) {
@@ -451,6 +511,8 @@ bool artsRemoteSetupIncoming() {
       return false;
     }
   }
+
+  artsFree(localServerAddr);
 
   FD_ZERO(&readSet);
   for (i = 0; i < artsGlobalMessageTable->tableLength; i++) {
@@ -514,10 +576,12 @@ void artsRemoteSetupOutgoing() {
   char ip[100];
   int pos;
 
-  remoteSocketSendList = artsMalloc(sizeof(int) * count * ports);
-  remoteSocketSendLockList = artsCalloc(sizeof(int) * count * ports);
-  remoteServerSendList = artsCalloc(sizeof(struct sockaddr_in) * count * ports);
-  remoteConnectionAlive = artsCalloc(sizeof(bool) * count * ports);
+  remoteSocketSendList = (int *)artsMalloc(sizeof(int) * count * ports);
+  remoteSocketSendLockList =
+      (volatile unsigned int *)artsCalloc(count * ports, sizeof(int));
+  remoteServerSendList = (struct sockaddr_in *)artsCalloc(
+      count * ports, sizeof(struct sockaddr_in));
+  remoteConnectionAlive = (bool *)artsCalloc(count * ports, sizeof(bool));
 
   for (i = 0; i < count; i++) {
     for (j = 0; j < ports; j++)
@@ -536,20 +600,32 @@ static __thread void **reRecievePacket;
 static __thread bool *maxIncoming;
 static __thread bool maxOutWorking;
 
-void artsRemotSetThreadInboundQueues(unsigned int start, unsigned int stop) {
+void artsRemoteSetThreadInboundQueues(unsigned int start, unsigned int stop) {
   threadStart = start;
   threadStop = stop;
   // ARTS_INFO_MASTER("%d %d", start, stop);
   unsigned int size = stop - start;
-  bypassBuf = artsMalloc(sizeof(char *) * size);
-  bypassPacketSize = artsMalloc(sizeof(unsigned int) * size);
-  reRecieveRes = artsCalloc(sizeof(int) * size);
-  reRecievePacket = artsCalloc(sizeof(void *) * size);
-  maxIncoming = artsCalloc(sizeof(bool) * size);
+  bypassBuf = (char **)artsMalloc(sizeof(char *) * size);
+  bypassPacketSize = (unsigned int *)artsMalloc(sizeof(unsigned int) * size);
+  reRecieveRes = (unsigned int *)artsCalloc(size, sizeof(int));
+  reRecievePacket = (void **)artsCalloc(size, sizeof(void *));
+  maxIncoming = (bool *)artsCalloc(size, sizeof(bool));
   for (int i = 0; i < size; i++) {
-    bypassBuf[i] = artsMalloc(PACKET_SIZE);
+    bypassBuf[i] = (char *)artsMalloc(PACKET_SIZE);
     bypassPacketSize[i] = PACKET_SIZE;
   }
+}
+
+void artsRemoteThreadInboundQueuesCleanup() {
+  unsigned int size = threadStop - threadStart;
+  for (int i = 0; i < size; i++) {
+    artsFree(bypassBuf[i]);
+  }
+  artsFree(bypassBuf);
+  artsFree(bypassPacketSize);
+  artsFree(reRecieveRes);
+  artsFree(reRecievePacket);
+  artsFree(maxIncoming);
 }
 
 bool maxOutBuffs(unsigned int ignore) {
@@ -733,7 +809,7 @@ bool artsServerTryToRecieve(char **inBuffer, int *inPacketSize,
 
               if (bypassPacketSize[pos] < packet->size) {
                 // ARTS_INFO("Here5");
-                char *nextBuf = artsMalloc(packet->size * 4);
+                char *nextBuf = (char *)artsMalloc(packet->size * 4);
 
                 memcpy(nextBuf, bypassBuf[pos], bypassPacketSize[pos]);
 

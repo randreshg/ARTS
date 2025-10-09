@@ -36,13 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSEMOTEFUNCTIONS_H
-#define ARTSEMOTEFUNCTIONS_H
-#include "arts/runtime/RT.h"
+#ifndef ARTS_RUNTIME_NETWORK_REMOTEFUNCTIONS_H
+#define ARTS_RUNTIME_NETWORK_REMOTEFUNCTIONS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 #include "arts/network/RemoteProtocol.h"
+#include "arts/runtime/RT.h"
 
 void artsRemoteAddDependence(artsGuid_t source, artsGuid_t destination,
                              uint32_t slot, artsType_t mode, unsigned int rank);
@@ -72,9 +73,10 @@ void artsRemoteSignalEdt(artsGuid_t edt, artsGuid_t db, uint32_t slot,
                          artsType_t mode);
 void artsRemoteEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
                                 uint32_t slot);
-void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t action, bool lock);
+void artsRemotePersistentEventSatisfySlot(artsGuid_t eventGuid, uint32_t action,
+                                          bool lock);
 void artsRemoteDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
-                                    uint32_t edtSlot);
+                               uint32_t edtSlot);
 void artsRemoteDbIncrementLatch(artsGuid_t db);
 void artsRemoteDbDecrementLatch(artsGuid_t db);
 void artsDbRequestCallback(struct artsEdt *edt, unsigned int slot,

@@ -36,18 +36,18 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include <execinfo.h>
+#include "arts/system/Debug.h"
+
 #include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+
+#include <execinfo.h>
+
+#include "arts/system/ArtsPrint.h"
 
 #if !defined(__APPLE__)
+
 #include <sys/prctl.h>
 #include <sys/resource.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 void artsTurnOnCoreDumps() {
   unsigned int res = prctl(PR_SET_DUMPABLE, 1);
@@ -57,13 +57,14 @@ void artsTurnOnCoreDumps() {
   limit.rlim_cur = RLIM_INFINITY;
   limit.rlim_max = RLIM_INFINITY;
   pid_t pid = getpid();
-  if (setrlimit(RLIMIT_CORE, &limit) != 0)
-    printf("Failed to force core dumps");
+  if (setrlimit(RLIMIT_CORE, &limit) != 0) {
+    ARTS_INFO("Failed to force core dumps");
+  }
 }
 
 #else
 
-void artsTurnOnCoreDumps() { printf("Core dumps not supported on OS X."); }
+void artsTurnOnCoreDumps() { ARTS_INFO("Core dumps not supported on OS X."); }
 
 #endif
 

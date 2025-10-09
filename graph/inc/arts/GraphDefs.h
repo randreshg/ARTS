@@ -43,7 +43,7 @@
 extern "C" {
 #endif
 
-#include "arts/arts.h"
+#include <stdint.h>
 
 typedef uint64_t vertex_t;
 typedef uint64_t graph_sz_t;

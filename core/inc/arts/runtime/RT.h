@@ -36,22 +36,19 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSRT_H
-#define ARTSRT_H
+#ifndef ARTS_RUNTIME_SYNC_RT_H
+#define ARTS_RUNTIME_SYNC_RT_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // #define _GNU_SOURCE
-#include "arts/utils/LinkList.h"
 #include <inttypes.h>
 #include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 
+#include "arts/utils/LinkList.h"
 
 /// GUID type
 typedef intptr_t artsGuid_t;
@@ -142,7 +139,7 @@ struct artsHeader {
 struct artsDb {
   struct artsHeader header;
   artsGuid_t guid;
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
   artsGuid_t eventGuid;
 #endif
   volatile unsigned int copyCount;

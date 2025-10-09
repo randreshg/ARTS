@@ -56,10 +56,12 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
+#include "arts/utils/Deque.h"
+
 #include <string.h>
 
+#include "arts/arts.h"
 #include "arts/utils/Atomics.h"
-#include "arts/utils/Deque.h"
 
 struct circularArray {
   struct circularArray *next;
@@ -81,8 +83,8 @@ struct artsDeque {
 } __attribute__((aligned(64)));
 
 static inline struct circularArray *newCircularArray(unsigned int size) {
-  struct circularArray *array =
-      artsCalloc(sizeof(struct circularArray) + sizeof(void *) * size);
+  struct circularArray *array = (struct circularArray *)artsCallocAlign(
+      1, sizeof(struct circularArray) + sizeof(void *) * size, 64);
   //    memset(array,0,sizeof(struct circularArray) + sizeof(void*) * size);
   array->size = size;
   array->segment = (void **)(array + 1);
@@ -145,7 +147,8 @@ static inline void artsDequeNewInit(struct artsDeque *deque,
 }
 
 struct artsDeque *artsDequeNew(unsigned int size) {
-  struct artsDeque *deque = artsCalloc(sizeof(struct artsDeque));
+  struct artsDeque *deque =
+      (struct artsDeque *)artsCallocAlign(1, sizeof(struct artsDeque), 64);
   artsDequeNewInit(deque, size);
   return deque;
 }
@@ -157,7 +160,7 @@ void artsDequeDelete(struct artsDeque *deque) {
     current = current->next;
     artsFree(trail);
   }
-  //    free(deque);
+  artsFree(deque);
 }
 
 bool artsDequePushFront(struct artsDeque *deque, void *item,
@@ -210,9 +213,9 @@ void *artsDequePopBack(struct artsDeque *deque) {
 
 struct artsDeque *artsDequeListNew(unsigned int listSize,
                                    unsigned int dequeSize) {
-  struct artsDeque *dequeList =
-      (struct artsDeque *)artsCalloc(listSize * sizeof(struct artsDeque));
-  int i = 0;
+  struct artsDeque *dequeList = (struct artsDeque *)artsCallocAlign(
+      listSize, sizeof(struct artsDeque), 64);
+  unsigned int i = 0;
   for (i = 0; i < listSize; i++)
     artsDequeNewInit(&dequeList[i], dequeSize);
 

@@ -52,15 +52,17 @@
  *
  */
 
-#ifndef CORE_INC_ARTS_TMT_H_
-#define CORE_INC_ARTS_TMT_H_
+#ifndef ARTS_SYSTEM_TMT_H
+#define ARTS_SYSTEM_TMT_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#include "arts/arts.h"
-#include "arts/runtime/Runtime.h"
-#include "arts/system/AbstractMachineModel.h"
-#include "arts/system/Config.h"
-#include "arts/utils/Queue.h"
+#include <pthread.h>
 #include <semaphore.h>
+
+#include "arts/system/AbstractMachineModel.h"
+#include "arts/utils/Queue.h"
 
 #define MAX_TOTAL_THREADS_PER_MAX 65536
 #define MAX_THREADS_PER_MASTER 64
@@ -123,4 +125,7 @@ bool artsAvailContext();
 void artsNextContext();
 void artsWakeUpContext();
 
-#endif /* CORE_INC_ARTS_TMT_H_ */
+#ifdef __cplusplus
+}
+#endif
+#endif /* ARTS_SYSTEM_TMT_H */

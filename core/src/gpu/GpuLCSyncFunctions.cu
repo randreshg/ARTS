@@ -36,14 +36,17 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/gpu/GpuLCSyncFunctions.h"
-#include "arts/gas/RouteTable.h"
+#include "arts/gpu/GpuLCSyncFunctions.cuh"
+
+#include <cuda_runtime_api.h>
+
+#include "arts/arts.h"
+#include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/memory/DbFunctions.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
-#include <cuda_runtime.h>
 
 // To use this lock the unlock must be an even number
 unsigned int versionLock(artsLCMeta_t *meta) {
@@ -201,7 +204,7 @@ __global__ void artsNonZeroGpuDbUnsignedInt(struct artsDb *sink,
   unsigned int *sinkData = (unsigned int *)(sink + 1);
 
   int index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (sinkData > 0)
+  if (sinkData[index] > 0)
     sinkData[index] = srcData[index];
 }
 
@@ -360,7 +363,7 @@ int gpuTreeReductionRec(int root, unsigned int start, unsigned int stop,
                         unsigned int *maxLevel) {
   int localRoot = -1;
   // ARTS_INFO("root: %u start: %u stop: %u", root, start, stop);
-  int gpuId[2] = {start, stop};
+  int gpuId[2] = {(int)start, (int)stop};
 
   if (stop - start > 1) // Recursive call
   {
@@ -487,9 +490,9 @@ unsigned int *gpuDepthFirst(unsigned int mask, unsigned int *maxSize) {
   }
 
   unsigned int *visited =
-      (unsigned int *)artsCalloc(sizeof(unsigned int) * cycleSize);
+      (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
   unsigned int *maxVisited =
-      (unsigned int *)artsCalloc(sizeof(unsigned int) * cycleSize);
+      (unsigned int *)artsCalloc(cycleSize, sizeof(unsigned int));
   for (unsigned int i = 0; i < artsGetTotalGpus(); i++) {
     if (mask & (1 << i)) {
       ARTS_INFO("i: %u", i);
@@ -508,7 +511,7 @@ unsigned int *gpuDepthFirst(unsigned int mask, unsigned int *maxSize) {
 
 bool gpuRingReduction(unsigned int mask, unsigned int guid, unsigned int dbSize,
                       artsLCSyncFunctionGpu_t fnPtr) {
-  unsigned int remMask = mask;
+  // unsigned int remMask = mask;
   unsigned int cycleSize = 0;
   unsigned int *cycle = gpuDepthFirst(mask, &cycleSize);
   if (cycle && cycleSize > 1) {
@@ -554,7 +557,7 @@ unsigned int gpuLCReduce(artsGuid_t guid, struct artsDb *db,
   *copyOnly = false;
   unsigned int remMask = 0;
   unsigned int size = db->header.size;
-  struct artsDb *shadowCopy = (struct artsDb *)(((char *)db) + size);
+  // struct artsDb *shadowCopy = (struct artsDb *)(((char *)db) + size);
 
   artsWriterLock(&db->reader, &db->writer);
   unsigned int mask = artsGpuLookupDbFix(guid);

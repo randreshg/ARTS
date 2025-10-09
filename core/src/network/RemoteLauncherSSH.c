@@ -37,14 +37,16 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#include "arts/arts.h"
 #include "arts/network/RemoteLauncher.h"
-#include "arts/system/Config.h"
+
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "arts/arts.h"
+#include "arts/system/Config.h"
 
 static int artsShellQuote(const char *input, char *output, size_t outputSize) {
   size_t outIndex = 0;
@@ -123,7 +125,8 @@ void artsRemoteLauncherSSHStartupProcesses(
   }
 
   // Allocate for all non-master nodes
-  sshExecutions = artsMalloc(sizeof(FILE *) * (config->tableLength - 1));
+  sshExecutions =
+      (FILE **)artsMalloc(sizeof(FILE *) * (config->tableLength - 1));
   launcher->launcherMemory = sshExecutions;
 
   char command[4096];

@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSSERVER_H
-#define ARTSSERVER_H
+#ifndef ARTS_NETWORK_SERVER_H
+#define ARTS_NETWORK_SERVER_H
 #ifdef __cplusplus
 extern "C" {
 #endif

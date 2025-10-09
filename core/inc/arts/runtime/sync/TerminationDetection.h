@@ -43,7 +43,7 @@
 extern "C" {
 #endif
 
-#include "arts/arts.h"
+#include "arts/runtime/RT.h"
 
 artsEpoch_t *createEpoch(artsGuid_t *guid, artsGuid_t edtGuid,
                          unsigned int slot);

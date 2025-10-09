@@ -43,15 +43,12 @@
 // Once this *class* works we will put a stream(s) in create a thread local
 // stream.  Then we will push stuff!
 #include "arts/gpu/GpuStreamBuffer.h"
-#include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuRuntime.h"
-#include "arts/gpu/GpuStream.h"
+
+#include "arts/gpu/GpuRuntime.cuh"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/memory/DbFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/utils/Deque.h"
+#include "arts/system/ArtsPrint.h"
+#include "arts/utils/Atomics.h"
 
 #define CHECKSTREAM 4096
 #define MAXSTREAM 32
@@ -182,8 +179,8 @@ bool pushWrapUpToStream(unsigned int gpuId, void *hostClosure, bool buff) {
   }
 
 #if CUDART_VERSION >= 10000
-  CHECKCORRECT(
-      cudaLaunchHostFunc(artsGpus[gpuId].stream, artsWrapUp, hostClosure));
+  CHECKCORRECT(cudaLaunchHostFunc(artsGpus[gpuId].stream, artsWrapUpHostFunc,
+                                  hostClosure));
 #else
   CHECKCORRECT(cudaStreamAddCallback(artsGpus[gpuId].stream, artsWrapUp,
                                      hostClosure, 0));
@@ -219,7 +216,7 @@ bool flushMemStream(unsigned int gpuId, unsigned int *count,
 }
 
 bool flushKernelStream(unsigned int gpuId) {
-  bool ret = (kernelToDevCount > 0);
+  bool ret = (kernelToDevCount[gpuId] > 0);
   if (ret) {
     for (unsigned int i = 0; i < kernelToDevCount[gpuId]; i++) {
       void *kernelArgs[] = {
@@ -243,10 +240,10 @@ bool flushKernelStream(unsigned int gpuId) {
 }
 
 bool flushWrapUpStream(unsigned int gpuId) {
-  bool ret = (wrapUpCount > 0);
+  bool ret = (wrapUpCount[gpuId] > 0);
   for (unsigned int i = 0; i < wrapUpCount[gpuId]; i++) {
 #if CUDART_VERSION >= 10000
-    CHECKCORRECT(cudaLaunchHostFunc(artsGpus[gpuId].stream, artsWrapUp,
+    CHECKCORRECT(cudaLaunchHostFunc(artsGpus[gpuId].stream, artsWrapUpHostFunc,
                                     wrapUpBuff[gpuId][i]));
 #else
     CHECKCORRECT(cudaStreamAddCallback(artsGpus[gpuId].stream, artsWrapUp,

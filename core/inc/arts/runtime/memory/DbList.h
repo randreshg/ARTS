@@ -36,12 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSDBLIST_H
-#define ARTSDBLIST_H
+#ifndef ARTS_RUNTIME_MEMORY_DBLIST_H
+#define ARTS_RUNTIME_MEMORY_DBLIST_H
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "arts/arts.h"
+
+#include "arts/runtime/RT.h"
 
 #define DBSPERELEMENT 8
 

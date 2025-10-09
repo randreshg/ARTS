@@ -36,13 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef SHADADAPTER_H
-#define SHADADAPTER_H
-
+#ifndef ARTS_RUNTIME_COMPUTE_SHADADAPTER_H
+#define ARTS_RUNTIME_COMPUTE_SHADADAPTER_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#include "arts/runtime/RT.h"
 #include "arts/utils/Queue.h"
 
 artsGuid_t artsEdtCreateShad(artsEdt_t funcPtr, unsigned int route,

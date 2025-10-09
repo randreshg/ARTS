@@ -54,25 +54,23 @@
 
 #define PT_CONTEXTS // maintain contexts via PThreads
 
-#include <errno.h>
+#include "arts/system/TMT.h"
+
 #include <inttypes.h>
-#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#define __USE_GNU
 #include <string.h>
 
+#include <pthread.h>
+#include <unistd.h>
+
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/compute/EdtFunctions.h"
-#include "arts/runtime/memory/DbFunctions.h"
+#include "arts/runtime/Runtime.h"
 #include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/Debug.h"
-#include "arts/system/TMT.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Threads.h"
 #include "arts/utils/Atomics.h"
-#include "arts/utils/Deque.h"
 
 #define ONLY_ONE_THREAD
 // while(!artsTestStateOneLeft(localPool->alias_running) &&
@@ -93,15 +91,16 @@ static inline internalMsi_t *artsGetMsiOffsetPtr(internalMsi_t *head,
   return ptr;
 }
 
-static inline artsTicket GenTicket() {
+static inline artsTicket genTicket() {
   artsTicket ticket;
   ticket.fields.rank = artsGlobalRankId;
   ticket.fields.unit = artsThreadInfo.groupId;
   ticket.fields.thread = aliasId;
   ticket.fields.valid = 1;
   ARTS_DEBUG("r: %u u: %u t: %u v: %u", (unsigned int)ticket.fields.rank,
-          (unsigned int)ticket.fields.unit, (unsigned int)ticket.fields.thread,
-          (unsigned int)ticket.fields.valid);
+             (unsigned int)ticket.fields.unit,
+             (unsigned int)ticket.fields.thread,
+             (unsigned int)ticket.fields.valid);
   return ticket;
 }
 
@@ -194,6 +193,8 @@ static void *artsAliasThreadLoop(void *arg) {
 
   artsRuntimeLoop();
   artsAtomicSub(&localInternal->shutDownCount, 1);
+
+  return NULL;
 }
 
 static inline void artsCreateContexts(struct artsRuntimePrivate *semiPrivate,
@@ -237,15 +238,15 @@ static inline void artsCreateContexts(struct artsRuntimePrivate *semiPrivate,
     if (pthread_create(&ptr->aliasThreads[i], &attr, &artsAliasThreadLoop,
                        &tmask)) {
       ARTS_INFO("FAILED ALIAS THREAD CREATION %u %u", artsThreadInfo.groupId,
-             i + offset);
+                i + offset);
       //            exit(EXIT_FAILURE);
     }
     ARTS_DEBUG("Master %u: Waiting in thread creation %d",
-            artsThreadInfo.groupId, i + offset);
+               artsThreadInfo.groupId, i + offset);
     if (sem_wait(&localInternal->sem[aliasId % numAT]) ==
         -1) { // wait to finish mask copy
       ARTS_INFO("FAILED SEMI INIT WAIT %u %u", artsThreadInfo.groupId,
-             i + offset);
+                i + offset);
       //            exit(EXIT_FAILURE);
     }
   }
@@ -276,14 +277,13 @@ static inline void artsDestroyContexts(internalMsi_t *ptr, bool head) {
 // RT visible functions
 // COMMENT: MasterThread (MT) is the original thread
 void artsTMTNodeInit(unsigned int numThreads) {
-  if (artsNodeInfo.tMT > 64) {
-    PRINTF(
-        "Temporal multi-threading can't run more than 64 threads per core");
-    artsNodeInfo.tMT = 64;
+  if (numThreads > 64) {
+    PRINTF("Temporal multi-threading can't run more than 64 threads per core");
+    numThreads = 64;
   }
 
   if (artsNodeInfo.tMT) {
-    _arts_tMT_msi = (msi_t *)artsCalloc(numThreads * sizeof(msi_t));
+    _arts_tMT_msi = (msi_t *)artsCallocAlign(numThreads, sizeof(msi_t), 64);
   }
 }
 
@@ -293,22 +293,22 @@ void artsTMTConstructNewInternalMsi(msi_t *root, unsigned int numAT,
   unsigned int offset = 0;
   internalMsi_t *ptr = root->head;
   if (!root->head)
-    root->head = ptr = artsCalloc(sizeof(internalMsi_t));
+    root->head = ptr = (internalMsi_t *)artsCalloc(1, sizeof(internalMsi_t));
   else {
     offset = numAT;
     while (ptr->next) {
       offset += numAT;
       ptr = ptr->next;
     }
-    ptr->next = artsCalloc(sizeof(internalMsi_t));
+    ptr->next = (internalMsi_t *)artsCalloc(1, sizeof(internalMsi_t));
     ptr = ptr->next;
   }
 
   unsigned int total = (offset) ? numAT : numAT - 1;
   ptr->aliasThreads = (pthread_t *)artsMalloc(sizeof(pthread_t) * (total));
   ptr->sem = (sem_t *)artsMalloc(sizeof(sem_t) * (numAT));
-  ptr->alive = (volatile bool **)artsCalloc(sizeof(bool *) * numAT);
-  ptr->initShutdown = (volatile bool **)artsCalloc(sizeof(bool *) * numAT);
+  ptr->alive = (volatile bool **)artsCalloc(numAT, sizeof(bool *));
+  ptr->initShutdown = (volatile bool **)artsCalloc(numAT, sizeof(bool *));
   ptr->alias_running = (offset) ? 0UL : 1U; // MT is running on thread 0
 
   if (!offset)
@@ -426,8 +426,8 @@ void artsNextContext() {
         ptr = (localInternal->next) ? localInternal->next : localPool->head;
       }
       ARTS_DEBUG("%u link NEXT: %u total: %u %p %u next: %p head: %p",
-              artsThreadInfo.groupId, aliasId, localPool->total, ptr, cand,
-              localInternal->next, localPool->head);
+                 artsThreadInfo.groupId, aliasId, localPool->total, ptr, cand,
+                 localInternal->next, localPool->head);
       artsPutToWork(artsGlobalRankId, ptr, cand, true); // available so flip
     }
 
@@ -524,7 +524,7 @@ void artsOpenContextSwitch() {
 
 bool artsSignalContext(artsTicket_t waitTicket) {
   ARTS_DEBUG("SIGNAL CONTEXT %u", artsNodeInfo.tMT);
-  artsTicket ticket = (artsTicket)waitTicket;
+  artsTicket ticket = (artsTicket){.bits = waitTicket};
   unsigned int rank = (unsigned int)ticket.fields.rank;
   unsigned int unit = (unsigned int)ticket.fields.unit;
   unsigned int thread = (unsigned int)ticket.fields.thread;
@@ -559,11 +559,11 @@ artsTicket_t artsGetContextTicket() {
   artsTicket ticket;
   ticket.bits = 0;
   if (artsNodeInfo.tMT)
-    ticket = GenTicket();
+    ticket = genTicket();
   ARTS_DEBUG("%u r: %u u: %u t: %u v: %u", artsNodeInfo.tMT,
-          (unsigned int)ticket.fields.rank, (unsigned int)ticket.fields.unit,
-          (unsigned int)ticket.fields.thread,
-          (unsigned int)ticket.fields.valid);
+             (unsigned int)ticket.fields.rank, (unsigned int)ticket.fields.unit,
+             (unsigned int)ticket.fields.thread,
+             (unsigned int)ticket.fields.valid);
   return (artsTicket_t)ticket.bits;
 }
 

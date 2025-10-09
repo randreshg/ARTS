@@ -36,15 +36,16 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-
 #include "arts/introspection/Counter.h"
+
+#include <strings.h>
+#include <sys/stat.h>
+
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
-#include <strings.h>
-#include <sys/stat.h>
 
 const char *const artsCounterNames[] = {"edtCounter",
                                         "sleepCounter",
@@ -197,7 +198,7 @@ void artsCounterStop() {
 
 artsCounter *artsCounterCreate(unsigned int threadId, unsigned int nodeId,
                                const char *counterName) {
-  artsCounter *counter = (artsCounter *)artsCalloc(sizeof(artsCounter));
+  artsCounter *counter = (artsCounter *)artsCalloc(1, sizeof(artsCounter));
   counter->threadId = threadId;
   counter->nodeId = nodeId;
   counter->name = counterName;

@@ -36,12 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSEDTFUNCTIONS_H
-#define ARTSEDTFUNCTIONS_H
+#ifndef ARTS_RUNTIME_COMPUTE_EDTFUNCTIONS_H
+#define ARTS_RUNTIME_COMPUTE_EDTFUNCTIONS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
-#include "arts/arts.h"
+
+#include "arts/runtime/RT.h"
 
 bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
                            artsGuid_t *guid, unsigned int route,

@@ -37,4 +37,7 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
+set(ARTS_CORE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/inc")
+set(ARTS_CORE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/inc" PARENT_SCOPE)
+
 add_subdirectory(src)

@@ -38,16 +38,17 @@
 ******************************************************************************/
 
 #include "arts/runtime/memory/ArrayDb.h"
+
+#include <string.h>
+
 #include "arts/arts.h"
-#include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/Runtime.h"
-#include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/memory/DbFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/runtime/sync/TerminationDetection.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
@@ -57,7 +58,7 @@ unsigned int artsGetSizeArrayDb(artsArrayDb_t *array) {
 
 void *copyDb(void *ptr, unsigned int size, artsGuid_t guid) {
   struct artsDb *db = ((struct artsDb *)ptr) - 1;
-  struct artsDb *newDb = artsCalloc(size);
+  struct artsDb *newDb = (struct artsDb *)artsCallocAlign(1, size, 16);
   memcpy(newDb, db, size);
   newDb->guid = guid;
   return (void *)(newDb + 1);
@@ -85,7 +86,7 @@ artsArrayDb_t *artsNewArrayDbWithGuid(artsGuid_t guid, unsigned int elementSize,
     // We have to manually create the db so it isn't updated before we send
     // it...
     unsigned int dbSize = sizeof(struct artsDb) + allocSize;
-    struct artsDb *toSend = artsCalloc(dbSize);
+    struct artsDb *toSend = (struct artsDb *)artsCallocAlign(1, dbSize, 16);
     artsDbCreateInternal(guid, toSend, allocSize, dbSize, ARTS_DB_PIN);
 
     block = (artsArrayDb_t *)(toSend + 1);
@@ -120,8 +121,8 @@ artsArrayDb_t *artsNewLocalArrayDbWithGuid(artsGuid_t guid,
   artsArrayDb_t *block = NULL;
 
   unsigned int dbSize = sizeof(struct artsDb) + allocSize;
-  // struct artsDb *local = artsCalloc(dbSize);
-  struct artsDb *local = artsMalloc(dbSize);
+  // struct artsDb *local = artsCalloc(1, dbSize);
+  struct artsDb *local = (struct artsDb *)artsMallocAlign(dbSize, 16);
   artsDbCreateInternal(guid, local, allocSize, dbSize, ARTS_DB_PIN);
 
   block = (artsArrayDb_t *)(local + 1);
@@ -192,7 +193,7 @@ void artsPutInArrayDb(void *ptr, artsGuid_t edtGuid, unsigned int slot,
 
 void artsForEachInArrayDb(artsArrayDb_t *array, artsEdt_t funcPtr,
                           uint32_t paramc, uint64_t *paramv) {
-  uint64_t *args = artsMalloc(sizeof(uint64_t) * (paramc + 1));
+  uint64_t *args = (uint64_t *)artsMalloc(sizeof(uint64_t) * (paramc + 1));
   memcpy(&args[1], paramv, sizeof(uint64_t) * paramc);
 
   unsigned int size = artsGetSizeArrayDb(array);
@@ -207,6 +208,8 @@ void artsForEachInArrayDb(artsArrayDb_t *array, artsEdt_t funcPtr,
 void artsGatherArrayDb(artsArrayDb_t *array, artsEdt_t funcPtr,
                        unsigned int route, uint32_t paramc, uint64_t *paramv,
                        uint64_t depc) {
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int offset = getOffsetFromIndex(array, 0);
   unsigned int size = array->elementSize * array->elementsPerBlock;
   artsGuid_t arrayGuid = getArrayDbGuid(array);
@@ -222,6 +225,8 @@ void artsGatherArrayDbEpoch(artsArrayDb_t *array, artsEdt_t funcPtr,
                             unsigned int route, uint32_t paramc,
                             uint64_t *paramv, uint64_t depc,
                             artsGuid_t epochGuid) {
+  if (route == -1)
+    route = artsGlobalRankId;
   unsigned int offset = getOffsetFromIndex(array, 0);
   unsigned int size = array->elementSize * array->elementsPerBlock;
   artsGuid_t arrayGuid = getArrayDbGuid(array);
@@ -251,9 +256,9 @@ void loopPolicy(uint32_t paramc, uint64_t *paramv, uint32_t depc,
   unsigned int end = paramv[2];
   unsigned int start = paramv[3];
 
-  artsArrayDb_t *array = depv[0].ptr;
+  artsArrayDb_t *array = (artsArrayDb_t *)depv[0].ptr;
   unsigned int offset = getOffsetFromIndex(array, start);
-  char *raw = depv[0].ptr;
+  char *raw = (char *)depv[0].ptr;
 
   for (unsigned int i = start; i < end; i += stride) {
     paramv[3] = i;
@@ -273,7 +278,7 @@ void artsForEachInArrayDbAtData(artsArrayDb_t *array, unsigned int stride,
     ARTS_INFO("WARNING: Size is not divisible by stride!");
   }
   artsGuid_t guid = getArrayDbGuid(array);
-  uint64_t *args = artsMalloc(sizeof(uint64_t) * (paramc + 4));
+  uint64_t *args = (uint64_t *)artsMalloc(sizeof(uint64_t) * (paramc + 4));
   if (paramc)
     memcpy(&args[4], paramv, sizeof(uint64_t) * paramc);
   args[0] = (uint64_t)funcPtr;
@@ -289,7 +294,7 @@ void artsForEachInArrayDbAtData(artsArrayDb_t *array, unsigned int stride,
 void internalAtomicAddInArrayDb(artsGuid_t dbGuid, unsigned int index,
                                 unsigned int toAdd, artsGuid_t edtGuid,
                                 unsigned int slot, artsGuid_t epochGuid) {
-  struct artsDb *db = artsRouteTableLookupItem(dbGuid);
+  struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
   if (db) {
     artsArrayDb_t *array = (artsArrayDb_t *)(db + 1);
     // Do this so when we increment finished we can check the term status
@@ -332,7 +337,7 @@ void internalAtomicCompareAndSwapInArrayDb(
     artsGuid_t dbGuid, unsigned int index, unsigned int oldValue,
     unsigned int newValue, artsGuid_t edtGuid, unsigned int slot,
     artsGuid_t epochGuid) {
-  struct artsDb *db = artsRouteTableLookupItem(dbGuid);
+  struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
   if (db) {
     artsArrayDb_t *array = (artsArrayDb_t *)(db + 1);
     // Do this so when we increment finished we can check the term status

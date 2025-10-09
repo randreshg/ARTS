@@ -36,12 +36,12 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSREMOTEPROTOCOL_H
-#define ARTSREMOTEPROTOCOL_H
-#include "arts/runtime/RT.h"
+#ifndef ARTS_NETWORK_REMOTEPROTOCOL_H
+#define ARTS_NETWORK_REMOTEPROTOCOL_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include "arts/runtime/RT.h"
 #define SEQUENCENUMBERS 1
 
 enum artsServerMessageType {
@@ -52,7 +52,7 @@ enum artsServerMessageType {
   ARTS_REMOTE_PERSISTENT_EVENT_SATISFY_SLOT_MSG,
   ARTS_REMOTE_ADD_DEPENDENCE_MSG,
   ARTS_REMOTE_ADD_DEPENDENCE_TO_PERSISTENT_EVENT_MSG,
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
   ARTS_REMOTE_DB_ADD_DEPENDENCE_MSG,
   ARTS_REMOTE_DB_INCREMENT_LATCH_MSG,
   ARTS_REMOTE_DB_DECREMENT_LATCH_MSG,
@@ -99,13 +99,13 @@ struct __attribute__((__packed__)) artsRemotePacket {
   unsigned int seqRank;
   uint64_t seqNum;
 #endif
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   uint64_t timeStamp;
   uint64_t procTimeStamp;
 #endif
 };
 
-struct artsRemoteGuidOnlyPacket {
+struct __attribute__((__packed__)) artsRemoteGuidOnlyPacket {
   struct artsRemotePacket header;
   artsGuid_t guid;
 };
@@ -140,7 +140,7 @@ struct __attribute__((__packed__)) artsRemotePersistentEventSatisfySlotPacket {
   bool lock;
 };
 
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
 struct __attribute__((__packed__)) artsRemoteDbAddDependencePacket {
   struct artsRemotePacket header;
   artsGuid_t dbSrc;
@@ -269,7 +269,8 @@ void artsRemoteSendRequestPayloadAsyncFree(int rank, char *message,
                                            unsigned int offset,
                                            unsigned int size,
                                            void (*freeMethod)(void *));
-void artsRemotSetThreadOutboundQueues(unsigned int start, unsigned int stop);
+void artsRemoteSetThreadOutboundQueues(unsigned int start, unsigned int stop);
+void artsRemoteThreadOutboundQueuesCleanup();
 #ifdef __cplusplus
 }
 #endif

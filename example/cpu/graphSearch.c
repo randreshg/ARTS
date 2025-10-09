@@ -36,16 +36,17 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/Graph.h"
-#include "arts/arts.h"
-#include "arts/runtime/compute/ShadAdapter.h"
-#include "arts/runtime/sync/TerminationDetection.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "arts/BlockDistribution.h"
+#include "arts/Csr.h"
+#include "arts/arts.h"
+#include "arts/runtime/compute/ShadAdapter.h"
 
 unsigned int introStart = 5;
 
@@ -95,15 +96,15 @@ void exitProgram(uint32_t paramc, uint64_t *paramv, uint32_t depc,
   artsShutdown();
 }
 
-void GatherNeighborPropertyVal(uint32_t paramc, uint64_t *paramv, uint32_t depc,
+void gatherNeighborPropertyVal(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                                artsEdtDep_t depv[]) {
-  sourceInfo *srcInfo = depv[depc - 1].ptr;
-  vertexProperty *maxWeightedNeighbor = depv[0].ptr;
+  sourceInfo *srcInfo = (sourceInfo *)depv[depc - 1].ptr;
+  vertexProperty *maxWeightedNeighbor = (vertexProperty *)depv[0].ptr;
   for (unsigned int i = 0; i < srcInfo->numNeighbors; i++) {
-    vertexProperty *data = depv[i].ptr;
+    vertexProperty *data = (vertexProperty *)depv[i].ptr;
     // TODO: For now, its inefficiently getting both v and id, could have
     // discarded v.
-    vertexID *vId = depv[i + srcInfo->numNeighbors].ptr;
+    vertexID *vId = (vertexID *)depv[i + srcInfo->numNeighbors].ptr;
     /*For now, just printing in-place*/
     //    PRINTF("Seed: %u, Step: %u, Neighbor: %u, neibID: %llu Weight: %f,
     //    Visited: %d, Indicator computation: \n", srcInfo->seed, num_steps -
@@ -147,7 +148,7 @@ void visitSource(uint32_t paramc, uint64_t *paramv, uint32_t depc,
         sizeof(sourceInfo); // + neighbor_cnt * sizeof(vertex_t);
     void *ptr = NULL;
     artsGuid_t dbGuid = artsDbCreate(&ptr, dbSize, ARTS_DB_ONCE_LOCAL);
-    sourceInfo *srcInfo = ptr;
+    sourceInfo *srcInfo = (sourceInfo *)ptr;
     srcInfo->source = source;
     srcInfo->step = nSteps;
     srcInfo->seed = seed;
@@ -158,19 +159,19 @@ void visitSource(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     // sizeof(vertex_t));
     /* //... keep filling in */
     artsGuid_t GatherNeighborPropertyValGuid =
-        artsEdtCreate(GatherNeighborPropertyVal, artsGetCurrentNode(), 0, NULL,
+        artsEdtCreate(gatherNeighborPropertyVal, artsGetCurrentNode(), 0, NULL,
                       2 * neighbor_cnt + 1);
 
     artsSignalEdt(GatherNeighborPropertyValGuid, 2 * neighbor_cnt, dbGuid);
 
-    artsArrayDb_t *vertexPropertyMap = depv[0].ptr;
+    artsArrayDb_t *vertexPropertyMap = (artsArrayDb_t *)depv[0].ptr;
     for (unsigned int i = 0; i < neighbor_cnt; i++) {
       vertex_t neib = neighbors[i];
       artsGetFromArrayDb(GatherNeighborPropertyValGuid, i, vertexPropertyMap,
                          neib);
     }
 
-    artsArrayDb_t *vertexIDMap = depv[1].ptr;
+    artsArrayDb_t *vertexIDMap = (artsArrayDb_t *)depv[1].ptr;
     for (unsigned int i = 0; i < neighbor_cnt; i++) {
       vertex_t neib = neighbors[i];
       // PRINTF("Vertex=%llu indexing at %u \n", neib, neighbor_cnt + i);
@@ -183,7 +184,7 @@ void visitSource(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 void check(uint32_t paramc, uint64_t *paramv, uint32_t depc,
            artsEdtDep_t depv[]) {
   for (unsigned int i = 0; i < depc; i++) {
-    vertexProperty *data = depv[i].ptr;
+    vertexProperty *data = (vertexProperty *)depv[i].ptr;
     //        PRINTF("%d %f: %u\n", i, data->v, data->propertyVal);
   }
 
@@ -220,7 +221,7 @@ void endVertexIDMapRead(uint32_t paramc, uint64_t *paramv, uint32_t depc,
     partition_t rank = getOwnerDistr(source, distribution);
     // PRINTF("Source is located on rank %d\n", rank);
     /*Spawn an edt at rank that is the owner of current seed vertex*/
-    uint64_t packed_values[3] = {source, num_steps, source};
+    uint64_t packed_values[3] = {source, (uint64_t)num_steps, source};
     artsGuid_t visitSourceGuid =
         artsEdtCreate(visitSource, rank, 3, (uint64_t *)&packed_values, 2);
     // TODO: why pass vertexpropertguid as an argument?
@@ -355,13 +356,12 @@ void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
                                distribution->num_vertices);
 
     // Read in property file
-    PRINTF(
-        "[INFO] Reading in and constructing the vertex property map ...\n");
+    PRINTF("[INFO] Reading in and constructing the vertex property map ...\n");
     FILE *file = fopen(_file, "r");
     PRINTF("File to be opened %s\n", _file);
     if (file == NULL) {
       PRINTF("[ERROR] File containing property value can't be open -- %s",
-                _file);
+             _file);
       artsShutdown();
     }
 

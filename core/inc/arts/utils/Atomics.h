@@ -36,13 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTSATOMICS_H
-#define ARTSATOMICS_H
+#ifndef ARTS_UTILS_ATOMICS_H
+#define ARTS_UTILS_ATOMICS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/runtime/RT.h"
+#include <stdbool.h>
+#include <stdint.h>
 #define HW_MEMORY_FENCE() __sync_synchronize()
 #define COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT()                    \
   __asm__ volatile("" : : : "memory")

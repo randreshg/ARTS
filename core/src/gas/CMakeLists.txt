@@ -37,7 +37,18 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
+# Collect all source files
+file(GLOB GAS_SOURCES "*.c")
 
+# Create object library for the gas module
+add_library(arts_gas OBJECT ${GAS_SOURCES})
 
-file(GLOB gas_src "*.c")
-add_library(gas OBJECT ${gas_src})
+# Include directories
+target_include_directories(arts_gas PRIVATE
+    ${ARTS_CORE_INCLUDE_DIR}
+)
+
+# Add hwloc include directories if available
+if(HWLOC_INCLUDE_DIRS)
+    target_include_directories(arts_gas PRIVATE ${HWLOC_INCLUDE_DIRS})
+endif()

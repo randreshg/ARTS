@@ -36,10 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/BlockDistribution.h"
 #include <assert.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include <string.h>
+
+#include "arts/BlockDistribution.h"
+#include "arts/arts.h"
 #include "arts/system/ArtsPrint.h"
 
 void internalInitBlockDistribution(arts_block_dist_t *_dist, graph_sz_t _n,
@@ -53,8 +56,8 @@ void internalInitBlockDistribution(arts_block_dist_t *_dist, graph_sz_t _n,
 arts_block_dist_t *initBlockDistributionBlock(graph_sz_t n, graph_sz_t m,
                                               unsigned int numBlocks,
                                               artsType_t dbType) {
-  arts_block_dist_t *dist =
-      artsMalloc(sizeof(arts_block_dist_t) + sizeof(artsGuid_t) * numBlocks);
+  arts_block_dist_t *dist = (arts_block_dist_t *)artsMalloc(
+      sizeof(arts_block_dist_t) + sizeof(artsGuid_t) * numBlocks);
   unsigned int blocksPerNode = numBlocks / artsGetTotalNodes();
   unsigned int mod = numBlocks % artsGetTotalNodes();
   unsigned int current = 0;
@@ -74,8 +77,8 @@ arts_block_dist_t *initBlockDistributionBlock(graph_sz_t n, graph_sz_t m,
 
 arts_block_dist_t *initBlockDistribution(graph_sz_t n, graph_sz_t m) {
   unsigned int numBlocks = artsGetTotalNodes();
-  arts_block_dist_t *dist =
-      artsMalloc(sizeof(arts_block_dist_t) + sizeof(artsGuid_t) * numBlocks);
+  arts_block_dist_t *dist = (arts_block_dist_t *)artsMalloc(
+      sizeof(arts_block_dist_t) + sizeof(artsGuid_t) * numBlocks);
   for (unsigned int i = 0; i < numBlocks; i++)
     dist->graphGuid[i] = artsReserveGuidRoute(ARTS_DB_PIN, i);
   internalInitBlockDistribution(dist, n, m, numBlocks);
@@ -94,14 +97,14 @@ arts_block_dist_t *initBlockDistributionWithCmdLineArgs(int argc, char **argv) {
 
   if (n && m) {
     unsigned int numBlocks = artsGetTotalNodes();
-    arts_block_dist_t *dist =
-        artsMalloc(sizeof(arts_block_dist_t) + sizeof(artsGuid_t) * numBlocks);
+    arts_block_dist_t *dist = (arts_block_dist_t *)artsMalloc(
+        sizeof(arts_block_dist_t) + sizeof(artsGuid_t) * numBlocks);
     for (unsigned int i = 0; i < numBlocks; i++)
       dist->graphGuid[i] = artsReserveGuidRoute(ARTS_DB_PIN, i);
     internalInitBlockDistribution(dist, n, m, numBlocks);
     return dist;
-  } else
-    ARTS_INFO("Must set --num-vertices and --num-edges");
+  }
+  ARTS_INFO("Must set --num-vertices and --num-edges");
   return NULL;
 }
 
@@ -119,10 +122,10 @@ unsigned int getNumLocalBlocks(arts_block_dist_t *_dist) {
 graph_sz_t getBlockSizeForPartition(unsigned int index,
                                     const arts_block_dist_t *const _dist) {
   // is this the last node
-  if (index == (_dist->num_blocks - 1))
+  if (index == (_dist->num_blocks - 1)) {
     return (_dist->num_vertices - ((_dist->num_blocks - 1) * _dist->block_sz));
-  else
-    return _dist->block_sz;
+  }
+  return _dist->block_sz;
 }
 
 unsigned int getOwnerDistr(vertex_t v, const arts_block_dist_t *const _dist) {
@@ -137,10 +140,10 @@ vertex_t partitionStartDistr(partition_t index,
 vertex_t partitionEndDistr(partition_t index,
                            const arts_block_dist_t *const _dist) {
   // is this the last node ?
-  if (index == (_dist->num_blocks - 1))
+  if (index == (_dist->num_blocks - 1)) {
     return (vertex_t)(_dist->num_vertices - 1);
-  else
-    return (partitionStartDistr(index, _dist) + (_dist->block_sz - 1));
+  }
+  return (partitionStartDistr(index, _dist) + (_dist->block_sz - 1));
 }
 
 vertex_t getVertexFromLocalDistr(unsigned int local, local_index_t u,

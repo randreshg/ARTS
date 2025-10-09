@@ -4,7 +4,7 @@
 ** nor the United States Department of Energy, nor Battelle, nor any of      **
 ** their employees, nor any jurisdiction or organization that has cooperated **
 ** in the development of these materials, makes any warranty, express or     **
-** implied, or assumes any legal liability or responsibility for the accuracy,* 
+** implied, or assumes any legal liability or responsibility for the accuracy,*
 ** completeness, or usefulness or any information, apparatus, product,       **
 ** software, or process disclosed, or represents that its use would not      **
 ** infringe privately owned rights.                                          **
@@ -36,26 +36,22 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include <stdio.h>
 #include <stdlib.h>
-#include "arts/arts.h"
-#include "artsGpuLCSyncFunctions.h"
 
-extern "C"
-void initPerNode(unsigned int nodeId, int argc, char** argv)
-{
-    // for(unsigned int i=0; i<256; i++)
-    {
-        unsigned int i=1+2+4;
-        PRINTF("i: %u -> %p\n", i, (void*)i);
-        // unsigned int rem = artsSendTree(i);
-        // PRINTF("REM: %u\n", rem);
-    }
-    artsShutdown();
+#include "arts/arts.h"
+
+extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
+  // for(unsigned int i=0; i<256; i++)
+  {
+    unsigned int i = 1 + 2 + 4;
+    PRINTF("i: %u -> %p\n", i, (void *)&i);
+    // unsigned int rem = artsSendTree(i);
+    // PRINTF("REM: %u\n", rem);
+  }
+  artsShutdown();
 }
 
-int main(int argc, char** argv)
-{
-    artsRT(argc, argv);
-    return 0;
+int main(int argc, char **argv) {
+  artsRT(argc, argv);
+  return 0;
 }

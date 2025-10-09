@@ -36,12 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_H
-#define ARTS_H
-#include <stdint.h>
+#ifndef ARTS_ARTS_H
+#define ARTS_ARTS_H
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <stddef.h>
+#include <stdint.h>
 
 #include "arts/runtime/RT.h"
 
@@ -66,12 +68,12 @@ void *artsMallocAlign(size_t size, size_t align);
 // Allocates memory of size bytes and initializes the memory to zero.  Arts
 // applications should use this allocation method to give the runtime a full
 // view of resource utilization.
-void *artsCalloc(size_t size);
+void *artsCalloc(size_t nmemb, size_t size);
 
 // Allocates memory of size bytes with given alignment and initializes the
 // memory to zero.  Arts applications should use this allocation method to give
 // the runtime a full view of resource utilization.
-void *artsCallocAlign(size_t size, size_t allign);
+void *artsCallocAlign(size_t nmemb, size_t size, size_t align);
 
 // Resizes memory that was previously allocated using artsMalloc or artsCalloc.
 // This is here for completion but should probably not be used.
@@ -79,9 +81,6 @@ void *artsRealloc(void *ptr, size_t size);
 
 // Releases memory allocated by artsMalloc or artsCalloc.
 void artsFree(void *ptr);
-
-// Releases memory allocated by artsMallocAlign or artsCallocAlign.
-void artsFreeAlign(void *ptr);
 
 /*GUID*************************************************************************/
 
@@ -106,7 +105,7 @@ artsGuid_t artsGuidCast(artsGuid_t guid, artsType_t type);
 // with several fields, the actual value of guids may not be consecutive making
 // it cumbersome to handle many guids individually.  Guid ranges provide a way
 // of accessing many guids from one the start guid.
-artsGuidRange *artsNewGuidRangeNode(unsigned int type, unsigned int size,
+artsGuidRange *artsNewGuidRangeNode(artsType_t type, unsigned int size,
                                     unsigned int route);
 
 // Gets guid at index away from the start guid of the range.
@@ -138,8 +137,10 @@ artsGuid_t artsEdtCreate(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
 
 /// Creates a parallel EDT to run on all the workers on the node. It then waits
 /// for all the EDTs to finish before continuing.
-void artsEdtParallel(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
-                     uint64_t *paramv, uint32_t depc);
+// ! Not implemented
+// void artsEdtParallel(artsEdt_t funcPtr, unsigned int route, uint32_t paramc,
+//                      uint64_t *paramv, uint32_t depc);
+
 // Creates an EDT with the given guid.  The guid will run on the home node of
 // the guid. Paramc are the number of static parameters. Paramv are the static
 // parameters that are copied into the EDT closure. Depc is the number of
@@ -407,7 +408,7 @@ bool artsDbRenameWithGuid(artsGuid_t newGuid, artsGuid_t oldGuid);
 
 artsGuid_t artsDbCopyToNewType(artsGuid_t oldGuid, artsType_t newType);
 
-#ifdef SMART_DB
+#ifdef USE_SMART_DB
 // Increment the latch count associated with the persistent event of the DB
 void artsDbIncrementLatch(artsGuid_t guid);
 
@@ -547,10 +548,10 @@ void artsAtomicCompareAndSwapInArrayDb(artsArrayDb_t *array, unsigned int index,
 
 /*Util*************************************************************************/
 /// Returns the guid of the input edtDep
-inline artsGuid_t artsGetGuidFromEdtDep(artsEdtDep_t dep);
+inline artsGuid_t artsGetGuidFromEdtDep(artsEdtDep_t dep) { return dep.guid; }
 
 /// Returns the pointer to the data in the edtDep
-inline void *artsGetPtrFromEdtDep(artsEdtDep_t dep);
+inline void *artsGetPtrFromEdtDep(artsEdtDep_t dep) { return dep.ptr; }
 
 // Returns the guid of the current EDT running.
 artsGuid_t artsGetCurrentGuid();

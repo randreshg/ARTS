@@ -36,7 +36,11 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
+
+#include "arts/runtime/RT.h"
+
+#include <stdio.h>
+
 #include "arts/runtime/Globals.h"
 
 void PRINTF(const char *format, ...) {

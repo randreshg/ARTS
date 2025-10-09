@@ -36,15 +36,12 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-
 #include "arts/gpu/GpuRouteTable.h"
-#include "arts/gas/Guid.h"
-#include "arts/gas/OutOfOrder.h"
+
 #include "arts/gpu/GpuStream.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/runtime/memory/DbList.h"
-#include "arts/system/Debug.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/utils/Atomics.h"
 
 // Use to keep ordering for LC accesses
@@ -76,9 +73,9 @@ artsRouteTable_t *artsGpuNewRouteTable(unsigned int routeTableSize,
                                        unsigned int shift) {
   unsigned int totalElems = collisionResolves * routeTableSize;
   artsGpuRouteTable_t *gpuRouteTable =
-      (artsGpuRouteTable_t *)artsCalloc(sizeof(artsGpuRouteTable_t));
-  gpuRouteTable->routingTable.data =
-      (artsRouteItem_t *)artsCalloc(totalElems * sizeof(artsRouteItem_t));
+      (artsGpuRouteTable_t *)artsCalloc(1, sizeof(artsGpuRouteTable_t));
+  gpuRouteTable->routingTable.data = (artsRouteItem_t *)artsCallocAlign(
+      totalElems, sizeof(artsRouteItem_t), 16);
   gpuRouteTable->routingTable.size = routeTableSize;
   gpuRouteTable->routingTable.shift = shift;
   gpuRouteTable->routingTable.setFunc = setGpuItem;
@@ -86,7 +83,7 @@ artsRouteTable_t *artsGpuNewRouteTable(unsigned int routeTableSize,
   gpuRouteTable->routingTable.newFunc = artsGpuNewRouteTable;
 
   gpuRouteTable->wrappers =
-      (artsItemWrapper_t *)artsCalloc(totalElems * sizeof(artsItemWrapper_t));
+      (artsItemWrapper_t *)artsCalloc(totalElems, sizeof(artsItemWrapper_t));
   for (unsigned int i = 0; i < totalElems; i++)
     gpuRouteTable->routingTable.data[i].data = &gpuRouteTable->wrappers[i];
 
@@ -115,7 +112,7 @@ unsigned int artsGpuLookupDbFix(artsGuid_t key) {
     location = (artsRouteItem_t *)internalRouteTableLookupDb(
         gpuRouteTable, key, &dummyRank, &internalTouched);
     if (location) {
-      artsItemWrapper_t *wrapper = (artsItemWrapper_t *)location;
+      // artsItemWrapper_t *wrapper = (artsItemWrapper_t *)location;
       ret |= (1 << i);
     }
   }
