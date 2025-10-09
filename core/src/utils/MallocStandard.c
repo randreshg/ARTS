@@ -63,14 +63,12 @@ void *artsMalloc(size_t size) {
   artsCounterTriggerTimerEvent(mallocMemory, true);
 
   if (!size) {
-    ARTS_INFO("Invalid Malloc request");
-    artsDebugGenerateSegFault();
+    return NULL;
   }
 
   header_t *base = (header_t *)malloc(size + sizeof(header_t));
   if (!base) {
-    ARTS_INFO("Out of Memory");
-    artsDebugGenerateSegFault();
+    return NULL;
   }
 
   base->size = size;
@@ -88,14 +86,12 @@ void *artsMallocAlign(size_t size, size_t align) {
   artsCounterTriggerTimerEvent(mallocMemory, true);
 
   if (!size || align < ALIGNMENT || !IS_POWER_OF_TWO(align)) {
-    ARTS_INFO("Invalid MallocAlign request");
-    artsDebugGenerateSegFault();
+    return NULL;
   }
 
   void *base = malloc(size + align - 1 + sizeof(header_t));
   if (!base) {
-    ARTS_INFO("Out of Memory");
-    artsDebugGenerateSegFault();
+    return NULL;
   }
 
   void *aligned = alignPointer((char *)base + sizeof(header_t), align);
@@ -116,8 +112,7 @@ void *artsCalloc(size_t nmemb, size_t size) {
   artsCounterTriggerTimerEvent(callocMemory, true);
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb) {
-    ARTS_INFO("Invalid Calloc request");
-    artsDebugGenerateSegFault();
+    return NULL;
   }
 
   size_t totalSize = nmemb * size;
@@ -136,8 +131,7 @@ void *artsCallocAlign(size_t nmemb, size_t size, size_t align) {
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb || align < ALIGNMENT ||
       !IS_POWER_OF_TWO(align)) {
-    ARTS_INFO("Invalid artsCallocAlign request");
-    artsDebugGenerateSegFault();
+    return NULL;
   }
 
   size_t totalSize = nmemb * size;
