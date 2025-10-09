@@ -37,17 +37,18 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/arts.h"
-#include "arts/runtime/Globals.h"
-#include "arts/runtime/Runtime.h"
 
-#include <fcntl.h>
 #include <inttypes.h>
 #include <stdarg.h>
+
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "arts/runtime/Globals.h"
+#include "arts/runtime/Runtime.h"
 
 extern __thread struct artsEdt *currentEdt;
 extern unsigned int numNumaDomains;

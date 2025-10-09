@@ -38,8 +38,6 @@
 ******************************************************************************/
 #include "arts/arts.h"
 
-#include <string.h>
-
 unsigned int elemsPerNode = 4;
 artsArrayDb_t *array = NULL;
 

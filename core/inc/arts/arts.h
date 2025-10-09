@@ -42,9 +42,10 @@
 extern "C" {
 #endif
 
-#include "arts/runtime/RT.h"
 #include <stddef.h>
 #include <stdint.h>
+
+#include "arts/runtime/RT.h"
 
 // This is the entry point to starting the ARTS runtime.  Call from main.
 int artsRT(int argc, char **argv);

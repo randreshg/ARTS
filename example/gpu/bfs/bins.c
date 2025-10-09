@@ -36,28 +36,30 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
-#include "arts/utils/ArrayList.h"
+#include "bins.h"
 
 #include <assert.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 
+#include "arts/arts.h"
+#include "arts/utils/ArrayList.h"
+
 static artsArrayList **list;
 
-static void initListRecord() {
+void initListRecord() {
   unsigned int size = artsGetTotalGpus() + 1;
   list = (artsArrayList **)artsCalloc(size, sizeof(artsArrayList *));
   for (unsigned int i = 0; i < size; i++)
     list[i] = artsNewArrayList(sizeof(unsigned int), 32);
 }
 
-static void addToList(unsigned int frontierSize, unsigned int index) {
+void addToList(unsigned int frontierSize, unsigned int index) {
   artsPushToArrayList(list[index], &frontierSize);
 }
 
-static void writeBinsToFile(unsigned int index) {
+void writeBinsToFile(unsigned int index) {
   // Do the CPU bins
   if (index + 1 == artsGetTotalGpus())
     writeBinsToFile(index + 1);

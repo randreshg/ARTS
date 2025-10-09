@@ -38,6 +38,20 @@
 ******************************************************************************/
 #define _GNU_SOURCE // Required for getaddrinfo_a()
 #include "arts/network/SocketServer.h"
+
+#include <errno.h>
+#include <inttypes.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <unistd.h>
+
 #include "arts/arts.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Connection.h"
@@ -48,18 +62,6 @@
 #include "arts/runtime/Runtime.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Config.h"
-
-#include <arpa/inet.h>
-#include <errno.h>
-#include <ifaddrs.h>
-#include <inttypes.h>
-#include <net/if.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
 struct artsConfig *artsGlobalMessageTable;
 unsigned int ports;
@@ -433,7 +435,7 @@ unsigned int artsRemoteSendRequest(int rank, unsigned int queue, char *message,
                                    unsigned int length) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();
@@ -448,7 +450,7 @@ unsigned int artsRemoteSendPayloadRequest(int rank, unsigned int queue,
                                           char *payload, int length2) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();

@@ -42,10 +42,11 @@
 // https://github.com/NVIDIA-developer-blog/code-samples/blob/master/series/cuda-cpp/overlap-data-transfers/async.cu
 // Once this *class* works we will put a stream(s) in create a thread local
 // stream.  Then we will push stuff!
+#include "arts/gpu/GpuRuntime.cuh"
+
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gpu/GpuLCSyncFunctions.cuh"
 #include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuRuntime.cuh"
 #include "arts/gpu/GpuStream.h"
 #include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/introspection/Introspection.h"
@@ -163,12 +164,12 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
   edt->passthrough = passThrough;
   edt->lib = lib;
 
-  artsIntrospectionEdtCreateBegin();
+  // artsIntrospectionEdtCreateBegin();
   bool created = artsEdtCreateInternal((struct artsEdt *)edt, ARTS_GPU_EDT,
                                        guid, route, artsThreadInfo.clusterId,
                                        edtSpace, NULL_GUID, funcPtr, paramc,
                                        paramv, depc, true, NULL_GUID, hasDepv);
-  artsIntrospectionEdtCreateFinish(created);
+  // artsIntrospectionEdtCreateFinish(created);
   //    ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
   return *guid;
 }

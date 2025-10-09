@@ -36,13 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <cuda_runtime_api.h>
 
 #include "arts/arts.h"
 #include "arts/utils/ArrayList.h"
-
-#include <cuda_runtime_api.h>
-#include <stdio.h>
-#include <stdlib.h>
 
 #define CHECKCORRECT(x)                                                        \
   {                                                                            \

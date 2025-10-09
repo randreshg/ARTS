@@ -42,10 +42,12 @@
 extern "C" {
 #endif
 
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
+
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "arts/arts.h"
-#include "arts/runtime/Globals.h"
-#include "arts/utils/ArrayList.h"
 
 extern const char *const artsCounterNames[];
 extern uint64_t countersOn;

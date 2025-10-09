@@ -36,15 +36,17 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "mmUtil.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <cublas_v2.h>
+#include <cuda_runtime_api.h>
 
 #include "arts/arts.h"
 #include "arts/gpu/GpuRuntime.cuh"
 
-#include <cublas_v2.h>
-#include <cuda_runtime_api.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include "mmUtil.h"
 
 #define MATSIZE 1024
 #define TILESIZE 32

@@ -42,12 +42,13 @@
 extern "C" {
 #endif
 
-#include "arts/runtime/RT.h"
-
 #include <float.h>
 #include <limits.h>
 #include <math.h>
+
 #include <sys/time.h>
+
+#include "arts/runtime/RT.h"
 
 #define N 2000000
 #define NTIMES 10

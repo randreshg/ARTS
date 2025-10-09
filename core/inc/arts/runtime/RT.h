@@ -43,11 +43,12 @@ extern "C" {
 #endif
 
 // #define _GNU_SOURCE
-#include "arts/utils/LinkList.h"
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "arts/utils/LinkList.h"
 
 /// GUID type
 typedef intptr_t artsGuid_t;

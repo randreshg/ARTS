@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-
 #include "arts/gpu/GpuRouteTable.h"
+
 #include "arts/gpu/GpuStream.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
@@ -112,7 +112,7 @@ unsigned int artsGpuLookupDbFix(artsGuid_t key) {
     location = (artsRouteItem_t *)internalRouteTableLookupDb(
         gpuRouteTable, key, &dummyRank, &internalTouched);
     if (location) {
-      artsItemWrapper_t *wrapper = (artsItemWrapper_t *)location;
+      // artsItemWrapper_t *wrapper = (artsItemWrapper_t *)location;
       ret |= (1 << i);
     }
   }

@@ -36,9 +36,9 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/BlockDistribution.h"
-
 #include <assert.h>
+
+#include "arts/BlockDistribution.h"
 
 int main(int argc, char **argv) {
 

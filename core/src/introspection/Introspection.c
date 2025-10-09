@@ -39,20 +39,17 @@
 
 #include "arts/introspection/Introspection.h"
 
-#if defined(COUNTERS) || defined(METRICS)
+#if defined(USE_COUNTERS) || defined(USE_METRICS)
 
-#include "arts/introspection/JsonWriter.h"
-#include "arts/runtime/Globals.h"
-#include "arts/runtime/network/RemoteFunctions.h"
-#include "arts/system/ArtsPrint.h"
-#include "arts/system/Debug.h"
-#include "arts/utils/Atomics.h"
-
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+
+#include "arts/introspection/JsonWriter.h"
+#include "arts/runtime/Globals.h"
 
 artsIntrospectionConfig globalIntrospectionConfig = {0};
 
@@ -122,7 +119,8 @@ static bool matchPattern(const char *name, const char *pattern) {
         name++;
       }
       return false;
-    } else if (*pattern == *name) {
+    }
+    if (*pattern == *name) {
       pattern++;
       name++;
     } else {
@@ -191,13 +189,13 @@ void artsIntrospectionInit(const char *configFile) {
   globalIntrospectionConfig.introspectionStartPoint = 1;
   globalIntrospectionConfig.introspectionTraceLevel = 0;
 
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   globalIntrospectionConfig.enableCounters = true;
 #else
   globalIntrospectionConfig.enableCounters = false;
 #endif
 
-#ifdef METRICS
+#ifdef USE_METRICS
   globalIntrospectionConfig.enableMetrics = true;
 #else
   globalIntrospectionConfig.enableMetrics = false;
@@ -237,7 +235,7 @@ void artsIntrospectionInit(const char *configFile) {
 
   if (globalIntrospectionConfig.enableMetrics) {
     artsMetricsConfigSetDefaultEnabled(true);
-#ifdef METRICS
+#ifdef USE_METRICS
     artsMetricsInitIntrospector(
         globalIntrospectionConfig.introspectionStartPoint);
 #endif
@@ -248,21 +246,21 @@ void artsIntrospectionInit(const char *configFile) {
 }
 
 void artsIntrospectionStart(unsigned int startPoint) {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   artsCounterStart(startPoint);
 #endif
-#ifdef METRICS
+#ifdef USE_METRICS
   artsMetricsStart(startPoint);
 #endif
 }
 
 void artsIntrospectionStop() {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   if (globalIntrospectionConfig.enableCounters) {
     artsCounterStop();
   }
 #endif
-#ifdef METRICS
+#ifdef USE_METRICS
   if (globalIntrospectionConfig.enableMetrics) {
     artsMetricsStop();
   }
@@ -317,7 +315,7 @@ void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
   }
   artsJsonWriterEndObject(&writer);
 
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   if (writeCounters && artsThreadInfo.counterList) {
     artsJsonWriterBeginObject(&writer, "counters");
     uint64_t length = artsLengthArrayList(artsThreadInfo.counterList);
@@ -341,7 +339,7 @@ void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
   }
 #endif
 
-#ifdef METRICS
+#ifdef USE_METRICS
   if (writeMetrics) {
     artsJsonWriterBeginObject(&writer, "metrics");
     for (unsigned int i = 0; i < artsLastMetricType; i++) {

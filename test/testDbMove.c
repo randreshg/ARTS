@@ -38,8 +38,6 @@
 ******************************************************************************/
 #include "arts/arts.h"
 
-#include <stdlib.h>
-
 artsGuid_t guid[4];
 artsGuid_t shutdownGuid = NULL_GUID;
 

@@ -37,9 +37,10 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/utils/ArrayList.h"
-#include "arts/arts.h"
 
 #include <string.h>
+
+#include "arts/arts.h"
 
 artsArrayListElement *artsNewArrayListElement(uint64_t start,
                                               size_t elementSize,

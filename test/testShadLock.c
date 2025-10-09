@@ -39,7 +39,6 @@
 #include "arts/arts.h"
 #include "arts/runtime/compute/ShadAdapter.h"
 
-#include <stdlib.h>
 #define EDTCOUNT 100
 uint64_t lock = 0;
 unsigned int count = 0;

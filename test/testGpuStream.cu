@@ -36,10 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/gpu/GpuRuntime.cuh"
-
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "arts/gpu/GpuRuntime.cuh"
 
 #define SOMEARGS 10
 

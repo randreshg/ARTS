@@ -38,6 +38,9 @@
 ******************************************************************************/
 
 #include "arts/gas/RouteTable.h"
+
+#include <stdlib.h>
+
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
@@ -47,8 +50,6 @@
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
-
-#include <stdlib.h>
 
 #define initInvalidateSize 128
 #define guidLockSize 1024
@@ -127,9 +128,10 @@ void printState(artsRouteItem_t *item) {
     } else if (isAvail(local)) {
       ARTS_INFO("%lu: available %p %s", item->key, local,
                 getTypeName(artsGuidGetType(item->key)));
-    } else if (isDel(local))
+    } else if (isDel(local)) {
       ARTS_INFO("%lu: deleted %p %s", item->key, local,
                 getTypeName(artsGuidGetType(item->key)));
+    }
   } else {
     ARTS_INFO("NULL ITEM");
   }
@@ -814,11 +816,12 @@ artsRouteItem_t *artsRouteTableIterate(artsRouteTableIterator *iter) {
 void artsPrintItem(artsRouteItem_t *item) {
   if (item) {
     uint64_t local = item->lock;
-    ARTS_INFO("GUID: %lu DATA: %p RANK: %u LOCK: %p COUNTERS: %lu Res: %u Req: %u "
-              "Avail: %u Del: %u",
-              item->key, item->data, item->rank, local, getCount(local),
-              isRes(local) != 0, isReq(local) != 0, isAvail(local) != 0,
-              isDel(local) != 0);
+    ARTS_INFO(
+        "GUID: %lu DATA: %p RANK: %u LOCK: %p COUNTERS: %lu Res: %u Req: %u "
+        "Avail: %u Del: %u",
+        item->key, item->data, item->rank, local, getCount(local),
+        isRes(local) != 0, isReq(local) != 0, isAvail(local) != 0,
+        isDel(local) != 0);
   }
 }
 

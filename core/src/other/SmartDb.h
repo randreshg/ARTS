@@ -43,11 +43,11 @@
 extern "C" {
 #endif
 
-#include "arts/runtime/RT.h"
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+#include "arts/runtime/RT.h"
 
 // Memory placement hints for the memory sensor
 typedef enum {

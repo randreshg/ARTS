@@ -36,14 +36,15 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
-#include "arts/gpu/GpuRuntime.cuh"
-
-#include <cuda_runtime_api.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include <cuda_runtime_api.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
+
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.cuh"
 
 #define GPULISTLEN 32
 

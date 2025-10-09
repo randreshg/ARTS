@@ -38,12 +38,12 @@
 ******************************************************************************/
 #include "streamUtil.h"
 
-#include "arts/arts.h"
-#include "arts/gpu/GpuRuntime.cuh"
+#include <stdlib.h>
 
 #include <cuda_runtime_api.h>
-#include <stdio.h>
-#include <stdlib.h>
+
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.cuh"
 
 void launch2KernelEdt(artsEdt_t funPtr, unsigned int tileSize,
                       unsigned int totalSize, double scalar,

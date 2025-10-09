@@ -38,8 +38,6 @@
 ******************************************************************************/
 #include "arts/arts.h"
 
-#include <stdlib.h>
-
 artsGuid_t dbGuid = NULL_GUID;
 
 void edtFunc(uint32_t paramc, uint64_t *paramv, uint32_t depc,

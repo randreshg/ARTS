@@ -36,7 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include <stdbool.h>
+#include "mmUtil.h"
+
 #include <stdlib.h>
 #include <string.h>
 

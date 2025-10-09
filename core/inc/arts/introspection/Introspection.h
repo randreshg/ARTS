@@ -39,15 +39,16 @@
 #ifndef ARTS_INTROSPECTION_INTROSPECTION_H
 #define ARTS_INTROSPECTION_INTROSPECTION_H
 
+#include <stdbool.h>
+
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Metrics.h"
-#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if defined(COUNTERS) || defined(METRICS)
+#if defined(USE_COUNTERS) || defined(USE_METRICS)
 
 typedef struct {
   char *introspectionFolder;

@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/gas/OutOfOrder.h"
+
 #include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/RT.h"

@@ -38,12 +38,14 @@
 ******************************************************************************/
 
 #include "sys/socket.h"
-#include "arpa/inet.h"
+
+#include <string.h>
+
+#include <arpa/inet.h>
+#include <fcntl.h>
+
 #include "arts/network/Connection.h"
 #include "arts/system/ArtsPrint.h"
-
-#include <fcntl.h>
-#include <string.h>
 
 void artsPrintSocketAddr(struct sockaddr_in *sock) {
   char *addr = inet_ntoa(sock->sin_addr);

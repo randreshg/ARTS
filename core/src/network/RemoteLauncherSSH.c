@@ -37,15 +37,16 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#include "arts/arts.h"
 #include "arts/network/RemoteLauncher.h"
-#include "arts/system/Config.h"
 
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "arts/arts.h"
+#include "arts/system/Config.h"
 
 static int artsShellQuote(const char *input, char *output, size_t outputSize) {
   size_t outIndex = 0;

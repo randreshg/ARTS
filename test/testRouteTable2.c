@@ -38,8 +38,6 @@
 ******************************************************************************/
 #include "arts/arts.h"
 
-#include <stdlib.h>
-
 artsGuid_t shutdownGuid;
 artsGuid_t edtGuid;
 artsGuid_t dbGuid;

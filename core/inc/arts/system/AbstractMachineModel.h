@@ -43,9 +43,10 @@
 extern "C" {
 #endif
 
-#include "arts/system/Config.h"
 #include <assert.h>
 #include <unistd.h>
+
+#include "arts/system/Config.h"
 
 #ifdef USE_HWLOC
 #include <hwloc.h>

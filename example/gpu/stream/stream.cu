@@ -81,14 +81,15 @@
 /*  5. Absolutely no warranty is expressed or implied.                   */
 /*-----------------------------------------------------------------------*/
 
-#include "streamUtil.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <cuda_runtime_api.h>
 
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
 
-#include <cuda_runtime_api.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include "streamUtil.h"
 
 // #define SAFE 1
 

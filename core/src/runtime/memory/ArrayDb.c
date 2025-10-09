@@ -38,6 +38,9 @@
 ******************************************************************************/
 
 #include "arts/runtime/memory/ArrayDb.h"
+
+#include <string.h>
+
 #include "arts/arts.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
@@ -48,8 +51,6 @@
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
-
-#include <string.h>
 
 unsigned int artsGetSizeArrayDb(artsArrayDb_t *array) {
   return array->elementsPerBlock * array->numBlocks;

@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/compute/EdtFunctions.h"
+
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
@@ -459,11 +460,11 @@ artsGuid_t artsAllocateLocalBuffer(void **buffer, unsigned int size,
     incrementActiveEpoch(epochGuid);
   globalShutdownGuidIncActive();
 
-  unsigned int alloc = 0;
+  // unsigned int alloc = 0;
   if (size) {
     if (*buffer == NULL) {
       *buffer = (char *)artsMalloc(sizeof(char) * size);
-      alloc = 1;
+      // alloc = 1;
     }
   }
 
@@ -521,8 +522,9 @@ void *artsSetBuffer(artsGuid_t bufferGuid, void *buffer, unsigned int size) {
       if (epochGuid)
         incrementFinishedEpoch(epochGuid);
       globalShutdownGuidIncFinished();
-    } else
+    } else {
       ARTS_INFO("Out-of-order buffers not supported");
+    }
   } else {
     artsRemoteMemoryMove(rank, bufferGuid, buffer, size,
                          ARTS_REMOTE_BUFFER_SEND_MSG, artsFree);

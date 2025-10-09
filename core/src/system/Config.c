@@ -37,16 +37,18 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/system/Config.h"
-#include "arts/arts.h"
-#include "arts/network/RemoteLauncher.h"
-#include "arts/system/ArtsPrint.h"
-#include "arts/system/Debug.h"
 
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include <unistd.h>
+
+#include "arts/arts.h"
+#include "arts/network/RemoteLauncher.h"
+#include "arts/system/ArtsPrint.h"
+#include "arts/system/Debug.h"
 
 char *extractNodelistLsf(const char *envr, int stride, unsigned int *cnt) {
   char *lsfNodes;
@@ -750,8 +752,9 @@ struct artsConfig *artsConfigLoad() {
     }
     config->masterNode = artsConfigMakeNewVar(foundVariable->value);
   } else if (strncmp(config->launcher, "local", 5) != 0) {
-    if (strncmp(config->launcher, "slurm", 5) != 0)
+    if (strncmp(config->launcher, "slurm", 5) != 0) {
       ARTS_DEBUG_ONCE("No master given: defaulting to first node in node list");
+    }
 
     config->masterNode = NULL;
   }
@@ -875,9 +878,10 @@ struct artsConfig *artsConfigLoad() {
   else
     config->freeDbAfterGpuRun = false;
 
-  if (config->freeDbAfterGpuRun)
+  if (config->freeDbAfterGpuRun) {
     ARTS_INFO("FreeDbAfterGpuRun is turned on... This mode is intended for "
               "testing not performance.");
+  }
 
   if ((foundVariable =
            artsConfigFindVariable(&configVariables, "runGpuGcIdle")) != NULL)
@@ -890,10 +894,11 @@ struct artsConfig *artsConfigLoad() {
     config->runGpuGcPreEdt = strtol(foundVariable->value, &end, 10) > 0;
   else
     config->runGpuGcPreEdt = false;
-  if (config->runGpuGcPreEdt)
+  if (config->runGpuGcPreEdt) {
     ARTS_INFO(
         "RunGpuGcPreEdt is turned on... This mode is intended for testing "
         "not performance.");
+  }
 
   if ((foundVariable = artsConfigFindVariable(&configVariables,
                                               "deleteZerosGpuGc")) != NULL)

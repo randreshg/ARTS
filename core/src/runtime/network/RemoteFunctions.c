@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/network/RemoteFunctions.h"
+
 #include "arts/arts.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
@@ -640,8 +641,9 @@ void artsRemoteHandleDbFullRecieved(struct artsRemoteDbFullSendPacket *packet) {
       void *dest = (void *)((struct artsDb *)dbRes + 1);
       memcpy(dest, source, packetDb->header.size - sizeof(struct artsDb));
       dbRes->dbList = dbList;
-    } else
+    } else {
       ARTS_INFO("Did the DB do a remote resize...");
+    }
   } else {
     dbRes = (struct artsDb *)artsMallocAlignWithType(packetDb->header.size, 16,
                                                      artsDbMemorySize);

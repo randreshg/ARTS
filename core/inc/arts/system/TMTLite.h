@@ -58,9 +58,9 @@
 extern "C" {
 #endif
 
-#include "arts/runtime/RT.h"
-
 #include <stdint.h>
+
+#include "arts/runtime/RT.h"
 
 void artsInitTMTLitePerNode(unsigned int numWorkers);
 void artsInitTMTLitePerWorker(unsigned int id);

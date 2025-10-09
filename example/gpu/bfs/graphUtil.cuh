@@ -1,8 +1,8 @@
-#include "arts/Csr.h"
-
 #include <assert.h>
 #include <cuda_runtime_api.h>
 #include <inttypes.h>
+
+#include "arts/Csr.h"
 
 __device__ vertex_t *getRowPtrGpu(csr_graph_t *_csr);
 __device__ vertex_t *getColPtrGpu(csr_graph_t *_csr);

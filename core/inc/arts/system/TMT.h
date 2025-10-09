@@ -58,11 +58,11 @@
 extern "C" {
 #endif
 
-#include "arts/system/AbstractMachineModel.h"
-#include "arts/utils/Queue.h"
-
 #include <pthread.h>
 #include <semaphore.h>
+
+#include "arts/system/AbstractMachineModel.h"
+#include "arts/utils/Queue.h"
 
 #define MAX_TOTAL_THREADS_PER_MAX 65536
 #define MAX_THREADS_PER_MASTER 64

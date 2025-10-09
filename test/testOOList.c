@@ -36,20 +36,21 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
-#include "arts/gas/OutOfOrderList.h"
-#include "arts/utils/Atomics.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 #define _GNU_SOURCE
 #include <pthread.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <sys/resource.h>
 #if !defined(__APPLE__)
 #include <sys/prctl.h>
 #endif
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "arts/arts.h"
+#include "arts/gas/OutOfOrderList.h"
+#include "arts/utils/Atomics.h"
 
 #define NUMTHREADS 2
 

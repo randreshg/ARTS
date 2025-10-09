@@ -37,17 +37,19 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #define _GNU_SOURCE
+#include "arts/system/Threads.h"
+
+#include <limits.h>
+
+#include <pthread.h>
+#include <unistd.h>
+
 #include "arts/arts.h"
 #include "arts/network/Remote.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Config.h"
-#include "arts/system/Threads.h"
-
-#include "limits.h"
-#include <pthread.h>
-#include <unistd.h>
 
 unsigned int artsGlobalRankId;
 unsigned int artsGlobalRankCount;
@@ -133,8 +135,9 @@ void artsPthreadAffinity(unsigned int cpuCoreId, bool verbose) {
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(cpuCoreId, &cpuset);
-  if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) && verbose)
+  if (pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset) && verbose) {
     ARTS_INFO("Failed to set affinity %u", cpuCoreId);
+  }
 #endif
 }
 

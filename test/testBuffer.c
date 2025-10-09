@@ -38,8 +38,6 @@
 ******************************************************************************/
 #include "arts/arts.h"
 
-#include <stdlib.h>
-
 artsGuid_t dbDestGuid = NULL_GUID;
 artsGuid_t shutdownGuid = NULL_GUID;
 unsigned int numElements = 0;

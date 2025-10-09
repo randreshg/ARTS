@@ -36,11 +36,12 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/arts.h"
-
 #include <stdio.h>
 #include <string.h>
+
 #include <sys/types.h>
+
+#include "arts/arts.h"
 
 #define MATSIZE 3
 #define TILE 1

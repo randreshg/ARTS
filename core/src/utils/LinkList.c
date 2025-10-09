@@ -37,9 +37,9 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/utils/LinkList.h"
+
 #include "arts/arts.h"
 #include "arts/utils/Atomics.h"
-
 
 void artsLinkListNew(struct artsLinkList *list) {
   list->headPtr = list->tailPtr = NULL;

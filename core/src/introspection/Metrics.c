@@ -38,12 +38,17 @@
 ******************************************************************************/
 
 #include "arts/introspection/Metrics.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#include "arts/arts.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/network/RemoteFunctions.h"
+#include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
-#include <strings.h>
-#include <sys/stat.h>
 
 #define NANOSECS 1000000000
 #define localTimeStamp artsGetTimeStamp
@@ -261,14 +266,14 @@ void artsMetricsInitIntrospector(unsigned int startPoint) {
   if (!artsGlobalRankId)
     printMetrics();
   ARTS_DEBUG("inspector %u\n", sizeof(artsInspector));
-  inspector = artsCalloc(sizeof(artsInspector));
+  inspector = artsCalloc(1, sizeof(artsInspector));
   inspector->startPoint = startPoint;
   ARTS_DEBUG("inspector->coreMetric %u\n", sizeof(artsPerformanceUnit) *
                                                artsLastMetricType *
                                                artsNodeInfo.totalThreadCount);
   inspector->coreMetric =
-      artsCalloc(sizeof(artsPerformanceUnit) * artsLastMetricType *
-                 artsNodeInfo.totalThreadCount);
+      artsCalloc(artsLastMetricType * artsNodeInfo.totalThreadCount,
+                 sizeof(artsPerformanceUnit));
   for (unsigned int i = 0; i < artsNodeInfo.totalThreadCount; i++) {
     for (unsigned int j = 0; j < artsLastMetricType; j++) {
       inspector->coreMetric[i * artsLastMetricType + j].maxTotal =
@@ -279,23 +284,23 @@ void artsMetricsInitIntrospector(unsigned int startPoint) {
   }
 
   inspector->nodeMetric =
-      artsCalloc(sizeof(artsPerformanceUnit) * artsLastMetricType);
+      artsCalloc(artsLastMetricType, sizeof(artsPerformanceUnit));
   for (unsigned int j = 0; j < artsLastMetricType; j++) {
     inspector->nodeMetric[j].maxTotal = maxTotal[j][1];
     inspector->nodeMetric[j].timeMethod = globalTimeStamp;
   }
 
   inspector->systemMetric =
-      artsCalloc(sizeof(artsPerformanceUnit) * artsLastMetricType);
+      artsCalloc(artsLastMetricType, sizeof(artsPerformanceUnit));
   for (unsigned int j = 0; j < artsLastMetricType; j++) {
     inspector->systemMetric[j].maxTotal = maxTotal[j][2];
     inspector->systemMetric[j].timeMethod = globalTimeStamp;
   }
 
   ARTS_DEBUG("stats %u\n", sizeof(artsInspectorStats));
-  stats = artsCalloc(sizeof(artsInspectorStats));
+  stats = artsCalloc(1, sizeof(artsInspectorStats));
   ARTS_DEBUG("packetInspector %u\n", sizeof(artsPacketInspector));
-  packetInspector = artsCalloc(sizeof(artsPacketInspector));
+  packetInspector = artsCalloc(1, sizeof(artsPacketInspector));
   packetInspector->minPacket = (uint64_t)-1;
   packetInspector->maxPacket = 0;
   packetInspector->intervalMin = (uint64_t)-1;
@@ -464,11 +469,10 @@ uint64_t artsMetricsGetRateU64Diff(artsMetricType type, artsMetricLevel level,
       uint64_t diff = localCurrentCountStamp - localWindowCountStamp;
       if (diff && localWindowTimeStamp) {
         return (localCurrentTimeStamp - localWindowTimeStamp) / diff;
-      } else {
-        diff = localWindowCountStamp - lastWindowCountStamp;
-        if (diff && localWindowCountStamp && lastWindowTimeStamp) {
-          return (localWindowCountStamp - lastWindowTimeStamp) / diff;
-        }
+      }
+      diff = localWindowCountStamp - lastWindowCountStamp;
+      if (diff && localWindowCountStamp && lastWindowTimeStamp) {
+        return (localWindowCountStamp - lastWindowTimeStamp) / diff;
       }
     }
   }
@@ -804,7 +808,7 @@ void artsMetricsReadConfigFile(char *filename) {
         }
       }
 
-      if (metricIndex >= 0 && metricIndex < artsLastMetricType) {
+      if (metricIndex < artsLastMetricType) {
         for (unsigned int i = 0; i < artsMETRICLEVELS; i++) {
           while (line[offset] == ' ')
             offset++;
@@ -839,7 +843,7 @@ void artsMetricsReadConfigFile(char *filename) {
         }
       }
 
-      if (metricIndex < 0 || metricIndex >= artsLastMetricType ||
+      if (metricIndex >= artsLastMetricType ||
           paramRead < artsMETRICLEVELS * 2) {
         ARTS_INFO("FAILED to init metric %s\n", temp);
       }
@@ -899,16 +903,14 @@ static inline void updatePacketExtreme(uint64_t val, volatile uint64_t *old,
       res = artsAtomicCswapU64(old, local, val);
       if (res == local)
         break;
-      else
-        local = res;
+      local = res;
     }
   } else {
     while (val > local) {
       res = artsAtomicCswapU64(old, local, val);
       if (res == local)
         break;
-      else
-        local = res;
+      local = res;
     }
   }
 }

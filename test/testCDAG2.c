@@ -36,9 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdlib.h>
+
 #include "arts/arts.h"
 
-#include <stdlib.h>
 unsigned int numWrites = 0;
 artsGuid_t dbGuid;
 artsGuid_t *writeGuids;

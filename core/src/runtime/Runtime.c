@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/Runtime.h"
+
 #include "arts/gas/Guid.h"
 #include "arts/gas/RouteTable.h"
 #include "arts/introspection/Introspection.h"
@@ -301,7 +302,7 @@ void artsRuntimePrivateInit(struct threadMask *unit,
   artsThreadInfo.localCounting = 1;
   artsThreadInfo.shadLock = 0;
   artsGuidKeyGeneratorInit();
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   artsCounterInitList(unit->id, artsGlobalRankId);
 #endif
 

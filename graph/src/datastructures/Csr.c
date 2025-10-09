@@ -36,17 +36,17 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/Csr.h"
-#include "arts/EdgeVector.h"
-#include "arts/arts.h"
-#include "arts/gas/RouteTable.h"
-#include "arts/system/ArtsPrint.h"
-
 #include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "arts/Csr.h"
+#include "arts/EdgeVector.h"
+#include "arts/arts.h"
+#include "arts/gas/RouteTable.h"
+#include "arts/system/ArtsPrint.h"
 
 vertex_t *getRowPtr(csr_graph_t *_csr) { return (vertex_t *)(_csr + 1); }
 
@@ -126,8 +126,9 @@ csr_graph_t *initCSR(partition_t partIndex, graph_sz_t _localv,
     vertex_t last_src_ind = getLocalIndexDistr(last_src, _dist);
     ++last_src_ind;
     vertex_t val = row_indices[last_src_ind];
-    if (last_src_ind > _localv)
+    if (last_src_ind > _localv) {
       ARTS_INFO("lasr_src index: %lu _localv: %lu", last_src_ind, _localv);
+    }
     assert(last_src_ind <= _localv);
     while (last_src_ind < _localv)
       row_indices[++last_src_ind] = val;
@@ -452,9 +453,10 @@ int loadGraphNoWeightCsr(const char *_file, arts_block_dist_t *_dist,
               _dist->graphGuid[partIndex[k]]);
       freeEdgeVector(&vedges[k]);
     }
-  } else
+  } else {
     ARTS_INFO("SRC: %lu != numVerts %lu.  Check the line length", src,
               numVerts);
+  }
 
   return 0;
 }

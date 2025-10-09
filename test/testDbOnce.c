@@ -38,8 +38,6 @@
 ******************************************************************************/
 #include "arts/arts.h"
 
-#include <stdlib.h>
-
 artsGuid_t dbGuid = NULL_GUID;
 artsGuid_t aGuid = NULL_GUID;
 artsGuid_t bGuid = NULL_GUID;

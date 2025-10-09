@@ -36,10 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdlib.h>
+
 #include "arts/arts.h"
 #include "arts/runtime/compute/ShadAdapter.h"
-
-#include <stdlib.h>
 
 uint64_t numDummy = 0;
 

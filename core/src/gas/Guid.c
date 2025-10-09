@@ -37,12 +37,12 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/gas/Guid.h"
+
+#include "arts/arts.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-#include "arts/system/Debug.h"
-
-/// Debug
 #include "arts/system/ArtsPrint.h"
+#include "arts/system/Debug.h"
 
 uint64_t numTables = 0;
 uint64_t keysPerThread = 0;

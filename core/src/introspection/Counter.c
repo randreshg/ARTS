@@ -36,16 +36,16 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-
 #include "arts/introspection/Counter.h"
+
+#include <strings.h>
+#include <sys/stat.h>
+
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
-
-#include <string.h>
-#include <sys/stat.h>
 
 const char *const artsCounterNames[] = {"edtCounter",
                                         "sleepCounter",

@@ -40,8 +40,6 @@
 #include "arts/runtime/compute/ShadAdapter.h"
 #include "arts/system/TMTLite.h"
 
-#include <stdlib.h>
-
 #define EDTCOUNT 2
 volatile uint64_t ulock = 0x8000000000000000ULL;
 volatile unsigned int lock = 0;

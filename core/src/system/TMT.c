@@ -55,20 +55,22 @@
 #define PT_CONTEXTS // maintain contexts via PThreads
 
 #include "arts/system/TMT.h"
+
+#include <inttypes.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <pthread.h>
+#include <unistd.h>
+
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Threads.h"
 #include "arts/utils/Atomics.h"
-
-#include <inttypes.h>
-#include <pthread.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
 #define ONLY_ONE_THREAD
 // while(!artsTestStateOneLeft(localPool->alias_running) &&

@@ -36,10 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdlib.h>
+
 #include "arts/arts.h"
 #include "arts/utils/Atomics.h"
-
-#include <stdlib.h>
 
 unsigned int counter = 0;
 unsigned int numDummy = 0;

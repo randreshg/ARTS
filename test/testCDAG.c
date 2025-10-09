@@ -36,9 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdlib.h>
+
 #include "arts/arts.h"
 
-#include <stdlib.h>
 unsigned int numReads = 0;
 unsigned int numWrites = 0;
 unsigned int numDynamicReads = 0;

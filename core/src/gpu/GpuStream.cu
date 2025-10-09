@@ -42,11 +42,13 @@
 // https://github.com/NVIDIA-developer-blog/code-samples/blob/master/series/cuda-cpp/overlap-data-transfers/async.cu
 // Once this *class* works we will put a stream(s) in create a thread local
 // stream.  Then we will push stuff!
+#include "arts/gpu/GpuStream.h"
+
+#include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gpu/GpuLCSyncFunctions.cuh"
 #include "arts/gpu/GpuRouteTable.h"
 #include "arts/gpu/GpuRuntime.cuh"
-#include "arts/gpu/GpuStream.h"
 #include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
@@ -248,7 +250,7 @@ void artsCleanupGpus() {
 }
 
 void CUDART_CB artsWrapUp(cudaStream_t stream, cudaError_t status, void *data) {
-  artsToggleThreadInspection();
+  // artsToggleThreadInspection();
 
   artsGpuCleanUp_t *gc = (artsGpuCleanUp_t *)data;
 
@@ -292,7 +294,7 @@ void CUDART_CB artsWrapUp(cudaStream_t stream, cudaError_t status, void *data) {
   newEdts = gc->newEdts;
   artsGpuHostWrapUp(gc->edt, edt->endGuid, edt->slot, edt->dataGuid);
   ARTS_DEBUG("FINISHED GPU CALLS %s\n", cudaGetErrorString(status));
-  artsToggleThreadInspection();
+  // artsToggleThreadInspection();
 }
 
 void CUDART_CB artsWrapUpHostFunc(void *data) {
@@ -780,7 +782,7 @@ int hashLargest(void *edtPacket) {
   // Size to be allocated on the GPU
   uint64_t size = sizeof(uint64_t) * paramc + sizeof(artsEdtDep_t) * depc +
                   getDbSizeNeeded(depc, depv);
-  uint64_t mask = 0;
+  // uint64_t mask = 0;
   uint64_t largest = 0;
   for (unsigned int i = 0; i < depc; ++i) {
     uint64_t key = (depv[i].guid) ? artsGetGuidKey(depv[i].guid) : 0;

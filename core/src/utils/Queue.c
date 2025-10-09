@@ -38,6 +38,7 @@
 ******************************************************************************/
 
 #include "arts/utils/Queue.h"
+
 #include "arts/arts.h"
 
 #define CACHE_ALIGN __attribute__((aligned(64)))

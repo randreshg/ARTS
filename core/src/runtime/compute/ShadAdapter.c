@@ -38,10 +38,11 @@
 ******************************************************************************/
 
 #include "arts/runtime/compute/ShadAdapter.h"
+
 #include "arts/arts.h"
-#include "arts/introspection/Introspection.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/RouteTable.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/runtime/compute/EdtFunctions.h"
@@ -137,9 +138,7 @@ void artsCheckLockShad() {
   }
 }
 
-void artsStartIntroShad(unsigned int start) {
-  artsIntrospectionStart(start);
-}
+void artsStartIntroShad(unsigned int start) { artsIntrospectionStart(start); }
 
 void artsStopIntroShad() { artsIntrospectionStop(); }
 
@@ -149,8 +148,9 @@ artsGuid_t artsAllocateLocalBufferShad(void **buffer, uint32_t *sizeToWrite,
                                        artsGuid_t epochGuid) {
   if (epochGuid) {
     incrementActiveEpoch(epochGuid);
-  } else
+  } else {
     ARTS_INFO("No EPOCH!!!");
+  }
   globalShutdownGuidIncActive();
 
   artsBuffer_t *stub = (artsBuffer_t *)artsMalloc(sizeof(artsBuffer_t));

@@ -42,6 +42,8 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
+
 void printMatrix(unsigned int rowSize, double *mat);
 void initMatrix(unsigned int rowSize, double *mat, bool identity, bool zero);
 void copyBlock(unsigned int x, unsigned int y, unsigned int tileRowSize,

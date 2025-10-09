@@ -39,9 +39,6 @@
 #ifndef ARTSMETRICS_H
 #define ARTSMETRICS_H
 
-#include "arts/arts.h"
-#include "arts/runtime/RT.h"
-#include "arts/system/Config.h"
 #include "arts/utils/ArrayList.h"
 
 #ifdef __cplusplus
@@ -246,7 +243,7 @@ typedef struct {
   char *prefix;
 } artsInspectorShots;
 
-#ifdef METRICS
+#ifdef USE_METRICS
 
 void artsMetricsInitIntrospector(unsigned int startPoint);
 void artsMetricsStart(unsigned int startPoint);

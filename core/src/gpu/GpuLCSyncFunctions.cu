@@ -36,16 +36,17 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/gpu/GpuLCSyncFunctions.cuh"
+
+#include <cuda_runtime_api.h>
+
 #include "arts/arts.h"
+#include "arts/gpu/GpuRouteTable.h"
+#include "arts/gpu/GpuStreamBuffer.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
-
-#include "arts/gpu/GpuLCSyncFunctions.cuh"
-#include "arts/gpu/GpuRouteTable.h"
-#include "arts/gpu/GpuStreamBuffer.h"
-#include <cuda_runtime_api.h>
 
 // To use this lock the unlock must be an even number
 unsigned int versionLock(artsLCMeta_t *meta) {
@@ -510,7 +511,7 @@ unsigned int *gpuDepthFirst(unsigned int mask, unsigned int *maxSize) {
 
 bool gpuRingReduction(unsigned int mask, unsigned int guid, unsigned int dbSize,
                       artsLCSyncFunctionGpu_t fnPtr) {
-  unsigned int remMask = mask;
+  // unsigned int remMask = mask;
   unsigned int cycleSize = 0;
   unsigned int *cycle = gpuDepthFirst(mask, &cycleSize);
   if (cycle && cycleSize > 1) {
@@ -556,7 +557,7 @@ unsigned int gpuLCReduce(artsGuid_t guid, struct artsDb *db,
   *copyOnly = false;
   unsigned int remMask = 0;
   unsigned int size = db->header.size;
-  struct artsDb *shadowCopy = (struct artsDb *)(((char *)db) + size);
+  // struct artsDb *shadowCopy = (struct artsDb *)(((char *)db) + size);
 
   artsWriterLock(&db->reader, &db->writer);
   unsigned int mask = artsGpuLookupDbFix(guid);

@@ -36,10 +36,9 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdlib.h>
 
 #include "arts/arts.h"
-
-#include <stdlib.h>
 
 artsGuid_t dbSourceGuid = NULL_GUID;
 artsGuid_t dbDestGuid = NULL_GUID;

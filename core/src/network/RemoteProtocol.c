@@ -37,6 +37,9 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/network/RemoteProtocol.h"
+
+#include <string.h>
+
 #include "arts/arts.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
@@ -46,10 +49,8 @@
 #include "arts/utils/Atomics.h"
 #include "arts/utils/LinkList.h"
 
-#include <string.h>
-
 struct outList {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   uint64_t timeStamp;
 #endif
   unsigned int offset;
@@ -147,7 +148,7 @@ void outInit(unsigned int size) {
 }
 
 static inline void outInsertNode(struct outList *node, unsigned int length) {
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   // This is for network queue sitting time...
 //    node->timeStamp = artsExtGetTimeStamp();
 #endif

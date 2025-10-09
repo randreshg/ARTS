@@ -43,6 +43,8 @@
 extern "C" {
 #endif
 
+#include "arts/runtime/Globals.h"
+
 #define PRINTF(...)
 //  #define PRINTF(...) PRINTF(__VA_ARGS__)
 #define TURNON(...)

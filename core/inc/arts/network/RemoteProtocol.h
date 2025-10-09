@@ -99,7 +99,7 @@ struct __attribute__((__packed__)) artsRemotePacket {
   unsigned int seqRank;
   uint64_t seqNum;
 #endif
-#ifdef COUNTERS
+#ifdef USE_COUNTERS
   uint64_t timeStamp;
   uint64_t procTimeStamp;
 #endif

@@ -36,10 +36,10 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include <stdio.h>
+
 #include "arts/arts.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 artsGuid_t shutdownGuid;
 artsGuid_t *guids;
 

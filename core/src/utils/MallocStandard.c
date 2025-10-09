@@ -36,14 +36,16 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/arts.h"
+
+#include <stdlib.h>
+#include <string.h>
+
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Queue.h"
-
-#include <stdlib.h>
-#include <string.h>
 
 #define IS_POWER_OF_TWO(x) (!((x) & ((x) - 1)))
 
@@ -183,6 +185,6 @@ void artsFree(void *ptr) {
   free(hdr->base);
 
   if (artsThreadInfo.mallocTrace)
-    artsMetricsTriggerEvent(artsFreeBW, artsThread, size);
+    artsMetricsTriggerEvent(artsFreeBW, artsThread, hdr->size);
   artsCounterTriggerTimerEvent(freeMemory, false);
 }

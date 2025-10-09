@@ -37,6 +37,9 @@
  ** License for the specific language governing permissions and limitations   **
  ******************************************************************************/
 #include "arts/network/Server.h"
+
+#include <unistd.h>
+
 #include "arts/arts.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/network/Remote.h"
@@ -46,9 +49,6 @@
 #include "arts/runtime/compute/EdtFunctions.h"
 #include "arts/runtime/network/RemoteFunctions.h"
 #include "arts/system/ArtsPrint.h"
-
-#include <unistd.h>
-// #include "artsRemote.h"
 
 #define EDT_MUG_SIZE 32
 
@@ -152,8 +152,9 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
   case ARTS_REMOTE_DB_REQUEST_MSG: {
     struct artsRemoteDbRequestPacket *pack =
         (struct artsRemoteDbRequestPacket *)(packet);
-    if (packet->size != sizeof(*pack))
+    if (packet->size != sizeof(*pack)) {
       ARTS_INFO("Error dbpacket insanity");
+    }
     artsRemoteDbSend(pack);
     break;
   }

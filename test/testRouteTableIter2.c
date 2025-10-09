@@ -37,11 +37,11 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
+#include <stdio.h>
+
 #include "arts/arts.h"
 #include "arts/gas/RouteTable.h"
 #include "arts/runtime/Globals.h"
-
-#include <stdio.h>
 
 #define MYSIZE 10
 

@@ -42,12 +42,12 @@
 extern "C" {
 #endif
 
-#include "arts/runtime/RT.h"
-
 #include <assert.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+#include "arts/runtime/RT.h"
 
 void createBuffersOnCpu(unsigned int size);
 void createBuffersOnGpu(unsigned int gpu, unsigned int size);

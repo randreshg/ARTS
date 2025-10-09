@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/runtime/sync/TerminationDetection.h"
+
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
@@ -273,8 +274,9 @@ void artsStartEpoch(artsGuid_t epochGuid) {
     artsSetCurrentEpochGuid(epoch->guid);
     artsAtomicAdd(&epoch->activeCount, 1);
     artsAtomicAddU64(&epoch->queued, 1);
-  } else
+  } else {
     ARTS_INFO("Out-of-Order epoch start not supported %lu", epochGuid);
+  }
 }
 
 bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
@@ -370,8 +372,9 @@ void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
       ARTS_DEBUG("%lu EPOCH QUEUEU: %u", epochGuid, epoch->queued);
     }
     ARTS_DEBUG("###### %lu -> %lu", epoch->guid, epoch->outstanding);
-  } else
+  } else {
     ARTS_INFO("%lu ERROR: NO EPOCH", epochGuid);
+  }
 }
 
 artsEpochPool_t *createEpochPool(artsGuid_t *epochPoolGuid,

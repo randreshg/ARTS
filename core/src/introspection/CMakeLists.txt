@@ -40,15 +40,15 @@
 # Conditionally add introspection source files
 set(introspection_src "IntrospectionStub.c")
 
-if(COUNTERS OR METRICS)
+if(USE_COUNTERS OR USE_METRICS)
     list(APPEND introspection_src "Introspection.c" "JsonWriter.c")
 endif()
 
-if(COUNTERS)
+if(USE_COUNTERS)
     list(APPEND introspection_src "Counter.c")
 endif()
 
-if(METRICS)
+if(USE_METRICS)
     list(APPEND introspection_src "Metrics.c")
 endif()
 

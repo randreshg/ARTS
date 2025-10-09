@@ -37,27 +37,29 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-#include "bfsDefs.h"
-#include "bins.h"
-#include "buffer.h"
-#include "graphUtil.cuh"
-
-#include "arts/arts.h"
-#include "arts/gpu/GpuRuntime.cuh"
-#include "arts/utils/Atomics.h"
-
-#include <algorithm>
 #include <assert.h>
-#include <cuda_runtime_api.h>
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <algorithm>
+
+#include <cuda_runtime_api.h>
 #include <thrust/binary_search.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <thrust/unique.h>
+
+#include "arts/arts.h"
+#include "arts/gpu/GpuRuntime.cuh"
+#include "arts/utils/Atomics.h"
+
+#include "bfsDefs.h"
+#include "bins.h"
+#include "buffer.h"
+#include "graphUtil.cuh"
 
 uint64_t start = 0; // Timer
 
@@ -255,7 +257,7 @@ void doPartionSync(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 void launchSort(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                 artsEdtDep_t depv[]) {
   uint64_t localLevel = paramv[0];
-  uint64_t edtsRan = depv[0].guid;
+  // uint64_t edtsRan = depv[0].guid;
   PRINTF("%s Level: %lu Edts Ran: %lu\n", __func__, localLevel, edtsRan);
 
   // This is tricky.  We need to create the epoch for the next round since

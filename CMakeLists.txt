@@ -76,7 +76,6 @@ include(GNUInstallDirs)
 include(CheckLanguage)
 
 # Build options
-option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" ON)
 option(ARTS_BUILD_SHARED "Build shared library" ON)
 option(ARTS_BUILD_STATIC "Build static library" ON)
 option(ARTS_BUILD_EXAMPLES "Build example programs" ON)
@@ -84,15 +83,14 @@ option(ARTS_BUILD_TESTS "Build test programs" ON)
 option(ARTS_BUILD_BENCHMARK "Build benchmark programs" ON)
 
 # Feature options (can be set via command line)
-option(USE_JUSTCOUNT "Enable just counting for introspection" OFF)
-option(USE_COUNT "Enable counting for introspection" OFF)
-option(USE_MODELCOUNT "Enable model counting for introspection" OFF)
-option(USE_INSPECTOR "Enable inspector for introspection" OFF)
+option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" OFF)
 option(USE_RDMA "Use RDMA RSockets networking (default: ON, use TCP when OFF)" ON)
 option(USE_HWLOC "Use hwloc for hardware topology (default: ON, disable when OFF)" ON)
 option(USE_GPU "Enable GPU support (default: ON, disable when OFF)" ON)
 option(USE_SIMPLE_ARCH "Use simple architecture implementations" OFF)
 option(USE_SMART_DB "Enable smart database features (currently not supported)" OFF)
+option(USE_COUNTERS "Enable counters for performance monitoring" ON)
+option(USE_METRICS "Enable metrics/inspector for performance monitoring" ON)
 option(USE_PRIORITY_DEQUE "Use priority Chase-Lev deque implementation" OFF)
 option(USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON)
 
@@ -272,22 +270,6 @@ else()
     endif()
 endif()
 
-# Feature flags for introspection
-if(USE_JUSTCOUNT)
-    add_compile_definitions(USE_JUSTCOUNT)
-    message(STATUS "Introspection: Just counting enabled - USE_JUSTCOUNT defined")
-endif()
-
-if(USE_COUNT)
-    add_compile_definitions(USE_COUNT)
-    message(STATUS "Introspection: Counting enabled - USE_COUNT defined")
-endif()
-
-if(USE_MODELCOUNT)
-    add_compile_definitions(USE_MODELCOUNT)
-    message(STATUS "Introspection: Model counting enabled - USE_MODELCOUNT defined")
-endif()
-
 # Architecture flags
 if(USE_SIMPLE_ARCH)
     add_compile_definitions(USE_SIMPLE_ARCH)
@@ -300,14 +282,14 @@ if(USE_SMART_DB)
     message(STATUS "Smart database: Using smart database - USE_SMART_DB defined")
 endif()
 
-if(COUNTERS)
-    message("Counters enabled")
-    add_definitions(-DCOUNTERS)
+if(USE_COUNTERS)
+    add_compile_definitions(-DUSE_COUNTERS)
+    message(STATUS "Counters: Using counters - USE_COUNTERS defined")
 endif()
 
-if(METRICS)
-    message("Metrics/Inspector enabled")
-    add_definitions(-DMETRICS)
+if(USE_METRICS)
+    add_compile_definitions(-DUSE_METRICS)
+    message(STATUS "Metrics: Using metrics - USE_METRICS defined")
 endif()
 
 # Create the main ARTS library target

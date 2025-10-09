@@ -43,12 +43,12 @@
 extern "C" {
 #endif
 
+#include <cuda_runtime_api.h>
+
 #include "arts/gas/RouteTable.h"
 #include "arts/runtime/RT.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/ArrayList.h"
-
-#include <cuda_runtime_api.h>
 
 #define CHECKCORRECT(x)                                                        \
   {                                                                            \

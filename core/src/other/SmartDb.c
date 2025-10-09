@@ -39,16 +39,16 @@
 
 #include "SmartDb.h"
 
+#include <assert.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "arts/arts.h"
 #include "arts/gas/RouteTable.h"
 #include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
-
-#include <assert.h>
-#include <math.h>
-#include <stdlib.h>
-#include <string.h>
 
 // Constants for memory management
 #define HOT_ACCESS_THRESHOLD 1000 // Number of accesses to consider data "hot"

@@ -38,6 +38,10 @@
 ******************************************************************************/
 
 #include "arts/runtime/memory/DbFunctions.h"
+
+#include <assert.h>
+#include <string.h>
+
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
@@ -51,9 +55,6 @@
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/utils/Atomics.h"
-
-#include <assert.h>
-#include <string.h>
 
 #ifdef USE_GPU
 #include "arts/gpu/GpuRuntime.cuh"
@@ -285,9 +286,10 @@ bool artsDbRenameWithGuid(artsGuid_t newGuid, artsGuid_t oldGuid) {
       }
       ret = true;
     }
-  } else
+  } else {
     artsRemoteDbRename(newGuid, oldGuid);
-  return true;
+  }
+  return ret;
 }
 
 artsGuid_t artsDbCopyToNewType(artsGuid_t oldGuid, artsType_t newType) {

@@ -36,6 +36,16 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/system/TMTLite.h"
+
+#include <inttypes.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <pthread.h>
+#include <unistd.h>
 
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
@@ -44,14 +54,6 @@
 #include "arts/system/Threads.h"
 #include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
-
-#include <inttypes.h>
-#include <pthread.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
 __thread unsigned int tmtLiteAliasId = 0;
 

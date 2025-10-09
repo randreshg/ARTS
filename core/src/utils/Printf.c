@@ -37,6 +37,8 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
+#include "arts/runtime/RT.h"
+
 #include <stdio.h>
 
 #include "arts/runtime/Globals.h"

@@ -36,11 +36,6 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/BlockDistribution.h"
-#include "arts/Csr.h"
-#include "arts/arts.h"
-#include "arts/runtime/compute/ShadAdapter.h"
-
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -49,6 +44,11 @@
 #include <cstring>
 #include <iostream>
 #include <vector>
+
+#include "arts/BlockDistribution.h"
+#include "arts/Csr.h"
+#include "arts/arts.h"
+#include "arts/runtime/compute/ShadAdapter.h"
 
 arts_block_dist_t *distribution;
 csr_graph_t *graph;

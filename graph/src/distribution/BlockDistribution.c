@@ -36,14 +36,14 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#include "arts/BlockDistribution.h"
-#include "arts/arts.h"
-
-#include "arts/system/ArtsPrint.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+
+#include "arts/BlockDistribution.h"
+#include "arts/arts.h"
+#include "arts/system/ArtsPrint.h"
 
 void internalInitBlockDistribution(arts_block_dist_t *_dist, graph_sz_t _n,
                                    graph_sz_t _m, unsigned int numBlocks) {
