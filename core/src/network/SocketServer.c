@@ -357,7 +357,7 @@ static inline bool artsRemoteConnect(int rank, unsigned int port) {
         (struct sockaddr *)(remoteServerSendList + rank * ports + port),
         sizeof(struct sockaddr_in));
     if (res < 0) {
-      void *ptrCrap;
+      void *ptrCrap = NULL;
 
       remoteConnectionAlive[rank] = false;
 
