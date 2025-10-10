@@ -91,6 +91,8 @@ option(USE_SIMPLE_ARCH "Use simple architecture implementations" OFF)
 option(USE_SMART_DB "Enable smart database features (currently not supported)" OFF)
 option(USE_COUNTERS "Enable counters for performance monitoring" ON)
 option(USE_METRICS "Enable metrics/inspector for performance monitoring" ON)
+option(ARTS_INFO_ENABLED "Enable info-level logging" OFF)
+option(ARTS_DEBUG_ENABLED "Enable debug-level logging" OFF)
 option(USE_PRIORITY_DEQUE "Use priority Chase-Lev deque implementation" OFF)
 option(USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON)
 
@@ -290,6 +292,16 @@ endif()
 if(USE_METRICS)
     add_compile_definitions(-DUSE_METRICS)
     message(STATUS "Metrics: Using metrics - USE_METRICS defined")
+endif()
+
+if(ARTS_INFO_ENABLED)
+    add_compile_definitions(-DARTS_INFO_ENABLED)
+    message(STATUS "Info logging: Enabled - ARTS_INFO_ENABLED defined")
+endif()
+
+if(ARTS_DEBUG_ENABLED)
+    add_compile_definitions(-DARTS_DEBUG_ENABLED)
+    message(STATUS "Debug logging: Enabled - ARTS_DEBUG_ENABLED defined")
 endif()
 
 # Create the main ARTS library target

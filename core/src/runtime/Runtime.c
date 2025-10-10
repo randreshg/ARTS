@@ -80,6 +80,11 @@ extern void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
 extern void artsMain(int argc, char **argv) __attribute__((weak));
 #endif
 
+// Weak implementations of optional user functions
+__attribute__((weak)) void initPerNode(unsigned int nodeId, int argc, char **argv) {}
+__attribute__((weak)) void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char **argv) {}
+__attribute__((weak)) void artsMain(int argc, char **argv) {}
+
 struct artsRuntimeShared artsNodeInfo;
 __thread struct artsRuntimePrivate artsThreadInfo;
 

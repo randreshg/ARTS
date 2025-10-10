@@ -98,6 +98,11 @@ if(ARTS_BUILD_STATIC)
         ${HWLOC_LIBRARIES}
     )
 
+    # Add macOS framework dependencies for hwloc
+    if(APPLE AND HWLOC_FOUND)
+        target_link_libraries(arts_static PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
+    endif()
+
     # Set library properties
     set_target_properties(arts_static PROPERTIES
         OUTPUT_NAME arts
@@ -141,6 +146,11 @@ if(ARTS_BUILD_SHARED)
         ${RDMACM_LIBRARIES}
         ${HWLOC_LIBRARIES}
     )
+
+    # Add macOS framework dependencies for hwloc
+    if(APPLE AND HWLOC_FOUND)
+        target_link_libraries(arts_shared PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
+    endif()
 
     # Set library properties
     set_target_properties(arts_shared PROPERTIES
@@ -198,6 +208,11 @@ if(BUILD_CUDA_LIBRARY)
             CUDA::cublas
         )
 
+        # Add macOS framework dependencies for hwloc
+        if(APPLE AND HWLOC_FOUND)
+            target_link_libraries(arts_cuda_static PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
+        endif()
+
         # Set library properties
         set_target_properties(arts_cuda_static PROPERTIES
             OUTPUT_NAME arts_cuda
@@ -248,6 +263,11 @@ if(BUILD_CUDA_LIBRARY)
             CUDA::cuda_driver
             CUDA::cublas
         )
+
+        # Add macOS framework dependencies for hwloc
+        if(APPLE AND HWLOC_FOUND)
+            target_link_libraries(arts_cuda_shared PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
+        endif()
 
         # Set library properties
         set_target_properties(arts_cuda_shared PROPERTIES

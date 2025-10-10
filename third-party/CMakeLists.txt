@@ -40,7 +40,7 @@ function(build_hwloc)
 
     message(STATUS "Configuring hwloc with prefix: ${CMAKE_INSTALL_PREFIX}")
     execute_process(
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/hwloc/configure --prefix=${CMAKE_INSTALL_PREFIX} --disable-rsmi
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/hwloc/configure --prefix=${CMAKE_INSTALL_PREFIX} --disable-rsmi --enable-static --enable-shared
         WORKING_DIRECTORY ${HWLOC_BUILD_DIR}
         RESULT_VARIABLE CONFIGURE_RESULT
     )
