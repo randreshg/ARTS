@@ -112,8 +112,6 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
   }
   unsigned int pos = artsAtomicFetchAdd(&addToMe->count, 1U);
 
-  ARTS_DEBUG("ADDING to OO LIST %u %u %p", pos, addToMe->count,
-             &addToMe->count);
   unsigned int numElements = pos / OOPERELEMENT;
   unsigned int elementPos = pos % OOPERELEMENT;
 
@@ -167,7 +165,6 @@ void artsOutOfOrderListFireCallback(struct artsOutOfOrderList *fireMe,
                                     void *localGuidAddress,
                                     void (*callback)(void *, void *)) {
   if (writerTryOOLock(fireMe, fireLock)) {
-    ARTS_DEBUG("FIRING OO LIST %u", fireMe->count);
     fireMe->isFired = true;
     unsigned int pos = fireMe->count;
     unsigned int j = 0;

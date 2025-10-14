@@ -84,9 +84,6 @@ artsGuid_t artsGuidCreateForRankInternal(unsigned int route, unsigned int type,
   }
   guid.fields.type = type;
   guid.fields.rank = route;
-  ARTS_DEBUG("Key: %lu %lu %lu %p %lu sizeof(artsGuid): %u parallel start: %u",
-             guid.fields.type, guid.fields.rank, guid.fields.key, guid.bits,
-             (artsGuid_t)guid.bits, sizeof(artsGuid), (globalGuidOn != 0));
   artsCounterTriggerEvent(guidAllocCounter, guidCount);
   return (artsGuid_t)guid.bits;
 }
@@ -98,7 +95,6 @@ artsGuid_t artsGuidCreateForRank(unsigned int route, unsigned int type) {
 void setGuidGeneratorAfterParallelStart() {
   unsigned int numOfTables = artsNodeInfo.workerThreadCount + 1;
   keysPerThread = globalGuidOn / (numOfTables * artsGlobalRankCount);
-  ARTS_DEBUG("Keys per thread %lu", keysPerThread);
   globalGuidOn = 0;
 }
 
@@ -178,13 +174,8 @@ artsGuid_t *artsReserveGuidsRoundRobin(unsigned int size, artsType_t type) {
     for (unsigned int i = 0; i < size; i++) {
       unsigned int route = i % artsGlobalRankCount;
       guids[i] = artsGuidCreateForRank(route, (unsigned int)type);
-      ARTS_DEBUG("GUID[%u]: %lu %p", i, guids[i]);
-      //        if(route == artsGlobalRankId)
-      //            artsRouteTableAddItem(NULL, guids[i], artsGlobalRankId,
-      //            false);
     }
   }
-  ARTS_DEBUG("guids: %p", guids);
   return guids;
 }
 

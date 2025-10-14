@@ -50,7 +50,6 @@
 #define exclusiveSet 0x40000000
 
 void frontierLock(volatile unsigned int *lock) {
-  ARTS_DEBUG("Llocking frontier: >>>>>>> %p", lock);
   unsigned int local, temp;
   while (1) {
     local = *lock;
@@ -64,17 +63,16 @@ void frontierLock(volatile unsigned int *lock) {
 }
 
 void frontierUnlock(volatile unsigned int *lock) {
-  ARTS_DEBUG("unlocking frontier: <<<<<<< %p", lock);
   unsigned int mask = writeSet | exclusiveSet;
   artsAtomicFetchAnd(lock, mask);
 }
 
 bool frontierAddReadLock(volatile unsigned int *lock) {
-  ARTS_DEBUG("Rlocking frontier: >>>>>>> %p %u", lock, *lock);
   unsigned int local, temp;
   while (1) {
     local = *lock;
-    if ((local & exclusiveSet) != 0) // Make sure exclusive not set first
+    // Make sure exclusive not set first
+    if ((local & exclusiveSet) != 0)
       return false;
     if ((local & 1U) == 0) {
       temp = artsAtomicCswap(lock, local, local | 1U);
@@ -87,7 +85,7 @@ bool frontierAddReadLock(volatile unsigned int *lock) {
 
 // Returns true if there is no write in the frontier, false if there is
 bool frontierAddWriteLock(volatile unsigned int *lock) {
-  ARTS_DEBUG("Wlocking frontier: >>>>>>> %p", lock);
+  // ARTS_DEBUG("Wlocking frontier: >>>>>>> %p", lock);
   unsigned int local, temp;
   while (1) {
     local = *lock;
@@ -108,7 +106,7 @@ bool frontierAddWriteLock(volatile unsigned int *lock) {
 }
 
 bool frontierAddExclusiveLock(volatile unsigned int *lock) {
-  ARTS_DEBUG("Elocking frontier: >>>>>>> %p", lock);
+  // ARTS_DEBUG("Elocking frontier: >>>>>>> %p", lock);
   unsigned int local, temp;
   while (1) {
     local = *lock;
@@ -232,32 +230,17 @@ bool artsPushDbToFrontier(struct artsDbFrontier *frontier, unsigned int data,
                           struct artsEdt *edt, unsigned int slot,
                           artsType_t mode, bool *unique) {
   if (bypass) {
-    ARTS_DEBUG("A");
     frontierLock(&frontier->lock);
-    ARTS_DEBUG("B");
   } else if (exclusive && !frontierAddExclusiveLock(&frontier->lock)) {
-    ARTS_DEBUG("Failed artsPushDbToFrontier 1");
     return false;
   } else if (write && !frontierAddWriteLock(&frontier->lock)) {
-    ARTS_DEBUG("Failed artsPushDbToFrontier 2");
     return false;
   } else if (!exclusive && !write && !frontierAddReadLock(&frontier->lock)) {
-    ARTS_DEBUG("Failed artsPushDbToFrontier 3");
     return false;
   }
 
   if (artsPushDbToElement(&frontier->list, frontier->position, data))
     frontier->position++;
-  //    else
-  //    {
-  //        if(*unique && !local)
-  //            ARTS_INFO("agging the write after read");
-  //        *unique = local;
-  //
-  //    }
-
-  ARTS_DEBUG("*unique %u w: %u e: %u l: %u b: %u rank: %u", *unique, write,
-             exclusive, local, bypass, data);
 
   if (exclusive || (write && !local)) {
     frontier->exNode = data;
@@ -293,8 +276,6 @@ bool artsPushDbToList(struct artsDbList *dbList, unsigned int data, bool write,
   bool ret = true;
   for (struct artsDbFrontier *frontier = dbList->head; frontier;
        frontier = frontier->next) {
-    ARTS_DEBUG("FRONT: %p, W: %u E: %u L: %u B: %u %p", frontier, write,
-               exclusive, local, bypass, edt);
     if (artsPushDbToFrontier(frontier, data, write, exclusive, local, bypass,
                              edt, slot, mode, &ret)) {
       break;
@@ -483,7 +464,6 @@ void artsProgressFrontier(struct artsDb *db, unsigned int rank) {
   artsWriterLock(&dbList->reader, &dbList->writer);
   struct artsDbFrontier *tail = dbList->head;
   if (dbList->head) {
-    ARTS_DEBUG("HEAD: %p -> NEXT: %p", dbList->head, dbList->head->next);
     dbList->head = (struct artsDbFrontier *)dbList->head->next;
     if (dbList->head) {
       if (rank == artsGlobalRankId)

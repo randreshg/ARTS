@@ -145,8 +145,8 @@ void artsIncrementFinishedEpochList() {
     unsigned int epochArrayLength = artsLengthArrayList(epochList);
     for (unsigned int i = 0; i < epochArrayLength; i++) {
       artsGuid_t *guid = (artsGuid_t *)artsGetFromArrayList(epochList, i);
-      ARTS_DEBUG("%lu Unsetting guid: %lu", artsThreadInfo.currentEdtGuid,
-                 *guid);
+      ARTS_DEBUG("Current EDT [Guid: %lu] -  Unsetting Epoch [Guid: %lu]",
+                 artsThreadInfo.currentEdtGuid, *guid);
       if (*guid)
         incrementFinishedEpoch(*guid);
     }
@@ -381,7 +381,7 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
           edtDep[slot].ptr = ptr;
         }
         unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-        ARTS_INFO("Signal DB [Guid: %lu] to EDT [Guid: %lu - Slot: %u - "
+        ARTS_INFO("Signal DB [Guid: %lu] to EDT [Guid: %lu, Slot: %u, "
                   "DepCount: %d]",
                   dataGuid, edt->currentEdt, slot, res);
         if (res == 0)
@@ -407,14 +407,10 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
 void artsSignalEdt(artsGuid_t edtGuid, uint32_t slot, artsGuid_t dataGuid) {
   artsGuid_t acqGuid = dataGuid;
   artsType_t mode = artsGuidGetType(dataGuid);
-  ARTS_DEBUG("Signal DB [Guid: %lu] to EDT [Guid: %lu] in slot %u", dataGuid,
-             edtGuid, slot);
   internalSignalEdt(edtGuid, slot, acqGuid, mode, NULL, 0);
 }
 
 void artsSignalEdtValue(artsGuid_t edtGuid, uint32_t slot, uint64_t value) {
-  ARTS_DEBUG("Signal Value [%lu] to EDT [Guid: %lu, Slot: %u]", value, edtGuid,
-             slot);
   internalSignalEdt(edtGuid, slot, value, ARTS_SINGLE_VALUE, NULL, 0);
 }
 
@@ -436,7 +432,6 @@ artsGuid_t artsActiveMessageWithDbAt(artsEdt_t funcPtr, uint32_t paramc,
                                      uint64_t *paramv, uint32_t depc,
                                      artsGuid_t dbGuid, unsigned int rank) {
   artsGuid_t guid = artsEdtCreate(funcPtr, rank, paramc, paramv, depc + 1);
-  ARTS_DEBUG("AM -> [Guid: %lu, Rank: %u, Depc: %u]", guid, rank, depc + 1);
   artsSignalEdt(guid, 0, dbGuid);
   return guid;
 }

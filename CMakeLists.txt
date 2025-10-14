@@ -124,6 +124,15 @@ else()
     add_compile_options(-march=native -mtune=native)
 endif()
 
+# Linker configuration
+option(ARTS_USE_LINKER "Specify linker to use for ARTS builds" "")
+if(ARTS_USE_LINKER)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --ld-path=${ARTS_USE_LINKER} -w")
+    set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} --ld-path=${ARTS_USE_LINKER} -w")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --ld-path=${ARTS_USE_LINKER} -w")
+    message(STATUS "Using custom linker: ${ARTS_USE_LINKER}")
+endif()
+
 # CUDA support detection
 check_language(CUDA)
 set(CUDA_AVAILABLE OFF)

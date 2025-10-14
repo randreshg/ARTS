@@ -364,7 +364,6 @@ artsRouteItem_t *artsRouteTableSearchForEmpty(artsRouteTable_t *routeTable,
       if (!current->data[keyVal].lock) {
         if (markReserve(&current->data[keyVal], markUsed)) {
           current->data[keyVal].key = key;
-          ARTS_DEBUG("Set Key: %lu %p %lu", key, current, keyVal);
           return &current->data[keyVal];
         }
       }
@@ -377,8 +376,6 @@ artsRouteItem_t *artsRouteTableSearchForEmpty(artsRouteTable_t *routeTable,
 
     if (!next) {
       if (artsWriterTryLock(&current->readerLock, &current->writerLock)) {
-        ARTS_DEBUG("LS Resize %d %d %p %p %d %ld", keyVal, 2 * current->size,
-                   current, routeTable);
         next = current->next =
             current->newFunc(2 * current->size, current->shift + 1);
         artsWriterUnlock(&current->writerLock);
@@ -530,7 +527,6 @@ bool artsRouteTableReserveItemRace(artsGuid_t key, artsRouteItem_t **item,
         if (!(*item)) {
           *item = artsRouteTableSearchForEmpty(routeTable, key, used);
           ret = true;
-          ARTS_DEBUG("RES: %lu %p", key, routeTable);
         } else {
           if (used)
             incItem(*item, 1, (*item)->key, routeTable);
@@ -627,7 +623,6 @@ void *artsRouteTableLookupDb(artsGuid_t key, int *rank, bool touch) {
   if (data) {
     if (touch)
       internalIncDbVersion(touched);
-    ARTS_DEBUG("db version: %u", *touched);
   }
   return data;
 }
@@ -880,17 +875,6 @@ bool artsRouteTableUpdateItem(artsGuid_t key, void *data, unsigned int rank,
 
 bool artsRouteTableInvalidateItem(artsGuid_t key) {
   artsRouteTable_t *routeTable = artsGetRouteTable(key);
-  // artsRouteItem_t *location =
-  //     artsRouteTableSearchForKey(routeTable, key, allocatedKey);
-  // if (location) {
-  //   markDelete(location);
-  //   if (shouldDelete(location->lock)) {
-  //     routeTable->freeFunc(location);
-  //     return true;
-  //   }
-  //   ARTS_DEBUG("Marked %lu as invalid %lu", key, location->lock);
-  // }
-  // return false;
   return internalRouteTableRemoveItem(routeTable, key);
 }
 

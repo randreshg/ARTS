@@ -73,13 +73,11 @@ void globalShutdownGuidIncFinished() {
 
 void globalGuidShutdown(artsGuid_t guid) {
   if (artsNodeInfo.shutdownEpoch == guid) {
-    ARTS_DEBUG("TERMINATION GUID SHUTDOWN %lu", guid);
     artsShutdown();
   }
 }
 
 bool decrementQueueEpoch(artsEpoch_t *epoch) {
-  ARTS_DEBUG("Dec queue Epoch: %lu", epoch->guid);
   uint64_t local;
   while (1) {
     local = epoch->queued;
@@ -94,26 +92,22 @@ bool decrementQueueEpoch(artsEpoch_t *epoch) {
 }
 
 void incrementQueueEpoch(artsGuid_t epochGuid) {
-  ARTS_DEBUG("Inc queue Epoch: %lu", epochGuid);
   if (epochGuid != NULL_GUID) {
     artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
     if (epoch) {
       artsAtomicAddU64(&epoch->queued, 1);
     } else {
       artsOutOfOrderIncQueueEpoch(epochGuid);
-      ARTS_DEBUG("OOIncQueueEpoch %lu", epochGuid);
     }
   }
 }
 
 void incrementActiveEpoch(artsGuid_t epochGuid) {
-  ARTS_DEBUG("Inc active Epoch: %lu", epochGuid);
   artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
     artsAtomicAdd(&epoch->activeCount, 1);
   } else {
     artsOutOfOrderIncActiveEpoch(epochGuid);
-    ARTS_DEBUG("OOIncActiveEpoch %lu", epochGuid);
   }
 }
 
@@ -134,25 +128,17 @@ void incrementFinishedEpoch(artsGuid_t epochGuid) {
             if (!artsAtomicCswapU64(&epoch->outstanding, 0,
                                     artsGlobalRankCount)) {
               broadcastEpochRequest(epochGuid);
-              ARTS_DEBUG("%lu Broadcasting req... ", epochGuid);
-            } else {
-              ARTS_DEBUG("OUTSTANDING: %lu %lu", epoch->guid,
-                         epoch->outstanding);
             }
-          } else {
-            ARTS_DEBUG("QUEUED: %lu %lu", epoch->guid, epoch->outstanding);
           }
         } else {
           if (decrementQueueEpoch(epoch)) {
             artsRemoteEpochSend(rank, epochGuid, epoch->activeCount,
                                 epoch->finishedCount);
-            ARTS_DEBUG("%lu Now responding... ", epochGuid);
           }
         }
       }
     } else {
       artsOutOfOrderIncFinishedEpoch(epochGuid);
-      ARTS_DEBUG("%lu ooFinish", epochGuid);
     }
   }
 }
@@ -164,10 +150,7 @@ void sendEpoch(artsGuid_t epochGuid, unsigned int source, unsigned int dest) {
     if (!artsAtomicCswapU64(&epoch->queued, 0, EpochBit)) {
       artsRemoteEpochSend(dest, epochGuid, epoch->activeCount,
                           epoch->finishedCount);
-      //            ARTS_INFO("%lu Sending Now...", epochGuid);
     }
-    //        else
-    //            ARTS_INFO("Buffer Send...");
   } else
     artsOutOfOrderSendEpoch(epochGuid, source, dest);
 }
@@ -196,8 +179,6 @@ bool createShutdownEpoch() {
     artsEpoch_t *epoch = createEpoch(&artsNodeInfo.shutdownEpoch, NULL_GUID, 0);
     artsAtomicAdd(&epoch->activeCount, artsGetTotalWorkers());
     artsAtomicAddU64(&epoch->queued, artsGetTotalWorkers());
-    ARTS_DEBUG("Shutdown guy %u : %lu --------> %lu %p", epoch->activeCount,
-               epoch->queued, epoch->guid, epoch);
     return true;
   }
   return false;
@@ -210,7 +191,6 @@ void artsAddEdtToEpoch(artsGuid_t edtGuid, artsGuid_t epochGuid) {
     incrementActiveEpoch(epochGuid);
     return;
   }
-  ARTS_DEBUG("Out-of-order add to epoch not supported...");
   return;
 }
 
@@ -225,22 +205,11 @@ void broadcastEpochRequest(artsGuid_t epochGuid) {
 
 artsGuid_t artsInitializeAndStartEpoch(artsGuid_t finishEdtGuid,
                                        unsigned int slot) {
-  //    artsGuid_t guid = NULL_GUID;
-  //    artsEpoch_t * epoch = createEpoch(&guid, finishEdtGuid, slot);
   artsEpoch_t *epoch = getPoolEpoch(finishEdtGuid, slot);
 
   artsSetCurrentEpochGuid(epoch->guid);
   artsAtomicAdd(&epoch->activeCount, 1);
   artsAtomicAddU64(&epoch->queued, 1);
-
-  //    for(unsigned int i=0; i<artsGlobalRankCount; i++)
-  //    {
-  //        if(i != artsGlobalRankId)
-  //            artsRemoteEpochInitSend(i, guid, finishEdtGuid, slot);
-  //    }
-
-  ARTS_DEBUG("%u : %lu --------> %lu %p", epoch->activeCount, epoch->queued,
-             epoch->guid, epoch);
   return epoch->guid;
 }
 
@@ -274,32 +243,24 @@ void artsStartEpoch(artsGuid_t epochGuid) {
     artsSetCurrentEpochGuid(epoch->guid);
     artsAtomicAdd(&epoch->activeCount, 1);
     artsAtomicAddU64(&epoch->queued, 1);
-  } else {
-    ARTS_INFO("Out-of-Order epoch start not supported %lu", epochGuid);
   }
 }
 
 bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
                 unsigned int totalFinish) {
   unsigned int diff = totalActive - totalFinish;
-  ARTS_DEBUG("%lu : %u - %u = %u", epoch->guid, totalActive, totalFinish, diff);
   // We have a zero
   if (totalFinish && !diff) {
     // Lets check the phase and if we have the same counts as before
     if (epoch->phase == PHASE_2 && epoch->lastActiveCount == totalActive &&
         epoch->lastFinishedCount == totalFinish) {
       epoch->phase = PHASE_3;
-      ARTS_DEBUG("%lu epoch done!!!!!!!", epoch->guid);
       if (epoch->waitPtr)
         *epoch->waitPtr = 0;
       if (epoch->ticket) {
         artsSignalContext(epoch->ticket);
-        ARTS_DEBUG("%lu Signaling context %u", epoch->guid, epoch->ticket);
       }
       if (epoch->terminationExitGuid) {
-        ARTS_DEBUG(
-            "%lu Calling finalization continuation provided by the user %u",
-            epoch->guid, totalFinish);
         artsSignalEdtValue(epoch->terminationExitGuid,
                            epoch->terminationExitSlot, totalFinish);
       } else {
@@ -311,19 +272,13 @@ bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
     epoch->lastActiveCount = totalActive;
     epoch->lastFinishedCount = totalFinish;
     epoch->phase = PHASE_2;
-    ARTS_DEBUG("%lu Starting phase 2 %u", epoch->guid,
-               epoch->lastFinishedCount);
     if (artsGlobalRankCount == 1) {
       epoch->phase = PHASE_3;
-      ARTS_DEBUG("%lu epoch done!!!!!!!", epoch->guid);
       if (epoch->waitPtr)
         *epoch->waitPtr = 0;
       if (epoch->ticket)
         artsSignalContext(epoch->ticket);
       if (epoch->terminationExitGuid) {
-        ARTS_DEBUG("%lu Calling finalization continuation provided by the user "
-                   "%u !",
-                   epoch->guid, totalFinish);
         artsSignalEdtValue(epoch->terminationExitGuid,
                            epoch->terminationExitSlot, totalFinish);
       } else {
@@ -341,13 +296,10 @@ void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
                  unsigned int finish) {
   artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
-    ARTS_DEBUG("%lu A: %u F: %u", epochGuid, active, finish);
     unsigned int totalActive = artsAtomicAdd(&epoch->globalActiveCount, active);
     unsigned int totalFinish =
         artsAtomicAdd(&epoch->globalFinishedCount, finish);
     if (artsAtomicSubU64(&epoch->outstanding, 1) == 1) {
-      ARTS_DEBUG("%lu A: %u F: %u", epochGuid, epoch->activeCount,
-                 epoch->finishedCount);
       totalActive += epoch->activeCount;
       totalFinish += epoch->finishedCount;
 
@@ -356,7 +308,6 @@ void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
       epoch->globalFinishedCount = 0;
 
       if (checkEpoch(epoch, totalActive, totalFinish)) {
-        ARTS_DEBUG("%lu REDUCE SEND", epochGuid);
         artsAtomicAddU64(&epoch->outstanding, artsGlobalRankCount - 1);
         broadcastEpochRequest(epochGuid);
         // A better idea will be to know when to kick off a new round
@@ -368,12 +319,7 @@ void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
 
       if (epoch->phase == PHASE_3)
         deleteEpoch(epochGuid, epoch);
-
-      ARTS_DEBUG("%lu EPOCH QUEUEU: %u", epochGuid, epoch->queued);
     }
-    ARTS_DEBUG("###### %lu -> %lu", epoch->guid, epoch->outstanding);
-  } else {
-    ARTS_INFO("%lu ERROR: NO EPOCH", epochGuid);
   }
 }
 
@@ -414,9 +360,6 @@ artsEpochPool_t *createEpochPool(artsGuid_t *epochPoolGuid,
       artsRouteTableFireOO(epochPool->pool[i].guid, artsOutOfOrderHandler);
     }
   }
-
-  ARTS_DEBUG("Creating pool %lu starting %lu %p", *epochPoolGuid,
-             artsGetGuid(range, 0), epochPool);
 
   if (newRange)
     artsFree(range);
@@ -462,16 +405,12 @@ void deleteEpoch(artsGuid_t epochGuid, artsEpoch_t *epoch) {
 }
 
 void cleanEpochPool() {
-  ARTS_DEBUG("EPOCHTHREADPOOL -------- %p", epochThreadPool);
-
   artsEpochPool_t *trailPool = NULL;
   artsEpochPool_t *pool = epochThreadPool;
 
   while (pool) {
-    ARTS_DEBUG("###### POOL %p", pool);
     if (pool->index == epochThreadPool->size && !pool->outstanding) {
       artsEpochPool_t *toFree = pool;
-      ARTS_DEBUG("Deleting %p", toFree);
 
       pool = pool->next;
 
@@ -481,9 +420,7 @@ void cleanEpochPool() {
         epochThreadPool = pool;
 
       artsFree(toFree);
-      ARTS_DEBUG("JUST FREED A POOL");
     } else {
-      ARTS_DEBUG("Next...");
       trailPool = pool;
       pool = pool->next;
     }
@@ -491,8 +428,6 @@ void cleanEpochPool() {
 }
 
 artsEpoch_t *getPoolEpoch(artsGuid_t edtGuid, unsigned int slot) {
-  ARTS_DEBUG("EpochThreadPool %p", epochThreadPool);
-
   //    cleanEpochPool();
   artsEpochPool_t *trailPool = NULL;
   artsEpochPool_t *pool = epochThreadPool;
@@ -515,7 +450,6 @@ artsEpoch_t *getPoolEpoch(artsGuid_t edtGuid, unsigned int slot) {
       }
     }
 
-    ARTS_DEBUG("Pool index: %u", pool->index);
     if (pool->index < pool->size)
       epoch = &pool->pool[pool->index++];
     else {
@@ -523,7 +457,6 @@ artsEpoch_t *getPoolEpoch(artsGuid_t edtGuid, unsigned int slot) {
       pool = pool->next;
     }
   }
-  ARTS_DEBUG("GetPoolEpoch %lu", epoch->guid);
 
   epoch->terminationExitGuid = edtGuid;
   epoch->terminationExitSlot = slot;

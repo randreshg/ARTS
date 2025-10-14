@@ -496,7 +496,7 @@ void acquireDbs(struct artsEdt *edt) {
 
       if (dbFound)
         depv[i].ptr = dbFound + 1;
-      ARTS_DEBUG(" - DB [Guid: %lu - Ptr: %p] acquired", depv[i].guid,
+      ARTS_DEBUG("DB [Guid: %lu, Ptr: %p] acquired", depv[i].guid,
                  depv[i].ptr);
     } else {
       artsAtomicSub(&edt->depcNeeded, 1U);

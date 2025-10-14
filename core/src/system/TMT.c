@@ -97,10 +97,6 @@ static inline artsTicket genTicket() {
   ticket.fields.unit = artsThreadInfo.groupId;
   ticket.fields.thread = aliasId;
   ticket.fields.valid = 1;
-  ARTS_DEBUG("r: %u u: %u t: %u v: %u", (unsigned int)ticket.fields.rank,
-             (unsigned int)ticket.fields.unit,
-             (unsigned int)ticket.fields.thread,
-             (unsigned int)ticket.fields.valid);
   return ticket;
 }
 
@@ -395,7 +391,6 @@ bool artsTMTCheckShutdown() {
 }
 
 void artsTMTRuntimePrivateCleanup() {
-  ARTS_DEBUG("TMT CLEANUP");
   if (artsNodeInfo.tMT) {
     bool head = true;
     internalMsi_t *trail = NULL;
@@ -560,10 +555,6 @@ artsTicket_t artsGetContextTicket() {
   ticket.bits = 0;
   if (artsNodeInfo.tMT)
     ticket = genTicket();
-  ARTS_DEBUG("%u r: %u u: %u t: %u v: %u", artsNodeInfo.tMT,
-             (unsigned int)ticket.fields.rank, (unsigned int)ticket.fields.unit,
-             (unsigned int)ticket.fields.thread,
-             (unsigned int)ticket.fields.valid);
   return (artsTicket_t)ticket.bits;
 }
 

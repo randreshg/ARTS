@@ -362,7 +362,7 @@ void artsRemoteHandlePersistentEventMove(void *ptr) {
 
 void artsRemoteSignalEdt(artsGuid_t edt, artsGuid_t db, uint32_t slot,
                          artsType_t mode) {
-  ARTS_INFO("Remote Signal from [DB: %ld] to EDT [Guid: %ld - Slot: %d - Rank: "
+  ARTS_INFO("Remote Signal from DB [Guid: %lu] to EDT [Guid: %lu, Slot: %d, Rank: "
             "%d]",
             db, edt, slot, artsGuidGetRank(edt));
   struct artsRemoteEdtSignalPacket packet;
@@ -492,7 +492,7 @@ void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsType_t mode) {
 
 void artsRemoteDbSend(struct artsRemoteDbRequestPacket *pack) {
   unsigned int redirected = artsRouteTableLookupRank(pack->dbGuid);
-  ARTS_INFO("Remote DB Send [Guid: %ld] [Rank: %d] [Mode: %d]", pack->dbGuid,
+  ARTS_INFO("Remote DB Send [Guid: %lu] [Rank: %d] [Mode: %d]", pack->dbGuid,
             pack->header.rank, pack->mode);
   if (redirected != artsGlobalRankId && redirected != -1)
     artsRemoteSendRequestAsync(redirected, (char *)pack, pack->header.size);

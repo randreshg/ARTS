@@ -104,10 +104,10 @@ scheduler_t schedulerLoop[] = {(scheduler_t)artsDefaultSchedulerLoop,
 
 void artsMainEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
                  artsEdtDep_t depv[]) {
-  ARTS_DEBUG("artsMainEdt called");
+  ARTS_DEBUG("Runtime Main EDT called");
   if (artsMain)
     artsMain(mainArgc, mainArgv);
-  ARTS_DEBUG("artsMainEdt finished");
+  ARTS_DEBUG("Runtime Main EDT finished");
 }
 
 void artsRuntimeNodeInit(unsigned int workerThreads,

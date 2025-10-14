@@ -459,7 +459,7 @@ bool artsPersistentEventCreateInternal(artsGuid_t *guid, unsigned int route,
     }
     return true;
   }
-  ARTS_INFO(" - Failed to create persistent event");
+  ARTS_INFO("Failed to create persistent event");
   return false;
 }
 
@@ -478,7 +478,6 @@ bool artsPersistentEventFreeVersion(struct artsPersistentEvent *event) {
   assert(version != NULL);
 
   /// Free dependencies for this version
-  ARTS_DEBUG("   - Freeing dependencies for version %u", version->version);
   struct artsDependentList *trail, *current = version->dependent.next;
   while (current) {
     trail = current;
@@ -490,9 +489,7 @@ bool artsPersistentEventFreeVersion(struct artsPersistentEvent *event) {
   if (last) {
     version->latchCount = 0;
     version->dependentCount = 0;
-    ARTS_DEBUG("   - Resetting dependencies for version %u", version->version);
   } else {
-    ARTS_DEBUG("   - Popping version %u", version->version);
     versions->headPtr = versions->headPtr->next;
     struct artsLinkListItem *item = ((struct artsLinkListItem *)version) - 1;
     artsFree(item);
@@ -555,35 +552,38 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
     unsigned int res = -1;
     struct artsPersistentEventVersion *version =
         artsGetFrontPersistentEventVersion(event);
-    ARTS_DEBUG("[PersistentEvent] Satisfying event %lu, version %u", eventGuid,
+    ARTS_DEBUG("Satisfying Event [Guid: %lu, Version: %u]", eventGuid,
                version->version);
     assert(version != NULL);
     if (action == ARTS_EVENT_LATCH_INCR_SLOT) {
       res = artsAtomicFetchAdd(&version->latchCount, 0U);
       if (res == 1) {
-        ARTS_DEBUG("Latch count is 1 for event %u, creating new version",
-                   eventGuid);
+        ARTS_DEBUG(
+            "Latch count is 1 for Event [Guid: %lu], creating new version",
+            eventGuid);
         version = artsPushPersistentEventVersion(event);
-        ARTS_DEBUG("    - Created version %u for event %lu", version->version,
+        ARTS_DEBUG("Created Event [Guid: %lu, Version: %u]", version->version,
                    eventGuid);
       }
       res = artsAtomicAdd(&version->latchCount, 1U);
-      ARTS_DEBUG("Increment latch count to %d for event %u", res, eventGuid);
+      ARTS_DEBUG("Increment Event [Guid: %lu, Latch Count: %d]", eventGuid,
+                 res);
     } else if (action == ARTS_EVENT_LATCH_DECR_SLOT) {
       res = artsAtomicFetchAdd(&version->latchCount, 0U);
       if (res == (unsigned int)-1) {
-        ARTS_DEBUG("Latch count is -1 for event %u, creating new version",
-                   eventGuid);
+        ARTS_DEBUG(
+            "Latch count is -1 for Event [Guid: %lu], creating new version",
+            eventGuid);
         version = artsPushPersistentEventVersion(event);
-        ARTS_DEBUG("    - Created version %u for event %lu", version->version,
-                   eventGuid);
+        ARTS_DEBUG("Created version %u for Event [Guid: %lu, Version: %u]",
+                   version->version, eventGuid);
       }
       res = artsAtomicSub(&version->latchCount, 1U);
-      ARTS_DEBUG("Decrement latch count to %d for event %u ", res, eventGuid);
+      ARTS_DEBUG("Decrement Event [Guid: %lu, Latch Count: %d] ", eventGuid,
+                 res);
     } else if (action == ARTS_EVENT_UPDATE) {
       res = artsAtomicFetchAdd(&version->latchCount, 0U);
-      ARTS_DEBUG("Update latch count to %d for event %u ", res, eventGuid);
-      ARTS_DEBUG("    - Updated event %lu", eventGuid);
+      ARTS_DEBUG("Update Event [Guid: %lu, Latch Count: %d] ", eventGuid, res);
     } else {
       ARTS_DEBUG("Bad latch slot %u", action);
       artsDebugGenerateSegFault();
@@ -652,7 +652,7 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
                                         artsGuid_t edtDest, uint32_t edtSlot) {
   /// Check that the eventSource is a persistent event
   if (artsGuidGetType(eventSource) != ARTS_PERSISTENT_EVENT) {
-    ARTS_DEBUG("Event source %u is not a persistent event", eventSource);
+    ARTS_DEBUG("Event source %lu is not a persistent event", eventSource);
     artsDebugGenerateSegFault();
     return;
   }
@@ -671,7 +671,8 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
     return;
   }
 
-  ARTS_DEBUG("Add Dependence from persistent event %u to EDT %u at %u",
+  ARTS_DEBUG("Add Dep from Persistent Event [Guid: %lu] to EDT [Guid: "
+             "%lu, Slot: %u]",
              eventSource, edtDest, edtSlot);
   struct artsPersistentEvent *event =
       (struct artsPersistentEvent *)sourceHeader;
