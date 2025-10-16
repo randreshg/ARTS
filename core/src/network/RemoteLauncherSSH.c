@@ -125,9 +125,9 @@ void artsRemoteLauncherSSHStartupProcesses(
   }
 
   // Allocate for all non-master nodes
-  sshExecutions =
-      (FILE **)artsMalloc(sizeof(FILE *) * (config->tableLength - 1));
-  launcher->launcherMemory = sshExecutions;
+  // sshExecutions =
+  //     (FILE **)artsMalloc(sizeof(FILE *) * (config->tableLength - 1));
+  // launcher->launcherMemory = sshExecutions;
 
   char command[4096];
   char quotedCommand[(sizeof(command) * 6) + 8];
@@ -241,8 +241,8 @@ void artsRemoteLauncherSSHStartupProcesses(
 
 void artsRemoteLauncherSSHCleanupProcesses(
     struct artsRemoteLauncher *launcher) {
-  if (launcher && launcher->launcherMemory) {
-    artsFree(launcher->launcherMemory);
-    launcher->launcherMemory = NULL;
-  }
+  // if (launcher && launcher->launcherMemory) {
+  //   artsFree(launcher->launcherMemory);
+  //   launcher->launcherMemory = NULL;
+  // }
 }

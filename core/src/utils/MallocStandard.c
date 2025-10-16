@@ -63,12 +63,14 @@ void *artsMalloc(size_t size) {
   artsCounterTriggerTimerEvent(mallocMemory, true);
 
   if (!size) {
-    return NULL;
+    artsCounterTriggerTimerEvent(mallocMemory, false);
+    artsDebugGenerateSegFault();
   }
 
   header_t *base = (header_t *)malloc(size + sizeof(header_t));
   if (!base) {
-    return NULL;
+    artsCounterTriggerTimerEvent(mallocMemory, false);
+    artsDebugGenerateSegFault();
   }
 
   base->size = size;
@@ -86,12 +88,14 @@ void *artsMallocAlign(size_t size, size_t align) {
   artsCounterTriggerTimerEvent(mallocMemory, true);
 
   if (!size || align < ALIGNMENT || !IS_POWER_OF_TWO(align)) {
-    return NULL;
+    artsCounterTriggerTimerEvent(mallocMemory, false);
+    artsDebugGenerateSegFault();
   }
 
   void *base = malloc(size + align - 1 + sizeof(header_t));
   if (!base) {
-    return NULL;
+    artsCounterTriggerTimerEvent(mallocMemory, false);
+    artsDebugGenerateSegFault();
   }
 
   void *aligned = alignPointer((char *)base + sizeof(header_t), align);
@@ -112,7 +116,8 @@ void *artsCalloc(size_t nmemb, size_t size) {
   artsCounterTriggerTimerEvent(callocMemory, true);
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb) {
-    return NULL;
+    artsCounterTriggerTimerEvent(callocMemory, false);
+    artsDebugGenerateSegFault();
   }
 
   size_t totalSize = nmemb * size;
@@ -131,7 +136,8 @@ void *artsCallocAlign(size_t nmemb, size_t size, size_t align) {
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb || align < ALIGNMENT ||
       !IS_POWER_OF_TWO(align)) {
-    return NULL;
+    artsCounterTriggerTimerEvent(callocMemory, false);
+    artsDebugGenerateSegFault();
   }
 
   size_t totalSize = nmemb * size;
@@ -163,8 +169,6 @@ void *artsRealloc(void *ptr, size_t size) {
   size_t align = old_hdr->align;
 
   void *new_ptr = align ? artsMallocAlign(size, align) : artsMalloc(size);
-  if (!new_ptr)
-    return NULL;
   memcpy(new_ptr, ptr, old_size);
   artsFree(ptr);
   return new_ptr;

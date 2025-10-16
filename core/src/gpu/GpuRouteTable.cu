@@ -38,6 +38,7 @@
 ******************************************************************************/
 #include "arts/gpu/GpuRouteTable.h"
 
+#include "arts/arts.h"
 #include "arts/gpu/GpuStream.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"

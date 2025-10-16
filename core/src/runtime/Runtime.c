@@ -123,14 +123,18 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.scheduler = schedulerLoop[config->scheduler];
   artsNodeInfo.deque = (struct artsDeque **)artsMalloc(
       sizeof(struct artsDeque *) * totalThreads);
-  artsNodeInfo.receiverDeque = (struct artsDeque **)artsMalloc(
-      sizeof(struct artsDeque *) * receiverThreads);
+  artsNodeInfo.receiverDeque =
+      receiverThreads ? (struct artsDeque **)artsMalloc(
+                            sizeof(struct artsDeque *) * receiverThreads)
+                      : NULL;
   artsNodeInfo.gpuDeque = (struct artsDeque **)artsMalloc(
       sizeof(struct artsDeque *) * totalThreads);
   artsNodeInfo.routeTable =
       (artsRouteTable_t **)artsCalloc(totalThreads, sizeof(artsRouteTable_t *));
   artsNodeInfo.gpuRouteTable =
-      (artsRouteTable_t **)artsCalloc(config->gpu, sizeof(artsRouteTable_t *));
+      config->gpu ? (artsRouteTable_t **)artsCalloc(config->gpu,
+                                                    sizeof(artsRouteTable_t *))
+                  : NULL;
   artsNodeInfo.remoteRouteTable =
       artsNewRouteTable(config->routeTableEntries, config->routeTableSize);
   artsNodeInfo.localSpin =
