@@ -47,7 +47,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#include "arts/introspection/Introspection.h"
+#include "arts/introspection/Counter.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/system/ArtsPrint.h"

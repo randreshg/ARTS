@@ -41,6 +41,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 
+#include "arts/arts.h"
 #include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
@@ -73,6 +74,27 @@ static int counterDefaultEnabled = 1;
 static int counterEnabledOverride[lastCounter];
 static bool counterOverrideInitialized = false;
 
+// Private methods
+static void ensureCounterOverrides(void) {
+  if (!counterOverrideInitialized) {
+    for (int i = 0; i < lastCounter; i++)
+      counterEnabledOverride[i] = -1;
+    counterOverrideInitialized = true;
+  }
+}
+
+static int counterIndexFromName(const char *name) {
+  if (!name)
+    return -1;
+  for (int i = 0; i < lastCounter; i++) {
+    const char *candidate = artsCounterNames[i];
+    if (candidate && !strcasecmp(candidate, name))
+      return i;
+  }
+  return -1;
+}
+
+#ifdef USE_COUNTER
 // Event-based counter interface implementation
 void artsCounterTriggerEvent(artsCounterType counterType, uint64_t value) {
   if (!ARTS_COUNTERS_IS_ACTIVE())
@@ -100,26 +122,6 @@ void artsCounterTriggerTimerEvent(artsCounterType counterType, bool start) {
   }
 }
 
-// Private methods
-static void ensureCounterOverrides(void) {
-  if (!counterOverrideInitialized) {
-    for (int i = 0; i < lastCounter; i++)
-      counterEnabledOverride[i] = -1;
-    counterOverrideInitialized = true;
-  }
-}
-
-static int counterIndexFromName(const char *name) {
-  if (!name)
-    return -1;
-  for (int i = 0; i < lastCounter; i++) {
-    const char *candidate = artsCounterNames[i];
-    if (candidate && !strcasecmp(candidate, name))
-      return i;
-  }
-  return -1;
-}
-
 void artsCounterConfigSetDefaultEnabled(bool enabled) {
   ensureCounterOverrides();
   counterDefaultEnabled = enabled ? 1 : 0;
@@ -131,6 +133,8 @@ void artsCounterConfigSetEnabled(const char *name, bool enabled) {
   if (index >= 0)
     counterEnabledOverride[index] = enabled ? 1 : 0;
 }
+
+#endif // USE_COUNTER
 
 static inline bool counterIsActive(const artsCounter *counter) {
   return counter && counter->enabled && countersOn &&

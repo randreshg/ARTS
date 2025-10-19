@@ -42,12 +42,8 @@
 extern "C" {
 #endif
 
-#ifdef USE_COUNTERS
-
 #include <stdbool.h>
 #include <stdint.h>
-
-#include "arts/arts.h"
 
 extern const char *const artsCounterNames[];
 extern uint64_t countersOn;
@@ -100,6 +96,21 @@ typedef struct {
   uint64_t endTime;
 } artsCounter;
 
+#if USE_COUNTER
+void artsCounterTriggerEvent(artsCounterType counterType, uint64_t value);
+void artsCounterTriggerTimerEvent(artsCounterType counterType, bool start);
+void artsCounterConfigSetDefaultEnabled(bool enabled);
+void artsCounterConfigSetEnabled(const char *name, bool enabled);
+
+#else
+
+#define artsCounterTriggerEvent(counterType, value) ((void)0)
+#define artsCounterTriggerTimerEvent(counterType, start) ((void)0)
+#define artsCounterConfigSetDefaultEnabled(enabled) ((void)0)
+#define artsCounterConfigSetEnabled(name, enabled) ((void)0)
+
+#endif // USE_COUNTER
+
 /// Private methods
 void artsCounterInitList(unsigned int threadId, unsigned int nodeId);
 void artsCounterStart(unsigned int startPoint);
@@ -123,7 +134,6 @@ void artsCounterNonEmtpy(artsCounter *counter);
 uint64_t artsCounterGetStartTime(artsCounter *counter);
 uint64_t artsCounterGetEndTime(artsCounter *counter);
 void artsCounterAddTime(artsCounter *counter, uint64_t time);
-#endif
 
 #ifdef __cplusplus
 }

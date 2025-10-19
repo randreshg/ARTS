@@ -41,7 +41,7 @@
 #include <string.h>
 
 #include "arts/arts.h"
-#include "arts/introspection/Introspection.h"
+#include "arts/introspection/Metrics.h"
 #include "arts/network/Remote.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
@@ -50,7 +50,7 @@
 #include "arts/utils/LinkList.h"
 
 struct outList {
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
   uint64_t timeStamp;
 #endif
   unsigned int offset;
@@ -148,7 +148,7 @@ void outInit(unsigned int size) {
 }
 
 static inline void outInsertNode(struct outList *node, unsigned int length) {
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
   // This is for network queue sitting time...
 //    node->timeStamp = artsExtGetTimeStamp();
 #endif

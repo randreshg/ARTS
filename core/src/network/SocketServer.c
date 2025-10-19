@@ -53,7 +53,7 @@
 #include <unistd.h>
 
 #include "arts/arts.h"
-#include "arts/introspection/Introspection.h"
+#include "arts/introspection/Metrics.h"
 #include "arts/network/Connection.h"
 #include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
@@ -415,7 +415,7 @@ unsigned int artsRemoteSendRequest(int rank, unsigned int queue, char *message,
                                    unsigned int length) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();
@@ -430,7 +430,7 @@ unsigned int artsRemoteSendPayloadRequest(int rank, unsigned int queue,
                                           char *payload, int length2) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
     // struct artsRemotePacket * pk = (void *)message;
     // if(!pk->timeStamp)
     //     pk->timeStamp = artsExtGetTimeStamp();

@@ -41,14 +41,9 @@
 
 #include <stdbool.h>
 
-#include "arts/introspection/Counter.h"
-#include "arts/introspection/Metrics.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#if defined(USE_COUNTERS) || defined(USE_METRICS)
 
 typedef struct {
   char *introspectionFolder;
@@ -61,26 +56,14 @@ typedef struct {
 
 extern artsIntrospectionConfig globalIntrospectionConfig;
 
+#if defined(USE_COUNTER) || defined(USE_METRICS)
+
 void artsIntrospectionInit(const char *configFile);
 void artsIntrospectionStart(unsigned int startPoint);
 void artsIntrospectionStop();
 void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
                                   unsigned int threadId, bool writeCounters,
                                   bool writeMetrics);
-
-/// Counter Functions
-void artsCounterTriggerEvent(artsCounterType counterType, uint64_t value);
-void artsCounterTriggerTimerEvent(artsCounterType counterType, bool start);
-void artsCounterConfigSetDefaultEnabled(bool enabled);
-void artsCounterConfigSetEnabled(const char *name, bool enabled);
-
-/// Metrics Functions
-void artsMetricsTriggerEvent(artsMetricType metricType, artsMetricLevel level,
-                             uint64_t value);
-void artsMetricsTriggerTimerEvent(artsMetricType metricType,
-                                  artsMetricLevel level, bool start);
-void artsMetricsConfigSetDefaultEnabled(bool enabled);
-void artsMetricsConfigSetEnabled(const char *name, bool enabled);
 
 #else
 
@@ -91,17 +74,7 @@ void artsMetricsConfigSetEnabled(const char *name, bool enabled);
                                      writeCounters, writeMetrics)              \
   ((void)0)
 
-#define artsCounterTriggerEvent(counterType, value) ((void)0)
-#define artsCounterTriggerTimerEvent(counterType, start) ((void)0)
-#define artsCounterConfigSetDefaultEnabled(enabled) ((void)0)
-#define artsCounterConfigSetEnabled(name, enabled) ((void)0)
-
-#define artsMetricsTriggerEvent(metricType, level, value) ((void)0)
-#define artsMetricsTriggerTimerEvent(metricType, level, start) ((void)0)
-#define artsMetricsConfigSetDefaultEnabled(enabled) ((void)0)
-#define artsMetricsConfigSetEnabled(name, enabled) ((void)0)
-
-#endif
+#endif // USE_COUNTER || USE_METRICS
 
 #ifdef __cplusplus
 }

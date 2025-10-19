@@ -139,7 +139,7 @@ static int metricDefaultEnabled = 1;
 static int metricEnabledOverride[artsLastMetricType];
 static bool metricOverrideInitialized = false;
 
-static void ensureMetricOverrides(void) {
+static void ensureMetricOverrides() {
   if (!metricOverrideInitialized) {
     for (int i = 0; i < artsLastMetricType; i++)
       metricEnabledOverride[i] = -1;
@@ -158,18 +158,6 @@ static int metricIndexFromName(const char *name) {
   return -1;
 }
 
-void artsMetricsConfigSetDefaultEnabled(bool enabled) {
-  ensureMetricOverrides();
-  metricDefaultEnabled = enabled ? 1 : 0;
-}
-
-void artsMetricsConfigSetEnabled(const char *name, bool enabled) {
-  ensureMetricOverrides();
-  int index = metricIndexFromName(name);
-  if (index >= 0)
-    metricEnabledOverride[index] = enabled ? 1 : 0;
-}
-
 static inline bool metricIsEnabled(artsMetricType type) {
   if (!metricOverrideInitialized)
     return metricDefaultEnabled;
@@ -185,6 +173,20 @@ static artsMetricLevel updatePerformanceCoreMetric(unsigned int core,
                                                    artsMetricType type,
                                                    artsMetricLevel level,
                                                    uint64_t toAdd, bool sub);
+
+#ifdef USE_METRICS
+
+void artsMetricsConfigSetDefaultEnabled(bool enabled) {
+  ensureMetricOverrides();
+  metricDefaultEnabled = enabled ? 1 : 0;
+}
+
+void artsMetricsConfigSetEnabled(const char *name, bool enabled) {
+  ensureMetricOverrides();
+  int index = metricIndexFromName(name);
+  if (index >= 0)
+    metricEnabledOverride[index] = enabled ? 1 : 0;
+}
 
 void artsMetricsTriggerEvent(artsMetricType metricType, artsMetricLevel level,
                              uint64_t value) {
@@ -207,16 +209,16 @@ void artsMetricsTriggerTimerEvent(artsMetricType metricType,
   }
 }
 
-void artsMetricsToggleThread(void) {
+void artsMetricsToggleThread() {
   inspectorIgnore = !inspectorIgnore;
   ARTS_DEBUG("II: %u\n", inspectorIgnore);
 }
 
-uint64_t artsMetricsGetInspectorTime(void) {
+uint64_t artsMetricsGetInspectorTime() {
   return inspector ? inspector->startTimeStamp : 0;
 }
 
-bool artsMetricsIsActive(void) { return (inspectorOn); }
+bool artsMetricsIsActive() { return (inspectorOn); }
 
 void artsMetricsStart(unsigned int startPoint) {
   if (inspector && inspector->startPoint == startPoint) {
@@ -225,14 +227,14 @@ void artsMetricsStart(unsigned int startPoint) {
   }
 }
 
-void artsMetricsStop(void) {
+void artsMetricsStop() {
   if (inspector) {
     inspectorOn = 0;
     inspector->endTimeStamp = globalTimeStamp();
   }
 }
 
-static void printMetrics(void) {
+static void printMetrics() {
   for (unsigned int i = 0; i < artsLastMetricType; i++) {
     ARTS_INFO("%35s %ld %ld %ld %ld %ld %ld %ld %ld %ld\n", artsMetricName[i],
               countWindow[i][0], countWindow[i][1], countWindow[i][2],
@@ -855,12 +857,12 @@ void artsMetricsReadConfigFile(char *filename) {
     free(line);
 }
 
-void artsMetricsPrintInspectorTime(void) {
+void artsMetricsPrintInspectorTime() {
   printf("Stat 0 Node %u Start %" PRIu64 " End %" PRIu64 "\n", artsGlobalRankId,
          inspector->startTimeStamp, inspector->endTimeStamp);
 }
 
-void artsMetricsPrintInspectorStats(void) {
+void artsMetricsPrintInspectorStats() {
   printf("Stat 3 Node %u Node_Updates %" PRIu64 " System_Updates %" PRIu64
          " Remote_Updates  %" PRIu64 " System_Messages %" PRIu64 "\n",
          artsGlobalRankId, stats->nodeUpdates, stats->systemUpdates,
@@ -959,3 +961,5 @@ void artsMetricsIntervalPacketStats(uint64_t *totalBytes,
     artsWriterUnlock(&packetInspector->intervalWriter);
   }
 }
+
+#endif // USE_METRICS

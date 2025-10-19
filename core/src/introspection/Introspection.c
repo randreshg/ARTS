@@ -39,8 +39,6 @@
 
 #include "arts/introspection/Introspection.h"
 
-#if defined(USE_COUNTERS) || defined(USE_METRICS)
-
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +46,9 @@
 #include <sys/stat.h>
 #include <time.h>
 
+#include "arts/introspection/Counter.h"
 #include "arts/introspection/JsonWriter.h"
+#include "arts/introspection/Metrics.h"
 #include "arts/runtime/Globals.h"
 
 artsIntrospectionConfig globalIntrospectionConfig = {0};
@@ -183,23 +183,25 @@ static void parseMetricLine(const char *line) {
   }
 }
 
+#if defined(USE_COUNTER) || defined(USE_METRICS)
+
 void artsIntrospectionInit(const char *configFile) {
   globalIntrospectionConfig.introspectionFolder = strdup("./introspection");
   globalIntrospectionConfig.counterDefault = true;
   globalIntrospectionConfig.introspectionStartPoint = 1;
   globalIntrospectionConfig.introspectionTraceLevel = 0;
 
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
   globalIntrospectionConfig.enableCounters = true;
 #else
   globalIntrospectionConfig.enableCounters = false;
-#endif
+#endif // USE_COUNTER
 
 #ifdef USE_METRICS
   globalIntrospectionConfig.enableMetrics = true;
 #else
   globalIntrospectionConfig.enableMetrics = false;
-#endif
+#endif // USE_METRICS
 
   if (!configFile)
     return;
@@ -238,7 +240,7 @@ void artsIntrospectionInit(const char *configFile) {
 #ifdef USE_METRICS
     artsMetricsInitIntrospector(
         globalIntrospectionConfig.introspectionStartPoint);
-#endif
+#endif // USE_METRICS
   }
 
   if (line)
@@ -246,25 +248,25 @@ void artsIntrospectionInit(const char *configFile) {
 }
 
 void artsIntrospectionStart(unsigned int startPoint) {
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
   artsCounterStart(startPoint);
-#endif
+#endif // USE_COUNTER
 #ifdef USE_METRICS
   artsMetricsStart(startPoint);
-#endif
+#endif // USE_METRICS
 }
 
 void artsIntrospectionStop() {
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
   if (globalIntrospectionConfig.enableCounters) {
     artsCounterStop();
   }
-#endif
+#endif // USE_COUNTER
 #ifdef USE_METRICS
   if (globalIntrospectionConfig.enableMetrics) {
     artsMetricsStop();
   }
-#endif
+#endif // USE_METRICS
 
   if (globalIntrospectionConfig.introspectionFolder) {
     for (unsigned int threadId = 0; threadId < artsNodeInfo.totalThreadCount;
@@ -315,7 +317,7 @@ void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
   }
   artsJsonWriterEndObject(&writer);
 
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
   if (writeCounters && artsThreadInfo.counterList) {
     artsJsonWriterBeginObject(&writer, "counters");
     uint64_t length = artsLengthArrayList(artsThreadInfo.counterList);
@@ -337,7 +339,7 @@ void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
     }
     artsJsonWriterEndObject(&writer);
   }
-#endif
+#endif // USE_COUNTER
 
 #ifdef USE_METRICS
   if (writeMetrics) {
@@ -365,7 +367,7 @@ void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
     }
     artsJsonWriterEndObject(&writer);
   }
-#endif
+#endif // USE_METRICS
 
   artsJsonWriterEndObject(&writer);
   artsJsonWriterFinish(&writer);
@@ -373,4 +375,4 @@ void artsIntrospectionWriteOutput(const char *outputFolder, unsigned int nodeId,
   fclose(fp);
 }
 
-#endif
+#endif // USE_COUNTER || USE_METRICS

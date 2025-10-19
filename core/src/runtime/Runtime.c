@@ -40,7 +40,9 @@
 
 #include "arts/gas/Guid.h"
 #include "arts/gas/RouteTable.h"
+#include "arts/introspection/Counter.h"
 #include "arts/introspection/Introspection.h"
+#include "arts/introspection/Metrics.h"
 #include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
 #include "arts/runtime/Globals.h"
@@ -314,7 +316,7 @@ void artsRuntimePrivateInit(struct threadMask *unit,
   artsThreadInfo.localCounting = 1;
   artsThreadInfo.shadLock = 0;
   artsGuidKeyGeneratorInit();
-#ifdef USE_COUNTERS
+#ifdef USE_COUNTER
   artsCounterInitList(unit->id, artsGlobalRankId);
 #endif
 

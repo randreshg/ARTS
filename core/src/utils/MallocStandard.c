@@ -41,10 +41,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "arts/introspection/Introspection.h"
+#include "arts/introspection/Counter.h"
+#include "arts/introspection/Metrics.h"
 #include "arts/runtime/Globals.h"
-#include "arts/system/ArtsPrint.h"
-#include "arts/system/Debug.h"
 #include "arts/utils/Queue.h"
 
 #define IS_POWER_OF_TWO(x) (!((x) & ((x) - 1)))

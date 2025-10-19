@@ -42,7 +42,7 @@
 #include "arts/gas/Guid.h"
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/introspection/Introspection.h"
+#include "arts/introspection/Counter.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/RT.h"
 #include "arts/runtime/compute/EdtFunctions.h"
