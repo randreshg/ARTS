@@ -180,9 +180,10 @@ void artsFree(void *ptr) {
   if (!ptr)
     return;
   header_t *hdr = (header_t *)ptr - 1;
+  size_t size = hdr->size;
   free(hdr->base);
 
   if (artsThreadInfo.mallocTrace)
-    artsMetricsTriggerEvent(artsFreeBW, artsThread, hdr->size);
+    artsMetricsTriggerEvent(artsFreeBW, artsThread, size);
   artsCounterTriggerTimerEvent(freeMemory, false);
 }
