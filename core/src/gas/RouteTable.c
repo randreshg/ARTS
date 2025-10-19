@@ -558,9 +558,10 @@ bool artsRouteTableAddSent(artsGuid_t key, void *edt, unsigned int slot,
     sendReq = markRequested(item);
   } else {
     sendReq = artsRouteTableReserveItemRace(key, &item, true);
-    if (!sendReq && !incItem(item, 1, item->key, routeTable))
+    if (!sendReq && !incItem(item, 1, item->key, routeTable)) {
       ARTS_INFO("Item marked for deletion before it has arrived %u...",
                 sendReq);
+    }
   }
   artsOutOfOrderHandleDbRequestWithOOList(&item->ooList, &item->data,
                                           (struct artsEdt *)edt, slot);

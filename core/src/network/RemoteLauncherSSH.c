@@ -45,7 +45,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "arts/arts.h"
 #include "arts/system/Config.h"
 
 static int artsShellQuote(const char *input, char *output, size_t outputSize) {
@@ -121,7 +120,11 @@ void artsRemoteLauncherSSHStartupProcesses(
     basePtr = slashPtr + 1;
   }
   if (basePtr && basePtr[0] != '\0') {
-    snprintf(binaryName, sizeof(binaryName), "%s", basePtr);
+    size_t baseLen = strlen(basePtr);
+    size_t copyLen =
+        (baseLen < sizeof(binaryName) - 1) ? baseLen : sizeof(binaryName) - 1;
+    memcpy(binaryName, basePtr, copyLen);
+    binaryName[copyLen] = '\0';
   }
 
   // Allocate for all non-master nodes

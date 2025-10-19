@@ -63,8 +63,8 @@ void forkNqueens(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 
   unsigned int numNodes = artsGetTotalNodes();
   srand(time(NULL) + artsGetCurrentNode());
-  artsGuid_t joinGuid =
-      artsEdtCreate(joinNqueens, rand() % numNodes, 2, paramv, count);
+  unsigned int route = rand() % numNodes;
+  artsGuid_t joinGuid = artsEdtCreate(joinNqueens, route, 2, paramv, count);
   for (int i = 0; i < count; i++) {
     nqueen_data_t *nextData;
     artsGuid_t dbGuid =
@@ -136,11 +136,11 @@ void artsMain(int argc, char **argv) {
   srand(time(NULL) + artsGetCurrentNode());
 
   uint64_t finalParamv[2] = {(uint64_t)startTime, (uint64_t)n};
-  artsGuid_t finalGuid =
-      artsEdtCreate(finalNqueens, rand() % numNodes, 2, finalParamv, 1);
+  unsigned int route = rand() % numNodes;
+  artsGuid_t finalGuid = artsEdtCreate(finalNqueens, route, 2, finalParamv, 1);
   uint64_t forkParamv[2] = {finalGuid, 0};
-  artsGuid_t forkGuid =
-      artsEdtCreate(forkNqueens, rand() % numNodes, 2, forkParamv, 1);
+  route = rand() % numNodes;
+  artsGuid_t forkGuid = artsEdtCreate(forkNqueens, route, 2, forkParamv, 1);
   nqueen_data_t *forkData;
   artsGuid_t dbGuid =
       artsDbCreate((void **)&forkData, sizeof(nqueen_data_t), ARTS_DB_READ);
