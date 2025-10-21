@@ -47,6 +47,8 @@ extern "C" {
 
 #include "arts/runtime/RT.h"
 
+#include "arts/utils/Atomics.h"
+
 // This is the entry point to starting the ARTS runtime.  Call from main.
 int artsRT(int argc, char **argv);
 
