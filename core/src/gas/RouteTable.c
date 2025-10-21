@@ -228,15 +228,12 @@ bool incItem(artsRouteItem_t *item, unsigned int count, artsGuid_t key,
 }
 
 bool decItem(artsRouteTable_t *routeTable, artsRouteItem_t *item) {
-  uint64_t local = item->lock;
+  uint64_t local = artsAtomicSubU64(&item->lock, 1);
   if (getCount(local) == 0) {
-    printState(item);
-    artsDebugGenerateSegFault();
-  }
-  local = artsAtomicSubU64(&item->lock, 1);
-  if (shouldDelete(local)) {
-    routeTable->freeFunc(item);
-    return true;
+    if (shouldDelete(local)) {
+      routeTable->freeFunc(item);
+      return true;
+    }
   }
   return false;
 }
