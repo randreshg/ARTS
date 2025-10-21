@@ -59,9 +59,9 @@ struct artsConfigVariable {
 struct artsConfig {
   unsigned int myRank;
   char *masterNode;
-  char *myIPAddress;
+  // char *myIPAddress;
   char *netInterface;
-  char *protocol;
+  // char *protocol;
   char *launcher;
   unsigned int ports;
   unsigned int osThreadCount;
@@ -69,7 +69,7 @@ struct artsConfig {
   unsigned int coreCount;
   unsigned int recieverCount;
   unsigned int senderCount;
-  unsigned int socketCount;
+  // unsigned int socketCount;
   unsigned int nodes;
   unsigned int masterRank;
   unsigned int port;
@@ -90,7 +90,7 @@ struct artsConfig {
   unsigned int pinStride;
   bool printTopology;
   bool pinThreads;
-  unsigned int firstEdt;
+  // unsigned int firstEdt;
   unsigned int shadLoopStride;
   uint64_t stackSize;
   struct artsRemoteLauncher *launcherData;

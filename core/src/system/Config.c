@@ -703,12 +703,14 @@ struct artsConfig *artsConfigLoad() {
     config->recieverCount = 1;
   }
 
-  if ((foundVariable = artsConfigFindVariable(&configVariables, "sockets")) !=
-      NULL)
-    config->socketCount = strtol(foundVariable->value, &end, 10);
-  else {
-    config->socketCount = 1;
-  }
+  // if ((foundVariable = artsConfigFindVariable(&configVariables, "sockets"))
+  // !=
+  //     NULL)
+  //   config->socketCount = strtol(foundVariable->value, &end, 10);
+  // else {
+  //   ARTS_DEBUG_ONCE("Defaulting to 1 sockets");
+  //   config->socketCount = 1;
+  // }
 
   if ((foundVariable =
            artsConfigFindVariable(&configVariables, "netInterface")) != NULL) {
@@ -723,12 +725,15 @@ struct artsConfig *artsConfigLoad() {
     config->ibNames = false;
   }
 
-  if ((foundVariable = artsConfigFindVariable(&configVariables, "protocol")) !=
-      NULL)
-    config->protocol = artsConfigMakeNewVar(foundVariable->value);
-  else {
-    config->protocol = artsConfigMakeNewVar("tcp");
-  }
+  // if ((foundVariable = artsConfigFindVariable(&configVariables, "protocol"))
+  // !=
+  //     NULL)
+  //   config->protocol = artsConfigMakeNewVar(foundVariable->value);
+  // else {
+  //   ARTS_DEBUG_ONCE("No protocol given: defaulting to tcp");
+
+  //   config->protocol = artsConfigMakeNewVar("tcp");
+  // }
 
   if ((foundVariable =
            artsConfigFindVariable(&configVariables, "masterNode")) != NULL) {
@@ -1068,6 +1073,6 @@ void artsConfigDestroy(struct artsConfig *config) {
   if (config->masterNode) {
     artsFree(config->masterNode);
   }
-  artsFree(config->protocol);
+  // artsFree(config->protocol);
   artsFree(config);
 }
