@@ -184,9 +184,10 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.keys = (uint64_t **)artsCalloc(totalThreads, sizeof(uint64_t *));
   artsNodeInfo.globalGuidThreadId =
       (uint64_t *)artsCalloc(totalThreads, sizeof(uint64_t));
+  artsNodeInfo.introspectionFolder = config->introspectionFolder;
+  artsNodeInfo.introspectionStartPoint = config->introspectionStartPoint;
   artsTMTNodeInit(workerThreads);
   artsInitTMTLitePerNode(workerThreads);
-  artsIntrospectionInit(config->introspectiveConf);
 #ifdef USE_GPU
   if (artsNodeInfo.gpu) // TODO: Multi-Node init
     artsNodeInitGpus();
@@ -316,9 +317,9 @@ void artsRuntimePrivateInit(struct threadMask *unit,
   artsThreadInfo.localCounting = 1;
   artsThreadInfo.shadLock = 0;
   artsGuidKeyGeneratorInit();
-#ifdef USE_COUNTER
-  artsCounterInitList(unit->id, artsGlobalRankId);
-#endif
+  artsCounterListInit(config->introspectionFolder,
+                      config->introspectionStartPoint, unit->id,
+                      artsGlobalRankId);
 
   if (artsThreadInfo.worker) {
     if (artsNodeInfo.tMT && artsThreadInfo.worker) // @awmm
@@ -559,7 +560,7 @@ bool artsDefaultSchedulerLoop() {
 }
 
 int artsRuntimeLoop() {
-  artsCounterTriggerTimerEvent(totalCounter, true);
+  TOTAL_COUNTER_START();
   if (artsThreadInfo.networkReceive) {
     while (artsThreadInfo.alive) {
       artsServerTryToReceive(&artsNodeInfo.buf, &artsNodeInfo.packetSize,
@@ -578,6 +579,6 @@ int artsRuntimeLoop() {
       artsNodeInfo.scheduler();
     }
   }
-  artsCounterTriggerTimerEvent(totalCounter, false);
+  TOTAL_COUNTER_STOP();
   return 0;
 }

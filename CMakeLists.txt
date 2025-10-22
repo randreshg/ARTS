@@ -84,13 +84,11 @@ option(ARTS_BUILD_BENCHMARK "Build benchmark programs" ON)
 
 # Feature options (can be set via command line)
 option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" OFF)
-option(USE_RDMA "Use RDMA RSockets networking (default: ON, use TCP when OFF)" ON)
+option(USE_RDMA "Use RDMA RSockets networking (default: ON, use TCP when OFF)" OFF)
 option(USE_HWLOC "Use hwloc for hardware topology (default: ON, disable when OFF)" ON)
 option(USE_GPU "Enable GPU support (default: ON, disable when OFF)" ON)
 option(USE_SIMPLE_ARCH "Use simple architecture implementations" OFF)
 option(USE_SMART_DB "Enable smart database features (currently not supported)" OFF)
-option(USE_COUNTER "Enable counters for performance monitoring" ON)
-option(USE_METRICS "Enable metrics/inspector for performance monitoring" ON)
 option(ARTS_INFO_ENABLED "Enable info-level logging" OFF)
 option(ARTS_DEBUG_ENABLED "Enable debug-level logging" OFF)
 option(USE_PRIORITY_DEQUE "Use priority Chase-Lev deque implementation" OFF)
@@ -293,16 +291,6 @@ if(USE_SMART_DB)
     message(STATUS "Smart database: Using smart database - USE_SMART_DB defined")
 endif()
 
-if(USE_COUNTER)
-    add_compile_definitions(-DUSE_COUNTER)
-    message(STATUS "Counters: Using counters - USE_COUNTER defined")
-endif()
-
-if(USE_METRICS)
-    add_compile_definitions(-DUSE_METRICS)
-    message(STATUS "Metrics: Using metrics - USE_METRICS defined")
-endif()
-
 if(ARTS_INFO_ENABLED)
     add_compile_definitions(-DARTS_INFO_ENABLED)
     message(STATUS "Info logging: Enabled - ARTS_INFO_ENABLED defined")
@@ -352,6 +340,11 @@ else()
         FILES_MATCHING PATTERN "*.h"
     )
 endif()
+
+# Install generated Introspection.h from build directory
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/core/inc/arts/introspection/Introspection.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/arts/introspection
+)
 
 # Install library targets
 if(ARTS_BUILD_STATIC)

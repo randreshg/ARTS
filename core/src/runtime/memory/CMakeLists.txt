@@ -3,7 +3,7 @@ file(GLOB MEMORY_SOURCES "*.c")
 
 # CPU-only object library
 add_library(arts_runtime_memory OBJECT ${MEMORY_SOURCES})
-target_include_directories(arts_runtime_memory PRIVATE ${ARTS_CORE_INCLUDE_DIR})
+target_include_directories(arts_runtime_memory PRIVATE ${ARTS_CORE_INCLUDE_DIR} ${ARTS_CORE_BUILD_INCLUDE_DIR})
 
 # Add hwloc include directories if available
 if(HWLOC_INCLUDE_DIRS)

@@ -42,7 +42,7 @@ file(GLOB RUNTIME_MAIN_SOURCES "*.c")
 
 # CPU-only object library
 add_library(arts_runtime OBJECT ${RUNTIME_MAIN_SOURCES})
-target_include_directories(arts_runtime PRIVATE ${ARTS_CORE_INCLUDE_DIR})
+target_include_directories(arts_runtime PRIVATE ${ARTS_CORE_INCLUDE_DIR} ${ARTS_CORE_BUILD_INCLUDE_DIR})
 
 # Add hwloc include directories if available
 if(HWLOC_INCLUDE_DIRS)

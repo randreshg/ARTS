@@ -149,7 +149,7 @@ typedef enum artsMetricType {
   artsEpochDeleteMsg,
   artsAtomicAddArraydbMsg,
   artsAtomicCasArraydbMsg,
-  artsRemote_bufferSendMsg,
+  artsRemoteBufferSendMsg,
   artsRemoteContextSigMsg,
   artsRemoteDbRenameMsg,
   artsDefaultMemorySize,
@@ -243,8 +243,6 @@ typedef struct {
   char *prefix;
 } artsInspectorShots;
 
-#ifdef USE_METRICS
-
 void artsMetricsConfigSetDefaultEnabled(bool enabled);
 void artsMetricsConfigSetEnabled(const char *name, bool enabled);
 void artsMetricsTriggerEvent(artsMetricType metricType, artsMetricLevel level,
@@ -280,36 +278,6 @@ void artsMetricsPacketStats(uint64_t *totalBytes, uint64_t *totalPackets,
 void artsMetricsIntervalPacketStats(uint64_t *totalBytes,
                                     uint64_t *totalPackets, uint64_t *minPacket,
                                     uint64_t *maxPacket);
-
-#else
-
-#define artsMetricsConfigSetDefaultEnabled(enabled) ((void)0)
-#define artsMetricsConfigSetEnabled(name, enabled) ((void)0)
-#define artsMetricsTriggerEvent(metricType, level, value) ((void)0)
-#define artsMetricsTriggerTimerEvent(metricType, level, start) ((void)0)
-#define artsMetricsToggleThread()
-#define artsMetricsGetInspectorTime() 0
-#define artsMetricsIsActive() 0
-#define artsMetricsStart(startPoint)
-#define artsMetricsStop()
-#define artsMetricsInitIntrospector(startPoint)
-#define artsMetricsGetTotal(type, level) 0
-#define artsMetricsGetRate(type, level, last) 0
-#define artsMetricsGetTotalRate(type, level) 0
-#define artsMetricsTest(type, level, num) 0
-#define artsMetricsGetRateU64(type, level, last) 0
-#define artsMetricsGetRateU64Diff(type, level, diff) 0
-#define artsMetricsGetTotalRateU64(type, level, total, timeStamp) 0
-#define artsMetricsHandleRemoteUpdate(type, level, toAdd, sub) 0
-#define artsMetricsPrintInspectorTime()
-#define artsMetricsPrintInspectorStats()
-#define artsMetricsPrintModelTotalMetrics(level)
-#define artsMetricsUpdatePacketInfo(bytes)
-#define artsMetricsPacketStats(totalBytes, totalPackets, minPacket, maxPacket)
-#define artsMetricsIntervalPacketStats(totalBytes, totalPackets, minPacket,    \
-                                       maxPacket)
-
-#endif // USE_METRICS
 
 #ifdef __cplusplus
 }

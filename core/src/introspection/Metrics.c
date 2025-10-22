@@ -111,7 +111,7 @@ const char *const artsMetricName[] = {"artsEdtThroughput",
                                       "artsEpochDeleteMsg",
                                       "artsAtomicAddArraydbMsg",
                                       "artsAtomicCasArraydbMsg",
-                                      "artsRemote_bufferSendMsg",
+                                      "artsRemoteBufferSendMsg",
                                       "artsRemoteContextSigMsg",
                                       "artsRemoteDbRenameMsg",
                                       "artsDefaultMemorySize",
@@ -173,8 +173,6 @@ static artsMetricLevel updatePerformanceCoreMetric(unsigned int core,
                                                    artsMetricType type,
                                                    artsMetricLevel level,
                                                    uint64_t toAdd, bool sub);
-
-#ifdef USE_METRICS
 
 void artsMetricsConfigSetDefaultEnabled(bool enabled) {
   ensureMetricOverrides();
@@ -961,5 +959,3 @@ void artsMetricsIntervalPacketStats(uint64_t *totalBytes,
     artsWriterUnlock(&packetInspector->intervalWriter);
   }
 }
-
-#endif // USE_METRICS

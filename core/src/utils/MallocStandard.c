@@ -41,8 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "arts/introspection/Counter.h"
-#include "arts/introspection/Metrics.h"
+#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Queue.h"
@@ -60,16 +59,16 @@ static inline void *alignPointer(void *ptr, size_t align) {
 }
 
 void *artsMalloc(size_t size) {
-  artsCounterTriggerTimerEvent(mallocMemory, true);
+  MALLOC_MEMORY_START();
 
   if (!size) {
-    artsCounterTriggerTimerEvent(mallocMemory, false);
+    MALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
 
   header_t *base = (header_t *)malloc(size + sizeof(header_t));
   if (!base) {
-    artsCounterTriggerTimerEvent(mallocMemory, false);
+    MALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
 
@@ -77,24 +76,25 @@ void *artsMalloc(size_t size) {
   base->align = 0;
   base->base = base;
 
-  if (artsThreadInfo.mallocTrace)
+  if (artsThreadInfo.mallocTrace) {
     artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
-  artsCounterTriggerTimerEvent(mallocMemory, false);
+  }
+  MALLOC_MEMORY_STOP();
 
   return base + 1;
 }
 
 void *artsMallocAlign(size_t size, size_t align) {
-  artsCounterTriggerTimerEvent(mallocMemory, true);
+  MALLOC_MEMORY_START();
 
   if (!size || align < ALIGNMENT || !IS_POWER_OF_TWO(align)) {
-    artsCounterTriggerTimerEvent(mallocMemory, false);
+    MALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
 
   void *base = malloc(size + align - 1 + sizeof(header_t));
   if (!base) {
-    artsCounterTriggerTimerEvent(mallocMemory, false);
+    MALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
 
@@ -105,18 +105,19 @@ void *artsMallocAlign(size_t size, size_t align) {
   hdr->align = align;
   hdr->base = base;
 
-  if (artsThreadInfo.mallocTrace)
+  if (artsThreadInfo.mallocTrace) {
     artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
-  artsCounterTriggerTimerEvent(mallocMemory, false);
+  }
+  MALLOC_MEMORY_STOP();
 
   return aligned;
 }
 
 void *artsCalloc(size_t nmemb, size_t size) {
-  artsCounterTriggerTimerEvent(callocMemory, true);
+  CALLOC_MEMORY_START();
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb) {
-    artsCounterTriggerTimerEvent(callocMemory, false);
+    CALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
 
@@ -124,19 +125,20 @@ void *artsCalloc(size_t nmemb, size_t size) {
   void *ptr = artsMalloc(totalSize);
   memset(ptr, 0, totalSize);
 
-  if (artsThreadInfo.mallocTrace)
+  if (artsThreadInfo.mallocTrace) {
     artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
-  artsCounterTriggerTimerEvent(callocMemory, false);
+  }
+  CALLOC_MEMORY_STOP();
 
   return ptr;
 }
 
 void *artsCallocAlign(size_t nmemb, size_t size, size_t align) {
-  artsCounterTriggerTimerEvent(callocMemory, true);
+  CALLOC_MEMORY_START();
 
   if (!nmemb || !size || size > SIZE_MAX / nmemb || align < ALIGNMENT ||
       !IS_POWER_OF_TWO(align)) {
-    artsCounterTriggerTimerEvent(callocMemory, false);
+    CALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
 
@@ -144,16 +146,18 @@ void *artsCallocAlign(size_t nmemb, size_t size, size_t align) {
   void *ptr = artsMallocAlign(totalSize, align);
   memset(ptr, 0, totalSize);
 
-  if (artsThreadInfo.mallocTrace)
+  if (artsThreadInfo.mallocTrace) {
     artsMetricsTriggerEvent(artsMallocBW, artsThread, size);
-  artsCounterTriggerTimerEvent(callocMemory, false);
+  }
+  CALLOC_MEMORY_STOP();
 
   return ptr;
 }
 
 void *artsRealloc(void *ptr, size_t size) {
-  if (!ptr)
+  if (!ptr) {
     return artsMalloc(size);
+  }
   if (!size) {
     artsFree(ptr);
     return NULL;
@@ -175,15 +179,17 @@ void *artsRealloc(void *ptr, size_t size) {
 }
 
 void artsFree(void *ptr) {
-  artsCounterTriggerTimerEvent(freeMemory, true);
+  FREE_MEMORY_START();
 
-  if (!ptr)
+  if (!ptr) {
     return;
+  }
   header_t *hdr = (header_t *)ptr - 1;
   size_t size = hdr->size;
   free(hdr->base);
 
-  if (artsThreadInfo.mallocTrace)
+  if (artsThreadInfo.mallocTrace) {
     artsMetricsTriggerEvent(artsFreeBW, artsThread, size);
-  artsCounterTriggerTimerEvent(freeMemory, false);
+  }
+  FREE_MEMORY_STOP();
 }

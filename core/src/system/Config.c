@@ -703,15 +703,6 @@ struct artsConfig *artsConfigLoad() {
     config->recieverCount = 1;
   }
 
-  // if ((foundVariable = artsConfigFindVariable(&configVariables, "sockets"))
-  // !=
-  //     NULL)
-  //   config->socketCount = strtol(foundVariable->value, &end, 10);
-  // else {
-  //   ARTS_DEBUG_ONCE("Defaulting to 1 sockets");
-  //   config->socketCount = 1;
-  // }
-
   if ((foundVariable =
            artsConfigFindVariable(&configVariables, "netInterface")) != NULL) {
     config->netInterface = artsConfigMakeNewVar(foundVariable->value);
@@ -724,16 +715,6 @@ struct artsConfig *artsConfigLoad() {
     config->netInterface = NULL;
     config->ibNames = false;
   }
-
-  // if ((foundVariable = artsConfigFindVariable(&configVariables, "protocol"))
-  // !=
-  //     NULL)
-  //   config->protocol = artsConfigMakeNewVar(foundVariable->value);
-  // else {
-  //   ARTS_DEBUG_ONCE("No protocol given: defaulting to tcp");
-
-  //   config->protocol = artsConfigMakeNewVar("tcp");
-  // }
 
   if ((foundVariable =
            artsConfigFindVariable(&configVariables, "masterNode")) != NULL) {
@@ -758,22 +739,16 @@ struct artsConfig *artsConfigLoad() {
     config->suffix = NULL;
 
   if ((foundVariable = artsConfigFindVariable(&configVariables,
-                                              "introspectiveConf")) != NULL)
-    config->introspectiveConf = artsConfigMakeNewVar(foundVariable->value);
+                                              "introspectionFolder")) != NULL)
+    config->introspectionFolder = artsConfigMakeNewVar(foundVariable->value);
   else
-    config->introspectiveConf = NULL;
+    config->introspectionFolder = artsConfigMakeNewVar("./introspection");
 
   if ((foundVariableChar = artsConfigFindVariableChar(
-           configVariables, "introspectiveTraceLevel")) != NULL)
-    config->introspectiveTraceLevel = strtol(foundVariableChar, &end, 10);
+           configVariables, "introspectionStartPoint")) != NULL)
+    config->introspectionStartPoint = strtol(foundVariableChar, &end, 10);
   else
-    config->introspectiveTraceLevel = 1;
-
-  if ((foundVariableChar = artsConfigFindVariableChar(
-           configVariables, "introspectiveStartPoint")) != NULL)
-    config->introspectiveStartPoint = strtol(foundVariableChar, &end, 10);
-  else
-    config->introspectiveStartPoint = 1;
+    config->introspectionStartPoint = 1;
 
   if ((foundVariableChar = artsConfigFindVariableChar(
            configVariables, "printNodeStats")) != NULL)
@@ -1073,6 +1048,5 @@ void artsConfigDestroy(struct artsConfig *config) {
   if (config->masterNode) {
     artsFree(config->masterNode);
   }
-  // artsFree(config->protocol);
   artsFree(config);
 }

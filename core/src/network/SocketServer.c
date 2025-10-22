@@ -415,11 +415,6 @@ unsigned int artsRemoteSendRequest(int rank, unsigned int queue, char *message,
                                    unsigned int length) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef USE_COUNTER
-    // struct artsRemotePacket * pk = (void *)message;
-    // if(!pk->timeStamp)
-    //     pk->timeStamp = artsExtGetTimeStamp();
-#endif
     return artsActualSend(message, length, rank, port);
   }
   return length;
@@ -430,11 +425,6 @@ unsigned int artsRemoteSendPayloadRequest(int rank, unsigned int queue,
                                           char *payload, int length2) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-#ifdef USE_COUNTER
-    // struct artsRemotePacket * pk = (void *)message;
-    // if(!pk->timeStamp)
-    //     pk->timeStamp = artsExtGetTimeStamp();
-#endif
     int tempLength = artsActualSend(message, length, rank, port);
     if (tempLength)
       return tempLength + length2;
