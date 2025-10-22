@@ -169,7 +169,17 @@ void artsRemoteLauncherSSHStartupProcesses(
       if (binaryName[0] != '\0') {
         finalLength +=
             snprintf(command + finalLength, sizeof(command) - finalLength,
-                     "cd %s && ./%s", cwd, binaryName);
+                     "cd %s && ", cwd);
+        // Pass through artsConfig environment variable if set
+        char *artsConfigEnv = getenv("artsConfig");
+        if (artsConfigEnv) {
+          finalLength +=
+              snprintf(command + finalLength, sizeof(command) - finalLength,
+                       "artsConfig=%s ", artsConfigEnv);
+        }
+        finalLength +=
+            snprintf(command + finalLength, sizeof(command) - finalLength,
+                     "./%s", binaryName);
         // Pass through any arguments beyond argv[0] if provided
         for (j = 1; j < (int)argc; j++) {
           finalLength +=
@@ -179,7 +189,14 @@ void artsRemoteLauncherSSHStartupProcesses(
       } else {
         // Fallback: attempt to use argv if available, otherwise just cd
         finalLength += snprintf(command + finalLength,
-                                sizeof(command) - finalLength, "cd %s", cwd);
+                                sizeof(command) - finalLength, "cd %s && ", cwd);
+        // Pass through artsConfig environment variable if set
+        char *artsConfigEnv = getenv("artsConfig");
+        if (artsConfigEnv) {
+          finalLength +=
+              snprintf(command + finalLength, sizeof(command) - finalLength,
+                       "artsConfig=%s ", artsConfigEnv);
+        }
         for (j = 0; j < (int)argc; j++) {
           finalLength +=
               snprintf(command + finalLength, sizeof(command) - finalLength,
