@@ -105,8 +105,11 @@ struct artsRuntimeShared {
   unsigned int pinThreads;
   uint64_t **keys;
   uint64_t *globalGuidThreadId;
-  const char *introspectionFolder;
-  unsigned int introspectionStartPoint;
+  const char *counterFolder;
+  unsigned int counterStartPoint;
+  artsCounterCaptures *counterCaptures;
+  uint64_t counterCaptureInterval;
+  artsCounterReduces counterReduces;
 } __attribute__((aligned(64)));
 
 struct artsRuntimePrivate {
@@ -131,7 +134,7 @@ struct artsRuntimePrivate {
   int edtFree;
   int localCounting;
   unsigned int shadLock;
-  artsCounter counterList[lastCounter];
+  artsCounter *artsCounters;
   unsigned short drand_buf[3];
 };
 

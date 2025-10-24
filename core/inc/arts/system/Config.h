@@ -74,8 +74,9 @@ struct artsConfig {
   unsigned int routeTableSize;
   unsigned int routeTableEntries;
   unsigned int dequeSize;
-  char *introspectionFolder;
-  unsigned int introspectionStartPoint;
+  char *counterFolder;
+  unsigned int counterStartPoint;
+  unsigned int counterCaptureInterval;
   unsigned int printNodeStats;
   unsigned int scheduler;
   unsigned int shutdownEpoch;

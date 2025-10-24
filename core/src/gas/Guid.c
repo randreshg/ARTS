@@ -39,7 +39,6 @@
 #include "arts/gas/Guid.h"
 
 #include "arts/arts.h"
-#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"

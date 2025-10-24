@@ -46,7 +46,6 @@
 
 #include "arts/arts.h"
 #include "arts/gas/RouteTable.h"
-#include "arts/introspection/Introspection.h"
 #include "arts/runtime/Globals.h"
 
 // Constants for memory management

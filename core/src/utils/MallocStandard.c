@@ -41,7 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "arts/introspection/Introspection.h"
+#include "arts/introspection/Metrics.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/Debug.h"
 #include "arts/utils/Queue.h"
@@ -182,6 +182,7 @@ void artsFree(void *ptr) {
   FREE_MEMORY_START();
 
   if (!ptr) {
+    FREE_MEMORY_STOP();
     return;
   }
   header_t *hdr = (header_t *)ptr - 1;

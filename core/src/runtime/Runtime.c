@@ -41,7 +41,6 @@
 #include "arts/gas/Guid.h"
 #include "arts/gas/RouteTable.h"
 #include "arts/introspection/Counter.h"
-#include "arts/introspection/Introspection.h"
 #include "arts/introspection/Metrics.h"
 #include "arts/network/Remote.h"
 #include "arts/network/RemoteProtocol.h"
@@ -54,6 +53,7 @@
 #include "arts/system/TMT.h"
 #include "arts/system/TMTLite.h"
 #include "arts/system/Threads.h"
+#include "arts/utils/ArrayList.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
 
@@ -184,8 +184,26 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   artsNodeInfo.keys = (uint64_t **)artsCalloc(totalThreads, sizeof(uint64_t *));
   artsNodeInfo.globalGuidThreadId =
       (uint64_t *)artsCalloc(totalThreads, sizeof(uint64_t));
-  artsNodeInfo.introspectionFolder = config->introspectionFolder;
-  artsNodeInfo.introspectionStartPoint = config->introspectionStartPoint;
+  artsNodeInfo.counterFolder = config->counterFolder;
+  artsNodeInfo.counterStartPoint = config->counterStartPoint;
+  artsNodeInfo.counterCaptures = (artsCounterCaptures *)artsCalloc(
+      totalThreads, sizeof(artsCounterCaptures));
+  for (unsigned int t = 0; t < totalThreads; t++) {
+    for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
+      if (artsCounterEnabled[i] &&
+          (artsCounterMode[i] == artsCounterModeThread ||
+           artsCounterMode[i] == artsCounterModeNode)) {
+        artsNodeInfo.counterCaptures[t].captures[i] =
+            artsNewArrayList(sizeof(uint64_t), 16);
+      }
+    }
+  }
+  artsNodeInfo.counterCaptureInterval = config->counterCaptureInterval;
+  for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
+    if (artsCounterEnabled[i] && artsCounterMode[i] == artsCounterModeNode) {
+      artsNodeInfo.counterReduces[i] = artsNewArrayList(sizeof(uint64_t), 16);
+    }
+  }
   artsTMTNodeInit(workerThreads);
   artsInitTMTLitePerNode(workerThreads);
 #ifdef USE_GPU
@@ -195,7 +213,13 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
 }
 
 void artsRuntimeGlobalCleanup() {
-  artsIntrospectionStop();
+  artsCounterStop();
+  if (artsNodeInfo.counterFolder) {
+    for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
+      artsCounterWriteThread(artsNodeInfo.counterFolder, artsGlobalRankId, t);
+    }
+    artsCounterWriteNode(artsNodeInfo.counterFolder, artsGlobalRankId);
+  }
   artsCleanUpDbs();
   artsFree(artsNodeInfo.deque);
   artsFree(artsNodeInfo.receiverDeque);
@@ -214,7 +238,7 @@ void artsRuntimeGlobalCleanup() {
 }
 
 void artsThreadZeroNodeStart() {
-  artsIntrospectionStart(1);
+  artsCounterStart(1);
 
   setGlobalGuidOn();
   createShutdownEpoch();
@@ -227,7 +251,7 @@ void artsThreadZeroNodeStart() {
 #endif
   setGuidGeneratorAfterParallelStart();
 
-  artsIntrospectionStart(2);
+  artsCounterStart(2);
   artsAtomicSub(&artsNodeInfo.readyToParallelStart, 1U);
   while (artsNodeInfo.readyToParallelStart) {
   }
@@ -242,7 +266,7 @@ void artsThreadZeroNodeStart() {
   artsAtomicSub(&artsNodeInfo.readyToInspect, 1U);
   while (artsNodeInfo.readyToInspect) {
   }
-  artsIntrospectionStart(3);
+  artsCounterStart(3);
   artsAtomicSub(&artsNodeInfo.readyToExecute, 1U);
   while (artsNodeInfo.readyToExecute) {
   }
@@ -316,10 +340,8 @@ void artsRuntimePrivateInit(struct threadMask *unit,
   artsThreadInfo.mallocTrace = 1;
   artsThreadInfo.localCounting = 1;
   artsThreadInfo.shadLock = 0;
+  artsThreadInfo.artsCounters = artsNodeInfo.counterCaptures[unit->id].counters;
   artsGuidKeyGeneratorInit();
-  artsCounterListInit(config->introspectionFolder,
-                      config->introspectionStartPoint, unit->id,
-                      artsGlobalRankId);
 
   if (artsThreadInfo.worker) {
     if (artsNodeInfo.tMT && artsThreadInfo.worker) // @awmm

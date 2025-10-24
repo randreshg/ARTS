@@ -301,6 +301,8 @@ if(ARTS_DEBUG_ENABLED)
     message(STATUS "Debug logging: Enabled - ARTS_DEBUG_ENABLED defined")
 endif()
 
+set(COUNTER_CONFIG_PATH "${CMAKE_CURRENT_SOURCE_DIR}/counter.cfg")
+
 # Create the main ARTS library target
 add_subdirectory(core)
 
@@ -341,8 +343,8 @@ else()
     )
 endif()
 
-# Install generated Introspection.h from build directory
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/core/inc/arts/introspection/Introspection.h
+# Install generated counter/Preamble.h from build directory
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/core/inc/arts/introspection/Preamble.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/arts/introspection
 )
 

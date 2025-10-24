@@ -738,17 +738,25 @@ struct artsConfig *artsConfigLoad() {
   else
     config->suffix = NULL;
 
-  if ((foundVariable = artsConfigFindVariable(&configVariables,
-                                              "introspectionFolder")) != NULL)
-    config->introspectionFolder = artsConfigMakeNewVar(foundVariable->value);
+  if ((foundVariable =
+           artsConfigFindVariable(&configVariables, "counterFolder")) != NULL)
+    config->counterFolder = artsConfigMakeNewVar(foundVariable->value);
   else
-    config->introspectionFolder = artsConfigMakeNewVar("./introspection");
+    config->counterFolder = artsConfigMakeNewVar("./counter");
 
   if ((foundVariableChar = artsConfigFindVariableChar(
-           configVariables, "introspectionStartPoint")) != NULL)
-    config->introspectionStartPoint = strtol(foundVariableChar, &end, 10);
+           configVariables, "counterStartPoint")) != NULL)
+    config->counterStartPoint = strtol(foundVariableChar, &end, 10);
   else
-    config->introspectionStartPoint = 1;
+    config->counterStartPoint = 1;
+
+  if ((foundVariable = artsConfigFindVariable(
+           &configVariables, "counterCaptureInterval")) != NULL)
+    config->counterCaptureInterval = strtol(foundVariable->value, &end, 10);
+  else {
+    ARTS_DEBUG_ONCE("Defaulting the counter capture interval to 1000 ms");
+    config->counterCaptureInterval = 1000;
+  }
 
   if ((foundVariableChar = artsConfigFindVariableChar(
            configVariables, "printNodeStats")) != NULL)
