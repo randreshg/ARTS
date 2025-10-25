@@ -50,7 +50,7 @@ void artsRemoteSetupOutgoing();
 bool artsRemoteSetupIncoming();
 unsigned int artsRemoteGetMyRank();
 void artsRemoteShutdown();
-bool artsServerTryToRecieve(char **inBuffer, int *inPacketSize,
+bool artsServerTryToReceive(char **inBuffer, int *inPacketSize,
                             volatile unsigned int *remoteStealLock);
 void artsServerSendStealRequest();
 unsigned int artsRemoteSendRequest(int rank, unsigned int queue, char *message,

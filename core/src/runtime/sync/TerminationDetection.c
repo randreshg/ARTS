@@ -146,6 +146,7 @@ void incrementFinishedEpoch(artsGuid_t epochGuid) {
 void sendEpoch(artsGuid_t epochGuid, unsigned int source, unsigned int dest) {
   artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
+    ARTS_DEBUG("Sending epoch [Guid: %lu] to rank %u", epochGuid, dest);
     artsAtomicFetchAndU64(&epoch->queued, EpochMask);
     if (!artsAtomicCswapU64(&epoch->queued, 0, EpochBit)) {
       artsRemoteEpochSend(dest, epochGuid, epoch->activeCount,
@@ -249,11 +250,17 @@ void artsStartEpoch(artsGuid_t epochGuid) {
 bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
                 unsigned int totalFinish) {
   unsigned int diff = totalActive - totalFinish;
+  ARTS_DEBUG("checkEpoch: totalActive=%u, totalFinish=%u, diff=%u, phase=%u, "
+             "lastActive=%u, lastFinished=%u",
+             totalActive, totalFinish, diff, epoch->phase,
+             epoch->lastActiveCount, epoch->lastFinishedCount);
   // We have a zero
   if (totalFinish && !diff) {
     // Lets check the phase and if we have the same counts as before
     if (epoch->phase == PHASE_2 && epoch->lastActiveCount == totalActive &&
         epoch->lastFinishedCount == totalFinish) {
+      ARTS_DEBUG(
+          "checkEpoch: Advancing to PHASE_3 - epoch termination complete!");
       epoch->phase = PHASE_3;
       if (epoch->waitPtr)
         *epoch->waitPtr = 0;
@@ -299,26 +306,44 @@ void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
     unsigned int totalActive = artsAtomicAdd(&epoch->globalActiveCount, active);
     unsigned int totalFinish =
         artsAtomicAdd(&epoch->globalFinishedCount, finish);
+    uint64_t outstanding_before = epoch->outstanding;
     if (artsAtomicSubU64(&epoch->outstanding, 1) == 1) {
       totalActive += epoch->activeCount;
       totalFinish += epoch->finishedCount;
+
+      ARTS_DEBUG("reduceEpoch [Guid: %lu]: totalActive=%u, totalFinish=%u, "
+                 "phase=%u, outstanding_before=%lu, queued=%lu",
+                 epochGuid, totalActive, totalFinish, epoch->phase,
+                 outstanding_before, epoch->queued);
 
       // Reset for the next round
       epoch->globalActiveCount = 0;
       epoch->globalFinishedCount = 0;
 
       if (checkEpoch(epoch, totalActive, totalFinish)) {
+        ARTS_DEBUG("  checkEpoch returned TRUE - broadcasting new request");
         artsAtomicAddU64(&epoch->outstanding, artsGlobalRankCount - 1);
         broadcastEpochRequest(epochGuid);
         // A better idea will be to know when to kick off a new round
         // the checkinCount == 0 indicates there is a new round can be kicked
         // off
         //                artsAtomicSub(&epoch->checkinCount, 1);
-      } else
+      } else {
+        ARTS_DEBUG("  checkEpoch returned FALSE - epoch completed or advancing "
+                   "to phase %u",
+                   epoch->phase);
         artsAtomicSubU64(&epoch->outstanding, 1);
+      }
 
-      if (epoch->phase == PHASE_3)
+      if (epoch->phase == PHASE_3) {
+        ARTS_DEBUG("  Deleting epoch [Guid: %lu] - termination complete",
+                   epochGuid);
         deleteEpoch(epochGuid, epoch);
+      }
+    } else {
+      ARTS_DEBUG("reduceEpoch [Guid: %lu]: outstanding=%lu (still waiting for "
+                 "more responses)",
+                 epochGuid, outstanding_before - 1);
     }
   }
 }
@@ -475,6 +500,7 @@ void artsYield() {
 
 bool artsWaitOnHandle(artsGuid_t epochGuid) {
   artsGuid_t *guid = artsCheckEpochIsRoot(epochGuid);
+  ARTS_DEBUG("Waiting on epoch [Guid: %lu]", epochGuid);
   // For now lets leave this rule here
   if (guid) {
     artsGuid_t local = *guid;

@@ -81,8 +81,11 @@ extern void artsMain(int argc, char **argv) __attribute__((weak));
 #endif
 
 // Weak implementations of optional user functions
-__attribute__((weak)) void initPerNode(unsigned int nodeId, int argc, char **argv) {}
-__attribute__((weak)) void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc, char **argv) {}
+__attribute__((weak)) void initPerNode(unsigned int nodeId, int argc,
+                                       char **argv) {}
+__attribute__((weak)) void initPerWorker(unsigned int nodeId,
+                                         unsigned int workerId, int argc,
+                                         char **argv) {}
 __attribute__((weak)) void artsMain(int argc, char **argv) {}
 
 struct artsRuntimeShared artsNodeInfo;
@@ -378,7 +381,8 @@ void artsRuntimeStop() {
 }
 
 void artsHandleRemoteStolenEdt(struct artsEdt *edt) {
-  ARTS_DEBUG("push stolen %d", artsThreadInfo.coreId);
+  ARTS_DEBUG("Processing stolen EDT [Guid: %lu] on core %d", edt->currentEdt,
+             artsThreadInfo.coreId);
   incrementQueueEpoch(edt->epochGuid);
   globalShutdownGuidIncQueue();
 #ifdef USE_GPU
@@ -390,7 +394,7 @@ void artsHandleRemoteStolenEdt(struct artsEdt *edt) {
   {
     if (edt->header.type == ARTS_EDT)
       artsDequePushFront(artsThreadInfo.myDeque, edt, 0);
-    if (edt->header.type == ARTS_GPU_EDT)
+    else if (edt->header.type == ARTS_GPU_EDT)
       artsDequePushFront(artsThreadInfo.myGpuDeque, edt, 0);
   }
 }
@@ -408,16 +412,16 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
     else
 #endif
     {
-      if (edt->header.type == ARTS_EDT) {
+      if (edt->header.type == ARTS_EDT)
         artsDequePushFront(artsThreadInfo.myDeque, edt, 0);
-      } else if (edt->header.type == ARTS_GPU_EDT) {
+      else if (edt->header.type == ARTS_GPU_EDT)
         artsDequePushFront(artsThreadInfo.myGpuDeque, edt, 0);
-      }
     }
 
     artsMetricsTriggerEvent(artsEdtQueue, artsThread, 1);
   }
 }
+
 void artsRunEdt(struct artsEdt *edt) {
   uint32_t depc = edt->depc;
   artsEdtDep_t *depv = (artsEdtDep_t *)(((uint64_t *)(edt + 1)) + edt->paramc);
@@ -552,7 +556,7 @@ int artsRuntimeLoop() {
   artsCounterTriggerTimerEvent(totalCounter, true);
   if (artsThreadInfo.networkReceive) {
     while (artsThreadInfo.alive) {
-      artsServerTryToRecieve(&artsNodeInfo.buf, &artsNodeInfo.packetSize,
+      artsServerTryToReceive(&artsNodeInfo.buf, &artsNodeInfo.packetSize,
                              &artsNodeInfo.stealRequestLock);
     }
   } else if (artsThreadInfo.networkSend) {

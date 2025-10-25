@@ -55,7 +55,6 @@ int mainArgc = 0;
 char **mainArgv = NULL;
 
 int artsRT(int argc, char **argv) {
-  ARTS_INFO("Initializing ARTS...");
   mainArgc = argc;
   mainArgv = argv;
   artsRemoteTryToBecomePrinter();

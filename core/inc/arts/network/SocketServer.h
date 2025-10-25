@@ -46,7 +46,6 @@ extern "C" {
 unsigned int artsGetNewSocket();
 void artsServerSetSocketOptionsSender(unsigned int socket);
 void artsServerSetSocketOptionsReciever(unsigned int socket);
-void artsPrintSocketAddr(struct sockaddr_in *sock);
 unsigned int artsGetSocketListening(struct sockaddr_in *listeningSocket,
                                     unsigned int port);
 unsigned int artsGetSocketOutgoing(struct sockaddr_in *outgoingSocket,

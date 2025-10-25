@@ -41,6 +41,7 @@
 #include "arts/arts.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/utils/Atomics.h"
+#include <time.h>
 
 #define fireLock 1U
 #define resetLock 2U
@@ -82,22 +83,33 @@ void writerOOLock(struct artsOutOfOrderList *list, unsigned int lockType) {
   return;
 }
 
-bool writerTryOOLock(struct artsOutOfOrderList *list, unsigned int lockType) {
-  while (1) {
-    unsigned int temp = artsAtomicCswap(&list->writerLock, 0U, lockType);
-    if (temp == 0U) {
-      while (list->readerLock)
-        ;
-      break;
-    }
-    if (temp == lockType)
-      return false;
-  }
-  return true;
-}
-
 void writerOOUnlock(struct artsOutOfOrderList *list) {
   artsAtomicSwap(&list->writerLock, 0U);
+}
+
+bool writerTryOOLock(struct artsOutOfOrderList *list, unsigned int lockType) {
+  // Attempt to acquire the writer lock atomically
+  unsigned int temp = artsAtomicCswap(&list->writerLock, 0U, lockType);
+
+  if (temp == 0U) {
+    // We got the writer lock - now check for readers
+    unsigned int readerCount = list->readerLock;
+    if (readerCount) {
+      // Readers are present - release lock and fail immediately
+      writerOOUnlock(list);
+      return false;
+    }
+    // No readers - we have exclusive access
+    return true;
+  }
+
+  if (temp == lockType) {
+    // We already hold this lock type - prevent re-entry
+    return false;
+  }
+
+  // Lock is held by someone else - fail immediately
+  return false;
 }
 
 bool artsOOisFired(struct artsOutOfOrderList *list) { return list->isFired; }
@@ -106,12 +118,12 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
   if (!readerOOTryLock(addToMe)) {
     return false;
   }
+
   if (artsOOisFired(addToMe)) {
     readerOOUnlock(addToMe);
     return false;
   }
   unsigned int pos = artsAtomicFetchAdd(&addToMe->count, 1U);
-
   unsigned int numElements = pos / OOPERELEMENT;
   unsigned int elementPos = pos % OOPERELEMENT;
 
@@ -121,15 +133,23 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
       if (i + 1 == numElements && elementPos == 0) {
         current->next = (struct artsOutOfOrderElement *)artsCalloc(
             1, sizeof(struct artsOutOfOrderElement));
-      } else
+      } else {
         while (!current->next)
           ;
+      }
     }
     current = current->next;
   }
-  if (artsAtomicCswapPtr((volatile void **)&current->array[elementPos],
-                         (void *)0, item))
-    readerOOUnlock(addToMe);
+
+  // Always insert and always release lock
+  // The CAS is used to wait for slot availability, but we should still unlock
+  while (artsAtomicCswapPtr((volatile void **)&current->array[elementPos],
+                            (void *)0, item)) {
+    // Slot was occupied - this shouldn't happen in normal operation
+    // but we need to wait for it to become available
+  }
+
+  readerOOUnlock(addToMe);
   return true;
 }
 
@@ -164,33 +184,55 @@ void artsOutOfOrderListDelete(struct artsOutOfOrderList *list) {
 void artsOutOfOrderListFireCallback(struct artsOutOfOrderList *fireMe,
                                     void *localGuidAddress,
                                     void (*callback)(void *, void *)) {
-  if (writerTryOOLock(fireMe, fireLock)) {
-    fireMe->isFired = true;
-    unsigned int pos = fireMe->count;
-    unsigned int j = 0;
-    for (volatile struct artsOutOfOrderElement *current = &fireMe->head;
-         current; current = current->next) {
-      for (unsigned int i = 0; i < OOPERELEMENT; i++) {
-        if (j < pos) {
-          volatile void *item = NULL;
-          while (!item) {
-            item = artsAtomicSwapPtr((volatile void **)&current->array[i],
-                                     (void *)0);
+  // Retry mechanism: Try multiple times with brief delays
+  // This allows readers to complete and release locks
+  // 1000 attempts × 10μs ≈ 10ms total retry window
+  const int MAX_RETRIES = 1000;
+
+  for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (writerTryOOLock(fireMe, fireLock)) {
+      fireMe->isFired = true;
+      unsigned int pos = fireMe->count;
+      unsigned int j = 0;
+      for (volatile struct artsOutOfOrderElement *current = &fireMe->head;
+           current; current = current->next) {
+        for (unsigned int i = 0; i < OOPERELEMENT; i++) {
+          if (j < pos) {
+            volatile void *item = NULL;
+            while (!item) {
+              item = artsAtomicSwapPtr((volatile void **)&current->array[i],
+                                       (void *)0);
+            }
+            callback((void *)item, localGuidAddress);
+            j++;
           }
-          callback((void *)item, localGuidAddress);
-          j++;
         }
+        if (j == pos)
+          break;
+        while (!current->next)
+          ;
       }
-      if (j == pos)
-        break;
-      while (!current->next)
-        ;
+      fireMe->count = 0;
+      struct artsOutOfOrderElement *p =
+          (struct artsOutOfOrderElement *)fireMe->head.next;
+      fireMe->head.next = NULL;
+      writerOOUnlock(fireMe);
+      deleteOOElements(p);
+      return;
     }
-    fireMe->count = 0;
-    struct artsOutOfOrderElement *p =
-        (struct artsOutOfOrderElement *)fireMe->head.next;
-    fireMe->head.next = NULL;
-    writerOOUnlock(fireMe);
-    deleteOOElements(p);
+
+    // Failed to get lock - yield CPU briefly to let readers finish
+    // Only yield on attempts after the first few quick tries
+    if (attempt > 5) {
+      // Use nanosleep for 10 microseconds
+      struct timespec ts = {0, 10000};
+      nanosleep(&ts, NULL);
+    }
   }
+
+  // If we get here, we failed after MAX_RETRIES attempts
+  // This should be very rare, but log it for debugging
+  ARTS_ERROR("artsOutOfOrderListFireCallback: failed to acquire lock after %d "
+             "attempts",
+             MAX_RETRIES);
 }

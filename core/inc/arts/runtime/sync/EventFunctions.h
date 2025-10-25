@@ -49,6 +49,9 @@ bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
                              unsigned int latchCount, bool destroyOnFire,
                              artsGuid_t eventData);
 
+struct artsPersistentEventVersion *
+artsGetFrontPersistentEventVersion(struct artsPersistentEvent *event);
+
 #ifdef __cplusplus
 }
 #endif

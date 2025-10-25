@@ -251,6 +251,9 @@ void artsRemoteHandleUpdateDb(void *ptr) {
       memcpy(ptr, packetDb + 1, db->header.size - sizeof(struct artsDb));
       artsRouteTableSetRank(packet->guid, artsGlobalRankId);
       artsProgressFrontier(db, artsGlobalRankId);
+#ifdef USE_SMART_DB
+      artsDbDecrementLatch(packet->guid);
+#endif
     } else {
       artsProgressFrontier(db, packet->header.rank);
     }
@@ -362,9 +365,10 @@ void artsRemoteHandlePersistentEventMove(void *ptr) {
 
 void artsRemoteSignalEdt(artsGuid_t edt, artsGuid_t db, uint32_t slot,
                          artsType_t mode) {
-  ARTS_INFO("Remote Signal from DB [Guid: %lu] to EDT [Guid: %lu, Slot: %d, Rank: "
-            "%d]",
-            db, edt, slot, artsGuidGetRank(edt));
+  ARTS_INFO(
+      "Remote Signal from DB [Guid: %lu] to EDT [Guid: %lu, Slot: %d, Rank: "
+      "%d]",
+      db, edt, slot, artsGuidGetRank(edt));
   struct artsRemoteEdtSignalPacket packet;
 
   unsigned int rank = artsGuidGetRank(edt);
@@ -455,8 +459,6 @@ bool artsRemoteDbRequest(artsGuid_t dataGuid, int rank, struct artsEdt *edt,
     artsFillPacketHeader(&packet.header, sizeof(packet),
                          ARTS_REMOTE_DB_REQUEST_MSG);
     artsRemoteSendRequestAsync(rank, (char *)&packet, sizeof(packet));
-    ARTS_DEBUG("DB req send: %u -> %u mode: %u agg: %u", packet.header.rank,
-               rank, mode, aggRequest);
     return true;
   }
   return false;
@@ -514,6 +516,7 @@ void artsRemoteDbSend(struct artsRemoteDbRequestPacket *pack) {
 
 void artsRemoteHandleDbReceived(struct artsRemoteDbSendPacket *packet) {
   struct artsDb *packetDb = (struct artsDb *)(packet + 1);
+  ARTS_DEBUG("Handle DB Received [Guid: %lu]", packetDb->guid);
   struct artsDb *dbRes = NULL;
   struct artsDb **dataPtr = NULL;
   itemState_t state = artsRouteTableLookupItemWithState(
@@ -525,7 +528,7 @@ void artsRemoteHandleDbReceived(struct artsRemoteDbSendPacket *packet) {
     dbList = (struct artsDbList *)tPtr->dbList;
   ARTS_DEBUG("Rec DB State: %u", state);
   switch (state) {
-  case requestedKey:
+  case requestedKey: {
     if (packetDb->header.size == tPtr->header.size) {
       void *source = (void *)((struct artsDb *)packetDb + 1);
       void *dest = (void *)((struct artsDb *)tPtr + 1);
@@ -535,9 +538,9 @@ void artsRemoteHandleDbReceived(struct artsRemoteDbSendPacket *packet) {
     } else {
       ARTS_INFO("Did the DB do a remote resize...");
     }
-    break;
+  } break;
 
-  case reservedKey:
+  case reservedKey: {
     dbRes = (struct artsDb *)artsMallocAlignWithType(packetDb->header.size, 16,
                                                      artsDbMemorySize);
     memcpy(dbRes, packetDb, packetDb->header.size);
@@ -545,21 +548,18 @@ void artsRemoteHandleDbReceived(struct artsRemoteDbSendPacket *packet) {
       dbRes->dbList = artsNewDbList();
     else
       dbRes->dbList = NULL;
-    break;
+  } break;
 
-  default:
-    ARTS_INFO("Got a DB but current key state is %d looking again", state);
+  default: {
     itemState_t state = artsRouteTableLookupItemWithState(
         packetDb->guid, (void ***)&tPtr, anyKey, false);
-    ARTS_INFO("The current state after re-checking is %d", state);
-    break;
+  } break;
   }
+
   if (dbRes && artsRouteTableUpdateItem(packetDb->guid, (void *)dbRes,
                                         artsGlobalRankId, state)) {
     artsRouteTableFireOO(packetDb->guid, artsOutOfOrderHandler);
   }
-
-  // artsRouteTableDecItem(packetDb->guid, dataPtr);
 }
 
 void artsRemoteDbFullRequest(artsGuid_t dataGuid, int rank, struct artsEdt *edt,
@@ -573,6 +573,8 @@ void artsRemoteDbFullRequest(artsGuid_t dataGuid, int rank, struct artsEdt *edt,
   artsFillPacketHeader(&packet.header, sizeof(packet),
                        ARTS_REMOTE_DB_FULL_REQUEST_MSG);
   artsRemoteSendRequestAsync(rank, (char *)&packet, sizeof(packet));
+  ARTS_DEBUG("Request Full DB [Guid: %lu] from rank %u to rank %u, mode: %u",
+             dataGuid, rank, packet.header.rank, mode);
 }
 
 void artsRemoteDbForwardFull(int destRank, int sourceRank, artsGuid_t dataGuid,
@@ -590,7 +592,6 @@ void artsRemoteDbForwardFull(int destRank, int sourceRank, artsGuid_t dataGuid,
 
 void artsRemoteDbFullSendNow(int rank, struct artsDb *db, struct artsEdt *edt,
                              unsigned int slot, artsType_t mode) {
-  ARTS_DEBUG("SEND FULL NOW: %u -> %u", artsGlobalRankId, rank);
   struct artsRemoteDbFullSendPacket packet;
   packet.edt = edt;
   packet.slot = slot;
@@ -613,22 +614,25 @@ void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, struct artsEdt *edt,
 
 void artsRemoteDbFullSend(struct artsRemoteDbFullRequestPacket *pack) {
   unsigned int redirected = artsRouteTableLookupRank(pack->dbGuid);
-  if (redirected != artsGlobalRankId && redirected != -1)
+  if (redirected != artsGlobalRankId && redirected != -1) {
     artsRemoteSendRequestAsync(redirected, (char *)pack, pack->header.size);
-  else {
+  } else {
     struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(pack->dbGuid);
     if (db == NULL) {
       artsOutOfOrderHandleRemoteDbFullSend(pack->header.rank, pack->dbGuid,
                                            (struct artsEdt *)pack->edt,
                                            pack->slot, pack->mode);
-    } else
+    } else {
       artsRemoteDbFullSendCheck(pack->header.rank, db,
                                 (struct artsEdt *)pack->edt, pack->slot,
                                 pack->mode);
+    }
   }
 }
 
 void artsRemoteHandleDbFullRecieved(struct artsRemoteDbFullSendPacket *packet) {
+  ARTS_DEBUG("Handle Full DB Received: slot=%u, mode=%u", packet->slot,
+             packet->mode);
   bool dec;
   itemState_t state;
   struct artsDb *packetDb = (struct artsDb *)(packet + 1);
@@ -657,8 +661,6 @@ void artsRemoteHandleDbFullRecieved(struct artsRemoteDbFullSendPacket *packet) {
                                state))
     artsRouteTableFireOO(packetDb->guid, artsOutOfOrderHandler);
   artsDbRequestCallback(packet->edt, packet->slot, dbRes);
-  // if(dec)
-  //     artsRouteTableDecItem(packetDb->guid, dataPtr);
 }
 
 void artsRemoteSendAlreadyLocal(int rank, artsGuid_t guid, struct artsEdt *edt,

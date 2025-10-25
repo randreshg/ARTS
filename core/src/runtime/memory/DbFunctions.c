@@ -361,11 +361,15 @@ void artsDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
 void acquireDbs(struct artsEdt *edt) {
   artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
   edt->depcNeeded = edt->depc + 1;
-  ARTS_INFO("Acquiring %u DBs for EDT [Guid: %lu]", edt->depc, edt->currentEdt);
+  ARTS_INFO(
+      "Acquiring %u DBs for EDT [Guid: %lu], depcNeeded initialized to %u",
+      edt->depc, edt->currentEdt, edt->depcNeeded);
   for (int i = 0; i < edt->depc; i++) {
     if (depv[i].guid && depv[i].ptr == NULL) {
       struct artsDb *dbFound = NULL;
       int owner = artsGuidGetRank(depv[i].guid);
+      ARTS_INFO("Slot %d: DB [Guid: %lu, mode=%u, owner=%d, currentRank=%u]", i,
+                depv[i].guid, depv[i].mode, owner, artsGlobalRankId);
       switch (depv[i].mode) {
       // This case assumes that the guid exists only on the owner
       case ARTS_DB_ONCE: {
@@ -472,18 +476,30 @@ void acquireDbs(struct artsEdt *edt) {
           struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
               depv[i].guid, &validRank, true);
           // We have found an entry
+          ARTS_INFO("acquireDbs: Non-owner case for DB [Guid: %lu, mode=%u, "
+                    "owner=%d, validRank=%d, dbTemp=%p]",
+                    depv[i].guid, depv[i].mode, owner, validRank,
+                    (void *)dbTemp);
           if (dbTemp) {
             dbFound = dbTemp;
             artsAtomicSub(&edt->depcNeeded, 1U);
+            ARTS_INFO("  Found local copy, decremented depcNeeded");
           }
 
           if (depv[i].mode == ARTS_DB_WRITE) {
             // We can't aggregate read requests for cdag write
+            ARTS_INFO("  WRITE mode - sending full DB request to rank %d",
+                      owner);
             artsRemoteDbFullRequest(depv[i].guid, owner, edt, i, depv[i].mode);
           } else if (!dbTemp) {
             // We can aggregate read requests for reads
+            ARTS_INFO("  READ mode, no local copy - sending aggregated request "
+                      "to rank %d",
+                      owner);
             artsRemoteDbRequest(depv[i].guid, owner, edt, i, depv[i].mode,
                                 true);
+          } else {
+            ARTS_INFO("  READ mode with local copy - no remote request needed");
           }
         }
       } break;
@@ -496,8 +512,7 @@ void acquireDbs(struct artsEdt *edt) {
 
       if (dbFound)
         depv[i].ptr = dbFound + 1;
-      ARTS_DEBUG("DB [Guid: %lu, Ptr: %p] acquired", depv[i].guid,
-                 depv[i].ptr);
+      ARTS_DEBUG("DB [Guid: %lu, Ptr: %p] acquired", depv[i].guid, depv[i].ptr);
     } else {
       artsAtomicSub(&edt->depcNeeded, 1U);
     }
@@ -530,21 +545,23 @@ void releaseDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {
   for (int i = 0; i < depc; i++) {
     ARTS_DEBUG("Releasing DB [Guid: %lu]", depv[i].guid);
     unsigned int owner = artsGuidGetRank(depv[i].guid);
-#ifdef USE_SMART_DB
-    /// Smart DBs automatically decrement the latch count when the db is
-    /// released.
-    if (depv[i].mode == ARTS_DB_PIN || depv[i].mode == ARTS_DB_WRITE) {
-      artsDbDecrementLatch(depv[i].guid);
-    }
-#endif
     if (depv[i].guid != NULL_GUID && depv[i].mode == ARTS_DB_WRITE) {
-      // Signal we finished and progress frontier
       if (owner == artsGlobalRankId) {
         struct artsDb *db = ((struct artsDb *)depv[i].ptr - 1);
         artsProgressFrontier(db, artsGlobalRankId);
+#ifdef USE_SMART_DB
+        artsDbDecrementLatch(depv[i].guid);
+#endif
       } else {
-        artsRemoteUpdateDb(depv[i].guid, false);
+        ARTS_DEBUG("Remote write release for DB [Guid: %lu]; sending update to "
+                   "owner %u",
+                   depv[i].guid, owner);
+        artsRemoteUpdateDb(depv[i].guid, true);
       }
+    } else if (depv[i].mode == ARTS_DB_PIN) {
+#ifdef USE_SMART_DB
+      artsDbDecrementLatch(depv[i].guid);
+#endif
     } else if (depv[i].mode == ARTS_DB_ONCE_LOCAL ||
                depv[i].mode == ARTS_DB_ONCE) {
       artsRouteTableInvalidateItem(depv[i].guid);

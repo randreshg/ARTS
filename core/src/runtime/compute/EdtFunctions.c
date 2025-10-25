@@ -214,6 +214,14 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
       memcpy(tmp, paramv, sizeof(uint64_t) * paramc);
     }
 
+    /// DEBUG
+    if (useEpoch) {
+      ARTS_INFO("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u] [Route: %d]",
+                *guid, edt->epochGuid, edt->depc, route);
+    } else {
+      ARTS_INFO("Created EDT [Guid: %lu] [Route: %d]", *guid, route);
+    }
+
     if (route != artsGlobalRankId) {
       artsRemoteMemoryMove(route, *guid, (void *)edt,
                            (unsigned int)edt->header.size,
@@ -232,20 +240,6 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
           artsHandleReadyEdt(edt);
       }
     }
-
-    /// DEBUG
-    // ! This may cause segfaults when free method is called for edt right after
-    // ! artsRemoteMemoryMove is performed
-
-    // if (useEpoch) {
-    //   ARTS_INFO("Creating EDT [Guid: %lu] [Epoch: %lu] [Deps: %u] [Route:
-    //   %d]",
-    //             (unsigned)*guid, (unsigned)edt->epochGuid,
-    //             (unsigned)edt->depc, route);
-    // } else {
-    //   ARTS_INFO("Created EDT [Guid: %lu] [Route: %d]", (unsigned)*guid,
-    //   route);
-    // }
 
     return true;
   }

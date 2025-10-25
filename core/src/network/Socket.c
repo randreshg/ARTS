@@ -47,13 +47,6 @@
 #include "arts/network/Connection.h"
 #include "arts/system/ArtsPrint.h"
 
-void artsPrintSocketAddr(struct sockaddr_in *sock) {
-  char *addr = inet_ntoa(sock->sin_addr);
-  if (addr != NULL) {
-    ARTS_DEBUG("socket addr %s", addr);
-  }
-}
-
 unsigned int artsGetNewSocket() {
   unsigned int socketOut = rsocket(PF_INET, SOCK_STREAM, 0);
   return socketOut;
@@ -76,6 +69,5 @@ unsigned int artsGetSocketOutgoing(struct sockaddr_in *outgoingSocket,
   outgoingSocket->sin_family = AF_INET;
   outgoingSocket->sin_addr.s_addr = saddr;
   outgoingSocket->sin_port = htons(port);
-  artsPrintSocketAddr(outgoingSocket);
   return socketOut;
 }
