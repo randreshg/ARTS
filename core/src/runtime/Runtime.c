@@ -190,9 +190,8 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
       totalThreads, sizeof(artsCounterCaptures));
   for (unsigned int t = 0; t < totalThreads; t++) {
     for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-      if (artsCounterEnabled[i] &&
-          (artsCounterMode[i] == artsCounterModeThread ||
-           artsCounterMode[i] == artsCounterModeNode)) {
+      if (artsCounterMode[i] == artsCounterModeThread ||
+          artsCounterMode[i] == artsCounterModeNode) {
         artsNodeInfo.counterCaptures[t].captures[i] =
             artsNewArrayList(sizeof(uint64_t), 16);
       }
@@ -200,7 +199,7 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
   }
   artsNodeInfo.counterCaptureInterval = config->counterCaptureInterval;
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-    if (artsCounterEnabled[i] && artsCounterMode[i] == artsCounterModeNode) {
+    if (artsCounterMode[i] == artsCounterModeNode) {
       artsNodeInfo.counterReduces[i] = artsNewArrayList(sizeof(uint64_t), 16);
     }
   }
@@ -432,6 +431,7 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
   ARTS_INFO("EDT [Guid: %lu] is ready", edt->currentEdt);
   acquireDbs(edt);
   if (artsAtomicSub(&edt->depcNeeded, 1U) == 0) {
+    INCREMENT_NUM_EDTS_ACQUIRED_BY(1);
     incrementQueueEpoch(edt->epochGuid);
     globalShutdownGuidIncQueue();
 #ifdef USE_GPU
@@ -446,7 +446,6 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
       else if (edt->header.type == ARTS_GPU_EDT)
         artsDequePushFront(artsThreadInfo.myGpuDeque, edt, 0);
     }
-
     artsMetricsTriggerEvent(artsEdtQueue, artsThread, 1);
   }
 }
@@ -463,7 +462,13 @@ void artsRunEdt(struct artsEdt *edt) {
 
   artsSetThreadLocalEdtInfo(edt);
   ARTS_INFO("Running EDT [Guid: %lu]", edt->currentEdt);
+
+  EDT_IDLE_TIME_STOP();
+  EDT_RUNNING_TIME_START();
   func(paramc, paramv, depc, depv);
+  EDT_RUNNING_TIME_STOP();
+  INCREMENT_NUM_EDTS_FINISHED_BY(1);
+  EDT_IDLE_TIME_START();
 
   artsMetricsTriggerEvent(artsEdtThroughput, artsThread, 1);
 
@@ -583,6 +588,7 @@ bool artsDefaultSchedulerLoop() {
 
 int artsRuntimeLoop() {
   TOTAL_COUNTER_START();
+  EDT_IDLE_TIME_START();
   if (artsThreadInfo.networkReceive) {
     while (artsThreadInfo.alive) {
       artsServerTryToReceive(&artsNodeInfo.buf, &artsNodeInfo.packetSize,
@@ -601,6 +607,7 @@ int artsRuntimeLoop() {
       artsNodeInfo.scheduler();
     }
   }
+  EDT_IDLE_TIME_STOP();
   TOTAL_COUNTER_STOP();
   return 0;
 }

@@ -114,6 +114,7 @@ void artsDbCreateInternal(artsGuid_t guid, void *addr, uint64_t size,
 #ifdef USE_SMART_DB
   dbRes->eventGuid = artsPersistentEventCreate(artsGuidGetRank(guid), 0, guid);
 #endif
+  INCREMENT_NUM_DBS_CREATED_BY(1);
 }
 
 artsGuid_t artsDbCreateRemote(unsigned int route, uint64_t size,

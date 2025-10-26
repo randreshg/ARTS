@@ -61,7 +61,7 @@ char *extractNodelistLsf(const char *envr, int stride, unsigned int *cnt) {
   if (stride <= 0)
     stride = 1;
   unsigned int nodesStrLen = strlen(lsfNodes) + 1;
-  char *nodeList = (char *)malloc(sizeof(char) * nodesStrLen);
+  char *nodeList = (char *)artsMalloc(sizeof(char) * nodesStrLen);
   unsigned int count = 0;
   unsigned int listStrLength = 0;
   last = resString = strtok(lsfNodes, " ");

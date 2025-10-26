@@ -70,6 +70,15 @@ typedef enum artsCounterType {
   contextSwitch,
   yield,
   remoteMemoryMove,
+  memoryFootprint,
+  edtRunningTime,
+  edtIdleTime,
+  numEdtsCreated,
+  numEdtsAcquired,
+  numEdtsFinished,
+  remoteBytesSent,
+  remoteBytesReceived,
+  numDbsCreated,
   NUM_COUNTER_TYPES,
 } artsCounterType;
 
@@ -107,11 +116,10 @@ typedef artsArrayList *artsCounterReduces[NUM_COUNTER_TYPES];
 void artsCounterStart(unsigned int startPoint);
 void artsCounterStop();
 void artsCounterReset(artsCounter *counter);
-void artsCounterIncrement(artsCounter *counter);
 void artsCounterIncrementBy(artsCounter *counter, uint64_t num);
+void artsCounterDecrementBy(artsCounter *counter, uint64_t num);
 void artsCounterTimerStart(artsCounter *counter);
 void artsCounterTimerEnd(artsCounter *counter);
-void artsCounterTimerEndOverwrite(artsCounter *counter);
 void artsCounterWriteThread(const char *outputFolder, unsigned int nodeId,
                             unsigned int threadId);
 void artsCounterWriteNode(const char *outputFolder, unsigned int nodeId);
@@ -136,7 +144,16 @@ static const char *const artsCounterNames[] = {"edtCounter",
                                                "putDbCounter",
                                                "contextSwitch",
                                                "yield",
-                                               "remoteMemoryMove"};
+                                               "remoteMemoryMove",
+                                               "memoryFootprint",
+                                               "edtRunningTime",
+                                               "edtIdleTime",
+                                               "numEdtsCreated",
+                                               "numEdtsAcquired",
+                                               "numEdtsFinished",
+                                               "remoteBytesSent",
+                                               "remoteBytesReceived",
+                                               "numDbsCreated"};
 
 static const unsigned int artsCounterReduceTypes[] = {
     artsCounterSum, // edtCounter
@@ -160,6 +177,15 @@ static const unsigned int artsCounterReduceTypes[] = {
     artsCounterSum, // contextSwitch
     artsCounterSum, // yield
     artsCounterSum, // remoteMemoryMove
+    artsCounterSum, // memoryFootprint
+    artsCounterSum, // edtRunningTime
+    artsCounterSum, // edtIdleTime
+    artsCounterSum, // numEdtsCreated
+    artsCounterSum, // numEdtsAcquired
+    artsCounterSum, // numEdtsFinished
+    artsCounterSum, // remoteBytesSent
+    artsCounterSum, // remoteBytesReceived
+    artsCounterSum  // numDbsCreated
 };
 
 #ifdef __cplusplus

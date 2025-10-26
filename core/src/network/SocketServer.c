@@ -408,6 +408,7 @@ int artsActualSend(char *message, unsigned int length, int rank, int port) {
       return -1;
     }
   }
+  INCREMENT_REMOTE_BYTES_SENT_BY(total);
   return length;
 }
 
@@ -699,6 +700,9 @@ bool artsServerTryToReceive(char **inBuffer, int *inPacketSize,
             packet = (struct artsRemotePacket *)bypassBuf[pos];
             res = rrecv(remoteSocketRecieveList[i], bypassBuf[pos],
                         bypassPacketSize[pos], MSG_DONTWAIT);
+            if (res > 0) {
+              INCREMENT_REMOTE_BYTES_RECEIVED_BY(res);
+            }
           } else {
             // packet = reRecievePacket[pos];
             packet = (struct artsRemotePacket *)bypassBuf[pos];
@@ -715,6 +719,9 @@ bool artsServerTryToReceive(char **inBuffer, int *inPacketSize,
                 }
                 res2 = rrecv(remoteSocketRecieveList[i], bypassBuf[pos] + res,
                              bypassPacketSize[pos] - res, MSG_DONTWAIT);
+                if (res2 > 0) {
+                  INCREMENT_REMOTE_BYTES_RECEIVED_BY(res);
+                }
 
                 if (res2 < 0) {
                   if (errno != EAGAIN) {
@@ -759,6 +766,9 @@ bool artsServerTryToReceive(char **inBuffer, int *inPacketSize,
                 }
                 res2 = rrecv(remoteSocketRecieveList[i], bypassBuf[pos] + res,
                              bypassPacketSize[pos] - res, MSG_DONTWAIT);
+                if (res2 > 0) {
+                  INCREMENT_REMOTE_BYTES_RECEIVED_BY(res2);
+                }
                 if (res2 < 0) {
                   if (errno != EAGAIN) {
                     ARTS_INFO("Error on recv return 0 %d %d", errno, EAGAIN);
@@ -774,7 +784,6 @@ bool artsServerTryToReceive(char **inBuffer, int *inPacketSize,
               }
               if (gotoNext)
                 break;
-
               artsServerProcessPacket(packet);
 
               res -= packet->size;

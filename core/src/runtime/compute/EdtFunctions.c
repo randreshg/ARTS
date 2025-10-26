@@ -241,6 +241,7 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
       }
     }
 
+    INCREMENT_NUM_EDTS_CREATED_BY(1);
     return true;
   }
   return false;

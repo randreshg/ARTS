@@ -38,33 +38,41 @@
 ###############################################################################
 
 # =============================================================================
-# Define All Counters
+# Define All Counters - Parse from Counter.h
 # =============================================================================
 
-# List all your counters
-set(COUNTER_TYPES
-    edtCounter
-    sleepCounter
-    totalCounter
-    signalEventCounter
-    signalPersistentEventCounter
-    signalEdtCounter
-    edtCreateCounter
-    eventCreateCounter
-    persistentEventCreateCounter
-    dbCreateCounter
-    smartDbCreateCounter
-    mallocMemory
-    callocMemory
-    freeMemory
-    guidAllocCounter
-    guidLookupCounter
-    getDbCounter
-    putDbCounter
-    contextSwitch
-    yield
-    remoteMemoryMove
-)
+# Read Counter.h and extract counter types from artsCounterType enum
+set(COUNTER_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/Counter.h")
+if(NOT EXISTS "${COUNTER_HEADER}")
+    message(FATAL_ERROR "Counter.h not found at: ${COUNTER_HEADER}")
+endif()
+
+file(READ "${COUNTER_HEADER}" COUNTER_HEADER_CONTENT)
+
+# Extract the enum artsCounterType block
+string(REGEX MATCH "typedef enum artsCounterType[^}]*}" ENUM_BLOCK "${COUNTER_HEADER_CONTENT}")
+
+if(NOT ENUM_BLOCK)
+    message(FATAL_ERROR "Could not find artsCounterType enum in Counter.h")
+endif()
+
+# Extract counter names from the enum - match identifiers at start of line or after whitespace
+# This regex matches: optional whitespace, identifier, optional "= digit", followed by comma or newline
+string(REGEX MATCHALL "[ \t\n\r]+([a-zA-Z_][a-zA-Z0-9_]*)[ \t]*(=[ \t]*[0-9]+)?[ \t]*," MATCHES "${ENUM_BLOCK}")
+
+set(COUNTER_TYPES)
+foreach(MATCH ${MATCHES})
+    # Extract just the identifier name (first capture group)
+    string(REGEX MATCH "([a-zA-Z_][a-zA-Z0-9_]*)" COUNTER_NAME "${MATCH}")
+    
+    # Skip NUM_COUNTER_TYPES
+    if(COUNTER_NAME AND NOT COUNTER_NAME STREQUAL "NUM_COUNTER_TYPES")
+        list(APPEND COUNTER_TYPES "${COUNTER_NAME}")
+    endif()
+endforeach()
+
+list(LENGTH COUNTER_TYPES COUNTER_COUNT)
+message(STATUS "Parsed ${COUNTER_COUNT} counters from Counter.h: ${COUNTER_TYPES}")
 
 # Set counter configuration
 if(NOT EXISTS "${COUNTER_CONFIG_PATH}")
@@ -173,17 +181,20 @@ foreach(COUNTER ${COUNTER_TYPES})
     string(TOUPPER ${MACRO_NAME} MACRO_NAME)
     set(TIMER_START "${MACRO_NAME}_START")
     set(TIMER_STOP "${MACRO_NAME}_STOP")
-    set(EVENT_NAME "INCREMENT_${MACRO_NAME}_BY")
+    set(INCREMENT "INCREMENT_${MACRO_NAME}_BY")
+    set(DECREMENT "DECREMENT_${MACRO_NAME}_BY")
 
     file(APPEND ${GENERATED_HEADER}
         "#if ENABLE_${COUNTER}
     #define ${TIMER_START}() artsCounterTimerStart(&artsThreadInfo.artsCounters[${COUNTER_INDEX}])
     #define ${TIMER_STOP}() artsCounterTimerEnd(&artsThreadInfo.artsCounters[${COUNTER_INDEX}])
-    #define ${EVENT_NAME}(value) artsCounterIncrementBy(&artsThreadInfo.artsCounters[${COUNTER_INDEX}], value)
+    #define ${INCREMENT}(value) artsCounterIncrementBy(&artsThreadInfo.artsCounters[${COUNTER_INDEX}], value)
+    #define ${DECREMENT}(value) artsCounterDecrementBy(&artsThreadInfo.artsCounters[${COUNTER_INDEX}], value)
 #else
     #define ${TIMER_START}() ((void)0)
     #define ${TIMER_STOP}() ((void)0)
-    #define ${EVENT_NAME}(value) ((void)0)
+    #define ${INCREMENT}(value) ((void)0)
+    #define ${DECREMENT}(value) ((void)0)
 #endif
 
 ")
@@ -196,18 +207,7 @@ file(APPEND ${GENERATED_HEADER} "
  * Counter Enabled Array - Automatically Generated
  * ============================================================================ */
 
-/* Static array mapping counter index to enabled status */
-static const bool artsCounterEnabled[] = {
 ")
-
-foreach(COUNTER ${COUNTER_TYPES})
-    if(NOT DEFINED ENABLE_${COUNTER})
-        set(ENABLE_${COUNTER} 0)
-    endif()
-    file(APPEND ${GENERATED_HEADER} "    ${ENABLE_${COUNTER}},  /* ${COUNTER} */\n")
-endforeach()
-
-file(APPEND ${GENERATED_HEADER} "};\n\n")
 
 # Generate counter mode array
 file(APPEND ${GENERATED_HEADER} "

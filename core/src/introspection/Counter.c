@@ -47,13 +47,27 @@
 #include "arts/introspection/JsonWriter.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
+#include "arts/utils/Atomics.h"
 
-extern const bool artsCounterEnabled[];
 extern const unsigned int artsCounterMode[];
 
 static uint64_t countersOn = 0;
 static pthread_t captureThread;
 static volatile bool captureThreadRunning = false;
+
+static uint64_t artsCounterCaptureCounter(artsCounter *counter) {
+  uint64_t expected = counter->start;
+  while (expected) {
+    uint64_t start = artsGetTimeStamp();
+    if (artsAtomicCswapU64(&counter->start, expected, start) != expected) {
+      expected = counter->start;
+    } else {
+      artsAtomicFetchAddU64(&counter->count, start - expected);
+      expected = 0;
+    }
+  }
+  return counter->count;
+}
 
 static void *artsCounterCaptureThread() {
   unsigned int cnt = 0;
@@ -78,56 +92,46 @@ static void *artsCounterCaptureThread() {
                 NULL);
       continue;
     }
-
+    // Capture counters
     for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-      if (artsCounterEnabled[i] &&
-          (artsCounterMode[i] == artsCounterModeThread ||
-           artsCounterMode[i] == artsCounterModeNode)) {
-
-        uint64_t capturedValues[artsNodeInfo.totalThreadCount];
-        for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
-          artsCounterCaptures *threadCounters =
-              &artsNodeInfo.counterCaptures[t];
-          uint64_t value = threadCounters->counters[i].count;
-          capturedValues[t] = value;
-          artsPushToArrayList(threadCounters->captures[i], &value);
-        }
-
+      if (artsCounterMode[i] == artsCounterModeThread ||
+          artsCounterMode[i] == artsCounterModeNode) {
+        // Only this thread accesses node captures so no atomic needed
+        uint64_t *capture = NULL;
         if (artsCounterMode[i] == artsCounterModeNode) {
-          uint64_t *capture = (uint64_t *)artsNextFreeFromArrayList(
+          capture = (uint64_t *)artsNextFreeFromArrayList(
               artsNodeInfo.counterReduces[i]);
-
-          switch (artsCounterReduceTypes[i]) {
-          case artsCounterSum:
+          if (artsCounterReduceTypes[i] == artsCounterSum) {
             *capture = 0;
-            for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
-              *capture += capturedValues[t];
-            }
-            break;
-
-          case artsCounterMax:
+          } else if (artsCounterReduceTypes[i] == artsCounterMax) {
             *capture = 0;
-            for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
-              if (*capture < capturedValues[t]) {
-                *capture = capturedValues[t];
-              }
-            }
-            break;
-
-          case artsCounterMin:
+          } else if (artsCounterReduceTypes[i] == artsCounterMin) {
             *capture = UINT64_MAX;
-            for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
-              if (*capture > capturedValues[t]) {
-                *capture = capturedValues[t];
+          }
+        }
+        // Capture and reduce from all threads
+        for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
+          artsCounterCaptures *threadCapture = &artsNodeInfo.counterCaptures[t];
+          uint64_t captured =
+              artsCounterCaptureCounter(&threadCapture->counters[i]);
+          artsPushToArrayList(threadCapture->captures[i], &captured);
+          if (capture) {
+            if (artsCounterReduceTypes[i] == artsCounterSum) {
+              *capture += captured;
+            } else if (artsCounterReduceTypes[i] == artsCounterMax) {
+              if (*capture < captured) {
+                *capture = captured;
+              }
+            } else if (artsCounterReduceTypes[i] == artsCounterMin) {
+              if (*capture > captured) {
+                *capture = captured;
               }
             }
-            break;
           }
         }
       }
     }
   }
-
   return NULL;
 }
 
@@ -144,13 +148,11 @@ void artsCounterStart(unsigned int startPoint) {
     bool hasNodeMode = false;
 
     for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-      if (artsCounterEnabled[i]) {
-        if (artsCounterMode[i] == artsCounterModeThread ||
-            artsCounterMode[i] == artsCounterModeNode) {
-          needCaptureThread = true;
-          if (artsCounterMode[i] == artsCounterModeNode) {
-            hasNodeMode = true;
-          }
+      if (artsCounterMode[i] == artsCounterModeThread ||
+          artsCounterMode[i] == artsCounterModeNode) {
+        needCaptureThread = true;
+        if (artsCounterMode[i] == artsCounterModeNode) {
+          hasNodeMode = true;
         }
       }
     }
@@ -197,49 +199,36 @@ void artsCounterReset(artsCounter *counter) {
   counter->start = 0;
 }
 
-void artsCounterIncrement(artsCounter *counter) {
+void artsCounterIncrementBy(artsCounter *counter, uint64_t num) {
   if (countersOn) {
-    counter->count++;
+    artsAtomicFetchAddU64(&counter->count, num);
   }
 }
 
-void artsCounterIncrementBy(artsCounter *counter, uint64_t num) {
+void artsCounterDecrementBy(artsCounter *counter, uint64_t num) {
   if (countersOn) {
-    counter->count += num;
+    artsAtomicFetchSubU64(&counter->count, num);
   }
 }
 
 void artsCounterTimerStart(artsCounter *counter) {
   if (countersOn) {
-    if (counter->start) {
+    if (artsAtomicCswapU64(&counter->start, 0, artsGetTimeStamp())) {
       ARTS_DEBUG("Trying to start a timer that is already started");
       artsDebugGenerateSegFault();
     }
-    counter->start = artsGetTimeStamp();
   }
 }
 
 void artsCounterTimerEnd(artsCounter *counter) {
-  uint64_t end = artsGetTimeStamp();
   if (countersOn) {
-    if (!counter->start) {
+    uint64_t end = artsGetTimeStamp();
+    uint64_t start = artsAtomicSwapU64(&counter->start, 0);
+    if (!start) {
       ARTS_DEBUG("Trying to end a timer that is not started");
       artsDebugGenerateSegFault();
     }
-    counter->count += end - counter->start;
-    counter->start = 0;
-  }
-}
-
-void artsCounterTimerEndOverwrite(artsCounter *counter) {
-  uint64_t end = artsGetTimeStamp();
-  if (countersOn) {
-    if (!counter->start) {
-      ARTS_DEBUG("Trying to end a timer that is not started");
-      artsDebugGenerateSegFault();
-    }
-    counter->count = end - counter->start;
-    counter->start = 0;
+    artsAtomicFetchAddU64(&counter->count, end - start);
   }
 }
 
@@ -283,7 +272,7 @@ void artsCounterWriteThread(const char *outputFolder, unsigned int nodeId,
   artsJsonWriterBeginObject(&writer, "counters");
   artsCounterCaptures *threadCounters = &artsNodeInfo.counterCaptures[threadId];
   for (uint64_t i = 0; i < NUM_COUNTER_TYPES; i++) {
-    if (artsCounterEnabled[i]) {
+    if (artsCounterMode[i]) {
       artsCounter *counter = &threadCounters->counters[i];
       artsJsonWriterBeginObject(&writer, artsCounterNames[i]);
       artsJsonWriterWriteUInt64(&writer, "count", counter->count);
@@ -372,7 +361,7 @@ void artsCounterWriteNode(const char *outputFolder, unsigned int nodeId) {
   artsJsonWriterBeginObject(&writer, "counters");
   for (uint64_t i = 0; i < NUM_COUNTER_TYPES; i++) {
     // Only write NODE mode counters in the node output
-    if (artsCounterEnabled[i] && artsCounterMode[i] == artsCounterModeNode) {
+    if (artsCounterMode[i] == artsCounterModeNode) {
       artsJsonWriterBeginObject(&writer, artsCounterNames[i]);
       artsJsonWriterWriteString(&writer, "mode", "NODE");
 

@@ -71,6 +71,7 @@ void *artsMalloc(size_t size) {
     MALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
+  INCREMENT_MEMORY_FOOTPRINT_BY(size);
 
   base->size = size;
   base->align = 0;
@@ -97,6 +98,7 @@ void *artsMallocAlign(size_t size, size_t align) {
     MALLOC_MEMORY_STOP();
     artsDebugGenerateSegFault();
   }
+  INCREMENT_MEMORY_FOOTPRINT_BY(size);
 
   void *aligned = alignPointer((char *)base + sizeof(header_t), align);
   header_t *hdr = (header_t *)aligned - 1;
@@ -188,6 +190,7 @@ void artsFree(void *ptr) {
   header_t *hdr = (header_t *)ptr - 1;
   size_t size = hdr->size;
   free(hdr->base);
+  DECREMENT_MEMORY_FOOTPRINT_BY(size);
 
   if (artsThreadInfo.mallocTrace) {
     artsMetricsTriggerEvent(artsFreeBW, artsThread, size);
