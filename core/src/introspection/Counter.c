@@ -69,7 +69,9 @@ static uint64_t artsCounterCaptureCounter(artsCounter *counter) {
   return counter->count;
 }
 
-static void *artsCounterCaptureThread() {
+static void *artsCounterCaptureThread(void *args) {
+  // We must set artsCounters to prevent invalid memory access
+  artsThreadInfo.artsCounters = (artsCounter *)args;
   unsigned int cnt = 0;
   // milli to nano
   uint64_t sleepTime = artsNodeInfo.counterCaptureInterval * 1000000;
@@ -160,8 +162,8 @@ void artsCounterStart(unsigned int startPoint) {
     if (needCaptureThread) {
       captureThreadRunning = true;
 
-      int ret =
-          pthread_create(&captureThread, NULL, artsCounterCaptureThread, NULL);
+      int ret = pthread_create(&captureThread, NULL, artsCounterCaptureThread,
+                               artsThreadInfo.artsCounters);
       if (ret) {
         ARTS_DEBUG("Failed to create capture thread: %d", ret);
         captureThreadRunning = false;
@@ -234,16 +236,28 @@ void artsCounterTimerEnd(artsCounter *counter) {
 
 void artsCounterWriteThread(const char *outputFolder, unsigned int nodeId,
                             unsigned int threadId) {
-  if (!outputFolder)
+  if (!outputFolder) {
     return;
+  }
+
+  bool hasThreadMode = false;
+  for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
+    if (artsCounterMode[i] == artsCounterModeThread) {
+      hasThreadMode = true;
+      break;
+    }
+  }
+  if (!hasThreadMode) {
+    return;
+  }
 
   struct stat st = {0};
   if (stat(outputFolder, &st) == -1)
     mkdir(outputFolder, 0755);
 
   char filename[1024];
-  snprintf(filename, sizeof(filename), "%s/counter_n%u_t%u.json", outputFolder,
-           nodeId, threadId);
+  snprintf(filename, sizeof(filename), "%s/n%u_t%u.json", outputFolder, nodeId,
+           threadId);
 
   FILE *fp = fopen(filename, "w");
   if (!fp)
@@ -272,7 +286,7 @@ void artsCounterWriteThread(const char *outputFolder, unsigned int nodeId,
   artsJsonWriterBeginObject(&writer, "counters");
   artsCounterCaptures *threadCounters = &artsNodeInfo.counterCaptures[threadId];
   for (uint64_t i = 0; i < NUM_COUNTER_TYPES; i++) {
-    if (artsCounterMode[i]) {
+    if (artsCounterMode[i] == artsCounterModeThread) {
       artsCounter *counter = &threadCounters->counters[i];
       artsJsonWriterBeginObject(&writer, artsCounterNames[i]);
       artsJsonWriterWriteUInt64(&writer, "count", counter->count);
@@ -321,16 +335,27 @@ void artsCounterWriteThread(const char *outputFolder, unsigned int nodeId,
 }
 
 void artsCounterWriteNode(const char *outputFolder, unsigned int nodeId) {
-  if (!outputFolder)
+  if (!outputFolder) {
     return;
+  }
+
+  bool hasNodeMode = false;
+  for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
+    if (artsCounterMode[i] == artsCounterModeNode) {
+      hasNodeMode = true;
+      break;
+    }
+  }
+  if (!hasNodeMode) {
+    return;
+  }
 
   struct stat st = {0};
   if (stat(outputFolder, &st) == -1)
     mkdir(outputFolder, 0755);
 
   char filename[1024];
-  snprintf(filename, sizeof(filename), "%s/counter_n%u_node.json", outputFolder,
-           nodeId);
+  snprintf(filename, sizeof(filename), "%s/n%u.json", outputFolder, nodeId);
 
   FILE *fp = fopen(filename, "w");
   if (!fp)
@@ -343,7 +368,6 @@ void artsCounterWriteNode(const char *outputFolder, unsigned int nodeId) {
 
   artsJsonWriterBeginObject(&writer, "metadata");
   artsJsonWriterWriteUInt64(&writer, "nodeId", nodeId);
-  artsJsonWriterWriteString(&writer, "type", "node-reduced");
   artsJsonWriterWriteUInt64(&writer, "timestamp", (uint64_t)time(NULL));
   artsJsonWriterWriteString(&writer, "version", "1.0");
   artsJsonWriterWriteUInt64(&writer, "startPoint",

@@ -213,11 +213,9 @@ void artsRuntimeNodeInit(unsigned int workerThreads,
 
 void artsRuntimeGlobalCleanup() {
   artsCounterStop();
-  if (artsNodeInfo.counterFolder) {
-    for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
-      artsCounterWriteThread(artsNodeInfo.counterFolder, artsGlobalRankId, t);
-    }
-    artsCounterWriteNode(artsNodeInfo.counterFolder, artsGlobalRankId);
+  artsCounterWriteNode(artsNodeInfo.counterFolder, artsGlobalRankId);
+  for (unsigned int t = 0; t < artsNodeInfo.totalThreadCount; t++) {
+    artsCounterWriteThread(artsNodeInfo.counterFolder, artsGlobalRankId, t);
   }
   artsCleanUpDbs();
   artsFree(artsNodeInfo.deque);
