@@ -44,6 +44,12 @@
 // stream.  Then we will push stuff!
 #include "arts/gpu/GpuRuntime.cuh"
 
+#include <cuda.h>  // CUDA Driver API for PTX loading
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
+
 #include "arts/gas/OutOfOrder.h"
 #include "arts/gpu/GpuLCSyncFunctions.cuh"
 #include "arts/gpu/GpuRouteTable.h"
@@ -148,6 +154,8 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
                                 dim3 block, artsGuid_t endGuid, uint32_t slot,
                                 artsGuid_t dataGuid, bool hasDepv,
                                 bool passThrough, bool lib, int gpuToRunOn) {
+  ARTS_INFO("Creating GPU EDT: func=%p, grid=(%d,%d,%d), block=(%d,%d,%d), route=%u, depc=%u, lib=%d, gpuToRunOn=%d\n",
+            funcPtr, grid.x, grid.y, grid.z, block.x, block.y, block.z, route, depc, lib, gpuToRunOn);
   //    ARTSEDTCOUNTERTIMERSTART(edtCreateCounter);
   unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
   unsigned int edtSpace =
@@ -169,6 +177,7 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
       (struct artsEdt *)edt, ARTS_GPU_EDT, guid, route,
       artsThreadInfo.clusterId, edtSpace, NULL_GUID, funcPtr, paramc, paramv,
       depc, true, NULL_GUID, hasDepv, 0);
+  ARTS_INFO("GPU EDT created: guid=%lu, created=%d, depc=%u, hasDepv=%d\n", *guid, created, depc, hasDepv);
   // artsIntrospectionEdtCreateFinish(created);
   //    ARTSEDTCOUNTERTIMERENDINCREMENT(edtCreateCounter);
   return *guid;
@@ -270,6 +279,203 @@ artsGuid_t artsEdtCreateGpuLibDirect(artsEdt_t funcPtr, unsigned int route,
                               gpu);
 }
 
+//=============================================================================
+// PTX Module Loading and Caching
+//=============================================================================
+
+// Module cache: key = PTX source pointer, value = array of CUmodule per GPU
+static std::map<const char*, std::vector<CUmodule>> ptxModuleCache;
+static std::mutex ptxCacheMutex;
+static bool cuInitialized = false;
+
+// Initialize CUDA Driver API (idempotent)
+static CUresult ensureCuInit() {
+  if (!cuInitialized) {
+    CUresult err = cuInit(0);
+    if (err == CUDA_SUCCESS) {
+      cuInitialized = true;
+    }
+    return err;
+  }
+  return CUDA_SUCCESS;
+}
+
+// Load a kernel function from PTX source for a specific GPU
+// Returns the CUfunction handle, or NULL on failure
+CUfunction artsLoadKernelFromPtx(const char *ptxSource, const char *kernelName,
+                                 unsigned int gpuId) {
+  if (!ptxSource || !kernelName) {
+    ARTS_INFO("artsLoadKernelFromPtx: NULL ptxSource or kernelName\n");
+    return NULL;
+  }
+
+  CUresult err = ensureCuInit();
+  if (err != CUDA_SUCCESS) {
+    ARTS_INFO("artsLoadKernelFromPtx: cuInit failed with error %d\n", err);
+    return NULL;
+  }
+
+  std::lock_guard<std::mutex> lock(ptxCacheMutex);
+
+  // Check if we have a cached module for this PTX
+  auto it = ptxModuleCache.find(ptxSource);
+  CUmodule module = NULL;
+
+  if (it != ptxModuleCache.end()) {
+    // Found cached entry - check if module is loaded for this GPU
+    if (gpuId < it->second.size() && it->second[gpuId] != NULL) {
+      module = it->second[gpuId];
+    }
+  } else {
+    // Create new entry in cache
+    ptxModuleCache[ptxSource] = std::vector<CUmodule>(artsNodeInfo.gpu, NULL);
+    it = ptxModuleCache.find(ptxSource);
+  }
+
+  if (module == NULL) {
+    // Need to load module for this GPU
+    // Get the CUDA context for this GPU
+    CUdevice device;
+    CUcontext ctx;
+
+    err = cuDeviceGet(&device, gpuId);
+    if (err != CUDA_SUCCESS) {
+      ARTS_INFO("artsLoadKernelFromPtx: cuDeviceGet failed for GPU %u: %d\n",
+                gpuId, err);
+      return NULL;
+    }
+
+    // Create or get context for this device
+    // Note: cudaSetDevice already creates a primary context, we can use it
+    err = cuDevicePrimaryCtxRetain(&ctx, device);
+    if (err != CUDA_SUCCESS) {
+      ARTS_INFO("artsLoadKernelFromPtx: cuDevicePrimaryCtxRetain failed: %d\n",
+                err);
+      return NULL;
+    }
+
+    err = cuCtxSetCurrent(ctx);
+    if (err != CUDA_SUCCESS) {
+      ARTS_INFO("artsLoadKernelFromPtx: cuCtxSetCurrent failed: %d\n", err);
+      cuDevicePrimaryCtxRelease(device);
+      return NULL;
+    }
+
+    // Load the PTX module
+    err = cuModuleLoadData(&module, ptxSource);
+    if (err != CUDA_SUCCESS) {
+      const char* errName;
+      cuGetErrorName(err, &errName);
+      ARTS_INFO("artsLoadKernelFromPtx: cuModuleLoadData failed: %s (%d)\n",
+                errName ? errName : "unknown", err);
+      cuDevicePrimaryCtxRelease(device);
+      return NULL;
+    }
+
+    // Cache the module
+    it->second[gpuId] = module;
+    ARTS_INFO("artsLoadKernelFromPtx: Loaded PTX module for GPU %u\n", gpuId);
+  }
+
+  // Get the function from the module
+  CUfunction func;
+  err = cuModuleGetFunction(&func, module, kernelName);
+  if (err != CUDA_SUCCESS) {
+    const char* errName;
+    cuGetErrorName(err, &errName);
+    ARTS_INFO("artsLoadKernelFromPtx: cuModuleGetFunction(%s) failed: %s (%d)\n",
+              kernelName, errName ? errName : "unknown", err);
+    return NULL;
+  }
+
+  ARTS_INFO("artsLoadKernelFromPtx: Got function %s from PTX\n", kernelName);
+  return func;
+}
+
+// Cleanup all cached PTX modules (call at shutdown)
+void artsCleanupPtxModules() {
+  std::lock_guard<std::mutex> lock(ptxCacheMutex);
+
+  for (auto& entry : ptxModuleCache) {
+    for (unsigned int i = 0; i < entry.second.size(); i++) {
+      if (entry.second[i] != NULL) {
+        CUdevice device;
+        if (cuDeviceGet(&device, i) == CUDA_SUCCESS) {
+          CUcontext ctx;
+          if (cuDevicePrimaryCtxRetain(&ctx, device) == CUDA_SUCCESS) {
+            cuCtxSetCurrent(ctx);
+            cuModuleUnload(entry.second[i]);
+            cuDevicePrimaryCtxRelease(device);
+          }
+        }
+      }
+    }
+  }
+  ptxModuleCache.clear();
+}
+
+//=============================================================================
+// PTX-based GPU EDT Creation
+//=============================================================================
+
+artsGuid_t internalEdtCreateGpuPtx(const char *ptxSource, const char *kernelName,
+                                   artsGuid_t *guid, unsigned int route,
+                                   uint32_t paramc, uint64_t *paramv,
+                                   uint32_t depc, dim3 grid, dim3 block,
+                                   artsGuid_t endGuid, uint32_t slot,
+                                   artsGuid_t dataGuid, bool hasDepv,
+                                   int gpuToRunOn) {
+  if (!ptxSource || !kernelName) {
+    ARTS_INFO("Creating PTX GPU EDT: missing PTX or kernel name\n");
+    return NULL_GUID;
+  }
+  if (paramc && !paramv) {
+    ARTS_INFO("Creating PTX GPU EDT: paramv is null (paramc=%u)\n", paramc);
+    return NULL_GUID;
+  }
+  ARTS_INFO("Creating PTX GPU EDT: kernel=%p, grid=(%d,%d,%d), block=(%d,%d,%d), route=%u, depc=%u\n",
+            kernelName, grid.x, grid.y, grid.z, block.x, block.y, block.z, route, depc);
+
+  unsigned int depSpace = (hasDepv) ? depc * sizeof(artsEdtDep_t) : 0;
+  unsigned int edtSpace =
+      sizeof(artsGpuEdt_t) + paramc * sizeof(uint64_t) + depSpace;
+
+  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCalloc(1, edtSpace);
+  edt->wrapperEdt.invalidateCount = 1;
+  edt->grid = grid;
+  edt->block = block;
+  edt->gpuToRunOn = gpuToRunOn;
+  edt->endGuid = endGuid;
+  edt->slot = slot;
+  edt->dataGuid = dataGuid;
+  edt->passthrough = false;
+  edt->lib = false;
+  // Set PTX source and kernel name
+  edt->ptxSource = ptxSource;
+  edt->kernelName = kernelName;
+
+  bool created = artsEdtCreateInternal(
+      (struct artsEdt *)edt, ARTS_GPU_EDT, guid, route,
+      artsThreadInfo.clusterId, edtSpace, NULL_GUID, NULL, paramc, paramv,
+      depc, true, NULL_GUID, hasDepv, 0);
+
+  ARTS_INFO("PTX GPU EDT created: guid=%lu, created=%d, depc=%u, hasDepv=%d\n",
+            *guid, created, depc, hasDepv);
+
+  return *guid;
+}
+
+artsGuid_t artsEdtCreateGpuPtx(const char *ptxSource, const char *kernelName,
+                               unsigned int route, uint32_t paramc,
+                               uint64_t *paramv, uint32_t depc, dim3 grid,
+                               dim3 block, artsGuid_t endGuid, uint32_t slot,
+                               artsGuid_t dataGuid) {
+  artsGuid_t guid = NULL_GUID;
+  return internalEdtCreateGpuPtx(ptxSource, kernelName, &guid, route, paramc,
+                                 paramv, depc, grid, block, endGuid, slot,
+                                 dataGuid, true, -1);
+}
+
 void artsRunGpu(void *edtPacket, artsGpu_t *artsGpu) {
   artsGpuEdt_t *edt = (artsGpuEdt_t *)edtPacket;
   artsEdt_t func = edt->wrapperEdt.funcPtr;
@@ -277,6 +483,9 @@ void artsRunGpu(void *edtPacket, artsGpu_t *artsGpu) {
   uint32_t depc = edt->wrapperEdt.depc;
   uint64_t *paramv = (uint64_t *)(edt + 1);
   artsEdtDep_t *depv = (artsEdtDep_t *)(paramv + paramc);
+
+  ARTS_INFO("artsRunGpu: guid=%lu, func=%p, paramc=%u, depc=%u, lib=%d\n",
+            edt->wrapperEdt.currentEdt, func, paramc, depc, edt->lib);
 
   artsCudaSetDevice(artsGpu->device, true);
 
@@ -291,31 +500,36 @@ void artsRunGpu(void *edtPacket, artsGpu_t *artsGpu) {
 
   artsAtomicAdd(&artsGpu->runningEdts, 1U);
 
+  ARTS_INFO("artsRunGpu: prepDbs and scheduling to GPU\n");
   prepDbs(depc, depv, true);
   artsScheduleToGpu(func, paramc, paramv, depc, depv, edtPacket, artsGpu);
+  ARTS_INFO("artsRunGpu: scheduled to GPU, returning\n");
 
   artsCudaRestoreDevice();
 }
 
 void artsGpuHostWrapUp(void *edtPacket, artsGuid_t toSignal, uint32_t slot,
                        artsGuid_t dataGuid) {
+  ARTS_INFO("artsGpuHostWrapUp called: edtPacket=%p, toSignal=%lu, slot=%u, dataGuid=%lu\n",
+            edtPacket, toSignal, slot, dataGuid);
+
   artsGpuEdt_t *edt = (artsGpuEdt_t *)edtPacket;
   uint32_t paramc = edt->wrapperEdt.paramc;
   uint32_t depc = edt->wrapperEdt.depc;
   uint64_t *paramv = (uint64_t *)(edt + 1);
   artsEdtDep_t *depv = (artsEdtDep_t *)(paramv + paramc);
 
-  releaseDbs(depc, depv, true);
-
   if (edt->lib) {
+    ARTS_INFO("artsGpuHostWrapUp: lib EDT, firing OO\n");
     edt->wrapperEdt.invalidateCount = 0;
     artsRouteTableFireOO(edt->wrapperEdt.currentEdt, artsOutOfOrderHandler);
   } else if (edt->wrapperEdt.epochGuid) {
+    ARTS_INFO("artsGpuHostWrapUp: incrementing epoch %lu\n", edt->wrapperEdt.epochGuid);
     incrementFinishedEpoch(edt->wrapperEdt.epochGuid);
   }
 
-  ARTS_DEBUG("TO SIGNAL: %lu -> %lu slot: %u\n", toSignal, dataGuid, slot);
-  // Signal next
+  ARTS_INFO("TO SIGNAL: %lu -> %lu slot: %u\n", toSignal, dataGuid, slot);
+  // Signal next BEFORE releasing DBs so dependent EDTs can acquire them
   if (toSignal) {
     if (edt->passthrough)
       artsSignalEdt(toSignal, slot, depv[dataGuid].guid);
@@ -332,6 +546,11 @@ void artsGpuHostWrapUp(void *edtPacket, artsGuid_t toSignal, uint32_t slot,
         artsPersistentEventSatisfy(toSignal, slot, true);
     }
   }
+
+  // Release DBs AFTER signaling so dependent EDTs can acquire them
+  ARTS_INFO("artsGpuHostWrapUp: releasing DBs, edt->lib=%d\n", edt->lib);
+  releaseDbs(depc, depv, true);
+
   artsEdtDelete((struct artsEdt *)edtPacket);
 }
 
@@ -349,6 +568,11 @@ struct artsEdt *artsRuntimeStealGpuTask() {
 }
 
 bool artsGpuSchedulerLoop() {
+  static __thread bool logged = false;
+  if (!logged) {
+    ARTS_INFO("GPU Scheduler Loop active on thread %u\n", artsThreadInfo.threadId);
+    logged = true;
+  }
   artsGpu_t *artsGpu = NULL;
   artsHandleNewEdts();
 
@@ -361,6 +585,7 @@ bool artsGpuSchedulerLoop() {
 
   bool ranGpuEdt = false;
   if (edtFound) {
+    ARTS_INFO("GPU Scheduler found EDT: guid=%lu, type=%d\n", edtFound->currentEdt, edtFound->header.type);
     artsGpu = artsFindGpu(edtFound);
     if (artsGpu) {
       artsRunGpu(edtFound, artsGpu);
@@ -456,6 +681,11 @@ bool artsGpuSchedulerBackoffLoop() {
 extern __thread unsigned int runGCFlag;
 
 bool artsGpuSchedulerDemandLoop() {
+  static __thread bool logged = false;
+  if (!logged) {
+    ARTS_INFO("GPU Scheduler Demand Loop active on thread %u\n", artsThreadInfo.threadId);
+    logged = true;
+  }
   artsGpu_t *artsGpu = NULL;
   artsHandleNewEdts();
 
@@ -468,12 +698,16 @@ bool artsGpuSchedulerDemandLoop() {
 
   bool ranGpuEdt = false;
   if (edtFound) {
+    ARTS_INFO("GPU Scheduler Demand found EDT: guid=%lu, type=%d\n", edtFound->currentEdt, edtFound->header.type);
     artsGpu = artsFindGpu(edtFound);
     if (artsGpu) {
+      ARTS_INFO("Running GPU EDT on GPU device %d\n", artsGpu->device);
       artsRunGpu(edtFound, artsGpu);
       ranGpuEdt = true;
-    } else
+    } else {
+      ARTS_INFO("No GPU available, re-queueing EDT\n");
       artsDequePushFront(artsThreadInfo.myGpuDeque, edtFound, 0);
+    }
   }
 
   if (!ranGpuEdt)

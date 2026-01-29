@@ -44,6 +44,7 @@ extern "C" {
 #endif
 
 #include <cuda_runtime_api.h>
+#include <cuda.h>  // For CUfunction (CUDA Driver API)
 
 #include "arts/gpu/GpuLCSyncFunctions.cuh"
 #include "arts/runtime/RT.h"
@@ -77,6 +78,12 @@ bool getDataFromStream(unsigned int gpuId, void *dst, void *src, size_t count,
 bool pushKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv,
                         uint32_t depc, artsEdtDep_t *depv, artsEdt_t fnPtr,
                         dim3 grid, dim3 block, bool buff);
+
+// PTX kernel launch using CUDA Driver API
+// Uses cuLaunchKernel instead of cudaLaunchKernel
+bool pushPtxKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv,
+                           uint32_t depc, artsEdtDep_t *depv, CUfunction cuFunc,
+                           dim3 grid, dim3 block);
 
 // #if CUDART_VERSION >= 10000
 //     CHECKCORRECT(cudaLaunchHostFunc(artsGpu->stream, artsWrapUp,

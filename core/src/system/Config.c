@@ -152,7 +152,7 @@ unsigned int artsConfigGetVariable(FILE *config, const char *lookForMe) {
   char *val;
   int size;
   struct artsConfigVariable *cVar;
-  struct artsConfigVariable *head, *next = NULL;
+  struct artsConfigVariable *head = NULL, *next = NULL;
 
   while ((read = getline(&line, &len, config)) != -1) {
     var = strtok(line, "=");
@@ -245,7 +245,7 @@ unsigned int artsConfigGetValue(char *start, char *stop) {
   if (i == size) {
     // No digits found, raise an error
     PRINTF("artsConfigGetValue: No digits found in %s\n", start);
-    artsDebugGenerateSegFault();
+    return 0;
   }
   if (*stop == ':') {
     *stop = '\0';
@@ -267,7 +267,10 @@ char *artsConfigGetNodeName(char *start, char *stop) {
   }
   if (i == size) {
     // No digits found, return the original string
-    artsDebugGenerateSegFault();
+    char *name = (char *)artsMalloc(size + 1);
+    strncpy(name, start, size);
+    name[size] = '\0';
+    return name;
   }
   name = (char *)artsMalloc(size);
   strncpy(name, start, size);
@@ -605,7 +608,9 @@ struct artsConfig *artsConfigLoad() {
 
   config = (struct artsConfig *)artsCalloc(1, sizeof(struct artsConfig));
 
-  char *location = getenv("artsConfig");
+  const char *location = getenv("ARTS_CFG");
+  if (!location)
+    location = getenv("artsConfig");
   if (location)
     configFile = fopen(location, "r");
   else
@@ -614,19 +619,22 @@ struct artsConfig *artsConfigLoad() {
   if (configFile == NULL) {
     ARTS_INFO("No Config file found (./arts.cfg).");
     configVariables = NULL;
-    artsDebugGenerateSegFault();
   } else
     configVariables = artsConfigGetVariables(configFile);
 
   foundVariable = artsConfigFindVariable(&configVariables, "launcher");
-  if (strncmp(foundVariable->value, "slurm", 5) == 0)
-    config->launcher = artsConfigMakeNewVar("slurm");
-  else if (strncmp(foundVariable->value, "lsf", 5) == 0)
-    config->launcher = artsConfigMakeNewVar("lsf");
-  else if (strncmp(foundVariable->value, "local", 5) == 0)
-    config->launcher = artsConfigMakeNewVar("local");
-  else
+  if (foundVariable) {
+    if (strncmp(foundVariable->value, "slurm", 5) == 0)
+      config->launcher = artsConfigMakeNewVar("slurm");
+    else if (strncmp(foundVariable->value, "lsf", 5) == 0)
+      config->launcher = artsConfigMakeNewVar("lsf");
+    else if (strncmp(foundVariable->value, "local", 5) == 0)
+      config->launcher = artsConfigMakeNewVar("local");
+    else
+      config->launcher = artsConfigMakeNewVar("ssh");
+  } else {
     config->launcher = artsConfigMakeNewVar("ssh");
+  }
 
   char *killSet = getenv("killMode");
   if (killSet == NULL) {

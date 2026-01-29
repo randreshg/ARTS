@@ -477,7 +477,21 @@ void artsRecordDepAt(artsGuid_t dbSrc, artsGuid_t edtDest, uint32_t edtSlot,
 // Returns false on out of order and true otherwise
 void acquireDbs(struct artsEdt *edt) {
   artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
-  edt->depcNeeded = edt->depc + 1;
+
+  // Count how many deps still need acquisition (ptr is NULL and guid is set)
+  unsigned int needAcquire = 0;
+  for (int i = 0; i < edt->depc; i++) {
+    if (depv[i].guid && depv[i].ptr == NULL) {
+      needAcquire++;
+    }
+  }
+
+  // Set depcNeeded: 1 (for final decrement in artsHandleReadyEdt) + number of deps needing acquisition
+  // Note: We use atomic add instead of assignment because depcNeeded may have been
+  // modified by signals for remote deps or by concurrent DB acquisitions.
+  // We start fresh with our count since artsHandleReadyEdt has already determined
+  // all signal-based deps are satisfied before calling us.
+  edt->depcNeeded = needAcquire + 1;
   ARTS_INFO("Acquiring %u DBs for EDT[Id:%lu, Guid:%lu], depcNeeded "
             "initialized to %u",
             edt->depc, edt->arts_id, edt->currentEdt, edt->depcNeeded);
@@ -572,6 +586,7 @@ void acquireDbs(struct artsEdt *edt) {
           int validRank = -1;
           struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
               depv[i].guid, &validRank, true);
+          ARTS_INFO("  Owner case: dbTemp=%p, validRank=%d\n", (void*)dbTemp, validRank);
           // We have found an entry
           if (dbTemp) {
             bool duplicateAdded =

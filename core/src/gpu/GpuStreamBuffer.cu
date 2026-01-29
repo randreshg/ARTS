@@ -44,13 +44,15 @@
 // stream.  Then we will push stuff!
 #include "arts/gpu/GpuStreamBuffer.h"
 
+#include <cuda.h>  // CUDA Driver API for cuLaunchKernel
+
 #include "arts/gpu/GpuRuntime.cuh"
 #include "arts/introspection/Metrics.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/utils/Atomics.h"
 
-#define CHECKSTREAM 4096
+#define CHECKSTREAM 32
 #define MAXSTREAM 32
 #define MAXBUFFER 128
 
@@ -162,6 +164,50 @@ bool pushKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv,
                                 artsGpus[gpuId].stream));
   checkOccupancy(fnPtr, gpuId, block);
   artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
+  return true;
+}
+
+// PTX kernel launch using CUDA Driver API
+// Note: PTX kernels don't support buffering - they are launched immediately
+bool pushPtxKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv,
+                           uint32_t depc, artsEdtDep_t *depv, CUfunction cuFunc,
+                           dim3 grid, dim3 block) {
+  if (!cuFunc) {
+    ARTS_INFO("pushPtxKernelToStream: NULL CUfunction\n");
+    return false;
+  }
+
+  // Get the CUDA stream as CUstream
+  // cudaStream_t is compatible with CUstream
+  CUstream cuStream = (CUstream)artsGpus[gpuId].stream;
+
+  // Set up kernel arguments
+  // The kernel expects: (uint32_t paramc, uint64_t* paramv, uint32_t depc, artsEdtDep_t* depv)
+  void *kernelArgs[] = {&paramc, &paramv, &depc, &depv};
+
+  ARTS_INFO("pushPtxKernelToStream: launching on GPU %u, grid=(%u,%u,%u), block=(%u,%u,%u)\n",
+            gpuId, grid.x, grid.y, grid.z, block.x, block.y, block.z);
+
+  CUresult err = cuLaunchKernel(
+      cuFunc,
+      grid.x, grid.y, grid.z,     // Grid dimensions
+      block.x, block.y, block.z,  // Block dimensions
+      0,                          // Shared memory bytes
+      cuStream,                   // Stream
+      kernelArgs,                 // Kernel arguments
+      NULL                        // Extra (unused)
+  );
+
+  if (err != CUDA_SUCCESS) {
+    const char* errName;
+    cuGetErrorName(err, &errName);
+    ARTS_INFO("pushPtxKernelToStream: cuLaunchKernel failed: %s (%d)\n",
+              errName ? errName : "unknown", err);
+    return false;
+  }
+
+  artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
+  ARTS_INFO("pushPtxKernelToStream: kernel launched successfully\n");
   return true;
 }
 
@@ -418,6 +464,14 @@ bool checkStreams(bool buffOn) {
       }
     }
     return ret;
+  }
+  // When buffering is off, still need to poll streams to trigger callbacks
+  // cudaLaunchHostFunc callbacks require host interaction to execute
+  for (unsigned int i = 0; i < artsNodeInfo.gpu; i++) {
+    cudaError_t status = cudaStreamQuery(artsGpus[i].stream);
+    // cudaStreamQuery returns cudaSuccess if stream is idle (all work done)
+    // or cudaErrorNotReady if still busy. Either way, it triggers callbacks.
+    (void)status; // Ignore the status, we just want to trigger callbacks
   }
   return false;
 }
