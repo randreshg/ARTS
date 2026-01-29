@@ -69,6 +69,13 @@ void *artsCudaMallocHost(unsigned int size);
 void artsCudaFreeHost(void *ptr);
 void *artsCudaMalloc(unsigned int size);
 void artsCudaFree(void *ptr);
+
+// Stream-ordered allocation (CUDA 11.2+)
+// These functions enable memory allocation/deallocation tied to a specific stream,
+// allowing for better concurrency with memory reuse from stream-local pools.
+// Falls back to synchronous allocation on older CUDA versions.
+void *artsCudaMallocAsync(unsigned int size, cudaStream_t stream);
+void artsCudaFreeAsync(void *ptr, cudaStream_t stream);
 void artsCudaMemCpyFromDev(void *dst, void *src, size_t count);
 void artsCudaMemCpyToDev(void *dst, void *src, size_t count);
 artsGuid_t artsEdtCreateGpuDep(artsEdt_t funcPtr, unsigned int route,

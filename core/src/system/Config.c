@@ -1044,6 +1044,11 @@ struct artsConfig *artsConfigLoad() {
     configVariables = nextVar;
   }
 
+  // Close the config file to prevent file descriptor leak
+  if (configFile != NULL) {
+    fclose(configFile);
+  }
+
   return config;
 }
 

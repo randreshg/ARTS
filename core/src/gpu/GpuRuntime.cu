@@ -113,6 +113,14 @@ void artsCudaFreeHost(void *ptr) {
   // artsFree(ptr);
 }
 
+// Stream-ordered allocation support (CUDA 11.2+)
+// When enabled, allocations are tied to a specific stream for better concurrency
+#if CUDART_VERSION >= 11020
+#define ARTS_STREAM_ORDERED_ALLOC_SUPPORTED 1
+#else
+#define ARTS_STREAM_ORDERED_ALLOC_SUPPORTED 0
+#endif
+
 void *artsCudaMalloc(unsigned int size) {
   void *ptr = NULL;
   CHECKCORRECT(cudaMalloc(&ptr, size));
@@ -125,9 +133,50 @@ void *artsCudaMalloc(unsigned int size) {
   return ptr;
 }
 
+// Stream-ordered allocation - allocates memory in the stream's memory pool
+// Memory is available immediately for use in the same stream
+// For CUDA < 11.2, falls back to regular cudaMalloc
+void *artsCudaMallocAsync(unsigned int size, cudaStream_t stream) {
+  void *ptr = NULL;
+#if ARTS_STREAM_ORDERED_ALLOC_SUPPORTED
+  cudaError_t err = cudaMallocAsync(&ptr, size, stream);
+  if (err != cudaSuccess) {
+    // Fallback to synchronous allocation if async fails
+    ARTS_DEBUG("cudaMallocAsync failed, falling back to cudaMalloc\n");
+    CHECKCORRECT(cudaMalloc(&ptr, size));
+  }
+#else
+  CHECKCORRECT(cudaMalloc(&ptr, size));
+#endif
+  if (!ptr) {
+    ARTS_INFO("artsCudaMallocAsync failed %lu\n",
+              artsGpus[artsCurrentDeviceId].availGlobalMem);
+    artsDebugPrintStack();
+    exit(1);
+  }
+  return ptr;
+}
+
 void artsCudaFree(void *ptr) {
   if (ptr)
     CHECKCORRECT(cudaFree(ptr));
+}
+
+// Stream-ordered free - returns memory to the stream's memory pool
+// Memory may be reused by subsequent allocations in the same stream
+// For CUDA < 11.2, falls back to regular cudaFree
+void artsCudaFreeAsync(void *ptr, cudaStream_t stream) {
+  if (!ptr) return;
+#if ARTS_STREAM_ORDERED_ALLOC_SUPPORTED
+  cudaError_t err = cudaFreeAsync(ptr, stream);
+  if (err != cudaSuccess) {
+    // Fallback to synchronous free if async fails
+    ARTS_DEBUG("cudaFreeAsync failed, falling back to cudaFree\n");
+    CHECKCORRECT(cudaFree(ptr));
+  }
+#else
+  CHECKCORRECT(cudaFree(ptr));
+#endif
 }
 
 void artsCudaMemCpyFromDev(void *dst, void *src, size_t count) {
@@ -161,7 +210,12 @@ artsGuid_t internalEdtCreateGpu(artsEdt_t funcPtr, artsGuid_t *guid,
   unsigned int edtSpace =
       sizeof(artsGpuEdt_t) + paramc * sizeof(uint64_t) + depSpace;
 
-  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCalloc(1, edtSpace);
+  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCallocAlignWithType(
+      1, edtSpace, 16, artsEdtMemorySize);
+  if (!edt) {
+    ARTS_INFO("Creating PTX GPU EDT: allocation failed (size=%u)\n", edtSpace);
+    return NULL_GUID;
+  }
   edt->wrapperEdt.invalidateCount = 1;
   edt->grid = grid;
   edt->block = block;
@@ -283,10 +337,25 @@ artsGuid_t artsEdtCreateGpuLibDirect(artsEdt_t funcPtr, unsigned int route,
 // PTX Module Loading and Caching
 //=============================================================================
 
-// Module cache: key = PTX source pointer, value = array of CUmodule per GPU
-static std::map<const char*, std::vector<CUmodule>> ptxModuleCache;
+// Module cache: key = content hash of PTX source, value = array of CUmodule per GPU
+// Using content hash instead of pointer prevents redundant compilations when
+// the same PTX content is loaded from different memory locations
+static std::map<size_t, std::vector<CUmodule>> ptxModuleCache;
 static std::mutex ptxCacheMutex;
 static bool cuInitialized = false;
+
+// Hash function for PTX content (FNV-1a hash)
+static size_t hashPtxContent(const char* ptxSource) {
+  if (!ptxSource) return 0;
+  size_t hash = 14695981039346656037ULL;  // FNV offset basis
+  const char* p = ptxSource;
+  while (*p) {
+    hash ^= static_cast<size_t>(*p);
+    hash *= 1099511628211ULL;  // FNV prime
+    ++p;
+  }
+  return hash;
+}
 
 // Initialize CUDA Driver API (idempotent)
 static CUresult ensureCuInit() {
@@ -315,10 +384,13 @@ CUfunction artsLoadKernelFromPtx(const char *ptxSource, const char *kernelName,
     return NULL;
   }
 
+  // Compute content hash for cache lookup
+  size_t ptxHash = hashPtxContent(ptxSource);
+
   std::lock_guard<std::mutex> lock(ptxCacheMutex);
 
-  // Check if we have a cached module for this PTX
-  auto it = ptxModuleCache.find(ptxSource);
+  // Check if we have a cached module for this PTX content
+  auto it = ptxModuleCache.find(ptxHash);
   CUmodule module = NULL;
 
   if (it != ptxModuleCache.end()) {
@@ -328,8 +400,8 @@ CUfunction artsLoadKernelFromPtx(const char *ptxSource, const char *kernelName,
     }
   } else {
     // Create new entry in cache
-    ptxModuleCache[ptxSource] = std::vector<CUmodule>(artsNodeInfo.gpu, NULL);
-    it = ptxModuleCache.find(ptxSource);
+    ptxModuleCache[ptxHash] = std::vector<CUmodule>(artsNodeInfo.gpu, NULL);
+    it = ptxModuleCache.find(ptxHash);
   }
 
   if (module == NULL) {
@@ -440,7 +512,12 @@ artsGuid_t internalEdtCreateGpuPtx(const char *ptxSource, const char *kernelName
   unsigned int edtSpace =
       sizeof(artsGpuEdt_t) + paramc * sizeof(uint64_t) + depSpace;
 
-  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCalloc(1, edtSpace);
+  artsGpuEdt_t *edt = (artsGpuEdt_t *)artsCallocAlignWithType(
+      1, edtSpace, 16, artsEdtMemorySize);
+  if (!edt) {
+    ARTS_INFO("Creating PTX GPU EDT: allocation failed (size=%u)\n", edtSpace);
+    return NULL_GUID;
+  }
   edt->wrapperEdt.invalidateCount = 1;
   edt->grid = grid;
   edt->block = block;
@@ -678,7 +755,8 @@ bool artsGpuSchedulerBackoffLoop() {
   return ranCpuEdt;
 }
 
-extern __thread unsigned int runGCFlag;
+// Global atomic GC flag - stores gpuId + 1 (0 means no GC needed)
+extern volatile unsigned int globalRunGCFlag;
 
 bool artsGpuSchedulerDemandLoop() {
   static __thread bool logged = false;
@@ -716,9 +794,10 @@ bool artsGpuSchedulerDemandLoop() {
   bool ranCpuEdt = artsDefaultSchedulerLoop();
 
   if (!ranGpuEdt && !ranCpuEdt) {
-    if (artsNodeInfo.runGpuGcIdle && runGCFlag) {
-      long unsigned int gpuId = runGCFlag - 1;
-      runGCFlag = 0;
+    // Use atomic fetch-and-swap to atomically read and clear the GC flag
+    unsigned int gcFlag = artsAtomicSwap(&globalRunGCFlag, 0U);
+    if (artsNodeInfo.runGpuGcIdle && gcFlag) {
+      long unsigned int gpuId = gcFlag - 1;
 
       artsGpu = &artsGpus[gpuId];
       ARTS_DEBUG("Running Idle GPU GC: %u\n", gpuId);

@@ -85,6 +85,12 @@ bool pushPtxKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv
                            uint32_t depc, artsEdtDep_t *depv, CUfunction cuFunc,
                            dim3 grid, dim3 block);
 
+// Multi-stream synchronization helpers
+// Signal that all H2D transfers are complete - call after pushing all H2D data
+void signalH2DComplete(unsigned int gpuId);
+// Wait for compute to complete before D2H - call before pulling D2H data
+void waitForComputeComplete(unsigned int gpuId);
+
 // #if CUDART_VERSION >= 10000
 //     CHECKCORRECT(cudaLaunchHostFunc(artsGpu->stream, artsWrapUp,
 //     hostClosure));
