@@ -44,6 +44,8 @@
 // stream.  Then we will push stuff!
 #include "arts/gpu/GpuStream.h"
 
+#include <cuda.h>  // CUDA Driver API
+
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gpu/GpuLCSyncFunctions.cuh"
@@ -57,6 +59,10 @@
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
+
+// External function from GpuRuntime.cu for loading PTX kernels
+extern CUfunction artsLoadKernelFromPtx(const char *ptxSource, const char *kernelName,
+                                        unsigned int gpuId);
 
 int random(void *edtPacket);
 int allOrNothing(void *edtPacket);
@@ -144,8 +150,8 @@ void artsNodeInitGpus() {
   fit = fitScheme[artsNodeInfo.gpuFit];
   CHECKCORRECT(cudaGetDeviceCount(&numAvailGpus));
   if (numAvailGpus < artsNodeInfo.gpu) {
-    ARTS_INFO("Requested %d gpus but only %d available\n", numAvailGpus,
-              artsNodeInfo.gpu);
+    ARTS_INFO("Requested %d gpus but only %d available\n", artsNodeInfo.gpu,
+              numAvailGpus);
     artsNodeInfo.gpu = numAvailGpus;
   }
 
@@ -250,6 +256,7 @@ void artsCleanupGpus() {
 }
 
 void CUDART_CB artsWrapUp(cudaStream_t stream, cudaError_t status, void *data) {
+  ARTS_INFO("artsWrapUp callback invoked: status=%d, data=%p\n", status, data);
   // artsToggleThreadInspection();
 
   artsGpuCleanUp_t *gc = (artsGpuCleanUp_t *)data;
@@ -456,7 +463,19 @@ void artsScheduleToGpuInternal(artsEdt_t fnPtr, uint32_t paramc,
     artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
 
     artsUnsetThreadLocalEdtInfo();
+  } else if (gpuEdt->ptxSource != NULL) {
+    // PTX-based kernel launch using CUDA Driver API
+    ARTS_INFO("Launching PTX kernel: %s on GPU %d\n", gpuEdt->kernelName, artsGpu->device);
+    CUfunction cuFunc = artsLoadKernelFromPtx(gpuEdt->ptxSource, gpuEdt->kernelName,
+                                              artsGpu->device);
+    if (cuFunc) {
+      pushPtxKernelToStream(artsGpu->device, paramc, devParamv, depc, devDepv,
+                            cuFunc, grid, block);
+    } else {
+      ARTS_INFO("Failed to load PTX kernel: %s\n", gpuEdt->kernelName);
+    }
   } else {
+    // Legacy function pointer path
     pushKernelToStream(artsGpu->device, paramc, devParamv, depc, devDepv, fnPtr,
                        grid, block, artsNodeInfo.gpuBuffOn);
   }
@@ -473,8 +492,7 @@ void artsScheduleToGpuInternal(artsEdt_t fnPtr, uint32_t paramc,
     }
   }
 
-  pushWrapUpToStream(artsGpu->device, hostClosure,
-                     artsNodeInfo.gpuBuffOn && !gpuEdt->lib);
+  pushWrapUpToStream(artsGpu->device, hostClosure, false);  // Never buffer wrap-ups
 }
 
 void artsScheduleToGpu(artsEdt_t fnPtr, uint32_t paramc, uint64_t *paramv,

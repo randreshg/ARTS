@@ -70,6 +70,12 @@
 extern unsigned int numNumaDomains;
 extern int mainArgc;
 extern char **mainArgv;
+
+// Use extern "C" to ensure C linkage when compiled as C++ (via CUDA wrapper)
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #if defined(__APPLE__)
 extern void initPerNode(unsigned int nodeId, int argc, char **argv)
     __attribute__((weak_import));
@@ -91,6 +97,10 @@ __attribute__((weak)) void initPerWorker(unsigned int nodeId,
                                          unsigned int workerId, int argc,
                                          char **argv) {}
 __attribute__((weak)) void artsMain(int argc, char **argv) {}
+
+#ifdef __cplusplus
+}
+#endif
 
 struct artsRuntimeShared artsNodeInfo;
 __thread struct artsRuntimePrivate artsThreadInfo;
@@ -460,23 +470,30 @@ void artsHandleRemoteStolenEdt(struct artsEdt *edt) {
 }
 
 void artsHandleReadyEdt(struct artsEdt *edt) {
-  ARTS_INFO("EDT[Id:%lu, Guid:%lu] is ready", edt->arts_id, edt->currentEdt);
+  artsGuid_t guid = edt->currentEdt;
+  ARTS_INFO("EDT[Id:%lu, Guid:%lu] is ready", edt->arts_id, guid);
   acquireDbs(edt);
-  if (artsAtomicSub(&edt->depcNeeded, 1U) == 0) {
+  unsigned int depcAfterSub = artsAtomicSub(&edt->depcNeeded, 1U);
+  ARTS_INFO("EDT[Guid:%lu] depcNeeded afterSub=%u, type=%d", guid, depcAfterSub, edt->header.type);
+  if (depcAfterSub == 0) {
     INCREMENT_NUM_EDTS_ACQUIRED_BY(1);
     incrementQueueEpoch(edt->epochGuid);
     globalShutdownGuidIncQueue();
 #ifdef USE_GPU
     if (artsNodeInfo.gpu &&
-        (!artsThreadInfo.myDeque || !artsThreadInfo.myGpuDeque))
+        (!artsThreadInfo.myDeque || !artsThreadInfo.myGpuDeque)) {
+      ARTS_INFO("Storing EDT via artsStoreNewEdts: guid=%lu, type=%d, myDeque=%p, myGpuDeque=%p\n",
+                edt->currentEdt, edt->header.type, artsThreadInfo.myDeque, artsThreadInfo.myGpuDeque);
       artsStoreNewEdts(edt);
-    else
+    } else
 #endif
     {
       if (edt->header.type == ARTS_EDT)
         artsDequePushFront(artsThreadInfo.myDeque, edt, 0);
-      else if (edt->header.type == ARTS_GPU_EDT)
+      else if (edt->header.type == ARTS_GPU_EDT) {
+        ARTS_INFO("Queueing GPU EDT to gpuDeque: guid=%lu, deque=%p\n", edt->currentEdt, artsThreadInfo.myGpuDeque);
         artsDequePushFront(artsThreadInfo.myGpuDeque, edt, 0);
+      }
     }
     artsMetricsTriggerEvent(artsEdtQueue, artsThread, 1);
   }

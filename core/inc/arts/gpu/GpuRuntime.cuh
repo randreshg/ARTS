@@ -56,6 +56,9 @@ typedef struct {
   uint32_t slot;
   bool passthrough;
   bool lib;
+  // PTX-based kernel support
+  const char *ptxSource;    // PTX source string (NULL for legacy function ptr)
+  const char *kernelName;   // Kernel entry point name
 } artsGpuEdt_t;
 
 int artsGetCurrentGpu();
@@ -111,6 +114,15 @@ artsGuid_t artsEdtCreateGpuWithGuid(artsEdt_t funcPtr, artsGuid_t guid,
 artsGuid_t artsEdtCreateGpuLibWithGuid(artsEdt_t funcPtr, artsGuid_t guid,
                                        uint32_t paramc, uint64_t *paramv,
                                        uint32_t depc, dim3 grid, dim3 block);
+
+// PTX-based GPU EDT creation
+// Creates a GPU EDT using PTX source code instead of a function pointer.
+// The PTX is loaded and compiled using CUDA Driver API at runtime.
+artsGuid_t artsEdtCreateGpuPtx(const char *ptxSource, const char *kernelName,
+                               unsigned int route, uint32_t paramc,
+                               uint64_t *paramv, uint32_t depc, dim3 grid,
+                               dim3 block, artsGuid_t endGuid, uint32_t slot,
+                               artsGuid_t dataGuid);
 
 dim3 *artsGetGpuGrid();
 dim3 *artsGetGpuBlock();
