@@ -54,6 +54,7 @@ struct artsDbElement {
 struct artsLocalDelayedEdt {
   struct artsLocalDelayedEdt *next;
   struct artsEdt *edt[DBSPERELEMENT];
+  artsGuid_t edtGuid[DBSPERELEMENT];
   unsigned int slot[DBSPERELEMENT];
   artsType_t mode[DBSPERELEMENT];
 };

@@ -206,8 +206,8 @@ bool artsPushDbToElement(struct artsDbElement *head, unsigned int position,
 }
 
 void artsPushDelayedEdt(struct artsLocalDelayedEdt *head, unsigned int position,
-                        struct artsEdt *edt, unsigned int slot,
-                        artsType_t mode) {
+                        struct artsEdt *edt, artsGuid_t edtGuid,
+                        unsigned int slot, artsType_t mode) {
   unsigned int numElements = position / DBSPERELEMENT;
   unsigned int elementPos = position % DBSPERELEMENT;
   struct artsLocalDelayedEdt *current = head;
@@ -222,6 +222,7 @@ void artsPushDelayedEdt(struct artsLocalDelayedEdt *head, unsigned int position,
     current = current->next;
   }
   current->edt[elementPos] = edt;
+  current->edtGuid[elementPos] = edtGuid;
   current->slot[elementPos] = slot;
   current->mode[elementPos] = mode;
 }
@@ -254,7 +255,7 @@ bool artsPushDbToFrontier(struct artsDbFrontier *frontier, unsigned int data,
     frontier->exMode = mode;
   } else if (inserted && local) {
     artsPushDelayedEdt(&frontier->localDelayed, frontier->localPosition++, edt,
-                       slot, mode);
+                       edtGuid, slot, mode);
   }
 
   frontierUnlock(&frontier->lock);
@@ -309,7 +310,7 @@ unsigned int artsCurrentFrontierSize(struct artsDbList *dbList) {
     size = dbList->head->position;
     frontierUnlock(&dbList->head->lock);
   }
-  artsReaderUnlock(&dbList->head->lock);
+  artsReaderUnlock(&dbList->reader);
   return size;
 }
 
@@ -325,8 +326,7 @@ artsDbFrontierIterCreate(struct artsDbFrontier *frontier) {
     iter->frontier = frontier;
     iter->currentElement = &frontier->list;
   }
-  // Need to mark unreachable
-  return NULL;
+  return iter;
 }
 
 unsigned int artsDbFrontierIterSize(struct artsDbFrontierIterator *iter) {
@@ -376,17 +376,17 @@ void artsSignalFrontierRemote(struct artsDbFrontier *frontier,
 
   if (frontier->exEdt || frontier->exEdtGuid != NULL_GUID) {
     artsGuid_t edtGuid = frontier->exEdtGuid;
-    if (edtGuid == NULL_GUID && frontier->exEdt)
-      edtGuid = frontier->exEdt->currentEdt;
-    if (frontier->exNode == getFrom)
-      artsRemoteSendAlreadyLocal(getFrom, db->guid, edtGuid, frontier->exSlot,
-                                 frontier->exMode);
-    else if (frontier->exNode != artsGlobalRankId)
-      artsRemoteDbForwardFull(frontier->exNode, getFrom, db->guid, edtGuid,
-                              frontier->exSlot, frontier->exMode);
-    else
-      artsRemoteDbFullRequest(db->guid, getFrom, edtGuid, frontier->exSlot,
-                              frontier->exMode);
+    if (edtGuid != NULL_GUID) {
+      if (frontier->exNode == getFrom)
+        artsRemoteSendAlreadyLocal(getFrom, db->guid, edtGuid, frontier->exSlot,
+                                   frontier->exMode);
+      else if (frontier->exNode != artsGlobalRankId)
+        artsRemoteDbForwardFull(frontier->exNode, getFrom, db->guid, edtGuid,
+                                frontier->exSlot, frontier->exMode);
+      else
+        artsRemoteDbFullRequest(db->guid, getFrom, edtGuid, frontier->exSlot,
+                                frontier->exMode);
+    }
   }
 
   struct artsDbFrontierIterator *iter = artsDbFrontierIterCreate(frontier);
@@ -406,8 +406,17 @@ void artsSignalFrontierRemote(struct artsDbFrontier *frontier,
     struct artsLocalDelayedEdt *current = &frontier->localDelayed;
     for (unsigned int i = 0; i < frontier->localPosition; i++) {
       unsigned int pos = i % DBSPERELEMENT;
-      struct artsEdt *edt = current->edt[pos];
+      artsGuid_t edtGuid = current->edtGuid[pos];
+      struct artsEdt *edt =
+          (edtGuid != NULL_GUID)
+              ? (struct artsEdt *)artsRouteTableLookupItem(edtGuid)
+              : current->edt[pos];
       unsigned int slot = current->slot[pos];
+      if (!edt) {
+        if (pos + 1 == DBSPERELEMENT)
+          current = current->next;
+        continue;
+      }
       // send through aggregation
       artsRemoteDbRequest(db->guid, getFrom, edt, slot, ARTS_DB_READ, true,
                           ARTS_NULL);
@@ -427,22 +436,19 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
 
   if (frontier->exEdt || frontier->exEdtGuid != NULL_GUID) {
     artsGuid_t edtGuid = frontier->exEdtGuid;
-    struct artsEdt *edt = frontier->exEdt;
-    if (edtGuid == NULL_GUID && edt)
-      edtGuid = edt->currentEdt;
-    if (!edt && edtGuid != NULL_GUID)
+    struct artsEdt *edt = NULL;
+    if (edtGuid != NULL_GUID)
       edt = (struct artsEdt *)artsRouteTableLookupItem(edtGuid);
+    else
+      edt = frontier->exEdt;
     if (frontier->exNode == artsGlobalRankId) {
       if (edt) {
         artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
         depv[frontier->exSlot].ptr = db + 1;
         if (artsAtomicSub(&edt->depcNeeded, 1U) == 0)
           artsHandleRemoteStolenEdt(edt);
-      } else {
-        ARTS_INFO("Local frontier missing EDT[Guid:%lu] on rank %u", edtGuid,
-                  artsGlobalRankId);
       }
-    } else {
+    } else if (edtGuid != NULL_GUID) {
       artsRemoteDbFullSendNow(frontier->exNode, db, edtGuid, frontier->exSlot,
                               frontier->exMode);
     }
@@ -465,7 +471,16 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
     struct artsLocalDelayedEdt *current = &frontier->localDelayed;
     for (unsigned int i = 0; i < frontier->localPosition; i++) {
       unsigned int pos = i % DBSPERELEMENT;
-      struct artsEdt *edt = current->edt[pos];
+      artsGuid_t edtGuid = current->edtGuid[pos];
+      struct artsEdt *edt =
+          (edtGuid != NULL_GUID)
+              ? (struct artsEdt *)artsRouteTableLookupItem(edtGuid)
+              : current->edt[pos];
+      if (!edt) {
+        if (pos + 1 == DBSPERELEMENT)
+          current = current->next;
+        continue;
+      }
       // This is prob wrong now with GPUs
       artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
       depv[current->slot[pos]].ptr = db + 1;
@@ -482,6 +497,9 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
 }
 
 void artsProgressFrontier(struct artsDb *db, unsigned int rank) {
+  if (!db || !db->dbList)
+    return;
+
   struct artsDbList *dbList = (struct artsDbList *)db->dbList;
   artsWriterLock(&dbList->reader, &dbList->writer);
   struct artsDbFrontier *tail = dbList->head;
