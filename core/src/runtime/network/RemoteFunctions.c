@@ -314,11 +314,15 @@ void artsRemoteHandleUpdateDb(void *ptr) {
   struct artsDb *packetDb = (struct artsDb *)(packet + 1);
   unsigned int rank = artsGuidGetRank(packet->guid);
   if (rank == artsGlobalRankId) {
-    struct artsDb **dataPtr;
+    struct artsDb **dataPtr = NULL;
     bool write = packet->header.size > sizeof(struct artsRemoteGuidOnlyPacket);
-    itemState_t state = artsRouteTableLookupItemWithState(
-        packet->guid, (void ***)&dataPtr, allocatedKey, write);
+    artsRouteTableLookupItemWithState(packet->guid, (void ***)&dataPtr,
+                                      allocatedKey, write);
     struct artsDb *db = (dataPtr) ? *dataPtr : NULL;
+    if (!db) {
+      artsDbDecrementLatch(packet->guid);
+      return;
+    }
     if (write && db &&
         (db->header.size - sizeof(struct artsDb)) == 176128) {
       ARTS_INFO("RemoteHandleUpdateDb WRITE DB[Id:%lu, Guid:%lu, Size:%lu] "
@@ -330,8 +334,22 @@ void artsRemoteHandleUpdateDb(void *ptr) {
                  packet->guid, packet->header.rank);
     }
     if (write) {
+      uint64_t packetDbBytes =
+          packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
+      if (packetDbBytes < sizeof(struct artsDb) ||
+          db->header.size < sizeof(struct artsDb)) {
+        artsDbDecrementLatch(packet->guid);
+        return;
+      }
+
+      uint64_t remotePayloadBytes = packetDbBytes - sizeof(struct artsDb);
+      uint64_t localPayloadBytes = db->header.size - sizeof(struct artsDb);
+      uint64_t copyBytes = (remotePayloadBytes < localPayloadBytes)
+                               ? remotePayloadBytes
+                               : localPayloadBytes;
+
       void *ptr = (void *)(db + 1);
-      memcpy(ptr, packetDb + 1, db->header.size - sizeof(struct artsDb));
+      memcpy(ptr, packetDb + 1, copyBytes);
       artsRouteTableSetRank(packet->guid, artsGlobalRankId);
       artsProgressFrontier(db, artsGlobalRankId);
     } else {
@@ -1251,4 +1269,3 @@ void artsRemoteHandleTimeSyncResp(void *pack) {
             artsGlobalRankId, T1, T2, T3, rtt, (double)rtt / 1000000.0, offset,
             (double)offset / 1000000.0);
 }
-
