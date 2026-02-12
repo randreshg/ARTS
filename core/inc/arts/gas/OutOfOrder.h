@@ -64,6 +64,24 @@ void artsOutOfOrderAddDependenceToPersistentEvent(artsGuid_t source,
                                                   uint32_t slot,
                                                   artsType_t mode,
                                                   artsGuid_t waitOn);
+void artsOutOfOrderAddDependenceToPersistentEventWithMode(
+    artsGuid_t source, artsGuid_t destination, uint32_t slot,
+    artsType_t acquireMode, artsGuid_t waitOn);
+void artsOutOfOrderAddDependenceToPersistentEventWithByteOffset(
+    artsGuid_t source, artsGuid_t destination, uint32_t slot,
+    artsType_t acquireMode, uint64_t byteOffset, uint64_t size,
+    artsGuid_t waitOn);
+void artsOutOfOrderDbAddDependenceWithMode(artsGuid_t dbGuid,
+                                           artsGuid_t edtDest, uint32_t slot,
+                                           artsType_t acquireMode);
+void artsOutOfOrderDbAddDependenceWithByteOffset(artsGuid_t dbGuid,
+                                                 artsGuid_t edtDest,
+                                                 uint32_t slot,
+                                                 artsType_t acquireMode,
+                                                 uint64_t byteOffset,
+                                                 uint64_t size);
+void artsOutOfOrderDbIncrementLatch(artsGuid_t dbGuid);
+void artsOutOfOrderDbDecrementLatch(artsGuid_t dbGuid);
 void artsOutOfOrderHandleReadyEdt(artsGuid_t triggerGuid, struct artsEdt *edt);
 void artsOutOfOrderHandleRemoteDbSend(int rank, artsGuid_t dbGuid,
                                       artsType_t mode);

@@ -54,6 +54,12 @@ enum artsOutOfOrderType {
   ooEventSatisfySlot,
   ooPersistentEventSatisfySlot,
   ooAddDependence,
+  ooAddDependenceToPersistentEventWithMode,
+  ooAddDependenceToPersistentEventWithByteOffset,
+  ooDbAddDependenceWithMode,
+  ooDbAddDependenceWithByteOffset,
+  ooDbIncrementLatch,
+  ooDbDecrementLatch,
   ooHandleReadyEdt,
   ooRemoteDbSend,
   ooDbRequestSatisfy,
@@ -92,6 +98,47 @@ struct ooAddDependence {
   uint32_t slot;
   artsGuid_t data;
   artsType_t mode;
+};
+
+struct ooAddDependenceToPersistentEventWithMode {
+  enum artsOutOfOrderType type;
+  artsGuid_t source;
+  artsGuid_t destination;
+  uint32_t slot;
+  artsType_t acquireMode;
+};
+
+struct ooAddDependenceToPersistentEventWithByteOffset {
+  enum artsOutOfOrderType type;
+  artsGuid_t source;
+  artsGuid_t destination;
+  uint32_t slot;
+  artsType_t acquireMode;
+  uint64_t byteOffset;
+  uint64_t size;
+};
+
+struct ooDbAddDependenceWithMode {
+  enum artsOutOfOrderType type;
+  artsGuid_t dbGuid;
+  artsGuid_t edtGuid;
+  uint32_t slot;
+  artsType_t acquireMode;
+};
+
+struct ooDbAddDependenceWithByteOffset {
+  enum artsOutOfOrderType type;
+  artsGuid_t dbGuid;
+  artsGuid_t edtGuid;
+  uint32_t slot;
+  artsType_t acquireMode;
+  uint64_t byteOffset;
+  uint64_t size;
+};
+
+struct ooDbLatch {
+  enum artsOutOfOrderType type;
+  artsGuid_t dbGuid;
 };
 
 struct ooEventSatisfySlot {
@@ -209,6 +256,48 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
   case ooAddDependence: {
     struct ooAddDependence *dep = (struct ooAddDependence *)handleMe;
     artsAddDependence(dep->source, dep->destination, dep->slot);
+    break;
+  }
+  case ooAddDependenceToPersistentEventWithMode: {
+    struct ooAddDependenceToPersistentEventWithMode *dep =
+        (struct ooAddDependenceToPersistentEventWithMode *)handleMe;
+    artsAddDependenceToPersistentEventWithModeAndDiff(
+        dep->source, dep->destination, dep->slot, dep->acquireMode);
+    break;
+  }
+  case ooAddDependenceToPersistentEventWithByteOffset: {
+    struct ooAddDependenceToPersistentEventWithByteOffset *dep =
+        (struct ooAddDependenceToPersistentEventWithByteOffset *)handleMe;
+    artsAddDependenceToPersistentEventWithByteOffset(
+        dep->source, dep->destination, dep->slot, dep->acquireMode,
+        dep->byteOffset, dep->size);
+    break;
+  }
+  case ooDbAddDependenceWithMode: {
+    struct ooDbAddDependenceWithMode *dep =
+        (struct ooDbAddDependenceWithMode *)handleMe;
+    struct artsDb *db = (struct artsDb *)memoryPtr;
+    artsAddDependenceToPersistentEventWithModeAndDiff(
+        db->eventGuid, dep->edtGuid, dep->slot, dep->acquireMode);
+    break;
+  }
+  case ooDbAddDependenceWithByteOffset: {
+    struct ooDbAddDependenceWithByteOffset *dep =
+        (struct ooDbAddDependenceWithByteOffset *)handleMe;
+    struct artsDb *db = (struct artsDb *)memoryPtr;
+    artsAddDependenceToPersistentEventWithByteOffset(
+        db->eventGuid, dep->edtGuid, dep->slot, dep->acquireMode,
+        dep->byteOffset, dep->size);
+    break;
+  }
+  case ooDbIncrementLatch: {
+    struct artsDb *db = (struct artsDb *)memoryPtr;
+    artsPersistentEventIncrementLatch(db->eventGuid);
+    break;
+  }
+  case ooDbDecrementLatch: {
+    struct artsDb *db = (struct artsDb *)memoryPtr;
+    artsPersistentEventDecrementLatch(db->eventGuid);
     break;
   }
   case ooHandleReadyEdt: {
@@ -394,6 +483,124 @@ void artsOutOfOrderAddDependenceToPersistentEvent(artsGuid_t source,
   if (!res) {
     artsAddDependenceToPersistentEvent(source, destination, slot);
     artsFree(dep);
+  }
+}
+
+void artsOutOfOrderAddDependenceToPersistentEventWithMode(
+    artsGuid_t source, artsGuid_t destination, uint32_t slot,
+    artsType_t acquireMode, artsGuid_t waitOn) {
+  struct ooAddDependenceToPersistentEventWithMode *dep =
+      (struct ooAddDependenceToPersistentEventWithMode *)artsMalloc(
+          sizeof(struct ooAddDependenceToPersistentEventWithMode));
+  dep->type = ooAddDependenceToPersistentEventWithMode;
+  dep->source = source;
+  dep->destination = destination;
+  dep->slot = slot;
+  dep->acquireMode = acquireMode;
+  bool res = artsRouteTableAddOO(waitOn, dep, false);
+  if (!res) {
+    artsAddDependenceToPersistentEventWithModeAndDiff(
+        source, destination, slot, acquireMode);
+    artsFree(dep);
+  }
+}
+
+void artsOutOfOrderAddDependenceToPersistentEventWithByteOffset(
+    artsGuid_t source, artsGuid_t destination, uint32_t slot,
+    artsType_t acquireMode, uint64_t byteOffset, uint64_t size,
+    artsGuid_t waitOn) {
+  struct ooAddDependenceToPersistentEventWithByteOffset *dep =
+      (struct ooAddDependenceToPersistentEventWithByteOffset *)artsMalloc(
+          sizeof(struct ooAddDependenceToPersistentEventWithByteOffset));
+  dep->type = ooAddDependenceToPersistentEventWithByteOffset;
+  dep->source = source;
+  dep->destination = destination;
+  dep->slot = slot;
+  dep->acquireMode = acquireMode;
+  dep->byteOffset = byteOffset;
+  dep->size = size;
+  bool res = artsRouteTableAddOO(waitOn, dep, false);
+  if (!res) {
+    artsAddDependenceToPersistentEventWithByteOffset(
+        source, destination, slot, acquireMode, byteOffset, size);
+    artsFree(dep);
+  }
+}
+
+void artsOutOfOrderDbAddDependenceWithMode(artsGuid_t dbGuid,
+                                           artsGuid_t edtDest, uint32_t slot,
+                                           artsType_t acquireMode) {
+  struct ooDbAddDependenceWithMode *dep =
+      (struct ooDbAddDependenceWithMode *)artsMalloc(
+          sizeof(struct ooDbAddDependenceWithMode));
+  dep->type = ooDbAddDependenceWithMode;
+  dep->dbGuid = dbGuid;
+  dep->edtGuid = edtDest;
+  dep->slot = slot;
+  dep->acquireMode = acquireMode;
+  bool res = artsRouteTableAddOO(dbGuid, dep, false);
+  if (!res) {
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
+    if (db != NULL) {
+      artsAddDependenceToPersistentEventWithModeAndDiff(
+          db->eventGuid, edtDest, slot, acquireMode);
+    }
+    artsFree(dep);
+  }
+}
+
+void artsOutOfOrderDbAddDependenceWithByteOffset(artsGuid_t dbGuid,
+                                                 artsGuid_t edtDest,
+                                                 uint32_t slot,
+                                                 artsType_t acquireMode,
+                                                 uint64_t byteOffset,
+                                                 uint64_t size) {
+  struct ooDbAddDependenceWithByteOffset *dep =
+      (struct ooDbAddDependenceWithByteOffset *)artsMalloc(
+          sizeof(struct ooDbAddDependenceWithByteOffset));
+  dep->type = ooDbAddDependenceWithByteOffset;
+  dep->dbGuid = dbGuid;
+  dep->edtGuid = edtDest;
+  dep->slot = slot;
+  dep->acquireMode = acquireMode;
+  dep->byteOffset = byteOffset;
+  dep->size = size;
+  bool res = artsRouteTableAddOO(dbGuid, dep, false);
+  if (!res) {
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
+    if (db != NULL) {
+      artsAddDependenceToPersistentEventWithByteOffset(
+          db->eventGuid, edtDest, slot, acquireMode, byteOffset, size);
+    }
+    artsFree(dep);
+  }
+}
+
+void artsOutOfOrderDbIncrementLatch(artsGuid_t dbGuid) {
+  struct ooDbLatch *req = (struct ooDbLatch *)artsMalloc(sizeof(struct ooDbLatch));
+  req->type = ooDbIncrementLatch;
+  req->dbGuid = dbGuid;
+  bool res = artsRouteTableAddOO(dbGuid, req, false);
+  if (!res) {
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
+    if (db != NULL) {
+      artsPersistentEventIncrementLatch(db->eventGuid);
+    }
+    artsFree(req);
+  }
+}
+
+void artsOutOfOrderDbDecrementLatch(artsGuid_t dbGuid) {
+  struct ooDbLatch *req = (struct ooDbLatch *)artsMalloc(sizeof(struct ooDbLatch));
+  req->type = ooDbDecrementLatch;
+  req->dbGuid = dbGuid;
+  bool res = artsRouteTableAddOO(dbGuid, req, false);
+  if (!res) {
+    struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
+    if (db != NULL) {
+      artsPersistentEventDecrementLatch(db->eventGuid);
+    }
+    artsFree(req);
   }
 }
 

@@ -43,6 +43,7 @@ set(CPU_EXAMPLES
     fibYield
     fibContextSwitch
     simpleReduction
+    distributedDbOwnership
 )
 
 # Programs that require arts_graph library

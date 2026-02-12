@@ -393,6 +393,8 @@ void artsDbIncrementLatch(artsGuid_t guid) {
   struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(guid);
   if (dbRes != NULL)
     artsPersistentEventIncrementLatch(dbRes->eventGuid);
+  else if (artsGuidGetRank(guid) == artsGlobalRankId)
+    artsOutOfOrderDbIncrementLatch(guid);
   else
     artsRemoteDbIncrementLatch(guid);
 }
@@ -401,6 +403,8 @@ void artsDbDecrementLatch(artsGuid_t guid) {
   struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(guid);
   if (dbRes != NULL)
     artsPersistentEventDecrementLatch(dbRes->eventGuid);
+  else if (artsGuidGetRank(guid) == artsGlobalRankId)
+    artsOutOfOrderDbDecrementLatch(guid);
   else
     artsRemoteDbDecrementLatch(guid);
 }
@@ -410,6 +414,8 @@ void artsDbAddDependence(artsGuid_t dbSrc, artsGuid_t edtDest,
   struct artsDb *dbRes = (struct artsDb *)artsRouteTableLookupItem(dbSrc);
   if (dbRes != NULL)
     artsAddDependenceToPersistentEvent(dbRes->eventGuid, edtDest, edtSlot);
+  else if (artsGuidGetRank(dbSrc) == artsGlobalRankId)
+    artsOutOfOrderDbAddDependenceWithMode(dbSrc, edtDest, edtSlot, ARTS_NULL);
   else
     artsRemoteDbAddDependence(dbSrc, edtDest, edtSlot);
 }
@@ -426,6 +432,9 @@ void artsDbAddDependenceWithModeAndDiff(artsGuid_t dbSrc, artsGuid_t edtDest,
   if (dbRes != NULL)
     artsAddDependenceToPersistentEventWithModeAndDiff(
         dbRes->eventGuid, edtDest, edtSlot, acquireMode);
+  else if (artsGuidGetRank(dbSrc) == artsGlobalRankId)
+    artsOutOfOrderDbAddDependenceWithMode(dbSrc, edtDest, edtSlot,
+                                          acquireMode);
   else
     artsRemoteDbAddDependenceWithHints(dbSrc, edtDest, edtSlot, acquireMode);
 }
@@ -452,6 +461,9 @@ void artsRecordDepAt(artsGuid_t dbSrc, artsGuid_t edtDest, uint32_t edtSlot,
   if (dbRes != NULL)
     artsAddDependenceToPersistentEventWithByteOffset(
         dbRes->eventGuid, edtDest, edtSlot, acquireMode, byteOffset, size);
+  else if (artsGuidGetRank(dbSrc) == artsGlobalRankId)
+    artsOutOfOrderDbAddDependenceWithByteOffset(dbSrc, edtDest, edtSlot,
+                                                acquireMode, byteOffset, size);
   else
     artsRemoteDbAddDependenceWithByteOffset(dbSrc, edtDest, edtSlot,
                                             acquireMode, byteOffset, size);
@@ -540,11 +552,10 @@ void acquireDbs(struct artsEdt *edt) {
           }
           // The Db hasn't been created yet
           else {
-            // TODO: Create an out-of-order sync
-            ARTS_DEBUG("DB[Guid:%lu] out of order request for LC_SYNC not "
-                       "supported yet",
+            ARTS_DEBUG("DB[Guid:%lu] out of order request for LC_SYNC; "
+                       "falling back to standard OO dependency queue",
                        depv[i].guid);
-            // artsOutOfOrderHandleDbRequest(depv[i].guid, edt, i, true);
+            artsOutOfOrderHandleDbRequest(depv[i].guid, edt, i, true);
           }
         }
         break;
@@ -582,17 +593,12 @@ void acquireDbs(struct artsEdt *edt) {
             // Owner rank but another rank currently has the valid copy; request
             // it.
             else {
-              if (depv[i].mode == ARTS_DB_READ ||
-                  depv[i].mode == ARTS_DB_GPU_READ ||
-                  depv[i].mode == ARTS_DB_GPU_WRITE ||
-                  depv[i].mode == ARTS_DB_LC ||
-                  depv[i].mode == ARTS_DB_LC_NO_COPY ||
-                  depv[i].mode == ARTS_DB_GPU_MEMSET)
+              if (effectiveMode != ARTS_DB_WRITE)
                 artsRemoteDbRequest(depv[i].guid, validRank, edt, i,
-                                    depv[i].mode, true, depv[i].acquireMode);
+                                    effectiveMode, true, effectiveMode);
               else
                 artsRemoteDbFullRequest(depv[i].guid, validRank,
-                                        edt->currentEdt, i, depv[i].mode);
+                                        edt->currentEdt, i, effectiveMode);
             }
           }
           // The Db hasn't been created yet
@@ -673,8 +679,8 @@ void acquireDbs(struct artsEdt *edt) {
                       "to rank %d",
                       owner);
             int requestRank = owner;
-            artsRemoteDbRequest(depv[i].guid, requestRank, edt, i, depv[i].mode,
-                                true, ARTS_NULL);
+            artsRemoteDbRequest(depv[i].guid, requestRank, edt, i,
+                                effectiveMode, true, effectiveMode);
           } else {
             ARTS_INFO("  READ mode with local copy - no remote request needed");
           }
@@ -750,17 +756,13 @@ void releaseDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {
         artsProgressFrontier(db, artsGlobalRankId);
         artsDbDecrementLatch(depv[i].guid);
       } else {
-        struct artsDb *db = ((struct artsDb *)depv[i].ptr) - 1;
-        if (db && (db->header.size - sizeof(struct artsDb)) == 176128) {
-          ARTS_INFO("Release WRITE non-owner DB[Id:%lu, Guid:%lu, Size:%lu] "
-                    "sending update to owner %u",
-                    db->arts_id, depv[i].guid, db->header.size, owner);
-        }
         artsRemoteUpdateDb(depv[i].guid, true);
         INCREMENT_OWNER_UPDATES_PERFORMED_BY(1);
       }
     } else if (depv[i].guid != NULL_GUID && effectiveMode == ARTS_DB_READ) {
-      // READ mode: NO latch decrement, NO owner update
+      // READ mode: no owner write-back and no latch decrement.
+      // Keep historical behavior: do not return route-table handles here.
+      // Returning can invalidate availability for sibling EDTs still pending.
       ARTS_DEBUG("DB[Guid:%lu] released in READ mode (no owner update, no "
                  "latch decrement)",
                  depv[i].guid);

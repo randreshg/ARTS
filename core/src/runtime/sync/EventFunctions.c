@@ -773,14 +773,13 @@ void artsAddDependenceToPersistentEventWithModeAndDiff(artsGuid_t eventSource,
   if (sourceHeader == NULL) {
     unsigned int rank = artsGuidGetRank(eventSource);
     if (rank != artsGlobalRankId) {
-      // TODO: Extend remote protocol to pass acquireMode
+      // Remote protocol already carries acquireMode hints.
       artsRemoteAddDependenceToPersistentEventWithHints(
           eventSource, edtDest, edtSlot, rank, acquireMode);
     } else {
-      // TODO: Extend out-of-order handling to pass acquireMode
-      // For now, fallback to standard out-of-order add dependence
-      artsOutOfOrderAddDependenceToPersistentEvent(eventSource, edtDest,
-                                                   edtSlot, mode, eventSource);
+      // Local out-of-order path now preserves acquireMode hints.
+      artsOutOfOrderAddDependenceToPersistentEventWithMode(
+          eventSource, edtDest, edtSlot, acquireMode, eventSource);
     }
     return;
   }
@@ -853,9 +852,10 @@ void artsAddDependenceToPersistentEventWithByteOffset(
       artsRemoteAddDependenceToPersistentEventWithByteOffset(
           eventSource, edtDest, edtSlot, rank, acquireMode, byteOffset, size);
     } else {
-      // Local out-of-order: byte offset is not critical for OO handling
-      artsOutOfOrderAddDependenceToPersistentEvent(eventSource, edtDest,
-                                                   edtSlot, mode, eventSource);
+      // Local out-of-order path now preserves acquireMode + byte range hints.
+      artsOutOfOrderAddDependenceToPersistentEventWithByteOffset(
+          eventSource, edtDest, edtSlot, acquireMode, byteOffset, size,
+          eventSource);
     }
     return;
   }

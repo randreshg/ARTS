@@ -533,10 +533,17 @@ uint64_t artsRemoteSendPayloadRequest(int rank, unsigned int queue,
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
     uint64_t tempLength = artsActualSend(message, length, rank, port);
+    // Preserve explicit send error sentinel from artsActualSend.
+    // Returning (-1 + payloadSize) corrupts partial-send accounting.
+    if (tempLength == (uint64_t)-1)
+      return (uint64_t)-1;
     if (tempLength)
       return tempLength + length2;
 
-    return artsActualSend(payload, length2, rank, port);
+    uint64_t payloadRemaining = artsActualSend(payload, length2, rank, port);
+    if (payloadRemaining == (uint64_t)-1)
+      return (uint64_t)-1;
+    return payloadRemaining;
   }
   return length + length2;
 }
@@ -857,6 +864,17 @@ bool artsServerTryToReceive(char **inBuffer, int *inPacketSize,
               }
               if (gotoNext)
                 break;
+
+              if (packet->size < sizeof(struct artsRemotePacket)) {
+                ARTS_ERROR(
+                    "Invalid packet header on rank %u: type=%u size=%lu "
+                    "(bufCap=%lu recv=%ld socket=%d)",
+                    artsGlobalRankId, packet->messageType, packet->size,
+                    bypassPacketSize[pos], res, remoteSocketRecieveList[i]);
+                artsShutdown();
+                artsRuntimeStop();
+                return false;
+              }
 
               if (bypassPacketSize[pos] < packet->size) {
                 // For large packets (>256MB), avoid 4x over-allocation

@@ -200,7 +200,11 @@ bool artsEdtCreateInternal(struct artsEdt *edt, artsType_t mode,
 
     if (useEpoch) {
       artsGuid_t currentEpochGuid = NULL_GUID;
-      if (epochGuid && artsCheckEpochIsRoot(epochGuid))
+      // If an explicit epoch is provided by API call sites
+      // (e.g., artsEdtCreateWithEpoch*), honor it directly.
+      // Falling back to the thread-local current epoch can bind EDTs to an
+      // unrelated root when nested epochs are active.
+      if (epochGuid)
         currentEpochGuid = epochGuid;
       else
         currentEpochGuid = artsGetCurrentEpochGuid();

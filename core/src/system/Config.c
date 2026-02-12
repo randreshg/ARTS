@@ -50,6 +50,32 @@
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Debug.h"
 
+static char *artsConfigOverridePath = NULL;
+
+void artsSetConfigPath(const char *path) {
+  if (artsConfigOverridePath) {
+    free(artsConfigOverridePath);
+    artsConfigOverridePath = NULL;
+  }
+  if (!path || !path[0])
+    return;
+  size_t len = strlen(path);
+  artsConfigOverridePath = (char *)malloc(len + 1);
+  if (!artsConfigOverridePath)
+    return;
+  memcpy(artsConfigOverridePath, path, len + 1);
+}
+
+static const char *artsResolveConfigPath(void) {
+  if (artsConfigOverridePath && artsConfigOverridePath[0] != '\0')
+    return artsConfigOverridePath;
+
+  char *envPath = getenv("artsConfig");
+  if (envPath && envPath[0] != '\0')
+    return envPath;
+  return NULL;
+}
+
 char *extractNodelistLsf(const char *envr, int stride, unsigned int *cnt) {
   char *lsfNodes;
   char *resString;
@@ -100,7 +126,7 @@ artsConfigFindVariable(struct artsConfigVariable **head, const char *string) {
   if (overide) {
     unsigned int size = strlen(overide);
     struct artsConfigVariable *newVar = (struct artsConfigVariable *)artsMalloc(
-        sizeof(struct artsConfigVariable) + size);
+        sizeof(struct artsConfigVariable) + size + 1);
 
     newVar->size = size;
     strcpy(newVar->variable, string);
@@ -203,7 +229,7 @@ struct artsConfigVariable *artsConfigGetVariables(FILE *config) {
         val[size - 1] = '\0';
 
       cVar = (struct artsConfigVariable *)artsMalloc(
-          sizeof(struct artsConfigVariable) + size);
+          sizeof(struct artsConfigVariable) + size + 1);
       cVar->size = size;
 
       strncpy(cVar->variable, var, 255);
@@ -667,10 +693,14 @@ void artsConfigCreateRoutingTable(struct artsConfig **config, char *nodeList) {
 
 unsigned int artsConfigGetNumberOfThreads(char *location) {
   FILE *configFile = NULL;
-  if (location == NULL)
+  const char *resolvedPath = location;
+  if (resolvedPath == NULL || resolvedPath[0] == '\0')
+    resolvedPath = artsResolveConfigPath();
+
+  if (resolvedPath == NULL)
     configFile = fopen("arts.cfg", "r");
   else
-    configFile = fopen(location, "r");
+    configFile = fopen(resolvedPath, "r");
 
   if (configFile == NULL) {
     return 4;
@@ -690,14 +720,17 @@ struct artsConfig *artsConfigLoad() {
 
   config = (struct artsConfig *)artsCalloc(1, sizeof(struct artsConfig));
 
-  char *location = getenv("artsConfig");
+  const char *location = artsResolveConfigPath();
   if (location)
     configFile = fopen(location, "r");
   else
     configFile = fopen("arts.cfg", "r");
 
   if (configFile == NULL) {
-    ARTS_INFO("No Config file found (./arts.cfg).");
+    if (location)
+      ARTS_INFO("No Config file found (%s).", location);
+    else
+      ARTS_INFO("No Config file found (./arts.cfg).");
     configVariables = NULL;
     artsDebugGenerateSegFault();
   } else
