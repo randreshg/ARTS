@@ -38,6 +38,7 @@
 ******************************************************************************/
 #include "arts/runtime/network/RemoteFunctions.h"
 
+#include <limits.h>
 #include <string.h>
 
 #include "arts/arts.h"
@@ -194,70 +195,52 @@ void artsRemoteHandleInvalidateDb(void *ptr) {
   artsRouteTableInvalidateItem(packet->guid);
 }
 
-// TODO: Fix this...
 void artsRemoteDbDestroy(artsGuid_t guid, unsigned int originRank, bool clean) {
-  //    unsigned int rank = artsGuidGetRank(guid);
-  //    //ARTS_INFO("Destroy Check");
-  //    if(rank == artsGlobalRankId)
-  //    {
-  //        struct artsRouteInvalidate * table =
-  //        artsRouteTableGetRankDuplicates(guid); struct artsRouteInvalidate *
-  //        next = table; struct artsRouteInvalidate * current;
-  //
-  //        if(next != NULL && next->used != 0)
-  //        {
-  //            struct artsRemoteGuidOnlyPacket outPacket;
-  //            outPacket.guid = guid;
-  //            artsFillPacketHeader(&outPacket.header, sizeof(outPacket),
-  //            ARTS_REMOTE_DB_DESTROY_MSG);
-  //
-  //            int lastSend=-1;
-  //            while( next != NULL)
-  //            {
-  //                for(int i=0; i < next->used; i++ )
-  //                {
-  //                    if(originRank != next->data[i] && next->data[i] !=
-  //                    lastSend)
-  //                    {
-  ////                        ARTS_INFO("Destroy Send 1");
-  //                        lastSend = next->data[i];
-  //                        artsRemoteSendRequestAsync(next->data[i], (char
-  //                        *)&outPacket, sizeof(outPacket));
-  //                    }
-  //                }
-  //                next->used = 0;
-  //                //current=next;
-  //                next = next->next;
-  //                //artsFree(current);
-  //            }
-  //        }
-  //        if(originRank != artsGlobalRankId && !clean)
-  //        {
-  ////            ARTS_INFO("Origin Destroy");
-  ////            artsDebugPrintStack();
-  //            void * address = artsRouteTableLookupItem(guid);
-  //            artsFree(address);
-  //            artsRouteTableRemoveItem(guid);
-  //        }
-  //        //if( originRank != artsGlobalRankId )
-  //        //    artsDbDestroy(guid);
-  //    }
-  //    else
-  //    {
-  //        //void * dbAddress = artsRouteTableLookupItem(  guid );
-  //        //ARTS_DEBUG("depv %ld %p %p", guid, dbAddress, callBack);
-  //        struct artsRemoteGuidOnlyPacket packet;
-  //        if(!clean)
-  //            artsFillPacketHeader(&packet.header, sizeof(packet),
-  //            ARTS_REMOTE_DB_DESTROY_FORWARD_MSG);
-  //        else
-  //            artsFillPacketHeader(&packet.header, sizeof(packet),
-  //            ARTS_REMOTE_DB_CLEAN_FORWARD_MSG);
-  //        packet.guid = guid;
-  ////        ARTS_INFO("Destroy Send 2");
-  ////        artsDebugPrintStack();
-  //        artsRemoteSendRequestAsync(rank, (char *)&packet, sizeof(packet));
-  //    }
+  unsigned int ownerRank = artsGuidGetRank(guid);
+
+  // Non-owner forwards destroy/clean to owner.
+  if (ownerRank != artsGlobalRankId) {
+    struct artsRemoteGuidOnlyPacket packet;
+    packet.guid = guid;
+    artsFillPacketHeader(
+        &packet.header, sizeof(packet),
+        clean ? ARTS_REMOTE_DB_CLEAN_FORWARD_MSG
+              : ARTS_REMOTE_DB_DESTROY_FORWARD_MSG);
+    artsRemoteSendRequestAsync(ownerRank, (char *)&packet, sizeof(packet));
+    return;
+  }
+
+  // Owner notifies cached duplicate holders to destroy local copies.
+  struct artsDbFrontierIterator *iter =
+      artsRouteTableGetRankDuplicates(guid, UINT_MAX);
+  if (!iter)
+    return;
+
+  bool *sentRank = (bool *)artsCalloc(artsGlobalRankCount, sizeof(bool));
+  if (!sentRank) {
+    artsFree(iter);
+    return;
+  }
+
+  struct artsRemoteGuidOnlyPacket outPacket;
+  outPacket.guid = guid;
+  artsFillPacketHeader(&outPacket.header, sizeof(outPacket),
+                       ARTS_REMOTE_DB_DESTROY_MSG);
+
+  unsigned int rank = 0;
+  while (artsDbFrontierIterNext(iter, &rank)) {
+    if (rank == artsGlobalRankId || rank == originRank)
+      continue;
+    if (rank < artsGlobalRankCount && sentRank[rank])
+      continue;
+    if (rank < artsGlobalRankCount)
+      sentRank[rank] = true;
+
+    artsRemoteSendRequestAsync(rank, (char *)&outPacket, sizeof(outPacket));
+  }
+
+  artsFree(sentRank);
+  artsFree(iter);
 }
 
 void artsRemoteHandleDbDestroyForward(void *ptr) {
@@ -286,20 +269,11 @@ void artsRemoteUpdateDb(artsGuid_t guid, bool sendDb) {
     packet.guid = guid;
     struct artsDb *db = NULL;
     if (sendDb && (db = (struct artsDb *)artsRouteTableLookupItem(guid))) {
-      if ((db->header.size - sizeof(struct artsDb)) == 176128) {
-        ARTS_INFO("RemoteUpdateDb SEND DB[Id:%lu, Guid:%lu, Size:%lu] "
-                  "from rank %u to rank %u",
-                  db->arts_id, guid, db->header.size, artsGlobalRankId, rank);
-      }
       uint64_t size = sizeof(struct artsRemoteGuidOnlyPacket) + db->header.size;
       artsFillPacketHeader(&packet.header, size, ARTS_REMOTE_DB_UPDATE_MSG);
       artsRemoteSendRequestPayloadAsync(rank, (char *)&packet, sizeof(packet),
                                         (char *)db, db->header.size);
     } else {
-      if (sendDb) {
-        ARTS_INFO("RemoteUpdateDb missing local DB for Guid:%lu on rank %u",
-                  guid, artsGlobalRankId);
-      }
       artsFillPacketHeader(&packet.header,
                            sizeof(struct artsRemoteGuidOnlyPacket),
                            ARTS_REMOTE_DB_UPDATE_MSG);
@@ -322,16 +296,6 @@ void artsRemoteHandleUpdateDb(void *ptr) {
     if (!db) {
       artsDbDecrementLatch(packet->guid);
       return;
-    }
-    if (write && db &&
-        (db->header.size - sizeof(struct artsDb)) == 176128) {
-      ARTS_INFO("RemoteHandleUpdateDb WRITE DB[Id:%lu, Guid:%lu, Size:%lu] "
-                "from rank %u",
-                db->arts_id, packet->guid, db->header.size,
-                packet->header.rank);
-    } else if (!write) {
-      ARTS_DEBUG("RemoteHandleUpdateDb NO-DATA Guid:%lu from rank %u",
-                 packet->guid, packet->header.rank);
     }
     if (write) {
       uint64_t packetDbBytes =

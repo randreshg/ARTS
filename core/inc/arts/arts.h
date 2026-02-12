@@ -52,6 +52,10 @@ extern "C" {
 // This is the entry point to starting the ARTS runtime.  Call from main.
 int artsRT(int argc, char **argv);
 
+// Set the config file path used by artsConfigLoad(). If set, this overrides
+// getenv("artsConfig") and the default ./arts.cfg lookup.
+void artsSetConfigPath(const char *path);
+
 // Shuts down the arts runtime.  It is possible to race to shutdown if there are
 // multiple calls.
 void artsShutdown();

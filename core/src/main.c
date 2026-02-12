@@ -90,8 +90,15 @@ int artsRT(int argc, char **argv) {
   if (strncmp(config->launcher, "local", 5) != 0)
     artsServerSetup(config);
   artsGlobalMasterRankId = config->masterRank;
-  if (artsGlobalRankId == config->masterRank && config->masterBoot)
+  if (artsGlobalRankId == config->masterRank && config->masterBoot) {
+    // Forward the application argv to the launcher so remote ranks run with
+    // the same arguments as the master rank.
+    if (config->launcherData) {
+      config->launcherData->argc = (unsigned int)argc;
+      config->launcherData->argv = argv;
+    }
     config->launcherData->launchProcesses(config->launcherData);
+  }
 
   if (artsGlobalRankCount > 1) {
     artsRemoteSetupOutgoing();

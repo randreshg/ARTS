@@ -36,91 +36,92 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_SYSTEM_CONFIG_H
-#define ARTS_SYSTEM_CONFIG_H
-#ifdef __cplusplus
-extern "C" {
-#endif
 
-#include "arts/network/RemoteLauncher.h"
+#include <stdio.h>
+#include <stdlib.h>
 
-struct artsConfigTable {
-  unsigned int rank;
-  char *ipAddress;
-  unsigned int port;  // Per-node port (0 = use global default)
-};
+#include "arts/arts.h"
 
-struct artsConfigVariable {
-  unsigned int size;
-  struct artsConfigVariable *next;
-  char variable[255];
-  char value[];
-};
+static const unsigned int kDefaultBlocks = 16;
 
-struct artsConfig {
-  unsigned int myRank;
-  char *masterNode;
-  char *netInterface;
-  char *launcher;
-  unsigned int ports;
-  unsigned int osThreadCount;
-  unsigned int threadCount;
-  unsigned int coreCount;
-  unsigned int recieverCount;
-  unsigned int senderCount;
-  unsigned int nodes;
-  unsigned int masterRank;
-  unsigned int port;
-  bool portRange;
-  unsigned int portStart;
-  unsigned int portEnd;
-  unsigned int killMode;
-  unsigned int routeTableSize;
-  unsigned int routeTableEntries;
-  unsigned int dequeSize;
-  char *counterFolder;
-  unsigned int counterCaptureInterval;
-  unsigned int printNodeStats;
-  unsigned int scheduler;
-  unsigned int shutdownEpoch;
-  char *prefix;
-  char *suffix;
-  bool ibNames;
-  bool masterBoot;
-  bool coreDump;
-  unsigned int pinStride;
-  bool printTopology;
-  bool pinThreads;
-  unsigned int shadLoopStride;
-  uint64_t stackSize;
-  struct artsRemoteLauncher *launcherData;
-  unsigned int tableLength;
-  unsigned int
-      tMT; // @awmm temporal MT; # of MT aliases per core thread; 0 if disabled
-  unsigned int coresPerNetworkThread;
-  unsigned int gpu;
-  unsigned int gpuLocality;
-  unsigned int gpuFit;
-  unsigned int gpuLCSync;
-  unsigned int gpuMaxEdts;
-  uint64_t gpuMaxMemory;
-  bool gpuP2P;
-  bool gpuBuffOn;
-  unsigned int gpuRouteTableSize;
-  unsigned int gpuRouteTableEntries;
-  bool freeDbAfterGpuRun;
-  bool runGpuGcPreEdt;
-  bool runGpuGcIdle;
-  bool deleteZerosGpuGc;
-  struct artsConfigTable *table;
-};
+static unsigned int numBlocks = 0;
+static artsGuid_t *dbGuids = NULL;
+static artsGuid_t summaryGuid = NULL_GUID;
 
-struct artsConfig *artsConfigLoad();
-void artsSetConfigPath(const char *path);
-void artsConfigDestroy(struct artsConfig *config);
-unsigned int artsConfigGetNumberOfThreads(char *location);
-#ifdef __cplusplus
+static unsigned int parseNumBlocks(int argc, char **argv) {
+  if (argc < 2)
+    return kDefaultBlocks;
+
+  long value = strtol(argv[1], NULL, 10);
+  if (value <= 0)
+    return kDefaultBlocks;
+  return (unsigned int)value;
 }
-#endif
 
-#endif
+static void summaryEdt(uint32_t paramc, uint64_t *paramv, uint32_t depc,
+                       artsEdtDep_t depv[]) {
+  unsigned int totalCreated = 0;
+  for (uint32_t i = 0; i < depc; ++i)
+    totalCreated += (unsigned int)depv[i].guid;
+
+  printf("[distributed-db-ownership] blocks=%u nodes=%u total_created=%u\n",
+         numBlocks, artsGetTotalNodes(), totalCreated);
+  artsShutdown();
+}
+
+void initPerNode(unsigned int nodeId, int argc, char **argv) {
+  numBlocks = parseNumBlocks(argc, argv);
+  dbGuids = (artsGuid_t *)artsMalloc(sizeof(artsGuid_t) * numBlocks);
+  summaryGuid = artsReserveGuidRoute(ARTS_EDT, 0);
+
+  unsigned int totalNodes = artsGetTotalNodes();
+  unsigned int currentNode = artsGetCurrentNode();
+  unsigned int locallyOwned = 0;
+
+  for (unsigned int block = 0; block < numBlocks; ++block) {
+    unsigned int route = block % totalNodes;
+    dbGuids[block] = artsReserveGuidRoute(ARTS_DB_READ, route);
+    if (route == currentNode)
+      ++locallyOwned;
+  }
+
+  printf("[distributed-db-ownership] node=%u reserved=%u owns=%u\n", nodeId,
+         numBlocks, locallyOwned);
+
+  if (nodeId == 0) {
+    artsEdtCreateWithGuid(summaryEdt, summaryGuid, 0, NULL,
+                          artsGetTotalNodes());
+  }
+}
+
+void initPerWorker(unsigned int nodeId, unsigned int workerId, int argc,
+                   char **argv) {
+  (void)argc;
+  (void)argv;
+
+  if (workerId != 0)
+    return;
+
+  unsigned int createdLocal = 0;
+  for (unsigned int block = 0; block < numBlocks; ++block) {
+    if (!artsIsGuidLocal(dbGuids[block]))
+      continue;
+
+    unsigned int *ptr =
+        (unsigned int *)artsDbCreateWithGuid(dbGuids[block], sizeof(unsigned int));
+    if (!ptr)
+      continue;
+
+    *ptr = nodeId;
+    ++createdLocal;
+  }
+
+  printf("[distributed-db-ownership] node=%u created_local=%u\n", nodeId,
+         createdLocal);
+  artsSignalEdtValue(summaryGuid, nodeId, createdLocal);
+}
+
+int main(int argc, char **argv) {
+  artsRT(argc, argv);
+  return 0;
+}
