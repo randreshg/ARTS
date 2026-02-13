@@ -56,6 +56,11 @@ int artsRT(int argc, char **argv);
 // getenv("artsConfig") and the default ./arts.cfg lookup.
 void artsSetConfigPath(const char *path);
 
+// Set the config data used by artsConfigLoad(). If set, this takes priority
+// over artsSetConfigPath, getenv("artsConfig"), and ./arts.cfg.
+// The binary becomes self-contained — no external config file needed at runtime.
+void artsSetConfigData(const char *data);
+
 // Shuts down the arts runtime.  It is possible to race to shutdown if there are
 // multiple calls.
 void artsShutdown();

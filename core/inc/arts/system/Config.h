@@ -117,6 +117,7 @@ struct artsConfig {
 
 struct artsConfig *artsConfigLoad();
 void artsSetConfigPath(const char *path);
+void artsSetConfigData(const char *data);
 void artsConfigDestroy(struct artsConfig *config);
 unsigned int artsConfigGetNumberOfThreads(char *location);
 #ifdef __cplusplus

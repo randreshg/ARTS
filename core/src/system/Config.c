@@ -51,6 +51,7 @@
 #include "arts/system/Debug.h"
 
 static char *artsConfigOverridePath = NULL;
+static char *artsConfigOverrideData = NULL;
 
 void artsSetConfigPath(const char *path) {
   if (artsConfigOverridePath) {
@@ -64,6 +65,32 @@ void artsSetConfigPath(const char *path) {
   if (!artsConfigOverridePath)
     return;
   memcpy(artsConfigOverridePath, path, len + 1);
+}
+
+void artsSetConfigData(const char *data) {
+  if (artsConfigOverrideData) {
+    free(artsConfigOverrideData);
+    artsConfigOverrideData = NULL;
+  }
+  if (!data || !data[0])
+    return;
+  size_t len = strlen(data);
+  artsConfigOverrideData = (char *)malloc(len + 1);
+  if (!artsConfigOverrideData)
+    return;
+  memcpy(artsConfigOverrideData, data, len + 1);
+}
+
+struct artsConfigVariable *artsConfigGetVariables(FILE *config);
+
+static struct artsConfigVariable *artsConfigGetVariablesFromString(const char *data) {
+  size_t len = strlen(data);
+  FILE *stream = fmemopen((void *)data, len, "r");
+  if (!stream)
+    return NULL;
+  struct artsConfigVariable *vars = artsConfigGetVariables(stream);
+  fclose(stream);
+  return vars;
 }
 
 static const char *artsResolveConfigPath(void) {
@@ -720,21 +747,27 @@ struct artsConfig *artsConfigLoad() {
 
   config = (struct artsConfig *)artsCalloc(1, sizeof(struct artsConfig));
 
-  const char *location = artsResolveConfigPath();
-  if (location)
-    configFile = fopen(location, "r");
-  else
-    configFile = fopen("arts.cfg", "r");
-
-  if (configFile == NULL) {
+  if (artsConfigOverrideData && artsConfigOverrideData[0] != '\0') {
+    // Embedded config data — self-contained binary
+    configVariables = artsConfigGetVariablesFromString(artsConfigOverrideData);
+  } else {
+    // Fallback: path override → env var → ./arts.cfg
+    const char *location = artsResolveConfigPath();
     if (location)
-      ARTS_INFO("No Config file found (%s).", location);
+      configFile = fopen(location, "r");
     else
-      ARTS_INFO("No Config file found (./arts.cfg).");
-    configVariables = NULL;
-    artsDebugGenerateSegFault();
-  } else
-    configVariables = artsConfigGetVariables(configFile);
+      configFile = fopen("arts.cfg", "r");
+
+    if (configFile == NULL) {
+      if (location)
+        ARTS_INFO("No Config file found (%s).", location);
+      else
+        ARTS_INFO("No Config file found (./arts.cfg).");
+      configVariables = NULL;
+      artsDebugGenerateSegFault();
+    } else
+      configVariables = artsConfigGetVariables(configFile);
+  }
 
   foundVariable = artsConfigFindVariable(&configVariables, "launcher");
   if (strncmp(foundVariable->value, "slurm", 5) == 0)
