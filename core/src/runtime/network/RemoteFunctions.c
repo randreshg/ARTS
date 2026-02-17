@@ -191,7 +191,19 @@ void artsRemoteHandleUpdateDbGuid(void *ptr) {
 void artsRemoteHandleInvalidateDb(void *ptr) {
   struct artsRemoteGuidOnlyPacket *packet =
       (struct artsRemoteGuidOnlyPacket *)ptr;
-  void *address = artsRouteTableLookupItem(packet->guid);
+  void **data = NULL;
+  itemState_t state =
+      artsRouteTableLookupItemWithState(packet->guid, &data, anyKey, false);
+
+  // If a request for this DB is in-flight, invalidating now can drop the OO
+  // waiters attached to the route-table entry and strand pending dep slots.
+  // Defer invalidation until the in-flight response installs the fresh copy.
+  if (state == requestedKey || state == reservedKey) {
+    ARTS_DEBUG("Deferring invalidate for DB[Guid:%lu] in state=%u",
+               packet->guid, state);
+    return;
+  }
+
   artsRouteTableInvalidateItem(packet->guid);
 }
 
@@ -631,7 +643,16 @@ void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsType_t mode) {
   if (!artsIsGuidLocal(db->guid)) {
     artsRouteTableReturnDb(db->guid, false);
     artsRemoteDbSendNow(rank, db);
-  } else if (artsAddDbDuplicate(db, rank, NULL, NULL_GUID, 0, mode)) {
+  } else {
+    // Even if the rank is already tracked as a duplicate holder, an explicit
+    // remote request means the requester may have invalidated or discarded its
+    // cached copy. Always send a response so waiting OO callbacks can fire.
+    if (!artsAddDbDuplicate(db, rank, NULL, NULL_GUID, 0, mode)) {
+      ARTS_DEBUG(
+          "Remote DB send forced [Guid:%lu] to rank %d despite duplicate "
+          "tracking (mode=%u)",
+          db->guid, rank, mode);
+    }
     artsRemoteDbSendNow(rank, db);
   }
 }
@@ -760,7 +781,16 @@ void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, artsGuid_t edtGuid,
   if (!artsIsGuidLocal(db->guid)) {
     artsRouteTableReturnDb(db->guid, false);
     artsRemoteDbFullSendNow(rank, db, edtGuid, slot, mode);
-  } else if (artsAddDbDuplicate(db, rank, NULL, edtGuid, slot, mode)) {
+  } else {
+    // Symmetric with read-path handling: an explicit full-DB request must
+    // always receive a response, even if duplicate tracking already contains
+    // the requester. The requester may have invalidated its local copy.
+    if (!artsAddDbDuplicate(db, rank, NULL, edtGuid, slot, mode)) {
+      ARTS_DEBUG(
+          "Remote FULL DB send forced [Guid:%lu] to rank %d (edt=%lu slot=%u "
+          "mode=%u) despite duplicate tracking",
+          db->guid, rank, edtGuid, slot, mode);
+    }
     artsRemoteDbFullSendNow(rank, db, edtGuid, slot, mode);
     artsClearExclusiveRequest(db, rank, edtGuid);
   }

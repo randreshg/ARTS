@@ -630,49 +630,21 @@ void acquireDbs(struct artsEdt *edt) {
                       depv[i].guid, getTypeName(depv[i].mode),
                       getTypeName(effectiveMode), validRank);
           }
-          if (effectiveMode == ARTS_DB_WRITE && depv[i].mode == ARTS_DB_WRITE &&
-              localValid) {
-            // Conservative: avoid using possibly stale cached WRITE copies.
-            ARTS_INFO("  Non-owner WRITE acquire: invalidating local cached "
-                      "copy for DB_WRITE to avoid stale data");
-            artsRouteTableInvalidateItem(depv[i].guid);
-            dbTemp = NULL;
-            validRank = -1;
-            localValid = false;
-          }
-          if (effectiveMode == ARTS_DB_READ && depv[i].mode == ARTS_DB_WRITE &&
-              localValid) {
-            // Drop cached READ copies for DB_WRITE types to avoid stale data.
-            artsRouteTableInvalidateItem(depv[i].guid);
-            dbTemp = NULL;
-            validRank = -1;
-            localValid = false;
-          }
+          // If route-table ownership says this rank has the valid copy, reuse
+          // it for both READ and WRITE acquires.
           if (localValid && effectiveMode != ARTS_DB_WRITE) {
             dbFound = dbTemp;
             artsAtomicSub(&edt->depcNeeded, 1U);
             ARTS_INFO("  Found local valid copy, decremented depcNeeded");
           } else if (dbTemp && effectiveMode == ARTS_DB_WRITE) {
-            if (localValid) {
-              dbFound = dbTemp;
-              artsAtomicSub(&edt->depcNeeded, 1U);
-              ARTS_INFO("  Found local valid copy for WRITE; using it");
-            } else {
-              // For WRITE, non-owner cached copies may be stale; wait for owner.
-              ARTS_INFO("  Local copy ignored for WRITE; waiting for owner");
-            }
+            // Non-owner WRITE acquires must refresh from owner.
+            ARTS_INFO("  Local copy ignored for WRITE; forcing owner refresh");
           }
           if (effectiveMode == ARTS_DB_WRITE) {
-            if (!dbFound) {
-              // Full DB transfer for exclusive WRITE
-              ARTS_INFO("  WRITE mode - sending full DB request to rank %d",
-                        owner);
-              artsRemoteDbFullRequest(depv[i].guid, owner, edt->currentEdt, i,
-                                      effectiveMode);
-            } else {
-              ARTS_INFO("  WRITE mode with local valid copy - no remote request "
-                        "needed");
-            }
+            // Always use full owner refresh for non-owner WRITE.
+            ARTS_INFO("  WRITE mode - sending full DB request to rank %d", owner);
+            artsRemoteDbFullRequest(depv[i].guid, owner, edt->currentEdt, i,
+                                    effectiveMode);
           } else if (!dbTemp || !localValid) {
             // We can aggregate read requests for reads
             ARTS_INFO("  READ mode, no local copy - sending aggregated request "
