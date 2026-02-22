@@ -54,6 +54,7 @@
 
 #define PT_CONTEXTS // maintain contexts via PThreads
 
+#define _GNU_SOURCE
 #include "arts/system/TMT.h"
 
 #include <inttypes.h>
