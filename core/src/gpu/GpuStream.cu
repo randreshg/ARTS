@@ -44,6 +44,8 @@
 // stream.  Then we will push stuff!
 #include "arts/gpu/GpuStream.h"
 
+#include <cuda.h>  // CUDA Driver API
+
 #include "arts/arts.h"
 #include "arts/gas/Guid.h"
 #include "arts/gpu/GpuLCSyncFunctions.cuh"
@@ -57,6 +59,13 @@
 #include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 #include "arts/utils/Deque.h"
+
+// External function from GpuRuntime.cu for loading PTX kernels
+extern CUfunction artsLoadKernelFromPtx(const char *ptxSource, const char *kernelName,
+                                        unsigned int gpuId);
+
+// External variables from GpuRuntime.cu
+extern __thread int artsCurrentDeviceId;
 
 int random(void *edtPacket);
 int allOrNothing(void *edtPacket);
@@ -74,6 +83,119 @@ volatile unsigned int misses = 0;
 volatile uint64_t freeBytes = 0;
 
 artsGpu_t *artsGpus;
+
+//=============================================================================
+// Error Handling and Recovery
+//=============================================================================
+
+// Thread-local storage for last GPU error
+__thread artsGpuError_t lastGpuError = ARTS_GPU_SUCCESS;
+
+const char *artsGpuErrorString(artsGpuError_t error) {
+  switch (error) {
+    case ARTS_GPU_SUCCESS: return "Success";
+    case ARTS_GPU_ERROR_CUDA_FAILED: return "CUDA operation failed";
+    case ARTS_GPU_ERROR_OUT_OF_MEMORY: return "Out of GPU memory";
+    case ARTS_GPU_ERROR_INVALID_DEVICE: return "Invalid GPU device";
+    case ARTS_GPU_ERROR_KERNEL_FAILED: return "Kernel execution failed";
+    case ARTS_GPU_ERROR_SYNC_FAILED: return "Stream synchronization failed";
+    case ARTS_GPU_ERROR_INVALID_ARG: return "Invalid argument";
+    default: return "Unknown error";
+  }
+}
+
+artsGpuError_t artsGpuGetLastError(void) {
+  return lastGpuError;
+}
+
+void artsGpuClearError(void) {
+  lastGpuError = ARTS_GPU_SUCCESS;
+  // Also clear CUDA's internal error state
+  cudaGetLastError();
+}
+
+bool artsGpuCanRecover(unsigned int gpuId) {
+  if (gpuId >= (unsigned int)artsNodeInfo.gpu) {
+    return false;
+  }
+
+  // Query the device to see if it's still responsive
+  int savedDevice = artsCurrentDeviceId;
+  cudaError_t err = cudaSetDevice(gpuId);
+  if (err != cudaSuccess) {
+    return false;
+  }
+
+  // Try a simple stream query to check device health
+  err = cudaStreamQuery(artsGpus[gpuId].stream);
+  // cudaSuccess or cudaErrorNotReady are both acceptable
+  bool canRecover = (err == cudaSuccess || err == cudaErrorNotReady);
+
+  // Restore previous device
+  if (savedDevice >= 0 && savedDevice < artsNodeInfo.gpu) {
+    cudaSetDevice(savedDevice);
+  }
+
+  return canRecover;
+}
+
+artsGpuError_t artsGpuReset(unsigned int gpuId) {
+  if (gpuId >= (unsigned int)artsNodeInfo.gpu) {
+    return ARTS_GPU_ERROR_INVALID_DEVICE;
+  }
+
+  int savedDevice = artsCurrentDeviceId;
+  cudaError_t err = cudaSetDevice(gpuId);
+  if (err != cudaSuccess) {
+    return ARTS_GPU_ERROR_INVALID_DEVICE;
+  }
+
+  // Attempt to reset the device
+  err = cudaDeviceReset();
+  if (err != cudaSuccess) {
+    PRINTF("artsGpuReset: cudaDeviceReset failed for GPU %u: %s\n",
+           gpuId, cudaGetErrorString(err));
+    // Restore previous device
+    if (savedDevice >= 0 && savedDevice < artsNodeInfo.gpu) {
+      cudaSetDevice(savedDevice);
+    }
+    return ARTS_GPU_ERROR_CUDA_FAILED;
+  }
+
+  // Reinitialize the GPU streams and events
+  err = cudaSetDevice(gpuId);
+  if (err != cudaSuccess) {
+    return ARTS_GPU_ERROR_CUDA_FAILED;
+  }
+
+  // Recreate streams
+  for (int s = 0; s < ARTS_GPU_STREAM_COUNT; ++s) {
+    err = cudaStreamCreate(&artsGpus[gpuId].streams[s]);
+    if (err != cudaSuccess) {
+      PRINTF("artsGpuReset: failed to recreate stream %d for GPU %u\n", s, gpuId);
+      return ARTS_GPU_ERROR_CUDA_FAILED;
+    }
+  }
+  artsGpus[gpuId].stream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_COMPUTE];
+
+  // Recreate events
+  err = cudaEventCreateWithFlags(&artsGpus[gpuId].h2dDoneEvent, cudaEventDisableTiming);
+  if (err != cudaSuccess) {
+    return ARTS_GPU_ERROR_CUDA_FAILED;
+  }
+  err = cudaEventCreateWithFlags(&artsGpus[gpuId].computeDoneEvent, cudaEventDisableTiming);
+  if (err != cudaSuccess) {
+    return ARTS_GPU_ERROR_CUDA_FAILED;
+  }
+
+  // Restore previous device
+  if (savedDevice >= 0 && savedDevice < artsNodeInfo.gpu) {
+    cudaSetDevice(savedDevice);
+  }
+
+  PRINTF("artsGpuReset: GPU %u successfully reset\n", gpuId);
+  return ARTS_GPU_SUCCESS;
+}
 
 typedef int (*locality_t)(void *edt);
 
@@ -144,8 +266,8 @@ void artsNodeInitGpus() {
   fit = fitScheme[artsNodeInfo.gpuFit];
   CHECKCORRECT(cudaGetDeviceCount(&numAvailGpus));
   if (numAvailGpus < artsNodeInfo.gpu) {
-    ARTS_INFO("Requested %d gpus but only %d available\n", numAvailGpus,
-              artsNodeInfo.gpu);
+    ARTS_INFO("Requested %d gpus but only %d available\n", artsNodeInfo.gpu,
+              numAvailGpus);
     artsNodeInfo.gpu = numAvailGpus;
   }
 
@@ -161,12 +283,25 @@ void artsNodeInitGpus() {
 
   artsCudaSetDevice(-1, true);
 
-  // Initialize artsGpu with 1 stream/GPU
+  // Initialize artsGpu with multiple streams per GPU for overlapping ops
   for (int i = 0; i < artsNodeInfo.gpu; ++i) {
     artsGpus[i].device = i;
     ARTS_DEBUG("Setting %d\n", i);
     artsCudaSetDevice(i, false);
-    CHECKCORRECT(cudaStreamCreate(&artsGpus[i].stream)); // Make it scalable
+
+    // Create 3 streams: H2D, compute, D2H for true overlap
+    for (int s = 0; s < ARTS_GPU_STREAM_COUNT; ++s) {
+      CHECKCORRECT(cudaStreamCreate(&artsGpus[i].streams[s]));
+    }
+    // Legacy stream points to compute stream for backward compatibility
+    artsGpus[i].stream = artsGpus[i].streams[ARTS_GPU_STREAM_COMPUTE];
+
+    // Create events for inter-stream synchronization
+    CHECKCORRECT(cudaEventCreateWithFlags(&artsGpus[i].h2dDoneEvent,
+                                          cudaEventDisableTiming));
+    CHECKCORRECT(cudaEventCreateWithFlags(&artsGpus[i].computeDoneEvent,
+                                          cudaEventDisableTiming));
+
     artsNodeInfo.gpuRouteTable[i] = artsGpuNewRouteTable(
         artsNodeInfo.gpuRouteTableEntries, artsNodeInfo.gpuRouteTableSize);
     size_t tempFreeMem = 0;
@@ -237,8 +372,16 @@ void artsCleanupGpus() {
     if (cleanPerGpu)
       cleanPerGpu(artsGlobalRankId, i, &artsGpus[i].stream);
     freedSize += artsGpuFreeAll(artsGpus[i].device);
-    CHECKCORRECT(cudaStreamSynchronize(artsGpus[i].stream));
-    CHECKCORRECT(cudaStreamDestroy(artsGpus[i].stream));
+
+    // Synchronize and destroy all streams
+    for (int s = 0; s < ARTS_GPU_STREAM_COUNT; ++s) {
+      CHECKCORRECT(cudaStreamSynchronize(artsGpus[i].streams[s]));
+      CHECKCORRECT(cudaStreamDestroy(artsGpus[i].streams[s]));
+    }
+
+    // Destroy events
+    CHECKCORRECT(cudaEventDestroy(artsGpus[i].h2dDoneEvent));
+    CHECKCORRECT(cudaEventDestroy(artsGpus[i].computeDoneEvent));
   }
   artsCudaRestoreDevice();
   ARTS_INFO("Occupancy :\n");
@@ -250,6 +393,7 @@ void artsCleanupGpus() {
 }
 
 void CUDART_CB artsWrapUp(cudaStream_t stream, cudaError_t status, void *data) {
+  ARTS_INFO("artsWrapUp callback invoked: status=%d, data=%p\n", status, data);
   // artsToggleThreadInspection();
 
   artsGpuCleanUp_t *gc = (artsGpuCleanUp_t *)data;
@@ -444,6 +588,11 @@ void artsScheduleToGpuInternal(artsEdt_t fnPtr, uint32_t paramc,
                    devClosureSize, artsNodeInfo.gpuBuffOn && !gpuEdt->lib);
   ARTS_DEBUG("Filled GPU Closure\n");
 
+  // Signal that all H2D transfers are complete (for multi-stream synchronization)
+  if (!(artsNodeInfo.gpuBuffOn && !gpuEdt->lib)) {
+    signalH2DComplete(artsGpu->device);
+  }
+
   if (gpuEdt->lib) {
     artsLocalGrid = &gpuEdt->grid;
     artsLocalBlock = &gpuEdt->block;
@@ -456,9 +605,26 @@ void artsScheduleToGpuInternal(artsEdt_t fnPtr, uint32_t paramc,
     artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
 
     artsUnsetThreadLocalEdtInfo();
+  } else if (gpuEdt->ptxSource != NULL) {
+    // PTX-based kernel launch using CUDA Driver API
+    ARTS_INFO("Launching PTX kernel: %s on GPU %d\n", gpuEdt->kernelName, artsGpu->device);
+    CUfunction cuFunc = artsLoadKernelFromPtx(gpuEdt->ptxSource, gpuEdt->kernelName,
+                                              artsGpu->device);
+    if (cuFunc) {
+      pushPtxKernelToStream(artsGpu->device, paramc, devParamv, depc, devDepv,
+                            cuFunc, grid, block);
+    } else {
+      ARTS_INFO("Failed to load PTX kernel: %s\n", gpuEdt->kernelName);
+    }
   } else {
+    // Legacy function pointer path
     pushKernelToStream(artsGpu->device, paramc, devParamv, depc, devDepv, fnPtr,
                        grid, block, artsNodeInfo.gpuBuffOn);
+  }
+
+  // Wait for compute to complete before D2H transfers (for multi-stream synchronization)
+  if (!(artsNodeInfo.gpuBuffOn && !gpuEdt->lib)) {
+    waitForComputeComplete(artsGpu->device);
   }
 
   // Move data back
@@ -473,8 +639,7 @@ void artsScheduleToGpuInternal(artsEdt_t fnPtr, uint32_t paramc,
     }
   }
 
-  pushWrapUpToStream(artsGpu->device, hostClosure,
-                     artsNodeInfo.gpuBuffOn && !gpuEdt->lib);
+  pushWrapUpToStream(artsGpu->device, hostClosure, false);  // Never buffer wrap-ups
 }
 
 void artsScheduleToGpu(artsEdt_t fnPtr, uint32_t paramc, uint64_t *paramv,
@@ -486,7 +651,10 @@ void artsScheduleToGpu(artsEdt_t fnPtr, uint32_t paramc, uint64_t *paramv,
 }
 
 void artsGpuSynchronize(artsGpu_t *artsGpu) {
-  CHECKCORRECT(cudaStreamSynchronize(artsGpu->stream));
+  // Synchronize all streams for complete GPU synchronization
+  for (int s = 0; s < ARTS_GPU_STREAM_COUNT; ++s) {
+    CHECKCORRECT(cudaStreamSynchronize(artsGpu->streams[s]));
+  }
 }
 
 void artsGpuStreamBusy(artsGpu_t *artsGpu) {
@@ -557,7 +725,9 @@ void freeGpuItem(artsRouteItem_t *item) {
   item->touched = 0;
 }
 
-__thread unsigned int runGCFlag = 0;
+// Global atomic GC flag - stores gpuId + 1 (0 means no GC needed)
+// Using atomic to prevent race conditions when multiple threads signal GC need
+volatile unsigned int globalRunGCFlag = 0;
 
 bool tryReserve(int gpu, uint64_t size, unsigned int threads) {
   artsGpu_t *artsGpu = &artsGpus[gpu];
@@ -571,12 +741,14 @@ bool tryReserve(int gpu, uint64_t size, unsigned int threads) {
       while (availSize >= size) {
         if (artsAtomicCswapU64(&artsGpu->availGlobalMem, availSize,
                                availSize - size)) {
-          runGCFlag = 0;
+          // Use atomic CAS to clear the GC flag (prevents race with other threads)
+          artsAtomicCswap(&globalRunGCFlag, globalRunGCFlag, 0U);
           return true;
         }
         availSize = artsGpu->availGlobalMem;
       }
-      runGCFlag = gpu + 1;
+      // Use atomic CAS to set GC flag only if not already set
+      artsAtomicCswap(&globalRunGCFlag, 0U, (unsigned int)(gpu + 1));
     }
     artsAtomicSub(&artsGpu->availableEdtSlots, 1U);
   }
@@ -619,7 +791,7 @@ int roundRobinFit(uint64_t mask, uint64_t size, unsigned int totalThreads) {
 
 int bestFit(uint64_t mask, uint64_t size, unsigned int totalThreads) {
   int selectedGpu = -1;
-  uint64_t selectedGpuAvailSize;
+  uint64_t selectedGpuAvailSize = 0;  // Initialize to 0 to fix race condition
   int random = jrand48(artsThreadInfo.drand_buf);
   for (int i = 0; i < artsNodeInfo.gpu; i++) {
     int index = (i + random) % artsNodeInfo.gpu;
@@ -642,7 +814,7 @@ int bestFit(uint64_t mask, uint64_t size, unsigned int totalThreads) {
 
 int worstFit(uint64_t mask, uint64_t size, unsigned int totalThreads) {
   int selectedGpu = -1;
-  uint64_t selectedGpuAvailSize;
+  uint64_t selectedGpuAvailSize = 0;  // Initialize to 0 to fix race condition
   int random = jrand48(artsThreadInfo.drand_buf);
   for (int i = 0; i < artsNodeInfo.gpu; i++) {
     int index = (i + random) % artsNodeInfo.gpu;

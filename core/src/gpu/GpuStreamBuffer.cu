@@ -44,13 +44,16 @@
 // stream.  Then we will push stuff!
 #include "arts/gpu/GpuStreamBuffer.h"
 
+#include <cuda.h>  // CUDA Driver API for cuLaunchKernel
+#include <vector>
+
 #include "arts/gpu/GpuRuntime.cuh"
 #include "arts/introspection/Metrics.h"
 #include "arts/runtime/Globals.h"
 #include "arts/system/ArtsPrint.h"
 #include "arts/utils/Atomics.h"
 
-#define CHECKSTREAM 4096
+#define CHECKSTREAM 32
 #define MAXSTREAM 32
 #define MAXBUFFER 128
 
@@ -101,12 +104,14 @@ bool pushDataToStream(unsigned int gpuId, void *dst, void *src, size_t count,
     return ret;
   }
 
+  // Use dedicated H2D stream for better overlap with compute
+  cudaStream_t h2dStream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_H2D];
   if (src) {
     CHECKCORRECT(cudaMemcpyAsync(dst, src, count, cudaMemcpyHostToDevice,
-                                 artsGpus[gpuId].stream));
+                                 h2dStream));
     artsMetricsTriggerEvent(artsGpuBWPush, artsThread, count);
   } else
-    CHECKCORRECT(cudaMemsetAsync(dst, 0, count, artsGpus[gpuId].stream));
+    CHECKCORRECT(cudaMemsetAsync(dst, 0, count, h2dStream));
   return true;
 }
 
@@ -125,8 +130,10 @@ bool getDataFromStream(unsigned int gpuId, void *dst, void *src, size_t count,
     artsUnlock(&buffLock[gpuId]);
     return ret;
   }
+  // Use dedicated D2H stream for better overlap with compute
+  cudaStream_t d2hStream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_D2H];
   CHECKCORRECT(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToHost,
-                               artsGpus[gpuId].stream));
+                               d2hStream));
   artsMetricsTriggerEvent(artsGpuBWPull, artsThread, count);
   return true;
 }
@@ -156,12 +163,92 @@ bool pushKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv,
     return ret;
   }
 
+  // Use dedicated compute stream
+  cudaStream_t computeStream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_COMPUTE];
+
+  // Wait for H2D transfers to complete before starting compute
+  CHECKCORRECT(cudaStreamWaitEvent(computeStream, artsGpus[gpuId].h2dDoneEvent, 0));
+
   void *kernelArgs[] = {&paramc, &paramv, &depc, &depv};
   CHECKCORRECT(cudaLaunchKernel((const void *)fnPtr, grid, block,
                                 (void **)kernelArgs, (size_t)0,
-                                artsGpus[gpuId].stream));
+                                computeStream));
   checkOccupancy(fnPtr, gpuId, block);
+
+  // Record event when compute completes for D2H synchronization
+  CHECKCORRECT(cudaEventRecord(artsGpus[gpuId].computeDoneEvent, computeStream));
+
   artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
+  return true;
+}
+
+// Signal H2D transfers are complete - call after all H2D data is pushed
+void signalH2DComplete(unsigned int gpuId) {
+  cudaStream_t h2dStream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_H2D];
+  CHECKCORRECT(cudaEventRecord(artsGpus[gpuId].h2dDoneEvent, h2dStream));
+}
+
+// Wait for compute to complete before D2H - call before D2H transfers
+void waitForComputeComplete(unsigned int gpuId) {
+  cudaStream_t d2hStream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_D2H];
+  CHECKCORRECT(cudaStreamWaitEvent(d2hStream, artsGpus[gpuId].computeDoneEvent, 0));
+}
+
+// PTX kernel launch using CUDA Driver API
+// Note: PTX kernels don't support buffering - they are launched immediately
+bool pushPtxKernelToStream(unsigned int gpuId, uint32_t paramc, uint64_t *paramv,
+                           uint32_t depc, artsEdtDep_t *depv, CUfunction cuFunc,
+                           dim3 grid, dim3 block) {
+  if (!cuFunc) {
+    ARTS_INFO("pushPtxKernelToStream: NULL CUfunction\n");
+    return false;
+  }
+
+  // Use dedicated compute stream
+  cudaStream_t computeStream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_COMPUTE];
+
+  // Wait for H2D transfers to complete before starting compute
+  CHECKCORRECT(cudaStreamWaitEvent(computeStream, artsGpus[gpuId].h2dDoneEvent, 0));
+
+  // Get the CUDA stream as CUstream
+  // cudaStream_t is compatible with CUstream
+  CUstream cuStream = (CUstream)computeStream;
+
+  // Set up kernel arguments
+  // PTX kernels use dependency DB pointers first, then captures from paramv.
+  std::vector<void *> kernelArgs;
+  kernelArgs.reserve(paramc);
+  for (uint32_t i = 0; i < depc; ++i)
+    kernelArgs.push_back(&depv[i].ptr);
+  for (uint32_t i = depc; i < paramc; ++i)
+    kernelArgs.push_back(&paramv[i]);
+
+  ARTS_INFO("pushPtxKernelToStream: launching on GPU %u, grid=(%u,%u,%u), block=(%u,%u,%u)\n",
+            gpuId, grid.x, grid.y, grid.z, block.x, block.y, block.z);
+
+  CUresult err = cuLaunchKernel(
+      cuFunc,
+      grid.x, grid.y, grid.z,     // Grid dimensions
+      block.x, block.y, block.z,  // Block dimensions
+      0,                          // Shared memory bytes
+      cuStream,                   // Stream
+      kernelArgs.empty() ? nullptr : kernelArgs.data(), // Kernel arguments
+      NULL                        // Extra (unused)
+  );
+
+  if (err != CUDA_SUCCESS) {
+    const char* errName;
+    cuGetErrorName(err, &errName);
+    ARTS_INFO("pushPtxKernelToStream: cuLaunchKernel failed: %s (%d)\n",
+              errName ? errName : "unknown", err);
+    return false;
+  }
+
+  // Record event when compute completes for D2H synchronization
+  CHECKCORRECT(cudaEventRecord(artsGpus[gpuId].computeDoneEvent, computeStream));
+
+  artsMetricsTriggerEvent(artsGpuEdt, artsThread, 1);
+  ARTS_INFO("pushPtxKernelToStream: kernel launched successfully\n");
   return true;
 }
 
@@ -178,11 +265,13 @@ bool pushWrapUpToStream(unsigned int gpuId, void *hostClosure, bool buff) {
     return ret;
   }
 
+  // Use D2H stream for wrapup since it runs after D2H transfers complete
+  cudaStream_t d2hStream = artsGpus[gpuId].streams[ARTS_GPU_STREAM_D2H];
 #if CUDART_VERSION >= 10000
-  CHECKCORRECT(cudaLaunchHostFunc(artsGpus[gpuId].stream, artsWrapUpHostFunc,
+  CHECKCORRECT(cudaLaunchHostFunc(d2hStream, artsWrapUpHostFunc,
                                   hostClosure));
 #else
-  CHECKCORRECT(cudaStreamAddCallback(artsGpus[gpuId].stream, artsWrapUp,
+  CHECKCORRECT(cudaStreamAddCallback(d2hStream, artsWrapUp,
                                      hostClosure, 0));
 #endif
   return true;
@@ -418,6 +507,17 @@ bool checkStreams(bool buffOn) {
       }
     }
     return ret;
+  }
+  // When buffering is off, still need to poll streams to trigger callbacks
+  // cudaLaunchHostFunc callbacks require host interaction to execute
+  // Poll all streams (H2D, compute, D2H) for each GPU
+  for (unsigned int i = 0; i < artsNodeInfo.gpu; i++) {
+    for (int s = 0; s < ARTS_GPU_STREAM_COUNT; ++s) {
+      cudaError_t status = cudaStreamQuery(artsGpus[i].streams[s]);
+      // cudaStreamQuery returns cudaSuccess if stream is idle (all work done)
+      // or cudaErrorNotReady if still busy. Either way, it triggers callbacks.
+      (void)status; // Ignore the status, we just want to trigger callbacks
+    }
   }
   return false;
 }
