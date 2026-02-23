@@ -108,19 +108,37 @@ void done(uint32_t paramc, uint64_t *paramv, uint32_t depc,
 }
 
 extern "C" void initPerNode(unsigned int nodeId, int argc, char **argv) {
+  unsigned int numGpus = artsGetTotalGpus();
+  printf("[DEBUG] initPerNode called: nodeId=%u, artsGetTotalGpus()=%u\n", nodeId, numGpus);
+  fflush(stdout);
   devPtrRaw =
-      (unsigned int **)artsCalloc(artsGetTotalGpus(), sizeof(unsigned int *));
+      (unsigned int **)artsCalloc(numGpus, sizeof(unsigned int *));
+  printf("[DEBUG] initPerNode: devPtrRaw allocated at %p\n", (void*)devPtrRaw);
+  fflush(stdout);
 }
 
 extern "C" void initPerGpu(unsigned int nodeId, int devId, cudaStream_t *stream,
                            int argc, char *argv) {
+  printf("[DEBUG] initPerGpu called: nodeId=%u, devId=%d, devPtrRaw=%p\n", nodeId, devId, (void*)devPtrRaw);
+  fflush(stdout);
+  if (devPtrRaw == NULL) {
+    printf("[DEBUG] ERROR: devPtrRaw is NULL in initPerGpu!\n");
+    fflush(stdout);
+    return;
+  }
   devPtrRaw[devId] =
       (unsigned int *)artsCudaMalloc(sizeof(unsigned int) * GPULISTLEN);
+  printf("[DEBUG] initPerGpu: devPtrRaw[%d]=%p\n", devId, (void*)devPtrRaw[devId]);
+  fflush(stdout);
 }
 
 extern "C" void initPerWorker(unsigned int nodeId, unsigned int workerId,
                               int argc, char **argv) {
+  printf("[DEBUG] initPerWorker called: nodeId=%u workerId=%u\n", nodeId, workerId);
+  fflush(stdout);
   if (!workerId) {
+    printf("[DEBUG] Worker 0 creating GPU EDTs, totalGpus=%u\n", artsGetTotalGpus());
+    fflush(stdout);
     unsigned int **addr;
     artsGuid_t dbGuid = artsDbCreate(
         (void **)&addr, sizeof(unsigned int *) * artsGetTotalGpus(),
