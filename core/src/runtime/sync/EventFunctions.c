@@ -52,9 +52,33 @@
 #include "arts/utils/LinkList.h"
 
 #include <assert.h>
+#include <string.h>
 #include <time.h>
 
 extern __thread struct artsEdt *currentEdt;
+
+static inline void artsPublishDependent(struct artsDependent *dependent) {
+  __atomic_store_n((bool *)&dependent->doneWriting, true, __ATOMIC_RELEASE);
+}
+
+static inline bool artsDependentReady(const struct artsDependent *dependent) {
+  return __atomic_load_n((bool *)&dependent->doneWriting, __ATOMIC_ACQUIRE);
+}
+
+static inline struct artsDependentList *
+artsDependentListNext(struct artsDependentList *list) {
+  return __atomic_load_n(&list->next, __ATOMIC_ACQUIRE);
+}
+
+static inline struct artsDependentList *
+artsInstallDependentListNext(struct artsDependentList *list,
+                             struct artsDependentList *candidate) {
+  struct artsDependentList *expected = NULL;
+  if (__atomic_compare_exchange_n(&list->next, &expected, candidate, false,
+                                  __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
+    return candidate;
+  return expected;
+}
 
 bool artsEventCreateInternal(artsGuid_t *guid, unsigned int route,
                              unsigned int dependentCount,
@@ -198,7 +222,7 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
         while (i < lastKnown) {
           j = i - totalSize;
           while (i < lastKnown && j < dependentList->size) {
-            while (!dependent[j].doneWriting)
+            while (!artsDependentReady(&dependent[j]))
               ;
             if (dependent[j].type == ARTS_EDT) {
               artsSignalEdt(dependent[j].addr, dependent[j].slot, event->data);
@@ -218,9 +242,9 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
             i++;
           }
           totalSize += dependentList->size;
-          while (i < lastKnown && dependentList->next == NULL)
+          while (i < lastKnown && artsDependentListNext(dependentList) == NULL)
             ;
-          dependentList = dependentList->next;
+          dependentList = artsDependentListNext(dependentList);
           dependent = dependentList->dependents;
         }
         if (!event->destroyOnFire) {
@@ -237,28 +261,30 @@ void artsEventSatisfySlot(artsGuid_t eventGuid, artsGuid_t dataGuid,
 struct artsDependent *artsDependentGet(struct artsDependentList *head,
                                        int position) {
   struct artsDependentList *list = head;
-  volatile struct artsDependentList *temp;
 
   while (1) {
     /// If the position is greater than the size of the list, we need to
     /// allocate a new list
     if (position >= list->size) {
-      if (position - list->size == 0) {
-        if (list->next == NULL) {
-          temp = (volatile struct artsDependentList *)artsCalloc(
-              1, sizeof(struct artsDependentList) +
-                     sizeof(struct artsDependent) * list->size * 2);
-          temp->size = list->size * 2;
-          list->next = (struct artsDependentList *)temp;
-        }
+      struct artsDependentList *next = artsDependentListNext(list);
+      if (next == NULL) {
+        struct artsDependentList *candidate =
+            (struct artsDependentList *)artsCalloc(
+                1, sizeof(struct artsDependentList) +
+                       sizeof(struct artsDependent) * list->size * 2);
+        candidate->size = list->size * 2;
+        next = artsInstallDependentListNext(list, candidate);
+        if (next != candidate)
+          artsFree(candidate);
       }
 
       // EXPONENTIONAL BACK OFF THIS
-      while (list->next == NULL) {
+      while (next == NULL) {
+        next = artsDependentListNext(list);
       }
 
       position -= list->size;
-      list = list->next;
+      list = next;
     } else
       break;
   }
@@ -290,8 +316,7 @@ void artsAddDependence(artsGuid_t source, artsGuid_t destination,
     dependent->type = ARTS_EDT;
     dependent->addr = destination;
     dependent->slot = slot;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     unsigned int destroyEvent = (event->destroyOnFire != -1)
                                     ? artsAtomicSub(&event->destroyOnFire, 1U)
@@ -315,8 +340,7 @@ void artsAddDependence(artsGuid_t source, artsGuid_t destination,
     dependent->type = ARTS_EVENT;
     dependent->addr = destination;
     dependent->slot = slot;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     unsigned int destroyEvent = (event->destroyOnFire != -1)
                                     ? artsAtomicSub(&event->destroyOnFire, 1U)
@@ -348,8 +372,7 @@ void artsAddLocalEventCallback(artsGuid_t source, eventCallback_t callback) {
     dependent->callback = callback;
     dependent->addr = NULL_GUID;
     dependent->slot = 0;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     unsigned int destroyEvent = (event->destroyOnFire != -1)
                                     ? artsAtomicSub(&event->destroyOnFire, 1U)
@@ -498,6 +521,10 @@ bool artsPersistentEventFreeVersion(struct artsPersistentEvent *event) {
 
   /// Free the version
   if (last) {
+    // Reusing the head version requires clearing dependent slots so reused
+    // entries start with doneWriting=false.
+    memset(version->dependent.dependents, 0,
+           sizeof(struct artsDependent) * version->dependent.size);
     version->latchCount = 0;
     version->dependentCount = 0;
   } else {
@@ -609,7 +636,7 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
       while (i < lastKnown) {
         j = i - totalSize;
         while (i < lastKnown && j < dependentList->size) {
-          while (!dependent[j].doneWriting)
+          while (!artsDependentReady(&dependent[j]))
             ;
           if (dependent[j].type == ARTS_EDT) {
             if (event->data != NULL_GUID) {
@@ -657,9 +684,9 @@ void artsPersistentEventSatisfy(artsGuid_t eventGuid, uint32_t action,
           i++;
         }
         totalSize += dependentList->size;
-        while (i < lastKnown && dependentList->next == NULL)
+        while (i < lastKnown && artsDependentListNext(dependentList) == NULL)
           ;
-        dependentList = dependentList->next;
+        dependentList = artsDependentListNext(dependentList);
         dependent = dependentList->dependents;
       }
 
@@ -723,8 +750,7 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
     dependent->addr = edtDest;
     dependent->slot = edtSlot;
     dependent->acquireMode = ARTS_NULL;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     unsigned int res = artsAtomicFetchAdd(&version->latchCount, 0U);
     if (res == 0)
@@ -737,8 +763,7 @@ void artsAddDependenceToPersistentEvent(artsGuid_t eventSource,
     dependent->addr = edtDest;
     dependent->slot = edtSlot;
     dependent->acquireMode = ARTS_NULL;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     if (artsAtomicFetchAdd(&version->latchCount, 0U) == 0)
       needsUpdate = true;
@@ -805,8 +830,7 @@ void artsAddDependenceToPersistentEventWithModeAndDiff(artsGuid_t eventSource,
     dependent->acquireMode = acquireMode;
     dependent->byteOffset = 0;
     dependent->size = 0;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     unsigned int res = artsAtomicFetchAdd(&version->latchCount, 0U);
     if (res == 0)
@@ -821,8 +845,7 @@ void artsAddDependenceToPersistentEventWithModeAndDiff(artsGuid_t eventSource,
     dependent->acquireMode = acquireMode;
     dependent->byteOffset = 0;
     dependent->size = 0;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     if (artsAtomicFetchAdd(&version->latchCount, 0U) == 0)
       needsUpdate = true;
@@ -882,8 +905,7 @@ void artsAddDependenceToPersistentEventWithByteOffset(
     dependent->acquireMode = acquireMode;
     dependent->byteOffset = byteOffset;
     dependent->size = size;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     unsigned int res = artsAtomicFetchAdd(&version->latchCount, 0U);
     if (res == 0)
@@ -898,8 +920,7 @@ void artsAddDependenceToPersistentEventWithByteOffset(
     dependent->acquireMode = acquireMode;
     dependent->byteOffset = byteOffset;
     dependent->size = size;
-    COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT();
-    dependent->doneWriting = true;
+    artsPublishDependent(dependent);
 
     if (artsAtomicFetchAdd(&version->latchCount, 0U) == 0)
       needsUpdate = true;

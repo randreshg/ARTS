@@ -111,8 +111,8 @@ bool artsLock(volatile unsigned int *lock) {
 }
 
 void artsUnlock(volatile unsigned int *lock) {
-  // artsAtomicSwap( lock, 0U );
-  *lock = 0U;
+  // Publish critical-section writes before releasing the lock.
+  __sync_lock_release(lock);
 }
 
 bool artsTryLock(volatile unsigned int *lock) {
