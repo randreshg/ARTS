@@ -702,7 +702,8 @@ void prepDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {
     }
 
     if (depv[i].guid != NULL_GUID && effectiveMode == ARTS_DB_WRITE) {
-      if (depv[i].mode != ARTS_DB_PIN)
+      // Single-node runs do not need route-table invalidation broadcasts.
+      if (depv[i].mode != ARTS_DB_PIN && artsGlobalRankCount > 1)
         artsRemoteUpdateRouteTable(depv[i].guid, -1);
       struct artsDb *db = ((struct artsDb *)depv[i].ptr) - 1;
       ARTS_DEBUG("[prepDbs] DB[Id:%lu, Guid:%lu] ptr=%p, db=%p", db->arts_id,
