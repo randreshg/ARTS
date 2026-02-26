@@ -63,6 +63,10 @@
 #include "arts/system/ArtsPrint.h"
 #include "arts/system/Config.h"
 
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 struct artsConfig *artsGlobalMessageTable;
 unsigned int ports;
 // SOCKETS!
@@ -488,9 +492,10 @@ uint64_t artsActualSend(char *message, uint64_t length, int rank, int port) {
   int res = 0;
   uint64_t total = 0;
   int iterations = 0;
+  const int sendFlags = MSG_DONTWAIT | MSG_NOSIGNAL;
   while (length != 0 && res >= 0) {
     res = rsend(remoteSocketSendList[rank * ports + port], message + total,
-                length, MSG_DONTWAIT);
+                length, sendFlags);
     if (res >= 0) {
       total += res;
       length -= res;
