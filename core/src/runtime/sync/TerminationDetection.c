@@ -251,10 +251,10 @@ void artsStartEpoch(artsGuid_t epochGuid) {
 bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
                 unsigned int totalFinish) {
   unsigned int diff = totalActive - totalFinish;
-  ARTS_INFO("Checking Epoch [Guid:%lu, TotalActive:%u, TotalFinish:%u, "
-            "Diff:%u, Phase:%u, LastActive:%u, LastFinished:%u]",
-            epoch->guid, totalActive, totalFinish, diff, epoch->phase,
-            epoch->lastActiveCount, epoch->lastFinishedCount);
+  ARTS_DEBUG("Checking Epoch [Guid:%lu, TotalActive:%u, TotalFinish:%u, "
+             "Diff:%u, Phase:%u, LastActive:%u, LastFinished:%u]",
+             epoch->guid, totalActive, totalFinish, diff, epoch->phase,
+             epoch->lastActiveCount, epoch->lastFinishedCount);
   // We have a zero
   if (totalFinish && !diff) {
     // Lets check the phase and if we have the same counts as before
