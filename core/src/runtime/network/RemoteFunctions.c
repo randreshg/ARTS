@@ -782,10 +782,10 @@ void artsRemoteDbFullSendNow(int rank, struct artsDb *db, artsGuid_t edtGuid,
   artsFillPacketHeader(&packet.header, size, ARTS_REMOTE_DB_FULL_SEND_MSG);
   artsRemoteSendRequestPayloadAsync(rank, (char *)&packet, sizeof(packet),
                                     (char *)db, db->header.size);
-  ARTS_INFO("Full DB send [DbGuid:%lu, EdtGuid:%lu, Slot:%u, Mode:%u, Size:%u] "
-            "from rank %u to rank %u",
-            db->guid, edtGuid, slot, mode, db->header.size, artsGlobalRankId,
-            rank);
+  ARTS_DEBUG("Full DB send [DbGuid:%lu, EdtGuid:%lu, Slot:%u, Mode:%u, "
+             "Size:%u] from rank %u to rank %u",
+             db->guid, edtGuid, slot, mode, db->header.size, artsGlobalRankId,
+             rank);
 }
 
 void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, artsGuid_t edtGuid,

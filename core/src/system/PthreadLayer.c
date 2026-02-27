@@ -48,6 +48,7 @@
 #include "arts/arts.h"
 #include "arts/introspection/Counter.h"
 #include "arts/network/Remote.h"
+#include "arts/network/RemoteProtocol.h"
 #include "arts/runtime/Globals.h"
 #include "arts/runtime/Runtime.h"
 #include "arts/system/ArtsPrint.h"
@@ -61,6 +62,7 @@ struct artsConfig *config;
 
 struct threadMask *mask;
 pthread_t *nodeThreadList;
+static volatile unsigned int artsShutdownIssued = 0;
 
 
 void *artsThreadLoop(void *data) {
@@ -104,6 +106,7 @@ void artsThreadMainJoin() {
   // File-based counter aggregation: no socket synchronization needed
   // Each node writes its own JSON file independently, master polls filesystem
   // Join ALL threads (workers and network threads)
+  artsRemoteShutdown();
   for (int i = 1; i < artsNodeInfo.totalThreadCount; i++) {
     pthread_join(nodeThreadList[i], NULL);
   }
@@ -143,11 +146,22 @@ void artsThreadInit(struct artsConfig *config) {
 }
 
 void artsShutdown() {
-  if (artsGlobalRankCount > 1)
-    artsRemoteShutdown();
-
-  if (artsGlobalRankCount == 1)
+  if (__sync_lock_test_and_set(&artsShutdownIssued, 1U)) {
     artsRuntimeStop();
+    fflush(stdout);
+    return;
+  }
+
+  if (artsGlobalRankCount > 1) {
+    for (unsigned int i = 0; i < artsGlobalRankCount; i++) {
+      if (i != artsGlobalRankId)
+        artsRemoteShutdownPing(i);
+    }
+    artsRemoteFlushOutbound();
+    artsRemoteShutdown();
+  }
+
+  artsRuntimeStop();
 
   fflush(stdout);
 }

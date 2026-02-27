@@ -38,6 +38,7 @@
  ******************************************************************************/
 #include "arts/network/Server.h"
 
+#include <string.h>
 #include <unistd.h>
 
 #include "arts/arts.h"
@@ -72,6 +73,18 @@ void artsRemoteTryToClosePrinter() {
   if (lockPrintFile)
     fclose(lockPrintFile);
   remove(".artsPrintLock");
+}
+
+void artsRemoteShutdownPing(unsigned int route) {
+  if (route == artsGlobalRankId || route >= artsGlobalRankCount)
+    return;
+
+  struct artsRemotePacket packet;
+  memset(&packet, 0, sizeof(packet));
+  packet.size = sizeof(packet);
+  packet.messageType = ARTS_REMOTE_SHUTDOWN_MSG;
+  packet.rank = artsGlobalRankId;
+  artsRemoteSendRequestAsync(route, (char *)&packet, sizeof(packet));
 }
 
 void artsRemoteShutdown() { artsLLServerShutdown(); }
@@ -110,6 +123,8 @@ void artsServerProcessPacket(struct artsRemotePacket *packet) {
   case ARTS_REMOTE_SHUTDOWN_MSG: {
     ARTS_INFO("Node %u: Received shutdown message from node %u",
               artsGlobalRankId, packet->rank);
+    // Ensure network threads break out of blocking poll/connect loops quickly.
+    artsRemoteShutdown();
     artsRuntimeStop();
     break;
   }
