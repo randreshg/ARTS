@@ -85,12 +85,58 @@ struct pollfd *pollIncoming;
 #define EDT_MUG_SIZE 32
 #define PACKET_SIZE 4194304
 #define INITIAL_OUT_SIZE 80000000
+#define SOCKET_CONNECT_MAX_RETRIES 300
+#define SOCKET_CONNECT_RETRY_US 100000
+#define SOCKET_SEND_MAX_ATTEMPTS 32
 
 char *ipList;
+static volatile bool artsSocketShuttingDown = false;
+
+static inline unsigned int artsSocketIndex(int rank, unsigned int port) {
+  return (unsigned int)rank * ports + port;
+}
+
+static inline const char *artsSocketMessageTypeName(unsigned int messageType) {
+  switch (messageType) {
+  case ARTS_REMOTE_DB_REQUEST_MSG:
+    return "DB_REQUEST";
+  case ARTS_REMOTE_DB_SEND_MSG:
+    return "DB_SEND";
+  case ARTS_REMOTE_DB_FULL_REQUEST_MSG:
+    return "DB_FULL_REQUEST";
+  case ARTS_REMOTE_DB_FULL_SEND_MSG:
+    return "DB_FULL_SEND";
+  case ARTS_REMOTE_EDT_SIGNAL_MSG:
+    return "EDT_SIGNAL";
+  case ARTS_REMOTE_METRIC_UPDATE_MSG:
+    return "METRIC_UPDATE";
+  case ARTS_REMOTE_SHUTDOWN_MSG:
+    return "SHUTDOWN";
+  default:
+    return "OTHER";
+  }
+}
+
+static inline void artsSocketCloseFd(int *fd) {
+  if (!fd || *fd < 0)
+    return;
+  rshutdown(*fd, SHUT_RDWR);
+  rclose(*fd);
+  *fd = -1;
+}
+
+static inline void artsSocketMarkDisconnected(int rank, unsigned int port) {
+  unsigned int idx = artsSocketIndex(rank, port);
+  if (remoteConnectionAlive)
+    remoteConnectionAlive[idx] = false;
+  if (remoteSocketSendList)
+    artsSocketCloseFd(&remoteSocketSendList[idx]);
+}
 
 void artsRemoteSetMessageTable(struct artsConfig *table) {
   artsGlobalMessageTable = table;
   ports = table->ports;
+  artsSocketShuttingDown = false;
 }
 bool hostnameToIp(char *hostName, char *ip) {
   int j;
@@ -425,100 +471,139 @@ void artsLLServerSetup(struct artsConfig *config) {
 }
 
 void artsLLServerShutdown() {
+  if (artsSocketShuttingDown)
+    return;
+  artsSocketShuttingDown = true;
+
+  if (!artsGlobalMessageTable)
+    return;
+
   int count = artsGlobalMessageTable->tableLength;
-  for (int i = 0; i < (count - 1) * ports; i++) {
-    rshutdown(remoteSocketRecieveList[i], SHUT_RDWR);
-    // rclose(remoteSocketRecieveList[i]);
+  int incomingCount = (count > 0) ? (count - 1) * ports : 0;
+  ARTS_INFO("artsLLServerShutdown: rank=%u closing sockets", artsGlobalRankId);
+
+  if (remoteSocketRecieveList) {
+    for (int i = 0; i < incomingCount; i++)
+      artsSocketCloseFd(&remoteSocketRecieveList[i]);
   }
 
-  for (int i = 0; i < count * ports; i++) {
-    if (i / ports != artsGlobalRankId) {
-      rshutdown(remoteSocketSendList[i], SHUT_RDWR);
-      //            rclose(remoteSocketSendList[i]);
-    }
+  if (localSocketRecieve) {
+    for (unsigned int i = 0; i < ports; i++)
+      artsSocketCloseFd(&localSocketRecieve[i]);
+  }
+
+  if (remoteSocketSendList) {
+    for (int i = 0; i < count * (int)ports; i++)
+      artsSocketCloseFd(&remoteSocketSendList[i]);
+  }
+
+  if (remoteConnectionAlive) {
+    for (int i = 0; i < count * (int)ports; i++)
+      remoteConnectionAlive[i] = false;
   }
 }
 
 unsigned int artsRemoteGetMyRank() { return artsGlobalMessageTable->myRank; }
 
 static inline bool artsRemoteConnect(int rank, unsigned int port) {
+  if (artsSocketShuttingDown)
+    return false;
 
-  if (!remoteConnectionAlive[rank * ports + port]) {
-    int res = rconnect(
-        remoteSocketSendList[rank * ports + port],
-        (struct sockaddr *)(remoteServerSendList + rank * ports + port),
-        sizeof(struct sockaddr_in));
-    if (res < 0) {
-      remoteConnectionAlive[rank * ports + port] = false;
+  unsigned int idx = artsSocketIndex(rank, port);
+  if (remoteConnectionAlive[idx])
+    return true;
 
-      rclose(remoteSocketSendList[rank * ports + port]);
-      remoteSocketSendList[rank * ports + port] = artsGetNewSocket();
+  int retryCount = 0;
+  while (!artsSocketShuttingDown) {
+    if (remoteSocketSendList[idx] < 0)
+      remoteSocketSendList[idx] = artsGetNewSocket();
 
-      // Retry with delay to handle SLURM startup skew (srun starts all
-      // processes simultaneously, so the remote may not be listening yet)
-      int maxRetries = 300;
-      int retryCount = 0;
-      while (rconnect(remoteSocketSendList[rank * ports + port],
-                      (struct sockaddr *)(remoteServerSendList + rank * ports +
-                                          port),
-                      sizeof(struct sockaddr_in)) < 0) {
-        if (++retryCount >= maxRetries) {
-          struct sockaddr_in *addr = remoteServerSendList + rank * ports + port;
-          ARTS_INFO("artsRemoteConnect: Failed to connect to rank %d port %d after %d retries (target %s:%d, errno=%d: %s)",
-                    rank, port, maxRetries,
-                    inet_ntoa(addr->sin_addr), ntohs(addr->sin_port),
-                    errno, strerror(errno));
-          return false;
-        }
-        rclose(remoteSocketSendList[rank * ports + port]);
-        remoteSocketSendList[rank * ports + port] = artsGetNewSocket();
-        usleep(100000);
-      }
-
-      remoteConnectionAlive[rank * ports + port] = true;
-
+    int res = rconnect(remoteSocketSendList[idx],
+                       (struct sockaddr *)(remoteServerSendList + idx),
+                       sizeof(struct sockaddr_in));
+    if (res == 0 || errno == EISCONN) {
+      remoteConnectionAlive[idx] = true;
       return true;
     }
 
-    remoteConnectionAlive[rank * ports + port] = true;
-  }
+    int savedErrno = errno;
+    remoteConnectionAlive[idx] = false;
+    artsSocketCloseFd(&remoteSocketSendList[idx]);
 
-  return true;
+    if (++retryCount >= SOCKET_CONNECT_MAX_RETRIES) {
+      struct sockaddr_in *addr = remoteServerSendList + idx;
+      ARTS_INFO(
+          "artsRemoteConnect: failed src=%u dst=%d port=%u retries=%d "
+          "target=%s:%d errno=%d (%s)",
+          artsGlobalRankId, rank, port, retryCount, inet_ntoa(addr->sin_addr),
+          ntohs(addr->sin_port), savedErrno, strerror(savedErrno));
+      return false;
+    }
+#ifdef ARTS_DEBUG_ENABLED
+    if (retryCount == 1 || retryCount % 50 == 0) {
+      ARTS_DEBUG(
+          "artsRemoteConnect: retry src=%u dst=%d port=%u retry=%d errno=%d "
+          "(%s)",
+          artsGlobalRankId, rank, port, retryCount, savedErrno,
+          strerror(savedErrno));
+    }
+#endif
+    usleep(SOCKET_CONNECT_RETRY_US);
+  }
+  return false;
 }
 
 // inline int artsActualSend(char * message, unsigned int length, int rank, int
 // port)
-uint64_t artsActualSend(char *message, uint64_t length, int rank, int port) {
-  int res = 0;
+uint64_t artsActualSend(char *message, uint64_t length, int rank, int port,
+                        unsigned int messageType) {
+  ssize_t res = 0;
   uint64_t total = 0;
-  int iterations = 0;
+  unsigned int attempts = 0;
+  unsigned int idx = artsSocketIndex(rank, port);
   const int sendFlags = MSG_DONTWAIT | MSG_NOSIGNAL;
-  while (length != 0 && res >= 0) {
-    res = rsend(remoteSocketSendList[rank * ports + port], message + total,
-                length, sendFlags);
-    if (res >= 0) {
-      total += res;
-      length -= res;
+  while (!artsSocketShuttingDown && length && attempts < SOCKET_SEND_MAX_ATTEMPTS) {
+    attempts++;
+    res = rsend(remoteSocketSendList[idx], message + total, length, sendFlags);
+    if (res > 0) {
+      total += (uint64_t)res;
+      length -= (uint64_t)res;
+      continue;
     }
-    iterations++;
-    if (iterations > 1000000) {
-      ARTS_INFO("artsActualSend: stuck in loop, res=%d, length=%lu, total=%lu, errno=%d",
-                res, length, total, errno);
-      break;
-    }
-  }
-
-  if (res < 0) {
-    if (errno != EAGAIN) {
-      struct artsRemotePacket *pk = (struct artsRemotePacket *)message;
+    if (res == 0) {
       ARTS_INFO(
-          "artsRemoteSendRequest %u Socket appears to be closed to rank %d: "
-          " %s",
-          pk->messageType, rank, strerror(errno));
+          "artsActualSend: zero-byte send src=%u dst=%d port=%u type=%u(%s)",
+          artsGlobalRankId, rank, port, messageType,
+          artsSocketMessageTypeName(messageType));
+      artsSocketMarkDisconnected(rank, port);
       artsRuntimeStop();
       return -1;
     }
+    if (errno == EINTR)
+      continue;
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      break;
+
+    int savedErrno = errno;
+    ARTS_INFO(
+        "artsActualSend: error src=%u dst=%d port=%u type=%u(%s) "
+        "remaining=%lu errno=%d (%s)",
+        artsGlobalRankId, rank, port, messageType,
+        artsSocketMessageTypeName(messageType), length, savedErrno,
+        strerror(savedErrno));
+    artsSocketMarkDisconnected(rank, port);
+    artsRuntimeStop();
+    return -1;
   }
+#ifdef ARTS_DEBUG_ENABLED
+  if (length && attempts >= SOCKET_SEND_MAX_ATTEMPTS) {
+    ARTS_DEBUG(
+        "artsActualSend: deferred src=%u dst=%d port=%u type=%u(%s) "
+        "remaining=%lu attempts=%u",
+        artsGlobalRankId, rank, port, messageType,
+        artsSocketMessageTypeName(messageType), length, attempts);
+  }
+#endif
   INCREMENT_REMOTE_BYTES_SENT_BY(total);
   return length;
 }
@@ -527,7 +612,8 @@ uint64_t artsRemoteSendRequest(int rank, unsigned int queue, char *message,
                                uint64_t length) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-    return artsActualSend(message, length, rank, port);
+    struct artsRemotePacket *packet = (struct artsRemotePacket *)message;
+    return artsActualSend(message, length, rank, port, packet->messageType);
   }
   return length;
 }
@@ -537,7 +623,9 @@ uint64_t artsRemoteSendPayloadRequest(int rank, unsigned int queue,
                                       char *payload, uint64_t length2) {
   int port = queue % ports;
   if (artsRemoteConnect(rank, port)) {
-    uint64_t tempLength = artsActualSend(message, length, rank, port);
+    struct artsRemotePacket *packet = (struct artsRemotePacket *)message;
+    uint64_t tempLength =
+        artsActualSend(message, length, rank, port, packet->messageType);
     // Preserve explicit send error sentinel from artsActualSend.
     // Returning (-1 + payloadSize) corrupts partial-send accounting.
     if (tempLength == (uint64_t)-1)
@@ -545,7 +633,8 @@ uint64_t artsRemoteSendPayloadRequest(int rank, unsigned int queue,
     if (tempLength)
       return tempLength + length2;
 
-    uint64_t payloadRemaining = artsActualSend(payload, length2, rank, port);
+    uint64_t payloadRemaining =
+        artsActualSend(payload, length2, rank, port, packet->messageType);
     if (payloadRemaining == (uint64_t)-1)
       return (uint64_t)-1;
     return payloadRemaining;
@@ -796,9 +885,13 @@ bool artsServerTryToReceive(char **inBuffer, int *inPacketSize,
   struct artsRemotePacket *packet;
   int count = artsGlobalMessageTable->tableLength - 1;
   fd_set tempSet;
-  int timeOut = 300000;
+  int timeOut = artsSocketShuttingDown ? 1 : 50;
   struct timeval selTimeout;
   unsigned int pos;
+  if (threadStop <= threadStart) {
+    usleep(1000);
+    return false;
+  }
   res = rpoll(pollIncoming + threadStart, threadStop - threadStart, timeOut);
 
   if (res == -1) {

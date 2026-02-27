@@ -253,10 +253,7 @@ bool artsPushDbToFrontier(struct artsDbFrontier *frontier, unsigned int data,
     frontier->exEdt = edt;
     frontier->exSlot = slot;
     frontier->exMode = mode;
-  } else if (local) {
-    // Local dependences are per-EDT, not per-node. Even when this node is
-    // already present in the frontier set, we still must queue every local EDT
-    // waiter so its slot can be satisfied when the frontier is signaled.
+  } else if (inserted && local) {
     artsPushDelayedEdt(&frontier->localDelayed, frontier->localPosition++, edt,
                        edtGuid, slot, mode);
   }
@@ -421,7 +418,7 @@ void artsSignalFrontierRemote(struct artsDbFrontier *frontier,
         continue;
       }
       // send through aggregation
-      artsRemoteDbRequest(db->guid, getFrom, edt, slot, ARTS_DB_READ, false,
+      artsRemoteDbRequest(db->guid, getFrom, edt, slot, ARTS_DB_READ, true,
                           ARTS_NULL);
       if (pos + 1 == DBSPERELEMENT)
         current = current->next;
@@ -472,7 +469,7 @@ void artsSignalFrontierLocal(struct artsDbFrontier *frontier,
           !((frontier->exEdt || frontier->exEdtGuid != NULL_GUID) &&
             node == frontier->exNode)) {
         artsRemoteDbSendNow(node, db);
-        ARTS_INFO("Progress Local sending to %u", node);
+        ARTS_DEBUG("Progress Local sending to %u", node);
       }
     }
   }

@@ -493,9 +493,9 @@ void acquireDbs(struct artsEdt *edt) {
   // We start fresh with our count since artsHandleReadyEdt has already determined
   // all signal-based deps are satisfied before calling us.
   edt->depcNeeded = needAcquire + 1;
-  ARTS_INFO("Acquiring %u DBs for EDT[Id:%lu, Guid:%lu], depcNeeded "
-            "initialized to %u",
-            edt->depc, edt->arts_id, edt->currentEdt, edt->depcNeeded);
+  ARTS_DEBUG("Acquiring %u DBs for EDT[Id:%lu, Guid:%lu], depcNeeded "
+             "initialized to %u",
+             edt->depc, edt->arts_id, edt->currentEdt, edt->depcNeeded);
   for (int i = 0; i < edt->depc; i++) {
     if (depv[i].guid && depv[i].ptr == NULL) {
       struct artsDb *dbFound = NULL;
@@ -516,10 +516,10 @@ void acquireDbs(struct artsEdt *edt) {
           INCREMENT_OWNER_UPDATES_PERFORMED_BY(1);
       }
 
-      ARTS_INFO("Acquiring DB[Guid:%lu, Mode:%u, Owner:%d, Rank:%u] "
-                "in EDT[Id:%lu, Guid:%lu, Slot:%u]",
-                depv[i].guid, depv[i].mode, owner, artsGlobalRankId,
-                edt->arts_id, edt->currentEdt, i);
+      ARTS_DEBUG("Acquiring DB[Guid:%lu, Mode:%u, Owner:%d, Rank:%u] "
+                 "in EDT[Id:%lu, Guid:%lu, Slot:%u]",
+                 depv[i].guid, depv[i].mode, owner, artsGlobalRankId,
+                 edt->arts_id, edt->currentEdt, i);
       switch (depv[i].mode) {
       // This case assumes that the guid exists only on the owner
       case ARTS_DB_ONCE: {
@@ -586,7 +586,8 @@ void acquireDbs(struct artsEdt *edt) {
           int validRank = -1;
           struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
               depv[i].guid, &validRank, true);
-          ARTS_INFO("  Owner case: dbTemp=%p, validRank=%d\n", (void*)dbTemp, validRank);
+          ARTS_DEBUG("  Owner case: dbTemp=%p, validRank=%d", (void *)dbTemp,
+                     validRank);
           // We have found an entry
           if (dbTemp) {
             bool duplicateAdded =
@@ -609,11 +610,8 @@ void acquireDbs(struct artsEdt *edt) {
             // it.
             else {
               if (effectiveMode != ARTS_DB_WRITE)
-                // Do not aggregate owner-side read refreshes. Under heavy
-                // DB ownership churn, aggregation can strand queued waiters
-                // on the owner and leave EDT slots unsatisfied.
                 artsRemoteDbRequest(depv[i].guid, validRank, edt, i,
-                                    effectiveMode, false, effectiveMode);
+                                    effectiveMode, true, effectiveMode);
               else
                 artsRemoteDbFullRequest(depv[i].guid, validRank,
                                         edt->currentEdt, i, effectiveMode);
@@ -630,47 +628,50 @@ void acquireDbs(struct artsEdt *edt) {
           struct artsDb *dbTemp = (struct artsDb *)artsRouteTableLookupDb(
               depv[i].guid, &validRank, true);
           // We have found an entry
-          ARTS_INFO("[AcquireDbs] Non-owner case for DB[Guid:%lu, Mode:%u, "
-                    "Owner:%d, ValidRank: %d, DbTemp: %p]",
-                    depv[i].guid, depv[i].mode, owner, validRank,
-                    (void *)dbTemp);
+          ARTS_DEBUG("[AcquireDbs] Non-owner case for DB[Guid:%lu, Mode:%u, "
+                     "Owner:%d, ValidRank: %d, DbTemp: %p]",
+                     depv[i].guid, depv[i].mode, owner, validRank,
+                     (void *)dbTemp);
           bool localValid = (dbTemp && validRank == artsGlobalRankId);
           if (dbTemp) {
-            ARTS_INFO("[AcquireDbs] Non-owner cache state DB[Guid:%lu, "
-                      "ArtsId:%lu, Mode:%s, Effective:%s, ValidRank:%d, "
-                      "LocalValid:%d, Version:%u]",
-                      depv[i].guid, dbTemp->arts_id, getTypeName(depv[i].mode),
-                      getTypeName(effectiveMode), validRank, localValid,
-                      dbTemp->version);
+            ARTS_DEBUG("[AcquireDbs] Non-owner cache state DB[Guid:%lu, "
+                       "ArtsId:%lu, Mode:%s, Effective:%s, ValidRank:%d, "
+                       "LocalValid:%d, Version:%u]",
+                       depv[i].guid, dbTemp->arts_id,
+                       getTypeName(depv[i].mode), getTypeName(effectiveMode),
+                       validRank, localValid, dbTemp->version);
           } else {
-            ARTS_INFO("[AcquireDbs] Non-owner cache miss DB[Guid:%lu, "
-                      "Mode:%s, Effective:%s, ValidRank:%d]",
-                      depv[i].guid, getTypeName(depv[i].mode),
-                      getTypeName(effectiveMode), validRank);
+            ARTS_DEBUG("[AcquireDbs] Non-owner cache miss DB[Guid:%lu, "
+                       "Mode:%s, Effective:%s, ValidRank:%d]",
+                       depv[i].guid, getTypeName(depv[i].mode),
+                       getTypeName(effectiveMode), validRank);
           }
           // If route-table ownership says this rank has the valid copy, reuse
           // it for both READ and WRITE acquires.
           if (localValid && effectiveMode != ARTS_DB_WRITE) {
             dbFound = dbTemp;
             artsAtomicSub(&edt->depcNeeded, 1U);
-            ARTS_INFO("  Found local valid copy, decremented depcNeeded");
+            ARTS_DEBUG("  Found local valid copy, decremented depcNeeded");
           } else if (dbTemp && effectiveMode == ARTS_DB_WRITE) {
             // Non-owner WRITE acquires must refresh from owner.
-            ARTS_INFO("  Local copy ignored for WRITE; forcing owner refresh");
+            ARTS_DEBUG("  Local copy ignored for WRITE; forcing owner refresh");
           }
           if (effectiveMode == ARTS_DB_WRITE) {
             // Always use full owner refresh for non-owner WRITE.
-            ARTS_INFO("  WRITE mode - sending full DB request to rank %d", owner);
+            ARTS_DEBUG("  WRITE mode - sending full DB request to rank %d",
+                       owner);
             artsRemoteDbFullRequest(depv[i].guid, owner, edt->currentEdt, i,
                                     effectiveMode);
           } else if (!dbTemp || !localValid) {
-            ARTS_INFO("  READ mode, no local copy - sending request to rank %d",
-                      owner);
+            // We can aggregate read requests for reads
+            ARTS_DEBUG("  READ mode, no local copy - sending aggregated request "
+                       "to rank %d",
+                       owner);
             int requestRank = owner;
             artsRemoteDbRequest(depv[i].guid, requestRank, edt, i,
-                                effectiveMode, false, effectiveMode);
+                                effectiveMode, true, effectiveMode);
           } else {
-            ARTS_INFO("  READ mode with local copy - no remote request needed");
+            ARTS_DEBUG("  READ mode with local copy - no remote request needed");
           }
         }
       } break;
@@ -688,8 +689,8 @@ void acquireDbs(struct artsEdt *edt) {
       artsAtomicSub(&edt->depcNeeded, 1U);
     }
   }
-  ARTS_INFO("EDT[Id:%lu, Guid:%lu] has finished acquiring DBs", edt->arts_id,
-            edt->currentEdt);
+  ARTS_DEBUG("EDT[Id:%lu, Guid:%lu] has finished acquiring DBs", edt->arts_id,
+             edt->currentEdt);
 }
 
 void prepDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {

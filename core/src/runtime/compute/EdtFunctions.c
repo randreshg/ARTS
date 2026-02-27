@@ -148,8 +148,8 @@ void artsIncrementFinishedEpochList() {
     for (unsigned int i = 0; i < epochArrayLength; i++) {
       artsGuid_t *guid = (artsGuid_t *)artsGetFromArrayList(epochList, i);
       uint64_t currentId = currentEdt ? currentEdt->arts_id : 0;
-      ARTS_INFO("Current EDT[Id:%lu, Guid:%lu] - Unsetting Epoch [Guid:%lu]",
-                currentId, artsThreadInfo.currentEdtGuid, *guid);
+      ARTS_DEBUG("Current EDT[Id:%lu, Guid:%lu] - Unsetting Epoch [Guid:%lu]",
+                 currentId, artsThreadInfo.currentEdtGuid, *guid);
       if (*guid)
         incrementFinishedEpoch(*guid);
     }
@@ -374,12 +374,12 @@ void artsEdtFree(struct artsEdt *edt) {
 
 void artsEdtDelete(struct artsEdt *edt) {
   if (!edt) {
-    ARTS_INFO("EDT delete called with NULL edt on rank %u", artsGlobalRankId);
+    ARTS_DEBUG("EDT delete called with NULL edt on rank %u", artsGlobalRankId);
     return;
   }
-  ARTS_INFO("EDT delete [Guid:%lu, Id:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
-            edt->currentEdt, edt->arts_id, edt->depc, edt->depcNeeded,
-            artsGlobalRankId);
+  ARTS_DEBUG("EDT delete [Guid:%lu, Id:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
+             edt->currentEdt, edt->arts_id, edt->depc, edt->depcNeeded,
+             artsGlobalRankId);
   artsRouteTableRemoveItem(edt->currentEdt);
   artsEdtFree(edt);
 }
@@ -387,13 +387,14 @@ void artsEdtDelete(struct artsEdt *edt) {
 void artsEdtDestroy(artsGuid_t guid) {
   struct artsEdt *edt = (struct artsEdt *)artsRouteTableLookupItem(guid);
   if (!edt) {
-    ARTS_INFO("EDT destroy missing [Guid:%lu] on rank %u", guid,
-              artsGlobalRankId);
+    ARTS_DEBUG("EDT destroy missing [Guid:%lu] on rank %u", guid,
+               artsGlobalRankId);
     return;
   }
-  ARTS_INFO("EDT destroy [Guid:%lu, Id:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
-            edt->currentEdt, edt->arts_id, edt->depc, edt->depcNeeded,
-            artsGlobalRankId);
+  ARTS_DEBUG(
+      "EDT destroy [Guid:%lu, Id:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
+      edt->currentEdt, edt->arts_id, edt->depc, edt->depcNeeded,
+      artsGlobalRankId);
   artsRouteTableRemoveItem(guid);
   artsEdtFree(edt);
 }
@@ -437,9 +438,9 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
           edtDep[slot].acquireMode = ARTS_NULL;
           edtDep[slot].ptr = ptr;
           unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-          ARTS_INFO("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
-                    "DepCount:%d]",
-                    dataGuid, edt->currentEdt, slot, res);
+          ARTS_DEBUG("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
+                     "DepCount:%d]",
+                     dataGuid, edt->currentEdt, slot, res);
           if (res == 0)
             artsHandleReadyEdt(edt);
         } else {
@@ -497,10 +498,10 @@ void internalSignalEdtWithMode(artsGuid_t edtPacket, uint32_t slot,
           edtDep[slot].acquireMode = acquireMode;
           edtDep[slot].ptr = NULL;
           unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-          ARTS_INFO("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
-                    "DepCount:%d, AcquireMode:%s]",
-                    dataGuid, edt->currentEdt, slot, res,
-                    getTypeName(acquireMode));
+          ARTS_DEBUG("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
+                     "DepCount:%d, AcquireMode:%s]",
+                     dataGuid, edt->currentEdt, slot, res,
+                     getTypeName(acquireMode));
           if (res == 0)
             artsHandleReadyEdt(edt);
         } else {

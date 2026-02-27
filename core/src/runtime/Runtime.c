@@ -478,10 +478,11 @@ void artsHandleRemoteStolenEdt(struct artsEdt *edt) {
 
 void artsHandleReadyEdt(struct artsEdt *edt) {
   artsGuid_t guid = edt->currentEdt;
-  ARTS_INFO("EDT[Id:%lu, Guid:%lu] is ready", edt->arts_id, guid);
+  ARTS_DEBUG("EDT[Id:%lu, Guid:%lu] is ready", edt->arts_id, guid);
   acquireDbs(edt);
   unsigned int depcAfterSub = artsAtomicSub(&edt->depcNeeded, 1U);
-  ARTS_INFO("EDT[Guid:%lu] depcNeeded afterSub=%u, type=%d", guid, depcAfterSub, edt->header.type);
+  ARTS_DEBUG("EDT[Guid:%lu] depcNeeded afterSub=%u, type=%d", guid,
+             depcAfterSub, edt->header.type);
   if (depcAfterSub == 0) {
     INCREMENT_NUM_EDTS_ACQUIRED_BY(1);
     incrementQueueEpoch(edt->epochGuid);
@@ -489,8 +490,10 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
 #ifdef USE_GPU
     if (artsNodeInfo.gpu &&
         (!artsThreadInfo.myDeque || !artsThreadInfo.myGpuDeque)) {
-      ARTS_INFO("Storing EDT via artsStoreNewEdts: guid=%lu, type=%d, myDeque=%p, myGpuDeque=%p\n",
-                edt->currentEdt, edt->header.type, artsThreadInfo.myDeque, artsThreadInfo.myGpuDeque);
+      ARTS_DEBUG("Storing EDT via artsStoreNewEdts: guid=%lu, type=%d, "
+                 "myDeque=%p, myGpuDeque=%p",
+                 edt->currentEdt, edt->header.type, artsThreadInfo.myDeque,
+                 artsThreadInfo.myGpuDeque);
       artsStoreNewEdts(edt);
     } else
 #endif
@@ -498,7 +501,8 @@ void artsHandleReadyEdt(struct artsEdt *edt) {
       if (edt->header.type == ARTS_EDT)
         artsDequePushFront(artsThreadInfo.myDeque, edt, 0);
       else if (edt->header.type == ARTS_GPU_EDT) {
-        ARTS_INFO("Queueing GPU EDT to gpuDeque: guid=%lu, deque=%p\n", edt->currentEdt, artsThreadInfo.myGpuDeque);
+        ARTS_DEBUG("Queueing GPU EDT to gpuDeque: guid=%lu, deque=%p",
+                   edt->currentEdt, artsThreadInfo.myGpuDeque);
         artsDequePushFront(artsThreadInfo.myGpuDeque, edt, 0);
       }
     }
@@ -514,9 +518,9 @@ void artsRunEdt(struct artsEdt *edt) {
   uint32_t paramc = edt->paramc;
   uint64_t *paramv = (uint64_t *)(edt + 1);
 
-  ARTS_INFO("Running EDT[Id:%lu, Guid:%lu, Deps: %u, Params: %u, "
-            "DepvPtr: %p]",
-            edt->arts_id, edt->currentEdt, depc, paramc, depv);
+  ARTS_DEBUG("Running EDT[Id:%lu, Guid:%lu, Deps: %u, Params: %u, "
+             "DepvPtr: %p]",
+             edt->arts_id, edt->currentEdt, depc, paramc, depv);
   prepDbs(depc, depv, false);
 
   artsSetThreadLocalEdtInfo(edt);
@@ -544,7 +548,8 @@ void artsRunEdt(struct artsEdt *edt) {
     artsSetBuffer(edt->outputBuffer, artsCalloc(1, sizeof(unsigned int)),
                   sizeof(unsigned int));
 
-  ARTS_INFO("EDT[Id:%lu, Guid:%lu] Finished", edt->arts_id, edt->currentEdt);
+  ARTS_DEBUG("EDT[Id:%lu, Guid:%lu] Finished", edt->arts_id,
+             edt->currentEdt);
   releaseDbs(depc, depv, false);
   artsEdtDelete(edt);
   // This is for debugging purposes
