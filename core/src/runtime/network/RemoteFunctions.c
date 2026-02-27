@@ -381,7 +381,8 @@ void artsRemoteHandleEdtMove(void *ptr) {
   memcpy(edt, packet + 1, size);
   artsRouteTableAddItemRace(edt, (artsGuid_t)packet->guid, artsGlobalRankId,
                             false);
-  ARTS_INFO("EDT[Guid:%lu] Moved to Rank: %d", packet->guid, artsGlobalRankId);
+  ARTS_DEBUG("EDT[Guid:%lu] Moved to Rank: %d", packet->guid,
+             artsGlobalRankId);
   if (edt->depcNeeded == 0)
     artsHandleReadyEdt(edt);
   else
@@ -412,7 +413,7 @@ void artsRemoteHandleDbMove(void *ptr) {
     newDb->dbList = artsNewDbList();
   }
 
-  ARTS_INFO("DB[Guid:%lu] Moved to Rank: %d", packet->guid, artsGlobalRankId);
+  ARTS_DEBUG("DB[Guid:%lu] Moved to Rank: %d", packet->guid, artsGlobalRankId);
   if (artsRouteTableAddItemRace(memPacket, (artsGuid_t)packet->guid,
                                 artsGlobalRankId, false))
     artsRouteTableFireOO(packet->guid, artsOutOfOrderHandler);
@@ -443,8 +444,8 @@ void artsRemoteHandlePersistentEventMove(void *ptr) {
       size, 16, artsPersistentEventMemorySize);
 
   memcpy(memPacket, packet + 1, size);
-  ARTS_INFO("Persistent Event [Guid:%lu] Moved to Rank: %d", packet->guid,
-            artsGlobalRankId);
+  ARTS_DEBUG("Persistent Event [Guid:%lu] Moved to Rank: %d", packet->guid,
+             artsGlobalRankId);
   artsRouteTableAddItemRace(memPacket, (artsGuid_t)packet->guid,
                             artsGlobalRankId, false);
   artsRouteTableFireOO(packet->guid, artsOutOfOrderHandler);
@@ -472,17 +473,17 @@ static void sendRemoteEdtSignalPacket(artsGuid_t edt, artsGuid_t db,
 
 void artsRemoteSignalEdt(artsGuid_t edt, artsGuid_t db, uint32_t slot,
                          artsType_t mode) {
-  ARTS_INFO("Remote Signal from DB[Guid:%lu] to EDT[Guid:%lu, Slot:%d, Rank: "
-            "%d]",
-            db, edt, slot, artsGuidGetRank(edt));
+  ARTS_DEBUG("Remote Signal from DB[Guid:%lu] to EDT[Guid:%lu, Slot:%d, Rank: "
+             "%d]",
+             db, edt, slot, artsGuidGetRank(edt));
   sendRemoteEdtSignalPacket(edt, db, slot, mode, ARTS_NULL);
 }
 
 void artsRemoteSignalEdtWithHints(artsGuid_t edt, artsGuid_t db, uint32_t slot,
                                   artsType_t mode, artsType_t acquireMode) {
-  ARTS_INFO("Remote Signal from DB[Guid:%lu] to EDT[Guid:%lu, Slot:%d, "
-            "Rank: %d, AcquireMode:%u]",
-            db, edt, slot, artsGuidGetRank(edt), acquireMode);
+  ARTS_DEBUG("Remote Signal from DB[Guid:%lu] to EDT[Guid:%lu, Slot:%d, "
+             "Rank: %d, AcquireMode:%u]",
+             db, edt, slot, artsGuidGetRank(edt), acquireMode);
   sendRemoteEdtSignalPacket(edt, db, slot, mode, acquireMode);
 }
 
@@ -671,8 +672,9 @@ void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsType_t mode) {
 
 void artsRemoteDbSend(struct artsRemoteDbRequestPacket *pack) {
   unsigned int redirected = artsRouteTableLookupRank(pack->dbGuid);
-  ARTS_INFO("Remote DB Send [Guid:%lu] [Rank: %d] [Mode:%d] [AcquireMode:%d]",
-            pack->dbGuid, pack->header.rank, pack->mode, pack->acquireMode);
+  ARTS_DEBUG(
+      "Remote DB Send [Guid:%lu] [Rank: %d] [Mode:%d] [AcquireMode:%d]",
+      pack->dbGuid, pack->header.rank, pack->mode, pack->acquireMode);
   if (redirected != artsGlobalRankId && redirected != -1)
     artsRemoteSendRequestAsync(redirected, (char *)pack, pack->header.size);
   else {
@@ -752,9 +754,9 @@ void artsRemoteDbFullRequest(artsGuid_t dataGuid, int rank, artsGuid_t edtGuid,
   artsFillPacketHeader(&packet.header, sizeof(packet),
                        ARTS_REMOTE_DB_FULL_REQUEST_MSG);
   artsRemoteSendRequestAsync(rank, (char *)&packet, sizeof(packet));
-  ARTS_INFO("Full DB request sent [DbGuid:%lu, EdtGuid:%lu, Slot:%d, Mode:%u] "
-            "from rank %u to rank %u",
-            dataGuid, edtGuid, pos, mode, artsGlobalRankId, rank);
+  ARTS_DEBUG("Full DB request sent [DbGuid:%lu, EdtGuid:%lu, Slot:%d, Mode:%u] "
+             "from rank %u to rank %u",
+             dataGuid, edtGuid, pos, mode, artsGlobalRankId, rank);
   ARTS_DEBUG("Request Full DB[Guid:%lu] from rank %u to rank %u, mode: %u",
              dataGuid, rank, packet.header.rank, mode);
 }

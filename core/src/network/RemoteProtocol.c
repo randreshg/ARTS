@@ -51,11 +51,9 @@
 #include "arts/utils/Atomics.h"
 #include "arts/utils/LinkList.h"
 
-#ifdef ARTS_DEBUG_ENABLED
 #define REMOTE_STALL_WARN_NS 5000000000ULL
 #define REMOTE_STALL_LOG_NS 1000000000ULL
 #define REMOTE_STALL_ABORT_NS 30000000000ULL
-#endif
 
 struct outList {
   uint64_t timeStamp;
@@ -66,7 +64,6 @@ struct outList {
   uint64_t payloadSize;
   unsigned int offsetPayload;
   void (*freeMethod)(void *);
-#ifdef ARTS_DEBUG_ENABLED
   uint64_t enqueueTs;
   uint64_t firstRetryTs;
   uint64_t lastProgressTs;
@@ -76,7 +73,6 @@ struct outList {
   unsigned int queueId;
   unsigned int messageType;
   unsigned int retryCount;
-#endif
 };
 
 unsigned int nodeListSize;
@@ -119,7 +115,6 @@ static inline const char *artsRemoteMessageTypeName(unsigned int messageType) {
 
 static inline bool outHandleRetry(struct outList *out, unsigned int queueId,
                                   uint64_t lengthRemaining) {
-#ifdef ARTS_DEBUG_ENABLED
   uint64_t now = artsGetTimeStamp();
   if (!out->firstRetryTs)
     out->firstRetryTs = now;
@@ -134,6 +129,7 @@ static inline bool outHandleRetry(struct outList *out, unsigned int queueId,
   }
 
   uint64_t stallNs = now - out->lastProgressTs;
+#ifdef ARTS_DEBUG_ENABLED
   if (stallNs >= REMOTE_STALL_WARN_NS &&
       now - out->lastWarnTs >= REMOTE_STALL_LOG_NS) {
     uint64_t ageNs = now - out->enqueueTs;
@@ -146,9 +142,10 @@ static inline bool outHandleRetry(struct outList *out, unsigned int queueId,
         ageNs / 1000000ULL);
     out->lastWarnTs = now;
   }
+#endif
 
   if (stallNs >= REMOTE_STALL_ABORT_NS) {
-    ARTS_INFO(
+    ARTS_ERROR(
         "Remote send hard-timeout: src=%u dst=%u queue=%u type=%u(%s) "
         "remaining=%lu total=%lu retries=%u stall_ms=%lu. Stopping runtime.",
         artsGlobalRankId, out->rank, queueId, out->messageType,
@@ -157,11 +154,6 @@ static inline bool outHandleRetry(struct outList *out, unsigned int queueId,
     artsRuntimeStop();
     return false;
   }
-#else
-  (void)out;
-  (void)queueId;
-  (void)lengthRemaining;
-#endif
   return true;
 }
 
@@ -344,10 +336,8 @@ static inline void outInsertNode(struct outList *node, unsigned int length) {
   listId = node->rank * ports + artsThreadInfo.groupId % ports;
   struct artsLinkList *list = artsLinkListGet(outHead, listId);
   struct artsRemotePacket *packet = (struct artsRemotePacket *)(node + 1);
-#ifdef ARTS_DEBUG_ENABLED
   node->queueId = (unsigned int)listId;
   node->messageType = packet->messageType;
-#endif
 #ifdef SEQUENCENUMBERS
   artsLock(&seqNumLock[listId]);
   packet->seqNum = artsAtomicFetchAddU64(&seqNumber[node->rank], 1U);
@@ -392,10 +382,12 @@ bool artsRemoteAsyncSend() {
   struct outList *out;
 
   bool sent = true;
-  while (sent) {
+  while (sent && artsThreadInfo.alive) {
     sent = false;
     // Loop over our threads
     for (int i = threadStart; i < threadStop; i++) {
+      if (!artsThreadInfo.alive)
+        break;
       out = NULL;                     // For looping purposes...
       if (outResend[i - threadStart]) // Checking failed sends?
         out = outResend[i - threadStart];
@@ -479,7 +471,6 @@ void artsRemoteSendRequestAsync(int rank, char *message, unsigned int length) {
   next->payload = NULL;
   next->payloadSize = 0;
   next->freeMethod = NULL;
-#ifdef ARTS_DEBUG_ENABLED
   next->enqueueTs = now;
   next->firstRetryTs = 0;
   next->lastProgressTs = now;
@@ -489,10 +480,6 @@ void artsRemoteSendRequestAsync(int rank, char *message, unsigned int length) {
   next->queueId = 0;
   next->messageType = packet->messageType;
   next->retryCount = 0;
-#else
-  (void)now;
-  (void)packet;
-#endif
   memcpy(next + 1, message, length);
   outInsertNode(next, length + sizeof(struct outList));
 }
@@ -514,7 +501,6 @@ void artsRemoteSendRequestPayloadAsync(int rank, char *message,
   next->payload = payload;
   next->freeMethod = NULL;
   next->payloadSize = size;
-#ifdef ARTS_DEBUG_ENABLED
   next->enqueueTs = now;
   next->firstRetryTs = 0;
   next->lastProgressTs = now;
@@ -524,10 +510,6 @@ void artsRemoteSendRequestPayloadAsync(int rank, char *message,
   next->queueId = 0;
   next->messageType = packet->messageType;
   next->retryCount = 0;
-#else
-  (void)now;
-  (void)packet;
-#endif
   memcpy(next + 1, message, length);
   outInsertNode(next, length + sizeof(struct outList));
 }
@@ -551,7 +533,6 @@ void artsRemoteSendRequestPayloadAsyncFree(int rank, char *message,
   next->payload = payload;
   next->payloadSize = size;
   next->freeMethod = freeMethod;
-#ifdef ARTS_DEBUG_ENABLED
   next->enqueueTs = now;
   next->firstRetryTs = 0;
   next->lastProgressTs = now;
@@ -561,10 +542,6 @@ void artsRemoteSendRequestPayloadAsyncFree(int rank, char *message,
   next->queueId = 0;
   next->messageType = packet->messageType;
   next->retryCount = 0;
-#else
-  (void)now;
-  (void)packet;
-#endif
   memcpy(next + 1, message, length);
   outInsertNode(next, length + sizeof(struct outList));
 }
