@@ -609,8 +609,11 @@ void acquireDbs(struct artsEdt *edt) {
             // it.
             else {
               if (effectiveMode != ARTS_DB_WRITE)
+                // Do not aggregate owner-side read refreshes. Under heavy
+                // DB ownership churn, aggregation can strand queued waiters
+                // on the owner and leave EDT slots unsatisfied.
                 artsRemoteDbRequest(depv[i].guid, validRank, edt, i,
-                                    effectiveMode, true, effectiveMode);
+                                    effectiveMode, false, effectiveMode);
               else
                 artsRemoteDbFullRequest(depv[i].guid, validRank,
                                         edt->currentEdt, i, effectiveMode);
@@ -661,13 +664,11 @@ void acquireDbs(struct artsEdt *edt) {
             artsRemoteDbFullRequest(depv[i].guid, owner, edt->currentEdt, i,
                                     effectiveMode);
           } else if (!dbTemp || !localValid) {
-            // We can aggregate read requests for reads
-            ARTS_INFO("  READ mode, no local copy - sending aggregated request "
-                      "to rank %d",
+            ARTS_INFO("  READ mode, no local copy - sending request to rank %d",
                       owner);
             int requestRank = owner;
             artsRemoteDbRequest(depv[i].guid, requestRank, edt, i,
-                                effectiveMode, true, effectiveMode);
+                                effectiveMode, false, effectiveMode);
           } else {
             ARTS_INFO("  READ mode with local copy - no remote request needed");
           }
