@@ -594,6 +594,18 @@ void artsRemoteDbDecrementLatch(artsGuid_t db) {
 
 void artsDbRequestCallback(struct artsEdt *edt, unsigned int slot,
                            struct artsDb *dbRes) {
+  if (!edt || !dbRes) {
+    ARTS_ERROR("Invalid DB request callback target (edt=%p, db=%p)", edt,
+               dbRes);
+    return;
+  }
+  if (slot >= edt->depc) {
+    ARTS_ERROR("DB callback slot out of bounds: edtGuid=%lu id=%lu slot=%u "
+               "depc=%u depcNeeded=%u rank=%u",
+               edt->currentEdt, edt->arts_id, slot, edt->depc, edt->depcNeeded,
+               artsGlobalRankId);
+    return;
+  }
   artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
   depv[slot].ptr = dbRes + 1;
   unsigned int temp = artsAtomicSub(&edt->depcNeeded, 1U);

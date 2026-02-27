@@ -436,13 +436,18 @@ void internalSignalEdt(artsGuid_t edtPacket, uint32_t slot, artsGuid_t dataGuid,
           edtDep[slot].mode = mode;
           edtDep[slot].acquireMode = ARTS_NULL;
           edtDep[slot].ptr = ptr;
+          unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
+          ARTS_INFO("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
+                    "DepCount:%d]",
+                    dataGuid, edt->currentEdt, slot, res);
+          if (res == 0)
+            artsHandleReadyEdt(edt);
+        } else {
+          ARTS_ERROR("Signal slot out of bounds: edtGuid=%lu id=%lu "
+                     "slot=%u depc=%u depcNeeded=%u dataGuid=%lu rank=%u",
+                     edt->currentEdt, edt->arts_id, slot, edt->depc,
+                     edt->depcNeeded, dataGuid, artsGlobalRankId);
         }
-        unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-        ARTS_INFO("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
-                  "DepCount:%d]",
-                  dataGuid, edt->currentEdt, slot, res);
-        if (res == 0)
-          artsHandleReadyEdt(edt);
       } else {
         if (mode == ARTS_PTR)
           artsOutOfOrderSignalEdtWithPtr(edtPacket, dataGuid, ptr, size, slot);
@@ -491,14 +496,21 @@ void internalSignalEdtWithMode(artsGuid_t edtPacket, uint32_t slot,
           edtDep[slot].mode = mode;
           edtDep[slot].acquireMode = acquireMode;
           edtDep[slot].ptr = NULL;
+          unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
+          ARTS_INFO("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
+                    "DepCount:%d, AcquireMode:%s]",
+                    dataGuid, edt->currentEdt, slot, res,
+                    getTypeName(acquireMode));
+          if (res == 0)
+            artsHandleReadyEdt(edt);
+        } else {
+          ARTS_ERROR("Signal slot out of bounds: edtGuid=%lu id=%lu "
+                     "slot=%u depc=%u depcNeeded=%u dataGuid=%lu "
+                     "acquireMode=%s rank=%u",
+                     edt->currentEdt, edt->arts_id, slot, edt->depc,
+                     edt->depcNeeded, dataGuid, getTypeName(acquireMode),
+                     artsGlobalRankId);
         }
-        unsigned int res = artsAtomicSub(&edt->depcNeeded, 1U);
-        ARTS_INFO("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
-                  "DepCount:%d, AcquireMode:%s]",
-                  dataGuid, edt->currentEdt, slot, res,
-                  getTypeName(acquireMode));
-        if (res == 0)
-          artsHandleReadyEdt(edt);
       } else {
         if (mode == ARTS_PTR)
           artsOutOfOrderSignalEdtWithPtr(edtPacket, dataGuid, NULL, 0, slot);
