@@ -653,6 +653,15 @@ void artsRemoteDbSendNow(int rank, struct artsDb *db) {
 }
 
 void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsType_t mode) {
+  if (rank == artsGlobalRankId) {
+    // A local requester should be satisfied in-process; never enqueue a remote
+    // self-send.
+    ARTS_DEBUG("Suppressing self DB send [Guid:%lu, Rank:%d, Mode:%u]",
+               db->guid, rank, mode);
+    if (artsIsGuidLocal(db->guid))
+      artsRouteTableFireOO(db->guid, artsOutOfOrderHandler);
+    return;
+  }
   if (!artsIsGuidLocal(db->guid)) {
     artsRouteTableReturnDb(db->guid, false);
     artsRemoteDbSendNow(rank, db);
@@ -792,6 +801,27 @@ void artsRemoteDbFullSendNow(int rank, struct artsDb *db, artsGuid_t edtGuid,
 
 void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, artsGuid_t edtGuid,
                                unsigned int slot, artsType_t mode) {
+  if (rank == artsGlobalRankId) {
+    // A local requester should be satisfied directly; remote self-send triggers
+    // the self-send check in RemoteProtocol.
+    ARTS_DEBUG("Handling self FULL DB send locally [DbGuid:%lu, EdtGuid:%lu, "
+               "Slot:%u, Mode:%u, Rank:%d]",
+               db->guid, edtGuid, slot, mode, rank);
+    struct artsEdt *edt = (struct artsEdt *)artsRouteTableLookupItem(edtGuid);
+    if (!edt) {
+      void **edtData = NULL;
+      itemState_t edtState = artsRouteTableLookupItemWithState(
+          edtGuid, &edtData, anyKey, false);
+      ARTS_INFO("Self FULL DB send with missing EDT[Guid:%lu] on rank %u "
+                "(state=%u, data=%p) [DbGuid:%lu, Slot:%u, Mode:%u]",
+                edtGuid, artsGlobalRankId, edtState, edtData ? *edtData : NULL,
+                db->guid, slot, mode);
+    } else {
+      artsDbRequestCallback(edt, slot, db);
+    }
+    artsClearExclusiveRequest(db, rank, edtGuid);
+    return;
+  }
   if (!artsIsGuidLocal(db->guid)) {
     artsRouteTableReturnDb(db->guid, false);
     artsRemoteDbFullSendNow(rank, db, edtGuid, slot, mode);
@@ -902,6 +932,19 @@ void artsRemoteHandleSendAlreadyLocal(void *pack) {
               packet->edtGuid, artsGlobalRankId, edtState,
               edtData ? *edtData : NULL, packet->dbGuid, packet->slot,
               packet->mode);
+    return;
+  }
+  if (!dbRes) {
+    unsigned int owner = artsRouteTableLookupRank(packet->dbGuid);
+    ARTS_INFO("Already-local DB missing for EDT[Guid:%lu] on rank %u "
+              "[DbGuid:%lu, Slot:%u, Mode:%u, lookupRank:%d, owner:%u] "
+              "- falling back to full request",
+              packet->edtGuid, artsGlobalRankId, packet->dbGuid, packet->slot,
+              packet->mode, rank, owner);
+    if (owner != (unsigned int)-1 && owner != artsGlobalRankId) {
+      artsRemoteDbFullRequest(packet->dbGuid, owner, packet->edtGuid,
+                              packet->slot, packet->mode);
+    }
     return;
   }
   artsDbRequestCallback(edt, packet->slot, dbRes);
