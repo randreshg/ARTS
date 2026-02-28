@@ -106,6 +106,11 @@ void artsRemoteDbIncrementLatch(artsGuid_t db);
 void artsRemoteDbDecrementLatch(artsGuid_t db);
 void artsDbRequestCallback(struct artsEdt *edt, unsigned int slot,
                            struct artsDb *dbRes);
+void artsDbRequestCallbackWithContext(const char *source, struct artsEdt *edt,
+                                      unsigned int slot, struct artsDb *dbRes,
+                                      artsGuid_t edtGuidHint,
+                                      artsGuid_t dbGuidHint,
+                                      artsType_t modeHint);
 bool artsRemoteDbRequest(artsGuid_t dataGuid, int rank, struct artsEdt *edt,
                          int pos, artsType_t mode, bool aggRequest,
                          artsType_t acquireMode);
