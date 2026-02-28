@@ -39,6 +39,7 @@
 #include "arts/runtime/network/RemoteFunctions.h"
 
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "arts/arts.h"
@@ -599,6 +600,7 @@ static void artsDbCallbackFailFast(const char *source, struct artsEdt *edt,
                                    artsGuid_t edtGuidHint,
                                    artsGuid_t dbGuidHint,
                                    artsType_t modeHint) {
+  static volatile unsigned int failFastPrinted = 0U;
   const char *src = (source) ? source : "unknown";
   artsGuid_t edtGuid = edt ? edt->currentEdt : edtGuidHint;
   uint64_t edtId = edt ? edt->arts_id : 0;
@@ -606,12 +608,18 @@ static void artsDbCallbackFailFast(const char *source, struct artsEdt *edt,
   unsigned int depcNeeded = edt ? edt->depcNeeded : 0;
   artsGuid_t dbGuid = dbRes ? dbRes->guid : dbGuidHint;
 
-  ARTS_ERROR("Invalid DB request callback [%s]: edt=%p edtGuid=%lu id=%lu "
-             "slot=%u depc=%u depcNeeded=%u db=%p dbGuid=%lu mode=%u rank=%u",
+  // ARTS_ERROR is compiled out when ARTS_INFO_ENABLED is disabled.
+  // Use ARTS_PRINT so this fatal context is always visible.
+  ARTS_PRINT("[FATAL] Invalid DB request callback [%s]: edt=%p edtGuid=%lu "
+             "id=%lu slot=%u depc=%u depcNeeded=%u db=%p dbGuid=%lu mode=%u "
+             "rank=%u",
              src, edt, edtGuid, edtId, slot, depc, depcNeeded, dbRes, dbGuid,
              modeHint, artsGlobalRankId);
-  artsDebugPrintStack();
+  // Print one representative stack trace to avoid overwhelming logs.
+  if (artsAtomicCswap(&failFastPrinted, 0U, 1U) == 0U)
+    artsDebugPrintStack();
   artsRuntimeStop();
+  abort();
 }
 
 void artsDbRequestCallbackWithContext(const char *source, struct artsEdt *edt,
