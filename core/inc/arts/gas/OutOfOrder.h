@@ -86,7 +86,8 @@ void artsOutOfOrderHandleReadyEdt(artsGuid_t triggerGuid, struct artsEdt *edt);
 void artsOutOfOrderHandleRemoteDbSend(int rank, artsGuid_t dbGuid,
                                       artsType_t mode);
 void artsOutOfOrderHandleDbRequestWithOOList(struct artsOutOfOrderList *addToMe,
-                                             void **data, struct artsEdt *edt,
+                                             void **data, artsGuid_t dbGuid,
+                                             struct artsEdt *edt,
                                              unsigned int slot);
 void artsOutOfOrderHandleDbRequest(artsGuid_t dbGuid, struct artsEdt *edt,
                                    unsigned int slot, bool inc);

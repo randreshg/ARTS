@@ -552,15 +552,40 @@ bool artsRouteTableAddSent(artsGuid_t key, void *edt, unsigned int slot,
   // and I am the owner node thus item can't be null... or so it should be
   if (artsGuidGetRank(key) == artsGlobalRankId) {
     item = artsRouteTableSearchForKey(routeTable, key, allocatedKey);
+    if (!item) {
+      ARTS_PRINT("[FATAL] artsRouteTableAddSent missing local route item "
+                 "[dbGuid=%lu aggregate=%u slot=%u edt=%p rank=%u]",
+                 key, (unsigned int)aggregate, slot, edt, artsGlobalRankId);
+      artsDebugPrintStack();
+      abort();
+    }
     sendReq = markRequested(item);
+    if (!sendReq) {
+      ARTS_INFO("artsRouteTableAddSent local markRequested=false "
+                "[dbGuid=%lu lock=0x%lx state=%u aggregate=%u slot=%u edt=%p]",
+                key, item->lock, getItemState(item), (unsigned int)aggregate,
+                slot, edt);
+    }
   } else {
     sendReq = artsRouteTableReserveItemRace(key, &item, true);
+    if (!item) {
+      ARTS_PRINT("[FATAL] artsRouteTableAddSent missing remote route item "
+                 "[dbGuid=%lu aggregate=%u slot=%u edt=%p rank=%u]",
+                 key, (unsigned int)aggregate, slot, edt, artsGlobalRankId);
+      artsDebugPrintStack();
+      abort();
+    }
     if (!sendReq && !incItem(item, 1, item->key, routeTable)) {
       ARTS_INFO("Item marked for deletion before it has arrived %u...",
                 sendReq);
+    } else if (!sendReq) {
+      ARTS_INFO("artsRouteTableAddSent remote sendReq=false "
+                "[dbGuid=%lu lock=0x%lx state=%u aggregate=%u slot=%u edt=%p]",
+                key, item->lock, getItemState(item), (unsigned int)aggregate,
+                slot, edt);
     }
   }
-  artsOutOfOrderHandleDbRequestWithOOList(&item->ooList, &item->data,
+  artsOutOfOrderHandleDbRequestWithOOList(&item->ooList, &item->data, key,
                                           (struct artsEdt *)edt, slot);
   return sendReq || !aggregate;
 }

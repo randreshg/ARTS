@@ -49,6 +49,10 @@
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/ArtsPrint.h"
 
+#define OO_DB_RETRY_YIELD_INTERVAL (1U << 8)
+#define OO_DB_RETRY_LOG_INTERVAL (1U << 12)
+#define OO_DB_RETRY_FAIL_FAST (1U << 22)
+
 enum artsOutOfOrderType {
   ooSignalEdt,
   ooEventSatisfySlot,
@@ -103,6 +107,54 @@ static inline bool satisfyDbRequestIfReady(const char *source,
                                    req->dbGuid, ARTS_NULL);
   artsFree(req);
   return true;
+}
+
+static inline const char *routeStateName(itemState_t state) {
+  switch (state) {
+  case noKey:
+    return "noKey";
+  case anyKey:
+    return "anyKey";
+  case deletedKey:
+    return "deletedKey";
+  case allocatedKey:
+    return "allocatedKey";
+  case availableKey:
+    return "availableKey";
+  case requestedKey:
+    return "requestedKey";
+  case reservedKey:
+    return "reservedKey";
+  default:
+    return "unknown";
+  }
+}
+
+static void logDbRetryState(const char *source, artsGuid_t dbGuid,
+                            struct artsEdt *edt, unsigned int slot,
+                            unsigned int retries) {
+  void **data = NULL;
+  itemState_t state =
+      artsRouteTableLookupItemWithState(dbGuid, &data, anyKey, false);
+  void *raw = (data) ? *data : NULL;
+  int owner = artsRouteTableLookupRank(dbGuid);
+  ARTS_INFO("[%s] retries=%u dbGuid=%lu state=%s owner=%d data=%p edt=%p "
+            "edtGuid=%lu slot=%u",
+            source, retries, dbGuid, routeStateName(state), owner, raw, edt,
+            edt ? edt->currentEdt : NULL_GUID, slot);
+}
+
+static void logOoListRetryState(const char *source,
+                                struct artsOutOfOrderList *list, void **data,
+                                struct ooDbRequestSatisfy *req,
+                                unsigned int retries) {
+  struct artsDb *db = (data && *data) ? (struct artsDb *)(*data) : NULL;
+  ARTS_INFO("[%s] retries=%u dbGuid=%lu list=%p count=%u readerLock=%u "
+            "writerLock=%u fired=%u db=%p edt=%p edtGuid=%lu slot=%u",
+            source, retries, req->dbGuid, list, list ? list->count : 0U,
+            list ? list->readerLock : 0U, list ? list->writerLock : 0U,
+            list ? (unsigned int)list->isFired : 0U, db, req->edt,
+            req->edt ? req->edt->currentEdt : NULL_GUID, req->slot);
 }
 
 struct ooAddDependence {
@@ -177,6 +229,7 @@ struct ooRemoteDbSend {
 struct ooRemoteDbFullSend {
   enum artsOutOfOrderType type;
   int rank;
+  artsGuid_t dbGuid;
   artsGuid_t edtGuid;
   unsigned int slot;
   artsType_t mode;
@@ -322,7 +375,7 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
   case ooRemoteDbSend: {
     struct ooRemoteDbSend *dbSend = (struct ooRemoteDbSend *)handleMe;
     artsRemoteDbSendCheck(dbSend->rank, (struct artsDb *)memoryPtr,
-                          dbSend->mode);
+                          dbSend->dataGuid, dbSend->mode);
     break;
   }
   case ooDbRequestSatisfy: {
@@ -337,7 +390,8 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
   case ooDbFullSend: {
     struct ooRemoteDbFullSend *dbSend = (struct ooRemoteDbFullSend *)handleMe;
     artsRemoteDbFullSendCheck(dbSend->rank, (struct artsDb *)memoryPtr,
-                              dbSend->edtGuid, dbSend->slot, dbSend->mode);
+                              dbSend->dbGuid, dbSend->edtGuid, dbSend->slot,
+                              dbSend->mode);
     break;
   }
   case ooGetFromDb: {
@@ -641,11 +695,32 @@ void artsOutOfOrderHandleRemoteDbSend(int rank, artsGuid_t dbGuid,
   readySend->rank = rank;
   readySend->dataGuid = dbGuid;
   readySend->mode = mode;
-  bool res = artsRouteTableAddOO(dbGuid, readySend, false);
-  if (!res) {
+  unsigned int retries = 0;
+  while (1) {
+    bool res = artsRouteTableAddOO(dbGuid, readySend, false);
+    if (res)
+      return;
+
     struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
-    artsRemoteDbSendCheck(readySend->rank, db, readySend->mode);
-    artsFree(readySend);
+    if (db) {
+      artsRemoteDbSendCheck(readySend->rank, db, dbGuid, readySend->mode);
+      artsFree(readySend);
+      return;
+    }
+
+    retries++;
+    if ((retries & (OO_DB_RETRY_LOG_INTERVAL - 1U)) == 0U)
+      logDbRetryState("oo_remote_db_send/retry", dbGuid, NULL, 0, retries);
+    if ((retries & (OO_DB_RETRY_YIELD_INTERVAL - 1U)) == 0U)
+      artsYield();
+    if (retries >= OO_DB_RETRY_FAIL_FAST) {
+      ARTS_PRINT("[FATAL] oo_remote_db_send exhausted retries: dbGuid=%lu "
+                 "rank=%d mode=%u",
+                 dbGuid, rank, mode);
+      artsRemoteDbSendCheck(readySend->rank, NULL, dbGuid, readySend->mode);
+      artsFree(readySend);
+      return;
+    }
   }
 }
 
@@ -668,23 +743,35 @@ void artsOutOfOrderHandleDbRequest(artsGuid_t dbGuid, struct artsEdt *edt,
       return;
 
     retries++;
-    if ((retries & 0xFF) == 0) {
-      // Yield periodically to avoid hot-spinning under route-table contention.
+    if ((retries & (OO_DB_RETRY_LOG_INTERVAL - 1U)) == 0U)
+      logDbRetryState("oo_addoo/retry", dbGuid, edt, slot, retries);
+    if ((retries & (OO_DB_RETRY_YIELD_INTERVAL - 1U)) == 0U)
       artsYield();
+    if (retries >= OO_DB_RETRY_FAIL_FAST) {
+      ARTS_PRINT("[FATAL] oo_addoo exhausted retries: dbGuid=%lu edt=%p "
+                 "edtGuid=%lu slot=%u inc=%u",
+                 dbGuid, edt, edt ? edt->currentEdt : NULL_GUID, slot,
+                 (unsigned int)inc);
+      logDbRetryState("oo_addoo/retry_exhausted", dbGuid, edt, slot, retries);
+      artsDbRequestCallbackWithContext(
+          "oo_addoo/retry_exhausted", req->edt, req->slot, NULL,
+          req->edt ? req->edt->currentEdt : NULL_GUID, req->dbGuid, ARTS_NULL);
+      artsFree(req);
+      return;
     }
   }
 }
 
 // This should save one lookup compared to the function above...
 void artsOutOfOrderHandleDbRequestWithOOList(struct artsOutOfOrderList *addToMe,
-                                             void **data, struct artsEdt *edt,
+                                             void **data, artsGuid_t dbGuid,
+                                             struct artsEdt *edt,
                                              unsigned int slot) {
   struct ooDbRequestSatisfy *req = (struct ooDbRequestSatisfy *)artsMalloc(
       sizeof(struct ooDbRequestSatisfy));
   req->type = ooDbRequestSatisfy;
   req->edt = edt;
-  req->dbGuid =
-      (data && *data) ? ((struct artsDb *)(*data))->guid : NULL_GUID;
+  req->dbGuid = dbGuid;
   req->slot = slot;
   unsigned int retries = 0;
   while (1) {
@@ -697,9 +784,22 @@ void artsOutOfOrderHandleDbRequestWithOOList(struct artsOutOfOrderList *addToMe,
       return;
 
     retries++;
-    if ((retries & 0xFF) == 0) {
-      // The OO list can briefly reject inserts while transitioning locks.
+    if ((retries & (OO_DB_RETRY_LOG_INTERVAL - 1U)) == 0U)
+      logOoListRetryState("oo_list/retry", addToMe, data, req, retries);
+    if ((retries & (OO_DB_RETRY_YIELD_INTERVAL - 1U)) == 0U)
       artsYield();
+    if (retries >= OO_DB_RETRY_FAIL_FAST) {
+      ARTS_PRINT("[FATAL] oo_list exhausted retries: dbGuid=%lu edt=%p "
+                 "edtGuid=%lu slot=%u",
+                 req->dbGuid, req->edt,
+                 req->edt ? req->edt->currentEdt : NULL_GUID, req->slot);
+      logOoListRetryState("oo_list/retry_exhausted", addToMe, data, req,
+                          retries);
+      artsDbRequestCallbackWithContext(
+          "oo_list/retry_exhausted", req->edt, req->slot, NULL,
+          req->edt ? req->edt->currentEdt : NULL_GUID, req->dbGuid, ARTS_NULL);
+      artsFree(req);
+      return;
     }
   }
 }
@@ -711,15 +811,39 @@ void artsOutOfOrderHandleRemoteDbFullSend(artsGuid_t dbGuid, int rank,
       sizeof(struct ooRemoteDbFullSend));
   dbSend->type = ooDbFullSend;
   dbSend->rank = rank;
+  dbSend->dbGuid = dbGuid;
   dbSend->edtGuid = edtGuid;
   dbSend->slot = slot;
   dbSend->mode = mode;
-  bool res = artsRouteTableAddOO(dbGuid, dbSend, false);
-  if (!res) {
+  unsigned int retries = 0;
+  while (1) {
+    bool res = artsRouteTableAddOO(dbGuid, dbSend, false);
+    if (res)
+      return;
+
     struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
-    artsRemoteDbFullSendCheck(dbSend->rank, db, dbSend->edtGuid,
-                              dbSend->slot, dbSend->mode);
-    artsFree(dbSend);
+    if (db) {
+      artsRemoteDbFullSendCheck(dbSend->rank, db, dbGuid, dbSend->edtGuid,
+                                dbSend->slot, dbSend->mode);
+      artsFree(dbSend);
+      return;
+    }
+
+    retries++;
+    if ((retries & (OO_DB_RETRY_LOG_INTERVAL - 1U)) == 0U)
+      logDbRetryState("oo_remote_db_full_send/retry", dbGuid, NULL, slot,
+                      retries);
+    if ((retries & (OO_DB_RETRY_YIELD_INTERVAL - 1U)) == 0U)
+      artsYield();
+    if (retries >= OO_DB_RETRY_FAIL_FAST) {
+      ARTS_PRINT("[FATAL] oo_remote_db_full_send exhausted retries: dbGuid=%lu "
+                 "rank=%d edtGuid=%lu slot=%u mode=%u",
+                 dbGuid, rank, edtGuid, slot, mode);
+      artsRemoteDbFullSendCheck(dbSend->rank, NULL, dbGuid, dbSend->edtGuid,
+                                dbSend->slot, dbSend->mode);
+      artsFree(dbSend);
+      return;
+    }
   }
 }
 
