@@ -595,6 +595,9 @@ void artsRemoteDbDecrementLatch(artsGuid_t db) {
                              sizeof(packet));
 }
 
+static inline const char *remoteRouteStateName(itemState_t state);
+static void logRouteGuidState(const char *source, artsGuid_t guid);
+
 static void artsDbCallbackFailFast(const char *source, struct artsEdt *edt,
                                    unsigned int slot, struct artsDb *dbRes,
                                    artsGuid_t edtGuidHint,
@@ -615,6 +618,8 @@ static void artsDbCallbackFailFast(const char *source, struct artsEdt *edt,
              "rank=%u",
              src, edt, edtGuid, edtId, slot, depc, depcNeeded, dbRes, dbGuid,
              modeHint, artsGlobalRankId);
+  logRouteGuidState("artsDbCallbackFailFast/db_state", dbGuid);
+  logRouteGuidState("artsDbCallbackFailFast/edt_state", edtGuid);
   // Print one representative stack trace to avoid overwhelming logs.
   if (artsAtomicCswap(&failFastPrinted, 0U, 1U) == 0U)
     artsDebugPrintStack();
@@ -689,18 +694,63 @@ void artsRemoteDbSendNow(int rank, struct artsDb *db) {
                                     (char *)db, db->header.size);
 }
 
-void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsType_t mode) {
+static inline const char *remoteRouteStateName(itemState_t state) {
+  switch (state) {
+  case noKey:
+    return "noKey";
+  case anyKey:
+    return "anyKey";
+  case deletedKey:
+    return "deletedKey";
+  case allocatedKey:
+    return "allocatedKey";
+  case availableKey:
+    return "availableKey";
+  case requestedKey:
+    return "requestedKey";
+  case reservedKey:
+    return "reservedKey";
+  default:
+    return "unknown";
+  }
+}
+
+static void logRouteGuidState(const char *source, artsGuid_t guid) {
+  if (!guid) {
+    ARTS_PRINT("[%s] guid=NULL_GUID", source);
+    return;
+  }
+  void **data = NULL;
+  itemState_t state = artsRouteTableLookupItemWithState(guid, &data, anyKey, false);
+  int owner = artsRouteTableLookupRank(guid);
+  ARTS_PRINT("[%s] guid=%lu state=%s owner=%d data=%p", source, guid,
+             remoteRouteStateName(state), owner, data ? *data : NULL);
+}
+
+void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsGuid_t dbGuidHint,
+                           artsType_t mode) {
+  artsGuid_t dbGuid = db ? db->guid : dbGuidHint;
+  if (!db) {
+    ARTS_PRINT("[FATAL] artsRemoteDbSendCheck received NULL db: rank=%d "
+               "dbGuidHint=%lu mode=%u localRank=%u",
+               rank, dbGuidHint, mode, artsGlobalRankId);
+    logRouteGuidState("artsRemoteDbSendCheck/db_state", dbGuid);
+    artsDebugPrintStack();
+    artsRuntimeStop();
+    abort();
+    return;
+  }
   if (rank == artsGlobalRankId) {
     // A local requester should be satisfied in-process; never enqueue a remote
     // self-send.
     ARTS_DEBUG("Suppressing self DB send [Guid:%lu, Rank:%d, Mode:%u]",
-               db->guid, rank, mode);
-    if (artsIsGuidLocal(db->guid))
-      artsRouteTableFireOO(db->guid, artsOutOfOrderHandler);
+               dbGuid, rank, mode);
+    if (artsIsGuidLocal(dbGuid))
+      artsRouteTableFireOO(dbGuid, artsOutOfOrderHandler);
     return;
   }
-  if (!artsIsGuidLocal(db->guid)) {
-    artsRouteTableReturnDb(db->guid, false);
+  if (!artsIsGuidLocal(dbGuid)) {
+    artsRouteTableReturnDb(dbGuid, false);
     artsRemoteDbSendNow(rank, db);
   } else {
     // Even if the rank is already tracked as a duplicate holder, an explicit
@@ -710,7 +760,7 @@ void artsRemoteDbSendCheck(int rank, struct artsDb *db, artsType_t mode) {
       ARTS_DEBUG(
           "Remote DB send forced [Guid:%lu] to rank %d despite duplicate "
           "tracking (mode=%u)",
-          db->guid, rank, mode);
+          dbGuid, rank, mode);
     }
     artsRemoteDbSendNow(rank, db);
   }
@@ -735,7 +785,7 @@ void artsRemoteDbSend(struct artsRemoteDbRequestPacket *pack) {
       // required
       artsRouteTableFireOO(pack->dbGuid, artsOutOfOrderHandler);
     } else {
-      artsRemoteDbSendCheck(pack->header.rank, db, pack->mode);
+      artsRemoteDbSendCheck(pack->header.rank, db, pack->dbGuid, pack->mode);
     }
   }
 }
@@ -836,14 +886,27 @@ void artsRemoteDbFullSendNow(int rank, struct artsDb *db, artsGuid_t edtGuid,
              rank);
 }
 
-void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, artsGuid_t edtGuid,
+void artsRemoteDbFullSendCheck(int rank, struct artsDb *db,
+                               artsGuid_t dbGuidHint, artsGuid_t edtGuid,
                                unsigned int slot, artsType_t mode) {
+  artsGuid_t dbGuid = db ? db->guid : dbGuidHint;
+  if (!db) {
+    ARTS_PRINT("[FATAL] artsRemoteDbFullSendCheck received NULL db: rank=%d "
+               "dbGuidHint=%lu edtGuid=%lu slot=%u mode=%u localRank=%u",
+               rank, dbGuidHint, edtGuid, slot, mode, artsGlobalRankId);
+    logRouteGuidState("artsRemoteDbFullSendCheck/db_state", dbGuid);
+    logRouteGuidState("artsRemoteDbFullSendCheck/edt_state", edtGuid);
+    artsDebugPrintStack();
+    artsRuntimeStop();
+    abort();
+    return;
+  }
   if (rank == artsGlobalRankId) {
     // A local requester should be satisfied directly; remote self-send triggers
     // the self-send check in RemoteProtocol.
     ARTS_DEBUG("Handling self FULL DB send locally [DbGuid:%lu, EdtGuid:%lu, "
                "Slot:%u, Mode:%u, Rank:%d]",
-               db->guid, edtGuid, slot, mode, rank);
+               dbGuid, edtGuid, slot, mode, rank);
     struct artsEdt *edt = (struct artsEdt *)artsRouteTableLookupItem(edtGuid);
     if (!edt) {
       void **edtData = NULL;
@@ -852,16 +915,16 @@ void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, artsGuid_t edtGuid,
       ARTS_INFO("Self FULL DB send with missing EDT[Guid:%lu] on rank %u "
                 "(state=%u, data=%p) [DbGuid:%lu, Slot:%u, Mode:%u]",
                 edtGuid, artsGlobalRankId, edtState, edtData ? *edtData : NULL,
-                db->guid, slot, mode);
+                dbGuid, slot, mode);
     } else {
       artsDbRequestCallbackWithContext("full_send_check/local", edt, slot, db,
-                                       edtGuid, db->guid, mode);
+                                       edtGuid, dbGuid, mode);
     }
     artsClearExclusiveRequest(db, rank, edtGuid);
     return;
   }
-  if (!artsIsGuidLocal(db->guid)) {
-    artsRouteTableReturnDb(db->guid, false);
+  if (!artsIsGuidLocal(dbGuid)) {
+    artsRouteTableReturnDb(dbGuid, false);
     artsRemoteDbFullSendNow(rank, db, edtGuid, slot, mode);
   } else {
     // Symmetric with read-path handling: an explicit full-DB request must
@@ -871,7 +934,7 @@ void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, artsGuid_t edtGuid,
       ARTS_DEBUG(
           "Remote FULL DB send forced [Guid:%lu] to rank %d (edt=%lu slot=%u "
           "mode=%u) despite duplicate tracking",
-          db->guid, rank, edtGuid, slot, mode);
+          dbGuid, rank, edtGuid, slot, mode);
     }
     artsRemoteDbFullSendNow(rank, db, edtGuid, slot, mode);
     artsClearExclusiveRequest(db, rank, edtGuid);
@@ -889,8 +952,8 @@ void artsRemoteDbFullSend(struct artsRemoteDbFullRequestPacket *pack) {
                                            pack->edtGuid, pack->slot,
                                            pack->mode);
     } else {
-      artsRemoteDbFullSendCheck(pack->header.rank, db, pack->edtGuid,
-                                pack->slot, pack->mode);
+      artsRemoteDbFullSendCheck(pack->header.rank, db, pack->dbGuid,
+                                pack->edtGuid, pack->slot, pack->mode);
     }
   }
 }
