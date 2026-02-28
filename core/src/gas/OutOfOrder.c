@@ -87,6 +87,7 @@ struct ooSignalEdt {
 struct ooDbRequestSatisfy {
   enum artsOutOfOrderType type;
   struct artsEdt *edt;
+  artsGuid_t dbGuid;
   uint32_t slot;
   bool inc;
 };
@@ -314,7 +315,10 @@ inline void artsOutOfOrderHandler(void *handleMe, void *memoryPtr) {
   case ooDbRequestSatisfy: {
     struct ooDbRequestSatisfy *req = (struct ooDbRequestSatisfy *)handleMe;
     ARTS_DEBUG("FILL %lu %u %p", req->edt, req->slot, memoryPtr);
-    artsDbRequestCallback(req->edt, req->slot, (struct artsDb *)memoryPtr);
+    artsDbRequestCallbackWithContext("oo_handler/db_request_satisfy", req->edt,
+                                     req->slot, (struct artsDb *)memoryPtr,
+                                     req->edt ? req->edt->currentEdt : NULL_GUID,
+                                     req->dbGuid, ARTS_NULL);
     break;
   }
   case ooDbFullSend: {
@@ -638,11 +642,15 @@ void artsOutOfOrderHandleDbRequest(artsGuid_t dbGuid, struct artsEdt *edt,
       sizeof(struct ooDbRequestSatisfy));
   req->type = ooDbRequestSatisfy;
   req->edt = edt;
+  req->dbGuid = dbGuid;
   req->slot = slot;
   bool res = artsRouteTableAddOO(dbGuid, req, inc);
   if (!res) {
     struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
-    artsDbRequestCallback(req->edt, req->slot, db);
+    artsDbRequestCallbackWithContext("oo_addoo/fallback_lookup", req->edt,
+                                     req->slot, db,
+                                     req->edt ? req->edt->currentEdt : NULL_GUID,
+                                     dbGuid, ARTS_NULL);
     artsFree(req);
   }
 }
@@ -655,10 +663,16 @@ void artsOutOfOrderHandleDbRequestWithOOList(struct artsOutOfOrderList *addToMe,
       sizeof(struct ooDbRequestSatisfy));
   req->type = ooDbRequestSatisfy;
   req->edt = edt;
+  req->dbGuid =
+      (data && *data) ? ((struct artsDb *)(*data))->guid : NULL_GUID;
   req->slot = slot;
   bool res = artsOutOfOrderListAddItem(addToMe, req);
   if (!res) {
-    artsDbRequestCallback(req->edt, req->slot, (struct artsDb *)(*data));
+    struct artsDb *db = (data) ? (struct artsDb *)(*data) : NULL;
+    artsDbRequestCallbackWithContext("oo_list/fallback_data", req->edt,
+                                     req->slot, db,
+                                     req->edt ? req->edt->currentEdt : NULL_GUID,
+                                     req->dbGuid, ARTS_NULL);
     artsFree(req);
   }
 }

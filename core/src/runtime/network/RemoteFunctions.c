@@ -54,6 +54,7 @@
 #include "arts/runtime/memory/DbList.h"
 #include "arts/runtime/sync/TerminationDetection.h"
 #include "arts/system/ArtsPrint.h"
+#include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
 
 static inline void artsFillPacketHeader(struct artsRemotePacket *header,
@@ -593,18 +594,39 @@ void artsRemoteDbDecrementLatch(artsGuid_t db) {
                              sizeof(packet));
 }
 
-void artsDbRequestCallback(struct artsEdt *edt, unsigned int slot,
-                           struct artsDb *dbRes) {
+static void artsDbCallbackFailFast(const char *source, struct artsEdt *edt,
+                                   unsigned int slot, struct artsDb *dbRes,
+                                   artsGuid_t edtGuidHint,
+                                   artsGuid_t dbGuidHint,
+                                   artsType_t modeHint) {
+  const char *src = (source) ? source : "unknown";
+  artsGuid_t edtGuid = edt ? edt->currentEdt : edtGuidHint;
+  uint64_t edtId = edt ? edt->arts_id : 0;
+  unsigned int depc = edt ? edt->depc : 0;
+  unsigned int depcNeeded = edt ? edt->depcNeeded : 0;
+  artsGuid_t dbGuid = dbRes ? dbRes->guid : dbGuidHint;
+
+  ARTS_ERROR("Invalid DB request callback [%s]: edt=%p edtGuid=%lu id=%lu "
+             "slot=%u depc=%u depcNeeded=%u db=%p dbGuid=%lu mode=%u rank=%u",
+             src, edt, edtGuid, edtId, slot, depc, depcNeeded, dbRes, dbGuid,
+             modeHint, artsGlobalRankId);
+  artsDebugPrintStack();
+  artsRuntimeStop();
+}
+
+void artsDbRequestCallbackWithContext(const char *source, struct artsEdt *edt,
+                                      unsigned int slot, struct artsDb *dbRes,
+                                      artsGuid_t edtGuidHint,
+                                      artsGuid_t dbGuidHint,
+                                      artsType_t modeHint) {
   if (!edt || !dbRes) {
-    ARTS_ERROR("Invalid DB request callback target (edt=%p, db=%p)", edt,
-               dbRes);
+    artsDbCallbackFailFast(source, edt, slot, dbRes, edtGuidHint, dbGuidHint,
+                           modeHint);
     return;
   }
   if (slot >= edt->depc) {
-    ARTS_ERROR("DB callback slot out of bounds: edtGuid=%lu id=%lu slot=%u "
-               "depc=%u depcNeeded=%u rank=%u",
-               edt->currentEdt, edt->arts_id, slot, edt->depc, edt->depcNeeded,
-               artsGlobalRankId);
+    artsDbCallbackFailFast(source, edt, slot, dbRes, edtGuidHint, dbGuidHint,
+                           modeHint);
     return;
   }
   artsEdtDep_t *depv = (artsEdtDep_t *)artsGetDepv(edt);
@@ -612,6 +634,13 @@ void artsDbRequestCallback(struct artsEdt *edt, unsigned int slot,
   unsigned int temp = artsAtomicSub(&edt->depcNeeded, 1U);
   if (temp == 0)
     artsHandleRemoteStolenEdt(edt);
+}
+
+void artsDbRequestCallback(struct artsEdt *edt, unsigned int slot,
+                           struct artsDb *dbRes) {
+  artsDbRequestCallbackWithContext("legacy", edt, slot, dbRes,
+                                   edt ? edt->currentEdt : NULL_GUID,
+                                   dbRes ? dbRes->guid : NULL_GUID, ARTS_NULL);
 }
 
 bool artsRemoteDbRequest(artsGuid_t dataGuid, int rank, struct artsEdt *edt,
@@ -817,7 +846,8 @@ void artsRemoteDbFullSendCheck(int rank, struct artsDb *db, artsGuid_t edtGuid,
                 edtGuid, artsGlobalRankId, edtState, edtData ? *edtData : NULL,
                 db->guid, slot, mode);
     } else {
-      artsDbRequestCallback(edt, slot, db);
+      artsDbRequestCallbackWithContext("full_send_check/local", edt, slot, db,
+                                       edtGuid, db->guid, mode);
     }
     artsClearExclusiveRequest(db, rank, edtGuid);
     return;
@@ -900,7 +930,9 @@ void artsRemoteHandleDbFullRecieved(struct artsRemoteDbFullSendPacket *packet) {
               packet->mode);
     return;
   }
-  artsDbRequestCallback(edt, packet->slot, dbRes);
+  artsDbRequestCallbackWithContext("db_full_received", edt, packet->slot, dbRes,
+                                   packet->edtGuid, packetDb->guid,
+                                   packet->mode);
 }
 
 void artsRemoteSendAlreadyLocal(int rank, artsGuid_t guid, artsGuid_t edtGuid,
@@ -947,7 +979,9 @@ void artsRemoteHandleSendAlreadyLocal(void *pack) {
     }
     return;
   }
-  artsDbRequestCallback(edt, packet->slot, dbRes);
+  artsDbRequestCallbackWithContext("send_already_local", edt, packet->slot,
+                                   dbRes, packet->edtGuid, packet->dbGuid,
+                                   packet->mode);
 }
 
 void artsRemoteGetFromDb(artsGuid_t edtGuid, artsGuid_t dbGuid,
