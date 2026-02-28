@@ -92,6 +92,19 @@ struct ooDbRequestSatisfy {
   bool inc;
 };
 
+static inline bool satisfyDbRequestIfReady(const char *source,
+                                           struct ooDbRequestSatisfy *req,
+                                           struct artsDb *db) {
+  if (!db)
+    return false;
+
+  artsDbRequestCallbackWithContext(source, req->edt, req->slot, db,
+                                   req->edt ? req->edt->currentEdt : NULL_GUID,
+                                   req->dbGuid, ARTS_NULL);
+  artsFree(req);
+  return true;
+}
+
 struct ooAddDependence {
   enum artsOutOfOrderType type;
   artsGuid_t source;
@@ -644,14 +657,21 @@ void artsOutOfOrderHandleDbRequest(artsGuid_t dbGuid, struct artsEdt *edt,
   req->edt = edt;
   req->dbGuid = dbGuid;
   req->slot = slot;
-  bool res = artsRouteTableAddOO(dbGuid, req, inc);
-  if (!res) {
+  unsigned int retries = 0;
+  while (1) {
+    bool res = artsRouteTableAddOO(dbGuid, req, inc);
+    if (res)
+      return;
+
     struct artsDb *db = (struct artsDb *)artsRouteTableLookupItem(dbGuid);
-    artsDbRequestCallbackWithContext("oo_addoo/fallback_lookup", req->edt,
-                                     req->slot, db,
-                                     req->edt ? req->edt->currentEdt : NULL_GUID,
-                                     dbGuid, ARTS_NULL);
-    artsFree(req);
+    if (satisfyDbRequestIfReady("oo_addoo/fallback_lookup", req, db))
+      return;
+
+    retries++;
+    if ((retries & 0xFF) == 0) {
+      // Yield periodically to avoid hot-spinning under route-table contention.
+      artsYield();
+    }
   }
 }
 
@@ -666,14 +686,21 @@ void artsOutOfOrderHandleDbRequestWithOOList(struct artsOutOfOrderList *addToMe,
   req->dbGuid =
       (data && *data) ? ((struct artsDb *)(*data))->guid : NULL_GUID;
   req->slot = slot;
-  bool res = artsOutOfOrderListAddItem(addToMe, req);
-  if (!res) {
+  unsigned int retries = 0;
+  while (1) {
+    bool res = artsOutOfOrderListAddItem(addToMe, req);
+    if (res)
+      return;
+
     struct artsDb *db = (data) ? (struct artsDb *)(*data) : NULL;
-    artsDbRequestCallbackWithContext("oo_list/fallback_data", req->edt,
-                                     req->slot, db,
-                                     req->edt ? req->edt->currentEdt : NULL_GUID,
-                                     req->dbGuid, ARTS_NULL);
-    artsFree(req);
+    if (satisfyDbRequestIfReady("oo_list/fallback_data", req, db))
+      return;
+
+    retries++;
+    if ((retries & 0xFF) == 0) {
+      // The OO list can briefly reject inserts while transitioning locks.
+      artsYield();
+    }
   }
 }
 
