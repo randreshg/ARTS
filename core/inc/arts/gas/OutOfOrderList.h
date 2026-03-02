@@ -43,6 +43,7 @@ extern "C" {
 #endif
 
 #include <stdbool.h>
+#include <stdint.h>
 #define OOPERELEMENT 4
 
 struct artsOutOfOrderElement {
@@ -54,7 +55,7 @@ struct artsOutOfOrderList {
   volatile unsigned int readerLock;
   volatile unsigned int writerLock;
   volatile unsigned int count;
-  bool isFired;
+  volatile unsigned int isFired;
   struct artsOutOfOrderElement head;
 };
 
@@ -63,7 +64,9 @@ void artsOutOfOrderListFireCallback(struct artsOutOfOrderList *fireMe,
                                     void *localGuidAddress,
                                     void (*callback)(void *, void *));
 void artsOutOfOrderListReset(struct artsOutOfOrderList *fireMe);
-void artsOutOfOrderListDelete(struct artsOutOfOrderList *fireMe);
+void artsOutOfOrderListDelete(struct artsOutOfOrderList *fireMe,
+                              uint64_t contextKey, unsigned int contextRank,
+                              uint64_t contextLock, void *contextData);
 #ifdef __cplusplus
 }
 #endif

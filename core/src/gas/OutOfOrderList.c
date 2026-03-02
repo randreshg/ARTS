@@ -40,20 +40,55 @@
 
 #include "arts/arts.h"
 #include "arts/system/ArtsPrint.h"
+#include "arts/system/Debug.h"
 #include "arts/utils/Atomics.h"
+#include <stdlib.h>
 #include <time.h>
 
 #define fireLock 1U
 #define resetLock 2U
 
+static inline unsigned int ooWriterLockLoad(
+    const struct artsOutOfOrderList *list) {
+  return artsAtomicLoadU32Relaxed(&list->writerLock);
+}
+
+static inline unsigned int ooReaderLockLoad(
+    const struct artsOutOfOrderList *list) {
+  return artsAtomicLoadU32Relaxed(&list->readerLock);
+}
+
+static inline struct artsOutOfOrderElement *
+ooNextLoad(volatile struct artsOutOfOrderElement *elem) {
+  return (struct artsOutOfOrderElement *)artsAtomicLoadPtrAcquire(
+      (void *const volatile *)&elem->next);
+}
+
+static inline void ooNextStore(volatile struct artsOutOfOrderElement *elem,
+                               struct artsOutOfOrderElement *next) {
+  artsAtomicStorePtrRelease((void *volatile *)&elem->next, next);
+}
+
+typedef struct {
+  unsigned int elementCount;
+  unsigned int occupiedSlots;
+  void *firstPtr;
+  unsigned int firstElement;
+  unsigned int firstSlot;
+  unsigned int sampleCount;
+  void *samplePtr[4];
+  unsigned int sampleElement[4];
+  unsigned int sampleSlot[4];
+} artsOODeleteStats_t;
+
 bool readerOOTryLock(struct artsOutOfOrderList *list) {
   while (1) {
-    if (list->writerLock == fireLock)
+    if (ooWriterLockLoad(list) == fireLock)
       return false;
-    while (list->writerLock == resetLock)
+    while (ooWriterLockLoad(list) == resetLock)
       ;
     artsAtomicFetchAdd(&list->readerLock, 1U);
-    if (list->writerLock == 0)
+    if (ooWriterLockLoad(list) == 0)
       break;
     artsAtomicSub(&list->readerLock, 1U);
   }
@@ -62,10 +97,10 @@ bool readerOOTryLock(struct artsOutOfOrderList *list) {
 
 inline void readerOOLock(struct artsOutOfOrderList *list) {
   while (1) {
-    while (list->writerLock)
+    while (ooWriterLockLoad(list))
       ;
     artsAtomicFetchAdd(&list->readerLock, 1U);
-    if (list->writerLock == 0)
+    if (ooWriterLockLoad(list) == 0)
       break;
     artsAtomicSub(&list->readerLock, 1U);
   }
@@ -78,7 +113,7 @@ void readerOOUnlock(struct artsOutOfOrderList *list) {
 void writerOOLock(struct artsOutOfOrderList *list, unsigned int lockType) {
   while (artsAtomicCswap(&list->writerLock, 0U, lockType) != 0U)
     ;
-  while (list->readerLock)
+  while (ooReaderLockLoad(list))
     ;
   return;
 }
@@ -93,7 +128,7 @@ bool writerTryOOLock(struct artsOutOfOrderList *list, unsigned int lockType) {
 
   if (temp == 0U) {
     // We got the writer lock - now check for readers
-    unsigned int readerCount = list->readerLock;
+    unsigned int readerCount = ooReaderLockLoad(list);
     if (readerCount) {
       // Readers are present - release lock and fail immediately
       writerOOUnlock(list);
@@ -112,7 +147,9 @@ bool writerTryOOLock(struct artsOutOfOrderList *list, unsigned int lockType) {
   return false;
 }
 
-bool artsOOisFired(struct artsOutOfOrderList *list) { return list->isFired; }
+bool artsOOisFired(struct artsOutOfOrderList *list) {
+  return artsAtomicLoadU32Relaxed(&list->isFired) != 0U;
+}
 
 bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
   if (!readerOOTryLock(addToMe)) {
@@ -129,16 +166,20 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
 
   volatile struct artsOutOfOrderElement *current = &addToMe->head;
   for (unsigned int i = 0; i < numElements; i++) {
-    if (!current->next) {
+    struct artsOutOfOrderElement *next = ooNextLoad(current);
+    if (!next) {
       if (i + 1 == numElements && elementPos == 0) {
-        current->next = (struct artsOutOfOrderElement *)artsCalloc(
-            1, sizeof(struct artsOutOfOrderElement));
+        struct artsOutOfOrderElement *created =
+            (struct artsOutOfOrderElement *)artsCalloc(
+                1, sizeof(struct artsOutOfOrderElement));
+        ooNextStore(current, created);
+        next = created;
       } else {
-        while (!current->next)
+        while (!(next = ooNextLoad(current)))
           ;
       }
     }
-    current = current->next;
+    current = next;
   }
 
   // Always insert and always release lock
@@ -155,30 +196,114 @@ bool artsOutOfOrderListAddItem(struct artsOutOfOrderList *addToMe, void *item) {
 
 void artsOutOfOrderListReset(struct artsOutOfOrderList *list) {
   if (writerTryOOLock(list, resetLock)) {
-    list->isFired = false;
+    artsAtomicSwap(&list->isFired, 0U);
     writerOOUnlock(list);
   }
 }
 
-void deleteOOElements(struct artsOutOfOrderElement *current) {
+static unsigned int deleteOOElements(struct artsOutOfOrderElement *current,
+                                     bool waitForClear,
+                                     artsOODeleteStats_t *stats) {
   struct artsOutOfOrderElement *trail = NULL;
+  unsigned int dropped = 0;
+  unsigned int elementIndex = 0;
+  if (stats) {
+    stats->elementCount = 0U;
+    stats->occupiedSlots = 0U;
+    stats->firstPtr = NULL;
+    stats->firstElement = 0U;
+    stats->firstSlot = 0U;
+    stats->sampleCount = 0U;
+  }
   while (current) {
+    if (stats)
+      stats->elementCount++;
     for (unsigned int i = 0; i < OOPERELEMENT; i++) {
-      while (current->array[i])
-        ;
+      if (waitForClear) {
+        while (current->array[i])
+          ;
+      } else if (current->array[i]) {
+        void *entry = (void *)current->array[i];
+        if (stats) {
+          stats->occupiedSlots++;
+          if (!stats->firstPtr) {
+            stats->firstPtr = entry;
+            stats->firstElement = elementIndex;
+            stats->firstSlot = i;
+          }
+          if (stats->sampleCount < 4U) {
+            unsigned int idx = stats->sampleCount++;
+            stats->samplePtr[idx] = entry;
+            stats->sampleElement[idx] = elementIndex;
+            stats->sampleSlot[idx] = i;
+          }
+        }
+        // We are tearing down the OO list under exclusive writer ownership and
+        // the list is detached, so pending entries cannot be processed. Drop
+        // them instead of blocking indefinitely.
+        current->array[i] = NULL;
+        dropped++;
+      }
     }
     trail = current;
-    current = (struct artsOutOfOrderElement *)current->next;
+    current = ooNextLoad(current);
     artsFree(trail);
+    elementIndex++;
   }
+  return dropped;
 }
 
-// Not threadsafe
-void artsOutOfOrderListDelete(struct artsOutOfOrderList *list) {
-  deleteOOElements((struct artsOutOfOrderElement *)list->head.next);
-  list->head.next = NULL;
-  list->isFired = false;
-  list->count = 0;
+void artsOutOfOrderListDelete(struct artsOutOfOrderList *list,
+                              uint64_t contextKey, unsigned int contextRank,
+                              uint64_t contextLock, void *contextData) {
+  unsigned int preReader = ooReaderLockLoad(list);
+  unsigned int preWriter = ooWriterLockLoad(list);
+  unsigned int preCount = artsAtomicLoadU32Relaxed(&list->count);
+  unsigned int preFired = artsAtomicLoadU32Relaxed(&list->isFired);
+  struct artsOutOfOrderElement *preHeadNext = ooNextLoad(&list->head);
+
+  writerOOLock(list, resetLock);
+  unsigned int heldReader = ooReaderLockLoad(list);
+  unsigned int heldWriter = ooWriterLockLoad(list);
+  struct artsOutOfOrderElement *detached = ooNextLoad(&list->head);
+  ooNextStore(&list->head, NULL);
+  unsigned int pending = artsAtomicLoadU32Relaxed(&list->count);
+  artsAtomicSwap(&list->isFired, 0U);
+  artsAtomicStoreU32Relaxed(&list->count, 0U);
+  writerOOUnlock(list);
+
+  artsOODeleteStats_t stats;
+  unsigned int dropped = deleteOOElements(detached, false, &stats);
+  if (pending || dropped) {
+    // TODO(debug-cleanup): remove extended oo-delete diagnostics after the
+    // distributed-db teardown issue is fully root-caused and stable.
+    ARTS_ERROR("artsOutOfOrderListDelete dropped pending entries [pending=%u "
+               "dropped=%u]",
+               pending, dropped);
+    ARTS_PRINT("[FATAL] artsOutOfOrderListDelete dropped pending entries "
+               "[pending=%u dropped=%u]",
+               pending, dropped);
+    ARTS_PRINT("[FATAL] oo-delete context [key=%lu rank=%u lock=0x%lx data=%p "
+               "list=%p]",
+               contextKey, contextRank, contextLock, contextData, list);
+    ARTS_PRINT("[FATAL] oo-delete snapshot pre [reader=%u writer=%u count=%u "
+               "fired=%u headNext=%p]",
+               preReader, preWriter, preCount, preFired, preHeadNext);
+    ARTS_PRINT("[FATAL] oo-delete snapshot held [reader=%u writer=%u detached=%p "
+               "pending=%u]",
+               heldReader, heldWriter, detached, pending);
+    ARTS_PRINT("[FATAL] oo-delete detached summary [elements=%u occupiedSlots=%u "
+               "firstPtr=%p firstPos=%u:%u sampleCount=%u]",
+               stats.elementCount, stats.occupiedSlots, stats.firstPtr,
+               stats.firstElement, stats.firstSlot, stats.sampleCount);
+    for (unsigned int i = 0; i < stats.sampleCount; i++) {
+      ARTS_PRINT("[FATAL] oo-delete sample[%u] ptr=%p pos=%u:%u", i,
+                 stats.samplePtr[i], stats.sampleElement[i],
+                 stats.sampleSlot[i]);
+    }
+    artsDebugPrintStack();
+    abort();
+  }
 }
 
 void artsOutOfOrderListFireCallback(struct artsOutOfOrderList *fireMe,
@@ -191,11 +316,11 @@ void artsOutOfOrderListFireCallback(struct artsOutOfOrderList *fireMe,
 
   for (int attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (writerTryOOLock(fireMe, fireLock)) {
-      fireMe->isFired = true;
-      unsigned int pos = fireMe->count;
+      artsAtomicSwap(&fireMe->isFired, 1U);
+      unsigned int pos = artsAtomicLoadU32Relaxed(&fireMe->count);
       unsigned int j = 0;
       for (volatile struct artsOutOfOrderElement *current = &fireMe->head;
-           current; current = current->next) {
+           current; current = ooNextLoad(current)) {
         for (unsigned int i = 0; i < OOPERELEMENT; i++) {
           if (j < pos) {
             volatile void *item = NULL;
@@ -209,15 +334,14 @@ void artsOutOfOrderListFireCallback(struct artsOutOfOrderList *fireMe,
         }
         if (j == pos)
           break;
-        while (!current->next)
+        while (!ooNextLoad(current))
           ;
       }
-      fireMe->count = 0;
-      struct artsOutOfOrderElement *p =
-          (struct artsOutOfOrderElement *)fireMe->head.next;
-      fireMe->head.next = NULL;
+      artsAtomicStoreU32Relaxed(&fireMe->count, 0U);
+      struct artsOutOfOrderElement *p = ooNextLoad(&fireMe->head);
+      ooNextStore(&fireMe->head, NULL);
       writerOOUnlock(fireMe);
-      deleteOOElements(p);
+      deleteOOElements(p, true, NULL);
       return;
     }
 

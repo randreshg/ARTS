@@ -48,6 +48,82 @@ extern "C" {
 #define COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT()                    \
   __asm__ volatile("" : : : "memory")
 
+static inline unsigned int
+artsAtomicLoadU32Acquire(const volatile unsigned int *source) {
+  return __atomic_load_n(source, __ATOMIC_ACQUIRE);
+}
+
+static inline unsigned int
+artsAtomicLoadU32Relaxed(const volatile unsigned int *source) {
+  return __atomic_load_n(source, __ATOMIC_RELAXED);
+}
+
+static inline void artsAtomicStoreU32Release(volatile unsigned int *destination,
+                                             unsigned int value) {
+  __atomic_store_n(destination, value, __ATOMIC_RELEASE);
+}
+
+static inline void artsAtomicStoreU32Relaxed(volatile unsigned int *destination,
+                                             unsigned int value) {
+  __atomic_store_n(destination, value, __ATOMIC_RELAXED);
+}
+
+static inline uint64_t
+artsAtomicLoadU64Acquire(const volatile uint64_t *source) {
+  return __atomic_load_n(source, __ATOMIC_ACQUIRE);
+}
+
+static inline void artsAtomicStoreU64Release(volatile uint64_t *destination,
+                                             uint64_t value) {
+  __atomic_store_n(destination, value, __ATOMIC_RELEASE);
+}
+
+static inline int64_t artsAtomicLoadI64Acquire(const volatile int64_t *source) {
+  return __atomic_load_n(source, __ATOMIC_ACQUIRE);
+}
+
+static inline void artsAtomicStoreI64Release(volatile int64_t *destination,
+                                             int64_t value) {
+  __atomic_store_n(destination, value, __ATOMIC_RELEASE);
+}
+
+static inline void artsAtomicStoreI64Relaxed(volatile int64_t *destination,
+                                             int64_t value) {
+  __atomic_store_n(destination, value, __ATOMIC_RELAXED);
+}
+
+static inline bool artsAtomicLoadBoolAcquire(const volatile bool *source) {
+  return __atomic_load_n(source, __ATOMIC_ACQUIRE);
+}
+
+static inline bool artsAtomicLoadBoolRelaxed(const volatile bool *source) {
+  return __atomic_load_n(source, __ATOMIC_RELAXED);
+}
+
+static inline void artsAtomicStoreBoolRelease(volatile bool *destination,
+                                              bool value) {
+  __atomic_store_n(destination, value, __ATOMIC_RELEASE);
+}
+
+static inline void *artsAtomicLoadPtrAcquire(void *const volatile *source) {
+  return __atomic_load_n(source, __ATOMIC_ACQUIRE);
+}
+
+static inline void *artsAtomicLoadPtrRelaxed(void *const volatile *source) {
+  return __atomic_load_n(source, __ATOMIC_RELAXED);
+}
+
+static inline void artsAtomicStorePtrRelease(void *volatile *destination,
+                                             void *value) {
+  __atomic_store_n(destination, value, __ATOMIC_RELEASE);
+}
+
+static inline bool artsAtomicCmpXchgPtrReleaseAcquire(
+    void *volatile *destination, void **expected, void *desired) {
+  return __atomic_compare_exchange_n(destination, expected, desired, false,
+                                     __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
+}
+
 unsigned int artsAtomicSwap(volatile unsigned int *destination,
                             unsigned int swapIn);
 uint64_t artsAtomicSwapU64(volatile uint64_t *destination, uint64_t swapIn);
