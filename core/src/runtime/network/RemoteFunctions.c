@@ -461,6 +461,12 @@ static void sendRemoteEdtSignalPacket(artsGuid_t edt, artsGuid_t db,
 
   if (rank == artsGlobalRankId)
     rank = artsRouteTableLookupRank(edt);
+  if (rank == (unsigned int)-1) {
+    ARTS_INFO("Remote EDT signal missing route rank for EDT[Guid:%lu] on rank "
+              "%u; defaulting to local delivery path",
+              edt, artsGlobalRankId);
+    rank = artsGlobalRankId;
+  }
 
   packet.db = db;
   packet.edt = edt;

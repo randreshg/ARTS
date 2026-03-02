@@ -67,6 +67,7 @@ void freeItem(artsRouteItem_t *item) {
   item->data = NULL;
   item->key = 0;
   item->lock = 0;
+  item->rank = (unsigned int)-1;
   item->touched = 0;
 }
 
@@ -361,6 +362,9 @@ artsRouteItem_t *artsRouteTableSearchForEmpty(artsRouteTable_t *routeTable,
       if (!current->data[keyVal].lock) {
         if (markReserve(&current->data[keyVal], markUsed)) {
           current->data[keyVal].key = key;
+          current->data[keyVal].data = NULL;
+          current->data[keyVal].rank = (unsigned int)-1;
+          current->data[keyVal].touched = 0;
           return &current->data[keyVal];
         }
       }
@@ -686,9 +690,16 @@ bool artsRouteTableReturnDb(artsGuid_t key, bool markToDelete) {
 int artsRouteTableLookupRank(artsGuid_t key) {
   artsRouteTable_t *routeTable = artsGetRouteTable(key);
   artsRouteItem_t *location =
-      artsRouteTableSearchForKey(routeTable, key, availableKey);
-  if (location)
+      artsRouteTableSearchForKey(routeTable, key, allocatedKey);
+  if (location) {
+    // Reserved entries without backing data are placeholders and do not
+    // identify a valid owner copy yet.
+    if (checkItemState(location, reservedKey) && !location->data)
+      return -1;
+    if (location->rank == (unsigned int)-1)
+      return -1;
     return location->rank;
+  }
   return -1;
 }
 

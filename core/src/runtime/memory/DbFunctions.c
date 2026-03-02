@@ -621,7 +621,57 @@ void acquireDbs(struct artsEdt *edt) {
           else {
             ARTS_DEBUG("DB[Guid:%lu] out of order request slot %u",
                        depv[i].guid, i);
-            artsOutOfOrderHandleDbRequest(depv[i].guid, edt, i, true);
+            // If this owner-side entry is currently in requested state, a
+            // remote rank may hold the newest copy. Re-issue the request
+            // instead of waiting only on OO callbacks.
+            int requestedOwner = artsRouteTableLookupRank(depv[i].guid);
+            if (requestedOwner != -1 && requestedOwner != artsGlobalRankId) {
+              ARTS_DEBUG("  Owner fallback request for DB[Guid:%lu] from rank %d"
+                         " (mode=%s, effective=%s)",
+                         depv[i].guid, requestedOwner,
+                         getTypeName(depv[i].mode), getTypeName(effectiveMode));
+              if (effectiveMode != ARTS_DB_WRITE)
+                // Force a request in this recovery path (no aggregation) so a
+                // stale in-flight marker cannot suppress delivery.
+                artsRemoteDbRequest(depv[i].guid, requestedOwner, edt, i,
+                                    effectiveMode, false, effectiveMode);
+              else
+                artsRemoteDbFullRequest(depv[i].guid, requestedOwner,
+                                        edt->currentEdt, i, effectiveMode);
+            } else if (requestedOwner == -1) {
+              void **routeData = NULL;
+              itemState_t routeState = artsRouteTableLookupItemWithState(
+                  depv[i].guid, &routeData, anyKey, false);
+              struct artsDb *fallbackDb =
+                  (routeData) ? (struct artsDb *)(*routeData) : NULL;
+              bool canUseLocalRequestedCopy =
+                  (routeState == requestedKey) && fallbackDb &&
+                  artsIsGuidLocal(depv[i].guid) &&
+                  (effectiveMode != ARTS_DB_WRITE) &&
+                  (fallbackDb->guid == depv[i].guid);
+
+              if (canUseLocalRequestedCopy) {
+                ARTS_INFO("  Owner fallback recovering requested DB locally for "
+                          "Guid:%lu (state=%u owner=%d rank=%u mode=%s "
+                          "effective=%s)",
+                          depv[i].guid, routeState, requestedOwner,
+                          artsGlobalRankId, getTypeName(depv[i].mode),
+                          getTypeName(effectiveMode));
+                artsRouteTableSetRank(depv[i].guid, artsGlobalRankId);
+                dbFound = fallbackDb;
+                artsAtomicSub(&edt->depcNeeded, 1U);
+              } else {
+                ARTS_INFO("  Owner fallback unresolved DB owner for Guid:%lu "
+                          "(routeState=%u data=%p guidOwner=%d rank=%u mode=%s "
+                          "effective=%s)",
+                          depv[i].guid, routeState,
+                          routeData ? *routeData : NULL, owner,
+                          artsGlobalRankId, getTypeName(depv[i].mode),
+                          getTypeName(effectiveMode));
+              }
+            }
+            if (!dbFound)
+              artsOutOfOrderHandleDbRequest(depv[i].guid, edt, i, true);
           }
         } else {
           int validRank = -1;
