@@ -58,24 +58,25 @@
 extern __thread struct artsEdt *currentEdt;
 
 static inline void artsPublishDependent(struct artsDependent *dependent) {
-  __atomic_store_n((bool *)&dependent->doneWriting, true, __ATOMIC_RELEASE);
+  artsAtomicStoreBoolRelease((volatile bool *)&dependent->doneWriting, true);
 }
 
 static inline bool artsDependentReady(const struct artsDependent *dependent) {
-  return __atomic_load_n((bool *)&dependent->doneWriting, __ATOMIC_ACQUIRE);
+  return artsAtomicLoadBoolAcquire((volatile bool *)&dependent->doneWriting);
 }
 
 static inline struct artsDependentList *
 artsDependentListNext(struct artsDependentList *list) {
-  return __atomic_load_n(&list->next, __ATOMIC_ACQUIRE);
+  return (struct artsDependentList *)artsAtomicLoadPtrAcquire(
+      (void *const volatile *)&list->next);
 }
 
 static inline struct artsDependentList *
 artsInstallDependentListNext(struct artsDependentList *list,
                              struct artsDependentList *candidate) {
   struct artsDependentList *expected = NULL;
-  if (__atomic_compare_exchange_n(&list->next, &expected, candidate, false,
-                                  __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
+  if (artsAtomicCmpXchgPtrReleaseAcquire((void *volatile *)&list->next,
+                                         (void **)&expected, candidate))
     return candidate;
   return expected;
 }

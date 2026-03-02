@@ -666,6 +666,9 @@ bool artsRemoteDbRequest(artsGuid_t dataGuid, int rank, struct artsEdt *edt,
                          int pos, artsType_t mode, bool aggRequest,
                          artsType_t acquireMode) {
   if (artsRouteTableAddSent(dataGuid, edt, pos, aggRequest)) {
+    // Record the current request target even while the route entry is in
+    // requested/reserved state so owner lookups never degrade to -1.
+    artsRouteTableSetRank(dataGuid, rank);
     struct artsRemoteDbRequestPacket packet;
     packet.dbGuid = dataGuid;
     packet.mode = mode;
@@ -1422,8 +1425,9 @@ void artsRemoteHandleTimeSyncResp(void *pack) {
   // offset = workerTime - masterTime = (T1 + RTT/2) - T2 = (T1 + T3)/2 - T2
   int64_t offset = (int64_t)((T1 + T3) / 2) - (int64_t)T2;
 
-  __atomic_store_n(&artsCounterTimeOffset, offset, __ATOMIC_RELAXED);
-  __atomic_store_n(&artsCounterTimeSyncReceived, true, __ATOMIC_RELEASE);
+  artsAtomicStoreI64Relaxed((volatile int64_t *)&artsCounterTimeOffset, offset);
+  artsAtomicStoreBoolRelease((volatile bool *)&artsCounterTimeSyncReceived,
+                             true);
 
   uint64_t rtt = T3 - T1;
   ARTS_INFO("Time sync: Worker %u received response, T1=%lu, T2=%lu, T3=%lu, "

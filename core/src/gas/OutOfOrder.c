@@ -149,11 +149,17 @@ static void logOoListRetryState(const char *source,
                                 struct ooDbRequestSatisfy *req,
                                 unsigned int retries) {
   struct artsDb *db = (data && *data) ? (struct artsDb *)(*data) : NULL;
+  unsigned int count = list ? artsAtomicLoadU32Relaxed(&list->count) : 0U;
+  unsigned int reader =
+      list ? artsAtomicLoadU32Relaxed(&list->readerLock) : 0U;
+  unsigned int writer =
+      list ? artsAtomicLoadU32Relaxed(&list->writerLock) : 0U;
+  unsigned int fired =
+      list ? artsAtomicLoadU32Relaxed(&list->isFired) : 0U;
   ARTS_INFO("[%s] retries=%u dbGuid=%lu list=%p count=%u readerLock=%u "
             "writerLock=%u fired=%u db=%p edt=%p edtGuid=%lu slot=%u",
-            source, retries, req->dbGuid, list, list ? list->count : 0U,
-            list ? list->readerLock : 0U, list ? list->writerLock : 0U,
-            list ? (unsigned int)list->isFired : 0U, db, req->edt,
+            source, retries, req->dbGuid, list, count, reader, writer, fired,
+            db, req->edt,
             req->edt ? req->edt->currentEdt : NULL_GUID, req->slot);
 }
 
