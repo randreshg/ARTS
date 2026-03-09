@@ -541,16 +541,22 @@ void artsRunEdt(struct artsEdt *edt) {
 
   artsMetricsTriggerEvent(artsEdtThroughput, artsThread, 1);
 
+  ARTS_DEBUG("EDT[Id:%lu, Guid:%lu] Finished", edt->arts_id,
+             edt->currentEdt);
+  releaseDbs(depc, depv, false);
+
+  // Make DB write-back/frontier release visible before epoch completion.
+  // Otherwise a waiter can wake and reuse the same DB before the previous
+  // WRITE release has reached the owner, which can deadlock frontier progress
+  // across epochs.
   artsUnsetThreadLocalEdtInfo();
 
-  // This is for a synchronous path
+  // This is for a synchronous path. Keep it after DB release for the same
+  // reason: completion-visible signals must not outrun write-back.
   if (edt->outputBuffer != NULL_GUID)
     artsSetBuffer(edt->outputBuffer, artsCalloc(1, sizeof(unsigned int)),
                   sizeof(unsigned int));
 
-  ARTS_DEBUG("EDT[Id:%lu, Guid:%lu] Finished", edt->arts_id,
-             edt->currentEdt);
-  releaseDbs(depc, depv, false);
   artsEdtDelete(edt);
   // This is for debugging purposes
   decOustandingEdts(1);

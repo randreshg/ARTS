@@ -111,6 +111,12 @@ struct __attribute__((__packed__)) artsRemoteGuidOnlyPacket {
   artsGuid_t guid;
 };
 
+struct __attribute__((__packed__)) artsRemoteDbUpdatePacket {
+  struct artsRemotePacket header;
+  artsGuid_t guid;
+  artsGuid_t epochGuid;
+};
+
 struct __attribute__((__packed__)) artsRemoteAddDependencePacket {
   struct artsRemotePacket header;
   artsGuid_t source;
