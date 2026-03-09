@@ -73,6 +73,7 @@ set(TEST_PROGRAMS
     testTMTLite
     testAcquireMode
     testArtsId
+    testEpochDbWritebackOrdering
 )
 
 # Programs that require arts_graph library

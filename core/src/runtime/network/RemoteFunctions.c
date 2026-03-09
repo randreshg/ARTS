@@ -276,20 +276,20 @@ void artsRemoteHandleDbDestroy(void *ptr) {
   artsDbDestroySafe(packet->guid, false);
 }
 
-void artsRemoteUpdateDb(artsGuid_t guid, bool sendDb) {
+void artsRemoteUpdateDb(artsGuid_t guid, bool sendDb, artsGuid_t epochGuid) {
   unsigned int rank = artsGuidGetRank(guid);
   if (rank != artsGlobalRankId) {
-    struct artsRemoteGuidOnlyPacket packet;
+    struct artsRemoteDbUpdatePacket packet;
     packet.guid = guid;
+    packet.epochGuid = epochGuid;
     struct artsDb *db = NULL;
     if (sendDb && (db = (struct artsDb *)artsRouteTableLookupItem(guid))) {
-      uint64_t size = sizeof(struct artsRemoteGuidOnlyPacket) + db->header.size;
+      uint64_t size = sizeof(struct artsRemoteDbUpdatePacket) + db->header.size;
       artsFillPacketHeader(&packet.header, size, ARTS_REMOTE_DB_UPDATE_MSG);
       artsRemoteSendRequestPayloadAsync(rank, (char *)&packet, sizeof(packet),
                                         (char *)db, db->header.size);
     } else {
-      artsFillPacketHeader(&packet.header,
-                           sizeof(struct artsRemoteGuidOnlyPacket),
+      artsFillPacketHeader(&packet.header, sizeof(struct artsRemoteDbUpdatePacket),
                            ARTS_REMOTE_DB_UPDATE_MSG);
       artsRemoteSendRequestAsync(rank, (char *)&packet, sizeof(packet));
     }
@@ -297,26 +297,37 @@ void artsRemoteUpdateDb(artsGuid_t guid, bool sendDb) {
 }
 
 void artsRemoteHandleUpdateDb(void *ptr) {
-  struct artsRemoteGuidOnlyPacket *packet =
-      (struct artsRemoteGuidOnlyPacket *)ptr;
+  struct artsRemoteDbUpdatePacket *packet = (struct artsRemoteDbUpdatePacket *)ptr;
   struct artsDb *packetDb = (struct artsDb *)(packet + 1);
   unsigned int rank = artsGuidGetRank(packet->guid);
   if (rank == artsGlobalRankId) {
+    if (packet->epochGuid != NULL_GUID) {
+      incrementQueueEpoch(packet->epochGuid);
+      globalShutdownGuidIncQueue();
+    }
     struct artsDb **dataPtr = NULL;
-    bool write = packet->header.size > sizeof(struct artsRemoteGuidOnlyPacket);
+    bool write = packet->header.size > sizeof(struct artsRemoteDbUpdatePacket);
     artsRouteTableLookupItemWithState(packet->guid, (void ***)&dataPtr,
                                       allocatedKey, write);
     struct artsDb *db = (dataPtr) ? *dataPtr : NULL;
     if (!db) {
       artsDbDecrementLatch(packet->guid);
+      if (packet->epochGuid != NULL_GUID) {
+        incrementFinishedEpoch(packet->epochGuid);
+        globalShutdownGuidIncFinished();
+      }
       return;
     }
     if (write) {
       uint64_t packetDbBytes =
-          packet->header.size - sizeof(struct artsRemoteGuidOnlyPacket);
+          packet->header.size - sizeof(struct artsRemoteDbUpdatePacket);
       if (packetDbBytes < sizeof(struct artsDb) ||
           db->header.size < sizeof(struct artsDb)) {
         artsDbDecrementLatch(packet->guid);
+        if (packet->epochGuid != NULL_GUID) {
+          incrementFinishedEpoch(packet->epochGuid);
+          globalShutdownGuidIncFinished();
+        }
         return;
       }
 
@@ -334,6 +345,10 @@ void artsRemoteHandleUpdateDb(void *ptr) {
       artsProgressFrontier(db, packet->header.rank);
     }
     artsDbDecrementLatch(packet->guid);
+    if (packet->epochGuid != NULL_GUID) {
+      incrementFinishedEpoch(packet->epochGuid);
+      globalShutdownGuidIncFinished();
+    }
   }
 }
 

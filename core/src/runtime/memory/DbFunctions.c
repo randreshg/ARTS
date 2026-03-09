@@ -796,7 +796,13 @@ void releaseDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {
         artsProgressFrontier(db, artsGlobalRankId);
         artsDbDecrementLatch(depv[i].guid);
       } else {
-        artsRemoteUpdateDb(depv[i].guid, true);
+        /// Update the epoch to ensure the write is visible to other ranks.
+        artsGuid_t epochGuid = artsGetCurrentEpochGuid();
+        if (epochGuid != NULL_GUID) {
+          incrementActiveEpoch(epochGuid);
+          globalShutdownGuidIncActive();
+        }
+        artsRemoteUpdateDb(depv[i].guid, true, epochGuid);
         INCREMENT_OWNER_UPDATES_PERFORMED_BY(1);
       }
     } else if (depv[i].guid != NULL_GUID && effectiveMode == ARTS_DB_READ) {
