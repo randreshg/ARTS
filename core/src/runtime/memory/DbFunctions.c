@@ -590,25 +590,29 @@ void acquireDbs(struct artsEdt *edt) {
                      validRank);
           // We have found an entry
           if (dbTemp) {
-            bool duplicateAdded =
+            bool frontierReady =
                 artsAddDbDuplicate(dbTemp, artsGlobalRankId, edt,
                                    edt->currentEdt, i, effectiveMode);
-            if (duplicateAdded)
-              ARTS_DEBUG("Adding duplicate DB[Guid:%lu]", depv[i].guid);
+            if (frontierReady)
+              ARTS_DEBUG("DB[Guid:%lu] attached to head frontier",
+                         depv[i].guid);
             else
-              ARTS_DEBUG(
-                  "Duplicate not added DB[Guid:%lu] (rank already tracked)",
-                  depv[i].guid);
+              ARTS_DEBUG("DB[Guid:%lu] queued behind an earlier frontier",
+                         depv[i].guid);
 
-            // If the owner (this rank) still has the valid copy, hand it out
-            // regardless of whether we inserted a new duplicate entry.
-            if (validRank == artsGlobalRankId) {
+            // Only head-frontier accesses may receive the live DB pointer
+            // immediately. Later-frontier accesses are signaled when
+            // artsProgressFrontier advances to them.
+            if (validRank == artsGlobalRankId && frontierReady) {
               dbFound = dbTemp;
               artsAtomicSub(&edt->depcNeeded, 1U);
-            }
-            // Owner rank but another rank currently has the valid copy; request
-            // it.
-            else {
+            } else if (validRank == artsGlobalRankId) {
+              ARTS_DEBUG("  Waiting for local frontier progression on "
+                         "DB[Guid:%lu]",
+                         depv[i].guid);
+            } else {
+              // Owner rank but another rank currently has the valid copy;
+              // request it.
               if (effectiveMode != ARTS_DB_WRITE)
                 artsRemoteDbRequest(depv[i].guid, validRank, edt, i,
                                     effectiveMode, true, effectiveMode);

@@ -232,6 +232,9 @@ typedef struct {
   volatile unsigned int lastFinishedCount;
   volatile uint64_t queued;
   volatile uint64_t outstanding;
+  /// Tracks which remote ranks have already contributed to the current
+  /// reduction round so duplicate epoch replies cannot satisfy outstanding.
+  volatile uint64_t responseMask;
   unsigned int terminationExitSlot;
   artsGuid_t terminationExitGuid;
   artsGuid_t guid;
