@@ -280,12 +280,15 @@ bool artsPushDbToList(struct artsDbList *dbList, unsigned int data, bool write,
   }
   artsReaderLock(&dbList->reader, &dbList->writer);
   bool inserted = false;
+  bool addedToHead = false;
   bool unique = true;
+  struct artsDbFrontier *head = dbList->head;
   for (struct artsDbFrontier *frontier = dbList->head; frontier;
        frontier = frontier->next) {
     if (artsPushDbToFrontier(frontier, data, write, exclusive, local, bypass,
                              edt, edtGuid, slot, mode, &unique)) {
       inserted = true;
+      addedToHead = (frontier == head);
       break;
     }
     if (!frontier->next) {
@@ -299,7 +302,15 @@ bool artsPushDbToList(struct artsDbList *dbList, unsigned int data, bool write,
     }
   }
   artsReaderUnlock(&dbList->reader);
-  return inserted && unique;
+  if (!inserted)
+    return false;
+
+  // Local accesses may legally share the head frontier, but accesses queued
+  // behind an earlier frontier must wait for frontier progression.
+  if (local)
+    return addedToHead;
+
+  return addedToHead && unique;
 }
 
 unsigned int artsCurrentFrontierSize(struct artsDbList *dbList) {

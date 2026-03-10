@@ -55,7 +55,7 @@ void broadcastEpochRequest(artsGuid_t epochGuid);
 bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
                 unsigned int totalFinish);
 void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
-                 unsigned int finish);
+                 unsigned int finish, unsigned int senderRank);
 void deleteEpoch(artsGuid_t epochGuid, artsEpoch_t *epoch);
 
 typedef struct artsEpochPool {

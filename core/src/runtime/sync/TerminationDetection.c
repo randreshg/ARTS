@@ -126,6 +126,7 @@ void incrementFinishedEpoch(artsGuid_t epochGuid) {
           if (!artsAtomicSubU64(&epoch->queued, 1)) {
             if (!artsAtomicCswapU64(&epoch->outstanding, 0,
                                     artsGlobalRankCount)) {
+              epoch->responseMask = 0;
               broadcastEpochRequest(epochGuid);
             }
           }
@@ -153,6 +154,22 @@ void sendEpoch(artsGuid_t epochGuid, unsigned int source, unsigned int dest) {
     }
   } else
     artsOutOfOrderSendEpoch(epochGuid, source, dest);
+}
+
+static bool markEpochSenderForRound(artsEpoch_t *epoch,
+                                    unsigned int senderRank) {
+  if (!epoch || senderRank >= 64 || senderRank == artsGlobalRankId)
+    return false;
+
+  uint64_t bit = 1ULL << senderRank;
+  while (1) {
+    uint64_t current = epoch->responseMask;
+    if (current & bit)
+      return true;
+    if (artsAtomicCswapU64(&epoch->responseMask, current, current | bit) ==
+        current)
+      return false;
+  }
 }
 
 artsEpoch_t *createEpoch(artsGuid_t *guid, artsGuid_t edtGuid,
@@ -301,9 +318,15 @@ bool checkEpoch(artsEpoch_t *epoch, unsigned int totalActive,
 }
 
 void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
-                 unsigned int finish) {
+                 unsigned int finish, unsigned int senderRank) {
   artsEpoch_t *epoch = (artsEpoch_t *)artsRouteTableLookupItem(epochGuid);
   if (epoch) {
+    if (markEpochSenderForRound(epoch, senderRank)) {
+      ARTS_DEBUG("reduceEpoch [Guid:%lu]: ignoring duplicate epoch response "
+                 "from rank %u in current round",
+                 epochGuid, senderRank);
+      return;
+    }
     unsigned int totalActive = artsAtomicAdd(&epoch->globalActiveCount, active);
     unsigned int totalFinish =
         artsAtomicAdd(&epoch->globalFinishedCount, finish);
@@ -323,6 +346,7 @@ void reduceEpoch(artsGuid_t epochGuid, unsigned int active,
 
       if (checkEpoch(epoch, totalActive, totalFinish)) {
         ARTS_DEBUG("  checkEpoch returned TRUE - broadcasting new request");
+        epoch->responseMask = 0;
         artsAtomicAddU64(&epoch->outstanding, artsGlobalRankCount - 1);
         broadcastEpochRequest(epochGuid);
         // A better idea will be to know when to kick off a new round

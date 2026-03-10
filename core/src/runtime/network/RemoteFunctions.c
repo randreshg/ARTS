@@ -1265,7 +1265,8 @@ void artsRemoteEpochSend(unsigned int rank, artsGuid_t guid,
 void artsRemoteHandleEpochSend(void *pack) {
   struct artsRemoteEpochSendPacket *packet =
       (struct artsRemoteEpochSendPacket *)pack;
-  reduceEpoch(packet->epochGuid, packet->active, packet->finish);
+  reduceEpoch(packet->epochGuid, packet->active, packet->finish,
+              packet->header.rank);
 }
 
 void artsRemoteAtomicAddInArrayDb(unsigned int rank, artsGuid_t dbGuid,
