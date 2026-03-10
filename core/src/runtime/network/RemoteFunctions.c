@@ -276,14 +276,14 @@ void artsRemoteHandleDbDestroy(void *ptr) {
   artsDbDestroySafe(packet->guid, false);
 }
 
-void artsRemoteUpdateDb(artsGuid_t guid, bool sendDb, artsGuid_t epochGuid) {
+void artsRemoteUpdateDb(artsGuid_t guid, struct artsDb *db,
+                        artsGuid_t epochGuid) {
   unsigned int rank = artsGuidGetRank(guid);
   if (rank != artsGlobalRankId) {
     struct artsRemoteDbUpdatePacket packet;
     packet.guid = guid;
     packet.epochGuid = epochGuid;
-    struct artsDb *db = NULL;
-    if (sendDb && (db = (struct artsDb *)artsRouteTableLookupItem(guid))) {
+    if (db) {
       uint64_t size = sizeof(struct artsRemoteDbUpdatePacket) + db->header.size;
       artsFillPacketHeader(&packet.header, size, ARTS_REMOTE_DB_UPDATE_MSG);
       artsRemoteSendRequestPayloadAsync(rank, (char *)&packet, sizeof(packet),

@@ -66,7 +66,9 @@ void artsRemoteDbDestroy(artsGuid_t guid, unsigned int originRank, bool clean);
 void artsRemoteHandleDbDestroyForward(void *ptr);
 void artsRemoteHandleDbCleanForward(void *ptr);
 void artsRemoteHandleDbDestroy(void *ptr);
-void artsRemoteUpdateDb(artsGuid_t guid, bool sendDb, artsGuid_t epochGuid);
+struct artsDb;
+void artsRemoteUpdateDb(artsGuid_t guid, struct artsDb *db,
+                        artsGuid_t epochGuid);
 void artsRemoteHandleUpdateDb(void *ptr);
 
 struct artsDiffList;

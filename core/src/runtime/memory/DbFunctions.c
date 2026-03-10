@@ -697,17 +697,14 @@ void acquireDbs(struct artsEdt *edt) {
                        getTypeName(effectiveMode), validRank);
           }
           // If route-table ownership says this rank has the valid copy, reuse
-          // it for both READ and WRITE acquires.
-          if (localValid && effectiveMode != ARTS_DB_WRITE) {
+          // it for both READ and WRITE acquires. For non-owner WRITE chains,
+          // forcing a refresh from the owner can drop earlier local writes if
+          // the owner has not yet processed the previous write-back.
+          if (localValid) {
             dbFound = dbTemp;
             artsAtomicSub(&edt->depcNeeded, 1U);
             ARTS_DEBUG("  Found local valid copy, decremented depcNeeded");
-          } else if (dbTemp && effectiveMode == ARTS_DB_WRITE) {
-            // Non-owner WRITE acquires must refresh from owner.
-            ARTS_DEBUG("  Local copy ignored for WRITE; forcing owner refresh");
-          }
-          if (effectiveMode == ARTS_DB_WRITE) {
-            // Always use full owner refresh for non-owner WRITE.
+          } else if (effectiveMode == ARTS_DB_WRITE) {
             ARTS_DEBUG("  WRITE mode - sending full DB request to rank %d",
                        owner);
             artsRemoteDbFullRequest(depv[i].guid, owner, edt->currentEdt, i,
@@ -786,7 +783,6 @@ void releaseDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {
     /// Check compiler-inferred acquireMode if provided, otherwise use
     /// allocation mode
     artsType_t effectiveMode = artsGetEffectiveMode(&depv[i]);
-
     if (depv[i].guid != NULL_GUID && effectiveMode == ARTS_DB_WRITE) {
       if (depv[i].mode == ARTS_DB_PIN) {
         ARTS_DEBUG("Pinned DB write release (no frontier update)");
@@ -802,7 +798,9 @@ void releaseDbs(unsigned int depc, artsEdtDep_t *depv, bool gpu) {
           incrementActiveEpoch(epochGuid);
           globalShutdownGuidIncActive();
         }
-        artsRemoteUpdateDb(depv[i].guid, true, epochGuid);
+        struct artsDb *db = depv[i].ptr ? (((struct artsDb *)depv[i].ptr) - 1)
+                                        : NULL;
+        artsRemoteUpdateDb(depv[i].guid, db, epochGuid);
         INCREMENT_OWNER_UPDATES_PERFORMED_BY(1);
       }
     } else if (depv[i].guid != NULL_GUID && effectiveMode == ARTS_DB_READ) {
