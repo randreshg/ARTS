@@ -37,28 +37,10 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Create histogram CUDA example
+# Create histogram GPU example
 add_executable(gpu_histo histo.cu)
-
-# Set include directories
 target_include_directories(gpu_histo PRIVATE ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR} ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-
-# Link with CUDA libraries
-target_link_libraries(gpu_histo PRIVATE 
-    Threads::Threads 
-    ${RT_LIBRARY} 
-    ${M_LIBRARY} 
-    ${ANL_LIBRARY} 
-    CUDA::cudart 
-    CUDA::cuda_driver 
-    CUDA::cublas
-)
-
-# Use the CUDA-enabled ARTS library
-if(TARGET arts_cuda_shared)
-    target_link_libraries(gpu_histo PRIVATE arts_cuda_shared)
-elseif(TARGET arts_cuda_static)
-    target_link_libraries(gpu_histo PRIVATE arts_cuda_static)
-else()
-    message(FATAL_ERROR "No CUDA ARTS library target found for gpu_histo")
-endif()
+arts_link_gpu_library(gpu_histo)
+target_link_libraries(gpu_histo PRIVATE
+    Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY} ${GPU_LINK_LIBS})
+arts_gpu_set_cu_sources(gpu_histo histo.cu)

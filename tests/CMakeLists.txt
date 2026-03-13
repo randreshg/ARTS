@@ -152,9 +152,9 @@ foreach(test_program ${TEST_PROGRAMS})
     add_arts_test(${test_program})
 endforeach()
 
-# CUDA test programs (only built if CUDA is available)
-if(BUILD_CUDA_LIBRARY)
-    set(CUDA_TEST_PROGRAMS
+# GPU test programs (only built if GPU support is available)
+if(BUILD_GPU_LIBRARY)
+    set(GPU_TEST_PROGRAMS
         gpu_stream
         gpu_for_all
         lc_sync
@@ -172,46 +172,59 @@ if(BUILD_CUDA_LIBRARY)
         gpu_multi_kernel
     )
 
-    # Function to create a CUDA test executable
-    function(add_cuda_test test_name)
-        add_executable(${test_name} ${test_name}.cu)
+    # Tests that link hip::device transitively (rocthrust, etc.) — they already
+    # get -x hip and --offload-arch from the imported target.
+    set(GPU_TESTS_WITH_HIP_DEVICE gpu_for_all)
 
-        # Set include directories
+    function(add_gpu_test test_name)
+        add_executable(${test_name} ${test_name}.cu)
         target_include_directories(${test_name} PRIVATE ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR} ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
 
         set_property(TARGET ${test_name} PROPERTY POSITION_INDEPENDENT_CODE OFF)
         target_compile_options(${test_name} PRIVATE -fno-pie -fno-PIE)
         target_link_options(${test_name} PRIVATE -no-pie -fno-pie -fno-PIE)
 
-        # Link with CUDA libraries
+        arts_link_gpu_library(${test_name})
         target_link_libraries(${test_name} PRIVATE
-            Threads::Threads
-            ${RT_LIBRARY}
-            ${M_LIBRARY}
-            ${ANL_LIBRARY}
-            CUDA::cudart
-            CUDA::cuda_driver
-            CUDA::cublas
-        )
+            Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY} ${GPU_LINK_LIBS})
 
-        # Use the CUDA-enabled ARTS library
-        if(TARGET arts_cuda_shared)
-            target_link_libraries(${test_name} PRIVATE arts_cuda_shared)
-        elseif(TARGET arts_cuda_static)
-            target_link_libraries(${test_name} PRIVATE arts_cuda_static)
-        else()
-            message(FATAL_ERROR "No CUDA ARTS library target found")
+        set(_skip_flags)
+        if(${test_name} IN_LIST GPU_TESTS_WITH_HIP_DEVICE)
+            set(_skip_flags SKIP_HIPCC_FLAGS)
         endif()
+        arts_gpu_set_cu_sources(${test_name} ${_skip_flags} ${test_name}.cu)
     endfunction()
 
-    # Create CUDA test executables
-    foreach(cuda_test ${CUDA_TEST_PROGRAMS})
-        add_cuda_test(${cuda_test})
+    # Create GPU test executables
+    foreach(gpu_test ${GPU_TEST_PROGRAMS})
+        add_gpu_test(${gpu_test})
     endforeach()
 
-    message(STATUS "CUDA test programs will be built")
+    # gpu_lib test: needs BLAS library (cuBLAS on NVIDIA, hipBLAS on AMD)
+    if(GPU_PLATFORM STREQUAL "NVIDIA")
+        target_link_libraries(gpu_lib PRIVATE CUDA::cublas)
+    elseif(GPU_PLATFORM STREQUAL "AMD")
+        find_library(HIPBLAS_LIBRARY hipblas HINTS ENV ROCM_PATH PATH_SUFFIXES lib)
+        if(HIPBLAS_LIBRARY)
+            target_link_libraries(gpu_lib PRIVATE ${HIPBLAS_LIBRARY})
+        else()
+            message(WARNING "hipBLAS not found — gpu_lib test may fail to link")
+        endif()
+    endif()
+
+    # gpu_for_all test: needs Thrust (rocThrust on AMD, CUDA Thrust on NVIDIA)
+    if(GPU_PLATFORM STREQUAL "AMD")
+        find_package(rocthrust QUIET CONFIG HINTS ENV ROCM_PATH)
+        if(rocthrust_FOUND)
+            target_link_libraries(gpu_for_all PRIVATE roc::rocthrust)
+        else()
+            message(WARNING "rocThrust not found — gpu_for_all test may fail to link")
+        endif()
+    endif()
+
+    message(STATUS "GPU test programs will be built (${GPU_PLATFORM})")
 else()
-    message(STATUS "CUDA test programs will not be built (CUDA not available)")
+    message(STATUS "GPU test programs will not be built (GPU not available)")
 endif()
 
 ###############################################################################
@@ -377,7 +390,7 @@ register_multinode_test(multinode_db_advanced)
 
 # --- GPU tests ---
 
-if(BUILD_CUDA_LIBRARY)
+if(BUILD_GPU_LIBRARY)
     register_gpu_test(gpu_edt_basic)
     register_gpu_test(gpu_edt_dep)
     register_gpu_test(gpu_edt_with_guid)

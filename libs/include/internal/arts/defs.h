@@ -99,8 +99,9 @@
 #endif
 
 /** 128-bit unsigned integer type (used for 128-bit CAS in lock-free queues).
- *  Not available under NVCC — CUDA does not support 128-bit integers. */
-#ifndef __CUDACC__
+ *  Not available under NVCC/HIPCC — device compilers do not support
+ *  128-bit integers. */
+#if !defined(__CUDACC__) && !defined(__HIPCC__)
 __extension__ typedef unsigned __int128 arts_uint128_t;
 #endif
 

@@ -81,10 +81,8 @@
  * This core is used by both the single_cpu and star_single_cpu tests.
  */
 
-#include <cuda_runtime_api.h>
 #include <stdlib.h>
 
-#include "arts.h"
 #include "arts/gpu.h"
 #include "arts/gpu/gpu_stream.h"
 #include "arts/runtime_state.h"
@@ -235,7 +233,7 @@ __global__ void update_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  // uint64_t gpu_id = GET_GPU_INDEX();
+  // uint64_t gpu_id = ARTS_GPU_INDEX();
   // arts_printf("Hello from %lu\n", gpu_id);
   uint64_cu_t tile_size = paramv[0];
   uint64_cu_t num_tiles = paramv[1];
@@ -292,9 +290,9 @@ void random_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     dim3 grid(MAXTHREADBLOCKSPERSM * NUMBEROFSM, 1, 1);
     void *kernel_args[] = {&start_index, &num_random, &num_tiles,
                            &tile_size,   &table_size, &r_array};
-    CHECKCORRECT(cudaLaunchKernel((const void *)hpcc_starts, grid, block,
-                                  (void **)kernel_args));
-    cudaDeviceSynchronize();
+    ARTS_GPU_CHECK(hipLaunchKernel((const void *)hpcc_starts, grid, block,
+                                   (void **)kernel_args, 0, 0));
+    hipDeviceSynchronize();
 
     // Get random counts
     unsigned int elems_to_copy = num_tiles; // + numRandom;

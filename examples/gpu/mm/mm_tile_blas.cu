@@ -40,10 +40,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <cublas_v2.h>
-#include <cuda_runtime_api.h>
+#include <hipblas/hipblas.h>
 
-#include "arts.h"
 #include "arts/gpu.h"
 
 #include "mm_util.h"
@@ -71,7 +69,7 @@ double *c_matrix = NULL;
 arts_guid_t a_tile_guids = NULL_GUID;
 arts_guid_t b_tile_guids = NULL_GUID;
 
-cublasHandle_t *handle;
+hipblasHandle_t *handle;
 
 void multiply_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
@@ -99,7 +97,7 @@ void multiply_mm(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   double alpha = 1.0;
   double beta = 0.0;
 
-  cublasDgemm(handle[arts_get_gpu_id()], CUBLAS_OP_N, CUBLAS_OP_N, tile_size,
+  hipblasDgemm(handle[arts_get_gpu_id()], HIPBLAS_OP_N, HIPBLAS_OP_N, tile_size,
               tile_size, tile_size, &alpha, a_tile_dev, tile_size, b_tile_dev,
               tile_size, &beta, c_tile_dev, tile_size);
 
@@ -282,7 +280,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 extern "C" void arts_init_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream, int argc,
+                                  hipStream_t *stream, int argc,
                                   const char *argv) {
   (void)node_id;
   (void)stream;
@@ -290,17 +288,17 @@ extern "C" void arts_init_per_gpu(unsigned int node_id, int dev_id,
   (void)argv;
   if (!dev_id) {
     handle =
-        (cublasHandle_t *)calloc(arts_get_num_gpus(), sizeof(cublasHandle_t));
+        (hipblasHandle_t *)calloc(arts_get_num_gpus(), sizeof(hipblasHandle_t));
   }
-  cublasStatus_t stat = cublasCreate(&handle[dev_id]);
+  hipblasStatus_t stat = hipblasCreate(&handle[dev_id]);
   (void)stat;
 }
 
 extern "C" void arts_fini_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream) {
+                                  hipStream_t *stream) {
   (void)node_id;
   (void)stream;
-  cublasStatus_t stat = cublasDestroy(handle[dev_id]);
+  hipblasStatus_t stat = hipblasDestroy(handle[dev_id]);
   (void)stat;
 }
 

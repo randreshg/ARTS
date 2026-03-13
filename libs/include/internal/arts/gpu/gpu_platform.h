@@ -36,67 +36,28 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_GPU_GPUSTREAMBUFFER_H
-#define ARTS_GPU_GPUSTREAMBUFFER_H
+#ifndef ARTS_GPU_PLATFORM_H
+#define ARTS_GPU_PLATFORM_H
 
-#include "arts/gpu/gpu_platform.h"
+#include <hip/hip_runtime.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "arts/system/print.h"
 
-#include "arts/gpu/gpu_lc_sync_functions.cuh"
+/* Unified GPU error checking macro.
+   Replaces the CUDA-specific CHECKCORRECT in gpu_stream.h. */
+#define ARTS_GPU_CHECK(x)                                               \
+  do {                                                                  \
+    hipError_t _err = (x);                                              \
+    if (_err != hipSuccess)                                             \
+      ARTS_ERROR("GPU error: %s: %s", #x, hipGetErrorString(_err));    \
+  } while (0)
 
-typedef struct {
-  void *dst;
-  void *src;
-  size_t count;
-} arts_buffer_mem_move_t;
+/* Keep CHECKCORRECT as an alias during transition so that
+   out-of-tree user code calling CHECKCORRECT still compiles. */
+#define CHECKCORRECT ARTS_GPU_CHECK
 
-typedef struct {
-  uint32_t paramc;
-  const uint64_t *paramv;
-  uint32_t depc;
-  arts_edt_dep_t *depv;
-  arts_edt_t fn_ptr;
-  unsigned int grid[3];
-  unsigned int block[3];
-} arts_buffer_kernel_t;
+/* hipLaunchHostFunc has been available since ROCm 3.0 (2019).
+   On NVIDIA via HIP it wraps cudaLaunchHostFunc (stable since CUDA 10.0). */
+#define ARTS_GPU_HAS_LAUNCH_HOST_FUNC 1
 
-bool push_data_to_stream(unsigned int gpu_id, void *dst, void *src,
-                         size_t count, bool buff);
-bool get_data_from_stream(unsigned int gpu_id, void *dst, void *src,
-                          size_t count, bool buff);
-
-bool push_kernel_to_stream(unsigned int gpu_id, uint32_t paramc,
-                           const uint64_t *paramv, uint32_t depc,
-                           arts_edt_dep_t *depv, arts_edt_t fn_ptr, dim3 grid,
-                           dim3 block, bool buff);
-
-bool push_wrap_up_to_stream(unsigned int gpu_id, void *host_closure, bool buff);
-
-bool flush_mem_stream(unsigned int gpu_id, unsigned int *count,
-                      arts_buffer_mem_move_t *buff, hipMemcpyKind kind);
-bool flush_kernel_stream(unsigned int gpu_id);
-bool flush_wrap_up_stream(unsigned int gpu_id);
-
-bool flush_stream(unsigned int gpu_id);
-bool check_streams(bool buff_on);
-
-void reduce_datafrom_gpus(void *dst, unsigned int dst_gpu_id, void *src,
-                          unsigned int src_gpu_id, unsigned int size,
-                          arts_lc_sync_function_gpu_t fn_ptr,
-                          unsigned int element_size, void *db_data);
-void get_data_from_stream_now(unsigned int gpu_id, void *dst, void *src,
-                              size_t count, bool buff);
-void copy_gputo_gpu(void *dst, unsigned int dst_gpu_id, void *src,
-                    unsigned int src_gpu_id, unsigned int size);
-void do_reduction_now(unsigned int gpu_id, void *sink, void *src,
-                      arts_lc_sync_function_gpu_t fn_ptr,
-                      unsigned int element_size, unsigned int size);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* ARTSGPUSTREAMBUFFER_H */
+#endif /* ARTS_GPU_PLATFORM_H */

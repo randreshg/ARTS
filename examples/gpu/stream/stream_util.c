@@ -40,9 +40,6 @@
 
 #include <stdlib.h>
 
-#include <cuda_runtime_api.h>
-
-#include "arts.h"
 #include "arts/gpu.h"
 
 void launch2_kernel_edt(arts_edt_t fun_ptr, unsigned int tile_size,
@@ -58,8 +55,8 @@ void launch2_kernel_edt(arts_edt_t fun_ptr, unsigned int tile_size,
 
   unsigned int num_threads =
       (THREADSPERBLOCK < tile_size) ? THREADSPERBLOCK : tile_size;
-  dim3 threads = {num_threads, 1, 1};
-  dim3 grid = {tile_size / num_threads, 1, 1};
+  arts_dim3_t t = {num_threads, 1, 1};
+  arts_dim3_t g = {tile_size / num_threads, 1, 1};
 
   uint64_t args[] = {0, (uint64_t)scalar};
   arts_gpu_hint_t gpu_hint = {
@@ -69,8 +66,6 @@ void launch2_kernel_edt(arts_edt_t fun_ptr, unsigned int tile_size,
       .slot = 0,
       .data_guid = NULL_GUID,
   };
-  arts_dim3_t g = {grid.x, grid.y, grid.z};
-  arts_dim3_t t = {threads.x, threads.y, threads.z};
   if (scalar != 0) {
     for (unsigned int i = 0; i < tiles; ++i) {
       args[0] = (i + 1 < tiles) ? tile_size : total_size - (i * tile_size);
@@ -105,9 +100,8 @@ void launch3_kernel_edt(arts_edt_t fun_ptr, unsigned int tile_size,
 
   unsigned int num_threads =
       (THREADSPERBLOCK < tile_size) ? THREADSPERBLOCK : tile_size;
-  unsigned int rem_threads = tile_size;
-  dim3 threads = {num_threads, 1, 1};
-  dim3 grid = {tile_size / num_threads, 1, 1};
+  arts_dim3_t t = {num_threads, 1, 1};
+  arts_dim3_t g = {tile_size / num_threads, 1, 1};
 
   uint64_t args[] = {0, (uint64_t)scalar};
   arts_gpu_hint_t gpu_hint = {
@@ -117,8 +111,6 @@ void launch3_kernel_edt(arts_edt_t fun_ptr, unsigned int tile_size,
       .slot = 0,
       .data_guid = NULL_GUID,
   };
-  arts_dim3_t g = {grid.x, grid.y, grid.z};
-  arts_dim3_t t = {threads.x, threads.y, threads.z};
   if (scalar != 0) {
     for (unsigned int i = 0; i < tiles; ++i) {
       args[0] = (i + 1 < tiles) ? tile_size : total_size - (i * tile_size);

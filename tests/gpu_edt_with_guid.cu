@@ -49,9 +49,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <cuda_runtime_api.h>
-
-#include "arts.h"
 #include "arts/gpu.h"
 
 #define N_ELEMENTS 16
@@ -132,7 +129,7 @@ void lib_work(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 extern "C" void arts_init_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream, int argc, char **argv) {
+                                  hipStream_t *stream, int argc, char **argv) {
   (void)node_id;
   (void)dev_id;
   (void)stream;
@@ -166,7 +163,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 extern "C" void arts_fini_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream) {
+                                  hipStream_t *stream) {
   (void)node_id;
   (void)dev_id;
   (void)stream;

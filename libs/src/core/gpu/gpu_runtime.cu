@@ -65,7 +65,7 @@ ARTS_THREAD_LOCAL int arts_current_device_id = -1;
 
 int arts_get_current_gpu() {
   if (arts_current_device_id == -1) {
-    CHECKCORRECT(cudaGetDevice(&arts_current_device_id));
+    ARTS_GPU_CHECK(hipGetDevice(&arts_current_device_id));
   }
 
   return arts_current_device_id;
@@ -73,7 +73,7 @@ int arts_get_current_gpu() {
 
 bool arts_cuda_set_device(int id, bool save) {
   if (arts_current_device_id == -1) {
-    CHECKCORRECT(cudaGetDevice(&arts_current_device_id));
+    ARTS_GPU_CHECK(hipGetDevice(&arts_current_device_id));
   }
 
   if (save) {
@@ -81,7 +81,7 @@ bool arts_cuda_set_device(int id, bool save) {
   }
 
   if (id > -1 && id < arts_node_info.gpu && id != arts_current_device_id) {
-    CHECKCORRECT(cudaSetDevice(id));
+    ARTS_GPU_CHECK(hipSetDevice(id));
     arts_current_device_id = id;
     return true;
   }
@@ -95,26 +95,24 @@ bool arts_cuda_restore_device() {
 
 void *arts_cuda_malloc_host(unsigned int size) {
   void *ptr = NULL;
-  CHECKCORRECT(cudaMallocHost(&ptr, size));
-  // ptr = arts_calloc(1, size);
+  ARTS_GPU_CHECK(hipHostMalloc(&ptr, size, 0));
   if (!ptr) {
-    ARTS_ERROR("CUDA host malloc failed (size=%u)", size);
+    ARTS_ERROR("GPU host malloc failed (size=%u)", size);
   }
   return ptr;
 }
 
 void arts_cuda_free_host(void *ptr) {
   if (ptr) {
-    CHECKCORRECT(cudaFreeHost(ptr));
+    ARTS_GPU_CHECK(hipHostFree(ptr));
   }
-  // arts_free(ptr);
 }
 
 void *arts_cuda_malloc(unsigned int size) {
   void *ptr = NULL;
-  CHECKCORRECT(cudaMalloc(&ptr, size));
+  ARTS_GPU_CHECK(hipMalloc(&ptr, size));
   if (!ptr) {
-    ARTS_ERROR("CUDA device malloc failed (%lu avail)",
+    ARTS_ERROR("GPU device malloc failed (%lu avail)",
                arts_gpus[arts_current_device_id].availGlobalMem);
   }
   return ptr;
@@ -122,16 +120,16 @@ void *arts_cuda_malloc(unsigned int size) {
 
 void arts_cuda_free(void *ptr) {
   if (ptr) {
-    CHECKCORRECT(cudaFree(ptr));
+    ARTS_GPU_CHECK(hipFree(ptr));
   }
 }
 
 void arts_cuda_mem_cpy_from_dev(void *dst, void *src, size_t count) {
-  CHECKCORRECT(cudaMemcpy(dst, src, count, cudaMemcpyDeviceToHost));
+  ARTS_GPU_CHECK(hipMemcpy(dst, src, count, hipMemcpyDeviceToHost));
 }
 
 void arts_cuda_mem_cpy_to_dev(void *dst, void *src, size_t count) {
-  CHECKCORRECT(cudaMemcpy(dst, src, count, cudaMemcpyHostToDevice));
+  ARTS_GPU_CHECK(hipMemcpy(dst, src, count, hipMemcpyHostToDevice));
 }
 
 arts_dim3_t *arts_get_gpu_grid() { return arts_local_grid; }
@@ -305,12 +303,10 @@ bool arts_gpu_scheduler_loop() {
   arts_gpu_t *arts_gpu = NULL;
   arts_handle_new_edts();
 
-  struct arts_edt_s *edt_found = (struct arts_edt_s *)NULL;
-  if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-            arts_thread_info.my_gpu_deque))) {
-    if (!edt_found) {
-      edt_found = arts_runtime_steal_gpu_task();
-    }
+  struct arts_edt_s *edt_found = (struct arts_edt_s *)arts_deque_pop_front(
+      arts_thread_info.my_gpu_deque);
+  if (!edt_found) {
+    edt_found = arts_runtime_steal_gpu_task();
   }
 
   bool ran_gpu_edt = false;
@@ -356,12 +352,10 @@ bool arts_gpu_scheduler_backoff_loop() {
   arts_gpu_t *arts_gpu = NULL;
   arts_handle_new_edts();
 
-  struct arts_edt_s *edt_found = (struct arts_edt_s *)NULL;
-  if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-            arts_thread_info.my_gpu_deque))) {
-    if (!edt_found) {
-      edt_found = arts_runtime_steal_gpu_task();
-    }
+  struct arts_edt_s *edt_found = (struct arts_edt_s *)arts_deque_pop_front(
+      arts_thread_info.my_gpu_deque);
+  if (!edt_found) {
+    edt_found = arts_runtime_steal_gpu_task();
   }
 
   bool ran_gpu_edt = false;
@@ -421,12 +415,10 @@ bool arts_gpu_scheduler_demand_loop() {
   arts_gpu_t *arts_gpu = NULL;
   arts_handle_new_edts();
 
-  struct arts_edt_s *edt_found = (struct arts_edt_s *)NULL;
-  if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-            arts_thread_info.my_gpu_deque))) {
-    if (!edt_found) {
-      edt_found = arts_runtime_steal_gpu_task();
-    }
+  struct arts_edt_s *edt_found = (struct arts_edt_s *)arts_deque_pop_front(
+      arts_thread_info.my_gpu_deque);
+  if (!edt_found) {
+    edt_found = arts_runtime_steal_gpu_task();
   }
 
   bool ran_gpu_edt = false;
@@ -478,13 +470,13 @@ void arts_put_in_db_from_gpu(void *ptr, arts_guid_t db_guid,
     if (db) {
       void *data = (void *)(((char *)(db + 1)) + offset);
       // memcpy(data, ptr, size);
-      CHECKCORRECT(cudaMemcpyAsync(data, ptr, size, cudaMemcpyDeviceToHost,
+      ARTS_GPU_CHECK(hipMemcpyAsync(data, ptr, size, hipMemcpyDeviceToHost,
                                    *arts_local_stream));
       arts_route_table_return_db(db_guid, false);
     } else {
       void *cpy_ptr = arts_malloc(size);
       // memcpy(cpy_ptr, ptr, size);
-      CHECKCORRECT(cudaMemcpyAsync(cpy_ptr, ptr, size, cudaMemcpyDeviceToHost,
+      ARTS_GPU_CHECK(hipMemcpyAsync(cpy_ptr, ptr, size, hipMemcpyDeviceToHost,
                                    *arts_local_stream));
       arts_out_of_order_put_in_db(cpy_ptr, NULL_GUID, db_guid, 0, offset, size,
                                   NULL_GUID);

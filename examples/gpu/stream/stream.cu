@@ -84,7 +84,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <cuda_runtime_api.h>
+#include <hip/hip_runtime.h>
 
 #include "arts.h"
 #include "arts/gas/guid.h"

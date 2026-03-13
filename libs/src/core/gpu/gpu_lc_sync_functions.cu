@@ -36,9 +36,11 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#include "arts/gpu/gpu_platform.h"
+
 #include "arts/gpu/gpu_lc_sync_functions.cuh"
 
-#include <cuda_runtime_api.h>
+#include <string.h>
 
 #include "arts.h"
 #include "arts/gpu/gpu_route_table.h"
@@ -87,14 +89,14 @@ inline void arts_print_db_meta_data(arts_lc_meta_t *db) {
 }
 
 void arts_memcpy_gpu_db(arts_lc_meta_t *host, arts_lc_meta_t *dev) {
-  unsigned int host_version = version_lock(host);
+  version_lock(host);
   memcpy(host->data, dev->data, host->data_size);
   *host->host_time_stamp = dev->gpu_time_stamp;
   version_unlock(host);
 }
 
 void arts_get_latest_gpu_db(arts_lc_meta_t *host, arts_lc_meta_t *dev) {
-  unsigned int host_version = version_lock(host);
+  version_lock(host);
   if (*host->host_time_stamp < dev->gpu_time_stamp) {
     memcpy(host->data, dev->data, host->data_size);
     host->gpu_version = dev->gpu_version;
@@ -127,7 +129,7 @@ void arts_get_non_zeros_unsigned_int(arts_lc_meta_t *host,
   unsigned int num_elem = host->data_size / sizeof(unsigned int);
   unsigned int *dst = (unsigned int *)host->data;
   unsigned int *src = (unsigned int *)dev->data;
-  unsigned int host_version = version_lock(host);
+  version_lock(host);
   for (unsigned int i = 0; i < num_elem; i++) {
     ARTS_DEBUG("src: %u dest: %u", src[i], dst[i]);
     if (src[i]) {
@@ -138,51 +140,39 @@ void arts_get_non_zeros_unsigned_int(arts_lc_meta_t *host,
 }
 
 void arts_get_min_db_unsigned_int(arts_lc_meta_t *host, arts_lc_meta_t *dev) {
-  unsigned int count = 0;
-  unsigned int count2 = 0;
   unsigned int num_elem = host->data_size / sizeof(unsigned int);
   unsigned int *dst = (unsigned int *)host->data;
   unsigned int *src = (unsigned int *)dev->data;
-  unsigned int host_version = version_lock(host);
+  version_lock(host);
   for (unsigned int i = 0; i < num_elem; i++) {
     if (src[i] < dst[i]) {
       ARTS_DEBUG("src: %u dst: %u", src[i], dst[i]);
       dst[i] = src[i];
-      count++;
-    }
-    if (src[i] != (unsigned int)-1) {
-      count2++;
     }
   }
-  ARTS_DEBUG("%lu %u %u", host->guid, count, count2);
   version_unlock(host);
 }
 
 void arts_add_db_unsigned_int(arts_lc_meta_t *host, arts_lc_meta_t *dev) {
-  unsigned int count = 0;
   unsigned int num_elem = host->data_size / sizeof(unsigned int);
   unsigned int *dst = (unsigned int *)host->data;
   unsigned int *src = (unsigned int *)dev->data;
-  unsigned int host_version = version_lock(host);
+  version_lock(host);
   for (unsigned int i = 0; i < num_elem; i++) {
     dst[i] += src[i];
   }
-  ARTS_DEBUG("%lu %u", host->guid, count);
   version_unlock(host);
 }
 
 void arts_xor_db_uint64(arts_lc_meta_t *host, arts_lc_meta_t *dev) {
-  unsigned int count = 0;
   unsigned int num_elem = host->data_size / sizeof(uint64_t);
   uint64_t *dst = (uint64_t *)host->data;
   uint64_t *src = (uint64_t *)dev->data;
-  uint64_t host_version = version_lock(host);
+  version_lock(host);
   for (unsigned int i = 0; i < num_elem; i++) {
     ARTS_DEBUG("xor[%u]: %lu -- %lu = %lu", i, dst[i], src[i], dst[i] ^ src[i]);
     dst[i] ^= src[i];
-    count++;
   }
-  ARTS_DEBUG("%lu %u", host->guid, count);
   version_unlock(host);
 }
 

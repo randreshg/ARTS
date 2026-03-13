@@ -37,33 +37,12 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Create stream CUDA example
+# Create stream GPU example
 add_executable(stream stream.cu stream_util.c)
-
-# Set include directories
 target_include_directories(stream PRIVATE
-    ${ARTS_PUBLIC_INCLUDE_DIR}
-    ${ARTS_INTERNAL_INCLUDE_DIR}
-    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-# Link with CUDA libraries
-target_link_libraries(stream PRIVATE 
-    Threads::Threads 
-    ${RT_LIBRARY} 
-    ${M_LIBRARY} 
-    ${ANL_LIBRARY} 
-    CUDA::cudart 
-    CUDA::cuda_driver 
-    CUDA::cublas
-)
-
-# Use the CUDA-enabled ARTS library
-if(TARGET arts_cuda_shared)
-    target_link_libraries(stream PRIVATE arts_cuda_shared)
-elseif(TARGET arts_cuda_static)
-    target_link_libraries(stream PRIVATE arts_cuda_static)
-else()
-    message(FATAL_ERROR "No CUDA ARTS library target found for stream")
-endif()
+    ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+arts_link_gpu_library(stream)
+target_link_libraries(stream PRIVATE
+    Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY} ${GPU_LINK_LIBS})
+arts_gpu_set_cu_sources(stream stream.cu)

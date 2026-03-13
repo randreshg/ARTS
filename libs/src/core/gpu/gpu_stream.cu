@@ -98,17 +98,17 @@ ARTS_THREAD_LOCAL arts_array_list_t *new_edts = NULL;
 // We still want to collect them for scheduling purposes
 ARTS_THREAD_LOCAL arts_dim3_t *arts_local_grid;
 ARTS_THREAD_LOCAL arts_dim3_t *arts_local_block;
-ARTS_THREAD_LOCAL cudaStream_t *arts_local_stream;
+ARTS_THREAD_LOCAL hipStream_t *arts_local_stream;
 ARTS_THREAD_LOCAL int arts_local_gpu_id;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 extern void arts_init_per_gpu(unsigned int node_id, int dev_id,
-                              cudaStream_t *stream, int argc,
+                              hipStream_t *stream, int argc,
                               char **argv) ARTS_WEAK_IMPORT;
 extern void arts_fini_per_gpu(unsigned int node_id, int dev_id,
-                              cudaStream_t *stream) ARTS_WEAK_IMPORT;
+                              hipStream_t *stream) ARTS_WEAK_IMPORT;
 #ifdef __cplusplus
 }
 #endif
@@ -127,14 +127,14 @@ void arts_fully_connect_gpus(bool p2p, bool disconnect_p2p) {
       for (unsigned int dst = 0; dst < arts_node_info.gpu; dst++) {
         if (src != dst) {
           int has_access = 0;
-          CHECKCORRECT(
-              cudaDeviceCanAccessPeer(&has_access, (int)src, (int)dst));
+          ARTS_GPU_CHECK(
+              hipDeviceCanAccessPeer(&has_access, (int)src, (int)dst));
           if (has_access) {
             if (disconnect_p2p) {
-              CHECKCORRECT(cudaDeviceDisablePeerAccess((int)dst));
+              ARTS_GPU_CHECK(hipDeviceDisablePeerAccess((int)dst));
             } else {
               gpu_adj_list[src][dst] = 1;
-              CHECKCORRECT(cudaDeviceEnablePeerAccess((int)dst, 0));
+              ARTS_GPU_CHECK(hipDeviceEnablePeerAccess((int)dst, 0));
             }
           }
         }
@@ -147,7 +147,7 @@ void arts_node_init_gpus() {
   int num_avail_gpus = 0;
   locality = locality_scheme[arts_node_info.gpu_locality];
   fit = fit_scheme[arts_node_info.gpu_fit];
-  CHECKCORRECT(cudaGetDeviceCount(&num_avail_gpus));
+  ARTS_GPU_CHECK(hipGetDeviceCount(&num_avail_gpus));
   if (num_avail_gpus < (int)arts_node_info.gpu) {
     ARTS_INFO("Requested %d gpus but only %d available\n", num_avail_gpus,
               arts_node_info.gpu);
@@ -173,16 +173,16 @@ void arts_node_init_gpus() {
     arts_gpus[i].device = (int)i;
     ARTS_DEBUG("Setting %u\n", i);
     arts_cuda_set_device((int)i, false);
-    CHECKCORRECT(cudaStreamCreate(&arts_gpus[i].stream)); // Make it scalable
+    ARTS_GPU_CHECK(hipStreamCreate(&arts_gpus[i].stream)); // Make it scalable
     arts_node_info.gpu_route_table[i] =
         arts_gpu_new_route_table(arts_node_info.gpu_route_table_entries,
                                  arts_node_info.gpu_route_table_size);
     size_t temp_free_mem = 0;
     size_t temp_max_mem = 0;
-    CHECKCORRECT(
-        cudaMemGetInfo((size_t *)&temp_free_mem, (size_t *)&temp_max_mem));
-    CHECKCORRECT(
-        cudaGetDeviceProperties(&arts_gpus[i].prop, arts_gpus[i].device));
+    ARTS_GPU_CHECK(
+        hipMemGetInfo((size_t *)&temp_free_mem, (size_t *)&temp_max_mem));
+    ARTS_GPU_CHECK(
+        hipGetDeviceProperties(&arts_gpus[i].prop, arts_gpus[i].device));
     arts_gpus[i].availGlobalMem = (uint64_t)temp_free_mem;
     arts_gpus[i].totalGlobalMem = (uint64_t)temp_max_mem;
     if (arts_gpus[i].availGlobalMem > arts_node_info.gpu_max_memory) {
@@ -250,8 +250,8 @@ void arts_cleanup_gpus() {
       arts_fini_per_gpu(arts_global_rank_id, (int)i, &arts_gpus[i].stream);
     }
     freed_size += arts_gpu_free_all((unsigned int)arts_gpus[i].device);
-    CHECKCORRECT(cudaStreamSynchronize(arts_gpus[i].stream));
-    CHECKCORRECT(cudaStreamDestroy(arts_gpus[i].stream));
+    ARTS_GPU_CHECK(hipStreamSynchronize(arts_gpus[i].stream));
+    ARTS_GPU_CHECK(hipStreamDestroy(arts_gpus[i].stream));
   }
   arts_cuda_restore_device();
   ARTS_INFO("Occupancy :\n");
@@ -263,7 +263,7 @@ void arts_cleanup_gpus() {
   ARTS_INFO("HIT RATIO: %lf\n", (double)hits / (double)(hits + misses));
 }
 
-void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
+void arts_wrap_up(hipStream_t stream, hipError_t status, void *data) {
   (void)stream;
   (void)status;
 
@@ -311,12 +311,12 @@ void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
   new_edt_lock = gc->newEdtLock;
   new_edts = gc->newEdts;
   arts_gpu_host_wrap_up(gc->edt, edt->end_guid, edt->slot, edt->data_guid);
-  ARTS_DEBUG("FINISHED GPU CALLS %s\n", cudaGetErrorString(status));
+  ARTS_DEBUG("FINISHED GPU CALLS %s\n", hipGetErrorString(status));
   // artsToggleThreadInspection();
 }
 
 void arts_wrap_up_host_func(void *data) {
-  arts_wrap_up(NULL, cudaSuccess, data);
+  arts_wrap_up(NULL, hipSuccess, data);
 }
 
 void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
@@ -477,7 +477,7 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
 
     arts_unset_thread_local_edt_info();
     /* Release DBs created during the lib function NOW, on the worker thread.
-       The wrap-up callback runs on the CUDA callback thread whose TLS
+       The wrap-up callback runs on the GPU callback thread whose TLS
        created_db_list is empty, so arts_release_created_dbs() there would be
        a no-op — leaving frontiers un-progressed and consumer EDTs stuck. */
     arts_release_created_dbs();
@@ -515,11 +515,11 @@ void arts_schedule_to_gpu(arts_edt_t fn_ptr, uint32_t paramc,
 }
 
 void arts_gpu_synchronize(arts_gpu_t *arts_gpu) {
-  CHECKCORRECT(cudaStreamSynchronize(arts_gpu->stream));
+  ARTS_GPU_CHECK(hipStreamSynchronize(arts_gpu->stream));
 }
 
 void arts_gpu_stream_busy(arts_gpu_t *arts_gpu) {
-  CHECKCORRECT(cudaStreamQuery(arts_gpu->stream));
+  ARTS_GPU_CHECK(hipStreamQuery(arts_gpu->stream));
 }
 
 void free_gpu_item(arts_route_item_t *item) {

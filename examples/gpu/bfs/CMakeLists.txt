@@ -37,40 +37,33 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Function to create a BFS CUDA example
-function(add_bfs_cuda_example example_name)
+# rocthrust: find once outside the loop
+if(GPU_PLATFORM STREQUAL "AMD")
+    find_package(rocthrust REQUIRED)
+endif()
+
+function(add_bfs_gpu_example example_name)
     add_executable(gpu${example_name} ${ARGN})
-
-    # Set include directories
     target_include_directories(gpu${example_name} PRIVATE
-        ${ARTS_PUBLIC_INCLUDE_DIR}
-        ${ARTS_INTERNAL_INCLUDE_DIR}
-        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-
-    # Link with runtime libraries
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+    arts_link_gpu_library(gpu${example_name})
     target_link_libraries(gpu${example_name} PRIVATE
-        Threads::Threads
-        ${RT_LIBRARY}
-        ${M_LIBRARY}
-        ${ANL_LIBRARY}
-        CUDA::cudart
-        CUDA::cuda_driver
-        CUDA::cublas
-    )
-    
-    # Use the CUDA-enabled ARTS library
-    if(TARGET arts_cuda_shared)
-        target_link_libraries(gpu${example_name} PRIVATE arts_cuda_shared)
-    elseif(TARGET arts_cuda_static)
-        target_link_libraries(gpu${example_name} PRIVATE arts_cuda_static)
-    else()
-        message(FATAL_ERROR "No CUDA ARTS library target found for gpu${example_name}")
+        Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY} ${GPU_LINK_LIBS})
+
+    if(GPU_PLATFORM STREQUAL "AMD")
+        target_link_libraries(gpu${example_name} PRIVATE roc::rocthrust)
     endif()
+
+    # rocthrust links hip::device which already provides -x hip and --offload-arch
+    set(_skip_flags)
+    if(GPU_PLATFORM STREQUAL "AMD")
+        set(_skip_flags SKIP_HIPCC_FLAGS)
+    endif()
+    arts_gpu_set_cu_sources(gpu${example_name} ${_skip_flags} RDC ${ARGN})
 endfunction()
 
-# Create BFS CUDA examples
-add_bfs_cuda_example(bfs bfs.cu graph_util.cu bins.c)
-add_bfs_cuda_example(bfs_hybrid bfs_hybrid.cu graph_util.cu bins.c)
-add_bfs_cuda_example(bfs_hybrid_buffer bfs_hybrid_buffer.cu graph_util.cu buffer.c bins.c)
+# Create BFS GPU examples
+add_bfs_gpu_example(bfs bfs.cu graph_util.cu bins.c)
+add_bfs_gpu_example(bfs_hybrid bfs_hybrid.cu graph_util.cu bins.c)
+add_bfs_gpu_example(bfs_hybrid_buffer bfs_hybrid_buffer.cu graph_util.cu buffer.c bins.c)

@@ -46,11 +46,13 @@
  */
 #ifndef ARTS_GPU_INTERNAL_H
 #define ARTS_GPU_INTERNAL_H
+
+#include "arts/gpu/gpu_stream.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "arts/gpu/gpu_stream.h"
 #include "arts/runtime_types.h"
 
 /**

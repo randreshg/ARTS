@@ -56,11 +56,11 @@ if(HWLOC_INCLUDE_DIRS)
     target_include_directories(arts_scheduler PRIVATE ${HWLOC_INCLUDE_DIRS})
 endif()
 
-# GPU module is only built for CUDA library
-if(BUILD_CUDA_LIBRARY)
+# GPU module is only built for GPU library
+if(BUILD_GPU_LIBRARY)
     add_subdirectory(gpu)
 
-    # GPU variant of scheduler (wraps scheduler.c as .cu for NVCC)
+    # GPU variant of scheduler (wraps scheduler.c as .cu for device compiler)
     set(SCHED_PATH "${CMAKE_CURRENT_SOURCE_DIR}/scheduler.c")
     set(SCHED_WRAPPER ${CMAKE_CURRENT_BINARY_DIR}/scheduler_gpu.cu)
     file(WRITE ${SCHED_WRAPPER} "#include \"${SCHED_PATH}\"\n")
@@ -71,4 +71,6 @@ if(BUILD_CUDA_LIBRARY)
         target_include_directories(arts_scheduler_gpu PRIVATE ${HWLOC_INCLUDE_DIRS})
     endif()
     target_compile_definitions(arts_scheduler_gpu PRIVATE ARTS_USE_GPU)
+
+    arts_gpu_set_cu_sources(arts_scheduler_gpu ${SCHED_WRAPPER})
 endif()

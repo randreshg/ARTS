@@ -39,8 +39,8 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
-#include "arts.h"
 #include "arts/gpu.h"
 
 #define ARRAYSIZE (1024 * 1024)

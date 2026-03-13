@@ -10,12 +10,11 @@ if(HWLOC_INCLUDE_DIRS)
     target_include_directories(arts_compute PRIVATE ${HWLOC_INCLUDE_DIRS})
 endif()
 
-# GPU-specific object library: generate a small .cu wrapper so NVCC compiles
-# the required translation unit(s) while keeping the original .c files
-# available for the CPU object library.
-if(BUILD_CUDA_LIBRARY)
-  set(EDT_SOURCE "edt.c")
-  set(EDT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${EDT_SOURCE}")
+# GPU-specific object library: generate a small .cu wrapper so the device
+# compiler compiles the required translation unit(s) while keeping the
+# original .c files available for the CPU object library.
+if(BUILD_GPU_LIBRARY)
+  set(EDT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/edt.c")
   set(EDT_WRAPPER ${CMAKE_CURRENT_BINARY_DIR}/edt_gpu.cu)
   file(WRITE ${EDT_WRAPPER} "#include \"${EDT_PATH}\"\n")
 
@@ -29,4 +28,6 @@ if(BUILD_CUDA_LIBRARY)
     target_include_directories(arts_compute_gpu PRIVATE ${HWLOC_INCLUDE_DIRS})
   endif()
   target_compile_definitions(arts_compute_gpu PRIVATE ARTS_USE_GPU)
+
+  arts_gpu_set_cu_sources(arts_compute_gpu ${EDT_WRAPPER})
 endif()

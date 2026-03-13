@@ -46,13 +46,11 @@
 
 #include <algorithm>
 
-#include <cuda_runtime_api.h>
 #include <thrust/binary_search.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <thrust/unique.h>
 
-#include "arts.h"
 #include "arts/gpu.h"
 #include "arts/utils/atomics.h"
 
@@ -717,7 +715,7 @@ void init_node(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 extern "C" void arts_init_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream, int argc,
+                                  hipStream_t *stream, int argc,
                                   const char *argv) {
   (void)node_id;
   (void)stream;
@@ -749,7 +747,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 extern "C" void arts_fini_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream) {
+                                  hipStream_t *stream) {
   (void)node_id;
   (void)stream;
   free_buffers_on_gpu(dev_id);

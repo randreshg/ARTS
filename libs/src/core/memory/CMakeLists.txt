@@ -11,9 +11,8 @@ if(HWLOC_INCLUDE_DIRS)
 endif()
 
 # GPU-specific object library
-if(BUILD_CUDA_LIBRARY)
-    set(DB_SOURCE "db.c")
-    set(DB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${DB_SOURCE}")
+if(BUILD_GPU_LIBRARY)
+    set(DB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/db.c")
     set(DB_WRAPPER ${CMAKE_CURRENT_BINARY_DIR}/db_gpu.cu)
     file(WRITE ${DB_WRAPPER} "#include \"${DB_PATH}\"\n")
 
@@ -27,4 +26,6 @@ if(BUILD_CUDA_LIBRARY)
         target_include_directories(arts_memory_gpu PRIVATE ${HWLOC_INCLUDE_DIRS})
     endif()
     target_compile_definitions(arts_memory_gpu PRIVATE ARTS_USE_GPU)
+
+    arts_gpu_set_cu_sources(arts_memory_gpu ${DB_WRAPPER})
 endif()

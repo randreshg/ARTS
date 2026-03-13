@@ -243,7 +243,7 @@ if(BUILD_CUDA_LIBRARY)
         # Add CUDA compile definition for this target
         target_compile_definitions(arts_cuda_static PRIVATE ARTS_USE_GPU)
 
-        # Link external dependencies and CUDA libraries
+        # Link external dependencies and GPU libraries
         target_link_libraries(arts_cuda_static PRIVATE
             Threads::Threads
             ${RT_LIBRARY}
@@ -251,10 +251,14 @@ if(BUILD_CUDA_LIBRARY)
             ${ANL_LIBRARY}
             ${RDMACM_LIBRARIES}
             $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
-            CUDA::cudart
-            CUDA::cuda_driver
-            CUDA::cublas
+            ${HWLOC_PRIVATE_LIBS}
+            ${GPU_LINK_LIBS}
         )
+
+        # When using hipcc, exclude sanitizer flags from this GPU target
+        if(GPU_USE_HIPCC AND ARTS_USE_SANITIZERS)
+            target_compile_options(arts_cuda_static PRIVATE ${GPU_SANITIZER_EXCLUDE_FLAGS})
+        endif()
 
         if(ARTS_ATOMIC_LIBRARY)
             target_link_libraries(arts_cuda_static PRIVATE ${ARTS_ATOMIC_LIBRARY})
@@ -312,7 +316,7 @@ if(BUILD_CUDA_LIBRARY)
         # Add CUDA compile definition for this target
         target_compile_definitions(arts_cuda_shared PRIVATE ARTS_USE_GPU)
 
-        # Link external dependencies and CUDA libraries
+        # Link external dependencies and GPU libraries
         target_link_libraries(arts_cuda_shared PRIVATE
             Threads::Threads
             ${RT_LIBRARY}
@@ -320,10 +324,14 @@ if(BUILD_CUDA_LIBRARY)
             ${ANL_LIBRARY}
             ${RDMACM_LIBRARIES}
             $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
-            CUDA::cudart
-            CUDA::cuda_driver
-            CUDA::cublas
+            ${HWLOC_PRIVATE_LIBS}
+            ${GPU_LINK_LIBS}
         )
+
+        # When using hipcc, exclude sanitizer flags from this GPU target
+        if(GPU_USE_HIPCC AND ARTS_USE_SANITIZERS)
+            target_compile_options(arts_cuda_shared PRIVATE ${GPU_SANITIZER_EXCLUDE_FLAGS})
+        endif()
 
         # Hide hwloc symbols from shared library exports (GNU ld/lld)
         if(HWLOC_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -355,9 +363,12 @@ endif()
 if(ARTS_BUILD_SHARED)
     add_library(ARTS::arts ALIAS arts_shared)
     add_library(ARTS::shared ALIAS arts_shared)
-    if(BUILD_CUDA_LIBRARY)
+    if(BUILD_GPU_LIBRARY)
         add_library(ARTS::arts_cuda ALIAS arts_cuda_shared)
         add_library(ARTS::cuda_shared ALIAS arts_cuda_shared)
+        # New GPU-named aliases (primary names going forward)
+        add_library(ARTS::arts_gpu ALIAS arts_cuda_shared)
+        add_library(ARTS::gpu_shared ALIAS arts_cuda_shared)
     endif()
 endif()
 
@@ -366,11 +377,16 @@ if(ARTS_BUILD_STATIC)
         add_library(ARTS::arts ALIAS arts_static)
     endif()
     add_library(ARTS::static ALIAS arts_static)
-    if(BUILD_CUDA_LIBRARY)
+    if(BUILD_GPU_LIBRARY)
         if(NOT TARGET ARTS::arts_cuda)
             add_library(ARTS::arts_cuda ALIAS arts_cuda_static)
         endif()
         add_library(ARTS::cuda_static ALIAS arts_cuda_static)
+        # New GPU-named aliases (primary names going forward)
+        if(NOT TARGET ARTS::arts_gpu)
+            add_library(ARTS::arts_gpu ALIAS arts_cuda_static)
+        endif()
+        add_library(ARTS::gpu_static ALIAS arts_cuda_static)
     endif()
 endif()
 
