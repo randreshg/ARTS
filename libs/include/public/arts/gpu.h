@@ -39,11 +39,12 @@
 
 /**
  * @file arts/gpu.h
- * @brief GPU extension API for ARTS (CUDA-free public header).
+ * @brief GPU extension API for ARTS (device-compiler-free public header).
  *
  * This header provides the GPU EDT creation API, device management, and
- * GPU memory utilities.  It is a pure C header — no CUDA types are exposed,
- * so it can be included from any C/C++ translation unit without NVCC.
+ * GPU memory utilities.  It is a pure C header — no CUDA/HIP types are
+ * exposed, so it can be included from any C/C++ translation unit without
+ * NVCC or hipcc.
  *
  * @code
  * #include "arts/gpu.h"
@@ -51,6 +52,15 @@
  */
 #ifndef ARTS_GPU_H
 #define ARTS_GPU_H
+
+/* HIP/CUDA runtime must be included before any extern "C" block because
+   hip_runtime.h pulls in C++ standard headers (templates). */
+#if defined(__HIPCC__) && !defined(__CUDACC__)
+#include <hip/hip_runtime.h>
+#elif defined(__CUDACC__)
+#include <cuda_runtime_api.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -59,10 +69,10 @@ extern "C" {
 
 /* ========================================================================= */
 /** @defgroup gpu_types GPU Types
- *  CUDA-free equivalents of GPU-specific types.
+ *  Device-compiler-free equivalents of GPU-specific types.
  *  @{ */
 
-/** CUDA-free 3D dimension descriptor (equivalent to @c dim3). */
+/** Device-compiler-free 3D dimension descriptor (equivalent to @c dim3). */
 typedef struct {
   unsigned int x;
   unsigned int y;
@@ -95,7 +105,8 @@ typedef struct {
   bool passthrough;      /**< Pass-through mode: forward an input dep as the
                               completion data instead of @c data_guid. */
   bool lib; /**< Library EDT mode: function runs on CPU with GPU stream access,
-                 not as a CUDA kernel.  Use for cuBLAS-style host functions. */
+                 not as a GPU kernel.  Use for cuBLAS/hipBLAS-style host
+                 functions. */
 } arts_gpu_hint_t;
 
 /** @} */ /* end gpu_types */
@@ -108,15 +119,15 @@ typedef struct {
 /**
  * @brief Create a GPU EDT.
  *
- * The EDT executes @p func_ptr as a CUDA kernel (or host function if
+ * The EDT executes @p func_ptr as a GPU kernel (or host function if
  * @c hint->lib is true) once all @p depc dependencies are satisfied.
  *
  * @param func_ptr Function to execute on GPU.
  * @param paramc   Number of static parameters.
  * @param paramv   Array of @p paramc uint64_t values copied into the closure.
  * @param depc     Number of dependency slots.
- * @param grid     CUDA grid dimensions.
- * @param block    CUDA block dimensions.
+ * @param grid     Grid dimensions.
+ * @param block    Block dimensions.
  * @param hint     GPU advisory metadata. NULL = defaults.
  * @return GUID of the newly created GPU EDT.
  */
@@ -135,8 +146,8 @@ arts_guid_t arts_edt_create_gpu(arts_edt_t func_ptr, uint32_t paramc,
  * @param paramc   Number of static parameters.
  * @param paramv   Array of parameters.
  * @param depc     Number of dependency slots.
- * @param grid     CUDA grid dimensions.
- * @param block    CUDA block dimensions.
+ * @param grid     Grid dimensions.
+ * @param block    Block dimensions.
  * @param hint     GPU advisory metadata. NULL = defaults.
  * @return The same @p guid, now associated with the GPU EDT.
  */
@@ -157,7 +168,7 @@ arts_guid_t arts_edt_create_gpu_with_guid(arts_edt_t func_ptr, arts_guid_t guid,
 int arts_get_current_gpu(void);
 
 /**
- * @brief Set the active CUDA device.
+ * @brief Set the active GPU device.
  *
  * @param id   Device index.
  * @param save If true, the previous device is saved for
@@ -166,7 +177,7 @@ int arts_get_current_gpu(void);
  */
 bool arts_cuda_set_device(int id, bool save);
 
-/** @brief Restore the CUDA device saved by arts_cuda_set_device(). */
+/** @brief Restore the GPU device saved by arts_cuda_set_device(). */
 bool arts_cuda_restore_device(void);
 
 /** @brief Return the number of GPUs available on this node. */
@@ -232,7 +243,7 @@ void arts_lc_sync(arts_guid_t edt_guid, uint32_t slot, arts_guid_t data_guid);
 /**
  * @brief Signal an EDT slot with GPU memset (zero-initialize on device).
  *
- * Allocates GPU memory for the DataBlock, zeroes it via @c cudaMemset,
+ * Allocates GPU memory for the DataBlock, zeroes it via @c hipMemset,
  * and signals @p edt_guid at dependency @p slot.
  *
  * @param edt_guid EDT to signal.
@@ -256,10 +267,10 @@ arts_dim3_t *arts_get_gpu_grid(void);
 arts_dim3_t *arts_get_gpu_block(void);
 
 /**
- * @brief Return a pointer to the CUDA stream of the current GPU.
+ * @brief Return a pointer to the GPU stream of the current GPU.
  *
- * The returned pointer is actually a @c cudaStream_t* but is exposed as
- * @c void* to avoid CUDA header dependencies.  Cast to @c cudaStream_t*
+ * The returned pointer is actually a @c hipStream_t* but is exposed as
+ * @c void* to avoid device header dependencies.  Cast to @c hipStream_t*
  * inside @c .cu files.
  */
 void *arts_get_gpu_stream(void);
@@ -270,11 +281,11 @@ int arts_get_gpu_id(void);
 /** @} */ /* end gpu_context */
 
 /* ========================================================================= */
-/** @defgroup gpu_kernel CUDA Kernel Utilities (NVCC only)
+/** @defgroup gpu_kernel GPU Kernel Utilities (NVCC / hipcc only)
  *  Macros available only inside @c .cu translation units.
  *  @{ */
 
-#ifdef __CUDACC__
+#if defined(__CUDACC__) || defined(__HIPCC__)
 /**
  * @brief Retrieve the global thread index inside a GPU kernel.
  *
@@ -283,7 +294,7 @@ int arts_get_gpu_id(void);
  */
 #define ARTS_GPU_INDEX() (*(paramv - 1))
 
-/** @brief Convert a CUDA @c dim3 to an @c arts_dim3_t. */
+/** @brief Convert a device @c dim3 to an @c arts_dim3_t. */
 static inline arts_dim3_t arts_from_dim3(dim3 d) {
   arts_dim3_t r;
   r.x = d.x;

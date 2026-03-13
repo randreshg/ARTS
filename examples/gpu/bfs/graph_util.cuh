@@ -37,7 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include <assert.h>
-#include <cuda_runtime_api.h>
+#include <hip/hip_runtime.h>
 #include <inttypes.h>
 
 #include "arts/graph.h"

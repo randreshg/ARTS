@@ -37,28 +37,10 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Create random_access CUDA example
+# Create random_access GPU example
 add_executable(random_access random_access.cu)
-
-# Set include directories
 target_include_directories(random_access PRIVATE ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR} ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-
-# Link with CUDA libraries
+arts_link_gpu_library(random_access)
 target_link_libraries(random_access PRIVATE
-    Threads::Threads
-    ${RT_LIBRARY}
-    ${M_LIBRARY}
-    ${ANL_LIBRARY}
-    CUDA::cudart
-    CUDA::cuda_driver
-    CUDA::cublas
-)
-
-# Use the CUDA-enabled ARTS library
-if(TARGET arts_cuda_shared)
-    target_link_libraries(random_access PRIVATE arts_cuda_shared)
-elseif(TARGET arts_cuda_static)
-    target_link_libraries(random_access PRIVATE arts_cuda_static)
-else()
-    message(FATAL_ERROR "No CUDA ARTS library target found for random_access")
-endif()
+    Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY} ${GPU_LINK_LIBS})
+arts_gpu_set_cu_sources(random_access random_access.cu)

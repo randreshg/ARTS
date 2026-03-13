@@ -37,8 +37,8 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Matrix multiplication CUDA examples
-set(MM_CUDA_EXAMPLES
+# Matrix multiplication GPU examples
+set(MM_GPU_EXAMPLES
     mm_tile_naive
     mm_tile
     mm_tile_blas
@@ -47,40 +47,50 @@ set(MM_CUDA_EXAMPLES
     mm_tile_red_big
 )
 
-# Function to create a matrix multiplication CUDA example
-function(add_mm_cuda_example example_name)
+# Examples that require BLAS
+set(MM_BLAS_EXAMPLES mm_tile_blas mm_tile_red mm_tile_red_big mm_thrust)
+
+# Examples that require Thrust
+set(MM_THRUST_EXAMPLES mm_thrust)
+
+# Find AMD packages once outside the loop
+if(GPU_PLATFORM STREQUAL "AMD")
+    find_package(hipblas REQUIRED)
+    find_package(rocthrust REQUIRED)
+endif()
+
+function(add_mm_gpu_example example_name)
     add_executable(${example_name} ${example_name}.cu mm_util.c)
-    
-    # Set include directories
     target_include_directories(${example_name} PRIVATE
-        ${ARTS_PUBLIC_INCLUDE_DIR}
-        ${ARTS_INTERNAL_INCLUDE_DIR}
-        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}
-    )
-    
-    # Link with CUDA libraries
-    target_link_libraries(${example_name} PRIVATE 
-        Threads::Threads 
-        ${RT_LIBRARY} 
-        ${M_LIBRARY} 
-        ${ANL_LIBRARY} 
-        CUDA::cudart 
-        CUDA::cuda_driver 
-        CUDA::cublas
-    )
-    
-    # Use the CUDA-enabled ARTS library
-    if(TARGET arts_cuda_shared)
-        target_link_libraries(${example_name} PRIVATE arts_cuda_shared)
-    elseif(TARGET arts_cuda_static)
-        target_link_libraries(${example_name} PRIVATE arts_cuda_static)
-    else()
-        message(FATAL_ERROR "No CUDA ARTS library target found for ${example_name}")
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR})
+    arts_link_gpu_library(${example_name})
+    target_link_libraries(${example_name} PRIVATE
+        Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY} ${GPU_LINK_LIBS})
+
+    if(${example_name} IN_LIST MM_BLAS_EXAMPLES)
+        if(GPU_PLATFORM STREQUAL "AMD")
+            target_link_libraries(${example_name} PRIVATE roc::hipblas)
+        else()
+            target_link_libraries(${example_name} PRIVATE CUDA::cublas)
+        endif()
     endif()
+
+    if(${example_name} IN_LIST MM_THRUST_EXAMPLES)
+        if(GPU_PLATFORM STREQUAL "AMD")
+            target_link_libraries(${example_name} PRIVATE roc::rocthrust)
+        endif()
+    endif()
+
+    # rocthrust links hip::device which already provides -x hip and --offload-arch
+    set(_skip_flags)
+    if(${example_name} IN_LIST MM_THRUST_EXAMPLES AND GPU_PLATFORM STREQUAL "AMD")
+        set(_skip_flags SKIP_HIPCC_FLAGS)
+    endif()
+    arts_gpu_set_cu_sources(${example_name} ${_skip_flags} ${example_name}.cu)
 endfunction()
 
-# Create standard CUDA matrix multiplication examples
-foreach(example ${MM_CUDA_EXAMPLES})
-    add_mm_cuda_example(${example})
+# Create GPU matrix multiplication examples
+foreach(example ${MM_GPU_EXAMPLES})
+    add_mm_gpu_example(${example})
 endforeach()

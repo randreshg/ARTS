@@ -41,30 +41,20 @@
 ## Only built when CUDA library is being created
 ###############################################################################
 
-# Only build if CUDA library is being built
-if(BUILD_CUDA_LIBRARY)
-    # Collect all CUDA source files
+if(BUILD_GPU_LIBRARY)
     file(GLOB GPU_SOURCES "*.cu")
 
-    # Create object library for the GPU module
     add_library(arts_gpu OBJECT ${GPU_SOURCES})
-    
-    # Add ARTS_USE_GPU definition for this module
     target_compile_definitions(arts_gpu PRIVATE ARTS_USE_GPU)
-    
-    # Include directories
     target_include_directories(arts_gpu PRIVATE
-        ${ARTS_PUBLIC_INCLUDE_DIR}
-        ${ARTS_INTERNAL_INCLUDE_DIR}
-        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
-    )
-
-    # Add hwloc include directories if available
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR} ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
     if(HWLOC_INCLUDE_DIRS)
         target_include_directories(arts_gpu PRIVATE ${HWLOC_INCLUDE_DIRS})
     endif()
 
-    message(STATUS "GPU module configured with CUDA support")
+    arts_gpu_set_cu_sources(arts_gpu ${GPU_SOURCES})
+
+    message(STATUS "GPU module configured with ${GPU_PLATFORM} support")
 else()
-    message(STATUS "GPU module skipped - CUDA not available or disabled")
+    message(STATUS "GPU module skipped - GPU not available or disabled")
 endif()

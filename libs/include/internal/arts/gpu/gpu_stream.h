@@ -39,27 +39,17 @@
 #ifndef ARTS_GPU_GPUSTREAM_H
 #define ARTS_GPU_GPUSTREAM_H
 
+#include "arts/gpu/gpu_platform.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <cuda_runtime_api.h>
 
 #include "arts/defs.h"
 #include "arts/gas/route_table.h"
 #include "arts/gpu.h"
 #include "arts/runtime_types.h"
-#include "arts/system/print.h"
 #include "arts/utils/array_list.h"
-
-#define CHECKCORRECT(x)                                                        \
-  do {                                                                         \
-    cudaError_t err;                                                           \
-    if ((err = (x)) != cudaSuccess) {                                          \
-      ARTS_ERROR("CUDA operation failed: %s: %s", #x,                          \
-                 cudaGetErrorString(err));                                     \
-    }                                                                          \
-  } while (0)
 
 typedef struct {
   unsigned int gpu_id;
@@ -73,14 +63,14 @@ typedef struct {
   int device;
   volatile uint64_t availGlobalMem;
   volatile uint64_t totalGlobalMem;
-  struct cudaDeviceProp prop;
+  hipDeviceProp_t prop;
   volatile float occupancy;
   volatile unsigned int deviceLock;
   volatile unsigned int totalEdts;
   volatile unsigned int availableEdtSlots;
   volatile unsigned int runningEdts;
   volatile unsigned int availableThreads;
-  cudaStream_t stream;
+  hipStream_t stream;
 } arts_gpu_t;
 
 extern arts_gpu_t *arts_gpus;
@@ -99,7 +89,7 @@ void arts_schedule_to_gpu(arts_edt_t fn_ptr, uint32_t paramc,
                           const uint64_t *paramv, uint32_t depc,
                           arts_edt_dep_t *depv, void *edt_ptr,
                           arts_gpu_t *arts_gpu);
-void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data);
+void arts_wrap_up(hipStream_t stream, hipError_t status, void *data);
 void arts_wrap_up_host_func(void *data);
 void arts_gpu_synchronize(arts_gpu_t *arts_gpu);
 void arts_gpu_stream_busy(arts_gpu_t *arts_gpu);
@@ -111,7 +101,7 @@ void free_gpu_item(arts_route_item_t *item);
 
 extern ARTS_THREAD_LOCAL arts_dim3_t *arts_local_grid;
 extern ARTS_THREAD_LOCAL arts_dim3_t *arts_local_block;
-extern ARTS_THREAD_LOCAL cudaStream_t *arts_local_stream;
+extern ARTS_THREAD_LOCAL hipStream_t *arts_local_stream;
 extern ARTS_THREAD_LOCAL int arts_local_gpu_id;
 
 extern volatile unsigned int hits;

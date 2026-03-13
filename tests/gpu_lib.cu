@@ -39,10 +39,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <cublas_v2.h>
-#include <cuda_runtime_api.h>
+#include <hipblas/hipblas.h>
 
-#include "arts.h"
 #include "arts/gpu.h"
 #include "arts/gpu/gpu_stream.h"
 
@@ -51,15 +49,15 @@
 #define N 4 // b - kxn matrix
 #define K 5 // c - mxn matrix
 
-#define CHECKCUBLASERROR(x)                                                    \
+#define CHECKHIPBLASERROR(x)                                                   \
   {                                                                            \
-    cublasStatus_t err;                                                        \
-    if ((err = (x)) != CUBLAS_STATUS_SUCCESS) {                                \
-      arts_printf("FAILED %s: %s\n", #x, err);                                 \
+    hipblasStatus_t err;                                                        \
+    if ((err = (x)) != HIPBLAS_STATUS_SUCCESS) {                                \
+      arts_printf("FAILED %s: %d\n", #x, (int)err);                            \
     }                                                                          \
   }
 
-cublasHandle_t *handle;
+hipblasHandle_t *handle;
 
 void work(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
           arts_edt_dep_t depv[]) {
@@ -132,26 +130,26 @@ void work(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   float *d_a; // d_a - a on the device
   float *d_b; // d_b - b on the device
   float *d_c; // d_c - c on the device
-  CHECKCORRECT(cudaMalloc((void **)&d_a, (size_t)M * K * sizeof(*a))); // device
+  ARTS_GPU_CHECK(hipMalloc((void **)&d_a, (size_t)M * K * sizeof(*a))); // device
   // memory alloc for a
-  CHECKCORRECT(cudaMalloc((void **)&d_b, (size_t)K * N * sizeof(*b))); // device
+  ARTS_GPU_CHECK(hipMalloc((void **)&d_b, (size_t)K * N * sizeof(*b))); // device
   // memory alloc for b
-  CHECKCORRECT(cudaMalloc((void **)&d_c, (size_t)M * N * sizeof(*c))); // device
+  ARTS_GPU_CHECK(hipMalloc((void **)&d_c, (size_t)M * N * sizeof(*c))); // device
   // memory alloc for c
   // initialize CUBLAS context
 
   // copy matrices from the host to the device
-  CHECKCUBLASERROR(cublasSetMatrix(M, K, sizeof(*a), a, M, d_a, M)); // a -> d_a
-  CHECKCUBLASERROR(cublasSetMatrix(K, N, sizeof(*b), b, K, d_b, K)); // b -> d_b
-  CHECKCUBLASERROR(cublasSetMatrix(M, N, sizeof(*c), c, M, d_c, M)); // c -> d_c
+  CHECKHIPBLASERROR(hipblasSetMatrix(M, K, sizeof(*a), a, M, d_a, M)); // a -> d_a
+  CHECKHIPBLASERROR(hipblasSetMatrix(K, N, sizeof(*b), b, K, d_b, K)); // b -> d_b
+  CHECKHIPBLASERROR(hipblasSetMatrix(M, N, sizeof(*c), c, M, d_c, M)); // c -> d_c
   float al = 1.0f;                                                   // al =1
   float bet = 1.0f;                                                  // bet =1
 
   // matrix - matrix multiplication : d_c = al*d_a *d_b + bet *d_c
   // d_a -mxk matrix , d_b -kxn matrix , d_c -mxn matrix ;
   // al ,bet -scalars
-  CHECKCUBLASERROR(cublasSgemm(handle[arts_get_gpu_id()], CUBLAS_OP_N,
-                               CUBLAS_OP_N, M, N, K, &al, d_a, M, d_b, K, &bet,
+  CHECKHIPBLASERROR(hipblasSgemm(handle[arts_get_gpu_id()], HIPBLAS_OP_N,
+                               HIPBLAS_OP_N, M, N, K, &al, d_a, M, d_b, K, &bet,
                                d_c, M));
 
   float *final_data;
@@ -162,9 +160,9 @@ void work(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                           true);
   // stat = cublasGetMatrix(M, N, sizeof(*c), d_c, M, c, M);    // cp d_c - >c
 
-  cudaFree(d_a); // free device memory
-  cudaFree(d_b); // free device memory
-  // cudaFree(d_c);            // free device memory
+  hipFree(d_a); // free device memory
+  hipFree(d_b); // free device memory
+  // hipFree(d_c);            // free device memory
 
   free(a); // free host memory
   free(b); // free host memory
@@ -224,7 +222,7 @@ extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 extern "C" void arts_init_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream, int argc, char **argv) {
+                                  hipStream_t *stream, int argc, char **argv) {
   (void)node_id;
   (void)stream;
   (void)argc;
@@ -232,19 +230,19 @@ extern "C" void arts_init_per_gpu(unsigned int node_id, int dev_id,
   arts_printf("DevId: %d\n", dev_id);
   if (!dev_id) {
     handle =
-        (cublasHandle_t *)calloc(arts_get_num_gpus(), sizeof(cublasHandle_t));
+        (hipblasHandle_t *)calloc(arts_get_num_gpus(), sizeof(hipblasHandle_t));
     arts_printf("NUM GPUS: %u\n", arts_get_num_gpus());
   }
-  cublasStatus_t stat = cublasCreate(&handle[dev_id]);
+  hipblasStatus_t stat = hipblasCreate(&handle[dev_id]);
   (void)stat;
 }
 
 extern "C" void arts_fini_per_gpu(unsigned int node_id, int dev_id,
-                                  cudaStream_t *stream) {
+                                  hipStream_t *stream) {
   (void)node_id;
   (void)stream;
   arts_printf("DevId: %d\n", dev_id);
-  cublasStatus_t stat = cublasDestroy(handle[dev_id]);
+  hipblasStatus_t stat = hipblasDestroy(handle[dev_id]);
   (void)stat;
 }
 

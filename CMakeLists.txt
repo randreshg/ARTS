@@ -120,9 +120,11 @@ if(NOT ARTS_LOG_LEVEL MATCHES "^[0-3]$")
         "Invalid ARTS_LOG_LEVEL='${ARTS_LOG_LEVEL}'. Expected one of: 0, 1, 2, 3")
 endif()
 option(ARTS_USE_GPU "Enable GPU support (default: ON, disable when OFF)" ON)
+set(ARTS_GPU_PLATFORM "AUTO" CACHE STRING "GPU platform: AUTO, NVIDIA, AMD")
+set_property(CACHE ARTS_GPU_PLATFORM PROPERTY STRINGS AUTO NVIDIA AMD)
 option(ARTS_USE_RDMA "Use RDMA RSockets networking (default: ON, use TCP when OFF)" OFF)
 option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" ON)
-option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON)
+option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect GPU architectures from local GPUs" ON)
 
 # Compiler-specific settings
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -141,8 +143,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-Wno-stringop-truncation)
     endif()
 
-    # Sanitizers (C/CXX only — CUDA excluded to avoid ASan shadow memory
-    # conflicting with the CUDA driver's virtual address space mapping)
+    # Sanitizers (C/CXX only — GPU code excluded to avoid ASan shadow memory
+    # conflicting with the GPU driver's virtual address space mapping).
+    # When using hipcc, .cu files compile as CXX, so sanitizer flags are
+    # excluded from GPU targets individually (see GPU_SANITIZER_EXCLUDE_FLAGS).
     if(ARTS_USE_SANITIZERS)
         add_compile_options(
             $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-fsanitize=address>
@@ -150,7 +154,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
             $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-fsanitize=leak>
         )
         add_link_options(-fsanitize=address -fsanitize=undefined -fsanitize=leak)
-        message(STATUS "Enabled sanitizers for Debug build (C/CXX only, excludes CUDA)")
+        # Flags to strip from GPU targets when using hipcc (applied per-target)
+        set(GPU_SANITIZER_EXCLUDE_FLAGS
+            -fno-sanitize=address -fno-sanitize=undefined -fno-sanitize=leak
+            CACHE INTERNAL "Flags to exclude sanitizers from GPU targets under hipcc")
+        message(STATUS "Enabled sanitizers for Debug build (C/CXX only, excludes GPU)")
     endif()
 else()
     message(STATUS "Configuring Release build")
@@ -166,91 +174,250 @@ if(ARTS_USE_LINKER)
     message(STATUS "Using custom linker: ${ARTS_USE_LINKER}")
 endif()
 
-# CUDA support detection (only when GPU support is requested)
+# GPU support detection (NVIDIA via hipcc or native CUDA, AMD via hipcc)
+set(GPU_AVAILABLE OFF)
+set(GPU_USE_HIPCC OFF)
+set(GPU_PLATFORM "NONE")   # NVIDIA, AMD, or NONE
+set(GPU_ARCH_FLAGS "")      # Architecture flags for hipcc
+set(GPU_LINK_LIBS "")       # GPU link libraries
 set(CUDA_AVAILABLE OFF)
+
 if(ARTS_USE_GPU)
-    check_language(CUDA)
-    if(CMAKE_CUDA_COMPILER)
-        enable_language(CUDA)
-        set(CMAKE_CUDA_STANDARD 17)
-        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-        set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+    # ---------------------------------------------------------------
+    # Path 1: Try hipcc first (supports both NVIDIA and AMD backends)
+    # ---------------------------------------------------------------
+    find_program(HIPCC_EXECUTABLE hipcc)
+    if(HIPCC_EXECUTABLE AND NOT ARTS_GPU_PLATFORM STREQUAL "NVIDIA")
+        message(STATUS "Found hipcc: ${HIPCC_EXECUTABLE}")
 
-        message(STATUS "CUDA compiler detected: ${CMAKE_CUDA_COMPILER}")
+        # Detect HIP platform (nvidia or amd)
+        execute_process(
+            COMMAND ${HIPCC_EXECUTABLE} --print-targets
+            OUTPUT_VARIABLE HIP_TARGETS_OUTPUT
+            ERROR_VARIABLE HIP_TARGETS_ERROR
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE HIP_TARGETS_RESULT
+        )
 
-        # Try to find CUDA toolkit - required for full CUDA support
-        # Fix for CUDA 12.0+ where nvToolsExt is no longer a library but header-only
-        if(NOT TARGET CUDA::nvToolsExt)
-            add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+        # Also check hipconfig for the platform
+        find_program(HIPCONFIG_EXECUTABLE hipconfig)
+        if(HIPCONFIG_EXECUTABLE)
+            execute_process(
+                COMMAND ${HIPCONFIG_EXECUTABLE} --platform
+                OUTPUT_VARIABLE HIP_PLATFORM_OUTPUT
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET
+            )
+            message(STATUS "HIP platform: ${HIP_PLATFORM_OUTPUT}")
         endif()
 
-        find_package(CUDAToolkit QUIET)
-        if(CUDAToolkit_FOUND)
-            message(STATUS "CUDA toolkit found: ${CUDAToolkit_VERSION}")
-            set(CUDA_AVAILABLE ON)
-        else()
-            message(STATUS "CUDA compiler available but CUDAToolkit not found")
-            message(STATUS "  CUDA support disabled - toolkit required for CUDA library")
-            set(CUDA_AVAILABLE OFF)
-        endif()
-
-        # Set CUDA architectures - auto-detect if explicitly requested
-        if(ARTS_USE_LOCAL_CUDA_ARCHITECTURES)
-            # Try to auto-detect GPU compute capability using nvidia-smi
-            find_program(NVIDIA_SMI nvidia-smi)
-            if(NVIDIA_SMI)
-                execute_process(
-                    COMMAND ${NVIDIA_SMI} --query-gpu=compute_cap --format=csv,noheader,nounits
-                    OUTPUT_VARIABLE NVIDIA_SMI_OUTPUT
-                    ERROR_QUIET
-                    OUTPUT_STRIP_TRAILING_WHITESPACE
-                )
-
-                if(NVIDIA_SMI_OUTPUT)
-                    # Parse compute capabilities for all GPUs (e.g., "8.6\n7.5" -> "86;75")
-                    string(REPLACE "\n" ";" GPU_CAPS ${NVIDIA_SMI_OUTPUT})
-                    string(REPLACE "." "" CUDA_ARCH_NUMS "${GPU_CAPS}")
-
-                    # Remove duplicates and sort
-                    list(REMOVE_DUPLICATES CUDA_ARCH_NUMS)
-                    list(SORT CUDA_ARCH_NUMS)
-
-                    set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_NUMS})
-                    message(STATUS "ARTS_USE_LOCAL_CUDA_ARCHITECTURES enabled - detected CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
-                else()
-                    message(WARNING "ARTS_USE_LOCAL_CUDA_ARCHITECTURES enabled but nvidia-smi detection failed - keeping default CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
-                endif()
-            else()
-                message(WARNING "ARTS_USE_LOCAL_CUDA_ARCHITECTURES enabled but nvidia-smi not found - keeping default CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
+        # Determine platform from hipconfig or environment
+        if(HIP_PLATFORM_OUTPUT MATCHES "nvidia")
+            set(GPU_PLATFORM "NVIDIA")
+        elseif(HIP_PLATFORM_OUTPUT MATCHES "amd")
+            set(GPU_PLATFORM "AMD")
+        elseif(DEFINED ENV{HIP_PLATFORM})
+            if("$ENV{HIP_PLATFORM}" STREQUAL "nvidia")
+                set(GPU_PLATFORM "NVIDIA")
+            elseif("$ENV{HIP_PLATFORM}" STREQUAL "amd")
+                set(GPU_PLATFORM "AMD")
             endif()
         else()
-            message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+            # Default: try to detect from available hardware
+            find_program(ROCMINFO_EXECUTABLE rocminfo)
+            find_program(NVIDIA_SMI nvidia-smi)
+            if(ROCMINFO_EXECUTABLE)
+                set(GPU_PLATFORM "AMD")
+            elseif(NVIDIA_SMI)
+                set(GPU_PLATFORM "NVIDIA")
+            endif()
         endif()
 
-        # CUDA compiler flags
-        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-            add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-G>)
-        endif()
+        if(GPU_PLATFORM STREQUAL "NONE")
+            message(STATUS "hipcc found but cannot determine GPU platform")
+        else()
+            set(GPU_USE_HIPCC ON)
+            set(GPU_AVAILABLE ON)
+            message(STATUS "Using hipcc for ${GPU_PLATFORM} GPU platform")
 
-        # Ensure NVCC uses the same host compiler and flags as the C++ compiler
-        set(CMAKE_CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
-        if(CMAKE_CXX_FLAGS)
-            string(REPLACE " " "," CUDA_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
-            add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${CUDA_HOST_FLAGS}>)
+            # Detect architectures
+            if(ARTS_USE_LOCAL_CUDA_ARCHITECTURES)
+                if(GPU_PLATFORM STREQUAL "NVIDIA")
+                    find_program(NVIDIA_SMI nvidia-smi)
+                    if(NVIDIA_SMI)
+                        execute_process(
+                            COMMAND ${NVIDIA_SMI} --query-gpu=compute_cap --format=csv,noheader,nounits
+                            OUTPUT_VARIABLE NVIDIA_SMI_OUTPUT
+                            ERROR_QUIET
+                            OUTPUT_STRIP_TRAILING_WHITESPACE
+                        )
+                        if(NVIDIA_SMI_OUTPUT)
+                            string(REPLACE "\n" ";" GPU_CAPS ${NVIDIA_SMI_OUTPUT})
+                            string(REPLACE "." "" GPU_ARCH_NUMS "${GPU_CAPS}")
+                            list(REMOVE_DUPLICATES GPU_ARCH_NUMS)
+                            list(SORT GPU_ARCH_NUMS)
+                            foreach(arch ${GPU_ARCH_NUMS})
+                                list(APPEND GPU_ARCH_FLAGS "--gpu-architecture=sm_${arch}")
+                            endforeach()
+                            set(CMAKE_CUDA_ARCHITECTURES ${GPU_ARCH_NUMS})
+                            message(STATUS "Detected NVIDIA architectures: ${GPU_ARCH_NUMS}")
+                        else()
+                            message(WARNING "nvidia-smi detection failed — using hipcc defaults")
+                        endif()
+                    endif()
+                elseif(GPU_PLATFORM STREQUAL "AMD")
+                    find_program(ROCMINFO_EXECUTABLE rocminfo)
+                    if(ROCMINFO_EXECUTABLE)
+                        execute_process(
+                            COMMAND ${ROCMINFO_EXECUTABLE}
+                            OUTPUT_VARIABLE ROCMINFO_OUTPUT
+                            ERROR_QUIET
+                            OUTPUT_STRIP_TRAILING_WHITESPACE
+                        )
+                        # Extract gfx arch names (e.g. gfx90a, gfx942) — require 3+ chars after gfx
+                        string(REGEX MATCHALL "gfx[0-9a-z][0-9a-z][0-9a-z]+" AMD_ARCHS "${ROCMINFO_OUTPUT}")
+                        if(AMD_ARCHS)
+                            list(REMOVE_DUPLICATES AMD_ARCHS)
+                            list(SORT AMD_ARCHS)
+                            foreach(arch ${AMD_ARCHS})
+                                list(APPEND GPU_ARCH_FLAGS "--offload-arch=${arch}")
+                            endforeach()
+                            message(STATUS "Detected AMD architectures: ${AMD_ARCHS}")
+                        else()
+                            message(WARNING "rocminfo detection failed — using hipcc defaults")
+                        endif()
+                    endif()
+                endif()
+            endif()
+
+            # Set link libraries based on platform
+            if(GPU_PLATFORM STREQUAL "NVIDIA")
+                # hipcc on NVIDIA still needs CUDA runtime
+                find_package(CUDAToolkit QUIET)
+                if(CUDAToolkit_FOUND)
+                    # Fix for CUDA 12.0+ where nvToolsExt is no longer a library
+                    if(NOT TARGET CUDA::nvToolsExt)
+                        add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+                    endif()
+                    set(GPU_LINK_LIBS CUDA::cudart CUDA::cuda_driver)
+                    set(CUDA_AVAILABLE ON)
+                    message(STATUS "CUDA toolkit found: ${CUDAToolkit_VERSION}")
+                else()
+                    message(WARNING "hipcc NVIDIA mode but CUDAToolkit not found")
+                    set(GPU_AVAILABLE OFF)
+                    set(GPU_USE_HIPCC OFF)
+                endif()
+            elseif(GPU_PLATFORM STREQUAL "AMD")
+                # hipcc handles AMD linking; amdhip64 provides the runtime
+                set(GPU_LINK_LIBS amdhip64)
+            endif()
         endif()
-    else()
-        message(STATUS "CUDA compiler not found - CUDA support unavailable")
+    endif()
+
+    # ---------------------------------------------------------------
+    # Path 2: Fall back to native CUDA (nvcc) if hipcc was not found
+    #         or if ARTS_GPU_PLATFORM is forced to NVIDIA
+    # ---------------------------------------------------------------
+    if(NOT GPU_AVAILABLE)
+        check_language(CUDA)
+        if(CMAKE_CUDA_COMPILER)
+            enable_language(CUDA)
+            set(CMAKE_CUDA_STANDARD 17)
+            set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+            set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
+
+            message(STATUS "CUDA compiler detected: ${CMAKE_CUDA_COMPILER}")
+
+            # Fix for CUDA 12.0+ where nvToolsExt is no longer a library
+            if(NOT TARGET CUDA::nvToolsExt)
+                add_library(CUDA::nvToolsExt INTERFACE IMPORTED)
+            endif()
+
+            find_package(CUDAToolkit QUIET)
+            if(CUDAToolkit_FOUND)
+                message(STATUS "CUDA toolkit found: ${CUDAToolkit_VERSION}")
+                set(CUDA_AVAILABLE ON)
+                set(GPU_AVAILABLE ON)
+                set(GPU_PLATFORM "NVIDIA")
+                set(GPU_LINK_LIBS CUDA::cudart CUDA::cuda_driver)
+            else()
+                message(STATUS "CUDA compiler available but CUDAToolkit not found")
+                message(STATUS "  GPU support disabled - toolkit required")
+            endif()
+
+            # Auto-detect CUDA architectures
+            if(ARTS_USE_LOCAL_CUDA_ARCHITECTURES AND GPU_AVAILABLE)
+                find_program(NVIDIA_SMI nvidia-smi)
+                if(NVIDIA_SMI)
+                    execute_process(
+                        COMMAND ${NVIDIA_SMI} --query-gpu=compute_cap --format=csv,noheader,nounits
+                        OUTPUT_VARIABLE NVIDIA_SMI_OUTPUT
+                        ERROR_QUIET
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                    )
+                    if(NVIDIA_SMI_OUTPUT)
+                        string(REPLACE "\n" ";" GPU_CAPS ${NVIDIA_SMI_OUTPUT})
+                        string(REPLACE "." "" CUDA_ARCH_NUMS "${GPU_CAPS}")
+                        list(REMOVE_DUPLICATES CUDA_ARCH_NUMS)
+                        list(SORT CUDA_ARCH_NUMS)
+                        set(CMAKE_CUDA_ARCHITECTURES ${CUDA_ARCH_NUMS})
+                        message(STATUS "Detected CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+                    else()
+                        message(WARNING "nvidia-smi detection failed - keeping default CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
+                    endif()
+                else()
+                    message(WARNING "nvidia-smi not found - keeping default CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
+                endif()
+            elseif(GPU_AVAILABLE)
+                message(STATUS "CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+            endif()
+
+            # CUDA compiler flags
+            if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND GPU_AVAILABLE)
+                add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-G>)
+            endif()
+
+            # Ensure NVCC uses the same host compiler and flags
+            if(GPU_AVAILABLE)
+                set(CMAKE_CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
+                if(CMAKE_CXX_FLAGS)
+                    string(REPLACE " " "," CUDA_HOST_FLAGS "${CMAKE_CXX_FLAGS}")
+                    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${CUDA_HOST_FLAGS}>)
+                endif()
+            endif()
+        else()
+            message(STATUS "No GPU compiler found - GPU support unavailable")
+        endif()
+    endif()
+
+    if(NOT GPU_AVAILABLE)
+        message(STATUS "GPU support requested but no suitable GPU toolchain found")
     endif()
 else()
     message(STATUS "GPU support disabled (ARTS_USE_GPU=OFF)")
 endif()
 
 # Determine which libraries to build
-set(BUILD_CUDA_LIBRARY OFF)
-if(ARTS_USE_GPU AND CUDA_AVAILABLE)
-    # GPU support enabled and CUDA is available
-    set(BUILD_CUDA_LIBRARY ON)
-    message(STATUS "Will build both standard ARTS library and CUDA-enabled ARTS library")
+set(BUILD_GPU_LIBRARY ${GPU_AVAILABLE})
+# Backward compat
+set(BUILD_CUDA_LIBRARY ${GPU_AVAILABLE})
+
+# Composite flag list for hipcc: tell hipcc to treat .cu files as HIP source
+# (CMake sets -x c++ via LANGUAGE CXX, -x hip overrides that)
+if(GPU_USE_HIPCC)
+    set(GPU_HIPCC_FLAGS -x hip ${GPU_ARCH_FLAGS})
+    # hipcc uses ld.lld which defaults to --no-allow-shlib-undefined.
+    # Our shared library (libarts_cuda.so) has transitive deps (libudev, libOpenCL
+    # from hwloc) that are resolved at runtime, not link time.
+    add_link_options("LINKER:--allow-shlib-undefined")
+endif()
+
+# Load reusable GPU helper functions (arts_link_gpu_library, arts_gpu_set_cu_sources)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ARTSGpuHelpers.cmake)
+
+if(BUILD_GPU_LIBRARY)
+    message(STATUS "Will build both standard ARTS library and GPU-enabled ARTS library (${GPU_PLATFORM})")
 else()
     message(STATUS "Will build only standard ARTS library (GPU support disabled)")
 endif()
@@ -466,17 +633,22 @@ message(STATUS "Build type:        ${CMAKE_BUILD_TYPE}")
 message(STATUS "Install prefix:    ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "C Compiler:        ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
 message(STATUS "CXX Compiler:      ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
-if(CMAKE_CUDA_COMPILER)
-    message(STATUS "CUDA Compiler:     ${CMAKE_CUDA_COMPILER_VERSION}")
-    message(STATUS "CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+if(GPU_AVAILABLE)
+    if(GPU_USE_HIPCC)
+        message(STATUS "GPU Compiler:      hipcc (${GPU_PLATFORM})")
+        message(STATUS "GPU Arch Flags:    ${GPU_ARCH_FLAGS}")
+    elseif(CMAKE_CUDA_COMPILER)
+        message(STATUS "CUDA Compiler:     ${CMAKE_CUDA_COMPILER_VERSION}")
+        message(STATUS "CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    endif()
 endif()
 message(STATUS "")
 message(STATUS "Features:")
 message(STATUS "  Standard Library: ON (always built)")
-if(BUILD_CUDA_LIBRARY)
-    message(STATUS "  CUDA Library:     ON (libarts_cuda)")
+if(BUILD_GPU_LIBRARY)
+    message(STATUS "  GPU Library:      ON (libarts_cuda, platform=${GPU_PLATFORM})")
 else()
-    message(STATUS "  CUDA Library:     OFF")
+    message(STATUS "  GPU Library:      OFF")
 endif()
 if(ARTS_USE_RDMA AND RDMACM_FOUND)
     message(STATUS "  Network:          RDMA RSockets")
@@ -488,16 +660,16 @@ message(STATUS "")
 message(STATUS "Build options:")
 if(ARTS_BUILD_SHARED)
     message(STATUS "  Shared library:  libarts.so (standard)")
-    if(BUILD_CUDA_LIBRARY)
-        message(STATUS "                   libarts_cuda.so (CUDA-enabled)")
+    if(BUILD_GPU_LIBRARY)
+        message(STATUS "                   libarts_cuda.so (GPU-enabled)")
     endif()
 else()
     message(STATUS "  Shared library:  OFF")
 endif()
 if(ARTS_BUILD_STATIC)
     message(STATUS "  Static library:  libarts.a (standard)")
-    if(BUILD_CUDA_LIBRARY)
-        message(STATUS "                   libarts_cuda.a (CUDA-enabled)")
+    if(BUILD_GPU_LIBRARY)
+        message(STATUS "                   libarts_cuda.a (GPU-enabled)")
     endif()
 else()
     message(STATUS "  Static library:  OFF")

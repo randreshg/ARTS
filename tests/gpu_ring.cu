@@ -39,16 +39,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <cuda_runtime_api.h>
+#include <hip/hip_runtime.h>
 
 #include "arts.h"
 #include "arts/utils/array_list.h"
 
-#define CHECKCORRECT(x)                                                        \
+#define ARTS_GPU_CHECK(x)                                                      \
   {                                                                            \
-    cudaError_t err;                                                           \
-    if ((err = (x)) != cudaSuccess) {                                          \
-      arts_printf("FAILED %s: %s\n", #x, cudaGetErrorString(err));             \
+    hipError_t err;                                                            \
+    if ((err = (x)) != hipSuccess) {                                           \
+      arts_printf("FAILED %s: %s\n", #x, hipGetErrorString(err));              \
     }                                                                          \
   }
 
@@ -123,15 +123,15 @@ bool **fully_connect() {
   uint64_t length = arts_length_array_list(gpu_list);
   for (uint64_t i = 0; i < length; i++) {
     int *src = (int *)arts_get_from_array_list(gpu_list, i);
-    CHECKCORRECT(cudaSetDevice(*src));
+    ARTS_GPU_CHECK(hipSetDevice(*src));
     for (uint64_t j = 0; j < length; j++) {
       if (i != j) {
         int has_access = 0;
         int *dst = (int *)arts_get_from_array_list(gpu_list, j);
-        CHECKCORRECT(cudaDeviceCanAccessPeer(&has_access, *src, *dst));
+        ARTS_GPU_CHECK(hipDeviceCanAccessPeer(&has_access, *src, *dst));
         if (has_access) {
           local_adj_list[*src][*dst] = 1;
-          CHECKCORRECT(cudaDeviceEnablePeerAccess(*dst, 0));
+          ARTS_GPU_CHECK(hipDeviceEnablePeerAccess(*dst, 0));
         }
       }
     }
