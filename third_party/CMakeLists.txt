@@ -144,3 +144,113 @@ set(HWLOC_PRIVATE_LIBS ${HWLOC_PRIVATE_LIBS} PARENT_SCOPE)
 set(HWLOC_INCLUDE_DIRS ${HWLOC_INCLUDE_DIRS} PARENT_SCOPE)
 set(HWLOC_FOUND ${HWLOC_FOUND} PARENT_SCOPE)
 set(HWLOC_VERSION ${HWLOC_VERSION} PARENT_SCOPE)
+
+# ---------------------------------------------------------------------------
+# jemalloc — optional, built from source when ARTS_USE_JEMALLOC=ON
+# ---------------------------------------------------------------------------
+if(ARTS_USE_JEMALLOC)
+    function(build_jemalloc)
+        message(STATUS "Building jemalloc from third_party/jemalloc")
+
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc/autogen.sh")
+            message(FATAL_ERROR
+                "jemalloc source not found at third_party/jemalloc.\n"
+                "  Run: git clone --depth 1 --branch 5.3.0 "
+                "https://github.com/jemalloc/jemalloc.git "
+                "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc")
+        endif()
+
+        set(JEMALLOC_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/jemalloc")
+        set(JEMALLOC_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/jemalloc_install")
+        file(MAKE_DIRECTORY ${JEMALLOC_BUILD_DIR})
+
+        # Run autogen.sh if configure doesn't exist
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/jemalloc/configure")
+            message(STATUS "Running jemalloc autogen.sh")
+            execute_process(
+                COMMAND ./autogen.sh
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/jemalloc
+                RESULT_VARIABLE AUTOGEN_RESULT
+            )
+            if(NOT AUTOGEN_RESULT EQUAL 0)
+                message(FATAL_ERROR "Failed to run jemalloc autogen.sh")
+            endif()
+        endif()
+
+        # Configure jemalloc
+        # -fPIC for embedding in shared lib; -g0 to avoid zlib-compressed debug
+        # sections that lld without zlib cannot handle.
+        message(STATUS "Configuring jemalloc with prefix: ${JEMALLOC_INSTALL_DIR}")
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env
+                "CFLAGS=-fPIC -O2 -g0"
+                ${CMAKE_CURRENT_SOURCE_DIR}/jemalloc/configure
+                    --prefix=${JEMALLOC_INSTALL_DIR}
+                    --disable-cxx
+                    --enable-static
+                    --disable-shared
+                    --with-jemalloc-prefix=
+            WORKING_DIRECTORY ${JEMALLOC_BUILD_DIR}
+            RESULT_VARIABLE CONFIGURE_RESULT
+        )
+        if(NOT CONFIGURE_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to configure jemalloc")
+        endif()
+
+        # Build jemalloc
+        message(STATUS "Building jemalloc")
+        if(NOT CMAKE_BUILD_PARALLEL_LEVEL)
+            set(CMAKE_BUILD_PARALLEL_LEVEL 4)
+        endif()
+        execute_process(
+            COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL} build_lib_static
+            WORKING_DIRECTORY ${JEMALLOC_BUILD_DIR}
+            RESULT_VARIABLE BUILD_RESULT
+        )
+        if(NOT BUILD_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to build jemalloc")
+        endif()
+
+        # Install jemalloc
+        message(STATUS "Installing jemalloc to ${JEMALLOC_INSTALL_DIR}")
+        execute_process(
+            COMMAND make install_lib_static install_include
+            WORKING_DIRECTORY ${JEMALLOC_BUILD_DIR}
+            RESULT_VARIABLE INSTALL_RESULT
+        )
+        if(NOT INSTALL_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to install jemalloc")
+        endif()
+
+        message(STATUS "jemalloc built and installed successfully")
+    endfunction()
+
+    # Build jemalloc from source if not already built in the build directory
+    set(JEMALLOC_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/jemalloc_install")
+    set(JEMALLOC_LIB_A "${JEMALLOC_INSTALL_DIR}/lib/libjemalloc.a")
+    set(JEMALLOC_INCLUDE_PATH "${JEMALLOC_INSTALL_DIR}/include/jemalloc/jemalloc.h")
+
+    if(NOT (EXISTS ${JEMALLOC_LIB_A} AND EXISTS ${JEMALLOC_INCLUDE_PATH}))
+        build_jemalloc()
+    endif()
+
+    if(NOT EXISTS ${JEMALLOC_LIB_A})
+        message(FATAL_ERROR "jemalloc static library not found after build at ${JEMALLOC_LIB_A}")
+    endif()
+
+    # Static library for embedding into libarts
+    set(JEMALLOC_LIB "${JEMALLOC_LIB_A}" PARENT_SCOPE)
+    set(JEMALLOC_INCLUDE_DIRS "${JEMALLOC_INSTALL_DIR}/include" PARENT_SCOPE)
+
+    # Determine version from the installed header
+    if(EXISTS "${JEMALLOC_INCLUDE_PATH}")
+        file(READ "${JEMALLOC_INCLUDE_PATH}" _jemalloc_h)
+        string(REGEX MATCH "JEMALLOC_VERSION \"([0-9]+\\.[0-9]+\\.[0-9]+)" _jemalloc_ver "${_jemalloc_h}")
+        if(_jemalloc_ver)
+            set(JEMALLOC_VERSION ${CMAKE_MATCH_1})
+        endif()
+    endif()
+    set(JEMALLOC_VERSION ${JEMALLOC_VERSION} PARENT_SCOPE)
+
+    message(STATUS "jemalloc: v${JEMALLOC_VERSION} (${JEMALLOC_LIB_A})")
+endif()

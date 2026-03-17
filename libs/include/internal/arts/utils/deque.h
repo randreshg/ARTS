@@ -99,6 +99,8 @@ bool arts_deque_simple_push_front(struct arts_deque_s *deque, void *item,
                                   unsigned int priority);
 void *arts_deque_simple_pop_front(struct arts_deque_s *deque);
 void *arts_deque_simple_pop_back(struct arts_deque_s *deque);
+unsigned int arts_deque_simple_pop_back_half(struct arts_deque_s *deque,
+                                             void **out, unsigned int max);
 bool arts_deque_simple_empty(struct arts_deque_s *deque);
 void arts_deque_simple_clear(struct arts_deque_s *deque);
 unsigned int arts_deque_simple_size(struct arts_deque_s *deque);

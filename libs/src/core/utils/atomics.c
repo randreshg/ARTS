@@ -107,10 +107,15 @@ bool arts_atomic_swap_bool(volatile bool *destination, bool value) {
 }
 
 bool arts_lock(volatile unsigned int *lock) {
-  while (arts_atomic_cswap(lock, 0U, 1U) == 1U) {
-    ;
+  unsigned int backoff = 1;
+  while (1) {
+    if (__atomic_load_n(lock, __ATOMIC_RELAXED) == 0U &&
+        arts_atomic_cswap(lock, 0U, 1U) == 0U)
+      return true;
+    for (unsigned int i = 0; i < backoff; i++)
+      __builtin_ia32_pause();
+    if (backoff < 64) backoff <<= 1;
   }
-  return true;
 }
 
 void arts_unlock(volatile unsigned int *lock) {
@@ -150,11 +155,11 @@ unsigned int arts_atomic_fetch_and(volatile unsigned int *destination,
 void arts_reader_lock(volatile unsigned int *read_lock,
                       const volatile unsigned int *write_lock) {
   while (1) {
-    while (*write_lock) {
-      ;
+    while (__atomic_load_n(write_lock, __ATOMIC_RELAXED)) {
+      __builtin_ia32_pause();
     }
     arts_atomic_fetch_add(read_lock, 1U);
-    if (*write_lock == 0) {
+    if (__atomic_load_n(write_lock, __ATOMIC_RELAXED) == 0) {
       break;
     }
     arts_atomic_sub(read_lock, 1U);
@@ -167,19 +172,25 @@ void arts_reader_unlock(volatile unsigned int *read_lock) {
 
 void arts_writer_lock(const volatile unsigned int *read_lock,
                       volatile unsigned int *write_lock) {
-  while (arts_atomic_cswap(write_lock, 0U, 1U) != 0U) {
-    ;
+  unsigned int backoff = 1;
+  while (1) {
+    if (__atomic_load_n(write_lock, __ATOMIC_RELAXED) == 0U &&
+        arts_atomic_cswap(write_lock, 0U, 1U) == 0U)
+      break;
+    for (unsigned int i = 0; i < backoff; i++)
+      __builtin_ia32_pause();
+    if (backoff < 64) backoff <<= 1;
   }
-  while ((*read_lock)) {
-    ;
+  while (__atomic_load_n(read_lock, __ATOMIC_RELAXED)) {
+    __builtin_ia32_pause();
   }
 }
 
 bool arts_writer_try_lock(const volatile unsigned int *read_lock,
                           volatile unsigned int *write_lock) {
   if (arts_atomic_cswap(write_lock, 0U, 1U) == 0U) {
-    while (*read_lock) {
-      ;
+    while (__atomic_load_n(read_lock, __ATOMIC_RELAXED)) {
+      __builtin_ia32_pause();
     }
     return true;
   }

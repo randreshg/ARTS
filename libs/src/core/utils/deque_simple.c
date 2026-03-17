@@ -231,6 +231,28 @@ void *arts_deque_simple_pop_back(struct arts_deque_s *deque) {
   return NULL;
 }
 
+unsigned int arts_deque_simple_pop_back_half(struct arts_deque_s *deque,
+                                             void **out, unsigned int max) {
+  uint64_t t = deque->top;
+  HW_MEMORY_FENCE();
+  uint64_t b = deque->bottom;
+  int64_t available = (int64_t)b - (int64_t)t;
+  if (available <= 0)
+    return 0;
+  unsigned int to_steal = (unsigned int)(available / 2);
+  if (to_steal == 0)
+    to_steal = 1;
+  if (to_steal > max)
+    to_steal = max;
+  /* Single CAS to claim to_steal items from the top. */
+  if (arts_atomic_cswap_u64(&deque->top, t, t + to_steal) != t)
+    return 0;
+  struct circular_array_s *a = deque->activeArray;
+  for (unsigned int i = 0; i < to_steal; i++)
+    out[i] = a->segment[(t + i) % a->size];
+  return to_steal;
+}
+
 struct arts_deque_s *arts_deque_simple_list_new(unsigned int list_size,
                                                 unsigned int deque_size) {
   struct arts_deque_s *deque_list = (struct arts_deque_s *)arts_calloc_align(

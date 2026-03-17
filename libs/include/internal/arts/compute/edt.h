@@ -96,6 +96,7 @@ void *arts_get_depv(void *edt_ptr);
 void arts_track_created_db(arts_guid_t guid);
 arts_array_list_t *arts_get_created_db_list(void);
 void arts_cleanup_edt_tls(void);
+void arts_cleanup_edt_pool(void);
 #ifdef __cplusplus
 }
 #endif
