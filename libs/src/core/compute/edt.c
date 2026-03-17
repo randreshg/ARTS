@@ -65,6 +65,148 @@ ARTS_THREAD_LOCAL arts_array_list_t *epoch_list = NULL;
 ARTS_THREAD_LOCAL struct arts_edt_s *current_edt = NULL;
 ARTS_THREAD_LOCAL arts_array_list_t *created_db_list = NULL;
 
+/* =========================================================================
+ * Thread-local EDT memory pool.
+ *
+ * EDT allocations are a hot path: every task creation does an arts_calloc_align
+ * and every completion does an arts_free.  At high thread counts this causes
+ * severe allocator contention (lock + syscall overhead).
+ *
+ * Design:
+ *   - 4 size-class buckets: <=128, <=256, <=512, <=1024 bytes.
+ *   - Each bucket is a singly-linked free-list (the freed EDT memory is
+ *     reused as the link pointer — no extra allocation needed).
+ *   - Oversized EDTs (>1024 bytes) fall through to arts_malloc_align/arts_free.
+ *   - The pool is purely thread-local: no locks, no atomics.
+ *   - Because work-stealing means the freeing thread differs from the
+ *     allocating thread, the pool naturally rebalances: threads that execute
+ *     many stolen EDTs accumulate pool entries they can reuse for creation.
+ *   - A per-bucket depth cap (EDT_POOL_MAX_PER_BUCKET) prevents unbounded
+ *     growth if one thread only frees but never allocates.
+ *   - arts_cleanup_edt_pool() drains all buckets at thread shutdown.
+ *
+ * Memory layout requirement: EDT allocations are 16-byte aligned and use
+ * arts_malloc_align, which prepends a header_t.  Pool entries store the
+ * *user pointer* (the value returned by arts_malloc_align), not the base.
+ * When returning to the OS we call arts_free(user_ptr) which recovers the
+ * base pointer via hdr->base.
+ * ========================================================================= */
+
+#define EDT_POOL_NUM_BUCKETS    4
+#define EDT_POOL_BUCKET_0_MAX   128
+#define EDT_POOL_BUCKET_1_MAX   256
+#define EDT_POOL_BUCKET_2_MAX   512
+#define EDT_POOL_BUCKET_3_MAX   1024
+#define EDT_POOL_MAX_PER_BUCKET 64
+
+/** A free-list node overlaid on a freed EDT allocation. */
+typedef struct edt_pool_entry_s {
+  struct edt_pool_entry_s *next;
+  unsigned int alloc_size; /**< usable size of this slot (bucket max). */
+} edt_pool_entry_t;
+
+/** Per-bucket state. */
+typedef struct {
+  edt_pool_entry_t *head;
+  unsigned int count;
+} edt_pool_bucket_t;
+
+static ARTS_THREAD_LOCAL edt_pool_bucket_t edt_pool[EDT_POOL_NUM_BUCKETS];
+static ARTS_THREAD_LOCAL int edt_pool_initialized = 0;
+
+static const unsigned int edt_pool_bucket_sizes[EDT_POOL_NUM_BUCKETS] = {
+    EDT_POOL_BUCKET_0_MAX,
+    EDT_POOL_BUCKET_1_MAX,
+    EDT_POOL_BUCKET_2_MAX,
+    EDT_POOL_BUCKET_3_MAX,
+};
+
+/** Map a requested size to a bucket index, or -1 if too large. */
+static inline int edt_pool_bucket_index(unsigned int size) {
+  if (size <= EDT_POOL_BUCKET_0_MAX) return 0;
+  if (size <= EDT_POOL_BUCKET_1_MAX) return 1;
+  if (size <= EDT_POOL_BUCKET_2_MAX) return 2;
+  if (size <= EDT_POOL_BUCKET_3_MAX) return 3;
+  return -1;
+}
+
+static inline void edt_pool_ensure_init(void) {
+  if (!edt_pool_initialized) {
+    for (int i = 0; i < EDT_POOL_NUM_BUCKETS; i++) {
+      edt_pool[i].head = NULL;
+      edt_pool[i].count = 0;
+    }
+    edt_pool_initialized = 1;
+  }
+}
+
+/**
+ * Try to allocate from the thread-local pool.
+ * Returns NULL if the pool has no entry for this size class.
+ * The returned memory is zeroed (memset) to match arts_calloc_align behavior.
+ */
+static inline void *edt_pool_alloc(unsigned int size) {
+  edt_pool_ensure_init();
+  int idx = edt_pool_bucket_index(size);
+  if (idx < 0) return NULL;
+
+  edt_pool_bucket_t *bucket = &edt_pool[idx];
+  if (bucket->head) {
+    edt_pool_entry_t *entry = bucket->head;
+    bucket->head = entry->next;
+    bucket->count--;
+    /* Zero the memory to match calloc semantics. */
+    memset(entry, 0, edt_pool_bucket_sizes[idx]);
+    return (void *)entry;
+  }
+  return NULL;
+}
+
+/**
+ * Return an EDT allocation to the thread-local pool.
+ * If the pool bucket is full, falls through to arts_free.
+ * @param ptr   The user pointer (as returned by arts_malloc_align).
+ * @param size  The allocation size (from edt->header.size).
+ */
+static inline void edt_pool_free(void *ptr, unsigned int size) {
+  edt_pool_ensure_init();
+  int idx = edt_pool_bucket_index(size);
+  if (idx < 0) {
+    /* Oversized — cannot pool. */
+    arts_free(ptr);
+    return;
+  }
+
+  edt_pool_bucket_t *bucket = &edt_pool[idx];
+  if (bucket->count >= EDT_POOL_MAX_PER_BUCKET) {
+    /* Bucket full — release to the allocator. */
+    arts_free(ptr);
+    return;
+  }
+
+  edt_pool_entry_t *entry = (edt_pool_entry_t *)ptr;
+  entry->next = bucket->head;
+  entry->alloc_size = edt_pool_bucket_sizes[idx];
+  bucket->head = entry;
+  bucket->count++;
+}
+
+/** Drain all pool buckets, releasing memory to the system allocator. */
+void arts_cleanup_edt_pool(void) {
+  if (!edt_pool_initialized) return;
+  for (int i = 0; i < EDT_POOL_NUM_BUCKETS; i++) {
+    edt_pool_entry_t *entry = edt_pool[i].head;
+    while (entry) {
+      edt_pool_entry_t *next = entry->next;
+      arts_free(entry);
+      entry = next;
+    }
+    edt_pool[i].head = NULL;
+    edt_pool[i].count = 0;
+  }
+  edt_pool_initialized = 0;
+}
+
 bool arts_set_current_epoch_guid(arts_guid_t epoch_guid) {
   if (epoch_guid) {
     if (!epoch_list) {
@@ -168,6 +310,8 @@ void arts_cleanup_edt_tls() {
     arts_delete_array_list(created_db_list);
     created_db_list = NULL;
   }
+  /* Drain the thread-local EDT memory pool. */
+  arts_cleanup_edt_pool();
 }
 
 void arts_increment_finished_epoch_list() {
@@ -237,7 +381,23 @@ bool arts_edt_create_internal(struct arts_edt_s *edt, arts_type_t mode,
                               arts_guid_t epoch_guid, bool has_depv,
                               uint64_t arts_id) {
   if (!edt) {
-    edt = (struct arts_edt_s *)arts_calloc_align(1, edt_space, 16);
+    /* Determine the bucket for this size class.  All allocations are
+     * rounded up to the bucket ceiling so that any pooled entry is
+     * reusable for any request within the same bucket. */
+    int bucket_idx = edt_pool_bucket_index(edt_space);
+    unsigned int alloc_size =
+        (bucket_idx >= 0) ? edt_pool_bucket_sizes[bucket_idx] : edt_space;
+
+    /* Try the thread-local pool first to avoid allocator contention. */
+    edt = (struct arts_edt_s *)edt_pool_alloc(edt_space);
+    if (!edt) {
+      edt = (struct arts_edt_s *)arts_calloc_align(1, alloc_size, 16);
+    }
+    /* Record the allocation capacity (bucket ceiling) rather than the
+     * requested size.  This ensures edt_pool_free places the entry in
+     * the correct bucket regardless of which thread frees it.  The
+     * extra bytes are always zero and harmless for remote transfer. */
+    edt_space = alloc_size;
   }
   if (!edt) {
     ARTS_ERROR("EDT allocation failed (size=%u)", edt_space);
@@ -428,7 +588,8 @@ arts_guid_t arts_edt_create_with_epoch(arts_edt_t func_ptr, uint32_t paramc,
 
 void arts_edt_free(struct arts_edt_s *edt) {
   arts_thread_info.edt_free = 1;
-  arts_free(edt);
+  /* Return to thread-local pool if the size class fits; else arts_free. */
+  edt_pool_free(edt, (unsigned int)edt->header.size);
   arts_thread_info.edt_free = 0;
 }
 
@@ -810,9 +971,9 @@ void *arts_block_for_buffer(arts_guid_t buffer_guid) {
   return buffer;
 }
 
-volatile uint64_t outstanding_edts = 0;
+volatile uint64_t outstanding_edts __attribute__((aligned(64))) = 0;
 void check_out_edts(uint64_t threshold) {
-  static uint64_t count = 0;
+  static volatile uint64_t count __attribute__((aligned(64))) = 0;
   if (arts_atomic_fetch_add_u64(&count, 1) + 1 == threshold) {
     arts_atomic_fetch_sub_u64(&count, threshold);
   }
