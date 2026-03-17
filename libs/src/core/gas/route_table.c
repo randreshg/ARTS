@@ -55,8 +55,12 @@
 #include "arts/utils/malloc.h"
 
 #define INIT_INVALIDATE_SIZE 128
-#define GUID_LOCK_SIZE 1024
-volatile unsigned int guid_lock[GUID_LOCK_SIZE] = {0};
+#define GUID_LOCK_SIZE 8192
+struct guid_lock_entry_s {
+  volatile unsigned int lock;
+  char pad[60];
+} __attribute__((aligned(64)));
+static struct guid_lock_entry_s guid_lock[GUID_LOCK_SIZE];
 
 static inline unsigned int arts_guid_lock_index(arts_guid_t key) {
   uint64_t hash = ((uint64_t)key) * 11400714819323198485ull;
@@ -481,9 +485,10 @@ arts_route_item_t *internal_route_table_add_item_race(
   unsigned int pos = arts_guid_lock_index(key);
   *added_item = false;
   arts_route_item_t *found = NULL;
+  unsigned int backoff = 1;
   while (!found) {
-    if (arts_guid_lock_is_free(&guid_lock[pos])) {
-      if (!arts_atomic_cswap(&guid_lock[pos], 0U, 1U)) {
+    if (arts_guid_lock_is_free(&guid_lock[pos].lock)) {
+      if (!arts_atomic_cswap(&guid_lock[pos].lock, 0U, 1U)) {
         found =
             arts_route_table_search_for_key(route_table, key, ALLOCATED_KEY);
         if (found) {
@@ -506,13 +511,19 @@ arts_route_item_t *internal_route_table_add_item_race(
           }
           *added_item = true;
         }
-        arts_guid_lock_release(&guid_lock[pos]);
+        arts_guid_lock_release(&guid_lock[pos].lock);
+        backoff = 1;
       }
     } else {
       found = arts_route_table_search_for_key(route_table, key, AVAILABLE_KEY);
       if (found && used_avail) {
         inc_item(found, 1, found->key, route_table);
       }
+    }
+    if (!found) {
+      for (unsigned int i = 0; i < backoff; i++)
+        __builtin_ia32_pause();
+      if (backoff < 64) backoff <<= 1;
     }
   }
   //    ARTS_INFO("found: %lu %p", key, found);
@@ -525,16 +536,23 @@ internal_route_table_add_deleted_item_race(arts_route_table_t *route_table,
                                            unsigned int rank) {
   unsigned int pos = arts_guid_lock_index(key);
   arts_route_item_t *found = NULL;
+  unsigned int backoff = 1;
   while (!found) {
-    if (arts_guid_lock_is_free(&guid_lock[pos])) {
-      if (!arts_atomic_cswap(&guid_lock[pos], 0U, 1U)) {
+    if (arts_guid_lock_is_free(&guid_lock[pos].lock)) {
+      if (!arts_atomic_cswap(&guid_lock[pos].lock, 0U, 1U)) {
         found = arts_route_table_search_for_empty(route_table, key, false);
         route_table->setFunc(found, item);
         found->rank = rank;
         mark_delete(found);
         mark_write(found);
-        arts_guid_lock_release(&guid_lock[pos]);
+        arts_guid_lock_release(&guid_lock[pos].lock);
+        backoff = 1;
       }
+    }
+    if (!found) {
+      for (unsigned int i = 0; i < backoff; i++)
+        __builtin_ia32_pause();
+      if (backoff < 64) backoff <<= 1;
     }
   }
   return found;
@@ -567,9 +585,10 @@ bool arts_route_table_reserve_item_race(arts_guid_t key,
   unsigned int pos = arts_guid_lock_index(key);
   bool ret = false;
   *item = NULL;
+  unsigned int backoff = 1;
   while (!(*item)) {
-    if (arts_guid_lock_is_free(&guid_lock[pos])) {
-      if (!arts_atomic_cswap(&guid_lock[pos], 0U, 1U)) {
+    if (arts_guid_lock_is_free(&guid_lock[pos].lock)) {
+      if (!arts_atomic_cswap(&guid_lock[pos].lock, 0U, 1U)) {
         *item =
             arts_route_table_search_for_key(route_table, key, ALLOCATED_KEY);
         if (!(*item)) {
@@ -580,7 +599,8 @@ bool arts_route_table_reserve_item_race(arts_guid_t key,
             inc_item(*item, 1, (*item)->key, route_table);
           }
         }
-        arts_guid_lock_release(&guid_lock[pos]);
+        arts_guid_lock_release(&guid_lock[pos].lock);
+        backoff = 1;
       }
     } else {
       arts_route_item_t *temp =
@@ -589,6 +609,11 @@ bool arts_route_table_reserve_item_race(arts_guid_t key,
         inc_item(temp, 1, temp->key, route_table);
       }
       *item = temp;
+    }
+    if (!(*item)) {
+      for (unsigned int i = 0; i < backoff; i++)
+        __builtin_ia32_pause();
+      if (backoff < 64) backoff <<= 1;
     }
   }
   //    print_state(arts_route_table_search_for_key(route_table, key, ANY_KEY));

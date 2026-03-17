@@ -112,6 +112,10 @@ if(ARTS_BUILD_STATIC)
         ${HWLOC_PRIVATE_LIBS}
     )
 
+    if(JEMALLOC_LIB)
+        target_link_libraries(arts_static PRIVATE ${JEMALLOC_LIB})
+    endif()
+
     if(ARTS_ATOMIC_LIBRARY)
         target_link_libraries(arts_static PRIVATE ${ARTS_ATOMIC_LIBRARY})
     endif()
@@ -180,6 +184,10 @@ if(ARTS_BUILD_SHARED)
         target_link_options(arts_shared PRIVATE
             "LINKER:--exclude-libs,libhwloc.a"
         )
+    endif()
+
+    if(JEMALLOC_LIB)
+        target_link_libraries(arts_shared PRIVATE ${JEMALLOC_LIB})
     endif()
 
     if(ARTS_ATOMIC_LIBRARY)
@@ -256,6 +264,10 @@ if(BUILD_CUDA_LIBRARY)
             CUDA::cublas
         )
 
+        if(JEMALLOC_LIB)
+            target_link_libraries(arts_cuda_static PRIVATE ${JEMALLOC_LIB})
+        endif()
+
         if(ARTS_ATOMIC_LIBRARY)
             target_link_libraries(arts_cuda_static PRIVATE ${ARTS_ATOMIC_LIBRARY})
         endif()
@@ -330,6 +342,10 @@ if(BUILD_CUDA_LIBRARY)
             target_link_options(arts_cuda_shared PRIVATE
                 "LINKER:--exclude-libs,libhwloc.a"
             )
+        endif()
+
+        if(JEMALLOC_LIB)
+            target_link_libraries(arts_cuda_shared PRIVATE ${JEMALLOC_LIB})
         endif()
 
         if(ARTS_ATOMIC_LIBRARY)

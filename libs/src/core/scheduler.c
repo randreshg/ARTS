@@ -88,14 +88,18 @@ extern void init_per_worker(unsigned int node_id, unsigned int worker_id,
 static int arts_runtime_argc = 0;
 static char **arts_runtime_argv = NULL;
 
-static inline void arts_runtime_idle_pause(void) {
+static inline void arts_runtime_idle_backoff(void) {
+  for (unsigned int i = 0; i < arts_thread_info.back_off; i++) {
 #if defined(__x86_64__) || defined(__i386__)
-  __asm__ __volatile__("pause" ::: "memory");
+    __asm__ __volatile__("pause" ::: "memory");
 #elif defined(__aarch64__) || defined(__arm__)
-  __asm__ __volatile__("yield" ::: "memory");
+    __asm__ __volatile__("yield" ::: "memory");
 #else
-  __asm__ __volatile__("" ::: "memory");
+    __asm__ __volatile__("" ::: "memory");
 #endif
+  }
+  if (arts_thread_info.back_off < 64)
+    arts_thread_info.back_off <<= 1;
 }
 
 ARTS_WEAK void init_per_node(unsigned int node_id, int argc, char **argv) {
@@ -636,6 +640,8 @@ void arts_run_edt(struct arts_edt_s *edt) {
   arts_set_thread_local_edt_info(edt);
 
   TIME_EDT_EXEC_START();
+#if ENABLE_TIME_EDT_EXEC || ARTS_OBJECT_EDT_TABLE_ENABLED ||                   \
+    ARTS_OBJECT_EDT_TRACE_ENABLED
   struct timespec start_time;
   struct timespec end_time;
   (void)clock_gettime(CLOCK_MONOTONIC, &start_time);
@@ -648,6 +654,11 @@ void arts_run_edt(struct arts_edt_s *edt) {
                      (end_time.tv_nsec - start_time.tv_nsec);
   arts_object_record_edt(edt->arts_id, exec_ns, 0);
   arts_object_trace_edt(edt->arts_id, exec_ns, 0);
+#else
+  func(paramc, paramv, depc, depv);
+  TIME_EDT_EXEC_STOP();
+  uint64_t exec_ns = 0;
+#endif
 
   INCREMENT_NUM_EDT_FINISH_BY(1);
 
@@ -689,6 +700,8 @@ inline struct arts_edt_s *arts_runtime_steal_from_network() {
   return edt;
 }
 
+#define HALF_STEAL_MAX 16
+
 inline struct arts_edt_s *arts_runtime_steal_from_worker() {
   struct arts_edt_s *edt = NULL;
   if (arts_node_info.total_thread_count > 1) {
@@ -698,10 +711,17 @@ inline struct arts_edt_s *arts_runtime_steal_from_worker() {
       steal_loc = jrand48(arts_thread_info.drand_buf);
       steal_loc = steal_loc % arts_node_info.total_thread_count;
     } while (steal_loc == arts_thread_info.thread_id);
-    edt = (struct arts_edt_s *)arts_deque_pop_back(
-        arts_node_info.deque[steal_loc]);
-    if (edt) {
+
+    void *stolen[HALF_STEAL_MAX];
+    unsigned int count = arts_deque_simple_pop_back_half(
+        arts_node_info.deque[steal_loc], stolen, HALF_STEAL_MAX);
+    if (count > 0) {
       INCREMENT_NUM_STEAL_SUCCESS_BY(1);
+      edt = (struct arts_edt_s *)stolen[0];
+      /* Push remaining stolen items to our own deque. */
+      for (unsigned int i = 1; i < count; i++) {
+        arts_deque_push_front(arts_thread_info.my_deque, stolen[i], 0);
+      }
     }
   }
   return edt;
@@ -719,9 +739,11 @@ bool arts_network_first_scheduler_loop() {
     }
   }
   if (edt_found) {
+    arts_thread_info.back_off = 1;
     arts_run_edt(edt_found);
     return true;
   }
+  arts_runtime_idle_backoff();
   return false;
 }
 
@@ -738,9 +760,11 @@ bool arts_network_before_steal_scheduler_loop() {
   }
 
   if (edt_found) {
+    arts_thread_info.back_off = 1;
     arts_run_edt(edt_found);
     return true;
   }
+  arts_runtime_idle_backoff();
   return false;
 }
 
@@ -769,12 +793,13 @@ bool arts_default_scheduler_loop() {
   }
 
   if (edt_found) {
+    arts_thread_info.back_off = 1;
     arts_run_edt(edt_found);
     // arts_wake_up_context();
     return true;
   }
   CHECK_OUTSTANDING_EDTS(10000000);
-  arts_runtime_idle_pause();
+  arts_runtime_idle_backoff();
   return false;
 }
 
