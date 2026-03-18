@@ -198,6 +198,10 @@ bool arts_deque_simple_push_front(struct arts_deque_s *deque, void *item,
 }
 
 void *arts_deque_simple_pop_front(struct arts_deque_s *deque) {
+  /* Fast-path: skip write+mfence when deque is visibly empty. */
+  if (__atomic_load_n(&deque->top, __ATOMIC_RELAXED) >=
+      __atomic_load_n(&deque->bottom, __ATOMIC_RELAXED))
+    return NULL;
   uint64_t b = --deque->bottom;
   HW_MEMORY_FENCE();
   uint64_t t = deque->top;
@@ -218,6 +222,10 @@ void *arts_deque_simple_pop_front(struct arts_deque_s *deque) {
 }
 
 void *arts_deque_simple_pop_back(struct arts_deque_s *deque) {
+  /* Fast-path: skip write+mfence when deque is visibly empty. */
+  if (__atomic_load_n(&deque->top, __ATOMIC_RELAXED) >=
+      __atomic_load_n(&deque->bottom, __ATOMIC_RELAXED))
+    return NULL;
   uint64_t t = deque->top;
   HW_MEMORY_FENCE();
   uint64_t b = deque->bottom;
@@ -233,6 +241,10 @@ void *arts_deque_simple_pop_back(struct arts_deque_s *deque) {
 
 unsigned int arts_deque_simple_pop_back_half(struct arts_deque_s *deque,
                                              void **out, unsigned int max) {
+  /* Fast-path: skip write+mfence when deque is visibly empty. */
+  if ((int64_t)__atomic_load_n(&deque->bottom, __ATOMIC_RELAXED) -
+      (int64_t)__atomic_load_n(&deque->top, __ATOMIC_RELAXED) <= 0)
+    return 0;
   uint64_t t = deque->top;
   HW_MEMORY_FENCE();
   uint64_t b = deque->bottom;
