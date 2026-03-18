@@ -41,6 +41,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <pthread.h>
 #include "arts/counter/counter.h"
 #include "arts/counter/object_counter.h"
 #include "arts/defs.h"
@@ -74,11 +75,17 @@ struct arts_runtime_shared_s {
   unsigned int receiver_thread_count;
   unsigned int total_thread_count;
   volatile unsigned int ready_to_push;
+  char _pad_push[60];
   volatile unsigned int ready_to_parallel_start;
+  char _pad_parallel_start[60];
   volatile unsigned int ready_to_inspect;
+  char _pad_inspect[60];
   volatile unsigned int ready_to_execute;
+  char _pad_execute[60];
   volatile unsigned int ready_to_clean;
+  char _pad_clean[60];
   volatile unsigned int ready_to_shutdown;
+  char _pad_shutdown[60];
   char *buf;
   int packet_size;
   volatile unsigned int shutdown_count;
@@ -111,6 +118,13 @@ struct arts_runtime_shared_s {
   arts_object_table_t **object_tables;   // [thread_id]
   arts_array_list_t **object_edt_traces; // [thread_id]
   arts_array_list_t **object_db_traces;  // [thread_id]
+  /* Worker idle-sleep (Tier 2) */
+  pthread_mutex_t worker_sleep_mutex;
+  pthread_cond_t  worker_sleep_cond;
+  volatile unsigned int n_spinning;
+  char _pad_n_spinning[60];
+  unsigned int max_spinners;
+  bool idle_sleep_enabled;
 } ARTS_ALIGNED(64);
 
 struct arts_runtime_private_s {
@@ -131,6 +145,7 @@ struct arts_runtime_private_s {
   int local_counting;
   unsigned int shad_lock;
   unsigned short drand_buf[3];
+  bool is_sleeping;
 };
 
 extern struct arts_runtime_shared_s arts_node_info;
