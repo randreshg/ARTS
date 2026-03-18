@@ -78,6 +78,8 @@ struct arts_config_s {
   unsigned int route_table_size;
   unsigned int route_table_entries;
   unsigned int deque_size;
+  unsigned int idle_max_backoff;
+  bool idle_sleep_enabled;
   char *counter_folder;
   unsigned int counter_capture_interval;
   unsigned int scheduler;

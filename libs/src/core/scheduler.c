@@ -88,18 +88,61 @@ extern void init_per_worker(unsigned int node_id, unsigned int worker_id,
 static int arts_runtime_argc = 0;
 static char **arts_runtime_argv = NULL;
 
+#if defined(__x86_64__) || defined(__i386__)
+#define ARTS_SPIN_PAUSE() __asm__ __volatile__("pause" ::: "memory")
+#elif defined(__aarch64__) || defined(__arm__)
+#define ARTS_SPIN_PAUSE() __asm__ __volatile__("yield" ::: "memory")
+#else
+#define ARTS_SPIN_PAUSE() __asm__ __volatile__("" ::: "memory")
+#endif
+
+static void arts_worker_try_sleep(void);
+
 static inline void arts_runtime_idle_backoff(void) {
   for (unsigned int i = 0; i < arts_thread_info.back_off; i++) {
-#if defined(__x86_64__) || defined(__i386__)
-    __asm__ __volatile__("pause" ::: "memory");
-#elif defined(__aarch64__) || defined(__arm__)
-    __asm__ __volatile__("yield" ::: "memory");
-#else
-    __asm__ __volatile__("" ::: "memory");
-#endif
+    ARTS_SPIN_PAUSE();
   }
-  if (arts_thread_info.back_off < 64)
+  if (arts_thread_info.back_off < 4096) {
     arts_thread_info.back_off <<= 1;
+  } else if (arts_node_info.idle_sleep_enabled) {
+    arts_worker_try_sleep();
+  }
+}
+
+static inline void arts_wake_one_worker(void) {
+  if (!arts_node_info.idle_sleep_enabled)
+    return;
+  /* Quick check: if all workers are spinning, nobody is sleeping. */
+  if (__atomic_load_n(&arts_node_info.n_spinning, __ATOMIC_RELAXED) >=
+      arts_node_info.worker_thread_count)
+    return;
+  pthread_mutex_lock(&arts_node_info.worker_sleep_mutex);
+  pthread_cond_signal(&arts_node_info.worker_sleep_cond);
+  pthread_mutex_unlock(&arts_node_info.worker_sleep_mutex);
+}
+
+static void arts_worker_try_sleep(void) {
+  /* Only sleep if there are enough spinners remaining. */
+  unsigned int cur = __atomic_load_n(&arts_node_info.n_spinning, __ATOMIC_ACQUIRE);
+  while (cur > arts_node_info.max_spinners) {
+    if (__atomic_compare_exchange_n(&arts_node_info.n_spinning, &cur, cur - 1,
+                                    /*weak=*/1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+      goto do_sleep;
+  }
+  return;
+
+do_sleep:
+  pthread_mutex_lock(&arts_node_info.worker_sleep_mutex);
+  /* Re-check alive under the lock to avoid sleeping past shutdown. */
+  if (arts_thread_info.alive) {
+    arts_thread_info.is_sleeping = true;
+    pthread_cond_wait(&arts_node_info.worker_sleep_cond,
+                      &arts_node_info.worker_sleep_mutex);
+    arts_thread_info.is_sleeping = false;
+  }
+  pthread_mutex_unlock(&arts_node_info.worker_sleep_mutex);
+  __atomic_add_fetch(&arts_node_info.n_spinning, 1, __ATOMIC_ACQ_REL);
+  arts_thread_info.back_off = 1;
 }
 
 ARTS_WEAK void init_per_node(unsigned int node_id, int argc, char **argv) {
@@ -218,6 +261,16 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.run_gpu_gc_pre_edt = config->run_gpu_gc_pre_edt;
   arts_node_info.delete_zeros_gpu_gc = config->delete_zeros_gpu_gc;
 
+  /* Worker idle-sleep */
+  arts_node_info.idle_sleep_enabled = config->idle_sleep_enabled;
+  if (arts_node_info.idle_sleep_enabled) {
+    pthread_mutex_init(&arts_node_info.worker_sleep_mutex, NULL);
+    pthread_cond_init(&arts_node_info.worker_sleep_cond, NULL);
+    arts_node_info.n_spinning = config->worker_thread_count;
+    unsigned int quarter = config->worker_thread_count / 4;
+    arts_node_info.max_spinners = quarter < 1 ? 1 : (quarter > 16 ? 16 : quarter);
+  }
+
   /* GUID generation */
   arts_node_info.keys = (uint64_t **)arts_calloc(tc, sizeof(uint64_t *));
   arts_node_info.global_guid_thread_id =
@@ -323,6 +376,12 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.keys);
   arts_free(arts_node_info.global_guid_thread_id);
 
+  /* Worker idle-sleep cleanup */
+  if (arts_node_info.idle_sleep_enabled) {
+    pthread_mutex_destroy(&arts_node_info.worker_sleep_mutex);
+    pthread_cond_destroy(&arts_node_info.worker_sleep_cond);
+  }
+
   /* Network outbound queues and sequence tracking arrays */
   arts_server_cleanup();
 
@@ -361,8 +420,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   set_guid_generator_after_parallel_start();
 
   arts_atomic_sub(&arts_node_info.ready_to_parallel_start, 1U);
-  while (arts_node_info.ready_to_parallel_start) {
-  }
+  while (arts_node_info.ready_to_parallel_start) { ARTS_SPIN_PAUSE(); }
   if (init_per_worker && arts_thread_info.role == ARTS_ROLE_WORKER)
     init_per_worker(arts_global_rank_id, arts_thread_info.group_pos, argc,
                     argv);
@@ -376,11 +434,9 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   arts_increment_finished_epoch_list();
 
   arts_atomic_sub(&arts_node_info.ready_to_inspect, 1U);
-  while (arts_node_info.ready_to_inspect) {
-  }
+  while (arts_node_info.ready_to_inspect) { ARTS_SPIN_PAUSE(); }
   arts_atomic_sub(&arts_node_info.ready_to_execute, 1U);
-  while (arts_node_info.ready_to_execute) {
-  }
+  while (arts_node_info.ready_to_execute) { ARTS_SPIN_PAUSE(); }
 
   // Start counter capture AFTER all barriers, when receiver threads are in
   // their runtime loops. This ensures time sync requests can be processed.
@@ -471,12 +527,10 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
   arts_guid_key_generator_init();
 
   arts_atomic_sub(&arts_node_info.ready_to_push, 1U);
-  while (arts_node_info.ready_to_push) {
-  };
+  while (arts_node_info.ready_to_push) { ARTS_SPIN_PAUSE(); }
   if (thread->id) {
     arts_atomic_sub(&arts_node_info.ready_to_parallel_start, 1U);
-    while (arts_node_info.ready_to_parallel_start) {
-    };
+    while (arts_node_info.ready_to_parallel_start) { ARTS_SPIN_PAUSE(); }
 
     if (arts_thread_info.role == ARTS_ROLE_WORKER) {
       if (init_per_worker)
@@ -486,11 +540,9 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
     }
 
     arts_atomic_sub(&arts_node_info.ready_to_inspect, 1U);
-    while (arts_node_info.ready_to_inspect) {
-    };
+    while (arts_node_info.ready_to_inspect) { ARTS_SPIN_PAUSE(); }
     arts_atomic_sub(&arts_node_info.ready_to_execute, 1U);
-    while (arts_node_info.ready_to_execute) {
-    };
+    while (arts_node_info.ready_to_execute) { ARTS_SPIN_PAUSE(); }
   }
   arts_thread_info.drand_buf[0] = 1202107158 + (thread->id * 1999);
   arts_thread_info.drand_buf[1] = 0;
@@ -499,8 +551,7 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
 
 void arts_runtime_private_cleanup() {
   arts_atomic_sub(&arts_node_info.ready_to_clean, 1U);
-  while (arts_node_info.ready_to_clean) {
-  };
+  while (arts_node_info.ready_to_clean) { ARTS_SPIN_PAUSE(); }
   arts_remote_thread_outbound_queues_cleanup();
   arts_remote_thread_inbound_queues_cleanup();
   if (arts_thread_info.my_deque) {
@@ -534,11 +585,15 @@ void arts_runtime_stop() {
   unsigned int i;
   for (i = 0; i < arts_node_info.total_thread_count; i++) {
     ARTS_DEBUG("arts_runtime_stop: waiting for thread %u to register", i);
-    while (!arts_node_info.local_spin[i]) {
-      ;
-    }
+    while (!arts_node_info.local_spin[i]) { ARTS_SPIN_PAUSE(); }
     (*arts_node_info.local_spin[i]) = false;
     ARTS_DEBUG("arts_runtime_stop: thread %u signaled to stop", i);
+  }
+  /* Wake any workers sleeping on the condvar so they see alive==false. */
+  if (arts_node_info.idle_sleep_enabled) {
+    pthread_mutex_lock(&arts_node_info.worker_sleep_mutex);
+    pthread_cond_broadcast(&arts_node_info.worker_sleep_cond);
+    pthread_mutex_unlock(&arts_node_info.worker_sleep_mutex);
   }
   ARTS_INFO("arts_runtime_stop: all threads signaled");
 }
@@ -560,6 +615,7 @@ void arts_handle_remote_stolen_edt(struct arts_edt_s *edt) {
     } else {
       arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
     }
+    arts_wake_one_worker();
   }
 }
 
@@ -605,6 +661,7 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
         } else {
           arts_deque_push_front(arts_node_info.deque[0], edt, 0);
         }
+        arts_wake_one_worker();
       }
     } else
 #endif
@@ -616,6 +673,7 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
         ARTS_INFO("EDT[Guid:%lu] pushed to worker deque", edt->current_edt);
         arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
       }
+      arts_wake_one_worker();
     }
   } else {
     ARTS_DEBUG("EDT[Guid:%lu] waiting for %u more DB acquisitions",
@@ -722,6 +780,8 @@ inline struct arts_edt_s *arts_runtime_steal_from_worker() {
       for (unsigned int i = 1; i < count; i++) {
         arts_deque_push_front(arts_thread_info.my_deque, stolen[i], 0);
       }
+      if (count > 1)
+        arts_wake_one_worker();
     }
   }
   return edt;

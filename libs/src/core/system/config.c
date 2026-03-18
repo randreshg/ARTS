@@ -764,6 +764,9 @@ static const struct arts_config_entry_s config_entries[] = {
     {"worker_init_deque_size", CONFIG_UINT, OFF(deque_size), "4096", NULL},
     {"route_table_size", CONFIG_UINT, OFF(route_table_size), "16", NULL},
     {"auto_shutdown", CONFIG_UINT, OFF(auto_shutdown), "0", NULL},
+    /* --- Idle / backoff --- */
+    {"idle_max_backoff", CONFIG_UINT, OFF(idle_max_backoff), "4096", NULL},
+    {"idle_sleep_enabled", CONFIG_BOOL, OFF(idle_sleep_enabled), "0", NULL},
     /* --- GPU --- */
     {"gpu", CONFIG_UINT, OFF(gpu), "0", NULL},
     {"gpu_locality", CONFIG_UINT, OFF(gpu_locality), "0", NULL},
