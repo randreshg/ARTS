@@ -90,6 +90,7 @@ struct arts_runtime_shared_s {
   int packet_size;
   volatile unsigned int shutdown_count;
   arts_guid_t auto_shutdown_guid;
+  arts_epoch_t *auto_shutdown_epoch; /**< Cached pointer (avoids RT lookup). */
   unsigned int gpu;
   unsigned int gpu_locality;
   unsigned int gpu_fit;
