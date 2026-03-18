@@ -56,6 +56,9 @@
 #define DEFAULT_EPOCH_POOL_SIZE 4096
 ARTS_THREAD_LOCAL arts_epoch_pool_t *epoch_thread_pool;
 
+static void increment_finished_epoch_impl(arts_guid_t epoch_guid,
+                                           arts_epoch_t *epoch);
+
 /*
  * Shutdown-epoch helpers.
  *
@@ -69,26 +72,26 @@ ARTS_THREAD_LOCAL arts_epoch_pool_t *epoch_thread_pool;
  *   inc_finished — when an EDT completes execution.
  */
 void arts_shutdown_epoch_inc_active() {
-  if (arts_node_info.auto_shutdown_guid) {
-    ARTS_DEBUG("shutdown_epoch: inc_active [Epoch:%lu]",
-               arts_node_info.auto_shutdown_guid);
-    increment_active_epoch(arts_node_info.auto_shutdown_guid);
+  arts_epoch_t *ep = arts_node_info.auto_shutdown_epoch;
+  if (ep) {
+    ARTS_DEBUG("shutdown_epoch: inc_active [Epoch:%lu]", ep->guid);
+    arts_atomic_add_u64(&ep->epoch_counts, EPOCH_ACTIVE_INC);
   }
 }
 
 void arts_shutdown_epoch_inc_queue() {
-  if (arts_node_info.auto_shutdown_guid) {
-    ARTS_DEBUG("shutdown_epoch: inc_queue [Epoch:%lu]",
-               arts_node_info.auto_shutdown_guid);
-    increment_queue_epoch(arts_node_info.auto_shutdown_guid);
+  arts_epoch_t *ep = arts_node_info.auto_shutdown_epoch;
+  if (ep) {
+    ARTS_DEBUG("shutdown_epoch: inc_queue [Epoch:%lu]", ep->guid);
+    arts_atomic_add_u64(&ep->queued, 1);
   }
 }
 
 void arts_shutdown_epoch_inc_finished() {
-  if (arts_node_info.auto_shutdown_guid) {
-    ARTS_DEBUG("shutdown_epoch: inc_finished [Epoch:%lu]",
-               arts_node_info.auto_shutdown_guid);
-    increment_finished_epoch(arts_node_info.auto_shutdown_guid);
+  arts_epoch_t *ep = arts_node_info.auto_shutdown_epoch;
+  if (ep) {
+    ARTS_DEBUG("shutdown_epoch: inc_finished [Epoch:%lu]", ep->guid);
+    increment_finished_epoch_impl(ep->guid, ep);
   }
 }
 
@@ -153,67 +156,72 @@ void increment_active_epoch(arts_guid_t epoch_guid) {
  * their queued counter and, when it hits 1, send their active/finished
  * counts to the owner for global reduction.
  */
+static void increment_finished_epoch_impl(arts_guid_t epoch_guid,
+                                           arts_epoch_t *epoch) {
+  if (arts_global_rank_count == 1) {
+    /*
+     * Lock-free single-node path.
+     *
+     * fetch_and_add returns the value BEFORE the add.  Adding 1 to the
+     * low 32 bits increments finished_count while the high 32 bits
+     * (active_count) are read atomically in the same 64-bit word.
+     *
+     * If (old_finished + 1) == old_active, all EDTs have finished.
+     * The CAS on phase ensures exactly one thread fires the epoch.
+     */
+    uint64_t prev = __sync_fetch_and_add(&epoch->epoch_counts, 1);
+    unsigned int new_finished = (unsigned int)((prev & 0xFFFFFFFF) + 1);
+    unsigned int cur_active = (unsigned int)(prev >> EPOCH_ACTIVE_SHIFT);
+    ARTS_DEBUG("increment_finished_epoch[Guid:%lu]: finished_count=%u, "
+               "active_count=%u, phase=%u",
+               epoch_guid, new_finished, cur_active, epoch->phase);
+    if (new_finished > 0 && new_finished == cur_active) {
+      unsigned int old_phase = arts_atomic_cswap(
+          &epoch->phase, (unsigned int)PHASE_1, (unsigned int)PHASE_3);
+      if (old_phase == (unsigned int)PHASE_1) {
+        /* Signal completion before delete so waiters see it. */
+        __atomic_store_n(&epoch->completed, 1, __ATOMIC_RELEASE);
+        if (epoch->termination_exit_guid) {
+          arts_signal_edt_value(epoch->termination_exit_guid,
+                                epoch->termination_exit_slot,
+                                new_finished);
+        } else {
+          arts_shutdown_epoch_fire(epoch->guid);
+        }
+        delete_epoch(epoch_guid, epoch);
+      }
+    }
+  } else {
+    /* Multi-node: increment finished in the packed counter. */
+    uint64_t prev = __sync_fetch_and_add(&epoch->epoch_counts, 1);
+    unsigned int new_finished = (unsigned int)((prev & 0xFFFFFFFF) + 1);
+    unsigned int cur_active = (unsigned int)(prev >> EPOCH_ACTIVE_SHIFT);
+    ARTS_DEBUG("increment_finished_epoch[Guid:%lu]: finished_count=%u, "
+               "active_count=%u, phase=%u",
+               epoch_guid, new_finished, cur_active, epoch->phase);
+    unsigned int rank = arts_guid_get_rank(epoch_guid);
+    if (rank == arts_global_rank_id) {
+      if (!arts_atomic_sub_u64(&epoch->queued, 1)) {
+        if (!arts_atomic_cswap_u64(&epoch->outstanding, 0,
+                                   arts_global_rank_count)) {
+          broadcast_epoch_request(epoch_guid);
+        }
+      }
+    } else {
+      if (decrement_queue_epoch(epoch)) {
+        arts_remote_epoch_send(rank, epoch_guid, cur_active,
+                               new_finished);
+      }
+    }
+  }
+}
+
 void increment_finished_epoch(arts_guid_t epoch_guid) {
   if (epoch_guid != NULL_GUID) {
     arts_epoch_t *epoch =
         (arts_epoch_t *)arts_route_table_lookup_item(epoch_guid);
     if (epoch) {
-      if (arts_global_rank_count == 1) {
-        /*
-         * Lock-free single-node path.
-         *
-         * fetch_and_add returns the value BEFORE the add.  Adding 1 to the
-         * low 32 bits increments finished_count while the high 32 bits
-         * (active_count) are read atomically in the same 64-bit word.
-         *
-         * If (old_finished + 1) == old_active, all EDTs have finished.
-         * The CAS on phase ensures exactly one thread fires the epoch.
-         */
-        uint64_t prev = __sync_fetch_and_add(&epoch->epoch_counts, 1);
-        unsigned int new_finished = (unsigned int)((prev & 0xFFFFFFFF) + 1);
-        unsigned int cur_active = (unsigned int)(prev >> EPOCH_ACTIVE_SHIFT);
-        ARTS_DEBUG("increment_finished_epoch[Guid:%lu]: finished_count=%u, "
-                   "active_count=%u, phase=%u",
-                   epoch_guid, new_finished, cur_active, epoch->phase);
-        if (new_finished > 0 && new_finished == cur_active) {
-          unsigned int old_phase = arts_atomic_cswap(
-              &epoch->phase, (unsigned int)PHASE_1, (unsigned int)PHASE_3);
-          if (old_phase == (unsigned int)PHASE_1) {
-            /* Signal completion before delete so waiters see it. */
-            __atomic_store_n(&epoch->completed, 1, __ATOMIC_RELEASE);
-            if (epoch->termination_exit_guid) {
-              arts_signal_edt_value(epoch->termination_exit_guid,
-                                    epoch->termination_exit_slot,
-                                    new_finished);
-            } else {
-              arts_shutdown_epoch_fire(epoch->guid);
-            }
-            delete_epoch(epoch_guid, epoch);
-          }
-        }
-      } else {
-        /* Multi-node: increment finished in the packed counter. */
-        uint64_t prev = __sync_fetch_and_add(&epoch->epoch_counts, 1);
-        unsigned int new_finished = (unsigned int)((prev & 0xFFFFFFFF) + 1);
-        unsigned int cur_active = (unsigned int)(prev >> EPOCH_ACTIVE_SHIFT);
-        ARTS_DEBUG("increment_finished_epoch[Guid:%lu]: finished_count=%u, "
-                   "active_count=%u, phase=%u",
-                   epoch_guid, new_finished, cur_active, epoch->phase);
-        unsigned int rank = arts_guid_get_rank(epoch_guid);
-        if (rank == arts_global_rank_id) {
-          if (!arts_atomic_sub_u64(&epoch->queued, 1)) {
-            if (!arts_atomic_cswap_u64(&epoch->outstanding, 0,
-                                       arts_global_rank_count)) {
-              broadcast_epoch_request(epoch_guid);
-            }
-          }
-        } else {
-          if (decrement_queue_epoch(epoch)) {
-            arts_remote_epoch_send(rank, epoch_guid, cur_active,
-                                   new_finished);
-          }
-        }
-      }
+      increment_finished_epoch_impl(epoch_guid, epoch);
     } else {
       arts_out_of_order_inc_finished_epoch(epoch_guid);
     }
@@ -267,6 +275,7 @@ bool arts_shutdown_epoch_create() {
     arts_node_info.auto_shutdown_guid = arts_guid_create_for_rank(0, ARTS_EDT);
     arts_epoch_t *epoch =
         create_epoch(&arts_node_info.auto_shutdown_guid, NULL_GUID, 0);
+    arts_node_info.auto_shutdown_epoch = epoch;
     unsigned int total_workers = arts_get_total_workers();
     arts_atomic_add_u64(&epoch->epoch_counts,
                         (uint64_t)total_workers << EPOCH_ACTIVE_SHIFT);
