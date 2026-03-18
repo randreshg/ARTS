@@ -165,12 +165,20 @@ typedef enum {
  *
  * Tracks active/finished task counts across nodes to determine when
  * all work within the epoch has completed.
+ *
+ * Single-node fast path: active_count and finished_count are packed into
+ * epoch_counts (active in high 32, finished in low 32) so a single
+ * atomic add on the finished half atomically reads both counters.
+ * This eliminates the local_lock that previously serialized all 64
+ * threads.  The CAS on phase ensures exactly one thread fires.
+ *
+ * Multi-node: uses separate atomic ops on individual halves via the
+ * EPOCH_ACTIVE/EPOCH_FINISHED accessor macros.
  */
 typedef struct {
-  volatile unsigned int local_lock; /**< Single-node active/finished lock. */
+  volatile uint64_t epoch_counts;  /**< Packed active(hi32)|finished(lo32). */
   volatile unsigned int phase;               /**< Current TD phase (PHASE_*). */
-  volatile unsigned int active_count;        /**< Local active task count. */
-  volatile unsigned int finished_count;      /**< Local finished task count. */
+  volatile unsigned int completed;           /**< Set to 1 when epoch fires. */
   volatile unsigned int global_active_count; /**< Cluster-wide active count. */
   volatile unsigned int
       global_finished_count;               /**< Cluster-wide finished count. */
@@ -184,6 +192,12 @@ typedef struct {
   arts_guid_t guid;                   /**< GUID of this epoch. */
   arts_guid_t pool_guid;              /**< Associated resource pool GUID. */
 } arts_epoch_t;
+
+/** Active count occupies the upper 32 bits of epoch_counts. */
+#define EPOCH_ACTIVE_SHIFT 32
+#define EPOCH_ACTIVE_INC   ((uint64_t)1 << EPOCH_ACTIVE_SHIFT)
+#define EPOCH_ACTIVE(e)    ((unsigned int)((e)->epoch_counts >> EPOCH_ACTIVE_SHIFT))
+#define EPOCH_FINISHED(e)  ((unsigned int)((e)->epoch_counts & 0xFFFFFFFF))
 
 /** @} */ /* end td_types */
 
