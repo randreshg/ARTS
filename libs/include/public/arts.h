@@ -1039,6 +1039,17 @@ arts_guid_t arts_db_copy_to_new_type(arts_guid_t old_guid,
 arts_guid_t arts_get_current_epoch_guid();
 
 /**
+ * @brief Return the epoch GUID that the current EDT is enrolled in.
+ *
+ * Unlike arts_get_current_epoch_guid() which returns the top of the epoch
+ * stack, this returns current_edt->epoch_guid — the epoch this EDT was
+ * enrolled in at creation time.
+ *
+ * @return EDT's enrollment epoch GUID, or NULL_GUID if no current EDT.
+ */
+arts_guid_t arts_get_edt_epoch_guid();
+
+/**
  * @brief Assign an EDT to a specific epoch.
  *
  * The caller must ensure the EDT has not yet run and the epoch is still live.

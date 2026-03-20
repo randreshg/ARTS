@@ -233,6 +233,10 @@ arts_guid_t arts_get_current_epoch_guid() {
   return NULL_GUID;
 }
 
+arts_guid_t arts_get_edt_epoch_guid() {
+  return current_edt ? current_edt->epoch_guid : NULL_GUID;
+}
+
 arts_guid_t *arts_check_epoch_is_root(arts_guid_t to_check) {
   if (epoch_list) {
     uint64_t length = arts_length_array_list(epoch_list);
