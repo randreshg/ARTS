@@ -47,6 +47,7 @@ extern "C" {
 
 enum arts_out_of_order_type {
   OO_SIGNAL_EDT,
+  OO_SET_DEP_METADATA,
   OO_EVENT_SATISFY_SLOT,
   OO_ADD_DEPENDENCE,
   OO_HANDLE_READY_EDT,
@@ -64,7 +65,11 @@ enum arts_out_of_order_type {
 
 void arts_out_of_order_signal_edt(arts_guid_t wait_on, arts_guid_t edt_packet,
                                   arts_guid_t data_guid, uint32_t slot,
-                                  arts_db_access_mode_t mode, bool force);
+                                  arts_db_access_mode_t mode, uint32_t flags,
+                                  bool force);
+void arts_out_of_order_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
+                                        arts_db_access_mode_t mode,
+                                        uint32_t flags);
 void arts_out_of_order_event_satisfy(arts_guid_t wait_on,
                                      arts_guid_t event_guid,
                                      arts_guid_t data_guid);
@@ -75,6 +80,7 @@ void arts_out_of_order_event_satisfy_slot(arts_guid_t wait_on,
 void arts_out_of_order_add_dependence(arts_guid_t source,
                                       arts_guid_t destination, uint32_t slot,
                                       arts_db_access_mode_t mode,
+                                      uint32_t flags,
                                       arts_guid_t wait_on);
 void arts_out_of_order_handle_ready_edt(arts_guid_t trigger_guid,
                                         struct arts_edt_s *edt);

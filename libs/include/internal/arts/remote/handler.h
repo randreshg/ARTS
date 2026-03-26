@@ -50,11 +50,12 @@ void arts_remote_send(unsigned int rank, send_handler_t fun_ptr, void *args,
 
 void arts_remote_add_dependence(arts_guid_t source, arts_guid_t destination,
                                 uint32_t slot, unsigned int rank,
-                                arts_db_access_mode_t mode);
+                                arts_db_access_mode_t mode, uint32_t flags);
 void arts_remote_add_dependence_with_hints(arts_guid_t source,
                                            arts_guid_t destination,
                                            uint32_t slot, unsigned int rank,
-                                           arts_db_access_mode_t mode);
+                                           arts_db_access_mode_t mode,
+                                           uint32_t flags);
 void arts_remote_update_route_table(arts_guid_t guid, unsigned int rank);
 void arts_remote_handle_update_db_guid(void *ptr);
 void arts_remote_handle_invalidate_db(void *ptr);
@@ -74,9 +75,9 @@ void arts_remote_handle_edt_move(void *ptr);
 void arts_remote_handle_db_move(void *ptr);
 void arts_remote_handle_event_move(void *ptr);
 void arts_remote_signal_edt(arts_guid_t edt, arts_guid_t db, uint32_t slot,
-                            arts_db_access_mode_t mode);
+                            arts_db_access_mode_t mode, uint32_t flags);
 void arts_remote_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
-                              arts_db_access_mode_t mode);
+                              arts_db_access_mode_t mode, uint32_t flags);
 void arts_remote_event_satisfy_slot(arts_guid_t event_guid,
                                     arts_guid_t data_guid, uint32_t slot);
 void arts_db_request_callback(struct arts_edt_s *edt, unsigned int slot,

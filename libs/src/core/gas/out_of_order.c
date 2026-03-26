@@ -57,6 +57,15 @@ struct oo_signal_edt_s {
   arts_guid_t data_guid;
   uint32_t slot;
   arts_db_access_mode_t mode;
+  uint32_t flags;
+};
+
+struct oo_set_dep_metadata_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t edt_guid;
+  uint32_t slot;
+  arts_db_access_mode_t mode;
+  uint32_t flags;
 };
 
 struct oo_db_request_satisfy_s {
@@ -73,6 +82,7 @@ struct oo_add_dependence_s {
   uint32_t slot;
   arts_guid_t data;
   arts_db_access_mode_t mode;
+  uint32_t flags;
 };
 
 struct oo_event_satisfy_slot_s {
@@ -163,8 +173,14 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
   switch (type_ptr->type) {
   case OO_SIGNAL_EDT: {
     struct oo_signal_edt_s *edt = (struct oo_signal_edt_s *)handle_me;
-    internal_signal_edt(edt->edt_packet, edt->slot, edt->data_guid, edt->mode,
-                        NULL, 0);
+    internal_signal_edt_ex(edt->edt_packet, edt->slot, edt->data_guid,
+                           edt->mode, edt->flags, NULL, 0);
+    break;
+  }
+  case OO_SET_DEP_METADATA: {
+    struct oo_set_dep_metadata_s *meta =
+        (struct oo_set_dep_metadata_s *)handle_me;
+    arts_set_dep_metadata(meta->edt_guid, meta->slot, meta->mode, meta->flags);
     break;
   }
   case OO_EVENT_SATISFY_SLOT: {
@@ -175,7 +191,8 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
   }
   case OO_ADD_DEPENDENCE: {
     struct oo_add_dependence_s *dep = (struct oo_add_dependence_s *)handle_me;
-    arts_add_dependence(dep->source, dep->destination, dep->slot, dep->mode);
+    arts_add_dependence_ex(dep->source, dep->destination, dep->slot, dep->mode,
+                           dep->flags);
     break;
   }
   case OO_HANDLE_READY_EDT: {
@@ -266,7 +283,8 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
  */
 void arts_out_of_order_signal_edt(arts_guid_t wait_on, arts_guid_t edt_packet,
                                   arts_guid_t data_guid, uint32_t slot,
-                                  arts_db_access_mode_t mode, bool force) {
+                                  arts_db_access_mode_t mode, uint32_t flags,
+                                  bool force) {
   struct oo_signal_edt_s *edt =
       (struct oo_signal_edt_s *)arts_malloc(sizeof(struct oo_signal_edt_s));
   edt->type = OO_SIGNAL_EDT;
@@ -274,14 +292,34 @@ void arts_out_of_order_signal_edt(arts_guid_t wait_on, arts_guid_t edt_packet,
   edt->data_guid = data_guid;
   edt->slot = slot;
   edt->mode = mode;
+  edt->flags = flags;
   if (force) {
     arts_route_table_add_oo_existing(wait_on, edt, false);
   } else {
     bool res = arts_route_table_add_oo(wait_on, edt, false);
     if (!res) {
-      internal_signal_edt(edt_packet, slot, data_guid, mode, NULL, 0);
+      internal_signal_edt_ex(edt_packet, slot, data_guid, mode, flags, NULL,
+                             0);
       arts_free(edt);
     }
+  }
+}
+
+void arts_out_of_order_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
+                                        arts_db_access_mode_t mode,
+                                        uint32_t flags) {
+  struct oo_set_dep_metadata_s *meta =
+      (struct oo_set_dep_metadata_s *)arts_malloc(
+          sizeof(struct oo_set_dep_metadata_s));
+  meta->type = OO_SET_DEP_METADATA;
+  meta->edt_guid = edt_guid;
+  meta->slot = slot;
+  meta->mode = mode;
+  meta->flags = flags;
+  bool res = arts_route_table_add_oo(edt_guid, meta, false);
+  if (!res) {
+    arts_set_dep_metadata(edt_guid, slot, mode, flags);
+    arts_free(meta);
   }
 }
 
@@ -311,6 +349,7 @@ void arts_out_of_order_event_satisfy_slot(arts_guid_t wait_on,
 void arts_out_of_order_add_dependence(arts_guid_t source,
                                       arts_guid_t destination, uint32_t slot,
                                       arts_db_access_mode_t mode,
+                                      uint32_t flags,
                                       arts_guid_t wait_on) {
   struct oo_add_dependence_s *dep = (struct oo_add_dependence_s *)arts_malloc(
       sizeof(struct oo_add_dependence_s));
@@ -319,9 +358,10 @@ void arts_out_of_order_add_dependence(arts_guid_t source,
   dep->destination = destination;
   dep->slot = slot;
   dep->mode = mode;
+  dep->flags = flags;
   bool res = arts_route_table_add_oo(wait_on, dep, false);
   if (!res) {
-    arts_add_dependence(source, destination, slot, mode);
+    arts_add_dependence_ex(source, destination, slot, mode, flags);
     arts_free(dep);
   }
 }

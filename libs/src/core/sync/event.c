@@ -414,10 +414,11 @@ void arts_event_add_dependence_with_mode(arts_guid_t event_source,
   if (event == NULL) {
     unsigned int rank = arts_guid_get_rank(event_source);
     if (rank != arts_global_rank_id) {
-      arts_remote_add_dependence(event_source, edt_dest, edt_slot, rank, mode);
+      arts_remote_add_dependence(event_source, edt_dest, edt_slot, rank, mode,
+                                 0);
     } else {
       arts_out_of_order_add_dependence(event_source, edt_dest, edt_slot,
-                                       DB_MODE_NULL, event_source);
+                                       DB_MODE_NULL, 0, event_source);
     }
     return;
   }
@@ -472,10 +473,11 @@ void arts_event_add_dependence_with_byte_offset(
     if (rank != arts_global_rank_id) {
       /* Byte-offset not supported for remote channels — fall back to
        * full-DB dependence.  The byte slice is resolved at acquire time. */
-      arts_remote_add_dependence(event_source, edt_dest, edt_slot, rank, mode);
+      arts_remote_add_dependence(event_source, edt_dest, edt_slot, rank, mode,
+                                 0);
     } else {
       arts_out_of_order_add_dependence(event_source, edt_dest, edt_slot,
-                                       DB_MODE_NULL, event_source);
+                                       DB_MODE_NULL, 0, event_source);
     }
     return;
   }
@@ -722,6 +724,12 @@ struct arts_dependent_s *arts_dependent_get(struct arts_dependent_list_s *head,
  */
 void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
                          uint32_t slot, arts_db_access_mode_t access_mode) {
+  arts_add_dependence_ex(source, destination, slot, access_mode, 0);
+}
+
+void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
+                            uint32_t slot, arts_db_access_mode_t access_mode,
+                            uint32_t flags) {
   ARTS_INFO("Add Dependence from %lu to %lu at %u mode=%u", source, destination,
             slot, access_mode);
 
@@ -729,7 +737,8 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
   if (source == NULL_GUID) {
     arts_type_t dest_type = arts_guid_get_type(destination);
     if (dest_type == ARTS_EDT) {
-      arts_signal_edt(destination, slot, NULL_GUID, access_mode);
+      arts_signal_edt_with_flags(destination, slot, NULL_GUID, access_mode,
+                                 flags);
     } else if (dest_type == ARTS_EVENT) {
       arts_event_satisfy_slot(destination, NULL_GUID, slot);
     }
@@ -742,7 +751,8 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
   if (source_type == ARTS_DB) {
     arts_type_t dest_type = arts_guid_get_type(destination);
     if (dest_type == ARTS_EDT) {
-      arts_signal_edt(destination, slot, source, access_mode);
+      arts_signal_edt_with_flags(destination, slot, source, access_mode,
+                                 flags);
     } else if (dest_type == ARTS_EVENT) {
       arts_event_satisfy_slot(destination, source, slot);
     }
@@ -752,9 +762,9 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
   /* Event source (ARTS_EVENT). */
   arts_type_t dest_type = arts_guid_get_type(destination);
 
-  /* Step 1: set mode on EDT dep slot. */
+  /* Step 1: set dep metadata on the EDT slot. */
   if (dest_type == ARTS_EDT) {
-    arts_set_dep_mode(destination, slot, access_mode);
+    arts_set_dep_metadata(destination, slot, access_mode, flags);
   }
 
   /* Step 2: register waiter on event. */
@@ -763,10 +773,11 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
   if (source_header == NULL) {
     unsigned int rank = arts_guid_get_rank(source);
     if (rank != arts_global_rank_id) {
-      arts_remote_add_dependence(source, destination, slot, rank, access_mode);
+      arts_remote_add_dependence(source, destination, slot, rank, access_mode,
+                                 flags);
     } else {
       arts_out_of_order_add_dependence(source, destination, slot, access_mode,
-                                       source);
+                                       flags, source);
     }
     return;
   }
@@ -797,8 +808,9 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
         ;
       }
       if (position >= event->pos - 1) {
-        /* Self-signal: data only, mode already set on EDT. */
-        arts_signal_edt(destination, slot, event->data, DB_MODE_NULL);
+        /* Self-signal: data only, metadata already set on the EDT slot. */
+        arts_signal_edt_with_flags(destination, slot, event->data, DB_MODE_NULL,
+                                   0);
       }
     }
   } else if (dest_type == ARTS_EVENT) {
@@ -827,16 +839,25 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
 void arts_add_dependence_at(arts_guid_t source, arts_guid_t destination,
                             uint32_t slot, arts_db_access_mode_t access_mode,
                             uint64_t byte_offset, uint64_t len) {
+  arts_add_dependence_at_ex(source, destination, slot, access_mode,
+                            byte_offset, len, 0);
+}
+
+void arts_add_dependence_at_ex(arts_guid_t source, arts_guid_t destination,
+                               uint32_t slot,
+                               arts_db_access_mode_t access_mode,
+                               uint64_t byte_offset, uint64_t len,
+                               uint32_t flags) {
   /* Delegates to the standard path when no byte-offset is needed. */
   if (byte_offset == 0 && len == 0) {
-    arts_add_dependence(source, destination, slot, access_mode);
+    arts_add_dependence_ex(source, destination, slot, access_mode, flags);
     return;
   }
 
-  /* Step 1: set mode on EDT dep slot. */
+  /* Step 1: set dep metadata on the EDT slot. */
   arts_type_t dest_type = arts_guid_get_type(destination);
   if (dest_type == ARTS_EDT) {
-    arts_set_dep_mode(destination, slot, access_mode);
+    arts_set_dep_metadata(destination, slot, access_mode, flags);
   }
 
   arts_type_t source_type = arts_guid_get_type(source);
@@ -845,7 +866,8 @@ void arts_add_dependence_at(arts_guid_t source, arts_guid_t destination,
     /* DB source — immediate satisfy (DBs are passive objects).
      * Byte-offset slice resolution happens in acquire_dbs. */
     if (dest_type == ARTS_EDT) {
-      arts_signal_edt(destination, slot, source, access_mode);
+      arts_signal_edt_with_flags(destination, slot, source, access_mode,
+                                 flags);
     } else if (dest_type == ARTS_EVENT) {
       arts_event_satisfy_slot(destination, source, slot);
     }
