@@ -102,6 +102,7 @@ struct ARTS_PACKED arts_remote_add_dependence_packet_s {
   arts_guid_t destination;
   uint32_t slot;
   arts_db_access_mode_t mode;
+  uint32_t flags;
 };
 
 struct ARTS_PACKED arts_remote_edt_signal_packet_s {
@@ -110,6 +111,7 @@ struct ARTS_PACKED arts_remote_edt_signal_packet_s {
   arts_guid_t db;
   uint32_t slot;
   arts_db_access_mode_t mode;
+  uint32_t flags;
   unsigned int db_route;
 };
 
@@ -125,6 +127,7 @@ struct ARTS_PACKED arts_remote_set_dep_mode_packet_s {
   arts_guid_t edt;
   uint32_t slot;
   arts_db_access_mode_t mode;
+  uint32_t flags;
 };
 
 struct ARTS_PACKED arts_remote_db_request_packet_s {

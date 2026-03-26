@@ -81,40 +81,44 @@ static void send_remote_add_dependence_packet(unsigned int message_type,
                                               arts_guid_t source,
                                               arts_guid_t destination,
                                               uint32_t slot, unsigned int rank,
-                                              arts_db_access_mode_t mode) {
+                                              arts_db_access_mode_t mode,
+                                              uint32_t flags) {
   struct arts_remote_add_dependence_packet_s packet;
   packet.source = source;
   packet.destination = destination;
   packet.slot = slot;
   packet.mode = mode;
+  packet.flags = flags;
   arts_fill_packet_header(&packet.header, sizeof(packet), message_type);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
 }
 
 void arts_remote_add_dependence(arts_guid_t source, arts_guid_t destination,
                                 uint32_t slot, unsigned int rank,
-                                arts_db_access_mode_t mode) {
+                                arts_db_access_mode_t mode, uint32_t flags) {
   ARTS_DEBUG("Remote Add dependence sent %d", rank);
   send_remote_add_dependence_packet(ARTS_REMOTE_ADD_DEPENDENCE_MSG, source,
-                                    destination, slot, rank, mode);
+                                    destination, slot, rank, mode, flags);
 }
 
 void arts_remote_add_dependence_with_hints(arts_guid_t source,
                                            arts_guid_t destination,
                                            uint32_t slot, unsigned int rank,
-                                           arts_db_access_mode_t mode) {
+                                           arts_db_access_mode_t mode,
+                                           uint32_t flags) {
   ARTS_DEBUG("Remote Add dependence (mode=%u) sent %d", mode, rank);
   send_remote_add_dependence_packet(ARTS_REMOTE_ADD_DEPENDENCE_MSG, source,
-                                    destination, slot, rank, mode);
+                                    destination, slot, rank, mode, flags);
 }
 
 void arts_remote_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
-                              arts_db_access_mode_t mode) {
+                              arts_db_access_mode_t mode, uint32_t flags) {
   unsigned int rank = arts_guid_get_rank(edt_guid);
   struct arts_remote_set_dep_mode_packet_s packet;
   packet.edt = edt_guid;
   packet.slot = slot;
   packet.mode = mode;
+  packet.flags = flags;
   arts_fill_packet_header(&packet.header, sizeof(packet),
                           ARTS_REMOTE_SET_DEP_MODE_MSG);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
@@ -349,7 +353,8 @@ void arts_remote_handle_event_move(void *ptr) {
 
 static void send_remote_edt_signal_packet(arts_guid_t edt, arts_guid_t db,
                                           uint32_t slot,
-                                          arts_db_access_mode_t mode) {
+                                          arts_db_access_mode_t mode,
+                                          uint32_t flags) {
   struct arts_remote_edt_signal_packet_s packet;
   unsigned int rank = arts_guid_get_rank(edt);
 
@@ -361,6 +366,7 @@ static void send_remote_edt_signal_packet(arts_guid_t edt, arts_guid_t db,
   packet.edt = edt;
   packet.slot = slot;
   packet.mode = mode;
+  packet.flags = flags;
   packet.db_route = arts_guid_get_rank(db);
   arts_fill_packet_header(&packet.header, sizeof(packet),
                           ARTS_REMOTE_EDT_SIGNAL_MSG);
@@ -368,11 +374,11 @@ static void send_remote_edt_signal_packet(arts_guid_t edt, arts_guid_t db,
 }
 
 void arts_remote_signal_edt(arts_guid_t edt, arts_guid_t db, uint32_t slot,
-                            arts_db_access_mode_t mode) {
+                            arts_db_access_mode_t mode, uint32_t flags) {
   ARTS_INFO("Remote Signal from DB[Guid:%lu] to EDT[Guid:%lu, Slot:%d, Rank: "
             "%d]",
             db, edt, slot, arts_guid_get_rank(edt));
-  send_remote_edt_signal_packet(edt, db, slot, mode);
+  send_remote_edt_signal_packet(edt, db, slot, mode, flags);
 }
 
 void arts_remote_event_satisfy_slot(arts_guid_t event_guid,

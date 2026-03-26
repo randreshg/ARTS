@@ -642,18 +642,18 @@ void *arts_get_depv(void *edt_ptr) {
 /* arts_get_dep_modes removed — mode now lives in arts_edt_dep_t.mode */
 
 /*
- * arts_set_dep_mode — Write access mode to an EDT dep slot without signaling.
+ * arts_set_dep_metadata — Write dep metadata to an EDT slot without signaling.
  *
- * This is the "mode-set" half of the two-message add_dependence pattern.
- * It sets depv[slot].mode on the target EDT.  It does NOT decrement
- * depc_needed and does NOT deliver data.
+ * This is the metadata half of the two-message add_dependence pattern.
+ * It sets depv[slot].mode / depv[slot].flags on the target EDT. It does NOT
+ * decrement depc_needed and does NOT deliver data.
  *
  * Local EDT: direct write.  Remote EDT: forward via network message.
- * Not-yet-created EDT: queue via OOO (OO_SIGNAL_EDT with NULL data —
- * the OOO replay will call internal_signal_edt which writes mode).
+ * Not-yet-created EDT: queue a dedicated OOO metadata write that replays once
+ * the EDT becomes available.
  */
-void arts_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
-                       arts_db_access_mode_t mode) {
+void arts_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
+                           arts_db_access_mode_t mode, uint32_t flags) {
   unsigned int rank = arts_guid_get_rank(edt_guid);
   if (rank == arts_global_rank_id) {
     struct arts_edt_s *edt =
@@ -662,18 +662,20 @@ void arts_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
       arts_edt_dep_t *edt_dep = (arts_edt_dep_t *)arts_get_depv(edt);
       if (slot < edt->depc) {
         edt_dep[slot].mode = mode;
+        edt_dep[slot].flags = flags;
       }
+    } else {
+      arts_out_of_order_set_dep_metadata(edt_guid, slot, mode, flags);
     }
-    /* If EDT not yet in route table, the mode will be delivered by
-       the add_dependence OOO replay, which stores mode and calls
-       arts_add_dependence → arts_set_dep_mode again when the EDT
-       exists. */
   } else {
-    /* Remote EDT — send a lightweight mode-set message.
-       We reuse the signal packet with NULL_GUID data; the receiver
-       will call arts_set_dep_mode locally. */
-    arts_remote_set_dep_mode(edt_guid, slot, mode);
+    /* Remote EDT — forward dep metadata to the owning rank. */
+    arts_remote_set_dep_mode(edt_guid, slot, mode, flags);
   }
+}
+
+void arts_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
+                       arts_db_access_mode_t mode) {
+  arts_set_dep_metadata(edt_guid, slot, mode, 0);
 }
 
 /*
@@ -690,9 +692,10 @@ void arts_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
  *      transitions to AVAILABLE via arts_route_table_fire_oo.
  *   4. Remote EDT → forward the signal over the network.
  */
-void internal_signal_edt(arts_guid_t edt_packet, uint32_t slot,
-                         arts_guid_t data_guid, arts_db_access_mode_t mode,
-                         void *ptr, unsigned int size) {
+void internal_signal_edt_ex(arts_guid_t edt_packet, uint32_t slot,
+                            arts_guid_t data_guid,
+                            arts_db_access_mode_t mode, uint32_t flags,
+                            void *ptr, unsigned int size) {
   TIME_EDT_SIGNAL_START();
   INCREMENT_NUM_EDT_SIGNAL_BY(1);
 
@@ -705,7 +708,7 @@ void internal_signal_edt(arts_guid_t edt_packet, uint32_t slot,
                                             slot);
     } else {
       arts_out_of_order_signal_edt(current_edt->current_edt, edt_packet,
-                                   data_guid, slot, mode, true);
+                                   data_guid, slot, mode, flags, true);
     }
   } else {
     unsigned int rank = arts_guid_get_rank(edt_packet);
@@ -728,6 +731,9 @@ void internal_signal_edt(arts_guid_t edt_packet, uint32_t slot,
           if (mode != DB_MODE_NULL) {
             edt_dep[slot].mode = mode;
           }
+          if (flags) {
+            edt_dep[slot].flags = flags;
+          }
         }
         unsigned int res = arts_atomic_sub(&edt->depc_needed, 1U);
         ARTS_INFO("Signal EDT[Guid:%lu, Slot:%u] DB[Guid:%lu] "
@@ -747,7 +753,7 @@ void internal_signal_edt(arts_guid_t edt_packet, uint32_t slot,
                                                 size, slot);
         } else {
           arts_out_of_order_signal_edt(edt_packet, edt_packet, data_guid, slot,
-                                       mode, false);
+                                       mode, flags, false);
         }
       }
     } else {
@@ -757,74 +763,37 @@ void internal_signal_edt(arts_guid_t edt_packet, uint32_t slot,
       if (mode == DB_MODE_PTR) {
         arts_remote_signal_edt_with_ptr(edt_packet, data_guid, ptr, size, slot);
       } else {
-        arts_remote_signal_edt(edt_packet, data_guid, slot, mode);
+        arts_remote_signal_edt(edt_packet, data_guid, slot, mode, flags);
       }
     }
   }
   TIME_EDT_SIGNAL_STOP();
+}
+
+void internal_signal_edt(arts_guid_t edt_packet, uint32_t slot,
+                         arts_guid_t data_guid, arts_db_access_mode_t mode,
+                         void *ptr, unsigned int size) {
+  internal_signal_edt_ex(edt_packet, slot, data_guid, mode, 0, ptr, size);
+}
+
+void arts_signal_edt_with_flags(arts_guid_t edt_guid, uint32_t slot,
+                                arts_guid_t data_guid,
+                                arts_db_access_mode_t mode, uint32_t flags) {
+  internal_signal_edt_ex(edt_guid, slot, data_guid, mode, flags, NULL, 0);
 }
 
 void arts_signal_edt(arts_guid_t edt_guid, uint32_t slot, arts_guid_t data_guid,
                      arts_db_access_mode_t mode) {
   ARTS_DEBUG("arts_signal_edt [EDT:%lu, Slot:%u, DB:%lu, Mode:%u]", edt_guid,
              slot, data_guid, mode);
-  internal_signal_edt(edt_guid, slot, data_guid, mode, NULL, 0);
+  internal_signal_edt_ex(edt_guid, slot, data_guid, mode, 0, NULL, 0);
 }
 
 // Internal function to signal EDT with explicit access mode
 void internal_signal_edt_with_mode(arts_guid_t edt_packet, uint32_t slot,
                                    arts_guid_t data_guid,
                                    arts_db_access_mode_t mode) {
-  TIME_EDT_SIGNAL_START();
-  // This is old CDAG code...
-  if (current_edt && current_edt->invalidate_count > 0) {
-    if (mode == DB_MODE_PTR) {
-      arts_out_of_order_signal_edt_with_ptr(edt_packet, data_guid, NULL, 0,
-                                            slot);
-    } else {
-      arts_out_of_order_signal_edt(current_edt->current_edt, edt_packet,
-                                   data_guid, slot, mode, true);
-    }
-  } else {
-    unsigned int rank = arts_guid_get_rank(edt_packet);
-    if (rank == arts_global_rank_id) {
-      struct arts_edt_s *edt =
-          (struct arts_edt_s *)arts_route_table_lookup_item(edt_packet);
-      if (edt) {
-        arts_edt_dep_t *edt_dep = (arts_edt_dep_t *)arts_get_depv(edt);
-        if (slot < edt->depc) {
-          edt_dep[slot].guid = data_guid;
-          edt_dep[slot].ptr = NULL;
-          if (mode != DB_MODE_NULL) {
-            edt_dep[slot].mode = mode;
-          }
-        }
-        unsigned int res = arts_atomic_sub(&edt->depc_needed, 1U);
-        ARTS_INFO("Signal DB[Guid:%lu] to EDT[Guid:%lu, Slot:%u, "
-                  "DepCount:%d, Mode:%s]",
-                  data_guid, edt->current_edt, slot, res,
-                  GET_DB_MODE_NAME(mode));
-        if (res == 0) {
-          arts_handle_ready_edt(edt);
-        }
-      } else {
-        if (mode == DB_MODE_PTR) {
-          arts_out_of_order_signal_edt_with_ptr(edt_packet, data_guid, NULL, 0,
-                                                slot);
-        } else {
-          arts_out_of_order_signal_edt(edt_packet, edt_packet, data_guid, slot,
-                                       mode, false);
-        }
-      }
-    } else {
-      if (mode == DB_MODE_PTR) {
-        arts_remote_signal_edt_with_ptr(edt_packet, data_guid, NULL, 0, slot);
-      } else {
-        arts_remote_signal_edt(edt_packet, data_guid, slot, mode);
-      }
-    }
-  }
-  TIME_EDT_SIGNAL_STOP();
+  internal_signal_edt_ex(edt_packet, slot, data_guid, mode, 0, NULL, 0);
 }
 
 void arts_signal_edt_value(arts_guid_t edt_guid, uint32_t slot,

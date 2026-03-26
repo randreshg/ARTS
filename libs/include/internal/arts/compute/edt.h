@@ -68,12 +68,21 @@ void arts_edt_delete(struct arts_edt_s *edt);
 void internal_signal_edt(arts_guid_t edt_packet, uint32_t slot,
                          arts_guid_t data_guid, arts_db_access_mode_t mode,
                          void *ptr, unsigned int size);
+void internal_signal_edt_ex(arts_guid_t edt_packet, uint32_t slot,
+                            arts_guid_t data_guid,
+                            arts_db_access_mode_t mode, uint32_t flags,
+                            void *ptr, unsigned int size);
 void internal_signal_edt_with_mode(arts_guid_t edt_packet, uint32_t slot,
                                    arts_guid_t data_guid,
                                    arts_db_access_mode_t mode);
+void arts_signal_edt_with_flags(arts_guid_t edt_guid, uint32_t slot,
+                                arts_guid_t data_guid,
+                                arts_db_access_mode_t mode, uint32_t flags);
 
 void arts_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
                        arts_db_access_mode_t mode);
+void arts_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
+                           arts_db_access_mode_t mode, uint32_t flags);
 
 typedef struct {
   arts_guid_t current_edt_guid;

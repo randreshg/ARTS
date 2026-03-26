@@ -460,6 +460,9 @@ void acquire_dbs(struct arts_edt_s *edt) {
     }
     if (depv[i].guid && depv[i].ptr == NULL) {
       arts_db_access_mode_t access_mode = depv[i].mode;
+      bool prefer_duplicate =
+          (depv[i].flags & ARTS_DEP_FLAG_PREFER_DUPLICATE) != 0 &&
+          access_mode == DB_MODE_RO;
 
       /*
        * Value signals (DB_MODE_VALUE) store a raw uint64 in
@@ -486,9 +489,10 @@ void acquire_dbs(struct arts_edt_s *edt) {
       }
 
       ARTS_INFO("Acquiring DB[Guid:%lu, GuidType:%u, AccessMode:%u, Owner:%d, "
-                "Rank:%u] in EDT[Id:%lu, Guid:%lu, Slot:%u]",
+                "Rank:%u] in EDT[Id:%lu, Guid:%lu, Slot:%u] flags=%u",
                 depv[i].guid, guid_type, access_mode, owner,
-                arts_global_rank_id, edt->arts_id, edt->current_edt, i);
+                arts_global_rank_id, edt->arts_id, edt->current_edt, i,
+                depv[i].flags);
 
       if (guid_type == ARTS_DB) {
         // Look up DB first — subtype dispatch requires the struct
@@ -519,6 +523,11 @@ void acquire_dbs(struct arts_edt_s *edt) {
           if (duplicate_added) {
             ARTS_DEBUG("Adding duplicate DB[Guid:%lu] on_head=%d", depv[i].guid,
                        on_head);
+            if (prefer_duplicate) {
+              ARTS_DEBUG("Compiler requested duplicate-friendly RO acquire for "
+                         "DB[Guid:%lu]",
+                         depv[i].guid);
+            }
           } else {
             ARTS_DEBUG(
                 "Duplicate not added DB[Guid:%lu] (rank already tracked)",
