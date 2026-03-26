@@ -103,7 +103,8 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
   case ARTS_REMOTE_EDT_SIGNAL_MSG: {
     struct arts_remote_edt_signal_packet_s *pack =
         (struct arts_remote_edt_signal_packet_s *)(packet);
-    internal_signal_edt_with_mode(pack->edt, pack->slot, pack->db, pack->mode);
+    internal_signal_edt_ex(pack->edt, pack->slot, pack->db, pack->mode,
+                           pack->flags, NULL, 0);
     break;
   }
   case ARTS_REMOTE_EVENT_SATISFY_SLOT_MSG: {
@@ -132,8 +133,8 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
     ARTS_DEBUG("Dependence Received");
     struct arts_remote_add_dependence_packet_s *pack =
         (struct arts_remote_add_dependence_packet_s *)(packet);
-    arts_add_dependence(pack->source, pack->destination, pack->slot,
-                        pack->mode);
+    arts_add_dependence_ex(pack->source, pack->destination, pack->slot,
+                           pack->mode, pack->flags);
     break;
   }
   case ARTS_REMOTE_INVALIDATE_DB_MSG: {
@@ -263,7 +264,7 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
     ARTS_DEBUG("Set Dep Mode Received");
     struct arts_remote_set_dep_mode_packet_s *pack =
         (struct arts_remote_set_dep_mode_packet_s *)(packet);
-    arts_set_dep_mode(pack->edt, pack->slot, pack->mode);
+    arts_set_dep_metadata(pack->edt, pack->slot, pack->mode, pack->flags);
     break;
   }
   default: {

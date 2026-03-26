@@ -115,6 +115,17 @@ typedef enum {
 } arts_db_access_mode_t;
 
 /**
+ * @brief Advisory per-dependency flags preserved on EDT slots.
+ *
+ * These flags do not change ARTS dependency semantics. They let compiler and
+ * runtime layers preserve per-slot hints until DB acquisition time.
+ */
+typedef enum {
+  ARTS_DEP_FLAG_NONE = 0u,
+  ARTS_DEP_FLAG_PREFER_DUPLICATE = 1u << 0,
+} arts_dep_flags_t;
+
+/**
  * @brief DataBlock subtype (stored in @c arts_db_s.db_type, NOT in the GUID).
  *
  * Specifies the storage and coherence class of a DataBlock.  All subtypes
@@ -182,12 +193,13 @@ typedef struct {
  * @brief Describes a single dependency slot delivered to an EDT.
  *
  * Mode is set via @c arts_add_dependence() or @c arts_signal_edt().
- * User EDTs typically read @c guid / @c ptr and ignore @c mode.
+ * User EDTs typically read @c guid / @c ptr and ignore @c mode / @c flags.
  */
 typedef struct {
   arts_guid_t guid;           /**< GUID of the DataBlock (or encoded value). */
   void *ptr;                  /**< Pointer to the DataBlock payload. */
   arts_db_access_mode_t mode; /**< Access mode for this dependency slot. */
+  uint32_t flags;             /**< Advisory dependency flags. */
 } arts_edt_dep_t;
 
 /**
@@ -823,6 +835,16 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
                          uint32_t slot, arts_db_access_mode_t mode);
 
 /**
+ * @brief Extended dependence registration with advisory per-slot flags.
+ *
+ * Semantics match @c arts_add_dependence. The extra @p flags are preserved on
+ * the destination EDT slot for later acquisition-time decisions.
+ */
+void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
+                            uint32_t slot, arts_db_access_mode_t mode,
+                            uint32_t flags);
+
+/**
  * @brief Wire a DB source to a destination with byte-offset slicing.
  *
  * Same as @c arts_add_dependence, but delivers only a byte slice of the DB.
@@ -837,6 +859,16 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
 void arts_add_dependence_at(arts_guid_t source, arts_guid_t destination,
                             uint32_t slot, arts_db_access_mode_t mode,
                             uint64_t byte_offset, uint64_t len);
+
+/**
+ * @brief Extended sliced dependence registration with advisory per-slot flags.
+ *
+ * Semantics match @c arts_add_dependence_at.
+ */
+void arts_add_dependence_at_ex(arts_guid_t source, arts_guid_t destination,
+                               uint32_t slot, arts_db_access_mode_t mode,
+                               uint64_t byte_offset, uint64_t len,
+                               uint32_t flags);
 
 /**
  * @brief Register a callback to execute when @p source fires.
