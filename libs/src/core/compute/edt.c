@@ -652,8 +652,10 @@ void *arts_get_depv(void *edt_ptr) {
  * Not-yet-created EDT: queue a dedicated OOO metadata write that replays once
  * the EDT becomes available.
  */
-void arts_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
-                           arts_db_access_mode_t mode, uint32_t flags) {
+void arts_set_dep_metadata_ext(arts_guid_t edt_guid, uint32_t slot,
+                               arts_db_access_mode_t mode, uint32_t flags,
+                               uint64_t slice_offset,
+                               uint64_t slice_size) {
   unsigned int rank = arts_guid_get_rank(edt_guid);
   if (rank == arts_global_rank_id) {
     struct arts_edt_s *edt =
@@ -663,14 +665,23 @@ void arts_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
       if (slot < edt->depc) {
         edt_dep[slot].mode = mode;
         edt_dep[slot].flags = flags;
+        edt_dep[slot].slice_offset = slice_offset;
+        edt_dep[slot].slice_size = slice_size;
       }
     } else {
-      arts_out_of_order_set_dep_metadata(edt_guid, slot, mode, flags);
+      arts_out_of_order_set_dep_metadata_ext(edt_guid, slot, mode, flags,
+                                             slice_offset, slice_size);
     }
   } else {
     /* Remote EDT — forward dep metadata to the owning rank. */
-    arts_remote_set_dep_mode(edt_guid, slot, mode, flags);
+    arts_remote_set_dep_metadata_ext(edt_guid, slot, mode, flags, slice_offset,
+                                     slice_size);
   }
+}
+
+void arts_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
+                           arts_db_access_mode_t mode, uint32_t flags) {
+  arts_set_dep_metadata_ext(edt_guid, slot, mode, flags, 0, 0);
 }
 
 void arts_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
@@ -730,6 +741,8 @@ void internal_signal_edt_ex(arts_guid_t edt_packet, uint32_t slot,
           }
           if (mode != DB_MODE_NULL) {
             edt_dep[slot].mode = mode;
+            edt_dep[slot].slice_offset = 0;
+            edt_dep[slot].slice_size = 0;
           }
           if (flags) {
             edt_dep[slot].flags = flags;

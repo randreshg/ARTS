@@ -41,6 +41,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <limits.h>
 #include <pthread.h>
 #include "arts/counter/counter.h"
 #include "arts/counter/object_counter.h"
@@ -67,6 +68,7 @@ struct arts_runtime_shared_s {
   struct arts_route_table_s **route_table;
   struct arts_route_table_s **gpu_route_table;
   struct arts_route_table_s *remote_route_table;
+  unsigned int *thread_numa_ids;
   volatile bool **local_spin;
   unsigned int **memory_moves;
   struct atomic_create_barrier_info_s **atomic_waits;
@@ -186,6 +188,19 @@ bool arts_network_first_scheduler_loop();
 bool arts_network_before_steal_scheduler_loop();
 bool arts_gpu_scheduler_backoff_loop();
 bool arts_gpu_scheduler_demand_loop();
+
+#define ARTS_INVALID_WORKER_ID UINT_MAX
+
+unsigned int arts_pick_worker_for_numa(unsigned int preferred_numa_id,
+                                       const unsigned int *thread_numa_ids,
+                                       unsigned int worker_count,
+                                       unsigned int start);
+unsigned int arts_pick_worker_steal_victim(unsigned int self_thread_id,
+                                           unsigned int self_numa_id,
+                                           const unsigned int *thread_numa_ids,
+                                           unsigned int worker_count,
+                                           unsigned int start,
+                                           bool allow_cross_numa);
 
 #ifdef __cplusplus
 }

@@ -94,8 +94,10 @@ set(TEST_PROGRAMS
     guid_basic
     guid_range
     hint_routing
+    numa_steal_policy
     node_query
     record_dep_at
+    wavefront_dep_at
     utility_api
     multinode_db
     multinode_edt
@@ -136,6 +138,11 @@ function(add_arts_test test_name)
 
     # Link with runtime libraries
     target_link_libraries(${test_name} PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
+    if(HWLOC_PRIVATE_LIBS)
+        # Tests link against the in-tree ARTS shared library, which still
+        # needs hwloc's private system deps on the final link line.
+        target_link_libraries(${test_name} PRIVATE ${HWLOC_PRIVATE_LIBS})
+    endif()
 
     # Use the appropriate ARTS library based on availability
     if(TARGET arts_shared)
@@ -335,8 +342,10 @@ register_single_node_test(guid_range)
 
 # Routing / misc
 register_single_node_test(hint_routing)
+register_single_node_test(numa_steal_policy)
 register_single_node_test(node_query)
 register_single_node_test(record_dep_at)
+register_single_node_test(wavefront_dep_at)
 register_single_node_test(utility_api)
 register_single_node_test(route_table)
 register_single_node_test(route_table_iter)

@@ -264,7 +264,8 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
     ARTS_DEBUG("Set Dep Mode Received");
     struct arts_remote_set_dep_mode_packet_s *pack =
         (struct arts_remote_set_dep_mode_packet_s *)(packet);
-    arts_set_dep_metadata(pack->edt, pack->slot, pack->mode, pack->flags);
+    arts_set_dep_metadata_ext(pack->edt, pack->slot, pack->mode, pack->flags,
+                              pack->slice_offset, pack->slice_size);
     break;
   }
   default: {

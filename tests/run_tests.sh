@@ -134,6 +134,7 @@ SINGLE_NODE_TESTS=(
   "hint_routing||$TIMEOUT_DEFAULT|Hint routing"
   "node_query||$TIMEOUT_DEFAULT|Node query"
   "record_dep_at||$TIMEOUT_DEFAULT|Record dep at"
+  "wavefront_dep_at||$TIMEOUT_DEFAULT|Wavefront dep at"
   "utility_api||$TIMEOUT_DEFAULT|Utility API"
   "route_table||$TIMEOUT_DEFAULT|Route table"
   "route_table_iter||$TIMEOUT_DEFAULT|Route table iter"

@@ -39,6 +39,9 @@
 #include "arts/memory/frontier.h"
 #include "arts/gas/route_table.h"
 
+#include <limits.h>
+#include <string.h>
+
 #include "arts/utils/malloc.h"
 
 #include "arts/compute/edt.h"
@@ -154,12 +157,25 @@ void arts_delete_local_delayed_edt(struct arts_local_delayed_edt_s *head) {
   }
 }
 
+void arts_delete_delayed_slice_request(struct arts_delayed_slice_request_s *head) {
+  struct arts_delayed_slice_request_s *trail;
+  struct arts_delayed_slice_request_s *current = head;
+  while (current) {
+    trail = current;
+    current = current->next;
+    arts_free(trail);
+  }
+}
+
 void arts_delete_db_frontier(struct arts_db_frontier_s *frontier) {
   if (frontier->list.next) {
     arts_delete_db_element(frontier->list.next);
   }
   if (frontier->localDelayed.next) {
     arts_delete_local_delayed_edt(frontier->localDelayed.next);
+  }
+  if (frontier->sliceDelayed.next) {
+    arts_delete_delayed_slice_request(frontier->sliceDelayed.next);
   }
   arts_free(frontier);
 }
@@ -176,6 +192,9 @@ void arts_delete_db_list(struct arts_db_list_s *db_list) {
     }
     if (frontier->localDelayed.next) {
       arts_delete_local_delayed_edt(frontier->localDelayed.next);
+    }
+    if (frontier->sliceDelayed.next) {
+      arts_delete_delayed_slice_request(frontier->sliceDelayed.next);
     }
     arts_free(frontier);
     frontier = next;
@@ -229,6 +248,118 @@ void arts_push_delayed_edt(struct arts_local_delayed_edt_s *head,
   current->edt[element_pos] = edt;
   current->slot[element_pos] = slot;
   current->mode[element_pos] = mode;
+}
+
+static void arts_validate_db_slice(struct arts_db_s *db, uint64_t offset,
+                                   uint64_t size) {
+  uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
+  if (size > UINT_MAX) {
+    ARTS_ERROR("ESD slice size %lu exceeds DB_MODE_PTR transport limit",
+               (unsigned long)size);
+  }
+  if (offset > data_size || size > data_size - offset) {
+    ARTS_ERROR("ESD slice [%lu, %lu) is out of bounds for DB[Guid:%lu, Size:%lu]",
+               (unsigned long)offset, (unsigned long)(offset + size), db->guid,
+               (unsigned long)data_size);
+  }
+}
+
+static unsigned int arts_db_slice_signal_size(struct arts_db_s *db,
+                                              uint64_t slice_size,
+                                              uint32_t flags) {
+  if ((flags & ARTS_DEP_FLAG_PRESERVE_SHAPE) != 0) {
+    uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
+    if (data_size > UINT_MAX) {
+      ARTS_ERROR("DB[Guid:%lu] payload [%lu] exceeds DB_MODE_PTR transport "
+                 "limit",
+                 db->guid, (unsigned long)data_size);
+    }
+    return (unsigned int)data_size;
+  }
+  return (unsigned int)slice_size;
+}
+
+static void *arts_alloc_db_slice_copy(struct arts_db_s *db, uint64_t offset,
+                                      uint64_t size, uint32_t flags) {
+  arts_validate_db_slice(db, offset, size);
+  unsigned int signal_size = arts_db_slice_signal_size(db, size, flags);
+  void *copy = (flags & ARTS_DEP_FLAG_PRESERVE_SHAPE)
+                   ? arts_calloc(1, signal_size)
+                   : arts_malloc(signal_size);
+  if (size) {
+    char *dst = (char *)copy;
+    if ((flags & ARTS_DEP_FLAG_PRESERVE_SHAPE) != 0) {
+      dst += offset;
+    }
+    memcpy(dst, ((char *)(db + 1)) + offset, (size_t)size);
+  }
+  return copy;
+}
+
+static void arts_satisfy_local_edt_slice(struct arts_edt_s *edt,
+                                         unsigned int slot,
+                                         struct arts_db_s *db,
+                                         uint64_t offset, uint64_t size,
+                                         uint32_t flags) {
+  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
+  depv[slot].guid = db->guid;
+  depv[slot].ptr = arts_alloc_db_slice_copy(db, offset, size, flags);
+  depv[slot].mode = DB_MODE_PTR;
+  depv[slot].slice_offset = 0;
+  depv[slot].slice_size = 0;
+  if (arts_atomic_sub(&edt->depc_needed, 1U) == 0) {
+    arts_handle_remote_stolen_edt(edt);
+  }
+}
+
+void arts_push_delayed_slice_request(struct arts_delayed_slice_request_s *head,
+                                     unsigned int position,
+                                     struct arts_edt_s *edt,
+                                     arts_guid_t edt_guid, unsigned int slot,
+                                     uint64_t offset, uint64_t size,
+                                     uint32_t flags) {
+  if (!head) {
+    return;
+  }
+  unsigned int num_elements = position / DBSPERELEMENT;
+  unsigned int element_pos = position % DBSPERELEMENT;
+  struct arts_delayed_slice_request_s *current = head;
+  for (unsigned int i = 0; i < num_elements; i++) {
+    if (!current->next) {
+      current->next = (struct arts_delayed_slice_request_s *)arts_calloc(
+          1, sizeof(struct arts_delayed_slice_request_s));
+      if (!current->next) {
+        ARTS_ERROR("DB delayed slice request allocation failed");
+      }
+    }
+    current = current->next;
+  }
+  current->edt[element_pos] = edt;
+  current->edt_guid[element_pos] = edt_guid;
+  current->slot[element_pos] = slot;
+  current->flags[element_pos] = flags;
+  current->offset[element_pos] = offset;
+  current->size[element_pos] = size;
+}
+
+static void arts_signal_db_slice(struct arts_db_s *db, arts_guid_t edt_guid,
+                                 unsigned int slot, uint64_t offset,
+                                 uint64_t size, uint32_t flags) {
+  /*
+   * ESD is intentionally copy-based transport: consumers see only the RO
+   * byte range they asked for, while ARTS retains whole-DB ownership.
+   */
+  arts_validate_db_slice(db, offset, size);
+  if ((flags & ARTS_DEP_FLAG_PRESERVE_SHAPE) != 0) {
+    unsigned int signal_size = arts_db_slice_signal_size(db, size, flags);
+    void *copy = arts_alloc_db_slice_copy(db, offset, size, flags);
+    arts_signal_edt_ptr_with_guid(edt_guid, slot, db->guid, copy, signal_size);
+    arts_free(copy);
+    return;
+  }
+  arts_signal_edt_ptr_with_guid(edt_guid, slot, db->guid,
+                                (void *)(((char *)(db + 1)) + offset),
+                                (unsigned int)size);
 }
 
 bool arts_push_db_to_frontier(struct arts_db_frontier_s *frontier,
@@ -334,6 +465,68 @@ bool arts_push_db_to_list(struct arts_db_list_s *db_list, unsigned int data,
   }
   arts_reader_unlock(&db_list->reader);
   return inserted && unique;
+}
+
+bool arts_request_db_slice(struct arts_db_s *db, struct arts_edt_s *local_edt,
+                           arts_guid_t edt_guid, unsigned int slot,
+                           uint64_t offset, uint64_t size, uint32_t flags) {
+  if (!db) {
+    return false;
+  }
+
+  struct arts_db_list_s *db_list = (struct arts_db_list_s *)db->db_list;
+  if (!db_list) {
+    if (local_edt) {
+      arts_satisfy_local_edt_slice(local_edt, slot, db, offset, size, flags);
+    } else {
+      arts_signal_db_slice(db, edt_guid, slot, offset, size, flags);
+    }
+    return true;
+  }
+
+  if (!db_list->head) {
+    if (arts_writer_try_lock(&db_list->reader, &db_list->writer)) {
+      db_list->head = db_list->tail = arts_new_db_frontier();
+      arts_writer_unlock(&db_list->writer);
+    }
+  }
+
+  arts_reader_lock(&db_list->reader, &db_list->writer);
+  bool inserted = false;
+  bool is_head = true;
+  for (struct arts_db_frontier_s *frontier = db_list->head; frontier;
+       frontier = frontier->next) {
+    if (frontier_add_read_lock(&frontier->lock)) {
+      if (is_head) {
+        if (local_edt) {
+          arts_satisfy_local_edt_slice(local_edt, slot, db, offset, size,
+                                       flags);
+        } else {
+          arts_signal_db_slice(db, edt_guid, slot, offset, size, flags);
+        }
+      } else {
+        arts_push_delayed_slice_request(&frontier->sliceDelayed,
+                                        frontier->slicePosition++, local_edt,
+                                        edt_guid, slot, offset, size, flags);
+      }
+      frontier_unlock(&frontier->lock);
+      inserted = true;
+      break;
+    }
+    is_head = false;
+    if (!frontier->next) {
+      struct arts_db_frontier_s *new_frontier = arts_new_db_frontier();
+      if (arts_atomic_cswap_ptr((volatile void **)&frontier->next, NULL,
+                                new_frontier)) {
+        arts_delete_db_frontier(new_frontier);
+        while (!frontier->next) {
+          ;
+        }
+      }
+    }
+  }
+  arts_reader_unlock(&db_list->reader);
+  return inserted;
 }
 
 unsigned int arts_current_frontier_size(struct arts_db_list_s *db_list) {
@@ -447,6 +640,25 @@ void arts_signal_frontier_remote(struct arts_db_frontier_s *frontier,
     }
   }
 
+  if (frontier->slicePosition) {
+    struct arts_delayed_slice_request_s *current = &frontier->sliceDelayed;
+    for (unsigned int i = 0; i < frontier->slicePosition; i++) {
+      unsigned int pos = i % DBSPERELEMENT;
+      if (current->edt[pos]) {
+        arts_satisfy_local_edt_slice(current->edt[pos], current->slot[pos], db,
+                                     current->offset[pos], current->size[pos],
+                                     current->flags[pos]);
+      } else {
+        arts_signal_db_slice(db, current->edt_guid[pos], current->slot[pos],
+                             current->offset[pos], current->size[pos],
+                             current->flags[pos]);
+      }
+      if (pos + 1 == DBSPERELEMENT) {
+        current = current->next;
+      }
+    }
+  }
+
   if (arts_push_db_to_element(&frontier->list, frontier->position, get_from)) {
     frontier->position++;
   }
@@ -515,6 +727,25 @@ void arts_signal_frontier_local(struct arts_db_frontier_s *frontier,
         arts_handle_remote_stolen_edt(edt);
       }
 
+      if (pos + 1 == DBSPERELEMENT) {
+        current = current->next;
+      }
+    }
+  }
+
+  if (frontier->slicePosition) {
+    struct arts_delayed_slice_request_s *current = &frontier->sliceDelayed;
+    for (unsigned int i = 0; i < frontier->slicePosition; i++) {
+      unsigned int pos = i % DBSPERELEMENT;
+      if (current->edt[pos]) {
+        arts_satisfy_local_edt_slice(current->edt[pos], current->slot[pos], db,
+                                     current->offset[pos], current->size[pos],
+                                     current->flags[pos]);
+      } else {
+        arts_signal_db_slice(db, current->edt_guid[pos], current->slot[pos],
+                             current->offset[pos], current->size[pos],
+                             current->flags[pos]);
+      }
       if (pos + 1 == DBSPERELEMENT) {
         current = current->next;
       }
