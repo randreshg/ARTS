@@ -86,6 +86,10 @@ void internal_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
                         unsigned int slot, unsigned int offset,
                         unsigned int size, arts_guid_t epoch_guid,
                         unsigned int rank);
+void arts_get_from_db_at_ex(arts_guid_t edt_guid, arts_guid_t db_guid,
+                            unsigned int slot, unsigned int offset,
+                            unsigned int len, uint32_t flags,
+                            unsigned int rank);
 
 void arts_db_destroy_safe(arts_guid_t guid, bool remote);
 void *arts_db_malloc(arts_db_types_t db_type, size_t size);

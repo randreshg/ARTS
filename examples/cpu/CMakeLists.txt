@@ -41,6 +41,7 @@
 set(CPU_EXAMPLES
     fib
     fib_yield
+    seidel_dep_at
     simple_reduction
     tiled_matmul
     bfs
@@ -71,6 +72,9 @@ function(add_cpu_example example_name)
 
     # Link with runtime libraries
     target_link_libraries(${example_name} PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
+    if(HWLOC_PRIVATE_LIBS)
+        target_link_libraries(${example_name} PRIVATE ${HWLOC_PRIVATE_LIBS})
+    endif()
 endfunction()
 
 # Function to create a C++ CPU example executable
@@ -89,6 +93,9 @@ function(add_cpu_cxx_example example_name)
 
     # Link with runtime libraries
     target_link_libraries(${example_name} PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
+    if(HWLOC_PRIVATE_LIBS)
+        target_link_libraries(${example_name} PRIVATE ${HWLOC_PRIVATE_LIBS})
+    endif()
 endfunction()
 
 # Create CPU example executables
