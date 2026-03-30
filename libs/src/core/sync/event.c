@@ -53,6 +53,7 @@
 #include "arts/utils/malloc.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <time.h>
 
 extern ARTS_THREAD_LOCAL struct arts_edt_s *current_edt;
@@ -856,19 +857,40 @@ void arts_add_dependence_at_ex(arts_guid_t source, arts_guid_t destination,
 
   /* Step 1: set dep metadata on the EDT slot. */
   arts_type_t dest_type = arts_guid_get_type(destination);
+  arts_type_t source_type = arts_guid_get_type(source);
   if (dest_type == ARTS_EDT) {
-    arts_set_dep_metadata(destination, slot, access_mode, flags);
+    arts_set_dep_metadata_ext(destination, slot, access_mode, flags,
+                              byte_offset, len);
   }
 
-  arts_type_t source_type = arts_guid_get_type(source);
-
   if (source_type == ARTS_DB) {
-    /* DB source — immediate satisfy (DBs are passive objects).
-     * Byte-offset slice resolution happens in acquire_dbs. */
+    /*
+     * DB-source ESD is intentionally RO transport only.
+     *
+     * The actual byte-slice transport happens later in acquire_dbs(), not
+     * during registration. That keeps DB-source slice deps aligned with the
+     * normal DB readiness/frontier model instead of reading bytes too early.
+     */
     if (dest_type == ARTS_EDT) {
-      arts_signal_edt_with_flags(destination, slot, source, access_mode,
-                                 flags);
+      if (access_mode != DB_MODE_RO) {
+        ARTS_ERROR("arts_add_dependence_at on DB[Guid:%lu] only supports "
+                   "DB_MODE_RO slices; mode=%s must use a whole-DB "
+                   "dependence instead",
+                   source, GET_DB_MODE_NAME(access_mode));
+      }
+      if (len == 0) {
+        ARTS_ERROR("arts_add_dependence_at on DB[Guid:%lu] requires len > 0",
+                   source);
+      }
+      if (byte_offset > UINT_MAX || len > UINT_MAX) {
+        ARTS_ERROR("arts_add_dependence_at slice [%lu, %lu) exceeds current "
+                   "transport limits",
+                   (unsigned long)byte_offset,
+                   (unsigned long)(byte_offset + len));
+      }
+      arts_signal_edt_with_flags(destination, slot, source, DB_MODE_NULL, 0);
     } else if (dest_type == ARTS_EVENT) {
+      /* Events carry only GUID satisfaction; byte slicing is EDT-only. */
       arts_event_satisfy_slot(destination, source, slot);
     }
   } else {

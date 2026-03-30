@@ -123,6 +123,13 @@ typedef enum {
 typedef enum {
   ARTS_DEP_FLAG_NONE = 0u,
   ARTS_DEP_FLAG_PREFER_DUPLICATE = 1u << 0,
+  /*
+   * Deliver RO byte-slice transport into a full DB-shaped temporary, keeping
+   * the copied bytes at their original byte offsets. This preserves the
+   * source DB address space for compiler-generated memref consumers while
+   * still copying only the requested slice payload.
+   */
+  ARTS_DEP_FLAG_PRESERVE_SHAPE = 1u << 1,
 } arts_dep_flags_t;
 
 /**
@@ -193,13 +200,17 @@ typedef struct {
  * @brief Describes a single dependency slot delivered to an EDT.
  *
  * Mode is set via @c arts_add_dependence() or @c arts_signal_edt().
- * User EDTs typically read @c guid / @c ptr and ignore @c mode / @c flags.
+ * User EDTs typically read @c guid / @c ptr and ignore the remaining fields.
+ * The slice metadata is runtime-owned and is used to defer DB-source byte
+ * slices until the normal DB acquisition phase.
  */
 typedef struct {
   arts_guid_t guid;           /**< GUID of the DataBlock (or encoded value). */
   void *ptr;                  /**< Pointer to the DataBlock payload. */
   arts_db_access_mode_t mode; /**< Access mode for this dependency slot. */
   uint32_t flags;             /**< Advisory dependency flags. */
+  uint64_t slice_offset;      /**< Byte offset for deferred DB slice reads. */
+  uint64_t slice_size;        /**< Slice length in bytes (0 = full DB). */
 } arts_edt_dep_t;
 
 /**
@@ -849,10 +860,17 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
  *
  * Same as @c arts_add_dependence, but delivers only a byte slice of the DB.
  *
+ * For DB sources, sliced dependencies are intentionally read-only transport:
+ * ARTS waits until the DB is ready, copies the requested byte range, and
+ * delivers that slice to the destination EDT as a @c DB_MODE_PTR payload while
+ * preserving the original DB GUID. Writable "sub-DB" slices are not supported;
+ * use a whole-DB dependence for writes.
+ *
  * @param source      Source DB or event GUID.
  * @param destination Destination EDT or event GUID.
  * @param slot        Dependency slot on the destination.
- * @param mode        Access mode.
+ * @param mode        Access mode. For DB sources, only @c DB_MODE_RO is
+ *                    supported when @p byte_offset/@p len specify a slice.
  * @param byte_offset Byte offset into the DB payload.
  * @param len         Length in bytes of the slice.
  */

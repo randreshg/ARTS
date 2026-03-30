@@ -41,7 +41,13 @@
 /// @brief Tests arts_record_dep and arts_record_dep_at (byte-offset slicing).
 
 #include "arts.h"
+#include <stdlib.h>
 #include <string.h>
+
+static void fail_test(const char *msg) {
+  arts_printf("  FAIL: %s\n", msg);
+  abort();
+}
 
 /// Test 1: Basic arts_record_dep with DB_MODE_RO.
 void check_record_dep_ro(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -54,7 +60,7 @@ void check_record_dep_ro(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (ok) {
     arts_printf("  PASS: record_dep RO - data read correctly\n");
   } else {
-    arts_printf("  FAIL: record_dep RO\n");
+    fail_test("record_dep RO");
   }
 }
 
@@ -83,7 +89,7 @@ void reader_after_ew(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (ok) {
     arts_printf("  PASS: record_dep EW->RO ordering correct\n");
   } else {
-    arts_printf("  FAIL: record_dep EW->RO data mismatch\n");
+    fail_test("record_dep EW->RO data mismatch");
   }
 }
 
@@ -97,16 +103,19 @@ void check_slice(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   // depv[0].ptr should point to offset 8 within the DB.
   int *slice = (int *)depv[0].ptr;
-  bool ok = (slice != NULL && slice[0] == 300 && slice[1] == 400);
+  bool ok = (slice != NULL && slice[0] == 300 && slice[1] == 400 &&
+             depv[0].mode == DB_MODE_PTR);
   if (ok) {
     arts_printf("  PASS: record_dep_at byte offset slice correct\n");
   } else {
     if (slice) {
-      arts_printf("  FAIL: record_dep_at got [%d, %d] expected [300, 400]\n",
-                  slice[0], slice[1]);
+      arts_printf("  FAIL: record_dep_at got [%d, %d], mode=%u "
+                  "expected [300, 400], mode=%u\n",
+                  slice[0], slice[1], depv[0].mode, DB_MODE_PTR);
     } else {
       arts_printf("  FAIL: record_dep_at null pointer\n");
     }
+    abort();
   }
 }
 
@@ -115,13 +124,54 @@ void check_slice_guid(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)depc;
   arts_guid_t expected_guid = (arts_guid_t)paramv[0];
-  bool ok = (depv[0].guid == expected_guid && depv[0].ptr != NULL);
+  bool ok = (depv[0].guid == expected_guid && depv[0].ptr != NULL &&
+             depv[0].mode == DB_MODE_PTR);
   if (ok) {
     arts_printf("  PASS: record_dep_at preserves DB GUID\n");
   } else {
-    arts_printf("  FAIL: record_dep_at GUID mismatch\n");
+    fail_test("record_dep_at GUID mismatch");
   }
   (void)paramc;
+}
+
+/// Test 5: a sliced DB dependence must observe bytes after earlier writers.
+/// The extra event dep forces EDT execution to wait, so a registration-time
+/// slice copy would expose stale data here.
+void writer_then_signal(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  int *data = (int *)depv[0].ptr;
+  if (!data) {
+    fail_test("record_dep_at writer null pointer");
+  }
+  data[2] = 700;
+  data[3] = 800;
+  arts_event_satisfy_slot((arts_guid_t)paramv[0], NULL_GUID,
+                          ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_printf("  PASS: record_dep_at writer updated halo region\n");
+}
+
+void check_slice_after_writer(uint32_t paramc, const uint64_t *paramv,
+                              uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  int *slice = (int *)depv[0].ptr;
+  bool ok = (slice != NULL && slice[0] == 700 && slice[1] == 800 &&
+             depv[0].mode == DB_MODE_PTR);
+  if (ok) {
+    arts_printf("  PASS: record_dep_at slice observes post-writer bytes\n");
+  } else {
+    if (slice) {
+      arts_printf("  FAIL: record_dep_at post-writer slice got [%d, %d], "
+                  "mode=%u expected [700, 800], mode=%u\n",
+                  slice[0], slice[1], depv[0].mode, DB_MODE_PTR);
+    } else {
+      arts_printf("  FAIL: record_dep_at post-writer slice null pointer\n");
+    }
+    abort();
+  }
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -186,6 +236,33 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e4 = arts_edt_create_with_epoch(
       check_slice_guid, 1, &guid_param, 1, epoch, &(arts_hint_t){.route = 0});
   arts_add_dependence_at(db3, e4, 0, DB_MODE_RO, sizeof(int), sizeof(int));
+
+  // Test 5: record_dep_at must resolve the slice after an earlier DB writer.
+  void *ptr4 = NULL;
+  arts_guid_t db4 =
+      arts_db_create(&ptr4, 4 * sizeof(int), ARTS_DB_DEFAULT, NULL);
+  int *d4 = (int *)ptr4;
+  d4[0] = 10;
+  d4[1] = 20;
+  d4[2] = 30;
+  d4[3] = 40;
+  arts_db_release(db4);
+
+  arts_guid_t writer_done =
+      arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
+  uint64_t writer_done_param = (uint64_t)writer_done;
+
+  arts_guid_t e5_writer = arts_edt_create_with_epoch(
+      writer_then_signal, 1, &writer_done_param, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence(db4, e5_writer, 0, DB_MODE_EW);
+
+  arts_guid_t e5_reader = arts_edt_create_with_epoch(
+      check_slice_after_writer, 0, NULL, 2, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence_at(db4, e5_reader, 0, DB_MODE_RO, 2 * sizeof(int),
+                         2 * sizeof(int));
+  arts_add_dependence(writer_done, e5_reader, 1, DB_MODE_NULL);
 
   arts_wait_on_handle(epoch);
   arts_shutdown();

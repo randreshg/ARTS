@@ -66,6 +66,8 @@ struct oo_set_dep_metadata_s {
   uint32_t slot;
   arts_db_access_mode_t mode;
   uint32_t flags;
+  uint64_t slice_offset;
+  uint64_t slice_size;
 };
 
 struct oo_db_request_satisfy_s {
@@ -119,6 +121,7 @@ struct oo_get_from_db_s {
   unsigned int slot;
   unsigned int offset;
   unsigned int size;
+  uint32_t flags;
 };
 
 struct oo_signal_edt_ptr_s {
@@ -180,7 +183,9 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
   case OO_SET_DEP_METADATA: {
     struct oo_set_dep_metadata_s *meta =
         (struct oo_set_dep_metadata_s *)handle_me;
-    arts_set_dep_metadata(meta->edt_guid, meta->slot, meta->mode, meta->flags);
+    arts_set_dep_metadata_ext(meta->edt_guid, meta->slot, meta->mode,
+                              meta->flags, meta->slice_offset,
+                              meta->slice_size);
     break;
   }
   case OO_EVENT_SATISFY_SLOT: {
@@ -226,13 +231,15 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
   }
   case OO_GET_FROM_DB: {
     struct oo_get_from_db_s *req = (struct oo_get_from_db_s *)handle_me;
-    arts_get_from_db_at(req->edt_guid, req->db_guid, req->slot, req->offset,
-                        req->size, arts_global_rank_id);
+    arts_get_from_db_at_ex(req->edt_guid, req->db_guid, req->slot,
+                           req->offset, req->size, req->flags,
+                           arts_global_rank_id);
     break;
   }
   case OO_SIGNAL_EDT_PTR: {
     struct oo_signal_edt_ptr_s *req = (struct oo_signal_edt_ptr_s *)handle_me;
-    arts_signal_edt_ptr(req->edt_guid, req->slot, req->ptr, req->size);
+    arts_signal_edt_ptr_with_guid(req->edt_guid, req->slot, req->db_guid,
+                                  req->ptr, req->size);
     arts_free(req->ptr);
     break;
   }
@@ -308,6 +315,15 @@ void arts_out_of_order_signal_edt(arts_guid_t wait_on, arts_guid_t edt_packet,
 void arts_out_of_order_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
                                         arts_db_access_mode_t mode,
                                         uint32_t flags) {
+  arts_out_of_order_set_dep_metadata_ext(edt_guid, slot, mode, flags, 0, 0);
+}
+
+void arts_out_of_order_set_dep_metadata_ext(arts_guid_t edt_guid,
+                                            uint32_t slot,
+                                            arts_db_access_mode_t mode,
+                                            uint32_t flags,
+                                            uint64_t slice_offset,
+                                            uint64_t slice_size) {
   struct oo_set_dep_metadata_s *meta =
       (struct oo_set_dep_metadata_s *)arts_malloc(
           sizeof(struct oo_set_dep_metadata_s));
@@ -316,9 +332,12 @@ void arts_out_of_order_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
   meta->slot = slot;
   meta->mode = mode;
   meta->flags = flags;
+  meta->slice_offset = slice_offset;
+  meta->slice_size = slice_size;
   bool res = arts_route_table_add_oo(edt_guid, meta, false);
   if (!res) {
-    arts_set_dep_metadata(edt_guid, slot, mode, flags);
+    arts_set_dep_metadata_ext(edt_guid, slot, mode, flags, slice_offset,
+                              slice_size);
     arts_free(meta);
   }
 }
@@ -485,7 +504,7 @@ void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
 
 void arts_out_of_order_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
                                    unsigned int slot, unsigned int offset,
-                                   unsigned int size) {
+                                   unsigned int size, uint32_t flags) {
   struct oo_get_from_db_s *req =
       (struct oo_get_from_db_s *)arts_malloc(sizeof(struct oo_get_from_db_s));
   req->type = OO_GET_FROM_DB;
@@ -494,10 +513,12 @@ void arts_out_of_order_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
   req->slot = slot;
   req->offset = offset;
   req->size = size;
+  req->flags = flags;
   bool res = arts_route_table_add_oo(db_guid, req, false);
   if (!res) {
-    arts_get_from_db_at(req->edt_guid, req->db_guid, req->slot, req->offset,
-                        req->size, arts_global_rank_id);
+    arts_get_from_db_at_ex(req->edt_guid, req->db_guid, req->slot,
+                           req->offset, req->size, req->flags,
+                           arts_global_rank_id);
     arts_free(req);
   }
 }
@@ -521,7 +542,8 @@ void arts_out_of_order_signal_edt_with_ptr(arts_guid_t edt_guid,
   }
   bool res = arts_route_table_add_oo(edt_guid, req, false);
   if (!res) {
-    arts_signal_edt_ptr(req->edt_guid, req->slot, req->ptr, req->size);
+    arts_signal_edt_ptr_with_guid(req->edt_guid, req->slot, req->db_guid,
+                                  req->ptr, req->size);
     arts_free(req->ptr);
     arts_free(req);
   }

@@ -460,6 +460,9 @@ void acquire_dbs(struct arts_edt_s *edt) {
     }
     if (depv[i].guid && depv[i].ptr == NULL) {
       arts_db_access_mode_t access_mode = depv[i].mode;
+      uint64_t slice_offset = depv[i].slice_offset;
+      uint64_t slice_size = depv[i].slice_size;
+      bool has_slice = (slice_size != 0);
       bool prefer_duplicate =
           (depv[i].flags & ARTS_DEP_FLAG_PREFER_DUPLICATE) != 0 &&
           access_mode == DB_MODE_RO;
@@ -503,6 +506,72 @@ void acquire_dbs(struct arts_edt_s *edt) {
         /* Track whether lookup acquired a route table ref so we can
          * return it if the dep is deferred (frontier/remote/OO). */
         bool lookup_ref_held = (db_temp != NULL);
+
+        if (has_slice) {
+          if (access_mode != DB_MODE_RO) {
+            ARTS_ERROR("Deferred DB slice acquire only supports DB_MODE_RO "
+                       "[Guid:%lu, Mode:%s]",
+                       depv[i].guid, GET_DB_MODE_NAME(access_mode));
+          }
+
+          if (db_temp && db_temp->db_type == ARTS_DB_LOCAL) {
+            if (!arts_request_db_slice(db_temp, edt, edt->current_edt, i,
+                                       slice_offset, slice_size,
+                                       depv[i].flags)) {
+              ARTS_ERROR("Failed to satisfy local DB slice request "
+                         "[Guid:%lu, Slot:%u]",
+                         depv[i].guid, i);
+            }
+          } else if (db_temp && owner == arts_global_rank_id) {
+            if (valid_rank == arts_global_rank_id) {
+              if (!arts_request_db_slice(db_temp, edt, edt->current_edt, i,
+                                         slice_offset, slice_size,
+                                         depv[i].flags)) {
+                ARTS_ERROR("Failed to queue local DB slice request "
+                           "[Guid:%lu, Slot:%u]",
+                           depv[i].guid, i);
+              }
+            } else {
+              arts_remote_get_from_db(edt->current_edt, depv[i].guid, i,
+                                      (unsigned int)slice_offset,
+                                      (unsigned int)slice_size, depv[i].flags,
+                                      valid_rank);
+            }
+          } else if (db_temp) {
+            bool local_valid = (valid_rank == arts_global_rank_id);
+            if (local_valid) {
+              if (!arts_request_db_slice(db_temp, edt, edt->current_edt, i,
+                                         slice_offset, slice_size,
+                                         depv[i].flags)) {
+                ARTS_ERROR("Failed to satisfy cached DB slice request "
+                           "[Guid:%lu, Slot:%u]",
+                           depv[i].guid, i);
+              }
+            } else {
+              arts_remote_get_from_db(edt->current_edt, depv[i].guid, i,
+                                      (unsigned int)slice_offset,
+                                      (unsigned int)slice_size, depv[i].flags,
+                                      valid_rank);
+            }
+          } else {
+            if (arts_guid_is_local(depv[i].guid)) {
+              arts_out_of_order_get_from_db(
+                  edt->current_edt, depv[i].guid, i,
+                  (unsigned int)slice_offset, (unsigned int)slice_size,
+                  depv[i].flags);
+            } else {
+              arts_remote_get_from_db(edt->current_edt, depv[i].guid, i,
+                                      (unsigned int)slice_offset,
+                                      (unsigned int)slice_size, depv[i].flags,
+                                      owner);
+            }
+          }
+
+          if (lookup_ref_held) {
+            arts_route_table_return_db(depv[i].guid, false);
+          }
+          continue;
+        }
 
         if (db_temp && db_temp->db_type == ARTS_DB_LOCAL) {
           // LOCAL: direct access, no frontier
@@ -619,6 +688,9 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
   (void)gpu;
   for (unsigned int i = 0; i < depc; i++) {
     arts_db_access_mode_t access_mode = depv[i].mode;
+    if (access_mode == DB_MODE_PTR || access_mode == DB_MODE_VALUE) {
+      continue;
+    }
     if (depv[i].guid != NULL_GUID && depv[i].ptr && access_mode == DB_MODE_EW) {
       struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
       uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
@@ -657,11 +729,21 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
 void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
   for (int i = 0; i < depc; i++) {
     arts_db_access_mode_t access_mode = depv[i].mode;
+    if (access_mode == DB_MODE_PTR) {
+      ARTS_DEBUG("Releasing DB slice copy [Guid:%lu]", depv[i].guid);
+      if (depv[i].ptr) {
+        arts_free(depv[i].ptr);
+        depv[i].ptr = NULL;
+      }
+      continue;
+    }
+
     // Get DB subtype from struct when ptr is available.
     // Guard with guid != NULL_GUID: arts_db_release may have nulled the
     // guid while leaving ptr non-NULL (or the DB may have been freed).
     arts_db_types_t db_subtype = ARTS_DB_DEFAULT;
-    if (depv[i].guid != NULL_GUID && depv[i].ptr) {
+    if (depv[i].guid != NULL_GUID && depv[i].ptr &&
+        access_mode != DB_MODE_VALUE) {
       struct arts_db_s *db_hdr = ((struct arts_db_s *)depv[i].ptr) - 1;
       db_subtype = db_hdr->db_type;
     }
@@ -687,10 +769,6 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
                  "latch decrement)",
                  depv[i].guid);
       INCREMENT_NUM_OWNER_UPDATE_SAVED_BY(1);
-    } else if (access_mode == DB_MODE_PTR) {
-      if (depv[i].ptr) {
-        arts_free(depv[i].ptr);
-      }
     } else if (!gpu && db_subtype == ARTS_DB_LC) {
       if (depv[i].ptr) {
         struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
@@ -753,6 +831,17 @@ void arts_db_release(arts_guid_t guid) {
       continue;
     }
     arts_db_access_mode_t mode = depv[i].mode;
+    if (mode == DB_MODE_PTR) {
+      if (depv[i].ptr) {
+        arts_free(depv[i].ptr);
+      }
+      depv[i].guid = NULL_GUID;
+      depv[i].ptr = NULL;
+      depv[i].mode = DB_MODE_NULL;
+      depv[i].slice_offset = 0;
+      depv[i].slice_size = 0;
+      return;
+    }
     if (mode == DB_MODE_EW || mode == DB_MODE_MEMSET) {
       struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
       if (db) {
@@ -771,6 +860,8 @@ void arts_db_release(arts_guid_t guid) {
     depv[i].guid = NULL_GUID;
     depv[i].ptr = NULL;
     depv[i].mode = DB_MODE_NULL;
+    depv[i].slice_offset = 0;
+    depv[i].slice_size = 0;
     return;
   }
 }
@@ -819,28 +910,105 @@ bool arts_add_db_duplicate(struct arts_db_s *db, unsigned int rank,
                               edt_guid, slot, mode, on_head);
 }
 
+static unsigned int arts_db_slice_signal_size(struct arts_db_s *db,
+                                              unsigned int slice_size,
+                                              uint32_t flags) {
+  if ((flags & ARTS_DEP_FLAG_PRESERVE_SHAPE) != 0) {
+    uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
+    if (data_size > UINT_MAX) {
+      ARTS_ERROR("DB[Guid:%lu] payload [%lu] exceeds DB_MODE_PTR transport "
+                 "limit",
+                 db->guid, (unsigned long)data_size);
+    }
+    return (unsigned int)data_size;
+  }
+  return slice_size;
+}
+
+static void *arts_alloc_db_slice_payload(struct arts_db_s *db,
+                                         unsigned int offset,
+                                         unsigned int size,
+                                         uint32_t flags) {
+  uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
+  if ((uint64_t)offset > data_size || (uint64_t)size > data_size - offset) {
+    ARTS_ERROR("ESD slice [%u, %u) is out of bounds for DB[Guid:%lu, Size:%lu]",
+               offset, offset + size, db->guid, (unsigned long)data_size);
+  }
+
+  unsigned int signal_size = arts_db_slice_signal_size(db, size, flags);
+  void *payload = (flags & ARTS_DEP_FLAG_PRESERVE_SHAPE)
+                      ? arts_calloc(1, signal_size)
+                      : arts_malloc(signal_size);
+  if (size) {
+    char *dst = (char *)payload;
+    if ((flags & ARTS_DEP_FLAG_PRESERVE_SHAPE) != 0) {
+      dst += offset;
+    }
+    memcpy(dst, ((char *)(db + 1)) + offset, size);
+  }
+  return payload;
+}
+
 void internal_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
                           unsigned int slot, unsigned int offset,
-                          unsigned int size, unsigned int rank) {
+                          unsigned int size, uint32_t flags,
+                          unsigned int rank) {
   if (rank == arts_global_rank_id) {
-    struct arts_db_s *db =
-        (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
+    int valid_rank = -1;
+    struct arts_db_s *db = (struct arts_db_s *)arts_route_table_lookup_db(
+        db_guid, &valid_rank, false);
     if (db) {
-      void *data = (void *)(((char *)(db + 1)) + offset);
-      ARTS_INFO("Getting DB[Guid:%lu] From: %p", db_guid, data);
-      if (edt_guid != NULL_GUID) {
-        arts_signal_edt_ptr(edt_guid, slot, data, size);
+      ARTS_INFO("Getting DB slice [Guid:%lu, Offset:%u, Size:%u] for EDT[%lu]",
+                db_guid, offset, size, edt_guid);
+
+      /*
+       * Slice delivery is copy-based. Owner-local DBs must still respect the
+       * frontier before copying the bytes; cached remote DB copies and
+       * ARTS_DB_LOCAL instances can signal immediately.
+       */
+      if (db->db_type == ARTS_DB_LOCAL ||
+          (valid_rank == arts_global_rank_id && !arts_guid_is_local(db_guid))) {
+        if (edt_guid != NULL_GUID) {
+          if ((flags & ARTS_DEP_FLAG_PRESERVE_SHAPE) != 0) {
+            unsigned int signal_size =
+                arts_db_slice_signal_size(db, size, flags);
+            void *payload =
+                arts_alloc_db_slice_payload(db, offset, size, flags);
+            arts_signal_edt_ptr_with_guid(edt_guid, slot, db_guid, payload,
+                                          signal_size);
+            arts_free(payload);
+          } else {
+            arts_signal_edt_ptr_with_guid(
+                edt_guid, slot, db_guid,
+                (void *)(((char *)(db + 1)) + offset), size);
+          }
+        }
+      } else if (valid_rank == arts_global_rank_id) {
+        if (edt_guid == NULL_GUID) {
+          ARTS_ERROR("DB slice request for DB[Guid:%lu] requires a target EDT",
+                     db_guid);
+        }
+        arts_request_db_slice(db, NULL, edt_guid, slot, offset, size, flags);
+      } else {
+        arts_route_table_return_db(db_guid, false);
+        arts_remote_get_from_db(edt_guid, db_guid, slot, offset, size, flags,
+                                valid_rank);
+        return;
       }
       arts_route_table_return_db(db_guid, false);
     } else {
       assert(edt_guid != NULL_GUID && "DB not found and no EDT to signal");
-      ARTS_INFO("Getting OO-DB[Guid:%lu] From: %p", db_guid, NULL);
-      arts_out_of_order_get_from_db(edt_guid, db_guid, slot, offset, size);
+      ARTS_INFO("Getting OO-DB slice [Guid:%lu, Offset:%u, Size:%u]", db_guid,
+                offset, size);
+      arts_out_of_order_get_from_db(edt_guid, db_guid, slot, offset, size,
+                                    flags);
     }
   } else {
-    ARTS_DEBUG("Sending DB[Guid:%lu] to Rank %u", db_guid, rank);
+    ARTS_DEBUG("Sending DB slice [Guid:%lu, Offset:%u, Size:%u] via rank %u",
+               db_guid, offset, size, rank);
     assert(edt_guid != NULL_GUID && "DB not found and no EDT to signal");
-    arts_remote_get_from_db(edt_guid, db_guid, slot, offset, size, rank);
+    arts_remote_get_from_db(edt_guid, db_guid, slot, offset, size, flags,
+                            rank);
   }
 }
 
@@ -850,16 +1018,23 @@ void arts_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
   TIME_DB_GET_START();
   INCREMENT_NUM_DB_GET_BY(1);
   unsigned int rank = arts_guid_get_rank(db_guid);
-  internal_get_from_db(edt_guid, db_guid, slot, offset, len, rank);
+  internal_get_from_db(edt_guid, db_guid, slot, offset, len, 0, rank);
   TIME_DB_GET_STOP();
 }
 
 void arts_get_from_db_at(arts_guid_t edt_guid, arts_guid_t db_guid,
                          unsigned int slot, unsigned int offset,
                          unsigned int len, unsigned int rank) {
+  arts_get_from_db_at_ex(edt_guid, db_guid, slot, offset, len, 0, rank);
+}
+
+void arts_get_from_db_at_ex(arts_guid_t edt_guid, arts_guid_t db_guid,
+                            unsigned int slot, unsigned int offset,
+                            unsigned int len, uint32_t flags,
+                            unsigned int rank) {
   TIME_DB_GET_START();
   INCREMENT_NUM_DB_GET_BY(1);
-  internal_get_from_db(edt_guid, db_guid, slot, offset, len, rank);
+  internal_get_from_db(edt_guid, db_guid, slot, offset, len, flags, rank);
   TIME_DB_GET_STOP();
 }
 

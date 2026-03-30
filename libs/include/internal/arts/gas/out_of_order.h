@@ -70,6 +70,12 @@ void arts_out_of_order_signal_edt(arts_guid_t wait_on, arts_guid_t edt_packet,
 void arts_out_of_order_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
                                         arts_db_access_mode_t mode,
                                         uint32_t flags);
+void arts_out_of_order_set_dep_metadata_ext(arts_guid_t edt_guid,
+                                            uint32_t slot,
+                                            arts_db_access_mode_t mode,
+                                            uint32_t flags,
+                                            uint64_t slice_offset,
+                                            uint64_t slice_size);
 void arts_out_of_order_event_satisfy(arts_guid_t wait_on,
                                      arts_guid_t event_guid,
                                      arts_guid_t data_guid);
@@ -98,7 +104,7 @@ void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
                                                   arts_db_access_mode_t mode);
 void arts_out_of_order_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
                                    unsigned int slot, unsigned int offset,
-                                   unsigned int size);
+                                   unsigned int size, uint32_t flags);
 void arts_out_of_order_signal_edt_with_ptr(arts_guid_t edt_guid,
                                            arts_guid_t db_guid, void *ptr,
                                            unsigned int size,

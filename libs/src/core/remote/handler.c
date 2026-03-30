@@ -113,12 +113,21 @@ void arts_remote_add_dependence_with_hints(arts_guid_t source,
 
 void arts_remote_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
                               arts_db_access_mode_t mode, uint32_t flags) {
+  arts_remote_set_dep_metadata_ext(edt_guid, slot, mode, flags, 0, 0);
+}
+
+void arts_remote_set_dep_metadata_ext(arts_guid_t edt_guid, uint32_t slot,
+                                      arts_db_access_mode_t mode,
+                                      uint32_t flags, uint64_t slice_offset,
+                                      uint64_t slice_size) {
   unsigned int rank = arts_guid_get_rank(edt_guid);
   struct arts_remote_set_dep_mode_packet_s packet;
   packet.edt = edt_guid;
   packet.slot = slot;
   packet.mode = mode;
   packet.flags = flags;
+  packet.slice_offset = slice_offset;
+  packet.slice_size = slice_size;
   arts_fill_packet_header(&packet.header, sizeof(packet),
                           ARTS_REMOTE_SET_DEP_MODE_MSG);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
@@ -740,11 +749,14 @@ void arts_remote_handle_send_already_local(void *pack) {
 
 void arts_remote_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
                              unsigned int slot, unsigned int offset,
-                             unsigned int len, unsigned int rank) {
+                             unsigned int len, uint32_t flags,
+                             unsigned int rank) {
   struct arts_remote_get_put_packet_s packet;
   packet.edt_guid = edt_guid;
   packet.db_guid = db_guid;
+  packet.epoch_guid = NULL_GUID;
   packet.slot = slot;
+  packet.flags = flags;
   packet.offset = offset;
   packet.size = len;
   arts_fill_packet_header(&packet.header, sizeof(packet),
@@ -755,8 +767,9 @@ void arts_remote_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
 void arts_remote_handle_get_from_db(void *pack) {
   struct arts_remote_get_put_packet_s *packet =
       (struct arts_remote_get_put_packet_s *)pack;
-  arts_get_from_db_at(packet->edt_guid, packet->db_guid, packet->slot,
-                      packet->offset, packet->size, arts_global_rank_id);
+  arts_get_from_db_at_ex(packet->edt_guid, packet->db_guid, packet->slot,
+                         packet->offset, packet->size, packet->flags,
+                         arts_global_rank_id);
 }
 
 void arts_remote_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
@@ -768,6 +781,7 @@ void arts_remote_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
   packet.db_guid = db_guid;
   packet.epoch_guid = epoch_guid;
   packet.slot = slot;
+  packet.flags = 0;
   packet.offset = offset;
   packet.size = len;
   uint64_t total_size = sizeof(struct arts_remote_get_put_packet_s) + len;

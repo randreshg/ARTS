@@ -68,6 +68,7 @@
 
 #define PACKET_SIZE 4096
 #define NETWORK_BACKOFF_INCREMENT 0
+#define ARTS_CROSS_NUMA_STEAL_BACKOFF 64U
 
 extern unsigned int num_numa_domains;
 
@@ -145,6 +146,70 @@ do_sleep:
   arts_thread_info.back_off = 1;
 }
 
+unsigned int arts_pick_worker_for_numa(unsigned int preferred_numa_id,
+                                       const unsigned int *thread_numa_ids,
+                                       unsigned int worker_count,
+                                       unsigned int start) {
+  if (!worker_count)
+    return ARTS_INVALID_WORKER_ID;
+
+  unsigned int start_idx = start % worker_count;
+  if (thread_numa_ids) {
+    for (unsigned int i = 0; i < worker_count; i++) {
+      unsigned int victim = (start_idx + i) % worker_count;
+      if (thread_numa_ids[victim] == preferred_numa_id)
+        return victim;
+    }
+  }
+
+  return start_idx;
+}
+
+unsigned int arts_pick_worker_steal_victim(unsigned int self_thread_id,
+                                           unsigned int self_numa_id,
+                                           const unsigned int *thread_numa_ids,
+                                           unsigned int worker_count,
+                                           unsigned int start,
+                                           bool allow_cross_numa) {
+  if (worker_count <= 1)
+    return ARTS_INVALID_WORKER_ID;
+
+  unsigned int start_idx = start % worker_count;
+  if (thread_numa_ids) {
+    for (unsigned int i = 0; i < worker_count; i++) {
+      unsigned int victim = (start_idx + i) % worker_count;
+      if (victim == self_thread_id)
+        continue;
+      if (thread_numa_ids[victim] == self_numa_id)
+        return victim;
+    }
+  }
+
+  if (!allow_cross_numa)
+    return ARTS_INVALID_WORKER_ID;
+
+  for (unsigned int i = 0; i < worker_count; i++) {
+    unsigned int victim = (start_idx + i) % worker_count;
+    if (victim != self_thread_id)
+      return victim;
+  }
+
+  return ARTS_INVALID_WORKER_ID;
+}
+
+static inline unsigned int
+arts_pick_ready_worker_for_edt(const struct arts_edt_s *edt) {
+  unsigned int worker_count = arts_node_info.worker_thread_count;
+  if (!worker_count)
+    return ARTS_INVALID_WORKER_ID;
+
+  unsigned int start = edt ? (unsigned int)(edt->current_edt % worker_count) : 0;
+  unsigned int preferred_numa =
+      edt ? edt->numa_domain : arts_thread_info.numa_domain_id;
+  return arts_pick_worker_for_numa(preferred_numa, arts_node_info.thread_numa_ids,
+                                   worker_count, start);
+}
+
 ARTS_WEAK void init_per_node(unsigned int node_id, int argc, char **argv) {
   (void)node_id;
   (void)argc;
@@ -213,6 +278,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
                   : NULL;
   arts_node_info.remote_route_table = arts_new_route_table(
       config->route_table_entries, config->route_table_size);
+  arts_node_info.thread_numa_ids =
+      (unsigned int *)arts_calloc(tc, sizeof(unsigned int));
   arts_node_info.local_spin = (volatile bool **)arts_calloc(tc, sizeof(bool *));
   arts_node_info.memory_moves =
       (unsigned int **)arts_calloc(tc, sizeof(unsigned int *));
@@ -366,6 +433,7 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.receiver_deque);
   arts_free(arts_node_info.gpu_deque);
   arts_free(arts_node_info.gpu_route_table);
+  arts_free(arts_node_info.thread_numa_ids);
   arts_free((void *)arts_node_info.local_spin);
   arts_free(arts_node_info.memory_moves);
   arts_free(arts_node_info.atomic_waits);
@@ -504,6 +572,7 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
   arts_thread_info.thread_id = thread->id;
   arts_thread_info.group_pos = thread->group_pos;
   arts_thread_info.numa_domain_id = thread->numa_domain_id;
+  arts_node_info.thread_numa_ids[thread->id] = thread->numa_domain_id;
   arts_thread_info.role = thread->role;
   arts_thread_info.back_off = 1;
   arts_thread_info.current_edt_guid = 0;
@@ -670,8 +739,17 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
         ARTS_INFO("EDT[Guid:%lu] pushed to GPU deque", edt->current_edt);
         arts_deque_push_front(arts_thread_info.my_gpu_deque, edt, 0);
       } else {
-        ARTS_INFO("EDT[Guid:%lu] pushed to worker deque", edt->current_edt);
-        arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
+        unsigned int target_worker = arts_pick_ready_worker_for_edt(edt);
+        if (target_worker == ARTS_INVALID_WORKER_ID)
+          target_worker = 0;
+        ARTS_INFO("EDT[Guid:%lu] pushed to worker deque %u (preferred NUMA %u)",
+                  edt->current_edt, target_worker, edt->numa_domain);
+        if (arts_thread_info.thread_id == target_worker &&
+            arts_thread_info.my_deque) {
+          arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
+        } else {
+          arts_deque_push_front(arts_node_info.deque[target_worker], edt, 0);
+        }
       }
       arts_wake_one_worker();
     }
@@ -762,13 +840,15 @@ inline struct arts_edt_s *arts_runtime_steal_from_network() {
 
 inline struct arts_edt_s *arts_runtime_steal_from_worker() {
   struct arts_edt_s *edt = NULL;
-  if (arts_node_info.total_thread_count > 1) {
+  if (arts_node_info.worker_thread_count > 1) {
     INCREMENT_NUM_STEAL_ATTEMPT_BY(1);
-    long unsigned int steal_loc;
-    do {
-      steal_loc = jrand48(arts_thread_info.drand_buf);
-      steal_loc = steal_loc % arts_node_info.total_thread_count;
-    } while (steal_loc == arts_thread_info.thread_id);
+    unsigned int steal_loc = arts_pick_worker_steal_victim(
+        arts_thread_info.thread_id, arts_thread_info.numa_domain_id,
+        arts_node_info.thread_numa_ids, arts_node_info.worker_thread_count,
+        (unsigned int)jrand48(arts_thread_info.drand_buf),
+        arts_thread_info.back_off >= ARTS_CROSS_NUMA_STEAL_BACKOFF);
+    if (steal_loc == ARTS_INVALID_WORKER_ID)
+      return NULL;
 
     void *stolen[HALF_STEAL_MAX];
     unsigned int count = arts_deque_simple_pop_back_half(

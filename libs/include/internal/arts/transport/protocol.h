@@ -128,6 +128,8 @@ struct ARTS_PACKED arts_remote_set_dep_mode_packet_s {
   uint32_t slot;
   arts_db_access_mode_t mode;
   uint32_t flags;
+  uint64_t slice_offset;
+  uint64_t slice_size;
 };
 
 struct ARTS_PACKED arts_remote_db_request_packet_s {
@@ -161,6 +163,7 @@ struct ARTS_PACKED arts_remote_get_put_packet_s {
   arts_guid_t db_guid;
   arts_guid_t epoch_guid;
   unsigned int slot;
+  unsigned int flags;
   unsigned int offset;
   unsigned int size;
 };

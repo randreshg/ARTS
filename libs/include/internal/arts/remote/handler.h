@@ -78,6 +78,10 @@ void arts_remote_signal_edt(arts_guid_t edt, arts_guid_t db, uint32_t slot,
                             arts_db_access_mode_t mode, uint32_t flags);
 void arts_remote_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
                               arts_db_access_mode_t mode, uint32_t flags);
+void arts_remote_set_dep_metadata_ext(arts_guid_t edt_guid, uint32_t slot,
+                                      arts_db_access_mode_t mode,
+                                      uint32_t flags, uint64_t slice_offset,
+                                      uint64_t slice_size);
 void arts_remote_event_satisfy_slot(arts_guid_t event_guid,
                                     arts_guid_t data_guid, uint32_t slot);
 void arts_db_request_callback(struct arts_edt_s *edt, unsigned int slot,
@@ -115,7 +119,8 @@ void arts_remote_send_already_local(int rank, arts_guid_t guid,
 void arts_remote_handle_send_already_local(void *pack);
 void arts_remote_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
                              unsigned int slot, unsigned int offset,
-                             unsigned int len, unsigned int rank);
+                             unsigned int len, uint32_t flags,
+                             unsigned int rank);
 void arts_remote_handle_get_from_db(void *pack);
 void arts_remote_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
                            unsigned int slot, unsigned int offset,

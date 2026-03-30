@@ -58,6 +58,16 @@ struct arts_local_delayed_edt_s {
   arts_db_access_mode_t mode[DBSPERELEMENT];
 };
 
+struct arts_delayed_slice_request_s {
+  struct arts_delayed_slice_request_s *next;
+  struct arts_edt_s *edt[DBSPERELEMENT];
+  arts_guid_t edt_guid[DBSPERELEMENT];
+  unsigned int slot[DBSPERELEMENT];
+  uint32_t flags[DBSPERELEMENT];
+  uint64_t offset[DBSPERELEMENT];
+  uint64_t size[DBSPERELEMENT];
+};
+
 struct arts_db_frontier_s {
   struct arts_db_element_s list;
   unsigned int position;
@@ -82,6 +92,13 @@ struct arts_db_frontier_s {
    */
   unsigned int localPosition;
   struct arts_local_delayed_edt_s localDelayed;
+
+  /*
+   * Copy-based RO slice requests (ESD) are delayed here when they cannot read
+   * from the current frontier yet. They do not create cached full-DB copies.
+   */
+  unsigned int slicePosition;
+  struct arts_delayed_slice_request_s sliceDelayed;
 };
 
 struct arts_db_list_s {
@@ -116,6 +133,9 @@ bool arts_push_db_to_list(struct arts_db_list_s *db_list, unsigned int data,
                           struct arts_edt_s *edt, arts_guid_t edt_guid,
                           unsigned int slot, arts_db_access_mode_t mode,
                           bool *on_head);
+bool arts_request_db_slice(struct arts_db_s *db, struct arts_edt_s *local_edt,
+                           arts_guid_t edt_guid, unsigned int slot,
+                           uint64_t offset, uint64_t size, uint32_t flags);
 bool arts_close_frontier(struct arts_db_list_s *db_list,
                          struct arts_db_frontier_iterator_s *iter);
 #ifdef __cplusplus
