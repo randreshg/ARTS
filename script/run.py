@@ -8,7 +8,7 @@ import json
 from socket import gethostname
 from pathlib import Path
 
-sys.path.append('/share/micron/rapid/install/gcc-release/bin/')
+sys.path.append('/opt/micron/rapid/bin/') ## Crete path
 import rapid
 
 # JS: This is for the current twosisters setup.  App must exist on hosts[0]!
@@ -16,7 +16,7 @@ import rapid
 hosts = ["twosisters"]
 
 # JS: Path to util
-rapidutil = "/share/micron/rapid/install/gcc-release/bin/rapidutil"
+rapidutil = "/opt/micron/rapid/bin/rapidutil"
 
 # JS: Micron environment path
 rapidenv = "/share/micron/environment.sh"
@@ -46,7 +46,7 @@ def empty_region(name, verbose):
             print("Deleting:", region.list_items())
         items = region.list_items().value
         for item in items:
-            region.lookup_item(item).seek_and_adstroy()
+            region.lookup_item(item).seek_and_destroy()
     return region
 
 def alloc_region_for_app(name, size, alignment, verbose=defaultVerbosity):
@@ -65,7 +65,7 @@ def alloc_region_for_app(name, size, alignment, verbose=defaultVerbosity):
         Alignment of the region to create
     verbose : bool
         Flag to print info about the region created
-    
+
     Returns
     -------
     region
@@ -163,19 +163,19 @@ def copy_app_on_hosts(app, run_dir, app_runner):
         Path of the executable to copy
     run_dir : str
         Path to copy executable to
-    app_runner : 
+    app_runner :
         Executable path in the run directory
     """
     def funct(host):
         """
         This is the function used by run_pool.  It contains the copy commands.
         The app is copied from hosts[0] to all others.
-        
+
         Parameters
         ----------
         host : str
             Name of the host
-        
+
         Returns
         -------
         str
@@ -191,7 +191,7 @@ def copy_app_on_hosts(app, run_dir, app_runner):
         cmd = command(host, cmds, wait=True)
         return cmd.err + cmd.out
     run_pool(funct, hosts, verbose=False)
-    
+
 def run_app_on_hosts(app_runner, app_args, run_hosts, verbose=defaultVerbosity):
     """
     This function launches app w/o MPI using the run_pool function.
@@ -212,12 +212,12 @@ def run_app_on_hosts(app_runner, app_args, run_hosts, verbose=defaultVerbosity):
     def funct(host):
         """
         This is the function used by run_pool.  It contains the launcher commands.
-        
+
         Parameters
         ----------
         host : str
             Name of the host
-        
+
         Returns
         -------
         str
@@ -285,7 +285,7 @@ if __name__ == "__main__":
                 # JS: App parameters
                 app = js["app"]
                 app_args = js["args"]
-                
+
                 # JS: Shared memory init parameters
                 init = js["init"] if "init" in js else None
                 init_args = js["init_args"] if "init" in js else None
@@ -332,7 +332,7 @@ if __name__ == "__main__":
     else:
         run_app_on_hosts(app_runner, app_args, run_hosts)
         retCode = 0
-    
+
     if defaultVerbosity:
         cmd = command(None, [rapidutil + " -L"], wait=True, verbose=True)
         print(cmd.err, cmd.out)
