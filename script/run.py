@@ -65,7 +65,7 @@ def alloc_region_for_app(name, size, alignment, verbose=defaultVerbosity):
         Alignment of the region to create
     verbose : bool
         Flag to print info about the region created
-    
+
     Returns
     -------
     region
@@ -163,19 +163,19 @@ def copy_app_on_hosts(app, run_dir, app_runner):
         Path of the executable to copy
     run_dir : str
         Path to copy executable to
-    app_runner : 
+    app_runner :
         Executable path in the run directory
     """
     def funct(host):
         """
         This is the function used by run_pool.  It contains the copy commands.
         The app is copied from hosts[0] to all others.
-        
+
         Parameters
         ----------
         host : str
             Name of the host
-        
+
         Returns
         -------
         str
@@ -191,7 +191,7 @@ def copy_app_on_hosts(app, run_dir, app_runner):
         cmd = command(host, cmds, wait=True)
         return cmd.err + cmd.out
     run_pool(funct, hosts, verbose=False)
-    
+
 def run_app_on_hosts(app_runner, app_args, run_hosts, verbose=defaultVerbosity):
     """
     This function launches app w/o MPI using the run_pool function.
@@ -212,12 +212,12 @@ def run_app_on_hosts(app_runner, app_args, run_hosts, verbose=defaultVerbosity):
     def funct(host):
         """
         This is the function used by run_pool.  It contains the launcher commands.
-        
+
         Parameters
         ----------
         host : str
             Name of the host
-        
+
         Returns
         -------
         str
@@ -268,7 +268,8 @@ if __name__ == "__main__":
     parser.add_argument("--shared-region-name", help="Name of the shared region", type=str, default="shared") #"/tmp/")
     parser.add_argument("--fam-ranks-region-name", help="Name of fam rank region used to determine rank w/o MPI", type=str, default="fam_ranks")
     parser.add_argument("--alignment", help="Memory alignment of shared memory region", type=int, default=64)
-    parser.add_argument("--region-size", help="Size of shared memory region", type=int, default=2*1024*1024*1024)
+    # parser.add_argument("--region-size", help="Size of shared memory region", type=int, default=2*1024*1024*1024)
+    parser.add_argument("--region-size", help="Size of shared memory region", type=int, default=10*1024*1024*1024)
     parser.add_argument("--run-dir", help="Directory to run executables from", type=str, default=str(Path.home())+"/runners") #"/tmp/")
     parser.add_argument("--path-to-json", help="Path to json with app args", type=str, default="./args.json")
     parser.add_argument("--mpi-runner", help="Will use mpi to run app", action='store_true', default=False)
@@ -285,7 +286,7 @@ if __name__ == "__main__":
                 # JS: App parameters
                 app = js["app"]
                 app_args = js["args"]
-                
+
                 # JS: Shared memory init parameters
                 init = js["init"] if "init" in js else None
                 init_args = js["init_args"] if "init" in js else None
@@ -332,7 +333,7 @@ if __name__ == "__main__":
     else:
         run_app_on_hosts(app_runner, app_args, run_hosts)
         retCode = 0
-    
+
     if defaultVerbosity:
         cmd = command(None, [rapidutil + " -L"], wait=True, verbose=True)
         print(cmd.err, cmd.out)
