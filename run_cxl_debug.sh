@@ -10,5 +10,5 @@ trap clean_regions SIGINT
 
 clean_regions
 ../../../script/run.py --exe /usr/bin/pwd
-time ./"$1" "${@:2}"
+gdb ./"$1"
 clean_regions

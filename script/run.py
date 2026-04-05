@@ -8,7 +8,7 @@ import json
 from socket import gethostname
 from pathlib import Path
 
-sys.path.append('/share/micron/rapid/install/gcc-release/bin/')
+sys.path.append('/opt/micron/rapid/bin/') ## Crete path
 import rapid
 
 # JS: This is for the current twosisters setup.  App must exist on hosts[0]!
@@ -16,7 +16,7 @@ import rapid
 hosts = ["twosisters"]
 
 # JS: Path to util
-rapidutil = "/share/micron/rapid/install/gcc-release/bin/rapidutil"
+rapidutil = "/opt/micron/rapid/bin/rapidutil"
 
 # JS: Micron environment path
 rapidenv = "/share/micron/environment.sh"
@@ -46,7 +46,7 @@ def empty_region(name, verbose):
             print("Deleting:", region.list_items())
         items = region.list_items().value
         for item in items:
-            region.lookup_item(item).seek_and_adstroy()
+            region.lookup_item(item).seek_and_destroy()
     return region
 
 def alloc_region_for_app(name, size, alignment, verbose=defaultVerbosity):
