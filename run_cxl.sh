@@ -2,8 +2,8 @@
 
 clean_regions() {
     echo "Cleaning regions..."
-    rapidutil remove -r "shared"     ## JBMF: Updated to Crete rapidutil format
-    rapidutil remove -r "fam_ranks"
+    rapidutil -d -r "shared"
+    rapidutil -d -r "fam_ranks"
 }
 
 trap clean_regions SIGINT
