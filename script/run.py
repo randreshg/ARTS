@@ -8,7 +8,7 @@ import json
 from socket import gethostname
 from pathlib import Path
 
-sys.path.append('/share/micron/rapid/install/gcc-release/bin/')
+sys.path.append('/opt/micron/rapid/bin/')
 import rapid
 
 # JS: This is for the current twosisters setup.  App must exist on hosts[0]!
@@ -16,7 +16,7 @@ import rapid
 hosts = ["twosisters"]
 
 # JS: Path to util
-rapidutil = "/share/micron/rapid/install/gcc-release/bin/rapidutil"
+rapidutil = "/opt/micron/rapid/bin/rapidutil"
 
 # JS: Micron environment path
 rapidenv = "/share/micron/environment.sh"
