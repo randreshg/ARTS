@@ -48,6 +48,14 @@ extern "C" {
 #define COMPILER_DO_NOT_REORDER_WRITES_BETWEEN_THIS_POINT()                    \
   __asm__ volatile("" : : : "memory")
 
+#if defined(__x86_64__) || defined(__i386__)
+#define ARTS_SPIN_PAUSE() __asm__ __volatile__("pause" ::: "memory")
+#elif defined(__aarch64__) || defined(__arm__)
+#define ARTS_SPIN_PAUSE() __asm__ __volatile__("yield" ::: "memory")
+#else
+#define ARTS_SPIN_PAUSE() __asm__ __volatile__("" ::: "memory")
+#endif
+
 unsigned int arts_atomic_swap(volatile unsigned int *destination,
                               unsigned int swap_in);
 uint64_t arts_atomic_swap_u64(volatile uint64_t *destination, uint64_t swap_in);

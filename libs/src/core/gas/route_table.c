@@ -522,7 +522,7 @@ arts_route_item_t *internal_route_table_add_item_race(
     }
     if (!found) {
       for (unsigned int i = 0; i < backoff; i++)
-        __builtin_ia32_pause();
+        ARTS_SPIN_PAUSE();
       if (backoff < 64) backoff <<= 1;
     }
   }
@@ -551,7 +551,7 @@ internal_route_table_add_deleted_item_race(arts_route_table_t *route_table,
     }
     if (!found) {
       for (unsigned int i = 0; i < backoff; i++)
-        __builtin_ia32_pause();
+        ARTS_SPIN_PAUSE();
       if (backoff < 64) backoff <<= 1;
     }
   }
@@ -612,7 +612,7 @@ bool arts_route_table_reserve_item_race(arts_guid_t key,
     }
     if (!(*item)) {
       for (unsigned int i = 0; i < backoff; i++)
-        __builtin_ia32_pause();
+        ARTS_SPIN_PAUSE();
       if (backoff < 64) backoff <<= 1;
     }
   }
