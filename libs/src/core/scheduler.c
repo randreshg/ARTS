@@ -89,14 +89,6 @@ extern void init_per_worker(unsigned int node_id, unsigned int worker_id,
 static int arts_runtime_argc = 0;
 static char **arts_runtime_argv = NULL;
 
-#if defined(__x86_64__) || defined(__i386__)
-#define ARTS_SPIN_PAUSE() __asm__ __volatile__("pause" ::: "memory")
-#elif defined(__aarch64__) || defined(__arm__)
-#define ARTS_SPIN_PAUSE() __asm__ __volatile__("yield" ::: "memory")
-#else
-#define ARTS_SPIN_PAUSE() __asm__ __volatile__("" ::: "memory")
-#endif
-
 static void arts_worker_try_sleep(void);
 
 static inline void arts_runtime_idle_backoff(void) {

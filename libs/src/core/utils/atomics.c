@@ -113,7 +113,7 @@ bool arts_lock(volatile unsigned int *lock) {
         arts_atomic_cswap(lock, 0U, 1U) == 0U)
       return true;
     for (unsigned int i = 0; i < backoff; i++)
-      __builtin_ia32_pause();
+      ARTS_SPIN_PAUSE();
     if (backoff < 64) backoff <<= 1;
   }
 }
@@ -156,7 +156,7 @@ void arts_reader_lock(volatile unsigned int *read_lock,
                       const volatile unsigned int *write_lock) {
   while (1) {
     while (__atomic_load_n(write_lock, __ATOMIC_RELAXED)) {
-      __builtin_ia32_pause();
+      ARTS_SPIN_PAUSE();
     }
     arts_atomic_fetch_add(read_lock, 1U);
     if (__atomic_load_n(write_lock, __ATOMIC_RELAXED) == 0) {
@@ -178,11 +178,11 @@ void arts_writer_lock(const volatile unsigned int *read_lock,
         arts_atomic_cswap(write_lock, 0U, 1U) == 0U)
       break;
     for (unsigned int i = 0; i < backoff; i++)
-      __builtin_ia32_pause();
+      ARTS_SPIN_PAUSE();
     if (backoff < 64) backoff <<= 1;
   }
   while (__atomic_load_n(read_lock, __ATOMIC_RELAXED)) {
-    __builtin_ia32_pause();
+    ARTS_SPIN_PAUSE();
   }
 }
 
@@ -190,7 +190,7 @@ bool arts_writer_try_lock(const volatile unsigned int *read_lock,
                           volatile unsigned int *write_lock) {
   if (arts_atomic_cswap(write_lock, 0U, 1U) == 0U) {
     while (__atomic_load_n(read_lock, __ATOMIC_RELAXED)) {
-      __builtin_ia32_pause();
+      ARTS_SPIN_PAUSE();
     }
     return true;
   }
