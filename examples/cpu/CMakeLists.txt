@@ -174,6 +174,29 @@ if (ARTS_USE_CXL)
   target_link_options(inhibitor_raw_mem PRIVATE -no-pie -fno-pie -fno-PIE)
 endif()
 
+# latency_bench: CXL vs local DRAM latency microbenchmark (pointer-chase + sequential writes)
+if (ARTS_USE_CXL)
+  add_executable(latency_bench latency_bench.c)
+  target_include_directories(latency_bench PRIVATE
+      ${ARTS_PUBLIC_INCLUDE_DIR}
+      ${ARTS_INTERNAL_INCLUDE_DIR}
+      ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
+  )
+  if(TARGET arts_shared)
+      target_link_libraries(latency_bench PRIVATE arts_shared)
+  elseif(TARGET arts_static)
+      target_link_libraries(latency_bench PRIVATE arts_static)
+  endif()
+  target_link_libraries(latency_bench PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
+  if(ARTS_USE_CXL AND TARGET arts_cxl_lib)
+      target_link_libraries(latency_bench PRIVATE arts_cxl_lib)
+      target_compile_definitions(latency_bench PRIVATE ARTS_USE_CXL=1)
+  endif()
+  # Non-PIE: function pointers must match across nodes (multinode EDT dispatch)
+  target_compile_options(latency_bench PRIVATE -fno-pie -fno-PIE)
+  target_link_options(latency_bench PRIVATE -no-pie -fno-pie -fno-PIE)
+endif()
+
 # Create C++ CPU example executables
 foreach(example ${CPU_CXX_EXAMPLES})
     add_cpu_cxx_example(${example})
