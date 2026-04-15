@@ -258,7 +258,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
         arts_cxl_deque_create_with_arenas(dev_ids, 1);
 #endif
     arts_node_info.cxl_db_dev_count = 1;
-    arts_node_info.cxl_db_static_device = (unsigned int)dev_id;
+    arts_node_info.cxl_db_static_device = 0; /* arena index is always 0 for static; dev_id is encoded in the arena */
   }
 
   arts_printf("CXL FAM device ID: %lu\n",
