@@ -56,11 +56,14 @@
  *   4 MB – 256 MB  : DRAM/CXL territory — full latency difference visible
  *
  * Usage:
- *   latency_bench [-n <ntimes>]
+ *   latency_bench [-n <ntimes>] [-o <output_dir>]
  *
  *   -n  Number of timing repetitions per (size, tier, op) tuple (default: 50)
+ *   -o  Directory path where latencies.json will be written (optional).
+ *       If omitted, no JSON file is produced.
  *
  * Output: tab-formatted table with Min/Avg/P50/P95/Max latency in ns/access.
+ *         When -o is given, results are also written to <output_dir>/latencies.json.
  */
 
 #include <stdio.h>
@@ -68,6 +71,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <getopt.h>
+#include <errno.h>
 
 #include "arts.h"
 #include "arts/memory/db.h"
@@ -78,6 +83,7 @@
  * ========================================================================= */
 
 #define NTIMES_DEFAULT  50
+#define JSON_FILENAME   "latencies.json"
 
 /* Number of pointer-chase steps per read timing rep.
  * Kept fixed across all buffer sizes so that each step causes a cache miss
@@ -106,6 +112,20 @@ static const uint64_t SWEEP_SIZES[] = {
 static arts_guid_t bench_edts[9]; /* must match NUM_SIZES */
 
 /* =========================================================================
+ * JSON output state (set once in init_per_node / init_per_worker)
+ * ========================================================================= */
+
+/* Directory supplied via -o; NULL means no JSON output */
+static char *g_json_dir = NULL;
+
+/* Open file handle for the JSON output; NULL when not writing */
+static FILE *g_json_fp  = NULL;
+
+/* Tracks whether we have written at least one JSON array element
+ * (used to emit commas correctly). */
+static int   g_json_first_entry = 1;
+
+/* =========================================================================
  * Helpers
  * ========================================================================= */
 
@@ -124,9 +144,13 @@ static void fmt_size(uint64_t size, char *out, size_t outlen)
         snprintf(out, outlen, "%4lu KB", (unsigned long)(size >> 10));
 }
 
-/* Print one results row.
+/* Compute statistics, print one results row, and (optionally) append a JSON
+ * object to the open g_json_fp array.
+ *
  * rep_totals[i] = total nanoseconds for rep i (NTIMES entries).
- * n_ops         = number of accesses per rep (for ns/access calculation). */
+ * n_ops         = number of accesses per rep (for ns/access calculation).
+ *
+ * NOTE: rep_totals is sorted in-place by this function. */
 static void print_row(uint64_t size, const char *tier, const char *op,
                       uint64_t *rep_totals, uint32_t n, uint64_t n_ops)
 {
@@ -149,6 +173,36 @@ static void print_row(uint64_t size, const char *tier, const char *op,
 
     arts_printf("%9s | %-5s | %-5s | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f\n",
                 size_str, tier, op, min, avg, p50, p95, p99, max);
+
+    /* ---- JSON output ---- */
+    if (g_json_fp) {
+        if (!g_json_first_entry)
+            fprintf(g_json_fp, ",\n");
+        g_json_first_entry = 0;
+
+        fprintf(g_json_fp,
+                "  {\n"
+                "    \"size_bytes\": %llu,\n"
+                "    \"size_label\": \"%s\",\n"
+                "    \"tier\": \"%s\",\n"
+                "    \"op\": \"%s\",\n"
+                "    \"n_reps\": %u,\n"
+                "    \"n_ops_per_rep\": %llu,\n"
+                "    \"min_ns\": %.2f,\n"
+                "    \"avg_ns\": %.2f,\n"
+                "    \"p50_ns\": %.2f,\n"
+                "    \"p95_ns\": %.2f,\n"
+                "    \"p99_ns\": %.2f,\n"
+                "    \"max_ns\": %.2f\n"
+                "  }",
+                (unsigned long long)size,
+                size_str,
+                tier,
+                op,
+                n,
+                (unsigned long long)n_ops,
+                min, avg, p50, p95, p99, max);
+    }
 }
 
 /* Fisher-Yates shuffle: builds a pointer-chase permutation in buf[0..n-1].
@@ -261,6 +315,14 @@ void bench_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     free(write_local);
     free(write_cxl);
 
+    /* Close JSON array when this is the last size in the sweep */
+    if (next == NULL_GUID && g_json_fp) {
+        fprintf(g_json_fp, "\n]\n");
+        fclose(g_json_fp);
+        g_json_fp = NULL;
+        arts_printf("\nLatency results written to JSON.\n");
+    }
+
     /* Chain to next size or shut down */
     if (next != NULL_GUID)
         arts_signal_edt_null(next, 0);
@@ -278,9 +340,19 @@ void init_per_node(unsigned int node_id, int argc, char **argv)
 
     uint32_t ntimes = NTIMES_DEFAULT;
     int opt;
-    while ((opt = getopt(argc, argv, "n:")) != -1) {
-        if (opt == 'n')
+    /* Reset getopt state so we can re-parse argv cleanly */
+    optind = 1;
+    while ((opt = getopt(argc, argv, "n:o:")) != -1) {
+        switch (opt) {
+        case 'n':
             ntimes = (uint32_t)strtoul(optarg, NULL, 10);
+            break;
+        case 'o':
+            g_json_dir = optarg;
+            break;
+        default:
+            break;
+        }
     }
     if (ntimes == 0)
         ntimes = NTIMES_DEFAULT;
@@ -328,6 +400,35 @@ void init_per_worker(unsigned int node_id, unsigned int worker_id,
 {
     if (node_id || worker_id)
         return;
+
+    /* Open JSON output file if -o was supplied */
+    if (g_json_dir) {
+        /* Build path: <dir>/latencies.json */
+        size_t dir_len  = strlen(g_json_dir);
+        /* +1 for '/', +strlen(JSON_FILENAME), +1 for '\0' */
+        size_t path_len = dir_len + 1 + strlen(JSON_FILENAME) + 1;
+        char  *json_path = malloc(path_len);
+        if (json_path) {
+            /* Avoid double-slash if the user already appended one */
+            if (dir_len > 0 && g_json_dir[dir_len - 1] == '/')
+                snprintf(json_path, path_len, "%s%s", g_json_dir, JSON_FILENAME);
+            else
+                snprintf(json_path, path_len, "%s/%s", g_json_dir, JSON_FILENAME);
+
+            g_json_fp = fopen(json_path, "w");
+            if (!g_json_fp) {
+                arts_printf("WARNING: could not open JSON output file '%s': %s\n",
+                            json_path, strerror(errno));
+            } else {
+                arts_printf("JSON output: %s\n", json_path);
+                /* Write opening bracket of the top-level JSON array */
+                fprintf(g_json_fp, "[\n");
+            }
+            free(json_path);
+        } else {
+            arts_printf("WARNING: malloc failed for JSON path — skipping JSON output.\n");
+        }
+    }
 
     /* Write-back/invalidate caches to ensure cold-cache first measurement */
     wbinv();
