@@ -21,7 +21,8 @@ from pathlib import Path
 
 node_names = ["ca-fcp0", "ca-fcp1"]
 
-NUM_FAM_DEVICES = 14
+#NUM_FAM_DEVICES = 14
+NUM_FAM_DEVICES = 2
 
 # ==============================================================================
 # PATHS
@@ -64,9 +65,15 @@ def main() -> None:
 
         for i in range(NUM_FAM_DEVICES):
             # --------------------------------------------------------------
-            # a) Copy sample config to current directory, rename to arts.cfg
+            # Create per-device subdirectory  <node_name>/<i>/
             # --------------------------------------------------------------
-            arts_cfg_path = current_dir / "arts.cfg"
+            device_dir = current_dir / str(i)
+            device_dir.mkdir(parents=True, exist_ok=True)
+
+            # --------------------------------------------------------------
+            # a) Copy sample config to device directory, rename to arts.cfg
+            # --------------------------------------------------------------
+            arts_cfg_path = device_dir / "arts.cfg"
             shutil.copy2(SAMPLE_CFG, arts_cfg_path)
 
             # --------------------------------------------------------------
@@ -80,10 +87,10 @@ def main() -> None:
             cfg_content = set_cfg_value(cfg_content, "nodes", node_name)
 
             # --------------------------------------------------------------
-            # f) Save file; note the working directory for output
+            # f) Save file; note the device directory for output
             # --------------------------------------------------------------
             arts_cfg_path.write_text(cfg_content)
-            output_dir = current_dir  # noted working directory for -o flag
+            output_dir = device_dir  # noted working directory for -o flag
 
             # --------------------------------------------------------------
             # g) Copy arts.cfg to PROJECT_ROOT_DIR/build/examples/cpu/
