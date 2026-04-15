@@ -215,15 +215,11 @@ void bench_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
 
     /* CXL reads — flush before first rep to ensure coherent view */
-#ifdef ARTS_USE_CXL
     arts_cxl_consumer_flush(cxl_guid);
-#endif
     for (uint32_t rep = 0; rep < ntimes; rep++) {
-#ifdef ARTS_USE_CXL
-        arts_cxl_consumer_flush(cxl_guid);
-#endif
         volatile uint64_t cur = 0;
         uint64_t t0 = arts_get_time_stamp();
+        arts_cxl_consumer_flush(cxl_guid);
         for (uint64_t step = 0; step < chain_len; step++)
             cur = cxl_buf[cur];
         read_cxl[rep] = arts_get_time_stamp() - t0;
@@ -247,9 +243,7 @@ void bench_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         uint64_t t0 = arts_get_time_stamp();
         for (uint64_t i = 0; i < write_len; i++)
             cxl_buf[i] = i;
-#ifdef ARTS_USE_CXL
         arts_cxl_producer_flush(cxl_guid);
-#endif
         write_cxl[rep] = arts_get_time_stamp() - t0;
     }
 
@@ -310,9 +304,7 @@ void init_per_node(unsigned int node_id, int argc, char **argv)
         arts_guid_t cxl_guid = arts_db_create((void **)&cxl_ptr, size,
                                                ARTS_DB_CXL, NULL);
         memcpy(cxl_ptr, local_ptr, size);
-#ifdef ARTS_USE_CXL
         arts_cxl_producer_flush(cxl_guid);
-#endif
 
         arts_guid_t next = (i + 1 < NUM_SIZES) ? bench_edts[i + 1] : NULL_GUID;
 
@@ -338,9 +330,7 @@ void init_per_worker(unsigned int node_id, unsigned int worker_id,
         return;
 
     /* Write-back/invalidate caches to ensure cold-cache first measurement */
-#ifdef ARTS_USE_CXL
     wbinv();
-#endif
 
     arts_printf("\n=== CXL vs Local DRAM Latency Profile ===\n");
     arts_printf("READ: pointer-chase (%llu steps/rep)  "
