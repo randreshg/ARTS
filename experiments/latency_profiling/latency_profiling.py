@@ -21,8 +21,7 @@ from pathlib import Path
 
 node_names = ["ca-fcp0", "ca-fcp1"]
 
-#NUM_FAM_DEVICES = 14
-NUM_FAM_DEVICES = 2
+NUM_FAM_DEVICES = 14
 
 # ==============================================================================
 # PATHS
