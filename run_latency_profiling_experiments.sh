@@ -1,10 +1,10 @@
 #!/bin/bash
 
 rm -f latency_profiling.tar.gz
-cd build/example/cpu
+cd build/examples/cpu
 cp ../../../run_cxl.sh .
 chmod +x run_cxl.sh
-cd ../../../experiments/latency_profling
+cd ../../../experiments/latency_profiling
 rm -r */
 python3 latency_profiling.py
 cd ../../

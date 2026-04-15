@@ -2,8 +2,8 @@
 
 clean_regions() {
     echo "Cleaning regions..."
-    rapidutil -remove -r "shared"
-    rapidutil -remove -r "fam_ranks"
+    rapidutil remove -r "shared"
+    rapidutil remove -r "fam_ranks"
 }
 
 trap clean_regions SIGINT
