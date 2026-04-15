@@ -1,5 +1,6 @@
 #!/bin/bash
 
+rm -f latency_profiling.tar.gz
 cd build/example/cpu
 cp ../../../run_cxl.sh .
 chmod +x run_cxl.sh
