@@ -1133,6 +1133,9 @@ void arts_wait_reacquire_dbs(void) {
 #ifdef ARTS_USE_CXL
 void arts_cxl_producer_flush(arts_guid_t guid) {
   struct arts_db_s *db = (struct arts_db_s *)arts_cxl_get_ptr(guid);
+  /* First flush the header to read the actual size. */
+  FLUSH_FENCE_CONSUMER(db, ALIGN_UP(sizeof(struct arts_db_s), CACHELINE_SIZE));
+  arts_printf("Producer flushing db of size: %lu\n", db->header.size);
   FLUSH_FENCE_PRODUCER(db, ALIGN_UP(db->header.size, CACHELINE_SIZE));
 }
 
