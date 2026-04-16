@@ -77,6 +77,7 @@
 #include "arts.h"
 #include "arts/memory/db.h"
 #include "arts/cxl/wrapper.h"
+#include "arts/gas/guid.h"
 
 /* =========================================================================
  * Configuration
@@ -375,6 +376,9 @@ void init_per_node(unsigned int node_id, int argc, char **argv)
         uint64_t *cxl_ptr;
         arts_guid_t cxl_guid = arts_db_create((void **)&cxl_ptr, size,
                                                ARTS_DB_CXL, NULL);
+        assert(cxl_ptr && "cxl_ptr is valid");
+        assert(IS_CXL_PTR(cxl_ptr) && "cxl_ptr is a valid cxl ptr");
+        assert(arts_guid_is_cxl(cxl_guid) && "cxl_guid is a valid CXL GUID");
         memcpy(cxl_ptr, local_ptr, size);
         arts_cxl_producer_flush(cxl_guid);
 
