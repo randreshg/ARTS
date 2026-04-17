@@ -207,4 +207,8 @@ add_subdirectory(stream)
 if (ARTS_USE_CXL)
   add_subdirectory(random_access)
 endif()
+# lulesh: ARTS port of the LULESH hydrodynamics proxy application
+if (ARTS_USE_CXL)
+  add_subdirectory(lulesh)
+endif()
  
