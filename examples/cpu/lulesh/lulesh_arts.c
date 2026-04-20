@@ -143,6 +143,24 @@ typedef struct {
   double origin_energy; /* tile 0 only: energy[0] for final output */
 } dt_result_db_t;
 
+#if ARTS_USE_CXL
+/* Registry slot: one per tile.  6 GUIDs (48 bytes) + padding to one
+ * cacheline so concurrent writes by different tile owners hit disjoint
+ * cachelines (no false sharing). */
+typedef struct {
+  arts_guid_t const_guid;
+  arts_guid_t pos_vel_guid;
+  arts_guid_t elem_state_guid;
+  arts_guid_t grad_guid;
+  arts_guid_t force_guid;
+  arts_guid_t dt_result_guid;
+  uint8_t _pad[16];
+} __attribute__((aligned(64))) lulesh_tile_guids_t;
+
+_Static_assert(sizeof(lulesh_tile_guids_t) == 64,
+               "lulesh_tile_guids_t must be exactly one cacheline");
+#endif
+
 /* ========================================================================= */
 /*  Offset setup                                                             */
 /* ========================================================================= */
@@ -1057,6 +1075,43 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
+#if ARTS_USE_CXL
+  int tid = (int)paramv[0], N = (int)paramv[1], T = (int)paramv[2],
+      tpd = (int)paramv[3], max_iter = (int)paramv[4];
+  arts_guid_t registry_guid = (arts_guid_t)paramv[5];
+  arts_guid_t init_done = (arts_guid_t)paramv[6];
+
+  size_t csz = compute_const_db_size(T), pvsz = compute_pos_vel_db_size(T);
+  size_t essz = compute_elem_state_db_size(T), gsz = compute_grad_db_size(T),
+         fsz = compute_force_db_size(T);
+
+  /* Allocate 6 CXL DBs and capture their CXL-encoded GUIDs. */
+  const_db_header_t *ch;
+  arts_guid_t cg =
+      arts_db_create((void **)&ch, (uint64_t)csz, ARTS_DB_CXL, NULL);
+  memset(ch, 0, csz);
+  pos_vel_db_header_t *pvh;
+  arts_guid_t pg =
+      arts_db_create((void **)&pvh, (uint64_t)pvsz, ARTS_DB_CXL, NULL);
+  memset(pvh, 0, pvsz);
+  elem_state_db_header_t *esh;
+  arts_guid_t es_guid =
+      arts_db_create((void **)&esh, (uint64_t)essz, ARTS_DB_CXL, NULL);
+  memset(esh, 0, essz);
+  grad_db_header_t *gh;
+  arts_guid_t gg =
+      arts_db_create((void **)&gh, (uint64_t)gsz, ARTS_DB_CXL, NULL);
+  memset(gh, 0, gsz);
+  force_db_header_t *fh;
+  arts_guid_t fg =
+      arts_db_create((void **)&fh, (uint64_t)fsz, ARTS_DB_CXL, NULL);
+  memset(fh, 0, fsz);
+  dt_result_db_t *dr;
+  arts_guid_t dt_guid = arts_db_create(
+      (void **)&dr, (uint64_t)sizeof(dt_result_db_t), ARTS_DB_CXL, NULL);
+  dr->dt_courant = 1.e20;
+  dr->dt_hydro = 1.e20;
+#else
   int tid = (int)paramv[0], N = (int)paramv[1], T = (int)paramv[2],
       tpd = (int)paramv[3], max_iter = (int)paramv[4];
   arts_guid_t cg = (arts_guid_t)paramv[5];
@@ -1091,6 +1146,7 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       dt_guid, (uint64_t)sizeof(dt_result_db_t), ARTS_DB_DEFAULT, NULL, NULL);
   dr->dt_courant = 1.e20;
   dr->dt_hydro = 1.e20;
+#endif
 
   set_const_offsets(ch, T);
   set_pos_vel_offsets(pvh, T);
@@ -1260,6 +1316,36 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         if (tz * T + lz == 0)
           szf[ni] = 1;
       }
+#if ARTS_USE_CXL
+  /* Publish this tile's 6 CXL GUIDs into the registry slot.  Slots are
+   * cacheline-aligned so writes from different tile owners hit
+   * different cachelines — no false sharing, no lock needed. */
+  lulesh_tile_guids_t *registry =
+      (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
+                                  registry_guid) +
+                              1);
+  registry[tid].const_guid = cg;
+  registry[tid].pos_vel_guid = pg;
+  registry[tid].elem_state_guid = es_guid;
+  registry[tid].grad_guid = gg;
+  registry[tid].force_guid = fg;
+  registry[tid].dt_result_guid = dt_guid;
+#endif
+
+  /* Pattern A: release all 6 created DBs so CXL producer_flush fires
+   * before the LATCH decrement that dispatches downstream consumers. */
+  arts_db_release(cg);
+  arts_db_release(pg);
+  arts_db_release(es_guid);
+  arts_db_release(gg);
+  arts_db_release(fg);
+  arts_db_release(dt_guid);
+
+#if ARTS_USE_CXL
+  /* Flush this tile's registry slot so post_init sees it. */
+  arts_cxl_producer_flush(registry_guid);
+#endif
+
   /* Signal init_done latch */
   arts_event_satisfy_slot(init_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
@@ -1273,18 +1359,49 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 void post_init_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
+#if ARTS_USE_CXL
+  (void)depv;
+  /* Read the registry DB to populate g_init with the CXL GUIDs produced
+   * by init_tile_edts.  Rank 0 is the only place this struct is used
+   * (launch_iteration runs on rank 0), so local population suffices. */
+  arts_guid_t registry_guid = (arts_guid_t)paramv[0];
+  arts_cxl_consumer_flush(registry_guid);
+  lulesh_tile_guids_t *registry =
+      (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
+                                  registry_guid) +
+                              1);
+  int nt = g_init.num_tiles;
+  for (int t = 0; t < nt; t++) {
+    g_init.const_guids[t] = registry[t].const_guid;
+    g_init.pos_vel_guids[t] = registry[t].pos_vel_guid;
+    g_init.elem_state_guids[t] = registry[t].elem_state_guid;
+    g_init.grad_guids[t] = registry[t].grad_guid;
+    g_init.force_guids[t] = registry[t].force_guid;
+    g_init.dt_result_guids[t] = registry[t].dt_result_guid;
+  }
+
+  /* Read tile 0's const + elem_state DBs to compute initial dt. */
+  arts_cxl_consumer_flush(g_init.const_guids[0]);
+  arts_cxl_consumer_flush(g_init.elem_state_guids[0]);
+  const_db_header_t *ch =
+      (const_db_header_t *)((struct arts_db_s *)arts_cxl_get_ptr(
+                                g_init.const_guids[0]) +
+                            1);
+  elem_state_db_header_t *esh =
+      (elem_state_db_header_t *)((struct arts_db_s *)arts_cxl_get_ptr(
+                                     g_init.elem_state_guids[0]) +
+                                 1);
+#else
+  (void)paramv;
   const_db_header_t *ch = depv[1].ptr;
   elem_state_db_header_t *esh = depv[2].ptr;
+#endif
+
   double *eivol = TILE_PTR(ch, ch->off_elem_init_vol, double);
   double *eg = TILE_PTR(esh, esh->off_energy, double);
   double dt = 0.5 * cbrt(eivol[0]) / sqrt(2.0 * eg[0]);
-  fprintf(stderr, "  Initial delta_time: %12.6e\n", dt);
-  /* Spawn next_iter_edt trampoline instead of calling launch_iteration
-   * directly. This ensures post_init_edt's DB deps are released before
-   * launch_iteration creates new EDTs that need the same DBs (avoiding EW
-   * ordering deadlock). */
+  arts_printf("  Initial delta_time: %12.6e\n", dt);
   uint64_t p[3] = {0, 0, 0};
   memcpy(&p[1], &dt, sizeof(double));
   double zero = 0.0;
@@ -1420,7 +1537,7 @@ static void launch_iteration(int iter, double dt, double elapsed) {
     arts_add_dependence(setup_done, e, 0, DB_MODE_NULL);
     arts_add_dependence(g_init.const_guids[t], e, 1, DB_MODE_RO);
     arts_add_dependence(g_init.pos_vel_guids[t], e, 2, DB_MODE_RO);
-    arts_add_dependence(g_init.force_guids[t], e, 3, DB_MODE_EW);
+    arts_add_dependence(g_init.force_guids[t], e, 3, DB_MODE_RW);
   }
 
   /* Phase 2: reduce_kin_edt */
@@ -1439,7 +1556,7 @@ static void launch_iteration(int iter, double dt, double elapsed) {
     arts_add_dependence(g_init.const_guids[t], e, (uint32_t)(2 + na),
                         DB_MODE_RO);
     arts_add_dependence(g_init.pos_vel_guids[t], e, (uint32_t)(3 + na),
-                        DB_MODE_EW);
+                        DB_MODE_RW);
   }
 
   /* Phase 3: elem_props_edt */
@@ -1451,7 +1568,7 @@ static void launch_iteration(int iter, double dt, double elapsed) {
     arts_add_dependence(er_guids[t], e, 0, DB_MODE_NULL);
     arts_add_dependence(g_init.const_guids[t], e, 1, DB_MODE_RO);
     arts_add_dependence(g_init.pos_vel_guids[t], e, 2, DB_MODE_RO);
-    arts_add_dependence(g_init.grad_guids[t], e, 3, DB_MODE_EW);
+    arts_add_dependence(g_init.grad_guids[t], e, 3, DB_MODE_RW);
   }
 
   /* Phase 4: visc_eos_time_edt */
@@ -1470,11 +1587,11 @@ static void launch_iteration(int iter, double dt, double elapsed) {
     arts_add_dependence(g_init.const_guids[t], e, (uint32_t)(2 + nf),
                         DB_MODE_RO);
     arts_add_dependence(g_init.elem_state_guids[t], e, (uint32_t)(3 + nf),
-                        DB_MODE_EW);
+                        DB_MODE_RW);
     arts_add_dependence(g_init.dt_result_guids[t], e, (uint32_t)(4 + nf),
-                        DB_MODE_EW);
+                        DB_MODE_RW);
     arts_add_dependence(g_init.force_guids[t], e, (uint32_t)(5 + nf),
-                        DB_MODE_EW);
+                        DB_MODE_RW);
   }
 
   /* Reduction: reduce_dt_edt — reads all dt_result DBs (RO) + const[0] (RO).
@@ -1539,6 +1656,8 @@ void forces_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       efz[k * 8 + c] = fz[c];
     }
   }
+  /* Pattern A: flush force_db before the LATCH-DECR dispatches consumers. */
+  arts_db_release(depv[3].guid);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -1703,6 +1822,8 @@ void reduce_kin_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     py[ni] += vyp[ni] * dt;
     pz[ni] += vzp[ni] * dt;
   }
+  /* Pattern A: flush pos_vel_db before LATCH-DECR dispatches consumers. */
+  arts_db_release(depv[3 + na].guid);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -1760,12 +1881,14 @@ void elem_props_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     calc_elem_vel_grad(xd, yd, zd, B, detJ, D);
     vdov[k] = D[0] + D[1] + D[2];
     if (vnew[k] <= 0) {
-      fprintf(stderr, "LULESH ERROR: negative volume elem %d tile %d\n", k,
-              ch->tile_id);
+      arts_printf("LULESH ERROR: negative volume elem %d tile %d\n", k,
+                  ch->tile_id);
       arts_abort(1);
     }
   }
   calc_monoq_gradients(ch, pvh, gh);
+  /* Pattern A: flush grad_db before LATCH-DECR dispatches consumers. */
+  arts_db_release(depv[3].guid);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -1846,6 +1969,11 @@ void visc_eos_time_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     vol_cache[k] = vol[k];
   }
 
+  /* Pattern A: flush the three EW-modified DBs before LATCH-DECR
+   * dispatches downstream consumers. */
+  arts_db_release(depv[3 + nf].guid); // elem_state_db
+  arts_db_release(depv[4 + nf].guid); // dt_result_db
+  arts_db_release(depv[5 + nf].guid); // force_db
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -1871,8 +1999,8 @@ void reduce_dt_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Print iteration info */
   /* Read origin energy from tile 0's dt_result */
   double origin_energy = ((dt_result_db_t *)depv[1].ptr)->origin_energy;
-  fprintf(stderr, "iteration %d, delta time %f, energy %f\n", iter + 1, dt_old,
-          origin_energy);
+  arts_printf("iteration %d, delta time %f, energy %f\n", iter + 1, dt_old,
+              origin_energy);
 
   double stop = ch0->stop_time;
   int max_iter = ch0->max_iterations;
@@ -1910,19 +2038,19 @@ void reduce_dt_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     dt_new = targetdt;
   int finished = (new_elapsed >= stop) || (iter + 1 >= max_iter);
   if (finished) {
-    fprintf(stderr, "Run completed:\n");
-    fprintf(stderr, "   Problem size        = %d\n", ch0->global_edge_elems);
-    fprintf(stderr, "   Iteration count     = %d\n", iter + 1);
-    fprintf(stderr, "   Final Origin Energy = %12.6e\n", origin_energy);
-    fprintf(stderr, "   Elapsed time        = %12.6e\n", new_elapsed);
+    arts_printf("Run completed:\n");
+    arts_printf("   Problem size        = %d\n", ch0->global_edge_elems);
+    arts_printf("   Iteration count     = %d\n", iter + 1);
+    arts_printf("   Final Origin Energy = %12.6e\n", origin_energy);
+    arts_printf("   Elapsed time        = %12.6e\n", new_elapsed);
 #ifdef LULESH_PROFILE
     uint64_t total_ns = prof_now_ns() - g_prof_first_ns;
-    fprintf(stderr,
-            "PROFILE: launch_iteration total=%.3f ms (%lu calls, avg=%.3f ms); "
-            "wall since first launch=%.3f ms; serial_fraction=%.2f%%\n",
-            g_prof_launch_ns / 1e6, g_prof_launch_count,
-            (g_prof_launch_ns / 1e6) / (double)g_prof_launch_count,
-            total_ns / 1e6, 100.0 * g_prof_launch_ns / (double)total_ns);
+    arts_printf("PROFILE: launch_iteration total=%.3f ms (%lu calls, "
+                "avg=%.3f ms); wall since first launch=%.3f ms; "
+                "serial_fraction=%.2f%%\n",
+                g_prof_launch_ns / 1e6, g_prof_launch_count,
+                (g_prof_launch_ns / 1e6) / (double)g_prof_launch_count,
+                total_ns / 1e6, 100.0 * g_prof_launch_ns / (double)total_ns);
 #endif
     fflush(stdout);
     arts_shutdown();
@@ -2009,13 +2137,44 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-  fprintf(stderr, "LULESH ARTS 6-DB-partition implementation\n");
-  fprintf(stderr,
-          "  Edge elements:  %d\n  Tile elements:  %d\n  Tiles:          %d\n  "
-          "ARTS nodes:     %u\n",
-          N, T, nt, nn);
+  arts_printf("LULESH ARTS 6-DB-partition implementation\n");
+  arts_printf("  Edge elements:  %d\n  Tile elements:  %d\n  Tiles:         "
+              " %d\n  ARTS nodes:     %u\n",
+              N, T, nt, nn);
   build_topo(N, T, (int)nn);
 
+#if ARTS_USE_CXL
+  /* CXL mode: do not reserve GUIDs — init_tile_edt receives CXL-encoded
+   * GUIDs from arts_db_create and publishes them via the registry DB. */
+  lulesh_tile_guids_t *registry = NULL;
+  arts_guid_t registry_guid = arts_db_create(
+      (void **)&registry, (uint64_t)nt * sizeof(lulesh_tile_guids_t),
+      ARTS_DB_CXL, NULL);
+  if (registry_guid == NULL_GUID || registry == NULL) {
+    arts_printf("LULESH: failed to create CXL registry DB\n");
+    arts_shutdown();
+    return;
+  }
+  memset(registry, 0, (size_t)nt * sizeof(lulesh_tile_guids_t));
+  arts_db_release(registry_guid); /* Pattern A: producer_flush before readers */
+
+  arts_guid_t init_done =
+      arts_event_create(0, ARTS_EVENT_LATCH, (unsigned)nt, NULL_GUID);
+
+  uint64_t pi_paramv[1] = {(uint64_t)registry_guid};
+  arts_guid_t post_init = arts_edt_create(post_init_edt, 1, pi_paramv, 1,
+                                          &(arts_hint_t){.route = 0});
+  arts_add_dependence(init_done, post_init, 0, DB_MODE_NULL);
+
+  for (int t = 0; t < nt; t++) {
+    unsigned o = g_init.tile_owner[t];
+    uint64_t p[7] = {(uint64_t)t,        (uint64_t)N,
+                     (uint64_t)T,        (uint64_t)tpd,
+                     (uint64_t)max_iter, (uint64_t)registry_guid,
+                     (uint64_t)init_done};
+    arts_edt_create(init_tile_edt, 7, p, 0, &(arts_hint_t){.route = o});
+  }
+#else
   /* Pre-reserve 6*nt DB GUIDs on tile owner nodes */
   for (int t = 0; t < nt; t++) {
     unsigned o = g_init.tile_owner[t];
@@ -2053,6 +2212,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       (uint64_t)init_done};
     arts_edt_create(init_tile_edt, 12, p, 0, &(arts_hint_t){.route = o});
   }
+#endif
 }
 
 /* Called on EVERY node before main_edt -- ensures g_init is available
