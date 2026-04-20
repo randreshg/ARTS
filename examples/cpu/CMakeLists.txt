@@ -207,4 +207,12 @@ add_subdirectory(stream)
 if (ARTS_USE_CXL)
   add_subdirectory(random_access)
 endif()
+# lulesh: ARTS port of the LULESH hydrodynamics proxy application
+# if (ARTS_USE_CXL)
+  add_subdirectory(lulesh)
+# endif()
+# cholesky: ARTS port of the Cholesky factorization benchmark
+add_subdirectory(cholesky)
+# smithwaterman: ARTS port of the Smith-Waterman sequence alignment benchmark
+add_subdirectory(smithwaterman)
  
