@@ -57,6 +57,8 @@
  */
 
 #include "arts.h"
+#include "arts/gas/guid.h"
+#include "arts/runtime_types.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
