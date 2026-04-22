@@ -69,6 +69,12 @@ uint64_t arts_remote_send_payload_request(int rank, unsigned int queue,
 void arts_remote_set_thread_inbound_queues(unsigned int start,
                                            unsigned int stop);
 void arts_remote_thread_inbound_queues_cleanup();
+// Pre-thread-init CXL barrier: synchronises rank 0's deque creation with all
+// other ranks' deque_get() calls using direct blocking socket I/O.
+// Only compiled when ARTS_CXL_NATIVE is defined.
+#ifdef ARTS_CXL_NATIVE
+void arts_cxl_socket_barrier(void);
+#endif
 #ifdef __cplusplus
 }
 #endif

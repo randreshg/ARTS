@@ -286,6 +286,88 @@ void arts_ll_server_shutdown() {
   }
 }
 
+#ifdef ARTS_CXL_NATIVE
+/*
+ * arts_cxl_socket_barrier — pre-thread-init CXL synchronisation barrier.
+ *
+ * Called from arts_runtime_cxl_init() (main.c) AFTER arts_remote_setup_incoming()
+ * has established all TCP connections but BEFORE arts_thread_init() starts any
+ * worker threads.  Because no sender/receiver threads exist yet we use direct
+ * blocking send/recv on the already-connected sockets.
+ *
+ * Protocol (star topology, rank 0 is hub):
+ *   Rank 0  → sends ARTS_REMOTE_CXL_BARRIER_MSG to every other rank
+ *           ← waits to receive one ack (same message type) from every other rank
+ *   Rank N  ← waits to receive the barrier packet from rank 0
+ *           → sends ack back to rank 0
+ *
+ * The barrier packet is just an arts_remote_cxl_barrier_packet_s (header only).
+ * We bypass the normal async protocol machinery entirely.
+ */
+void arts_cxl_socket_barrier(void) {
+  unsigned int n = arts_global_message_table->table_length;
+  unsigned int me = arts_global_rank_id;
+  unsigned int pkt_size = (unsigned int)sizeof(struct arts_remote_cxl_barrier_packet_s);
+
+  struct arts_remote_cxl_barrier_packet_s pkt;
+  arts_fill_packet_header(&pkt.header, pkt_size, ARTS_REMOTE_CXL_BARRIER_MSG);
+
+  if (me == 0) {
+    /* --- rank 0: broadcast then collect acks --- */
+    for (unsigned int r = 1; r < n; r++) {
+      /* Use port 0 for the barrier (same port used by arts_remote_connect). */
+      arts_remote_send_request((int)r, 0, (char *)&pkt, pkt_size);
+    }
+    /* Blocking recv of one ack from each non-zero rank. */
+    for (unsigned int r = 1; r < n; r++) {
+      /* Find the receive socket for rank r, port 0.
+       * remote_socket_recieve_list is indexed [port + (peer_index * ports)]
+       * where peer_index counts non-self ranks in connection order.
+       * For simplicity we poll all incoming sockets until we have n-1 acks. */
+      struct arts_remote_cxl_barrier_packet_s ack;
+      unsigned int received = 0;
+      /* Scan poll_incoming for a ready socket and drain the ack. */
+      int total_sockets = (int)((n - 1) * ports);
+      while (!received) {
+        int ready = poll(poll_incoming, (nfds_t)total_sockets, -1 /* block */);
+        if (ready <= 0) continue;
+        for (int s = 0; s < total_sockets && !received; s++) {
+          if (poll_incoming[s].revents & POLLIN) {
+            ssize_t got = recv(poll_incoming[s].fd, &ack, pkt_size, MSG_WAITALL);
+            if (got == (ssize_t)pkt_size &&
+                ack.header.message_type == ARTS_REMOTE_CXL_BARRIER_MSG) {
+              received = 1;
+            }
+            poll_incoming[s].revents = 0;
+          }
+        }
+      }
+    }
+  } else {
+    /* --- non-master rank: wait for broadcast from rank 0, then ack --- */
+    struct arts_remote_cxl_barrier_packet_s bcast;
+    int total_sockets = (int)((n - 1) * ports);
+    unsigned int received = 0;
+    while (!received) {
+      int ready = poll(poll_incoming, (nfds_t)total_sockets, -1 /* block */);
+      if (ready <= 0) continue;
+      for (int s = 0; s < total_sockets && !received; s++) {
+        if (poll_incoming[s].revents & POLLIN) {
+          ssize_t got = recv(poll_incoming[s].fd, &bcast, pkt_size, MSG_WAITALL);
+          if (got == (ssize_t)pkt_size &&
+              bcast.header.message_type == ARTS_REMOTE_CXL_BARRIER_MSG) {
+            received = 1;
+          }
+          poll_incoming[s].revents = 0;
+        }
+      }
+    }
+    /* Send ack back to rank 0. */
+    arts_remote_send_request(0, 0, (char *)&pkt, pkt_size);
+  }
+}
+#endif /* ARTS_CXL_NATIVE */
+
 void arts_ll_server_cleanup() {
   arts_free(ip_list);
   arts_free(remote_socket_send_list);

@@ -76,6 +76,7 @@ enum artsServerMessageType {
   ARTS_REMOTE_TIME_SYNC_REQ_MSG,
   ARTS_REMOTE_TIME_SYNC_RESP_MSG,
   ARTS_REMOTE_SET_DEP_MODE_MSG,
+  ARTS_REMOTE_CXL_BARRIER_MSG,
 };
 
 // Header
@@ -216,6 +217,13 @@ struct ARTS_PACKED arts_remote_time_sync_resp_packet_s {
   struct arts_remote_packet_s header;
   uint64_t worker_send_time; // T1: echoed back
   uint64_t master_recv_time; // T2: master's local time when receiving request
+};
+
+// CXL barrier: rank 0 broadcasts after arts_cxl_deque_create_with_arenas();
+// non-master ranks wait for this before calling arts_cxl_deque_get().
+// The ack direction reuses the same packet type (rank field identifies sender).
+struct ARTS_PACKED arts_remote_cxl_barrier_packet_s {
+  struct arts_remote_packet_s header;
 };
 
 #include "arts/system/threads.h"

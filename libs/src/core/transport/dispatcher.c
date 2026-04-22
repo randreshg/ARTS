@@ -266,6 +266,13 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
     arts_set_dep_mode(pack->edt, pack->slot, pack->mode);
     break;
   }
+  case ARTS_REMOTE_CXL_BARRIER_MSG: {
+    /* Barrier packets are consumed by arts_cxl_socket_barrier() before any
+     * worker threads start.  If one somehow arrives during normal operation
+     * (e.g. a stale retransmit) we silently discard it. */
+    arts_remote_handle_cxl_barrier(packet);
+    break;
+  }
   default: {
     ARTS_INFO("Unknown Packet %d %d %d", packet->message_type, packet->size,
               packet->rank);
