@@ -1022,14 +1022,3 @@ void arts_remote_handle_time_sync_resp(void *pack) {
             arts_global_rank_id, ntp_t1, ntp_t2, ntp_t3, rtt,
             (double)rtt / 1000000.0, offset, (double)offset / 1000000.0);
 }
-
-// Safety-net handler for ARTS_REMOTE_CXL_BARRIER_MSG arriving during normal
-// operation (after threads have started).  The barrier is consumed by
-// arts_cxl_socket_barrier() before any worker threads exist, so this path
-// should never be reached in practice.  We log and discard.
-void arts_remote_handle_cxl_barrier(void *pack) {
-  (void)pack;
-  ARTS_INFO("arts_remote_handle_cxl_barrier: unexpected barrier packet "
-            "received during normal operation on rank %u — discarding",
-            arts_global_rank_id);
-}

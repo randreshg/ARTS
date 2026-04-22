@@ -47,10 +47,6 @@ extern "C" {
 
 void arts_thread_init(struct arts_config_s *config);
 void arts_thread_main_join(void);
-// Initialises the CXL shared-memory deque after sockets are connected.
-// Must be called from main.c after arts_remote_setup_incoming() and before
-// arts_thread_init().  No-op when ARTS_USE_CXL is not defined.
-void arts_runtime_cxl_init(struct arts_config_s *config);
 
 extern unsigned int arts_global_rank_id;
 extern unsigned int arts_global_rank_count;

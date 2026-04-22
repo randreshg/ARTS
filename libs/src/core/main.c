@@ -80,13 +80,6 @@ int arts_rt(int argc, char **argv) {
     }
   }
 
-  /* Initialise the CXL shared-memory deque now that all TCP sockets are
-   * connected.  For ARTS_CXL_NATIVE builds this uses a socket barrier to
-   * sequence rank 0's arts_cxl_deque_create_with_arenas() before all other
-   * ranks' arts_cxl_deque_get() calls, breaking the previous deadlock.
-   * Must be called before arts_thread_init() starts any worker threads. */
-  arts_runtime_cxl_init(&config);
-
   arts_thread_init(&config);
   arts_thread_zero_node_start(argc, argv);
 

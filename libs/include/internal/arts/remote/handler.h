@@ -150,10 +150,6 @@ void arts_remote_time_sync_request(void); // Worker sends request to master
 void arts_remote_handle_time_sync_req(void *pack);  // Master handles request
 void arts_remote_handle_time_sync_resp(void *pack); // Worker handles response
 
-// CXL barrier dispatcher handler (no-op: barrier is consumed before threads
-// start; this case exists only as a safety net in the dispatcher).
-void arts_remote_handle_cxl_barrier(void *pack);
-
 #ifdef __cplusplus
 }
 #endif
