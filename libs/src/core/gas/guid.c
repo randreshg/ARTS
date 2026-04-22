@@ -50,7 +50,7 @@ uint64_t global_guid_on = 0;
 uint64_t min_global_guid_thread = 0;
 uint64_t max_global_guid_thread = 0;
 
-void set_global_guid_on() { global_guid_on = ((uint64_t)1) << 40; }
+void set_global_guid_on() { global_guid_on = ((uint64_t)1) << ARTS_GUID_KEY_BITS; }
 
 uint64_t *arts_guid_generator_get_key(unsigned int route, unsigned int type) {
   return &arts_node_info.keys[arts_thread_info.thread_id]
