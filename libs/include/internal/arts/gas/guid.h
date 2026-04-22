@@ -88,14 +88,14 @@ extern "C" {
 
 /* ── Extraction macros ─────────────────────────────────────────────────── */
 
-/** Extract the 40-bit key from a GUID (bits 39–0). */
+/** Extract the key from a GUID. */
 #define ARTS_GUID_GET_KEY(g) ((uint64_t)(g) & ARTS_GUID_KEY_MASK)
 
-/** Extract the 16-bit rank from a GUID (bits 55–40). */
+/** Extract the rank from a GUID. */
 #define ARTS_GUID_GET_RANK(g)                                                  \
   (((uint64_t)(g) >> ARTS_GUID_RANK_SHIFT) & ARTS_GUID_RANK_MASK)
 
-/** Extract the 8-bit type tag from a GUID (bits 63–56). */
+/** Extract the type tag from a GUID. */
 #define ARTS_GUID_GET_TYPE(g)                                                  \
   (((uint64_t)(g) >> ARTS_GUID_TYPE_SHIFT) & ARTS_GUID_TYPE_MASK)
 
