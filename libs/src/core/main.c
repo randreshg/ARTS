@@ -48,6 +48,7 @@
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/launcher.h"
 #include "arts/transport/socket.h"
+#include "arts/transport/stdio_forward.h"
 
 int arts_rt(int argc, char **argv) {
   TIME_INIT_START();
@@ -91,6 +92,7 @@ int arts_rt(int argc, char **argv) {
   }
   if (arts_global_rank_id == config.master_rank && config.master_boot) {
     config.launcher_data->cleanup_processes(config.launcher_data);
+    arts_stdio_forwarder_shutdown_all();
   }
   arts_config_destroy(&config);
   return 0;

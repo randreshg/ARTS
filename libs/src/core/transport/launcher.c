@@ -51,6 +51,7 @@
 
 #include "arts/system/config.h"
 #include "arts/system/print.h"
+#include "arts/transport/stdio_forward.h"
 
 static int arts_shell_quote(const char *input, char *output,
                             size_t output_size) {
@@ -273,17 +274,38 @@ void arts_remote_launcher_ssh_startup_processes(
 
     ARTS_DEBUG("SSH wrapped[%d]: %s", i, wrapped_command);
 
+    int forward_out_wfd = -1;
+    int forward_err_wfd = -1;
+    if (!kill_mode) {
+      forward_out_wfd = arts_stdio_forwarder_make_pipe(i, "stdout", stdout);
+      forward_err_wfd = arts_stdio_forwarder_make_pipe(i, "stderr", stderr);
+    }
+
     child = fork();
 
     if (child == 0) {
-      // Redirect stdout/stderr to /dev/null so the SSH child does not
-      // keep CTest's capture pipe open after the master process exits.
-      int devnull = open("/dev/null", O_RDWR);
-      if (devnull >= 0) {
-        dup2(devnull, STDOUT_FILENO);
-        dup2(devnull, STDERR_FILENO);
-        if (devnull > STDERR_FILENO) {
-          close(devnull);
+      if (forward_out_wfd >= 0 && forward_err_wfd >= 0) {
+        /* Pipe to master: SSH inherits these fds as its stdout/stderr,
+         * which transparently forwards the remote ARTS process's output
+         * back to our reader thread. */
+        dup2(forward_out_wfd, STDOUT_FILENO);
+        dup2(forward_err_wfd, STDERR_FILENO);
+        if (forward_out_wfd > STDERR_FILENO) {
+          close(forward_out_wfd);
+        }
+        if (forward_err_wfd > STDERR_FILENO) {
+          close(forward_err_wfd);
+        }
+      } else {
+        // Redirect stdout/stderr to /dev/null so the SSH child does not
+        // keep CTest's capture pipe open after the master process exits.
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+          dup2(devnull, STDOUT_FILENO);
+          dup2(devnull, STDERR_FILENO);
+          if (devnull > STDERR_FILENO) {
+            close(devnull);
+          }
         }
       }
 
@@ -297,8 +319,17 @@ void arts_remote_launcher_ssh_startup_processes(
 
       // If execlp fails
       _exit(127);
-    } else if (child > 0 && !kill_mode) {
-      launcher->child_pids[launcher->child_count++] = child;
+    } else if (child > 0) {
+      /* Parent: close write-ends so EOF propagates when SSH child exits. */
+      if (forward_out_wfd >= 0) {
+        close(forward_out_wfd);
+      }
+      if (forward_err_wfd >= 0) {
+        close(forward_err_wfd);
+      }
+      if (!kill_mode) {
+        launcher->child_pids[launcher->child_count++] = child;
+      }
     }
   }
 
@@ -376,6 +407,9 @@ void arts_remote_launcher_local_startup_processes(
   launcher->child_count = 0;
 
   for (unsigned int i = 1; i < config->table_length; i++) {
+    int forward_out_wfd = arts_stdio_forwarder_make_pipe(i, "stdout", stdout);
+    int forward_err_wfd = arts_stdio_forwarder_make_pipe(i, "stderr", stderr);
+
     pid_t child = fork();
 
     if (child == 0) {
@@ -384,27 +418,41 @@ void arts_remote_launcher_local_startup_processes(
       (void)snprintf(rank_str, sizeof(rank_str), "%u", i);
       setenv("ARTS_RANK", rank_str, 1);
 
-      /* Use per-rank log files when ARTS_LOG_LEVEL >= 2, else /dev/null. */
-      const char *log_env = getenv("ARTS_LOG_LEVEL");
-      long log_level = log_env ? strtol(log_env, NULL, 10) : 0;
-      if (log_level >= 2) {
-        char log_path[128];
-        (void)snprintf(log_path, sizeof(log_path), "/tmp/arts_rank_%u.log", i);
-        int logfd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (logfd >= 0) {
-          dup2(logfd, STDOUT_FILENO);
-          dup2(logfd, STDERR_FILENO);
-          if (logfd > STDERR_FILENO) {
-            close(logfd);
-          }
+      if (forward_out_wfd >= 0 && forward_err_wfd >= 0) {
+        /* Pipe forwarder path: child's stdout/stderr go into the pipes
+         * that the master's reader threads drain. */
+        dup2(forward_out_wfd, STDOUT_FILENO);
+        dup2(forward_err_wfd, STDERR_FILENO);
+        if (forward_out_wfd > STDERR_FILENO) {
+          close(forward_out_wfd);
+        }
+        if (forward_err_wfd > STDERR_FILENO) {
+          close(forward_err_wfd);
         }
       } else {
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-          dup2(devnull, STDOUT_FILENO);
-          dup2(devnull, STDERR_FILENO);
-          if (devnull > STDERR_FILENO) {
-            close(devnull);
+        /* Legacy redirect: per-rank log files or /dev/null. */
+        const char *log_env = getenv("ARTS_LOG_LEVEL");
+        long log_level = log_env ? strtol(log_env, NULL, 10) : 0;
+        if (log_level >= 2) {
+          char log_path[128];
+          (void)snprintf(log_path, sizeof(log_path), "/tmp/arts_rank_%u.log",
+                         i);
+          int logfd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+          if (logfd >= 0) {
+            dup2(logfd, STDOUT_FILENO);
+            dup2(logfd, STDERR_FILENO);
+            if (logfd > STDERR_FILENO) {
+              close(logfd);
+            }
+          }
+        } else {
+          int devnull = open("/dev/null", O_RDWR);
+          if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) {
+              close(devnull);
+            }
           }
         }
       }
@@ -412,6 +460,15 @@ void arts_remote_launcher_local_startup_processes(
       execv(self_exe, new_argv);
       _exit(127);
     } else if (child > 0) {
+      /* Parent: close our copies of the pipe write-ends so only the
+       * child holds them.  On child exit the kernel closes its copies
+       * and the reader thread sees EOF. */
+      if (forward_out_wfd >= 0) {
+        close(forward_out_wfd);
+      }
+      if (forward_err_wfd >= 0) {
+        close(forward_err_wfd);
+      }
       launcher->child_pids[launcher->child_count++] = child;
       ARTS_INFO("Local launcher: spawned rank %u (pid %d)", i, (int)child);
     } else {

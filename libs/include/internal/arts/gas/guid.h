@@ -68,8 +68,8 @@ extern "C" {
 
 /* ── GUID field dimensions ─────────────────────────────────────────────── */
 
-#define ARTS_GUID_KEY_BITS 40
-#define ARTS_GUID_RANK_BITS 16
+#define ARTS_GUID_KEY_BITS 48
+#define ARTS_GUID_RANK_BITS 8
 #define ARTS_GUID_TYPE_BITS 8
 
 /* ── Field positions (bit offset from LSB) ─────────────────────────────── */
@@ -170,7 +170,7 @@ arts_guid_t arts_guid_reserve_range_hash(arts_type_t type, unsigned int size,
 #define ARTS_CXL_BASE_ADDR 0x200000000000ULL
 
 /** Sentinel rank value that identifies CXL-encoded GUIDs. */
-#define ARTS_CXL_RANK 0xFFFF
+#define ARTS_CXL_RANK 0xFF
 
 /** Extract a CXL pointer from a CXL-encoded GUID. */
 static inline void *arts_cxl_get_ptr(arts_guid_t guid) {
