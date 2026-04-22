@@ -66,18 +66,6 @@ int arts_rt(int argc, char **argv) {
   if (config.table_length > 1) {
     arts_server_setup(&config);
   }
-
-  // Bind listening ports BEFORE spawning remote processes so that by the time
-  // any remote rank attempts to connect, our accept backlog is already open.
-  // This eliminates the startup-sequencing race that causes ECONNREFUSED when
-  // CXL FAM device initialisation delays the bind on the master node.
-  if (arts_global_rank_count > 1) {
-    arts_remote_setup_outgoing();
-    if (!arts_remote_setup_incoming_bind()) {
-      return -1;
-    }
-  }
-
   arts_global_master_rank_id = config.master_rank;
   if (arts_global_rank_id == config.master_rank && config.master_boot) {
     config.launcher_data->argc = (unsigned int)argc;
@@ -85,11 +73,9 @@ int arts_rt(int argc, char **argv) {
     config.launcher_data->launch_processes(config.launcher_data);
   }
 
-  // Accept connections from (and connect to) all peer ranks.  Because we
-  // already called bind+listen above, remote ranks that were spawned by
-  // launch_processes can connect immediately without hitting ECONNREFUSED.
   if (arts_global_rank_count > 1) {
-    if (!arts_remote_setup_incoming_accept()) {
+    arts_remote_setup_outgoing();
+    if (!arts_remote_setup_incoming()) {
       return -1;
     }
   }

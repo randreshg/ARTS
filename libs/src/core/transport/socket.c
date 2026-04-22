@@ -410,10 +410,16 @@ uint64_t arts_remote_send_payload_request(int rank, unsigned int queue,
   return length + length2;
 }
 
-bool arts_remote_setup_incoming_bind() {
+bool arts_remote_setup_incoming() {
+  // ARTS_INFO("%d", FD_SETSIZE);
+  int i;
+  int j;
+  int k;
+  int pos;
   unsigned int *my_ports =
       arts_global_message_table->table[arts_global_message_table->my_rank]
           .ports;
+  socklen_t s_length = sizeof(struct sockaddr);
   int count = (int)(arts_global_message_table->table_length - 1);
 
   remote_socket_recieve_list =
@@ -423,12 +429,14 @@ bool arts_remote_setup_incoming_bind() {
   poll_incoming =
       (struct pollfd *)arts_malloc(sizeof(struct pollfd) * (count + 1) * ports);
 
+  struct sockaddr_in test;
+
   struct sockaddr_in *local_server_addr =
       (struct sockaddr_in *)arts_calloc(ports, sizeof(struct sockaddr_in));
   local_socket_recieve = (int *)arts_calloc(ports, sizeof(int));
 
   int i_set_option;
-  for (int i = 0; i < (int)arts_global_message_table->port_count; i++) {
+  for (i = 0; i < (int)arts_global_message_table->port_count; i++) {
     local_socket_recieve[i] =
         arts_get_socket_listening(&local_server_addr[i], my_ports[i]);
 
@@ -443,7 +451,6 @@ bool arts_remote_setup_incoming_bind() {
     if (res < 0) {
       ARTS_INFO("Bind Failed");
       ARTS_INFO("error %s", strerror(errno));
-      arts_free(local_server_addr);
       return false;
     }
 
@@ -452,29 +459,18 @@ bool arts_remote_setup_incoming_bind() {
     if (res < 0) {
       ARTS_INFO("Listening Failed");
       ARTS_INFO("error %s", strerror(errno));
-      arts_free(local_server_addr);
       return false;
     }
   }
 
   arts_free(local_server_addr);
-  return true;
-}
-
-bool arts_remote_setup_incoming_accept() {
-  int i;
-  int j;
-  socklen_t s_length;
-  int count = (int)(arts_global_message_table->table_length - 1);
-
-  struct sockaddr_in test;
 
   FD_ZERO(&read_set);
-  for (i = 0; i < (int)arts_global_message_table->table_length; i++) {
+  for (i = 0; i < arts_global_message_table->table_length; i++) {
     if (arts_global_message_table->my_rank ==
         arts_global_message_table->table[i].rank) {
       for (j = 0; j < count; j++) {
-        for (int z = 0; z < (int)ports; z++) {
+        for (int z = 0; z < ports; z++) {
           s_length = sizeof(struct sockaddr_in);
 
           // Poll with timeout before blocking accept — prevents indefinite
@@ -482,7 +478,7 @@ bool arts_remote_setup_incoming_accept() {
           // a previous test's remote still holds the port.
           struct pollfd accept_pfd = {.fd = local_socket_recieve[z],
                                       .events = POLLIN};
-          int poll_res = poll(&accept_pfd, 1, 60000); // 60 s timeout
+          int poll_res = poll(&accept_pfd, 1, 60000); // Increase timeout for Crete
           if (poll_res <= 0) {
             ARTS_INFO("Accept timed out waiting for remote connection "
                       "(port index %d, poll=%d, errno=%d: %s)",
@@ -490,20 +486,20 @@ bool arts_remote_setup_incoming_accept() {
             return false;
           }
 
-          remote_socket_recieve_list[z + (j * (int)ports)] = RACCEPT(
+          remote_socket_recieve_list[z + (j * ports)] = RACCEPT(
               local_socket_recieve[z], (struct sockaddr *)&test, &s_length);
-          if (remote_socket_recieve_list[z + (j * (int)ports)] < 0) {
+          if (remote_socket_recieve_list[z + (j * ports)] < 0) {
             ARTS_INFO("Accept failed: %s", strerror(errno));
             return false;
           }
 
-          poll_incoming[z + (j * (int)ports)].fd =
-              remote_socket_recieve_list[z + (j * (int)ports)];
-          poll_incoming[z + (j * (int)ports)].events = POLLIN;
+          poll_incoming[z + (j * ports)].fd =
+              remote_socket_recieve_list[z + (j * ports)];
+          poll_incoming[z + (j * ports)].events = POLLIN;
         }
       }
     } else {
-      for (int z = 0; z < (int)ports; z++) {
+      for (int z = 0; z < ports; z++) {
         if (!arts_remote_connect(i, z)) {
           ARTS_INFO("Could not create initial connection");
           return false;
@@ -513,13 +509,6 @@ bool arts_remote_setup_incoming_accept() {
   }
 
   return true;
-}
-
-bool arts_remote_setup_incoming() {
-  if (!arts_remote_setup_incoming_bind()) {
-    return false;
-  }
-  return arts_remote_setup_incoming_accept();
 }
 
 void arts_remote_setup_outgoing() {
