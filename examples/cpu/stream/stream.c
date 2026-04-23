@@ -133,38 +133,47 @@ static int cmp_double(const void *a, const void *b)
  *
  * sorted_times[] must already be sorted ascending (NTIMES-1 entries,
  * first iteration skipped).  bytes_per_iter is the number of bytes
- * transferred per kernel invocation (used for MB/s calculation). */
+ * transferred per kernel invocation (used for MB/s calculation).
+ *
+ * All reported statistics are in MB/s (higher = better).  Because
+ * bandwidth is inversely proportional to time, the sort order is
+ * reversed: sorted_times[0] is the fastest (best BW) run. */
 static void print_bw_row(const char *kernel_name,
                          double *sorted_times, int n,
                          double bytes_per_iter)
 {
+    /* Convert every sample from seconds to MB/s.
+     * sorted_times is sorted ascending in time, so bandwidth is
+     * descending — reverse the index mapping so bw[] is also ascending
+     * (min BW first) for consistent percentile semantics. */
+    double *bw = malloc(n * sizeof(double));
+    for (int i = 0; i < n; i++)
+        bw[i] = 1.0E-06 * bytes_per_iter / sorted_times[n - 1 - i];
+
+    /* bw[] is now sorted ascending in bandwidth */
     double sum = 0.0;
     for (int i = 0; i < n; i++)
-        sum += sorted_times[i];
+        sum += bw[i];
 
-    double avg = sum / (double)n;
-    double min = sorted_times[0];
-    double max = sorted_times[n - 1];
-    double p50 = sorted_times[n / 2];
-    double p95 = sorted_times[(int)(n * 0.95)];
-    double p99 = sorted_times[(int)(n * 0.99)];
+    double bw_avg  = sum / (double)n;
+    double bw_min  = bw[0];                          /* lowest BW  */
+    double bw_max  = bw[n - 1];                      /* best/peak BW */
+    double bw_p50  = bw[n / 2];
+    double bw_p95  = bw[(int)(n * 0.95)];
+    double bw_p99  = bw[(int)(n * 0.99)];
 
     double sq_sum = 0.0;
     for (int i = 0; i < n; i++) {
-        double diff = sorted_times[i] - avg;
+        double diff = bw[i] - bw_avg;
         sq_sum += diff * diff;
     }
     double variance = sq_sum / (double)n;
     double stddev   = sqrt(variance);
 
-    /* Best (peak) bandwidth uses the minimum time */
-    double bw_best = 1.0E-06 * bytes_per_iter / min;
-    double bw_avg  = 1.0E-06 * bytes_per_iter / avg;
-
     arts_printf("%-11s %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %14.6f  %12.6f\n",
                 kernel_name,
-                bw_best, bw_avg,
-                min, avg, p50, p95, p99, max,
+                bw_max, bw_avg,
+                bw_min, bw_avg, bw_p50, bw_p95, bw_p99, bw_max,
                 variance, stddev);
 
     /* ---- JSON output ---- */
@@ -177,25 +186,28 @@ static void print_bw_row(const char *kernel_name,
                 "  {\n"
                 "    \"kernel\": \"%s\",\n"
                 "    \"n_reps\": %d,\n"
+                "    \"n_reps_used\": %d,\n"
                 "    \"bytes_per_iter\": %.0f,\n"
                 "    \"best_bw_MBs\": %.4f,\n"
                 "    \"avg_bw_MBs\": %.4f,\n"
-                "    \"min_time_s\": %.6f,\n"
-                "    \"avg_time_s\": %.6f,\n"
-                "    \"p50_time_s\": %.6f,\n"
-                "    \"p95_time_s\": %.6f,\n"
-                "    \"p99_time_s\": %.6f,\n"
-                "    \"max_time_s\": %.6f,\n"
-                "    \"variance_s2\": %.9f,\n"
-                "    \"stddev_s\": %.9f\n"
+                "    \"min_bw_MBs\": %.4f,\n"
+                "    \"p50_bw_MBs\": %.4f,\n"
+                "    \"p95_bw_MBs\": %.4f,\n"
+                "    \"p99_bw_MBs\": %.4f,\n"
+                "    \"max_bw_MBs\": %.4f,\n"
+                "    \"variance_MBs2\": %.6f,\n"
+                "    \"stddev_MBs\": %.6f\n"
                 "  }",
                 kernel_name,
+                NTIMES,
                 n,
                 bytes_per_iter,
-                bw_best, bw_avg,
-                min, avg, p50, p95, p99, max,
+                bw_max, bw_avg,
+                bw_min, bw_p50, bw_p95, bw_p99, bw_max,
                 variance, stddev);
     }
+
+    free(bw);
 }
 
 int quantum;
@@ -420,8 +432,8 @@ void done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("%-11s %11s  %11s  %11s  %11s  %11s  %11s  %11s  %11s  %14s  %12s\n",
               "Function",
               "Best(MB/s)", "Avg(MB/s)",
-              "Min(s)", "Avg(s)", "P50(s)", "P95(s)", "P99(s)", "Max(s)",
-              "Var(s^2)", "StdDev(s)");
+              "Min(MB/s)", "Avg(MB/s)", "P50(MB/s)", "P95(MB/s)", "P99(MB/s)", "Max(MB/s)",
+              "Var(MB/s)^2", "StdDev(MB/s)");
   arts_printf(HLINE);
 
   /* Open JSON array if output was requested */
