@@ -277,8 +277,16 @@ void arts_remote_launcher_ssh_startup_processes(
     int forward_out_wfd = -1;
     int forward_err_wfd = -1;
     if (!kill_mode) {
-      forward_out_wfd = arts_stdio_forwarder_make_pipe(i, "stdout", stdout);
-      forward_err_wfd = arts_stdio_forwarder_make_pipe(i, "stderr", stderr);
+      /* Phase 1: allocate the pipe without spawning a thread.  Threads
+       * are started after ALL forks complete (see below) so that fork()
+       * is never called from a multi-threaded context.  This is required
+       * for CXL builds where the Rapid API library holds internal mutexes
+       * that, if locked at fork time, leave the child permanently
+       * deadlocked before it can call bind()/listen(). */
+      forward_out_wfd =
+          arts_stdio_forwarder_alloc_pipe(i, "stdout", stdout);
+      forward_err_wfd =
+          arts_stdio_forwarder_alloc_pipe(i, "stderr", stderr);
     }
 
     child = fork();
@@ -336,6 +344,10 @@ void arts_remote_launcher_ssh_startup_processes(
   if (kill_mode) {
     exit(0);
   }
+
+  /* Phase 2: all SSH children have been forked; now start the reader
+   * threads.  The master is single-threaded at this point. */
+  arts_stdio_forwarder_start_threads();
 }
 
 void arts_remote_launcher_ssh_cleanup_processes(
@@ -407,8 +419,17 @@ void arts_remote_launcher_local_startup_processes(
   launcher->child_count = 0;
 
   for (unsigned int i = 1; i < config->table_length; i++) {
-    int forward_out_wfd = arts_stdio_forwarder_make_pipe(i, "stdout", stdout);
-    int forward_err_wfd = arts_stdio_forwarder_make_pipe(i, "stderr", stderr);
+    /* Phase 1: allocate the pipe (no pthread_create yet).  Threads are
+     * started after ALL forks complete so that fork() is never called
+     * from a multi-threaded context.  This is required for CXL builds
+     * where the Rapid API library holds internal mutexes: a thread
+     * holding one of those locks at fork time would leave the child with
+     * a permanently locked mutex, preventing it from ever calling
+     * bind()/listen(). */
+    int forward_out_wfd =
+        arts_stdio_forwarder_alloc_pipe(i, "stdout", stdout);
+    int forward_err_wfd =
+        arts_stdio_forwarder_alloc_pipe(i, "stderr", stderr);
 
     pid_t child = fork();
 
@@ -478,4 +499,9 @@ void arts_remote_launcher_local_startup_processes(
   }
 
   arts_free(new_argv);
+
+  /* Phase 2: now that all children have been forked, start the reader
+   * threads.  The master is single-threaded at this point (no forwarder
+   * threads exist yet), so the CXL library's internal state is clean. */
+  arts_stdio_forwarder_start_threads();
 }
