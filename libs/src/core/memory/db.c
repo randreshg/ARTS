@@ -684,7 +684,8 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
     if (depv[i].guid != NULL_GUID && depv[i].ptr) {
       struct arts_db_s *db_cxl = ((struct arts_db_s *)depv[i].ptr) - 1;
       if (db_cxl->db_type == ARTS_DB_CXL) {
-        arts_cxl_consumer_flush(db_cxl->guid);
+        // arts_cxl_consumer_flush(db_cxl->guid);
+        arts_cxl_consumer_flush(depv[i].guid);
       }
     }
 #endif
