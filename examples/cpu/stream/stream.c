@@ -81,9 +81,13 @@
 /*  5. Absolutely no warranty is expressed or implied.                   */
 /*-----------------------------------------------------------------------*/
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <getopt.h>
+#include <errno.h>
 
 #include "arts.h"
 #include "arts/gas/guid.h"
@@ -93,15 +97,118 @@
 
 // #define SAFE 1
 
-static double avg_time[4] = {0};
-static double max_time[4] = {0};
-static double min_time[4] = {FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX};
-
 static const char *label[4] = {
     "Copy:      ", "Scale:     ", "Add:       ", "Triad:     "};
 
 static double bytes[4] = {2 * sizeof(double) * N, 2 * sizeof(double) * N,
                           3 * sizeof(double) * N, 3 * sizeof(double) * N};
+
+/* =========================================================================
+ * JSON output state
+ * ========================================================================= */
+
+#define BW_JSON_FILENAME "bandwidth.json"
+
+/* Directory supplied via -o; NULL means no JSON output */
+static char *g_json_dir = NULL;
+
+/* Open file handle for the JSON output; NULL when not writing */
+static FILE *g_json_fp  = NULL;
+
+/* Tracks whether we have written at least one JSON array element */
+static int   g_json_first_entry = 1;
+
+/* =========================================================================
+ * Statistics helpers
+ * ========================================================================= */
+
+static int cmp_double(const void *a, const void *b)
+{
+    double x = *(const double *)a;
+    double y = *(const double *)b;
+    return (x > y) - (x < y);
+}
+
+/* Print one bandwidth results row and optionally append a JSON object.
+ *
+ * sorted_times[] must already be sorted ascending (NTIMES-1 entries,
+ * first iteration skipped).  bytes_per_iter is the number of bytes
+ * transferred per kernel invocation (used for MB/s calculation).
+ *
+ * All reported statistics are in MB/s (higher = better).  Because
+ * bandwidth is inversely proportional to time, the sort order is
+ * reversed: sorted_times[0] is the fastest (best BW) run. */
+static void print_bw_row(const char *kernel_name,
+                         double *sorted_times, int n,
+                         double bytes_per_iter)
+{
+    /* Convert every sample from seconds to MB/s.
+     * sorted_times is sorted ascending in time, so bandwidth is
+     * descending — reverse the index mapping so bw[] is also ascending
+     * (min BW first) for consistent percentile semantics. */
+    double *bw = malloc(n * sizeof(double));
+    for (int i = 0; i < n; i++)
+        bw[i] = 1.0E-06 * bytes_per_iter / sorted_times[n - 1 - i];
+
+    /* bw[] is now sorted ascending in bandwidth */
+    double sum = 0.0;
+    for (int i = 0; i < n; i++)
+        sum += bw[i];
+
+    double bw_avg  = sum / (double)n;
+    double bw_min  = bw[0];                          /* lowest BW  */
+    double bw_max  = bw[n - 1];                      /* best/peak BW */
+    double bw_p50  = bw[n / 2];
+    double bw_p95  = bw[(int)(n * 0.95)];
+    double bw_p99  = bw[(int)(n * 0.99)];
+
+    double sq_sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        double diff = bw[i] - bw_avg;
+        sq_sum += diff * diff;
+    }
+    double variance = sq_sum / (double)n;
+    double stddev   = sqrt(variance);
+
+    arts_printf("%-11s %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %11.4f  %14.6f  %12.6f\n",
+                kernel_name,
+                bw_max, bw_avg,
+                bw_min, bw_avg, bw_p50, bw_p95, bw_p99, bw_max,
+                variance, stddev);
+
+    /* ---- JSON output ---- */
+    if (g_json_fp) {
+        if (!g_json_first_entry)
+            fprintf(g_json_fp, ",\n");
+        g_json_first_entry = 0;
+
+        fprintf(g_json_fp,
+                "  {\n"
+                "    \"kernel\": \"%s\",\n"
+                "    \"n_reps\": %d,\n"
+                "    \"n_reps_used\": %d,\n"
+                "    \"bytes_per_iter\": %.0f,\n"
+                "    \"best_bw_MBs\": %.4f,\n"
+                "    \"avg_bw_MBs\": %.4f,\n"
+                "    \"min_bw_MBs\": %.4f,\n"
+                "    \"p50_bw_MBs\": %.4f,\n"
+                "    \"p95_bw_MBs\": %.4f,\n"
+                "    \"p99_bw_MBs\": %.4f,\n"
+                "    \"max_bw_MBs\": %.4f,\n"
+                "    \"variance_MBs2\": %.6f,\n"
+                "    \"stddev_MBs\": %.6f\n"
+                "  }",
+                kernel_name,
+                NTIMES,
+                n,
+                bytes_per_iter,
+                bw_max, bw_avg,
+                bw_min, bw_p50, bw_p95, bw_p99, bw_max,
+                variance, stddev);
+    }
+
+    free(bw);
+}
 
 int quantum;
 
@@ -311,24 +418,40 @@ void triad_kernel(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 void done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                             arts_edt_dep_t depv[]) {
   int k, j;
-  /*	--- SUMMARY --- */
-  for (k = 1; k < NTIMES; k++) // note -- skip first iteration
-  {
-    for (j = 0; j < 4; j++) {
-      avg_time[j] = avg_time[j] + times[j][k];
-      min_time[j] = MIN(min_time[j], times[j][k]);
-      max_time[j] = MAX(max_time[j], times[j][k]);
-    }
-  }
+  int n = NTIMES - 1; /* skip first (warm-up) iteration */
 
-  arts_printf("Function      Rate (MB/s)   Avg time     Min time     Max time\n");
+  /* Collect per-kernel timing samples (skip iteration 0) into sorted arrays */
+  double sorted[4][NTIMES]; /* at most NTIMES-1 entries used */
   for (j = 0; j < 4; j++) {
-    avg_time[j] = avg_time[j] / (double)(NTIMES - 1);
-
-    arts_printf("%s%11.4f  %11.4f  %11.4f  %11.4f\n", label[j],
-           1.0E-06 * bytes[j] / min_time[j], avg_time[j], min_time[j], max_time[j]);
+    for (k = 1; k < NTIMES; k++)
+      sorted[j][k - 1] = times[j][k];
+    qsort(sorted[j], n, sizeof(double), cmp_double);
   }
+
+  /* Print header */
+  arts_printf("%-11s %11s  %11s  %11s  %11s  %11s  %11s  %11s  %11s  %14s  %12s\n",
+              "Function",
+              "Best(MB/s)", "Avg(MB/s)",
+              "Min(MB/s)", "Avg(MB/s)", "P50(MB/s)", "P95(MB/s)", "P99(MB/s)", "Max(MB/s)",
+              "Var(MB/s)^2", "StdDev(MB/s)");
   arts_printf(HLINE);
+
+  /* Open JSON array if output was requested */
+  if (g_json_fp)
+    fprintf(g_json_fp, "[\n");
+
+  for (j = 0; j < 4; j++)
+    print_bw_row(label[j], sorted[j], n, bytes[j]);
+
+  arts_printf(HLINE);
+
+  /* Close JSON array */
+  if (g_json_fp) {
+    fprintf(g_json_fp, "\n]\n");
+    fclose(g_json_fp);
+    g_json_fp = NULL;
+    arts_printf("\nBandwidth results written to JSON.\n");
+  }
 
   #if !ARTS_USE_CXL
   double** a_tile_all = malloc(sizeof(double*)*num_tiles);
@@ -423,9 +546,22 @@ void stream_driver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 void init_per_node(unsigned int node_id, int argc, char **argv) {
-  // if (!node_id) {
-  if (argc > 1)
-    tile_size = (unsigned int)atoi(argv[1]);
+  /* Parse options: -o <output_dir> */
+  optind = 1;
+  int opt;
+  while ((opt = getopt(argc, argv, "o:")) != -1) {
+    switch (opt) {
+    case 'o':
+      g_json_dir = optarg;
+      break;
+    default:
+      break;
+    }
+  }
+  /* First non-option argument is the optional tile_size */
+  if (optind < argc)
+    tile_size = (unsigned int)atoi(argv[optind]);
+
   num_tiles = N / tile_size;
   if (N % tile_size)
     num_tiles++;
@@ -526,6 +662,29 @@ void init_per_node(unsigned int node_id, int argc, char **argv) {
 
 void init_per_worker(unsigned int node_id, unsigned int worker_id,
                               int argc, char **argv) {
+  /* Open JSON output file on worker 0 of node 0 if -o was supplied */
+  if (!node_id && !worker_id && g_json_dir) {
+    size_t dir_len  = strlen(g_json_dir);
+    size_t path_len = dir_len + 1 + strlen(BW_JSON_FILENAME) + 1;
+    char  *json_path = malloc(path_len);
+    if (json_path) {
+      if (dir_len > 0 && g_json_dir[dir_len - 1] == '/')
+        snprintf(json_path, path_len, "%s%s", g_json_dir, BW_JSON_FILENAME);
+      else
+        snprintf(json_path, path_len, "%s/%s", g_json_dir, BW_JSON_FILENAME);
+
+      g_json_fp = fopen(json_path, "w");
+      if (!g_json_fp)
+        arts_printf("WARNING: could not open JSON output file '%s': %s\n",
+                    json_path, strerror(errno));
+      else
+        arts_printf("JSON output: %s\n", json_path);
+      free(json_path);
+    } else {
+      arts_printf("WARNING: malloc failed for JSON path — skipping JSON output.\n");
+    }
+  }
+
   #if ARTS_USE_CXL
   wbinv();
   if (!node_id) {
