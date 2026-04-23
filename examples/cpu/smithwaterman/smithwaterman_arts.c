@@ -25,11 +25,10 @@
  *   pressure.
  *
  * Synchronization:
- *   Per tile, 3 ARTS_EVENT_ONCE events carry halo DBs.  Tile (i,j)'s
- *   consumer EDTs (tile (i+1,j), (i,j+1), (i+1,j+1)) wire in advance via
- *   arts_add_dependence on those events.  Producer satisfies events via
- *   arts_event_satisfy_slot with DB payload.  Pattern A release-before-
- *   satisfy is used on every signaled halo for CXL retrofit.
+ *   fibDB pattern: arts_edt_create allocates depc slots; arts_signal_edt
+ *   pushes DB payloads directly to target EDT slots.  No events needed.
+ *   Pattern A release-before-signal is used on every halo DB for CXL
+ *   retrofit.
  *
  * Distribution:
  *   tile_owner(i,j) = (tile_linear_index(i,j) / CHUNK_SIZE) % num_nodes,
@@ -38,6 +37,23 @@
  * Shared data:
  *   One params DB holds tile/grid dims and both strings.  Every tile EDT
  *   has an RO dep on it at slot 3.  Read-only, never modified.
+ *
+ * paramv layout for sw_tile_edt (9 words):
+ *   [0] i
+ *   [1] j
+ *   [2] rc_edt_guid      — downstream tile (i, j+1) EDT GUID
+ *   [3] rc_slot          — slot in rc_edt that receives right_col halo
+ *   [4] brow_edt_guid    — downstream tile (i+1, j) EDT GUID
+ *   [5] brow_slot        — slot in brow_edt that receives bottom_row halo
+ *   [6] bcorner_edt_guid — downstream tile (i+1, j+1) EDT GUID
+ *   [7] bcorner_slot     — slot in bcorner_edt that receives corner halo
+ *   [8] done_edt_guid    — done EDT GUID (NULL_GUID for non-last tiles)
+ *
+ * depv layout for sw_tile_edt (4 slots):
+ *   [0] left halo  (right_col of (i, j-1))
+ *   [1] top  halo  (bottom_row of (i-1, j))
+ *   [2] NW   halo  (bottom_right of (i-1, j-1))
+ *   [3] params DB  (RO shared)
  */
 
 #include "arts.h"
@@ -96,13 +112,6 @@ typedef struct {
 } sw_topo_t;
 
 static sw_topo_t g_topo;
-
-static inline int n_events_per_type(void) {
-  return (g_topo.n_tiles_h + 1) * (g_topo.n_tiles_w + 1);
-}
-static inline int idx_ev(int i, int j) {
-  return i * (g_topo.n_tiles_w + 1) + j;
-}
 
 static inline unsigned tile_owner(int i, int j) {
   int linear = (i - 1) * g_topo.n_tiles_w + (j - 1);
@@ -168,11 +177,13 @@ void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 /*  sw_tile_edt                                                              */
 /*                                                                           */
 /*  paramv[0] = i, paramv[1] = j                                             */
-/*  paramv[2..4] = halo event GUIDs this EDT will satisfy when done:         */
-/*     [2] right_col event for (i,j+1)                                       */
-/*     [3] bottom_row event for (i+1,j)                                      */
-/*     [4] bottom_right event for (i+1,j+1)                                  */
-/*  paramv[5] = done_guid event (NULL_GUID for non-last tiles)               */
+/*  paramv[2] = rc_edt_guid      (NULL_GUID if no right neighbor)            */
+/*  paramv[3] = rc_slot          (slot in rc_edt for right_col halo)         */
+/*  paramv[4] = brow_edt_guid    (NULL_GUID if no bottom neighbor)           */
+/*  paramv[5] = brow_slot        (slot in brow_edt for bottom_row halo)      */
+/*  paramv[6] = bcorner_edt_guid (NULL_GUID if no bottom-right neighbor)     */
+/*  paramv[7] = bcorner_slot     (slot in bcorner_edt for corner halo)       */
+/*  paramv[8] = done_edt_guid    (NULL_GUID for non-last tiles)              */
 /*  depv[0] = left halo (right_col of (i, j-1)) RO                           */
 /*  depv[1] = top  halo (bottom_row of (i-1, j)) RO                          */
 /*  depv[2] = NW   halo (bottom_right of (i-1, j-1)) RO                      */
@@ -185,20 +196,23 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   int i = (int)paramv[0];
   int j = (int)paramv[1];
-  arts_guid_t rc_event = (arts_guid_t)paramv[2];
-  arts_guid_t br_row_event = (arts_guid_t)paramv[3];
-  arts_guid_t br_corner_event = (arts_guid_t)paramv[4];
-  arts_guid_t done_guid = (arts_guid_t)paramv[5];
+  arts_guid_t rc_edt_guid      = (arts_guid_t)paramv[2];
+  uint32_t    rc_slot          = (uint32_t)paramv[3];
+  arts_guid_t brow_edt_guid    = (arts_guid_t)paramv[4];
+  uint32_t    brow_slot        = (uint32_t)paramv[5];
+  arts_guid_t bcorner_edt_guid = (arts_guid_t)paramv[6];
+  uint32_t    bcorner_slot     = (uint32_t)paramv[7];
+  arts_guid_t done_guid        = (arts_guid_t)paramv[8];
 
   const int32_t *left_col = (const int32_t *)depv[0].ptr;
-  const int32_t *top_row = (const int32_t *)depv[1].ptr;
-  const int32_t *nw_br = (const int32_t *)depv[2].ptr;
-  const int64_t *params = (const int64_t *)depv[3].ptr;
+  const int32_t *top_row  = (const int32_t *)depv[1].ptr;
+  const int32_t *nw_br    = (const int32_t *)depv[2].ptr;
+  const int64_t *params   = (const int64_t *)depv[3].ptr;
 
-  int tile_w = params_tile_w(params);
-  int tile_h = params_tile_h(params);
-  int n_tiles_w = params_n_w(params);
-  int n_tiles_h = params_n_h(params);
+  int tile_w     = params_tile_w(params);
+  int tile_h     = params_tile_h(params);
+  int n_tiles_w  = params_n_w(params);
+  int n_tiles_h  = params_n_h(params);
   int string1_len = params_s1_len(params);
   int string2_len = params_s2_len(params);
   const int8_t *string_1 = params_s1(params);
@@ -220,9 +234,7 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Local DP scratchpad: (tile_h+1) x (tile_w+1) ints */
   size_t cells = (size_t)(tile_h + 1) * (size_t)(tile_w + 1);
   int32_t *M = (int32_t *)malloc(cells * sizeof(int32_t));
-  int H = tile_h + 1;
   int W = tile_w + 1;
-  (void)H;
 #define Mref(r, c) M[(size_t)(r) * (size_t)W + (size_t)(c)]
 
   /* Seed halo */
@@ -239,87 +251,87 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       int c2 = string_2[(i - 1) * tile_h + (ii - 1)];
       int diag = Mref(ii - 1, jj - 1) + alignment_score_matrix[c2][c1];
       int left = Mref(ii, jj - 1) + alignment_score_matrix[c1][GAP];
-      int top = Mref(ii - 1, jj) + alignment_score_matrix[GAP][c2];
+      int top  = Mref(ii - 1, jj) + alignment_score_matrix[GAP][c2];
       int bigger = (left > top) ? left : top;
       Mref(ii, jj) = (bigger > diag) ? bigger : diag;
     }
   }
 
-  /* Emit 3 halo DBs and satisfy events.
-   * Pattern A: arts_db_release before each satisfy. */
-  arts_guid_t rc_guid = NULL_GUID;
-  arts_guid_t br_row_guid = NULL_GUID;
-  arts_guid_t br_corner_guid = NULL_GUID;
   unsigned cur = arts_get_current_node();
 
-  /* Bottom-right corner */
-  if (br_corner_event != NULL_GUID) {
+  /* Bottom-right corner halo → downstream tile (i+1, j+1) slot bcorner_slot */
+  if (bcorner_edt_guid != NULL_GUID) {
     int32_t *br_corner_data;
 #if ARTS_USE_CXL
-    br_corner_guid = arts_db_create((void **)&br_corner_data, sizeof(int32_t),
-                                    ARTS_DB_CXL, NULL);
+    arts_guid_t br_corner_guid = arts_db_create((void **)&br_corner_data,
+                                                sizeof(int32_t), ARTS_DB_CXL, NULL);
 #else
-    br_corner_guid =
+    arts_guid_t br_corner_guid =
         arts_db_create((void **)&br_corner_data, sizeof(int32_t),
                        ARTS_DB_DEFAULT, &(arts_hint_t){.route = cur});
 #endif
     br_corner_data[0] = Mref(eff_h, eff_w);
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(br_corner_guid); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+    arts_cxl_producer_flush(br_corner_guid);
 #endif
-    arts_db_release(br_corner_guid); // Pattern A
-    arts_event_satisfy_slot(br_corner_event, br_corner_guid,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+    arts_db_release(br_corner_guid); /* Pattern A */
+    arts_signal_edt(bcorner_edt_guid, bcorner_slot, br_corner_guid, DB_MODE_RO);
   }
 
-  /* Right column */
-  if (rc_event != NULL_GUID) {
+  /* Right column halo → downstream tile (i, j+1) slot rc_slot */
+  if (rc_edt_guid != NULL_GUID) {
     int32_t *rc_data;
 #if ARTS_USE_CXL
-    rc_guid = arts_db_create((void **)&rc_data, sizeof(int32_t) * tile_h,
-                             ARTS_DB_CXL, NULL);
+    arts_guid_t rc_guid = arts_db_create((void **)&rc_data,
+                                         sizeof(int32_t) * tile_h, ARTS_DB_CXL, NULL);
 #else
-    rc_guid = arts_db_create((void **)&rc_data, sizeof(int32_t) * tile_h,
-                             ARTS_DB_DEFAULT, &(arts_hint_t){.route = cur});
+    arts_guid_t rc_guid =
+        arts_db_create((void **)&rc_data, sizeof(int32_t) * tile_h,
+                       ARTS_DB_DEFAULT, &(arts_hint_t){.route = cur});
 #endif
     for (int r = 0; r < eff_h; ++r)
       rc_data[r] = Mref(r + 1, eff_w);
     for (int r = eff_h; r < tile_h; ++r)
-      rc_data[r] = 0;         /* pad */
+      rc_data[r] = 0; /* pad */
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(rc_guid); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+    arts_cxl_producer_flush(rc_guid);
 #endif
-    arts_db_release(rc_guid); // Pattern A
-    arts_event_satisfy_slot(rc_event, rc_guid, ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+    arts_db_release(rc_guid); /* Pattern A */
+    arts_signal_edt(rc_edt_guid, rc_slot, rc_guid, DB_MODE_RO);
   }
 
-  /* Bottom row */
-  if (br_row_event != NULL_GUID) {
+  /* Bottom row halo → downstream tile (i+1, j) slot brow_slot */
+  if (brow_edt_guid != NULL_GUID) {
     int32_t *br_row_data;
 #if ARTS_USE_CXL
-    br_row_guid = arts_db_create((void **)&br_row_data,
-                                 sizeof(int32_t) * tile_w, ARTS_DB_CXL, NULL);
+    arts_guid_t br_row_guid = arts_db_create((void **)&br_row_data,
+                                             sizeof(int32_t) * tile_w, ARTS_DB_CXL, NULL);
 #else
-    br_row_guid =
+    arts_guid_t br_row_guid =
         arts_db_create((void **)&br_row_data, sizeof(int32_t) * tile_w,
                        ARTS_DB_DEFAULT, &(arts_hint_t){.route = cur});
 #endif
     for (int c = 0; c < eff_w; ++c)
       br_row_data[c] = Mref(eff_h, c + 1);
     for (int c = eff_w; c < tile_w; ++c)
-      br_row_data[c] = 0;         /* pad */
+      br_row_data[c] = 0; /* pad */
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(br_row_guid); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+    arts_cxl_producer_flush(br_row_guid);
 #endif
-    arts_db_release(br_row_guid); // Pattern A
-    arts_event_satisfy_slot(br_row_event, br_row_guid,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+    arts_db_release(br_row_guid); /* Pattern A */
+    arts_signal_edt(brow_edt_guid, brow_slot, br_row_guid, DB_MODE_RO);
   }
 
   int final_score = Mref(eff_h, eff_w);
   free(M);
 
-  /* If this is the last tile (bottom-right most), signal done_guid on node 0
+  /* If this is the last tile (bottom-right most), signal done_edt on node 0
    * which will print the result and shut down. */
   if (i == n_tiles_h && j == n_tiles_w && done_guid != NULL_GUID) {
     int32_t *score_data;
@@ -333,11 +345,12 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 #endif
     score_data[0] = final_score;
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(score_db_guid); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+    arts_cxl_producer_flush(score_db_guid);
 #endif
-    arts_db_release(score_db_guid); // Pattern A
-    arts_event_satisfy_slot(done_guid, score_db_guid,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+    arts_db_release(score_db_guid); /* Pattern A */
+    arts_signal_edt(done_guid, 0, score_db_guid, DB_MODE_RO);
   }
 #undef Mref
 }
@@ -417,10 +430,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   int n_tiles_w = (s1_len + tile_w - 1) / tile_w;
   int n_tiles_h = (s2_len + tile_h - 1) / tile_h;
 
-  g_topo.tile_w = tile_w;
-  g_topo.tile_h = tile_h;
-  g_topo.n_tiles_w = n_tiles_w;
-  g_topo.n_tiles_h = n_tiles_h;
+  g_topo.tile_w      = tile_w;
+  g_topo.tile_h      = tile_h;
+  g_topo.n_tiles_w   = n_tiles_w;
+  g_topo.n_tiles_h   = n_tiles_h;
   g_topo.string1_len = s1_len;
   g_topo.string2_len = s2_len;
   g_topo.verify_score = verify_score;
@@ -459,66 +472,81 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (score_buf)
     free(score_buf);
 #if ARTS_USE_CXL
-  arts_cxl_producer_flush(params_guid); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+  arts_cxl_producer_flush(params_guid);
 #endif
-  arts_db_release(params_guid); // WRITE — shared params ready
+#endif /* ARTS_USE_CXL */
+  arts_db_release(params_guid); /* WRITE — shared params ready */
 
-  /* --- Create halo events for every (i,j) including border row/col --- */
-  int nev = (n_tiles_h + 1) * (n_tiles_w + 1);
-  arts_guid_t *ev_rc = (arts_guid_t *)malloc(sizeof(arts_guid_t) * nev);
-  arts_guid_t *ev_brow = (arts_guid_t *)malloc(sizeof(arts_guid_t) * nev);
-  arts_guid_t *ev_bcorner = (arts_guid_t *)malloc(sizeof(arts_guid_t) * nev);
-  for (int i = 0; i <= n_tiles_h; ++i) {
-    for (int j = 0; j <= n_tiles_w; ++j) {
-      int idx = i * (n_tiles_w + 1) + j;
-      /* All events home-rooted at rank 0 for now. Cross-node consumer
-       * EDTs depend on them; ARTS handles the data forwarding. */
-      ev_rc[idx] = arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
-      ev_brow[idx] = arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
-      ev_bcorner[idx] = arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
-    }
-  }
+  /* --- Create done_edt on node 0 (1 dep slot: score DB) --- */
+  uint64_t dp[1] = {(uint64_t)verify_score};
+  arts_guid_t done_edt_guid =
+      arts_edt_create(done_edt, 1, dp, 1, &(arts_hint_t){.route = 0});
 
-  /* --- Create done_edt on node 0 — triggered by the last tile --- */
-  arts_guid_t done_guid = arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
-  {
-    uint64_t dp[1] = {(uint64_t)verify_score};
-    arts_guid_t done_e =
-        arts_edt_create(done_edt, 1, dp, 1, &(arts_hint_t){.route = 0});
-    arts_add_dependence(done_guid, done_e, 0, DB_MODE_RO);
-  }
+  /* --- Allocate tile EDT GUID table: (n_tiles_h+1) x (n_tiles_w+1)
+   *     Row/col 0 are unused (boundary); real tiles at [1..n_tiles_h][1..n_tiles_w].
+   *     NULL_GUID marks "no downstream EDT" for border tiles. --- */
+  int rows = n_tiles_h + 1;
+  int cols = n_tiles_w + 1;
+  arts_guid_t *tile_guids =
+      (arts_guid_t *)calloc((size_t)rows * cols, sizeof(arts_guid_t));
+#define TGUID(r, c) tile_guids[(size_t)(r) * (size_t)cols + (size_t)(c)]
 
-  /* --- Create tile EDTs for (i in 1..n_tiles_h, j in 1..n_tiles_w) --- */
+  /* First pass: reserve GUIDs for all tile EDTs so downstream GUIDs are
+   * known before we build each tile's paramv. */
   for (int i = 1; i <= n_tiles_h; ++i) {
     for (int j = 1; j <= n_tiles_w; ++j) {
       unsigned o = tile_owner(i, j);
-      int idx_self = i * (n_tiles_w + 1) + j;
-      /* Pass the downstream event guids that this EDT will satisfy. */
-      arts_guid_t my_rc_ev = ev_rc[idx_self];
-      arts_guid_t my_brow_ev = ev_brow[idx_self];
-      arts_guid_t my_bcorner_ev = ev_bcorner[idx_self];
-      int is_last = (i == n_tiles_h && j == n_tiles_w);
-      uint64_t p[6] = {(uint64_t)i, (uint64_t)j, (uint64_t)my_rc_ev,
-                       (uint64_t)my_brow_ev, (uint64_t)my_bcorner_ev,
-                       (uint64_t)(is_last ? done_guid : NULL_GUID)};
-      arts_guid_t e =
-          arts_edt_create(sw_tile_edt, 6, p, 4, &(arts_hint_t){.route = o});
-      /* left halo from (i, j-1) */
-      arts_add_dependence(ev_rc[i * (n_tiles_w + 1) + (j - 1)], e, 0,
-                          DB_MODE_RO);
-      /* top halo from (i-1, j) */
-      arts_add_dependence(ev_brow[(i - 1) * (n_tiles_w + 1) + j], e, 1,
-                          DB_MODE_RO);
-      /* NW halo from (i-1, j-1) */
-      arts_add_dependence(ev_bcorner[(i - 1) * (n_tiles_w + 1) + (j - 1)], e, 2,
-                          DB_MODE_RO);
-      /* params DB */
-      arts_add_dependence(params_guid, e, 3, DB_MODE_RO);
+      TGUID(i, j) = arts_guid_reserve(ARTS_EDT, o);
     }
   }
 
-  /* --- Initialize boundary halos --- */
-  /* (0,0) bottom-right corner = 0 */
+  /* Second pass: create each EDT with the correct paramv that references
+   * downstream GUIDs.  arts_edt_create_with_guid uses the pre-reserved GUID
+   * (route is already encoded in the GUID; no hint parameter). */
+  for (int i = 1; i <= n_tiles_h; ++i) {
+    for (int j = 1; j <= n_tiles_w; ++j) {
+      /* Downstream right neighbor (i, j+1) — receives right_col at slot 0 */
+      arts_guid_t rc_edt  = (j < n_tiles_w) ? TGUID(i, j + 1) : NULL_GUID;
+      uint32_t    rc_slot = 0; /* left halo slot */
+
+      /* Downstream bottom neighbor (i+1, j) — receives bottom_row at slot 1 */
+      arts_guid_t brow_edt  = (i < n_tiles_h) ? TGUID(i + 1, j) : NULL_GUID;
+      uint32_t    brow_slot = 1; /* top halo slot */
+
+      /* Downstream bottom-right neighbor (i+1, j+1) — receives corner at slot 2 */
+      arts_guid_t bcorner_edt  = (i < n_tiles_h && j < n_tiles_w)
+                                     ? TGUID(i + 1, j + 1)
+                                     : NULL_GUID;
+      uint32_t    bcorner_slot = 2; /* NW halo slot */
+
+      int is_last = (i == n_tiles_h && j == n_tiles_w);
+
+      uint64_t p[9] = {
+          (uint64_t)i,
+          (uint64_t)j,
+          (uint64_t)rc_edt,
+          (uint64_t)rc_slot,
+          (uint64_t)brow_edt,
+          (uint64_t)brow_slot,
+          (uint64_t)bcorner_edt,
+          (uint64_t)bcorner_slot,
+          (uint64_t)(is_last ? done_edt_guid : NULL_GUID)};
+
+      arts_edt_create_with_guid(sw_tile_edt, TGUID(i, j), 9, p, 4);
+    }
+  }
+
+  /* --- Push params DB to slot 3 of every tile EDT --- */
+  for (int i = 1; i <= n_tiles_h; ++i) {
+    for (int j = 1; j <= n_tiles_w; ++j) {
+      arts_signal_edt(TGUID(i, j), 3, params_guid, DB_MODE_RO);
+    }
+  }
+
+  /* --- Initialize boundary halos via arts_signal_edt --- */
+
+  /* (0,0) bottom-right corner → tile (1,1) slot 2 (NW halo) */
   {
     int32_t *p0;
 #if ARTS_USE_CXL
@@ -531,13 +559,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 #endif
     p0[0] = 0;
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(g0); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+    arts_cxl_producer_flush(g0);
 #endif
-    arts_db_release(g0); // Pattern A
-    arts_event_satisfy_slot(ev_bcorner[0], g0, ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+    arts_db_release(g0); /* Pattern A */
+    arts_signal_edt(TGUID(1, 1), 2, g0, DB_MODE_RO);
   }
-  /* Top row of halos: for (0, j) the bottom_row and bottom_right values.
-   * A real tile (1, j) reads (0, j) bottom_row as its top halo. */
+
+  /* Top row of halos: for each tile (1, j):
+   *   slot 1 (top halo)  ← bottom_row of boundary row (0, j)
+   *   slot 2 (NW halo)   ← bottom_right of boundary (0, j-1)  [already done for j=1 above]
+   */
   for (int j = 1; j <= n_tiles_w; ++j) {
     int eff_w = tile_w;
     if (j == n_tiles_w) {
@@ -545,7 +578,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       if (rem < tile_w && rem > 0)
         eff_w = rem;
     }
-    /* bottom_row for (0,j): values GAP*(n) along string 1 */
+
+    /* bottom_row for boundary (0,j): GAP-penalty values along string 1
+     * → pushed to tile (1, j) slot 1 (top halo) */
     int32_t *brow;
 #if ARTS_USE_CXL
     arts_guid_t g_brow = arts_db_create(
@@ -560,31 +595,40 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     for (int c = eff_w; c < tile_w; ++c)
       brow[c] = 0;
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(g_brow); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+    arts_cxl_producer_flush(g_brow);
 #endif
-    arts_db_release(g_brow); // Pattern A
-    arts_event_satisfy_slot(ev_brow[0 * (n_tiles_w + 1) + j], g_brow,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+    arts_db_release(g_brow); /* Pattern A */
+    arts_signal_edt(TGUID(1, j), 1, g_brow, DB_MODE_RO);
 
-    /* bottom_right for (0, j): scalar GAP*((j-1)*tile_w + eff_w) */
-    int32_t *bcor;
+    /* bottom_right for boundary (0, j): scalar GAP*(cumulative width)
+     * → pushed to tile (1, j+1) slot 2 (NW halo), if j+1 exists */
+    if (j < n_tiles_w) {
+      int32_t *bcor;
 #if ARTS_USE_CXL
-    arts_guid_t g_bcor =
-        arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_CXL, NULL);
+      arts_guid_t g_bcor =
+          arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_CXL, NULL);
 #else
-    arts_guid_t g_bcor =
-        arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_DEFAULT,
-                       &(arts_hint_t){.route = 0});
+      arts_guid_t g_bcor =
+          arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_DEFAULT,
+                         &(arts_hint_t){.route = 0});
 #endif
-    bcor[0] = GAP_PENALTY * ((j - 1) * tile_w + eff_w);
+      bcor[0] = GAP_PENALTY * ((j - 1) * tile_w + eff_w);
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(g_bcor); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+      arts_cxl_producer_flush(g_bcor);
 #endif
-    arts_db_release(g_bcor); // Pattern A
-    arts_event_satisfy_slot(ev_bcorner[0 * (n_tiles_w + 1) + j], g_bcor,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+      arts_db_release(g_bcor); /* Pattern A */
+      arts_signal_edt(TGUID(1, j + 1), 2, g_bcor, DB_MODE_RO);
+    }
   }
-  /* Left column of halos */
+
+  /* Left column of halos: for each tile (i, 1):
+   *   slot 0 (left halo) ← right_col of boundary col (i, 0)
+   *   slot 2 (NW halo)   ← bottom_right of boundary (i-1, 0)  [already done for i=1 above]
+   */
   for (int i = 1; i <= n_tiles_h; ++i) {
     int eff_h = tile_h;
     if (i == n_tiles_h) {
@@ -592,6 +636,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       if (rem < tile_h && rem > 0)
         eff_h = rem;
     }
+
+    /* right_col for boundary (i, 0): GAP-penalty values along string 2
+     * → pushed to tile (i, 1) slot 0 (left halo) */
     int32_t *rc;
 #if ARTS_USE_CXL
     arts_guid_t g_rc = arts_db_create((void **)&rc, sizeof(int32_t) * tile_h,
@@ -606,33 +653,38 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     for (int r = eff_h; r < tile_h; ++r)
       rc[r] = 0;
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(g_rc); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+    arts_cxl_producer_flush(g_rc);
 #endif
-    arts_db_release(g_rc); // Pattern A
-    arts_event_satisfy_slot(ev_rc[i * (n_tiles_w + 1) + 0], g_rc,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+    arts_db_release(g_rc); /* Pattern A */
+    arts_signal_edt(TGUID(i, 1), 0, g_rc, DB_MODE_RO);
 
-    int32_t *bcor;
+    /* bottom_right for boundary (i, 0): scalar GAP*(cumulative height)
+     * → pushed to tile (i+1, 1) slot 2 (NW halo), if i+1 exists */
+    if (i < n_tiles_h) {
+      int32_t *bcor;
 #if ARTS_USE_CXL
-    arts_guid_t g_bcor =
-        arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_CXL, NULL);
+      arts_guid_t g_bcor =
+          arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_CXL, NULL);
 #else
-    arts_guid_t g_bcor =
-        arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_DEFAULT,
-                       &(arts_hint_t){.route = 0});
+      arts_guid_t g_bcor =
+          arts_db_create((void **)&bcor, sizeof(int32_t), ARTS_DB_DEFAULT,
+                         &(arts_hint_t){.route = 0});
 #endif
-    bcor[0] = GAP_PENALTY * ((i - 1) * tile_h + eff_h);
+      bcor[0] = GAP_PENALTY * ((i - 1) * tile_h + eff_h);
 #if ARTS_USE_CXL
-    arts_cxl_producer_flush(g_bcor); // flush CXL FAM writes before release
+#if !ARTS_CXL_ENABLE_AUTO_FLUSH
+      arts_cxl_producer_flush(g_bcor);
 #endif
-    arts_db_release(g_bcor); // Pattern A
-    arts_event_satisfy_slot(ev_bcorner[i * (n_tiles_w + 1) + 0], g_bcor,
-                            ARTS_EVENT_LATCH_DECR_SLOT);
+#endif /* ARTS_USE_CXL */
+      arts_db_release(g_bcor); /* Pattern A */
+      arts_signal_edt(TGUID(i + 1, 1), 2, g_bcor, DB_MODE_RO);
+    }
   }
 
-  free(ev_rc);
-  free(ev_brow);
-  free(ev_bcorner);
+  free(tile_guids);
+#undef TGUID
 }
 
 void init_per_node(unsigned int node_id, int argc, char **argv) {
