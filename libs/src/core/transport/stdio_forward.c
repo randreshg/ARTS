@@ -21,7 +21,6 @@
 
 typedef struct {
   bool active;
-  bool thread_started; /**< true once pthread_create has been called */
   int read_fd;
   pthread_t thread;
   unsigned int rank;
@@ -56,8 +55,8 @@ static void *forwarder_thread_main(void *arg) {
   return NULL;
 }
 
-int arts_stdio_forwarder_alloc_pipe(unsigned int rank,
-                                    const char *stream_label, FILE *sink) {
+int arts_stdio_forwarder_make_pipe(unsigned int rank, const char *stream_label,
+                                   FILE *sink) {
   int pipefd[2];
   if (pipe(pipefd) != 0) {
     ARTS_WARN("stdio_forward: pipe() failed for rank %u %s: %s", rank,
@@ -82,65 +81,31 @@ int arts_stdio_forwarder_alloc_pipe(unsigned int rank,
     return -1;
   }
   slot->active = true;
-  slot->thread_started = false;
   slot->read_fd = pipefd[0];
   slot->rank = rank;
   slot->stream_label = stream_label;
   slot->sink = sink;
+
+  int err = pthread_create(&slot->thread, NULL, forwarder_thread_main, slot);
+  if (err != 0) {
+    ARTS_WARN("stdio_forward: pthread_create failed for rank %u %s: %s", rank,
+              stream_label, strerror(err));
+    slot->active = false;
+    slot->read_fd = -1;
+    pthread_mutex_unlock(&g_forwarders_lock);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return -1;
+  }
   pthread_mutex_unlock(&g_forwarders_lock);
 
   return pipefd[1];
-}
-
-void arts_stdio_forwarder_start_threads(void) {
-  pthread_mutex_lock(&g_forwarders_lock);
-  for (int i = 0; i < ARTS_MAX_FORWARDERS; i++) {
-    if (!g_forwarders[i].active || g_forwarders[i].thread_started) {
-      continue;
-    }
-    int err = pthread_create(&g_forwarders[i].thread, NULL,
-                             forwarder_thread_main, &g_forwarders[i]);
-    if (err != 0) {
-      ARTS_WARN("stdio_forward: pthread_create failed for rank %u %s: %s",
-                g_forwarders[i].rank, g_forwarders[i].stream_label,
-                strerror(err));
-      /* Close the read-end so the write-end (held by the child) will
-       * eventually get SIGPIPE / EPIPE rather than blocking forever. */
-      close(g_forwarders[i].read_fd);
-      g_forwarders[i].read_fd = -1;
-      g_forwarders[i].active = false;
-    } else {
-      g_forwarders[i].thread_started = true;
-    }
-  }
-  pthread_mutex_unlock(&g_forwarders_lock);
-}
-
-int arts_stdio_forwarder_make_pipe(unsigned int rank, const char *stream_label,
-                                   FILE *sink) {
-  int wfd = arts_stdio_forwarder_alloc_pipe(rank, stream_label, sink);
-  if (wfd < 0) {
-    return -1;
-  }
-  arts_stdio_forwarder_start_threads();
-  return wfd;
 }
 
 void arts_stdio_forwarder_shutdown_all(void) {
   pthread_mutex_lock(&g_forwarders_lock);
   for (int i = 0; i < ARTS_MAX_FORWARDERS; i++) {
     if (!g_forwarders[i].active) {
-      continue;
-    }
-    if (!g_forwarders[i].thread_started) {
-      /* Pipe was allocated but thread never started (e.g. alloc_pipe was
-       * called but start_threads was never reached due to an early error).
-       * Just close the read-end and release the slot. */
-      if (g_forwarders[i].read_fd >= 0) {
-        close(g_forwarders[i].read_fd);
-        g_forwarders[i].read_fd = -1;
-      }
-      g_forwarders[i].active = false;
       continue;
     }
     pthread_t thread = g_forwarders[i].thread;
@@ -154,7 +119,6 @@ void arts_stdio_forwarder_shutdown_all(void) {
     (void)pthread_join(thread, NULL);
     pthread_mutex_lock(&g_forwarders_lock);
     g_forwarders[i].active = false;
-    g_forwarders[i].thread_started = false;
     g_forwarders[i].read_fd = -1;
   }
   pthread_mutex_unlock(&g_forwarders_lock);
