@@ -62,10 +62,11 @@
  *   -o  Directory path where latencies.json will be written (optional).
  *       If omitted, no JSON file is produced.
  *
- * Output: tab-formatted table with Min/Avg/P50/P95/Max latency in ns/access.
+ * Output: tab-formatted table with Min/Avg/P50/P95/P99/Max/Var/StdDev latency in ns/access.
  *         When -o is given, results are also written to <output_dir>/latencies.json.
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -161,19 +162,29 @@ static void print_row(uint64_t size, const char *tier, const char *op,
     for (uint32_t i = 0; i < n; i++)
         total_sum += (double)rep_totals[i];
 
-    double scale = 1.0 / (double)n_ops;
-    double avg   = (total_sum / (double)n) * scale;
-    double min   = (double)rep_totals[0]                         * scale;
-    double max   = (double)rep_totals[n - 1]                     * scale;
-    double p50   = (double)rep_totals[n / 2]                     * scale;
-    double p95   = (double)rep_totals[(uint32_t)(n * 0.95f)]     * scale;
-    double p99   = (double)rep_totals[(uint32_t)(n * 0.99f)]     * scale;
+    double scale  = 1.0 / (double)n_ops;
+    double avg    = (total_sum / (double)n) * scale;
+    double min    = (double)rep_totals[0]                         * scale;
+    double max    = (double)rep_totals[n - 1]                     * scale;
+    double p50    = (double)rep_totals[n / 2]                     * scale;
+    double p95    = (double)rep_totals[(uint32_t)(n * 0.95f)]     * scale;
+    double p99    = (double)rep_totals[(uint32_t)(n * 0.99f)]     * scale;
+
+    /* Variance and standard deviation (population, in ns/access units) */
+    double sq_sum = 0.0;
+    for (uint32_t i = 0; i < n; i++) {
+        double val  = (double)rep_totals[i] * scale;
+        double diff = val - avg;
+        sq_sum += diff * diff;
+    }
+    double variance = sq_sum / (double)n;
+    double stddev   = sqrt(variance);
 
     char size_str[12];
     fmt_size(size, size_str, sizeof(size_str));
 
-    arts_printf("%9s | %-5s | %-5s | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f\n",
-                size_str, tier, op, min, avg, p50, p95, p99, max);
+    arts_printf("%9s | %-5s | %-5s | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %8.2f | %12.4f | %10.4f\n",
+                size_str, tier, op, min, avg, p50, p95, p99, max, variance, stddev);
 
     /* ---- JSON output ---- */
     if (g_json_fp) {
@@ -194,7 +205,9 @@ static void print_row(uint64_t size, const char *tier, const char *op,
                 "    \"p50_ns\": %.2f,\n"
                 "    \"p95_ns\": %.2f,\n"
                 "    \"p99_ns\": %.2f,\n"
-                "    \"max_ns\": %.2f\n"
+                "    \"max_ns\": %.2f,\n"
+                "    \"variance_ns2\": %.4f,\n"
+                "    \"stddev_ns\": %.4f\n"
                 "  }",
                 (unsigned long long)size,
                 size_str,
@@ -202,7 +215,7 @@ static void print_row(uint64_t size, const char *tier, const char *op,
                 op,
                 n,
                 (unsigned long long)n_ops,
-                min, avg, p50, p95, p99, max);
+                min, avg, p50, p95, p99, max, variance, stddev);
     }
 }
 
@@ -309,7 +322,7 @@ void bench_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     print_row(size, "CXL",   "read",  read_cxl,    ntimes, chain_len);
     print_row(size, "LOCAL", "write", write_local, ntimes, write_len);
     print_row(size, "CXL",   "write", write_cxl,   ntimes, write_len);
-    arts_printf("----------|-------|-------|----------|----------|----------|----------|----------|----------\n");
+    arts_printf("----------|-------|-------|----------|----------|----------|----------|----------|----------|--------------|------------\n");
 
     free(read_local);
     free(read_cxl);
@@ -442,10 +455,11 @@ void init_per_worker(unsigned int node_id, unsigned int worker_id,
                 "WRITE: sequential stores (max %llu elements)\n\n",
                 (unsigned long long)READ_CHAIN_LEN,
                 (unsigned long long)WRITE_LEN_MAX);
-    arts_printf("%9s | %-5s | %-5s | %8s | %8s | %8s | %8s | %8s | %8s\n",
+    arts_printf("%9s | %-5s | %-5s | %8s | %8s | %8s | %8s | %8s | %8s | %12s | %10s\n",
                 "Size", "Tier", "Op",
-                "Min(ns)", "Avg(ns)", "P50(ns)", "P95(ns)", "P99(ns)", "Max(ns)");
-    arts_printf("----------|-------|-------|----------|----------|----------|----------|----------|----------\n");
+                "Min(ns)", "Avg(ns)", "P50(ns)", "P95(ns)", "P99(ns)", "Max(ns)",
+                "Var(ns^2)", "StdDev(ns)");
+    arts_printf("----------|-------|-------|----------|----------|----------|----------|----------|----------|--------------|------------\n");
 
     arts_signal_edt_null(bench_edts[0], 0);
 }

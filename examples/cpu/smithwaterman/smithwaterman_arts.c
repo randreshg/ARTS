@@ -142,6 +142,28 @@ static inline int params_score(const int64_t *p) { return (int)p[8]; }
 void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]);
 
+void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]);
+
+/* ========================================================================= */
+/*  done_edt  (always runs on node 0)                                        */
+/*                                                                           */
+/*  paramv[0] = expected score (verify_score from params)                    */
+/*  depv[0]   = score DB (int32_t[1]) RO — final DP score from last tile     */
+/* ========================================================================= */
+
+void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  int expected = (int)paramv[0];
+  const int32_t *score_db = (const int32_t *)depv[0].ptr;
+  int final_score = score_db[0];
+  arts_printf("SW-ARTS final score = %d (expected %d) %s\n", final_score,
+              expected, (final_score == expected) ? "PASS" : "FAIL");
+  arts_shutdown();
+}
+
 /* ========================================================================= */
 /*  sw_tile_edt                                                              */
 /*                                                                           */
@@ -150,6 +172,7 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 /*     [2] right_col event for (i,j+1)                                       */
 /*     [3] bottom_row event for (i+1,j)                                      */
 /*     [4] bottom_right event for (i+1,j+1)                                  */
+/*  paramv[5] = done_guid event (NULL_GUID for non-last tiles)               */
 /*  depv[0] = left halo (right_col of (i, j-1)) RO                           */
 /*  depv[1] = top  halo (bottom_row of (i-1, j)) RO                          */
 /*  depv[2] = NW   halo (bottom_right of (i-1, j-1)) RO                      */
@@ -165,6 +188,7 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t rc_event = (arts_guid_t)paramv[2];
   arts_guid_t br_row_event = (arts_guid_t)paramv[3];
   arts_guid_t br_corner_event = (arts_guid_t)paramv[4];
+  arts_guid_t done_guid = (arts_guid_t)paramv[5];
 
   const int32_t *left_col = (const int32_t *)depv[0].ptr;
   const int32_t *top_row = (const int32_t *)depv[1].ptr;
@@ -240,6 +264,9 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        ARTS_DB_DEFAULT, &(arts_hint_t){.route = cur});
 #endif
     br_corner_data[0] = Mref(eff_h, eff_w);
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(br_corner_guid); // flush CXL FAM writes before release
+#endif
     arts_db_release(br_corner_guid); // Pattern A
     arts_event_satisfy_slot(br_corner_event, br_corner_guid,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -259,6 +286,9 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       rc_data[r] = Mref(r + 1, eff_w);
     for (int r = eff_h; r < tile_h; ++r)
       rc_data[r] = 0;         /* pad */
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(rc_guid); // flush CXL FAM writes before release
+#endif
     arts_db_release(rc_guid); // Pattern A
     arts_event_satisfy_slot(rc_event, rc_guid, ARTS_EVENT_LATCH_DECR_SLOT);
   }
@@ -278,6 +308,9 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       br_row_data[c] = Mref(eff_h, c + 1);
     for (int c = eff_w; c < tile_w; ++c)
       br_row_data[c] = 0;         /* pad */
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(br_row_guid); // flush CXL FAM writes before release
+#endif
     arts_db_release(br_row_guid); // Pattern A
     arts_event_satisfy_slot(br_row_event, br_row_guid,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -286,12 +319,25 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   int final_score = Mref(eff_h, eff_w);
   free(M);
 
-  /* If this is the last tile (bottom-right most), verify and shutdown. */
-  if (i == n_tiles_h && j == n_tiles_w) {
-    int expected = params_score(params);
-    arts_printf("SW-ARTS final score = %d (expected %d) %s\n", final_score,
-                expected, (final_score == expected) ? "PASS" : "FAIL");
-    arts_shutdown();
+  /* If this is the last tile (bottom-right most), signal done_guid on node 0
+   * which will print the result and shut down. */
+  if (i == n_tiles_h && j == n_tiles_w && done_guid != NULL_GUID) {
+    int32_t *score_data;
+#if ARTS_USE_CXL
+    arts_guid_t score_db_guid = arts_db_create(
+        (void **)&score_data, sizeof(int32_t), ARTS_DB_CXL, NULL);
+#else
+    arts_guid_t score_db_guid =
+        arts_db_create((void **)&score_data, sizeof(int32_t), ARTS_DB_DEFAULT,
+                       &(arts_hint_t){.route = 0});
+#endif
+    score_data[0] = final_score;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(score_db_guid); // flush CXL FAM writes before release
+#endif
+    arts_db_release(score_db_guid); // Pattern A
+    arts_event_satisfy_slot(done_guid, score_db_guid,
+                            ARTS_EVENT_LATCH_DECR_SLOT);
   }
 #undef Mref
 }
@@ -412,6 +458,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   free(s2);
   if (score_buf)
     free(score_buf);
+#if ARTS_USE_CXL
+  arts_cxl_producer_flush(params_guid); // flush CXL FAM writes before release
+#endif
   arts_db_release(params_guid); // WRITE — shared params ready
 
   /* --- Create halo events for every (i,j) including border row/col --- */
@@ -430,6 +479,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
 
+  /* --- Create done_edt on node 0 — triggered by the last tile --- */
+  arts_guid_t done_guid = arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
+  {
+    uint64_t dp[1] = {(uint64_t)verify_score};
+    arts_guid_t done_e =
+        arts_edt_create(done_edt, 1, dp, 1, &(arts_hint_t){.route = 0});
+    arts_add_dependence(done_guid, done_e, 0, DB_MODE_RO);
+  }
+
   /* --- Create tile EDTs for (i in 1..n_tiles_h, j in 1..n_tiles_w) --- */
   for (int i = 1; i <= n_tiles_h; ++i) {
     for (int j = 1; j <= n_tiles_w; ++j) {
@@ -439,10 +497,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t my_rc_ev = ev_rc[idx_self];
       arts_guid_t my_brow_ev = ev_brow[idx_self];
       arts_guid_t my_bcorner_ev = ev_bcorner[idx_self];
-      uint64_t p[5] = {(uint64_t)i, (uint64_t)j, (uint64_t)my_rc_ev,
-                       (uint64_t)my_brow_ev, (uint64_t)my_bcorner_ev};
+      int is_last = (i == n_tiles_h && j == n_tiles_w);
+      uint64_t p[6] = {(uint64_t)i, (uint64_t)j, (uint64_t)my_rc_ev,
+                       (uint64_t)my_brow_ev, (uint64_t)my_bcorner_ev,
+                       (uint64_t)(is_last ? done_guid : NULL_GUID)};
       arts_guid_t e =
-          arts_edt_create(sw_tile_edt, 5, p, 4, &(arts_hint_t){.route = o});
+          arts_edt_create(sw_tile_edt, 6, p, 4, &(arts_hint_t){.route = o});
       /* left halo from (i, j-1) */
       arts_add_dependence(ev_rc[i * (n_tiles_w + 1) + (j - 1)], e, 0,
                           DB_MODE_RO);
@@ -470,6 +530,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        &(arts_hint_t){.route = 0});
 #endif
     p0[0] = 0;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g0); // flush CXL FAM writes before release
+#endif
     arts_db_release(g0); // Pattern A
     arts_event_satisfy_slot(ev_bcorner[0], g0, ARTS_EVENT_LATCH_DECR_SLOT);
   }
@@ -496,6 +559,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       brow[c] = GAP_PENALTY * ((j - 1) * tile_w + c + 1);
     for (int c = eff_w; c < tile_w; ++c)
       brow[c] = 0;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_brow); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_brow); // Pattern A
     arts_event_satisfy_slot(ev_brow[0 * (n_tiles_w + 1) + j], g_brow,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -511,6 +577,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        &(arts_hint_t){.route = 0});
 #endif
     bcor[0] = GAP_PENALTY * ((j - 1) * tile_w + eff_w);
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_bcor); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_bcor); // Pattern A
     arts_event_satisfy_slot(ev_bcorner[0 * (n_tiles_w + 1) + j], g_bcor,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -536,6 +605,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       rc[r] = GAP_PENALTY * ((i - 1) * tile_h + r + 1);
     for (int r = eff_h; r < tile_h; ++r)
       rc[r] = 0;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_rc); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_rc); // Pattern A
     arts_event_satisfy_slot(ev_rc[i * (n_tiles_w + 1) + 0], g_rc,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -550,6 +622,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        &(arts_hint_t){.route = 0});
 #endif
     bcor[0] = GAP_PENALTY * ((i - 1) * tile_h + eff_h);
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_bcor); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_bcor); // Pattern A
     arts_event_satisfy_slot(ev_bcorner[i * (n_tiles_w + 1) + 0], g_bcor,
                             ARTS_EVENT_LATCH_DECR_SLOT);
