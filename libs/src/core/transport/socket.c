@@ -317,7 +317,7 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
 
       // Retry with delay to handle SLURM startup skew (srun starts all
       // processes simultaneously, so the remote may not be listening yet)
-      int max_retries = 300;
+      int max_retries = 1000;
       int retry_count = 0;
       while (RCONNECT(remote_socket_send_list[(rank * ports) + port],
                       (struct sockaddr *)(remote_server_send_list +
