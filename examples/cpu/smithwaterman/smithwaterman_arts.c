@@ -264,6 +264,9 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        ARTS_DB_DEFAULT, &(arts_hint_t){.route = cur});
 #endif
     br_corner_data[0] = Mref(eff_h, eff_w);
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(br_corner_guid); // flush CXL FAM writes before release
+#endif
     arts_db_release(br_corner_guid); // Pattern A
     arts_event_satisfy_slot(br_corner_event, br_corner_guid,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -283,6 +286,9 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       rc_data[r] = Mref(r + 1, eff_w);
     for (int r = eff_h; r < tile_h; ++r)
       rc_data[r] = 0;         /* pad */
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(rc_guid); // flush CXL FAM writes before release
+#endif
     arts_db_release(rc_guid); // Pattern A
     arts_event_satisfy_slot(rc_event, rc_guid, ARTS_EVENT_LATCH_DECR_SLOT);
   }
@@ -302,6 +308,9 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       br_row_data[c] = Mref(eff_h, c + 1);
     for (int c = eff_w; c < tile_w; ++c)
       br_row_data[c] = 0;         /* pad */
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(br_row_guid); // flush CXL FAM writes before release
+#endif
     arts_db_release(br_row_guid); // Pattern A
     arts_event_satisfy_slot(br_row_event, br_row_guid,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -323,6 +332,9 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        &(arts_hint_t){.route = 0});
 #endif
     score_data[0] = final_score;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(score_db_guid); // flush CXL FAM writes before release
+#endif
     arts_db_release(score_db_guid); // Pattern A
     arts_event_satisfy_slot(done_guid, score_db_guid,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -446,6 +458,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   free(s2);
   if (score_buf)
     free(score_buf);
+#if ARTS_USE_CXL
+  arts_cxl_producer_flush(params_guid); // flush CXL FAM writes before release
+#endif
   arts_db_release(params_guid); // WRITE — shared params ready
 
   /* --- Create halo events for every (i,j) including border row/col --- */
@@ -515,6 +530,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        &(arts_hint_t){.route = 0});
 #endif
     p0[0] = 0;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g0); // flush CXL FAM writes before release
+#endif
     arts_db_release(g0); // Pattern A
     arts_event_satisfy_slot(ev_bcorner[0], g0, ARTS_EVENT_LATCH_DECR_SLOT);
   }
@@ -541,6 +559,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       brow[c] = GAP_PENALTY * ((j - 1) * tile_w + c + 1);
     for (int c = eff_w; c < tile_w; ++c)
       brow[c] = 0;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_brow); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_brow); // Pattern A
     arts_event_satisfy_slot(ev_brow[0 * (n_tiles_w + 1) + j], g_brow,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -556,6 +577,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        &(arts_hint_t){.route = 0});
 #endif
     bcor[0] = GAP_PENALTY * ((j - 1) * tile_w + eff_w);
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_bcor); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_bcor); // Pattern A
     arts_event_satisfy_slot(ev_bcorner[0 * (n_tiles_w + 1) + j], g_bcor,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -581,6 +605,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       rc[r] = GAP_PENALTY * ((i - 1) * tile_h + r + 1);
     for (int r = eff_h; r < tile_h; ++r)
       rc[r] = 0;
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_rc); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_rc); // Pattern A
     arts_event_satisfy_slot(ev_rc[i * (n_tiles_w + 1) + 0], g_rc,
                             ARTS_EVENT_LATCH_DECR_SLOT);
@@ -595,6 +622,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        &(arts_hint_t){.route = 0});
 #endif
     bcor[0] = GAP_PENALTY * ((i - 1) * tile_h + eff_h);
+#if ARTS_USE_CXL
+    arts_cxl_producer_flush(g_bcor); // flush CXL FAM writes before release
+#endif
     arts_db_release(g_bcor); // Pattern A
     arts_event_satisfy_slot(ev_bcorner[i * (n_tiles_w + 1) + 0], g_bcor,
                             ARTS_EVENT_LATCH_DECR_SLOT);
