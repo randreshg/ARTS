@@ -51,11 +51,11 @@ extern "C" {
 
 // #define ARTS_USE_CXL 1
 // #define N 20000000
-#define N (1 << 22)
+#define N (1 << 24)
 // #define N 20
-#define TILESIZE 131072
+// #define TILESIZE 524288
 // #define NTIMES 20
-#define NTIMES 50
+#define NTIMES 100
 // #define NTIMES 10
 #define OFFSET 0
 

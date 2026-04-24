@@ -212,7 +212,8 @@ static void print_bw_row(const char *kernel_name,
 
 int quantum;
 
-unsigned int tile_size = TILESIZE;
+// unsigned int tile_size = TILESIZE;
+unsigned int tile_size;
 unsigned int num_tiles;
 
 arts_guid_t *a_tile_guids = NULL;
@@ -561,6 +562,8 @@ void init_per_node(unsigned int node_id, int argc, char **argv) {
   /* First non-option argument is the optional tile_size */
   if (optind < argc)
     tile_size = (unsigned int)atoi(argv[optind]);
+  else
+    tile_size = N/(arts_get_total_workers() * arts_get_total_nodes()); // Default tile size
 
   num_tiles = N / tile_size;
   if (N % tile_size)
