@@ -177,10 +177,10 @@ static inline arts_cxl_deque_t *arts_cxl_deque_create(void) {
     dq->data[i].base.ptr = NULL;
     dq->data[i].base.size = 0;
   }
-  arts_cxl_arena_init(&dq->consts.mem_arena, 5000000000); /* ~5 GB */
+  arts_cxl_arena_init(&dq->consts.mem_arena, 10000000000); /* ~10 GB */
 
   /* Single DB arena on device 0 (default / static strategy). */
-  arts_cxl_arena_init_dev(&dq->consts.db_arenas[0], 5000000000, 0);
+  arts_cxl_arena_init_dev(&dq->consts.db_arenas[0], 10000000000, 0);
   for (unsigned int i = 1; i < ARTS_CXL_MAX_DEVICES; i++) {
     dq->consts.db_arenas[i] = NULL;
   }
@@ -224,10 +224,10 @@ arts_cxl_deque_create_with_arenas(const uint64_t *dev_ids,
     dq->data[i].base.ptr = NULL;
     dq->data[i].base.size = 0;
   }
-  arts_cxl_arena_init(&dq->consts.mem_arena, 5000000000); /* ~5 GB */
+  arts_cxl_arena_init(&dq->consts.mem_arena, 10000000000); /* ~5 GB */
 
   for (unsigned int i = 0; i < dev_count; i++) {
-    arts_cxl_arena_init_dev(&dq->consts.db_arenas[i], 5000000000, dev_ids[i]);
+    arts_cxl_arena_init_dev(&dq->consts.db_arenas[i], 10000000000, dev_ids[i]);
   }
   for (unsigned int i = dev_count; i < ARTS_CXL_MAX_DEVICES; i++) {
     dq->consts.db_arenas[i] = NULL;
