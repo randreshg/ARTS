@@ -469,6 +469,8 @@ void arts_db_destroy_safe(arts_guid_t guid, bool remote) {
 //   and launches out of order handleReadyEdt
 // Returns false on out of order and true otherwise
 void acquire_dbs(struct arts_edt_s *edt) {
+  TIME_DB_ACQUIRE_START();
+  INCREMENT_NUM_DB_ACQUIRE_BY(1);
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   edt->depc_needed = edt->depc + 1;
   ARTS_INFO("Acquiring %u DBs for EDT[Id:%lu, Guid:%lu], depc_needed "
@@ -653,6 +655,7 @@ void acquire_dbs(struct arts_edt_s *edt) {
   }
   ARTS_INFO("EDT[Id:%lu, Guid:%lu] has finished acquiring DBs", edt->arts_id,
             edt->current_edt);
+  TIME_DB_ACQUIRE_STOP();
 }
 
 /*
@@ -1133,11 +1136,16 @@ void arts_wait_reacquire_dbs(void) {
 
 #ifdef ARTS_USE_CXL
 void arts_cxl_producer_flush(arts_guid_t guid) {
+  TIME_CXL_PRODUCER_FLUSH_START();
+  INCREMENT_NUM_CXL_PRODUCER_FLUSH_BY(1);
   struct arts_db_s *db = (struct arts_db_s *)arts_cxl_get_ptr(guid);
   FLUSH_FENCE_PRODUCER(db, ALIGN_UP(db->header.size, CACHELINE_SIZE));
+  TIME_CXL_PRODUCER_FLUSH_STOP();
 }
 
 void arts_cxl_consumer_flush(arts_guid_t guid) {
+  TIME_CXL_CONSUMER_FLUSH_START();
+  INCREMENT_NUM_CXL_CONSUMER_FLUSH_BY(1);
   struct arts_db_s *db = (struct arts_db_s *)arts_cxl_get_ptr(guid);
   /* First flush the header to read the actual size. */
   FLUSH_FENCE_CONSUMER(db, ALIGN_UP(sizeof(struct arts_db_s), CACHELINE_SIZE));
@@ -1145,5 +1153,6 @@ void arts_cxl_consumer_flush(arts_guid_t guid) {
   if (db->header.size > sizeof(struct arts_db_s)) {
     FLUSH_FENCE_CONSUMER(db, ALIGN_UP(db->header.size, CACHELINE_SIZE));
   }
+  TIME_CXL_CONSUMER_FLUSH_STOP();
 }
 #endif /* ARTS_USE_CXL */
