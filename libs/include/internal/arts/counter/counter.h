@@ -104,6 +104,16 @@ extern "C" {
   X(NUM_EPOCH_CREATE)                                                          \
   /* Num: out-of-order */                                                      \
   X(NUM_OO_ENQUEUE)                                                            \
+  /* Time: DB acquisition (route-table lookup + frontier + remote request) */  \
+  X(TIME_DB_ACQUIRE)                                                           \
+  /* Num: DB acquisition */                                                    \
+  X(NUM_DB_ACQUIRE)                                                            \
+  /* Time: CXL cache-flush operations */                                       \
+  X(TIME_CXL_PRODUCER_FLUSH)                                                   \
+  X(TIME_CXL_CONSUMER_FLUSH)                                                   \
+  /* Num: CXL cache-flush operations */                                        \
+  X(NUM_CXL_PRODUCER_FLUSH)                                                    \
+  X(NUM_CXL_CONSUMER_FLUSH)                                                    \
   /* Object counters — per arts_id tracking */                                 \
   X(OBJ_NUM_EDT)                                                               \
   X(OBJ_TIME_EDT_EXEC)                                                         \
