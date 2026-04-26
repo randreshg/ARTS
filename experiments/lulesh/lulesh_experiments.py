@@ -8,6 +8,10 @@ For each node count i (1..num_nodes) and each run j (0..NUM_RUNS-1):
   3. Copies the config to the build directory.
   4. Runs ./run_cxl.sh ./lulesh_arts with size/tile/iter inputs scaled to i.
   5. On success (output contains "Final Origin Energy"), saves inputs.json.
+  6. On failure (timeout, missing success string, or any error):
+       - Cleans up counters/ and inputs.json
+       - SSHes to each node and pkills lulesh_arts
+       - Retries up to MAX_RETRIES times (sleeping 10 s after pkill)
 """
 
 import json
@@ -15,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 # ==============================================================================
@@ -31,6 +36,10 @@ node_names = [
 num_nodes = len(node_names)
 
 NUM_RUNS = 10
+
+MAX_RETRIES = 5
+
+TIMEOUT_SECONDS = 15 * 60  # 15 minutes
 
 # Inputs keyed by node count (i)
 LULESH_INPUTS = {
@@ -58,6 +67,63 @@ BUILD_CPU_DIR = PROJECT_ROOT_DIR / "build" / "examples" / "cpu"
 def set_cfg_value(content: str, key: str, value: str) -> str:
     """Replace `key=<anything>` with `key=<value>` in cfg file content."""
     return re.sub(rf"^({re.escape(key)}=).*$", rf"\g<1>{value}", content, flags=re.MULTILINE)
+
+
+def cleanup_run(counters_dir: Path, inputs_json_path: Path) -> None:
+    """Remove all files in counters_dir and the inputs.json file if they exist."""
+    if counters_dir.exists():
+        for item in counters_dir.iterdir():
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                shutil.rmtree(item)
+        print(f"  [cleanup] Cleared contents of {counters_dir}")
+    if inputs_json_path.exists():
+        inputs_json_path.unlink()
+        print(f"  [cleanup] Removed {inputs_json_path}")
+
+
+def pkill_on_all_nodes(nodes: list) -> None:
+    """SSH to each node in turn and pkill -9 -x lulesh_arts."""
+    for node in nodes:
+        print(f"  [pkill] SSHing to {node} to kill lulesh_arts …")
+        try:
+            subprocess.run(
+                ["ssh", node, "pkill", "-9", "-x", "lulesh_arts"],
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"  [pkill] SSH to {node} timed out; continuing.")
+        except Exception as exc:
+            print(f"  [pkill] SSH to {node} raised {exc}; continuing.")
+
+
+def run_lulesh(cmd: list, exec_dir: Path) -> tuple:
+    """
+    Run the lulesh command with a timeout.
+
+    Returns (success: bool, combined_output: str, timed_out: bool).
+    """
+    timed_out = False
+    combined_output = ""
+    success = False
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(exec_dir),
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS,
+        )
+        combined_output = result.stdout + result.stderr
+        success = "Final Origin Energy" in combined_output
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        combined_output = (exc.stdout or "") + (exc.stderr or "")
+        print(f"  [timeout] Process exceeded {TIMEOUT_SECONDS}s and was terminated.")
+
+    return success, combined_output, timed_out
 
 # ==============================================================================
 # MAIN EXPERIMENT LOOP
@@ -90,6 +156,7 @@ def main() -> None:
 
             # Path to j (absolute)
             run_dir_abs = run_dir.resolve()
+            inputs_json_path = run_dir_abs / "inputs.json"
 
             # ------------------------------------------------------------------
             # i)  Copy sample config to run directory, rename to arts.cfg
@@ -137,38 +204,55 @@ def main() -> None:
             exec_dir = BUILD_CPU_DIR
 
             # ------------------------------------------------------------------
-            # vi) Run ./run_cxl.sh ./lulesh_arts <inputs>
+            # vi) Run ./run_cxl.sh ./lulesh_arts <inputs> with retry logic
             # ------------------------------------------------------------------
             lulesh_args = LULESH_INPUTS[i]
             cmd = ["./run_cxl.sh", "./lulesh_arts"] + lulesh_args
 
             print(f"[nodes={i}] run={j}: running {' '.join(cmd)} in {exec_dir}")
 
-            result = subprocess.run(
-                cmd,
-                cwd=str(exec_dir),
-                capture_output=True,
-                text=True,
-            )
+            success = False
+            active_nodes = node_names[:i]
 
-            combined_output = result.stdout + result.stderr
-            success = "Final Origin Energy" in combined_output
+            for attempt in range(MAX_RETRIES + 1):
+                if attempt > 0:
+                    print(f"[nodes={i}] run={j}: retry attempt {attempt}/{MAX_RETRIES}")
 
-            if success:
-                print(f"[nodes={i}] run={j}: SUCCESS")
-                inputs_data = {
-                    "node_count": i,
-                    "run": j,
-                    "args": lulesh_args,
-                    "cmd": cmd,
-                }
-                inputs_json_path = noted_dir / "inputs.json"
-                inputs_json_path.write_text(json.dumps(inputs_data, indent=2))
-            else:
+                success, combined_output, timed_out = run_lulesh(cmd, exec_dir)
+
+                if success:
+                    print(f"[nodes={i}] run={j}: SUCCESS (attempt {attempt})")
+                    inputs_data = {
+                        "node_count": i,
+                        "run": j,
+                        "args": lulesh_args,
+                        "cmd": cmd,
+                    }
+                    inputs_json_path.write_text(json.dumps(inputs_data, indent=2))
+                    break
+
+                # ---- FAILED (timeout, missing success string, or other) ----
+                reason = "timeout" if timed_out else "missing 'Final Origin Energy'"
                 print(
-                    f"[nodes={i}] run={j}: FAILED (return code {result.returncode})"
+                    f"[nodes={i}] run={j}: FAILED — {reason} (attempt {attempt})"
                 )
                 print(combined_output[-2000:] if combined_output else "(no output)")
+
+                # a) Clean up counters and inputs.json
+                cleanup_run(counters_dir, inputs_json_path)
+
+                if attempt < MAX_RETRIES:
+                    # b) SSH to all nodes and pkill lulesh_arts
+                    pkill_on_all_nodes(active_nodes)
+
+                    # c) Sleep 10 seconds before retrying
+                    print(f"  [retry] Sleeping 10 s before next attempt …")
+                    time.sleep(10)
+                else:
+                    print(
+                        f"[nodes={i}] run={j}: Exhausted {MAX_RETRIES} retries. "
+                        "Skipping this run."
+                    )
 
             # ------------------------------------------------------------------
             # vii) Change dir back to …/experiments/lulesh/<i>
