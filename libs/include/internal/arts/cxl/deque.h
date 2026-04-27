@@ -272,9 +272,12 @@ static inline arts_cxl_deque_t *arts_cxl_deque_init(void) {
 static inline void arts_cxl_deque_free(arts_cxl_deque_t *dq) {
 #ifdef ARTS_CXL_NATIVE
   /* Real CXL: only rank 0 frees shared resources */
+  arts_printf("Freeing CXL deque: %p\n", dq);
   if (!arts_global_rank_id) {
+    arts_printf("Freeing CXL Arena: %p\n", dq->consts.mem_arena);
     arts_cxl_arena_free(dq->consts.mem_arena);
     for (unsigned int i = 0; i < dq->consts.db_arena_count; i++) {
+      arts_printf("Freeing CXL DB Arena: %p\n", dq->consts.db_arenas[i]);
       arts_cxl_arena_free(dq->consts.db_arenas[i]);
     }
     arts_cxl_tournament_lock_delete(dq->consts.lock);
