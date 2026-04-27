@@ -46,7 +46,8 @@ LULESH_INPUTS = {
     1: ["-s", "180", "-t", "30", "-i", "5"],
     2: ["-s", "210", "-t", "30", "-i", "5"],
     3: ["-s", "240", "-t", "30", "-i", "5"],
-    4: ["-s", "270", "-t", "30", "-i", "5"],
+    # 4: ["-s", "270", "-t", "30", "-i", "5"],
+    4: ["-s", "180", "-t", "20", "-i", "5"], # Smaller size to fit in 1 DAX device
 }
 
 # ==============================================================================
@@ -57,7 +58,8 @@ LULESH_INPUTS = {
 SCRIPT_DIR = Path(__file__).resolve().parent          # …/experiments/lulesh
 PROJECT_ROOT_DIR = SCRIPT_DIR.parent.parent           # …/arts_cxl
 
-SAMPLE_CFG = PROJECT_ROOT_DIR / "sample_configs" / "arts_crete_roundrobin.cfg"
+# SAMPLE_CFG = PROJECT_ROOT_DIR / "sample_configs" / "arts_crete_roundrobin.cfg"
+SAMPLE_CFG = PROJECT_ROOT_DIR / "sample_configs" / "arts_crete.cfg" # Single FAM device
 BUILD_CPU_DIR = PROJECT_ROOT_DIR / "build" / "examples" / "cpu"
 
 # ==============================================================================
@@ -133,7 +135,8 @@ def main() -> None:
     # Working directory is the directory that contains this script
     working_dir = SCRIPT_DIR
 
-    for i in range(1, num_nodes + 1):
+    # for i in range(1, num_nodes + 1):
+    for i in range(num_nodes, num_nodes + 1): # Just run with max nodes
         # ----------------------------------------------------------------------
         # i)  Create per-node-count directory  <working_dir>/<i>/
         # ----------------------------------------------------------------------
