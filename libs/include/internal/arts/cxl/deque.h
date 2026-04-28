@@ -107,7 +107,15 @@ typedef union {
 
 static inline void arts_cxl_arena_init(arts_cxl_arena_t **arena, size_t bytes) {
   *arena = (arts_cxl_arena_t *)GLOBAL_MALLOC(sizeof(arts_cxl_arena_t));
+  assert(*arena && "arts_cxl_arena_init arena struct allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(*arena) && "arts_cxl_arena_init arena struct allocation is a CXL ptr");
+  #endif
   char *memory = (char *)GLOBAL_MALLOC(bytes);
+  assert(memory && "arts_cxl_arena_init memory allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(memory) && "arts_cxl_arena_init memory allocation is a CXL ptr");
+  #endif
   (*arena)->base = memory;
   (*arena)->head = memory;
   (*arena)->initialized = true;
@@ -123,7 +131,15 @@ static inline void arts_cxl_arena_init(arts_cxl_arena_t **arena, size_t bytes) {
 static inline void arts_cxl_arena_init_dev(arts_cxl_arena_t **arena,
                                             size_t bytes, uint64_t dev_id) {
   *arena = (arts_cxl_arena_t *)GLOBAL_MALLOC(sizeof(arts_cxl_arena_t));
+  assert(*arena && "arts_cxl_arena_init_dev arena allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(*arena) && "arts_cxl_arena_init_dev arena allocation is a CXL ptr");
+  #endif
   char *memory = (char *)GLOBAL_MALLOC_DEV(bytes, dev_id);
+  assert(memory && "arts_cxl_arena_init_dev memory allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(memory) && "arts_cxl_arena_init_dev memory allocation is a CXL ptr");
+  #endif
   (*arena)->base = memory;
   (*arena)->head = memory;
   (*arena)->initialized = true;
@@ -168,6 +184,10 @@ static inline void *arts_cxl_arena_malloc(arts_cxl_arena_t *arena,
 static inline arts_cxl_deque_t *arts_cxl_deque_create(void) {
   arts_cxl_deque_t *dq =
       (arts_cxl_deque_t *)SHARED_MALLOC(sizeof(arts_cxl_deque_t));
+  assert(dq && "arts_cxl_deque_create struct allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(dq) && "arts_cxl_deque_create struct allocation is a CXL ptr");
+  #endif
 
   dq->indices.front_idx = -1;
   dq->indices.back_idx = 0;
@@ -246,6 +266,10 @@ arts_cxl_deque_create_with_arenas(const uint64_t *dev_ids,
 static inline arts_cxl_deque_t *arts_cxl_deque_get(void) {
   arts_cxl_deque_t *dq =
       (arts_cxl_deque_t *)LAST_SHARED_MALLOC(sizeof(arts_cxl_deque_t));
+  assert(dq && "arts_cxl_deque_get struct allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(dq) && "arts_cxl_deque_get struct allocation is a CXL ptr");
+  #endif
   FLUSH_FENCE_CONSUMER(dq, sizeof(arts_cxl_deque_t));
   return dq;
 }

@@ -107,6 +107,10 @@ static inline arts_cxl_tournament_lock_t *
 arts_cxl_tournament_lock_new(unsigned int num_procs) {
   arts_cxl_tournament_lock_t *tl = (arts_cxl_tournament_lock_t *)GLOBAL_MALLOC(
       sizeof(arts_cxl_tournament_lock_t));
+  assert(tl && "arts_cxl_tournament_lock_new tl allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(tl) && "arts_cxl_tournament_lock_new tl allocation is a CXL ptr");
+  #endif
   unsigned int x = num_procs;
   uint64_t k = 0;
   while (x >>= 1) {
@@ -122,6 +126,10 @@ arts_cxl_tournament_lock_new(unsigned int num_procs) {
   unsigned int num_locks = tl->lock.num_procs - 1;
   tl->lock.locks = (arts_cxl_peterson_lock_t *)GLOBAL_MALLOC(
       sizeof(arts_cxl_peterson_lock_t) * num_locks);
+  assert(tl->lock.locks && "arts_cxl_tournament_lock_new lock allocation is valid");
+  #ifdef ARTS_CXL_NATIVE
+  assert(IS_CXL_PTR(tl->lock.locks) && "arts_cxl_tournament_lock_new lock allocation is a CXL ptr");
+  #endif
   for (unsigned int i = 0; i < num_locks; i++) {
     arts_cxl_peterson_lock_init(&tl->lock.locks[i]);
   }
