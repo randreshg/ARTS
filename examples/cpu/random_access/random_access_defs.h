@@ -47,11 +47,11 @@ extern "C" {
 // #define TURNON(...) __VA_ARGS__
 
 // #define TABLESIZE 32UL * 2UL * 80UL * 1024UL * 32UL
-#define TABLESIZE 32UL * 1024UL * 80UL
+#define TABLESIZE 972800UL
 // #define TABLESIZE 32UL * 2UL
 // #define TILESIZE 32UL * 2UL * 80UL * 1024UL
 // #define TILESIZE 32UL
-#define TILESIZE 40960UL
+#define TILESIZE 1280UL
 #define NUPDATE (16 * TABLESIZE)
 // #define NUPDATE TABLESIZE
 
