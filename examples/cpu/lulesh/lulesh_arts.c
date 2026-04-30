@@ -1322,10 +1322,18 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Publish this tile's 6 CXL GUIDs into the registry slot.  Slots are
    * cacheline-aligned so writes from different tile owners hit
    * different cachelines — no false sharing, no lock needed. */
+
+  // lulesh_tile_guids_t *registry =
+      // (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
+                                  // registry_guid) +
+                              // 1);
+  
+  // With padding
+  static const size_t reg_leading_pad =
+      (64u - (sizeof(struct arts_db_s) % 64u)) % 64u;
   lulesh_tile_guids_t *registry =
-      (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
-                                  registry_guid) +
-                              1);
+      (lulesh_tile_guids_t *)((char *)((struct arts_db_s *)arts_cxl_get_ptr(
+                                  registry_guid) + 1) + reg_leading_pad);
   registry[tid].const_guid = cg;
   registry[tid].pos_vel_guid = pg;
   registry[tid].elem_state_guid = es_guid;
@@ -1369,10 +1377,19 @@ void post_init_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * (launch_iteration runs on rank 0), so local population suffices. */
   arts_guid_t registry_guid = (arts_guid_t)paramv[0];
   arts_cxl_consumer_flush(registry_guid);
+
+  // lulesh_tile_guids_t *registry =
+  //     (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
+  //                                 registry_guid) +
+  //                             1);
+  
+  // With padding
+  static const size_t reg_leading_pad =
+      (64u - (sizeof(struct arts_db_s) % 64u)) % 64u;
   lulesh_tile_guids_t *registry =
-      (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
-                                  registry_guid) +
-                              1);
+      (lulesh_tile_guids_t *)((char *)((struct arts_db_s *)arts_cxl_get_ptr(
+                                  registry_guid) + 1) + reg_leading_pad);
+
   int nt = g_init.num_tiles;
   for (int t = 0; t < nt; t++) {
     g_init.const_guids[t] = registry[t].const_guid;
@@ -2149,16 +2166,31 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* CXL mode: do not reserve GUIDs — init_tile_edt receives CXL-encoded
    * GUIDs from arts_db_create and publishes them via the registry DB. */
   lulesh_tile_guids_t *registry = NULL;
+  
+  // arts_guid_t registry_guid = arts_db_create(
+  //     (void **)&registry, (uint64_t)nt * sizeof(lulesh_tile_guids_t),
+  // ARTS_DB_CXL, NULL);
+  // if (registry_guid == NULL_GUID || registry == NULL) {
+  //   arts_printf("LULESH: failed to create CXL registry DB\n");
+  //   arts_shutdown();
+  //   return;
+  // }
+  // memset(registry, 0, (size_t)nt * sizeof(lulesh_tile_guids_t));
+  // arts_db_release(registry_guid); /* Pattern A: producer_flush before readers */
+  
+  // With padding
+  size_t reg_leading_pad =
+      (64u - (sizeof(struct arts_db_s) % 64u)) % 64u;
+  size_t reg_payload_sz =
+      reg_leading_pad + (size_t)nt * sizeof(lulesh_tile_guids_t);
   arts_guid_t registry_guid = arts_db_create(
-      (void **)&registry, (uint64_t)nt * sizeof(lulesh_tile_guids_t),
-      ARTS_DB_CXL, NULL);
+      (void **)&registry, (uint64_t)reg_payload_sz, ARTS_DB_CXL, NULL);
   if (registry_guid == NULL_GUID || registry == NULL) {
     arts_printf("LULESH: failed to create CXL registry DB\n");
     arts_shutdown();
     return;
   }
-  memset(registry, 0, (size_t)nt * sizeof(lulesh_tile_guids_t));
-  arts_db_release(registry_guid); /* Pattern A: producer_flush before readers */
+  memset(registry, 0, reg_payload_sz); 
 
   arts_guid_t init_done =
       arts_event_create(0, ARTS_EVENT_LATCH, (unsigned)nt, NULL_GUID);
