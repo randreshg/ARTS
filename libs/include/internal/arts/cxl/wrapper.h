@@ -65,6 +65,20 @@ extern "C" {
 #endif
 #endif
 
+/* ── Incompatible CXL base detection ─────────────────────────────────────── */
+
+#include <stdint.h>
+#include <stdbool.h>
+
+/**
+ * Base address of the incompatible CXL FAM mapping.
+ * Any pointer whose bit 55 is set originates from this region.
+ */
+#define INCOMPATIBLE_CXL_BASE 0x80000000000000ULL
+static inline bool arts_cxl_is_incompatible_base(const void *ptr) {
+  return ((uintptr_t)ptr & INCOMPATIBLE_CXL_BASE) == INCOMPATIBLE_CXL_BASE;
+}
+
 #ifdef __cplusplus
 }
 #endif

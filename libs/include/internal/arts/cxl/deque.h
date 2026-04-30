@@ -20,13 +20,6 @@ extern "C" {
 extern unsigned int arts_global_rank_count;
 extern unsigned int arts_global_rank_id;
 
-#define INCOMPATIBLE_CXL_BASE 0x80000000000000ULL
-
-// Check if CXL address is part of the 56-bit incompatible pointer base
-static inline bool arts_cxl_is_incompatible_base(const void *ptr) {
-  return ((uintptr_t)ptr & INCOMPATIBLE_CXL_BASE) == INCOMPATIBLE_CXL_BASE;
-}
-
 #define ARTS_CXL_DEQUE_LENGTH 1000000
 #define ARTS_CXL_CHUNK_SIZE 1024
 #define ARTS_CXL_NUM_NODES arts_global_rank_count
