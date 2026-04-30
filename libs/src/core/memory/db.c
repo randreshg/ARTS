@@ -796,6 +796,10 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
  * in the epilogue (release_dbs / arts_release_created_dbs).
  */
 void arts_db_release(arts_guid_t guid) {
+  #ifdef ARTS_USE_CXL
+    if(arts_guid_is_cxl(guid))
+      arts_cxl_producer_flush(guid);
+  #endif
   /* Path 1: check created_db_list (DBs this EDT created) */
   arts_array_list_t *list = arts_get_created_db_list();
   if (list) {
