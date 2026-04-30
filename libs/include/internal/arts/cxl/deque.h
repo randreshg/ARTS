@@ -20,6 +20,13 @@ extern "C" {
 extern unsigned int arts_global_rank_count;
 extern unsigned int arts_global_rank_id;
 
+#define INCOMPATIBLE_CXL_BASE 0x80000000000000ULL
+
+// Check if CXL address is part of the 56-bit incompatible pointer base
+static inline bool arts_cxl_is_incompatible_base(const void *ptr) {
+  return ((uintptr_t)ptr & INCOMPATIBLE_CXL_BASE) == INCOMPATIBLE_CXL_BASE;
+}
+
 #define ARTS_CXL_DEQUE_LENGTH 1000000
 #define ARTS_CXL_CHUNK_SIZE 1024
 #define ARTS_CXL_NUM_NODES arts_global_rank_count
@@ -108,11 +115,13 @@ typedef union {
 static inline void arts_cxl_arena_init(arts_cxl_arena_t **arena, size_t bytes) {
   *arena = (arts_cxl_arena_t *)GLOBAL_MALLOC(sizeof(arts_cxl_arena_t));
   assert(*arena && "arts_cxl_arena_init arena struct allocation is valid");
+  assert(!arts_cxl_is_incompatible_base(*arena) && "arts_cxl_arena_init arena struct is not from incompatible CXL base");
   #ifdef ARTS_CXL_NATIVE
   assert(IS_CXL_PTR(*arena) && "arts_cxl_arena_init arena struct allocation is a CXL ptr");
   #endif
   char *memory = (char *)GLOBAL_MALLOC(bytes);
   assert(memory && "arts_cxl_arena_init memory allocation is valid");
+  assert(!arts_cxl_is_incompatible_base(memory) && "arts_cxl_arena_init memory is not from incompatible CXL base");
   #ifdef ARTS_CXL_NATIVE
   assert(IS_CXL_PTR(memory) && "arts_cxl_arena_init memory allocation is a CXL ptr");
   #endif
@@ -132,11 +141,13 @@ static inline void arts_cxl_arena_init_dev(arts_cxl_arena_t **arena,
                                             size_t bytes, uint64_t dev_id) {
   *arena = (arts_cxl_arena_t *)GLOBAL_MALLOC(sizeof(arts_cxl_arena_t));
   assert(*arena && "arts_cxl_arena_init_dev arena allocation is valid");
+  assert(!arts_cxl_is_incompatible_base(*arena) && "arts_cxl_arena_init_dev arena is not from incompatible CXL base");
   #ifdef ARTS_CXL_NATIVE
   assert(IS_CXL_PTR(*arena) && "arts_cxl_arena_init_dev arena allocation is a CXL ptr");
   #endif
   char *memory = (char *)GLOBAL_MALLOC_DEV(bytes, dev_id);
   assert(memory && "arts_cxl_arena_init_dev memory allocation is valid");
+  assert(!arts_cxl_is_incompatible_base(memory) && "arts_cxl_arena_init_dev memory is not from incompatible CXL base");
   #ifdef ARTS_CXL_NATIVE
   assert(IS_CXL_PTR(memory) && "arts_cxl_arena_init_dev memory allocation is a CXL ptr");
   #endif
@@ -185,6 +196,7 @@ static inline arts_cxl_deque_t *arts_cxl_deque_create(void) {
   arts_cxl_deque_t *dq =
       (arts_cxl_deque_t *)SHARED_MALLOC(sizeof(arts_cxl_deque_t));
   assert(dq && "arts_cxl_deque_create struct allocation is valid");
+  assert(!arts_cxl_is_incompatible_base(dq) && "arts_cxl_deque_create dq is not from incompatible CXL base");
   #ifdef ARTS_CXL_NATIVE
   assert(IS_CXL_PTR(dq) && "arts_cxl_deque_create struct allocation is a CXL ptr");
   #endif
@@ -235,6 +247,7 @@ arts_cxl_deque_create_with_arenas(const uint64_t *dev_ids,
       (arts_cxl_deque_t *)SHARED_MALLOC(sizeof(arts_cxl_deque_t));
 
   assert(dq && "Allocated CXL deque pointer is valid");
+  assert(!arts_cxl_is_incompatible_base(dq) && "arts_cxl_deque_create_with_arenas dq is not from incompatible CXL base");
 
   dq->indices.front_idx = -1;
   dq->indices.back_idx = 0;

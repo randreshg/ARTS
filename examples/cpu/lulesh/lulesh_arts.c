@@ -2232,7 +2232,10 @@ void init_per_node(unsigned int node_id, int argc, char **argv) {
   if (T <= 0)
     T = compute_tile_elems(N, (int)nn);
   if (N % T)
-    return;
+    {
+      arts_printf("N is not divisible by T. Exiting...\n");
+      return;
+    }
   build_topo(N, T, (int)nn);
 }
 

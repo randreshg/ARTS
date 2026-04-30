@@ -108,6 +108,7 @@ arts_cxl_tournament_lock_new(unsigned int num_procs) {
   arts_cxl_tournament_lock_t *tl = (arts_cxl_tournament_lock_t *)GLOBAL_MALLOC(
       sizeof(arts_cxl_tournament_lock_t));
   assert(tl && "arts_cxl_tournament_lock_new tl allocation is valid");
+  assert(!arts_cxl_is_incompatible_base(tl) && "arts_cxl_tournament_lock_new tl is not from incompatible CXL base");
   #ifdef ARTS_CXL_NATIVE
   assert(IS_CXL_PTR(tl) && "arts_cxl_tournament_lock_new tl allocation is a CXL ptr");
   #endif
@@ -127,6 +128,7 @@ arts_cxl_tournament_lock_new(unsigned int num_procs) {
   tl->lock.locks = (arts_cxl_peterson_lock_t *)GLOBAL_MALLOC(
       sizeof(arts_cxl_peterson_lock_t) * num_locks);
   assert(tl->lock.locks && "arts_cxl_tournament_lock_new lock allocation is valid");
+  assert(!arts_cxl_is_incompatible_base(tl->lock.locks) && "arts_cxl_tournament_lock_new locks is not from incompatible CXL base");
   #ifdef ARTS_CXL_NATIVE
   assert(IS_CXL_PTR(tl->lock.locks) && "arts_cxl_tournament_lock_new lock allocation is a CXL ptr");
   #endif
