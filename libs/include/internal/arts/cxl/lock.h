@@ -167,6 +167,9 @@ arts_cxl_tournament_lock_release(arts_cxl_tournament_lock_t *tl,
   (void)id;
   unsigned int node_id = 0;
   for (unsigned int i = 0; i < tl->lock.k; i++) {
+        // Fix: flush before reading owner.value from CXL memory
+    FLUSH_FENCE_CONSUMER(&tl->lock.locks[node_id].lock.owner,
+                         sizeof(arts_cxl_cache_line_t));
     unsigned int pid = tl->lock.locks[node_id].lock.owner.value;
     arts_cxl_peterson_lock_release(&tl->lock.locks[node_id]);
     node_id = (2 * node_id) + 1 + pid;
