@@ -128,7 +128,8 @@ arts_cxl_tournament_lock_new(unsigned int num_procs) {
       sizeof(arts_cxl_peterson_lock_t) * num_locks);
   assert(tl->lock.locks && "arts_cxl_tournament_lock_new lock allocation is valid");
   #ifdef ARTS_CXL_NATIVE
-  assert(IS_CXL_PTR(tl->lock.locks) && "arts_cxl_tournament_lock_new lock allocation is a CXL ptr");
+  if (tl->lock.num_procs > 1)
+    assert(IS_CXL_PTR(tl->lock.locks) && "arts_cxl_tournament_lock_new lock allocation is a CXL ptr");
   #endif
   for (unsigned int i = 0; i < num_locks; i++) {
     arts_cxl_peterson_lock_init(&tl->lock.locks[i]);
