@@ -10,4 +10,4 @@ for i in {1..100}; do
     ./run_cxl.sh ./fibDB 22 &> fibDB_${i}.log
 done
 cd ../../../
-python3 check_logs_random_access.py
+python3 check_logs_fibDB.py
