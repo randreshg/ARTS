@@ -329,7 +329,7 @@ void sw_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 #else
     arts_guid_t score_db_guid =
         arts_db_create((void **)&score_data, sizeof(int32_t), ARTS_DB_DEFAULT,
-                       &(arts_hint_t){.route = 0});
+                       &(arts_hint_t){.route = cur});
 #endif
     score_data[0] = final_score;
 #if ARTS_USE_CXL
