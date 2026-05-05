@@ -837,6 +837,11 @@ void arts_db_release(arts_guid_t guid) {
         arts_db_types_t subtype = db->db_type;
         if (subtype == ARTS_DB_LOCAL) {
           /* LOCAL: no frontier, ordering is programmer's responsibility. */
+#ifdef ARTS_USE_CXL
+        } else if (subtype == ARTS_DB_CXL) {
+          /* CXL: shared FAM, no route table, no frontier, no remote update.
+           * Producer flush already done at the top of arts_db_release. */
+#endif
         } else if (arts_guid_get_rank(guid) == arts_global_rank_id) {
           arts_progress_frontier(db, arts_global_rank_id);
         } else {
@@ -1161,3 +1166,4 @@ void arts_cxl_consumer_flush(arts_guid_t guid) {
   TIME_CXL_CONSUMER_FLUSH_STOP();
 }
 #endif /* ARTS_USE_CXL */
+

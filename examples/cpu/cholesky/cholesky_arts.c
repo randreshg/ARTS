@@ -348,7 +348,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t e =
           arts_edt_create(sequential_cholesky_edt, 3, p, 1,
                           &(arts_hint_t){.route = tile_owner(k, k)});
-      arts_add_dependence(EV(k, k, k), e, 0, DB_MODE_RW);
+      arts_add_dependence(EV(k, k, k), e, 0, DB_MODE_EW);
     }
 
     /* Phase 2: trisolve at (j, k) for j > k */
@@ -357,7 +357,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        (uint64_t)EV(j, k, k + 1)};
       arts_guid_t e = arts_edt_create(
           trisolve_edt, 4, p, 2, &(arts_hint_t){.route = tile_owner(j, k)});
-      arts_add_dependence(EV(j, k, k), e, 0, DB_MODE_RW);
+      arts_add_dependence(EV(j, k, k), e, 0, DB_MODE_EW);
       arts_add_dependence(EV(k, k, k + 1), e, 1, DB_MODE_RO);
     }
 
@@ -368,7 +368,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t e =
           arts_edt_create(update_diagonal_edt, 4, p, 2,
                           &(arts_hint_t){.route = tile_owner(j, j)});
-      arts_add_dependence(EV(j, j, k), e, 0, DB_MODE_RW);
+      arts_add_dependence(EV(j, j, k), e, 0, DB_MODE_EW);
       arts_add_dependence(EV(j, k, k + 1), e, 1, DB_MODE_RO);
     }
 
@@ -380,7 +380,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_guid_t e =
             arts_edt_create(update_nondiagonal_edt, 5, p, 3,
                             &(arts_hint_t){.route = tile_owner(j, i)});
-        arts_add_dependence(EV(j, i, k), e, 0, DB_MODE_RW);
+        arts_add_dependence(EV(j, i, k), e, 0, DB_MODE_EW);
         arts_add_dependence(EV(j, k, k + 1), e, 1, DB_MODE_RO);
         arts_add_dependence(EV(i, k, k + 1), e, 2, DB_MODE_RO);
       }
@@ -398,15 +398,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     int idx = 0;
     for (int i = 0; i < numTiles; ++i) {
       for (int j = 0; j <= i; ++j) {
-        int final_k = j + 1; /* last generation where (i,j) was produced */
+        /* Last generation for tile (i,j):
+         *   diagonal (i==j): seq_chol at k=i writes EV(i,i,i+1)  -> final_k = i+1
+         *   off-diagonal (i>j): trisolve at k=j writes EV(i,j,j+1) -> final_k = j+1
+         *     (update_nondiagonal runs at k=0..j-1, BEFORE trisolve at k=j,
+         *      so trisolve output is the final L tile for off-diagonal tiles) */
+        int final_k = j + 1;
         arts_add_dependence(EV(i, j, final_k), e, (uint32_t)idx++, DB_MODE_RO);
       }
     }
   }
 
-  /* Now satisfy k=0 events with input tiles (all consumers prescribed).
-   * Each tile is created with its owner in hint->route; arts_db_create
-   * stages locally and pushes to remote home on creator release. */
   for (int i = 0; i < numTiles; ++i) {
     for (int j = 0; j <= i; ++j) {
       double *tile;
@@ -417,7 +419,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 #else
       arts_guid_t g = arts_db_create(
           (void **)&tile, sizeof(double) * tileSize * tileSize, ARTS_DB_DEFAULT,
-          &(arts_hint_t){.route = tile_owner(i, j)});
+          NULL);
 #endif
       for (int ti = 0; ti < tileSize; ++ti)
         for (int tj = 0; tj < tileSize; ++tj) {
@@ -445,3 +447,4 @@ int main(int argc, char *argv[]) {
   arts_rt(argc, argv);
   return 0;
 }
+

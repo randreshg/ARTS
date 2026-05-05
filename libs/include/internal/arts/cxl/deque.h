@@ -12,6 +12,7 @@ extern "C" {
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "arts/cxl/lock.h"
@@ -23,6 +24,7 @@ extern unsigned int arts_global_rank_id;
 #define ARTS_CXL_DEQUE_LENGTH 1000000
 #define ARTS_CXL_CHUNK_SIZE 1024
 #define ARTS_CXL_NUM_NODES arts_global_rank_count
+#define PRINT_MALLOC_INFO 1
 
 /* ── Arena allocator (bump pointer on CXL global memory) ────────────────────
  */
@@ -122,6 +124,10 @@ static inline void arts_cxl_arena_init(arts_cxl_arena_t **arena, size_t bytes) {
   (*arena)->head = memory;
   (*arena)->initialized = true;
   (*arena)->max_size = memory + bytes;
+#if PRINT_MALLOC_INFO
+  printf("[ARTS_CXL_ARENA] Arena %p initialized, total_size=%zu bytes, used=0 bytes\n", (void*)*arena, bytes);
+  fflush(stdout);
+#endif
 }
 
 /**
@@ -131,7 +137,7 @@ static inline void arts_cxl_arena_init(arts_cxl_arena_t **arena, size_t bytes) {
  * The arena metadata struct itself is allocated with GLOBAL_MALLOC (any device).
  */
 static inline void arts_cxl_arena_init_dev(arts_cxl_arena_t **arena,
-                                            size_t bytes, uint64_t dev_id) {
+                                             size_t bytes, uint64_t dev_id) {
   *arena = (arts_cxl_arena_t *)GLOBAL_MALLOC(sizeof(arts_cxl_arena_t));
   assert(*arena && "arts_cxl_arena_init_dev arena allocation is valid");
   assert(!arts_cxl_is_incompatible_base(*arena) && "arts_cxl_arena_init_dev arena is not from incompatible CXL base");
@@ -148,6 +154,10 @@ static inline void arts_cxl_arena_init_dev(arts_cxl_arena_t **arena,
   (*arena)->head = memory;
   (*arena)->initialized = true;
   (*arena)->max_size = memory + bytes;
+#if PRINT_MALLOC_INFO
+  printf("[ARTS_CXL_ARENA] Arena %p (dev=%lu) initialized, total_size=%zu bytes, used=0 bytes\n", (void*)*arena, (unsigned long)dev_id, bytes);
+  fflush(stdout);
+#endif
 }
 
 static inline void arts_cxl_arena_free(arts_cxl_arena_t *arena) {
@@ -169,10 +179,15 @@ static inline void *arts_cxl_arena_malloc(arts_cxl_arena_t *arena,
   if (new_head <= (uintptr_t)arena->max_size) {
     arena->head = (char *)new_head;
     FLUSH_FENCE_PRODUCER(arena, sizeof(arts_cxl_arena_t));
+#if PRINT_MALLOC_INFO
+    size_t used = (size_t)((uintptr_t)arena->head - (uintptr_t)arena->base);
+    printf("[ARTS_CXL_ARENA] Arena %p alloc=%zu bytes, used=%zu bytes\n", (void*)arena, aligned_bytes, used);
+    fflush(stdout);
+#endif
     return (void *)aligned_head;
   }
   else {
-    printf("Ran out of space in arena!\n");
+    printf("[ARTS_CXL_ARENA] Arena %p Ran out of space in arena!\n", (void*)arena);
     fflush(stdout);
   }
   return NULL;
