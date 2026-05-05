@@ -398,7 +398,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     int idx = 0;
     for (int i = 0; i < numTiles; ++i) {
       for (int j = 0; j <= i; ++j) {
-        // Last generation for tile (i,j):
+        /* Last generation for tile (i,j):
+         *   diagonal (i==j): seq_chol at k=i writes EV(i,i,i+1)  -> final_k = i+1
+         *   off-diagonal (i>j): trisolve at k=j writes EV(i,j,j+1) -> final_k = j+1
+         *     (update_nondiagonal runs at k=0..j-1, BEFORE trisolve at k=j,
+         *      so trisolve output is the final L tile for off-diagonal tiles) */
         int final_k = j + 1;
         arts_add_dependence(EV(i, j, final_k), e, (uint32_t)idx++, DB_MODE_RO);
       }
@@ -443,3 +447,4 @@ int main(int argc, char *argv[]) {
   arts_rt(argc, argv);
   return 0;
 }
+
