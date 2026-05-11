@@ -731,15 +731,17 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
         ARTS_INFO("EDT[Guid:%lu] pushed to GPU deque", edt->current_edt);
         arts_deque_push_front(arts_thread_info.my_gpu_deque, edt, 0);
       } else {
-        unsigned int target_worker = arts_pick_ready_worker_for_edt(edt);
-        if (target_worker == ARTS_INVALID_WORKER_ID)
-          target_worker = 0;
-        ARTS_INFO("EDT[Guid:%lu] pushed to worker deque %u (preferred NUMA %u)",
-                  edt->current_edt, target_worker, edt->numa_domain);
-        if (arts_thread_info.thread_id == target_worker &&
-            arts_thread_info.my_deque) {
+        if (arts_thread_info.my_deque) {
+          ARTS_INFO("EDT[Guid:%lu] pushed to local deque %u (preferred NUMA %u)",
+                    edt->current_edt, arts_thread_info.thread_id,
+                    edt->numa_domain);
           arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
         } else {
+          unsigned int target_worker = arts_pick_ready_worker_for_edt(edt);
+          if (target_worker == ARTS_INVALID_WORKER_ID)
+            target_worker = 0;
+          ARTS_INFO("EDT[Guid:%lu] pushed to worker deque %u (preferred NUMA %u)",
+                    edt->current_edt, target_worker, edt->numa_domain);
           arts_deque_push_front(arts_node_info.deque[target_worker], edt, 0);
         }
       }
