@@ -248,6 +248,7 @@ unsigned int arts_deque_simple_pop_back_half(struct arts_deque_s *deque,
   uint64_t t = deque->top;
   HW_MEMORY_FENCE();
   uint64_t b = deque->bottom;
+  struct circular_array_s *a = deque->activeArray;
   int64_t available = (int64_t)b - (int64_t)t;
   if (available <= 0)
     return 0;
@@ -259,7 +260,6 @@ unsigned int arts_deque_simple_pop_back_half(struct arts_deque_s *deque,
   /* Single CAS to claim to_steal items from the top. */
   if (arts_atomic_cswap_u64(&deque->top, t, t + to_steal) != t)
     return 0;
-  struct circular_array_s *a = deque->activeArray;
   for (unsigned int i = 0; i < to_steal; i++)
     out[i] = a->segment[(t + i) % a->size];
   return to_steal;
