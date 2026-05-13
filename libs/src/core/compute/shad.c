@@ -58,7 +58,8 @@ arts_guid_t arts_edt_create_shad(arts_edt_t func_ptr, unsigned int route,
   arts_guid_t guid = NULL_GUID;
   arts_edt_create_internal(
       NULL, ARTS_EDT, &guid, route, arts_thread_info.numa_domain_id, edt_space,
-      NULL_GUID, func_ptr, paramc, paramv, 0, false, NULL_GUID, false, 0);
+      NULL_GUID, func_ptr, paramc, paramv, 0, false, NULL_GUID, false, NULL,
+      0);
   return guid;
 }
 
@@ -77,7 +78,7 @@ arts_guid_t arts_active_message_shad(arts_edt_t func_ptr, unsigned int route,
         sizeof(struct arts_edt_s) + (paramc * sizeof(uint64_t)) + dep_space;
     arts_edt_create_internal(NULL, ARTS_EDT, &guid, rank, numa_domain,
                              edt_space, NULL_GUID, func_ptr, paramc, paramv, 1,
-                             use_epoch, epoch_guid, true, 0);
+                             use_epoch, epoch_guid, true, NULL, 0);
 
     arts_signal_edt_ptr(guid, 0, data, size);
   } else {
@@ -85,7 +86,7 @@ arts_guid_t arts_active_message_shad(arts_edt_t func_ptr, unsigned int route,
         sizeof(struct arts_edt_s) + (paramc * sizeof(uint64_t));
     arts_edt_create_internal(NULL, ARTS_EDT, &guid, rank, numa_domain,
                              edt_space, NULL_GUID, func_ptr, paramc, paramv, 0,
-                             use_epoch, epoch_guid, false, 0);
+                             use_epoch, epoch_guid, false, NULL, 0);
   }
   return guid;
 }
@@ -108,7 +109,7 @@ void arts_synchronous_active_message_shad(arts_edt_t func_ptr,
         sizeof(struct arts_edt_s) + (paramc * sizeof(uint64_t)) + dep_space;
     arts_edt_create_internal(NULL, ARTS_EDT, &guid, rank, numa_domain,
                              edt_space, wait_guid, func_ptr, paramc, paramv, 1,
-                             false, NULL_GUID, true, 0);
+                             false, NULL_GUID, true, NULL, 0);
 
     arts_signal_edt_ptr(guid, 0, data, size);
   } else {
@@ -116,7 +117,7 @@ void arts_synchronous_active_message_shad(arts_edt_t func_ptr,
         sizeof(struct arts_edt_s) + (paramc * sizeof(uint64_t));
     arts_edt_create_internal(NULL, ARTS_EDT, &guid, rank, numa_domain,
                              edt_space, wait_guid, func_ptr, paramc, paramv, 0,
-                             false, NULL_GUID, false, 0);
+                             false, NULL_GUID, false, NULL, 0);
   }
 
   while (wait_flag) {

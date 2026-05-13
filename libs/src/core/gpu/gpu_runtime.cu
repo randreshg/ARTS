@@ -170,7 +170,7 @@ arts_guid_t internal_edt_create_gpu(
   (void)arts_edt_create_internal((struct arts_edt_s *)edt, ARTS_EDT, guid,
                                  route, arts_thread_info.numa_domain_id,
                                  edt_space, NULL_GUID, func_ptr, paramc, paramv,
-                                 depc, true, NULL_GUID, has_depv, 0);
+                                 depc, true, NULL_GUID, has_depv, NULL, 0);
   // artsIntrospectionEdtCreateFinish(created);
   //    ARTSEDTCOUNTERTIMERENDINCREMENT(EDT_CREATE_COUNTER);
   return *guid;
