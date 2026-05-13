@@ -34,9 +34,9 @@ int main(void) {
   failed += expect_equal("ready_worker_prefers_requested_numa",
                          arts_pick_worker_for_numa(1, balanced_numa_ids, 4, 0),
                          2);
-  failed += expect_equal("ready_worker_wraps_within_requested_numa",
+  failed += expect_equal("ready_worker_spreads_within_requested_numa",
                          arts_pick_worker_for_numa(0, balanced_numa_ids, 4, 3),
-                         0);
+                         1);
   failed += expect_equal("ready_worker_falls_back_when_numa_absent",
                          arts_pick_worker_for_numa(2, skewed_numa_ids, 3, 1),
                          1);

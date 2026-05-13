@@ -59,11 +59,10 @@
 
 #define MAX_EPOCH_ARRAY_LIST 32
 
-extern unsigned int num_numa_domains;
-
 ARTS_THREAD_LOCAL arts_array_list_t *epoch_list = NULL;
 ARTS_THREAD_LOCAL struct arts_edt_s *current_edt = NULL;
 ARTS_THREAD_LOCAL arts_array_list_t *created_db_list = NULL;
+extern unsigned int num_numa_domains;
 
 /* =========================================================================
  * Thread-local EDT memory pool.
@@ -383,6 +382,7 @@ bool arts_edt_create_internal(struct arts_edt_s *edt, arts_type_t mode,
                               uint32_t paramc, const uint64_t *paramv,
                               uint32_t depc, bool use_epoch,
                               arts_guid_t epoch_guid, bool has_depv,
+                              const arts_edt_dep_t *initial_depv,
                               uint64_t arts_id) {
   if (!edt) {
     /* Determine the bucket for this size class.  All allocations are
@@ -455,6 +455,16 @@ bool arts_edt_create_internal(struct arts_edt_s *edt, arts_type_t mode,
     memcpy(tmp, paramv, sizeof(uint64_t) * paramc);
   }
 
+  if (has_depv && depc) {
+    arts_edt_dep_t *edt_dep = (arts_edt_dep_t *)arts_get_depv(edt);
+    unsigned int dep_space = depc * sizeof(arts_edt_dep_t);
+    if (initial_depv) {
+      memcpy(edt_dep, initial_depv, dep_space);
+    } else {
+      memset(edt_dep, 0, dep_space);
+    }
+  }
+
   ARTS_INFO("EDT create [Guid:%lu, Id:%lu, Depc:%u, Route:%u, "
             "PreReserved:%s, Epoch:%lu, FuncPtr:%p]",
             *guid, edt->arts_id, edt->depc, route, created_guid ? "no" : "yes",
@@ -512,6 +522,43 @@ bool arts_edt_create_internal(struct arts_edt_s *edt, arts_type_t mode,
   return true;
 }
 
+static inline uint64_t arts_mix_u64(uint64_t value) {
+  value ^= value >> 30;
+  value *= 0xbf58476d1ce4e5b9ULL;
+  value ^= value >> 27;
+  value *= 0x94d049bb133111ebULL;
+  value ^= value >> 31;
+  return value;
+}
+
+static unsigned int arts_choose_ready_local_numa(uint32_t paramc,
+                                                 const uint64_t *paramv,
+                                                 uint32_t depc,
+                                                 const arts_edt_dep_t *depv,
+                                                 uint64_t arts_id) {
+  if (num_numa_domains <= 1)
+    return arts_thread_info.numa_domain_id;
+
+  if (depv) {
+    for (uint32_t i = 0; i < depc; ++i) {
+      arts_guid_t guid = depv[i].guid;
+      if (guid && arts_guid_get_type(guid) == ARTS_DB)
+        return (unsigned int)(arts_guid_get_key(guid) % num_numa_domains);
+    }
+  }
+
+  if (paramv && paramc != 0) {
+    uint64_t hash = arts_mix_u64(arts_id);
+    for (uint32_t i = 0; i < paramc; ++i) {
+      hash ^= arts_mix_u64(paramv[i] + 0x9e3779b97f4a7c15ULL +
+                           ((uint64_t)i << 32));
+    }
+    return (unsigned int)(hash % num_numa_domains);
+  }
+
+  return arts_thread_info.numa_domain_id;
+}
+
 arts_guid_t arts_edt_create_dep(arts_edt_t func_ptr, uint32_t paramc,
                                 const uint64_t *paramv, uint32_t depc,
                                 bool has_depv, const arts_hint_t *hint) {
@@ -528,7 +575,7 @@ arts_guid_t arts_edt_create_dep(arts_edt_t func_ptr, uint32_t paramc,
   bool created = arts_edt_create_internal(
       NULL, ARTS_EDT, guid_ptr, route, arts_thread_info.numa_domain_id,
       edt_space, NULL_GUID, func_ptr, paramc, paramv, depc, true, NULL_GUID,
-      has_depv, arts_id);
+      has_depv, NULL, arts_id);
   TIME_EDT_CREATE_STOP();
   return guid;
 }
@@ -544,7 +591,8 @@ arts_guid_t arts_edt_create_with_guid_dep(arts_edt_t func_ptr, arts_guid_t guid,
       sizeof(struct arts_edt_s) + (paramc * sizeof(uint64_t)) + dep_space;
   bool ret = arts_edt_create_internal(
       NULL, ARTS_EDT, &guid, route, arts_thread_info.numa_domain_id, edt_space,
-      NULL_GUID, func_ptr, paramc, paramv, depc, true, NULL_GUID, has_depv, 0);
+      NULL_GUID, func_ptr, paramc, paramv, depc, true, NULL_GUID, has_depv,
+      NULL, 0);
   TIME_EDT_CREATE_STOP();
   return (ret) ? guid : NULL_GUID;
 }
@@ -564,7 +612,7 @@ arts_guid_t arts_edt_create_with_epoch_dep(
   bool created = arts_edt_create_internal(
       NULL, ARTS_EDT, &guid, route, arts_thread_info.numa_domain_id, edt_space,
       NULL_GUID, func_ptr, paramc, paramv, depc, true, epoch_guid, has_depv,
-      arts_id);
+      NULL, arts_id);
   TIME_EDT_CREATE_STOP();
   return guid;
 }
@@ -588,6 +636,64 @@ arts_guid_t arts_edt_create_with_epoch(arts_edt_t func_ptr, uint32_t paramc,
                                        const arts_hint_t *hint) {
   return arts_edt_create_with_epoch_dep(func_ptr, paramc, paramv, depc,
                                         epoch_guid, true, hint);
+}
+
+arts_guid_t arts_edt_create_ready_local_with_epoch(
+    arts_edt_t func_ptr, uint32_t paramc, const uint64_t *paramv,
+    uint32_t depc, const arts_edt_dep_t *depv, arts_guid_t epoch_guid,
+    const arts_hint_t *hint) {
+  if (depc == 0) {
+    return arts_edt_create_with_epoch_dep(func_ptr, paramc, paramv, depc,
+                                          epoch_guid, true, hint);
+  }
+
+  unsigned int route = (hint && hint->route != ARTS_HINT_CURRENT_NODE)
+                           ? hint->route
+                           : arts_global_rank_id;
+
+  if (route != arts_global_rank_id) {
+    arts_guid_t guid = arts_edt_create_with_epoch_dep(
+        func_ptr, paramc, paramv, depc, epoch_guid, true, hint);
+    for (uint32_t i = 0; i < depc; ++i) {
+      const arts_edt_dep_t *dep = depv ? &depv[i] : NULL;
+      arts_guid_t source = dep ? dep->guid : NULL_GUID;
+      arts_db_access_mode_t mode = dep ? dep->mode : DB_MODE_NULL;
+      uint32_t flags = dep ? dep->flags : 0;
+      uint64_t slice_offset = dep ? dep->slice_offset : 0;
+      uint64_t slice_size = dep ? dep->slice_size : 0;
+      if (slice_offset != 0 || slice_size != 0) {
+        arts_add_dependence_at_ex(source, guid, i, mode, slice_offset,
+                                  slice_size, flags);
+      } else {
+        arts_add_dependence_ex(source, guid, i, mode, flags);
+      }
+    }
+    return guid;
+  }
+
+  TIME_EDT_CREATE_START();
+  uint64_t arts_id = hint ? hint->id : 0;
+  unsigned int preferred_numa =
+      arts_choose_ready_local_numa(paramc, paramv, depc, depv, arts_id);
+  unsigned int dep_space = depc * sizeof(arts_edt_dep_t);
+  unsigned int edt_space =
+      sizeof(struct arts_edt_s) + (paramc * sizeof(uint64_t)) + dep_space;
+  arts_guid_t guid = NULL_GUID;
+  bool created = arts_edt_create_internal(
+      NULL, ARTS_EDT, &guid, route, preferred_numa, edt_space,
+      NULL_GUID, func_ptr, paramc, paramv, depc, true, epoch_guid, true,
+      depv, arts_id);
+  if (created) {
+    struct arts_edt_s *edt =
+        (struct arts_edt_s *)arts_route_table_lookup_item(guid);
+    if (!edt) {
+      ARTS_ERROR("Ready-local EDT[Guid:%lu] missing from route table", guid);
+    } else {
+      arts_handle_ready_edt(edt);
+    }
+  }
+  TIME_EDT_CREATE_STOP();
+  return guid;
 }
 
 void arts_edt_free(struct arts_edt_s *edt) {

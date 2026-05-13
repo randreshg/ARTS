@@ -62,6 +62,7 @@ bool arts_edt_create_internal(struct arts_edt_s *edt, arts_type_t mode,
                               uint32_t paramc, const uint64_t *paramv,
                               uint32_t depc, bool use_epoch,
                               arts_guid_t epoch_guid, bool has_depv,
+                              const arts_edt_dep_t *initial_depv,
                               uint64_t arts_id);
 void arts_edt_free(struct arts_edt_s *edt);
 void arts_edt_delete(struct arts_edt_s *edt);

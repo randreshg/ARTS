@@ -68,7 +68,7 @@
 
 #define PACKET_SIZE 4096
 #define NETWORK_BACKOFF_INCREMENT 0
-#define ARTS_CROSS_NUMA_STEAL_BACKOFF 64U
+#define ARTS_CROSS_NUMA_STEAL_BACKOFF 1024U
 
 extern unsigned int num_numa_domains;
 
@@ -147,10 +147,21 @@ unsigned int arts_pick_worker_for_numa(unsigned int preferred_numa_id,
 
   unsigned int start_idx = start % worker_count;
   if (thread_numa_ids) {
+    unsigned int local_count = 0;
     for (unsigned int i = 0; i < worker_count; i++) {
-      unsigned int victim = (start_idx + i) % worker_count;
-      if (thread_numa_ids[victim] == preferred_numa_id)
-        return victim;
+      if (thread_numa_ids[i] == preferred_numa_id)
+        local_count++;
+    }
+    if (local_count) {
+      unsigned int local_target = start % local_count;
+      unsigned int local_seen = 0;
+      for (unsigned int i = 0; i < worker_count; i++) {
+        if (thread_numa_ids[i] != preferred_numa_id)
+          continue;
+        if (local_seen == local_target)
+          return i;
+        local_seen++;
+      }
     }
   }
 
@@ -830,35 +841,64 @@ inline struct arts_edt_s *arts_runtime_steal_from_network() {
   return edt;
 }
 
-#define HALF_STEAL_MAX 16
+#define HALF_STEAL_MAX 32
+
+static inline struct arts_edt_s *
+arts_try_steal_from_worker(unsigned int steal_loc) {
+  void *stolen[HALF_STEAL_MAX];
+  unsigned int count = arts_deque_simple_pop_back_half(
+      arts_node_info.deque[steal_loc], stolen, HALF_STEAL_MAX);
+  if (count == 0)
+    return NULL;
+
+  INCREMENT_NUM_STEAL_SUCCESS_BY(1);
+  struct arts_edt_s *edt = (struct arts_edt_s *)stolen[0];
+  /* Push remaining stolen items to our own deque. */
+  for (unsigned int i = 1; i < count; i++) {
+    arts_deque_push_front(arts_thread_info.my_deque, stolen[i], 0);
+  }
+  if (count > 1)
+    arts_wake_one_worker();
+  return edt;
+}
 
 inline struct arts_edt_s *arts_runtime_steal_from_worker() {
-  struct arts_edt_s *edt = NULL;
-  if (arts_node_info.worker_thread_count > 1) {
-    INCREMENT_NUM_STEAL_ATTEMPT_BY(1);
-    unsigned int steal_loc = arts_pick_worker_steal_victim(
-        arts_thread_info.thread_id, arts_thread_info.numa_domain_id,
-        arts_node_info.thread_numa_ids, arts_node_info.worker_thread_count,
-        (unsigned int)jrand48(arts_thread_info.drand_buf),
-        arts_thread_info.back_off >= ARTS_CROSS_NUMA_STEAL_BACKOFF);
-    if (steal_loc == ARTS_INVALID_WORKER_ID)
-      return NULL;
+  unsigned int worker_count = arts_node_info.worker_thread_count;
+  if (worker_count <= 1)
+    return NULL;
 
-    void *stolen[HALF_STEAL_MAX];
-    unsigned int count = arts_deque_simple_pop_back_half(
-        arts_node_info.deque[steal_loc], stolen, HALF_STEAL_MAX);
-    if (count > 0) {
-      INCREMENT_NUM_STEAL_SUCCESS_BY(1);
-      edt = (struct arts_edt_s *)stolen[0];
-      /* Push remaining stolen items to our own deque. */
-      for (unsigned int i = 1; i < count; i++) {
-        arts_deque_push_front(arts_thread_info.my_deque, stolen[i], 0);
-      }
-      if (count > 1)
-        arts_wake_one_worker();
+  INCREMENT_NUM_STEAL_ATTEMPT_BY(1);
+  unsigned int self = arts_thread_info.thread_id;
+  unsigned int self_numa = arts_thread_info.numa_domain_id;
+  unsigned int start =
+      (unsigned int)jrand48(arts_thread_info.drand_buf) % worker_count;
+  const unsigned int *thread_numa_ids = arts_node_info.thread_numa_ids;
+  bool allow_cross_numa =
+      arts_thread_info.back_off >= ARTS_CROSS_NUMA_STEAL_BACKOFF;
+
+  for (unsigned int pass = 0; pass < 2; ++pass) {
+    if (pass == 1 && !allow_cross_numa)
+      break;
+
+    for (unsigned int i = 0; i < worker_count; ++i) {
+      unsigned int victim = (start + i) % worker_count;
+      if (victim == self)
+        continue;
+
+      bool same_numa =
+          thread_numa_ids && thread_numa_ids[victim] == self_numa;
+      if ((pass == 0 && !same_numa) || (pass == 1 && same_numa))
+        continue;
+
+      struct arts_edt_s *edt = arts_try_steal_from_worker(victim);
+      if (edt)
+        return edt;
     }
+
+    if (!thread_numa_ids)
+      break;
   }
-  return edt;
+  return NULL;
 }
 
 bool arts_network_first_scheduler_loop() {

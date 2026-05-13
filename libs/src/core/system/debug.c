@@ -39,8 +39,10 @@
 #include "arts/system/debug.h"
 
 #include <execinfo.h>
+#include <stdint.h>
 #include <signal.h>
 #include <string.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include "arts/system/print.h"
@@ -83,6 +85,19 @@ static void write_uint(unsigned int val) {
   (void)write(STDERR_FILENO, buf + pos, (size_t)(sizeof(buf) - (size_t)pos));
 }
 
+static void write_hex_uintptr(uintptr_t val) {
+  char buf[2 + (sizeof(uintptr_t) * 2)];
+  const char hex[] = "0123456789abcdef";
+  buf[0] = '0';
+  buf[1] = 'x';
+  for (size_t i = 0; i < sizeof(uintptr_t) * 2; ++i) {
+    unsigned int shift =
+        (unsigned int)((sizeof(uintptr_t) * 2 - 1 - i) * 4);
+    buf[2 + i] = hex[(val >> shift) & 0xfU];
+  }
+  (void)write(STDERR_FILENO, buf, sizeof(buf));
+}
+
 static void write_backtrace(void) {
   void *frames[32];
   int depth = backtrace(frames, 32);
@@ -90,7 +105,7 @@ static void write_backtrace(void) {
 }
 
 // Crash signals (SIGSEGV, SIGBUS, SIGFPE) — unrecoverable, re-raise for core.
-static void arts_crash_signal_handler(int sig) {
+static void arts_crash_signal_handler(int sig, siginfo_t *info, void *context) {
   const char *pre = "\n[ARTS] Crashed: ";
   (void)write(STDERR_FILENO, pre, strlen(pre));
   const char *name = signal_name(sig);
@@ -98,10 +113,19 @@ static void arts_crash_signal_handler(int sig) {
   const char *mid = " (rank ";
   (void)write(STDERR_FILENO, mid, strlen(mid));
   write_uint(arts_global_rank_id);
-  const char *post = ") — stack trace:\n";
+  const char *addr = ") fault_addr=";
+  (void)write(STDERR_FILENO, addr, strlen(addr));
+  write_hex_uintptr((uintptr_t)(info ? info->si_addr : NULL));
+  const char *pc = " pc=";
+  (void)write(STDERR_FILENO, pc, strlen(pc));
+#if defined(__linux__) && defined(__x86_64__) && defined(REG_RIP)
+  ucontext_t *uc = (ucontext_t *)context;
+  write_hex_uintptr((uintptr_t)(uc ? uc->uc_mcontext.gregs[REG_RIP] : 0));
+#else
+  write_hex_uintptr(0);
+#endif
+  const char *post = "\n";
   (void)write(STDERR_FILENO, post, strlen(post));
-
-  write_backtrace();
 
   struct sigaction sa;
   sa.sa_handler = SIG_DFL;
@@ -136,9 +160,9 @@ static void arts_term_signal_handler(int sig) {
 void arts_install_signal_handlers(void) {
   // Crash handlers — backtrace + re-raise for core dump.
   struct sigaction crash_sa;
-  crash_sa.sa_handler = arts_crash_signal_handler;
+  crash_sa.sa_sigaction = arts_crash_signal_handler;
   sigemptyset(&crash_sa.sa_mask);
-  crash_sa.sa_flags = 0;
+  crash_sa.sa_flags = SA_SIGINFO;
   int crash_sigs[] = {SIGSEGV, SIGBUS, SIGFPE};
   for (int i = 0; i < 3; i++) {
     sigaction(crash_sigs[i], &crash_sa, NULL);

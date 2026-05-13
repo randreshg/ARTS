@@ -545,6 +545,27 @@ arts_guid_t arts_edt_create_with_epoch(arts_edt_t func_ptr, uint32_t paramc,
                                        const arts_hint_t *hint);
 
 /**
+ * @brief Create an EDT whose dependency slots are already known locally.
+ *
+ * This is the fused form of @c arts_edt_create_with_epoch followed by one
+ * @c arts_add_dependence call per slot. The dependency array is copied into
+ * the EDT before the normal DB-acquire phase starts.
+ *
+ * @param func_ptr   Function to execute.
+ * @param paramc     Number of static parameters.
+ * @param paramv     Array of parameters.
+ * @param depc       Number of dependency slots.
+ * @param depv       Array of dependency descriptors.
+ * @param epoch_guid Epoch GUID (must still be live).
+ * @param hint       Advisory metadata (route, profiling id). NULL = defaults.
+ * @return GUID of the newly created EDT.
+ */
+arts_guid_t arts_edt_create_ready_local_with_epoch(
+    arts_edt_t func_ptr, uint32_t paramc, const uint64_t *paramv,
+    uint32_t depc, const arts_edt_dep_t *depv, arts_guid_t epoch_guid,
+    const arts_hint_t *hint);
+
+/**
  * @brief Create an EDT with optional dependency-slot allocation.
  *
  * When @p has_depv is @c false the runtime does not allocate storage for the
@@ -942,6 +963,11 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
 void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
                                arts_db_types_t db_type, const void *data,
                                const arts_hint_t *hint);
+
+void *arts_db_create_with_guid_interleaved(arts_guid_t guid, uint64_t len,
+                                           arts_db_types_t db_type,
+                                           const void *data,
+                                           const arts_hint_t *hint);
 
 /**
  * @brief Release the auto-acquired WRITE access for a DataBlock.
