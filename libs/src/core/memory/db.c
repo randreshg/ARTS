@@ -40,7 +40,10 @@
 #include "arts/memory/db.h"
 
 #include <assert.h>
+#include <pthread.h>
 #include <string.h>
+
+#include <hwloc.h>
 
 #include "arts.h"
 #include "arts/compute/edt.h"
@@ -69,6 +72,12 @@ ARTS_DB_TYPE_NAME;
 DB_MODE_NAME;
 
 extern ARTS_THREAD_LOCAL struct arts_edt_s *current_edt;
+extern unsigned int num_numa_domains;
+
+static pthread_once_t arts_db_numa_once = PTHREAD_ONCE_INIT;
+static hwloc_topology_t arts_db_numa_topology = NULL;
+static hwloc_bitmap_t arts_db_numa_nodeset = NULL;
+static bool arts_db_numa_interleave_supported = false;
 
 // True for DB subtypes that have a CDAG frontier (remote-capable).
 static inline bool arts_db_subtype_has_frontier(arts_db_types_t db_type) {
@@ -76,6 +85,62 @@ static inline bool arts_db_subtype_has_frontier(arts_db_types_t db_type) {
 }
 
 #define WRITE_SET 0x80000000
+#define ARTS_DB_NUMA_ALIGN 4096U
+
+static void arts_db_numa_init_once(void) {
+  hwloc_topology_t topology = NULL;
+  if (hwloc_topology_init(&topology) < 0)
+    return;
+  if (hwloc_topology_load(topology) < 0) {
+    hwloc_topology_destroy(topology);
+    return;
+  }
+
+  hwloc_bitmap_t nodeset = NULL;
+  hwloc_obj_t root = hwloc_get_root_obj(topology);
+  if (root && root->nodeset && !hwloc_bitmap_iszero(root->nodeset)) {
+    nodeset = hwloc_bitmap_dup(root->nodeset);
+  } else {
+    nodeset = hwloc_bitmap_alloc();
+    hwloc_obj_t numa = NULL;
+    while ((numa = hwloc_get_next_obj_by_type(topology, HWLOC_OBJ_NUMANODE,
+                                              numa))) {
+      hwloc_bitmap_set(nodeset, numa->os_index);
+    }
+  }
+
+  if (!nodeset || hwloc_bitmap_weight(nodeset) <= 1) {
+    if (nodeset)
+      hwloc_bitmap_free(nodeset);
+    hwloc_topology_destroy(topology);
+    return;
+  }
+
+  arts_db_numa_topology = topology;
+  arts_db_numa_nodeset = nodeset;
+  arts_db_numa_interleave_supported = true;
+}
+
+static bool arts_db_apply_numa_interleave(void *ptr, size_t size) {
+  if (!ptr || size == 0 || num_numa_domains <= 1)
+    return false;
+
+  pthread_once(&arts_db_numa_once, arts_db_numa_init_once);
+  if (!arts_db_numa_interleave_supported || !arts_db_numa_topology ||
+      !arts_db_numa_nodeset)
+    return false;
+
+  int flags = HWLOC_MEMBIND_BYNODESET | HWLOC_MEMBIND_NOCPUBIND;
+  if (hwloc_set_area_membind(arts_db_numa_topology, ptr, size,
+                             arts_db_numa_nodeset, HWLOC_MEMBIND_INTERLEAVE,
+                             flags) == 0)
+    return true;
+
+  flags = HWLOC_MEMBIND_BYNODESET;
+  return hwloc_set_area_membind(arts_db_numa_topology, ptr, size,
+                                arts_db_numa_nodeset, HWLOC_MEMBIND_INTERLEAVE,
+                                flags) == 0;
+}
 
 /*
  * arts_db_auto_acquire — Automatically acquire WRITE access for the creator
@@ -108,6 +173,17 @@ void *arts_db_malloc(arts_db_types_t db_type, size_t size) {
   if (!ptr) {
     ptr = arts_malloc_align(size, 16);
   }
+  return ptr;
+}
+
+static void *arts_db_malloc_interleaved(arts_db_types_t db_type, size_t size) {
+#ifdef ARTS_USE_GPU
+  if (arts_node_info.gpu)
+    return arts_db_malloc(db_type, size);
+#endif
+  void *ptr = arts_malloc_align(size, ARTS_DB_NUMA_ALIGN);
+  if (ptr)
+    arts_db_apply_numa_interleave(ptr, size);
   return ptr;
 }
 
@@ -228,9 +304,11 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
 }
 
 // Guid must be for a local DB only
-void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
-                               arts_db_types_t db_type, const void *data,
-                               const arts_hint_t *hint) {
+static void *arts_db_create_with_guid_impl(arts_guid_t guid, uint64_t len,
+                                           arts_db_types_t db_type,
+                                           const void *data,
+                                           const arts_hint_t *hint,
+                                           bool interleave_memory) {
   TIME_DB_CREATE_START();
   uint64_t arts_id = hint ? hint->id : 0;
 
@@ -238,7 +316,11 @@ void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
   if (arts_guid_is_local(guid)) {
     uint64_t db_size = len + sizeof(struct arts_db_s);
 
-    ptr = arts_db_malloc(db_type, db_size);
+    if (interleave_memory) {
+      ptr = arts_db_malloc_interleaved(db_type, db_size);
+    } else {
+      ptr = arts_db_malloc(db_type, db_size);
+    }
     if (ptr) {
       struct arts_db_s *db_header = (struct arts_db_s *)ptr;
       arts_db_create_internal(guid, db_header, len, db_size, db_type, arts_id);
@@ -261,6 +343,19 @@ void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
             arts_guid_get_rank(guid), len);
   TIME_DB_CREATE_STOP();
   return ptr;
+}
+
+void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
+                               arts_db_types_t db_type, const void *data,
+                               const arts_hint_t *hint) {
+  return arts_db_create_with_guid_impl(guid, len, db_type, data, hint, false);
+}
+
+void *arts_db_create_with_guid_interleaved(arts_guid_t guid, uint64_t len,
+                                           arts_db_types_t db_type,
+                                           const void *data,
+                                           const arts_hint_t *hint) {
+  return arts_db_create_with_guid_impl(guid, len, db_type, data, hint, true);
 }
 
 void *arts_db_adopt(arts_guid_t guid, struct arts_db_s *db) {
