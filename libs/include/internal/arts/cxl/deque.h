@@ -24,7 +24,7 @@ extern unsigned int arts_global_rank_id;
 #define ARTS_CXL_DEQUE_LENGTH 1000000
 #define ARTS_CXL_CHUNK_SIZE 1024
 #define ARTS_CXL_NUM_NODES arts_global_rank_count
-#define PRINT_MALLOC_INFO 1
+#define PRINT_MALLOC_INFO 0
 
 /* ── Arena allocator (bump pointer on CXL global memory) ────────────────────
  */

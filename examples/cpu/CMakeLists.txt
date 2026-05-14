@@ -42,6 +42,9 @@ if (ARTS_USE_CXL)
   set(CPU_EXAMPLES
       fib
       fibDB
+      memory_stress_test
+      memory_stress_test_refactored
+      memory_stress_test_refactored_v2
       fib_yield
       simple_reduction
       tiled_matmul
@@ -215,4 +218,3 @@ endif()
 add_subdirectory(cholesky)
 # smithwaterman: ARTS port of the Smith-Waterman sequence alignment benchmark
 add_subdirectory(smithwaterman)
- 

@@ -1148,7 +1148,7 @@ void arts_cxl_producer_flush(arts_guid_t guid) {
   TIME_CXL_PRODUCER_FLUSH_START();
   INCREMENT_NUM_CXL_PRODUCER_FLUSH_BY(1);
   struct arts_db_s *db = (struct arts_db_s *)arts_cxl_get_ptr(guid);
-  arts_printf("Producer flushing db of size: %lu\n", ALIGN_UP(db->header.size, CACHELINE_SIZE));
+  // arts_printf("Producer flushing db of size: %lu\n", ALIGN_UP(db->header.size, CACHELINE_SIZE));
   FLUSH_FENCE_PRODUCER(db, ALIGN_UP(db->header.size, CACHELINE_SIZE));
   TIME_CXL_PRODUCER_FLUSH_STOP();
 }
@@ -1166,4 +1166,3 @@ void arts_cxl_consumer_flush(arts_guid_t guid) {
   TIME_CXL_CONSUMER_FLUSH_STOP();
 }
 #endif /* ARTS_USE_CXL */
-

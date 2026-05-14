@@ -42,8 +42,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "arts.h"
+
+struct timespec global_start, global_end;
 
 uint64_t start = 0;
 
@@ -148,6 +151,7 @@ void fib_fork(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 void fib_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
+  clock_gettime(CLOCK_MONOTONIC, &global_end);
   uint64_t time = arts_get_time_stamp() - start;
 
   // Extract result from DB
@@ -157,10 +161,16 @@ void fib_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("Fib %u: %u time: %lu nodes: %u workers: %u\n", paramv[0],
               result, time, arts_get_total_nodes(), arts_get_total_workers());
+
+  arts_printf("Elapsed: %lld us\n", (long long)((global_end.tv_sec - global_start.tv_sec) * 1000000LL + (global_end.tv_nsec - global_start.tv_nsec) / 1000LL));
   arts_shutdown();
 }
 
 void init_per_node(unsigned int node_id, int argc, char **argv) {
+
+  if (!node_id) {
+    clock_gettime(CLOCK_MONOTONIC, &global_start);
+  }
   // Nothing to do here
   #if ARTS_USE_CXL
     printf("Using CXL\n");
