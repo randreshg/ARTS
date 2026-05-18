@@ -114,6 +114,9 @@ static ARTS_THREAD_LOCAL void **re_recieve_packet;
 static ARTS_THREAD_LOCAL bool *max_incoming;
 static ARTS_THREAD_LOCAL bool max_out_working;
 static ARTS_THREAD_LOCAL uint64_t next_lazy_accept_time;
+#ifdef ARTS_USE_RDMA
+static ARTS_THREAD_LOCAL bool rdma_accept_thread_active;
+#endif
 
 #define EDT_MUG_SIZE 32
 #define PACKET_SIZE 4194304
@@ -778,9 +781,15 @@ static void arts_close_receive_socket_index(int socket_index) {
 }
 
 static bool arts_receiver_wakeup_requested(void) {
+  bool local_thread_stopped = !arts_thread_info.alive;
+#ifdef ARTS_USE_RDMA
+  if (rdma_accept_thread_active) {
+    local_thread_stopped = false;
+  }
+#endif
   return remote_receiver_wakeup_started != 0U ||
          remote_transport_shutdown_started != 0U ||
-         !arts_thread_info.alive;
+         local_thread_stopped;
 }
 
 void arts_remote_set_message_table(struct arts_config_s *table) {
@@ -2678,6 +2687,7 @@ static bool arts_remote_accept_pending(unsigned int limit, int first_timeout_ms)
 #ifdef ARTS_USE_RDMA
 static void *arts_rdma_accept_thread_main(void *arg) {
   (void)arg;
+  rdma_accept_thread_active = true;
   ARTS_TRACE_RDMA("accept thread start rank=%u", arts_global_rank_id);
   while (!arts_receiver_wakeup_requested()) {
     bool accepted =
@@ -2689,6 +2699,7 @@ static void *arts_rdma_accept_thread_main(void *arg) {
   }
   arts_rdma_maybe_print_summary("accept-thread-stop");
   ARTS_TRACE_RDMA("accept thread stop rank=%u", arts_global_rank_id);
+  rdma_accept_thread_active = false;
   return NULL;
 }
 
