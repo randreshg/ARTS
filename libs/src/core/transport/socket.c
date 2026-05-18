@@ -90,6 +90,7 @@ static uint64_t *remote_connect_retry_after;
 static volatile unsigned int *remote_connect_abandoned_inflight;
 static unsigned int *remote_connect_abandoned_generation;
 static uint64_t *remote_connect_abandoned_until;
+static volatile unsigned int *remote_connect_active_permit;
 #endif
 
 int *local_socket_recieve;
@@ -140,11 +141,17 @@ static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 #define ARTS_RDMA_EAGER_CONNECT 0
 #define ARTS_RDMA_EAGER_CONNECT_ROUNDS 4
 #define ARTS_RDMA_ACCEPT_THREAD 0
+#define ARTS_RDMA_ABANDON_CLOSE_AFTER_SEND 0
+#define ARTS_RDMA_ABANDON_ABANDONED_CONNECT_CLOSE 0
+#define ARTS_RDMA_FULL_DUPLEX 0
+#define ARTS_RDMA_ALLOW_RSOCKET_REUSE 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND_EVERY 1
+#define ARTS_RDMA_MAX_ACTIVE_CONNECTS 2
 #define ARTS_RDMA_CLOSE_WORKERS 4
 #define ARTS_RDMA_SEND_MAX_BYTES 1048576
 #define ARTS_RDMA_SEND_MAX_ITERS 256
 #define ARTS_RDMA_RECV_PACKETS_PER_SOCKET 16
+#define ARTS_RDMA_SOCKET_RETIRE_MSG 0xFFFFFFFEu
 #define ARTS_CONNECTION_HELLO_MAGIC 0x41525453u
 #define ARTS_TRANSPORT_TCP_NAME "tcp"
 #define ARTS_TRANSPORT_RDMA_NAME "rdma-rsocket"
@@ -166,6 +173,10 @@ static volatile uint64_t rdma_connect_abandoned_count = 0;
 static volatile uint64_t rdma_connect_backoff_skip_count = 0;
 static volatile uint64_t rdma_connect_helper_hello_count = 0;
 static volatile uint64_t rdma_connect_helper_hello_fail_count = 0;
+static volatile uint64_t rdma_connect_helper_active_count = 0;
+static volatile uint64_t rdma_active_connect_permit_count = 0;
+static volatile uint64_t rdma_active_connect_permit_peak = 0;
+static volatile uint64_t rdma_active_connect_permit_wait_count = 0;
 static volatile uint64_t rdma_accept_fd_count = 0;
 static volatile uint64_t rdma_accept_attempt_count = 0;
 static volatile uint64_t rdma_accept_success_count = 0;
@@ -180,6 +191,8 @@ static volatile uint64_t rdma_recv_eof_count = 0;
 static volatile uint64_t rdma_recv_error_count = 0;
 static volatile uint64_t rdma_deferred_close_start_count = 0;
 static volatile uint64_t rdma_deferred_close_done_count = 0;
+static volatile uint64_t rdma_deferred_close_abandon_count = 0;
+static volatile uint64_t rdma_deferred_close_inflight_count = 0;
 static volatile uint64_t rdma_deferred_close_queue_depth = 0;
 static volatile uint64_t rdma_deferred_close_queue_peak = 0;
 static volatile uint64_t rdma_close_after_send_context_count = 0;
@@ -189,6 +202,15 @@ static volatile uint64_t rdma_close_other_context_count = 0;
 static volatile uint64_t rdma_abandoned_connect_inflight_count = 0;
 static volatile uint64_t rdma_send_cap_hit_count = 0;
 static volatile uint64_t rdma_recv_cap_hit_count = 0;
+static volatile uint64_t rdma_socket_retire_send_count = 0;
+static volatile uint64_t rdma_socket_retire_send_fail_count = 0;
+static volatile uint64_t rdma_socket_retire_recv_count = 0;
+static volatile uint64_t rdma_full_duplex_connected_recv_count = 0;
+static volatile uint64_t rdma_full_duplex_accepted_send_count = 0;
+static volatile uint64_t rdma_full_duplex_skip_close_count = 0;
+static volatile uint64_t rdma_full_duplex_detach_count = 0;
+static volatile uint64_t rdma_provider_fanout_hint_count = 0;
+static volatile unsigned int rdma_provider_fanout_warning_emitted = 0;
 static volatile int rdma_last_connect_errno = 0;
 static volatile int rdma_last_connect_peer = -1;
 static volatile unsigned int rdma_last_connect_port = 0;
@@ -203,13 +225,29 @@ struct arts_connection_hello_s {
 
 static const char *arts_transport_name(void);
 static unsigned int arts_env_uint(const char *name, unsigned int fallback);
+static bool arts_close_send_after_complete_send(void);
 static unsigned int arts_close_send_after_complete_send_every(void);
 #ifdef ARTS_USE_RDMA
 static void arts_rdma_maybe_print_summary(const char *reason);
+static unsigned int arts_rdma_max_active_connects(void);
+static bool arts_rdma_active_connect_throttle_enabled(void);
+static bool arts_rdma_acquire_active_connect_permit_for_socket(
+    int socket_index, int peer_rank, unsigned int port);
+static bool arts_rdma_take_active_connect_permit_for_socket(int socket_index);
+static void arts_rdma_release_active_connect_permit(const char *reason);
+static bool arts_rdma_socket_has_active_connect_permit(int socket_index);
 static unsigned int arts_lazy_accept_drain_limit(void);
 static bool arts_remote_accept_pending(unsigned int limit, int first_timeout_ms);
 static bool arts_send_connection_hello(int socket_fd, unsigned int port,
                                        int *err_out);
+static bool arts_send_rdma_socket_retire(int socket_fd, unsigned int port,
+                                         int *err_out);
+static bool arts_rdma_allow_rsocket_reuse(void);
+static bool arts_rdma_full_duplex_enabled(void);
+static void arts_rdma_maybe_warn_provider_fanout_limit(
+    int peer_rank, unsigned int port, const struct sockaddr_in *addr,
+    unsigned int retry_count, int connect_errno);
+static bool arts_rdma_wait_for_connect_helpers(void);
 static void *arts_rdma_accept_thread_main(void *arg);
 static void arts_rdma_start_accept_thread(void);
 static void arts_rdma_stop_accept_thread(void);
@@ -268,10 +306,161 @@ static void arts_rdma_note_deferred_close_context(const char *context) {
   }
 }
 
+static bool arts_rdma_abandon_close_after_send_enabled(void) {
+  static bool initialized = false;
+  static bool enabled = true;
+  if (!initialized) {
+    enabled = arts_env_uint("ARTS_RDMA_ABANDON_CLOSE_AFTER_SEND",
+                            ARTS_RDMA_ABANDON_CLOSE_AFTER_SEND) != 0U;
+    initialized = true;
+  }
+  return enabled;
+}
+
+static bool arts_rdma_abandon_abandoned_connect_close_enabled(void) {
+  static bool initialized = false;
+  static bool enabled = true;
+  if (!initialized) {
+    enabled =
+        arts_env_uint("ARTS_RDMA_ABANDON_ABANDONED_CONNECT_CLOSE",
+                      ARTS_RDMA_ABANDON_ABANDONED_CONNECT_CLOSE) != 0U;
+    initialized = true;
+  }
+  return enabled;
+}
+
+static bool arts_rdma_should_abandon_deferred_close(const char *context) {
+  return context && strcmp(context, "close_after_send") == 0 &&
+         arts_rdma_abandon_close_after_send_enabled();
+}
+
+static bool arts_rdma_allow_rsocket_reuse(void) {
+  static bool initialized = false;
+  static bool enabled = false;
+  if (!initialized) {
+    enabled = arts_env_uint("ARTS_RDMA_ALLOW_RSOCKET_REUSE",
+                            ARTS_RDMA_ALLOW_RSOCKET_REUSE) != 0U;
+    initialized = true;
+  }
+  return enabled;
+}
+
+static void arts_rdma_warn_rsocket_reuse_fallback(const char *setting,
+                                                  unsigned int requested) {
+  static volatile unsigned int warning_emitted = 0;
+  if (!__sync_bool_compare_and_swap(&warning_emitted, 0U, 1U)) {
+    return;
+  }
+  arts_atomic_print(
+      "[RDMA-WARN][rank=%u] %s ignoring %s=%u because rdma-rsocket reuse is "
+      "not enabled. Persistent/bounded rsocket fanout can stall on this RoCE "
+      "path; using one-shot close-after-send. Set "
+      "ARTS_RDMA_ALLOW_RSOCKET_REUSE=1 to force the experimental reuse path.\n",
+      arts_global_rank_id, arts_transport_name(),
+      setting ? setting : "rdma reuse", requested);
+}
+
+static unsigned int arts_rdma_max_active_connects(void) {
+  static bool initialized = false;
+  static unsigned int max_active = ARTS_RDMA_MAX_ACTIVE_CONNECTS;
+  if (!initialized) {
+    max_active = arts_env_uint("ARTS_RDMA_MAX_ACTIVE_CONNECTS",
+                               ARTS_RDMA_MAX_ACTIVE_CONNECTS);
+    initialized = true;
+  }
+  return max_active;
+}
+
+static bool arts_rdma_active_connect_throttle_enabled(void) {
+  unsigned int max_active = arts_rdma_max_active_connects();
+  return max_active != 0U && max_active != UINT_MAX &&
+         arts_close_send_after_complete_send() &&
+         arts_close_send_after_complete_send_every() == 1U &&
+         !arts_rdma_full_duplex_enabled();
+}
+
+static void arts_rdma_release_active_connect_permit(const char *reason) {
+  uint64_t active = rdma_active_connect_permit_count;
+  while (active != 0ULL) {
+    if (__sync_bool_compare_and_swap(&rdma_active_connect_permit_count, active,
+                                     active - 1ULL)) {
+      ARTS_TRACE_RDMA("active connect permit release reason=%s active=%llu",
+                      reason ? reason : "unknown",
+                      (unsigned long long)(active - 1ULL));
+      arts_rdma_maybe_print_summary("active-connect-release");
+      return;
+    }
+    active = rdma_active_connect_permit_count;
+  }
+  ARTS_TRACE_RDMA("active connect permit release skipped reason=%s active=0",
+                  reason ? reason : "unknown");
+}
+
+static bool arts_rdma_socket_has_active_connect_permit(int socket_index) {
+  return socket_index >= 0 && remote_connect_active_permit &&
+         remote_connect_active_permit[socket_index] != 0U;
+}
+
+static bool arts_rdma_acquire_active_connect_permit_for_socket(
+    int socket_index, int peer_rank, unsigned int port) {
+  if (!arts_rdma_active_connect_throttle_enabled()) {
+    return false;
+  }
+  if (socket_index < 0 || !remote_connect_active_permit) {
+    return false;
+  }
+  if (arts_rdma_socket_has_active_connect_permit(socket_index)) {
+    __sync_fetch_and_add(&rdma_connect_backoff_skip_count, 1ULL);
+    arts_rdma_maybe_print_summary("active-connect-inflight");
+    return false;
+  }
+
+  unsigned int max_active = arts_rdma_max_active_connects();
+  bool waited = false;
+  while (true) {
+    uint64_t active = rdma_active_connect_permit_count;
+    if (active < (uint64_t)max_active &&
+        __sync_bool_compare_and_swap(&rdma_active_connect_permit_count, active,
+                                     active + 1ULL)) {
+      uint64_t acquired = active + 1ULL;
+      arts_rdma_update_peak(&rdma_active_connect_permit_peak, acquired);
+      __sync_lock_test_and_set(&remote_connect_active_permit[socket_index], 1U);
+      ARTS_TRACE_RDMA("active connect permit acquire peer=%d port=%u "
+                      "active=%llu max=%u waited=%u",
+                      peer_rank, port, (unsigned long long)acquired,
+                      max_active, waited ? 1U : 0U);
+      if (waited) {
+        arts_rdma_maybe_print_summary("active-connect-acquire-after-wait");
+      }
+      return true;
+    }
+
+    if (!waited) {
+      waited = true;
+      __sync_fetch_and_add(&rdma_active_connect_permit_wait_count, 1ULL);
+      ARTS_TRACE_RDMA("active connect permit wait peer=%d port=%u active=%llu "
+                      "max=%u",
+                      peer_rank, port, (unsigned long long)active, max_active);
+      arts_rdma_maybe_print_summary("active-connect-throttle");
+    }
+    arts_remote_accept_pending(arts_lazy_accept_drain_limit(), 0);
+    usleep(ARTS_RDMA_ACCEPT_SLEEP_US);
+  }
+}
+
+static bool arts_rdma_take_active_connect_permit_for_socket(int socket_index) {
+  if (socket_index < 0 || !remote_connect_active_permit) {
+    return false;
+  }
+  return __sync_bool_compare_and_swap(&remote_connect_active_permit[socket_index],
+                                      1U, 0U);
+}
+
 struct arts_rdma_deferred_close_s {
   int socket_fd;
   bool shutdown_first;
   const char *context;
+  bool release_active_connect_permit;
   struct arts_rdma_deferred_close_s *next;
 };
 
@@ -289,14 +478,44 @@ static void arts_rdma_close_socket_now(int socket_fd, bool shutdown_first,
   ARTS_TRACE_RDMA("deferred close enter fd=%d context=%s shutdown=%u",
                   socket_fd, context ? context : "unknown",
                   shutdown_first ? 1U : 0U);
+  __sync_fetch_and_add(&rdma_deferred_close_inflight_count, 1ULL);
   if (shutdown_first) {
     RSHUTDOWN(socket_fd, SHUT_RDWR);
   }
   RCLOSE(socket_fd);
+  arts_rdma_sub_counter_floor_zero(&rdma_deferred_close_inflight_count, 1ULL);
   __sync_fetch_and_add(&rdma_deferred_close_done_count, 1ULL);
   arts_rdma_maybe_print_summary("deferred-close-done");
   ARTS_TRACE_RDMA("deferred close leave fd=%d context=%s", socket_fd,
                   context ? context : "unknown");
+}
+
+static unsigned int arts_rdma_connect_helper_shutdown_wait_ms(void) {
+  static bool initialized = false;
+  static unsigned int wait_ms = 0;
+  if (!initialized) {
+    wait_ms = arts_env_uint("ARTS_RDMA_CONNECT_HELPER_SHUTDOWN_WAIT_MS", 5000U);
+    initialized = true;
+  }
+  return wait_ms;
+}
+
+static bool arts_rdma_wait_for_connect_helpers(void) {
+  unsigned int wait_ms = arts_rdma_connect_helper_shutdown_wait_ms();
+  uint64_t deadline = arts_get_time_stamp() + ((uint64_t)wait_ms * 1000000ULL);
+  while (rdma_connect_helper_active_count != 0ULL) {
+    if (wait_ms == 0 || arts_get_time_stamp() >= deadline) {
+      arts_atomic_print(
+          "[RDMA-WARN][rank=%u] %s cleanup continuing with %llu detached RDMA "
+          "connect helper thread(s) still active; keeping abandoned-connect "
+          "state alive to avoid use-after-free during provider teardown\n",
+          arts_global_rank_id, arts_transport_name(),
+          (unsigned long long)rdma_connect_helper_active_count);
+      return false;
+    }
+    usleep(1000);
+  }
+  return true;
 }
 
 static void *arts_rdma_deferred_close_main(void *arg) {
@@ -304,6 +523,9 @@ static void *arts_rdma_deferred_close_main(void *arg) {
       (struct arts_rdma_deferred_close_s *)arg;
   arts_rdma_close_socket_now(close_arg->socket_fd, close_arg->shutdown_first,
                              close_arg->context);
+  if (close_arg->release_active_connect_permit) {
+    arts_rdma_release_active_connect_permit(close_arg->context);
+  }
   free(close_arg);
   return NULL;
 }
@@ -330,6 +552,9 @@ static void *arts_rdma_deferred_close_worker_main(void *arg) {
     close_arg->next = NULL;
     arts_rdma_close_socket_now(close_arg->socket_fd, close_arg->shutdown_first,
                                close_arg->context);
+    if (close_arg->release_active_connect_permit) {
+      arts_rdma_release_active_connect_permit(close_arg->context);
+    }
     free(close_arg);
   }
   return NULL;
@@ -441,10 +666,13 @@ static void arts_rdma_close_worker_shutdown(void) {
   pthread_mutex_unlock(&rdma_close_queue_lock);
 }
 
-static void arts_defer_rdma_close_socket_fd(int *socket_fd,
-                                            bool shutdown_first,
-                                            const char *context) {
+static void arts_defer_rdma_close_socket_fd_with_permit(
+    int *socket_fd, bool shutdown_first, const char *context,
+    bool release_active_connect_permit) {
   if (!socket_fd || *socket_fd < 0) {
+    if (release_active_connect_permit) {
+      arts_rdma_release_active_connect_permit(context);
+    }
     return;
   }
 
@@ -452,23 +680,41 @@ static void arts_defer_rdma_close_socket_fd(int *socket_fd,
   *socket_fd = -1;
   arts_rdma_note_deferred_close_context(context);
 
+  if (arts_rdma_should_abandon_deferred_close(context)) {
+    __sync_fetch_and_add(&rdma_deferred_close_abandon_count, 1ULL);
+    arts_rdma_maybe_print_summary("deferred-close-abandon");
+    ARTS_TRACE_RDMA("deferred close abandoned fd=%d context=%s", fd,
+                    context ? context : "unknown");
+    if (release_active_connect_permit) {
+      arts_rdma_release_active_connect_permit(context);
+    }
+    return;
+  }
+
   struct arts_rdma_deferred_close_s *close_arg =
       (struct arts_rdma_deferred_close_s *)calloc(1, sizeof(*close_arg));
   if (!close_arg) {
     ARTS_WARN("%s could not allocate deferred close for fd=%d (%s); "
               "abandoning fd to keep RDMA sender progress",
               arts_transport_name(), fd, context ? context : "unknown");
+    if (release_active_connect_permit) {
+      arts_rdma_release_active_connect_permit(context);
+    }
     return;
   }
   close_arg->socket_fd = fd;
   close_arg->shutdown_first = shutdown_first;
   close_arg->context = context;
+  close_arg->release_active_connect_permit = release_active_connect_permit;
 
   if (!arts_rdma_close_queue_enqueue(close_arg)) {
     if (remote_transport_shutdown_started || rdma_close_queue_stopping) {
       arts_rdma_close_socket_now(close_arg->socket_fd,
                                  close_arg->shutdown_first,
                                  close_arg->context);
+      if (close_arg->release_active_connect_permit) {
+        arts_rdma_release_active_connect_permit(close_arg->context);
+      }
       free(close_arg);
       return;
     }
@@ -488,6 +734,9 @@ static void arts_defer_rdma_close_socket_fd(int *socket_fd,
               "abandoning fd to keep RDMA sender progress",
               arts_transport_name(), fd, context ? context : "unknown",
               strerror(create_res));
+    if (close_arg->release_active_connect_permit) {
+      arts_rdma_release_active_connect_permit(close_arg->context);
+    }
     free(close_arg);
     return;
   }
@@ -496,10 +745,25 @@ static void arts_defer_rdma_close_socket_fd(int *socket_fd,
   ARTS_TRACE_RDMA("deferred close scheduled fd=%d context=%s shutdown=%u", fd,
                   context ? context : "unknown", shutdown_first ? 1U : 0U);
 }
+
+static void arts_defer_rdma_close_socket_fd(int *socket_fd,
+                                            bool shutdown_first,
+                                            const char *context) {
+  arts_defer_rdma_close_socket_fd_with_permit(socket_fd, shutdown_first,
+                                              context, false);
+}
 #endif
 
-static void arts_discard_unconnected_socket_fd(int *socket_fd) {
+static void arts_discard_unconnected_socket_fd_with_permit(
+    int *socket_fd, bool release_active_connect_permit) {
   if (!socket_fd || *socket_fd < 0) {
+#ifdef ARTS_USE_RDMA
+    if (release_active_connect_permit) {
+      arts_rdma_release_active_connect_permit("discard_unconnected");
+    }
+#else
+    (void)release_active_connect_permit;
+#endif
     return;
   }
 
@@ -509,11 +773,17 @@ static void arts_discard_unconnected_socket_fd(int *socket_fd) {
    * Do not hold the sender thread on cleanup for a socket that is about to be
    * retried; progress on later peers is more important than synchronous close.
    */
-  arts_defer_rdma_close_socket_fd(socket_fd, false, "discard_unconnected");
+  arts_defer_rdma_close_socket_fd_with_permit(
+      socket_fd, false, "discard_unconnected", release_active_connect_permit);
 #else
+  (void)release_active_connect_permit;
   RCLOSE(*socket_fd);
   *socket_fd = -1;
 #endif
+}
+
+static void arts_discard_unconnected_socket_fd(int *socket_fd) {
+  arts_discard_unconnected_socket_fd_with_permit(socket_fd, false);
 }
 
 static void arts_abandon_unconnected_socket_fd(int *socket_fd) {
@@ -728,6 +998,31 @@ static void arts_clear_receive_slot_partial_state(int socket_index) {
   }
 }
 
+#ifdef ARTS_USE_RDMA
+static void arts_rdma_detach_send_socket_fd(int socket_fd) {
+  if (!arts_rdma_full_duplex_enabled() || socket_fd < 0 ||
+      !remote_socket_send_list || !remote_connection_alive ||
+      !arts_global_message_table) {
+    return;
+  }
+
+  unsigned int total = arts_global_message_table->table_length * ports;
+  for (unsigned int i = 0; i < total; i++) {
+    arts_lock(&remote_socket_send_lock_list[i]);
+    if (remote_socket_send_list[i] == socket_fd) {
+      remote_socket_send_list[i] = -1;
+      remote_connection_alive[i] = false;
+      if (remote_send_success_count) {
+        remote_send_success_count[i] = 0;
+      }
+      __sync_fetch_and_add(&rdma_full_duplex_detach_count, 1ULL);
+      ARTS_TRACE_RDMA("full-duplex detach send index=%u fd=%d", i, socket_fd);
+    }
+    arts_unlock(&remote_socket_send_lock_list[i]);
+  }
+}
+#endif
+
 static void arts_close_receive_socket_index(int socket_index) {
   if (socket_index < 0) {
     return;
@@ -779,6 +1074,7 @@ static void arts_close_receive_socket_index(int socket_index) {
 
   if (socket_fd >= 0) {
 #ifdef ARTS_USE_RDMA
+    arts_rdma_detach_send_socket_fd(socket_fd);
     arts_defer_rdma_close_socket_fd(&socket_fd, false, "close_receive");
 #else
     arts_close_socket_fd(&socket_fd);
@@ -1103,6 +1399,9 @@ void arts_ll_server_wakeup_receivers() {
 
 void arts_ll_server_cleanup() {
   arts_ll_server_shutdown();
+#ifdef ARTS_USE_RDMA
+  bool rdma_connect_helpers_drained = arts_rdma_wait_for_connect_helpers();
+#endif
 
   arts_free(ip_list);
   ip_list = NULL;
@@ -1129,12 +1428,16 @@ void arts_ll_server_cleanup() {
   arts_free(remote_connect_retry_after);
   remote_connect_retry_after = NULL;
 #ifdef ARTS_USE_RDMA
-  arts_free((void *)remote_connect_abandoned_inflight);
-  remote_connect_abandoned_inflight = NULL;
-  arts_free(remote_connect_abandoned_generation);
-  remote_connect_abandoned_generation = NULL;
-  arts_free(remote_connect_abandoned_until);
-  remote_connect_abandoned_until = NULL;
+  if (rdma_connect_helpers_drained) {
+    arts_free((void *)remote_connect_abandoned_inflight);
+    remote_connect_abandoned_inflight = NULL;
+    arts_free(remote_connect_abandoned_generation);
+    remote_connect_abandoned_generation = NULL;
+    arts_free(remote_connect_abandoned_until);
+    remote_connect_abandoned_until = NULL;
+    arts_free((void *)remote_connect_active_permit);
+    remote_connect_active_permit = NULL;
+  }
 #endif
   arts_free(remote_socket_recieve_list);
   remote_socket_recieve_list = NULL;
@@ -1152,10 +1455,19 @@ void arts_ll_server_cleanup() {
   local_socket_recieve = NULL;
   remote_incoming_connected_count = 0;
   remote_receiver_wakeup_started = 0;
+#ifdef ARTS_USE_RDMA
+  if (rdma_connect_helpers_drained) {
+    remote_transport_shutdown_started = 0;
+  }
+#else
   remote_transport_shutdown_started = 0;
+#endif
   remote_expected_incoming_count = 0;
 #ifdef ARTS_USE_RDMA
   rdma_abandoned_connect_inflight_count = 0;
+  rdma_active_connect_permit_count = 0;
+  rdma_active_connect_permit_peak = 0;
+  rdma_active_connect_permit_wait_count = 0;
   rdma_next_summary_time = 0;
 #endif
 }
@@ -1245,6 +1557,10 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     "connect_fail=%llu connect_timeout=%llu "
                     "connect_abandoned=%llu connect_backoff_skip=%llu "
                     "helper_hello=%llu helper_hello_fail=%llu "
+                    "helper_active=%llu "
+                    "active_connect_permits=%llu "
+                    "active_connect_permit_peak=%llu "
+                    "active_connect_permit_wait=%llu "
                     "abandoned_inflight=%llu accept_attempt=%llu "
                     "accept_fd=%llu accept_success=%llu accept_eagain=%llu "
                     "accept_hello_fail=%llu accept_hello_timeout=%llu "
@@ -1252,11 +1568,20 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     "pending_peak=%llu recv_register=%llu recv_close=%llu "
                     "recv_eof=%llu recv_error=%llu "
                     "deferred_close_start=%llu deferred_close_done=%llu "
+                    "deferred_close_abandon=%llu "
+                    "deferred_close_inflight=%llu "
                     "deferred_close_queue_depth=%llu "
                     "deferred_close_queue_peak=%llu close_ctx_send=%llu "
                     "close_ctx_recv=%llu close_ctx_discard=%llu "
                     "close_ctx_other=%llu send_cap_hit=%llu "
-                    "recv_cap_hit=%llu last_connect_errno=%d "
+                    "recv_cap_hit=%llu retire_send=%llu "
+                    "retire_send_fail=%llu retire_recv=%llu "
+                    "full_duplex_connected_recv=%llu "
+                    "full_duplex_accepted_send=%llu "
+                    "full_duplex_skip_close=%llu "
+                    "full_duplex_detach=%llu "
+                    "provider_fanout_hint=%llu "
+                    "last_connect_errno=%d "
                     "last_connect_peer=%d last_connect_port=%u\n",
                     arts_trace_time_us(), arts_global_rank_id,
                     reason ? reason : "periodic",
@@ -1268,6 +1593,10 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     (unsigned long long)rdma_connect_backoff_skip_count,
                     (unsigned long long)rdma_connect_helper_hello_count,
                     (unsigned long long)rdma_connect_helper_hello_fail_count,
+                    (unsigned long long)rdma_connect_helper_active_count,
+                    (unsigned long long)rdma_active_connect_permit_count,
+                    (unsigned long long)rdma_active_connect_permit_peak,
+                    (unsigned long long)rdma_active_connect_permit_wait_count,
                     (unsigned long long)rdma_abandoned_connect_inflight_count,
                     (unsigned long long)rdma_accept_attempt_count,
                     (unsigned long long)rdma_accept_fd_count,
@@ -1286,6 +1615,8 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     (unsigned long long)rdma_recv_error_count,
                     (unsigned long long)rdma_deferred_close_start_count,
                     (unsigned long long)rdma_deferred_close_done_count,
+                    (unsigned long long)rdma_deferred_close_abandon_count,
+                    (unsigned long long)rdma_deferred_close_inflight_count,
                     (unsigned long long)rdma_deferred_close_queue_depth,
                     (unsigned long long)rdma_deferred_close_queue_peak,
                     (unsigned long long)rdma_close_after_send_context_count,
@@ -1294,6 +1625,14 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     (unsigned long long)rdma_close_other_context_count,
                     (unsigned long long)rdma_send_cap_hit_count,
                     (unsigned long long)rdma_recv_cap_hit_count,
+                    (unsigned long long)rdma_socket_retire_send_count,
+                    (unsigned long long)rdma_socket_retire_send_fail_count,
+                    (unsigned long long)rdma_socket_retire_recv_count,
+                    (unsigned long long)rdma_full_duplex_connected_recv_count,
+                    (unsigned long long)rdma_full_duplex_accepted_send_count,
+                    (unsigned long long)rdma_full_duplex_skip_close_count,
+                    (unsigned long long)rdma_full_duplex_detach_count,
+                    (unsigned long long)rdma_provider_fanout_hint_count,
                     rdma_last_connect_errno, rdma_last_connect_peer,
                     rdma_last_connect_port);
 }
@@ -1379,6 +1718,10 @@ static bool arts_close_send_after_complete_send(void) {
      */
     close_after_send =
         arts_env_uint("ARTS_RDMA_CLOSE_AFTER_SEND", 1U) != 0U;
+    if (!close_after_send && !arts_rdma_allow_rsocket_reuse()) {
+      arts_rdma_warn_rsocket_reuse_fallback("ARTS_RDMA_CLOSE_AFTER_SEND", 0U);
+      close_after_send = true;
+    }
     initialized = true;
   }
   return close_after_send;
@@ -1405,12 +1748,17 @@ static unsigned int arts_close_send_after_complete_send_every(void) {
   if (!initialized) {
     if (arts_close_send_after_complete_send()) {
       const char *raw = getenv("ARTS_RDMA_CLOSE_AFTER_SEND_EVERY");
-      close_after_send_every = (raw && raw[0] != '\0')
-                                   ? arts_env_uint(
-                                         "ARTS_RDMA_CLOSE_AFTER_SEND_EVERY", 0U)
-                                   : arts_rdma_adaptive_close_after_send_every();
+      close_after_send_every =
+          (raw && raw[0] != '\0')
+              ? arts_env_uint("ARTS_RDMA_CLOSE_AFTER_SEND_EVERY", 0U)
+              : arts_rdma_adaptive_close_after_send_every();
       if (close_after_send_every == 0) {
         close_after_send_every = arts_rdma_adaptive_close_after_send_every();
+      }
+      if (close_after_send_every > 1U && !arts_rdma_allow_rsocket_reuse()) {
+        arts_rdma_warn_rsocket_reuse_fallback(
+            "ARTS_RDMA_CLOSE_AFTER_SEND_EVERY", close_after_send_every);
+        close_after_send_every = 1U;
       }
     }
     initialized = true;
@@ -1456,19 +1804,15 @@ static bool arts_should_close_receive_after_packet(int socket_index,
     return local_buffer_empty;
   }
 
+  /*
+   * For bounded reuse, the sender owns generation retirement.  Receiver packet
+   * counts are not equivalent to completed sends because payloads can be split
+   * or coalesced.  Keep the active receive socket until EOF, or retire it after
+   * a replacement connection for the same peer/port is already pending.
+   */
   bool close_due = false;
   if (remote_receive_close_pending &&
       remote_receive_close_pending[socket_index]) {
-    close_due = true;
-  }
-
-  if (remote_receive_success_count) {
-    unsigned int completed = ++remote_receive_success_count[socket_index];
-    if (completed >= close_every) {
-      remote_receive_success_count[socket_index] = 0;
-      close_due = true;
-    }
-  } else if (arts_receive_socket_is_one_shot()) {
     close_due = true;
   }
 
@@ -1554,6 +1898,25 @@ static bool arts_rdma_accept_thread_enabled(void) {
 #endif
 }
 
+static bool arts_rdma_full_duplex_enabled(void) {
+#ifdef ARTS_USE_RDMA
+  static bool initialized = false;
+  static bool enabled = false;
+  if (!initialized) {
+    enabled = arts_env_uint("ARTS_RDMA_FULL_DUPLEX",
+                            ARTS_RDMA_FULL_DUPLEX) != 0U;
+    if (enabled && !arts_rdma_allow_rsocket_reuse()) {
+      arts_rdma_warn_rsocket_reuse_fallback("ARTS_RDMA_FULL_DUPLEX", 1U);
+      enabled = false;
+    }
+    initialized = true;
+  }
+  return enabled;
+#else
+  return false;
+#endif
+}
+
 static int arts_receive_poll_timeout_ms(bool has_live_inbound,
                                         bool awaiting_lazy_accept) {
 #ifdef ARTS_USE_RDMA
@@ -1608,6 +1971,7 @@ static void arts_rdma_connect_attempt_destroy(
 
 static void *arts_rdma_connect_attempt_main(void *arg) {
   rdma_connect_helper_thread_active = true;
+  __sync_fetch_and_add(&rdma_connect_helper_active_count, 1ULL);
   struct arts_rdma_connect_attempt_s *attempt =
       (struct arts_rdma_connect_attempt_s *)arg;
   ARTS_TRACE_RDMA("connect rconnect enter peer=%d port=%u fd=%d",
@@ -1701,17 +2065,32 @@ static void *arts_rdma_connect_attempt_main(void *arg) {
                   saved_errno);
 
   if (abandoned) {
-    if (result == 0) {
-      RSHUTDOWN(attempt->socket_fd, SHUT_RDWR);
+    if (arts_rdma_abandon_abandoned_connect_close_enabled() && result != 0 &&
+        !hello_sent) {
+      __sync_fetch_and_add(&rdma_deferred_close_abandon_count, 1ULL);
+      arts_rdma_maybe_print_summary("abandoned-connect-close-abandon");
+      ARTS_TRACE_RDMA("connect abandoned worker leaked fd=%d peer=%d port=%u",
+                      attempt->socket_fd, attempt->peer_rank, attempt->port);
+    } else {
+      if (result == 0) {
+        RSHUTDOWN(attempt->socket_fd, SHUT_RDWR);
+      }
+      RCLOSE(attempt->socket_fd);
     }
-    RCLOSE(attempt->socket_fd);
-    arts_rdma_clear_abandoned_connect_inflight(
-        attempt->socket_index, attempt->abandoned_generation);
-    ARTS_TRACE_RDMA("connect abandoned worker closed peer=%d port=%u fd=%d",
+    if (!remote_transport_shutdown_started) {
+      arts_rdma_clear_abandoned_connect_inflight(
+          attempt->socket_index, attempt->abandoned_generation);
+    }
+    ARTS_TRACE_RDMA("connect abandoned worker cleanup peer=%d port=%u fd=%d",
                     attempt->peer_rank, attempt->port, attempt->socket_fd);
+    if (arts_rdma_take_active_connect_permit_for_socket(
+            attempt->socket_index)) {
+      arts_rdma_release_active_connect_permit("abandoned-connect-helper");
+    }
     arts_rdma_connect_attempt_destroy(attempt);
   }
   rdma_connect_helper_thread_active = false;
+  arts_rdma_sub_counter_floor_zero(&rdma_connect_helper_active_count, 1ULL);
   return NULL;
 }
 
@@ -2163,6 +2542,47 @@ static bool arts_rdma_abandoned_connect_still_quarantined(int socket_index,
   remote_connect_abandoned_until[socket_index] = 0;
   return false;
 }
+
+static void arts_rdma_maybe_warn_provider_fanout_limit(
+    int peer_rank, unsigned int port, const struct sockaddr_in *addr,
+    unsigned int retry_count, int connect_errno) {
+  if (connect_errno != ETIMEDOUT || rdma_connect_success_count < 4ULL ||
+      rdma_connect_success_count > 4ULL || rdma_connect_timeout_count == 0ULL) {
+    return;
+  }
+  if (!__sync_bool_compare_and_swap(&rdma_provider_fanout_warning_emitted, 0U,
+                                    1U)) {
+    return;
+  }
+
+  __sync_fetch_and_add(&rdma_provider_fanout_hint_count, 1ULL);
+  char target_ip[INET_ADDRSTRLEN];
+  snprintf(target_ip, sizeof(target_ip), "unknown");
+  unsigned int target_port = 0;
+  if (addr) {
+    if (!inet_ntop(AF_INET, &addr->sin_addr, target_ip, sizeof(target_ip))) {
+      snprintf(target_ip, sizeof(target_ip), "unknown");
+    }
+    target_port = ntohs(addr->sin_port);
+  }
+
+  arts_atomic_print(
+      "[RDMA-WARN][rank=%u] %s observed RDMA rsocket ETIMEDOUT after %llu "
+      "successful connects (peer=%d port=%u target=%s:%u retry=%u, "
+      "timeouts=%llu, accepted=%llu, close_every=%u). This is consistent with "
+      "an rsocket/RoCE provider open-fanout or resource reclaim limit. The "
+      "supported scalable mode keeps ARTS_RDMA_CLOSE_AFTER_SEND=1 and "
+      "ARTS_RDMA_CLOSE_AFTER_SEND_EVERY=1; set "
+      "ARTS_RDMA_ALLOW_RSOCKET_REUSE=1 only for provider triage.\n",
+      arts_global_message_table ? arts_global_message_table->my_rank
+                                : arts_global_rank_id,
+      arts_transport_name(), (unsigned long long)rdma_connect_success_count,
+      peer_rank, port, target_ip, target_port, retry_count,
+      (unsigned long long)rdma_connect_timeout_count,
+      (unsigned long long)rdma_accept_success_count,
+      arts_close_send_after_complete_send_every());
+  arts_rdma_maybe_print_summary("provider-fanout-limit");
+}
 #endif
 
 static void arts_stagger_remote_connect(int peer_rank, bool steady_state) {
@@ -2486,6 +2906,40 @@ static bool arts_send_connection_hello(int socket_fd, unsigned int port,
   return arts_socket_send_all(socket_fd, &hello, sizeof(hello), err_out);
 }
 
+#ifdef ARTS_USE_RDMA
+static bool arts_is_rdma_socket_retire_packet(
+    const struct arts_remote_packet_s *packet) {
+  return packet && packet->message_type == ARTS_RDMA_SOCKET_RETIRE_MSG &&
+         packet->size == sizeof(*packet);
+}
+
+static bool arts_send_rdma_socket_retire(int socket_fd, unsigned int port,
+                                         int *err_out) {
+  (void)port;
+  struct arts_remote_packet_s packet;
+  memset(&packet, 0, sizeof(packet));
+  arts_fill_packet_header(&packet, sizeof(packet), ARTS_RDMA_SOCKET_RETIRE_MSG);
+  ARTS_TRACE_RDMA("retire send enter fd=%d port=%u", socket_fd, port);
+  bool sent = arts_socket_send_all(socket_fd, &packet, sizeof(packet), err_out);
+  ARTS_TRACE_RDMA("retire send leave fd=%d port=%u ok=%u errno=%d", socket_fd,
+                  port, sent ? 1U : 0U, sent ? 0 : (err_out ? *err_out : 0));
+  if (sent) {
+    __sync_fetch_and_add(&rdma_socket_retire_send_count, 1ULL);
+  } else {
+    __sync_fetch_and_add(&rdma_socket_retire_send_fail_count, 1ULL);
+  }
+  return sent;
+}
+#else
+static bool arts_send_rdma_socket_retire(int socket_fd, unsigned int port,
+                                         int *err_out) {
+  (void)socket_fd;
+  (void)port;
+  (void)err_out;
+  return true;
+}
+#endif
+
 static bool arts_recv_connection_hello(int socket_fd,
                                        struct arts_connection_hello_s *hello,
                                        int *err_out) {
@@ -2558,6 +3012,84 @@ static bool arts_register_receive_socket(int peer_rank, unsigned int port,
   arts_receive_slot_unlock(recv_index);
   return true;
 }
+
+#ifdef ARTS_USE_RDMA
+static int arts_receive_index_for_peer_port(int peer_rank, unsigned int port) {
+  int peer_slot = arts_remote_peer_slot(peer_rank);
+  if (peer_slot < 0 || port >= ports) {
+    return -1;
+  }
+  return (int)port + (peer_slot * (int)ports);
+}
+
+static bool arts_rdma_send_socket_is_active_receive(int peer_rank,
+                                                    unsigned int port,
+                                                    int socket_fd) {
+  if (!arts_rdma_full_duplex_enabled() || socket_fd < 0 ||
+      !remote_socket_recieve_list) {
+    return false;
+  }
+
+  int recv_index = arts_receive_index_for_peer_port(peer_rank, port);
+  if (recv_index < 0) {
+    return false;
+  }
+
+  arts_receive_slot_lock(recv_index);
+  bool shared = remote_socket_recieve_list[recv_index] == socket_fd;
+  arts_receive_slot_unlock(recv_index);
+  return shared;
+}
+
+static bool arts_rdma_register_send_socket_from_full_duplex(int peer_rank,
+                                                           unsigned int port,
+                                                           int socket_fd,
+                                                           const char *source) {
+  if (!arts_rdma_full_duplex_enabled() || peer_rank < 0 ||
+      !arts_global_message_table ||
+      (unsigned int)peer_rank >= arts_global_message_table->table_length ||
+      (unsigned int)peer_rank == arts_global_message_table->my_rank ||
+      port >= ports || socket_fd < 0 || !remote_socket_send_list ||
+      !remote_connection_alive || !remote_socket_send_lock_list) {
+    return false;
+  }
+
+  int socket_index = (peer_rank * (int)ports) + (int)port;
+  bool adopted = false;
+  arts_lock(&remote_socket_send_lock_list[socket_index]);
+  int existing = remote_socket_send_list[socket_index];
+  if (existing == socket_fd) {
+    remote_connection_alive[socket_index] = true;
+    adopted = true;
+  } else if (existing < 0 || !remote_connection_alive[socket_index]) {
+    remote_socket_send_list[socket_index] = socket_fd;
+    remote_connection_alive[socket_index] = true;
+    if (remote_send_success_count) {
+      remote_send_success_count[socket_index] = 0;
+    }
+    if (remote_connect_retry_count) {
+      remote_connect_retry_count[socket_index] = 0;
+    }
+    if (remote_connect_retry_after) {
+      remote_connect_retry_after[socket_index] = 0;
+    }
+    if (remote_connect_success_seen) {
+      remote_connect_success_seen[socket_index] = 1U;
+    }
+    adopted = true;
+  }
+  arts_unlock(&remote_socket_send_lock_list[socket_index]);
+
+  if (adopted) {
+    __sync_fetch_and_add(&rdma_full_duplex_accepted_send_count, 1ULL);
+    ARTS_TRACE_RDMA("full-duplex adopted %s socket for sends peer=%d port=%u "
+                    "index=%d fd=%d",
+                    source ? source : "unknown", peer_rank, port, socket_index,
+                    socket_fd);
+  }
+  return adopted;
+}
+#endif
 
 static bool arts_try_accept_lock(void) {
   return __sync_bool_compare_and_swap(&remote_accept_lock, 0U, 1U);
@@ -2750,6 +3282,10 @@ static bool arts_remote_accept_one_pending(int timeout_ms) {
     arts_discard_unconnected_socket_fd(&accepted_socket);
     return false;
   }
+#ifdef ARTS_USE_RDMA
+  arts_rdma_register_send_socket_from_full_duplex(
+      (int)hello.rank, hello.port, accepted_socket, "accepted");
+#endif
   INCREMENT_NUM_REMOTE_ACCEPT_SUCCESS_BY(1);
 #ifdef ARTS_USE_RDMA
   __sync_fetch_and_add(&rdma_accept_success_count, 1ULL);
@@ -2879,11 +3415,28 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
           remote_connect_success_seen[socket_index] != 0U;
       arts_stagger_remote_connect(rank, steady_connect);
     }
+#ifdef ARTS_USE_RDMA
+    bool active_connect_permit = false;
+    if (arts_rdma_active_connect_throttle_enabled()) {
+      active_connect_permit =
+          arts_rdma_acquire_active_connect_permit_for_socket(socket_index, rank,
+                                                             port);
+      if (!active_connect_permit) {
+        return false;
+      }
+    }
+#endif
     bool candidate_is_published = remote_socket_send_list[socket_index] >= 0;
     int candidate_fd = candidate_is_published
                            ? remote_socket_send_list[socket_index]
                            : arts_get_new_socket();
     if (candidate_fd < 0) {
+#ifdef ARTS_USE_RDMA
+      if (active_connect_permit &&
+          arts_rdma_take_active_connect_permit_for_socket(socket_index)) {
+        arts_rdma_release_active_connect_permit("socket-create-failed");
+      }
+#endif
       return false;
     }
 
@@ -2931,6 +3484,19 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
       INCREMENT_NUM_REMOTE_CONNECT_SUCCESS_BY(1);
 #ifdef ARTS_USE_RDMA
       __sync_fetch_and_add(&rdma_connect_success_count, 1ULL);
+      if (arts_rdma_full_duplex_enabled()) {
+        if (arts_register_receive_socket(rank, port, candidate_fd, "connected")) {
+          __sync_fetch_and_add(&rdma_full_duplex_connected_recv_count, 1ULL);
+          ARTS_TRACE_RDMA("full-duplex registered connected socket for receives "
+                          "peer=%d port=%u fd=%d",
+                          rank, port, candidate_fd);
+        } else {
+          ARTS_WARN("%s could not register connected full-duplex receive socket "
+                    "rank %u <- rank %d port %u fd=%d",
+                    arts_transport_name(), arts_global_message_table->my_rank,
+                    rank, port, candidate_fd);
+        }
+      }
       arts_rdma_maybe_print_summary("connect-success");
 #endif
       ARTS_TRACE_RDMA("connect success peer=%d port=%u fd=%d", rank, port,
@@ -2982,11 +3548,19 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
         arts_abandon_unconnected_socket_fd(&candidate_fd);
       }
     } else {
+      bool release_active_connect_permit = false;
+#ifdef ARTS_USE_RDMA
+      release_active_connect_permit =
+          active_connect_permit &&
+          arts_rdma_take_active_connect_permit_for_socket(socket_index);
+#endif
       if (candidate_is_published) {
-        arts_discard_unconnected_socket_fd(
-            &remote_socket_send_list[socket_index]);
+        arts_discard_unconnected_socket_fd_with_permit(
+            &remote_socket_send_list[socket_index],
+            release_active_connect_permit);
       } else {
-        arts_discard_unconnected_socket_fd(&candidate_fd);
+        arts_discard_unconnected_socket_fd_with_permit(&candidate_fd,
+                                                       release_active_connect_permit);
       }
     }
     if (remote_send_success_count) {
@@ -3000,6 +3574,8 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
       INCREMENT_NUM_REMOTE_CONNECT_TIMEOUT_BY(1);
 #ifdef ARTS_USE_RDMA
       __sync_fetch_and_add(&rdma_connect_timeout_count, 1ULL);
+      arts_rdma_maybe_warn_provider_fanout_limit(rank, port, addr, retry_count,
+                                                 last_errno);
 #endif
     }
 
@@ -3115,6 +3691,19 @@ static void arts_close_send_socket_after_complete_send(int socket_index,
     remote_send_success_count[socket_index] = 0;
   }
 
+#ifdef ARTS_USE_RDMA
+  if (arts_rdma_send_socket_is_active_receive(
+          rank, port, remote_socket_send_list[socket_index])) {
+    __sync_fetch_and_add(&rdma_full_duplex_skip_close_count, 1ULL);
+    ARTS_TRACE_RDMA("full-duplex keeping shared socket after %u complete "
+                    "send(s) peer=%d port=%u fd=%d",
+                    completed_sends, rank, port,
+                    remote_socket_send_list[socket_index]);
+    arts_rdma_maybe_print_summary("full-duplex-skip-close");
+    return;
+  }
+#endif
+
   ARTS_TRACE_RDMA("close send socket after %u complete send(s) peer=%d "
                   "port=%u fd=%d",
                   completed_sends, rank, port,
@@ -3122,8 +3711,25 @@ static void arts_close_send_socket_after_complete_send(int socket_index,
   INCREMENT_NUM_REMOTE_CLOSE_AFTER_SEND_BY(1);
   remote_connection_alive[socket_index] = false;
 #ifdef ARTS_USE_RDMA
-  arts_defer_rdma_close_socket_fd(&remote_socket_send_list[socket_index], false,
-                                  "close_after_send");
+  if (close_after_send_every > 1U) {
+    int retire_errno = 0;
+    if (!arts_send_rdma_socket_retire(remote_socket_send_list[socket_index], port,
+                                      &retire_errno)) {
+      ARTS_WARN("%s failed to send RDMA socket retire marker rank %u -> rank %d "
+                "port %u fd=%d errno=%d: %s",
+                arts_transport_name(), arts_global_message_table->my_rank, rank,
+                port, remote_socket_send_list[socket_index], retire_errno,
+                strerror(retire_errno));
+      arts_rdma_maybe_print_summary("retire-send-fail");
+    } else {
+      arts_rdma_maybe_print_summary("retire-send");
+    }
+  }
+  bool release_active_connect_permit =
+      arts_rdma_take_active_connect_permit_for_socket(socket_index);
+  arts_defer_rdma_close_socket_fd_with_permit(
+      &remote_socket_send_list[socket_index], false, "close_after_send",
+      release_active_connect_permit);
 #else
   arts_close_socket_fd(&remote_socket_send_list[socket_index]);
 #endif
@@ -3261,6 +3867,12 @@ bool arts_remote_setup_incoming() {
   bool rdma_receive_rpoll = arts_rdma_receive_rpoll_enabled();
   bool rdma_accept_thread = arts_rdma_accept_thread_enabled();
   bool rdma_eager_connect = arts_rdma_eager_connect_enabled();
+  bool rdma_full_duplex = arts_rdma_full_duplex_enabled();
+  bool rdma_allow_rsocket_reuse = arts_rdma_allow_rsocket_reuse();
+  bool rdma_abandon_close_after_send =
+      arts_rdma_abandon_close_after_send_enabled();
+  bool rdma_abandon_abandoned_connect_close =
+      arts_rdma_abandon_abandoned_connect_close_enabled();
   unsigned int connect_timeout_ms = arts_connect_timeout_ms();
   unsigned int accept_hello_timeout_ms = arts_accept_hello_timeout_ms();
   unsigned int connect_max_retries = arts_connect_max_retries();
@@ -3276,29 +3888,40 @@ bool arts_remote_setup_incoming() {
   uint64_t send_max_bytes = arts_send_max_bytes_per_call();
   unsigned int send_max_iters = arts_send_max_iters_per_call();
   unsigned int recv_packets = arts_recv_packets_per_socket_limit();
+  unsigned int helper_shutdown_wait_ms =
+      arts_rdma_connect_helper_shutdown_wait_ms();
+  unsigned int max_active_connects = arts_rdma_max_active_connects();
   (void)arts_receive_poll_timeout_ms(false, true);
   ARTS_INFO("%s config rank %u: connect_helper=%u close_after_send=%u "
             "close_after_send_every=%u receive_rpoll=%u eager_connect=%u "
-            "accept_thread=%u connect_timeout_ms=%u "
+            "accept_thread=%u full_duplex=%u allow_rsocket_reuse=%u "
+            "abandon_close_after_send=%u "
+            "abandon_abandoned_connect_close=%u connect_timeout_ms=%u "
             "accept_hello_timeout_ms=%u "
             "max_retries=%u retry_delay_us=%u "
             "abandoned_backoff_us=%u abandoned_quarantine_us=%u "
             "stagger_us=%u between_us=%u steady_between_us=%u "
             "accept_drain_limit=%u accept_idle_us=%u send_max_bytes=%lu "
             "send_max_iters=%u recv_packets_per_socket=%u "
+            "helper_shutdown_wait_ms=%u "
+            "max_active_connects=%u "
             "expected_incoming=%u",
             arts_transport_name(), arts_global_rank_id,
             rdma_connect_helper_enabled ? 1U : 0U,
             rdma_close_after_send ? 1U : 0U,
             rdma_close_after_send_every, rdma_receive_rpoll ? 1U : 0U,
             rdma_eager_connect ? 1U : 0U, rdma_accept_thread ? 1U : 0U,
+            rdma_full_duplex ? 1U : 0U,
+            rdma_allow_rsocket_reuse ? 1U : 0U,
+            rdma_abandon_close_after_send ? 1U : 0U,
+            rdma_abandon_abandoned_connect_close ? 1U : 0U,
             connect_timeout_ms,
             accept_hello_timeout_ms,
             connect_max_retries, connect_retry_delay_us,
             abandoned_connect_backoff_us, abandoned_connect_quarantine_us,
             stagger_us, connect_between_us, connect_steady_between_us,
             accept_drain_limit, accept_idle_us, send_max_bytes, send_max_iters,
-            recv_packets,
+            recv_packets, helper_shutdown_wait_ms, max_active_connects,
             remote_expected_incoming_count);
   arts_rdma_maybe_print_summary("setup-incoming");
 #endif
@@ -3445,6 +4068,9 @@ void arts_remote_setup_outgoing() {
       (unsigned int *)arts_calloc((size_t)count * ports, sizeof(unsigned int));
   remote_connect_abandoned_until =
       (uint64_t *)arts_calloc((size_t)count * ports, sizeof(uint64_t));
+  remote_connect_active_permit =
+      (volatile unsigned int *)arts_calloc((size_t)count * ports,
+                                           sizeof(unsigned int));
 #endif
   for (i = 0; i < count * (int)ports; i++) {
     remote_socket_send_list[i] = -1;
@@ -3832,6 +4458,30 @@ bool arts_server_try_to_receive(
               ARTS_TRACE_RDMA("recv packet index=%d from=%u msg=%u size=%lu",
                               i, processed_rank, processed_msg,
                               processed_size);
+#ifdef ARTS_USE_RDMA
+              if (arts_is_rdma_socket_retire_packet(packet)) {
+                __sync_fetch_and_add(&rdma_socket_retire_recv_count, 1ULL);
+                ARTS_TRACE_RDMA("recv retire index=%d from=%u size=%lu "
+                                "buffer_remaining=%ld",
+                                i, processed_rank, processed_size,
+                                (long)res);
+                res -= (int64_t)processed_size;
+                packet = (struct arts_remote_packet_s *)(((char *)packet) +
+                                                         processed_size);
+                if (res == 0) {
+                  if (remote_receive_close_pending) {
+                    remote_receive_close_pending[i] = false;
+                  }
+                  arts_close_receive_socket_index(i);
+                  max_out_working = true;
+                  break;
+                }
+                if (remote_receive_close_pending) {
+                  remote_receive_close_pending[i] = true;
+                }
+                continue;
+              }
+#endif
               arts_server_process_packet(packet);
               if (processed_msg >= ARTS_EPOCH_INIT_MSG ||
                   processed_msg == ARTS_REMOTE_SHUTDOWN_MSG) {
