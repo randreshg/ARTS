@@ -869,6 +869,8 @@ void arts_remote_epoch_init_send(unsigned int rank, arts_guid_t epoch_guid,
   packet.edt_guid = edt_guid;
   packet.slot = slot;
   arts_fill_packet_header(&packet.header, sizeof(packet), ARTS_EPOCH_INIT_MSG);
+  ARTS_TRACE_RDMA("remote epoch_init enqueue to=%u guid=%lu edt=%lu slot=%u",
+                  rank, epoch_guid, edt_guid, slot);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
 }
 
@@ -877,6 +879,9 @@ void arts_remote_handle_epoch_init_send(void *pack) {
   struct arts_remote_epoch_init_packet_s *packet =
       (struct arts_remote_epoch_init_packet_s *)pack;
   arts_guid_t local_epoch_guid = packet->epoch_guid;
+  ARTS_TRACE_RDMA("remote epoch_init recv from=%u guid=%lu edt=%lu slot=%u",
+                  packet->header.rank, packet->epoch_guid, packet->edt_guid,
+                  packet->slot);
   create_epoch(&local_epoch_guid, packet->edt_guid, packet->slot);
   packet->epoch_guid = local_epoch_guid;
 }
@@ -892,6 +897,8 @@ void arts_remote_epoch_init_pool_send(unsigned int rank, unsigned int pool_size,
   packet.pool_guid = pool_guid;
   arts_fill_packet_header(&packet.header, sizeof(packet),
                           ARTS_EPOCH_INIT_POOL_MSG);
+  ARTS_TRACE_RDMA("remote epoch_pool enqueue to=%u pool=%lu start=%lu size=%u",
+                  rank, pool_guid, start_guid, pool_size);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
 }
 
@@ -900,6 +907,9 @@ void arts_remote_handle_epoch_init_pool_send(void *pack) {
       (struct arts_remote_epoch_init_pool_packet_s *)pack;
   arts_guid_t local_pool_guid = packet->pool_guid;
   arts_guid_t local_start_guid = packet->start_guid;
+  ARTS_TRACE_RDMA("remote epoch_pool recv from=%u pool=%lu start=%lu size=%u",
+                  packet->header.rank, packet->pool_guid, packet->start_guid,
+                  packet->pool_size);
   arts_epoch_pool_t *pool =
       create_epoch_pool(&local_pool_guid, packet->pool_size, &local_start_guid);
   arts_link_epoch_pool_to_tls(pool);
@@ -911,6 +921,7 @@ void arts_remote_epoch_req(unsigned int rank, arts_guid_t guid) {
   struct arts_remote_guid_only_packet_s packet;
   packet.guid = guid;
   arts_fill_packet_header(&packet.header, sizeof(packet), ARTS_EPOCH_REQ_MSG);
+  ARTS_TRACE_RDMA("remote epoch_req enqueue to=%u guid=%lu", rank, guid);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
 }
 
@@ -918,6 +929,8 @@ void arts_remote_handle_epoch_req(void *pack) {
   struct arts_remote_guid_only_packet_s *packet =
       (struct arts_remote_guid_only_packet_s *)pack;
   // For now the source and dest are the same...
+  ARTS_TRACE_RDMA("remote epoch_req recv from=%u guid=%lu",
+                  packet->header.rank, packet->guid);
   send_epoch(packet->guid, packet->header.rank, packet->header.rank);
 }
 
@@ -928,12 +941,19 @@ void arts_remote_epoch_send(unsigned int rank, arts_guid_t guid,
   packet.active = active;
   packet.finish = finish;
   arts_fill_packet_header(&packet.header, sizeof(packet), ARTS_EPOCH_SEND_MSG);
+  ARTS_TRACE_RDMA("remote epoch_send enqueue to=%u guid=%lu active=%u "
+                  "finish=%u",
+                  rank, guid, active, finish);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
 }
 
 void arts_remote_handle_epoch_send(void *pack) {
   struct arts_remote_epoch_send_packet_s *packet =
       (struct arts_remote_epoch_send_packet_s *)pack;
+  ARTS_TRACE_RDMA("remote epoch_send recv from=%u guid=%lu active=%u "
+                  "finish=%u",
+                  packet->header.rank, packet->epoch_guid, packet->active,
+                  packet->finish);
   reduce_epoch(packet->epoch_guid, packet->active, packet->finish);
 }
 

@@ -60,6 +60,7 @@ unsigned int arts_global_rank_id;
 unsigned int arts_global_rank_count;
 unsigned int arts_global_master_rank_id;
 struct arts_config_s *g_config;
+static volatile unsigned int arts_shutdown_started = 0;
 
 struct thread_mask_s *mask;
 pthread_t *node_thread_list;
@@ -97,11 +98,14 @@ void *arts_thread_loop(void *data) {
 void arts_thread_main_join() {
   ARTS_DEBUG("arts_thread_main_join: main thread entering runtime_loop");
   arts_runtime_loop();
+  ARTS_TRACE_RDMA("thread_main_join runtime_loop returned");
   ARTS_DEBUG("arts_thread_main_join: main thread exited runtime_loop, joining "
              "%u threads",
              arts_node_info.total_thread_count - 1);
   TIME_TOTAL_STOP();
+  ARTS_TRACE_RDMA("thread_main_join private_cleanup enter");
   arts_runtime_private_cleanup();
+  ARTS_TRACE_RDMA("thread_main_join private_cleanup leave");
 
   // Save main thread's final counter values before joining other threads
   arts_counter_t *saved = arts_node_info.saved_counters[0];
@@ -117,10 +121,14 @@ void arts_thread_main_join() {
   // Each node writes its own JSON file independently, master polls filesystem
   // Join ALL threads (workers and network threads)
   for (int i = 1; i < arts_node_info.total_thread_count; i++) {
+    ARTS_TRACE_RDMA("thread_main_join join enter thread=%d", i);
     pthread_join(node_thread_list[i], NULL);
+    ARTS_TRACE_RDMA("thread_main_join join leave thread=%d", i);
   }
 
+  ARTS_TRACE_RDMA("thread_main_join global_cleanup enter");
   arts_runtime_global_cleanup();
+  ARTS_TRACE_RDMA("thread_main_join global_cleanup leave");
   // arts_free(args);
   arts_free(mask);
   arts_free(node_thread_list);
@@ -215,14 +223,25 @@ void arts_thread_init(struct arts_config_s *config) {
  *   - User code via the arts_shutdown() public API.
  */
 void arts_shutdown() {
-  ARTS_INFO("arts_shutdown: rank_count=%u, rank_id=%u", arts_global_rank_count,
-            arts_global_rank_id);
-  if (arts_global_rank_count > 1) {
-    arts_remote_shutdown();
-  }
+  if (__sync_bool_compare_and_swap(&arts_shutdown_started, 0U, 1U)) {
+    ARTS_INFO("arts_shutdown: rank_count=%u, rank_id=%u",
+              arts_global_rank_count, arts_global_rank_id);
+    ARTS_TRACE_RDMA("arts_shutdown begin rank_count=%u rank_id=%u",
+                    arts_global_rank_count, arts_global_rank_id);
+    if (arts_global_rank_count > 1) {
+      ARTS_TRACE_RDMA("arts_shutdown remote_shutdown enter");
+      arts_remote_shutdown();
+      ARTS_TRACE_RDMA("arts_shutdown remote_shutdown leave");
+    }
 
-  if (arts_global_rank_count == 1) {
+    ARTS_TRACE_RDMA("arts_shutdown runtime_stop enter");
     arts_runtime_stop();
+    ARTS_TRACE_RDMA("arts_shutdown runtime_stop leave");
+  } else {
+    ARTS_INFO("arts_shutdown: shutdown already in progress on rank %u",
+              arts_global_rank_id);
+    ARTS_TRACE_RDMA("arts_shutdown already in progress rank=%u",
+                    arts_global_rank_id);
   }
 
   (void)fflush(stdout);

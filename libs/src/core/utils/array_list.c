@@ -68,6 +68,9 @@ arts_array_list_t *arts_new_array_list(size_t element_size,
 }
 
 void arts_delete_array_list(arts_array_list_t *a_list) {
+  if (!a_list) {
+    return;
+  }
   arts_array_list_element_t *trail;
   arts_array_list_element_t *current = a_list->head;
   while (current) {

@@ -58,6 +58,7 @@ int arts_get_socket_outgoing(struct sockaddr_in *outgoing_socket,
 void arts_remote_set_message_table(struct arts_config_s *table);
 void arts_remote_setup_outgoing();
 bool arts_remote_setup_incoming();
+void arts_remote_eager_connect_all();
 unsigned int arts_remote_get_my_rank();
 bool arts_server_try_to_receive(char **in_buffer, const int *in_packet_size,
                                 const volatile unsigned int *remote_steal_lock);

@@ -49,6 +49,7 @@
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/protocol.h"
+#include "arts/transport/socket.h"
 #include "arts/utils/malloc.h"
 
 #define EDT_MUG_SIZE 32
@@ -59,7 +60,24 @@ extern bool server_end;
 uint64_t *rec_seq_numbers;
 #endif
 
-void arts_remote_shutdown() { arts_ll_server_shutdown(); }
+void arts_remote_shutdown() {
+  if (arts_global_rank_count > 1) {
+    struct arts_remote_packet_s packet;
+    arts_fill_packet_header(&packet, sizeof(packet), ARTS_REMOTE_SHUTDOWN_MSG);
+    for (unsigned int rank = 0; rank < arts_global_rank_count; rank++) {
+      if (rank == arts_global_rank_id) {
+        continue;
+      }
+      uint64_t remaining =
+          arts_remote_send_request((int)rank, 0, (char *)&packet, sizeof(packet));
+      if (remaining) {
+        ARTS_WARN("Rank %u failed to send shutdown packet to rank %u "
+                  "(remaining=%lu)",
+                  arts_global_rank_id, rank, remaining);
+      }
+    }
+  }
+}
 
 void arts_server_cleanup(void) {
   out_cleanup();
@@ -80,6 +98,11 @@ void arts_server_setup(struct arts_config_s *config) {
 }
 
 void arts_server_process_packet(struct arts_remote_packet_s *packet) {
+  if (packet->message_type >= ARTS_EPOCH_INIT_MSG ||
+      packet->message_type == ARTS_REMOTE_SHUTDOWN_MSG) {
+    ARTS_TRACE_RDMA("process packet from=%u msg=%u size=%lu", packet->rank,
+                    packet->message_type, packet->size);
+  }
 #ifdef SEQUENCENUMBERS
   uint64_t exp_seq_number =
       __sync_fetch_and_add(&rec_seq_numbers[packet->seq_rank], 1U);

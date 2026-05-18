@@ -301,6 +301,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.ready_to_parallel_start = tc;
   arts_node_info.ready_to_inspect = tc;
   arts_node_info.ready_to_execute = tc;
+  arts_node_info.ready_to_network =
+      config->sender_thread_count + config->receiver_thread_count;
   arts_node_info.ready_to_clean = tc;
 
   /* Locks and shutdown coordination */
@@ -399,19 +401,33 @@ void arts_runtime_global_cleanup() {
   for (unsigned int t = 0; t < tc; t++) {
     if (arts_node_info.capture_arrays && arts_node_info.capture_arrays[t]) {
       for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-        if (arts_node_info.capture_arrays[t][i]) {
+        if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_PERIODIC &&
+            arts_node_info.capture_arrays[t][i]) {
           arts_delete_array_list(arts_node_info.capture_arrays[t][i]);
+          arts_node_info.capture_arrays[t][i] = NULL;
+        } else if (arts_counter_mode_array[i] != ARTS_COUNTER_MODE_PERIODIC &&
+                   arts_node_info.capture_arrays[t][i]) {
+          ARTS_WARN("Ignoring non-periodic capture array pointer during "
+                    "cleanup (rank=%u thread=%u counter=%s ptr=%p)",
+                    arts_global_rank_id, t, arts_counter_names[i],
+                    (void *)arts_node_info.capture_arrays[t][i]);
+          arts_node_info.capture_arrays[t][i] = NULL;
         }
       }
       arts_free(arts_node_info.capture_arrays[t]);
+      arts_node_info.capture_arrays[t] = NULL;
     }
     if (arts_node_info.saved_counters) {
       arts_free(arts_node_info.saved_counters[t]);
+      arts_node_info.saved_counters[t] = NULL;
     }
   }
   arts_free(arts_node_info.capture_arrays);
+  arts_node_info.capture_arrays = NULL;
   arts_free(arts_node_info.saved_counters);
+  arts_node_info.saved_counters = NULL;
   arts_free(arts_node_info.live_counters);
+  arts_node_info.live_counters = NULL;
 
   /* Object counter cleanup */
   arts_object_cleanup_node_storage(tc);
@@ -495,23 +511,28 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   if (init_per_worker && arts_thread_info.role == ARTS_ROLE_WORKER)
     init_per_worker(arts_global_rank_id, arts_thread_info.group_pos, argc,
                     argv);
-  if (!arts_global_rank_id) {
-    ARTS_INFO("Thread 0: scheduling main_edt on rank 0 (argc=%d)", argc);
-    uint64_t main_args[2] = {(uint64_t)argc, (uint64_t)argv};
-    arts_hint_t main_hint = {0, 0};
-    arts_edt_create(main_edt, 2, main_args, 0, &main_hint);
-  }
-
   arts_increment_finished_epoch_list();
 
   arts_atomic_sub(&arts_node_info.ready_to_inspect, 1U);
   while (arts_node_info.ready_to_inspect) { ARTS_SPIN_PAUSE(); }
   arts_atomic_sub(&arts_node_info.ready_to_execute, 1U);
   while (arts_node_info.ready_to_execute) { ARTS_SPIN_PAUSE(); }
+  while (arts_node_info.ready_to_network) { ARTS_SPIN_PAUSE(); }
+
+  if (arts_global_rank_count > 1) {
+    arts_remote_eager_connect_all();
+  }
 
   // Start counter capture AFTER all barriers, when receiver threads are in
   // their runtime loops. This ensures time sync requests can be processed.
   arts_counter_capture_start();
+
+  if (!arts_global_rank_id) {
+    ARTS_INFO("Thread 0: scheduling main_edt on rank 0 (argc=%d)", argc);
+    uint64_t main_args[2] = {(uint64_t)argc, (uint64_t)argv};
+    arts_hint_t main_hint = {0, 0};
+    arts_edt_create(main_edt, 2, main_args, 0, &main_hint);
+  }
 }
 
 void arts_runtime_private_init(struct thread_mask_s *thread,
@@ -546,6 +567,10 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
         start = (rem * (size + 1)) + ((thread->group_pos - rem) * size);
         arts_remote_set_thread_outbound_queues(start, start + size);
       }
+      ARTS_TRACE_RDMA("sender queues thread_id=%u group=%u start=%u stop=%u",
+                      thread->id, thread->group_pos, start,
+                      (thread->group_pos < rem) ? start + size + 1
+                                                : start + size);
     }
     if (thread->role == ARTS_ROLE_RECEIVER) {
       arts_node_info.receiver_deque[thread->group_pos] =
@@ -562,6 +587,10 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
         start = (rem * (size + 1)) + ((thread->group_pos - rem) * size);
         arts_remote_set_thread_inbound_queues(start, start + size);
       }
+      ARTS_TRACE_RDMA("receiver queues thread_id=%u group=%u start=%u stop=%u",
+                      thread->id, thread->group_pos, start,
+                      (thread->group_pos < rem) ? start + size + 1
+                                                : start + size);
     }
   }
   arts_node_info.local_spin[thread->id] = &arts_thread_info.alive;
@@ -622,8 +651,10 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
 }
 
 void arts_runtime_private_cleanup() {
-  arts_atomic_sub(&arts_node_info.ready_to_clean, 1U);
+  unsigned int remaining = arts_atomic_sub(&arts_node_info.ready_to_clean, 1U);
+  ARTS_TRACE_RDMA("private_cleanup barrier enter remaining=%u", remaining);
   while (arts_node_info.ready_to_clean) { ARTS_SPIN_PAUSE(); }
+  ARTS_TRACE_RDMA("private_cleanup barrier leave");
   arts_remote_thread_outbound_queues_cleanup();
   arts_remote_thread_inbound_queues_cleanup();
   if (arts_thread_info.my_deque) {
@@ -654,11 +685,14 @@ void arts_runtime_private_cleanup() {
 void arts_runtime_stop() {
   ARTS_INFO("arts_runtime_stop: stopping %u threads",
             arts_node_info.total_thread_count);
+  ARTS_TRACE_RDMA("runtime_stop begin total_threads=%u",
+                  arts_node_info.total_thread_count);
   unsigned int i;
   for (i = 0; i < arts_node_info.total_thread_count; i++) {
     ARTS_DEBUG("arts_runtime_stop: waiting for thread %u to register", i);
     while (!arts_node_info.local_spin[i]) { ARTS_SPIN_PAUSE(); }
     (*arts_node_info.local_spin[i]) = false;
+    ARTS_TRACE_RDMA("runtime_stop signaled thread=%u", i);
     ARTS_DEBUG("arts_runtime_stop: thread %u signaled to stop", i);
   }
   /* Wake any workers sleeping on the condvar so they see alive==false. */
@@ -667,7 +701,13 @@ void arts_runtime_stop() {
     pthread_cond_broadcast(&arts_node_info.worker_sleep_cond);
     pthread_mutex_unlock(&arts_node_info.worker_sleep_mutex);
   }
+  if (arts_global_rank_count > 1) {
+    ARTS_TRACE_RDMA("runtime_stop wake receivers enter");
+    arts_ll_server_wakeup_receivers();
+    ARTS_TRACE_RDMA("runtime_stop wake receivers leave");
+  }
   ARTS_INFO("arts_runtime_stop: all threads signaled");
+  ARTS_TRACE_RDMA("runtime_stop leave");
 }
 
 void arts_handle_remote_stolen_edt(struct arts_edt_s *edt) {
@@ -992,8 +1032,13 @@ bool arts_default_scheduler_loop() {
 int arts_runtime_loop() {
   ARTS_DEBUG("Thread %u entering runtime_loop (role=%d)",
              arts_thread_info.thread_id, arts_thread_info.role);
+  ARTS_TRACE_RDMA("runtime_loop enter role=%d ready_network=%u",
+                  arts_thread_info.role, arts_node_info.ready_to_network);
   switch (arts_thread_info.role) {
   case ARTS_ROLE_RECEIVER:
+    arts_atomic_sub(&arts_node_info.ready_to_network, 1U);
+    ARTS_TRACE_RDMA("receiver runtime ready ready_network=%u",
+                    arts_node_info.ready_to_network);
     while (arts_thread_info.alive) {
       arts_server_try_to_receive(&arts_node_info.buf,
                                  &arts_node_info.packet_size,
@@ -1001,6 +1046,9 @@ int arts_runtime_loop() {
     }
     break;
   case ARTS_ROLE_SENDER:
+    arts_atomic_sub(&arts_node_info.ready_to_network, 1U);
+    ARTS_TRACE_RDMA("sender runtime ready ready_network=%u",
+                    arts_node_info.ready_to_network);
     while (arts_thread_info.alive) {
       arts_remote_async_send();
     }
@@ -1013,6 +1061,7 @@ int arts_runtime_loop() {
   default:
     break;
   }
+  ARTS_TRACE_RDMA("runtime_loop exit role=%d", arts_thread_info.role);
   ARTS_DEBUG("Thread %u exiting runtime_loop", arts_thread_info.thread_id);
   return 0;
 }

@@ -47,6 +47,7 @@ extern "C" {
 void arts_ll_server_setup(struct arts_config_s *config);
 void arts_server_process_packet(struct arts_remote_packet_s *packet);
 void arts_ll_server_shutdown();
+void arts_ll_server_wakeup_receivers();
 void arts_ll_server_cleanup();
 
 void arts_server_setup(struct arts_config_s *config);

@@ -84,6 +84,8 @@ struct arts_runtime_shared_s {
   char _pad_inspect[60];
   volatile unsigned int ready_to_execute;
   char _pad_execute[60];
+  volatile unsigned int ready_to_network;
+  char _pad_network[60];
   volatile unsigned int ready_to_clean;
   char _pad_clean[60];
   volatile unsigned int ready_to_shutdown;

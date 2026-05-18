@@ -42,6 +42,9 @@
 #include <stdint.h>
 #include <signal.h>
 #include <string.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -85,6 +88,37 @@ static void write_uint(unsigned int val) {
   (void)write(STDERR_FILENO, buf + pos, (size_t)(sizeof(buf) - (size_t)pos));
 }
 
+static void write_long(long val) {
+  char buf[32];
+  int pos = (int)sizeof(buf);
+  unsigned long magnitude;
+  if (val < 0) {
+    magnitude = (unsigned long)(-val);
+  } else {
+    magnitude = (unsigned long)val;
+  }
+  if (magnitude == 0) {
+    buf[--pos] = '0';
+  } else {
+    while (magnitude > 0) {
+      buf[--pos] = (char)('0' + (magnitude % 10));
+      magnitude /= 10;
+    }
+  }
+  if (val < 0) {
+    buf[--pos] = '-';
+  }
+  (void)write(STDERR_FILENO, buf + pos, (size_t)(sizeof(buf) - (size_t)pos));
+}
+
+static long current_os_tid(void) {
+#if defined(__linux__) && defined(SYS_gettid)
+  return (long)syscall(SYS_gettid);
+#else
+  return 0L;
+#endif
+}
+
 static void write_hex_uintptr(uintptr_t val) {
   char buf[2 + (sizeof(uintptr_t) * 2)];
   const char hex[] = "0123456789abcdef";
@@ -113,6 +147,15 @@ static void arts_crash_signal_handler(int sig, siginfo_t *info, void *context) {
   const char *mid = " (rank ";
   (void)write(STDERR_FILENO, mid, strlen(mid));
   write_uint(arts_global_rank_id);
+  const char *tid = " tid=";
+  (void)write(STDERR_FILENO, tid, strlen(tid));
+  write_long(current_os_tid());
+  const char *rtid = " runtime_thread=";
+  (void)write(STDERR_FILENO, rtid, strlen(rtid));
+  write_uint(arts_thread_info.thread_id);
+  const char *role = " role=";
+  (void)write(STDERR_FILENO, role, strlen(role));
+  write_uint((unsigned int)arts_thread_info.role);
   const char *addr = ") fault_addr=";
   (void)write(STDERR_FILENO, addr, strlen(addr));
   write_hex_uintptr((uintptr_t)(info ? info->si_addr : NULL));
@@ -126,6 +169,7 @@ static void arts_crash_signal_handler(int sig, siginfo_t *info, void *context) {
 #endif
   const char *post = "\n";
   (void)write(STDERR_FILENO, post, strlen(post));
+  write_backtrace();
 
   struct sigaction sa;
   sa.sa_handler = SIG_DFL;
@@ -144,6 +188,15 @@ static void arts_term_signal_handler(int sig) {
   const char *mid = " (rank ";
   (void)write(STDERR_FILENO, mid, strlen(mid));
   write_uint(arts_global_rank_id);
+  const char *tid = " tid=";
+  (void)write(STDERR_FILENO, tid, strlen(tid));
+  write_long(current_os_tid());
+  const char *rtid = " runtime_thread=";
+  (void)write(STDERR_FILENO, rtid, strlen(rtid));
+  write_uint(arts_thread_info.thread_id);
+  const char *role = " role=";
+  (void)write(STDERR_FILENO, role, strlen(role));
+  write_uint((unsigned int)arts_thread_info.role);
   const char *post = ") — stack trace:\n";
   (void)write(STDERR_FILENO, post, strlen(post));
 

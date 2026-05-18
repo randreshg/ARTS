@@ -78,6 +78,16 @@ ARTS_THREAD_LOCAL uint64_t *last_out;
 ARTS_THREAD_LOCAL uint64_t *last_sent;
 #endif
 
+#define ARTS_SEND_NO_PROGRESS_BACKOFF_US 50
+
+static inline uint64_t out_pending_length(const struct out_list_s *out) {
+  return out->length + (out->payload ? out->payloadSize : 0);
+}
+
+static inline unsigned int out_queue_id_for_rank(unsigned int rank) {
+  return (rank * ports) + (arts_thread_info.group_pos % ports);
+}
+
 void partial_send_store(struct out_list_s *out, uint64_t length_remaining) {
   if (out->payload == NULL) {
     out->offset = out->offset + (out->length - length_remaining);
@@ -212,6 +222,7 @@ void arts_remote_flush_outbound(void) {
       if (out) {
         all_empty = false;
         uint64_t length_remaining;
+        uint64_t pending_before = out_pending_length(out);
 
         if (!out->payload) {
           length_remaining = arts_remote_send_request(
@@ -241,7 +252,9 @@ void arts_remote_flush_outbound(void) {
           pending_sends[i] = NULL;
           arts_link_list_delete_item(out);
         }
-        did_work = true;
+        if (length_remaining < pending_before) {
+          did_work = true;
+        }
       } else {
         // Check if queue has more items
         struct arts_link_list_s *list = arts_link_list_get(out_head, i);
@@ -289,7 +302,7 @@ static inline void out_insert_node(struct out_list_s *node,
   // int list_id = node->rank*ports+arts_thread_info.thread_id%ports;
   long unsigned int list_id;
   // mrand48_r (&arts_thread_info.drand_buf, &list_id);
-  list_id = (node->rank * ports) + (arts_thread_info.group_pos % ports);
+  list_id = out_queue_id_for_rank(node->rank);
   struct arts_link_list_s *list = arts_link_list_get(out_head, list_id);
   struct arts_remote_packet_s *packet =
       (struct arts_remote_packet_s *)(node + 1);
@@ -299,6 +312,11 @@ static inline void out_insert_node(struct out_list_s *node,
   packet->seq_rank = arts_global_rank_id;
 #endif
   arts_link_list_push_back(list, node);
+  if (packet->message_type >= ARTS_EPOCH_INIT_MSG ||
+      packet->message_type == ARTS_REMOTE_SHUTDOWN_MSG) {
+    ARTS_TRACE_RDMA("out_enqueue q=%lu to=%u msg=%u", list_id, node->rank,
+                    packet->message_type);
+  }
 #ifdef SEQUENCENUMBERS
   arts_unlock(&seq_num_lock[list_id]);
 #endif
@@ -346,6 +364,12 @@ bool arts_remote_async_send() {
       }
 
       if (out) {
+        unsigned int trace_msg =
+            ((struct arts_remote_packet_s *)(((char *)(out + 1)) +
+                                            out->offset))
+                ->message_type;
+        unsigned int trace_rank = out->rank;
+        bool trace_has_payload = out->payload != NULL;
 #ifdef SEQUENCENUMBERS
         struct arts_remote_packet_s *packet =
             (struct arts_remote_packet_s *)(out + 1);
@@ -356,6 +380,15 @@ bool arts_remote_async_send() {
         }
         last_sent[packet->seq_rank] = packet->seq_num;
 #endif
+        uint64_t pending_before = out_pending_length(out);
+        if (trace_msg >= ARTS_EPOCH_INIT_MSG ||
+            trace_msg == ARTS_REMOTE_SHUTDOWN_MSG) {
+          ARTS_TRACE_RDMA("async_send begin q=%d to=%u msg=%u bytes=%lu "
+                          "payload=%s resend=%s",
+                          i, trace_rank, trace_msg, pending_before,
+                          trace_has_payload ? "yes" : "no",
+                          out_resend[i - (int)thread_start] ? "yes" : "no");
+        }
         if (!out->payload) {
           length_remaining = arts_remote_send_request(
               (int)out->rank, i, ((char *)(out + 1)) + out->offset,
@@ -387,8 +420,21 @@ bool arts_remote_async_send() {
           arts_link_list_delete_item(out);
         }
 
-        sent = true;
-        success = true;
+        if (trace_msg >= ARTS_EPOCH_INIT_MSG ||
+            trace_msg == ARTS_REMOTE_SHUTDOWN_MSG) {
+          ARTS_TRACE_RDMA("async_send q=%d to=%u msg=%u before=%lu "
+                          "remaining=%lu payload=%s",
+                          i, trace_rank, trace_msg, pending_before,
+                          length_remaining,
+                          trace_has_payload ? "yes" : "no");
+        }
+
+        if (length_remaining < pending_before) {
+          sent = true;
+          success = true;
+        } else {
+          usleep(ARTS_SEND_NO_PROGRESS_BACKOFF_US);
+        }
       }
     }
   }
@@ -423,6 +469,16 @@ void arts_remote_send_request_async(int rank, char *message,
   next->rank = rank;
   next->payload = NULL;
   memcpy(next + 1, message, length);
+  struct arts_remote_packet_s *packet = (struct arts_remote_packet_s *)message;
+  if (packet->message_type >= ARTS_EPOCH_INIT_MSG ||
+      packet->message_type == ARTS_REMOTE_SHUTDOWN_MSG) {
+    ARTS_INFO("Queueing remote control message type=%u from rank %u to rank %d "
+              "(length=%u)",
+              packet->message_type, arts_global_rank_id, rank, length);
+    ARTS_TRACE_RDMA("enqueue control q=%u to=%d msg=%u length=%u",
+                    out_queue_id_for_rank((unsigned int)rank), rank,
+                    packet->message_type, length);
+  }
   out_insert_node(next, length + sizeof(struct out_list_s));
 }
 
