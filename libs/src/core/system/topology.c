@@ -160,11 +160,16 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
     ARTS_INFO("Local multi-node rank %u: PU offset %u (threads %u)",
               config->my_rank, pu_offset, config->thread_count);
   }
-  if (pu_offset + config->thread_count > total_pus) {
+  if (config->pin_threads && pu_offset + config->thread_count > total_pus) {
     ARTS_ERROR("Rank %u: PU range [%u..%u) exceeds available PUs (%u)",
                config->my_rank, pu_offset, pu_offset + config->thread_count,
                total_pus);
     return;
+  }
+  if (!config->pin_threads && pu_offset + config->thread_count > total_pus) {
+    ARTS_WARN("Rank %u: oversubscribing %u threads on %u visible PUs with "
+              "pinning disabled",
+              config->my_rank, config->thread_count, total_pus);
   }
 
   /* Phase 1: Collect all PUs with topology metadata */
@@ -206,7 +211,7 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
       role = ARTS_ROLE_RECEIVER;
     }
 
-    unsigned int pi = pu_offset + t;
+    unsigned int pi = (pu_offset + t) % total_pus;
     flat[t].id = t;
     flat[t].pu_id = pus[pi].pu_os_index;
     flat[t].core_id = pus[pi].core_os_index;

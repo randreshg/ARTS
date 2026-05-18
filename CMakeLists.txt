@@ -275,20 +275,33 @@ if(NOT ARTS_USE_RDMA)
     set(RDMACM_LIBRARIES "")
     set(RDMACM_INCLUDE_DIRS "")
 else()
-    # Try to use RDMA
+    # RDMA was explicitly requested; fail fast when the build host does not
+    # provide the RSockets compatibility layer rather than silently measuring
+    # TCP in an RDMA-labeled experiment.
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(RDMACM QUIET librdmacm)
     endif()
 
-    if(RDMACM_FOUND)
-        add_compile_definitions(ARTS_USE_RDMA)
-        message(STATUS "Network: Using RDMA RSockets - ARTS_USE_RDMA defined")
-    else()
-        message(STATUS "Network: RDMA requested but not available, falling back to TCP")
-        set(RDMACM_LIBRARIES "")
-        set(RDMACM_INCLUDE_DIRS "")
+    if(NOT RDMACM_FOUND)
+        message(FATAL_ERROR
+            "ARTS_USE_RDMA=ON requires librdmacm/RSockets, but pkg-config "
+            "could not find librdmacm")
     endif()
+
+    include(CheckIncludeFile)
+    set(CMAKE_REQUIRED_INCLUDES ${RDMACM_INCLUDE_DIRS})
+    check_include_file("rdma/rsocket.h" ARTS_HAVE_RDMA_RSOCKET_LOWER)
+    check_include_file("rdma/RSOCKET.h" ARTS_HAVE_RDMA_RSOCKET_UPPER)
+    unset(CMAKE_REQUIRED_INCLUDES)
+    if(NOT ARTS_HAVE_RDMA_RSOCKET_LOWER AND NOT ARTS_HAVE_RDMA_RSOCKET_UPPER)
+        message(FATAL_ERROR
+            "ARTS_USE_RDMA=ON requires an RSockets header "
+            "(rdma/rsocket.h or rdma/RSOCKET.h)")
+    endif()
+
+    add_compile_definitions(ARTS_USE_RDMA)
+    message(STATUS "Network: Using RDMA RSockets - ARTS_USE_RDMA defined")
 endif()
 
 # Add third-party dependencies

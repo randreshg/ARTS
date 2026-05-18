@@ -128,6 +128,7 @@ void *arts_link_list_get_tail_data(struct arts_link_list_s *link_list) {
 void arts_link_list_push_back(struct arts_link_list_s *list, void *item) {
   struct arts_link_list_item_s *new_item = (struct arts_link_list_item_s *)item;
   new_item -= 1;
+  new_item->next = NULL;
   arts_lock(&list->lock);
   if (list->headPtr == NULL) {
     list->headPtr = list->tailPtr = new_item;
@@ -145,8 +146,13 @@ void *arts_link_list_pop_front(struct arts_link_list_s *list, void **free_pos) {
   }
   arts_lock(&list->lock);
   if (list->headPtr) {
-    data = (void *)(list->headPtr + 1);
-    list->headPtr = list->headPtr->next;
+    struct arts_link_list_item_s *item = list->headPtr;
+    data = (void *)(item + 1);
+    list->headPtr = item->next;
+    if (list->headPtr == NULL) {
+      list->tailPtr = NULL;
+    }
+    item->next = NULL;
   }
   arts_unlock(&list->lock);
   return data;

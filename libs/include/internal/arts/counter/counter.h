@@ -87,6 +87,20 @@ extern "C" {
   /* Num: network */                                                           \
   X(NUM_REMOTE_SEND)                                                           \
   X(NUM_REMOTE_RECEIVE)                                                        \
+  X(NUM_REMOTE_CONNECT_ATTEMPT)                                                \
+  X(NUM_REMOTE_CONNECT_SUCCESS)                                                \
+  X(NUM_REMOTE_CONNECT_FAIL)                                                   \
+  X(NUM_REMOTE_CONNECT_TIMEOUT)                                                \
+  X(NUM_REMOTE_CONNECT_ABANDONED)                                              \
+  X(NUM_REMOTE_ACCEPT_ATTEMPT)                                                 \
+  X(NUM_REMOTE_ACCEPT_SUCCESS)                                                 \
+  X(NUM_REMOTE_ACCEPT_EAGAIN)                                                  \
+  X(NUM_REMOTE_CLOSE_AFTER_SEND)                                               \
+  X(NUM_REMOTE_SEND_EAGAIN)                                                    \
+  X(NUM_REMOTE_SEND_PARTIAL)                                                   \
+  X(NUM_REMOTE_RECV_EAGAIN)                                                    \
+  X(NUM_REMOTE_RECV_PARTIAL)                                                   \
+  X(NUM_REMOTE_PENDING_RECV_PROMOTE)                                           \
   /* Time: network */                                                          \
   X(TIME_REMOTE_MOVE)                                                          \
   /* Time: events */                                                           \

@@ -44,7 +44,32 @@ extern "C" {
 #endif
 
 #ifdef ARTS_USE_RDMA
+#if defined(__has_include)
+#if __has_include(<rdma/rsocket.h>)
+#include <rdma/rsocket.h>
+#elif __has_include(<rdma/RSOCKET.h>)
 #include <rdma/RSOCKET.h>
+#else
+#error "ARTS_USE_RDMA requires rdma/rsocket.h or rdma/RSOCKET.h"
+#endif
+#else
+#include <rdma/rsocket.h>
+#endif
+#define RRECV rrecv
+#define RSEND rsend
+#define RLISTEN rlisten
+#define RPOLL rpoll
+#define RSELECT rselect
+#define RBIND rbind
+#define RCLOSE rclose
+#define RACCEPT raccept
+#define RCONNECT rconnect
+#define RGETSOCKOPT rgetsockopt
+#define RSETSOCKOPT rsetsockopt
+#define RSOCKET rsocket
+#define RSHUTDOWN rshutdown
+#define RF_GETFL(fd) rfcntl((fd), F_GETFL)
+#define RF_SETFL(fd, flags) rfcntl((fd), F_SETFL, (flags))
 #else
 #include <sys/poll.h>
 #define RRECV recv
@@ -56,8 +81,12 @@ extern "C" {
 #define RCLOSE close
 #define RACCEPT accept
 #define RCONNECT connect
+#define RGETSOCKOPT getsockopt
+#define RSETSOCKOPT setsockopt
 #define RSOCKET socket
 #define RSHUTDOWN shutdown
+#define RF_GETFL(fd) fcntl((fd), F_GETFL)
+#define RF_SETFL(fd, flags) fcntl((fd), F_SETFL, (flags))
 #endif
 
 #ifdef __cplusplus
