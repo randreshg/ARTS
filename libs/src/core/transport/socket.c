@@ -129,6 +129,7 @@ static ARTS_THREAD_LOCAL uint64_t next_lazy_accept_time;
 #define ARTS_RDMA_EAGER_CONNECT 0
 #define ARTS_RDMA_EAGER_CONNECT_ROUNDS 4
 #define ARTS_RDMA_CLOSE_AFTER_SEND_EVERY 1
+#define ARTS_RDMA_CLOSE_WORKERS 4
 #define ARTS_RDMA_SEND_MAX_BYTES 1048576
 #define ARTS_RDMA_SEND_MAX_ITERS 256
 #define ARTS_RDMA_RECV_PACKETS_PER_SOCKET 16
@@ -165,6 +166,7 @@ struct arts_connection_hello_s {
 };
 
 static const char *arts_transport_name(void);
+static unsigned int arts_env_uint(const char *name, unsigned int fallback);
 #ifdef ARTS_USE_RDMA
 static void arts_rdma_maybe_print_summary(const char *reason);
 static unsigned int
@@ -190,27 +192,113 @@ struct arts_rdma_deferred_close_s {
   int socket_fd;
   bool shutdown_first;
   const char *context;
+  struct arts_rdma_deferred_close_s *next;
 };
 
-static void *arts_rdma_deferred_close_main(void *arg) {
-  struct arts_rdma_deferred_close_s *close_arg =
-      (struct arts_rdma_deferred_close_s *)arg;
-  int socket_fd = close_arg->socket_fd;
-  bool shutdown_first = close_arg->shutdown_first;
-  const char *context = close_arg->context ? close_arg->context : "unknown";
+static pthread_mutex_t rdma_close_queue_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t rdma_close_queue_cond = PTHREAD_COND_INITIALIZER;
+static struct arts_rdma_deferred_close_s *rdma_close_queue_head = NULL;
+static struct arts_rdma_deferred_close_s *rdma_close_queue_tail = NULL;
+static volatile unsigned int rdma_close_workers_started = 0;
 
+static void arts_rdma_close_socket_now(int socket_fd, bool shutdown_first,
+                                       const char *context) {
   ARTS_TRACE_RDMA("deferred close enter fd=%d context=%s shutdown=%u",
-                  socket_fd, context, shutdown_first ? 1U : 0U);
+                  socket_fd, context ? context : "unknown",
+                  shutdown_first ? 1U : 0U);
   if (shutdown_first) {
     RSHUTDOWN(socket_fd, SHUT_RDWR);
   }
   RCLOSE(socket_fd);
   __sync_fetch_and_add(&rdma_deferred_close_done_count, 1ULL);
   arts_rdma_maybe_print_summary("deferred-close-done");
-  ARTS_TRACE_RDMA("deferred close leave fd=%d context=%s", socket_fd, context);
+  ARTS_TRACE_RDMA("deferred close leave fd=%d context=%s", socket_fd,
+                  context ? context : "unknown");
+}
 
+static void *arts_rdma_deferred_close_main(void *arg) {
+  struct arts_rdma_deferred_close_s *close_arg =
+      (struct arts_rdma_deferred_close_s *)arg;
+  arts_rdma_close_socket_now(close_arg->socket_fd, close_arg->shutdown_first,
+                             close_arg->context);
   free(close_arg);
   return NULL;
+}
+
+static void *arts_rdma_deferred_close_worker_main(void *arg) {
+  (void)arg;
+  while (true) {
+    pthread_mutex_lock(&rdma_close_queue_lock);
+    while (!rdma_close_queue_head) {
+      pthread_cond_wait(&rdma_close_queue_cond, &rdma_close_queue_lock);
+    }
+    struct arts_rdma_deferred_close_s *close_arg = rdma_close_queue_head;
+    rdma_close_queue_head = close_arg->next;
+    if (!rdma_close_queue_head) {
+      rdma_close_queue_tail = NULL;
+    }
+    pthread_mutex_unlock(&rdma_close_queue_lock);
+
+    close_arg->next = NULL;
+    arts_rdma_close_socket_now(close_arg->socket_fd, close_arg->shutdown_first,
+                               close_arg->context);
+    free(close_arg);
+  }
+  return NULL;
+}
+
+static bool arts_rdma_close_queue_enqueue(
+    struct arts_rdma_deferred_close_s *close_arg) {
+  if (!close_arg) {
+    return false;
+  }
+
+  if (!rdma_close_workers_started) {
+    unsigned int worker_count =
+        arts_env_uint("ARTS_RDMA_CLOSE_WORKERS", ARTS_RDMA_CLOSE_WORKERS);
+    if (worker_count == 0) {
+      worker_count = 1;
+    }
+    unsigned int started = 0;
+    if (__sync_bool_compare_and_swap(&rdma_close_workers_started, 0U,
+                                     worker_count)) {
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+#ifdef PTHREAD_STACK_MIN
+      pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN * 2);
+#endif
+      for (unsigned int i = 0; i < worker_count; i++) {
+        pthread_t thread;
+        int create_res = pthread_create(
+            &thread, &attr, arts_rdma_deferred_close_worker_main, NULL);
+        if (create_res != 0) {
+          ARTS_WARN("%s could not start deferred close worker %u/%u: %s",
+                    arts_transport_name(), i + 1U, worker_count,
+                    strerror(create_res));
+          continue;
+        }
+        pthread_detach(thread);
+        started++;
+      }
+      pthread_attr_destroy(&attr);
+      if (started == 0) {
+        __sync_lock_test_and_set(&rdma_close_workers_started, 0U);
+        return false;
+      }
+    }
+  }
+
+  pthread_mutex_lock(&rdma_close_queue_lock);
+  close_arg->next = NULL;
+  if (rdma_close_queue_tail) {
+    rdma_close_queue_tail->next = close_arg;
+  } else {
+    rdma_close_queue_head = close_arg;
+  }
+  rdma_close_queue_tail = close_arg;
+  pthread_cond_signal(&rdma_close_queue_cond);
+  pthread_mutex_unlock(&rdma_close_queue_lock);
+  return true;
 }
 
 static void arts_defer_rdma_close_socket_fd(int *socket_fd,
@@ -235,10 +323,19 @@ static void arts_defer_rdma_close_socket_fd(int *socket_fd,
   close_arg->shutdown_first = shutdown_first;
   close_arg->context = context;
 
-  pthread_t thread;
-  int create_res =
-      pthread_create(&thread, NULL, arts_rdma_deferred_close_main, close_arg);
-  if (create_res != 0) {
+  if (!arts_rdma_close_queue_enqueue(close_arg)) {
+    pthread_t thread;
+    int create_res =
+        pthread_create(&thread, NULL, arts_rdma_deferred_close_main, close_arg);
+    if (create_res == 0) {
+      pthread_detach(thread);
+      __sync_fetch_and_add(&rdma_deferred_close_start_count, 1ULL);
+      arts_rdma_maybe_print_summary("deferred-close-start");
+      ARTS_TRACE_RDMA("deferred close scheduled fd=%d context=%s shutdown=%u",
+                      fd, context ? context : "unknown",
+                      shutdown_first ? 1U : 0U);
+      return;
+    }
     ARTS_WARN("%s could not start deferred close for fd=%d (%s): %s; "
               "abandoning fd to keep RDMA sender progress",
               arts_transport_name(), fd, context ? context : "unknown",
@@ -246,7 +343,6 @@ static void arts_defer_rdma_close_socket_fd(int *socket_fd,
     free(close_arg);
     return;
   }
-  pthread_detach(thread);
   __sync_fetch_and_add(&rdma_deferred_close_start_count, 1ULL);
   arts_rdma_maybe_print_summary("deferred-close-start");
   ARTS_TRACE_RDMA("deferred close scheduled fd=%d context=%s shutdown=%u", fd,
@@ -1385,7 +1481,7 @@ static bool arts_should_try_lazy_accept(bool has_live_inbound,
   if (!awaiting_lazy_accept) {
     return false;
   }
-  if (arts_close_send_after_complete_send() || !has_live_inbound) {
+  if (!has_live_inbound) {
     return true;
   }
 
