@@ -79,6 +79,10 @@ volatile unsigned int *volatile remote_socket_send_lock_list;
 struct sockaddr_in *remote_server_send_list;
 bool *remote_connection_alive;
 static unsigned int *remote_send_success_count;
+#ifdef ARTS_USE_RDMA
+static unsigned int *remote_receive_success_count;
+static bool *remote_receive_close_pending;
+#endif
 static unsigned int *remote_connect_success_seen;
 static unsigned int *remote_connect_retry_count;
 static uint64_t *remote_connect_retry_after;
@@ -118,6 +122,7 @@ static ARTS_THREAD_LOCAL uint64_t next_lazy_accept_time;
 #define ARTS_CONNECT_MAX_RETRIES 60
 #define ARTS_CONNECT_RETRY_DELAY_US 100000
 #define ARTS_RDMA_CONNECT_TIMEOUT_MS 3000
+#define ARTS_RDMA_ACCEPT_HELLO_TIMEOUT_MS 3000
 #define ARTS_RDMA_CONNECT_MAX_RETRIES 6
 #define ARTS_RDMA_ABANDONED_CONNECT_BACKOFF_US 1000000
 #define ARTS_RDMA_CONNECT_STAGGER_US 50000
@@ -146,18 +151,40 @@ static volatile unsigned int remote_receiver_wakeup_started = 0;
 static volatile unsigned int remote_transport_shutdown_started = 0;
 static unsigned int remote_expected_incoming_count = 0;
 #ifdef ARTS_USE_RDMA
+static pthread_t rdma_accept_thread;
+static volatile unsigned int rdma_accept_thread_started = 0;
 static volatile uint64_t rdma_connect_attempt_count = 0;
 static volatile uint64_t rdma_connect_success_count = 0;
 static volatile uint64_t rdma_connect_fail_count = 0;
 static volatile uint64_t rdma_connect_timeout_count = 0;
 static volatile uint64_t rdma_connect_abandoned_count = 0;
 static volatile uint64_t rdma_connect_backoff_skip_count = 0;
+static volatile uint64_t rdma_accept_fd_count = 0;
 static volatile uint64_t rdma_accept_attempt_count = 0;
 static volatile uint64_t rdma_accept_success_count = 0;
 static volatile uint64_t rdma_accept_eagain_count = 0;
+static volatile uint64_t rdma_accept_hello_fail_count = 0;
+static volatile uint64_t rdma_accept_hello_timeout_count = 0;
+static volatile uint64_t rdma_pending_recv_depth = 0;
+static volatile uint64_t rdma_pending_recv_peak = 0;
+static volatile uint64_t rdma_recv_register_count = 0;
+static volatile uint64_t rdma_recv_close_count = 0;
+static volatile uint64_t rdma_recv_eof_count = 0;
+static volatile uint64_t rdma_recv_error_count = 0;
 static volatile uint64_t rdma_deferred_close_start_count = 0;
 static volatile uint64_t rdma_deferred_close_done_count = 0;
+static volatile uint64_t rdma_deferred_close_queue_depth = 0;
+static volatile uint64_t rdma_deferred_close_queue_peak = 0;
+static volatile uint64_t rdma_close_after_send_context_count = 0;
+static volatile uint64_t rdma_close_receive_context_count = 0;
+static volatile uint64_t rdma_close_discard_context_count = 0;
+static volatile uint64_t rdma_close_other_context_count = 0;
 static volatile uint64_t rdma_abandoned_connect_inflight_count = 0;
+static volatile uint64_t rdma_send_cap_hit_count = 0;
+static volatile uint64_t rdma_recv_cap_hit_count = 0;
+static volatile int rdma_last_connect_errno = 0;
+static volatile int rdma_last_connect_peer = -1;
+static volatile unsigned int rdma_last_connect_port = 0;
 static volatile uint64_t rdma_next_summary_time = 0;
 #endif
 
@@ -169,8 +196,14 @@ struct arts_connection_hello_s {
 
 static const char *arts_transport_name(void);
 static unsigned int arts_env_uint(const char *name, unsigned int fallback);
+static unsigned int arts_close_send_after_complete_send_every(void);
 #ifdef ARTS_USE_RDMA
 static void arts_rdma_maybe_print_summary(const char *reason);
+static unsigned int arts_lazy_accept_drain_limit(void);
+static bool arts_remote_accept_pending(unsigned int limit, int first_timeout_ms);
+static void *arts_rdma_accept_thread_main(void *arg);
+static void arts_rdma_start_accept_thread(void);
+static void arts_rdma_stop_accept_thread(void);
 static unsigned int
 arts_rdma_mark_abandoned_connect_inflight(int socket_index, uint64_t now);
 static void arts_rdma_clear_abandoned_connect_inflight(int socket_index,
@@ -190,6 +223,42 @@ static void arts_close_socket_fd(int *socket_fd) {
 }
 
 #ifdef ARTS_USE_RDMA
+static void arts_rdma_update_peak(volatile uint64_t *peak, uint64_t value) {
+  uint64_t observed = *peak;
+  while (value > observed) {
+    if (__sync_bool_compare_and_swap(peak, observed, value)) {
+      return;
+    }
+    observed = *peak;
+  }
+}
+
+static void arts_rdma_sub_counter_floor_zero(volatile uint64_t *counter,
+                                             uint64_t value) {
+  uint64_t observed = *counter;
+  while (observed > 0) {
+    uint64_t next = observed > value ? observed - value : 0;
+    if (__sync_bool_compare_and_swap(counter, observed, next)) {
+      return;
+    }
+    observed = *counter;
+  }
+}
+
+static void arts_rdma_note_deferred_close_context(const char *context) {
+  if (!context) {
+    __sync_fetch_and_add(&rdma_close_other_context_count, 1ULL);
+  } else if (strcmp(context, "close_after_send") == 0) {
+    __sync_fetch_and_add(&rdma_close_after_send_context_count, 1ULL);
+  } else if (strcmp(context, "close_receive") == 0) {
+    __sync_fetch_and_add(&rdma_close_receive_context_count, 1ULL);
+  } else if (strcmp(context, "discard_unconnected") == 0) {
+    __sync_fetch_and_add(&rdma_close_discard_context_count, 1ULL);
+  } else {
+    __sync_fetch_and_add(&rdma_close_other_context_count, 1ULL);
+  }
+}
+
 struct arts_rdma_deferred_close_s {
   int socket_fd;
   bool shutdown_first;
@@ -202,6 +271,9 @@ static pthread_cond_t rdma_close_queue_cond = PTHREAD_COND_INITIALIZER;
 static struct arts_rdma_deferred_close_s *rdma_close_queue_head = NULL;
 static struct arts_rdma_deferred_close_s *rdma_close_queue_tail = NULL;
 static volatile unsigned int rdma_close_workers_started = 0;
+static volatile unsigned int rdma_close_queue_stopping = 0;
+static pthread_t *rdma_close_worker_threads = NULL;
+static unsigned int rdma_close_worker_count = 0;
 
 static void arts_rdma_close_socket_now(int socket_fd, bool shutdown_first,
                                        const char *context) {
@@ -231,14 +303,19 @@ static void *arts_rdma_deferred_close_worker_main(void *arg) {
   (void)arg;
   while (true) {
     pthread_mutex_lock(&rdma_close_queue_lock);
-    while (!rdma_close_queue_head) {
+    while (!rdma_close_queue_head && !rdma_close_queue_stopping) {
       pthread_cond_wait(&rdma_close_queue_cond, &rdma_close_queue_lock);
+    }
+    if (!rdma_close_queue_head && rdma_close_queue_stopping) {
+      pthread_mutex_unlock(&rdma_close_queue_lock);
+      break;
     }
     struct arts_rdma_deferred_close_s *close_arg = rdma_close_queue_head;
     rdma_close_queue_head = close_arg->next;
     if (!rdma_close_queue_head) {
       rdma_close_queue_tail = NULL;
     }
+    arts_rdma_sub_counter_floor_zero(&rdma_deferred_close_queue_depth, 1ULL);
     pthread_mutex_unlock(&rdma_close_queue_lock);
 
     close_arg->next = NULL;
@@ -249,48 +326,69 @@ static void *arts_rdma_deferred_close_worker_main(void *arg) {
   return NULL;
 }
 
+static bool arts_rdma_ensure_close_workers_locked(void) {
+  if (rdma_close_workers_started) {
+    return true;
+  }
+  if (rdma_close_queue_stopping) {
+    return false;
+  }
+
+  unsigned int worker_count =
+      arts_env_uint("ARTS_RDMA_CLOSE_WORKERS", ARTS_RDMA_CLOSE_WORKERS);
+  if (worker_count == 0) {
+    worker_count = 1;
+  }
+
+  pthread_t *threads = (pthread_t *)calloc(worker_count, sizeof(*threads));
+  if (!threads) {
+    return false;
+  }
+
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+#ifdef PTHREAD_STACK_MIN
+  pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN * 2);
+#endif
+
+  unsigned int started = 0;
+  for (unsigned int i = 0; i < worker_count; i++) {
+    pthread_t thread;
+    int create_res =
+        pthread_create(&thread, &attr, arts_rdma_deferred_close_worker_main,
+                       NULL);
+    if (create_res != 0) {
+      ARTS_WARN("%s could not start deferred close worker %u/%u: %s",
+                arts_transport_name(), i + 1U, worker_count,
+                strerror(create_res));
+      continue;
+    }
+    threads[started++] = thread;
+  }
+  pthread_attr_destroy(&attr);
+
+  if (started == 0) {
+    free(threads);
+    return false;
+  }
+
+  rdma_close_worker_threads = threads;
+  rdma_close_worker_count = started;
+  __sync_lock_test_and_set(&rdma_close_workers_started, 1U);
+  return true;
+}
+
 static bool arts_rdma_close_queue_enqueue(
     struct arts_rdma_deferred_close_s *close_arg) {
   if (!close_arg) {
     return false;
   }
 
-  if (!rdma_close_workers_started) {
-    unsigned int worker_count =
-        arts_env_uint("ARTS_RDMA_CLOSE_WORKERS", ARTS_RDMA_CLOSE_WORKERS);
-    if (worker_count == 0) {
-      worker_count = 1;
-    }
-    unsigned int started = 0;
-    if (__sync_bool_compare_and_swap(&rdma_close_workers_started, 0U,
-                                     worker_count)) {
-      pthread_attr_t attr;
-      pthread_attr_init(&attr);
-#ifdef PTHREAD_STACK_MIN
-      pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN * 2);
-#endif
-      for (unsigned int i = 0; i < worker_count; i++) {
-        pthread_t thread;
-        int create_res = pthread_create(
-            &thread, &attr, arts_rdma_deferred_close_worker_main, NULL);
-        if (create_res != 0) {
-          ARTS_WARN("%s could not start deferred close worker %u/%u: %s",
-                    arts_transport_name(), i + 1U, worker_count,
-                    strerror(create_res));
-          continue;
-        }
-        pthread_detach(thread);
-        started++;
-      }
-      pthread_attr_destroy(&attr);
-      if (started == 0) {
-        __sync_lock_test_and_set(&rdma_close_workers_started, 0U);
-        return false;
-      }
-    }
-  }
-
   pthread_mutex_lock(&rdma_close_queue_lock);
+  if (!arts_rdma_ensure_close_workers_locked()) {
+    pthread_mutex_unlock(&rdma_close_queue_lock);
+    return false;
+  }
   close_arg->next = NULL;
   if (rdma_close_queue_tail) {
     rdma_close_queue_tail->next = close_arg;
@@ -298,9 +396,40 @@ static bool arts_rdma_close_queue_enqueue(
     rdma_close_queue_head = close_arg;
   }
   rdma_close_queue_tail = close_arg;
+  uint64_t depth =
+      __sync_add_and_fetch(&rdma_deferred_close_queue_depth, 1ULL);
+  arts_rdma_update_peak(&rdma_deferred_close_queue_peak, depth);
   pthread_cond_signal(&rdma_close_queue_cond);
   pthread_mutex_unlock(&rdma_close_queue_lock);
   return true;
+}
+
+static void arts_rdma_close_worker_shutdown(void) {
+  pthread_t *threads = NULL;
+  unsigned int worker_count = 0;
+
+  pthread_mutex_lock(&rdma_close_queue_lock);
+  if (rdma_close_workers_started) {
+    __sync_lock_test_and_set(&rdma_close_queue_stopping, 1U);
+    pthread_cond_broadcast(&rdma_close_queue_cond);
+    threads = rdma_close_worker_threads;
+    worker_count = rdma_close_worker_count;
+  }
+  pthread_mutex_unlock(&rdma_close_queue_lock);
+
+  for (unsigned int i = 0; i < worker_count; i++) {
+    pthread_join(threads[i], NULL);
+  }
+  free(threads);
+
+  pthread_mutex_lock(&rdma_close_queue_lock);
+  rdma_close_worker_threads = NULL;
+  rdma_close_worker_count = 0;
+  rdma_close_workers_started = 0;
+  rdma_close_queue_stopping = 0;
+  rdma_close_queue_head = NULL;
+  rdma_close_queue_tail = NULL;
+  pthread_mutex_unlock(&rdma_close_queue_lock);
 }
 
 static void arts_defer_rdma_close_socket_fd(int *socket_fd,
@@ -312,6 +441,7 @@ static void arts_defer_rdma_close_socket_fd(int *socket_fd,
 
   int fd = *socket_fd;
   *socket_fd = -1;
+  arts_rdma_note_deferred_close_context(context);
 
   struct arts_rdma_deferred_close_s *close_arg =
       (struct arts_rdma_deferred_close_s *)calloc(1, sizeof(*close_arg));
@@ -326,6 +456,13 @@ static void arts_defer_rdma_close_socket_fd(int *socket_fd,
   close_arg->context = context;
 
   if (!arts_rdma_close_queue_enqueue(close_arg)) {
+    if (remote_transport_shutdown_started || rdma_close_queue_stopping) {
+      arts_rdma_close_socket_now(close_arg->socket_fd,
+                                 close_arg->shutdown_first,
+                                 close_arg->context);
+      free(close_arg);
+      return;
+    }
     pthread_t thread;
     int create_res =
         pthread_create(&thread, NULL, arts_rdma_deferred_close_main, close_arg);
@@ -445,6 +582,14 @@ static void arts_install_receive_socket_locked(int socket_index,
   poll_incoming[socket_index].fd = socket_fd;
   poll_incoming[socket_index].events = POLLIN;
   poll_incoming[socket_index].revents = 0;
+#ifdef ARTS_USE_RDMA
+  if (remote_receive_success_count) {
+    remote_receive_success_count[socket_index] = 0;
+  }
+  if (remote_receive_close_pending) {
+    remote_receive_close_pending[socket_index] = false;
+  }
+#endif
 }
 
 static bool arts_queue_pending_receive_socket_locked(int socket_index,
@@ -467,6 +612,11 @@ static bool arts_queue_pending_receive_socket_locked(int socket_index,
   }
   remote_pending_receive_socket_tails[socket_index] = pending;
 
+#ifdef ARTS_USE_RDMA
+  uint64_t pending_depth =
+      __sync_add_and_fetch(&rdma_pending_recv_depth, 1ULL);
+  arts_rdma_update_peak(&rdma_pending_recv_peak, pending_depth);
+#endif
   ARTS_TRACE_RDMA("queue pending recv source=%s index=%d peer=%d port=%u fd=%d "
                   "active_fd=%d",
                   source ? source : "unknown", socket_index,
@@ -499,6 +649,9 @@ static bool arts_promote_pending_receive_socket_locked(int socket_index,
 
   int socket_fd = pending->fd;
   arts_free(pending);
+#ifdef ARTS_USE_RDMA
+  arts_rdma_sub_counter_floor_zero(&rdma_pending_recv_depth, 1ULL);
+#endif
   arts_install_receive_socket_locked(socket_index, socket_fd);
   INCREMENT_NUM_REMOTE_PENDING_RECV_PROMOTE_BY(1);
   ARTS_TRACE_RDMA("promote pending recv reason=%s index=%d peer=%d port=%u "
@@ -526,11 +679,20 @@ static void arts_close_pending_receive_sockets_locked(int socket_index,
   while (pending) {
     struct arts_pending_receive_socket_s *next = pending->next;
     int socket_fd = pending->fd;
+#ifdef ARTS_USE_RDMA
+    arts_defer_rdma_close_socket_fd(&socket_fd, false, reason);
+#else
     arts_close_socket_fd(&socket_fd);
+#endif
     arts_free(pending);
     pending = next;
     closed++;
   }
+#ifdef ARTS_USE_RDMA
+  if (closed) {
+    arts_rdma_sub_counter_floor_zero(&rdma_pending_recv_depth, closed);
+  }
+#endif
   if (closed) {
     ARTS_TRACE_RDMA("closed pending recv sockets reason=%s index=%d peer=%d "
                     "port=%u count=%u",
@@ -575,11 +737,15 @@ static void arts_close_receive_socket_index(int socket_index) {
   if (remote_socket_recieve_list) {
     remote_socket_recieve_list[socket_index] = -1;
   }
-  arts_clear_receive_slot_partial_state(socket_index);
-
-  if (socket_fd >= 0) {
-    arts_close_socket_fd(&socket_fd);
+#ifdef ARTS_USE_RDMA
+  if (remote_receive_success_count) {
+    remote_receive_success_count[socket_index] = 0;
   }
+  if (remote_receive_close_pending) {
+    remote_receive_close_pending[socket_index] = false;
+  }
+#endif
+  arts_clear_receive_slot_partial_state(socket_index);
 
   bool promoted =
       arts_promote_pending_receive_socket_locked(socket_index, "active_closed");
@@ -588,6 +754,11 @@ static void arts_close_receive_socket_index(int socket_index) {
   } else if (!had_live_socket && promoted) {
     __sync_add_and_fetch(&remote_incoming_connected_count, 1U);
   }
+#ifdef ARTS_USE_RDMA
+  if (had_live_socket) {
+    __sync_fetch_and_add(&rdma_recv_close_count, 1ULL);
+  }
+#endif
   ARTS_TRACE_RDMA("close recv index=%d peer=%d port=%u had_live=%u "
                   "promoted=%u connected=%u expected=%u",
                   socket_index, arts_receive_index_peer_rank(socket_index),
@@ -596,6 +767,14 @@ static void arts_close_receive_socket_index(int socket_index) {
                   remote_incoming_connected_count,
                   remote_expected_incoming_count);
   arts_receive_slot_unlock(socket_index);
+
+  if (socket_fd >= 0) {
+#ifdef ARTS_USE_RDMA
+    arts_defer_rdma_close_socket_fd(&socket_fd, false, "close_receive");
+#else
+    arts_close_socket_fd(&socket_fd);
+#endif
+  }
 }
 
 static bool arts_receiver_wakeup_requested(void) {
@@ -806,18 +985,37 @@ void arts_ll_server_shutdown() {
     return;
   }
   __sync_lock_test_and_set(&remote_receiver_wakeup_started, 1U);
+#ifdef ARTS_USE_RDMA
+  arts_rdma_stop_accept_thread();
+#endif
   int count = (int)arts_global_message_table->table_length;
   int incoming_count = (count > 0) ? (count - 1) * (int)ports : 0;
   for (int i = 0; remote_socket_recieve_list && i < incoming_count; i++) {
+    int socket_fd = -1;
     arts_receive_slot_lock(i);
     if (poll_incoming) {
       poll_incoming[i].fd = -1;
       poll_incoming[i].events = 0;
       poll_incoming[i].revents = 0;
     }
-    arts_close_socket_fd(&remote_socket_recieve_list[i]);
+    socket_fd = remote_socket_recieve_list[i];
+    remote_socket_recieve_list[i] = -1;
+#ifdef ARTS_USE_RDMA
+    if (remote_receive_success_count) {
+      remote_receive_success_count[i] = 0;
+    }
+    if (remote_receive_close_pending) {
+      remote_receive_close_pending[i] = false;
+    }
+#endif
+    arts_clear_receive_slot_partial_state(i);
     arts_close_pending_receive_sockets_locked(i, "shutdown");
     arts_receive_slot_unlock(i);
+#ifdef ARTS_USE_RDMA
+    arts_defer_rdma_close_socket_fd(&socket_fd, false, "shutdown");
+#else
+    arts_close_socket_fd(&socket_fd);
+#endif
   }
 
   for (int i = 0; remote_socket_send_list && i < count * (int)ports; i++) {
@@ -829,6 +1027,10 @@ void arts_ll_server_shutdown() {
   for (int i = 0; local_socket_recieve && i < (int)ports; i++) {
     arts_close_socket_fd_everywhere(&local_socket_recieve[i]);
   }
+
+#ifdef ARTS_USE_RDMA
+  arts_rdma_close_worker_shutdown();
+#endif
 }
 
 void arts_ll_server_wakeup_receivers() {
@@ -839,6 +1041,9 @@ void arts_ll_server_wakeup_receivers() {
   if (!__sync_bool_compare_and_swap(&remote_receiver_wakeup_started, 0U, 1U)) {
     return;
   }
+#ifdef ARTS_USE_RDMA
+  arts_rdma_stop_accept_thread();
+#endif
 
   int count = (int)arts_global_message_table->table_length;
   int incoming_count = (count > 0) ? (count - 1) * (int)ports : 0;
@@ -850,15 +1055,31 @@ void arts_ll_server_wakeup_receivers() {
   }
 
   for (int i = 0; remote_socket_recieve_list && i < incoming_count; i++) {
+    int socket_fd = -1;
     arts_receive_slot_lock(i);
     if (poll_incoming) {
       poll_incoming[i].fd = -1;
       poll_incoming[i].events = 0;
       poll_incoming[i].revents = 0;
     }
-    arts_close_socket_fd(&remote_socket_recieve_list[i]);
+    socket_fd = remote_socket_recieve_list[i];
+    remote_socket_recieve_list[i] = -1;
+#ifdef ARTS_USE_RDMA
+    if (remote_receive_success_count) {
+      remote_receive_success_count[i] = 0;
+    }
+    if (remote_receive_close_pending) {
+      remote_receive_close_pending[i] = false;
+    }
+#endif
+    arts_clear_receive_slot_partial_state(i);
     arts_close_pending_receive_sockets_locked(i, "wakeup");
     arts_receive_slot_unlock(i);
+#ifdef ARTS_USE_RDMA
+    arts_defer_rdma_close_socket_fd(&socket_fd, false, "wakeup");
+#else
+    arts_close_socket_fd(&socket_fd);
+#endif
   }
 
   remote_incoming_connected_count = 0;
@@ -880,6 +1101,12 @@ void arts_ll_server_cleanup() {
   remote_connection_alive = NULL;
   arts_free(remote_send_success_count);
   remote_send_success_count = NULL;
+#ifdef ARTS_USE_RDMA
+  arts_free(remote_receive_success_count);
+  remote_receive_success_count = NULL;
+  arts_free(remote_receive_close_pending);
+  remote_receive_close_pending = NULL;
+#endif
   arts_free(remote_connect_success_seen);
   remote_connect_success_seen = NULL;
   arts_free(remote_connect_retry_count);
@@ -1003,8 +1230,18 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     "connect_fail=%llu connect_timeout=%llu "
                     "connect_abandoned=%llu connect_backoff_skip=%llu "
                     "abandoned_inflight=%llu accept_attempt=%llu "
-                    "accept_success=%llu accept_eagain=%llu incoming=%u/%u "
-                    "deferred_close_start=%llu deferred_close_done=%llu\n",
+                    "accept_fd=%llu accept_success=%llu accept_eagain=%llu "
+                    "accept_hello_fail=%llu accept_hello_timeout=%llu "
+                    "close_every=%u incoming=%u/%u pending_depth=%llu "
+                    "pending_peak=%llu recv_register=%llu recv_close=%llu "
+                    "recv_eof=%llu recv_error=%llu "
+                    "deferred_close_start=%llu deferred_close_done=%llu "
+                    "deferred_close_queue_depth=%llu "
+                    "deferred_close_queue_peak=%llu close_ctx_send=%llu "
+                    "close_ctx_recv=%llu close_ctx_discard=%llu "
+                    "close_ctx_other=%llu send_cap_hit=%llu "
+                    "recv_cap_hit=%llu last_connect_errno=%d "
+                    "last_connect_peer=%d last_connect_port=%u\n",
                     arts_trace_time_us(), arts_global_rank_id,
                     reason ? reason : "periodic",
                     (unsigned long long)rdma_connect_attempt_count,
@@ -1015,12 +1252,32 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     (unsigned long long)rdma_connect_backoff_skip_count,
                     (unsigned long long)rdma_abandoned_connect_inflight_count,
                     (unsigned long long)rdma_accept_attempt_count,
+                    (unsigned long long)rdma_accept_fd_count,
                     (unsigned long long)rdma_accept_success_count,
                     (unsigned long long)rdma_accept_eagain_count,
+                    (unsigned long long)rdma_accept_hello_fail_count,
+                    (unsigned long long)rdma_accept_hello_timeout_count,
+                    arts_close_send_after_complete_send_every(),
                     remote_incoming_connected_count,
                     remote_expected_incoming_count,
+                    (unsigned long long)rdma_pending_recv_depth,
+                    (unsigned long long)rdma_pending_recv_peak,
+                    (unsigned long long)rdma_recv_register_count,
+                    (unsigned long long)rdma_recv_close_count,
+                    (unsigned long long)rdma_recv_eof_count,
+                    (unsigned long long)rdma_recv_error_count,
                     (unsigned long long)rdma_deferred_close_start_count,
-                    (unsigned long long)rdma_deferred_close_done_count);
+                    (unsigned long long)rdma_deferred_close_done_count,
+                    (unsigned long long)rdma_deferred_close_queue_depth,
+                    (unsigned long long)rdma_deferred_close_queue_peak,
+                    (unsigned long long)rdma_close_after_send_context_count,
+                    (unsigned long long)rdma_close_receive_context_count,
+                    (unsigned long long)rdma_close_discard_context_count,
+                    (unsigned long long)rdma_close_other_context_count,
+                    (unsigned long long)rdma_send_cap_hit_count,
+                    (unsigned long long)rdma_recv_cap_hit_count,
+                    rdma_last_connect_errno, rdma_last_connect_peer,
+                    rdma_last_connect_port);
 }
 #endif
 
@@ -1032,6 +1289,30 @@ static unsigned int arts_connect_timeout_ms(void) {
                                 ? ARTS_RDMA_CONNECT_TIMEOUT_MS
                                 : ARTS_CONNECT_TIMEOUT_MS;
     timeout_ms = arts_env_uint("ARTS_CONNECT_TIMEOUT_MS", fallback);
+    if (timeout_ms == 0) {
+      timeout_ms = 1;
+    }
+    initialized = true;
+  }
+  return timeout_ms;
+}
+
+static unsigned int arts_accept_hello_timeout_ms(void) {
+  static bool initialized = false;
+  static unsigned int timeout_ms = 0;
+  if (!initialized) {
+#ifdef ARTS_USE_RDMA
+    const char *rdma_raw = getenv("ARTS_RDMA_ACCEPT_HELLO_TIMEOUT_MS");
+    timeout_ms =
+        (rdma_raw && rdma_raw[0] != '\0')
+            ? arts_env_uint("ARTS_RDMA_ACCEPT_HELLO_TIMEOUT_MS",
+                            arts_connect_timeout_ms())
+            : arts_env_uint("ARTS_ACCEPT_HELLO_TIMEOUT_MS",
+                            arts_connect_timeout_ms());
+#else
+    timeout_ms =
+        arts_env_uint("ARTS_ACCEPT_HELLO_TIMEOUT_MS", arts_connect_timeout_ms());
+#endif
     if (timeout_ms == 0) {
       timeout_ms = 1;
     }
@@ -1130,6 +1411,77 @@ static bool arts_receive_socket_is_one_shot(void) {
   return false;
 #endif
 }
+
+#ifdef ARTS_USE_RDMA
+static bool arts_receive_socket_has_pending(int socket_index) {
+  if (socket_index < 0 || !remote_pending_receive_sockets) {
+    return false;
+  }
+
+  arts_receive_slot_lock(socket_index);
+  bool has_pending = remote_pending_receive_sockets[socket_index] != NULL;
+  arts_receive_slot_unlock(socket_index);
+  return has_pending;
+}
+
+static bool arts_should_close_receive_after_packet(int socket_index,
+                                                   bool local_buffer_empty) {
+  if (!arts_close_send_after_complete_send() || socket_index < 0) {
+    return false;
+  }
+
+  unsigned int close_every = arts_close_send_after_complete_send_every();
+  if (close_every == 0) {
+    return false;
+  }
+  if (close_every == 1) {
+    return local_buffer_empty;
+  }
+
+  bool close_due = false;
+  if (remote_receive_close_pending &&
+      remote_receive_close_pending[socket_index]) {
+    close_due = true;
+  }
+
+  if (remote_receive_success_count) {
+    unsigned int completed = ++remote_receive_success_count[socket_index];
+    if (completed >= close_every) {
+      remote_receive_success_count[socket_index] = 0;
+      close_due = true;
+    }
+  } else if (arts_receive_socket_is_one_shot()) {
+    close_due = true;
+  }
+
+  if (arts_receive_socket_has_pending(socket_index)) {
+    close_due = true;
+  }
+
+  if (!close_due) {
+    return false;
+  }
+
+  if (!local_buffer_empty) {
+    if (remote_receive_close_pending) {
+      remote_receive_close_pending[socket_index] = true;
+    }
+    return false;
+  }
+
+  if (remote_receive_close_pending) {
+    remote_receive_close_pending[socket_index] = false;
+  }
+  return true;
+}
+#else
+static bool arts_should_close_receive_after_packet(int socket_index,
+                                                   bool local_buffer_empty) {
+  (void)socket_index;
+  (void)local_buffer_empty;
+  return false;
+}
+#endif
 
 static bool arts_rdma_connect_helper_enabled(void) {
 #ifdef ARTS_USE_RDMA
@@ -1362,6 +1714,9 @@ static int arts_rdma_connect_with_thread_timeout(int socket_fd,
     if (done) {
       break;
     }
+#ifdef ARTS_USE_RDMA
+    arts_remote_accept_pending(arts_lazy_accept_drain_limit(), 0);
+#endif
     usleep(1000);
   }
 
@@ -1794,11 +2149,14 @@ static bool arts_socket_send_all(int socket_fd, const void *buffer, size_t lengt
 }
 
 static bool arts_socket_recv_all(int socket_fd, void *buffer, size_t length,
-                                 int *err_out) {
+                                 unsigned int timeout_ms, int *err_out) {
   char *cursor = (char *)buffer;
   size_t total = 0;
-  uint64_t deadline =
-      arts_get_time_stamp() + ((uint64_t)arts_connect_timeout_ms() * 1000000ULL);
+  if (timeout_ms == 0) {
+    timeout_ms = 1;
+  }
+  uint64_t deadline = arts_get_time_stamp() +
+                      ((uint64_t)timeout_ms * 1000000ULL);
   while (total < length) {
     if (arts_receiver_wakeup_requested()) {
       if (err_out) {
@@ -1806,18 +2164,18 @@ static bool arts_socket_recv_all(int socket_fd, void *buffer, size_t length,
       }
       return false;
     }
-    int timeout_ms = arts_deadline_remaining_ms(deadline);
-    if (timeout_ms <= 0) {
+    int remaining_ms = arts_deadline_remaining_ms(deadline);
+    if (remaining_ms <= 0) {
       if (err_out) {
         *err_out = ETIMEDOUT;
       }
       return false;
     }
 #ifdef ARTS_USE_RDMA
-    (void)timeout_ms;
+    (void)remaining_ms;
 #else
     struct pollfd pfd = {.fd = socket_fd, .events = POLLIN};
-    int poll_res = RPOLL(&pfd, 1, timeout_ms);
+    int poll_res = RPOLL(&pfd, 1, remaining_ms);
     if (poll_res < 0 && errno == EINTR) {
       continue;
     }
@@ -2025,7 +2383,7 @@ static bool arts_recv_connection_hello(int socket_fd,
                                        int *err_out) {
   struct arts_connection_hello_s wire_hello;
   if (!arts_socket_recv_all(socket_fd, &wire_hello, sizeof(wire_hello),
-                            err_out)) {
+                            arts_accept_hello_timeout_ms(), err_out)) {
     return false;
   }
 
@@ -2077,6 +2435,9 @@ static bool arts_register_receive_socket(int peer_rank, unsigned int port,
 
   arts_install_receive_socket_locked(recv_index, socket_fd);
   __sync_add_and_fetch(&remote_incoming_connected_count, 1U);
+#ifdef ARTS_USE_RDMA
+  __sync_fetch_and_add(&rdma_recv_register_count, 1ULL);
+#endif
   ARTS_INFO("%s registered %s socket for receives on rank %u from rank %d "
             "port %u (recv_index=%d, fd=%d)",
             arts_transport_name(), source ? source : "unknown",
@@ -2236,10 +2597,8 @@ static bool arts_remote_accept_one_pending(int timeout_ms) {
   if (accepted_socket < 0) {
     return false;
   }
-  INCREMENT_NUM_REMOTE_ACCEPT_SUCCESS_BY(1);
 #ifdef ARTS_USE_RDMA
-  __sync_fetch_and_add(&rdma_accept_success_count, 1ULL);
-  arts_rdma_maybe_print_summary("accept-success");
+  __sync_fetch_and_add(&rdma_accept_fd_count, 1ULL);
 #endif
   if (arts_receiver_wakeup_requested()) {
     arts_discard_unconnected_socket_fd(&accepted_socket);
@@ -2249,10 +2608,18 @@ static bool arts_remote_accept_one_pending(int timeout_ms) {
   struct arts_connection_hello_s hello;
   int hello_errno = 0;
   if (!arts_recv_connection_hello(accepted_socket, &hello, &hello_errno)) {
+#ifdef ARTS_USE_RDMA
+    __sync_fetch_and_add(&rdma_accept_hello_fail_count, 1ULL);
+    if (hello_errno == ETIMEDOUT) {
+      __sync_fetch_and_add(&rdma_accept_hello_timeout_count, 1ULL);
+      arts_rdma_maybe_print_summary("accept-hello-timeout");
+    }
+#endif
     ARTS_WARN("%s lazy accept failed to read hello on rank %u port index %d "
-              "(errno=%d: %s)",
+              "within %u ms (errno=%d: %s)",
               arts_transport_name(), arts_global_rank_id, accepted_port,
-              hello_errno, strerror(hello_errno));
+              arts_accept_hello_timeout_ms(), hello_errno,
+              strerror(hello_errno));
     arts_discard_unconnected_socket_fd(&accepted_socket);
     return false;
   }
@@ -2275,6 +2642,11 @@ static bool arts_remote_accept_one_pending(int timeout_ms) {
     arts_discard_unconnected_socket_fd(&accepted_socket);
     return false;
   }
+  INCREMENT_NUM_REMOTE_ACCEPT_SUCCESS_BY(1);
+#ifdef ARTS_USE_RDMA
+  __sync_fetch_and_add(&rdma_accept_success_count, 1ULL);
+  arts_rdma_maybe_print_summary("accept-success");
+#endif
   return true;
 }
 
@@ -2302,6 +2674,67 @@ static bool arts_remote_accept_pending(unsigned int limit, int first_timeout_ms)
 #endif
   return accepted_any;
 }
+
+#ifdef ARTS_USE_RDMA
+static void *arts_rdma_accept_thread_main(void *arg) {
+  (void)arg;
+  ARTS_TRACE_RDMA("accept thread start rank=%u", arts_global_rank_id);
+  while (!arts_receiver_wakeup_requested()) {
+    bool accepted =
+        arts_remote_accept_pending(arts_lazy_accept_drain_limit(),
+                                   ARTS_LAZY_ACCEPT_POLL_MS);
+    if (!accepted) {
+      usleep(ARTS_RDMA_ACCEPT_SLEEP_US);
+    }
+  }
+  arts_rdma_maybe_print_summary("accept-thread-stop");
+  ARTS_TRACE_RDMA("accept thread stop rank=%u", arts_global_rank_id);
+  return NULL;
+}
+
+static void arts_rdma_start_accept_thread(void) {
+  if (!arts_transport_uses_rdma() || remote_expected_incoming_count == 0 ||
+      !local_socket_recieve) {
+    return;
+  }
+  if (!__sync_bool_compare_and_swap(&rdma_accept_thread_started, 0U, 1U)) {
+    return;
+  }
+
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+#ifdef PTHREAD_STACK_MIN
+  pthread_attr_setstacksize(&attr, PTHREAD_STACK_MIN * 2);
+#endif
+
+  int create_res = pthread_create(&rdma_accept_thread, &attr,
+                                  arts_rdma_accept_thread_main, NULL);
+  pthread_attr_destroy(&attr);
+  if (create_res != 0) {
+    __sync_lock_release(&rdma_accept_thread_started);
+    ARTS_WARN("%s could not start RDMA accept thread on rank %u: %s",
+              arts_transport_name(), arts_global_rank_id,
+              strerror(create_res));
+    return;
+  }
+
+  ARTS_INFO("%s RDMA accept thread started on rank %u",
+            arts_transport_name(), arts_global_rank_id);
+}
+
+static void arts_rdma_stop_accept_thread(void) {
+  if (!rdma_accept_thread_started) {
+    return;
+  }
+  if (pthread_equal(pthread_self(), rdma_accept_thread)) {
+    __sync_lock_release(&rdma_accept_thread_started);
+    return;
+  }
+  pthread_join(rdma_accept_thread, NULL);
+  __sync_lock_release(&rdma_accept_thread_started);
+  ARTS_TRACE_RDMA("accept thread joined rank=%u", arts_global_rank_id);
+}
+#endif
 
 static inline bool arts_remote_connect(int rank, unsigned int port) {
 
@@ -2396,6 +2829,11 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
     if (!last_errno) {
       last_errno = errno;
     }
+#ifdef ARTS_USE_RDMA
+    rdma_last_connect_errno = last_errno;
+    rdma_last_connect_peer = rank;
+    rdma_last_connect_port = port;
+#endif
     remote_connection_alive[socket_index] = false;
     retry_count++;
     unsigned int max_retries = arts_connect_max_retries();
@@ -2602,6 +3040,9 @@ uint64_t arts_actual_send(char *message, uint64_t length, int rank, int port) {
       total += res;
       length -= res;
       if (length != 0 && max_bytes != 0 && total >= max_bytes) {
+#ifdef ARTS_USE_RDMA
+        __sync_fetch_and_add(&rdma_send_cap_hit_count, 1ULL);
+#endif
         INCREMENT_NUM_REMOTE_SEND_PARTIAL_BY(1);
         break;
       }
@@ -2609,6 +3050,9 @@ uint64_t arts_actual_send(char *message, uint64_t length, int rank, int port) {
     iterations++;
     if (length != 0 && max_iters != 0 &&
         iterations >= (int)max_iters) {
+#ifdef ARTS_USE_RDMA
+      __sync_fetch_and_add(&rdma_send_cap_hit_count, 1ULL);
+#endif
       INCREMENT_NUM_REMOTE_SEND_PARTIAL_BY(1);
       break;
     }
@@ -2705,6 +3149,7 @@ bool arts_remote_setup_incoming() {
   bool rdma_receive_rpoll = arts_rdma_receive_rpoll_enabled();
   bool rdma_eager_connect = arts_rdma_eager_connect_enabled();
   unsigned int connect_timeout_ms = arts_connect_timeout_ms();
+  unsigned int accept_hello_timeout_ms = arts_accept_hello_timeout_ms();
   unsigned int connect_max_retries = arts_connect_max_retries();
   unsigned int connect_retry_delay_us = arts_connect_retry_delay_us();
   unsigned int abandoned_connect_backoff_us =
@@ -2722,6 +3167,7 @@ bool arts_remote_setup_incoming() {
   ARTS_INFO("%s config rank %u: connect_helper=%u close_after_send=%u "
             "close_after_send_every=%u receive_rpoll=%u eager_connect=%u "
             "connect_timeout_ms=%u "
+            "accept_hello_timeout_ms=%u "
             "max_retries=%u retry_delay_us=%u "
             "abandoned_backoff_us=%u abandoned_quarantine_us=%u "
             "stagger_us=%u between_us=%u steady_between_us=%u "
@@ -2733,6 +3179,7 @@ bool arts_remote_setup_incoming() {
             rdma_close_after_send ? 1U : 0U,
             rdma_close_after_send_every, rdma_receive_rpoll ? 1U : 0U,
             rdma_eager_connect ? 1U : 0U, connect_timeout_ms,
+            accept_hello_timeout_ms,
             connect_max_retries, connect_retry_delay_us,
             abandoned_connect_backoff_us, abandoned_connect_quarantine_us,
             stagger_us, connect_between_us, connect_steady_between_us,
@@ -2761,6 +3208,13 @@ bool arts_remote_setup_incoming() {
   remote_receive_socket_locks =
       (volatile unsigned int *)arts_calloc((size_t)(count + 1) * ports,
                                            sizeof(unsigned int));
+#ifdef ARTS_USE_RDMA
+  remote_receive_success_count =
+      (unsigned int *)arts_calloc((size_t)(count + 1) * ports,
+                                  sizeof(unsigned int));
+  remote_receive_close_pending =
+      (bool *)arts_calloc((size_t)(count + 1) * ports, sizeof(bool));
+#endif
   for (i = 0; i < (count + 1) * (int)ports; i++) {
     remote_socket_recieve_list[i] = -1;
     poll_incoming[i].fd = -1;
@@ -2840,6 +3294,10 @@ bool arts_remote_setup_incoming() {
             "%u port(s), accepting up to %u incoming peer sockets on demand",
             arts_transport_name(), arts_global_rank_id, ports,
             remote_expected_incoming_count);
+
+#ifdef ARTS_USE_RDMA
+  arts_rdma_start_accept_thread();
+#endif
 
   return true;
 }
@@ -2974,6 +3432,9 @@ bool max_out_buffs(unsigned int ignore) {
 
 	    if (res2 < 0) {
 		      if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+#ifdef ARTS_USE_RDMA
+		        __sync_fetch_and_add(&rdma_recv_error_count, 1ULL);
+#endif
 		        ARTS_INFO("Error on recv return 0 %d %d", errno, EAGAIN);
 		        arts_close_receive_socket_index(i);
 		        arts_shutdown();
@@ -2987,6 +3448,9 @@ bool max_out_buffs(unsigned int ignore) {
               break;
             }
             if (res2 == 0) {
+#ifdef ARTS_USE_RDMA
+              __sync_fetch_and_add(&rdma_recv_eof_count, 1ULL);
+#endif
               arts_close_receive_socket_index(i);
               arts_shutdown();
               arts_runtime_stop();
@@ -3001,6 +3465,9 @@ bool max_out_buffs(unsigned int ignore) {
 	            INCREMENT_NUM_REMOTE_RECV_EAGAIN_BY(1);
 	            continue;
 	          }
+#ifdef ARTS_USE_RDMA
+          __sync_fetch_and_add(&rdma_recv_error_count, 1ULL);
+#endif
           ARTS_INFO("Error on recv socket return 0");
           ARTS_INFO("error %s", strerror(errno));
           arts_close_receive_socket_index(i);
@@ -3008,6 +3475,9 @@ bool max_out_buffs(unsigned int ignore) {
           arts_runtime_stop();
           return false;
         } else if (res == 0) {
+#ifdef ARTS_USE_RDMA
+          __sync_fetch_and_add(&rdma_recv_eof_count, 1ULL);
+#endif
           arts_close_receive_socket_index(i);
           continue;
         }
@@ -3143,10 +3613,13 @@ bool arts_server_try_to_receive(
                   INCREMENT_BYTES_REMOTE_RECEIVED_BY(res2);
                 }
 
-	                if (res2 < 0) {
-		                  if (errno != EAGAIN && errno != EWOULDBLOCK &&
-		                      errno != EINTR) {
-	                    ARTS_INFO("Error on recv return 0 %d %d", errno, EAGAIN);
+		                if (res2 < 0) {
+			                  if (errno != EAGAIN && errno != EWOULDBLOCK &&
+			                      errno != EINTR) {
+#ifdef ARTS_USE_RDMA
+		                    __sync_fetch_and_add(&rdma_recv_error_count, 1ULL);
+#endif
+		                    ARTS_INFO("Error on recv return 0 %d %d", errno, EAGAIN);
 	                    arts_close_receive_socket_index(i);
 	                    arts_shutdown();
 		                    arts_runtime_stop();
@@ -3159,6 +3632,9 @@ bool arts_server_try_to_receive(
                   break;
                 }
                 if (res2 == 0) {
+#ifdef ARTS_USE_RDMA
+                  __sync_fetch_and_add(&rdma_recv_eof_count, 1ULL);
+#endif
                   arts_close_receive_socket_index(i);
                   arts_shutdown();
                   arts_runtime_stop();
@@ -3203,10 +3679,13 @@ bool arts_server_try_to_receive(
                 if (res2 > 0) {
                   INCREMENT_BYTES_REMOTE_RECEIVED_BY(res2);
                 }
-	                if (res2 < 0) {
-		                  if (errno != EAGAIN && errno != EWOULDBLOCK &&
-		                      errno != EINTR) {
-	                    ARTS_INFO("Error on recv return 0 %d %d", errno, EAGAIN);
+		                if (res2 < 0) {
+			                  if (errno != EAGAIN && errno != EWOULDBLOCK &&
+			                      errno != EINTR) {
+#ifdef ARTS_USE_RDMA
+		                    __sync_fetch_and_add(&rdma_recv_error_count, 1ULL);
+#endif
+		                    ARTS_INFO("Error on recv return 0 %d %d", errno, EAGAIN);
 	                    ARTS_INFO("error %s", strerror(errno));
 	                    arts_close_receive_socket_index(i);
 	                    arts_shutdown();
@@ -3219,6 +3698,9 @@ bool arts_server_try_to_receive(
                   break;
                 }
                 if (res2 == 0) {
+#ifdef ARTS_USE_RDMA
+                  __sync_fetch_and_add(&rdma_recv_eof_count, 1ULL);
+#endif
                   arts_close_receive_socket_index(i);
                   arts_shutdown();
                   arts_runtime_stop();
@@ -3251,17 +3733,20 @@ bool arts_server_try_to_receive(
 		              packet = (struct arts_remote_packet_s *)(((char *)packet) +
 		                                                       processed_size);
 		              packets_processed_this_socket++;
-		              if (res == 0 && arts_receive_socket_is_one_shot()) {
-		                ARTS_TRACE_RDMA("close one-shot recv after packet index=%d "
-		                                "from=%u msg=%u size=%lu",
-		                                i, processed_rank, processed_msg,
-		                                processed_size);
+              if (arts_should_close_receive_after_packet(i, res == 0)) {
+                ARTS_TRACE_RDMA("close bounded recv after packet index=%d "
+                                "from=%u msg=%u size=%lu",
+                                i, processed_rank, processed_msg,
+                                processed_size);
 		                arts_close_receive_socket_index(i);
 		                max_out_working = true;
 		                break;
 		              }
-		              if (packet_limit != 0 &&
-		                  packets_processed_this_socket >= packet_limit && res > 0) {
+              if (packet_limit != 0 &&
+                  packets_processed_this_socket >= packet_limit && res > 0) {
+#ifdef ARTS_USE_RDMA
+	                __sync_fetch_and_add(&rdma_recv_cap_hit_count, 1ULL);
+#endif
 	                if (bypass_buf[pos] != (char *)packet) {
 	                  memmove(bypass_buf[pos], packet, res);
 	                }
@@ -3276,11 +3761,17 @@ bool arts_server_try_to_receive(
 	              INCREMENT_NUM_REMOTE_RECV_EAGAIN_BY(1);
 	              continue;
 	            }
+#ifdef ARTS_USE_RDMA
+            __sync_fetch_and_add(&rdma_recv_error_count, 1ULL);
+#endif
             arts_close_receive_socket_index(i);
             arts_shutdown();
             arts_runtime_stop();
             return false;
           } else if (res == 0) {
+#ifdef ARTS_USE_RDMA
+            __sync_fetch_and_add(&rdma_recv_eof_count, 1ULL);
+#endif
             arts_close_receive_socket_index(i);
             continue;
           }
