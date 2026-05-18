@@ -116,6 +116,7 @@ static ARTS_THREAD_LOCAL bool max_out_working;
 static ARTS_THREAD_LOCAL uint64_t next_lazy_accept_time;
 #ifdef ARTS_USE_RDMA
 static ARTS_THREAD_LOCAL bool rdma_accept_thread_active;
+static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 #endif
 
 #define EDT_MUG_SIZE 32
@@ -138,6 +139,7 @@ static ARTS_THREAD_LOCAL bool rdma_accept_thread_active;
 #define ARTS_RDMA_ACCEPT_SLEEP_US 1000
 #define ARTS_RDMA_EAGER_CONNECT 0
 #define ARTS_RDMA_EAGER_CONNECT_ROUNDS 4
+#define ARTS_RDMA_ACCEPT_THREAD 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND_EVERY 1
 #define ARTS_RDMA_CLOSE_WORKERS 4
 #define ARTS_RDMA_SEND_MAX_BYTES 1048576
@@ -162,6 +164,8 @@ static volatile uint64_t rdma_connect_fail_count = 0;
 static volatile uint64_t rdma_connect_timeout_count = 0;
 static volatile uint64_t rdma_connect_abandoned_count = 0;
 static volatile uint64_t rdma_connect_backoff_skip_count = 0;
+static volatile uint64_t rdma_connect_helper_hello_count = 0;
+static volatile uint64_t rdma_connect_helper_hello_fail_count = 0;
 static volatile uint64_t rdma_accept_fd_count = 0;
 static volatile uint64_t rdma_accept_attempt_count = 0;
 static volatile uint64_t rdma_accept_success_count = 0;
@@ -204,6 +208,8 @@ static unsigned int arts_close_send_after_complete_send_every(void);
 static void arts_rdma_maybe_print_summary(const char *reason);
 static unsigned int arts_lazy_accept_drain_limit(void);
 static bool arts_remote_accept_pending(unsigned int limit, int first_timeout_ms);
+static bool arts_send_connection_hello(int socket_fd, unsigned int port,
+                                       int *err_out);
 static void *arts_rdma_accept_thread_main(void *arg);
 static void arts_rdma_start_accept_thread(void);
 static void arts_rdma_stop_accept_thread(void);
@@ -783,7 +789,7 @@ static void arts_close_receive_socket_index(int socket_index) {
 static bool arts_receiver_wakeup_requested(void) {
   bool local_thread_stopped = !arts_thread_info.alive;
 #ifdef ARTS_USE_RDMA
-  if (rdma_accept_thread_active) {
+  if (rdma_accept_thread_active || rdma_connect_helper_thread_active) {
     local_thread_stopped = false;
   }
 #endif
@@ -1238,6 +1244,7 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     "connect_attempt=%llu connect_success=%llu "
                     "connect_fail=%llu connect_timeout=%llu "
                     "connect_abandoned=%llu connect_backoff_skip=%llu "
+                    "helper_hello=%llu helper_hello_fail=%llu "
                     "abandoned_inflight=%llu accept_attempt=%llu "
                     "accept_fd=%llu accept_success=%llu accept_eagain=%llu "
                     "accept_hello_fail=%llu accept_hello_timeout=%llu "
@@ -1259,6 +1266,8 @@ static void arts_rdma_maybe_print_summary(const char *reason) {
                     (unsigned long long)rdma_connect_timeout_count,
                     (unsigned long long)rdma_connect_abandoned_count,
                     (unsigned long long)rdma_connect_backoff_skip_count,
+                    (unsigned long long)rdma_connect_helper_hello_count,
+                    (unsigned long long)rdma_connect_helper_hello_fail_count,
                     (unsigned long long)rdma_abandoned_connect_inflight_count,
                     (unsigned long long)rdma_accept_attempt_count,
                     (unsigned long long)rdma_accept_fd_count,
@@ -1530,6 +1539,21 @@ static bool arts_rdma_receive_rpoll_enabled(void) {
 #endif
 }
 
+static bool arts_rdma_accept_thread_enabled(void) {
+#ifdef ARTS_USE_RDMA
+  static bool initialized = false;
+  static bool enabled = false;
+  if (!initialized) {
+    enabled = arts_env_uint("ARTS_RDMA_ACCEPT_THREAD",
+                            ARTS_RDMA_ACCEPT_THREAD) != 0U;
+    initialized = true;
+  }
+  return enabled;
+#else
+  return false;
+#endif
+}
+
 static int arts_receive_poll_timeout_ms(bool has_live_inbound,
                                         bool awaiting_lazy_accept) {
 #ifdef ARTS_USE_RDMA
@@ -1569,8 +1593,11 @@ struct arts_rdma_connect_attempt_s {
   pthread_mutex_t lock;
   bool done;
   bool abandoned;
+  bool hello_started;
   int result;
   int err;
+  bool hello_sent;
+  int hello_err;
 };
 
 static void arts_rdma_connect_attempt_destroy(
@@ -1580,6 +1607,7 @@ static void arts_rdma_connect_attempt_destroy(
 }
 
 static void *arts_rdma_connect_attempt_main(void *arg) {
+  rdma_connect_helper_thread_active = true;
   struct arts_rdma_connect_attempt_s *attempt =
       (struct arts_rdma_connect_attempt_s *)arg;
   ARTS_TRACE_RDMA("connect rconnect enter peer=%d port=%u fd=%d",
@@ -1630,9 +1658,40 @@ static void *arts_rdma_connect_attempt_main(void *arg) {
     }
   }
 
+  bool hello_sent = false;
+  int hello_errno = 0;
+  bool abandoned_before_hello = false;
+  pthread_mutex_lock(&attempt->lock);
+  abandoned_before_hello = attempt->abandoned;
+  pthread_mutex_unlock(&attempt->lock);
+
+  if (result == 0 && !abandoned_before_hello) {
+    pthread_mutex_lock(&attempt->lock);
+    attempt->hello_started = true;
+    pthread_mutex_unlock(&attempt->lock);
+    ARTS_TRACE_RDMA("connect helper hello send enter peer=%d port=%u fd=%d",
+                    attempt->peer_rank, attempt->port, attempt->socket_fd);
+    hello_sent =
+        arts_send_connection_hello(attempt->socket_fd, attempt->port,
+                                   &hello_errno);
+    ARTS_TRACE_RDMA("connect helper hello send leave peer=%d port=%u fd=%d "
+                    "ok=%u errno=%d",
+                    attempt->peer_rank, attempt->port, attempt->socket_fd,
+                    hello_sent ? 1U : 0U, hello_sent ? 0 : hello_errno);
+    if (hello_sent) {
+      __sync_fetch_and_add(&rdma_connect_helper_hello_count, 1ULL);
+    } else {
+      __sync_fetch_and_add(&rdma_connect_helper_hello_fail_count, 1ULL);
+      result = -1;
+      saved_errno = hello_errno ? hello_errno : EIO;
+    }
+  }
+
   pthread_mutex_lock(&attempt->lock);
   attempt->result = result;
   attempt->err = saved_errno;
+  attempt->hello_sent = hello_sent;
+  attempt->hello_err = hello_errno;
   attempt->done = true;
   bool abandoned = attempt->abandoned;
   pthread_mutex_unlock(&attempt->lock);
@@ -1652,6 +1711,7 @@ static void *arts_rdma_connect_attempt_main(void *arg) {
                     attempt->peer_rank, attempt->port, attempt->socket_fd);
     arts_rdma_connect_attempt_destroy(attempt);
   }
+  rdma_connect_helper_thread_active = false;
   return NULL;
 }
 
@@ -1662,9 +1722,13 @@ static int arts_rdma_connect_with_thread_timeout(int socket_fd,
                                                 int peer_rank,
                                                 unsigned int port,
                                                 int *err_out,
-                                                bool *abandoned_fd_out) {
+                                                bool *abandoned_fd_out,
+                                                bool *hello_sent_out) {
   if (abandoned_fd_out) {
     *abandoned_fd_out = false;
+  }
+  if (hello_sent_out) {
+    *hello_sent_out = false;
   }
   if (addrlen > sizeof(struct sockaddr_storage)) {
     if (err_out) {
@@ -1713,14 +1777,29 @@ static int arts_rdma_connect_with_thread_timeout(int socket_fd,
     return -1;
   }
 
-  uint64_t deadline =
+  uint64_t connect_deadline =
       arts_get_time_stamp() + ((uint64_t)arts_connect_timeout_ms() * 1000000ULL);
   bool done = false;
-  while (arts_get_time_stamp() < deadline) {
+  bool hello_started = false;
+  uint64_t hello_deadline = 0;
+  while (true) {
     pthread_mutex_lock(&attempt->lock);
     done = attempt->done;
+    hello_started = attempt->hello_started;
     pthread_mutex_unlock(&attempt->lock);
     if (done) {
+      break;
+    }
+    uint64_t now = arts_get_time_stamp();
+    if (hello_started) {
+      if (hello_deadline == 0) {
+        hello_deadline =
+            now + ((uint64_t)arts_accept_hello_timeout_ms() * 1000000ULL);
+      }
+      if (now >= hello_deadline) {
+        break;
+      }
+    } else if (now >= connect_deadline) {
       break;
     }
 #ifdef ARTS_USE_RDMA
@@ -1737,9 +1816,13 @@ static int arts_rdma_connect_with_thread_timeout(int socket_fd,
     pthread_join(thread, NULL);
     int result = attempt->result;
     int saved_errno = attempt->err;
+    bool hello_sent = attempt->hello_sent;
     arts_rdma_connect_attempt_destroy(attempt);
     if (err_out) {
       *err_out = saved_errno;
+    }
+    if (hello_sent_out) {
+      *hello_sent_out = hello_sent;
     }
     return result;
   }
@@ -1758,12 +1841,14 @@ static int arts_rdma_connect_with_thread_timeout(int socket_fd,
   if (err_out) {
     *err_out = ETIMEDOUT;
   }
-  ARTS_WARN("%s rconnect did not return within %u ms for rank %u -> rank %d "
-            "port %u (fd=%d); abandoning this socket and retrying later",
-            arts_transport_name(), arts_connect_timeout_ms(), arts_global_rank_id,
-            peer_rank, port, socket_fd);
-  ARTS_TRACE_RDMA("connect rconnect timeout peer=%d port=%u fd=%d",
-                  peer_rank, port, socket_fd);
+  ARTS_WARN("%s rconnect/hello did not complete for rank %u -> rank %d port %u "
+            "(fd=%d, connect_timeout_ms=%u, accept_hello_timeout_ms=%u, "
+            "hello_started=%u); abandoning this socket and retrying later",
+            arts_transport_name(), arts_global_rank_id, peer_rank, port,
+            socket_fd, arts_connect_timeout_ms(), arts_accept_hello_timeout_ms(),
+            hello_started ? 1U : 0U);
+  ARTS_TRACE_RDMA("connect rconnect timeout peer=%d port=%u fd=%d hello_started=%u",
+                  peer_rank, port, socket_fd, hello_started ? 1U : 0U);
   return -1;
 }
 #endif
@@ -1893,6 +1978,12 @@ static bool arts_should_try_lazy_accept(bool has_live_inbound,
   if (!has_live_inbound) {
     return true;
   }
+
+#ifdef ARTS_USE_RDMA
+  if (arts_close_send_after_complete_send()) {
+    return true;
+  }
+#endif
 
   unsigned int interval_us = arts_lazy_accept_idle_interval_us();
   if (interval_us == 0) {
@@ -2226,12 +2317,16 @@ static bool arts_socket_connect_with_timeout(int socket_fd,
                                              socklen_t addrlen, int peer_rank,
                                              unsigned int port, int socket_index,
                                              int *err_out,
-                                             bool *abandoned_fd_out) {
+                                             bool *abandoned_fd_out,
+                                             bool *hello_sent_out) {
 #ifndef ARTS_USE_RDMA
   (void)socket_index;
 #endif
   if (abandoned_fd_out) {
     *abandoned_fd_out = false;
+  }
+  if (hello_sent_out) {
+    *hello_sent_out = false;
   }
   ARTS_TRACE_RDMA("connect flags get peer=%d port=%u fd=%d", peer_rank, port,
                   socket_fd);
@@ -2256,6 +2351,7 @@ static bool arts_socket_connect_with_timeout(int socket_fd,
 
   ARTS_TRACE_RDMA("connect call enter peer=%d port=%u fd=%d", peer_rank, port,
                   socket_fd);
+  bool connection_hello_sent = false;
 #ifdef ARTS_USE_RDMA
   bool connect_abandoned = false;
   int connect_errno = 0;
@@ -2263,7 +2359,7 @@ static bool arts_socket_connect_with_timeout(int socket_fd,
   if (arts_rdma_connect_helper_enabled()) {
     connect_res = arts_rdma_connect_with_thread_timeout(
         socket_fd, addr, addrlen, socket_index, peer_rank, port, &connect_errno,
-        &connect_abandoned);
+        &connect_abandoned, &connection_hello_sent);
   } else {
     connect_res = RCONNECT(socket_fd, addr, addrlen);
     connect_errno = (connect_res < 0) ? errno : 0;
@@ -2290,6 +2386,9 @@ static bool arts_socket_connect_with_timeout(int socket_fd,
     if (restore_flags && RF_SETFL(socket_fd, flags) < 0) {
       ARTS_WARN("%s failed to restore socket flags after connect: %s",
                 arts_transport_name(), strerror(errno));
+    }
+    if (hello_sent_out) {
+      *hello_sent_out = connection_hello_sent;
     }
     return true;
   }
@@ -2704,8 +2803,8 @@ static void *arts_rdma_accept_thread_main(void *arg) {
 }
 
 static void arts_rdma_start_accept_thread(void) {
-  if (!arts_transport_uses_rdma() || remote_expected_incoming_count == 0 ||
-      !local_socket_recieve) {
+  if (!arts_transport_uses_rdma() || !arts_rdma_accept_thread_enabled() ||
+      remote_expected_incoming_count == 0 || !local_socket_recieve) {
     return;
   }
   if (!__sync_bool_compare_and_swap(&rdma_accept_thread_started, 0U, 1U)) {
@@ -2790,6 +2889,7 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
 
     int last_errno = 0;
     bool connect_abandoned = false;
+    bool connection_hello_sent = false;
     ARTS_TRACE_RDMA("connect attempt peer=%d port=%u fd=%d retry=%u", rank,
                     port, candidate_fd, retry_count);
     INCREMENT_NUM_REMOTE_CONNECT_ATTEMPT_BY(1);
@@ -2798,9 +2898,10 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
 #endif
     bool connected = arts_socket_connect_with_timeout(
         candidate_fd, (struct sockaddr *)addr, sizeof(struct sockaddr_in), rank,
-        port, socket_index, &last_errno, &connect_abandoned);
-    bool hello_sent = false;
-    if (connected) {
+        port, socket_index, &last_errno, &connect_abandoned,
+        &connection_hello_sent);
+    bool hello_sent = connection_hello_sent;
+    if (connected && !hello_sent) {
       ARTS_TRACE_RDMA("connect hello send enter peer=%d port=%u fd=%d", rank,
                       port, candidate_fd);
       hello_sent = arts_send_connection_hello(candidate_fd, port, &last_errno);
@@ -3158,6 +3259,7 @@ bool arts_remote_setup_incoming() {
   unsigned int rdma_close_after_send_every =
       arts_close_send_after_complete_send_every();
   bool rdma_receive_rpoll = arts_rdma_receive_rpoll_enabled();
+  bool rdma_accept_thread = arts_rdma_accept_thread_enabled();
   bool rdma_eager_connect = arts_rdma_eager_connect_enabled();
   unsigned int connect_timeout_ms = arts_connect_timeout_ms();
   unsigned int accept_hello_timeout_ms = arts_accept_hello_timeout_ms();
@@ -3177,7 +3279,7 @@ bool arts_remote_setup_incoming() {
   (void)arts_receive_poll_timeout_ms(false, true);
   ARTS_INFO("%s config rank %u: connect_helper=%u close_after_send=%u "
             "close_after_send_every=%u receive_rpoll=%u eager_connect=%u "
-            "connect_timeout_ms=%u "
+            "accept_thread=%u connect_timeout_ms=%u "
             "accept_hello_timeout_ms=%u "
             "max_retries=%u retry_delay_us=%u "
             "abandoned_backoff_us=%u abandoned_quarantine_us=%u "
@@ -3189,7 +3291,8 @@ bool arts_remote_setup_incoming() {
             rdma_connect_helper_enabled ? 1U : 0U,
             rdma_close_after_send ? 1U : 0U,
             rdma_close_after_send_every, rdma_receive_rpoll ? 1U : 0U,
-            rdma_eager_connect ? 1U : 0U, connect_timeout_ms,
+            rdma_eager_connect ? 1U : 0U, rdma_accept_thread ? 1U : 0U,
+            connect_timeout_ms,
             accept_hello_timeout_ms,
             connect_max_retries, connect_retry_delay_us,
             abandoned_connect_backoff_us, abandoned_connect_quarantine_us,
