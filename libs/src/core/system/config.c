@@ -50,6 +50,11 @@
 #include "arts/transport/launcher.h"
 #include "arts/utils/malloc.h"
 
+#define ARTS_PROTOCOL_TCP "tcp"
+#define ARTS_PROTOCOL_RDMA "rdma"
+#define ARTS_PROTOCOL_ROCE "roce"
+#define ARTS_PROTOCOL_AUTO "auto"
+
 /*--- Compiler-injected config overrides ------------------------------------*/
 static char *arts_config_override_path = NULL;
 static char *arts_config_override_data = NULL;
@@ -789,6 +794,7 @@ static const struct arts_config_entry_s config_entries[] = {
     {"receiver_threads", CONFIG_UINT, OFF(receiver_thread_count), NULL, NULL},
     {"port_count", CONFIG_UINT, OFF(port_count), NULL, NULL},
     {"master_node", CONFIG_STRING, OFF(master_node), NULL, NULL},
+    {"protocol", CONFIG_STRING, OFF(protocol), NULL, NULL},
     /* --- Debug --- */
     {"kill_mode", CONFIG_UINT, OFF(kill_mode), "0", NULL},
     {"core_dump", CONFIG_BOOL, OFF(core_dump), "0", NULL},
@@ -844,11 +850,13 @@ static void config_set_master_from_table(struct arts_config_s *config) {
   }
 }
 
-static void config_setup_slurm(struct arts_config_s *config) {
+static void config_setup_slurm(struct arts_config_s *config,
+                               struct arts_config_variable_s **vars) {
   config->master_boot = false;
 
   char *threads_temp = getenv("SLURM_CPUS_PER_TASK");
-  if (threads_temp != NULL) {
+  const char *worker_threads_value = config_lookup(vars, "worker_threads");
+  if (threads_temp != NULL && worker_threads_value == NULL) {
     config->thread_count = (unsigned int)strtol(threads_temp, NULL, 10);
   }
 
@@ -860,7 +868,22 @@ static void config_setup_slurm(struct arts_config_s *config) {
   }
 
   char *node_list = getenv("SLURM_STEP_NODELIST");
-  arts_config_create_routing_table(&config, node_list);
+  if (node_list == NULL || node_list[0] == '\0') {
+    node_list = getenv("SLURM_JOB_NODELIST");
+  }
+  if (node_list == NULL || node_list[0] == '\0') {
+    ARTS_ERROR("SLURM launcher requested but neither SLURM_STEP_NODELIST nor "
+               "SLURM_JOB_NODELIST is set");
+    return;
+  }
+
+  char *node_list_copy = arts_config_make_new_var(node_list);
+  arts_config_create_routing_table(&config, node_list_copy);
+  arts_free(node_list_copy);
+  if (config->table_length != config->nodes) {
+    ARTS_ERROR("SLURM routing table has %u node(s), expected SLURM_NNODES=%u",
+               config->table_length, config->nodes);
+  }
   config_set_master_from_table(config);
 }
 
@@ -998,7 +1021,7 @@ static void config_setup_local(struct arts_config_s *config,
 static void config_setup_launcher(struct arts_config_s *config,
                                   struct arts_config_variable_s **vars) {
   if (strcmp(config->launcher, "slurm") == 0) {
-    config_setup_slurm(config);
+    config_setup_slurm(config, vars);
   } else if (strcmp(config->launcher, "lsf") == 0) {
     config_setup_lsf(config);
   } else if (strcmp(config->launcher, "ssh") == 0) {
@@ -1113,6 +1136,50 @@ static void config_compute_derived(struct arts_config_s *config) {
 }
 
 static void config_print_warnings(struct arts_config_s *config) {
+  const char *compiled_transport =
+#ifdef ARTS_USE_RDMA
+      ARTS_PROTOCOL_RDMA;
+#else
+      ARTS_PROTOCOL_TCP;
+#endif
+
+  if (config->protocol && config->protocol[0] != '\0' &&
+      strcmp(config->protocol, ARTS_PROTOCOL_AUTO) != 0) {
+    bool requested_rdma = strcmp(config->protocol, ARTS_PROTOCOL_RDMA) == 0 ||
+                          strcmp(config->protocol, ARTS_PROTOCOL_ROCE) == 0;
+    bool requested_tcp = strcmp(config->protocol, ARTS_PROTOCOL_TCP) == 0;
+    if (!requested_rdma && !requested_tcp) {
+      ARTS_ERROR("Invalid protocol='%s' in arts.cfg; expected tcp, rdma, "
+                 "roce, or auto",
+                 config->protocol);
+    }
+#ifdef ARTS_USE_RDMA
+    if (requested_tcp) {
+      ARTS_ERROR("arts.cfg requests protocol=%s but ARTS was built with "
+                 "ARTS_USE_RDMA",
+                 ARTS_PROTOCOL_TCP);
+    }
+#else
+    if (requested_rdma) {
+      ARTS_ERROR("arts.cfg requests protocol=%s but ARTS was built without "
+                 "ARTS_USE_RDMA",
+                 config->protocol);
+    }
+#endif
+  }
+
+  if (config->nodes > 1) {
+    ARTS_INFO("ARTS transport=%s protocol=%s launcher=%s nodes=%u "
+              "worker_threads=%u sender_threads=%u receiver_threads=%u "
+              "net_interface=%s",
+              compiled_transport,
+              config->protocol ? config->protocol : ARTS_PROTOCOL_AUTO,
+              config->launcher ? config->launcher : "unknown", config->nodes,
+              config->worker_thread_count, config->sender_thread_count,
+              config->receiver_thread_count,
+              config->net_interface ? config->net_interface : "(default)");
+  }
+
   if (config->free_db_after_gpu_run) {
     ARTS_INFO("free_db_after_gpu_run is on -- intended for testing, not "
               "performance.");
@@ -1196,6 +1263,9 @@ void arts_config_load(struct arts_config_s *config) {
 
 void arts_config_destroy(struct arts_config_s *config) {
   arts_free(config->launcher);
+  if (config->protocol) {
+    arts_free(config->protocol);
+  }
   if (config->launcher_data) {
     arts_free(config->launcher_data);
   }

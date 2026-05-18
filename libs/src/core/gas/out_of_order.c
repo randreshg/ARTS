@@ -266,6 +266,8 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
   case OO_EPOCH_SEND: {
     //            ARTS_INFO("ooEpochSendFire");
     struct oo_epoch_send_s *req = (struct oo_epoch_send_s *)handle_me;
+    ARTS_TRACE_RDMA("oo replay epoch send guid=%lu source=%u dest=%u",
+                    req->guid, req->source, req->dest);
     send_epoch(req->guid, req->source, req->dest);
     break;
   }
@@ -602,8 +604,11 @@ void arts_out_of_order_send_epoch(arts_guid_t epoch_guid, unsigned int source,
   struct oo_epoch_send_s *req =
       (struct oo_epoch_send_s *)arts_malloc(sizeof(struct oo_epoch_send_s));
   req->type = OO_EPOCH_SEND;
+  req->guid = epoch_guid;
   req->source = source;
   req->dest = dest;
+  ARTS_TRACE_RDMA("oo queue epoch send guid=%lu source=%u dest=%u",
+                  epoch_guid, source, dest);
   bool res = arts_route_table_add_oo(epoch_guid, req, false);
   if (!res) {
     send_epoch(epoch_guid, source, dest);

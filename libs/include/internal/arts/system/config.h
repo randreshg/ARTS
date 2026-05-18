@@ -64,6 +64,7 @@ struct arts_config_s {
   unsigned int my_rank;
   char *master_node;
   char *net_interface;
+  char *protocol;
   char *launcher;
   unsigned int port_count;
   unsigned int *default_ports;

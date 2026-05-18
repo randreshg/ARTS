@@ -204,11 +204,26 @@ static void increment_finished_epoch_impl(arts_guid_t epoch_guid,
       if (!arts_atomic_sub_u64(&epoch->queued, 1)) {
         if (!arts_atomic_cswap_u64(&epoch->outstanding, 0,
                                    arts_global_rank_count)) {
+          ARTS_INFO("Epoch [Guid:%lu] owner rank %u local queue drained; "
+                    "requesting %u rank reductions (active=%u, finished=%u)",
+                    epoch_guid, arts_global_rank_id, arts_global_rank_count - 1,
+                    EPOCH_ACTIVE(epoch), EPOCH_FINISHED(epoch));
+          ARTS_TRACE_RDMA("epoch owner drained guid=%lu outstanding=%lu "
+                          "active=%u finished=%u broadcast",
+                          epoch_guid, epoch->outstanding, EPOCH_ACTIVE(epoch),
+                          EPOCH_FINISHED(epoch));
           broadcast_epoch_request(epoch_guid);
         }
       }
     } else {
       if (decrement_queue_epoch(epoch)) {
+        ARTS_INFO("Epoch [Guid:%lu] non-owner rank %u queue drained; sending "
+                  "active=%u finished=%u to owner rank %u",
+                  epoch_guid, arts_global_rank_id, cur_active, new_finished,
+                  rank);
+        ARTS_TRACE_RDMA("epoch nonowner drained guid=%lu owner=%u active=%u "
+                        "finished=%u",
+                        epoch_guid, rank, cur_active, new_finished);
         arts_remote_epoch_send(rank, epoch_guid, cur_active,
                                new_finished);
       }
@@ -233,13 +248,22 @@ void send_epoch(arts_guid_t epoch_guid, unsigned int source,
   arts_epoch_t *epoch =
       (arts_epoch_t *)arts_route_table_lookup_item(epoch_guid);
   if (epoch) {
-    ARTS_DEBUG("Sending epoch [Guid:%lu] to rank %u", epoch_guid, dest);
+    ARTS_INFO("Sending epoch [Guid:%lu] from rank %u to rank %u "
+              "(active=%u, finished=%u, queued=%lu)",
+              epoch_guid, arts_global_rank_id, dest, EPOCH_ACTIVE(epoch),
+              EPOCH_FINISHED(epoch), epoch->queued);
+    ARTS_TRACE_RDMA("send_epoch local guid=%lu source=%u dest=%u active=%u "
+                    "finished=%u queued=%lu",
+                    epoch_guid, source, dest, EPOCH_ACTIVE(epoch),
+                    EPOCH_FINISHED(epoch), epoch->queued);
     arts_atomic_fetch_and_u64(&epoch->queued, EPOCH_MASK);
     if (!arts_atomic_cswap_u64(&epoch->queued, 0, EPOCH_BIT)) {
       arts_remote_epoch_send(dest, epoch_guid, EPOCH_ACTIVE(epoch),
                              EPOCH_FINISHED(epoch));
     }
   } else {
+    ARTS_TRACE_RDMA("send_epoch missing guid=%lu source=%u dest=%u queued_oo",
+                    epoch_guid, source, dest);
     arts_out_of_order_send_epoch(epoch_guid, source, dest);
   }
 }
@@ -302,6 +326,8 @@ void broadcast_epoch_request(arts_guid_t epoch_guid) {
   unsigned int origin_rank = arts_guid_get_rank(epoch_guid);
   for (unsigned int i = 0; i < arts_global_rank_count; i++) {
     if (i != origin_rank) {
+      ARTS_TRACE_RDMA("broadcast_epoch_request guid=%lu to=%u origin=%u",
+                      epoch_guid, i, origin_rank);
       arts_remote_epoch_req(i, epoch_guid);
     }
   }
@@ -427,14 +453,45 @@ void reduce_epoch(arts_guid_t epoch_guid, unsigned int active,
   arts_epoch_t *epoch =
       (arts_epoch_t *)arts_route_table_lookup_item(epoch_guid);
   if (epoch) {
-    unsigned int total_active =
-        arts_atomic_add(&epoch->global_active_count, active);
-    unsigned int total_finish =
-        arts_atomic_add(&epoch->global_finished_count, finish);
-    uint64_t outstanding_before = epoch->outstanding;
-    if (arts_atomic_sub_u64(&epoch->outstanding, 1) == 1) {
+    uint64_t outstanding_before;
+    uint64_t outstanding_after;
+    unsigned int total_active;
+    unsigned int total_finish;
+    if (epoch->outstanding <= 1) {
+      ARTS_INFO("reduce_epoch [Guid:%lu]: ignoring response active=%u "
+                "finish=%u because no reduction round is open "
+                "(outstanding=%lu)",
+                epoch_guid, active, finish, epoch->outstanding);
+      return;
+    }
+
+    total_active = arts_atomic_add(&epoch->global_active_count, active);
+    total_finish = arts_atomic_add(&epoch->global_finished_count, finish);
+
+    do {
+      outstanding_before = epoch->outstanding;
+      if (outstanding_before <= 1) {
+        ARTS_INFO("reduce_epoch [Guid:%lu]: response active=%u finish=%u "
+                  "arrived as reduction round closed (outstanding=%lu)",
+                  epoch_guid, active, finish, outstanding_before);
+        ARTS_TRACE_RDMA("reduce_epoch closed guid=%lu active=%u finish=%u "
+                        "outstanding=%lu",
+                        epoch_guid, active, finish, outstanding_before);
+        arts_atomic_sub(&epoch->global_active_count, active);
+        arts_atomic_sub(&epoch->global_finished_count, finish);
+        return;
+      }
+      outstanding_after = outstanding_before - 1;
+    } while (arts_atomic_cswap_u64(&epoch->outstanding, outstanding_before,
+                                   outstanding_after) != outstanding_before);
+
+    if (outstanding_after == 1) {
       total_active += EPOCH_ACTIVE(epoch);
       total_finish += EPOCH_FINISHED(epoch);
+      ARTS_TRACE_RDMA("reduce_epoch final guid=%lu active=%u finish=%u "
+                      "phase=%u outstanding_before=%lu queued=%lu",
+                      epoch_guid, total_active, total_finish, epoch->phase,
+                      outstanding_before, epoch->queued);
 
       ARTS_DEBUG("reduce_epoch [Guid:%lu]: total_active=%u, total_finish=%u, "
                  "phase=%u, outstanding_before=%lu, queued=%lu",
@@ -445,7 +502,13 @@ void reduce_epoch(arts_guid_t epoch_guid, unsigned int active,
       epoch->global_active_count = 0;
       epoch->global_finished_count = 0;
 
-      if (check_epoch(epoch, total_active, total_finish)) {
+      bool request_next_round = check_epoch(epoch, total_active, total_finish);
+      ARTS_TRACE_RDMA("reduce_epoch check guid=%lu next_round=%u phase=%u "
+                      "outstanding=%lu",
+                      epoch_guid, request_next_round ? 1U : 0U, epoch->phase,
+                      epoch->outstanding);
+
+      if (request_next_round) {
         ARTS_DEBUG("  check_epoch returned TRUE - broadcasting new request");
         arts_atomic_add_u64(&epoch->outstanding, arts_global_rank_count - 1);
         broadcast_epoch_request(epoch_guid);
@@ -464,12 +527,18 @@ void reduce_epoch(arts_guid_t epoch_guid, unsigned int active,
       if (epoch->phase == PHASE_3) {
         ARTS_DEBUG("  Deleting epoch [Guid:%lu] - termination complete",
                    epoch_guid);
+        ARTS_TRACE_RDMA("reduce_epoch delete enter guid=%lu", epoch_guid);
         delete_epoch(epoch_guid, epoch);
+        ARTS_TRACE_RDMA("reduce_epoch delete leave guid=%lu", epoch_guid);
       }
     } else {
+      ARTS_TRACE_RDMA("reduce_epoch waiting guid=%lu active=%u finish=%u "
+                      "outstanding=%lu",
+                      epoch_guid, total_active, total_finish,
+                      outstanding_after);
       ARTS_DEBUG("reduce_epoch [Guid:%lu]: outstanding=%lu (still waiting for "
                  "more responses)",
-                 epoch_guid, outstanding_before - 1);
+                 epoch_guid, outstanding_after);
     }
   }
 }
@@ -517,6 +586,15 @@ void delete_epoch(arts_guid_t epoch_guid, arts_epoch_t *epoch) {
   if (!epoch) {
     epoch = (arts_epoch_t *)arts_route_table_lookup_item(epoch_guid);
   }
+  if (!epoch) {
+    ARTS_WARN("delete_epoch [Guid:%lu]: epoch not found", epoch_guid);
+    ARTS_TRACE_RDMA("delete_epoch missing guid=%lu", epoch_guid);
+    return;
+  }
+
+  ARTS_TRACE_RDMA("delete_epoch enter guid=%lu pool=%lu local=%u",
+                  epoch_guid, epoch->pool_guid,
+                  arts_guid_is_local(epoch_guid) ? 1U : 0U);
 
   if (epoch->pool_guid) {
     arts_epoch_pool_t *pool =
@@ -551,6 +629,7 @@ void delete_epoch(arts_guid_t epoch_guid, arts_epoch_t *epoch) {
       }
     }
   }
+  ARTS_TRACE_RDMA("delete_epoch leave guid=%lu", epoch_guid);
 }
 
 void clean_epoch_pool() {
@@ -612,6 +691,8 @@ arts_epoch_t *get_pool_epoch(arts_guid_t edt_guid, unsigned int slot) {
 
       for (unsigned int i = 0; i < arts_global_rank_count; i++) {
         if (i != arts_global_rank_id) {
+          ARTS_TRACE_RDMA("epoch pool send pool=%lu start=%lu to=%u size=%u",
+                          pool_guid, start_guid, i, DEFAULT_EPOCH_POOL_SIZE);
           arts_remote_epoch_init_pool_send(i, DEFAULT_EPOCH_POOL_SIZE,
                                            start_guid, pool_guid);
         }
@@ -631,6 +712,8 @@ arts_epoch_t *get_pool_epoch(arts_guid_t edt_guid, unsigned int slot) {
   arts_route_table_add_item_race(epoch, epoch->guid, arts_global_rank_id,
                                  false);
   arts_route_table_fire_oo(epoch->guid, arts_out_of_order_handler);
+  ARTS_TRACE_RDMA("get_pool_epoch guid=%lu pool=%lu index=%u slot=%u",
+                  epoch->guid, epoch->pool_guid, pool ? pool->index : 0, slot);
   return epoch;
 }
 
@@ -681,6 +764,10 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
       }
     }
     increment_finished_epoch(local);
+    ARTS_TRACE_RDMA("wait_on_handle start guid=%lu pool=%lu completed=%u "
+                    "active=%u finished=%u queued=%lu",
+                    local, epoch->pool_guid, epoch->completed,
+                    EPOCH_ACTIVE(epoch), EPOCH_FINISHED(epoch), epoch->queued);
 
     // Release all DB frontier locks before blocking so consumer EDTs can
     // proceed while this EDT waits on the epoch.
@@ -720,6 +807,8 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
     // Re-acquire all DB frontier locks after the epoch completes.
     arts_wait_reacquire_dbs();
 
+    ARTS_TRACE_RDMA("wait_on_handle done guid=%lu pool=%lu completed=%u",
+                    local, epoch->pool_guid, epoch->completed);
     clean_epoch_pool();
 
     TIME_EDT_EXEC_START();

@@ -41,6 +41,12 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 #include <unistd.h>
 
 #include "arts/runtime_state.h"
@@ -68,6 +74,43 @@ static inline void arts_atomic_print(const char *format, ...) {
     write(STDERR_FILENO, buffer, sizeof(buffer) - 1);
   }
 }
+
+static inline int arts_trace_env_enabled(const char *name) {
+  const char *value = getenv(name);
+  return value && value[0] != '\0' && strcmp(value, "0") != 0 &&
+         strcmp(value, "false") != 0 && strcmp(value, "FALSE") != 0;
+}
+
+static inline long arts_trace_os_tid(void) {
+#if defined(__linux__) && defined(SYS_gettid)
+  return (long)syscall(SYS_gettid);
+#else
+  return 0L;
+#endif
+}
+
+static inline unsigned long long arts_trace_time_us(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0ULL;
+  }
+  return ((unsigned long long)ts.tv_sec * 1000000ULL) +
+         ((unsigned long long)ts.tv_nsec / 1000ULL);
+}
+
+#define ARTS_TRACE_RDMA(format, ...)                                           \
+  do {                                                                         \
+    if (arts_trace_env_enabled("ARTS_TRACE_RDMA") ||                           \
+        arts_trace_env_enabled("ARTS_TRACE")) {                                \
+      arts_atomic_print("[TRACE][t_us=%llu rank=%u tid=%ld thread_id=%u "      \
+                        "group=%u role=%d] " format "\n",                    \
+                        arts_trace_time_us(), arts_global_rank_id,             \
+                        arts_trace_os_tid(),                                   \
+                        arts_thread_info.thread_id, arts_thread_info.group_pos, \
+                        arts_thread_info.role,                                 \
+                        ##__VA_ARGS__);                                        \
+    }                                                                          \
+  } while (0)
 
 /*--- Log Level Macros --------------------------------------------------------
  *

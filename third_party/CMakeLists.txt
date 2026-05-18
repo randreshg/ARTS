@@ -46,6 +46,10 @@ function(build_hwloc)
             --disable-rsmi
             --disable-cuda
             --disable-nvml
+            --disable-io
+            --disable-pci
+            --disable-opencl
+            --disable-libudev
             --disable-libxml2
             --enable-static
             --disable-shared
