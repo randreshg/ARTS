@@ -2336,34 +2336,37 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
           remote_connect_success_seen[socket_index] != 0U;
       arts_stagger_remote_connect(rank, steady_connect);
     }
-    if (remote_socket_send_list[socket_index] < 0) {
-      remote_socket_send_list[socket_index] = arts_get_new_socket();
+    bool candidate_is_published = remote_socket_send_list[socket_index] >= 0;
+    int candidate_fd = candidate_is_published
+                           ? remote_socket_send_list[socket_index]
+                           : arts_get_new_socket();
+    if (candidate_fd < 0) {
+      return false;
     }
 
     int last_errno = 0;
     bool connect_abandoned = false;
     ARTS_TRACE_RDMA("connect attempt peer=%d port=%u fd=%d retry=%u", rank,
-                    port, remote_socket_send_list[socket_index], retry_count);
+                    port, candidate_fd, retry_count);
     INCREMENT_NUM_REMOTE_CONNECT_ATTEMPT_BY(1);
 #ifdef ARTS_USE_RDMA
     __sync_fetch_and_add(&rdma_connect_attempt_count, 1ULL);
 #endif
     bool connected = arts_socket_connect_with_timeout(
-        remote_socket_send_list[socket_index], (struct sockaddr *)addr,
-        sizeof(struct sockaddr_in), rank, port, socket_index, &last_errno,
-        &connect_abandoned);
+        candidate_fd, (struct sockaddr *)addr, sizeof(struct sockaddr_in), rank,
+        port, socket_index, &last_errno, &connect_abandoned);
     bool hello_sent = false;
     if (connected) {
       ARTS_TRACE_RDMA("connect hello send enter peer=%d port=%u fd=%d", rank,
-                      port, remote_socket_send_list[socket_index]);
-      hello_sent = arts_send_connection_hello(
-          remote_socket_send_list[socket_index], port, &last_errno);
+                      port, candidate_fd);
+      hello_sent = arts_send_connection_hello(candidate_fd, port, &last_errno);
       ARTS_TRACE_RDMA("connect hello send leave peer=%d port=%u fd=%d ok=%u "
                       "errno=%d",
-                      rank, port, remote_socket_send_list[socket_index],
-                      hello_sent ? 1U : 0U, hello_sent ? 0 : last_errno);
+                      rank, port, candidate_fd, hello_sent ? 1U : 0U,
+                      hello_sent ? 0 : last_errno);
     }
     if (connected && hello_sent) {
+      remote_socket_send_list[socket_index] = candidate_fd;
       remote_connection_alive[socket_index] = true;
       if (remote_connect_retry_count) {
         remote_connect_retry_count[socket_index] = 0;
@@ -2379,14 +2382,14 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
       }
       ARTS_INFO("%s connected rank %u to rank %d port %u (fd=%d)",
                 arts_transport_name(), arts_global_message_table->my_rank, rank,
-                port, remote_socket_send_list[socket_index]);
+                port, candidate_fd);
       INCREMENT_NUM_REMOTE_CONNECT_SUCCESS_BY(1);
 #ifdef ARTS_USE_RDMA
       __sync_fetch_and_add(&rdma_connect_success_count, 1ULL);
       arts_rdma_maybe_print_summary("connect-success");
 #endif
       ARTS_TRACE_RDMA("connect success peer=%d port=%u fd=%d", rank, port,
-                      remote_socket_send_list[socket_index]);
+                      candidate_fd);
       return true;
     }
 
@@ -2418,14 +2421,23 @@ static inline bool arts_remote_connect(int rank, unsigned int port) {
       ARTS_WARN("%s abandoned blocking rconnect rank %u -> rank %d port %u "
                 "target %s:%u fd=%d retry=%u next_retry_us=%u",
                 arts_transport_name(), arts_global_message_table->my_rank, rank,
-                port, target_ip, ntohs(addr->sin_port),
-                remote_socket_send_list[socket_index], retry_count,
-                retry_delay_us);
+                port, target_ip, ntohs(addr->sin_port), candidate_fd,
+                retry_count, retry_delay_us);
       arts_rdma_maybe_print_summary("connect-abandoned");
 #endif
-      arts_abandon_unconnected_socket_fd(&remote_socket_send_list[socket_index]);
+      if (candidate_is_published) {
+        arts_abandon_unconnected_socket_fd(
+            &remote_socket_send_list[socket_index]);
+      } else {
+        arts_abandon_unconnected_socket_fd(&candidate_fd);
+      }
     } else {
-      arts_discard_unconnected_socket_fd(&remote_socket_send_list[socket_index]);
+      if (candidate_is_published) {
+        arts_discard_unconnected_socket_fd(
+            &remote_socket_send_list[socket_index]);
+      } else {
+        arts_discard_unconnected_socket_fd(&candidate_fd);
+      }
     }
     if (remote_send_success_count) {
       remote_send_success_count[socket_index] = 0;
