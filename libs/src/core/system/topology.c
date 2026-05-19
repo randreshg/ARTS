@@ -138,6 +138,13 @@ static int pu_entry_by_core(const void *a, const void *b) {
   return 0;
 }
 
+static int pu_is_allowed(hwloc_const_cpuset_t allowed, hwloc_obj_t pu) {
+  if (!allowed || hwloc_bitmap_iszero(allowed) || !pu || !pu->cpuset) {
+    return 1;
+  }
+  return hwloc_bitmap_intersects(pu->cpuset, allowed);
+}
+
 void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
   /* Init hwloc topology */
   hwloc_topology_t topology;
@@ -149,10 +156,26 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
   }
 
   /* Oversubscription check (accounts for PU offset in local multi-node) */
-  unsigned int total_pus = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
-  if (total_pus == 0) {
+  unsigned int detected_pus = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_PU);
+  if (detected_pus == 0) {
     ARTS_ERROR("hwloc detected 0 PUs — cannot assign thread topology");
     return;
+  }
+  hwloc_const_cpuset_t allowed = hwloc_topology_get_allowed_cpuset(topology);
+  unsigned int usable_pus = 0;
+  for (unsigned int i = 0; i < detected_pus; i++) {
+    hwloc_obj_t pu = hwloc_get_obj_by_type(topology, HWLOC_OBJ_PU, i);
+    if (pu_is_allowed(allowed, pu)) {
+      usable_pus++;
+    }
+  }
+  if (usable_pus == 0) {
+    ARTS_ERROR("hwloc detected 0 PUs in the current allowed cpuset");
+    return;
+  }
+  if (usable_pus != detected_pus) {
+    ARTS_INFO("Using %u of %u hwloc PUs allowed by the current CPU set",
+              usable_pus, detected_pus);
   }
   unsigned int pu_offset = 0;
   if (config->shared_pu_pool) {
@@ -160,35 +183,40 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
     ARTS_INFO("Local multi-node rank %u: PU offset %u (threads %u)",
               config->my_rank, pu_offset, config->thread_count);
   }
-  if (config->pin_threads && pu_offset + config->thread_count > total_pus) {
-    ARTS_ERROR("Rank %u: PU range [%u..%u) exceeds available PUs (%u)",
+  if (config->pin_threads && pu_offset + config->thread_count > usable_pus) {
+    ARTS_ERROR("Rank %u: PU range [%u..%u) exceeds allowed PUs (%u)",
                config->my_rank, pu_offset, pu_offset + config->thread_count,
-               total_pus);
+               usable_pus);
     return;
   }
-  if (!config->pin_threads && pu_offset + config->thread_count > total_pus) {
-    ARTS_WARN("Rank %u: oversubscribing %u threads on %u visible PUs with "
+  if (!config->pin_threads && pu_offset + config->thread_count > usable_pus) {
+    ARTS_WARN("Rank %u: oversubscribing %u threads on %u allowed PUs with "
               "pinning disabled",
-              config->my_rank, config->thread_count, total_pus);
+              config->my_rank, config->thread_count, usable_pus);
   }
 
   /* Phase 1: Collect all PUs with topology metadata */
-  struct pu_entry_s *pus = malloc(total_pus * sizeof(*pus));
-  for (unsigned int i = 0; i < total_pus; i++) {
+  struct pu_entry_s *pus = malloc(usable_pus * sizeof(*pus));
+  unsigned int pu_count = 0;
+  for (unsigned int i = 0; i < detected_pus; i++) {
     hwloc_obj_t pu = hwloc_get_obj_by_type(topology, HWLOC_OBJ_PU, i);
+    if (!pu_is_allowed(allowed, pu)) {
+      continue;
+    }
     hwloc_obj_t core = ancestor_by_type(pu, HWLOC_OBJ_CORE);
     hwloc_obj_t pkg = ancestor_by_type(pu, HWLOC_OBJ_PACKAGE);
-    pus[i].pu_os_index = pu->os_index;
-    pus[i].core_os_index = core ? core->os_index : 0;
-    pus[i].pkg_os_index = pkg ? pkg->os_index : 0;
-    pus[i].numa_id = find_numa_for_pu(topology, pu);
-    pus[i].pu_rank_in_core = 0;
+    pus[pu_count].pu_os_index = pu->os_index;
+    pus[pu_count].core_os_index = core ? core->os_index : 0;
+    pus[pu_count].pkg_os_index = pkg ? pkg->os_index : 0;
+    pus[pu_count].numa_id = find_numa_for_pu(topology, pu);
+    pus[pu_count].pu_rank_in_core = 0;
+    pu_count++;
   }
 
   /* Phase 2: Compute pu_rank_in_core — sort by core, assign ranks within */
-  qsort(pus, total_pus, sizeof(*pus), pu_entry_by_core);
+  qsort(pus, usable_pus, sizeof(*pus), pu_entry_by_core);
   unsigned int rank = 0;
-  for (unsigned int i = 0; i < total_pus; i++) {
+  for (unsigned int i = 0; i < usable_pus; i++) {
     if (i > 0 && pus[i].core_os_index != pus[i - 1].core_os_index) {
       rank = 0;
     }
@@ -196,7 +224,7 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
   }
 
   /* Phase 3: Sort by (pu_rank_in_core, numa_id, pu_os_index) */
-  qsort(pus, total_pus, sizeof(*pus), pu_entry_compare);
+  qsort(pus, usable_pus, sizeof(*pus), pu_entry_compare);
 
   /* Phase 4: Assign threads from sorted PU list (offset for local
      multi-node so each rank gets a disjoint PU slice). */
@@ -211,7 +239,7 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
       role = ARTS_ROLE_RECEIVER;
     }
 
-    unsigned int pi = (pu_offset + t) % total_pus;
+    unsigned int pi = (pu_offset + t) % usable_pus;
     flat[t].id = t;
     flat[t].pu_id = pus[pi].pu_os_index;
     flat[t].core_id = pus[pi].core_os_index;
