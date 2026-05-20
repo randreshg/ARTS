@@ -88,12 +88,14 @@ void arts_db_request_callback(struct arts_edt_s *edt, unsigned int slot,
                               struct arts_db_s *db_res);
 bool arts_remote_db_request(arts_guid_t data_guid, int rank,
                             struct arts_edt_s *edt, int pos,
-                            arts_db_access_mode_t mode, bool agg_request);
+                            arts_db_access_mode_t mode, uint32_t flags,
+                            bool agg_request);
 void arts_remote_db_forward(int dest_rank, int source_rank,
-                            arts_guid_t data_guid, arts_db_access_mode_t mode);
+                            arts_guid_t data_guid, arts_db_access_mode_t mode,
+                            uint32_t flags);
 void arts_remote_db_send_now(int rank, struct arts_db_s *db);
 void arts_remote_db_send_check(int rank, struct arts_db_s *db,
-                               arts_db_access_mode_t mode);
+                               arts_db_access_mode_t mode, uint32_t flags);
 void arts_remote_db_send(struct arts_remote_db_request_packet_s *pack);
 void arts_remote_handle_db_received(
     struct arts_remote_db_send_packet_s *packet);

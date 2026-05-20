@@ -81,6 +81,10 @@ bool arts_add_db_duplicate(struct arts_db_s *db, unsigned int rank,
                            struct arts_edt_s *edt, arts_guid_t edt_guid,
                            unsigned int slot, arts_db_access_mode_t mode,
                            bool *on_head);
+bool arts_add_db_duplicate_ex(struct arts_db_s *db, unsigned int rank,
+                              struct arts_edt_s *edt, arts_guid_t edt_guid,
+                              unsigned int slot, arts_db_access_mode_t mode,
+                              uint32_t flags, bool *on_head);
 void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu);
 void internal_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
                         unsigned int slot, unsigned int offset,

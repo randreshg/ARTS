@@ -713,6 +713,9 @@ void arts_runtime_stop() {
 void arts_handle_remote_stolen_edt(struct arts_edt_s *edt) {
   ARTS_DEBUG("Processing stolen EDT[Id:%lu, Guid:%lu] on PU %u", edt->arts_id,
              edt->current_edt, arts_thread_info.pu_id);
+  ARTS_TRACE_RDMA("remote stolen ready rank=%u edt=%lu epoch=%lu",
+                  arts_global_rank_id, edt ? edt->current_edt : NULL_GUID,
+                  edt ? edt->epoch_guid : NULL_GUID);
   increment_queue_epoch(edt->epoch_guid);
   arts_shutdown_epoch_inc_queue();
 #ifdef ARTS_USE_GPU
