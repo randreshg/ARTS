@@ -136,6 +136,7 @@ struct ARTS_PACKED arts_remote_db_request_packet_s {
   struct arts_remote_packet_s header;
   arts_guid_t db_guid;
   arts_db_access_mode_t mode;
+  uint32_t flags;
 };
 
 struct ARTS_PACKED arts_remote_db_send_packet_s {

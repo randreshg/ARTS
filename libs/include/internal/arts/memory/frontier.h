@@ -86,6 +86,14 @@ struct arts_db_frontier_s {
   arts_db_access_mode_t exMode;
 
   /*
+   * Local writer owner for this frontier. Multiple EW/MEMSET slots from the
+   * same EDT to the same DB are one logical CDAG acquisition and must share
+   * this frontier.
+   */
+  arts_guid_t localWriteEdtGuid;
+  struct arts_edt_s *localWriteEdt;
+
+  /*
    * This is dumb, but we need somewhere to store requests
    * that are from the guid owner but cannot be satisfied
    * because of the memory model

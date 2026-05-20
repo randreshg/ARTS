@@ -250,6 +250,41 @@ void arts_push_delayed_edt(struct arts_local_delayed_edt_s *head,
   current->mode[element_pos] = mode;
 }
 
+static arts_guid_t arts_candidate_edt_guid(struct arts_edt_s *edt,
+                                           arts_guid_t edt_guid) {
+  if (edt_guid == NULL_GUID && edt) {
+    return edt->current_edt;
+  }
+  return edt_guid;
+}
+
+static bool arts_same_local_writer(struct arts_db_frontier_s *frontier,
+                                   struct arts_edt_s *edt,
+                                   arts_guid_t edt_guid) {
+  edt_guid = arts_candidate_edt_guid(edt, edt_guid);
+  if (edt && frontier->localWriteEdt == edt) {
+    return true;
+  }
+  return edt_guid != NULL_GUID && frontier->localWriteEdtGuid == edt_guid;
+}
+
+static bool arts_try_join_same_local_writer(
+    struct arts_db_frontier_s *frontier, struct arts_edt_s *edt,
+    arts_guid_t edt_guid) {
+  bool same_writer = false;
+  frontier_lock(&frontier->lock);
+  same_writer = arts_same_local_writer(frontier, edt, edt_guid);
+  frontier_unlock(&frontier->lock);
+  return same_writer;
+}
+
+static void arts_record_local_writer(struct arts_db_frontier_s *frontier,
+                                     struct arts_edt_s *edt,
+                                     arts_guid_t edt_guid) {
+  frontier->localWriteEdt = edt;
+  frontier->localWriteEdtGuid = arts_candidate_edt_guid(edt, edt_guid);
+}
+
 static void arts_validate_db_slice(struct arts_db_s *db, uint64_t offset,
                                    uint64_t size) {
   uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
@@ -368,7 +403,9 @@ bool arts_push_db_to_frontier(struct arts_db_frontier_s *frontier,
                               arts_guid_t edt_guid, unsigned int slot,
                               arts_db_access_mode_t mode, bool *unique) {
   if (bypass) {
-    frontier_lock(&frontier->lock);
+    if (!frontier_add_read_lock(&frontier->lock)) {
+      return false;
+    }
   } else if (write && !frontier_add_write_lock(&frontier->lock)) {
     return false;
   } else if (!write && !frontier_add_read_lock(&frontier->lock)) {
@@ -388,6 +425,9 @@ bool arts_push_db_to_frontier(struct arts_db_frontier_s *frontier,
     frontier->exEdt = edt;
     frontier->exSlot = slot;
     frontier->exMode = mode;
+  }
+  if (write && local) {
+    arts_record_local_writer(frontier, edt, edt_guid);
   }
 
   frontier_unlock(&frontier->lock);
@@ -435,6 +475,12 @@ bool arts_push_db_to_list(struct arts_db_list_s *db_list, unsigned int data,
     if (arts_push_db_to_frontier(frontier, data, write, local, bypass, edt,
                                  edt_guid, slot, mode, &unique)) {
       inserted = true;
+      accepted_frontier = frontier;
+      break;
+    }
+    if (local && arts_try_join_same_local_writer(frontier, edt, edt_guid)) {
+      inserted = true;
+      unique = false;
       accepted_frontier = frontier;
       break;
     }
@@ -620,8 +666,8 @@ void arts_signal_frontier_remote(struct arts_db_frontier_s *frontier,
       if (node != arts_global_rank_id &&
           !((frontier->exEdt || frontier->exEdtGuid != NULL_GUID) &&
             node == frontier->exNode)) {
-        arts_remote_db_forward((int)node, (int)get_from, db->guid,
-                               DB_MODE_RO); // Don't care about mode
+        arts_remote_db_forward((int)node, (int)get_from, db->guid, DB_MODE_RO,
+                               0); // Don't care about mode
       }
     }
   }
@@ -633,7 +679,7 @@ void arts_signal_frontier_remote(struct arts_db_frontier_s *frontier,
       struct arts_edt_s *edt = current->edt[pos];
       unsigned int slot = current->slot[pos];
       arts_remote_db_request(db->guid, (int)get_from, edt, (int)slot,
-                             current->mode[pos], true);
+                             current->mode[pos], 0, true);
       if (pos + 1 == DBSPERELEMENT) {
         current = current->next;
       }

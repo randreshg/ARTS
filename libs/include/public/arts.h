@@ -122,6 +122,12 @@ typedef enum {
  */
 typedef enum {
   ARTS_DEP_FLAG_NONE = 0u,
+  /*
+   * The compiler has proven this RO dependency is duplicate-friendly (for
+   * example, a read-only DB or a DB that is read-only after initialization).
+   * ARTS may prefer a local duplicate/cache path while still preserving
+   * frontier ordering and DB lifetime tracking.
+   */
   ARTS_DEP_FLAG_PREFER_DUPLICATE = 1u << 0,
   /*
    * Deliver RO byte-slice transport into a full DB-shaped temporary, keeping
