@@ -103,6 +103,7 @@ struct oo_remote_db_send_s {
   enum arts_out_of_order_type type;
   int rank;
   arts_db_access_mode_t mode;
+  uint32_t flags;
   arts_guid_t data_guid;
 };
 
@@ -210,7 +211,7 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
     struct oo_remote_db_send_s *db_send =
         (struct oo_remote_db_send_s *)handle_me;
     arts_remote_db_send_check(db_send->rank, (struct arts_db_s *)memory_ptr,
-                              db_send->mode);
+                              db_send->mode, db_send->flags);
     break;
   }
   case OO_DB_REQUEST_SATISFY: {
@@ -402,7 +403,8 @@ void arts_out_of_order_handle_ready_edt(arts_guid_t trigger_guid,
 }
 
 void arts_out_of_order_handle_remote_db_send(int rank, arts_guid_t db_guid,
-                                             arts_db_access_mode_t mode) {
+                                             arts_db_access_mode_t mode,
+                                             uint32_t flags) {
   struct oo_remote_db_send_s *ready_send =
       (struct oo_remote_db_send_s *)arts_malloc(
           sizeof(struct oo_remote_db_send_s));
@@ -410,12 +412,14 @@ void arts_out_of_order_handle_remote_db_send(int rank, arts_guid_t db_guid,
   ready_send->rank = rank;
   ready_send->data_guid = db_guid;
   ready_send->mode = mode;
+  ready_send->flags = flags;
   bool res = arts_route_table_add_oo(db_guid, ready_send, false);
   if (!res) {
     struct arts_db_s *db =
         (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
     if (db) {
-      arts_remote_db_send_check(ready_send->rank, db, ready_send->mode);
+      arts_remote_db_send_check(ready_send->rank, db, ready_send->mode,
+                                ready_send->flags);
       arts_route_table_return_db(db_guid, false);
     } else {
       ARTS_DEBUG("OO remote_db_send: DB[Guid:%lu] vanished (DELETE_ITEM race)",

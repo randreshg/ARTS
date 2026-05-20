@@ -159,6 +159,17 @@ void arts_remote_update_route_table(arts_guid_t guid, unsigned int rank) {
   }
 }
 
+static void arts_remote_send_db_snapshot(int rank, char *packet,
+                                         unsigned int packet_size,
+                                         struct arts_db_s *db) {
+  uint64_t db_size = db->header.size;
+  struct arts_db_s *snapshot =
+      (struct arts_db_s *)arts_malloc_align(db_size, 16);
+  memcpy(snapshot, db, db_size);
+  arts_remote_send_request_payload_async_free(
+      rank, packet, packet_size, (char *)snapshot, 0, db_size, arts_free);
+}
+
 void arts_remote_handle_update_db_guid(void *ptr) {
   struct arts_remote_guid_only_packet_s *packet =
       (struct arts_remote_guid_only_packet_s *)ptr;
@@ -224,9 +235,8 @@ void arts_remote_update_db(arts_guid_t guid, bool send_db) {
       uint64_t size =
           sizeof(struct arts_remote_guid_only_packet_s) + db->header.size;
       arts_fill_packet_header(&packet.header, size, ARTS_REMOTE_DB_UPDATE_MSG);
-      arts_remote_send_request_payload_async((int)rank, (char *)&packet,
-                                             sizeof(packet), (char *)db,
-                                             db->header.size);
+      arts_remote_send_db_snapshot((int)rank, (char *)&packet, sizeof(packet),
+                                   db);
       arts_route_table_return_db(guid, false);
     } else {
       if (send_db) {
@@ -305,6 +315,10 @@ void arts_remote_handle_edt_move(void *ptr) {
   arts_route_table_add_item_race(edt, packet->guid, arts_global_rank_id, false);
   ARTS_INFO("EDT[Guid:%lu] Moved to Rank: %d", packet->guid,
             arts_global_rank_id);
+  ARTS_TRACE_RDMA("remote edt_move recv rank=%u edt=%lu depc=%u needed=%u "
+                  "epoch=%lu",
+                  arts_global_rank_id, packet->guid, edt->depc,
+                  edt->depc_needed, edt->epoch_guid);
   if (edt->depc_needed == 0) {
     arts_handle_ready_edt(edt);
   } else {
@@ -405,6 +419,11 @@ void arts_remote_event_satisfy_slot(arts_guid_t event_guid,
 void arts_db_request_callback(struct arts_edt_s *edt, unsigned int slot,
                               struct arts_db_s *db_res) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
+  ARTS_TRACE_RDMA("db_request_callback rank=%u edt=%lu slot=%u db=%lu ptr=%p "
+                  "needed_before=%u",
+                  arts_global_rank_id, edt->current_edt, slot,
+                  db_res ? db_res->guid : NULL_GUID,
+                  db_res ? (void *)(db_res + 1) : NULL, edt->depc_needed);
   if (db_res) {
     /* Acquire a route table ref for this dep slot — matched by
      * return_db in release_dbs after EDT execution. */
@@ -420,6 +439,9 @@ void arts_db_request_callback(struct arts_edt_s *edt, unsigned int slot,
     depv[slot].ptr = NULL;
   }
   unsigned int temp = arts_atomic_sub(&edt->depc_needed, 1U);
+  ARTS_TRACE_RDMA("db_request_callback rank=%u edt=%lu slot=%u "
+                  "needed_after=%u",
+                  arts_global_rank_id, edt->current_edt, slot, temp);
   if (temp == 0) {
     arts_handle_remote_stolen_edt(edt);
   }
@@ -427,11 +449,20 @@ void arts_db_request_callback(struct arts_edt_s *edt, unsigned int slot,
 
 bool arts_remote_db_request(arts_guid_t data_guid, int rank,
                             struct arts_edt_s *edt, int pos,
-                            arts_db_access_mode_t mode, bool agg_request) {
-  if (arts_route_table_add_sent(data_guid, edt, pos, agg_request)) {
+                            arts_db_access_mode_t mode, uint32_t flags,
+                            bool agg_request) {
+  bool send_request =
+      arts_route_table_add_sent(data_guid, edt, pos, agg_request);
+  ARTS_TRACE_RDMA("remote db_request rank=%u to=%d edt=%lu slot=%d db=%lu "
+                  "mode=%u flags=%u aggregate=%u send=%u",
+                  arts_global_rank_id, rank, edt ? edt->current_edt : NULL_GUID,
+                  pos, data_guid, mode, flags, agg_request ? 1U : 0U,
+                  send_request ? 1U : 0U);
+  if (send_request) {
     struct arts_remote_db_request_packet_s packet;
     packet.db_guid = data_guid;
     packet.mode = mode;
+    packet.flags = flags;
     arts_fill_packet_header(&packet.header, sizeof(packet),
                             ARTS_REMOTE_DB_REQUEST_MSG);
     ARTS_DEBUG("Rank %u requesting DB[Guid:%lu] from rank %d (slot=%d)",
@@ -443,13 +474,15 @@ bool arts_remote_db_request(arts_guid_t data_guid, int rank,
 }
 
 void arts_remote_db_forward(int dest_rank, int source_rank,
-                            arts_guid_t data_guid, arts_db_access_mode_t mode) {
+                            arts_guid_t data_guid, arts_db_access_mode_t mode,
+                            uint32_t flags) {
   struct arts_remote_db_request_packet_s packet;
   packet.header.size = sizeof(packet);
   packet.header.message_type = ARTS_REMOTE_DB_REQUEST_MSG;
   packet.header.rank = dest_rank;
   packet.db_guid = data_guid;
   packet.mode = mode;
+  packet.flags = flags;
   arts_remote_send_request_async(source_rank, (char *)&packet, sizeof(packet));
 }
 
@@ -457,17 +490,26 @@ void arts_remote_db_send_now(int rank, struct arts_db_s *db) {
   struct arts_remote_db_send_packet_s packet;
   uint64_t size = sizeof(struct arts_remote_db_send_packet_s) + db->header.size;
   arts_fill_packet_header(&packet.header, size, ARTS_REMOTE_DB_SEND_MSG);
-  arts_remote_send_request_payload_async(rank, (char *)&packet, sizeof(packet),
-                                         (char *)db, db->header.size);
+  ARTS_TRACE_RDMA("remote db_send_now rank=%u to=%d db=%lu bytes=%lu",
+                  arts_global_rank_id, rank, db->guid, db->header.size);
+  arts_remote_send_db_snapshot(rank, (char *)&packet, sizeof(packet), db);
 }
 
 void arts_remote_db_send_check(int rank, struct arts_db_s *db,
-                               arts_db_access_mode_t mode) {
+                               arts_db_access_mode_t mode, uint32_t flags) {
   if (!arts_guid_is_local(db->guid)) {
     arts_route_table_return_db(db->guid, false);
     arts_remote_db_send_now(rank, db);
-  } else if (arts_add_db_duplicate(db, rank, NULL, NULL_GUID, 0, mode, NULL)) {
+  } else if (arts_add_db_duplicate_ex(db, rank, NULL, NULL_GUID, 0, mode, flags,
+                                      NULL)) {
+    ARTS_TRACE_RDMA("remote db_send_check head rank=%u to=%d db=%lu mode=%u "
+                    "flags=%u",
+                    arts_global_rank_id, rank, db->guid, mode, flags);
     arts_remote_db_send_now(rank, db);
+  } else {
+    ARTS_TRACE_RDMA("remote db_send_check defer rank=%u to=%d db=%lu mode=%u "
+                    "flags=%u",
+                    arts_global_rank_id, rank, db->guid, mode, flags);
   }
 }
 
@@ -483,7 +525,8 @@ void arts_remote_db_send(struct arts_remote_db_request_packet_s *pack) {
         pack->db_guid, NULL, false);
     if (db == NULL) {
       arts_out_of_order_handle_remote_db_send((int)pack->header.rank,
-                                              pack->db_guid, pack->mode);
+                                              pack->db_guid, pack->mode,
+                                              pack->flags);
     } else if (!arts_guid_is_local(db->guid) &&
                pack->header.rank == arts_global_rank_id) {
       // This is when the memory model sends a CDAG write after CDAG write to
@@ -492,7 +535,8 @@ void arts_remote_db_send(struct arts_remote_db_request_packet_s *pack) {
       arts_route_table_fire_oo(pack->db_guid, arts_out_of_order_handler);
       arts_route_table_return_db(pack->db_guid, false);
     } else {
-      arts_remote_db_send_check((int)pack->header.rank, db, pack->mode);
+      arts_remote_db_send_check((int)pack->header.rank, db, pack->mode,
+                                pack->flags);
       arts_route_table_return_db(pack->db_guid, false);
     }
   }
@@ -508,6 +552,9 @@ void arts_remote_handle_db_received(
   void *packet_payload = (char *)(packet + 1) + sizeof(struct arts_db_s);
   ARTS_DEBUG("Handle DB Received [Guid:%lu, Size:%lu, Received:%lu] on rank %u",
              pdb.guid, pdb.header.size, received_bytes, arts_global_rank_id);
+  ARTS_TRACE_RDMA("remote db_recv rank=%u from=%u db=%lu size=%lu received=%lu",
+                  arts_global_rank_id, packet->header.rank, pdb.guid,
+                  pdb.header.size, received_bytes);
   struct arts_db_s *db_res = NULL;
   struct arts_db_s **data_ptr = NULL;
   item_state_t state = arts_route_table_lookup_item_with_state(
@@ -567,6 +614,8 @@ void arts_remote_handle_db_received(
 
   if (db_res && arts_route_table_update_item(pdb.guid, (void *)db_res,
                                              arts_global_rank_id, state)) {
+    ARTS_TRACE_RDMA("remote db_recv fire rank=%u db=%lu state=%u",
+                    arts_global_rank_id, pdb.guid, state);
     arts_route_table_fire_oo(pdb.guid, arts_out_of_order_handler);
   }
 }
@@ -582,6 +631,9 @@ void arts_remote_db_full_request(arts_guid_t data_guid, int rank,
   packet.mode = mode;
   arts_fill_packet_header(&packet.header, sizeof(packet),
                           ARTS_REMOTE_DB_FULL_REQUEST_MSG);
+  ARTS_TRACE_RDMA("remote db_full_request rank=%u to=%d edt=%lu slot=%d "
+                  "db=%lu mode=%u",
+                  arts_global_rank_id, rank, edt_guid, pos, data_guid, mode);
   arts_remote_send_request_async(rank, (char *)&packet, sizeof(packet));
   ARTS_INFO("Full DB request sent [DbGuid:%lu, EdtGuid:%lu, Slot:%d, Mode:%u] "
             "from rank %u to rank %u",
@@ -614,8 +666,11 @@ void arts_remote_db_full_send_now(int rank, struct arts_db_s *db,
   uint64_t size =
       sizeof(struct arts_remote_db_full_send_packet_s) + db->header.size;
   arts_fill_packet_header(&packet.header, size, ARTS_REMOTE_DB_FULL_SEND_MSG);
-  arts_remote_send_request_payload_async(rank, (char *)&packet, sizeof(packet),
-                                         (char *)db, db->header.size);
+  ARTS_TRACE_RDMA("remote db_full_send_now rank=%u to=%d edt=%lu slot=%u "
+                  "db=%lu mode=%u bytes=%lu",
+                  arts_global_rank_id, rank, edt_guid, slot, db->guid, mode,
+                  db->header.size);
+  arts_remote_send_db_snapshot(rank, (char *)&packet, sizeof(packet), db);
   ARTS_INFO("Full DB send [DbGuid:%lu, EdtGuid:%lu, Slot:%u, Mode:%u, Size:%u] "
             "from rank %u to rank %u",
             db->guid, edt_guid, slot, mode, db->header.size,
@@ -632,6 +687,10 @@ void arts_remote_db_full_send_check(int rank, struct arts_db_s *db,
     bool on_head = false;
     if (arts_add_db_duplicate(db, rank, NULL, edt_guid, slot, mode, &on_head)) {
       if (on_head) {
+        ARTS_TRACE_RDMA("remote db_full_send_check head rank=%u to=%d "
+                        "edt=%lu slot=%u db=%lu mode=%u",
+                        arts_global_rank_id, rank, edt_guid, slot, db->guid,
+                        mode);
         arts_remote_db_full_send_now(rank, db, edt_guid, slot, mode);
         arts_clear_exclusive_request(db, rank, edt_guid);
       }
@@ -672,6 +731,10 @@ void arts_remote_handle_db_full_recieved(
   void *packet_payload = (char *)(packet + 1) + sizeof(struct arts_db_s);
   ARTS_DEBUG("Handle Full DB Received [Guid:%lu, Slot:%u, Mode:%u]", pdb.guid,
              packet->slot, packet->mode);
+  ARTS_TRACE_RDMA("remote db_full_recv rank=%u from=%u edt=%lu slot=%u "
+                  "db=%lu mode=%u size=%lu",
+                  arts_global_rank_id, packet->header.rank, packet->edt_guid,
+                  packet->slot, pdb.guid, packet->mode, pdb.header.size);
   void **data_ptr = arts_route_table_reserve(pdb.guid, &dec, &state);
   struct arts_db_s *db_res = (data_ptr) ? (struct arts_db_s *)*data_ptr : NULL;
   if (db_res) {
@@ -707,6 +770,11 @@ void arts_remote_handle_db_full_recieved(
               packet->edt_guid, arts_global_rank_id, edt_state,
               edt_data ? *edt_data : NULL, pdb.guid, packet->slot,
               packet->mode);
+    ARTS_TRACE_RDMA("remote db_full_recv missing_edt rank=%u edt=%lu "
+                    "state=%u data=%p db=%lu slot=%u mode=%u",
+                    arts_global_rank_id, packet->edt_guid, edt_state,
+                    edt_data ? *edt_data : NULL, pdb.guid, packet->slot,
+                    packet->mode);
     return;
   }
   arts_db_request_callback(edt, packet->slot, db_res);

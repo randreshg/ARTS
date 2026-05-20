@@ -1148,19 +1148,20 @@ static void config_print_warnings(struct arts_config_s *config) {
     bool requested_rdma = strcmp(config->protocol, ARTS_PROTOCOL_RDMA) == 0 ||
                           strcmp(config->protocol, ARTS_PROTOCOL_ROCE) == 0;
     bool requested_tcp = strcmp(config->protocol, ARTS_PROTOCOL_TCP) == 0;
+    bool uses_network_transport = config->nodes > 1 || config->table_length > 1;
     if (!requested_rdma && !requested_tcp) {
       ARTS_ERROR("Invalid protocol='%s' in arts.cfg; expected tcp, rdma, "
                  "roce, or auto",
                  config->protocol);
     }
 #ifdef ARTS_USE_RDMA
-    if (requested_tcp) {
+    if (requested_tcp && uses_network_transport) {
       ARTS_ERROR("arts.cfg requests protocol=%s but ARTS was built with "
                  "ARTS_USE_RDMA",
                  ARTS_PROTOCOL_TCP);
     }
 #else
-    if (requested_rdma) {
+    if (requested_rdma && uses_network_transport) {
       ARTS_ERROR("arts.cfg requests protocol=%s but ARTS was built without "
                  "ARTS_USE_RDMA",
                  config->protocol);

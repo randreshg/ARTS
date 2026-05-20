@@ -415,37 +415,35 @@ static bool arts_rdma_acquire_active_connect_permit_for_socket(
     return false;
   }
 
+  /*
+   * This runs on the sender thread.  Do not block when the cap is full:
+   * earlier queues may already hold permits on sockets that connected but made
+   * no immediate nonblocking-send progress.  Blocking here prevents the sender
+   * from returning to those queues, so their close-after-send path never runs
+   * and the permits never release.
+   */
   unsigned int max_active = arts_rdma_max_active_connects();
-  bool waited = false;
-  while (true) {
-    uint64_t active = rdma_active_connect_permit_count;
-    if (active < (uint64_t)max_active &&
-        __sync_bool_compare_and_swap(&rdma_active_connect_permit_count, active,
-                                     active + 1ULL)) {
-      uint64_t acquired = active + 1ULL;
-      arts_rdma_update_peak(&rdma_active_connect_permit_peak, acquired);
-      __sync_lock_test_and_set(&remote_connect_active_permit[socket_index], 1U);
-      ARTS_TRACE_RDMA("active connect permit acquire peer=%d port=%u "
-                      "active=%llu max=%u waited=%u",
-                      peer_rank, port, (unsigned long long)acquired,
-                      max_active, waited ? 1U : 0U);
-      if (waited) {
-        arts_rdma_maybe_print_summary("active-connect-acquire-after-wait");
-      }
-      return true;
-    }
-
-    if (!waited) {
-      waited = true;
-      __sync_fetch_and_add(&rdma_active_connect_permit_wait_count, 1ULL);
-      ARTS_TRACE_RDMA("active connect permit wait peer=%d port=%u active=%llu "
-                      "max=%u",
-                      peer_rank, port, (unsigned long long)active, max_active);
-      arts_rdma_maybe_print_summary("active-connect-throttle");
-    }
-    arts_remote_accept_pending(arts_lazy_accept_drain_limit(), 0);
-    usleep(ARTS_RDMA_ACCEPT_SLEEP_US);
+  uint64_t active = rdma_active_connect_permit_count;
+  if (active < (uint64_t)max_active &&
+      __sync_bool_compare_and_swap(&rdma_active_connect_permit_count, active,
+                                   active + 1ULL)) {
+    uint64_t acquired = active + 1ULL;
+    arts_rdma_update_peak(&rdma_active_connect_permit_peak, acquired);
+    __sync_lock_test_and_set(&remote_connect_active_permit[socket_index], 1U);
+    ARTS_TRACE_RDMA("active connect permit acquire peer=%d port=%u "
+                    "active=%llu max=%u waited=0",
+                    peer_rank, port, (unsigned long long)acquired,
+                    max_active);
+    return true;
   }
+
+  __sync_fetch_and_add(&rdma_active_connect_permit_wait_count, 1ULL);
+  ARTS_TRACE_RDMA("active connect permit defer peer=%d port=%u active=%llu "
+                  "max=%u",
+                  peer_rank, port, (unsigned long long)active, max_active);
+  arts_rdma_maybe_print_summary("active-connect-throttle");
+  arts_remote_accept_pending(arts_lazy_accept_drain_limit(), 0);
+  return false;
 }
 
 static bool arts_rdma_take_active_connect_permit_for_socket(int socket_index) {
@@ -2358,12 +2356,14 @@ static bool arts_should_try_lazy_accept(bool has_live_inbound,
     return true;
   }
 
-#ifdef ARTS_USE_RDMA
-  if (arts_close_send_after_complete_send()) {
-    return true;
-  }
-#endif
-
+  /*
+   * With close-after-send RDMA traffic, incoming connections can arrive while
+   * receive sockets are also active.  Polling raccept on every receive pass
+   * scans all listen ports and turns the common no-ready-connection case into
+   * high NUM_REMOTE_ACCEPT_EAGAIN noise.  Keep immediate accepts when there is
+   * no live inbound work, but rate-limit opportunistic accepts while packets
+   * are already flowing.
+   */
   unsigned int interval_us = arts_lazy_accept_idle_interval_us();
   if (interval_us == 0) {
     return true;

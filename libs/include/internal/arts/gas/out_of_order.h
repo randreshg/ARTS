@@ -91,7 +91,8 @@ void arts_out_of_order_add_dependence(arts_guid_t source,
 void arts_out_of_order_handle_ready_edt(arts_guid_t trigger_guid,
                                         struct arts_edt_s *edt);
 void arts_out_of_order_handle_remote_db_send(int rank, arts_guid_t db_guid,
-                                             arts_db_access_mode_t mode);
+                                             arts_db_access_mode_t mode,
+                                             uint32_t flags);
 void arts_out_of_order_handle_db_request_with_oo_list(
     struct arts_out_of_order_list_s *add_to_me, void **data,
     struct arts_edt_s *edt, unsigned int slot);

@@ -71,6 +71,24 @@ ARTS_TYPE_NAME;
 ARTS_DB_TYPE_NAME;
 DB_MODE_NAME;
 
+static bool arts_is_write_mode(arts_db_access_mode_t mode) {
+  return mode == DB_MODE_EW || mode == DB_MODE_MEMSET;
+}
+
+static bool arts_seen_write_dep(arts_edt_dep_t *depv, int end,
+                                arts_guid_t guid, void *ptr) {
+  if (guid == NULL_GUID || !ptr) {
+    return false;
+  }
+  for (int j = 0; j < end; j++) {
+    if (depv[j].guid == guid && depv[j].ptr == ptr &&
+        arts_is_write_mode(depv[j].mode)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 extern ARTS_THREAD_LOCAL struct arts_edt_s *current_edt;
 extern unsigned int num_numa_domains;
 
@@ -555,6 +573,13 @@ void acquire_dbs(struct arts_edt_s *edt) {
     }
     if (depv[i].guid && depv[i].ptr == NULL) {
       arts_db_access_mode_t access_mode = depv[i].mode;
+      if (access_mode == DB_MODE_RW && arts_global_rank_count > 1) {
+        ARTS_DEBUG("Promoting multinode DB_MODE_RW acquire to DB_MODE_EW "
+                   "[Guid:%lu, EdtGuid:%lu, Slot:%u]",
+                   depv[i].guid, edt->current_edt, i);
+        access_mode = DB_MODE_EW;
+        depv[i].mode = DB_MODE_EW;
+      }
       uint64_t slice_offset = depv[i].slice_offset;
       uint64_t slice_size = depv[i].slice_size;
       bool has_slice = (slice_size != 0);
@@ -591,6 +616,10 @@ void acquire_dbs(struct arts_edt_s *edt) {
                 depv[i].guid, guid_type, access_mode, owner,
                 arts_global_rank_id, edt->arts_id, edt->current_edt, i,
                 depv[i].flags);
+      ARTS_TRACE_RDMA("db_acquire begin rank=%u edt=%lu slot=%u db=%lu "
+                      "mode=%u owner=%d flags=%u",
+                      arts_global_rank_id, edt->current_edt, i, depv[i].guid,
+                      access_mode, owner, depv[i].flags);
 
       if (guid_type == ARTS_DB) {
         // Look up DB first — subtype dispatch requires the struct
@@ -671,6 +700,10 @@ void acquire_dbs(struct arts_edt_s *edt) {
         if (db_temp && db_temp->db_type == ARTS_DB_LOCAL) {
           // LOCAL: direct access, no frontier
           db_found = db_temp;
+          ARTS_TRACE_RDMA("db_acquire local rank=%u edt=%lu slot=%u db=%lu "
+                          "mode=%u",
+                          arts_global_rank_id, edt->current_edt, i,
+                          depv[i].guid, access_mode);
           arts_atomic_sub(&edt->depc_needed, 1U);
         } else if (db_temp && access_mode == DB_MODE_LC_SYNC &&
                    owner == arts_global_rank_id) {
@@ -682,8 +715,9 @@ void acquire_dbs(struct arts_edt_s *edt) {
           // Owner path: CDAG frontier for DEFAULT/GPU/LC
           bool on_head = false;
           bool duplicate_added =
-              arts_add_db_duplicate(db_temp, arts_global_rank_id, edt,
-                                    edt->current_edt, i, access_mode, &on_head);
+              arts_add_db_duplicate_ex(db_temp, arts_global_rank_id, edt,
+                                       edt->current_edt, i, access_mode,
+                                       depv[i].flags, &on_head);
           if (duplicate_added) {
             ARTS_DEBUG("Adding duplicate DB[Guid:%lu] on_head=%d", depv[i].guid,
                        on_head);
@@ -700,17 +734,34 @@ void acquire_dbs(struct arts_edt_s *edt) {
 
           if (valid_rank == arts_global_rank_id && on_head) {
             db_found = db_temp;
+            ARTS_TRACE_RDMA("db_acquire owner-head rank=%u edt=%lu slot=%u "
+                            "db=%lu mode=%u",
+                            arts_global_rank_id, edt->current_edt, i,
+                            depv[i].guid, access_mode);
             arts_atomic_sub(&edt->depc_needed, 1U);
           } else if (valid_rank == arts_global_rank_id) {
             ARTS_DEBUG("EDT[Guid:%lu] deferred to frontier for "
                        "DB[Guid:%lu] (non-head local frontier, unique=%d)",
                        edt->current_edt, depv[i].guid, duplicate_added);
+            ARTS_TRACE_RDMA("db_acquire owner-defer rank=%u edt=%lu slot=%u "
+                            "db=%lu mode=%u unique=%u",
+                            arts_global_rank_id, edt->current_edt, i,
+                            depv[i].guid, access_mode,
+                            duplicate_added ? 1U : 0U);
           } else {
             if (access_mode == DB_MODE_RO || db_temp->db_type == ARTS_DB_GPU ||
                 db_temp->db_type == ARTS_DB_LC) {
+              ARTS_TRACE_RDMA("db_acquire cached-remote-request rank=%u "
+                              "edt=%lu slot=%u db=%lu mode=%u valid_rank=%d",
+                              arts_global_rank_id, edt->current_edt, i,
+                              depv[i].guid, access_mode, valid_rank);
               arts_remote_db_request(depv[i].guid, valid_rank, edt, i,
-                                     access_mode, true);
+                                     access_mode, depv[i].flags, true);
             } else {
+              ARTS_TRACE_RDMA("db_acquire cached-full-request rank=%u edt=%lu "
+                              "slot=%u db=%lu mode=%u valid_rank=%d",
+                              arts_global_rank_id, edt->current_edt, i,
+                              depv[i].guid, access_mode, valid_rank);
               arts_remote_db_full_request(depv[i].guid, valid_rank,
                                           edt->current_edt, i, access_mode);
             }
@@ -720,13 +771,25 @@ void acquire_dbs(struct arts_edt_s *edt) {
           bool local_valid = (valid_rank == arts_global_rank_id);
           if (local_valid) {
             db_found = db_temp;
+            ARTS_TRACE_RDMA("db_acquire cache-hit rank=%u edt=%lu slot=%u "
+                            "db=%lu mode=%u",
+                            arts_global_rank_id, edt->current_edt, i,
+                            depv[i].guid, access_mode);
             arts_atomic_sub(&edt->depc_needed, 1U);
           } else if (access_mode == DB_MODE_EW) {
+            ARTS_TRACE_RDMA("db_acquire full-request rank=%u edt=%lu slot=%u "
+                            "db=%lu owner=%u mode=%u",
+                            arts_global_rank_id, edt->current_edt, i,
+                            depv[i].guid, owner, access_mode);
             arts_remote_db_full_request(depv[i].guid, owner, edt->current_edt,
                                         i, access_mode);
           } else {
+            ARTS_TRACE_RDMA("db_acquire remote-request rank=%u edt=%lu slot=%u "
+                            "db=%lu owner=%u mode=%u",
+                            arts_global_rank_id, edt->current_edt, i,
+                            depv[i].guid, owner, access_mode);
             arts_remote_db_request(depv[i].guid, owner, edt, i, access_mode,
-                                   true);
+                                   depv[i].flags, true);
           }
         } else {
           // DB not in route table — out-of-order or remote
@@ -737,11 +800,19 @@ void acquire_dbs(struct arts_edt_s *edt) {
           } else {
             // Remote DB not cached locally — request from owner
             if (access_mode == DB_MODE_EW) {
+              ARTS_TRACE_RDMA("db_acquire missing-full-request rank=%u "
+                              "edt=%lu slot=%u db=%lu owner=%u mode=%u",
+                              arts_global_rank_id, edt->current_edt, i,
+                              depv[i].guid, owner, access_mode);
               arts_remote_db_full_request(depv[i].guid, owner, edt->current_edt,
                                           i, access_mode);
             } else {
+              ARTS_TRACE_RDMA("db_acquire missing-remote-request rank=%u "
+                              "edt=%lu slot=%u db=%lu owner=%u mode=%u",
+                              arts_global_rank_id, edt->current_edt, i,
+                              depv[i].guid, owner, access_mode);
               arts_remote_db_request(depv[i].guid, owner, edt, i, access_mode,
-                                     true);
+                                     depv[i].flags, true);
             }
           }
         }
@@ -848,16 +919,21 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
                GET_DB_TYPE_NAME(db_subtype));
     unsigned int owner = arts_guid_get_rank(depv[i].guid);
 
-    if (depv[i].guid != NULL_GUID &&
-        (access_mode == DB_MODE_EW || access_mode == DB_MODE_MEMSET)) {
-      if (db_subtype == ARTS_DB_LOCAL) {
-        ARTS_DEBUG("Pinned DB write release (no frontier update)");
-      } else if (owner == arts_global_rank_id) {
-        struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr - 1);
-        arts_progress_frontier(db, arts_global_rank_id);
+    if (depv[i].guid != NULL_GUID && arts_is_write_mode(access_mode)) {
+      if (!arts_seen_write_dep(depv, i, depv[i].guid, depv[i].ptr)) {
+        if (db_subtype == ARTS_DB_LOCAL) {
+          ARTS_DEBUG("Pinned DB write release (no frontier update)");
+        } else if (owner == arts_global_rank_id) {
+          struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr - 1);
+          arts_progress_frontier(db, arts_global_rank_id);
+        } else {
+          arts_remote_update_db(depv[i].guid, true);
+          INCREMENT_NUM_OWNER_UPDATE_PERFORMED_BY(1);
+        }
       } else {
-        arts_remote_update_db(depv[i].guid, true);
-        INCREMENT_NUM_OWNER_UPDATE_PERFORMED_BY(1);
+        ARTS_DEBUG("DB[Guid:%lu] duplicate WRITE dep release: frontier "
+                   "already progressed for this EDT",
+                   depv[i].guid);
       }
     } else if (depv[i].guid != NULL_GUID && access_mode == DB_MODE_RO) {
       ARTS_DEBUG("DB[Guid:%lu] released in READ mode (no owner update, no "
@@ -921,6 +997,8 @@ void arts_db_release(arts_guid_t guid) {
     return;
   }
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(current_edt);
+  bool released = false;
+  bool progressed_write = false;
   for (int i = 0; i < current_edt->depc; i++) {
     if (depv[i].guid != guid) {
       continue;
@@ -935,9 +1013,10 @@ void arts_db_release(arts_guid_t guid) {
       depv[i].mode = DB_MODE_NULL;
       depv[i].slice_offset = 0;
       depv[i].slice_size = 0;
-      return;
+      released = true;
+      continue;
     }
-    if (mode == DB_MODE_EW || mode == DB_MODE_MEMSET) {
+    if (arts_is_write_mode(mode) && !progressed_write) {
       struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
       if (db) {
         arts_db_types_t subtype = db->db_type;
@@ -949,14 +1028,20 @@ void arts_db_release(arts_guid_t guid) {
           arts_remote_update_db(guid, true);
         }
       }
+      progressed_write = true;
     }
     /* RO mode: no frontier/latch action needed */
-    arts_route_table_return_db(guid, false);
+    if (depv[i].ptr) {
+      arts_route_table_return_db(guid, false);
+    }
     depv[i].guid = NULL_GUID;
     depv[i].ptr = NULL;
     depv[i].mode = DB_MODE_NULL;
     depv[i].slice_offset = 0;
     depv[i].slice_size = 0;
+    released = true;
+  }
+  if (released) {
     return;
   }
 }
@@ -996,13 +1081,24 @@ bool arts_add_db_duplicate(struct arts_db_s *db, unsigned int rank,
                            struct arts_edt_s *edt, arts_guid_t edt_guid,
                            unsigned int slot, arts_db_access_mode_t mode,
                            bool *on_head) {
+  return arts_add_db_duplicate_ex(db, rank, edt, edt_guid, slot, mode, 0,
+                                  on_head);
+}
+
+bool arts_add_db_duplicate_ex(struct arts_db_s *db, unsigned int rank,
+                              struct arts_edt_s *edt, arts_guid_t edt_guid,
+                              unsigned int slot, arts_db_access_mode_t mode,
+                              uint32_t flags, bool *on_head) {
   bool write = (mode == DB_MODE_EW || mode == DB_MODE_MEMSET);
+  bool prefer_duplicate =
+      mode == DB_MODE_RO && (flags & ARTS_DEP_FLAG_PREFER_DUPLICATE) != 0;
   if (edt && edt_guid == NULL_GUID) {
     edt_guid = edt->current_edt;
   }
   return arts_push_db_to_list((struct arts_db_list_s *)db->db_list, rank, write,
-                              arts_guid_get_rank(db->guid) == rank, false, edt,
-                              edt_guid, slot, mode, on_head);
+                              arts_guid_get_rank(db->guid) == rank,
+                              prefer_duplicate, edt, edt_guid, slot, mode,
+                              on_head);
 }
 
 static unsigned int arts_db_slice_signal_size(struct arts_db_s *db,
@@ -1247,10 +1343,13 @@ void arts_wait_release_dbs(void) {
       if (depv[i].guid == NULL_GUID) {
         continue;
       }
-      if (depv[i].mode != DB_MODE_EW && depv[i].mode != DB_MODE_MEMSET) {
+      if (!arts_is_write_mode(depv[i].mode)) {
         continue;
       }
       if (!depv[i].ptr) {
+        continue;
+      }
+      if (arts_seen_write_dep(depv, i, depv[i].guid, depv[i].ptr)) {
         continue;
       }
       struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
@@ -1304,10 +1403,13 @@ void arts_wait_reacquire_dbs(void) {
       if (depv[i].guid == NULL_GUID) {
         continue;
       }
-      if (depv[i].mode != DB_MODE_EW && depv[i].mode != DB_MODE_MEMSET) {
+      if (!arts_is_write_mode(depv[i].mode)) {
         continue;
       }
       if (!depv[i].ptr) {
+        continue;
+      }
+      if (arts_seen_write_dep(depv, i, depv[i].guid, depv[i].ptr)) {
         continue;
       }
       struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;

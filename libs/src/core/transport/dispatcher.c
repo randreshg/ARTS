@@ -53,12 +53,41 @@
 #include "arts/utils/malloc.h"
 
 #define EDT_MUG_SIZE 32
+#define ARTS_SHUTDOWN_SEND_TIMEOUT_NS 5000000000ULL
+#define ARTS_SHUTDOWN_SEND_BACKOFF_US 100
 
 extern bool server_end;
 
 #ifdef SEQUENCENUMBERS
 uint64_t *rec_seq_numbers;
 #endif
+
+static uint64_t arts_remote_send_shutdown_packet(
+    unsigned int rank, struct arts_remote_packet_s *packet) {
+  char *cursor = (char *)packet;
+  uint64_t remaining = sizeof(*packet);
+  uint64_t deadline = arts_get_time_stamp() + ARTS_SHUTDOWN_SEND_TIMEOUT_NS;
+
+  while (remaining != 0 && arts_get_time_stamp() < deadline) {
+    uint64_t before = remaining;
+    uint64_t after =
+        arts_remote_send_request((int)rank, 0, cursor, remaining);
+
+    if (after == (uint64_t)-1) {
+      return after;
+    }
+    if (after < before) {
+      cursor += before - after;
+      remaining = after;
+      continue;
+    }
+
+    remaining = after;
+    usleep(ARTS_SHUTDOWN_SEND_BACKOFF_US);
+  }
+
+  return remaining;
+}
 
 void arts_remote_shutdown() {
   if (arts_global_rank_count > 1) {
@@ -68,8 +97,7 @@ void arts_remote_shutdown() {
       if (rank == arts_global_rank_id) {
         continue;
       }
-      uint64_t remaining =
-          arts_remote_send_request((int)rank, 0, (char *)&packet, sizeof(packet));
+      uint64_t remaining = arts_remote_send_shutdown_packet(rank, &packet);
       if (remaining) {
         ARTS_WARN("Rank %u failed to send shutdown packet to rank %u "
                   "(remaining=%lu)",
