@@ -200,17 +200,87 @@ unsigned int arts_pick_worker_steal_victim(unsigned int self_thread_id,
   return ARTS_INVALID_WORKER_ID;
 }
 
-static inline unsigned int
-arts_pick_ready_worker_for_edt(const struct arts_edt_s *edt) {
+unsigned int arts_pick_ready_worker(unsigned int preferred_numa_id,
+                                    arts_guid_t ready_guid) {
   unsigned int worker_count = arts_node_info.worker_thread_count;
   if (!worker_count)
     return ARTS_INVALID_WORKER_ID;
 
-  unsigned int start = edt ? (unsigned int)(edt->current_edt % worker_count) : 0;
-  unsigned int preferred_numa =
-      edt ? edt->numa_domain : arts_thread_info.numa_domain_id;
-  return arts_pick_worker_for_numa(preferred_numa, arts_node_info.thread_numa_ids,
+  unsigned int start = (unsigned int)(ready_guid % worker_count);
+  return arts_pick_worker_for_numa(preferred_numa_id,
+                                   arts_node_info.thread_numa_ids,
                                    worker_count, start);
+}
+
+static inline unsigned int
+arts_pick_ready_worker_for_edt(const struct arts_edt_s *edt) {
+  return arts_pick_ready_worker(
+      edt ? edt->numa_domain : arts_thread_info.numa_domain_id,
+      edt ? edt->current_edt : 0);
+}
+
+static inline bool arts_thread_owns_worker_deque(unsigned int worker) {
+  return arts_thread_info.role == ARTS_ROLE_WORKER &&
+         arts_thread_info.thread_id == worker && arts_thread_info.my_deque;
+}
+
+static inline void arts_enqueue_ready_inbox(unsigned int target_worker,
+                                            struct arts_edt_s *edt) {
+  struct arts_ready_edt_node_s *node =
+      (struct arts_ready_edt_node_s *)arts_malloc(sizeof(*node));
+  node->edt = edt;
+  node->next = NULL;
+
+  pthread_mutex_lock(&arts_node_info.ready_inbox_locks[target_worker]);
+  struct arts_ready_edt_node_s *tail =
+      arts_node_info.ready_inbox_tails[target_worker];
+  if (tail)
+    tail->next = node;
+  else
+    arts_node_info.ready_inbox_heads[target_worker] = node;
+  arts_node_info.ready_inbox_tails[target_worker] = node;
+  pthread_mutex_unlock(&arts_node_info.ready_inbox_locks[target_worker]);
+}
+
+static inline struct arts_edt_s *arts_runtime_pop_ready_inbox(void) {
+  unsigned int worker = arts_thread_info.thread_id;
+  if (worker >= arts_node_info.worker_thread_count ||
+      !arts_node_info.ready_inbox_heads)
+    return NULL;
+
+  pthread_mutex_lock(&arts_node_info.ready_inbox_locks[worker]);
+  struct arts_ready_edt_node_s *node = arts_node_info.ready_inbox_heads[worker];
+  if (node) {
+    arts_node_info.ready_inbox_heads[worker] = node->next;
+    if (!arts_node_info.ready_inbox_heads[worker])
+      arts_node_info.ready_inbox_tails[worker] = NULL;
+  }
+  pthread_mutex_unlock(&arts_node_info.ready_inbox_locks[worker]);
+
+  if (!node)
+    return NULL;
+  struct arts_edt_s *edt = node->edt;
+  arts_free(node);
+  return edt;
+}
+
+static inline unsigned int arts_enqueue_ready_cpu_edt(struct arts_edt_s *edt) {
+  unsigned int target_worker = arts_pick_ready_worker_for_edt(edt);
+  if (target_worker == ARTS_INVALID_WORKER_ID)
+    target_worker = 0;
+
+  if (target_worker >= arts_node_info.worker_thread_count)
+    target_worker = 0;
+
+  if (arts_thread_owns_worker_deque(target_worker))
+    arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
+  else if (arts_node_info.ready_inbox_heads &&
+           arts_node_info.ready_inbox_locks)
+    arts_enqueue_ready_inbox(target_worker, edt);
+  else
+    arts_deque_push_front(arts_node_info.deque[target_worker], edt, 0);
+
+  return target_worker;
 }
 
 ARTS_WEAK void init_per_node(unsigned int node_id, int argc, char **argv) {
@@ -266,6 +336,16 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   /* Per-thread indexed arrays */
   arts_node_info.deque =
       (struct arts_deque_s **)arts_malloc(sizeof(struct arts_deque_s *) * tc);
+  arts_node_info.ready_inbox_locks =
+      (pthread_mutex_t *)arts_malloc(sizeof(pthread_mutex_t) * tc);
+  arts_node_info.ready_inbox_heads =
+      (struct arts_ready_edt_node_s **)arts_calloc(
+          tc, sizeof(struct arts_ready_edt_node_s *));
+  arts_node_info.ready_inbox_tails =
+      (struct arts_ready_edt_node_s **)arts_calloc(
+          tc, sizeof(struct arts_ready_edt_node_s *));
+  for (unsigned int i = 0; i < tc; ++i)
+    pthread_mutex_init(&arts_node_info.ready_inbox_locks[i], NULL);
   arts_node_info.receiver_deque =
       config->receiver_thread_count
           ? (struct arts_deque_s **)arts_malloc(sizeof(struct arts_deque_s *) *
@@ -447,8 +527,23 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.route_table);
   arts_delete_route_table(arts_node_info.remote_route_table);
 
+  if (arts_node_info.ready_inbox_heads) {
+    for (unsigned int i = 0; i < tc; ++i) {
+      struct arts_ready_edt_node_s *node = arts_node_info.ready_inbox_heads[i];
+      while (node) {
+        struct arts_ready_edt_node_s *next = node->next;
+        arts_free(node);
+        node = next;
+      }
+      pthread_mutex_destroy(&arts_node_info.ready_inbox_locks[i]);
+    }
+  }
+
   /* Per-thread indexed arrays */
   arts_free(arts_node_info.deque);
+  arts_free(arts_node_info.ready_inbox_locks);
+  arts_free(arts_node_info.ready_inbox_heads);
+  arts_free(arts_node_info.ready_inbox_tails);
   arts_free(arts_node_info.receiver_deque);
   arts_free(arts_node_info.gpu_deque);
   arts_free(arts_node_info.gpu_route_table);
@@ -770,11 +865,11 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
         /* CUDA callback thread: new_edts/new_edt_lock set from closure */
         arts_store_new_edts(edt);
       } else {
-        /* Non-worker thread (sender/receiver): push to worker 0's deque */
+        /* Non-worker thread (sender/receiver): push to a worker deque */
         if (edt->edt_type == ARTS_EDT_GPU) {
           arts_deque_push_front(arts_node_info.gpu_deque[0], edt, 0);
         } else {
-          arts_deque_push_front(arts_node_info.deque[0], edt, 0);
+          arts_enqueue_ready_cpu_edt(edt);
         }
         arts_wake_one_worker();
       }
@@ -785,19 +880,9 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
         ARTS_INFO("EDT[Guid:%lu] pushed to GPU deque", edt->current_edt);
         arts_deque_push_front(arts_thread_info.my_gpu_deque, edt, 0);
       } else {
-        if (arts_thread_info.my_deque) {
-          ARTS_INFO("EDT[Guid:%lu] pushed to local deque %u (preferred NUMA %u)",
-                    edt->current_edt, arts_thread_info.thread_id,
-                    edt->numa_domain);
-          arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
-        } else {
-          unsigned int target_worker = arts_pick_ready_worker_for_edt(edt);
-          if (target_worker == ARTS_INVALID_WORKER_ID)
-            target_worker = 0;
-          ARTS_INFO("EDT[Guid:%lu] pushed to worker deque %u (preferred NUMA %u)",
-                    edt->current_edt, target_worker, edt->numa_domain);
-          arts_deque_push_front(arts_node_info.deque[target_worker], edt, 0);
-        }
+        unsigned int target_worker = arts_enqueue_ready_cpu_edt(edt);
+        ARTS_INFO("EDT[Guid:%lu] pushed to worker deque %u (preferred NUMA %u)",
+                  edt->current_edt, target_worker, edt->numa_domain);
       }
       arts_wake_one_worker();
     }
@@ -947,11 +1032,13 @@ inline struct arts_edt_s *arts_runtime_steal_from_worker() {
 bool arts_network_first_scheduler_loop() {
   struct arts_edt_s *edt_found;
   if (!(edt_found = arts_runtime_steal_from_network())) {
-    if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-              arts_thread_info.my_node_deque))) {
+    if (!(edt_found = arts_runtime_pop_ready_inbox())) {
       if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-                arts_thread_info.my_deque))) {
-        edt_found = arts_runtime_steal_from_worker();
+                arts_thread_info.my_node_deque))) {
+        if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
+                  arts_thread_info.my_deque))) {
+          edt_found = arts_runtime_steal_from_worker();
+        }
       }
     }
   }
@@ -966,12 +1053,14 @@ bool arts_network_first_scheduler_loop() {
 
 bool arts_network_before_steal_scheduler_loop() {
   struct arts_edt_s *edt_found;
-  if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-            arts_thread_info.my_node_deque))) {
+  if (!(edt_found = arts_runtime_pop_ready_inbox())) {
     if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-              arts_thread_info.my_deque))) {
-      if (!(edt_found = arts_runtime_steal_from_network())) {
-        edt_found = arts_runtime_steal_from_worker();
+              arts_thread_info.my_node_deque))) {
+      if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
+                arts_thread_info.my_deque))) {
+        if (!(edt_found = arts_runtime_steal_from_network())) {
+          edt_found = arts_runtime_steal_from_worker();
+        }
       }
     }
   }
@@ -987,11 +1076,13 @@ bool arts_network_before_steal_scheduler_loop() {
 
 struct arts_edt_s *arts_find_edt() {
   struct arts_edt_s *edt_found = NULL;
-  if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-            arts_thread_info.my_deque))) {
-    if (!edt_found) {
-      if (!(edt_found = arts_runtime_steal_from_worker())) {
-        edt_found = arts_runtime_steal_from_network();
+  if (!(edt_found = arts_runtime_pop_ready_inbox())) {
+    if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
+              arts_thread_info.my_deque))) {
+      if (!edt_found) {
+        if (!(edt_found = arts_runtime_steal_from_worker())) {
+          edt_found = arts_runtime_steal_from_network();
+        }
       }
     }
   }
@@ -1000,14 +1091,7 @@ struct arts_edt_s *arts_find_edt() {
 
 bool arts_default_scheduler_loop() {
   struct arts_edt_s *edt_found = NULL;
-  if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-            arts_thread_info.my_deque))) {
-    if (!edt_found) {
-      if (!(edt_found = arts_runtime_steal_from_worker())) {
-        edt_found = arts_runtime_steal_from_network();
-      }
-    }
-  }
+  edt_found = arts_find_edt();
 
   if (edt_found) {
     arts_thread_info.back_off = 1;
