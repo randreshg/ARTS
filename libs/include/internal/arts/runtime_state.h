@@ -49,6 +49,11 @@ extern "C" {
 #include "arts/runtime_types.h"
 #include "arts/system/topology.h"
 
+struct arts_ready_edt_node_s {
+  struct arts_edt_s *edt;
+  struct arts_ready_edt_node_s *next;
+};
+
 struct atomic_create_barrier_info_s {
   volatile unsigned int wait;
   volatile unsigned int result;
@@ -63,6 +68,9 @@ struct arts_runtime_shared_s {
   char pad3[56];
   bool (*scheduler)();
   struct arts_deque_s **deque;
+  pthread_mutex_t *ready_inbox_locks;
+  struct arts_ready_edt_node_s **ready_inbox_heads;
+  struct arts_ready_edt_node_s **ready_inbox_tails;
   struct arts_deque_s **receiver_deque;
   struct arts_deque_s **gpu_deque;
   struct arts_route_table_s **route_table;
@@ -197,6 +205,8 @@ unsigned int arts_pick_worker_for_numa(unsigned int preferred_numa_id,
                                        const unsigned int *thread_numa_ids,
                                        unsigned int worker_count,
                                        unsigned int start);
+unsigned int arts_pick_ready_worker(unsigned int preferred_numa_id,
+                                    arts_guid_t ready_guid);
 unsigned int arts_pick_worker_steal_victim(unsigned int self_thread_id,
                                            unsigned int self_numa_id,
                                            const unsigned int *thread_numa_ids,

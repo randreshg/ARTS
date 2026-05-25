@@ -41,6 +41,19 @@ int main(void) {
                          arts_pick_worker_for_numa(2, skewed_numa_ids, 3, 1),
                          1);
 
+  arts_node_info.worker_thread_count = 4;
+  arts_node_info.thread_numa_ids = balanced_numa_ids;
+  failed += expect_equal("ready_edt_spreads_within_requested_numa",
+                         arts_pick_ready_worker(1, 1), 3);
+  arts_node_info.thread_numa_ids = NULL;
+  failed += expect_equal("ready_edt_falls_back_to_guid_distribution",
+                         arts_pick_ready_worker(1, 7), 3);
+  arts_node_info.worker_thread_count = 0;
+  failed += expect_equal("ready_edt_rejects_empty_worker_set",
+                         arts_pick_ready_worker(1, 7),
+                         ARTS_INVALID_WORKER_ID);
+  arts_node_info.thread_numa_ids = NULL;
+
   failed += expect_equal("steal_prefers_same_numa",
                          arts_pick_worker_steal_victim(
                              0, 0, balanced_numa_ids, 4, 2, true),
