@@ -925,7 +925,12 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
           ARTS_DEBUG("Pinned DB write release (no frontier update)");
         } else if (owner == arts_global_rank_id) {
           struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr - 1);
-          arts_progress_frontier(db, arts_global_rank_id);
+          if (db->db_list && db->db_list != (void *)1) {
+            arts_progress_frontier(db, arts_global_rank_id);
+          } else {
+            ARTS_DEBUG("DB[Guid:%lu] write release has no frontier",
+                       depv[i].guid);
+          }
         } else {
           arts_remote_update_db(depv[i].guid, true);
           INCREMENT_NUM_OWNER_UPDATE_PERFORMED_BY(1);
@@ -1089,6 +1094,19 @@ bool arts_add_db_duplicate_ex(struct arts_db_s *db, unsigned int rank,
                               struct arts_edt_s *edt, arts_guid_t edt_guid,
                               unsigned int slot, arts_db_access_mode_t mode,
                               uint32_t flags, bool *on_head) {
+  if (!db || db->db_type == ARTS_DB_LOCAL || db->db_list == (void *)1) {
+    if (on_head)
+      *on_head = true;
+    return true;
+  }
+  if (!db->db_list) {
+    struct arts_db_list_s *new_list = arts_new_db_list();
+    if (arts_atomic_cswap_ptr((volatile void **)&db->db_list, NULL,
+                              new_list)) {
+      arts_delete_db_list(new_list);
+    }
+  }
+
   bool write = (mode == DB_MODE_EW || mode == DB_MODE_MEMSET);
   bool prefer_duplicate =
       mode == DB_MODE_RO && (flags & ARTS_DEP_FLAG_PREFER_DUPLICATE) != 0;
