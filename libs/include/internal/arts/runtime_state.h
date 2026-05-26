@@ -71,6 +71,8 @@ struct arts_runtime_shared_s {
   pthread_mutex_t *ready_inbox_locks;
   struct arts_ready_edt_node_s **ready_inbox_heads;
   struct arts_ready_edt_node_s **ready_inbox_tails;
+  volatile unsigned int ready_rr_counter;
+  char _pad_ready_rr[60];
   struct arts_deque_s **receiver_deque;
   struct arts_deque_s **gpu_deque;
   struct arts_route_table_s **route_table;
