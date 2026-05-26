@@ -206,7 +206,12 @@ unsigned int arts_pick_ready_worker(unsigned int preferred_numa_id,
   if (!worker_count)
     return ARTS_INVALID_WORKER_ID;
 
-  unsigned int start = (unsigned int)(ready_guid % worker_count);
+  unsigned int seed =
+      (unsigned int)(ready_guid ^ (ready_guid >> 32) ^ arts_thread_info.thread_id);
+  unsigned int rr =
+      __atomic_fetch_add(&arts_node_info.ready_rr_counter, 1,
+                         __ATOMIC_RELAXED);
+  unsigned int start = seed + rr;
   return arts_pick_worker_for_numa(preferred_numa_id,
                                    arts_node_info.thread_numa_ids,
                                    worker_count, start);
@@ -244,6 +249,28 @@ static inline void arts_enqueue_ready_inbox(unsigned int target_worker,
 
 static inline struct arts_edt_s *arts_runtime_pop_ready_inbox(void) {
   unsigned int worker = arts_thread_info.thread_id;
+  if (worker >= arts_node_info.worker_thread_count ||
+      !arts_node_info.ready_inbox_heads)
+    return NULL;
+
+  pthread_mutex_lock(&arts_node_info.ready_inbox_locks[worker]);
+  struct arts_ready_edt_node_s *node = arts_node_info.ready_inbox_heads[worker];
+  if (node) {
+    arts_node_info.ready_inbox_heads[worker] = node->next;
+    if (!arts_node_info.ready_inbox_heads[worker])
+      arts_node_info.ready_inbox_tails[worker] = NULL;
+  }
+  pthread_mutex_unlock(&arts_node_info.ready_inbox_locks[worker]);
+
+  if (!node)
+    return NULL;
+  struct arts_edt_s *edt = node->edt;
+  arts_free(node);
+  return edt;
+}
+
+static inline struct arts_edt_s *
+arts_runtime_steal_from_ready_inbox(unsigned int worker) {
   if (worker >= arts_node_info.worker_thread_count ||
       !arts_node_info.ready_inbox_heads)
     return NULL;
@@ -976,8 +1003,12 @@ arts_try_steal_from_worker(unsigned int steal_loc) {
   void *stolen[HALF_STEAL_MAX];
   unsigned int count = arts_deque_simple_pop_back_half(
       arts_node_info.deque[steal_loc], stolen, HALF_STEAL_MAX);
-  if (count == 0)
-    return NULL;
+  if (count == 0) {
+    struct arts_edt_s *edt = arts_runtime_steal_from_ready_inbox(steal_loc);
+    if (edt)
+      INCREMENT_NUM_STEAL_SUCCESS_BY(1);
+    return edt;
+  }
 
   INCREMENT_NUM_STEAL_SUCCESS_BY(1);
   struct arts_edt_s *edt = (struct arts_edt_s *)stolen[0];
