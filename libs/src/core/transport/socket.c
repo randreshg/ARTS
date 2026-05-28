@@ -3738,7 +3738,12 @@ static void arts_close_send_socket_after_complete_send(int socket_index,
 // inline int arts_actual_send(char * message, unsigned int length, int rank,
 // int port)
 uint64_t arts_actual_send(char *message, uint64_t length, int rank, int port) {
-  int res = 0;
+  // RSEND returns ssize_t; a single RDMA rsend of a >2GB buffer (e.g. a whole
+  // distributed DB > 2GB) returns a count that overflows a 32-bit int to
+  // negative, which the loop below mis-reads as an error and silently
+  // truncates the transfer (observed as size-scaling data corruption on
+  // multi-GB DB transfers). Use a 64-bit signed result.
+  int64_t res = 0;
   uint64_t total = 0;
   uint64_t original_length = length;
   uint64_t max_bytes = arts_send_max_bytes_per_call();
