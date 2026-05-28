@@ -1248,8 +1248,8 @@ void arts_get_from_db_at_ex(arts_guid_t edt_guid, arts_guid_t db_guid,
 }
 
 void internal_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
-                        unsigned int slot, unsigned int offset,
-                        unsigned int size, arts_guid_t epoch_guid,
+                        unsigned int slot, uint64_t offset,
+                        uint64_t size, arts_guid_t epoch_guid,
                         unsigned int rank) {
   if (rank == arts_global_rank_id) {
     struct arts_db_s *db =
@@ -1281,7 +1281,7 @@ void internal_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
 }
 
 void arts_put_in_db_at(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
-                       unsigned int slot, unsigned int offset, unsigned int len,
+                       unsigned int slot, uint64_t offset, uint64_t len,
                        unsigned int rank) {
   TIME_DB_PUT_START();
   INCREMENT_NUM_DB_PUT_BY(1);
@@ -1296,7 +1296,7 @@ void arts_put_in_db_at(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
 }
 
 void arts_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
-                    unsigned int slot, unsigned int offset, unsigned int len) {
+                    unsigned int slot, uint64_t offset, uint64_t len) {
   TIME_DB_PUT_START();
   INCREMENT_NUM_DB_PUT_BY(1);
   INCREMENT_BYTES_DB_PUT_BY(len);
@@ -1311,8 +1311,8 @@ void arts_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
 }
 
 void arts_put_in_db_epoch(void *ptr, arts_guid_t epoch_guid,
-                          arts_guid_t db_guid, unsigned int offset,
-                          unsigned int len) {
+                          arts_guid_t db_guid, uint64_t offset,
+                          uint64_t len) {
   TIME_DB_PUT_START();
   INCREMENT_NUM_DB_PUT_BY(1);
   INCREMENT_BYTES_DB_PUT_BY(len);

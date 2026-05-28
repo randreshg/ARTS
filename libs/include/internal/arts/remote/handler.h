@@ -125,8 +125,8 @@ void arts_remote_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
                              unsigned int rank);
 void arts_remote_handle_get_from_db(void *pack);
 void arts_remote_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
-                           unsigned int slot, unsigned int offset,
-                           unsigned int len, arts_guid_t epoch_guid,
+                           unsigned int slot, uint64_t offset,
+                           uint64_t len, arts_guid_t epoch_guid,
                            unsigned int rank);
 void arts_remote_handle_put_in_db(void *pack);
 void arts_remote_signal_edt_with_ptr(arts_guid_t edt_guid, arts_guid_t db_guid,

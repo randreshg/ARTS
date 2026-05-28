@@ -841,8 +841,8 @@ void arts_remote_handle_get_from_db(void *pack) {
 }
 
 void arts_remote_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
-                           unsigned int slot, unsigned int offset,
-                           unsigned int len, arts_guid_t epoch_guid,
+                           unsigned int slot, uint64_t offset,
+                           uint64_t len, arts_guid_t epoch_guid,
                            unsigned int rank) {
   struct arts_remote_get_put_packet_s packet;
   packet.edt_guid = edt_guid;

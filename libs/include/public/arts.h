@@ -1035,7 +1035,7 @@ void arts_db_destroy(arts_guid_t guid);
  * @param len      Number of bytes to write.
  */
 void arts_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
-                    unsigned int slot, unsigned int offset, unsigned int len);
+                    unsigned int slot, uint64_t offset, uint64_t len);
 
 /**
  * @brief Write data into a DataBlock on a specific node @p rank.
@@ -1049,7 +1049,7 @@ void arts_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
  * @param rank     Node rank where the write is applied.
  */
 void arts_put_in_db_at(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
-                       unsigned int slot, unsigned int offset, unsigned int len,
+                       unsigned int slot, uint64_t offset, uint64_t len,
                        unsigned int rank);
 
 /**
@@ -1062,8 +1062,8 @@ void arts_put_in_db_at(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
  * @param len        Number of bytes to write.
  */
 void arts_put_in_db_epoch(void *ptr, arts_guid_t epoch_guid,
-                          arts_guid_t db_guid, unsigned int offset,
-                          unsigned int len);
+                          arts_guid_t db_guid, uint64_t offset,
+                          uint64_t len);
 
 /**
  * @brief Read data from a DataBlock on its home node.
