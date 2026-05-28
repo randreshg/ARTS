@@ -104,8 +104,8 @@ void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
                                                   unsigned int slot,
                                                   arts_db_access_mode_t mode);
 void arts_out_of_order_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
-                                   unsigned int slot, unsigned int offset,
-                                   unsigned int size, uint32_t flags);
+                                   unsigned int slot, uint64_t offset,
+                                   uint64_t size, uint32_t flags);
 void arts_out_of_order_signal_edt_with_ptr(arts_guid_t edt_guid,
                                            arts_guid_t db_guid, void *ptr,
                                            unsigned int size,

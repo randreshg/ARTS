@@ -120,8 +120,8 @@ struct oo_get_from_db_s {
   arts_guid_t edt_guid;
   arts_guid_t db_guid;
   unsigned int slot;
-  unsigned int offset;
-  unsigned int size;
+  uint64_t offset;
+  uint64_t size;
   uint32_t flags;
 };
 
@@ -509,8 +509,8 @@ void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
 }
 
 void arts_out_of_order_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
-                                   unsigned int slot, unsigned int offset,
-                                   unsigned int size, uint32_t flags) {
+                                   unsigned int slot, uint64_t offset,
+                                   uint64_t size, uint32_t flags) {
   struct oo_get_from_db_s *req =
       (struct oo_get_from_db_s *)arts_malloc(sizeof(struct oo_get_from_db_s));
   req->type = OO_GET_FROM_DB;

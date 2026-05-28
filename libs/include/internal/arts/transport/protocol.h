@@ -42,7 +42,13 @@
 extern "C" {
 #endif
 #include "arts/runtime_types.h"
-#define SEQUENCENUMBERS 1
+// SEQUENCENUMBERS is a debug-only out-of-order detection feature (logs a warning
+// on unexpected seq_num). It indexes rec_seq_numbers[seq_rank] in the hot
+// receive path; a mis-framed large-transfer packet with a garbage seq_rank then
+// dereferences out of bounds and SIGSEGVs in arts_server_process_packet
+// (observed on conv-2d 2n). Disabled: diagnostic only, untrusted index on the
+// receive path. Re-enable behind a guarded debug build if needed.
+// #define SEQUENCENUMBERS 1
 
 enum artsServerMessageType {
   ARTS_REMOTE_SHUTDOWN_MSG,
@@ -165,8 +171,8 @@ struct ARTS_PACKED arts_remote_get_put_packet_s {
   arts_guid_t epoch_guid;
   unsigned int slot;
   unsigned int flags;
-  unsigned int offset;
-  unsigned int size;
+  uint64_t offset;
+  uint64_t size;
 };
 
 struct ARTS_PACKED arts_remote_signal_edt_with_ptr_packet_s {

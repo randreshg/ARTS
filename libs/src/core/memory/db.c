@@ -657,8 +657,8 @@ void acquire_dbs(struct arts_edt_s *edt) {
               }
             } else {
               arts_remote_get_from_db(edt->current_edt, depv[i].guid, i,
-                                      (unsigned int)slice_offset,
-                                      (unsigned int)slice_size, depv[i].flags,
+                                      slice_offset,
+                                      slice_size, depv[i].flags,
                                       valid_rank);
             }
           } else if (db_temp) {
@@ -673,20 +673,20 @@ void acquire_dbs(struct arts_edt_s *edt) {
               }
             } else {
               arts_remote_get_from_db(edt->current_edt, depv[i].guid, i,
-                                      (unsigned int)slice_offset,
-                                      (unsigned int)slice_size, depv[i].flags,
+                                      slice_offset,
+                                      slice_size, depv[i].flags,
                                       valid_rank);
             }
           } else {
             if (arts_guid_is_local(depv[i].guid)) {
               arts_out_of_order_get_from_db(
                   edt->current_edt, depv[i].guid, i,
-                  (unsigned int)slice_offset, (unsigned int)slice_size,
+                  slice_offset, slice_size,
                   depv[i].flags);
             } else {
               arts_remote_get_from_db(edt->current_edt, depv[i].guid, i,
-                                      (unsigned int)slice_offset,
-                                      (unsigned int)slice_size, depv[i].flags,
+                                      slice_offset,
+                                      slice_size, depv[i].flags,
                                       owner);
             }
           }
@@ -1135,8 +1135,8 @@ static unsigned int arts_db_slice_signal_size(struct arts_db_s *db,
 }
 
 static void *arts_alloc_db_slice_payload(struct arts_db_s *db,
-                                         unsigned int offset,
-                                         unsigned int size,
+                                         uint64_t offset,
+                                         uint64_t size,
                                          uint32_t flags) {
   uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
   if ((uint64_t)offset > data_size || (uint64_t)size > data_size - offset) {
@@ -1159,8 +1159,8 @@ static void *arts_alloc_db_slice_payload(struct arts_db_s *db,
 }
 
 void internal_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
-                          unsigned int slot, unsigned int offset,
-                          unsigned int size, uint32_t flags,
+                          unsigned int slot, uint64_t offset,
+                          uint64_t size, uint32_t flags,
                           unsigned int rank) {
   if (rank == arts_global_rank_id) {
     int valid_rank = -1;
@@ -1222,8 +1222,8 @@ void internal_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
 }
 
 void arts_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
-                      unsigned int slot, unsigned int offset,
-                      unsigned int len) {
+                      unsigned int slot, uint64_t offset,
+                      uint64_t len) {
   TIME_DB_GET_START();
   INCREMENT_NUM_DB_GET_BY(1);
   unsigned int rank = arts_guid_get_rank(db_guid);
@@ -1232,14 +1232,14 @@ void arts_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
 }
 
 void arts_get_from_db_at(arts_guid_t edt_guid, arts_guid_t db_guid,
-                         unsigned int slot, unsigned int offset,
-                         unsigned int len, unsigned int rank) {
+                         unsigned int slot, uint64_t offset,
+                         uint64_t len, unsigned int rank) {
   arts_get_from_db_at_ex(edt_guid, db_guid, slot, offset, len, 0, rank);
 }
 
 void arts_get_from_db_at_ex(arts_guid_t edt_guid, arts_guid_t db_guid,
-                            unsigned int slot, unsigned int offset,
-                            unsigned int len, uint32_t flags,
+                            unsigned int slot, uint64_t offset,
+                            uint64_t len, uint32_t flags,
                             unsigned int rank) {
   TIME_DB_GET_START();
   INCREMENT_NUM_DB_GET_BY(1);

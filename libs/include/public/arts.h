@@ -1078,7 +1078,7 @@ void arts_put_in_db_epoch(void *ptr, arts_guid_t epoch_guid,
  * @param len      Number of bytes to read.
  */
 void arts_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
-                      unsigned int slot, unsigned int offset, unsigned int len);
+                      unsigned int slot, uint64_t offset, uint64_t len);
 
 /**
  * @brief Read data from a DataBlock on a specific node @p rank.
@@ -1091,8 +1091,8 @@ void arts_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
  * @param rank     Node rank to read from.
  */
 void arts_get_from_db_at(arts_guid_t edt_guid, arts_guid_t db_guid,
-                         unsigned int slot, unsigned int offset,
-                         unsigned int len, unsigned int rank);
+                         unsigned int slot, uint64_t offset,
+                         uint64_t len, unsigned int rank);
 
 /** @brief Rename a DataBlock, returning a new GUID pointing to the same data.
  */

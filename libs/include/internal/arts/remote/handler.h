@@ -120,8 +120,8 @@ void arts_remote_send_already_local(int rank, arts_guid_t guid,
                                     arts_db_access_mode_t mode);
 void arts_remote_handle_send_already_local(void *pack);
 void arts_remote_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
-                             unsigned int slot, unsigned int offset,
-                             unsigned int len, uint32_t flags,
+                             unsigned int slot, uint64_t offset,
+                             uint64_t len, uint32_t flags,
                              unsigned int rank);
 void arts_remote_handle_get_from_db(void *pack);
 void arts_remote_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
