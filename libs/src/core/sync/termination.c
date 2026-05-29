@@ -763,11 +763,18 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
         return false;
       }
     }
-    increment_finished_epoch(local);
+    /* Snapshot pool_guid BEFORE increment_finished_epoch: for a non-pool epoch
+     * this increment can be the completing one, which calls delete_epoch and
+     * frees the epoch synchronously on this thread. Every epoch-> read after
+     * the increment (the pool/non-pool branch decision below, and the traces)
+     * would otherwise be a use-after-free. Pool epochs keep their memory (owned
+     * by the pool), so the pool-branch poll of epoch->completed stays valid. */
+    arts_guid_t epoch_pool_guid = epoch->pool_guid;
     ARTS_TRACE_RDMA("wait_on_handle start guid=%lu pool=%lu completed=%u "
                     "active=%u finished=%u queued=%lu",
-                    local, epoch->pool_guid, epoch->completed,
+                    local, epoch_pool_guid, epoch->completed,
                     EPOCH_ACTIVE(epoch), EPOCH_FINISHED(epoch), epoch->queued);
+    increment_finished_epoch(local);
 
     // Release all DB frontier locks before blocking so consumer EDTs can
     // proceed while this EDT waits on the epoch.
@@ -777,7 +784,7 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
     thread_local_t tl;
     arts_save_thread_local(&tl);
     TIME_YIELD_START();
-    if (epoch->pool_guid) {
+    if (epoch_pool_guid) {
       /*
        * Pool epoch: memory stays alive after delete_epoch (owned by pool).
        * Poll the lightweight completed flag instead of route table lookup.
@@ -807,8 +814,10 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
     // Re-acquire all DB frontier locks after the epoch completes.
     arts_wait_reacquire_dbs();
 
-    ARTS_TRACE_RDMA("wait_on_handle done guid=%lu pool=%lu completed=%u",
-                    local, epoch->pool_guid, epoch->completed);
+    /* Do not deref epoch here: a non-pool epoch has been freed by delete_epoch
+     * (it is why the non-pool branch above polls the route table). */
+    ARTS_TRACE_RDMA("wait_on_handle done guid=%lu pool=%lu", local,
+                    epoch_pool_guid);
     clean_epoch_pool();
 
     TIME_EDT_EXEC_START();
