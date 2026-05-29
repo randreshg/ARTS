@@ -230,13 +230,22 @@ run_test() {
   echo "=== $desc ($binary $args) ===" >> "$LOG_FILE"
 
   if [ -n "$config" ]; then
+    # Multinode: capture EVERY rank's assertions, not just rank 0's exit code.
+    # Non-master ranks are forked children whose stdout is discarded unless
+    # ARTS_LOG_LEVEL>=2, in which case the launcher writes /tmp/arts_rank_N.log.
+    # Without this, a reader on rank 1 that prints "FAIL:" but does not abort()
+    # is invisible to the harness (it masked real cross-node correctness bugs).
+    rm -f /tmp/arts_rank_*.log
     # Relax ASan for GPU/multinode tests: protect_shadow_gap=0 prevents ASan
     # shadow memory from blocking CUDA driver VA mappings; detect_leaks=0
     # suppresses false-positive leak reports from libcuda.so internals.
     output=$(cd "$TEST_BIN_DIR" && timeout "$tout" env \
       ARTS_CONFIG="$config" \
+      ARTS_LOG_LEVEL="${ARTS_LOG_LEVEL:-2}" \
       ASAN_OPTIONS="${ASAN_OPTIONS:-}:protect_shadow_gap=0:detect_leaks=0:alloc_dealloc_mismatch=0" \
       "./$binary" $args 2>&1) || exit_code=$?
+    # Fold in the non-master ranks' output so their assertions are classified.
+    output="$output"$'\n'"$(cat /tmp/arts_rank_*.log 2>/dev/null)"
   else
     output=$(cd "$TEST_BIN_DIR" && timeout "$tout" "./$binary" $args 2>&1) || exit_code=$?
   fi
@@ -256,6 +265,12 @@ run_test() {
     last_result="LEAK"
     LEAK=$((LEAK + 1))
     printf "  %-40s  %s\n" "$desc" "[LEAK]"
+  elif echo "$output" | grep -qE "(^|[^[:alnum:]])FAIL:"; then
+    # Any rank printed a "FAIL:" assertion (e.g. a cross-node reader that
+    # checks a value but does not abort). exit 0 alone would have hidden this.
+    last_result="FAIL"
+    FAIL=$((FAIL + 1))
+    printf "  %-40s  %s\n" "$desc" "[FAIL] (rank assertion)"
   elif [ "$exit_code" -ne 0 ]; then
     last_result="FAIL"
     FAIL=$((FAIL + 1))
