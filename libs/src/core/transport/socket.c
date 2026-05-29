@@ -143,6 +143,14 @@ static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 #define ARTS_RDMA_ACCEPT_THREAD 0
 #define ARTS_RDMA_ABANDON_CLOSE_AFTER_SEND 0
 #define ARTS_RDMA_ABANDON_ABANDONED_CONNECT_CLOSE 0
+/* Abandon (detach) deferred closes that originate from server shutdown when
+ * the close-worker rclose() blocks on the RoCE fabric in a teardown race.
+ * Default ON: rclose() of RDMA send sockets can wedge indefinitely at shutdown
+ * and the process is about to _exit, so leaking the fd is safe. */
+#define ARTS_RDMA_ABANDON_SHUTDOWN_CLOSE 1
+/* Deadline (ms) for joining deferred close workers at shutdown before
+ * detaching the stragglers stuck in rclose(). */
+#define ARTS_RDMA_CLOSE_WORKER_JOIN_MS 2000
 #define ARTS_RDMA_FULL_DUPLEX 0
 #define ARTS_RDMA_ALLOW_RSOCKET_REUSE 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND_EVERY 1
@@ -324,6 +332,19 @@ static bool arts_rdma_abandon_abandoned_connect_close_enabled(void) {
     enabled =
         arts_env_uint("ARTS_RDMA_ABANDON_ABANDONED_CONNECT_CLOSE",
                       ARTS_RDMA_ABANDON_ABANDONED_CONNECT_CLOSE) != 0U;
+    initialized = true;
+  }
+  return enabled;
+}
+
+/* Detach (rather than join) deferred close workers that are still stuck in
+ * rclose() of an RDMA send/local-recv socket when the server tears down. */
+static bool arts_rdma_abandon_shutdown_close_enabled(void) {
+  static bool initialized = false;
+  static bool enabled = true;
+  if (!initialized) {
+    enabled = arts_env_uint("ARTS_RDMA_ABANDON_SHUTDOWN_CLOSE",
+                            ARTS_RDMA_ABANDON_SHUTDOWN_CLOSE) != 0U;
     initialized = true;
   }
   return enabled;
@@ -636,6 +657,17 @@ static bool arts_rdma_close_queue_enqueue(
   return true;
 }
 
+static unsigned int arts_rdma_close_worker_join_ms(void) {
+  static bool initialized = false;
+  static unsigned int join_ms = 0;
+  if (!initialized) {
+    join_ms = arts_env_uint("ARTS_RDMA_CLOSE_WORKER_JOIN_MS",
+                            ARTS_RDMA_CLOSE_WORKER_JOIN_MS);
+    initialized = true;
+  }
+  return join_ms;
+}
+
 static void arts_rdma_close_worker_shutdown(void) {
   pthread_t *threads = NULL;
   unsigned int worker_count = 0;
@@ -649,9 +681,52 @@ static void arts_rdma_close_worker_shutdown(void) {
   }
   pthread_mutex_unlock(&rdma_close_queue_lock);
 
-  for (unsigned int i = 0; i < worker_count; i++) {
-    pthread_join(threads[i], NULL);
+  if (worker_count == 0) {
+    free(threads);
+    return;
   }
+
+  /* A worker may be wedged in rclose() of an RDMA socket on the RoCE fabric;
+   * join with a deadline and detach the stragglers so teardown cannot hang.
+   * Each worker holds a COPY of the fd in its queue node (not a pointer into
+   * the global socket arrays), so detaching and leaking it is use-after-free
+   * safe -- the process is about to _exit. */
+  bool abandon = arts_rdma_abandon_shutdown_close_enabled();
+  unsigned int join_ms = arts_rdma_close_worker_join_ms();
+  unsigned int abandoned = 0;
+
+  for (unsigned int i = 0; i < worker_count; i++) {
+    if (!abandon || join_ms == 0) {
+      pthread_join(threads[i], NULL);
+      continue;
+    }
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += (time_t)(join_ms / 1000U);
+    deadline.tv_nsec += (long)((join_ms % 1000U) * 1000000UL);
+    if (deadline.tv_nsec >= 1000000000L) {
+      deadline.tv_sec += 1;
+      deadline.tv_nsec -= 1000000000L;
+    }
+    int rc = pthread_timedjoin_np(threads[i], NULL, &deadline);
+    if (rc != 0) {
+      /* Stuck in rclose(); detach and leak. */
+      pthread_detach(threads[i]);
+      abandoned++;
+    }
+  }
+
+  if (abandoned != 0) {
+    arts_atomic_print(
+        "[RDMA-WARN][rank=%u] %s shutdown detached %u deferred-close "
+        "worker(s) wedged in rclose(); leaking close-worker state to avoid "
+        "use-after-free during process teardown\n",
+        arts_global_rank_id, arts_transport_name(), abandoned);
+    /* Leak threads array + queue state: a detached worker may still touch
+     * them. Safe -- process is exiting. */
+    return;
+  }
+
   free(threads);
 
   pthread_mutex_lock(&rdma_close_queue_lock);
@@ -1329,12 +1404,25 @@ void arts_ll_server_shutdown() {
 
   for (int i = 0; remote_socket_send_list && i < count * (int)ports; i++) {
     if (i / ports != arts_global_rank_id) {
+#ifdef ARTS_USE_RDMA
+      /* Synchronous rclose() of an RDMA send socket can wedge on the RoCE
+       * fabric in a teardown race; defer to the close-worker pool, which is
+       * joined with a deadline (and stragglers detached) below. */
+      arts_defer_rdma_close_socket_fd(&remote_socket_send_list[i], false,
+                                      "shutdown-send");
+#else
       arts_close_socket_fd_everywhere(&remote_socket_send_list[i]);
+#endif
     }
   }
 
   for (int i = 0; local_socket_recieve && i < (int)ports; i++) {
+#ifdef ARTS_USE_RDMA
+    arts_defer_rdma_close_socket_fd(&local_socket_recieve[i], false,
+                                    "shutdown-local-recv");
+#else
     arts_close_socket_fd_everywhere(&local_socket_recieve[i]);
+#endif
   }
 
 #ifdef ARTS_USE_RDMA
@@ -1468,6 +1556,9 @@ void arts_ll_server_cleanup() {
   rdma_active_connect_permit_wait_count = 0;
   rdma_next_summary_time = 0;
 #endif
+  if (arts_global_rank_id == 0) {
+    arts_atomic_print("[RDMA][rank=0] ll_server_cleanup done (COMPLETE)\n");
+  }
 }
 
 unsigned int arts_remote_get_my_rank() {
