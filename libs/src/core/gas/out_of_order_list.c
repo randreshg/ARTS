@@ -53,7 +53,7 @@ bool reader_oo_try_lock(struct arts_out_of_order_list_s *list) {
       return false;
     }
     while (list->writerLock == RESET_LOCK) {
-      ;
+      ARTS_SPIN_PAUSE();
     }
     arts_atomic_fetch_add(&list->readerLock, 1U);
     if (list->writerLock == 0) {
@@ -67,7 +67,7 @@ bool reader_oo_try_lock(struct arts_out_of_order_list_s *list) {
 inline void reader_oo_lock(struct arts_out_of_order_list_s *list) {
   while (1) {
     while (list->writerLock) {
-      ;
+      ARTS_SPIN_PAUSE();
     }
     arts_atomic_fetch_add(&list->readerLock, 1U);
     if (list->writerLock == 0) {
@@ -84,10 +84,10 @@ void reader_oo_unlock(struct arts_out_of_order_list_s *list) {
 void writer_oo_lock(struct arts_out_of_order_list_s *list,
                     unsigned int lock_type) {
   while (arts_atomic_cswap(&list->writerLock, 0U, lock_type) != 0U) {
-    ;
+    ARTS_SPIN_PAUSE();
   }
   while (list->readerLock) {
-    ;
+    ARTS_SPIN_PAUSE();
   }
 }
 
@@ -147,7 +147,7 @@ bool arts_out_of_order_list_add_item(struct arts_out_of_order_list_s *add_to_me,
             1, sizeof(struct arts_out_of_order_element_s));
       } else {
         while (!current->next) {
-          ;
+          ARTS_SPIN_PAUSE();
         }
       }
     }
@@ -230,7 +230,7 @@ void arts_out_of_order_list_fire_callback(
           break;
         }
         while (!current->next) {
-          ;
+          ARTS_SPIN_PAUSE();
         }
       }
       fire_me->count = 0;
