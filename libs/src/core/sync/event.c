@@ -44,7 +44,6 @@
 #include "arts/gas/out_of_order.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/db.h"
-#include "arts/memory/frontier.h"
 #include "arts/remote/handler.h"
 #include "arts/system/debug.h"
 #include "arts/system/print.h"
@@ -752,33 +751,6 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
   if (source_type == ARTS_DB) {
     arts_type_t dest_type = arts_guid_get_type(destination);
     if (dest_type == ARTS_EDT) {
-      /*
-       * Cross-node RO-after-EW coherence: when a DB owned by THIS node is read
-       * RO by an EDT on a REMOTE node, the legacy path signals the reader
-       * immediately and it then issues a late untargeted pull served from the
-       * CURRENT head — which a later EW generation may already have overwritten.
-       * Instead register the remote reader on the owner's frontier now (in CDAG
-       * order); the frontier serves it a targeted snapshot of exactly its
-       * generation, so no immediate signal and no late pull are issued.
-       */
-      unsigned int dest_rank = arts_guid_get_rank(destination);
-      if (dest_rank != arts_global_rank_id && arts_guid_is_local(source) &&
-          access_mode == DB_MODE_RO) {
-        struct arts_db_s *db =
-            (struct arts_db_s *)arts_route_table_lookup_db(source, NULL, false);
-        bool registered = false;
-        if (db) {
-          if (db->db_type == ARTS_DB_DEFAULT && db->db_list &&
-              db->db_list != (void *)1) {
-            registered =
-                arts_register_remote_ro_reader(db, dest_rank, destination, slot);
-          }
-          arts_route_table_return_db(source, false);
-        }
-        if (registered) {
-          return;
-        }
-      }
       arts_signal_edt_with_flags(destination, slot, source, access_mode,
                                  flags);
     } else if (dest_type == ARTS_EVENT) {

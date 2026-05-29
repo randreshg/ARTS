@@ -429,12 +429,6 @@ void arts_db_request_callback(struct arts_edt_s *edt, unsigned int slot,
      * return_db in release_dbs after EDT execution. */
     arts_route_table_lookup_db(db_res->guid, NULL, false);
     depv[slot].ptr = db_res + 1;
-    /* Targeted RO readers served straight from the owner's frontier never got a
-     * prior remote signal, so ensure the slot carries the DB guid for
-     * release_dbs accounting. */
-    if (depv[slot].guid == NULL_GUID) {
-      depv[slot].guid = db_res->guid;
-    }
   } else {
     /* DB was destroyed between the OO check and the lookup (DELETE_ITEM
      * race).  Treat this slot as a NULL dependency — the data is gone. */

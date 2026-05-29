@@ -68,21 +68,6 @@ struct arts_delayed_slice_request_s {
   uint64_t size[DBSPERELEMENT];
 };
 
-/*
- * Remote RO readers pre-registered on this frontier generation. Unlike the
- * untargeted RO-node entries in frontier->list (served by an untargeted push
- * that relies on a matching pending pull), these carry (node, edt_guid, slot)
- * and are served by a targeted per-generation push when the frontier becomes
- * head, so the reader observes the snapshot of exactly its CDAG generation,
- * never a later (overwritten) buffer.
- */
-struct arts_remote_ro_reader_s {
-  struct arts_remote_ro_reader_s *next;
-  unsigned int node[DBSPERELEMENT];
-  arts_guid_t edt_guid[DBSPERELEMENT];
-  unsigned int slot[DBSPERELEMENT];
-};
-
 struct arts_db_frontier_s {
   struct arts_db_element_s list;
   unsigned int position;
@@ -154,10 +139,6 @@ struct arts_db_frontier_s {
    */
   unsigned int slicePosition;
   struct arts_delayed_slice_request_s sliceDelayed;
-
-  /* Pre-registered remote RO readers for this generation (targeted serve). */
-  unsigned int roReaderPosition;
-  struct arts_remote_ro_reader_s roReaders;
 };
 
 struct arts_db_list_s {
@@ -204,16 +185,6 @@ bool arts_push_db_to_list(struct arts_db_list_s *db_list, unsigned int data,
 bool arts_request_db_slice(struct arts_db_s *db, struct arts_edt_s *local_edt,
                            arts_guid_t edt_guid, unsigned int slot,
                            uint64_t offset, uint64_t size, uint32_t flags);
-/*
- * Pre-register a remote RO reader on the DB's frontier, preserving its CDAG
- * generation: the reader is served a targeted snapshot of its generation when
- * that frontier becomes head (or immediately if it lands on the head). This is
- * the cross-node RO-after-EW coherence fix — the reader observes its version,
- * never a later overwritten buffer. Returns true if registered (caller must NOT
- * also send the immediate signal); false to fall back to the legacy path.
- */
-bool arts_register_remote_ro_reader(struct arts_db_s *db, unsigned int node,
-                                    arts_guid_t edt_guid, unsigned int slot);
 bool arts_close_frontier(struct arts_db_list_s *db_list,
                          struct arts_db_frontier_iterator_s *iter);
 #ifdef __cplusplus
