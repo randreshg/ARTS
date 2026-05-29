@@ -23,16 +23,21 @@
 ///
 /// Requires multi-node (node_count > 1). Run with ARTS_CONFIG=arts_multinode.cfg.
 ///
-/// FINDING (2026-05-29): the number of timesteps is an optional argv argument,
-/// default 1. A SINGLE cross-node exchange (1 timestep) completes correctly.
-/// TWO OR MORE interleaved EW->RO timesteps on the same tile across nodes
-/// DEADLOCK — the iterative cross-node halo pattern wedges: every node-0 EW
-/// writer finishes, but the node-1 readers past the first generation never make
-/// progress. This is the known pre-existing iterative cross-node halo bug (the
-/// jacobi2d-medium failure), reproduced here minimally at 2 timesteps. It is the
-/// target for the runtime-owned coherence work (durable sharer directory +
-/// per-write version), NOT a regression introduced by the optimization series.
-/// Run `./multinode_stencil_halo 2` to reproduce the deadlock.
+/// FINDING (2026-05-29): timesteps is an optional argv argument, default 1.
+/// A SINGLE cross-node exchange (1 timestep) is correct. TWO OR MORE interleaved
+/// EW->RO timesteps on the same tile across nodes hit a cross-node WAR: the
+/// node-1 reader of version t observes version t+1 (the reader's abort() then
+/// wedges the run). Root cause: a remote RO reader is served PULL-based — node 1
+/// fetches the tile on demand when the reader runs, and by then node 0 has
+/// already progressed the frontier to the next EW's version. The roOutstanding /
+/// roMarkedHead gate (remote/handler.c arts_remote_db_send_check) pins only the
+/// *current* head across the snapshot copy, not the reader's intended
+/// generation, and the next EW is never blocked on a remote-snapshot ack the
+/// runtime does not have. This is the known pre-existing iterative cross-node
+/// halo bug (jacobi2d-medium); the fix is the runtime-owned versioned-coherence
+/// protocol (durable sharer directory + per-write version + per-generation gated
+/// snapshot), not a surgical patch. NOT a regression from the optimization
+/// series. Reproduce with `./multinode_stencil_halo 2`.
 
 #include "arts.h"
 #include <stdlib.h>
