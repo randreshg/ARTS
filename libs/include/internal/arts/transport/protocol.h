@@ -252,7 +252,7 @@ void arts_remote_send_request_payload_async(int rank, char *message,
                                             uint64_t size);
 void arts_remote_send_request_payload_async_free(
     int rank, char *message, unsigned int length, char *payload,
-    unsigned int offset, uint64_t size, void (*free_method)(void *));
+    uint64_t offset, uint64_t size, void (*free_method)(void *));
 void arts_remote_set_thread_outbound_queues(unsigned int start,
                                             unsigned int stop);
 void arts_remote_thread_outbound_queues_cleanup();

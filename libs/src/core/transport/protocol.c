@@ -52,8 +52,11 @@
 
 struct out_list_s {
   uint64_t time_stamp;
-  unsigned int offset;
-  unsigned int length;
+  /* offset/length must be 64-bit: partial_send_store accumulates byte offsets
+   * that, for transfers larger than 4 GiB, overflow a 32-bit field and silently
+   * corrupt the resend. (rank stays 32-bit — it is just a node id.) */
+  uint64_t offset;
+  uint64_t length;
   unsigned int rank;
   void *payload;
   uint64_t payloadSize;
@@ -505,7 +508,7 @@ void arts_remote_send_request_payload_async(int rank, char *message,
 
 void arts_remote_send_request_payload_async_free(
     int rank, char *message, unsigned int length, char *payload,
-    unsigned int offset, uint64_t size, void (*free_method)(void *)) {
+    uint64_t offset, uint64_t size, void (*free_method)(void *)) {
   if (!self_send_check(rank)) {
     return;
   }
