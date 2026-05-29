@@ -7,17 +7,22 @@
 // Build:  g++ -O3 -march=native -fopenmp -o cholesky_openmp cholesky_openmp.cpp
 // -lm Run:    OMP_NUM_THREADS=8 ./cholesky_openmp [N] [repeats]
 
-#define _POSIX_C_SOURCE 199309L
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "arts.h"
+
+int N;
+int repeats;
+double *A;
+double *L;
+
 // Column-major access macros
-#define A(i, j) A[(size_t)(j)*N + (i)]
-#define L(i, j) L[(size_t)(j)*N + (i)]
+#define A(i, j) A[(size_t)(j) * N + (i)]
+#define L(i, j) L[(size_t)(j) * N + (i)]
 
 // ---------------------------------------------------------------------------
 // OpenMP Cholesky — parallelize the sub-diagonal row updates in each column.
@@ -139,5 +144,49 @@ int main(int argc, char **argv) {
 
   free(A);
   free(L);
+  return 0;
+}
+
+void cholesky_kernel(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {}
+
+void run_cholesky(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                  arts_edt_dep_t depv[]) {
+  arts_printf("Running Cholesky\n");
+}
+
+void init_per_node(unsigned int node_id, int argc, char **argv) {
+#if ARTS_USE_CXL
+  printf("Using CXL\n");
+#else
+  printf("Using default DBs\n");
+#endif
+  if (!node_id) {
+    N = 1024;
+    repeats = 3;
+    if (argc > 1)
+      N = atoi(argv[1]);
+    if (argc > 2)
+      repeats = atoi(argv[2]);
+
+    printf("ARTS Cholesky factorization: N = %d, workers = %d, repeats = %d\n",
+           N, arts_get_total_workers() * arts_get_total_nodes(), repeats);
+
+    A = (double *)malloc((size_t)N * N);
+    L = (double *)malloc((size_t)N * N);
+
+    srand(42);
+    generate_spd_matrix(A, N);
+
+    arts_edt_create(run_cholesky, 0, NULL, 0, &(arts_hint_t){.route = 0})
+  }
+}
+
+void init_per_worker(unsigned int node_id, unsigned int worker_id, int argc,
+                     char **argv) {}
+
+int main(int argc, char **argv) {
+  arts_printf("Starting ArtsRT with Cholesky\n");
+  arts_rt(argc, argv);
   return 0;
 }
