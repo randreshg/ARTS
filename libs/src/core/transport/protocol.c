@@ -57,7 +57,7 @@ struct out_list_s {
   unsigned int rank;
   void *payload;
   uint64_t payloadSize;
-  unsigned int offsetPayload;
+  uint64_t offsetPayload;
   void (*free_method)(void *);
 };
 
