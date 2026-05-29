@@ -505,7 +505,34 @@ void arts_remote_db_send_check(int rank, struct arts_db_s *db,
     ARTS_TRACE_RDMA("remote db_send_check head rank=%u to=%d db=%lu mode=%u "
                     "flags=%u",
                     arts_global_rank_id, rank, db->guid, mode, flags);
+    /*
+     * Remote RO halo reader being served on a live PURE-RO head. Pin the head
+     * across the snapshot copy so the next EW cannot retire/overwrite version t
+     * while this neighbour is still capturing it: bump roOutstanding before the
+     * memcpy snapshot, drop it after. If this serve drives the head to 0 (no
+     * local readers, or all local readers already released), retire it here so
+     * a remote-only RO group does not wedge the [EW][RO][EW] chain. Only
+     * frontiers seeded as PURE-RO heads (roMarkedHead) are gated/retired; EW
+     * frontiers keep roMarkedHead == 0 and are untouched. */
+    struct arts_db_list_s *db_list =
+        (db->db_list && db->db_list != (void *)1)
+            ? (struct arts_db_list_s *)db->db_list
+            : NULL;
+    struct arts_db_frontier_s *head = NULL;
+    bool gate = false;
+    if (db_list) {
+      arts_reader_lock(&db_list->reader, &db_list->writer);
+      head = db_list->head;
+      arts_reader_unlock(&db_list->reader);
+      if (head && head->roMarkedHead) {
+        gate = true;
+        arts_atomic_add(&head->roOutstanding, 1U);
+      }
+    }
     arts_remote_db_send_now(rank, db);
+    if (gate && arts_ro_outstanding_dec_and_test(&head->roOutstanding)) {
+      arts_progress_frontier(db, arts_global_rank_id);
+    }
   } else {
     ARTS_TRACE_RDMA("remote db_send_check defer rank=%u to=%d db=%lu mode=%u "
                     "flags=%u",

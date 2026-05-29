@@ -745,6 +745,21 @@ void arts_signal_frontier_local(struct arts_db_frontier_s *frontier,
     }
   }
 
+  /*
+   * PURE-RO head: no local or remote exclusive writer on this frontier. Only
+   * such a frontier is retired by the RO release path; EW-driven frontiers
+   * (single-pass, matmul, 1-node) keep roMarkedHead == 0 and retire on their
+   * write-release path, so they are entirely unaffected by the accounting
+   * below. This is the unique point at which a frontier becomes the local head,
+   * and the frontier lock is held, so the marking and local seed happen once.
+   */
+  bool pure_ro = !frontier->exEdt && frontier->exEdtGuid == NULL_GUID &&
+                 frontier->localWriteEdt == NULL &&
+                 frontier->localWriteEdtGuid == NULL_GUID;
+  if (pure_ro) {
+    frontier->roMarkedHead = 1U;
+  }
+
   struct arts_db_frontier_iterator_s iter;
   if (arts_db_frontier_iter_init(&iter, frontier)) {
     unsigned int node;
@@ -752,13 +767,37 @@ void arts_signal_frontier_local(struct arts_db_frontier_s *frontier,
       if (node != arts_global_rank_id &&
           !((frontier->exEdt || frontier->exEdtGuid != NULL_GUID) &&
             node == frontier->exNode)) {
+        /*
+         * Remote RO halo reader present at promotion. Pin the head across its
+         * PUSH snapshot: bump roOutstanding, capture the snapshot (a memcpy in
+         * arts_remote_send_db_snapshot — the bytes are version t at this point,
+         * inside the frontier lock, before any next-EW overwrite), then drop
+         * the pin. The bump/drop keeps a concurrent last-local-release from
+         * retiring the head while the copy is in flight. For EW frontiers
+         * pure_ro is false so the counter is untouched. */
+        if (pure_ro) {
+          arts_atomic_add(&frontier->roOutstanding, 1U);
+        }
         arts_remote_db_send_now((int)node, db);
         ARTS_INFO("Progress Local sending to %u", node);
+        if (pure_ro) {
+          arts_atomic_sub(&frontier->roOutstanding, 1U);
+        }
       }
     }
   }
 
   if (frontier->localPosition) {
+    /*
+     * PURE-RO head frontier with local readers: seed roOutstanding with the
+     * count of local RO readers we are about to signal. release_dbs decrements
+     * this as each local RO dep is released and retires the consumed RO head
+     * when it reaches 0 (the RO branch of release_dbs has no other progression
+     * path). */
+    if (pure_ro) {
+      arts_atomic_add(&frontier->roOutstanding, frontier->localPosition);
+    }
+
     struct arts_local_delayed_edt_s *current = &frontier->localDelayed;
     for (unsigned int i = 0; i < frontier->localPosition; i++) {
       unsigned int pos = i % DBSPERELEMENT;
@@ -798,6 +837,21 @@ void arts_signal_frontier_local(struct arts_db_frontier_s *frontier,
     }
   }
   frontier_unlock(&frontier->lock);
+}
+
+bool arts_ro_outstanding_dec_and_test(volatile unsigned int *counter) {
+  for (;;) {
+    unsigned int cur = *counter;
+    if (cur == 0) {
+      /* Not seeded for this consumer (or already drained): no-op, no
+       * underflow, no retire. */
+      return false;
+    }
+    if (arts_atomic_cswap(counter, cur, cur - 1U) == cur) {
+      return cur == 1U;
+    }
+    /* Lost the race; retry with the fresh value. */
+  }
 }
 
 void arts_progress_frontier(struct arts_db_s *db, unsigned int rank) {

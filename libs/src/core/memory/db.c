@@ -89,6 +89,26 @@ static bool arts_seen_write_dep(arts_edt_dep_t *depv, int end,
   return false;
 }
 
+/*
+ * arts_seen_read_dep — true if an earlier slot of this EDT already released the
+ * same DB (same guid+ptr) in RO mode. Mirrors arts_seen_write_dep so an EDT
+ * holding the same tile RO in multiple slots decrements the head frontier's
+ * roOutstanding exactly once (the frontier counts RO readers, not RO slots).
+ */
+static bool arts_seen_read_dep(arts_edt_dep_t *depv, int end, arts_guid_t guid,
+                               void *ptr) {
+  if (guid == NULL_GUID || !ptr) {
+    return false;
+  }
+  for (int j = 0; j < end; j++) {
+    if (depv[j].guid == guid && depv[j].ptr == ptr &&
+        depv[j].mode == DB_MODE_RO) {
+      return true;
+    }
+  }
+  return false;
+}
+
 extern ARTS_THREAD_LOCAL struct arts_edt_s *current_edt;
 extern unsigned int num_numa_domains;
 
@@ -945,6 +965,45 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
                  "latch decrement)",
                  depv[i].guid);
       INCREMENT_NUM_OWNER_UPDATE_SAVED_BY(1);
+      /*
+       * Retire a fully-consumed PURE-RO head frontier. The RO branch is
+       * otherwise log-only, so without this a [EW][RO][EW] chain wedges: the
+       * RO group becomes head when the prior EW retires, local readers run and
+       * release RO (no progression), and the next EW sits deferred forever.
+       *
+       * Mirror the EW branch's frontier access: only the local owner touches
+       * the frontier (remote RO readers are fire-and-forget snapshots with no
+       * back-release), and only when the DB actually has a frontier list.
+       * roOutstanding was seeded once with the local-reader count in
+       * arts_signal_frontier_local when this frontier became head, so the last
+       * local reader to release (atomic sub returning 0) retires the head. The
+       * seen-read dedup ensures an EDT holding the same tile RO in two slots
+       * decrements once. Non-pure-RO frontiers keep roOutstanding == 0, so the
+       * decrement never fires there and the EW path is unchanged. */
+      if (owner == arts_global_rank_id && depv[i].ptr &&
+          !arts_seen_read_dep(depv, i, depv[i].guid, depv[i].ptr)) {
+        struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr - 1);
+        if (db->db_list && db->db_list != (void *)1) {
+          struct arts_db_list_s *db_list =
+              (struct arts_db_list_s *)db->db_list;
+          arts_reader_lock(&db_list->reader, &db_list->writer);
+          struct arts_db_frontier_s *head = db_list->head;
+          arts_reader_unlock(&db_list->reader);
+          /*
+           * Retire only a frontier that was seeded as a PURE-RO head
+           * (roMarkedHead). roOutstanding now also counts remote halo snapshots,
+           * so the last consumer to reach 0 — whether the final local reader
+           * here or the final remote serve in arts_remote_db_send_check —
+           * performs the retirement. Retiring only at 0 keeps the live buffer
+           * alive until every version-t halo reader has memcpy'd its snapshot,
+           * which is the multi-block race fix. EW frontiers keep
+           * roMarkedHead == 0 and are never touched here. */
+          if (head && head->roMarkedHead &&
+              arts_ro_outstanding_dec_and_test(&head->roOutstanding)) {
+            arts_progress_frontier(db, arts_global_rank_id);
+          }
+        }
+      }
     } else if (!gpu && db_subtype == ARTS_DB_LC) {
       if (depv[i].ptr) {
         struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
