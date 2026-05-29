@@ -839,6 +839,15 @@ void internal_signal_edt_ex(arts_guid_t edt_packet, uint32_t slot,
         if (slot < edt->depc) {
           edt_dep[slot].guid = data_guid;
           if (mode == DB_MODE_PTR && size > 0) {
+            /* Free a prior PTR copy already in this slot before overwriting it:
+             * a duplicate PTR signal to the same slot (e.g. an OOO replay racing
+             * a live signaler on the pre-reserved-GUID path) would otherwise
+             * orphan the earlier copy. Guard on DB_MODE_PTR so we never free a
+             * borrowed DB-body pointer (RO/EW) or an already-NULLed slot. */
+            if (edt_dep[slot].mode == DB_MODE_PTR && edt_dep[slot].ptr) {
+              arts_free(edt_dep[slot].ptr);
+              edt_dep[slot].ptr = NULL;
+            }
             void *copy = arts_malloc(size);
             memcpy(copy, ptr, size);
             edt_dep[slot].ptr = copy;
