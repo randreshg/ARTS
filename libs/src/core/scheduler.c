@@ -229,22 +229,24 @@ static inline bool arts_thread_owns_worker_deque(unsigned int worker) {
          arts_thread_info.thread_id == worker && arts_thread_info.my_deque;
 }
 
+/* Lock-free MPSC ready inbox (Treiber stack).
+ * Producers (any thread) push with a CAS-loop using release ordering; the
+ * single consumer (the owning worker) pops with a CAS-loop using acquire
+ * ordering. The intrusive link lives in edt->mpsc_next, so there is no
+ * per-EDT node allocation and no mutex on the dispatch hot path.
+ *
+ * ABA safety: a queued EDT cannot be re-pushed until it is popped, executed
+ * and freed; only the single consumer pops, and it cannot pop while spinning
+ * in its own CAS loop. Hence the head cannot transition A->...->A underneath a
+ * concurrent pop, so the plain pointer CAS is sound here (no tagging needed). */
 static inline void arts_enqueue_ready_inbox(unsigned int target_worker,
                                             struct arts_edt_s *edt) {
-  struct arts_ready_edt_node_s *node =
-      (struct arts_ready_edt_node_s *)arts_malloc(sizeof(*node));
-  node->edt = edt;
-  node->next = NULL;
-
-  pthread_mutex_lock(&arts_node_info.ready_inbox_locks[target_worker]);
-  struct arts_ready_edt_node_s *tail =
-      arts_node_info.ready_inbox_tails[target_worker];
-  if (tail)
-    tail->next = node;
-  else
-    arts_node_info.ready_inbox_heads[target_worker] = node;
-  arts_node_info.ready_inbox_tails[target_worker] = node;
-  pthread_mutex_unlock(&arts_node_info.ready_inbox_locks[target_worker]);
+  struct arts_edt_s **head = &arts_node_info.ready_inbox_heads[target_worker];
+  struct arts_edt_s *old = __atomic_load_n(head, __ATOMIC_RELAXED);
+  do {
+    edt->mpsc_next = old;
+  } while (!__atomic_compare_exchange_n(head, &old, edt, /*weak=*/true,
+                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED));
 }
 
 static inline struct arts_edt_s *arts_runtime_pop_ready_inbox(void) {
@@ -253,42 +255,18 @@ static inline struct arts_edt_s *arts_runtime_pop_ready_inbox(void) {
       !arts_node_info.ready_inbox_heads)
     return NULL;
 
-  pthread_mutex_lock(&arts_node_info.ready_inbox_locks[worker]);
-  struct arts_ready_edt_node_s *node = arts_node_info.ready_inbox_heads[worker];
-  if (node) {
-    arts_node_info.ready_inbox_heads[worker] = node->next;
-    if (!arts_node_info.ready_inbox_heads[worker])
-      arts_node_info.ready_inbox_tails[worker] = NULL;
+  struct arts_edt_s **head = &arts_node_info.ready_inbox_heads[worker];
+  struct arts_edt_s *old = __atomic_load_n(head, __ATOMIC_ACQUIRE);
+  while (old) {
+    struct arts_edt_s *next = old->mpsc_next;
+    if (__atomic_compare_exchange_n(head, &old, next, /*weak=*/true,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) {
+      old->mpsc_next = NULL;
+      return old;
+    }
+    /* old reloaded by the CAS on failure; retry. */
   }
-  pthread_mutex_unlock(&arts_node_info.ready_inbox_locks[worker]);
-
-  if (!node)
-    return NULL;
-  struct arts_edt_s *edt = node->edt;
-  arts_free(node);
-  return edt;
-}
-
-static inline struct arts_edt_s *
-arts_runtime_steal_from_ready_inbox(unsigned int worker) {
-  if (worker >= arts_node_info.worker_thread_count ||
-      !arts_node_info.ready_inbox_heads)
-    return NULL;
-
-  pthread_mutex_lock(&arts_node_info.ready_inbox_locks[worker]);
-  struct arts_ready_edt_node_s *node = arts_node_info.ready_inbox_heads[worker];
-  if (node) {
-    arts_node_info.ready_inbox_heads[worker] = node->next;
-    if (!arts_node_info.ready_inbox_heads[worker])
-      arts_node_info.ready_inbox_tails[worker] = NULL;
-  }
-  pthread_mutex_unlock(&arts_node_info.ready_inbox_locks[worker]);
-
-  if (!node)
-    return NULL;
-  struct arts_edt_s *edt = node->edt;
-  arts_free(node);
-  return edt;
+  return NULL;
 }
 
 static inline unsigned int arts_enqueue_ready_cpu_edt(struct arts_edt_s *edt) {
@@ -301,8 +279,7 @@ static inline unsigned int arts_enqueue_ready_cpu_edt(struct arts_edt_s *edt) {
 
   if (arts_thread_owns_worker_deque(target_worker))
     arts_deque_push_front(arts_thread_info.my_deque, edt, 0);
-  else if (arts_node_info.ready_inbox_heads &&
-           arts_node_info.ready_inbox_locks)
+  else if (arts_node_info.ready_inbox_heads)
     arts_enqueue_ready_inbox(target_worker, edt);
   else
     arts_deque_push_front(arts_node_info.deque[target_worker], edt, 0);
@@ -363,16 +340,9 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   /* Per-thread indexed arrays */
   arts_node_info.deque =
       (struct arts_deque_s **)arts_malloc(sizeof(struct arts_deque_s *) * tc);
-  arts_node_info.ready_inbox_locks =
-      (pthread_mutex_t *)arts_malloc(sizeof(pthread_mutex_t) * tc);
-  arts_node_info.ready_inbox_heads =
-      (struct arts_ready_edt_node_s **)arts_calloc(
-          tc, sizeof(struct arts_ready_edt_node_s *));
-  arts_node_info.ready_inbox_tails =
-      (struct arts_ready_edt_node_s **)arts_calloc(
-          tc, sizeof(struct arts_ready_edt_node_s *));
-  for (unsigned int i = 0; i < tc; ++i)
-    pthread_mutex_init(&arts_node_info.ready_inbox_locks[i], NULL);
+  /* Lock-free MPSC ready inbox — one Treiber head per worker, zero-init. */
+  arts_node_info.ready_inbox_heads = (struct arts_edt_s **)arts_calloc(
+      tc, sizeof(struct arts_edt_s *));
   arts_node_info.receiver_deque =
       config->receiver_thread_count
           ? (struct arts_deque_s **)arts_malloc(sizeof(struct arts_deque_s *) *
@@ -554,23 +524,25 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.route_table);
   arts_delete_route_table(arts_node_info.remote_route_table);
 
+  /* Drain any EDTs still queued in the per-worker Treiber inboxes at
+   * shutdown (orphans whose owner never ran them before termination) and free
+   * them. Safe here: all worker threads have joined, so this is single-threaded
+   * and races no producer/consumer. The intrusive link is in edt->mpsc_next. */
   if (arts_node_info.ready_inbox_heads) {
     for (unsigned int i = 0; i < tc; ++i) {
-      struct arts_ready_edt_node_s *node = arts_node_info.ready_inbox_heads[i];
-      while (node) {
-        struct arts_ready_edt_node_s *next = node->next;
-        arts_free(node);
-        node = next;
+      struct arts_edt_s *edt = arts_node_info.ready_inbox_heads[i];
+      while (edt) {
+        struct arts_edt_s *next = edt->mpsc_next;
+        arts_free(edt);
+        edt = next;
       }
-      pthread_mutex_destroy(&arts_node_info.ready_inbox_locks[i]);
+      arts_node_info.ready_inbox_heads[i] = NULL;
     }
   }
 
   /* Per-thread indexed arrays */
   arts_free(arts_node_info.deque);
-  arts_free(arts_node_info.ready_inbox_locks);
   arts_free(arts_node_info.ready_inbox_heads);
-  arts_free(arts_node_info.ready_inbox_tails);
   arts_free(arts_node_info.receiver_deque);
   arts_free(arts_node_info.gpu_deque);
   arts_free(arts_node_info.gpu_route_table);
@@ -1004,10 +976,11 @@ arts_try_steal_from_worker(unsigned int steal_loc) {
   unsigned int count = arts_deque_simple_pop_back_half(
       arts_node_info.deque[steal_loc], stolen, HALF_STEAL_MAX);
   if (count == 0) {
-    struct arts_edt_s *edt = arts_runtime_steal_from_ready_inbox(steal_loc);
-    if (edt)
-      INCREMENT_NUM_STEAL_SUCCESS_BY(1);
-    return edt;
+    /* Inbox-steal removed — the ready inbox is now single-consumer (the
+     * owning worker) so the lock-free MPSC pop is sound. A victim's inbox EDTs
+     * are picked up by that victim on its next loop iteration (it polls the
+     * inbox first); thieves still drain the victim's Chase-Lev deque above. */
+    return NULL;
   }
 
   INCREMENT_NUM_STEAL_SUCCESS_BY(1);

@@ -49,11 +49,6 @@ extern "C" {
 #include "arts/runtime_types.h"
 #include "arts/system/topology.h"
 
-struct arts_ready_edt_node_s {
-  struct arts_edt_s *edt;
-  struct arts_ready_edt_node_s *next;
-};
-
 struct atomic_create_barrier_info_s {
   volatile unsigned int wait;
   volatile unsigned int result;
@@ -68,9 +63,11 @@ struct arts_runtime_shared_s {
   char pad3[56];
   bool (*scheduler)();
   struct arts_deque_s **deque;
-  pthread_mutex_t *ready_inbox_locks;
-  struct arts_ready_edt_node_s **ready_inbox_heads;
-  struct arts_ready_edt_node_s **ready_inbox_tails;
+  /* Per-worker lock-free MPSC ready inbox (Treiber stack). One head per
+   * worker, pushed by any thread (CAS, release), popped only by the owning
+   * worker (single consumer — see arts_runtime_pop_ready_inbox). The previous
+   * pthread_mutex + per-EDT malloc on the dispatch hot path are gone. */
+  struct arts_edt_s **ready_inbox_heads;
   volatile unsigned int ready_rr_counter;
   char _pad_ready_rr[60];
   struct arts_deque_s **receiver_deque;

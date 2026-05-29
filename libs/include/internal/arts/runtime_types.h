@@ -101,6 +101,11 @@ struct arts_edt_s {
   volatile unsigned int depc_needed; /**< Remaining unsatisfied deps. */
   volatile unsigned int
       invalidate_count; /**< Outstanding cache invalidations. */
+  /* Intrusive link for the lock-free (Treiber) per-worker ready inbox.
+   * Used only while the EDT is queued-ready (alive); disjoint in time from the
+   * thread-local EDT pool free-list overlay (which reuses the first 16 bytes of
+   * a dead EDT), so the two never alias. */
+  struct arts_edt_s *mpsc_next;
 } ARTS_ALIGNED_MAX;
 
 /** An individual dependent registered on an event. */
