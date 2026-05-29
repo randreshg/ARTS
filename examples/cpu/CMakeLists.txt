@@ -51,6 +51,7 @@ if (ARTS_USE_CXL)
       triangle_count2
       triangle_count_promise
       stream_cpu
+      cholesky_refactored 
       inhibitor_raw_mem
   )
 else()
@@ -66,6 +67,7 @@ set(CPU_EXAMPLES
     triangle_count2
     triangle_count_promise
     stream_cpu
+    cholesky_refactored 
 )
 endif()
 
