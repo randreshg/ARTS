@@ -49,8 +49,6 @@
 /// Verify ARTS_DB_LOCAL with RW mode.
 void check_local_rw(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
   (void)depc;
   unsigned int *data = (unsigned int *)depv[0].ptr;
   bool ok = (data != NULL);
@@ -73,6 +71,13 @@ void check_local_rw(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: DB_LOCAL with RW mode read/write OK\n");
   } else {
     arts_printf("  FAIL: DB_LOCAL with RW mode failed\n");
+  }
+  /* DB_LOCAL is node-pinned with NO CDAG frontier, so it does not order EW
+   * deps. Order the verifier after this modifier explicitly via paramv[0]'s
+   * event. */
+  if (paramc >= 1) {
+    arts_event_satisfy_slot((arts_guid_t)paramv[0], NULL_GUID,
+                            ARTS_EVENT_LATCH_DECR_SLOT);
   }
 }
 
@@ -145,15 +150,20 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(local_guid);
 
   // Test 2: Verify RW modifications persisted.
-  // Chain: e1 (modify) -> e2 (verify) using EW ordering through the DB.
-  // Registration order matters: e1 registered first gets EW access first.
-  arts_guid_t e2 = arts_edt_create_with_epoch(check_modified, 0, NULL, 1, epoch,
-                                              &(arts_hint_t){.route = 0});
+  // DB_LOCAL is node-pinned with NO CDAG frontier, so EW deps on it are NOT
+  // ordered. Chain e1 (modify) -> e2 (verify) explicitly via a ONCE event that
+  // e1 fires after modifying; e2 reads the same pinned buffer once ordered.
+  arts_guid_t modified_evt = arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
+  uint64_t evt_param = (uint64_t)modified_evt;
 
-  arts_guid_t e1 = arts_edt_create_with_epoch(check_local_rw, 0, NULL, 1, epoch,
-                                              &(arts_hint_t){.route = 0});
+  arts_guid_t e1 = arts_edt_create_with_epoch(check_local_rw, 1, &evt_param, 1,
+                                              epoch, &(arts_hint_t){.route = 0});
   arts_add_dependence(local_guid, e1, 0, DB_MODE_EW);
-  arts_add_dependence(local_guid, e2, 0, DB_MODE_EW);
+
+  arts_guid_t e2 = arts_edt_create_with_epoch(check_modified, 0, NULL, 2, epoch,
+                                              &(arts_hint_t){.route = 0});
+  arts_add_dependence(local_guid, e2, 0, DB_MODE_RO);
+  arts_add_dependence(modified_evt, e2, 1, DB_MODE_NULL);
 
   // Test 3: arts_db_copy_to_new_type (DB -> DB_LOCAL).
   void *src_ptr = NULL;
