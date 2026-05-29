@@ -7,37 +7,14 @@
 ******************************************************************************/
 
 /// @file multinode_stencil_halo.c
-/// @brief Cross-node halo WAR (write-after-read) stress for the CDAG.
+/// @brief Cross-node halo write-after-read stress for the CDAG.
 ///
-/// Replicates the data hazard a distributed iterative stencil (e.g. jacobi2d)
-/// generates: a tile owned by node 0 is, every timestep, written exclusively
-/// (EW) by an owner-local EDT and then read (RO) by a halo neighbour on the
-/// remote node. The CDAG must hold version t of the tile alive until the
-/// remote RO consumer has captured its snapshot, so the next timestep's EW
-/// cannot overwrite the buffer underneath an in-flight halo copy.
+/// A tile owned by node 0 is, each timestep, written EW by an owner-local EDT
+/// then read RO by a halo neighbour on node 1. The reader of version t must
+/// observe version t, so the next EW cannot overwrite the tile until node 1 has
+/// captured its snapshot. Timesteps is an optional argv (default 1).
 ///
-/// If the runtime's RO-head retirement / remote-snapshot gating (the
-/// roOutstanding sharer-ack) is wrong, EW(t+1) overwrites version t before the
-/// node-1 reader's snapshot of version t is taken, and that reader observes
-/// t+1 instead of t — a silent corruption this test turns into a FAIL/abort.
-///
-/// Requires multi-node (node_count > 1). Run with ARTS_CONFIG=arts_multinode.cfg.
-///
-/// FINDING (2026-05-29): timesteps is an optional argv argument, default 1.
-/// A SINGLE cross-node exchange (1 timestep) is correct. TWO OR MORE interleaved
-/// EW->RO timesteps on the same tile across nodes hit a cross-node WAR: the
-/// node-1 reader of version t observes version t+1 (the reader's abort() then
-/// wedges the run). Root cause: a remote RO reader is served PULL-based — node 1
-/// fetches the tile on demand when the reader runs, and by then node 0 has
-/// already progressed the frontier to the next EW's version. The roOutstanding /
-/// roMarkedHead gate (remote/handler.c arts_remote_db_send_check) pins only the
-/// *current* head across the snapshot copy, not the reader's intended
-/// generation, and the next EW is never blocked on a remote-snapshot ack the
-/// runtime does not have. This is the known pre-existing iterative cross-node
-/// halo bug (jacobi2d-medium); the fix is the runtime-owned versioned-coherence
-/// protocol (durable sharer directory + per-write version + per-generation gated
-/// snapshot), not a surgical patch. NOT a regression from the optimization
-/// series. Reproduce with `./multinode_stencil_halo 2`.
+/// Requires multi-node. Run with ARTS_CONFIG=arts_multinode.cfg.
 
 #include "arts.h"
 #include <stdlib.h>

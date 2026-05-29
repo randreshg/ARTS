@@ -657,30 +657,10 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
           dependent_list = dependent_list->next;
           dependent = dependent_list->dependents;
         }
-        /*
-         * Do NOT auto-destroy LATCH/ONCE/COUNTED on fire.
-         *
-         * A dependence can legitimately be added to an event *after* it has
-         * fired (arts_add_dependence handles this via the event->fired
-         * self-signal path at the bottom of this file). That path first looks
-         * the event up in the route table. If we removed+freed the event here,
-         * a late add racing the fire would (a) look up NULL and queue an
-         * out-of-order add-dependence that is never replayed (the event is gone
-         * for good) — a permanent lost wakeup — or (b) dereference freed memory.
-         * This is the record_dep_at flake: a ONCE completion event fired by the
-         * writer EDT before the reader's dependence was registered.
-         *
-         * Instead we leave the fired event in the route table (fired == true,
-         * data captured) so late adds resolve correctly, exactly as STICKY/IDEM
-         * events already do. Reclamation happens at shutdown in
-         * arts_clean_up_route_table, which frees every ARTS_EVENT still present.
-         *
-         * NOTE (follow-up): this defers reclamation to shutdown rather than to
-         * the enclosing epoch's completion, so a long multi-epoch run retains
-         * fired events until teardown. A tighter fix stamps each event with its
-         * creating epoch and frees it in delete_epoch once the epoch (and thus
-         * every possible late adder) has quiesced.
-         */
+        /* Do not auto-destroy LATCH/ONCE/COUNTED on fire: a dependence added
+         * after the fire resolves via the event->fired self-signal path, which
+         * needs the event to still exist. Leave it in the route table (as
+         * STICKY/IDEM do); the shutdown sweep reclaims it. */
         (void)event_guid;
       }
     }

@@ -269,13 +269,9 @@ static inline struct arts_edt_s *arts_runtime_pop_ready_inbox(void) {
   return NULL;
 }
 
-/* Free a ready-but-never-executed orphan EDT discovered at shutdown drain. A
- * ready EDT has all dependency slots resolved; DB_MODE_PTR slots hold a private
- * heap copy (made in internal_signal_edt_ex / arts_satisfy_local_edt_slice)
- * that release_dbs would free after the EDT body runs. Since an orphan never
- * runs, free those copies here before the EDT block, mirroring release_dbs'
- * PTR handling; this is the sole free for them (no double-free). Other modes
- * hold borrowed DB-body / value / NULL pointers and must not be freed. */
+/* Free an orphan EDT (ready but never executed) found at shutdown drain. Its
+ * DB_MODE_PTR slots hold private copies that release_dbs would free after the
+ * body runs; free them here too. Other modes are borrowed and left alone. */
 static void arts_free_orphan_edt(struct arts_edt_s *edt) {
   if (!edt)
     return;
@@ -545,10 +541,8 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.route_table);
   arts_delete_route_table(arts_node_info.remote_route_table);
 
-  /* Drain any EDTs still queued in the per-worker Treiber inboxes at
-   * shutdown (orphans whose owner never ran them before termination) and free
-   * them. Safe here: all worker threads have joined, so this is single-threaded
-   * and races no producer/consumer. The intrusive link is in edt->mpsc_next. */
+  /* Free EDTs still queued in the per-worker inboxes at shutdown (orphans the
+   * owner never ran). All threads have joined, so this is single-threaded. */
   if (arts_node_info.ready_inbox_heads) {
     for (unsigned int i = 0; i < tc; ++i) {
       struct arts_edt_s *edt = arts_node_info.ready_inbox_heads[i];
@@ -773,13 +767,8 @@ void arts_runtime_private_cleanup() {
   arts_remote_thread_outbound_queues_cleanup();
   arts_remote_thread_inbound_queues_cleanup();
   if (arts_thread_info.my_deque) {
-    /* Drain ready EDTs still resident in this worker's work-stealing deque:
-     * arts_deque_delete frees only the deque's backing storage, never the EDT
-     * payloads between top and bottom, and route-table cleanup never frees EDT
-     * data. These are orphans the owner never popped before shutdown — the
-     * Chase-Lev analogue of the Treiber-inbox drain in global cleanup. Past the
-     * ready_to_clean barrier above, all threads have left the scheduler loop,
-     * so this deque has no concurrent producer or stealer. */
+    /* Free orphan EDTs still in this worker's deque (arts_deque_delete frees
+     * only backing storage, not payloads). Single-threaded past the barrier. */
     struct arts_edt_s *orphan;
     while ((orphan = (struct arts_edt_s *)arts_deque_pop_front(
                 arts_thread_info.my_deque)) != NULL) {

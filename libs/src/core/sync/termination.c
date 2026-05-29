@@ -763,12 +763,9 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
         return false;
       }
     }
-    /* Snapshot pool_guid BEFORE increment_finished_epoch: for a non-pool epoch
-     * this increment can be the completing one, which calls delete_epoch and
-     * frees the epoch synchronously on this thread. Every epoch-> read after
-     * the increment (the pool/non-pool branch decision below, and the traces)
-     * would otherwise be a use-after-free. Pool epochs keep their memory (owned
-     * by the pool), so the pool-branch poll of epoch->completed stays valid. */
+    /* Snapshot pool_guid before increment_finished_epoch: for a non-pool epoch
+     * the completing increment frees the epoch here, so reads after it would be
+     * use-after-free. */
     arts_guid_t epoch_pool_guid = epoch->pool_guid;
     ARTS_TRACE_RDMA("wait_on_handle start guid=%lu pool=%lu completed=%u "
                     "active=%u finished=%u queued=%lu",

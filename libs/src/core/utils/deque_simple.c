@@ -192,9 +192,8 @@ bool arts_deque_simple_push_front(struct arts_deque_s *deque, void *item,
     deque->activeArray = a;
   }
   put_circular_array(a, b, item);
-  /* Release-store publishes the item slot before the new bottom becomes
-   * visible to stealers (whose acquire-load of bottom pairs with this).
-   * Replaces a full mfence on the owner's hot push path (Lê et al. PPoPP'13). */
+  /* Release-store publishes the item before the new bottom; pairs with the
+   * stealer's acquire-load. Replaces a full mfence on the push hot path. */
   __atomic_store_n(&deque->bottom, b + 1, __ATOMIC_RELEASE);
   return true;
 }
@@ -205,9 +204,8 @@ void *arts_deque_simple_pop_front(struct arts_deque_s *deque) {
       __atomic_load_n(&deque->bottom, __ATOMIC_RELAXED))
     return NULL;
   uint64_t b = --deque->bottom;
-  /* MUST remain a full (StoreLoad) fence — on x86 too. The owner's
-   * bottom-decrement store and the top load below must not reorder, else the
-   * owner and the last stealer can both take the same element. Do NOT relax. */
+  /* MUST stay a full StoreLoad fence (x86 too): the bottom-decrement and the
+   * top load must not reorder, or owner and last stealer take the same item. */
   HW_MEMORY_FENCE();
   uint64_t t = deque->top;
   if (t > b) {
@@ -231,9 +229,8 @@ void *arts_deque_simple_pop_back(struct arts_deque_s *deque) {
   if (__atomic_load_n(&deque->top, __ATOMIC_RELAXED) >=
       __atomic_load_n(&deque->bottom, __ATOMIC_RELAXED))
     return NULL;
-  /* Acquire loads give the LoadLoad ordering this path needs (a consistent
-   * top,bottom snapshot before the claim CAS). The prior full mfence was
-   * stronger than required; the steal CAS is the linearization point. */
+  /* Acquire loads give the LoadLoad ordering needed before the steal CAS
+   * (the linearization point); the prior full mfence was stronger than needed. */
   uint64_t t = __atomic_load_n(&deque->top, __ATOMIC_ACQUIRE);
   uint64_t b = __atomic_load_n(&deque->bottom, __ATOMIC_ACQUIRE);
   if (t < b) {
