@@ -167,6 +167,16 @@ void arts_delete_delayed_slice_request(struct arts_delayed_slice_request_s *head
   }
 }
 
+void arts_delete_ro_readers(struct arts_remote_ro_reader_s *head) {
+  struct arts_remote_ro_reader_s *trail;
+  struct arts_remote_ro_reader_s *current = head;
+  while (current) {
+    trail = current;
+    current = current->next;
+    arts_free(trail);
+  }
+}
+
 void arts_delete_db_frontier(struct arts_db_frontier_s *frontier) {
   if (frontier->list.next) {
     arts_delete_db_element(frontier->list.next);
@@ -176,6 +186,9 @@ void arts_delete_db_frontier(struct arts_db_frontier_s *frontier) {
   }
   if (frontier->sliceDelayed.next) {
     arts_delete_delayed_slice_request(frontier->sliceDelayed.next);
+  }
+  if (frontier->roReaders.next) {
+    arts_delete_ro_readers(frontier->roReaders.next);
   }
   arts_free(frontier);
 }
@@ -195,6 +208,9 @@ void arts_delete_db_list(struct arts_db_list_s *db_list) {
     }
     if (frontier->sliceDelayed.next) {
       arts_delete_delayed_slice_request(frontier->sliceDelayed.next);
+    }
+    if (frontier->roReaders.next) {
+      arts_delete_ro_readers(frontier->roReaders.next);
     }
     arts_free(frontier);
     frontier = next;
@@ -375,6 +391,30 @@ void arts_push_delayed_slice_request(struct arts_delayed_slice_request_s *head,
   current->flags[element_pos] = flags;
   current->offset[element_pos] = offset;
   current->size[element_pos] = size;
+}
+
+static void arts_push_ro_reader(struct arts_remote_ro_reader_s *head,
+                                unsigned int position, unsigned int node,
+                                arts_guid_t edt_guid, unsigned int slot) {
+  if (!head) {
+    return;
+  }
+  unsigned int num_elements = position / DBSPERELEMENT;
+  unsigned int element_pos = position % DBSPERELEMENT;
+  struct arts_remote_ro_reader_s *current = head;
+  for (unsigned int i = 0; i < num_elements; i++) {
+    if (!current->next) {
+      current->next = (struct arts_remote_ro_reader_s *)arts_calloc(
+          1, sizeof(struct arts_remote_ro_reader_s));
+      if (!current->next) {
+        ARTS_ERROR("DB remote RO reader allocation failed");
+      }
+    }
+    current = current->next;
+  }
+  current->node[element_pos] = node;
+  current->edt_guid[element_pos] = edt_guid;
+  current->slot[element_pos] = slot;
 }
 
 static void arts_signal_db_slice(struct arts_db_s *db, arts_guid_t edt_guid,
@@ -575,6 +615,62 @@ bool arts_request_db_slice(struct arts_db_s *db, struct arts_edt_s *local_edt,
   return inserted;
 }
 
+bool arts_register_remote_ro_reader(struct arts_db_s *db, unsigned int node,
+                                    arts_guid_t edt_guid, unsigned int slot) {
+  if (!db) {
+    return false;
+  }
+  struct arts_db_list_s *db_list = (struct arts_db_list_s *)db->db_list;
+  if (!db_list) {
+    return false;
+  }
+
+  if (!db_list->head) {
+    if (arts_writer_try_lock(&db_list->reader, &db_list->writer)) {
+      db_list->head = db_list->tail = arts_new_db_frontier();
+      arts_writer_unlock(&db_list->writer);
+    }
+  }
+
+  arts_reader_lock(&db_list->reader, &db_list->writer);
+  bool registered = false;
+  bool is_head = true;
+  for (struct arts_db_frontier_s *frontier = db_list->head; frontier;
+       frontier = frontier->next) {
+    /* A read lock succeeds only if this generation is not write-sealed. The
+     * first non-sealed frontier (head-first) is the reader's CDAG generation:
+     * any later EW writer lands on a subsequent frontier, so this reader
+     * observes the snapshot taken before that writer runs. */
+    if (frontier_add_read_lock(&frontier->lock)) {
+      arts_push_ro_reader(&frontier->roReaders, frontier->roReaderPosition++,
+                          node, edt_guid, slot);
+      if (is_head) {
+        /* The reader's generation is already the head — serve a private
+         * snapshot of the current payload immediately, targeted to its slot. */
+        uint64_t payload = db->header.size - sizeof(struct arts_db_s);
+        arts_remote_signal_edt_with_ptr(edt_guid, db->guid, (void *)(db + 1),
+                                        (unsigned int)payload, slot);
+      }
+      frontier_unlock(&frontier->lock);
+      registered = true;
+      break;
+    }
+    is_head = false;
+    if (!frontier->next) {
+      struct arts_db_frontier_s *new_frontier = arts_new_db_frontier();
+      if (arts_atomic_cswap_ptr((volatile void **)&frontier->next, NULL,
+                                new_frontier)) {
+        arts_delete_db_frontier(new_frontier);
+        while (!frontier->next) {
+          ARTS_SPIN_PAUSE();
+        }
+      }
+    }
+  }
+  arts_reader_unlock(&db_list->reader);
+  return registered;
+}
+
 unsigned int arts_current_frontier_size(struct arts_db_list_s *db_list) {
   unsigned int size = 0U;
   arts_reader_lock(&db_list->reader, &db_list->writer);
@@ -668,6 +764,22 @@ void arts_signal_frontier_remote(struct arts_db_frontier_s *frontier,
             node == frontier->exNode)) {
         arts_remote_db_forward((int)node, (int)get_from, db->guid, DB_MODE_RO,
                                0); // Don't care about mode
+      }
+    }
+  }
+
+  /* Targeted remote RO readers when the generation is progressed by a REMOTE
+   * writer: the fresh buffer lives on get_from, so forward each reader's
+   * targeted full send there (it holds this generation's data). */
+  if (frontier->roReaderPosition) {
+    struct arts_remote_ro_reader_s *current = &frontier->roReaders;
+    for (unsigned int i = 0; i < frontier->roReaderPosition; i++) {
+      unsigned int pos = i % DBSPERELEMENT;
+      arts_remote_db_forward_full((int)current->node[pos], (int)get_from,
+                                  db->guid, current->edt_guid[pos],
+                                  (int)current->slot[pos], DB_MODE_RO);
+      if (pos + 1 == DBSPERELEMENT) {
+        current = current->next;
       }
     }
   }
@@ -783,6 +895,26 @@ void arts_signal_frontier_local(struct arts_db_frontier_s *frontier,
         if (pure_ro) {
           arts_atomic_sub(&frontier->roOutstanding, 1U);
         }
+      }
+    }
+  }
+
+  /* Serve pre-registered remote RO readers for this generation a TARGETED
+   * private snapshot of the CURRENT buffer. This MUST run before the
+   * localDelayed writers below, which overwrite db's payload — the snapshot
+   * captures this generation's version (pre-overwrite). Each reader gets its
+   * own PTR copy (a shared remote copy would be aliased by the next
+   * generation's serve), freed by the reader's release_dbs. */
+  if (frontier->roReaderPosition) {
+    uint64_t payload = db->header.size - sizeof(struct arts_db_s);
+    struct arts_remote_ro_reader_s *current = &frontier->roReaders;
+    for (unsigned int i = 0; i < frontier->roReaderPosition; i++) {
+      unsigned int pos = i % DBSPERELEMENT;
+      arts_remote_signal_edt_with_ptr(current->edt_guid[pos], db->guid,
+                                      (void *)(db + 1), (unsigned int)payload,
+                                      current->slot[pos]);
+      if (pos + 1 == DBSPERELEMENT) {
+        current = current->next;
       }
     }
   }
