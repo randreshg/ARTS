@@ -107,6 +107,7 @@ set(TEST_PROGRAMS
     multinode_event_types
     multinode_array_db
     multinode_db_advanced
+    multinode_stencil_halo
     # --- Graph tests ---
     csr
     distribution
