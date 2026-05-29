@@ -302,7 +302,7 @@ static void channel_fire_dependents(struct arts_event_s *event,
     int j = i - total_size;
     while (i < (int)last_known && j < (int)dependent_list->size) {
       while (!dependent[j].done_writing) {
-        ;
+        ARTS_SPIN_PAUSE();
       }
       if (dependent[j].type == ARTS_EDT) {
         if (data != NULL_GUID) {
@@ -343,7 +343,7 @@ static void channel_fire_dependents(struct arts_event_s *event,
       break;
     }
     while (dependent_list->next == NULL) {
-      ;
+      ARTS_SPIN_PAUSE();
     }
     dependent_list = dependent_list->next;
     dependent = dependent_list->dependents;
@@ -625,7 +625,7 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
           j = i - total_size;
           while (i < last_known && j < dependent_list->size) {
             while (!dependent[j].done_writing) {
-              ;
+              ARTS_SPIN_PAUSE();
             }
             if (dependent[j].type == ARTS_EDT) {
               arts_signal_edt(dependent[j].addr, dependent[j].slot, event->data,
@@ -652,17 +652,36 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
             break;
           }
           while (dependent_list->next == NULL) {
-            ;
+            ARTS_SPIN_PAUSE();
           }
           dependent_list = dependent_list->next;
           dependent = dependent_list->dependents;
         }
-        // Auto-destroy for LATCH/ONCE/COUNTED; STICKY/IDEM persist
-        if (event->type == ARTS_EVENT_LATCH || event->type == ARTS_EVENT_ONCE ||
-            event->type == ARTS_EVENT_COUNTED) {
-          arts_route_table_remove_item(event_guid);
-          arts_event_free(event);
-        }
+        /*
+         * Do NOT auto-destroy LATCH/ONCE/COUNTED on fire.
+         *
+         * A dependence can legitimately be added to an event *after* it has
+         * fired (arts_add_dependence handles this via the event->fired
+         * self-signal path at the bottom of this file). That path first looks
+         * the event up in the route table. If we removed+freed the event here,
+         * a late add racing the fire would (a) look up NULL and queue an
+         * out-of-order add-dependence that is never replayed (the event is gone
+         * for good) — a permanent lost wakeup — or (b) dereference freed memory.
+         * This is the record_dep_at flake: a ONCE completion event fired by the
+         * writer EDT before the reader's dependence was registered.
+         *
+         * Instead we leave the fired event in the route table (fired == true,
+         * data captured) so late adds resolve correctly, exactly as STICKY/IDEM
+         * events already do. Reclamation happens at shutdown in
+         * arts_clean_up_route_table, which frees every ARTS_EVENT still present.
+         *
+         * NOTE (follow-up): this defers reclamation to shutdown rather than to
+         * the enclosing epoch's completion, so a long multi-epoch run retains
+         * fired events until teardown. A tighter fix stamps each event with its
+         * creating epoch and frees it in delete_epoch once the epoch (and thus
+         * every possible late adder) has quiesced.
+         */
+        (void)event_guid;
       }
     }
   }
@@ -692,8 +711,8 @@ struct arts_dependent_s *arts_dependent_get(struct arts_dependent_list_s *head,
         }
       }
 
-      // EXPONENTIONAL BACK OFF THIS
       while (list->next == NULL) {
+        ARTS_SPIN_PAUSE();
       }
 
       position -= (int)list->size;
