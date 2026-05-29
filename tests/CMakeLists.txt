@@ -108,6 +108,7 @@ set(TEST_PROGRAMS
     multinode_array_db
     multinode_db_advanced
     multinode_stencil_halo
+    multinode_remote_writer
     # --- Graph tests ---
     csr
     distribution
