@@ -170,6 +170,7 @@ MULTI_NODE_TESTS=(
   "multinode_event_types||$TIMEOUT_LONG|Multi-node event types"
   "multinode_array_db||$TIMEOUT_LONG|Multi-node array DB"
   "multinode_db_advanced||$TIMEOUT_LONG|Multi-node DB advanced"
+  "multinode_stencil_halo|4|$TIMEOUT_LONG|Multi-node stencil halo (cross-node RO-after-EW)"
 )
 
 GPU_TESTS=(
