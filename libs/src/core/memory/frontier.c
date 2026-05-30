@@ -1273,21 +1273,18 @@ void arts_signal_frontier_local(struct arts_db_frontier_s *frontier,
   }
 
   /*
-   * PURE-RO head: no local or remote exclusive writer on this frontier. Only
-   * such a frontier is retired by the RO release path; EW-driven frontiers
-   * (single-pass, matmul, 1-node) keep roMarkedHead == 0 and retire on their
-   * write-release path, so they are entirely unaffected by the accounting
-   * below. This is the unique point at which a frontier becomes the local head,
-   * and the frontier lock is held, so the marking and local seed happen once.
-   */
-  /*
-   * Remote RO readers are served by the unified per-generation targeted
-   * snapshot path (arts_serve_ro_readers from the roReaders list), and
-   * roOutstanding for owner-local readers is seeded once at registration
-   * (arts_push_db_to_list). The legacy element-iterated untargeted push and the
-   * promotion-time roOutstanding seed (plus roMarkedHead) are intentionally
-   * NOT done here — keeping them double-delivered remote readers and
-   * double-seeded roOutstanding, racing the W->R->W ping-pong.
+   * PURE-RO head: no local or remote exclusive writer on this frontier. Remote
+   * RO readers are served by the unified per-generation targeted snapshot path
+   * (arts_serve_ro_readers from the roReaders list); roOutstanding for
+   * owner-local readers is seeded once per reader at registration
+   * (arts_push_db_to_list) and retires the head on the last release. EW-driven
+   * frontiers (single-pass, matmul, 1-node) carry no RO consumers and retire on
+   * their write-release path, so they are unaffected by the accounting below.
+   *
+   * The legacy element-iterated untargeted push and the promotion-time
+   * roOutstanding seed are intentionally NOT done here: they double-delivered
+   * remote readers and double-seeded roOutstanding, racing the W->R->W
+   * ping-pong.
    */
   if (frontier->localPosition) {
     struct arts_local_delayed_edt_s *current = &frontier->localDelayed;
@@ -1331,21 +1328,6 @@ void arts_signal_frontier_local(struct arts_db_frontier_s *frontier,
   /* Targeted per-generation snapshot for pre-registered remote RO readers. */
   arts_serve_ro_readers(frontier, db);
   frontier_unlock(&frontier->lock);
-}
-
-bool arts_ro_outstanding_dec_and_test(volatile unsigned int *counter) {
-  for (;;) {
-    unsigned int cur = *counter;
-    if (cur == 0) {
-      /* Not seeded for this consumer (or already drained): no-op, no
-       * underflow, no retire. */
-      return false;
-    }
-    if (arts_atomic_cswap(counter, cur, cur - 1U) == cur) {
-      return cur == 1U;
-    }
-    /* Lost the race; retry with the fresh value. */
-  }
 }
 
 /*

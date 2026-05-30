@@ -123,7 +123,7 @@ struct arts_db_frontier_s {
    * drives it to zero progresses the frontier. This is what lets a strict
    * W -> R -> W -> R chain advance deterministically once readers and the
    * following writer occupy separate generations.
-   * (roOutstanding itself is declared once below, with roMarkedHead.)
+   * (roOutstanding itself is declared once below.)
    */
 
   /*
@@ -162,36 +162,22 @@ struct arts_db_frontier_s {
   struct arts_local_delayed_edt_s localDelayed;
 
   /*
-   * Outstanding read-only (RO) consumers for a PURE-RO head frontier. Counts
-   * BOTH local RO readers AND remote RO halo snapshots, so the RO head (and
-   * therefore the live tile buffer) stays alive until every consumer of this
-   * version has captured its data. The head is retired (arts_progress_frontier)
-   * only when this reaches 0, i.e. when local readers have released and every
-   * remote snapshot has been memcpy'd out — which guards the next EW from
-   * overwriting the buffer while a halo neighbour still needs version t.
+   * Outstanding owner-local read-only (RO) consumers on a PURE-RO head
+   * generation. Keeps the RO head (and the live tile buffer) alive until every
+   * local reader of this version has released, so the next EW cannot overwrite
+   * the buffer while a reader still needs version t. The head is retired
+   * (arts_progress_frontier) only when this reaches 0.
    *
-   * Seeding / accounting (all under the frontier lock or via atomics):
-   *   - Local readers: seeded once with frontier->localPosition when the
-   *     PURE-RO frontier becomes head (arts_signal_frontier_local); decremented
-   *     per local RO release in release_dbs.
-   *   - Remote readers present at promotion: counted into roOutstanding for the
-   *     remote nodes in frontier->list, then PUSH-snapshotted synchronously and
-   *     decremented immediately (arts_signal_frontier_local). The snapshot is a
-   *     memcpy (arts_remote_send_db_snapshot), so the bytes are safely captured
-   *     before the decrement / any retirement.
-   *   - Remote readers arriving while the head is alive: bumped before and
-   *     dropped after their synchronous snapshot in arts_remote_db_send_check.
-   *     The bump pins the head across the (already-synchronous) copy so a
-   *     concurrent last-local-release cannot retire underneath the copy.
+   * Seeded once per reader at registration (arts_push_db_to_list) and
+   * decremented per local RO release (release_dbs); the reader that drives it to
+   * 0 retires the head. EW-driven frontiers (single-pass, matmul, 1-node) carry
+   * no RO consumers here and retire on their write-release path instead.
    *
-   * roMarkedHead distinguishes "0 because this is an EW/non-RO frontier" from
-   * "0 because a PURE-RO head fully drained": only a frontier that was seeded
-   * as a PURE-RO head may be retired by the RO release path. EW-driven
-   * frontiers keep roMarkedHead == 0 and retire on their write-release path, so
-   * single-pass / 1-node / matmul schedules are untouched.
+   * Remote RO halo readers are NOT counted here: they are pre-registered in
+   * CDAG order on the roReaders list and served exactly once via
+   * arts_serve_ro_readers when the generation reaches head.
    */
   volatile unsigned int roOutstanding;
-  volatile unsigned int roMarkedHead;
 
   /*
    * Copy-based RO slice requests (ESD) are delayed here when they cannot read
@@ -226,15 +212,6 @@ bool arts_db_frontier_iter_next(struct arts_db_frontier_iterator_s *iter,
                                 unsigned int *next);
 bool arts_db_frontier_iter_has_next(struct arts_db_frontier_iterator_s *iter);
 void arts_progress_frontier(struct arts_db_s *db, unsigned int rank);
-/*
- * Underflow-safe decrement of a PURE-RO head's roOutstanding counter.
- * Atomically decrements *counter only while it is > 0 and returns true iff this
- * caller drove it from 1 to 0 (i.e. the head is now fully drained and the
- * caller should retire it). A decrement attempted at 0 is a no-op returning
- * false, so a consumer not accounted in the seed (e.g. a direct on-head local
- * RO acquire) can never underflow the counter or trigger a spurious retire.
- */
-bool arts_ro_outstanding_dec_and_test(volatile unsigned int *counter);
 bool arts_progress_and_get_frontier(struct arts_db_list_s *db_list,
                                     struct arts_db_frontier_iterator_s *iter);
 bool arts_push_db_to_list(struct arts_db_list_s *db_list, unsigned int data,
