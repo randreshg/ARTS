@@ -734,22 +734,36 @@ void acquire_dbs(struct arts_edt_s *edt) {
         } else if (db_temp && owner == arts_global_rank_id) {
           // Owner path: CDAG frontier for DEFAULT/GPU/LC
           bool on_head = false;
-          bool duplicate_added =
-              arts_add_db_duplicate_ex(db_temp, arts_global_rank_id, edt,
-                                       edt->current_edt, i, access_mode,
-                                       depv[i].flags, &on_head);
-          if (duplicate_added) {
-            ARTS_DEBUG("Adding duplicate DB[Guid:%lu] on_head=%d", depv[i].guid,
-                       on_head);
-            if (prefer_duplicate) {
-              ARTS_DEBUG("Compiler requested duplicate-friendly RO acquire for "
-                         "DB[Guid:%lu]",
-                         depv[i].guid);
+          /*
+           * Single-node: an owner-local RO reader pre-registered in CDAG order
+           * (arts_register_local_ro_reader) joins its reserved generation
+           * in-place here, instead of racing onto whatever generation happens to
+           * be head when this EDT runs. Delivered DB_MODE_RO (db+1), never a
+           * copy. Falls through to the ordinary path when not pre-registered.
+           */
+          bool duplicate_added = false;
+          bool claimed_prereg = false;
+          if (arts_global_rank_count == 1 && access_mode == DB_MODE_RO) {
+            claimed_prereg = arts_claim_local_ro_reader(
+                db_temp, edt, edt->current_edt, i, access_mode, &on_head);
+          }
+          if (!claimed_prereg) {
+            duplicate_added = arts_add_db_duplicate_ex(
+                db_temp, arts_global_rank_id, edt, edt->current_edt, i,
+                access_mode, depv[i].flags, &on_head);
+            if (duplicate_added) {
+              ARTS_DEBUG("Adding duplicate DB[Guid:%lu] on_head=%d",
+                         depv[i].guid, on_head);
+              if (prefer_duplicate) {
+                ARTS_DEBUG("Compiler requested duplicate-friendly RO acquire for "
+                           "DB[Guid:%lu]",
+                           depv[i].guid);
+              }
+            } else {
+              ARTS_DEBUG(
+                  "Duplicate not added DB[Guid:%lu] (rank already tracked)",
+                  depv[i].guid);
             }
-          } else {
-            ARTS_DEBUG(
-                "Duplicate not added DB[Guid:%lu] (rank already tracked)",
-                depv[i].guid);
           }
 
           if (valid_rank == arts_global_rank_id && on_head) {

@@ -198,6 +198,9 @@ void arts_delete_db_frontier(struct arts_db_frontier_s *frontier) {
   if (frontier->roReaders.next) {
     arts_delete_ro_reader(frontier->roReaders.next);
   }
+  if (frontier->localRoReaders.next) {
+    arts_delete_ro_reader(frontier->localRoReaders.next);
+  }
   arts_free(frontier);
 }
 
@@ -219,6 +222,9 @@ void arts_delete_db_list(struct arts_db_list_s *db_list) {
     }
     if (frontier->roReaders.next) {
       arts_delete_ro_reader(frontier->roReaders.next);
+    }
+    if (frontier->localRoReaders.next) {
+      arts_delete_ro_reader(frontier->localRoReaders.next);
     }
     arts_free(frontier);
     frontier = next;
@@ -451,6 +457,20 @@ bool arts_push_db_to_frontier(struct arts_db_frontier_s *frontier,
                               bool bypass, struct arts_edt_s *edt,
                               arts_guid_t edt_guid, unsigned int slot,
                               arts_db_access_mode_t mode, bool *unique) {
+  /*
+   * A writer must never fuse into a generation that carries owner-local RO
+   * readers pre-registered in CDAG order (single-node eager prereg): it must
+   * seek a strictly-later generation so this version's readers drain first.
+   * Reject here so the caller advances past the reserved reader generation and
+   * (for a pre-registered local writer) joins its own sealed generation via
+   * arts_try_join_same_local_writer. localRoReadersPos is set during phase-1
+   * prereg before any consumer EDT runs and is monotonic, so this unlocked read
+   * is stable; it is always 0 on multinode, leaving that path unchanged.
+   */
+  if (write && !bypass && frontier->localRoReadersPos > 0) {
+    *unique = false;
+    return false;
+  }
   if (bypass) {
     if (!frontier_add_read_lock(&frontier->lock)) {
       return false;
@@ -586,7 +606,11 @@ void arts_retire_local_ro_reader(struct arts_db_s *db) {
      * an exclusive writer is retired by that writer's update. */
     bool reader_gen = (head->exEdt == NULL && head->exEdtGuid == NULL_GUID);
     if (reader_gen && head->roOutstanding > 0) {
-      if (arts_atomic_sub(&head->roOutstanding, 1U) == 0) {
+      /* Hold the generation open while any pre-registered local reader has not
+       * yet joined (localRoPending > 0): a strictly-later writer must not be
+       * promoted until every owner-local reader of this version has acquired. */
+      if (arts_atomic_sub(&head->roOutstanding, 1U) == 0 &&
+          head->localRoPending == 0) {
         progress = true;
       }
     }
@@ -758,6 +782,7 @@ bool arts_register_local_ew_writer(struct arts_db_s *db, arts_guid_t edt_guid) {
   }
   struct arts_db_frontier_s *target = frontier;
   bool tail_used = (frontier->position != 0 || frontier->roReadersCount != 0 ||
+                    frontier->localRoReadersPos != 0 ||
                     frontier->localWriteEdtGuid != NULL_GUID ||
                     frontier->exEdtGuid != NULL_GUID ||
                     (frontier->lock & WRITE_SET) != 0);
@@ -771,6 +796,117 @@ bool arts_register_local_ew_writer(struct arts_db_s *db, arts_guid_t edt_guid) {
   arts_atomic_fetch_or(&target->lock, WRITE_SET);
   arts_writer_unlock(&db_list->writer);
   return true;
+}
+
+/*
+ * Reserve a generation for an owner-LOCAL RO reader in CDAG order (single-node).
+ * The reader is delivered IN-PLACE later (it joins this reserved generation in
+ * arts_claim_local_ro_reader when its acquire runs), so unlike a remote reader
+ * it is recorded on localRoReaders (not roReaders) and is NOT copy-served. The
+ * reservation marks the generation non-empty (localRoPending) so a following EW
+ * writer opens a strictly-later sealed generation.
+ */
+bool arts_register_local_ro_reader(struct arts_db_s *db, arts_guid_t edt_guid,
+                                   unsigned int slot) {
+  if (!db || db->db_type == ARTS_DB_LOCAL || db->db_list == (void *)1) {
+    return false;
+  }
+  if (!db->db_list) {
+    struct arts_db_list_s *new_list = arts_new_db_list();
+    if (arts_atomic_cswap_ptr((volatile void **)&db->db_list, NULL, new_list)) {
+      arts_delete_db_list(new_list);
+    }
+  }
+  struct arts_db_list_s *db_list = (struct arts_db_list_s *)db->db_list;
+  if (!db_list->head) {
+    if (arts_writer_try_lock(&db_list->reader, &db_list->writer)) {
+      db_list->head = db_list->tail = arts_new_db_frontier();
+      arts_writer_unlock(&db_list->writer);
+    }
+  }
+  /*
+   * Serialize per DB under the writer lock (same rationale as the remote reader
+   * prereg): the tail must be stable so the reader lands after the latest
+   * writer, preserving CDAG order under concurrent prereg.
+   */
+  arts_writer_lock(&db_list->reader, &db_list->writer);
+  if (!db_list->head) {
+    db_list->head = db_list->tail = arts_new_db_frontier();
+  }
+  struct arts_db_frontier_s *frontier = db_list->head;
+  while (frontier->next) {
+    frontier = frontier->next;
+  }
+  bool tail_is_writer = (frontier->exEdt != NULL ||
+                         frontier->exEdtGuid != NULL_GUID ||
+                         frontier->localWriteEdtGuid != NULL_GUID ||
+                         (frontier->lock & WRITE_SET) != 0 ||
+                         frontier->position != 0);
+  struct arts_db_frontier_s *target = frontier;
+  if (tail_is_writer) {
+    /* Open a fresh reader generation after the latest writer. */
+    frontier->next = arts_new_db_frontier();
+    target = frontier->next;
+  }
+  arts_push_ro_reader(&target->localRoReaders, target->localRoReadersPos,
+                      arts_global_rank_id, edt_guid, slot);
+  target->localRoReadersPos++;
+  target->localRoPending++;
+  arts_writer_unlock(&db_list->writer);
+  return true;
+}
+
+bool arts_claim_local_ro_reader(struct arts_db_s *db, struct arts_edt_s *edt,
+                                arts_guid_t edt_guid, unsigned int slot,
+                                arts_db_access_mode_t mode, bool *on_head) {
+  if (on_head) {
+    *on_head = false;
+  }
+  if (!db || !db->db_list || db->db_list == (void *)1 ||
+      edt_guid == NULL_GUID) {
+    return false;
+  }
+  struct arts_db_list_s *db_list = (struct arts_db_list_s *)db->db_list;
+  arts_writer_lock(&db_list->reader, &db_list->writer);
+  bool claimed = false;
+  for (struct arts_db_frontier_s *frontier = db_list->head;
+       frontier && !claimed; frontier = frontier->next) {
+    if (frontier->localRoPending == 0) {
+      continue;
+    }
+    struct arts_ro_reader_s *cur = &frontier->localRoReaders;
+    unsigned int n = frontier->localRoReadersPos;
+    for (unsigned int i = 0; i < n; i++) {
+      unsigned int pos = i % DBSPERELEMENT;
+      if (cur->edt_guid[pos] == edt_guid) {
+        /* Consume the reservation so a later duplicate dep cannot re-join. */
+        cur->edt_guid[pos] = NULL_GUID;
+        frontier->localRoPending--;
+        frontier_lock(&frontier->lock);
+        arts_atomic_add(&frontier->roOutstanding, 1U);
+        bool head_match = (frontier == db_list->head);
+        if (!head_match) {
+          /* Delivered in-place when this generation is promoted to head. */
+          arts_push_delayed_edt(&frontier->localDelayed,
+                                frontier->localPosition++, edt, slot, mode);
+        }
+        frontier_unlock(&frontier->lock);
+        if (head_match && on_head) {
+          *on_head = true;
+        }
+        claimed = true;
+        break;
+      }
+      if (pos + 1 == DBSPERELEMENT) {
+        cur = cur->next;
+        if (!cur) {
+          break;
+        }
+      }
+    }
+  }
+  arts_writer_unlock(&db_list->writer);
+  return claimed;
 }
 
 bool arts_claim_remote_ew_writer(struct arts_db_s *db, unsigned int rank,

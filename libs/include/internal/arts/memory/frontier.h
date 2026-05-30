@@ -146,6 +146,21 @@ struct arts_db_frontier_s {
   struct arts_ro_reader_s roReaders;
 
   /*
+   * Owner-LOCAL RO readers pre-registered on this generation in CDAG order
+   * (single-node eager prereg). Unlike roReaders (remote, served a copy
+   * snapshot), these are delivered IN-PLACE (DB_MODE_RO) by the normal acquire
+   * path: each reader's later phase-2 acquire JOINS this reserved generation by
+   * matching its edt_guid here (the reader dual of localWriteEdtGuid), keeping
+   * the in-place pointer + roOutstanding accounting. localRoReadersPos is the
+   * append cursor; localRoPending is reserved-minus-joined (a generation with
+   * pending reservations is not yet drained — a reader is still coming). A
+   * matched entry's edt_guid is cleared to NULL_GUID so it is not re-joined.
+   */
+  unsigned int localRoReadersPos;
+  unsigned int localRoPending;
+  struct arts_ro_reader_s localRoReaders;
+
+  /*
    * Local writer owner for this frontier. Multiple EW/MEMSET slots from the
    * same EDT to the same DB are one logical CDAG acquisition and must share
    * this frontier.
@@ -243,6 +258,31 @@ bool arts_register_remote_ew_writer(struct arts_db_s *db, unsigned int rank,
  * normal acquire path (localWriteEdtGuid match) and progresses it on release.
  */
 bool arts_register_local_ew_writer(struct arts_db_s *db, arts_guid_t edt_guid);
+
+/*
+ * Reserve a generation for an owner-LOCAL RO reader in CDAG order (single-node
+ * eager prereg). Records edt_guid on the chosen reader generation's
+ * localRoReaders list so the reader's later phase-2 acquire joins THIS
+ * generation in-place (DB_MODE_RO), rather than racing onto whatever generation
+ * happens to be head when the reader EDT runs. A following EW writer
+ * (arts_register_local_ew_writer) then lands on a strictly-later sealed
+ * generation, fixing the RO -> EW reused-DB order deterministically.
+ */
+bool arts_register_local_ro_reader(struct arts_db_s *db, arts_guid_t edt_guid,
+                                   unsigned int slot);
+
+/*
+ * Phase-2 join: if edt_guid was pre-registered as an owner-local RO reader
+ * (arts_register_local_ro_reader), claim its reserved generation in-place,
+ * seeding roOutstanding and (when the generation is not yet head) queuing it on
+ * localDelayed for in-place delivery at promotion. Returns true if a
+ * reservation was claimed; *on_head is set when the reserved generation is the
+ * current head (caller reads db+1 immediately). Returns false (no-op) when the
+ * reader was not pre-registered (the ordinary acquire path then applies).
+ */
+bool arts_claim_local_ro_reader(struct arts_db_s *db, struct arts_edt_s *edt,
+                                arts_guid_t edt_guid, unsigned int slot,
+                                arts_db_access_mode_t mode, bool *on_head);
 
 /*
  * Late-binding helper for the writer's own full DB request. If the writer was
