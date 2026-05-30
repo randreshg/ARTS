@@ -916,7 +916,7 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
 
     if (event->fired) {
       while (event->pos == 0) {
-        ;
+        ARTS_SPIN_PAUSE();
       }
       if (position >= event->pos - 1) {
         /* Self-signal: data only, metadata already set on the EDT slot. */
@@ -938,7 +938,7 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
 
     if (event->fired) {
       while (event->pos == 0) {
-        ;
+        ARTS_SPIN_PAUSE();
       }
       if (event->pos - 1 <= position) {
         arts_event_satisfy_slot(destination, event->data, slot);
@@ -1060,7 +1060,7 @@ void arts_add_local_event_callback(arts_guid_t source,
       }
       // STICKY/IDEM: event persists — self-signal for out-of-range callbacks
       while (event->pos == 0) {
-        ;
+        ARTS_SPIN_PAUSE();
       }
       if (event->pos - 1 <= position) {
         arts_edt_dep_t arg = {0};
