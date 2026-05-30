@@ -500,8 +500,43 @@ void arts_remote_db_send_check(int rank, struct arts_db_s *db,
   if (!arts_guid_is_local(db->guid)) {
     arts_route_table_return_db(db->guid, false);
     arts_remote_db_send_now(rank, db);
-  } else if (arts_add_db_duplicate_ex(db, rank, NULL, NULL_GUID, 0, mode, flags,
-                                      NULL)) {
+    return;
+  }
+  /*
+   * Remote RO reader ordering. If this reader's node has a pre-registered RO
+   * reader pending on some frontier generation (arts_register_remote_ro_reader
+   * at arts_add_dependence time, in CDAG order), the owner does NOT ship the DB
+   * here: that reader is served a TARGETED per-generation snapshot
+   * (arts_remote_signal_edt_with_ptr) when its generation reaches head. This
+   * delivers a private post-write copy straight to the EDT slot, bypassing the
+   * route-table cache so repeated reads of the same GUID across timesteps each
+   * get the correct generation's value (the seed's node-granular send_now is
+   * cached on the reader and goes stale, or is served pre-write — the bug).
+   */
+  if ((mode == DB_MODE_RO) && db->db_list && db->db_list != (void *)1) {
+    /*
+     * Owner-local CDAG DB: every cross-node RO reader of it is pre-registered
+     * on the frontier at arts_add_dependence time and served by a targeted
+     * snapshot at promotion. The owner therefore never ships via the legacy
+     * node-granular send_now path — whether the matching pre-registration is
+     * still present (request arrived before serve) or already served+retired
+     * (a late request arriving after the reader has been satisfied). Shipping
+     * in the latter case would double-deliver into the EDT slot and leave a
+     * dangling frontier generation that stalls the epoch (the observed hang).
+     */
+    ARTS_TRACE_RDMA("remote db_send_check ro-prereg-defer rank=%u to=%d db=%lu "
+                    "mode=%u flags=%u prereg=%u",
+                    arts_global_rank_id, rank, db->guid, mode, flags,
+                    arts_remote_ro_reader_preregistered(db, (unsigned int)rank,
+                                                        NULL_GUID)
+                        ? 1U
+                        : 0U);
+    return;
+  }
+  bool on_head = false;
+  bool added = arts_add_db_duplicate_ex(db, rank, NULL, NULL_GUID, 0, mode,
+                                        flags, &on_head);
+  if (added && on_head) {
     ARTS_TRACE_RDMA("remote db_send_check head rank=%u to=%d db=%lu mode=%u "
                     "flags=%u",
                     arts_global_rank_id, rank, db->guid, mode, flags);
@@ -535,8 +570,9 @@ void arts_remote_db_send_check(int rank, struct arts_db_s *db,
     }
   } else {
     ARTS_TRACE_RDMA("remote db_send_check defer rank=%u to=%d db=%lu mode=%u "
-                    "flags=%u",
-                    arts_global_rank_id, rank, db->guid, mode, flags);
+                    "flags=%u on_head=%u added=%u",
+                    arts_global_rank_id, rank, db->guid, mode, flags,
+                    on_head ? 1U : 0U, added ? 1U : 0U);
   }
 }
 
@@ -710,6 +746,70 @@ void arts_remote_db_full_send_check(int rank, struct arts_db_s *db,
   if (!arts_guid_is_local(db->guid)) {
     arts_route_table_return_db(db->guid, false);
     arts_remote_db_full_send_now(rank, db, edt_guid, slot, mode);
+  } else if ((mode == DB_MODE_EW || mode == DB_MODE_MEMSET)) {
+    /*
+     * Remote EW writer: it may have been pre-registered in CDAG order at
+     * arts_add_dependence time (arts_register_remote_ew_writer). If so, do NOT
+     * create a second frontier generation — that would both mis-order the
+     * reader and leave a writer slot that never progresses (the hang). Instead
+     * bind to the existing generation: ship the DB now iff it is the head and
+     * has not been delivered yet; otherwise arts_progress_frontier ships it
+     * when its generation reaches the head.
+     */
+    bool on_head = false;
+    bool deliver = false;
+    if (arts_claim_remote_ew_writer(db, (unsigned int)rank, edt_guid, &on_head,
+                                    &deliver)) {
+      if (deliver) {
+        ARTS_TRACE_RDMA("remote db_full_send_check prereg-head rank=%u to=%d "
+                        "edt=%lu slot=%u db=%lu mode=%u",
+                        arts_global_rank_id, rank, edt_guid, slot, db->guid,
+                        mode);
+        arts_remote_db_full_send_now(rank, db, edt_guid, slot, mode);
+      } else {
+        ARTS_TRACE_RDMA("remote db_full_send_check prereg-defer rank=%u to=%d "
+                        "edt=%lu slot=%u db=%lu mode=%u on_head=%u",
+                        arts_global_rank_id, rank, edt_guid, slot, db->guid,
+                        mode, on_head ? 1U : 0U);
+      }
+    } else {
+      bool added_on_head = false;
+      if (arts_add_db_duplicate(db, rank, NULL, edt_guid, slot, mode,
+                                &added_on_head)) {
+        if (added_on_head) {
+          arts_remote_db_full_send_now(rank, db, edt_guid, slot, mode);
+          arts_clear_exclusive_request(db, rank, edt_guid);
+        }
+      }
+    }
+  } else if (mode == DB_MODE_RO && db->db_list && db->db_list != (void *)1) {
+    /*
+     * Remote RO reader of an owner-managed CDAG DB. Register it lazily on the
+     * frontier in acquire order, carrying its edt_guid + slot, and serve it a
+     * TARGETED per-generation snapshot (arts_remote_signal_edt_with_ptr): if it
+     * lands on the head reader generation the snapshot is delivered now; if it
+     * follows a pending writer it is delivered when that writer completes and
+     * the reader generation is promoted. Snapshot delivery copies the
+     * post-write value straight into the reader EDT's slot, so repeated reads
+     * of the same GUID across CDAG generations (timesteps) each observe the
+     * correct value and never the route-table cache.
+     */
+    /*
+     * Every cross-node RO reader of an owner-managed CDAG DB is eagerly
+     * pre-registered at arts_add_dependence time and served the targeted
+     * snapshot at promotion. The reader's own full request is therefore only a
+     * trigger and must be a strict NO-OP here: registering again (e.g. if this
+     * request arrives after the reader's generation was already served and
+     * retired) would create a spurious extra reader generation and double- or
+     * stale-deliver into the EDT slot.
+     */
+    ARTS_TRACE_RDMA("remote db_full_send_check ro-noop rank=%u to=%d "
+                    "edt=%lu slot=%u db=%lu prereg=%u",
+                    arts_global_rank_id, rank, edt_guid, slot, db->guid,
+                    arts_remote_ro_reader_preregistered(db, (unsigned int)rank,
+                                                        edt_guid)
+                        ? 1U
+                        : 0U);
   } else {
     bool on_head = false;
     if (arts_add_db_duplicate(db, rank, NULL, edt_guid, slot, mode, &on_head)) {
@@ -784,7 +884,19 @@ void arts_remote_handle_db_full_recieved(
   }
   if (arts_route_table_update_item(pdb.guid, (void *)db_res,
                                    arts_global_rank_id, state)) {
-    arts_route_table_fire_oo(pdb.guid, arts_out_of_order_handler);
+    /*
+     * A full DB send for an EW/MEMSET writer is that writer's PRIVATE working
+     * copy: the writer is about to mutate it in place before shipping the
+     * update back to the owner. Firing the out-of-order waiters here would let
+     * an unrelated pending RO reader on this same node latch the pre-write
+     * value (the cross-node-reader / same-node-writer staleness). Only the
+     * targeted writer EDT is satisfied below (arts_db_request_callback); RO
+     * readers are served the post-write value by the owner's frontier forward
+     * at promotion. RO/other sends still fire OO normally.
+     */
+    if (packet->mode != DB_MODE_EW && packet->mode != DB_MODE_MEMSET) {
+      arts_route_table_fire_oo(pdb.guid, arts_out_of_order_handler);
+    }
   }
   struct arts_edt_s *edt =
       (struct arts_edt_s *)arts_route_table_lookup_item(packet->edt_guid);

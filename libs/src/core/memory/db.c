@@ -789,7 +789,24 @@ void acquire_dbs(struct arts_edt_s *edt) {
         } else if (db_temp) {
           // Non-owner path: cached copy management
           bool local_valid = (valid_rank == arts_global_rank_id);
-          if (local_valid) {
+          /*
+           * A cross-node RO read of an owner-managed CDAG (DEFAULT) DB must NOT
+           * be served from a stale cached copy: across CDAG generations
+           * (timesteps) the owner's value changes, but the cache does not. Force
+           * a full request to the owner (carrying edt_guid) so the owner serves
+           * a fresh per-generation snapshot at the correct CDAG point.
+           */
+          bool ro_frontier_db =
+              (access_mode == DB_MODE_RO &&
+               db_temp->db_type == ARTS_DB_DEFAULT && !has_slice);
+          if (ro_frontier_db) {
+            ARTS_TRACE_RDMA("db_acquire ro-frontier-full-request rank=%u "
+                            "edt=%lu slot=%u db=%lu owner=%u",
+                            arts_global_rank_id, edt->current_edt, i,
+                            depv[i].guid, owner);
+            arts_remote_db_full_request(depv[i].guid, owner, edt->current_edt, i,
+                                        access_mode);
+          } else if (local_valid) {
             db_found = db_temp;
             ARTS_TRACE_RDMA("db_acquire cache-hit rank=%u edt=%lu slot=%u "
                             "db=%lu mode=%u",
@@ -818,8 +835,13 @@ void acquire_dbs(struct arts_edt_s *edt) {
                        depv[i].guid, i);
             arts_out_of_order_handle_db_request(depv[i].guid, edt, i, true);
           } else {
-            // Remote DB not cached locally — request from owner
-            if (access_mode == DB_MODE_EW) {
+            // Remote DB not cached locally — request from owner.
+            // EW and RO both use a full request so the owner can bind the
+            // consumer to the correct CDAG generation by edt_guid (EW: writer
+            // claim; RO: per-generation targeted snapshot). The aggregated
+            // remote_request path drops edt_guid and is kept only for non-CDAG
+            // (e.g. GPU/LC) RO transports.
+            if (access_mode == DB_MODE_EW || access_mode == DB_MODE_RO) {
               ARTS_TRACE_RDMA("db_acquire missing-full-request rank=%u "
                               "edt=%lu slot=%u db=%lu owner=%u mode=%u",
                               arts_global_rank_id, edt->current_edt, i,
@@ -966,42 +988,17 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
                  depv[i].guid);
       INCREMENT_NUM_OWNER_UPDATE_SAVED_BY(1);
       /*
-       * Retire a fully-consumed PURE-RO head frontier. The RO branch is
-       * otherwise log-only, so without this a [EW][RO][EW] chain wedges: the
-       * RO group becomes head when the prior EW retires, local readers run and
-       * release RO (no progression), and the next EW sits deferred forever.
-       *
-       * Mirror the EW branch's frontier access: only the local owner touches
-       * the frontier (remote RO readers are fire-and-forget snapshots with no
-       * back-release), and only when the DB actually has a frontier list.
-       * roOutstanding was seeded once with the local-reader count in
-       * arts_signal_frontier_local when this frontier became head, so the last
-       * local reader to release (atomic sub returning 0) retires the head. The
-       * seen-read dedup ensures an EDT holding the same tile RO in two slots
-       * decrements once. Non-pure-RO frontiers keep roOutstanding == 0, so the
-       * decrement never fires there and the EW path is unchanged. */
+       * Reader-only generations are not progressed by any writer update. An
+       * owner-local RO reader on a frontier-backed DB retires its generation
+       * here so a strictly-later EW writer generation can be promoted. The
+       * last reader of the generation (roOutstanding -> 0) does the progress.
+       */
       if (owner == arts_global_rank_id && depv[i].ptr &&
-          !arts_seen_read_dep(depv, i, depv[i].guid, depv[i].ptr)) {
-        struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr - 1);
-        if (db->db_list && db->db_list != (void *)1) {
-          struct arts_db_list_s *db_list =
-              (struct arts_db_list_s *)db->db_list;
-          arts_reader_lock(&db_list->reader, &db_list->writer);
-          struct arts_db_frontier_s *head = db_list->head;
-          arts_reader_unlock(&db_list->reader);
-          /*
-           * Retire only a frontier that was seeded as a PURE-RO head
-           * (roMarkedHead). roOutstanding now also counts remote halo snapshots,
-           * so the last consumer to reach 0 — whether the final local reader
-           * here or the final remote serve in arts_remote_db_send_check —
-           * performs the retirement. Retiring only at 0 keeps the live buffer
-           * alive until every version-t halo reader has memcpy'd its snapshot,
-           * which is the multi-block race fix. EW frontiers keep
-           * roMarkedHead == 0 and are never touched here. */
-          if (head && head->roMarkedHead &&
-              arts_ro_outstanding_dec_and_test(&head->roOutstanding)) {
-            arts_progress_frontier(db, arts_global_rank_id);
-          }
+          db_subtype != ARTS_DB_LOCAL &&
+          arts_db_subtype_has_frontier(db_subtype)) {
+        struct arts_db_s *ro_db = ((struct arts_db_s *)depv[i].ptr) - 1;
+        if (ro_db->db_list && ro_db->db_list != (void *)1) {
+          arts_retire_local_ro_reader(ro_db);
         }
       }
     } else if (!gpu && db_subtype == ARTS_DB_LC) {

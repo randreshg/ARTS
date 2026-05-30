@@ -68,6 +68,23 @@ struct arts_delayed_slice_request_s {
   uint64_t size[DBSPERELEMENT];
 };
 
+/*
+ * Remote RO readers pre-registered on a frontier generation in CDAG order
+ * (arts_register_remote_ro_reader). Each carries the consumer node, its EDT
+ * guid, and the dep slot. When the generation reaches head, each reader is
+ * served a TARGETED per-generation snapshot of the (post-write) owner DB via
+ * arts_remote_signal_edt_with_ptr — a copy delivered straight to the EDT slot,
+ * bypassing the route-table cache so a later EW overwrite cannot make the read
+ * stale, and so repeated reads of the same GUID across timesteps each get the
+ * correct generation's value.
+ */
+struct arts_ro_reader_s {
+  struct arts_ro_reader_s *next;
+  unsigned int node[DBSPERELEMENT];
+  arts_guid_t edt_guid[DBSPERELEMENT];
+  unsigned int slot[DBSPERELEMENT];
+};
+
 struct arts_db_frontier_s {
   struct arts_db_element_s list;
   unsigned int position;
@@ -84,6 +101,49 @@ struct arts_db_frontier_s {
   struct arts_edt_s *exEdt;
   unsigned int exSlot;
   arts_db_access_mode_t exMode;
+
+  /*
+   * Set when a remote EW writer was pre-registered in CDAG order at
+   * arts_add_dependence time (arts_register_remote_ew_writer) — i.e. before
+   * the writer's own full DB request reaches the owner. This makes a
+   * following LOCAL RO reader on the owner land on a *later* frontier so it
+   * cannot race ahead of the remote write. exDelivered tracks whether the
+   * DB has already been shipped to the pre-registered writer, so the late
+   * full request does not double-deliver.
+   */
+  bool exPreRegistered;
+  bool exDelivered;
+
+  /*
+   * Number of owner-local RO readers registered on this generation that have
+   * not yet completed. A reader-only generation (no exclusive writer) is not
+   * retired by any writer update, so it must be retired by its own consumers:
+   * each owner-local RO reader increments this when it joins the generation
+   * (arts_push_db_to_list) and decrements it on release; the reader that
+   * drives it to zero progresses the frontier. This is what lets a strict
+   * W -> R -> W -> R chain advance deterministically once readers and the
+   * following writer occupy separate generations.
+   * (roOutstanding itself is declared once below, with roMarkedHead.)
+   */
+
+  /*
+   * Set the first time this generation is signaled as head (by
+   * arts_signal_frontier_local/remote). A generation can reach head by two
+   * paths that may race: a predecessor's retirement (arts_progress_frontier)
+   * and self-promotion when the generation is registered over a settled, empty
+   * frontier (arts_signal_fresh_head). This flag makes the head signal
+   * idempotent so consumers are satisfied exactly once.
+   */
+  bool headSignaled;
+
+  /*
+   * Remote RO readers pre-registered on this generation in CDAG order. Served a
+   * targeted snapshot when the generation reaches head (roReadersServed guards
+   * exactly-once delivery). roReadersCount is the number of registered readers.
+   */
+  unsigned int roReadersCount;
+  bool roReadersServed;
+  struct arts_ro_reader_s roReaders;
 
   /*
    * Local writer owner for this frontier. Multiple EW/MEMSET slots from the
@@ -187,6 +247,69 @@ bool arts_request_db_slice(struct arts_db_s *db, struct arts_edt_s *local_edt,
                            uint64_t offset, uint64_t size, uint32_t flags);
 bool arts_close_frontier(struct arts_db_list_s *db_list,
                          struct arts_db_frontier_iterator_s *iter);
+
+/*
+ * Pre-register a remote EW writer on the owner's frontier in CDAG order.
+ * Called from arts_add_dependence_ex when a locally-owned DB is given an EW
+ * dependence whose destination EDT lives on another node. Reserves an
+ * exclusive-writer frontier generation for that writer *before* its own full
+ * DB request arrives, so a subsequent local RO reader is ordered after it.
+ * Returns true if a new pre-registration generation was created.
+ */
+bool arts_register_remote_ew_writer(struct arts_db_s *db, unsigned int rank,
+                                    arts_guid_t edt_guid, unsigned int slot,
+                                    arts_db_access_mode_t mode);
+
+/*
+ * Reserve a dedicated CDAG generation for a LOCAL EW writer at
+ * arts_add_dependence time. The writer later joins this generation via the
+ * normal acquire path (localWriteEdtGuid match) and progresses it on release.
+ */
+bool arts_register_local_ew_writer(struct arts_db_s *db, arts_guid_t edt_guid);
+
+/*
+ * Late-binding helper for the writer's own full DB request. If the writer was
+ * pre-registered (arts_register_remote_ew_writer), find its frontier; report
+ * via on_head whether it is the current head and via deliver whether the DB
+ * still needs to be shipped (and atomically claims delivery). Returns true if
+ * a matching pre-registration was found (caller must not create a duplicate).
+ */
+bool arts_claim_remote_ew_writer(struct arts_db_s *db, unsigned int rank,
+                                 arts_guid_t edt_guid, bool *on_head,
+                                 bool *deliver);
+
+/*
+ * Retire one owner-local RO reader from the DB's current head generation.
+ * Called on RO release for an owner-local DB with a CDAG frontier. A
+ * reader-only generation has no writer update to progress it, so the last
+ * reader to complete (roOutstanding -> 0) progresses the frontier, promoting
+ * the next generation (typically the following EW writer). No-op if the head
+ * is not a reader-only generation awaiting consumers.
+ */
+void arts_retire_local_ro_reader(struct arts_db_s *db);
+
+/*
+ * Pre-register a remote RO reader on the owner's frontier in CDAG order
+ * (dual of arts_register_remote_ew_writer). Called from arts_add_dependence_ex
+ * when a locally-owned DB is given an RO dependence whose destination EDT lives
+ * on another node. The reader joins the current reader generation (a generation
+ * with no exclusive writer) or a fresh one after a writer, so it is ordered
+ * strictly after any earlier writer and before any later writer. At promotion
+ * the reader is served a targeted snapshot (arts_remote_signal_edt_with_ptr).
+ * Returns true if registered.
+ */
+bool arts_register_remote_ro_reader(struct arts_db_s *db, unsigned int rank,
+                                    arts_guid_t edt_guid, unsigned int slot);
+
+/*
+ * Late-binding helper for the reader's own remote DB request. Returns true if a
+ * matching pre-registration (same node + edt_guid) exists on any frontier
+ * generation — in which case the owner must NOT ship the DB now (the targeted
+ * snapshot at promotion serves it), avoiding a double-delivery / stale read.
+ */
+bool arts_remote_ro_reader_preregistered(struct arts_db_s *db,
+                                         unsigned int rank,
+                                         arts_guid_t edt_guid);
 #ifdef __cplusplus
 }
 #endif
