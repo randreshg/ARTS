@@ -560,7 +560,7 @@ bool arts_push_db_to_list(struct arts_db_list_s *db_list, unsigned int data,
                                 new_frontier)) {
         arts_delete_db_frontier(new_frontier);
         while (!frontier->next) {
-          ;
+          ARTS_SPIN_PAUSE();
         }
       }
     }
@@ -694,7 +694,7 @@ bool arts_register_remote_ew_writer(struct arts_db_s *db, unsigned int rank,
                                     new_frontier)) {
             arts_delete_db_frontier(new_frontier);
             while (!frontier->next) {
-              ;
+              ARTS_SPIN_PAUSE();
             }
           }
         }
@@ -725,7 +725,7 @@ bool arts_register_remote_ew_writer(struct arts_db_s *db, unsigned int rank,
                                 new_frontier)) {
         arts_delete_db_frontier(new_frontier);
         while (!frontier->next) {
-          ;
+          ARTS_SPIN_PAUSE();
         }
       }
     }
@@ -1203,7 +1203,7 @@ bool arts_request_db_slice(struct arts_db_s *db, struct arts_edt_s *local_edt,
                                 new_frontier)) {
         arts_delete_db_frontier(new_frontier);
         while (!frontier->next) {
-          ;
+          ARTS_SPIN_PAUSE();
         }
       }
     }
