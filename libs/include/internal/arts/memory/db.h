@@ -75,7 +75,8 @@ void arts_db_create_internal(arts_guid_t guid, void *addr, uint64_t len,
                              uint64_t packet_size, arts_db_types_t db_type,
                              uint64_t arts_id);
 void acquire_dbs(struct arts_edt_s *edt);
-void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu);
+void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu,
+                 arts_guid_t writer_edt_guid);
 void arts_release_created_dbs(void);
 bool arts_add_db_duplicate(struct arts_db_s *db, unsigned int rank,
                            struct arts_edt_s *edt, arts_guid_t edt_guid,

@@ -51,6 +51,11 @@ void arts_remote_send(unsigned int rank, send_handler_t fun_ptr, void *args,
 void arts_remote_add_dependence(arts_guid_t source, arts_guid_t destination,
                                 uint32_t slot, unsigned int rank,
                                 arts_db_access_mode_t mode, uint32_t flags);
+void arts_remote_add_dependence_ordered(arts_guid_t source,
+                                        arts_guid_t destination, uint32_t slot,
+                                        unsigned int rank,
+                                        arts_db_access_mode_t mode,
+                                        uint32_t flags);
 void arts_remote_add_dependence_with_hints(arts_guid_t source,
                                            arts_guid_t destination,
                                            uint32_t slot, unsigned int rank,
@@ -62,7 +67,8 @@ void arts_remote_handle_invalidate_db(void *ptr);
 void arts_remote_db_destroy(arts_guid_t guid, unsigned int origin_rank);
 void arts_remote_handle_db_destroy_forward(void *ptr);
 void arts_remote_handle_db_destroy(void *ptr);
-void arts_remote_update_db(arts_guid_t guid, bool send_db);
+void arts_remote_update_db(arts_guid_t guid, arts_guid_t edt_guid,
+                           bool send_db);
 void arts_remote_handle_update_db(void *ptr);
 
 void arts_remote_memory_move(unsigned int route, arts_guid_t guid, void *ptr,

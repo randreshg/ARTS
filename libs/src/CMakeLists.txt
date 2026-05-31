@@ -107,7 +107,7 @@ if(ARTS_BUILD_STATIC)
         ${RT_LIBRARY}
         ${M_LIBRARY}
         ${ANL_LIBRARY}
-        ${RDMACM_LIBRARIES}
+        ${ARTS_RDMA_PROVIDER_TARGETS}
         $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
         ${HWLOC_PRIVATE_LIBS}
     )
@@ -174,7 +174,7 @@ if(ARTS_BUILD_SHARED)
         ${RT_LIBRARY}
         ${M_LIBRARY}
         ${ANL_LIBRARY}
-        ${RDMACM_LIBRARIES}
+        ${ARTS_RDMA_PROVIDER_TARGETS}
         $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
         ${HWLOC_PRIVATE_LIBS}
     )
@@ -257,7 +257,7 @@ if(BUILD_CUDA_LIBRARY)
             ${RT_LIBRARY}
             ${M_LIBRARY}
             ${ANL_LIBRARY}
-            ${RDMACM_LIBRARIES}
+            ${ARTS_RDMA_PROVIDER_TARGETS}
             $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
             CUDA::cudart
             CUDA::cuda_driver
@@ -330,7 +330,7 @@ if(BUILD_CUDA_LIBRARY)
             ${RT_LIBRARY}
             ${M_LIBRARY}
             ${ANL_LIBRARY}
-            ${RDMACM_LIBRARIES}
+            ${ARTS_RDMA_PROVIDER_TARGETS}
             $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
             CUDA::cudart
             CUDA::cuda_driver

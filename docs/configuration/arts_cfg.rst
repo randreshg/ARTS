@@ -128,10 +128,21 @@ Networking
      - Number of incoming (receiver) network threads (0 for local mode).
    * - ``port_count``
      - 1
-     - Number of parallel network connections per node pair.
+     - Number of parallel network connections per node pair.  For RDMA/RoCE
+       rsocket multinode runs this is clamped to ``1`` unless
+       ``ARTS_RDMA_FORCE_MULTI_PORT=1`` is set.
    * - ``net_interface``
      - auto
      - Network interface name (``eth0``, ``ib0``, etc.).
+
+RDMA/RoCE rsocket policy
+------------------------
+
+The current RDMA build uses the rsocket compatibility API and requires
+``librdmacm``, UCX, and libfabric development packages.  Multinode RDMA/RoCE
+defaults use one lazy persistent full-duplex peer endpoint per rank pair.
+``port_count``, ``sender_threads``, and ``receiver_threads`` are clamped to
+``1`` unless explicitly forced with the RDMA override environment variables.
 
 Launcher
 --------

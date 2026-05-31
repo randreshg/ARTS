@@ -45,6 +45,7 @@
 #include "arts/gas/out_of_order.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/db.h"
+#include "arts/memory/frontier.h"
 #include "arts/remote/handler.h"
 #include "arts/runtime_state.h"
 #include "arts/sync/termination.h"
@@ -223,10 +224,12 @@ bool arts_set_current_epoch_guid(arts_guid_t epoch_guid) {
 arts_guid_t arts_get_current_epoch_guid() {
   if (epoch_list) {
     uint64_t length = arts_length_array_list(epoch_list);
-    if (length) {
+    for (uint64_t i = length; i > 0; i--) {
       arts_guid_t *guid =
-          (arts_guid_t *)arts_get_from_array_list(epoch_list, length - 1);
-      return *guid;
+          (arts_guid_t *)arts_get_from_array_list(epoch_list, i - 1);
+      if (*guid != NULL_GUID) {
+        return *guid;
+      }
     }
   }
   return NULL_GUID;
@@ -249,6 +252,12 @@ arts_guid_t *arts_check_epoch_is_root(arts_guid_t to_check) {
   }
   ARTS_INFO("ERROR %lu is not a valid epoch", to_check);
   return NULL;
+}
+
+void arts_refresh_current_edt_epoch_guid(void) {
+  if (current_edt) {
+    current_edt->epoch_guid = arts_get_current_epoch_guid();
+  }
 }
 
 void arts_track_created_db(arts_guid_t guid) {
@@ -910,10 +919,38 @@ void arts_signal_edt_with_flags(arts_guid_t edt_guid, uint32_t slot,
   internal_signal_edt_ex(edt_guid, slot, data_guid, mode, flags, NULL, 0);
 }
 
+static void arts_preregister_direct_signal_writer(arts_guid_t edt_guid,
+                                                  uint32_t slot,
+                                                  arts_guid_t data_guid,
+                                                  arts_db_access_mode_t mode) {
+  if (data_guid == NULL_GUID || arts_guid_get_type(data_guid) != ARTS_DB ||
+      (mode != DB_MODE_EW && mode != DB_MODE_MEMSET) ||
+      arts_guid_get_rank(data_guid) != arts_global_rank_id) {
+    return;
+  }
+
+  struct arts_db_s *owner_db =
+      (struct arts_db_s *)arts_route_table_lookup_db(data_guid, NULL, false);
+  if (!owner_db) {
+    return;
+  }
+
+  if (owner_db->db_type != ARTS_DB_LOCAL) {
+    unsigned int edt_rank = arts_guid_get_rank(edt_guid);
+    if (edt_rank == arts_global_rank_id) {
+      arts_register_local_ew_writer(owner_db, edt_guid);
+    } else {
+      arts_register_remote_ew_writer(owner_db, edt_rank, edt_guid, slot, mode);
+    }
+  }
+  arts_route_table_return_db(data_guid, false);
+}
+
 void arts_signal_edt(arts_guid_t edt_guid, uint32_t slot, arts_guid_t data_guid,
                      arts_db_access_mode_t mode) {
   ARTS_DEBUG("arts_signal_edt [EDT:%lu, Slot:%u, DB:%lu, Mode:%u]", edt_guid,
              slot, data_guid, mode);
+  arts_preregister_direct_signal_writer(edt_guid, slot, data_guid, mode);
   internal_signal_edt_ex(edt_guid, slot, data_guid, mode, 0, NULL, 0);
 }
 

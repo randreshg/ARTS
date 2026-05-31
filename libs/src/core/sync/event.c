@@ -734,7 +734,6 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
   ARTS_INFO("Add Dependence from %lu to %lu at %u mode=%u", source, destination,
             slot, access_mode);
 
-  /* NULL source → signal immediately (slot satisfied with no data). */
   if (source == NULL_GUID) {
     arts_type_t dest_type = arts_guid_get_type(destination);
     if (dest_type == ARTS_EDT) {
@@ -748,50 +747,18 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
 
   arts_type_t source_type = arts_guid_get_type(source);
 
-  /* DB source → immediate satisfy (DBs are passive objects). */
   if (source_type == ARTS_DB) {
     arts_type_t dest_type = arts_guid_get_type(destination);
     if (dest_type == ARTS_EDT) {
-      /*
-       * UNIFIED CDAG PRE-REGISTRATION. add_dependence runs in
-       * program (CDAG) order from the producer, so eagerly stamping each
-       * consumer of a locally-owned frontier DB onto the owner frontier here
-       * fixes the ordering deterministically — independent of when each consumer
-       * EDT later becomes ready and runs acquire:
-       *   - EW/MEMSET writer (local): a dedicated sealed reserved generation
-       *     (localWriteEdtGuid) the writer's own acquire joins and progresses.
-       *   - EW/MEMSET writer (remote): a dedicated exclusive-writer generation
-       *     served via the head signal (exDelivered = exactly-once).
-       *   - RO reader (remote): joins a reader generation strictly after the
-       *     writer it follows; served a targeted post-write snapshot at
-       *     promotion. Its ordinary dep signal is suppressed so the snapshot is
-       *     the single delivery path.
-       *   - RO reader (owner-local, single-node): reserves a reader generation
-       *     (localRoReaders) that its own acquire later joins IN-PLACE
-       *     (arts_claim_local_ro_reader). Its dep signal is NOT suppressed — the
-       *     reader still runs acquire and reads db+1 directly. This stops a
-       *     later EW on a reused buffer from deduping into a live RO generation
-       *     and firing before the readers drain (the single-node WAR race).
-       * This single ordering discipline makes the W -> R -> W -> R chain
-       * (local-writer/remote-reader, remote-writer/local-reader, single-node
-       * reused-DB, and the remote/remote ping-pong mixes) advance the same way.
-       */
+      unsigned int source_rank = arts_guid_get_rank(source);
+      if (source_rank != arts_global_rank_id) {
+        arts_remote_add_dependence_ordered(source, destination, slot,
+                                           source_rank, access_mode, flags);
+        return;
+      }
+
       if ((access_mode == DB_MODE_EW || access_mode == DB_MODE_MEMSET) &&
           arts_guid_get_rank(source) == arts_global_rank_id) {
-        /*
-         * Pre-register EVERY EW/MEMSET writer (local or remote) of a
-         * locally-owned frontier DB on the owner frontier here, in CDAG order.
-         * add_dependence runs in program order, so eager writer registration
-         * fixes the frontier's writer ordering deterministically — independent
-         * of when each writer EDT later becomes ready and runs acquire. A
-         * subsequent remote RO reader (registered lazily when its full request
-         * arrives) then lands strictly after the writer it follows. Without the
-         * LOCAL writer being eager too, a local-writer -> remote-reader chain
-         * (the stencil) has neither end eager and races nondeterministically.
-         * Local writers are stamped as a reserved generation (localWriteEdtGuid)
-         * that the writer's own acquire joins and drives the normal way; remote
-         * writers use the exclusive-writer slot served by the head signal.
-         */
         unsigned int dest_rank = arts_guid_get_rank(destination);
         struct arts_db_s *owner_db =
             (struct arts_db_s *)arts_route_table_lookup_db(source, NULL, false);
@@ -809,17 +776,6 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
       } else if (arts_global_rank_count > 1 && access_mode == DB_MODE_RO &&
                  arts_guid_get_rank(source) == arts_global_rank_id &&
                  arts_guid_get_rank(destination) != arts_global_rank_id) {
-        /*
-         * Eager remote-RO-reader pre-registration, interleaved with writer
-         * pre-registration in CDAG order. This is essential: main_edt adds all
-         * dependences before any consumer runs, so if readers were registered
-         * lazily (at request time) they would all pile up after every writer
-         * gen, destroying the per-timestep W -> R interleave. Eager
-         * registration places each reader in its own generation immediately
-         * after the writer it follows. The reader's later full request is then
-         * a no-op (already pre-registered); it is served the targeted snapshot
-         * at promotion.
-         */
         struct arts_db_s *owner_db =
             (struct arts_db_s *)arts_route_table_lookup_db(source, NULL, false);
         bool prereg = false;
@@ -831,35 +787,23 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
           arts_route_table_return_db(source, false);
         }
         if (prereg) {
-          /*
-           * The reader is fully owned by the frontier now: it will be satisfied
-           * EXACTLY ONCE by the targeted per-generation snapshot at promotion
-           * (arts_remote_signal_edt_with_ptr fills its dep slot directly). Do
-           * NOT also send the ordinary DB->EDT dependence signal — that second
-           * path makes the remote reader run acquire and race the snapshot,
-           * yielding a premature NULL read and a lost snapshot (stalls the next
-           * generation). Suppressing it makes snapshot delivery the single
-           * mechanism for prereg'd remote readers.
-           */
           return;
         }
-      } else if (arts_global_rank_count == 1 && access_mode == DB_MODE_RO &&
+      } else if (access_mode == DB_MODE_RO &&
                  arts_guid_get_rank(source) == arts_global_rank_id &&
                  arts_guid_get_rank(destination) == arts_global_rank_id) {
-        /*
-         * Single-node owner-local RO reader: reserve its reader generation in
-         * CDAG order so a following EW writer lands strictly after it. Unlike a
-         * remote reader, delivery is IN-PLACE via the reader's own acquire
-         * (arts_claim_local_ro_reader joins this generation), so the ordinary
-         * dep signal is NOT suppressed — fall through to it below.
-         */
         struct arts_db_s *owner_db =
             (struct arts_db_s *)arts_route_table_lookup_db(source, NULL, false);
+        bool prereg = false;
         if (owner_db) {
           if (owner_db->db_type != ARTS_DB_LOCAL) {
-            arts_register_local_ro_reader(owner_db, destination, slot);
+            prereg = arts_register_remote_ro_reader(
+                owner_db, arts_global_rank_id, destination, slot);
           }
           arts_route_table_return_db(source, false);
+        }
+        if (prereg) {
+          return;
         }
       }
       arts_signal_edt_with_flags(destination, slot, source, access_mode,

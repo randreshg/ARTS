@@ -120,7 +120,7 @@ if(NOT ARTS_LOG_LEVEL MATCHES "^[0-3]$")
         "Invalid ARTS_LOG_LEVEL='${ARTS_LOG_LEVEL}'. Expected one of: 0, 1, 2, 3")
 endif()
 option(ARTS_USE_GPU "Enable GPU support (default: ON, disable when OFF)" ON)
-option(ARTS_USE_RDMA "Use RDMA RSockets networking (default: ON, use TCP when OFF)" ON)
+option(ARTS_USE_RDMA "Use RDMA networking (default: ON, use TCP when OFF)" ON)
 option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" ON)
 option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON)
 option(ARTS_USE_JEMALLOC "Use jemalloc allocator for reduced lock contention at high thread counts" OFF)
@@ -274,34 +274,73 @@ if(NOT ARTS_USE_RDMA)
     message(STATUS "Network: Using TCP (RDMA disabled)")
     set(RDMACM_LIBRARIES "")
     set(RDMACM_INCLUDE_DIRS "")
+    set(ARTS_RDMA_PROVIDER_TARGETS "")
+    set(ARTS_RDMA_PROVIDER_INCLUDE_DIRS "")
 else()
-    # RDMA was explicitly requested; fail fast when the build host does not
-    # provide the RSockets compatibility layer rather than silently measuring
-    # TCP in an RDMA-labeled experiment.
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(RDMACM QUIET librdmacm)
-    endif()
+    # RDMA was explicitly requested; fail fast when the build host lacks the
+    # requested provider stack rather than silently measuring TCP in an
+    # RDMA-labeled experiment.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(RDMACM QUIET IMPORTED_TARGET librdmacm)
+    pkg_check_modules(UCX QUIET IMPORTED_TARGET ucx)
+    pkg_check_modules(LIBFABRIC QUIET IMPORTED_TARGET libfabric)
 
     if(NOT RDMACM_FOUND)
         message(FATAL_ERROR
             "ARTS_USE_RDMA=ON requires librdmacm/RSockets, but pkg-config "
-            "could not find librdmacm")
+            "could not find librdmacm. Install librdmacm-dev/rdma-core.")
+    endif()
+    if(NOT UCX_FOUND)
+        message(FATAL_ERROR
+            "ARTS_USE_RDMA=ON requires UCX development files for the production "
+            "RDMA provider stack. Install libucx-dev.")
+    endif()
+    if(NOT LIBFABRIC_FOUND)
+        message(FATAL_ERROR
+            "ARTS_USE_RDMA=ON requires libfabric development files for the "
+            "production RDMA provider stack. Install libfabric-dev.")
     endif()
 
     include(CheckIncludeFile)
-    set(CMAKE_REQUIRED_INCLUDES ${RDMACM_INCLUDE_DIRS})
+    set(CMAKE_REQUIRED_INCLUDES
+        ${RDMACM_INCLUDE_DIRS}
+        ${UCX_INCLUDE_DIRS}
+        ${LIBFABRIC_INCLUDE_DIRS}
+    )
     check_include_file("rdma/rsocket.h" ARTS_HAVE_RDMA_RSOCKET_LOWER)
     check_include_file("rdma/RSOCKET.h" ARTS_HAVE_RDMA_RSOCKET_UPPER)
+    check_include_file("ucp/api/ucp.h" ARTS_HAVE_UCX_HEADER)
+    check_include_file("rdma/fabric.h" ARTS_HAVE_LIBFABRIC_FABRIC_HEADER)
+    check_include_file("rdma/fi_endpoint.h" ARTS_HAVE_LIBFABRIC_ENDPOINT_HEADER)
     unset(CMAKE_REQUIRED_INCLUDES)
     if(NOT ARTS_HAVE_RDMA_RSOCKET_LOWER AND NOT ARTS_HAVE_RDMA_RSOCKET_UPPER)
         message(FATAL_ERROR
             "ARTS_USE_RDMA=ON requires an RSockets header "
             "(rdma/rsocket.h or rdma/RSOCKET.h)")
     endif()
+    if(NOT ARTS_HAVE_UCX_HEADER)
+        message(FATAL_ERROR
+            "ARTS_USE_RDMA=ON requires ucp/api/ucp.h from libucx-dev")
+    endif()
+    if(NOT ARTS_HAVE_LIBFABRIC_FABRIC_HEADER OR
+       NOT ARTS_HAVE_LIBFABRIC_ENDPOINT_HEADER)
+        message(FATAL_ERROR
+            "ARTS_USE_RDMA=ON requires rdma/fabric.h and rdma/fi_endpoint.h "
+            "from libfabric-dev")
+    endif()
 
     add_compile_definitions(ARTS_USE_RDMA)
-    message(STATUS "Network: Using RDMA RSockets - ARTS_USE_RDMA defined")
+    set(ARTS_RDMA_PROVIDER_TARGETS PkgConfig::RDMACM)
+    set(ARTS_RDMA_PROVIDER_INCLUDE_DIRS ${RDMACM_INCLUDE_DIRS})
+    add_compile_definitions(ARTS_HAVE_UCX ARTS_HAVE_LIBFABRIC)
+    list(APPEND ARTS_RDMA_PROVIDER_TARGETS PkgConfig::UCX PkgConfig::LIBFABRIC)
+    list(APPEND ARTS_RDMA_PROVIDER_INCLUDE_DIRS
+        ${UCX_INCLUDE_DIRS}
+        ${LIBFABRIC_INCLUDE_DIRS}
+    )
+    message(STATUS
+        "Network: Using RDMA; rsocket active, UCX ${UCX_VERSION} and "
+        "libfabric ${LIBFABRIC_VERSION} provider deps available")
 endif()
 
 # Add third-party dependencies
@@ -504,7 +543,7 @@ else()
     message(STATUS "  CUDA Library:     OFF")
 endif()
 if(ARTS_USE_RDMA AND RDMACM_FOUND)
-    message(STATUS "  Network:          RDMA RSockets")
+    message(STATUS "  Network:          RDMA (rsocket active; UCX/libfabric deps)")
 else()
     message(STATUS "  Network:          TCP fallback")
 endif()

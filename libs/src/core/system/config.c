@@ -50,6 +50,8 @@
 #include "arts/transport/launcher.h"
 #include "arts/utils/malloc.h"
 
+#define ARTS_DEFAULT_PORT_BASE 34739U
+
 #define ARTS_PROTOCOL_TCP "tcp"
 #define ARTS_PROTOCOL_RDMA "rdma"
 #define ARTS_PROTOCOL_ROCE "roce"
@@ -139,16 +141,18 @@ arts_config_find_variable(struct arts_config_variable_s **head,
 
   char *overide = getenv(string);
   if (overide) {
-    unsigned int size = strlen(overide);
+    unsigned int size = strlen(overide) + 1;
     struct arts_config_variable_s *new_var =
         (struct arts_config_variable_s *)arts_malloc(
             sizeof(struct arts_config_variable_s) + size);
 
     new_var->size = size;
+    new_var->next = NULL;
     memcpy(new_var->variable, string, strlen(string) + 1);
-    memcpy(new_var->value, overide, size + 1);
+    memcpy(new_var->value, overide, size);
 
     if (last) {
+      new_var->next = next ? next->next : NULL;
       last->next = new_var;
     } else {
       new_var->next = *head;
@@ -156,7 +160,6 @@ arts_config_find_variable(struct arts_config_variable_s **head,
     }
 
     if (next) {
-      new_var->next = next->next;
       arts_free(next);
     }
     return new_var;
@@ -693,7 +696,7 @@ static unsigned int *parse_port_spec(const char *spec, unsigned int *count) {
     if (endptr != ptr && *endptr == '-') {
       ptr = endptr + 1;
       unsigned long end = strtoul(ptr, &endptr, 10);
-      if (endptr != ptr && start <= end) {
+      if (endptr != ptr && start <= end && start > 0 && end <= 65535UL) {
         unsigned int n = (unsigned int)(end - start + 1);
         unsigned int *ports =
             (unsigned int *)arts_malloc(n * sizeof(unsigned int));
@@ -704,11 +707,7 @@ static unsigned int *parse_port_spec(const char *spec, unsigned int *count) {
         return ports;
       }
     }
-    /* Invalid range → treat as single port with default */
-    unsigned int *ports = (unsigned int *)arts_malloc(sizeof(unsigned int));
-    ports[0] = 75563;
-    *count = 1;
-    return ports;
+    ARTS_ERROR("Invalid port range specification '%s'", spec);
   }
 
   /* Check for comma-separated list */
@@ -724,7 +723,11 @@ static unsigned int *parse_port_spec(const char *spec, unsigned int *count) {
     char *tok = strtok(copy, ",");
     unsigned int i = 0;
     while (tok && i < n) {
-      ports[i++] = (unsigned int)strtoul(tok, NULL, 10);
+      unsigned long port = strtoul(tok, NULL, 10);
+      if (port == 0 || port > 65535UL) {
+        ARTS_ERROR("Invalid port '%s' in port specification '%s'", tok, spec);
+      }
+      ports[i++] = (unsigned int)port;
       tok = strtok(NULL, ",");
     }
     arts_free(copy);
@@ -734,7 +737,11 @@ static unsigned int *parse_port_spec(const char *spec, unsigned int *count) {
 
   /* Single port */
   unsigned int *ports = (unsigned int *)arts_malloc(sizeof(unsigned int));
-  ports[0] = (unsigned int)strtoul(spec, NULL, 10);
+  unsigned long port = strtoul(spec, NULL, 10);
+  if (port == 0 || port > 65535UL) {
+    ARTS_ERROR("Invalid port specification '%s'", spec);
+  }
+  ports[0] = (unsigned int)port;
   *count = 1;
   return ports;
 }
@@ -1033,12 +1040,95 @@ static void config_setup_launcher(struct arts_config_s *config,
   }
 }
 
+static bool config_is_local_multinode(const struct arts_config_s *config) {
+  return config->shared_pu_pool && config->table_length > 1;
+}
+
+static bool config_protocol_requires_network_default(const char *protocol) {
+  return !protocol || protocol[0] == '\0' ||
+         strcmp(protocol, ARTS_PROTOCOL_AUTO) == 0 ||
+         strcmp(protocol, ARTS_PROTOCOL_RDMA) == 0 ||
+         strcmp(protocol, ARTS_PROTOCOL_ROCE) == 0;
+}
+
+static void config_apply_local_transport_policy(struct arts_config_s *config) {
+  if (!config_is_local_multinode(config) ||
+      !config_protocol_requires_network_default(config->protocol)) {
+    return;
+  }
+
+  const char *requested =
+      (config->protocol && config->protocol[0] != '\0') ? config->protocol
+                                                        : ARTS_PROTOCOL_AUTO;
+  ARTS_WARN("Local multi-node launcher requested protocol=%s; forcing "
+            "protocol=tcp. RDMA/RoCE validation requires a real multi-node "
+            "launcher such as slurm or ssh.",
+            requested);
+
+  if (config->protocol) {
+    arts_free(config->protocol);
+  }
+  config->protocol = arts_config_make_new_var(ARTS_PROTOCOL_TCP);
+}
+
 /*--- Computed Fields & Warnings --------------------------------------------*/
 
 static void config_set_pre_defaults(struct arts_config_s *config) {
   config->gpu_max_edts = (unsigned int)-1;
   config->gpu_max_memory = (uint64_t)-1;
 }
+
+#ifdef ARTS_USE_RDMA
+static bool config_uses_rdma_transport(const struct arts_config_s *config) {
+  if (!config->protocol || strcmp(config->protocol, ARTS_PROTOCOL_AUTO) == 0) {
+    return true;
+  }
+  return strcmp(config->protocol, ARTS_PROTOCOL_RDMA) == 0 ||
+         strcmp(config->protocol, ARTS_PROTOCOL_ROCE) == 0;
+}
+
+static bool config_env_enabled(const char *name) {
+  const char *value = getenv(name);
+  if (!value || value[0] == '\0') {
+    return false;
+  }
+  return strtoul(value, NULL, 10) != 0UL;
+}
+
+static void config_apply_rdma_port_policy(struct arts_config_s *config) {
+  if (config->table_length <= 1 || config->port_count <= 1 ||
+      !config_uses_rdma_transport(config) ||
+      config_env_enabled("ARTS_RDMA_FORCE_MULTI_PORT")) {
+    return;
+  }
+
+  ARTS_WARN("RDMA: forcing port_count from %u to 1 for %u ranks; set "
+            "ARTS_RDMA_FORCE_MULTI_PORT=1 to override.",
+            config->port_count, config->table_length);
+  config->port_count = 1;
+  config->default_ports_count = 1;
+}
+
+static void config_apply_rdma_thread_policy(struct arts_config_s *config) {
+  if (config->table_length <= 1 || !config_uses_rdma_transport(config) ||
+      config_env_enabled("ARTS_RDMA_FORCE_NET_THREADS")) {
+    return;
+  }
+
+  if (config->sender_thread_count > 1) {
+    ARTS_WARN("RDMA: forcing sender_threads from %u to 1 for %u ranks; set "
+              "ARTS_RDMA_FORCE_NET_THREADS=1 to override.",
+              config->sender_thread_count, config->table_length);
+    config->sender_thread_count = 1;
+  }
+  if (config->receiver_thread_count > 1) {
+    ARTS_WARN("RDMA: forcing receiver_threads from %u to 1 for %u ranks; set "
+              "ARTS_RDMA_FORCE_NET_THREADS=1 to override.",
+              config->receiver_thread_count, config->table_length);
+    config->receiver_thread_count = 1;
+  }
+}
+#endif
 
 static void config_compute_derived(struct arts_config_s *config) {
   /* Power-of-2 route table entries via bit shift. */
@@ -1081,20 +1171,30 @@ static void config_compute_derived(struct arts_config_s *config) {
       config->default_ports = (unsigned int *)arts_malloc(config->port_count *
                                                           sizeof(unsigned int));
       for (unsigned int i = 0; i < config->port_count; i++) {
-        config->default_ports[i] = 75563 + i;
+        config->default_ports[i] = ARTS_DEFAULT_PORT_BASE + i;
       }
     } else if (!config->port_count) {
       /* Neither specified → defaults */
       config->port_count = 1;
       config->default_ports_count = 1;
       config->default_ports = (unsigned int *)arts_malloc(sizeof(unsigned int));
-      config->default_ports[0] = 75563;
+      config->default_ports[0] = ARTS_DEFAULT_PORT_BASE;
     }
+
+#ifdef ARTS_USE_RDMA
+    config_apply_rdma_port_policy(config);
+#endif
 
     /* Validate: port_count and default_ports_count must agree. */
     if (config->default_ports_count != config->port_count) {
       ARTS_ERROR("default_ports specifies %u ports but port_count=%u",
                  config->default_ports_count, config->port_count);
+    }
+    for (unsigned int i = 0; i < config->default_ports_count; i++) {
+      if (config->default_ports[i] == 0 || config->default_ports[i] > 65535U) {
+        ARTS_ERROR("default_ports[%u]=%u is outside valid port range 1..65535",
+                   i, config->default_ports[i]);
+      }
     }
 
     /* Populate table[i].ports from default_ports where NULL. */
@@ -1120,6 +1220,9 @@ static void config_compute_derived(struct arts_config_s *config) {
         }
       }
     }
+#ifdef ARTS_USE_RDMA
+    config_apply_rdma_thread_policy(config);
+#endif
   }
 
   /* Compute total thread count.
@@ -1138,7 +1241,7 @@ static void config_compute_derived(struct arts_config_s *config) {
 static void config_print_warnings(struct arts_config_s *config) {
   const char *compiled_transport =
 #ifdef ARTS_USE_RDMA
-      ARTS_PROTOCOL_RDMA;
+      "tcp+rdma";
 #else
       ARTS_PROTOCOL_TCP;
 #endif
@@ -1155,11 +1258,8 @@ static void config_print_warnings(struct arts_config_s *config) {
                  config->protocol);
     }
 #ifdef ARTS_USE_RDMA
-    if (requested_tcp && uses_network_transport) {
-      ARTS_ERROR("arts.cfg requests protocol=%s but ARTS was built with "
-                 "ARTS_USE_RDMA",
-                 ARTS_PROTOCOL_TCP);
-    }
+    (void)requested_tcp;
+    (void)uses_network_transport;
 #else
     if (requested_rdma && uses_network_transport) {
       ARTS_ERROR("arts.cfg requests protocol=%s but ARTS was built without "
@@ -1253,6 +1353,7 @@ void arts_config_load(struct arts_config_s *config) {
 
   /* Phase 4: Launcher-specific setup (nodes, routing table, master). */
   config_setup_launcher(config, &vars);
+  config_apply_local_transport_policy(config);
 
   /* Phase 5: Computed fields, warnings. */
   config_compute_derived(config);

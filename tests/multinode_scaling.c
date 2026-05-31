@@ -61,6 +61,16 @@ static long busy_compute(long seed, int w) {
 
 // paramv[0] = N, paramv[1] = i, paramv[2] = W.
 // depv[0] = nxt[i] (EW), depv[1] = cur[i] (RO), depv[2] = cur[(i+1)%N] (RO).
+void init_cell(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+               arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  long *cell = (long *)depv[0].ptr;
+  if (cell) {
+    cell[0] = (long)paramv[0];
+  }
+}
+
 void cell_update(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -145,10 +155,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                              &(arts_hint_t){.route = owner});
     bufB[i] = arts_db_create(&pb, sizeof(long), ARTS_DB_DEFAULT,
                              &(arts_hint_t){.route = owner});
-    ((long *)pa)[0] = 1; // initial cur[i] = 1
-    ((long *)pb)[0] = 0;
-    arts_db_release(bufA[i]);
-    arts_db_release(bufB[i]);
+  }
+  for (int i = 0; i < N; i++) {
+    unsigned int owner = (unsigned int)i % nodes;
+    uint64_t one = 1;
+    arts_guid_t ia = arts_edt_create_with_epoch(
+        init_cell, 1, &one, 1, epoch, &(arts_hint_t){.route = owner});
+    arts_add_dependence(bufA[i], ia, 0, DB_MODE_EW);
+
+    uint64_t zero = 0;
+    arts_guid_t ib = arts_edt_create_with_epoch(
+        init_cell, 1, &zero, 1, epoch, &(arts_hint_t){.route = owner});
+    arts_add_dependence(bufB[i], ib, 0, DB_MODE_EW);
   }
 
   arts_guid_t *cur = bufA, *nxt = bufB;
@@ -167,8 +185,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         unsigned int owner = (unsigned int)i % nodes;
         level[i] = arts_db_create(&p, sizeof(long), ARTS_DB_DEFAULT,
                                   &(arts_hint_t){.route = owner});
-        ((long *)p)[0] = 0;
-        arts_db_release(level[i]);
       }
       for (int i = 0; i < N; i++) {
         unsigned int owner = (unsigned int)i % nodes;

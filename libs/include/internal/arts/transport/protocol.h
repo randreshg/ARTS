@@ -102,6 +102,12 @@ struct ARTS_PACKED arts_remote_guid_only_packet_s {
   arts_guid_t guid;
 };
 
+struct ARTS_PACKED arts_remote_db_update_packet_s {
+  struct arts_remote_packet_s header;
+  arts_guid_t guid;
+  arts_guid_t edt_guid;
+};
+
 struct ARTS_PACKED arts_remote_add_dependence_packet_s {
   struct arts_remote_packet_s header;
   arts_guid_t source;
@@ -109,6 +115,9 @@ struct ARTS_PACKED arts_remote_add_dependence_packet_s {
   uint32_t slot;
   arts_db_access_mode_t mode;
   uint32_t flags;
+  uint64_t order;
+  uint32_t ordered;
+  uint32_t reserved;
 };
 
 struct ARTS_PACKED arts_remote_edt_signal_packet_s {

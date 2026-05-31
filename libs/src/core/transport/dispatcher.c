@@ -50,6 +50,7 @@
 #include "arts/system/threads.h"
 #include "arts/transport/protocol.h"
 #include "arts/transport/socket.h"
+#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 
 #define EDT_MUG_SIZE 32
@@ -87,6 +88,99 @@ static uint64_t arts_remote_send_shutdown_packet(
   }
 
   return remaining;
+}
+
+struct arts_pending_remote_add_dependence_s {
+  struct arts_remote_add_dependence_packet_s packet;
+  struct arts_pending_remote_add_dependence_s *next;
+};
+
+static volatile unsigned int remote_add_dependence_order_lock = 0;
+static uint64_t *remote_add_dependence_expected;
+static struct arts_pending_remote_add_dependence_s
+    **remote_add_dependence_pending;
+
+static void arts_process_remote_add_dependence_packet(
+    const struct arts_remote_add_dependence_packet_s *pack) {
+  arts_add_dependence_ex(pack->source, pack->destination, pack->slot, pack->mode,
+                         pack->flags);
+}
+
+static void arts_init_remote_add_dependence_ordering(void) {
+  if (!remote_add_dependence_expected) {
+    remote_add_dependence_expected =
+        (uint64_t *)arts_calloc(arts_global_rank_count, sizeof(uint64_t));
+    remote_add_dependence_pending =
+        (struct arts_pending_remote_add_dependence_s **)arts_calloc(
+            arts_global_rank_count,
+            sizeof(struct arts_pending_remote_add_dependence_s *));
+  }
+}
+
+static void arts_queue_pending_remote_add_dependence(
+    const struct arts_remote_add_dependence_packet_s *pack,
+    unsigned int sender) {
+  struct arts_pending_remote_add_dependence_s *node =
+      (struct arts_pending_remote_add_dependence_s *)arts_malloc(sizeof(*node));
+  node->packet = *pack;
+  node->next = NULL;
+
+  struct arts_pending_remote_add_dependence_s **cur =
+      &remote_add_dependence_pending[sender];
+  while (*cur && (*cur)->packet.order < pack->order) {
+    cur = &(*cur)->next;
+  }
+  node->next = *cur;
+  *cur = node;
+}
+
+static bool arts_pop_next_pending_remote_add_dependence(
+    unsigned int sender, struct arts_remote_add_dependence_packet_s *out) {
+  struct arts_pending_remote_add_dependence_s *head =
+      remote_add_dependence_pending[sender];
+  if (!head || head->packet.order != remote_add_dependence_expected[sender]) {
+    return false;
+  }
+  remote_add_dependence_pending[sender] = head->next;
+  *out = head->packet;
+  arts_free(head);
+  return true;
+}
+
+static void arts_dispatch_ordered_remote_add_dependence(
+    const struct arts_remote_add_dependence_packet_s *pack) {
+  unsigned int sender = pack->header.rank;
+  if (!pack->ordered || sender >= arts_global_rank_count) {
+    arts_process_remote_add_dependence_packet(pack);
+    return;
+  }
+
+  arts_lock(&remote_add_dependence_order_lock);
+  arts_init_remote_add_dependence_ordering();
+
+  if (pack->order != remote_add_dependence_expected[sender]) {
+    ARTS_TRACE_RDMA("ordered add-dep queue sender=%u order=%lu expected=%lu "
+                    "src=%lu dst=%lu slot=%u mode=%u",
+                    sender, pack->order, remote_add_dependence_expected[sender],
+                    pack->source, pack->destination, pack->slot, pack->mode);
+    arts_queue_pending_remote_add_dependence(pack, sender);
+    arts_unlock(&remote_add_dependence_order_lock);
+    return;
+  }
+
+  struct arts_remote_add_dependence_packet_s current = *pack;
+  while (true) {
+    ARTS_TRACE_RDMA("ordered add-dep process sender=%u order=%lu src=%lu "
+                    "dst=%lu slot=%u mode=%u",
+                    sender, current.order, current.source, current.destination,
+                    current.slot, current.mode);
+    arts_process_remote_add_dependence_packet(&current);
+    remote_add_dependence_expected[sender]++;
+    if (!arts_pop_next_pending_remote_add_dependence(sender, &current)) {
+      break;
+    }
+  }
+  arts_unlock(&remote_add_dependence_order_lock);
 }
 
 void arts_remote_shutdown() {
@@ -184,8 +278,7 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
     ARTS_DEBUG("Dependence Received");
     struct arts_remote_add_dependence_packet_s *pack =
         (struct arts_remote_add_dependence_packet_s *)(packet);
-    arts_add_dependence_ex(pack->source, pack->destination, pack->slot,
-                           pack->mode, pack->flags);
+    arts_dispatch_ordered_remote_add_dependence(pack);
     break;
   }
   case ARTS_REMOTE_INVALIDATE_DB_MSG: {

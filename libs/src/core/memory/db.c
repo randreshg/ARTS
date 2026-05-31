@@ -734,16 +734,9 @@ void acquire_dbs(struct arts_edt_s *edt) {
         } else if (db_temp && owner == arts_global_rank_id) {
           // Owner path: CDAG frontier for DEFAULT/GPU/LC
           bool on_head = false;
-          /*
-           * Single-node: an owner-local RO reader pre-registered in CDAG order
-           * (arts_register_local_ro_reader) joins its reserved generation
-           * in-place here, instead of racing onto whatever generation happens to
-           * be head when this EDT runs. Delivered DB_MODE_RO (db+1), never a
-           * copy. Falls through to the ordinary path when not pre-registered.
-           */
           bool duplicate_added = false;
           bool claimed_prereg = false;
-          if (arts_global_rank_count == 1 && access_mode == DB_MODE_RO) {
+          if (access_mode == DB_MODE_RO) {
             claimed_prereg = arts_claim_local_ro_reader(
                 db_temp, edt, edt->current_edt, i, access_mode, &on_head);
           }
@@ -803,21 +796,15 @@ void acquire_dbs(struct arts_edt_s *edt) {
         } else if (db_temp) {
           // Non-owner path: cached copy management
           bool local_valid = (valid_rank == arts_global_rank_id);
-          /*
-           * A cross-node RO read of an owner-managed CDAG (DEFAULT) DB must NOT
-           * be served from a stale cached copy: across CDAG generations
-           * (timesteps) the owner's value changes, but the cache does not. Force
-           * a full request to the owner (carrying edt_guid) so the owner serves
-           * a fresh per-generation snapshot at the correct CDAG point.
-           */
-          bool ro_frontier_db =
-              (access_mode == DB_MODE_RO &&
-               db_temp->db_type == ARTS_DB_DEFAULT && !has_slice);
-          if (ro_frontier_db) {
-            ARTS_TRACE_RDMA("db_acquire ro-frontier-full-request rank=%u "
-                            "edt=%lu slot=%u db=%lu owner=%u",
+          bool cdag_full_request =
+              !has_slice && arts_db_subtype_has_frontier(db_temp->db_type) &&
+              (access_mode == DB_MODE_RO || arts_is_write_mode(access_mode));
+          if (cdag_full_request) {
+            ARTS_TRACE_RDMA("db_acquire cdag-full-request rank=%u edt=%lu "
+                            "slot=%u db=%lu owner=%u mode=%u local_valid=%u",
                             arts_global_rank_id, edt->current_edt, i,
-                            depv[i].guid, owner);
+                            depv[i].guid, owner, access_mode,
+                            local_valid ? 1U : 0U);
             arts_remote_db_full_request(depv[i].guid, owner, edt->current_edt, i,
                                         access_mode);
           } else if (local_valid) {
@@ -948,7 +935,8 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
  * the owner node.  For READ-mode: returns the route table entry.
  * For LC DBs (GPU builds): releases the reader lock.
  */
-void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
+void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu,
+                 arts_guid_t writer_edt_guid) {
   for (int i = 0; i < depc; i++) {
     arts_db_access_mode_t access_mode = depv[i].mode;
     if (access_mode == DB_MODE_PTR) {
@@ -988,7 +976,7 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
                        depv[i].guid);
           }
         } else {
-          arts_remote_update_db(depv[i].guid, true);
+          arts_remote_update_db(depv[i].guid, writer_edt_guid, true);
           INCREMENT_NUM_OWNER_UPDATE_PERFORMED_BY(1);
         }
       } else {
@@ -1100,7 +1088,10 @@ void arts_db_release(arts_guid_t guid) {
         } else if (arts_guid_get_rank(guid) == arts_global_rank_id) {
           arts_progress_frontier(db, arts_global_rank_id);
         } else {
-          arts_remote_update_db(guid, true);
+          arts_remote_update_db(guid,
+                                current_edt ? current_edt->current_edt
+                                            : NULL_GUID,
+                                true);
         }
       }
       progressed_write = true;
@@ -1421,6 +1412,9 @@ void arts_wait_release_dbs(void) {
       if (db && db->db_list) {
         arts_progress_frontier(db, arts_global_rank_id);
       }
+      if (db) {
+        arts_route_table_return_db(*guid, false);
+      }
     }
   }
 
@@ -1480,6 +1474,9 @@ void arts_wait_reacquire_dbs(void) {
           arts_atomic_fetch_or(&db_list->head->lock, WRITE_SET);
         }
         arts_writer_unlock(&db_list->writer);
+      }
+      if (db) {
+        arts_route_table_return_db(*guid, false);
       }
     }
   }

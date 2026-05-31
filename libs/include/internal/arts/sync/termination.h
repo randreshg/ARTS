@@ -77,6 +77,7 @@ void arts_shutdown_epoch_inc_active();
 void arts_shutdown_epoch_inc_queue();
 void arts_shutdown_epoch_inc_finished();
 bool arts_shutdown_epoch_create();
+void arts_shutdown_epoch_release_startup_guard();
 
 #ifdef __cplusplus
 }

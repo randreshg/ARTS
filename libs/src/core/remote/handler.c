@@ -82,15 +82,36 @@ static void send_remote_add_dependence_packet(unsigned int message_type,
                                               arts_guid_t destination,
                                               uint32_t slot, unsigned int rank,
                                               arts_db_access_mode_t mode,
-                                              uint32_t flags) {
+                                              uint32_t flags, bool ordered,
+                                              uint64_t order) {
   struct arts_remote_add_dependence_packet_s packet;
   packet.source = source;
   packet.destination = destination;
   packet.slot = slot;
   packet.mode = mode;
   packet.flags = flags;
+  packet.order = order;
+  packet.ordered = ordered ? 1U : 0U;
+  packet.reserved = 0U;
   arts_fill_packet_header(&packet.header, sizeof(packet), message_type);
   arts_remote_send_request_async((int)rank, (char *)&packet, sizeof(packet));
+}
+
+static uint64_t arts_next_ordered_add_dependence(unsigned int rank) {
+  static volatile uint64_t *orders = NULL;
+  static volatile unsigned int init_lock = 0;
+  if (!orders) {
+    arts_lock(&init_lock);
+    if (!orders) {
+      orders = (volatile uint64_t *)arts_calloc(arts_global_rank_count,
+                                                sizeof(uint64_t));
+    }
+    arts_unlock(&init_lock);
+  }
+  if (!orders || rank >= arts_global_rank_count) {
+    return 0;
+  }
+  return arts_atomic_fetch_add_u64(&orders[rank], 1U);
 }
 
 void arts_remote_add_dependence(arts_guid_t source, arts_guid_t destination,
@@ -98,7 +119,20 @@ void arts_remote_add_dependence(arts_guid_t source, arts_guid_t destination,
                                 arts_db_access_mode_t mode, uint32_t flags) {
   ARTS_DEBUG("Remote Add dependence sent %d", rank);
   send_remote_add_dependence_packet(ARTS_REMOTE_ADD_DEPENDENCE_MSG, source,
-                                    destination, slot, rank, mode, flags);
+                                    destination, slot, rank, mode, flags, false,
+                                    0);
+}
+
+void arts_remote_add_dependence_ordered(arts_guid_t source,
+                                        arts_guid_t destination, uint32_t slot,
+                                        unsigned int rank,
+                                        arts_db_access_mode_t mode,
+                                        uint32_t flags) {
+  uint64_t order = arts_next_ordered_add_dependence(rank);
+  ARTS_DEBUG("Ordered remote Add dependence sent %d order=%lu", rank, order);
+  send_remote_add_dependence_packet(ARTS_REMOTE_ADD_DEPENDENCE_MSG, source,
+                                    destination, slot, rank, mode, flags, true,
+                                    order);
 }
 
 void arts_remote_add_dependence_with_hints(arts_guid_t source,
@@ -108,7 +142,8 @@ void arts_remote_add_dependence_with_hints(arts_guid_t source,
                                            uint32_t flags) {
   ARTS_DEBUG("Remote Add dependence (mode=%u) sent %d", mode, rank);
   send_remote_add_dependence_packet(ARTS_REMOTE_ADD_DEPENDENCE_MSG, source,
-                                    destination, slot, rank, mode, flags);
+                                    destination, slot, rank, mode, flags, false,
+                                    0);
 }
 
 void arts_remote_set_dep_mode(arts_guid_t edt_guid, uint32_t slot,
@@ -224,16 +259,18 @@ void arts_remote_handle_db_destroy(void *ptr) {
   arts_db_destroy_safe(packet->guid, false);
 }
 
-void arts_remote_update_db(arts_guid_t guid, bool send_db) {
+void arts_remote_update_db(arts_guid_t guid, arts_guid_t edt_guid,
+                           bool send_db) {
   unsigned int rank = arts_guid_get_rank(guid);
   if (rank != arts_global_rank_id) {
-    struct arts_remote_guid_only_packet_s packet;
+    struct arts_remote_db_update_packet_s packet;
     packet.guid = guid;
+    packet.edt_guid = edt_guid;
     struct arts_db_s *db = NULL;
     if (send_db && (db = (struct arts_db_s *)arts_route_table_lookup_db(
                         guid, NULL, false))) {
       uint64_t size =
-          sizeof(struct arts_remote_guid_only_packet_s) + db->header.size;
+          sizeof(struct arts_remote_db_update_packet_s) + db->header.size;
       arts_fill_packet_header(&packet.header, size, ARTS_REMOTE_DB_UPDATE_MSG);
       arts_remote_send_db_snapshot((int)rank, (char *)&packet, sizeof(packet),
                                    db);
@@ -244,7 +281,7 @@ void arts_remote_update_db(arts_guid_t guid, bool send_db) {
                   guid, arts_global_rank_id);
       }
       arts_fill_packet_header(&packet.header,
-                              sizeof(struct arts_remote_guid_only_packet_s),
+                              sizeof(struct arts_remote_db_update_packet_s),
                               ARTS_REMOTE_DB_UPDATE_MSG);
       arts_remote_send_request_async((int)rank, (char *)&packet,
                                      sizeof(packet));
@@ -253,24 +290,50 @@ void arts_remote_update_db(arts_guid_t guid, bool send_db) {
 }
 
 void arts_remote_handle_update_db(void *ptr) {
-  struct arts_remote_guid_only_packet_s *packet =
-      (struct arts_remote_guid_only_packet_s *)ptr;
+  struct arts_remote_db_update_packet_s *packet =
+      (struct arts_remote_db_update_packet_s *)ptr;
   void *packet_payload = (char *)(packet + 1) + sizeof(struct arts_db_s);
   unsigned int rank = arts_guid_get_rank(packet->guid);
   if (rank == arts_global_rank_id) {
     struct arts_db_s **data_ptr;
     bool write =
-        packet->header.size > sizeof(struct arts_remote_guid_only_packet_s);
+        packet->header.size > sizeof(struct arts_remote_db_update_packet_s);
     item_state_t state = arts_route_table_lookup_item_with_state(
         packet->guid, (void ***)&data_ptr, ALLOCATED_KEY, write);
     struct arts_db_s *db = (data_ptr) ? *data_ptr : NULL;
     if (db) {
       if (write) {
         uint64_t data_size = db->header.size - sizeof(struct arts_db_s);
-        void *dest = (void *)(db + 1);
-        memcpy(dest, packet_payload, data_size);
-        arts_route_table_set_rank(packet->guid, (int)arts_global_rank_id);
-        arts_progress_frontier(db, arts_global_rank_id);
+        uint64_t expected_size =
+            sizeof(struct arts_remote_db_update_packet_s) + db->header.size;
+        if (packet->header.size != expected_size) {
+          ARTS_ERROR("Remote DB update packet size mismatch DB[Guid:%lu] "
+                     "expected=%lu received=%lu",
+                     packet->guid, expected_size, packet->header.size);
+        }
+        uint64_t trace_value = 0;
+        if (data_size >= sizeof(trace_value)) {
+          memcpy(&trace_value, packet_payload, sizeof(trace_value));
+        }
+        ARTS_TRACE_RDMA("remote db_update apply rank=%u from=%u db=%lu "
+                        "bytes=%lu value=%lu",
+                        arts_global_rank_id, packet->header.rank, packet->guid,
+                        data_size, trace_value);
+        if (db->db_list && db->db_list != (void *)1 &&
+            packet->edt_guid != NULL_GUID) {
+          if (!arts_apply_remote_writer_update(db, packet->header.rank,
+                                               packet->edt_guid, packet_payload,
+                                               data_size)) {
+            ARTS_ERROR("Remote DB update for DB[Guid:%lu] writer EDT[Guid:%lu] "
+                       "from rank %u has no matching CDAG frontier",
+                       packet->guid, packet->edt_guid, packet->header.rank);
+          }
+        } else {
+          void *dest = (void *)(db + 1);
+          memcpy(dest, packet_payload, data_size);
+          arts_route_table_set_rank(packet->guid, (int)arts_global_rank_id);
+          arts_progress_frontier(db, arts_global_rank_id);
+        }
       } else {
         arts_progress_frontier(db, packet->header.rank);
       }
@@ -763,32 +826,33 @@ void arts_remote_db_full_send_check(int rank, struct arts_db_s *db,
     }
   } else if (mode == DB_MODE_RO && db->db_list && db->db_list != (void *)1) {
     /*
-     * Remote RO reader of an owner-managed CDAG DB. Register it lazily on the
-     * frontier in acquire order, carrying its edt_guid + slot, and serve it a
-     * TARGETED per-generation snapshot (arts_remote_signal_edt_with_ptr): if it
-     * lands on the head reader generation the snapshot is delivered now; if it
-     * follows a pending writer it is delivered when that writer completes and
-     * the reader generation is promoted. Snapshot delivery copies the
-     * post-write value straight into the reader EDT's slot, so repeated reads
-     * of the same GUID across CDAG generations (timesteps) each observe the
-     * correct value and never the route-table cache.
+     * Remote RO reader of an owner-managed CDAG DB. The preferred path is
+     * eager pre-registration at arts_add_dependence time, which preserves
+     * program order before the reader EDT runs. That only happens when the
+     * dependence is issued on the DB owner. If a non-owner rank records a
+     * dependence on a remote-owned DB, the owner's first chance to see the
+     * reader is this full request. In that case, lazily register the reader on
+     * the owner frontier and serve a targeted snapshot immediately when it is
+     * already at the head; otherwise promotion will serve it later.
      */
-    /*
-     * Every cross-node RO reader of an owner-managed CDAG DB is eagerly
-     * pre-registered at arts_add_dependence time and served the targeted
-     * snapshot at promotion. The reader's own full request is therefore only a
-     * trigger and must be a strict NO-OP here: registering again (e.g. if this
-     * request arrives after the reader's generation was already served and
-     * retired) would create a spurious extra reader generation and double- or
-     * stale-deliver into the EDT slot.
-     */
-    ARTS_TRACE_RDMA("remote db_full_send_check ro-noop rank=%u to=%d "
+    bool prereg = arts_remote_ro_reader_preregistered(
+        db, (unsigned int)rank, edt_guid);
+    ARTS_TRACE_RDMA("remote db_full_send_check ro-request rank=%u to=%d "
                     "edt=%lu slot=%u db=%lu prereg=%u",
                     arts_global_rank_id, rank, edt_guid, slot, db->guid,
-                    arts_remote_ro_reader_preregistered(db, (unsigned int)rank,
-                                                        edt_guid)
-                        ? 1U
-                        : 0U);
+                    prereg ? 1U : 0U);
+    if (!prereg) {
+      bool registered =
+          arts_register_remote_ro_reader(db, (unsigned int)rank, edt_guid,
+                                         slot);
+      ARTS_TRACE_RDMA("remote db_full_send_check ro-lazy-register rank=%u "
+                      "to=%d edt=%lu slot=%u db=%lu registered=%u",
+                      arts_global_rank_id, rank, edt_guid, slot, db->guid,
+                      registered ? 1U : 0U);
+      if (!registered) {
+        arts_remote_db_full_send_now(rank, db, edt_guid, slot, mode);
+      }
+    }
   } else {
     bool on_head = false;
     if (arts_add_db_duplicate(db, rank, NULL, edt_guid, slot, mode, &on_head)) {
@@ -993,6 +1057,10 @@ void arts_remote_signal_edt_with_ptr(arts_guid_t edt_guid, arts_guid_t db_guid,
                                      void *ptr, unsigned int size,
                                      unsigned int slot) {
   unsigned int rank = arts_guid_get_rank(edt_guid);
+  if (rank == arts_global_rank_id) {
+    arts_signal_edt_ptr_with_guid(edt_guid, slot, db_guid, ptr, size);
+    return;
+  }
   ARTS_DEBUG("SEND NOW: %u -> %u", arts_global_rank_id, rank);
   uint64_t total_size =
       sizeof(struct arts_remote_signal_edt_with_ptr_packet_s) + size;

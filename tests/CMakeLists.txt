@@ -46,6 +46,9 @@ set(TEST_PROGRAMS
     cdag
     cdag_ew_chain
     cdag_ew_ordering
+    cdag_remote_owner_ordering
+    cdag_remote_third_party_ordering
+    cdag_wave_scaling
     out_of_order_list
     pin_db
     get_from_db
@@ -56,6 +59,7 @@ set(TEST_PROGRAMS
     termination_detection
     rec_epoch
     epoch_pool
+    epoch_wait_nested_current
     epoch_basic
     epoch_deferred_start
     epoch_finish_edt
@@ -110,6 +114,7 @@ set(TEST_PROGRAMS
     multinode_stencil_halo
     multinode_remote_writer
     multinode_scaling
+    multinode_scaler_fanin
     cdag_multi_reader
     # --- Graph tests ---
     csr
@@ -269,6 +274,36 @@ function(register_multinode_test test_name)
     )
 endfunction()
 
+set(ARTS_LOCAL_RDMA_GUARD_CONFIG
+    "${CMAKE_CURRENT_BINARY_DIR}/arts_multinode_local_rdma_guard.cfg")
+file(READ "${CMAKE_SOURCE_DIR}/sample_configs/arts_multinode.cfg"
+    ARTS_LOCAL_RDMA_GUARD_CONFIG_CONTENTS)
+string(REPLACE "protocol=tcp" "protocol=rdma"
+    ARTS_LOCAL_RDMA_GUARD_CONFIG_CONTENTS
+    "${ARTS_LOCAL_RDMA_GUARD_CONFIG_CONTENTS}")
+file(WRITE "${ARTS_LOCAL_RDMA_GUARD_CONFIG}"
+    "${ARTS_LOCAL_RDMA_GUARD_CONFIG_CONTENTS}")
+
+function(register_local_rdma_guard_test test_name)
+    cmake_parse_arguments(ARG "" "TIMEOUT" "ARGS" ${ARGN})
+    if(NOT ARG_TIMEOUT)
+        set(ARG_TIMEOUT 30)
+    endif()
+    add_test(
+        NAME ${test_name}
+        COMMAND multinode_scaler_fanin ${ARG_ARGS}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(${test_name} PROPERTIES
+        LABELS "multinode"
+        TIMEOUT ${ARG_TIMEOUT}
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${ARTS_LOCAL_RDMA_GUARD_CONFIG}"
+        PASS_REGULAR_EXPRESSION "forcing protocol=tcp"
+        FAIL_REGULAR_EXPRESSION "\\[rdma-rsocket\\]|Cannot send|rconnect/hello did not complete|lazy accept failed|RDMA-WARN|target .*:0"
+    )
+endfunction()
+
 function(register_gpu_test test_name)
     cmake_parse_arguments(ARG "" "TIMEOUT" "ARGS" ${ARGN})
     if(NOT ARG_TIMEOUT)
@@ -330,6 +365,7 @@ register_single_node_test(epoch_basic)
 register_single_node_test(epoch_deferred_start)
 register_single_node_test(epoch_finish_edt)
 register_single_node_test(epoch_pool ARGS 3)
+register_single_node_test(epoch_wait_nested_current)
 register_single_node_test(epoch_shad_adapter ARGS 3)
 register_single_node_test(rec_epoch ARGS 3)
 register_single_node_test(termination_detection ARGS 3)
@@ -365,6 +401,7 @@ register_single_node_test(shad_lock)
 register_single_node_test(cdag ARGS 32 0 0 0)
 register_single_node_test(cdag_ew_chain ARGS 4)
 register_single_node_test(cdag_ew_ordering)
+register_single_node_test(cdag_wave_scaling ARGS 512 12 0 TIMEOUT 30)
 
 # Graph tests
 register_single_node_test(csr)
@@ -384,6 +421,11 @@ register_multinode_test(db_put_get_at)
 register_multinode_test(db_remote)
 register_multinode_test(remote_db_event)
 register_multinode_test(multinode_cdag)
+register_multinode_test(cdag_remote_owner_ordering ARGS 24 TIMEOUT 30)
+register_multinode_test(cdag_remote_third_party_ordering ARGS 32 TIMEOUT 30)
+register_multinode_test(multinode_scaler_fanin ARGS 64 8 2 1 TIMEOUT 30)
+register_local_rdma_guard_test(multinode_scaler_fanin_local_rdma_forces_tcp
+    ARGS 64 8 2 1 TIMEOUT 30)
 register_multinode_test(multinode_event_types)
 register_multinode_test(multinode_array_db)
 register_multinode_test(multinode_db_advanced)

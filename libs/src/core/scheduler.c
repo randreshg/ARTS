@@ -628,6 +628,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   while (arts_node_info.ready_to_execute) { ARTS_SPIN_PAUSE(); }
   while (arts_node_info.ready_to_network) { ARTS_SPIN_PAUSE(); }
 
+  arts_remote_refresh_startup_connect_grace();
   if (arts_global_rank_count > 1) {
     arts_remote_eager_connect_all();
   }
@@ -642,6 +643,8 @@ void arts_thread_zero_node_start(int argc, char **argv) {
     arts_hint_t main_hint = {0, 0};
     arts_edt_create(main_edt, 2, main_args, 0, &main_hint);
   }
+
+  arts_shutdown_epoch_release_startup_guard();
 }
 
 void arts_runtime_private_init(struct thread_mask_s *thread,
@@ -957,7 +960,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
    * before the epoch-done message. TCP FIFO ordering then guarantees
    * the DB data arrives at the owner before the epoch-done signal,
    * preventing stale reads in the next epoch. */
-  release_dbs(depc, depv, false);
+  release_dbs(depc, depv, false, edt->current_edt);
   arts_release_created_dbs();
 
   arts_unset_thread_local_edt_info();

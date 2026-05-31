@@ -105,6 +105,7 @@ void arts_restore_thread_local(thread_local_t *tl);
 
 bool arts_set_current_epoch_guid(arts_guid_t epoch_guid);
 arts_guid_t *arts_check_epoch_is_root(arts_guid_t to_check);
+void arts_refresh_current_edt_epoch_guid(void);
 void arts_increment_finished_epoch_list();
 
 void *arts_get_depv(void *edt_ptr);

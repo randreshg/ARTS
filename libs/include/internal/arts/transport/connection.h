@@ -44,6 +44,12 @@ extern "C" {
 #endif
 
 #ifdef ARTS_USE_RDMA
+#include <fcntl.h>
+#include <stdbool.h>
+#include <sys/poll.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #if defined(__has_include)
 #if __has_include(<rdma/rsocket.h>)
 #include <rdma/rsocket.h>
@@ -55,21 +61,54 @@ extern "C" {
 #else
 #include <rdma/rsocket.h>
 #endif
-#define RRECV rrecv
-#define RSEND rsend
-#define RLISTEN rlisten
-#define RPOLL rpoll
-#define RSELECT rselect
-#define RBIND rbind
-#define RCLOSE rclose
-#define RACCEPT raccept
-#define RCONNECT rconnect
-#define RGETSOCKOPT rgetsockopt
-#define RSETSOCKOPT rsetsockopt
-#define RSOCKET rsocket
-#define RSHUTDOWN rshutdown
-#define RF_GETFL(fd) rfcntl((fd), F_GETFL)
-#define RF_SETFL(fd, flags) rfcntl((fd), F_SETFL, (flags))
+bool arts_transport_runtime_uses_rdma(void);
+#define RRECV(fd, buf, len, flags)                                             \
+  (arts_transport_runtime_uses_rdma() ? rrecv((fd), (buf), (len), (flags))     \
+                                      : recv((fd), (buf), (len), (flags)))
+#define RSEND(fd, buf, len, flags)                                             \
+  (arts_transport_runtime_uses_rdma() ? rsend((fd), (buf), (len), (flags))     \
+                                      : send((fd), (buf), (len), (flags)))
+#define RLISTEN(fd, backlog)                                                   \
+  (arts_transport_runtime_uses_rdma() ? rlisten((fd), (backlog))               \
+                                      : listen((fd), (backlog)))
+#define RPOLL(fds, nfds, timeout)                                              \
+  (arts_transport_runtime_uses_rdma() ? rpoll((fds), (nfds), (timeout))        \
+                                      : poll((fds), (nfds), (timeout)))
+#define RSELECT(nfds, readfds, writefds, exceptfds, timeout)                   \
+  (arts_transport_runtime_uses_rdma()                                          \
+       ? rselect((nfds), (readfds), (writefds), (exceptfds), (timeout))        \
+       : select((nfds), (readfds), (writefds), (exceptfds), (timeout)))
+#define RBIND(fd, addr, len)                                                   \
+  (arts_transport_runtime_uses_rdma() ? rbind((fd), (addr), (len))             \
+                                      : bind((fd), (addr), (len)))
+#define RCLOSE(fd)                                                             \
+  (arts_transport_runtime_uses_rdma() ? rclose((fd)) : close((fd)))
+#define RACCEPT(fd, addr, len)                                                 \
+  (arts_transport_runtime_uses_rdma() ? raccept((fd), (addr), (len))           \
+                                      : accept((fd), (addr), (len)))
+#define RCONNECT(fd, addr, len)                                                \
+  (arts_transport_runtime_uses_rdma() ? rconnect((fd), (addr), (len))          \
+                                      : connect((fd), (addr), (len)))
+#define RGETSOCKOPT(fd, level, optname, optval, optlen)                        \
+  (arts_transport_runtime_uses_rdma()                                          \
+       ? rgetsockopt((fd), (level), (optname), (optval), (optlen))             \
+       : getsockopt((fd), (level), (optname), (optval), (optlen)))
+#define RSETSOCKOPT(fd, level, optname, optval, optlen)                        \
+  (arts_transport_runtime_uses_rdma()                                          \
+       ? rsetsockopt((fd), (level), (optname), (optval), (optlen))             \
+       : setsockopt((fd), (level), (optname), (optval), (optlen)))
+#define RSOCKET(domain, type, protocol)                                        \
+  (arts_transport_runtime_uses_rdma() ? rsocket((domain), (type), (protocol))  \
+                                      : socket((domain), (type), (protocol)))
+#define RSHUTDOWN(fd, how)                                                     \
+  (arts_transport_runtime_uses_rdma() ? rshutdown((fd), (how))                 \
+                                      : shutdown((fd), (how)))
+#define RF_GETFL(fd)                                                           \
+  (arts_transport_runtime_uses_rdma() ? rfcntl((fd), F_GETFL)                 \
+                                      : fcntl((fd), F_GETFL))
+#define RF_SETFL(fd, flags)                                                    \
+  (arts_transport_runtime_uses_rdma() ? rfcntl((fd), F_SETFL, (flags))         \
+                                      : fcntl((fd), F_SETFL, (flags)))
 #else
 #include <sys/poll.h>
 #define RRECV recv

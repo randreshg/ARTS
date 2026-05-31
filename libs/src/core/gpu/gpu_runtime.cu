@@ -254,7 +254,7 @@ void arts_gpu_host_wrap_up(void *edt_packet, arts_guid_t to_signal,
   const uint64_t *paramv = (uint64_t *)(edt + 1);
   arts_edt_dep_t *depv = (arts_edt_dep_t *)(paramv + paramc);
 
-  release_dbs(depc, depv, true);
+  release_dbs(depc, depv, true, edt->wrapperEdt.current_edt);
   arts_release_created_dbs();
 
   if (edt->lib) {

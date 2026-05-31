@@ -58,6 +58,7 @@ ARTS_THREAD_LOCAL arts_epoch_pool_t *epoch_thread_pool;
 
 static void increment_finished_epoch_impl(arts_guid_t epoch_guid,
                                            arts_epoch_t *epoch);
+static volatile unsigned int shutdown_startup_guard_released = 1U;
 
 /*
  * Shutdown-epoch helpers.
@@ -97,6 +98,8 @@ void arts_shutdown_epoch_inc_finished() {
 
 void arts_shutdown_epoch_fire(arts_guid_t guid) {
   if (arts_node_info.auto_shutdown_guid == guid) {
+    arts_node_info.auto_shutdown_epoch = NULL;
+    arts_node_info.auto_shutdown_guid = NULL_GUID;
     ARTS_INFO(
         "arts_shutdown_epoch_fire: Epoch[Guid:%lu] matched shutdown epoch — "
         "calling arts_shutdown()",
@@ -300,16 +303,31 @@ bool arts_shutdown_epoch_create() {
     arts_epoch_t *epoch =
         create_epoch(&arts_node_info.auto_shutdown_guid, NULL_GUID, 0);
     arts_node_info.auto_shutdown_epoch = epoch;
+    shutdown_startup_guard_released = 0U;
     unsigned int total_workers = arts_get_total_workers();
+    unsigned int startup_seed = total_workers + 1U;
     arts_atomic_add_u64(&epoch->epoch_counts,
-                        (uint64_t)total_workers << EPOCH_ACTIVE_SHIFT);
-    arts_atomic_add_u64(&epoch->queued, total_workers);
+                        (uint64_t)startup_seed << EPOCH_ACTIVE_SHIFT);
+    arts_atomic_add_u64(&epoch->queued, startup_seed);
     ARTS_INFO(
-        "arts_shutdown_epoch_create: Epoch[Guid:%lu] created with %u workers",
+        "arts_shutdown_epoch_create: Epoch[Guid:%lu] created with %u workers "
+        "and startup guard",
         arts_node_info.auto_shutdown_guid, total_workers);
     return true;
   }
   return false;
+}
+
+void arts_shutdown_epoch_release_startup_guard() {
+  arts_epoch_t *ep = arts_node_info.auto_shutdown_epoch;
+  if (!ep) {
+    return;
+  }
+
+  if (__sync_bool_compare_and_swap(&shutdown_startup_guard_released, 0U, 1U)) {
+    ARTS_DEBUG("shutdown_epoch: release startup guard [Epoch:%lu]", ep->guid);
+    increment_finished_epoch_impl(ep->guid, ep);
+  }
 }
 
 void arts_add_edt_to_epoch(arts_guid_t edt_guid, arts_guid_t epoch_guid) {
@@ -637,7 +655,7 @@ void clean_epoch_pool() {
   arts_epoch_pool_t *pool = epoch_thread_pool;
 
   while (pool) {
-    if (pool->index == epoch_thread_pool->size && !pool->outstanding) {
+    if (pool->index == pool->size && !pool->outstanding) {
       arts_epoch_pool_t *to_free = pool;
 
       pool = pool->next;
@@ -781,6 +799,7 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
     thread_local_t tl;
     arts_save_thread_local(&tl);
     TIME_YIELD_START();
+    bool completed = false;
     if (epoch_pool_guid) {
       /*
        * Pool epoch: memory stays alive after delete_epoch (owned by pool).
@@ -788,6 +807,7 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
        */
       while (arts_thread_info.alive) {
         if (__atomic_load_n(&epoch->completed, __ATOMIC_ACQUIRE)) {
+          completed = true;
           break;
         }
         arts_node_info.scheduler();
@@ -796,17 +816,23 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
       /* Non-pool epoch: memory freed by delete_epoch, use route table. */
       while (arts_thread_info.alive) {
         if (!arts_route_table_lookup_item(local)) {
+          completed = true;
           break;
         }
         arts_node_info.scheduler();
       }
     }
-    // Continue running until the scheduler reports no more ready work
-    while (arts_node_info.scheduler()) {
-      ;
-    }
     TIME_YIELD_STOP();
     arts_restore_thread_local(&tl);
+    arts_refresh_current_edt_epoch_guid();
+
+    if (!completed) {
+      ARTS_WARN("arts_wait_on_handle: Epoch [Guid:%lu] did not complete before "
+                "runtime shutdown",
+                local);
+      TIME_EDT_EXEC_START();
+      return false;
+    }
 
     // Re-acquire all DB frontier locks after the epoch completes.
     arts_wait_reacquire_dbs();

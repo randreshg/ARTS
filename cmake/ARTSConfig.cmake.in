@@ -48,6 +48,13 @@ include(CMakeFindDependencyMacro)
 #       as a consumer dependency
 find_dependency(Threads REQUIRED)
 
+if(@ARTS_BUILD_STATIC@ AND @ARTS_USE_RDMA@)
+    find_dependency(PkgConfig REQUIRED)
+    pkg_check_modules(RDMACM REQUIRED IMPORTED_TARGET librdmacm)
+    pkg_check_modules(UCX REQUIRED IMPORTED_TARGET ucx)
+    pkg_check_modules(LIBFABRIC REQUIRED IMPORTED_TARGET libfabric)
+endif()
+
 # Import ARTS targets
 include("${CMAKE_CURRENT_LIST_DIR}/ARTSTargets.cmake")
 
