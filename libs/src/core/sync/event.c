@@ -794,16 +794,11 @@ void arts_add_dependence_ex(arts_guid_t source, arts_guid_t destination,
                  arts_guid_get_rank(destination) == arts_global_rank_id) {
         struct arts_db_s *owner_db =
             (struct arts_db_s *)arts_route_table_lookup_db(source, NULL, false);
-        bool prereg = false;
         if (owner_db) {
           if (owner_db->db_type != ARTS_DB_LOCAL) {
-            prereg = arts_register_remote_ro_reader(
-                owner_db, arts_global_rank_id, destination, slot);
+            arts_register_local_ro_reader(owner_db, destination, slot);
           }
           arts_route_table_return_db(source, false);
-        }
-        if (prereg) {
-          return;
         }
       }
       arts_signal_edt_with_flags(destination, slot, source, access_mode,

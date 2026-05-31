@@ -205,6 +205,33 @@ static void arts_remote_send_db_snapshot(int rank, char *packet,
       rank, packet, packet_size, (char *)snapshot, 0, db_size, arts_free);
 }
 
+static uint64_t
+arts_remote_db_snapshot_bytes(const struct arts_remote_packet_s *header,
+                              uint64_t fixed_size, const char *kind) {
+  if (header->size < fixed_size + sizeof(struct arts_db_s)) {
+    ARTS_ERROR("Malformed %s packet from rank %u: size=%lu fixed=%lu",
+               kind, header->rank, header->size, fixed_size);
+  }
+  return header->size - fixed_size;
+}
+
+static void arts_remote_validate_db_snapshot(
+    const char *kind, const struct arts_remote_packet_s *header,
+    uint64_t received_bytes, const struct arts_db_s *pdb) {
+  if (pdb->header.type != ARTS_DB || arts_guid_get_type(pdb->guid) != ARTS_DB) {
+    ARTS_ERROR("Malformed %s DB snapshot from rank %u: guid=%lu type=%u "
+               "guid_type=%u",
+               kind, header->rank, pdb->guid, pdb->header.type,
+               arts_guid_get_type(pdb->guid));
+  }
+  if (pdb->header.size != received_bytes) {
+    ARTS_ERROR("Malformed %s DB snapshot from rank %u: guid=%lu db_size=%lu "
+               "payload=%lu packet=%lu",
+               kind, header->rank, pdb->guid, pdb->header.size, received_bytes,
+               header->size);
+  }
+}
+
 void arts_remote_handle_update_db_guid(void *ptr) {
   struct arts_remote_guid_only_packet_s *packet =
       (struct arts_remote_guid_only_packet_s *)ptr;
@@ -649,11 +676,12 @@ void arts_remote_db_send(struct arts_remote_db_request_packet_s *pack) {
 
 void arts_remote_handle_db_received(
     struct arts_remote_db_send_packet_s *packet) {
+  uint64_t received_bytes = arts_remote_db_snapshot_bytes(
+      &packet->header, sizeof(struct arts_remote_db_send_packet_s), "db_send");
   struct arts_db_s pdb;
   memcpy(&pdb, (packet + 1), sizeof(struct arts_db_s));
-  // Actual DB bytes in the packet (may be a stub or a full DB).
-  uint64_t received_bytes =
-      packet->header.size - sizeof(struct arts_remote_db_send_packet_s);
+  arts_remote_validate_db_snapshot("db_send", &packet->header, received_bytes,
+                                   &pdb);
   void *packet_payload = (char *)(packet + 1) + sizeof(struct arts_db_s);
   ARTS_DEBUG("Handle DB Received [Guid:%lu, Size:%lu, Received:%lu] on rank %u",
              pdb.guid, pdb.header.size, received_bytes, arts_global_rank_id);
@@ -896,8 +924,13 @@ void arts_remote_handle_db_full_recieved(
     struct arts_remote_db_full_send_packet_s *packet) {
   bool dec;
   item_state_t state;
+  uint64_t received_bytes = arts_remote_db_snapshot_bytes(
+      &packet->header, sizeof(struct arts_remote_db_full_send_packet_s),
+      "db_full");
   struct arts_db_s pdb;
   memcpy(&pdb, (packet + 1), sizeof(struct arts_db_s));
+  arts_remote_validate_db_snapshot("db_full", &packet->header, received_bytes,
+                                   &pdb);
   void *packet_payload = (char *)(packet + 1) + sizeof(struct arts_db_s);
   ARTS_DEBUG("Handle Full DB Received [Guid:%lu, Slot:%u, Mode:%u]", pdb.guid,
              packet->slot, packet->mode);

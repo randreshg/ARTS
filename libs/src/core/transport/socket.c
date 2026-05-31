@@ -141,8 +141,8 @@ static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 #define ARTS_LAZY_ACCEPT_DRAIN_LIMIT 128
 #define ARTS_LAZY_ACCEPT_IDLE_INTERVAL_US 1000
 #define ARTS_RDMA_ACCEPT_SLEEP_US 1000
-#define ARTS_RDMA_EAGER_CONNECT 0
-#define ARTS_RDMA_EAGER_CONNECT_ROUNDS 4
+#define ARTS_RDMA_EAGER_CONNECT 1
+#define ARTS_RDMA_EAGER_CONNECT_ROUNDS 16
 #define ARTS_RDMA_LISTENER_READY 1
 #define ARTS_RDMA_LISTENER_READY_MODE "ring"
 #define ARTS_RDMA_LISTENER_READY_TIMEOUT_MS 60000
@@ -154,7 +154,7 @@ static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 /* Do not block shutdown indefinitely in rclose(). */
 #define ARTS_RDMA_ABANDON_SHUTDOWN_CLOSE 1
 #define ARTS_RDMA_CLOSE_WORKER_JOIN_MS 2000
-#define ARTS_RDMA_FULL_DUPLEX 1
+#define ARTS_RDMA_FULL_DUPLEX 0
 #define ARTS_RDMA_ALLOW_RSOCKET_REUSE 1
 #define ARTS_RDMA_FORCE_RSOCKET_REUSE 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND 0
@@ -164,6 +164,7 @@ static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 #define ARTS_RDMA_SEND_MAX_BYTES 1048576
 #define ARTS_RDMA_SEND_MAX_ITERS 256
 #define ARTS_RDMA_RECV_PACKETS_PER_SOCKET 16
+#define ARTS_MAX_PACKET_BYTES 1073741824ULL
 #define ARTS_RDMA_SOCKET_RETIRE_MSG 0xFFFFFFFEu
 #define ARTS_CONNECTION_HELLO_MAGIC 0x41525453u
 #define ARTS_CONNECTION_HELLO_READY 0x1u
@@ -254,6 +255,7 @@ enum arts_rdma_listener_ready_mode_e {
 
 static const char *arts_transport_name(void);
 static unsigned int arts_env_uint(const char *name, unsigned int fallback);
+static uint64_t arts_env_uint64(const char *name, uint64_t fallback);
 static bool arts_close_send_after_complete_send(void);
 static unsigned int arts_close_send_after_complete_send_every(void);
 #ifdef ARTS_USE_RDMA
@@ -1652,6 +1654,22 @@ static unsigned int arts_env_uint(const char *name, unsigned int fallback) {
     return fallback;
   }
   return (unsigned int)value;
+}
+
+static uint64_t arts_env_uint64(const char *name, uint64_t fallback) {
+  const char *raw = getenv(name);
+  if (!raw || raw[0] == '\0') {
+    return fallback;
+  }
+
+  errno = 0;
+  char *end = NULL;
+  unsigned long long value = strtoull(raw, &end, 10);
+  if (errno != 0 || end == raw || *end != '\0') {
+    ARTS_WARN("Ignoring invalid %s='%s'; using %lu", name, raw, fallback);
+    return fallback;
+  }
+  return (uint64_t)value;
 }
 
 #ifdef ARTS_USE_RDMA
@@ -3217,6 +3235,55 @@ static bool arts_send_rdma_socket_retire(int socket_fd, unsigned int port,
 }
 #endif
 
+static uint64_t arts_max_packet_bytes(void) {
+  static uint64_t max_packet_bytes = 0;
+  static bool initialized = false;
+  if (!initialized) {
+    max_packet_bytes =
+        arts_env_uint64("ARTS_MAX_PACKET_BYTES", ARTS_MAX_PACKET_BYTES);
+    if (!max_packet_bytes) {
+      max_packet_bytes = ARTS_MAX_PACKET_BYTES;
+    }
+    initialized = true;
+  }
+  return max_packet_bytes;
+}
+
+static bool arts_remote_message_type_valid(unsigned int message_type) {
+  return message_type <= ARTS_REMOTE_SET_DEP_MODE_MSG ||
+         message_type == ARTS_RDMA_SOCKET_RETIRE_MSG;
+}
+
+static bool arts_remote_packet_header_valid(
+    const struct arts_remote_packet_s *packet) {
+  if (!packet) {
+    return false;
+  }
+  if (!arts_remote_message_type_valid(packet->message_type)) {
+    return false;
+  }
+  if (packet->rank >= arts_global_rank_count) {
+    return false;
+  }
+  if (packet->message_type == ARTS_RDMA_SOCKET_RETIRE_MSG) {
+    return packet->size == sizeof(*packet);
+  }
+  uint64_t max_packet_bytes = arts_max_packet_bytes();
+  return packet->size >= sizeof(*packet) && packet->size <= max_packet_bytes;
+}
+
+static void arts_reject_remote_packet_header(
+    int socket_index, const struct arts_remote_packet_s *packet) {
+  ARTS_INFO("Invalid remote packet header index=%d from=%u msg=%u size=%lu "
+            "max=%lu",
+            socket_index, packet ? packet->rank : 0,
+            packet ? packet->message_type : 0, packet ? packet->size : 0,
+            arts_max_packet_bytes());
+  arts_close_receive_socket_index(socket_index);
+  arts_shutdown();
+  arts_runtime_stop();
+}
+
 static bool arts_recv_connection_hello(int socket_fd,
                                        struct arts_connection_hello_s *hello,
                                        int *err_out) {
@@ -3559,7 +3626,9 @@ static bool arts_remote_accept_one_pending(int timeout_ms) {
                 arts_transport_name(), arts_global_rank_id, hello.rank,
                 hello.port, accepted_port);
     } else {
+#ifdef ARTS_USE_RDMA
       __sync_fetch_and_add(&rdma_listener_ready_incoming_count, 1ULL);
+#endif
       ARTS_TRACE_RDMA("listener-ready accept peer=%u port=%u fd=%d",
                       hello.rank, hello.port, accepted_socket);
     }
@@ -4403,7 +4472,9 @@ uint64_t arts_remote_send_payload_request(int rank, unsigned int queue,
   arts_lock(&remote_socket_send_lock_list[socket_index]);
   if (arts_remote_connect(rank, port)) {
     uint64_t temp_length = arts_actual_send(message, length, rank, port);
-    if (temp_length) {
+    if (temp_length == (uint64_t)-1) {
+      remaining = (uint64_t)-1;
+    } else if (temp_length) {
       remaining = temp_length + length2;
     } else {
       remaining = arts_actual_send(payload, length2, rank, port);
@@ -4992,8 +5063,12 @@ bool arts_server_try_to_receive(
                 break;
               }
 
+              if (!arts_remote_packet_header_valid(packet)) {
+                arts_reject_remote_packet_header(i, packet);
+                return false;
+              }
+
               if (bypass_packet_size[pos] < packet->size) {
-                // For large packets (>256MB), avoid 4x over-allocation
                 uint64_t new_buf_size = (packet->size > (1ULL << 28))
                                             ? packet->size
                                             : packet->size * 4;

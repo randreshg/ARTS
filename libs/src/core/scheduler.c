@@ -928,6 +928,16 @@ void arts_run_edt(struct arts_edt_s *edt) {
   ARTS_INFO("Running EDT[Id:%lu, Guid:%lu, Deps: %u, Params: %u, "
             "DepvPtr: %p]",
             edt->arts_id, edt->current_edt, depc, paramc, depv);
+  for (uint32_t i = 0; i < depc; ++i) {
+    if (arts_dep_mode_requires_db_ptr(depv[i].mode) &&
+        (depv[i].guid == NULL_GUID || depv[i].ptr == NULL)) {
+      ARTS_ERROR("EDT[Guid:%lu, Id:%lu] unresolved DB dep slot=%u mode=%s "
+                 "db=%lu ptr=%p func=%p",
+                 edt->current_edt, edt->arts_id, i,
+                 GET_DB_MODE_NAME(depv[i].mode), depv[i].guid, depv[i].ptr,
+                 (void *)func);
+    }
+  }
   prep_dbs(depc, depv, false);
 
   arts_set_thread_local_edt_info(edt);

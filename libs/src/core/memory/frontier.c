@@ -143,7 +143,6 @@ struct arts_db_frontier_s *arts_new_db_frontier() {
   return ret;
 }
 
-// This should be done before being released into the wild
 struct arts_db_list_s *arts_new_db_list() {
   struct arts_db_list_s *ret =
       (struct arts_db_list_s *)arts_calloc(1, sizeof(struct arts_db_list_s));

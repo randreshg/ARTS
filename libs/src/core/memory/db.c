@@ -582,14 +582,15 @@ void acquire_dbs(struct arts_edt_s *edt) {
 
   for (uint32_t si = 0; si < edt->depc; si++) {
     int i = (int)sorted[si]; /* Acquire in GUID order, not slot order. */
-    /*
-     * A slot with guid == NULL_GUID (0) but mode != DB_MODE_NULL was
-     * signaled via an event that carried no data — already satisfied,
-     * no DB to acquire.  Count it immediately.
-     */
-    if (depv[i].guid == NULL_GUID && depv[i].mode != DB_MODE_NULL) {
+    if (depv[i].mode == DB_MODE_VALUE || depv[i].mode == DB_MODE_PTR ||
+        (depv[i].mode == DB_MODE_NULL && depv[i].guid == NULL_GUID)) {
       arts_atomic_sub(&edt->depc_needed, 1U);
       continue;
+    }
+    if (arts_dep_mode_requires_db_ptr(depv[i].mode) &&
+        depv[i].guid == NULL_GUID && depv[i].ptr == NULL) {
+      ARTS_ERROR("EDT[Guid:%lu] has unresolved DB dependency slot=%u mode=%s",
+                 edt->current_edt, i, GET_DB_MODE_NAME(depv[i].mode));
     }
     if (depv[i].guid && depv[i].ptr == NULL) {
       arts_db_access_mode_t access_mode = depv[i].mode;

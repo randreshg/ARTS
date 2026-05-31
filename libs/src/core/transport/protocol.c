@@ -92,23 +92,26 @@ static inline unsigned int out_queue_id_for_rank(unsigned int rank) {
 }
 
 void partial_send_store(struct out_list_s *out, uint64_t length_remaining) {
-  if (out->payload == NULL) {
-    out->offset = out->offset + (out->length - length_remaining);
-    out->length = length_remaining;
-  } else {
-    uint64_t sent = out->length + out->payloadSize;
-    sent -= length_remaining;
-    if (sent >= out->length) {
-      out->length = 0;
-      out->offsetPayload =
-          out->offsetPayload + (out->payloadSize - length_remaining);
-      out->payloadSize = length_remaining;
+  uint64_t pending = out_pending_length(out);
+  if (length_remaining > pending) {
+    ARTS_ERROR("Partial send accounting underflow: remaining=%lu pending=%lu",
+               length_remaining, pending);
+  }
 
-    } else {
-      out->offset =
-          out->offset + (out->length - (length_remaining - out->payloadSize));
-      out->length = length_remaining - out->payloadSize;
+  uint64_t sent = pending - length_remaining;
+  uint64_t header_sent = (sent < out->length) ? sent : out->length;
+  out->offset += header_sent;
+  out->length -= header_sent;
+
+  uint64_t payload_sent = sent - header_sent;
+  if (payload_sent) {
+    if (!out->payload || payload_sent > out->payloadSize) {
+      ARTS_ERROR("Partial send payload accounting underflow: sent=%lu "
+                 "payload=%lu",
+                 payload_sent, out->payloadSize);
     }
+    out->offsetPayload += payload_sent;
+    out->payloadSize -= payload_sent;
   }
 }
 

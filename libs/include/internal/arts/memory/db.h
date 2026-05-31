@@ -71,6 +71,12 @@ extern const char *const arts_db_type_name[];
 
 extern const char *const db_mode_name[];
 
+static inline bool arts_dep_mode_requires_db_ptr(arts_db_access_mode_t mode) {
+  return mode == DB_MODE_RO || mode == DB_MODE_EW || mode == DB_MODE_RW ||
+         mode == DB_MODE_LC_SYNC || mode == DB_MODE_LC_NO_COPY ||
+         mode == DB_MODE_MEMSET;
+}
+
 void arts_db_create_internal(arts_guid_t guid, void *addr, uint64_t len,
                              uint64_t packet_size, arts_db_types_t db_type,
                              uint64_t arts_id);

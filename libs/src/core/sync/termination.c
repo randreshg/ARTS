@@ -96,6 +96,22 @@ void arts_shutdown_epoch_inc_finished() {
   }
 }
 
+static bool arts_shutdown_epoch_wait_begin(void) {
+  arts_epoch_t *ep = arts_node_info.auto_shutdown_epoch;
+  if (!ep) {
+    return false;
+  }
+  arts_atomic_add_u64(&ep->epoch_counts, EPOCH_ACTIVE_INC);
+  arts_atomic_add_u64(&ep->queued, 1);
+  return true;
+}
+
+static void arts_shutdown_epoch_wait_end(bool held) {
+  if (held) {
+    arts_shutdown_epoch_inc_finished();
+  }
+}
+
 void arts_shutdown_epoch_fire(arts_guid_t guid) {
   if (arts_node_info.auto_shutdown_guid == guid) {
     arts_node_info.auto_shutdown_epoch = NULL;
@@ -789,6 +805,7 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
                     "active=%u finished=%u queued=%lu",
                     local, epoch_pool_guid, epoch->completed,
                     EPOCH_ACTIVE(epoch), EPOCH_FINISHED(epoch), epoch->queued);
+    bool shutdown_wait_token = arts_shutdown_epoch_wait_begin();
     increment_finished_epoch(local);
 
     // Release all DB frontier locks before blocking so consumer EDTs can
@@ -830,12 +847,14 @@ bool arts_wait_on_handle(arts_guid_t epoch_guid) {
       ARTS_WARN("arts_wait_on_handle: Epoch [Guid:%lu] did not complete before "
                 "runtime shutdown",
                 local);
+      arts_shutdown_epoch_wait_end(shutdown_wait_token);
       TIME_EDT_EXEC_START();
       return false;
     }
 
     // Re-acquire all DB frontier locks after the epoch completes.
     arts_wait_reacquire_dbs();
+    arts_shutdown_epoch_wait_end(shutdown_wait_token);
 
     /* Do not deref epoch here: a non-pool epoch has been freed by delete_epoch
      * (it is why the non-pool branch above polls the route table). */
