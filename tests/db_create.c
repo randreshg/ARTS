@@ -147,6 +147,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t reserved = arts_guid_reserve(ARTS_DB, 0);
   uint64_t *d2 = (uint64_t *)arts_db_create_with_guid(
       reserved, DB_SIZE, ARTS_DB_DEFAULT, NULL, NULL);
+  uint64_t *d2_dup = (uint64_t *)arts_db_create_with_guid(
+      reserved, DB_SIZE, ARTS_DB_DEFAULT, NULL, NULL);
+  if (d2_dup != d2) {
+    arts_printf("  FAIL: duplicate db_create_with_guid returned detached "
+                "storage\n");
+    arts_abort(1);
+  }
+  arts_printf("  PASS: duplicate db_create_with_guid reused installed DB\n");
   for (unsigned int i = 0; i < DB_ELEMS; i++) {
     d2[i] = (uint64_t)i * 3;
   }

@@ -82,6 +82,7 @@ struct arts_db_s {
   volatile unsigned int version;    /**< Coherence version counter. */
   unsigned int time_stamp;          /**< Creation timestamp (relative). */
   arts_db_types_t db_type; /**< Storage subtype (DEFAULT/LOCAL/GPU/LC). */
+  void *route_item;        /**< Owning route-table item while locally cached. */
   void *db_list;           /**< Node in the per-node DB tracking list. */
 } ARTS_ALIGNED_MAX;
 

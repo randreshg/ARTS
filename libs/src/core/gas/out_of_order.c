@@ -41,6 +41,7 @@
 #include "arts/compute/edt.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/db.h"
+#include "arts/memory/frontier.h"
 #include "arts/remote/handler.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -113,6 +114,7 @@ struct oo_remote_db_full_send_s {
   arts_guid_t edt_guid;
   unsigned int slot;
   arts_db_access_mode_t mode;
+  bool forwarded;
 };
 
 struct oo_get_from_db_s {
@@ -140,9 +142,18 @@ struct oo_put_in_db_s {
   arts_guid_t edt_guid;
   arts_guid_t db_guid;
   arts_guid_t epoch_guid;
+  arts_guid_t writer_edt_guid;
+  unsigned int writer_rank;
   unsigned int slot;
   unsigned int offset;
   unsigned int size;
+};
+
+struct oo_release_created_db_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t db_guid;
+  arts_guid_t creator_edt_guid;
+  unsigned int creator_rank;
 };
 
 struct oo_epoch_s {
@@ -160,6 +171,17 @@ struct oo_epoch_send_s {
 struct oo_generic_s {
   enum arts_out_of_order_type type;
 };
+
+static bool arts_oo_return_lookup_db(arts_guid_t guid, struct arts_db_s *db) {
+  if (db && db->route_item) {
+    return arts_route_table_return_db_item(
+        guid, (arts_route_item_t *)db->route_item, false);
+  }
+  if (db) {
+    return arts_route_table_return_db(guid, false);
+  }
+  return false;
+}
 
 /*
  * arts_out_of_order_handler — Replay a deferred operation.
@@ -227,7 +249,7 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
         (struct oo_remote_db_full_send_s *)handle_me;
     arts_remote_db_full_send_check(
         db_send->rank, (struct arts_db_s *)memory_ptr, db_send->edt_guid,
-        db_send->slot, db_send->mode);
+        db_send->slot, db_send->mode, db_send->forwarded);
     break;
   }
   case OO_GET_FROM_DB: {
@@ -248,8 +270,17 @@ inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
     struct oo_put_in_db_s *req = (struct oo_put_in_db_s *)handle_me;
     internal_put_in_db(req->ptr, req->edt_guid, req->db_guid, req->slot,
                        req->offset, req->size, req->epoch_guid,
-                       arts_global_rank_id);
+                       arts_global_rank_id, req->writer_edt_guid,
+                       req->writer_rank);
     arts_free(req->ptr);
+    break;
+  }
+  case OO_RELEASE_CREATED_DB: {
+    struct oo_release_created_db_s *req =
+        (struct oo_release_created_db_s *)handle_me;
+    (void)arts_release_remote_writer((struct arts_db_s *)memory_ptr,
+                                     req->creator_rank,
+                                     req->creator_edt_guid);
     break;
   }
   case OO_EPOCH_ACTIVE: {
@@ -420,7 +451,7 @@ void arts_out_of_order_handle_remote_db_send(int rank, arts_guid_t db_guid,
     if (db) {
       arts_remote_db_send_check(ready_send->rank, db, ready_send->mode,
                                 ready_send->flags);
-      arts_route_table_return_db(db_guid, false);
+      arts_oo_return_lookup_db(db_guid, db);
     } else {
       ARTS_DEBUG("OO remote_db_send: DB[Guid:%lu] vanished (DELETE_ITEM race)",
                  db_guid);
@@ -456,7 +487,7 @@ void arts_out_of_order_handle_db_request(arts_guid_t db_guid,
         (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
     arts_db_request_callback(req->edt, req->slot, db);
     if (db) {
-      arts_route_table_return_db(db_guid, false);
+      arts_oo_return_lookup_db(db_guid, db);
     }
     arts_free(req);
   }
@@ -482,7 +513,8 @@ void arts_out_of_order_handle_db_request_with_oo_list(
 void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
                                                   arts_guid_t edt_guid,
                                                   unsigned int slot,
-                                                  arts_db_access_mode_t mode) {
+                                                  arts_db_access_mode_t mode,
+                                                  bool forwarded) {
   struct oo_remote_db_full_send_s *db_send =
       (struct oo_remote_db_full_send_s *)arts_malloc(
           sizeof(struct oo_remote_db_full_send_s));
@@ -491,14 +523,16 @@ void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
   db_send->edt_guid = edt_guid;
   db_send->slot = slot;
   db_send->mode = mode;
+  db_send->forwarded = forwarded;
   bool res = arts_route_table_add_oo(db_guid, db_send, false);
   if (!res) {
     struct arts_db_s *db =
         (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
     if (db) {
       arts_remote_db_full_send_check(db_send->rank, db, db_send->edt_guid,
-                                     db_send->slot, db_send->mode);
-      arts_route_table_return_db(db_guid, false);
+                                     db_send->slot, db_send->mode,
+                                     db_send->forwarded);
+      arts_oo_return_lookup_db(db_guid, db);
     } else {
       ARTS_DEBUG("OO remote_db_full_send: DB[Guid:%lu] vanished "
                  "(DELETE_ITEM race)",
@@ -558,7 +592,9 @@ void arts_out_of_order_signal_edt_with_ptr(arts_guid_t edt_guid,
 void arts_out_of_order_put_in_db(void *ptr, arts_guid_t edt_guid,
                                  arts_guid_t db_guid, unsigned int slot,
                                  unsigned int offset, unsigned int size,
-                                 arts_guid_t epoch_guid) {
+                                 arts_guid_t epoch_guid,
+                                 arts_guid_t writer_edt_guid,
+                                 unsigned int writer_rank) {
   struct oo_put_in_db_s *req =
       (struct oo_put_in_db_s *)arts_malloc(sizeof(struct oo_put_in_db_s));
   req->type = OO_PUT_IN_DB;
@@ -569,12 +605,36 @@ void arts_out_of_order_put_in_db(void *ptr, arts_guid_t edt_guid,
   req->offset = offset;
   req->size = size;
   req->epoch_guid = epoch_guid;
+  req->writer_edt_guid = writer_edt_guid;
+  req->writer_rank = writer_rank;
   bool res = arts_route_table_add_oo(db_guid, req, false);
   if (!res) {
     internal_put_in_db(req->ptr, req->edt_guid, req->db_guid, req->slot,
                        req->offset, req->size, req->epoch_guid,
-                       arts_global_rank_id);
+                       arts_global_rank_id, req->writer_edt_guid,
+                       req->writer_rank);
     arts_free(req->ptr);
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_release_created_db(arts_guid_t db_guid,
+                                          arts_guid_t creator_edt_guid,
+                                          unsigned int creator_rank) {
+  struct oo_release_created_db_s *req =
+      (struct oo_release_created_db_s *)arts_malloc(sizeof(*req));
+  req->type = OO_RELEASE_CREATED_DB;
+  req->db_guid = db_guid;
+  req->creator_edt_guid = creator_edt_guid;
+  req->creator_rank = creator_rank;
+  bool res = arts_route_table_add_oo(db_guid, req, false);
+  if (!res) {
+    struct arts_db_s *db =
+        (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
+    if (db) {
+      (void)arts_release_remote_writer(db, creator_rank, creator_edt_guid);
+      arts_route_table_return_db(db_guid, false);
+    }
     arts_free(req);
   }
 }

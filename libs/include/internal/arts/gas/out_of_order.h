@@ -60,7 +60,8 @@ enum arts_out_of_order_type {
   OO_EPOCH_ACTIVE,
   OO_EPOCH_FINISH,
   OO_EPOCH_SEND,
-  OO_EPOCH_INC_QUEUE
+  OO_EPOCH_INC_QUEUE,
+  OO_RELEASE_CREATED_DB
 };
 
 void arts_out_of_order_signal_edt(arts_guid_t wait_on, arts_guid_t edt_packet,
@@ -102,7 +103,8 @@ void arts_out_of_order_handle_db_request(arts_guid_t db_guid,
 void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
                                                   arts_guid_t edt_guid,
                                                   unsigned int slot,
-                                                  arts_db_access_mode_t mode);
+                                                  arts_db_access_mode_t mode,
+                                                  bool forwarded);
 void arts_out_of_order_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
                                    unsigned int slot, uint64_t offset,
                                    uint64_t size, uint32_t flags);
@@ -113,12 +115,17 @@ void arts_out_of_order_signal_edt_with_ptr(arts_guid_t edt_guid,
 void arts_out_of_order_put_in_db(void *ptr, arts_guid_t edt_guid,
                                  arts_guid_t db_guid, unsigned int slot,
                                  unsigned int offset, unsigned int size,
-                                 arts_guid_t epoch_guid);
+                                 arts_guid_t epoch_guid,
+                                 arts_guid_t writer_edt_guid,
+                                 unsigned int writer_rank);
 void arts_out_of_order_inc_active_epoch(arts_guid_t epoch_guid);
 void arts_out_of_order_inc_finished_epoch(arts_guid_t epoch_guid);
 void arts_out_of_order_send_epoch(arts_guid_t epoch_guid, unsigned int source,
                                   unsigned int dest);
 void arts_out_of_order_inc_queue_epoch(arts_guid_t epoch_guid);
+void arts_out_of_order_release_created_db(arts_guid_t db_guid,
+                                          arts_guid_t creator_edt_guid,
+                                          unsigned int creator_rank);
 
 void arts_out_of_order_handler(void *handle_me, void *memory_ptr);
 

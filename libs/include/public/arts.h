@@ -959,7 +959,8 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
  * The route is encoded in the GUID.  If @p data is non-NULL it is copied
  * into the DB at creation time (avoids races with out-of-order EDTs).
  *
- * @param guid    Pre-reserved GUID (must be local).
+ * @param guid    Pre-reserved GUID. If the GUID belongs to a remote rank, the
+ *                DB is materialized on that owner and this call returns NULL.
  * @param len     Length in bytes.
  * @param db_type Storage/coherence class (DEFAULT, LOCAL, GPU, LC).
  * @param data    Optional source data to copy into the DB (NULL = uninit).
@@ -969,6 +970,19 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
 void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
                                arts_db_types_t db_type, const void *data,
                                const arts_hint_t *hint);
+
+/**
+ * @brief Create a DataBlock with a pre-reserved local-owner @p guid.
+ *
+ * This variant is for compiler-generated owner-ranked distributed
+ * initialization. It is a hard contract: @p guid must belong to the current
+ * rank. Unlike arts_db_create_with_guid(), it never asks a remote owner to
+ * materialize the DB on behalf of this rank.
+ */
+void *arts_db_create_with_guid_local(arts_guid_t guid, uint64_t len,
+                                     arts_db_types_t db_type,
+                                     const void *data,
+                                     const arts_hint_t *hint);
 
 void *arts_db_create_with_guid_interleaved(arts_guid_t guid, uint64_t len,
                                            arts_db_types_t db_type,

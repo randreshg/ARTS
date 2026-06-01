@@ -80,6 +80,12 @@ static inline bool arts_dep_mode_requires_db_ptr(arts_db_access_mode_t mode) {
 void arts_db_create_internal(arts_guid_t guid, void *addr, uint64_t len,
                              uint64_t packet_size, arts_db_types_t db_type,
                              uint64_t arts_id);
+void arts_db_create_remote_on_owner(arts_guid_t guid, uint64_t len,
+                                    arts_db_types_t db_type, uint64_t arts_id,
+                                    bool interleave_memory, const void *data,
+                                    uint64_t data_len,
+                                    arts_guid_t creator_edt_guid,
+                                    unsigned int creator_rank);
 void acquire_dbs(struct arts_edt_s *edt);
 void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu,
                  arts_guid_t writer_edt_guid);
@@ -96,7 +102,8 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu);
 void internal_put_in_db(void *ptr, arts_guid_t edt_guid, arts_guid_t db_guid,
                         unsigned int slot, uint64_t offset,
                         uint64_t size, arts_guid_t epoch_guid,
-                        unsigned int rank);
+                        unsigned int rank, arts_guid_t writer_edt_guid,
+                        unsigned int writer_rank);
 void arts_get_from_db_at_ex(arts_guid_t edt_guid, arts_guid_t db_guid,
                             unsigned int slot, uint64_t offset,
                             uint64_t len, uint32_t flags,

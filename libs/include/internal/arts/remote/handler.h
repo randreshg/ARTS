@@ -69,6 +69,9 @@ void arts_remote_handle_db_destroy_forward(void *ptr);
 void arts_remote_handle_db_destroy(void *ptr);
 void arts_remote_update_db(arts_guid_t guid, arts_guid_t edt_guid,
                            bool send_db);
+void arts_remote_update_db_from_snapshot(arts_guid_t guid,
+                                         arts_guid_t edt_guid,
+                                         struct arts_db_s *db);
 void arts_remote_handle_update_db(void *ptr);
 
 void arts_remote_memory_move(unsigned int route, arts_guid_t guid, void *ptr,
@@ -103,9 +106,18 @@ void arts_remote_db_send_now(int rank, struct arts_db_s *db);
 void arts_remote_db_send_check(int rank, struct arts_db_s *db,
                                arts_db_access_mode_t mode, uint32_t flags);
 void arts_remote_db_send(struct arts_remote_db_request_packet_s *pack);
+void arts_remote_db_create(arts_guid_t guid, uint64_t len,
+                           arts_db_types_t db_type, const void *data,
+                           uint64_t arts_id, bool interleave_memory,
+                           arts_guid_t creator_edt_guid);
+void arts_remote_handle_db_create(
+    struct arts_remote_db_create_packet_s *packet);
+void arts_remote_release_created_db(arts_guid_t guid,
+                                    arts_guid_t creator_edt_guid);
+void arts_remote_handle_release_created_db(void *ptr);
 void arts_remote_handle_db_received(
     struct arts_remote_db_send_packet_s *packet);
-void arts_remote_db_full_request(arts_guid_t data_guid, int rank,
+void arts_remote_db_full_request(arts_guid_t data_guid, int owner_rank,
                                  arts_guid_t edt_guid, int pos,
                                  arts_db_access_mode_t mode);
 void arts_remote_db_forward_full(int dest_rank, int source_rank,
@@ -116,7 +128,7 @@ void arts_remote_db_full_send_now(int rank, struct arts_db_s *db,
                                   arts_db_access_mode_t mode);
 void arts_remote_db_full_send_check(int rank, struct arts_db_s *db,
                                     arts_guid_t edt_guid, unsigned int slot,
-                                    arts_db_access_mode_t mode);
+                                    arts_db_access_mode_t mode, bool forwarded);
 void arts_remote_db_full_send(
     struct arts_remote_db_full_request_packet_s *pack);
 void arts_remote_handle_db_full_recieved(

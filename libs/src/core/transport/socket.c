@@ -75,6 +75,9 @@
 struct arts_config_s *arts_global_message_table;
 unsigned int ports;
 static const char *arts_transport_name(void);
+#ifdef ARTS_USE_RDMA
+static bool arts_transport_uses_rdma_cached = true;
+#endif
 // SOCKETS!
 int *remote_socket_send_list;
 volatile unsigned int *volatile remote_socket_send_lock_list;
@@ -159,6 +162,7 @@ static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 #define ARTS_RDMA_FORCE_RSOCKET_REUSE 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND_EVERY 0
+#define ARTS_RDMA_INLINE 128
 #define ARTS_RDMA_MAX_ACTIVE_CONNECTS 1
 #define ARTS_RDMA_CLOSE_WORKERS 4
 #define ARTS_RDMA_SEND_MAX_BYTES 1048576
@@ -1217,6 +1221,11 @@ static bool arts_receiver_wakeup_requested(void) {
 void arts_remote_set_message_table(struct arts_config_s *table) {
   arts_global_message_table = table;
   ports = table->port_count;
+#ifdef ARTS_USE_RDMA
+  arts_transport_uses_rdma_cached =
+      !(table && table->protocol &&
+        strcmp(table->protocol, ARTS_TRANSPORT_TCP_NAME) == 0);
+#endif
 }
 bool hostname_to_ip(char *host_name, char *ip) {
   int j;
@@ -1626,11 +1635,7 @@ static const char *arts_transport_name(void) {
 
 bool arts_transport_runtime_uses_rdma(void) {
 #ifdef ARTS_USE_RDMA
-  if (arts_global_message_table && arts_global_message_table->protocol &&
-      strcmp(arts_global_message_table->protocol, "tcp") == 0) {
-    return false;
-  }
-  return true;
+  return arts_transport_uses_rdma_cached;
 #else
   return false;
 #endif
@@ -2541,7 +2546,8 @@ static void arts_configure_transport_socket(int socket_fd) {
   if (arts_transport_uses_rdma()) {
     unsigned int sq_size = arts_env_uint("ARTS_RDMA_SQSIZE", 0);
     unsigned int rq_size = arts_env_uint("ARTS_RDMA_RQSIZE", 0);
-    unsigned int inline_size = arts_env_uint("ARTS_RDMA_INLINE", 0);
+    unsigned int inline_size =
+        arts_env_uint("ARTS_RDMA_INLINE", ARTS_RDMA_INLINE);
     if (sq_size > 0 &&
         RSETSOCKOPT(socket_fd, SOL_RDMA, RDMA_SQSIZE, &sq_size,
                     sizeof(sq_size)) < 0) {

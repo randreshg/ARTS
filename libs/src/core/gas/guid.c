@@ -57,6 +57,13 @@ uint64_t *arts_guid_generator_get_key(unsigned int route, unsigned int type) {
                              [(route * ARTS_LAST_TYPE) + type];
 }
 
+static unsigned int normalize_guid_route(unsigned int route) {
+  if (route == ARTS_HINT_CURRENT_NODE) {
+    route = arts_global_rank_id;
+  }
+  return arts_global_rank_count ? route % arts_global_rank_count : route;
+}
+
 arts_guid_t arts_guid_create_for_rank_internal(unsigned int route,
                                                unsigned int type,
                                                unsigned int guid_count) {
@@ -139,10 +146,7 @@ uint64_t arts_guid_get_key(arts_guid_t guid) { return ARTS_GUID_GET_KEY(guid); }
 
 arts_guid_t arts_guid_reserve(arts_type_t type, unsigned int route) {
   arts_guid_t guid = NULL_GUID;
-  if (route == ARTS_HINT_CURRENT_NODE) {
-    route = arts_global_rank_id;
-  }
-  route = route % arts_global_rank_count;
+  route = normalize_guid_route(route);
   if (type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     guid = arts_guid_create_for_rank_internal(route, (unsigned int)type, 1);
     // ARTS_INFO("Allocation Guid %u", guid);
@@ -169,9 +173,7 @@ arts_guid_t *arts_guid_reserve_round_robin(unsigned int size,
 
 arts_guid_t arts_guid_reserve_range(arts_type_t type, unsigned int size,
                                     unsigned int route) {
-  if (route == ARTS_HINT_CURRENT_NODE) {
-    route = arts_global_rank_id;
-  }
+  route = normalize_guid_route(route);
   if (size && type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     return arts_guid_create_for_rank_internal(route, (unsigned int)type, size);
   }
@@ -181,6 +183,7 @@ arts_guid_t arts_guid_reserve_range(arts_type_t type, unsigned int size,
 arts_guid_t arts_guid_reserve_range_hash(arts_type_t type, unsigned int size,
                                          unsigned int route,
                                          unsigned int hash_size) {
+  route = normalize_guid_route(route);
   if (size && type > ARTS_NULL && type < ARTS_LAST_TYPE) {
     arts_guid_t start = arts_guid_create_for_rank_internal(
         route, (unsigned int)type, size + hash_size);

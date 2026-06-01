@@ -597,6 +597,7 @@ arts_epoch_pool_t *create_epoch_pool(arts_guid_t *epoch_pool_guid,
 
   arts_route_table_add_item(epoch_pool, *epoch_pool_guid, arts_global_rank_id,
                             false);
+  arts_route_table_fire_oo(*epoch_pool_guid, arts_out_of_order_handler);
   for (unsigned int i = 0; i < pool_size; i++) {
     epoch_pool->pool[i].phase = PHASE_1;
     epoch_pool->pool[i].pool_guid = *epoch_pool_guid;

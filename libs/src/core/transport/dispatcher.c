@@ -274,6 +274,13 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
     arts_remote_handle_db_received(pack);
     break;
   }
+  case ARTS_REMOTE_DB_CREATE_MSG: {
+    ARTS_DEBUG("Remote Db Create Received");
+    struct arts_remote_db_create_packet_s *pack =
+        (struct arts_remote_db_create_packet_s *)(packet);
+    arts_remote_handle_db_create(pack);
+    break;
+  }
   case ARTS_REMOTE_ADD_DEPENDENCE_MSG: {
     ARTS_DEBUG("Dependence Received");
     struct arts_remote_add_dependence_packet_s *pack =
@@ -312,6 +319,11 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
   case ARTS_REMOTE_DB_DESTROY_FORWARD_MSG: {
     ARTS_DEBUG("DB Destroy Forward Received");
     arts_remote_handle_db_destroy_forward(packet);
+    break;
+  }
+  case ARTS_REMOTE_DB_RELEASE_CREATED_MSG: {
+    ARTS_DEBUG("DB Created Release Received");
+    arts_remote_handle_release_created_db(packet);
     break;
   }
   case ARTS_REMOTE_DB_UPDATE_GUID_MSG: {

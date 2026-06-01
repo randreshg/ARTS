@@ -76,12 +76,30 @@ static inline bool arts_guid_lock_is_free(volatile unsigned int *lock) {
   return __atomic_load_n(lock, __ATOMIC_RELAXED) == 0U;
 }
 
-void set_item(arts_route_item_t *item, void *data) { item->data = data; }
+static bool internal_route_table_return_db_item(arts_route_table_t *route_table,
+                                                arts_guid_t key,
+                                                arts_route_item_t *location,
+                                                bool mark_to_delete,
+                                                bool do_delete);
+
+static inline void set_db_route_item(arts_route_item_t *item, void *data) {
+  if (data && arts_guid_get_type(item->key) == ARTS_DB) {
+    ((struct arts_db_s *)data)->route_item = item;
+  }
+}
+
+void set_item(arts_route_item_t *item, void *data) {
+  item->data = data;
+  set_db_route_item(item, data);
+}
 
 void free_item(arts_route_item_t *item) {
   arts_type_t type = arts_guid_get_type(item->key);
   if (type == ARTS_DB) {
     struct arts_db_s *db = (struct arts_db_s *)item->data;
+    if (db && db->route_item == item) {
+      db->route_item = NULL;
+    }
     if (db && !arts_atomic_sub(&db->copy_count, 1)) {
       arts_db_free(db);
     }
@@ -284,7 +302,8 @@ uint64_t urand64() {
 
 #define HASH64(x, y) ((uint64_t)(x) * (y))
 
-static inline uint64_t get_route_table_key(uint64_t x, unsigned int shift) {
+static inline uint64_t
+arts_route_table_hash_multiplier_for_shift(unsigned int shift) {
   uint64_t hash = 14695981039346656037U;
   switch (shift) {
   /*case 5:
@@ -330,8 +349,13 @@ static inline uint64_t get_route_table_key(uint64_t x, unsigned int shift) {
   default:
     break;
   }
+  return hash;
+}
 
-  return (HASH64(x, hash) >> (64 - shift)) * COLLISION_RESOLVES;
+static inline uint64_t get_route_table_key(uint64_t x,
+                                           const arts_route_table_t *table) {
+  return (HASH64(x, table->hash_multiplier) >> (64 - table->shift)) *
+         COLLISION_RESOLVES;
 }
 extern uint64_t num_tables;
 extern uint64_t max_guid;
@@ -353,13 +377,15 @@ static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
 
 arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
                                          unsigned int shift) {
-  arts_route_table_t *route_table =
-      (arts_route_table_t *)arts_calloc(1, sizeof(arts_route_table_t));
+  arts_route_table_t *route_table = (arts_route_table_t *)arts_calloc_align(
+      1, sizeof(arts_route_table_t), ARTS_ROUTE_TABLE_CACHELINE_SIZE);
   route_table->data = (arts_route_item_t *)arts_calloc_align(
       (size_t)COLLISION_RESOLVES * route_table_size, sizeof(arts_route_item_t),
       16);
   route_table->size = route_table_size;
   route_table->shift = shift;
+  route_table->hash_multiplier =
+      arts_route_table_hash_multiplier_for_shift(shift);
   route_table->setFunc = set_item;
   route_table->freeFunc = free_item;
   route_table->newFunc = arts_new_route_table;
@@ -373,7 +399,7 @@ arts_route_table_search_for_key(arts_route_table_t *route_table,
   arts_route_table_t *next;
   uint64_t key_val;
   while (current) {
-    key_val = get_route_table_key((uint64_t)key, current->shift);
+    key_val = get_route_table_key((uint64_t)key, current);
     for (int i = 0; i < COLLISION_RESOLVES; i++) {
       if (check_item_state(&current->data[key_val], state)) {
         if (current->data[key_val].key == key) {
@@ -397,7 +423,7 @@ arts_route_table_search_for_empty(arts_route_table_t *route_table,
   arts_route_table_t *next;
   uint64_t key_val;
   while (current != NULL) {
-    key_val = get_route_table_key((uint64_t)key, current->shift);
+    key_val = get_route_table_key((uint64_t)key, current);
     for (int i = 0; i < COLLISION_RESOLVES; i++) {
       if (!current->data[key_val].lock) {
         if (mark_reserve(&current->data[key_val], mark_used)) {
@@ -649,6 +675,7 @@ void *arts_route_table_lookup_item(arts_guid_t key) {
   arts_route_item_t *location =
       arts_route_table_search_for_key(route_table, key, AVAILABLE_KEY);
   if (location) {
+    set_db_route_item(location, location->data);
     ret = location->data;
   }
   return ret;
@@ -669,6 +696,7 @@ item_state_t arts_route_table_lookup_item_with_state(arts_guid_t key,
         return NO_KEY;
       }
     }
+    set_db_route_item(location, location->data);
     *data = &location->data;
     return get_item_state(location);
   }
@@ -687,6 +715,7 @@ void *internal_route_table_lookup_db(arts_route_table_t *route_table,
     *rank = (int)location->rank;
     if (inc_item(location, 1, location->key, route_table)) {
       ret = location->data;
+      set_db_route_item(location, ret);
       *touched = &location->touched;
     }
   }
@@ -719,7 +748,20 @@ bool internal_route_table_return_db(arts_route_table_t *route_table,
                                     bool do_delete) {
   arts_route_item_t *location =
       arts_route_table_search_for_key(route_table, key, AVAILABLE_KEY);
+  return internal_route_table_return_db_item(route_table, key, location,
+                                             mark_to_delete, do_delete);
+}
+
+static bool internal_route_table_return_db_item(arts_route_table_t *route_table,
+                                                arts_guid_t key,
+                                                arts_route_item_t *location,
+                                                bool mark_to_delete,
+                                                bool do_delete) {
   if (location) {
+    if (location->key != key) {
+      return internal_route_table_return_db(route_table, key, mark_to_delete,
+                                            do_delete);
+    }
     // Only mark it for deletion if it is the last one
     // Why make it unusable to other if there is still other
     // tasks that may benifit
@@ -749,7 +791,19 @@ bool arts_route_table_return_db(arts_guid_t key, bool mark_to_delete) {
                                         is_remote);
 }
 
-int arts_route_table_lookup_rank(arts_guid_t key) {
+bool arts_route_table_return_db_item(arts_guid_t key, arts_route_item_t *item,
+                                     bool mark_to_delete) {
+  arts_route_table_t *route_table = arts_get_route_table(key);
+  bool is_remote = arts_guid_get_rank(key) != arts_global_rank_id;
+  return internal_route_table_return_db_item(route_table, key, item,
+                                             mark_to_delete, is_remote);
+}
+
+int arts_route_table_lookup_owner_rank(arts_guid_t key) {
+  return (int)arts_guid_get_rank(key);
+}
+
+int arts_route_table_lookup_cache_rank(arts_guid_t key) {
   arts_route_table_t *route_table = arts_get_route_table(key);
   arts_route_item_t *location =
       arts_route_table_search_for_key(route_table, key, AVAILABLE_KEY);
@@ -759,16 +813,24 @@ int arts_route_table_lookup_rank(arts_guid_t key) {
   return -1;
 }
 
-int arts_route_table_set_rank(arts_guid_t key, int rank) {
+int arts_route_table_lookup_rank(arts_guid_t key) {
+  return arts_route_table_lookup_cache_rank(key);
+}
+
+int arts_route_table_set_cache_rank(arts_guid_t key, int cache_rank) {
   int ret = -1;
   arts_route_table_t *route_table = arts_get_route_table(key);
   arts_route_item_t *location =
       arts_route_table_search_for_key(route_table, key, AVAILABLE_KEY);
   if (location) {
     ret = (int)location->rank;
-    location->rank = rank;
+    location->rank = cache_rank;
   }
   return ret;
+}
+
+int arts_route_table_set_rank(arts_guid_t key, int rank) {
+  return arts_route_table_set_cache_rank(key, rank);
 }
 
 /*
@@ -934,7 +996,7 @@ void arts_route_table_debug_guid(arts_guid_t key, const char *label) {
       arts_route_table_search_for_key(route_table, key, ANY_KEY);
   if (item) {
     uint64_t local = item->lock;
-    ARTS_INFO("[RT-DBG:%s] Guid:%lu data=%p rank=%u count=%lu "
+    ARTS_INFO("[RT-DBG:%s] Guid:%lu data=%p cache_rank=%u count=%lu "
               "res=%u req=%u avail=%u del=%u",
               label, key, item->data, item->rank, GET_COUNT(local),
               IS_RES(local) != 0, IS_REQ(local) != 0,
@@ -1020,7 +1082,7 @@ bool arts_route_table_update_item(arts_guid_t key, void *data,
   while (!found) {
     found = arts_route_table_search_for_key(route_table, key, state);
     if (found) {
-      found->data = data;
+      route_table->setFunc(found, data);
       found->rank = rank;
       mark_write(found);
       ret = true;

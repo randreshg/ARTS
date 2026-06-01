@@ -38,40 +38,31 @@
 ******************************************************************************/
 
 /// @file db_remote.c
-/// @brief Tests arts_db_create_remote. Requires multi-node (node_count > 1).
-///        Creates a DB on a remote node and then puts/gets data to/from it.
+/// @brief Tests remote DB create ordering. Requires node_count > 1.
+///        Covers creator-frontier release and put/get to a remote owner.
 
 #include "arts.h"
 #include <string.h>
 
 #define DATA_SIZE 256
 
-/// EDT on remote node: verify the DB was created there.
-void check_remote_db(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]) {
+void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                  arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   (void)depc;
   (void)depv;
-  arts_guid_t db_guid = (arts_guid_t)paramv[0];
-  unsigned int target_rank = (unsigned int)paramv[1];
-  unsigned int db_rank = arts_guid_get_rank(db_guid);
-  bool ok = (db_rank == target_rank);
-  if (ok) {
-    arts_printf("  PASS: db_create_remote created DB on rank %u\n", db_rank);
-  } else {
-    arts_printf("  FAIL: db_create_remote rank=%u expected=%u\n", db_rank,
-                target_rank);
-  }
+  arts_shutdown();
 }
 
 /// EDT: verify put/get round-trip to remote DB.
 void check_remote_put_get(uint32_t paramc, const uint64_t *paramv,
                           uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
+  unsigned int target_rank = (unsigned int)paramv[0];
   unsigned char *data = (unsigned char *)depv[0].ptr;
-  bool ok = (data != NULL);
+  bool ok = (data != NULL && arts_get_current_node() == target_rank);
   if (ok) {
     for (unsigned int i = 0; i < DATA_SIZE && ok; i++) {
       if (data[i] != (unsigned char)(i & 0xFF)) {
@@ -80,11 +71,31 @@ void check_remote_put_get(uint32_t paramc, const uint64_t *paramv,
     }
   }
   if (ok) {
-    arts_printf("  PASS: remote DB put/get round-trip correct\n");
+    arts_printf("  PASS: remote DB create/put/read ordering correct\n");
   } else {
-    arts_printf("  FAIL: remote DB put/get data mismatch\n");
+    arts_printf("  FAIL: remote DB create/put/read ordering mismatch "
+                "(node=%u expected_node=%u data=%p)\n",
+                arts_get_current_node(), target_rank, data);
+    arts_abort(1);
   }
-  arts_shutdown();
+}
+
+/// EDT: a no-data remote create must release the creator-held frontier when
+/// the creator EDT exits, otherwise this RO reader never runs.
+void check_remote_create_release(uint32_t paramc, const uint64_t *paramv,
+                                 uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  unsigned int target_rank = (unsigned int)paramv[0];
+  bool ok = (depv[0].ptr != NULL && arts_get_current_node() == target_rank);
+  if (ok) {
+    arts_printf("  PASS: remote DB creator frontier release unblocked RO\n");
+  } else {
+    arts_printf("  FAIL: remote DB creator release mismatch "
+                "(node=%u expected_node=%u data=%p)\n",
+                arts_get_current_node(), target_rank, depv[0].ptr);
+    arts_abort(1);
+  }
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -95,34 +106,53 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 
   arts_printf("=== db_remote (multi-node) ===\n");
+  if (arts_get_total_nodes() < 2) {
+    arts_printf("  SKIP: requires >= 2 nodes\n");
+    arts_shutdown();
+    return;
+  }
 
   unsigned int target = 1; // Remote node.
 
-  arts_guid_t epoch = arts_initialize_and_start_epoch(NULL_GUID, 0);
+  arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
+  arts_guid_t epoch = arts_initialize_and_start_epoch(shut, 0);
 
-  // Test 1: arts_db_create_remote on node 1.
+  // Remote create is followed by an immediate put and then an owner-local RO
+  // dependence. This exercises the create/initialization ordering edge: the
+  // reader must not observe the DB until the put has released the creator
+  // write.
   void *tmp;
   arts_guid_t remote_db = arts_db_create(&tmp, DATA_SIZE, ARTS_DB_DEFAULT,
                                          &(arts_hint_t){.route = target});
-
-  uint64_t params[2];
-  params[0] = (uint64_t)remote_db;
-  params[1] = (uint64_t)target;
-  arts_edt_create_with_epoch(check_remote_db, 2, params, 0, epoch,
-                             &(arts_hint_t){.route = 0});
-
-  // Test 2: Put data to remote DB, then get it back.
+  if (tmp != NULL) {
+    arts_printf("  FAIL: remote arts_db_create returned local pointer\n");
+    arts_abort(1);
+  }
   unsigned char send_buf[DATA_SIZE];
   for (unsigned int i = 0; i < DATA_SIZE; i++) {
     send_buf[i] = (unsigned char)(i & 0xFF);
   }
 
+  uint64_t params[1];
+  params[0] = (uint64_t)target;
   arts_guid_t read_edt = arts_edt_create_with_epoch(
-      check_remote_put_get, 0, NULL, 1, epoch, &(arts_hint_t){.route = 0});
+      check_remote_put_get, 1, params, 1, epoch,
+      &(arts_hint_t){.route = target});
   arts_put_in_db(send_buf, NULL_GUID, remote_db, 0, 0, DATA_SIZE);
+  arts_add_dependence(remote_db, read_edt, 0, DB_MODE_RO);
 
-  // Get the data back.
-  arts_get_from_db(read_edt, remote_db, 0, 0, DATA_SIZE);
+  void *release_tmp;
+  arts_guid_t release_db =
+      arts_db_create(&release_tmp, sizeof(uint64_t), ARTS_DB_DEFAULT,
+                     &(arts_hint_t){.route = target});
+  if (release_tmp != NULL) {
+    arts_printf("  FAIL: remote release DB create returned local pointer\n");
+    arts_abort(1);
+  }
+  arts_guid_t release_reader = arts_edt_create_with_epoch(
+      check_remote_create_release, 1, params, 1, epoch,
+      &(arts_hint_t){.route = target});
+  arts_add_dependence(release_db, release_reader, 0, DB_MODE_RO);
 }
 
 int main(int argc, char **argv) {

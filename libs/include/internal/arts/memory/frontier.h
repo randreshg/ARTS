@@ -118,6 +118,8 @@ struct arts_db_frontier_s {
 struct arts_db_list_s {
   struct arts_db_frontier_s *head;
   struct arts_db_frontier_s *tail;
+  struct arts_db_frontier_s *free_frontiers;
+  unsigned int free_frontiers_count;
   volatile unsigned int reader;
   volatile unsigned int writer;
 };
@@ -144,6 +146,11 @@ bool arts_apply_remote_writer_update(struct arts_db_s *db, unsigned int rank,
                                      arts_guid_t edt_guid,
                                      const void *payload,
                                      uint64_t payload_size);
+bool arts_apply_remote_writer_put(struct arts_db_s *db, unsigned int rank,
+                                  arts_guid_t edt_guid, uint64_t offset,
+                                  const void *payload, uint64_t payload_size);
+bool arts_release_remote_writer(struct arts_db_s *db, unsigned int rank,
+                                arts_guid_t edt_guid);
 bool arts_progress_and_get_frontier(struct arts_db_list_s *db_list,
                                     struct arts_db_frontier_iterator_s *iter);
 bool arts_push_db_to_list(struct arts_db_list_s *db_list, unsigned int data,
@@ -171,7 +178,8 @@ bool arts_claim_local_ro_reader(struct arts_db_s *db, struct arts_edt_s *edt,
                                 arts_db_access_mode_t mode, bool *on_head);
 
 bool arts_claim_remote_ew_writer(struct arts_db_s *db, unsigned int rank,
-                                 arts_guid_t edt_guid, bool *on_head,
+                                 arts_guid_t edt_guid, unsigned int slot,
+                                 arts_db_access_mode_t mode, bool *on_head,
                                  bool *deliver);
 
 void arts_retire_local_ro_reader(struct arts_db_s *db);
@@ -182,6 +190,10 @@ bool arts_register_remote_ro_reader(struct arts_db_s *db, unsigned int rank,
 bool arts_remote_ro_reader_preregistered(struct arts_db_s *db,
                                          unsigned int rank,
                                          arts_guid_t edt_guid);
+bool arts_remote_ro_reader_preregistered_exact(struct arts_db_s *db,
+                                               unsigned int rank,
+                                               arts_guid_t edt_guid,
+                                               unsigned int slot);
 #ifdef __cplusplus
 }
 #endif

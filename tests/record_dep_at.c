@@ -174,6 +174,44 @@ void check_slice_after_writer(uint32_t paramc, const uint64_t *paramv,
   }
 }
 
+/// Test 6: a sliced RO after multiple EW generations must observe the latest
+/// completed writer, not an earlier DB image.
+void writer_slice_values(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  int *data = (int *)depv[0].ptr;
+  if (!data) {
+    fail_test("record_dep_at ordered writer null pointer");
+  }
+  data[2] = (int)paramv[0];
+  data[3] = (int)paramv[1];
+  arts_printf("  PASS: record_dep_at ordered writer set [%d, %d]\n", data[2],
+              data[3]);
+}
+
+void check_slice_after_writer_chain(uint32_t paramc, const uint64_t *paramv,
+                                    uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  int *slice = (int *)depv[0].ptr;
+  bool ok = (slice != NULL && slice[0] == 900 && slice[1] == 901 &&
+             depv[0].mode == DB_MODE_PTR);
+  if (ok) {
+    arts_printf("  PASS: record_dep_at slice observes latest EW generation\n");
+  } else {
+    if (slice) {
+      arts_printf("  FAIL: record_dep_at EW-chain slice got [%d, %d], "
+                  "mode=%u expected [900, 901], mode=%u\n",
+                  slice[0], slice[1], depv[0].mode, DB_MODE_PTR);
+    } else {
+      arts_printf("  FAIL: record_dep_at EW-chain slice null pointer\n");
+    }
+    abort();
+  }
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -263,6 +301,35 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence_at(db4, e5_reader, 0, DB_MODE_RO, 2 * sizeof(int),
                          2 * sizeof(int));
   arts_add_dependence(writer_done, e5_reader, 1, DB_MODE_NULL);
+
+  // Test 6: record_dep_at after an EW chain must see the latest generation.
+  void *ptr5 = NULL;
+  arts_guid_t db5 =
+      arts_db_create(&ptr5, 4 * sizeof(int), ARTS_DB_DEFAULT, NULL);
+  int *d5 = (int *)ptr5;
+  d5[0] = 1;
+  d5[1] = 2;
+  d5[2] = 3;
+  d5[3] = 4;
+  arts_db_release(db5);
+
+  uint64_t first_writer_params[] = {500, 501};
+  arts_guid_t e6_writer_a = arts_edt_create_with_epoch(
+      writer_slice_values, 2, first_writer_params, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence(db5, e6_writer_a, 0, DB_MODE_EW);
+
+  uint64_t second_writer_params[] = {900, 901};
+  arts_guid_t e6_writer_b = arts_edt_create_with_epoch(
+      writer_slice_values, 2, second_writer_params, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence(db5, e6_writer_b, 0, DB_MODE_EW);
+
+  arts_guid_t e6_reader = arts_edt_create_with_epoch(
+      check_slice_after_writer_chain, 0, NULL, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence_at(db5, e6_reader, 0, DB_MODE_RO, 2 * sizeof(int),
+                         2 * sizeof(int));
 
   arts_wait_on_handle(epoch);
   arts_shutdown();

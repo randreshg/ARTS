@@ -513,6 +513,9 @@ void arts_remote_send_request_payload_async_free(
     int rank, char *message, unsigned int length, char *payload,
     uint64_t offset, uint64_t size, void (*free_method)(void *)) {
   if (!self_send_check(rank)) {
+    if (payload && free_method) {
+      free_method(payload);
+    }
     return;
   }
   size_send_check(length);

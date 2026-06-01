@@ -58,11 +58,13 @@ enum artsServerMessageType {
   ARTS_REMOTE_ADD_DEPENDENCE_MSG,
   ARTS_REMOTE_DB_REQUEST_MSG,
   ARTS_REMOTE_DB_SEND_MSG,
+  ARTS_REMOTE_DB_CREATE_MSG,
   ARTS_REMOTE_INVALIDATE_DB_MSG,
   ARTS_REMOTE_DB_UPDATE_GUID_MSG,
   ARTS_REMOTE_DB_UPDATE_MSG,
   ARTS_REMOTE_DB_DESTROY_MSG,
   ARTS_REMOTE_DB_DESTROY_FORWARD_MSG,
+  ARTS_REMOTE_DB_RELEASE_CREATED_MSG,
   ARTS_REMOTE_EDT_MOVE_MSG,
   ARTS_REMOTE_EVENT_MOVE_MSG,
   ARTS_REMOTE_DB_MOVE_MSG,
@@ -158,12 +160,24 @@ struct ARTS_PACKED arts_remote_db_send_packet_s {
   struct arts_remote_packet_s header;
 };
 
+struct ARTS_PACKED arts_remote_db_create_packet_s {
+  struct arts_remote_packet_s header;
+  arts_guid_t guid;
+  arts_guid_t creator_edt_guid;
+  uint64_t len;
+  uint64_t arts_id;
+  arts_db_types_t db_type;
+  uint32_t interleave_memory;
+};
+
 struct ARTS_PACKED arts_remote_db_full_request_packet_s {
   struct arts_remote_packet_s header;
   arts_guid_t db_guid;
   arts_guid_t edt_guid;
   unsigned int slot;
   arts_db_access_mode_t mode;
+  uint32_t forwarded;
+  uint32_t reserved;
 };
 
 struct ARTS_PACKED arts_remote_db_full_send_packet_s {
@@ -178,6 +192,7 @@ struct ARTS_PACKED arts_remote_get_put_packet_s {
   arts_guid_t edt_guid;
   arts_guid_t db_guid;
   arts_guid_t epoch_guid;
+  arts_guid_t writer_edt_guid;
   unsigned int slot;
   unsigned int flags;
   uint64_t offset;

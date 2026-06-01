@@ -487,7 +487,7 @@ void arts_put_in_db_from_gpu(void *ptr, arts_guid_t db_guid,
       CHECKCORRECT(cudaMemcpyAsync(cpy_ptr, ptr, size, cudaMemcpyDeviceToHost,
                                    *arts_local_stream));
       arts_out_of_order_put_in_db(cpy_ptr, NULL_GUID, db_guid, 0, offset, size,
-                                  NULL_GUID);
+                                  NULL_GUID, NULL_GUID, arts_global_rank_id);
     }
     if (free_data) {
       arts_gpu_route_table_add_item_to_delete_race(ptr, 0, db_guid,

@@ -42,7 +42,9 @@ set(TEST_PROGRAMS
     # --- Original tests ---
     edt_epoch_wait
     route_table
+    route_table_layout
     route_table_remote_guid
+    frontier_prereg
     cdag
     cdag_ew_chain
     cdag_ew_ordering
@@ -388,6 +390,8 @@ register_single_node_test(record_dep_at)
 register_single_node_test(wavefront_dep_at)
 register_single_node_test(utility_api)
 register_single_node_test(route_table)
+register_single_node_test(route_table_layout)
+register_single_node_test(frontier_prereg)
 register_single_node_test(route_table_iter)
 register_single_node_test(route_table_iter_destroy)
 register_single_node_test(acquire_mode)
@@ -421,8 +425,10 @@ register_multinode_test(db_put_get_at)
 register_multinode_test(db_remote)
 register_multinode_test(remote_db_event)
 register_multinode_test(multinode_cdag)
-register_multinode_test(cdag_remote_owner_ordering ARGS 24 TIMEOUT 30)
+register_multinode_test(cdag_remote_owner_ordering ARGS 24 TIMEOUT 90)
 register_multinode_test(cdag_remote_third_party_ordering ARGS 32 TIMEOUT 30)
+register_multinode_test(multinode_remote_writer ARGS 4 TIMEOUT 30)
+register_multinode_test(multinode_stencil_halo ARGS 4 TIMEOUT 90)
 register_multinode_test(multinode_scaler_fanin ARGS 64 8 2 1 TIMEOUT 30)
 register_local_rdma_guard_test(multinode_scaler_fanin_local_rdma_forces_tcp
     ARGS 64 8 2 1 TIMEOUT 30)

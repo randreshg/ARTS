@@ -43,6 +43,7 @@
 ///        Requires multi-node (node_count > 1).
 
 #include "arts.h"
+#include "arts/gas/route_table.h"
 #include <string.h>
 
 #define DB_ELEMS 8
@@ -69,6 +70,7 @@ void check_create_with_data(uint32_t paramc, const uint64_t *paramv,
     arts_printf("  PASS: create_with_guid + data on remote node\n");
   } else {
     arts_printf("  FAIL: create_with_guid data mismatch\n");
+    arts_abort(1);
   }
 }
 
@@ -93,6 +95,7 @@ void check_signal_ptr(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: cross-node signal_edt_ptr %u bytes\n", size);
   } else {
     arts_printf("  FAIL: cross-node signal_edt_ptr data mismatch\n");
+    arts_abort(1);
   }
 }
 
@@ -117,6 +120,7 @@ void check_rename_get(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: db_rename cross-node access\n");
   } else {
     arts_printf("  FAIL: db_rename data mismatch\n");
+    arts_abort(1);
   }
 }
 
@@ -129,6 +133,15 @@ void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_shutdown();
+}
+
+static void require_no_local_db_storage(arts_guid_t guid, const char *label) {
+  if (arts_route_table_lookup_item(guid) == NULL) {
+    arts_printf("  PASS: %s did not install non-owner DB storage\n", label);
+    return;
+  }
+  arts_printf("  FAIL: %s installed detached non-owner DB storage\n", label);
+  arts_abort(1);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -144,8 +157,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t epoch = arts_initialize_and_start_epoch(shut, 0);
 
   // Test 1: Create DB locally with GUID + initial data, read from remote node.
-  // arts_db_create_with_guid is local-only, so create on node 0 and get
-  // from node 1 via arts_get_from_db.
   {
     int init_data[DB_ELEMS];
     for (int i = 0; i < DB_ELEMS; i++) {
@@ -160,7 +171,28 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_get_from_db(reader, reserved, 0, 0, DB_ELEMS * sizeof(int));
   }
 
-  // Test 2: Signal ptr (256 bytes) from node 0 to EDT on node 1.
+  // Test 2: Create a pre-reserved DB directly on node 1 with initial data and
+  // immediately add a same-owner reader dependence from node 0.
+  {
+    int init_data[DB_ELEMS];
+    for (int i = 0; i < DB_ELEMS; i++) {
+      init_data[i] = i * 7;
+    }
+    arts_guid_t reserved = arts_guid_reserve(ARTS_DB, 1);
+    void *remote_ptr =
+        arts_db_create_with_guid(reserved, DB_ELEMS * sizeof(int),
+                                 ARTS_DB_DEFAULT, init_data, NULL);
+    if (remote_ptr != NULL) {
+      arts_printf("  FAIL: remote create_with_guid returned local pointer\n");
+      arts_abort(1);
+    }
+    require_no_local_db_storage(reserved, "remote create_with_guid");
+    arts_guid_t reader = arts_edt_create_with_epoch(
+        check_create_with_data, 0, NULL, 1, epoch, &(arts_hint_t){.route = 1});
+    arts_add_dependence(reserved, reader, 0, DB_MODE_RO);
+  }
+
+  // Test 3: Signal ptr (256 bytes) from node 0 to EDT on node 1.
   {
     uint8_t buf[PTR_SIZE];
     for (unsigned int i = 0; i < PTR_SIZE; i++) {
@@ -172,7 +204,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_signal_edt_ptr(reader, 0, buf, PTR_SIZE);
   }
 
-  // Test 3: Create DB on node 0, fill, rename, then get from node 1.
+  // Test 4: Create DB on node 0, fill, rename, then get from node 1.
   {
     void *ptr = NULL;
     arts_guid_t db =

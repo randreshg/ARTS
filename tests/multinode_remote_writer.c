@@ -4,17 +4,15 @@
 ******************************************************************************/
 
 /// @file multinode_remote_writer.c
-/// @brief Reproducer for the remaining cross-node gap: remote-WRITER ordering.
+/// @brief Regression for cross-node remote-writer ordering.
 ///
 /// A tile owned by node 0 is written EW by an EDT on node 1 (remote to the
 /// owner) then read RO by an EDT on node 0 each timestep; the node-0 reader of
-/// version t must observe t. This is the DUAL of the (fixed) remote-RO-reader
-/// case: here the writer is forwarded + late-pulled, so the local reader can
-/// register and run before the remote write lands, observing the pre-write
-/// value (reader abort()s). The fix needs the remote writer registered on the
-/// owner's frontier in CDAG order AND its update-return completing the frontier
-/// progression — the latter is not yet wired, so this reproducer currently
-/// fails. Not in the auto-run suite. Timesteps is an optional argv (default 1).
+/// version t must observe t. This is the dual of the remote-RO-reader case:
+/// the writer is forwarded + late-pulled, so correctness depends on the remote
+/// writer being registered on the owner's frontier in CDAG order and the
+/// writer update return retiring that frontier generation before later RO
+/// readers run. Timesteps is an optional argv (default 1).
 
 #include "arts.h"
 #include <stdlib.h>

@@ -167,6 +167,7 @@ MULTI_NODE_TESTS=(
   "db_remote||$TIMEOUT_LONG|DB remote"
   "remote_db_event||$TIMEOUT_LONG|Remote DB event"
   "multinode_cdag||$TIMEOUT_LONG|Multi-node CDAG"
+  "multinode_remote_writer|4|$TIMEOUT_LONG|Multi-node remote writer ordering"
   "multinode_event_types||$TIMEOUT_LONG|Multi-node event types"
   "multinode_array_db||$TIMEOUT_LONG|Multi-node array DB"
   "multinode_db_advanced||$TIMEOUT_LONG|Multi-node DB advanced"

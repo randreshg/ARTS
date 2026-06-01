@@ -1110,12 +1110,6 @@ void *arts_block_for_buffer(arts_guid_t buffer_guid) {
 }
 
 volatile uint64_t outstanding_edts __attribute__((aligned(64))) = 0;
-void check_out_edts(uint64_t threshold) {
-  static volatile uint64_t count __attribute__((aligned(64))) = 0;
-  if (arts_atomic_fetch_add_u64(&count, 1) + 1 == threshold) {
-    arts_atomic_fetch_sub_u64(&count, threshold);
-  }
-}
 
 void arts_lc_sync(arts_guid_t edt_guid, uint32_t slot, arts_guid_t data_guid) {
   arts_type_t type = arts_guid_get_type(data_guid);

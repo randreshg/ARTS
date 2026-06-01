@@ -1138,7 +1138,6 @@ bool arts_default_scheduler_loop() {
     // arts_wake_up_context();
     return true;
   }
-  CHECK_OUTSTANDING_EDTS(10000000);
   arts_runtime_idle_backoff();
   return false;
 }

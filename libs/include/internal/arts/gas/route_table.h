@@ -70,6 +70,9 @@ struct arts_db_frontier_iterator_s;
 #define SHOULD_DELETE(x) (IS_DEL(x) && !GET_COUNT(x))
 
 #define COLLISION_RESOLVES 8
+#define ARTS_ROUTE_TABLE_CACHELINE_SIZE 64
+#define ARTS_ROUTE_TABLE_LOCK_PAD_SIZE                                         \
+  (ARTS_ROUTE_TABLE_CACHELINE_SIZE - sizeof(unsigned int))
 
 struct arts_route_invalidate_s {
   int size;
@@ -107,18 +110,23 @@ typedef void (*free_route_item_t)(arts_route_item_t *item);
 typedef arts_route_table_t *(*new_route_table_t)(unsigned int route_table_size,
                                                  unsigned int shift);
 
-// Add padding around locks...
 struct arts_route_table_s {
   arts_route_item_t *data;
   unsigned int size;
   unsigned int shift;
+  uint64_t hash_multiplier;
   struct arts_route_table_s *next;
-  volatile unsigned readerLock;
-  volatile unsigned writerLock;
   set_route_item_t setFunc;
   free_route_item_t freeFunc;
   new_route_table_t newFunc;
-}; // __attribute__ ((aligned));
+
+  volatile unsigned int readerLock
+      ARTS_ALIGNED(ARTS_ROUTE_TABLE_CACHELINE_SIZE);
+  unsigned char readerLockPad[ARTS_ROUTE_TABLE_LOCK_PAD_SIZE];
+  volatile unsigned int writerLock
+      ARTS_ALIGNED(ARTS_ROUTE_TABLE_CACHELINE_SIZE);
+  unsigned char writerLockPad[ARTS_ROUTE_TABLE_LOCK_PAD_SIZE];
+} ARTS_ALIGNED(ARTS_ROUTE_TABLE_CACHELINE_SIZE);
 
 typedef struct {
   uint64_t index;
@@ -145,6 +153,8 @@ internal_route_table_add_deleted_item_race(arts_route_table_t *route_table,
 
 void *arts_route_table_lookup_item(arts_guid_t key);
 int arts_route_table_lookup_rank(arts_guid_t key);
+int arts_route_table_lookup_owner_rank(arts_guid_t key);
+int arts_route_table_lookup_cache_rank(arts_guid_t key);
 bool internal_route_table_remove_item(arts_route_table_t *route_table,
                                       arts_guid_t key);
 bool arts_route_table_remove_item(arts_guid_t key);
@@ -171,6 +181,7 @@ item_state_t arts_route_table_lookup_item_with_state(arts_guid_t key,
 item_state_t getitem_state(arts_route_item_t *item);
 
 int arts_route_table_set_rank(arts_guid_t key, int rank);
+int arts_route_table_set_cache_rank(arts_guid_t key, int cache_rank);
 
 void **arts_route_table_reserve(arts_guid_t key, bool *dec,
                                 item_state_t *state);
@@ -187,6 +198,8 @@ bool internal_route_table_return_db(arts_route_table_t *route_table,
                                     arts_guid_t key, bool mark_to_delete,
                                     bool do_delete);
 bool arts_route_table_return_db(arts_guid_t key, bool mark_to_delete);
+bool arts_route_table_return_db_item(arts_guid_t key, arts_route_item_t *item,
+                                     bool mark_to_delete);
 
 bool arts_route_table_add_oo(arts_guid_t key, void *data, bool inc);
 bool arts_route_table_add_oo_existing(arts_guid_t key, void *data, bool inc);
