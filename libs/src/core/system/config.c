@@ -642,9 +642,13 @@ static void config_auto_parse(struct arts_config_s *config,
 static void handle_launcher(struct arts_config_s *config, const char *value,
                             struct arts_config_variable_s **vars) {
   (void)vars;
-  /* Environment always wins: SLURM/LSF env vars override config value */
+  /* Environment always wins: SLURM/LSF/FLUX env vars override config value */
   if (getenv("SLURM_PROCID") || getenv("SLURM_NNODES")) {
     config->launcher = arts_config_make_new_var("slurm");
+    return;
+  }
+  if (getenv("FLUX_JOB_ID") || getenv("FLUX_JOB_NNODES")) {
+    config->launcher = arts_config_make_new_var("flux");
     return;
   }
   if (getenv("LSB_HOSTS") || getenv("LSB_MCPU_HOSTS")) {
@@ -892,6 +896,48 @@ static void config_setup_slurm(struct arts_config_s *config) {
   config_set_master_from_table(config);
 }
 
+static void config_setup_flux(struct arts_config_s *config) {
+  config->master_boot = false;
+  // SLURM_CPUS_PER_TASK equivalent: no direct env var in Flux.
+  // Requires querying the job info at runtime.
+  char cmd[256];
+  snprintf(cmd, sizeof(cmd), "flux jobs -no {ncores} %s", getenv("FLUX_JOB_ID"));
+  FILE *fp = popen(cmd, "r");
+  if (fp != NULL) {
+    char result[64];
+    if (fgets(result, sizeof(result), fp) != NULL) {
+      unsigned int total_cores = (unsigned int)strtol(result, NULL, 10);
+      char *nnodes_str = getenv("FLUX_JOB_NNODES");
+      unsigned int nnodes = nnodes_str ? (unsigned int)strtol(nnodes_str, NULL, 10) : 1;
+      config->thread_count = total_cores / nnodes;
+    }
+    pclose(fp);
+  }
+
+  // SLURM_NNODES equivalent: FLUX_JOB_NNODES
+  char *flux_nodes = getenv("FLUX_JOB_NNODES");
+  if (flux_nodes != NULL) {
+    config->nodes = (unsigned int)strtol(flux_nodes, NULL, 10);
+  } else {
+    config->nodes = 1;
+  }
+
+  // SLURM_STEP_NODELIST equivalent: `flux hostlist local -e` (space-delimited)
+  FILE *fp2 = popen("flux hostlist local -e -d=','", "r");
+  char node_list[4096] = {0};
+  if (fp2 != NULL) {
+    fgets(node_list, sizeof(node_list), fp2);
+    pclose(fp2);
+    // Strip trailing newline if present
+    size_t len = strlen(node_list);
+    if (len > 0 && node_list[len - 1] == '\n') {
+      node_list[len - 1] = '\0';
+    }
+  }
+  arts_config_create_routing_table(&config, node_list);
+  config_set_master_from_table(config);
+}
+
 static void config_setup_lsf(struct arts_config_s *config) {
   config->master_boot = false;
   unsigned int count = 0;
@@ -1029,7 +1075,10 @@ static void config_setup_launcher(struct arts_config_s *config,
     config_setup_slurm(config);
   } else if (strcmp(config->launcher, "lsf") == 0) {
     config_setup_lsf(config);
+  } else if (strcmp(config->launcher, "flux") == 0) {
+    config_setup_flux(config);
   } else if (strcmp(config->launcher, "ssh") == 0) {
+    arts_printf("Configuring for SSH\n");
     config_setup_ssh(config, vars);
   } else if (strcmp(config->launcher, "local") == 0) {
     config_setup_local(config, vars);
