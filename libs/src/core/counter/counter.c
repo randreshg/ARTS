@@ -261,11 +261,17 @@ void arts_counter_capture_stop() {
 }
 
 void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
-  arts_atomic_fetch_add_u64(&counter->count, num);
+  // arts_thread_local_counters are per-thread (ARTS_THREAD_LOCAL); only the
+  // owning worker mutates count on this hot path (fires per arts_malloc/free
+  // when counters are enabled). The periodic capture thread reads/adjusts count
+  // separately, so a RELAXED atomic — not a seq-cst LOCKed RMW — is sufficient:
+  // it avoids a torn 64-bit value vs the capture thread without paying full
+  // barrier cost. Statistical counters need no inter-thread ordering.
+  __atomic_fetch_add(&counter->count, num, __ATOMIC_RELAXED);
 }
 
 void arts_counter_decrement_by(arts_counter_t *counter, uint64_t num) {
-  arts_atomic_fetch_sub_u64(&counter->count, num);
+  __atomic_fetch_sub(&counter->count, num, __ATOMIC_RELAXED);
 }
 
 void arts_counter_timer_start(arts_counter_t *counter) {
