@@ -405,7 +405,15 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.steal_request_lock = 1U;
   arts_node_info.shutdown_count = arts_global_rank_count - 1;
   arts_node_info.ready_to_shutdown = arts_global_rank_count - 1;
-  arts_node_info.auto_shutdown_guid = config->auto_shutdown ? 1 : NULL_GUID;
+  /*
+   * Application lifetime is rooted at rank 0: thread zero schedules main_edt
+   * only on rank 0, and rank 0 broadcasts shutdown when that work completes.
+   * Letting nonzero ranks fire their local auto-shutdown epoch can race with
+   * rank 0 issuing remote EDTs, so nonzero ranks stay alive until the global
+   * shutdown message arrives.
+   */
+  arts_node_info.auto_shutdown_guid =
+      (config->auto_shutdown && arts_global_rank_id == 0) ? 1 : NULL_GUID;
 
   /* Network buffer */
   arts_node_info.buf = (char *)arts_malloc(PACKET_SIZE);
