@@ -162,7 +162,9 @@ static ARTS_THREAD_LOCAL bool rdma_connect_helper_thread_active;
 #define ARTS_RDMA_FORCE_RSOCKET_REUSE 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND 0
 #define ARTS_RDMA_CLOSE_AFTER_SEND_EVERY 0
-#define ARTS_RDMA_INLINE 128
+/* Optional rsocket provider tuning. A value of 0 leaves provider defaults in
+ * place; some providers reject RDMA_INLINE with EINVAL. */
+#define ARTS_RDMA_INLINE 0
 #define ARTS_RDMA_MAX_ACTIVE_CONNECTS 1
 #define ARTS_RDMA_CLOSE_WORKERS 4
 #define ARTS_RDMA_SEND_MAX_BYTES 1048576
