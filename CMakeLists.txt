@@ -121,6 +121,10 @@ if(NOT ARTS_LOG_LEVEL MATCHES "^[0-3]$")
 endif()
 option(ARTS_USE_GPU "Enable GPU support (default: ON, disable when OFF)" ON)
 option(ARTS_USE_RDMA "Use RDMA networking (default: ON, use TCP when OFF)" ON)
+option(ARTS_USE_GASNET "Use GASNet-EX transport (one-sided RMA + Active Messages); overrides ARTS_USE_RDMA" OFF)
+set(ARTS_GASNET_PREFIX "" CACHE PATH "GASNet-EX install prefix (for ARTS_USE_GASNET)")
+set(ARTS_GASNET_CONDUIT "udp" CACHE STRING "GASNet conduit: udp|smp|ofi|ibv|ucx|mpi")
+set(ARTS_GASNET_THREADMODE "par" CACHE STRING "GASNet threading mode: par|seq|parsync")
 option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" ON)
 option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON)
 option(ARTS_USE_JEMALLOC "Use jemalloc allocator for reduced lock contention at high thread counts" OFF)
@@ -269,7 +273,54 @@ else()
 endif()
 
 # Network library detection and configuration
-if(NOT ARTS_USE_RDMA)
+if(ARTS_USE_GASNET)
+    # GASNet-EX transport: connectionless wireup + one-sided RMA + Active
+    # Messages. Takes precedence over the rsocket/TCP data plane and reuses the
+    # ARTS_RDMA_PROVIDER_* link/include variables to plug into the existing
+    # library targets without further edits.
+    message(STATUS "Network: Using GASNet-EX transport")
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GasnetFlags.cmake)
+    add_compile_definitions(ARTS_USE_GASNET)
+
+    add_library(arts_gasnet INTERFACE)
+    separate_arguments(_arts_gex_cppflags UNIX_COMMAND "${GASNET_CPPFLAGS}")
+    separate_arguments(_arts_gex_ldflags  UNIX_COMMAND "${GASNET_LDFLAGS}")
+    separate_arguments(_arts_gex_libs     UNIX_COMMAND "${GASNET_LIBS}")
+    # CPPFLAGS carries -I include dirs and -D defines (e.g. GASNET_PAR), but the
+    # conduit fragment may also inject compiler opt flags like repeated
+    # `--param X=Y`. CMake de-duplicates repeated `--param` tokens, which mangles
+    # the command line, so keep only the include dirs and defines.
+    set(_arts_gex_incs "")
+    set(_arts_gex_defs "")
+    foreach(_tok IN LISTS _arts_gex_cppflags)
+        if(_tok MATCHES "^-I(.+)$")
+            list(APPEND _arts_gex_incs "${CMAKE_MATCH_1}")
+        elseif(_tok MATCHES "^-D(.+)$")
+            list(APPEND _arts_gex_defs "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    target_include_directories(arts_gasnet INTERFACE ${_arts_gex_incs})
+    target_compile_definitions(arts_gasnet INTERFACE ${_arts_gex_defs})
+    # LDFLAGS from the conduit fragment can also embed compiler opt flags
+    # (-O3, repeated --param X=Y) that CMake de-duplicates and mangles. Keep
+    # only genuine linker flags (-L/-l/-Wl/-pthread/-rdynamic and paths).
+    set(_arts_gex_ldkeep "")
+    foreach(_tok IN LISTS _arts_gex_ldflags)
+        if(_tok MATCHES "^(-L|-l|-Wl|-pthread|-rdynamic|/)" )
+            list(APPEND _arts_gex_ldkeep "${_tok}")
+        endif()
+    endforeach()
+    target_link_options(arts_gasnet INTERFACE ${_arts_gex_ldkeep})
+    # amudp/udp-conduit is C++, so pull in the C++ runtime for the final link.
+    target_link_libraries(arts_gasnet INTERFACE ${_arts_gex_libs} stdc++)
+
+    set(RDMACM_LIBRARIES "")
+    set(RDMACM_INCLUDE_DIRS "")
+    # Build-only usage requirement: keeps arts_gasnet out of the installed
+    # ARTSTargets export set while still linking it into this build.
+    set(ARTS_RDMA_PROVIDER_TARGETS "$<BUILD_INTERFACE:arts_gasnet>")
+    set(ARTS_RDMA_PROVIDER_INCLUDE_DIRS "")
+elseif(NOT ARTS_USE_RDMA)
     # User explicitly disabled RDMA, use TCP
     message(STATUS "Network: Using TCP (RDMA disabled)")
     set(RDMACM_LIBRARIES "")
