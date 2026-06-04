@@ -43,6 +43,8 @@ set(CPU_EXAMPLES
     fib_yield
     seidel_dep_at
     simple_reduction
+    remote_db_read
+    distributed_reduction
     tiled_matmul
     bfs
     graph_search
