@@ -1,8 +1,8 @@
 # ARTS GASNet-EX Transport
 
-This branch (`arts/gasnet-transport`) re-platforms the ARTS multinode data plane
-from `librdmacm` rsockets onto **GASNet-EX** (one-sided RMA + Active Messages,
-connectionless wireup). It is an ARTS-only change — no CARTS/compiler work.
+ARTS runs its multinode data plane on **GASNet-EX** (one-sided RMA + Active
+Messages, connectionless wireup) as the v4 production default, in place of the
+legacy `librdmacm` rsocket plane.
 
 ## Architecture: who does what (PMI is *not* MPI, and *not* the transport)
 
@@ -42,17 +42,18 @@ Three independent layers — don't conflate them:
     handler, so the handler only copies the packet into an inbound queue and the
     ARTS receiver thread (`arts_server_try_to_receive`) drains it and runs
     `arts_server_process_packet` outside AM context.
-  - **Bulk transfer** rides the same Medium-AM path (header+payload sent as one
-    contiguous message, chunked when larger than the conduit max-Medium). True
-    zero-copy via one-sided `gex_RMA_Put` directly into a *segment-resident*
-    destination datablock is future work (it requires allocating datablocks in
-    the GASNet segment and is driven from `handler.c`, not the transport).
+  - **Bulk transfer** of RMA-eligible datablocks is zero-copy via one-sided
+    `gex_RMA_Put` into a segment-resident destination (`db_arena.c` allocates
+    eligible datablocks in the GASNet segment; the move is driven from
+    `handler.c`). Non-RMA-eligible traffic falls back to the Medium-AM path
+    (header+payload sent as one contiguous message, chunked when larger than the
+    conduit max-Medium).
 - **`CMakeLists.txt` / `cmake/GasnetFlags.cmake`** — `ARTS_USE_GASNET` option,
   consumes a conduit `.mak` fragment, selects `gasnet_transport.c` vs `socket.c`,
   and exposes an `arts_gasnet` (build-only) interface target with the conduit
-  include/define/link flags. No edits to `main.c`/`config.c` (the backend sets
-  `config->master_boot=false` so the launcher is skipped — the GASNet spawner
-  starts all ranks).
+  include/define/link flags. The backend sets `config->master_boot=false` so the
+  launcher is skipped — the GASNet spawner starts all ranks; `config.c` carries
+  only the compile-time transport label reported at startup.
 
 ## Conduits / using real RDMA
 

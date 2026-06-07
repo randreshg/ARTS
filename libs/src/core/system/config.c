@@ -1240,7 +1240,9 @@ static void config_compute_derived(struct arts_config_s *config) {
 
 static void config_print_warnings(struct arts_config_s *config) {
   const char *compiled_transport =
-#ifdef ARTS_USE_RDMA
+#if defined(ARTS_USE_GASNET)
+      "gasnet";
+#elif defined(ARTS_USE_RDMA)
       "tcp+rdma";
 #else
       ARTS_PROTOCOL_TCP;
