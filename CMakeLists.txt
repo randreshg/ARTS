@@ -122,8 +122,11 @@ endif()
 option(ARTS_USE_GPU "Enable GPU support (default: ON, disable when OFF)" ON)
 option(ARTS_USE_RDMA "Use RDMA networking (default: ON, use TCP when OFF)" ON)
 option(ARTS_USE_GASNET "Use GASNet-EX transport (one-sided RMA + Active Messages); overrides ARTS_USE_RDMA" OFF)
-set(ARTS_GASNET_PREFIX "" CACHE PATH "GASNet-EX install prefix (for ARTS_USE_GASNET)")
-set(ARTS_GASNET_CONDUIT "udp" CACHE STRING "GASNet conduit: udp|smp|ofi|ibv|ucx|mpi")
+set(ARTS_GASNET_PREFIX "" CACHE PATH "External GASNet-EX install prefix; empty => bootstrap from source when ARTS_GASNET_BOOTSTRAP")
+option(ARTS_GASNET_BOOTSTRAP "Download+build GASNet-EX from its release tarball when no ARTS_GASNET_PREFIX is given" ON)
+set(ARTS_GASNET_VERSION "2025.8.0" CACHE STRING "GASNet-EX release to bootstrap")
+set(ARTS_GASNET_SHA256 "" CACHE STRING "Override tarball SHA256 for a non-default ARTS_GASNET_VERSION")
+set(ARTS_GASNET_CONDUIT "" CACHE STRING "GASNet conduit (udp|smp|ofi|ibv|ucx|mpi); empty => auto-detect the fabric")
 set(ARTS_GASNET_THREADMODE "par" CACHE STRING "GASNet threading mode: par|seq|parsync")
 option(ARTS_USE_SANITIZERS "Enable address and undefined behavior sanitizers in Debug builds" ON)
 option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON)
@@ -279,6 +282,13 @@ if(ARTS_USE_GASNET)
     # ARTS_RDMA_PROVIDER_* link/include variables to plug into the existing
     # library targets without further edits.
     message(STATUS "Network: Using GASNet-EX transport")
+    # No external prefix: bootstrap GASNet from its release tarball (download +
+    # build into the build tree, like third_party/hwloc). Sets ARTS_GASNET_PREFIX
+    # / ARTS_GASNET_CONDUIT for GasnetFlags below. With bootstrap disabled and no
+    # prefix, GasnetFlags.cmake fails closed.
+    if(NOT ARTS_GASNET_PREFIX AND ARTS_GASNET_BOOTSTRAP)
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GasnetBootstrap.cmake)
+    endif()
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/GasnetFlags.cmake)
     add_compile_definitions(ARTS_USE_GASNET)
 
