@@ -53,6 +53,7 @@
 #include "arts/gas/guid.h"
 #include "arts/gas/out_of_order.h"
 #include "arts/gas/route_table.h"
+#include "arts/memory/db_arena.h"
 #include "arts/memory/db_move.h"
 #include "arts/memory/frontier.h"
 #include "arts/remote/handler.h"
@@ -261,6 +262,13 @@ void *arts_db_malloc(arts_db_types_t db_type, size_t size) {
       ptr = arts_cuda_malloc_host(size);
   }
 #endif
+  /* RMA DB-move: prefer segment-resident storage so this DB body is a valid
+   * one-sided RMA target. LOCAL DBs are never moved across nodes, so leave them
+   * on the heap and conserve the segment. Arena exhaustion falls through to the
+   * heap (the transfer then takes the Medium-AM path). */
+  if (!ptr && db_type != ARTS_DB_LOCAL && arts_db_rma_enabled()) {
+    ptr = arts_db_arena_alloc(size);
+  }
   if (!ptr) {
     ptr = arts_malloc_align(size, 16);
   }
@@ -272,6 +280,15 @@ static void *arts_db_malloc_interleaved(arts_db_types_t db_type, size_t size) {
   if (arts_node_info.gpu)
     return arts_db_malloc(db_type, size);
 #endif
+  /* When the RMA arena is live, segment residency (RMA addressability) takes
+   * precedence over NUMA interleave: the segment is registered/pinned and the
+   * interleave hint cannot be honored on it. Fall back to interleaved heap when
+   * the arena is off or exhausted. */
+  if (db_type != ARTS_DB_LOCAL && arts_db_rma_enabled()) {
+    void *ptr = arts_db_arena_alloc(size);
+    if (ptr)
+      return ptr;
+  }
   void *ptr = arts_malloc_align(size, ARTS_DB_NUMA_ALIGN);
   if (ptr)
     arts_db_apply_numa_interleave(ptr, size);

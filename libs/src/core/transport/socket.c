@@ -1639,6 +1639,27 @@ static const char *arts_transport_name(void) {
 // The GASNet backend (gasnet_transport.c) supplies the "gasnet" definition.
 const char *arts_transport_kind_name(void) { return arts_transport_name(); }
 
+// --- One-sided RMA DB-move seam ------------------------------------------
+// TCP/rsocket has no GASNet segment or gex_RMA equivalent, so callers use the
+// Medium-AM/socket snapshot path.
+bool arts_transport_rma_capable(void) { return false; }
+
+void *arts_transport_segment_base(uint64_t *size_out) {
+  if (size_out) {
+    *size_out = 0;
+  }
+  return NULL;
+}
+
+int arts_remote_rma_put(int dest_rank, uint64_t remote_addr,
+                        const void *local_src, uint64_t nbytes) {
+  (void)dest_rank;
+  (void)remote_addr;
+  (void)local_src;
+  (void)nbytes;
+  return -1;
+}
+
 bool arts_transport_runtime_uses_rdma(void) {
 #ifdef ARTS_USE_RDMA
   return arts_transport_uses_rdma_cached;

@@ -119,6 +119,7 @@ set(TEST_PROGRAMS
     multinode_remote_writer
     multinode_scaling
     multinode_scaler_fanin
+    rma_dbmove
     cdag_multi_reader
     # --- Graph tests ---
     csr
@@ -432,6 +433,8 @@ register_multinode_test(multinode_cdag)
 register_multinode_test(cdag_remote_owner_ordering ARGS 24 TIMEOUT 90)
 register_multinode_test(cdag_remote_third_party_ordering ARGS 32 TIMEOUT 30)
 register_multinode_test(multinode_remote_writer ARGS 4 TIMEOUT 30)
+# Single-rank checks arena state; multinode launch checks RMA DB-move delivery.
+register_multinode_test(rma_dbmove TIMEOUT 60)
 register_multinode_test(multinode_stencil_halo ARGS 4 TIMEOUT 90)
 register_multinode_test(multinode_scaler_fanin ARGS 64 8 2 1 TIMEOUT 30)
 register_local_rdma_guard_test(multinode_scaler_fanin_local_rdma_forces_tcp

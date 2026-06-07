@@ -24,10 +24,8 @@
 ** receiver thread drains that queue via arts_server_try_to_receive() and runs
 ** arts_server_process_packet() outside AM-handler context.
 **
-** A GASNet segment is attached at startup (required by the conduit; also backs
-** collectives). True zero-copy bulk transfer (one-sided RMA directly into a
-** segment-resident destination datablock) is future work and would be driven
-** from handler.c once datablocks are allocated in the segment.
+** A GASNet segment is attached at startup for collectives and DB bodies that
+** need to be one-sided RMA targets.
 ******************************************************************************/
 #ifdef ARTS_USE_GASNET
 
@@ -38,6 +36,7 @@
 #include <string.h>
 
 #include "arts.h"
+#include "arts/memory/db_arena.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
@@ -45,6 +44,8 @@
 #include "arts/transport/protocol.h"
 #include "arts/transport/socket.h"
 #include "arts/utils/malloc.h"
+
+#include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
 /* GASNet client state                                                */
@@ -55,10 +56,30 @@ static gex_TM_t g_tm;
 static gex_Segment_t g_segment;
 static int g_gasnet_up = 0;
 
-/* GASNet segment size per rank (conduit requirement; backs collectives). */
-#ifndef ARTS_GEX_SEGMENT_BYTES
-#define ARTS_GEX_SEGMENT_BYTES (((size_t)64) << 20) /* 64 MiB */
+/* GASNet segment size per rank. The segment backs the DB arena, so it must be
+ * large enough for the resident DB working set. Override per run with
+ * ARTS_GEX_SEGMENT_MB. */
+#ifndef ARTS_GEX_SEGMENT_MB_DEFAULT
+#define ARTS_GEX_SEGMENT_MB_DEFAULT ((size_t)512) /* 512 MiB */
 #endif
+
+/* Resolved segment base/size, published to the DB arena via
+ * arts_transport_segment_base() after attach. */
+static void *g_seg_base = NULL;
+static uint64_t g_seg_bytes = 0;
+
+static size_t arts_gex_segment_bytes(void) {
+  size_t mb = ARTS_GEX_SEGMENT_MB_DEFAULT;
+  const char *env = getenv("ARTS_GEX_SEGMENT_MB");
+  if (env) {
+    char *endp = NULL;
+    unsigned long long v = strtoull(env, &endp, 10);
+    if (endp != env && v > 0) {
+      mb = (size_t)v;
+    }
+  }
+  return mb << 20;
+}
 
 /* Single client Active Message handler index (client range is 128..255). */
 #define ARTS_GEX_HIDX_PKT 128
@@ -297,7 +318,10 @@ void arts_ll_server_setup(struct arts_config_s *config) {
        GEX_FLAG_AM_REQUEST | GEX_FLAG_AM_MEDIUM, 3, NULL, "arts_pkt"},
   };
   gex_EP_RegisterHandlers(g_ep, htable, sizeof(htable) / sizeof(htable[0]));
-  gex_Segment_Attach(&g_segment, g_tm, (size_t)ARTS_GEX_SEGMENT_BYTES);
+  size_t seg_bytes = arts_gex_segment_bytes();
+  gex_Segment_Attach(&g_segment, g_tm, seg_bytes);
+  g_seg_base = gex_Segment_QueryAddr(g_segment);
+  g_seg_bytes = (uint64_t)gex_Segment_QuerySize(g_segment);
 
   /* Rank/size come from GASNet, not the config file. */
   arts_global_rank_id = (unsigned int)gex_TM_QueryRank(g_tm);
@@ -310,11 +334,16 @@ void arts_ll_server_setup(struct arts_config_s *config) {
   config->nodes = arts_global_rank_count;
 
   g_gasnet_up = 1;
-  ARTS_INFO("ARTS transport: %s; GASNet up rank %u/%u, max_medium=%lu",
+  ARTS_INFO("ARTS transport: %s; GASNet up rank %u/%u, segment=%lu MiB, "
+            "max_medium=%lu",
             arts_transport_kind_name(), arts_global_rank_id,
-            arts_global_rank_count,
+            arts_global_rank_count, (unsigned long)(g_seg_bytes >> 20),
             (unsigned long)gex_AM_MaxRequestMedium(g_tm, GEX_RANK_INVALID,
                                                    GEX_EVENT_NOW, 0, 3));
+
+  /* Carve the DB arena out of the now-attached segment so DB bodies are valid
+   * one-sided RMA targets. No-op if disabled by ARTS_RMA_DBMOVE=0. */
+  arts_db_arena_init();
 }
 
 void arts_ll_server_shutdown() { /* shutdown messages handled by dispatcher.c */ }
@@ -327,9 +356,39 @@ void arts_ll_server_wakeup_receivers() {
 
 void arts_ll_server_cleanup() {
   if (g_gasnet_up) {
+    arts_db_rma_stats_dump();
     /* Quiesce so no rank tears down the conduit while a peer is still using it. */
     gex_Event_Wait(gex_Coll_BarrierNB(g_tm, 0));
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* One-sided RMA DB-move seam.                                         */
+/* ------------------------------------------------------------------ */
+bool arts_transport_rma_capable(void) { return g_gasnet_up != 0; }
+
+void *arts_transport_segment_base(uint64_t *size_out) {
+  if (size_out) {
+    *size_out = g_seg_bytes;
+  }
+  return g_seg_base;
+}
+
+int arts_remote_rma_put(int dest_rank, uint64_t remote_addr,
+                        const void *local_src, uint64_t nbytes) {
+  if (!g_gasnet_up || !remote_addr || !local_src || nbytes == 0) {
+    return -1;
+  }
+  /* Blocking Put: bytes are remotely landed when this returns (local + remote
+   * completion of the transfer). The caller still sends an explicit completion
+   * AM so the remote runs publish/fire/frontier only after this completes. */
+  int rc = gex_RMA_PutBlocking(g_tm, (gex_Rank_t)dest_rank,
+                               (void *)(uintptr_t)remote_addr, (void *)local_src,
+                               (size_t)nbytes, 0);
+  if (rc == 0) {
+    arts_db_rma_stat_inc(ARTS_RMA_STAT_PUT_FIRED);
+  }
+  return rc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -340,9 +399,7 @@ unsigned int arts_remote_get_my_rank() { return arts_global_rank_id; }
 
 bool arts_transport_runtime_uses_rdma(void) { return true; }
 
-// Public transport-kind name for the GASNet backend. Distinct from the
-// rsocket/TCP socket.c backend so logs and callers can tell GASNet apart from
-// the legacy rdma-rsocket data plane.
+// Public transport-kind name for the GASNet backend.
 const char *arts_transport_kind_name(void) { return "gasnet"; }
 
 void arts_remote_set_message_table(struct arts_config_s *table) { (void)table; }

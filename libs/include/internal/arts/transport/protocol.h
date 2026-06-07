@@ -84,6 +84,10 @@ enum artsServerMessageType {
   ARTS_REMOTE_TIME_SYNC_REQ_MSG,
   ARTS_REMOTE_TIME_SYNC_RESP_MSG,
   ARTS_REMOTE_SET_DEP_MODE_MSG,
+  /* GASNet one-sided DB-move control messages. */
+  ARTS_REMOTE_DB_RMA_OFFER_MSG,
+  ARTS_REMOTE_DB_RMA_READY_MSG,
+  ARTS_REMOTE_DB_RMA_DONE_MSG,
 };
 
 // Header
@@ -205,6 +209,32 @@ struct ARTS_PACKED arts_remote_signal_edt_with_ptr_packet_s {
   arts_guid_t db_guid;
   unsigned int size;
   unsigned int slot;
+};
+
+/*
+ * RMA DB-move control packet. One struct carries the OFFER -> READY -> DONE
+ * handshake so both endpoints can finalize from message-local state:
+ *  - OFFER  (owner -> requester): db_header is the source DB header snapshot
+ *    (size/type/db_type/arts_id/version...). dest_addr unused (0). ok unused.
+ *  - READY  (requester -> owner): dest_addr = requester body address
+ *    ((landing+1), an absolute VA inside the requester's segment) or 0 to ask
+ *    the owner to fall back to the Medium-AM snapshot path. db_header echoed.
+ *  - DONE   (owner -> requester): ok = 1 if the body was RMA-Put, 0 if the
+ *    owner could not serve (requester re-requests). dest_addr echoed so the
+ *    requester recovers its landing DB and runs the publish/fire/satisfy tail.
+ * The body bytes never ride this packet; they move by gex_RMA_Put only.
+ */
+struct ARTS_PACKED arts_remote_db_rma_packet_s {
+  struct arts_remote_packet_s header;
+  struct arts_db_s db_header; /* source DB header snapshot (no body) */
+  arts_guid_t db_guid;
+  arts_guid_t edt_guid; /* NULL_GUID for plain (non-full) send */
+  uint64_t dest_addr;   /* requester body VA (landing+1); 0 => fallback */
+  uint32_t slot;
+  arts_db_access_mode_t mode;
+  uint32_t is_full; /* 1 = full-send (EDT dep) semantics, 0 = plain send */
+  uint32_t flags;   /* plain-send flags (unused for full) */
+  uint32_t ok;      /* DONE: 1 = body landed, 0 = owner could not serve */
 };
 
 typedef void (*send_handler_t)(void *args);

@@ -57,6 +57,16 @@ static inline void *align_pointer(void *ptr, size_t align) {
   return (void *)(((uintptr_t)ptr + align - 1) & ~(align - 1));
 }
 
+/* Foreign-allocator hook (see malloc.h). Set once at arena init; read-mostly. */
+static bool (*g_foreign_owns)(const void *) = NULL;
+static void (*g_foreign_free)(void *) = NULL;
+
+void arts_malloc_register_foreign(bool (*owns)(const void *),
+                                  void (*free_fn)(void *)) {
+  g_foreign_owns = owns;
+  g_foreign_free = free_fn;
+}
+
 void *arts_malloc(size_t size) {
   if (!size) {
     return NULL;
@@ -136,6 +146,13 @@ void *arts_realloc(void *ptr, size_t size) {
   if (!ptr) {
     return arts_malloc(size);
   }
+  if (g_foreign_owns && g_foreign_owns(ptr)) {
+    /* Arena (segment-resident) blocks carry no header_t and no recorded size,
+     * so an in-place realloc cannot be honored safely. DB storage is never
+     * realloc'd; fail closed and loud rather than corrupt the segment. */
+    ARTS_ERROR("arts_realloc called on a foreign (DB arena) pointer %p", ptr);
+    return NULL;
+  }
   if (!size) {
     arts_free(ptr);
     return NULL;
@@ -158,6 +175,10 @@ void *arts_realloc(void *ptr, size_t size) {
 
 void arts_free(void *ptr) {
   if (!ptr) {
+    return;
+  }
+  if (g_foreign_owns && g_foreign_owns(ptr)) {
+    g_foreign_free(ptr);
     return;
   }
   header_t *hdr = (header_t *)ptr - 1;

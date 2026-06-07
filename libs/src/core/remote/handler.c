@@ -46,6 +46,7 @@
 #include "arts/gas/out_of_order.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/db.h"
+#include "arts/memory/db_arena.h"
 #include "arts/memory/frontier.h"
 #include "arts/runtime_state.h"
 #include "arts/sync/event.h"
@@ -53,6 +54,7 @@
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/protocol.h"
+#include "arts/transport/socket.h"
 #include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 
@@ -293,6 +295,64 @@ static void arts_remote_validate_db_snapshot(
                kind, header->rank, pdb->guid, pdb->header.size, received_bytes,
                header->size);
   }
+}
+
+/* ====================================================================== */
+/* GASNet one-sided DB-move.                                               */
+/*                                                                        */
+/* The RMA path changes only byte transport. Route-table, frontier, mode,  */
+/* and replay decisions are made before these terminal send points.        */
+/* ====================================================================== */
+
+/*
+ * Owner-side eligibility + OFFER. Returns true iff an OFFER was sent (the
+ * caller must then NOT take the Medium-AM path). The actual body transfer is
+ * completed by the READY handler. Eligibility is purely a runtime
+ * storage/transport fact: RMA enabled + capable, a remote peer, the DB body
+ * segment-resident, and large enough to be worth a one-sided transfer.
+ */
+static bool arts_rma_offer_if_eligible(int rank, struct arts_db_s *db,
+                                       bool is_full, arts_guid_t edt_guid,
+                                       unsigned int slot,
+                                       arts_db_access_mode_t mode,
+                                       uint32_t flags) {
+  if (!arts_db_rma_enabled() || !arts_transport_rma_capable()) {
+    return false; /* disabled / not capable: silent, no counter noise */
+  }
+  if (rank == (int)arts_global_rank_id) {
+    return false; /* local delivery, no transport involved */
+  }
+  if (db->header.size <= sizeof(struct arts_db_s)) {
+    return false; /* header-only DB, nothing to RMA */
+  }
+  if (!arts_db_arena_owns(db)) {
+    arts_db_rma_stat_inc(ARTS_RMA_STAT_FALLBACK_LOCAL);
+    return false; /* source body not segment-resident -> Medium-AM */
+  }
+  uint64_t body = db->header.size - sizeof(struct arts_db_s);
+  if (body < arts_db_rma_min_bytes()) {
+    arts_db_rma_stat_inc(ARTS_RMA_STAT_FALLBACK_SMALL);
+    return false; /* below the RMA-worthwhile threshold -> Medium-AM */
+  }
+
+  struct arts_remote_db_rma_packet_s pkt;
+  memset(&pkt, 0, sizeof(pkt));
+  memcpy(&pkt.db_header, db, sizeof(struct arts_db_s));
+  pkt.db_guid = db->guid;
+  pkt.edt_guid = edt_guid;
+  pkt.dest_addr = 0;
+  pkt.slot = slot;
+  pkt.mode = mode;
+  pkt.is_full = is_full ? 1u : 0u;
+  pkt.flags = flags;
+  pkt.ok = 0;
+  arts_fill_packet_header(&pkt.header, sizeof(pkt), ARTS_REMOTE_DB_RMA_OFFER_MSG);
+  ARTS_TRACE_RDMA("rma offer rank=%u to=%d db=%lu bytes=%lu full=%u mode=%u",
+                  arts_global_rank_id, rank, db->guid,
+                  (unsigned long)db->header.size, is_full ? 1u : 0u, mode);
+  arts_remote_send_request_async(rank, (char *)&pkt, sizeof(pkt));
+  arts_db_rma_stat_inc(ARTS_RMA_STAT_OFFER_SENT);
+  return true;
 }
 
 void arts_remote_handle_update_db_guid(void *ptr) {
@@ -684,13 +744,24 @@ void arts_remote_db_forward(int dest_rank, int source_rank,
   arts_remote_send_request_async(source_rank, (char *)&packet, sizeof(packet));
 }
 
-void arts_remote_db_send_now(int rank, struct arts_db_s *db) {
+/* Medium-AM snapshot send. */
+static void arts_remote_db_send_medium(int rank, struct arts_db_s *db) {
   struct arts_remote_db_send_packet_s packet;
   uint64_t size = sizeof(struct arts_remote_db_send_packet_s) + db->header.size;
   arts_fill_packet_header(&packet.header, size, ARTS_REMOTE_DB_SEND_MSG);
   ARTS_TRACE_RDMA("remote db_send_now rank=%u to=%d db=%lu bytes=%lu",
                   arts_global_rank_id, rank, db->guid, db->header.size);
   arts_remote_send_db_snapshot(rank, (char *)&packet, sizeof(packet), db);
+}
+
+void arts_remote_db_send_now(int rank, struct arts_db_s *db) {
+  /* Plain coherence send carries no EDT/mode context; the requester's finalize
+   * does not need it. Try RMA, else Medium-AM. */
+  if (arts_rma_offer_if_eligible(rank, db, /*is_full=*/false, NULL_GUID, 0,
+                                 DB_MODE_RO, 0)) {
+    return;
+  }
+  arts_remote_db_send_medium(rank, db);
 }
 
 void arts_remote_db_create(arts_guid_t guid, uint64_t len,
@@ -1024,18 +1095,11 @@ void arts_remote_db_forward_full(int dest_rank, int source_rank,
   arts_remote_send_request_async(source_rank, (char *)&packet, sizeof(packet));
 }
 
-void arts_remote_db_full_send_now(int rank, struct arts_db_s *db,
-                                  arts_guid_t edt_guid, unsigned int slot,
-                                  arts_db_access_mode_t mode) {
-  if (rank == (int)arts_global_rank_id) {
-    ARTS_TRACE_RDMA("remote db_full_send_now local rank=%u edt=%lu slot=%u "
-                    "db=%lu mode=%u bytes=%lu",
-                    arts_global_rank_id, edt_guid, slot, db->guid, mode,
-                    db->header.size);
-    arts_remote_deliver_full_db_local(db, edt_guid, slot, mode);
-    return;
-  }
-
+/* Medium-AM full-snapshot send. */
+static void arts_remote_db_full_send_medium(int rank, struct arts_db_s *db,
+                                            arts_guid_t edt_guid,
+                                            unsigned int slot,
+                                            arts_db_access_mode_t mode) {
   struct arts_remote_db_full_send_packet_s packet;
   packet.edt_guid = edt_guid;
   packet.slot = slot;
@@ -1048,6 +1112,28 @@ void arts_remote_db_full_send_now(int rank, struct arts_db_s *db,
                   arts_global_rank_id, rank, edt_guid, slot, db->guid, mode,
                   db->header.size);
   arts_remote_send_db_snapshot(rank, (char *)&packet, sizeof(packet), db);
+}
+
+void arts_remote_db_full_send_now(int rank, struct arts_db_s *db,
+                                  arts_guid_t edt_guid, unsigned int slot,
+                                  arts_db_access_mode_t mode) {
+  if (rank == (int)arts_global_rank_id) {
+    ARTS_TRACE_RDMA("remote db_full_send_now local rank=%u edt=%lu slot=%u "
+                    "db=%lu mode=%u bytes=%lu",
+                    arts_global_rank_id, edt_guid, slot, db->guid, mode,
+                    db->header.size);
+    arts_remote_deliver_full_db_local(db, edt_guid, slot, mode);
+    return;
+  }
+
+  /* RMA fast path: OFFER the DB instead of shipping the snapshot. The frontier/
+   * EW/RO ordering decision that selected this serve was already made by
+   * arts_remote_db_full_send_check; RMA only changes the byte transport. */
+  if (arts_rma_offer_if_eligible(rank, db, /*is_full=*/true, edt_guid, slot,
+                                 mode, 0)) {
+    return;
+  }
+  arts_remote_db_full_send_medium(rank, db, edt_guid, slot, mode);
   ARTS_INFO("Full DB send [DbGuid:%lu, EdtGuid:%lu, Slot:%u, Mode:%u, Size:%u] "
             "from rank %u to rank %u",
             db->guid, edt_guid, slot, mode, db->header.size,
@@ -1260,6 +1346,223 @@ void arts_remote_handle_db_full_recieved(
   if (dec) {
     arts_route_table_return_db(pdb.guid, false);
   }
+}
+
+/* ---------------------------------------------------------------------- */
+/* RMA handshake handlers (OFFER -> READY -> DONE).                        */
+/* ---------------------------------------------------------------------- */
+
+/* Requester: an OFFER arrived. Register a segment-resident landing zone and
+ * reply READY with its address, or ask the owner to fall back (dest_addr=0). */
+void arts_remote_handle_db_rma_offer(void *ptr) {
+  struct arts_remote_db_rma_packet_s *pkt =
+      (struct arts_remote_db_rma_packet_s *)ptr;
+  uint64_t db_bytes = pkt->db_header.header.size;
+
+  struct arts_remote_db_rma_packet_s reply = *pkt;
+  arts_fill_packet_header(&reply.header, sizeof(reply),
+                          ARTS_REMOTE_DB_RMA_READY_MSG);
+  reply.dest_addr = 0;
+
+  if (db_bytes <= sizeof(struct arts_db_s)) {
+    /* Nothing to land; let the owner fall back to Medium-AM. */
+    arts_remote_send_request_async((int)pkt->header.rank, (char *)&reply,
+                                   sizeof(reply));
+    return;
+  }
+
+  struct arts_db_s *landing = (struct arts_db_s *)arts_db_arena_alloc(db_bytes);
+  if (!landing) {
+    /* Arena off/exhausted: cannot register an RMA target -> fall back. */
+    arts_db_rma_stat_inc(ARTS_RMA_STAT_FALLBACK_DEST);
+    arts_remote_send_request_async((int)pkt->header.rank, (char *)&reply,
+                                   sizeof(reply));
+    return;
+  }
+
+  /* Initialize the landing header from the offered snapshot; the body arrives
+   * by RMA Put into (landing + 1). Reset owner-private pointers exactly as the
+   * Medium-AM receive handlers do after their landing memcpy. This node is a
+   * non-owner of the DB, so it manages no frontier (db_list == NULL). */
+  memcpy(landing, &pkt->db_header, sizeof(struct arts_db_s));
+  landing->route_item = NULL;
+  landing->db_list = NULL;
+  landing->copy_count = 1;
+
+  reply.dest_addr = (uint64_t)(uintptr_t)(landing + 1);
+  ARTS_TRACE_RDMA("rma ready rank=%u to=%u db=%lu dest=%lu bytes=%lu full=%u",
+                  arts_global_rank_id, pkt->header.rank, pkt->db_guid,
+                  (unsigned long)reply.dest_addr, (unsigned long)db_bytes,
+                  pkt->is_full);
+  arts_remote_send_request_async((int)pkt->header.rank, (char *)&reply,
+                                 sizeof(reply));
+}
+
+/* Owner: a READY arrived. RMA-Put the body into the advertised landing and send
+ * DONE, or honor the requester's fallback / handle a vanished DB. */
+void arts_remote_handle_db_rma_ready(void *ptr) {
+  struct arts_remote_db_rma_packet_s *pkt =
+      (struct arts_remote_db_rma_packet_s *)ptr;
+  int rank = (int)pkt->header.rank;
+  arts_guid_t guid = pkt->db_guid;
+
+  struct arts_db_s *db =
+      (struct arts_db_s *)arts_route_table_lookup_db(guid, NULL, false);
+
+  if (pkt->dest_addr == 0) {
+    /* Requester could not register a landing zone: serve via Medium-AM. No DONE
+     * is sent (the requester has nothing to reconcile). If the DB is not
+     * resident now, defer to the owner's out-of-order queue, which ships it via
+     * the normal (Medium-AM) path when it appears. */
+    if (db) {
+      if (pkt->is_full) {
+        arts_remote_db_full_send_medium(rank, db, pkt->edt_guid, pkt->slot,
+                                        pkt->mode);
+      } else {
+        arts_remote_db_send_medium(rank, db);
+      }
+      arts_route_table_return_db(guid, false);
+    } else if (pkt->is_full) {
+      arts_out_of_order_handle_remote_db_full_send(guid, rank, pkt->edt_guid,
+                                                   pkt->slot, pkt->mode, false);
+    } else {
+      arts_out_of_order_handle_remote_db_send(rank, guid, pkt->mode, pkt->flags);
+    }
+    return;
+  }
+
+  struct arts_remote_db_rma_packet_s done = *pkt;
+  arts_fill_packet_header(&done.header, sizeof(done),
+                          ARTS_REMOTE_DB_RMA_DONE_MSG);
+
+  uint64_t body = (db && db->header.size > sizeof(struct arts_db_s))
+                      ? db->header.size - sizeof(struct arts_db_s)
+                      : 0;
+  if (!db || db->header.size != pkt->db_header.header.size || body == 0) {
+    /* DB vanished or resized since the OFFER. Tell the requester to discard its
+     * landing; the owner re-drives delivery via its out-of-order queue. */
+    if (db) {
+      arts_route_table_return_db(guid, false);
+    } else if (pkt->is_full) {
+      arts_out_of_order_handle_remote_db_full_send(guid, rank, pkt->edt_guid,
+                                                   pkt->slot, pkt->mode, false);
+    } else {
+      arts_out_of_order_handle_remote_db_send(rank, guid, pkt->mode, pkt->flags);
+    }
+    done.ok = 0;
+    arts_remote_send_request_async(rank, (char *)&done, sizeof(done));
+    return;
+  }
+
+  int rc =
+      arts_remote_rma_put(rank, pkt->dest_addr, (const void *)(db + 1), body);
+  arts_route_table_return_db(guid, false);
+  done.ok = (rc == 0) ? 1u : 0u;
+  if (rc != 0) {
+    /* Put failed at the transport: re-drive via Medium-AM and tell the
+     * requester to discard its landing. */
+    if (pkt->is_full) {
+      arts_out_of_order_handle_remote_db_full_send(guid, rank, pkt->edt_guid,
+                                                   pkt->slot, pkt->mode, false);
+    } else {
+      arts_out_of_order_handle_remote_db_send(rank, guid, pkt->mode, pkt->flags);
+    }
+  }
+  ARTS_TRACE_RDMA("rma done rank=%u to=%d db=%lu body=%lu ok=%u",
+                  arts_global_rank_id, rank, guid, (unsigned long)body, done.ok);
+  arts_remote_send_request_async(rank, (char *)&done, sizeof(done));
+}
+
+/* Requester finalize tails (post-DONE). These mirror the Medium-AM receive
+ * handlers exactly, MINUS the landing memcpy (the body is already in place from
+ * the RMA Put): publish the route item, fire out-of-order continuations, and
+ * satisfy the waiting EDT / progress the frontier. */
+static void arts_rma_finalize_plain(arts_guid_t guid, struct arts_db_s *landing) {
+  struct arts_db_s **data_ptr = NULL;
+  item_state_t state = arts_route_table_lookup_item_with_state(
+      guid, (void ***)&data_ptr, ALLOCATED_KEY, true);
+  if (state == REQUESTED_KEY || state == RESERVED_KEY) {
+    if (arts_route_table_update_item(guid, (void *)landing, arts_global_rank_id,
+                                     state)) {
+      arts_route_table_fire_oo(guid, arts_out_of_order_handler);
+    }
+    return;
+  }
+  /* Fresh remote DB: GUID not previously in this node's route table. */
+  if (arts_route_table_add_item_race(landing, guid, arts_global_rank_id,
+                                     false)) {
+    arts_route_table_fire_oo(guid, arts_out_of_order_handler);
+  } else {
+    /* Lost the registration race: another copy won; drop ours. */
+    arts_db_free(landing);
+  }
+}
+
+static void arts_rma_finalize_full(struct arts_remote_db_rma_packet_s *pkt,
+                                   struct arts_db_s *landing) {
+  arts_guid_t guid = pkt->db_guid;
+  if (arts_remote_full_send_uses_private_copy(pkt->mode)) {
+    struct arts_edt_s *edt = arts_remote_lookup_full_send_edt(
+        pkt->edt_guid, guid, pkt->slot, pkt->mode, "Full-RMA");
+    if (!edt) {
+      arts_db_free(landing); /* private copy with no consumer */
+      return;
+    }
+    arts_db_request_callback(edt, pkt->slot, landing);
+    return;
+  }
+
+  bool dec;
+  item_state_t state;
+  (void)arts_route_table_reserve(guid, &dec, &state);
+  if (arts_route_table_update_item(guid, (void *)landing, arts_global_rank_id,
+                                   state)) {
+    /* EW/MEMSET full sends are the writer's private working copy: do not fire
+     * out-of-order waiters here (a pending RO reader would latch the pre-write
+     * value). Only the targeted writer EDT is satisfied below. */
+    if (pkt->mode != DB_MODE_EW && pkt->mode != DB_MODE_MEMSET) {
+      arts_route_table_fire_oo(guid, arts_out_of_order_handler);
+    }
+  }
+  struct arts_edt_s *edt = arts_remote_lookup_full_send_edt(
+      pkt->edt_guid, guid, pkt->slot, pkt->mode, "Full-RMA");
+  if (!edt) {
+    if (dec) {
+      arts_route_table_return_db(guid, false);
+    }
+    return;
+  }
+  arts_db_request_callback(edt, pkt->slot, landing);
+  if (dec) {
+    arts_route_table_return_db(guid, false);
+  }
+}
+
+/* Requester: a DONE arrived. The body is in (landing + 1) when ok; run the
+ * publish/fire/satisfy tail. When the owner could not serve (ok=0), discard the
+ * landing — the owner re-drives delivery via Medium-AM. */
+void arts_remote_handle_db_rma_done(void *ptr) {
+  struct arts_remote_db_rma_packet_s *pkt =
+      (struct arts_remote_db_rma_packet_s *)ptr;
+  if (pkt->dest_addr == 0) {
+    return; /* defensive: DONE is only sent when a landing existed */
+  }
+  struct arts_db_s *landing =
+      (struct arts_db_s *)((char *)(uintptr_t)pkt->dest_addr -
+                           sizeof(struct arts_db_s));
+  if (!pkt->ok) {
+    arts_db_free(landing);
+    return;
+  }
+  if (pkt->is_full) {
+    arts_rma_finalize_full(pkt, landing);
+  } else {
+    arts_rma_finalize_plain(pkt->db_guid, landing);
+  }
+  arts_db_rma_stat_inc(ARTS_RMA_STAT_LANDED);
+  ARTS_TRACE_RDMA("rma landed rank=%u from=%u db=%lu full=%u mode=%u",
+                  arts_global_rank_id, pkt->header.rank, pkt->db_guid,
+                  pkt->is_full, pkt->mode);
 }
 
 void arts_remote_send_already_local(int rank, arts_guid_t guid,

@@ -77,6 +77,28 @@ void arts_remote_thread_inbound_queues_cleanup();
 // definition, so callers and logs can distinguish the three transports instead
 // of collapsing every accelerated path to "rdma".
 const char *arts_transport_kind_name(void);
+
+// --- One-sided RMA DB-move seam ------------------------------------------
+// GASNet implements this seam over gex_RMA_Put. TCP/rsocket stubs report
+// "not RMA-capable" so callers use the Medium-AM snapshot path.
+
+// True iff this backend can perform one-sided RMA Puts into a peer's segment.
+bool arts_transport_rma_capable(void);
+
+// Base/size of the local RMA-addressable segment region that backs DB storage.
+// Returns NULL (and *size_out = 0) when the backend has no usable segment.
+// The DB arena (memory/db_arena.c) carves DB storage from this region so that
+// DB bodies are valid remote targets for arts_remote_rma_put.
+void *arts_transport_segment_base(uint64_t *size_out);
+
+// One-sided blocking Put of nbytes from local_src into remote_addr (an absolute
+// address inside dest_rank's registered segment, as advertised by that rank).
+// Returns 0 on success (bytes are remotely landed on return), non-zero on
+// failure or when the backend is not RMA-capable. Local completion only: the
+// caller must still send an explicit completion control message before the
+// remote installs the DB or wakes waiting work.
+int arts_remote_rma_put(int dest_rank, uint64_t remote_addr,
+                        const void *local_src, uint64_t nbytes);
 #ifdef __cplusplus
 }
 #endif

@@ -133,6 +133,11 @@ void arts_remote_db_full_send(
     struct arts_remote_db_full_request_packet_s *pack);
 void arts_remote_handle_db_full_recieved(
     struct arts_remote_db_full_send_packet_s *packet);
+/* RMA DB-move handshake handlers. OFFER/DONE run on the requester; READY runs
+ * on the owner. */
+void arts_remote_handle_db_rma_offer(void *ptr);
+void arts_remote_handle_db_rma_ready(void *ptr);
+void arts_remote_handle_db_rma_done(void *ptr);
 void arts_remote_send_already_local(int rank, arts_guid_t guid,
                                     arts_guid_t edt_guid, unsigned int slot,
                                     arts_db_access_mode_t mode);

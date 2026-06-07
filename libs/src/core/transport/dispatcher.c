@@ -311,6 +311,21 @@ void arts_server_process_packet(struct arts_remote_packet_s *packet) {
     arts_remote_handle_send_already_local(packet);
     break;
   }
+  case ARTS_REMOTE_DB_RMA_OFFER_MSG: {
+    ARTS_DEBUG("DB RMA Offer Received");
+    arts_remote_handle_db_rma_offer(packet);
+    break;
+  }
+  case ARTS_REMOTE_DB_RMA_READY_MSG: {
+    ARTS_DEBUG("DB RMA Ready Received");
+    arts_remote_handle_db_rma_ready(packet);
+    break;
+  }
+  case ARTS_REMOTE_DB_RMA_DONE_MSG: {
+    ARTS_DEBUG("DB RMA Done Received");
+    arts_remote_handle_db_rma_done(packet);
+    break;
+  }
   case ARTS_REMOTE_DB_DESTROY_MSG: {
     ARTS_DEBUG("DB Destroy Received");
     arts_remote_handle_db_destroy(packet);

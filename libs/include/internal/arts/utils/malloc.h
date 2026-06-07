@@ -42,6 +42,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stddef.h>
 
 void *arts_malloc(size_t size);
@@ -50,6 +51,20 @@ void *arts_calloc(size_t nmemb, size_t size);
 void *arts_calloc_align(size_t nmemb, size_t size, size_t align);
 void *arts_realloc(void *ptr, size_t size);
 void arts_free(void *ptr);
+
+/*
+ * Foreign-allocator escape hatch.
+ *
+ * arts_malloc/arts_malloc_align prefix every block with a private header_t and
+ * free it with libc free(). The GASNet RMA DB arena (memory/db_arena.c) hands
+ * out segment-resident blocks that have NO header_t and must NOT reach libc
+ * free(). Rather than couple malloc.c to the arena, the arena registers an
+ * ownership predicate + free routine here; arts_free()/arts_realloc() consult
+ * it FIRST and route arena pointers back to the arena. When no hook is
+ * registered (TCP builds, RMA disabled) this is a single NULL check.
+ */
+void arts_malloc_register_foreign(bool (*owns)(const void *ptr),
+                                  void (*free_fn)(void *ptr));
 
 #ifdef __cplusplus
 }
