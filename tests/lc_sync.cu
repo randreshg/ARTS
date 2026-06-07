@@ -1,0 +1,141 @@
+/******************************************************************************
+** This material was prepared as an account of work sponsored by an agency   **
+** of the United States Government.  Neither the United States Government    **
+** nor the United States Department of Energy, nor Battelle, nor any of      **
+** their employees, nor any jurisdiction or organization that has cooperated **
+** in the development of these materials, makes any warranty, express or     **
+** implied, or assumes any legal liability or responsibility for the accuracy,*
+** completeness, or usefulness or any information, apparatus, product,       **
+** software, or process disclosed, or represents that its use would not      **
+** infringe privately owned rights.                                          **
+**                                                                           **
+** Reference herein to any specific commercial product, process, or service  **
+** by trade name, trademark, manufacturer, or otherwise does not necessarily **
+** constitute or imply its endorsement, recommendation, or favoring by the   **
+** United States Government or any agency thereof, or Battelle Memorial      **
+** Institute. The views and opinions of authors expressed herein do not      **
+** necessarily state or reflect those of the United States Government or     **
+** any agency thereof.                                                       **
+**                                                                           **
+**                      PACIFIC NORTHWEST NATIONAL LABORATORY                **
+**                                  operated by                              **
+**                                    BATTELLE                               **
+**                                     for the                               **
+**                      UNITED STATES DEPARTMENT OF ENERGY                   **
+**                         under Contract DE-AC05-76RL01830                  **
+**                                                                           **
+** Copyright 2019 Battelle Memorial Institute                                **
+** Licensed under the Apache License, Version 2.0 (the "License");           **
+** you may not use this file except in compliance with the License.          **
+** You may obtain a copy of the License at                                   **
+**                                                                           **
+**    https://www.apache.org/licenses/LICENSE-2.0                            **
+**                                                                           **
+** Unless required by applicable law or agreed to in writing, software       **
+** distributed under the License is distributed on an "AS IS" BASIS, WITHOUT **
+** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
+** License for the specific language governing permissions and limitations   **
+******************************************************************************/
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "arts.h"
+#include "arts/gpu.h"
+
+__global__ void temp(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  uint64_t gpu_id = ARTS_GPU_INDEX();
+  // printf("Hello from %lu\n", gpu_id);
+  unsigned int *addr = (unsigned int *)depv[0].ptr;
+  unsigned int index = threadIdx.x + (blockIdx.x * blockDim.x);
+  addr[index] = (unsigned int)(gpu_id + 1);
+}
+
+void done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+          arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  unsigned int *tile = (unsigned int *)depv[0].ptr;
+  unsigned int total = arts_get_total_gpus();
+  bool any_modified = false;
+  for (unsigned int j = 0; j < total; j++) {
+    if (tile[j] != (unsigned int)-1) {
+      any_modified = true;
+    }
+  }
+  if (any_modified) {
+    arts_printf("  PASS: lc_sync data synced from GPU (%u GPUs)\n", total);
+  } else {
+    arts_printf("  FAIL: lc_sync all values still sentinel\n");
+  }
+  arts_shutdown();
+}
+
+extern "C" void arts_init_per_gpu(unsigned int node_id, int dev_id,
+                                  cudaStream_t *stream, int argc, char **argv) {
+  (void)node_id;
+  (void)dev_id;
+  (void)stream;
+  (void)argc;
+  (void)argv;
+}
+
+extern "C" void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  unsigned int *addr = NULL;
+  arts_printf("creating size: %u\n",
+              sizeof(unsigned int) * arts_get_total_gpus());
+  arts_guid_t db_guid = arts_guid_reserve(ARTS_DB, 0);
+  addr = (unsigned int *)arts_db_create_with_guid(
+      db_guid, sizeof(unsigned int) * arts_get_total_gpus(), ARTS_DB_LC, NULL,
+      NULL);
+  for (uint64_t i = 0; i < arts_get_total_gpus(); i++) {
+    addr[i] = (unsigned int)-1;
+  }
+
+  unsigned int node_id = arts_get_current_node();
+  arts_hint_t hint_0 = {0, 0};
+  arts_guid_t done_guid =
+      arts_edt_create(done, 0, NULL, arts_get_total_gpus() + 1, &hint_0);
+  arts_lc_sync(done_guid, 0, db_guid);
+
+  dim3 threads(arts_get_total_gpus(), 1, 1);
+  dim3 grid(1, 1, 1);
+  for (uint64_t i = 0; i < arts_get_total_gpus(); i++) {
+    if (i == 0 || i == 3 || i == 4 || i == 7) {
+      arts_printf("CREATING EDT for GPU: %lu\n", i);
+      arts_gpu_hint_t gpu_hint = {};
+      gpu_hint.route = node_id;
+      gpu_hint.gpu = (int)i;
+      gpu_hint.end_guid = done_guid;
+      gpu_hint.slot = (uint32_t)(i + 1);
+      gpu_hint.data_guid = NULL_GUID;
+      arts_guid_t edt_guid =
+          arts_edt_create_gpu(temp, 0, NULL, 1, arts_from_dim3(grid),
+                              arts_from_dim3(threads), &gpu_hint);
+      arts_signal_edt(edt_guid, 0, db_guid, DB_MODE_EW);
+    } else {
+      arts_signal_edt(done_guid, i + 1, NULL_GUID, DB_MODE_EW);
+    }
+  }
+}
+
+extern "C" void arts_fini_per_gpu(unsigned int node_id, int dev_id,
+                                  cudaStream_t *stream) {
+  (void)node_id;
+  (void)dev_id;
+  (void)stream;
+}
+
+int main(int argc, char **argv) {
+  arts_rt(argc, argv);
+  return 0;
+}

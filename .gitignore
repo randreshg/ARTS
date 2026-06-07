@@ -1,0 +1,25 @@
+# Build and installation directories
+build/
+install/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Documentation build artifacts
+docs/_build/
+
+# IDEs and editors
+.cache/
+.venv/
+.vscode/
+.claude/
+CLAUDE.md
+# GASNet/ARTS out-of-tree build dirs and scratch (do not commit)
+build-gasnet/
+build-ucx/
+build-ucxpmi/
+build-ofi/
+build-tcp/
+*.btr
+core.*
+build-ofi-run2.cfg

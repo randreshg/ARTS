@@ -1,0 +1,693 @@
+/******************************************************************************
+** This material was prepared as an account of work sponsored by an agency   **
+** of the United States Government.  Neither the United States Government    **
+** nor the United States Department of Energy, nor Battelle, nor any of      **
+** their employees, nor any jurisdiction or organization that has cooperated **
+** in the development of these materials, makes any warranty, express or     **
+** implied, or assumes any legal liability or responsibility for the accuracy,*
+** completeness, or usefulness or any information, apparatus, product,       **
+** software, or process disclosed, or represents that its use would not      **
+** infringe privately owned rights.                                          **
+**                                                                           **
+** Reference herein to any specific commercial product, process, or service  **
+** by trade name, trademark, manufacturer, or otherwise does not necessarily **
+** constitute or imply its endorsement, recommendation, or favoring by the   **
+** United States Government or any agency thereof, or Battelle Memorial      **
+** Institute. The views and opinions of authors expressed herein do not      **
+** necessarily state or reflect those of the United States Government or     **
+** any agency thereof.                                                       **
+**                                                                           **
+**                      PACIFIC NORTHWEST NATIONAL LABORATORY                **
+**                                  operated by                              **
+**                                    BATTELLE                               **
+**                                     for the                               **
+**                      UNITED STATES DEPARTMENT OF ENERGY                   **
+**                         under Contract DE-AC05-76RL01830                  **
+**                                                                           **
+** Copyright 2019 Battelle Memorial Institute                                **
+** Licensed under the Apache License, Version 2.0 (the "License");           **
+** you may not use this file except in compliance with the License.          **
+** You may obtain a copy of the License at                                   **
+**                                                                           **
+**    https://www.apache.org/licenses/LICENSE-2.0                            **
+**                                                                           **
+** Unless required by applicable law or agreed to in writing, software       **
+** distributed under the License is distributed on an "AS IS" BASIS, WITHOUT **
+** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
+** License for the specific language governing permissions and limitations   **
+******************************************************************************/
+#include "arts/gas/out_of_order.h"
+
+#include "arts/compute/edt.h"
+#include "arts/gas/route_table.h"
+#include "arts/memory/db.h"
+#include "arts/memory/frontier.h"
+#include "arts/remote/handler.h"
+#include "arts/runtime_state.h"
+#include "arts/runtime_types.h"
+#include "arts/sync/termination.h"
+#include "arts/system/print.h"
+#include "arts/system/threads.h"
+#include "arts/utils/malloc.h"
+
+#include <string.h>
+
+struct oo_signal_edt_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t edt_packet;
+  arts_guid_t data_guid;
+  uint32_t slot;
+  arts_db_access_mode_t mode;
+  uint32_t flags;
+};
+
+struct oo_set_dep_metadata_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t edt_guid;
+  uint32_t slot;
+  arts_db_access_mode_t mode;
+  uint32_t flags;
+  uint64_t slice_offset;
+  uint64_t slice_size;
+};
+
+struct oo_db_request_satisfy_s {
+  enum arts_out_of_order_type type;
+  struct arts_edt_s *edt;
+  uint32_t slot;
+  bool inc;
+};
+
+struct oo_add_dependence_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t source;
+  arts_guid_t destination;
+  uint32_t slot;
+  arts_guid_t data;
+  arts_db_access_mode_t mode;
+  uint32_t flags;
+};
+
+struct oo_event_satisfy_slot_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t event_guid;
+  arts_guid_t data_guid;
+  uint32_t slot;
+};
+
+struct oo_handle_ready_edt_s {
+  enum arts_out_of_order_type type;
+  struct arts_edt_s *edt;
+};
+
+struct oo_remote_db_send_s {
+  enum arts_out_of_order_type type;
+  int rank;
+  arts_db_access_mode_t mode;
+  uint32_t flags;
+  arts_guid_t data_guid;
+};
+
+struct oo_remote_db_full_send_s {
+  enum arts_out_of_order_type type;
+  int rank;
+  arts_guid_t edt_guid;
+  unsigned int slot;
+  arts_db_access_mode_t mode;
+  bool forwarded;
+};
+
+struct oo_get_from_db_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t edt_guid;
+  arts_guid_t db_guid;
+  unsigned int slot;
+  uint64_t offset;
+  uint64_t size;
+  uint32_t flags;
+};
+
+struct oo_signal_edt_ptr_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t edt_guid;
+  arts_guid_t db_guid;
+  void *ptr;
+  unsigned int size;
+  unsigned int slot;
+};
+
+struct oo_put_in_db_s {
+  enum arts_out_of_order_type type;
+  void *ptr;
+  arts_guid_t edt_guid;
+  arts_guid_t db_guid;
+  arts_guid_t epoch_guid;
+  arts_guid_t writer_edt_guid;
+  unsigned int writer_rank;
+  unsigned int slot;
+  unsigned int offset;
+  unsigned int size;
+};
+
+struct oo_release_created_db_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t db_guid;
+  arts_guid_t creator_edt_guid;
+  unsigned int creator_rank;
+};
+
+struct oo_epoch_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t guid;
+};
+
+struct oo_epoch_send_s {
+  enum arts_out_of_order_type type;
+  arts_guid_t guid;
+  unsigned int source;
+  unsigned int dest;
+};
+
+struct oo_generic_s {
+  enum arts_out_of_order_type type;
+};
+
+static bool arts_oo_return_lookup_db(arts_guid_t guid, struct arts_db_s *db) {
+  if (db && db->route_item) {
+    return arts_route_table_return_db_item(
+        guid, (arts_route_item_t *)db->route_item, false);
+  }
+  if (db) {
+    return arts_route_table_return_db(guid, false);
+  }
+  return false;
+}
+
+/*
+ * arts_out_of_order_handler — Replay a deferred operation.
+ *
+ * When an operation arrives before its target object exists in the route
+ * table (e.g., signal to an EDT that hasn't been created yet), it is
+ * queued as an OO entry.  Once the target is inserted, this handler
+ * replays each queued operation.
+ *
+ * The switch dispatches by OO type to the appropriate runtime function.
+ */
+inline void arts_out_of_order_handler(void *handle_me, void *memory_ptr) {
+  struct oo_generic_s *type_ptr = (struct oo_generic_s *)handle_me;
+  ARTS_DEBUG("OO handler: dispatching type=%d", type_ptr->type);
+  switch (type_ptr->type) {
+  case OO_SIGNAL_EDT: {
+    struct oo_signal_edt_s *edt = (struct oo_signal_edt_s *)handle_me;
+    internal_signal_edt_ex(edt->edt_packet, edt->slot, edt->data_guid,
+                           edt->mode, edt->flags, NULL, 0);
+    break;
+  }
+  case OO_SET_DEP_METADATA: {
+    struct oo_set_dep_metadata_s *meta =
+        (struct oo_set_dep_metadata_s *)handle_me;
+    arts_set_dep_metadata_ext(meta->edt_guid, meta->slot, meta->mode,
+                              meta->flags, meta->slice_offset,
+                              meta->slice_size);
+    break;
+  }
+  case OO_EVENT_SATISFY_SLOT: {
+    struct oo_event_satisfy_slot_s *event =
+        (struct oo_event_satisfy_slot_s *)handle_me;
+    arts_event_satisfy_slot(event->event_guid, event->data_guid, event->slot);
+    break;
+  }
+  case OO_ADD_DEPENDENCE: {
+    struct oo_add_dependence_s *dep = (struct oo_add_dependence_s *)handle_me;
+    arts_add_dependence_ex(dep->source, dep->destination, dep->slot, dep->mode,
+                           dep->flags);
+    break;
+  }
+  case OO_HANDLE_READY_EDT: {
+    struct oo_handle_ready_edt_s *ready_edt =
+        (struct oo_handle_ready_edt_s *)handle_me;
+    arts_handle_ready_edt(ready_edt->edt);
+    break;
+  }
+  case OO_REMOTE_DB_SEND: {
+    struct oo_remote_db_send_s *db_send =
+        (struct oo_remote_db_send_s *)handle_me;
+    arts_remote_db_send_check(db_send->rank, (struct arts_db_s *)memory_ptr,
+                              db_send->mode, db_send->flags);
+    break;
+  }
+  case OO_DB_REQUEST_SATISFY: {
+    struct oo_db_request_satisfy_s *req =
+        (struct oo_db_request_satisfy_s *)handle_me;
+    ARTS_DEBUG("FILL %lu %u %p", req->edt, req->slot, memory_ptr);
+    arts_db_request_callback(req->edt, req->slot,
+                             (struct arts_db_s *)memory_ptr);
+    break;
+  }
+  case OO_DB_FULL_SEND: {
+    struct oo_remote_db_full_send_s *db_send =
+        (struct oo_remote_db_full_send_s *)handle_me;
+    arts_remote_db_full_send_check(
+        db_send->rank, (struct arts_db_s *)memory_ptr, db_send->edt_guid,
+        db_send->slot, db_send->mode, db_send->forwarded);
+    break;
+  }
+  case OO_GET_FROM_DB: {
+    struct oo_get_from_db_s *req = (struct oo_get_from_db_s *)handle_me;
+    arts_get_from_db_at_ex(req->edt_guid, req->db_guid, req->slot,
+                           req->offset, req->size, req->flags,
+                           arts_global_rank_id);
+    break;
+  }
+  case OO_SIGNAL_EDT_PTR: {
+    struct oo_signal_edt_ptr_s *req = (struct oo_signal_edt_ptr_s *)handle_me;
+    arts_signal_edt_ptr_with_guid(req->edt_guid, req->slot, req->db_guid,
+                                  req->ptr, req->size);
+    arts_free(req->ptr);
+    break;
+  }
+  case OO_PUT_IN_DB: {
+    struct oo_put_in_db_s *req = (struct oo_put_in_db_s *)handle_me;
+    internal_put_in_db(req->ptr, req->edt_guid, req->db_guid, req->slot,
+                       req->offset, req->size, req->epoch_guid,
+                       arts_global_rank_id, req->writer_edt_guid,
+                       req->writer_rank);
+    arts_free(req->ptr);
+    break;
+  }
+  case OO_RELEASE_CREATED_DB: {
+    struct oo_release_created_db_s *req =
+        (struct oo_release_created_db_s *)handle_me;
+    (void)arts_release_remote_writer((struct arts_db_s *)memory_ptr,
+                                     req->creator_rank,
+                                     req->creator_edt_guid);
+    break;
+  }
+  case OO_EPOCH_ACTIVE: {
+    //            ARTS_INFO("ooActveFire");
+    struct oo_epoch_s *req = (struct oo_epoch_s *)handle_me;
+    increment_active_epoch(req->guid);
+    break;
+  }
+  case OO_EPOCH_FINISH: {
+    //            ARTS_INFO("ooFinishFire");
+    struct oo_epoch_s *req = (struct oo_epoch_s *)handle_me;
+    increment_finished_epoch(req->guid);
+    break;
+  }
+  case OO_EPOCH_SEND: {
+    //            ARTS_INFO("ooEpochSendFire");
+    struct oo_epoch_send_s *req = (struct oo_epoch_send_s *)handle_me;
+    ARTS_TRACE_RDMA("oo replay epoch send guid=%lu source=%u dest=%u",
+                    req->guid, req->source, req->dest);
+    send_epoch(req->guid, req->source, req->dest);
+    break;
+  }
+  case OO_EPOCH_INC_QUEUE: {
+    struct oo_epoch_s *req = (struct oo_epoch_s *)handle_me;
+    increment_queue_epoch(req->guid);
+    break;
+  }
+  default:
+    ARTS_INFO("OO Handler Error");
+  }
+  arts_free(handle_me);
+}
+
+/*
+ * arts_out_of_order_signal_edt — Queue an EDT signal for deferred delivery.
+ *
+ * If the target EDT's GUID is still in RESERVED state in the route table,
+ * the signal is stored in the OO list.  If the item is already AVAILABLE
+ * (race: created between our check and now), the signal is delivered
+ * immediately and the OO entry is freed.
+ */
+void arts_out_of_order_signal_edt(arts_guid_t wait_on, arts_guid_t edt_packet,
+                                  arts_guid_t data_guid, uint32_t slot,
+                                  arts_db_access_mode_t mode, uint32_t flags,
+                                  bool force) {
+  struct oo_signal_edt_s *edt =
+      (struct oo_signal_edt_s *)arts_malloc(sizeof(struct oo_signal_edt_s));
+  edt->type = OO_SIGNAL_EDT;
+  edt->edt_packet = edt_packet;
+  edt->data_guid = data_guid;
+  edt->slot = slot;
+  edt->mode = mode;
+  edt->flags = flags;
+  if (force) {
+    arts_route_table_add_oo_existing(wait_on, edt, false);
+  } else {
+    bool res = arts_route_table_add_oo(wait_on, edt, false);
+    if (!res) {
+      internal_signal_edt_ex(edt_packet, slot, data_guid, mode, flags, NULL,
+                             0);
+      arts_free(edt);
+    }
+  }
+}
+
+void arts_out_of_order_set_dep_metadata(arts_guid_t edt_guid, uint32_t slot,
+                                        arts_db_access_mode_t mode,
+                                        uint32_t flags) {
+  arts_out_of_order_set_dep_metadata_ext(edt_guid, slot, mode, flags, 0, 0);
+}
+
+void arts_out_of_order_set_dep_metadata_ext(arts_guid_t edt_guid,
+                                            uint32_t slot,
+                                            arts_db_access_mode_t mode,
+                                            uint32_t flags,
+                                            uint64_t slice_offset,
+                                            uint64_t slice_size) {
+  struct oo_set_dep_metadata_s *meta =
+      (struct oo_set_dep_metadata_s *)arts_malloc(
+          sizeof(struct oo_set_dep_metadata_s));
+  meta->type = OO_SET_DEP_METADATA;
+  meta->edt_guid = edt_guid;
+  meta->slot = slot;
+  meta->mode = mode;
+  meta->flags = flags;
+  meta->slice_offset = slice_offset;
+  meta->slice_size = slice_size;
+  bool res = arts_route_table_add_oo(edt_guid, meta, false);
+  if (!res) {
+    arts_set_dep_metadata_ext(edt_guid, slot, mode, flags, slice_offset,
+                              slice_size);
+    arts_free(meta);
+  }
+}
+
+void arts_out_of_order_event_satisfy_slot(arts_guid_t wait_on,
+                                          arts_guid_t event_guid,
+                                          arts_guid_t data_guid, uint32_t slot,
+                                          bool force) {
+  struct oo_event_satisfy_slot_s *event =
+      (struct oo_event_satisfy_slot_s *)arts_malloc(
+          sizeof(struct oo_event_satisfy_slot_s));
+  event->type = OO_EVENT_SATISFY_SLOT;
+  event->event_guid = event_guid;
+  event->data_guid = data_guid;
+  event->slot = slot;
+  bool res;
+  if (force) {
+    arts_route_table_add_oo_existing(wait_on, event, false);
+  } else {
+    bool res = arts_route_table_add_oo(wait_on, event, false);
+    if (!res) {
+      arts_event_satisfy_slot(event_guid, data_guid, slot);
+      arts_free(event);
+    }
+  }
+}
+
+void arts_out_of_order_add_dependence(arts_guid_t source,
+                                      arts_guid_t destination, uint32_t slot,
+                                      arts_db_access_mode_t mode,
+                                      uint32_t flags,
+                                      arts_guid_t wait_on) {
+  struct oo_add_dependence_s *dep = (struct oo_add_dependence_s *)arts_malloc(
+      sizeof(struct oo_add_dependence_s));
+  dep->type = OO_ADD_DEPENDENCE;
+  dep->source = source;
+  dep->destination = destination;
+  dep->slot = slot;
+  dep->mode = mode;
+  dep->flags = flags;
+  bool res = arts_route_table_add_oo(wait_on, dep, false);
+  if (!res) {
+    arts_add_dependence_ex(source, destination, slot, mode, flags);
+    arts_free(dep);
+  }
+}
+
+void arts_out_of_order_handle_ready_edt(arts_guid_t trigger_guid,
+                                        struct arts_edt_s *edt) {
+  struct oo_handle_ready_edt_s *ready_edt =
+      (struct oo_handle_ready_edt_s *)arts_malloc(
+          sizeof(struct oo_handle_ready_edt_s));
+  ready_edt->type = OO_HANDLE_READY_EDT;
+  ready_edt->edt = edt;
+  bool res = arts_route_table_add_oo(trigger_guid, ready_edt, false);
+  if (!res) {
+    arts_handle_ready_edt(edt);
+    arts_free(ready_edt);
+  }
+}
+
+void arts_out_of_order_handle_remote_db_send(int rank, arts_guid_t db_guid,
+                                             arts_db_access_mode_t mode,
+                                             uint32_t flags) {
+  struct oo_remote_db_send_s *ready_send =
+      (struct oo_remote_db_send_s *)arts_malloc(
+          sizeof(struct oo_remote_db_send_s));
+  ready_send->type = OO_REMOTE_DB_SEND;
+  ready_send->rank = rank;
+  ready_send->data_guid = db_guid;
+  ready_send->mode = mode;
+  ready_send->flags = flags;
+  bool res = arts_route_table_add_oo(db_guid, ready_send, false);
+  if (!res) {
+    struct arts_db_s *db =
+        (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
+    if (db) {
+      arts_remote_db_send_check(ready_send->rank, db, ready_send->mode,
+                                ready_send->flags);
+      arts_oo_return_lookup_db(db_guid, db);
+    } else {
+      ARTS_DEBUG("OO remote_db_send: DB[Guid:%lu] vanished (DELETE_ITEM race)",
+                 db_guid);
+    }
+    arts_free(ready_send);
+  }
+}
+
+/*
+ * arts_out_of_order_handle_db_request — Queue a DB acquisition for deferred
+ *   resolution when the DB does not yet exist in the route table.
+ *
+ * If the DB becomes available before the OO entry is added (race), the
+ * callback fires immediately.
+ */
+void arts_out_of_order_handle_db_request(arts_guid_t db_guid,
+                                         struct arts_edt_s *edt,
+                                         unsigned int slot, bool inc) {
+  ARTS_DEBUG("OO db_request: DB[Guid:%lu] -> EDT[Guid:%lu] slot=%u inc=%d",
+             db_guid, edt->current_edt, slot, inc);
+  struct oo_db_request_satisfy_s *req =
+      (struct oo_db_request_satisfy_s *)arts_malloc(
+          sizeof(struct oo_db_request_satisfy_s));
+  req->type = OO_DB_REQUEST_SATISFY;
+  req->edt = edt;
+  req->slot = slot;
+  bool res = arts_route_table_add_oo(db_guid, req, inc);
+  if (!res) {
+    ARTS_DEBUG(
+        "OO db_request: DB[Guid:%lu] already available — immediate callback",
+        db_guid);
+    struct arts_db_s *db =
+        (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
+    arts_db_request_callback(req->edt, req->slot, db);
+    if (db) {
+      arts_oo_return_lookup_db(db_guid, db);
+    }
+    arts_free(req);
+  }
+}
+
+// This should save one lookup compared to the function above...
+void arts_out_of_order_handle_db_request_with_oo_list(
+    struct arts_out_of_order_list_s *add_to_me, void **data,
+    struct arts_edt_s *edt, unsigned int slot) {
+  struct oo_db_request_satisfy_s *req =
+      (struct oo_db_request_satisfy_s *)arts_malloc(
+          sizeof(struct oo_db_request_satisfy_s));
+  req->type = OO_DB_REQUEST_SATISFY;
+  req->edt = edt;
+  req->slot = slot;
+  bool res = arts_out_of_order_list_add_item(add_to_me, req);
+  if (!res) {
+    arts_db_request_callback(req->edt, req->slot, (struct arts_db_s *)(*data));
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_handle_remote_db_full_send(arts_guid_t db_guid, int rank,
+                                                  arts_guid_t edt_guid,
+                                                  unsigned int slot,
+                                                  arts_db_access_mode_t mode,
+                                                  bool forwarded) {
+  struct oo_remote_db_full_send_s *db_send =
+      (struct oo_remote_db_full_send_s *)arts_malloc(
+          sizeof(struct oo_remote_db_full_send_s));
+  db_send->type = OO_DB_FULL_SEND;
+  db_send->rank = rank;
+  db_send->edt_guid = edt_guid;
+  db_send->slot = slot;
+  db_send->mode = mode;
+  db_send->forwarded = forwarded;
+  bool res = arts_route_table_add_oo(db_guid, db_send, false);
+  if (!res) {
+    struct arts_db_s *db =
+        (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
+    if (db) {
+      arts_remote_db_full_send_check(db_send->rank, db, db_send->edt_guid,
+                                     db_send->slot, db_send->mode,
+                                     db_send->forwarded);
+      arts_oo_return_lookup_db(db_guid, db);
+    } else {
+      ARTS_DEBUG("OO remote_db_full_send: DB[Guid:%lu] vanished "
+                 "(DELETE_ITEM race)",
+                 db_guid);
+    }
+    arts_free(db_send);
+  }
+}
+
+void arts_out_of_order_get_from_db(arts_guid_t edt_guid, arts_guid_t db_guid,
+                                   unsigned int slot, uint64_t offset,
+                                   uint64_t size, uint32_t flags) {
+  struct oo_get_from_db_s *req =
+      (struct oo_get_from_db_s *)arts_malloc(sizeof(struct oo_get_from_db_s));
+  req->type = OO_GET_FROM_DB;
+  req->edt_guid = edt_guid;
+  req->db_guid = db_guid;
+  req->slot = slot;
+  req->offset = offset;
+  req->size = size;
+  req->flags = flags;
+  bool res = arts_route_table_add_oo(db_guid, req, false);
+  if (!res) {
+    arts_get_from_db_at_ex(req->edt_guid, req->db_guid, req->slot,
+                           req->offset, req->size, req->flags,
+                           arts_global_rank_id);
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_signal_edt_with_ptr(arts_guid_t edt_guid,
+                                           arts_guid_t db_guid, void *ptr,
+                                           unsigned int size,
+                                           unsigned int slot) {
+  struct oo_signal_edt_ptr_s *req = (struct oo_signal_edt_ptr_s *)arts_malloc(
+      sizeof(struct oo_signal_edt_ptr_s));
+  req->type = OO_SIGNAL_EDT_PTR;
+  req->edt_guid = edt_guid;
+  req->db_guid = db_guid;
+  req->size = size;
+  req->slot = slot;
+  if (size > 0) {
+    req->ptr = arts_malloc(size);
+    memcpy(req->ptr, ptr, size);
+  } else {
+    req->ptr = ptr;
+  }
+  bool res = arts_route_table_add_oo(edt_guid, req, false);
+  if (!res) {
+    arts_signal_edt_ptr_with_guid(req->edt_guid, req->slot, req->db_guid,
+                                  req->ptr, req->size);
+    arts_free(req->ptr);
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_put_in_db(void *ptr, arts_guid_t edt_guid,
+                                 arts_guid_t db_guid, unsigned int slot,
+                                 unsigned int offset, unsigned int size,
+                                 arts_guid_t epoch_guid,
+                                 arts_guid_t writer_edt_guid,
+                                 unsigned int writer_rank) {
+  struct oo_put_in_db_s *req =
+      (struct oo_put_in_db_s *)arts_malloc(sizeof(struct oo_put_in_db_s));
+  req->type = OO_PUT_IN_DB;
+  req->ptr = ptr;
+  req->edt_guid = edt_guid;
+  req->db_guid = db_guid;
+  req->slot = slot;
+  req->offset = offset;
+  req->size = size;
+  req->epoch_guid = epoch_guid;
+  req->writer_edt_guid = writer_edt_guid;
+  req->writer_rank = writer_rank;
+  bool res = arts_route_table_add_oo(db_guid, req, false);
+  if (!res) {
+    internal_put_in_db(req->ptr, req->edt_guid, req->db_guid, req->slot,
+                       req->offset, req->size, req->epoch_guid,
+                       arts_global_rank_id, req->writer_edt_guid,
+                       req->writer_rank);
+    arts_free(req->ptr);
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_release_created_db(arts_guid_t db_guid,
+                                          arts_guid_t creator_edt_guid,
+                                          unsigned int creator_rank) {
+  struct oo_release_created_db_s *req =
+      (struct oo_release_created_db_s *)arts_malloc(sizeof(*req));
+  req->type = OO_RELEASE_CREATED_DB;
+  req->db_guid = db_guid;
+  req->creator_edt_guid = creator_edt_guid;
+  req->creator_rank = creator_rank;
+  bool res = arts_route_table_add_oo(db_guid, req, false);
+  if (!res) {
+    struct arts_db_s *db =
+        (struct arts_db_s *)arts_route_table_lookup_db(db_guid, NULL, false);
+    if (db) {
+      (void)arts_release_remote_writer(db, creator_rank, creator_edt_guid);
+      arts_route_table_return_db(db_guid, false);
+    }
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_inc_active_epoch(arts_guid_t epoch_guid) {
+  struct oo_epoch_s *req =
+      (struct oo_epoch_s *)arts_malloc(sizeof(struct oo_epoch_s));
+  req->type = OO_EPOCH_ACTIVE;
+  req->guid = epoch_guid;
+  bool res = arts_route_table_add_oo(epoch_guid, req, false);
+  if (!res) {
+    increment_active_epoch(epoch_guid);
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_inc_finished_epoch(arts_guid_t epoch_guid) {
+  struct oo_epoch_s *req =
+      (struct oo_epoch_s *)arts_malloc(sizeof(struct oo_epoch_s));
+  req->type = OO_EPOCH_FINISH;
+  req->guid = epoch_guid;
+  bool res = arts_route_table_add_oo(epoch_guid, req, false);
+  if (!res) {
+    increment_finished_epoch(epoch_guid);
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_send_epoch(arts_guid_t epoch_guid, unsigned int source,
+                                  unsigned int dest) {
+  struct oo_epoch_send_s *req =
+      (struct oo_epoch_send_s *)arts_malloc(sizeof(struct oo_epoch_send_s));
+  req->type = OO_EPOCH_SEND;
+  req->guid = epoch_guid;
+  req->source = source;
+  req->dest = dest;
+  ARTS_TRACE_RDMA("oo queue epoch send guid=%lu source=%u dest=%u",
+                  epoch_guid, source, dest);
+  bool res = arts_route_table_add_oo(epoch_guid, req, false);
+  if (!res) {
+    send_epoch(epoch_guid, source, dest);
+    arts_free(req);
+  }
+}
+
+void arts_out_of_order_inc_queue_epoch(arts_guid_t epoch_guid) {
+  struct oo_epoch_s *req =
+      (struct oo_epoch_s *)arts_malloc(sizeof(struct oo_epoch_s));
+  req->type = OO_EPOCH_INC_QUEUE;
+  req->guid = epoch_guid;
+  bool res = arts_route_table_add_oo(epoch_guid, req, false);
+  if (!res) {
+    increment_queue_epoch(epoch_guid);
+    arts_free(req);
+  }
+}

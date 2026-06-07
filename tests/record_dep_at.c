@@ -1,0 +1,341 @@
+/******************************************************************************
+** This material was prepared as an account of work sponsored by an agency   **
+** of the United States Government.  Neither the United States Government    **
+** nor the United States Department of Energy, nor Battelle, nor any of      **
+** their employees, nor any jurisdiction or organization that has cooperated **
+** in the development of these materials, makes any warranty, express or     **
+** implied, or assumes any legal liability or responsibility for the accuracy,*
+** completeness, or usefulness or any information, apparatus, product,       **
+** software, or process disclosed, or represents that its use would not      **
+** infringe privately owned rights.                                          **
+**                                                                           **
+** Reference herein to any specific commercial product, process, or service  **
+** by trade name, trademark, manufacturer, or otherwise does not necessarily **
+** constitute or imply its endorsement, recommendation, or favoring by the   **
+** United States Government or any agency thereof, or Battelle Memorial      **
+** Institute. The views and opinions of authors expressed herein do not      **
+** necessarily state or reflect those of the United States Government or     **
+** any agency thereof.                                                       **
+**                                                                           **
+**                      PACIFIC NORTHWEST NATIONAL LABORATORY                **
+**                                  operated by                              **
+**                                    BATTELLE                               **
+**                                     for the                               **
+**                      UNITED STATES DEPARTMENT OF ENERGY                   **
+**                         under Contract DE-AC05-76RL01830                  **
+**                                                                           **
+** Copyright 2019 Battelle Memorial Institute                                **
+** Licensed under the Apache License, Version 2.0 (the "License");           **
+** you may not use this file except in compliance with the License.          **
+** You may obtain a copy of the License at                                   **
+**                                                                           **
+**    https://www.apache.org/licenses/LICENSE-2.0                            **
+**                                                                           **
+** Unless required by applicable law or agreed to in writing, software       **
+** distributed under the License is distributed on an "AS IS" BASIS, WITHOUT **
+** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
+** License for the specific language governing permissions and limitations   **
+******************************************************************************/
+
+/// @file record_dep_at.c
+/// @brief Tests arts_record_dep and arts_record_dep_at (byte-offset slicing).
+
+#include "arts.h"
+#include <stdlib.h>
+#include <string.h>
+
+static void fail_test(const char *msg) {
+  arts_printf("  FAIL: %s\n", msg);
+  abort();
+}
+
+/// Test 1: Basic arts_record_dep with DB_MODE_RO.
+void check_record_dep_ro(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  int *data = (int *)depv[0].ptr;
+  bool ok = (data != NULL && data[0] == 42 && data[1] == 99);
+  if (ok) {
+    arts_printf("  PASS: record_dep RO - data read correctly\n");
+  } else {
+    fail_test("record_dep RO");
+  }
+}
+
+/// Test 2: arts_record_dep with DB_MODE_EW (exclusive write).
+/// After the first writer finishes, the second reader sees modified data.
+void writer_ew(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+               arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  int *data = (int *)depv[0].ptr;
+  if (data) {
+    data[0] = 1000;
+    data[1] = 2000;
+  }
+  arts_printf("  PASS: record_dep EW - write completed\n");
+}
+
+void reader_after_ew(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  int *data = (int *)depv[0].ptr;
+  bool ok = (data != NULL && data[0] == 1000 && data[1] == 2000);
+  if (ok) {
+    arts_printf("  PASS: record_dep EW->RO ordering correct\n");
+  } else {
+    fail_test("record_dep EW->RO data mismatch");
+  }
+}
+
+/// Test 3: arts_record_dep_at - byte offset slicing.
+/// DB layout: [int a, int b, int c, int d] (16 bytes)
+/// Slice at offset=8, len=8 gives pointer to c,d.
+void check_slice(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                 arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  // depv[0].ptr should point to offset 8 within the DB.
+  int *slice = (int *)depv[0].ptr;
+  bool ok = (slice != NULL && slice[0] == 300 && slice[1] == 400 &&
+             depv[0].mode == DB_MODE_PTR);
+  if (ok) {
+    arts_printf("  PASS: record_dep_at byte offset slice correct\n");
+  } else {
+    if (slice) {
+      arts_printf("  FAIL: record_dep_at got [%d, %d], mode=%u "
+                  "expected [300, 400], mode=%u\n",
+                  slice[0], slice[1], depv[0].mode, DB_MODE_PTR);
+    } else {
+      arts_printf("  FAIL: record_dep_at null pointer\n");
+    }
+    abort();
+  }
+}
+
+/// Test 4: arts_record_dep_at preserves the original DB GUID.
+void check_slice_guid(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
+  (void)depc;
+  arts_guid_t expected_guid = (arts_guid_t)paramv[0];
+  bool ok = (depv[0].guid == expected_guid && depv[0].ptr != NULL &&
+             depv[0].mode == DB_MODE_PTR);
+  if (ok) {
+    arts_printf("  PASS: record_dep_at preserves DB GUID\n");
+  } else {
+    fail_test("record_dep_at GUID mismatch");
+  }
+  (void)paramc;
+}
+
+/// Test 5: a sliced DB dependence must observe bytes after earlier writers.
+/// The extra event dep forces EDT execution to wait, so a registration-time
+/// slice copy would expose stale data here.
+void writer_then_signal(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  int *data = (int *)depv[0].ptr;
+  if (!data) {
+    fail_test("record_dep_at writer null pointer");
+  }
+  data[2] = 700;
+  data[3] = 800;
+  arts_event_satisfy_slot((arts_guid_t)paramv[0], NULL_GUID,
+                          ARTS_EVENT_LATCH_DECR_SLOT);
+  arts_printf("  PASS: record_dep_at writer updated halo region\n");
+}
+
+void check_slice_after_writer(uint32_t paramc, const uint64_t *paramv,
+                              uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  int *slice = (int *)depv[0].ptr;
+  bool ok = (slice != NULL && slice[0] == 700 && slice[1] == 800 &&
+             depv[0].mode == DB_MODE_PTR);
+  if (ok) {
+    arts_printf("  PASS: record_dep_at slice observes post-writer bytes\n");
+  } else {
+    if (slice) {
+      arts_printf("  FAIL: record_dep_at post-writer slice got [%d, %d], "
+                  "mode=%u expected [700, 800], mode=%u\n",
+                  slice[0], slice[1], depv[0].mode, DB_MODE_PTR);
+    } else {
+      arts_printf("  FAIL: record_dep_at post-writer slice null pointer\n");
+    }
+    abort();
+  }
+}
+
+/// Test 6: a sliced RO after multiple EW generations must observe the latest
+/// completed writer, not an earlier DB image.
+void writer_slice_values(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  int *data = (int *)depv[0].ptr;
+  if (!data) {
+    fail_test("record_dep_at ordered writer null pointer");
+  }
+  data[2] = (int)paramv[0];
+  data[3] = (int)paramv[1];
+  arts_printf("  PASS: record_dep_at ordered writer set [%d, %d]\n", data[2],
+              data[3]);
+}
+
+void check_slice_after_writer_chain(uint32_t paramc, const uint64_t *paramv,
+                                    uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  int *slice = (int *)depv[0].ptr;
+  bool ok = (slice != NULL && slice[0] == 900 && slice[1] == 901 &&
+             depv[0].mode == DB_MODE_PTR);
+  if (ok) {
+    arts_printf("  PASS: record_dep_at slice observes latest EW generation\n");
+  } else {
+    if (slice) {
+      arts_printf("  FAIL: record_dep_at EW-chain slice got [%d, %d], "
+                  "mode=%u expected [900, 901], mode=%u\n",
+                  slice[0], slice[1], depv[0].mode, DB_MODE_PTR);
+    } else {
+      arts_printf("  FAIL: record_dep_at EW-chain slice null pointer\n");
+    }
+    abort();
+  }
+}
+
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+
+  arts_printf("=== record_dep_at ===\n");
+
+  arts_guid_t epoch = arts_initialize_and_start_epoch(NULL_GUID, 0);
+
+  // Test 1: Basic RO record_dep.
+  void *ptr1 = NULL;
+  arts_guid_t db1 =
+      arts_db_create(&ptr1, 2 * sizeof(int), ARTS_DB_DEFAULT, NULL);
+  int *d1 = (int *)ptr1;
+  d1[0] = 42;
+  d1[1] = 99;
+  arts_db_release(db1);
+
+  arts_guid_t e1 = arts_edt_create_with_epoch(
+      check_record_dep_ro, 0, NULL, 1, epoch, &(arts_hint_t){.route = 0});
+  arts_add_dependence(db1, e1, 0, DB_MODE_RO);
+
+  // Test 2: EW → RO ordering via record_dep.
+  void *ptr2 = NULL;
+  arts_guid_t db2 =
+      arts_db_create(&ptr2, 2 * sizeof(int), ARTS_DB_DEFAULT, NULL);
+  int *d2 = (int *)ptr2;
+  d2[0] = 0;
+  d2[1] = 0;
+  arts_db_release(db2);
+
+  arts_guid_t ew_edt = arts_edt_create_with_epoch(writer_ew, 0, NULL, 1, epoch,
+                                                  &(arts_hint_t){.route = 0});
+  arts_add_dependence(db2, ew_edt, 0, DB_MODE_EW);
+
+  arts_guid_t ro_edt = arts_edt_create_with_epoch(
+      reader_after_ew, 0, NULL, 1, epoch, &(arts_hint_t){.route = 0});
+  arts_add_dependence(db2, ro_edt, 0, DB_MODE_RO);
+
+  // Test 3: record_dep_at with byte offset.
+  void *ptr3 = NULL;
+  arts_guid_t db3 =
+      arts_db_create(&ptr3, 4 * sizeof(int), ARTS_DB_DEFAULT, NULL);
+  int *d3 = (int *)ptr3;
+  d3[0] = 100;
+  d3[1] = 200;
+  d3[2] = 300;
+  d3[3] = 400;
+  arts_db_release(db3);
+
+  arts_guid_t e3 = arts_edt_create_with_epoch(check_slice, 0, NULL, 1, epoch,
+                                              &(arts_hint_t){.route = 0});
+  arts_add_dependence_at(db3, e3, 0, DB_MODE_RO, 2 * sizeof(int),
+                         2 * sizeof(int));
+
+  // Test 4: record_dep_at preserves DB GUID.
+  uint64_t guid_param = (uint64_t)db3;
+  arts_guid_t e4 = arts_edt_create_with_epoch(
+      check_slice_guid, 1, &guid_param, 1, epoch, &(arts_hint_t){.route = 0});
+  arts_add_dependence_at(db3, e4, 0, DB_MODE_RO, sizeof(int), sizeof(int));
+
+  // Test 5: record_dep_at must resolve the slice after an earlier DB writer.
+  void *ptr4 = NULL;
+  arts_guid_t db4 =
+      arts_db_create(&ptr4, 4 * sizeof(int), ARTS_DB_DEFAULT, NULL);
+  int *d4 = (int *)ptr4;
+  d4[0] = 10;
+  d4[1] = 20;
+  d4[2] = 30;
+  d4[3] = 40;
+  arts_db_release(db4);
+
+  arts_guid_t writer_done =
+      arts_event_create(0, ARTS_EVENT_ONCE, 1, NULL_GUID);
+  uint64_t writer_done_param = (uint64_t)writer_done;
+
+  arts_guid_t e5_writer = arts_edt_create_with_epoch(
+      writer_then_signal, 1, &writer_done_param, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence(db4, e5_writer, 0, DB_MODE_EW);
+
+  arts_guid_t e5_reader = arts_edt_create_with_epoch(
+      check_slice_after_writer, 0, NULL, 2, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence_at(db4, e5_reader, 0, DB_MODE_RO, 2 * sizeof(int),
+                         2 * sizeof(int));
+  arts_add_dependence(writer_done, e5_reader, 1, DB_MODE_NULL);
+
+  // Test 6: record_dep_at after an EW chain must see the latest generation.
+  void *ptr5 = NULL;
+  arts_guid_t db5 =
+      arts_db_create(&ptr5, 4 * sizeof(int), ARTS_DB_DEFAULT, NULL);
+  int *d5 = (int *)ptr5;
+  d5[0] = 1;
+  d5[1] = 2;
+  d5[2] = 3;
+  d5[3] = 4;
+  arts_db_release(db5);
+
+  uint64_t first_writer_params[] = {500, 501};
+  arts_guid_t e6_writer_a = arts_edt_create_with_epoch(
+      writer_slice_values, 2, first_writer_params, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence(db5, e6_writer_a, 0, DB_MODE_EW);
+
+  uint64_t second_writer_params[] = {900, 901};
+  arts_guid_t e6_writer_b = arts_edt_create_with_epoch(
+      writer_slice_values, 2, second_writer_params, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence(db5, e6_writer_b, 0, DB_MODE_EW);
+
+  arts_guid_t e6_reader = arts_edt_create_with_epoch(
+      check_slice_after_writer_chain, 0, NULL, 1, epoch,
+      &(arts_hint_t){.route = 0});
+  arts_add_dependence_at(db5, e6_reader, 0, DB_MODE_RO, 2 * sizeof(int),
+                         2 * sizeof(int));
+
+  arts_wait_on_handle(epoch);
+  arts_shutdown();
+}
+
+int main(int argc, char **argv) {
+  arts_rt(argc, argv);
+  return 0;
+}
