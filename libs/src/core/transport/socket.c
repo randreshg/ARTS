@@ -1635,6 +1635,10 @@ static const char *arts_transport_name(void) {
 #endif
 }
 
+// Public transport-kind name for this (socket) backend: "rdma-rsocket" or "tcp".
+// The GASNet backend (gasnet_transport.c) supplies the "gasnet" definition.
+const char *arts_transport_kind_name(void) { return arts_transport_name(); }
+
 bool arts_transport_runtime_uses_rdma(void) {
 #ifdef ARTS_USE_RDMA
   return arts_transport_uses_rdma_cached;
@@ -4507,6 +4511,9 @@ bool arts_remote_setup_incoming() {
   unsigned int stagger_us = arts_connect_stagger_us();
   remote_expected_incoming_count = (unsigned int)count * ports;
   remote_incoming_connected_count = 0;
+
+  ARTS_INFO("ARTS transport: %s (rank %u/%u)", arts_transport_kind_name(),
+            arts_global_rank_id, arts_global_rank_count);
 
   if (stagger_us > 0) {
     ARTS_INFO("%s startup connection staggering enabled: %u us per rank",

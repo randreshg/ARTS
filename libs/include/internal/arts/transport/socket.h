@@ -71,6 +71,12 @@ uint64_t arts_remote_send_payload_request(int rank, unsigned int queue,
 void arts_remote_set_thread_inbound_queues(unsigned int start,
                                            unsigned int stop);
 void arts_remote_thread_inbound_queues_cleanup();
+
+// Canonical name of the active data-plane transport: "tcp", "rdma-rsocket", or
+// "gasnet". Each backend (socket.c / gasnet_transport.c) provides its own
+// definition, so callers and logs can distinguish the three transports instead
+// of collapsing every accelerated path to "rdma".
+const char *arts_transport_kind_name(void);
 #ifdef __cplusplus
 }
 #endif

@@ -310,8 +310,9 @@ void arts_ll_server_setup(struct arts_config_s *config) {
   config->nodes = arts_global_rank_count;
 
   g_gasnet_up = 1;
-  ARTS_INFO("GASNet transport up: rank %u/%u, max_medium=%lu",
-            arts_global_rank_id, arts_global_rank_count,
+  ARTS_INFO("ARTS transport: %s; GASNet up rank %u/%u, max_medium=%lu",
+            arts_transport_kind_name(), arts_global_rank_id,
+            arts_global_rank_count,
             (unsigned long)gex_AM_MaxRequestMedium(g_tm, GEX_RANK_INVALID,
                                                    GEX_EVENT_NOW, 0, 3));
 }
@@ -338,6 +339,11 @@ void arts_ll_server_cleanup() {
 unsigned int arts_remote_get_my_rank() { return arts_global_rank_id; }
 
 bool arts_transport_runtime_uses_rdma(void) { return true; }
+
+// Public transport-kind name for the GASNet backend. Distinct from the
+// rsocket/TCP socket.c backend so logs and callers can tell GASNet apart from
+// the legacy rdma-rsocket data plane.
+const char *arts_transport_kind_name(void) { return "gasnet"; }
 
 void arts_remote_set_message_table(struct arts_config_s *table) { (void)table; }
 
