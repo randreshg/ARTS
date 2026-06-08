@@ -24,11 +24,9 @@
 ///   - STENCIL_FRESH=1: a fresh DB is allocated per (timestep, cell), so every
 ///     DB is written exactly once then read — no RO->EW reuse anywhere.
 ///
-/// KNOWN PRE-EXISTING BUG (reproduced by the default ping-pong mode, NOT
-/// introduced by the cross-node coherence work; confirmed present at the
-/// pre-O11 base bd7b004): with reused buffers the checksum is wrong/flaky once
-/// the graph is non-trivial (e.g. N>=16 at 20 workers flakes 64/70/82; with a
-/// single worker it is deterministically wrong). The STENCIL_FRESH variant of
+/// Known frontier-ordering bug: with reused buffers the checksum is wrong/flaky
+/// once the graph is non-trivial (e.g. N>=16 at 20 workers flakes 64/70/82; with
+/// a single worker it is deterministically wrong). The STENCIL_FRESH variant of
 /// the SAME computation is correct for every N,T on 1 and 20 workers, which
 /// isolates the fault to a mixed-mode EDT writing a reused DB (EW generation)
 /// before that DB's prior RO generation has drained. A pure-EW writer

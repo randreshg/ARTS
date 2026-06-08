@@ -7,8 +7,7 @@
 /// @file cdag_multi_reader.c
 /// @brief Minimal reproducer: repeated RO->EW cycles on one reused local DB.
 ///
-/// KNOWN PRE-EXISTING BUG this reproduces (NOT introduced by the cross-node
-/// coherence work; present at the pre-O11 base bd7b004):
+/// Known frontier-ordering bug this reproduces:
 ///   - cycles == 1 (any worker count), and ANY cycles at worker_threads=1, PASS.
 ///   - cycles >= 2 at high worker counts (e.g. 20) FAIL: a reader sees the
 ///     next/previous cycle's value. It reproduces even with R == 1 (one reader

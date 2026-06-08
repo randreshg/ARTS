@@ -1259,13 +1259,13 @@ static void config_print_warnings(struct arts_config_s *config) {
                  "roce, or auto",
                  config->protocol);
     }
-#ifdef ARTS_USE_RDMA
+#if defined(ARTS_USE_RDMA) || defined(ARTS_USE_GASNET)
     (void)requested_tcp;
     (void)uses_network_transport;
 #else
     if (requested_rdma && uses_network_transport) {
       ARTS_ERROR("arts.cfg requests protocol=%s but ARTS was built without "
-                 "ARTS_USE_RDMA",
+                 "an accelerated transport",
                  config->protocol);
     }
 #endif
