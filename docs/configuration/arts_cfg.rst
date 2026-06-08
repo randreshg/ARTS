@@ -135,14 +135,14 @@ Networking
      - auto
      - Network interface name (``eth0``, ``ib0``, etc.).
 
-RDMA/RoCE rsocket policy
-------------------------
+Production transport policy
+---------------------------
 
-The current RDMA build uses the rsocket compatibility API and requires
-``librdmacm``, UCX, and libfabric development packages.  Multinode RDMA/RoCE
-defaults use one lazy persistent full-duplex peer endpoint per rank pair.
-``port_count``, ``sender_threads``, and ``receiver_threads`` are clamped to
-``1`` unless explicitly forced with the RDMA override environment variables.
+Production multinode builds use GASNet-EX.  The legacy rsocket compatibility
+path is selected only by an explicit legacy build option.  The rsocket path keeps
+one lazy persistent full-duplex peer endpoint per rank pair, with
+``port_count``, ``sender_threads``, and ``receiver_threads`` clamped to ``1``
+unless explicitly forced with the RDMA override environment variables.
 
 Launcher
 --------
