@@ -148,6 +148,11 @@ class Benchset(BaseModel):
                     root = str(repo_root())
                     if entry.args is not None:
                         args, overridden = expand_repo(entry.args, root), True
+                        # One list from the roster serves every geometry:
+                        # the catalog's per-node editions describe the
+                        # arguments it replaced, so none may answer for a
+                        # node count unless the roster gives its own.
+                        args_by_nodes = {}
                     if entry.args_by_nodes is not None:
                         args_by_nodes = expand_repo(entry.args_by_nodes, root)
                         overridden = True
@@ -163,6 +168,7 @@ class Benchset(BaseModel):
                         root = str(repo_root())
                         if rewrite.args is not None:
                             args = expand_repo(rewrite.args, root)
+                            args_by_nodes = {}
                             overridden = True
                         if rewrite.args_by_nodes is not None:
                             args_by_nodes = expand_repo(

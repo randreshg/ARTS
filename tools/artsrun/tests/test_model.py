@@ -231,6 +231,52 @@ def test_benchset_override_marks_the_argument_source():
     assert resolved["nqueens:base"].args_overridden
 
 
+def test_a_roster_args_override_replaces_the_catalogs_per_node_editions():
+    # A row's catalog arguments may come as one list plus per-node editions.
+    # A roster that gives `args` alone has replaced the whole surface: one
+    # list serves every geometry, and the catalog's editions must not answer
+    # for any node count -- otherwise the override is dead exactly where
+    # the catalog is most specific.
+    catalog = load_catalog()
+    row = next(a for a in catalog.rows if a.args_by_nodes)
+    bs = Benchset(name="o", apps={row.name: BenchsetEntry(args=["1", "2"])})
+    got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
+    assert got.args_overridden
+    assert got.args_by_nodes == {}
+    for n in {1, *row.args_by_nodes}:
+        assert got.args_for(n) == ["1", "2"]
+
+
+def test_a_roster_keeps_its_own_per_node_editions_beside_its_args():
+    catalog = load_catalog()
+    row = next(a for a in catalog.rows if a.args_by_nodes)
+    bs = Benchset(name="o", apps={row.name: BenchsetEntry(
+        args=["1", "2"], args_by_nodes={2: ["3", "4"]})})
+    got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
+    assert got.args_for(2) == ["3", "4"]
+    assert got.args_for(1) == ["1", "2"]
+    assert got.args_for(8) == ["1", "2"]
+
+
+def test_a_rewrites_override_replaces_its_per_node_editions_too():
+    catalog = Catalog(apps={
+        "r": AppEntry.model_validate({
+            "name": "r", "binary": "r", "class": "spmd", "marker": "DONE",
+            "restructured_as": "r_dist"}),
+        "r_dist": AppEntry.model_validate({
+            "name": "r_dist", "binary": "r_dist", "class": "spmd",
+            "marker": "DONE", "args": ["9"],
+            "args_by_nodes": {1: ["8"], 2: ["7"]}}),
+    })
+    bs = Benchset(name="o", apps={
+        "r": BenchsetEntry(versions=[Version.RESTRUCTURED]),
+        "r_dist": BenchsetEntry(args=["1"]),
+    })
+    got = {a.key: a for a in bs.resolve(catalog)}["r:restructured"]
+    assert got.args_overridden
+    assert got.args_for(1) == ["1"] and got.args_for(2) == ["1"]
+
+
 def test_benchset_overrides_a_restructured_row_by_the_rewrites_name():
     catalog = load_catalog()
     row = next(a for a in catalog.rows if a.restructured_as)
