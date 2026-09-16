@@ -145,6 +145,14 @@ class Profile(BaseModel):
     cell_timeout_s: int = Field(default=300, ge=1)
     repeats: int = Field(default=1, ge=1)
 
+    # Wrap every cell's binary in a getrusage witness (`/usr/bin/time -v`) to
+    # recover peak resident set size and minor-fault counts alongside the
+    # runtime's own end-to-end stamp — neither is otherwise observed. Off by
+    # default: the wrapper is a per-rank extra process, and a site whose
+    # compute nodes lack the binary simply runs without it (guarded at
+    # launch, not here) rather than refusing the flag.
+    rusage_witness: bool = False
+
     @property
     def threads_per_node(self) -> int:
         """The core block one rank occupies.

@@ -110,6 +110,23 @@ def test_reference_env_disables_mvapich_affinity():
     assert "MV2_ENABLE_AFFINITY" not in arts
 
 
+@pytest.mark.parametrize("kind", [RuntimeKind.XSOCR, RuntimeKind.OCRVX, RuntimeKind.HPX])
+def test_a_local_reference_cell_is_held_to_loopback_tcp(kind):
+    local = Profile.model_validate({
+        "name": "t", "launcher": "local", "nodes": [1, 2],
+        "workers": 15, "progress": 1,
+    })
+    env = build_env(_cell(kind, nodes=2), local)
+    assert env["UCX_TLS"] == "tcp,self"
+    assert env["UCX_NET_DEVICES"] == "lo"
+
+
+@pytest.mark.parametrize("kind", [RuntimeKind.XSOCR, RuntimeKind.OCRVX, RuntimeKind.HPX])
+def test_a_remote_reference_cell_keeps_the_site_transport(kind):
+    env = build_env(_cell(kind, nodes=2), _ssh_profile())
+    assert "UCX_TLS" not in env and "UCX_NET_DEVICES" not in env
+
+
 # -- selection guards: what a reference cell needs from the profile ---------
 
 def _selection(**kw):
@@ -211,3 +228,71 @@ def test_a_single_stamp_still_passes(tmp_path):
     r = check.apply_to(_result(tmp_path, "DONE sum 42\n[E2E] 1000\n", Status.OK))
     assert r.status is Status.OK
     assert r.scalar == "42"
+
+
+# -- rusage witness: /usr/bin/time -v wraps the binary, not the launcher ----
+
+def test_rusage_witness_off_by_default_leaves_argv_unchanged():
+    profile = _ssh_profile()
+    assert profile.rusage_witness is False
+    argv = build_command(_cell(RuntimeKind.ARTS, nodes=2), profile)
+    assert argv == ["/opt/bin/app", "12", "4"]
+    assert "sh" not in argv and "/usr/bin/time" not in argv
+
+
+def test_rusage_witness_wraps_the_arts_binary():
+    profile = _ssh_profile().model_copy(update={"rusage_witness": True})
+    argv = build_command(_cell(RuntimeKind.ARTS, nodes=2), profile)
+    assert argv == [
+        "sh", "-c",
+        'if [ -x /usr/bin/time ]; then exec /usr/bin/time -v "$@"; '
+        'else exec "$@"; fi',
+        "sh", "/opt/bin/app", "12", "4",
+    ]
+
+
+def test_rusage_witness_wraps_only_the_reference_tail_not_the_envelope():
+    profile = _ssh_profile().model_copy(update={"rusage_witness": True})
+    argv = build_command(_cell(RuntimeKind.OCRVX, nodes=1), profile)
+    # The envelope prefix (bash ENV ... --) precedes the witness: the
+    # affinity mask must already be applied to the process /usr/bin/time
+    # execs, not the other way around.
+    assert argv[:5] == ["bash", ENV, "16", "1", "fixed"]
+    assert argv[5] == "--"
+    assert argv[6:9] == ["sh", "-c", (
+        'if [ -x /usr/bin/time ]; then exec /usr/bin/time -v "$@"; '
+        'else exec "$@"; fi')]
+    assert argv[9:] == ["sh", "/opt/bin/app", "12", "4"]
+
+
+def test_rusage_witness_guard_falls_back_when_the_witness_is_missing():
+    import subprocess
+
+    # The same [ -x <path> ] / exec "$@" shape command.py wires to
+    # /usr/bin/time, exercised against a path guaranteed absent: the wrapped
+    # command must still run to completion, silently, rather than fail the
+    # cell over a missing witness.
+    guard = ('if [ -x /nonexistent/time ]; then '
+             'exec /nonexistent/time -v "$@"; else exec "$@"; fi')
+    out = subprocess.run(
+        ["sh", "-c", guard, "sh", "echo", "ran ok"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert out.returncode == 0
+    assert out.stdout.strip() == "ran ok"
+
+
+def test_rusage_witness_guard_runs_the_witness_when_present():
+    from artsrun.run.command import _RUSAGE_GUARD
+    import subprocess
+
+    # On a host that does have /usr/bin/time, the same guard the driver
+    # emits must produce its rusage report alongside the command's own
+    # output — the branch check.py's extractor depends on.
+    out = subprocess.run(
+        ["sh", "-c", _RUSAGE_GUARD, "sh", "echo", "ran ok"],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert out.returncode == 0
+    assert "ran ok" in out.stdout
+    assert "Maximum resident set size" in out.stderr
