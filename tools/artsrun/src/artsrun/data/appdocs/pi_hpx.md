@@ -133,8 +133,9 @@ the row fails the expect check for a reason nothing in the failure names.
 count (3, 6, …) or a new `N` has to be chosen against this constraint
 before it is measured.
 
-**Calibrated arguments.** `72000000000` at every node count: a multiple of
+**Calibrated arguments.** `70000000000` at every node count: a multiple of
 32 × 10⁸, so the block `N / num_localities` drops no term at any node count of
 the sweep (the constraint above). Derived to the 100 s window from the probe
-through the linear law; the sizing pass measured 100.1 s on every ARTS arm and
-223 s on HPX (the code-generation gap recorded under parity), 4.4 GB resident.
+through the linear law and rounded to one significant digit; the anchor
+measured 97.4 s on every ARTS arm and 216.4 s on HPX (the code-generation gap
+recorded under the comparison's exclusions), 4.7 GB resident.

@@ -206,7 +206,8 @@ element). The `hpx-gate` roster runs
 `--array-size=4096 --iterations=200000 --seed=1`, finishing in well under
 a few seconds. The measurement argument is the calibrated one at the end of this section.
 
-**Calibrated arguments.** `--array-size=4096 --iterations=2100000 --seed=1`
+**Calibrated arguments.** `--array-size=4096 --iterations=2000000 --seed=1`
 at every node count; the pin is the update count itself. Derived to the 10 s
-window from the probe through the linear law; the sizing pass measured
-8.4–9.7 s on the ARTS arms and 11.5 s on HPX, 5.4 GB resident.
+window from the probe through the linear law and rounded to the update count;
+the anchor measured 8.4–8.9 s on the ARTS arms and 11.2 s on HPX, 6.9 GB
+resident.

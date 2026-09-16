@@ -422,9 +422,10 @@ is exact again. The two defects are independent — one in cross-rank
 message-dispatch metadata, the other in single-rank NULL-mode dependency
 handling — and only the second is confirmed repaired here.
 
-**Calibrated arguments.** `--n=119200 --nt=100 --size=23840 --theta=0.3
+**Calibrated arguments.** `--n=120000 --nt=100 --size=24000 --theta=0.3
 --th=100 --k-th=500` at every node count. `nt` keeps the published value,
 `size = n/5` the gate's relation, and the width — the eight cells of the top
 split — is exempt from the width floor. Derived to the 100 s window through
-the row's measured two-point work exponent; the sizing pass measured
-88.8–90.4 s on the ARTS arms and 50 s on HPX, 5.9 GB resident.
+the row's measured two-point work exponent and rounded to the body count; the
+anchor measured 86.6–94.5 s on the ARTS arms (INV/WB 91.7 s) and 51.5 s on
+HPX, 7.3 GB resident on ARTS and 9.0 GB on HPX.

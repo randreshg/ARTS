@@ -513,11 +513,12 @@ with the process grid per node from the catalog's ladder (1·1·1, 2·1·1, 4·1
 8·1·1 — one axis at every rung, as under Wiring), which finishes in tens of
 milliseconds per cell. The measurement argument is the calibrated one at the end of this section.
 
-**Calibrated arguments.** `--scaling=1 --nx=448 --ny=448 --nz=448
+**Calibrated arguments.** `--scaling=1 --nx=480 --ny=480 --nz=480
 --num_vars=5 --num_tsteps=100 --stencil=24 --percent_sum=100 --num_spikes=1
 --error_tol=1` with `--npx = nl --npy=1 --npz=1` per rung (one axis at every
 rung; `nx` a multiple of 32 so the slab divides at every node count).
 `num_vars` and `num_tsteps` keep the published values; the cube was derived to
-the 100 s window through the cubic law and one refit; the sizing pass measured
-70–90 s on the ARTS arms (EXCL the slowest, in the window) and 46 s on HPX,
-12 GB resident.
+the 100 s window through the cubic law and one refit, and rounded up to the
+next multiple of 32 (512³ would be 1.3 windows). The anchor measured 79.4–96.8 s
+on the ARTS arms (EXCL the slowest, in the window) and 53.4 s on HPX, 16 GB
+resident on ARTS and 9 GB on HPX.
