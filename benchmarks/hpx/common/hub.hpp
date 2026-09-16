@@ -86,7 +86,7 @@ private:
 }    // namespace arts_hpx
 
 // A plain action registers non-inline symbols, so the delivery action is
-// defined once per program, in the port's translation unit, per payload
+// defined once per program, in the program's translation unit, per payload
 // type.  Action names need be unique only within one program.
 #define ARTS_HPX_DEFINE_HUB(T, tag)                                            \
     void tag##_deliver(std::uint64_t key, T value)                             \

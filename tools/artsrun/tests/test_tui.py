@@ -88,12 +88,14 @@ def test_a_version_the_application_lacks_is_absent_not_unchecked():
     # fail when that application later gains one, which says nothing about the
     # absence being tested.
     from artsrun.model.catalog import load_catalog
-    bare = next(a for a in load_catalog().rows if not a.hinted).name
+    rows = load_catalog().rows
+    bare = next(a for a in rows if not a.hinted).name
+    hinted = next(a for a in rows if a.hinted).name
 
     async def check(app, pilot):
         bench = app.query_one("#bench", BenchsetPanel)
         idents = {t.ident for t in bench.toggles}
-        return (f"{bare}:hinted" in idents, "nqueens:hinted" in idents,
+        return (f"{bare}:hinted" in idents, f"{hinted}:hinted" in idents,
                 len(bench.query(".bench-cell.blank")))
 
     has_absent, has_present, blanks = drive(check)
@@ -393,9 +395,14 @@ def test_an_edited_argument_becomes_an_override():
         bench.query_one("#a-nqueens", Input).value = "12 4"
         edited = bench.edited_benchset("scratch")
         resolved = {a.key: a for a in edited.resolve(app.catalog)}
-        return resolved["nqueens:hinted"].args, resolved["nqueens:hinted"].args_overridden
+        # The override reaches every tier the row has; which tiers those are
+        # is the catalog's business, not this test's.
+        keys = [k for k in resolved if k.startswith("nqueens:")]
+        assert keys
+        return ({resolved[k].args[0] + " " + resolved[k].args[1] for k in keys},
+                all(resolved[k].args_overridden for k in keys))
 
-    assert drive(check) == (["12", "4"], True)
+    assert drive(check) == ({"12 4"}, True)
 
 
 def _a_row_with_a_rewrite() -> tuple[str, str]:
@@ -898,9 +905,10 @@ def test_the_application_screen_hides_the_attack_suite_unless_named():
         return headings, idents
 
     headings, idents = drive(check)
-    assert len(headings) == 2
+    assert len(headings) == 3
     assert headings[0].startswith("Applications")
-    assert headings[1].startswith("Toys")
+    assert headings[1].startswith("HPX-origin applications")
+    assert headings[2].startswith("Toys")
     assert not any(i.startswith("rwmix") or i.startswith("rwsteady")
                    for i in idents)
 
@@ -1066,7 +1074,7 @@ def test_loading_a_benchset_shows_that_roster():
         return small, big
 
     small, big = drive(check)
-    assert small == {"fibonacci", "nqueens", "quicksort"}
+    assert small == {"fibonacci", "nqueens", "quicksort", "pi_hpx"}
     assert len(big) > len(small)
 
 

@@ -199,14 +199,25 @@ def show_apps(
         Kind.ATTACK: "[red]attack[/red]",
         Kind.TOY: "[dim]toy[/dim]",
     }
-    for kind in (Kind.APP, Kind.ATTACK, Kind.TOY):
-        rows = [a for a in catalog.rows_of(kind)
+    # Same group order as the TUI roster: applications, then the HPX-origin
+    # section (one program on four runtimes, drawn from its own catalog file
+    # rather than by kind), then attacks, then toys.
+    groups = [
+        (None, catalog.rows_of(Kind.APP)),
+        ("HPX-origin applications", catalog.hpx_rows),
+        (None, catalog.rows_of(Kind.ATTACK)),
+        (None, catalog.rows_of(Kind.TOY)),
+    ]
+    for heading, group in groups:
+        rows = [a for a in group
                 if not enabled_only or bs.is_enabled(a)]
         if not rows:
             continue
         if not first:
             table.add_section()
         first = False
+        if heading:
+            table.add_row(f"[b]{heading}[/b]")
         for entry in rows:
             on = bs.is_enabled(entry)
             versions = entry.own_versions
@@ -216,7 +227,7 @@ def show_apps(
             name = entry.name if on else f"[dim]{entry.name}[/dim]"
             binary = entry.binary if entry.binary != entry.name else "[dim]·[/dim]"
             table.add_row(
-                name, labels[kind], entry.cls.value, binary,
+                name, labels[entry.kind], entry.cls.value, binary,
                 mark(Version.BASE), mark(Version.HINTED),
                 mark(Version.RESTRUCTURED),
                 " ".join(entry.args) or "[dim]none[/dim]",
@@ -306,7 +317,7 @@ def run_cmd(
         )
 
     try:
-        selection.validate_against(plane, catalog, prof)
+        selection.validate_against(plane, catalog, prof, bs)
     except ValueError as exc:
         _fail(str(exc))
 

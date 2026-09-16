@@ -1,0 +1,76 @@
+--- origin/examples/1d_stencil/1d_stencil_8.cpp
++++ ours/1d_stencil_8.cpp
+@@ -21,8 +21,12 @@
+ 
+ #include "print_time_results.hpp"
+ 
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdio>
+ #include <iostream>
+ #include <memory>
+ #include <mutex>
+@@ -299,6 +303,11 @@
+ // HPX_REGISTER_COMPONENT() exposes the component creation
+ // through hpx::new_<>().
+ typedef hpx::components::component<partition_server> partition_server_type;
++// A program that carries its own components defines the module whose
++// factory and registry plugin lists every component registration below
++// refers to; only a program that borrows the runtime's default module name
++// can leave this out.
++HPX_REGISTER_COMPONENT_MODULE()
+ HPX_REGISTER_COMPONENT(partition_server_type, partition_server)
+ 
+ // HPX_REGISTER_ACTION() exposes the component member function for remote
+@@ -647,6 +656,8 @@
+ {
+     std::vector<hpx::id_type> localities = hpx::find_all_localities();
+     std::size_t nl = localities.size();    // Number of localities
++    arts_hpx::print_geometry();
++    arts_hpx::run_clock clock;
+ 
+     if (np < nl)
+     {
+@@ -678,16 +689,29 @@
+             });
+ 
+         std::vector<stepper_server::space> solution = overall_result.get();
++        std::vector<partition_data> final_data;
+         for (std::size_t i = 0; i != nl; ++i)
+         {
+             stepper_server::space const& s = solution[i];
+             for (std::size_t i = 0; i != s.size(); ++i)
+             {
+-                s[i].get_data(partition_server::middle_partition).get();
++                final_data.push_back(
++                    s[i].get_data(partition_server::middle_partition).get());
+             }
+         }
+ 
+         std::uint64_t elapsed = hpx::chrono::high_resolution_clock::now() - t;
++        arts_hpx::print_e2e(clock);
++        if (arts_hpx::struct_marker())
++            arts_hpx::print_parcels();
++
++        double checksum = 0.0;
++        for (partition_data const& d : final_data)
++            for (std::size_t j = 0; j != d.size(); ++j)
++                checksum += d[j];
++        char line[64];
++        std::snprintf(line, sizeof line, "CHECKSUM %.14g\n", checksum);
++        arts_hpx::write_stdout_line(line);
+ 
+         // Print the solution at time-step 'nt'.
+         if (print_results)
+@@ -761,7 +785,7 @@
+ 
+     // Initialize and run HPX, this example requires to run hpx_main on all
+     // localities
+-    std::vector<std::string> const cfg = {"hpx.run_hpx_main!=1"};
++    std::vector<std::string> const cfg = arts_hpx::runtime_defaults();
+ 
+     hpx::init_params init_args;
+     init_args.desc_cmdline = desc_commandline;

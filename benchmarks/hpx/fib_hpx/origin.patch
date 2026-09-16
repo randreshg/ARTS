@@ -1,0 +1,40 @@
+--- origin/examples/quickstart/fibonacci_futures_distributed.cpp
++++ ours/fibonacci_futures_distributed.cpp
+@@ -12,6 +12,9 @@
+ #include <hpx/include/runtime.hpp>
+ #include <hpx/include/util.hpp>
+ 
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
+ #include <atomic>
+ #include <cstddef>
+ #include <cstdint>
+@@ -142,6 +145,7 @@
+     if (test == "all" || test == "1")
+     {
+         // Keep track of the time required to execute.
++        arts_hpx::run_clock clock;
+         std::uint64_t start = hpx::chrono::high_resolution_clock::now();
+ 
+         for (std::size_t i = 0; i != max_runs; ++i)
+@@ -152,6 +156,9 @@
+         }
+ 
+         std::uint64_t d = hpx::chrono::high_resolution_clock::now() - start;
++        arts_hpx::print_e2e(clock);
++        if (arts_hpx::struct_marker())
++            arts_hpx::print_parcels();
+         char const* fmt =
+             "fibonacci_future({1}) == {2},elapsed time:,{3},[s],{4}\n";
+         hpx::util::format_to(
+@@ -266,7 +273,9 @@
+ {
+     // Initialize and run HPX
+     hpx::register_startup_function(&init_globals);
++    arts_hpx::register_geometry_startup();
+     hpx::init_params init_args;
++    init_args.cfg = arts_hpx::runtime_defaults(false);
+     hpx::program_options::options_description cmdline =
+         get_commandline_options();
+     init_args.desc_cmdline = cmdline;

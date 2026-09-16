@@ -31,10 +31,11 @@ apps:
     enabled: false   # unsupported: needs EW semantics the runtime does not implement
   CoMD_intel_chandra_tiled:
     enabled: true
-    versions: [base]
+    versions: [base, hinted]
   CoMD_sdsc:
     enabled: true
-    versions: [base, hinted]
+    # the block map is 9-22 % faster than the base at 2-8 ranks (kept: a hinted tier is dropped only when it is the base placement)
+    versions: [base, hinted, restructured]
   CoMD_sdsc2:
     enabled: false   # unsupported: needs EW semantics the runtime does not implement
   curvefit:
@@ -63,13 +64,17 @@ apps:
     versions: [base]
   graph500:
     enabled: true
-    versions: [base, hinted]
+    # The hinted layer stays in the source and stays compiled, but on this
+    # row's square R x C grid it is the same whole-column partition the
+    # shipped map already makes, so the tier is not registered (the catalog
+    # carries hinted: false), so base and the rewrite are the two tiers.
+    versions: [base, restructured]
   highbw:
     enabled: false
     versions: [base]
   hpcg_intel:
     enabled: true
-    versions: [base]
+    versions: [base, restructured]
   hpgmg:
     enabled: true
     versions: [base, hinted, restructured]
@@ -78,16 +83,16 @@ apps:
     versions: [base, hinted, restructured]
   LCS_distributed_ST:
     enabled: true
-    versions: [base]
+    versions: [base, hinted]
   LCS_shared:
     enabled: true
-    versions: [base]
+    versions: [base, hinted]
   miniAMR_forkbomb:
     enabled: false
     versions: [base]
   miniAMR_intel:
     enabled: true
-    versions: [base, hinted]
+    versions: [base, hinted, restructured]
   # Off the roster 2026-08-23: reclassified kind: microbench -- same
   # philosophy as miniAMR_intel and dominated by it, with every EDT pinned to
   # the creating rank so nothing distributes.
@@ -96,7 +101,7 @@ apps:
     versions: [base]
   miniAMR_intel_chandra:
     enabled: true
-    versions: [base]
+    versions: [base, hinted]
   multigen:
     enabled: false
     versions: [base]
@@ -105,15 +110,21 @@ apps:
     versions: [base]
   nekbone:
     enabled: true
+    # R3: at the campaign grain the hint layer turns the verdict (base anti, hinted scales); a smaller trend lattice once read it as immaterial
     versions: [base, hinted, restructured]
   npb_cg:
     enabled: true
     versions: [base, restructured]
   nqueens:
     enabled: true
+    # the subtree map is 19 % faster at 8 ranks (kept)
     versions: [base, hinted]
   p2p:
     enabled: true
+    # The source gained an OCR_APP_OPTIMIZED_PLACEMENT map this cycle (the
+    # rank -> policy-domain chunking, argv[6]); the tier is registered in the
+    # catalog and its keep/drop verdict is the campaign's.
+    # R3 (local trend 2026-09-04): the chunk map ran 3-11x SLOWER than base at 2-8 ranks, so the tier is not registered (catalog hinted: false)
     versions: [base]
   printf:
     enabled: false
@@ -132,15 +143,17 @@ apps:
     versions: [base]
   RSBench_intel:
     enabled: true
-    versions: [base, hinted]
+    versions: [base, hinted, restructured]
   RSBench_intel_sharedDB:
     enabled: true
+    # R3 (local trend 2026-09-04): hinted == base at 1-8 ranks; the tier is not registered
     versions: [base]
   sar_pss:
     enabled: true
     versions: [base, restructured]
   smithwaterman:
     enabled: true
+    # the band map is 1.3-2x faster than the base at 2-8 ranks (kept)
     versions: [base, hinted, restructured]
   stencil1D_channel:
     enabled: false
@@ -192,7 +205,30 @@ apps:
     versions: [base]
   XSBench_intel:
     enabled: true
-    versions: [base, hinted]   # restructured is held back in the catalog until its source lands
+    versions: [base, hinted, restructured]
   XSBench_intel_sharedDB:
     enabled: true
     versions: [base]   # SPMD self-placed (fork pins ranks, chains carry rank hints) — no hint layer to add
+
+  # --- HPX-origin section (hpx_apps.yaml): one program on four runtimes ---
+  # Every row runs the catalog's calibrated arguments, like every other row
+  # here; the one-node anchor window and the width floor that chose them are in
+  # each row's appdoc.  A row is in the comparison only if its origin never
+  # suspends a parallel task (its waits are continuations, or a bounded number
+  # of driver-thread phase joins -- the same discipline an OCR program has by
+  # construction) AND its parallel width is set by the problem, not fixed by
+  # the origin below the machine's width; the seven rows that fail either test
+  # are excluded from it (`comparison_excluded` in the catalog names the
+  # reason) and stay runnable through the gate rosters.
+  fib_hpx:
+    enabled: true
+    versions: [base]
+  stencil1d_hpx:
+    enabled: true
+    versions: [base]
+  network_storage_hpx:
+    enabled: true
+    versions: [base]
+  fft_hpx:
+    enabled: true
+    versions: [base]

@@ -216,6 +216,16 @@ set(LIBNL_DIST_VERSION "3.11.0")
 set(LIBNL_DIST_URL "https://github.com/thom311/libnl/releases/download/libnl3_11_0/libnl-${LIBNL_DIST_VERSION}.tar.gz")
 set(LIBNL_DIST_SHA256 "2a56e1edefa3e68a7c00879496736fdbf62fc94ed3232c0baba127ecfa76874d")
 
+set(FFTW_DIST_VERSION "3.3.10")
+set(FFTW_DIST_URL "https://www.fftw.org/fftw-${FFTW_DIST_VERSION}.tar.gz")
+set(FFTW_DIST_SHA256 "56c932549852cddcfafdab3820b0200c7742675be92179e59e6215b340e26467")
+# The SIMD codelet sets the build compiles.  Both sides of the comparison
+# link this one archive, so the set only has to be buildable on the host,
+# not tuned per machine; it is a cache variable so a host without AVX2 can
+# drop to the SSE2 pair without editing this file.
+set(ARTS_FFTW_SIMD "--enable-sse2;--enable-avx;--enable-avx2;--enable-fma"
+    CACHE STRING "SIMD codelet sets compiled into the vendored FFTW")
+
 # Build one hwloc from a pinned dist tarball into its own prefix.  More than
 # one consumer embeds hwloc statically, each at the release its own project
 # validates against, so version and prefix belong to the caller.
@@ -446,6 +456,16 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
             "${CMAKE_CURRENT_SOURCE_DIR}/hpx"
             "${CMAKE_CURRENT_SOURCE_DIR}/patches/hpx/0001-Don-t-apply-PU-offset-for-localities-that-explicitly.patch"
             "${CMAKE_CURRENT_BINARY_DIR}/hpx_ep-prefix/src/hpx_ep-stamp")
+        # A thread-local allocator cache must be looked up on the worker that
+        # is running: an HPX thread that suspends can resume on another worker,
+        # and an inlined lookup may reuse a thread-local base computed before
+        # the suspension, registering the cache's destructor against the
+        # previous worker's storage, which is then read after that worker
+        # exits.
+        arts_patch_submodule(
+            "${CMAKE_CURRENT_SOURCE_DIR}/hpx"
+            "${CMAKE_CURRENT_SOURCE_DIR}/patches/hpx/0002-allocator_support-keep-the-thread-local-cache-lookup-out-of-line.patch"
+            "${CMAKE_CURRENT_BINARY_DIR}/hpx_ep-prefix/src/hpx_ep-stamp")
         include(ExternalProject)
 
         set(ARTS_HPX_INSTALL_DIR
@@ -494,9 +514,13 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
                 # false whatever the hardware (a lock-free 16-byte load
                 # would have to write); the 16-byte operations therefore
                 # stay calls into libatomic, which selects cmpxchg16b
-                # itself, and -mcx16 only permits inlining them.
-                "-DCMAKE_CXX_FLAGS=-mcx16 -DHPX_HAVE_CXX11_STD_ATOMIC_128BIT"
-                -DCMAKE_C_FLAGS=-mcx16
+                # itself, and -mcx16 only permits inlining them.  The
+                # native-ISA pair is what the outer Release tree compiles
+                # every other runtime and program with; a comparison is
+                # only fair when both sides target the same instruction
+                # set, so an external project repeats it explicitly.
+                "-DCMAKE_CXX_FLAGS=-mcx16 -march=native -mtune=native -DHPX_HAVE_CXX11_STD_ATOMIC_128BIT"
+                "-DCMAKE_C_FLAGS=-mcx16 -march=native -mtune=native"
                 -DHPX_WITH_CXX11_ATOMIC_128BIT=ON
                 -DHPX_CXX11_STD_ATOMIC_LIBRARIES=atomic
                 -DHPX_WITH_DISTRIBUTED_RUNTIME=ON
@@ -519,6 +543,19 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
                 # toolchain and MPI.
                 -DHPX_WITH_STATIC_LINKING=ON
                 -DHPX_WITH_MALLOC=system
+                # Coroutine stacks from the heap, not one mmap each.  A
+                # task that has started and waits keeps its stack, and the
+                # runtime places no bound on how many such tasks a program
+                # may have at once; with mmap'd stacks every one of them is
+                # a kernel mapping (two with the guard page), so a program
+                # that issues a wide flat burst of waiting tasks dies on
+                # the process's mapping limit — a kernel default far below
+                # its memory — with an exception rather than a slowdown.
+                # Heap stacks make the live-task bound the memory bound,
+                # the same bound every other runtime here has.  What it
+                # gives up is the guard page: an overflowing task stack
+                # corrupts the neighbour instead of faulting.
+                -DHPX_WITH_THREAD_STACK_MMAP=OFF
                 -DHPX_WITH_DYNAMIC_HPX_MAIN=OFF
                 -DHPX_WITH_EXAMPLES=OFF
                 -DHPX_WITH_TESTS=OFF
@@ -538,6 +575,76 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
             LOG_INSTALL 1
         )
 
+        # HDF5 for the EOS-table program: static, C and C++ APIs, threadsafe
+        # (the table partitions read their slices concurrently at init).  The
+        # threadsafe + C++ pairing is an officially unsupported combination
+        # upstream, which is what ALLOW_UNSUPPORTED exists to allow; the
+        # alternative is serialising the init reads, which changes when the
+        # data is there rather than what it is.  No parallel/MPI layer: the
+        # program reads hyperslabs from a file, not through MPI-IO.
+        arts_init_submodule(third_party/hdf5 CMakeLists.txt)
+        set(ARTS_HDF5_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/hdf5_install")
+        ExternalProject_Add(hdf5_ep
+            SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/hdf5"
+            BINARY_DIR "${CMAKE_BINARY_DIR}/third_party/hdf5-build"
+            DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
+            CMAKE_GENERATOR "${CMAKE_GENERATOR}"
+            CMAKE_ARGS
+                -DCMAKE_BUILD_TYPE=Release
+                -DCMAKE_INSTALL_PREFIX=${ARTS_HDF5_INSTALL_DIR}
+                -DCMAKE_INSTALL_LIBDIR=lib
+                -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+                "-DCMAKE_C_FLAGS=-O3 -march=native -mtune=native"
+                "-DCMAKE_CXX_FLAGS=-O3 -march=native -mtune=native"
+                -DBUILD_SHARED_LIBS=OFF
+                -DBUILD_STATIC_LIBS=ON
+                -DBUILD_TESTING=OFF
+                -DHDF5_BUILD_CPP_LIB=ON
+                -DHDF5_ENABLE_THREADSAFE=ON
+                -DALLOW_UNSUPPORTED=ON
+                -DHDF5_BUILD_TOOLS=OFF
+                -DHDF5_BUILD_UTILS=OFF
+                -DHDF5_BUILD_EXAMPLES=OFF
+                -DHDF5_BUILD_HL_LIB=OFF
+                -DHDF5_ENABLE_PARALLEL=OFF
+                -DHDF5_ENABLE_Z_LIB_SUPPORT=OFF
+                -DHDF5_ENABLE_SZIP_SUPPORT=OFF
+            BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR>
+                --parallel ${CMAKE_BUILD_PARALLEL_LEVEL}
+            INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR>
+            BUILD_BYPRODUCTS
+                "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5.a"
+                "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5_cpp.a"
+            LOG_CONFIGURE 1 LOG_BUILD 1 LOG_INSTALL 1)
+        set(ARTS_HDF5_INSTALL_DIR "${ARTS_HDF5_INSTALL_DIR}" PARENT_SCOPE)
+
+        # FFTW as the sequential transform kernel: the distribution is the
+        # program's own, so the library needs neither its threading layer
+        # nor its MPI layer -- only the per-rank one-dimensional transforms.
+        arts_fetch_dist_tarball(FFTW_TARBALL
+            "fftw-${FFTW_DIST_VERSION}.tar.gz" "${FFTW_DIST_URL}" "${FFTW_DIST_SHA256}")
+        set(FFTW_SRC_DIR "${CMAKE_BINARY_DIR}/third_party/fftw-${FFTW_DIST_VERSION}")
+        if(NOT EXISTS "${FFTW_SRC_DIR}/configure")
+            file(ARCHIVE_EXTRACT INPUT "${FFTW_TARBALL}"
+                 DESTINATION "${CMAKE_BINARY_DIR}/third_party")
+        endif()
+        set(ARTS_FFTW_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/fftw_install")
+        ExternalProject_Add(fftw_ep
+            SOURCE_DIR "${FFTW_SRC_DIR}"
+            BINARY_DIR "${CMAKE_BINARY_DIR}/third_party/fftw-build"
+            DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
+            CONFIGURE_COMMAND "${FFTW_SRC_DIR}/configure"
+                --prefix=${ARTS_FFTW_INSTALL_DIR}
+                --enable-static --disable-shared --disable-fortran
+                --disable-mpi --disable-threads --disable-openmp
+                --with-pic ${ARTS_FFTW_SIMD}
+                "CFLAGS=-O3 -march=native -mtune=native"
+            BUILD_COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
+            INSTALL_COMMAND make install
+            BUILD_BYPRODUCTS "${ARTS_FFTW_INSTALL_DIR}/lib/libfftw3.a"
+            LOG_CONFIGURE 1 LOG_BUILD 1 LOG_INSTALL 1)
+        set(ARTS_FFTW_INSTALL_DIR "${ARTS_FFTW_INSTALL_DIR}" PARENT_SCOPE)
+
         set(ARTS_HPX_AVAILABLE ON PARENT_SCOPE)
         set(ARTS_HPX_INSTALL_DIR "${ARTS_HPX_INSTALL_DIR}" PARENT_SCOPE)
         set(HPX_HWLOC_INSTALL_DIR "${HPX_HWLOC_INSTALL_DIR}" PARENT_SCOPE)
@@ -556,6 +663,52 @@ set_target_properties(arts_hwloc PROPERTIES
     IMPORTED_LOCATION "${HWLOC_LIB_A}"
     INTERFACE_INCLUDE_DIRECTORIES "${HWLOC_INCLUDE_DIRS}")
 add_library(arts::hwloc ALIAS arts_hwloc)
+
+# The vendored HDF5 as targets: a consumer names arts::hdf5 (C) or
+# arts::hdf5_cpp (C++ API) and gets the headers, the archive and the private
+# dependencies with it.  A bare -lhdf5 would resolve to whatever the host
+# ships, which is the per-machine drift the vendoring exists to prevent.
+if(ARTS_HDF5_INSTALL_DIR)
+    find_package(Threads REQUIRED)
+    file(MAKE_DIRECTORY "${ARTS_HDF5_INSTALL_DIR}/include")
+    add_library(arts_hdf5 STATIC IMPORTED GLOBAL)
+    set_target_properties(arts_hdf5 PROPERTIES
+        IMPORTED_LOCATION "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_HDF5_INSTALL_DIR}/include"
+        INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS};m")
+    add_dependencies(arts_hdf5 hdf5_ep)
+    add_library(arts::hdf5 ALIAS arts_hdf5)
+
+    add_library(arts_hdf5_cpp STATIC IMPORTED GLOBAL)
+    set_target_properties(arts_hdf5_cpp PROPERTIES
+        IMPORTED_LOCATION "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5_cpp.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_HDF5_INSTALL_DIR}/include"
+        INTERFACE_LINK_LIBRARIES "arts_hdf5")
+    add_dependencies(arts_hdf5_cpp hdf5_ep)
+    add_library(arts::hdf5_cpp ALIAS arts_hdf5_cpp)
+endif()
+
+if(ARTS_FFTW_INSTALL_DIR)
+    file(MAKE_DIRECTORY "${ARTS_FFTW_INSTALL_DIR}/include")
+    add_library(arts_fftw3 STATIC IMPORTED GLOBAL)
+    set_target_properties(arts_fftw3 PROPERTIES
+        IMPORTED_LOCATION "${ARTS_FFTW_INSTALL_DIR}/lib/libfftw3.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_FFTW_INSTALL_DIR}/include"
+        INTERFACE_LINK_LIBRARIES "m")
+    add_dependencies(arts_fftw3 fftw_ep)
+    add_library(arts::fftw3 ALIAS arts_fftw3)
+endif()
+
+# A try_compile would run while configuring, before either external project
+# has produced an archive, so the proof that the targets resolve and link is
+# a target the build itself compiles: one entry point from each library,
+# linked the way an application links them.
+if(ARTS_HDF5_INSTALL_DIR AND ARTS_FFTW_INSTALL_DIR)
+    add_executable(arts_dep_link_check "${CMAKE_CURRENT_SOURCE_DIR}/checks/dep_link_check.c")
+    target_link_libraries(arts_dep_link_check PRIVATE arts::fftw3 arts::hdf5)
+    set_target_properties(arts_dep_link_check PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/third_party")
+endif()
 
 # Export variables to parent scope
 set(HWLOC_LIBRARIES ${HWLOC_LIBRARIES} PARENT_SCOPE)

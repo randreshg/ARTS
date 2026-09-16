@@ -1,0 +1,174 @@
+--- origin/examples/jacobi/jacobi.cpp
++++ ours/jacobi.cpp
+@@ -13,7 +13,11 @@
+ #include "jacobi_component/grid.hpp"
+ #include "jacobi_component/solver.hpp"
+ 
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
+ #include <cstddef>
++#include <cstdio>
+ #include <string>
+ #include <vector>
+ 
+@@ -26,6 +30,8 @@
+ int hpx_main(variables_map& vm)
+ {
+     {
++        arts_hpx::run_clock clock;
++
+         std::size_t nx = vm["nx"].as<std::size_t>();
+         std::size_t ny = vm["ny"].as<std::size_t>();
+         std::size_t max_iterations = vm["max_iterations"].as<std::size_t>();
+@@ -36,6 +42,13 @@
+         jacobi::solver solver(u, nx, line_block);
+ 
+         solver.run(max_iterations);
++
++        arts_hpx::print_e2e(clock);
++        if (arts_hpx::struct_marker())
++            arts_hpx::print_parcels();
++        char line[64];
++        std::snprintf(line, sizeof line, "CHECKSUM %.14g\n", solver.checksum());
++        arts_hpx::write_stdout_line(line);
+     }
+ 
+     return hpx::finalize();
+@@ -59,8 +72,11 @@
+         "Number of line elements to block the iteration");
+     // clang-format on
+ 
++    arts_hpx::register_geometry_startup();
++
+     hpx::init_params init_args;
+     init_args.desc_cmdline = desc_commandline;
++    init_args.cfg = arts_hpx::runtime_defaults(false);
+ 
+     return hpx::init(argc, argv, init_args);
+ }
+--- origin/examples/jacobi/jacobi_component/stencil_iterator.hpp
++++ ours/jacobi_component/stencil_iterator.hpp
+@@ -34,6 +34,8 @@
+ 
+         hpx::future<jacobi::row> get(std::size_t idx) const;
+ 
++        hpx::future<double> sum() const;
++
+         template <typename Archive>
+         void serialize(Archive& ar, unsigned)
+         {
+--- origin/examples/jacobi/jacobi_component/stencil_iterator.cpp
++++ ours/jacobi_component/stencil_iterator.cpp
+@@ -43,5 +43,11 @@
+         HPX_ASSERT(id);
+         return hpx::async<server::stencil_iterator::get_action>(id, idx);
+     }
++
++    hpx::future<double> stencil_iterator::sum() const
++    {
++        HPX_ASSERT(id);
++        return hpx::async<server::stencil_iterator::sum_action>(id);
++    }
+ }    // namespace jacobi
+ #endif
+--- origin/examples/jacobi/jacobi_component/solver.hpp
++++ ours/jacobi_component/solver.hpp
+@@ -51,5 +51,11 @@
+                 this->get_id(), max_iterations)
+                 .get();
+         }
++
++        double checksum()
++        {
++            return hpx::async<server::solver::checksum_action>(this->get_id())
++                .get();
++        }
+     };
+ }    // namespace jacobi
+--- origin/examples/jacobi/jacobi_component/server/stencil_iterator.hpp
++++ ours/jacobi_component/server/stencil_iterator.hpp
+@@ -64,6 +64,15 @@
+ 
+             jacobi::row get(std::size_t idx);
+ 
++            double sum()
++            {
++                row_range r = rows[src].get(0, nx).get();
++                double s = 0.0;
++                for (auto it = r.begin(); it != r.end(); ++it)
++                    s += *it;
++                return s;
++            }
++
+             void update(hpx::future<row_range> dst, hpx::future<row_range> src,
+                 hpx::future<row_range> top, hpx::future<row_range> bottom);
+ 
+@@ -72,6 +81,7 @@
+                 stencil_iterator, setup_boundary, setup_boundary_action)
+             HPX_DEFINE_COMPONENT_ACTION(stencil_iterator, step, step_action)
+             HPX_DEFINE_COMPONENT_ACTION(stencil_iterator, get, get_action)
++            HPX_DEFINE_COMPONENT_ACTION(stencil_iterator, sum, sum_action)
+ 
+             std::size_t y;
+             std::size_t ny;
+@@ -99,4 +109,7 @@
+ HPX_REGISTER_ACTION_DECLARATION(jacobi::server::stencil_iterator::get_action,
+     jacobi_server_stencil_iterator_get_action)
+ 
++HPX_REGISTER_ACTION_DECLARATION(jacobi::server::stencil_iterator::sum_action,
++    jacobi_server_stencil_iterator_sum_action)
++
+ #endif
+--- origin/examples/jacobi/jacobi_component/server/stencil_iterator.cpp
++++ ours/jacobi_component/server/stencil_iterator.cpp
+@@ -100,4 +100,7 @@
+ 
+ HPX_REGISTER_ACTION(jacobi::server::stencil_iterator::get_action,
+     jacobi_server_stencil_iterator_get_action)
++
++HPX_REGISTER_ACTION(jacobi::server::stencil_iterator::sum_action,
++    jacobi_server_stencil_iterator_sum_action)
+ #endif
+--- origin/examples/jacobi/jacobi_component/server/solver.hpp
++++ ours/jacobi_component/server/solver.hpp
+@@ -131,7 +131,21 @@
+                       << std::flush;
+         }
+ 
++        double checksum()
++        {
++            std::vector<hpx::future<double>> sums;
++            sums.reserve(ny);
++            for (std::size_t y = 0; y < ny; ++y)
++                sums.push_back(stencil_iterators[y].sum());
++
++            double total = 0.0;
++            for (std::size_t y = 0; y < ny; ++y)
++                total += sums[y].get();
++            return total;
++        }
++
+         HPX_DEFINE_COMPONENT_ACTION(solver, run, run_action)
++        HPX_DEFINE_COMPONENT_ACTION(solver, checksum, checksum_action)
+ 
+         std::size_t ny;
+         std::size_t nx;
+@@ -142,4 +156,7 @@
+ HPX_REGISTER_ACTION_DECLARATION(
+     jacobi::server::solver::run_action, jacobi_server_solver_run_action)
+ 
++HPX_REGISTER_ACTION_DECLARATION(jacobi::server::solver::checksum_action,
++    jacobi_server_solver_checksum_action)
++
+ #endif
+--- origin/examples/jacobi/jacobi_component/server/solver.cpp
++++ ours/jacobi_component/server/solver.cpp
+@@ -16,4 +16,7 @@
+ 
+ HPX_REGISTER_ACTION(
+     jacobi::server::solver::run_action, jacobi_server_solver_run_action)
++
++HPX_REGISTER_ACTION(jacobi::server::solver::checksum_action,
++    jacobi_server_solver_checksum_action)
+ #endif

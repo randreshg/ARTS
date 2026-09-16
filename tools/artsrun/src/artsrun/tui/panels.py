@@ -106,15 +106,13 @@ class PlanePanel(Vertical):
             if any(e.kind is RuntimeKind.HPX for e in external):
                 from artsrun.model.catalog import load_catalog
 
-                ports = [a for a in load_catalog().rows if a.hpx]
-                names = ", ".join(
-                    f"{a.name} ({', '.join(v.value for v in a.hpx)} rows)"
-                    for a in ports) or "none yet"
+                rows = load_catalog().hpx_rows
+                names = ", ".join(a.name for a in rows) or "none yet"
                 with Horizontal(classes="plane-row"):
                     yield Label("", classes="plane-gutter")
                     yield Static(
-                        "[dim]not an OCR runtime — runs only applications "
-                        f"with a matched HPX port: {names}[/dim]",
+                        "[dim]not an OCR runtime — runs the HPX-origin "
+                        f"section: {names}[/dim]",
                         classes="external-note")
 
     @property
@@ -466,16 +464,19 @@ class BenchsetPanel(VerticalScroll):
                 yield Label(column, classes="bench-col-head")
             yield Label("arguments", classes="bench-args-head")
 
-        # Three groups, applications first: a result is claimed about an
-        # application; an attack is an adversarial probe with a roster of
-        # its own; a toy exercises one mechanism and belongs in a
-        # regression suite rather than in any measurement.
-        for kind, title in (
-            (Kind.APP, "Applications"),
-            (Kind.ATTACK, "Adversarial attacks (coherence probes)"),
-            (Kind.TOY, "Toys and fixtures"),
-        ):
-            rows = self._rendered_rows(kind)
+        # Applications first: a result is claimed about an application; an
+        # HPX-origin row is one program run on four runtimes, kept apart
+        # from the OCR-origin catalog it mirrors into; an attack is an
+        # adversarial probe with a roster of its own; a toy exercises one
+        # mechanism and belongs in a regression suite rather than in any
+        # measurement.
+        groups = [
+            ("Applications", self._rendered_rows(Kind.APP)),
+            ("HPX-origin applications", self.catalog.hpx_rows),
+            ("Adversarial attacks (coherence probes)", self._rendered_rows(Kind.ATTACK)),
+            ("Toys and fixtures", self._rendered_rows(Kind.TOY)),
+        ]
+        for title, rows in groups:
             if not rows:
                 continue
             yield Static(f"[b]{title}[/b]  [dim]{len(rows)}[/dim]",
@@ -498,7 +499,8 @@ class BenchsetPanel(VerticalScroll):
     def _rendered_names(self) -> set[str]:
         return {a.name
                 for kind in (Kind.APP, Kind.ATTACK, Kind.TOY)
-                for a in self._rendered_rows(kind)}
+                for a in self._rendered_rows(kind)} | {
+                    a.name for a in self.catalog.hpx_rows}
 
     def _app_rows(self, rows) -> ComposeResult:
         for app in rows:

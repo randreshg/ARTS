@@ -83,18 +83,17 @@ unbuildable:
 
 # A runtime that implements no position on this plane: its comparison axis
 # is the programming model, not a coherence design point, so it hangs off no
-# cell, never multiplies by the plane, and runs only the applications that
-# carry an algorithmically matched port (the catalog's `hpx: [<tiers>]`
-# list) — in the version rows the port mirrors, where its scalar joins the
-# ordinary consensus vote.
+# cell, never multiplies by the plane, and runs the HPX-origin section of
+# the catalog (`hpx_apps.yaml`): each row is an HPX program and its OCR
+# mirror, where its scalar joins the ordinary consensus vote.
 external_references:
   hpx:
     label: HPX
     kind: hpx
     note: >-
       STE||AR HPX with the MPI parcelport; cross-programming-model
-      reference — its applications are matched ports of the OCR programs,
-      not the OCR programs themselves
+      reference — runs the HPX-origin section of the catalog
+      (`hpx_apps.yaml`): each row is an HPX program and its OCR mirror
 
 references:
   xsocr:

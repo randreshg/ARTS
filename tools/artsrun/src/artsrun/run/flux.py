@@ -165,7 +165,8 @@ def _launch(cell: Cell, profile: Profile) -> str:
     backstop — if the affinity off-switch were ever rejected or ignored,
     the default per-task set would be the right width instead of one core.
     Never add --label here: it prefixes every output line with the rank id,
-    which silently breaks the line-anchored [E2E] stamp parse.
+    which breaks every line-anchored parse of the log — the envelope check
+    among them.
 
     A declared post-verify hook wraps OUTSIDE the flux run line, so it runs
     once on the script's node rather than once per rank.

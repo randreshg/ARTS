@@ -253,6 +253,10 @@ class SweepCampaign:
             }
             if result.e2e_s is not None:
                 row["e2e_s"] = round(result.e2e_s, 3)
+            row["timing_metric"] = result.cell.app.timing_metric
+            row["timing_contract"] = result.cell.app.timing_contract
+            if result.app_s is not None:
+                row["app_s"] = result.app_s
             if result.scalar is not None:
                 row["scalar"] = result.scalar
             if result.extra:

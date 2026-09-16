@@ -9,8 +9,9 @@ only has to carry its deltas.
 from __future__ import annotations
 
 import sys
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from artsrun.model.catalog import (AppClass, AppEntry, Catalog, ScalarKind,
                                    Version, expand_repo)
@@ -38,21 +39,30 @@ class ResolvedApp(BaseModel):
     expect_args: list[str] = Field(default_factory=list)
     tolerance: float = 0.0
     extra_scalars: dict[str, str] = Field(default_factory=dict)
+    timing_metric: Literal["e2e_s", "app_s"] = "e2e_s"
+    timing_contract: str | None = None
     args: list[str] = Field(default_factory=list)
     args_by_nodes: dict[int, list[str]] = Field(default_factory=dict)
     unsupported: str | None = None
     post_verify: str | None = None
     multinode_skip: str | None = None
     ocrvx_skip: bool = False
+    arts_only: bool = False
     fixtures: list[str] = Field(default_factory=list)
     timeout: int = 0
     multinode_timeout: int = 0
     args_overridden: bool = False
-    # The HPX port's target for this version row, or None where the port
-    # mirrors no such tier; `hpx_versions` is the row's whole list, so an
-    # ineligible cell can say which tiers the port does mirror.
+    # The HPX program of an HPX-origin row (`<row>_hpx`), or None on an
+    # OCR-origin row; `hpx_versions` is `[base]` for the HPX-origin section
+    # and empty otherwise.
     hpx_binary: str | None = None
     hpx_versions: list[Version] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_timing(self) -> "ResolvedApp":
+        if self.timing_metric == "app_s" and not self.timing_contract:
+            raise ValueError(f"{self.name}: app_s requires an explicit timing_contract")
+        return self
 
     @property
     def key(self) -> str:
@@ -171,18 +181,21 @@ class Benchset(BaseModel):
                         expect_args=source.expect_args,
                         tolerance=source.tolerance,
                         extra_scalars=source.extra_scalars,
+                        timing_metric=source.timing_metric,
+                        timing_contract=source.timing_contract,
                         args=args,
                         args_by_nodes=args_by_nodes,
                         unsupported=app.unsupported,
                         post_verify=source.post_verify,
                         multinode_skip=source.multinode_skip,
                         ocrvx_skip=source.ocrvx_skip,
+                        arts_only=source.arts_only,
                         fixtures=source.fixtures,
                         timeout=source.timeout,
                         multinode_timeout=source.multinode_timeout,
                         args_overridden=overridden,
                         hpx_binary=app.hpx_target(version),
-                        hpx_versions=list(app.hpx),
+                        hpx_versions=app.hpx_versions,
                     )
                 )
         return out

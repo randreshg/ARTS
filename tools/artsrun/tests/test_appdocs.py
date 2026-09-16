@@ -3,6 +3,8 @@ roster and from the command line, falling back to catalog facts."""
 
 from __future__ import annotations
 
+import re
+
 import asyncio
 
 from artsrun.data import load_doc
@@ -19,7 +21,7 @@ REQUIRED_SECTIONS = [
     "## Structure",
     "## Wiring",
     "## Flow",
-    "## Placement (base)",
+    "## Placement",
     "## Sizing",
 ]
 
@@ -40,11 +42,15 @@ def test_a_written_document_loads_and_a_missing_one_is_none():
 
 def test_every_application_row_has_a_document():
     """A result is claimed about an application; every application row the
-    roster offers must open to a real structural document, not the fallback."""
+    roster offers must open to a real structural document, not the fallback.
+
+    Every HPX-origin row owes one whatever its kind: there the document is
+    also where the mirror's correspondence to the origin program is stated,
+    which a toy needs as much as an application."""
     catalog = load_catalog()
-    missing = [a.name for a in catalog.rows_of(Kind.APP)
+    missing = [a.name for a in [*catalog.rows_of(Kind.APP), *catalog.hpx_rows]
                if load_doc(a.name) is None]
-    assert not missing, f"application rows without a document: {missing}"
+    assert not missing, f"rows without a document: {missing}"
 
 
 def test_every_written_document_tells_the_whole_story():
@@ -54,8 +60,12 @@ def test_every_written_document_tells_the_whole_story():
         if text is None:
             continue
         assert text.startswith(f"# {name}\n"), f"{name}: title is not the entry name"
+        # A heading may carry a qualifier after the fixed title — a rewrite
+        # row has no base/hinted pair, so its placement section says which
+        # placement it describes — as long as the title itself is there.
         for section in REQUIRED_SECTIONS:
-            assert f"\n{section}" in text, f"{name}: missing '{section}'"
+            assert re.search(rf"^{re.escape(section)}(?:\s|$)", text, re.M), (
+                f"{name}: missing '{section}'")
 
 
 def test_an_entry_without_a_document_still_renders_its_facts():

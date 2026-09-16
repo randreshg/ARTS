@@ -1,0 +1,1437 @@
+--- origin/MiniGhost/src/barrier.hpp
++++ ours/barrier.hpp
+@@ -6,11 +6,13 @@
+ #ifndef HPX_EXAMPLES_MINI_GHOST_BARRIER_HPP
+ #define HPX_EXAMPLES_MINI_GHOST_BARRIER_HPP
+ 
+-#include <hpx/hpx_fwd.hpp>
+ #include <hpx/include/naming.hpp>
+ #include <hpx/include/lcos.hpp>
++#include <hpx/collectives/barrier.hpp>
++#include <hpx/runtime_local/shutdown_function.hpp>
+ 
+-#include <boost/cstdint.hpp>
++#include <cstdint>
++#include <memory>
+ 
+ #define HPX_MINI_GHOST_BARRIER "/mini_ghost/barrier"
+ 
+@@ -18,56 +20,38 @@
+ {
+     namespace detail
+     {
+-        hpx::lcos::barrier& get_barrier()
++        std::unique_ptr<hpx::distributed::barrier>& get_barrier()
+         {
+-            hpx::util::static_<hpx::lcos::barrier> b;
+-            return b.get();
++            static std::unique_ptr<hpx::distributed::barrier> b;
++            return b;
+         }
+     }
+ 
+     void barrier_wait()
+     {
+         // Wait for the barrier to release all localities
+-        HPX_ASSERT(detail::get_barrier().get_gid());
+-        detail::get_barrier().wait();
++        HPX_ASSERT(detail::get_barrier());
++        detail::get_barrier()->wait();
+     }
+ 
+     void free_barrier()
+     {
+-        detail::get_barrier() = hpx::lcos::barrier();
++        detail::get_barrier().reset();
+     }
+ 
+     void create_barrier()
+     {
+-        boost::uint32_t rank = hpx::get_locality_id();
+-        if (0 == rank) {
+-            // create a barrier we will use at the start and end of each run to
+-            // synchronize
+-            boost::uint64_t nranks = hpx::get_num_localities_sync();
+-
+-            hpx::lcos::barrier& b = detail::get_barrier();
+-            b = hpx::lcos::barrier::create(hpx::find_here(), nranks);
+-
+-            // Register the global id of the barrier with AGAS so that other
+-            // localities will be able to retrieve it.
+-            hpx::id_type id = hpx::unmanaged(b.get_gid());
+-            hpx::agas::register_name_sync(HPX_MINI_GHOST_BARRIER, id.get_gid());
+-        }
+-
+         // make sure the barrier is released before exiting
+         hpx::register_pre_shutdown_function(&mini_ghost::free_barrier);
+     }
+ 
+     void find_barrier()
+     {
+-        boost::uint32_t rank = hpx::get_locality_id();
+-        if (rank != 0) {
+-            // Wait for the barrier to be registered with AGAS before continuing
+-            hpx::id_type id = hpx::agas::on_symbol_namespace_event(
+-                HPX_MINI_GHOST_BARRIER, hpx::agas::symbol_ns_bind, true).get();
+-
+-            detail::get_barrier() = hpx::lcos::barrier(id);
+-        }
++        // A barrier of this name on every locality: the name is the
++        // rendezvous, so no locality has to look the barrier up by symbol.
++        std::uint64_t nranks = hpx::get_num_localities(hpx::launch::sync);
++        detail::get_barrier().reset(new hpx::distributed::barrier(
++            HPX_MINI_GHOST_BARRIER, nranks, hpx::get_locality_id()));
+     }
+ }
+ 
+--- origin/MiniGhost/src/global_sum.hpp
++++ ours/global_sum.hpp
+@@ -6,16 +6,29 @@
+ #ifndef HPX_EXAMPLES_MINI_GHOST_GLOBAL_SUM_HPP
+ #define HPX_EXAMPLES_MINI_GHOST_GLOBAL_SUM_HPP
+ 
+-#include <hpx/include/local_lcos.hpp>
+-#include <hpx/lcos/broadcast.hpp>
++#include <hpx/collectives/broadcast_direct.hpp>
++#include <hpx/lcos_local/and_gate.hpp>
++#include <hpx/synchronization/spinlock.hpp>
++
++#include <cstddef>
++#include <mutex>
++#include <utility>
++#include <vector>
+ 
+ namespace mini_ghost {
+     template <typename T>
+     struct global_sum
+     {
+     private:
+-        HPX_MOVABLE_BUT_NOT_COPYABLE(global_sum);
+-        typedef hpx::lcos::local::spinlock mutex_type;
++        global_sum(global_sum const&) = delete;
++        global_sum& operator=(global_sum const&) = delete;
++        typedef hpx::spinlock mutex_type;
++        // This gate leaves its mutual exclusion to the code that uses it: the
++        // caller holds a lock and hands it in, where the older gate locked
++        // internally.  gate_mtx_ below is that lock, and it is not the one
++        // that guards the value: the gate fires the waiting future while it is
++        // held, and the continuation of that future takes mtx_.
++        typedef hpx::lcos::local::and_gate gate_type;
+ 
+     public:
+         global_sum()
+@@ -24,9 +37,17 @@
+         {
+         }
+ 
++        // The gate takes the number of participants at construction, where
++        // the older interface took it with every generation.  It is set
++        // before any input can arrive, so no participant can find the gate
++        // unsized.
++        void init(std::size_t count)
++        {
++            gate_ = gate_type(count);
++        }
++
+         global_sum(global_sum &&other)
+-          : mtx_(std::move(other.mtx_))
+-          , value_(std::move(other.value_))
++          : value_(std::move(other.value_))
+           , generation_(std::move(other.generation_))
+           , gate_(std::move(other.gate_))
+         {
+@@ -48,16 +69,26 @@
+         add(Action action, std::vector<hpx::id_type> const & ids,
+             std::size_t which, T val, std::size_t id, std::size_t idx)
+         {
+-            hpx::future<void> f = gate_.get_future(ids.size(), &generation_);
++            // The gate no longer advances its generation when a future is
++            // taken from it, so this opens the generation explicitly.  The
++            // future is taken first: the gate can only fire once every
++            // participant has been counted, and this one's own input is sent
++            // below.
++            hpx::future<void> f;
++            {
++                std::unique_lock<mutex_type> gl(gate_mtx_);
++                f = gate_.get_future(gl);
++                generation_ = gate_.next_generation(gl, std::size_t(-1));
++            }
+             HPX_ASSERT(value_ == 0);
+ 
+-            hpx::lcos::broadcast_apply<Action>(ids, generation_, which, val, id, idx);
++            hpx::lcos::broadcast_post<Action>(ids, generation_, which, val, id, idx);
+ 
+             return f.then(
+                 hpx::launch::sync,
+                 [this](hpx::future<void>) -> T
+                 {
+-                    mutex_type::scoped_lock l(mtx_);
++                    std::lock_guard<mutex_type> l(mtx_);
+                     T v = value_; value_ = T(0); return v;
+                 }
+             );
+@@ -65,21 +96,23 @@
+ 
+         void set_data(std::size_t generation, std::size_t which, T value)
+         {
+-            gate_.synchronize(generation, "global_sum::set_data");
++            std::unique_lock<mutex_type> gl(gate_mtx_);
++            gate_.synchronize(generation, gl, "global_sum::set_data");
+             {
+-                mutex_type::scoped_lock l(mtx_);
++                std::lock_guard<mutex_type> l(mtx_);
+                 value_ += value;
+             }
+-            gate_.set(which);         // trigger corresponding and-gate input
++            gate_.set(which, gl);     // trigger corresponding and-gate input
+         }
+ 
+     private:
+         mutable mutex_type mtx_;
++        mutable mutex_type gate_mtx_;
+ 
+         T value_;
+         std::size_t generation_;
+ 
+-        hpx::lcos::local::base_and_gate<> gate_;        // synchronization gate
++        gate_type gate_;        // synchronization gate
+     };
+ }
+ 
+--- origin/MiniGhost/src/mini_ghost.cpp
++++ ours/mini_ghost.cpp
+@@ -5,13 +5,22 @@
+ 
+ #include <hpx/hpx_init.hpp>
+ #include <hpx/hpx.hpp>
+-#include <hpx/lcos/local/counting_semaphore.hpp>
++#include <hpx/semaphore.hpp>
+ 
+ #include <profiling.hpp>
+ #include <barrier.hpp>
+ #include <params.hpp>
+ #include <stepper.hpp>
+ 
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
++#include <atomic>
++#include <cstdio>
++#include <fstream>
++#include <memory>
++#include <mutex>
++
+ typedef mini_ghost::grid<double> grid_type;
+ 
+ typedef mini_ghost::stepper<grid_type::value_type> stepper_type;
+@@ -20,16 +29,21 @@
+ mini_ghost::params<grid_type::value_type> p;
+ 
+ // Global profiling data
+-hpx::lcos::local::spinlock profiling_data_mtx;
+-boost::shared_ptr<hpx::lcos::local::counting_semaphore> profiling_data_sem;
++hpx::spinlock profiling_data_mtx;
++std::shared_ptr<hpx::counting_semaphore_var<>> profiling_data_sem;
+ std::vector<mini_ghost::profiling::profiling_data> profiling_data;
+ 
+ double init_start = 0;
+ 
++// The largest relative error the conservation check has seen on this
++// locality; the check itself is the origin's, once per step per summed
++// variable.
++std::atomic<double> g_err_max(0.0);
++
+ void add_profile(mini_ghost::profiling::profiling_data const & pd)
+ {
+     {
+-        hpx::lcos::local::spinlock::scoped_lock l(profiling_data_mtx);
++        std::lock_guard<hpx::spinlock> l(profiling_data_mtx);
+         profiling_data.push_back(pd);
+         profiling_data_sem->signal();
+     }
+@@ -42,12 +56,12 @@
+ 
+ HPX_PLAIN_ACTION(add_profile);
+ 
+-int hpx_main(boost::program_options::variables_map& vm)
++int hpx_main(hpx::program_options::variables_map& vm)
+ {
+     mini_ghost::profiling::data().time_init(
+-        hpx::util::high_resolution_timer::now() - init_start);
++        hpx::chrono::high_resolution_timer::now() - init_start);
+ 
+-    hpx::util::high_resolution_timer timer_all;
++    hpx::chrono::high_resolution_timer timer_all;
+ 
+     hpx::id_type here = hpx::find_here();
+     std::string name = hpx::get_locality_name();
+@@ -56,31 +70,41 @@
+     if(p.rank == 0)
+     {
+         std::cout << "mini ghost started up in "
+-                  << hpx::util::high_resolution_timer::now() - init_start
++                  << hpx::chrono::high_resolution_timer::now() - init_start
+                   << " seconds.\n";
+     }
+ 
+-    p.nranks = hpx::get_num_localities_sync();
++    p.nranks = hpx::get_num_localities(hpx::launch::sync);
+ 
+-    profiling_data_sem.reset(new hpx::lcos::local::counting_semaphore(p.nranks));
++    profiling_data_sem.reset(new hpx::counting_semaphore_var<>(p.nranks));
+     p.setup(vm);
+ 
++    arts_hpx::print_geometry();
++
+     // Create the local stepper object, retrieve the local pointer to it
+     hpx::id_type stepper_id = hpx::components::new_<stepper_type>(here).get();
+-    boost::shared_ptr<stepper_type> stepper(
++    std::shared_ptr<stepper_type> stepper(
+         hpx::get_ptr<stepper_type>(stepper_id).get());
+ 
+     // Initialize stepper
++    arts_hpx::run_clock clock;
+     stepper->init(p).get();
+     mini_ghost::barrier_wait();
+ 
+     // Perform the actual simulation work
+     stepper->run(p.num_spikes, p.num_tsteps);
+     mini_ghost::barrier_wait();
++    arts_hpx::print_e2e(clock);
++    if (arts_hpx::struct_marker())
++        arts_hpx::print_parcels();
+ 
+     // Output various pieces of information about the run
+     if (stepper->get_rank() == 0)
+     {
++        char line[64];
++        std::snprintf(line, sizeof line, "ERRMAX %.6e\n", g_err_max.load());
++        arts_hpx::write_stdout_line(line);
++
+         // Output various pieces of information about the run
+         add_profile(mini_ghost::profiling::data());
+ 
+@@ -98,7 +122,7 @@
+     else
+     {
+         // Send performance data from this locality to root
+-        hpx::apply(add_profile_action(), hpx::find_root_locality(),
++        hpx::post(add_profile_action(), hpx::find_root_locality(),
+             mini_ghost::profiling::data());
+         return 0;
+     }
+@@ -107,7 +131,7 @@
+ int main(int argc, char* argv[])
+ {
+     // Configure application-specific options
+-    boost::program_options::options_description
++    hpx::program_options::options_description
+        desc_commandline("Usage: " HPX_APPLICATION_STRING " [options]");
+ 
+     p.cmd_options(desc_commandline);
+@@ -117,9 +141,10 @@
+     hpx::register_startup_function(&mini_ghost::find_barrier);
+ 
+     // Initialize and run HPX such that hpx_main is executed on all localities
+-    std::vector<std::string> cfg;
+-    cfg.push_back("hpx.run_hpx_main!=1");
++    hpx::init_params init_args;
++    init_args.desc_cmdline = desc_commandline;
++    init_args.cfg = arts_hpx::runtime_defaults();
+ 
+-    init_start = hpx::util::high_resolution_timer::now();
+-    return hpx::init(desc_commandline, argc, argv, cfg);
++    init_start = hpx::chrono::high_resolution_timer::now();
++    return hpx::init(argc, argv, init_args);
+ }
+--- origin/MiniGhost/src/pack_buffer.hpp
++++ ours/pack_buffer.hpp
+@@ -7,7 +7,8 @@
+ #define HPX_EXAMPLES_MINI_GHOST_PACK_BUFFER_HPP
+ 
+ #include <grid.hpp>
+-#include <hpx/runtime/serialization/serialize_buffer.hpp>
++#include <hpx/serialization/serialize_buffer.hpp>
++#include <hpx/timing/high_resolution_timer.hpp>
+ 
+ namespace mini_ghost {
+     template <std::size_t Zone>
+@@ -19,7 +20,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> const & g, BufferType & buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             Real * data = new Real[g.nx_ * g.nz_];
+             buffer = BufferType(data, g.nx_ * g.nz_, BufferType::take);
+             typename BufferType::value_type * src = buffer.data();
+@@ -43,7 +44,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> const & g, BufferType & buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             Real * data = new Real[g.nx_ * g.nz_];
+             buffer = BufferType(data, g.nx_ * g.nz_, BufferType::take);
+             typename BufferType::value_type * src = buffer.data();
+@@ -67,7 +68,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> const & g, BufferType & buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             Real * data = new Real[g.ny_ * g.nz_];
+             buffer = BufferType(data, g.ny_ * g.nz_, BufferType::take);
+             typename BufferType::value_type * src = buffer.data();
+@@ -91,7 +92,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> const & g, BufferType & buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             Real * data = new Real[g.ny_ * g.nz_];
+             buffer = BufferType(data, g.ny_ * g.nz_, BufferType::take);
+             typename BufferType::value_type * src = buffer.data();
+@@ -115,7 +116,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> const & g, BufferType & buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             Real * data = new Real[g.nx_ * g.ny_];
+             buffer = BufferType(data, g.nx_ * g.ny_, BufferType::take);
+             typename BufferType::value_type * src = buffer.data();
+@@ -139,7 +140,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> const & g, BufferType & buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             Real * data = new Real[g.nx_ * g.ny_];
+             buffer = BufferType(data, g.nx_ * g.ny_, BufferType::take);
+             typename BufferType::value_type * src = buffer.data();
+--- origin/MiniGhost/src/params.hpp
++++ ours/params.hpp
+@@ -7,7 +7,7 @@
+ #define HPX_EXAMPLES_MINI_GHOST_PARAMS_HPP
+ 
+ #include <hpx/hpx_finalize.hpp>
+-#include <boost/program_options.hpp>
++#include <hpx/program_options.hpp>
+ #include <boost/date_time/posix_time/posix_time.hpp>
+ 
+ namespace mini_ghost {
+@@ -68,124 +68,124 @@
+           , debug_grid(0)
+         {}
+ 
+-        void cmd_options(boost::program_options::options_description & desc_commandline)
++        void cmd_options(hpx::program_options::options_description & desc_commandline)
+         {
+             desc_commandline.add_options()
+                 ( "scaling",
+-                  boost::program_options::value<std::size_t>(&scaling)->default_value(2),
++                  hpx::program_options::value<std::size_t>(&scaling)->default_value(2),
+                   "Sets the scaling mode. possible Options: 1 or 2.\n"
+                   "    1: Strong Scaling\n"
+                   "    2: Weak Scaling");
+             desc_commandline.add_options()
+                 ( "nx",
+-                  boost::program_options::value<std::size_t>()->default_value(100),
++                  hpx::program_options::value<std::size_t>()->default_value(100),
+                   "Local x dimension (local for weak scaling, global when strong\n"
+                   "scaling is selected.)");
+             desc_commandline.add_options()
+                 ( "ny",
+-                  boost::program_options::value<std::size_t>()->default_value(100),
++                  hpx::program_options::value<std::size_t>()->default_value(100),
+                   "Local y dimension (local for weak scaling, global when strong\n"
+                   "scaling is selected.)");
+             desc_commandline.add_options()
+                 ( "nz",
+-                  boost::program_options::value<std::size_t>()->default_value(100),
++                  hpx::program_options::value<std::size_t>()->default_value(100),
+                   "Local z dimension (local for weak scaling, global when strong\n"
+                   "scaling is selected.)");
+             desc_commandline.add_options()
+                 ( "nx_block",
+-                  boost::program_options::value<std::size_t>(&nx_block)->default_value(100),
++                  hpx::program_options::value<std::size_t>(&nx_block)->default_value(100),
+                   "Block size in x direction (default: 100)");
+             desc_commandline.add_options()
+                 ( "ny_block",
+-                  boost::program_options::value<std::size_t>(&ny_block)->default_value(100),
++                  hpx::program_options::value<std::size_t>(&ny_block)->default_value(100),
+                   "Block size in y direction (default: 100)");
+             desc_commandline.add_options()
+                 ( "nz_block",
+-                  boost::program_options::value<std::size_t>(&nz_block)->default_value(10),
++                  hpx::program_options::value<std::size_t>(&nz_block)->default_value(10),
+                   "Block size in z direction (default: 10)");
+             desc_commandline.add_options()
+                 ( "ndim",
+-                  boost::program_options::value<std::size_t>(),
++                  hpx::program_options::value<std::size_t>(),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "num_vars",
+-                  boost::program_options::value<std::size_t>(&num_vars)->default_value(5),
++                  hpx::program_options::value<std::size_t>(&num_vars)->default_value(5),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "percent_sum",
+-                  boost::program_options::value<std::size_t>(&percent_sum)->default_value(0),
++                  hpx::program_options::value<std::size_t>(&percent_sum)->default_value(0),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "num_spikes",
+-                  boost::program_options::value<std::size_t>(&num_spikes)->default_value(1),
++                  hpx::program_options::value<std::size_t>(&num_spikes)->default_value(1),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "num_tsteps",
+-                  boost::program_options::value<std::size_t>(&num_tsteps)->default_value(100),
++                  hpx::program_options::value<std::size_t>(&num_tsteps)->default_value(100),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "stencil",
+-                  boost::program_options::value<std::size_t>(&stencil)->default_value(21),
++                  hpx::program_options::value<std::size_t>(&stencil)->default_value(21),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "error_tol",
+-                  boost::program_options::value<Real>(&error_tol)->default_value(error_tolerance(Real())),
++                  hpx::program_options::value<Real>(&error_tol)->default_value(error_tolerance(Real())),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "report_diffusion",
+-                  boost::program_options::value<std::size_t>(&report_diffusion)->default_value(0),
++                  hpx::program_options::value<std::size_t>(&report_diffusion)->default_value(0),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "npx",
+-                  boost::program_options::value<std::size_t>(&npx)->default_value(1),
++                  hpx::program_options::value<std::size_t>(&npx)->default_value(1),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "npy",
+-                  boost::program_options::value<std::size_t>(&npy)->default_value(1),
++                  hpx::program_options::value<std::size_t>(&npy)->default_value(1),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "npz",
+-                  boost::program_options::value<std::size_t>(&npz)->default_value(1),
++                  hpx::program_options::value<std::size_t>(&npz)->default_value(1),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "npdim",
+-                  boost::program_options::value<std::size_t>()->default_value(1),
++                  hpx::program_options::value<std::size_t>()->default_value(1),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "checkpoint_interval",
+-                  boost::program_options::value<std::size_t>(&checkpoint_interval)->default_value(0),
++                  hpx::program_options::value<std::size_t>(&checkpoint_interval)->default_value(0),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "checkpoint_file",
+-                  boost::program_options::value<std::string>(&checkpoint_file)->default_value(std::string("")),
++                  hpx::program_options::value<std::string>(&checkpoint_file)->default_value(std::string("")),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "report_perf",
+-                  boost::program_options::value<std::size_t>(&report_perf)->default_value(0),
++                  hpx::program_options::value<std::size_t>(&report_perf)->default_value(0),
+                   // FIXME: description
+                   "");
+             desc_commandline.add_options()
+                 ( "debug_grid",
+-                  boost::program_options::value<std::size_t>(&debug_grid)->default_value(0),
++                  hpx::program_options::value<std::size_t>(&debug_grid)->default_value(0),
+                   // FIXME: description
+                   "");
+         }
+ 
+-        void setup(boost::program_options::variables_map& vm)
++        void setup(hpx::program_options::variables_map& vm)
+         {
+             std::size_t tmp_nx = 0;
+             std::size_t tmp_ny = 0;
+@@ -218,17 +218,17 @@
+                     break;
+                 case SCALING_STRONG:
+                     nx = tmp_nx / npx;
+-                    remainder = tmp_nx & npx;
++                    remainder = tmp_nx % npx;
+                     if(rank < remainder)
+                         nx++;
+ 
+                     ny = tmp_ny / npy;
+-                    remainder = tmp_ny & npy;
++                    remainder = tmp_ny % npy;
+                     if(rank < remainder)
+                         ny++;
+ 
+                     nz = tmp_nz / npz;
+-                    remainder = tmp_nz & npz;
++                    remainder = tmp_nz % npz;
+                     if(rank < remainder)
+                         nz++;
+                     break;
+--- origin/MiniGhost/src/partition.hpp
++++ ours/partition.hpp
+@@ -14,11 +14,26 @@
+ #include <spikes.hpp>
+ #include <stencils.hpp>
+ 
+-#include <hpx/lcos/local/dataflow.hpp>
+-#include <hpx/lcos/wait_all.hpp>
+-#include <hpx/lcos/when_all.hpp>
+-
+-#include <hpx/util/unwrapped.hpp>
++#include <hpx/async_combinators/wait_all.hpp>
++#include <hpx/async_combinators/when_all.hpp>
++#include <hpx/include/async.hpp>
++#include <hpx/pack_traversal/unwrap.hpp>
++#include <hpx/synchronization/spinlock.hpp>
++#include <hpx/timing/high_resolution_timer.hpp>
++
++#include <boost/lexical_cast.hpp>
++
++#include <array>
++#include <atomic>
++#include <cmath>
++#include <functional>
++#include <mutex>
++#include <utility>
++#include <vector>
++
++// The largest relative error the conservation check has seen on this
++// locality, over every step and every summed variable.
++extern std::atomic<double> g_err_max;
+ 
+ namespace mini_ghost {
+     template <
+@@ -31,7 +46,8 @@
+     struct partition
+     {
+     private:
+-        HPX_MOVABLE_BUT_NOT_COPYABLE(partition);
++        partition(partition const&) = delete;
++        partition& operator=(partition const&) = delete;
+ 
+     public:
+         typedef grid<Real> grid_type;
+@@ -160,20 +176,28 @@
+         }
+ 
+         ///////////////////////////////////////////////////////////////////////
++        // A pack reads a full padded plane of grids_[dst_], the halo rows and
++        // corners included, and the unpacks of the step after it write the
++        // halo planes of that same array (it is grids_[src_] by then).  Where a
++        // rank has neighbours on more than one axis those two zones meet on the
++        // box's edge lines, so an unpack may not copy before this rank's sends
++        // of the step before it have read their planes.
+         void receive_boundaries(std::size_t step,
+-            std::vector<hpx::shared_future<void> >& recv_futures)
++            std::vector<hpx::shared_future<void> >& recv_futures,
++            std::vector<hpx::shared_future<void> >& sent_futures)
+         {
+             if(step > 1)
+             {
+-                hpx::util::high_resolution_timer timer_recv;
++                hpx::chrono::high_resolution_timer timer_recv;
+                 if(recv_buffer_back_.valid_)
+                 {
+-                    hpx::util::high_resolution_timer timer_recv_dir;
++                    hpx::chrono::high_resolution_timer timer_recv_dir;
+                     recv_futures[BACK] =
+-                        hpx::async(
+-                            hpx::util::bind(
+-                                boost::ref(recv_buffer_back_)
+-                                , boost::ref(grids_[src_])
++                        hpx::when_all(sent_futures).then(
++                            hpx::launch::async,
++                            hpx::bind(
++                                std::ref(recv_buffer_back_)
++                                , std::ref(grids_[src_])
+                                 , step
+                             )
+                         );
+@@ -181,12 +205,13 @@
+                 }
+                 if(recv_buffer_front_.valid_)
+                 {
+-                    hpx::util::high_resolution_timer timer_recv_dir;
++                    hpx::chrono::high_resolution_timer timer_recv_dir;
+                     recv_futures[FRONT] =
+-                        hpx::async(
+-                            hpx::util::bind(
+-                                boost::ref(recv_buffer_front_)
+-                                , boost::ref(grids_[src_])
++                        hpx::when_all(sent_futures).then(
++                            hpx::launch::async,
++                            hpx::bind(
++                                std::ref(recv_buffer_front_)
++                                , std::ref(grids_[src_])
+                                 , step
+                             )
+                         );
+@@ -194,12 +219,13 @@
+                 }
+                 if(recv_buffer_east_.valid_)
+                 {
+-                    hpx::util::high_resolution_timer timer_recv_dir;
++                    hpx::chrono::high_resolution_timer timer_recv_dir;
+                     recv_futures[EAST] =
+-                        hpx::async(
+-                            hpx::util::bind(
+-                                boost::ref(recv_buffer_east_)
+-                                , boost::ref(grids_[src_])
++                        hpx::when_all(sent_futures).then(
++                            hpx::launch::async,
++                            hpx::bind(
++                                std::ref(recv_buffer_east_)
++                                , std::ref(grids_[src_])
+                                 , step
+                             )
+                         );
+@@ -207,12 +233,13 @@
+                 }
+                 if(recv_buffer_west_.valid_)
+                 {
+-                    hpx::util::high_resolution_timer timer_recv_dir;
++                    hpx::chrono::high_resolution_timer timer_recv_dir;
+                     recv_futures[WEST] =
+-                        hpx::async(
+-                            hpx::util::bind(
+-                                boost::ref(recv_buffer_west_)
+-                                , boost::ref(grids_[src_])
++                        hpx::when_all(sent_futures).then(
++                            hpx::launch::async,
++                            hpx::bind(
++                                std::ref(recv_buffer_west_)
++                                , std::ref(grids_[src_])
+                                 , step
+                             )
+                         );
+@@ -220,12 +247,13 @@
+                 }
+                 if(recv_buffer_north_.valid_)
+                 {
+-                    hpx::util::high_resolution_timer timer_recv_dir;
++                    hpx::chrono::high_resolution_timer timer_recv_dir;
+                     recv_futures[NORTH] =
+-                        hpx::async(
+-                            hpx::util::bind(
+-                                boost::ref(recv_buffer_north_)
+-                                , boost::ref(grids_[src_])
++                        hpx::when_all(sent_futures).then(
++                            hpx::launch::async,
++                            hpx::bind(
++                                std::ref(recv_buffer_north_)
++                                , std::ref(grids_[src_])
+                                 , step
+                             )
+                         );
+@@ -233,12 +261,13 @@
+                 }
+                 if(recv_buffer_south_.valid_)
+                 {
+-                    hpx::util::high_resolution_timer timer_recv_dir;
++                    hpx::chrono::high_resolution_timer timer_recv_dir;
+                     recv_futures[SOUTH] =
+-                        hpx::async(
+-                            hpx::util::bind(
+-                                boost::ref(recv_buffer_south_)
+-                                , boost::ref(grids_[src_])
++                        hpx::when_all(sent_futures).then(
++                            hpx::launch::async,
++                            hpx::bind(
++                                std::ref(recv_buffer_south_)
++                                , std::ref(grids_[src_])
+                                 , step
+                             )
+                         );
+@@ -307,89 +336,103 @@
+ 
+         ///////////////////////////////////////////////////////////////////////
+         void send_boundaries(std::size_t step,
+-            std::vector<std::vector<hpx::shared_future<void> > >& send_futures)
++            std::vector<std::vector<hpx::shared_future<void> > >& send_futures,
++            std::vector<hpx::shared_future<void> >& sent_futures)
+         {
+-            hpx::util::high_resolution_timer timer_send;
++            hpx::chrono::high_resolution_timer timer_send;
++            sent_futures.clear();
+             if(!send_futures[BACK].empty())
+             {
+-                hpx::util::high_resolution_timer timer_send_dir;
+-                hpx::when_all(send_futures[BACK]).then(
+-                    hpx::launch::async,
+-                    hpx::util::bind(
+-                        boost::ref(send_buffer_back_)
+-                        , boost::ref(grids_[dst_])
+-                        , step + 1
+-                        , id_
++                hpx::chrono::high_resolution_timer timer_send_dir;
++                sent_futures.push_back(
++                    hpx::when_all(send_futures[BACK]).then(
++                        hpx::launch::async,
++                        hpx::bind(
++                            std::ref(send_buffer_back_)
++                            , std::ref(grids_[dst_])
++                            , step + 1
++                            , id_
++                        )
+                     )
+                 );
+                 profiling::data().time_send_z(timer_send_dir.elapsed());
+             }
+             if(!send_futures[FRONT].empty())
+             {
+-                hpx::util::high_resolution_timer timer_send_dir;
+-                hpx::when_all(send_futures[FRONT]).then(
+-                    hpx::launch::async,
+-                    hpx::util::bind(
+-                        boost::ref(send_buffer_front_)
+-                        , boost::ref(grids_[dst_])
+-                        , step + 1
+-                        , id_
++                hpx::chrono::high_resolution_timer timer_send_dir;
++                sent_futures.push_back(
++                    hpx::when_all(send_futures[FRONT]).then(
++                        hpx::launch::async,
++                        hpx::bind(
++                            std::ref(send_buffer_front_)
++                            , std::ref(grids_[dst_])
++                            , step + 1
++                            , id_
++                        )
+                     )
+                 );
+                 profiling::data().time_send_z(timer_send_dir.elapsed());
+             }
+             if(!send_futures[EAST].empty())
+             {
+-                hpx::util::high_resolution_timer timer_send_dir;
+-                hpx::when_all(send_futures[EAST]).then(
+-                    hpx::launch::async,
+-                    hpx::util::bind(
+-                        boost::ref(send_buffer_east_)
+-                        , boost::ref(grids_[dst_])
+-                        , step + 1
+-                        , id_
++                hpx::chrono::high_resolution_timer timer_send_dir;
++                sent_futures.push_back(
++                    hpx::when_all(send_futures[EAST]).then(
++                        hpx::launch::async,
++                        hpx::bind(
++                            std::ref(send_buffer_east_)
++                            , std::ref(grids_[dst_])
++                            , step + 1
++                            , id_
++                        )
+                     )
+                 );
+                 profiling::data().time_send_x(timer_send_dir.elapsed());
+             }
+             if(!send_futures[WEST].empty())
+             {
+-                hpx::util::high_resolution_timer timer_send_dir;
+-                hpx::when_all(send_futures[WEST]).then(
+-                    hpx::launch::async,
+-                    hpx::util::bind(
+-                        boost::ref(send_buffer_west_)
+-                        , boost::ref(grids_[dst_])
+-                        , step + 1
+-                        , id_
++                hpx::chrono::high_resolution_timer timer_send_dir;
++                sent_futures.push_back(
++                    hpx::when_all(send_futures[WEST]).then(
++                        hpx::launch::async,
++                        hpx::bind(
++                            std::ref(send_buffer_west_)
++                            , std::ref(grids_[dst_])
++                            , step + 1
++                            , id_
++                        )
+                     )
+                 );
+                 profiling::data().time_send_x(timer_send_dir.elapsed());
+             }
+             if(!send_futures[NORTH].empty())
+             {
+-                hpx::util::high_resolution_timer timer_send_dir;
+-                hpx::when_all(send_futures[NORTH]).then(
+-                    hpx::launch::async,
+-                    hpx::util::bind(
+-                        boost::ref(send_buffer_north_)
+-                        , boost::ref(grids_[dst_])
+-                        , step + 1
+-                        , id_
++                hpx::chrono::high_resolution_timer timer_send_dir;
++                sent_futures.push_back(
++                    hpx::when_all(send_futures[NORTH]).then(
++                        hpx::launch::async,
++                        hpx::bind(
++                            std::ref(send_buffer_north_)
++                            , std::ref(grids_[dst_])
++                            , step + 1
++                            , id_
++                        )
+                     )
+                 );
+                 profiling::data().time_send_y(timer_send_dir.elapsed());
+             }
+             if(!send_futures[SOUTH].empty())
+             {
+-                hpx::util::high_resolution_timer timer_send_dir;
+-                hpx::when_all(send_futures[SOUTH]).then(
+-                    hpx::launch::async,
+-                    hpx::util::bind(
+-                        boost::ref(send_buffer_south_)
+-                        , boost::ref(grids_[dst_])
+-                        , step + 1
+-                        , id_
++                hpx::chrono::high_resolution_timer timer_send_dir;
++                sent_futures.push_back(
++                    hpx::when_all(send_futures[SOUTH]).then(
++                        hpx::launch::async,
++                        hpx::bind(
++                            std::ref(send_buffer_south_)
++                            , std::ref(grids_[dst_])
++                            , step + 1
++                            , id_
++                        )
+                     )
+                 );
+                 profiling::data().time_send_y(timer_send_dir.elapsed());
+@@ -401,7 +444,7 @@
+         // Main simulation loop
+         //hpx::future<void>
+         void run(std::vector<hpx::id_type> & ids, std::size_t num_tsteps,
+-            hpx::lcos::local::spinlock & io_mutex)
++            hpx::spinlock & io_mutex)
+         {
+             std::array<hpx::shared_future<void>, 2> sum_future;
+             sum_future[src_] = hpx::make_ready_future();
+@@ -429,6 +472,7 @@
+             calc_futures[dst_].resize(num_x_blocks, num_y_blocks, num_z_blocks);
+ 
+             std::vector<std::vector<hpx::shared_future<void> > > send_futures(NUM_NEIGHBORS);
++            std::vector<hpx::shared_future<void> > sent_futures;
+ 
+             for(std::size_t step = 1; step != num_tsteps+1; ++step)
+             {
+@@ -439,7 +483,7 @@
+                 }
+ 
+                 // Receive boundaries asynchronously and copy them into the grid
+-                receive_boundaries(step, recv_futures);
++                receive_boundaries(step, recv_futures, sent_futures);
+ 
+                 // calculate flux asynchronously once everything has been
+                 // received
+@@ -455,7 +499,7 @@
+                 // collect dependencies between partitions
+                 std::vector<hpx::shared_future<void> > dependencies;
+ 
+-                hpx::util::high_resolution_timer time_stencil;
++                hpx::chrono::high_resolution_timer time_stencil;
+                 for(std::size_t z = 1, nz_block = 0; z < nz_ + 1; z += nz_block_, ++nz_block)
+                 {
+                     range_type z_range(z, (std::min)(z + nz_block_, nz_ + 1));
+@@ -504,36 +548,36 @@
+                             hpx::shared_future<void> calc_future =
+                                 hpx::when_all(dependencies).then(
+                                     hpx::launch::async,
+-                                    hpx::util::bind(
++                                    hpx::bind(
+                                         get_stencil_call_op<Real>(stencil_)
+-                                      , boost::ref(grids_[dst_]), boost::ref(grids_[src_])
++                                      , std::ref(grids_[dst_]), std::ref(grids_[src_])
+                                       , x_range, y_range, z_range)
+                                     );
+                             calc_futures[dst_](nx_block, ny_block, nz_block) =
+                                 calc_future;
+ 
+                             // Setup send buffer dependencies ...
+-                            if(send_buffer_west_.dest_ && nx_block == calc_futures[dst_].nx_-1)
++                            if(send_buffer_west_.dest_ && nx_block == 0)
+                             {
+                                 send_futures[WEST].push_back(calc_future);
+                             }
+-                            if(send_buffer_east_.dest_ && nx_block == 0 )
++                            if(send_buffer_east_.dest_ && nx_block == calc_futures[dst_].nx_-1)
+                             {
+                                 send_futures[EAST].push_back(calc_future);
+                             }
+-                            if(send_buffer_south_.dest_ && ny_block == calc_futures[dst_].ny_-1)
++                            if(send_buffer_south_.dest_ && ny_block == 0)
+                             {
+                                 send_futures[SOUTH].push_back(calc_future);
+                             }
+-                            if(send_buffer_north_.dest_ && ny_block == 0)
++                            if(send_buffer_north_.dest_ && ny_block == calc_futures[dst_].ny_-1)
+                             {
+                                 send_futures[NORTH].push_back(calc_future);
+                             }
+-                            if(send_buffer_front_.dest_ && nz_block == calc_futures[dst_].nz_-1)
++                            if(send_buffer_front_.dest_ && nz_block == 0)
+                             {
+                                 send_futures[FRONT].push_back(calc_future);
+                             }
+-                            if(send_buffer_back_.dest_ && nz_block == 0)
++                            if(send_buffer_back_.dest_ && nz_block == calc_futures[dst_].nz_-1)
+                             {
+                                 send_futures[BACK].push_back(calc_future);
+                             }
+@@ -570,7 +614,7 @@
+                     flux_out_future[dst_], calc_futures[dst_].data_);
+ 
+                 // Send boundaries ...
+-                send_boundaries(step, send_futures);
++                send_boundaries(step, send_futures, sent_futures);
+ 
+                 std::swap(src_, dst_);
+             }
+@@ -605,7 +649,7 @@
+ 
+         hpx::shared_future<void> sum_grid(
+             std::vector<hpx::id_type> & ids
+-          , hpx::lcos::local::spinlock & io_mutex
++          , hpx::spinlock & io_mutex
+           , std::size_t step
+           , std::size_t dst
+           , hpx::shared_future<Real> & flux_out_future
+@@ -616,15 +660,15 @@
+                 return hpx::shared_future<void>(flux_out_future);
+ 
+             return
+-                hpx::lcos::local::dataflow(
++                hpx::dataflow(
+                    hpx::launch::async,
+                     [this, dst, step, &ids, &io_mutex](
+                             std::vector<hpx::shared_future<void> > &&
+                           , hpx::shared_future<Real> flux_out_future
+                         ) //-> hpx::future<void>
+                     {
+-                        double time_now = hpx::util::high_resolution_timer::now();
+-                        hpx::util::high_resolution_timer timer_comp;
++                        double time_now = hpx::chrono::high_resolution_timer::now();
++                        hpx::chrono::high_resolution_timer timer_comp;
+ 
+                         // Sum grid ...
+                         Real sum(this->sum_all_grid(dst));
+@@ -642,7 +686,7 @@
+                             .then(
+                                 [this, time_now, step, &io_mutex](hpx::future<Real> value)
+                                 {*/
+-                                    hpx::util::high_resolution_timer timer(time_now);
++                                    hpx::chrono::high_resolution_timer timer(time_now);
+                                     profiling::data().time_sumgrid_comm(timer.elapsed());
+                                     profiling::data().time_sumgrid(timer.elapsed());
+                                     profiling::data().num_sumgrid(1);
+@@ -651,11 +695,16 @@
+                                     // Report sum results for step-1
+                                     Real error_iter
+                                         = std::abs(source_total_ - value/*.get()*/) / source_total_;
++                                    for (double seen = g_err_max.load();
++                                         seen < static_cast<double>(error_iter) &&
++                                         !g_err_max.compare_exchange_weak(
++                                             seen, static_cast<double>(error_iter)); )
++                                    {}
+                                     bool terminate = error_iter > error_tol_;
+ 
+                                     if(terminate || (step % report_diffusion_ == 0))
+                                     {
+-                                        hpx::lcos::local::spinlock::scoped_lock l(io_mutex);
++                                        std::lock_guard<hpx::spinlock> l(io_mutex);
+                                         std::cout
+                                             << "Time step " << step << " "
+                                             << "for variable " << id_ << " "
+@@ -853,6 +902,8 @@
+       , stencil_(p.stencil)
+       , src_(0)
+       , dst_(1)
++      , source_total_(0)
++      , flux_out_(0)
+       , nx_(p.nx), ny_(p.ny), nz_(p.nz)
+       , nx_block_(p.nx_block), ny_block_(p.ny_block), nz_block_(p.nz_block)
+       , npx_(p.npx), npy_(p.npy), npz_(p.npz)
+@@ -862,6 +913,12 @@
+       , report_diffusion_(p.report_diffusion)
+       , sum_grid_(false)
+     {
++        // Every locality contributes one partial to each of the two gates.
++        // This runs before any of them can arrive: a zone or sum action
++        // waits for this locality's partitions to exist.
++        sum_allreduce_[0].init(ids.size());
++        sum_allreduce_[1].init(ids.size());
++
+         grids_[dst_].resize(nx_+2, ny_+2, nz_+2, 0.0);
+         grids_[src_].resize(nx_+2, ny_+2, nz_+2, 0.0);
+ 
+--- origin/MiniGhost/src/profiling.hpp
++++ ours/profiling.hpp
+@@ -8,6 +8,13 @@
+ 
+ #include <params.hpp>
+ 
++#include <hpx/include/runtime.hpp>
++#include <hpx/type_support/static.hpp>
++
++#include <cmath>
++#include <iostream>
++#include <vector>
++
+ #include <boost/accumulators/accumulators.hpp>
+ #include <boost/accumulators/statistics/count.hpp>
+ #include <boost/accumulators/statistics/min.hpp>
+--- origin/MiniGhost/src/recv_buffer.hpp
++++ ours/recv_buffer.hpp
+@@ -9,17 +9,20 @@
+ #include <grid.hpp>
+ #include <unpack_buffer.hpp>
+ 
+-#include <hpx/lcos/async.hpp>
+-#include <hpx/lcos/local/receive_buffer.hpp>
+-#include <hpx/runtime/serialization/serialize_buffer.hpp>
++#include <hpx/include/async.hpp>
++#include <hpx/lcos_local/receive_buffer.hpp>
++#include <hpx/serialization/serialize_buffer.hpp>
++#include <hpx/synchronization/spinlock.hpp>
++#include <hpx/timing/high_resolution_timer.hpp>
+ 
+ namespace mini_ghost {
+     template <typename BufferType, std::size_t Zone>
+     struct recv_buffer
+     {
+-        HPX_MOVABLE_BUT_NOT_COPYABLE(recv_buffer);
++        recv_buffer(recv_buffer const&) = delete;
++        recv_buffer& operator=(recv_buffer const&) = delete;
+     public:
+-        typedef hpx::lcos::local::spinlock mutex_type;
++        typedef hpx::spinlock mutex_type;
+ 
+         typedef typename BufferType::value_type value_type;
+ 
+@@ -54,7 +57,7 @@
+         void operator()(grid<value_type> & g, std::size_t step)
+         {
+             HPX_ASSERT(valid_);
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             buffer_type buffer = buffer_.receive(step).get();
+             double elapsed = timer.elapsed();
+             profiling::data().time_wait(elapsed);
+--- origin/MiniGhost/src/send_buffer.hpp
++++ ours/send_buffer.hpp
+@@ -9,16 +9,19 @@
+ #include <grid.hpp>
+ #include <pack_buffer.hpp>
+ 
+-#include <hpx/lcos/async.hpp>
+-#include <hpx/runtime/serialization/serialize_buffer.hpp>
++#include <hpx/include/async.hpp>
++#include <hpx/include/post.hpp>
++#include <hpx/serialization/serialize_buffer.hpp>
++#include <hpx/synchronization/spinlock.hpp>
+ 
+ namespace mini_ghost {
+     template <typename BufferType, std::size_t Zone, typename Action>
+     struct send_buffer
+     {
+-        HPX_MOVABLE_BUT_NOT_COPYABLE(send_buffer);
++        send_buffer(send_buffer const&) = delete;
++        send_buffer& operator=(send_buffer const&) = delete;
+     public:
+-        typedef hpx::lcos::local::spinlock mutex_type;
++        typedef hpx::spinlock mutex_type;
+ 
+         typedef typename BufferType::value_type value_type;
+ 
+@@ -48,7 +51,7 @@
+             HPX_ASSERT(dest_);
+             buffer_type buffer;
+             pack_buffer<Zone>::call(g, buffer);
+-            hpx::apply(Action(), dest_, buffer, step, var);
++            hpx::post(Action(), dest_, buffer, step, var);
+         }
+ 
+         hpx::id_type dest_;
+--- origin/MiniGhost/src/stencils.hpp
++++ ours/stencils.hpp
+@@ -8,6 +8,12 @@
+ 
+ #include <grid.hpp>
+ 
++#include <hpx/hpx_finalize.hpp>
++#include <hpx/timing/high_resolution_timer.hpp>
++
++#include <iostream>
++#include <utility>
++
+ namespace mini_ghost {
+ 
+     ///////////////////////////////////////////////////////////////////////////
+@@ -39,7 +45,7 @@
+         static void call(grid<Real> & dst, grid<Real> const & src,
+             range_type x_range, range_type y_range, range_type z_range)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             for(std::size_t z = z_range.first; z != z_range.second; ++z)
+             {
+                 for(std::size_t y = y_range.first; y != y_range.second; ++y)
+@@ -161,7 +167,7 @@
+         static void call(grid<Real> & dst, grid<Real> const & src,
+             range_type x_range, range_type y_range, range_type z_range)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             Real const divisor = Real(1.0)/Real(27.0);
+             for(std::size_t z = z_range.first; z != z_range.second; ++z)
+             {
+--- origin/MiniGhost/src/stepper.cpp
++++ ours/stepper.cpp
+@@ -3,13 +3,19 @@
+ //  Distributed under the Boost Software License, Version 1.0. (See accompanying
+ //  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ 
+-#include <hpx/hpx_fwd.hpp>
+ #include <profiling.hpp>
+ #include <stepper.hpp>
+ #include <stencils.hpp>
+ #include <write_grid.hpp>
+ 
+-#include <hpx/lcos/wait_all.hpp>
++#include <hpx/async_combinators/wait_all.hpp>
++#include <hpx/async_combinators/when_all.hpp>
++#include <hpx/functional/bind.hpp>
++#include <hpx/pack_traversal/unwrap.hpp>
++#include <hpx/synchronization/spinlock.hpp>
++#include <hpx/timing/high_resolution_timer.hpp>
++
++#include <functional>
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ // Boilerplate code which allows to remotely create and access the stepper
+@@ -17,19 +23,23 @@
+ typedef hpx::components::managed_component<
+     mini_ghost::stepper<float>
+ > stepper_float_type;
+-HPX_REGISTER_MINIMAL_COMPONENT_FACTORY(stepper_float_type, stepper_float);
++// The component module the two factory registrations below belong to: a
++// program that carries its own components names its own module, and only one
++// that borrows the runtime's default name can leave this out.
++HPX_REGISTER_COMPONENT_MODULE()
++HPX_REGISTER_COMPONENT(stepper_float_type, stepper_float);
+ 
+ typedef hpx::components::managed_component<
+     mini_ghost::stepper<double>
+ > stepper_double_type;
+-HPX_REGISTER_MINIMAL_COMPONENT_FACTORY(stepper_double_type, stepper_double);
++HPX_REGISTER_COMPONENT(stepper_double_type, stepper_double);
+ 
+ // boilerplate code to be able to use set_global_sum_actionas a broadcast action
+-HPX_REGISTER_BROADCAST_APPLY_ACTION(
++HPX_REGISTER_BROADCAST_POST_ACTION(
+     mini_ghost::stepper<float>::set_global_sum_action
+   , mini_ghost_stepper_float_set_global_sum_action)
+ 
+-HPX_REGISTER_BROADCAST_APPLY_ACTION(
++HPX_REGISTER_BROADCAST_POST_ACTION(
+     mini_ghost::stepper<double>::set_global_sum_action
+   , mini_ghost_stepper_double_set_global_sum_action)
+ 
+@@ -52,11 +62,11 @@
+ 
+         rank = p.rank;
+ 
+-        hpx::register_with_basename(base_name, this->get_gid(), p.rank);
++        hpx::register_with_basename(base_name, this->get_id(), p.rank);
+         std::vector<hpx::future<hpx::id_type> > steppers =
+             hpx::find_all_from_basename(base_name, p.nranks);
+ 
+-        return hpx::when_all(steppers).then(hpx::util::unwrapped2(
++        return hpx::when_all(steppers).then(hpx::unwrapping_n<2>(
+             [this, &p](std::vector<hpx::id_type> && ids)
+             {
+                 stepper_ids = std::move(ids);
+@@ -101,14 +111,19 @@
+                         spikes<Real>(p, my_px, my_py, my_pz, random_lambda)
+                     );
+ 
+-                    partitions_.push_back(
+-                        partition_type(
++                    // Constructed in place: the partition attaches a
++                    // continuation that captures its own address to receive
++                    // the global sum of its initial grid, so an object that
++                    // is constructed and then moved here would leave that
++                    // continuation writing to the object it was moved out of.
++                    // The vector's storage is reserved above, so the address
++                    // stays valid for the rest of the run.
++                    partitions_.emplace_back(
+                             var, p
+                           , stepper_ids//, id_map
+                           , my_px, my_py, my_pz
+                           , random_lambda
+                           , partition_initialized[var]
+-                        )
+                     );
+ 
+                     if (partitions_.back().sum_grid())
+@@ -132,9 +147,9 @@
+     template <typename Real>
+     void stepper<Real>::run(std::size_t num_spikes, std::size_t num_tsteps)
+     {
+-        hpx::util::high_resolution_timer timer_all;
++        hpx::chrono::high_resolution_timer timer_all;
+ 
+-        hpx::lcos::local::spinlock io_mutex;
++        hpx::spinlock io_mutex;
+ 
+         for(std::size_t spike = 0; spike != num_spikes; ++spike)
+         {
+@@ -145,12 +160,12 @@
+                 partition.insert_spike(spikes_[spike], spike);
+                 run_futures.push_back(
+                     hpx::async(
+-                        hpx::util::bind(
++                        hpx::bind(
+                             &partition_type::run
+-                          , boost::ref(partition)
+-                          , boost::ref(stepper_ids)
++                          , std::ref(partition)
++                          , std::ref(stepper_ids)
+                           , num_tsteps
+-                          , boost::ref(io_mutex)
++                          , std::ref(io_mutex)
+                         )
+                     )
+                 );
+--- origin/MiniGhost/src/stepper.hpp
++++ ours/stepper.hpp
+@@ -14,7 +14,8 @@
+ #include <recv_buffer.hpp>
+ 
+ #include <hpx/include/components.hpp>
+-#include <hpx/lcos/broadcast.hpp>
++#include <hpx/collectives/broadcast_direct.hpp>
++#include <hpx/futures/promise.hpp>
+ 
+ #include <boost/random.hpp>
+ 
+@@ -86,17 +87,17 @@
+             partition_type;
+         std::vector<partition_type> partitions_;
+ 
+-        hpx::lcos::local::promise<void> init_promise_;
++        hpx::promise<void> init_promise_;
+         hpx::future<void> init_future_;
+     };
+ }
+ 
+-HPX_REGISTER_BROADCAST_APPLY_ACTION_DECLARATION(
++HPX_REGISTER_BROADCAST_POST_ACTION_DECLARATION(
+     mini_ghost::stepper<float>::set_global_sum_action
+   , mini_ghost_stepper_float_set_global_sum_action
+ )
+ 
+-HPX_REGISTER_BROADCAST_APPLY_ACTION_DECLARATION(
++HPX_REGISTER_BROADCAST_POST_ACTION_DECLARATION(
+     mini_ghost::stepper<double>::set_global_sum_action
+   , mini_ghost_stepper_double_set_global_sum_action
+ )
+--- origin/MiniGhost/src/unpack_buffer.hpp
++++ ours/unpack_buffer.hpp
+@@ -7,7 +7,8 @@
+ #define HPX_EXAMPLES_MINI_GHOST_UNPACK_BUFFER_HPP
+ 
+ #include <grid.hpp>
+-#include <hpx/runtime/serialization/serialize_buffer.hpp>
++#include <hpx/serialization/serialize_buffer.hpp>
++#include <hpx/timing/high_resolution_timer.hpp>
+ 
+ namespace mini_ghost {
+     template <std::size_t Zone>
+@@ -19,7 +20,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> & g, BufferType buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             typename BufferType::value_type * src = buffer.data();
+             HPX_ASSERT(buffer.size() == g.nx_ * g.nz_);
+             for(std::size_t z = 0; z != g.nz_; ++z)
+@@ -42,7 +43,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> & g, BufferType buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             typename BufferType::value_type * src = buffer.data();
+             HPX_ASSERT(buffer.size() == g.nx_ * g.nz_);
+             for(std::size_t z = 0; z != g.nz_; ++z)
+@@ -65,7 +66,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> & g, BufferType buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             typename BufferType::value_type * src = buffer.data();
+             HPX_ASSERT(buffer.size() == g.nz_ * g.ny_);
+             for(std::size_t z = 0; z != g.nz_; ++z)
+@@ -88,7 +89,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> & g, BufferType buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             typename BufferType::value_type * src = buffer.data();
+             HPX_ASSERT(buffer.size() == g.nz_ * g.ny_);
+             for(std::size_t z = 0; z != g.nz_; ++z)
+@@ -111,7 +112,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> & g, BufferType buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             typename BufferType::value_type * src = buffer.data();
+             HPX_ASSERT(buffer.size() == g.nx_ * g.ny_);
+             for(std::size_t y = 0; y != g.ny_; ++y)
+@@ -134,7 +135,7 @@
+         template <typename Real, typename BufferType>
+         static void call(grid<Real> & g, BufferType buffer)
+         {
+-            hpx::util::high_resolution_timer timer;
++            hpx::chrono::high_resolution_timer timer;
+             typename BufferType::value_type * src = buffer.data();
+             HPX_ASSERT(buffer.size() == g.nx_ * g.ny_);
+             for(std::size_t y = 0; y != g.ny_; ++y)
+--- origin/MiniGhost/src/write_grid.cpp
++++ ours/write_grid.cpp
+@@ -3,7 +3,6 @@
+ //  Distributed under the Boost Software License, Version 1.0. (See accompanying
+ //  file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+ 
+-#include <hpx/hpx_fwd.hpp>
+ #include <write_grid.hpp>
+ 
+ #include <boost/lexical_cast.hpp>

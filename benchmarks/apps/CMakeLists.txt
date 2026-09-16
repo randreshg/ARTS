@@ -216,6 +216,8 @@ endif() # TARGET ocr_vdm_mpi
 #       [EXTRA_LINK_LIBS <lib> ...]     # extra link libraries (e.g. m)
 #       [OCRVX_SKIP]                    # suppress _ocrvx target (app uses unsupported OCR extensions)
 #       [HINTED_PLACEMENT]           # source carries a placement hint layer
+#       [ROOT <abs-dir>]  # DIR is relative to this instead of ocr-apps/apps
+#       [ARTS_ONLY]  # ARTS variants only (a probe that exists to separate the plane's arms)
 #   )
 #
 # Creates, per backend, <name>_arts_<suffix> (one per coherence configuration),
@@ -225,9 +227,13 @@ endif() # TARGET ocr_vdm_mpi
 # neither is a property of the build directory.
 # ==========================================================================
 function(add_benchmark_app)
-    cmake_parse_arguments(APP "OCRVX_SKIP;HINTED_PLACEMENT" "NAME;DIR;SRC_SUBDIR" "SOURCES;LIBS;EXTRA_INCLUDES;EXTRA_DEFINES;EXTRA_LINK_LIBS" ${ARGN})
+    cmake_parse_arguments(APP "OCRVX_SKIP;HINTED_PLACEMENT;ARTS_ONLY" "NAME;DIR;SRC_SUBDIR;ROOT" "SOURCES;LIBS;EXTRA_INCLUDES;EXTRA_DEFINES;EXTRA_LINK_LIBS" ${ARGN})
 
-    set(APP_DIR "${OCR_APPS_ROOT}/${APP_DIR}")
+    if(APP_ROOT)
+        set(APP_DIR "${APP_ROOT}/${APP_DIR}")
+    else()
+        set(APP_DIR "${OCR_APPS_ROOT}/${APP_DIR}")
+    endif()
     if(APP_SRC_SUBDIR)
         set(SRC_DIR "${APP_DIR}/${APP_SRC_SUBDIR}")
     else()
@@ -282,7 +288,7 @@ function(add_benchmark_app)
         endif()
 
         # --- XSOCR variant (only when the ocr_xsocr_static target exists) ---
-        if(TARGET ocr_xsocr_static)
+        if(TARGET ocr_xsocr_static AND NOT APP_ARTS_ONLY)
             add_executable(${_app}_xsocr ${ABS_SOURCES} ${LIB_OBJECTS})
             target_include_directories(${_app}_xsocr PRIVATE ${COMMON_INCLUDES})
             target_compile_definitions(${_app}_xsocr PRIVATE ${COMMON_DEFINES} ${_flavor_define})
@@ -326,7 +332,7 @@ function(add_benchmark_app)
         # --- OCR-VX variant (only when ocr_vdm_mpi target exists, OCRVX_SKIP not set,
         #     and all required helper libs have an _ocrvx variant compiled against
         #     vdm.h headers) ---
-        if(TARGET ocr_vdm_mpi AND NOT APP_OCRVX_SKIP)
+        if(TARGET ocr_vdm_mpi AND NOT APP_OCRVX_SKIP AND NOT APP_ARTS_ONLY)
             set(_ocrvx_ok TRUE)
             foreach(lib ${APP_LIBS})
                 if(NOT TARGET ocr_lib_${lib}_ocrvx)
@@ -372,6 +378,29 @@ function(add_benchmark_app)
     endforeach()
 endfunction()
 
+# A program written in this repository rather than carried by the
+# application submodule: the same backends and flags as every other
+# application, with the sources named by path.
+function(add_bespoke_app)
+    cmake_parse_arguments(B "ARTS_ONLY;OCRVX_SKIP" "NAME;DIR" "SOURCES;EXTRA_LINK_LIBS;EXTRA_DEFINES;EXTRA_INCLUDES" ${ARGN})
+    if(B_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "add_bespoke_app: unexpected arguments: ${B_UNPARSED_ARGUMENTS}")
+    endif()
+    if(NOT B_DIR)
+        set(B_DIR ".")
+    endif()
+    set(_flags)
+    if(B_ARTS_ONLY)
+        list(APPEND _flags ARTS_ONLY)
+    endif()
+    if(B_OCRVX_SKIP)
+        list(APPEND _flags OCRVX_SKIP)
+    endif()
+    add_benchmark_app(NAME ${B_NAME} ROOT "${CMAKE_CURRENT_SOURCE_DIR}" DIR "${B_DIR}"
+        SOURCES ${B_SOURCES} EXTRA_LINK_LIBS ${B_EXTRA_LINK_LIBS}
+        EXTRA_DEFINES ${B_EXTRA_DEFINES} EXTRA_INCLUDES ${B_EXTRA_INCLUDES} ${_flags})
+endfunction()
+
 # ==========================================================================
 # Tier 1: Simple single-file apps
 # ==========================================================================
@@ -390,7 +419,9 @@ add_benchmark_app(NAME printf
 add_benchmark_app(NAME quicksort
     DIR quicksort/ocr
     SOURCES quicksort.c
-    # The source carries a placement layer; without this it was never built.
+    # The recursion sorts one shared block; the layer places a subarray's
+    # tasks by the middle of the range they sort, so the block stops
+    # following the recursion around.
     HINTED_PLACEMENT
 )
 
@@ -563,7 +594,7 @@ add_benchmark_app(NAME cholesky_blas
 add_benchmark_app(NAME fft
     DIR fft/ocr
     SOURCES fft.c verify.c
-    # The source carries a placement layer; without this it was never built.
+    # The source carries a placement layer, so the hinted tier is a target.
     HINTED_PLACEMENT
     EXTRA_LINK_LIBS m
 )
@@ -582,8 +613,25 @@ add_benchmark_app(NAME graph500
     SOURCES graph500.c
     EXTRA_DEFINES NO_FILES NO_MAP
     # The shipped worker-to-place map indexes by worker id alone; the hinted
-    # flavour tiles the R x C worker grid instead.
+    # flavour tiles the R x C worker grid into one tile per place.  On a square
+    # grid the two are the same partition regrouped, so the tier is not
+    # registered in the catalog -- the flag is kept only so the guarded arm
+    # stays compiled and checked by every build.
     HINTED_PLACEMENT
+    EXTRA_LINK_LIBS m
+)
+
+# --- Restructured: graph500_dist ---
+# The same edge stream, the same search from the same root and the same
+# answer digest; what changes is the decomposition.  Generation is a
+# partition of the stream reached by jumping its recurrence, every edge is
+# routed once to the owner of its source, a level exchanges one block per
+# node pair carrying only the frontier, and each node runs a persistent
+# chain instead of one thread pre-creating the whole task lattice.
+# Placement is part of the design, so there is no _hinted family.
+add_benchmark_app(NAME graph500_dist
+    DIR graph500/dist
+    SOURCES graph500_dist.c
     EXTRA_LINK_LIBS m
 )
 
@@ -616,13 +664,22 @@ add_benchmark_app(NAME CoMD_intel_chandra
 
 add_benchmark_app(NAME CoMD_intel_chandra_tiled
     DIR CoMD/refactored/ocr/intel-chandra-tiled
-    EXTRA_DEFINES OCR_APP_COUNTED_OEVT
     SOURCES CoMD.c mycommand.c cmdLineParser.c eam.c ljForce.c decomposition.c
     linkCells.c initAtoms.c random.c timestep.c performanceTimers.c
     haloExchange.c
     LIBS reduction ocrAppUtils
-    EXTRA_DEFINES WITH_COUNTED_EVT CHANNEL_EVENTS_AT_RECEIVER DOUBLE_BUFFERED_EVTS
+    # One EXTRA_DEFINES list rather than two: cmake_parse_arguments appends on
+    # a repeated multi-value keyword, which is a property nobody reading the
+    # row should have to know.  The set is the published Makefile.x86-base's
+    # plus the app-supplied COUNTED output events.
+    EXTRA_DEFINES OCR_APP_COUNTED_OEVT WITH_COUNTED_EVT
+    CHANNEL_EVENTS_AT_RECEIVER DOUBLE_BUFFERED_EVTS
     EXTRA_LINK_LIBS m
+    # The rank grid is already the program's own placement; the one thing it
+    # leaves to a hint is which policy-domain grid the rank grid is blocked
+    # over, and the generic near-cubic factorisation is not the one that
+    # crosses the fewest halo faces on an elongated rank grid.
+    HINTED_PLACEMENT
 )
 
 add_benchmark_app(NAME CoMD_sdsc
@@ -633,6 +690,23 @@ add_benchmark_app(NAME CoMD_sdsc
     EXTRA_DEFINES OCR_APP_COUNTED_OEVT
     EXTRA_LINK_LIBS m
     HINTED_PLACEMENT
+)
+
+# --- Restructured: CoMD_sdsc_dist ---
+# The same LJ physics and the same instance; what changes is the wiring plane
+# and the step: spawn and reduction trees per phase, one task per cell per
+# step over two generations of the cell's block (the exchange rides the
+# step's neighbour reads), in-place generation from an index-seeded
+# generator, and per-owner release.  Placement is part of the design, so
+# there is no _hinted family.  ocrAppUtils supplies createEventHelper and
+# splitDimension_Cart3D.
+add_benchmark_app(NAME CoMD_sdsc_dist
+    DIR CoMD/refactored/ocr/sdsc-dist
+    SOURCES atoms.c cells.c comd.c command.c fan.c lj.c simulation.c timers.c
+    timestep.c
+    LIBS ocrAppUtils
+    EXTRA_DEFINES OCR_APP_COUNTED_OEVT
+    EXTRA_LINK_LIBS m
 )
 
 add_benchmark_app(NAME CoMD_sdsc2
@@ -650,6 +724,28 @@ add_benchmark_app(NAME hpcg_intel
     DIR hpcg/refactored/ocr/intel
     SOURCES hpcg.c timers.c
     LIBS reduction
+    EXTRA_LINK_LIBS m
+    HINTED_PLACEMENT
+)
+
+# --- Restructured: hpcg_intel_dist ---
+# Same conjugate gradient, same multigrid, same rank grid and bisection; what
+# changes is what a boundary costs.  The base creates one datablock per
+# direction per exchange -- 26 x 11 creates and as many destroys per tile per
+# iteration, three quarters of them carrying 92 B -- so the cross-node message
+# count is set by the tile adjacency and does not fall with the node count.
+# This program keeps one persistent, double-buffered block per (tile,
+# destination policy domain) per multigrid level: every direction packs its own
+# slice, the 26-way join is untouched, the bytes are identical, and a payload
+# crosses once per reading domain instead of once per reading tile.  Its
+# reduction tree is built in two levels around a domain-major numbering
+# (reductionTwoLevel in place of reduction), which is the same substitution
+# nekbone_dist makes.  Placement is part of the design, so there is no _hinted
+# family.
+add_benchmark_app(NAME hpcg_intel_dist
+    DIR hpcg/refactored/ocr/intel-dist
+    SOURCES hpcg.c timers.c
+    LIBS reductionTwoLevel
     EXTRA_LINK_LIBS m
 )
 
@@ -721,28 +817,41 @@ add_benchmark_app(NAME Stencil2D_intel_chandra
     EXTRA_LINK_LIBS m
 )
 
+# The guarded layer overrides one thing: the home of a tile's four halo send
+# buffers.  The tile grid is already mapped onto the domain grid in contiguous
+# 2-D blocks (the SPMD fork's own map, which is the minimum-cut factorisation
+# at every node count), and every EDT and every other block of a tile is pinned
+# to that map, so the one placement left free is where a send buffer's
+# directory entry lives.  A buffer has exactly one reader for the whole run --
+# the neighbour's receive task on the opposite face -- so base homes it where
+# it is packed and the guarded flavour homes it where it is read, and only for
+# a face whose neighbour is on another node.
 add_benchmark_app(NAME Stencil2D_intel_channelEVTs
     DIR Stencil2D/refactored/ocr/intel-channelEVTs
     SOURCES stencil_2d.c timers.c
     LIBS reduction ocrAppUtils timer
     EXTRA_DEFINES STENCIL_WITH_DBUF_CHRECV CHANNEL_EVENTS_AT_RECEIVER
     EXTRA_LINK_LIBS m
+    HINTED_PLACEMENT
 )
 
 # ==========================================================================
 # Tier 8: P2P and Reduction
 # ==========================================================================
 
-# The placement layer in this source homes the per-phase boundary block at its
-# consumer.  It was measured and does not pay -- the application already lays
-# its ranks out contiguously, so almost no handoff crosses a domain for the
-# home to help, while the hint is paid on every phase of every rank.  The
-# hinted target is therefore not built; the layer stays behind its guard with
-# the reasoning recorded there.
+# The guarded layer overrides one thing: the rank -> policy-domain map.  base
+# deals the ranks out in contiguous blocks (the source's own `#define BLOCK`),
+# which lands the wavefront's contiguous runnable interval on a contiguous
+# domain interval, so a domain holding more runnable ranks than it has workers
+# runs `workers` of them while the rest of the machine idles.  The guarded map
+# deals runs of `chunk` ranks (argv[6], parsed in both flavours, honoured only
+# here) round-robin over the domains, which costs p/chunk boundary crossings
+# instead of one per domain and keeps every engaged domain saturated.
 add_benchmark_app(NAME p2p
     DIR p2p/refactored/ocr/intel
     SOURCES p2p.c wtime.c
     LIBS reduction
+    HINTED_PLACEMENT
 )
 
 add_benchmark_app(NAME reduction_intel
@@ -801,8 +910,29 @@ add_benchmark_app(NAME miniAMR_intel
     DIR miniAMR/refactored/ocr/intel
     SOURCES block.c chksum.c comm.c clone.c init.c move.c parent.c plot.c
     stencil.c refine.c root.c util.c wtime.c
+    # root.h guards the block-grid capacity with #ifndef, so without a -D the
+    # base block grid could not exceed 1000 blocks from a build.  The width
+    # rule needs npx*npy*npz = 24*24*12 = 6912 = 2 x 3456; raise this further
+    # only together with the halo-range envelope the program now loud-fails on.
+    EXTRA_DEFINES MAX_NUM_UNREFINED_BLOCKS=6912
     EXTRA_LINK_LIBS m
     HINTED_PLACEMENT
+)
+
+# --- Restructured: miniAMR_intel_dist ---
+# The same stencil, refinement rules and checksums; what changes is the control
+# plane.  A stage of a block is one task over the strips its neighbours wrote,
+# phases are emitted and collected by spawn trees indexed by rank, the mesh
+# every epoch runs on is a directory one task derives from the object
+# trajectory (the refinement decision never reads a cell), and the checksum
+# reduces over the block forest.  There is no block-grid cap: no task holds a
+# dependence per block.  Placement is part of the design, so no _hinted family.
+add_benchmark_app(NAME miniAMR_intel_dist
+    DIR miniAMR/refactored/ocr/intel-dist
+    SOURCES amr_dist.c command.c fan.c mesh.c physics.c
+    LIBS ocrAppUtils
+    EXTRA_DEFINES OCR_APP_COUNTED_OEVT
+    EXTRA_LINK_LIBS m
 )
 
 add_benchmark_app(NAME miniAMR_intel_bryan
@@ -813,20 +943,22 @@ add_benchmark_app(NAME miniAMR_intel_bryan
 )
 
 add_benchmark_app(NAME miniAMR_intel_chandra
-    EXTRA_DEFINES OCR_APP_COUNTED_OEVT
     DIR miniAMR/refactored/ocr/intel-chandra
     SOURCES main.c init.c check_sum.c refine.c move.c block.c comm_refine.c
     comm_parent.c driver.c comm.c comm_utils.c stencil.c util.c
     load_balance.c profile.c
     LIBS reduction ocrAppUtils timer
-    # VERIFICATION_RUN: the app's own deterministic-init mode.  The default
-    # init fills cells from one global unseeded rand() stream that worker
-    # threads consume concurrently, so every run (same binary, same input)
-    # produces different checksums — unusable for cross-runtime consensus.
-    # The verification init is data-identical on every runtime and run while
-    # the stencil work (data-independent FLOPs) is unchanged.
-    EXTRA_DEFINES VERIFICATION_RUN
+    # OCR_APP_COUNTED_OEVT: every create that asks for an output event supplies
+    # its own COUNTED event, so the runtime mints and retains nothing extra.
+    # CHANNEL_EVENTS_AT_RECEIVER: the port's published choice (Makefile.x86-base)
+    # of which side creates, and so homes, each halo channel event.
+    # VERIFICATION_RUN is gone: it reached exactly one site, the cell fill, which
+    # is now an unconditional index-seeded generator — deterministic across runs,
+    # runtimes and node counts, and unlike the constant field that macro produced,
+    # not a fixed point of the stencil.
+    EXTRA_DEFINES OCR_APP_COUNTED_OEVT CHANNEL_EVENTS_AT_RECEIVER
     EXTRA_LINK_LIBS m
+    HINTED_PLACEMENT
 )
 
 # ==========================================================================
@@ -901,7 +1033,24 @@ add_benchmark_app(NAME RSBench_intel
     EXTRA_LINK_LIBS m
 )
 
+# --- Restructured: RSBench_intel_dist ---
+# The published per-lookup chain kept intact over a lookup range cut into
+# places, each with its own producer and its own shard of the dataset; its
+# placement is internal, so no _hinted family.
+add_benchmark_app(NAME RSBench_intel_dist
+    DIR RSBench/refactored/ocr/intel-dist
+    SRC_SUBDIR src
+    SOURCES main.c init.c material.c io.c timers.c utils.c rs_kernel.c
+    LIBS timer
+    EXTRA_LINK_LIBS m
+)
+
+# The hint layer lives inside main.c behind OCR_APP_OPTIMIZED_PLACEMENT: a lane
+# is placed by its index among ALL p*t lanes rather than by its index within its
+# own instance, and the per-lane datablocks take the hint the program already
+# computes.  No new source, include or define.
 add_benchmark_app(NAME RSBench_intel_sharedDB
+    HINTED_PLACEMENT
     DIR RSBench/refactored/ocr/intel-sharedDB
     SRC_SUBDIR src
     SOURCES main.c init.c material.c io.c utils.c rs_kernel.c timers.c
@@ -914,6 +1063,20 @@ add_benchmark_app(NAME XSBench_intel
     DIR XSBench/refactored/ocr/intel
     SRC_SUBDIR src
     SOURCES Main.c io.c CalculateXS.c XSutils.c Materials.c qsort.c timers.c
+    LIBS timer
+    EXTRA_LINK_LIBS m
+)
+
+# --- Restructured: XSBench_intel_dist ---
+# A separate program that cuts the lookup range into places, each with its own
+# producer and its own replica of the physics table, and keeps the per-lookup
+# task chain; its placement is internal, so no _hinted family.  qsort.c is not
+# in SOURCES: that file is entirely `#ifdef TG_ARCH` and the program uses the
+# libc qsort.
+add_benchmark_app(NAME XSBench_intel_dist
+    DIR XSBench/refactored/ocr/intel-dist
+    SRC_SUBDIR src
+    SOURCES Main.c io.c CalculateXS.c XSutils.c Materials.c timers.c
     LIBS timer
     EXTRA_LINK_LIBS m
 )
@@ -935,33 +1098,39 @@ add_benchmark_app(NAME LCS_distributed_ST
     SOURCES lcs_ST_distributed.c
     LIBS reduction timer
     EXTRA_LINK_LIBS m
+    HINTED_PLACEMENT
 )
 # LCS uses bare "inline" (C11 = no external def) → fails at -O0; force GNU89 semantics
-if(TARGET LCS_distributed_ST_xsocr)
-    target_compile_options(LCS_distributed_ST_xsocr PRIVATE -fgnu89-inline)
-endif()
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    target_compile_options(LCS_distributed_ST_arts_${sfx} PRIVATE -fgnu89-inline)
+foreach(flavor LCS_distributed_ST LCS_distributed_ST_hinted)
+    if(TARGET ${flavor}_xsocr)
+        target_compile_options(${flavor}_xsocr PRIVATE -fgnu89-inline)
+    endif()
+    foreach(sfx ${ARTS_VARIANT_SUFFIXES})
+        target_compile_options(${flavor}_arts_${sfx} PRIVATE -fgnu89-inline)
+    endforeach()
+    if(TARGET ${flavor}_ocrvx)
+        target_compile_options(${flavor}_ocrvx PRIVATE -fgnu89-inline)
+    endif()
 endforeach()
-if(TARGET LCS_distributed_ST_ocrvx)
-    target_compile_options(LCS_distributed_ST_ocrvx PRIVATE -fgnu89-inline)
-endif()
 
 add_benchmark_app(NAME LCS_shared
     DIR LCS/refactored/ocr/intel-jesmin-lcs_shared_datablocks
     SOURCES lcs.c
     LIBS reduction timer
     EXTRA_LINK_LIBS m
+    HINTED_PLACEMENT
 )
-if(TARGET LCS_shared_xsocr)
-    target_compile_options(LCS_shared_xsocr PRIVATE -fgnu89-inline)
-endif()
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    target_compile_options(LCS_shared_arts_${sfx} PRIVATE -fgnu89-inline)
+foreach(flavor LCS_shared LCS_shared_hinted)
+    if(TARGET ${flavor}_xsocr)
+        target_compile_options(${flavor}_xsocr PRIVATE -fgnu89-inline)
+    endif()
+    foreach(sfx ${ARTS_VARIANT_SUFFIXES})
+        target_compile_options(${flavor}_arts_${sfx} PRIVATE -fgnu89-inline)
+    endforeach()
+    if(TARGET ${flavor}_ocrvx)
+        target_compile_options(${flavor}_ocrvx PRIVATE -fgnu89-inline)
+    endif()
 endforeach()
-if(TARGET LCS_shared_ocrvx)
-    target_compile_options(LCS_shared_ocrvx PRIVATE -fgnu89-inline)
-endif()
 
 # LCS C++ variant: standard OCR API written in C++.  mainEdt is declared
 # extern "C" and ocr.h is extern "C"-guarded, so CMake compiles the .cpp with
@@ -1127,7 +1296,11 @@ endif()
 # Parameter files differing only in the image grid (Ix = 400*(n+1)), so the pss
 # target with a parameter file covers every one of them and the four binaries,
 # their host utilities and their generated data objects buy nothing.  The same
-# rule extends the ladder: Parameter41 is 16800 a side.
+# rule extends the ladder: Parameter45 is 18400 a side (the restructured
+# row's rung), Parameter10 is 4400, Parameter14 is 6000 and Parameter15 is
+# 6400 (the 32-rank rung of the restructured row at its default blocks).
+# (The submodule holds Parameter0..9, 10, 14, 15 and 45; there is no
+# Parameter41.)
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -1166,10 +1339,15 @@ if(HAS_CRLIBM)
     # The detection pass computes the correlation values its own windows need
     # instead of reading them from a whole-image map, so its blocking factor
     # is its own: the halo it recomputes is (blk+Ncfar-1)^2/blk^2.
+    # This is the DEFAULT and the MAXIMUM of the run-time knob (argv[7]): the
+    # detection task's window buffer is automatic storage sized from it, so a
+    # larger value is refused at start-up.  Raise it here to widen the range.
     list(APPEND SAR_DIST_DEFINES RAG_CFAR_BLK_SIZE=100)
 
     # The resample interpolates one pixel per iteration, so a projection-sized
-    # block holds microseconds of work; this phase blocks coarser.
+    # block holds microseconds of work; this phase blocks coarser.  Default and
+    # maximum of argv[8], for the same reason: the block's source window is
+    # automatic storage sized from it.
     list(APPEND SAR_DIST_DEFINES RAG_AFFINE_BLK_SIZE=250)
 
     # --- Restructured: sar_dist ---
@@ -1199,11 +1377,15 @@ if(HAS_CRLIBM)
     set(SAR_RT_DEFINES ${SAR_DEFINES})
     list(REMOVE_ITEM SAR_RT_DEFINES RAG_NEW_BLK_SIZE=32)
     list(APPEND SAR_RT_DEFINES RAG_NEW_BLK_SIZE=50)
-    # No HINTED_PLACEMENT: measured, a placement layer for this program either
-    # collapses the pipeline onto one rank (97% of the work on one of four) or,
-    # written honestly, runs 23-36% SLOWER than no hints at all.  The
-    # serialisation is on a shared whole image block, which affinity cannot
-    # address.
+    # No HINTED_PLACEMENT flavour: there is no OCR_APP_OPTIMIZED_PLACEMENT
+    # guard in the SAR sources.  Measured, a placement layer for this program
+    # either collapses the pipeline onto one rank (97% of the work on one of
+    # four) or, written honestly, runs 23-36% SLOWER than no hints at all --
+    # the serialisation is on a shared whole image block, which affinity
+    # cannot address.  The one affinity hint the base program does carry pins
+    # the input read's slabs to a single node, which is a correctness
+    # precondition of writing one datablock from many tasks, not a
+    # performance layer.
     add_benchmark_app(NAME sar_problem_size_scaling
         DIR sar/ocr/problem_size_scaling
         SRC_SUBDIR ../src
@@ -1222,10 +1404,10 @@ endif()
 add_benchmark_app(NAME stream
     DIR stream/ocr
     SOURCES stream.c
-    # No NTIMES here: stream.c hardcodes it unconditionally, so a -D value
-    # never took effect — its measured scalar (a[0] after NTIMES sweeps)
-    # was always the source default's.
-    EXTRA_DEFINES STREAM_ARRAY_SIZE=1000 NUM_THREADS=2
+    # Argument-free defaults only; every campaign run passes all three.
+    # NTIMES is #ifndef-guarded in stream.c now (it was an unconditional
+    # #define), so the define reaches it as it already does in stream_dist.c.
+    EXTRA_DEFINES STREAM_ARRAY_SIZE=1000 NUM_THREADS=2 NTIMES=3
     # The source carries a placement layer; without this it was never built.
     HINTED_PLACEMENT
     EXTRA_LINK_LIBS m
@@ -1251,46 +1433,7 @@ add_benchmark_app(NAME uts
 # release_sync_stress  (bespoke: source lives in this repo, not in ocr-apps)
 # Probes whether ocrDbRelease is a synchronizing operation across runtimes.
 # ==========================================================================
-set(RSS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/release_sync_stress.c")
-
-if(TARGET ocr_xsocr_static)
-    add_executable(release_sync_stress_xsocr ${RSS_SRC})
-    target_include_directories(release_sync_stress_xsocr PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR})
-    target_compile_definitions(release_sync_stress_xsocr PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(release_sync_stress_xsocr PRIVATE ocr_xsocr_static pthread)
-    target_link_options(release_sync_stress_xsocr PRIVATE -no-pie -fno-pie)
-    set_target_properties(release_sync_stress_xsocr PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(release_sync_stress_xsocr PRIVATE ${BENCH_C_OPT})
-endif()
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(release_sync_stress_arts_${sfx} ${RSS_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(release_sync_stress_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(release_sync_stress_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(release_sync_stress_arts_${sfx} PRIVATE arts_static_${sfx} pthread)
-    target_link_options(release_sync_stress_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(release_sync_stress_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(release_sync_stress_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
-
-if(TARGET ocr_vdm_mpi)
-    add_executable(release_sync_stress_ocrvx ${RSS_SRC})
-    target_include_directories(release_sync_stress_ocrvx PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${OCRVX_OCR_INC})
-    target_compile_definitions(release_sync_stress_ocrvx PRIVATE
-        ${OCR_EXT_DEFINES} "OCR_TYPE_H=vdm.h" OCR_ENABLE_EDT_NAMING)
-    target_link_libraries(release_sync_stress_ocrvx PRIVATE ocr_vdm_mpi)
-    target_link_options(release_sync_stress_ocrvx PRIVATE -no-pie -fno-pie)
-    set_target_properties(release_sync_stress_ocrvx PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(release_sync_stress_ocrvx PRIVATE ${BENCH_C_OPT}
-        "-include" "${OCRVX_COMPAT_H}")
-endif()
+add_bespoke_app(NAME release_sync_stress SOURCES release_sync_stress.c)
 
 # ==========================================================================
 # dbcreate_matrix  (bespoke: source lives in this repo, not in ocr-apps)
@@ -1300,46 +1443,7 @@ endif()
 # correctness harness can compare their create-path capability.  Prints
 # CELLS_OK=<k>/12.
 # ==========================================================================
-set(DBCM_SRC "${CMAKE_CURRENT_SOURCE_DIR}/dbcreate_matrix.c")
-
-if(TARGET ocr_xsocr_static)
-    add_executable(dbcreate_matrix_xsocr ${DBCM_SRC})
-    target_include_directories(dbcreate_matrix_xsocr PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR})
-    target_compile_definitions(dbcreate_matrix_xsocr PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(dbcreate_matrix_xsocr PRIVATE ocr_xsocr_static pthread)
-    target_link_options(dbcreate_matrix_xsocr PRIVATE -no-pie -fno-pie)
-    set_target_properties(dbcreate_matrix_xsocr PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(dbcreate_matrix_xsocr PRIVATE ${BENCH_C_OPT})
-endif()
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(dbcreate_matrix_arts_${sfx} ${DBCM_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(dbcreate_matrix_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(dbcreate_matrix_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(dbcreate_matrix_arts_${sfx} PRIVATE arts_static_${sfx} pthread)
-    target_link_options(dbcreate_matrix_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(dbcreate_matrix_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(dbcreate_matrix_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
-
-if(TARGET ocr_vdm_mpi)
-    add_executable(dbcreate_matrix_ocrvx ${DBCM_SRC})
-    target_include_directories(dbcreate_matrix_ocrvx PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${OCRVX_OCR_INC})
-    target_compile_definitions(dbcreate_matrix_ocrvx PRIVATE
-        ${OCR_EXT_DEFINES} "OCR_TYPE_H=vdm.h" OCR_ENABLE_EDT_NAMING)
-    target_link_libraries(dbcreate_matrix_ocrvx PRIVATE ocr_vdm_mpi)
-    target_link_options(dbcreate_matrix_ocrvx PRIVATE -no-pie -fno-pie)
-    set_target_properties(dbcreate_matrix_ocrvx PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(dbcreate_matrix_ocrvx PRIVATE ${BENCH_C_OPT}
-        "-include" "${OCRVX_COMPAT_H}")
-endif()
+add_bespoke_app(NAME dbcreate_matrix SOURCES dbcreate_matrix.c)
 
 # ==========================================================================
 # Meta targets
@@ -1358,46 +1462,7 @@ add_custom_target(benchmark_apps DEPENDS benchmark_arts)
 # data block, W of them RW, roles uniformly interleaved in creation order.
 # Prints ELAPSED_US from trigger to global completion.
 # ==========================================================================
-set(RWMIX_SRC "${CMAKE_CURRENT_SOURCE_DIR}/rwmix.c")
-
-if(TARGET ocr_xsocr_static)
-    add_executable(rwmix_xsocr ${RWMIX_SRC})
-    target_include_directories(rwmix_xsocr PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR})
-    target_compile_definitions(rwmix_xsocr PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwmix_xsocr PRIVATE ocr_xsocr_static pthread)
-    target_link_options(rwmix_xsocr PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwmix_xsocr PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwmix_xsocr PRIVATE ${BENCH_C_OPT})
-endif()
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(rwmix_arts_${sfx} ${RWMIX_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(rwmix_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(rwmix_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwmix_arts_${sfx} PRIVATE arts_static_${sfx} pthread)
-    target_link_options(rwmix_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwmix_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwmix_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
-
-if(TARGET ocr_vdm_mpi)
-    add_executable(rwmix_ocrvx ${RWMIX_SRC})
-    target_include_directories(rwmix_ocrvx PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${OCRVX_OCR_INC})
-    target_compile_definitions(rwmix_ocrvx PRIVATE
-        ${OCR_EXT_DEFINES} "OCR_TYPE_H=vdm.h" OCR_ENABLE_EDT_NAMING)
-    target_link_libraries(rwmix_ocrvx PRIVATE ocr_vdm_mpi)
-    target_link_options(rwmix_ocrvx PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwmix_ocrvx PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwmix_ocrvx PRIVATE ${BENCH_C_OPT}
-        "-include" "${OCRVX_COMPAT_H}")
-endif()
+add_bespoke_app(NAME rwmix SOURCES rwmix.c)
 
 # ==========================================================================
 # rwrounds  (bespoke: source lives in this repo, not in ocr-apps)
@@ -1405,46 +1470,7 @@ endif()
 # data block, W of them RW, roles uniformly interleaved in creation order.
 # Prints ELAPSED_US from trigger to global completion.
 # ==========================================================================
-set(RWROUNDS_SRC "${CMAKE_CURRENT_SOURCE_DIR}/rwrounds.c")
-
-if(TARGET ocr_xsocr_static)
-    add_executable(rwrounds_xsocr ${RWROUNDS_SRC})
-    target_include_directories(rwrounds_xsocr PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR})
-    target_compile_definitions(rwrounds_xsocr PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwrounds_xsocr PRIVATE ocr_xsocr_static pthread)
-    target_link_options(rwrounds_xsocr PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwrounds_xsocr PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwrounds_xsocr PRIVATE ${BENCH_C_OPT})
-endif()
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(rwrounds_arts_${sfx} ${RWROUNDS_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(rwrounds_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(rwrounds_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwrounds_arts_${sfx} PRIVATE arts_static_${sfx} pthread)
-    target_link_options(rwrounds_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwrounds_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwrounds_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
-
-if(TARGET ocr_vdm_mpi)
-    add_executable(rwrounds_ocrvx ${RWROUNDS_SRC})
-    target_include_directories(rwrounds_ocrvx PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${OCRVX_OCR_INC})
-    target_compile_definitions(rwrounds_ocrvx PRIVATE
-        ${OCR_EXT_DEFINES} "OCR_TYPE_H=vdm.h" OCR_ENABLE_EDT_NAMING)
-    target_link_libraries(rwrounds_ocrvx PRIVATE ocr_vdm_mpi)
-    target_link_options(rwrounds_ocrvx PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwrounds_ocrvx PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwrounds_ocrvx PRIVATE ${BENCH_C_OPT}
-        "-include" "${OCRVX_COMPAT_H}")
-endif()
+add_bespoke_app(NAME rwrounds SOURCES rwrounds.c)
 
 
 # ==========================================================================
@@ -1454,46 +1480,7 @@ endif()
 # explicit per-op release; per-class acquire/release/total latency
 # histograms and an exact-count + monotone-read oracle ride along.
 # ==========================================================================
-set(RWSTEADY_SRC "${CMAKE_CURRENT_SOURCE_DIR}/rwsteady.c")
-
-if(TARGET ocr_xsocr_static)
-    add_executable(rwsteady_xsocr ${RWSTEADY_SRC})
-    target_include_directories(rwsteady_xsocr PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR})
-    target_compile_definitions(rwsteady_xsocr PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwsteady_xsocr PRIVATE ocr_xsocr_static pthread m)
-    target_link_options(rwsteady_xsocr PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwsteady_xsocr PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwsteady_xsocr PRIVATE ${BENCH_C_OPT})
-endif()
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(rwsteady_arts_${sfx} ${RWSTEADY_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(rwsteady_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(rwsteady_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwsteady_arts_${sfx} PRIVATE arts_static_${sfx} pthread m)
-    target_link_options(rwsteady_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwsteady_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwsteady_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
-
-if(TARGET ocr_vdm_mpi)
-    add_executable(rwsteady_ocrvx ${RWSTEADY_SRC})
-    target_include_directories(rwsteady_ocrvx PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${OCRVX_OCR_INC})
-    target_compile_definitions(rwsteady_ocrvx PRIVATE
-        ${OCR_EXT_DEFINES} "OCR_TYPE_H=vdm.h" OCR_ENABLE_EDT_NAMING)
-    target_link_libraries(rwsteady_ocrvx PRIVATE ocr_vdm_mpi m)
-    target_link_options(rwsteady_ocrvx PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwsteady_ocrvx PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwsteady_ocrvx PRIVATE ${BENCH_C_OPT}
-        "-include" "${OCRVX_COMPAT_H}")
-endif()
+add_bespoke_app(NAME rwsteady SOURCES rwsteady.c EXTRA_LINK_LIBS m)
 
 # ==========================================================================
 # rwpriv  (bespoke: source lives in this repo, not in ocr-apps)
@@ -1503,20 +1490,7 @@ endif()
 # or remembering local state across a release edge.  ARTS variants only:
 # the probe exists to separate the plane's arms.
 # ==========================================================================
-set(RWPRIV_SRC "${CMAKE_CURRENT_SOURCE_DIR}/rwpriv.c")
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(rwpriv_arts_${sfx} ${RWPRIV_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(rwpriv_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(rwpriv_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwpriv_arts_${sfx} PRIVATE arts_static_${sfx} pthread m)
-    target_link_options(rwpriv_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwpriv_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwpriv_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
+add_bespoke_app(NAME rwpriv SOURCES rwpriv.c EXTRA_LINK_LIBS m ARTS_ONLY)
 
 # ==========================================================================
 # rwhandoff  (bespoke: source lives in this repo, not in ocr-apps)
@@ -1526,20 +1500,7 @@ endforeach()
 # offering a block-granular protocol zero batching fodder.  ARTS variants
 # only, as above.
 # ==========================================================================
-set(RWHANDOFF_SRC "${CMAKE_CURRENT_SOURCE_DIR}/rwhandoff.c")
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(rwhandoff_arts_${sfx} ${RWHANDOFF_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(rwhandoff_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(rwhandoff_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(rwhandoff_arts_${sfx} PRIVATE arts_static_${sfx} pthread m)
-    target_link_options(rwhandoff_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(rwhandoff_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(rwhandoff_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
+add_bespoke_app(NAME rwhandoff SOURCES rwhandoff.c EXTRA_LINK_LIBS m ARTS_ONLY)
 
 # ==========================================================================
 # mapreduce_wordcount  (bespoke: source lives in this repo, not in ocr-apps)
@@ -1549,43 +1510,39 @@ endforeach()
 # whose lower levels stay node-local.  Portable OCR API only, so all
 # three runtimes build it.
 # ==========================================================================
-set(WORDCOUNT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/mapreduce_wordcount.c")
+add_bespoke_app(NAME mapreduce_wordcount SOURCES mapreduce_wordcount.c EXTRA_LINK_LIBS m)
 
-if(TARGET ocr_xsocr_static)
-    add_executable(mapreduce_wordcount_xsocr ${WORDCOUNT_SRC})
-    target_include_directories(mapreduce_wordcount_xsocr PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR})
-    target_compile_definitions(mapreduce_wordcount_xsocr PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(mapreduce_wordcount_xsocr PRIVATE ocr_xsocr_static pthread m)
-    target_link_options(mapreduce_wordcount_xsocr PRIVATE -no-pie -fno-pie)
-    set_target_properties(mapreduce_wordcount_xsocr PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(mapreduce_wordcount_xsocr PRIVATE ${BENCH_C_OPT})
+# HPX-origin mirrors (sources under hpx_origin/)
+add_bespoke_app(NAME fib_hpx DIR hpx_origin SOURCES fib_hpx.c)
+add_bespoke_app(NAME pi_hpx DIR hpx_origin SOURCES pi_hpx.c)
+add_bespoke_app(NAME random_mem_access_hpx DIR hpx_origin SOURCES random_mem_access_hpx.c)
+add_bespoke_app(NAME stencil1d_hpx DIR hpx_origin SOURCES stencil1d_hpx.c)
+add_bespoke_app(NAME transpose_hpx DIR hpx_origin SOURCES transpose_hpx.c)
+add_bespoke_app(NAME jacobi_hpx DIR hpx_origin SOURCES jacobi_hpx.c)
+add_bespoke_app(NAME network_storage_hpx DIR hpx_origin SOURCES network_storage_hpx.c)
+add_bespoke_app(NAME mini_ghost_hpx DIR hpx_origin SOURCES mini_ghost_hpx.c)
+# The tree's opening test and the force kernel call into the math library,
+# which one of the reference runtimes' link lines does not carry of its own.
+add_bespoke_app(NAME nbody_hpx DIR hpx_origin SOURCES nbody_hpx.c
+    EXTRA_LINK_LIBS m)
+# Retained library pointers use acquired object identities across tasks.
+if(TARGET arts::fftw3)
+    add_subdirectory(hpx_origin/fftw_reloc)
+    add_bespoke_app(NAME fft_hpx DIR hpx_origin SOURCES fft_hpx.c
+        EXTRA_LINK_LIBS arts::fftw_reloc m)
+else()
+    message(STATUS "Skipping fft_hpx: the vendored FFTW is not configured")
 endif()
-
-foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-    add_executable(mapreduce_wordcount_arts_${sfx} ${WORDCOUNT_SRC}
-                   $<TARGET_OBJECTS:ocr_arts_objects>)
-    target_include_directories(mapreduce_wordcount_arts_${sfx} PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${BENCH_OCR_OPTIONS_DIR} ${OCR_INC_DIR})
-    target_compile_definitions(mapreduce_wordcount_arts_${sfx} PRIVATE ${OCR_EXT_DEFINES} ${BENCH_OCR_TYPE_DEFINE})
-    target_link_libraries(mapreduce_wordcount_arts_${sfx} PRIVATE arts_static_${sfx} pthread m)
-    target_link_options(mapreduce_wordcount_arts_${sfx} PRIVATE -no-pie -fno-pie)
-    set_target_properties(mapreduce_wordcount_arts_${sfx} PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(mapreduce_wordcount_arts_${sfx} PRIVATE ${BENCH_C_OPT})
-endforeach()
-
-if(TARGET ocr_vdm_mpi)
-    add_executable(mapreduce_wordcount_ocrvx ${WORDCOUNT_SRC})
-    target_include_directories(mapreduce_wordcount_ocrvx PRIVATE
-        ${OCR_LIBS_ROOT}/macros/macros ${OCRVX_OCR_INC})
-    target_compile_definitions(mapreduce_wordcount_ocrvx PRIVATE
-        ${OCR_EXT_DEFINES} "OCR_TYPE_H=vdm.h" OCR_ENABLE_EDT_NAMING)
-    target_link_libraries(mapreduce_wordcount_ocrvx PRIVATE ocr_vdm_mpi m)
-    target_link_options(mapreduce_wordcount_ocrvx PRIVATE -no-pie -fno-pie)
-    set_target_properties(mapreduce_wordcount_ocrvx PROPERTIES C_STANDARD 11 C_EXTENSIONS ON
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-    target_compile_options(mapreduce_wordcount_ocrvx PRIVATE ${BENCH_C_OPT}
-        "-include" "${OCRVX_COMPAT_H}")
+# The table this program interpolates is read through the same vendored HDF5
+# the HPX program reads it with -- the C API here, the C++ one there, one
+# library either way -- and the interpolation itself calls into libm.
+# The vendored library is built only by a tree that configured it, so the row
+# is conditioned on the target existing rather than on the options that
+# happen to create it: a tree without it still generates, and every other
+# row still builds every one of its variants.
+if(TARGET arts::hdf5)
+    add_bespoke_app(NAME sheneos_hpx DIR hpx_origin SOURCES sheneos_hpx.c
+        EXTRA_LINK_LIBS arts::hdf5 m)
+else()
+    message(STATUS "Skipping sheneos_hpx: the vendored HDF5 is not configured")
 endif()

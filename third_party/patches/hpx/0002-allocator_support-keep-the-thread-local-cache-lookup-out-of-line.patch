@@ -1,0 +1,24 @@
+From: Woohyeon Baek
+Subject: [PATCH] allocator_support: keep the thread-local cache lookup out of line
+
+A function that suspends and resumes on another worker must not reach the
+thread-local cache through a thread-local base computed before the
+suspension; an out-of-line accessor recomputes it on each call.
+---
+--- a/libs/core/allocator_support/include/hpx/allocator_support/thread_local_caching_allocator.hpp
++++ b/libs/core/allocator_support/include/hpx/allocator_support/thread_local_caching_allocator.hpp
+@@ -119,7 +119,13 @@
+             std::size_t deallocated = 0;
+         };
+ 
+-        allocated_cache& cache()
++        // An HPX thread can suspend inside a caller and resume on a different
++        // worker. Kept out of line, the thread-local object is looked up on
++        // every call against the worker that is running now; inlined, a
++        // compiler may reuse a thread-local base it computed before the
++        // suspension, and the cache (and the destructor registered for it)
++        // would belong to the previous worker.
++        HPX_NOINLINE allocated_cache& cache()
+         {
+             thread_local allocated_cache allocated_data(alloc);
+             return allocated_data;

@@ -1,0 +1,63 @@
+--- origin/examples/transpose/transpose_block.cpp
++++ ours/transpose_block.cpp
+@@ -13,9 +13,13 @@
+ #include <hpx/modules/iterator_support.hpp>
+ #include <hpx/numeric.hpp>
+ 
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
+ #include <algorithm>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdio>
+ #include <iostream>
+ #include <memory>
+ #include <string>
+@@ -182,6 +186,11 @@
+ // HPX_REGISTER_COMPONENT() exposes the component creation
+ // through hpx::new_<>().
+ typedef hpx::components::component<block_component> block_component_type;
++// A program that carries its own components defines the module whose
++// factory and registry plugin lists every component registration below
++// refers to; only a program that borrows the runtime's default module name
++// can leave this out.
++HPX_REGISTER_COMPONENT_MODULE()
+ HPX_REGISTER_COMPONENT(block_component_type, block_component)
+ 
+ // HPX_REGISTER_ACTION() exposes the component member function for remote
+@@ -223,7 +232,9 @@
+         std::uint64_t col_block_size = order * block_order;
+ 
+         std::uint64_t id = hpx::get_locality_id();
++        arts_hpx::print_geometry();
+ 
++        arts_hpx::run_clock clock;
+         std::vector<block> A(num_blocks);
+         std::vector<block> B(num_blocks);
+ 
+@@ -377,6 +388,15 @@
+                 hpx::terminate();
+             }
+         }
++        arts_hpx::print_e2e(clock);
++        if (arts_hpx::struct_marker())
++            arts_hpx::print_parcels();
++        if (root)
++        {
++            char line[64];
++            std::snprintf(line, sizeof line, "ERRSQ %.6e\n", errsq);
++            arts_hpx::write_stdout_line(line);
++        }
+         {
+             // unregister names...
+             auto range = hpx::util::counting_shape(blocks_start, blocks_end);
+@@ -414,7 +434,7 @@
+ 
+     // Initialize and run HPX, this example requires to run hpx_main on all
+     // localities
+-    std::vector<std::string> const cfg = {"hpx.run_hpx_main!=1"};
++    std::vector<std::string> const cfg = arts_hpx::runtime_defaults();
+ 
+     hpx::init_params init_args;
+     init_args.desc_cmdline = desc_commandline;

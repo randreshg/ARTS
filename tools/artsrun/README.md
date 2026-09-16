@@ -73,24 +73,28 @@ artsrun run -p ferrari -b paper-main -c perf
 Besides the eleven-entry coherence plane, `hpx` is an off-plane entry: the
 STE||AR HPX runtime (MPI parcelport, static-linked like the other
 references), a cross-programming-model reference tied to no coherence
-position. It multiplies by nothing and runs only the applications whose
-catalog row carries `hpx: [<tiers>]` — an algorithmically matched port under
-`benchmarks/hpx/`, one target per mirrored tier (`<binary>_hpx` for base,
-`<binary>_hinted_hpx` for hinted) — in exactly those version rows, where its
-scalar joins the ordinary consensus vote. Every other row of that
-application reports the HPX cell as structurally ineligible.
+position. It multiplies by nothing, and its scalar joins the ordinary
+consensus vote only in the version rows the HPX-origin section defines;
+every other catalog row reports the HPX cell as structurally ineligible.
 
-Six catalog rows carry a port: `nqueens`, `smithwaterman`, `triangle` and
-`tempest` in both tiers, and `p2p` and `Stencil2D_intel_channelEVTs` — the
-self-placing SPMD programs, whose single tier mirrors as base — in base
-only; ten binaries. The `hpx-gate` roster runs all six at small arguments
-and is the gate; `paper-main` is the measurement. Under `ARTS_STRUCT_MARKER`
-each port prints `[PARCELS] sent=… bytes=… wire=…` beside its `[STRUCT]`
-line, and its own structural counters count only then, so a timing cell
-never executes them; the ARTS arms beside it are built with the
+The rows it runs are the HPX-origin section (`hpx_apps.yaml`, names ending
+in `_hpx`): each is an HPX program, `<row>_hpx`, and the row's
+ARTS/xsocr/ocr-vx binaries are its OCR mirror; `benchmarks/hpx/apps.cmake`
+is the build list. The `hpx-gate` roster runs every row of the HPX-origin
+section at small arguments and is the gate; `paper-main` is the
+measurement. Under `ARTS_STRUCT_MARKER`
+each HPX-origin program prints `[PARCELS] sent=… bytes=… wire=…` from
+locality 0 immediately after its end stamp, so a timing cell never executes
+it; there is no `[STRUCT]` line in this section — that carried the retired
+ports' own structural counters and none of these programs has any. The ARTS
+arms beside it are built with the
 `configs/counters_off.cfg` default, which a `-c`-less campaign checks and
-refuses to run against an instrumented tree. Under `launcher=local` an HPX
-cell's environment also carries `UCX_TLS=^sysv`.
+refuses to run against an instrumented tree. Under `launcher=local` every
+reference cell — HPX, xsocr and OCR-vx — carries `UCX_TLS=tcp,self` and
+`UCX_NET_DEVICES=lo`: a local run simulates a multi-node job, so every
+runtime's ranks reach each other through the network stack's loopback, as
+ARTS's socket provider already does, and never through shared memory.
+Remote launchers keep the site's MPI defaults.
 
 On the screens: `1`–`4` switch surfaces, `5` is the run tab, `space`
 toggles, `a` is the shared all/none control for whichever surface is
@@ -166,6 +170,42 @@ carrying no workload at all. Only the first group is enabled by default.
 Arguments are edited inline. An empty box means the catalog's own calibration,
 shown as the placeholder; type into it and the benchmark set records an
 override.
+
+## The cluster selection
+
+`val_*_nocomb` is not part of it. The non-combining twins are an ablation of
+one family's read path rather than a position on the plane, and the question
+they answer — what the requester-side combining window buys — is a sweep
+question, so they stay on the development host (`-p ferrari`) where both
+settings of one knob fit in a campaign. A cluster campaign runs the eight
+plane arms and the references.
+
+The adversarial plan is the `attacks` roster under the `dane` profile. Every
+attack row carries its own edition per node count (`args_by_nodes` at 1, 2, 4,
+8, 16 and 32), so the columns and the grain dial run the whole node sweep in
+the same campaign as `paper-main`, at the profile's own geometry. The `s20` /
+`s21` / `s13b` sweep files remain ferrari instruments: each addresses the arms
+directly at one fixed geometry, which is what a probe sweep needs and what a
+strong-scaling campaign must not be.
+
+Those editions hold the per-rank load fixed rather than the job, so an attack
+row is **not** a scaling curve: its comparison is across runtimes within one
+node count. The scaling table marks such a row `~` on its name and says so in
+its legend, computed from the arguments themselves — any row whose arguments
+differ across the node counts shown is marked, whatever its kind.
+
+A catalog row may also declare `width_max` — the instantaneous task width its
+calibrated arguments reach at the profile's widest geometry. It is checked
+before a campaign builds anything: below the machine's total worker count
+(`nodes x workers`) the widest cell would run narrower than the machine, and
+an `spmd` or `mw` row, whose width is a fixed team, must reach a whole
+multiple of it. The declaration describes **the catalog's own arguments**: it
+is a hand-written number, not one derived from them, so a roster that
+overrides `args` or `args_by_nodes` has invalidated it — the campaign prints
+that the row's width is unchecked instead of judging a shrunken cell against a
+full-machine number. The attack rows declare no width on purpose: their chain
+count is a designed per-rank load -- 3 or ~15 chains a rank depending on the
+column, held fixed across the sweep -- not a machine-filling frontier.
 
 ## Where things live
 

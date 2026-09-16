@@ -1,0 +1,582 @@
+--- origin/DistributedNBody/NBody Code/main.cpp
++++ ours/main.cpp
+@@ -1,14 +1,22 @@
+ #include <hpx/hpx_init.hpp>
+ #include <hpx/hpx.hpp>
+-#include <hpx/lcos/gather.hpp>
+-#include <hpx/runtime/serialization/vector.hpp>
+-#include <hpx/runtime/serialization/serialize.hpp>
++#include <hpx/modules/collectives.hpp>
++#include <hpx/serialization/vector.hpp>
++#include <hpx/modules/serialization.hpp>
+ #include <hpx/include/async.hpp>
+ 
+-#include <hpx/include/parallel_algorithm.hpp>
+-#include <boost/iterator/counting_iterator.hpp>
+-
+-#include <boost/shared_array.hpp>
++#include <hpx/algorithm.hpp>
++#include <hpx/iterator_support/counting_iterator.hpp>
++#include <hpx/lcos_local/receive_buffer.hpp>
++#include <hpx/modules/format.hpp>
++
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <mutex>
+ #include <stack>
+ ///////////////////////////////////////////////////////////////////////////////
+ int n=1000000;
+@@ -59,7 +67,7 @@
+ struct partition_allocator
+ {
+ private:
+-    typedef hpx::lcos::local::spinlock mutex_type;
++    typedef hpx::spinlock mutex_type;
+ 
+ public:
+     partition_allocator(std::size_t max_size = std::size_t(-1))
+@@ -69,7 +77,7 @@
+ 
+     ~partition_allocator()
+     {
+-        mutex_type::scoped_lock l(mtx_);
++        std::lock_guard<mutex_type> l(mtx_);
+         while (!heap_.empty())
+         {
+             T* p = heap_.top();
+@@ -80,7 +88,7 @@
+ 
+     T* allocate(std::size_t n)
+     {
+-        mutex_type::scoped_lock l(mtx_);
++        std::lock_guard<mutex_type> l(mtx_);
+         if (heap_.empty())
+             return new T[n];
+ 
+@@ -91,7 +99,7 @@
+ 
+     void deallocate(T* p)
+     {
+-        mutex_type::scoped_lock l(mtx_);
++        std::lock_guard<mutex_type> l(mtx_);
+         if (max_size_ == static_cast<std::size_t>(-1) || heap_.size() < max_size_)
+             heap_.push(p);
+         else
+@@ -116,7 +124,7 @@
+                 : data_(data)
+         {}
+ 
+-        void operator()(Body*) {}     // no deletion necessary
++        void operator()(Body*) const {}     // no deletion necessary
+ 
+         buffer_type data_;
+     };
+@@ -244,12 +252,12 @@
+                 return size-1-i;}
+         
+         if(size==64){
+-            if(i==-2 && i<4)
++            if(dir==-2 && i<4)
+                 return size-(i+1);
+-            if(i==+2 && i<size && i>size-5)
++            if(dir==+2 && i<size && i>size-5)
+                 return size-1-i;}
+         
+-        int temp;
++        int temp = i;
+         if(size==8 || size==16 || size==32) temp=i+dir;
+         if(size==64) temp=i+(2*dir);
+         if(size<8) temp=i;
+@@ -289,7 +297,7 @@
+                 return size-1-i;}
+            
+ 
+-        int temp;
++        int temp = i;
+         if(size==4) temp=i+int(dir*0.5);
+         if(size==8) temp=i+dir;
+         if(size==16 || size==32) temp=i+(dir*2);
+@@ -299,12 +307,14 @@
+         HPX_ASSERT(temp < size);  
+         return temp;
+      }
++
++    return i;
+         
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ struct partition_server
+-        : hpx::components::simple_component_base<partition_server>
++        : hpx::components::component_base<partition_server>
+ {
+     enum partition_type
+     {
+@@ -341,7 +351,9 @@
+     partition_data data_;
+ };
+ 
+-typedef hpx::components::simple_component<partition_server> partition_server_type;
++HPX_REGISTER_COMPONENT_MODULE()
++
++typedef hpx::components::component<partition_server> partition_server_type;
+ HPX_REGISTER_COMPONENT(partition_server_type, partition_server);
+ 
+ typedef partition_server::get_data_action get_data_action;
+@@ -373,25 +385,25 @@
+      hpx::future<partition_data> get_data(partition_server::partition_type t) const
+     {
+         partition_server::get_data_action act;
+-        return hpx::async(act, get_gid(), t);
++        return hpx::async(act, get_id(), t);
+     }
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+-struct stepper_server : hpx::components::simple_component_base<stepper_server>
++struct stepper_server : hpx::components::component_base<stepper_server>
+ {
+     typedef std::vector<partition> space;
+ 
+     stepper_server() {}
+ 
+     stepper_server(std::size_t nl)
+-            : Left_(hpx::find_id_from_basename(stepper_basename, idx(hpx::get_locality_id(), -1, nl))),
+-              Right_(hpx::find_id_from_basename(stepper_basename, idx(hpx::get_locality_id(), +1, nl))),
+-              Back_(hpx::find_id_from_basename(stepper_basename, idx(hpx::get_locality_id(),-2, nl))),
+-              Front_(hpx::find_id_from_basename(stepper_basename, idx(hpx::get_locality_id(),+2, nl))),
+-              Up_(hpx::find_id_from_basename(stepper_basename, idx(hpx::get_locality_id(),-4, nl))),
+-              Down_(hpx::find_id_from_basename(stepper_basename, idx(hpx::get_locality_id(),+4, nl))),
++            : Left_(hpx::find_from_basename(stepper_basename, idx(hpx::get_locality_id(), -1, nl))),
++              Right_(hpx::find_from_basename(stepper_basename, idx(hpx::get_locality_id(), +1, nl))),
++              Back_(hpx::find_from_basename(stepper_basename, idx(hpx::get_locality_id(),-2, nl))),
++              Front_(hpx::find_from_basename(stepper_basename, idx(hpx::get_locality_id(),+2, nl))),
++              Up_(hpx::find_from_basename(stepper_basename, idx(hpx::get_locality_id(),-4, nl))),
++              Down_(hpx::find_from_basename(stepper_basename, idx(hpx::get_locality_id(),+4, nl))),
+               Parent_(6),
+               U_(6),
+               To_B_(1),
+@@ -452,12 +464,12 @@
+     partition receive_B(std::size_t time) { return send_B_buffer_.receive(time);}
+     partition receive_F(std::size_t time) { return send_F_buffer_.receive(time);} 
+ 
+-    void send_L(std::size_t time, partition p){ hpx::apply(from_R_action(), Left_.get(), time, p);}
+-    void send_R(std::size_t time, partition p){ hpx::apply(from_L_action(), Right_.get(), time, p);}
+-    void send_U(std::size_t time, partition p) { hpx::apply(from_U_action(), Up_.get(), time, p);}
+-    void send_D(std::size_t time, partition p) { hpx::apply(from_D_action(), Down_.get(), time, p);}
+-    void send_B(std::size_t time, partition p) { hpx::apply(from_B_action(), Back_.get(), time, p);}
+-    void send_F(std::size_t time, partition p) { hpx::apply(from_F_action(), Front_.get(), time, p);}
++    void send_L(std::size_t time, partition p){ hpx::post(from_R_action(), Left_.get(), time, p);}
++    void send_R(std::size_t time, partition p){ hpx::post(from_L_action(), Right_.get(), time, p);}
++    void send_U(std::size_t time, partition p) { hpx::post(from_U_action(), Up_.get(), time, p);}
++    void send_D(std::size_t time, partition p) { hpx::post(from_D_action(), Down_.get(), time, p);}
++    void send_B(std::size_t time, partition p) { hpx::post(from_B_action(), Back_.get(), time, p);}
++    void send_F(std::size_t time, partition p) { hpx::post(from_F_action(), Front_.get(), time, p);}
+ 
+ private:
+     hpx::shared_future<hpx::id_type> Left_, Right_, Back_, Front_, Up_, Down_; 
+@@ -470,7 +482,7 @@
+     hpx::lcos::local::receive_buffer<partition> send_D_buffer_;
+ };
+ 
+-typedef hpx::components::simple_component<stepper_server> stepper_server_type;
++typedef hpx::components::component<stepper_server> stepper_server_type;
+ HPX_REGISTER_COMPONENT(stepper_server_type, stepper_server);
+ 
+ typedef stepper_server::do_work_action do_work_action;
+@@ -483,9 +495,9 @@
+     typedef hpx::components::client_base<stepper, stepper_server> base_type;
+ 
+     stepper()
+-            : base_type(hpx::new_<stepper_server>(hpx::find_here(), hpx::get_num_localities_sync()))
++            : base_type(hpx::new_<stepper_server>(hpx::find_here(), hpx::get_num_localities(hpx::launch::sync)))
+     {
+-        hpx::register_id_with_basename(stepper_basename, get_gid(), hpx::get_locality_id());
++        hpx::register_with_basename(stepper_basename, get_id(), hpx::get_locality_id());
+     }
+ 
+     stepper(hpx::future<hpx::id_type> && id)
+@@ -493,7 +505,7 @@
+     {}
+ 
+     hpx::future<stepper_server::space> do_work(std::size_t np, std::size_t nl) {
+-        return hpx::async(do_work_action(), get_gid(), np, nl);
++        return hpx::async(do_work_action(), get_id(), np, nl);
+     }
+ };
+ //////////////////////////////////////////////////////////////////////////////
+@@ -683,12 +695,9 @@
+ 
+ void cell_list(int N)
+ {   
+-    using hpx::parallel::for_each;
+-    using hpx::parallel::par;
+-    typedef boost::counting_iterator<int> iterator;
++    typedef hpx::util::counting_iterator<int> iterator;
+ 
+-    using namespace hpx::parallel;
+-    for_each(par, iterator(0), iterator(N-1), [&](int i) {
++    hpx::for_each(hpx::execution::seq, iterator(0), iterator(N-1), [&](int i) {
+             if(cell[i].child.size()>0)
+                 traverse_tree(b[i].parent, i, 0);
+             
+@@ -809,12 +818,12 @@
+                                            partition const &Left, partition const &Right,
+                                            partition const &Up, partition const &Down)
+ {
+-    using hpx::lcos::local::dataflow;
+-    using hpx::util::unwrapped;
++    using hpx::dataflow;
++    using hpx::unwrapping;
+ 
+     hpx::shared_future<partition_data> current_bodies = ce0.get_data(partition_server::cell0);
+     hpx::future<partition_data> next_bodies = current_bodies.then(
+-            unwrapped(
++            unwrapping(
+                     [ce0](partition_data const&m) -> partition_data
+                     {
+                         std::size_t size = m.size();
+@@ -837,7 +846,7 @@
+ 
+     return dataflow(
+             hpx::launch::async,
+-            unwrapped(
++            unwrapping(
+                     [ce0,Back,Front,Left,Right,Up,Down](partition_data next, partition_data const& m,
+                                                         partition_data const& B, partition_data const& F,
+                                                         partition_data const& L, partition_data const& R,
+@@ -882,7 +891,7 @@
+                             if(next[i].ID1>0)
+                                 new_tree(next[i].ID1,next[i].parent);
+ 
+-                        return partition(ce0.get_gid(), next);
++                        return partition(ce0.get_id(), next);
+                     }
+             ),
+             std::move(next_bodies),
+@@ -898,13 +907,13 @@
+ /////////////////////////////////////////////////////////////////////////////////
+ partition stepper_server::changed_members( partition const& ce0, partition const& From_N, int cell_ID, int dim, int dir)
+ {
+-    using hpx::lcos::local::dataflow;
+-    using hpx::util::unwrapped;
++    using hpx::dataflow;
++    using hpx::unwrapping;
+ 
+     hpx::shared_future<partition_data> current_bodies = ce0.get_data(partition_server::cell0);
+ 
+     hpx::future<partition_data> next_changes= current_bodies.then(
+-            unwrapped(
++            unwrapping(
+                     [ce0, cell_ID, dim, dir](partition_data const& m) -> partition_data
+                     {
+                         std::size_t size = m.size();
+@@ -931,7 +940,7 @@
+ 
+     return dataflow(
+             hpx::launch::async,
+-            unwrapped(
++            unwrapping(
+                     [ce0, cell_ID, dim, dir](partition_data next, partition_data const& m, partition_data const& l) -> partition
+                     {
+                         std::size_t size = m.size();
+@@ -947,7 +956,7 @@
+                                     if (m[i].r1[dim] > cell[cell_ID].boundary[2 * dim + 1]){
+                                         next[size-k_th+k]=m[i]; k=k+1;}}
+                             }
+-                       return partition(ce0.get_gid(), next);
++                       return partition(ce0.get_id(), next);
+                     }
+             ),
+             std::move(next_changes),
+@@ -961,13 +970,13 @@
+ 
+ partition stepper_server::Non_Members(partition const& To_N_total, partition const & To_N)
+ {
+-    using hpx::lcos::local::dataflow;
+-    using hpx::util::unwrapped;
++    using hpx::dataflow;
++    using hpx::unwrapping;
+ 
+     hpx::shared_future<partition_data> current_bodies = To_N_total.get_data(partition_server::cell0);
+ 
+     hpx::future<partition_data> next_changes= current_bodies.then(
+-            unwrapped(
++            unwrapping(
+                     [To_N_total](partition_data const& m) -> partition_data
+                     {
+                         std::size_t size = m.size();
+@@ -981,7 +990,7 @@
+ 
+     return dataflow(
+             hpx::launch::async,
+-            unwrapped(
++            unwrapping(
+                     [To_N_total, To_N](partition_data next,partition_data const& m,partition_data const& l) -> partition
+                     {
+                         std::size_t size=m.size();
+@@ -998,7 +1007,7 @@
+                                         next[j] = l[j-i];
+                             }
+                         }
+-                       return partition(To_N_total.get_gid(), next);
++                       return partition(To_N_total.get_id(), next);
+                     }
+             ),
+             std::move(next_changes),
+@@ -1011,13 +1020,13 @@
+ 
+ partition stepper_server::New_Members(partition const& ce0, partition const& From_N, int ID)
+ {
+-    using hpx::lcos::local::dataflow;
+-    using hpx::util::unwrapped;
++    using hpx::dataflow;
++    using hpx::unwrapping;
+ 
+     hpx::shared_future<partition_data> current_bodies = From_N.get_data(partition_server::cell0);
+ 
+     hpx::future<partition_data> next_changes= current_bodies.then(
+-            unwrapped(
++            unwrapping(
+                     [From_N, ID](partition_data const& m) -> partition_data
+                     {
+                         std::size_t size = m.size();
+@@ -1032,7 +1041,7 @@
+ 
+     return dataflow(
+             hpx::launch::async,
+-            unwrapped(
++            unwrapping(
+                     [ce0, From_N, ID](partition_data next,partition_data const& l) -> partition
+                     {
+                         std::size_t size2 = l.size();
+@@ -1043,7 +1052,7 @@
+                                     next[i] = l[i]; k=k+1; }
+                             }
+                         }
+-                        return partition(ce0.get_gid(), next);
++                        return partition(ce0.get_id(), next);
+                     }
+             ),
+             std::move(next_changes),
+@@ -1054,12 +1063,12 @@
+ //////////////////////////////////////////////////////////////////////////////
+ 
+ partition stepper_server::copy_mem(partition const & ce0){
+-    using hpx::lcos::local::dataflow; 
+-    using hpx::util::unwrapped;
++    using hpx::dataflow; 
++    using hpx::unwrapping;
+ 
+     hpx::shared_future<partition_data> current_bodies = ce0.get_data(partition_server::cell0);
+     hpx::future<partition_data> next_changes= current_bodies.then( 
+-        unwrapped(
++        unwrapping(
+             [ce0](partition_data const& m) -> partition_data
+             {
+                 std::size_t size = m.size();
+@@ -1072,9 +1081,9 @@
+    );
+ 
+ 
+-   return dataflow(hpx::launch::async,unwrapped([ce0](partition_data next)->partition
++   return dataflow(hpx::launch::async,unwrapping([ce0](partition_data next)->partition
+     {
+-        return partition(ce0.get_gid(), next);
++        return partition(ce0.get_id(), next);
+     }
+     ),std::move(next_changes));
+ 
+@@ -1084,8 +1093,8 @@
+ 
+ stepper_server::space stepper_server::do_work(std::size_t np, std::size_t nl)
+ {
+-    using hpx::lcos::local::dataflow;
+-    using hpx::util::unwrapped;
++    using hpx::dataflow;
++    using hpx::unwrapping;
+ 
+     std::size_t local_np=np/nl;
+     std::vector<hpx::id_type> localities = hpx::find_all_localities();
+@@ -1176,32 +1185,92 @@
+ HPX_REGISTER_GATHER(stepper_server::space, stepper_server_space_gatherer);
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+-int hpx_main(boost::program_options::variables_map& vm)
++int hpx_main(hpx::program_options::variables_map& vm)
+ {
+-    using hpx::lcos::local::dataflow;
+-    
++    using hpx::dataflow;
++
++    n = vm["n"].as<int>();
++    nt = vm["nt"].as<int>();
++    SIZE = vm["size"].as<std::size_t>();
++    theta = vm["theta"].as<double>();
++    th = vm["th"].as<int>();
++    k_th = vm["k-th"].as<int>();
++
++    arts_hpx::run_clock clock;
++
+     create_Octree();    
+ 
+     std::vector<hpx::id_type> localities = hpx::find_all_localities();
+     std::size_t nl = localities.size();                    // Number of localities
+ 
+-    int np; 
++    arts_hpx::print_geometry();
+ 
+-    if(nl<9) np=8; //in level 1
++    int np = vm["np"].as<int>(); 
++
++    if(np == 0)
++    {
++        if(nl<9) np=8; //in level 1
++
++        else np=64; //in level 2
++    }
++
++    if((np != 8 && np != 64) || nl > static_cast<std::size_t>(np))
++    {
++        if (0 == hpx::get_locality_id())
++            std::cout << "usage: --np is 8 or 64 -- the cell map is defined for "
++                         "those two octree levels -- and is at least the number "
++                         "of localities\n" << std::flush;
++        return hpx::finalize();
++    }
++
++    if(SIZE < static_cast<std::size_t>(k_th))
++    {
++        if (0 == hpx::get_locality_id())
++            std::cout << "usage: --size is at least --k-th -- the migration "
++                         "slots a step splices in are the tail of a partition, "
++                         "and a partition shorter than that tail is indexed "
++                         "before its own start\n" << std::flush;
++        return hpx::finalize();
++    }
++
++    // The widest cell of the level the localities share out.  Every locality
++    // builds the same tree, so every one of them computes the same width and
++    // reaches the same verdict -- a per-locality test would let one refuse
++    // while the others went on to wait for it.
++    std::size_t widest = 0;
++    for (std::size_t l = 0; l != nl; ++l)
++    {
++        std::vector<int> const ids =
++            get_cell_foreach_lc(l, static_cast<std::size_t>(np), nl);
++        for (std::size_t j = 0; j != ids.size(); ++j)
++            if (cell[ids[j]].members.size() > widest)
++                widest = cell[ids[j]].members.size();
++    }
++
++    if(SIZE < widest)
++    {
++        if (0 == hpx::get_locality_id())
++            std::cout << "usage: --size is at least " << widest
++                      << " for these arguments -- a cell's partition is filled "
++                         "with that cell's members, and the widest cell of the "
++                         "level holds that many\n" << std::flush;
++        return hpx::finalize();
++    }
+ 
+-    else if(nl>15 && nl<=64) np=64; //in level 2
+     stepper step;
+   
+-    boost::uint64_t t=hpx::util::high_resolution_clock::now();
++    std::uint64_t t=hpx::chrono::high_resolution_clock::now();
++    arts_hpx::run_clock app_clock;
+ 
+     hpx::future<stepper_server::space> result = step.do_work(np, nl);
+   
+     if (0 == hpx::get_locality_id())
+     {
+-        boost::uint64_t const num_worker_threads = hpx::get_num_worker_threads();
++        std::uint64_t const num_worker_threads = hpx::get_num_worker_threads();
+ 
+         hpx::future<std::vector<stepper_server::space> > overall_result =
+-                hpx::lcos::gather_here(gather_basename, std::move(result), nl);
++                hpx::collectives::gather_here(gather_basename, result.get(),
++                    hpx::collectives::num_sites_arg(nl));
+ 
+         std::vector<stepper_server::space> solution = overall_result.get();
+         for (std::size_t j = 0; j != nl; ++j)
+@@ -1210,21 +1279,36 @@
+             for (std::size_t i = 0; i != s.size(); ++i)             
+                 s[i].get_data(partition_server::cell0).wait(); 
+         }            
+-            boost::uint64_t elapsed=hpx::util::high_resolution_clock::now()-t;
+-            std::cout<<(boost::format("%.14g")%(elapsed/ 1e9)) <<std::flush;
++            std::uint64_t elapsed=hpx::chrono::high_resolution_clock::now()-t;
++            std::cout<<hpx::util::format("{:.14g}", elapsed/ 1e9) <<"\n"<<std::flush;
+ 
++            double checksum = 0.0;
+             for (std::size_t i = 0; i != nl; ++i)
+             {
+                 stepper_server::space const& s = solution[i];
+                 for (std::size_t j = 0; j != s.size(); ++j)
+                 {
+-                     s[j].get_data(partition_server::cell0).get();
++                     partition_data d = s[j].get_data(partition_server::cell0).get();
++                     for (std::size_t e = 0; e != d.size(); ++e)
++                     {
++                         checksum += d[e].r1[0];
++                         checksum += d[e].r1[1];
++                         checksum += d[e].r1[2];
++                     }
+                }
+             }
++
++            arts_hpx::print_e2e(clock, app_clock);
++            if (arts_hpx::struct_marker())
++                arts_hpx::print_parcels();
++
++            char line[64];
++            std::snprintf(line, sizeof line, "CHECKSUM %.14g\n", checksum);
++            arts_hpx::write_stdout_line(line);
+     }
+     else
+     {
+-        hpx::lcos::gather_there(gather_basename, std::move(result)).wait();
++        hpx::collectives::gather_there(gather_basename, result.get()).wait();
+     }
+ 
+ 
+@@ -1234,8 +1318,30 @@
+ 
+ int main(int argc, char* argv[])
+ {
+-    std::vector<std::string> cfg;
+-    cfg.push_back("hpx.run_hpx_main!=1");
++    hpx::program_options::options_description
++       desc_commandline("Usage: " HPX_APPLICATION_STRING " [options]");
++
++    desc_commandline.add_options()
++        ("n", hpx::program_options::value<int>()->default_value(1000000),
++         "number of bodies")
++        ("nt", hpx::program_options::value<int>()->default_value(100),
++         "number of time steps")
++        ("size", hpx::program_options::value<std::size_t>()->default_value(150000),
++         "bodies a cell's partition holds")
++        ("theta", hpx::program_options::value<double>()->default_value(0.3),
++         "opening ratio of the tree traversal")
++        ("th", hpx::program_options::value<int>()->default_value(100),
++         "bodies a cell holds before it is subdivided")
++        ("k-th", hpx::program_options::value<int>()->default_value(500),
++         "migration slots at the end of a partition")
++        ("np", hpx::program_options::value<int>()->default_value(0),
++         "cells distributed over the localities; 0 takes the octree level from "
++         "the locality count (8 below 9 localities, 64 from 9)")
++        ;
++
++    hpx::init_params init_args;
++    init_args.desc_cmdline = desc_commandline;
++    init_args.cfg = arts_hpx::runtime_defaults();
+ 
+-    return hpx::init(argc, argv, cfg);
++    return hpx::init(argc, argv, init_args);
+ }

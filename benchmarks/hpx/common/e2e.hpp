@@ -17,10 +17,7 @@
 
 namespace arts_hpx {
 
-// The measured span opens BEFORE the start barrier, not after it: no task can
-// run until every locality has arrived, so that barrier is part of what the
-// program costs, and including it is what makes the span comparable with a
-// runtime whose own stamp precedes its start barriers.
+// Each caller chooses the application's start and result-completion edges.
 struct run_clock
 {
     std::chrono::steady_clock::time_point start =
@@ -33,19 +30,31 @@ inline bool e2e_enabled()
     return on;
 }
 
-// The structural pass is decided by locality 0 and broadcast, so a variable
-// that did not reach every rank fails as a mismatch instead of desynchronizing
-// the collectives that follow.  The decision is collective, so it must be
-// made once on every locality during setup, before any task exists; every
-// later call — including the ones a task makes to decide whether to count —
-// only reads the cached answer.
+// Whether the structural pass is on, as this locality's own environment
+// states it.  This is the gate for output one locality produces alone; the
+// collective form below is the gate for output every locality takes part in,
+// and the two are not interchangeable — asking for agreement needs every
+// locality to reach the question, which a program whose main runs on one
+// locality cannot promise.
+inline bool struct_marker()
+{
+    static bool const on = std::getenv("ARTS_STRUCT_MARKER") != nullptr;
+    return on;
+}
+
+// The structural pass as every locality agrees on it: decided by locality 0
+// and broadcast, so a variable that did not reach every rank fails as a
+// mismatch instead of desynchronizing the collectives that follow.  This is
+// itself collective, so every locality must reach it, and it must be reached
+// once during setup before any task exists; every later call only reads the
+// cached answer.
 inline bool struct_enabled()
 {
     static bool const on = [] {
         auto comm = hpx::collectives::create_communicator("/arts/common/struct",
             hpx::collectives::num_sites_arg(hpx::get_initial_num_localities()),
             hpx::collectives::this_site_arg(hpx::get_locality_id()));
-        int flag = std::getenv("ARTS_STRUCT_MARKER") != nullptr ? 1 : 0;
+        int flag = struct_marker() ? 1 : 0;
         if (hpx::get_locality_id() == 0)
             return hpx::collectives::broadcast_to(comm, flag).get() == 1;
         return hpx::collectives::broadcast_from<int>(comm).get() == 1;
@@ -100,13 +109,30 @@ inline void print_geometry()
         " threads=" + std::to_string(hpx::get_os_thread_count()) + "\n");
 }
 
-inline void print_e2e(run_clock const& clock)
+// A program whose hpx_main runs on locality 0 alone still owes one geometry
+// line per locality; a startup function runs on every locality once the
+// runtime is up and before hpx_main.
+inline void register_geometry_startup()
+{
+    hpx::register_startup_function([] { print_geometry(); });
+}
+
+inline void print_e2e(run_clock const& clock, run_clock const& app_clock)
 {
     if (!e2e_enabled() || hpx::get_locality_id() != 0)
         return;
+    auto const now = std::chrono::steady_clock::now();
     auto const ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - clock.start).count();
+        now - clock.start).count();
+    auto const app_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now - app_clock.start).count();
+    write_line("[APP_E2E] " + std::to_string(app_ns) + "\n");
     write_line("[E2E] " + std::to_string(ns) + "\n");
+}
+
+inline void print_e2e(run_clock const& clock)
+{
+    print_e2e(clock, clock);
 }
 
 // A reduction operator travels to the other sites as an action argument, so
@@ -125,7 +151,7 @@ struct add_elementwise
     }
 };
 
-// Sums the port's own counters over localities and prints them from
+// Sums a program's own counters over localities and prints them from
 // locality 0.  Every locality calls it (it is a collective), after the end
 // stamp, only when struct_enabled().  It registers its communicator's
 // basename as it goes, and a basename is registered once, so one program
@@ -148,41 +174,50 @@ inline void print_struct(std::vector<std::pair<char const*, std::uint64_t>> cons
     write_line(line + "\n");
 }
 
+// Sums one counter over every locality.  Each locality's instance is named
+// outright rather than through the `locality#*` wildcard: the wildcard needs
+// a discovery pass that this version resolves to an empty set in-process,
+// and reading a named instance is a plain request to the locality that owns
+// it, so the caller needs no participation from the others — which is what
+// lets this be called from a program whose main runs on one locality alone.
+inline std::uint64_t counter_total(
+    std::string const& object, std::string const& path)
+{
+    std::uint64_t sum = 0;
+    std::uint32_t const localities = hpx::get_initial_num_localities();
+    for (std::uint32_t i = 0; i != localities; ++i)
+    {
+        hpx::performance_counters::performance_counter counter(
+            object + "{locality#" + std::to_string(i) + "/total}" + path);
+        sum += static_cast<std::uint64_t>(
+            counter.get_value<std::int64_t>(hpx::launch::sync));
+    }
+    return sum;
+}
+
 // The runtime's own parcel counters, summed over localities: an upper bound
-// on the wire traffic (no coalescing is configured), printed once, after the
-// end stamp, when the structural pass is on.  `bytes` is the argument data a
-// parcel carried, `wire` the serialized parcel including its headers — the
-// second is what a message census on another runtime's transport counts.
-// A single locality never instantiates a parcelport, so its counters are not
-// registered and the traffic they would measure is zero.
+// on the wire traffic (no coalescing is configured, and the remote reads
+// this function performs are parcels themselves, a fixed few per locality),
+// printed once by locality 0, after the end stamp, when the structural pass
+// is on.  `bytes` is the
+// argument data a parcel carried, `wire` the serialized parcel including its
+// headers — the second is what a message census on another runtime's
+// transport counts.  A single locality never instantiates a parcelport, so
+// its counters are not registered and the traffic they would measure is zero.
 inline void print_parcels()
 {
-    std::vector<std::uint64_t> mine{0, 0, 0};
-    if (hpx::get_initial_num_localities() > 1)
-    {
-        hpx::performance_counters::performance_counter sent(
-            "/parcels/count/mpi/sent");
-        hpx::performance_counters::performance_counter data(
-            "/data/count/mpi/sent");
-        hpx::performance_counters::performance_counter wire(
-            "/serialize/count/mpi/sent");
-        mine = {static_cast<std::uint64_t>(
-                    sent.get_value<std::int64_t>(hpx::launch::sync)),
-            static_cast<std::uint64_t>(
-                data.get_value<std::int64_t>(hpx::launch::sync)),
-            static_cast<std::uint64_t>(
-                wire.get_value<std::int64_t>(hpx::launch::sync))};
-    }
-    auto comm = hpx::collectives::create_communicator("/arts/common/parcels",
-        hpx::collectives::num_sites_arg(hpx::get_initial_num_localities()),
-        hpx::collectives::this_site_arg(hpx::get_locality_id()));
-    std::vector<std::uint64_t> const total =
-        hpx::collectives::all_reduce(comm, mine, add_elementwise{}).get();
     if (hpx::get_locality_id() != 0)
         return;
-    write_line("[PARCELS] sent=" + std::to_string(total[0]) +
-        " bytes=" + std::to_string(total[1]) +
-        " wire=" + std::to_string(total[2]) + "\n");
+    std::uint64_t sent = 0, bytes = 0, wire = 0;
+    if (hpx::get_initial_num_localities() > 1)
+    {
+        sent = counter_total("/parcels", "/count/mpi/sent");
+        bytes = counter_total("/data", "/count/mpi/sent");
+        wire = counter_total("/serialize", "/count/mpi/sent");
+    }
+    write_line("[PARCELS] sent=" + std::to_string(sent) +
+        " bytes=" + std::to_string(bytes) + " wire=" + std::to_string(wire) +
+        "\n");
 }
 
 }    // namespace arts_hpx

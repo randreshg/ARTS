@@ -117,6 +117,24 @@ def envelope_wrap(cell: Cell, profile: Profile) -> list[str]:
             str(cell.nodes), mode, "--"]
 
 
+# Guarded at the shell, not at build time: the command line is composed on
+# the submitting host but a scheduler's step runs it on a compute node, and
+# the two need not agree on what binaries are installed.  "$@" carries the
+# wrapped argv through untouched either way — no re-quoting, so nothing in
+# it needs to survive a second round of shell parsing.
+_RUSAGE_GUARD = (
+    'if [ -x /usr/bin/time ]; then exec /usr/bin/time -v "$@"; '
+    'else exec "$@"; fi'
+)
+
+
+def rusage_wrap(argv: list[str]) -> list[str]:
+    """Wrap one rank's own command in a getrusage witness, one wrapper per
+    launched process so a multi-rank stream carries one `/usr/bin/time -v`
+    block per rank."""
+    return ["sh", "-c", _RUSAGE_GUARD, "sh", *argv]
+
+
 def build_command(cell: Cell, profile: Profile) -> list[str]:
     """The argv of one cell, without the timeout wrapper."""
     kind = cell.entry.kind
@@ -126,13 +144,16 @@ def build_command(cell: Cell, profile: Profile) -> list[str]:
         # The runtime reads its geometry from the configuration and spawns or
         # remote-launches its own ranks (under slurm, the job script's srun
         # starts its one process per node).
-        return [binary, *cell.args]
+        rank = [binary, *cell.args]
+        return rusage_wrap(rank) if profile.rusage_witness else rank
 
     wrap = envelope_wrap(cell, profile)
     tail = [binary]
     if kind is RuntimeKind.XSOCR and cell.cfg:
         tail += ["-ocr:cfg", str(cell.cfg)]
     tail += list(cell.args)
+    if profile.rusage_witness:
+        tail = rusage_wrap(tail)
 
     launcher = profile.launcher
     if launcher in (Launcher.SLURM, Launcher.FLUX):
@@ -194,16 +215,18 @@ def build_env(cell: Cell, profile: Profile) -> dict[str, str]:
         # envelope is the only affinity actor, so it is disabled.  Other MPIs
         # ignore the variable.
         env["MV2_ENABLE_AFFINITY"] = "0"
-    if cell.entry.kind is RuntimeKind.HPX and profile.launcher is Launcher.LOCAL:
-        # Colocated ranks on one host put the whole message stream through
-        # the MPI layer's shared-memory transport.  UCX's SysV variant grows
-        # its receive-descriptor pool one shared-memory segment at a time and
-        # never returns them, so a run whose messages are counted in tens of
-        # millions exhausts the system-wide segment limit (kernel.shmmni) and
-        # dies inside the allocator; the POSIX variant maps files instead and
-        # has no such limit.  Only the colocated case can reach the limit, so
-        # remote launchers keep their site's MPI defaults untouched.
-        env["UCX_TLS"] = "^sysv"
+    if cell.entry.kind is not RuntimeKind.ARTS and profile.launcher is Launcher.LOCAL:
+        # A local run stands in for a multi-node job on one host, so every
+        # runtime's ranks must reach each other through the network stack: a
+        # shared-memory transport would carry the messages past the very layer
+        # the simulation exists to exercise, and would give the MPI-based
+        # runtimes a path the socket-based one does not have.  UCX's defaults
+        # select shared memory and cross-memory attach between colocated
+        # ranks, so it is restricted to TCP on the loopback device (with
+        # `self` for a rank's messages to itself).  Remote launchers keep the
+        # site's MPI defaults, where the fabric is the right transport.
+        env["UCX_TLS"] = "tcp,self"
+        env["UCX_NET_DEVICES"] = "lo"
     return env
 
 

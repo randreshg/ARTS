@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <oneapi/tbb/global_control.h>
 
 extern "C" {
 
@@ -28,5 +29,10 @@ void ocrAbort(u8 errorCode) {
 /* ocrSetHint: advisory placement hints — no-op in the distributed runtime
  * where task placement is controlled by the MPI rank topology. */
 u8 ocrSetHint(ocrGuid_t /*guid*/, ocrHint_t * /*hint*/) { return 0; }
+
+u64 ocrNbWorkers() {
+  return (u64)tbb::global_control::active_value(
+      tbb::global_control::max_allowed_parallelism);
+}
 
 } /* extern "C" */

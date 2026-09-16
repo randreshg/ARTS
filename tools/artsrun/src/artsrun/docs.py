@@ -8,7 +8,7 @@ catalog's own facts, so every entry can be opened.
 from __future__ import annotations
 
 from artsrun.data import load_doc
-from artsrun.model.catalog import AppEntry, Kind
+from artsrun.model.catalog import AppEntry, Kind, Origin
 
 
 def facts_markdown(entry: AppEntry) -> str:
@@ -26,13 +26,15 @@ def facts_markdown(entry: AppEntry) -> str:
         + (f" (tolerance {entry.tolerance})" if entry.tolerance else ""),
         f"- **calibrated args**: `{' '.join(entry.args) or '(none)'}`",
     ]
-    if entry.hpx:
-        lines.append(
-            f"- **HPX port**: {', '.join(v.value for v in entry.hpx)}")
+    if entry.origin is Origin.HPX:
+        lines.append("- **origin**: an HPX program (the HPX entry runs it); "
+                     "the ARTS, XSOCR and OCR-vx binaries are its OCR mirror")
     if entry.multinode_skip:
         lines.append(f"- **multinode**: skipped — {entry.multinode_skip}")
     if entry.ocrvx_skip:
         lines.append("- **ocr-vx**: skipped — uses extensions it lacks")
+    if entry.arts_only:
+        lines.append("- **references**: none — built for the ARTS variants alone")
     lines += ["", "_No structural document for this entry._"]
     if entry.kind is Kind.TOY:
         lines[-1] = ("_No structural document: a toy exercises one runtime "

@@ -282,8 +282,8 @@ def plan_targets(
                 stem = app.binary
             for entry in entries:
                 if entry.kind is RuntimeKind.HPX:
-                    # One target per tier the port mirrors, named by the
-                    # row; nothing is derived from a version stem.
+                    # The HPX program is the row's _hpx target; nothing is
+                    # derived from a version stem.
                     if app is not None:
                         if app.hpx_binary:
                             wanted.append(app.hpx_binary)
@@ -294,6 +294,8 @@ def plan_targets(
                             wanted.append(target)
                     continue
                 if entry.kind.value == "ocrvx" and app and app.ocrvx_skip:
+                    continue
+                if entry.kind.value != "arts" and app and app.arts_only:
                     continue
                 # The hint layer is already folded into the resolved stem.
                 wanted.append(entry.binary(stem, hinted=False))
@@ -313,8 +315,8 @@ def build(plan: BuildPlan, *, jobs: int | None = None, on_line=None,
             + ("…" if len(plan.missing) > 10 else "")
             + "\n(either the application is not registered in CMake, or the "
             "tree skipped its runtime — the xsocr/ocrvx references and the "
-            "hpx ports are skipped on a host without an MPI compiler, and "
-            "the hpx ports also under -DARTS_BUILD_HPX=OFF; the configure "
+            "HPX-origin programs are skipped on a host without an MPI "
+            "compiler, and also under -DARTS_BUILD_HPX=OFF; the configure "
             "summary's References/HPX lines say which)"
         )
     if shutil.which("ninja") is None:
