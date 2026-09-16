@@ -1264,6 +1264,30 @@ def _e2e_collect(run_dir: Path, point: str) -> dict[str, list[float]]:
     return out
 
 
+def _e2e_collect_p99(run_dir: Path, point: str) -> dict[str, list[float]]:
+    """The same per-arm p99 write-tail values tail_ladder plots (`WTOT_P99`,
+    zero-writer points excluded), keyed to an e2e-master column instead of a
+    _LADDER entry."""
+    try:
+        spec = SweepSpec.model_validate(
+            json.loads((run_dir / "sweep.json").read_text()))
+    except (OSError, ValueError):
+        return {}
+    vals: dict[str, list[float]] = defaultdict(list)
+    for r in _ok(_rows(run_dir, spec)):
+        if r["point"] != point:
+            continue
+        try:
+            if float(r.get("knob_W") or 0) <= 0:
+                continue
+            v = float(r.get("WTOT_P99") or -1)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            vals[r["arm"]].append(v)
+    return vals
+
+
 def e2e_master(exp_root: Path, out_dir: Path,
                runs: list[Path] | None = None) -> list[Path]:
     import statistics
@@ -1271,6 +1295,7 @@ def e2e_master(exp_root: Path, out_dir: Path,
 
     out_dir.mkdir(parents=True, exist_ok=True)
     table: list[tuple[str, dict[str, float | None]]] = []
+    p99_table: list[tuple[str, dict[str, float | None]]] = []
     for sweep, point, label in E2E_MASTER_COLUMNS:
         cands = (runs if runs is not None
                  else sorted(exp_root.glob(f"*sweep-{sweep}*")))
@@ -1282,6 +1307,11 @@ def e2e_master(exp_root: Path, out_dir: Path,
                for a in E2E_ARMS}
         if any(v is not None for v in med.values()):
             table.append((label, med))
+        p99_cells = _e2e_collect_p99(cands[-1], point)
+        p99_med = {a: (statistics.median(v) if (v := p99_cells.get(a)) else None)
+                   for a in E2E_ARMS}
+        if any(v is not None for v in p99_med.values()):
+            p99_table.append((label, p99_med))
 
     if not table:
         raise SystemExit("no e2e master runs found under the experiment root")
@@ -1348,6 +1378,76 @@ def e2e_master(exp_root: Path, out_dir: Path,
                  "(each column one job; 1.0 = column crown)")
     fig.tight_layout()
     png = out_dir / "e2e-master.png"
+    fig.savefig(png, dpi=170)
+    plt.close(fig)
+    written.append(png)
+
+    written += _e2e_master_tail_panel(p99_table, out_dir)
+    return written
+
+
+def _e2e_master_tail_panel(p99_table: list[tuple[str, dict[str, float | None]]],
+                           out_dir: Path) -> list[Path]:
+    """A companion heatmap over the same columns, in the writer's p99
+    per-op overhead rather than the fixed job's e2e time.  Aggregate e2e
+    structurally cannot carry write-tail pain (writers are the minority in
+    most mixes) so a column can crown one arm on e2e and a different arm
+    here; a zero-writer column has no tail to show and is left off."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from artsrun.report import RT_LABEL
+
+    if not p99_table:
+        return []
+    n_r, n_c = len(E2E_ARMS), len(p99_table)
+    ratio = np.full((n_r, n_c), np.nan)
+    for ci, (_, med) in enumerate(p99_table):
+        ok = [v for v in med.values() if v]
+        best = min(ok) if ok else 1.0
+        for ai, a in enumerate(E2E_ARMS):
+            if med[a] is not None:
+                ratio[ai, ci] = med[a] / best
+
+    written: list[Path] = []
+    csv_path = out_dir / "e2e-master-tail.csv"
+    with csv_path.open("w") as f:
+        f.write("column,arm,wtot_p99_us,ratio_to_best\n")
+        for label, med in p99_table:
+            ok = [v for v in med.values() if v]
+            best = min(ok) if ok else 1.0
+            for a in E2E_ARMS:
+                v = med[a]
+                f.write(f"{label},{a},"
+                        f"{'' if v is None else f'{v:.4f}'},"
+                        f"{'' if v is None else f'{v / best:.3f}'}\n")
+    written.append(csv_path)
+
+    fig, ax = plt.subplots(figsize=(2.1 + 1.15 * n_c, 0.62 * n_r + 2.2))
+    im = ax.imshow(np.log10(ratio), cmap="RdYlGn_r", vmin=0,
+                   vmax=np.log10(np.nanmax(ratio)), aspect="auto")
+    ax.set_xticks(range(n_c))
+    ax.set_xticklabels([lbl for lbl, _ in p99_table], rotation=35, ha="right",
+                       fontsize=8)
+    ax.set_yticks(range(n_r))
+    ax.set_yticklabels([RT_LABEL.get(a, a) for a in E2E_ARMS], fontsize=9)
+    for ai in range(n_r):
+        for ci in range(n_c):
+            r = ratio[ai, ci]
+            if np.isnan(r):
+                ax.text(ci, ai, "off", ha="center", va="center", fontsize=7)
+            else:
+                ax.text(ci, ai, "1.0" if r < 1.005 else
+                        (f"{r:.1f}x" if r < 100 else f"{r:.0f}x"),
+                        ha="center", va="center", fontsize=7,
+                        color="black")
+    fig.colorbar(im, ax=ax, shrink=0.75,
+                 label="log10( writer p99 / column best )")
+    ax.set_title("Fixed-work writer p99 tail across the coherence plane "
+                 "(same columns as the e2e master; zero-writer columns off)")
+    fig.tight_layout()
+    png = out_dir / "e2e-master-tail.png"
     fig.savefig(png, dpi=170)
     plt.close(fig)
     written.append(png)

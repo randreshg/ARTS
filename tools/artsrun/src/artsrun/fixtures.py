@@ -1,52 +1,18 @@
 """Fixture staging: declared inputs the tool knows how to synthesize.
 
-Most fixtures are cheap deterministic files (an identity matrix, a counting
-sequence); regenerating them on the machine that needs them beats carrying
-them around or dropping the cell.  Anything not in the registry stays a
-missing input and is reported the usual way — a generated file is written
-atomically so a crashed generator never leaves a half-file that later runs
-mistake for the fixture.
+Most fixtures are cheap deterministic files (a seeded sequence, a counting
+file); regenerating them on the machine that needs them beats carrying them
+around or dropping the cell.  An input an application can derive from its own
+arguments is not a fixture at all — it is generated inside the run, by the
+tasks that own the data — so it never reaches this registry.  Anything not in
+the registry stays a missing input and is reported the usual way — a generated
+file is written atomically so a crashed generator never leaves a half-file that
+later runs mistake for the fixture.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-
-
-def _identity_matrix(path: Path, n: int) -> None:
-    # The cholesky ports read a whitespace-separated n×n text matrix; the
-    # identity is SPD with a unit factor, so the result trace equals n.
-    # A row differs from the all-zero row in one field, so the zero row is
-    # built once and patched -- at the calibrated sizes this is hundreds of
-    # millions of fields and the naive join dominates the staging.
-    zero = ["0.0"] * n
-    with open(path, "w") as fh:
-        for r in range(n):
-            zero[r] = "1.0"
-            fh.write(" ".join(zero) + "\n")
-            zero[r] = "0.0"
-
-
-def _identity_tiles_bin(path: Path, n: int, ts: int) -> None:
-    # The tile-stream layout convertData emits and cholesky's --fib reads:
-    # the lower-triangular tiles in (i, j<=i) order, each ts*ts doubles,
-    # row-major within the tile, host byte order.  The tile size is part of
-    # the layout, so it is part of the fixture's NAME — a stream baked for
-    # one ts is not a valid input for another.
-    import struct
-
-    assert n % ts == 0
-    tiles = n // ts
-    zero_tile = bytes(8 * ts * ts)
-    diag = bytearray(zero_tile)
-    one = struct.pack("=d", 1.0)
-    for r in range(ts):
-        off = 8 * (r * ts + r)
-        diag[off:off + 8] = one
-    with open(path, "wb") as fh:
-        for i in range(tiles):
-            for j in range(i + 1):
-                fh.write(diag if i == j else zero_tile)
 
 
 def _acgt_pair(path: Path, which: int, lens, seed, names) -> None:
@@ -75,15 +41,17 @@ _SW_CAL   = ("string1-cal.txt", "string2-cal.txt")
 _SW_TREND = ("string1-trend.txt", "string2-trend.txt")
 _SW_SWD   = ("string1-swd.txt", "string2-swd.txt")
 _SW_GATE  = ("string1-gate.txt", "string2-gate.txt")
+_SW_MID   = ("string1-mid.txt", "string2-mid.txt")
+_SW_CMP   = ("string1-cmp.txt", "string2-cmp.txt")
 
 GENERATORS = {
-    "cholesky_input.mat": lambda p: _identity_matrix(p, 50),
-    "cholesky_perf16700_ts100.bin": lambda p: _identity_tiles_bin(p, 16700, 100),
-    "cholesky_perf90000_ts500.bin": lambda p: _identity_tiles_bin(p, 90000, 500),
-    # Three alignment pairs, each a seeded ACGT stream split in two.  The
-    # scores are the expected global alignment of the pair, each computed by an
-    # independent sequential reference of the same DP (border = gap*position,
-    # match 2 / transition -2 / transversion -4 / gap -1, no zero clamp).
+    # Alignment pairs, each a seeded ACGT stream split in two.  The scores are
+    # the expected global alignment of the pair (border = gap*position,
+    # match 2 / transition -2 / transversion -4 / gap -1, no zero clamp): the
+    # huge, cal, trend and gate scores come from an independent sequential
+    # reference of the same DP; the swd, mid and cmp scores are the value the
+    # program itself printed in agreement across runtimes and node counts,
+    # since those pairs are past what the sequential reference computes.
     "string1-huge.txt":  lambda p: _acgt_pair(p, 0, (515000, 517000), 20260819, _SW_HUGE),
     "string2-huge.txt":  lambda p: _acgt_pair(p, 1, (515000, 517000), 20260819, _SW_HUGE),
     "score-huge.txt":    lambda p: p.write_text("318128\n"),
@@ -99,6 +67,12 @@ GENERATORS = {
     "string1-gate.txt":  lambda p: _acgt_pair(p, 0, (2000, 2000), 20260902, _SW_GATE),
     "string2-gate.txt":  lambda p: _acgt_pair(p, 1, (2000, 2000), 20260902, _SW_GATE),
     "score-gate.txt":    lambda p: p.write_text("1176\n"),
+    "string1-mid.txt":   lambda p: _acgt_pair(p, 0, (178000, 178400), 20260828, _SW_MID),
+    "string2-mid.txt":   lambda p: _acgt_pair(p, 1, (178000, 178400), 20260828, _SW_MID),
+    "score-mid.txt":     lambda p: p.write_text("110024\n"),
+    "string1-cmp.txt":   lambda p: _acgt_pair(p, 0, (200000, 200000), 20260828001, _SW_CMP),
+    "string2-cmp.txt":   lambda p: _acgt_pair(p, 1, (200000, 200000), 20260828001, _SW_CMP),
+    "score-cmp.txt":     lambda p: p.write_text("123196\n"),
     "basicIO_test.dat": _counting_file,
 }
 

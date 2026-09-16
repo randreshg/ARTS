@@ -7,12 +7,13 @@ run's results.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
 from artsrun.model.benchset import Benchset
-from artsrun.model.catalog import Catalog, Version
+from artsrun.model.catalog import AppClass, Catalog, Version
 from artsrun.model.plane import Plane, modern_entry_key
 from artsrun.model.profile import Launcher, Profile
 
@@ -66,7 +67,11 @@ class Selection(BaseModel):
     build_dir: str | None = None
 
     def validate_against(
-        self, plane: Plane, catalog: Catalog, profile: Profile
+        self,
+        plane: Plane,
+        catalog: Catalog,
+        profile: Profile,
+        benchset: Benchset | None = None,
     ) -> None:
         unknown = [k for k in self.entries if k not in plane.entry_keys]
         if unknown:
@@ -86,8 +91,80 @@ class Selection(BaseModel):
                 f"node counts {off_sweep} are not in profile "
                 f"'{profile.name}' sweep {profile.nodes}"
             )
+        self._check_width(catalog, profile, benchset)
         if any(plane.entry(k).is_reference for k in self.entries):
             self._check_reference_geometry(profile)
+
+    def _check_width(
+        self, catalog: Catalog, profile: Profile, benchset: Benchset | None = None
+    ) -> None:
+        """Refuse a row whose declared width cannot fill the machine.
+
+        `width_max` is a row's instantaneous task width at the widest
+        geometry of the profile, so the whole machine is the floor: below it
+        the widest cell of a strong-scaling sweep has idle workers for the
+        whole run and its number says nothing about the runtime.  An SPMD or
+        manager-worker decomposition additionally has to divide evenly —
+        its width is a fixed team, and a partial round leaves part of the
+        machine idle through every round rather than only at the tail.
+
+        The declaration describes the CATALOG's arguments, so a roster that
+        overrides them has invalidated it: such a cell is said out loud and
+        then left unchecked rather than judged against a number that belongs
+        to a workload it is not running.  Refusing it instead would be the
+        wrong trade — shrinking a row is exactly what a smoke roster is for.
+
+        Checked before anything is built, and only for rows that declare a
+        width: sizing a row is the campaign's own work, and a row waiting for
+        it must not be turned into a build-time error.
+        """
+        total = profile.max_nodes * profile.workers
+        overridden = self._overridden_args(catalog, benchset)
+        for name, versions in self.apps.items():
+            for version in versions:
+                source, _ = catalog.resolve(name, version)
+                width = source.width_max
+                if width is None:
+                    continue
+                if (name, version) in overridden:
+                    print(
+                        f"artsrun: {source.name}: benchset "
+                        f"'{benchset.name}' overrides the arguments "
+                        f"width_max={width} was declared for — width not "
+                        f"checked for this campaign",
+                        file=sys.stderr,
+                    )
+                    continue
+                if width < total:
+                    raise ValueError(
+                        f"{source.name}: width_max={width} is below the "
+                        f"{total} workers of profile '{profile.name}' at its "
+                        f"widest ({profile.max_nodes} nodes x "
+                        f"{profile.workers}); the widest cell would run "
+                        f"narrower than the machine"
+                    )
+                if source.cls in (AppClass.SPMD, AppClass.MW) and width % total:
+                    raise ValueError(
+                        f"{source.name}: width_max={width} is not a whole "
+                        f"multiple of the {total} workers of profile "
+                        f"'{profile.name}' at its widest "
+                        f"({profile.max_nodes} nodes x {profile.workers}); a "
+                        f"{source.cls.value} decomposition divides its work "
+                        f"into equal teams, so a partial round idles part of "
+                        f"the machine for every round"
+                    )
+
+    @staticmethod
+    def _overridden_args(
+        catalog: Catalog, benchset: Benchset | None
+    ) -> set[tuple[str, Version]]:
+        """The (row, version) pairs whose arguments the roster replaced."""
+        if benchset is None:
+            return set()
+        return {
+            (r.name, r.version) for r in benchset.resolve(catalog)
+            if r.args_overridden
+        }
 
     def _check_reference_geometry(self, profile: Profile) -> None:
         """What a reference cell needs from the profile.
