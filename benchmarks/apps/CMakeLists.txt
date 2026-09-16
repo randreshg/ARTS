@@ -1514,35 +1514,17 @@ add_bespoke_app(NAME mapreduce_wordcount SOURCES mapreduce_wordcount.c EXTRA_LIN
 
 # HPX-origin mirrors (sources under hpx_origin/)
 add_bespoke_app(NAME fib_hpx DIR hpx_origin SOURCES fib_hpx.c)
-add_bespoke_app(NAME pi_hpx DIR hpx_origin SOURCES pi_hpx.c)
-add_bespoke_app(NAME random_mem_access_hpx DIR hpx_origin SOURCES random_mem_access_hpx.c)
 add_bespoke_app(NAME stencil1d_hpx DIR hpx_origin SOURCES stencil1d_hpx.c)
-add_bespoke_app(NAME transpose_hpx DIR hpx_origin SOURCES transpose_hpx.c)
-add_bespoke_app(NAME jacobi_hpx DIR hpx_origin SOURCES jacobi_hpx.c)
 add_bespoke_app(NAME network_storage_hpx DIR hpx_origin SOURCES network_storage_hpx.c)
-add_bespoke_app(NAME mini_ghost_hpx DIR hpx_origin SOURCES mini_ghost_hpx.c)
-# The tree's opening test and the force kernel call into the math library,
-# which one of the reference runtimes' link lines does not carry of its own.
-add_bespoke_app(NAME nbody_hpx DIR hpx_origin SOURCES nbody_hpx.c
-    EXTRA_LINK_LIBS m)
 # Retained library pointers use acquired object identities across tasks.
+# The vendored library is built only by a tree that configured it, so the row
+# is conditioned on the target existing rather than on the options that
+# happen to create it: a tree without it still generates, and every other
+# row still builds every one of its variants.
 if(TARGET arts::fftw3)
     add_subdirectory(hpx_origin/fftw_reloc)
     add_bespoke_app(NAME fft_hpx DIR hpx_origin SOURCES fft_hpx.c
         EXTRA_LINK_LIBS arts::fftw_reloc m)
 else()
     message(STATUS "Skipping fft_hpx: the vendored FFTW is not configured")
-endif()
-# The table this program interpolates is read through the same vendored HDF5
-# the HPX program reads it with -- the C API here, the C++ one there, one
-# library either way -- and the interpolation itself calls into libm.
-# The vendored library is built only by a tree that configured it, so the row
-# is conditioned on the target existing rather than on the options that
-# happen to create it: a tree without it still generates, and every other
-# row still builds every one of its variants.
-if(TARGET arts::hdf5)
-    add_bespoke_app(NAME sheneos_hpx DIR hpx_origin SOURCES sheneos_hpx.c
-        EXTRA_LINK_LIBS arts::hdf5 m)
-else()
-    message(STATUS "Skipping sheneos_hpx: the vendored HDF5 is not configured")
 endif()

@@ -8,63 +8,10 @@ apps:
     enabled: true
     versions: [base]
     args: ['--n-value=30', '--threshold=12', '--distribute-at=25', '--n-runs=1', '--test=1']
-  pi_hpx:
-    enabled: true
-    versions: [base]
-    args: ['100000000']
-  random_mem_access_hpx:
-    enabled: true
-    versions: [base]
-    args: ['--array-size=4096', '--iterations=200000', '--seed=1']
   stencil1d_hpx:
     enabled: true
     versions: [base]
     args: ['--nx=64', '--nt=16', '--np=64', '--nd=10']
-  transpose_hpx:
-    enabled: true
-    versions: [base]
-    # --num_blocks is per node, so the gate carries the catalog's ladder and
-    # not one argument list: what must stay fixed across the sweep is the
-    # TOTAL block count (8), which is what keeps the square size and the
-    # phase count the same job at every geometry.
-    args: ['--matrix_size=1024', '--iterations=2', '--num_blocks=8']
-    args_by_nodes:
-      1: ['--matrix_size=1024', '--iterations=2', '--num_blocks=8']
-      2: ['--matrix_size=1024', '--iterations=2', '--num_blocks=4']
-      4: ['--matrix_size=1024', '--iterations=2', '--num_blocks=2']
-      8: ['--matrix_size=1024', '--iterations=2', '--num_blocks=1']
-  jacobi_hpx:
-    enabled: true
-    versions: [base]
-    args: ['--nx=256', '--ny=256', '--max_iterations=9', '--line_block=32']
-  mini_ghost_hpx:
-    enabled: true
-    versions: [base]
-    # The process grid must equal the node count, so the ladder carries one
-    # argument list per geometry, and it is ONE-AXIS at every rung -- which is
-    # what the program picks for itself when no grid is named (npx = nranks).
-    # A cubic grid is reachable and is not used: a step's pack reads the grid
-    # generation the next step's unpack writes and the origin joins neither,
-    # so the HPX entry stops agreeing with itself wherever a rank has
-    # neighbours on more than one axis (see the catalog comment).
-    # --scaling=1 because the origin defaults to weak scaling, and
-    # --error_tol=1 because the program terminates on its own conservation
-    # check otherwise.
-    args: ['--scaling=1', '--nx=64', '--ny=64', '--nz=64', '--num_vars=4', '--num_tsteps=10', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=1', '--npy=1', '--npz=1']
-    args_by_nodes:
-      1: ['--scaling=1', '--nx=64', '--ny=64', '--nz=64', '--num_vars=4', '--num_tsteps=10', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=1', '--npy=1', '--npz=1']
-      2: ['--scaling=1', '--nx=64', '--ny=64', '--nz=64', '--num_vars=4', '--num_tsteps=10', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=2', '--npy=1', '--npz=1']
-      4: ['--scaling=1', '--nx=64', '--ny=64', '--nz=64', '--num_vars=4', '--num_tsteps=10', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=4', '--npy=1', '--npz=1']
-      8: ['--scaling=1', '--nx=64', '--ny=64', '--nz=64', '--num_vars=4', '--num_tsteps=10', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=8', '--npy=1', '--npz=1']
-
-  nbody_hpx:
-    enabled: true
-    versions: [base]
-    # One argument list at every geometry: the cell count follows the node
-    # count by the program's own rule, and the ladder this profile sweeps stays
-    # on the first octree level.
-    args: ['--n=20000', '--nt=2', '--size=4000', '--theta=0.3', '--th=100', '--k-th=500']
-
   network_storage_hpx:
     enabled: true
     versions: [base]
@@ -72,7 +19,6 @@ apps:
     # argument list keeps the total storage -- and both transfer counts --
     # the same job at every node count the gate sweeps.
     args: ['--globalMB=16', '--transferKB=64', '--iterations=2', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
-
   fft_hpx:
     enabled: true
     versions: [base]
@@ -81,18 +27,3 @@ apps:
     # divides every rung the gate sweeps.  A non-dividing pair would silently
     # drop the trailing rows rather than fail.
     args: ['--nx=256', '--ny=254', '--plan=estimate', '--run=scatter']
-
-  sheneos_hpx:
-    enabled: true
-    versions: [base]
-    # The same two invariants the catalog row carries, and the reason this
-    # roster needs its own ladder: `--num-workers` is per locality and the
-    # WORKER TOTAL is what must stay at 8, while `--num-partitions` must equal
-    # the node count -- the program cuts the cube by the locality count and
-    # routes queries by the partition count, and the two agree only then.
-    args: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=8', '--num-temp-points=8', '--num-rho-points=8', '--num-partitions=1', '--num-workers=8', '--seed=1']
-    args_by_nodes:
-      1: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=8', '--num-temp-points=8', '--num-rho-points=8', '--num-partitions=1', '--num-workers=8', '--seed=1']
-      2: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=8', '--num-temp-points=8', '--num-rho-points=8', '--num-partitions=2', '--num-workers=4', '--seed=1']
-      4: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=8', '--num-temp-points=8', '--num-rho-points=8', '--num-partitions=4', '--num-workers=2', '--seed=1']
-      8: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=8', '--num-temp-points=8', '--num-rho-points=8', '--num-partitions=8', '--num-workers=1', '--seed=1']

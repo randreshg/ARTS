@@ -213,13 +213,12 @@ apps:
   # --- HPX-origin section (hpx_apps.yaml): one program on four runtimes ---
   # Every row runs the catalog's calibrated arguments, like every other row
   # here; the one-node anchor window and the width floor that chose them are in
-  # each row's appdoc.  A row is in the comparison only if its origin never
-  # suspends a parallel task (its waits are continuations, or a bounded number
-  # of driver-thread phase joins -- the same discipline an OCR program has by
+  # each row's appdoc.  The section admits an origin only if it never suspends
+  # a parallel task (its waits are continuations, or a bounded number of
+  # driver-thread phase joins -- the same discipline an OCR program has by
   # construction) AND its parallel width is set by the problem, not fixed by
-  # the origin below the machine's width; the seven rows that fail either test
-  # are excluded from it (`comparison_excluded` in the catalog names the
-  # reason) and stay runnable through the gate rosters.
+  # the origin below the machine's width; the rows that failed either test are
+  # archived under archive/hpx-origin-excluded/.
   fib_hpx:
     enabled: true
     versions: [base]

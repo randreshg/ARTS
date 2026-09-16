@@ -575,49 +575,6 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
             LOG_INSTALL 1
         )
 
-        # HDF5 for the EOS-table program: static, C and C++ APIs, threadsafe
-        # (the table partitions read their slices concurrently at init).  The
-        # threadsafe + C++ pairing is an officially unsupported combination
-        # upstream, which is what ALLOW_UNSUPPORTED exists to allow; the
-        # alternative is serialising the init reads, which changes when the
-        # data is there rather than what it is.  No parallel/MPI layer: the
-        # program reads hyperslabs from a file, not through MPI-IO.
-        arts_init_submodule(third_party/hdf5 CMakeLists.txt)
-        set(ARTS_HDF5_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/hdf5_install")
-        ExternalProject_Add(hdf5_ep
-            SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/hdf5"
-            BINARY_DIR "${CMAKE_BINARY_DIR}/third_party/hdf5-build"
-            DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
-            CMAKE_GENERATOR "${CMAKE_GENERATOR}"
-            CMAKE_ARGS
-                -DCMAKE_BUILD_TYPE=Release
-                -DCMAKE_INSTALL_PREFIX=${ARTS_HDF5_INSTALL_DIR}
-                -DCMAKE_INSTALL_LIBDIR=lib
-                -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-                "-DCMAKE_C_FLAGS=-O3 -march=native -mtune=native"
-                "-DCMAKE_CXX_FLAGS=-O3 -march=native -mtune=native"
-                -DBUILD_SHARED_LIBS=OFF
-                -DBUILD_STATIC_LIBS=ON
-                -DBUILD_TESTING=OFF
-                -DHDF5_BUILD_CPP_LIB=ON
-                -DHDF5_ENABLE_THREADSAFE=ON
-                -DALLOW_UNSUPPORTED=ON
-                -DHDF5_BUILD_TOOLS=OFF
-                -DHDF5_BUILD_UTILS=OFF
-                -DHDF5_BUILD_EXAMPLES=OFF
-                -DHDF5_BUILD_HL_LIB=OFF
-                -DHDF5_ENABLE_PARALLEL=OFF
-                -DHDF5_ENABLE_Z_LIB_SUPPORT=OFF
-                -DHDF5_ENABLE_SZIP_SUPPORT=OFF
-            BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR>
-                --parallel ${CMAKE_BUILD_PARALLEL_LEVEL}
-            INSTALL_COMMAND ${CMAKE_COMMAND} --install <BINARY_DIR>
-            BUILD_BYPRODUCTS
-                "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5.a"
-                "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5_cpp.a"
-            LOG_CONFIGURE 1 LOG_BUILD 1 LOG_INSTALL 1)
-        set(ARTS_HDF5_INSTALL_DIR "${ARTS_HDF5_INSTALL_DIR}" PARENT_SCOPE)
-
         # FFTW as the sequential transform kernel: the distribution is the
         # program's own, so the library needs neither its threading layer
         # nor its MPI layer -- only the per-rank one-dimensional transforms.
@@ -664,30 +621,6 @@ set_target_properties(arts_hwloc PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${HWLOC_INCLUDE_DIRS}")
 add_library(arts::hwloc ALIAS arts_hwloc)
 
-# The vendored HDF5 as targets: a consumer names arts::hdf5 (C) or
-# arts::hdf5_cpp (C++ API) and gets the headers, the archive and the private
-# dependencies with it.  A bare -lhdf5 would resolve to whatever the host
-# ships, which is the per-machine drift the vendoring exists to prevent.
-if(ARTS_HDF5_INSTALL_DIR)
-    find_package(Threads REQUIRED)
-    file(MAKE_DIRECTORY "${ARTS_HDF5_INSTALL_DIR}/include")
-    add_library(arts_hdf5 STATIC IMPORTED GLOBAL)
-    set_target_properties(arts_hdf5 PROPERTIES
-        IMPORTED_LOCATION "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_HDF5_INSTALL_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS};m")
-    add_dependencies(arts_hdf5 hdf5_ep)
-    add_library(arts::hdf5 ALIAS arts_hdf5)
-
-    add_library(arts_hdf5_cpp STATIC IMPORTED GLOBAL)
-    set_target_properties(arts_hdf5_cpp PROPERTIES
-        IMPORTED_LOCATION "${ARTS_HDF5_INSTALL_DIR}/lib/libhdf5_cpp.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_HDF5_INSTALL_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "arts_hdf5")
-    add_dependencies(arts_hdf5_cpp hdf5_ep)
-    add_library(arts::hdf5_cpp ALIAS arts_hdf5_cpp)
-endif()
-
 if(ARTS_FFTW_INSTALL_DIR)
     file(MAKE_DIRECTORY "${ARTS_FFTW_INSTALL_DIR}/include")
     add_library(arts_fftw3 STATIC IMPORTED GLOBAL)
@@ -699,13 +632,13 @@ if(ARTS_FFTW_INSTALL_DIR)
     add_library(arts::fftw3 ALIAS arts_fftw3)
 endif()
 
-# A try_compile would run while configuring, before either external project
-# has produced an archive, so the proof that the targets resolve and link is
-# a target the build itself compiles: one entry point from each library,
-# linked the way an application links them.
-if(ARTS_HDF5_INSTALL_DIR AND ARTS_FFTW_INSTALL_DIR)
+# A try_compile would run while configuring, before the external project
+# has produced an archive, so the proof that the target resolves and links is
+# a target the build itself compiles: one entry point of the library, linked
+# the way an application links it.
+if(ARTS_FFTW_INSTALL_DIR)
     add_executable(arts_dep_link_check "${CMAKE_CURRENT_SOURCE_DIR}/checks/dep_link_check.c")
-    target_link_libraries(arts_dep_link_check PRIVATE arts::fftw3 arts::hdf5)
+    target_link_libraries(arts_dep_link_check PRIVATE arts::fftw3)
     set_target_properties(arts_dep_link_check PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/third_party")
 endif()

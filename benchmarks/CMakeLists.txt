@@ -68,14 +68,11 @@ if(ARTS_BUILD_HPX AND ARTS_HPX_AVAILABLE)
             -DHwloc_LIBRARY=${HPX_HWLOC_INSTALL_DIR}/lib/libhwloc.a
             -DHPX_APPS_RUNTIME_OUTPUT_DIRECTORY=${ARTS_HPX_APPS_OUTPUT_DIR}
             -DARTS_HPX_ORIGIN_ROOT=${CMAKE_SOURCE_DIR}/third_party/hpx
-            # The vendored dependencies and the pristine origin trees the
+            # The vendored dependency and the pristine origin tree the
             # HPX-origin programs are built from and diffed against, handed
             # in as paths: the app project configures standalone against an
             # install, so it takes prefixes from outside, never targets.
-            -DARTS_HDF5_DIR=${ARTS_HDF5_INSTALL_DIR}
             -DARTS_FFTW_DIR=${ARTS_FFTW_INSTALL_DIR}
-            -DARTS_MINIAPPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/miniapps
-            -DARTS_NBODY_ROOT=${CMAKE_SOURCE_DIR}/third_party/NBody
             -DARTS_HPXFFT_ROOT=${CMAKE_SOURCE_DIR}/third_party/hpx-fft
             -DARTS_MPIEXEC=${MPIEXEC_EXECUTABLE}
             -DARTS_HPX_SMOKE=${ARTS_HPX_SMOKE}
@@ -89,7 +86,7 @@ if(ARTS_BUILD_HPX AND ARTS_HPX_AVAILABLE)
         TEST_COMMAND ctest --test-dir "${ARTS_HPX_APPS_BUILD_DIR}" --output-on-failure
         BUILD_ALWAYS TRUE
         BUILD_BYPRODUCTS ${_hpx_byproducts}
-        DEPENDS hpx_ep hdf5_ep fftw_ep
+        DEPENDS hpx_ep fftw_ep
         LOG_CONFIGURE 1
         LOG_BUILD 1
     )
