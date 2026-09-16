@@ -75,7 +75,10 @@ def write_manifest(
     rows = []
     for cell in cells:
         entries.setdefault(cell.entry.key, cell.entry.model_dump(mode="json"))
-        apps.setdefault(cell.app.key, cell.app.model_dump(mode="json"))
+        app = cell.app.model_dump(mode="json")
+        previous = apps.setdefault(cell.app.key, app)
+        if any(previous[k] != app[k] for k in ("timing_metric", "timing_contract")):
+            raise ValueError(f"{cell.app.key}: conflicting timing contracts in one campaign")
         log_path = run_dir / "cells" / cell.log_name
         rows.append({
             "key": cell.key,

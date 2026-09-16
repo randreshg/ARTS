@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
@@ -58,6 +59,17 @@ class Kind(StrEnum):
         if value == "microbench":
             return cls.ATTACK
         return None
+
+
+class Origin(StrEnum):
+    """Which programming model the row's program was written in.
+
+    OCR: the program is an OCR program (apps.yaml); the ARTS variants and
+    the OCR reference runtimes run it.  HPX: the program is an HPX program
+    (hpx_apps.yaml); the HPX entry runs it, and the row's ARTS/XSOCR/OCR-vx
+    binaries are its OCR mirror."""
+    OCR = "ocr"
+    HPX = "hpx"
 
 
 class Version(StrEnum):
@@ -113,9 +125,24 @@ class AppEntry(BaseModel):
     expect_args: list[str] = Field(default_factory=list)
     tolerance: float = 0.0
     extra_scalars: dict[str, str] = Field(default_factory=dict)
+    timing_metric: Literal["e2e_s", "app_s"] = "e2e_s"
+    timing_contract: str | None = None
 
     args: list[str] = Field(default_factory=list)
     args_by_nodes: dict[int, list[str]] = Field(default_factory=dict)
+
+    # How many tasks this row's calibrated arguments make ready AT ONCE at
+    # the campaign's widest geometry.  It is the property a strong-scaling
+    # sweep depends on and the arguments alone do not show: a run narrower
+    # than the machine measures the program's shape rather than the
+    # runtime's.  Optional — a row that has not been sized yet declares
+    # nothing and is not checked.  The check itself lives with the
+    # selection, which is where the machine is known.
+    # It describes THESE arguments and nothing else: it is a hand-declared
+    # number tied to the catalog's own `args`/`args_by_nodes`, so a roster
+    # that overrides either has invalidated it and the selection says so
+    # rather than reporting a width the cell will not reach.
+    width_max: int | None = Field(default=None, ge=1)
 
     # "optimized" is the field's pre-rename spelling, accepted on input
     # so entries renamed in later bundles still parse meanwhile.
@@ -123,13 +150,9 @@ class AppEntry(BaseModel):
     restructured_as: str | None = None
     restructured_from: str | None = None
 
-    # The version tiers an HPX port mirrors, one target per tier named from
-    # the row's binary — absent means no port.  A port is one source under a
-    # placement guard, exactly as the OCR row builds `<app>` and
-    # `<app>_hinted`; a rewrite has no mirror because its base tier IS a
-    # shared mutable object no coherence-free model can express.
-    hpx: list[Version] = Field(default_factory=list)
-    # Removed field, declared only so a leftover value fails loudly.
+    origin: Origin = Origin.OCR
+    # Retired fields, kept only to name their replacement loudly.
+    hpx: list[str] | None = None
     hpx_tier: str | None = None
 
     # Optional post-run verifier: a shell command run in the cell's working
@@ -146,6 +169,18 @@ class AppEntry(BaseModel):
     unsupported: str | None = None
     multinode_skip: str | None = None
     ocrvx_skip: bool = False
+    # A row of the runtime comparison only if its origin never suspends a
+    # started parallel task: its waits are continuations, or a bounded number
+    # of phase joins by the driver thread -- the discipline an event-driven
+    # program has by construction, so the two sides pay for the same thing.
+    # An origin whose tasks start and then block (on a future, a collective,
+    # a lock) measures its own synchronization idiom as much as the runtime,
+    # and is excluded from the comparison's rosters with the reason here.  An
+    # annotation, not a mask: the row stays selectable and runnable.
+    comparison_excluded: str | None = None
+    # A probe built for the ARTS variants alone: it exists to separate the
+    # coherence plane's arms, so no reference runtime has a target for it.
+    arts_only: bool = False
     fixtures: list[str] = Field(default_factory=list)
     timeout: int = 0
     multinode_timeout: int = 0
@@ -181,36 +216,38 @@ class AppEntry(BaseModel):
             v.append(Version.RESTRUCTURED)
         return v
 
-    def hpx_target(self, version: Version) -> str | None:
-        """The port's build target for a tier, or None where it mirrors none.
+    @property
+    def hpx_versions(self) -> list[Version]:
+        return [Version.BASE] if self.origin is Origin.HPX else []
 
-        The runtime tag is the last token, as for every reference binary
-        (`<stem>_xsocr`, `<stem>_ocrvx`), and the tier marker sits on the
-        application stem.
-        """
-        if version not in self.hpx:
-            return None
-        stem = f"{self.binary}_hinted" if version is Version.HINTED else self.binary
-        return f"{stem}_hpx"
+    def hpx_target(self, version: Version) -> str | None:
+        """The HPX program's build target, base tier only, on an HPX-origin
+        row: the runtime tag is the last token, as for every reference
+        binary (`<stem>_xsocr`, `<stem>_ocrvx`).  An OCR-origin row has none."""
+        if self.origin is Origin.HPX and version is Version.BASE:
+            return f"{self.binary}_hpx"
+        return None
 
     @model_validator(mode="after")
-    def _check_hpx(self) -> "AppEntry":
-        if self.hpx_tier is not None:
+    def _check_origin(self) -> "AppEntry":
+        if self.timing_metric == "app_s" and not self.timing_contract:
+            raise ValueError(f"{self.name}: app_s requires an explicit timing_contract")
+        if self.hpx is not None or self.hpx_tier is not None:
             raise ValueError(
-                f"{self.name}: `hpx_tier` was replaced by `hpx: [<version>, ...]`"
-                " — a port mirrors a list of tiers, one target each; note that"
-                " `<binary>_hpx` now names the BASE tier and the hinted port is"
-                " `<binary>_hinted_hpx`")
-        if Version.RESTRUCTURED in self.hpx:
-            raise ValueError(
-                f"{self.name}: hpx names restructured — a rewrite has no HPX"
-                " mirror (its base tier is a shared mutable object)")
-        bad = [v for v in self.hpx if v not in self.own_versions]
-        if bad:
-            raise ValueError(
-                f"{self.name}: hpx names {', '.join(v.value for v in bad)}, "
-                f"which this row does not offer "
-                f"({', '.join(v.value for v in self.own_versions)})")
+                f"{self.name}: `hpx`/`hpx_tier` are gone — an HPX program is a"
+                " row of the HPX-origin section (hpx_apps.yaml), named"
+                " `<stem>_hpx`, and the HPX entry runs that section only")
+        if self.origin is Origin.HPX:
+            if not self.name.endswith("_hpx") or self.binary != self.name:
+                raise ValueError(
+                    f"{self.name}: an HPX-origin row is named `<stem>_hpx` and"
+                    " its binary is that stem (the HPX program is the stem's"
+                    " _hpx target, the OCR mirrors its ARTS/XSOCR/OCR-vx targets)")
+            if self.hinted or self.restructured_as or self.restructured_from:
+                raise ValueError(
+                    f"{self.name}: an HPX-origin row has one tier — the"
+                    " placement it states is carried as hints, so no hint"
+                    " layer or rewrite exists")
         return self
 
 
@@ -234,7 +271,13 @@ class Catalog(BaseModel):
         return [a for a in self.apps.values() if a.restructured_from is None]
 
     def rows_of(self, kind: Kind) -> list[AppEntry]:
-        return sorted((a for a in self.rows if a.kind is kind),
+        return sorted((a for a in self.rows if a.kind is kind and a.origin is Origin.OCR),
+                      key=lambda a: a.name.lower())
+
+    @property
+    def hpx_rows(self) -> list[AppEntry]:
+        """The HPX-origin section, in name order."""
+        return sorted((a for a in self.rows if a.origin is Origin.HPX),
                       key=lambda a: a.name.lower())
 
     def resolve(self, name: str, version: Version) -> tuple[AppEntry, str]:
@@ -273,14 +316,34 @@ def expand_repo(value, root: str):
     return value
 
 
+def merge_sections(sections, root: str) -> dict[str, AppEntry]:
+    """Fold the catalog's sections into one namespace.
+
+    A row is addressed by name alone everywhere downstream — on the command
+    line, in a roster, in a result — so one name may head only one row, and a
+    name that appears in two sections is rejected rather than resolved by
+    section order.
+    """
+    apps: dict[str, AppEntry] = {}
+    for entries, origin in sections:
+        for name, spec in entries.items():
+            if name in apps:
+                raise ValueError(
+                    f"{name}: named in two catalog sections "
+                    f"({apps[name].origin.value} and {origin.value})")
+            spec = dict(spec)
+            spec.setdefault("name", name)
+            spec.setdefault("binary", name)
+            spec["origin"] = origin.value
+            apps[name] = AppEntry.model_validate(expand_repo(spec, root))
+    return apps
+
+
 @lru_cache(maxsize=1)
 def load_catalog() -> Catalog:
-    raw = load_data("apps.yaml")
     root = str(repo_root())
-    apps = {}
-    for name, spec in raw["apps"].items():
-        spec = dict(spec)
-        spec.setdefault("name", name)
-        spec.setdefault("binary", name)
-        apps[name] = AppEntry.model_validate(expand_repo(spec, root))
-    return Catalog(apps=apps)
+    return Catalog(apps=merge_sections(
+        ((load_data(file)["apps"], origin)
+         for file, origin in (("apps.yaml", Origin.OCR),
+                              ("hpx_apps.yaml", Origin.HPX))),
+        root))

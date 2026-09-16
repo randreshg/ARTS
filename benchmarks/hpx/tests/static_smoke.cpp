@@ -1,4 +1,4 @@
-// Two localities, the exact static build: every runtime facility the ports
+// Two localities, the exact static build: every runtime facility the programs
 // depend on, exercised once — collectives (registered components), a plain
 // action delivering into a receive buffer on the other locality, the
 // parcelport counter registry, and the hpx_main shape in which no locality
@@ -67,7 +67,7 @@ int hpx_main(hpx::program_options::variables_map&)
     hpx::performance_counters::performance_counter sent("/parcels/count/mpi/sent");
     check(sent.get_value<std::int64_t>(hpx::launch::sync) > 0, "parcelport counter readable and non-zero");
 
-    // The scheduling policy the run actually got.  The default the ports
+    // The scheduling policy the run actually got.  The default the programs
     // install is a non-forcing configuration entry, so the command line must
     // still win over it; which of the two answers is expected travels in the
     // environment, because --hpx:queuing is consumed by the runtime and never

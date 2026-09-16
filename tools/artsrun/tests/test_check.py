@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artsrun.check import Verdict, apply_to, extract, minority_report, vote
+from artsrun.check import (Verdict, apply_to, extract, extract_rusage,
+                           minority_report, vote)
 from artsrun.model.benchset import ResolvedApp
 from artsrun.model.catalog import AppClass, ScalarKind, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry
@@ -59,15 +60,60 @@ def test_e2e_marker_is_parsed_in_seconds():
     assert extract_e2e("noise\n[E2E] 1500000000\n") == 1.5
 
 
+def test_application_timing_is_separate_from_runtime_timing(tmp_path):
+    app = _app(timing_metric="app_s", timing_contract="source-interval-v1")
+    log = tmp_path / "app.log"
+    log.write_text("RESULT = 42\n[APP_E2E] 1250000000\n[E2E] 9000000000\n")
+    result = CellResult(_cell("a", app), Status.OK, log_path=log)
+    apply_to(result)
+    assert result.status is Status.OK
+    assert result.app_s == 1.25
+    assert result.e2e_s == 9.0
+    assert result.measured_s == 1.25
+
+
+def test_application_timing_never_falls_back_to_runtime_marker(tmp_path):
+    app = _app(timing_metric="app_s", timing_contract="source-interval-v1")
+    log = tmp_path / "old.log"
+    log.write_text("RESULT = 42\n[E2E] 9000000000\n")
+    result = CellResult(_cell("a", app), Status.OK, log_path=log)
+    apply_to(result)
+    assert result.status is Status.FAIL
+    assert "APP_E2E" in result.note
+
+
+def test_duplicate_application_markers_cannot_select_an_arbitrary_interval(tmp_path):
+    app = _app(timing_metric="app_s", timing_contract="source-interval-v1")
+    log = tmp_path / "duplicate.log"
+    log.write_text("RESULT = 42\n[APP_E2E] 100\n[APP_E2E] 200\n[E2E] 900\n")
+    result = CellResult(_cell("a", app), Status.OK, log_path=log)
+    apply_to(result)
+    assert result.status is Status.FAIL
+    assert "APP_E2E" in result.note
+
+
 def test_e2e_last_marker_wins_and_absence_is_none():
     from artsrun.check import extract_e2e
     assert extract_e2e("[E2E] 1000000000\n[E2E] 2000000000\n") == 2.0
     assert extract_e2e("no marker here\n") is None
 
 
-def test_e2e_marker_must_stand_alone_on_its_line():
+def test_e2e_marker_is_read_after_a_launcher_prefix():
+    from artsrun.check import extract_e2e
+    assert extract_e2e("n01: 0: [E2E] 1500000000\n") == 1.5
+
+
+def test_e2e_marker_must_end_its_line():
     from artsrun.check import extract_e2e
     assert extract_e2e("app says [E2E] 5 things\n") is None
+
+
+def test_a_prefixed_stamp_still_counts_once_per_line():
+    # The count is the world-size oracle: a prefix must not turn one rank's
+    # stamp into two, and two ranks' stamps must still count as two.
+    from artsrun.check import _E2E_RE
+    assert len(_E2E_RE.findall("n01: [E2E] 1 [E2E] 2\n")) == 1
+    assert len(_E2E_RE.findall("n01: [E2E] 1\nn02: [E2E] 2\n")) == 2
 
 
 def test_unanimous_results_all_pass():
@@ -298,6 +344,16 @@ def test_every_locality_prints_the_expected_geometry(tmp_path):
     assert r.status is Status.FAIL and "geometry" in r.note
 
 
+def test_a_marker_prefixed_by_another_ranks_write_still_counts(tmp_path):
+    # Ranks share one stream, so a write that has not ended in a newline can
+    # prefix the next rank's marker.  A marker that was printed must not read
+    # as a locality that never came up.
+    glued = ("[HPX] locality=0 localities=2 threads=16\n"
+             "starting up [HPX] locality=1 localities=2 threads=16\n"
+             "sols: 92\n[E2E] 10\n")
+    assert _hpx_result(tmp_path, glued, 2, 16).status is Status.OK
+
+
 def test_an_old_manifest_without_a_width_still_checks_the_id_set(tmp_path):
     good = "[HPX] locality=0 localities=1 threads=16\nsols: 92\n[E2E] 10\n"
     assert _hpx_result(tmp_path, good, 1, None).status is Status.OK
@@ -307,3 +363,41 @@ def test_an_old_manifest_without_a_width_still_checks_the_id_set(tmp_path):
              "[HPX] locality=0 localities=1 threads=16\nsols: 92\n[E2E] 10\n")
     r = _hpx_result(tmp_path, split, 2, None)
     assert r.status is Status.FAIL and "geometry" in r.note
+
+
+# --- rusage witness ---------------------------------------------------------
+
+_TIME_BLOCK = (
+    "\tMaximum resident set size (kbytes): {rss}\n"
+    "\tMinor (reclaiming a frame) page faults: {flt}\n"
+)
+
+
+def test_extract_rusage_reads_both_fields():
+    text = _TIME_BLOCK.format(rss=123456, flt=789)
+    assert extract_rusage(text) == {"maxrss_kb": "123456", "minflt": "789"}
+
+
+def test_extract_rusage_absent_is_empty():
+    assert extract_rusage("no witness ran here\n") == {}
+
+
+def test_extract_rusage_multi_rank_takes_max_rss_and_sums_faults():
+    # One /usr/bin/time -v block per rank, interleaved in the captured
+    # stream: the cell's peak resident set is its worst rank, but its fault
+    # volume is the total work the ranks together paid in fault handling.
+    text = (_TIME_BLOCK.format(rss=100, flt=10)
+            + _TIME_BLOCK.format(rss=300, flt=20)
+            + _TIME_BLOCK.format(rss=200, flt=5))
+    assert extract_rusage(text) == {"maxrss_kb": "300", "minflt": "35"}
+
+
+def test_apply_to_folds_rusage_into_extra(tmp_path):
+    app = _app()
+    text = "RESULT = 42\n[E2E] 1000\n" + _TIME_BLOCK.format(rss=555, flt=9)
+    r = _timeout_result("a", text, app, tmp_path)
+    r.status = Status.OK
+    apply_to(r)
+    assert r.status is Status.OK
+    assert r.extra["maxrss_kb"] == "555"
+    assert r.extra["minflt"] == "9"

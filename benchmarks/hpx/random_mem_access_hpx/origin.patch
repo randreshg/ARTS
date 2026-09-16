@@ -1,0 +1,149 @@
+--- origin/examples/random_mem_access/random_mem_access_client.cpp
++++ ours/random_mem_access_client.cpp
+@@ -19,6 +19,9 @@
+ #include <hpx/modules/program_options.hpp>
+ 
+ #include "random_mem_access/random_mem_access.hpp"
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++#include <cstdint>
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ int hpx_main(hpx::program_options::variables_map& vm)
+@@ -32,20 +35,28 @@
+     if (vm.count("iterations"))
+         iterations = vm["iterations"].as<std::size_t>();
+ 
++    std::uint64_t seed = std::random_device{}();
++    if (vm.count("seed"))
++        seed = vm["seed"].as<std::uint64_t>();
++
+     {
++        arts_hpx::run_clock clock;
+         std::vector<hpx::components::random_mem_access> accu =
+             hpx::new_<hpx::components::random_mem_access[]>(
+                 hpx::default_layout(hpx::find_all_localities()), array_size)
+                 .get();
+ 
+         // initialize the array
++        std::vector<hpx::future<void>> inits;
+         for (std::size_t i = 0; i < array_size; i++)
+         {
+-            accu[i].init(i);
++            inits.push_back(hpx::async<
++                hpx::components::server::random_mem_access::init_action>(
++                accu[i].get_id(), i));
+         }
++        hpx::wait_all(inits);
+ 
+-        auto seed = std::random_device{}();
+-        std::mt19937 gen(seed);
++        std::mt19937 gen(static_cast<std::mt19937::result_type>(seed));
+ 
+         std::vector<hpx::future<void>> barrier;
+         for (std::size_t i = 0; i < iterations; i++)
+@@ -53,19 +64,24 @@
+             std::uniform_int_distribution<> dis(
+                 0, static_cast<int>(array_size - 1));
+             std::size_t rn = dis(gen);
+-            //std::cout << " Random element access: " << rn << std::endl;
+             barrier.push_back(accu[rn].add_async());
+         }
+ 
+         hpx::wait_all(barrier);
+ 
+-        std::vector<hpx::future<void>> barrier2;
++        std::vector<hpx::future<std::size_t>> counts;
+         for (std::size_t i = 0; i < array_size; i++)
+         {
+-            barrier2.push_back(accu[i].print_async());
++            counts.push_back(accu[i].query_async());
+         }
+-
+-        hpx::wait_all(barrier2);
++        hpx::wait_all(counts);
++        std::uint64_t sum = 0;
++        for (std::size_t i = 0; i < array_size; i++)
++            sum += counts[i].get() - i;
++        arts_hpx::print_e2e(clock);
++        if (arts_hpx::struct_marker())
++            arts_hpx::print_parcels();
++        arts_hpx::write_stdout_line("COUNT_SUM " + std::to_string(sum) + "\n");
+     }
+ 
+     return hpx::finalize();
+@@ -83,11 +99,15 @@
+     desc_commandline.add_options()("array-size",
+         value<std::size_t>()->default_value(8), "the size of the array")(
+         "iterations", value<std::size_t>()->default_value(16),
+-        "the number of lookups to perform");
++        "the number of lookups to perform")(
++        "seed", value<std::uint64_t>(), "the seed of the index sequence");
+     // Initialize and run HPX
+     hpx::init_params init_args;
+     init_args.desc_cmdline = desc_commandline;
+ 
++    arts_hpx::register_geometry_startup();
++    init_args.cfg = arts_hpx::runtime_defaults(false);
++
+     return hpx::init(argc, argv, init_args);
+ }
+ 
+--- origin/examples/random_mem_access/random_mem_access/server/random_mem_access.hpp
++++ ours/random_mem_access/server/random_mem_access.hpp
+@@ -13,8 +13,6 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
+-#include <iostream>
+-#include <sstream>
+ 
+ namespace hpx { namespace components { namespace server {
+     ///////////////////////////////////////////////////////////////////////////
+@@ -51,11 +49,6 @@
+         /// Initialize the accumulator
+         void init(std::size_t i)
+         {
+-            std::ostringstream oss;
+-            oss << "[L" << prefix_ << "/" << this << "]"
+-                << " Initializing count to " << i << "\n";
+-            std::cout << oss.str() << std::flush;
+-
+             arg_ = i;
+             arg_init_ = i;
+         }
+@@ -63,34 +56,18 @@
+         /// Add the given number to the accumulator
+         void add()
+         {
+-            std::ostringstream oss;
+-            oss << "[L" << prefix_ << "/" << this << "]"
+-                << " Incrementing count from " << arg_ << " to " << (arg_ + 1)
+-                << "\n";
+-            std::cout << oss.str() << std::flush;
+-
+             arg_ += 1;
+         }
+ 
+         /// Return the current value to the caller
+         std::size_t query()
+         {
+-            std::ostringstream oss;
+-            oss << "[L" << prefix_ << "/" << this << "]"
+-                << " Querying count, current value is " << arg_ << "\n";
+-            std::cout << oss.str() << std::flush;
+-
+             return arg_;
+         }
+ 
+         /// Print the current value of the accumulator
+         void print()
+         {
+-            std::ostringstream oss;
+-            oss << "[L" << prefix_ << "/" << this << "]"
+-                << " Initial count was " << arg_init_ << ", final count is "
+-                << arg_ << "\n";
+-            std::cout << oss.str() << std::flush;
+         }
+ 
+         ///////////////////////////////////////////////////////////////////////

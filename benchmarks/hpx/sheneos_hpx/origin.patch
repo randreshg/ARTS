@@ -1,0 +1,113 @@
+--- origin/examples/sheneos/sheneos_test.cpp
++++ ours/sheneos_test.cpp
+@@ -19,6 +19,11 @@
+ 
+ #include "sheneos/interpolator.hpp"
+ 
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
++#include <cstdio>
++
+ #include <hpx/modules/program_options.hpp>
+ 
+ char const* const shen_symbolic_name = "/sheneos/interpolator_test";
+@@ -211,7 +216,7 @@
+ ///////////////////////////////////////////////////////////////////////////////
+ /// This is the test function for interpolate_bulk. It will be invoked on all
+ /// localities that the benchmark is being run on.
+-void test_sheneos_bulk(std::size_t num_ye_points, std::size_t num_temp_points,
++double test_sheneos_bulk(std::size_t num_ye_points, std::size_t num_temp_points,
+     std::size_t num_rho_points, std::size_t seed)
+ {
+     // Create a client instance connected to the already existing interpolation
+@@ -297,7 +302,16 @@
+         shen.interpolate_bulk_async(values);
+ 
+     std::vector<std::vector<double>> results = hpx::unwrap(bulk_tests);
+-    (void) results;
++
++    // This worker's share of the answer: every value it asked for, in the
++    // order of the query array it built.
++    double checksum = 0.0;
++    for (std::size_t i = 0; i != results.size(); ++i)
++    {
++        for (std::size_t j = 0; j != results[i].size(); ++j)
++            checksum += results[i][j];
++    }
++    return checksum;
+ }
+ 
+ HPX_DECLARE_ACTION(test_sheneos_bulk, test_bulk_action);
+@@ -338,6 +352,8 @@
+     std::cout << "Seed: " << seed << std::endl;
+ 
+     {
++        arts_hpx::run_clock clock;
++
+         hpx::chrono::high_resolution_timer t;
+ 
+         // Create a distributed interpolation object with the name
+@@ -356,7 +372,7 @@
+ 
+         // Kick off the computation asynchronously. On each locality,
+         // num_workers test_actions are created.
+-        std::vector<hpx::future<void>> bulk_tests;
++        std::vector<hpx::future<double>> bulk_tests;
+         for (hpx::id_type const& id : locality_ids)
+         {
+             for (std::size_t i = 0; i < num_workers; ++i)
+@@ -367,6 +383,18 @@
+         }
+         hpx::wait_all(bulk_tests);
+ 
++        arts_hpx::print_e2e(clock);
++        if (arts_hpx::struct_marker())
++            arts_hpx::print_parcels();
++
++        double checksum = 0.0;
++        for (hpx::future<double>& f : bulk_tests)
++            checksum += f.get();
++
++        char line[64];
++        std::snprintf(line, sizeof line, "CHECKSUM %.14g\n", checksum);
++        arts_hpx::write_stdout_line(line);
++
+         std::cout << "Completed bulk tests: " << t.elapsed() << " [s]"
+                   << std::endl;
+ 
+@@ -404,8 +432,11 @@
+         "is chosen based on the current system time)");
+ 
+     // Initialize and run HPX.
++    arts_hpx::register_geometry_startup();
++
+     hpx::init_params init_args;
+     init_args.desc_cmdline = cmdline;
++    init_args.cfg = arts_hpx::runtime_defaults(false);
+ 
+     return hpx::init(argc, argv, init_args);
+ }
+--- origin/examples/sheneos/sheneos/interpolator.cpp
++++ ours/sheneos/interpolator.cpp
+@@ -203,6 +203,11 @@
+         dimension dim_y(num_values_[dimension::temp]);
+         dimension dim_z(num_values_[dimension::rho]);
+ 
++        // The partitions have to exist before they can be initialised: the
++        // loop below indexes partitions_, which stays empty until the
++        // creation's result is moved into it.
++        partitions_ = result.get();
++
+         std::vector<hpx::future<void>> lazy_sync;
+         lazy_sync.reserve(2 * num_instances);
+ 
+@@ -245,8 +250,6 @@
+             symbolic_name_base += "/";
+ 
+         // Register symbolic names of all involved components.
+-        partitions_ = result.get();
+-
+         std::size_t i = 0;
+         for (partition3d& p : partitions_)
+         {

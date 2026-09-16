@@ -10,6 +10,8 @@ namespace arts_hpx {
 // cached connection slot; hpx_main runs on every locality, since every
 // locality owns setup state and must stay inside hpx_main until the global
 // completion edge (finalize on any locality begins global shutdown).
+// A program written for a single hpx_main keeps it: forcing hpx_main onto
+// every locality would run its driver loop once per locality.
 //
 // The last two lines are one budget between them.  A thread object that runs
 // takes a stack and a guard page, and its queue keeps the stack in a cache
@@ -27,12 +29,17 @@ namespace arts_hpx {
 // version instantiates the ABP deque backends the policy names suggest.
 // That line alone carries no forcing modifier: a forcing entry outranks the
 // command line, and a scheduling policy must stay selectable there.
-inline std::vector<std::string> runtime_defaults()
+inline std::vector<std::string> runtime_defaults(bool run_main_everywhere = true)
 {
-    return {"hpx.use_process_mask!=1", "hpx.os_threads!=cores",
-        "hpx.parcel.mpi.sendimm!=1", "hpx.run_hpx_main!=1",
+    std::vector<std::string> cfg = {"hpx.use_process_mask!=1",
+        "hpx.os_threads!=cores", "hpx.parcel.mpi.sendimm!=1",
         "hpx.thread_queue.max_thread_count!=100",
         "hpx.scheduler=local-priority-lifo"};
+    // A program whose hpx_main runs on locality 0 alone keeps that shape:
+    // the other localities host its components and leave when it finalizes.
+    if (run_main_everywhere)
+        cfg.push_back("hpx.run_hpx_main!=1");
+    return cfg;
 }
 
 }    // namespace arts_hpx

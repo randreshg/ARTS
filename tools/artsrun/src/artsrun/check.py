@@ -50,7 +50,12 @@ def extract(text: str, marker: str, scalar_re: str) -> tuple[bool, str | None]:
     return True, "MATCHED"
 
 
-_E2E_RE = re.compile(r"^\[E2E\]\s+(\d+)\s*$", re.M)
+# The stamp ends its line but need not start it: a launcher that prefixes
+# every line with a rank or host tag would otherwise hide the measurement,
+# while trailing text still disqualifies a line so a sentence that merely
+# mentions the token cannot be read as a stamp.
+_E2E_RE = re.compile(r"\[E2E\]\s+(\d+)\s*$", re.M)
+_APP_E2E_RE = re.compile(r"\[APP_E2E\]\s+(\d+)\s*$", re.M)
 
 # One line per violated check, printed by the CPU-envelope wrapper every
 # reference rank runs under.  The line, not the exit code, is the signal: a
@@ -59,12 +64,17 @@ _E2E_RE = re.compile(r"^\[E2E\]\s+(\d+)\s*$", re.M)
 # not depend on what the process tree happened to exit with.
 _ENVELOPE_RE = re.compile(r"^ARTSRUN-ENVELOPE-FAIL: (.*)$", re.M)
 
-# One line per locality, carrying its own id, printed by every HPX port;
+# One line per locality, carrying its own id, printed by every HPX-origin program;
 # together they are a world-size oracle independent of the [E2E] stamp
 # count, and the ids keep a locality that printed twice from masking one
 # that never printed.
+# Not anchored at the line start: ranks share one stream, so a write that has
+# not yet ended in a newline can prefix the next rank's marker.  Requiring the
+# marker to END its line keeps the shape strict while an interleaved prefix
+# stays harmless; anchoring both ends can only ever drop a marker that was
+# printed, which reads as a locality that never came up.
 _HPX_GEOM_RE = re.compile(
-    r"^\[HPX\] locality=(\d+) localities=(\d+) threads=(\d+)\s*$", re.M)
+    r"\[HPX\] locality=(\d+) localities=(\d+) threads=(\d+)\s*$", re.M)
 
 
 def extract_e2e(text: str) -> float | None:
@@ -73,12 +83,33 @@ def extract_e2e(text: str) -> float | None:
     The marker is rank 0's span from application start to shutdown
     recognition, so it excludes runtime init and teardown by construction.
     The last match wins: anything an application itself echoes earlier
-    cannot shadow the runtime's stamp at exit.
+    cannot shadow the runtime's stamp at exit.  A line yields at most one
+    stamp, which is what leaves the match count a world-size oracle.
     """
     matches = _E2E_RE.findall(text)
     if not matches:
         return None
     return int(matches[-1]) / 1e9
+
+
+# /usr/bin/time -v prints one block of these per process it waited for.  A
+# multi-rank cell's captured output interleaves one block per rank, so the
+# two fields aggregate differently: resident set size is a per-rank peak (the
+# cell's worst rank is the one that matters) while page faults are a per-rank
+# count (the cell's total fault volume is the sum across ranks).
+_MAXRSS_RE = re.compile(r"Maximum resident set size \(kbytes\):\s*(\d+)")
+_MINFLT_RE = re.compile(r"Minor \(reclaiming a frame\) page faults:\s*(\d+)")
+
+
+def extract_rusage(text: str) -> dict[str, str]:
+    maxrss = [int(m) for m in _MAXRSS_RE.findall(text)]
+    minflt = [int(m) for m in _MINFLT_RE.findall(text)]
+    out: dict[str, str] = {}
+    if maxrss:
+        out["maxrss_kb"] = str(max(maxrss))
+    if minflt:
+        out["minflt"] = str(sum(minflt))
+    return out
 
 
 def extract_extra(text: str, patterns: dict[str, str]) -> dict[str, str]:
@@ -102,7 +133,10 @@ def apply_to(result: CellResult) -> CellResult:
     completed, scalar = extract(text, result.cell.app.marker, result.cell.app.scalar_re)
     result.scalar = scalar
     result.e2e_s = extract_e2e(text)
+    app_stamps = _APP_E2E_RE.findall(text)
+    result.app_s = int(app_stamps[0]) / 1e9 if len(app_stamps) == 1 else None
     result.extra.update(extract_extra(text, result.cell.app.extra_scalars))
+    result.extra.update(extract_rusage(text))
     # Both demotions run BEFORE the timeout-leniency promotion below: a cell
     # whose rank 0 printed marker and stamp before another rank's envelope
     # died must not be promoted to OK by that branch.
@@ -110,6 +144,11 @@ def apply_to(result: CellResult) -> CellResult:
     if envelope:
         result.status = Status.FAIL
         result.note = f"envelope: {envelope.group(1)}"
+        return result
+    if result.cell.app.timing_metric == "app_s" and len(app_stamps) != 1:
+        if result.status is Status.OK or completed:
+            result.status = Status.FAIL
+            result.note = f"expected one [APP_E2E] stamp, found {len(app_stamps)}"
         return result
     stamps = len(_E2E_RE.findall(text))
     if stamps > 1:
@@ -133,7 +172,8 @@ def apply_to(result: CellResult) -> CellResult:
             # verdict, and overwriting it would hide the real failure.
             if result.status is Status.OK:
                 result.status = Status.FAIL
-                result.note = "no [HPX] geometry line (the port does not print its realised geometry)"
+                result.note = ("no [HPX] geometry line (the program does not "
+                               "print its realised geometry)")
             return result
         ids = sorted(int(i) for i, _, _ in seen)
         got = {(int(n), int(t)) for _, n, t in seen}

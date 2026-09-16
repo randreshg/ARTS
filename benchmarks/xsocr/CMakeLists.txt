@@ -72,9 +72,14 @@ target_include_directories(ocr_xsocr_objects PRIVATE
 # hints, which only some apps set, are then inert.  This keeps the runtime's
 # coherence behaviour single and uniform across all blocks.  The
 # channel/collective extension chain below is unrelated and stays enabled.
-# OCR_NOHINT_DB_HOME_ROUNDROBIN: no-hint DB home placement policy.
-# 1 = round-robin the home across all locations (default); 0 = pin to the
-# creator (legacy behavior).
+# OCR_NOHINT_DB_HOME_ROUNDROBIN: no-hint DB home placement policy.  0 (the
+# runtime's own default) homes a datablock created without an affinity hint
+# at its creating location, which is what the other runtimes under
+# comparison do for a hint-less create; 1 round-robins the home across
+# locations, which turns half of every no-hint create and release at two
+# locations into a blocking remote round trip on this runtime and, through
+# its nested dispatch of ready tasks while blocked, overruns the worker stack
+# on programs with many ready tasks.
 # INIT_DEQUE_CAPACITY: the workstealing deque does not grow; a full deque's
 # push would silently wrap and corrupt entries when asserts are compiled out.
 # Size it for large single-rank EDT fanouts, and keep the overflow assert
@@ -84,7 +89,7 @@ target_compile_definitions(ocr_xsocr_objects PRIVATE
     "OCR_TYPE_H=x86.h"
     CACHE_LINE_SZB=64
     GUID_PROVIDER_LOCID_SIZE=10
-    OCR_NOHINT_DB_HOME_ROUNDROBIN=1
+    OCR_NOHINT_DB_HOME_ROUNDROBIN=0
     INIT_DEQUE_CAPACITY=2097152
     OCR_ASSERT_CRITICAL=1
 )

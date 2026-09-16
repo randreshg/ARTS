@@ -123,6 +123,8 @@ class SweepSpec(BaseModel):
             scalar_kind=row.scalar_kind,
             tolerance=row.tolerance,
             extra_scalars=row.extra_scalars,
+            timing_metric=row.timing_metric,
+            timing_contract=row.timing_contract,
             args=self.argv_for(point),
             timeout=self.timeout or row.timeout,
             multinode_timeout=self.timeout or row.multinode_timeout,

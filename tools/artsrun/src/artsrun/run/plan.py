@@ -47,11 +47,11 @@ def _ineligible(entry: SelectionEntry, app: ResolvedApp, nodes: int) -> str | No
         return f"application cannot run multinode: {app.multinode_skip}"
     if entry.kind is RuntimeKind.OCRVX and app.ocrvx_skip:
         return "application uses OCR extensions this reference does not implement"
+    if entry.is_reference and app.arts_only:
+        return "probe is built for the ARTS variants alone"
     if entry.kind is RuntimeKind.HPX and app.hpx_binary is None:
-        if not app.hpx_versions:
-            return "no HPX port exists for this application"
-        return (f"the HPX port does not mirror the {app.version.value} tier "
-                f"(it mirrors {', '.join(v.value for v in app.hpx_versions)})")
+        return ("no HPX program: an OCR-origin row (the HPX entry runs the "
+                "HPX-origin section)")
     absent = _missing_inputs(app)
     if absent:
         return "input not staged on this machine: " + ", ".join(absent)
@@ -101,7 +101,7 @@ def expand(
                         continue
                     if entry.kind is RuntimeKind.HPX:
                         # The HPX apps are a standalone project beside the
-                        # OCR apps in the build tree, one target per port.
+                        # OCR apps in the build tree, one target per program.
                         binary = apps_dir.parent / "hpx" / app.hpx_binary
                     else:
                         binary = apps_dir / entry.binary(app.binary,

@@ -1,0 +1,505 @@
+# The HPX-origin section of the catalog: programs whose original is an HPX
+# program, mirrored in OCR.  A row here is one program on four runtimes.
+# Its name ends in `_hpx` and is the binary stem; the runtime tag is the
+# last token, as everywhere: the HPX program is `<name>_hpx` (built by the
+# HPX app project into build/benchmarks/hpx/), the OCR mirrors are
+# `<name>_arts_<variant>`, `<name>_xsocr`, `<name>_ocrvx` (built by the app
+# factory into build/benchmarks/apps/).  One tier, no hint layer, no rewrite: the
+# placement an HPX program states is carried by the mirror as hints, so
+# there is nothing a hint layer could add.  Every other field means what it
+# means in apps.yaml; a name here may not appear there.
+#
+# `kind` is the same classification: an app is cited by name outside this
+# catalog, a toy is named after an operation.
+
+apps:
+  fib_hpx:
+    binary: fib_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/fib_hpx/source-interval-v1
+    default_enabled: false
+    class: task
+    provenance: 'HPX quickstart example fibonacci_futures_distributed: distributed Fibonacci over futures and plain actions'
+    kind: toy
+    marker: 'fibonacci_future\(\d+\) == \d+'
+    scalar_re: 'fibonacci_future\(\d+\) == (\d+)'
+    scalar_kind: int
+    # Every call above the serial threshold is a task; the n-1 branch is
+    # spawned, the n-2 branch is recursed inline, and at the distribute-at
+    # level the children go to the next localities of a per-locality
+    # round-robin.  Width grows with n - threshold; distribute-at sets how
+    # many subtrees leave locality 0.  Test 1 only (test 0 is the serial
+    # reference the mirror does not carry).
+    # The pin fires at every rung: this row's arguments do not vary with the
+    # node count, so expect_args equals the cell's args at all four.
+    expect: '4052739537881'
+    expect_args: ['--n-value=62', '--threshold=44', '--distribute-at=57', '--n-runs=1', '--test=1']
+    # Sizing: n - threshold = 18 holds the task count at the gate's relation
+    # (about 21 900 tasks), distribute-at = n - 5; n is the size knob, the
+    # serial work below the threshold growing as phi^n.  Sized to the one-node
+    # window.
+    args: ['--n-value=62', '--threshold=44', '--distribute-at=57', '--n-runs=1', '--test=1']
+
+  pi_hpx:
+    binary: pi_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/pi_hpx/source-interval-v1
+    default_enabled: false
+    class: spmd
+    provenance: 'HPX collectives example distributed_pi: one integration block per locality, one reduce'
+    kind: toy
+    comparison_excluded: "the origin runs one integration block per locality and spawns no task, so on one node the whole computation is one thread; the parallel width is fixed by the locality count, below the machine"
+    marker: 'pi:\s*[0-9.]+'
+    scalar_re: 'pi:\s*([0-9.]+)'
+    tolerance: 1e-09
+    # One task per locality by construction, so the width rule does not
+    # apply; the row is the HPX entry's liveness smoke and the smallest
+    # consensus cell.  N is the only argument.
+    # This is the left-endpoint Riemann sum's own value at N = 1e8, not pi:
+    # its O(1/N) truncation error sits in the ninth significant digit (the
+    # eighth decimal place), so do not "correct" it back toward pi.
+    # N must be a multiple of every node count the profile sweeps: the block
+    # size is N/nl and the N%nl trailing terms are dropped, and one dropped
+    # term near x = 1 is about 4/N -- above the tolerance below, so a
+    # non-divisor node count fails the pin on all four runtimes at once.
+    expect: '3.14159265357222'
+    expect_args: ['70000000000']
+    # Sizing: N is the size knob and a multiple of every node count of the
+    # sweep (the block is N / localities and a dropped remainder moves the
+    # scalar past the tolerance); one task per locality, exempt from the width
+    # floor.  Sized to the one-node window, then rounded to a round number.
+    args: ['70000000000']
+
+  random_mem_access_hpx:
+    binary: random_mem_access_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/random_mem_access_hpx/source-interval-v1
+    default_enabled: false
+    class: task
+    provenance: 'HPX example random_mem_access: random remote updates of a distributed array of counters'
+    comparison_excluded: "the origin serializes the updates of one element with a component lock whose contention yields the running thread; the mirror serializes them through data-block ownership, a different mechanism"
+    kind: toy
+    marker: 'COUNT_SUM\s+\d+'
+    scalar_re: 'COUNT_SUM\s+(\d+)'
+    scalar_kind: int
+    # One 32-byte block per element, block-distributed over localities; each
+    # iteration is one independent task at a random element's home, drawn and
+    # issued in the same order the origin draws and posts add_async, guarded
+    # by a spinlock inside the element's own block -- the origin serialises
+    # every add() on a component under the component's own lock, and the
+    # spinlock is that lock.  The scalar is the delivered-update count and
+    # must equal iterations: a lost update is the defect this row can see.
+    # The seed fixes the stream on each side, and the mirror's bounded draw
+    # reproduces the vendored uniform_int_distribution algorithm exactly, so
+    # the two sides draw the identical index sequence at the same seed; the
+    # oracle does not depend on this, since it counts delivered updates, not
+    # which element received them.
+    # The pin fires at every rung: this row's arguments do not vary with the
+    # node count, so expect_args equals the cell's args at all four.
+    expect: '2000000'
+    expect_args: ['--array-size=4096', '--iterations=2000000', '--seed=1']
+    # Sizing: array-size 4096 is the width (one runnable turn per element);
+    # the duration rides on the update count, which is this program's unit of
+    # work and its own published option -- the one place in this section where
+    # an option that counts repetitions elsewhere is the size axis here.  Sized
+    # to the one-node window; the pin is the count itself (the lost-update
+    # oracle) and follows the size mechanically.
+    args: ['--array-size=4096', '--iterations=2000000', '--seed=1']
+
+  stencil1d_hpx:
+    binary: stencil1d_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/stencil1d_hpx/source-interval-v1
+    class: spmd
+    provenance: 'HPX example 1d_stencil_8: distributed 1D heat equation, one stepper component per locality, partitions exchanged as components and boundary elements pulled by action'
+    kind: app
+    marker: 'CHECKSUM\s+[-0-9.eE+]+'
+    scalar_re: 'CHECKSUM\s+([-0-9.eE+]+)'
+    tolerance: 1e-09
+    # No cross-geometry pin, and the reason is the origin's: a partition is
+    # initialised to its LOCAL index (`partition(here, nx, double(i))` inside
+    # do_work), so the initial grid -- and the final checksum with it -- is a
+    # function of the locality count.  The oracle is the four runtimes
+    # agreeing at each geometry, which is what consensus votes; a pinned
+    # answer would have to be one per node count and the catalog carries one.
+    # The scalar is the plain sum of the final state (the origin computes no
+    # printable quantity of its own).  It is conserved by the periodic
+    # update for any coefficient and so cannot distinguish a reversed ring
+    # from the right one -- a property of the quantity, disclosed in the
+    # appdoc, not something the program is changed to avoid.
+    # The tolerance is also what covers the xsocr entry's PRINTF: that
+    # runtime replaces printf with its own formatter, which renders a double
+    # to about a part in 1e15 (and no `%g` precision at all), so its line can
+    # read one ulp of the total below an answer that is bit-identical to
+    # every other entry's.
+    # Sizing: np is the parallel width, 4096 (a power of two above the widest
+    # geometry's worker total, 128 per node at 32, aligned to neither runtime's
+    # thread count; the origin divides it by the locality count); nt and nd
+    # keep the origin's published values; nx, the points per partition, carries
+    # the duration.  Both sides keep nd+2 generations of partition arrays alive
+    # (the origin's free list never releases and its components retire two
+    # steps late; the mirror keeps a ring of the same depth per partition), so
+    # the one-node cell is held below its window by the resident set that the
+    # registered pool's ladder maps over those generations: nx stops where the
+    # measured resident set fits the one-node memory budget with margin.
+    args: ['--nx=270000', '--nt=45', '--np=4096', '--nd=10']
+
+  transpose_hpx:
+    binary: transpose_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/transpose_hpx/source-interval-v1
+    class: spmd
+    provenance: 'HPX example transpose_block: the PRK matrix-transpose kernel over column blocks, one block component per locality slot, sub-blocks pulled by action'
+    comparison_excluded: "the origin's validation tasks start and then block on sub-block futures inside a parallel reduce, one per block per iteration (the numerical phase itself is continuation style)"
+    kind: app
+    marker: 'Solution validates'
+    scalar_re: 'ERRSQ\s+([-0-9.eE+]+)'
+    tolerance: 1e-08
+    # num_blocks is per locality; the ladder holds the TOTAL block count at 8,
+    # which is what keeps the matrix, the sub-block size and the phase count
+    # the same job at every geometry.  The pin applies at the one-node cell,
+    # where the args equal expect_args; the error is exactly zero everywhere,
+    # which the gate shows.
+    #
+    # Reading the two fields together: the origin prints the error only on the
+    # branch that validates and terminates on the other, and the mirror keeps
+    # that shape, so a wrong transpose shows up as a cell with neither the
+    # marker nor a scalar rather than as a number off the pin.  The transpose
+    # copies doubles, so every runtime's answer is the same bit pattern and the
+    # zero is exact; there is no repeat of stencil1d's xsocr rendering caveat
+    # here, since that runtime's own formatter renders zero exactly.
+    expect: '1.268042e-21'
+    expect_args: ['--matrix_size=71680', '--iterations=10', '--num_blocks=64']
+    # At the calibrated one-node size the HPX program occasionally prints nothing
+    # within the cell budget (about one run in eight; the others finish alike);
+    # a campaign reads such a cell as a timeout, never as a number.
+    # Sizing: the block count B is the parallel width, held at 64 (B^2 tasks
+    # per iteration), num_blocks = B / localities per rung; iterations keeps
+    # the origin's published value; matrix_size carries the duration.  The
+    # one-node cell is held below its window by the registered pool's
+    # resident set: the pool maps NUMA-placed slabs that grow by half at each
+    # step, so its capacity is a staircase of the per-node ladder, and the
+    # size stops at the largest measured size on the step that fits the
+    # memory budget with margin.
+    args: ['--matrix_size=71680', '--iterations=10', '--num_blocks=64']
+    args_by_nodes:
+      1: ['--matrix_size=71680', '--iterations=10', '--num_blocks=64']
+      2: ['--matrix_size=71680', '--iterations=10', '--num_blocks=32']
+      4: ['--matrix_size=71680', '--iterations=10', '--num_blocks=16']
+      8: ['--matrix_size=71680', '--iterations=10', '--num_blocks=8']
+      16: ['--matrix_size=71680', '--iterations=10', '--num_blocks=4']
+      32: ['--matrix_size=71680', '--iterations=10', '--num_blocks=2']
+
+  jacobi_hpx:
+    binary: jacobi_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/jacobi_hpx/source-interval-v1
+    class: task
+    provenance: 'HPX example jacobi: 2D Jacobi iteration over row components, one stencil_iterator per row, BSP barrier per iteration'
+    comparison_excluded: "the origin's update tasks start and then block on their neighbours' futures (async, then get), one suspended thread per line block per row per iteration -- a frontier that grows with the grid"
+    kind: app
+    marker: 'CHECKSUM\s+[-0-9.eE+]+'
+    scalar_re: 'CHECKSUM\s+([-0-9.eE+]+)'
+    tolerance: 1e-06
+    # The grid starts at 1.0 and the second generation at 0.0 -- on EVERY
+    # row, the two that are never stepped included -- so the alternating
+    # generation carries a different frame from the first, and the interior
+    # does not stay at 1.0 past the opening turn: an iterator indexes its
+    # neighbours by its OWN source parity, so on every other turn the first
+    # and last interior rows average against a boundary row's zeros.  The
+    # answer is therefore a function of the whole trajectory and of the
+    # iteration count, which is what makes it an oracle rather than a
+    # conserved constant, and the number below is the one this many turns
+    # writes.  It is also exact: every value is a dyadic rational a double
+    # holds outright, so the sum is the same in any order and the pin is
+    # geometry-independent (checked at one, two and four).
+    # The tolerance is what covers the xsocr entry's PRINTF: that runtime
+    # replaces printf with its own formatter, which renders a double to
+    # about a part in 1e15, so its line ends ...843 where every other
+    # entry's ends ...844.
+    expect: '64487.150146484'
+    expect_args: ['--nx=256', '--ny=256', '--max_iterations=9', '--line_block=32']
+    # Sizing: a square grid, max_iterations at the origin's published value;
+    # line_block is derived per size as the smallest multiple of ten that keeps
+    # the HPX origin's started-and-waiting frontier (one coroutine stack per
+    # line-block task) under the one-node stack budget.  The one-node cell is
+    # held below its window by this mirror's own bound -- cells are named in a
+    # 32-bit range, nx * ny < 2^30 -- and stops at the largest square under it.
+    args: ['--nx=32000', '--ny=32000', '--max_iterations=10', '--line_block=700']
+
+  network_storage_hpx:
+    binary: network_storage_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/network_storage_hpx/source-interval-v1
+    class: spmd
+    provenance: 'HPX performance test network_storage: bulk put/get of fixed-size transfers between per-locality storage arrays, block-cyclic or random targets at random offsets'
+    kind: toy
+    default_enabled: false
+    marker: 'TRANSFERS_OK\s+\d+\s+\d+'
+    scalar_re: 'TRANSFERS_OK\s+(\d+)'
+    scalar_kind: int
+    extra_scalars:
+      reads: 'TRANSFERS_OK\s+\d+\s+(\d+)'
+    # --globalMB=G gives each of the n localities G/n MB, cut into
+    # (G/n)*1024/transferKB slots, and with --all-to-all every locality puts
+    # (iterations + 1) passes of its slots -- the warm-up runs through the
+    # same write continuation and is counted, on both sides -- and gets
+    # `iterations` passes.  So the totals, (iterations + 1)*G*1024/transferKB
+    # puts and iterations*G*1024/transferKB gets, are the same at every
+    # geometry as long as --all-to-all is true, n divides G, and transferKB
+    # divides (G/n)*1024: 768 and 512 at 1, 2, 4 and 8 nodes with the
+    # arguments below (720 and 480 at 3).  The put count votes and is pinned;
+    # the get count rides as an extra.  The payload is the one thing in this
+    # section that is not write-race-free at block granularity: transfers that
+    # land on one slot are not ordered, in the origin (its storage array has no
+    # lock) or in the mirror, so nothing reads the bytes, here or there, and
+    # under DB_WRF the bytes are undefined while the counts are not.
+    expect: '393216'
+    expect_args: ['--globalMB=4096', '--transferKB=64', '--iterations=5', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
+    # Sizing: iterations and transferKB keep the origin's published values;
+    # globalMB is the size knob and stops at the origin's 4096 MB store ceiling
+    # (32-bit offsets), below the one-node window -- recorded, not sized past.
+    # --semaphore is inert on both sides; the width is the slot count.
+    args: ['--globalMB=4096', '--transferKB=64', '--iterations=5', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
+
+  mini_ghost_hpx:
+    binary: mini_ghost_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/mini_ghost_hpx/source-interval-v1
+    class: spmd
+    provenance: 'Mantevo MiniGhost (STE||AR-GROUP/miniapps, HPX port): 3D 27-point halo exchange with per-variable global sums'
+    comparison_excluded: "the origin's sum tasks wait mid-task on an all-reduce and its unpack tasks block on a neighbour's parcel -- a bounded count, but started tasks that suspend"
+    kind: app
+    marker: 'ERRMAX\s+[-0-9.eE+]+'
+    scalar_re: 'ERRMAX\s+([-0-9.eE+]+)'
+    tolerance: 1e-05
+    # The scalar is the program's own conservation check: the relative error
+    # between the total it injected and the global sum it computes, once per
+    # step per summed variable, maximised over both.  It is NOT small, and the
+    # reason is the program's own accounting, which is carried as written: the
+    # 27-point stencil loses mass at the boundary of the domain every step, and
+    # the flux that is supposed to credit it back reads the HALO planes of the
+    # grid, which on a global boundary no neighbour ever writes -- so the flux
+    # is identically zero and the error grows about half a percent per step.
+    # (The Mantevo reference sums the first and last INTERIOR layers instead.)
+    # The error therefore exceeds the origin's own default error_tol at every
+    # geometry, and the program calls hpx::terminate() when it does, so the row
+    # passes the origin's own --error_tol raised to 1: the program then runs to
+    # completion and the error it measures is what the four runtimes vote on.
+    # No cross-geometry pin: every rank draws its own initial field from its own
+    # stream, so the field -- and the error -- is a function of the rank count,
+    # exactly as stencil1d's checksum is.  The process grid must equal the node
+    # count and the origin defaults to WEAK scaling, so both are in the ladder.
+    # The tolerance is an absolute floor as well as a relative one (the driver
+    # compares with isclose(rel_tol=tol, abs_tol=tol)), which is what covers the
+    # xsocr entry: that runtime's own formatter renders a double for %.6e by
+    # adding half an ulp of the last printed digit, a fixed +5e-07 on the value,
+    # so its line differs in the sixth digit while the bits it computed are the
+    # same as every other entry's.  5e-07 against a 1e-05 floor is a 20x margin
+    # that does not shrink as ERRMAX does.
+    # The ladder runs a ONE-AXIS process grid at every rung, which is the
+    # program's own default: given more than one rank and no grid at all, it
+    # sets npx = nranks itself.  A multi-axis grid is reachable and is not a
+    # rung: as published the HPX entry did not repeat itself there (at 2x2x1
+    # ten runs gave ten values and at 2x2x2 twenty gave twenty, while 4x1x1
+    # and 8x1x1 repeat bit for bit and agree across all six entries); with
+    # the pack/unpack race fixed in the origin copy, five runs at 2x2x1 give
+    # one value on the HPX entry and the same value on the mirror.
+    # The program has two unordered pairs a multi-axis grid reaches.  (1) Its
+    # six unpack tasks each write a FULL padded halo plane, so adjacent faces
+    # overlap on the box's edge lines and such a cell holds whichever landed
+    # last -- but both writers of an edge cell are two-hop copies of the SAME
+    # cell of the diagonally adjacent rank, so whichever lands last writes what
+    # the other would have.  (2) A step's pack reads the grid generation the
+    # NEXT step's unpack writes.  The origin as published joined nothing
+    # there: it launched each send continuation and dropped its future, so a
+    # pack could read the next step's halo into a neighbour's edge cell.  That
+    # is a defect and it is fixed in the origin copy (disclosed in ORIGIN.md):
+    # every unpack of a step waits on its own rank's sends of the step before.
+    # The mirror carries the fixed program -- a pack raises a point the next
+    # step's unpacks wait on -- and both sides issue every step up front,
+    # gated only by those dependences.  On this one-axis ladder the plane a
+    # pack reads and the plane an unpack writes are disjoint, so neither pair
+    # moves an answer here.  What the one-axis choice costs is disclosed: two
+    # neighbours per rank instead of six, a thinner halo than a cubic grid
+    # exercises.
+    # Sizing: num_vars and num_tsteps keep the origin's published values, the
+    # width is the chunk count (variables x blocks x localities); a one-axis
+    # process grid at every rung (npx = localities), nx a multiple of 32 so the
+    # slab divides at every rung.  stencil 24, percent_sum 100, error_tol 1 and
+    # scaling 1 are the row's defining values.  Sized to the one-node window
+    # and rounded to the next multiple of 32.
+    args: ['--scaling=1', '--nx=480', '--ny=480', '--nz=480', '--num_vars=5', '--num_tsteps=100', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=1', '--npy=1', '--npz=1']
+    args_by_nodes:
+      1: ['--scaling=1', '--nx=480', '--ny=480', '--nz=480', '--num_vars=5', '--num_tsteps=100', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=1', '--npy=1', '--npz=1']
+      2: ['--scaling=1', '--nx=480', '--ny=480', '--nz=480', '--num_vars=5', '--num_tsteps=100', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=2', '--npy=1', '--npz=1']
+      4: ['--scaling=1', '--nx=480', '--ny=480', '--nz=480', '--num_vars=5', '--num_tsteps=100', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=4', '--npy=1', '--npz=1']
+      8: ['--scaling=1', '--nx=480', '--ny=480', '--nz=480', '--num_vars=5', '--num_tsteps=100', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=8', '--npy=1', '--npz=1']
+      16: ['--scaling=1', '--nx=480', '--ny=480', '--nz=480', '--num_vars=5', '--num_tsteps=100', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=16', '--npy=1', '--npz=1']
+      32: ['--scaling=1', '--nx=480', '--ny=480', '--nz=480', '--num_vars=5', '--num_tsteps=100', '--stencil=24', '--percent_sum=100', '--num_spikes=1', '--error_tol=1', '--npx=32', '--npy=1', '--npz=1']
+    timeout: 900
+
+  nbody_hpx:
+    binary: nbody_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/nbody_hpx/source-interval-v1
+    class: spmd
+    provenance: 'STE||AR-GROUP NBody, DistributedNBody: an octree over randomly placed bodies, one octree level spread over the localities, bodies migrating between cells every step'
+    kind: app
+    comparison_excluded: "the origin fixes its octree level at eight cells below nine localities (64 above), so on one node at most eight cell chains run at once on 112 cores; the parallel width is fixed by the origin, below the machine"
+    marker: 'CHECKSUM\s+[-0-9.eE+]+'
+    scalar_re: 'CHECKSUM\s+([-0-9.eE+]+)'
+    tolerance: 1e-09
+    # No cross-geometry pin: the cell count is a function of the locality count
+    # (the octree's first level, 8 cells, below nine localities and its second,
+    # 64, from nine), so the cell set -- and with it the answer -- changes at
+    # sixteen nodes and one pin cannot hold across a sweep.  --np is the knob a
+    # campaign can pin if it wants one answer at every geometry.  Over the
+    # ladder this profile sweeps the answer happens to be constant (5862219 at
+    # 1, 2, 4 and 8 nodes, measured on every entry), because all four counts
+    # take the same eight cells and only distribute them differently.
+    # What the scalar can see: a partition carries the positions its bodies had
+    # when it was built -- the step writes only the force back into the
+    # partition it passes on -- so the sum follows the bodies as they migrate
+    # between cells and localities, and is blind to the force kernel, which
+    # reaches nothing else.  That is a property of the program, disclosed in
+    # the appdoc rather than repaired.
+    # Width is the cell count, 8 or 64, whatever the node count: an anti-scaler
+    # by construction, reported as one and never resized to look better.
+    # Sizing: nt at the origin's published value; size = n / 5 keeps the gate's
+    # relation; the width is the eight cells of the top split (exempt from the
+    # width floor).  Sized to the one-node window through the row's measured
+    # two-point work exponent.
+    args: ['--n=120000', '--nt=100', '--size=24000', '--theta=0.3', '--th=100', '--k-th=500']
+    timeout: 900
+
+  fft_hpx:
+    binary: fft_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/fft_hpx/source-interval-v1
+    class: spmd
+    provenance: 'hpx-fft (DaRUS doi:10.18419/darus-4520, Strack and Pflüger): distributed 2D real-to-complex FFT over row-blocked data, two scatter exchanges around the transpose'
+    kind: app
+    marker: 'CHECKSUM\s+[-0-9.eE+]+'
+    scalar_re: 'CHECKSUM\s+([-0-9.eE+]+)'
+    tolerance: 1e-09
+    # --nx and --ny are the DIMENSIONS, not their logarithms: the paper's own
+    # script passes --nx=16384 --ny=16384.  The row fixes --run=scatter, the
+    # scheme the paper proposes; the origin's all_to_all is a different
+    # collective with a different message pattern and would be a second row.
+    #
+    # The pair must divide the geometry exactly.  The program computes
+    # n_x_local = nx / nl and n_y_local = (ny/2 + 1) / nl by truncating
+    # division, so a non-dividing pair silently drops the trailing rows and
+    # transforms a smaller array than the one asked for.  At --nx=256
+    # --ny=254 the two counts are 256 and 128, which divide every node count
+    # up to sixteen.
+    #
+    # No cross-geometry pin, and the reason is the origin's own arithmetic.
+    # It is NOT the first transpose's nl*j + i column ordering, which cannot
+    # move this program's answer: every row starts as the same ramp, so after
+    # the real-to-complex pass every row is identical and the vector the
+    # second transform sees is constant in x at every locality count --
+    # permuting a constant vector changes nothing.  What moves it is the
+    # SECOND transpose, which reads its chunk with the first phase's input
+    # stride (dim_c_y_part) where that chunk was cut with dim_c_x_part: both
+    # strides follow the locality count, so which chunk elements reach the
+    # result does too.  The row's pinlessness is a symptom of that kept
+    # kernel, not of the block distribution.  Measured on the HPX entry at
+    # these arguments:
+    # 28434214.354769, 26606318.203792, 24780157.170575 and 22952333.813996
+    # at one, two, four and eight.  The oracle is the four runtimes agreeing
+    # at each geometry, which is what consensus votes; a pinned answer would
+    # have to be one per node count and the catalog carries one.
+    #
+    # The scalar is the plain sum of the final array -- the origin computes
+    # no printable quantity of its own, only a phase-by-phase timing table.
+    # The tolerance covers three things, none of them a difference in the
+    # answer: the two sides reduce in different orders (an all_reduce against
+    # the mirror's rank-order sum), the two sides link different compiled
+    # FFTW binaries -- same source, same configuration, same planner and
+    # selected plan (the ESTIMATE plan text at this pair is byte-identical
+    # between the two builds), but the HPX program's FFTW is compiled by GCC
+    # and the OCR mirror's is compiled and translated by clang, so the
+    # codelet machine code differs in its last-bit rounding -- and the xsocr
+    # entry's own printf replacement renders a double to about a part in
+    # 1e15.  1e-09 is the sibling pinless row's tolerance and is as tight as
+    # the printing allows: the entries agree to about 1e-16, and the widest
+    # of the three causes is the %.14g/%.14e granularity at about 3.5e-14
+    # relative.  It does not loosen as a calibrated checksum grows -- both
+    # sides print a fixed number of significant digits.
+    # Sizing: nx and ny move together (ny = nx - 2, the paper's own square;
+    # ny/2+1 <= nx is the usage rule), nx FFTW-sized with nx and ny/2+1
+    # divisible by every node count to 32 (2250 rows per node at 32, aligned to
+    # neither runtime's thread count).  Sized to the one-node window through
+    # each arm's measured two-point exponent under the memory budget with margin.
+    args: ['--nx=72000', '--ny=71998', '--plan=estimate', '--run=scatter']
+
+  sheneos_hpx:
+    binary: sheneos_hpx
+    timing_metric: app_s
+    timing_contract: hpx-origin/sheneos_hpx/source-interval-v1
+    class: mw
+    provenance: 'HPX example sheneos: a tabulated nuclear equation of state cut into partition components over the localities, queried in bulk by workers on every locality'
+    comparison_excluded: "the origin's worker tasks start and then block on their own bulk query (unwrap) and on the partition sends (wait_all), two suspended threads per worker -- a frontier set by the width knob"
+    kind: app
+    marker: 'CHECKSUM\s+[-0-9.eE+]+'
+    scalar_re: 'CHECKSUM\s+([-0-9.eE+]+)'
+    tolerance: 1e-09
+    # Two invariants hold this row's ladder together, and both are the
+    # origin's own.  The WORKER TOTAL is held at 8 (`num-workers` is per
+    # locality, so it falls as the node count rises): every worker builds the
+    # same full grid of query points and returns the sum of what it got back,
+    # so the answer is the worker total times one worker's share and is the
+    # same job -- and the same number -- at every geometry.  And
+    # `--num-partitions` MUST EQUAL THE NODE COUNT, because the program
+    # derives the partitions-per-dimension twice, by two different numerical
+    # methods, for what is meant to be the same value: `fill_partitions` cuts
+    # the cube with floor(cbrt(localities)) while `connect()` routes queries
+    # with floor(exp(log(num_instances)/3)) -- mathematically identical
+    # expressions that truncate to different integers at some inputs (343,
+    # 512, 1000, 2744, 3375, 4096, ...), because the two library calls round
+    # differently.  Equal partition/node counts alone is necessary but not
+    # sufficient, so the mirror carries both derivations as the origin has
+    # them and rejects, as usage, a pair for which
+    # floor(cbrt(nodes)) != floor(exp(log(partitions)/3)) -- anywhere else
+    # the client routes a query to a partition that was never initialised,
+    # which the origin answers by throwing out of the interpolation.
+    #
+    # Only p^3 partitions are ever live, p = floor(cbrt(nodes)): ONE at 1, 2
+    # and 4 nodes -- on locality 0, taking every query from every worker -- and
+    # eight at 8.  That hot spot is the program's own behaviour and is the
+    # reason the row is interesting; it is reported, never engineered away.
+    #
+    # The answer is geometry-independent and therefore pinned: the query set is
+    # a function of the axis ranges and the point counts alone, and the
+    # partitioning only decides who computes it.  The pin applies at the
+    # one-node cell, where the args equal expect_args; this ladder changes
+    # --num-partitions and --num-workers at every rung, so the other three are
+    # judged by agreement among the entries rather than against expect.  The
+    # tolerance covers
+    # summation order, which is all that differs -- the origin shuffles each
+    # worker's query order (`seed + locality id`, so it differs per locality
+    # and per node count) and sums the replies in that order, while the mirror
+    # enumerates the same set in axis order; and the xsocr entry's own printf
+    # replacement renders a double to about a part in 1e15.
+    expect: '1.84915565522983e+46'
+    expect_args: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=1', '--num-workers=4096', '--seed=1']
+    fixtures: ['{repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5']
+    timeout: 1800
+    # Sizing: the worker total W = 4096 is the parallel width (num-workers =
+    # W / localities per rung, num-partitions = localities, the origin's own
+    # routing rule); the points per axis, cubed, carry the duration.  The
+    # one-node cell sits below its window: the HPX origin's resident set at
+    # this width grows faster than cubic with the points per axis and reaches
+    # the one-node memory budget before the ARTS time reaches the window, so
+    # the size stops at the largest round size whose HPX resident set fits the
+    # budget with margin.  Every rung keeps the request size.
+    args: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=1', '--num-workers=4096', '--seed=1']
+    args_by_nodes:
+      1: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=1', '--num-workers=4096', '--seed=1']
+      2: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=2', '--num-workers=2048', '--seed=1']
+      4: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=4', '--num-workers=1024', '--seed=1']
+      8: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=8', '--num-workers=512', '--seed=1']
+      16: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=16', '--num-workers=256', '--seed=1']
+      32: ['--file={repo}/datasets/sheneos/HShenEOS_rho220_temp180_ye65_version_1.1_20120817.h5', '--num-ye-points=95', '--num-temp-points=95', '--num-rho-points=95', '--num-partitions=32', '--num-workers=128', '--seed=1']

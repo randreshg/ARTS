@@ -92,7 +92,8 @@ def _launch(cell: Cell, profile: Profile) -> str:
     un-flagged step could rewrite it under the run.  --cpu-bind=none keeps
     the envelope wrapper the only affinity actor for the references.  Never
     add --label here: it prefixes every output line with the rank id, which
-    silently breaks the line-anchored [E2E] stamp parse.
+    breaks every line-anchored parse of the log — the envelope check among
+    them.
 
     A declared post-verify hook wraps OUTSIDE the srun line, so it runs once
     on the batch node rather than once per rank in a shared directory.

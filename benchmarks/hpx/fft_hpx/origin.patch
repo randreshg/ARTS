@@ -1,0 +1,98 @@
+--- origin/src/fft_hpx_loop.cpp
++++ ours/fft_hpx_loop.cpp
+@@ -18,6 +18,12 @@
+ 
+ #include "vector_2d.hpp"
+ 
++#include "common/e2e.hpp"
++#include "common/runtime_defaults.hpp"
++
++#include <cstdio>
++#include <functional>
++
+ typedef double real;
+ 
+ // FFT calculation struct
+@@ -91,7 +97,7 @@
+         std::size_t this_locality_, num_localities_;
+         // communicators
+         std::string COMM_FLAG_;
+-        std::vector<const char*> basenames_;
++        std::vector<std::string> basenames_;
+         std::vector<hpx::collectives::communicator> communicators_;
+ };
+ 
+@@ -401,8 +407,8 @@
+         communicators_.resize(num_localities_);
+         for(std::size_t i = 0; i < num_localities_; ++i)
+         {
+-            basenames_[i] = std::move(std::to_string(i).c_str());
+-            communicators_[i] = std::move(hpx::collectives::create_communicator(basenames_[i],
++            basenames_[i] = std::to_string(i);
++            communicators_[i] = std::move(hpx::collectives::create_communicator(basenames_[i].c_str(),
+                                           hpx::collectives::num_sites_arg(num_localities_), 
+                                           hpx::collectives::this_site_arg(this_locality_)));
+         }
+@@ -413,8 +419,8 @@
+         // setup communicators
+         basenames_.resize(1);
+         communicators_.resize(1);
+-        basenames_[0] = std::move(std::to_string(0).c_str());
+-        communicators_[0] = std::move(hpx::collectives::create_communicator(basenames_[0],
++        basenames_[0] = std::to_string(0);
++        communicators_[0] = std::move(hpx::collectives::create_communicator(basenames_[0].c_str(),
+                                       hpx::collectives::num_sites_arg(num_localities_), 
+                                       hpx::collectives::this_site_arg(this_locality_)));
+     }
+@@ -467,6 +473,7 @@
+     // Parameters and Data structures
+     const std::size_t this_locality = hpx::get_locality_id(); 
+     const std::size_t num_localities = hpx::get_num_localities(hpx::launch::sync);
++    arts_hpx::print_geometry();
+     const std::string run_flag = vm["run"].as<std::string>();
+     const std::string plan_flag = vm["plan"].as<std::string>();
+     bool print_result = vm["result"].as<bool>();
+@@ -496,6 +503,7 @@
+ 
+     ////////////////////////////////////////////////////////////////
+     // Initialization
++    arts_hpx::run_clock clock;
+     vector_2d<real> values_vec(n_x_local, 2 * dim_c_y);
+     for(std::size_t i = 0; i < n_x_local; ++i)
+     {
+@@ -510,6 +518,26 @@
+     auto stop_init = t.now();
+     values_vec = fft_computer.fft_2d_r2c();
+     auto stop_total = t.now();
++    arts_hpx::print_e2e(clock);
++    if (arts_hpx::struct_marker())
++        arts_hpx::print_parcels();
++    {
++        double local = 0.0;
++        for (std::size_t i = 0; i < values_vec.n_row(); ++i)
++            for (std::size_t j = 0; j < values_vec.n_col(); ++j)
++                local += values_vec(i, j);
++        auto comm = hpx::collectives::create_communicator("/fft/checksum",
++            hpx::collectives::num_sites_arg(num_localities),
++            hpx::collectives::this_site_arg(this_locality));
++        double total =
++            hpx::collectives::all_reduce(comm, local, std::plus<double>{}).get();
++        if (this_locality == 0)
++        {
++            char line[64];
++            std::snprintf(line, sizeof line, "CHECKSUM %.14g\n", total);
++            arts_hpx::write_stdout_line(line);
++        }
++    }
+     
+     // optional: print results 
+     if (print_result)
+@@ -611,7 +639,7 @@
+ 
+     // Initialize and run HPX, this example requires to run hpx_main on all
+     // localities
+-    std::vector<std::string> const cfg = {"hpx.run_hpx_main!=1"};
++    std::vector<std::string> const cfg = arts_hpx::runtime_defaults();
+ 
+     hpx::init_params init_args;
+     init_args.desc_cmdline = desc_commandline;

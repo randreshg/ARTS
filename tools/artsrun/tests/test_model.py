@@ -4,8 +4,10 @@ import pytest
 from pydantic import ValidationError
 
 from artsrun.model import (
+    AppEntry,
     Benchset,
     BenchsetEntry,
+    Catalog,
     Family,
     Kind,
     Profile,
@@ -90,7 +92,7 @@ def test_a_restructured_version_resolves_to_the_rewrite_target():
 
 def test_optimized_version_resolves_to_the_opt_target():
     catalog = load_catalog()
-    _, stem = catalog.resolve("nqueens", Version.HINTED)
+    _, stem = catalog.resolve("fft", Version.HINTED)
     assert stem.endswith("_hinted")
 
 
@@ -255,6 +257,22 @@ def test_a_row_override_never_follows_into_the_rewrites_cli():
     assert not got.args_overridden
 
 
+def test_a_rows_override_reaches_its_own_tiers_and_stops_at_the_rewrite():
+    # One roster entry can carry both: the row's own name sizes the tiers
+    # that share its CLI, the rewrite's name sizes the rewrite.  Neither
+    # override may cross into the other's arguments.
+    catalog = load_catalog()
+    row = next(a for a in catalog.rows if a.restructured_as and a.hinted)
+    bs = Benchset(name="o", apps={
+        row.name: BenchsetEntry(args=["4", "4"]),
+        row.restructured_as: BenchsetEntry(args=["7", "3"]),
+    })
+    resolved = {a.key: a for a in bs.resolve(catalog)}
+    assert resolved[f"{row.name}:base"].args == ["4", "4"]
+    assert resolved[f"{row.name}:hinted"].args == ["4", "4"]
+    assert resolved[f"{row.name}:restructured"].args == ["7", "3"]
+
+
 def test_benchset_disable_removes_every_version():
     catalog = load_catalog()
     bs = Benchset(name="o", apps={"nqueens": BenchsetEntry(enabled=False)})
@@ -284,6 +302,73 @@ def test_selection_rejects_a_node_count_outside_the_profile_sweep():
     )
     with pytest.raises(ValueError, match="not in profile"):
         sel.validate_against(plane, catalog, profile)
+
+
+# --- declared width -------------------------------------------------------
+def _width_catalog(cls: str, width: int | None) -> Catalog:
+    spec = {"name": "w", "binary": "w", "class": cls, "marker": "DONE"}
+    if width is not None:
+        spec["width_max"] = width
+    return Catalog(apps={"w": AppEntry.model_validate(spec)})
+
+
+def _width_selection() -> Selection:
+    return Selection(
+        profile="t", benchset="b", entries=["arts_val_wb"],
+        apps={"w": [Version.BASE]}, node_counts=[1, 2],
+    )
+
+
+def _validate_width(cls: str, width: int | None) -> None:
+    # nodes [1, 2] x 3 workers: the machine is 6 workers wide at its widest.
+    profile = Profile.model_validate(_local())
+    _width_selection().validate_against(
+        load_plane(), _width_catalog(cls, width), profile)
+
+
+def test_a_row_that_declares_no_width_is_not_checked():
+    _validate_width("task", None)
+
+
+def test_a_width_below_the_widest_geometry_is_refused_by_name():
+    with pytest.raises(ValueError, match=r"w: width_max=5 is below"):
+        _validate_width("task", 5)
+
+
+def test_a_task_width_needs_only_to_cover_the_machine():
+    # A task decomposition drains its excess; only the floor is structural.
+    _validate_width("task", 6)
+    _validate_width("task", 7)
+
+
+def test_a_team_width_must_divide_the_machine_evenly():
+    for cls in ("spmd", "mw"):
+        _validate_width(cls, 6)
+        _validate_width(cls, 12)
+        with pytest.raises(ValueError, match="not a whole multiple"):
+            _validate_width(cls, 7)
+
+
+def test_a_roster_override_suspends_the_width_check_and_says_so(capsys):
+    # width_max describes the catalog's own arguments; a roster that replaces
+    # them is running a different workload, so the number no longer describes
+    # the cell.  Refusing would break the smoke rosters shrinking a row is
+    # for, so the campaign is told instead.
+    profile = Profile.model_validate(_local())
+    catalog = _width_catalog("mw", 7)          # would be refused as declared
+    bs = Benchset(name="smoke", apps={"w": BenchsetEntry(args=["2"])})
+    _width_selection().validate_against(load_plane(), catalog, profile, bs)
+    err = capsys.readouterr().err
+    assert "width_max=7" in err and "smoke" in err
+
+
+def test_a_roster_that_leaves_the_arguments_alone_is_still_checked():
+    profile = Profile.model_validate(_local())
+    catalog = _width_catalog("mw", 7)
+    bs = Benchset(name="full", apps={"w": BenchsetEntry()})
+    with pytest.raises(ValueError, match="not a whole multiple"):
+        _width_selection().validate_against(
+            load_plane(), catalog, profile, bs)
 
 
 def test_cell_count_is_the_product_of_the_three_surfaces():
@@ -386,8 +471,11 @@ def test_the_catalog_separates_apps_probes_and_toys():
     apps = catalog.rows_of(Kind.APP)
     attacks = catalog.rows_of(Kind.ATTACK)
     toys = catalog.rows_of(Kind.TOY)
-    assert apps and attacks and toys
-    assert len(apps) + len(attacks) + len(toys) == len(catalog.rows)
+    hpx = catalog.hpx_rows
+    assert apps and attacks and toys and hpx
+    grouped = {a.name for a in (*apps, *attacks, *toys, *hpx)}
+    assert grouped == {a.name for a in catalog.rows}
+    assert len(apps) + len(attacks) + len(toys) + len(hpx) == len(catalog.rows)
 
 
 def test_the_old_probe_spelling_still_parses():
@@ -397,10 +485,12 @@ def test_the_old_probe_spelling_still_parses():
 
 def test_no_probe_or_toy_is_enabled_by_default():
     # A toy is a regression check and an attack probe is sweep material;
-    # neither belongs in a fresh comparison campaign.
+    # neither belongs in a fresh comparison campaign.  Every row of every
+    # section is held to this, so a new section inherits the rule.
     catalog = load_catalog()
-    assert not [a for a in catalog.rows_of(Kind.TOY) if a.default_enabled]
-    assert not [a for a in catalog.rows_of(Kind.ATTACK) if a.default_enabled]
+    offenders = [a.name for a in catalog.rows
+                 if a.default_enabled and a.kind in (Kind.TOY, Kind.ATTACK)]
+    assert not offenders, f"toys or probes enabled by default: {offenders}"
 
 
 def test_characterization_probes_are_attacks():
@@ -578,3 +668,54 @@ def test_sched_settings_reads_the_launchers_own_section():
     assert slurm.sched_settings.build_cpus == 4
     assert flux.sched_settings.build_cpus == 12
     assert local.sched_settings is None
+
+
+def test_arts_only_probe_excludes_every_reference():
+    """A probe built for the ARTS variants alone has no reference target: its
+    xsocr/ocr-vx cells are structurally ineligible, never a build error."""
+    from artsrun.model.catalog import load_catalog
+    from artsrun.model.plane import RuntimeKind
+    from artsrun.run.plan import _ineligible
+
+    cat = load_catalog()
+    flagged = {k for k, a in cat.apps.items() if a.arts_only}
+    assert {"rwpriv", "rwhandoff"} <= flagged
+    for key in flagged:
+        assert cat.apps[key].binary in ("rwpriv", "rwhandoff")
+
+    class _Entry:
+        def __init__(self, kind):
+            self.kind = kind
+
+        @property
+        def is_reference(self):
+            return self.kind is not RuntimeKind.ARTS
+
+    class _App:
+        unsupported = None
+        multinode_skip = None
+        ocrvx_skip = False
+        arts_only = True
+        hpx_binary = None
+        hpx_versions = []
+        fixtures = []
+
+    for kind in (RuntimeKind.XSOCR, RuntimeKind.OCRVX):
+        assert _ineligible(_Entry(kind), _App(), 1) == "probe is built for the ARTS variants alone"
+    assert _ineligible(_Entry(RuntimeKind.ARTS), _App(), 1) is None
+
+
+def test_the_two_section_loader_rejects_a_name_in_both_sections():
+    """A row is addressed by name alone downstream, so the merge that builds
+    the catalog refuses a name two sections both claim rather than letting
+    section order decide which one a roster gets."""
+    from artsrun.model.catalog import Origin, merge_sections
+
+    ocr = {"twin": {"class": "task", "provenance": "p", "kind": "toy",
+                    "marker": "x", "args": []}}
+    hpx = {"twin": {"class": "task", "provenance": "p", "kind": "toy",
+                    "marker": "x", "args": []}}
+    # Either section alone is accepted.
+    assert set(merge_sections([(ocr, Origin.OCR)], "/repo")) == {"twin"}
+    with pytest.raises(ValueError, match="named in two catalog sections"):
+        merge_sections([(ocr, Origin.OCR), (hpx, Origin.HPX)], "/repo")

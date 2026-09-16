@@ -1,0 +1,10 @@
+# Quick nqueens comparison roster: the hinted tier only (the row the HPX
+# port mirrors), one size below the calibrated workload so a cell stays in
+# the seconds range at every geometry.
+name: hpx-vs
+description: nqueens hpx-vs-arts quick comparison (hinted tier, n=18 s=6)
+apps:
+  nqueens:
+    enabled: true
+    versions: [hinted]
+    args: ['18', '14', '1', '6']

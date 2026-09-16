@@ -89,11 +89,12 @@ class SelectionEntry(BaseModel):
         """Executable name this entry runs a given application under.
 
         A cross-model reference does not run the OCR program in any version:
-        its port is one target of its own, named from the catalog's base
-        binary — the caller resolves it, so this mapping never applies.
+        its HPX-origin program is one target of its own, named from the
+        catalog's base binary — the caller resolves it, so this mapping never
+        applies.
         """
         if self.kind is RuntimeKind.HPX:
-            raise ValueError("an HPX port is named by the catalog, not "
+            raise ValueError("an HPX program is named by the catalog, not "
                              "derived from a version stem")
         stem = f"{app_binary}_hinted" if hinted else app_binary
         if self.kind is RuntimeKind.ARTS:

@@ -1946,6 +1946,8 @@ char *getArgv(void *dbPtr, u64 count) {
 
 u64 ocrGetArgc(void *dbPtr) { return getArgc(dbPtr); }
 
+u64 ocrNbWorkers(void) { return arts_get_workers_per_rank(); }
+
 char *ocrGetArgv(void *dbPtr, u64 count) { return getArgv(dbPtr, count); }
 
 /* =========================================================================
