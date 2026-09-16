@@ -1,15 +1,27 @@
 /*
  * rwsteady.c -- closed-loop steady-state reader/writer coherence probe.
  *
- * R reader chains and W writer chains free-run against D shared data blocks
- * for a fixed time window.  A chain is a self-perpetuating EDT sequence
- * pinned to one PD: each EDT acquires the target block in its chain's mode
+ * R reader chains and W writer chains free-run against D shared data blocks.
+ * A chain is a self-perpetuating EDT sequence pinned to one PD: each EDT acquires the target block in its chain's mode
  * (RO for readers, RW for writers), touches a bounded slice of the payload,
  * optionally spins while holding, releases EXPLICITLY, spins its think time,
  * and creates its successor.  The explicit release forces a coherence zero
  * edge between consecutive ops of one chain; overlap ACROSS chains on one
  * node is deliberate (per-node batching is a protocol property, controlled
  * by chains-per-PD).
+ *
+ * Two termination modes, selected per chain by its own op count (OPS_R for
+ * readers, OPS_W for writers):
+ *   - fixed-work (OPS_* nonzero): the chain runs exactly that many ops and
+ *     stops -- no deadline, no time-based guard of any kind.  T_MS and
+ *     WARM_MS are meaningless for that chain (every op is measured).
+ *   - timed (OPS_* zero): the chain runs until T_MS have elapsed past
+ *     WARM_MS of warmup, measuring only ops whose entry falls inside that
+ *     window, anchored at the chain's trigger arrival.  Starvation shows as
+ *     a class throughput collapse, never as a hang.
+ * Either way, a chain whose total op count runs away past RS_G_CAP is a
+ * failed cell (RWSTEADY-CAP-HIT) -- a runaway-loop safety net independent
+ * of both modes, not a per-mode termination path.
  *
  * Timing: a chain never leaves its PD, so all its timestamps come from one
  * monotonic clock; nothing compares clocks across PDs.  Each op yields
@@ -22,11 +34,13 @@
  * Samples land in per-PD process globals (one process per rank; a chain's
  * rows are written only by that chain), in octave+mantissa buckets.
  *
- * The measurement window is anchored at each chain's trigger arrival:
- * ops whose entry falls in [t_trig + warm, t_trig + warm + span) count.
- * Chains run to their deadline regardless of progress, so starvation is
- * reported as a class throughput collapse, never as a hang.  A chain that
- * hits the op cap is a failed cell (RWSTEADY-CAP-HIT), not a short one.
+ * Throughput (RXPUT/WXPUT) is the actually elapsed measurement span on one
+ * clock, never the requested window: per chain, span = (entry of its last
+ * measured op) - (its trigger arrival), and the reported window is the max
+ * of that span over every chain -- the wall of the slowest chain.  XPUT =
+ * ops / that window.  In timed mode every chain runs to the same deadline
+ * so this collapses to T_MS; in fixed-work mode it is the only honest
+ * figure, since there T_MS names no window at all.
  *
  * Correctness rides along: writers bump the block's op counter with an
  * atomic add (same-PD RW concurrency is legal under per-node-exclusive
@@ -46,14 +60,6 @@
  * deliberately.  D=0 is the null cut: every chain loops on a private block
  * homed at its own PD, measuring the create/dispatch/local-acquire floor
  * that sits inside every acquire figure.
- *
- * Fixed-work termination (OPS_R/OPS_W nonzero): each chain runs exactly
- * its class's op count and the figure of record is the runtime's own
- * end-to-end stamp — class interference then lands in e2e as the honest
- * serialization it is, instead of vanishing from a timed window.  The
- * deadline degrades to a budget guard: a chain that hits it short of its
- * count reports CAP-HIT and the marker is withheld.  WARM_MS is ignored
- * (every op is measured).
  *
  * args: R W E_HOLD_R_us E_HOLD_W_us E_THINK_us BYTES D T_MS WARM_MS
  *       RSPREAD WSPREAD HSPREAD SEED CENSUS JITTER_PCT PIPE OPS_R OPS_W
@@ -98,7 +104,9 @@
 #define RS_F_SUM_REL 6
 #define RS_F_SUM_TOT 7
 #define RS_F_USEFUL 8
-#define RS_F_HIST 9
+#define RS_F_TRIG_NS 9
+#define RS_F_LAST_NS 10
+#define RS_F_HIST 11
 #define RS_RESULT_WORDS (RS_F_HIST + 3u * RS_NB)
 
 /* paramv layout (all chain EDTs, one shape) */
@@ -131,6 +139,8 @@ enum {
              * readers additionally count USEFUL reads (counter advanced
              * since their last visit) — the consumed-value rate that a
              * dependency-coupled application's e2e is actually made of */
+  P_LASTOP, /* entry time of this chain's final measured op, for the
+             * elapsed-window throughput figure */
   P_DB0, /* P_DB0 .. P_DB0+7: data-block guids (null cut: [0] = private) */
   P_COUNT = P_DB0 + RS_MAX_DBS
 };
@@ -293,7 +303,8 @@ ocrGuid_t step_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     if (stamp < last)
       __atomic_fetch_add(&row->viol, 1, __ATOMIC_RELAXED);
     else {
-      if (stamp > last && t0 >= paramv[P_TRIG_NS] + warm_ns && t0 < deadline)
+      if (stamp > last &&
+          (kops || (t0 >= paramv[P_TRIG_NS] + warm_ns && t0 < deadline)))
         __atomic_fetch_add(&row->useful, 1, __ATOMIC_RELAXED);
       __atomic_store_n(&row->last_seen[dbi], stamp, __ATOMIC_RELAXED);
     }
@@ -353,12 +364,6 @@ ocrGuid_t step_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
                        ? __atomic_load_n(&row->last_seen[dbi], __ATOMIC_RELAXED)
                        : total;
     done = progress >= kops;
-    if (!done && now_ns() >= deadline) {
-      /* fixed-work budget guard: ending short of the count is a loud
-       * failure, never a quiet small sample */
-      __atomic_store_n(&row->cap_hit, 1, __ATOMIC_RELAXED);
-      done = 1;
-    }
   } else {
     done = now_ns() >= deadline;
   }
@@ -370,6 +375,7 @@ ocrGuid_t step_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrHint_t h;
   pd_hint(&h, paramv[P_PD], OCR_HINT_EDT_T);
   if (done) {
+    paramv[P_LASTOP] = t0;
     ocrGuid_t fin;
     ocrEdtCreate(&fin, u64_guid(paramv[P_FIN_TPL]), P_COUNT, paramv, 1, NULL,
                  EDT_PROP_NONE, &h, NULL);
@@ -412,6 +418,8 @@ ocrGuid_t fin_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   r[RS_F_VIOL] = __atomic_load_n(&row->viol, __ATOMIC_RELAXED);
   r[RS_F_CAP] = __atomic_load_n(&row->cap_hit, __ATOMIC_RELAXED);
   r[RS_F_USEFUL] = __atomic_load_n(&row->useful, __ATOMIC_RELAXED);
+  r[RS_F_TRIG_NS] = paramv[P_TRIG_NS];
+  r[RS_F_LAST_NS] = paramv[P_LASTOP];
   for (unsigned int k = 0; k < 3; k++) {
     r[RS_F_SUM_ACQ + k] = __atomic_load_n(&row->sum[k], __ATOMIC_RELAXED);
     for (unsigned int b = 0; b < RS_NB; b++)
@@ -430,17 +438,18 @@ ocrGuid_t fin_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 /* ------------------------------------------------------------ collector */
 /* paramv: {R, W, D, T_MS, WARM_MS, EHR, EHW, ETH, BYTES, RSPREAD, WSPREAD,
- *          HSPREAD, PDS, RHO_MILLI};  depv: A result blocks then D data
- *          blocks (RO).  Runs only when every chain slot landed, i.e. after
- *          every chain's last release. */
+ *          HSPREAD, PDS, RHO_MILLI, JITTER, OPS_R, OPS_W};  depv: A result
+ *          blocks then D data blocks (RO).  Runs only when every chain slot
+ *          landed, i.e. after every chain's last release. */
 ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc;
   u64 R = paramv[0], W = paramv[1], D = paramv[2], t_ms = paramv[3];
   u64 A = R + W;
+  int fixed_work = (paramv[15] != 0 || paramv[16] != 0);
   static uint64_t pooled[2][3][RS_NB]; /* class x figure x bucket */
   double sum[2][3] = {{0}};
   u64 ops_meas[2] = {0, 0}, ops_total_w = 0, viol = 0, cap = 0;
-  u64 useful_sum = 0;
+  u64 useful_sum = 0, max_span_ns = 0;
   double cn[2] = {0, 0}, cs[2] = {0, 0}, cq[2] = {0, 0}; /* chain-ops CV */
   memset(pooled, 0, sizeof(pooled));
   for (u64 i = 0; i < A; i++) {
@@ -455,6 +464,8 @@ ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     if (c) ops_total_w += r[RS_F_OPS_TOTAL];
     viol += r[RS_F_VIOL];
     cap += r[RS_F_CAP];
+    u64 span = r[RS_F_LAST_NS] - r[RS_F_TRIG_NS];
+    if (span > max_span_ns) max_span_ns = span;
     for (unsigned int k = 0; k < 3; k++) {
       sum[c][k] += (double)r[RS_F_SUM_ACQ + k];
       for (unsigned int b = 0; b < RS_NB; b++)
@@ -496,7 +507,9 @@ ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
   }
 
-  double span_s = (double)t_ms / 1000.0;
+  /* fixed work names no window: the denominator is the slowest chain's wall */
+  double span_s = fixed_work ? (double)max_span_ns / 1e9 : (double)t_ms / 1000.0;
+  if (span_s <= 0.0) span_s = 1e-9;
   double rx = (double)ops_meas[0] / span_s, wx = (double)ops_meas[1] / span_s;
 #define QQ(c, k, q) hist_quantile_us(pooled[c][k], q)
 #define MEAN(c, k) \
@@ -587,17 +600,18 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtTemplateCreate(&step_tpl, step_edt, P_COUNT, 1);
   ocrEdtTemplateCreate(&start_tpl, step_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&fin_tpl, fin_edt, P_COUNT, 1);
-  ocrEdtTemplateCreate(&coll_tpl, collector_edt, 15, (u32)(A + n_data));
+  ocrEdtTemplateCreate(&coll_tpl, collector_edt, 17, (u32)(A + n_data));
 
   u64 rho_milli =
       (u64)((double)W / (double)A * 10000.0 + 0.5); /* 4 decimals */
-  u64 cparams[15] = {R,       W,       n_data,  t_ms,   warm_ms,
+  u64 cparams[17] = {R,       W,       n_data,  t_ms,   warm_ms,
                      ehr,     ehw,     eth,     bytes,  rspread,
-                     wspread, hspread, pd_count, rho_milli, jitter};
+                     wspread, hspread, pd_count, rho_milli, jitter,
+                     ops_r,   ops_w};
   ocrHint_t h0;
   pd_hint(&h0, 0, OCR_HINT_EDT_T);
   ocrGuid_t collector;
-  ocrEdtCreate(&collector, coll_tpl, 15, cparams, (u32)(A + n_data), NULL,
+  ocrEdtCreate(&collector, coll_tpl, 17, cparams, (u32)(A + n_data), NULL,
                EDT_PROP_NONE, &h0, NULL);
   for (u64 d = 0; d < n_data; d++)
     ocrAddDependence(u64_guid(db_guids[d]), collector, (u32)(A + d),
