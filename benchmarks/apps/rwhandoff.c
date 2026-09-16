@@ -22,6 +22,19 @@
  * launcher); termination compares are coarse enough to tolerate ordinary
  * clock skew either way.
  *
+ * Two termination modes, selected by GENS (0 = timed mode, the default):
+ *   - fixed-work (GENS nonzero): each lattice's producer stops once it has
+ *     produced exactly GENS generations -- no deadline, no time-based guard.
+ *     T_MS and WARM_MS are meaningless in this mode (every generation is
+ *     measured).  The lattice rate is then the actually elapsed measurement
+ *     span on one clock, never the requested window: per lattice, span =
+ *     (entry of its last measured generation) - (its trigger arrival), and
+ *     the reported window is the max of that span over every lattice -- the
+ *     wall of the slowest lattice.
+ *   - timed (GENS zero): producers run until T_MS have elapsed past WARM_MS
+ *     of warmup, and the lattice rate is generations measured / T_MS, as
+ *     before.
+ *
  * Correctness: a producer is chain-ordered with every earlier producer,
  * so the region it overwrites must hold exactly the stamp from NREG
  * generations ago.  A consumer's snapshot is concurrent with LATER
@@ -32,7 +45,10 @@
  * never runs and no completion marker is printed.
  *
  * args: L NREG BYTES E_HOLD_W_us E_HOLD_R_us E_THINK_us T_MS WARM_MS
- *       CENSUS CROSSCLOCK
+ *       CENSUS CROSSCLOCK GENS
+ * GENS (0 = timed mode) is the fixed-work knob: a nonzero count is the
+ * exact number of generations every lattice's producer runs before
+ * stopping, replacing the T_MS time window as the termination condition.
  * output: one "RWHANDOFF OK ..." line (the completion marker) or an
  *         RWHANDOFF-ORACLE-FAIL line and no marker.
  */
@@ -62,7 +78,9 @@
 #define RH_F_SUM_GEN 4
 #define RH_F_HREL 5
 #define RH_F_HGEN (RH_F_HREL + RH_NB)
-#define RH_RESULT_WORDS (RH_F_HGEN + RH_NB)
+#define RH_F_TRIG_NS (RH_F_HGEN + RH_NB)
+#define RH_F_LAST_NS (RH_F_TRIG_NS + 1)
+#define RH_RESULT_WORDS (RH_F_LAST_NS + 1)
 
 enum {
   P_LAT,
@@ -91,6 +109,9 @@ enum {
   P_WMS,
   P_XCLK,
   P_PDS,
+  P_KGENS, /* fixed-work mode: exact generation count per lattice (0 = timed) */
+  P_LASTOP, /* entry time of this lattice's final measured generation, for
+             * the elapsed-window rate figure */
   M_GENS_MEAS,
   M_VIOL,
   M_SUM_REL,
@@ -176,6 +197,7 @@ ocrGuid_t prod_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   }
   u64 warm_ns = paramv[P_WMS] * 1000000ull;
   u64 deadline = paramv[P_TRIG_NS] + warm_ns + paramv[P_TMS] * 1000000ull;
+  u64 kgens = paramv[P_KGENS];
 
   u64 rw = region_words(paramv[P_BYTES], nreg);
   u64 *base = (u64 *)depv[0].ptr + (g % nreg) * rw;
@@ -193,7 +215,8 @@ ocrGuid_t prod_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrDbRelease(depv[0].guid);
   u64 t2 = now_ns();
 
-  int in_window = t0 >= paramv[P_TRIG_NS] + warm_ns && t0 < deadline;
+  int in_window =
+      kgens ? 1 : (t0 >= paramv[P_TRIG_NS] + warm_ns && t0 < deadline);
   if (in_window) {
     u64 rel = t2 - t1;
     paramv[M_SUM_REL] += rel;
@@ -207,10 +230,12 @@ ocrGuid_t prod_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     paramv[M_GENS_MEAS]++;
   }
 
-  if (now_ns() >= deadline) {
+  int done = kgens ? (g + 1 >= kgens) : (now_ns() >= deadline);
+  if (done) {
     ocrHint_t h;
     pd_hint(&h, (lat + g) % pds, OCR_HINT_EDT_T);
     paramv[P_GEN] = g + 1; /* gens produced in total */
+    paramv[P_LASTOP] = t0;
     ocrGuid_t fin;
     ocrEdtCreate(&fin, u64_guid(paramv[P_FIN_TPL]), P_COUNT, paramv, 2, NULL,
                  EDT_PROP_NONE, &h, NULL);
@@ -308,6 +333,8 @@ ocrGuid_t fin_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     r[RH_F_HREL + b] = paramv[M_HREL + b];
     r[RH_F_HGEN + b] = paramv[M_HGEN + b];
   }
+  r[RH_F_TRIG_NS] = paramv[P_TRIG_NS];
+  r[RH_F_LAST_NS] = paramv[P_LASTOP];
   ocrEventDestroy(u64_guid(paramv[P_LATCH]));
   ocrGuid_t rdb = depv[0].guid;
   ocrDbRelease(rdb);
@@ -317,16 +344,17 @@ ocrGuid_t fin_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 }
 
 /* --------------------------------------------------------------- collector */
-/* paramv: {L, NREG, BYTES, EHW, EHR, ETH, T_MS, WARM_MS, PDS, XCLK};
+/* paramv: {L, NREG, BYTES, EHW, EHR, ETH, T_MS, WARM_MS, PDS, XCLK, GENS};
  * depv: L result blocks (RO). */
 ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc;
   (void)depc;
   u64 L = paramv[0], t_ms = paramv[6];
+  int fixed_work = paramv[10] != 0;
   static uint64_t prel[RH_NB], pgen[RH_NB];
   memset(prel, 0, sizeof(prel));
   memset(pgen, 0, sizeof(pgen));
-  u64 gens_meas = 0, gens_total = 0, viol = 0;
+  u64 gens_meas = 0, gens_total = 0, viol = 0, max_span_ns = 0;
   double sum_rel = 0, sum_gen = 0;
   for (u64 l = 0; l < L; l++) {
     const u64 *r = (const u64 *)depv[l].ptr;
@@ -335,6 +363,8 @@ ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     viol += r[RH_F_VIOL];
     sum_rel += (double)r[RH_F_SUM_REL];
     sum_gen += (double)r[RH_F_SUM_GEN];
+    u64 span = r[RH_F_LAST_NS] - r[RH_F_TRIG_NS];
+    if (span > max_span_ns) max_span_ns = span;
     for (unsigned int b = 0; b < RH_NB; b++) {
       prel[b] += r[RH_F_HREL + b];
       pgen[b] += r[RH_F_HGEN + b];
@@ -346,7 +376,9 @@ ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrShutdown();
     return NULL_GUID;
   }
-  double span_s = (double)t_ms / 1000.0;
+  /* fixed work names no window: the denominator is the slowest lattice's wall */
+  double span_s = fixed_work ? (double)max_span_ns / 1e9 : (double)t_ms / 1000.0;
+  if (span_s <= 0.0) span_s = 1e-9;
   PRINTF("RWHANDOFF OK PDS=%lu L=%lu NREG=%lu BYTES=%lu EHW=%lu EHR=%lu "
          "ETH=%lu T_MS=%lu WARM_MS=%lu GENS=%lu GXPUT=%.1f "
          "WREL_P50=%.2f WREL_P99=%.2f WREL_MEAN=%.2f "
@@ -369,10 +401,10 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc;
   (void)depc;
   u64 L = 16, nreg = 8, bytes = 65536, ehw = 1, ehr = 1, eth = 20;
-  u64 t_ms = 4000, warm_ms = 1500, census = 0, xclk = 1;
+  u64 t_ms = 4000, warm_ms = 1500, census = 0, xclk = 1, gens = 0;
   u64 argc = getArgc(depv[0].ptr);
   u64 *args[] = {&L, &nreg, &bytes, &ehw, &ehr, &eth, &t_ms, &warm_ms,
-                 &census, &xclk};
+                 &census, &xclk, &gens};
   for (u64 i = 0; i < sizeof(args) / sizeof(args[0]); i++)
     if (argc > i + 1) *args[i] = (u64)atol(getArgv(depv[0].ptr, i + 1));
 
@@ -398,14 +430,14 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtTemplateCreate(&start_tpl, prod_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&cons_tpl, cons_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&fin_tpl, fin_edt, P_COUNT, 2);
-  ocrEdtTemplateCreate(&coll_tpl, collector_edt, 10, (u32)L);
+  ocrEdtTemplateCreate(&coll_tpl, collector_edt, 11, (u32)L);
 
-  u64 cparams[10] = {L,    nreg,    bytes, ehw,      ehr,
-                     eth,  t_ms,    warm_ms, pd_count, xclk};
+  u64 cparams[11] = {L,    nreg,    bytes, ehw,      ehr,
+                     eth,  t_ms,    warm_ms, pd_count, xclk, gens};
   ocrHint_t h0;
   pd_hint(&h0, 0, OCR_HINT_EDT_T);
   ocrGuid_t collector;
-  ocrEdtCreate(&collector, coll_tpl, 10, cparams, (u32)L, NULL, EDT_PROP_NONE,
+  ocrEdtCreate(&collector, coll_tpl, 11, cparams, (u32)L, NULL, EDT_PROP_NONE,
                &h0, NULL);
 
   for (u64 l = 0; l < L; l++) {
@@ -451,6 +483,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     params[P_WMS] = warm_ms;
     params[P_XCLK] = xclk;
     params[P_PDS] = pd_count;
+    params[P_KGENS] = gens;
 
     ocrHint_t eh;
     pd_hint(&eh, home, OCR_HINT_EDT_T);

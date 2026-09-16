@@ -37,10 +37,25 @@
  * shape a first-touch application actually has.  A reader's block then
  * carries exactly one write forever.
  *
- * Fixed-work termination (OPS_R/OPS_W nonzero): each chain runs exactly
- * its class's op count; the deadline degrades to a budget guard that
- * fails the cell loudly (CAP-HIT) if hit short of the count, and every
- * op is measured (WARM_MS ignored).
+ * Two termination modes, selected per chain by its own op count (OPS_R for
+ * readers, OPS_W for writers):
+ *   - fixed-work (OPS_* nonzero): the chain runs exactly that many ops and
+ *     stops -- no deadline, no time-based guard of any kind.  T_MS and
+ *     WARM_MS are meaningless for that chain (every op is measured).
+ *   - timed (OPS_* zero): the chain runs until T_MS have elapsed past
+ *     WARM_MS of warmup, measuring only ops whose entry falls inside that
+ *     window.
+ * Either way, a chain whose total op count runs away past RP_G_CAP is a
+ * failed cell (RWPRIV-CAP-HIT) -- a runaway-loop safety net independent of
+ * both modes, not a per-mode termination path.
+ *
+ * Throughput (RXPUT/WXPUT) is the actually elapsed measurement span on one
+ * clock, never the requested window: per chain, span = (entry of its last
+ * measured op) - (its trigger arrival), and the reported window is the max
+ * of that span over every chain -- the wall of the slowest chain.  XPUT =
+ * ops / that window.  In timed mode every chain runs to the same deadline
+ * so this collapses to T_MS; in fixed-work mode it is the only honest
+ * figure, since there T_MS names no window at all.
  *
  * args: R W E_HOLD_R_us E_HOLD_W_us E_THINK_us BYTES T_MS WARM_MS
  *       SEED CENSUS JITTER_PCT WARMRW OPS_R OPS_W
@@ -79,7 +94,9 @@
 #define RP_F_SUM_ACQ 5
 #define RP_F_SUM_REL 6
 #define RP_F_SUM_TOT 7
-#define RP_F_HIST 8
+#define RP_F_TRIG_NS 8
+#define RP_F_LAST_NS 9
+#define RP_F_HIST 10
 #define RP_RESULT_WORDS (RP_F_HIST + 3u * RP_NB)
 
 enum {
@@ -104,6 +121,8 @@ enum {
   P_JITTER,
   P_WARM, /* 1 = this EDT is the chain's untimed first-touch write */
   P_KOPS, /* fixed-work mode: this chain's exact op count (0 = timed mode) */
+  P_LASTOP, /* entry time of this chain's final measured op, for the
+             * elapsed-window throughput figure */
   P_DB,
   P_COUNT
 };
@@ -303,10 +322,6 @@ ocrGuid_t step_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   int done;
   if (kops) {
     done = total >= kops;
-    if (!done && now_ns() >= deadline) {
-      __atomic_store_n(&row->cap_hit, 1, __ATOMIC_RELAXED);
-      done = 1;
-    }
   } else {
     done = now_ns() >= deadline;
   }
@@ -318,6 +333,7 @@ ocrGuid_t step_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrHint_t h;
   pd_hint(&h, paramv[P_PD], OCR_HINT_EDT_T);
   if (done) {
+    paramv[P_LASTOP] = t0;
     ocrGuid_t fin;
     ocrEdtCreate(&fin, u64_guid(paramv[P_FIN_TPL]), P_COUNT, paramv, 1, NULL,
                  EDT_PROP_NONE, &h, NULL);
@@ -350,6 +366,8 @@ ocrGuid_t fin_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   r[RP_F_OPS_MEAS] = __atomic_load_n(&row->ops_measured, __ATOMIC_RELAXED);
   r[RP_F_VIOL] = __atomic_load_n(&row->viol, __ATOMIC_RELAXED);
   r[RP_F_CAP] = __atomic_load_n(&row->cap_hit, __ATOMIC_RELAXED);
+  r[RP_F_TRIG_NS] = paramv[P_TRIG_NS];
+  r[RP_F_LAST_NS] = paramv[P_LASTOP];
   for (unsigned int k = 0; k < 3; k++) {
     r[RP_F_SUM_ACQ + k] = __atomic_load_n(&row->sum[k], __ATOMIC_RELAXED);
     for (unsigned int b = 0; b < RP_NB; b++)
@@ -365,15 +383,17 @@ ocrGuid_t fin_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
 
 /* ------------------------------------------------------------ collector */
 /* paramv: {R, W, T_MS, WARM_MS, EHR, EHW, ETH, BYTES, PDS, RHO_MILLI,
- *          JITTER, WARMRW}; depv: A result blocks then A data blocks (RO). */
+ *          JITTER, WARMRW, OPS_R, OPS_W}; depv: A result blocks then A data
+ *          blocks (RO). */
 ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc;
   (void)depc;
   u64 R = paramv[0], W = paramv[1], t_ms = paramv[2];
   u64 A = R + W;
+  int fixed_work = (paramv[12] != 0 || paramv[13] != 0);
   static uint64_t pooled[2][3][RP_NB];
   double sum[2][3] = {{0}};
-  u64 ops_meas[2] = {0, 0}, viol = 0, cap = 0, final_bad = 0;
+  u64 ops_meas[2] = {0, 0}, viol = 0, cap = 0, final_bad = 0, max_span_ns = 0;
   double cn[2] = {0, 0}, cs[2] = {0, 0}, cq[2] = {0, 0};
   memset(pooled, 0, sizeof(pooled));
   for (u64 i = 0; i < A; i++) {
@@ -390,6 +410,8 @@ ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     cq[c] += co * co;
     viol += r[RP_F_VIOL];
     cap += r[RP_F_CAP];
+    u64 span = r[RP_F_LAST_NS] - r[RP_F_TRIG_NS];
+    if (span > max_span_ns) max_span_ns = span;
     for (unsigned int k = 0; k < 3; k++) {
       sum[c][k] += (double)r[RP_F_SUM_ACQ + k];
       for (unsigned int b = 0; b < RP_NB; b++)
@@ -417,7 +439,9 @@ ocrGuid_t collector_edt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
   }
 
-  double span_s = (double)t_ms / 1000.0;
+  /* fixed work names no window: the denominator is the slowest chain's wall */
+  double span_s = fixed_work ? (double)max_span_ns / 1e9 : (double)t_ms / 1000.0;
+  if (span_s <= 0.0) span_s = 1e-9;
   double rx = (double)ops_meas[0] / span_s, wx = (double)ops_meas[1] / span_s;
 #define QQ(c, k, q) hist_quantile_us(pooled[c][k], q)
 #define MEAN(c, k) \
@@ -482,15 +506,16 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtTemplateCreate(&step_tpl, step_edt, P_COUNT, 1);
   ocrEdtTemplateCreate(&start_tpl, step_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&fin_tpl, fin_edt, P_COUNT, 1);
-  ocrEdtTemplateCreate(&coll_tpl, collector_edt, 12, (u32)(2 * A));
+  ocrEdtTemplateCreate(&coll_tpl, collector_edt, 14, (u32)(2 * A));
 
   u64 rho_milli = (u64)((double)W / (double)A * 10000.0 + 0.5);
-  u64 cparams[12] = {R,   W,     t_ms,     warm_ms,   ehr,    ehw,
-                     eth, bytes, pd_count, rho_milli, jitter, warmrw};
+  u64 cparams[14] = {R,   W,     t_ms,     warm_ms,   ehr,    ehw,
+                     eth, bytes, pd_count, rho_milli, jitter, warmrw,
+                     ops_r, ops_w};
   ocrHint_t h0;
   pd_hint(&h0, 0, OCR_HINT_EDT_T);
   ocrGuid_t collector;
-  ocrEdtCreate(&collector, coll_tpl, 12, cparams, (u32)(2 * A), NULL,
+  ocrEdtCreate(&collector, coll_tpl, 14, cparams, (u32)(2 * A), NULL,
                EDT_PROP_NONE, &h0, NULL);
 
   for (u64 c = 0; c < A; c++) {
