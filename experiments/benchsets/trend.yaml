@@ -1,0 +1,276 @@
+# Local trend roster: the scalability SHAPE of every paper-main row and of the
+# HPX-origin rows on the development host (ferrari-local profile, 1/2/4/8 ranks x
+# 15 workers + 1 progress thread), at arguments small enough to finish in seconds and wide enough to
+# saturate the 120 workers of the widest local geometry.  Nothing measured
+# here is a paper number: the Dane campaign (paper-main) carries the timing,
+# this roster carries the base-scales / anti-scales / hinted-earned /
+# restructured-scales verdicts and the small-size liveness of every runtime
+# entry.  Every argument list overrides the catalog's calibrated one, so the
+# catalog pins do not apply (check.py pins only when args == expect_args);
+# the cross-runtime consensus vote still grades every cell.
+#
+# Sizing rules (audit 2026-09-03, section 3, with the verifiers' corrections):
+# width >= 2 x 120 at 8 ranks (an exact multiple for SPMD / manager-worker
+# rows), height knobs at their published defaults, base 1-rank cell in the
+# 5-15 s band where the structure allows it.  A restructured row's arguments
+# are addressed by the rewrite's own name (the driver never carries a row's
+# override into a different CLI).
+name: trend
+description: local 1/2/4/8-rank scalability trend at small saturating arguments (verdicts only, never timing)
+
+# Sizes re-derived 2026-09-08: every tier judged here runs 5-15 s at one trend node
+# (15w+1p), the band where neither a latency floor nor a fixed cost can carry the
+# verdict; the calibration arguments are unchanged.  Where the base tier's larger
+# size exceeds the 300 s cap from two nodes on, the base curve is censored and its
+# shape at the previous size is kept in the report's notes.
+apps:
+  cholesky_blas:
+    versions: [base, hinted, restructured]
+    # t = 100 tiles: peak frontier 4950, generated SPD instance (no fixture).
+    args: ['--ds', '20000', '--ts', '100']
+  cholesky_dist:
+    # t = 70: average available parallelism 287 = 2.4 x 120, ~13.6 GB.
+    args: ['--ds', '35000', '--ts', '500', '--places', '32']
+
+  CoMD_intel_chandra_tiled:
+    versions: [base, hinted]
+    # R = 10*6*4 = 240 = 2 x 120 chains, every extent even so each local
+    # policy-domain split has zero remainder; published -N 100 -n 10.
+    args: ['-x', '100', '-y', '60', '-z', '40', '-N', '100', '-n', '10', '-i', '10', '-j', '6', '-k', '4']
+
+  CoMD_sdsc:
+    versions: [base, hinted, restructured]
+    # g = 12, B = 1728 = 14.4 x 120 link cells, exactly balanced under the
+    # block map at every rank count; published -N 100 -n 10.
+    args: ['-x', '26', '-y', '26', '-z', '26', '-N', '100', '-n', '10']
+  CoMD_sdsc_dist:
+    args: ['-x', '64', '-y', '64', '-z', '64', '-N', '100', '-n', '10', '-w', '8']
+
+  fft:
+    versions: [base, hinted, restructured]
+    # power 27 at the default grain: leaf frontier 8192 = 68 x 120, and the
+    # last size every reference can send (a 2^28 block overflows the MPI int
+    # count on the reference runtimes).
+    args: ['27']
+  fft_dist:
+    # power 28, 960 tiles = 8 x 120, 32 places.
+    args: ['32', '6912', '32']
+
+  fibonacci:
+    versions: [base, hinted]
+    args: ['34', '11']
+
+  graph500:
+    versions: [base, restructured]
+    # Same kernel-1 work as 20 16 16 16 but 4x the width (W = 1024) and a
+    # per-worker vertex block (256) close to the campaign's 128.
+    args: ['18', '16', '32', '32']
+
+  graph500_dist:
+    # The same instance as the base row above, so the two tiers' printed
+    # digest and frontier sequence are comparable cell by cell.  The
+    # restructured tier removes the W-fold construction that carries the base
+    # row's curve, so this size is a placeholder until the row is re-sized.
+    args: ['24', '16', '32', '32']   # the dist rung in the 5-15 s one-node band (SCALE 23 4.3 s, 22 2.4 s)
+
+  hpcg_intel:
+    versions: [base, restructured]
+    # 10*6*6 = 360 tiles = 3 x 120, near-cubic; published maxIter 50.
+    args: ['10', '6', '6', '32', '50']
+  hpcg_intel_dist:
+    # the same instance, so the two tiers' `final deviation` is comparable
+    # cell by cell.
+    args: ['10', '6', '6', '32', '50']
+
+  hpgmg:
+    versions: [base, hinted, restructured]
+    # log2_box_dim 5 (the published 4 is latency-bound at ~1 s a cell);
+    # 1728 boxes = 14.4 x 120 (both rows the same instance, so the two
+    # ||error|| values must agree).
+    args: ['5', '1728']
+  hpgmg_dist:
+    args: ['5', '13824']
+
+  LCS_all_db_distributed:
+    versions: [base, hinted, restructured]
+    # L = 128 keeps the campaign DAG shape; 4(N+1)^2 = 38.7 GB.  The tile
+    # must carry enough work for the fixed cost of the up-front score table
+    # not to hide the placement's gain: at a quarter of this tile the hinted
+    # tier read as flat, at this tile it scales inside its (4/3)^d span cap.
+    args: ['98304', '768']
+  LCS_wavefront:
+    args: ['196608', '256']
+  LCS_distributed_ST:
+    versions: [base, hinted]
+    # upstream's own scalability line; d = 8 -> peak frontier 256 = 2.1 x 120.
+    args: ['262144', '1024']
+  LCS_shared:
+    versions: [base, hinted]
+    args: ['262144', '1024']
+
+  miniAMR_intel:
+    versions: [base, hinted, restructured]
+    # 8*8*4 = 256 blocks = 2.1 x 120 before refinement; published 20 steps,
+    # refine path exercised (num_refine 1).
+    args: ['--nx', '10', '--ny', '10', '--nz', '10', '--npx', '16', '--npy', '8', '--npz', '8', '--num_refine', '1', '--num_tsteps', '20']
+  miniAMR_intel_dist:
+    # 16*8*8 = 1024 blocks: a stage must carry work against the per-stage
+    # barrier, or the tree's latency reads as the row's curve.
+    args: ['--nx', '10', '--ny', '10', '--nz', '10', '--npx', '16', '--npy', '8', '--npz', '8', '--num_refine', '1', '--num_tsteps', '20']
+
+  miniAMR_intel_chandra:
+    versions: [base, hinted]
+    # 2*2*2 ranks x 5*3*2 = 240 blocks = 2 x 120; published heights
+    # (20 steps, 20 stages, 40 vars, checksum every 5).
+    args: ['--npx', '2', '--npy', '2', '--npz', '2',
+           '--init_x', '5', '--init_y', '3', '--init_z', '2',
+           '--nx', '12', '--ny', '12', '--nz', '12',
+           '--max_blocks', '32',
+           '--num_tsteps', '20', '--num_refine', '0',
+           '--stages_per_ts', '20', '--num_vars', '40',
+           '--report_diffusion', '1', '--checksum_freq', '5']
+
+  nekbone:
+    versions: [base, hinted, restructured]
+    # the campaign lattice and element block (3456 ranks, 3x3x3): the box
+    # map's face locality and the flops per halo are what the placement
+    # verdict rests on, and a 240-rank lattice with the same block read the
+    # hinted tier as anti; the CG count is cut to 20, which moves only the
+    # duration.
+    args: ['18', '16', '12', '3', '3', '3', '8', '20']
+  nekbone_dist:
+    args: ['18', '16', '12', '3', '3', '3', '8', '20']
+
+  npb_cg:
+    versions: [base, restructured]
+    # class A, na/blk = 3500 = 29 x 120.
+    args: ['-t', 'A', '-b', '4']
+  npb_cg_dist:
+    # class C, 16 ranks x 30 chunks = 480 = 4 x 120.
+    args: ['-t', 'C', '-c', '30']
+
+  nqueens:
+    versions: [base, hinted]
+    args: ['18', '14', '1', '6']
+
+  p2p:
+    versions: [base]
+    # p = 480 = 4 x 120 (a multiple of chunk 15 x 8 ranks), published t = 100,
+    # gf 1, hinted chunk = the local per-node worker count.
+    args: ['480', '93600', '481', '100', '1', '15']
+
+  quicksort:
+    versions: [base, hinted, restructured]
+    args: ['16000000', '1000000']
+  quicksort_dist:
+    args: ['480000000', '1000000', '240', '240', '8']
+
+  RSBench_intel:
+    versions: [base, hinted, restructured]
+    # -b 1800 keeps the campaign's barrier count (~435 batches).
+    args: ['-s', 'large', '-l', '750000', '-b', '1800']
+  RSBench_intel_dist:
+    # 240 partitions x 8 = 1920 chains = 16 x 120.
+    args: ['-s', 'large', '-l', '750000', '-r', '240', '-b', '8']
+
+  RSBench_intel_sharedDB:
+    versions: [base]
+    # 8 instances x 32 lanes = 256 = 2.1 x 120.
+    args: ['-s', 'large', '-l', '400000', '-t', '32', '-p', '8']
+
+  sar_pss:
+    versions: [base, restructured]
+    # Parameter2 (Ix = 1200): the base blow-up at 2 ranks is the phenomenon.
+    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter3.txt', '50', '100', '250', '0']
+  sar_dist:
+    # Parameter10 (Ix = 4400) covers 8 stripes with the 100/100 blocks.
+    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_dist_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter10.txt', '50', '100', '100', '0']
+
+  smithwaterman:
+    versions: [base, hinted, restructured]
+    # the cal pair (140,000 / 140,400): W = H = 1400 tiles at 100 x 100.
+    args: ['100', '100', '{repo}/datasets/smithwaterman/string1-cal.txt', '{repo}/datasets/smithwaterman/string2-cal.txt', '{repo}/datasets/smithwaterman/score-cal.txt']
+  smithwaterman_dist:
+    # the mid pair (178,000 / 178,400), 8 places: ~10 s at one rank.
+    args: ['100', '100', '{repo}/datasets/smithwaterman/string1-mid.txt', '{repo}/datasets/smithwaterman/string2-mid.txt', '{repo}/datasets/smithwaterman/score-mid.txt', '8']
+
+  Stencil2D_intel_channelEVTs:
+    versions: [base]
+    # NR = 480 = 4 x 120, published NT 100.
+    args: ['8400', '480', '100']
+
+  stream:
+    versions: [base, hinted, restructured]
+    # 240 chains = 2 x 120 at 70,000 elements each (just above the 512 KiB
+    # cliff, like the campaign); published 1000 sweeps.
+    args: ['33600000', '240', '1000']
+  stream_dist:
+    args: ['33600000', '240', '1000']
+
+  tempest:
+    versions: [base, hinted, restructured]
+    # k = 96 (a multiple of 24): 55296 patch chains; published duration 100.
+    args: ['96', '100']
+  tempest_dist:
+    args: ['192', '100', '512']
+
+  triangle:
+    versions: [base, hinted]
+    # depth 8 on the 7-row board: the rung nearest the 5-15 s one-node band on the
+    # trend geometry (4.95 s; depth 7 was 0.66 s, a latency floor that cannot
+    # carry a verdict, and depth 8 on the calibrated 8-row board is far over).
+    args: ['8', '1', '7']
+
+  XSBench_intel:
+    versions: [base, hinted, restructured]
+    # -l = the suite's ss_medium lookup count; -b 240 = 2 x 120.
+    args: ['-s', 'large', '-g', '96', '-l', '1000000', '-b', '240']
+  XSBench_intel_dist:
+    # 240 places x 8 = 1920 chains = 16 x 120.
+    args: ['-s', 'large', '-g', '96', '-l', '1000000', '-p', '240', '-b', '8']
+
+  XSBench_intel_sharedDB:
+    versions: [base]
+    # -l = the port's published default; 8 instances x 30 chains = 240.
+    args: ['-s', 'large', '-g', '96', '-l', '15000000', '-t', '30', '-p', '8']
+
+  # --- HPX-origin section: the same shape reading for the four compared rows,
+  # against the HPX program itself.  Calibration arguments never run here --
+  # a local multinode cell is a shared-memory simulation, and the large
+  # vectors only add a memory bottleneck to a question about shape.
+  fib_hpx:
+    # n - threshold = 18 holds the task count at 21 890 (the gate's relation), distribute-at = n - 5;
+    # the size knob is n: the serial work below the threshold grows as phi^n.  Predicted 11 s.
+    # Task 2 correction: measured 1.95 s at n = 51 against the 11.0 s model (2.5 ns per serial call);
+    # the compiled recursion costs 0.45 ns per call on the mirror (partial inlining), so n rises by
+    # log_phi(10/1.95) = 3.4 -> 54 (8.2 s predicted; 55 would be 13.4 s); threshold 36, distribute-at 49.
+    enabled: true
+    versions: [base]
+    args: ['--n-value=54', '--threshold=36', '--distribute-at=49', '--n-runs=1', '--test=1']
+  stencil1d_hpx:
+    # np = 240 = 2 x 120 partitions (the width, a total the origin divides by nl);
+    # nt 45 and nd 10 published; nx carries the duration at ~2.5 ns per point-update.
+    # Task 2 correction: measured 70.3 s at nx = 5 550 000 against the 10.0 s paper model (2.5 ns per
+    # point-update); the row is bandwidth-bound at ~14 GB/s effective on one NUMA node (a fresh block
+    # per step), 7.0x the model, so nx = 5 550 000 x 10/70.3 through the linear law -> 790 000.
+    enabled: true
+    versions: [base]
+    args: ['--nx=790000', '--nt=45', '--np=240', '--nd=10']
+  network_storage_hpx:
+    # iterations 5 and transferKB 64 published; the size knob G stops at the origin's
+    # 4096 MB store ceiling (uint32 offsets), below the band by the law -- recorded.
+    # --semaphore is inert on both sides; the width is the slot count, 65 536.
+    enabled: true
+    versions: [base]
+    args: ['--globalMB=4096', '--transferKB=64', '--iterations=5', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
+  fft_hpx:
+    # the pair moves together (ny/2+1 <= nx is the mirror's usage rule and the origin's stride
+    # arithmetic): ny = nx - 2 as the paper's own square; nx a multiple of 64 with FFTW-sized
+    # factors (34560 = 2^8 3^3 5), ny/2+1 = 17280 divides 8.  One node holds ~29 GB (two arrays
+    # and one exchange's chunk copy).
+    # Task 2 correction: measured 16.7 s at nx = 34 560 against the 10.2 s paper model (1.63x, the same
+    # per-NUMA-node bandwidth as the other streaming rows); nx re-derived through N log N -> 26 880
+    # (= 2^8 3 5 7, FFTW-sized; ny = 26 878, ny/2+1 = 13 440 divides every node count to 32).
+    enabled: true
+    versions: [base]
+    args: ['--nx=26880', '--ny=26878', '--plan=estimate', '--run=scatter']

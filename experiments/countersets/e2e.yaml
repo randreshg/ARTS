@@ -1,0 +1,9 @@
+# Nothing on.  Calibration decides absolute sizes from the [E2E] stamp, so the
+# tree that produces those numbers must not be carrying an instrumentation
+# cost from some earlier campaign -- every counter here is explicitly OFF, and
+# selecting this set forces the reconfigure that proves it.
+name: e2e
+description: no counters; the run's only output is the end-to-end stamp
+capture_interval: 250
+allow_empty: true
+counters: {}

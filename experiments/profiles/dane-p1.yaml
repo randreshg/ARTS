@@ -1,0 +1,34 @@
+# Dane with a single progress thread: 111 workers + 1 progress fills the same
+# 112-core node, so the node sweep and every argument stay the machine's and
+# only the split between compute and message progress moves.  With dane-p8 it
+# brackets the 108+4 profile (1 / 4 / 8 progress threads at the same geometry)
+# and answers how much of a column's cost is progress-thread capacity rather
+# than protocol -- read against the 108+4 profile, never mixed into its trend.
+#
+# 111 = 3 * 37 does NOT factor into a near-cubic grid the way 108 does, so the
+# SPMD rows whose grid must equal the worker count do not belong in a sweep
+# run here; the adversarial columns, whose width is a chain count, do.
+name: dane-p1
+launcher: slurm
+
+nodes: [1, 2, 4, 8, 16, 32]
+workers: 111
+progress: 1
+
+pin: true
+provider: verbs;ofi_rxm
+route_table_size: 16
+# A failing rank at 32 nodes would drop one core file per rank onto the
+# shared filesystem; the campaign's evidence is its logs and markers.
+core_dump: false
+port_count: 1
+ports: [25000]
+
+slurm:
+  poll_interval_s: 10
+
+cell_timeout_s: 1800
+# Five measurements per cell: the scaling reading is the median with a
+# min/max band, so a cell that lands next to a noisy neighbour is bounded
+# rather than silently averaged away.
+repeats: 5

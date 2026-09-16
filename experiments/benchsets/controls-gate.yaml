@@ -1,0 +1,123 @@
+# Gate roster for the controls: the adversarial columns and the HPX-origin
+# rows of paper-controls at arguments small enough that the whole roster runs
+# in minutes on the development host.  Timing from this roster is never
+# reported; the catalog's calibrated arguments remain the measurement.  The
+# cross-runtime consensus vote is the gate:
+#
+#   artsrun run -p ferrari-local -b controls-gate \
+#       -e arts_val_wb,arts_inv_wb,arts_excl_retain,xsocr,ocrvx,hpx -n 1,2,4,8 --repeats 1
+#
+# An adversarial row keeps its one-node chain population (the catalog's
+# smallest edition), which is a per-rank population the probe places over
+# whatever geometry it is given; only the fixed-work op counts per chain are
+# cut to a hundredth and the window cap to a minute, so the exact-count and
+# monotone-read oracles still decide the marker.  One argument list serves
+# every geometry: the probe clamps its spreads to the rank count.
+name: controls-gate
+description: small-size consensus gate for the adversarial columns and the HPX-origin rows
+apps:
+  own_reread_64k:
+    enabled: true
+    versions: [base]
+    args: ['3', '0', '1', '1', '20', '65536', '60000', '0', '1', '0', '0', '1', '7400', '0']
+  own_reread_16m:
+    enabled: true
+    versions: [base]
+    args: ['3', '0', '1', '1', '20', '16777216', '60000', '0', '1', '0', '0', '1', '64', '0']
+  own_rewrite_64k:
+    enabled: true
+    versions: [base]
+    args: ['0', '3', '1', '1', '20', '65536', '60000', '0', '1', '0', '0', '1', '0', '4800']
+  own_rewrite_16m:
+    enabled: true
+    versions: [base]
+    args: ['0', '3', '1', '1', '20', '16777216', '60000', '0', '1', '0', '0', '1', '0', '26']
+  one_home_funnel_4m:
+    enabled: true
+    versions: [base]
+    args: ['15', '0', '1', '1', '20', '4194304', '16', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '6', '0', '0']
+  spread_home_funnel_4m:
+    enabled: true
+    versions: [base]
+    args: ['15', '0', '1', '1', '20', '4194304', '16', '60000', '0', '0', '0', '16', '1', '0', '0', '0', '6', '0', '0']
+  audienceless_publish_16m:
+    enabled: true
+    versions: [base]
+    args: ['0', '15', '1', '1', '20', '16777216', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '350', '0']
+  freerun_read_heavy_64k:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '700', '88', '0']
+  freerun_grain_200us_64k:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '20', '20', '180', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '840', '105', '0']
+  freerun_grain_2ms_64k:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '200', '200', '1800', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '1440', '180', '0']
+  pipeline_converge_1m:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '1', '1', '20', '1048576', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '1', '55', '28', '0']
+  alternating_bomb_64k:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '2', '1', '1', '0', '0', '0', '2000', '200', '0']
+  bomb_narrow_sharers_64k:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '8', '2', '1', '1', '0', '0', '0', '2000', '200', '0']
+  resident_mill_1m:
+    enabled: true
+    versions: [base]
+    args: ['15', '1', '1', '1', '5', '1048576', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '1750', '70', '0']
+  sparse_mill_1m:
+    enabled: true
+    versions: [base]
+    args: ['1', '1', '1', '1', '5', '1048576', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '150', '6', '0']
+  migration_gauntlet_64k:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '750', '2', '0']
+  migration_gauntlet_16m:
+    enabled: true
+    versions: [base]
+    args: ['13', '2', '1', '1', '20', '16777216', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '8', '1', '0']
+  slow_churn_dial_16m:
+    enabled: true
+    versions: [base]
+    args: ['15', '1', '1', '1', '20', '16777216', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '340', '7', '20000']
+  rwrounds:
+    enabled: true
+    versions: [base]
+    args: ['2', '16', '50', '65536']
+  rwhandoff:
+    enabled: true
+    versions: [base]
+    args: ['16', '8', '65536', '1', '1', '20', '4000', '1500', '0', '1', '1150']
+
+  # --- HPX-origin rows: the origin's own program beside the mirror ---
+  fib_hpx:
+    enabled: true
+    versions: [base]
+    args: ['--n-value=30', '--threshold=12', '--distribute-at=25', '--n-runs=1', '--test=1']
+  stencil1d_hpx:
+    enabled: true
+    versions: [base]
+    args: ['--nx=64', '--nt=16', '--np=64', '--nd=10']
+  network_storage_hpx:
+    enabled: true
+    versions: [base]
+    # --globalMB is divided among the nodes by the program itself, so one
+    # argument list keeps the total storage -- and both transfer counts --
+    # the same job at every node count the gate sweeps.
+    args: ['--globalMB=16', '--transferKB=64', '--iterations=2', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
+  fft_hpx:
+    enabled: true
+    versions: [base]
+    # One argument list at every geometry: the program divides both
+    # dimensions by the node count itself, and 256 x (254/2 + 1) = 256 x 128
+    # divides every rung the gate sweeps.  A non-dividing pair would silently
+    # drop the trailing rows rather than fail.
+    args: ['--nx=256', '--ny=254', '--plan=estimate', '--run=scatter']

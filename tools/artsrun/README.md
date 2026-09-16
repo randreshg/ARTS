@@ -26,10 +26,11 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 `pyproject.toml` (`uv pip compile tools/artsrun/pyproject.toml -o
 requirements.txt`); regenerate it when a dependency changes.
 
-Profiles are a machine's own untracked settings, so a fresh checkout has
-none. The screens still open — on an unsaved single-node local profile;
-adjust it on the Profile tab and Save writes the machine's first one. The
-same bootstrap exists on the command line:
+Profiles are tracked with the tree, one per machine the experiment runs on
+(`experiments/profiles/`); on a machine none of them describes, the screens
+still open — on an unsaved single-node local profile; adjust it on the
+Profile tab and Save writes the machine's first one. The same bootstrap
+exists on the command line:
 
 ```bash
 artsrun profile new <machine>     # single-node local defaults, opens $EDITOR
@@ -56,8 +57,8 @@ artsrun profile new junction2 --from junction   # copy, then $EDITOR
 artsrun profile set junction2 workers=31 slurm.partition=pbatch
 artsrun benchset list | show X | new Y --from X | edit Y
 artsrun benchset set paper-main nqueens --args "12 4" --versions asborn,optimized
-artsrun config render -p ferrari -n 4    # inspect a rendered configuration
-artsrun run -p ferrari -b paper-main --dry-run
+artsrun config render -p ferrari-local -n 4    # inspect a rendered configuration
+artsrun run -p ferrari-local -b paper-main --dry-run
 artsrun run -p junction -b paper-main --detach
 artsrun watch                             # live view of the latest campaign
 artsrun watch 20260811-220547             # …or of a named one
@@ -65,7 +66,7 @@ artsrun report                            # reprint the latest summary
 
 artsrun counters --set perf --enabled     # what a counter set turns on
 artsrun counterset list | show X | render X
-artsrun run -p ferrari -b paper-main -c perf
+artsrun run -p ferrari-local -b paper-main -c census
 ```
 
 ## External runtimes
@@ -80,9 +81,9 @@ every other catalog row reports the HPX cell as structurally ineligible.
 The rows it runs are the HPX-origin section (`hpx_apps.yaml`, names ending
 in `_hpx`): each is an HPX program, `<row>_hpx`, and the row's
 ARTS/xsocr/ocr-vx binaries are its OCR mirror; `benchmarks/hpx/apps.cmake`
-is the build list. The `hpx-gate` roster runs every row of the HPX-origin
-section at small arguments and is the gate; `paper-main` is the
-measurement. Under `ARTS_STRUCT_MARKER`
+is the build list. The rows sit in the `paper-controls` roster, and the
+`controls-gate` roster runs them at small arguments as the gate (the main
+roster's gate is `main-gate`). Under `ARTS_STRUCT_MARKER`
 each HPX-origin program prints `[PARCELS] sent=… bytes=… wire=…` from
 locality 0 immediately after its end stamp, so a timing cell never executes
 it; there is no `[STRUCT]` line in this section — that carried the retired
@@ -176,11 +177,12 @@ override.
 `val_*_nocomb` is not part of it. The non-combining twins are an ablation of
 one family's read path rather than a position on the plane, and the question
 they answer — what the requester-side combining window buys — is a sweep
-question, so they stay on the development host (`-p ferrari`) where both
+question, so they stay on the development host (`-p ferrari-local`) where both
 settings of one knob fit in a campaign. A cluster campaign runs the eight
 plane arms and the references.
 
-The adversarial plan is the `attacks` roster under the `dane` profile. Every
+The adversarial plan is the adversarial half of the `paper-controls` roster
+under the `dane` profile. Every
 attack row carries its own edition per node count (`args_by_nodes` at 1, 2, 4,
 8, 16 and 32), so the columns and the grain dial run the whole node sweep in
 the same campaign as `paper-main`, at the profile's own geometry. The `s20` /
@@ -214,9 +216,9 @@ column, held fixed across the sweep -- not a machine-filling frontier.
 | Application structure and calibration | `src/artsrun/data/apps.yaml` (committed) |
 | Configuration plane | `src/artsrun/data/protocols.yaml` (committed) |
 | Configuration templates | `configs/templates/*.j2` (committed) |
-| Machine and node settings | `experiments/profiles/*.yaml` (untracked) |
-| Application rosters and overrides | `experiments/benchsets/*.yaml` (untracked) |
-| Counter selections | `experiments/countersets/*.yaml` (untracked) |
+| Machine and node settings | `experiments/profiles/*.yaml` (committed) |
+| Application rosters and overrides | `experiments/benchsets/*.yaml` (committed) |
+| Counter selections | `experiments/countersets/*.yaml` (committed) |
 | Counters the runtime defines | `src/artsrun/data/counters.yaml` (committed) |
 | Campaign output | `logs/exp/<timestamp>/` |
 

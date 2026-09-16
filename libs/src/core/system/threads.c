@@ -82,7 +82,6 @@ void *arts_thread_loop(void *data) {
     saved[i].count = arts_thread_local_counters[i].count;
     saved[i].start = 0;
   }
-  arts_object_save_thread_data(thread_id);
   // Mark thread as closed by clearing live_counters pointer
   // Capture thread will skip threads with NULL live_counters
   arts_node_info.live_counters[thread_id] = NULL;
@@ -131,7 +130,6 @@ void arts_thread_main_join() {
     saved[i].count = arts_thread_local_counters[i].count;
     saved[i].start = 0;
   }
-  arts_object_save_thread_data(0);
   // Mark main thread as closed
   arts_node_info.live_counters[0] = NULL;
 

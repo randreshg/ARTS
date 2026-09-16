@@ -24,7 +24,6 @@
 /* excl/types.h must precede all other coherence headers: it defines
  * arts_db_cache_s, arts_db_s, the CACHE_ and LOCK_ macros, the RETAIN arbiter
  * prototypes, and arts_db_excl_waiter_s for the EXCL build. */
-#include "arts/counter/object_counter.h"
 #include "arts/coherence/excl/types.h"
 
 #include <stdatomic.h>
@@ -1011,12 +1010,10 @@ void arts_handler_db_acquire(void *item, void *args) {
   switch (act) {
   case CACHE_ACT_SEND_RW:
     INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-    arts_object_acquire(true);
     arts_send_db_excl_request(cache, DB_MODE_RW);
     break;
   case CACHE_ACT_SEND_RO:
     INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-    arts_object_acquire(true);
     arts_send_db_excl_request(cache, DB_MODE_RO);
     break;
   case CACHE_ACT_DRAIN_RW:
@@ -1026,13 +1023,11 @@ void arts_handler_db_acquire(void *item, void *args) {
      * block whose create took no hold gets its storage: on the acquiring
      * thread's node, before the drain hands out a pointer. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    arts_object_acquire(false);
     (void)arts_db_buf_ensure(cache, cache->db_size);
     lock_drain_pending(&cache->rw_pending);
     break;
   case CACHE_ACT_DRAIN_RO:
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    arts_object_acquire(false);
     (void)arts_db_buf_ensure(cache, cache->db_size);
     lock_drain_pending(&cache->ro_pending);
     break;

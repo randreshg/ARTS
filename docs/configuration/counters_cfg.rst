@@ -53,7 +53,6 @@ All counter names use a type prefix:
 - ``TIME_*`` — timer counters (nanoseconds, measured with START/STOP).
 - ``NUM_*`` — count counters (event occurrences, measured with INCREMENT_BY).
 - ``BYTES_*`` — byte counters (accumulated bytes, measured with INCREMENT/DECREMENT_BY).
-- ``OBJ_*`` — per-object counters (tracked per ``arts_id`` in hash tables/traces).
 
 Examples
 ~~~~~~~~
@@ -493,38 +492,6 @@ Grant Plane Rare Paths
        permission with no payload (the home already holds the newest
        bytes).
 
-Object Counters
-~~~~~~~~~~~~~~~
-
-Per-object counters track performance metrics aggregated by ``arts_id``
-(a compiler-assigned unique identifier for each EDT/DB type).
-Output is written to separate ``object_n{id}.json`` and ``object.json``
-files (not embedded in scalar counter output).
-
-Enabling any EDT counter activates the per-thread EDT hash table (~40 KB).
-Enabling any DB counter activates the per-thread DB hash table (~40 KB).
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Counter
-     - Description
-   * - ``OBJ_NUM_EDT``
-     - EDT invocation count per arts_id.
-   * - ``OBJ_TIME_EDT_EXEC``
-     - Total EDT execution time per arts_id (nanoseconds).
-   * - ``OBJ_NUM_DB``
-     - DB access count per arts_id.
-   * - ``OBJ_BYTES_DB``
-     - Bytes accessed per arts_id.
-   * - ``OBJ_NUM_DB_CACHE_MISS``
-     - Cache misses per arts_id.
-   * - ``OBJ_TRACE_EDT``
-     - Detailed per-invocation EDT execution records.
-   * - ``OBJ_TRACE_DB``
-     - Detailed per-invocation DB access records.
-
 .. note::
 
    End-to-end / init wall time is no longer a counter.  ``TIME_INIT`` and
@@ -562,9 +529,6 @@ File naming depends on the counter level:
 - **NODE** — ``n{node}.json`` (one file per node, reduced across threads).
 - **CLUSTER** — ``cluster.json`` (single file on the master node, reduced
   across all nodes).
-
-Object counters are written to separate ``object_n{node}.json`` and
-``object.json`` files.
 
 Each JSON file includes a ``timestamp`` (Unix epoch), a ``version``
 string, and a ``counters`` object whose keys are counter names.

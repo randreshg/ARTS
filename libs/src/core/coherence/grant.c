@@ -37,7 +37,6 @@
 #include <string.h>
 
 #include "arts/coherence/buffer.h" /* arts_db_buf_acquire (invalidate xfer) */
-#include "arts/counter/object_counter.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h" /* arts_home_grantreq_queue_push */
@@ -122,7 +121,6 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
    * the grant path); the refcount-0 destructor frees any waiter still parked at
    * destroy. */
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-  arts_object_acquire(true);
   arts_pending_rw_queue_push(&cache->pending_rw, w);
   arts_sched_fuzz_point(); /* widen the push<->coalescing-flag-CAS window */
 

@@ -267,9 +267,8 @@ fixes `niter`), `-i` moves duration only.
   fill 32 nodes.)
 
   Every number above was taken on a tree built with every counter OFF. That
-  is not pedantry: the tree these were first measured on carried an earlier
-  campaign's `attribution` set, whose `OBJ_*` tables hash on each acquire,
-  and it moved this app's anchor by 6%.
+  is not pedantry: the tree these were first measured on still carried an
+  earlier campaign's counter set, and it moved this app's anchor by 6%.
 - `expect_args` equals `args` and the pin is the class's own reference zeta
   (17.1721077015265): the previous pin was taken at `-t T`, an argument set
   no campaign runs, so the cross-check never fired.

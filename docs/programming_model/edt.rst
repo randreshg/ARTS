@@ -95,7 +95,6 @@ The legacy ``arts_edt_create_*`` variants are collapsed into the single
   (see :doc:`finish_events`).
 - ``output_event`` — per-EDT result channel satisfied after the EDT's
   DBs are released (payload set via :c:func:`arts_edt_set_result`).
-- ``edt_id`` — compiler-assigned profiling identifier.
 
 See :doc:`/api/public_api` for the full list.
 

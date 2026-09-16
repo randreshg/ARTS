@@ -434,7 +434,7 @@ the default `--plan=estimate`, growing to about 8 MB under
 that rigor. It is why the per-rank block count above names the image
 separately from the two numerical buffers.
 
-The `hpx-gate` roster runs `--nx=256 --ny=254 --plan=estimate --run=scatter`,
+The `controls-gate` roster runs `--nx=256 --ny=254 --plan=estimate --run=scatter`,
 which finishes in milliseconds on one rank. What limits the multi-rank cell at
 that size is the exchange's latency and not its bandwidth — `2·nl(nl−1)`
 messages of `512/nl²` KB — so the gate's timing says more about per-message

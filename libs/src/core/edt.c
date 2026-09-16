@@ -150,8 +150,7 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                           unsigned int edt_space, arts_edt_t func_ptr,
                           uint32_t paramc, const uint64_t *paramv,
                           uint32_t depc, arts_guid_t hint_finish_event,
-                          arts_guid_t hint_output_event, uint64_t arts_id,
-                          uint32_t flags) {
+                          arts_guid_t hint_output_event, uint32_t flags) {
   if (!edt) {
     edt = (struct arts_edt_s *)arts_calloc_aligned(1, edt_space,
                                                  ARTS_CACHE_LINE_SIZE);
@@ -167,7 +166,6 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
    * from the GUID (bits 63-62); total size from
    * arts_edt_total_size(paramc/depc) — no per-object header stores them. */
   (void)edt_space;
-  edt->arts_id = arts_id;
 
   bool created_guid = false;
   if (*guid == NULL_GUID) {
@@ -236,9 +234,9 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
     memcpy(tmp, paramv, sizeof(uint64_t) * paramc);
   }
 
-  ARTS_INFO("EDT create [Guid:%lu, Id:%lu, Depc:%u, Route:%u, "
-            "PreReserved:%s, FuncPtr:%p]",
-            *guid, edt->arts_id, edt->depc, rank, created_guid ? "no" : "yes",
+  ARTS_INFO("EDT create [Guid:%lu, Depc:%u, Route:%u, PreReserved:%s, "
+            "FuncPtr:%p]",
+            *guid, edt->depc, rank, created_guid ? "no" : "yes",
             (void *)func_ptr);
 
   if (rank != arts_global_rank_id) {
@@ -327,7 +325,6 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
   arts_edt_hint_t snap = hint
                              ? *hint
                              : (arts_edt_hint_t){.rank = ARTS_HINT_CURRENT_RANK,
-                                                 .edt_id = 0,
                                                  .guid = NULL_GUID};
 
   arts_guid_t guid = snap.guid;
@@ -359,7 +356,7 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
                            (depc * sizeof(arts_edt_dep_t));
   bool ok = arts_edt_create_core(
       NULL, ARTS_GUID_EDT, &guid, rank, edt_space, func_ptr, paramc, paramv,
-      depc, snap.finish_event, snap.output_event, snap.edt_id, snap.flags);
+      depc, snap.finish_event, snap.output_event, snap.flags);
   TIME_EDT_CREATE_STOP();
   return ok ? guid : NULL_GUID;
 }
@@ -391,9 +388,8 @@ void arts_edt_delete(struct arts_edt_s *edt) {
               arts_global_rank_id);
     return;
   }
-  ARTS_INFO("EDT delete [Guid:%lu, Id:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
-            edt->guid, edt->arts_id, edt->depc, edt->depc_needed,
-            arts_global_rank_id);
+  ARTS_INFO("EDT delete [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
+            edt->guid, edt->depc, edt->depc_needed, arts_global_rank_id);
   /* route through arts_route_table_set_destroyed so the deleter
    * (arts_edt_deleter -> arts_edt_free) runs once outstanding refs are
    * returned.  Capturing the GUID up front, then calling mark_delete:
@@ -423,9 +419,8 @@ void arts_handler_edt_destroy(void *item_v, void *args_v) {
               a->guid);
     return;
   }
-  ARTS_INFO("EDT destroy [Guid:%lu, Id:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
-            edt->guid, edt->arts_id, edt->depc, edt->depc_needed,
-            arts_global_rank_id);
+  ARTS_INFO("EDT destroy [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
+            edt->guid, edt->depc, edt->depc_needed, arts_global_rank_id);
   arts_route_table_set_destroyed(a->guid);
 }
 

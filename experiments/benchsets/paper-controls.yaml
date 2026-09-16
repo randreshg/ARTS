@@ -1,0 +1,130 @@
+# The controls of the coherence comparison, as their own roster: rows built
+# to isolate one thing, kept out of paper-main on purpose.  That roster
+# answers "what do real applications cost on each arm"; the two halves here
+# answer "what is each arm's best and worst case, by construction" (the
+# adversarial columns) and "what does the same program cost on a runtime of
+# another programming model" (the HPX-origin rows).  Different claims, run
+# separately, at the profile's own geometry.
+#
+# The adversarial half: every row is one program plus one designed workload,
+# and the catalog entry states which arm the column is built to crown and
+# which to bury.  The roster carries no arguments of its own: each row's
+# edition per node count lives in the catalog's args_by_nodes, so the whole
+# node sweep runs in one campaign.
+#
+# Requester-side RO combining is the VAL family's default, not an add-on --
+# every other message class in the plane suppresses duplicates structurally
+# (parked acquires, batched invalidation rounds, publish flights), so VAL's
+# window is part of its definition. This suite deliberately carries no
+# combining column: the off-plane `_nocomb` twins that ablate it live outside
+# this roster, and VAL's numbers here are numbers for the combining
+# implementation, not for the validation philosophy on its own.
+
+name: paper-controls
+description: the adversarial columns of the protocol suite with the grain dial, and the HPX-origin rows
+
+apps:
+  # C1 — the release-axis spectrometer: a holder touching its own data, where
+  # the only cost that can appear is what the protocol charges for re-use.
+  own_reread_64k:
+    enabled: true
+    versions: [base]
+  own_reread_16m:
+    enabled: true
+    versions: [base]
+  own_rewrite_64k:
+    enabled: true
+    versions: [base]
+  own_rewrite_16m:
+    enabled: true
+    versions: [base]
+
+  # The shared-block columns: reuse, audience, coupling, alternation and
+  # migration, each isolated so one axis decides the ranking.
+  one_home_funnel_4m:
+    enabled: true
+    versions: [base]
+  # Directory-spread control for the funnel above: same population and op
+  # count, homes spread across 16 ranks instead of concentrated on one.
+  spread_home_funnel_4m:
+    enabled: true
+    versions: [base]
+  audienceless_publish_16m:
+    enabled: true
+    versions: [base]
+  freerun_read_heavy_64k:
+    enabled: true
+    versions: [base]
+
+  # The grain dial: the same read-heavy mix at a 200 us and a 2 ms task, read
+  # against the 21 us edition above.  Three settings of one knob, so the
+  # answer is the trend across them rather than any one cell.
+  freerun_grain_200us_64k:
+    enabled: true
+    versions: [base]
+  freerun_grain_2ms_64k:
+    enabled: true
+    versions: [base]
+  pipeline_converge_1m:
+    enabled: true
+    versions: [base]
+  alternating_bomb_64k:
+    enabled: true
+    versions: [base]
+  # Sharer-fanout control for the bomb above: the same alternating writers,
+  # readers packed onto 8 ranks instead of every actor rank.
+  bomb_narrow_sharers_64k:
+    enabled: true
+    versions: [base]
+  resident_mill_1m:
+    enabled: true
+    versions: [base]
+  # Zero-edge-density control for the mill above: one reader per rank
+  # instead of fifteen, so a PURGE zero edge is no longer shielded.
+  sparse_mill_1m:
+    enabled: true
+    versions: [base]
+  migration_gauntlet_64k:
+    enabled: true
+    versions: [base]
+  # Size-qualified edition of the migration gauntlet above: same population,
+  # payload raised 256x so the migrating grant drags bytes, not only a turn.
+  migration_gauntlet_16m:
+    enabled: true
+    versions: [base]
+  slow_churn_dial_16m:
+    enabled: true
+    versions: [base]
+
+  # The convergence controls: fixed-work jobs whose gap between the read-only
+  # and write-only halves and their mix (C0), and whose own e2e wall time
+  # under a race-free handoff pattern (C3), prove the kill columns' spreads
+  # come from concurrency x structure and not from the engine itself.
+  rwrounds:
+    enabled: true
+    versions: [base]
+  rwhandoff:
+    enabled: true
+    versions: [base]
+
+  # --- HPX-origin section (hpx_apps.yaml): one program on four runtimes ---
+  # Every row runs the catalog's calibrated arguments, like every other row
+  # here; the one-node anchor window and the width floor that chose them are in
+  # each row's appdoc.  The section admits an origin only if it never suspends
+  # a parallel task (its waits are continuations, or a bounded number of
+  # driver-thread phase joins -- the same discipline an OCR program has by
+  # construction) AND its parallel width is set by the problem, not fixed by
+  # the origin below the machine's width; the rows that failed either test are
+  # archived under archive/hpx-origin-excluded/.
+  fib_hpx:
+    enabled: true
+    versions: [base]
+  stencil1d_hpx:
+    enabled: true
+    versions: [base]
+  network_storage_hpx:
+    enabled: true
+    versions: [base]
+  fft_hpx:
+    enabled: true
+    versions: [base]

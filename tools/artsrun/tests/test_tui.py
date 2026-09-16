@@ -14,7 +14,7 @@ def drive(coro_factory):
     """Run one piloted session and return whatever it produced."""
 
     async def main():
-        app = ArtsRunApp(profile="ferrari", benchset="paper-main")
+        app = ArtsRunApp(profile="ferrari-local", benchset="paper-main")
         async with app.run_test() as pilot:
             return await coro_factory(app, pilot)
 
@@ -611,7 +611,7 @@ def _launcher_view(profile_name):
 
 
 def test_a_local_profile_hides_every_launcher_section_and_locks_ports():
-    view = _launcher_view("ferrari")
+    view = _launcher_view("ferrari-local")
     assert view["ssh"] is False
     assert view["slurm"] is False
     assert view["flux"] is False
@@ -742,7 +742,7 @@ def _visible_field_slack(profile_name, launcher=None):
 
 def test_no_visible_field_clips_its_text():
     # "claimed automatically" is the longest placeholder and was being cut.
-    for profile, launcher in (("ferrari", None), ("junction", None),
+    for profile, launcher in (("ferrari-local", None), ("junction", None),
                               ("junction", "ssh")):
         for key, text, width in _visible_field_slack(profile, launcher):
             assert width >= len(text), (
@@ -1020,14 +1020,14 @@ def test_switching_a_saved_set_leaves_one_panel_behind():
 
         app.query_one(TabbedContent).active = "tab-counters"
         await pilot.pause()
-        for name in ("perf", "distribution", "perf"):
+        for name in ("census", "e2e", "census"):
             app.query_one("#counter-select", Select).value = name
             await pilot.pause()
         counters = len(app.query("#counters"))
 
         app.query_one(TabbedContent).active = "tab-bench"
         await pilot.pause()
-        for name in ("smoke", "paper-main", "smoke"):
+        for name in ("controls-gate", "paper-main", "controls-gate"):
             app.query_one("#bench-select", Select).value = name
             await pilot.pause()
         return counters, len(app.query("#bench"))
@@ -1045,16 +1045,18 @@ def test_loading_a_counter_set_shows_that_set_s_values():
         app.query_one(TabbedContent).active = "tab-counters"
         await pilot.pause()
         panel = app.query_one("#counters", CounterPanel)
-        panel.query_one("#counter-select", Select).value = "perf"
+        panel.query_one("#counter-select", Select).value = "census"
         await pilot.pause()
         wide = len(panel.edited_counterset("x").enabled)
-        panel.query_one("#counter-select", Select).value = "distribution"
+        panel.query_one("#counter-select", Select).value = "e2e"
         await pilot.pause()
-        narrow = len(panel.edited_counterset("x").enabled)
-        return wide, narrow
+        empty = len(panel.edited_counterset("x").enabled)
+        return wide, empty
 
-    wide, narrow = drive(check)
-    assert wide > narrow > 0
+    wide, empty = drive(check)
+    # The screen follows the selection both ways: the census set's counters
+    # come on, and the all-off e2e set turns every one of them off again.
+    assert wide > 0 and empty == 0
 
 
 def test_loading_a_benchset_shows_that_roster():
@@ -1065,7 +1067,7 @@ def test_loading_a_benchset_shows_that_roster():
         app.query_one(TabbedContent).active = "tab-bench"
         await pilot.pause()
         panel = app.query_one("#bench", BenchsetPanel)
-        panel.query_one("#bench-select", Select).value = "smoke"
+        panel.query_one("#bench-select", Select).value = "controls-gate"
         await pilot.pause()
         small = set(panel.selected())
         panel.query_one("#bench-select", Select).value = "paper-main"
@@ -1074,14 +1076,15 @@ def test_loading_a_benchset_shows_that_roster():
         return small, big
 
     small, big = drive(check)
-    assert small == {"fibonacci", "nqueens", "quicksort"}
+    from artsrun import store
+    assert small == set(store.load_benchset("controls-gate").apps)
     assert len(big) > len(small)
 
 
-def test_a_set_with_once_and_no_reduction_loads_onto_the_screen():
-    # The sets built for the protocol comparison are uniformly PERIODIC /
-    # CLUSTER / SUM; the attribution set is ONCE / NODE with no reduction, so
-    # it is the one that exercises the dropdowns' other values.
+def test_a_set_with_once_at_node_level_loads_onto_the_screen():
+    # The census set is ONCE / NODE (end-of-run totals per rank, no capture
+    # thread), so it is the one that exercises the dropdowns' non-default
+    # values.
     async def check(app, pilot):
         from textual.widgets import TabbedContent, Select
         from artsrun.tui.panels import CounterPanel
@@ -1089,14 +1092,14 @@ def test_a_set_with_once_and_no_reduction_loads_onto_the_screen():
         app.query_one(TabbedContent).active = "tab-counters"
         await pilot.pause()
         panel = app.query_one("#counters", CounterPanel)
-        panel.query_one("#counter-select", Select).value = "attribution"
+        panel.query_one("#counter-select", Select).value = "census"
         await pilot.pause()
         cs = panel.edited_counterset("x")
-        obj = cs.counters["OBJ_BYTES_DB"]
+        obj = cs.counters["NUM_DB_ACQUIRE_REMOTE"]
         return set(cs.enabled), obj.mode.value, obj.level.value
 
     enabled, mode, level = drive(check)
-    assert "OBJ_BYTES_DB" in enabled
+    assert "NUM_DB_ACQUIRE_REMOTE" in enabled
     assert (mode, level) == ("ONCE", "NODE")
 
 

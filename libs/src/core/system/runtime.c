@@ -47,7 +47,6 @@
 
 #include "arts/counter/Preamble.h"
 #include "arts/counter/counter.h"
-#include "arts/counter/object_counter.h"
 #include "arts/db.h"
 #include "arts/defs.h"
 #include "arts/edt.h"
@@ -333,9 +332,6 @@ void arts_runtime_node_init(struct arts_config_s *config) {
     }
   }
 
-  /* Object counter storage (per-arts_id tracking) */
-  arts_object_alloc_node_storage(tc);
-
 #ifdef ARTS_USE_GPU
   if (arts_node_info.gpu) {
     arts_node_init_gpus();
@@ -374,9 +370,6 @@ void arts_runtime_global_cleanup() {
   for (unsigned int t = 0; t < tc; t++) {
     arts_counter_write(arts_node_info.counter_folder, arts_global_rank_id, t);
   }
-  // Write object counter output (per-arts_id tracking)
-  arts_object_write_node(arts_node_info.counter_folder, arts_global_rank_id,
-                         tc);
   /* Every runtime thread has joined: coherence wait-structures must be
    * empty now.  Reports (does not abort); compiled out below DEBUG log
    * level — see the check's definition. */
@@ -414,9 +407,6 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.capture_arrays);
   arts_free(arts_node_info.saved_counters);
   arts_free(arts_node_info.live_counters);
-
-  /* Object counter cleanup */
-  arts_object_cleanup_node_storage(tc);
 
 #ifdef ARTS_USE_CXL
   arts_cxl_deque_free(arts_node_info.cxl_deque);
@@ -592,17 +582,6 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
 
   // Register thread-local counter storage with nodeInfo
   arts_node_info.live_counters[thread->id] = arts_thread_local_counters;
-#if ENABLE_ARTS_ID_EDT_METRICS || ENABLE_ARTS_ID_DB_METRICS
-  arts_id_init_hash_table(&arts_thread_local_arts_id_metrics);
-#endif
-#if ENABLE_ARTS_ID_EDT_CAPTURES
-  arts_thread_local_edt_capture_list =
-      arts_new_array_list(sizeof(arts_id_edt_capture_t), 1024);
-#endif
-#if ENABLE_ARTS_ID_DB_CAPTURES
-  arts_thread_local_db_capture_list =
-      arts_new_array_list(sizeof(arts_id_db_capture_t), 1024);
-#endif
 
   arts_guid_key_generator_init();
 

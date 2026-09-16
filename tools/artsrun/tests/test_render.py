@@ -28,7 +28,7 @@ def test_arts_config_matches_the_committed_one(nodes, name):
     reference = repo_root() / "configs" / "local" / "ferrari" / f"{name}.cfg"
     if not reference.is_file():
         pytest.skip(f"{reference} not present")
-    profile = load_profile("ferrari")
+    profile = load_profile("ferrari-local")
     rendered = _keys(render_arts(profile, nodes))
     expected = _keys(reference.read_text())
     for key, value in expected.items():
@@ -36,7 +36,7 @@ def test_arts_config_matches_the_committed_one(nodes, name):
 
 
 def test_arts_config_omits_ports_for_a_local_run():
-    profile = load_profile("ferrari")
+    profile = load_profile("ferrari-local")
     assert "ports" not in render_arts(profile, 4)
 
 
@@ -54,7 +54,7 @@ def test_reference_config_matches_the_committed_one(nodes, name):
     reference = repo_root() / "configs" / "mpi" / "ferrari" / f"{name}.cfg"
     if not reference.is_file():
         pytest.skip(f"{reference} not present")
-    profile = load_profile("ferrari")
+    profile = load_profile("ferrari-local")
     rendered = render_ocr(profile, nodes)
 
     def normalize(text: str) -> list[str]:
@@ -74,7 +74,7 @@ def test_reference_config_binds_on_every_launcher_when_pinning():
     # each rank's absolute block by its own MPI rank inside the runtime —
     # one file serves every rank.  A remote rank owns its host, so the plain
     # 0..W-1 range stands alone there.
-    ferrari = load_profile("ferrari")          # local, 15+1
+    ferrari = load_profile("ferrari-local")          # local, 15+1
     assert "binding\t=\t0-15" in render_ocr(ferrari, 1)
     assert "numa" not in render_ocr(ferrari, 1)
     four = render_ocr(ferrari, 4)
@@ -88,7 +88,7 @@ def test_reference_config_binds_on_every_launcher_when_pinning():
 
 
 def test_reference_config_binding_follows_the_pin_flag():
-    profile = load_profile("ferrari").model_copy(update={"pin": False})
+    profile = load_profile("ferrari-local").model_copy(update={"pin": False})
     text = render_ocr(profile, 4)
     assert "binding" not in text
     assert "numa" not in text

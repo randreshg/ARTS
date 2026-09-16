@@ -197,15 +197,7 @@ extern "C" {
   X(NUM_GRANT_PURGE_ACCEPT)                                                    \
   X(NUM_GRANT_PURGE_LATCHED)                                                   \
   X(NUM_GRANT_PURGE_STALE_SETTLE)                                              \
-  X(NUM_GRANT_REGRANT_DEDUP)                                                   \
-  /* Object counters — per arts_id tracking */                                 \
-  X(OBJ_NUM_EDT)                                                               \
-  X(OBJ_TIME_EDT_EXEC)                                                         \
-  X(OBJ_NUM_DB)                                                                \
-  X(OBJ_BYTES_DB)                                                              \
-  X(OBJ_NUM_DB_CACHE_MISS)                                                     \
-  X(OBJ_TRACE_EDT)                                                             \
-  X(OBJ_TRACE_DB)
+  X(NUM_GRANT_REGRANT_DEDUP)
 /* Note: end-to-end / init wall time is no longer a counter — it is the
  * env-gated "[E2E] <ns>" stderr marker (rank 0; see runtime.c / shutdown.c /
  * threads.c), identical across arts/xsocr/ocr-vx. */
@@ -268,7 +260,6 @@ extern ARTS_THREAD_LOCAL arts_counter_t
 // Note: Saved counter data is stored directly in arts_node_info:
 // - saved_counters[thread_id][counter_index]: final counter values
 // - capture_arrays[thread_id][counter_index]: capture history (PERIODIC)
-// Object counter (per-arts_id) data is managed by object_counter.h
 
 // We do not implement system-wide counters due to the overhead of
 // synchronization and network communication

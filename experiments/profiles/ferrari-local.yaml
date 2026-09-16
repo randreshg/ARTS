@@ -1,0 +1,20 @@
+# Development host as a local multi-node simulation: one machine, ranks
+# self-forked onto NUMA-aligned core blocks.  15 workers + 1 progress thread
+# per rank keeps 8 ranks inside the 128 physical cores, so the widest geometry
+# still runs one thread per core.  Trend verdicts and gates run here; nothing
+# measured here is a paper number.
+name: ferrari-local
+launcher: local
+
+nodes: [1, 2, 4, 8]
+workers: 15
+progress: 1
+
+pin: true
+provider: tcp
+route_table_size: 14
+core_dump: true
+
+cell_timeout_s: 600
+# Five measurements per cell, as on Dane; a gate passes --repeats 1.
+repeats: 5

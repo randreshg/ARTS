@@ -21,7 +21,7 @@ from artsrun import store
 from artsrun.model.catalog import Version, load_catalog
 from artsrun.model.plane import load_plane
 from artsrun.model.selection import Selection
-from artsrun.paths import default_build_dir, logs_root, repo_root
+from artsrun.paths import logs_root, repo_root
 
 app = typer.Typer(
     add_completion=False,
@@ -323,7 +323,7 @@ def run_cmd(
 
     try:
         # No -c means the campaign takes the tree as it stands (unvalidated);
-        # naming a set — the all-OFF timing set included — pledges the tree
+        # naming a set — the all-OFF e2e set included — pledges the tree
         # to that selection and reconfigures it on any mismatch.
         cset = store.load_counterset(counters) if counters else None
     except store.NotFound as exc:
@@ -728,134 +728,6 @@ def list_runs(limit: int = typer.Option(20, "--limit")) -> None:
         )
     console.print(table)
     console.print("\n[dim]continue one with: artsrun run --resume <run>[/dim]")
-
-
-def _latest_run(run: str | None) -> Path:
-    root = logs_root()
-    if run:
-        run_dir = root / run
-        if not run_dir.is_dir():
-            _fail(f"no run {run} under {root}")
-        return run_dir
-    candidates = sorted(p for p in root.glob("*") if p.is_dir())
-    if not candidates:
-        _fail(f"no runs under {root}")
-    return candidates[-1]
-
-
-def _binary_of_cell(run_dir: Path, slug: str) -> Path | None:
-    """Rebuild the exact executable a cell ran.
-
-    Names must come from the binary that produced the addresses: every
-    configuration links its own executable, and resolving against a sibling
-    yields names that look plausible and are wrong.
-    """
-    parts = slug.split(".")
-    if len(parts) < 3:
-        return None
-    name, version, entry_key = parts[0], parts[1], parts[2]
-    try:
-        saved = json.loads((run_dir / "selection.yaml").read_text())
-        selection = Selection.model_validate(saved)
-        catalog = load_catalog()
-        benchset = (
-            store.load_benchset(selection.benchset)
-            if selection.benchset
-            else store.default_benchset()
-        )
-        resolved = {a.key: a for a in benchset.resolve(catalog)}
-        app_row = resolved.get(f"{name}:{version}")
-        entry = load_plane().entry(entry_key)
-        if app_row is None or entry is None:
-            return None
-        build_dir = (
-            Path(selection.build_dir) if selection.build_dir else default_build_dir()
-        )
-        candidate = (
-            build_dir.expanduser().resolve()
-            / "benchmarks" / "apps"
-            / entry.binary(app_row.binary, hinted=False)
-        )
-    except Exception:
-        return None
-    return candidate if candidate.is_file() else None
-
-
-@app.command("attribute")
-def attribute_cmd(
-    run: str = typer.Argument(None, help="run id (default: latest)"),
-    cell: str = typer.Option(None, "--cell", help="cell slug (default: list them)"),
-    binary: Path = typer.Option(None, "--binary", help="binary to resolve names against"),
-    top: int = typer.Option(15, "--top", help="rows to show"),
-) -> None:
-    """Say which task kind moved the data, for one measured cell.
-
-    Needs a campaign run with a counter set that enables the OBJ counters
-    (`attribution` is the one built for this); other sets leave no per-task
-    tables and the cell is reported as having none.
-    """
-    from artsrun import attribute as attr
-
-    run_dir = _latest_run(run)
-    found = attr.cells(run_dir)
-    if not found:
-        _fail(
-            f"{run_dir} has no per-cell counters — rerun with "
-            "`artsrun run -c attribution`"
-        )
-    if not cell:
-        console.print(f"[bold]cells with counters in {run_dir.name}[/bold]")
-        for p in found:
-            console.print(f"  {p.name}")
-        console.print("\nchoose one with --cell")
-        return
-    match = [p for p in found if p.name == cell]
-    if not match:
-        match = [p for p in found if cell in p.name]
-    if not match:
-        _fail(f"no cell matching {cell!r}; run without --cell to list them")
-    target = match[0]
-
-    binp = binary or _binary_of_cell(run_dir, target.name)
-
-    a = attr.read(target, binp)
-    if not a.tasks:
-        _fail(
-            f"{target.name} has no per-task tables — its run used a counter set "
-            "without the OBJ counters"
-        )
-
-    table = Table(title=f"{target.name}   ({a.ranks} ranks)")
-    table.add_column("task", style="bold")
-    table.add_column("acquires", justify="right")
-    table.add_column("remote", justify="right")
-    table.add_column("local hit", justify="right")
-    table.add_column("bytes", justify="right")
-    table.add_column("runs", justify="right")
-    for t in a.ranked()[:top]:
-        table.add_row(
-            t.name, f"{t.acquires:,}", f"{t.remote:,}",
-            f"{t.local_hit_pct:.1f}%", f"{t.bytes:,}", f"{t.runs:,}",
-        )
-    console.print(table)
-
-    if binp is None:
-        console.print("[yellow]no binary found — names shown as addresses[/yellow]")
-    if a.global_acquires:
-        console.print(
-            f"attributed {a.attributed_acquires:,} of {a.global_acquires:,} acquires "
-            f"({a.attributed_remote:,} of {a.global_remote:,} remote)"
-        )
-        if a.residual_acquires:
-            console.print(
-                f"[yellow]{a.residual_acquires:,} acquires "
-                f"({a.residual_remote:,} remote) carried no task identity[/yellow]"
-            )
-    if a.collisions:
-        console.print(
-            f"[yellow]{a.collisions:,} table collisions — some rows merge "
-            f"distinct tasks[/yellow]"
-        )
 
 
 # --- profile --------------------------------------------------------------

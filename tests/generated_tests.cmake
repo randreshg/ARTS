@@ -903,10 +903,6 @@ foreach(_v 2n 3n 4n 2n_io)
     set_tests_properties(counter_time_sync_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_time_sync|SKIP counter_time_sync_${_v}")
 endforeach()
 
-add_arts_test(object_counter_full)
-register_single_node_test(object_counter_full TIMEOUT 30)
-set_tests_properties(object_counter_full PROPERTIES PASS_REGULAR_EXPRESSION "PASS object_counter_full|SKIP object_counter_full")
-
 # --- C25r: block dist / CSR ---
 # T262 EXPOSES B-args-oob: expected to FAIL (ASan OOB). runtime_single (needs arts_rt). Do not mask.
 add_arts_test(dist_args_oob)
@@ -977,14 +973,6 @@ if(BUILD_CUDA_LIBRARY)
     set_tests_properties(api_gpu_context_accessors PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS api_gpu_context_accessors|SKIP api_gpu_context_accessors")
 endif()
-
-# api_edt_id_profiling: full_counters (OBJ EDT counter) build; SKIP stub in other counter
-# builds. Gated on the header-derived ARTS_OBJECT_EDT_TABLE_ENABLED macro the body checks, so
-# it builds+links in any build dir and self-selects body vs SKIP.
-add_arts_test(api_edt_id_profiling)
-register_single_node_test(api_edt_id_profiling TIMEOUT 10)
-set_tests_properties(api_edt_id_profiling PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS api_edt_id_profiling|SKIP api_edt_id_profiling")
 
 # --- C13: EDT semantics (census metadata lost; classified by scanning tests/ocr/) ---
 add_arts_test(edt_sentinel_single_fire)
@@ -1137,7 +1125,6 @@ endif()
 # ============================================================================
 set_tests_properties(acquire_mode PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL|ERROR")
 set_tests_properties(array_list_basic PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(arts_id PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL|ERROR")
 set_tests_properties(atomics_locks PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(atomics_rmw_contention PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(atomics_rmw_conventions PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")

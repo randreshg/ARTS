@@ -135,7 +135,7 @@ same rank.
 
 The width knob is `n-value`/`threshold` together — the object counts in
 Structure scale with the internal-call count, not with `n` alone. The
-`hpx-gate` roster runs the small consensus arguments
+`controls-gate` roster runs the small consensus arguments
 (`--n-value=30 --threshold=12 --distribute-at=25 --n-runs=1 --test=1`),
 which finish in well under a second and are never reported as a timing
 number. The measurement argument is the calibrated one at the end of this section.

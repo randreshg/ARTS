@@ -42,19 +42,10 @@ third_party/ocrPNNL/
 #   datasets/    large staged runtime datasets (README stays tracked)
 /research/
 /logs/
-# experiments/ is untracked VALUES (machine-local profiles, campaign rosters)
-# — except the paper's main-experiment definition, which is part of the
-# claim and therefore tracked: the Dane profile and the paper-main roster,
-# and the HPX gate roster the port README runs.
-/experiments/*
-!/experiments/profiles/
-/experiments/profiles/*
-!/experiments/profiles/dane.yaml
-!/experiments/benchsets/
-/experiments/benchsets/*
-!/experiments/benchsets/paper-main.yaml
-!/experiments/benchsets/attacks.yaml
-!/experiments/benchsets/hpx-gate.yaml
+# experiments/ is the driver's three value surfaces -- node profiles,
+# application rosters, counter sets -- and is tracked whole: a profile or a
+# roster is part of the experiment's definition, not a machine-local scratch
+# value.  Campaign output goes to logs/exp/, never here.
 /scratch/*
 !/scratch/.gitkeep
 /notes/

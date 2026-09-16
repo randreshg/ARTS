@@ -354,39 +354,3 @@ counters:
     group: 'Write grant'
     unit: count
     help: 'Grants served with permission alone because the requester already held the current copy'
-
-  OBJ_NUM_EDT:
-    group: 'Per-object'
-    unit: count
-    help: 'Per-object EDT invocations, keyed by arts_id'
-
-  OBJ_TIME_EDT_EXEC:
-    group: 'Per-object'
-    unit: ns
-    help: 'Per-object execution time, keyed by arts_id'
-
-  OBJ_NUM_DB:
-    group: 'Per-object'
-    unit: count
-    help: 'Datablock acquires by task kind (adds up to the global acquires)'
-
-  OBJ_BYTES_DB:
-    group: 'Per-object'
-    unit: bytes
-    help: 'Bytes acquires delivered, by task kind'
-
-
-  OBJ_NUM_DB_CACHE_MISS:
-    group: 'Per-object'
-    unit: count
-    help: 'Acquires by task kind this rank could not answer (adds up to NUM_DB_ACQUIRE_REMOTE)'
-
-  OBJ_TRACE_EDT:
-    group: 'Per-object'
-    unit: count
-    help: 'Per-invocation EDT records (detailed trace)'
-
-  OBJ_TRACE_DB:
-    group: 'Per-object'
-    unit: count
-    help: 'Per-invocation datablock records (detailed trace)'
