@@ -238,14 +238,15 @@ matrix payload and 128 transpose tasks. Matrices in a node sweep must
 remain divisible by the fixed total block count. Timings from earlier mirrors do not characterize this graph; the trend,
 parity and sizing below were measured on this version.
 
-**Calibrated arguments.** `--matrix_size=62720 --iterations=10` with
+**Calibrated arguments.** `--matrix_size=71680 --iterations=10` with
 `--num_blocks = 64 / nl` per rung (the block total `B = 64` is the width,
 `B²` tasks per iteration). `iterations` keeps the published value; the order
 was derived to the 100 s window through the quadratic law and then held below
-it by the registered pool's resident set: the pool that backs every data block
-populates NUMA-bound slabs that double in size on every grow, so its capacity
-steps at each slab size, and 62 720 is the last order whose live set fits the
-8 GiB slab per NUMA node (about 133 GB resident against 63 GB of matrices —
-HPX holds exactly the two matrices); the next step maps a 16 GiB slab per node
-(about 275 GB, where every arm was stopped by the memory watchdog at 73 472).
-The sizing pass measured 19–23 s on the ARTS arms and 46 s on HPX.
+it by the registered pool's resident set. The pool maps a ladder of slabs per
+NUMA node, so the resident set is a staircase over the live matrices, and
+71 680 (= 70 × 1024 = 64 × 1120) is the largest measured order on the lower
+step — 126–138 GB across the three arms in the sizing probes, against
+187–201 GB at 81 920, over the 180 GB ceiling — where the sizing model's
+77 248 would land on the upper step. The anchor measured 24.0–27.3 s on the
+ARTS arms (EXCL 26.4 s, about a quarter of the window) at 145 GB resident and
+59.8 s on HPX at 82 GB.

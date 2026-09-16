@@ -259,16 +259,17 @@ is part of the workload; `expect` and `expect_args` must move together.
 Windows measured on earlier mirrors do not describe this setup graph; the
 trend, parity and sizing below were measured on this version.
 
-**Calibrated arguments.** `--nx=32762 --ny=32765 --max_iterations=10
---line_block=730` at every node count. `max_iterations` keeps the published
+**Calibrated arguments.** `--nx=32000 --ny=32000 --max_iterations=10
+--line_block=700` at every node count. `max_iterations` keeps the published
 value; `line_block` is derived per size as the smallest multiple of ten that
 keeps the HPX origin's started-and-waiting frontier — one coroutine stack per
 line-block task, 64 KiB each from the heap — under the one-node stack budget of
 100 GB. The grid was derived to the 20 s window through each arm's measured
 two-point exponent (coarser grain is cheaper per point than the cell-update
 law assumes), which asks for about 45 000², and is held below it by this
-mirror's own cell bound above (`nx·ny < 2³⁰`): the largest square under it.
-The sizing pass measured 12.2–12.9 s on the ARTS arms (0.64 of the window) and
-59 GB resident; HPX printed nothing in 600 s at this size and took 514 s at
-29 172² (a started-and-waiting thread per line-block task), which is recorded
-as measured, not sized for.
+mirror's own cell bound above (`nx·ny < 2³⁰`): 32 768² would equal the bound,
+and 32 000² is the round square under it, with `line_block = 700` what the
+frontier rule yields there. The anchor measured 11.4–12.0 s on the ARTS arms
+(0.58 of the window) at 52 GB resident; HPX took 478–949 s over three repeats
+at this size (a started-and-waiting thread per line-block task), recorded as
+measured, not sized for.

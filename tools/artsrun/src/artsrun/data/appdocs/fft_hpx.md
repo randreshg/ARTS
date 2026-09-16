@@ -441,14 +441,18 @@ messages of `512/nl²` KB — so the gate's timing says more about per-message
 cost than about the transform, and `nx`/`ny` are the knobs that move it back
 onto computation. The measurement argument is the calibrated one at the end of this section.
 
-**Calibrated arguments.** `--nx=71680 --ny=71678 --plan=estimate
---run=scatter` at every node count: `ny = nx − 2`, `nx = 2¹¹·5·7` FFTW-sized,
-`nx` and `ny/2 + 1 = 35 840` divisible by every node count to 32 (the
-constraints above). Derived to the 100 s window through each arm's measured
-exponent between 60 480 and 77 760 — INV/WB, the slowest arm there, binds —
-under the one-node memory budget with a 10 % margin (172 GB resident on ARTS,
-166 GB on HPX at this size). The anchor measured 40.5 s on INV/WB (39.8–55.2),
-59.1 s on VAL (36.7–74.3) and 41.5 s on EXCL (37.2–67.0) — one slow repeat per
-arm in the near-ceiling regime — and 67.2 s on HPX; the sizing pass, on the
-runtime before its data-block descriptor lost its inline payload, had measured
-53–84 s.
+**Calibrated arguments.** `--nx=72000 --ny=71998 --plan=estimate
+--run=scatter` at every node count. `ny = nx − 2` because the second phase
+runs over the half-spectrum's `ny/2 + 1` rows: with `ny = nx − 2` that count
+is `nx/2 = 36 000`, divisible like `nx` by every node count to 32 and at most
+`nx` (the constraints above), where `ny = 72 000` would give 36 001 rows that
+no even node count divides. `nx = 72 000 = 2⁶·3²·5³` is FFTW-sized. Derived
+to the 100 s window through each arm's measured exponent between 60 480 and
+77 760 — INV/WB, the slowest arm there, binds — under the one-node memory
+budget with a 10 % margin (172 GB resident on ARTS, 166 GB on HPX at this
+size), and rounded from the model's 71 680 to 72 000 (65 536 would drop
+INV/WB to about two thirds of the window). The anchor measured 40.5 s on
+INV/WB (39.8–55.2), 59.1 s on VAL (36.7–74.3) and 41.5 s on EXCL (37.2–67.0)
+— one slow repeat per arm in the near-ceiling regime — and 67.2 s on HPX; the
+sizing pass, on the runtime before its data-block descriptor lost its inline
+payload, had measured 53–84 s.

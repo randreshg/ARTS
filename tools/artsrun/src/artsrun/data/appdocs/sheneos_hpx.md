@@ -388,22 +388,14 @@ table read**. The knob that moves it back onto computation and onto the hot
 spot is `--num-ye-points`, cubed; the measurement argument is the calibrated one at the end of this
 section.
 
-**Calibrated arguments.** `--num-ye-points=78 --num-temp-points=78
---num-rho-points=78 --seed=1` with `--num-partitions = nl` and
-`--num-workers = 3456 / nl` per rung (the worker total `W = 3456` is the width
-floor of the widest geometry, held at every rung by the invariant above). The
-points per axis, cubed, carry the duration, and the row sits below its 20 s
-window by a boundary in the ARTS time at this width: 6.7 s at `n = 78`,
-27.5 s at `n = 82` (cubic on either side, four times higher above it, the
-resident set unchanged at 20 GB), so no size lands in the window on the
-slowest arm and the row takes the largest size under the window below the
-boundary. The mechanism is the runtime's: a data block whose payload and
-64-byte header exceed half the registered pool's base slab (32 MiB at the
-default 64 MiB) is served by the pool's direct path — a mapping populated and
-torn down per allocation under one process-wide lock, a few hundred blocks a
-second whatever the thread count — and this row's `64·n³` reply block crosses
-that line at `n = 81`, two such blocks per worker; every rung keeps the
-request size, so the ladder never crosses it. The
-HPX origin's resident set grows faster than `n³` here (48 GB at 70, 121 at 90,
-192 at 105) and was the binding ceiling before the boundary was found. The
-sizing pass measured 6.5–7.0 s on the ARTS arms and 49 s on HPX (64 GB).
+**Calibrated arguments.** `--num-ye-points=95 --num-temp-points=95
+--num-rho-points=95 --seed=1` with `--num-partitions = nl` and
+`--num-workers = 4096 / nl` per rung (the worker total `W = 4096` is the width,
+a power of two above the floor of the widest geometry, held at every rung by
+the invariant above). The points per axis, cubed, carry the duration, and the
+row sits below its 20 s window because the HPX origin's resident set binds:
+it grows faster than cubic with the points per axis — 127 GB at `n = 90`,
+193 GB at `n = 100` at this width, over the 180 GB one-node ceiling taken with
+its margin — so `n = 95` is the round size under it (about 158 GB predicted
+through the measured exponent). The anchor measured 12.9–13.3 s on the ARTS
+arms (0.65 of the window) at 24 GB resident and 105.9 s on HPX at 170 GB.
