@@ -535,6 +535,21 @@ Enabling any DB counter activates the per-thread DB hash table (~40 KB).
    the reference runtimes (xsocr, ocr-vx) use so a harness parses all
    three identically.
 
+   ``ARTS_REGPOOL_REPORT`` is the other env-gated marker: set it and every
+   rank prints the registered pool's shape to stderr at teardown —
+   ``[REGPOOL] node <n>:`` per NUMA node (carve state, arena count, mapped
+   MiB, grow count, the milliseconds its grows spent mapping and the number
+   and milliseconds of allocations that waited for a grow already in flight
+   on that node — the cost an exhausted node charges the threads that reach
+   it behind the one mapping its next slab), ``[REGPOOL] direct:`` for the
+   oversize mappings (live,
+   retired, free table slots), ``[REGPOOL] direct placement:`` (how many of
+   them, and how many MiB, are ``interleaved`` across the rank's node set,
+   landed on a single ``node<k>``, or were left ``unplaced`` for the kernel
+   to position) and ``[REGPOOL] total:``.  The pool's resident
+   set is its mapped capacity, so these lines are what a memory measurement
+   is read against; they cost nothing when the variable is unset.
+
 Output
 ------
 

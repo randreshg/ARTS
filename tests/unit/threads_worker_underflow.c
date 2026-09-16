@@ -81,10 +81,17 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
 
-void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
-  /* Inert: zero the flat array so the (bounded) spawn loop reads valid pu_ids.
-   * Deliberately does NOT touch worker_thread_count — the derivation under test
-   * already set it. */
+void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
+                     struct arts_numa_facts_s *facts) {
+  /* Inert: zero the flat array so the (bounded) spawn loop reads valid pu_ids,
+   * and report a one-node machine so the pool's topology hand-off has
+   * something consistent to consume.  Deliberately does NOT touch
+   * worker_thread_count — the derivation under test already set it. */
+  if (facts != NULL) {
+    memset(facts, 0, sizeof(*facts));
+    facts->node_count = 1;
+    facts->rank_nodes = 1;
+  }
   for (unsigned int t = 0; t < config->thread_count; t++) {
     flat[t].id = t;
     flat[t].pu_id = 0;
@@ -98,6 +105,13 @@ void print_mask(struct thread_mask_s *t, unsigned int n) {
   (void)n;
 }
 void arts_runtime_node_init(struct arts_config_s *c) { (void)c; }
+void arts_regpool_set_topology(unsigned int node_count, uint64_t node_set,
+                               const uint32_t *distance) {
+  /* No pool in this harness: the hand-off only has to link. */
+  (void)node_count;
+  (void)node_set;
+  (void)distance;
+}
 void arts_runtime_private_init(struct thread_mask_s *m,
                                struct arts_config_s *c) {
   (void)m;

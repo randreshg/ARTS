@@ -90,10 +90,9 @@ int main(void) {
     arts_config_destroy(&config);
   }
 
-  /* (B) Unconfigured: provider stays NULL (auto), regpool_slab_mb defaults
-   * to 64 (the historical ARTS_REGPOOL_SLAB_BYTES_DEFAULT this key replaced,
-   * so an unconfigured cfg's behavior is unchanged from before the key
-   * existed). */
+  /* (B) Unconfigured: provider stays NULL (auto) and regpool_slab_mb takes
+   * the table's built-in default — the base slab the pool carves per NUMA
+   * node when a cfg names no size. */
   {
     struct arts_config_s config;
     if (load_cfg("default", "", &config) != 0) {
@@ -107,9 +106,9 @@ int main(void) {
              config.provider);
       fails++;
     }
-    if (config.regpool_slab_mb != 64) {
+    if (config.regpool_slab_mb != 256) {
       printf("FAIL config_provider_regpool_parse: regpool_slab_mb=%u "
-             "expected default 64\n",
+             "expected default 256\n",
              config.regpool_slab_mb);
       fails++;
     }

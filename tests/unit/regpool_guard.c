@@ -6,10 +6,11 @@
  *      lookup table (>= 2 distinct registered ranges observed).
  *   2. An oversize request (> slab) must be served from a direct slab (or a
  *      grow) — never as an unregistered pointer.
- *   3. A freed direct (oversize) slab must be live-reclaimed, not merely
+ *   3. A freed direct (oversize) slab must be reclaimed by the pool, not
  *      leaked until process exit: repeating an oversize alloc/free cycle
- *      must not leave the freed pointer resolvable, and must not exhaust the
- *      pool's fixed-capacity slab table. */
+ *      must not leave the freed pointer resolvable, must reuse the one
+ *      mapping it needs, and must not exhaust the pool's fixed-capacity
+ *      slab table. */
 #include "arts/memory/regpool.h"
 
 #include <assert.h>
@@ -72,16 +73,14 @@ int main(void) {
   ((volatile unsigned char *)big)[OVERSIZE - 1] = 0x3C;
   arts_regpool_free(big);
 
-  /* Part 3: repeated direct-slab alloc/free must reclaim live, not leak.
-   * Track distinct bases purely as reporting evidence of slot reuse (the
-   * kernel is not contractually obligated to hand back the same address
-   * for a same-size mmap after munmap, so it is not asserted on) -- the
-   * hard gate is the lookup-miss check below, which is exactly the
-   * observable contract a live reclaim must satisfy and a leak-until-
-   * cleanup implementation cannot: before the fix, arts_regpool_free was a
-   * no-op for direct slabs, so the freed pointer stayed resolvable and
-   * every iteration burned a fresh, never-recycled slot in the pool's
-   * fixed-capacity table. */
+  /* Part 3: a repeated direct-slab alloc/free cycle of ONE shape must run on
+   * one mapping.  Two things are asserted, and each rules out a different
+   * failure: the freed pointer must stop resolving (a free that did nothing
+   * would leave it resolvable and burn a fresh table slot every iteration),
+   * and every iteration must get the same base back (a free that unmapped
+   * the range would pay the syscalls again per iteration; the pool retires
+   * the mapping instead, and a retired mapping of the right length and
+   * alignment is exactly what the next request claims). */
   int reclaim_distinct = 0;
   const void *reclaim_bases[RECLAIM_ITERS];
   for (int i = 0; i < RECLAIM_ITERS; i++) {
@@ -102,9 +101,11 @@ int main(void) {
 
     arts_regpool_free(p);
     assert(arts_regpool_lookup(p) == NULL &&
-           "a freed direct slab must not remain resolvable -- live reclaim, "
-           "not leak-until-cleanup");
+           "a freed direct slab must not remain resolvable -- the pool "
+           "reclaims it, it is not leaked until cleanup");
   }
+  assert(reclaim_distinct == 1 &&
+         "one shape must run on one retained mapping across the cycle");
 
   arts_regpool_cleanup();
   printf("REGPOOL_GUARD_OK distinct_slabs=%d oversize=%zuMiB "

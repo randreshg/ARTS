@@ -151,6 +151,11 @@ set(TEST_PROGRAMS
     regpool_node_avail
     regpool_node_fallover
     regpool_direct_oversize
+    regpool_lazy_carve
+    regpool_ladder
+    regpool_evict_retired
+    regpool_interleave
+    regpool_fallback_order
     # --- New unit tests (Tasks 6-12) ---
     counter_smoke
     edt_dep_variants
@@ -562,6 +567,38 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_direct_oversize TIMEOUT 60)
     set_tests_properties(regpool_direct_oversize PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_direct_oversize")
+    # Lazy carving is a property of the arena/slab machinery: exactly one
+    # node carved at init, another carved by the first allocation of a
+    # thread on it.  Needs >= 2 NUMA nodes and a CPU of a second node in
+    # the process's affinity mask; the PASS/SKIP markers keep an
+    # environment that has neither from reading as an exercised pass.
+    register_pure_unit_test(regpool_lazy_carve TIMEOUT 60)
+    set_tests_properties(regpool_lazy_carve PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "PASS regpool_lazy_carve|SKIP regpool_lazy_carve")
+    # The slab ladder's exact rungs (a node's next slab is half again the
+    # last one mapped for it, on the allocator's granule).
+    register_pure_unit_test(regpool_ladder TIMEOUT 60)
+    set_tests_properties(regpool_ladder PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_ladder")
+    # Eviction of retired mappings and the unplaced fallback behind it,
+    # driven by the force-full override (so it needs no memory pressure and
+    # no second NUMA node).
+    register_pure_unit_test(regpool_evict_retired TIMEOUT 60)
+    set_tests_properties(regpool_evict_retired PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_evict_retired")
+    # An oversize mapping is spread over the caller's node set, which needs
+    # >= 2 NUMA nodes to be distinguishable from a placed one; the PASS/SKIP
+    # markers keep a one-node environment from reading as an exercised pass.
+    register_pure_unit_test(regpool_interleave TIMEOUT 60)
+    set_tests_properties(regpool_interleave PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "PASS regpool_interleave|SKIP regpool_interleave")
+    # The candidate order itself, against a supplied distance table — so it
+    # asserts the ordering rule and not the machine it runs on.
+    register_pure_unit_test(regpool_fallback_order TIMEOUT 60)
+    set_tests_properties(regpool_fallback_order PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_fallback_order")
 endif()
 # The availability parser is allocator-independent (pure over a stream).
 register_pure_unit_test(regpool_node_avail TIMEOUT 30)
