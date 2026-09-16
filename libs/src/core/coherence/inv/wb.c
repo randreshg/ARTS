@@ -19,7 +19,6 @@
  * a later ownership generation.  Nothing queues and nothing sleeps, which is
  * what keeps a reader from ever waiting behind a writer.
  */
-#include "arts/counter/object_counter.h"
 #include "arts/coherence/inv/types.h"
 
 #include <stdatomic.h>
@@ -122,7 +121,6 @@ void arts_handler_db_acquire(void *item, void *args) {
      * acquire served locally, so it belongs in the same census the
      * other arms feed through arts_db_acquire_local. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    arts_object_acquire(false);
     mark_edt_ready_by_guid(edt->guid, slot);
     return;
   }
@@ -151,20 +149,17 @@ void arts_handler_db_acquire(void *item, void *args) {
   case INV_CACHE_ACT_SELF_SERVE:
     /* The copy turned valid while we were deciding — served from here. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    arts_object_acquire(false);
     inv_waiter_free(cache, idx);
     mark_edt_ready_by_guid(edt->guid, slot);
     break;
   case INV_CACHE_ACT_SEND_RO:
     INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-    arts_object_acquire(true);
     arts_send_db_inv_request(cache, DB_MODE_RO);
     break;
   default: /* PARK: the fetch's committer will serve us */
     /* Parked behind an open fetch: still an acquire this rank could not
      * answer, so it counts with the one that issued the fetch. */
     INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-    arts_object_acquire(true);
     break;
   }
 }

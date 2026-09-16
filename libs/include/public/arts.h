@@ -204,7 +204,7 @@ typedef enum {
  *  arts_edt_create's hint==NULL behavior, which this is equivalent to).
  *  Distinct from @c ARTS_HINT_CURRENT_RANK (explicit self) and from passing
  *  a NULL hint pointer: usable by callers that must still populate other
- *  hint fields (finish_event, output_event, edt_id, flags) while leaving
+ *  hint fields (finish_event, output_event, flags) while leaving
  *  placement itself unpinned. */
 #define ARTS_HINT_ANY_RANK ((unsigned int)-3)
 
@@ -216,9 +216,6 @@ typedef enum {
  *  Migration from the legacy @c arts_hint_t :
  *    - @c arts_hint_t.rank → @c arts_edt_hint_t.rank or @c
  * arts_db_hint_t.rank
- *    - @c arts_hint_t.id    → @c arts_edt_hint_t.edt_id (DB hint has no id;
- *                              the DB profiling id field is dropped because
- *                              no functional code consumed it)
  *  @{ */
 
 /** Bit flags for arts_edt_hint_t.flags.  Reserved for future EDT-create flags;
@@ -229,7 +226,6 @@ typedef enum {
 /** Hint passed to @c arts_edt_create.  Optional fields collapse the legacy
  *  six EDT-create variants into a single entry point:
  *    - @c rank   selects the home node (default current rank).
- *    - @c edt_id is the compiler-assigned profiling id (default 0).
  *    - @c guid   when non-NULL_GUID pre-reserves the EDT GUID; the home
  *                rank is then taken from that GUID and @c rank is ignored.
  *    - @c finish_event when non-NULL_GUID joins this EDT to that finish scope.
@@ -239,8 +235,6 @@ typedef struct {
    *  ARTS_HINT_ANY_RANK = no preference (policy-selected, same as passing a
    *  NULL hint) | specific rank. */
   unsigned int rank;
-  /** Compiler-assigned profiling identifier.  0 = disabled. */
-  uint64_t edt_id;
   /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default). */
   arts_guid_t guid;
   /** Finish event to join (bulk sync).  NULL_GUID = inherit the caller's
@@ -261,7 +255,6 @@ typedef struct {
 
 #define ARTS_EDT_HINT_DEFAULTS                                                 \
   ((arts_edt_hint_t){.rank = ARTS_HINT_CURRENT_RANK,                           \
-                     .edt_id = 0,                                              \
                      .guid = NULL_GUID,                                        \
                      .finish_event = NULL_GUID,                                \
                      .output_event = NULL_GUID,                                \
@@ -686,8 +679,8 @@ int arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
  * @param paramc   Number of static parameters.
  * @param paramv   Array of @p paramc uint64_t values copied into the closure.
  * @param depc     Number of dependency slots.
- * @param hint     Advisory metadata (rank, edt_id, guid, finish_event,
- *                 output_event).  NULL = defaults.
+ * @param hint     Advisory metadata (rank, guid, finish_event, output_event).
+ *                 NULL = defaults.
  * @return GUID of the newly created EDT.
  * @see arts_add_dependence, arts_edt_destroy
  */

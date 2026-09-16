@@ -386,7 +386,7 @@ offsets are `uint32_t` and a larger store makes them wrap onto lower slots
 an `int`; and the mirror's name map, `n·S = G·1024/transferKB` GUIDs per
 rank on top of the storage, which the global store also holds fixed.
 
-The `hpx-gate` roster runs `--globalMB=16 --transferKB=64 --iterations=2
+The `controls-gate` roster runs `--globalMB=16 --transferKB=64 --iterations=2
 --semaphore=16 --all-to-all=true --no-local=false --distribution=1`: 16 MB
 in total — 256 slots per rank at one node, 128 at two, 64 at four, 32 at
 eight — and `TRANSFERS_OK 768 512` at every one of those geometries, pinned

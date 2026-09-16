@@ -107,7 +107,6 @@ int arts_rt(int argc, char **argv) {
   // Aggregate cluster counters before cleanup (workers may still be writing)
   if (arts_global_rank_id == config.master_rank) {
     arts_counter_write_cluster(config.counter_folder, config.nodes);
-    arts_object_write_cluster(config.counter_folder, config.nodes);
   }
   int spawned_rank_failures = 0;
   if (arts_global_rank_id == config.master_rank && config.master_boot) {

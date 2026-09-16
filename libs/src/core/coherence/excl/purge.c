@@ -23,7 +23,6 @@
  * arts_db_cache_s, arts_db_s, arts_db_excl_waiter_s, and the
  * arts_home_grantreq_queue_s for the EXCL build (coherence.h and handlers.h
  * declare functions that take these types by pointer). */
-#include "arts/counter/object_counter.h"
 #include "arts/coherence/excl/types.h"
 
 #include <semaphore.h>
@@ -704,13 +703,11 @@ void arts_handler_db_acquire(void *item, void *args) {
      * waiter is served.  The turn was answered from what this rank already
      * holds, so it joins the same census the other arms feed. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    arts_object_acquire(false);
     mark_edt_secured_by_guid(edt->guid, slot);
     mark_edt_ready_by_guid(edt->guid, slot);
     return;
   }
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-  arts_object_acquire(true);
 
   /* SEND_* / PARK: park the waiter.  Push BEFORE any send so the node is
    * drainable before a grant for this round can arrive. */

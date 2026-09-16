@@ -1,0 +1,26 @@
+# Cluster target: node-exclusive Slurm allocations, InfiniBand data plane.
+# One rank per node, 63 workers + 1 progress thread = a full 64-core node.
+#
+# Each cell is submitted as its own exclusive job, so a run only ever sees the
+# nodes of its own allocation; every job is submitted up front and scheduling
+# the queue is Slurm's own job.
+name: junction
+launcher: slurm
+
+nodes: [1, 2, 4, 8, 16, 32]
+workers: 63
+progress: 1
+
+pin: true
+provider: verbs;ofi_rxm
+route_table_size: 16
+core_dump: true
+ports: [25000]
+
+slurm:
+  poll_interval_s: 10
+
+cell_timeout_s: 600
+# Five measurements per cell, as on Dane: the reading is the median with a
+# min/max band.
+repeats: 5

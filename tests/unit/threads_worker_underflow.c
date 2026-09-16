@@ -122,7 +122,6 @@ int arts_runtime_loop(void) { return 0; }
 void arts_runtime_global_cleanup(void) {}
 void arts_runtime_stop(void) {}
 void arts_runtime_stop_network(void) {}
-void arts_object_save_thread_data(unsigned int tid) { (void)tid; }
 void arts_counter_timer_end(arts_counter_t *counter) { (void)counter; }
 
 /* arts_thread_loop is DEFINED in threads.c (real); it will run the counter-save

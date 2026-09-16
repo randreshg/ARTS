@@ -172,7 +172,7 @@ def test_the_sampling_interval_reaches_the_runtime_configuration():
     from artsrun.render import render_arts
     from artsrun.store import load_profile
 
-    text = render_arts(load_profile("ferrari"), 2,
+    text = render_arts(load_profile("ferrari-local"), 2,
                        counter_folder="/runs/c", capture_interval=250)
     assert "counter_capture_interval=250" in text
     assert "counter_folder=/runs/c" in text
@@ -186,7 +186,7 @@ def test_a_set_that_turns_everything_off_names_the_counters_still_on(tmp_path):
         "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     })
-    empty = Counterset(name="timing", counters={}, allow_empty=True)
+    empty = Counterset(name="e2e", counters={}, allow_empty=True)
     assert counter_mismatch(build_dir, empty) == ["NUM_EDT_CREATE"]
 
 
@@ -205,7 +205,7 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
     build_dir = _tree_with_counters(tmp_path / "build", {
         "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
     })
-    wanted = tmp_path / "cfg" / "counters_timing.cfg"
+    wanted = tmp_path / "cfg" / "counters_e2e.cfg"
     reconfigured = []
     monkeypatch.setattr(campaign_mod, "ensure_build_dir", lambda *a, **k: None)
     monkeypatch.setattr(campaign_mod, "write_counter_config", lambda cs, d: wanted)
@@ -217,7 +217,7 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
         selection=None, plane=None, catalog=None, benchset=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",
-        counterset=Counterset(name="timing", counters={}, allow_empty=True),
+        counterset=Counterset(name="e2e", counters={}, allow_empty=True),
     )
     assert c.build_plan() == "plan"
     assert reconfigured == [(build_dir, wanted)]
@@ -255,7 +255,7 @@ def test_a_counterless_campaign_refuses_an_instrumented_tree(tmp_path,
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     })
     (build_dir / "CMakeCache.txt").write_text(
-        "ARTS_COUNTER_CONFIG:FILEPATH=/somewhere/counters_attribution.cfg\n")
+        "ARTS_COUNTER_CONFIG:FILEPATH=/somewhere/counters_census.cfg\n")
     monkeypatch.setattr(campaign_mod, "ensure_build_dir", lambda *a, **k: None)
     monkeypatch.setattr(campaign_mod, "plan_targets", lambda *a: "plan")
 
@@ -268,7 +268,7 @@ def test_a_counterless_campaign_refuses_an_instrumented_tree(tmp_path,
         c.build_plan()
     msg = str(excinfo.value)
     assert "NUM_EDT_CREATE" in msg
-    assert "/somewhere/counters_attribution.cfg" in msg
+    assert "/somewhere/counters_census.cfg" in msg
     assert "configs/counters_off.cfg" in msg
     assert f"ninja -C {build_dir}" in msg
 
@@ -320,7 +320,7 @@ def test_a_sweep_without_a_set_refuses_an_instrumented_tree(tmp_path,
         "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
     })
     (build_dir / "CMakeCache.txt").write_text(
-        "ARTS_COUNTER_CONFIG:FILEPATH=/somewhere/counters_attribution.cfg\n")
+        "ARTS_COUNTER_CONFIG:FILEPATH=/somewhere/counters_census.cfg\n")
     monkeypatch.setattr(sweep_mod, "ensure_build_dir", lambda *a, **k: None)
 
     s = sweep_mod.SweepCampaign(
@@ -328,7 +328,7 @@ def test_a_sweep_without_a_set_refuses_an_instrumented_tree(tmp_path,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run", counterset=None,
     )
-    with pytest.raises(BuildError, match="counters_attribution.cfg"):
+    with pytest.raises(BuildError, match="counters_census.cfg"):
         s.build_plan()
 
 

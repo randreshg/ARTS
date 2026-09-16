@@ -145,7 +145,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   // Test 5: Hint with profiling id.
   arts_edt_create(
       profiled_task, 0, NULL, 0,
-      &(arts_edt_hint_t){.rank = 0, .edt_id = 42, .finish_event = fe});
+      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
 
   arts_event_wait(fe);
   arts_shutdown();

@@ -1,0 +1,296 @@
+# Consensus gate for the main application roster: every row of paper-main, in
+# every version it offers, at arguments small enough that the whole roster runs
+# in minutes on a development host.  It is what a change to a program or to the
+# runtime is checked against before anything is measured; nothing timed here is
+# a paper number -- the calibrated paper-main arguments remain the measurement.
+#
+#   artsrun run -p ferrari-local -b main-gate \
+#       -e arts_val_wb,arts_inv_wb,arts_excl_retain,xsocr,ocrvx \
+#       -n 1,2,4,8 --repeats 1 --build-dir build_release
+#
+# Sizing rule: shrink the duration/size knob, keep the width knob only as large
+# as the geometry needs (a gate has no width floor to defend), leave every
+# height knob a program pins at its published value.  Every argument list is
+# legal at 1, 2, 4 and 8 ranks, so no row needs an args_by_nodes ladder: a knob
+# that must follow the rank count is set to the value that satisfies the widest
+# rung, which is also legal at the narrower ones.  Because every list overrides
+# the catalog's, the catalog pins do not fire; the cross-runtime consensus vote
+# still grades every cell, and that vote is the gate.  A restructured row's
+# arguments are addressed by the rewrite's own name -- the driver never carries
+# a row's override into a different CLI.
+name: main-gate
+description: small-argument consensus gate for every paper-main row and version
+
+apps:
+  cholesky_blas:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # ds must be a whole multiple of ts; t = ds/ts = 40 tiles per dimension.
+    args: ['--ds', '4000', '--ts', '100']
+  cholesky_dist:
+    # Compute per byte moved IS the tile edge, so a shrunk row is only the same
+    # program if ts stays at the catalog tile and ds alone falls; places must
+    # lie in 1..t^2 and one per node at the widest geometry is 8.
+    args: ['--ds', '6000', '--ts', '500', '--places', '8']
+
+  CoMD_intel_chandra_tiled:
+    enabled: true
+    versions: [base, hinted]
+    # The rank grid is the SPMD width: 4x2x2 = 16 chains divides every rung, and
+    # each cell extent is a whole multiple of its grid extent so no split has a
+    # remainder.
+    args: ['-x', '48', '-y', '24', '-z', '24', '-N', '20', '-n', '10',
+           '-i', '4', '-j', '2', '-k', '2']
+
+  CoMD_sdsc:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # The step count is honoured at period boundaries, so -N is a multiple of
+    # -n; the box must stay above two cutoffs on every axis.
+    args: ['-x', '24', '-y', '24', '-z', '24', '-N', '20', '-n', '10']
+  CoMD_sdsc_dist:
+    args: ['-x', '24', '-y', '24', '-z', '24', '-N', '20', '-n', '10', '-w', '8']
+
+  fft:
+    enabled: true
+    versions: [base, hinted, restructured]
+    args: ['24']
+  fft_dist:
+    # Two forms of the matrix are live at once (32 bytes per element), which is
+    # what bounds the power; tiles and places are clamped to the matrix, and
+    # the derived wave count needs places <= tiles.
+    args: ['22', '64', '8']
+
+  fibonacci:
+    enabled: true
+    versions: [base, hinted]
+    # The scatter depth must be deep enough that the heaviest subtree, F(n-d+1),
+    # fits a rank's equal share F(n+1)/nranks at the widest geometry.
+    args: ['27', '10']
+
+  graph500:
+    enabled: true
+    versions: [base, restructured]
+    # R, C and R*C must each divide the vertex count 2^SCALE; the rewrite
+    # additionally needs R*C at or above the policy-domain count.
+    args: ['14', '16', '8', '8']
+  graph500_dist:
+    # The base row's instance, so the two tiers' digest is comparable cell by cell.
+    args: ['14', '16', '8', '8']
+
+  hpcg_intel:
+    enabled: true
+    versions: [base, restructured]
+    # npx*npy*npz = 16 tiles divides every rung; the tile edge is rounded up to
+    # a multiple of 16 and the iteration count is capped at 50.
+    args: ['4', '2', '2', '32', '20']
+  hpcg_intel_dist:
+    args: ['4', '2', '2', '32', '20']
+
+  hpgmg:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # The box grid must bottom out on a single box and agglomerate at most 125
+    # fine boxes into one; the box edge stays at the published 4.
+    args: ['4', '1728']
+  hpgmg_dist:
+    args: ['4', '1728']
+
+  LCS_all_db_distributed:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # N/base must be a positive power of two; the score table costs 4(N+1)^2.
+    args: ['16384', '256']
+  LCS_wavefront:
+    # This row only requires N % base == 0, but the same pair keeps the two
+    # tiers on one instance.
+    args: ['16384', '256']
+  LCS_distributed_ST:
+    enabled: true
+    versions: [base, hinted]
+    # N/base must be a positive power of two.
+    args: ['32768', '1024']
+  LCS_shared:
+    enabled: true
+    versions: [base, hinted]
+    args: ['32768', '1024']
+
+  miniAMR_intel:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # Cells per block must be even; the block count is capped by the target's
+    # MAX_NUM_UNREFINED_BLOCKS.  num_tsteps stays at or above refine_freq so the
+    # refinement path is still exercised.
+    args: ['--nx', '10', '--ny', '10', '--nz', '10',
+           '--npx', '8', '--npy', '4', '--npz', '4',
+           '--num_refine', '1', '--num_tsteps', '10']
+  miniAMR_intel_dist:
+    args: ['--nx', '10', '--ny', '10', '--nz', '10',
+           '--npx', '8', '--npy', '4', '--npz', '4',
+           '--num_refine', '1', '--num_tsteps', '10']
+
+  miniAMR_intel_chandra:
+    enabled: true
+    versions: [base, hinted]
+    # npx*npy*npz is the SPMD rank grid and the unit of node distribution, so it
+    # is 8; max_blocks is the ceiling on init_x*init_y*init_z; the result scalar
+    # is the timestep-5 checksum, which needs num_tsteps >= checksum_freq and
+    # report_diffusion on to be printed at all.
+    args: ['--npx', '2', '--npy', '2', '--npz', '2',
+           '--init_x', '2', '--init_y', '2', '--init_z', '2',
+           '--nx', '10', '--ny', '10', '--nz', '10',
+           '--max_blocks', '16',
+           '--num_tsteps', '5', '--num_refine', '0',
+           '--stages_per_ts', '10', '--num_vars', '40',
+           '--report_diffusion', '1', '--checksum_freq', '5']
+
+  nekbone:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # Rx >= Ry >= Rz and Ex >= Ey >= Ez are hard (the id-to-triplet hash is not
+    # rotation invariant); the lattice 4x4x2 = 32 divides every rung, pDOF stays
+    # at the published 8 and the CG count is the duration knob.
+    args: ['4', '4', '2', '2', '2', '2', '8', '20']
+  nekbone_dist:
+    args: ['4', '4', '2', '2', '2', '2', '8', '20']
+
+  npb_cg:
+    enabled: true
+    versions: [base, restructured]
+    # The class carries its own iteration count and its reference zeta, so the
+    # class is the size knob and -i is left alone; -b must divide na.
+    args: ['-t', 'S', '-b', '4']
+  npb_cg_dist:
+    # -c must stay at or below the rows a rank owns, na/nranks, at the widest
+    # geometry.
+    args: ['-t', 'S', '-c', '16']
+
+  nqueens:
+    enabled: true
+    versions: [base, hinted]
+    # cutoff must lie in [0, n) and the scatter depth has a floor of 2.
+    args: ['16', '12', '1', '4']
+
+  p2p:
+    enabled: true
+    versions: [base]
+    # m >= p (a logical rank owns at least one column) and n >= 2.
+    args: ['48', '9600', '49', '10', '1', '6']
+
+  quicksort:
+    enabled: true
+    versions: [base, hinted, restructured]
+    args: ['2000000', '1000000']
+  quicksort_dist:
+    # places must not exceed either the bucket or the chunk count.
+    args: ['8000000', '1000000', '64', '64', '8']
+
+  RSBench_intel:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # The dataset knobs (-s, -p, -w, -d) are the benchmark's published defaults;
+    # -l is the run-length knob.
+    args: ['-s', 'large', '-l', '30000', '-b', '240']
+  RSBench_intel_dist:
+    # Partition p is pinned to place p % ranks, so the partition count is a
+    # whole multiple of the widest rung.
+    args: ['-s', 'large', '-l', '30000', '-r', '48', '-b', '8']
+
+  RSBench_intel_sharedDB:
+    enabled: true
+    versions: [base]
+    # -p replicates the run rather than partitioning it, so one instance per
+    # node at the widest geometry is the same job at every rung.
+    args: ['-s', 'large', '-l', '40000', '-t', '8', '-p', '8']
+
+  sar_pss:
+    enabled: true
+    versions: [base, restructured]
+    # The image size lives in the parameter file; the tile block must lie in
+    # [1, Ix] and the detections file is not written at the last argument 0.
+    args: ['{repo}/datasets/sar-huge/Data.bin',
+           '{repo}/datasets/sar-huge/PlatformPosition.bin',
+           '{repo}/datasets/sar-huge/PulseTransmissionTime.bin',
+           '{repo}/scratch/sar_detects.txt',
+           '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter1.txt',
+           '50', '100', '250', '0']
+  sar_dist:
+    # Its own output path -- sharing one with the base row is shared mutable
+    # state between two rows of one campaign.  The image is cut into one stripe
+    # per rank and the shortest stripe must still hold a consumer's footprint,
+    # max(C + 28, A + 64, 47) rows, which is what sets the smallest image the
+    # widest rung admits; the detection and resample blocks are downward-only
+    # from their compiled maxima.
+    args: ['{repo}/datasets/sar-huge/Data.bin',
+           '{repo}/datasets/sar-huge/PlatformPosition.bin',
+           '{repo}/datasets/sar-huge/PulseTransmissionTime.bin',
+           '{repo}/scratch/sar_dist_detects.txt',
+           '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter4.txt',
+           '50', '100', '100', '0']
+
+  smithwaterman:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # The 2000-character pair and its independently computed score.
+    args: ['100', '100',
+           '{repo}/datasets/smithwaterman/string1-gate.txt',
+           '{repo}/datasets/smithwaterman/string2-gate.txt',
+           '{repo}/datasets/smithwaterman/score-gate.txt']
+  smithwaterman_dist:
+    # places must lie between the rank count and the tile row count H+1, so at
+    # this tile the same pair admits one place per node at the widest geometry.
+    args: ['100', '100',
+           '{repo}/datasets/smithwaterman/string1-gate.txt',
+           '{repo}/datasets/smithwaterman/string2-gate.txt',
+           '{repo}/datasets/smithwaterman/score-gate.txt',
+           '8']
+
+  Stencil2D_intel_channelEVTs:
+    enabled: true
+    versions: [base]
+    # NR <= NP and every tile must be at least the halo radius wide on both
+    # axes after NR is factored into a near-square grid.
+    args: ['2400', '48', '20']
+
+  stream:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # The element count divides the chain count exactly, or the tail elements
+    # reach no datablock at all.
+    args: ['3360000', '48', '200']
+  stream_dist:
+    # The same triple as the row it re-implements: a different sweep count would
+    # make the pair a comparison of two problem instances.
+    args: ['3360000', '48', '200']
+
+  tempest:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # k is the width dial (6k^2 patches) and duration the length dial.
+    args: ['32', '25']
+  tempest_dist:
+    # The third argument is the target number of tiles a rank cuts its box into.
+    args: ['32', '25', '64']
+
+  triangle:
+    enabled: true
+    versions: [base, hinted]
+    # depth must lie in [1, holes-2] for a board of holes = rows(rows+1)/2.
+    args: ['7', '1', '7']
+
+  XSBench_intel:
+    enabled: true
+    versions: [base, hinted, restructured]
+    args: ['-s', 'large', '-g', '96', '-l', '150000', '-b', '240']
+  XSBench_intel_dist:
+    # A place is a producer and a table replica, placed at place % nodes, so the
+    # place count is a whole multiple of the widest rung; 1 <= p <= l.
+    args: ['-s', 'large', '-g', '96', '-l', '150000', '-p', '16', '-b', '8']
+
+  XSBench_intel_sharedDB:
+    enabled: true
+    versions: [base]
+    # -p is refused below the policy-domain count (a node would own no
+    # instance), and each instance runs the full lookup count, so one instance
+    # per node at the widest geometry is the same job at every rung.
+    args: ['-s', 'large', '-g', '96', '-l', '1000000', '-t', '8', '-p', '8']

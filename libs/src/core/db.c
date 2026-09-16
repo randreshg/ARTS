@@ -51,7 +51,6 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/counter/Preamble.h"
-#include "arts/counter/object_counter.h"
 #include "arts/edt.h"
 #include "arts/edt_context.h" /* current_edt + created-DB tracking */
 #include "arts/gas/guid.h"
@@ -804,9 +803,9 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
   }
 
   ARTS_INFO("Acquiring DB[Guid:%lu, GuidType:%u, AccessMode:%u, Owner:%u, "
-            "Rank:%u] in EDT[Id:%lu, Guid:%lu, Slot:%u]",
+            "Rank:%u] in EDT[Guid:%lu, Slot:%u]",
             depv[i].guid, guid_type, access_mode, owner, arts_global_rank_id,
-            edt->arts_id, edt->guid, i);
+            edt->guid, i);
 
 #ifdef ARTS_USE_CXL
   if (arts_guid_is_cxl(depv[i].guid)) {
@@ -881,20 +880,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
     depv[i].subtype = ARTS_DB;
     struct arts_ooo_args_db_acquire_s a = {
         .edt = edt, .db_guid = depv[i].guid, .slot = i};
-    /* Publish the acquiring task for the span of the decision: the arm that
-     * decides whether this rank can answer counts against it there, at the
-     * same points it counts the cluster-wide totals.  Restored rather than
-     * cleared, because a serve can nest inside another one on this thread. */
-    uint64_t prev_task = arts_object_task_enter(edt->arts_id);
     arts_handler_db_acquire(arts_db_of_cache(cache), &a);
-    arts_object_task_leave(prev_task);
-    /* A handler that answered from here left ptr set, so the payload size is
-     * known now.  One that parked is charged its bytes at the resume site,
-     * where a datablock this rank had never seen finally has a size. */
-    if (depv[i].ptr != NULL) {
-      arts_object_record_db_bytes(edt->arts_id, cache->db_size);
-      arts_object_trace_db(edt->arts_id, cache->db_size, 0);
-    }
     /* B1: a local hit set depv[i].ptr and took the EDT's buffer ref.  Pin the
      * descriptor by MOVING the still-alive cache-owning handle into db_pin
      * (released last in release_one_dep), so a concurrent destroy cannot free

@@ -1,0 +1,74 @@
+name: census
+description: what asked for the wire, what it carried, and what each family paid
+  for it
+capture_interval: 250
+counters:
+  NUM_EDT_FINISH:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_DB_CREATE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_DB_ACQUIRE_READ:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_DB_ACQUIRE_WRITE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_DB_ACQUIRE_LOCAL_HIT:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_DB_ACQUIRE_REMOTE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  BYTES_DB_CREATE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  BYTES_DB_PAYLOAD_SENT:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  BYTES_REMOTE_SENT:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_REMOTE_SEND:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_SNAPSHOT_REQUEST:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_SNAPSHOT_HEADER_ONLY:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_RO_COMBINE_JOINED:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_INVALIDATE_ROUND:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_INVALIDATE_ACK:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_GRANT_MIGRATE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+  NUM_GRANT_LOCAL_REUSE:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+allow_empty: false

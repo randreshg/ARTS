@@ -78,7 +78,6 @@ extern "C" {
 
 /** Internal EDT descriptor. */
 struct arts_edt_s {
-  uint64_t arts_id;    /**< Compiler-assigned unique id (0 = unset). */
   arts_edt_t func_ptr; /**< User function to execute. */
   uint32_t paramc;     /**< Number of static parameters. */
   uint32_t depc;       /**< Number of dependency slots. */

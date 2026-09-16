@@ -45,7 +45,6 @@
 
 #include "arts/counter/Preamble.h"
 #include "arts/counter/counter.h"
-#include "arts/counter/object_counter.h"
 #include "arts/db.h"
 #include "arts/defs.h"
 #include "arts/edt.h"
@@ -138,9 +137,8 @@ void arts_schedule_ready_edt(struct arts_edt_s *edt) {
  * DB dep's data has resolved at this rank.
  */
 void arts_handle_ready_edt(struct arts_edt_s *edt) {
-  ARTS_INFO("EDT[Guid:%lu, Id:%lu] ready — entering sequential DB acquire "
-            "(depc=%u)",
-            edt->guid, edt->arts_id, edt->depc);
+  ARTS_INFO("EDT[Guid:%lu] ready — entering sequential DB acquire (depc=%u)",
+            edt->guid, edt->depc);
 #ifdef ARTS_USE_CXL
   if (arts_node_info.scheduler == (void *)arts_cxl_scheduler_loop &&
       arts_deque_full(arts_thread_info.my_deque)) {
@@ -178,9 +176,8 @@ void arts_run_edt(struct arts_edt_s *edt) {
   uint32_t paramc = edt->paramc;
   const uint64_t *paramv = (uint64_t *)(edt + 1);
 
-  ARTS_INFO("Running EDT[Id:%lu, Guid:%lu, Deps: %u, Params: %u, "
-            "DepvPtr: %p]",
-            edt->arts_id, edt->guid, depc, paramc, depv);
+  ARTS_INFO("Running EDT[Guid:%lu, Deps: %u, Params: %u, DepvPtr: %p]",
+            edt->guid, depc, paramc, depv);
   prep_dbs(depc, depv, false);
 
   arts_set_thread_local_edt_info(edt);
@@ -193,11 +190,8 @@ void arts_run_edt(struct arts_edt_s *edt) {
   (void)clock_gettime(CLOCK_MONOTONIC, &end_time);
   TIME_EDT_EXEC_STOP();
 
-  // Record per-object EDT metrics
   uint64_t exec_ns = ((end_time.tv_sec - start_time.tv_sec) * 1000000000ULL) +
                      (end_time.tv_nsec - start_time.tv_nsec);
-  arts_object_record_edt(edt->arts_id, exec_ns, 0);
-  arts_object_trace_edt(edt->arts_id, exec_ns, 0);
 
   INCREMENT_NUM_EDT_FINISH_BY(1);
 
@@ -222,8 +216,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
 
   arts_unset_thread_local_edt_info();
 
-  ARTS_INFO("EDT[Guid:%lu, Id:%lu] finished (exec_ns=%lu)", edt->guid,
-            edt->arts_id, exec_ns);
+  ARTS_INFO("EDT[Guid:%lu] finished (exec_ns=%lu)", edt->guid, exec_ns);
   /* Drop the runnable-phase ref taken in arts_handle_ready_edt.  Capture the
    * alias first: arts_edt_delete detaches the route slot (dropping the install
    * ref), but the EDT is kept alive by this ref, so the final release below is

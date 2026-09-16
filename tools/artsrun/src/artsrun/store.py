@@ -1,6 +1,6 @@
 """Discovery and persistence of the two saved surfaces.
 
-Profiles and benchsets are values, not code: they live under experiments/ and
+Profiles and benchsets are values, not code: they live under experiments/, tracked, and
 are not tracked, so a campaign can be reshaped without touching the tool.
 """
 

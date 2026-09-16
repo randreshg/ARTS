@@ -42,11 +42,11 @@
 extern "C" {
 #endif
 #include "arts/counter/counter.h"
-#include "arts/counter/object_counter.h"
 #include "arts/defs.h"
 #include "arts/gas/route_table.h"
 #include "arts/runtime_types.h"
 #include "arts/system/topology.h"
+#include "arts/utils/array_list.h"
 #ifdef ARTS_USE_CXL
 #include "arts/cxl/deque.h"
 #include <pthread.h>
@@ -133,10 +133,6 @@ struct arts_runtime_shared_s {
   arts_array_list_t ***capture_arrays; // [thread_id][counter_index] - capture
                                        // history (PERIODIC)
   uint64_t counter_capture_interval;
-  // Object counter storage (per-thread saved data for per-arts_id tracking)
-  arts_object_table_t **object_tables;   // [thread_id]
-  arts_array_list_t **object_edt_traces; // [thread_id]
-  arts_array_list_t **object_db_traces;  // [thread_id]
 } ARTS_ALIGNED(64);
 
 struct arts_runtime_private_s {

@@ -83,7 +83,6 @@ set(TEST_PROGRAMS
     route_table_iter
     route_table_iter_destroy
     acquire_mode
-    arts_id
     # --- New unit tests ---
     edt_create_basic
     edt_chain
@@ -462,7 +461,6 @@ register_single_node_test(route_table)
 register_single_node_test(route_table_iter)
 register_single_node_test(route_table_iter_destroy)
 register_single_node_test(acquire_mode)
-register_single_node_test(arts_id)
 
 # Strict lock-free reserve_or_lookup stress
 register_single_node_test(route_table_install_race TIMEOUT 120)

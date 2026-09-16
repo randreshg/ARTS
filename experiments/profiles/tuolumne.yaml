@@ -1,0 +1,40 @@
+# LLNL Tuolumne (El Capitan class): 1,100 batch + 44 debug nodes, 4x AMD
+# MI300A per node = 96 Zen4 cores (SMT-2; OS CPUs 0-95 are the first threads
+# if TOSS enumerates as usual -- verify with lscpu before trusting the
+# envelope), 512 GB unified memory per node, HPE Slingshot 11 (four Cassini
+# NICs, cxi0..cxi3), TOSS 4, Flux.  Queues: pdebug (16 nodes per user, 1 h),
+# pbatch (256 nodes per job, 24 h).  Parallel file space: /p/lustre5.
+#
+# 92 workers + 4 progress threads fills the node: one progress thread per APU,
+# each APU being its own NUMA domain, the same rule that gives Dane's two
+# sub-NUMA sockets their four.  The worker count is not calibrated -- the
+# strong-scaling arguments were derived for Dane's 108 -- so a campaign here
+# re-derives sizes before it measures.
+name: tuolumne
+launcher: flux
+
+nodes: [1, 2, 4, 8, 16, 32]
+workers: 92
+progress: 4
+
+pin: true
+# Native RDM on Slingshot; named outright because the runtime commits its cxi
+# adaptations only when asked and auto-selection never reaches it.
+provider: cxi
+route_table_size: 16
+core_dump: false
+port_count: 1
+ports: [25000]
+
+flux:
+  queue: pbatch
+  build_queue: pdebug
+  build_cpus: 16
+  build_time: 30m
+  # The accounting bank of the allocation; filled in at the site.
+  bank:
+  poll_interval_s: 10
+
+cell_timeout_s: 1800
+repeats: 5
+rusage_witness: true

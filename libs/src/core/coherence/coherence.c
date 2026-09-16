@@ -47,7 +47,6 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
-#include "arts/counter/object_counter.h"
 #include "arts/db.h"
 #include "arts/edt.h"
 #include "arts/gas/guid.h" /* GUID kind extraction (quiescence debug check) */
@@ -214,13 +213,6 @@ void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
           __atomic_store_n(&depv[slot].db_pin, (void *)db_h, __ATOMIC_RELEASE);
           db_h = NULL;
         }
-        /* The bytes half of a parked acquire's accounting: only now is the
-         * payload — and, for a datablock this rank had never seen, its size —
-         * in hand.  The winning CAS above makes this exactly-once per
-         * resolution; the acquire itself was already counted where the arm
-         * decided it. */
-        arts_object_record_db_bytes(edt->arts_id, cache->db_size);
-        arts_object_trace_db(edt->arts_id, cache->db_size, 1);
       }
     }
     arts_shared_release(&db_h); /* no-op when moved into db_pin above */
@@ -308,7 +300,6 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
     return NULL; /* h is NULL — nothing installed, nothing held */
   }
   INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-  arts_object_acquire(false);
   return buf->data;
 }
 
@@ -473,7 +464,6 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
    * reorder-buffer node onto pending_snapshot.  A concurrent destroy is handled
    * by the caller's lookup-miss + OoO defer. */
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-  arts_object_acquire(true);
 #ifdef ARTS_RO_COMBINING_LIVE
   if (arts_global_rank_count > 1) {
     struct arts_db_snapshot_waiter_s *w =
