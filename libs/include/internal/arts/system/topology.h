@@ -55,9 +55,34 @@ extern "C" {
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include "arts/system/config.h"
+
+/* Widest NUMA node count the facts below describe.  A single-word node mask
+ * covers node < 64, which is also the registered pool's own ceiling. */
+#define ARTS_MAX_NUMA_NODES 64u
+
+/* What the memory subsystem needs to know about the machine's NUMA
+ * topology, discovered alongside the thread placement because the same
+ * traversal already answers it:
+ *
+ *   node_count      NUMA nodes on the machine.
+ *   rank_nodes      bitmask of the nodes carrying at least one of THIS
+ *                   rank's threads — the set an object no single thread owns
+ *                   should be spread across.
+ *   distance_known  false when the machine reports no distances, leaving
+ *                   every node equidistant.
+ *   distance        node_count x node_count relative access latencies,
+ *                   row-major with the requesting node as the row (stride
+ *                   node_count, smallest value on the diagonal). */
+struct arts_numa_facts_s {
+  unsigned int node_count;
+  uint64_t rank_nodes;
+  bool distance_known;
+  uint32_t distance[ARTS_MAX_NUMA_NODES * ARTS_MAX_NUMA_NODES];
+};
 
 /* Thread roles.  A thread has exactly one role.  After the transport cutover
  * there is no dedicated sender: every producing thread injects its own outbound
@@ -84,7 +109,12 @@ struct thread_mask_s {
   bool pin;
 };
 
-void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat);
+/* Compute this rank's thread placement into `flat` (config->thread_count
+ * entries) and, when `facts` is non-NULL, the machine's NUMA facts the same
+ * traversal discovers.  Both are read from the machine once, here, so no
+ * other module re-discovers the topology for itself. */
+void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
+                     struct arts_numa_facts_s *facts);
 void print_mask(struct thread_mask_s *threads, unsigned int num_threads);
 
 #ifdef __cplusplus

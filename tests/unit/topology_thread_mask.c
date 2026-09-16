@@ -164,7 +164,7 @@ static void death_test_offset_overflow(unsigned int total_pus) {
     struct arts_config_s c =
         make_config(total_pus, 0, /*shared_pool=*/true, /*my_rank=*/1);
     struct thread_mask_s *flat = calloc(total_pus, sizeof(*flat));
-    get_thread_mask(&c, flat); /* expected to ARTS_ERROR -> arts_abort */
+    get_thread_mask(&c, flat, NULL); /* expected to ARTS_ERROR -> arts_abort */
     /* If we get here, the bounds check did NOT fire — fail loudly. */
     fprintf(stderr, "CHILD: get_thread_mask returned without abort\n");
     _exit(0); /* exit 0 signals the death test FAILED to abort */
@@ -201,7 +201,7 @@ int main(void) {
     if (!flat) {
       fail("calloc");
     }
-    get_thread_mask(&c, flat);
+    get_thread_mask(&c, flat, NULL);
     check_mask(flat, &c, total_pus, 0);
     free(flat);
   }
@@ -224,9 +224,9 @@ int main(void) {
     if (!f0 || !f1) {
       fail("calloc");
     }
-    get_thread_mask(&c0, f0);
+    get_thread_mask(&c0, f0, NULL);
     check_mask(f0, &c0, total_pus, 0);
-    get_thread_mask(&c1, f1);
+    get_thread_mask(&c1, f1, NULL);
     check_mask(f1, &c1, total_pus, slice_tc);
 
     /* Disjointness: no pu_id from rank 0's slice appears in rank 1's slice. */

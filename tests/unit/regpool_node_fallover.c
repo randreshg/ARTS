@@ -1,12 +1,12 @@
-/* Init fallover + fallback serving for a node the clamp refuses.
+/* Init on a node the placement screen refuses.
  *
  * The diagnostic override (ARTS_REGPOOL_FORCE_FULL_NODES) marks the CALLING
  * thread's node as full before init, so this exercises deterministically —
  * with no real memory pressure — the path a genuinely starved node takes:
- * init must still succeed (best-effort carving falls over to the remaining
- * nodes), and an allocation from the refused node's own thread must be
- * served from another node's arena while still resolving through
- * arts_regpool_lookup (confinement holds across the fallback).
+ * placement is a preference, so init must still succeed and the node's
+ * threads must still be served, from a slab the kernel places (no node
+ * named) rather than a refusal, while every pointer still resolves through
+ * arts_regpool_lookup (confinement holds regardless of placement).
  *
  * Requires >= 2 NUMA nodes and the arena allocator; skipped (pass) below
  * that, and registered only for arena-allocator builds. */
@@ -61,30 +61,31 @@ int main(void) {
   snprintf(buf, sizeof(buf), "%u", node);
   assert(setenv("ARTS_REGPOOL_FORCE_FULL_NODES", buf, 1) == 0);
 
-  /* Init must survive the refused node (best-effort carving). */
+  /* Init must survive the node the screen refuses. */
   assert(arts_regpool_init(NULL, NULL, (size_t)64 * 1024 * 1024, 0));
 
-  /* An allocation from the refused node's own thread must succeed via the
-   * fallback arena AND stay confined to a registered slab — and the slab
-   * must belong to a DIFFERENT node, or the override did nothing and this
-   * test is passing vacuously. */
+  /* An allocation from that node's own thread must succeed AND stay
+   * confined to a registered slab — and the slab must be one the kernel
+   * placed (no node named), or the override did nothing and this test is
+   * passing vacuously. */
   void *p = arts_regpool_alloc_aligned(1 << 20, 64);
   assert(p != NULL);
   const arts_regpool_mr_t *m = arts_regpool_lookup(p);
   assert(m != NULL);
-  assert(m->numa_node != (int)node);
+  assert(m->numa_node == -1 &&
+         "a node the screen refuses is served from an unplaced slab");
   memset(p, 0xA5, 1 << 20);
   arts_regpool_free(p);
 
-  /* A second allocation exercises the memoized fallback fast path. */
+  /* A second allocation takes the node's now-published arena directly. */
   void *q = arts_regpool_alloc_aligned(1 << 16, 64);
   assert(q != NULL);
   assert(arts_regpool_lookup(q) != NULL);
   arts_regpool_free(q);
 
   arts_regpool_cleanup();
-  printf("PASS regpool_node_fallover: init fell over node %u and served its "
-         "thread from node %d's arena\n",
-         node, m->numa_node);
+  printf("PASS regpool_node_fallover: node %u refused by the screen, served "
+         "from a slab placed by the kernel\n",
+         node);
   return 0;
 }

@@ -852,7 +852,7 @@ static const struct arts_config_entry_s config_entries[] = {
     {"master_node", CONFIG_STRING, OFF(master_node), NULL, NULL},
     {"provider", CONFIG_STRING, OFF(provider), NULL, NULL},
     {"fabric_domain", CONFIG_STRING, OFF(fabric_domain), NULL, NULL},
-    {"regpool_slab_mb", CONFIG_UINT, OFF(regpool_slab_mb), "64", NULL},
+    {"regpool_slab_mb", CONFIG_UINT, OFF(regpool_slab_mb), "256", NULL},
     /* --- Debug --- */
     {"kill_mode", CONFIG_UINT, OFF(kill_mode), "0", NULL},
     {"core_dump", CONFIG_BOOL, OFF(core_dump), "0", NULL},

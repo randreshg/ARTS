@@ -514,9 +514,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
       arts_node_info.e2e_start_stamp = arts_get_time_stamp();
   }
 
-  if (init_per_node) {
-    init_per_node(arts_global_rank_id, argc, argv);
-  }
+  init_per_node(arts_global_rank_id, argc, argv);
 
 #ifdef ARTS_USE_GPU
   arts_init_per_gpu_wrapper(argc, argv);
@@ -526,7 +524,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   arts_atomic_sub(&arts_node_info.ready_to_parallel_start, 1U);
   while (arts_node_info.ready_to_parallel_start) {
   }
-  if (init_per_worker && arts_thread_info.role == ARTS_ROLE_WORKER) {
+  if (arts_thread_info.role == ARTS_ROLE_WORKER) {
     init_per_worker(arts_global_rank_id, arts_thread_info.group_pos, argc,
                     argv);
   }
@@ -617,10 +615,8 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
     };
 
     if (arts_thread_info.role == ARTS_ROLE_WORKER) {
-      if (init_per_worker) {
-        init_per_worker(arts_global_rank_id, arts_thread_info.group_pos,
-                        arts_runtime_argc, arts_runtime_argv);
-      }
+      init_per_worker(arts_global_rank_id, arts_thread_info.group_pos,
+                      arts_runtime_argc, arts_runtime_argv);
       arts_owned_finish_cleanup();
     }
 

@@ -142,10 +142,17 @@ Networking
        for the process — the config is the deliberate, versioned artifact;
        the environment variable is ambient and host-specific.
    * - ``regpool_slab_mb``
-     - 64
-     - Registered-memory slab pool size in MB, per NUMA node. Backs the
-       libfabric memory registration the DB payload buffers draw from; the
-       pool grows on demand from this floor.
+     - 256
+     - Registered-memory base slab size in MB: the first slab carved for a
+       NUMA node, on that node's first use. Backs the libfabric memory
+       registration the DB payload buffers draw from. The pool grows on
+       demand by half of the last slab mapped for the node, up to 16 GiB per
+       slab; a payload above 32 MiB is served by a dedicated mapping kept for
+       reuse, interleaved across the NUMA nodes this rank's threads are
+       pinned to (one object every thread sweeps has no owning node), while a
+       smaller payload comes from the allocating thread's own node. Placement
+       is a preference throughout: a node that cannot take a mapping hands it
+       to the nearest one that can.
    * - ``port_count``
      - (from ``ports``, else 1)
      - Parallel connections each node listens on.  The ``ports`` list must

@@ -41,6 +41,7 @@
 
 #include <limits.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include <pthread.h>
@@ -50,9 +51,11 @@
 #endif
 
 #include "arts/counter/counter.h"
+#include "arts/memory/regpool.h" /* the pool learns this rank's NUMA nodes */
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
+#include "arts/system/topology.h" /* get_thread_mask + the NUMA facts */
 #include "arts/transport/dispatcher.h"
 #include "arts/utils/malloc.h"
 
@@ -198,7 +201,19 @@ void arts_thread_init(struct arts_config_s *config) {
 
   mask =
       (struct thread_mask_s *)arts_malloc(sizeof(*mask) * config->thread_count);
-  get_thread_mask(config, mask);
+  /* The placement is computed BEFORE the node init that carves the memory
+   * pool, so the pool can be told which NUMA nodes this rank's threads
+   * actually sit on and how far apart the machine's nodes are — facts it
+   * would otherwise have to rediscover, and the second of which it cannot
+   * see at all.  The facts are consumed by the init; nothing keeps them. */
+  {
+    struct arts_numa_facts_s *facts =
+        (struct arts_numa_facts_s *)arts_malloc(sizeof(*facts));
+    get_thread_mask(config, mask, facts);
+    arts_regpool_set_topology(facts->node_count, facts->rank_nodes,
+                              facts->distance_known ? facts->distance : NULL);
+    arts_free(facts);
+  }
   arts_runtime_node_init(config);
   print_mask(mask, config->thread_count);
 
@@ -230,7 +245,15 @@ void arts_thread_init(struct arts_config_s *config) {
       pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &set);
     }
 #endif
-    pthread_create(&node_thread_list[i], &attr, &arts_thread_loop, &mask[i]);
+    /* A worker slot that was never created is fatal, not degraded service:
+     * the slot is joined at shutdown and its share of the placement is
+     * silently missing from the run. */
+    int rc =
+        pthread_create(&node_thread_list[i], &attr, &arts_thread_loop,
+                       &mask[i]);
+    if (rc != 0) {
+      ARTS_ERROR("thread %u: pthread_create failed: %s", i, strerror(rc));
+    }
     pthread_attr_destroy(&attr);
   }
 

@@ -44,6 +44,7 @@
 #include <hwloc.h>
 #include <hwloc/helper.h>
 #include <stdlib.h>
+#include <string.h>
 
 unsigned int num_numa_domains = 1;
 
@@ -93,7 +94,49 @@ static hwloc_obj_t ancestor_by_type(hwloc_obj_t obj, hwloc_obj_type_t type) {
   return NULL;
 }
 
-void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
+/* Read the machine's NUMA-node distances out of the loaded topology into the
+ * flat row-major table `facts` carries.  hwloc reports the matrix over an
+ * arbitrary object order, so every value is placed by the objects' OS
+ * indices, never by their position in its array.  A machine that reports no
+ * latency matrix leaves distance_known false, which its consumers read as
+ * "every node equidistant" rather than as an error: distances only ORDER a
+ * fallback, so not knowing them costs an ordering, not a placement. */
+static void read_numa_distances(hwloc_topology_t topology,
+                                struct arts_numa_facts_s *facts) {
+  facts->distance_known = false;
+  if (facts->node_count == 0 || facts->node_count > ARTS_MAX_NUMA_NODES) {
+    return;
+  }
+  unsigned nr = 1;
+  struct hwloc_distances_s *dist = NULL;
+  if (hwloc_distances_get_by_type(topology, HWLOC_OBJ_NUMANODE, &nr, &dist,
+                                  HWLOC_DISTANCES_KIND_FROM_OS |
+                                      HWLOC_DISTANCES_KIND_MEANS_LATENCY,
+                                  0) != 0 ||
+      nr == 0 || dist == NULL) {
+    return;
+  }
+  for (unsigned i = 0; i < dist->nbobjs; i++) {
+    unsigned from = dist->objs[i]->os_index;
+    if (from >= facts->node_count) {
+      continue;
+    }
+    for (unsigned j = 0; j < dist->nbobjs; j++) {
+      unsigned to = dist->objs[j]->os_index;
+      if (to >= facts->node_count) {
+        continue;
+      }
+      uint64_t v = dist->values[(size_t)i * dist->nbobjs + j];
+      facts->distance[(size_t)from * facts->node_count + to] =
+          (v > UINT32_MAX) ? UINT32_MAX : (uint32_t)v;
+    }
+  }
+  facts->distance_known = true;
+  hwloc_distances_release(topology, dist);
+}
+
+void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
+                     struct arts_numa_facts_s *facts) {
   /* Init hwloc topology */
   hwloc_topology_t topology;
   if (hwloc_topology_init(&topology) < 0) {
@@ -156,12 +199,30 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat) {
     flat[t].pin = config->pin_threads;
   }
 
-  free(placed);
-  free(pus);
-
   /* NUMA domain count for public API */
   unsigned int mem = hwloc_get_nbobjs_by_type(topology, HWLOC_OBJ_NUMANODE);
   num_numa_domains = mem ? mem : 1;
+
+  if (facts != NULL) {
+    memset(facts, 0, sizeof(*facts));
+    facts->node_count = (num_numa_domains > ARTS_MAX_NUMA_NODES)
+                            ? ARTS_MAX_NUMA_NODES
+                            : num_numa_domains;
+    /* The rank's nodes are exactly the ones its placed threads sit on: the
+     * slice is contiguous in the base order, but which nodes that spans is a
+     * property of the machine, so it is read off the placement rather than
+     * derived from the slice's bounds. */
+    for (unsigned int t = 0; t < config->thread_count; t++) {
+      unsigned int nid = placed[t].numa_id;
+      if (nid < facts->node_count) {
+        facts->rank_nodes |= (uint64_t)1 << nid;
+      }
+    }
+    read_numa_distances(topology, facts);
+  }
+
+  free(placed);
+  free(pus);
 
   hwloc_topology_destroy(topology);
 }
