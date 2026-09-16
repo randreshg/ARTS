@@ -1,7 +1,6 @@
-/* The vendored dependencies resolve as targets: one entry point from each,
- * linked the way an application links them. */
+/* The vendored dependency resolves as a target: one entry point, linked the
+ * way an application links it. */
 #include <fftw3.h>
-#include <hdf5.h>
 
 int main(void) {
   double in[4] = {0, 1, 2, 3};
@@ -10,5 +9,5 @@ int main(void) {
   fftw_execute(p);
   fftw_destroy_plan(p);
   fftw_free(out);
-  return H5open() < 0 ? 1 : (H5close() < 0 ? 1 : 0);
+  return 0;
 }

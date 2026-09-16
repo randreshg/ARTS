@@ -30,29 +30,12 @@ function(arts_hpx_configure target)
     target_link_options(${target} PRIVATE "LINKER:--exclude-libs,libhwloc.a")
 endfunction()
 
-# The vendored HDF5 and FFTW, handed in by the outer project as install
-# prefixes.  A program that needs one names it in add_hpx_origin_app's LINK
-# list; a tree configured without them has no such target, and the program
-# that needs it is not built.
-set(ARTS_HDF5_DIR "" CACHE PATH "Install prefix of the vendored HDF5")
+# The vendored FFTW, handed in by the outer project as an install prefix.
+# A program that needs it names it in add_hpx_origin_app's LINK list; a tree
+# configured without it has no such target, and the program that needs it is
+# not built.
 set(ARTS_FFTW_DIR "" CACHE PATH "Install prefix of the vendored FFTW")
-set(ARTS_MINIAPPS_ROOT "" CACHE PATH "Pristine miniapps checkout")
-set(ARTS_NBODY_ROOT "" CACHE PATH "Pristine NBody checkout")
 set(ARTS_HPXFFT_ROOT "" CACHE PATH "Pristine hpx-fft sources")
-if(ARTS_HDF5_DIR AND EXISTS "${ARTS_HDF5_DIR}/lib/libhdf5_cpp.a")
-    find_package(Threads REQUIRED)
-    add_library(arts_hpx_hdf5 STATIC IMPORTED GLOBAL)
-    set_target_properties(arts_hpx_hdf5 PROPERTIES
-        IMPORTED_LOCATION "${ARTS_HDF5_DIR}/lib/libhdf5.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_HDF5_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS};m")
-    add_library(arts_hpx_hdf5_cpp STATIC IMPORTED GLOBAL)
-    set_target_properties(arts_hpx_hdf5_cpp PROPERTIES
-        IMPORTED_LOCATION "${ARTS_HDF5_DIR}/lib/libhdf5_cpp.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_HDF5_DIR}/include"
-        INTERFACE_LINK_LIBRARIES "arts_hpx_hdf5")
-    add_library(arts_hpx::hdf5_cpp ALIAS arts_hpx_hdf5_cpp)
-endif()
 if(ARTS_FFTW_DIR AND EXISTS "${ARTS_FFTW_DIR}/lib/libfftw3.a")
     add_library(arts_hpx_fftw3 STATIC IMPORTED GLOBAL)
     set_target_properties(arts_hpx_fftw3 PROPERTIES
@@ -126,60 +109,27 @@ endfunction()
 add_hpx_origin_app(NAME fib_hpx
     SOURCES fibonacci_futures_distributed.cpp)
 
-add_hpx_origin_app(NAME pi_hpx
-    SOURCES distributed_pi.cpp)
-
-add_hpx_origin_app(NAME random_mem_access_hpx
-    SOURCES random_mem_access_client.cpp random_mem_access/random_mem_access.cpp)
-
 add_hpx_origin_app(NAME stencil1d_hpx
     SOURCES 1d_stencil_8.cpp)
 
-add_hpx_origin_app(NAME transpose_hpx
-    SOURCES transpose_block.cpp)
-
-# The component this program carries declares a dependency on the runtime's
-# iostreams component (its own build file names it), and the runtime keeps
-# that component's stream objects in a library of its own — so the
-# dependency is named here rather than edited out of the sources.
-add_hpx_origin_app(NAME jacobi_hpx
-    SOURCES jacobi.cpp
-            jacobi_component/grid.cpp
-            jacobi_component/jacobi_component.cpp
-            jacobi_component/server/row.cpp
-            jacobi_component/server/solver.cpp
-            jacobi_component/server/stencil_iterator.cpp
-            jacobi_component/stencil_iterator.cpp
-    LINK HPX::iostreams_component)
-
-# The program's own build file declares the same dependency on the runtime's
-# iostreams component, for the same reason.
+# The program's own build file declares a dependency on the runtime's
+# iostreams component, and the runtime keeps that component's stream objects
+# in a library of its own — so the dependency is named here rather than
+# edited out of the sources.
 add_hpx_origin_app(NAME network_storage_hpx
     SOURCES network_storage.cpp
     LINK HPX::iostreams_component)
 
-# The first program whose origin is not the vendored HPX tree: its pristine
-# sources live in another submodule, named here through ORIGIN_ROOT, and its
-# ORIGIN.md file paths are relative to that root.
-add_hpx_origin_app(NAME mini_ghost_hpx
-    ORIGIN_ROOT "${ARTS_MINIAPPS_ROOT}"
-    SOURCES mini_ghost.cpp stepper.cpp write_grid.cpp)
-
-# Its origin lives in another submodule as well.  The origin path of its one
-# source contains a space; the disclosure carries that path and the checker
-# passes it to diff as a single list element, so nothing has to quote it.
-add_hpx_origin_app(NAME nbody_hpx
-    ORIGIN_ROOT "${ARTS_NBODY_ROOT}"
-    SOURCES main.cpp)
-
-# The third origin outside the vendored HPX tree, and the first program here
-# that needs a numerical library: its transform kernel is FFTW.  A tree-driven
-# build always has the prefix (the outer project's app subproject is added
-# only where the dependency is built, and its external project depends on it),
-# so the target is guaranteed there.  This project is also configurable on its
-# own against an install, where the prefix can be absent -- and there the
-# program is skipped rather than failing the generate step, which is what the
-# LINK list's contract at the top of this file promises.
+# The one origin outside the vendored HPX tree (its pristine sources are a
+# tracked directory, named here through ORIGIN_ROOT, and its ORIGIN.md file
+# paths are relative to that root), and the one program here that needs a
+# numerical library: its transform kernel is FFTW.  A tree-driven build always
+# has the prefix (the outer project's app subproject is added only where the
+# dependency is built, and its external project depends on it), so the target
+# is guaranteed there.  This project is also configurable on its own against
+# an install, where the prefix can be absent -- and there the program is
+# skipped rather than failing the generate step, which is what the LINK list's
+# contract at the top of this file promises.
 if(TARGET arts_hpx::fftw3)
     add_hpx_origin_app(NAME fft_hpx
         ORIGIN_ROOT "${ARTS_HPXFFT_ROOT}"
@@ -187,29 +137,6 @@ if(TARGET arts_hpx::fftw3)
         LINK arts_hpx::fftw3)
 else()
     message(STATUS "Skipping fft_hpx: the vendored FFTW is not configured")
-endif()
-
-# The one program here whose input is a dataset rather than its arguments: it
-# reads hyperslabs of a tabulated equation of state through the HDF5 C++ API.
-# A tree-driven build always has the prefix (the outer project's app
-# subproject is added only where the dependency is built, and its external
-# project depends on it), so the target is guaranteed there.  This project is
-# also configurable on its own against an install, where the prefix can be
-# absent -- and there the program is skipped rather than failing the generate
-# step, which is what the LINK list's contract at the top of this file
-# promises.  Its component lives in a sub-library of its own in the origin;
-# here the whole program is the executable's six translation units.
-if(TARGET arts_hpx::hdf5_cpp)
-    add_hpx_origin_app(NAME sheneos_hpx
-        SOURCES sheneos_test.cpp
-                sheneos/interpolator.cpp
-                sheneos/read_values.cpp
-                sheneos/dimension.cpp
-                sheneos/server/partition3d.cpp
-                sheneos/server/configuration.cpp
-        LINK arts_hpx::hdf5_cpp)
-else()
-    message(STATUS "Skipping sheneos_hpx: the vendored HDF5 is not configured")
 endif()
 
 # The disclosure tests are only as good as the checker: this drives every

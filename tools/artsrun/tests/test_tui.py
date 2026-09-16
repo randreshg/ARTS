@@ -1074,7 +1074,7 @@ def test_loading_a_benchset_shows_that_roster():
         return small, big
 
     small, big = drive(check)
-    assert small == {"fibonacci", "nqueens", "quicksort", "pi_hpx"}
+    assert small == {"fibonacci", "nqueens", "quicksort"}
     assert len(big) > len(small)
 
 

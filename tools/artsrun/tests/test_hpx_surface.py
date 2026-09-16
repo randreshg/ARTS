@@ -282,20 +282,15 @@ def test_sweep_refuses_hpx_arm():
         spec.validate_against(catalog, _profile())
 
 
-def test_the_comparison_excludes_origins_whose_tasks_suspend():
-    # Four origins never suspend a started parallel task (continuation style,
-    # or a bounded number of driver-thread phase joins) and let the problem set
-    # their parallel width; seven fail one of the two tests and carry the
-    # reason.  The annotation masks nothing: every row keeps its HPX program.
+def test_the_section_is_the_four_compared_rows():
+    # The section admits an origin only if it never suspends a started
+    # parallel task (continuation style, or a bounded number of driver-thread
+    # phase joins) and lets the problem set its parallel width; the rows that
+    # failed either test are archived, not annotated, so every row here is in
+    # the comparison and has its HPX program.
     catalog = load_catalog()
     compared = {"stencil1d_hpx", "fib_hpx", "network_storage_hpx", "fft_hpx"}
-    excluded = {"jacobi_hpx", "sheneos_hpx", "transpose_hpx", "mini_ghost_hpx", "random_mem_access_hpx",
-                "pi_hpx", "nbody_hpx"}
     hpx_rows = {name for name, app in catalog.apps.items() if app.origin is Origin.HPX}
-    assert hpx_rows == compared | excluded
+    assert hpx_rows == compared
     for name in compared:
-        assert catalog.apps[name].comparison_excluded is None
-    for name in excluded:
-        reason = catalog.apps[name].comparison_excluded
-        assert reason and ("block" in reason or "yield" in reason or "width" in reason)
         assert catalog.apps[name].hpx_target(Version.BASE) is not None

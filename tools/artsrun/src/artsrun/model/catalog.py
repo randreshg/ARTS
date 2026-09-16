@@ -169,15 +169,6 @@ class AppEntry(BaseModel):
     unsupported: str | None = None
     multinode_skip: str | None = None
     ocrvx_skip: bool = False
-    # A row of the runtime comparison only if its origin never suspends a
-    # started parallel task: its waits are continuations, or a bounded number
-    # of phase joins by the driver thread -- the discipline an event-driven
-    # program has by construction, so the two sides pay for the same thing.
-    # An origin whose tasks start and then block (on a future, a collective,
-    # a lock) measures its own synchronization idiom as much as the runtime,
-    # and is excluded from the comparison's rosters with the reason here.  An
-    # annotation, not a mask: the row stays selectable and runnable.
-    comparison_excluded: str | None = None
     # A probe built for the ARTS variants alone: it exists to separate the
     # coherence plane's arms, so no reference runtime has a target for it.
     arts_only: bool = False
