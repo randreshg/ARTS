@@ -242,10 +242,51 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   arts_db_cache_common_destroy_post(cache);
 }
 
-void arts_db_create_publish_holder(struct arts_db_s *db,
-                                   unsigned int creator_rank) {
-  /* The creator boots holding the grant; name it in the home directory. */
-  atomic_store_explicit(&db->rw_holder, creator_rank, memory_order_release);
+/* The reader plane's VALID is a claim to durable bytes, and it dies exactly
+ * one way — an INVALIDATE arrives.  A create that takes no hold is given no
+ * bytes, so seeding VALID there would leave a claim nothing can retire until
+ * some later round happens to name this rank: its own reads would be answered
+ * from a copy it never held, and the ensure that materializes a first image
+ * would do so on a rank with no right to one.  Retract the claim instead, and
+ * only the claim: an in-flight fetch and a parked reader chain live in the
+ * same word and must survive (this runs on a create that may be coalescing
+ * onto a cache readers already reached). */
+/* The hold is possession plus this create's own writer, from a word that
+ * holds nothing. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+  return arts_atomic_cswap(&cache->writer_count, 0u,
+                           ARTS_GRANT_SEED_HOLDING) == 0u;
+}
+
+void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
+  struct arts_db_cache_s *cache = &db->cache;
+  uint64_t cur, next;
+  do {
+    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+    if (INV_CACHE_RO(cur) != INV_RO_VALID) {
+      return;
+    }
+    next = INV_CACHE_MAKE(INV_RO_IDLE, INV_CACHE_INFLIGHT(cur),
+                          INV_CACHE_HEAD_RO(cur));
+  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
+                                                  next, memory_order_acq_rel,
+                                                  memory_order_acquire));
+}
+
+
+/* One transition, from the one state a create may claim a copy in: the reader
+ * word exactly idle.  A fetch in flight is a reader that has already asked,
+ * and its delivery brings the copy with it — stamping VALID over it would
+ * leave that answer with nowhere to land; a parked chain is the same reader,
+ * waiting.  So a non-idle word is left alone and the create simply
+ * does not claim. */
+void arts_db_create_claim_creator_copy(struct arts_db_s *db) {
+  struct arts_db_cache_s *cache = &db->cache;
+  uint64_t idle = INV_CACHE_MAKE(INV_RO_IDLE, 0u, 0u);
+  uint64_t want = INV_CACHE_MAKE(INV_RO_VALID, 0u, 0u);
+  (void)atomic_compare_exchange_strong_explicit(&cache->cache_state, &idle,
+                                                want, memory_order_acq_rel,
+                                                memory_order_acquire);
 }
 
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
@@ -609,6 +650,9 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     if (master == NULL ||
         !arts_net_rdzv_local(master->data, cache->db_size, &landing.addr,
                              &landing.key)) {
+      /* Unreachable: the releaser obtained its write right from this home,
+       * and serving that request is one of the points that materializes the
+       * home's buffer. */
       ARTS_ERROR("coherence: publish announce found no stable home buffer");
     }
     landing.txid = arts_net_rdzv_txid_next();
@@ -764,10 +808,23 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
    * forever.  The advertised landing is that storage; adopt it when the cache
    * has none and return it to the pool when the cache already has one. */
   if (p->rdzv_cookie != 0) {
+    /* Stamped at version 1 when the server held nothing: a live image may
+     * never carry the version that means "holds nothing", or the first
+     * release of real bytes would mint the same stamp and its install would
+     * retreat as stale against the invented zero image. */
     (void)arts_db_buf_adopt_landing(
-        &db->cache, p->version,
+        &db->cache, p->version ? p->version : 1u,
         (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie,
         db->cache.db_size);
+  } else if (db->cache.db_size != 0) {
+    arts_shared_ptr_t have_h = arts_db_buf_acquire(&db->cache);
+    bool have = (arts_shared_get(have_h) != NULL);
+    if (have) {
+      arts_db_buf_release(&have_h);
+    } else {
+      ARTS_ERROR("inv: data-less deliver for a sized block with neither a "
+                 "landing nor a buffer to make valid");
+    }
   }
   inv_deliver_commit(db_h, p->version, NULL, 0u);
 }
@@ -982,8 +1039,9 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
       if (have_bytes) {
         arts_db_buf_landing_recycle(cache, landing);
       } else {
-        (void)arts_db_buf_adopt_landing(cache, p.version, landing,
-                                        cache->db_size);
+        /* Version 1, never 0 — see the wire-side adopt above. */
+        (void)arts_db_buf_adopt_landing(cache, p.version ? p.version : 1u,
+                                        landing, cache->db_size);
       }
       p.rdzv_cookie = 0;
     }

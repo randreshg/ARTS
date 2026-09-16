@@ -75,6 +75,17 @@ struct arts_db_cache_s {
    * original guid argument has been lost in the call chain. */
   arts_guid_t db_guid;
   uint64_t db_size;
+  /* Does this cache's payload slot still need materializing?  1 until a
+   * buffer has been installed, 0 after — the first entitled use of a block
+   * whose create left it no storage is what installs one, and every later
+   * use must find that out without touching the slot's refcount.  Accessed
+   * with the atomic builtins rather than an _Atomic qualifier so the layout
+   * is identical in the C and C++ views of this struct.  Correctness never
+   * rests on it: a reader that sees 0 still reads the pointer from the slot
+   * itself, and a stale 1 costs one materialize attempt that then clears
+   * it.  The slot is monotone for a live cache — only the destructor puts
+   * NULL back — so a 0 can never go stale. */
+  uint8_t payload_pending;
   /* WRF_VAL: writer_count is a pure ref count.  The PUBLISH ACK rendezvous is
    * a stack-local sem_t created per release_rw, matched by pointer identity
    * (the &sem address rides the PUBLISH packet and is echoed in the ACK) —

@@ -82,6 +82,66 @@ arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
 
 void arts_db_buf_release(arts_shared_ptr_t *h) { arts_shared_release(h); }
 
+/* One place records that the payload slot is no longer empty, so the
+ * per-acquire question "does this block still need materializing" is a byte
+ * load instead of a refcounted look at the slot.  Called wherever a non-NULL
+ * buffer ends up in the slot — including an install-if-absent that LOST,
+ * since the winner's buffer is in there either way.  Release order pairs
+ * with the relaxed load at the fast exit: the flag is a hint, and whoever
+ * acts on it reads the pointer from the slot itself. */
+static inline void buf_note_present(struct arts_db_cache_s *cache) {
+  __atomic_store_n(&cache->payload_pending, (uint8_t)0, __ATOMIC_RELEASE);
+}
+
+bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
+  /* A byte load answers the common case: once anything has installed a
+   * buffer, no later use has to materialize one, and asking the slot itself
+   * would cost every acquire a refcount round-trip on a shared line.
+   * Relaxed, because nothing rests on the answer — a caller that stops here
+   * goes on to read the pointer from the slot with its own acquire load, and
+   * a caller that reads a stale 1 simply tries an install that then fails
+   * and clears the flag. */
+  if (__atomic_load_n(&cache->payload_pending, __ATOMIC_RELAXED) == 0u) {
+    return false;
+  }
+  if (db_size == 0) {
+    /* A zero-sized block has no storage to hold: NULL is its defined
+     * value. */
+    return false;
+  }
+  arts_shared_ptr_t h = arts_db_buf_acquire(cache);
+  if (arts_shared_get(h) != NULL) {
+    arts_db_buf_release(&h);
+    return false;
+  }
+  struct arts_db_buffer_s *nb = arts_db_buf_alloc_zeroed(cache, db_size);
+  if (nb == NULL) {
+    return false; /* OOM — caller decides how to surface. */
+  }
+  nb->owner_cache = cache;
+  /* Version 1, not 0: the block's first image is its VALUE, not a
+   * placeholder awaiting a publication.  An arm whose "has anyone published
+   * yet" predicate is version > 0 must read this as published, or a reader
+   * would hold for a writer that may never come. */
+  nb->version = 1;
+  arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
+  nb->cb = cb;
+  /* Install-if-absent, never the version-conditional publish: this buffer
+   * may only ever fill a hole.  Two first users therefore agree by
+   * construction — one installs, the other adopts a buffer whose bytes are
+   * identical to the one it built. */
+  if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
+    arts_shared_release(&cb); /* last ref: the deleter recycles nb */
+    buf_note_present(cache);
+    return false;
+  }
+  if (cache->db_size == 0) {
+    cache->db_size = db_size;
+  }
+  buf_note_present(cache);
+  return true;
+}
+
 /* Version-conditional publish of a fully-initialized private buffer (fields +
  * payload bytes already set; no cb yet).  Shared by the copy install
  * (arts_db_buf_install) and the rendezvous landed install
@@ -108,10 +168,20 @@ static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
         __atomic_load_n(&old->version, __ATOMIC_ACQUIRE) >= new_version) {
       /* Stale install: a newer (or equal) buffer is already published.
        * Drop our load ref, abandon the unpublished cb (keeps new_buf ours)
-       * and free new_buf.  old stays alive via the slot's sentinel ref. */
+       * and free new_buf.  old stays alive via the slot's sentinel ref.
+       *
+       * The comparison is what keeps an INVENTED first image from displacing
+       * real bytes, so the two live at different stamps by construction: an
+       * invented image — the one a first user materializes for a block whose
+       * create left it no storage — is version 1, and the first real bytes
+       * of such a block arrive at 2 or above, because whoever writes them
+       * bumps past the image it was handed.  An install that arrives at 1
+       * against a 1 already there is therefore the other first user, and
+       * keeping the published one is right. */
       arts_shared_release(&old_h);
       arts_shared_abandon(&new_cb);
       buffer_deleter(new_buf); /* recycle the just-allocated buffer */
+      buf_note_present(cache);
       return old;
     }
     /* Conditional publish: install new_cb only while the slot still holds
@@ -121,6 +191,7 @@ static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
       if (old_h != NULL) {
         arts_shared_release(&old_h); /* our load ref on old */
       }
+      buf_note_present(cache);
       return new_buf;
     }
     /* CAS lost — cache.buffer changed concurrently; re-evaluate. */
@@ -260,11 +331,13 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
    * would destroy them. */
   if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
     arts_shared_release(&cb); /* last ref: the deleter recycles the landing */
+    buf_note_present(cache);
     return false;
   }
   if (cache->db_size == 0) {
     cache->db_size = db_size;
   }
+  buf_note_present(cache);
   return true;
 }
 
@@ -327,6 +400,7 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
      * zero-identical). */
     arts_shared_release(&cb);
   }
+  buf_note_present(cache);
 }
 
 void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
@@ -391,4 +465,5 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
       arts_shared_release(&wh);
     }
   }
+  buf_note_present(cache);
 }

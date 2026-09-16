@@ -86,6 +86,11 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
     arts_excl_home_teardown(db, cache->db_guid);
     return;
   }
+  /* A first use of a block whose create took no hold: the grant about to
+   * leave carries the block's bytes, and under this release policy the home
+   * is the one rank entitled to say what they are — so materialize them here
+   * when the block has no storage yet.  A no-op for every other block. */
+  (void)arts_db_buf_ensure(cache, cache->db_size);
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -464,16 +469,13 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   arts_db_cache_common_destroy_post(cache); /* snapshot free → home teardown */
 }
 
-/* ===== arts_db_create_publish_holder ====================================
- * EXCL home init: nothing to publish for the holder field — EXCL tracks
- * mode via lock_state, not rw_holder.  The creator becomes the first RW
- * holder via the normal acquire/self-grant chain, so there is nothing to
- * publish at create. */
-void arts_db_create_publish_holder(struct arts_db_s *db,
-                                   unsigned int creator_rank) {
-  (void)db;
-  (void)creator_rank;
-}
+/* Retract nothing: on this arm a create that takes no hold rewrites the whole
+ * cache word to idle already, so no copy claim survives it. */
+/* Claim nothing: this arm keeps no reader copy past a write turn, so a
+ * create's copy asserts nothing that has to be recorded. */
+void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
+
+void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== arts_db_create_install_home_buffer ================================
  * EXCL home init: install the zero-init home buffer at creation time so the
@@ -620,6 +622,35 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   }
 }
 
+/* The hold is this arm's own: one CAS of the cache word, through the arbiter
+ * like every other transition of it, and then the actions that transition
+ * owes.  A read this rank had already asked for is covered by the turn the
+ * create takes (RW ⊇ RO) and is served here, exactly as a granted RW phase
+ * serves its RO cohort.  The home's directory is not touched from here — it
+ * comes from the announce, where arts_db_home_init names the creator. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+  uint32_t act;
+  uint64_t cur, next;
+  do {
+    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+    next = cache_compute_next(cur, CACHE_OP_CREATE_HOLD, &act);
+    if (next == cur) {
+      return false; /* the word carries the block already */
+    }
+  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
+                                                  next, memory_order_acq_rel,
+                                                  memory_order_acquire));
+  if (act == CACHE_ACT_DRAIN_BOTH) {
+    /* The counts are the pre-image's: the population this transition owes,
+     * exactly as a GRANT_RW landing drains it (the creator's own +1 is not
+     * parked). */
+    lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
+    lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
+  }
+  return true;
+}
+
+
 /* ===== arts_handler_db_acquire =========================================
  * OOO_DB_ACQUIRE Cat-B body — protocol-agnostic signature.
  *
@@ -647,6 +678,16 @@ void arts_handler_db_acquire(void *item, void *args) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   arts_db_access_mode_t mode = depv[slot].mode;
+
+  if (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id) {
+    /* First use of a block whose create took no hold: its storage was left
+     * for whoever uses it first, and under this release policy only the home
+     * may hold the canonical copy — so if the block has none, this acquiring
+     * thread allocates it, on its own node.  A no-op for every other block:
+     * the home's buffer exists from create and a requester materializes its
+     * own before it asks. */
+    (void)arts_db_buf_ensure(cache, cache->db_size);
+  }
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_ACQ_RW : CACHE_OP_ACQ_RO;
   uint32_t act;
@@ -741,6 +782,16 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     break;
   case CACHE_ACT_REL_RO: /* phantom RO grant: nothing to serve, return home */
     arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RO,
+                              /*version=*/0u, /*cv=*/0u, NULL, 0u,
+                              /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
+    break;
+  case CACHE_ACT_REL_RW_EMPTY:
+    /* The RW mirror of the line above: a grant whose cohort was already
+     * served under this rank's own create holds nothing, and nothing was
+     * written under it, so the write right goes back with no payload — the
+     * home's release handler takes the same no-data path an RO release
+     * takes. */
+    arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RW,
                               /*version=*/0u, /*cv=*/0u, NULL, 0u,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;

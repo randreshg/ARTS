@@ -67,12 +67,37 @@ struct arts_db_buffer_s *arts_db_buf_alloc_zeroed(struct arts_db_cache_s *cache,
 /* Race-safe acquire: returns a caller-owned strong ref to the installed
  * buffer (keeping it alive against a concurrent destroy), or NULL if no
  * buffer is currently installed.  Recover the buffer via arts_shared_get;
- * release via arts_db_buf_release when done. */
+ * release via arts_db_buf_release when done.
+ *
+ * When it can hand back NULL for a SIZED block: only before the block's
+ * first use.  A rank that HOLDS the block — it took a hold, was granted
+ * ownership, or had a copy delivered to it — is guaranteed storage, because
+ * every path that establishes a hold has passed one of the
+ * arts_db_buf_ensure points above.  So a release, a publish, or any other
+ * step under a hold can treat NULL as "zero-sized block" alone. */
 arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache);
 
 /* Drop a strong ref taken via acquire_buf.  On the last drop the cb deleter
  * frees the buffer.  Sets *h = NULL. */
 void arts_db_buf_release(arts_shared_ptr_t *h);
+
+/* Materialize this cache's payload buffer if it has none: db_size zeroed
+ * bytes at version 1 — the value a block nobody has written reads as.
+ * Returns whether this call installed it.
+ *
+ * Exists because a block created WITHOUT an acquire has no first user at
+ * creation, so allocating its payload there would place it for a thread that
+ * may never touch it.  The allocation is deferred to the first use instead,
+ * and lands on the node of whichever thread that turns out to be.  Every
+ * point that may BE that first use calls this before reading the buffer or
+ * handing it out; install-if-absent makes it a no-op everywhere else, and
+ * two racing first users cannot install twice.
+ *
+ * Only a rank ENTITLED to hold the block may call it: the caller must
+ * already have established that its own copy is the one to answer from (it
+ * is the home of a home-canonical arm, or it holds the block's ownership).
+ * A rank that installs zeroes without that right invents a value. */
+bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size);
 
 /* Recover the enclosing arts_db_buffer_s from a data pointer (which aliases
  * buf->data, the FAM canonical payload).  Pointer arithmetic only — does NOT

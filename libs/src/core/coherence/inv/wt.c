@@ -75,6 +75,12 @@ void arts_handler_db_acquire(void *item, void *args) {
   }
 
   if (is_home) {
+    /* First use of a block whose create took no hold: its storage was left
+     * for whoever uses it first, and on this arm only the home may hold the
+     * canonical copy — so if the block has none, this acquiring thread
+     * allocates it, on its own node.  A no-op for every other block (the
+     * home's buffer exists from create, at version 0 until published). */
+    (void)arts_db_buf_ensure(cache, cache->db_size);
     /* The home's installed buffer is the canonical copy — serve it.  Before
      * the creator's first publish there is nothing to serve, so hold on the
      * snapshot reorder buffer and let the install's drain resume us. */
@@ -283,6 +289,11 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
     return;
   }
   if (a->mode == DB_MODE_RO) {
+    /* A remote first use of a block whose create took no hold: the home is
+     * the canonical holder on this arm and the serve must carry the block's
+     * first image, so it is materialized here — on a progress thread, hence
+     * on whatever node that thread sits on rather than the requester's. */
+    (void)arts_db_buf_ensure(cache, cache->db_size);
     if (cache->db_size != 0) {
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
       struct arts_db_buffer_s *pb =

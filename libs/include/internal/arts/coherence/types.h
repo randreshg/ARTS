@@ -90,11 +90,15 @@ static inline struct arts_db_s *arts_db_of_cache(struct arts_db_cache_s *c) {
   return ARTS_CONTAINER_OF(c, struct arts_db_s, cache);
 }
 
-/* Total allocation size of a DB = wrapping struct + user payload.  A DB always
- * carries its own length in the cache (cache.db_size, set for every db_type at
- * create); there is no separate object header storing it. */
+/* Bytes the descriptor allocation spans.  A coherent DB's payload is its
+ * coherence buffer, allocated apart from the descriptor, so the descriptor is
+ * the struct alone; every other subtype keeps its payload inline right after
+ * the struct.  A DB always carries its own length in the cache (cache.db_size,
+ * set for every db_type at create); there is no separate object header storing
+ * it. */
 static inline uint64_t arts_db_total_size(const struct arts_db_s *db) {
-  return sizeof(struct arts_db_s) + db->cache.db_size;
+  return sizeof(struct arts_db_s) +
+         ((db->db_type == ARTS_DB) ? 0 : db->cache.db_size);
 }
 
 /* Footprint of a non-home / WB / creator-remote DB stub: the cache prefix +

@@ -80,22 +80,28 @@ GUID.  Always check against it before dereferencing:
 
 .. _labeled-guid-reuse:
 
-Reusing a labeled GUID: create replaces, and that is a deviation
-----------------------------------------------------------------
+Reusing a labeled GUID: create is first-wins, and that is a deviation
+---------------------------------------------------------------------
 
-A create that finds its labeled GUID already occupied **replaces** the
-object in that slot by default; the displaced one is released.  The
-native hints carry a ``check`` flag that turns the install into
-first-wins — the first creator's object stands and a later creator's is
-never installed — and what the loser is TOLD then differs by object: an
-event or range creator at the label's home gets ``NULL_GUID`` back, a
-remote creator's install is fire-and-forget and always returns success,
-and a losing labeled data-block creator is handed a pointer to its own
-uninstalled block with a success status.  A cross-rank rendezvous on a
-label — every rank creating the same sticky event and one of them
-satisfying it — relies on first-wins: a labeled event is installed only
-at the label's home rank, so the racing creators have one arbiter and
-nothing to disagree about.
+A labeled create is **first-wins**: one label names one object for its
+lifetime, the create whose install lands is its creator, and a create of
+a label that already exists creates nothing — it takes no hold, is
+handed no pointer, and returns success.  A create hands back a pointer
+only through a hold it took, and a later creator that goes on to use the
+label does so through a dependence on the GUID, like any other task.
+The native hints carry a ``check`` flag for the standard's CHECK
+property; it is accepted and changes nothing, because a replacing
+install would leave two directories for one GUID and every message that
+finds a block by its label would land on whichever the slot holds now.
+What a loser is TOLD differs by object: an event or range creator at the
+label's home gets ``NULL_GUID`` back, while a data-block creator — like a
+remote creator, whose install is fire-and-forget — is told nothing at
+all.
+
+A cross-rank rendezvous on a label — every rank creating the same sticky
+event and one of them satisfying it — relies on first-wins: a labeled
+event is installed only at the label's home rank, so the racing creators
+have one arbiter and nothing to disagree about.
 
 Neither of the OCR standard's two checked variants can be provided as
 specified, and the OCR shim therefore treats every labeled create the
@@ -109,11 +115,13 @@ same way — **first-wins, and no creator is told**:
     one label are ordered only by the order they happen to land at the
     label's home, so a report would reach some creators, miss others, and
     sometimes name a generation the program had already retired.  The
-    shim accepts the property, installs first-wins, and returns success
-    to every creator; a creator that goes on to use the label uses the
-    winner's object, which is what every rendezvous in the roster expects
-    (each of them already treated ``OCR_EGUIDEXISTS`` as the normal
-    outcome).
+    shim accepts the property, installs first-wins, and returns success to
+    every creator; a creator that goes on to use the label uses the
+    winner's object through a dependence on it, which is what every
+    rendezvous in the roster expects (each of them already treated
+    ``OCR_EGUIDEXISTS`` as the normal outcome).  A later creator's
+    ``*addr`` is NULL, because it took no hold to write through — the
+    same answer the native create gives.
 
 ``GUID_PROP_BLOCK``
     the standard waits until the label can be re-created — a reuse of the
@@ -124,35 +132,63 @@ same way — **first-wins, and no creator is told**:
     the existing one instead.
 
 Because no creator is told, the two properties change nothing through
-the shim; a bare labeled create is first-wins there too, never the
-replacing native default.  What a label reused across a lifetime boundary
-does is unsupported and engine-dependent: a create whose install lands
+the shim; a bare labeled create is first-wins there as it is natively.
+What a label reused across a lifetime boundary does is unsupported and
+engine-dependent: a create whose install lands
 before the destroy of the previous generation is dropped as a loser and
 every later operation on the label parks on a slot no install will fill;
 one that lands after it replaces nothing and the late destroy tears down
 the wrong generation.  Derive a distinct label per unit of work instead.
 
-The consequence worth knowing is narrower than "replace is unsafe".
-Creating the same label at once, where one creator wins and the others
-go on to use the winner's object, works: every creator installs an
-equivalent object and one of them stands.
+Creating the same label from several places, where one create wins and
+the others go on to use the winner's object through dependences, works:
+the block under that label is the first creator's, and no later create
+touches it.
 
-That holds without qualification only while the racing creators take no
-hold on what they create.  A create acquires its data block by default,
-and that hold is per-rank state: two ranks creating one label at the
-same time each record themselves as holding a block only one of them
-can hold, and nothing afterwards distinguishes the two — one of them
-will go on writing through a hold it does not have.  So:
+What that does not license is CREATING it from several places at once.
+A create acquires its data block by default, and that hold is per-rank
+state — a create on a rank that has never touched the label cannot know
+the label exists elsewhere, and its home is not asked at create time —
+so two such creates each record themselves as holding a block only one
+of them can hold.  Hence:
 
-  Creators that race for one label must either be on **one rank**, or
-  create with ``ARTS_DB_PROP_NO_ACQUIRE`` (``DB_PROP_NO_ACQUIRE``).
+  Creates of one label must be **one create**, with every other user
+  reaching the block through a dependence on the GUID — or take no hold
+  at all (``ARTS_DB_PROP_NO_ACQUIRE`` / ``DB_PROP_NO_ACQUIRE``), which
+  several ranks may do.
 
-Within one rank the race is between threads over one object and has a
-winner; the loser's hold folds into the winner's.  With no hold there
-is nothing to disagree about, and the block's home is its holder from
-creation.  A cross-rank race between creators that DO acquire is
-diagnosed at the home in a debug build; whether a given build happens
-to survive it is an implementation detail and not a promise.
+A create makes the **block**: the object at its home, which every
+operation on the label is ordered against.  A rank's **cache** of a DB is
+a different thing — the landing and coherence state that rank keeps for
+it, which any rank makes the first time it touches the DB, with or
+without a create.  A dependence dispatched before its label's create
+therefore leaves a cache on its own rank and a deferred request at the
+home, and the create that then runs on that rank is still the block's
+create: it records the creator's hold in the cache already there, gives
+the block its first image, and announces it like any create, after which
+the deferred request is drained against a block that exists.  A create is
+always its block's creator and is always handed a pointer; what it never
+does is create over a block that exists, which is what a cache whose word
+already carries a hold tells it.
+
+What is **undefined** is racing creates of one label.  Two creates of one
+label on one rank, and acquiring creates of one label on two ranks, are
+outside the contract: the runtime does not arbitrate them, it does not
+carry logic or overhead to survive them, and what they leave behind is
+not defined — the same standing as everything else the OCR standard
+permits and ARTS narrows.  A rank that has never touched a label cannot
+know the label exists elsewhere, and its home is not asked at create
+time, which is why the cross-rank case is out of contract on every arm
+rather than diagnosed on some.  Creates of one label that take NO hold
+(``ARTS_DB_PROP_NO_ACQUIRE``) are fine on as many ranks as you like:
+there is no hold to disagree about, and the block's home is its holder
+from creation.
+
+Whether a given build happens to survive an out-of-contract create is an
+implementation detail and not a promise: a debug build may abort at the
+transition such a program corrupts — a grant installs only on a rank
+that holds nothing, a hand-back is accepted only onto a home that holds
+nothing — and a release build may simply compute the wrong answer.
 
 What does **not** work in any arrangement is *reusing* a label across a
 lifetime boundary:

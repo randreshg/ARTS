@@ -89,7 +89,10 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
        * acquire_local may only come back NULL for a zero-sized (sentinel)
        * block: holding the grant on a SIZED block means holding its buffer,
        * and a buffer installed but never published is present at version 0,
-       * not absent. */
+       * not absent.  The one exception is a block whose create took no hold:
+       * its storage waits for a first user, and the CAS just proved this
+       * rank is entitled to be it. */
+      (void)arts_db_buf_ensure(cache, cache->db_size);
       /* A write turn taken on a grant this rank already held: the round trip
        * the sticky grant removed. */
       INCREMENT_NUM_GRANT_LOCAL_REUSE_BY(1);
@@ -283,7 +286,13 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
       if (buf != NULL) {
         arts_db_buf_landing_recycle(cache, landing);
       } else {
-        (void)arts_db_buf_adopt_landing(cache, version, landing,
+        /* A first image is stamped at version 1, never 0: on the wire 0 is
+         * ARTS_GRANT_VERSION_NONE, "holds nothing", so a live image carrying
+         * it could not be told from an absent one — and this rank's first
+         * release would then mint 1 for REAL bytes, the same stamp an
+         * invented zero image elsewhere already carries, which makes a
+         * genuine install retreat as stale. */
+        (void)arts_db_buf_adopt_landing(cache, version ? version : 1u, landing,
                                         cache->db_size);
       }
     }
@@ -387,6 +396,15 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
 
   struct arts_db_s *db = arts_db_of_cache(cache);
+#ifdef ARTS_WRITE_POLICY_WT
+  /* The write-through home holds this block's canonical bytes for its whole
+   * lifetime, and from here on it owes them to someone: the grant it is
+   * about to hand out carries them, and the holder's release publishes back
+   * into them.  A block whose create took no hold has not been given storage
+   * yet, and this request is its first use — so materialize it here, where
+   * the home is provably entitled to the block's first image. */
+  (void)arts_db_buf_ensure(cache, cache->db_size);
+#endif
   if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
       cache->db_size > 0 && arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know

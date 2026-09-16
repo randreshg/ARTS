@@ -120,6 +120,9 @@ set(TEST_PROGRAMS
     multinode_edt
     edt_create_oversize_guard
     db_no_acquire_remote_first_touch
+    db_no_acquire_lazy
+    db_no_acquire_wb_first_writer
+    db_create_after_dep_asked
     db_first_touch_matrix
     db_acquire_release_semantics
     finish_event_mn_termination
@@ -419,6 +422,10 @@ register_single_node_test(db_dependence)
 register_single_node_test(db_destroy)
 register_single_node_test(db_local)
 register_single_node_test(db_local_create)
+register_single_node_test(db_no_acquire_lazy TIMEOUT 30)
+register_single_node_test(db_no_acquire_wb_first_writer TIMEOUT 30)
+set_tests_properties(db_no_acquire_wb_first_writer PROPERTIES
+    FAIL_REGULAR_EXPRESSION "FAIL")
 register_single_node_test(pin_db ARGS 0)
 
 # Array DB tests
@@ -872,6 +879,48 @@ register_multinode_test(event_value_control TIMEOUT 15)
 register_multinode_test(event_scalar_return TIMEOUT 30)
 register_multinode_test(event_payload_policy TIMEOUT 15)
 register_multinode_test(db_no_acquire_remote_first_touch TIMEOUT 60)
+# A block created without an acquire has its payload allocated by its first
+# user, so the same program has to hold on one rank (the first user is local)
+# and on several (the home materializes the block to serve the request).
+register_multinode_test(db_no_acquire_lazy TIMEOUT 60)
+# A block whose payload never exists at its home: the first user is a remote
+# WRITER, so the home answers the ownership request with no bytes and the
+# holder mints the block's first image itself.  The two readers catch the two
+# ways that goes wrong — a NULL pointer for a sized block, and a first image
+# minted at the stamp the writer's own release uses (which makes the real
+# bytes retreat as stale).
+register_multinode_test(db_no_acquire_wb_first_writer TIMEOUT 60)
+foreach(_v 2n 3n 4n 2n_io)
+    set_tests_properties(db_no_acquire_wb_first_writer_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
+# The unordered reader's whole point is a race, so one shape also runs with
+# the scheduler-fuzz injection that widens the lock-free decision-commit
+# windows (compiled out of Release, where the variable is simply inert).
+# Three nodes, because the racing read has to reach the home from a rank that
+# is neither the home nor the writer — with two there is no such rank and the
+# window cannot be reached at all.
+add_test(
+    NAME db_no_acquire_wb_first_writer_3n_fuzz
+    COMMAND db_no_acquire_wb_first_writer
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+set_tests_properties(db_no_acquire_wb_first_writer_3n_fuzz PROPERTIES
+    LABELS "multinode"
+    TIMEOUT 120
+    RESOURCE_LOCK "arts_runtime"
+    FAIL_REGULAR_EXPRESSION "FAIL"
+    ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/3n.cfg;ARTS_SCHED_FUZZ=25")
+# A create that lands where a dependence on the same label has already asked
+# the block's home about it: the create may install the block, but it may not
+# take the write right out from under a request already in flight.  Both
+# request kinds get a lane (RW opens an ownership request, RO a fetch or a
+# snapshot), so this needs a rank that is not the home.
+register_multinode_test(db_create_after_dep_asked TIMEOUT 60)
+foreach(_v 2n 3n 4n 2n_io)
+    set_tests_properties(db_create_after_dep_asked_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
 register_multinode_test(db_first_touch_matrix TIMEOUT 120)
 register_multinode_test(db_acquire_release_semantics TIMEOUT 120)
 # The guard aborts the run by design, so the message is the verdict and
@@ -1347,10 +1396,6 @@ set_tests_properties(db_acquire_all_bias_2n PROPERTIES FAIL_REGULAR_EXPRESSION "
 set_tests_properties(db_acquire_all_bias_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_acquire_all_bias_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_acquire_all_bias_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_install_race_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_install_race_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_install_race_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_install_race_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_release_alias_slot PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_rw_secure_double_fire PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_rw_secure_double_fire_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -1466,3 +1511,4 @@ set_tests_properties(wrf_val_sentinel_snapshot_2n PROPERTIES FAIL_REGULAR_EXPRES
 set_tests_properties(wrf_val_sentinel_snapshot_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(wrf_val_sentinel_snapshot_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(wrf_val_sentinel_snapshot_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+

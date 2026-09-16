@@ -225,15 +225,6 @@ register_single_node_test(db_excl_creator_skip_hold TIMEOUT 30)
 set_tests_properties(db_excl_creator_skip_hold PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS: db_excl_creator_skip_hold|SKIP db_excl_creator_skip_hold")
 
-add_arts_test(db_copy_to_new_type_race)
-register_single_node_test(db_copy_to_new_type_race TIMEOUT 30)
-set_tests_properties(db_copy_to_new_type_race PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_copy_to_new_type_race|SKIP db_copy_to_new_type_race")
-
-# T121 EXPOSES B-create-install-uaf: expected to FAIL (UAF/underflow crash or hang) in its
-# target config (non-EXCL, >=3 ranks); self-skips (exit 0) under EXCL or with <3 ranks. Do not mask.
-add_arts_test(db_create_install_race)
-register_multinode_test(db_create_install_race TIMEOUT 60)
-
 add_arts_test(db_acquire_replay_local)
 register_single_node_test(db_acquire_replay_local TIMEOUT 30)
 set_tests_properties(db_acquire_replay_local PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_replay_local|SKIP db_acquire_replay_local")

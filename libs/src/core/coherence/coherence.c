@@ -82,6 +82,9 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * owns the storage. */
   c->db_guid = db_guid;
   c->db_size = db_size;
+  /* Every cache starts without a buffer; the install path clears this the
+   * moment one is in the slot, whoever put it there. */
+  __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
   /* Snapshot reorder-buffer: a Treiber stack (zero-initializable, but init
    * explicitly for clarity).  Nodes are heap-allocated on the case-3 push path
    * and freed when drained by the next install. */
@@ -167,7 +170,11 @@ void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
       struct arts_db_cache_s *cache = &db->cache;
       /* Acquire the EDT's strong ref on the buffer; release_one_dep drops it
        * (via buf_from_data(ptr)->cb) when the EDT finishes.  depv[slot].ptr
-       * aliases buf->data, the canonical user-visible payload. */
+       * aliases buf->data, the canonical user-visible payload.  This wake
+       * reaches any rank for any parked slot and knows nothing about whether
+       * this one may hold the block, so it never materializes a buffer: the
+       * arm that decided to wake the slot did that at the point it
+       * established the hold. */
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
       struct arts_db_buffer_s *buf =
           (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -289,7 +296,12 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
   /* Take the EDT's strong ref on the buffer and return buf->data.  The handle
    * is intentionally NOT released here — the ref is the EDT's hold for its
    * whole lifetime; release_one_dep drops it via buf_from_data(ptr)->cb.  The
-   * ref keeps the buffer alive against a concurrent destroy. */
+   * ref keeps the buffer alive against a concurrent destroy.
+   *
+   * No materialization here either: this helper is reached from every arm's
+   * acquire body and cannot tell whether this rank may hold the block.  Each
+   * arm calls arts_db_buf_ensure in the branch where it has already decided
+   * that it may. */
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
@@ -651,6 +663,8 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
   }
   if (!pub_flight_carries_payload(cache) || buf == NULL) {
     if (buf == NULL && pub_flight_carries_payload(cache)) {
+      /* Unreachable: a flight only ever leaves under a hold this rank took,
+       * and a hold on a sized block implies its storage. */
       ARTS_ERROR("coherence: payload publish flight with no local buffer");
     }
     arts_db_buf_release(&buf_h);
@@ -978,6 +992,10 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
     return;
   }
   arts_atomic_shared_store(&cache->buffer, NULL);
+  /* The slot is empty again, so the "has this block storage" byte goes back
+   * with it: the two are one fact, and leaving a stale 0 would tell a use of
+   * a resurrected cache that its payload is already there. */
+  __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
   /* Drain the per-DB recycled-buffer pool, returning leftovers to the
    * registered pool.  The buffer slot is already NULL'd above, and B1 keeps
    * the descriptor (hence this pool) alive until the last buffer ref drops,

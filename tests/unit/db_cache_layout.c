@@ -24,7 +24,10 @@
  * offsetof(home_initialized).
  *   5. Buffer FAM data[] lands at offset 64 (cache-line / CXL boundary).
  *   6. snapshot_waiter.link is FIRST (offset 0) — required by arts_lf_stack_t.
- *   7. arts_db_total_size(db) == sizeof(arts_db_s) + db->cache.db_size.
+ *   7. arts_db_total_size(db) spans the descriptor allocation: sizeof(arts_db_s)
+ *      alone for a coherent DB (whose payload is its coherence buffer), and
+ *      sizeof(arts_db_s) + db->cache.db_size for a subtype whose payload is
+ *      inline after the struct.
  *
  * This is a pure static-layout test: it starts no runtime and links nothing.
  * Most checks are _Static_assert (compile-time); a couple that need a live
@@ -123,23 +126,37 @@ int main(void) {
     rc = 1;
   }
 
-  /* (7) total_size == sizeof(arts_db_s) + db_size, for a couple of sizes. */
+  /* (7) total_size spans the descriptor allocation, which the subtype decides:
+   * the struct alone when the payload lives in the coherence buffer, struct +
+   * payload when it is inline. */
   struct arts_db_s db;
   memset(&db, 0, sizeof(db));
   uint64_t sizes[] = {0, 1, 64, 4096};
   for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
     db.cache.db_size = sizes[i];
-    uint64_t want = (uint64_t)sizeof(struct arts_db_s) + sizes[i];
+    db.db_type = ARTS_DB;
     uint64_t got = arts_db_total_size(&db);
+    if (got != (uint64_t)sizeof(struct arts_db_s)) {
+      (void)fprintf(stderr,
+                    "FAIL db_cache_layout: coherent total_size(db_size=%llu)"
+                    "=%llu, expected %llu\n",
+                    (unsigned long long)sizes[i], (unsigned long long)got,
+                    (unsigned long long)sizeof(struct arts_db_s));
+      rc = 1;
+    }
+    db.db_type = ARTS_DB_PIN;
+    uint64_t want = (uint64_t)sizeof(struct arts_db_s) + sizes[i];
+    got = arts_db_total_size(&db);
     if (got != want) {
       (void)fprintf(stderr,
-                    "FAIL db_cache_layout: total_size(db_size=%llu)=%llu, "
-                    "expected %llu\n",
+                    "FAIL db_cache_layout: inline total_size(db_size=%llu)"
+                    "=%llu, expected %llu\n",
                     (unsigned long long)sizes[i], (unsigned long long)got,
                     (unsigned long long)want);
       rc = 1;
     }
   }
+  db.db_type = ARTS_DB;
 
   /* arts_db_of_cache round-trip (cache is first ⇒ same address; NULL-safe). */
   if (arts_db_of_cache(&db.cache) != &db) {

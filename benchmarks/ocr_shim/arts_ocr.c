@@ -1526,19 +1526,15 @@ u8 ocrDbCreate(ocrGuid_t *db, void **addr, u64 len, u16 flags, ocrHint_t *hint,
       return 0;
     }
     if (data == NULL) {
-      /* Labeled GUID already taken — fall back to looking it up so the
-       * caller still gets a valid pointer.  The lookup handle is released
-       * immediately (the descriptor lifetime is owned by route_table; the
-       * user data pointer remains valid because the DB itself wasn't
-       * destroyed). */
-      arts_shared_ptr_t ex_h = arts_route_table_lookup_db(labeledGuid);
-      struct arts_db_s *db_existing = (struct arts_db_s *)arts_shared_get(ex_h);
-      if (db_existing != NULL) {
-        *addr = arts_db_user_ptr(db_existing);
-        arts_shared_release(&ex_h);
-        return 0;
-      }
-      return OCR_ENOMEM;
+      /* The label is already taken: a labeled create is first-wins, and
+       * every later create of that label creates nothing — it takes no hold
+       * and so is handed no pointer, because a pointer is only ever valid
+       * through a hold the create took.  No creator is told: a later creator
+       * that goes on to use the label does so through a dependence on the
+       * GUID, like any other task, and that is what every rendezvous in the
+       * roster does. */
+      *addr = NULL;
+      return 0;
     }
     *addr = data;
     return 0;
