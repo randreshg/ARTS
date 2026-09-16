@@ -145,8 +145,13 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
    * least as good as the silence that just arrived).  Then install any inline
    * same-rank payload and commit. */
   if (hdr->rdzv_cookie != 0) {
+    /* Stamped at version 1 when the server held nothing (it sent
+     * ARTS_GRANT_VERSION_NONE): a live image may never carry the version that
+     * means "holds nothing", or this rank's first release would mint 1 for
+     * real bytes against an invented zero image at the same stamp and the
+     * genuine install would retreat as stale. */
     (void)arts_db_buf_adopt_landing(
-        cache, hdr->version,
+        cache, hdr->version ? hdr->version : 1u,
         (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie,
         cache->db_size);
   }

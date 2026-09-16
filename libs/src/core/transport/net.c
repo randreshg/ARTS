@@ -195,8 +195,16 @@ static inline void *net_desc(const void *p) {
     return NULL;
   }
   const arts_regpool_mr_t *m = arts_regpool_lookup(p);
-  return (m != NULL && m->mr != NULL) ? fi_mr_desc((struct fid_mr *)m->mr)
-                                      : NULL;
+  if (m == NULL || m->mr == NULL) {
+    /* A provider that requires local descriptors cannot be handed a region it
+     * has no registration for: naming NULL would leave it to reject or misread
+     * the buffer at submit time, far from the caller that chose the memory. */
+    ARTS_ERROR("arts_net: buffer %p lies in no fabric-registered slab — the "
+               "provider requires a local descriptor, so every send source, "
+               "PUT source and landing requires the registered pool",
+               p);
+  }
+  return fi_mr_desc((struct fid_mr *)m->mr);
 }
 
 /* A registered staging buffer for a bounce copy.  regpool fails loudly rather
@@ -1489,14 +1497,7 @@ void arts_net_rx_arm(void) {
       ARTS_ERROR("arts_net: recv buffer %u allocation failed", i);
     }
     g_net.rxctx[i].idx = i;
-    if (g_net.mr_local) {
-      g_net.rxdesc[i] = net_desc(g_net.rxbuf[i]);
-      if (g_net.rxdesc[i] == NULL) {
-        ARTS_ERROR("arts_net: recv buffer %u not in a registered slab", i);
-      }
-    } else {
-      g_net.rxdesc[i] = NULL;
-    }
+    g_net.rxdesc[i] = net_desc(g_net.rxbuf[i]);
   }
   for (unsigned i = 0; i < ARTS_NET_RECV_BUF_COUNT; i++) {
     net_post_recv(i);

@@ -294,15 +294,42 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache);
 void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
 
-/* Case-D (arts_handler_db_create) per-protocol leaf functions.
- * publish_holder: WT/WB store creator_rank as the home rw_holder, WRF_VAL
- * no-op; install_home_buffer: WRF_VAL installs a version-1 zero buffer (home
- * is always canonical), WT/WB defer the install to the creator's first
- * PUBLISH (no-op here).  Defined once per protocol TU. */
-void arts_db_create_publish_holder(struct arts_db_s *db,
-                                   unsigned int creator_rank);
+/* Case-D (arts_handler_db_create) per-protocol leaf function.
+ * install_home_buffer: WRF_VAL installs a version-1 zero buffer (home is
+ * always canonical), WT/WB defer the install to the creator's first PUBLISH
+ * (no-op here).  Defined once per protocol TU. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size);
+
+/* Record the create's own hold in this rank's cache.  Committed ONLY from the
+ * word a cache carries while nothing has touched the block here — the state
+ * a rank's first touch of a DB leaves — so any other word carries a hold,
+ * which means the block exists and the create then creates nothing.  Reports
+ * whether it committed.  Each arm names the hold in its own state: the
+ * migrating-grant arms take possession plus one writer on the grant word, and
+ * the exclusion arm takes its cache word's RW grant.  Defined once per
+ * protocol TU. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache);
+
+/* The counterpart, for a create that gives the block its first image in a
+ * cache this rank had already made: on an arm that tracks a durable reader
+ * copy, that image is this rank's.  Committed ONLY from a reader word that
+ * is exactly idle — no fetch open, no chain parked — since a fetch already
+ * in flight brings the copy with it when it lands, and stamping a claim over
+ * it would hand that reader an invented image.  A no-op on the arms whose
+ * readers re-validate at every acquire.  Defined once per protocol TU. */
+void arts_db_create_claim_creator_copy(struct arts_db_s *db);
+
+/* Retract whatever the create-time seed claimed about this rank holding a
+ * READER copy of the block.  Called only where the create takes no hold
+ * (ARTS_DB_PROP_NO_ACQUIRE), which is exactly where the claim is false: an
+ * arm that seeds "the creator's copy is valid — it holds the bytes it is
+ * about to write" is describing a creator that was given storage, and a
+ * create that acquires nothing is given none.  Left standing, the claim
+ * answers this rank's own reads from a copy it never had.  A no-op on every
+ * arm whose reader plane keeps no durable copy claim. */
+void arts_db_create_retract_creator_copy(struct arts_db_s *db);
+
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* Single-owner ownership machinery shared by every grant-bearing arm (VAL,

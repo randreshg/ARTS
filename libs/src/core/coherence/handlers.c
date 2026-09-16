@@ -86,22 +86,27 @@
  * Mirrors the local-create path: under a single-writer lock the unreleased hold
  * deadlocks every future writer; the ownership protocols collapse the seed to
  * the sentinel (writer_count = 1).  Idempotent and safe to call on every create
- * path (fresh install and WB-stub coalesce). */
+ * path. */
 static inline void db_create_no_acquire_idle(struct arts_db_s *db,
                                              bool no_acquire) {
   if (!no_acquire) {
     return;
   }
+  /* The creator was given no storage, so whatever the create-time seed
+   * claimed about this rank holding a reader copy is false and must go with
+   * the write hold. */
+  arts_db_create_retract_creator_copy(db);
 #if defined(ARTS_PROTOCOL_EXCL)
 #if defined(ARTS_RELEASE_RETAIN)
   /* RETAIN: data lives with the owner, not the home.  With no creator hold there
    * is no owner unless we make one — so the home rank (this rank; the create
    * handler runs only on the GUID home, see the assert in
-   * arts_handler_db_create) becomes the IDLE data owner: it holds the zero-init
-   * buffer (installed by the create flow) with owner-bit set but rw_st=IDLE,
-   * wc=0.  The first writer's REQUEST then migrates that zero buffer from here,
-   * exactly like a sticky owner that has finished its writers.  lock_state is
-   * the idle directory naming this rank as owner. */
+   * arts_handler_db_create) becomes the IDLE data owner with owner-bit set but
+   * rw_st=IDLE, wc=0.  Its buffer does not exist yet: a create that acquires
+   * nothing has no first user to place it for, so the first user allocates it
+   * (arts_db_buf_ensure) — and the first writer's REQUEST then migrates it
+   * from here, exactly like a sticky owner that has finished its writers.
+   * lock_state is the idle directory naming this rank as owner. */
   atomic_store_explicit(&db->cache.cache_state,
                         CACHE_MAKE_FULL(1u, CACHE_ST_IDLE, CACHE_ST_IDLE,
                                         ARTS_EXCL_NO_TARGET, 0u, 0u),
@@ -134,40 +139,19 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
 #endif
 }
 
-/* A create that takes the creator's implicit write hold may race only WITHIN
- * one rank.  Two ranks doing it to one label both stamp themselves as holders
- * of a block only one of them can hold, and nothing afterwards can tell them
- * apart: the directory names one, the other keeps a hold it was never granted
- * and will write through it without asking.  Only the home sees both creates,
- * so this is the one place the pattern is visible at all.
- *
- * Diagnosed, not repaired: repairing it means revoking a rank that may be
- * mid-write, which no message here is allowed to mean.  A create that takes
- * no hold (NO_ACQUIRE) is exempt — every arm of it ends with the home as the
- * holder, so there is no second holder to disagree about.
- *
- * The test is "would this create displace a holder that is not itself": a
- * repeated create from the SAME rank re-publishes the rank already named and
- * is left alone, and so is one that finds the block resting at its home. */
-static inline void db_create_diagnose_second_creator(struct arts_db_s *db,
-                                                     unsigned int creator_rank,
-                                                     bool no_acquire) {
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-  if (no_acquire) {
-    return;
-  }
-  unsigned int holder =
-      atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  assert((holder == creator_rank || holder == arts_global_rank_id) &&
-         "a create that takes the creator's hold may race only within one "
-         "rank; across ranks it must not acquire");
-  (void)holder;
-#else
-  (void)db;
-  (void)creator_rank;
-  (void)no_acquire;
-#endif
-}
+/* There is deliberately no arrival-time check that the creator's claim
+ * agrees with the directory.  The claim is about the moment the create ran on
+ * its own rank, and the home cannot reconstruct that moment: DB_CREATE and
+ * GRANT_RETURN carry no ordering against each other, so a first creator's
+ * legitimate claim can arrive after its own hand-back has been accepted and
+ * after a later create of the label has installed the block — leaving
+ * exactly the directory state an illegitimate claim leaves.  Any test here
+ * would therefore abort correct programs.  What does hold the word is
+ * checked where it is committed: a grant installs only on a rank that holds
+ * nothing, a hand-back is accepted only onto a home that holds nothing, and
+ * one write right yields one outstanding hand-back.  A rank that took a right
+ * the home never issued reaches one of those, and those states are reachable
+ * no other way. */
 
 void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   /* Home-side init for non-home creator.  Per coherence design plan
@@ -176,8 +160,8 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   unsigned int creator_rank = p->header.rank;
   arts_guid_t db_guid = p->db_guid;
   uint64_t db_size = p->db_size;
-  /* NO_ACQUIRE: the creator neither acquires nor publishes, so home is the
-   * sole idle owner (not a non-owner awaiting a creator publish). */
+  /* NO_ACQUIRE: the creator neither acquires nor publishes, so the home is
+   * the sole idle owner (not a non-owner awaiting a creator publish). */
   bool no_acquire = (p->flags & ARTS_DB_PROP_NO_ACQUIRE) != 0;
 
   /* This handler installs/initializes the home directory, so it is only ever
@@ -199,16 +183,12 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
     bool buf_absent = (arts_shared_get(buf_h) == NULL);
     arts_db_buf_release(&buf_h);
-    if (buf_absent && db_size > 0) {
+    if (buf_absent && db_size > 0 && !no_acquire) {
       /* Same seam as the fresh-stub path below: the coalesce winner must end
        * in the identical buffer state, or the arm's publication predicate
        * (buffer presence / version zero) reads differently depending on who
        * won an internal race. */
-      if (no_acquire) {
-        arts_db_buf_install(cache, 1, NULL, db_size);
-      } else {
-        arts_db_create_install_home_buffer(cache, db_size);
-      }
+      arts_db_create_install_home_buffer(cache, db_size);
     }
     if (cache->db_size == 0) {
       cache->db_size = db_size;
@@ -222,15 +202,13 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * build where the write would actually land past the allocation. */
     assert(db->home_initialized &&
            "a home rank's descriptor carries its home directory");
-    if (db->home_initialized) {
-      db_create_diagnose_second_creator(db, creator_rank, no_acquire);
-      if (!no_acquire) {
-        arts_db_create_publish_holder(db, creator_rank);
-      }
-      /* NO_ACQUIRE names the home as the holder instead (below), so the
-       * creator is never published as one — not even transiently. */
-      db_create_no_acquire_idle(db, no_acquire);
-    }
+    /* The directory is NOT re-seeded here.  It is live protocol state from
+     * the moment this block's create installed it, and a create reaching
+     * this arm made no block: naming a holder now would either restate what
+     * the directory already says or hand the right to a rank that does not
+     * hold it — and the next hand-back would then be discharged from a word
+     * the home had already taken possession of.  A block's holder is named
+     * once, by the create that made it. */
 #if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||        \
     defined(ARTS_PROTOCOL_WRF_VAL)
     if (!no_acquire) {
@@ -252,13 +230,16 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
    * Whether the home installs a buffer here is the arm's decision
    * (arts_db_create_install_home_buffer): an arm whose home holds the
    * canonical copy installs one now, an arm whose payload lives with its
-   * owner leaves the home metadata-only.  Either way a read that arrives
+   * owner leaves the home metadata-only.  A create that acquires nothing
+   * installs none on any arm — it has no first user to place the payload
+   * for, so the first use allocates it.  Either way a read that arrives
    * before the block has been published does NOT resolve to a NULL pointer —
    * the arm holds it (on the snapshot reorder buffer, until the first publish
-   * drains it) or routes it to the rank that does hold the bytes.  What is
-   * undefined before the first publish is the block's CONTENTS (OCR ch2:
-   * "value of the created data block is undefined"), never whether it has
-   * storage. */
+   * drains it), routes it to the rank that does hold the bytes, or, where no
+   * publish is ever coming because nobody took a write hold, materializes the
+   * block's first image on the spot.  What is undefined before the first
+   * publish is the block's CONTENTS (OCR ch2: "value of the created data
+   * block is undefined"), never whether it has storage. */
   struct arts_db_s *stub = (struct arts_db_s *)arts_malloc_aligned(
       sizeof(struct arts_db_s), ARTS_CACHE_LINE_SIZE);
   memset(stub, 0, sizeof(struct arts_db_s));
@@ -270,9 +251,10 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * no cache — a phantom holder — and the acquire would stall forever.
      *
      * CREATOR_HOME sets writer_count = sentinel(1) + creator_hold(1) = 2, but
-     * NO_ACQUIRE means no EDT will ever release the creator hold.  Decrement to
-     * 1 (sentinel only) so the first GRANT_REQUEST's INVALIDATE-to-self
-     * drives writer_count to 0, triggering advance_chain and the GRANT. */
+     * NO_ACQUIRE means no EDT will ever release the creator hold.  Decrement
+     * to 1 (sentinel only) so the first GRANT_REQUEST's INVALIDATE-to-self
+     * drives
+     * writer_count to 0, triggering advance_chain and the GRANT. */
     arts_db_cache_init(&stub->cache, db_guid, db_size,
                        ARTS_DB_INIT_CREATOR_HOME, creator_rank);
     /* Collapse the create-time creator hold to the idle/sentinel state:
@@ -280,16 +262,23 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * lock+cache state so the first GRANT_REQUEST / EXCL_REQUEST is granted
      * rather than blocked behind a hold no EDT will ever release. */
     db_create_no_acquire_idle(stub, no_acquire);
-    if (db_size > 0) {
-      arts_db_buf_install(&stub->cache, /*new_version=*/1,
-                          /*data_payload=*/NULL, db_size);
-    }
+    /* No buffer here: a create that acquires nothing has no first user to
+     * place the payload for, so its storage is allocated by whoever first
+     * uses it (arts_db_buf_ensure) —
+     * this rank when the first request it serves needs the bytes, on the
+     * acquiring thread's node when the first user is local. */
   } else {
     arts_db_cache_init(&stub->cache, db_guid, db_size, ARTS_DB_INIT_HOME_RECV,
                        creator_rank);
-    /* Case-D leaf: WRF_VAL installs a version-1 zero buffer now (home is
-     * canonical, no creator publish to wait for); WT/WB defer the
-     * install to the creator's first PUBLISH (no-op here). */
+  }
+  /* The home's create-time buffer is the target a publish lands in, at
+   * version 0 — "unpublished", which is what every serve and park predicate
+   * on these arms keys on.  A create confers the block's write right on some
+   * rank (its own, or the home under NO_ACQUIRE), so a publish is coming
+   * wherever the creator acquires, and the target must exist before it can
+   * arrive.  Which arms need one at all is the leaf's own decision: a
+   * write-back home holds no payload and its leaf is a no-op. */
+  if (!no_acquire) {
     arts_db_create_install_home_buffer(&stub->cache, db_size);
   }
 
@@ -300,7 +289,8 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
     defined(ARTS_PROTOCOL_WRF_VAL)
     /* Off the critical path: the credit flies while the creator EDT is still
      * writing, so a create -> write -> release sequence publishes with no
-     * announce round.  A NO_ACQUIRE creator never publishes — no credit.
+     * announce round.  A creator that took no right never publishes — no
+     * credit.
      * Re-acquire through the route table rather than using the raw stub
      * pointer: the drain above can run a deferred DESTROY that frees the
      * stub, and a dead slot must not advertise a recycled buffer. */
@@ -326,13 +316,9 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
     bool buf_absent = (arts_shared_get(buf_h) == NULL);
     arts_db_buf_release(&buf_h);
-    if (buf_absent && db_size > 0) {
+    if (buf_absent && db_size > 0 && !no_acquire) {
       /* Same seam as the fresh-stub path — see the coalesce branch above. */
-      if (no_acquire) {
-        arts_db_buf_install(cache, 1, NULL, db_size);
-      } else {
-        arts_db_create_install_home_buffer(cache, db_size);
-      }
+      arts_db_create_install_home_buffer(cache, db_size);
     }
     if (cache->db_size == 0) {
       cache->db_size = db_size;
@@ -346,15 +332,8 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * build where the write would actually land past the allocation. */
     assert(db->home_initialized &&
            "a home rank's descriptor carries its home directory");
-    if (db->home_initialized) {
-      db_create_diagnose_second_creator(db, creator_rank, no_acquire);
-      if (!no_acquire) {
-        arts_db_create_publish_holder(db, creator_rank);
-      }
-      /* NO_ACQUIRE names the home as the holder instead (below), so the
-       * creator is never published as one — not even transiently. */
-      db_create_no_acquire_idle(db, no_acquire);
-    }
+    (void)db;
+    /* The directory is NOT re-seeded here — see the coalesce branch above. */
 #if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||        \
     defined(ARTS_PROTOCOL_WRF_VAL)
     if (!no_acquire) {
@@ -496,21 +475,28 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     return;
   }
 
-  /* No PUT consumed the advertised landing: recycle it — this rank keeps the
-   * storage it already has, and installing a fresh empty buffer over a current
-   * one would destroy live data.  Recycling is safe because both no-PUT cases
-   * leave this rank with a buffer already:
-   *   - a no-data reply is the server's dedup verdict (known_v >= cur_v), and
-   *     the ledger credits a rank only where bytes actually reached it (a
-   *     serve that PUT, or the rank's own publish), so the credit IS the
-   *     proof that this cache holds a buffer;
-   *   - a same-rank inline serve read that buffer to answer itself.
-   * The one reply carrying neither data nor a credit — version 0, "nothing
-   * published" — cannot name a sized block: every arm holds or redirects a
-   * pre-publication read rather than answering it empty. */
+  /* No PUT consumed the advertised landing.  Two readings, told apart by the
+   * version the reply carries, and the landing's fate differs:
+   *   - version 0 (ARTS_GRANT_VERSION_NONE, "the server holds nothing"):
+   *     nobody has written the block, its value IS zero, and this rank is
+   *     entitled to storage of the declared size whatever its contents —
+   *     adopt the landing it already allocated, stamped 1 rather than the 0
+   *     that means "nothing";
+   *   - any other version is the server's dedup verdict (known_v >= cur_v)
+   *     or a same-rank inline serve: bytes at that version reached this rank
+   *     (the ledger credits a rank only where a serve PUT them or it
+   *     published them itself) — recycle.  Never adopt here: the credited
+   *     install may still be in flight behind this reply (the reorder case
+   *     parked below), and an invented image stamped with its version would
+   *     make that install retreat as stale and stand in for the data. */
   if (a->rdzv_cookie != 0) {
-    arts_db_buf_landing_recycle(
-        cache, (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie);
+    struct arts_db_buffer_s *landing =
+        (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
+    if (a->version == 0) {
+      (void)arts_db_buf_adopt_landing(cache, 1u, landing, cache->db_size);
+    } else {
+      arts_db_buf_landing_recycle(cache, landing);
+    }
   }
 
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);

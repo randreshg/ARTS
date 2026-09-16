@@ -310,6 +310,9 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
 #define CACHE_OP_GRANT_RO 3
 #define CACHE_OP_REL_RW 4
 #define CACHE_OP_REL_RO 5
+/* A create recording its own hold in a cache this rank already made for the
+ * block (see the arbiter for the word it admits). */
+#define CACHE_OP_CREATE_HOLD 6
 
 #define CACHE_ACT_NONE 0
 #define CACHE_ACT_SELF_SERVE 1 /* covering grant held: serve the dep directly */
@@ -320,6 +323,10 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
 #define CACHE_ACT_DRAIN_RO 6   /* RO grant: serve ro_pending */
 #define CACHE_ACT_REL_RW 7     /* send RW RELEASE (publish, ACK-gated) */
 #define CACHE_ACT_REL_RO 8     /* send RO RELEASE (notify) */
+/* An RW grant that found no cohort at all: return the write right with no
+ * payload.  Distinct from CACHE_ACT_REL_RW, which carries a publish — nothing
+ * was written under a grant nobody held. */
+#define CACHE_ACT_REL_RW_EMPTY 9
 
 /* Defined in arbiters.c (included by purge.c); exposed non-static for the
  * cache-state model test (mirrors excl_compute_next's exposure). */
@@ -337,6 +344,9 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action);
  */
 #define CACHE_OP_REL_RW 4 /* local RW release: wc-- + 0-edge → migrate/noop */
 #define CACHE_OP_REL_RO 5 /* local RO release: rc-- */
+/* A create recording its own hold in a cache this rank already made for the
+ * block (see the arbiter for the word it admits). */
+#define CACHE_OP_CREATE_HOLD 6
 
 /* Values are aligned with the PURGE block above so that a name shared by both
  * policies also shares its number.  The acquire-axis NAMES stay distinct on
@@ -442,6 +452,17 @@ struct arts_db_cache_s {
 #endif
   arts_guid_t db_guid;
   uint64_t db_size;
+  /* Does this cache's payload slot still need materializing?  1 until a
+   * buffer has been installed, 0 after — the first entitled use of a block
+   * whose create left it no storage is what installs one, and every later
+   * use must find that out without touching the slot's refcount.  Accessed
+   * with the atomic builtins rather than an _Atomic qualifier so the layout
+   * is identical in the C and C++ views of this struct.  Correctness never
+   * rests on it: a reader that sees 0 still reads the pointer from the slot
+   * itself, and a stale 1 costs one materialize attempt that then clears
+   * it.  The slot is monotone for a live cache — only the destructor puts
+   * NULL back — so a 0 can never go stale. */
+  uint8_t payload_pending;
 };
 #else
 struct arts_db_cache_s {
@@ -461,6 +482,17 @@ struct arts_db_cache_s {
 #endif
   arts_guid_t db_guid;
   uint64_t db_size;
+  /* Does this cache's payload slot still need materializing?  1 until a
+   * buffer has been installed, 0 after — the first entitled use of a block
+   * whose create left it no storage is what installs one, and every later
+   * use must find that out without touching the slot's refcount.  Accessed
+   * with the atomic builtins rather than an _Atomic qualifier so the layout
+   * is identical in the C and C++ views of this struct.  Correctness never
+   * rests on it: a reader that sees 0 still reads the pointer from the slot
+   * itself, and a stale 1 costs one materialize attempt that then clears
+   * it.  The slot is monotone for a live cache — only the destructor puts
+   * NULL back — so a 0 can never go stale. */
+  uint8_t payload_pending;
 };
 #endif
 

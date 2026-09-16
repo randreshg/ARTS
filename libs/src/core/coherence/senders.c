@@ -151,7 +151,9 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
    * rendezvous contract (the pairing table is local to this rank).  No
    * expectation is registered at issue time — the commit packet registers the
    * pairing on arrival — so an unused credit is only a burned counter value.
-   * A self-rank releaser never PUTs to itself: no credit. */
+   * A self-rank releaser never PUTs to itself: no credit.  A home with no
+   * buffer yet simply teaches no credit, and the releaser's next flight
+   * takes the announce leg — this path never has to materialize one. */
   if (home_cache != NULL && home_cache->db_size > 0 &&
       releaser_rank != arts_global_rank_id && arts_global_rank_count > 1) {
     arts_shared_ptr_t mh = arts_db_buf_acquire(home_cache);

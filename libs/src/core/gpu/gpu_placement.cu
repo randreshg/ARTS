@@ -201,11 +201,18 @@ uint64_t get_db_size_needed(uint32_t depc, arts_edt_dep_t *depv) {
   uint64_t size = 0;
   for (unsigned int i = 0; i < depc; i++) {
     if (depv[i].ptr) {
-      struct arts_db_s *db = (struct arts_db_s *)depv[i].ptr - 1;
-      size += arts_db_total_size(db);
-      if (db->db_type == ARTS_DB_GPU) {
-        size += arts_db_total_size(db);
+      arts_shared_ptr_t hold = NULL;
+      struct arts_db_s *db = arts_gpu_dep_db(&depv[i], &hold);
+      if (db != NULL) {
+        uint64_t image = arts_gpu_db_image_size(db);
+        size += image;
+        /* The subtype whose device replicas are merged by reduction carries a
+         * shadow of its image alongside it. */
+        if (db->db_type == ARTS_DB_GPU) {
+          size += image;
+        }
       }
+      arts_shared_release(&hold);
     }
   }
   return size;

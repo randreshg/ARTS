@@ -111,14 +111,13 @@ extern "C" {
 #define ARTS_GRANT_COUNT_MASK 0x3fffffffu
 #define ARTS_GRANT_OWN_OF(w) (((w) & ARTS_GRANT_OWN) != 0u)
 #define ARTS_GRANT_COUNT_OF(w) ((w) & ARTS_GRANT_COUNT_MASK)
-/* Seeds — every create/adopt path names possession and the creator's own
- * hold separately; there is no path that seeds a count without possession. */
+/* Seeds — every path that confers possession names it together with the
+ * hold underneath; there is no path that seeds a count without possession,
+ * and none that adds possession to a word that has lost it (a rank takes the
+ * right from a grant or from the create that establishes the block, never
+ * from itself). */
 #define ARTS_GRANT_SEED_HOLDING (ARTS_GRANT_OWN | 1u)
 #define ARTS_GRANT_SEED_IDLE (ARTS_GRANT_OWN)
-/* A create that lost its install race adopts the cache already there: take
- * possession (it may already be held) and add this creator's own hold.  Run
- * in a CAS loop — possession added in would depend on what the word held. */
-#define ARTS_GRANT_ADOPT_NEXT(w) (((w) | ARTS_GRANT_OWN) + 1u)
 #else
 /* The accessors are diagnostics (tests, oracles); the release-entry guard
  * has its own per-policy predicate and must not be expressed through them —
@@ -128,7 +127,6 @@ extern "C" {
 #define ARTS_GRANT_COUNT_OF(w) ((int)(w) >= 1 ? ((w) - 1u) : 0u)
 #define ARTS_GRANT_SEED_HOLDING 2u
 #define ARTS_GRANT_SEED_IDLE 1u
-#define ARTS_GRANT_ADOPT_NEXT(w) ((w) + 2u)
 #endif /* ARTS_RELEASE_PURGE */
 
 #ifdef ARTS_RELEASE_PURGE

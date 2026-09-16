@@ -42,8 +42,8 @@
 /// DB
 ///        subtype (build-gated, no CI matrix).
 ///
-/// ARTS_DB_CXL allocates from the CXL shared segment (arts_db_malloc CXL arm,
-/// round-robin or static device), encodes the device pointer directly in the
+/// ARTS_DB_CXL allocates from the CXL shared segment (round-robin or static
+/// device), encodes the device pointer directly in the
 /// GUID (NO route table entry, NO DB-level coherence), and uses producer /
 /// consumer FLUSH fences (driven automatically by db.c at create / prep /
 /// release) for cross-node visibility under HW MESI.  The application drives

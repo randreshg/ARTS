@@ -78,7 +78,9 @@ void arts_edt_ctx_save(arts_edt_ctx_t *tl);
 void arts_edt_ctx_restore(arts_edt_ctx_t *tl);
 void arts_cleanup_edt_tls(void);
 
-/* Created-DB tracking on the current worker (auto-acquire / release path). */
+/* Created-DB tracking on the current worker (auto-acquire / release path).
+ * A label names one object for its lifetime — the create that installs it is
+ * its only creator — so the GUID identifies the hold's object. */
 void arts_track_created_db(arts_guid_t guid);
 arts_vector_t *arts_get_created_db_list(void);
 

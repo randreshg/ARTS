@@ -101,8 +101,23 @@ void arts_handler_db_acquire(void *item, void *args) {
    * install below zero, so "> 0" already means "held and confirmed". */
   uint64_t peek =
       atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-  if (INV_CACHE_RO(peek) == INV_RO_VALID ||
-      (int)arts_atomic_read(&cache->writer_count) > 0) {
+  /* One observation governs both the decision to answer locally and the
+   * materialization below: a second load of the same word could see the
+   * grant withdrawn in between and skip the storage the first one entitled,
+   * handing the EDT no pointer for a sized block. */
+  bool own = (int)arts_atomic_read(&cache->writer_count) > 0;
+  if (INV_CACHE_RO(peek) == INV_RO_VALID || own) {
+    /* First use of a block whose create took no hold: its storage was left
+     * for whoever uses it first, and holding the block's OWNERSHIP is what
+     * entitles this rank to be it — so allocate here, on the acquiring
+     * thread's node.  Not on the valid-copy half of the test above: a valid
+     * copy already implies storage (the delivery that made it valid brought
+     * the bytes), so a valid copy without a buffer would mean the claim
+     * itself is false, and inventing a first image under it would answer
+     * reads from a block this rank never held. */
+    if (own) {
+      (void)arts_db_buf_ensure(cache, cache->db_size);
+    }
     /* A durable copy answers with no message and no CAS — still an
      * acquire served locally, so it belongs in the same census the
      * other arms feed through arts_db_acquire_local. */

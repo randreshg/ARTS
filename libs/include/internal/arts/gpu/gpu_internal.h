@@ -50,6 +50,7 @@
 extern "C" {
 #endif
 
+#include "arts/gas/route_table.h"
 #include "arts/gpu/gpu_stream.h"
 #include "arts/runtime_types.h"
 
@@ -94,6 +95,32 @@ extern fit_t fit; /* selected fit scheme */
 extern ARTS_THREAD_LOCAL unsigned int run_gc_flag;
 
 int arts_reserve_edt_required_gpu(int *gpu, void *edt_packet);
+
+/* --- DB dependency views --- */
+
+/* Bytes of a DB's device image: one self-contained header + payload object.
+ * On the host the two are not always adjacent — a payload that lives in a
+ * coherence buffer is allocated apart from its descriptor — so the image is
+ * sized from the DB's own length rather than from any host allocation's span.
+ */
+static inline uint64_t arts_gpu_db_image_size(const struct arts_db_s *db) {
+  return sizeof(struct arts_db_s) + db->cache.db_size;
+}
+
+/* The descriptor behind a dependency slot.  A subtype that keeps its payload
+ * inline has its descriptor immediately before the slot pointer; a payload
+ * that lives in a coherence buffer does not, so that descriptor is reachable
+ * only by name and comes back under a reference `hold` the caller must release
+ * (NULL when none was taken, which arts_shared_release accepts). */
+static inline struct arts_db_s *arts_gpu_dep_db(const arts_edt_dep_t *dep,
+                                                arts_shared_ptr_t *hold) {
+  if (dep->subtype != ARTS_DB) {
+    *hold = NULL;
+    return (struct arts_db_s *)dep->ptr - 1;
+  }
+  *hold = arts_route_table_lookup_db(dep->guid);
+  return (struct arts_db_s *)arts_shared_get(*hold);
+}
 
 /* --- LC sync helpers (internal only — public decls in arts/gpu.h) --- */
 

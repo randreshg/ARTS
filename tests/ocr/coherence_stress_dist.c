@@ -56,6 +56,7 @@
 
 #include "arts.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -68,12 +69,12 @@ static void init_writer_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  int *data = (int *)depv[0].ptr;
+  _Atomic int *data = (_Atomic int *)depv[0].ptr;
   if (data == NULL) {
     arts_printf("FAIL: init_writer got NULL ptr\n");
     arts_abort(1);
   }
-  *data = 0;
+  atomic_store_explicit(data, 0, memory_order_relaxed);
 }
 
 static void worker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -84,17 +85,18 @@ static void worker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   int mode_is_rw = (int)paramv[0];
-  int *data = (int *)depv[0].ptr;
+  _Atomic int *data = (_Atomic int *)depv[0].ptr;
   if (data == NULL) {
     arts_printf("FAIL: worker got NULL ptr\n");
     arts_abort(1);
   }
   if (mode_is_rw) {
-    /* Per-node serialised RW: increment is safe under per-node exclusivity. */
-    (*data)++;
+    /* RW is exclusive between NODES, not between the writers on one: several
+     * EDTs on this rank hold the block at once, so the increment is atomic. */
+    (void)atomic_fetch_add_explicit(data, 1, memory_order_relaxed);
   } else {
     /* RO: just read, do not modify. */
-    volatile int seen = *data;
+    int seen = atomic_load_explicit(data, memory_order_relaxed);
     (void)seen;
   }
 }

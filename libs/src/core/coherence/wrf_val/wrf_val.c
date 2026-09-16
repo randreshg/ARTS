@@ -54,6 +54,12 @@ void arts_handler_db_acquire(void *item, void *args) {
     arts_atomic_add(&cache->writer_count, 1); /* balanced by release_rw */
   }
   if (is_home) {
+    /* First use of a block whose create took no hold: its storage was left
+     * for whoever uses it first, and the home is the only rank that may hold
+     * the canonical copy here — so this acquiring thread allocates it, on
+     * its own node.  A no-op for every other block (the home's buffer exists
+     * from create). */
+    (void)arts_db_buf_ensure(cache, cache->db_size);
     dep->ptr = arts_db_acquire_local(cache);
     arts_db_acquire_resolved(edt, slot);
     return;
@@ -195,14 +201,21 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   arts_guid_t edt_guid = a->edt_guid;
   uint32_t slot = a->slot;
 
+  /* A remote first use of a block whose create took no hold: the home holds
+   * the canonical copy here and the reply must carry the block's first
+   * image, so it is materialized on this progress thread rather than on the
+   * requester.  A no-op for every other block. */
+  (void)arts_db_buf_ensure(cache, cache->db_size);
+
   arts_shared_ptr_t master_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *master =
       (struct arts_db_buffer_s *)arts_shared_get(master_h);
   if (master == NULL) {
     /* Home-canonical: every sized block gets its version-1 zero buffer at
-     * create (arts_db_create_install_home_buffer below), so the only block
-     * that reaches here is a zero-sized one — respond version=0, NULL data,
-     * which is that block's defined value.  A sized block never resolves to a
+     * create (arts_db_create_install_home_buffer below) or at its first use,
+     * so the only block that reaches here is a zero-sized one — respond
+     * version=0, NULL data, which is that block's defined value.
+     * A sized block never resolves to a
      * NULL pointer: "nobody has published yet" bears on its contents, not on
      * whether it has storage.  NOT a destroy condition -- the precheck above
      * (destroy_state) is authoritative for that. */
@@ -294,6 +307,9 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     if (master == NULL ||
         !arts_net_rdzv_local(master->data, cache->db_size, &landing.addr,
                              &landing.key)) {
+      /* Unreachable: the releaser obtained its write right from this home,
+       * and serving that request is one of the points that materializes the
+       * home's buffer. */
       ARTS_ERROR("coherence: publish announce found no stable home buffer");
     }
     landing.txid = arts_net_rdzv_txid_next();
@@ -357,13 +373,30 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
   arts_db_pub_flight_abandon(cache);
 }
 
-/* Case-D leaf: WRF_VAL has no exclusive owner — no rw_holder to publish
- * (no-op). */
-void arts_db_create_publish_holder(struct arts_db_s *db,
-                                   unsigned int creator_rank) {
-  (void)db;
-  (void)creator_rank;
+/* Retract nothing: this arm has no sharer plane to claim a copy on. */
+
+/* The hold is one reference, added to whatever the word already counts.
+ *
+ * There is no possession to take here and no state in this word to refuse
+ * from: with the home canonical and no write right that migrates, the word is
+ * a pure count of this rank's live holds, and an RW acquire that is still
+ * PARKED has already added its own (this arm counts it before parking so the
+ * release that balances it cannot skip its publish).  A create that demanded
+ * a word holding nothing would therefore refuse itself whenever a dependence
+ * on the label had asked first — while the fact it was trying to read, that
+ * the block exists, is not in this word at all.  It is the home's, which is
+ * what the create's announce tells it. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+  arts_atomic_add(&cache->writer_count, 1);
+  return true;
 }
+
+void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
+
+/* Claim nothing either: a reader here re-validates against a version at
+ * every acquire, so a copy asserts nothing that has to be recorded. */
+void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
+
 
 /* WRF_VAL has no exclusive-ownership protocol (no GRANT_REQUEST, no
  * GRANT_INVALIDATE — its dispatcher fatals on both wire messages), so its

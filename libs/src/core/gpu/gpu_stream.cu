@@ -309,8 +309,7 @@ void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
 
   for (unsigned int i = 0; i < depc; i++) {
     if (depv[i].ptr) {
-      struct arts_db_s *db_hdr = (struct arts_db_s *)depv[i].ptr - 1;
-      if (db_hdr->db_type == ARTS_DB_GPU_PIN) {
+      if (depv[i].subtype == ARTS_DB_GPU_PIN) {
         arts_gpu_invalidate_route_tables(depv[i].guid, gc->gpu_id);
       }
       // True says to mark it for deletion... Change this to false to further
@@ -418,13 +417,22 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
   // Allocate space for DB on GPU and Move Data
   for (unsigned int i = 0; i < depc; ++i) {
     if (depv[i].ptr) {
-      struct arts_db_s *db = (struct arts_db_s *)depv[i].ptr - 1;
+      arts_shared_ptr_t db_hold = NULL;
+      struct arts_db_s *db = arts_gpu_dep_db(&depv[i], &db_hold);
+      if (db == NULL) {
+        /* The descriptor is no longer installed (a destroy raced the launch):
+         * there is nothing to stage and no pointer to hand the kernel. */
+        arts_shared_release(&db_hold);
+        host_depv[i].ptr = NULL;
+        host_depv[i].guid = depv[i].guid;
+        continue;
+      }
       arts_db_types_t db_subtype = db->db_type;
       unsigned int gpu_version;
       unsigned int time_stamp;
       void *data_ptr = arts_gpu_route_table_lookup_db(
           depv[i].guid, arts_gpu->device, &gpu_version, &time_stamp);
-      uint64_t size = arts_db_total_size(db);
+      uint64_t size = arts_gpu_db_image_size(db);
       uint64_t alloc_size = (db_subtype == ARTS_DB_GPU) ? (size * 2) : size;
       if (!data_ptr) {
         bool successful_add = false;
@@ -437,16 +445,28 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
           ARTS_DEBUG("Adding %lu %u id: %d mode: %s\n", depv[i].guid,
                      alloc_size, arts_gpu->device, GET_DB_MODE_NAME(depv[i].mode));
           data_ptr = arts_cuda_malloc(alloc_size);
-          void *src = (void *)db;
-          if (db_subtype == ARTS_DB_GPU) {
-            src = make_lc_shadow_copy(db);
-          }
+          bool buffered = arts_node_info.gpu_buff_on && !gpu_edt->lib;
           if (depv[i].mode == DB_MODE_LC_NO_COPY ||
               depv[i].mode == DB_MODE_MEMSET) {
-            src = NULL;
+            push_data_to_stream(arts_gpu->device, data_ptr, NULL, size,
+                                buffered);
+          } else if (db_subtype == ARTS_DB_GPU) {
+            /* The shadow is already one contiguous header + payload image. */
+            push_data_to_stream(arts_gpu->device, data_ptr,
+                                make_lc_shadow_copy(db), size, buffered);
+          } else {
+            /* Header and payload are separate host objects whenever the
+             * payload lives in a coherence buffer, so the device image is
+             * assembled from both rather than copied from one span. */
+            push_data_to_stream(arts_gpu->device, data_ptr, (void *)db,
+                                sizeof(struct arts_db_s), buffered);
+            if (db->cache.db_size > 0) {
+              push_data_to_stream(
+                  arts_gpu->device,
+                  (void *)((char *)data_ptr + sizeof(struct arts_db_s)),
+                  depv[i].ptr, (size_t)db->cache.db_size, buffered);
+            }
           }
-          push_data_to_stream(arts_gpu->device, data_ptr, src, size,
-                              arts_node_info.gpu_buff_on && !gpu_edt->lib);
           // Must have already launched the memcpy before setting real_data or
           // races will ensue
           wrapper->real_data = data_ptr;
@@ -470,6 +490,9 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
         arts_atomic_add_u64(&arts_gpu->avail_global_mem, alloc_size);
         arts_atomic_add(&hits, 1U);
       }
+      arts_shared_release(&db_hold);
+      /* The device image is header + payload in one object, so the kernel's
+       * payload pointer is the byte after its header. */
       struct arts_db_s *new_db = (struct arts_db_s *)data_ptr;
       host_depv[i].ptr = (void *)(new_db + 1);
     } else {
@@ -511,14 +534,14 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
 
   // Move data back
   for (unsigned int i = 0; i < depc; i++) {
-    if (depv[i].ptr) {
+    if (depv[i].ptr && depv[i].subtype == ARTS_DB_GPU_PIN &&
+        (depv[i].mode == DB_MODE_RW || depv[i].mode == DB_MODE_MEMSET)) {
+      /* This subtype keeps its payload inline, so its descriptor is the bytes
+       * before the slot pointer. */
       struct arts_db_s *cb_db = (struct arts_db_s *)depv[i].ptr - 1;
-      if (cb_db->db_type == ARTS_DB_GPU_PIN &&
-          (depv[i].mode == DB_MODE_RW || depv[i].mode == DB_MODE_MEMSET)) {
-        size_t size = (size_t)(cb_db->cache.db_size);
-        get_data_from_stream(arts_gpu->device, depv[i].ptr, host_depv[i].ptr,
-                             size, arts_node_info.gpu_buff_on && !gpu_edt->lib);
-      }
+      size_t size = (size_t)(cb_db->cache.db_size);
+      get_data_from_stream(arts_gpu->device, depv[i].ptr, host_depv[i].ptr,
+                           size, arts_node_info.gpu_buff_on && !gpu_edt->lib);
     }
   }
 
@@ -1018,8 +1041,13 @@ void arts_put_in_db_from_gpu(void *ptr, arts_guid_t db_guid,
     arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db) {
-      void *data = (void *)(((char *)(db + 1)) + offset);
-      // memcpy(data, ptr, size);
+      void *payload = arts_db_user_ptr(db);
+      if (payload == NULL) {
+        ARTS_ERROR("arts_put_in_db_from_gpu: DB[Guid:%lu] carries no payload "
+                   "to stage into",
+                   db_guid);
+      }
+      void *data = (void *)(((char *)payload) + offset);
       CHECKCORRECT(cudaMemcpyAsync(data, ptr, size, cudaMemcpyDeviceToHost,
                                    *arts_local_stream));
       arts_shared_release(&db_h);

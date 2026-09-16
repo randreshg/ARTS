@@ -170,9 +170,25 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     }
     break;
   case CACHE_OP_GRANT_RW:
-    /* precond: rws==REQ (home grants only what was requested) and wc>=1 (the
-     * request opener is counted and cannot have been served before this
-     * grant) — so an RW grant always finds its cohort. */
+    /* Normally rws==REQ and wc>=1: the request opener is counted and cannot
+     * have been served before its grant, so an RW grant finds its cohort.
+     * One arrival breaks that — a request this rank sent BEFORE its own
+     * create of the same block, whose cohort the create's own grant then
+     * served (CACHE_OP_CREATE_HOLD).  The home cannot tell that late request
+     * from a fresh one, so the grant it answers with is returned here, where
+     * the absence of a cohort is visible.  With readers still parked the
+     * grant is kept for them instead (RW ⊇ RO), and their own zero edge ends
+     * it. */
+    if (wc == 0u) {
+      if (rc == 0u) {
+        rws = CACHE_ST_IDLE;
+        act = CACHE_ACT_REL_RW_EMPTY; /* nothing was written: no payload */
+        break;
+      }
+      rws = CACHE_ST_GRANT;
+      act = CACHE_ACT_DRAIN_RO;
+      break;
+    }
     rws = CACHE_ST_GRANT;
     act = CACHE_ACT_DRAIN_BOTH; /* RW grant serves this rank's RW + RO cohort */
     break;
@@ -186,6 +202,20 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
       ros = CACHE_ST_IDLE;
       act = CACHE_ACT_REL_RO;
     }
+    break;
+  case CACHE_OP_CREATE_HOLD:
+    /* A create records its own hold in a cache this rank made when it first
+     * touched the block.  The hold IS a local RW grant, so it serves the same
+     * cohorts a granted RW phase serves: a request this rank had already sent
+     * stays counted and becomes a joiner under it, readers too (RW ⊇ RO).
+     * A grant on either axis is the one refusal — the block exists elsewhere,
+     * and nothing here may take a turn over it. */
+    if (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT) {
+      break; /* act stays NONE: this create records no hold */
+    }
+    rws = CACHE_ST_GRANT;
+    wc += 1;
+    act = CACHE_ACT_DRAIN_BOTH;
     break;
   case CACHE_OP_REL_RW: /* precond: rws==GRANT */
     wc -= 1;

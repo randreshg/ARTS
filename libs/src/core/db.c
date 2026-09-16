@@ -60,6 +60,7 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/atomics.h"
@@ -86,26 +87,28 @@ ARTS_DB_TYPE_NAME;
 DB_MODE_NAME;
 
 /*
- * arts_db_user_ptr — Return the user-visible data pointer for a DB.
+ * arts_db_user_ptr — the user-visible payload pointer for a DB.
  *
- * For coherent ARTS_DB datablocks this is cache->buffer->data (the
- * canonical payload installed by arts_db_buf_install at create time or
- * by GRANT/SNAPSHOT_RESPONSE on sharer ranks).  For all other subtypes it
- * is the legacy (db+1) pointer.
- *
- * Returns NULL if `db` itself is NULL or if a coherent ARTS_DB has no
- * buffer installed yet (transient at create-time; callers should treat
- * this as "data not yet available").
+ * A coherent DB's payload is its installed coherence buffer; every other
+ * subtype's payload is inline after the struct.  NULL when `db` is NULL, or
+ * when a coherent DB has no buffer installed yet — which a caller must read
+ * as "no payload here", not as an error.
  */
 void *arts_db_user_ptr(struct arts_db_s *db) {
   if (db == NULL) {
     return NULL;
   }
   if (db->db_type == ARTS_DB) {
-    /* Coherent ARTS_DB: canonical payload lives in the installed buffer's
-     * data, not at (db+1).  Single-owner context: acquire a ref, read the
-     * canonical payload pointer, release.  buf->data is the buffer's FAM and
-     * stays valid for the single owner that consumes the returned pointer. */
+    /* Deliberately NOT a first-use point, although asking for the pointer
+     * looks like one: a create that takes no hold is handed no pointer at
+     * all, so no caller here can be a no-hold block's first user — and
+     * "this is the home" is not the right to materialize a block on either
+     * arm whose payload lives with its owner.  The arms' acquire paths are
+     * where that right is established, and they are the only points that
+     * materialize. */
+    /* Single-owner context: acquire a ref, read the payload pointer, release.
+     * buf->data is the buffer's FAM and stays valid for the single owner that
+     * consumes the returned pointer. */
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(&db->cache);
     struct arts_db_buffer_s *buf =
         (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -131,10 +134,13 @@ void *arts_db_user_ptr(struct arts_db_s *db) {
  * In both cases the GUID is recorded on the creating THREAD's created-DB
  * list, and whoever drains that list drives the matching release: the EDT
  * epilogue for a task, or the thread's own scheduler entry for a startup
- * hook, which runs before any task on that thread.  The list is thread-local
- * and the release chain needs no task context, so a create outside a task is
- * tracked exactly like one inside it — the alternative leaves the hold
- * stamped and nothing owning its release.
+ * hook, which runs before any task on that thread.  The GUID is enough
+ * because a label names one object for its lifetime: the create that
+ * installs it is its only creator, and a create that finds it already there
+ * creates nothing and registers nothing.  The list is thread-local and the
+ * release chain needs no task context, so a create outside a task is tracked
+ * exactly like one inside it — the alternative leaves the hold stamped and
+ * nothing owning its release.
  */
 static void arts_db_auto_acquire(struct arts_db_s *db) {
   arts_track_created_db(db->cache.db_guid);
@@ -169,15 +175,29 @@ static inline bool arts_db_creator_skip_hold(arts_db_types_t db_type) {
   return false;
 }
 
-void *arts_db_malloc(arts_db_types_t db_type, size_t size) {
+/* Bytes a descriptor allocation must span.  A coherent DB's payload is its
+ * coherence buffer, allocated apart from the descriptor; every other subtype
+ * keeps its payload inline after the struct. */
+static inline uint64_t db_descriptor_span(arts_db_types_t db_type,
+                                          uint64_t len) {
+  return sizeof(struct arts_db_s) + ((db_type == ARTS_DB) ? 0 : len);
+}
+
+/* The descriptor allocation.  A subtype that carries its payload inline is
+ * pinned to the rank that created it and names the memory that payload has to
+ * come from, so the subtype also picks the allocator; a coherent descriptor is
+ * plain shared storage. */
+static void *db_descriptor_alloc(arts_db_types_t db_type, uint64_t span) {
   (void)db_type;
   void *ptr = NULL;
 #ifdef ARTS_USE_GPU
   if (arts_node_info.gpu) {
+    /* The GPU subtype carries a shadow image of itself for version
+     * reconciliation, so its allocation is twice the descriptor span. */
     if (db_type == ARTS_DB_GPU)
-      ptr = arts_cuda_malloc_host(size * 2);
+      ptr = arts_cuda_malloc_host(span * 2);
     else if (db_type == ARTS_DB_GPU_PIN)
-      ptr = arts_cuda_malloc_host(size);
+      ptr = arts_cuda_malloc_host(span);
   }
 #endif
 #ifdef ARTS_USE_CXL
@@ -192,15 +212,15 @@ void *arts_db_malloc(arts_db_types_t db_type, size_t size) {
       dev_idx = arts_node_info.cxl_db_static_device;
     }
     ptr = arts_cxl_deque_db_malloc_dev(arts_node_info.cxl_deque,
-                                       &arts_node_info.cxl_local_lock, size,
+                                       &arts_node_info.cxl_local_lock, span,
                                        dev_idx);
     assert(ptr && "arts_cxl_deque_db_malloc_dev ptr is valid\n");
   }
 #endif
   if (!ptr) {
-    /* Full DataBlock backing store: the arts_db_s header sits at offset 0, so
-     * it must be cache-line aligned (shared, multi-thread object). */
-    ptr = arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
+    /* The descriptor sits at offset 0 of the allocation and is shared across
+     * threads, so it must start on a cache line. */
+    ptr = arts_malloc_aligned(span, ARTS_CACHE_LINE_SIZE);
   }
   return ptr;
 }
@@ -252,10 +272,14 @@ __attribute__((constructor)) static void arts_db_register_cb_deleter(void) {
  * Sets up the arts_db_s header fields (type, size, version, reader/writer
  * counts, db_list) and records metrics.  The caller is responsible for
  * route-table registration.
+ *
+ * `acquires` says whether the create takes the creator's hold, which is also
+ * what decides who allocates the payload: a create that acquires has its
+ * first user right here and allocates for it, while one that does not leaves
+ * the buffer to the first acquirer (arts_db_buf_ensure).
  */
 static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
-                               uint64_t packet_size, arts_db_types_t db_type) {
-  (void)len;
+                               arts_db_types_t db_type, bool acquires) {
   struct arts_db_s *db_res = (struct arts_db_s *)addr;
   /* lifecycle/deleter handled by the route_table cb (deleter-by-kind) on
    * install — no per-object shared field to initialize. */
@@ -273,17 +297,16 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
    * branch of arts_db_create; the remote-create branch builds its own
    * stub directly and does NOT invoke this routine. */
   /* Every DB — coherent or pinned — records its payload length in the cache.
-   * Size lives here (cache->db_size), not in a separate per-object header
-   * (arts_header_s removed): a DB always carries its own length. */
-  uint64_t user_size = packet_size - sizeof(struct arts_db_s);
+   * Size lives here (cache->db_size), not in a separate per-object header: a
+   * DB always carries its own length. */
   struct arts_db_cache_s *cache = &db_res->cache;
-  /* addr came from arts_db_malloc (not necessarily zeroed); zero the embedded
-   * cache before in-place init. */
+  /* The allocation is not necessarily zeroed; zero the embedded cache before
+   * in-place init. */
   memset(cache, 0, sizeof(*cache));
-  cache->db_size = user_size;
+  cache->db_size = len;
   cache->db_guid = guid;
   if (db_type == ARTS_DB) {
-    arts_db_cache_init(cache, guid, user_size, ARTS_DB_INIT_CREATOR_HOME,
+    arts_db_cache_init(cache, guid, len, ARTS_DB_INIT_CREATOR_HOME,
                        arts_global_rank_id);
     /* Install a fresh buffer so subsequent coherent acquires
      * (acquire_local / mark_edt_ready_by_guid) find a non-NULL
@@ -291,17 +314,24 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
      * points into this buffer's data[] FAM, so writes by the creator
      * EDT land in buf->data and are published when release_rw bumps
      * the version.  No initial data — zero-init is deterministic and
-     * matches the DB_CREATE_COHERENT home-recv path. */
-    if (user_size > 0) {
+     * matches the DB_CREATE_COHERENT home-recv path.
+     *
+     * Only when the create acquires: then the creating thread IS the
+     * payload's first user and allocating here places it on that thread's
+     * node.  A create that acquires nothing has no first user yet, so the
+     * buffer waits for one (arts_db_buf_ensure at every point that can be
+     * it) rather than being placed for a thread that may never read it. */
+    if (len > 0 && acquires) {
       arts_db_buf_install(cache, /*new_version=*/1,
-                          /*data_payload=*/NULL, user_size);
+                          /*data_payload=*/NULL, len);
     }
   }
   /* Non-coherent subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU,
    * ARTS_DB_CXL) are pinned to the creator rank and have no DB-level
    * coherence.  The embedded cache stays zeroed and db_list stays NULL. */
   if (db_type == ARTS_DB_GPU) {
-    void *shadow_copy = (void *)(((char *)addr) + packet_size);
+    void *shadow_copy =
+        (void *)(((char *)addr) + sizeof(struct arts_db_s) + len);
     memcpy(shadow_copy, addr, sizeof(struct arts_db_s));
   }
   INCREMENT_NUM_DB_CREATE_BY(1);
@@ -352,16 +382,16 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
   arts_guid_t guid = NULL_GUID;
 
   if (rank == arts_global_rank_id) {
-    uint64_t db_size = len + sizeof(struct arts_db_s);
+    uint64_t db_span = db_descriptor_span(db_type, len);
 #ifdef ARTS_USE_CXL
     if (db_type == ARTS_DB_CXL) {
-      db_size = ALIGN_UP(db_size, CACHELINE_SIZE);
-      void *ptr = arts_db_malloc(ARTS_DB_CXL, db_size);
+      db_span = ALIGN_UP(db_span, CACHELINE_SIZE);
+      void *ptr = db_descriptor_alloc(ARTS_DB_CXL, db_span);
       if (ptr) {
         guid = arts_cxl_make_guid(ptr);
-        db_create_in_place(guid, ptr, len, db_size, ARTS_DB_CXL);
+        db_create_in_place(guid, ptr, len, ARTS_DB_CXL,
+                           /*acquires=*/!no_acquire);
         /* No route table entry — GUID encodes CXL pointer directly */
-        // FLUSH_FENCE_PRODUCER(ptr, db_size);
         FLUSH_FENCE_PRODUCER(ptr, sizeof(struct arts_db_s));
         *addr = no_acquire ? NULL : (void *)((struct arts_db_s *)ptr + 1);
         ARTS_DEBUG("arts_db_create: CXL DB[Guid:%lu, Size:%lu] created", guid,
@@ -370,36 +400,34 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
     } else
 #endif
     {
-      void *ptr = arts_db_malloc(db_type, db_size);
+      void *ptr = db_descriptor_alloc(db_type, db_span);
       if (ptr) {
         if (pre_guid != NULL_GUID) {
           /* Pre-reserved labeled GUID. */
           guid = pre_guid;
-          db_create_in_place(guid, ptr, len, db_size, db_type);
-          /* Register the creator's hold BEFORE the DB becomes visible, then
-           * install — both install variants fire the OoO list internally on a
-           * successful install (no separate fire_oo needed). */
-          if (!no_acquire && !arts_db_creator_skip_hold(db_type)) {
-            arts_db_auto_acquire((struct arts_db_s *)ptr);
-          } else if (no_acquire && db_type == ARTS_DB) {
+          db_create_in_place(guid, ptr, len, db_type,
+                             /*acquires=*/!no_acquire);
+          if (no_acquire && db_type == ARTS_DB) {
             /* NO_ACQUIRE coherent: the creator never acquires or releases, so
              * home is the sole idle owner.  db_create_in_place pre-stamped the
-             * coherent writer_count to 2 (sentinel + creator-hold), but no EDT
-             * tracks or releases that hold (auto-acquire is skipped just
-             * above), so drop it to the sentinel (1) before the DB becomes
-             * visible at install.  Without this the unreleased creator-hold
-             * blocks every future writer under a single-writer protocol — the
-             * same reason the remote DB_CREATE handler stamps writer_count = 1
-             * for NO_ACQUIRE. */
+             * coherent writer_count to 2 (sentinel + creator-hold), but no
+             * EDT tracks or releases that hold (nothing is registered for a
+             * create that takes none), so drop it to the sentinel (1) before
+             * the DB becomes visible at install.  Without this the
+             * unreleased creator-hold blocks every future writer under a
+             * single-writer protocol — the same reason the remote DB_CREATE
+             * handler stamps writer_count = 1 for NO_ACQUIRE. */
 #if defined(ARTS_PROTOCOL_EXCL)
 #if defined(ARTS_RELEASE_RETAIN)
             /* RETAIN release policy: data lives with the owner, not the home — with no creator
              * hold there is no owner unless we make one.  This rank (the GUID
-             * home, where a local create runs) becomes the IDLE data owner: it
-             * holds the zero-init buffer (installed by db_create_in_place) with
-             * owner-bit set but rw_st=IDLE, wc=0.  The first writer's REQUEST
-             * migrates that zero buffer from here.  lock_state is the idle
-             * directory naming this rank as owner. */
+             * home, where a local create runs) becomes the IDLE data owner
+             * with owner-bit set but rw_st=IDLE, wc=0.  Its buffer does not
+             * exist yet: with no creator to place it for, the first user
+             * allocates it — a remote writer in the buffer it prepares for
+             * the migration, which then carries the size and no bytes, or
+             * the acquiring thread when the first user is local.  lock_state
+             * is the idle directory naming this rank as owner. */
             atomic_store_explicit(&((struct arts_db_s *)ptr)->cache.cache_state,
                                   CACHE_MAKE_FULL(1u, CACHE_ST_IDLE,
                                                   CACHE_ST_IDLE,
@@ -427,43 +455,61 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
             ((struct arts_db_s *)ptr)->cache.writer_count =
                 ARTS_GRANT_SEED_IDLE;
 #endif
+            /* The creator was given no storage, so any create-time claim to a
+             * reader copy of it is false and goes with the write hold. */
+            arts_db_create_retract_creator_copy((struct arts_db_s *)ptr);
           }
-          if (check) {
-            /* CHECK / rendezvous: first-wins install — concurrent installs with
-             * the same GUID are safe (a later one keeps the existing). */
-            arts_route_table_install_if_absent(ptr, guid, arts_global_rank_id,
-                                               true);
-          } else {
-            /* Default: unconditional replace — a labeled-GUID reuse overwrites
-             * the prior generation (the displaced cb is released). */
-            arts_route_table_install(ptr, guid, arts_global_rank_id, true);
+          /* First-wins, for every labeled create: one label names one object
+           * for its lifetime, so the install decides whether this create
+           * created anything at all.  The `check` hint is accepted and
+           * ignored — a replacing install would leave two directories for
+           * one GUID, and every message that finds the block by label would
+           * land on whichever one the slot holds now.  The create's own hold
+           * is the seed db_create_in_place stamped on the descriptor above,
+           * so it is registered only once this create knows its descriptor
+           * is the installed one; registering it first would make the
+           * epilogue drop a hold on an object this create does not own. */
+          bool installed = arts_route_table_install_if_absent(
+              ptr, guid, arts_global_rank_id, /*used=*/true);
+          if (!installed) {
+            /* This create created nothing: the block under that label is
+             * somebody else's, this rank holds no right to it, and a pointer
+             * is only ever handed back through a hold this create took.  The
+             * descriptor is torn down rather than left as an orphan whose
+             * writes nothing would publish. */
+            arts_db_free(ptr);
+            ptr = NULL;
+            *addr = NULL;
+          } else if (!no_acquire && !arts_db_creator_skip_hold(db_type)) {
+            arts_db_auto_acquire((struct arts_db_s *)ptr);
           }
         } else {
           guid = arts_db_guid_stamp_szhint(
               arts_guid_create_for_rank(arts_global_rank_id, ARTS_GUID_DB),
               len);
-          db_create_in_place(guid, ptr, len, db_size, db_type);
-          if (!no_acquire && !arts_db_creator_skip_hold(db_type)) {
-            arts_db_auto_acquire((struct arts_db_s *)ptr);
-          } else if (no_acquire && db_type == ARTS_DB) {
+          db_create_in_place(guid, ptr, len, db_type,
+                             /*acquires=*/!no_acquire);
+          if (no_acquire && db_type == ARTS_DB) {
             /* NO_ACQUIRE coherent: the creator never acquires or releases, so
              * home is the sole idle owner.  db_create_in_place pre-stamped the
-             * coherent writer_count to 2 (sentinel + creator-hold), but no EDT
-             * tracks or releases that hold (auto-acquire is skipped just
-             * above), so drop it to the sentinel (1) before the DB becomes
-             * visible at install.  Without this the unreleased creator-hold
-             * blocks every future writer under a single-writer protocol — the
-             * same reason the remote DB_CREATE handler stamps writer_count = 1
-             * for NO_ACQUIRE. */
+             * coherent writer_count to 2 (sentinel + creator-hold), but no
+             * EDT tracks or releases that hold (nothing is registered for a
+             * create that takes none), so drop it to the sentinel (1) before
+             * the DB becomes visible at install.  Without this the
+             * unreleased creator-hold blocks every future writer under a
+             * single-writer protocol — the same reason the remote DB_CREATE
+             * handler stamps writer_count = 1 for NO_ACQUIRE. */
 #if defined(ARTS_PROTOCOL_EXCL)
 #if defined(ARTS_RELEASE_RETAIN)
             /* RETAIN release policy: data lives with the owner, not the home — with no creator
              * hold there is no owner unless we make one.  This rank (the GUID
-             * home, where a local create runs) becomes the IDLE data owner: it
-             * holds the zero-init buffer (installed by db_create_in_place) with
-             * owner-bit set but rw_st=IDLE, wc=0.  The first writer's REQUEST
-             * migrates that zero buffer from here.  lock_state is the idle
-             * directory naming this rank as owner. */
+             * home, where a local create runs) becomes the IDLE data owner
+             * with owner-bit set but rw_st=IDLE, wc=0.  Its buffer does not
+             * exist yet: with no creator to place it for, the first user
+             * allocates it — a remote writer in the buffer it prepares for
+             * the migration, which then carries the size and no bytes, or
+             * the acquiring thread when the first user is local.  lock_state
+             * is the idle directory naming this rank as owner. */
             atomic_store_explicit(&((struct arts_db_s *)ptr)->cache.cache_state,
                                   CACHE_MAKE_FULL(1u, CACHE_ST_IDLE,
                                                   CACHE_ST_IDLE,
@@ -491,25 +537,30 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
             ((struct arts_db_s *)ptr)->cache.writer_count =
                 ARTS_GRANT_SEED_IDLE;
 #endif
+            /* The creator was given no storage, so any create-time claim to a
+             * reader copy of it is false and goes with the write hold. */
+            arts_db_create_retract_creator_copy((struct arts_db_s *)ptr);
           }
+          /* A fresh auto-GUID is this rank's alone, so the install lands by
+           * construction and the hold is this create's. */
           arts_route_table_install(ptr, guid, arts_global_rank_id, true);
+          if (!no_acquire && !arts_db_creator_skip_hold(db_type)) {
+            arts_db_auto_acquire((struct arts_db_s *)ptr);
+          }
         }
-        /* For coherent ARTS_DB the canonical user data lives
-         * in cache->buffer->data (installed by db_create_in_place),
-         * not at (db+1).  arts_db_user_ptr returns the right pointer
-         * for both worlds.  NO_ACQUIRE: return NULL so caller cannot
-         * accidentally write to the buffer (home is the idle owner). */
-        *addr = no_acquire ? NULL : arts_db_user_ptr((struct arts_db_s *)ptr);
+        /* A pointer is handed out only under a hold, and a NO_ACQUIRE create
+         * takes none.  A create that installed nothing was answered above. */
+        if (ptr != NULL) {
+          *addr = no_acquire ? NULL : arts_db_user_ptr((struct arts_db_s *)ptr);
+        }
         ARTS_DEBUG("arts_db_create: DB[Guid:%lu, Type:%s, Size:%lu] "
                    "created locally",
                    guid, GET_DB_TYPE_NAME(db_type), len);
       } else {
-        /* The pool reports exhaustion by returning NULL only after every
-         * node's growth has failed; a silent NULL_GUID here would surface
-         * as arbitrary downstream failures instead of the real cause. */
-        ARTS_ERROR("arts_db_create: allocation of %lu bytes failed — "
-                   "registered pool exhausted on every node",
-                   (unsigned long)db_size);
+        /* A silent NULL_GUID here would surface as arbitrary downstream
+         * failures instead of the real cause. */
+        ARTS_ERROR("arts_db_create: descriptor allocation of %lu bytes failed",
+                   (unsigned long)db_span);
       }
     }
   } else {
@@ -573,11 +624,15 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
         memset(creator_stub, 0, stub_sz);
         creator_stub->db_type = ARTS_DB;
         struct arts_db_cache_s *creator_cache = &creator_stub->cache;
-        /* On a lost install race we adopt the existing db_s via a pinned handle
-         * (released at the end of this block).  On install-success the handle
-         * stays NULL and creator_cache points at our own (route-table-owned)
-         * stub. */
-        arts_shared_ptr_t adopted_h = NULL;
+        /* A create makes the block: the object at its home, which every
+         * operation on the label is ordered against, and on this rank the
+         * cache that holds the creator's own hold on it.  A cache is not the
+         * block though — any rank makes one when it first touches a DB,
+         * before or without a create — so a create that finds one here uses
+         * it and records its hold in it, and only a cache whose word already
+         * carries a hold belongs to a block that exists, in which case this
+         * create creates nothing at all. */
+        bool creator_hold = true;
         arts_db_cache_init(creator_cache, guid, len,
                            ARTS_DB_INIT_CREATOR_REMOTE, /*creator_rank=*/0);
         if (len > 0) {
@@ -587,54 +642,59 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
         if (!arts_route_table_install_if_absent(creator_stub, guid,
                                                 arts_global_rank_id,
                                                 /*used=*/true)) {
-          /* Lost the race -- another thread already installed (e.g. an
-           * earlier wire arrival).  Free our stub and adopt the existing
-           * cache; adopt possession and add our creator EDT's hold to it
-           * (consistent with CREATOR_REMOTE semantics). */
           arts_db_free(creator_stub);
-          adopted_h = arts_route_table_lookup_db(guid);
-          struct arts_db_s *adopted_db =
-              (struct arts_db_s *)arts_shared_get(adopted_h);
-          creator_cache = (adopted_db != NULL && adopted_db->db_type == ARTS_DB)
-                              ? &adopted_db->cache
-                              : NULL;
-          if (creator_cache != NULL) {
-#if !defined(ARTS_PROTOCOL_EXCL) && !defined(ARTS_PROTOCOL_INV)
-            /* Possession is not carried by an add: added in, its meaning
-             * would depend on what the word happened to hold.  CAS the whole
-             * word instead — take possession, add this creator's own hold. */
-            unsigned int cur;
-            do {
-              cur = arts_atomic_read(&creator_cache->writer_count);
-            } while (arts_atomic_cswap(&creator_cache->writer_count, cur,
-                                       ARTS_GRANT_ADOPT_NEXT(cur)) != cur);
-#endif
+          creator_cache = NULL;
+          creator_hold = false;
+          arts_shared_ptr_t found_h = arts_route_table_lookup_db(guid);
+          struct arts_db_s *found =
+              (struct arts_db_s *)arts_shared_get(found_h);
+          if (found != NULL && found->db_type == ARTS_DB) {
+            struct arts_db_cache_s *cache = &found->cache;
+            /* The block's first image, into a cache a first touch left
+             * without one.  Size from whatever this rank has been taught,
+             * else this create's own length. */
+            uint64_t size = (cache->db_size != 0) ? cache->db_size : len;
+            if (size > 0) {
+              (void)arts_db_buf_ensure(cache, size);
+            }
+            /* On an arm that tracks a durable reader copy, the image this
+             * create put here is this rank's — recorded only from an idle
+             * reader word, because a fetch already in flight brings the copy
+             * with it when it lands. */
+            arts_db_create_claim_creator_copy(found);
+            /* The create's own hold, in its arm's own state.  It commits
+             * only from the word a first touch leaves; any other word
+             * carries a hold, so the block exists and this create creates
+             * nothing. */
+            if (arts_db_create_take_hold(cache)) {
+              creator_cache = cache;
+              creator_hold = true;
+            }
           }
+          arts_shared_release(&found_h);
         }
-        arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NONE,
-                                     (uint16_t)db_type);
-        /* Return the creator-side buffer pointer so the user can write to
-         * the local copy.  The data is published to home via PUBLISH
-         * when the creator EDT releases (or via per-release publish).
-         * Single-owner context: the creator owns the freshly-installed
-         * buffer, so acquire a ref, read the payload pointer, release. */
+        /* Only a create that created something announces the block: the one
+         * that found it already there was preceded by the create that did,
+         * and that create's own announce is the home's. */
+        if (creator_hold) {
+          arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NONE,
+                                       (uint16_t)db_type);
+        }
+        /* The creator-side buffer pointer, so the user can write the local
+         * copy its release publishes — handed out only through the hold this
+         * create took. */
         arts_shared_ptr_t creator_buf_h =
-            creator_cache ? arts_db_buf_acquire(creator_cache) : NULL;
+            creator_hold ? arts_db_buf_acquire(creator_cache) : NULL;
         struct arts_db_buffer_s *creator_buf =
             (struct arts_db_buffer_s *)arts_shared_get(creator_buf_h);
         *addr = creator_buf ? (void *)creator_buf->data : NULL;
         arts_db_buf_release(&creator_buf_h);
-        if (creator_cache != NULL && !arts_db_creator_skip_hold(ARTS_DB)) {
+        if (creator_hold && !arts_db_creator_skip_hold(ARTS_DB)) {
           /* Register the DB on the creating thread's created-DB list so the
            * release that drops this hold runs at the end of the creating EDT
-           * (or, for a startup hook, at that thread's scheduler entry).
-           * Register the descriptor that SURVIVED the install race: on the
-           * lost arm our own stub was freed above and only the adopted one is
-           * still addressable. */
+           * (or, for a startup hook, at that thread's scheduler entry). */
           arts_db_auto_acquire(arts_db_of_cache(creator_cache));
         }
-        /* Drop the adopted-DB pin (NULL on the install-success path). */
-        arts_shared_release(&adopted_h);
       }
       ARTS_DEBUG("arts_db_create: DB[Guid:%lu, Type:%s, Size:%lu] "
                  "created remotely on rank %u via DB_CREATE_COHERENT",
@@ -710,53 +770,6 @@ void arts_db_destroy(arts_guid_t guid) {
     arts_shared_release(&db_res_h);
     arts_route_table_set_destroyed(guid);
   }
-}
-
-arts_guid_t arts_db_copy_to_new_type(arts_guid_t old_guid,
-                                     arts_db_types_t new_type) {
-  arts_guid_t ret = NULL_GUID;
-  unsigned int rank = arts_guid_get_rank(old_guid);
-  if (rank == arts_global_rank_id) {
-    arts_guid_t new_guid = arts_guid_create_for_rank(rank, ARTS_GUID_DB);
-    arts_shared_ptr_t h = arts_route_table_lookup_db(old_guid);
-    struct arts_db_s *db_res = (struct arts_db_s *)arts_shared_get(h);
-    if (db_res != NULL) {
-      /* Storage-model migration.  A coherent ARTS_DB keeps its canonical
-       * payload in the coherence buffer (cache->buffer->data); every
-       * non-coherent subtype keeps it inline at (db+1).  When the model
-       * changes, copy the payload to the destination model's location so the
-       * retyped DB actually carries the data rather than just flipping the type
-       * flag.  This MUST run while db_type is still the OLD type, so
-       * arts_db_user_ptr resolves the OLD canonical location; the inline region
-       * is always present (the DB was allocated as sizeof(db_s)+db_size). */
-      if (db_res->db_type == ARTS_DB && new_type != ARTS_DB) {
-        void *old_data = arts_db_user_ptr(db_res); /* buffer->data */
-        void *inline_data = (char *)db_res + sizeof(struct arts_db_s);
-        if (old_data != NULL && old_data != inline_data) {
-          memcpy(inline_data, old_data, db_res->cache.db_size);
-        }
-        /* The coherent-model resources (versioned buffer + home directory:
-         * rank_bitset, snapshot reorder stack, grantreq queues) are now dead —
-         * the non-coherent target reads the inline payload and never runs the
-         * coherent teardown.  Release them here with the canonical teardown so
-         * they are not leaked.  common_destroy_post clears home_initialized, so
-         * the eventual real destructor is a no-op for these (no double-free).
-         */
-        arts_db_cache_common_destroy_pre(&db_res->cache);  /* buffer-NULL */
-        arts_db_cache_common_destroy_post(&db_res->cache); /* snapshot+home */
-      }
-      new_guid = arts_db_guid_stamp_szhint(new_guid, db_res->cache.db_size);
-      db_res->cache.db_guid = new_guid;
-      db_res->db_type = new_type;
-      /* Move the single cb to new_guid (see arts_db_rename_with_guid): one
-       * owner across the GUID change, no double-free. */
-      if (arts_route_table_move_item(old_guid, new_guid)) {
-        ret = new_guid;
-      }
-      arts_shared_release(&h);
-    }
-  }
-  return ret;
 }
 
 /**********************DB MEMORY MODEL*************************************/
@@ -906,8 +919,10 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
   arts_shared_release(&stub_h);
 
   /* Non-coherent pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU,
-   * ARTS_DB_CXL): the DB lives only on its creator rank — hand back the local
-   * pointer if present. */
+   * ARTS_DB_CXL) live only on their creator rank, and a coherent DB reaches
+   * here only in a mode outside the coherence protocol (device-side sync
+   * modes): either way the local payload is handed back, wherever the subtype
+   * keeps it. */
   if (db_temp != NULL) {
     if (owner != arts_global_rank_id) {
       ARTS_WARN(
@@ -917,7 +932,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
           depv[i].guid, GET_DB_TYPE_NAME(db_temp->db_type), arts_global_rank_id,
           owner);
     }
-    depv[i].ptr = db_temp + 1;
+    depv[i].ptr = arts_db_user_ptr(db_temp);
     depv[i].subtype = db_temp->db_type;
     arts_shared_release(&db_temp_h);
     arts_db_acquire_resolved(edt, i);

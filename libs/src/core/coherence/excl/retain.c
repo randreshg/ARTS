@@ -162,6 +162,23 @@ uint64_t cache_owner_compute_next(uint64_t cur, int op, uint32_t *out_action) {
       act = CACHE_ACT_NONE;
     }
     break;
+  case CACHE_OP_CREATE_HOLD:
+    /* A create records its own hold in a cache this rank made when it first
+     * touched the block.  The hold IS a local RW grant, so it serves the same
+     * cohorts a granted RW phase serves: a request this rank had already sent
+     * stays counted and becomes a joiner under it, readers included
+     * (RW ⊇ RO).  Refused where the block is already here or on its way: the
+     * bytes resident, a grant on either axis (a read grant marked for return
+     * is still a grant), or a migration pending. */
+    if (own != 0u || rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT ||
+        ros == CACHE_ST_GRANT_PURGE || mt != ARTS_EXCL_NO_TARGET) {
+      break; /* act stays NONE: this create records no hold */
+    }
+    own = 1u;
+    rws = CACHE_ST_GRANT;
+    wc += 1;
+    act = CACHE_ACT_DRAIN_BOTH;
+    break;
   case CACHE_OP_REL_RW: /* precond: rws==GRANT, own==1 */
     wc -= 1;
     /* The grant ends only when BOTH counts reach zero: readers that joined
@@ -310,23 +327,13 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   arts_db_cache_common_destroy_post(cache); /* snapshot free → home teardown */
 }
 
-/* ===== arts_db_create_publish_holder ====================================
- * OWNER home init: the creator is the first data owner.  arts_db_home_init
- * already seeds lock_state with the idle directory (LOCK_MAKE(PH_IDLE,
- * creator, 0, 0)); this coalesce-path leaf re-publishes owner=creator into the
- * home word (the home_initialized==true branch of the create handler). */
-void arts_db_create_publish_holder(struct arts_db_s *db,
-                                   unsigned int creator_rank) {
-  /* Re-seed the home directory to phase=IDLE, owner=creator, w=0, r=0 — the
-   * same idle-directory state arts_db_home_init installs under OWNER (the
-   * creator's RW hold/release are cache-local/sticky and never reach home, so
-   * home must not count it; owner names the migrate/serve FORWARD recipient).
-   * Single coalesce-path store (the route slot is freshly promoted), no CAS
-   * needed. */
-  atomic_store_explicit(&db->lock_state,
-                        LOCK_MAKE(EXCL_PHASE_IDLE, creator_rank, 0u, 0u),
-                        memory_order_release);
-}
+/* Retract nothing: on this arm a create that takes no hold rewrites the whole
+ * cache word to idle already, so no copy claim survives it. */
+/* Claim nothing: this arm keeps no reader copy past a write turn, so a
+ * create's copy asserts nothing that has to be recorded. */
+void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
+
+void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== arts_db_create_install_home_buffer ===============================
  * OWNER: data stays with the owner (the creator); the home holds no canonical
@@ -359,6 +366,32 @@ static void lock_drain_pending(arts_lf_stack_t *q) {
     node = nx;
   }
 }
+
+/* The hold is this arm's own: one CAS of the cache word, through the arbiter
+ * like every other transition of it, and then the actions that transition
+ * owes.  A read this rank had already asked for is covered by the turn the
+ * create takes (RW ⊇ RO) and is served here, exactly as a granted RW phase
+ * serves its RO cohort.  The home's directory is not touched from here — it
+ * comes from the announce, where arts_db_home_init names the creator. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+  uint32_t act;
+  uint64_t cur, next;
+  do {
+    cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
+    next = cache_owner_compute_next(cur, CACHE_OP_CREATE_HOLD, &act);
+    if (next == cur) {
+      return false; /* the word carries the block already */
+    }
+  } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
+                                                  next, memory_order_acq_rel,
+                                                  memory_order_acquire));
+  if (act == CACHE_ACT_DRAIN_BOTH) {
+    lock_drain_pending(&cache->rw_pending);
+    lock_drain_pending(&cache->ro_pending);
+  }
+  return true;
+}
+
 
 /* ===== owner_try_execute ===============================================
  * The serve-RO + RW-migration driver.  Called whenever an event may have made
@@ -422,6 +455,13 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
       if (atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, next,
                                                 memory_order_acq_rel,
                                                 memory_order_acquire)) {
+        /* The CAS committed this rank as the resident holder of the write
+         * permission, so it is now the rank that owes its local writers the
+         * block's bytes.  A create that took no hold left the block's storage
+         * to its first user, and these writers are it — materialize before
+         * the drain hands them a pointer.  A no-op for every other block:
+         * residency arrived with a DELIVER that installed the copy. */
+        (void)arts_db_buf_ensure(cache, cache->db_size);
         /* Only rw_pending: a reader never parks while this rank is resident
          * (the read acquire's owner-bit branch serves it immediately), so
          * ro_pending is empty whenever the owner-bit is already set.  A change
@@ -481,10 +521,13 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
        * "rw_st==GRANT implies the owner-bit" true across every transition:
        * leave it behind and the departed rank would still grant local writes
        * on bytes that now live elsewhere. */
+      /* The size is descriptor state and travels whether or not bytes do.
+       * A block nobody has written has no buffer here, so the migration is
+       * data-less and the new owner's own prepared buffer becomes the first
+       * image — but that owner must still learn the size, or every reader it
+       * later serves would be handed an empty copy. */
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-      struct arts_db_buffer_s *buf =
-          (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-      uint64_t ds = (buf != NULL) ? cache->db_size : 0u;
+      uint64_t ds = cache->db_size;
       /* Consume the pending migrate target's landing (single in-flight
        * migration; the FORWARD handler wrote it before publishing the
        * target).  buf_h transfers into the deliver sender (PUT source pin). */
@@ -544,12 +587,25 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
     }
   }
   {
+    /* Residency was observed above, not pinned: the exit that finds the
+     * permission already relinquished takes no CAS.  What holds it through
+     * the serve is the home's phase arbitration, not this word — a reader's
+     * entry is queued here by a FORWARD the home issues inside the read phase
+     * it opened on that reader's outstanding count, and the home opens no
+     * write phase (so no migration that could clear residency) while that
+     * count stands.  Within that guarantee this is the rank that owes these
+     * readers the block's bytes.  A create that took no hold left the block's
+     * storage to its first user, and a reader served from here is it: a
+     * data-less DELIVER would install nothing at the reader and hand its EDT
+     * a NULL pointer for a sized block.  Install-if-absent, so even a stale
+     * observation could at most fill a hole, never displace bytes. */
+    (void)arts_db_buf_ensure(cache, cache->db_size);
     arts_lf_link_t *node = arts_lf_stack_drain(&cache->ro_serve);
     if (node != NULL) {
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
       struct arts_db_buffer_s *buf =
           (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-      uint64_t ds = (buf != NULL) ? cache->db_size : 0u;
+      uint64_t ds = cache->db_size;
       while (node != NULL) {
         arts_lf_link_t *nx =
             atomic_load_explicit(&node->next, memory_order_relaxed);
@@ -965,14 +1021,19 @@ void arts_handler_db_acquire(void *item, void *args) {
     break;
   case CACHE_ACT_DRAIN_RW:
     /* The permission was already held here, so the waiter is served without
-     * asking anyone — the retained grant's whole point. */
+     * asking anyone — the retained grant's whole point.  The CAS that
+     * returned this action is what established residency, so this is where a
+     * block whose create took no hold gets its storage: on the acquiring
+     * thread's node, before the drain hands out a pointer. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
     arts_object_acquire(false);
+    (void)arts_db_buf_ensure(cache, cache->db_size);
     lock_drain_pending(&cache->rw_pending);
     break;
   case CACHE_ACT_DRAIN_RO:
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
     arts_object_acquire(false);
+    (void)arts_db_buf_ensure(cache, cache->db_size);
     lock_drain_pending(&cache->ro_pending);
     break;
   default: /* NONE: parked; a DELIVER / another acquire's drain serves us. */

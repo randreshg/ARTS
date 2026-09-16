@@ -38,11 +38,9 @@
 ******************************************************************************/
 
 /// @file db_local.c
-/// @brief Tests ARTS_DB_PIN (pinned) datablocks, DB_MODE_RW access,
-///        and arts_db_copy_to_new_type.
+/// @brief Tests ARTS_DB_PIN (pinned) datablocks and DB_MODE_RW access.
 
 #include "arts.h"
-#include "arts/db.h" /* arts_db_copy_to_new_type */
 #include <string.h>
 
 #define DB_SIZE 128
@@ -100,31 +98,6 @@ void check_modified(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// Verify db_copy_to_new_type.
-void check_copy_type(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  arts_guid_t new_guid = (arts_guid_t)paramv[0];
-  arts_guid_kind_t new_type = arts_guid_get_kind(new_guid);
-  uint64_t *data = (uint64_t *)depv[0].ptr;
-  bool ok = (data != NULL && new_type == ARTS_GUID_DB);
-  if (ok) {
-    for (unsigned int i = 0; i < DB_SIZE / sizeof(uint64_t); i++) {
-      if (data[i] != (i + 100)) {
-        ok = false;
-        break;
-      }
-    }
-  }
-  if (ok) {
-    arts_printf("  PASS: db_copy_to_new_type data preserved, type=%d\n",
-                new_type);
-  } else {
-    arts_printf("  FAIL: db_copy_to_new_type mismatch\n");
-  }
-}
-
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -161,23 +134,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_add_dependence(local_guid, e1, 0, DB_MODE_RW);
   arts_add_dependence(local_guid, e2, 0, DB_MODE_RW);
   arts_add_dependence(oe1, e2, 1, DB_MODE_NULL); /* e2 runs after e1 releases */
-
-  // Test 3: arts_db_copy_to_new_type (DB -> DB_LOCAL).
-  void *src_ptr = NULL;
-  arts_guid_t src_db = arts_db_create(&src_ptr, DB_SIZE, ARTS_DB_DEFAULT,
-                                      ARTS_DB_PROP_NONE, NULL);
-  uint64_t *src = (uint64_t *)src_ptr;
-  for (unsigned int i = 0; i < DB_SIZE / sizeof(uint64_t); i++) {
-    src[i] = i + 100;
-  }
-  arts_db_release(src_db, DB_MODE_RW);
-
-  arts_guid_t copied = arts_db_copy_to_new_type(src_db, ARTS_DB_PIN);
-  uint64_t copy_param = (uint64_t)copied;
-  arts_guid_t e3 =
-      arts_edt_create(check_copy_type, 1, &copy_param, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
-  arts_add_dependence(copied, e3, 0, DB_MODE_RO);
 
   arts_event_wait(fe);
   arts_shutdown();

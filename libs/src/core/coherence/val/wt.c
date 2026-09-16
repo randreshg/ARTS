@@ -52,6 +52,15 @@ void arts_handler_db_acquire(void *item, void *args) {
    * An owned read here is safe to serve RO from the local buffer. */
   bool is_owner = ((int)arts_atomic_read(&cache->writer_count) > 0);
 
+  if (is_home) {
+    /* First use of a block whose create took no hold: its storage was left
+     * for whoever uses it first, and on this arm only the home may hold the
+     * canonical copy — so if the block has none, this acquiring thread
+     * allocates it, on its own node.  A no-op for every other block (the
+     * home's buffer exists from create, at version 0 until published). */
+    (void)arts_db_buf_ensure(cache, cache->db_size);
+  }
+
   if (mode == DB_MODE_RO) {
     if (is_home ||
         is_owner) { /* HOME RO predicate (home holds current data) */
@@ -338,6 +347,12 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   arts_guid_t edt_guid = a->edt_guid;
   uint32_t slot = a->slot;
 
+  /* A remote first use of a block whose create took no hold: the home is the
+   * canonical holder on this arm and the reply must carry the block's first
+   * image, so it is materialized here — on a progress thread, hence on
+   * whatever node that thread sits on rather than the requester's. */
+  (void)arts_db_buf_ensure(cache, cache->db_size);
+
   arts_shared_ptr_t master_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *master =
       (struct arts_db_buffer_s *)arts_shared_get(master_h);
@@ -490,6 +505,9 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
     if (master == NULL ||
         !arts_net_rdzv_local(master->data, cache->db_size, &landing.addr,
                              &landing.key)) {
+      /* Unreachable: the releaser obtained its write right from this home,
+       * and serving that request is one of the points that materializes the
+       * home's buffer. */
       ARTS_ERROR("coherence: publish announce found no stable home buffer");
     }
     landing.txid = arts_net_rdzv_txid_next();
@@ -563,12 +581,22 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
   arts_db_pub_flight_abandon(cache);
 }
 
-/* Case-D leaf: HOME publishes creator_rank as the home rw_holder (coalesce
- * path). */
-void arts_db_create_publish_holder(struct arts_db_s *db,
-                                   unsigned int creator_rank) {
-  atomic_store_explicit(&db->rw_holder, creator_rank, memory_order_release);
+/* Retract nothing: this arm's readers hold no durable copy claim — every
+ * acquire re-validates against a version, so a creator that was given no
+ * storage simply has nothing to assert. */
+/* The hold is possession plus this create's own writer, from a word that
+ * holds nothing. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+  return arts_atomic_cswap(&cache->writer_count, 0u,
+                           ARTS_GRANT_SEED_HOLDING) == 0u;
 }
+
+void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
+
+/* Claim nothing either: a reader here re-validates against a version at
+ * every acquire, so a copy asserts nothing that has to be recorded. */
+void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
+
 
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size) {

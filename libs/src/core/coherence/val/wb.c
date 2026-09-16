@@ -53,6 +53,12 @@ void arts_handler_db_acquire(void *item, void *args) {
   if (mode == DB_MODE_RO) {
     if (has_canonical_copy) { /* WB RO predicate (only a grant holder has the
                                  canonical copy; home holds no bytes) */
+      /* First use of a block whose create took no hold: its storage was left
+       * for whoever uses it first, and holding the block's ownership is what
+       * entitles this rank to be it — so allocate here, on the acquiring
+       * thread's node.  A no-op for every other block: a grant install
+       * always brings storage with it. */
+      (void)arts_db_buf_ensure(cache, cache->db_size);
       dep->ptr = arts_db_acquire_local(cache);
       arts_db_acquire_resolved(edt, slot);
       return;
@@ -285,12 +291,22 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
   (void)arts_route_table_set_destroyed(a->db_guid);
 }
 
-/* Case-D leaf: OWNER publishes creator_rank as the home rw_holder (coalesce
- * path). */
-void arts_db_create_publish_holder(struct arts_db_s *db,
-                                   unsigned int creator_rank) {
-  atomic_store_explicit(&db->rw_holder, creator_rank, memory_order_release);
+/* Retract nothing: this arm's readers hold no durable copy claim — every
+ * acquire re-validates against a version, so a creator that was given no
+ * storage simply has nothing to assert. */
+/* The hold is possession plus this create's own writer, from a word that
+ * holds nothing. */
+bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
+  return arts_atomic_cswap(&cache->writer_count, 0u,
+                           ARTS_GRANT_SEED_HOLDING) == 0u;
 }
+
+void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
+
+/* Claim nothing either: a reader here re-validates against a version at
+ * every acquire, so a copy asserts nothing that has to be recorded. */
+void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
+
 
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
@@ -300,16 +316,30 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
   arts_guid_t edt_guid = a->edt_guid;
   uint32_t slot = a->slot;
 
+  /* A remote first use of a block whose create took no hold: this rank owes
+   * the reply the block's first image, so it materializes one (on a progress
+   * thread) when the block has no storage yet.  Gated on HOLDING the block,
+   * not on being the rank the directory named: between a ship and its
+   * CONFIRM the directory still names the previous holder, and that rank has
+   * already given the block up — inventing a first image there would put a
+   * second version 1 in the world, which the new holder's first release then
+   * collides with.  A holder that no longer holds answers with the
+   * holds-nothing reply below, and the requester adopts its own landing. */
+  if (arts_atomic_read(&cache->writer_count) != 0u) {
+    (void)arts_db_buf_ensure(cache, cache->db_size);
+  }
+
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   if (buf == NULL) {
-    /* A grant holder of a SIZED block always holds its buffer — every create
-     * seeds the initial holder's, and a transfer either carries the payload or
-     * hands the requester its own advertised landing as storage — so the only
-     * block that reaches here is a zero-sized one, whose defined value is the
-     * NULL pointer the requester's waiter then sees.  Respond version=0, no
-     * data; the unused landing is echoed for recycling. */
+    /* Nothing to serve, for one of two reasons: the block is zero-sized
+     * (NULL is its defined value), or the directory named this rank while its
+     * ship to the next holder was still in flight, so it has already given
+     * the block up.  Both answer the same way — version 0 is
+     * ARTS_GRANT_VERSION_NONE, "this rank holds nothing" — and the requester
+     * reads that as "nobody has written the block", adopting its own
+     * advertised landing as the storage it is owed. */
     arts_send_db_snapshot_response(requester, a->db_guid, /*version=*/0,
                                    edt_guid, slot, /*kind=*/0, cache->db_size,
                                    &a->rdzv, NULL);
