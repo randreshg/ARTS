@@ -296,3 +296,104 @@ def test_rusage_witness_guard_runs_the_witness_when_present():
     assert out.returncode == 0
     assert "ran ok" in out.stdout
     assert "Maximum resident set size" in out.stderr
+
+
+# -- a cell that has produced its whole result is not owed the rest of its
+#    budget: the runner ends a teardown that will not end -------------------
+
+def _measured_cell(post_verify: str | None = None):
+    from artsrun.run.types import Cell
+
+    app = ResolvedApp(
+        name="app", version=Version.BASE, binary="app", cls=AppClass.TASK,
+        marker="DONE", scalar_re=r"sum (\d+)", post_verify=post_verify,
+    )
+    return Cell(entry=_entry(RuntimeKind.OCRVX), app=app, nodes=1, repeat=1,
+                binary=Path("/opt/bin/app"), args=[], timeout_s=1800)
+
+
+def _sleeper(tmp_path, text):
+    import subprocess
+    log = tmp_path / "cell.log"
+    log.write_text(text)
+    return log, subprocess.Popen(["sleep", "300"])
+
+
+def _backend(tmp_path, monkeypatch, grace=0.0):
+    from artsrun.run import local as local_mod
+    monkeypatch.setattr(local_mod, "TEARDOWN_GRACE_S", grace)
+    monkeypatch.setattr(local_mod, "_POLL_S", 0.05)
+    profile = Profile.model_validate({
+        "name": "t", "launcher": "local", "nodes": [1],
+        "workers": 15, "progress": 1,
+    })
+    return local_mod.LocalBackend(profile, tmp_path / "logs")
+
+
+def test_a_completed_measured_cell_stuck_in_teardown_is_reaped(tmp_path, monkeypatch):
+    backend = _backend(tmp_path, monkeypatch)
+    log, proc = _sleeper(tmp_path, "DONE sum 42\n[E2E] 1000\n")
+    backend._current = proc
+    try:
+        # Through the deadline helper: a loop that never reaps must fail this
+        # test, not hang it.
+        assert _wait_briefly(backend, proc, _measured_cell(), log) is True
+        assert proc.poll() is not None
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_a_cell_without_its_timing_stamp_is_left_to_its_own_budget(tmp_path, monkeypatch):
+    import subprocess
+    backend = _backend(tmp_path, monkeypatch)
+    # The completion marker alone does not say the run measured itself, so
+    # nothing may be concluded from the log and the cell keeps its budget.
+    log, proc = _sleeper(tmp_path, "DONE sum 42\n")
+    backend._current = proc
+    try:
+        with pytest.raises(TimeoutError):
+            _wait_briefly(backend, proc, _measured_cell(), log)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert proc.poll() is not None
+
+
+def _wait_briefly(backend, proc, cell, log):
+    """Run the wait loop with a deadline, so a loop that never reaps fails
+    the test by timing out instead of hanging it."""
+    import threading
+    box: list = []
+    t = threading.Thread(target=lambda: box.append(backend._wait(proc, cell, log)),
+                         daemon=True)
+    t.start()
+    t.join(1.5)
+    if t.is_alive():
+        raise TimeoutError("still waiting, as it should be")
+    return box[0]
+
+
+def test_a_cell_with_a_post_verify_hook_is_never_reaped_early(tmp_path, monkeypatch):
+    backend = _backend(tmp_path, monkeypatch)
+    # The hook runs after the program and is part of the answer; ending the
+    # program early would decide the cell on a check that never ran.
+    log, proc = _sleeper(tmp_path, "DONE sum 42\n[E2E] 1000\n")
+    backend._current = proc
+    try:
+        with pytest.raises(TimeoutError):
+            _wait_briefly(backend, proc, _measured_cell(post_verify="test -f out"), log)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_an_early_reap_is_judged_as_a_completed_measured_run(tmp_path):
+    from artsrun import check
+    from artsrun.run.types import CellResult, Status
+    log = tmp_path / "cell.log"
+    log.write_text("DONE sum 42\n[E2E] 2500000000\n")
+    r = check.apply_to(CellResult(cell=_measured_cell(), status=Status.TIMEOUT,
+                                  log_path=log))
+    assert r.status is Status.OK and r.teardown_hang
+    assert r.scalar == "42" and r.e2e_s == 2.5

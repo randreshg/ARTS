@@ -11,6 +11,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from artsrun.check import measured_and_complete
 from artsrun.model.profile import Profile
 from artsrun.paths import scratch_dir
 from artsrun.run.command import (build_command, build_env, render,
@@ -18,6 +19,20 @@ from artsrun.run.command import (build_command, build_env, render,
 from artsrun.run.types import Cell, CellResult, Status
 
 TIMEOUT_RC = 124
+
+# How long a cell may go on after it has produced its whole result.  Once the
+# completion marker and the runtime's own end-to-end stamp are both in the log
+# the campaign has everything it will read from that cell, so what follows is
+# teardown and cannot change the verdict; a teardown that will not end is
+# therefore not worth the rest of the cell's budget.  The grace has to clear
+# the slowest honest teardown -- returning a large heap to the system and
+# writing a counter set -- while staying far below any cell timeout, so an
+# early reap only ever replaces waiting.
+TEARDOWN_GRACE_S = 120
+
+# Re-reading the log has to be cheap enough to do while a cell runs; a file
+# that has not grown cannot have gained a marker, so its size gates the read.
+_POLL_S = 2.0
 
 
 def reap(binary: Path) -> int:
@@ -84,7 +99,7 @@ class LocalBackend:
                 extra={"pid": str(proc.pid)},
             ))
             try:
-                proc.wait()
+                reaped = self._wait(proc, cell, log_path)
             finally:
                 self._current = None
         wall = time.monotonic() - started
@@ -94,13 +109,53 @@ class LocalBackend:
         # next.
         reap(cell.binary)
 
-        status = Status.TIMEOUT if proc.returncode == TIMEOUT_RC else (
+        # An early reap is a budget expiry like any other -- the cell was ended
+        # by the runner, not by itself -- so it is reported as a timeout and
+        # the checker decides, from the log alone, whether the run had already
+        # measured itself.
+        status = Status.TIMEOUT if (reaped or proc.returncode == TIMEOUT_RC) else (
             Status.OK if proc.returncode == 0 else Status.FAIL
         )
         return CellResult(
             cell=cell, status=status, rc=proc.returncode,
             wall_s=wall, log_path=log_path,
         )
+
+    def _wait(self, proc: subprocess.Popen, cell: Cell, log_path: Path) -> bool:
+        """Wait for a cell, ending it once it is only tearing down.
+
+        Returns whether the cell was reaped rather than having exited.  A cell
+        with a post-verify hook is never reaped early: its hook runs after the
+        program and is part of the answer, so cutting the program short would
+        decide the cell on a check that never ran.
+        """
+        early = not cell.app.post_verify
+        measured_at: float | None = None
+        size = -1
+        while True:
+            try:
+                proc.wait(timeout=_POLL_S)
+                return False
+            except subprocess.TimeoutExpired:
+                pass
+            if not early:
+                continue
+            if measured_at is None:
+                try:
+                    grew = log_path.stat().st_size != size
+                except OSError:
+                    continue
+                if grew:
+                    size = log_path.stat().st_size
+                    text = log_path.read_text(encoding="utf-8", errors="replace")
+                    if measured_and_complete(text, cell.app):
+                        measured_at = time.monotonic()
+            elif time.monotonic() - measured_at >= TEARDOWN_GRACE_S:
+                self.abort()
+                # abort() escalates to a kill without collecting the child, so
+                # claim the status here: the caller reads it.
+                proc.wait()
+                return True
 
     def poll(self, result: CellResult) -> CellResult:
         return result

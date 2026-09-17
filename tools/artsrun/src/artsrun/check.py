@@ -2,12 +2,14 @@
 
 Three rules make the verdict trustworthy. A run whose completion marker never
 appeared fails regardless of its exit status, because a wedged run that printed
-part of an answer must not pass. A process reaped by timeout is judged on what
-its log already carries, not its exit code alone: one whose log shows both the
+part of an answer must not pass. A reaped process is judged on what its log
+already carries, not its exit code alone: one whose log shows both the
 completion marker and the runtime's own end-to-end stamp measured itself
 before the reap, so it is OK with a note rather than a failure — a hung
 teardown after a finished, measured run is not the same defect as a run that
-never finished; a reap missing either one stays a failure. And the only cells
+never finished; a reap missing either one stays a failure.  The same pair is
+what tells a runner that a live cell has nothing left to produce, so the two
+read it through one predicate. And the only cells
 excluded from a vote are structurally ineligible ones — never a cell that
 merely disagreed.
 """
@@ -121,6 +123,19 @@ def extract_extra(text: str, patterns: dict[str, str]) -> dict[str, str]:
     return out
 
 
+def measured_and_complete(text: str, app) -> bool:
+    """Whether a log already carries everything a verdict is read from.
+
+    The completion marker says the application finished; the end-to-end stamp
+    says the runtime measured that run.  With both present nothing a process
+    does afterwards can change the cell's result, which is what lets a reap
+    be judged leniently and a still-running cell be recognised as only
+    tearing down.
+    """
+    completed, _ = extract(text, app.marker, app.scalar_re)
+    return completed and extract_e2e(text) is not None
+
+
 def apply_to(result: CellResult) -> CellResult:
     """Fill in a finished cell's scalar, and settle a run whose exit status
     alone does not say whether it measured anything."""
@@ -194,7 +209,7 @@ def apply_to(result: CellResult) -> CellResult:
     if result.status is Status.OK and not completed:
         result.status = Status.FAIL
         result.note = "exited cleanly but never printed its completion marker"
-    elif result.status is Status.TIMEOUT and completed and result.e2e_s is not None:
+    elif result.status is Status.TIMEOUT and measured_and_complete(text, result.cell.app):
         # The process was reaped by timeout, but its log already carries both
         # the completion marker and the runtime's own end-to-end stamp — the
         # application finished and the run measured itself; only the
@@ -202,7 +217,7 @@ def apply_to(result: CellResult) -> CellResult:
         # timeout: nothing says the run measured itself completely.
         result.status = Status.OK
         result.teardown_hang = True
-        result.note = "reaped by timeout after a completed, measured run (teardown hang)"
+        result.note = "reaped after a completed, measured run (teardown hang)"
     return result
 
 
