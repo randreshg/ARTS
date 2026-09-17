@@ -299,7 +299,7 @@ def write_summary(
     console.print(consensus_table(groups, plane, selection.entries))
     if any(any(g.teardown_hang.values()) for g in groups):
         console.print(
-            "[dim]† on a verdict: reaped by timeout after a completed, measured run "
+            "[dim]† on a verdict: reaped after a completed, measured run "
             "(teardown hang)[/dim]"
         )
     console.print()
