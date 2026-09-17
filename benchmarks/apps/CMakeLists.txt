@@ -1457,50 +1457,35 @@ add_custom_target(benchmark_arts DEPENDS ${ALL_ARTS})
 add_custom_target(benchmark_apps DEPENDS benchmark_arts)
 
 # ==========================================================================
-# rwmix  (bespoke: source lives in this repo, not in ocr-apps)
-# Racy single-DB reader/writer contention probe: N gated task EDTs over one
-# data block, W of them RW, roles uniformly interleaved in creation order.
-# Prints ELAPSED_US from trigger to global completion.
+# The adversarial suite: one program per attack over two shared engines
+# (attack/chain.c: closed-loop chains; attack/handoff.c: event-ordered
+# lattices).  Populations follow the rank count inside each program.
+# The apps root is on the include path so a program names its engine by the
+# directory it lives in ("attack/chain.h").
+# The suite compares the plane's own coherence arms against each other, so
+# every program here builds for the ARTS variants only.
 # ==========================================================================
-add_bespoke_app(NAME rwmix SOURCES rwmix.c)
-
-# ==========================================================================
-# rwrounds  (bespoke: source lives in this repo, not in ocr-apps)
-# Racy single-DB reader/writer contention probe: N gated task EDTs over one
-# data block, W of them RW, roles uniformly interleaved in creation order.
-# Prints ELAPSED_US from trigger to global completion.
-# ==========================================================================
-add_bespoke_app(NAME rwrounds SOURCES rwrounds.c)
-
-
-# ==========================================================================
-# rwsteady  (bespoke: source lives in this repo, not in ocr-apps)
-# Closed-loop steady-state reader/writer coherence probe: reader and writer
-# EDT chains free-run against shared data blocks for a fixed window with
-# explicit per-op release; per-class acquire/release/total latency
-# histograms and an exact-count + monotone-read oracle ride along.
-# ==========================================================================
-add_bespoke_app(NAME rwsteady SOURCES rwsteady.c EXTRA_LINK_LIBS m)
-
-# ==========================================================================
-# rwpriv  (bespoke: source lives in this repo, not in ocr-apps)
-# Private-working-set release-axis probe: every chain re-touches its own
-# remote-homed block, so required steady-state communication is zero and
-# the per-op wire cost is exactly the configuration's cost of forgetting
-# or remembering local state across a release edge.  ARTS variants only:
-# the probe exists to separate the plane's arms.
-# ==========================================================================
-add_bespoke_app(NAME rwpriv SOURCES rwpriv.c EXTRA_LINK_LIBS m ARTS_ONLY)
-
-# ==========================================================================
-# rwhandoff  (bespoke: source lives in this repo, not in ocr-apps)
-# Phase-alternating producer/consumer handoff probe: every generation's
-# release wakes one consumer and one next producer on rotating ranks,
-# byte-disjoint regions, so the program is race-free by event order while
-# offering a block-granular protocol zero batching fodder.  ARTS variants
-# only, as above.
-# ==========================================================================
-add_bespoke_app(NAME rwhandoff SOURCES rwhandoff.c EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME own_reread DIR attack SOURCES own_reread.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME own_rewrite DIR attack SOURCES own_rewrite.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME read_funnel DIR attack SOURCES read_funnel.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME audienceless_publish DIR attack SOURCES audienceless_publish.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME freerun_mix DIR attack SOURCES freerun_mix.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME pipeline_converge DIR attack SOURCES pipeline_converge.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME alternating_bomb DIR attack SOURCES alternating_bomb.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME resident_mill DIR attack SOURCES resident_mill.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME migration_gauntlet DIR attack SOURCES migration_gauntlet.c chain.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" EXTRA_LINK_LIBS m ARTS_ONLY)
+add_bespoke_app(NAME handoff_lattice DIR attack SOURCES handoff_lattice.c handoff.c
+    EXTRA_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}" ARTS_ONLY)
+add_bespoke_app(NAME serial_rounds DIR attack SOURCES serial_rounds.c ARTS_ONLY)
 
 # ==========================================================================
 # mapreduce_wordcount  (bespoke: source lives in this repo, not in ocr-apps)
