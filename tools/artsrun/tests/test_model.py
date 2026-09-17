@@ -231,14 +231,25 @@ def test_benchset_override_marks_the_argument_source():
     assert resolved["nqueens:base"].args_overridden
 
 
+def _catalog_with_a_node_laddered_row() -> tuple[Catalog, AppEntry]:
+    # The shipped catalog no longer ships any row with args_by_nodes (the
+    # attack suite was the only user, and it derives population from the
+    # rank count instead); this general roster-override mechanic needs its
+    # own fixture rather than fishing one out of load_catalog().
+    row = AppEntry.model_validate({
+        "name": "r", "binary": "r", "class": "spmd", "marker": "DONE",
+        "args": ["9"], "args_by_nodes": {1: ["8"], 2: ["7"]},
+    })
+    return Catalog(apps={"r": row}), row
+
+
 def test_a_roster_args_override_replaces_the_catalogs_per_node_editions():
     # A row's catalog arguments may come as one list plus per-node editions.
     # A roster that gives `args` alone has replaced the whole surface: one
     # list serves every geometry, and the catalog's editions must not answer
     # for any node count -- otherwise the override is dead exactly where
     # the catalog is most specific.
-    catalog = load_catalog()
-    row = next(a for a in catalog.rows if a.args_by_nodes)
+    catalog, row = _catalog_with_a_node_laddered_row()
     bs = Benchset(name="o", apps={row.name: BenchsetEntry(args=["1", "2"])})
     got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
     assert got.args_overridden
@@ -248,8 +259,7 @@ def test_a_roster_args_override_replaces_the_catalogs_per_node_editions():
 
 
 def test_a_roster_keeps_its_own_per_node_editions_beside_its_args():
-    catalog = load_catalog()
-    row = next(a for a in catalog.rows if a.args_by_nodes)
+    catalog, row = _catalog_with_a_node_laddered_row()
     bs = Benchset(name="o", apps={row.name: BenchsetEntry(
         args=["1", "2"], args_by_nodes={2: ["3", "4"]})})
     got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
@@ -530,19 +540,43 @@ def test_the_old_probe_spelling_still_parses():
 
 
 def test_no_probe_or_toy_is_enabled_by_default():
-    # A toy is a regression check and an attack probe is sweep material;
-    # neither belongs in a fresh comparison campaign.  Every row of every
-    # section is held to this, so a new section inherits the rule.
+    # A toy is a regression check and an attack row runs in the
+    # paper-controls roster; neither belongs in a fresh comparison campaign.
+    # Every row of every section is held to this, so a new section inherits
+    # the rule.
     catalog = load_catalog()
     offenders = [a.name for a in catalog.rows
                  if a.default_enabled and a.kind in (Kind.TOY, Kind.ATTACK)]
     assert not offenders, f"toys or probes enabled by default: {offenders}"
 
 
-def test_characterization_probes_are_attacks():
+ATTACK_ROWS = {
+    "own_reread_64k": "own_reread", "own_reread_16m": "own_reread",
+    "own_rewrite_64k": "own_rewrite", "own_rewrite_16m": "own_rewrite",
+    "one_home_funnel_4m": "read_funnel", "spread_home_funnel_4m": "read_funnel",
+    "audienceless_publish_16m": "audienceless_publish",
+    "freerun_read_heavy_64k": "freerun_mix", "freerun_grain_200us_64k": "freerun_mix",
+    "freerun_grain_2ms_64k": "freerun_mix",
+    "pipeline_converge_1m": "pipeline_converge",
+    "alternating_bomb_64k": "alternating_bomb", "bomb_narrow_sharers_64k": "alternating_bomb",
+    "resident_mill_1m": "resident_mill", "sparse_mill_1m": "resident_mill",
+    "slow_churn_dial_16m": "resident_mill",
+    "migration_gauntlet_64k": "migration_gauntlet", "migration_gauntlet_16m": "migration_gauntlet",
+    "handoff_control_64k": "handoff_lattice", "handoff_long_read_64k": "handoff_lattice",
+    "serial_rounds": "serial_rounds",
+}
+
+
+def test_every_attack_row_is_one_program_with_one_argument_vector():
     catalog = load_catalog()
-    for name in ("rwmix", "rwrounds", "rwsteady", "rwpriv", "rwhandoff"):
-        assert catalog.apps[name].kind is Kind.ATTACK, name
+    assert {row.name for row in catalog.rows_of(Kind.ATTACK)} == set(ATTACK_ROWS)
+    for row, binary in ATTACK_ROWS.items():
+        app = catalog.apps[row]
+        assert app.kind is Kind.ATTACK, row
+        assert app.binary == binary, row
+        assert not app.args_by_nodes, f"{row}: populations are the program's, not a ladder"
+        assert app.marker.startswith(binary.upper() + " OK"), row
+    assert not {"rwmix", "rwsteady", "rwpriv", "rwhandoff", "rwrounds"} & set(catalog.apps)
 
 
 def test_the_suite_core_is_made_of_applications():
@@ -725,9 +759,8 @@ def test_arts_only_probe_excludes_every_reference():
 
     cat = load_catalog()
     flagged = {k for k, a in cat.apps.items() if a.arts_only}
-    assert {"rwpriv", "rwhandoff"} <= flagged
-    for key in flagged:
-        assert cat.apps[key].binary in ("rwpriv", "rwhandoff")
+    assert flagged == set(ATTACK_ROWS)
+    assert {cat.apps[k].binary for k in flagged} <= set(ATTACK_ROWS.values())
 
     class _Entry:
         def __init__(self, kind):

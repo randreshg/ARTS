@@ -2389,71 +2389,57 @@ apps:
       # now that generation no longer serialises on a shared generator.
       init_s: 'Initialization Complete\. \(([0-9.]+) seconds\)'
 
-  rwmix:
-    binary: rwmix
-    class: mw
-    # The engine behind the attack rows rather than a measurement of its own:
-    # a column of the suite is one of those rows, which owns the workload and
-    # names what it is built to prove.  This entry exists so the binary and its
-    # result line have a home.
-    kind: attack
-    provenance: 'racy single-datablock reader/writer saturation probe, written for this repo'
-    # One flat fan-out: N tasks (W of them RW) become ready at once against
-    # one shared DB and the makespan is the measurement.  No result value to
-    # vote — the output line doubles as the completion marker.
-    marker: 'RWMIX PDS=\d+ .*ELAPSED_US=\d+'
-    scalar_kind: bool
+  mapreduce_wordcount:
+    binary: mapreduce_wordcount
+    class: task
+    kind: app
+    provenance: 'canonical MapReduce word count (Dean & Ghemawat, OSDI 2004), native OCR implementation written for this repo'
+    # Weak-scaling map+reduce: each map tile synthesizes its text from its
+    # GLOBAL tile id (closed V-word vocabulary, Hadoop RandomTextWriter
+    # style), so there is no ingest I/O at any node count and the corpus
+    # for a given (nodes, seed) is identical across configurations.  A
+    # K-ary spawner-built reduction tree keeps its lower levels node-local
+    # (the map-side combiner); the verifier requires the total token count
+    # EXACTLY and prints the histogram checksum the consensus votes on.
+    # args: V WORDS TPN K ZIPF GRAIN ITER SEED
+    marker: 'WORDCOUNT OK '
+    scalar_re: 'CHECKSUM=([0-9]+)'
+    scalar_kind: int
     extra_scalars:
-      elapsed_us: 'ELAPSED_US=(\d+)'
-    args: ['2048', '256', '50', '65536']
+      TOKENS: 'TOKENS=([0-9]+)'
+    args: ['16384', '1000000', '128', '8', '100', '0', '4', '1']
     default_enabled: false
-    timeout: 120
-    multinode_timeout: 180
-  rwrounds:
-    binary: rwrounds
-    class: spmd
-    kind: attack
-    provenance: 'round-structured reader/writer superadditivity probe, written for this repo'
-    # Forced [1 writer -> (n-1) readers] rounds; modes 0/1/2 keep spin totals
-    # equal so T(mix) - [T(ro)+T(wo)] isolates the read/write interaction.
-    # rounds = ranks x rounds_mult (1,600 a rank), read from the runtime's
-    # own rank count, so this row is already fixed-work and already
-    # self-scales with node count -- no args_by_nodes ladder is needed; its
-    # serial chain of rounds grows as the square of the rank count (rounds
-    # and readers per round both follow it).  This is C0, the suite's first
-    # convergence control: it is the arm-superadditivity check the kill
-    # columns are read against.
-    # Crowns: VAL x WT x PURGE 0.094 s on one node, the VAL trio 0.094-0.095 s
-    # -- 1,600 writer-only rounds of a 50 us spin, no reader to interact with.
-    # Graves: EXCL x RETAIN 0.105 s (1.12x), EXCL x PURGE 0.102 s (1.09x).
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # RETAIN 0.10 s; 32-node projection ~350 s (f32 3400).
-    marker: 'RWROUNDS PDS=\d+ .*ELAPSED_US=\d+'
-    scalar_kind: bool
-    extra_scalars:
-      elapsed_us: 'ELAPSED_US=(\d+)'
-    args: ['2', '1600', '50', '65536']
-    default_enabled: false
-    timeout: 1800
-    multinode_timeout: 1800
-  rwsteady:
-    binary: rwsteady
+    timeout: 300
+    multinode_timeout: 600
+  # --- the adversarial suite ------------------------------------------------
+  # One program per attack, under benchmarks/apps/attack/: each names its
+  # target arm and owns a single designed workload, so a column of the
+  # master table is a row here rather than a point buried in a sweep file.
+  # Every program derives its population from the runtime's own rank count,
+  # so `args` below is size and op count only -- no per-node ladder, and no
+  # args_by_nodes.
+  # The suite is ARTS-only by design: the experiment it serves compares the
+  # plane's own coherence arms against each other, so every row here carries
+  # arts_only -- the reference runtimes are not part of that comparison.
+  own_reread_64k:
+    binary: own_reread
+    arts_only: true
     class: mw
-    # The engine behind the attack rows rather than a measurement of its own:
-    # a column of the suite is one of those rows, which owns the workload and
-    # names what it is built to prove.  This entry exists so the binary and its
-    # result line have a home.
     kind: attack
-    provenance: 'closed-loop steady-state reader/writer coherence probe, written for this repo'
-    # Reader/writer EDT chains free-run against shared datablocks for a fixed
-    # window with explicit per-op release; the completion marker is printed
-    # only when the exact-count and monotone-read oracles both pass, so the
-    # votable scalar is the verdict itself and the numbers ride as extras.
-    # args: R W E_HOLD_R E_HOLD_W E_THINK BYTES D T_MS WARM_MS RSPREAD
-    #       WSPREAD HSPREAD SEED CENSUS JITTER_PCT PIPE OPS_R OPS_W ETH_W
-    marker: 'RWSTEADY OK '
+    provenance: 'attack matrix C1: private-lane re-read (release-axis spectrometer)'
+    # Every chain re-reads the block it owns, homed one rank away: nothing is
+    # shared, so the only cost left is what a protocol charges a holder for
+    # touching its own data again.
+    # TARGET: the two arms that cannot let a holder keep anything.
+    # On one node of 108 workers the eight arms tie within 5% (18.9-19.5 s);
+    # at eight ranks EXCL·PURGE opens to 271.1 s against 17.8 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 19.5 s; 32-node projection ~350 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'OWN_REREAD OK '
     scalar_kind: bool
-    extra_scalars:
+    extra_scalars: &chain_scalars
       RHO: 'RHO=([-0-9.]+)'
       ROPS: 'ROPS=([0-9]+)'
       WOPS: 'WOPS=([0-9]+)'
@@ -2479,693 +2465,556 @@ apps:
       WCV: 'WCV=([-0-9.]+)'
       RUSE: 'RUSE=([-0-9.]+)'
       FINAL: 'FINAL=([0-9]+)'
-    args: ['54', '9', '1', '1', '20', '65536', '1', '8000', '2000', '0', '0', '1', '1', '0', '0', '0']
-    default_enabled: false
-    timeout: 120
-    multinode_timeout: 120
-  mapreduce_wordcount:
-    binary: mapreduce_wordcount
-    class: task
-    kind: app
-    provenance: 'canonical MapReduce word count (Dean & Ghemawat, OSDI 2004), native OCR implementation written for this repo'
-    # Weak-scaling map+reduce: each map tile synthesizes its text from its
-    # GLOBAL tile id (closed V-word vocabulary, Hadoop RandomTextWriter
-    # style), so there is no ingest I/O at any node count and the corpus
-    # for a given (nodes, seed) is identical across configurations.  A
-    # K-ary spawner-built reduction tree keeps its lower levels node-local
-    # (the map-side combiner); the verifier requires the total token count
-    # EXACTLY and prints the histogram checksum the consensus votes on.
-    # args: V WORDS TPN K ZIPF GRAIN ITER SEED
-    marker: 'WORDCOUNT OK '
-    scalar_re: 'CHECKSUM=([0-9]+)'
-    scalar_kind: int
-    extra_scalars:
-      TOKENS: 'TOKENS=([0-9]+)'
-    args: ['16384', '1000000', '128', '8', '100', '0', '4', '1']
-    default_enabled: false
-    timeout: 300
-    multinode_timeout: 600
-  rwpriv:
-    binary: rwpriv
-    arts_only: true
-    class: mw
-    # The engine behind the attack rows rather than a measurement of its own:
-    # a column of the suite is one of those rows, which owns the workload and
-    # names what it is built to prove.  This entry exists so the binary and its
-    # result line have a home.
-    kind: attack
-    provenance: 'private-working-set release-axis probe, written for this repo'
-    # Every chain re-touches its OWN block homed one PD away: required
-    # steady-state communication is zero, so per-op wire cost is purely the
-    # configuration's cost of forgetting or remembering local state across
-    # a release edge.  Writer blocks must advance by exactly 1 per op and
-    # reader blocks must stay 0; the marker prints only when both hold.
-    # args: R W E_HOLD_R E_HOLD_W E_THINK BYTES T_MS WARM_MS SEED CENSUS
-    #       JITTER_PCT WARMRW OPS_R OPS_W
-    marker: 'RWPRIV OK '
-    scalar_kind: bool
-    extra_scalars:
-      RHO: 'RHO=([-0-9.]+)'
-      ROPS: 'ROPS=([0-9]+)'
-      WOPS: 'WOPS=([0-9]+)'
-      RXPUT: 'RXPUT=([-0-9.]+)'
-      WXPUT: 'WXPUT=([-0-9.]+)'
-      RTOT_P50: 'RTOT_P50=([-0-9.]+)'
-      RTOT_P90: 'RTOT_P90=([-0-9.]+)'
-      RTOT_P99: 'RTOT_P99=([-0-9.]+)'
-      WTOT_P50: 'WTOT_P50=([-0-9.]+)'
-      WTOT_P90: 'WTOT_P90=([-0-9.]+)'
-      WTOT_P99: 'WTOT_P99=([-0-9.]+)'
-      RACQ_P99: 'RACQ_P99=([-0-9.]+)'
-      RREL_P99: 'RREL_P99=([-0-9.]+)'
-      WACQ_P99: 'WACQ_P99=([-0-9.]+)'
-      WREL_P99: 'WREL_P99=([-0-9.]+)'
-      RACQ_MEAN: 'RACQ_MEAN=([-0-9.]+)'
-      RREL_MEAN: 'RREL_MEAN=([-0-9.]+)'
-      RTOT_MEAN: 'RTOT_MEAN=([-0-9.]+)'
-      WACQ_MEAN: 'WACQ_MEAN=([-0-9.]+)'
-      WREL_MEAN: 'WREL_MEAN=([-0-9.]+)'
-      WTOT_MEAN: 'WTOT_MEAN=([-0-9.]+)'
-      RCV: 'RCV=([-0-9.]+)'
-      WCV: 'WCV=([-0-9.]+)'
-    args: ['24', '24', '1', '1', '20', '65536', '4000', '1500', '1', '0', '0', '0', '0', '0']
-    default_enabled: false
-    timeout: 120
-    multinode_timeout: 120
-  rwhandoff:
-    binary: rwhandoff
-    arts_only: true
-    class: mw
-    kind: attack
-    provenance: 'phase-alternating producer/consumer handoff probe, written for this repo'
-    # Each generation's release wakes one consumer and one next producer on
-    # rotating ranks touching byte-disjoint regions: race-free by event
-    # order, zero batching fodder for a block-granular protocol.  A failed
-    # consumer withholds its latch decrement, so the marker never prints.
-    # args: L NREG BYTES E_HOLD_W E_HOLD_R E_THINK T_MS WARM_MS CENSUS
-    #       CROSSCLOCK GENS
-    # GENS = 0 keeps the windowed (T_MS) engine mode; nonzero converts to a
-    # fixed-work job -- every lattice's producer stops after exactly GENS
-    # generations (115,000 here) and GXPUT is measured over the resulting
-    # elapsed window.  This row uses the fixed-work form: it is C3, the
-    # suite's second convergence control (rwrounds is C0), so its wall time
-    # is itself an e2e-legal figure with no windowed-throughput averaging.
-    # Crowns: EXCL x RETAIN 5.67 s on one node with the INV trio at 5.68 s;
-    # the VAL trio 5.78-5.87 s (1.02-1.04x).
-    # Grave: EXCL x PURGE 6.29 s (1.11x) -- the hand-off's zero edge returns
-    # the grant each generation even with producer and consumer on one rank.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 6.3 s; 32-node projection ~350 s (f32 55.8).
-    marker: 'RWHANDOFF OK '
-    scalar_kind: bool
-    extra_scalars:
-      GENS: 'GENS=([0-9]+)'
-      GXPUT: 'GXPUT=([-0-9.]+)'
-      WREL_P50: 'WREL_P50=([-0-9.]+)'
-      WREL_P99: 'WREL_P99=([-0-9.]+)'
-      WREL_MEAN: 'WREL_MEAN=([-0-9.]+)'
-      GTOT_P50: 'GTOT_P50=([-0-9.]+)'
-      GTOT_P99: 'GTOT_P99=([-0-9.]+)'
-      GTOT_MEAN: 'GTOT_MEAN=([-0-9.]+)'
-    args: ['16', '8', '65536', '1', '1', '20', '4000', '1500', '0', '1', '115000']
-    default_enabled: false
-    timeout: 1800
-    multinode_timeout: 1800
-
-  # A note on T_MS across these rows: every row is a fixed-work job (a
-  # nonzero OPS_R/OPS_W, GENS or round count), and in that mode a chain stops
-  # at its op count and at nothing else -- T_MS names no window, no deadline
-  # and no guard, so the value carried in these argument vectors is inert.  It
-  # keeps its position only because the same binaries run a timed mode
-  # (OPS = 0) in the probe sweeps, where T_MS is the measurement window.  The
-  # cell budget is the profile's timeout alone.
-  # --- the adversarial suite ------------------------------------------------
-  # Each attack is a program plus ONE designed workload, so a column of the
-  # master table is a row here rather than a point buried in a sweep file.
-  # Every one names its target: the suite's claim is that each arm of the plane
-  # is somebody's optimum and somebody's disaster, so a column exists to crown
-  # one arm or bury another, and the ratios below are the measured verdicts.
-  # `args` is the widest geometry (32 nodes) and `args_by_nodes` carries the
-  # whole node sweep, one edition per node count.  The ladder is per-rank
-  # load, not job size: a shared-block column runs 15 actor chains on every
-  # rank the block homes leave free (15 x (n-1) -- 465 at 32 nodes, 105 at 8),
-  # a private-lane column 3 a rank, and R and W keep their ratio while every
-  # op count, payload size and think time stays fixed.  That is what keeps a
-  # job the same job across geometries.  A class whose count IS the design --
-  # one resident writer, the alternating pair, a writer bundle confined to one
-  # policy domain -- does not scale; the population class takes the ladder.
-  # The two ladders differ ON PURPOSE, and the private one is the lower: a
-  # private lane shares nothing, so its e2e is very nearly invariant in the
-  # chain count and the per-rank figure carries no information the shared
-  # columns do not carry better -- what the private columns must preserve
-  # instead is the recorded chain count their published ratios were measured
-  # at, which pins the widest edition and leaves 3 a rank.  Raising them to
-  # the shared columns' 15 a rank would restate every private ratio for no
-  # new measurement.
-  own_reread_64k:
-    binary: rwpriv
-    arts_only: true
-    class: mw
-    kind: attack
-    provenance: 'attack matrix C1: private-lane re-read (release-axis spectrometer)'
-    # 96 chains re-reading the block they own, 740,000 ops each at 64 KB, so
-    # nothing is shared and the only cost left is what a protocol charges a
-    # holder for touching its own data again.
-    # TARGET: the two arms that cannot let a holder keep anything.
-    # Crowns: on one node the eight arms sit together on the 17.9-18.6 s work
-    # floor -- the holder's own rank answers, and re-use is charged nothing.
-    # Grave: EXCL x PURGE 18.8 s (1.06x), the one arm above the floor even
-    # here; its hand-back-and-refetch per zero edge is the term that grows
-    # once the home is a rank away.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 18.8 s; 32-node projection ~350 s (f32 18.6).
-    marker: 'RWPRIV OK '
-    scalar_kind: bool
-    args: ['96', '0', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '740000', '0']
-    args_by_nodes:
-      1: ['3', '0', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '740000', '0']
-      2: ['6', '0', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '740000', '0']
-      4: ['12', '0', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '740000', '0']
-      8: ['24', '0', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '740000', '0']
-      16: ['48', '0', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '740000', '0']
-      32: ['96', '0', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '740000', '0']
+      ETHW: 'ETHW=([0-9]+)'
+    args: ['65536', '740000']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   own_reread_16m:
-    binary: rwpriv
+    binary: own_reread
     arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C1: private-lane re-read at size'
-    # The same private re-read with the payload 256x larger (6,400 ops a
-    # chain), which converts a protocol's per-turn byte traffic into the
-    # dominant term.
+    # The same private re-read with the payload 256x larger, which converts a
+    # protocol's per-turn byte traffic into the dominant term.
     # TARGET: purge-family arms, whose return-and-refetch now moves 16 MB.
-    # Crowns: every arm at 0.27-0.28 s on one node -- size costs a holder
-    # nothing while the bytes never leave its rank.
-    # Grave: none at one node (INV x WB 0.279 s, 1.02x, is the slowest).
-    # Anchor at these arguments, one node of 108 workers: worst arm INV x WB
-    # 0.28 s; 32-node projection ~350 s (f32 1250 -- the whole job is the
-    # remote re-fetch, which one rank never pays).
-    marker: 'RWPRIV OK '
+    # On one node of 108 workers the eight arms tie within 5% (about 0.8 s);
+    # at eight ranks EXCL·PURGE opens to 194.5 s against 0.7-0.9 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm VAL·WT
+    # 0.8 s; 32-node projection ~347 s by the calibration rule on the
+    # full-size local growth of the previous pass, whose 8-rank cells this
+    # program reproduces.
+    marker: 'OWN_REREAD OK '
     scalar_kind: bool
-    args: ['96', '0', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '6400', '0']
-    args_by_nodes:
-      1: ['3', '0', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '6400', '0']
-      2: ['6', '0', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '6400', '0']
-      4: ['12', '0', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '6400', '0']
-      8: ['24', '0', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '6400', '0']
-      16: ['48', '0', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '6400', '0']
-      32: ['96', '0', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '6400', '0']
+    extra_scalars: *chain_scalars
+    args: ['16777216', '6400']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   own_rewrite_64k:
-    binary: rwpriv
+    binary: own_rewrite
     arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C1: private-lane re-write (turn amortization)'
-    # 96 chains re-writing their OWN block, 480,000 ops each: consecutive write
-    # turns by one holder, which a sticky grant should make free.
+    # Every chain re-writes the block it owns, homed one rank away: consecutive
+    # write turns by one holder, which a sticky grant should make free.
     # TARGET: every arm that re-arbitrates a write it already owns.
-    # Crowns: VAL x WB 11.9 s, with the other retaining arms within 4% -- the
-    # grant outlives the writer, so the second turn costs nothing.
-    # Grave: EXCL x PURGE 13.0 s (1.10x) -- the only arm that re-arbitrates
-    # a turn it already holds even with no other rank in the picture.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 13.0 s; 32-node projection ~350 s (f32 27.0).
-    marker: 'RWPRIV OK '
+    # On one node of 108 workers the eight arms tie within 5% (12.8-13.1 s);
+    # at eight ranks EXCL·PURGE 248.1 s and INV·WB 71.3 s against VAL·WB
+    # 11.6 s and EXCL·RETAIN 11.7 s.
+    # Anchor at these arguments, one node of 108 workers: worst arm INV·WB
+    # 13.1 s; 32-node projection ~352 s by the calibration rule on the
+    # full-size local growth of the previous pass, whose 8-rank cells this
+    # program reproduces.
+    marker: 'OWN_REWRITE OK '
     scalar_kind: bool
-    args: ['0', '96', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '0', '480000']
-    args_by_nodes:
-      1: ['0', '3', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '0', '480000']
-      2: ['0', '6', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '0', '480000']
-      4: ['0', '12', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '0', '480000']
-      8: ['0', '24', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '0', '480000']
-      16: ['0', '48', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '0', '480000']
-      32: ['0', '96', '1', '1', '20', '65536', '120000', '0', '1', '0', '0', '1', '0', '480000']
+    extra_scalars: *chain_scalars
+    args: ['65536', '480000']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   own_rewrite_16m:
-    binary: rwpriv
+    binary: own_rewrite
     arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C1: private-lane re-write at size'
-    # The re-write turn with a 16 MB payload (2,560 ops a chain): the same
-    # arbitration, but every write-through publish now carries the block.
+    # The re-write turn with a 16 MB payload: the same arbitration, but every
+    # write-through publish now carries the block.
     # TARGET: write-through, whose per-release publish is size-proportional.
-    # Crowns: the eight arms at 0.098-0.104 s on one node; the publish has
-    # nowhere to go while the home is the writer's own rank.
-    # Grave: none at one node (INV x WT and EXCL x PURGE 0.104 s, 1.06x).
-    # Anchor at these arguments, one node of 108 workers: worst arm INV x WT
-    # 0.10 s; 32-node projection ~350 s (f32 3400).
-    marker: 'RWPRIV OK '
+    # Crown/grave on one node of 108 workers: crown EXCL·RETAIN 0.4 s, grave
+    # EXCL·PURGE 0.6 s; at eight ranks EXCL·PURGE opens to 133.7 s against
+    # 0.5-0.8 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 0.6 s; 32-node projection ~351 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'OWN_REWRITE OK '
     scalar_kind: bool
-    args: ['0', '96', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '0', '2560']
-    args_by_nodes:
-      1: ['0', '3', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '0', '2560']
-      2: ['0', '6', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '0', '2560']
-      4: ['0', '12', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '0', '2560']
-      8: ['0', '24', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '0', '2560']
-      16: ['0', '48', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '0', '2560']
-      32: ['0', '96', '1', '1', '20', '16777216', '180000', '0', '1', '0', '0', '1', '0', '2560']
+    extra_scalars: *chain_scalars
+    args: ['16777216', '2560']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   one_home_funnel_4m:
-    binary: rwsteady
+    binary: read_funnel
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C2: many readers funnelled through one home'
-    # Every reader pulls from 16 blocks that all live on one rank (HSPREAD=1),
-    # 600 ops each at 4 MB: a read-only funnel with no writer at all.
+    # A fixed reader population (set by rank count alone) pulls from 16 blocks
+    # all homed on one rank (HOMES=1): a read-only funnel with no writer at all.
     # TARGET: arms that must ask the home again for a copy they already hold.
-    # Crowns: all eight arms at 0.040-0.042 s on one node -- with the home
-    # and every reader on the same rank there is no funnel to serve.
-    # Grave: none at one node; the column exists for the geometries where
-    # the sixteen homes sit on a rank the readers are not.
-    # Anchor at these arguments, one node of 108 workers: worst arm INV x WT
-    # x PURGE 0.04 s; 32-node projection ~340 s (f32 8200).
-    marker: 'RWSTEADY OK '
+    # Crown/grave on one node of 108 workers: crown INV·WB 0.3 s, grave
+    # EXCL·RETAIN 0.6 s; at eight ranks EXCL·PURGE opens to 43.7 s against
+    # 0.2-1.0 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·RETAIN 0.6 s; 32-node projection ~343 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'READ_FUNNEL OK '
     scalar_kind: bool
-    args: ['465', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '600', '0', '0']
-    args_by_nodes:
-      1: ['15', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '600', '0', '0']
-      2: ['15', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '600', '0', '0']
-      4: ['45', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '600', '0', '0']
-      8: ['105', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '600', '0', '0']
-      16: ['225', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '600', '0', '0']
-      32: ['465', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '600', '0', '0']
+    extra_scalars: *chain_scalars
+    args: ['4194304', '16', '1', '600']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   spread_home_funnel_4m:
-    binary: rwsteady
+    binary: read_funnel
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix G2: the funnel column with a directory-spread control'
     # Byte-for-byte the one-home funnel, with the 16 blocks spread across 16
-    # homes instead of one (HSPREAD=16): same population, payload and op
-    # count (600 a chain), so the only difference between the two columns is
-    # who answers.
+    # homes instead of one: same reader population, payload and op count, so
+    # the only difference between the two columns is who answers.  With the
+    # homes spread over every rank, the home ranks also run actors, so at
+    # eight ranks the same population sits on eight actor ranks instead of
+    # the one-home column's seven.
     # TARGET: the arms whose funnel grave comes from concentrating every ask
     # on a single home rank rather than from re-asking as such.
-    # Crowns: all eight arms at 0.039-0.043 s on one node, the funnel twin's
-    # numbers to the millisecond -- one rank is one home however it is spread.
-    # Grave: none at one node.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 0.04 s; 32-node projection ~22 s (f32 510): sized as the funnel's
-    # twin, so the control runs well inside the budget by construction.
-    marker: 'RWSTEADY OK '
+    # Crown/grave on one node of 108 workers: crown VAL·WB 0.3 s, grave
+    # INV·WT·PURGE 0.6 s; at eight ranks EXCL·PURGE opens to 9.6 s against
+    # 0.3-0.8 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # INV·WT·PURGE 0.6 s; 32-node projection ~22 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'READ_FUNNEL OK '
     scalar_kind: bool
-    args: ['465', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '16', '1', '0', '0', '0', '600', '0', '0']
-    args_by_nodes:
-      1: ['15', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '16', '1', '0', '0', '0', '600', '0', '0']
-      2: ['15', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '16', '1', '0', '0', '0', '600', '0', '0']
-      4: ['45', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '16', '1', '0', '0', '0', '600', '0', '0']
-      8: ['105', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '16', '1', '0', '0', '0', '600', '0', '0']
-      16: ['225', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '16', '1', '0', '0', '0', '600', '0', '0']
-      32: ['465', '0', '1', '1', '20', '4194304', '16', '600000', '0', '0', '0', '16', '1', '0', '0', '0', '600', '0', '0']
+    extra_scalars: *chain_scalars
+    args: ['4194304', '16', '16', '600']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   audienceless_publish_16m:
-    binary: rwsteady
+    binary: audienceless_publish
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C8: writes nobody reads'
-    # 15 writers, 35,000 writes each at 16 MB, and NO readers: every byte a
-    # protocol moves here is waste, because the audience it moves them for does
-    # not exist.  The geometry is deliberate and narrow -- WSPREAD=1 confines
-    # every writer to ONE policy domain and D=1 gives them ONE block, so
-    # same-domain RW concurrency (legal by contract) carries the writes and no
-    # cross-node contention enters.
+    # Fifteen writers on one rank hammer a single 16 MB block that no reader
+    # ever touches: every byte a protocol moves here is waste, because the
+    # audience it moves them for does not exist.
     # TARGET: write-through, which publishes to the home whether or not anyone
     # will read it.
-    # Crowns: VAL x WB 3.0 s on one node; EXCL both ways and VAL x WT within
-    # 10% -- the payload stays with the writer, and its home is its own rank.
-    # Graves: INV x WT x PURGE 3.4 s (1.14x) and INV x WB 3.4 s (1.13x) lead a
-    # 3.2-3.4 s cluster: the invalidation round runs even with nobody to
-    # invalidate, while the write-through publish is free until the home moves
-    # off the rank.
-    # DO NOT widen the writer count: publishes coalesce per (block, rank) and
-    # the grant's zero edge grows rarer, so more writers means FEWER publishes
-    # per write -- the column would stop measuring a publish per write.
-    # WSPREAD=1 also confines the bundle to ONE policy domain, so this is the
-    # one column whose population does not follow the node count: the same 15
-    # writers at every geometry.  Its per-node table is therefore written out
-    # identical rather than omitted -- the constancy is the design, and an
-    # omitted table cannot be told apart from an unfinished one.
-    # Anchor at these arguments, one node of 108 workers: worst arm INV x WT
-    # x PURGE 3.4 s; 32-node projection ~350 s (f32 101).
-    marker: 'RWSTEADY OK '
+    # Crown/grave on one node of 108 workers: crown VAL·WT·PURGE 3.5 s, grave
+    # INV·WT 3.9 s; at eight ranks EXCL·PURGE opens to 174.9 s against
+    # 2.1-3.5 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm INV·WT
+    # 3.9 s; 32-node projection ~346 s by the calibration rule on the
+    # full-size local growth of the previous pass, whose 8-rank cells this
+    # program reproduces.
+    marker: 'AUDIENCELESS_PUBLISH OK '
     scalar_kind: bool
-    args: ['0', '15', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '35000', '0']
-    args_by_nodes:
-      1: ['0', '15', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '35000', '0']
-      2: ['0', '15', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '35000', '0']
-      4: ['0', '15', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '35000', '0']
-      8: ['0', '15', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '35000', '0']
-      16: ['0', '15', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '35000', '0']
-      32: ['0', '15', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '35000', '0']
+    extra_scalars: *chain_scalars
+    args: ['16777216', '35000']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   freerun_read_heavy_64k:
-    binary: rwsteady
+    binary: freerun_mix
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C9: uncoupled read-heavy mix'
-    # 406 readers x 70,000 and 59 writers x 8,750 on a shared 64 KB block, all
-    # free-running: the ordinary steady state a cache is designed for, with
-    # reuse high enough that keeping a copy should pay.
+    # Readers and writers free-run against one shared 64 KB block with one
+    # hold time and one think time shared by both classes (1 us hold, 20 us
+    # think: a 21 us grain), an 8:1 read/write op ratio: the ordinary steady
+    # state a cache is designed for, with reuse high enough that keeping a
+    # copy should pay.
     # TARGET: arms with no durable reader copy.
-    # Crowns: the VAL trio at 1.79-1.83 s on one node, the INV trio 1.89-1.90 s.
-    # Graves: EXCL x PURGE 2.16 s (1.21x) and EXCL x RETAIN 2.08 s (1.16x) --
-    # the queue-fair lock is the one mechanism that costs a same-rank reader
-    # something, so the exclusion family trails before any wire is involved.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 2.2 s; 32-node projection ~350 s (f32 160).
-    marker: 'RWSTEADY OK '
+    # Crown/grave on one node of 108 workers: crown INV·WT·PURGE 2.2 s, grave
+    # EXCL·PURGE 2.6 s; at eight ranks EXCL·PURGE opens to 39.6 s against
+    # 11.0-23.6 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 2.6 s; 32-node projection ~347 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'FREERUN_MIX OK '
     scalar_kind: bool
-    args: ['406', '59', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '70000', '8750', '0']
-    args_by_nodes:
-      1: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '70000', '8750', '0']
-      2: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '70000', '8750', '0']
-      4: ['39', '6', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '70000', '8750', '0']
-      8: ['92', '13', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '70000', '8750', '0']
-      16: ['196', '29', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '70000', '8750', '0']
-      32: ['406', '59', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '70000', '8750', '0']
+    extra_scalars: *chain_scalars
+    args: ['65536', '1', '20', '70000', '8750']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   freerun_grain_200us_64k:
-    binary: rwsteady
+    binary: freerun_mix
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C9: uncoupled read-heavy mix at 200 us EDT grain'
-    # The read-heavy mix with the EDT itself made coarse: each op holds its
-    # block for 20 us and thinks for 180, so the task is 200 us of the
-    # application's own work and a protocol's per-op cost is a fraction of
-    # it rather than the whole of it.  Op counts (84,000 / 10,500) keep the
-    # classes' 8:1 mix and put ~17 s of pure work in a reader chain.
+    # The read-heavy mix with the EDT itself made coarse (20 us hold, 180 us
+    # think: a 200 us grain), the same 8:1 mix: a protocol's per-op cost is a
+    # fraction of the task's own work rather than the whole of it.
     # TARGET: the claim that the arms' gaps are a grain artefact -- at a
-    # coarse enough task every arm should converge on the work itself.
-    # The 21 us mix, this row and the 2 ms row are one dial with three
-    # settings; only the trend across the three answers the question.
-    # Crowns: on one node the eight arms lie within 1.5% of each other at
-    # 17.2-17.4 s, which is the reader chain's pure work.
-    # Grave: none (INV x WT x PURGE 17.4 s, 1.01x).
-    # Anchor at these arguments, one node of 108 workers: worst arm INV x WT
-    # x PURGE 17.4 s; 32-node projection ~350 s (f32 19.9).
-    marker: 'RWSTEADY OK '
+    # coarse enough task every arm should converge on the work itself.  The
+    # 21 us mix above, this row and the 2 ms row below are one dial with
+    # three settings; only the trend across the three answers the question.
+    # On one node of 108 workers the eight arms tie within 5% (17.5-17.9 s);
+    # at eight ranks the arms narrow to 32.6-41.6 s, most of the 64 KB row's
+    # order-of-magnitude spread already gone.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 17.9 s; 32-node projection ~346 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'FREERUN_MIX OK '
     scalar_kind: bool
-    args: ['406', '59', '20', '20', '180', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '84000', '10500', '0']
-    args_by_nodes:
-      1: ['13', '2', '20', '20', '180', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '84000', '10500', '0']
-      2: ['13', '2', '20', '20', '180', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '84000', '10500', '0']
-      4: ['39', '6', '20', '20', '180', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '84000', '10500', '0']
-      8: ['92', '13', '20', '20', '180', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '84000', '10500', '0']
-      16: ['196', '29', '20', '20', '180', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '84000', '10500', '0']
-      32: ['406', '59', '20', '20', '180', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '84000', '10500', '0']
+    extra_scalars: *chain_scalars
+    args: ['65536', '20', '180', '84000', '10500']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   freerun_grain_2ms_64k:
-    binary: rwsteady
+    binary: freerun_mix
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C9: uncoupled read-heavy mix at 2 ms EDT grain'
-    # The same mix two decades coarser: 200 us held, 1800 us thought, a 2 ms
-    # task.  Op counts (144,000 / 18,000) keep the 8:1 mix and put ~290 s of
-    # pure work in a reader chain.
-    # TARGET: the far end of the grain dial -- what remains of a protocol's
-    # verdict when the application's own task dwarfs every coherence op.
-    # Crowns: all eight arms at 289.1-289.3 s on one node -- the reader
-    # chain's 144,000 x 2 ms, with the protocol invisible under it.
-    # Grave: none (EXCL x PURGE 289.3 s, 1.00x).
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 289 s; 32-node projection ~350 s (f32 1.2): the one row whose
-    # wall time is the work itself at every geometry.
-    marker: 'RWSTEADY OK '
+    # The same mix two decades coarser (200 us hold, 1800 us think: a 2 ms
+    # grain), the same 8:1 mix: what remains of a protocol's verdict when the
+    # application's own task dwarfs every coherence op.  A flat row is sized
+    # to prove flatness, not to fill the budget.
+    # TARGET: the far end of the grain dial.
+    # On one node of 108 workers the eight arms tie within 5% (29.2-29.4 s);
+    # at eight ranks they hold within 29.3-31.8 s, confirming the flat row's
+    # point.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # VAL·WT·PURGE 29.4 s; 32-node projection ~35 s (op count cut 10x from
+    # the previous pass, linear in fixed work).
+    marker: 'FREERUN_MIX OK '
     scalar_kind: bool
-    args: ['406', '59', '200', '200', '1800', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '144000', '18000', '0']
-    args_by_nodes:
-      1: ['13', '2', '200', '200', '1800', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '144000', '18000', '0']
-      2: ['13', '2', '200', '200', '1800', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '144000', '18000', '0']
-      4: ['39', '6', '200', '200', '1800', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '144000', '18000', '0']
-      8: ['92', '13', '200', '200', '1800', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '144000', '18000', '0']
-      16: ['196', '29', '200', '200', '1800', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '144000', '18000', '0']
-      32: ['406', '59', '200', '200', '1800', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '144000', '18000', '0']
+    extra_scalars: *chain_scalars
+    args: ['65536', '200', '1800', '14400', '1800']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   pipeline_converge_1m:
-    binary: rwsteady
+    binary: pipeline_converge
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C10: coupled producer-consumer pipeline'
-    # PIPE=1 couples the classes: 62 producers publish 2,750 versions each of
-    # 31 blocks and 403 consumers run until they have seen the final one
-    # (OPS_R = 2 x OPS_W, two producers a block), so a consumer cannot outrun
-    # its producer and every handoff is on the critical path.
+    # Readers converge on a block set sized to pd_count-1 so every block sees
+    # exactly two writers (OPS_R = 2 x OPS_W); each reader waits for its
+    # block's final write count rather than a raw read tally, so the read
+    # class is value-coupled to the writers feeding its block.  Every block's
+    # consumers share one rank (chain index modulo the block count places
+    # both the block and the rank), so the row measures the per-version
+    # handoff cost and never a cross-rank read phase.
     # TARGET: arms whose handoff needs a round trip before the reader may look.
-    # Crowns: VAL x WB 0.085 s on one node, the other VAL arms and EXCL x
-    # RETAIN at 0.087 s -- a consumer reads the producer's own copy.
-    # Graves: EXCL x PURGE 0.111 s (1.31x), the INV trio 0.099-0.102 s
-    # (1.16-1.20x): even on one rank the handoff pays a turn or a round.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 0.11 s; 32-node projection ~350 s (f32 3200).
-    marker: 'RWSTEADY OK '
+    # Crown/grave on one node of 108 workers: crown EXCL·RETAIN 0.3 s, grave
+    # EXCL·PURGE 0.6 s; at eight ranks EXCL·PURGE opens to 20.0 s against
+    # 0.1-2.2 s on the rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 0.6 s; 32-node projection ~352 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'PIPELINE_CONVERGE OK '
     scalar_kind: bool
-    args: ['403', '62', '1', '1', '20', '1048576', '31', '600000', '0', '0', '0', '1', '1', '0', '0', '1', '5500', '2750', '0']
-    args_by_nodes:
-      1: ['13', '2', '1', '1', '20', '1048576', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '1', '5500', '2750', '0']
-      2: ['13', '2', '1', '1', '20', '1048576', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '1', '5500', '2750', '0']
-      4: ['39', '6', '1', '1', '20', '1048576', '3', '600000', '0', '0', '0', '1', '1', '0', '0', '1', '5500', '2750', '0']
-      8: ['91', '14', '1', '1', '20', '1048576', '7', '600000', '0', '0', '0', '1', '1', '0', '0', '1', '5500', '2750', '0']
-      16: ['195', '30', '1', '1', '20', '1048576', '15', '600000', '0', '0', '0', '1', '1', '0', '0', '1', '5500', '2750', '0']
-      32: ['403', '62', '1', '1', '20', '1048576', '31', '600000', '0', '0', '0', '1', '1', '0', '0', '1', '5500', '2750', '0']
+    extra_scalars: *chain_scalars
+    args: ['1048576', '5500', '2750']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   alternating_bomb_64k:
-    binary: rwsteady
+    binary: alternating_bomb
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C11: two alternating writers against a wide sharer set'
-    # WSPREAD=2 makes the two writers alternate on the SAME block while 463
-    # readers hold copies of it (200,000 / 20,000 ops): the pattern that
-    # defeats batching, because every write turn changes hands and every turn
-    # faces the full sharer set.
-    # TARGET: write-invalidate, which must run a round against 463 sharers per
-    # alternation -- and the arms that serialise readers behind the turn.
-    # Crowns: VAL x WT and VAL x WT x PURGE 5.2 s on one node, VAL x WB 5.3 s.
-    # Graves: EXCL x PURGE 5.7 s (1.10x); INV x WT 5.6 s and the rest of INV
-    # and EXCL 5.4-5.6 s (1.04-1.08x) -- with every sharer on one rank the
-    # round has one ack to collect, and the bomb's fuse is the geometry.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 5.7 s; 32-node projection ~335 s (f32 58.5).
-    marker: 'RWSTEADY OK '
+    # Two writers on two ranks alternate on the SAME block while a reader
+    # swarm spread across every actor rank holds copies of it: the pattern
+    # that defeats batching, because every write turn changes hands and every
+    # turn faces the full sharer set.
+    # TARGET: write-invalidate, which must run a round against the full
+    # sharer set per alternation -- and the arms that serialise readers
+    # behind the turn.
+    # Crown/grave on one node of 108 workers: crown VAL·WT·PURGE 5.5 s, grave
+    # EXCL·PURGE 6.4 s; at eight ranks EXCL·PURGE 81.7 s and EXCL·RETAIN
+    # 59.4 s against VAL·WB 40.2 s and INV·WB 14.1 s.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 6.4 s; 32-node projection ~335 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'ALTERNATING_BOMB OK '
     scalar_kind: bool
-    args: ['463', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-    args_by_nodes:
-      1: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      2: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      4: ['43', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      8: ['103', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      16: ['223', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      32: ['463', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
+    extra_scalars: *chain_scalars
+    args: ['65536', '0', '200000', '20000']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   bomb_narrow_sharers_64k:
-    binary: rwsteady
+    binary: alternating_bomb
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix G3: the alternating bomb with a sharer-fanout control'
-    # The bomb's reader population packed onto at most 8 ranks (RSPREAD=8)
-    # instead of every actor rank, so past 8 ranks an invalidation round
-    # collects 8 acks instead of ranks-1.  The population ladder and the op
-    # counts are the bomb's, with the two editions above 8 ranks raised by one
-    # (224, 464) so 8 divides them evenly; below 8 ranks the spread clamps to
-    # the rank count and the pair is the same job, which is the control's
-    # point -- it separates only where fan-out can exceed 8.
-    # TARGET: whether INV's round cost is fan-out-bound or service-bound --
-    # if the former, this column's INV numbers separate from the bomb's by
-    # roughly the fan-out ratio (8 vs 31 acks); if the latter, they do not move.
-    # Crowns: VAL x WB 5.2 s on one node, the other VAL arms and INV x WB
-    # within 2% -- the bomb's own one-node numbers, as the same job must give.
-    # Graves: EXCL x PURGE 6.0 s (1.17x), EXCL x RETAIN 6.0 s (1.16x).
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 6.0 s; 32-node projection ~415 s (f32 68.4) -- a few percent past
-    # the 400 s sizing band, kept because the twin's op counts must match.
-    marker: 'RWSTEADY OK '
+    # Byte-for-byte the alternating bomb, with the reader population packed
+    # onto at most 8 sharer ranks instead of every actor rank: past 8 ranks
+    # an invalidation round collects 8 acks instead of every actor's.
+    # TARGET: whether an invalidation round's cost is fan-out-bound or
+    # service-bound -- if the former, this column's INV numbers separate from
+    # the bomb's by roughly the fan-out ratio; if the latter, they do not move.
+    # Crown/grave on one node of 108 workers: crown VAL·WB 5.5 s, grave
+    # EXCL·PURGE 6.1 s; at eight ranks EXCL·PURGE 77.4 s and EXCL·RETAIN
+    # 57.4 s against VAL·WB 39.3 s and INV·WB 14.4 s.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 6.1 s; 32-node projection ~413 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'ALTERNATING_BOMB OK '
     scalar_kind: bool
-    args: ['464', '2', '1', '1', '20', '65536', '1', '600000', '0', '8', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-    args_by_nodes:
-      1: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '8', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      2: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '8', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      4: ['43', '2', '1', '1', '20', '65536', '1', '600000', '0', '8', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      8: ['103', '2', '1', '1', '20', '65536', '1', '600000', '0', '8', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      16: ['224', '2', '1', '1', '20', '65536', '1', '600000', '0', '8', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
-      32: ['464', '2', '1', '1', '20', '65536', '1', '600000', '0', '8', '2', '1', '1', '0', '0', '0', '200000', '20000', '0']
+    extra_scalars: *chain_scalars
+    args: ['65536', '8', '200000', '20000']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   resident_mill_1m:
-    binary: rwsteady
+    binary: resident_mill
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C5: one resident writer churning under a reader mill'
-    # 465 readers x 175,000 against ONE writer x 7,000 on a 1 MB block, with a
-    # 5 us think time so the copy's lifetime is short: readers grind while the
-    # data underneath them keeps moving.
+    # One writer keeps a 1 MB block resident (5 us reader think, so the
+    # copy's lifetime is short) while a fifteen-readers-per-rank swarm mills
+    # against it: readers grind while the data underneath them keeps moving.
     # TARGET: arms that must re-establish a reader copy after every churn.
-    # Crown: VAL x WB 2.1 s on one node, VAL x WT x PURGE 2.3 s.
-    # Graves: EXCL x RETAIN 3.2 s (1.52x); INV x WT and EXCL x PURGE 2.9 s
-    # (1.37x) -- on one rank the mill is a lock-convoy exhibit: the arms that
-    # queue readers behind the writer's turn pay it, the validating arms read
-    # through it.
-    # Caveat worth carrying: this column is a reader-side verdict and says
-    # so; the writer's own receipts run the other way.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # RETAIN 3.2 s; 32-node projection ~350 s (f32 108).
-    marker: 'RWSTEADY OK '
+    # Caveat worth carrying: this column is a reader-side verdict and says so;
+    # the writer's own receipts run the other way.
+    # Crown/grave on one node of 108 workers: crown VAL·WB 2.6 s, grave
+    # EXCL·RETAIN 3.7 s; at eight ranks EXCL·PURGE 58.9 s and VAL·WB 35.2 s
+    # against EXCL·RETAIN 29.2 s and INV·WB 2.9 s.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·RETAIN 3.7 s; 32-node projection ~348 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'RESIDENT_MILL OK '
     scalar_kind: bool
-    args: ['465', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '175000', '7000', '0']
-    args_by_nodes:
-      1: ['15', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '175000', '7000', '0']
-      2: ['15', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '175000', '7000', '0']
-      4: ['45', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '175000', '7000', '0']
-      8: ['105', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '175000', '7000', '0']
-      16: ['225', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '175000', '7000', '0']
-      32: ['465', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '175000', '7000', '0']
+    extra_scalars: *chain_scalars
+    args: ['1048576', '15', '5', '0', '175000', '7000']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   sparse_mill_1m:
-    binary: rwsteady
+    binary: resident_mill
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix G5: the mill with a zero-edge-density control'
-    # One reader per rank (R = ranks - 1) instead of fifteen, so a rank's
-    # per-block reference count reaches zero between ops far more often and a
-    # PURGE grant is no longer shielded by co-resident chains (15,000 / 600
-    # ops).  This is a SEPARATE column, not a twin of resident_mill_1m: fewer
-    # chains means less offered load, so only the arm ORDERING is comparable
-    # between the two, never the e2e numbers themselves.
-    # TARGET: whether EXCL x PURGE's grave widens once the zero edge that
-    # its own return-and-refetch depends on actually fires every op.
-    # Crowns: VAL x WT 0.155 s on one node, EXCL x RETAIN 0.160 s.
-    # Graves: INV x WT 0.195 s (1.26x), VAL x WB 0.189 s (1.22x) -- one reader
-    # and one writer on one rank, a 0.04 s spread of pure turn-taking.
-    # Anchor at these arguments, one node of 108 workers: worst arm INV x WT
-    # 0.20 s; 32-node projection ~335 s (f32 1700): the row whose one-rank
-    # reader has no remote zero edge to fire, and whose every rank past the
-    # first fires one per op.
-    marker: 'RWSTEADY OK '
+    # One reader per rank instead of fifteen, so a rank's per-block reference
+    # count reaches zero between ops far more often and a PURGE grant is no
+    # longer shielded by co-resident chains.  A SEPARATE column, not a twin of
+    # resident_mill_1m: fewer chains means less offered load, so only the arm
+    # ORDERING is comparable between the two, never the e2e numbers themselves.
+    # TARGET: whether a purge-family grave widens once the zero edge its own
+    # return-and-refetch depends on actually fires every op.
+    # Crown/grave on one node of 108 workers: crown VAL·WT 0.4 s, grave
+    # INV·WT 0.7 s; at eight ranks EXCL·PURGE 49.7 s and EXCL·RETAIN 35.7 s
+    # against VAL·WB 1.5 s and INV·WB 0.8 s.
+    # Anchor at these arguments, one node of 108 workers: worst arm INV·WT
+    # 0.7 s; 32-node projection ~334 s by the calibration rule on the
+    # full-size local growth of the previous pass, whose 8-rank cells this
+    # program reproduces.
+    marker: 'RESIDENT_MILL OK '
     scalar_kind: bool
-    args: ['31', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '15000', '600', '0']
-    args_by_nodes:
-      1: ['1', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '15000', '600', '0']
-      2: ['1', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '15000', '600', '0']
-      4: ['3', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '15000', '600', '0']
-      8: ['7', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '15000', '600', '0']
-      16: ['15', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '15000', '600', '0']
-      32: ['31', '1', '1', '1', '5', '1048576', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '15000', '600', '0']
+    extra_scalars: *chain_scalars
+    args: ['1048576', '1', '5', '0', '15000', '600']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   migration_gauntlet_64k:
-    binary: rwsteady
+    binary: migration_gauntlet
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix A9/C7: write ownership dragged across ranks'
-    # 403 readers x 75,000 against 62 writers x 180 spread across ranks: the
-    # write right migrates constantly while a large reader set chases it.
+    # Readers free-run against one shared 64 KB block at fixed hold/think
+    # timing; the write side is a set of token rings (RINGS, the fourth
+    # argument -- this row runs two).  A ring is one write in flight whose
+    # successor is created on the next writer rank, so every write migrates
+    # the grant across ranks and never more than RINGS writers are queued
+    # at the home.  That is what keeps every arm in one regime: with
+    # free-running writers this cell was bistable under EXCL·RETAIN (writer
+    # chaining at the phase transitions versus a held read phase, ~2.6 s or
+    # ~21 s at eight ranks decided at the first transition), whereas a
+    # write chain can never outlast a queue of two.  Measured spread of
+    # EXCL·RETAIN at eight ranks: 1.12x over five gate-size runs, 1.35x
+    # over three full-size runs.
     # TARGET: arms that make readers follow a moving owner.
-    # Crowns: VAL x WB 1.91 s on one node, VAL x WT 1.92 s, VAL x WT x PURGE
-    # 1.94 s; the INV trio at 1.97-2.02 s.
-    # Graves: EXCL x PURGE 2.15 s (1.12x), EXCL x RETAIN 2.04 s (1.07x) -- the
-    # write right has nowhere to migrate on one rank, so what remains is the
-    # lock's turn discipline.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 2.2 s; 32-node projection ~350 s (f32 164).
-    marker: 'RWSTEADY OK '
+    # Crown/grave at eight ranks, full size: INV·WB 7.7 s, VAL·WB 13.7 s,
+    # EXCL·RETAIN 23.6-31.9 s, EXCL·PURGE 35.6 s.  One node of 108 workers
+    # spreads only 1.99-2.24 s across the eight arms -- nothing migrates on
+    # one rank -- so the one-node cell sizes and never ranks.
+    # Anchor at these arguments: the ring is serial, so a cell is steps per
+    # ring x step cost.  Steps per ring = (ranks - 1) x OPS_W: 14,000 at
+    # eight ranks, 62,000 at 32 (4.4x); the eight-rank step cost is 0.55 ms
+    # (INV·WB) to 2.55 ms (EXCL·PURGE), so the 32-node projection is ~160 s
+    # for the worst arm, with more than 10x headroom under the cap for any
+    # growth of the read phase a write must drain.
+    marker: 'MIGRATION_GAUNTLET OK '
     scalar_kind: bool
-    args: ['403', '62', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '75000', '180', '0']
-    args_by_nodes:
-      1: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '75000', '180', '0']
-      2: ['13', '2', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '75000', '180', '0']
-      4: ['39', '6', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '75000', '180', '0']
-      8: ['91', '14', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '75000', '180', '0']
-      16: ['195', '30', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '75000', '180', '0']
-      32: ['403', '62', '1', '1', '20', '65536', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '75000', '180', '0']
+    extra_scalars: *chain_scalars
+    args: ['65536', '75000', '2000', '2']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   migration_gauntlet_16m:
-    binary: rwsteady
+    binary: migration_gauntlet
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix G4: the migration gauntlet at a large payload'
-    # The migration gauntlet's population unchanged, its payload raised 256x
-    # to 16 MB and its op counts cut (800 / 96) so the byte-heavy job stays in
-    # budget: the write-right migration term (owner-to-owner drag under WB,
-    # publish under WT) is invisible at 64 KB against the control round
-    # trips, so this column is the size-qualified edition of that verdict.
+    # The migration gauntlet's population and its two write rings
+    # unchanged, the payload raised 256x to 16 MB and the op counts cut so
+    # the byte-heavy job stays in budget: the write-right migration term
+    # (owner-to-owner drag under WB, publish under WT) is invisible at
+    # 64 KB against the control round trips, so this column is the
+    # size-qualified edition of that verdict.  RINGS is the fourth
+    # argument; this row runs two.
     # TARGET: arms whose migrating grant drags a payload, not only a
-    # permission -- the small-payload verdict should widen here if the pain
-    # is bytes, not turns.
-    # Crowns: seven arms at 0.041-0.043 s on one node.
-    # Grave: EXCL x PURGE 0.060 s (1.46x) -- the one arm that moves the 16 MB
-    # at every zero edge even when the home is the rank it is already on.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 0.06 s; 32-node projection ~365 s (f32 6100).
-    marker: 'RWSTEADY OK '
+    # permission.
+    # Crown/grave at eight ranks, full size: INV·WB 6.8 s and EXCL·RETAIN
+    # 7.4-7.5 s (1.02x over three runs), VAL·WB 9.0 s, VAL·WT 17.7 s,
+    # EXCL·PURGE 22.4 s.  One node of 108 workers is 65-86 ms on every arm
+    # (start-up noise; nothing migrates), so the one-node cell sizes and
+    # never ranks.
+    # Anchor at these arguments: steps per ring = (ranks - 1) x OPS_W, 672
+    # at eight ranks and 2,976 at 32 (4.4x); the eight-rank step cost is
+    # 10 ms (INV·WB) to 33 ms (EXCL·PURGE, a 16 MB drag per step over tcp),
+    # so the 32-node projection is ~100 s for the worst arm before the
+    # fabric's faster drag.
+    marker: 'MIGRATION_GAUNTLET OK '
     scalar_kind: bool
-    args: ['403', '62', '1', '1', '20', '16777216', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '800', '96', '0']
-    args_by_nodes:
-      1: ['13', '2', '1', '1', '20', '16777216', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '800', '96', '0']
-      2: ['13', '2', '1', '1', '20', '16777216', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '800', '96', '0']
-      4: ['39', '6', '1', '1', '20', '16777216', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '800', '96', '0']
-      8: ['91', '14', '1', '1', '20', '16777216', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '800', '96', '0']
-      16: ['195', '30', '1', '1', '20', '16777216', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '800', '96', '0']
-      32: ['403', '62', '1', '1', '20', '16777216', '1', '600000', '0', '0', '0', '1', '1', '0', '0', '0', '800', '96', '0']
+    extra_scalars: *chain_scalars
+    args: ['16777216', '800', '96', '2']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800
   slow_churn_dial_16m:
-    binary: rwsteady
+    binary: resident_mill
+    arts_only: true
     class: mw
     kind: attack
     provenance: 'attack matrix C6: the churn dial at its slow end'
-    # The mill's opposite end: 465 readers x 34,000 at 16 MB against one writer
-    # x 680 that THINKS for 20 ms between writes (ETHW), so a reader copy lives
-    # long enough to be worth keeping.
-    # TARGET: it is the control for the fast churn column -- the dial that
-    # shows how much of a protocol's verdict is churn rate rather than shape.
-    # Crowns: seven arms at 13.63-13.67 s on one node -- the writer's 680 x
-    # 20 ms think is the critical path, and every reader copy is local.
-    # Grave: EXCL x PURGE 14.2 s (1.04x), the read-side purge tax at 16 MB
-    # showing through even with the home on the reader's rank.
-    # Anchor at these arguments, one node of 108 workers: worst arm EXCL x
-    # PURGE 14.2 s; 32-node projection ~350 s (f32 24.4).
-    marker: 'RWSTEADY OK '
+    # The mill's opposite end: fifteen readers per rank against one writer at
+    # 16 MB that thinks 20 ms between writes, so a reader copy lives long
+    # enough to be worth keeping.
+    # TARGET: the control for the fast churn column -- the dial that shows
+    # how much of a protocol's verdict is churn rate rather than shape.
+    # On one node of 108 workers the eight arms tie within 5% (14.1-14.6 s);
+    # at eight ranks EXCL·PURGE opens to 296.3 s against 15.4-25.8 s on the
+    # rest.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 14.6 s; 32-node projection ~347 s by the calibration rule on
+    # the full-size local growth of the previous pass, whose 8-rank cells
+    # this program reproduces.
+    marker: 'RESIDENT_MILL OK '
     scalar_kind: bool
-    args: ['465', '1', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '34000', '680', '20000']
-    args_by_nodes:
-      1: ['15', '1', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '34000', '680', '20000']
-      2: ['15', '1', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '34000', '680', '20000']
-      4: ['45', '1', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '34000', '680', '20000']
-      8: ['105', '1', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '34000', '680', '20000']
-      16: ['225', '1', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '34000', '680', '20000']
-      32: ['465', '1', '1', '1', '20', '16777216', '1', '600000', '0', '0', '1', '1', '1', '0', '0', '0', '34000', '680', '20000']
+    extra_scalars: *chain_scalars
+    args: ['16777216', '15', '20', '20000', '34000', '680']
+    default_enabled: false
+    timeout: 1800
+    multinode_timeout: 1800
+
+  # The convergence controls: fixed-work jobs whose gap between the read-only
+  # and write-only halves and their mix (C0), and whose own e2e wall time
+  # under a race-free handoff pattern (C3), prove the kill columns' spreads
+  # come from concurrency x structure and not from the engine itself.
+  serial_rounds:
+    binary: serial_rounds
+    arts_only: true
+    class: mw
+    kind: attack
+    provenance: 'attack matrix C0: first convergence control -- round-structured reader/writer superadditivity check'
+    # Forced [1 writer -> (n-1) readers] rounds; rounds = ranks x
+    # rounds_per_rank, read from the runtime's own rank count, so this row is
+    # already fixed-work and self-scales with node count.  This is C0, the
+    # suite's first convergence control: it is the arm-superadditivity check
+    # the kill columns are read against.
+    # Crown/grave on one node of 108 workers: crown EXCL·PURGE 0.3 s, grave
+    # EXCL·RETAIN 0.5 s; at eight ranks the four arms hold within 1.5-1.7 s,
+    # the convergence control's point.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·RETAIN 0.5 s; 32-node projection ~35 s (op count cut 10x from the
+    # previous pass, linear in fixed work).
+    marker: 'SERIAL_ROUNDS OK '
+    scalar_kind: bool
+    extra_scalars:
+      elapsed_us: 'ELAPSED_US=(\d+)'
+    args: ['160', '50', '65536']
+    default_enabled: false
+    timeout: 1800
+    multinode_timeout: 1800
+  handoff_control_64k:
+    binary: handoff_lattice
+    arts_only: true
+    class: mw
+    kind: attack
+    provenance: 'attack matrix C3: second convergence control -- race-free producer/consumer handoff at 1 us holds'
+    # The same event-ordered handoff lattice as the exclusion column below,
+    # at the same geometry (8 lattices, 8 regions, 3 consumers per
+    # generation): the control's holds are negligible (1 us) on both sides,
+    # so the per-generation cost left is the handoff's own overhead, with no
+    # read phase for the next producer to wait out -- the exclusion column's
+    # consumer hold is that read phase.  This is C3, the suite's second
+    # convergence control: its own e2e wall time under a race-free handoff
+    # pattern is a figure with no windowed-throughput averaging.  The
+    # printed GENS= is the aggregate over all lattices (lattices times the
+    # per-lattice generation count).
+    # Crown/grave on one node of 108 workers: crown VAL·WB 3.5 s, grave
+    # EXCL·PURGE 4.5 s; at eight ranks the four arms hold within
+    # 104.8-130.1 s (INV·WB slowest), the control's point.
+    # Anchor at these arguments, one node of 108 workers: worst arm
+    # EXCL·PURGE 4.5 s; population is fixed at this geometry, so the 32-node
+    # cell is its 8-rank cell: ~130 s.
+    marker: 'HANDOFF_LATTICE OK '
+    scalar_kind: bool
+    extra_scalars: &lattice_scalars
+      GENS: 'GENS=([0-9]+)'
+      FANOUT: 'FANOUT=([0-9]+)'
+      GXPUT: 'GXPUT=([-0-9.]+)'
+      WREL_P50: 'WREL_P50=([-0-9.]+)'
+      WREL_P99: 'WREL_P99=([-0-9.]+)'
+      WREL_MEAN: 'WREL_MEAN=([-0-9.]+)'
+    args: ['65536', '1', '1', '3', '115000', '8', '8']
+    default_enabled: false
+    timeout: 1800
+    multinode_timeout: 1800
+  handoff_long_read_64k:
+    binary: handoff_lattice
+    arts_only: true
+    class: mw
+    kind: attack
+    provenance: 'attack matrix v3: the exclusion column — an event-ordered handoff whose consumers hold the block for longer than the producer'
+    # The consumers' hold is the read phase; the next producer must wait it
+    # out under exclusion and does not under validation or invalidation, so
+    # the per-generation cost is the hold under the exclusion arms and the
+    # handoff's own overhead elsewhere.
+    # TARGET: exclusion, whose queue-fair lock makes the next producer wait
+    # out a live read phase.
+    # The home-based reference fails the consumer oracle on this row from
+    # four ranks: a re-acquire on a rank whose earlier consumer still holds
+    # the block is served the previous occupant of the region.  The printed
+    # GENS= is the aggregate over all lattices (lattices times the
+    # per-lattice generation count).
+    # On one node of 108 workers only EXCL·PURGE pays the consumer hold:
+    # EXCL·PURGE ~270 s against ~21-22 s on the other seven arms (scaled
+    # from a measurement at 20,000 generations) -- a writer on the readers'
+    # own rank waits their zero edge only when the grant returns at every
+    # release, and EXCL·RETAIN serves both under its resident grant.  From
+    # two ranks both exclusion arms pay it: EXCL ~360 s against VAL·WB
+    # ~115 s / INV·WB ~155 s (same scaling).
+    # Anchor at these arguments, one node of 108 workers: GENS raised
+    # 20,000 -> 130,000 so the exclusion arms land near 350 s.  Population is
+    # fixed at 8 lattices, so the 32-node cell is its 8-rank cell:
+    # EXCL·RETAIN ~359 s, EXCL·PURGE ~349 s (VAL·WB ~115 s, INV·WB ~155 s).
+    marker: 'HANDOFF_LATTICE OK '
+    scalar_kind: bool
+    extra_scalars: *lattice_scalars
+    args: ['65536', '20', '2000', '3', '130000', '8', '8']
     default_enabled: false
     timeout: 1800
     multinode_timeout: 1800

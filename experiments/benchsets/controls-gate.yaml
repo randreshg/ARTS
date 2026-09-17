@@ -7,112 +7,104 @@
 #   artsrun run -p ferrari-local -b controls-gate \
 #       -e arts_val_wb,arts_inv_wb,arts_excl_retain,xsocr,ocrvx,hpx -n 1,2,4,8 --repeats 1
 #
-# An adversarial row keeps its one-node chain population (the catalog's
-# smallest edition).  That population is a TOTAL number of chains, which the
-# probe spreads over whatever geometry it is given -- so holding it fixed
-# while the rank count grows thins the chains per rank rather than adding
-# them.  Only the fixed-work op counts per chain are cut to a hundredth and
-# the window cap to a minute, so the exact-count and monotone-read oracles
-# still decide the marker.  One argument list serves every geometry: the
-# probe clamps its spreads to the rank count.
+# The adversarial rows are ARTS-only by design (they compare the plane's own
+# arms against each other), so the xsocr/ocrvx entries above are structurally
+# ineligible for them and only reach this roster's HPX-origin rows.
 #
-# A row whose actors COUPLE (the pipeline below: readers run until a writer
-# has advanced the block) needs its population sized here rather than
-# inherited, because holding the one-node count while the block count stays
-# at one concentrates every reader on a single block -- a far harsher shape
-# than the catalog's edition for that geometry, which spreads both.
+# Every adversarial row's op count is the catalog vector's cut to a tenth (a
+# coupled row's two counts keep their ratio), so an arm that the row is built
+# to bury takes about a minute here and every other cell a few seconds; the
+# exact-count and monotone-read oracles still decide the marker.  Every other
+# argument -- size, spread, hold and think times, lattice geometry -- is the
+# catalog's own.  Population is the program's, derived from the rank count,
+# not a roster concern.
 name: controls-gate
 description: small-size consensus gate for the adversarial columns and the HPX-origin rows
 apps:
   own_reread_64k:
     enabled: true
     versions: [base]
-    args: ['3', '0', '1', '1', '20', '65536', '60000', '0', '1', '0', '0', '1', '7400', '0']
+    args: ['65536', '74000']
   own_reread_16m:
     enabled: true
     versions: [base]
-    args: ['3', '0', '1', '1', '20', '16777216', '60000', '0', '1', '0', '0', '1', '64', '0']
+    args: ['16777216', '640']
   own_rewrite_64k:
     enabled: true
     versions: [base]
-    args: ['0', '3', '1', '1', '20', '65536', '60000', '0', '1', '0', '0', '1', '0', '4800']
+    args: ['65536', '48000']
   own_rewrite_16m:
     enabled: true
     versions: [base]
-    args: ['0', '3', '1', '1', '20', '16777216', '60000', '0', '1', '0', '0', '1', '0', '26']
+    args: ['16777216', '256']
   one_home_funnel_4m:
     enabled: true
     versions: [base]
-    args: ['15', '0', '1', '1', '20', '4194304', '16', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '6', '0', '0']
+    args: ['4194304', '16', '1', '60']
   spread_home_funnel_4m:
     enabled: true
     versions: [base]
-    args: ['15', '0', '1', '1', '20', '4194304', '16', '60000', '0', '0', '0', '16', '1', '0', '0', '0', '6', '0', '0']
+    args: ['4194304', '16', '16', '60']
   audienceless_publish_16m:
     enabled: true
     versions: [base]
-    args: ['0', '15', '1', '1', '20', '16777216', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '0', '350', '0']
+    args: ['16777216', '3500']
   freerun_read_heavy_64k:
     enabled: true
     versions: [base]
-    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '700', '88', '0']
+    args: ['65536', '1', '20', '7000', '875']
   freerun_grain_200us_64k:
     enabled: true
     versions: [base]
-    args: ['13', '2', '20', '20', '180', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '840', '105', '0']
+    args: ['65536', '20', '180', '8400', '1050']
   freerun_grain_2ms_64k:
     enabled: true
     versions: [base]
-    args: ['13', '2', '200', '200', '1800', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '1440', '180', '0']
+    args: ['65536', '200', '1800', '1440', '180']
   pipeline_converge_1m:
     enabled: true
     versions: [base]
-    # Population and payload sized here rather than inherited from the one-node
-    # edition.  This row's readers run until a writer has advanced the block, so
-    # on an exclusion arm -- where a reader arriving inside a live read phase is
-    # granted ahead of a queued writer -- the wall time is set by how often the
-    # read phase empties, not by the op counts.  At thirteen readers on a 1 MiB
-    # block the eight-rank cell never leaves a gap and exhausts the entire cell
-    # budget; three readers on a 64 KiB block leave the attack intact at three
-    # to six minutes there, while every other arm and every smaller geometry
-    # stays under a second.
-    args: ['3', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '1', '55', '28', '0']
+    args: ['1048576', '550', '275']
   alternating_bomb_64k:
     enabled: true
     versions: [base]
-    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '2', '1', '1', '0', '0', '0', '2000', '200', '0']
+    args: ['65536', '0', '20000', '2000']
   bomb_narrow_sharers_64k:
     enabled: true
     versions: [base]
-    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '8', '2', '1', '1', '0', '0', '0', '2000', '200', '0']
+    args: ['65536', '8', '20000', '2000']
   resident_mill_1m:
     enabled: true
     versions: [base]
-    args: ['15', '1', '1', '1', '5', '1048576', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '1750', '70', '0']
+    args: ['1048576', '15', '5', '0', '17500', '700']
   sparse_mill_1m:
     enabled: true
     versions: [base]
-    args: ['1', '1', '1', '1', '5', '1048576', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '150', '6', '0']
+    args: ['1048576', '1', '5', '0', '1500', '60']
   migration_gauntlet_64k:
     enabled: true
     versions: [base]
-    args: ['13', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '750', '2', '0']
+    args: ['65536', '7500', '200', '2']
   migration_gauntlet_16m:
     enabled: true
     versions: [base]
-    args: ['13', '2', '1', '1', '20', '16777216', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '0', '8', '1', '0']
+    args: ['16777216', '80', '10', '2']
   slow_churn_dial_16m:
     enabled: true
     versions: [base]
-    args: ['15', '1', '1', '1', '20', '16777216', '1', '60000', '0', '0', '1', '1', '1', '0', '0', '0', '340', '7', '20000']
-  rwrounds:
+    args: ['16777216', '15', '20', '20000', '3400', '68']
+  handoff_long_read_64k:
     enabled: true
     versions: [base]
-    args: ['2', '16', '50', '65536']
-  rwhandoff:
+    args: ['65536', '20', '2000', '3', '13000', '8', '8']
+  serial_rounds:
     enabled: true
     versions: [base]
-    args: ['16', '8', '65536', '1', '1', '20', '4000', '1500', '0', '1', '1150']
+    args: ['16', '50', '65536']
+  handoff_control_64k:
+    enabled: true
+    versions: [base]
+    args: ['65536', '1', '1', '3', '11500', '8', '8']
 
   # --- HPX-origin rows: the origin's own program beside the mirror ---
   fib_hpx:

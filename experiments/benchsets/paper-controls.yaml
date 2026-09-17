@@ -8,9 +8,9 @@
 #
 # The adversarial half: every row is one program plus one designed workload,
 # and the catalog entry states which arm the column is built to crown and
-# which to bury.  The roster carries no arguments of its own: each row's
-# edition per node count lives in the catalog's args_by_nodes, so the whole
-# node sweep runs in one campaign.
+# which to bury.  The roster carries no arguments of its own: each program
+# derives its population from the runtime's own rank count, so one argument
+# vector in the catalog serves every geometry.
 #
 # Requester-side RO combining is the VAL family's default, not an add-on --
 # every other message class in the plane suppresses duplicates structurally
@@ -95,15 +95,20 @@ apps:
   slow_churn_dial_16m:
     enabled: true
     versions: [base]
+  # The exclusion column: the read phase is the consumers' hold, so the
+  # exclusion arms pay it per generation and the others do not.
+  handoff_long_read_64k:
+    enabled: true
+    versions: [base]
 
   # The convergence controls: fixed-work jobs whose gap between the read-only
   # and write-only halves and their mix (C0), and whose own e2e wall time
   # under a race-free handoff pattern (C3), prove the kill columns' spreads
   # come from concurrency x structure and not from the engine itself.
-  rwrounds:
+  serial_rounds:
     enabled: true
     versions: [base]
-  rwhandoff:
+  handoff_control_64k:
     enabled: true
     versions: [base]
 
