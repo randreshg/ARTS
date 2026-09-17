@@ -19,7 +19,6 @@ from artsrun.model.catalog import AppEntry, Kind, Origin, Version, load_catalog
 from artsrun.model.plane import RuntimeKind, load_plane
 from artsrun.model.profile import Profile
 from artsrun.model.selection import Selection
-from artsrun.model.sweep import SweepSpec
 from artsrun.run.command import build_command
 from artsrun.run.plan import expand
 
@@ -269,17 +268,6 @@ def test_the_apps_listing_shows_the_hpx_origin_section_as_its_own_group(monkeypa
     row = out.find(ROW)
     assert heading != -1 and row != -1
     assert heading < row
-
-
-# --- sweeps --------------------------------------------------------------------
-def test_sweep_refuses_hpx_arm():
-    catalog = load_catalog()
-    spec = SweepSpec.model_validate({
-        "name": "t", "app": "triangle", "nodes": 1, "arms": ["hpx"],
-        "arg_order": ["n"], "points": [{"name": "a", "set": {"n": 1}}],
-    })
-    with pytest.raises(ValueError, match="sweeps run ARTS builds only"):
-        spec.validate_against(catalog, _profile())
 
 
 def test_the_section_is_the_four_compared_rows():

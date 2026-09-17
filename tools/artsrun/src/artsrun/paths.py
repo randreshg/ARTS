@@ -52,10 +52,6 @@ def countersets_dir() -> Path:
     return repo_root() / "experiments" / "countersets"
 
 
-def sweeps_dir() -> Path:
-    return repo_root() / "experiments" / "sweeps"
-
-
 def templates_dir() -> Path:
     return repo_root() / "configs" / "templates"
 
