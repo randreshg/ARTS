@@ -207,12 +207,14 @@ def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
     exactly one option for the same reason.  A dry run configures nothing —
     dry means dry — and reports what a real run would do instead.
     """
+    fresh = False
     if not (build_dir / "build.ninja").is_file():
         if not bootstrap:
             raise BuildError(
                 f"{build_dir} is not a configured build tree; a real run "
                 f"configures it first (Release, benchmarks on)"
             )
+        fresh = True
         if shutil.which("cmake") is None:
             raise BuildError("cmake not found on PATH")
         from artsrun.paths import repo_root
@@ -246,6 +248,54 @@ def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
             f"{build_dir} is a {build_type} tree; measurements must come from a "
             f"Release build (reconfigure with -DCMAKE_BUILD_TYPE=Release)"
         )
+    # A tree generated a moment ago is current by construction.
+    if fresh:
+        return
+    if bootstrap:
+        regenerate(build_dir, prefix=prefix)
+    elif generator_stale(build_dir):
+        say = on_line or (lambda _msg: None)
+        say(f"{build_dir}: its CMake files changed since it was generated; a "
+            "real run re-runs the configure first, and until then the target "
+            "check reads the previous generation")
+
+
+def generator_stale(build_dir: Path) -> bool:
+    """Whether the tree's generation predates its CMake files."""
+    if shutil.which("ninja") is None:
+        return False
+    out = subprocess.run(
+        ["ninja", "-C", str(build_dir), "-n", "build.ninja"],
+        capture_output=True, text=True, check=False,
+    ).stdout
+    return "Re-running CMake" in out
+
+
+def regenerate(build_dir: Path, *, prefix: list[str] | None = None) -> None:
+    """Bring an existing tree's generation up to date with its CMake files.
+
+    This is the tree's own first build step, run early: ninja re-runs the
+    configure from the tree's cache — no option changed — before it builds
+    anything, so doing it before the target list is read is not a
+    reconfiguration, it is reading the list the build would use.  Without
+    it a source update that registers new programs is invisible until the
+    build, and a configure that now fails leaves the previous generation
+    in place, so the targets it did not know are reported as missing and
+    the failure itself is never shown.
+    """
+    if shutil.which("ninja") is None:
+        raise BuildError("ninja not found on PATH")
+    proc = subprocess.run(
+        [*(prefix or []), "ninja", "-C", str(build_dir), "build.ninja"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        tail = "\n".join(proc.stdout.splitlines()[-25:])
+        raise BuildError(
+            f"{build_dir}: its CMake files changed since it was generated and "
+            f"the configure now fails, so nothing in it can be built until "
+            f"that is resolved:\n{tail}"
+        )
 
 
 def available_targets(build_dir: Path) -> set[str]:
@@ -268,7 +318,13 @@ def plan_targets(
     benchset: Benchset,
     build_dir: Path,
 ) -> BuildPlan:
-    """Every executable this campaign will run, deduplicated."""
+    """Every executable this campaign will run, deduplicated.
+
+    The same rows and the same eligibility the expansion applies: a name the
+    benchset does not enable runs no cell, so it needs nothing built, and a
+    row's own exclusions (ARTS-only, no ocr-vx) hold for the
+    build exactly as they hold for the run.
+    """
     entries = [plane.entry(k) for k in selection.entries]
     resolved = {a.key: a for a in benchset.resolve(catalog)}
 
@@ -277,28 +333,20 @@ def plan_targets(
         for version in versions:
             app = resolved.get(f"{name}:{version.value}")
             if app is None:
-                _, stem = catalog.resolve(name, version)
-            else:
-                stem = app.binary
+                continue
             for entry in entries:
                 if entry.kind is RuntimeKind.HPX:
                     # The HPX program is the row's _hpx target; nothing is
                     # derived from a version stem.
-                    if app is not None:
-                        if app.hpx_binary:
-                            wanted.append(app.hpx_binary)
-                    else:
-                        capp = catalog.apps.get(name)
-                        target = capp.hpx_target(version) if capp else None
-                        if target:
-                            wanted.append(target)
+                    if app.hpx_binary:
+                        wanted.append(app.hpx_binary)
                     continue
-                if entry.kind.value == "ocrvx" and app and app.ocrvx_skip:
+                if entry.kind.value == "ocrvx" and app.ocrvx_skip:
                     continue
-                if entry.kind.value != "arts" and app and app.arts_only:
+                if entry.kind.value != "arts" and app.arts_only:
                     continue
                 # The hint layer is already folded into the resolved stem.
-                wanted.append(entry.binary(stem, hinted=False))
+                wanted.append(entry.binary(app.binary, hinted=False))
 
     targets = sorted(set(wanted))
     have = available_targets(build_dir)
@@ -313,11 +361,12 @@ def build(plan: BuildPlan, *, jobs: int | None = None, on_line=None,
         raise BuildError(
             "the build tree has no target for: " + ", ".join(plan.missing[:10])
             + ("…" if len(plan.missing) > 10 else "")
-            + "\n(either the application is not registered in CMake, or the "
-            "tree skipped its runtime — the xsocr/ocrvx references and the "
-            "HPX-origin programs are skipped on a host without an MPI "
-            "compiler, and also under -DARTS_BUILD_HPX=OFF; the configure "
-            "summary's References/HPX lines say which)"
+            + "\n(the tree's generation is current, so either the application "
+            "is not registered in CMake, or the tree skipped its runtime: the "
+            "xsocr/ocrvx references and the HPX-origin programs are skipped "
+            "on a host without an MPI compiler and under -DARTS_BUILD_HPX=OFF; "
+            "the configure output's 'Skipping' and References/HPX lines say "
+            "which)"
         )
     if shutil.which("ninja") is None:
         raise BuildError("ninja not found on PATH")
