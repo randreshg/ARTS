@@ -486,10 +486,10 @@ class BenchsetPanel(VerticalScroll):
     def _rendered_rows(self, kind: Kind) -> list:
         """The rows this surface draws for one group.
 
-        The attack suite belongs to its own roster (and to sweeps); on a
-        general application surface its rows only invite checking probes
-        into an application campaign, so they appear exactly when the
-        loaded benchset names them.
+        The attack suite belongs to its own roster; on a general application
+        surface its rows only invite checking probes into an application
+        campaign, so they appear exactly when the loaded benchset names
+        them.
         """
         rows = self.catalog.rows_of(kind)
         if kind is Kind.ATTACK:

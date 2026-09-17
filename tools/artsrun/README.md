@@ -175,26 +175,27 @@ override.
 ## The cluster selection
 
 `val_*_nocomb` is not part of it. The non-combining twins are an ablation of
-one family's read path rather than a position on the plane, and the question
-they answer — what the requester-side combining window buys — is a sweep
-question, so they stay on the development host (`-p ferrari-local`) where both
-settings of one knob fit in a campaign. A cluster campaign runs the eight
-plane arms and the references.
+one family's read path rather than a position on the plane — selectable build
+variants a benchset names directly as an entry — and the question they
+answer, what the requester-side combining window buys, is why they stay on
+the development host (`-p ferrari-local`) where both settings of one knob fit
+in a campaign. A cluster campaign runs the eight plane arms and the
+references.
 
 The adversarial plan is the adversarial half of the `paper-controls` roster
-under the `dane` profile. Every
-attack row carries its own edition per node count (`args_by_nodes` at 1, 2, 4,
-8, 16 and 32), so the columns and the grain dial run the whole node sweep in
-the same campaign as `paper-main`, at the profile's own geometry. The `s20` /
-`s21` / `s13b` sweep files remain ferrari instruments: each addresses the arms
-directly at one fixed geometry, which is what a probe sweep needs and what a
-strong-scaling campaign must not be.
+under the `dane` profile. Every attack row carries one argument vector that
+runs at every geometry: each program derives its own population from the
+runtime's rank count, so the per-rank load stays fixed in the program itself,
+not in a per-node edition. The columns and the grain dial run the whole node
+sweep in the same campaign as `paper-main`, at the profile's own geometry:
+there is no separate sweep command, and the attack rows run inside this
+roster like any other.
 
-Those editions hold the per-rank load fixed rather than the job, so an attack
-row is **not** a scaling curve: its comparison is across runtimes within one
-node count. The scaling table marks such a row `~` on its name and says so in
-its legend, computed from the arguments themselves — any row whose arguments
-differ across the node counts shown is marked, whatever its kind.
+For that same reason an attack row is still **not** a scaling curve: its
+comparison is across runtimes within one node count. The scaling table marks
+such a row `~` on its name and says so in its legend, computed from the
+arguments themselves — any row whose arguments differ across the node counts
+shown is marked, whatever its kind.
 
 A catalog row may also declare `width_max` — the instantaneous task width its
 calibrated arguments reach at the profile's widest geometry. It is checked

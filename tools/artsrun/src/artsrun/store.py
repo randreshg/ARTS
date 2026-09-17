@@ -1,7 +1,7 @@
 """Discovery and persistence of the two saved surfaces.
 
-Profiles and benchsets are values, not code: they live under experiments/, tracked, and
-are not tracked, so a campaign can be reshaped without touching the tool.
+Profiles and benchsets are values, not code: they live under experiments/ as
+tracked files, so a campaign can be reshaped without touching the tool.
 """
 
 from __future__ import annotations
@@ -96,31 +96,6 @@ def save_benchset(benchset: Benchset) -> Path:
 def default_benchset() -> Benchset:
     """The catalog's own defaults, for a run that names no benchset."""
     return Benchset(name="catalog-default", description="catalog defaults")
-
-
-# --- sweeps ---------------------------------------------------------------
-def list_sweeps() -> list[str]:
-    from artsrun.paths import sweeps_dir
-
-    return _list(sweeps_dir())
-
-
-def sweep_path(name: str) -> Path:
-    from artsrun.paths import sweeps_dir
-
-    return sweeps_dir() / f"{name}.yaml"
-
-
-def load_sweep(name: str):
-    from artsrun.model.sweep import SweepSpec
-
-    path = sweep_path(name)
-    if not path.is_file():
-        known = ", ".join(list_sweeps()) or "none"
-        raise NotFound(f"no sweep '{name}' in {path.parent} (have: {known})")
-    data = _read(path)
-    data.setdefault("name", name)
-    return SweepSpec.model_validate(data)
 
 
 # --- counter sets ---------------------------------------------------------

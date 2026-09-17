@@ -306,32 +306,6 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
     assert reconfigured == []
 
 
-def test_a_sweep_without_a_set_refuses_an_instrumented_tree(tmp_path,
-                                                            monkeypatch):
-    # A sweep is a measurement too, and it shares the campaign's build path,
-    # so it shares the refusal.
-    from types import SimpleNamespace
-
-    import artsrun.sweep as sweep_mod
-    from artsrun.build import BuildError
-    from artsrun.model.profile import Launcher
-
-    build_dir = _tree_with_counters(tmp_path / "build", {
-        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
-    })
-    (build_dir / "CMakeCache.txt").write_text(
-        "ARTS_COUNTER_CONFIG:FILEPATH=/somewhere/counters_census.cfg\n")
-    monkeypatch.setattr(sweep_mod, "ensure_build_dir", lambda *a, **k: None)
-
-    s = sweep_mod.SweepCampaign(
-        spec=None, catalog=None,
-        profile=SimpleNamespace(launcher=Launcher.LOCAL),
-        build_dir=build_dir, run_dir=tmp_path / "run", counterset=None,
-    )
-    with pytest.raises(BuildError, match="counters_census.cfg"):
-        s.build_plan()
-
-
 def test_the_shipped_off_cfg_turns_every_declared_counter_off():
     # The CMake default this refusal is written against: the parser leaves an
     # unmentioned counter at its own default, so the file states every one.
