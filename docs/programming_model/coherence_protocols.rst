@@ -282,10 +282,17 @@ EXCL — queue-fair distributed reader–writer lock
 
 Each DB carries a distributed reader–writer lock whose authoritative state is
 a single 64-bit ``lock_state`` word on the home rank: shared read grants
-overlap; a write grant excludes everything; waiters queue fairly (in the
-tradition of queue-based reader–writer synchronization, Mellor-Crummey &
-Scott). Data ships with the grant, in the style of entry consistency — the
-consistency actions are scoped to the DB whose lock is being acquired.
+overlap and a write grant excludes everything, in the tradition of queue-based
+reader–writer synchronization (Mellor-Crummey & Scott). Priority between the
+two is decided at the phase boundary, not on arrival: a queued writer takes
+the lock at the transition that ends a read phase, while a reader arriving
+during a live read phase is granted immediately rather than queued behind that
+writer. The read phase therefore ends only when its readers do, so a workload
+whose readers re-read without pause can hold writers off for as long as it
+keeps a read outstanding — the deliberate throughput bias of this arm, and the
+fairness exposure the adversarial suite measures. Data ships with the grant,
+in the style of entry consistency — the consistency actions are scoped to the
+DB whose lock is being acquired.
 EXCL trivially satisfies the OCR contract (it is strictly stronger:
 readers are isolated from writers by admission, not by promise) and serves as
 the lock-philosophy point of the design-space comparison.

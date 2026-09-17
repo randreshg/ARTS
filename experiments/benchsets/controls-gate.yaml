@@ -8,11 +8,19 @@
 #       -e arts_val_wb,arts_inv_wb,arts_excl_retain,xsocr,ocrvx,hpx -n 1,2,4,8 --repeats 1
 #
 # An adversarial row keeps its one-node chain population (the catalog's
-# smallest edition), which is a per-rank population the probe places over
-# whatever geometry it is given; only the fixed-work op counts per chain are
-# cut to a hundredth and the window cap to a minute, so the exact-count and
-# monotone-read oracles still decide the marker.  One argument list serves
-# every geometry: the probe clamps its spreads to the rank count.
+# smallest edition).  That population is a TOTAL number of chains, which the
+# probe spreads over whatever geometry it is given -- so holding it fixed
+# while the rank count grows thins the chains per rank rather than adding
+# them.  Only the fixed-work op counts per chain are cut to a hundredth and
+# the window cap to a minute, so the exact-count and monotone-read oracles
+# still decide the marker.  One argument list serves every geometry: the
+# probe clamps its spreads to the rank count.
+#
+# A row whose actors COUPLE (the pipeline below: readers run until a writer
+# has advanced the block) needs its population sized here rather than
+# inherited, because holding the one-node count while the block count stays
+# at one concentrates every reader on a single block -- a far harsher shape
+# than the catalog's edition for that geometry, which spreads both.
 name: controls-gate
 description: small-size consensus gate for the adversarial columns and the HPX-origin rows
 apps:
@@ -59,7 +67,16 @@ apps:
   pipeline_converge_1m:
     enabled: true
     versions: [base]
-    args: ['13', '2', '1', '1', '20', '1048576', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '1', '55', '28', '0']
+    # Population and payload sized here rather than inherited from the one-node
+    # edition.  This row's readers run until a writer has advanced the block, so
+    # on an exclusion arm -- where a reader arriving inside a live read phase is
+    # granted ahead of a queued writer -- the wall time is set by how often the
+    # read phase empties, not by the op counts.  At thirteen readers on a 1 MiB
+    # block the eight-rank cell never leaves a gap and exhausts the entire cell
+    # budget; three readers on a 64 KiB block leave the attack intact at three
+    # to six minutes there, while every other arm and every smaller geometry
+    # stays under a second.
+    args: ['3', '2', '1', '1', '20', '65536', '1', '60000', '0', '0', '0', '1', '1', '0', '0', '1', '55', '28', '0']
   alternating_bomb_64k:
     enabled: true
     versions: [base]
