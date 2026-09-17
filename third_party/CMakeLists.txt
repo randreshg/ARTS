@@ -601,6 +601,9 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
             BUILD_BYPRODUCTS "${ARTS_FFTW_INSTALL_DIR}/lib/libfftw3.a"
             LOG_CONFIGURE 1 LOG_BUILD 1 LOG_INSTALL 1)
         set(ARTS_FFTW_INSTALL_DIR "${ARTS_FFTW_INSTALL_DIR}" PARENT_SCOPE)
+        # The OCR mirror's relocation library is derived from this same
+        # source archive; it takes the archive, not the built library.
+        set(ARTS_FFTW_TARBALL "${FFTW_TARBALL}" PARENT_SCOPE)
 
         set(ARTS_HPX_AVAILABLE ON PARENT_SCOPE)
         set(ARTS_HPX_INSTALL_DIR "${ARTS_HPX_INSTALL_DIR}" PARENT_SCOPE)

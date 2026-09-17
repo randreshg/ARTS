@@ -77,9 +77,15 @@ holds for any buffer whose columns are whole complex elements. That is what
 makes every row carry its buffer's alignment, and plan selection therefore
 address-independent for every row rather than only the first.
 
-The front end uses `-O1 -g -march=native -mtune=native -flto` to retain typed
-pointer operations. The complete translated module is compiled with `-O3 -fPIC`.
-SIMD and FMA configuration comes from `ARTS_FFTW_SIMD`. These compilation and
+The front end uses `-O1 -g -march=x86-64-v3 -flto` to retain typed pointer
+operations; the level names what the configured SIMD sets need (AVX2 and FMA)
+rather than the generating host, so the artifact runs on every x86-64 host the
+experiments use and its code does not depend on where it was generated. The
+translated module, its debug metadata stripped, is compiled to assembly with
+`-O3 -fPIC -fno-addrsig -S`; the native HPX side's FFTW is compiled at the
+consuming host's `-march=native`, so the two sides can differ in the
+compiler's own vectorisation of the library's scalar code as well as in
+compiler. SIMD and FMA configuration comes from `ARTS_FFTW_SIMD`. These compilation and
 representation choices add costs: pointer resolution, callback context passing,
 manifest publication, the per-row image attach and lent-buffer binding, and
 unaligned-safe memory accesses. The identity-keyed and offset-ordered arrays
@@ -91,11 +97,31 @@ that timed planning selects identical plans.
 
 ## Reproduction and schema
 
-`CMakeLists.txt` locates LLVM 14 in the existing environment or the repository's
-`install/fftw-port-tools` directory. `build.py` checks the source SHA-256, extracts
+The translated library is a pinned artifact of the source tree, committed as
+text: `pinned/fftw-reloc.s` is the assembly `build.py` generated from the
+pinned source, `pinned/fftw-reloc.bc.schema` the translation's record of the
+module, and `pinned/fftw-reloc.stamp` the source checksum, the SIMD set, the
+alignment, the `-march` level and the generating clang. An ordinary configure
+checks the stamp against the tree's FFTW archive and `ARTS_FFTW_SIMD` (a
+mismatch is a configure error naming the regeneration), and the library is
+assembled and linked by the compiler the tree was configured with — GCC or
+clang, whichever `project()` detected. Nothing in an ordinary build looks for
+LLVM.
+
+Regeneration is opt-in: `-DFFTW_RELOC_REGENERATE=ON` and the `fftw_reloc_pin`
+target. That configuration locates LLVM 14 in the existing environment or the
+repository's `install/fftw-port-tools` directory — LLVM 14 is the version, not
+a floor, because the translation works on typed pointer operations, which
+later LLVM releases no longer carry — and rewrites the pinned files in the
+source tree, so the artifact a tree builds from is always the one it carries,
+and a regeneration's effect on the code is a `git diff` of the assembly.
+`build.py` checks the source SHA-256, extracts
 it in the build tree, builds all configured source modules, links their bitcode,
-reads the configured alignment, runs the translator, and compiles the output. It
-never changes the source archive or installs system tools.
+reads the configured alignment, runs the translator, emits the output as
+assembly, assembles it once with the generating host's C compiler so a dialect
+the GNU assembler rejects fails at generation rather than at consumption, and
+places the artifact's files in `pinned/`. It never changes the source archive
+or installs system tools.
 
 `fftw-reloc.bc.schema` records the data layout, all 88 structure layouts and
 pointer offsets, 2,674 function pointer-access/callback counts, 250 integer/address
