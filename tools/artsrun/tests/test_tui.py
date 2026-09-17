@@ -909,7 +909,7 @@ def test_the_application_screen_hides_the_attack_suite_unless_named():
     assert headings[0].startswith("Applications")
     assert headings[1].startswith("HPX-origin applications")
     assert headings[2].startswith("Toys")
-    assert not any(i.startswith("rwmix") or i.startswith("rwsteady")
+    assert not any(i.startswith("own_reread") or i.startswith("freerun_mix")
                    for i in idents)
 
 

@@ -137,9 +137,12 @@ def test_the_summary_explains_the_mark_only_when_one_appears(tmp_path):
 
 
 def _laddered_app() -> ResolvedApp:
-    """A row whose arguments follow the node count (the attack columns' shape)."""
+    """A row whose arguments follow the node count.  Synthetic: attack rows
+    run in the paper-controls roster at one argument vector, so no shipped
+    row actually ladders like this; the fixture exists only to exercise the
+    scaling table's marking rule."""
     return ResolvedApp(
-        name="attack", version=Version.BASE, binary="rwsteady",
+        name="attack", version=Version.BASE, binary="freerun_mix",
         cls=AppClass.MW, marker=r"RESULT", scalar_re=r"RESULT\s*=\s*([\d.]+)",
         scalar_kind=ScalarKind.FLOAT, args=["465"],
         args_by_nodes={1: ["15"], 2: ["15"], 4: ["45"]},
