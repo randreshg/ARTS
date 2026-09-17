@@ -1,0 +1,5 @@
+fftw_sha256=56c932549852cddcfafdab3820b0200c7742675be92179e59e6215b340e26467
+simd=--enable-sse2 --enable-avx --enable-avx2 --enable-fma
+alignment=16
+march=x86-64-v3
+clang=Debian clang version 14.0.6

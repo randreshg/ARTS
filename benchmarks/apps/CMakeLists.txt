@@ -1505,7 +1505,10 @@ add_bespoke_app(NAME network_storage_hpx DIR hpx_origin SOURCES network_storage_
 # The vendored library is built only by a tree that configured it, so the row
 # is conditioned on the target existing rather than on the options that
 # happen to create it: a tree without it still generates, and every other
-# row still builds every one of its variants.
+# row still builds every one of its variants.  The mirror links the
+# relocation library, a pinned translation of the same FFTW source that the
+# tree's own compiler assembles (hpx_origin/fftw_reloc/), so the row asks
+# nothing more of the host than the vendored FFTW does.
 if(TARGET arts::fftw3)
     add_subdirectory(hpx_origin/fftw_reloc)
     add_bespoke_app(NAME fft_hpx DIR hpx_origin SOURCES fft_hpx.c

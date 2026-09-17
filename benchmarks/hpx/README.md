@@ -714,9 +714,10 @@ actually uses (16 bytes for the vendored double-precision SSE2/AVX/AVX2/FMA
 build), so plan selection and codelet applicability stay address-independent
 for every row. Its effect on the answer is under `1e-16` relative; the
 remaining cross-runtime disagreement is the same FFTW source compiled
-twice — GCC for the HPX side, clang-14 for the mirror's translated
-library — leaving its own mark in the last bits of rounding and FMA
-contraction.
+twice — GCC at the host's `-march=native` for the HPX side, clang-14 at
+`-march=x86-64-v3` for the mirror's translated library, which the tree
+consumes as a pinned assembly artifact rather than compiling on the host —
+leaving its own mark in the last bits of rounding and FMA contraction.
 
 **The checksum is a function of the locality count**, like `stencil1d_hpx`'s,
 and for the origin's own reason — though not the obvious one. The first

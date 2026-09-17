@@ -1,5 +1,6 @@
 #include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/InlineAsm.h>
 #include <llvm/IR/InstIterator.h>
@@ -441,6 +442,10 @@ int main(int argc,char **argv) {
   new GlobalVariable(*module,Type::getInt64Ty(context),true,GlobalValue::ExternalLinkage,
       ConstantInt::get(Type::getInt64Ty(context),fingerprint),"fftw_reloc_fingerprint");
   translation.run();
+  /* The front end keeps debug metadata so the pass sees the source's typed
+   * operations; the result is codegen input whose committed form is assembly,
+   * and debug lines there would be most of it. */
+  StripDebugInfo(*module);
   if (verifyModule(*module,&errs())) return 1;
   std::error_code error;
   raw_fd_ostream output(argv[2],error,sys::fs::OF_None);
