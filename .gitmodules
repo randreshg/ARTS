@@ -25,6 +25,7 @@
 	path = third_party/hpx
 	url = https://github.com/TheHPXProject/hpx.git
 	shallow = true
+	ignore = dirty
 [submodule "third_party/cassini-headers"]
 	path = third_party/cassini-headers
 	url = https://github.com/HewlettPackard/shs-cassini-headers.git
