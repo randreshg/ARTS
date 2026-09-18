@@ -1,0 +1,44 @@
+# crete: four nodes of 96 cores each, reached over ssh.  One rank per node.
+#
+# 92 workers + 4 progress threads fills the node on the rule that gives Dane
+# and Tuolumne their four (one progress thread per NUMA domain); crete's
+# topology has not been read yet, so verify with lscpu that OS CPUs 0-95 are
+# the per-core first SMT threads and that the domain count agrees before
+# trusting the envelope.  92 = 2**2 * 23 does not factor into a near-cubic
+# grid the way Dane's 108 does, so the SPMD rows whose grid must equal the
+# total worker count are not sized for this profile; the strong-scaling
+# arguments were derived for Dane's 108, and a campaign here re-derives
+# sizes before it measures.
+#
+# The host list is a placeholder: replace each entry with the node's address,
+# in rank order.  The campaign must be launched from hosts[0] (arts runs rank
+# 0 in-process and ssh-launches the rest), and the submitter check refuses
+# any other host by name -- which is also what keeps the placeholders from
+# ever running a cell.
+name: crete
+launcher: ssh
+
+nodes: [1, 2, 4]
+workers: 92
+progress: 4
+
+pin: true
+# Ethernet until an RDMA fabric is confirmed on the nodes; then verbs;ofi_rxm.
+# If the default route is a management network, name the data interface with
+# net_interface.
+provider: tcp
+route_table_size: 16
+core_dump: false
+port_count: 1
+ports: [25000]
+
+ssh:
+  budget: 4
+  hosts: [crete1, crete2, crete3, crete4]
+
+cell_timeout_s: 1800
+# Five measurements per cell, as on Dane; a gate passes --repeats 1.
+repeats: 5
+# Peak resident set and minor-fault counts alongside the runtime's own stamp;
+# guarded at launch, so a node without the witness binary runs without it.
+rusage_witness: true
