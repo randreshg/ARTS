@@ -322,7 +322,7 @@ def plan_targets(
 
     The same rows and the same eligibility the expansion applies: a name the
     benchset does not enable runs no cell, so it needs nothing built, and a
-    row's own exclusions (ARTS-only, no ocr-vx) hold for the
+    row's own exclusions (ARTS-only, no ocr-vx, outside DB-WRF) hold for the
     build exactly as they hold for the run.
     """
     entries = [plane.entry(k) for k in selection.entries]
@@ -342,6 +342,8 @@ def plan_targets(
                         wanted.append(app.hpx_binary)
                     continue
                 if entry.kind.value == "ocrvx" and app.ocrvx_skip:
+                    continue
+                if entry.model == "DB_WRF" and app.unordered_writes:
                     continue
                 if entry.kind.value != "arts" and app.arts_only:
                     continue

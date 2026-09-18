@@ -590,9 +590,9 @@ no lock, and the mirror adds no chain of write turns: a chain would need a
 cross-rank sequencer the origin does not have, a bandwidth test whose
 storage is deliberately unsynchronised would stop being the same program,
 and the counts do not read the racing bytes. This row's *payload* is
-therefore not write-race-free at block granularity: under
-`ARTS_MEMORY_MODEL=DB_WRF` its bytes are undefined while its counts are
-not, and the `wrf_val_wt` check asserts the counts only. It is also a row
+therefore outside DB-WRF at block granularity: the counts survive only
+because every completion runs on the counters' home rank — an
+implementation accident, not program ordering. It is also a row
 in which a slot is read from another rank while its home writes it, so each
 coherence protocol's treatment of a reader under a writer is part of what
 the row exercises; none of the OCR runtimes can wedge on the crossing pairs
@@ -683,10 +683,10 @@ origin's row-parallel `split_vec`/`split_trans_vec`), and one task per
 (source, row) per transpose. These are the origin's own parallel units,
 carried unchanged: many split tasks hold one phase's chunk blocks
 `DB_MODE_RW` at once and many transpose tasks hold the phase's destination
-buffer `RW` at once, all writing disjoint bytes. `ARTS_MEMORY_MODEL=DB_WRF` is
-therefore undefined for this row by design — the same-DB write-write
-conflicts the code does not event-order are exactly what that model declares
-undefined — and no coherence-plane cell runs it. The copies, the bytes and the
+buffer `RW` at once, all writing disjoint bytes. The row is therefore outside
+DB-WRF by design — the same-DB write-write conflicts the code does not
+event-order are exactly what that model requires to be ordered — and no
+coherence-plane cell runs it. The copies, the bytes and the
 one message per (source, destination) are unchanged.
 
 Each `scatter_to` is `nl` labeled STICKY points from the program's one

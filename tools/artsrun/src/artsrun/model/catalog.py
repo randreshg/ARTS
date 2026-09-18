@@ -167,6 +167,11 @@ class AppEntry(BaseModel):
     # deliberately does not implement.  It stays a visible row — the doc and
     # the reason are the point — but it cannot be selected or run.
     unsupported: str | None = None
+    # The program leaves two write-mode acquisitions of one DataBlock
+    # unordered somewhere, so it is outside the DB-WRF memory model: an entry
+    # whose protocol requires DB-WRF cannot run it, and says why.  One value per
+    # row — base and hinted are one program; a rewrite carries its own.
+    unordered_writes: str | None = None
     multinode_skip: str | None = None
     ocrvx_skip: bool = False
     # A probe built for the ARTS variants alone: it exists to separate the

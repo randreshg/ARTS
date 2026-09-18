@@ -137,12 +137,12 @@ buffer. So `nxl` (or `nyl`) split tasks of a rank hold each of that phase's
 `nl` chunk blocks `DB_MODE_RW` at once, and `nxl` `fft1_edt` tasks hold `varr`
 RW at once, and `nl·nyl` transposes hold the phase's destination buffer RW at
 once — all disjoint writes, all the origin's own concurrency, carried
-unchanged. **`DB_WRF` is undefined for this row by design**: the program has
+unchanged. **The row is outside DB-WRF**: the program has
 same-DB write-write conflicts the code does not event-order (disjoint rows
-and columns at whole-DB granularity), which is exactly what
-`ARTS_MEMORY_MODEL=DB_WRF` declares undefined, since many tasks write one
-buffer, as the origin's `for_loop(par)` does. The coherence plane artsrun
-selects from (`EXCL`/`INV`/`VAL` × release × write) carries no `DB_WRF`
+and columns at whole-DB granularity), which is exactly what DB-WRF requires
+to be ordered, since many tasks write one buffer, as the origin's
+`for_loop(par)` does. The coherence plane artsrun
+selects from (`EXCL`/`INV`/`VAL` × release × write) carries no DB-WRF
 entry, and this row has none either.
 
 Where the origin has a barrier between phases (`for_loop` is blocking), the

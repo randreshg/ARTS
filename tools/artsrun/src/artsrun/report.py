@@ -50,6 +50,8 @@ RT_LABEL = {
     # distributed-memory one, which is what the label should name.
     "ocrvx": "OCR-Vdm",
     "hpx": "HPX",
+    # the model token replaces the family×policy axes: this arm has none
+    "arts_wrf_flush": "DB-WRF·FLUSH",
 }
 RT_COLOR = {
     "arts_excl_purge": "#4C72B0",
@@ -71,7 +73,15 @@ RT_COLOR = {
     "xsocr": "#8172B3",
     "ocrvx": "#937860",
     "hpx": "#C44E52",
+    # a neutral dark tone: the no-optimisation baseline, on no family's hue
+    "arts_wrf_flush": "#4A4A4A",
 }
+# How a program that is INSIDE the DB-WRF model is marked on a terminal
+# surface (the apps table, the roster screen).  A style of its own, not the
+# entry's figure colour above: that tone is chosen to sit under the families
+# on a plot and reads as "off" as a foreground.  The roster stylesheet
+# carries the same colour and weight.
+WRF_ELIGIBLE_STYLE = "bold cyan"
 
 
 def rt_key(key: str) -> str:
@@ -79,13 +89,15 @@ def rt_key(key: str) -> str:
 
     Callers hold either a selection-entry key (arts_*/xsocr/ocrvx — possibly a
     pre-promotion comb spelling from an old run) or a raw build suffix
-    (ocr_val_wt, from a sweep that addresses arms directly).
+    (ocr_val_wt or wrf_flush, from a sweep that addresses arms directly).
     """
     from artsrun.model.plane import modern_entry_key
 
     if key.startswith("ocr_"):
         alt = "arts_" + key.removeprefix("ocr_")
         return alt if alt in RT_LABEL else key
+    if key.startswith("wrf_"):
+        return "arts_" + key
     return modern_entry_key(key)
 
 

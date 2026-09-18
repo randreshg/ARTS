@@ -107,3 +107,30 @@ references:
     label: OCR-Vdm
     kind: ocrvx
     note: owner-resident write-invalidate; the same design point as INV x WB
+
+# Every protocol requires a memory model of the program.  The grid above holds
+# the OCR-model protocols: the runtime orders every conflict, so any OCR-legal
+# program is admitted.  The protocols below require the DB-WRF model instead —
+# they are correct only for programs whose write acquisitions are exclusive —
+# so they sit under their own heading and never in the grid.  A cell with no
+# variant is a retired arm: drawn with its reason, never selectable.
+models:
+  DB_WRF:
+    label: DB-WRF
+    note: >-
+      exclusive write acquisition — at most one write-mode acquisition of a
+      DataBlock is live at any time, and the program guarantees it by
+      happens-before; read acquisitions are unconstrained
+    cells:
+      - arm: FLUSH
+        label: FLUSH
+        variant: wrf_flush
+        note: >-
+          fetch the whole payload at every remote acquire, write it back at
+          every remote RW release, block for the home's acknowledgement
+      - arm: VAL_WT_RETAIN
+        label: VAL·WT·RETAIN
+        reason: >-
+          retired — the validation family carried under a model that needs no
+          validation (buffer versions, a served-version ledger, read and
+          write combining); FLUSH is the model's arm

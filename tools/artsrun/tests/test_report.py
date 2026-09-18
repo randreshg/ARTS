@@ -180,6 +180,13 @@ def test_a_failed_cell_does_not_by_itself_mark_a_row():
     assert "~" not in _text(scaling_table(rs, ["a"]))
 
 
+def test_the_wrf_flush_entry_has_a_label_and_a_colour_of_its_own():
+    from artsrun.report import RT_COLOR, RT_LABEL, rt_key
+    assert RT_LABEL["arts_wrf_flush"] == "DB-WRF·FLUSH"
+    assert RT_COLOR["arts_wrf_flush"] not in {v for k, v in RT_COLOR.items() if k != "arts_wrf_flush"}
+    assert rt_key("wrf_flush") == "arts_wrf_flush"
+
+
 def test_the_summary_explains_the_ladder_mark_only_when_one_appears(tmp_path):
     from artsrun.model.plane import load_plane
 
@@ -198,3 +205,29 @@ def test_the_summary_explains_the_ladder_mark_only_when_one_appears(tmp_path):
     text = write_summary(fixed, vote(fixed), [], selection, plane,
                          tmp_path / "f.txt")
     assert "~ after an application" not in text
+
+
+def test_the_apps_table_marks_each_tier_by_the_row_that_supplies_it():
+    # The DB-WRF mark on a terminal is its own style, not the entry's figure
+    # tone; the restructured column is judged by the rewrite's row.
+    from artsrun.cli import _tier_mark
+    from artsrun.model.catalog import Version, load_catalog
+    from artsrun.report import RT_COLOR, WRF_ELIGIBLE_STYLE
+
+    assert WRF_ELIGIBLE_STYLE not in RT_COLOR.values()
+    catalog = load_catalog()
+    split = [a for a in catalog.rows
+             if a.restructured_as and not a.unsupported
+             and (a.unordered_writes is None)
+             != (catalog.apps[a.restructured_as].unordered_writes is None)]
+    if not split:
+        pytest.skip("no row whose rewrite verdict differs from its own")
+    row = split[0]
+    base = _tier_mark(catalog, row, Version.BASE)
+    rewrite = _tier_mark(catalog, row, Version.RESTRUCTURED)
+    assert base != rewrite
+    inside, outside = (base, rewrite) if row.unordered_writes is None else (rewrite, base)
+    assert inside == f"[{WRF_ELIGIBLE_STYLE}]✓[/]"
+    assert outside == "[green]✓[/green]"
+    assert _tier_mark(catalog, row, Version.HINTED) in (base, "[dim]·[/dim]")
+
