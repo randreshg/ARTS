@@ -328,12 +328,25 @@ def run_cmd(
         cset = store.load_counterset(counters) if counters else None
     except store.NotFound as exc:
         _fail(str(exc))
+    if dry_run and run_dir is None:
+        from artsrun.campaign import scratch_run_dir
+
+        with scratch_run_dir() as scratch:
+            campaign = Campaign.prepare(
+                selection, plane, catalog, bs, prof, counterset=cset,
+                build_dir=build_dir, run_dir=scratch,
+            )
+            _dry_run(campaign, selection)
+        return
+
     campaign = Campaign.prepare(
         selection, plane, catalog, bs, prof, counterset=cset,
         build_dir=build_dir, run_dir=run_dir,
     )
 
     if dry_run:
+        # Continuing a campaign: its directory exists and is what a dry run
+        # of the continuation reads.
         _dry_run(campaign, selection)
         return
 

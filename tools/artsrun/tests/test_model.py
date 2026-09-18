@@ -714,6 +714,35 @@ def test_a_run_with_no_selection_is_not_offered_for_continuing(tmp_path, monkeyp
     assert mod.past_runs() == []
 
 
+def test_a_dry_run_leaves_nothing_under_the_campaign_log_root(tmp_path, monkeypatch):
+    # The configurations a dry run renders are what a campaign would write,
+    # but they record nothing: a dry run must not leave a campaign directory.
+    import artsrun.campaign as mod
+    from artsrun import store
+    from artsrun.model.catalog import load_catalog
+    from artsrun.model.plane import load_plane
+
+    exp = tmp_path / "exp"
+    exp.mkdir()
+    monkeypatch.setattr(mod, "logs_root", lambda: exp)
+    plane, catalog = load_plane(), load_catalog()
+    prof = store.load_profile("ferrari-local")
+    bs = store.default_benchset()
+    selection = Selection(
+        profile=prof.name, benchset=bs.name, entries=["arts_val_wb"],
+        apps={"nqueens": [Version.BASE]}, node_counts=[1], repeats=1,
+    )
+    with mod.scratch_run_dir() as scratch:
+        campaign = mod.Campaign.prepare(
+            selection, plane, catalog, bs, prof,
+            build_dir=tmp_path / "build", run_dir=scratch,
+        )
+        cells, _ = campaign.cells()
+        assert cells and (scratch / "cfg").is_dir()
+    assert not scratch.exists()
+    assert list(exp.iterdir()) == []
+
+
 def test_flux_requires_its_section():
     with pytest.raises(ValidationError, match="requires a flux section"):
         Profile.model_validate(_local(launcher="flux", ports=[25000]))
