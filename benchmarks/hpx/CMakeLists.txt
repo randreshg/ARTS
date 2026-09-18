@@ -8,8 +8,21 @@ enable_testing()
 # The 16-byte operations the 128-bit queue backends compile to are resolved
 # from libatomic, and a static link resolves a library only against what
 # precedes it — so the entry has to follow every HPX archive, which is what
-# the standard-libraries list is.
-set(CMAKE_CXX_STANDARD_LIBRARIES "${CMAKE_CXX_STANDARD_LIBRARIES} -latomic")
+# the standard-libraries list is.  The item is resolved the way the tree
+# resolves it for its own consumers: a host may carry libatomic only as its
+# runtime SONAME, with no name for the linker to find behind `-latomic`.
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/ArtsAtomicLink.cmake")
+arts_resolve_atomic_link(CXX)
+if(NOT ARTS_ATOMIC_LINK)
+    message(FATAL_ERROR "libatomic not found: the programs' 16-byte atomics "
+        "are resolved from it.  Install the toolchain's libatomic package, "
+        "or set ATOMIC_LIBRARY to its libatomic.so.1.")
+elseif(IS_ABSOLUTE "${ARTS_ATOMIC_LINK}")
+    set(_arts_atomic_flag "${ARTS_ATOMIC_LINK}")
+else()
+    set(_arts_atomic_flag "-l${ARTS_ATOMIC_LINK}")
+endif()
+set(CMAKE_CXX_STANDARD_LIBRARIES "${CMAKE_CXX_STANDARD_LIBRARIES} ${_arts_atomic_flag}")
 
 # Settings every consumer of this HPX install needs, whatever it is, and
 # every one of them stated here: this project is configurable on its own

@@ -519,10 +519,15 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
                 # every other runtime and program with; a comparison is
                 # only fair when both sides target the same instruction
                 # set, so an external project repeats it explicitly.
+                # The libatomic item is the tree's resolved one, never the
+                # bare name: HPX exports whatever it is handed here into
+                # its package's link interface, and a bare name is
+                # unresolvable on a host that carries libatomic only as a
+                # runtime object.
                 "-DCMAKE_CXX_FLAGS=-mcx16 -march=native -mtune=native -DHPX_HAVE_CXX11_STD_ATOMIC_128BIT"
                 "-DCMAKE_C_FLAGS=-mcx16 -march=native -mtune=native"
                 -DHPX_WITH_CXX11_ATOMIC_128BIT=ON
-                -DHPX_CXX11_STD_ATOMIC_LIBRARIES=atomic
+                -DHPX_CXX11_STD_ATOMIC_LIBRARIES=${ARTS_ATOMIC_LINK}
                 -DHPX_WITH_DISTRIBUTED_RUNTIME=ON
                 -DHPX_WITH_NETWORKING=ON
                 -DHPX_WITH_PARCELPORT_MPI=ON
