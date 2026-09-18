@@ -1020,6 +1020,10 @@ if(ARTS_OFI_CXI)
     endif()
   endif()
 
+  # Minimal static json-c, pinned the same way: with no arc4random in libc
+  # its build looks for libbsd and, finding it, makes the archive depend on
+  # it -- a dependency a static archive cannot carry to the provider's link
+  # probe.  DISABLE_EXTRA_LIBS keeps the seed on getrandom instead.
   set(JSONC_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/json-c_install")
   set(JSONC_LIB_A "${JSONC_INSTALL_DIR}/lib/libjson-c.a")
   if(NOT EXISTS "${JSONC_LIB_A}")
@@ -1041,6 +1045,7 @@ if(ARTS_OFI_CXI)
           -DBUILD_TESTING=OFF
           -DBUILD_APPS=OFF
           -DDISABLE_WERROR=ON
+          -DDISABLE_EXTRA_LIBS=ON
       RESULT_VARIABLE _rc)
     if(NOT _rc EQUAL 0)
       message(FATAL_ERROR "Failed to configure vendored json-c")
