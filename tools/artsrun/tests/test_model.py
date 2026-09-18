@@ -41,7 +41,7 @@ def test_every_unbuildable_position_states_a_reason():
 
 def test_two_configurations_offer_a_reference_and_the_rest_do_not():
     plane = load_plane()
-    assert len(plane.entries) == 11
+    assert len(plane.entries) == 12
     refs = [e for e in plane.entries if e.is_reference and not e.is_external]
     assert {e.key for e in refs} == {"xsocr", "ocrvx"}
     assert plane.entry("xsocr").cell == "EXCL/PURGE/WB"
@@ -57,9 +57,25 @@ def test_hpx_is_selectable_but_sits_on_no_plane_position():
     assert all(hpx not in plane.entries_of(c) for c in plane.cells)
 
 
-def test_wrf_is_not_selectable():
+def test_the_db_wrf_section_offers_flush_and_draws_its_retired_arm():
     plane = load_plane()
-    assert not any("wrf" in key for key in plane.entry_keys)
+    assert [m.model for m in plane.models] == ["DB_WRF"]
+    db_wrf = plane.models[0]
+    assert [c.arm for c in db_wrf.cells] == ["FLUSH", "VAL_WT_RETAIN"]
+    flush, retired = db_wrf.cells
+    assert flush.buildable and flush.variant == "wrf_flush"
+    assert not retired.buildable and "retired" in retired.reason
+    entry = plane.entry("arts_wrf_flush")
+    assert entry.kind is RuntimeKind.ARTS and entry.model == "DB_WRF"
+    assert entry.cell == "DB_WRF/FLUSH"
+    assert plane.entries_of(flush) == [entry]
+    assert plane.entries_of(retired) == []
+    assert entry.binary("nqueens", hinted=False) == "nqueens_arts_wrf_flush"
+
+
+def test_grid_entries_belong_to_the_ocr_model():
+    plane = load_plane()
+    assert {e.model for e in plane.entries if e.cell and "/" in e.cell and e.cell.count("/") == 2} == {"OCR"}
 
 
 def test_binary_names_follow_the_build_convention():
@@ -77,6 +93,13 @@ def test_catalog_rows_exclude_rewrites():
     rewrites = {a.name for a in catalog.apps.values() if a.restructured_from}
     assert rewrites
     assert not rewrites & {a.name for a in catalog.rows}
+
+
+def test_every_unordered_writes_reason_cites_a_source_line():
+    import re
+    for app in load_catalog().apps.values():
+        if app.unordered_writes:
+            assert re.search(r"\.c:\d+", app.unordered_writes), app.name
 
 
 def test_a_restructured_version_resolves_to_the_rewrite_target():
@@ -794,6 +817,7 @@ def test_arts_only_probe_excludes_every_reference():
     class _Entry:
         def __init__(self, kind):
             self.kind = kind
+            self.model = "OCR"
 
         @property
         def is_reference(self):
@@ -804,6 +828,7 @@ def test_arts_only_probe_excludes_every_reference():
         multinode_skip = None
         ocrvx_skip = False
         arts_only = True
+        unordered_writes = None
         hpx_binary = None
         hpx_versions = []
         fixtures = []
@@ -811,6 +836,46 @@ def test_arts_only_probe_excludes_every_reference():
     for kind in (RuntimeKind.XSOCR, RuntimeKind.OCRVX):
         assert _ineligible(_Entry(kind), _App(), 1) == "probe is built for the ARTS variants alone"
     assert _ineligible(_Entry(RuntimeKind.ARTS), _App(), 1) is None
+
+
+def test_a_row_outside_db_wrf_is_dropped_on_the_wrf_flush_entry_only():
+    from artsrun.run.plan import _ineligible
+    plane = load_plane()
+    catalog = load_catalog()
+    bs = Benchset(name="t", apps={})
+    resolved = {a.key: a for a in bs.resolve(catalog)}
+    app = resolved["quicksort:base"]
+    assert app.unordered_writes
+    assert _ineligible(plane.entry("arts_wrf_flush"), app, 2).startswith("program is outside DB-WRF")
+    assert _ineligible(plane.entry("arts_val_wb"), app, 2) is None
+    ok = resolved["nqueens:base"]
+    assert ok.unordered_writes is None
+    assert _ineligible(plane.entry("arts_wrf_flush"), ok, 2) is None
+
+
+def test_a_restructured_row_carries_the_rewrites_own_unordered_writes():
+    """`unordered_writes` is a per-row annotation (base/hinted share one
+    program; a rewrite is a separate program with its own), so a restructured
+    ResolvedApp must read it from the rewrite the catalog resolved to, not
+    from the row head it was dispatched under."""
+    from artsrun.run.plan import _ineligible
+    plane = load_plane()
+    catalog = load_catalog()
+    bs = Benchset(name="t", apps={})
+    resolved = {a.key: a for a in bs.resolve(catalog)}
+
+    # fft's base row is annotated; its rewrite (fft_dist) is not.
+    assert resolved["fft:base"].unordered_writes
+    restructured = resolved["fft:restructured"]
+    assert restructured.unordered_writes is None
+    assert _ineligible(plane.entry("arts_wrf_flush"), restructured, 2) is None
+
+    # npb_cg's base row is unannotated; its rewrite (npb_cg_dist) is.
+    assert resolved["npb_cg:base"].unordered_writes is None
+    restructured = resolved["npb_cg:restructured"]
+    assert restructured.unordered_writes
+    assert _ineligible(plane.entry("arts_wrf_flush"), restructured, 2).startswith(
+        "program is outside DB-WRF")
 
 
 def test_the_two_section_loader_rejects_a_name_in_both_sections():

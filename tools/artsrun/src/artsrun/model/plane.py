@@ -53,9 +53,9 @@ class RuntimeKind(StrEnum):
 def _arts_key(variant: str) -> str:
     """The name an ARTS configuration is selected and reported by.
 
-    Its build suffix leads with the memory model (`ocr_`), which the plane
-    holds fixed, so carrying that into the name distinguishes nothing and
-    misreads as the reference runtime of the same name.
+    an OCR-model variant drops its `ocr_` token, which the grid already
+    fixes; a variant of another model keeps the model token, which is
+    exactly what distinguishes it
     """
     return "arts_" + variant.removeprefix("ocr_")
 
@@ -67,7 +67,8 @@ class SelectionEntry(BaseModel):
     selections and in result rows: an ARTS entry is named by the
     configuration it selects, a reference entry by the runtime.  An entry
     whose `cell` is None sits on no plane position: a cross-model reference,
-    selectable like any entry but tied to no coherence design point.
+    selectable like any entry but tied to no coherence design point.  `model`
+    is the memory model the entry's protocol requires of the program.
     """
 
     key: str
@@ -76,6 +77,7 @@ class SelectionEntry(BaseModel):
     cell: str | None = None
     variant: str | None = None
     note: str | None = None
+    model: str = "OCR"
 
     @property
     def is_reference(self) -> bool:
@@ -119,6 +121,36 @@ class PlaneCell(BaseModel):
         return self.variant is not None
 
 
+class ModelCell(BaseModel):
+    """One arm of a memory model that is not the OCR grid's.
+
+    A cell with a variant is selectable; one with a reason is a retired arm,
+    drawn so the section reads as a statement about the model rather than a
+    list of what happens to be built."""
+
+    model: str
+    arm: str
+    label: str
+    variant: str | None = None
+    note: str | None = None
+    reason: str | None = None
+
+    @property
+    def key(self) -> str:
+        return f"{self.model}/{self.arm}"
+
+    @property
+    def buildable(self) -> bool:
+        return self.variant is not None
+
+
+class ModelSection(BaseModel):
+    model: str
+    label: str
+    note: str
+    cells: list[ModelCell]
+
+
 class Plane(BaseModel):
     families: list[Family]
     releases: list[Release]
@@ -128,6 +160,7 @@ class Plane(BaseModel):
     release_labels: dict[Release, str] = Field(default_factory=dict)
     cells: list[PlaneCell]
     entries: list[SelectionEntry]
+    models: list[ModelSection] = Field(default_factory=list)
 
     # -- lookup ----------------------------------------------------------
     def cell(self, family: Family, release: Release, write: Write) -> PlaneCell:
@@ -143,7 +176,7 @@ class Plane(BaseModel):
                 return e
         raise KeyError(key)
 
-    def entries_of(self, cell: PlaneCell) -> list[SelectionEntry]:
+    def entries_of(self, cell: PlaneCell | ModelCell) -> list[SelectionEntry]:
         return [e for e in self.entries if e.cell == cell.key]
 
     @property
@@ -237,6 +270,18 @@ def load_plane() -> Plane:
                     )
                 )
 
+    models: list[ModelSection] = []
+    for model, spec in raw.get("models", {}).items():
+        cells_m = [ModelCell(model=model, **c) for c in spec["cells"]]
+        models.append(ModelSection(model=model, label=spec["label"],
+                                   note=spec["note"], cells=cells_m))
+        for cell in cells_m:
+            if cell.buildable:
+                entries.append(SelectionEntry(
+                    key=_arts_key(cell.variant), label=_arts_key(cell.variant),
+                    kind=RuntimeKind.ARTS, cell=cell.key, variant=cell.variant,
+                    note=cell.note, model=model))
+
     for key, ref in raw.get("external_references", {}).items():
         entries.append(
             SelectionEntry(
@@ -257,4 +302,5 @@ def load_plane() -> Plane:
                         for k, v in raw.get("release_labels", {}).items()},
         cells=cells,
         entries=entries,
+        models=models,
     )

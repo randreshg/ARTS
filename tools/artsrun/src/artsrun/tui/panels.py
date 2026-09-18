@@ -31,7 +31,7 @@ class LauncherChanged(Message):
 
 
 class PlanePanel(Vertical):
-    """The 4x4 grid.
+    """The 4x4 grid, then one row per further memory model.
 
     Every grid position is drawn, including the five that carry no
     configuration: seeing why EXCL has no WT column, and no family has a
@@ -87,6 +87,25 @@ class PlanePanel(Vertical):
                                     entry.key,
                                     classes="entry-toggle",
                                 )
+        for section in self.plane.models:
+            yield Static(f"[b]{section.label} memory model[/b]  [dim]protocols "
+                         "correct only for programs whose write acquisitions "
+                         "are exclusive — the OCR plane above needs no such "
+                         "obligation[/dim]", classes="panel-head model-head")
+            with Horizontal(classes="plane-row"):
+                yield Label(section.label, classes="plane-family")
+                for cell in section.cells:
+                    if not cell.buildable:
+                        blank = Static(cell.label, classes="plane-cell blank")
+                        blank.tooltip = cell.reason
+                        yield blank
+                        continue
+                    with Horizontal(classes="plane-cell"):
+                        for entry in self.plane.entries_of(cell):
+                            toggle = Toggle(cell.label, entry.key, classes="entry-toggle")
+                            toggle.tooltip = cell.note
+                            yield toggle
+
         external = [e for e in self.plane.entries if e.is_external]
         if external:
             # Off-plane cross-model references get a section of their own: a
@@ -438,7 +457,8 @@ class BenchsetPanel(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield Static(
             "[b]Applications[/b]  [dim]a = all/none · arguments are editable; "
-            "an empty box means the catalog's own calibration[/dim]",
+            "an empty box means the catalog's own calibration · a name in "
+            "green also runs under DB-WRF·FLUSH[/dim]",
             classes="panel-head",
         )
         names = store.list_benchsets()
@@ -509,10 +529,28 @@ class BenchsetPanel(VerticalScroll):
             with Horizontal(classes="bench-row"):
                 # The name opens the application's structural document —
                 # what the parameters mean and how they size the task graph.
-                yield Label(
+                # It also colours: a name in the DB-WRF style runs under
+                # DB-WRF·FLUSH too, so the tooltip on any other name says why
+                # not.
+                eligible = app.unordered_writes is None and not app.unsupported
+                name_label = Label(
                     f"[@click=app.show_app_doc({app.name!r})]{app.name}[/]",
-                    classes="bench-name",
+                    classes="bench-name wrf-eligible" if eligible else "bench-name",
                 )
+                if not eligible:
+                    # A row can be grey for either reason, or both at once
+                    # (independent axes: an unsupported program can also be
+                    # outside DB-WRF) — the tooltip must say why in every
+                    # case, not only the DB-WRF one.
+                    reasons = []
+                    if app.unordered_writes:
+                        reasons.append(
+                            f"program is outside DB-WRF: {app.unordered_writes}")
+                    if app.unsupported:
+                        reasons.append(
+                            f"application is unsupported: {app.unsupported}")
+                    name_label.tooltip = "\n".join(reasons)
+                yield name_label
                 if app.unsupported:
                     # The row stays visible — the document and the reason are
                     # the point — but its boxes cannot be taken: the program
@@ -563,8 +601,20 @@ class BenchsetPanel(VerticalScroll):
                 sub = self.benchset.apps.get(rewrite.name)
                 sub_args = sub.args if sub and sub.args is not None else None
                 with Horizontal(classes="bench-row"):
-                    yield Label(f"[dim]  └ {rewrite.name}[/dim]",
-                                classes="bench-name")
+                    # Its own verdict, coloured like the row's name: the
+                    # rewrite is a different program, and the model judges
+                    # programs.
+                    if rewrite.unordered_writes is None and not rewrite.unsupported:
+                        yield Label(f"  └ {rewrite.name}",
+                                    classes="bench-name wrf-eligible")
+                    else:
+                        sub_label = Label(f"[dim]  └ {rewrite.name}[/dim]",
+                                          classes="bench-name")
+                        sub_label.tooltip = (
+                            f"program is outside DB-WRF: {rewrite.unordered_writes}"
+                            if rewrite.unordered_writes
+                            else f"application is unsupported: {rewrite.unsupported}")
+                        yield sub_label
                     for _ in range(3):
                         yield Static("", classes="bench-cell blank")
                     yield Input(

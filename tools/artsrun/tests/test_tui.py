@@ -10,12 +10,12 @@ from artsrun.tui.panels import BenchsetPanel, PlanePanel, ProfilePanel
 from artsrun.tui.widgets import Toggle
 
 
-def drive(coro_factory):
+def drive(coro_factory, size=None):
     """Run one piloted session and return whatever it produced."""
 
     async def main():
         app = ArtsRunApp(profile="ferrari-local", benchset="paper-main")
-        async with app.run_test() as pilot:
+        async with app.run_test(size=size) as pilot:
             return await coro_factory(app, pilot)
 
     return asyncio.run(main())
@@ -33,7 +33,7 @@ def test_everything_is_selected_by_default():
         )
 
     entries, nodes, apps = drive(check)
-    assert len(entries) == 11
+    assert len(entries) == 12
     assert "hpx" in entries
     assert nodes == [1, 2, 4, 8]
     assert apps > 0
@@ -46,8 +46,8 @@ def test_the_plane_draws_every_position_but_only_offers_eight():
         return len(plane.toggles), len(blanks)
 
     toggles, blanks = drive(check)
-    assert toggles == 11
-    assert blanks == 4
+    assert toggles == 12
+    assert blanks == 5
 
 
 def test_one_control_clears_then_restores_the_whole_plane():
@@ -61,9 +61,9 @@ def test_one_control_clears_then_restores_the_whole_plane():
         return first, cleared, restored
 
     first, cleared, restored = drive(check)
-    assert first == 11
+    assert first == 12
     assert cleared == 0
-    assert restored == 11
+    assert restored == 12
 
 
 def test_the_control_acts_on_the_surface_that_is_showing():
@@ -80,7 +80,7 @@ def test_the_control_acts_on_the_surface_that_is_showing():
 
     apps, entries = drive(check)
     assert apps == 0        # the visible surface cleared
-    assert entries == 11    # the others did not
+    assert entries == 12    # the others did not
 
 
 def test_a_version_the_application_lacks_is_absent_not_unchecked():
@@ -104,6 +104,115 @@ def test_a_version_the_application_lacks_is_absent_not_unchecked():
     assert blanks > 0
 
 
+def test_an_unsupported_only_row_still_explains_why_in_its_tooltip():
+    # CoMD_sdsc2 needs EW semantics the runtime does not implement but
+    # carries no unordered_writes annotation of its own — the row is grey
+    # for a reason unrelated to DB-WRF, and the tooltip must still say why
+    # rather than fall back to the unordered_writes field's None.
+    from artsrun.model.catalog import load_catalog
+    app_entry = load_catalog().apps["CoMD_sdsc2"]
+    assert app_entry.unsupported and app_entry.unordered_writes is None
+
+    async def check(app, pilot):
+        from textual.widgets import Label
+
+        bench = app.query_one("#bench", BenchsetPanel)
+        name = next(label for label in bench.query(Label)
+                    if "CoMD_sdsc2" in str(label.content))
+        return name.tooltip
+
+    tooltip = drive(check)
+    assert tooltip == f"application is unsupported: {app_entry.unsupported}"
+
+
+def test_a_rewrite_line_carries_the_rewrite_s_own_verdict():
+    # base and hinted share the row's verdict; the restructured rewrite is a
+    # different program and is judged on its own.  A row whose two verdicts
+    # differ must therefore draw its name and its rewrite line differently.
+    from artsrun.model.catalog import load_catalog
+    catalog = load_catalog()
+    split = [a for a in catalog.rows
+             if a.restructured_as and not a.unsupported
+             and (a.unordered_writes is None)
+             != (catalog.apps[a.restructured_as].unordered_writes is None)]
+    if not split:
+        pytest.skip("no row whose rewrite verdict differs from its own")
+    row = split[0]
+    rewrite = catalog.apps[row.restructured_as]
+
+    async def check(app, pilot):
+        from textual.widgets import Label
+
+        bench = app.query_one("#bench", BenchsetPanel)
+        labels = list(bench.query(Label))
+        name = next(l for l in labels if f"]{row.name}[/]" in str(l.content))
+        sub = next(l for l in labels if f"└ {rewrite.name}" in str(l.content))
+        fills = await _rendered_fills(app, pilot)
+        return ("wrf-eligible" in name.classes, name.tooltip,
+                "wrf-eligible" in sub.classes, sub.tooltip,
+                fills[row.name], fills[f"└ {rewrite.name}"])
+
+    name_in, name_tip, sub_in, sub_tip, name_fill, sub_fill = drive(
+        check, size=ROSTER_SCREEN)
+    assert name_in == (row.unordered_writes is None)
+    assert sub_in == (rewrite.unordered_writes is None)
+    outside = next(x for x, inside in ((row, name_in), (rewrite, sub_in))
+                   if not inside)
+    tip = name_tip if outside is row else sub_tip
+    assert tip == f"program is outside DB-WRF: {outside.unordered_writes}"
+    # What reaches the screen: the two verdicts differ, so the two lines are
+    # drawn in different colours.  A name is an action link, whose text takes
+    # the link colour rather than the widget's — a stylesheet that sets only
+    # `color` leaves every name in the default text colour.
+    assert name_fill != sub_fill
+
+
+# A terminal tall enough for the whole roster, so a screenshot holds every row.
+ROSTER_SCREEN = (180, 240)
+
+
+async def _rendered_fills(app, pilot) -> dict:
+    """The fill colour of every text run on the Applications tab, keyed by
+    the run's text, read off an SVG screenshot of a terminal tall enough to
+    hold the whole roster."""
+    import re
+
+    from textual.widgets import TabbedContent
+
+    app.query_one(TabbedContent).active = "tab-bench"
+    await pilot.pause()
+    await pilot.pause()
+    svg = app.export_screenshot()
+    styles = {m.group(1): m.group(2)
+              for m in re.finditer(r"\.(terminal-[0-9]+-r[0-9]+)\s*\{([^}]*)\}", svg)}
+    fills = {}
+    for cls, txt in re.findall(
+            r'<text class="(terminal-[0-9]+-r[0-9]+)"[^>]*>([^<]*)</text>', svg):
+        fill = re.search(r"fill:\s*(#[0-9a-fA-F]{6})", styles.get(cls, ""))
+        fills[txt.replace("&#160;", " ").strip()] = fill.group(1) if fill else None
+    return fills
+
+
+def test_an_eligible_name_is_drawn_in_the_eligible_colour():
+    # The name of a row inside DB-WRF must reach the screen in the same
+    # colour as an eligible rewrite line, and a row outside it in another.
+    from artsrun.model.catalog import Kind, load_catalog
+    catalog = load_catalog()
+    apps = [a for a in catalog.rows_of(Kind.APP) if not a.unsupported]
+    inside = next((a for a in apps if a.unordered_writes is None), None)
+    outside = next((a for a in apps if a.unordered_writes), None)
+    if inside is None or outside is None:
+        pytest.skip("the catalog has no row on one side of the model")
+
+    async def check(app, pilot):
+        fills = await _rendered_fills(app, pilot)
+        return fills[inside.name], fills[outside.name]
+
+    inside_fill, outside_fill = drive(check, size=ROSTER_SCREEN)
+    assert inside_fill is not None and outside_fill is not None
+    assert inside_fill != outside_fill
+
+
 def test_the_selection_becomes_a_campaign_of_the_expected_size():
     async def check(app, pilot):
         selection = app.build_selection()
@@ -111,7 +220,7 @@ def test_the_selection_becomes_a_campaign_of_the_expected_size():
 
     cells, entries, nodes = drive(check)
     assert cells == len(entries) * 4 * (cells // (len(entries) * 4))
-    assert len(entries) == 11
+    assert len(entries) == 12
     assert nodes == [1, 2, 4, 8]
 
 

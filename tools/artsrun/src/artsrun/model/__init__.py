@@ -6,6 +6,8 @@ from artsrun.model.catalog import (
 )
 from artsrun.model.plane import (
     Family,
+    ModelCell,
+    ModelSection,
     Plane,
     PlaneCell,
     Release,
@@ -27,6 +29,8 @@ __all__ = [
     "FluxSettings",
     "Kind",
     "Launcher",
+    "ModelCell",
+    "ModelSection",
     "Plane",
     "PlaneCell",
     "Profile",

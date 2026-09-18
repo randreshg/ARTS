@@ -39,6 +39,7 @@ apps:
     # serial work below the threshold growing as phi^n.  Sized to the one-node
     # window.
     args: ['--n-value=62', '--threshold=44', '--distribute-at=57', '--n-runs=1', '--test=1']
+    unordered_writes: 'every spawned fib task takes its rank''s locality state block RW (fib_hpx.c:47)'
 
   stencil1d_hpx:
     binary: stencil1d_hpx
@@ -77,6 +78,7 @@ apps:
     # registered pool's ladder maps over those generations: nx stops where the
     # measured resident set fits the one-node memory budget with margin.
     args: ['--nx=270000', '--nt=45', '--np=4096', '--nd=10']
+    unordered_writes: 'the per-rank semaphore block is satisfied while held and signalled by unordered writers (stencil1d_hpx.c:251, :507-528)'
 
   network_storage_hpx:
     binary: network_storage_hpx
@@ -101,10 +103,12 @@ apps:
     # divides (G/n)*1024: 768 and 512 at 1, 2, 4 and 8 nodes with the
     # arguments below (720 and 480 at 3).  The put count votes and is pinned;
     # the get count rides as an extra.  The payload is the one thing in this
-    # section that is not write-race-free at block granularity: transfers that
-    # land on one slot are not ordered, in the origin (its storage array has no
-    # lock) or in the mirror, so nothing reads the bytes, here or there, and
-    # under DB_WRF the bytes are undefined while the counts are not.
+    # section outside DB-WRF at block granularity: transfers that land on one
+    # slot are not ordered, in the origin (its storage array has no lock) or
+    # in the mirror, so nothing reads the bytes, here or there, and the counts
+    # survive only because every completion runs on the counters' home rank --
+    # an implementation accident, not program ordering; the row is outside
+    # DB-WRF.
     expect: '393216'
     expect_args: ['--globalMB=4096', '--transferKB=64', '--iterations=5', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
     # Sizing: iterations and transferKB keep the origin's published values;
@@ -112,6 +116,7 @@ apps:
     # (32-bit offsets), below the one-node window -- recorded, not sized past.
     # --semaphore is inert on both sides; the width is the slot count.
     args: ['--globalMB=4096', '--transferKB=64', '--iterations=5', '--semaphore=16', '--all-to-all=true', '--no-local=false', '--distribution=1']
+    unordered_writes: 'every concurrent completion holds the counters and results blocks RW; slots collide at random (network_storage_hpx.c:204)'
 
   fft_hpx:
     binary: fft_hpx
@@ -174,3 +179,4 @@ apps:
     # neither runtime's thread count).  Sized to the one-node window through
     # each arm's measured two-point exponent under the memory budget with margin.
     args: ['--nx=72000', '--ny=71998', '--plan=estimate', '--run=scatter']
+    unordered_writes: 'row-parallel loops hold one array RW from nxl/nyl siblings (fft_hpx.c:388, :379); see the appdoc''s DB-WRF paragraph'

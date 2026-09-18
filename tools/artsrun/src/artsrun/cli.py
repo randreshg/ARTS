@@ -146,6 +146,22 @@ def show_plane() -> None:
                 row.append(names)
         table.add_row(*row)
     console.print(table)
+    for section in plane.models:
+        mtable = Table(title=f"{section.label} memory model — {section.note}",
+                       expand=False)
+        mtable.add_column("arm", style="bold")
+        mtable.add_column("entry")
+        mtable.add_column("note/reason")
+        for cell in section.cells:
+            if not cell.buildable:
+                # cell.reason already opens with "retired — " (it doubles as
+                # the TUI tooltip's prose), so only the styling is added here.
+                mtable.add_row(cell.label, "[dim]····[/dim]",
+                               f"[dim]{cell.reason}[/dim]")
+            else:
+                names = " | ".join(e.label for e in plane.entries_of(cell))
+                mtable.add_row(cell.label, names, cell.note or "")
+        console.print(mtable)
     for entry in plane.entries:
         if entry.is_external:
             console.print(f"off-plane [b]{entry.key}[/b] ({entry.label}): "
@@ -192,7 +208,7 @@ def show_apps(
     table.add_column("args", max_width=36, overflow="ellipsis")
 
     from artsrun.model.catalog import Kind
-
+    from artsrun.report import WRF_ELIGIBLE_STYLE as wrf
     first = True
     labels = {
         Kind.APP: "app",
@@ -220,16 +236,13 @@ def show_apps(
             table.add_row(f"[b]{heading}[/b]")
         for entry in rows:
             on = bs.is_enabled(entry)
-            versions = entry.own_versions
-            mark = lambda v: "[green]✓[/green]" if v in versions else "[dim]·[/dim]"  # noqa: E731
-            if entry.unsupported:
-                mark = lambda v: "[dim]✗[/dim]"  # noqa: E731
             name = entry.name if on else f"[dim]{entry.name}[/dim]"
             binary = entry.binary if entry.binary != entry.name else "[dim]·[/dim]"
             table.add_row(
                 name, labels[entry.kind], entry.cls.value, binary,
-                mark(Version.BASE), mark(Version.HINTED),
-                mark(Version.RESTRUCTURED),
+                _tier_mark(catalog, entry, Version.BASE),
+                _tier_mark(catalog, entry, Version.HINTED),
+                _tier_mark(catalog, entry, Version.RESTRUCTURED),
                 " ".join(entry.args) or "[dim]none[/dim]",
             )
     console.print(table)
@@ -238,6 +251,13 @@ def show_apps(
         "· hinted = structure untouched, EDT/DB placement hints added or "
         "changed as far as hints alone can carry it · restructured = its "
         "decomposition redesigned as a separate target[/dim]"
+    )
+    console.print(
+        f"[dim]· [/dim][{wrf}]✓[/] [dim]= that tier keeps every block's write "
+        "acquisitions exclusive, so it also runs under the DB-WRF·FLUSH "
+        "entry; a plain [/dim][green]✓[/green][dim] runs under the OCR-model "
+        "entries only.  base and hinted share one verdict, a restructured "
+        "rewrite has its own (artsrun apps <name> states why)[/dim]"
     )
     console.print(
         "[dim]app = a benchmark with a provenance, what a result is claimed "
@@ -399,6 +419,25 @@ def run_cmd(
                    else "consensus clean")
         console.print(f"finished: {ok}/{len(results)} ok · {verdict}")
     console.print(f"run directory: {campaign.run_dir}")
+
+
+def _tier_mark(catalog, entry, version: Version) -> str:
+    """The glyph for one tier of a row in the apps table.
+
+    Whether the tier exists is the row's; whether it is inside DB-WRF is the
+    verdict of the catalog row that supplies the tier's program — the row
+    itself for base and hinted, the rewrite for restructured.
+    """
+    from artsrun.report import WRF_ELIGIBLE_STYLE
+
+    if entry.unsupported:
+        return "[dim]✗[/dim]"
+    if version not in entry.own_versions:
+        return "[dim]·[/dim]"
+    row, _ = catalog.resolve(entry.name, version)
+    if row.unordered_writes is None:
+        return f"[{WRF_ELIGIBLE_STYLE}]✓[/]"
+    return "[green]✓[/green]"
 
 
 def _dry_run(campaign, selection: Selection) -> None:

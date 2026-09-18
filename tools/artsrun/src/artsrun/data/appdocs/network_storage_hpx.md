@@ -174,9 +174,9 @@ cross-rank sequencer the origin does not have, which means messages the
 origin never sends; the program is a bandwidth test whose storage is
 deliberately unsynchronised, and repairing it would make the two columns
 different programs; and the result does not read the racing bytes. This
-row's *payload* is therefore not write-race-free at block granularity:
-under `ARTS_MEMORY_MODEL=DB_WRF` its bytes are undefined while its counts are
-not, and the row's `wrf_val_wt` check asserts the counts only. It is the one
+row's *payload* is therefore outside DB-WRF at block granularity: the
+counts survive only because every completion runs on the counters' home
+rank — an implementation accident, not program ordering. It is the one
 row of the section with that property.
 
 It is also a row in which a block is read from another rank while its home

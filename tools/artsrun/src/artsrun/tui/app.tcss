@@ -73,6 +73,10 @@ HeaderIcon {
     margin-top: 1;
 }
 
+.model-head {
+    margin-top: 1;
+}
+
 .external-note {
     width: auto;
     padding: 0 1;
@@ -114,6 +118,17 @@ HeaderIcon {
 .bench-name {
     width: 30;
     padding: 0 1;
+}
+
+/* Inside the DB-WRF model: the same colour and weight as the apps table's
+   mark (WRF_ELIGIBLE_STYLE in report.py).  A row's name is an action link
+   (it opens the document), and link text takes the link-* properties, not
+   the widget's colour — so both are set. */
+.bench-name.wrf-eligible {
+    color: cyan;
+    text-style: bold;
+    link-color: cyan;
+    link-style: bold underline;
 }
 
 .bench-col-head {

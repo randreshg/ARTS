@@ -49,6 +49,8 @@ def _ineligible(entry: SelectionEntry, app: ResolvedApp, nodes: int) -> str | No
         return "application uses OCR extensions this reference does not implement"
     if entry.is_reference and app.arts_only:
         return "probe is built for the ARTS variants alone"
+    if entry.model == "DB_WRF" and app.unordered_writes:
+        return f"program is outside DB-WRF: {app.unordered_writes}"
     if entry.kind is RuntimeKind.HPX and app.hpx_binary is None:
         return ("no HPX program: an OCR-origin row (the HPX entry runs the "
                 "HPX-origin section)")
