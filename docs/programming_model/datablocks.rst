@@ -94,17 +94,17 @@ Consistency
 For regular ``ARTS_DB`` DataBlocks, which values a read may return is
 governed by the build-time protocol selection:
 
-* ``ARTS_MEMORY_MODEL`` × ``ARTS_COHERENCE_PROTOCOL`` select the contract
-  and the coherence family: ``OCR`` × ``VAL`` (default; implements the OCR
-  v1.2.0 §1.6 contract), ``OCR`` × ``INV``, ``OCR`` × ``EXCL``, or
-  ``DB_WRF`` × ``VAL`` (write-race-free at DB granularity, DB-WRF;
-  evaluation only).
+* ``ARTS_COHERENCE_PROTOCOL`` selects the protocol, which determines the
+  required memory model (``ARTS_MEMORY_MODEL`` is derived, not chosen
+  independently): ``VAL`` (default), ``INV``, or ``EXCL`` under the ``OCR``
+  model (implements the OCR v1.2.0 §1.6 contract), or ``FLUSH`` under the
+  ``DB_WRF`` model (exclusive write acquisition, DB-WRF; evaluation only).
 * ``ARTS_WRITE_POLICY`` selects where the canonical payload rests between
   write turns — ``WB`` (write-back, default) or ``WT`` (write-through at
-  release); live under INV/VAL.
+  release); live under INV/VAL (FLUSH has no write-policy axis).
 * ``ARTS_RELEASE_POLICY`` selects when a node's write grant goes back —
   ``RETAIN`` (default) or ``PURGE``; live under EXCL and under WT × {VAL,
-  INV} (``WB`` requires ``RETAIN``).
+  INV} (``WB`` requires ``RETAIN``; FLUSH has no release-policy axis).
 
 See :ref:`coherence_protocols` for the normative definition of all axes.  The
 other subtypes (``ARTS_DB_PIN``, ``ARTS_DB_CXL``, ``ARTS_DB_GPU``,
