@@ -1,268 +1,261 @@
 # sar_pss
 
 *The SAR pipeline with its inputs on disk instead of in the binary — one
-executable and a ten-rung parameter ladder, the roster's largest single
-datablock.*
-Source: `third_party/ocr-apps/apps/sar/ocr/src/` (11 files, ~4.6k lines),
+executable and a parameter ladder, the roster's largest single datablock.*
+Source: `third_party/ocr-apps/apps/sar/ocr/src/` (11 files, ~4.8k lines),
 built from `ocr/problem_size_scaling/`.  Binary: `sar_problem_size_scaling`.
 
 ## Overview
 
-`sar_pss` runs **exactly the same program** as `sar_tiny/small/medium/large`
-— identical sources, identical stage graph, identical wiring — with three
-build-level differences that make it a different benchmark:
-
-1. **Inputs at runtime, not at link time.** It is the one SAR target built
-   *without* `RAG_IMPLICIT_INPUTS`, so `mainEdt`'s argv block (`main.c:156-208`)
-   is live: the pulse data, platform positions and pulse timestamps are read
-   from files named on the command line, and the radar/image parameters come
-   from a text file rather than from a compiled-in `Parameters.h`.  The
-   problem size is data, so one binary covers the whole ladder.
-2. **A ten-rung ladder ships with it.**  `Parameter0.txt … Parameter9.txt`
-   sit beside the source with `Ix = Iy = 400, 800, … 4000` and everything else
-   fixed (`P1 = 4200`, `S1 = 4000`, `Nc = 3629`).  The catalog names
-   `Parameter2.txt` (1200²).
-3. **A coarser tile: `RAG_NEW_BLK_SIZE = 50`, not 32** — this variant's own
-   upstream `Makefile.x86` blocking factor, preserved by CMake.  Every
-   parallel family tiles at `50×50`, so at equal image size it has ~2.4×
-   fewer, ~2.4× fatter tiles than the compiled-in sizes.  Its CFAR percentile
-   is also looser (`Tcfar = 75` vs 90), so it reports more detects per scene.
-
-The pipeline itself: two SAR images are formed from a pulse stream and
-compared.  Per image, `ReadData` fills the pulse-return block `X` (plus `Pt`,
-`Tp`), `FormImage` copies the previous image into `refImage` and zeroes
-`curImage`, and `BackProj` fans out 576 tiled tasks that each accumulate all
-4200 pulses into their `50×50` pixels.  After the second image, `Affine`
-registers current against reference (2-D correlation at 3600 control points →
+The pipeline: two SAR images are formed from a pulse stream and compared.  Per
+image, `ReadData` fills the pulse-return block `X` (plus `Pt`, `Tp`),
+`FormImage` copies the previous image into `refImage` and zeroes `curImage`,
+and `BackProj` fans out `⌈Ix/B⌉²` tiled tasks that each accumulate all `P1`
+pulses into their `B×B` pixels.  After the second image, `Affine` registers
+current against reference (2-D correlation at `⌊√Nc⌋²` control points →
 6-parameter least-squares warp → tiled resampling), `CCD` builds a normalized
 correlation map, `CFAR` declares a detection wherever the cell under test is
 less correlated than its local clutter ring, and `post_CFAR` prints
-`SAR detects: <Nd>` — the catalog marker and scalar — and writes the detect
-list to the path given as `argv[4]`.  Provenance: the Georgia Tech Research
-Institute Streaming Sensor Challenge Problem reference, ported to OCR through
-the `RAG_*` macro layer.  The catalog pins **no `expect`** for this row, and
-correctly so: the scalar is a function of the parameter file, not of the
-binary.  It stresses broadcast of large read-only blocks and exclusive
-re-acquisition of one whole-image block per tile, on top of 6.05 G complex
-MACs of backprojection per image.
+`SAR detects: <Nd>` — the catalog marker and scalar.  Provenance: the Georgia
+Tech Research Institute Streaming Sensor Challenge Problem reference, ported to
+OCR through the `RAG_*` macro layer.
+
+Three things distinguish this target from the retired compiled-in SAR sizes:
+
+1. **Inputs at runtime, not at link time.** It is the one SAR target built
+   *without* `RAG_IMPLICIT_INPUTS`, so `mainEdt`'s argv block is live: the
+   pulse data, platform positions and pulse timestamps are read from files
+   named on the command line, and the radar/image parameters come from a text
+   file rather than a compiled-in `Parameters.h`.  The problem size is data, so
+   one binary covers the whole ladder.
+2. **A parameter ladder ships with it.** `Parameter0.txt … Parameter9.txt` come
+   from upstream with `Ix = Iy = 400, 800, … 4000` and everything else fixed
+   (`P1 = 4200`, `S1 = 4000`, `Nc = 3629`).  This project added six more by
+   the ladder's own rule `Ix = 400*(n+1)`: `Parameter10` (4400), `Parameter14`
+   (6000), `Parameter15` (6400) and `Parameter19` (8000) along the way,
+   `Parameter17` (7200) for this row's calibrated width, and `Parameter45`
+   (18400) for the restructured row.
+3. **A coarser tile: the blocking factor defaults to 50, not 32** — this
+   variant's own upstream `Makefile.x86` value, preserved by CMake as the
+   default of the run-time knob.  Its CFAR percentile is also looser
+   (`Tcfar = 75` vs 90), so it reports more detects per scene.
+
+The catalog **pins an `expect`** together with `expect_args`: the detect count
+is a deterministic function of the fixture, the parameter file and the tile
+block, so the pin is only valid for the argument list beside it.
 
 ## Parameters
 
-argv is **all-or-nothing**: the four path overrides are taken only when
-`ocrGetArgc() >= 5` (program name + 4) and the parameter-file override only at
-`>= 6`.  One to three arguments is a usage error that names the four paths and
-exits; with none, the compiled `argv.h` defaults apply —
-`../../datasets/huge/Data.bin` and friends, relative to the working directory
-— and the validation `fopen` then fails with `Error opening ...`.
+argv positions 1–4 are **all-or-nothing**: the four path overrides are taken
+only when `ocrGetArgc() >= 5` (program name + 4).  One to three arguments is a
+usage error that names the four paths and exits.  Positions 5–9 are each
+optional and default to the compiled value.
 
-| arg | meaning | catalog value | CLI reachability |
-|-----|---------|---------------|------------------|
-| `argv[1]` | pulse-return data (`2·P1·S1` complex pairs) | `datasets/sar-huge/Data.bin` (268.8 MB) | ✓ carried to every node in the `file_args` block, reopened per task — multinode-safe |
-| `argv[2]` | platform positions (`2·P1·3` floats) | `datasets/sar-huge/PlatformPosition.bin` | ✓ same |
-| `argv[3]` | pulse timestamps (`2·P1` floats) | `datasets/sar-huge/PulseTransmissionTime.bin` | ✓ same |
-| `argv[4]` | detects output path | `{repo}/scratch/sar_detects.txt` | ✓ passed by value in `post_CFAR`'s paramv |
-| `argv[5]` | radar/image parameter file | `ocr/problem_size_scaling/Parameter2.txt` | ✓ read by `ReadParams` on rank 0 only, into the `image_params` DB — multinode-safe |
-| `Ix`, `Iy` (param file) | image pixels | 1200 × 1200 | ✓ via `argv[5]`; **`Ix != Iy` is unsupported** (see below) |
-| `P1`, `S1` (param file) | pulses per image; samples per pulse | 4200, 4000 | ✓ but must match the `.bin` fixtures byte for byte |
-| `Sx`, `Sy` (param file) | spotlight subimage | 1200 (`TF = Ix/Sx = 1`) | ✓; `TF > 1` aborts ("digital spotlighting not yet supported") |
-| `Nc`, `Sc`, `Rc`, `Tc` | control-point budget / window / radius / threshold | 3629 → `N = ⌊√Nc⌋ = 60`; 15, 16, 0.7 | ✓ |
-| `Ncor`; `Ncfar`, `Nguard`, `Tcfar` | CCD window; CFAR window / guard / percentile | 5; 25, 17, 75 | ✓ |
-| `NumberImages` | images to process | 2 — **only 2 works**; any other value is a run-time error in `main_body_edt` | ✓ but effectively fixed |
-| `RAG_NEW_BLK_SIZE` | tile edge for every parallel family | 50 | ✗ `benchmarks/apps/CMakeLists.txt` |
-| `DEBUG_SSCP` | dump image/correlation planes | off | ✗ deliberately left out of every variant |
+| arg | meaning | CLI reachability |
+|-----|---------|------------------|
+| `argv[1]` | pulse-return data (`2·P1·S1` complex pairs) | ✓ carried to every node in the `file_args` block, reopened per task — multinode-safe |
+| `argv[2]` | platform positions (`2·P1·3` floats) | ✓ same |
+| `argv[3]` | pulse timestamps (`2·P1` floats) | ✓ same |
+| `argv[4]` | detects output path | ✓ passed by value in `post_CFAR`'s paramv; required, but opened only when `argv[9] = 1` |
+| `argv[5]` | radar/image parameter file | ✓ read by `ReadParams` on rank 0 only, into the `image_params` DB — multinode-safe |
+| `argv[6]` | **tile block** `B` for every parallel family | ✓ default 50; bounded to `[1, Ix]`, refused loudly outside |
+| `argv[7]` | detection block | ✓ parsed and range-checked, **unused in this tier** (it is the restructured row's fused-detection knob; the grammar is identical in both) |
+| `argv[8]` | resample block | ✓ same |
+| `argv[9]` | write the detections file, 0/1 | ✓ **default 0** |
+| `Ix`, `Iy` (param file) | image pixels | ✓ via `argv[5]`; **`Ix != Iy` is unsupported** (see below) |
+| `P1`, `S1` (param file) | pulses per image; samples per pulse | ✓ but must match the `.bin` fixtures byte for byte (4200, 4000) |
+| `Sx`, `Sy` (param file) | spotlight subimage | ✓; `TF = Ix/Sx > 1` aborts ("digital spotlighting not yet supported") |
+| `Nc`, `Sc`, `Rc`, `Tc` | control-point budget / window / radius / threshold | ✓; 3629 → `N = ⌊√Nc⌋ = 60`; 15, 16, 0.7 |
+| `Ncor`; `Ncfar`, `Nguard`, `Tcfar` | CCD window; CFAR window / guard / percentile | ✓; 5; 25, 17, 75 |
+| `NumberImages` | images to process | ✓ but effectively fixed: any value but 2 is a loud run-time error |
+| `DEBUG_SSCP` | dump image/correlation planes | ✗ deliberately left out of every variant |
+
+`argv[9] = 0` is the campaign setting.  The detections file is the program's
+bulk output — 4 M lines and ~180 MB at `Ix = 4000`, written by one task inside
+the measured window — not its result; the result is the count, which is printed
+either way.  `argv[9] = 1` restores the published behaviour byte for byte.
 
 `Ix != Iy` is accepted by the parser and then mis-indexed: `backproject_async`
 walks `m` over the `Ix` extent against a row table built with `Iy` rows, and
-`affine_async_2` clamps its `Y` loop against `Xend`.  All ten shipped
-parameter files are square, so this never bites — but a hand-written one must
-be too.
+`affine_async_2` clamps its `Y` loop against `Xend`.  Every shipped parameter
+file is square — a hand-written one must be too.
 
 ## Structure
 
-With `Ix = Iy = 1200`, tile edge `B = 50`, `N = ⌊√Nc⌋ = 60`, and the three
-tiled window grids `T_bp = ⌈Ix/B⌉² = 576`, `T_ccd = ⌈(Iy−Ncor+1)/B⌉² = 576`,
-`T_cfar = ⌈(Iy−Ncor−Ncfar+2)/B⌉² = 576`:
+With `g = ⌈Ix/B⌉` (all three tiled window grids collapse to `g²` because every
+shipped `Ix` is a multiple of 400 and `B` divides it) and `N = ⌊√Nc⌋ = 60`:
 
-| object | count | here | size |
-|--------|-------|------|------|
-| stage heads | 18 (`post_main`, `main_body`, `ReadData`×2, `FormImage`×2, `post_FormImage`×2, `BackProj`×2, `Affine`, `post_Affine`, `post_affine_async_1/2`, `CCD`, `CFAR`, `post_CFAR`, plus `mainEdt` itself — the OCR shim creates it as an EDT before its body runs (`arts_ocr.c:2194`), so it is not one of `mainEdt`'s own explicit `ocrEdtCreate` calls and the stage-head count above missed it) | 18 | — |
-| tile EDTs | `2·T_bp` backprojection + `N²` correlation + `T_bp` resample + `T_ccd` CCD + `T_cfar` CFAR | 1152 + 3600 + 576 + 576 + 576 | — |
-| global DBs | 14, all in `mainEdt` | 14 | `X` 128.2 MiB, `curImage`/`refImage` 11.0 MiB each, `corr_map` 16.4 MiB, `Y` 15.7 MiB, `Pt`/`Tp`/axis vectors, `file_args` 4 KiB, four parameter blocks (12–88 B) |
-| `Affine` DBs | `5 + N²` | 3605 | `Fx`/`Fy` (`Nc·4`), `A` (`Nc·32`), `output` 11.0 MiB, 56 B per control point |
-| per-task scratch | `2·N²` correlation windows (1.8 KiB) + `6·T_bp` backprojection (20 KiB tile copy, two 50-vectors) + `T_cfar` clutter windows (2.7 KiB) + 5 fixed | 11 237 | — |
-| EDT templates | 21 per rank | 21 | into a fixed `templateList[25]`, bounds-checked on every claim |
+| object | count | size |
+|--------|-------|------|
+| stage heads | 18 (`mainEdt`, `post_main`, `main_body`, `ReadData`×2, `FormImage`×2, `post_FormImage`×2, `BackProj`×2, `Affine`, `post_Affine`, `post_affine_async_1/2`, `CCD`, `CFAR`, `post_CFAR`) | — |
+| input-read tasks | `2·(128 + 1)` — 128 slab readers plus a join, per image | — |
+| tile EDTs | `2g²` backprojection + `N²` correlation + `g²` resample + `g²` CCD + `g²` CFAR | — |
+| global DBs | 14, all in `mainEdt` | `X` 128.2 MiB, `curImage`/`refImage`/`output` `8·Ix²` each, `corr_map` `12·(Ix−4)²`, `Y` `12·(Ix−28)²`, `Pt`/`Tp`/axis vectors, `file_args` 4 KiB, four parameter blocks |
+| `Affine` DBs | `5 + N²` | `Fx`/`Fy` (`Nc·4`), `A` (`Nc·32`), `output`, 56 B per control point |
+| per-task scratch | `2N²` correlation windows + `6g²` backprojection + `g²` clutter windows + 5 fixed | — |
+| EDT templates | 25 per rank | into a fixed `templateList[256]`, bounds-checked on every claim |
 
-Totals: `18 + 3·T_bp + N² + T_ccd + T_cfar` = **6498 EDTs**,
-`24 + 3·N² + 6·T_bp + T_cfar` = **14 856 DBs**, and **20 events regardless of
-size** — the app never calls `ocrEventCreate`, and the 10 `ocrEdtCreate` calls
-that pass a non-NULL `outputEvent` are exactly the 10 that carry
-`EDT_PROP_FINISH` (`main_body`, `Affine`, `post_affine_async_1/2`,
-`post_Affine`, `CCD`, `CFAR`, `post_CFAR`, `BackProj`×2), giving 10 output +
-10 finish events; every other create passes `NULL`.
+Closed forms: `EDT = 3876 + 5g²`, `DB = 10 824 + 7g²`, and **20 events
+regardless of size** — the app never calls `ocrEventCreate`, and the 10
+`ocrEdtCreate` calls that pass a non-NULL `outputEvent` are exactly the 10 that
+carry `EDT_PROP_FINISH`, giving 10 output + 10 finish events.
 
-Because every grid tiles at `B = 50` and every shipped `Ix` is a multiple of
-400, all three grids collapse to `g² ` with `g = Ix/50`, giving the closed
-forms `EDT = 3618 + 5·g²` and `DB = 10 824 + 7·g²` across the whole ladder.
-
-Live set ≈ 229 MiB — and it is also the *total* allocated set, because
-`main.c`, `back_proj.c` and `registration.c` each `#define`
-`bsm_free`/`dram_free`/`spad_free` to nothing; only `cfar.c` destroys anything
-(a clutter window per CFAR tile, plus `Nd`).  Unlike the compiled-in sizes the
-binary carries no dataset: the 268.8 MB of input is read from disk instead,
-twice (once per image), by whichever node runs each `ReadData`.
-
-Counter cross-check: not independently measured at this size. The family's
-shared closed forms — `EDT = 18 + 3·T_bp + N² + T_ccd + T_cfar` (the `+18`
-folding in `mainEdt` itself, created by the OCR shim's bootstrap before its
-body runs, `arts_ocr.c:2194`), `DB = 24 + 3·N² + 6·T_bp + T_cfar`, and the
-fixed 20 events — were verified exactly on the `sar_tiny`/`sar_small` pair (1
-node, counters ONCE: measured 43/115 EDTs, 65/185 DBs, 20/20 events, each the
-formula's 42/114, 64/184, 20/20 plus the runtime's constant +1 EDT/+1 DB/+0
-EVT baseline). This row's Structure figures (and the collapsed
-`EDT = 3618 + 5·g²`, `DB = 10 824 + 7·g²` forms above) follow the same closed
-forms at its own `T_bp = 576`, `N² = 3600`, `T_ccd = 576`, `T_cfar = 576`.
+The live set is also the *total* allocated set: `main.c`, `back_proj.c` and
+`registration.c` each `#define` `bsm_free`/`dram_free`/`spad_free` to nothing;
+only `cfar.c` destroys anything.  Unlike the retired compiled-in sizes the
+binary carries no dataset: the 268.8 MB of input is read from disk, once per
+image, by the node that runs that image's `ReadData`.
 
 ## Wiring
 
-Identical to the compiled-in sizes.  There is not one explicit event in the
-program: stages chain through **finish events**, each head a finish EDT whose
-fan-out lives in its scope and whose event lands on the next head's last
-dependence slot (`main.c:1180-1185`).  `post_FormImage` closes an imaging
-round by wiring the refilled `X`/`Pt`/`Tp` into the next `ReadData` (first
-round) or `curImage` into `Affine` (second).
+There is not one explicit event in the program: stages chain through **finish
+events**, each head a finish EDT whose fan-out lives in its scope and whose
+event lands on the next head's last dependence slot.  `post_FormImage` closes
+an imaging round by wiring the refilled `X`/`Pt`/`Tp` into the next `ReadData`
+(first round) or `curImage` into `Affine` (second).
 
 | datablock | RW writers | RO readers | max concurrent readers |
 |-----------|-----------|------------|------------------------|
-| `X`, `Pt`, `Tp` | `ReadData` (1) | `backproject_async` | 576 |
-| `curImage` | `backproject_async` (576), `post_Affine` (1) | `affine_async_1`, `affine_async_2`, `ccd_async` | 3600 |
-| `refImage` | `FormImage` (1) | `affine_async_1`, `ccd_async` | 3600 |
-| `output` | `affine_async_2` (576) | `post_Affine` | 1 |
-| `affine_params`, `Fx`, `Fy`, `A` | `affine_async_1` (3600) | `post_affine_async_1/2` | 1 |
-| `corr_map` | `ccd_async` (576) | `cfar_async` | 576 |
-| `Y`, `Nd` | `cfar_async` (576) | `post_CFAR` | 1 |
+| `X`, `Pt`, `Tp` | 128 slab readers, on one node | `backproject_async` | `g²` |
+| `curImage` | `backproject_async` (`g²`), `post_Affine` (1) | `affine_async_1/2`, `ccd_async` | `N²` |
+| `refImage` | `FormImage` (1) | `affine_async_1`, `ccd_async` | `N²` |
+| `output` | `affine_async_2` (`g²`) | `post_Affine` | 1 |
+| `affine_params`, `Fx`, `Fy`, `A` | `affine_async_1` (`N²`) | `post_affine_async_1/2` | 1 |
+| `corr_map` | `ccd_async` (`g²`) | `cfar_async` | `g²` |
+| `Y`, `Nd` | `cfar_async` (`g²`) | `post_CFAR` | 1 |
 | `image_params` | `ReadData` (twice) | *every* task in the program | all of them |
 
 Two facts dominate.  **Every parallel family writes one whole-image block**,
-and OCR `RW` is per-node exclusive — 576 backprojection tiles all take
-`curImage` RW, 576 CCD tiles `corr_map`, 576 CFAR tiles `Y` and `Nd`, 3600
-correlation tasks `affine_params`/`Fx`/`Fy`/`A`.  Tiles are round-robin
-placed, so each of those blocks is written from every node's tasks and a
-family can never write on two nodes at once.  `curImage` is the contention
-point: 1152 exclusive acquisitions of an 11.0 MiB block in backprojection
-alone, over disjoint pixel ranges — pure protocol cost, not an algorithmic
-dependence.  And the fan-out is genuinely broadcast-shaped: `X` (128.2 MiB)
-read concurrently by all 576 tiles of a round, `curImage`/`refImage` by up to
-3600 tasks, and the 88-byte `image_params` by essentially every task.  Tiles
-sharing a writable block coordinate with plain atomics on the shared copy
-(`__sync_fetch_and_add` on `affine_params->Nc`, on `Nd`), varying the *order*
-of rows and detects but not the counts or the fitted warp.
+and OCR `RW` is per-node exclusive — the tiles of a family all take the same
+block RW, so tiles are round-robin placed, each of those blocks is written from
+every node's tasks, and a family can never write on two nodes at once.
+`curImage` is the contention point: `2g²` exclusive acquisitions of an
+`8·Ix²`-byte block in backprojection alone, over disjoint pixel ranges — pure
+protocol cost, not an algorithmic dependence.  The fan-out is genuinely
+broadcast-shaped: `X` (128.2 MiB) read concurrently by every tile of a round,
+the images by up to `N²` tasks, and the 88-byte `image_params` by essentially
+every task.  Tiles sharing a writable block coordinate with plain atomics on
+the shared copy (`__sync_fetch_and_add` on `affine_params->Nc`, on `Nd`),
+varying the *order* of rows and detects but not the counts or the fitted warp.
 
-One wiring detail is specific to this build: a `FILE*` is process-local, so
-the input paths (not handles) travel in the `file_args` block, and each
-`ReadData_edt` reopens all three files on whatever node it lands on and
-`fseek`s to its image's slice.  The fixtures must therefore be visible at the
-same path on every node — trivially true for `launcher=local`, a real
-requirement on a cluster.
+Distribution-legality adaptations, applied identically to every tier and every
+backend: a `FILE*` is process-local, so the input paths (not handles) travel in
+the `file_args` block and each file-touching task reopens on its own node;
+row-pointer tables and the `xr`/`yr` axis vectors are rebuilt locally from
+`(Ix, Iy, dr)` after a block is relocated; and ~108 dependence sites whose EDT
+body provably never writes the block are declared `DB_MODE_RO` where upstream
+declared `RW`.  The whole-image `RW` *writers* — the exhibit — are untouched.
 
 ## Flow
 
 Strictly serial stages, each a one-EDT head fanning out to a tile family and
 joining on its own finish event:
 
-1. `mainEdt` (rank 0, serial) — reads the parameter file, validates the four
-   paths by opening them, 14 `ocrDbCreate`s, axis vectors.
-2. `refReadData` → `refFormImage` — read 134 MB of pulse data off disk, zero
-   `curImage` (11.0 MiB).  Both serial.
-3. `BackProj` → **576 `backproject_async`** — the heaviest stage; each tile
-   sweeps all 4200 pulses over `50×50` pixels, ≈ 10.5 M complex MACs.
-4. `post_FormImage` → `ReadData` (the second 134 MB read) → `FormImage` (which
-   now really does the `curImage → refImage` copy) → `BackProj` → **576 tiles**.
-5. `Affine` → **3600 `affine_async_1`**, one per control point,
-   `(2·Rc+1)²·Sc²` ≈ 245 k operations each.
+1. `mainEdt` (rank 0, serial) — reads the parameter file, validates the three
+   input paths by opening them, 14 `ocrDbCreate`s, axis vectors.
+2. `refReadData` → **128 slab readers** (all on `refReadData`'s node) + a join
+   → `refFormImage` — 134 MB of pulse data off disk, then zero `curImage`.
+3. `BackProj` → **`g²` `backproject_async`** — the heaviest stage; each tile
+   sweeps all 4200 pulses over `B×B` pixels.
+4. `post_FormImage` → `ReadData` (the second 134 MB read, slabbed the same way)
+   → `FormImage` (which now really does the `curImage → refImage` copy) →
+   `BackProj` → **`g²` tiles**.
+5. `Affine` → **`N²` `affine_async_1`**, one per control point,
+   `(2Rc+1)²·Sc²` ≈ 245 k operations each.
 6. `post_affine_async_1` — serial `A'A`/`A'F` accumulation and two 6×6
-   Gaussian eliminations → **576 `affine_async_2`** resampling tiles.
+   Gaussian eliminations → **`g²` `affine_async_2`** resampling tiles.
 7. `post_affine_async_2` → `post_Affine` — serial full-image copy
    `output → curImage`.
-8. `CCD` → **576 `ccd_async`**; `CFAR` → **576 `cfar_async`**; `post_CFAR`
-   writes `Nd` lines; `post_main` shuts down.
+8. `CCD` → **`g²` `ccd_async`**; `CFAR` → **`g²` `cfar_async`**; `post_CFAR`
+   prints the detect count (and writes the file only under `argv[9] = 1`);
+   `post_main` shuts down.
 
-Max parallel width is `max(T_bp, N², T_ccd, T_cfar)` = **3600**, but what
-bounds how much machine a rung keeps busy is the *narrowest* wide stage,
-**576** at `Parameter2` — and note that the correlation stage is 3600 wide at
-*every* rung, because `Nc` is 3629 in all ten parameter files.  Serial
-bottlenecks in cost order: the two 134 MB `ReadData` file reads, the
-`FormImage` copy-and-zero pair, `post_Affine`'s full-image copy, and
-`post_CFAR`'s line-by-line write.  Stage boundaries are hard barriers, so no
-two tile families overlap and every serial head is fully exposed.
+Stage boundaries are hard barriers, so no two tile families overlap: the
+**instantaneous frontier is one phase**, and the structure is spawn-and-join.
+What bounds how much machine a rung keeps busy is therefore the *narrowest*
+wide stage — and the correlation stage is `⌊√3629⌋² = 3600` at **every** rung,
+because `Nc` is 3629 in every shipped parameter file.  Remaining serial terms,
+in cost order: `FormImage`'s copy-and-zero pair, `post_Affine`'s full-image
+copy, and `post_affine_async_1`'s least-squares accumulation.  The two file
+reads and the detects write, which used to head that list, are respectively
+slabbed and off by default.
 
 ## Placement (base)
 
-Every `ocrEdtCreate` passes `NULL_HINT`, and every DB is created through
-`bsm/dram/spad_malloc`, which pass `NULL_HINT` too (`rag_ocr.c:22-24`).  The
-five tile-EDT creates route their hint through `ragTileEdtHint()`, guarded by
-`OCR_APP_OPTIMIZED_PLACEMENT` and returning `NULL_HINT` in the only build
-there is: no `hinted` target exists for this row (`benchmarks/apps/CMakeLists.txt`,
-catalog: no `hinted:`), because a placement layer here, measured, either
-collapses the pipeline onto one rank (97% of the work on one of four) or,
-written honestly, runs 23–36% slower than no hints at all — the serialisation
-is on a shared whole-image block, which affinity cannot address.  So:
-**EDTs** → the shim passes `ARTS_HINT_ANY_RANK` → runtime round-robin, and all
-5880 tile tasks plus every stage head land on arbitrary ranks; **DBs** →
-home = creating rank, and since `mainEdt` runs on rank 0 all 14 global blocks
-(`X`, both images, `corr_map`, `Y`, the parameter blocks) are homed there,
-while `Affine_edt` and the two `BackProj_edt`s are round-robin so `output`,
-`A`, `Fx`, `Fy` and the per-tile scratch home on scattered ranks.
+Every `ocrEdtCreate` in the program passes a literal `NULL_HINT`, and every DB
+is created through `bsm/dram/spad_malloc`, which pass `NULL_HINT` too — with
+one exception: the 128 slab readers and the join of each `ReadData` carry
+`OCR_HINT_EDT_AFFINITY = ocrAffinityGetCurrent()`.  That is a correctness
+constraint, not a performance hint: `X`/`Pt`/`Tp` are one object each and their
+consumers read them whole, so the readers cannot own separate pieces, and
+concurrent writers to disjoint regions of one block are defined within a node
+and undefined across one.  The precondition is loud on both axes: the file
+refuses to compile without `ENABLE_EXTENSION_AFFINITY`, and a failing
+`ocrAffinityGetCurrent` exits instead of falling through to `NULL_HINT` — a
+silently round-robin read would be a cross-node write race whose only symptom is
+a wrong detect count, which is this row's scalar.
 
-Consequence: tiles spread uniformly over all `n` ranks, so every large
-read-only block must materialise on every rank that runs a tile, and the
-whole-image block a family writes changes owner on nearly every one of its
-per-tile RW acquisitions.  This build adds one more cross-rank effect the
-compiled-in sizes do not have: `ReadData_edt` is round-robin like everything
-else, so the 134 MB file read happens on an arbitrary rank and the freshly
-filled `X` then has to reach every other rank's backprojection tiles.  The
-algorithm has ideal tile locality (disjoint output tiles over shared read-only
-pulse data) and the base program expresses none of it — not merely because
-hints are absent, but because a stage's entire output is one datablock, so no
-placement could let two ranks write it concurrently.
+There is **no hinted tier and no guard**: no `OCR_APP_OPTIMIZED_PLACEMENT`
+appears anywhere in the SAR sources, in any commit, and CMake defines no
+`_hinted` target for this row.  That is the right answer, not an omission: hinted
+was tried.  A placement layer here, measured, either collapses the pipeline
+onto one rank (97% of the useful work on one of four, five tasks between the
+other two) or, written honestly as a coordinate map, runs 23–36% slower than
+no hints at all -- so the base's own map is the best hinted map and the base
+stands in for the hinted comparison.
+The structural reason is decisive: a stage's entire output is one datablock, so
+no placement can let two ranks write it concurrently, and the read-only inputs
+must reach every rank in any case because a balanced map must put tiles
+everywhere.
+
+So: **EDTs** → the shim passes `ARTS_HINT_ANY_RANK` → runtime round-robin, and
+every tile task plus every stage head lands on an arbitrary rank; **DBs** →
+home = creating rank, so the 14 global blocks are homed on rank 0 while
+`output`, `A`, `Fx`, `Fy` and the per-tile scratch home wherever their
+round-robin-placed creator ran.
 
 ## Sizing
 
-`sar_pss` is the continuation of the SAR ladder past `sar_large`, and the only
-rung that is chosen at launch rather than at build time — swap `argv[5]` and
-the same binary covers `Ix = 400 … 4000`.  It is also the SAR row that is
-enabled by default (the four compiled-in sizes carry `default_enabled: false`),
-and the one that needs `fixtures`: the 268.8 MB `datasets/sar-huge/` triple.
-A campaign should still pick **one** rung.
+`Ix`/`Iy` is the real dial — all three tile grids grow as `(Ix/B)²` and five of
+the blocks grow as `Ix²`.  `P1`/`S1` change no object count, only the bytes of
+`X` and the inner-loop length of a backprojection tile, and they must match the
+fixture, so in practice they are fixed at 4200×4000.  `Nc` moves only the
+correlation stage, as `⌊√Nc⌋²`, and every shipped file leaves it at 3629 —
+which makes that stage a *constant* 3600-task floor that neither shrinks with a
+smaller image nor grows with a larger machine.  The tile block `B` (`argv[6]`)
+trades width against grain at fixed work.
 
-| parameter file | `Ix = Iy` | tiles per grid | EDTs | DBs | image block | live set | backprojection |
-|---|---|---|---|---|---|---|---|
-| `Parameter0.txt` | 400 | 64 | 3 938 | 11 272 | 1.2 MiB | ~150 MiB | 0.67 G MAC/img |
-| `Parameter2.txt` (catalog) | 1200 | 576 | 6 498 | 14 856 | 11.0 MiB | ~229 MiB | 6.05 G MAC/img |
-| `Parameter5.txt` | 2400 | 2 304 | 15 138 | 26 952 | 44.0 MiB | ~495 MiB | 24.2 G MAC/img |
-| `Parameter9.txt` | 4000 | 6 400 | 35 618 | 55 624 | 122.1 MiB | ~1.1 GiB | 67.2 G MAC/img |
+| parameter file | `Ix = Iy` | tiles per grid at `B = 50` | EDTs | DBs | image block | app-side live set |
+|---|---|---|---|---|---|---|
+| `Parameter2.txt` | 1200 | 576 | 6 756 | 14 856 | 11.0 MiB | ~229 MiB |
+| `Parameter5.txt` | 2400 | 2 304 | 15 396 | 26 952 | 44.0 MiB | ~495 MiB |
+| `Parameter9.txt` | 4000 | 6 400 | 35 876 | 55 624 | 122.1 MiB | ~1.1 GiB |
+| `Parameter10.txt` | 4400 | 7 744 | 42 596 | 65 032 | 147.7 MiB | ~1.3 GiB |
+| `Parameter14.txt` | 6000 | 14 400 | 75 876 | 111 624 | 274.7 MiB | ~2.3 GiB |
+| `Parameter17.txt` | 7200 | 20 736 | 107 556 | 155 976 | 395.5 MiB | ~3.3 GiB |
 
-How the knobs move the shape: `Ix`/`Iy` is the real dial — all three tile grids
-grow as `(Ix/50)²` and five of the blocks grow as `Ix²`.  `P1`/`S1` change no
-object count, only the bytes of `X` and the inner-loop length of a
-backprojection tile (and they must match the fixture, so in practice they are
-fixed at 4200×4000).  `Nc` moves only the correlation stage, as `⌊√Nc⌋²`, and
-every shipped file leaves it at 3629 — which means the 3600-task correlation
-stage is a *constant* floor of work that does not shrink when you pick a
-smaller image.  `RAG_NEW_BLK_SIZE` (50) trades width against grain at fixed
-work and is compile-time.
-
-Against the reference machine (15 workers + 1 progress thread per node,
-1/2/4/8 nodes, strong scaling): pick the rung whose narrowest wide stage
-comfortably exceeds `nodes × 15`.  `Parameter0` (64 tiles) fits one node and
-starves beyond it; `Parameter2` (576) gives ≥ 4 tiles per worker at 8 nodes ×
-15 = 120 workers and is the calibrated choice for that reason — it is the
-smallest rung whose *narrow* stages still cover the full node sweep, at a live
-set that fits comfortably per rank.  `Parameter3`–`Parameter5` are the rungs to
-reach for if 8 nodes finish too fast; `Parameter9` is a ~1.1 GiB, 67 G-MAC
-per-image run and should be treated as a capacity experiment, not a sweep point.
+Memory: `live ≈ 48·Ix² + 134 MB` app-side; measured RSS was 3.8 GB at
+`Ix = 4000` on one Dane-class node, scaling as `Ix²` from that anchor: ~4.6 GB
+at 4400, ~8.6 GB at 6000, and ~12.3 GB at the catalog's `Ix = 7200`
+(`Parameter17`) — far inside a 190 GB budget.  Width, against 3456 workers and
+the spawn-and-join rule (integer multiple, ≥ 2× acceptable): the tile phases
+need `Ix ≥ 4151` for 2× and `Ix ≥ 5951` for the project's 4× fork-join slack,
+so `Parameter10` gives 7744 = 2.24× and `Parameter14` gives 14 400 = 4.17×.
+`Parameter9` (6400 = 1.85×) does not clear either.  **`Parameter17`
+(`Ix = 7200`) is the catalog's calibrated choice: `g² = 20 736 = 6×` the
+3456-worker floor** — an exact integer multiple, clearing the fork-join slack
+with more headroom than `Parameter14`.  The correlation stage stays 1.04× at
+every rung regardless of `Ix`; raising `Nc` is the only fix and is a
+deliberate deviation from every shipped file, which changes the fitted warp
+and therefore the pin.
 
 Width is not throughput here, though: every tile of a stage acquires the same
 whole-image block RW, exclusive per node, so write concurrency across nodes is
 1 however wide the stage — extra nodes buy image-sized transfers, not
-parallelism, and the strong-scaling curve should be expected to bend or invert.
-Memory never constrains the choice on this machine below `Parameter7` or so.
+parallelism.  The anti-scaling is a memory blow-up as much as a time one:
+measured at 2000 a side, 13.2 s / 1.4 GB at one node against 78.7 s / 110.5 GB
+at two.  Declare the expected per-geometry RSS before running; a 4- or 8-rank
+death on the uncombined VAL arm is a result about that arm, not a sizing error.
+
+Both tiers need `datasets/sar-huge/` staged (268.8 MB, checksum-gated)
+regardless of rung, and every rank must see the three input paths.
