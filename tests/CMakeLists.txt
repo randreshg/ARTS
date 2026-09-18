@@ -968,12 +968,7 @@ foreach(_t db_labeled_create_second_after_release_remote
         FAIL_REGULAR_EXPRESSION "FAIL:"
         PASS_REGULAR_EXPRESSION "PASS: db_labeled_create_second_after_release_remote")
 endforeach()
-# These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
-# it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(db_acquire_release_semantics TIMEOUT 120)
-endif()
 # The guard aborts the run by design, so the message is the verdict and
 # the exit status is not; one node shape states it as well as four.
 register_multinode_test(edt_create_oversize_guard VARIANTS 2n TIMEOUT 60)
@@ -1257,6 +1252,9 @@ add_arts_test(wrf_flush_private_copy)
 # Whitebox: a write-back whose landing credit is gone must ask for one and
 # still deliver the bytes.  Self-skips where the field does not exist.
 add_arts_test(wrf_flush_announce)
+# A block whose name carries no size: the first fetch on a rank is answered
+# size-only and re-asked with a landing, in both access modes.
+add_arts_test(wrf_flush_size_discovery)
 if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     register_single_node_test(wrf_flush_writer_reader TIMEOUT 30)
     register_multinode_test(wrf_flush_writer_reader TIMEOUT 60)
@@ -1273,6 +1271,8 @@ if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     register_multinode_test(wrf_flush_zero_size TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
     # Same reason: the spent credit only matters to a non-home releaser.
     register_multinode_test(wrf_flush_announce TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
+    # And the size-only round is asked only by a rank that is not the home.
+    register_multinode_test(wrf_flush_size_discovery TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
     foreach(_base wrf_flush_writer_reader wrf_flush_creator_remote_home
                   wrf_flush_no_acquire_first_touch wrf_flush_chain
                   wrf_flush_private_copy)
@@ -1281,7 +1281,7 @@ if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
                                  FAIL_REGULAR_EXPRESSION "FAIL:")
         endforeach()
     endforeach()
-    foreach(_base wrf_flush_zero_size wrf_flush_announce)
+    foreach(_base wrf_flush_zero_size wrf_flush_announce wrf_flush_size_discovery)
         foreach(_t ${_base}_2n ${_base}_3n ${_base}_4n ${_base}_2n_io)
             set_tests_properties(${_t} PROPERTIES PASS_REGULAR_EXPRESSION "DB_WRF: PASS"
                                  FAIL_REGULAR_EXPRESSION "FAIL:")
