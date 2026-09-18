@@ -2,8 +2,9 @@
 
 *The restructured version of `fft`: the same transform, decomposed as a Bailey
 four-step transpose over a tile grid, on a place-persistent SPMD structure whose
-transpose is aggregated per place.*
-Source: `third_party/ocr-apps/apps/fft/ocr/fft_dist.c` (~610 lines).
+transpose payload is aggregated per place pair while its task count follows the
+tile count.*
+Source: `third_party/ocr-apps/apps/fft/ocr/fft_dist.c` (~700 lines).
 
 ## Overview
 
@@ -12,9 +13,11 @@ about it can be distributed, which is why its `hinted` version only contains the
 tree rather than spreading it. This rewrite replaces the decomposition. The
 length-N transform is viewed as an `N1 x N2` matrix (`N1 = 2^ceil(m/2)`,
 `N2 = N/N1`) and computed in Bailey's four steps: an FFT down every column, a
-twiddle, a transpose, and an FFT along every row. The matrix is cut into `t`
-tiles in each direction, so no two tasks ever write the same object -- a tile
-owns `N2/t` columns on the way in and `N1/t` rows on the way out.
+twiddle, a transpose, and an FFT along every row. Both matrix dimensions are cut
+into `t` tiles **by index**, so `t` need not divide either dimension: any tile
+count up to the smaller dimension is legal, every tile is non-empty, and no two
+tasks ever write the same object -- a tile owns a range of columns on the way in
+and a range of rows on the way out.
 
 The input is a single tone, whose spectrum is known in closed form
 (`X[5] = X[N-5] = N/2`, every other bin zero), so each row tile verifies its own
@@ -24,82 +27,123 @@ is the result scalar. A run that got the transform wrong prints
 
 ## Parameters
 
-`fft_dist <power> [tiles] [places]`. The catalog runs `32 8192 32`.
+`fft_dist <power> [tiles] [places] [waves]`. The catalog runs
+`<power> <tiles> 32` and leaves `waves` derived.
 
 `power` is the size knob. It is NOT the `fft` row's: a restructured tier is
-its own row with its own window, and this one transforms 4 times the length in
-about the time the recursion takes for a sixteenth of it. `tiles` is the compute decomposition, clamped
-down to the largest power of two dividing both `N1` and `N2`; the width rule
-sets it -- a dataflow DAG asks for about 4x the 3456 persistent units the
-largest geometry provides, and `t` is the width of every phase.
+its own row with its own window, and this one transforms a longer signal in
+double complex arithmetic. `tiles` is the compute decomposition and the width of
+the column and row stages; because tiles are index ranges rather than divisors,
+the width rule can be met exactly -- an integer multiple of the 3456 persistent
+units the largest geometry provides is always reachable.
 
 `places` is the ownership and communication decomposition: how many partitions
-the program divides its tiles into and aggregates its exchange in. It is an
-**argument, not the rank count**. The program never asks how many ranks exist
+the program divides its tiles into and aggregates its exchange payload in. It is
+an **argument, not the rank count**. The program never asks how many ranks exist
 except to compute a placement hint, so its task count, its datablock count and
 the order its partial checksums combine in are identical in every geometry. 32
 is one place per node at the largest geometry, which is where the calibration is
 taken, and it is the convention XSBench's `-p 32` already uses here.
 
+`waves` is how many groups a place packs its tiles in. One packing task exists
+per (place, wave, destination place), so the wave count is what carries the
+exchange stage up to the width of the tile stages around it. Left unset it is
+derived as `ceil(tiles / places^2)`, bounded below by 1 and above by
+`tiles / places` so a wave still holds a tile; that default makes the exchange
+stage at least `tiles` tasks wide by construction. It is exposed because it also
+sets the transfer block size and the per-row-tile arrival count.
+
 ## Structure
 
-`mainEdt` does O(P) work and nothing else: it creates the `P * waves * P`
-events the places hand blocks through, one report event per place, and one
-`rankInitTask` per place, hinted onto `place * nranks / places`. The events a
-place hands to ITSELF -- the cut from a wave's unpack to its row tiles -- never
-leave the place and are created there, not here. Everything else is created by
-`rankInitTask` **on the place that will run it**, because a task created with a
-remote affinity is a message and a graph built in one place cannot scale.
+`mainEdt` does O(`places^2 * waves`) work and nothing else: it creates the
+`P * waves * P` rendezvous events the places hand blocks through, one report
+event per place, the event-grid block, and one `rankInitTask` per place, hinted
+onto `place * nranks / places`. Everything else is created by `rankInitTask`
+**on the place that will run it**, because a task created with a remote affinity
+is a message and a graph built in one place cannot scale.
 
-Per place, with `tpg = t/places`:
+A place's tile count is its **index span**, `tpg = floor((g+1)*t/places) -
+floor(g*t/places)`, which equals `t/places` only when `places` divides `t`;
+spans of consecutive places abut and differ by at most one. Per place:
 
-- **`colTileTask`** (`tpg`, no dependences) generates its own `N2/t` columns of
-  the tone, runs a length-`N1` FFT down each, applies the twiddle, and writes a
-  first-touch block in row-block-major order.
-- **`packTask`** (one per wave, several waves per place) reads a run of this
-  place's column tiles and writes one block per destination PLACE, then destroys
-  the tiles it read. Aggregating per place is what keeps the message count off
-  the tile count, and packing in waves is what lets the column form be released
-  a wave at a time rather than all at once. Each block is created on its
-  consumer's home.
-- **`unpackTask`** (one per wave) takes this place's arrival from every place
-  and cuts it into one block per row tile, then destroys the arrivals. This is
-  the stage that lets the two properties hold at once: a block on the wire is a
-  place pair's whole share, and a block a row tile waits on belongs to it alone.
-  Emitting per destination ROW BLOCK instead removes this stage, but multiplies
-  the transfer count by the tile count -- `places * waves * t` blocks, 2 KB each
-  at the catalog decomposition -- and buys nothing back, because a row tile
-  waits on every place and every wave regardless, so no arrival is freed any
-  earlier for it.
-- **`rowTileTask`** (`tpg`) takes one arrival per wave, reads its rows as
-  contiguous runs, runs a length-`N2` FFT along each, checks every output bin
-  against the closed-form spectrum, reports `{partial checksum, max err}`, and
-  **destroys its arrivals**.
+- **`colTileTask`** (`tpg`, no dependences) generates its own columns of the
+  tone analytically, runs a length-`N1` FFT down each, applies the twiddle, and
+  writes a first-touch block in row-major order over the matrix rows.
+- **`packTask`** (one per (wave, destination place)) reads a run of this place's
+  column tiles and writes **one** block -- what this place owes that destination
+  for that wave -- then signals. Aggregating the payload per place pair is what
+  keeps the message count off the tile count; one task per block is what keeps
+  the stage's width on it. Each block is created on its consumer's home.
+- **`reapTask`** (one per wave) frees that wave's column tiles once every
+  destination's pack has signalled. A shared object outlives its readers, so its
+  reaper is a task ordered after all of them.
+- **`forwardTask`** (one per (wave, source place)) is the sole waiter on one
+  rendezvous event and republishes its arrival on a place-local event. It moves
+  no data. A rendezvous event is homed where it was created -- `mainEdt`'s rank,
+  neither endpoint -- so a registration on it and every delivery from it is a
+  message to and from that one rank; the readers of an arrival number `tpg`, so
+  binding them to it directly would put `t * places * waves` registrations and
+  as many deliveries through a single rank. With the forwarder, the rendezvous
+  events carry `places^2 * waves` registrations and `places^2 * waves`
+  deliveries **whatever the tile count**, and the fan-out to the readers is
+  rank-local.
+- **`rowTileTask`** (`tpg`) reads this place's arrivals through those local
+  events -- one dependence per (wave, source place) -- assembles each of its
+  rows as a walk of contiguous runs, runs a length-`N2` FFT along it, checks
+  every output bin against the closed-form spectrum, and reports
+  `{partial checksum, max err}`. There is no repacking stage between the
+  exchange and the row FFT: a separate one would copy the whole dataset a second
+  time inside the measured window and would be `places * waves` tasks wide. What
+  it did buy -- being the single local fan-out point for the arrivals -- the
+  forwarder buys without the copy.
 - **`rankJoinTask`** (one) sums this place's partial checksums, takes the worst
-  of their errors, and destroys the partials.
-- **`finishTask`** combines the `P` reports, prints the scalar and shuts down.
+  of their errors, destroys the partials, and -- being the task ordered after
+  every row tile of the place -- reclaims the arrivals and the sticky rendezvous
+  events they arrived on.
+- **`finishTask`** combines the `P` reports, reclaims the event grid, prints the
+  scalar and shuts down.
+
+**What the builder costs.** `rankInitTask` is serial within its place (and
+parallel across places, on the place's own rank). Its dependence-addition count
+is dominated by the row stage's fan-in, `tpg * places * waves` -- 48,384 per
+place at `t = 6912, places = 32` (waves 7), 193,536 at `t = 13824` (waves 14).
+With the derived wave count that is `t * waves ~ t^2 / places^2`: **quadratic in
+the tile count** at a fixed place count, and linear in `t` if `waves` is pinned
+by argument instead. Every one of those calls is rank-local. The column stage is
+built **first**, before any of it, so the place starts computing after
+`O(tpg + places * waves)` calls rather than after the whole row-side wiring; the
+row side waits on the exchange either way.
 
 ## Wiring
 
-A column tile's block is `[row block][row][column]`; row-block major is what
-makes a destination's whole share of it one contiguous run, so the pack copies
-it per column tile rather than per row block. A transferred block is
-`[source's column tile][row block of the destination][point]`, and the unpack
-turns it into `[column tile of the wave, places in order][point]` per row tile,
-which is the order the row tile walks -- so it gathers rather than searches.
+A column tile's block is `[matrix row][column of the tile]`; row-major over the
+matrix rows is what makes a destination place's whole share of it one contiguous
+run, so the pack copies it per column tile rather than per row. A transferred
+block is `[source's column tile][row of the destination][column]`, which is
+exactly the order a row tile of that destination walks -- for one of its rows,
+each (source place, wave, column tile) contributes one contiguous run, so the
+row tile gathers rather than searches.
 
-Every block is destroyed by the task that consumes it: the pack destroys the
-column tiles of its wave, the unpack destroys the arrivals, the row tile
-destroys what the unpack gave it, the join destroys the partials, the finisher
-destroys the reports. Nothing outlives its reader.
+Every object is reclaimed by the task that can know it is finished with: the
+per-wave reaper frees the column tiles, the place's join frees the arrivals and
+the sticky rendezvous events that carried them, the join frees the partials, the
+finisher frees the reports and the event grid. Nothing outlives its readers.
+
+The rendezvous events are STICKY by necessity, not preference: their one waiter
+is registered inside the destination place's own init task while the producer
+satisfies from the source place's pack, and nothing orders the registration
+before the satisfy. Every intra-place event is single-fire, and every one of
+their consumers registers before the producing task is created -- which is why
+the forwarders are the last thing a place's builder creates.
 
 ## Flow
 
 Column tiles have no dependences and run as soon as their place is created. A
-wave's pack fires when that wave's tiles are done -- not when the place's are --
-a wave's unpack when that wave has arrived from every place, the row tiles when
-every wave has been cut for them, the join on its place's partials, and the
-finisher on the `P` reports.
+wave's packs fire when that wave's tiles are done -- not when the place's are --
+the wave's reaper when all of that wave's packs have signalled, a forwarder when
+its one transfer lands, a row tile when every arrival for its place has been
+forwarded, the join on its place's partials, and the finisher on the `P`
+reports.
 
 ## Placement (base)
 
@@ -113,41 +157,59 @@ exactly once cannot amortize an ownership migration.
 
 ## Sizing
 
-A place's resident data is `N/places` complex numbers throughout, because the
-transpose redistributes it rather than growing it. Live across the machine that
-is `N * 16` bytes of column-tile blocks -- 68.7 GB at the catalog's `power` 32 --
-and about twice that during a wave, while the column form the wave still holds
-and the row-major blocks it has emitted are both alive. Measured peak resident
-set at the anchor is 161 GB under `val_wb`, 176 under `inv_wb` and 164
-under `excl_retain` -- a 1.09x spread, which is the resident set following the
-protocol only weakly because every transfer block has one writer and one
-reader. `power` 33 is excluded on memory alone.
+**Width.** The column stage and the row stage are `t` tasks each, all
+dependence-free within their stage. The exchange stage is `places * waves *
+places` packing tasks, which the derived wave count holds at or above `t`.
+Because a tile is an index range, `t` can be set to any integer multiple of the
+3456 persistent units the largest geometry provides. The control-only stages are
+narrower and carry no data: `places * waves` reapers and `places^2 * waves`
+forwarders.
 
-Measured at `power` 28 in the trend geometry (15 workers + 1 progress per
-node), against the per-row-block split this replaces:
+**Memory (1 node).** Live payload is bounded structurally, not by scheduling
+order: the column form of the matrix is `16 * 2^power` bytes and the arrival
+form is another `16 * 2^power`, and no third form of the data exists, so
 
-| nodes | per row block | per place pair |
-|---|---|---|
-| 1 | 6.88 | 5.55 |
-| 2 | 43.39 | 4.44 |
-| 4 | 52.59 | 1.99 |
-| 8 | 38.10 | **1.16** |
+    peak payload  =  32 * 2^power bytes
 
-**4.8x from one node to eight**, where the split it replaces lost a factor of
-five over the same span -- and 33x at eight nodes outright. The split had been
-measured on memory and on one node, and one node is exactly where its cost
-cannot appear: every block is local there, so only the allocation shows.
+whatever order the scheduler interleaves the stages in -- 137.4 GB at `power`
+32, 274.9 GB at 33, which is what excludes 33. Two much smaller terms ride on
+top, both charged to a node only for the places resident on it, because both the
+waiting task and the event it waits on are created on the place's own rank:
 
-At the anchor (one node, 108 workers + 4 progress) `power` 32 runs in 22.78 s
-holding 161 GB under `val_wb`, 23.17 s and 176 GB under `inv_wb`, 22.89 s
-and 164 GB under `excl_retain`. The tightest family decides, and 176 GB is what
-the row is admissible at against a 256 GB node. The time is well inside the
-window a strong scaler asks for; **memory is what fixes the size here**, since a
-power doubles it and 33 does not fit. The checksum is one value in every cell
-and every family -- an earlier version whose decomposition followed the rank
-count instead had it drift with the node count, because the order the partials
-combined in drifted too.
+    scratch       =  32 * max(N1, N2) bytes per running task
+                     (~0.24 GB at power 32 over 112 threads)
+    pending edges ~  72 bytes * t * places * waves
+                     (0.11 GB at power 32, t = 6912, waves 7; 0.45 GB at
+                      t = 13824, waves 14; places = 32, all places co-resident)
 
-What this replaced, in turn, was a direct transpose of `t^2` blocks: 67.1 million
-datablocks and as many never-reclaimed events, which at eight nodes took the
-host to 807 GB of 1007 and had to be killed.
+The 72 bytes per pending edge is `sizeof(arts_edt_dep_t)` (40 -- the slot in the
+waiting task's dependence array, live from the task's creation until it runs)
+plus `sizeof(arts_event_dep_s)` (32 -- the waiter record on the event, live from
+registration until the event fires): the two structures the runtime allocates
+per registered dependence.
+
+One term is charged elsewhere. The waiter records on the **rendezvous** events
+live on the rank that created them (`mainEdt`'s rank) at every geometry, not on
+the places that use them. There is exactly one per transfer -- `places^2 * waves`
+records, 0.23 MB at `places = 32, waves = 7` -- so that concentration is bounded
+by the place count and is negligible. Binding the readers to those events
+directly, with no forwarder, would put `t * places * waves` records there
+instead.
+
+`t` and `places` are payload-neutral: the column form is `N1*N2*16` and the
+arrival form `N1*N2*16` at every tile and place count. They move the *block
+size* -- a column tile is `16 * 2^power / t` bytes and a transfer block is
+`16 * 2^power / (places^2 * waves)` -- and the arrival count a row tile takes,
+`places * waves`, which is what the bookkeeping term above follows.
+
+**Messages.** The transfer count is `places^2 * waves` blocks, and the exchange
+control traffic is `places^2 * waves` registrations plus `places^2 * waves`
+deliveries through the rank that homes the rendezvous events (7168 of each at
+`places = 32, waves = 7`). All three are independent of the tile count; nothing
+else in the program crosses a rank boundary except the `places` builder tasks,
+the grid block they read and the `places` reports.
+
+**Calibration.** `calibration pending` -- the decomposition changed (the
+repacking stage is gone, the exchange is task-per-block, and the arrivals reach
+their readers through a per-place forwarder), so no earlier timing on this row
+carries over and the trend must be re-taken before the campaign size is fixed.

@@ -1,10 +1,10 @@
 # tempest
 
 *A cubed-sphere halo exchange with the physics removed: 6 panels of `k×k`
-patches trade an 8-byte "who am I" block with up to 8 neighbours, 100
-timesteps, over persistent CHANNEL events.*
+patches trade an 8-byte "who am I" block with up to 8 neighbours, `duration`
+timesteps (published default 100), over persistent CHANNEL events.*
 Source: `third_party/ocr-apps/apps/tempest/refactored/ocr/intel-bryan/tempestCommunication.c`
-(~980 lines).
+(~1050 lines).
 
 ## Overview
 
@@ -17,13 +17,14 @@ neighbours across the panel seams, and then exchanges one `nbData_t` (a single
 no arithmetic: a patch's whole timestep is "stamp my number into each block I
 received and hand it on".
 
-Patch `TEST_PATCH` (0) prints its computed neighbour grid, then
-`*CROSS-CHECKING NEIGHBOR DATA EXCHANGE*` and the 3×3 grid of patch numbers it
-actually *received*; the two match iff every block travelled the edge it was
-wired to. The catalog's scalar is the last cell of the received grid — the SE
-neighbour — `21` at the default `k=2`, `46081` at `k=96`. It is a narrow
-oracle: one direction of one patch, the other eight cells printed but not
-extracted.
+Patch `TEST_PATCH` (0) prints, in its terminal generation only, its computed
+neighbour grid, then `*CROSS-CHECKING NEIGHBOR DATA EXCHANGE*` and the 3×3
+grid of patch numbers it actually *received*; the two match iff every block
+travelled the edge it was wired to. The catalog's scalar is the last cell of
+the received grid — the SE neighbour of patch 0, which is `5k² + 1` for every
+`k` and every `duration`: `21` at the default `k=2`, `11521` at `k=48`,
+`46081` at `k=96`. It is a narrow oracle: one direction of one patch, the
+other eight cells printed but not extracted.
 
 What it stresses is task churn and fine-grain exclusive data movement: every
 timestep is `6k²` tasks, each acquiring **nine RW datablocks** and issuing
@@ -32,18 +33,48 @@ channel idiom keeps event objects out of the steady state (created once at
 setup, reused for every generation), so what remains is EDT creation plus
 per-node-exclusive block migration — a coherence probe, not a FLOPS benchmark.
 
+Adaptations of the published source, identical in both tiers and to be
+disclosed with the measurement:
+
+1. **Persistent CHANNEL events replace the published per-timestep labeled
+   sticky create/destroy.** The published idiom re-creates a shared labeled
+   GUID every timestep; labeled-GUID reuse is not supported (a create
+   *replaces*), and the satisfy-vs-destroy race it implies is not orderable
+   without a transport ordering contract. The substitution also removes ~16
+   event operations per patch per timestep from the steady state of a program
+   that is nothing but event traffic.
+2. **`duration` became `argv[2]`** (the compile-time `#define DURATION 100`
+   remains its default), so the run length is a campaign knob rather than a
+   build.
+3. **The panel dependence is declared `DB_MODE_CONST`, not `DB_MODE_RW`.** No
+   task other than `realmainEdt` ever writes a panel block, so the RW
+   declaration was untrue; the effect is that a panel's `k²` `patchInit`s no
+   longer take exclusive turns on it. This is a declaration fix with a
+   measurable consequence (the init phase widens), which is why it is
+   disclosed rather than silent.
+4. **The terminal-generation neighbour test reads the pointer, not the GUID.**
+   The generation-0 seed leaves a block in an absent neighbour's slot, so the
+   GUID test dereferenced NULL at `duration=1`.
+5. **Loud argument validation** (`strtol` + positivity + arity) replaces the
+   silent `atoi`.
+6. **The per-generation `timestep: <g>` line is gone.** Patch 0 printed one
+   stdout line per generation on its own dependence chain, inside the measured
+   span; only the published cross-check output remains.
+
 ## Parameters
 
 | arg | meaning | default | CLI reachability |
 |-----|---------|---------|------------------|
-| `argv[1]` = `k` | patches per panel side; total patches `6k²` | 2 | ✓ parsed in `mainEdt` (`atoi`), passed as `realmainEdt`'s `paramv[0]`, stored in every panel DB and copied into every patch DB — multinode-safe |
-| (arg count) | `argc == 1` (no args) keeps the documented default `k=2`; `argc == 2` parses `argv[1]` | — | ✓ no-args default is intentional; a wrong argument count or a non-numeric `argv[1]` is now a loud usage error (prints `USAGE:` and shuts down) instead of silently running `k=2` |
-| `duration` | timesteps, i.e. `patchEdt` generations per patch | **the second argument**; the source's `#define DURATION` is 100 and remains the default when the argument is absent | ✓ an argument — width comes from `k`, run length from here, and the two are therefore independent |
+| `argv[1]` = `k` | patches per panel side; total patches `6k²` | 2 | ✓ parsed in `mainEdt` (`strtol`, positive-integer checked), passed as `realmainEdt`'s `paramv[0]`, stored in every panel DB and copied into every patch DB — multinode-safe |
+| `argv[2]` = `duration` | timesteps, i.e. `patchEdt` generations per patch | 100 (the source's `#define DURATION`, used when the argument is absent) | ✓ an argument — width comes from `k`, run length from here, and the two are therefore independent |
+| (arg count) | `argc == 1` (no args) keeps the documented default `k=2`; more than two arguments, a non-numeric one, or a non-positive one is a loud usage error (prints `USAGE:` and shuts down) | — | ✓ |
 | `TEST_PATCH` | which patch prints the cross-check | 0 | ✗ compile-time (`#ifndef`-guarded, so `-DTEST_PATCH=` would work, but the CMake target does not set it) |
 | channel `maxGen`/`nbSat`/`nbDeps` | requested `2`/`1`/`1` per halo channel | — | ✗ in-source; the shim *requires* `nbSat=nbDeps=1` and ignores `maxGen` (ARTS channels are unbounded MPSC), so there is no backpressure knob |
 
 `k` moves parallel width, object count and memory together — nothing scales the
 work *per* task — so `k` is the width dial and `duration` is the length dial.
+The campaign holds `duration` at the published 100 and sizes with `k=216`
+(measured: see the anchor below).
 
 ## Structure
 
@@ -55,11 +86,15 @@ has exactly one publisher and one learner.)
 
 | object | count | size / note |
 |--------|-------|-------------|
-| EDTs | `612k² + 9` | `600k²` `patchEdt` (`6k²` chains × 100 generations) + `6k²` `patchInit` + `6k²` `channelSetup` + 6 `panelInit` + `realmain` + `wrapup` + 1 `mainEdt` itself (the OCR shim creates it as an EDT — `arts_edt_create(mainEdtTrampoline, ...)` — before its body runs; not one of `mainEdt`'s own explicit `ocrEdtCreate` calls, so the earlier count missed it) |
-| DBs | `102k² − 18` | 6 panel (80 B) + `6k²` patch (232 B: `sizeof(patch_t)`, grown by a `u64 duration` field) + `E(k)` channel-handoff (8 B) + `48k²` halo seeds (8 B) |
+| EDTs | `6k²·duration + 12k² + 9` | `6k²·duration` `patchEdt` (`6k²` chains × `duration` generations) + `6k²` `patchInit` + `6k²` `channelSetup` + 6 `panelInit` + `realmain` + `wrapup` + 1 `mainEdt` itself (the OCR shim creates it as an EDT — `arts_edt_create(mainEdtTrampoline, ...)` — before its body runs; not one of `mainEdt`'s own explicit `ocrEdtCreate` calls) |
+| DBs | `102k² − 18` | 6 panel (80 B) + `6k²` patch (232 B: `sizeof(patch_t)`) + `E(k)` channel-handoff (8 B) + `48k²` halo seeds (8 B) — all duration-independent |
 | Events created | `144k² − 70` | see accounting below |
 | Live event objects | `96k² − 46` | `E(k)` CHANNEL + `E(k)` labeled sticky + 2; nothing is ever destroyed |
 | EDT templates | `12k² + 9` | pure GUID encodings under ARTS, not runtime objects |
+
+Only the EDT count carries `duration`; every other count is a function of `k`
+alone, because nothing is destroyed and the halo blocks are reused rather than
+re-minted.
 
 Event accounting: one `OCR_EVENT_CHANNEL_T` per directed edge, plus **two**
 `ocrEventCreate` calls per labeled sticky slot — publisher and learner both
@@ -69,36 +104,19 @@ install is rejected, so `2·E(k)` creates yield `E(k)` objects. Exactly one
 and that same EDT is the only `EDT_PROP_FINISH`, whose finish event the shim
 pre-creates: `+2`. Every other `ocrEdtCreate` passes NULL and creates nothing.
 
-Worked numbers at the calibrated `args: ['96']` — 55,296 patches, 442,344 halo
-edges: **5,640,201** EDTs (5,529,600 of them `patchEdt`), **940,014** DBs,
-**1,327,034** event creates for **884,690** live events, ≈18.6 MiB of payload,
-≈49.8 M RW acquires over the run (`9 · 6k² · duration`). Default `k=2` → 24
-patches, 2,457 EDTs, 390 DBs, 506 event creates.
+Worked numbers at the local-trend geometry `96 100` — 55,296 patches, 442,344
+halo edges: **5,640,201** EDTs (5,529,600 of them `patchEdt`), **940,014** DBs,
+**1,327,034** event creates for **884,690** live events, ≈19.0 MiB of payload
+(`2160k² + 288` bytes), ≈49.8 M RW acquires over the run
+(`9 · 6k² · duration`). Default `k=2`,
+`duration=100` → 24 patches, 2,457 EDTs, 390 DBs, 506 event creates. The
+campaign runs `k=216`; substitute it in the formulas above.
 
-Counter cross-check: verified (1 node, `k=4` vs `k=8`, measured totals
-9,802/39,178 EDTs, 1,615/6,511 DBs, 2,234/9,146 events). NUM_EVENT_CREATE
-matches `144k² − 70` exactly with no offset; NUM_DB_CREATE matches
-`102k² − 18` plus the runtime's constant +1 DB per run; NUM_EDT_CREATE needed
-the `mainEdt` correction above — it matches `612k² + 9` plus that same
-constant +1 EDT per run (formula values 9,801/39,177, +1 = measured).
-
-An HPX port (`benchmarks/hpx/tempest.cpp`) mirrors both tiers as `tempest_hpx`
-/ `tempest_hinted_hpx`. Values land at a patch's creating locality keyed by
-(patch, side, generation); the hinted tier keeps the state on the home and runs
-each generation as the continuation on its local inputs; the base tier runs
-each generation wherever the blind spawn put it, carrying the 96-byte state,
-and asks the creator for its ≤ 8 inputs, returned in one parcel — the mirror of
-the OCR base's three-party rendezvous (channel on the `patchInit` rank, satisfy
-from the producer, pull by the consumer). Because the creator of a patch is not
-a function of the patch under blind placement, the base tier publishes the
-patch→creator map once after init (`all_gather`, 6k² entries) — the analogue of
-the labeled-sticky handshake, inside the stamp on both sides. Structural
-references at the calibrated `48 1900`: `generations = 6k²·duration =
-26,265,600`, `deliveries = (48k²−24)·(duration−1) = 209,968,632`; base only:
-`interests = returns = state_posts = 26,265,600`, `state_bytes = 96 ×
-26,265,600 = 2,521,497,600`, `map_exchange = 1`; hinted gates these at zero.
-OCR's per-generation block is `sizeof(patch_t)` = 232 bytes (17 GUIDs of
-plumbing ride along), the port's 96; the accounting pass reports both.
+Counter cross-check: verified (1 node, `k=4` vs `k=8` at `duration=100`,
+measured totals 9,802/39,178 EDTs, 1,615/6,511 DBs, 2,234/9,146 events).
+NUM_EVENT_CREATE matches `144k² − 70` exactly with no offset; NUM_DB_CREATE
+matches `102k² − 18` plus the runtime's constant +1 DB per run; NUM_EDT_CREATE
+matches `6k²·duration + 12k² + 9` plus that same constant +1 EDT per run.
 
 ## Wiring
 
@@ -109,67 +127,71 @@ run's single FINISH EDT, whose output event fires `wrapupEdt` (`DONE.` +
 stamps them into every panel DB and forks 6 `panelInit`s.
 
 `panelInit` loops `k²` times: one 232 B patch DB and one `patchInit` per patch,
-wired `panel DB → slot 0 (RW)`, `patch DB → slot 1 (RW)`. **No `patchInit`
-writes the panel block** — it only reads `patchRange` and the GUID ranges — yet
-all `k²` of them take it RW, i.e. exclusively.
+wired `panel DB → slot 0 (CONST)`, `patch DB → slot 1 (RW)`. No `patchInit`
+writes the panel block — it only reads `patchRange`, `duration` and the GUID
+ranges — and the dependence says so, so the `k²` readers of a panel share it
+instead of taking exclusive turns.
 
 `patchInit` computes the 8 neighbours, then per existing direction `i` creates
 a CHANNEL event (its *receive* queue for that direction) and publishes it: an
 8 B DB holding the channel GUID, satisfied into the labeled sticky at
 `(range[rel], neighbour)`, where `rel` is the neighbour's direction back at me;
-symmetrically it wires its `channelSetup`'s slot `i` (RO — the program's only
-RO dependence) to `(range[i], me)`, where that neighbour publishes.
-`channelSetup` records the learned GUIDs as `sendChannels[]`, mints 8 fresh 8 B
-`nbData` seed blocks (unconditionally, corner slot included) and launches
-generation 0. `patchEdt(g)` then creates generation `g+1`, wires
-`recvChannels[i] → slot i (RW)` (one dependence = one pop from the FIFO),
-writes its own patch number into each received block, releases it and satisfies
-the neighbour's channel with it, and finally releases its patch block into slot
-8 (RW). Blocks are never re-minted: `P`'s seed for direction `i` ping-pongs
-across the `P↔Q` edge for the whole run.
+symmetrically it wires its `channelSetup`'s slot `i` (RO) to `(range[i], me)`,
+where that neighbour publishes. `channelSetup` records the learned GUIDs as
+`sendChannels[]`, mints 8 fresh 8 B `nbData` seed blocks (unconditionally,
+corner slot included) and launches generation 0. `patchEdt(g)` then creates
+generation `g+1`, wires `recvChannels[i] → slot i (RW)` (one dependence = one
+pop from the FIFO), writes its own patch number into each received block,
+releases it and satisfies the neighbour's channel with it, and finally releases
+its patch block into slot 8 (RW). Blocks are never re-minted: `P`'s seed for
+direction `i` ping-pongs across the `P↔Q` edge for the whole run.
 
-DB concurrency is uniformly exclusive — one accessor at a time, no DB ever has
-two readers, and no block takes RW from more than two patches (halo) or one
-(patch state). The contention points are therefore not the halo but (a) the
-**6 panel DBs**, each serialising `k²` exclusive turns during init, and (b) the
-**single global finish-scope latch**, which every EDT create INCRs and every
-completion DECRs — `2·(612k²+8)` satisfies on one event, 11.3 M at `k=96`.
+Steady-state DB concurrency is uniformly exclusive — one accessor at a time,
+no block takes RW from more than two patches (halo) or one (patch state). The
+remaining contention points are (a) the **6 panel DBs**, read by `6k²+6` tasks
+during init — shared reads, but a fan-out from wherever the block lives — and
+(b) the **single global finish-scope latch**, which every EDT create INCRs and
+every completion DECRs: `2·(6k²·duration + 12k² + 8)` satisfies on one event,
+11.3 M at `96 100`.
 
 ## Flow
 
 `mainEdt` is rank-0-only but O(1); `realmain` is one EDT. Width is then **6**
-for the whole creation phase: each `panelInit` runs a `k²`-iteration serial
-create+wire loop, and the `patchInit`s it spawns — nominally `6k²` ready tasks
-— serialise behind their panel block's RW chain, `k²` deep per panel.
-`channelSetup` is the first genuinely wide phase (`6k²`, each gated only on its
-8 published slots). Steady state is 100 generations of `6k²` independent tasks
-with no global barrier and no rank-0-only phase; because generation `g+1` of a
-patch needs generation `g` of each neighbour, skew between two patches is
-bounded by their graph distance rather than by a barrier. The tail is
-symmetric: `patchEdt` at `timestep == 99` prints (patch 0 only) and returns
+for the creation phase: each `panelInit` runs a `k²`-iteration serial
+create+wire loop. The `patchInit`s it spawns are `6k²` ready tasks gated only
+on a shared (CONST) panel block, so they no longer serialise behind it;
+`channelSetup` is `6k²` wide as well, each gated on its 8 published slots.
+Steady state is `duration` generations of `6k²` independent tasks with no
+global barrier and no rank-0-only phase; because generation `g+1` of a patch
+needs generation `g` of each neighbour, skew between two patches is bounded by
+their graph distance rather than by a barrier. The tail is symmetric:
+`patchEdt` at `timestep == duration−1` prints (patch 0 only) and returns
 without a successor, the finish scope drains, `wrapup` shuts down. Nothing is
 destroyed anywhere in the program — no `ocrDbDestroy`, no `ocrEventDestroy` —
 so every object created stays live to the end.
 
 ## Placement (base)
 
-Every create passes `NULL_HINT`: the `makePatchEdtHint`/`makeLocalEdtHint`
-helpers return `NULL_HINT` unless `OCR_APP_OPTIMIZED_PLACEMENT` is defined (the
-`_hinted` build), and there is no affinity use outside that guard — the base
-program never calls `ocrAffinity*` at all. Effective policy: **EDTs
-round-robin, DB home = creating rank.** Hence:
+Every create passes `NULL_HINT`: the `makePatchEdtHint`/`makePatchDbHint`/
+`makeLocalEdtHint` helpers return `NULL_HINT` unless
+`OCR_APP_OPTIMIZED_PLACEMENT` is defined (the `_hinted` build), and there is no
+affinity use outside that guard — the base program never calls `ocrAffinity*`
+at all. Effective policy: **EDTs round-robin, DB home = creating rank.**
+Hence:
 
-- The 6 panel blocks are born on rank 0, migrate to `realmain`'s rank, then to
-  each `panelInit`'s rank, then bounce through `k²` random `patchInit` ranks —
-  an 80-byte block dragged through `6k²` exclusive cross-rank grants at startup.
+- The 6 panel blocks are homed on rank 0 (`mainEdt`'s rank). `realmain`'s RW
+  take is the only write; after it, the six `panelInit`s and all `6k²`
+  `patchInit`s read the block as CONST, so a single rank-0-homed object serves
+  a `6k²`-wide read fan-out.
 - A panel's `k²` patch blocks are all homed on that one `panelInit`'s rank (six
   ranks host every patch block), while the tasks that touch them are scattered.
-  Each patch block is then RW-acquired by 102 successive EDTs (`patchInit`,
-  `channelSetup`, 100 generations), each placed independently at random — 232
-  bytes of per-patch state migrating once per timestep, remote with probability
-  `(N−1)/N`.
+  Each patch block is then RW-acquired by `duration + 2` successive EDTs
+  (`patchInit`, `channelSetup`, `duration` generations), each placed
+  independently at random — 232 bytes of per-patch state migrating once per
+  timestep, remote with probability `(N−1)/N`.
 - Halo seeds are homed wherever `channelSetup` ran and move once per timestep
-  each: `99·E(k)` migrations of 8-byte blocks between two moving holders.
+  each: `(duration−1)·E(k)` migrations of 8-byte blocks between two moving
+  holders.
 - Channel events live on their patch's `patchInit` rank, so every satisfy and
   every dependence registration is a message to a third, unrelated rank; the
   labeled sticky slots are spread by index, making each handshake a three-party
@@ -187,40 +209,99 @@ patch's halo exchange partners are arbitrary ranks and its persistent halo
 blocks (created once at setup, reused every generation) are acquired remotely
 almost every turn.
 
-The layer (`patchHomeRank`) maps the cube-sphere's 6 x k x k patches onto a
-P x Q rank grid chosen from the divisors of the rank count to minimise the cut
-(the number of patch edges crossing rank boundaries), unrolling the six faces
-along one axis; each patch EDT is pinned to its patch's home rank every
-generation (`OCR_HINT_EDT_AFFINITY`).  With EDTs stationary, the reused halo
-blocks' ownership settles on the consumer's rank after the first turn.  Below
-6 ranks the map degenerates to contiguous patch bands.
+The layer (`patchHomeRank`) maps the cube-sphere's `6 × k × k` patches onto a
+`P × Q` rank grid chosen from the divisors of the rank count to minimise the
+cut (the number of patch edges crossing rank boundaries), unrolling the six
+faces along one `k × 6k` strip; each patch EDT is pinned to its patch's home
+rank every generation (`OCR_HINT_EDT_AFFINITY`) and each patch's state block is
+homed there (`OCR_HINT_DB_AFFINITY`). With EDTs stationary, the reused halo
+blocks' ownership settles on the consumer's rank after the first turn. The six
+panel blocks are hinted to the home of their own panel's first patch, which is
+also where that panel's creation loop runs — in the base tier they all stay on
+rank 0 and every `patchInit` reads them from there.
+
+The `P × Q` rule now covers **every** rank count. It used to be preceded by a
+special case — below 6 ranks the map was a contiguous patch-number band — and
+that case was strictly worse wherever the two differed. A patch number runs
+along the strip's *row* (`idx = row·k + col`, so consecutive numbers advance
+`gcol` at fixed `row`), which makes a band a split on the row axis, not the
+column split the `P × Q` rule picks there. Enumerated on the strip's own
+adjacency at `k = 48` (the metric the rule minimises: a cut between two
+columns severs `k` edges, one between two rows `6k`):
+
+| ranks | band cut | `P × Q` cut | same partition? |
+|---|---|---|---|
+| 2 | `1k` | `1k` (P=1,Q=2) | yes |
+| 3 | `2k` | `2k` (P=1,Q=3) | yes |
+| 4 | `5k` (`3k` column + `2k` row) | `3k` (P=1,Q=4) | no |
+| 5 | `8k` | `4k` (P=1,Q=5) | no |
+
+Both maps are exactly balanced at 2, 3 and 4 ranks (the band to within one
+patch always; the grid exactly whenever `Q | 6k`, true for even `k` at 4
+ranks). 4 ranks is a live geometry, so the band was removed rather than
+documented. Only at 5 ranks — not a geometry of either machine — does the
+band buy anything: balance to within one patch (1.0001) against the grid's
+1.007, for exactly twice the cut.
+Neither map is face-aligned: at 4 ranks the grid's boundaries fall at
+`gcol = 1.5k, 3k, 4.5k`, two of them inside a face. Face alignment is a
+property of the face count, not of the cut, and at a rank count that does not
+divide 6 it can be bought only with imbalance.
+
+What no closed-form cut on this strip can see is that the strip's adjacency is
+not the sphere's: faces 0-3 are an equatorial ring, so the `3|4` and `4|5`
+strip seams are free cuts, while each pole face borders all four equatorial
+faces at arbitrary strip distance. The residual is bounded by that intrinsic
+polar adjacency; a genuinely better map would have to be a precomputed
+partition of the true `6k²` adjacency, and would only be worth taking if its
+balance stayed at 1.0.
+
+Everything under the guard is a hint: the guard occurs only inside
+`patchHomeRank` and the three `ocrHint_t *` helpers, and every call site is
+unconditional and identical in both tiers. Load balance is the patch
+partition's, i.e. exactly 1.000 at 2, 4, 8, 16 and 32 ranks whenever `P | k`
+and `Q | 6k` (which holds for `k` a multiple of 24 at every one of those
+counts). The one phase the layer cannot balance is the program's own width-6
+creation phase: the six `panelInit`s land on the homes of patches
+`0, k², …, 5k²`, so at 8 ranks two ranks run no creation loop. R1 forbids the
+layer from changing that.
+
+Two objects stay out of the layer's reach in both tiers: the eight labeled
+sticky GUID ranges are reserved round-robin by the shim, so the one-time
+handshake's `2·E(k)` event creates and `E(k)` satisfies are three-party
+rendezvous at unrelated ranks, and OCR offers no hint surface on a labeled
+range. That term is `O(k²)` against a steady state of `O(k²·duration)`.
 
 ## Sizing
 
 `k` scales the *number* of tasks and blocks (`6k²` patches, `∝ k²` time) and
-never their size -- a `patchEdt` does the same eight stores at any `k` -- so `k`
-is the width dial and `duration`, the second argument, is the length dial.  Memory
-never decides: 1-2 GB at any size measured here.
+never their size — a `patchEdt` does the same eight stores at any `k` — so `k`
+is the width dial and `duration`, the second argument, is the length dial.
 
-Width comes from the class rule: four times the largest geometry's 3456 workers
-is 13,824, and `6k² = 13,824` puts `k` at 48 exactly.
+The window is reached with `k`, at the published `duration = 100`; the width
+follows as a consequence, not the other way round. `6k²` independent patch
+chains are runnable at once (this is a dataflow frontier, not a fork-join:
+`patchEdt` creates only its own successor, there is no barrier, and the shim
+ignores the channels' `maxGen`), so the largest geometry's 3456 workers are a
+floor with no ceiling: any `k` that lands the window clears the width rule with
+room, and a `k` that is a multiple of 24 also keeps the `P × Q` balance exact
+at 2/4/8/16/32 ranks.  The campaign runs `k=216`.  The one-node anchor at
+`duration=100` is measured: 20.1 s base / 19.3 s hinted, 10 GB resident,
+against a 20 s target (hinted kept, flat).  Every anchor published before
+this predates the current tree and was taken at `duration = 1900`, which the
+size knob has since replaced and which does not carry over; the
+base-vs-hinted multi-node pair is what a fresh campaign takes.
 
-The length then comes from the window, and this row's window is the short one,
-because it anti-scales harder than anything else in the roster:
+Memory never decides. Object counts are duration-independent, so live objects
+are `102k² − 18` DBs and `96k² − 46` events — `198k² − 64` in all, 456,128 at
+`k = 48`. Both terms are `∝ k²` and the payload is a small part of the total,
+so the measured 1 GB at `k = 48` scales as ≈`(k/48)² GB` — about 20 GB at
+`k = 216`, against a 190 GB per-node budget.
 
-| geometry, k=16 | time |
-|---|---|
-| 1 node x 15 workers | 4.78 s |
-| 2 nodes x 15 workers | ~1125 s (still running at the 900 s cap, 3513 of 4400 timesteps) |
-
-**235x worse across one node boundary.**  That is what a program whose task does
-eight stores and then exchanges with eight neighbours looks like once half those
-exchanges cross a rank -- the communication is the entire program.  So the
-anchor is calibrated against 10-30 s, and `duration=1900` at `k=48` measures
-19.0 s, 19.3 s and 20.2 s on the three coherence families, holding 1 GB.
-
-The placement layer matters here more than anywhere else in its cycle: at four
-nodes it turns 454.2 s into **34.7 s, a factor of 13.1**.  Cutting the cube's six
-faces into minimum-cut 2-D blocks makes almost every halo neighbour rank-local,
-and in a program that is nothing but halo exchange that is nearly the whole
-cost.
+This row anti-scales harder than anything else in the roster — a program whose
+task does eight stores and then exchanges with eight neighbours pays the whole
+cost in communication once half those exchanges cross a rank — and the
+placement layer is worth more here than anywhere else in its cycle. Both
+statements are qualitative until the re-take: the numbers previously quoted
+here (a 235× 1→2 node degradation at `k=16, duration=4400`, and 454.2 s → 34.7 s
+at four nodes with `48 1900`) come from lattice points that are neither the
+calibrated size nor the published height, and are not this row's headline.
