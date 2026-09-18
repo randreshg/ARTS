@@ -105,19 +105,28 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - Auto-detect the local GPU's CUDA architecture via ``nvidia-smi`` (only
        when ``ARTS_USE_GPU=ON``; otherwise set ``CMAKE_CUDA_ARCHITECTURES``).
    * - ``ARTS_MEMORY_MODEL``
-     - OCR
-     - Memory model — ``OCR`` (default; implements the OCR v1.2.0 §1.6
-       contract) or ``DB_WRF`` (write-race-free at DB granularity; evaluation
-       only — emits a configure warning). Compile-time; all ranks must share
-       one build.
+     - OCR (derived)
+     - Memory model — **derived** from ``ARTS_COHERENCE_PROTOCOL``, not
+       chosen independently (passing it explicitly only asserts the value
+       its protocol already implies; a mismatch is a configure error):
+       ``OCR`` (races legal, the runtime orders every conflict it must;
+       required by ``VAL``/``INV``/``EXCL``) or ``DB_WRF`` (prose DB-WRF;
+       exclusive write acquisition — the program guarantees that at most one
+       write-mode acquisition of a DataBlock is live at any time,
+       system-wide; required by ``FLUSH``; evaluation only). Compile-time;
+       all ranks must share one build.
    * - ``ARTS_COHERENCE_PROTOCOL``
      - VAL
-     - Coherence family — ``VAL`` (default; validation: versioned snapshots,
-       readers never blocked/invalidated), ``INV`` (invalidation: directory
-       write-invalidate with acknowledged per-release invalidation rounds),
-       or ``EXCL`` (exclusion: per-DB distributed reader-writer lock).
+     - Coherence protocol — ``VAL`` (default; validation: versioned
+       snapshots, readers never blocked/invalidated), ``INV`` (invalidation:
+       directory write-invalidate with acknowledged per-release invalidation
+       rounds), or ``EXCL`` (exclusion: per-DB distributed reader-writer
+       lock), all under the ``OCR`` model; or ``FLUSH`` (fetch the whole
+       payload at every remote acquire, write it back at every remote RW
+       release) under the ``DB_WRF`` model, with no write- or release-policy
+       axis of its own.
        Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN,
-       OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×VAL×WT×RETAIN.
+       OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH.
    * - ``ARTS_WRITE_POLICY``
      - WB
      - Write policy at release granularity, live in INV/VAL — ``WT``

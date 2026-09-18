@@ -18,39 +18,52 @@ A *memory (consistency) model* is a contract: it defines which values a read
 may legally return, and therefore which programs are valid. A *coherence
 protocol* is an implementation mechanism — replica management, admission
 control, ownership transfer, write-back — that satisfies some contract as a
-consequence of its design. ARTS keeps the contract and the mechanism as
-**separate build axes**, plus two second axes for what a release moves and
+consequence of its design. **Each coherence protocol requires a memory
+model of the program**, and ``ARTS_MEMORY_MODEL`` is **derived** from
+``ARTS_COHERENCE_PROTOCOL`` rather than chosen independently: passing it
+explicitly only asserts the value its protocol already implies, and a
+mismatch is a configure-time ``FATAL_ERROR``. ARTS keeps the model and the
+mechanism as build axes, plus two second axes for what a release moves and
 when a grant goes back:
 
 * ``ARTS_MEMORY_MODEL`` selects the **contract** the build implements:
-  ``OCR`` (default; races legal, the runtime orders every conflict it must) or
-  ``DB_WRF`` (write-race-free at DataBlock granularity: the program must
-  event-order every write-write conflict on a DB; evaluation only).
-* ``ARTS_COHERENCE_PROTOCOL`` selects the coherence **family** — who keeps
-  reader copies valid: ``VAL`` (default; *validation* — each read acquire
-  checks its cached copy's version at the serving side and refetches only
-  when stale; readers are never blocked, tracked, or invalidated), ``INV``
-  (*invalidation* — reader copies stay valid until a writer's release
-  retires every standing copy in an acknowledged invalidation round), or
-  ``EXCL`` (*exclusion* — queue-fair distributed reader–writer lock per DB;
-  readers and writers take turns, so no stale copy ever exists).
+  ``OCR`` (races legal, the runtime orders every conflict it must — required
+  by ``VAL``/``INV``/``EXCL``) or ``DB-WRF`` (exclusive write acquisition:
+  the program guarantees that at most one write-mode acquisition of a
+  DataBlock is live at any time, system-wide — required by ``FLUSH``; see
+  :ref:`db_wrf_contract`).
+* ``ARTS_COHERENCE_PROTOCOL`` selects the coherence **protocol**. Under the
+  ``OCR`` model, who keeps reader copies valid: ``VAL`` (default;
+  *validation* — each read acquire checks its cached copy's version at the
+  serving side and refetches only when stale; readers are never blocked,
+  tracked, or invalidated), ``INV`` (*invalidation* — reader copies stay
+  valid until a writer's release retires every standing copy in an
+  acknowledged invalidation round), or ``EXCL`` (*exclusion* — queue-fair
+  distributed reader–writer lock per DB; readers and writers take turns, so
+  no stale copy ever exists). Under the ``DB-WRF`` model, the one protocol
+  is ``FLUSH`` (fetch the whole payload at every remote acquire, write it
+  back at every remote RW release; see :ref:`flush_protocol`).
 * ``ARTS_WRITE_POLICY`` selects the **write policy** of a node's DB cache at
   release granularity — live under INV/VAL: ``WT`` (write-through at
   release; the payload is flushed to the DB's home, which then serves reads)
   or ``WB`` (default; write-back — the payload stays with the last writer
-  and moves only on demand, through directory forwarding).
+  and moves only on demand, through directory forwarding). FLUSH has no
+  write-policy axis: it fetches and writes back the whole payload every
+  time, unconditionally.
 * ``ARTS_RELEASE_POLICY`` selects the **release policy** — what a node does
   with its grant when the last local user finishes — live under EXCL and
   under ``WT`` in VAL/INV: ``PURGE`` (hand copy and permission back to the
   home) or ``RETAIN`` (default; keep both until another node asks, and let
-  the home recall them).
+  the home recall them). FLUSH has no release-policy axis either — there is
+  no grant to retain, only a per-release round trip.
 
-The axes are nominally independent: within OCR the family × write-policy ×
+The OCR-model axes are nominally independent: the family × write-policy ×
 release-policy space has 12 combinations, of which **eight** are built (the
-dead ones excluded by the reasons below); DB_WRF adds one more, for **nine
-build configurations** in total, one build directory each:
+dead ones excluded by the reasons below). DB-WRF has exactly one protocol —
+``FLUSH`` needs neither second axis — for **nine build configurations** in
+total, one build directory each:
 OCR×VAL×WT×{PURGE,RETAIN}, OCR×VAL×WB×RETAIN, OCR×INV×WT×{PURGE,RETAIN},
-OCR×INV×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×VAL×WT×RETAIN.
+OCR×INV×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB-WRF×FLUSH.
 Everything else is a configure-time ``FATAL_ERROR`` naming the reason:
 EXCL×WT (under exclusion no copy outlives a write turn, so the payload
 rides the permission and the release policy already decides both),
@@ -58,17 +71,11 @@ INV/VAL×WB×PURGE (a voluntary return hands back only the permission while
 the bytes stay at the ex-owner, so the home still cannot serve a reader on
 its own — and shipping the bytes home too is, by definition,
 write-through; at ``WT`` the same return costs no data motion, which is why
-PURGE is built there instead — see :ref:`orthogonal_dimensions`),
-DB_WRF×EXCL and DB_WRF×INV (both mechanisms already order writers at
-runtime — admission for EXCL, per-release rounds for INV — making the
-program-side write-ordering obligation redundant), and DB_WRF×VAL×WB
-(designed but unimplemented: the built DB_WRF arm is home-canonical, and the
-release-time write-through *is* what makes the home copy canonical).
-
-The model and protocol axes are genuinely orthogonal in one direction: the
-same VAL read path serves both contracts. What changes between OCR×VAL and
-DB_WRF×VAL is **who orders the update side** — the runtime (via a
-single-owner grant) under OCR, or the program (via events) under DB_WRF.
+PURGE is built there instead — see :ref:`orthogonal_dimensions`), and
+DB-WRF×VAL/INV/EXCL (each of those mechanisms already orders writers at
+runtime — a migrating grant for VAL/INV, admission for EXCL — making the
+program-side write-ordering obligation redundant; a validation arm was once
+built under DB-WRF and is retired — see Historical vocabulary below).
 
 Every rank in a multinode run must use the same build.
 
@@ -155,35 +162,55 @@ implementation freedom — including future multi-writer merge protocols.
 The DB-WRF contract
 -------------------
 
-``ARTS_MEMORY_MODEL=DB_WRF`` delivers a deliberately **weaker** contract —
-*write-race-freedom at DataBlock granularity*:
+``ARTS_MEMORY_MODEL=DB_WRF`` (prose **DB-WRF**) delivers a deliberately
+**weaker** contract than OCR — *exclusive write acquisition*:
 
-  Any two unordered writes to the same DB (no happens-before edge between
-  their acquire/release brackets, at whole-DB granularity — disjoint-range
-  sibling writers included) make the program's outcome undefined: concurrent
-  writes may be lost entirely, because release performs a whole-DB write-back
-  and the last write-back wins.
+  A write acquisition of a DataBlock is any acquisition in a write mode: an
+  EDT dependence in RW or EW mode, or the hold a creating EDT takes when it
+  creates the block without ``ARTS_DB_PROP_NO_ACQUIRE``. A program is
+  DB-WRF-valid iff, for every DataBlock, every pair of its write
+  acquisitions is ordered by happens-before — one is released (explicitly,
+  or by its EDT's completion) before the other begins. Read acquisitions
+  (RO, CONST) are unconstrained: they may overlap writes and each other.
+  Granularity is the whole DataBlock; writers to disjoint byte ranges of one
+  block are still two write acquisitions. The property is
+  placement-independent: where the EDTs run, and where the block is homed,
+  do not enter the definition.
 
-Read-write races remain **legal**, with the same word-granularity floor as
-racy reads under OCR: an unordered reader observes, per 8-byte-aligned word,
-some value that was legitimately held by that word (a *regular register* in
-Lamport's sense). The name follows the DRF → HRF lineage: where DRF requires
-the program to order *all* conflicting pairs, WRF requires it only for
-*write-write* pairs.
+The word "race" is not used for this model: write-race-freedom at byte
+granularity already holds for every OCR-legal program, so it would name
+nothing new. A write acquisition that violates the contract is a
+*write-write conflict*; two overlapping write acquisitions on a FLUSH build
+race their whole-DB write-backs and the last one wins, so the outcome is
+undefined, not merely stale.
 
-The lattice of program classes is ``DRF ⊂ DB-WRF ⊂ OCR-legal``: every
-data-race-free program is DB-WRF-valid, and every DB-WRF-valid program is
-OCR-legal — but OCR-legal programs that exploit the non-overlapping data-race
-rule (e.g. unordered sibling writers to disjoint regions of one DB) are
-**invalid under DB-WRF** and can silently produce wrong answers there.
+The lattice of program classes is ``DB-WRF ⊂ OCR-legal``: every DB-WRF-valid
+program is OCR-legal, but OCR-legal programs that rely on the runtime to
+order overlapping writers — whole-DB fan-out, disjoint-region sibling
+writers, a hand-off without a preceding release — are **outside DB-WRF**
+and can silently produce wrong answers under a build that requires it. A
+creator hold is a write acquisition: passing a freshly created block to a
+child in RW without releasing it first is a DB-WRF violation regardless of
+whether the creator happens to be the block's home (the OCR spec §1.6.2(c)
+already demands the release before the satisfy).
+
+Each coherence protocol requires a memory model: ``VAL``/``INV``/``EXCL``
+require only ``OCR`` (the runtime orders every conflict). ``FLUSH`` (see
+:ref:`flush_protocol`) requires ``DB-WRF``. ``EXCL`` and ``INV`` under
+DB-WRF would be redundant — both already order writers at runtime, which is
+exactly what DB-WRF asks of the program instead — which is why DB-WRF has
+exactly one protocol and CMake refuses the rest.
 
 .. warning::
 
-   DB_WRF exists to measure the cost of coherence obligations in benchmarks.
-   Never use it as a correctness baseline; the build emits a CMake warning
-   when selected. The correctness harness marks apps whose wiring relies on
-   guarantees outside this contract with ``wrf_val_skip`` (a
-   contract-ineligibility declaration, not a bug mask).
+   DB-WRF exists to measure the cost of coherence obligations in benchmarks,
+   and as the fabric-side stand-in for a CXL build (acquire becomes a
+   consumer flush over a shared pool, RW release a producer flush). Never
+   use it as a correctness baseline. The experiment driver's catalog marks
+   applications whose wiring relies on guarantees outside this contract with
+   ``unordered_writes`` (a reason plus file:line — a contract-ineligibility
+   declaration, not a bug mask); such a row is ``N/A`` on the FLUSH entry
+   and runs unaffected on every OCR-model entry.
 
 .. _protocols:
 
@@ -201,23 +228,15 @@ selected by ``-DARTS_COHERENCE_PROTOCOL=VAL`` (the default), write policy by
 The name is used in McKenney's sense: **readers are never blocked and never
 invalidated**. A reader acquires a versioned snapshot and proceeds on it;
 updates install new versions without disturbing readers in flight. The
-update side's ordering comes from *outside* the read path — which is exactly
-what the model axis selects:
-
-* **Under OCR** (OCR×VAL): write access is granted to at most one node at a
-  time via a single-owner grant. Within the owning node, multiple RW
-  acquirers share a local buffer, so intra-node writes are multi-writer
-  (hardware cache coherence keeps them consistent). A remote RW acquire
-  requests ownership from the current owner; the owner completes its release,
-  ships the payload and transfers the grant. This serializes inter-node
-  writes — the OCR non-overlapping rule holds because intra-node concurrent
-  writes are hardware-coherent and inter-node ones never overlap in time.
-* **Under DB_WRF** (DB_WRF×VAL×WT, ``wrf_val/wrf_val.c``): no ownership
-  machinery at all. The home rank always holds the canonical payload;
-  release writes the whole DB back to the home synchronously; acquires pull
-  from the home. True concurrent multi-writer access is admitted at every
-  level — which is precisely why the contract must demand program-side
-  write-write ordering (see :ref:`db_wrf_contract`).
+update side's ordering comes from *outside* the read path: write access is
+granted to at most one node at a time via a single-owner grant. Within the
+owning node, multiple RW acquirers share a local buffer, so intra-node
+writes are multi-writer (hardware cache coherence keeps them consistent). A
+remote RW acquire requests ownership from the current owner; the owner
+completes its release, ships the payload and transfers the grant. This
+serializes inter-node writes — the OCR non-overlapping rule holds because
+intra-node concurrent writes are hardware-coherent and inter-node ones never
+overlap in time.
 
 The correspondence to canonical RCU is the read-side regime: updaters
 serialized outside the read path, readers proceeding on possibly-stale
@@ -305,6 +324,60 @@ the next turn re-requests and re-fetches. Under ``RETAIN`` a release with
 nothing pending sends nothing: the home stays a pure directory naming the
 holder (callback-locking style — it recalls the grant when another node
 asks), and a second local write turn costs no traffic.
+
+.. _flush_protocol:
+
+FLUSH — fetch at acquire, flush at release (requires DB-WRF)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+*Status:* implemented (``libs/src/core/coherence/flush/flush.c``); selected
+by ``-DARTS_COHERENCE_PROTOCOL=FLUSH``, which derives
+``ARTS_MEMORY_MODEL=DB_WRF`` (see :ref:`db_wrf_contract`). No write-policy or
+release-policy axis: every remote acquire fetches and every remote RW
+release writes back, unconditionally.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Event
+     - Home rank
+     - Other rank
+   * - Acquire (RO or RW)
+     - Pointer to the home line, in place (materialised at first use if the
+       create took no hold)
+     - Allocate a private copy of ``db_size`` bytes, ask the home; the home
+       PUTs the line into it and the EDT resumes on the copy
+   * - Release RO
+     - Nothing
+     - Drop the copy
+   * - Release RW
+     - Nothing (writes were already in place)
+     - PUT the copy into the home line, send the commit, block until the
+       home's ACK, then drop the copy
+
+No versions, no per-rank ledger, no header-only replies, no request
+combining, no write combining, no reorder buffer, no freelist, no grant, and
+no counters that gate anything: every remote acquire moves the payload and
+every remote RW release moves it back, one round trip each.
+
+A private copy per EDT, rather than one shared line per rank, closes a
+lost-update window: with a single shared line, an RO fetch issued before a
+same-rank RW acquire could land after that RW EDT has started writing and
+overwrite its in-progress writes, and nothing short of tracking in-flight
+fetches would prevent it. A per-EDT copy has no such window and needs no
+extra state. It is also the software analogue of a consumer flush
+(invalidate, then reload from the pool): a hardware cache gives a same-node
+reader no free hit either — same-rank readers and writers of one block do
+not share bytes on a non-home rank, while on the home rank they all use the
+line in place, exactly as they would use a pool.
+
+The home keeps a sharer bitset — ranks that ever fetched the line or were
+told its credential — used only by destroy fan-out; it is lifecycle
+bookkeeping, not coherence state. FLUSH is the fabric-side stand-in for a
+CXL build, where acquire becomes a consumer flush over a shared pool and RW
+release a producer flush; it also serves as the no-optimization baseline
+against the OCR-model protocols.
 
 Retired and rejected arms
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -425,8 +498,8 @@ Where does coherence bookkeeping live?
 * **Fixed home** (all current arms) — each DB has a designated home rank
   (set at creation; encoded in the GUID rank field). The home holds the
   authoritative directory entry (VAL×OCR: grant directory; INV: grant
-  directory + sharer roster; EXCL: ``lock_state``; DB_WRF: the canonical
-  payload itself). Simple and
+  directory + sharer roster; EXCL: ``lock_state``; FLUSH: the canonical
+  payload itself — the home line). Simple and
   predictable; the home can become a hot-spot for highly shared DBs.
 * **Migratory owner** (current WB placements, and EXCL under RETAIN) — the
   payload (and, under VAL, the per-rank serving ledger) migrates with the
@@ -476,9 +549,11 @@ reconciled?
   OCR non-overlapping rule.
 * **Admission exclusion** (OCR×EXCL) — the lock never grants two writers
   concurrently anywhere; the question is moot.
-* **Lossy whole-DB write-back** (DB_WRF×VAL) — each release writes the whole
-  DB back to the home; the last write-back wins. Unordered writes are lost —
-  hence the stricter program-side contract.
+* **Lossy whole-DB write-back** (FLUSH) — each RW release PUTs the whole DB
+  back into the home line. A DB-WRF-valid program never has two such
+  releases overlapping, so nothing is ever actually lost; a program that
+  violates the contract's write-exclusivity guarantee gets undefined
+  results here precisely because the last write-back wins with no merge.
 * **Non-lossy merge** (roadmap) — diff- or twin-based merging in the
   TreadMarks / Midway tradition would reconcile concurrent writers' disjoint
   changes, achieving the full OCR non-overlapping rule while admitting true
@@ -573,6 +648,18 @@ axes throughout; the intermediate 2026-07 vocabulary (``RCU``/``RWLOCK``/
 under INV/VAL and ``HOME → PURGE`` / ``OWNER → RETAIN`` under EXCL
 (``EAGER``/``LAZY`` map the same way: ``EAGER → WT``/``PURGE``,
 ``LAZY → WB``/``RETAIN``).
+
+**2026-09 model/protocol split:** ``DB_WRF × VAL × WT`` (an evaluation arm
+that mirrored the VAL engine with a home-canonical write policy) is
+**retired** to ``archive/coherence-wrf-val/``, succeeded by
+``DB_WRF × FLUSH`` (2026-09). The ``DB_WRF`` memory model keeps its name
+(prose ``DB-WRF``) but is redefined in terms of write acquisitions (see
+:ref:`db_wrf_contract`), and ``ARTS_MEMORY_MODEL`` is now **derived** from
+``ARTS_COHERENCE_PROTOCOL`` rather than chosen independently: each protocol
+requires exactly one memory model (``VAL``/``INV``/``EXCL`` require
+``OCR``, ``FLUSH`` requires ``DB-WRF``), so ``DB_WRF`` has exactly one arm.
+Passing ``-DARTS_COHERENCE_PROTOCOL=VAL`` with ``-DARTS_MEMORY_MODEL=DB_WRF``
+is now a configure-time ``FATAL_ERROR`` naming the retirement.
 
 References
 ----------
