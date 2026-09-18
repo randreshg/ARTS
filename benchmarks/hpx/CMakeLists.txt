@@ -177,10 +177,24 @@ add_hpx_probe(action_rtt)
 
 # Two-locality smoke of the static build: components (collectives), a plain
 # action into a receive buffer, the counter registry, and the hpx_main
-# shape.  Needs an MPI launcher, which the outer project hands in together
-# with the switch that leaves the smoke out on a host whose launcher cannot
-# start a two-rank job.
+# shape.  It needs a launcher that can start two ranks on THIS host, and the
+# one handed in cannot always do that (a login node whose launcher runs only
+# under the scheduler), so the launcher is asked once, at configure, to
+# start two ranks of `hostname`: where it cannot, the smoke is left out and
+# says so, and the build goes on where the programs will never be run.  The
+# switch leaves the smoke out regardless.
+set(_arts_smoke_launcher_ok FALSE)
 if(ARTS_MPIEXEC AND ARTS_HPX_SMOKE)
+    execute_process(COMMAND ${ARTS_MPIEXEC} -n 2 hostname
+        RESULT_VARIABLE _arts_launch_rc OUTPUT_QUIET ERROR_QUIET TIMEOUT 60)
+    if(_arts_launch_rc EQUAL 0)
+        set(_arts_smoke_launcher_ok TRUE)
+    else()
+        message(STATUS "Skipping static_smoke: ${ARTS_MPIEXEC} cannot start "
+            "two ranks on this host (${_arts_launch_rc})")
+    endif()
+endif()
+if(_arts_smoke_launcher_ok)
     add_executable(static_smoke tests/static_smoke.cpp)
     arts_hpx_configure(static_smoke)
     add_test(NAME static_smoke
