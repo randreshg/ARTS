@@ -362,11 +362,12 @@ def build(plan: BuildPlan, *, jobs: int | None = None, on_line=None,
             "the build tree has no target for: " + ", ".join(plan.missing[:10])
             + ("…" if len(plan.missing) > 10 else "")
             + "\n(the tree's generation is current, so either the application "
-            "is not registered in CMake, or the tree skipped its runtime: the "
-            "xsocr/ocrvx references and the HPX-origin programs are skipped "
-            "on a host without an MPI compiler and under -DARTS_BUILD_HPX=OFF; "
-            "the configure output's 'Skipping' and References/HPX lines say "
-            "which)"
+            "is not registered in CMake, its sources are not in this checkout "
+            "-- the configure creates no target for such a registration -- or "
+            "the tree skipped its runtime: the xsocr/ocrvx references and the "
+            "HPX-origin programs are skipped on a host without an MPI compiler "
+            "and under -DARTS_BUILD_HPX=OFF; the configure output's 'Skipping' "
+            "and References/HPX lines say which)"
         )
     if shutil.which("ninja") is None:
         raise BuildError("ninja not found on PATH")

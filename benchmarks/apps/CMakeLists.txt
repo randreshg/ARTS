@@ -225,6 +225,9 @@ endif() # TARGET ocr_vdm_mpi
 # same set is created a second time under the name <name>_hinted, compiled with the
 # hint layer enabled — so both placement settings coexist in one build tree and
 # neither is a property of the build directory.
+#
+# A registration naming a source file the checkout does not carry creates no
+# target at all and says so with a status line.
 # ==========================================================================
 function(add_benchmark_app)
     cmake_parse_arguments(APP "OCRVX_SKIP;HINTED_PLACEMENT;ARTS_ONLY" "NAME;DIR;SRC_SUBDIR;ROOT" "SOURCES;LIBS;EXTRA_INCLUDES;EXTRA_DEFINES;EXTRA_LINK_LIBS" ${ARGN})
@@ -244,6 +247,15 @@ function(add_benchmark_app)
     set(ABS_SOURCES "")
     foreach(src ${APP_SOURCES})
         list(APPEND ABS_SOURCES "${SRC_DIR}/${src}")
+    endforeach()
+
+    # One absent file would fail the whole generation, and with it every
+    # program that is present.
+    foreach(src ${ABS_SOURCES})
+        if(NOT EXISTS "${src}")
+            message(STATUS "Skipping ${APP_NAME}: ${src} is not in this checkout")
+            return()
+        endif()
     endforeach()
 
     # Collect OBJECT library objects and include dirs for helper libs
@@ -1106,7 +1118,9 @@ foreach(flavor LCS_distributed_ST LCS_distributed_ST_hinted)
         target_compile_options(${flavor}_xsocr PRIVATE -fgnu89-inline)
     endif()
     foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-        target_compile_options(${flavor}_arts_${sfx} PRIVATE -fgnu89-inline)
+        if(TARGET ${flavor}_arts_${sfx})
+            target_compile_options(${flavor}_arts_${sfx} PRIVATE -fgnu89-inline)
+        endif()
     endforeach()
     if(TARGET ${flavor}_ocrvx)
         target_compile_options(${flavor}_ocrvx PRIVATE -fgnu89-inline)
@@ -1125,7 +1139,9 @@ foreach(flavor LCS_shared LCS_shared_hinted)
         target_compile_options(${flavor}_xsocr PRIVATE -fgnu89-inline)
     endif()
     foreach(sfx ${ARTS_VARIANT_SUFFIXES})
-        target_compile_options(${flavor}_arts_${sfx} PRIVATE -fgnu89-inline)
+        if(TARGET ${flavor}_arts_${sfx})
+            target_compile_options(${flavor}_arts_${sfx} PRIVATE -fgnu89-inline)
+        endif()
     endforeach()
     if(TARGET ${flavor}_ocrvx)
         target_compile_options(${flavor}_ocrvx PRIVATE -fgnu89-inline)
