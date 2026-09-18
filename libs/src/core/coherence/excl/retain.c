@@ -347,11 +347,12 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 /* ===== lock_drain_pending ==============================================
  * Serve every waiter currently in `q`: a single atomic-exchange drain claims
  * the whole stack, so each node is taken by exactly one drainer (any node a
- * drainer "misses" is taken by another).  Serving = position-idempotent cursor
- * advance (fires the next serialized dep) + re-derive dep->ptr from the
- * installed buffer + account (may schedule the EDT when acquire_remaining
- * reaches 0).  It does NOT touch the count (the count was bumped at the
- * waiter's acquire cas1, before it was pushed — "queued ⟹ counted"). */
+ * drainer "misses" is taken by another).  Serving = re-derive dep->ptr from
+ * the installed buffer + position-idempotent cursor advance (which is what
+ * fires the next serialized dep) + account (may schedule the EDT when
+ * acquire_remaining reaches 0).  It does NOT touch the count (the count was
+ * bumped at the waiter's acquire cas1, before it was pushed — "queued ⟹
+ * counted"). */
 static void lock_drain_pending(arts_lf_stack_t *q) {
   arts_lf_link_t *node = arts_lf_stack_drain(q);
   while (node != NULL) {
@@ -359,7 +360,6 @@ static void lock_drain_pending(arts_lf_stack_t *q) {
         atomic_load_explicit(&node->next, memory_order_relaxed);
     struct arts_db_excl_waiter_s *w =
         ARTS_CONTAINER_OF(node, struct arts_db_excl_waiter_s, link);
-    mark_edt_secured_by_guid(w->edt_guid, w->slot);
     mark_edt_ready_by_guid(w->edt_guid, w->slot);
     arts_free(w);
     node = nx;
@@ -1435,7 +1435,15 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
  *
  * Destroyed-guard: a dep NULL-woken at destroy never really held the lock; a
  * count of 0 means there is nothing to release — skip rather than underflow. */
-void arts_db_release_rw(struct arts_db_cache_s *cache) {
+/* A create's hold is this arm's ordinary write hold, taken when the block was
+ * made; the bytes under it are the cache's own, so the release needs no
+ * pointer to them. */
+void arts_db_release_created(struct arts_db_cache_s *cache) {
+  arts_db_release_rw(cache, NULL);
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
   uint32_t act;
   uint64_t cur, next;
   uint32_t target = ARTS_EXCL_NO_TARGET;

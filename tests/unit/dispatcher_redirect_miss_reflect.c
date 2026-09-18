@@ -28,7 +28,7 @@
  *
  * Config gate: MSG_DB_SNAPSHOT_REDIRECT exists ONLY in the OWNER-placement builds
  * (HOME serves RO from home directly; the HOME dispatcher fatals on REDIRECT;
- * EXCL/WRF_VAL have no snapshot protocol at all).  Compile-time self-skip on
+ * EXCL has no snapshot protocol at all).  Compile-time self-skip on
  * everything that is not OWNER.
  */
 

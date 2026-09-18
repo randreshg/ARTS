@@ -91,6 +91,61 @@ struct arts_db_publish_ack_args_s {
   uint64_t credit_txid;
 };
 
+#ifdef ARTS_PROTOCOL_FLUSH
+struct arts_db_fetch_response_args_s {
+  arts_guid_t edt_guid;
+  uint32_t slot;
+  uint32_t kind;
+  uint64_t db_size;
+  uint64_t rdzv_txid;
+  uint64_t rdzv_cookie;
+  uint64_t line_addr;
+  uint64_t line_rkey;
+  uint64_t flush_txid;
+};
+struct arts_db_flush_commit_args_s {
+  unsigned int releaser;
+  arts_guid_t db_guid;
+  uint64_t txid;
+  uint64_t sem;
+};
+struct arts_db_flush_ack_args_s {
+  uint64_t sem;
+  uint64_t next_txid;
+};
+struct arts_db_flush_cts_args_s {
+  uint64_t sem;
+  uint64_t line_addr;
+  uint64_t line_rkey;
+  uint64_t txid;
+};
+/* Cat-B bodies (OoO): the engine pinned the home descriptor.  Both are
+ * messages a rank can send before the home has installed the block — a first
+ * touch ahead of the CREATE, and a creator's release ahead of its own CREATE's
+ * return — which a route-table miss cannot tell from a destroy.  Their args
+ * are the arts_ooo_args_db_* structs in ooo.h, like every other OoO kind. */
+void arts_handler_db_fetch_request(void *item_v, void *args_v);
+void arts_handler_db_flush_announce(void *item_v, void *args_v);
+/* Cat-C bodies: the dispatcher looked the descriptor up.  item_v may be NULL
+ * for flush_commit / flush_ack / flush_cts — the dispatcher passes what the
+ * lookup gave it, unguarded, because a torn-down block must never strand a
+ * blocked releaser: each of these completes the releaser's hand-shake on a
+ * MISS as well as on a HIT (post the semaphore the message carries; a CTS with
+ * no descriptor still hands its txid — zero or not — to the waiter, which is
+ * what tells the waiter to skip the PUT).  Each of them follows a message the
+ * home itself sent after installing, so a miss here means the block is gone,
+ * never that it has not arrived.  Only fetch_response has a live descriptor by
+ * construction: the dispatcher's own MISS branch discards the landing instead
+ * of calling it. */
+void arts_handler_db_fetch_response(void *item_v, void *args_v);
+void arts_handler_db_flush_commit(void *item_v, void *args_v);
+void arts_handler_db_flush_ack(void *item_v, void *args_v);
+void arts_handler_db_flush_cts(void *item_v, void *args_v);
+/* A fetch response whose descriptor is gone: free the landing the cookie
+ * names once (or as soon as) the PUT has landed. */
+void arts_db_flush_discard_landing(uint64_t txid, uint64_t cookie);
+#endif /* ARTS_PROTOCOL_FLUSH */
+
 #ifdef ARTS_WRITE_POLICY_WB
 /* arts_handler_db_snapshot_redirect body args (owner side). */
 struct arts_db_snapshot_redirect_args_s {
@@ -115,8 +170,7 @@ struct arts_db_grant_response_ack_args_s {
  * arts_ooo_args_db_grant_request_s.  The wire dispatcher decodes
  * GRANT_REQUEST into those args and routes through
  * arts_ooo_dispatch_or_defer_guid.  Defined for the release-consistency family
- * (coherence/grant.c) where GRANT_REQUEST exists; WRF_VAL provides a
- * no-op body (coherence/wrf_val.c) — WRF_VAL never enqueues this kind. */
+ * (coherence/grant.c) where GRANT_REQUEST exists. */
 void arts_handler_db_grant_request(void *item_v, void *args_v);
 #ifdef ARTS_RELEASE_PURGE
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_RETURN]): item_v is the home
@@ -169,8 +223,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie);
  * both write policies the home publishes the invalidate target (rw_holder) only at the
  * post-install CONFIRM owner-swap, so the cache is provably installed when
  * INVALIDATE arrives.  WT/WB define the real body (sentinel withdrawal /
- * transfer trigger); WRF_VAL provides a no-op body (WRF_VAL never receives
- * INVALIDATE). */
+ * transfer trigger). */
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v);
 /* Cat-C pure body (PUBLISH_ACK): item_v is the releaser-rank db_s the
  * dispatcher acquired; args_v is an arts_db_publish_ack_args_s.  NOT

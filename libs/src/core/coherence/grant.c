@@ -15,9 +15,9 @@
  *
  * Nothing here is protocol-specific: what a release does BESIDES decrementing
  * the count (publish the payload to home, run an invalidation round, both, or
- * neither) belongs to the arm, not to the grant.  WRF_VAL is the one arm that
- * does not link this TU — it has no grant at all, keeping the canonical buffer
- * at home via a synchronous PUBLISH on every release.
+ * neither) belongs to the arm, not to the grant.  EXCL is the one arm that
+ * does not link this TU — it serializes through a single home-side lock_state
+ * word instead of a migrating grant.
  *
  * Write-policy-divergent steps are delegated to seams the arm defines
  * (arts_db_start_grant_round, and the GRANT_RESPONSE / CONFIRM
@@ -153,13 +153,10 @@ static void rw_drain_cb(arts_guid_t edt_guid, unsigned int slot, void *vctx) {
   struct rw_drain_ctx_s *ctx = (struct rw_drain_ctx_s *)vctx;
   /* Each popped waiter claims exactly one writer_count slot (FIFO). */
   arts_atomic_add(&ctx->cache->writer_count, 1);
-  /* Advance the RW cursor first (position-idempotent; never schedules), THEN
-   * deliver data (may schedule + let another worker run/free the EDT).
-   * A waiter woken here is being handed the write turn, so it must find
+  /* A waiter woken here is being handed the write turn, so it must find
    * storage of the DB's declared size; the one buffer-less case is a
-   * zero-sized (sentinel) block, whose defined value is the NULL pointer
-   * mark_edt_ready_by_guid then stamps (still accounting the dep). */
-  mark_edt_secured_by_guid(edt_guid, slot);
+   * zero-sized (sentinel) block, whose defined value is the NULL pointer this
+   * wake stamps (still accounting the dep, still advancing the walk). */
   mark_edt_ready_by_guid(edt_guid, slot);
 }
 
@@ -370,8 +367,7 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
 }
 
 /* ===== Home-side ownership handlers (VAL; moved from handlers.c) =====
- * GRANT_REQUEST exists only under VAL (WRF_VAL routes
- * all acquires through SNAPSHOT_REQUEST / SNAPSHOT_RESPONSE), so these handlers are
+ * GRANT_REQUEST exists only under VAL, so these handlers are
  * compiled only for VAL.  The home-directory machinery they touch
  * (pending_rw, invalidate_in_flight, rw_holder) is shared by both write policies;
  * the point where WT and WB diverge is delegated to per-write-policy seams in
@@ -384,9 +380,7 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
  * cache.  The wire dispatcher decodes GRANT_REQUEST into the args struct
  * and routes through the engine via OOO_DB_GRANT_REQUEST; a missing home
  * db_s defers the args and re-issues this body once DB_CREATE installs and
- * drains.  (WRF_VAL never enqueues this kind — coherence/wrf_val.c provides a
- * no-op definition that satisfies the single g_ooo_table slot in the WRF_VAL
- * build.) */
+ * drains. */
 void arts_handler_db_grant_request(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_grant_request_s *a =

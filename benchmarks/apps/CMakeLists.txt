@@ -10,7 +10,8 @@
 set(ARTS_VARIANT_SUFFIXES
     ocr_val_wt ocr_val_wb ocr_val_wt_purge ocr_val_wt_nocomb ocr_val_wb_nocomb
     ocr_val_wt_purge_nocomb
-    ocr_excl_purge ocr_excl_retain wrf_val_wt ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge)
+    ocr_excl_purge ocr_excl_retain ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge
+    wrf_flush)
 
 set(OCR_APPS_ROOT "${CMAKE_SOURCE_DIR}/third_party/ocr-apps/apps")
 set(OCR_LIBS_ROOT "${OCR_APPS_ROOT}/libs/src")

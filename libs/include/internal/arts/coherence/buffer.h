@@ -64,6 +64,12 @@ struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
 struct arts_db_buffer_s *arts_db_buf_alloc_zeroed(struct arts_db_cache_s *cache,
                                                   uint64_t db_size);
 
+/* A buffer that belongs to no cache: its last drop frees it to the
+ * registered pool, never to a free-list.  The caller owns the one strong
+ * ref and reads the buffer through *out. */
+arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
+                                       struct arts_db_buffer_s **out);
+
 /* Race-safe acquire: returns a caller-owned strong ref to the installed
  * buffer (keeping it alive against a concurrent destroy), or NULL if no
  * buffer is currently installed.  Recover the buffer via arts_shared_get;

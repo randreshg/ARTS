@@ -41,7 +41,7 @@
 /// @brief GRANT drain accounting: every queued RW waiter is woken exactly once
 ///        with the correct buffer pointer, #writer_count bumps == #drained.
 ///
-/// rw_drain_cb (per waiter): writer_count += 1, then mark_edt_secured, then
+/// rw_drain_cb (per waiter): writer_count += 1, then mark_edt_ready_by_guid, then
 /// mark_edt_ready (secure BEFORE ready — secure is idempotent and never
 /// schedules; ready may schedule/free).  arts_db_drain_pending_rw_after_grant
 /// drains the WHOLE cache->pending_rw stack via that cb.  The accounting

@@ -88,23 +88,20 @@ add_pure_unit_src(rank_u64_map_advance SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core
 # coherence directory.c, so the source/link selection is keyed on the build dir's
 # ${ARTS_COHERENCE_ARM}:
 #   VAL -> compile val/directory.c standalone (ARTS_UNIT_STANDALONE_SHIMS shims)
-#   WRF_VAL  -> the rank bit-set is not compiled under WRF_VAL (the protocol directory.c
-#            bodies do not even build there, as their node/waiter structs are
-#            #if'd out), and the test self-skips (prints PASS).  So link NO
-#            protocol directory.c — the self-skipping main needs no home symbols.
 #   EXCL  -> excl/directory.c pulls transport/edt deps, so link the full libarts
 #            (shims auto-compiled-out via the ARTS_UNIT_STANDALONE_SHIMS gate)
 if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
     add_arts_test(rank_bitset)
     register_pure_unit_test(rank_bitset TIMEOUT 60)
     set_tests_properties(rank_bitset PROPERTIES PASS_REGULAR_EXPRESSION "PASS rank_bitset")
-elseif(ARTS_COHERENCE_ARM STREQUAL "WRF_VAL")
-    # No protocol directory.c source: the test body self-skips under WRF_VAL.
-    add_pure_unit_src(rank_bitset
-        DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
 elseif(ARTS_COHERENCE_ARM STREQUAL "INV")
     set(_rank_bitset_dir ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/inv/directory.c)
     add_pure_unit_src(rank_bitset SOURCES ${_rank_bitset_dir}
+        DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
+elseif(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    # No directory.c at all in this arm: the test source self-skips and there
+    # is nothing to compile alongside it.
+    add_pure_unit_src(rank_bitset
         DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
 else()
     set(_rank_bitset_dir ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/val/directory.c)
@@ -211,6 +208,14 @@ add_pure_unit_src(gpu_locality_schemes TIMEOUT 60)
 # ============================================================================
 
 # --- C12: DB lifecycle & acquire/release accounting ---
+# dep_alias_classify: pure_unit — the acquire engine's owner/alias rule is a
+# pure function of a dependence vector, so it is driven on stack arrays out of
+# the per-config static libarts; the runtime is never started and the answers
+# are configuration-independent.
+add_arts_test(dep_alias_classify)
+register_pure_unit_test(dep_alias_classify TIMEOUT 30)
+set_tests_properties(dep_alias_classify PROPERTIES PASS_REGULAR_EXPRESSION "PASS dep_alias_classify")
+
 add_arts_test(db_alias_dedup)
 register_single_node_test(db_alias_dedup TIMEOUT 30)
 set_tests_properties(db_alias_dedup PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup|SKIP db_alias_dedup")
@@ -229,8 +234,11 @@ add_arts_test(db_acquire_replay_local)
 register_single_node_test(db_acquire_replay_local TIMEOUT 30)
 set_tests_properties(db_acquire_replay_local PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_replay_local|SKIP db_acquire_replay_local")
 
-# T123 EXPOSES B-release-alias-underflow: expected to FAIL (double-decrement) in its target
-# config (ownership/EXCL); self-skips (exit 0) under WRF_VAL. Do not mask.
+# A mid-EDT release of a block one EDT names twice must drop the block's single
+# coherence hold exactly once — the owner slot is released and its aliases retire
+# with it.  The double drop this was written to expose is fixed, so it is a plain
+# green test in every configuration; a printed FAIL, a crash or a hang is what
+# fails it (FAIL_REGULAR_EXPRESSION + the TIMEOUT).
 add_arts_test(db_release_alias_slot)
 register_single_node_test(db_release_alias_slot TIMEOUT 30)
 
@@ -339,11 +347,16 @@ register_single_node_test(event_check_collision TIMEOUT 30)
 set_tests_properties(event_check_collision PROPERTIES PASS_REGULAR_EXPRESSION "event_check_collision:.*PASS|SKIP event_check_collision")
 
 add_arts_test(event_remote_create_race)
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(event_remote_create_race TIMEOUT 90)
 foreach(_v 2n 3n 4n 2n_io)
     set_tests_properties(event_remote_create_race_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "event_remote_create_race:.*PASS|SKIP: event_remote_create_race")
 endforeach()
+endif()
 
 # both single + multinode (OoO defer is home-rank-local but census asks for multinode too)
 # COUNTED delivery + reclamation, and that an undeclared ONCE still lingers.
@@ -470,39 +483,26 @@ set_tests_properties(excl_purge_grant_d6_d7_2n PROPERTIES PASS_REGULAR_EXPRESSIO
 # excl_req_before_create: protocol-agnostic, needs 3+ ranks (verbatim copy of the old
 # coherence_lock_req_before_create into the planned filename); register at 3n/4n.
 add_arts_test(excl_req_before_create)
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(excl_req_before_create TIMEOUT 90 VARIANTS 3n 4n)
 set_tests_properties(excl_req_before_create_3n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed|SKIP excl_req_before_create")
 set_tests_properties(excl_req_before_create_4n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed|SKIP excl_req_before_create")
+endif()
 
 # excl_mode_mismatch_fatal: standalone driver paired by run_mode_mismatch.sh — NOT a plain
 # ctest (like coherence_mode_mismatch). Build the binary only; no add_test registration.
 add_arts_test(excl_mode_mismatch_fatal)
 
-# --- C10: WRF_VAL protocol-specific ---
-# wrf_val_is_serialized: pure_unit, WRF_VAL-only (self-skips else); links the real per-config libarts
-# symbol, so it uses add_arts_test (not add_pure_unit_src) + register_pure_unit_test.
-add_arts_test(wrf_val_is_serialized)
-register_pure_unit_test(wrf_val_is_serialized TIMEOUT 30)
-set_tests_properties(wrf_val_is_serialized PROPERTIES PASS_REGULAR_EXPRESSION "PASS wrf_val_is_serialized|SKIP wrf_val_is_serialized")
-
-# T102 EXPOSES B-wrf_val-writer-count-leak: expected to FAIL (stranded parked acquire) under WRF_VAL
-
-# T103 EXPOSES update_cached_version_max watermark hazard (latent): see status_note. WRF_VAL, >=2 ranks.
-add_arts_test(wrf_val_getdata_dedup)
-register_multinode_test(wrf_val_getdata_dedup TIMEOUT 120)
-
-# T104 EXPOSES in-place buf->version-vs-install hazard. WRF_VAL, >=2 ranks.
-add_arts_test(wrf_val_home_vs_nonhome_writer)
-register_multinode_test(wrf_val_home_vs_nonhome_writer TIMEOUT 120)
-
-# T105 EXPOSES snapshot_request master==NULL/version=0 hazard. WRF_VAL, >=2 ranks.
-add_arts_test(wrf_val_sentinel_snapshot)
-register_multinode_test(wrf_val_sentinel_snapshot TIMEOUT 120)
-
-
-add_arts_test(db_wrf_promote_manual)
-register_multinode_test(db_wrf_promote_manual TIMEOUT 120)
-set_tests_properties(db_wrf_promote_manual_2n PROPERTIES PASS_REGULAR_EXPRESSION "db_wrf_promote_manual: PASS|SKIP db_wrf_promote_manual")
+# --- C10: FLUSH protocol-specific ---
+# wrf_flush_is_serialized: pure_unit, FLUSH-only (self-skips else); links the real
+# per-config libarts symbol, so it uses add_arts_test (not add_pure_unit_src) +
+# register_pure_unit_test.
+add_arts_test(wrf_flush_is_serialized)
+register_pure_unit_test(wrf_flush_is_serialized TIMEOUT 30)
+set_tests_properties(wrf_flush_is_serialized PROPERTIES PASS_REGULAR_EXPRESSION "PASS wrf_flush_is_serialized|SKIP wrf_flush_is_serialized")
 
 # --- C11: snapshot / publish-ack / destroy-notify / dispatcher-parity (config_specific,
 # but census asks for multinode variants to expose the wire reorder; register both) ---
@@ -511,7 +511,7 @@ add_arts_test(snapshot_response_3case)
 register_single_node_test(snapshot_response_3case TIMEOUT 120)
 register_multinode_test(snapshot_response_3case TIMEOUT 120)
 
-# T109 EXPOSES B017/B018. WT + WRF_VAL; self-skips under WB/EXCL.
+# T109 EXPOSES B017/B018. WT only; self-skips under WB/EXCL.
 add_arts_test(publish_ack_post_on_miss)
 register_single_node_test(publish_ack_post_on_miss TIMEOUT 120)
 register_multinode_test(publish_ack_post_on_miss TIMEOUT 120)
@@ -542,7 +542,7 @@ register_multinode_test(cat_c_ref_balance TIMEOUT 120)
 set_tests_properties(cat_c_ref_balance PROPERTIES PASS_REGULAR_EXPRESSION "PASS: cat_c_ref_balance|SKIP cat_c_ref_balance")
 set_tests_properties(cat_c_ref_balance_2n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: cat_c_ref_balance|SKIP cat_c_ref_balance")
 
-# T116 EXPOSES B017 (await_publish_ack under shutdown). WT + WRF_VAL; self-skips under WB/EXCL.
+# T116 EXPOSES B017 (await_publish_ack under shutdown). WT only; self-skips under WB/EXCL.
 # Normally PASSES (prints token before shutdown). 1n + multinode.
 add_arts_test(await_publish_ack_shutdown)
 register_single_node_test(await_publish_ack_shutdown TIMEOUT 120)
@@ -997,11 +997,16 @@ set_tests_properties(edt_output_event_2n PROPERTIES PASS_REGULAR_EXPRESSION "PAS
 
 # edt_finish_scope_balance: round-robins members across all ranks; runs on 1n too. single + multinode.
 add_arts_test(edt_finish_scope_balance)
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(edt_finish_scope_balance TIMEOUT 30)
 register_multinode_test(edt_finish_scope_balance TIMEOUT 60)
 foreach(_v "" _2n _3n _4n _2n_io)
     set_tests_properties(edt_finish_scope_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_finish_scope_balance|SKIP edt_finish_scope_balance")
 endforeach()
+endif()
 
 # edt_remote_create_race: needs 2+ ranks; SKIPs cleanly on 1n.
 add_arts_test(edt_remote_create_race)
@@ -1041,7 +1046,7 @@ add_pure_unit_src(event_drain_simple_idempotent PASS_REGEX "PASS event_drain_sim
 # configs).
 # ============================================================================
 
-# directory_grantreq_queue: VAL/EXCL (the .c #if-guards select the protocol directory.c; WRF_VAL self-skips).
+# directory_grantreq_queue: VAL/EXCL (the .c #if-guards select the protocol directory.c).
 add_pure_unit_src(directory_grantreq_queue DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS directory_grantreq_queue:|SKIP" TIMEOUT 60)
 
 # pending_rw_treiber: VAL only (self-skips else).
@@ -1142,24 +1147,30 @@ set_tests_properties(coherence_mixed_local_remote_2n PROPERTIES FAIL_REGULAR_EXP
 set_tests_properties(coherence_mixed_local_remote_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_mixed_local_remote_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_mixed_local_remote_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 foreach(_v 2n 3n 4n)
     set_tests_properties(coherence_multi_writer_dist_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL"
         PASS_REGULAR_EXPRESSION "PASS: EXCL distributed arbitration|SKIP coherence_multi_writer_dist")
 endforeach()
+endif()
 set_tests_properties(coherence_multi_writer_multi_db PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_multi_writer_same_addr PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_ro_accumulation PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_ro_acquire_stress PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 set_tests_properties(coherence_rw_multihop_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rw_multihop_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rw_multihop_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rw_multihop_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
 set_tests_properties(coherence_rw_ordering PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 set_tests_properties(coherence_rw_pipeline_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rw_pipeline_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rw_pipeline_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rw_pipeline_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
 # NOTE: coherence_rw_ro_rw legitimately prints "MISMATCH (racy, expected)" for
 # its documented RW/RO reorder race, so MISMATCH must NOT gate it; only a hard
 # "FAIL" indicates a real defect.

@@ -45,7 +45,7 @@
 /// installed value (a dropped/duplicated drain would show a stale read).
 ///
 /// runtime_multinode, non-EXCL: the snapshot reorder buffer is the RO-acquire
-/// mechanism for VAL/WRF_VAL.  EXCL has its own RO acquire/release path
+/// mechanism for VAL.  EXCL has its own RO acquire/release path
 /// (no pending_snapshot reorder buffer), so self-skips.  On a single node the
 /// readers are local hits (no snapshot path) and the test passes trivially.
 

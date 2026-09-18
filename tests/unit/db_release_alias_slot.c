@@ -38,34 +38,28 @@
 ******************************************************************************/
 
 /// @file db_release_alias_slot.c
-/// @brief Mid-EDT arts_db_release of an ALIAS slot (the SAME DB bound to two RW
-///        slots) drives the suspected writer_count underflow.
+/// @brief Mid-EDT arts_db_release of a block one EDT names twice: the single
+///        coherence hold must be dropped exactly once.
 ///
-/// EXPOSES SUSPECTED BUG (db.c arts_db_release Path 2 alias underflow):
-/// arts_db_release Path 2 always passes alias_only=false to release_one_dep.
-/// When a DB is bound to two RW slots of one EDT, only the smallest-index slot
-/// took the real coherence acquire (writer_count hold); the later slot is an
-/// alias (buffer ref only).  release_dbs at the epilogue correctly computes
-/// alias_only and decrements writer_count exactly once.  But a mid-EDT
-/// arts_db_release naming the DB matches the FIRST slot in depv order — and
-/// after that slot is nulled, the epilogue then treats the remaining (alias)
-/// slot as the real acquirer.  Releasing one of two alias RW slots mid-EDT and
-/// leaving the other to the epilogue therefore drops writer_count for both an
-/// alias and the real slot -> a double decrement -> underflow / premature
-/// ownership transfer.
+/// An EDT acquires each distinct block ONCE.  Naming it in slot 0 (RW) and slot
+/// 1 (RW) gives one acquisition: slot 0 owns it, slot 1 is an alias holding
+/// only its own buffer ref and descriptor pin.  A mid-EDT
+/// arts_db_release(guid, mode) therefore has exactly one slot to release — the
+/// OWNER — and must retire the alias with it, because an alias carries no hold
+/// to give back and leaving it behind would let the epilogue mistake it for the
+/// acquirer.
 ///
-/// Scenario: an EDT acquires DB in slot 0 (RW) and slot 1 (RW), writes a value,
-/// mid-EDT releases the GUID once (Path 2 hits slot 0, alias_only=false), then
-/// the epilogue releases slot 1 (also alias_only=false, since slot 0 is now
-/// nulled).  Two writer_count decrements for a single real hold -> underflow.
-/// A subsequent RW writer then either is granted ownership prematurely
-/// (corruption -> reader mismatch -> arts_abort) or the underflow wraps the
-/// counter and the writer never gets ownership (hang -> ctest TIMEOUT).
+/// The failure this guards is a double drop of the one hold: release the alias
+/// mid-body (or release the owner and leave the alias for the epilogue to
+/// release as if it were the owner) and the count falls twice for one
+/// acquisition.  A subsequent RW writer is then either granted ownership
+/// prematurely (corruption -> reader mismatch -> arts_abort) or the count wraps
+/// and the writer never gets ownership (hang -> ctest TIMEOUT).
 ///
-/// This test is designed to FAIL while the bug exists (it must stay
-/// correct-and-failing); it documents the contract that mid-EDT release of an
-/// alias slot must not double-decrement.  ownership/EXCL only (WRF_VAL does not
-/// serialize RW so there is no alias dedup; it self-skips).
+/// Scenario: the EDT writes a value through slot 0, releases the GUID once
+/// mid-body, and returns; the epilogue must find nothing left to release for
+/// that block.  Then a follow-up RW writer and an RO reader prove the block is
+/// grantable again and carries the follow-up's value.
 ///
 /// No in-test watchdog: a hang is reaped by the ctest TIMEOUT.
 
@@ -78,8 +72,7 @@
 #define V1 0xAB1u
 
 /// alias_releaser: same DB in slots 0 and 1 (both RW).  Writes V0, then mid-EDT
-/// releases the DB once (Path 2 hits the first matching slot).  The second
-/// (alias) slot is left to the epilogue.
+/// releases the DB once.
 void alias_releaser(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -91,16 +84,16 @@ void alias_releaser(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   unsigned int *d = (unsigned int *)depv[0].ptr;
   d[0] = V0;
-  /* Mid-EDT release of the aliased DB.  Path 2 finds the first depv slot with
-   * this GUID and runs release_one_dep(alias_only=false). */
+  /* Mid-EDT release of the block this EDT names twice: it names the block's one
+   * acquisition, so the owner slot is released and the alias retires with it —
+   * each dropping its own buffer ref and pin exactly once. */
   arts_db_release(depv[0].guid, DB_MODE_RW);
-  /* Slot 1 (the alias) is still held; the epilogue release_dbs will release it,
-   * also with alias_only=false (slot 0 was nulled), double-decrementing
-   * writer_count. */
+  /* The epilogue must now find nothing left to release for this block: both
+   * slots are retired, and the single hold fell exactly once. */
 }
 
-/// followup_writer: a plain RW writer.  Only schedulable if writer_count is in
-/// a sane (grantable, non-wrapped) state after the aliased EDT released.
+/// followup_writer: a plain RW writer.  Only schedulable if the block's hold is
+/// in a sane (grantable, non-wrapped) state after the aliasing EDT released.
 void followup_writer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -113,7 +106,7 @@ void followup_writer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// checker: RO reader; MUST observe the follow-up writer's value (no
-/// corruption from a premature ownership transfer caused by the underflow).
+/// corruption from a premature ownership transfer caused by a double drop).
 void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -123,7 +116,7 @@ void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (d == NULL || d[0] != V1) {
     (void)fprintf(stderr,
                   "FAIL: db_release_alias_slot follow-up mismatch got 0x%x "
-                  "(writer_count underflow / premature transfer)\n",
+                  "(hold dropped twice / premature transfer)\n",
                   d ? d[0] : 0u);
     arts_abort(1);
     return;
@@ -140,12 +133,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_release_alias_slot ===\n");
 
-#if defined(ARTS_PROTOCOL_WRF_VAL)
-  arts_printf("SKIP db_release_alias_slot: WRF_VAL does not serialize RW (no "
-              "alias dedup)\n");
-  arts_shutdown();
-  return;
-#else
   void *ptr = NULL;
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -180,7 +167,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_wait(e_r);
 
   arts_shutdown();
-#endif
 }
 
 int main(int argc, char **argv) {

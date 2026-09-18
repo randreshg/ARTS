@@ -172,24 +172,15 @@ void inv_waiter_free(struct arts_db_cache_s *c, uint32_t idx) {
  * Serve every node of a privately-owned chain.  The chain was grabbed in the
  * same CAS that published the install, so it holds exactly the fetch's
  * cohort — however late this loop runs, no other actor can reach these
- * nodes.  The secured signal (serialized-cursor advance) is reserved for
- * serialized deps: raising it for a non-serialized dep that happens to sit
- * at the cursor position falsely advances the cursor and enqueues a
- * duplicate resume, double-driving the next serialized dep, whose writer
- * count is then bumped twice against a single release and never reaches
- * zero.  A non-serialized waiter
- * gets the data-arrival signal only. */
-void inv_serve_chain(struct arts_db_cache_s *cache, uint32_t head,
-                            bool serialized) {
+ * nodes.  Whether a woken slot also advances the EDT's serialized walk is the
+ * wake's own reading of the slot, never a property of the chain. */
+void inv_serve_chain(struct arts_db_cache_s *cache, uint32_t head) {
   while (head != 0u) {
     struct arts_db_inv_waiter_s *w = inv_waiter_ptr(cache, head);
     uint32_t next = w->next;
     arts_guid_t edt_guid = w->edt_guid;
     unsigned int slot = w->slot;
     inv_waiter_free(cache, head);
-    if (serialized) {
-      mark_edt_secured_by_guid(edt_guid, slot);
-    }
     mark_edt_ready_by_guid(edt_guid, slot);
     head = next;
   }
@@ -731,7 +722,7 @@ static void inv_deliver_commit(arts_shared_ptr_t db_h, uint64_t version,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
   if (act == INV_CACHE_ACT_PUBLISH || act == INV_CACHE_ACT_PUBLISH_KILL) {
-    inv_serve_chain(cache, INV_CACHE_HEAD_RO(cur), /*serialized=*/false);
+    inv_serve_chain(cache, INV_CACHE_HEAD_RO(cur));
   }
   if (act == INV_CACHE_ACT_PUBLISH_KILL) {
     uint32_t pact;
@@ -1080,6 +1071,14 @@ void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int rank) {
   }
 #endif
   (void)arts_rank_bitset_set(&db->roster, rank);
+}
+
+/* A create's hold is this arm's ordinary write hold, taken when the block was
+ * made; the bytes under it are the cache's own, so the release needs no
+ * pointer to them.  Policy-independent, so it sits here rather than in the
+ * write-policy TU that defines arts_db_release_rw itself. */
+void arts_db_release_created(struct arts_db_cache_s *cache) {
+  arts_db_release_rw(cache, NULL);
 }
 
 /* arts_handler_db_publish_ack — shared flight-completion body, defined once in

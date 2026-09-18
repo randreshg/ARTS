@@ -29,7 +29,7 @@ extern "C" {
 /**
  * @file types_common.h
  * @brief Protocol-agnostic DB-coherence layout types shared by every
- *        ARTS_COHERENCE_PROTOCOL build (RCU / WRF_RCU).
+ *        ARTS_COHERENCE_PROTOCOL build.
  *
  * The protocol-specific cache/db ownership layout lives in the per-protocol
  * coherence/<proto>/types.h, selected by arts/coherence/types.h.  Anything
@@ -77,7 +77,7 @@ extern "C" {
  * low bits hold, and it commutes with the ±1 that the sentinel, the drain and
  * every local writer apply.  A word carrying it can never be exactly 0, so the
  * ownership-transfer zero edge cannot be crossed while a hold is unconfirmed.
- * Arms with no migrating grant (EXCL, WRF_VAL) never set it. */
+ * Arms with no migrating grant (EXCL) never set it. */
 #define ARTS_GRANT_UNCONFIRMED 0x80000000u
 
 #ifndef ARTS_PROTOCOL_EXCL
@@ -217,7 +217,7 @@ struct arts_db_cache_s;
  * Drained in full by the next install via a single atomic_exchange on the
  * Treiber stack — monotonic version guarantees every parked node's
  * target_version <= the just-installed version.  RO path; present in every
- * protocol (WRF_RCU parks all modes here). */
+ * protocol. */
 struct arts_db_snapshot_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
   arts_guid_t edt_guid;

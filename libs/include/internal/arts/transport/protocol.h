@@ -159,6 +159,16 @@ enum arts_msg_type {
    * existing ordinal moves. */
   MSG_DB_GRANT_RETURN,
 
+  /* FLUSH-arm coherence messages: the fetch that serves an acquire and the
+   * write-back round that serves an RW release.  Appended at the end so no
+   * existing ordinal moves. */
+  MSG_DB_FETCH_REQUEST,  /* FLUSH: requester → home, "PUT your line into my landing" */
+  MSG_DB_FETCH_RESPONSE, /* FLUSH: home → requester, pairs with the PUT; carries the line's address */
+  MSG_DB_FLUSH_COMMIT,   /* FLUSH: releaser → home, after its PUT into the line */
+  MSG_DB_FLUSH_ACK,      /* FLUSH: home → releaser, once the PUT has landed; refills the credit */
+  MSG_DB_FLUSH_ANNOUNCE, /* FLUSH: releaser → home, a release with no credit asks for one */
+  MSG_DB_FLUSH_CTS,      /* FLUSH: home → releaser, the credit for an announced release */
+
   MSG_COUNT, /* sentinel — keep last; used for array sizing */
 };
 
@@ -626,6 +636,60 @@ struct ARTS_PACKED arts_msg_excl_confirm_packet_s {
 };
 #endif /* ARTS_RELEASE_RETAIN */
 #endif /* ARTS_PROTOCOL_EXCL */
+
+/* ===== FLUSH wire packets ===================================================
+ * Sent only between ranks compiled with ARTS_COHERENCE_PROTOCOL=FLUSH.
+ * Members unconditional; structs guarded so they share the FLUSH types. */
+#ifdef ARTS_PROTOCOL_FLUSH
+struct ARTS_PACKED arts_msg_fetch_request_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  arts_guid_t edt_guid; /* parked EDT to resume on the requester rank */
+  uint32_t slot;
+  uint8_t pad[4];
+  /* txid == 0: the requester could not size a landing (sentinel GUID, size
+   * unknown) and expects a size-only reply. */
+  struct arts_msg_rdzv_landing_s rdzv;
+};
+struct ARTS_PACKED arts_msg_fetch_response_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  arts_guid_t edt_guid;
+  uint32_t slot;
+  uint32_t kind; /* 0 = zero-size block (NULL payload), 1 = payload PUT, 2 = size only */
+  uint64_t db_size;
+  uint64_t rdzv_txid;   /* kind 1: pairs with the write completion */
+  uint64_t rdzv_cookie; /* the requester's landing handle, echoed */
+  uint64_t line_addr;   /* the home line's wire address (0 = none yet) */
+  uint64_t line_rkey;
+  uint64_t flush_txid;  /* a credit for the requester's next flush (0 = none) */
+};
+struct ARTS_PACKED arts_msg_flush_commit_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  uint64_t txid; /* the credit the PUT carried as its immediate */
+  uint64_t sem;  /* releaser's heap semaphore, echoed by the ACK */
+};
+struct ARTS_PACKED arts_msg_flush_ack_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  uint64_t sem;
+  uint64_t next_txid; /* the refilled credit (0 when the home is gone) */
+};
+struct ARTS_PACKED arts_msg_flush_announce_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  uint64_t sem;
+};
+struct ARTS_PACKED arts_msg_flush_cts_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  uint64_t sem;
+  uint64_t line_addr;
+  uint64_t line_rkey;
+  uint64_t txid; /* 0 = the home no longer has the block; skip the PUT */
+};
+#endif /* ARTS_PROTOCOL_FLUSH */
 
 /* ===== INV wire packets ======================================================
  * Sent only between ranks compiled with ARTS_COHERENCE_PROTOCOL=INV.

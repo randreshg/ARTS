@@ -126,12 +126,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_printf("=== coherence_rw_pipeline ===\n");
 
-#ifdef ARTS_PROTOCOL_WRF_VAL
-  arts_printf("SKIP: RELAXED has no exclusive-RW ownership round\n");
-  arts_shutdown();
-  return;
-#endif
-
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
     arts_printf("SKIP: requires 2+ ranks (got %u)\n", nranks);

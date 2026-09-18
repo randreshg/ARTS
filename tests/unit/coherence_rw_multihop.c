@@ -104,18 +104,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== coherence_rw_multihop ===\n");
 
-#ifdef ARTS_PROTOCOL_WRF_VAL
-  /* The relaxed (DB-WRF) model unifies RW with RO (concurrent replicas,
-   * reduce on release) and has no ownership-transfer chain (no
-   * LOCK_REQ/INVALIDATE/GRANT).  A plain serial increment is therefore not a
-   * meaningful relaxed-model workload — concurrent acquirers race the
-   * read-modify-write.  This test targets the OCR-model (HOME/OWNER placements)
-   * exclusive-RW ownership-transfer chain. */
-  arts_printf("SKIP: RELAXED has no exclusive-RW ownership-transfer chain\n");
-  arts_shutdown();
-  return;
-#endif
-
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 3) {
     arts_printf("SKIP: requires 3+ ranks (got %u)\n", nranks);

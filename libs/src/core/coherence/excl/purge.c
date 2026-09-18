@@ -597,9 +597,9 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
  * consumed once (exactly-once serve).  A counted waiter whose push has not
  * landed yet — the instruction window between its acquire CAS and its push —
  * is awaited by re-draining, the same bounded-window retry discipline as the
- * home queue's mid-push pop.  Serving = cursor-advance + account
- * (mark_edt_secured + mark_edt_ready); it does NOT touch the count (the
- * count was carried by the waiter's acquire CAS — "counted ⟹ will park"). */
+ * home queue's mid-push pop.  Serving = resolve + cursor-advance + account, in
+ * that order and in one call; it does NOT touch the count (the count was
+ * carried by the waiter's acquire CAS — "counted ⟹ will park"). */
 static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   uint32_t served = 0;
   while (served < expected) {
@@ -609,10 +609,9 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
           atomic_load_explicit(&node->next, memory_order_relaxed);
       struct arts_db_excl_waiter_s *w =
           ARTS_CONTAINER_OF(node, struct arts_db_excl_waiter_s, link);
-      /* Position-idempotent cursor advance (fires next serialized dep), then
-       * re-derive dep->ptr from the installed buffer + account (may schedule
-       * the EDT when acquire_remaining reaches 0). */
-      mark_edt_secured_by_guid(w->edt_guid, w->slot);
+      /* Re-derive dep->ptr from the installed buffer, let the serialized walk
+       * past this slot, and account (which may schedule the EDT when
+       * acquire_remaining reaches 0). */
       mark_edt_ready_by_guid(w->edt_guid, w->slot);
       arts_free(w);
       served++;
@@ -699,11 +698,10 @@ void arts_handler_db_acquire(void *item, void *args) {
                                                   memory_order_acquire));
 
   if (act == CACHE_ACT_SELF_SERVE) {
-    /* Position-idempotent cursor advance + account, exactly as a drained
-     * waiter is served.  The turn was answered from what this rank already
-     * holds, so it joins the same census the other arms feed. */
+    /* Served exactly as a drained waiter is.  The turn was answered from what
+     * this rank already holds, so it joins the same census the other arms
+     * feed. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    mark_edt_secured_by_guid(edt->guid, slot);
     mark_edt_ready_by_guid(edt->guid, slot);
     return;
   }
@@ -999,7 +997,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
                               /*version=*/0u, (uint64_t)(uintptr_t)wr,
                               /*data=*/NULL, ds, /*rdzv_txid=*/0u,
                               /*rdzv_cookie=*/0u);
-    await_publish_ack(&wr->sem); /* CTS wake — or the shutdown escape */
+    arts_db_await_ack(&wr->sem); /* CTS wake — or the shutdown escape */
     if (wr->landing.txid == 0) {
       /* This read of wr->landing.txid is UNSYNCHRONIZED on the shutdown-
        * escape path — sem_timedwait returned via the shutdown timeout, not a
@@ -1075,7 +1073,15 @@ static void lock_send_release_ro(struct arts_db_cache_s *cache) {
  * count of 0 means there is nothing to release — skip rather than underflow.
  * (Full destroy reconciliation under the acquire-time count is a separate
  * subtask.) */
-void arts_db_release_rw(struct arts_db_cache_s *cache) {
+/* A create's hold is this arm's ordinary write hold, taken when the block was
+ * made; the bytes under it are the cache's own, so the release needs no
+ * pointer to them. */
+void arts_db_release_created(struct arts_db_cache_s *cache) {
+  arts_db_release_rw(cache, NULL);
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
   uint32_t act;
   uint64_t cur, next;
   do {

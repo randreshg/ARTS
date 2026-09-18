@@ -64,7 +64,7 @@
 /// ctest TIMEOUT.  Repeated for many iterations to widen the race window.
 ///
 /// ownership protocols (VAL); needs >= 2 ranks for the remote-park arm.
-/// SKIPs cleanly single-node and under WRF_VAL (no ownership park).  EXCL also
+/// SKIPs cleanly single-node.  EXCL also
 /// serializes RW and parks remotely, so it runs there too.
 
 #include "arts.h"
@@ -121,11 +121,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_acquire_all_bias ===\n");
 
-#if defined(ARTS_PROTOCOL_WRF_VAL)
-  arts_printf("SKIP db_acquire_all_bias: WRF_VAL has no ownership park\n");
-  arts_shutdown();
-  return;
-#else
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
     arts_printf("SKIP db_acquire_all_bias: needs >= 2 ranks (have %u)\n",
@@ -183,7 +178,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("PASS: db_acquire_all_bias %u iterations\n", ITERS);
   arts_shutdown();
-#endif
 }
 
 int main(int argc, char **argv) {

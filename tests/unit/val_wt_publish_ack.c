@@ -42,7 +42,7 @@
 ///
 /// Under HOME, arts_db_release_rw on a NON-home owner performs a SYNCHRONOUS
 /// PUBLISH to home: it builds a stack-local `sem_t cv`, ships its address
-/// over the wire (arts_send_db_publish), then blocks in await_publish_ack
+/// over the wire (arts_send_db_publish), then blocks in arts_db_await_ack
 /// until arts_handler_db_publish_ack sem_posts it.  The dispatcher posts the
 /// ACK on BOTH the home HIT and the home-torn-down MISS so the blocked releaser
 /// is never stranded.  Fragile surfaces: (a) sem_t pointer-identity (the ACK

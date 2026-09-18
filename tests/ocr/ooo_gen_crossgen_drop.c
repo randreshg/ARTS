@@ -61,7 +61,7 @@
 ///   Generation A:
 ///     - DB created at a fixed labeled GUID, home rank 0, value VAL_A.
 ///     - A remote RW writer on rank W forces a home(0)->W ownership transfer
-///       (HOME may defer OWNERSHIP_INVALIDATE; OWNER/WRF_VAL defer SNAPSHOT /
+///       (HOME may defer OWNERSHIP_INVALIDATE; OWNER defers SNAPSHOT /
 ///       OWNERSHIP / PUBLISH on the before-install path).
 ///     - The DB is destroyed.
 ///   Generation B:
@@ -71,8 +71,7 @@
 /// Multinode-only (the cross-gen + ownership-transfer race needs >1 rank); on a
 /// single rank the test self-skips.  2n_io (multi sender/receiver -> wire
 /// reorder) is the configuration most likely to actually float a stale op
-/// across the boundary.  RELAXED (WRF_VAL) has no ownership transfer but still
-/// has destroy/publish defer paths, so it is exercised too.
+/// across the boundary.
 ///
 /// exposes_runtime_bug: targets the B-gen unimplemented cross-generation drop.
 /// A stranded waiter is reaped by the ctest TIMEOUT (no in-test spin).

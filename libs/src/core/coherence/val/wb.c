@@ -93,7 +93,15 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
  * (local_transfer_now restores the sentinel); the WB write policy has no sentinel
  * restoration, so it must close the window by releasing the ref before exposing
  * writer_count==0. */
-void arts_db_release_rw(struct arts_db_cache_s *cache) {
+/* A create's hold is this arm's ordinary write hold, taken when the block was
+ * made; the bytes under it are the cache's own, so the release needs no
+ * pointer to them. */
+void arts_db_release_created(struct arts_db_cache_s *cache) {
+  arts_db_release_rw(cache, NULL);
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
   /* Defensive: writer_count==0 means our acquire never bumped ownership;
    * decrementing would underflow.  Atomic acquire-load avoids a TSan race. */
   if (arts_atomic_read(&cache->writer_count) == 0) {

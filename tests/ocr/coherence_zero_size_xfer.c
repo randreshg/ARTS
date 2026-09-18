@@ -51,7 +51,7 @@
 ///
 ///        Completion is the assertion: if the empty transfer crashes any rank,
 ///        the finish scope never drains and shutdown never fires, surfacing as
-///        a ctest FAIL.  Model-agnostic (HOME/WRF_VAL builds simply move
+///        a ctest FAIL.  Model-agnostic (HOME builds simply move
 ///        ownership without a map). Requires 2+ ranks.
 
 #include "arts.h"

@@ -39,35 +39,34 @@
 
 /// @file db_alias_dedup.c
 /// @brief Same DB GUID bound to TWO RW dep slots of one EDT: the acquire-side
-///        alias dedup (rw_fire_from_cursor reentrant branch) must exactly match
-///        the release-side dedup (release_dbs alias_only), with no writer_count
-///        under/over-count.
+///        alias rule must exactly match the release-side one, with no
+///        coherence-hold under/over-count.
 ///
 /// This is the single hardest acquire/release accounting path in db.c.  An EDT
-/// that names the same coherent ARTS_DB in slot 0 (RW) and slot 1 (RW):
-///   - rw_fire_from_cursor secures slot 0 via a real ownership round, then on
-///     slot 1 detects a serialized GUID-equal predecessor (reentrant=true) and
-///     resolves it as a LOCAL HIT (a fresh per-slot buffer ref, NOT a second
-///     ownership round — a second round would self-deadlock behind the EDT's
-///     own unreleased hold under a single-writer protocol).
-///   - release_dbs mirrors this: slot 1 is alias_only (drop buffer ref only,
-///     no writer_count decrement); slot 0 is the real release.
+/// acquires each distinct block ONCE.  For an EDT naming the same coherent
+/// ARTS_DB in slot 0 (RW) and slot 1 (RW), the engine classifies the whole
+/// dependence vector before any of it fires: slot 0 OWNS the acquisition and
+/// slot 1 is an ALIAS on it.
+///   - only slot 0 asks the arm for the block; when its pointer becomes final
+///     the engine hands slot 1 the same payload, a per-slot buffer ref and a
+///     descriptor pin.  A second acquisition would, under a protocol that lets
+///     one holder at a time write, queue behind the EDT's own unreleased hold
+///     and self-deadlock.
+///   - release mirrors it: slot 1 drops only its buffer ref and pin, slot 0
+///     also drops the single coherence hold.
 ///
-/// If the two sides disagree, writer_count under/over-counts: a subsequent
+/// If the two sides disagree, the hold count under/over-counts: a subsequent
 /// writer either never gets ownership (stuck — caught by ctest TIMEOUT) or
 /// gets it while a phantom hold remains (data corruption — caught by the
 /// follow-up reader's value check -> arts_abort).
 ///
 /// Both slots point at the SAME buffer, so a write through depv[0].ptr must be
 /// visible through depv[1].ptr (same DB).  We verify that, then a follow-up RW
-/// writer + RO reader chain proves writer_count returned cleanly to a grantable
+/// writer + RO reader chain proves the hold returned cleanly to a grantable
 /// state after the aliased EDT released.
 ///
-/// Config: ownership protocols (VAL) serialize RW so the reentrant
-/// branch is live.  Under EXCL RW is also serialized (alias dedup applies).
-/// Under WRF_VAL RW is NOT serialized — the reentrant branch is a no-op but the
-/// test is still a valid two-slot-same-DB correctness check, so it runs in all
-/// configs.  Config-agnostic across 1n..4n.  A stranded EDT is caught by the
+/// The rule is the engine's, so it holds in every coherence configuration.
+/// Config-agnostic across 1n..4n.  A stranded EDT is caught by the
 /// ctest TIMEOUT (no in-test watchdog).
 
 #include "arts.h"
@@ -148,7 +147,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("=== db_alias_dedup ===\n");
 
   /* Home the DB on rank 0 so the whole chain runs locally; the accounting
-   * path (reentrant dedup) is identical regardless of node count. */
+   * path (one acquisition, one alias) is identical regardless of node count. */
   void *ptr = NULL;
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,

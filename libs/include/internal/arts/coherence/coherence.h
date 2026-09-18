@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#include <semaphore.h> /* sem_t — await_publish_ack signature */
+#include <semaphore.h> /* sem_t — arts_db_await_ack signature */
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -148,16 +148,33 @@ void arts_db_acquire_account(struct arts_edt_s *edt);
  * serialized (RW) dep advance the cursor + fire the next serialized dep. */
 void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot);
 
-/* Secured wake (position-idempotent): advance the RW cursor past `slot` if it
- * still points there, then fire the next serialized dep. Does NOT touch
- * acquire_remaining. Callers: PROCEED handler + GRANT/TRANSFER drain. */
-void mark_edt_secured_by_guid(arts_guid_t edt_guid, unsigned int slot);
+/* An EDT acquires each distinct block ONCE: the owner slot asks an arm for it,
+ * every other slot naming it is an alias that requests nothing and skips the
+ * arm's release.  This hands the block's payload to those aliases — the same
+ * address, a per-slot buffer ref and descriptor pin, one account each — and is
+ * the ONLY place an alias is resolved, on every arm.  Call it where an owner's
+ * pointer becomes final, BEFORE accounting the owner (that account may schedule
+ * the EDT, after which nothing may read its acquire state); a NULL payload
+ * resolves the aliases to NULL, the value a block with no bytes reads as.  One
+ * pass over depv in the calling frame: no dispatch, no recursion.
+ *
+ * owner_db_h is the descriptor handle the calling frame holds for the block,
+ * BORROWED for the call (the caller still owns it), or NULL when the frame
+ * holds none.  Pass it whenever there is one: an alias must never end with a
+ * buffer ref and no descriptor pin — a buffer's last drop recycles it into its
+ * cache's free-list, and the slots release in index order — and a fresh lookup
+ * can miss under a concurrent destroy while the payload is still alive under
+ * the owner's own pin.  With no handle the block is looked up here, and a miss
+ * resolves the aliases to NULL with no ref at all. */
+void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot,
+                          arts_shared_ptr_t owner_db_h);
 
 /* Per-protocol classification used by the arts_db_acquire_all driver: returns
- * true for deps that take exclusive ownership through the home directory and
- * must be GUID-serialized (WT/WB RW). RO is never serialized; WRF_VAL
- * serializes nothing (every acquire is a home snapshot). Defined in
- * each arm's own write-policy TU. */
+ * true for the dep modes whose acquire can WAIT on another rank, which the
+ * engine must therefore fire in one global GUID order so an EDT's own
+ * acquisitions cannot deadlock against another EDT's.  An arm whose acquire
+ * waits on nobody serializes nothing.  DB_MODE_NULL acquires nothing and is
+ * never serialized.  Defined in each arm's own write-policy TU. */
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode);
 
 /*--- Release path --------------------------------------------------------
@@ -176,10 +193,17 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode);
  * skipped — destroy commits the runtime to teardown and any state we would
  * have published is moot. */
 
-/* Release a RW acquire.  Cache-only signature: the dual-stack model keeps
- * user data at cache->user_data and the buf is just a coherence handle owned
- * by the cache, so callers don't track a per-acquire buf pointer. */
-void arts_db_release_rw(struct arts_db_cache_s *cache);
+/* Release a RW acquire taken as a DEPENDENCE.  payload is the releasing EDT's
+ * pointer into its hold; arms whose release does not move the EDT's own bytes
+ * ignore it, and an arm that does has nothing to move when it is NULL. */
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload);
+
+/* Release the hold a CREATE took.  A separate entry point because the two are
+ * statically distinct callers, not two readings of one pointer: a creating
+ * EDT's bytes are wherever the arm put them at create time, while a
+ * dependence's are the ones the acquire resolved.  Defined once per protocol
+ * TU beside arts_db_release_rw. */
+void arts_db_release_created(struct arts_db_cache_s *cache);
 
 /* Release a RO acquire — currently a no-op (no held ref to drop) but kept as
  * a separate symbol for symmetry and future cutover. */
@@ -210,18 +234,22 @@ struct arts_db_pub_rendezvous_s {
  * (the source-lifetime pin is the flight's own buffer ref, released at the
  * PUT's local completion).  Blocks the calling worker; returns early only on
  * shutdown. */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
+#endif
 
-/* Block on a stack-local semaphore until the matching PUBLISH_ACK posts it
- * (pointer identity); returns early if teardown begins.  Used by the WT and
- * WRF_VAL release-tail bodies. */
-void await_publish_ack(sem_t *cv);
+/* Block on a stack-local semaphore until the matching reply posts it (pointer
+ * identity); returns early if teardown begins.  The one blocking wait of the
+ * release path, in every arm that has one. */
+void arts_db_await_ack(sem_t *cv);
 
 /* Wake every waiter parked on the cache's publish flight (destroy paths and
  * teardown: the cache-keyed ACK completion cannot reach a withdrawn slot's
  * stack, and a parked waiter's buffer ref keeps the descriptor alive, so no
  * destructor can do it).  Publishing arms only. */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache);
+#endif
 
 /* Debug-only one-shot teardown-time invariant check over every live DB (see
  * the definition): prints QUIESCENCE-DEBUG markers for wait-structures that
@@ -234,22 +262,52 @@ void arts_db_debug_quiescence_check(void);
  * installed).  Used by the per-protocol acquire bodies. */
 void *arts_db_acquire_local(struct arts_db_cache_s *cache);
 
-/* Fire SNAPSHOT_REQUEST (edt_guid + slot) to home and PARK.  Shared by the
- * VAL/WRF_VAL acquire bodies (not EXCL, which uses EXCL_REQUEST). */
-#if !defined(ARTS_PROTOCOL_EXCL) && !defined(ARTS_PROTOCOL_INV)
+/* Fire SNAPSHOT_REQUEST (edt_guid + slot) to home and PARK.  Used by the
+ * VAL acquire body (not EXCL, which uses EXCL_REQUEST). */
+#if defined(ARTS_PROTOCOL_VAL)
 arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
                           unsigned int slot);
 #endif
 
-/* Wake a parked EDT's dep slot (re-derives dep->ptr from the installed buffer).
- * Used by the drain paths and the response handlers. */
-void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot);
+/* Resume the parked (edt_guid, slot) on buf_h: on success the ref becomes the
+ * EDT's hold; returns false when the slot was already resolved, in which case
+ * the caller still owns buf_h.  A NULL buf_h resolves a block with no bytes;
+ * no pointer CAS can arbitrate that value, so the claim is db_h itself —
+ * exactly one such wake installs the pin and accounts — and with no db_h
+ * either, nothing arbitrates.
+ *
+ * db_h is a pinned handle on the block's descriptor and is CONSUMED by the
+ * call: a winning slot claim MOVES it into depv[slot].db_pin (released last in
+ * release_one_dep), a slot that already carries a pin releases it, and every
+ * other path — lost claim, NULL data, EDT gone — releases it before
+ * returning.  The caller must take it together with buf_h, from the same
+ * lookup: the pin is what keeps the cache alive under the buffer ref the same
+ * claim installs, so a pin fetched separately could miss a destroy between
+ * the two and leave the dep holding bytes whose cache may be freed. */
+bool arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
+                           arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h);
 
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
+    defined(ARTS_PROTOCOL_EXCL)
+/* Wake a parked EDT's dep slot against the DB's CACHE-installed buffer (the
+ * cache-slot form of the resume above).  Used by the drain paths and the
+ * response handlers of every arm whose readers share the rank's own copy.
+ *
+ * Whether the slot also holds up the EDT's SERIALIZED acquire walk is read off
+ * the slot itself: a wake that publishes a serialized owner slot lets the walk
+ * past it in the same frame — after the payload is published, before the
+ * account that may schedule the EDT — and a wake of any other slot leaves the
+ * walk where it stands.  There is no separate advance to compose with. */
+void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot);
+#endif
+
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* Drain the snapshot reorder buffer in one atomic_exchange (monotonic version
  * guarantees a full drain is always correct).  Called from the install paths
  * (GRANT / GRANT_RESPONSE / SNAPSHOT_RESPONSE case 2). */
 void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache);
+#endif
 
 /* RO request combining rides the validation family's snapshot pull path and
  * is part of that family's definition (every other message class suppresses
@@ -258,8 +316,7 @@ void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache);
  * combining window, so it is inert for them regardless of the knob.  The
  * disable knob exists for the ablation build only.  Every combining site
  * gates on this derived macro, never on the raw option. */
-#if !defined(ARTS_NO_RO_COMBINING) && !defined(ARTS_PROTOCOL_EXCL) && \
-    !defined(ARTS_PROTOCOL_INV)
+#if !defined(ARTS_NO_RO_COMBINING) && defined(ARTS_PROTOCOL_VAL)
 #define ARTS_RO_COMBINING_LIVE 1
 #endif
 
@@ -288,27 +345,44 @@ void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache);
  * (snapshot drain → home teardown).  Splitting the destruct into pre/post lets
  * the protocol field-destroy land between the buffer-NULL and the snapshot/home
  * teardown, matching the original single-TU ordering. */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||                \
+    defined(ARTS_PROTOCOL_EXCL)
 void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                                uint64_t db_size, arts_db_init_kind_t kind,
                                unsigned int creator_rank);
 void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache);
 void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
+#endif
 
 /* Case-D (arts_handler_db_create) per-protocol leaf function.
- * install_home_buffer: WRF_VAL installs a version-1 zero buffer (home is
- * always canonical), WT/WB defer the install to the creator's first PUBLISH
- * (no-op here).  Defined once per protocol TU. */
+ * install_home_buffer: WT/WB defer the install to the creator's first
+ * PUBLISH (no-op here).  Defined once per protocol TU. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size);
 
-/* Record the create's own hold in this rank's cache.  Committed ONLY from the
- * word a cache carries while nothing has touched the block here — the state
- * a rank's first touch of a DB leaves — so any other word carries a hold,
- * which means the block exists and the create then creates nothing.  Reports
- * whether it committed.  Each arm names the hold in its own state: the
- * migrating-grant arms take possession plus one writer on the grant word, and
- * the exclusion arm takes its cache word's RW grant.  Defined once per
- * protocol TU. */
+/* Seed the create mark while a cache is still private to its builder: set on
+ * the cache a create installs for the block it is making, clear on every
+ * other.  Called from each arm's arts_db_cache_init, so the mark means the
+ * same thing in every build. */
+void arts_db_create_hold_seed(struct arts_db_cache_s *c,
+                              arts_db_init_kind_t kind);
+
+/* Arbitrate a create against the block's whole lifetime on this rank: one
+ * rank's create makes one block once, so the mark is taken 0 -> 1 and never
+ * put back, and only the create that takes it created anything.  A create
+ * that loses is handed no image and takes no hold — the rank whose create
+ * released the block holds nothing of it a later create could be given.
+ * Asked before anything is materialised for the create, since a loser must
+ * leave no trace. */
+bool arts_db_create_hold_once(struct arts_db_cache_s *cache);
+
+/* Record the create's own hold in this rank's cache, each arm naming it in
+ * its own state: the migrating-grant arms take possession plus one writer on
+ * the grant word, the exclusion arm takes its cache word's RW grant, and an
+ * arm that keeps no permission word takes nothing.  Runs only for a create
+ * that won the mark, so this is the state step and not the arbitration; it
+ * still reports whether it committed, because possession is never seeded over
+ * a word that already carries a hold.  Defined once per protocol TU. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache);
 
 /* The counterpart, for a create that gives the block its first image in a

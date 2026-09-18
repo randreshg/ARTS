@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * cached_version dense map — owner-side per-rank dedup of the version each
- * rank last received.  Protocol-agnostic: every build links it (the ownership
- * protocols use it for SNAPSHOT_RESPONSE dedup; WRF_VAL uses it to skip redundant
- * sends), so it lives in its own TU rather than the ownership-only val/directory.c (the
- * home GRANT_REQUEST FIFO, which WRF_VAL does not link).
+ * rank last received.  Shared by every arm that keeps versions (the ownership
+ * protocols use it for SNAPSHOT_RESPONSE dedup), so it lives in its own TU
+ * rather than the ownership-only val/directory.c (the home GRANT_REQUEST
+ * FIFO); an arm with no versions links neither.
  *
  * Concurrency: each rank slot is an independent _Atomic(uint64_t) accessed via
  * atomic load/store and a CAS-loop monotonic-max for advance.  No cross-slot

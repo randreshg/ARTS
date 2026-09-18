@@ -64,16 +64,15 @@ target_compile_definitions(arts_compute PRIVATE ARTS_NOHINT_EDT_ROUNDROBIN=${_AR
 # or purge.c/retain.c for EXCL) plus its shared directory infrastructure
 # (directory.c).  Arms whose ownership is a migrating sentinel grant (VAL,
 # INV) also link the protocol-independent grant plane (coherence/grant.c).
-# WRF_VAL compiles wrf_val.c alone (it carries no ownership grant, so neither
-# the request queue nor directory.c is linked).
-# Each TU defines its arts_handler_db_* / arts_db_* bodies directly; the linker
-# resolves the single compiled variant.
+# FLUSH compiles flush.c alone (no grant plane, no directory, no version
+# ledger).  Each TU defines its arts_handler_db_* / arts_db_* bodies directly;
+# the linker resolves the single compiled variant.
 arts_coherence_model_tus(DB_COHERENCE_MODEL_TU ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 
 # DB + coherence (db.c carries CUDA staging paths -> GPU wrapper).
 set(ARTS_MEMORY_SOURCES
     db.c
-    coherence/coherence.c coherence/buffer.c coherence/rank_u64_map.c
+    coherence/coherence.c coherence/buffer.c
     coherence/handlers.c coherence/senders.c
     ${DB_COHERENCE_MODEL_TU})
 add_library(arts_memory OBJECT ${ARTS_MEMORY_SOURCES})

@@ -20,8 +20,8 @@
 ** Licensed under the Apache License, Version 2.0 (the "License");           **
 ** you may not use this file except in compliance with the License.          **
 ******************************************************************************/
-#ifndef ARTS_MEMORY_COHERENCE_RCU_TYPES_H
-#define ARTS_MEMORY_COHERENCE_RCU_TYPES_H
+#ifndef ARTS_MEMORY_COHERENCE_VAL_TYPES_H
+#define ARTS_MEMORY_COHERENCE_VAL_TYPES_H
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,7 +30,8 @@ extern "C" {
  * @file val/types.h
  * @brief VAL (Multi-Reader, Node-Exclusive-Writer) cache/db layout.
  *
- * Selected by arts/coherence/types.h when ARTS_PROTOCOL_WRF_VAL is NOT defined.
+ * Selected by arts/coherence/types.h as the default, when neither
+ * ARTS_PROTOCOL_EXCL nor ARTS_PROTOCOL_INV is defined.
  * The WT vs WB write-policy variant is chosen here by ARTS_WRITE_POLICY_WB.  The
  * protocol-agnostic pieces (buffer, snapshot waiter, defines, container_of)
  * come from types_common.h; the of_cache/total_size/stub_size helpers live in
@@ -132,6 +133,13 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
+  /* This rank's create mark for the block: 0 while no create here has held
+   * it, 1 once one has.  One rank's create makes one block once, so the mark
+   * never returns to 0 — a rank whose create released the block holds no
+   * image of it a later create could be handed — and a create that finds it
+   * set creates nothing.  The arm's permission word says what a hold is
+   * doing; this byte says only that a create here took one. */
+  uint8_t creator_hold;
   /* New owner rank for the next ownership transfer, published by this round's
    * GRANT_INVALIDATE handler BEFORE it withdraws the sentinel.  Sentinel
    * ARTS_NO_PENDING_OWNER == no transfer pending.  The publish-before-
@@ -295,4 +303,4 @@ struct arts_db_s {
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_RCU_TYPES_H */
+#endif /* ARTS_MEMORY_COHERENCE_VAL_TYPES_H */

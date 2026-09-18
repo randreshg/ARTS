@@ -69,10 +69,39 @@
 /* ===== Cache lifecycle ============================================ */
 /* ================================================================== */
 
+/* The create mark's seed.  A create that installs a fresh descriptor here is
+ * the block's creator on this rank, so its cache starts marked; every other
+ * cache — a first touch's stub, the home's own — starts unmarked.  The cache
+ * is still private to the caller at this point, so a plain store is the whole
+ * of it. */
+void arts_db_create_hold_seed(struct arts_db_cache_s *c,
+                              arts_db_init_kind_t kind) {
+  __atomic_store_n(&c->creator_hold,
+                   (uint8_t)(kind == ARTS_DB_INIT_CREATOR_REMOTE ? 1 : 0),
+                   __ATOMIC_RELAXED);
+}
+
+/* One rank's create makes one block once.  The mark outlives the hold it
+ * records, because a rank whose create released the block holds no image of
+ * it that a later create could be handed; so exactly one create per rank
+ * wins the mark, and every later one creates nothing. */
+bool arts_db_create_hold_once(struct arts_db_cache_s *cache) {
+  uint8_t expected = 0;
+  return __atomic_compare_exchange_n(&cache->creator_hold, &expected,
+                                     (uint8_t)1, /*weak=*/false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
 /* Protocol-agnostic cache_s field init.  The per-protocol arts_db_cache_init
  * wrapper (coherence/<protocol>.c) runs its protocol-specific field-init
- * (WT/WB pending_rw queue + WB dedup-map/sentinel; WRF_VAL none) BEFORE
- * calling this, so the Vyukov MPSC stub is wired before any push could land. */
+ * (WT/WB pending_rw queue + WB dedup-map/sentinel) BEFORE
+ * calling this, so the Vyukov MPSC stub is wired before any push could land.
+ *
+ * The arms that share this shape are the ones whose cache carries a snapshot
+ * reorder buffer and a home directory; an arm with neither builds its cache
+ * itself. */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
+    defined(ARTS_PROTOCOL_EXCL)
 void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                                uint64_t db_size, arts_db_init_kind_t kind,
                                unsigned int creator_rank) {
@@ -84,6 +113,7 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   /* Every cache starts without a buffer; the install path clears this the
    * moment one is in the slot, whoever put it there. */
   __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
+  arts_db_create_hold_seed(c, kind);
   /* Snapshot reorder-buffer: a Treiber stack (zero-initializable, but init
    * explicitly for clarity).  Nodes are heap-allocated on the case-3 push path
    * and freed when drained by the next install. */
@@ -110,21 +140,22 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   } else if (kind == ARTS_DB_INIT_CREATOR_HOME) {
     arts_db_home_init(db_self, self, n);
     db_self->home_initialized = true;
-#if !defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
     /* The creator boots holding the write right, with its own create-time
      * hold under it: possession, and one live writer. */
     c->writer_count = ARTS_GRANT_SEED_HOLDING;
 #endif
   } else if (kind == ARTS_DB_INIT_CREATOR_REMOTE) {
-#if !defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
     c->writer_count = ARTS_GRANT_SEED_HOLDING;
 #endif
   }
-  /* WT/WRF_VAL PUBLISH ACK rendezvous is a stack-local sem_t per
+  /* WT PUBLISH ACK rendezvous is a stack-local sem_t per
    * release_rw (pointer-identity match) — no per-cache seq fields to
    * initialize.  WB owner-side fields (dedup map + transfer sentinel) are
    * armed by the protocol init hook above. */
 }
+#endif /* arms sharing the common cache shape */
 
 /* ================================================================== */
 /* ===== Acquire path =============================================== */
@@ -132,98 +163,219 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 
 /* ===== EDT wake helper ============================================== */
 
-/* Trigger the parked EDT identified by (edt_guid, slot) by writing
- * the dep slot's data pointer and decrementing depc_needed.
+/* Resume `edt`'s parked `slot` on a buffer the caller supplies, and — when the
+ * slot is one the EDT's serialized acquire walk is parked at — advance that
+ * walk past it, in this one frame.  The caller holds the EDT for the whole
+ * call, so the wake reads its acquire state and accounts under a single ref.
  *
- * Eager-only: the canonical user data pointer lives in cache->user_data,
- * regardless of whether cache_s was created in-place with arts_db_s
- * (user_data == (db+1)) or stub-installed standalone (user_data ==
- * malloc'd buffer).  We look up the cache via the GUID of the dep
- * slot's DB and stamp depv[slot].ptr accordingly.
+ * The ref in buf_h is what the EDT's dep slot will hold for the rest of its
+ * life: on a won claim it becomes the EDT's hold (release_one_dep drops it
+ * via buf_from_data(ptr)->cb) and the descriptor is pinned for that same
+ * span.  A lost claim leaves the ref with the caller, which is the only way
+ * the two delivery paths that can wake one slot both stay leak-free.
  *
- * Cross-TU: the snapshot-response handler (coherence_handlers.c) resumes a
- * parked EDT by (edt_guid, slot) directly; the refcount-0 cache destructor
- * delivers a NULL ptr to any waiter still parked at destroy. */
-void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
+ * Whose buffer it is, is the arm's business: an arm whose payload lives in
+ * the rank's cache passes the cache slot's buffer (the cache-slot wrappers
+ * below), an arm that gives every EDT a private copy passes that copy.  A
+ * NULL handle resolves a zero-size block, whose defined value is NULL.
+ *
+ * db_h is a pin on the block's descriptor and is CONSUMED: a won claim moves
+ * it into the dep slot, so the descriptor cannot be freed under the buffer
+ * ref the same claim installed.  The two must be ONE pin taken with the
+ * buffer, never a fresh lookup here — a lookup between them could miss a
+ * destroy's slot withdrawal and leave the dep holding bytes with nothing
+ * keeping their cache alive.
+ *
+ * Whether this wake also discharges the slot's place in the EDT's serialized
+ * walk is read off the slot itself — a serialized owner slot, never an alias —
+ * and never off the caller, so whichever frame wins the claim is the one that
+ * lets the walk past it.  The tail then runs claim, aliases, cursor, account,
+ * drain, and both of its orderings are load-bearing:
+ *
+ *   claim BEFORE cursor — the cursor passing a slot is what entitles a frame
+ *   to fire the next one, and such a frame reads the passed slot's payload as
+ *   final.  Publishing first is what makes "the cursor is never ahead of an
+ *   unpublished payload" an invariant instead of a race.
+ *
+ *   cursor BEFORE account — the account may be the decrement that schedules
+ *   the EDT, and a scheduled EDT's acquire state belongs to whoever runs it;
+ *   nothing may read or write it afterwards.
+ *
+ * A wake that LOSES the claim owes neither step: the winner owns the
+ * continuation, and a second frame advancing the same cursor would put two
+ * threads in one walk.  A winning wake whose payload is NULL — a block with no
+ * bytes, or one destroyed under a pending acquire — still owes the cursor step,
+ * because NULL is that slot's resolved value and a walk never advanced past it
+ * never finishes.
+ *
+ * Stack depth is bounded on every path: the cursor step does nothing but raise
+ * a thread-local flag or append to the resume worklist, and the walk it hands
+ * off to runs in the single top-level loop of the drain, never nested here.
+ *
+ * Returns false when the ref was NOT taken — the slot was already resolved by
+ * another wake — and the caller still owns buf_h. */
+static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
+                          arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h) {
+  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
+  bool secured = !depv[slot].alias && arts_dep_is_serialized(depv, slot);
+  struct arts_db_buffer_s *buf =
+      (struct arts_db_buffer_s *)arts_shared_get(buf_h);
+  /* A resolved acquire owes the EDT storage of the DB's declared size.
+   * data == NULL therefore means db_size == 0 (a sentinel block, whose
+   * defined value is NULL) or the DB was destroyed under a pending
+   * acquire, which the programming model leaves undefined. */
+  void *data = buf ? buf->data : NULL;
+  /* The descriptor this resolution belongs to, borrowed for the alias fill
+   * below: the aliases pin THIS handle rather than looking the block up again,
+   * because a lookup can miss under a concurrent destroy while the payload is
+   * still alive under the pin installed here.  Taken before db_h is moved into
+   * the slot and dropped on every path out. */
+  arts_shared_ptr_t alias_pin = arts_shared_copy(db_h);
+  if (data != NULL) {
+    /* Idempotent slot claim.  Two delivery paths can wake the SAME
+     * (edt, slot) — e.g. a snapshot_response case-2 drain racing a direct
+     * response.  The slot resolves exactly once: CAS depv[slot].ptr
+     * NULL->data so only the first wake keeps its buffer ref (the EDT's hold)
+     * and accounts; a loser leaves the ref with its caller and returns
+     * WITHOUT accounting — no double-decrement of acquire_remaining, no
+     * buffer-ref leak. */
+    void *expected = NULL;
+    if (!atomic_compare_exchange_strong((_Atomic(void *) *)&depv[slot].ptr,
+                                        &expected, data)) {
+      arts_shared_release(&alias_pin);
+      arts_shared_release(&db_h);
+      return false;
+    }
+    /* Won: MOVE the pin into the dep slot (released last in release_one_dep)
+     * rather than dropping it here.  The embedded cache is the descriptor's
+     * FIRST member, so this pin is what keeps the cache (buffer slot +
+     * recycle pool) alive for the whole acquire->release span. */
+    if (db_h != NULL &&
+        __atomic_load_n(&depv[slot].db_pin, __ATOMIC_ACQUIRE) == NULL) {
+      /* Publish with release so the run/release thread (reached via the
+       * work-stealing deque handoff) observes db_pin like the sibling ptr
+       * field's atomic CAS — keeps TSan clean and the ARM ordering explicit
+       * rather than relying on the deque's incidental HW fence. */
+      __atomic_store_n(&depv[slot].db_pin, (void *)db_h, __ATOMIC_RELEASE);
+      db_h = NULL;
+    }
+  } else if (db_h != NULL) {
+    /* A block with no bytes resolves to NULL, which no CAS on the pointer can
+     * arbitrate — the resolved value and the unresolved one are the same.  So
+     * the descriptor pin is the claim instead: exactly one wake installs it,
+     * and only that wake accounts.  (With no handle at all the block is gone
+     * and there is nothing to arbitrate on; a destroyed block woken twice is
+     * outside the programming model.) */
+    void *pin_expected = NULL;
+    if (!__atomic_compare_exchange_n(&depv[slot].db_pin, &pin_expected,
+                                     (void *)db_h, false, __ATOMIC_RELEASE,
+                                     __ATOMIC_RELAXED)) {
+      arts_shared_release(&alias_pin);
+      arts_shared_release(&db_h);
+      return false;
+    }
+    db_h = NULL; /* the slot owns it now */
+  }
+  arts_shared_release(&db_h); /* no-op when moved into db_pin above */
+  /* The block's payload is final for this EDT now: every other slot naming it
+   * shares these bytes.  Run after the claim published them, and before this
+   * slot's own account, which may be the one that schedules the EDT. */
+  arts_db_fill_aliases(edt, slot, alias_pin);
+  arts_shared_release(&alias_pin);
+  if (secured) {
+    /* Every byte this slot resolves to is published, so the walk may pass it. */
+    arts_db_rw_secure(edt, slot);
+  }
+  /* Data resolved for this dep — count it down; the actor that reaches 0
+   * schedules. The caller's ref on the EDT keeps it alive even if the schedule
+   * lets another worker run (and free) it; do NOT touch edt after
+   * arts_db_acquire_account returns. */
+  arts_db_acquire_account(edt);
+  if (secured) {
+    /* Free of this EDT's acquire state now, so the walk the cursor step handed
+     * off runs here, as one top-level loop over the worklist. */
+    arts_db_drain_resume_list();
+  }
+  return true;
+}
+
+/* Resolve the parked EDT and hold it for the whole wake: every read of its
+ * acquire state, and the account that may schedule it, happen under this one
+ * ref, so the wake needs no second lookup and can meet no intervening
+ * teardown.  NULL means the EDT is no longer there, and the caller has nothing
+ * left to wake. */
+static struct arts_edt_s *parked_edt_pin(arts_guid_t edt_guid,
+                                         arts_shared_ptr_t *edt_h) {
+  *edt_h = arts_route_table_lookup_edt(edt_guid);
+  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(*edt_h);
+  if (edt == NULL) {
+    ARTS_INFO("coherence: edt_guid %lu not found at trigger time", edt_guid);
+    arts_shared_release(edt_h);
+  }
+  return edt;
+}
+
+bool arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
+                           arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h) {
+  arts_shared_ptr_t edt_h = NULL;
+  struct arts_edt_s *edt =
+      (edt_guid == NULL_GUID) ? NULL : parked_edt_pin(edt_guid, &edt_h);
+  if (edt == NULL) {
+    arts_shared_release(&db_h);
+    return false;
+  }
+  bool claimed = resume_parked(edt, slot, buf_h, db_h);
+  arts_shared_release(&edt_h);
+  return claimed;
+}
+
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
+    defined(ARTS_PROTOCOL_EXCL)
+/* The cache-slot form of the resume: the buffer is whatever this rank's cache
+ * currently holds for the DB the dep names.  This wake reaches any rank for
+ * any parked slot and knows nothing about whether this one may hold the
+ * block, so it never materializes a buffer: the arm that decided to wake the
+ * slot did that at the point it established the hold.
+ *
+ * Cross-TU: the response handlers and the drain paths resume a parked EDT by
+ * (edt_guid, slot) through the wrapper below. */
+static void resume_cache_slot(arts_guid_t edt_guid, unsigned int slot) {
   if (edt_guid == NULL_GUID) {
     return;
   }
-  /* lookup_edt handle pairs with release at function exit. */
-  arts_shared_ptr_t edt_h = arts_route_table_lookup_edt(edt_guid);
-  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(edt_h);
+  arts_shared_ptr_t edt_h = NULL;
+  struct arts_edt_s *edt = parked_edt_pin(edt_guid, &edt_h);
   if (edt == NULL) {
-    ARTS_INFO("coherence: edt_guid %lu not found at trigger time", edt_guid);
-    arts_shared_release(&edt_h);
     return;
   }
-  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
-  arts_guid_t db_guid = depv[slot].guid;
+  /* The dep slot names the DB whose cache holds the bytes. */
+  arts_guid_t db_guid = ((arts_edt_dep_t *)arts_get_depv(edt))[slot].guid;
+  arts_shared_ptr_t buf_h = NULL;
+  arts_shared_ptr_t db_h = NULL;
   if (db_guid != NULL_GUID) {
-    /* Pin the db_s for the cache-deref window: the embedded cache is its FIRST
-     * member (offset 0), so pinning the db_s keeps the cache alive against a
-     * concurrent destroy while we read the buffer slot.  Released after
-     * depv[slot].ptr is set. */
-    arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
+    db_h = arts_route_table_lookup_db(db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db != NULL && db->db_type == ARTS_DB) {
-      struct arts_db_cache_s *cache = &db->cache;
-      /* Acquire the EDT's strong ref on the buffer; release_one_dep drops it
-       * (via buf_from_data(ptr)->cb) when the EDT finishes.  depv[slot].ptr
-       * aliases buf->data, the canonical user-visible payload.  This wake
-       * reaches any rank for any parked slot and knows nothing about whether
-       * this one may hold the block, so it never materializes a buffer: the
-       * arm that decided to wake the slot did that at the point it
-       * established the hold. */
-      arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-      struct arts_db_buffer_s *buf =
-          (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-      /* A resolved acquire owes the EDT storage of the DB's declared size.
-       * data == NULL therefore means db_size == 0 (a sentinel block, whose
-       * defined value is NULL) or the DB was destroyed under a pending
-       * acquire, which the programming model leaves undefined. */
-      void *data = buf ? buf->data : NULL;
-      /* Idempotent slot claim.  Two delivery paths can wake the SAME
-       * (edt, slot) — e.g. a snapshot_response case-2 drain racing a direct
-       * response.  The slot resolves exactly once: CAS depv[slot].ptr
-       * NULL->data so only the first wake keeps its buffer ref (the EDT's hold)
-       * and accounts; a loser drops the extra ref it just took and returns
-       * WITHOUT accounting — no double-decrement of acquire_remaining, no
-       * buffer-ref leak.  (A NULL data resolution is the destroyed-DB / UB
-       * path; it does not claim and falls through to account, matching legacy
-       * behavior.) */
-      if (data != NULL) {
-        void *expected = NULL;
-        if (!atomic_compare_exchange_strong((_Atomic(void *) *)&depv[slot].ptr,
-                                            &expected, data)) {
-          arts_db_buf_release(&buf_h); /* lost: release the extra ref */
-          arts_shared_release(&db_h);
-          arts_shared_release(&edt_h);
-          return;
-        }
-        /* won: keep buf_h as the EDT's hold (do not release it here).  B1: pin
-         * the descriptor for the slot's acquire->release span by MOVING db_h
-         * into db_pin (released last in release_one_dep) instead of dropping it
-         * below, so a concurrent destroy cannot free the cache (buffer slot +
-         * recycle pool) under this outstanding buffer ref. */
-        if (__atomic_load_n(&depv[slot].db_pin, __ATOMIC_ACQUIRE) == NULL) {
-          /* Publish with release so the run/release thread (reached via the
-           * work-stealing deque handoff) observes db_pin like the sibling ptr
-           * field's atomic CAS — keeps TSan clean and the ARM ordering explicit
-           * rather than relying on the deque's incidental HW fence. */
-          __atomic_store_n(&depv[slot].db_pin, (void *)db_h, __ATOMIC_RELEASE);
-          db_h = NULL;
-        }
-      }
+      buf_h = arts_db_buf_acquire(&db->cache);
     }
-    arts_shared_release(&db_h); /* no-op when moved into db_pin above */
   }
-  /* Data resolved for this dep — count it down; the actor that reaches 0
-   * schedules. The edt_h ref held across this call keeps the EDT alive even if
-   * the schedule lets another worker run (and free) it; do NOT touch edt after
-   * arts_db_acquire_account returns. */
-  arts_db_acquire_account(edt);
+  /* One lookup yields both the buffer and the pin the dep will carry; the
+   * resume CONSUMES the pin, so there is no second lookup and no window in
+   * which the two could disagree about whether the block still exists. */
+  if (!resume_parked(edt, slot, buf_h, db_h)) {
+    arts_db_buf_release(&buf_h); /* lost the claim: drop the extra ref */
+  }
   arts_shared_release(&edt_h);
 }
+
+/* One wake, one EDT lookup, one block lookup.  A slot the EDT's serialized
+ * walk is parked at is let past in the same frame, once its payload is there
+ * to be read; any other slot is resolved and accounted with the walk left
+ * where it stands. */
+void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
+  resume_cache_slot(edt_guid, slot);
+}
+#endif /* arms whose readers resume on the rank's own cache */
 
 /* ===== Stub first-touch =========================================== */
 
@@ -305,12 +457,11 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
 
 /* Case 2/6 (RW local fast path) and Case 4/8 (remote-RW path) live in
  * coherence/grant.c — they touch the OCR-model home-directory cache fields
- * (pending_rw, grant_req_in_flight) that the WRF_VAL cache layout does not
- * have. */
+ * (pending_rw, grant_req_in_flight). */
 
 /* ===== Case 7: remote-RO / remote-snapshot path =================== */
 
-#if !defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 #ifdef ARTS_RO_COMBINING_LIVE
 /* ===== Remote-read request combining ===============================
  *
@@ -484,15 +635,14 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
 #endif
   return ARTS_DB_ACQUIRE_PARK;
 }
-#endif /* !ARTS_PROTOCOL_EXCL */
+#endif /* arms with a pulled reader copy */
 
 /* The 8-case acquire dispatcher arts_handler_db_acquire is protocol-specific:
  * WT and WB define it in coherence/grant.c-backed
  * each arm's own write-policy TU (single-owner GRANT_REQUEST / GRANT path,
- * differing only on the RO-has-local-data predicate); WRF_VAL defines its
- * unified home-canonical body in coherence/wrf_val.c.  The shared remote-RO
+ * differing only on the RO-has-local-data predicate).  The shared remote-RO
  * path (arts_db_acquire_remote_ro) and the local-buffer fast read
- * (arts_db_acquire_local) above are reused by all three.
+ * (arts_db_acquire_local) above are reused by both.
  */
 
 /* Drain the snapshot reorder buffer in one atomic_exchange.  Monotonic version
@@ -500,6 +650,7 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
  * triggers the drain, so a full drain (no partial pop) is always correct
  * (plan: "install 시 전체 drain").  Called from the case-2 install path, the
  * GRANT install, the WB GRANT_RESPONSE install, and destroy fan-out. */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache) {
   arts_lf_link_t *node = arts_lf_stack_drain(&cache->pending_snapshot);
   while (node != NULL) {
@@ -524,23 +675,26 @@ void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache) {
     node = next;
   }
 }
+#endif /* arms with a snapshot reorder buffer */
 
 /* ================================================================== */
 /* ===== Release path =============================================== */
 /* ================================================================== */
 
-/* ===== publish ACK wait (shared coherence service) =================
+/* ===== release-reply wait (shared coherence service) ===============
  *
- * Synchronous PUBLISH with a stack-local semaphore matched by pointer
- * identity.  Called by the WT and WRF_VAL release-tail bodies (the WB
- * tail uses GRANT_RESPONSE and never waits on a PUBLISH_ACK).  Declared
- * in coherence/coherence.h so the protocol TUs can invoke it. */
-void await_publish_ack(sem_t *cv) {
-  /* Block on the stack-local semaphore until arts_handler_db_publish_ack
-   * posts it.  No busy-wait: sem_timedwait sleeps the worker.  We re-arm on a
-   * coarse cadence only to re-check the shutdown flag — once teardown starts
-   * the network receiver stops draining and the ACK never arrives, so the EDT
-   * epilogue must not block forever (returning lets the worker exit). */
+ * A release that must not return before the home has seen its bytes blocks
+ * on a stack-local (or heap) semaphore matched by pointer identity: the
+ * address rides the request and every reply posts it.  Compiled for every
+ * arm; declared in coherence/coherence.h so the arm TUs can invoke it. */
+void arts_db_await_ack(sem_t *cv) {
+  /* Block until the arm's ACK/CTS handler posts this semaphore by pointer
+   * identity.  The wait state is the caller's — a stack frame on one arm, a
+   * heap object on another — so nothing here may assume either.  No busy-wait:
+   * sem_timedwait sleeps the worker.  We re-arm on a coarse cadence only to
+   * re-check the shutdown flag — once teardown starts the network receiver
+   * stops draining and the reply never arrives, so the EDT epilogue must not
+   * block forever (returning lets the worker exit). */
   for (;;) {
     struct timespec ts;
     (void)clock_gettime(CLOCK_REALTIME, &ts);
@@ -559,7 +713,7 @@ void await_publish_ack(sem_t *cv) {
 /* arts_db_release_rw is protocol-specific (the version bump is shared, but the
  * pre-decrement buffer-ref drop and the post-decrement transfer/publish
  * decision differ per protocol), so its whole body lives in each arm's own
- * placement TU.  VAL+WT, WRF_VAL, and INV under either write policy call
+ * placement TU.  VAL+WT and INV under either write policy call
  * arts_db_publish_sync below for the synchronous-PUBLISH rendezvous (INV's
  * publish doubles as its invalidation-round request). */
 
@@ -579,7 +733,7 @@ void await_publish_ack(sem_t *cv) {
  * carries the home's next in-place credit {stable-buffer addr, rkey, txid},
  * consumed 1:1 by the next payload flight, so the steady state is one PUT +
  * one commit + one blocked wait, announce-free. */
-#if !defined(ARTS_PROTOCOL_EXCL) &&                                          \
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
 
 #define ARTS_PUB_FLYING 1u
@@ -710,7 +864,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
                          (uint64_t)(uintptr_t)wr, /*data=*/NULL,
                          cache->db_size, /*rdzv_txid=*/0, /*rdzv_cookie=*/0,
                          /*return_grant=*/false);
-  await_publish_ack(&wr->sem); /* CTS wake — or the shutdown escape */
+  arts_db_await_ack(&wr->sem); /* CTS wake — or the shutdown escape */
   if (wr->landing.txid == 0) {
     /* Shutdown escape before the CTS landed: the flight is abandoned with
      * the runtime (a live run's CTS wake always carries a landing).
@@ -816,7 +970,7 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
       arts_db_pub_flight_abandon(cache);
     }
   }
-  await_publish_ack(&w->sem);
+  arts_db_await_ack(&w->sem);
   if (arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
     return; /* possible shutdown escape: a late drain may still post — leak
              * w (and the gate, which stays parked) */
@@ -824,7 +978,7 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
   sem_destroy(&w->sem);
   arts_free(w);
   if (gate != NULL) {
-    await_publish_ack(&gate->sem);
+    arts_db_await_ack(&gate->sem);
     if (arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
       return; /* shutdown escape — leak the gate */
     }
@@ -934,18 +1088,18 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
     __atomic_store_n(&cache->pub_flight, ARTS_PUB_FLYING, __ATOMIC_RELEASE);
   }
 }
-#endif /* !ARTS_WRITE_POLICY_WB && !ARTS_PROTOCOL_EXCL */
+#endif /* publishing arms */
 
-#if !defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_release_ro(struct arts_db_cache_s *cache) {
-  /* RO release is a no-op for VAL/WRF_VAL: the EDT's buf ref is dropped
+  /* RO release is a no-op for VAL: the EDT's buf ref is dropped
    * by release_one_dep's DIST branch via release_buf (matching the
    * acquire_buf in mark_edt_ready_by_guid / acquire_local).
    * EXCL defines its own arts_db_release_ro in coherence/excl/purge.c and
    * coherence/excl/retain.c. */
   (void)cache;
 }
-#endif /* !ARTS_PROTOCOL_EXCL */
+#endif /* arms whose RO release drops nothing but the EDT's own ref */
 
 /* ================================================================== */
 /* ===== Destroy lifecycle ========================================== */
@@ -972,6 +1126,8 @@ void arts_db_destroy_remote(arts_guid_t db_guid) {
  * freed by the route_table after the wrapper returns; buffers (FAM data) are
  * recycled / freed by the cb deleter chain once outstanding refs drain. */
 
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
+    defined(ARTS_PROTOCOL_EXCL)
 /* Step 1: release the cache-hold on the buffer (store NULL into the shared
  * slot).  If no acquirer holds a ref the cb deleter frees the buffer now;
  * otherwise it survives until the last in-flight acquirer releases.  Runs
@@ -996,6 +1152,7 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
    * pool's default arts_free. */
   arts_lf_pool_destroy_with(&cache->buf_freelist, arts_regpool_free);
 }
+#endif /* arms sharing the common cache shape */
 
 /* Steps 3b+4: drain+free the snapshot reorder buffer (a Treiber stack), then
  * tear down the inlined home-directory sub-resources.  Runs AFTER the protocol
@@ -1040,8 +1197,13 @@ void arts_db_debug_quiescence_check(void) {
       struct arts_db_s *db = (struct arts_db_s *)(h ? arts_shared_get(h)
                                                     : NULL);
       if (db != NULL && db->db_type == ARTS_DB) {
+#ifdef ARTS_PROTOCOL_FLUSH
+        /* FLUSH keeps no wait structure on a descriptor — a blocked release
+         * owns a heap semaphore that the home's ACK posts — so a walk has
+         * nothing to report. */
+#else
         struct arts_db_cache_s *c = &db->cache;
-#if !defined(ARTS_PROTOCOL_EXCL) &&                                          \
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
         if (!arts_lf_stack_empty(&c->pub_waiters) ||
             __atomic_load_n(&c->pub_parked, __ATOMIC_ACQUIRE) != NULL) {
@@ -1137,6 +1299,7 @@ void arts_db_debug_quiescence_check(void) {
           }
         }
 #endif
+#endif /* ARTS_PROTOCOL_FLUSH */
       }
       if (h) {
         arts_shared_release(&h);
@@ -1149,11 +1312,13 @@ void arts_db_debug_quiescence_check(void) {
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
 
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
+    defined(ARTS_PROTOCOL_EXCL)
 void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
     return;
   }
-#if !defined(ARTS_PROTOCOL_EXCL) &&                                          \
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
   /* Teardown backstop; the destroy handlers already abandoned the flight. */
   arts_db_pub_flight_abandon(cache);
@@ -1197,3 +1362,4 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
     }
   }
 }
+#endif /* arms sharing the common cache shape */

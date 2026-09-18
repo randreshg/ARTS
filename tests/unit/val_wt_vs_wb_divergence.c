@@ -60,7 +60,7 @@
 /// then a final RO reader must observe the LAST writer's value — the transfer
 /// must carry the latest buffer in either placement.  Mismatch => arts_abort.
 ///
-/// VAL-only (home.c/owner.c are not compiled under WRF_VAL/EXCL).  Self
+/// VAL-only (home.c/owner.c are not compiled under EXCL).  Self
 /// skips cleanly elsewhere.  On 1n there is no actual transfer but the chain is
 /// still correct (passes trivially); the divergence is physically exercised at
 /// 2n+.  A stranded waiter is caught by the ctest TIMEOUT (no in-test spin).

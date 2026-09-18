@@ -9,7 +9,7 @@
  *
  * Like coherence_mode_mismatch.c, this is a STANDALONE driver (not a plain
  * ctest): run_mode_mismatch.sh launches a EXCL-built binary as one rank and a
- * non-EXCL-built binary (VAL HOME/OWNER, WRF_VAL) as the other.  Across
+ * non-EXCL-built binary (VAL HOME/OWNER) as the other.  Across
  * the protocol boundary the wire tags diverge:
  *   - The non-EXCL rank receives MSG_DB_EXCL_REQUEST / _GRANT / _RELEASE
  *     (absent from its enum dispatch) → hits the dispatcher default arm →

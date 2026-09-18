@@ -158,21 +158,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
-#if defined(ARTS_PROTOCOL_WRF_VAL)
-  /* Relies on OCR RW serialization: the consumer's RW acquire observes the
-   * writer's published value only because a coherent protocol blocks the
-   * acquire until the writer releases (publishes).  WRF_VAL is DB-WRF — the RW
-   * acquire is an unserialized GET_DATA snapshot, and the writer satisfies the
-   * event before its release (satisfy-before-release), so the consumer can read
-   * home before the publish publishes and observe a stale value.  Not a
-   * defined program under DB-WRF. */
-  arts_printf(
-      "SKIP excl_req_before_create: relies on RW serialization (WRF_VAL is "
-      "DB-WRF)\n");
-  arts_shutdown();
-  return;
-#endif
-
   arts_printf("=== coherence_lock_req_before_create (%d iterations, ranks=%u)"
               " ===\n",
               N_ITERATIONS, rank_count);

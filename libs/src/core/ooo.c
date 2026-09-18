@@ -118,15 +118,13 @@
  * _destroy) — pure (item, args) Cat-B bodies defined in the coherence TUs.
  * Each model's enum (and this table) carries only that model's OOO_DB_* kinds,
  * so a build references only the bodies it actually defines:
- *   - OWNERSHIP_REQUEST: RCU only (grant.c); WRF_RCU's enum omits it.
- *   - PUBLISH: HOME/WRF_RCU only; OWNER's enum omits it (OWNER fatals on the
- * wire).
- *   - OWNERSHIP_INVALIDATE: HOME only.  HOME can see a GRANT/INVALIDATE
+ *   - GRANT_REQUEST: VAL and INV only (grant.c).
+ *   - PUBLISH: WT only; WB's enum omits it (WB fatals on the wire).
+ *   - GRANT_INVALIDATE: WT only.  WT can see a GRANT/INVALIDATE
  * reorder (or a before-create race) that lands INVALIDATE before the cache
- * installs, so it defers + replays here.  The OWNER placement never defers
+ * installs, so it defers + replays here.  The WB write policy never defers
  * INVALIDATE (home publishes the rw_holder target only after that rank's
- * cache install, so the dispatcher/self-send call the body directly) and the
- * WRF_RCU has no ownership transfer, so neither carries this kind. */
+ * cache install, so the dispatcher/self-send call the body directly). */
 
 /* Event/EDT destroy replay bodies are the wire handlers themselves
  * (arts_handler_event_destroy / arts_handler_edt_destroy) — pure (item, args)
@@ -174,10 +172,10 @@ static const arts_ooo_handler_fn_t g_ooo_table[OOO_KIND_COUNT] = {
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
     [OOO_DB_SNAPSHOT_REQUEST] = arts_handler_db_snapshot_request,
     [OOO_DB_GRANT_REQUEST] = arts_handler_db_grant_request,
-#elif defined(ARTS_PROTOCOL_WRF_VAL)
+#elif defined(ARTS_PROTOCOL_FLUSH)
     [OOO_DB_ACQUIRE] = arts_db_acquire_replay_dep,
-    [OOO_DB_SNAPSHOT_REQUEST] = arts_handler_db_snapshot_request,
-    [OOO_DB_PUBLISH] = arts_handler_db_publish,
+    [OOO_DB_FETCH_REQUEST] = arts_handler_db_fetch_request,
+    [OOO_DB_FLUSH_ANNOUNCE] = arts_handler_db_flush_announce,
 #endif
 };
 

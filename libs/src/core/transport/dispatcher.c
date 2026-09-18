@@ -203,14 +203,16 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
    * the data/data_size arguments.
    *
    * GRANT_REQUEST: shared between the WT and WB write policies (both use
-   * the migrating grant), but WRF_VAL has no such concept.  Fatal in
-   * WRF_VAL builds to catch binary mode mismatch.
+   * the migrating grant), but EXCL has no such concept.  Fatal in
+   * EXCL builds to catch binary mode mismatch.
    * GRANT_INVALIDATE is handled in its own three-model block below (WT =
    * Cat-B defer; WB = direct, never deferred).
    */
-#if defined(ARTS_PROTOCOL_WRF_VAL) || defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif defined(ARTS_PROTOCOL_EXCL)
   case MSG_DB_GRANT_REQUEST: {
-    ARTS_ERROR("WRF_VAL/EXCL build received exclusivity message type %d from rank "
+    ARTS_ERROR("EXCL build received exclusivity message type %d from rank "
                "%u — this protocol has no migrating grant; binary mode mismatch?",
                packet->message_type, packet->rank);
     break;
@@ -233,11 +235,13 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
                                     &args, sizeof(args));
     break;
   }
-#endif /* ARTS_PROTOCOL_WRF_VAL */
+#endif /* ARTS_PROTOCOL_EXCL */
   /* GRANT_RETURN — the voluntary hand-back, which exists only where the
    * release policy has the holder initiate.  A build whose grants are revoked
    * by the home has no such message, so receiving one is a mode mismatch. */
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
     defined(ARTS_RELEASE_PURGE)
   case MSG_DB_GRANT_RETURN: {
     ARTS_DEBUG("Coh GRANT_RETURN Received");
@@ -269,10 +273,12 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
    *           looked-up cache.  (The before-install GRANT/INVALIDATE reorder
    *           that once forced WT through the OoO engine is gone: WT no
    *           longer flips rw_holder before install.)
-   *   WRF_VAL: no ownership transfer (caught by the fatal group above). */
-#if defined(ARTS_PROTOCOL_WRF_VAL) || defined(ARTS_PROTOCOL_EXCL)
+   *   EXCL: no ownership transfer (caught by the fatal group above). */
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif defined(ARTS_PROTOCOL_EXCL)
   case MSG_DB_GRANT_INVALIDATE: {
-    ARTS_ERROR("WRF_VAL/EXCL build received INVALIDATE from rank %u — "
+    ARTS_ERROR("EXCL build received INVALIDATE from rank %u — "
                "this protocol has no migrating grant; binary mode mismatch?",
                packet->rank);
     break;
@@ -316,7 +322,9 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* model dispatch for MSG_DB_GRANT_INVALIDATE */
-#if defined(ARTS_PROTOCOL_EXCL) || defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif defined(ARTS_PROTOCOL_EXCL) || defined(ARTS_PROTOCOL_INV)
   case MSG_DB_SNAPSHOT_REQUEST:
   case MSG_DB_SNAPSHOT_RESPONSE: {
     ARTS_ERROR("EXCL/INV build received snapshot message type %d from rank %u — "
@@ -324,7 +332,7 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
                packet->message_type, packet->rank);
     break;
   }
-#else  /* VAL/WRF_VAL: snapshot handlers */
+#else  /* VAL: snapshot handlers */
   case MSG_DB_SNAPSHOT_REQUEST: {
     ARTS_DEBUG("Coh SNAPSHOT_REQUEST Received");
     struct arts_msg_snapshot_request_packet_s *pack =
@@ -410,14 +418,109 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     arts_shared_release(&h);
     break;
   }
+  /* The FLUSH arm's own rounds: the fetch that serves an acquire, and the
+   * write-back round that serves an RW release. */
+#if defined(ARTS_PROTOCOL_FLUSH)
+  case MSG_DB_FETCH_REQUEST: {
+    struct arts_msg_fetch_request_packet_s *pack =
+        (struct arts_msg_fetch_request_packet_s *)(packet);
+    struct arts_ooo_args_db_fetch_request_s args = {
+        .requester = pack->header.rank,
+        .db_guid = pack->db_guid,
+        .edt_guid = pack->edt_guid,
+        .slot = pack->slot,
+        .rdzv = {.addr = pack->rdzv.addr, .key = pack->rdzv.key,
+                 .txid = pack->rdzv.txid, .cookie = pack->rdzv.cookie},
+    };
+    arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_FETCH_REQUEST, &args,
+                                    sizeof(args));
+    break;
+  }
+  case MSG_DB_FETCH_RESPONSE: {
+    struct arts_msg_fetch_response_packet_s *pack =
+        (struct arts_msg_fetch_response_packet_s *)(packet);
+    struct arts_db_fetch_response_args_s args = {
+        .edt_guid = pack->edt_guid, .slot = pack->slot, .kind = pack->kind,
+        .db_size = pack->db_size, .rdzv_txid = pack->rdzv_txid,
+        .rdzv_cookie = pack->rdzv_cookie, .line_addr = pack->line_addr,
+        .line_rkey = pack->line_rkey, .flush_txid = pack->flush_txid};
+    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
+    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+    if (db != NULL) {
+      arts_handler_db_fetch_response(db, &args);
+    } else {
+      arts_db_flush_discard_landing(pack->rdzv_txid, pack->rdzv_cookie);
+    }
+    arts_shared_release(&h);
+    break;
+  }
+  case MSG_DB_FLUSH_COMMIT: {
+    struct arts_msg_flush_commit_packet_s *pack =
+        (struct arts_msg_flush_commit_packet_s *)(packet);
+    struct arts_db_flush_commit_args_s args = {
+        .releaser = pack->header.rank, .db_guid = pack->db_guid,
+        .txid = pack->txid, .sem = pack->sem};
+    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
+    arts_handler_db_flush_commit(arts_shared_get(h), &args); /* NULL = gone: still ACK */
+    arts_shared_release(&h);
+    break;
+  }
+  case MSG_DB_FLUSH_ACK: {
+    struct arts_msg_flush_ack_packet_s *pack =
+        (struct arts_msg_flush_ack_packet_s *)(packet);
+    struct arts_db_flush_ack_args_s args = {.sem = pack->sem,
+                                            .next_txid = pack->next_txid};
+    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
+    arts_handler_db_flush_ack(arts_shared_get(h), &args); /* NULL = no refill, still post */
+    arts_shared_release(&h);
+    break;
+  }
+  case MSG_DB_FLUSH_ANNOUNCE: {
+    struct arts_msg_flush_announce_packet_s *pack =
+        (struct arts_msg_flush_announce_packet_s *)(packet);
+    struct arts_ooo_args_db_flush_announce_s args = {
+        .releaser = pack->header.rank, .db_guid = pack->db_guid, .sem = pack->sem};
+    /* A remote creator releases as soon as it has written its copy, which can
+     * be before its own CREATE has been handled here; a route-table miss
+     * cannot tell that from a destroy, so the announce defers and replays on
+     * the install's drain. */
+    arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_FLUSH_ANNOUNCE, &args,
+                                    sizeof(args));
+    break;
+  }
+  case MSG_DB_FLUSH_CTS: {
+    struct arts_msg_flush_cts_packet_s *pack =
+        (struct arts_msg_flush_cts_packet_s *)(packet);
+    struct arts_db_flush_cts_args_s args = {
+        .sem = pack->sem, .line_addr = pack->line_addr,
+        .line_rkey = pack->line_rkey, .txid = pack->txid};
+    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
+    arts_handler_db_flush_cts(arts_shared_get(h), &args);
+    arts_shared_release(&h);
+    break;
+  }
+#else
+  case MSG_DB_FETCH_REQUEST:
+  case MSG_DB_FETCH_RESPONSE:
+  case MSG_DB_FLUSH_COMMIT:
+  case MSG_DB_FLUSH_ACK:
+  case MSG_DB_FLUSH_ANNOUNCE:
+  case MSG_DB_FLUSH_CTS: {
+    ARTS_ERROR("this build received a FLUSH-arm message (type %d) from rank %u "
+               "— binary mode mismatch?", packet->message_type, packet->rank);
+    break;
+  }
+#endif /* ARTS_PROTOCOL_FLUSH */
   /* GRANT_RESPONSE: the single ownership-transfer wire message.  One
    * converged layout carries the map (WT: map_entry_count=0) plus buffer;
-   * WRF_VAL has no ownership transfer and fatals to catch a binary mode
+   * EXCL has no ownership transfer and fatals to catch a binary mode
    * mismatch. */
-#if defined(ARTS_PROTOCOL_WRF_VAL) || defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif defined(ARTS_PROTOCOL_EXCL)
   case MSG_DB_GRANT_RESPONSE:
   case MSG_DB_GRANT_CTS: {
-    ARTS_ERROR("WRF_VAL/EXCL build received ownership-transfer message type %d "
+    ARTS_ERROR("EXCL build received ownership-transfer message type %d "
                "from rank %u — this protocol has no migrating grant; binary "
                "mode mismatch?",
                packet->message_type, packet->rank);
@@ -448,13 +551,15 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* model dispatch for MSG_DB_GRANT_RESPONSE */
-  /* PUBLISH + PUBLISH_ACK: used by the WT write policy and WRF_VAL
+  /* PUBLISH + PUBLISH_ACK: used by the WT write policy
    * (sync release publish).  Fatal in the WB write policy — WB uses
    * async transfer, not synchronous publish. */
 /* The CTS leg exists only when a publish carries payload — i.e. under WT
  * (and EXCL's purge policy).  INV's WB publish is control-only, so it never
  * announces. */
-#if (defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)) ||          \
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif (defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)) ||          \
     (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WB))
   case MSG_DB_PUBLISH_CTS: {
     ARTS_ERROR("WB-write-policy build received PUBLISH_CTS from rank %u — no "
@@ -490,7 +595,31 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
 /* Every arm that publishes at a release: WT write policies (payload write-through)
  * and INV under either write policy (its release always asks the home for an
  * invalidation round, carrying payload only under WT). */
-#if defined(ARTS_PROTOCOL_EXCL) ||                                           \
+#if defined(ARTS_PROTOCOL_FLUSH)
+  /* PUBLISH / PUBLISH_ACK are refused in one place below; the create's line
+   * credential is this arm's too, and lands in its own cache fields. */
+  case MSG_DB_CREATE_RETURN: {
+    ARTS_DEBUG("Coh CREATE_RETURN Received");
+    struct arts_msg_db_create_return_packet_s *pack =
+        (struct arts_msg_db_create_return_packet_s *)(packet);
+    /* Cat-C lookup-or-drop: record the creator's first flush credit.  The
+     * creator always installed its descriptor before sending the create this
+     * answers, so a MISS means the DB is already destroyed — the credit dies
+     * with it (a credit is a hint, never a precondition). */
+    arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
+    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+    if (db != NULL && pack->credit_txid != 0) {
+      struct arts_db_cache_s *cache = &db->cache;
+      __atomic_store_n(&cache->home_line_addr, pack->credit_addr,
+                       __ATOMIC_RELAXED);
+      __atomic_store_n(&cache->home_line_rkey, pack->credit_rkey,
+                       __ATOMIC_RELAXED);
+      __atomic_store_n(&cache->flush_txid, pack->credit_txid, __ATOMIC_RELEASE);
+    }
+    arts_shared_release(&h);
+    break;
+  }
+#elif defined(ARTS_PROTOCOL_EXCL) ||                                         \
     (defined(ARTS_WRITE_POLICY_WB) && !defined(ARTS_PROTOCOL_INV))
   case MSG_DB_PUBLISH:
   case MSG_DB_PUBLISH_ACK:
@@ -596,7 +725,9 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
   /* The versioned-snapshot redirect: VAL's read path under WB, where the home
  * holds no bytes and forwards the read to the owner.  INV has its own reader
  * plane (INV_REDIRECT) and EXCL its own FORWARD, so both are excluded. */
-#if defined(ARTS_WRITE_POLICY_WB) && !defined(ARTS_PROTOCOL_EXCL) &&         \
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif defined(ARTS_WRITE_POLICY_WB) && !defined(ARTS_PROTOCOL_EXCL) &&         \
     !defined(ARTS_PROTOCOL_INV)
   case MSG_DB_SNAPSHOT_REDIRECT: {
     ARTS_DEBUG("Coh SNAPSHOT_REDIRECT Received");
@@ -638,8 +769,9 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
 /* CONFIRM_ACK is the WB write policy's confirm gate: a new owner may not run
  * until the home has published the directory flip.  Every grant-bearing arm
  * needs it under WB — the gate belongs to the write policy, not the protocol. */
-#if defined(ARTS_WRITE_POLICY_WB) && !defined(ARTS_PROTOCOL_EXCL) &&         \
-    !defined(ARTS_PROTOCOL_WRF_VAL)
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif defined(ARTS_WRITE_POLICY_WB) && !defined(ARTS_PROTOCOL_EXCL)
   case MSG_DB_GRANT_CONFIRM_ACK: {
     ARTS_DEBUG("Coh GRANT_CONFIRM_ACK Received");
     struct arts_msg_grant_confirm_ack_packet_s *pack =
@@ -666,10 +798,12 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
   /* GRANT_CONFIRM: both write policies (new owner C → home A flips rw_holder +
    * advances the round).  WB additionally replies with CONFIRM_ACK; WT's
    * home handler does not (the new owner already drained at
-   * GRANT_RESPONSE). WRF_VAL has no ownership transfer and fatals. */
-#if defined(ARTS_PROTOCOL_WRF_VAL) || defined(ARTS_PROTOCOL_EXCL)
+   * GRANT_RESPONSE). EXCL has no ownership transfer and fatals. */
+#if defined(ARTS_PROTOCOL_FLUSH)
+/* Refused in one place below: this arm has none of these rounds. */
+#elif defined(ARTS_PROTOCOL_EXCL)
   case MSG_DB_GRANT_CONFIRM: {
-    ARTS_ERROR("WRF_VAL/EXCL build received GRANT_CONFIRM from rank %u — "
+    ARTS_ERROR("EXCL build received GRANT_CONFIRM from rank %u — "
                "this protocol has no migrating grant; binary mode mismatch?",
                packet->rank);
     break;
@@ -936,6 +1070,46 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
   }
 #endif /* ARTS_WRITE_POLICY_WB */
 #endif /* ARTS_PROTOCOL_INV */
+  /* Every coherence round this arm does not run.  The FLUSH arm fetches a
+   * private copy at each remote acquire and writes it back at each remote RW
+   * release: it has no grant to migrate, no snapshot to validate, no
+   * invalidation round and no exclusion queue, so any of those messages on
+   * the wire means the ranks were not built alike. */
+#ifdef ARTS_PROTOCOL_FLUSH
+  case MSG_DB_GRANT_REQUEST:
+  case MSG_DB_GRANT_RESPONSE:
+  case MSG_DB_GRANT_CTS:
+  case MSG_DB_GRANT_INVALIDATE:
+  case MSG_DB_GRANT_CONFIRM:
+  case MSG_DB_GRANT_CONFIRM_ACK:
+  case MSG_DB_GRANT_RETURN:
+  case MSG_DB_PUBLISH:
+  case MSG_DB_PUBLISH_ACK:
+  case MSG_DB_PUBLISH_CTS:
+  case MSG_DB_SNAPSHOT_REQUEST:
+  case MSG_DB_SNAPSHOT_RESPONSE:
+  case MSG_DB_SNAPSHOT_REDIRECT:
+  case MSG_DB_INV_REQUEST:
+  case MSG_DB_INV_CTS:
+  case MSG_DB_INV_DELIVER:
+  case MSG_DB_INV_INVALIDATE:
+  case MSG_DB_INV_INVALIDATE_ACK:
+  case MSG_DB_INV_REDIRECT:
+  case MSG_DB_EXCL_REQUEST:
+  case MSG_DB_EXCL_CTS:
+  case MSG_DB_EXCL_GRANT:
+  case MSG_DB_EXCL_RELEASE:
+  case MSG_DB_EXCL_FORWARD:
+  case MSG_DB_EXCL_DELIVER:
+  case MSG_DB_EXCL_CONFIRM:
+  case MSG_DB_EXCL_RORET:
+  case MSG_DB_EXCL_RECALL: {
+    ARTS_ERROR("FLUSH build received an OCR-model coherence message (type %d) "
+               "from rank %u — binary mode mismatch?",
+               packet->message_type, packet->rank);
+    break;
+  }
+#endif /* ARTS_PROTOCOL_FLUSH */
   default: {
     ARTS_INFO("Unknown Packet %d %d %d", packet->message_type, packet->size,
               packet->rank);

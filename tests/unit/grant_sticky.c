@@ -30,7 +30,11 @@
  * here and every later local write pays a home round trip — the policy
  * silently degrades to PURGE while computing identical answers, which is
  * exactly the class of regression a value oracle cannot see. PURGE lands on
- * IDLE legitimately and is excluded; WRF_VAL has no grant at all and skips.
+ * IDLE legitimately and is excluded.
+ *
+ * An arm that holds no write right at all — every remote acquire fetches and
+ * every remote write acquisition writes back — has nothing that could outlive
+ * a writer, so the property is vacuous there and the test skips.
  */
 
 #include "arts.h"
@@ -39,8 +43,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#if defined(ARTS_PROTOCOL_WRF_VAL) ||                                          \
-    (defined(ARTS_PROTOCOL_EXCL) && !defined(ARTS_RELEASE_RETAIN))
+#if (defined(ARTS_PROTOCOL_EXCL) && !defined(ARTS_RELEASE_RETAIN)) ||         \
+    defined(ARTS_PROTOCOL_FLUSH)
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;

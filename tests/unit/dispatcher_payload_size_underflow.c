@@ -150,7 +150,7 @@ int main(void) {
   failures += exercise("MSG_DB_SNAPSHOT_RESPONSE",
                        sizeof(struct arts_msg_snapshot_response_packet_s));
 #endif
-  /* PUBLISH (HOME / WRF_VAL dispatcher case) — dispatcher.c:408.  The struct is
+  /* PUBLISH (HOME dispatcher case) — dispatcher.c:408.  The struct is
    * unconditional in protocol.h, so size-check it in every build. */
   failures +=
       exercise("MSG_DB_PUBLISH", sizeof(struct arts_msg_publish_packet_s));
