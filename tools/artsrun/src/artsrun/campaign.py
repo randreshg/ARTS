@@ -8,8 +8,11 @@ the source of truth; the console is a convenience.
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -344,6 +347,19 @@ def _check_ssh_submitter(profile: Profile) -> None:
             f"elsewhere gives the runtimes different node sets (this host is "
             f"known as: {', '.join(sorted(mine))})"
         )
+
+
+@contextmanager
+def scratch_run_dir():
+    """A run directory for a dry run: what it renders (the node counts'
+    configurations, a counter selection) is what a campaign would write, but
+    none of it is a record of anything, so it lives for the printout and
+    never under the campaign log root."""
+    scratch = Path(tempfile.mkdtemp(prefix="artsrun-dry-"))
+    try:
+        yield scratch
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def recorded_results(run_dir: Path, cells: list) -> list[CellResult]:
