@@ -997,16 +997,11 @@ set_tests_properties(edt_output_event_2n PROPERTIES PASS_REGULAR_EXPRESSION "PAS
 
 # edt_finish_scope_balance: round-robins members across all ranks; runs on 1n too. single + multinode.
 add_arts_test(edt_finish_scope_balance)
-# These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
-# it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(edt_finish_scope_balance TIMEOUT 30)
 register_multinode_test(edt_finish_scope_balance TIMEOUT 60)
 foreach(_v "" _2n _3n _4n _2n_io)
     set_tests_properties(edt_finish_scope_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_finish_scope_balance|SKIP edt_finish_scope_balance")
 endforeach()
-endif()
 
 # edt_remote_create_race: needs 2+ ranks; SKIPs cleanly on 1n.
 add_arts_test(edt_remote_create_race)

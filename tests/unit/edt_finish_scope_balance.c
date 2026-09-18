@@ -22,11 +22,16 @@
  * Scenario
  * --------
  * main_edt creates a finish event, then M member EDTs joined to it spread
- * round-robin across all ranks (local + remote when nranks>1), each bumping a
- * shared counter.  main_edt then arts_event_wait(fe): this releases the
+ * round-robin across all ranks (local + remote when nranks>1), each marking a
+ * block of its own.  main_edt then arts_event_wait(fe): this releases the
  * creator-token and blocks until every member completes.  After the wait
  * returns, every member must have run exactly once — proving the scope drained
  * precisely when (and only when) all members finished.  Then shut down.
+ *
+ * One block per member: no two write acquisitions of a block ever overlap, so
+ * the tally is exact under every memory model.  A shared counter would make
+ * the oracle depend on the runtime ordering the members' writes, which the
+ * DB-WRF model leaves to the program.
  *
  * Single-node: all members local (pure INCR/DECR balance).  Multinode: members
  * on remote ranks exercise the proxy-LATCH forward path.
@@ -34,46 +39,50 @@
 
 #include "arts.h"
 
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #define MEMBERS 24
 
 typedef struct {
-  _Atomic unsigned int ran; /* number of members that executed */
-} ctr_t;
+  unsigned int ran; /* how many times this member executed */
+} mark_t;
 
-/* Member body: bump the shared counter.  depv[0] = counter DB (RW). */
+/* Member body: mark its own block.  depv[0] = this member's block (RW). */
 void member(uint32_t pc, const uint64_t *pv, uint32_t dc, arts_edt_dep_t dv[]) {
   (void)pc;
   (void)pv;
   (void)dc;
-  ctr_t *c = (ctr_t *)dv[0].ptr;
-  if (c) {
-    atomic_fetch_add_explicit(&c->ran, 1u, memory_order_relaxed);
+  mark_t *m = (mark_t *)dv[0].ptr;
+  if (m) {
+    m->ran++;
   }
 }
 
-/* Verifier body: RO-acquire the counter DB AFTER every member completed, so
- * coherence delivers the final tally (the creator cannot read it through its
- * raw create-time pointer — remote RW members migrate/replace the home buffer,
- * leaving that pointer stale/freed).  depv[0] = counter DB (RO). */
+/* Verifier body: RO-acquire every member's block AFTER every member completed,
+ * so coherence delivers the final marks (the creator cannot read them through
+ * its raw create-time pointers — remote RW members migrate/replace the home
+ * buffers, leaving those pointers stale/freed).  depv[i] = member i's block
+ * (RO). */
 void verifier(uint32_t pc, const uint64_t *pv, uint32_t dc,
               arts_edt_dep_t dv[]) {
   (void)pc;
   (void)pv;
-  (void)dc;
-  const ctr_t *c = (const ctr_t *)dv[0].ptr;
-  unsigned int ran =
-      c ? atomic_load_explicit(&c->ran, memory_order_relaxed) : 0u;
-  if (ran == (unsigned int)MEMBERS) {
+  unsigned int once = 0u; /* members whose block reads exactly one run */
+  unsigned int runs = 0u; /* runs summed over every block */
+  for (uint32_t i = 0; i < dc; i++) {
+    const mark_t *m = (const mark_t *)dv[i].ptr;
+    unsigned int n = m ? m->ran : 0u;
+    runs += n;
+    once += (n == 1u);
+  }
+  if (dc == (uint32_t)MEMBERS && once == (unsigned int)MEMBERS) {
     arts_printf("PASS edt_finish_scope_balance: %d members, scope balanced\n",
                 MEMBERS);
   } else {
-    arts_printf("FAIL edt_finish_scope_balance: scope drained with ran=%u "
-                "(want %d) — INCR/DECR imbalance\n",
-                ran, MEMBERS);
+    arts_printf("FAIL edt_finish_scope_balance: scope drained with %u members "
+                "run once, %u runs in all (want %d) — INCR/DECR imbalance\n",
+                once, runs, MEMBERS);
     arts_abort(1);
   }
 }
@@ -89,26 +98,32 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
 
-  void *cp = NULL;
-  arts_guid_t cdb =
-      arts_db_create(&cp, sizeof(ctr_t), ARTS_DB, ARTS_DB_PROP_NONE,
-                     &(arts_db_hint_t){.rank = 0});
-  ctr_t *c = (ctr_t *)cp;
-  atomic_init(&c->ran, 0u);
-  arts_db_release(cdb, DB_MODE_RW);
-
-  uint64_t pv[1] = {(uint64_t)cdb};
+  /* One block per member, zeroed and released before any member depends on
+   * it: the create's hold is the block's first write acquisition, the
+   * member's its second, and the two never overlap. */
+  arts_guid_t blocks[MEMBERS];
+  for (int i = 0; i < MEMBERS; i++) {
+    void *p = NULL;
+    blocks[i] = arts_db_create(&p, sizeof(mark_t), ARTS_DB, ARTS_DB_PROP_NONE,
+                               &(arts_db_hint_t){.rank = 0});
+    if (p == NULL) {
+      arts_printf("FAIL edt_finish_scope_balance: create %d handed no "
+                  "storage\n", i);
+      arts_abort(1);
+    }
+    ((mark_t *)p)->ran = 0u;
+    arts_db_release(blocks[i], DB_MODE_RW);
+  }
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
-  /* M members joined to the finish scope, round-robin across all ranks.  Each
-   * acquires the counter RW (serialized), so the writes are ordered and the
-   * final tally is exact. */
+  /* M members joined to the finish scope, round-robin across all ranks, each
+   * writing its own block. */
   for (int i = 0; i < MEMBERS; i++) {
     unsigned int rank = (unsigned int)i % nranks;
     arts_guid_t m = arts_edt_create(
-        member, 1, pv, 1, &(arts_edt_hint_t){.rank = rank, .finish_event = fe});
-    arts_add_dependence(cdb, m, 0, DB_MODE_RW);
+        member, 0, NULL, 1, &(arts_edt_hint_t){.rank = rank, .finish_event = fe});
+    arts_add_dependence(blocks[i], m, 0, DB_MODE_RW);
   }
 
   /* Release the creator-token and block until the scope drains (all members
@@ -117,13 +132,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_wait(fe);
 
   /* The wait returned ⇒ the scope drained ⇒ every member's DECR landed, which
-   * happens only after each member body ran.  Read the tally back through a
-   * verifier EDT (RO acquire) rather than the stale create-time pointer, then
-   * shut down once that second scope drains. */
+   * happens only after each member body ran.  Read the marks back through a
+   * verifier EDT (RO acquires) rather than the stale create-time pointers,
+   * then shut down once that second scope drains. */
   arts_guid_t fe2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t v = arts_edt_create(
-      verifier, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = fe2});
-  arts_add_dependence(cdb, v, 0, DB_MODE_RO);
+      verifier, 0, NULL, MEMBERS,
+      &(arts_edt_hint_t){.rank = 0, .finish_event = fe2});
+  for (int i = 0; i < MEMBERS; i++) {
+    arts_add_dependence(blocks[i], v, (uint32_t)i, DB_MODE_RO);
+  }
   arts_event_wait(fe2);
   arts_shutdown();
 }

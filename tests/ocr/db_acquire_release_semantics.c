@@ -203,6 +203,11 @@ void c3_writer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned i = 0; i < ELEMS; i++) {
     p[i] = MAGIC_REWRITE | i;
   }
+  /* The hold ends before the checker's dependence is asked for, so what the
+   * checker sees is what this release published: a read ordered after a
+   * release observes it on every memory model, while a read overlapping a
+   * live hold is owed nothing by some of them. */
+  arts_db_release(db, DB_MODE_RW);
 
   arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
   h.rank = away(home, 1);
