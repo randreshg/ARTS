@@ -193,7 +193,8 @@ void arts_handler_db_acquire(void *item, void *args) {
  * it withdraws the sentinel and names the next owner, but this releaser still
  * holds its own count, so the ship happens here, at its decrement.
  */
-void arts_db_release_rw(struct arts_db_cache_s *cache) {
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
   /* Defensive: no local hold to drop means our acquire never bumped the grant
    * (e.g. a cache already torn down by a destroy fan-out); decrementing would
    * underflow.  Which word states carry no hold is the release policy's —

@@ -48,7 +48,7 @@ extern "C" {
  *
  * Includes the protocol-agnostic layout (types_common.h), then the
  * protocol-specific cache/db (coherence/<proto>/types.h, chosen by
- * ARTS_PROTOCOL_WRF_VAL), then the of_cache / total_size / stub_size helpers that
+ * the ARTS_PROTOCOL_* macro), then the of_cache / total_size / stub_size helpers that
  * need the complete cache + db_s types.  struct arts_db_s embeds the per-rank
  * cache (struct arts_db_cache_s) by value as its FIRST member, so each protocol
  * header defines the whole cache + db_s chain together.
@@ -60,16 +60,15 @@ extern "C" {
 
 #include "arts/coherence/types_common.h"
 
-/* Protocol-specific cache/db layout.  WRF_VAL carries no ownership grant or RW
- * waiter queue (writer_count is a pure ref count); VAL carries the
- * ownership-cache shape, with the WT/WB write-policy split made inside the
- * header via ARTS_WRITE_POLICY_WB. */
+/* Protocol-specific cache/db layout.  VAL carries the ownership-cache shape,
+ * with the WT/WB write-policy split made inside the header via
+ * ARTS_WRITE_POLICY_WB. */
 #if defined(ARTS_PROTOCOL_EXCL)
 #include "arts/coherence/excl/types.h"
 #elif defined(ARTS_PROTOCOL_INV)
 #include "arts/coherence/inv/types.h"
-#elif defined(ARTS_PROTOCOL_WRF_VAL)
-#include "arts/coherence/wrf_val/types.h"
+#elif defined(ARTS_PROTOCOL_FLUSH)
+#include "arts/coherence/flush/types.h"
 #else
 #include "arts/coherence/val/types.h"
 #endif
@@ -111,15 +110,14 @@ static inline uint64_t arts_db_total_size(const struct arts_db_s *db) {
  * cached_ranks bitset).  The home rank allocates the full sizeof(struct
  * arts_db_s) instead.
  * The stub ends at the first home-directory field after home_initialized
- * (protocol-dependent: rw_holder for the ownership protocols, cached_version
- * for WRF_VAL). */
+ * (protocol-dependent: rw_holder for the ownership protocols). */
 static inline uint64_t arts_db_cache_stub_size(void) {
-#if defined(ARTS_PROTOCOL_WRF_VAL)
-  return offsetof(struct arts_db_s, cached_version);
-#elif defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_EXCL)
   return offsetof(struct arts_db_s, lock_state);
 #elif defined(ARTS_PROTOCOL_INV)
   return offsetof(struct arts_db_s, dir_state);
+#elif defined(ARTS_PROTOCOL_FLUSH)
+  return offsetof(struct arts_db_s, sharers);
 #else
   return offsetof(struct arts_db_s, rw_holder);
 #endif

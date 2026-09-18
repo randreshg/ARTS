@@ -44,7 +44,7 @@
 /// stranded stub install would hang the finish scope → ctest TIMEOUT).
 ///
 /// runtime_single+multinode, non-EXCL: stub first-touch install is the
-/// VAL/WRF_VAL remote-acquire mechanism.  EXCL has its own RO acquire path,
+/// VAL remote-acquire mechanism.  EXCL has its own RO acquire path,
 /// so self-skips.  On a single node every acquire is a local hit (the stub-install path
 /// is never entered) and the test passes trivially.
 

@@ -20,7 +20,7 @@
  *       thread therefore cannot free the db_s mid-handler.  A torn-down slot is
  *       a clean NULL get, not a dangling pointer deref.
  *
- *   (c) WAKE-ON-MISS — PUBLISH_ACK (WT/WRF_VAL) and PUBLISH_CTS (EXCL)
+ *   (c) WAKE-ON-MISS — PUBLISH_ACK (WT) and PUBLISH_CTS (EXCL)
  *       post the releaser's stack-local sem by pointer identity, INDEPENDENT of
  *       the route lookup (the body is called even on db==NULL, or the sem_post
  *       is inline).  A torn-down home cache must NOT swallow the ACK or the
@@ -40,8 +40,8 @@
  * double-free / cb refcount underflow).
  *
  * Config-agnostic: every protocol routes RW/RO acquires + destroy through the
- * dispatcher Cat-C cases, so this runs unchanged under VAL (WT/WB),
- * WRF_VAL, and EXCL.  Cross-rank handoff (nranks>1, the
+ * dispatcher Cat-C cases, so this runs unchanged under VAL (WT/WB)
+ * and EXCL.  Cross-rank handoff (nranks>1, the
  * 2n/3n/4n/2n_io registrations) is what generates the real wire responses; on a
  * single rank the self-loopback Cat-C path still exercises the unconditional
  * ACK post.

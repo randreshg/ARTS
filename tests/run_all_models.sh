@@ -14,11 +14,11 @@
 #   ocr_inv_wt         -DARTS_MEMORY_MODEL=OCR    -DARTS_COHERENCE_PROTOCOL=INV  -DARTS_WRITE_POLICY=WT
 #   ocr_inv_wb         -DARTS_MEMORY_MODEL=OCR    -DARTS_COHERENCE_PROTOCOL=INV  -DARTS_WRITE_POLICY=WB
 #   ocr_inv_wt_purge   -DARTS_MEMORY_MODEL=OCR    -DARTS_COHERENCE_PROTOCOL=INV  -DARTS_WRITE_POLICY=WT -DARTS_RELEASE_POLICY=PURGE
-#   wrf_val_wt         -DARTS_MEMORY_MODEL=DB_WRF -DARTS_COHERENCE_PROTOCOL=VAL  -DARTS_WRITE_POLICY=WT
+#   wrf_flush          -DARTS_COHERENCE_PROTOCOL=FLUSH
 #
-# DB_WRF (wrf_val_wt) requires program-ordered write-write conflicts, so some
-# correctness deviations are EXPECTED there — they are reported, not silently
-# treated as regressions.  OCR-model builds must be clean.
+# The last row names no memory model: FLUSH derives DB_WRF, and naming the
+# model as well only asserts what the protocol already implies.  It also has
+# no second axis, so its cache check compares model and protocol alone.
 #
 # Usage:
 #   bash tests/run_all_models.sh                                  # ctest + applications
@@ -31,7 +31,7 @@ set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
-MODELS="ocr_val_wt ocr_val_wb ocr_val_wt_purge ocr_excl_purge ocr_excl_retain ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge wrf_val_wt"
+MODELS="ocr_val_wt ocr_val_wb ocr_val_wt_purge ocr_excl_purge ocr_excl_retain ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge wrf_flush"
 DO_CTEST=1
 DO_HARNESS=1
 DO_BUILD=1
@@ -58,22 +58,24 @@ model_cmake_flags() {
     ocr_inv_wt)       echo "-DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=INV -DARTS_WRITE_POLICY=WT" ;;
     ocr_inv_wb)       echo "-DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=INV -DARTS_WRITE_POLICY=WB" ;;
     ocr_inv_wt_purge) echo "-DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=INV -DARTS_WRITE_POLICY=WT -DARTS_RELEASE_POLICY=PURGE" ;;
-    wrf_val_wt)       echo "-DARTS_MEMORY_MODEL=DB_WRF -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WT" ;;
+    wrf_flush)        echo "-DARTS_COHERENCE_PROTOCOL=FLUSH" ;;
   esac
 }
 # expected CMakeCache values per config
-model_model()  { case "$1" in wrf_val_wt) echo DB_WRF;; *) echo OCR;; esac; }
-model_proto()  { case "$1" in ocr_excl_*) echo EXCL;; ocr_inv_*) echo INV;; *) echo VAL;; esac; }
+model_model()  { case "$1" in wrf_flush) echo DB_WRF;; *) echo OCR;; esac; }
+model_proto()  { case "$1" in wrf_flush) echo FLUSH;; ocr_excl_*) echo EXCL;; ocr_inv_*) echo INV;; *) echo VAL;; esac; }
 # The live second axis, read off the suffix.  ocr_{val,inv}_wt_purge pin BOTH
 # ARTS_WRITE_POLICY and ARTS_RELEASE_POLICY away from their defaults, so their
-# "timing" is the pair, not a single value.
-model_timing() { case "$1" in *_wt_purge) echo "WT+PURGE" ;; *_wt) echo WT;; *_wb) echo WB;; ocr_excl_purge) echo PURGE;; ocr_excl_retain) echo RETAIN;; esac; }
+# "timing" is the pair, not a single value.  A config with no live second axis
+# answers the empty string, which the cache check below skips.
+model_timing() { case "$1" in wrf_flush) echo "" ;; *_wt_purge) echo "WT+PURGE" ;; *_wt) echo WT;; *_wb) echo WB;; ocr_excl_purge) echo PURGE;; ocr_excl_retain) echo RETAIN;; esac; }
 
 # Configure a build dir to the requested configuration if its cache does not
 # match, then build.  Reconfigure forces a full rebuild (compile-flag change).
 # The cache check compares ARTS_MEMORY_MODEL, ARTS_COHERENCE_PROTOCOL, and
 # the live second axis (ARTS_WRITE_POLICY / ARTS_RELEASE_POLICY, or both for
-# the ocr_{val,inv}_wt_purge configs, which pin both away from default).
+# the ocr_{val,inv}_wt_purge configs, which pin both away from default; a
+# config with no live second axis compares model and protocol alone).
 ensure_build() {
   local dir="$1" model="$2" wantgpu="$3" extra="${4:-}"
   local want_model; want_model="$(model_model "$model")"
@@ -81,8 +83,18 @@ ensure_build() {
   local want_timing; want_timing="$(model_timing "$model")"
   local have_model; have_model="$(grep -E '^ARTS_MEMORY_MODEL:STRING=' "$dir/CMakeCache.txt" 2>/dev/null | cut -d= -f2)"
   local have_proto; have_proto="$(grep -E '^ARTS_COHERENCE_PROTOCOL:STRING=' "$dir/CMakeCache.txt" 2>/dev/null | cut -d= -f2)"
+  # The model is DERIVED from the protocol, so a tree configured without the
+  # option carries an empty cache entry and still implements one; read it off
+  # the protocol rather than calling the tree misconfigured.
+  if [ -z "$have_model" ]; then
+    case "$have_proto" in
+      FLUSH) have_model=DB_WRF ;;
+      ?*)    have_model=OCR ;;
+    esac
+  fi
   local have_timing
   case "$model" in
+    wrf_flush)  have_timing="" ;; # no second axis: nothing to read or compare
     ocr_excl_*) have_timing="$(grep -E '^ARTS_RELEASE_POLICY:STRING=' "$dir/CMakeCache.txt" 2>/dev/null | cut -d= -f2)" ;;
     *_wt_purge)
       local have_write have_release
@@ -92,10 +104,17 @@ ensure_build() {
       ;;
     *)          have_timing="$(grep -E '^ARTS_WRITE_POLICY:STRING=' "$dir/CMakeCache.txt" 2>/dev/null | cut -d= -f2)" ;;
   esac
+  # A tree that is going to be tested must carry the test programs; a tree
+  # configured without them reports nothing to run, not a failure, so the
+  # option is part of what the cache must match.
+  local want_tests=OFF
+  case " $extra " in *"-DARTS_BUILD_TESTS=ON"*) want_tests=ON ;; esac
+  local have_tests; have_tests="$(grep -E '^ARTS_BUILD_TESTS:BOOL=' "$dir/CMakeCache.txt" 2>/dev/null | cut -d= -f2)"
   local mismatch=0
   [ "$have_model" != "$want_model" ] && mismatch=1
   [ "$have_proto" != "$want_proto" ] && mismatch=1
   [ -n "$want_timing" ] && [ "$have_timing" != "$want_timing" ] && mismatch=1
+  [ "$want_tests" = ON ] && [ "$have_tests" != ON ] && mismatch=1
   if [ ! -d "$dir" ] || [ "$mismatch" = 1 ]; then
     echo "  [cfg] $dir → $(model_cmake_flags "$model") (was MODEL='${have_model:-none}' PROTO='${have_proto:-none}' TIMING='${have_timing:-none}')"
     # shellcheck disable=SC2086
@@ -120,7 +139,7 @@ for m in $MODELS; do
 
   if [ "$DO_CTEST" = 1 ]; then
     cd="$(ctest_dir "$m")"
-    [ "$DO_BUILD" = 1 ] && ensure_build "$cd" "$m" OFF
+    [ "$DO_BUILD" = 1 ] && ensure_build "$cd" "$m" OFF "-DARTS_BUILD_TESTS=ON"
     # No config copying: CTest sets each test's ARTS_CONFIG env straight at
     # the source cfg (tests/CMakeLists.txt).
     s=$( cd "$cd" && ctest -L single_node 2>&1 | grep -oE '[0-9]+% tests passed[^.]*' | head -1 )
@@ -150,7 +169,7 @@ if [ "$DO_HARNESS" = 1 ]; then
 fi
 
 echo
-echo "===================== SUMMARY (OCR-model configs must be clean; WRF_VAL DB-WRF deviations annotated) ====================="
+echo "===================== SUMMARY (OCR-model configs must be clean; so is the DB_WRF tree, whose test set is restricted to DB-WRF-valid programs) ====================="
 for m in $MODELS; do
   M="$(model_label "$m")"
   echo "[$M]"

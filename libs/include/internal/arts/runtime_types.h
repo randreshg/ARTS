@@ -101,17 +101,29 @@ struct arts_edt_s {
   volatile unsigned int depc_needed; /**< Remaining unsatisfied deps (satisfy
                                           phase — driven to 0 by event/signal
                                           delivery before DB acquisition). */
-  uint32_t rw_cursor;  /**< GUID-sorted index over the EDT's serialized (RW)
-                            deps, up to which they have been *secured* (owned or
+  uint32_t rw_cursor;  /**< Index into rw_sorted up to which the EDT's
+                            serialized deps have been *secured* (owned or
                             guaranteed next-owner). Advanced at the secured point
                             (PROCEED / local-fast), NOT at data install. */
-  uint32_t *rw_sorted; /**< GUID-sorted serialized-dep index order, computed
-                            ONCE at arts_db_acquire_all entry and consumed by
-                            rw_fire_from_cursor / rw_secure /
-                            arts_db_acquire_resolved (never re-sorted per dep).
-                            NULL until the acquire phase begins; freed at run.
-                            Order is a pure function of depv (fixed once ready),
-                            so a single sort is identity-preserving. */
+  uint32_t *rw_sorted; /**< Dep visit order: by GUID, then by DESCENDING mode
+                            strength within one GUID, ties keeping slot order.
+                            The first slot of a GUID's group owns that block's
+                            single acquisition (a write acquisition subsumes a
+                            read one, so the strongest mode owns it) and every
+                            later slot naming it is marked an alias on that
+                            acquisition — the order and the classification are
+                            decided together, ONCE, at arts_db_acquire_all entry
+                            (arts_dep_sort_and_classify), before anything fires.
+                            Which modes are serialized is the protocol's answer
+                            (arts_db_acquire_is_serialized): RW on the arms that
+                            make a write wait, RO only on an arm that says so;
+                            aliases are on no walk at all. Consumed by
+                            rw_fire_from_cursor / arts_db_rw_secure /
+                            arts_db_acquire_resolved (never re-derived per dep).
+                            NULL until the acquire phase begins; freed with the
+                            EDT (arts_edt_free). Both are pure functions of depv
+                            (fixed once ready), so the single pass is
+                            identity-preserving. */
   volatile unsigned int acquire_remaining; /**< Count of real DB deps (RO+RW)
                            whose data is not yet resolved at this rank;
                            decremented on each data arrival, the actor driving

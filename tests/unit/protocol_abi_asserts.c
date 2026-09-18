@@ -5,10 +5,10 @@
  * Property under test
  * -------------------
  * protocol.h is the cross-rank wire contract.  Two ranks built in DIFFERENT
- * coherence configs (the 7 supported: VAL+HOME, VAL+OWNER, INV+HOME, INV+OWNER,
- * WRF_VAL, EXCL+HOME, EXCL+OWNER) MUST agree byte-for-byte on:
+ * coherence configs (VAL+WT, VAL+WB, INV+WT, INV+WB, EXCL+PURGE, EXCL+RETAIN,
+ * FLUSH) MUST agree byte-for-byte on:
  *   (1) `enum arts_msg_type` — every ordinal contiguous 0..MSG_COUNT-1, and
- *       MSG_COUNT itself, IDENTICAL across all 7 configs (the enum members are
+ *       MSG_COUNT itself, IDENTICAL across every config (the enum members are
  *       unconditional even where their dispatcher case is #ifdef'd out, so the
  *       ordinals must not drift) — a skew = silent misroute.
  *   (2) `struct arts_msg_header_s` field offsets (message_type / size / rank)
@@ -19,9 +19,12 @@
  * payload at offset sizeof(struct); a sizeof skew tears every payload.
  *
  * The golden values below were frozen from the current tree and verified
- * IDENTICAL across all 7 configs (only the EXCL-only structs, and the
- * EXCL+OWNER-only subset within them, differ in presence, never in the shared
- * ordinals/offsets/sizes).  This TU is meant to be COMPILED ONCE PER
+ * IDENTICAL across every config (only the protocol-gated structs differ in
+ * presence, never in the shared ordinals/offsets/sizes: the ARTS_PROTOCOL_EXCL
+ * block, the ARTS_RELEASE_RETAIN subset nested inside it, the
+ * ARTS_PROTOCOL_INV block and the ARTS_PROTOCOL_FLUSH block, each frozen
+ * inside its own guard).  This TU is
+ * meant to be COMPILED ONCE PER
  * -DARTS_PROTOCOL_* config; the `_Static_assert`s catch any config that drifts
  * from the golden table at compile time.
  *
@@ -39,8 +42,9 @@
  * protocol.h §4 documents a pad-field invariant: "Pad-fields exist to keep the
  * trailing payload on an 8-byte boundary ... the payload starts at sizeof() —
  * that offset must be 8-aligned."  The payload-carrying structs are
- * OWNERSHIP_RESPONSE, PUBLISH, SNAPSHOT_RESPONSE, and — in EXCL builds —
- * LOCK_GRANT, LOCK_RELEASE, and (EXCL+OWNER only) LOCK_DELIVER.  This TU checks that sizeof() of each is a multiple of 8
+ * GRANT_RESPONSE, PUBLISH, SNAPSHOT_RESPONSE, and — in EXCL builds —
+ * EXCL_GRANT, EXCL_RELEASE, and (EXCL×RETAIN only) EXCL_DELIVER.  This TU
+ * checks that sizeof() of each is a multiple of 8
  * at runtime (the invariant spans a pad field whose width is itself derived
  * from other fields, so it is not expressible as a single `_Static_assert`).
  * All payload-carrying structs currently HOLD the invariant — the check exists
@@ -54,8 +58,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* ===== (1) enum ordinals — frozen golden table, identical across all 7
- * configs. Members are unconditional in protocol.h regardless of build. */
+/* ===== (1) enum ordinals — frozen golden table, identical across every
+ * config. Members are unconditional in protocol.h regardless of build. */
 _Static_assert(MSG_SHUTDOWN == 0, "ordinal MSG_SHUTDOWN drifted");
 _Static_assert(MSG_EDT_SATISFY_SLOT == 1,
                "ordinal MSG_EDT_SATISFY_SLOT drifted");
@@ -126,8 +130,18 @@ _Static_assert(MSG_DB_EXCL_RECALL == 40,
                "ordinal MSG_DB_EXCL_RECALL drifted");
 _Static_assert(MSG_DB_GRANT_RETURN == 41,
                "ordinal MSG_DB_GRANT_RETURN drifted");
-_Static_assert(MSG_COUNT == 42,
-               "MSG_COUNT drifted (wire-compat: must be 42 in all configs)");
+_Static_assert(MSG_DB_FETCH_REQUEST == 42,
+               "ordinal MSG_DB_FETCH_REQUEST drifted");
+_Static_assert(MSG_DB_FETCH_RESPONSE == 43,
+               "ordinal MSG_DB_FETCH_RESPONSE drifted");
+_Static_assert(MSG_DB_FLUSH_COMMIT == 44,
+               "ordinal MSG_DB_FLUSH_COMMIT drifted");
+_Static_assert(MSG_DB_FLUSH_ACK == 45, "ordinal MSG_DB_FLUSH_ACK drifted");
+_Static_assert(MSG_DB_FLUSH_ANNOUNCE == 46,
+               "ordinal MSG_DB_FLUSH_ANNOUNCE drifted");
+_Static_assert(MSG_DB_FLUSH_CTS == 47, "ordinal MSG_DB_FLUSH_CTS drifted");
+_Static_assert(MSG_COUNT == 48,
+               "MSG_COUNT drifted (wire-compat: must be 48 in all configs)");
 
 /* ===== (2) header layout — read before the message type is known. ===== */
 _Static_assert(offsetof(struct arts_msg_header_s, message_type) == 0,
@@ -157,7 +171,7 @@ _Static_assert(sizeof(struct arts_msg_header_s) == 16, "header size drifted");
 /* ===== (3) per-packet sizeof — frozen golden table (non-SEQ).
  * Only assert under the non-SEQ header (the SEQ header adds 12 bytes to every
  * struct, which is the very skew B071 documents).  Each value verified
- * identical across all 7 configs. */
+ * identical across every config. */
 #ifndef SEQUENCENUMBERS
 _Static_assert(sizeof(struct arts_msg_guid_only_packet_s) == 24,
                "guid_only sizeof drifted");
@@ -229,6 +243,20 @@ _Static_assert(sizeof(struct arts_msg_excl_confirm_packet_s) == 24,
                "lock_confirm sizeof drifted");
 #endif /* ARTS_RELEASE_RETAIN */
 #endif
+#ifdef ARTS_PROTOCOL_FLUSH
+_Static_assert(sizeof(struct arts_msg_fetch_request_packet_s) == 72,
+               "fetch_request sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_fetch_response_packet_s) == 88,
+               "fetch_response sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_flush_commit_packet_s) == 40,
+               "flush_commit sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_flush_ack_packet_s) == 40,
+               "flush_ack sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_flush_announce_packet_s) == 32,
+               "flush_announce sizeof drifted");
+_Static_assert(sizeof(struct arts_msg_flush_cts_packet_s) == 56,
+               "flush_cts sizeof drifted");
+#endif
 #endif /* !SEQUENCENUMBERS */
 
 /* ===== runtime: the documented 8-byte payload-alignment invariant.
@@ -253,7 +281,7 @@ int main(void) {
 #endif
 
   const struct payload_pkt pkts[] = {
-      {"OWNERSHIP_RESPONSE",
+      {"GRANT_RESPONSE",
        sizeof(struct arts_msg_grant_response_packet_s), 1},
       {"PUBLISH", sizeof(struct arts_msg_publish_packet_s), 1},
       {"SNAPSHOT_RESPONSE", sizeof(struct arts_msg_snapshot_response_packet_s),

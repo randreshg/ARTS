@@ -45,13 +45,27 @@
 /// builds in all 6 configs.  Object lifetime is held by the route-table cb
 /// handle + the never-firing gate event for the whole observation.
 
+#ifdef ARTS_PROTOCOL_FLUSH
+/* The cache-slot wake this test drives exists only where a rank's readers
+ * share that rank's copy.  Here every acquirer owns its own bytes, so the
+ * resume takes an explicit buffer and there is no cache-slot form to
+ * double-wake. */
+#include <stdio.h>
+int main(void) {
+  printf("SKIP mark_edt_ready_idempotent: no cache-slot wake in this arm\n");
+  return 0;
+}
+#else
+
 #include "arts.h"
 
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/coherence.h"
+#include "arts/db.h"
 #include "arts/edt.h"
 #include "arts/gas/route_table.h"
 #include "arts/runtime_types.h"
+#include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
 #include <stdatomic.h>
@@ -120,6 +134,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_dep_t *dv = (arts_edt_dep_t *)arts_get_depv(edt);
   dv[0].guid = db;
   dv[0].mode = DB_MODE_RO;
+  /* A wake only ever follows an acquisition the EDT's own walk issued, and the
+   * walk's first act is to order and classify the dependence vector; a
+   * hand-parked EDT is given that state before it is woken. */
+  edt->rw_sorted = (uint32_t *)arts_malloc(edt->depc * sizeof(uint32_t));
+  arts_dep_sort_and_classify(dv, edt->depc, edt->rw_sorted);
 
   atomic_store_explicit((_Atomic unsigned int *)&edt->acquire_remaining, BIAS,
                         memory_order_release);
@@ -174,3 +193,4 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
+#endif /* !ARTS_PROTOCOL_FLUSH */

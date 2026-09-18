@@ -196,7 +196,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
   INCREMENT_NUM_EDT_FINISH_BY(1);
 
   /* Release DBs before signaling finish-event completion: any PUBLISH
-   * messages (sent at release by the HOME placement and WRF_RCU) are
+   * messages (sent at release under the WT write policy) are
    * queued to the sender thread before the
    * finish DECR message, so TCP FIFO ordering guarantees data arrives at home
    * first. */

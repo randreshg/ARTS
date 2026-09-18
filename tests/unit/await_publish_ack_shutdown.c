@@ -38,15 +38,15 @@
 ******************************************************************************/
 
 /// @file await_publish_ack_shutdown.c
-/// @brief T116 — await_publish_ack escapes under shutdown; no UB on the stale
+/// @brief T116 — arts_db_await_ack escapes under shutdown; no UB on the stale
 ///        stack sem (B017).
 ///
-/// The WT/WRF_VAL RW release tail blocks in `await_publish_ack` on a
+/// The WT RW release tail blocks in `arts_db_await_ack` on a
 /// stack-local sem_t until the home's PUBLISH_ACK posts it by pointer
 /// identity.  Two failure modes are under test:
 ///   1. Lost-ACK under shutdown: once teardown starts the network receiver
 ///   stops
-///      draining and the ACK never arrives.  `await_publish_ack` must escape
+///      draining and the ACK never arrives.  `arts_db_await_ack` must escape
 ///      on its coarse shutdown re-check (sem_timedwait + shutdown_state poll)
 ///      so the blocked releaser is not stranded → no shutdown hang.
 ///   2. Stale-stack post: a late PUBLISH_ACK arriving after the releaser's
@@ -60,8 +60,8 @@
 /// blocked releaser escapes); a regressed escape hangs → ctest TIMEOUT FAIL; a
 /// stale-stack post is an ASan use-after-free / SIGSEGV.
 ///
-/// Config gate: PUBLISH_ACK + await_publish_ack exist only under HOME
-/// (VAL+WT) and WRF_VAL — WB has no synchronous publish, EXCL
+/// Config gate: the PUBLISH_ACK this waits for exists only under the WT
+/// write policy — WB has no synchronous publish, EXCL
 /// wakes on the publish path.  Compile-time self-skip on WB/EXCL.
 
 #include "arts.h"
@@ -71,8 +71,7 @@
 
 #if defined(ARTS_PROTOCOL_EXCL) || defined(ARTS_WRITE_POLICY_WB)
 int main(void) {
-  printf("SKIP await_publish_ack_shutdown: HOME (VAL+HOME) + WRF_VAL "
-         "only\n");
+  printf("SKIP await_publish_ack_shutdown: WT only\n");
   return 0;
 }
 #else

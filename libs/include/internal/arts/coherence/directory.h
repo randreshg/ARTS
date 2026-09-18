@@ -133,8 +133,9 @@ void arts_db_home_teardown(struct arts_db_s *db);
  * Used to piggyback the owner-side dedup map onto GRANT_RESPONSE
  * messages so the new owner can continue skipping redundant SNAPSHOT_RESPONSE
  * sends without re-learning which ranks already hold a fresh copy.
- * Protocol-agnostic (every build links rank_u64_map.c); the declarations are
- * unconditional so this header carries no coherence-model preprocessor logic.
+ * Independent of which ownership protocol keeps the ledger, so the
+ * declarations are unconditional and this header carries no coherence-model
+ * preprocessor logic; an arm that keeps no versions links no ledger.
  *
  * Wire layout (in out buffer, starting at byte 0):
  *   uint32_t count;        number of non-zero (rank, version) pairs

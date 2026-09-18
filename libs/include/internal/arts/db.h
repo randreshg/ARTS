@@ -96,6 +96,48 @@ extern const char *const db_mode_internal_name[];
 extern const char *const arts_db_type_name[];
 
 void arts_db_acquire_all(struct arts_edt_s *edt);
+
+/* Whether a dep's acquisition is ordered by the EDT's serialized (RW-cursor)
+ * walk: the arm's answer for its mode, with the non-coherent subtypes that
+ * bypass the walk excluded.  A pure function of the slot. */
+bool arts_dep_is_serialized(arts_edt_dep_t *depv, uint32_t i);
+
+/* Order one EDT's dependence vector and classify it, once, before any of it
+ * fires.  `sorted` receives the visit order: by GUID (same-block deps adjacent,
+ * so a serialized walk takes blocks in one global order), strongest mode first
+ * within a block, ties keeping slot order.  `depv[].alias` receives the
+ * classification: the first slot of each block's group owns that block's single
+ * acquisition, every later slot naming it is an alias on that acquisition.
+ * Slots that acquire nothing — NULL GUID, DB_MODE_NULL, a non-DB kind, an
+ * already-resolved slot — are neither, and are left untouched.
+ *
+ * A pure function of depv, with no runtime state behind it: the classification
+ * every later frame reads is decided here and nowhere else. */
+void arts_dep_sort_and_classify(arts_edt_dep_t *depv, uint32_t depc,
+                                uint32_t *sorted);
+
+/* Advance one EDT's serialized-acquire cursor past `slot`.  It is
+ * position-idempotent: it moves only while the cursor still points at `slot`,
+ * so a wake for a slot the walk has already passed changes nothing.  It does
+ * NOT touch the acquire count, and it fires no dependence of its own: it either
+ * flags the walk running in this execution context to continue, or appends the
+ * EDT to the flat resume worklist below — so the calling frame grows the stack
+ * by nothing.
+ *
+ * Call it only once the slot's payload is published.  Passing the cursor is
+ * what entitles the next frame to fire the following slot, and that frame may
+ * read this slot's payload as final; a cursor ahead of an unpublished payload
+ * is therefore a state no reader may observe. */
+void arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot);
+
+/* Run the serialized-acquire walk of every EDT on the flat resume worklist, in
+ * one loop at this level.  A no-op while a walk is already in progress in this
+ * execution context, or while a drain is running: the outermost frame owns the
+ * drain, which is what keeps a wake enqueued deep in a nest from stacking a
+ * second walk on the first.  Call it where the frame is free of any EDT's
+ * acquire state, after the account that may schedule the woken EDT. */
+void arts_db_drain_resume_list(void);
+
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep
  * through the per-dep 3-way (subtype-aware — ARTS_DB → arts_handler_db_acquire,
  * PIN/GPU/CXL → pinned ptr path, still-absent → re-defer).  item = the

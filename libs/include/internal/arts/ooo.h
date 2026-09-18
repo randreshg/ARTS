@@ -70,9 +70,11 @@ extern "C" {
  * arts_handler_event_add_dependence → OOO_EVENT_ADD_DEPENDENCE.
  *
  * The model-specific DB-coherence kinds are preprocessor-selected: VAL builds
- * define ARTS_PROTOCOL_VAL plus exactly one of ARTS_WRITE_POLICY_{WT,WB};
- * WRF_VAL builds define ARTS_PROTOCOL_WRF_VAL alone.  Each build's enum
- * (and the mirroring g_ooo_table) carries only that model's OOO_DB_* kinds.
+ * define ARTS_PROTOCOL_VAL plus exactly one of ARTS_WRITE_POLICY_{WT,WB}.
+ * FLUSH builds define ARTS_PROTOCOL_FLUSH alone — the write and release policy
+ * axes are dead there — and carry OOO_DB_ACQUIRE, OOO_DB_FETCH_REQUEST and
+ * OOO_DB_FLUSH_ANNOUNCE.
+ * Each build's enum (and the mirroring g_ooo_table) carries only that model's OOO_DB_* kinds.
  * OOO_KIND_COUNT is therefore per-model — sound because every TU in one build
  * sees the same model define. */
 enum arts_ooo_kind {
@@ -166,16 +168,17 @@ enum arts_ooo_kind {
  * directly).
  * NO OOO_DB_PUBLISH — the WB write policy has no synchronous publish (the
  * dispatcher fatals on the PUBLISH wire message). */
-#elif defined(ARTS_PROTOCOL_WRF_VAL)
-  OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
-                     local dep; pushed by arts_db_acquire_all's per-dep 3-way)
-                   */
-  OOO_DB_SNAPSHOT_REQUEST, /* → arts_handler_db_snapshot_request @ home */
-  OOO_DB_PUBLISH,        /* → arts_handler_db_publish @ home (no ownership
-                              transfer) */
+#elif defined(ARTS_PROTOCOL_FLUSH)
+  OOO_DB_ACQUIRE,       /* → arts_db_acquire_replay_dep */
+  OOO_DB_FETCH_REQUEST, /* → arts_handler_db_fetch_request @ home; a first
+                           touch can overtake the home's CREATE, so it defers */
+  OOO_DB_FLUSH_ANNOUNCE, /* → arts_handler_db_flush_announce @ home; a remote
+                            creator's release can announce before the home's
+                            CREATE lands, so it defers and replays on the
+                            install's drain */
 #else
 #error                                                                         \
-    "exactly one of ARTS_PROTOCOL_EXCL+ARTS_RELEASE_{PURGE,RETAIN}, ARTS_PROTOCOL_INV+ARTS_WRITE_POLICY_{WT,WB}, ARTS_WRITE_POLICY_{WT,WB} (VAL), or ARTS_PROTOCOL_WRF_VAL must be defined"
+    "exactly one of ARTS_PROTOCOL_EXCL+ARTS_RELEASE_{PURGE,RETAIN}, ARTS_PROTOCOL_INV+ARTS_WRITE_POLICY_{WT,WB}, ARTS_WRITE_POLICY_{WT,WB} (VAL), or ARTS_PROTOCOL_FLUSH must be defined"
 #endif
 
   OOO_KIND_COUNT /* sentinel — g_ooo_table size (per-model) */
@@ -265,6 +268,22 @@ struct arts_ooo_args_db_snapshot_request_s {
   arts_guid_t edt_guid;
   uint32_t slot;
   struct arts_rdzv_landing_s rdzv; /* requester's snapshot landing */
+};
+
+struct arts_ooo_args_db_fetch_request_s {
+  unsigned int requester;
+  arts_guid_t db_guid;
+  arts_guid_t edt_guid;
+  uint32_t slot;
+  struct arts_rdzv_landing_s rdzv; /* the requester's private copy, advertised */
+};
+
+/* The credit-less release's announce: the releaser's identity and the heap
+ * rendezvous the home's CTS must post. */
+struct arts_ooo_args_db_flush_announce_s {
+  unsigned int releaser;
+  arts_guid_t db_guid;
+  uint64_t sem;
 };
 
 struct arts_ooo_args_db_destroy_s {

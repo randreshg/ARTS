@@ -920,7 +920,60 @@ foreach(_v 2n 3n 4n 2n_io)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 register_multinode_test(db_first_touch_matrix TIMEOUT 120)
+# The alias dedup with the aliasing EDT OFF the block's home.  On the home rank
+# every way of asking for the block answers with the rank's own copy, so a
+# second acquisition there is indistinguishable from the first and the
+# home-rank test can only state the rule; off the home a second acquisition is
+# a second copy at a second address whose release can erase the EDT's write.
+# Every arm owes the same answer, so it runs in all of them.
+add_arts_test(db_alias_dedup_remote)
+register_multinode_test(db_alias_dedup_remote TIMEOUT 60)
+foreach(_v 2n 3n 4n 2n_io)
+    set_tests_properties(db_alias_dedup_remote_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL:"
+        PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup_remote")
+endforeach()
+# A second create of a label that already exists, from a rank that is NOT the
+# label's home.  There the route-table install cannot arbitrate — the first
+# create's descriptor is already there — so the answer comes from the rank's
+# own hold word, which every arm keeps in its own state.  First-wins is the
+# contract in all of them, so it runs in all of them; the single-node entry
+# covers the home-rank arbitration by the same program.
+add_arts_test(db_labeled_create_first_wins_remote)
+register_single_node_test(db_labeled_create_first_wins_remote TIMEOUT 30)
+register_multinode_test(db_labeled_create_first_wins_remote TIMEOUT 60)
+foreach(_t db_labeled_create_first_wins_remote
+           db_labeled_create_first_wins_remote_2n
+           db_labeled_create_first_wins_remote_3n
+           db_labeled_create_first_wins_remote_4n
+           db_labeled_create_first_wins_remote_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL:"
+        PASS_REGULAR_EXPRESSION "PASS: db_labeled_create_first_wins_remote")
+endforeach()
+# The same contract one lifetime later: the second create comes after the
+# first one's hold was released AND after another rank took the block, the
+# state in which a hold answered from a permission word rather than from the
+# rank's create mark would be possession the home never granted.  Every arm
+# owes the same answer, so it runs in all of them.
+add_arts_test(db_labeled_create_second_after_release_remote)
+register_single_node_test(db_labeled_create_second_after_release_remote TIMEOUT 30)
+register_multinode_test(db_labeled_create_second_after_release_remote TIMEOUT 60)
+foreach(_t db_labeled_create_second_after_release_remote
+           db_labeled_create_second_after_release_remote_2n
+           db_labeled_create_second_after_release_remote_3n
+           db_labeled_create_second_after_release_remote_4n
+           db_labeled_create_second_after_release_remote_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL:"
+        PASS_REGULAR_EXPRESSION "PASS: db_labeled_create_second_after_release_remote")
+endforeach()
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(db_acquire_release_semantics TIMEOUT 120)
+endif()
 # The guard aborts the run by design, so the message is the verdict and
 # the exit status is not; one node shape states it as well as four.
 register_multinode_test(edt_create_oversize_guard VARIANTS 2n TIMEOUT 60)
@@ -936,8 +989,13 @@ register_multinode_test(multinode_event_types)
 register_multinode_test(coherence_mixed_local_remote)
 register_multinode_test(coherence_home_producer_ro TIMEOUT 30)
 register_multinode_test(coherence_zero_size_xfer TIMEOUT 30)
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_rw_multihop TIMEOUT 30)
 register_multinode_test(coherence_rw_pipeline TIMEOUT 40)
+endif()
 register_multinode_test(coherence_rw_chain TIMEOUT 30)
 # A NO_ACQUIRE create whose creator, home and writer are three different ranks:
 # the home-side create handler must end naming ITSELF as the holder on every
@@ -947,21 +1005,23 @@ register_multinode_test(coherence_rw_chain TIMEOUT 30)
 register_multinode_test(grant_purge_no_acquire_creator TIMEOUT 60)
 # Write-right churn with home-local turns overlapping remote ones.  It asserts
 # an exact sum, which every release policy must compute, so it runs at every
-# release policy; it is also where interleaving injection is aimed.  NOT under
-# the DB-WRF memory model: its turns race write-write on one block without
-# event-ordering them, which that model leaves undefined by contract (it is
-# the program's job to order them there, and this program deliberately does
-# not).
-if(NOT ARTS_COHERENCE_ARM STREQUAL "WRF_VAL")
-    register_single_node_test(grant_purge_churn TIMEOUT 60)
-    register_multinode_test(grant_purge_churn TIMEOUT 90)
+# release policy; it is also where interleaving injection is aimed.
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+register_single_node_test(grant_purge_churn TIMEOUT 60)
+register_multinode_test(grant_purge_churn TIMEOUT 90)
 endif()
 # Independent writer chains can re-request a handed-back grant while the
 # previous release is settling. Atomic increments cover concurrent same-rank
-# RW holders; the exact-sum oracle has the churn test's memory-model exclusion.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "WRF_VAL")
-    register_single_node_test(grant_purge_handback_regrant TIMEOUT 60)
-    register_multinode_test(grant_purge_handback_regrant TIMEOUT 120)
+# RW holders.
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+register_single_node_test(grant_purge_handback_regrant TIMEOUT 60)
+register_multinode_test(grant_purge_handback_regrant TIMEOUT 120)
 endif()
 register_multinode_test(coherence_rwro_phase TIMEOUT 30)
 # RO-side coherence is a MULTINODE-only code path: on one rank home, owner and
@@ -1068,11 +1128,10 @@ endforeach()
 # consumer NULL/zero read (FAIL/abort — rank death still exits 0 through the
 # survivor's clean shutdown, so require the PASS line) or as a never-woken
 # parked acquire (missing PASS -> timeout).
-# NOT registered under WRF_VAL: the release-gated hand-off is an OCR-model
-# (exclusive-RW serialization) guarantee.  WRF_VAL's DB-WRF admission has no
-# ownership round — a reader satisfied mid-hold legally reads the current
-# canonical snapshot, so this assertion is outside that contract.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "WRF_VAL")
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_satisfy_before_release TIMEOUT 60)
 foreach(_v 2n 3n 4n 2n_io)
     set_property(TEST coherence_satisfy_before_release_${_v} APPEND PROPERTY
@@ -1096,6 +1155,10 @@ endif()
 # by a separate FIFO-ordering defect orthogonal to writer_count — see the test
 # file header).  SKIPs cleanly when rank_count < 2 or under the RELAXED model
 # (no exclusive-RW chain).
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_test(
     NAME coherence_owner_ownership_reorder
     COMMAND coherence_owner_ownership_reorder
@@ -1107,6 +1170,7 @@ set_tests_properties(coherence_owner_ownership_reorder PROPERTIES
     RESOURCE_LOCK "arts_runtime"
     ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/2n_io.cfg"
 )
+endif()
 
 # OWNER-placement stale-RO ownership-confirm gate: RO acquire causally ordered after a
 # remote RW writer must observe the writer's value, not a stale snapshot from
@@ -1122,11 +1186,16 @@ register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120)
 # writer's atomic update.  An ordinary OCR program — registered under every
 # protocol; at >=3 ranks a DB homed on a non-zero rank has two distinct remote
 # writer ranks, exercising the cross-rank publish handoff that 2n cannot.
+# These assert what the runtime's exclusive-RW serialization guarantees; under
+# DB-WRF that ordering is the program's, and these programs deliberately omit
+# it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_multi_writer_dist TIMEOUT 120 VARIANTS 2n 3n 4n)
 foreach(_v 2n 3n 4n)
     set_property(TEST coherence_multi_writer_dist_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
 endforeach()
+endif()
 
 # coherence_writer_ro_overlap: cross-rank RW write write windows OVERLAPPED by
 # concurrent RO readers on other ranks — the one regime the rest of the suite
@@ -1138,8 +1207,8 @@ endforeach()
 # writer that every acquire must observe verbatim, and a round's writers all
 # stamp the churn region with the same byte, so the only legal observations are
 # this round's and the previous round's stamps.  Both assertions survive a
-# whole-DB last-writer-wins publish, so it is registered under every arm
-# including WRF_VAL.  Single-node registration covers the all-local paths; the
+# whole-DB last-writer-wins publish, so it is registered under every arm.
+# Single-node registration covers the all-local paths; the
 # multinode variants carry the cross-rank ones.
 register_single_node_test(coherence_writer_ro_overlap TIMEOUT 120)
 register_multinode_test(coherence_writer_ro_overlap TIMEOUT 180)
@@ -1164,71 +1233,60 @@ foreach(_t IN LISTS _writer_ro_cases)
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
 
-# --- DB-WRF contract tests (portable OCR programs, sources under ocr/) ---
-# These OCR programs exercise the DB-WRF contract (defined results only when
-# accesses are race-free at DB granularity).  Their last-writer / racy outcomes
-# are only well-defined under the WRF_VAL protocol, so the CTest entries are
-# registered only when ARTS_COHERENCE_ARM is WRF_VAL; the binaries build in
-# every tree.
-
-add_arts_test(db_wrf_multi_writer_concurrent)
-add_arts_test(db_wrf_invariant)
-add_arts_test(db_wrf_local_hit_dedup)
-add_arts_test(db_wrf_counter_race)
-
-if(ARTS_COHERENCE_ARM STREQUAL "WRF_VAL")
-    # db_wrf_invariant (single-node): home-rank writer and home-rank
-    # reader; no PUBLISH round-trip.  Validates finish-event happens-before
-    # ordering.
-    add_test(
-        NAME db_wrf_invariant
-        COMMAND db_wrf_invariant
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-    set_tests_properties(db_wrf_invariant PROPERTIES
-        LABELS "single_node"
-        TIMEOUT 30
-        RESOURCE_LOCK "arts_runtime"
-        ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/1n.cfg"
-        PASS_REGULAR_EXPRESSION "DB_WRF: PASS"
-    )
-
-    # db_wrf_invariant (2-node): writer on rank 1, reader on rank 0
-    # (home).  Exercises the cross-rank RW PUBLISH path: writer_count bump
-    # on acquire ensures release_rw sends PUBLISH; home delivers updated
-    # data to the RO reader.
-    add_test(
-        NAME db_wrf_invariant_2n
-        COMMAND db_wrf_invariant
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-    set_tests_properties(db_wrf_invariant_2n PROPERTIES
-        LABELS "multinode"
-        TIMEOUT 60
-        RESOURCE_LOCK "arts_runtime"
-        ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/2n.cfg"
-        PASS_REGULAR_EXPRESSION "DB_WRF: PASS"
-    )
-
-    # db_wrf_local_hit_dedup: N concurrent same-rank RO acquires on a DB
-    # homed at a different rank — exercises the GET_DATA / STILL_VALID dedup
-    # code path under the WRF_VAL protocol.  Requires 2-node config.
-    add_test(
-        NAME db_wrf_local_hit_dedup_2n
-        COMMAND db_wrf_local_hit_dedup
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-    set_tests_properties(db_wrf_local_hit_dedup_2n PROPERTIES
-        LABELS "multinode"
-        TIMEOUT 60
-        RESOURCE_LOCK "arts_runtime"
-        ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/2n.cfg"
-        PASS_REGULAR_EXPRESSION "DB_WRF_LOCAL_HIT_DEDUP: PASS"
-    )
-
-    # db_wrf_multi_writer_concurrent: manual test only — non-deterministic
-    # last-writer-wins outcome cannot be expressed as a fixed regex.
-    # Run directly with: build_wrf_val_wt/tests/db_wrf_multi_writer_concurrent
+# --- DB-WRF / FLUSH arm tests ------------------------------------------------
+# Portable OCR programs under ocr/, plus one whitebox program under unit/ that
+# reaches the descriptor through the route table.  Their assertions hold only
+# where every remote acquire fetches and every remote RW release writes
+# through, so the entries are registered for the FLUSH arm; the binaries build
+# in every tree.
+add_arts_test(wrf_flush_writer_reader)
+# A block created away from its home: the creator's hold is a write acquisition
+# whose release must reach the home, and the next write acquisition on the
+# creating rank must fetch rather than reuse what the create left behind.
+add_arts_test(wrf_flush_creator_remote_home)
+# A create that takes no hold: the home owes its first asker real storage, and
+# the asker's write-back must return every byte.
+add_arts_test(wrf_flush_no_acquire_first_touch)
+# A block with no bytes still has to resolve both access modes.
+add_arts_test(wrf_flush_zero_size)
+# A long strictly ordered chain of remote write acquisitions on one block.
+add_arts_test(wrf_flush_chain)
+# A read acquisition landing inside a live write acquisition of the same block
+# on the same rank must not disturb the writer's bytes.
+add_arts_test(wrf_flush_private_copy)
+# Whitebox: a write-back whose landing credit is gone must ask for one and
+# still deliver the bytes.  Self-skips where the field does not exist.
+add_arts_test(wrf_flush_announce)
+if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    register_single_node_test(wrf_flush_writer_reader TIMEOUT 30)
+    register_multinode_test(wrf_flush_writer_reader TIMEOUT 60)
+    register_single_node_test(wrf_flush_creator_remote_home TIMEOUT 30)
+    register_multinode_test(wrf_flush_creator_remote_home TIMEOUT 60)
+    register_single_node_test(wrf_flush_no_acquire_first_touch TIMEOUT 30)
+    register_multinode_test(wrf_flush_no_acquire_first_touch TIMEOUT 60)
+    register_single_node_test(wrf_flush_chain TIMEOUT 60)
+    register_multinode_test(wrf_flush_chain TIMEOUT 120)
+    register_single_node_test(wrf_flush_private_copy TIMEOUT 30)
+    register_multinode_test(wrf_flush_private_copy TIMEOUT 60)
+    # Nothing to separate on one rank: the acquirer IS the home, so the
+    # zero-size fetch/announce legs are only reachable multinode.
+    register_multinode_test(wrf_flush_zero_size TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
+    # Same reason: the spent credit only matters to a non-home releaser.
+    register_multinode_test(wrf_flush_announce TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
+    foreach(_base wrf_flush_writer_reader wrf_flush_creator_remote_home
+                  wrf_flush_no_acquire_first_touch wrf_flush_chain
+                  wrf_flush_private_copy)
+        foreach(_t ${_base} ${_base}_2n ${_base}_3n ${_base}_4n ${_base}_2n_io)
+            set_tests_properties(${_t} PROPERTIES PASS_REGULAR_EXPRESSION "DB_WRF: PASS"
+                                 FAIL_REGULAR_EXPRESSION "FAIL:")
+        endforeach()
+    endforeach()
+    foreach(_base wrf_flush_zero_size wrf_flush_announce)
+        foreach(_t ${_base}_2n ${_base}_3n ${_base}_4n ${_base}_2n_io)
+            set_tests_properties(${_t} PROPERTIES PASS_REGULAR_EXPRESSION "DB_WRF: PASS"
+                                 FAIL_REGULAR_EXPRESSION "FAIL:")
+        endforeach()
+    endforeach()
 endif()
 
 # --- Mode-mismatch detection binary (no CTest entry — driven by run_mode_mismatch.sh) ---
@@ -1335,21 +1393,23 @@ set_tests_properties(coherence_install_version_monotone_2n PROPERTIES FAIL_REGUL
 set_tests_properties(coherence_install_version_monotone_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_install_version_monotone_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_install_version_monotone_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 set_tests_properties(coherence_owner_ownership_reorder PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
 set_tests_properties(coherence_rw_chain PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 foreach(_t grant_purge_no_acquire_creator_2n grant_purge_no_acquire_creator_3n
           grant_purge_no_acquire_creator_4n
           grant_purge_no_acquire_creator_2n_io)
     set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
-if(NOT ARTS_COHERENCE_ARM STREQUAL "WRF_VAL")
-    foreach(_t grant_purge_churn grant_purge_churn_2n grant_purge_churn_3n
-              grant_purge_churn_4n grant_purge_churn_2n_io
-              grant_purge_handback_regrant grant_purge_handback_regrant_2n
-              grant_purge_handback_regrant_3n grant_purge_handback_regrant_4n
-              grant_purge_handback_regrant_2n_io)
-        set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-    endforeach()
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+foreach(_t grant_purge_churn grant_purge_churn_2n grant_purge_churn_3n
+          grant_purge_churn_4n grant_purge_churn_2n_io
+          grant_purge_handback_regrant grant_purge_handback_regrant_2n
+          grant_purge_handback_regrant_3n grant_purge_handback_regrant_4n
+          grant_purge_handback_regrant_2n_io)
+    set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
 endif()
 
 # grant_purge_return asserts that the write right is GIVEN BACK at every idle
@@ -1400,10 +1460,6 @@ set_tests_properties(db_rw_secure_double_fire_2n PROPERTIES FAIL_REGULAR_EXPRESS
 set_tests_properties(db_rw_secure_double_fire_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_rw_secure_double_fire_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_rw_secure_double_fire_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_wrf_promote_manual_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_wrf_promote_manual_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_wrf_promote_manual_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_wrf_promote_manual_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(destroy_before_create_defer_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(destroy_before_create_defer_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(destroy_before_create_defer_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -1501,12 +1557,4 @@ set_tests_properties(val_wt_vs_wb_divergence_2n PROPERTIES FAIL_REGULAR_EXPRESSI
 set_tests_properties(val_wt_vs_wb_divergence_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(val_wt_vs_wb_divergence_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(val_wt_vs_wb_divergence_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_home_vs_nonhome_writer_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_home_vs_nonhome_writer_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_home_vs_nonhome_writer_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_home_vs_nonhome_writer_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_sentinel_snapshot_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_sentinel_snapshot_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_sentinel_snapshot_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(wrf_val_sentinel_snapshot_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 

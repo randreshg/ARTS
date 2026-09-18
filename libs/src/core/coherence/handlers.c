@@ -57,22 +57,21 @@
 
 /* ===== Home-side handlers ========================================== */
 
-/* arts_handler_db_grant_request lives in coherence/grant.c (VAL
- * only — WRF_VAL has no GRANT_REQUEST / GRANT round). */
+/* arts_handler_db_grant_request lives in coherence/grant.c (VAL only). */
 
 /* arts_handler_db_snapshot_request (SNAPSHOT_REQUEST) is protocol-specific —
- * WT/WRF_VAL serve from home's canonical buffer (dedup), WB records the
+ * WT serves from home's canonical buffer (dedup), WB records the
  * sharer + REDIRECTs to the owner — so its whole body lives in
  * each arm's own write-policy TU. */
 
-/* arts_handler_db_publish (+_ack) is protocol-specific — WT/WRF_VAL install
- * + ACK (pure: ownership transfer is a separate owner→owner GRANT_RESPONSE
+/* arts_handler_db_publish (+_ack) is protocol-specific — WT installs
+ * + ACKs (pure: ownership transfer is a separate owner→owner GRANT_RESPONSE
  * ship), WB has no synchronous publish (no-op fillers preserve the
  * OoO-table / link parity) — so their whole bodies live in
  * each arm's own write-policy TU. */
 
 /* arts_handler_db_destroy is protocol-specific — the roster fan-out source
- * differs (WT/WRF_VAL walk home->cached_version; WB walks rw_holder +
+ * differs (WT walks home->cached_version; WB walks rw_holder +
  * cached_ranks + pending_rw) — so its whole body lives in
  * each arm's own write-policy TU.  All three skeletons run the roster fan-out,
  * then arts_route_table_set_destroyed; any waiter left parked at destroy time
@@ -96,7 +95,10 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
    * claimed about this rank holding a reader copy is false and must go with
    * the write hold. */
   arts_db_create_retract_creator_copy(db);
-#if defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_FLUSH)
+  /* An arm that keeps no permission state has no seed to collapse: the
+   * retraction above is the whole normalization. */
+#elif defined(ARTS_PROTOCOL_EXCL)
 #if defined(ARTS_RELEASE_RETAIN)
   /* RETAIN: data lives with the owner, not the home.  With no creator hold there
    * is no owner unless we make one — so the home rank (this rank; the create
@@ -209,8 +211,8 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * hold it — and the next hand-back would then be discharged from a word
      * the home had already taken possession of.  A block's holder is named
      * once, by the create that made it. */
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||        \
-    defined(ARTS_PROTOCOL_WRF_VAL)
+#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
+    defined(ARTS_PROTOCOL_FLUSH)
     if (!no_acquire) {
       arts_send_db_create_return(creator_rank, cache);
     }
@@ -285,8 +287,8 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   if (arts_route_table_install_if_absent(stub, db_guid, arts_global_rank_id,
                                          /*used=*/true)) {
     arts_ooo_drain_guid(db_guid);
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||        \
-    defined(ARTS_PROTOCOL_WRF_VAL)
+#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
+    defined(ARTS_PROTOCOL_FLUSH)
     /* Off the critical path: the credit flies while the creator EDT is still
      * writing, so a create -> write -> release sequence publishes with no
      * announce round.  A creator that took no right never publishes — no
@@ -334,8 +336,8 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
            "a home rank's descriptor carries its home directory");
     (void)db;
     /* The directory is NOT re-seeded here — see the coalesce branch above. */
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||        \
-    defined(ARTS_PROTOCOL_WRF_VAL)
+#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
+    defined(ARTS_PROTOCOL_FLUSH)
     if (!no_acquire) {
       arts_send_db_create_return(creator_rank, cache);
     }
@@ -350,7 +352,7 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
 
 /* The WT GRANT_RESPONSE handler arts_handler_db_grant_response lives in
  * coherence/grant_wt.c; WB's overload lives in
- * coherence/grant_wb.c; WRF_VAL has no ownership transfer (dispatcher fatals). */
+ * coherence/grant_wb.c. */
 
 /* Cat-C pure body (SNAPSHOT_RESPONSE).  The wire dispatcher / self-send shortcut
  * has already looked the home db_s up with a held ref and passes it as item_v
@@ -367,7 +369,7 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
  *   3. NO_DATA + a->version > buf->version : the with-data reply was
  *      reordered behind us — push self onto pending_snapshot (a future
  *      case-2 install drains us) + re-check (race recovery).
- * Shared verbatim by WT/WB/WRF_VAL (WRF_VAL routes RW through here too). */
+ * Shared verbatim by WT/WB. */
 /* Consume an in-flight rendezvous whose receiver-side object is gone: the
  * metadata packet arrived for a destroyed target, so nobody will ever expect
  * the txid — register a discard continuation that returns the landing's
@@ -393,7 +395,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie) {
   arts_net_rdzv_expect(txid, rdzv_discard_cb, ctx);
 }
 
-#if !defined(ARTS_PROTOCOL_EXCL) && !defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_PROTOCOL_VAL)
 /* Rendezvous continuation for a data-bearing SNAPSHOT_RESPONSE: the snapshot
  * payload has fully landed in our advertised landing ("imm seen => landing
  * valid").  Install it without a copy (version-conditional; a stale landing
@@ -557,12 +559,11 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     arts_db_drain_pending_snapshot(cache);
   }
 }
-#endif /* !ARTS_PROTOCOL_EXCL */
+#endif /* the versioned-snapshot read path */
 
 /* arts_handler_db_grant_invalidate (GRANT_INVALIDATE) lives per write policy:
  * coherence/grant_wt.c (commutative signed counter) and coherence/grant_wb.c
- * (publish-target-then-withdraw).  WRF_VAL never sends INVALIDATE (dispatcher
- * fatals). */
+ * (publish-target-then-withdraw). */
 
 /* arts_handler_db_publish_ack is the shared flight-completion body, defined
  * ONCE in coherence/coherence.c for every publishing arm (gated
@@ -584,7 +585,7 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_destroy_args_s *a =
       (struct arts_db_cache_destroy_args_s *)args_v;
   (void)arts_route_table_set_destroyed(a->db_guid);
-#if !defined(ARTS_PROTOCOL_EXCL) &&                                          \
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
   /* AFTER the slot withdrawal, so a releaser registering concurrently either
    * lands in this drain or sees the NULL slot on its own recheck.  The

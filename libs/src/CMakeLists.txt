@@ -65,14 +65,17 @@ function(arts_grant_release_tu out write_policy release_policy)
     endif()
 endfunction()
 
+# The dense per-rank version map is the ownership plane's ledger, so it is
+# linked by the arms that HAVE one; an arm with no versions carries no ledger
+# and must not compile the TU that keeps it.
 function(arts_coherence_model_tus out arm write_policy release_policy)
-    if(arm STREQUAL "WRF_VAL")
-        set(tus coherence/wrf_val/wrf_val.c)
+    if(arm STREQUAL "FLUSH")
+        set(tus coherence/flush/flush.c)
     elseif(arm STREQUAL "INV")
         if(write_policy STREQUAL "WB")
-            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c)
+            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c coherence/rank_u64_map.c)
         else()
-            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c)
+            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/rank_u64_map.c)
         endif()
         arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
         list(APPEND tus ${rel})
@@ -84,9 +87,9 @@ function(arts_coherence_model_tus out arm write_policy release_policy)
         endif()
     else() # VAL
         if(write_policy STREQUAL "WT")
-            set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/val/directory.c)
+            set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/val/directory.c coherence/rank_u64_map.c)
         else()
-            set(tus coherence/val/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c coherence/val/directory.c)
+            set(tus coherence/val/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c coherence/val/directory.c coherence/rank_u64_map.c)
         endif()
         arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
         list(APPEND tus ${rel})
@@ -95,10 +98,11 @@ function(arts_coherence_model_tus out arm write_policy release_policy)
 endfunction()
 
 # Applies the family + second-axis compile definitions to <target> (PRIVATE).
-# All three macro groups are always emitted: ARTS_PROTOCOL_<arm>, one of
-# ARTS_WRITE_POLICY_WT/WB, and one of ARTS_RELEASE_PURGE/RETAIN.  Each arm's
-# sources test only its live axis (EXCL: ARTS_RELEASE_*; INV/VAL and the
-# grant plane: ARTS_WRITE_POLICY_*).
+# ARTS_PROTOCOL_<arm> is always emitted; VAL/INV/EXCL additionally get one of
+# ARTS_WRITE_POLICY_WT/WB and one of ARTS_RELEASE_PURGE/RETAIN (each arm's
+# sources test only its live axis: EXCL: ARTS_RELEASE_*; INV/VAL and the
+# grant plane: ARTS_WRITE_POLICY_*).  FLUSH has neither axis, so it gets
+# ARTS_PROTOCOL_FLUSH alone.
 function(arts_apply_protocol target arm write_policy release_policy)
     # A call with no declaration in scope is an error, not a warning.  Each arm
     # compiles a different subset of the sources, so a declaration guarded to
@@ -122,10 +126,10 @@ function(arts_apply_protocol target arm write_policy release_policy)
         target_compile_definitions(${target} PRIVATE ARTS_NO_RO_COMBINING=1)
     endif()
     target_compile_definitions(${target} PRIVATE ARTS_PROTOCOL_${arm}=1)
-    if(arm STREQUAL "WRF_VAL")
-        # WRF_VAL is WT by construction and links no grant plane; it defines
-        # neither second-axis macro so the shared selection chains fall through
-        # to their ARTS_PROTOCOL_WRF_VAL branches.
+    if(arm STREQUAL "FLUSH")
+        # FLUSH has neither second axis: every remote acquire fetches and every
+        # remote RW release writes through, so no selection chain branches on
+        # a write or release policy here.
         return()
     endif()
     if(write_policy STREQUAL "WT")
@@ -554,9 +558,10 @@ if(ARTS_BUILD_BENCHMARKS)
                 else()
                     set(abs "${ldir}/${s}")
                 endif()
-                # Skip variant-specific coherence TUs: the per-arm subdirs, and
-                # the grant plane (linked only by arms whose ownership migrates).
-                if(NOT abs MATCHES "/coherence/(val|excl|wrf_val|inv)/|/coherence/grant(_wt|_wb|_queue|_purge|_retain)?\\.c$")
+                # Skip variant-specific coherence TUs: the per-arm subdirs, the
+                # grant plane (linked only by arms whose ownership migrates), and
+                # the version ledger (only by arms that keep versions).
+                if(NOT abs MATCHES "/coherence/(val|excl|inv|flush)/|/coherence/(grant(_wt|_wb|_queue|_purge|_retain)?|rank_u64_map)\\.c$")
                     list(APPEND srcs "${abs}")
                 endif()
             endforeach()
@@ -594,12 +599,13 @@ if(ARTS_BUILD_BENCHMARKS)
 
     # Suffix = <memory model>_<family>_<live second axis>; the second argument
     # is the protocol ARM (the TU family): VAL/INV/EXCL live under the OCR
-    # model, WRF_VAL is the VAL family under the DB-WRF model.  The dead axis
-    # sits at its required value (WB for EXCL, RETAIN for INV/VAL).  The last
-    # argument DISABLES read combining: OFF for every plane configuration
-    # (combining is part of the validation family's definition — every other
-    # message class already suppresses duplicates structurally), ON only for
-    # the *_nocomb ablation twins that measure what the combining window buys.
+    # model.  The dead axis sits at its required value (WB for EXCL, RETAIN
+    # for INV/VAL).  The last argument DISABLES read combining: OFF for every
+    # plane configuration (combining is part of the validation family's
+    # definition — every other message class already suppresses duplicates
+    # structurally), ON only for the *_nocomb ablation twins that measure what
+    # the combining window buys.  FLUSH is the DB-WRF model's one protocol and
+    # carries no axis token.
     arts_variant(ocr_val_wt        VAL     WT RETAIN OFF)
     arts_variant(ocr_val_wb        VAL     WB RETAIN OFF)
     arts_variant(ocr_val_wt_purge  VAL     WT PURGE  OFF)
@@ -608,10 +614,10 @@ if(ARTS_BUILD_BENCHMARKS)
     arts_variant(ocr_val_wt_purge_nocomb VAL WT PURGE ON)
     arts_variant(ocr_excl_purge    EXCL    WB PURGE  OFF)
     arts_variant(ocr_excl_retain   EXCL    WB RETAIN OFF)
-    arts_variant(wrf_val_wt        WRF_VAL WT RETAIN OFF)
     arts_variant(ocr_inv_wt        INV     WT RETAIN OFF)
     arts_variant(ocr_inv_wb        INV     WB RETAIN OFF)
     arts_variant(ocr_inv_wt_purge  INV     WT PURGE  OFF)
+    arts_variant(wrf_flush         FLUSH   WB RETAIN OFF)
 endif()
 
 # Link mimalloc-static when selected.  The OBJECT library arts_utils needs

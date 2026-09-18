@@ -2,14 +2,13 @@
  *
  * Home-side coherence state implementations.  See directory.h.
  *
- * Consolidates the ownership-protocol home-side state (VAL;
- * not linked under WRF_VAL, which carries no ownership grant):
+ * Consolidates the ownership-protocol home-side state (VAL):
  *   - home GRANT_REQUEST FIFO (grantreq Vyukov MPSC queue) + home-directory
  *     init/teardown
  *   - the per-cache pending_rw Treiber stack (cache-side RW waiter chain)
  *   - the bit-packed atomic rank bit-set (WB destroy fan-out roster)
  * The protocol-agnostic cached_version dense map moved to rank_u64_map.c
- * (linked into every build, including WRF_VAL).
+ * (linked into every build).
  */
 
 #include "arts/coherence/directory.h"

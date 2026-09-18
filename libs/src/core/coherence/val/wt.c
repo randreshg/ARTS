@@ -138,7 +138,15 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
  * is pending — structurally identical to the WB arm.  The drain-now /
  * confirm-ack divergence lives only in the GRANT_RESPONSE / CONFIRM
  * handlers, not here. */
-void arts_db_release_rw(struct arts_db_cache_s *cache) {
+/* A create's hold is this arm's ordinary write hold, taken when the block was
+ * made; the bytes under it are the cache's own, so the release needs no
+ * pointer to them. */
+void arts_db_release_created(struct arts_db_cache_s *cache) {
+  arts_db_release_rw(cache, NULL);
+}
+
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
   /* Defensive: no local hold to drop means our acquire never bumped ownership
    * (e.g. a cache already torn down by a destroy fan-out); decrementing would
    * underflow.  Which word states carry no hold is the release policy's —

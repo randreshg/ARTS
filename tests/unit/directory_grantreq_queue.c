@@ -7,8 +7,7 @@
  * excl/directory.c — whichever directory.c the build configures defines the bodies.  The
  * test #includes the matching protocol's directory.c into a standalone TU (no ARTS
  * runtime; precedent: tests/unit/rank_bitset.c, edt_gpu.cu->edt.c) and is
- * validated under all three protocol defines.  Self-skips under WRF_VAL (no
- * ownership grant → no home grantreq queue compiled).
+ * validated under all three protocol defines.
  *
  * Properties exercised:
  *   1. Functional single-thread: empty on init, peek/pop false on empty,
@@ -26,19 +25,18 @@
  *   with -DARTS_UNIT_STANDALONE_SHIMS for the libc alloc shims.
  */
 
+#ifdef ARTS_PROTOCOL_FLUSH
+/* This arm has no home-side request queue: an acquire is answered by the home
+ * on arrival and nothing is ever queued for a later turn. */
 #include <stdio.h>
-
-#if defined(ARTS_PROTOCOL_WRF_VAL)
-/* WRF_VAL carries no ownership grant → coherence.h does not even define the home
- * grantreq queue struct under WRF_VAL, so the rest of this TU would not compile.
- * Self-skip cleanly BEFORE pulling in any coherence header. */
 int main(void) {
-  printf(
-      "PASS directory_grantreq_queue: skipped under WRF_VAL (no home grantreq queue in "
-      "this protocol)\n");
+  printf("PASS directory_grantreq_queue: skipped under FLUSH (no home request "
+         "queue in this arm)\n");
   return 0;
 }
 #else
+
+#include <stdio.h>
 
 #include "arts/coherence/directory.h"
 #include "arts/transport/protocol.h" /* ARTS_GRANT_VERSION_NONE */
@@ -337,8 +335,6 @@ bool arts_route_table_set_destroyed(arts_guid_t key) {
 #endif /* ARTS_PROTOCOL_EXCL */
 #endif
 
-#endif /* !ARTS_PROTOCOL_WRF_VAL */
-
 /* Pull in the protocol's directory.c (defines the queue bodies).  Done at the end so
  * the test's own includes/decls are in scope first. */
 #if defined(ARTS_PROTOCOL_VAL)
@@ -348,3 +344,4 @@ bool arts_route_table_set_destroyed(arts_guid_t key) {
 #elif defined(ARTS_PROTOCOL_INV)
 #include "core/coherence/inv/directory.c"
 #endif
+#endif /* !ARTS_PROTOCOL_FLUSH */

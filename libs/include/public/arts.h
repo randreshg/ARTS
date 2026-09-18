@@ -279,10 +279,10 @@ typedef struct {
    *  non-zero, the GUID's rank field is authoritative for routing and
    *  overrides @c rank above. */
   arts_guid_t guid;
-  /** If true, a create at an already-occupied (home-local) GUID FAILS instead
-   * of overwriting — OCR GUID_PROP_CHECK / rendezvous semantics.  Default
-   * false = unconditional replace (a labeled-GUID reuse overwrites the prior
-   * generation, releasing it). */
+  /** The OCR standard's GUID_PROP_CHECK, accepted for source compatibility
+   *  and changing nothing: every labeled create is first-wins, so a create of
+   *  a label that already exists creates nothing and hands back no pointer
+   *  whether or not this is set.  Default false. */
   bool check;
 } arts_db_hint_t;
 
@@ -290,7 +290,8 @@ typedef struct {
   ((arts_db_hint_t){.rank = ARTS_HINT_CURRENT_RANK,                            \
                     .access_offset = 0,                                        \
                     .access_size = UINT64_MAX,                                 \
-                    .guid = NULL_GUID})
+                    .guid = NULL_GUID,                                         \
+                    .check = false})
 
 /** @} */
 
@@ -318,15 +319,16 @@ typedef struct {
    *  and crashes once a concurrent destroy has removed the route entry.  User
    *  EDTs ignore this field. */
   arts_db_types_t subtype;
-  /** Runtime-internal: set at acquire time when this serialized (RW) slot names
-   *  a DB an earlier serialized slot of the same EDT already acquired.  Such a
-   *  slot took a per-slot buffer ref but NOT a coherence (writer_count) hold —
-   *  the earlier slot owns the single acquire/release for that DB.  Release
-   *  drops the buffer ref but skips the coherence release for an alias, so the
-   *  owner's writer_count is decremented exactly once per distinct DB. Recorded
-   *  here (not re-derived by GUID scan at release) so a mid-EDT release that
-   *  nulls the owning slot cannot make an alias masquerade as the owner.  User
-   *  EDTs ignore this field. */
+  /** Runtime-internal: an EDT acquires each distinct DB ONCE, and this marks
+   *  every slot that is not that acquisition.  The slots naming one DB are
+   *  classified before any of them fires: the strongest mode owns the single
+   *  acquire/release, and each later slot is an alias on it — the owner's
+   *  payload pointer, a per-slot buffer ref and descriptor pin, but NO
+   *  coherence hold.  Release drops an alias's buffer ref and skips the
+   *  coherence release, so the hold is dropped exactly once per distinct DB.
+   *  Recorded here (not re-derived by GUID scan at release) so a mid-EDT
+   *  release that nulls the owning slot cannot make an alias masquerade as the
+   *  owner.  User EDTs ignore this field. */
   bool alias;
   /** Runtime-internal: for a coherent @c ARTS_DB slot, the ref-counted handle
    *  on the owning DB descriptor (@c arts_db_s), taken once when this slot's

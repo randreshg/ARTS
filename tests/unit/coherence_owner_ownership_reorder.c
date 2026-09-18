@@ -190,19 +190,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== coherence_owner_grant_reorder ===\n");
 
-#ifdef ARTS_PROTOCOL_WRF_VAL
-  /* The relaxed (DB-WRF) model unifies RW with RO (concurrent replicas,
-   * reduce on release) and has no owner->owner ownership-transfer chain (no
-   * LOCK_REQ / INVALIDATE / TRANSFER), so the TRANSFER/INVALIDATE reorder
-   * window does not exist.  Concurrent acquirers also race the
-   * read-modify-write under the relaxed model.  This test targets the
-   * OCR-model exclusive-RW ownership-transfer chain (and specifically the
-   * OWNER placement's owner->owner TRANSFER path). */
-  arts_printf("SKIP: RELAXED has no exclusive-RW ownership-transfer chain\n");
-  arts_shutdown();
-  return;
-#endif
-
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
     arts_printf("SKIP: requires 2+ ranks (got %u)\n", nranks);

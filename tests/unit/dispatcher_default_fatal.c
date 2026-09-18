@@ -29,7 +29,7 @@
  * 0..MSG_COUNT-1).
  *
  * Config-agnostic: the default arm is unconditional in every protocol build, so
- * this runs unchanged under VAL (HOME/OWNER), WRF_VAL, EXCL.
+ * this runs unchanged under VAL (HOME/OWNER), EXCL.
  * Single-node (runtime_single): no wire, no peers — the self-loopback body call
  * is purely local.
  */

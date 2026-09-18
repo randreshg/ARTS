@@ -10,10 +10,13 @@
  *   - VAL (ownership grant, single inter-node writer): RW is
  *     serialized, RO is NOT (RO is a snapshot read, no ordering needed).
  *   - EXCL (blocking RW *and* RO locks): BOTH RW and RO are serialized.
- *   - WRF_VAL (DB-WRF, no ownership round): NOTHING is serialized → false for all.
+ *   - FLUSH (every remote acquire fetches the home's line into a private
+ *     copy): NEITHER is serialized — an acquire waits only on its own home's
+ *     reply, never on another EDT's release, so there is no acquire cycle to
+ *     order away.
  *
  * The defining TU per protocol (val/{home,owner}.c,
- * wrf_val/wrf_val.c, lock/acquire.c) drags in the broader runtime, so this test links
+ * lock/acquire.c) drags in the broader runtime, so this test links
  * the real symbol out of the per-config static libarts (needs_full_build)
  * rather than #including a heavyweight TU — it never starts the runtime, it
  * only calls the pure query function.
@@ -41,10 +44,6 @@ int main(void) {
   proto = "EXCL";
   exp_rw = true;
   exp_ro = true; /* blocking locks: both serialized */
-#elif defined(ARTS_PROTOCOL_WRF_VAL)
-  proto = "WRF_VAL";
-  exp_rw = false;
-  exp_ro = false; /* DB-WRF: nothing serialized */
 #elif defined(ARTS_PROTOCOL_VAL)
   proto = "VAL";
   exp_rw = true;
@@ -53,6 +52,10 @@ int main(void) {
   proto = "INV";
   exp_rw = true;  /* a write grant waits on other holders' releases */
   exp_ro = false; /* readers are never blocked by writers */
+#elif defined(ARTS_PROTOCOL_FLUSH)
+  proto = "FLUSH";
+  exp_rw = false; /* no ownership round and no lock: an acquire waits only on */
+  exp_ro = false; /* its own home's reply, so no order needs imposing */
 #else
 #error "no ARTS_PROTOCOL_* defined"
 #endif

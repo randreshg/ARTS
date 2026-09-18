@@ -83,6 +83,9 @@ void arts_handler_db_grant_return(void *i, void *a) { recorder(i, a); }
 #ifdef ARTS_WRITE_POLICY_WB
 void arts_handler_db_inv_redirect(void *i, void *a) { recorder(i, a); }
 #endif
+#elif defined(ARTS_PROTOCOL_FLUSH)
+void arts_handler_db_fetch_request(void *i, void *a) { recorder(i, a); }
+void arts_handler_db_flush_announce(void *i, void *a) { recorder(i, a); }
 #elif defined(ARTS_WRITE_POLICY_WT) || defined(ARTS_WRITE_POLICY_WB)
 void arts_handler_db_grant_request(void *i, void *a) { recorder(i, a); }
 #ifdef ARTS_RELEASE_PURGE

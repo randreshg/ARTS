@@ -380,6 +380,13 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
+  /* This rank's create mark for the block: 0 while no create here has held
+   * it, 1 once one has.  One rank's create makes one block once, so the mark
+   * never returns to 0 — a rank whose create released the block holds no
+   * image of it a later create could be handed — and a create that finds it
+   * set creates nothing.  The arm's permission word says what a hold is
+   * doing; this byte says only that a create here took one. */
+  uint8_t creator_hold;
 
   /* WT publish write-combining — the write-side twin of the RO combining
    * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
@@ -456,6 +463,13 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
+  /* This rank's create mark for the block: 0 while no create here has held
+   * it, 1 once one has.  One rank's create makes one block once, so the mark
+   * never returns to 0 — a rank whose create released the block holds no
+   * image of it a later create could be handed — and a create that finds it
+   * set creates nothing.  The arm's permission word says what a hold is
+   * doing; this byte says only that a create here took one. */
+  uint8_t creator_hold;
 
   /* WT publish write-combining — the write-side twin of the RO combining
    * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
@@ -611,8 +625,7 @@ void inv_waiter_free(struct arts_db_cache_s *c, uint32_t idx);
 struct arts_db_inv_waiter_s *inv_waiter_ptr(struct arts_db_cache_s *c,
                                             uint32_t idx);
 /* Wake a grabbed chain: the committer's continuation, however late it runs. */
-void inv_serve_chain(struct arts_db_cache_s *cache, uint32_t head,
-                     bool serialized);
+void inv_serve_chain(struct arts_db_cache_s *cache, uint32_t head);
 /* Drive the invalidation round: called by every producer (a publish push, a
  * close re-arm).  A claim that raced past the work it saw closes empty. */
 void inv_home_round_try_open(struct arts_db_s *db);

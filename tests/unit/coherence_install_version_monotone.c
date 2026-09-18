@@ -34,8 +34,7 @@
 ///
 /// config_specific: meaningful only where DB-level ownership transfer + version
 /// installs happen, i.e. VAL (both placements).  EXCL has a distinct
-/// state machine (and is registered separately); WRF_VAL is DB-WRF with no version
-/// guard contract.  Self-skips cleanly under EXCL / WRF_VAL.
+/// state machine (and is registered separately).  Self-skips cleanly under EXCL.
 ///
 /// A lost transfer / stranded acquirer is caught by the ctest TIMEOUT.
 

@@ -41,7 +41,7 @@
 /// @brief T109 — PUBLISH_ACK posts the releaser's sem on HIT and MISS
 ///        (B017/B018).
 ///
-/// The HOME (and WRF_VAL) RW release performs a synchronous PUBLISH round: the
+/// The WT RW release performs a synchronous PUBLISH round: the
 /// releaser blocks on a stack-local sem_t whose address is carried in the wire
 /// `cv` field; the home posts that sem via PUBLISH_ACK by pointer identity.
 /// The Cat-C SPECIAL invariant is that the ACK posts the sem on BOTH HIT and
@@ -58,8 +58,8 @@
 /// a torn-down home cache (the MISS path).  If any ACK is dropped the releaser
 /// never wakes and the finish scope never drains → ctest TIMEOUT FAIL.
 ///
-/// Config gate: PUBLISH / PUBLISH_ACK exist only under HOME (VAL+HOME,
-/// and WRF_VAL — WB has no synchronous publish (its dispatcher
+/// Config gate: PUBLISH / PUBLISH_ACK exist only under the WT write policy —
+/// WB has no synchronous publish (its dispatcher
 /// fatals on the message) and EXCL wakes on the publish path.  Compile-time
 /// self-skip on WB/EXCL.
 
@@ -71,7 +71,7 @@
 #if defined(ARTS_PROTOCOL_EXCL) || defined(ARTS_WRITE_POLICY_WB)
 int main(void) {
   printf(
-      "SKIP publish_ack_post_on_miss: HOME (VAL+HOME) + WRF_VAL only\n");
+      "SKIP publish_ack_post_on_miss: WT only\n");
   return 0;
 }
 #else

@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file db_rw_secure_double_fire.c
-/// @brief rw_secure must be position-idempotent: mark_edt_secured fires TWICE
+/// @brief arts_db_rw_secure must be position-idempotent: mark_edt_ready_by_guid fires TWICE
 ///        per RW dep (PROCEED handler + GRANT-drain rw_drain_cb).  A redundant
 ///        secure for an already-passed cursor slot must NOT re-fire the
 ///        in-flight dep (else a duplicate OWNERSHIP_REQUEST + double-account
@@ -47,7 +47,7 @@
 ///
 /// To force the double-fire path, an EDT acquires SEVERAL distinct DBs in RW
 /// mode, each homed REMOTELY so each goes through a real
-/// OWNERSHIP_REQUEST/GRANT round (the path where rw_secure is invoked from both
+/// OWNERSHIP_REQUEST/GRANT round (the path where arts_db_rw_secure is invoked from both
 /// PROCEED and the GRANT drain).  The sorted RW cursor walks the deps one at a
 /// time; the sorted[rw_cursor]==slot idempotence guard is the entire
 /// correctness of the advance.  If it regresses, the EDT either schedules early
@@ -59,9 +59,8 @@
 /// accounted exactly once, in order).  A premature schedule corrupts at least
 /// one DB -> arts_abort; a stalled cursor hangs -> ctest TIMEOUT.
 ///
-/// ownership/EXCL only (RW is serialized; the cursor + rw_secure are live).
-/// WRF_VAL does not serialize RW (Pass-2 cursor is a no-op) -> self-skip.  Runs in
-/// all node counts; remote homes only exist when nranks>1, so single-node is a
+/// ownership/EXCL only (RW is serialized; the cursor + arts_db_rw_secure are live).
+/// Runs in all node counts; remote homes only exist when nranks>1, so single-node is a
 /// (still-valid) local-hit smoke of the same multi-RW accounting.
 
 #include "arts.h"
@@ -117,11 +116,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_rw_secure_double_fire ===\n");
 
-#if defined(ARTS_PROTOCOL_WRF_VAL)
-  arts_printf("SKIP db_rw_secure_double_fire: WRF_VAL does not serialize RW\n");
-  arts_shutdown();
-  return;
-#else
   unsigned int nranks = arts_get_total_ranks();
 
   /* Create NDBS distinct DBs, spread across ranks so the writer (on rank 0)
@@ -139,7 +133,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* The writer holds all NDBS in RW: the serialized cursor walks them one at a
-   * time, each driving rw_secure from PROCEED + GRANT drain. */
+   * time, each driving arts_db_rw_secure from PROCEED + GRANT drain. */
   arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t w =
       arts_edt_create(multi_writer, 0, NULL, NDBS,
@@ -162,7 +156,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("PASS: db_rw_secure_double_fire\n");
   arts_shutdown();
-#endif
 }
 
 int main(int argc, char **argv) {

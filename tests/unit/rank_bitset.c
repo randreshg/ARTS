@@ -2,8 +2,7 @@
  *
  * T056 — rank_bitset set / for_each / init / destroy (B035: for_each snapshot
  * vs concurrent set; first-set-wins).  Built VAL+OWNER (the bitset is the OWNER
- * destroy fan-out roster; HOME reuses the version map, so this is self-skipped
- * under WRF_VAL and only meaningful where cached_ranks exists).
+ * destroy fan-out roster; HOME reuses the version map).
  *
  * Each word covers 64 ranks; nwords == (nranks+63)/64.  arts_rank_bitset_set
  * returns true IFF the bit was previously clear (first-time set).
@@ -30,6 +29,17 @@
  * alloc shims.  Built with -DARTS_PROTOCOL_VAL=1 -DARTS_WRITE_POLICY_WB=1.
  */
 
+#ifdef ARTS_PROTOCOL_FLUSH
+/* This arm keeps its destroy roster inline in its own translation unit and
+ * links no rank-bitset module, so there is no symbol here to exercise. */
+#include <stdio.h>
+int main(void) {
+  printf("PASS rank_bitset: skipped under FLUSH (no rank-bitset module in "
+         "this arm)\n");
+  return 0;
+}
+#else
+
 #include "arts/rank_bitset.h"
 #include "arts/coherence/directory.h"
 
@@ -40,17 +50,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(ARTS_PROTOCOL_WRF_VAL)
-/* WRF_VAL carries no per-DB rank bit-set (no cached_ranks roster; its home arm is
- * the version map).  The bitset functions are not even compiled for WRF_VAL, so
- * this test self-skips there. */
-int main(void) {
-  printf("PASS rank_bitset: skipped under WRF_VAL (no rank bit-set in this "
-         "protocol)\n");
-  return 0;
-}
-#else
 
 #define NRANKS 130
 #define THREADS 8
@@ -308,5 +307,4 @@ void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }
 #endif
-
-#endif /* !ARTS_PROTOCOL_WRF_VAL */
+#endif /* !ARTS_PROTOCOL_FLUSH */

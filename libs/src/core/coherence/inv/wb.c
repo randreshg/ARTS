@@ -171,7 +171,8 @@ void arts_handler_db_acquire(void *item, void *args) {
  * stale copy is dead, and the count is still dropped only after the round
  * acks, which is what orders any ownership transfer behind it.
  */
-void arts_db_release_rw(struct arts_db_cache_s *cache) {
+void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
+  (void)payload;
   /* Defensive: writer_count==0 means our acquire never bumped the grant (e.g.
    * a cache already torn down by a destroy fan-out); decrementing would
    * underflow. */

@@ -27,7 +27,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "arts/coherence/coherence.h" /* mark_edt_ready_by_guid */
+#include "arts/coherence/coherence.h" /* the handler arg structs */
 #include "arts/db.h" /* struct arts_db_s (Cat-C self-send lookup-acquire) */
 #include "arts/gas/route_table.h" /* arts_route_table_lookup_db (Cat-C self-send) */
 #include "arts/ooo.h" /* arts_ooo_dispatch_or_defer_guid (self-send replay) */
@@ -42,10 +42,9 @@
 
 /* arts_send_db_grant_request / _cts / _invalidate / _confirm and the
  * GRANT_RESPONSE sender (arts_db_send_grant_response) all live in
- * coherence/grant.c, shared by WT and WB.  WRF_VAL has no
- * exclusive-ownership wire messages. */
+ * coherence/grant.c, shared by WT and WB. */
 
-#if !defined(ARTS_PROTOCOL_EXCL)
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
                             uint64_t version, uint64_t cv, const void *data,
                             uint64_t data_size, uint64_t rdzv_txid,
@@ -106,13 +105,15 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
-#endif /* !ARTS_PROTOCOL_EXCL */
+#endif /* arms that publish at a release */
 
 /* PUBLISH_CTS — home → releaser: a home landing for an announced dirty
  * publish (a fresh buffer under the ownership/multi-writer protocols; the
  * stable buffer under the exclusive-lock protocol's landing-less release).
  * Never a self-send (a same-rank publish is inline).  Compiled for every
  * protocol with a synchronous publish leg. */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
+    defined(ARTS_PROTOCOL_EXCL)
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
                                 const struct arts_rdzv_landing_s *landing,
                                 uint64_t cv) {
@@ -127,12 +128,13 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
   p.cv = cv;
   arts_transport_send_async((int)releaser_rank, (char *)&p, sizeof(p));
 }
+#endif /* arms with a synchronous publish leg */
 
-/* PUBLISH_ACK is the reply to a synchronous PUBLISH round, which only the
- * the WT write policy and WRF_VAL use (the WB write policy transfers ownership
+/* PUBLISH_ACK is the reply to a synchronous PUBLISH round, which only
+ * the WT write policy uses (the WB write policy transfers ownership
  * owner→owner without a synchronous publish, so it never sends or receives
  * PUBLISH_ACK and its dispatcher fatals on the wire message). */
-#if !defined(ARTS_PROTOCOL_EXCL) &&                                          \
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
 void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
                                 uint64_t cv, uint64_t version,
@@ -159,9 +161,11 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
     arts_shared_ptr_t mh = arts_db_buf_acquire(home_cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);
+    uint64_t addr = 0, rkey = 0;
     if (master != NULL &&
-        arts_net_rdzv_local(master->data, home_cache->db_size, &p.credit_addr,
-                            &p.credit_rkey)) {
+        arts_net_rdzv_local(master->data, home_cache->db_size, &addr, &rkey)) {
+      p.credit_addr = addr;
+      p.credit_rkey = rkey;
       p.credit_txid = arts_net_rdzv_txid_next();
     }
     arts_db_buf_release(&mh);
@@ -183,7 +187,12 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
   }
   arts_transport_send_async((int)releaser_rank, (char *)&p, sizeof(p));
 }
+#endif /* arms whose release is acknowledged by the home */
 
+/* The create's credit is minted by every arm whose remote creator writes into
+ * a line the home owns. */
+#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||        \
+    defined(ARTS_PROTOCOL_FLUSH)
 void arts_send_db_create_return(unsigned int creator_rank,
                                 struct arts_db_cache_s *home_cache) {
   if (creator_rank == arts_global_rank_id || arts_global_rank_count <= 1 ||
@@ -200,24 +209,27 @@ void arts_send_db_create_return(unsigned int creator_rank,
   arts_shared_ptr_t mh = arts_db_buf_acquire(home_cache);
   struct arts_db_buffer_s *master =
       (struct arts_db_buffer_s *)arts_shared_get(mh);
-  bool ok = (master != NULL &&
-             arts_net_rdzv_local(master->data, home_cache->db_size,
-                                 &p.credit_addr, &p.credit_rkey));
+  uint64_t addr = 0, rkey = 0;
+  bool ok = (master != NULL && arts_net_rdzv_local(master->data,
+                                                   home_cache->db_size, &addr,
+                                                   &rkey));
   arts_db_buf_release(&mh);
   if (!ok) {
     return;
   }
+  p.credit_addr = addr;
+  p.credit_rkey = rkey;
   /* No expectation is registered at issue time (the commit packet registers
    * the pairing on arrival), so a credit superseded by an ACK refill before
    * its first use is only a burned counter value. */
   p.credit_txid = arts_net_rdzv_txid_next();
   arts_transport_send_async((int)creator_rank, (char *)&p, sizeof(p));
 }
-#endif /* !ARTS_WRITE_POLICY_WB && !ARTS_PROTOCOL_EXCL */
+#endif /* arms whose create hands out a line credential */
 
-/* The versioned-snapshot read path: VAL and WRF_VAL only.  INV's readers hold
+/* The versioned-snapshot read path: VAL only.  INV's readers hold
  * durable copies and fetch with INV_REQUEST instead. */
-#if !defined(ARTS_PROTOCOL_EXCL) && !defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_PROTOCOL_VAL)
 /* One request on the wire per parked reader (or per combining window). */
 void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
                                    arts_guid_t edt_guid, uint32_t slot) {
@@ -339,7 +351,7 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
   }
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
-#endif /* !ARTS_PROTOCOL_EXCL && !ARTS_PROTOCOL_INV */
+#endif /* the versioned-snapshot read path */
 
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,

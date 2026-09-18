@@ -8,11 +8,11 @@
  * that does not exist in this build's protocol — the diagnostic for a cluster
  * accidentally assembled from binaries built with mismatched
  * ARTS_COHERENCE_PROTOCOL / ARTS_WRITE_POLICY / ARTS_RELEASE_POLICY.  The existing
- * coherence_mode_mismatch.c only paired RCU_HOME / RCU_OWNER / WRF_VAL, and
+ * coherence_mode_mismatch.c only paired RCU_HOME / RCU_OWNER, and
  * excl_mode_mismatch_fatal.c added EXCL.  This driver is
  * protocol-agnostic and, built once per config dir, completes the matrix:
  * pairing any two DIFFERENT-config binaries (RCU_HOME, RCU_OWNER,
- * WRF_VAL, EXCL) makes the first cross-protocol message hit
+ * EXCL) makes the first cross-protocol message hit
  * a fatal arm.
  *
  * What each protocol emits across the rank boundary (so every fatal arm is
@@ -20,7 +20,6 @@
  *   - RW remote acquire → the build's RW-ownership wire:
  *       VAL HOME : OWNERSHIP_REQUEST/RESPONSE + PUBLISH/PUBLISH_ACK
  *       VAL OWNER  : OWNERSHIP_REQUEST/RESPONSE + CONFIRM/CONFIRM_ACK
- *       WRF_VAL             : PUBLISH/PUBLISH_ACK (no ownership)
  *       EXCL             : LOCK_REQUEST/GRANT/RELEASE/RELEASE_ACK
  *   - RO remote acquire → the build's RO wire:
  *       non-EXCL         : SNAPSHOT_REQUEST/RESPONSE (+ OWNER SNAPSHOT_REDIRECT)

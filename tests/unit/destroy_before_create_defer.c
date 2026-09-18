@@ -46,12 +46,12 @@
 /// it on the GUID slot and replays it when DB_CREATE drains.  DB_CREATE itself
 /// is NON-deferrable — it is the drain trigger.  Two families exercise this:
 ///   - SNAPSHOT_REQUEST (RO acquire) — non-EXCL protocols;
-///   - PUBLISH (RW release) — HOME / WRF_VAL only.
+///   - PUBLISH (RW release) — WT only.
 /// Critically, the OWNER PUBLISH sender must never be reached with home==self
 /// (B019): the self-send fast path is `#if !ARTS_WRITE_POLICY_WB`-excluded, so
 /// under OWNER a stray publish would fall to the async send → self_send_check
 /// drops it → silent lost publish hang.  This test self-skips EXCL and only
-/// drives the RW-publish leg under HOME/WRF_VAL; the RO-snapshot leg runs on
+/// drives the RW-publish leg under WT; the RO-snapshot leg runs on
 /// all non-EXCL.
 ///
 /// Black-box driver: a reserved (labeled) DB GUID home=0 with a remote acquirer
@@ -97,7 +97,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// remote RW writer: forces a PUBLISH round on release whose message can
-/// reach the home before CREATE installs (HOME/WRF_VAL only — see gate below).
+/// reach the home before CREATE installs (WT only — see gate below).
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -129,7 +129,7 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 /// blocks on the outer wait and so cannot release per-generation tokens, so
 /// each generation's inner scope is owned by this short-lived EDT that returns
 /// immediately — its completion releases the inner token, letting inner fire
-/// once the creator (and, under HOME/WRF_VAL, the writer) finish.
+/// once the creator (and, under WT, the writer) finish.
 static void launcher_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                          arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -138,7 +138,7 @@ static void launcher_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t outer = (arts_guid_t)paramv[0];
   unsigned int sentinel = (unsigned int)paramv[1];
 
-  /* The value the reader must ultimately observe.  Under HOME/WRF_VAL a remote
+  /* The value the reader must ultimately observe.  Under WT a remote
    * RW writer runs after the creator and overwrites it; the reader then expects
    * the writer's value.  Under OWNER there is no publish leg, so the reader
    * expects the creator's sentinel. */
@@ -172,7 +172,7 @@ static void launcher_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)creator;
 
 #if !defined(ARTS_WRITE_POLICY_WB)
-  /* RW-publish leg (HOME/WRF_VAL only): a remote RW writer ordered strictly
+  /* RW-publish leg (WT only): a remote RW writer ordered strictly
    * AFTER the creator by the DB's per-node exclusive RW grant (serialized), so
    * the write->read chain is unambiguous.  Its release sheds ownership with a
    * synchronous PUBLISH whose message can reach the home before / around

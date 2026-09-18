@@ -64,7 +64,7 @@
 /// caught by the ctest TIMEOUT (no in-test spin).
 ///
 /// Config gate: SNAPSHOT_RESPONSE is a snapshot-bearing protocol message that
-/// exists only in the non-EXCL builds (VAL/WRF_VAL route RO through the
+/// exists only in the non-EXCL builds (VAL routes RO through the
 /// snapshot path).  EXCL has no snapshot machinery → compile-time self-skip.
 
 #include "arts.h"

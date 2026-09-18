@@ -61,8 +61,7 @@
 /// ctest TIMEOUT, a topology-specific wrong answer by the in-EDT assertion
 /// (arts_abort).
 ///
-/// Config-agnostic: runs under every protocol (RW handoff is a no-op transfer
-/// under WRF_VAL but the read-after-write chain still holds).
+/// Config-agnostic: runs under every protocol.
 
 #include "arts.h"
 

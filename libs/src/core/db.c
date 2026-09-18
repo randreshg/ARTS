@@ -445,6 +445,8 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
             atomic_store_explicit(&((struct arts_db_s *)ptr)->lock_state, 0ULL,
                                   memory_order_relaxed);
 #endif /* ARTS_RELEASE_* */
+#elif defined(ARTS_PROTOCOL_FLUSH)
+            /* An arm that keeps no permission state has no seed to undo. */
 #else
             /* Grant-bearing arms: this rank becomes the idle owner —
              * possession, and no hold under it.  With no creator hold there
@@ -527,6 +529,8 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
             atomic_store_explicit(&((struct arts_db_s *)ptr)->lock_state, 0ULL,
                                   memory_order_relaxed);
 #endif /* ARTS_RELEASE_* */
+#elif defined(ARTS_PROTOCOL_FLUSH)
+            /* An arm that keeps no permission state has no seed to undo. */
 #else
             /* Grant-bearing arms: this rank becomes the idle owner —
              * possession, and no hold under it.  With no creator hold there
@@ -628,10 +632,11 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * cache that holds the creator's own hold on it.  A cache is not the
          * block though — any rank makes one when it first touches a DB,
          * before or without a create — so a create that finds one here uses
-         * it and records its hold in it, and only a cache whose word already
-         * carries a hold belongs to a block that exists, in which case this
-         * create creates nothing at all. */
-        bool creator_hold = true;
+         * it and records its hold in it.  What decides whether there is
+         * anything to record is the cache's create mark, which one rank's
+         * create takes once and never gives back: a create that finds it
+         * taken creates nothing at all. */
+        bool took_hold = true;
         arts_db_cache_init(creator_cache, guid, len,
                            ARTS_DB_INIT_CREATOR_REMOTE, /*creator_rank=*/0);
         if (len > 0) {
@@ -643,31 +648,33 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                                                 /*used=*/true)) {
           arts_db_free(creator_stub);
           creator_cache = NULL;
-          creator_hold = false;
+          took_hold = false;
           arts_shared_ptr_t found_h = arts_route_table_lookup_db(guid);
           struct arts_db_s *found =
               (struct arts_db_s *)arts_shared_get(found_h);
           if (found != NULL && found->db_type == ARTS_DB) {
             struct arts_db_cache_s *cache = &found->cache;
-            /* The block's first image, into a cache a first touch left
-             * without one.  Size from whatever this rank has been taught,
-             * else this create's own length. */
-            uint64_t size = (cache->db_size != 0) ? cache->db_size : len;
-            if (size > 0) {
-              (void)arts_db_buf_ensure(cache, size);
-            }
-            /* On an arm that tracks a durable reader copy, the image this
-             * create put here is this rank's — recorded only from an idle
-             * reader word, because a fetch already in flight brings the copy
-             * with it when it lands. */
-            arts_db_create_claim_creator_copy(found);
-            /* The create's own hold, in its arm's own state.  It commits
-             * only from the word a first touch leaves; any other word
-             * carries a hold, so the block exists and this create creates
-             * nothing. */
-            if (arts_db_create_take_hold(cache)) {
-              creator_cache = cache;
-              creator_hold = true;
+            /* The mark is asked before anything is made for this create, so
+             * a create that loses it leaves nothing behind: no image in the
+             * slot, no claim to one, no hold. */
+            if (arts_db_create_hold_once(cache)) {
+              /* The block's first image, into a cache a first touch left
+               * without one.  Size from whatever this rank has been taught,
+               * else this create's own length. */
+              uint64_t size = (cache->db_size != 0) ? cache->db_size : len;
+              if (size > 0) {
+                (void)arts_db_buf_ensure(cache, size);
+              }
+              /* On an arm that tracks a durable reader copy, the image this
+               * create put here is this rank's — recorded only from an idle
+               * reader word, because a fetch already in flight brings the
+               * copy with it when it lands. */
+              arts_db_create_claim_creator_copy(found);
+              /* The create's own hold, in its arm's own state. */
+              if (arts_db_create_take_hold(cache)) {
+                creator_cache = cache;
+                took_hold = true;
+              }
             }
           }
           arts_shared_release(&found_h);
@@ -675,7 +682,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
         /* Only a create that created something announces the block: the one
          * that found it already there was preceded by the create that did,
          * and that create's own announce is the home's. */
-        if (creator_hold) {
+        if (took_hold) {
           arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NONE,
                                        (uint16_t)db_type);
         }
@@ -683,12 +690,12 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * copy its release publishes — handed out only through the hold this
          * create took. */
         arts_shared_ptr_t creator_buf_h =
-            creator_hold ? arts_db_buf_acquire(creator_cache) : NULL;
+            took_hold ? arts_db_buf_acquire(creator_cache) : NULL;
         struct arts_db_buffer_s *creator_buf =
             (struct arts_db_buffer_s *)arts_shared_get(creator_buf_h);
         *addr = creator_buf ? (void *)creator_buf->data : NULL;
         arts_db_buf_release(&creator_buf_h);
-        if (creator_hold && !arts_db_creator_skip_hold(ARTS_DB)) {
+        if (took_hold && !arts_db_creator_skip_hold(ARTS_DB)) {
           /* Register the DB on the creating thread's created-DB list so the
            * release that drops this hold runs at the end of the creating EDT
            * (or, for a startup hook, at that thread's scheduler entry). */
@@ -946,10 +953,8 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
   }
 }
 
-static bool dep_is_serialized(arts_edt_dep_t *depv, uint32_t i);
 static void rw_fire_from_cursor(struct arts_edt_s *edt);
 static void resume_enqueue(arts_guid_t edt_guid);
-static void flush_resume_list(void);
 
 /* OOO_DB_ACQUIRE replay table entry — see db.h.  Re-attempts the single
  * deferred dep through acquire_one_dep's subtype-aware 3-way: for an ARTS_DB
@@ -963,14 +968,14 @@ void arts_db_acquire_replay_dep(void *item, void *args) {
   struct arts_ooo_args_db_acquire_s *a =
       (struct arts_ooo_args_db_acquire_s *)args;
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(a->edt);
-  if (dep_is_serialized(depv, a->slot)) {
+  if (arts_dep_is_serialized(depv, a->slot)) {
     /* Serialized dep deferred at the cursor: re-drive the acquire loop from the
-     * cursor.  Route through the flat resume trampoline (enqueue + flush) so
+     * cursor.  Route through the flat resume trampoline (enqueue + drain) so
      * the re-drive stays top-level even when this replay runs nested inside
      * another EDT's acquire loop (an inline OoO drain) — never an inline
      * rw_fire_from_cursor that would recurse. */
     resume_enqueue(a->edt->guid);
-    flush_resume_list();
+    arts_db_drain_resume_list();
   } else {
     /* Non-serialized (Pass-1) dep: re-attempt just this slot; it self-accounts
      * on a local hit and the EDT schedules when the last dep's data lands. */
@@ -978,21 +983,21 @@ void arts_db_acquire_replay_dep(void *item, void *args) {
   }
 }
 
-/* GUID-sorted index array — identical on every (re)entry. */
-static void sort_dep_indices(arts_edt_dep_t *depv, uint32_t depc,
-                             uint32_t *sorted) {
-  for (uint32_t k = 0; k < depc; k++) {
-    sorted[k] = k;
+/* How much of a block a dep asks for: a write acquisition subsumes a read one,
+ * and a slot that acquires nothing asks for neither. */
+static unsigned int dep_mode_strength(arts_db_access_mode_t mode) {
+  if (mode == DB_MODE_RW) {
+    return 2u;
   }
-  for (uint32_t k = 1; k < depc; k++) {
-    uint32_t val = sorted[k];
-    int j = (int)k - 1;
-    while (j >= 0 && depv[sorted[j]].guid > depv[val].guid) {
-      sorted[j + 1] = sorted[j];
-      j--;
-    }
-    sorted[j + 1] = val;
+  return mode == DB_MODE_RO ? 1u : 0u;
+}
+
+/* True when dep `a` must be visited AFTER dep `b`. */
+static bool dep_order_after(arts_edt_dep_t *depv, uint32_t a, uint32_t b) {
+  if (depv[a].guid != depv[b].guid) {
+    return depv[a].guid > depv[b].guid;
   }
+  return dep_mode_strength(depv[a].mode) < dep_mode_strength(depv[b].mode);
 }
 
 /* A real DB dep still needing acquisition (not NULL / not a raw value / not
@@ -1003,9 +1008,71 @@ static bool dep_needs_acquire(arts_edt_dep_t *depv, uint32_t i) {
          arts_guid_get_kind(depv[i].guid) == ARTS_GUID_DB;
 }
 
+/* Visit order AND owner/alias classification for one EDT's whole dependence
+ * vector — computed once, consumed by every later frame.
+ *
+ * Order: by GUID, so same-block deps are adjacent and a serialized walk takes
+ * blocks in one global order; within a block, STRONGEST MODE FIRST; ties keep
+ * slot order (insertion sort with a strict comparison is stable).
+ *
+ * Classification: an EDT acquires each distinct block ONCE.  The first slot of
+ * a block's group OWNS that acquisition and is the only slot that asks an arm
+ * for the block; every later slot naming it is an ALIAS, which shares the
+ * owner's payload pointer, requests nothing and skips the arm's release,
+ * holding only its own buffer ref and descriptor pin.  Being first in the
+ * order, the owner carries the strongest mode any slot asks for: a write
+ * released as a read is not exclusive and, on an arm whose release is what
+ * carries the bytes home, is dropped outright.  Two copies of one block inside
+ * one EDT would also be written back over each other, and the copy the EDT
+ * never wrote through can be the one that lands last.
+ *
+ * Only the slots that share a block's coherence acquisition are classified —
+ * DB_MODE_RO and DB_MODE_RW.  A NULL GUID, a value slot (DB_MODE_NULL), a
+ * non-DB kind, an already-resolved slot, a CXL block and a device-side internal
+ * mode (DB_MODE_LC_SYNC / MEMSET and the like, which the coherence protocol
+ * does not acquire and which resolve on their own per-mode terms) are neither
+ * owner nor alias and are left exactly as they are.
+ *
+ * A pure function of depv, which is fixed once the EDT is ready — so the answer
+ * is the same for every frame that consumes it and nothing re-derives it. */
+void arts_dep_sort_and_classify(arts_edt_dep_t *depv, uint32_t depc,
+                                uint32_t *sorted) {
+  for (uint32_t k = 0; k < depc; k++) {
+    sorted[k] = k;
+  }
+  for (uint32_t k = 1; k < depc; k++) {
+    uint32_t val = sorted[k];
+    int j = (int)k - 1;
+    while (j >= 0 && dep_order_after(depv, sorted[j], val)) {
+      sorted[j + 1] = sorted[j];
+      j--;
+    }
+    sorted[j + 1] = val;
+  }
+  /* An eligible slot never names NULL_GUID, so the seed can only start a
+   * group, never join one. */
+  arts_guid_t group = NULL_GUID;
+  for (uint32_t k = 0; k < depc; k++) {
+    uint32_t i = sorted[k];
+    if (!dep_needs_acquire(depv, i) ||
+        (depv[i].mode != DB_MODE_RO && depv[i].mode != DB_MODE_RW)) {
+      continue;
+    }
+#ifdef ARTS_USE_CXL
+    /* A CXL block has no descriptor to pin and no coherence acquisition to
+     * share: every slot naming it resolves on its own from the segment. */
+    if (arts_guid_is_cxl(depv[i].guid)) {
+      continue;
+    }
+#endif
+    depv[i].alias = (depv[i].guid == group);
+    group = depv[i].guid;
+  }
+}
+
 /* Ownership-serialized (RW cursor) dep? CXL DBs bypass DB coherence (no
  * ownership round), so they are never serialized — they fire in Pass 1. */
-static bool dep_is_serialized(arts_edt_dep_t *depv, uint32_t i) {
+bool arts_dep_is_serialized(arts_edt_dep_t *depv, uint32_t i) {
 #ifdef ARTS_USE_CXL
   if (arts_guid_is_cxl(depv[i].guid)) {
     return false;
@@ -1041,25 +1108,25 @@ static ARTS_THREAD_LOCAL struct arts_edt_s *tl_acquiring = NULL;
  * currently-running loop (continuation recursion, O(depth) stack and O(depc²)
  * repeated work).  Instead the woken EDT's GUID is appended to a thread-local
  * worklist and the resume runs FLAT: when control returns to the top level
- * (no acquire loop in progress, tl_acquiring == NULL) flush_resume_list drains
+ * (no acquire loop in progress, tl_acquiring == NULL) the drain below walks
  * the worklist in a while loop, calling rw_fire_from_cursor once per entry.
- * Re-entrancy-guarded (tl_in_flush) + top-level-guarded (tl_acquiring) so
+ * Re-entrancy-guarded (tl_in_drain) + top-level-guarded (tl_acquiring) so
  * rw_fire_from_cursor can never appear twice on the stack. */
 static ARTS_THREAD_LOCAL arts_guid_t *tl_resume_buf = NULL;
 static ARTS_THREAD_LOCAL uint32_t tl_resume_len = 0;
 static ARTS_THREAD_LOCAL uint32_t tl_resume_cap = 0;
-static ARTS_THREAD_LOCAL bool tl_in_flush = false;
+static ARTS_THREAD_LOCAL bool tl_in_drain = false;
 
 /* Continuation-ownership signal for the resume_k loop: set when the dep the
  * loop just fired was resolved IN-FRAME (a synchronous local resolve or a
- * same-thread nested serve — rw_secure / arts_db_acquire_resolved with
+ * same-thread nested serve — arts_db_rw_secure / arts_db_acquire_resolved with
  * edt == tl_acquiring).  The loop continues ONLY on this signal; otherwise it
- * breaks and the serving side owns the continuation (its rw_secure enqueued
- * the flat resume on its own thread).  A cursor comparison cannot make this
- * call: a CONCURRENT other-thread serve also advances the cursor, and reading
- * "advanced" as "resolved in-frame" lets two threads drive the same EDT's
- * loop at once — double-firing the next dep (double count, one release, and a
- * double acquire_remaining account).  Being thread-local, this flag is
+ * breaks and the serving side owns the continuation (its arts_db_rw_secure
+ * enqueued the flat resume on its own thread).  A cursor comparison cannot
+ * make this call: a CONCURRENT other-thread serve also advances the cursor, and
+ * reading "advanced" as "resolved in-frame" lets two threads drive the same
+ * EDT's loop at once — double-firing the next dep (double count, one release,
+ * and a double acquire_remaining account).  Being thread-local, this flag is
  * untouchable by other threads' serves, so ownership is race-free. */
 static ARTS_THREAD_LOCAL bool tl_inline_advanced = false;
 
@@ -1073,16 +1140,16 @@ static void resume_enqueue(arts_guid_t edt_guid) {
   tl_resume_buf[tl_resume_len++] = edt_guid;
 }
 
-/* Drain the resume worklist as a flat loop.  No-op when called from inside an
- * acquire loop (tl_acquiring != NULL) or an in-progress flush — the outermost
- * caller owns the drain, so a wake enqueued deep in the nest is picked up by
+/* Drain the resume worklist as a flat loop — see db.h.  No-op when called from
+ * inside an acquire loop (tl_acquiring != NULL) or an in-progress drain — the
+ * outermost caller owns it, so a wake enqueued deep in the nest is picked up by
  * that single top-level while loop, never by a nested rw_fire_from_cursor. */
 static void rw_fire_from_cursor(struct arts_edt_s *edt);
-static void flush_resume_list(void) {
-  if (tl_acquiring != NULL || tl_in_flush) {
+void arts_db_drain_resume_list(void) {
+  if (tl_acquiring != NULL || tl_in_drain) {
     return;
   }
-  tl_in_flush = true;
+  tl_in_drain = true;
   while (tl_resume_len > 0) {
     arts_guid_t g = tl_resume_buf[--tl_resume_len];
     arts_shared_ptr_t h = arts_route_table_lookup_edt(g);
@@ -1092,14 +1159,15 @@ static void flush_resume_list(void) {
     }
     arts_shared_release(&h);
   }
-  tl_in_flush = false;
+  tl_in_drain = false;
 }
 
 /* resume_k loop: walk the serialized deps from the cursor, firing each.  A dep
- * that resolves LOCALLY advances the cursor (arts_db_acquire_resolved / the
- * alias path — advance only, no re-fire) and the loop picks up the next one; a
- * dep that PARKS (its grant is not local) leaves the cursor put and we return —
- * the matching async grant re-enters here (rw_secure) to continue.  Driving the
+ * that resolves LOCALLY advances the cursor (arts_db_acquire_resolved — advance
+ * only, no re-fire) and the loop picks up the next one; a dep that PARKS (its
+ * grant is not local) leaves the cursor put and we return — the matching async
+ * grant re-enters here (arts_db_rw_secure enqueues, the drain calls) to
+ * continue.  Driving the
  * walk as a LOOP (not the handler re-firing recursively) keeps the stack O(1)
  * however many serialized deps resolve in a row — required for EXCL, where RW
  * AND RO are both serialized so an EDT can have very many serialized deps. */
@@ -1111,70 +1179,32 @@ static void rw_fire_from_cursor(struct arts_edt_s *edt) {
   tl_acquiring = edt;
   while (edt->rw_cursor < depc) {
     uint32_t i = sorted[edt->rw_cursor];
-    if (!dep_needs_acquire(depv, i) || !dep_is_serialized(depv, i)) {
+    /* An alias is not on this walk.  It holds no acquisition of its own, so it
+     * can neither wait on another EDT's release nor be waited on, and there is
+     * nothing about it to order: the owner's resolve hands it the block's
+     * payload (arts_db_fill_aliases).  Issuing an acquisition here instead
+     * would, under a protocol that lets one holder at a time write, queue the
+     * request behind the EDT's own unreleased hold and self-deadlock. */
+    if (depv[i].alias || !dep_needs_acquire(depv, i) ||
+        !arts_dep_is_serialized(depv, i)) {
       edt->rw_cursor++;
       continue;
     }
-    /* Re-entrant same-DB exclusive acquire. An EDT acquires each distinct DB
-     * exactly once; a later slot naming a DB an earlier serialized slot of the
-     * same EDT already secured is an alias, not a fresh writer. The GUID sort
-     * makes same-GUID deps adjacent, and the cursor only reaches a slot after
-     * every earlier serialized dep secured — so a serialized predecessor with
-     * this GUID means the rank already owns the DB and its buffer is installed.
-     * Issuing a second ownership round here would, under a single-writer
-     * protocol, enqueue the request behind the EDT's own unreleased hold and
-     * self-deadlock. Resolve it as a local hit (a fresh per-slot buffer ref,
-     * balanced by release_one_dep) — the same payload the predecessor sees. */
-    bool reentrant = false;
-    for (int p = (int)edt->rw_cursor - 1; p >= 0; p--) {
-      uint32_t pj = sorted[p];
-      if (depv[pj].guid != depv[i].guid) {
-        break; /* GUID-sorted: no earlier dep shares this GUID */
-      }
-      if (dep_is_serialized(depv, pj)) {
-        reentrant = true;
-        break;
-      }
-    }
-    if (reentrant) {
-      /* Pin the db_s for the cache-deref window (cache is its FIRST member,
-       * offset 0).  arts_db_acquire_local takes the buffer's own ref (the EDT's
-       * hold); B1 keeps this descriptor pin alive for the slot's whole span. */
-      arts_shared_ptr_t db_h = arts_route_table_lookup_db(depv[i].guid);
-      struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-      if (db != NULL && db->db_type == ARTS_DB) {
-        depv[i].subtype = ARTS_DB;
-        /* Alias slot: buffer ref only, no writer_count hold (the earlier
-         * serialized slot owns the single acquire).  Recorded so release skips
-         * the coherence release for this slot. */
-        depv[i].alias = true;
-        depv[i].ptr = arts_db_acquire_local(&db->cache);
-        arts_db_acquire_resolved(edt, i); /* advances cursor; loop continues */
-        /* B1: the alias took a per-slot buffer ref — pin the descriptor for its
-         * acquire->release span by MOVING db_h into db_pin (released last in
-         * release_one_dep).  ptr==NULL means no buffer was installed (no ref
-         * taken); release db_h normally then. */
-        if (depv[i].ptr != NULL &&
-            __atomic_load_n(&depv[i].db_pin, __ATOMIC_ACQUIRE) == NULL) {
-          __atomic_store_n(&depv[i].db_pin, (void *)db_h, __ATOMIC_RELEASE);
-          db_h = NULL;
-        }
-        arts_shared_release(&db_h);
-        continue;
-      }
-      arts_shared_release(&db_h);
-      /* Cache unexpectedly absent — fall back to a normal acquire. */
-    }
     tl_inline_advanced = false;
+    /* A dependence fires only for an EDT that still owes an account: once
+     * every account is in, the EDT is scheduled and its acquire state belongs
+     * to its run, so a walk arriving here past that point would charge a
+     * second acquisition to a task that is already running. */
+    assert(edt->acquire_remaining > 0);
     acquire_one_dep(
         edt, depv,
         i); /* local hit advances the cursor; remote/contended parks */
     if (!tl_inline_advanced) {
       /* Parked (or deferred): the serving side owns the continuation — its
-       * rw_secure enqueues the flat resume on its own thread.  Do NOT infer
-       * "resolved" from cursor movement: a concurrent other-thread serve also
-       * advances the cursor, and continuing here would put two threads in the
-       * same EDT's loop (double-firing the next dep). */
+       * arts_db_rw_secure enqueues the flat resume on its own thread.  Do NOT
+       * infer "resolved" from cursor movement: a concurrent other-thread serve
+       * also advances the cursor, and continuing here would put two threads in
+       * the same EDT's loop (double-firing the next dep). */
       break;
     }
     /* resolved in-frame — the loop picks up the next serialized dep */
@@ -1182,17 +1212,21 @@ static void rw_fire_from_cursor(struct arts_edt_s *edt) {
   tl_acquiring = prev_acquiring;
 }
 
-/* Async grant resume: advance past the just-secured `slot` and continue firing
- * from the cursor.  Position-idempotent: only advances when the cursor still
- * points at `slot`, so a redundant secure for an already-passed slot is a no-op
- * (it neither re-fires the in-flight dep nor double-accounts).  This is the
- * path a grant for a PARKED EDT takes (remote grant / release grant) — it
- * re-enters the resume_k loop.  The SYNCHRONOUS local resolve does NOT come
- * through here; it uses arts_db_acquire_resolved (advance only) and the running
- * loop picks up the next dep, so consecutive local resolves never recurse. */
-static void rw_secure(struct arts_edt_s *edt, unsigned int slot) {
+/* Async grant resume — see db.h.  Position-idempotent: only advances when the
+ * cursor still points at `slot`, so a redundant secure for an already-passed
+ * slot is a no-op (it neither re-fires the in-flight dep nor double-accounts).
+ * This is the path a grant for a PARKED EDT takes (remote grant / release
+ * grant).  The SYNCHRONOUS local resolve does NOT come through here; it uses
+ * arts_db_acquire_resolved (advance only) and the running loop picks up the
+ * next dep, so consecutive local resolves never recurse.
+ *
+ * The frame this runs in grows by nothing: the two outcomes are a thread-local
+ * flag and an append to the worklist, neither of which fires a dependence. */
+void arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot) {
   uint32_t depc = edt->depc;
   const uint32_t *sorted = edt->rw_sorted; /* sorted ONCE in acquire_all */
+  /* A wake follows an acquisition the walk issued, so the walk has begun. */
+  assert(sorted != NULL);
   if (edt->rw_cursor < depc && sorted[edt->rw_cursor] == slot) {
     edt->rw_cursor++;
     /* If this resume is for THIS thread's in-flight EDT (a same-rank grant
@@ -1209,18 +1243,168 @@ static void rw_secure(struct arts_edt_s *edt, unsigned int slot) {
   }
 }
 
+/* Resolve ONE alias slot onto the block's payload: the same bytes at the same
+ * address, the slot's own buffer ref (release drops one per slot) and its own
+ * descriptor pin.
+ *
+ * `subtype` is the owner's, because it is the acquisition's: for a coherent
+ * block the payload is a buffer's data and carries a ref; for a non-coherent
+ * (pinned) block it is the descriptor's inline storage and carries none.
+ *
+ * `pin_src` is a handle on the descriptor the payload belongs to, borrowed from
+ * the caller.  INVARIANT: an alias never ends with a buffer ref and no
+ * descriptor pin.  A buffer's last drop recycles it into its owning cache's
+ * free-list, that cache lives inside the descriptor, and the slots release in
+ * index order — so an unpinned alias above the owner would recycle into a cache
+ * the owner's pin drop had already freed.  The pin is therefore COPIED from the
+ * handle that resolved the payload, never looked up again: a lookup can miss
+ * under a concurrent destroy while the payload and its descriptor are still
+ * alive under the owner's own pin.
+ *
+ * The payload claim is the idempotent CAS a parked resume uses, so a slot
+ * resolves exactly once however many frames meet it; the loser drops the ref it
+ * took.  A NULL payload cannot be claimed that way — NULL is the resolved value
+ * — so it is arbitrated on the descriptor pin instead, which exactly one frame
+ * installs.  With no pin to install either (the block is gone) nothing can
+ * arbitrate, and a destroyed block woken twice is outside the programming
+ * model.
+ *
+ * Returns whether THIS call resolved the slot, i.e. whether the caller now
+ * owes it an account.  Accounting is the caller's because it may schedule the
+ * EDT, after which nothing may read its acquire state. */
+static bool fill_one_alias(arts_edt_dep_t *depv, uint32_t slot, void *payload,
+                           arts_db_types_t subtype,
+                           arts_shared_ptr_t pin_src) {
+  depv[slot].subtype = subtype;
+  if (payload == NULL) {
+    if (pin_src == NULL) {
+      return true;
+    }
+    arts_shared_ptr_t pin_h = arts_shared_copy(pin_src);
+    void *null_expected = NULL;
+    if (!__atomic_compare_exchange_n(&depv[slot].db_pin, &null_expected,
+                                     (void *)pin_h, false, __ATOMIC_RELEASE,
+                                     __ATOMIC_RELAXED)) {
+      arts_shared_release(&pin_h); /* another frame resolved the slot */
+      return false;
+    }
+    return true;
+  }
+  if (subtype != ARTS_DB) {
+    /* A non-coherent block's payload is its descriptor's own storage: no
+     * buffer, no ref, and a release with nothing to give back. */
+    void *pinned_expected = NULL;
+    return __atomic_compare_exchange_n(&depv[slot].ptr, &pinned_expected,
+                                       payload, false, __ATOMIC_ACQ_REL,
+                                       __ATOMIC_ACQUIRE);
+  }
+  /* The pin goes in BEFORE the payload: a slot takes a pin only while it
+   * carries none, so publishing the pin first leaves exactly one pin however
+   * two frames interleave.  Publish the other way round and both can read
+   * db_pin == NULL with ptr already set, and one handle leaks. */
+  arts_shared_ptr_t db_h = arts_shared_copy(pin_src);
+  void *pin_expected = NULL;
+  if (__atomic_compare_exchange_n(&depv[slot].db_pin, &pin_expected,
+                                  (void *)db_h, false, __ATOMIC_RELEASE,
+                                  __ATOMIC_RELAXED)) {
+    db_h = NULL; /* the slot owns it now; release_one_dep drops it last */
+  }
+  arts_shared_release(&db_h); /* no-op when the slot took it */
+  /* The ref is taken BEFORE the claim so the losing side's drop is symmetric.
+   * It is a ref on the owner's buffer, not on whatever the block's cache holds
+   * now, which is what makes the two slots the same address by construction. */
+  arts_shared_ptr_t buf_h =
+      arts_shared_copy(arts_db_buf_from_data(payload)->cb);
+  void *expected = NULL;
+  if (!__atomic_compare_exchange_n(&depv[slot].ptr, &expected, payload, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    arts_db_buf_release(&buf_h); /* another frame claimed the slot */
+    return false;
+  }
+  /* Not counted: an alias is not an acquisition.  One block, one acquisition,
+   * one census entry — the owner's. */
+  return true;
+}
+
+/* Hand the block's payload to every slot that aliases the acquisition just
+ * resolved on `owner_slot`.  This is the one place an alias is ever resolved,
+ * on every arm: it runs where an owner's pointer becomes final — the
+ * synchronous resolve (arts_db_acquire_resolved) and the parked resume
+ * (resume_parked in coherence.c, behind arts_db_resume_parked and
+ * mark_edt_ready_by_guid) — and nowhere else.
+ *
+ * `owner_db_h` is the descriptor handle the resolving frame holds for the
+ * block, borrowed for the call, or NULL when the frame has none (the
+ * synchronous resolve pins the owner's slot only after its handler returns).
+ * With none, the block is looked up once here — and a MISS means the block was
+ * destroyed under a pending acquire, which the model leaves undefined: the
+ * aliases then resolve to NULL and take no buffer ref, the value and the shape
+ * every other path delivers for a block with no storage.  A payload therefore
+ * never reaches an alias without the descriptor it belongs to.
+ *
+ * One pass over depv in this frame, no recursion and no dispatch: an alias
+ * needs nothing from the network, and the slots it fills were classified
+ * before anything fired, so the walk is decided, not searched.
+ *
+ * The accounts are issued at the end.  An account may schedule the EDT, and
+ * the loop must not read it after that; deferring them is safe because the
+ * caller still owes the owner's own account, so the count cannot reach zero
+ * while this loop runs. */
+void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot,
+                          arts_shared_ptr_t owner_db_h) {
+  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
+  arts_guid_t guid = depv[owner_slot].guid;
+  if (guid == NULL_GUID) {
+    /* The EDT released the block from inside its own body, which retires every
+     * slot naming it — there is nothing left to alias. */
+    return;
+  }
+  void *payload = __atomic_load_n(&depv[owner_slot].ptr, __ATOMIC_ACQUIRE);
+  arts_db_types_t subtype = depv[owner_slot].subtype;
+  arts_shared_ptr_t looked_up = NULL;
+  arts_shared_ptr_t pin_src = owner_db_h;
+  bool pin_known = (pin_src != NULL);
+  /* A slot this loop resolves is a slot nobody has accounted, so the EDT
+   * cannot have run yet and the owner's payload is alive under its own ref. */
+  uint32_t owed = 0;
+  for (uint32_t k = 0; k < edt->depc; k++) {
+    if (!depv[k].alias || depv[k].guid != guid ||
+        __atomic_load_n(&depv[k].ptr, __ATOMIC_ACQUIRE) != NULL) {
+      continue;
+    }
+    if (!pin_known) {
+      /* Paid once, and only by an EDT that has an alias to fill: the common
+       * alias-free resolve never touches the route table here. */
+      looked_up = arts_route_table_lookup_db(guid);
+      pin_src = looked_up;
+      if (pin_src == NULL) {
+        payload = NULL; /* no descriptor to pin: hand out no bytes either */
+      }
+      pin_known = true;
+    }
+    if (fill_one_alias(depv, k, payload, subtype, pin_src)) {
+      owed++;
+    }
+  }
+  arts_shared_release(&looked_up);
+  while (owed-- > 0) {
+    arts_db_acquire_account(edt);
+  }
+}
+
 /* A SYNCHRONOUS local resolve (handler set dep->ptr, in the running acquire
  * loop).  For a serialized dep, advance the cursor ONLY — the running
  * rw_fire_from_cursor loop picks up the next dep, so this never re-fires
  * recursively (that is the whole point of the loop: acquire_all is the
- * continuation unit, the loop walks deps, and only an ASYNC resume — rw_secure
- * / the OoO replay — re-enters the loop).  Then account THIS dep; the +1 bias
- * on acquire_remaining keeps the count above zero until the loop completes, so
- * accounting order is free.  The upstream caller holds an EDT ref across the
- * loop, so a schedule from the final account cannot free the EDT mid-loop. */
+ * continuation unit, the loop walks deps, and only an ASYNC resume —
+ * arts_db_rw_secure / the OoO replay — re-enters the loop).  Then account THIS
+ * dep; the +1 bias on acquire_remaining keeps the count above zero until the
+ * loop completes, so accounting order is free.  The upstream caller holds an
+ * EDT ref across the loop, so a schedule from the final account cannot free the
+ * EDT mid-loop. */
 void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
-  if (dep_is_serialized(depv, slot)) {
+  if (arts_dep_is_serialized(depv, slot)) {
     uint32_t depc = edt->depc;
     const uint32_t *sorted = edt->rw_sorted; /* sorted ONCE in acquire_all */
     if (edt->rw_cursor < depc && sorted[edt->rw_cursor] == slot) {
@@ -1230,6 +1414,10 @@ void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot) {
       }
     }
   }
+  /* The block's payload is final for this EDT: hand it to every slot that
+   * aliases this acquisition BEFORE accounting the owner, because the owner's
+   * account may be the one that schedules the EDT. */
+  arts_db_fill_aliases(edt, slot, NULL);
   arts_db_acquire_account(
       edt); /* count THIS dep's data; outermost may schedule */
 }
@@ -1242,14 +1430,16 @@ void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot) {
 void arts_db_acquire_all(struct arts_edt_s *edt) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   uint32_t depc = edt->depc;
-  /* Sort the GUID order ONCE for the whole acquire phase.  The order is a pure
-   * function of depv (fixed once the EDT is ready), so rw_fire_from_cursor /
-   * rw_secure / arts_db_acquire_resolved all consume edt->rw_sorted and none
-   * re-sorts — turning the per-dep O(depc²) re-sort into a single O(depc²).
-   * Freed at run (arts_run_edt). */
+  /* Order the deps and classify owner vs alias ONCE for the whole acquire
+   * phase, BEFORE anything fires: both are pure functions of depv (fixed once
+   * the EDT is ready), so rw_fire_from_cursor / arts_db_rw_secure /
+   * arts_db_acquire_resolved / arts_db_fill_aliases all consume the one answer
+   * and none re-derives it — turning the per-dep O(depc²) re-sort into a single
+   * O(depc²), and giving every frame that meets a slot the same verdict about
+   * which slot owns its block.  Freed with the EDT (arts_edt_free). */
   if (depc > 0 && edt->rw_sorted == NULL) {
     edt->rw_sorted = (uint32_t *)arts_malloc(depc * sizeof(uint32_t));
-    sort_dep_indices(depv, depc, edt->rw_sorted);
+    arts_dep_sort_and_classify(depv, depc, edt->rw_sorted);
   }
   const uint32_t *sorted = edt->rw_sorted;
 
@@ -1261,46 +1451,27 @@ void arts_db_acquire_all(struct arts_edt_s *edt) {
   }
   arts_atomic_add(&edt->acquire_remaining, n); /* now (1 + n) with the bias */
 
-  /* Pass 1: every non-serialized real DB dep, order-independent (handler
-   * self-accounts via arts_db_acquire_resolved on a local hit; remote parks).
-   */
+  /* Pass 1: every non-serialized real DB dep that OWNS its block's single
+   * acquisition, order-independent (the handler self-accounts via
+   * arts_db_acquire_resolved on a local hit; remote parks).  An alias asks for
+   * nothing — the owner's resolve fills it (arts_db_fill_aliases). */
   for (uint32_t k = 0; k < depc; k++) {
     uint32_t i = sorted[k];
-    if (!dep_needs_acquire(depv, i) || dep_is_serialized(depv, i)) {
+    if (depv[i].alias || !dep_needs_acquire(depv, i) ||
+        arts_dep_is_serialized(depv, i)) {
       continue;
     }
     acquire_one_dep(edt, depv, i);
   }
 
-  /* Pass 2: fire the serialized (RW) deps from the cursor (no-op under WRF_VAL).
-   */
+  /* Pass 2: fire the serialized owners from the cursor. */
   rw_fire_from_cursor(edt);
 
   /* Remove the +1 bias; this decrement may be the one that reaches 0. */
   arts_db_acquire_account(edt);
 
   /* Drain any cross-EDT resumes enqueued while this EDT's loop ran (flat). */
-  flush_resume_list();
-}
-
-/* Secured wake (PROCEED / GRANT drain): position-idempotent cursor advance +
- * fire next serialized dep. Holds an EDT ref across rw_secure (which may
- * schedule deep in the recursion). */
-void mark_edt_secured_by_guid(arts_guid_t edt_guid, unsigned int slot) {
-  if (edt_guid == NULL_GUID) {
-    return;
-  }
-  arts_shared_ptr_t edt_h = arts_route_table_lookup_edt(edt_guid);
-  struct arts_edt_s *edt = (struct arts_edt_s *)arts_shared_get(edt_h);
-  if (edt == NULL) {
-    arts_shared_release(&edt_h);
-    return;
-  }
-  rw_secure(edt, slot);
-  arts_shared_release(&edt_h);
-  /* Top-level grant-wake: drive the parked EDT's resume flat (no-op when nested
-   * inside an acquire loop — the outer loop's flush owns the drain). */
-  flush_resume_list();
+  arts_db_drain_resume_list();
 }
 
 /*
@@ -1391,15 +1562,66 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
    * dep->ptr is cache->buffer->data (NOT (db+1)), so the pinned-subtype
    * pointer arithmetic below would read a wild address — fatal once a
    * concurrent destroy has removed the route entry (cache lookup then misses).
-   * Drop the EDT's per-acquire buffer ref (taken at acquire time:
-   * acquire_local / mark_edt_ready_by_guid each do arts_db_buf_acquire)
-   * unconditionally via the buffer's own cb: the EDT's ref kept the buffer
-   * (hence buf->cb) alive up to here, so the deref is never use-after-free even
-   * under a racing destroy.  Dispatch release_rw / release_ro only while the
-   * cache is still installed; once destroyed there is no publish / version
-   * work left to do (the buffer ref drop above is the only cleanup needed). */
+   * The EDT's per-acquire buffer ref (taken at acquire time: acquire_local /
+   * the parked-EDT resume each do arts_db_buf_acquire) is dropped
+   * unconditionally at the tail of this block via the buffer's own cb: the
+   * EDT's ref kept the buffer (hence buf->cb) alive up to there, so the deref
+   * is never use-after-free even under a racing destroy.  Dispatch release_rw
+   * / release_ro only while the cache is still installed; once destroyed there
+   * is no publish / version work left to do (that ref drop is the only cleanup
+   * needed). */
   if (dep->subtype == ARTS_DB &&
       (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW)) {
+    /* B1: take the stashed descriptor pin (set when this slot's buffer ref was
+     * secured at acquire).  It is released LAST — after the arm's release and
+     * after the EDT's buffer ref — because the pin outlives the buffer ref by
+     * contract: a buffer's last drop RECYCLES it into its owning cache's
+     * free-list, so dropping the pin first could free that cache (and its
+     * free-list) and turn the recycle into a write-after-free. */
+    /* Consume the descriptor pin published (with release) at the acquire/wake
+     * site; acquire-load matches that release across the work-stealing handoff
+     * (mirrors the sibling ptr field's atomic discipline — TSan-clean). */
+    arts_shared_ptr_t db_pin =
+        (arts_shared_ptr_t)__atomic_load_n(&dep->db_pin, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&dep->db_pin, NULL, __ATOMIC_RELAXED);
+    /* The re-lookup handle of the no-pin path, released at the same tail and
+     * under the same rule. */
+    arts_shared_ptr_t db_fallback = NULL;
+    /* Alias slot (a slot naming a DB whose single acquisition another slot of
+     * the same EDT owns): it took a buffer ref when that acquisition's payload
+     * was handed to it (so the tail drop balances it) but never a coherence
+     * hold.  Skip release_rw/ro so the hold is dropped exactly once per
+     * distinct DB.  The alias bit is decided before the acquire phase fires
+     * (arts_dep_sort_and_classify), NOT re-derived here, so a mid-EDT release
+     * that nulls the owning slot's GUID cannot make an alias masquerade as the
+     * owner.  Still drop the alias's own pin. */
+    if (!dep->alias) {
+      struct arts_db_s *db = NULL;
+      if (db_pin != NULL) {
+        /* Resolve the descriptor via the B1 pin — guaranteed alive (it kept
+         * the cache pinned across the whole span), so it is immune to the
+         * destroyed-but-lingering-DB re-lookup miss the old path risked. */
+        db = (struct arts_db_s *)arts_shared_get(db_pin);
+      } else if (dep->guid != NULL_GUID) {
+        /* No pin stashed (a buffer-ref path not covered by B1, or a destroyed
+         * DB): fall back to the ref-counted route re-lookup — identical to
+         * pre-B1 behavior, correct for the held writer_count; it only loses
+         * the destroy-race robustness the pin provides. */
+        db_fallback = arts_route_table_lookup_db(dep->guid);
+        db = (struct arts_db_s *)arts_shared_get(db_fallback);
+      }
+      if (db != NULL && db->db_type == ARTS_DB) {
+        if (access_mode == DB_MODE_RW) {
+          arts_db_release_rw(&db->cache, dep->ptr);
+        } else {
+          arts_db_release_ro(&db->cache);
+        }
+      }
+    }
+    /* Drop the EDT's per-acquire buffer ref AFTER the arm's release: an arm
+     * whose release moves the EDT's own bytes needs them alive until its
+     * transfer has completed.  An alias slot takes this path too — it holds
+     * a ref of its own, it just never held the coherence hold. */
     if (dep->ptr != NULL) {
       struct arts_db_buffer_s *buf = arts_db_buf_from_data(dep->ptr);
       if (buf != NULL) {
@@ -1407,60 +1629,11 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
         arts_db_buf_release(&buf_cb);
       }
     }
-    /* B1: take the stashed descriptor pin (set when this slot's buffer ref was
-     * secured at acquire).  Dropped LAST — after the buffer-ref drop above and
-     * the RW/RO release below — so the cache (buffer slot + recycle pool)
-     * outlives the buffer's recycle-on-drop and the coherence release even
-     * against a concurrent destroy. */
-    /* Consume the descriptor pin published (with release) at the acquire/wake
-     * site; acquire-load matches that release across the work-stealing handoff
-     * (mirrors the sibling ptr field's atomic discipline — TSan-clean). */
-    arts_shared_ptr_t db_pin =
-        (arts_shared_ptr_t)__atomic_load_n(&dep->db_pin, __ATOMIC_ACQUIRE);
-    __atomic_store_n(&dep->db_pin, NULL, __ATOMIC_RELAXED);
-    /* Re-entrant alias slot (a later dep naming a DB an earlier serialized slot
-     * of the same EDT already acquired): it took a buffer ref at acquire (so
-     * the drop above balances it) but never a writer_count hold — the first
-     * slot owns the single coherence acquire/release. Skip release_rw/ro so the
-     * owner's writer_count is decremented exactly once per distinct DB.  The
-     * alias bit is recorded at acquire (rw_fire_from_cursor), NOT re-derived
-     * here, so a mid-EDT release that nulls the owning slot's GUID cannot make
-     * an alias masquerade as the owner.  Still drop the alias's own pin. */
-    if (dep->alias) {
-      arts_shared_release(&db_pin);
-      return;
-    }
-    if (db_pin != NULL) {
-      /* Resolve the descriptor via the B1 pin — guaranteed alive (it kept the
-       * cache pinned across the whole span), so it is immune to the
-       * destroyed-but-lingering-DB re-lookup miss the old path risked. */
-      struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_pin);
-      if (db != NULL && db->db_type == ARTS_DB) {
-        if (access_mode == DB_MODE_RW) {
-          arts_db_release_rw(&db->cache);
-        } else {
-          arts_db_release_ro(&db->cache);
-        }
-      }
-      arts_shared_release(&db_pin);
-    } else if (dep->guid != NULL_GUID) {
-      /* No pin stashed (a buffer-ref path not covered by B1, or a destroyed
-       * DB): fall back to the ref-counted route re-lookup — identical to pre-B1
-       * behavior, correct for the held writer_count; it only loses the
-       * destroy-race robustness the pin provides. */
-      arts_shared_ptr_t db_h = arts_route_table_lookup_db(dep->guid);
-      struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-      if (db != NULL) {
-        if (db->db_type == ARTS_DB) {
-          if (access_mode == DB_MODE_RW) {
-            arts_db_release_rw(&db->cache);
-          } else {
-            arts_db_release_ro(&db->cache);
-          }
-        }
-        arts_shared_release(&db_h);
-      }
-    }
+    /* The descriptor pin LAST, on every path: the drop above may have been the
+     * buffer's last, and a buffer's deleter recycles it into its owning
+     * cache's free-list — which lives inside the descriptor this pin holds. */
+    arts_shared_release(&db_pin);
+    arts_shared_release(&db_fallback);
     return;
   }
 
@@ -1508,9 +1681,10 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
  */
 void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
   for (uint32_t i = 0; i < depc; i++) {
-    /* Alias-vs-owner is recorded on the dep at acquire (rw_fire_from_cursor):
-     * an alias slot drops only its buffer ref, the owner also releases the
-     * single coherence hold.  See arts_edt_dep_t.alias / release_one_dep. */
+    /* Alias-vs-owner is decided before the acquire phase fires
+     * (arts_dep_sort_and_classify): an alias slot drops only its buffer ref,
+     * the owner also releases the single coherence hold.  See
+     * arts_edt_dep_t.alias / release_one_dep. */
     release_one_dep(&depv[i], gpu);
   }
 }
@@ -1518,15 +1692,15 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
 /*
  * release_one_created — Release a single created DB by GUID.
  *
- * Looks up the DB struct via the route table; for ARTS_DB the
- * creator's hold is the writer_count=2 sentinel set by
- * ARTS_DB_INIT_CREATOR_HOME / ARTS_DB_INIT_CREATOR_REMOTE —
- * release_rw decrements it directly with NO buffer ref to drop
- * (auto_acquire never called acquire_buf).  For non-coherent pinned
- * subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU, ARTS_DB_CXL) the
- * creator EDT has no DB-level coherence hold to drop; building a synthetic
- * RW-mode dep and dispatching through release_one_dep handles only the
- * per-mode non-coherence work (GPU-LC reader unlock, CXL producer flush).
+ * Looks up the DB struct via the route table; for ARTS_DB the creator's hold
+ * is the arm's own state, seeded at ARTS_DB_INIT_CREATOR_HOME /
+ * ARTS_DB_INIT_CREATOR_REMOTE and released through the arm's own entry point
+ * with NO buffer ref to drop (auto_acquire never called acquire_buf).  For
+ * non-coherent pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU,
+ * ARTS_DB_CXL) the creator EDT has no DB-level coherence hold to drop;
+ * building a synthetic RW-mode dep and dispatching through release_one_dep
+ * handles only the per-mode non-coherence work (GPU-LC reader unlock, CXL
+ * producer flush).
  */
 static void release_one_created(arts_guid_t guid, arts_db_access_mode_t mode) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(guid);
@@ -1536,12 +1710,13 @@ static void release_one_created(arts_guid_t guid, arts_db_access_mode_t mode) {
   }
   if (db->db_type == ARTS_DB) {
     /* Coherent creator release.  No buffer ref to drop (auto_acquire is a
-     * no-op for ARTS_DB — writer_count was pre-stamped to 2 in
-     * arts_db_cache_init).  release_rw decrements writer_count, runs
-     * R1-R4 transfer logic if rest hits 0, and bumps version.  The coherent
+     * no-op for ARTS_DB — the hold is the seed arts_db_cache_init stamped on
+     * the cache).  The arm's create-hold entry point runs it: the creating
+     * EDT's bytes are wherever that arm put them when the block was made,
+     * which is not something a dependence's pointer could name.  The coherent
      * creator hold is always RW, so `mode` only steers the pinned-subtype
      * synthetic dep below. */
-    arts_db_release_rw(&db->cache);
+    arts_db_release_created(&db->cache);
     arts_shared_release(&db_h);
     return;
   }
@@ -1586,23 +1761,67 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
     }
   }
 
-  /* Path 2: depv (dependency-acquired DBs) */
+  /* Path 2: depv (dependency-acquired DBs).
+   *
+   * An EDT acquires each distinct block once and every other slot naming it is
+   * an alias on that one acquisition, so a block has exactly ONE non-alias slot
+   * in a dependence vector and that slot is what this call releases.  Releasing
+   * an alias instead would release nothing — an alias carries no coherence hold
+   * — and leave the acquisition held until the epilogue, exposing the block (a
+   * satisfy later in the same body) before the release that carries the bytes
+   * home has run.  The aliases retire with the owner: each still drops its own
+   * buffer ref and pin exactly once, and the epilogue then skips every slot
+   * naming the block.
+   *
+   * `mode` therefore selects nothing among the slots that SHARE the block's
+   * acquisition (DB_MODE_RO / DB_MODE_RW): the owner's acquisition is the
+   * strongest mode the EDT asked for and is the only one there is.  A
+   * device-side internal mode is not part of that acquisition and is not
+   * classified, so it is never the owner while a coherent slot names the same
+   * block: the search takes the first RO/RW slot and falls back to an
+   * unclassified one only when the block has no coherent acquisition here.
+   * Releasing the internal-mode slot first would retire the acquisition's
+   * aliases while the acquisition itself stayed held, so the bytes would reach
+   * the home later than the program asked. */
   if (!current_edt) {
     return;
   }
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(current_edt);
-  for (uint32_t i = 0; i < current_edt->depc; i++) {
-    if (depv[i].guid != guid || depv[i].mode == DB_MODE_NULL) {
+  uint32_t depc = current_edt->depc;
+  uint32_t owner = depc;
+  uint32_t unclassified = depc;
+  for (uint32_t i = 0; i < depc; i++) {
+    if (depv[i].guid != guid || depv[i].mode == DB_MODE_NULL ||
+        depv[i].alias) {
       continue;
     }
-    release_one_dep(&depv[i], false);
-    /* Mark the slot released so the epilogue release_dbs skips it.  The alias
-     * bit on each slot is independent, so nulling this slot does not affect the
-     * remaining slots' alias/owner classification. */
+    if (depv[i].mode == DB_MODE_RO || depv[i].mode == DB_MODE_RW) {
+      owner = i;
+      break;
+    }
+    if (unclassified == depc) {
+      unclassified = i;
+    }
+  }
+  if (owner == depc) {
+    owner = unclassified;
+  }
+  if (owner == depc) {
+    return;
+  }
+  release_one_dep(&depv[owner], false);
+  depv[owner].guid = NULL_GUID;
+  depv[owner].ptr = NULL;
+  depv[owner].mode = DB_MODE_NULL;
+  for (uint32_t i = 0; i < depc; i++) {
+    if (i == owner || depv[i].guid != guid || depv[i].mode == DB_MODE_NULL ||
+        !depv[i].alias) {
+      continue;
+    }
+    release_one_dep(&depv[i], false); /* buffer ref + descriptor pin only */
     depv[i].guid = NULL_GUID;
     depv[i].ptr = NULL;
     depv[i].mode = DB_MODE_NULL;
-    return;
   }
 }
 

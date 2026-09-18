@@ -15,7 +15,7 @@
  *
  *  (2) EXACT PER-CONFIG KIND SET.  The model-agnostic kinds are always present;
  *      each build's OOO_DB_* arm wires only that protocol's coherence kinds
- *      (HOME vs OWNER vs WRF_VAL vs EXCL).  The test asserts each named enum maps
+ *      (WT vs WB vs EXCL vs FLUSH).  The test asserts each named enum maps
  *      to its expected handler (the OOO_<NAME> == arts_handler_<name> naming
  *      invariant) and that OOO_KIND_COUNT equals the count of kinds that
  *      protocol defines — pinning the per-config table shape.
@@ -69,6 +69,9 @@ MK_HANDLER(arts_handler_db_grant_return)
 #ifdef ARTS_WRITE_POLICY_WB
 MK_HANDLER(arts_handler_db_inv_redirect)
 #endif
+#elif defined(ARTS_PROTOCOL_FLUSH)
+MK_HANDLER(arts_handler_db_fetch_request)
+MK_HANDLER(arts_handler_db_flush_announce)
 #elif defined(ARTS_WRITE_POLICY_WT) || defined(ARTS_WRITE_POLICY_WB)
 MK_HANDLER(arts_handler_db_grant_request)
 #ifdef ARTS_RELEASE_PURGE
@@ -125,6 +128,10 @@ static const struct expect_s g_expect[] = {
 #ifdef ARTS_WRITE_POLICY_WB
     E(OOO_DB_INV_REDIRECT, arts_handler_db_inv_redirect),
 #endif
+#elif defined(ARTS_PROTOCOL_FLUSH)
+    E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
+    E(OOO_DB_FETCH_REQUEST, arts_handler_db_fetch_request),
+    E(OOO_DB_FLUSH_ANNOUNCE, arts_handler_db_flush_announce),
 #elif defined(ARTS_WRITE_POLICY_WT)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_SNAPSHOT_REQUEST, arts_handler_db_snapshot_request),
@@ -137,10 +144,6 @@ static const struct expect_s g_expect[] = {
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_SNAPSHOT_REQUEST, arts_handler_db_snapshot_request),
     E(OOO_DB_GRANT_REQUEST, arts_handler_db_grant_request),
-#elif defined(ARTS_PROTOCOL_WRF_VAL)
-    E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
-    E(OOO_DB_SNAPSHOT_REQUEST, arts_handler_db_snapshot_request),
-    E(OOO_DB_PUBLISH, arts_handler_db_publish),
 #endif
 };
 
@@ -166,14 +169,14 @@ int main(void) {
       "INV+HOME+PURGE"
 #elif defined(ARTS_PROTOCOL_INV)
       "INV+HOME"
+#elif defined(ARTS_PROTOCOL_FLUSH)
+      "FLUSH"
 #elif defined(ARTS_WRITE_POLICY_WT) && defined(ARTS_RELEASE_PURGE)
       "VAL+HOME+PURGE"
 #elif defined(ARTS_WRITE_POLICY_WT)
       "VAL+HOME"
 #elif defined(ARTS_WRITE_POLICY_WB)
       "VAL+OWNER"
-#elif defined(ARTS_PROTOCOL_WRF_VAL)
-      "WRF_VAL"
 #else
       "?"
 #endif

@@ -518,7 +518,6 @@ void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache) {
 static void commit_wake_cb(arts_guid_t edt_guid, unsigned int slot,
                            void *vctx) {
   (void)vctx;
-  mark_edt_secured_by_guid(edt_guid, slot);
   mark_edt_ready_by_guid(edt_guid, slot);
 }
 

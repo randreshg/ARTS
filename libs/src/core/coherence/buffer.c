@@ -73,6 +73,21 @@ struct arts_db_buffer_s *arts_db_buf_alloc_zeroed(struct arts_db_cache_s *cache,
       sizeof(struct arts_db_buffer_s) + db_size, 64);
 }
 
+arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
+                                       struct arts_db_buffer_s **out) {
+  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
+      sizeof(struct arts_db_buffer_s) + db_size, 64);
+  if (b == NULL) {
+    ARTS_ERROR("coherence: detached buffer alloc failed (%llu bytes)",
+               (unsigned long long)db_size);
+  }
+  b->owner_cache = NULL;
+  b->version = 0;
+  b->cb = arts_shared_make(b, buffer_deleter);
+  *out = b;
+  return b->cb;
+}
+
 arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
   /* Acquire-and-validate load: returns a caller-owned strong ref (keeps the
    * buffer alive) or NULL if no buffer is installed.  Caller releases via
@@ -249,20 +264,11 @@ void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
   }
   uint64_t cur = __atomic_load_n(&buf->version, __ATOMIC_ACQUIRE);
   if (version < cur) {
-#ifdef ARTS_PROTOCOL_WRF_VAL
-    /* The lossy multi-writer model has no migrating write right: two ranks'
-     * publishes may reach the home in either order (the program owes the
-     * ordering; a violation is defined-lossy).  A stale commit retreats —
-     * the newer stamp and whichever bytes landed last stand. */
-    arts_db_buf_release(&h);
-    return;
-#else
     /* Publishes to one home are serialized (one flight per rank, and the
      * write right migrates only between flights), so a version below the
      * buffer's is not reordering — it is corruption. */
     ARTS_ERROR("coherence: publish commit version regressed (%llu < %llu)",
                (unsigned long long)version, (unsigned long long)cur);
-#endif
   }
   if (version > cur) {
     /* An equal version is an idempotent republish: a releaser whose waiter

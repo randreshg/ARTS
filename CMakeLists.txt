@@ -202,13 +202,16 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
 # ── Memory model × coherence protocol × data placement ─────────────────────
 # Compile-time switches — one binary is exactly one configuration; all ranks in
 # a multinode run must use the same build.
-#   ARTS_MEMORY_MODEL        OCR (default) — the OCR v1.2.0 §1.6 memory model:
-#                            races are legal; the runtime orders all conflicting
-#                            accesses it must (word-granular race semantics).
-#                            DB_WRF — write-race-free at datablock granularity:
-#                            the PROGRAM must order every write-write conflict
-#                            on a DB via events; read-write races keep the same
-#                            word-granular (regular-register) reader floor.
+#   ARTS_MEMORY_MODEL        Derived from the protocol, never chosen on its own:
+#                            every coherence protocol requires a memory model
+#                            of the program.  VAL/INV/EXCL require OCR (the
+#                            OCR v1.2.0 §1.6 model: races legal, the runtime
+#                            orders every conflict it must).  FLUSH requires
+#                            DB-WRF (exclusive write acquisition: at most one
+#                            write-mode acquisition of a DataBlock is live at
+#                            any time, and the program guarantees it by
+#                            happens-before; read acquisitions are free).
+#                            Passing the option asserts the expectation.
 #   ARTS_COHERENCE_PROTOCOL  Coherence family — who keeps reader copies valid:
 #                            VAL (default) — validation: each read acquire
 #                            checks its cached copy's version at the serving
@@ -220,6 +223,13 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
 #                            EXCL — exclusion: queue-fair distributed
 #                            reader-writer lock per DB; readers and writers
 #                            take turns, so no stale copy ever exists.
+#                            FLUSH — fetch at acquire, flush at release: every
+#                            remote acquire fetches the current payload and
+#                            every remote RW release writes it through; requires
+#                            the DB-WRF model (the program keeps every DB's
+#                            write acquisitions exclusive), which is what makes
+#                            the fetch-then-flush pair correct without any
+#                            tracking of readers or writers at the home.
 #   ARTS_WRITE_POLICY        WT | WB (default) — write policy of a node's
 #                            data-block cache at release granularity: WT =
 #                            write-through (payload flushed to the block's home
@@ -232,24 +242,25 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
 #                            nothing); RETAIN = the home, on demand, and an
 #                            unasked holder keeps the grant. Live in EXCL and
 #                            in WT × {VAL, INV}.
-# The axes are nominally independent: 12 combinations, 8 built. Everything
+# The axes are nominally independent: 12 combinations, 8 built under OCR, plus
+# the ninth build DB_WRF × FLUSH (no write/release policy axis). Everything
 # else is a configure error naming the reason:
 #   OCR    × VAL  × {WT, WB} × RETAIN
 #   OCR    × VAL  × WT × PURGE
 #   OCR    × INV  × {WT, WB} × RETAIN
 #   OCR    × INV  × WT × PURGE
 #   OCR    × EXCL × WB × {PURGE, RETAIN}
-#   DB_WRF × VAL  × WT × RETAIN        (home-canonical sync publish)
+#   DB_WRF × FLUSH (no write/release policy axis)
 # Not built: EXCL×WT (the payload rides the permission, so the release policy
 # already decides both), INV/VAL×WB×PURGE (a voluntary return hands back only
 # the permission while the bytes stay at the ex-owner, so the home still
 # cannot serve alone — and shipping them home too is write-through).
-set(ARTS_MEMORY_MODEL "OCR" CACHE STRING
-    "Memory model the build implements: OCR (default; races legal, runtime-ordered) or DB_WRF (program orders write-write conflicts per DB)")
-set_property(CACHE ARTS_MEMORY_MODEL PROPERTY STRINGS OCR DB_WRF)
+set(ARTS_MEMORY_MODEL "" CACHE STRING
+    "Memory model the build implements — DERIVED from ARTS_COHERENCE_PROTOCOL (OCR for VAL/INV/EXCL, DB-WRF for FLUSH); set it only to assert the expected value")
+set_property(CACHE ARTS_MEMORY_MODEL PROPERTY STRINGS "" OCR DB_WRF)
 set(ARTS_COHERENCE_PROTOCOL "VAL" CACHE STRING
-    "Coherence family: VAL (default; acquire-time version validation, readers never blocked/tracked/invalidated), INV (release-time invalidation rounds), or EXCL (per-DB distributed reader-writer lock)")
-set_property(CACHE ARTS_COHERENCE_PROTOCOL PROPERTY STRINGS VAL INV EXCL)
+    "Coherence protocol: VAL (default; acquire-time version validation), INV (release-time invalidation rounds), EXCL (per-DB distributed reader-writer lock) — the three OCR-model protocols — or FLUSH (fetch at acquire, flush at release; requires the DB-WRF model: the program keeps every DB's write acquisitions exclusive)")
+set_property(CACHE ARTS_COHERENCE_PROTOCOL PROPERTY STRINGS VAL INV EXCL FLUSH)
 set(ARTS_WRITE_POLICY "WB" CACHE STRING
     "Write policy at release granularity: WT (flush to the home at every release) or WB (resident with the last writer, default). Live in INV/VAL; EXCL requires WB")
 set_property(CACHE ARTS_WRITE_POLICY PROPERTY STRINGS WT WB)
@@ -390,7 +401,7 @@ set(ARTS_COUNTER_CONFIG
 #   (OCR,    VAL,  WT/WB)  -> arm VAL      (coherence/val/,     ARTS_PROTOCOL_VAL)
 #   (OCR,    INV,  WT/WB)  -> arm INV      (coherence/inv/,     ARTS_PROTOCOL_INV)
 #   (OCR,    EXCL, P/R)    -> arm EXCL     (coherence/excl/,    ARTS_PROTOCOL_EXCL)
-#   (DB_WRF, VAL,  WT)     -> arm WRF_VAL  (coherence/wrf_val/, ARTS_PROTOCOL_WRF_VAL)
+#   (DB_WRF, FLUSH)        -> arm FLUSH    (coherence/flush/,   ARTS_PROTOCOL_FLUSH)
 # ARTS_COHERENCE_ARM is internal — downstream CMake (TU selection, tests)
 # branches on the arm, never on the raw axes.
 # Migration guards: pre-rename axis values.
@@ -403,8 +414,8 @@ if(ARTS_COHERENCE_PROTOCOL STREQUAL "MRNEW" OR ARTS_COHERENCE_PROTOCOL STREQUAL 
           "(2026-07-31 terminology pass). Use the family names: "
           "RCU -> VAL, MSI -> INV, RWLOCK -> EXCL. "
           "(Older single-axis values: MRNEW -> VAL, LOCK -> EXCL, "
-          "MRMW -> ARTS_MEMORY_MODEL=DB_WRF ARTS_COHERENCE_PROTOCOL=VAL "
-          "ARTS_WRITE_POLICY=WT. MRSW was retired, archive/coherence-mrsw/.)")
+          "MRMW -> ARTS_COHERENCE_PROTOCOL=FLUSH, which derives the DB_WRF "
+          "model on its own. MRSW was retired, archive/coherence-mrsw/.)")
 endif()
 if(DEFINED ARTS_DATA_PLACEMENT)
   message(FATAL_ERROR
@@ -413,15 +424,42 @@ if(DEFINED ARTS_DATA_PLACEMENT)
           "OWNER -> WB) and ARTS_RELEASE_POLICY=PURGE|RETAIN (live in EXCL; "
           "old HOME -> PURGE, OWNER -> RETAIN).")
 endif()
-if(NOT ARTS_MEMORY_MODEL STREQUAL "OCR" AND NOT ARTS_MEMORY_MODEL STREQUAL "DB_WRF")
+if(NOT ARTS_MEMORY_MODEL STREQUAL "" AND
+   NOT ARTS_MEMORY_MODEL STREQUAL "OCR" AND
+   NOT ARTS_MEMORY_MODEL STREQUAL "DB_WRF")
   message(FATAL_ERROR
-          "ARTS_MEMORY_MODEL must be OCR or DB_WRF, got: ${ARTS_MEMORY_MODEL}")
+          "ARTS_MEMORY_MODEL must be OCR or DB_WRF, or left unset to derive "
+          "from ARTS_COHERENCE_PROTOCOL, got: ${ARTS_MEMORY_MODEL}")
 endif()
 if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "VAL" AND
    NOT ARTS_COHERENCE_PROTOCOL STREQUAL "INV" AND
-   NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL")
+   NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" AND
+   NOT ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
   message(FATAL_ERROR
-          "ARTS_COHERENCE_PROTOCOL must be VAL, INV or EXCL, got: ${ARTS_COHERENCE_PROTOCOL}")
+          "ARTS_COHERENCE_PROTOCOL must be VAL, INV, EXCL or FLUSH, got: ${ARTS_COHERENCE_PROTOCOL}")
+endif()
+# ARTS_MEMORY_MODEL is derived from the protocol, not chosen on its own:
+# passing it explicitly only asserts the value the protocol already implies.
+if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
+  set(_arts_model_required "DB_WRF")
+else()
+  set(_arts_model_required "OCR")
+endif()
+if(ARTS_MEMORY_MODEL STREQUAL "")
+  set(ARTS_MEMORY_MODEL "${_arts_model_required}")
+elseif(NOT ARTS_MEMORY_MODEL STREQUAL "${_arts_model_required}")
+  if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
+    message(FATAL_ERROR
+            "FLUSH is correct only for programs whose write acquisitions are "
+            "exclusive (the DB_WRF memory model); ARTS_MEMORY_MODEL=${ARTS_MEMORY_MODEL} "
+            "does not describe it. Leave the option unset or pass DB_WRF.")
+  else()
+    message(FATAL_ERROR
+            "DB_WRF has exactly one protocol, FLUSH: ${ARTS_COHERENCE_PROTOCOL} "
+            "orders writers at runtime, which DB_WRF already asks of the program "
+            "(its VAL arm was retired to archive/coherence-wrf-val/). "
+            "Use -DARTS_COHERENCE_PROTOCOL=FLUSH, or drop ARTS_MEMORY_MODEL.")
+  endif()
 endif()
 if(NOT ARTS_WRITE_POLICY STREQUAL "WT" AND NOT ARTS_WRITE_POLICY STREQUAL "WB")
   message(FATAL_ERROR
@@ -450,36 +488,15 @@ if((ARTS_COHERENCE_PROTOCOL STREQUAL "INV" OR ARTS_COHERENCE_PROTOCOL STREQUAL "
           "Use ARTS_WRITE_POLICY=WT (where the return is metadata-only) or "
           "ARTS_RELEASE_POLICY=RETAIN.")
 endif()
-if(ARTS_COHERENCE_PROTOCOL STREQUAL "INV" AND ARTS_MEMORY_MODEL STREQUAL "DB_WRF")
-  message(FATAL_ERROR
-          "DB_WRF x INV is not a meaningful configuration: INV already "
-          "orders writers at runtime (per-release rounds), so the DB-WRF "
-          "program obligation is redundant — use ARTS_MEMORY_MODEL=OCR.")
-endif()
-if(ARTS_MEMORY_MODEL STREQUAL "DB_WRF")
-  if(ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL")
+if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
+  if(NOT ARTS_WRITE_POLICY STREQUAL "WB" OR NOT ARTS_RELEASE_POLICY STREQUAL "RETAIN")
     message(FATAL_ERROR
-            "DB_WRF x EXCL is not a meaningful configuration: EXCL already "
-            "serializes writer-writer at runtime, so the DB-WRF program "
-            "obligation is redundant — use ARTS_MEMORY_MODEL=OCR "
-            "ARTS_COHERENCE_PROTOCOL=EXCL.")
+            "FLUSH has no write-policy or release-policy axis: every remote "
+            "acquire fetches and every remote RW release writes through, so "
+            "leave ARTS_WRITE_POLICY and ARTS_RELEASE_POLICY at their defaults.")
   endif()
-  if(ARTS_WRITE_POLICY STREQUAL "WB")
-    message(FATAL_ERROR
-            "DB_WRF x VAL x WB is designed but unimplemented (owner-held "
-            "canonical copy, control-only release). The implemented DB_WRF "
-            "configuration is ARTS_WRITE_POLICY=WT (home-canonical sync "
-            "publish at release).")
-  endif()
-  set(ARTS_COHERENCE_ARM "WRF_VAL")
-  message(WARNING
-          "ARTS_MEMORY_MODEL=DB_WRF: write-write conflicts on a DB must be "
-          "event-ordered BY THE PROGRAM (whole-DB granularity — unordered "
-          "writers to disjoint regions of one DB are also outside the "
-          "contract). Programs valid under the OCR memory model may produce "
-          "wrong results here. Evaluation builds only — never a correctness "
-          "baseline.")
-  message(STATUS "ARTS: model DB_WRF, family VAL (arm WRF_VAL), write policy WT")
+  set(ARTS_COHERENCE_ARM "FLUSH")
+  message(STATUS "ARTS: model DB_WRF, protocol FLUSH")
 elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "INV")
   # INV (invalidation): readers are never blocked, tracked only as a
   # node-granular copy roster, and every RW release retires every valid copy
