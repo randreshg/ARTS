@@ -91,37 +91,12 @@ set(_arts_saved_required_libs  "${CMAKE_REQUIRED_LIBRARIES}")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -mcx16")
 endif()
-# Some distributions (e.g., Debian without libatomic-dev) ship only
-# `libatomic.so.1` without the canonical `libatomic.so` symlink, which
-# defeats `find_library(NAMES atomic)`.  Probe for the SONAME directly
-# as a fallback.
-find_library(ATOMIC_LIBRARY NAMES atomic)
-if(NOT ATOMIC_LIBRARY)
-    find_file(ATOMIC_LIBRARY_SONAME libatomic.so.1
-        PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib /usr/lib64
-        NO_DEFAULT_PATH)
-    if(ATOMIC_LIBRARY_SONAME)
-        set(ATOMIC_LIBRARY "${ATOMIC_LIBRARY_SONAME}" CACHE FILEPATH
-            "Path to libatomic" FORCE)
-    endif()
-endif()
-# ARTS_ATOMIC_LINK is the single link item every consumer must use: the
-# resolved path when there is one, the bare `-latomic` name when only the
-# toolchain's own library directory (which find_library() does not search)
-# carries libatomic, and empty when the platform needs no libatomic at all.
-# A name the linker cannot resolve fails every link that inherits it, so the
-# bare name is never emitted without probing that the linker accepts it.
-if(ATOMIC_LIBRARY)
-    set(ARTS_ATOMIC_LINK "${ATOMIC_LIBRARY}")
-else()
-    include(CheckLinkerFlag)
-    check_linker_flag(C "-latomic" ARTS_HAVE_LATOMIC_FLAG)
-    if(ARTS_HAVE_LATOMIC_FLAG)
-        set(ARTS_ATOMIC_LINK "atomic")
-    else()
-        set(ARTS_ATOMIC_LINK "")
-    endif()
-endif()
+# ARTS_ATOMIC_LINK is the single link item every consumer must use; the
+# module resolves it (a found library, the runtime SONAME's file, or the bare
+# name once the linker has accepted it) so a host that carries libatomic only
+# as a runtime object still links.
+include(cmake/ArtsAtomicLink.cmake)
+arts_resolve_atomic_link(C)
 if(ARTS_ATOMIC_LINK)
     set(CMAKE_REQUIRED_LIBRARIES "${ARTS_ATOMIC_LINK}" ${CMAKE_REQUIRED_LIBRARIES})
 endif()
