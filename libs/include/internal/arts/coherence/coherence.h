@@ -131,7 +131,8 @@ typedef enum {
  * MUST arts_shared_release it on every control-flow path.  A NULL handle =
  * the DB was destroyed before the install could be observed. */
 arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
-                                             uint64_t db_size);
+                                             uint64_t db_size,
+                                             arts_db_types_t db_type);
 
 /* OOO_DB_ACQUIRE Cat-B body (per model). item = the installed db_s; args =
  * arts_ooo_args_db_acquire_s {edt, db_guid, slot}. Attempts the one dep's

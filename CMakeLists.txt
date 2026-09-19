@@ -210,7 +210,7 @@ option(ARTS_BUILD_BASELINES  "Build native OpenMP/MPI baseline implementations" 
 option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime" ON)
 option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime" ON)
 option(ARTS_BUILD_HPX        "Build HPX and the HPX benchmark apps" ON)
-option(ARTS_OFI_CXI          "Compile the libfabric cxi provider (HPE Slingshot) from the vendored Cassini/libcxi stack" ON)
+option(ARTS_OFI_CXI          "Compile the libfabric cxi provider (HPE Slingshot) from the vendored Cassini/libcxi stack" OFF)
 option(ARTS_BUILD_DOCS       "Build documentation (requires Doxygen + Sphinx)" OFF)
 
 # ── GPU / CUDA ─────────────────────────────────────────────────────────────
@@ -557,6 +557,44 @@ if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND
 endif()
 add_compile_definitions(ARTS_DB_DEFAULT=${ARTS_DEFAULT_DB_KIND})
 
+# ── CXL shared memory x coherence protocol ─────────────────────────────────
+# A CXL datablock keeps its payload in the shared window for its whole life and
+# lets the protocol move only the PERMISSION to touch it.  That is the EXCL
+# family's shape and nobody else's: a validation family serves readers from
+# versioned copies and an invalidation family retires reader copies, but a CXL
+# block has exactly one copy and no rank owns it, so there is nothing to
+# version and nothing to retire.  Within EXCL it is specifically the PURGE
+# release policy: the holder hands the turn back at its own idle edge and the
+# home arbitrates every hand-over, which is what puts the writer's flush before
+# the next reader's invalidate.  RETAIN's answer — the holder keeps the turn
+# until recalled, and the payload migrates owner to owner — has no meaning for
+# a payload that never moves.
+if(ARTS_USE_CXL)
+  if(NOT ARTS_COHERENCE_ARM STREQUAL "EXCL")
+    message(FATAL_ERROR
+            "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL "
+            "(got model ${ARTS_MEMORY_MODEL}, family "
+            "${ARTS_COHERENCE_PROTOCOL} -> arm ${ARTS_COHERENCE_ARM}). "
+            "CXL datablocks move permission, not payload: the home arbitrates "
+            "access to bytes that stay in the shared window, which is what "
+            "EXCL does and what the copy-based families (VAL, INV) and the "
+            "DB-WRF publish arm do not. "
+            "Configure with -DARTS_COHERENCE_PROTOCOL=EXCL "
+            "-DARTS_RELEASE_POLICY=PURGE.")
+  endif()
+  if(NOT ARTS_RELEASE_POLICY STREQUAL "PURGE")
+    message(FATAL_ERROR
+            "ARTS_USE_CXL=ON requires ARTS_RELEASE_POLICY=PURGE "
+            "(got ${ARTS_RELEASE_POLICY}). RETAIN keeps the grant at the "
+            "holder until the home recalls it and migrates the payload from "
+            "owner to owner; a CXL payload never moves, so there is nothing "
+            "to migrate and no reason for the home to lose sight of the turn. "
+            "Add -DARTS_RELEASE_POLICY=PURGE.")
+  endif()
+  message(STATUS "ARTS: CXL datablocks use EXCL x PURGE (permission-only grants, "
+                 "flush on release, invalidate on grant)")
+endif()
+
 # ── Mutually-exclusive sanitizer guard ─────────────────────────────────────
 if(ARTS_USE_SANS AND ARTS_USE_TSAN)
   message(FATAL_ERROR
@@ -766,6 +804,15 @@ if(ARTS_USE_CXL)
         IMPORTED_LOCATION "${ARTS_CXL_LIB_PATH}"
         INTERFACE_INCLUDE_DIRECTORIES "${ARTS_CXL_INCLUDE_DIR};${ARTS_CXL_RAPID_INCLUDE_DIR}"
     )
+
+    # The ARTS_USE_CXL definition is directory-wide (above), so anything that
+    # includes an ARTS internal header ends up including <MemOps.h> — including
+    # the whitebox tests, which compile runtime TUs directly and do not link
+    # the arts targets that carry the CXL include path.  Make the header path
+    # as global as the define that demands it; keeping them out of step is what
+    # makes an ARTS_USE_CXL build fail the moment tests are switched on.
+    include_directories(SYSTEM
+        "${ARTS_CXL_INCLUDE_DIR}" "${ARTS_CXL_RAPID_INCLUDE_DIR}")
 
     find_package(rapid CONFIG REQUIRED
         PATHS "${ARTS_CXL_RAPID_INCLUDE_DIR}/..")

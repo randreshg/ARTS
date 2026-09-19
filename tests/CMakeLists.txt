@@ -37,6 +37,18 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
+# Many tests here are whitebox: they compile runtime TUs directly instead of
+# linking an arts target, which is how they reach file-static symbols.  In a
+# CXL build those TUs call into the CXL library (arts_free consults
+# IS_CXL_PTR, the deque and lock headers call the flush intrinsics), so every
+# test in this directory needs it on the link line whether or not it links
+# libarts.  Declared once for the directory rather than per target: the
+# ARTS_USE_CXL definition that creates the dependency is itself directory-wide,
+# and a per-target list would go stale the next time a test is added.
+if(ARTS_USE_CXL)
+    link_libraries(arts_cxl_lib)
+endif()
+
 # Define test programs to build
 set(TEST_PROGRAMS
     # --- Original tests ---
@@ -169,6 +181,14 @@ set(TEST_PROGRAMS
     coherence_multi_writer_dist
     coherence_writer_ro_overlap
 )
+
+# CXL datablocks exist only in a CXL build, and there only under EXCL x PURGE
+# (the top-level CMakeLists refuses every other pairing), so the test that
+# exercises their grant chain is added to the list conditionally rather than
+# guarded with #ifdef inside the source.
+if(ARTS_USE_CXL)
+    list(APPEND TEST_PROGRAMS coherence_cxl_grant_chain)
+endif()
 
 # Function to create a test executable
 function(add_arts_test test_name)
@@ -1038,6 +1058,33 @@ register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120)
 # writer's atomic update.  An ordinary OCR program — registered under every
 # protocol; at >=3 ranks a DB homed on a non-zero rank has two distinct remote
 # writer ranks, exercising the cross-rank publish handoff that 2n cannot.
+# coherence_cxl_grant_chain: the CXL permission-only chain — remote write then
+# remote read, a concurrent reader cohort, and a writer that must wait the
+# cohort out.  On one rank the home is local, but every transition still runs
+# through the real arbiter and both flush edges, so this is a genuine
+# regression signal and not a no-op.
+#
+# The multinode variants are registered DISABLED rather than omitted, because
+# what blocks them is the emulation and not the protocol.  A non-zero rank
+# joins the shared CXL segment through arts_cxl_deque_get(), which is
+# LAST_SHARED_MALLOC — "hand me the allocation rank 0 already made".  The
+# fake_arts_cxl_lib implements that as a plain bump allocation, so every
+# non-zero rank receives a fresh zeroed block instead of rank 0's deque and
+# dies in arts_runtime_init with "CXL DB arena is missing or uninitialized",
+# before any datablock exists.  Enable these the moment the CXL library in use
+# can hand a second process the first process's allocation.
+if(ARTS_USE_CXL)
+    register_single_node_test(coherence_cxl_grant_chain TIMEOUT 60)
+    set_tests_properties(coherence_cxl_grant_chain PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    register_multinode_test(coherence_cxl_grant_chain TIMEOUT 120 VARIANTS 2n 3n 4n)
+    foreach(_v 2n 3n 4n)
+        set_tests_properties(coherence_cxl_grant_chain_${_v} PROPERTIES
+            FAIL_REGULAR_EXPRESSION "FAIL"
+            DISABLED TRUE)
+    endforeach()
+endif()
+
 register_multinode_test(coherence_multi_writer_dist TIMEOUT 120 VARIANTS 2n 3n 4n)
 foreach(_v 2n 3n 4n)
     set_property(TEST coherence_multi_writer_dist_${_v} APPEND PROPERTY

@@ -39,6 +39,7 @@
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
 #include "arts/edt.h"
+#include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
@@ -62,6 +63,45 @@ struct arts_lock_ro_node_s {
   struct arts_rdzv_landing_s rdzv; /* requester's grant landing */
 };
 
+/* ===== CXL blocks: the same arbiter, with permission in place of payload ==
+ *
+ * An ARTS_DB_CXL block runs the EXCL state machine below UNCHANGED — the same
+ * home lock word, the same queues, the same grant and release edges.  What
+ * differs is what a grant carries and what a release ships:
+ *
+ *   ordinary block          CXL block
+ *   ----------------------  ---------------------------------------------
+ *   grant carries the       grant carries permission only; the bytes have
+ *   payload (one-sided PUT  always been addressable by the grantee, so the
+ *   into the grantee's      grantee instead INVALIDATES its cached lines
+ *   stable buffer)          before it reads them
+ *
+ *   release publishes the   release FLUSHES the writer's modified lines to
+ *   dirty bytes home, then  the shared window, then notifies the home with
+ *   notifies                a control-only message
+ *
+ * That substitution is what makes the visibility chain hold on a fabric with
+ * no hardware coherence.  The home never orders the DATA — it cannot, it does
+ * not see it — it orders the PERMISSION, and the two flush edges convert that
+ * ordering into visibility: no reader is granted until the writer's release
+ * has arrived, no release is sent until the writer's flush has retired, and no
+ * granted reader touches a line it has not first invalidated.
+ *
+ * Nothing about this state lives in CXL.  The lock word, the waiter queues and
+ * the per-rank cache word are DRAM at the rank that owns them, reached by
+ * message, so every authoritative transition below is an ordinary local atomic
+ * on memory the hardware does keep coherent. */
+#ifdef ARTS_CXL_COHERENT
+static inline bool lock_is_cxl(struct arts_db_cache_s *cache) {
+  return arts_db_of_cache(cache)->db_type == ARTS_DB_CXL;
+}
+#else
+static inline bool lock_is_cxl(struct arts_db_cache_s *cache) {
+  (void)cache;
+  return false;
+}
+#endif
+
 /* ===== Pure state-transition arbiters ==================================
  * excl_compute_next and cache_compute_next are pure functions (no external
  * calls, no global state).  They live in arbiters.c so the unit test
@@ -84,6 +124,35 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
     /* This release was the last one owed to a home a destroy already marked.
      * Nothing is left to grant — tear the home down instead. */
     arts_excl_home_teardown(db, cache->db_guid);
+    return;
+  }
+  if (lock_is_cxl(cache)) {
+    /* Permission-only fan-out: no buffer to pin, no landing to fill, no bytes
+     * to move.  The grant still states the size, because that is what the
+     * grantee's invalidate needs a range from and a rank that has never seen
+     * this block has no other way to learn it (a CXL GUID spends its key on
+     * the payload offset and carries no size hint). */
+    uint64_t cxl_size = cache->db_size;
+    if (grant == LOCK_GRANT_ONE_RW) {
+      unsigned int rank;
+      struct arts_rdzv_landing_s rdzv;
+      if (arts_home_grantreq_queue_pop(&db->rw_waiters, &rank, &rdzv, NULL)) {
+        arts_send_db_excl_grant(rank, cache->db_guid, DB_MODE_RW, /*version=*/0,
+                                NULL, NULL, NULL, cxl_size);
+      }
+    } else {
+      arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);
+      while (node != NULL) {
+        arts_lf_link_t *nx =
+            atomic_load_explicit(&node->next, memory_order_relaxed);
+        struct arts_lock_ro_node_s *rn =
+            ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
+        arts_send_db_excl_grant(rn->rank, cache->db_guid, DB_MODE_RO,
+                                /*version=*/0, NULL, NULL, NULL, cxl_size);
+        arts_free(rn);
+        node = nx;
+      }
+    }
     return;
   }
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
@@ -213,7 +282,8 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
-  if (a->rdzv.txid == 0 && cache->db_size > 0 && arts_global_rank_count > 1) {
+  if (!lock_is_cxl(cache) && a->rdzv.txid == 0 && cache->db_size > 0 &&
+      arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — the grant
      * plane requires a landing.  The requester re-issues with one. */
@@ -482,6 +552,9 @@ void arts_db_create_publish_holder(struct arts_db_s *db,
  * RW release sends back the updated contents via EXCL_RELEASE publish. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size) {
+  if (lock_is_cxl(cache)) {
+    return; /* the canonical bytes are in CXL and belong to no rank's buffer */
+  }
   if (db_size > 0) {
     arts_db_buf_write_inplace(cache, /*data=*/NULL, db_size); /* zero-init */
   }
@@ -527,9 +600,15 @@ static bool lock_stable_landing(struct arts_db_cache_s *cache,
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode) {
   arts_guid_t db_guid = cache->db_guid;
-  unsigned int home_rank = arts_guid_get_rank(db_guid);
-  struct arts_rdzv_landing_s rdzv;
-  (void)lock_stable_landing(cache, &rdzv);
+  unsigned int home_rank = arts_db_home_rank(db_guid);
+  struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
+  /* A CXL request advertises no landing: there is nothing for the home to PUT.
+   * The absence is not a "size unknown" signal here either — the request
+   * handler skips the size-CTS round for CXL blocks precisely because a
+   * landing-less CXL request is the normal case, not a first-touch one. */
+  if (!lock_is_cxl(cache)) {
+    (void)lock_stable_landing(cache, &rdzv);
+  }
   if (home_rank == arts_global_rank_id) {
     /* Self-send: route through the OoO engine so before-create reorders are
      * handled correctly (the engine defers when the slot is absent). */
@@ -714,11 +793,32 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   struct arts_db_cache_s *cache = &db->cache;
 
-  /* Stash home's publish landing for this grant's eventual RW release —
-   * BEFORE the CAS that lets local writers run (the single ACK-gated releaser
-   * consumes it). */
-  if (mode == DB_MODE_RW && pub != NULL) {
-    cache->home_pub_rdzv = *pub;
+#ifdef ARTS_CXL_COHERENT
+  if (lock_is_cxl(cache)) {
+    /* THE CONSUMER EDGE.  Retire every line this rank still holds for the
+     * block before the CAS below lets any local EDT touch it.  Those lines may
+     * have been read under an earlier grant and then written by somebody else
+     * — the fabric will not have told us.  The home's ordering guarantees the
+     * writer's flush completed before this grant was issued, so invalidating
+     * here is exactly what converts that ordering into visibility.
+     *
+     * It runs for RW grants too, not just RO: a writer holding stale clean
+     * lines would otherwise read its own pre-turn bytes through them.
+     *
+     * Unconditional, with no epoch test for "nothing changed since last
+     * time" — the cost is the honest price of the protocol, and skipping it
+     * would only be sound if nothing else could have dirtied the lines. */
+    arts_cxl_consumer_flush(cache->db_guid);
+  } else
+#endif
+  {
+    /* Stash home's publish landing for this grant's eventual RW release —
+     * BEFORE the CAS that lets local writers run (the single ACK-gated
+     * releaser consumes it).  A CXL grant carries no landing: its release
+     * publishes nothing. */
+    if (mode == DB_MODE_RW && pub != NULL) {
+      cache->home_pub_rdzv = *pub;
+    }
   }
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_GRANT_RW : CACHE_OP_GRANT_RO;
@@ -740,7 +840,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
     break;
   case CACHE_ACT_REL_RO: /* phantom RO grant: nothing to serve, return home */
-    arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RO,
+    arts_send_db_excl_release(arts_db_home_rank(db_guid), db_guid, DB_MODE_RO,
                               /*version=*/0u, /*cv=*/0u, NULL, 0u,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;
@@ -790,7 +890,10 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
   }
   struct arts_db_cache_s *cache = &db->cache;
 
-  /* Hinted first touch: the size may still be unlearned here. */
+  /* Hinted first touch: the size may still be unlearned here.  For a CXL block
+   * this is the ONLY place it is learned on a rank that neither created the
+   * block nor homes it — and it must land before lock_grant_commit, whose
+   * invalidate needs the range. */
   if (cache->db_size == 0 && p->data_size > 0) {
     cache->db_size = p->data_size;
   }
@@ -913,7 +1016,33 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
  * is not an acknowledgement: a hold that never received a grant has no landing
  * address, and there is nowhere to PUT until the home names one. */
 static void lock_send_release_rw(struct arts_db_cache_s *cache) {
-  unsigned int home = (unsigned int)arts_guid_get_rank(cache->db_guid);
+  unsigned int home = arts_db_home_rank(cache->db_guid);
+#ifdef ARTS_CXL_COHERENT
+  if (lock_is_cxl(cache)) {
+    /* THE PRODUCER EDGE, and it must retire BEFORE the home hears anything.
+     * The home's next act on this block is to grant somebody, and that
+     * somebody will invalidate and read; if these lines were still sitting
+     * dirty in this rank's cache when the release message overtook them, the
+     * reader would invalidate, read the window, and see the state before this
+     * writer's turn.  So: flush, then notify — never the other way round, and
+     * never merged into one step.
+     *
+     * The home-local case takes the same edge.  Two ranks on one node do share
+     * hardware coherence and the flush is redundant between them, but the
+     * protocol does not branch on that: the moment the job spans nodes the
+     * elision is wrong, and a correctness edge that holds only in the
+     * single-node case is not one worth having. */
+    arts_cxl_producer_flush(cache->db_guid);
+    if (home == arts_global_rank_id) {
+      lock_release_commit(arts_db_of_cache(cache), cache, DB_MODE_RW);
+      return;
+    }
+    arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*version=*/0u,
+                              /*cv=*/0u, /*data=*/NULL, /*data_size=*/0u,
+                              /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
+    return;
+  }
+#endif
   if (home == arts_global_rank_id) {
     /* Home-local RW release: this rank IS home, so the releaser already holds
      * home's authoritative buffer (its in-place writes have landed) and the
@@ -1004,7 +1133,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
 }
 
 static void lock_send_release_ro(struct arts_db_cache_s *cache) {
-  unsigned int home = (unsigned int)arts_guid_get_rank(cache->db_guid);
+  unsigned int home = arts_db_home_rank(cache->db_guid);
   if (home == arts_global_rank_id) {
     /* Home-local RO release: commit the home lock_state transition + onward
      * grant directly, for the same reason the RW path does — a destroy that

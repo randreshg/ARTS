@@ -130,8 +130,54 @@ void arts_wait_reacquire_dbs(void);
 arts_guid_t arts_db_copy_to_new_type(arts_guid_t old_guid,
                                      arts_db_types_t new_type);
 
-#ifdef ARTS_USE_CXL
+/* ── Coherent storage kinds ────────────────────────────────────────────────
+ *
+ * A "coherent" DB is one whose access goes through the DB-coherence protocol.
+ * ARTS_DB is coherent by payload: its bytes live in a per-rank buffer that the
+ * protocol moves.  ARTS_DB_CXL is coherent by PERMISSION ONLY: its bytes never
+ * move — they sit in the shared CXL window for the whole lifetime of the block
+ * — and what the protocol arbitrates is the right to read or write them,
+ * together with the cache flush/invalidate that makes a hand-over visible.
+ *
+ * The pinned kinds (PIN / GPU / GPU_PIN) carry no DB-level coherence at all;
+ * they live on their creator rank and rely on hardware coherence plus the
+ * program's own event ordering.
+ *
+ * ARTS_DB_CXL counts as coherent only where a protocol exists that can serve
+ * it, which is EXCL and nothing else (see the ARTS_USE_CXL x protocol guard in
+ * the top-level CMakeLists for why).  That distinction matters inside this
+ * tree and not only at configure time: the benchmark variant libraries build
+ * these same sources against VAL and INV while ARTS_USE_CXL is on, and in
+ * those the CXL storage kind falls back to the pinned, creator-local path
+ * rather than entering a coherence arm with no way to grant it. */
+#if defined(ARTS_USE_CXL) && defined(ARTS_PROTOCOL_EXCL)
+#define ARTS_CXL_COHERENT 1
+#endif
+
+static inline bool arts_db_type_is_coherent(arts_db_types_t t) {
+#ifdef ARTS_CXL_COHERENT
+  return t == ARTS_DB || t == ARTS_DB_CXL;
+#else
+  return t == ARTS_DB;
+#endif
+}
+
+/* True for a coherent kind whose payload the protocol must MOVE.  CXL blocks
+ * answer false: there is exactly one copy of the bytes and every rank already
+ * addresses it, so no buffer is ever installed, no payload rides a grant, and
+ * no publish travels with a release. */
+static inline bool arts_db_type_has_buffer(arts_db_types_t t) {
+  return t == ARTS_DB;
+}
+
+#ifdef ARTS_CXL_COHERENT
+/* Writer-side visibility edge: flush this block's modified CXL cache lines out
+ * to the shared window.  Runs BEFORE the release reaches the home, so that a
+ * reader the home grants afterwards cannot observe pre-release bytes. */
 void arts_cxl_producer_flush(arts_guid_t guid);
+/* Reader-side visibility edge: invalidate this rank's cached lines for the
+ * block.  Runs AFTER the grant arrives and BEFORE any local EDT reads, so a
+ * line cached under an earlier grant cannot survive a writer's turn. */
 void arts_cxl_consumer_flush(arts_guid_t guid);
 #endif
 
