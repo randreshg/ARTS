@@ -37,7 +37,7 @@ apps:
     # serial work below the threshold growing as phi^n.  Sized to the one-node
     # window.
     args: ['--n-value=62', '--threshold=44', '--distribute-at=57', '--n-runs=1', '--test=1']
-    unordered_writes: 'every spawned fib task takes its rank''s locality state block RW (fib_hpx.c:47)'
+    unordered_writes: 'every spawned fib task takes its rank''s locality state block RW (fib_hpx.c:62)'
 
   stencil1d_hpx:
     binary: stencil1d_hpx
@@ -74,7 +74,7 @@ apps:
     # registered pool's ladder maps over those generations: nx stops where the
     # measured resident set fits the one-node memory budget with margin.
     args: ['--nx=270000', '--nt=45', '--np=4096', '--nd=10']
-    unordered_writes: 'the per-rank semaphore block is satisfied while held and signalled by unordered writers (stencil1d_hpx.c:251, :507-528)'
+    unordered_writes: 'the per-rank semaphore block is satisfied while held and signalled by unordered writers (stencil1d_hpx.c:242-252, :493-496, :514-515)'
 
   network_storage_hpx:
     binary: network_storage_hpx
@@ -171,4 +171,4 @@ apps:
     # neither runtime's thread count).  Sized to the one-node window through
     # each arm's measured two-point exponent under the memory budget with margin.
     args: ['--nx=72000', '--ny=71998', '--plan=estimate', '--run=scatter']
-    unordered_writes: 'row-parallel loops hold one array RW from nxl/nyl siblings (fft_hpx.c:388, :379); see the appdoc''s DB-WRF paragraph'
+    unordered_writes: 'chunk-parallel loops hold one array RW from sibling tasks (fft_hpx.c:421, :411); see the appdoc''s DB-WRF paragraph'

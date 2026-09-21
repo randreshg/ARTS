@@ -26,8 +26,8 @@ edits:
   phase-by-phase timing table), so the edit is the simplest digest of the
   final state it already holds: each locality sums its own rows and one
   `all_reduce` over a communicator of its own makes the total, which locality
-  0 writes once as `CHECKSUM %.14g`. It sits after the end stamp, so the
-  tally is teardown and not measured work
+  0 writes once as `CHECKSUM %.14g`. It sits before the end stamp, inside the
+  span, as the mirror's own tally does
 - bugfix: `basenames_` held `const char*` and was filled with
   `std::move(std::to_string(i).c_str())` -- a pointer into a temporary that
   dies at the end of that statement, read by `create_communicator` in the

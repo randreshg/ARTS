@@ -352,7 +352,6 @@ static ocrGuid_t turn_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     ocrGuid_t relay;
     ocrEdtCreate(&relay, mirror_u64_guid(pv[P_RELAY_TPL]), P_COUNT, params, 3, NULL,
                  EDT_PROP_NONE, &h, NULL);
-    ocrAddDependence(state, relay, 1, DB_MODE_RW);
     ocrAddDependence(mirror_u64_guid(pv[P_OPTIONS]), relay, 2, DB_MODE_RO);
     ocrGuid_t released = release_point(pv, closing, rank);
     mirror_edge_open(released);
@@ -367,6 +366,7 @@ static ocrGuid_t turn_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     mirror_edge_open(opened);
     ocrAddDependence(opened, first, 0, DB_MODE_NULL);
     ocrDbRelease(state);
+    ocrAddDependence(state, relay, 1, DB_MODE_RW);
     ocrAddDependence(state, first, 1, DB_MODE_RW);
   } else {
     ocrGuid_t tally;
@@ -413,6 +413,10 @@ static ocrGuid_t tally_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   u64 rank = pv[P_RANK];
   if (rank == 0) PRINTF("\n");
   report_test(pv, depv[2].ptr, depv[3].ptr);
+  /* The origin's delete_local_storage: a rank gives its own storage back
+   * once its last test has reported. */
+  state_t *st = depv[2].ptr;
+  for (u64 i = 0; i < pv[P_BLOCKS]; ++i) ocrDbDestroy(st->names[rank * pv[P_BLOCKS] + i]);
   ocrEventDestroy(release_point(pv, BARRIER_COUNT - 1, rank));
   ocrHint_t dh;
   mirror_rank_hint(&dh, rank, OCR_HINT_DB_T);
@@ -567,7 +571,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtTemplateCreate(&land_tpl, land_edt, P_COUNT, 3);
   ocrEdtTemplateCreate(&complete_tpl, complete_edt, P_COUNT, 3);
   ocrGuid_t options; char *label;
-  ocrDbCreate(&options, (void **)&label, strlen(network) + 1, DB_PROP_NONE, NULL_HINT, NO_ALLOC);
+  ocrHint_t oh; mirror_here_hint(&oh, OCR_HINT_DB_T);
+  ocrDbCreate(&options, (void **)&label, strlen(network) + 1, DB_PROP_NONE, &oh, NO_ALLOC);
   strcpy(label, network); ocrDbRelease(options);
   u64 pv[P_COUNT] = {0};
   pv[P_OPTIONS] = mirror_guid_u64(options);

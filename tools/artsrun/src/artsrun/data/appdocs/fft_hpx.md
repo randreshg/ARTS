@@ -40,11 +40,12 @@ HPX primitives used: `hpx::collectives::create_communicator`, `scatter_to` /
 components and no actions — the whole distributed structure is collectives,
 which makes this the section's purest exchange row. The mirror's mapping: two
 blocks per rank — its local rows and its local transposed rows — one block
-per (phase, source, destination) chunk, one task per row per transform, one
-task per row per split (writing into every destination's chunk, exactly as
-the origin's row-parallel `split_vec` does), one task per (source, row) per
-transpose, and each `scatter_to` as `nl` labeled points — one logical payload
-per (source, destination). HPX additionally routes its collective support objects
+per (phase, source, destination) chunk, one task per **loop chunk** of every
+`for_loop(par, …)` — the transforms, the splits (each writing into every
+destination's chunk, exactly as the origin's row-parallel `split_vec` does)
+and both levels of the nested transposes, cut by the origin's own default
+chunking rule (Structure, below) — and each `scatter_to` as `nl` labeled
+points — one logical payload per (source, destination). HPX additionally routes its collective support objects
 through rank 0; that runtime implementation can add physical messages.
 
 ## Parameters
@@ -70,10 +71,9 @@ truncating, which is the one place it is stricter than the origin.
 
 Two further mirror-side rejections, both of arguments neither side can
 compute the stated job from: a `--run` that is not `scatter`, and a pair for
-which the origin's second transpose would index outside the array (it derives
-its row count from the received chunk's size divided by an input stride the
-first phase set, and the mirror creates one task per row, so the two must be
-the same number). `--plan` follows the origin's own else-less chain: an
+which the origin's second transpose would index outside the array (it reads
+the received chunk with the input stride the first phase set, which overruns
+the chunk unless `n_y_local ≤ n_x_local` or `n_y_local = 1`). `--plan` follows the origin's own else-less chain: an
 unrecognised name keeps `estimate` rather than being rejected.
 
 `--result` and `--header` are output knobs of the origin — printing the whole
@@ -87,25 +87,44 @@ where the origin's own option parsing exits non-zero; the missing
 ## Structure
 
 Let `nl` = ranks, `cx = nx`, `cy = ny/2 + 1`, `nxl = cx/nl`, `nyl = cy/nl`,
-`cypart = 2·cy/nl`, `cxpart = 2·cx/nl`. Per run:
+`cypart = 2·cy/nl`, `cxpart = 2·cx/nl`.
+
+**A task is one chunk of an origin loop, not one row.** The origin's eight
+`for_loop(par, …)` calls carry no chunking parameter, so HPX cuts each by its
+default rule (`default_parameters::get_chunk_size`): the chunk is the
+smallest power of two `c` with `4·W·c ≥ n` for a loop of `n` iterations on
+`W` cores — at most four chunks per core, one chunk per iteration when the
+range is shorter than that — and the whole range when `W = 1`. The mirror
+applies the same rule to the same eight loops with `W` = what
+`ocrNbWorkers()` reports, each runtime against its own width as the origin
+does against its own: ARTS and ocr-vx report their compute workers, xsocr's
+count includes its communication worker, and HPX's `W` is every thread of
+the locality, progress included. At the calibrated sizes those counts fall
+on the same power of two; at the gate's they can differ by one doubling
+between entries, which moves task counts and nothing the oracle reads. One
+representation difference remains inside a loop: HPX runs a loop's `K`
+chunks from `min(W, K)` threads that pull them off a queue, where the mirror
+creates `K` tasks — at most four per worker, per loop. Write `K(n) = ⌈n/c(n)⌉` for the
+chunk count, `Kx = K(nxl)`, `Ky = K(nyl)`, `Kl = K(nl)`; `Kl = nl` — one
+source per outer chunk — whenever `4·W ≥ nl`. Per run:
 
 | object | count (per rank, unless noted) | dependences |
 |---|---|---|
 | driver task | 1 | 0 |
-| `fft1_edt` (r2c transform) | `nxl` | 2 — rows buffer RW, plan image RO |
-| `split1_edt` | `nxl` — one per row | `2 + nl` — phase-transform join NULL, rows buffer RO, `nl` outgoing chunk blocks RW |
+| `fft1_edt` (r2c transform) | `Kx` — one per chunk of rows | 2 — rows buffer RW, plan image RO |
+| `split1_edt` | `Kx` — one per chunk of rows | `2 + nl` — phase-transform join NULL, rows buffer RO, `nl` outgoing chunk blocks RW |
 | `publish_edt`, phase 1 | 1 | `1 + nl` — split join NULL, `nl` chunk blocks RO |
 | `xpose_scope_edt`, phase 1 | 1 | `1 + nl` — phase gate NULL, `nl` arriving chunks RO |
-| `xpose_outer_edt`, phase 1 | `nl` — one per source | 1 — one arriving chunk RO |
-| `xpose1_edt` | `nl·nyl` — one per (source, row) | 2 — arriving chunk RO, transposed-rows buffer RW |
-| `fft2_edt` (c2c transform) | `nyl` | 3 — scope output NULL, transposed-rows buffer RW, plan image RO |
-| `split2_edt` | `nyl` — one per row | `2 + nl` — phase-transform join NULL, transposed-rows buffer RO, `nl` return chunk blocks RW |
+| `xpose_outer_edt`, phase 1 | `Kl` — one per chunk of sources | one arriving chunk RO per source of the chunk (`nl` over the phase) |
+| `xpose1_edt` | `nl·Ky` — one per (source, chunk of rows) | 2 — arriving chunk RO, transposed-rows buffer RW |
+| `fft2_edt` (c2c transform) | `Ky` — one per chunk of rows | 3 — scope output NULL, transposed-rows buffer RW, plan image RO |
+| `split2_edt` | `Ky` — one per chunk of rows | `2 + nl` — phase-transform join NULL, transposed-rows buffer RO, `nl` return chunk blocks RW |
 | `publish_edt`, phase 2 | 1 | `1 + nl` — split join NULL, `nl` chunk blocks RO |
 | `xpose_scope_edt`, phase 2 | 1 | `1 + nl` — phase gate NULL, `nl` arriving chunks RO |
-| `xpose_outer_edt`, phase 2 | `nl` — one per source | 1 — one arriving chunk RO |
-| `xpose2_edt` | `nl·nyl` — one per (source, row) | 2 — arriving chunk RO, rows buffer RW |
+| `xpose_outer_edt`, phase 2 | `Kl` — one per chunk of sources | one arriving chunk RO per source of the chunk (`nl` over the phase) |
+| `xpose2_edt` | `nl·Ky` — one per (source, chunk of rows) | 2 — arriving chunk RO, rows buffer RW |
 | `reap1_edt` | 1 | `1 + 2·nl` — join NULL, `2·nl` phase-0/1 chunk points RO |
-| `finish_edt` | 1 | `5 + nl` — scope output NULL, reap output NULL, `nl` phase-1 chunks RO, rows RO, transposed rows RO, plan image RW |
+| `finish_edt` | 1 | 4 — scope output NULL, reap output NULL, rows RO, plan image RW |
 | `sum_edt` (rank 0 only, once) | 1 | `nl` — one share per rank RO |
 | rows buffer `varr` | 1 | `nxl·2·cy` doubles |
 | transposed-rows buffer `warr` | 1 | `nyl·2·cx` doubles |
@@ -118,24 +137,25 @@ Let `nl` = ranks, `cx = nx`, `cy = ny/2 + 1`, `nxl = cx/nl`, `nyl = cy/nl`,
 Per-rank dependence-slot total:
 
 ```
-S = nxl·(4 + nl) + nyl·(5 + nl) + 4·nl·nyl + 9·nl + 10        (+ nl on rank 0)
+S = Kx·(4 + nl) + Ky·(5 + nl) + 4·nl·Ky + 8·nl + 9            (+ nl on rank 0)
 ```
 
-and per-rank block count is `4 + 2·nl` (the two buffers, `2·nl` chunk blocks,
+— block and event dependences; each transform and split task adds one
+latch-decrement edge of its output event on top, `2·(Kx + Ky)` in all — and per-rank block count is `4 + 2·nl` (the two buffers, `2·nl` chunk blocks,
 the plan image, one share). The global reservation is `2·nl²` names — two
 phases × one point per (source, destination) pair — which is the whole
 rendezvous this program needs.
 
-An OCR block has exactly one writer, and the mirror's split and transpose
-tasks are the origin's own parallel units, unchanged: `split1_edt`/
-`split2_edt` run one task per **row**, exactly as the origin's
-`split_vec`/`split_trans_vec`, each task writing a disjoint byte range into
-**every** destination's chunk block; `xpose1_edt`/`xpose2_edt` run one task
-per (source, row), exactly as `transpose_y_to_x`/`transpose_x_to_y`, each
-writing disjoint rows or a disjoint column pair of the phase's destination
-buffer. So `nxl` (or `nyl`) split tasks of a rank hold each of that phase's
-`nl` chunk blocks `DB_MODE_RW` at once, and `nxl` `fft1_edt` tasks hold `varr`
-RW at once, and `nl·nyl` transposes hold the phase's destination buffer RW at
+The mirror's tasks are the origin's own parallel units, unchanged:
+`split1_edt`/`split2_edt` run one task per chunk of rows, each row handled
+exactly as the origin's `split_vec`/`split_trans_vec` handle it — a disjoint
+byte range written into **every** destination's chunk block;
+`xpose1_edt`/`xpose2_edt` run one task per (source, chunk of rows), each row
+handled exactly as `transpose_y_to_x`/`transpose_x_to_y`, writing disjoint
+rows or a disjoint column pair of the phase's destination buffer. So the
+`Kx` (or `Ky`) split tasks of a rank hold each of that phase's `nl` chunk
+blocks `DB_MODE_RW` at once, and the `Kx` `fft1_edt` tasks hold `varr` RW at
+once, and the `nl·Ky` transposes hold the phase's destination buffer RW at
 once — all disjoint writes, all the origin's own concurrency, carried
 unchanged. **The row is outside DB-WRF**: the program has
 same-DB write-write conflicts the code does not event-order (disjoint rows
@@ -147,14 +167,20 @@ entry, and this row has none either.
 
 Where the origin has a barrier between phases (`for_loop` is blocking), the
 mirror preserves the whole local phase boundary. Each split writes into all
-`nl` local chunk blocks of its phase; only after all `nxl` (or `nyl`) local
+`nl` local chunk blocks of its phase; only after all `Kx` (or `Ky`) local
 splits are complete does the phase's publication task satisfy the exchange
 points. Every second FFT waits for the first transpose phase join. The
-second split latch also gates cleanup of the transposed rows; receipt of all
-chunks aimed at this rank alone would not establish that its own outgoing
-readers have finished.
+second split latch also gates the reap of the first exchange's arrivals —
+the point at which the origin's own gather assignment frees them.
 
-Nothing is allocated per iteration — there are no iterations. The arrays occupy
+One difference in the nested transposes is confined to a geometry the
+campaigns never reach: an outer chunk of several sources starts their inner
+loops together, where the origin's outer chunk runs its sources' inner loops
+one after another. The two coincide while an outer chunk is one source —
+every geometry with `nl ≤ 4·W` — and at `W = 1`, where one worker serialises
+both.
+
+No iteration allocates: every buffer a task writes exists before it runs. The arrays occupy
 `4·cx·cy·8` bytes per run, and the chunk blocks of both exchanges —
 `2·cx·cy·8/nl` bytes per rank each — are created up front, so both exchanges
 are resident for the whole run: the logical peak is `64·cx·cy` bytes per run
@@ -196,11 +222,24 @@ disclosed rather than equalised.
 
 **A chunk has one producer and several readers** — every transpose task of
 the destination rank reads all `nl` arrivals — so no reader can be its
-destroyer. Each rank has one reap task per phase that depends on the same
-points and destroys both the blocks and the points once the phase's transpose
-join has fired; the second phase's reap is folded into the finish task, which
-also destroys the rank's rows, its transposed rows and its two FFTW plans, in
-that order and after the tally is taken.
+destroyer. Each rank has one reap task that depends on the first exchange's
+points and destroys both the blocks and the points, where the origin's
+second gather assignment frees the first exchange's receive vectors.
+
+**What the origin holds to its end, the mirror never destroys.** `vector_2d`
+allocates with `new[]` and its destructor is defaulted, so the rows and the
+transposed rows are leaked outright; the second exchange's arrivals live in
+`communication_vec_` until `hpx_main` returns, after the end stamp. The
+mirror therefore leaves `varr`, `warr` and the second exchange's chunk blocks
+to the runtime's teardown, outside the span on both sides. One asymmetry
+follows from the mapping and favours the OCR side above one rank: the
+origin's send buffers are moved into `scatter_to`, which releases the
+`nl − 1` it serialised inside the span, while a mirror chunk block is one
+object for the send buffer and the arrival — and the arrival is held to the
+end. What the mirror does destroy inside the span is the OCR-only objects —
+the exchange points, the plan image's block, the rank shares — and the two
+FFTW plans `~fft()` names, whose destructor runs after the stamp on the HPX
+side, at `hpx_main`'s return.
 
 **The joins are per rank, because the origin's `for_loop`s are per locality.**
 Four latches per rank — one per transform phase and one per split phase —
@@ -208,8 +247,8 @@ each with its successors created and registered before any task can complete
 it, since a latch is once-type and is destroyed when it reaches zero. The two
 transposes are gated by their own `EDT_PROP_FINISH` scope instead, one per
 phase, whose output event fires only once its whole spawned subtree — the
-outer per-source task and its per-row children — completes. The first
-transform's latch alone carries one extra slot beyond its `nxl` producers:
+outer per-source-chunk tasks and their per-row-chunk children — completes. The first
+transform's latch alone carries one extra slot beyond its `Kx` producers:
 the driver's own last statement is one explicit decrement of it, issued only
 after every task and dependence in the whole function has been created.
 Every other join is gated, directly or transitively, behind that one firing,
@@ -227,7 +266,7 @@ rather than behind a timing margin.
 
 `mainEdt` derives the origin's sizes (including its recomputation of the real
 length from the complex one, so an odd `--ny` transforms one point fewer),
-validates them, reserves the `2·nl²` point names, creates the eleven templates
+validates them, reserves the `2·nl²` point names, creates the thirteen templates
 and the sum task, and forks one driver per rank.
 
 A driver creates its rank's rows and fills each with the ramp, creates its
@@ -237,7 +276,7 @@ that writes (every flag but `estimate`) overwrites what it overwrites there.
 It then creates every task of the rank in one order that two OCR contracts fix:
 the two phase `EDT_PROP_FINISH` scopes first, empty of their own
 dependences; then the reap and finish tasks, fully wired; then each phase's
-publication task and its row-parallel splits, which also wire that phase's
+publication task and its chunk-parallel splits, which also wire that phase's
 `FINISH` scope; then the second-transform tasks; then the first-transform
 tasks last, followed by the one explicit decrement (Wiring, above) that
 releases the whole graph.
@@ -266,14 +305,20 @@ against the image's own identity-keyed and offset-ordered arrays, with no
 per-row allocation. The translated library's own memory accesses, wherever
 the alignment rewrite touches a load, store or inline-asm move, are
 unaligned-safe rather than assuming the plan-time base. Neither changes the
-codelet arithmetic.
+codelet arithmetic. Destroying the plans costs the same kind of work once per
+rank: the finish task reopens the image as a full planner context — one
+object entry per identity and one set insert per retained pointer slot —
+before the two `fftw_destroy_plan` calls and `fftw_cleanup`, about the
+publication's own cost again.
 
 The measured disagreement between the HPX and OCR checksums is not a
 difference in kernel arithmetic: both sides plan and execute the same FFTW
 3.3.10 source at the same configuration, and the `ESTIMATE` plan text at the
 catalog geometry is byte-identical between the two builds. What differs is
 the compiler — the HPX program links `arts::fftw3`, compiled by GCC; the OCR
-mirror links the translated `arts::fftw_reloc`, compiled by clang-14 — so the
+mirror links the translated `arts::fftw_reloc`, compiled by clang-14; both at
+one `-march` level, the pinned artifact's, which the HPX side's FFTW build
+reads from its stamp — so the
 same source, planner and selected plan end up as different machine code,
 with different FMA contraction and rounding in the last bits. That is
 consistent with the measured `~1e-15..1e-16` relative disagreement (below)
@@ -301,14 +346,15 @@ rank 0). On the HPX side every locality runs `hpx_main`; `run_clock` opens as
 its first statement and `print_e2e` closes it, on locality 0, immediately
 before `hpx::finalize()` — after the checksum reduction every locality takes
 part in, so locality 0's end is the application's. Option handling, buffer
-allocation and fill, both plans, both transforms, both exchanges, the
-checksum reduction and the origin's own timing table are inside the span on
-both sides.
+allocation and fill, both plans, both transforms, both exchanges and the
+checksum reduction are inside the span on both sides. The origin's timing
+table and its CSV append are inside the HPX span alone: the mirror prints
+no table, its one output line being `CHECKSUM`.
 
 **The scalar is the plain sum of the final array**, because the origin
 computes no printable quantity of its own — it prints a phase-by-phase timing
-table and appends a CSV row. `CHECKSUM %.14g` on the HPX side, `%.14e` on the
-OCR entries (the xsocr `printf` replacement has no `%g`).
+table and appends a CSV row. `CHECKSUM %.14g` on the HPX side, `%.14e` — one
+significant digit more — on the OCR entries.
 
 **It is a function of the locality count**, and the reason is the origin's own
 arithmetic — but not the one it first looks like. It is *not* the first
@@ -376,7 +422,11 @@ The application defines `2·nl²` logical chunk deliveries per run, of which
 `2·nl(nl−1)` cross ranks, each carrying `2·cx·cy·8/nl²` bytes. Their logical
 remote payload is `4·cx·cy·8·(nl−1)/nl` bytes. Physical messages and wire bytes
 also depend on event routing, acquisition and the collective implementation;
-HPX's support-object relay through rank 0 is not counted by this formula. The
+HPX's support-object relay through rank 0 is not counted by this formula, and
+neither is the receive side's representation: the origin's collective returns
+a fresh `std::vector` per arrival per phase (allocated and filled by
+deserialisation), where the mirror's transposes read the arriving block in
+place and the equivalent copy is the runtime's own transfer into its cache. The
 row and transposed-row buffers never leave their rank, and the `nl` rank
 shares are one double each.
 
@@ -444,7 +494,10 @@ to the 100 s window through each arm's measured exponent between 60 480 and
 77 760 — INV/WB, the slowest arm there, binds — under the one-node memory
 budget with a 10 % margin (172 GB resident on ARTS, 166 GB on HPX at this
 size), and rounded from the model's 71 680 to 72 000 (65 536 would drop
-INV/WB to about two thirds of the window). The anchor measured 40.5 s on
+INV/WB to about two thirds of the window). **The timings and resident sets
+in this paragraph were taken when the mirror ran one task per row**, about
+two thousand times the task count it has now, and stand only until the next
+campaign replaces them; the checksums are independent of the chunking. The anchor measured 40.5 s on
 INV/WB (39.8–55.2), 59.1 s on VAL (36.7–74.3) and 41.5 s on EXCL (37.2–67.0)
 — one slow repeat per arm in the near-ceiling regime — and 67.2 s on HPX; the
 sizing pass, on the runtime before its data-block descriptor lost its inline

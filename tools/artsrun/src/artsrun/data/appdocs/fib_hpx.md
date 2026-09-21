@@ -1,7 +1,7 @@
 # fib_hpx
 
 *Distributed Fibonacci over HPX futures and plain actions — one EDT per
-recursive call, an output dependence carrying each 8-byte result.*
+spawned call, an output dependence carrying each 8-byte result.*
 Origin: HPX's `fibonacci_futures_distributed` quickstart example
 (`third_party/hpx/examples/quickstart/fibonacci_futures_distributed.cpp`,
 pin `v1.11.0`), copied to
@@ -21,9 +21,11 @@ runtimes — `fib_hpx_hpx` is the HPX program, `fib_hpx_arts_<variant>`,
 (`benchmarks/apps/hpx_origin/fib_hpx.c`), one row in `hpx_apps.yaml`. HPX
 primitives used: a plain action (`fibonacci_future`), `hpx::async`, a
 synchronous action call, `hpx::when_all().then()`, `hpx_main`. The mirror's
-mapping: one EDT per recursive call delivering its 8-byte result on an
-output dependence, with a two-slot `sum` EDT standing in for
-`when_all().then()`.
+mapping: one EDT per call the origin spawns — the `n-1` branch always, the
+`n-2` branch only where the origin's synchronous action call leaves the
+caller's locality; a local `n-2` recurses inline in the caller's task, as it
+does in the origin — delivering its 8-byte result on an output dependence,
+with a two-slot `sum` EDT standing in for `when_all().then()`.
 
 ## Parameters
 
@@ -51,7 +53,7 @@ delivering a value directly. Per run, with `I` the internal-call count:
 | `sum_edt` | `I` — one per internal call |
 | `fib_edt`, the `n-1` branch | `I` — `spawn_fib` always creates this task, local or remote |
 | `fib_edt`, the `n-2` branch | at most a handful per run — only when the branch is routed off the caller's locality at a `distribute_at` boundary; otherwise the call recurses inline in the same EDT |
-| 8-byte DBs (one `deliver()` per invocation of `fibonacci_future`) | `2I + 1` — a full binary tree cut at `threshold` has one more leaf than internal node |
+| 8-byte DBs | `2I + 1` — one per leaf delivery (`I + 1`: a full binary tree cut at `threshold` has one more leaf than internal node) and one per `sum_edt` (`I`) |
 | `run_edt` | `--n-runs` — one per repetition |
 
 ## Wiring
@@ -71,8 +73,11 @@ live block count follows the frontier rather than the whole tree and
 ## Flow
 
 `mainEdt` validates the arguments, builds the six EDT templates (fib, sum,
-run, start, query, count), creates the per-rank `locality_t` state DBs and
-the table of their GUIDs, and creates `start_edt` on rank 0. `start_edt`
+run, start, query, count), creates the per-rank `locality_t` state DBs,
+appends their GUIDs to every task's parameter vector — the origin's tasks
+reach their locality's state as a global, with nothing to acquire, so the
+mirror carries the names in the parameters rather than in a block every task
+would depend on — and creates `start_edt` on rank 0. `start_edt`
 runs the untimed serial reference when `--test` is `0` or `all` (shutting
 down immediately for `--test=0`, without starting the DAG), then starts run
 0: the round-robin counter (`next_locality`) resets and the root call
@@ -93,9 +98,23 @@ runtime to stop, runtime start-up and teardown excluded. On the OCR side the
 runtime stamps it (the main task becoming eligible, shutdown recognised on
 rank 0); on the HPX side `run_clock` opens as the first statement of
 `hpx_main` and `print_e2e` closes it immediately before `hpx::finalize()`.
-Option handling, the serial reference when `--test` asks for it, the timed
-loop, the result line and the serial-count report are inside it on both
-sides.
+The serial reference when `--test` asks for it, the timed loop, the result
+line and the serial-count report are inside it on both sides. Option
+validation and the per-locality setup are inside it on the OCR side only —
+the origin does both in a startup function every locality runs before
+`hpx_main` — which is the six templates and `nl` state blocks of one run.
+
+**What the span holds at the calibrated arguments is the serial kernel.** A
+run is about 21 900 tasks against about `1.3·10¹³` calls of the serial
+recursion below the threshold, so the runtime's share of the span is under a
+percent on either side and the row's ratio is, to first order, how two
+compilations of one four-line function compare — the origin's as C++, the
+mirror's as C, same statements, same flags. Interleaved timings of that
+function alone differ by up to a tenth between equally valid compilations of
+it, so a ratio inside that band says nothing about either runtime. And at
+one rank every routed index resolves to the caller's own locality, so the
+one-node cell spawns nothing remotely: the row's distributed content starts
+at two ranks.
 
 `run_edt`'s result line now also carries the round-robin counter's final
 value, `fibonacci_future(n) == r,next_locality,<value>`. The mirror then keeps the origin's `serial_execution_count` — the

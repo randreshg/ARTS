@@ -6,6 +6,7 @@
  * in x, and sends everything back the same way.  Two exchanges, one message
  * per (source, destination) in each -- what one scatter_to costs. */
 #include "hpx_mirror.h"
+#include "extensions/ocr-runtime-itf.h"
 
 #include <fftw3.h>
 #include "fftw_reloc/reloc.h"
@@ -15,7 +16,7 @@ enum { P_NL, P_RANK, P_NXL, P_NYL, P_CX, P_CY, P_RY, P_CYPART, P_CXPART,
        P_FFT1_TPL, P_SPLIT1_TPL, P_XPOSE1_TPL, P_FFT2_TPL, P_SPLIT2_TPL,
        P_XPOSE2_TPL, P_REAP1_TPL, P_FINISH_TPL, P_PUBLISH_TPL, P_PHASE,
        P_PLAN_DB, P_PLAN_SIZE, P_SRC, P_XPOSE_SCOPE_TPL,
-       P_XPOSE_OUTER_TPL, P_V_DB, P_W_DB, P_COUNT };
+       P_XPOSE_OUTER_TPL, P_V_DB, P_W_DB, P_END, P_SRC_END, P_COUNT };
 
 /* One rendezvous point per (phase, source, destination): the ordinal names
  * the phase and the source, the index the destination, so a point has one
@@ -29,26 +30,46 @@ static inline ocrGuid_t chunk_point(u64 *pv, u64 phase, u64 src, u64 dst) {
                      pv[P_NL]);
 }
 
-/* One row's transform in y, in place: the origin's fft_1d_r2c_inplace, one
- * task per row as its parallel for_loop has it.  The row is a slice of the
- * rank's array: the task holds the array for write and names its own row by
- * offset, which is what lets sibling rows run at once on disjoint columns. */
+/* A parallel loop of the origin runs under its runtime's default chunking:
+ * the smallest power of two that leaves at most four chunks per core, and
+ * the whole range where there is one core.  A task here is one such chunk,
+ * [P_IDX, P_END) of the loop's range. */
+static u64 loop_chunk(u64 count) {
+  u64 cores = ocrNbWorkers();
+  if (cores == 1) return count;
+  u64 chunk = 1;
+  while (chunk * cores * 4 < count) chunk *= 2;
+  return chunk;
+}
+
+static inline u64 loop_chunks(u64 count) {
+  u64 chunk = loop_chunk(count);
+  return chunk ? (count + chunk - 1) / chunk : 0;
+}
+
+/* The rows' transform in y, in place: the origin's fft_1d_r2c_inplace.  A
+ * row is a slice of the rank's array: the task holds the array for write and
+ * names its rows by offset, which is what lets sibling chunks run at once on
+ * disjoint rows. */
 static ocrGuid_t fft1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  fftw_reloc_execute_r2c(fftw_reloc_image_at(depv[1].ptr), pv[P_PLAN_SIZE],
-                         pv[P_PLAN_R2C], depv[0].ptr,
-                         pv[P_IDX] * 2 * pv[P_CY] * sizeof(double));
+  const void *image = fftw_reloc_image_at(depv[1].ptr);
+  for (u64 i = pv[P_IDX]; i < pv[P_END]; ++i)
+    fftw_reloc_execute_r2c(image, pv[P_PLAN_SIZE], pv[P_PLAN_R2C], depv[0].ptr,
+                           i * 2 * pv[P_CY] * sizeof(double));
   return NULL_GUID;
 }
 
 /* A row writes disjoint slices of every destination buffer. */
 static ocrGuid_t split1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  u64 part = pv[P_CYPART], i = pv[P_IDX];
-  const double *row = (const double *)depv[1].ptr + i * 2 * pv[P_CY];
-  for (u64 j = 0; j < pv[P_NL]; ++j)
-    memcpy((double *)depv[2 + j].ptr + i * part, row + j * part,
-           part * sizeof(double));
+  u64 part = pv[P_CYPART];
+  for (u64 i = pv[P_IDX]; i < pv[P_END]; ++i) {
+    const double *row = (const double *)depv[1].ptr + i * 2 * pv[P_CY];
+    for (u64 j = 0; j < pv[P_NL]; ++j)
+      memcpy((double *)depv[2 + j].ptr + i * part, row + j * part,
+             part * sizeof(double));
+  }
   return NULL_GUID;
 }
 
@@ -65,72 +86,89 @@ static ocrGuid_t publish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) 
 /* One (source, transposed row) pair retains the sequential input-row loop. */
 static ocrGuid_t xpose1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  u64 part = pv[P_CYPART], k = pv[P_IDX], i = pv[P_SRC];
+  u64 part = pv[P_CYPART], i = pv[P_SRC];
   u64 dim_input = pv[P_NXL] * part / part;
   const double *in = depv[0].ptr;
-  double *w = (double *)depv[1].ptr + k * 2 * pv[P_CX];
-  for (u64 j = 0; j < dim_input; ++j) {
-    u64 index_in = part * j + 2 * k;
-    u64 index_out = 2 * pv[P_NL] * j + 2 * i;
-    w[index_out] = in[index_in];
-    w[index_out + 1] = in[index_in + 1];
+  for (u64 k = pv[P_IDX]; k < pv[P_END]; ++k) {
+    double *w = (double *)depv[1].ptr + k * 2 * pv[P_CX];
+    for (u64 j = 0; j < dim_input; ++j) {
+      u64 index_in = part * j + 2 * k;
+      u64 index_out = 2 * pv[P_NL] * j + 2 * i;
+      w[index_out] = in[index_in];
+      w[index_out + 1] = in[index_in + 1];
+    }
   }
   return NULL_GUID;
 }
 
-/* One transposed row's transform in x, in place: the origin's
+/* The transposed rows' transform in x, in place: the origin's
  * fft_1d_c2c_inplace. */
 static ocrGuid_t fft2_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  fftw_reloc_execute_c2c(fftw_reloc_image_at(depv[2].ptr), pv[P_PLAN_SIZE],
-                         pv[P_PLAN_C2C], depv[1].ptr,
-                         pv[P_IDX] * 2 * pv[P_CX] * sizeof(double));
+  const void *image = fftw_reloc_image_at(depv[2].ptr);
+  for (u64 i = pv[P_IDX]; i < pv[P_END]; ++i)
+    fftw_reloc_execute_c2c(image, pv[P_PLAN_SIZE], pv[P_PLAN_C2C], depv[1].ptr,
+                           i * 2 * pv[P_CX] * sizeof(double));
   return NULL_GUID;
 }
 
 static ocrGuid_t split2_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  u64 part = pv[P_CXPART], i = pv[P_IDX];
-  const double *row = (const double *)depv[1].ptr + i * 2 * pv[P_CX];
-  for (u64 j = 0; j < pv[P_NL]; ++j)
-    memcpy((double *)depv[2 + j].ptr + i * part, row + j * part,
-           part * sizeof(double));
+  u64 part = pv[P_CXPART];
+  for (u64 i = pv[P_IDX]; i < pv[P_END]; ++i) {
+    const double *row = (const double *)depv[1].ptr + i * 2 * pv[P_CX];
+    for (u64 j = 0; j < pv[P_NL]; ++j)
+      memcpy((double *)depv[2 + j].ptr + i * part, row + j * part,
+             part * sizeof(double));
+  }
   return NULL_GUID;
 }
 
 /* The input stride and sequential output-row loop follow the source arithmetic. */
 static ocrGuid_t xpose2_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  u64 part = pv[P_CYPART], j = pv[P_IDX], i = pv[P_SRC];
+  u64 part = pv[P_CYPART], i = pv[P_SRC];
   u64 dim_input = pv[P_NYL] * pv[P_CXPART] / part;
   const double *in = depv[0].ptr;
   double *v = depv[1].ptr;
   u64 stride = 2 * pv[P_CY];
-  for (u64 k = 0; k < dim_input; ++k) {
-    u64 index_in = part * j + 2 * k;
-    u64 index_out = 2 * pv[P_NL] * j + 2 * i;
-    v[k * stride + index_out] = in[index_in];
-    v[k * stride + index_out + 1] = in[index_in + 1];
+  for (u64 j = pv[P_IDX]; j < pv[P_END]; ++j) {
+    for (u64 k = 0; k < dim_input; ++k) {
+      u64 index_in = part * j + 2 * k;
+      u64 index_out = 2 * pv[P_NL] * j + 2 * i;
+      v[k * stride + index_out] = in[index_in];
+      v[k * stride + index_out + 1] = in[index_in + 1];
+    }
   }
   return NULL_GUID;
 }
 
-/* The array a transpose writes is the phase's destination buffer: the
- * transposed rows in the first phase, the original rows in the second. */
+/* One chunk of the outer loop over sources, [P_SRC, P_SRC_END), each source
+ * an inner parallel loop over the transposed rows.  The array a transpose
+ * writes is the phase's destination buffer: the transposed rows in the first
+ * phase, the original rows in the second.  A chunk of several sources starts
+ * their inner loops together where the origin runs them one after another;
+ * the two coincide while a chunk is one source, which is every geometry with
+ * no more ranks than four times the workers. */
 static ocrGuid_t xpose_outer_edt(u32 paramc, u64 *pv, u32 depc,
                                 ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  u64 phase = pv[P_PHASE];
+  u64 phase = pv[P_PHASE], first = pv[P_SRC], nyl = pv[P_NYL];
+  u64 chunk = loop_chunk(nyl);
   ocrGuid_t array = mirror_u64_guid(pv[phase ? P_V_DB : P_W_DB]);
   ocrHint_t eh;
   mirror_rank_hint(&eh, pv[P_RANK], OCR_HINT_EDT_T);
-  for (u64 j = 0; j < pv[P_NYL]; ++j) {
-    ocrGuid_t e;
-    pv[P_IDX] = j;
-    ocrEdtCreate(&e, mirror_u64_guid(pv[phase ? P_XPOSE2_TPL : P_XPOSE1_TPL]),
-                 P_COUNT, pv, 2, NULL, EDT_PROP_NONE, &eh, NULL);
-    ocrAddDependence(depv[0].guid, e, 0, DB_MODE_RO);
-    ocrAddDependence(array, e, 1, DB_MODE_RW);
+  for (u64 i = first; i < pv[P_SRC_END]; ++i) {
+    pv[P_SRC] = i;
+    for (u64 j = 0; j < nyl; j += chunk) {
+      ocrGuid_t e;
+      pv[P_IDX] = j;
+      pv[P_END] = j + chunk < nyl ? j + chunk : nyl;
+      ocrEdtCreate(&e, mirror_u64_guid(pv[phase ? P_XPOSE2_TPL : P_XPOSE1_TPL]),
+                   P_COUNT, pv, 2, NULL, EDT_PROP_NONE, &eh, NULL);
+      ocrAddDependence(depv[i - first].guid, e, 0, DB_MODE_RO);
+      ocrAddDependence(array, e, 1, DB_MODE_RW);
+    }
   }
   return NULL_GUID;
 }
@@ -139,14 +177,18 @@ static ocrGuid_t xpose_outer_edt(u32 paramc, u64 *pv, u32 depc,
 static ocrGuid_t xpose_scope_edt(u32 paramc, u64 *pv, u32 depc,
                                 ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
+  u64 nl = pv[P_NL], chunk = loop_chunk(nl);
   ocrHint_t eh;
   mirror_rank_hint(&eh, pv[P_RANK], OCR_HINT_EDT_T);
-  for (u64 i = 0; i < pv[P_NL]; ++i) {
+  for (u64 i = 0; i < nl; i += chunk) {
     ocrGuid_t e;
+    u64 end = i + chunk < nl ? i + chunk : nl;
     pv[P_SRC] = i;
-    ocrEdtCreate(&e, mirror_u64_guid(pv[P_XPOSE_OUTER_TPL]), P_COUNT, pv, 1,
-                 NULL, EDT_PROP_FINISH, &eh, NULL);
-    ocrAddDependence(depv[1 + i].guid, e, 0, DB_MODE_RO);
+    pv[P_SRC_END] = end;
+    ocrEdtCreate(&e, mirror_u64_guid(pv[P_XPOSE_OUTER_TPL]), P_COUNT, pv,
+                 (u32)(end - i), NULL, EDT_PROP_FINISH, &eh, NULL);
+    for (u64 q = i; q < end; ++q)
+      ocrAddDependence(depv[1 + q].guid, e, (u32)(q - i), DB_MODE_RO);
   }
   return NULL_GUID;
 }
@@ -164,13 +206,13 @@ static ocrGuid_t reap1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   return NULL_GUID;
 }
 
-/* A rank's whole ending: its share of the tally, handed to the task that
- * prints, and everything it still owns.  The sum is taken before anything is
- * destroyed, and the plans go last, as the origin's destructor has them. */
+/* A rank's ending: its share of the tally, handed to the task that prints,
+ * and the plans, which are all the origin's destructor names.  The arrays and
+ * the last exchange's arrivals stay, as the origin never releases them. */
 static ocrGuid_t finish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
   u64 nl = pv[P_NL], nxl = pv[P_NXL], cy = pv[P_CY];
-  u64 rank = pv[P_RANK], slot_v = 2 + nl, slot_w = 3 + nl, slot_plan = 4 + nl;
+  u64 rank = pv[P_RANK], slot_v = 2, slot_plan = 3;
 
   const double *v = depv[slot_v].ptr;
   double sum = 0.0;
@@ -184,12 +226,8 @@ static ocrGuid_t finish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   *s = sum;
   ocrDbRelease(share);
 
-  for (u64 q = 0; q < nl; ++q) {
-    ocrDbDestroy(depv[2 + q].guid);
+  for (u64 q = 0; q < nl; ++q)
     ocrEventDestroy(chunk_point(pv, 1, q, rank));
-  }
-  ocrDbDestroy(depv[slot_v].guid);
-  ocrDbDestroy(depv[slot_w].guid);
   void *image = fftw_reloc_image_at(depv[slot_plan].ptr);
   fftw_reloc_image_protect(image, pv[P_PLAN_SIZE], 0);
   fftw_reloc_destroy_pair(image, pv[P_PLAN_SIZE], pv[P_PLAN_R2C],
@@ -234,7 +272,7 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
 
   /* The rank's two numerical buffers, as the origin has them: the local rows
    * and the local transposed rows, one object each.  Every row task holds the
-   * buffer its rows live in and addresses its own row by offset. */
+   * buffer its rows live in and addresses its own rows by offset. */
   ocrGuid_t varr, warr;
   double *v0, *w0;
   ocrDbCreate(&varr, (void **)&v0, nxl * 2 * cy * sizeof(double), DB_PROP_NONE,
@@ -298,8 +336,10 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   params[P_V_DB] = mirror_guid_u64(varr);
   params[P_W_DB] = mirror_guid_u64(warr);
 
-  ocrGuid_t join_f1 = mirror_latch(nxl + 1), join_s1 = mirror_latch(nxl);
-  ocrGuid_t join_f2 = mirror_latch(nyl), join_s2 = mirror_latch(nyl);
+  u64 xchunk = loop_chunk(nxl), ychunk = loop_chunk(nyl);
+  u64 xchunks = loop_chunks(nxl), ychunks = loop_chunks(nyl);
+  ocrGuid_t join_f1 = mirror_latch(xchunks + 1), join_s1 = mirror_latch(xchunks);
+  ocrGuid_t join_f2 = mirror_latch(ychunks), join_s2 = mirror_latch(ychunks);
   ocrGuid_t xpose[2], xout[2];
   for (u64 phase = 0; phase < 2; ++phase) {
     params[P_PHASE] = phase;
@@ -322,18 +362,12 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     ocrAddDependence(p, e, (u32)(1 + nl + q), DB_MODE_RO);
   }
 
-  ocrEdtCreate(&e, mirror_u64_guid(pv[P_FINISH_TPL]), P_COUNT, params,
-               (u32)(5 + nl), NULL, EDT_PROP_NONE, &eh, NULL);
+  ocrEdtCreate(&e, mirror_u64_guid(pv[P_FINISH_TPL]), P_COUNT, params, 4, NULL,
+               EDT_PROP_NONE, &eh, NULL);
   ocrAddDependence(xout[1], e, 0, DB_MODE_NULL);
   ocrAddDependence(reaped, e, 1, DB_MODE_NULL);
-  for (u64 q = 0; q < nl; ++q) {
-    ocrGuid_t p = chunk_point(params, 1, q, rank);
-    mirror_edge_open(p);
-    ocrAddDependence(p, e, (u32)(2 + q), DB_MODE_RO);
-  }
-  ocrAddDependence(varr, e, (u32)(2 + nl), DB_MODE_RO);
-  ocrAddDependence(warr, e, (u32)(3 + nl), DB_MODE_RO);
-  ocrAddDependence(plan_db, e, (u32)(4 + nl), DB_MODE_RW);
+  ocrAddDependence(varr, e, 2, DB_MODE_RO);
+  ocrAddDependence(plan_db, e, 3, DB_MODE_RW);
 
   for (u64 phase = 0; phase < 2; ++phase) {
     params[P_PHASE] = phase;
@@ -351,9 +385,10 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
       ocrAddDependence(p, xpose[phase], (u32)(1 + q), DB_MODE_RO);
     }
 
-    u64 count = phase ? nyl : nxl;
-    for (u64 i = 0; i < count; ++i) {
+    u64 count = phase ? nyl : nxl, chunk = phase ? ychunk : xchunk;
+    for (u64 i = 0; i < count; i += chunk) {
       params[P_IDX] = i;
+      params[P_END] = i + chunk < count ? i + chunk : count;
       ocrEdtCreate(&e, mirror_u64_guid(pv[phase ? P_SPLIT2_TPL : P_SPLIT1_TPL]),
                    P_COUNT, params, (u32)(2 + nl), NULL, EDT_PROP_NONE, &eh, &out);
       ocrAddDependence(out, join_split, OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
@@ -365,8 +400,9 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   }
 
   params[P_PHASE] = 0;
-  for (u64 k = 0; k < nyl; ++k) {
+  for (u64 k = 0; k < nyl; k += ychunk) {
     params[P_IDX] = k;
+    params[P_END] = k + ychunk < nyl ? k + ychunk : nyl;
     ocrEdtCreate(&e, mirror_u64_guid(pv[P_FFT2_TPL]), P_COUNT, params, 3,
                  NULL, EDT_PROP_NONE, &eh, &out);
     ocrAddDependence(out, join_f2, OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
@@ -375,8 +411,9 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     ocrAddDependence(warr, e, 1, DB_MODE_RW);
   }
 
-  for (u64 i = 0; i < nxl; ++i) {
+  for (u64 i = 0; i < nxl; i += xchunk) {
     params[P_IDX] = i;
+    params[P_END] = i + xchunk < nxl ? i + xchunk : nxl;
     ocrEdtCreate(&e, mirror_u64_guid(pv[P_FFT1_TPL]), P_COUNT, params, 2, NULL,
                  EDT_PROP_NONE, &eh, &out);
     ocrAddDependence(out, join_f1, OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
@@ -454,12 +491,12 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtTemplateCreate(&split2_tpl, split2_edt, P_COUNT, EDT_PARAM_UNK);
   ocrEdtTemplateCreate(&xpose2_tpl, xpose2_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&reap1_tpl, reap1_edt, P_COUNT, EDT_PARAM_UNK);
-  ocrEdtTemplateCreate(&finish_tpl, finish_edt, P_COUNT, EDT_PARAM_UNK);
+  ocrEdtTemplateCreate(&finish_tpl, finish_edt, P_COUNT, 4);
   ocrEdtTemplateCreate(&sum_tpl, sum_edt, P_COUNT, EDT_PARAM_UNK);
   ocrEdtTemplateCreate(&driver_tpl, driver_edt, P_COUNT, 0);
   ocrEdtTemplateCreate(&publish_tpl, publish_edt, P_COUNT, EDT_PARAM_UNK);
   ocrEdtTemplateCreate(&xpose_scope_tpl, xpose_scope_edt, P_COUNT, EDT_PARAM_UNK);
-  ocrEdtTemplateCreate(&xpose_outer_tpl, xpose_outer_edt, P_COUNT, 1);
+  ocrEdtTemplateCreate(&xpose_outer_tpl, xpose_outer_edt, P_COUNT, EDT_PARAM_UNK);
 
   u64 pv[P_COUNT] = {0};
   pv[P_NL] = nl; pv[P_NXL] = nxl; pv[P_NYL] = nyl;

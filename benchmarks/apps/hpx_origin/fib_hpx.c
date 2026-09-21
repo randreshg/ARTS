@@ -6,8 +6,16 @@
 #include <limits.h>
 
 enum { P_N, P_PARENT, P_SLOT, P_THRESHOLD, P_DIST_AT, P_LOC_REPEAT, P_NL,
-       P_FIB_TPL, P_SUM_TPL, P_RUN_TPL, P_RUN, P_RUNS, P_RANK, P_TABLE,
+       P_FIB_TPL, P_SUM_TPL, P_RUN_TPL, P_RUN, P_RUNS, P_RANK,
        P_TEST, P_QUERY_TPL, P_COUNT_TPL, P_QUERY_RANK, P_COUNT };
+
+/* The origin's locality list is a vector every locality holds its own copy
+ * of; here every task's parameters end with every rank's state block, so a
+ * task names another rank's state without asking anyone for it. */
+enum { MAX_RANKS = 256 };
+#define PARAMC(pv) ((u32)(P_COUNT + (pv)[P_NL]))
+#define STATE_OF(pv, rank) mirror_u64_guid((pv)[P_COUNT + (rank)])
+#define COPY_PARAMS(dst, pv) memcpy((dst), (pv), PARAMC(pv) * sizeof(u64))
 
 typedef struct { _Atomic u64 next_locality, serial_execution_count; } locality_t;
 
@@ -22,7 +30,15 @@ static u64 rank_of_index(u64 index, u64 nl, u64 repeat, u64 me) {
   return j < me ? j : j + 1;
 }
 
-static __attribute__((noinline)) u64 fib_serial_sub(u64 n) { return n < 2 ? n : fib_serial_sub(n - 1) + fib_serial_sub(n - 2); }
+/* The origin's serial kernel statement for statement, linkage included: a
+ * run is almost entirely this function, so how it is written is what the
+ * compiler is given to work with on both sides. */
+u64 fib_serial_sub(u64 n);
+__attribute__((noinline)) u64 fib_serial_sub(u64 n) {
+  if (n < 2)
+    return n;
+  return fib_serial_sub(n - 1) + fib_serial_sub(n - 2);
+}
 static u64 fib_serial(u64 n, locality_t *state) { atomic_fetch_add(&state->serial_execution_count, 1); return fib_serial_sub(n); }
 
 /* Deliver a ready value to (parent, slot): the origin's make_ready_future. */
@@ -35,21 +51,20 @@ static void deliver(u64 value, ocrGuid_t parent, u32 slot) {
   ocrAddDependence(db, parent, slot, DB_MODE_RO);
 }
 
-static void spawn_fib(const u64 *pv, const ocrGuid_t *states, u64 n, u64 rank, ocrGuid_t parent, u32 slot) {
-  u64 params[P_COUNT];
-  memcpy(params, pv, sizeof(params));
+static void spawn_fib(const u64 *pv, u64 n, u64 rank, ocrGuid_t parent, u32 slot) {
+  u64 params[P_COUNT + MAX_RANKS];
+  COPY_PARAMS(params, pv);
   params[P_RANK] = rank;
   params[P_N] = n; params[P_PARENT] = mirror_guid_u64(parent); params[P_SLOT] = slot;
   ocrHint_t h; mirror_rank_hint(&h, rank, OCR_HINT_EDT_T);
   ocrGuid_t e;
-  ocrEdtCreate(&e, mirror_u64_guid(pv[P_FIB_TPL]), P_COUNT, params, 2, NULL, EDT_PROP_NONE, &h, NULL);
-  ocrAddDependence(mirror_u64_guid(pv[P_TABLE]), e, 1, DB_MODE_RO);
-  ocrAddDependence(states[rank], e, 0, DB_MODE_RW);
+  ocrEdtCreate(&e, mirror_u64_guid(pv[P_FIB_TPL]), PARAMC(pv), params, 1, NULL, EDT_PROP_NONE, &h, NULL);
+  ocrAddDependence(STATE_OF(pv, rank), e, 0, DB_MODE_RW);
 }
 
 /* fibonacci_future(n) with its reply target: the recursion the origin runs
  * inline on the n-2 branch runs inline here too, inside one EDT. */
-static void fib_future(const u64 *pv, locality_t *state, const ocrGuid_t *states, u64 n, ocrGuid_t parent, u32 slot) {
+static void fib_future(const u64 *pv, locality_t *state, u64 n, ocrGuid_t parent, u32 slot) {
   u64 nl = pv[P_NL], me = pv[P_RANK];
   if (n < 2) { deliver(n, parent, slot); return; }
   if (n < pv[P_THRESHOLD]) { deliver(fib_serial(n, state), parent, slot); return; }
@@ -65,21 +80,21 @@ static void fib_future(const u64 *pv, locality_t *state, const ocrGuid_t *states
   u64 rank2 = rank_of_index(loc2, nl, pv[P_LOC_REPEAT], me);
 
   /* when_all(f, r).then(sum): the continuation runs where this task runs. */
-  u64 params[P_COUNT];
-  memcpy(params, pv, sizeof(params));
+  u64 params[P_COUNT + MAX_RANKS];
+  COPY_PARAMS(params, pv);
   params[P_N] = n; params[P_PARENT] = mirror_guid_u64(parent); params[P_SLOT] = slot;
   ocrHint_t h; mirror_rank_hint(&h, me, OCR_HINT_EDT_T);
   ocrGuid_t sum;
-  ocrEdtCreate(&sum, mirror_u64_guid(pv[P_SUM_TPL]), P_COUNT, params, 2, NULL, EDT_PROP_NONE, &h, NULL);
+  ocrEdtCreate(&sum, mirror_u64_guid(pv[P_SUM_TPL]), PARAMC(pv), params, 2, NULL, EDT_PROP_NONE, &h, NULL);
 
-  spawn_fib(pv, states, n - 1, rank1, sum, 0);          /* hpx::async(fib, loc1, n-1) */
-  if (rank2 == me) fib_future(pv, state, states, n - 2, sum, 1); /* fib(loc2, n-2): inline when local */
-  else spawn_fib(pv, states, n - 2, rank2, sum, 1);     /* remote: the origin waits, the sum waits here */
+  spawn_fib(pv, n - 1, rank1, sum, 0);                  /* hpx::async(fib, loc1, n-1) */
+  if (rank2 == me) fib_future(pv, state, n - 2, sum, 1); /* fib(loc2, n-2): inline when local */
+  else spawn_fib(pv, n - 2, rank2, sum, 1);             /* remote: the origin waits, the sum waits here */
 }
 
 static ocrGuid_t fib_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc; (void)depv;
-  fib_future(pv, depv[0].ptr, depv[1].ptr, pv[P_N], mirror_u64_guid(pv[P_PARENT]), (u32)pv[P_SLOT]);
+  fib_future(pv, depv[0].ptr, pv[P_N], mirror_u64_guid(pv[P_PARENT]), (u32)pv[P_SLOT]);
   return NULL_GUID;
 }
 
@@ -94,7 +109,7 @@ static ocrGuid_t sum_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   return NULL_GUID;
 }
 
-static void start_run(const u64 *pv, locality_t *state, const ocrGuid_t *states, u64 run);
+static void start_run(const u64 *pv, locality_t *state, u64 run);
 
 static ocrGuid_t query_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)pv; (void)depc;
@@ -106,17 +121,16 @@ static ocrGuid_t query_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   return db;
 }
 
-static void query_count(u64 *pv, const ocrGuid_t *states) {
+static void query_count(u64 *pv) {
   ocrHint_t h; mirror_rank_hint(&h, 0, OCR_HINT_EDT_T);
   ocrGuid_t next, query, out;
-  ocrEdtCreate(&next, mirror_u64_guid(pv[P_COUNT_TPL]), P_COUNT, pv,
-               2, NULL, EDT_PROP_NONE, &h, NULL);
-  ocrAddDependence(mirror_u64_guid(pv[P_TABLE]), next, 1, DB_MODE_RO);
+  ocrEdtCreate(&next, mirror_u64_guid(pv[P_COUNT_TPL]), PARAMC(pv), pv,
+               1, NULL, EDT_PROP_NONE, &h, NULL);
   mirror_rank_hint(&h, pv[P_QUERY_RANK], OCR_HINT_EDT_T);
-  ocrEdtCreate(&query, mirror_u64_guid(pv[P_QUERY_TPL]), P_COUNT, pv,
+  ocrEdtCreate(&query, mirror_u64_guid(pv[P_QUERY_TPL]), PARAMC(pv), pv,
                1, NULL, EDT_PROP_NONE, &h, &out);
   ocrAddDependence(out, next, 0, DB_MODE_RO);
-  ocrAddDependence(states[pv[P_QUERY_RANK]], query, 0, DB_MODE_RW);
+  ocrAddDependence(STATE_OF(pv, pv[P_QUERY_RANK]), query, 0, DB_MODE_RO);
 }
 
 static ocrGuid_t count_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
@@ -124,7 +138,7 @@ static ocrGuid_t count_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   PRINTF("  serial-count,%lu,%lu\n", (unsigned long)pv[P_QUERY_RANK],
          (unsigned long)(*(u64 *)depv[0].ptr / pv[P_RUNS]));
   ocrDbDestroy(depv[0].guid);
-  if (++pv[P_QUERY_RANK] < pv[P_NL]) query_count(pv, depv[1].ptr);
+  if (++pv[P_QUERY_RANK] < pv[P_NL]) query_count(pv);
   else ocrShutdown();
   return NULL_GUID;
 }
@@ -134,26 +148,25 @@ static ocrGuid_t run_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   u64 value = *(u64 *)depv[0].ptr;
   ocrDbDestroy(depv[0].guid);
   if (pv[P_RUN] + 1 < pv[P_RUNS]) {
-    start_run(pv, depv[2].ptr, depv[1].ptr, pv[P_RUN] + 1);
+    start_run(pv, depv[1].ptr, pv[P_RUN] + 1);
     return NULL_GUID;
   }
-  locality_t *root = depv[2].ptr;
+  locality_t *root = depv[1].ptr;
   PRINTF("fibonacci_future(%lu) == %lu,next_locality,%lu\n", (unsigned long)pv[P_N],
          (unsigned long)value, (unsigned long)atomic_load(&root->next_locality));
-  query_count(pv, depv[1].ptr);
+  query_count(pv);
   return NULL_GUID;
 }
 
-static void start_run(const u64 *pv, locality_t *state, const ocrGuid_t *states, u64 run) {
+static void start_run(const u64 *pv, locality_t *state, u64 run) {
   atomic_store(&state->next_locality, 0);
-  u64 params[P_COUNT]; memcpy(params, pv, sizeof params); params[P_RUN] = run;
+  u64 params[P_COUNT + MAX_RANKS]; COPY_PARAMS(params, pv); params[P_RUN] = run;
   ocrHint_t h; mirror_rank_hint(&h, 0, OCR_HINT_EDT_T);
   ocrGuid_t root;
-  ocrEdtCreate(&root, mirror_u64_guid(pv[P_RUN_TPL]), P_COUNT, params,
-               3, NULL, EDT_PROP_NONE, &h, NULL);
-  ocrAddDependence(mirror_u64_guid(pv[P_TABLE]), root, 1, DB_MODE_RO);
-  ocrAddDependence(states[0], root, 2, DB_MODE_RW);
-  fib_future(pv, state, states, pv[P_N], root, 0);
+  ocrEdtCreate(&root, mirror_u64_guid(pv[P_RUN_TPL]), PARAMC(pv), params,
+               2, NULL, EDT_PROP_NONE, &h, NULL);
+  ocrAddDependence(STATE_OF(pv, 0), root, 1, DB_MODE_RW);
+  fib_future(pv, state, pv[P_N], root, 0);
 }
 
 static ocrGuid_t start_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
@@ -163,7 +176,7 @@ static ocrGuid_t start_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     PRINTF("fibonacci_serial(%lu) == %lu\n", (unsigned long)pv[P_N], (unsigned long)value);
   }
   if (pv[P_TEST] == 0) { ocrShutdown(); return NULL_GUID; }
-  start_run(pv, depv[0].ptr, depv[1].ptr, 0);
+  start_run(pv, depv[0].ptr, 0);
   return NULL_GUID;
 }
 
@@ -194,36 +207,37 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
   }
   u64 nl; ocrAffinityCount(AFFINITY_PD, &nl);
+  if (nl > MAX_RANKS) {
+    PRINTF("fib_hpx: at most %d ranks\n", (int)MAX_RANKS);
+    ocrShutdown();
+    return NULL_GUID;
+  }
+  u32 width = (u32)(P_COUNT + nl);
   ocrGuid_t fib_tpl, sum_tpl, run_tpl, start_tpl, query_tpl, count_tpl;
-  ocrEdtTemplateCreate(&fib_tpl, fib_edt, P_COUNT, 2);
-  ocrEdtTemplateCreate(&sum_tpl, sum_edt, P_COUNT, 2);
-  ocrEdtTemplateCreate(&run_tpl, run_edt, P_COUNT, 3);
-  ocrEdtTemplateCreate(&start_tpl, start_edt, P_COUNT, 2);
-  ocrEdtTemplateCreate(&query_tpl, query_edt, P_COUNT, 1);
-  ocrEdtTemplateCreate(&count_tpl, count_edt, P_COUNT, 2);
-  u64 pv[P_COUNT] = {0};
+  ocrEdtTemplateCreate(&fib_tpl, fib_edt, width, 1);
+  ocrEdtTemplateCreate(&sum_tpl, sum_edt, width, 2);
+  ocrEdtTemplateCreate(&run_tpl, run_edt, width, 2);
+  ocrEdtTemplateCreate(&start_tpl, start_edt, width, 1);
+  ocrEdtTemplateCreate(&query_tpl, query_edt, width, 1);
+  ocrEdtTemplateCreate(&count_tpl, count_edt, width, 1);
+  u64 pv[P_COUNT + MAX_RANKS] = {0};
   pv[P_N] = n; pv[P_THRESHOLD] = threshold; pv[P_DIST_AT] = dist_at;
   pv[P_LOC_REPEAT] = repeat; pv[P_NL] = nl; pv[P_RUNS] = runs;
   pv[P_FIB_TPL] = mirror_guid_u64(fib_tpl); pv[P_SUM_TPL] = mirror_guid_u64(sum_tpl);
   pv[P_RUN_TPL] = mirror_guid_u64(run_tpl);
   pv[P_TEST] = strcmp(test, "all") == 0 ? 2 : (u64)(test[0] - '0');
   pv[P_QUERY_TPL] = mirror_guid_u64(query_tpl); pv[P_COUNT_TPL] = mirror_guid_u64(count_tpl);
-  ocrGuid_t table, *states;
-  ocrDbCreate(&table, (void **)&states, nl * sizeof(*states), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
   for (u64 rank = 0; rank < nl; ++rank) {
     ocrHint_t h; mirror_rank_hint(&h, rank, OCR_HINT_DB_T);
-    locality_t *state;
-    ocrDbCreate(&states[rank], (void **)&state, sizeof(*state), DB_PROP_NONE, &h, NO_ALLOC);
+    ocrGuid_t db; locality_t *state;
+    ocrDbCreate(&db, (void **)&state, sizeof(*state), DB_PROP_NONE, &h, NO_ALLOC);
     atomic_init(&state->next_locality, 0); atomic_init(&state->serial_execution_count, 0);
-    ocrDbRelease(states[rank]);
+    ocrDbRelease(db);
+    pv[P_COUNT + rank] = mirror_guid_u64(db);
   }
-  ocrGuid_t state0 = states[0];
-  ocrDbRelease(table);
-  pv[P_TABLE] = mirror_guid_u64(table);
   ocrHint_t h; mirror_rank_hint(&h, 0, OCR_HINT_EDT_T);
   ocrGuid_t start;
-  ocrEdtCreate(&start, start_tpl, P_COUNT, pv, 2, NULL, EDT_PROP_NONE, &h, NULL);
-  ocrAddDependence(table, start, 1, DB_MODE_RO);
-  ocrAddDependence(state0, start, 0, DB_MODE_RW);
+  ocrEdtCreate(&start, start_tpl, width, pv, 1, NULL, EDT_PROP_NONE, &h, NULL);
+  ocrAddDependence(STATE_OF(pv, 0), start, 0, DB_MODE_RW);
   return NULL_GUID;
 }

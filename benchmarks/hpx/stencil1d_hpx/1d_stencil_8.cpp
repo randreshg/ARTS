@@ -688,23 +688,21 @@ void do_all_work(
             });
 
         std::vector<stepper_server::space> solution = overall_result.get();
-        std::vector<partition_data> final_data;
+        double checksum = 0.0;
         for (std::size_t i = 0; i != nl; ++i)
         {
             stepper_server::space const& s = solution[i];
             for (std::size_t i = 0; i != s.size(); ++i)
             {
-                final_data.push_back(
-                    s[i].get_data(partition_server::middle_partition).get());
+                partition_data const d =
+                    s[i].get_data(partition_server::middle_partition).get();
+                for (std::size_t j = 0; j != d.size(); ++j)
+                    checksum += d[j];
             }
         }
 
         std::uint64_t elapsed = hpx::chrono::high_resolution_clock::now() - t;
 
-        double checksum = 0.0;
-        for (partition_data const& d : final_data)
-            for (std::size_t j = 0; j != d.size(); ++j)
-                checksum += d[j];
         char line[64];
         std::snprintf(line, sizeof line, "CHECKSUM %.14g\n", checksum);
         arts_hpx::write_stdout_line(line);

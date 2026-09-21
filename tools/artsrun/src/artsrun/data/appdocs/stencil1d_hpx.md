@@ -80,15 +80,18 @@ Let `nl` = ranks, `local_np` = `np / nl`. Per run:
 | interior tasks | `nt × np` — one per partition per generation | 1 dependence |
 | boundary tasks | `nt × np` — one per partition per generation | 4 dependences each |
 | retire tasks | `(nt + 1) × np` — one per generation per partition | 1–5 control dependences |
-| spawner tasks | `nl × max(nt − nd, 0)` | 1 dependence each |
+| signal tasks | `nl × ⌈nt/nd⌉` — a rank's first partition, every `nd`-th generation | 2 dependences — the boundary task's output, the rank's semaphore block RW |
+| spawner tasks | at most `nl × max(nt − nd − 1, 0)` — one each time a rank's issue loop meets the depth limit, which depends on how far the signals have advanced | 2 dependences — its wake event, the semaphore block RW |
 | gather tasks | `nl`, plus one collect task on rank 0 | `local_np + 1` (the rank's final-generation points, plus a control signal that every generation has been issued) |
+| read tasks | `np` on rank 0, one at a time (`2 × np` with `--results`) | 2 dependences — one final partition RO, the merged name table RO |
+| root, shutdown and drain tasks | one root and one shutdown task on rank 0, `nl` drain tasks | the shutdown task `nl`, a drain task 1 |
 | partition blocks | `K × np` ring slots (`K = min(nd + 2, nt + 1)`) | `nx` doubles |
 | edge blocks | `2 × nt × np` logical edges, of which `2 × nt × nl` cross a rank and allocate a fresh DB | one double |
-| rank-share blocks | `nl` | `local_np` guids |
+| rank-share blocks | `nl`, plus the collect task's one merged table | `local_np` guids each; the merged table `np` |
 | partition points | `(nt + 1) × np` | — |
 | edge points | `2 × nt × np`, of which `2 × nt × nl` cross a rank | — |
-| signal points | `nl × max(nt − nd, 0)` | — |
-| lifetime/retire points | `3 × nt × np` (`USE_MIDDLE`/`USE_LEFT`/`USE_RIGHT`) plus `nt × np` (`SLOT_RELEASE`) plus `np × max(0, nt + 1 − K)` (`KIND_RETIRED`, one per ring-slot reuse) plus `nl` (`FINAL`/`STEPPER_RELEASE`) | — |
+| signal points | `nl × ⌈nt/nd⌉` (`SIGNAL_RELEASE`); a spawner's wake is an unlabeled once-event of its own | — |
+| lifetime/retire points | `3 × nt × np` (`USE_MIDDLE`/`USE_LEFT`/`USE_RIGHT`) plus `(nt − 1) × np` (`SLOT_RELEASE`) plus `np × max(0, nt + 1 − K)` (`KIND_RETIRED`, one per ring-slot reuse) plus `2 × nl − 1` (`FINAL` per rank, `STEPPER_RELEASE` per rank but rank 0) | — |
 
 Every point is a labeled STICKY event from one range reserved in `mainEdt`
 and named by `ordinal = (t · np + i) · KIND_COUNT + kind`, `KIND_COUNT` = 11:
@@ -128,29 +131,42 @@ carries no ordering — so a consumer wired straight to a block GUID may run
 before the producer has written it. Ordering therefore has to ride on an
 event, and the mirror uses one rail for it: the producing task writes the
 block, releases it, and satisfies the point; the consuming task registers on
-the point in `DB_MODE_RO` and destroys both the point and the block when it
-is done. The points are single-fire and persistent, so registration and
+the point in `DB_MODE_RO` and destroys the point when it is done — and the
+block with it only where that is a crossing edge's one-double block; a
+partition block is never destroyed (below). A point has one producer and one
+consuming *rank*: a generation's partition point is read by both of that
+partition's tasks, the interior and the boundary one, where the origin hands
+one `shared_future` to both. The points are single-fire and persistent, so registration and
 publication may happen in either order, which is what lets a spawner create
 a generation's tasks long after its inputs' producers were created.
 
 The rail's rule states its own exception: a block that is already complete
 when its consumer's edge is created needs no point, because the edge is then
-ordered by construction. Exactly one block is in that position — the rank
-share the gather task hands to the collect task, which the gather writes,
-releases, and only then wires into the collect task's slot as a plain data
-block. Everything a step task produces is consumed by a task that already
+ordered by construction. Three kinds of block are in that position, all at
+the program's end: the rank share the gather task writes, releases, and only
+then wires into the collect task's slot; the merged table the collect task
+hands the read chain the same way; and the final-generation partitions the
+read chain takes by name, which were complete before their names were
+gathered. Everything a step task produces is consumed by a task that already
 exists when the block does not yet, and so goes on the rail.
 
 The point's index is `ordinal · nl + consumer_rank`, which gives every point
 one producer and one consumer; and where a range's names are spread
 `index % nranks` — ARTS and ocr-vx both do — **a point's home is its
 consumer's rank**. Within a rank that makes a publish no message at all, which
-is the case the great majority of points are in. Across a rank it is four: the remote opener's
-labeled create, the satisfy, the consumer's RO acquire of a block homed at
-the producer, and the consumer's destroy of that block. The origin spends
-three parcels on the same edge — the `post` that pushes the handle and the
-`get_data` request and reply — so the rail costs one message more per
-crossing edge, and buys one structure at both distances for it: a handle
+is the case the great majority of points are in. Across a rank the value path
+is five messages: the remote opener's labeled create, the satisfy, the
+consumer's RO acquire of a block homed at the producer (a request and its
+reply), and the consumer's destroy of that block. The acknowledgement path
+adds two: the point through which a reader tells a block's owner it is done
+with that generation is homed at the *owner's* rank, so a crossing reader
+opens it remotely and its boundary task's output event satisfies it
+remotely. The origin spends three parcels on the same edge — the `post` that
+pushes the handle and the `get_data` request and reply — plus whatever its
+own reference counting of the pushed handle returns when the reader drops
+it, so the rail costs about seven messages against about three per crossing
+edge, all of them header-sized but the one double, and buys one structure at
+both distances for it: a handle
 announced to the consumer and the element then pulled is the origin's own
 mechanism, and here it is the only mechanism, with no second path for the
 local case to drift away from. Those counts are the ones a runtime that homes
@@ -191,8 +207,7 @@ so the generation whose checkpoint the signal represents can be destroyed
 once the signal has fired.
 
 **A generation's block is freed for reuse once every reader has
-acknowledged it — destroyed only once no later generation will ever claim
-it.** A cross-rank edge block still has exactly one consumer, which destroys
+acknowledged it, and never destroyed.** A cross-rank edge block still has exactly one consumer, which destroys
 it (the step task destroys the one or two 8-byte edge DBs it read that
 crossed a rank, and recognises a same-rank neighbour's edge as an alias of
 that neighbour's own partition block, which it must not destroy). A
@@ -207,17 +222,18 @@ block's own guid as payload, so the task licensed to reuse it
 `DB_MODE_RW` dependence and writes into it directly — no `pool_push`, no
 `allocate_partition`, and no second create. A slot no later generation
 reaches — the last `K` generations of each partition — publishes nothing,
-and its block simply persists, still labeled, until teardown. `drain_edt`
-is what destroys the ring: behind the rank's `RETIRED` latch of
-`(nt + 1) × local_np` retirements (every retire task, whether or not it
-published, counts into it) it calls `ocrDbDestroy` on all `K` ring slots of
-every local partition, then the semaphore block and the rank's two teardown
-points, and signals shutdown. The gather task destroys the final-generation
-points it concatenated (`ocrEventDestroy`, not the partition blocks — those
-are destroyed by `drain_edt`, since the final `K` generations are exactly
-the ones no retirement ever frees), and the collect task destroys the `nl`
-per-rank gather tables once it has copied their names into the merged
-table.
+and its block simply persists, still labeled, until the runtime's own
+teardown. **The ring is never destroyed**, because the origin never returns
+an array: its `partition_allocator` keeps every array it ever handed out on
+its free list for the life of the process. `drain_edt`, behind the rank's
+`RETIRED` latch of `(nt + 1) × local_np` retirements (every retire task,
+whether or not it published, counts into it), destroys the semaphore block
+and the rank's teardown points (`FINAL`, and `STEPPER_RELEASE` on every rank
+but rank 0) and signals shutdown. The gather task destroys the
+final-generation points it concatenated (`ocrEventDestroy`, not the
+partition blocks), the collect task destroys the `nl` per-rank gather tables
+once it has copied their names into the merged table, and the last read
+task destroys the merged table.
 
 ## Flow
 
@@ -248,15 +264,15 @@ The gather task concatenates its rank's final-generation partition names
 into one table and wires it into the collect task's slot for its rank; the
 collect task merges all `nl` rank tables into one `np`-entry table and
 starts a serial chain of read tasks, one partition at a time in ascending
-index order, that pulls and releases every final partition once — the
-origin's own serial `s[i].get_data(middle).get()` loop. After the last of
-those reads the chain hands the same `np` names to the sum task as a fresh
-set of `np` RO dependences (a second full acquisition of the grid), which
-computes and prints `CHECKSUM`. With
-`--results`, the sum task then starts a second, independent serial read
-chain — the origin's own separate `--results` print loop — that prints
-every partition's values before the timing line and the shutdown release;
-without it, the timing line and the shutdown release follow directly.
+index order, that pulls every final partition once and folds it into the
+checksum while it is in hand — the origin's own serial
+`s[i].get_data(middle).get()` loop, which on the HPX side sums each
+partition where it is pulled. The last read stamps the narrow
+`Execution_Time` and prints `CHECKSUM`. With `--results`, it then starts a
+second, independent serial read chain — the origin's own separate
+`--results` print loop — that prints every partition's values before the
+timing line and the shutdown release; without it, the timing line and the
+shutdown release follow directly.
 
 | HPX wait site | classification | mirror |
 |---|---|---|
@@ -276,17 +292,22 @@ calls `ocrShutdown()`). On the HPX side every locality runs `hpx_main`;
 `run_clock` opens as its first statement and `print_e2e` closes it, on
 locality 0, immediately before `hpx::finalize()` — locality 0 gathers every
 other locality's partitions before it returns from `do_all_work`, so its end
-is the application's.
+is the application's. Two things sit in the OCR span with no HPX
+counterpart, both small: the final release that lets every rank's drain run
+is published after the timing line, so rank 0's stamp waits for each rank's
+last retirements and its shutdown signal, where locality 0 waits for no
+other locality once it holds their partitions; and a final partition pulled
+from another rank stays cached at rank 0 after the read task releases it
+(how long is the coherence arm's choice), where the origin frees each pulled
+`partition_data` as its loop moves on — the same bytes on the wire, a larger
+resident set at rank 0.
 
 The origin's own `Execution_Time_sec` is a different, narrower span and both
 sides keep it where the origin has it: from just before the steppers start to
 the final partitions in hand on locality 0. The mirror takes both of its ends
 on rank 0 — the start in the rank-0 root task that creates the collect and
 shutdown tasks and forks the drivers, never in the main task, which a runtime
-may run on any rank and whose clock is then another node's. The mirror prints
-it, like every floating-point value it prints, in `%e` form where the origin
-uses `%g`: one of the OCR runtimes' `printf` has no `%g` and prints a
-placeholder for it.
+may run on any rank and whose clock is then another node's.
 
 `CHECKSUM` is the sum of every element of the final state — the simplest
 digest of what the program already holds, since `1d_stencil_8` computes no
@@ -303,16 +324,20 @@ origin, and it is what this row's review did. The limitation is the
 quantity's, it is disclosed here, and nothing is added to the program to
 work around it.
 
-At `k = 0.5`, `dt = dx = 1` every value stays a dyadic rational small enough
-to be exact in binary64, so all six entries agree bit for bit — `8386560` at
-one locality and `4192256` at two for the gate arguments. The `xsocr` entry
-*prints* the two-locality answer as `4.19225599999999e+06`: that runtime
-replaces `printf` with its own formatter, whose double conversion is good to
-about a part in `1e15` and which rejects `%g` precision outright. The bit
-pattern it computes is `414ffc0000000000`, the same as every other entry's,
-so this is a rendering limit of one reference runtime's output path, not a
-difference in the answer; the row's `1e-09` relative tolerance covers it
-with four orders of magnitude to spare.
+At `k = 0.5`, `dt = dx = 1` and the gate's size every value stays a dyadic
+rational small enough to be exact in binary64, so all six entries agree bit
+for bit — `8386560` at one locality and `4192256` at two for the gate
+arguments, which the HPX entry prints that way (`%.14g`) and the OCR entries
+as `8.38656000000000e+06` and `4.19225600000000e+06` (`%.14e`). At the
+calibrated size the values outgrow 53 bits and the agreement rests instead
+on what the two sides share: one expression, in the origin's operand order,
+and one summation order — the final partitions in ascending index, each
+element in order. The `xsocr` entry's rendering can differ in the last
+printed digit: that runtime replaces `printf` with its own formatter, whose
+double conversion is good to about a part in `1e15`. That is a rendering
+limit of one reference runtime's output path, not a difference in the
+answer; the row's `1e-09` relative tolerance covers it with four orders of
+magnitude to spare.
 
 ## Placement
 
@@ -333,10 +358,10 @@ leaves its rank is announced locally, and the two boundary elements per rank
 per generation — `2 × nt × nl` of the `2 × nt × np` edge points — are the
 only ones a message is spent on. The origin spends three parcels on each of
 those edges (`post`, then the `get_data` request and reply); the mirror
-spends four (the remote opener's labeled create, the satisfy, the
-consumer's RO acquire of a block homed at the producer, and the consumer's
-destroy). One message more per crossing edge is what one structure at both
-distances costs, and the set of edges that cross is identical.
+spends seven (the five of the value path and the two of the reader's
+acknowledgement, named under Wiring above). The extra messages per crossing
+edge are what one structure at both distances costs, and the set of edges
+that cross is identical.
 
 A within-rank edge costs nothing beyond the partition block already in
 flight: `publish_edges` hands that *same* block guid to a same-rank
@@ -346,13 +371,13 @@ local — one structure serves both distances, and only a crossing edge pays
 for a second one. A crossing edge allocates a fresh one-double block and a
 labeled point per side (opened, satisfied, registered and destroyed once
 each), where the origin's `post` plus its `get_data` request/reply pay for
-the same handoff in three parcels; the mirror pays one message more for it
-(four, named under Wiring above). That cost scales with `2 · nt · nl`, not
+the same handoff in three parcels; the mirror pays seven messages for it
+(named under Wiring above). That cost scales with `2 · nt · nl`, not
 with `np`: at the gate's two ranks it is 64 blocks and 64 points, and it
 does not grow with how many partitions each rank runs. The alternatives are
 worse under this rail: letting a step read its neighbours' whole partition
-blocks gives a partition point three consumers, which breaks both the
-one-consumer rule and the rule that the consumer destroys what it read; and
+blocks gives a partition point consumers on three ranks, which breaks the
+rule that a point has one consuming rank; and
 materialising every edge, local ones included, would give the program a
 second structure the rail does not need.
 

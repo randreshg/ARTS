@@ -49,7 +49,9 @@ One program on four runtimes: `network_storage_hpx_hpx` is the HPX program,
 allocator back), `when_all(...).then(...)`, `distributed::barrier`, and — for
 the scalar edit only — a communicator and `all_reduce`. The mirror's mapping:
 one block per slot, one put task per `CopyToStorage` at the destination rank,
-one get task per `CopyFromStorage` at the asker, one turn task per rank per
+one get task per `CopyFromStorage` at the rank that owns the slot read and a
+landing task at the asker for its reply, one completion task per transfer at
+the requester (the origin's continuation), one turn task per rank per
 pass holding the pass's latch, one barrier task on rank 0 per
 `synchronize()`, and the slot names exchanged once, since an OCR program
 cannot address another rank's storage by offset.
@@ -104,9 +106,15 @@ transferring ranks (`nl` with `--all-to-all`, 1 without). Per run:
 | slot blocks | `nl·S` — a rank's storage, cut at the transfer unit | `transferKB` KiB each |
 | slot tables | `nl` — a rank's slot names, published to every rank | `S` GUIDs |
 | state blocks | `nl` — a rank's stream and every rank's slot names, carried turn to turn | an `mt19937` state plus `nl·S` GUIDs |
-| turn tasks | `2I + 4` per transferring rank (a pass turn per pass plus a closing turn per test), 3 per other rank | the first `nl + 2` dependences, the rest 2 |
-| put tasks | `A·(I + 1)·S` — the warm-up included | 2 dependences, 1 when both slots are one block |
-| get tasks | `A·I·S` | 2 dependences, 1 when both slots are one block |
+| turn tasks | `2I + 4` per transferring rank (a pass turn per pass plus a closing turn per test), 3 per other rank | the first `nl + 2` dependences; a turn that follows a pass 4 (the pass's join, its results and order blocks, the state); a test's first turn 2 |
+| put tasks | `A·(I + 1)·S` — the warm-up included, at the destination rank | 3 dependences — destination slot RW, the slot a straddling transfer would spill into (always NULL: an address is a whole number of transfers), sender's slot RO (NULL when it is the destination slot itself) |
+| success blocks | `A·(I + 1)·S` — a put's `TEST_SUCCESS`, created at the destination, destroyed by the requester's completion | 4 bytes |
+| get tasks | `A·I·S` — at the rank that owns the slot read | 2 dependences — the owner's slot RO, the spill slot (NULL) |
+| reply blocks | `A·I·S` — a get's payload, created at the owner, destroyed by the landing task | `transferKB` KiB each |
+| landing tasks | `A·I·S` — at the asker | 3 dependences — the asker's slot RW, the spill slot (NULL), the reply block RO |
+| completion tasks | `A·(2I + 1)·S` — one per transfer, at the requester | 3 dependences — the put's success block RO or the landing's output, the rank's counters block RW, the pass's results block RW |
+| results and order blocks | `2·A·(2I + 1)` — one pair per pass, destroyed by the next turn | `S` ints and `S` indices |
+| counters blocks | `nl` | two counts and the origin's own `MAX_RANKS` (16 384) in-flight counts, the size of its `FuturesWaiting` array |
 | pass joins | `A·(2I + 1)` latches, counting `S` output events each | — |
 | relay tasks | `2·nl` — one per rank between consecutive barriers | 1 dependence |
 | barrier tasks | 6, on rank 0 | `nl` dependences |
@@ -127,9 +135,18 @@ loop, one per pass; the barrier and relay tasks are its six
 `synchronize()` calls; the joins are its per-pass `when_all`. What the
 origin does not have is the name service: the tables, their points and the
 `nl·S`-GUID map inside each state block, which an offset address makes
-unnecessary on the HPX side. Nothing is allocated per pass except tasks,
-their output events and the latches; the blocks live for the run, as the
-origin's storage does.
+unnecessary on the HPX side. Per pass the mirror allocates what the origin
+allocates per pass: a result per put (the origin's action returns its
+`TEST_SUCCESS` through the future, the mirror's put task through a 4-byte
+block the requester fetches and destroys), a transfer-sized reply per get
+(the origin's `serialize_buffer` reply), and the pass's result and order
+vectors. The slot blocks live until the rank's tally task destroys them,
+where the origin's `delete_local_storage()` frees its array — inside the
+span on both sides, though not the same work: the origin's is one
+synchronous `delete[]` of the whole array on each locality, and locality 0's
+stamp does not wait for the others', while an `ocrDbDestroy` hands each
+block back to the runtime (plus a message per rank that still holds a copy
+of it) and the final task waits for every rank's tally.
 
 ## Wiring
 
@@ -249,9 +266,11 @@ A pass turn draws, for each slot `i` in order, the destination — `(rank + i)
 `--no-local` leaves it on the sender — and then the offset, exactly the
 origin's draw order, and issues one transfer: in the write tests a put task
 on the destination rank reading the sender's slot `i` and writing the
-destination's slot at the offset; in the read test a get task on the rank
-itself reading the destination's slot at the offset and writing its own slot
-there. After the last pass of a test, a closing turn enters the barrier that
+destination's slot at the offset; in the read test a get task on the
+destination rank copying its slot at the offset into a reply block, and a
+landing task on the rank itself writing that reply into its own slot
+there. Either way a completion task on the issuing rank counts the transfer
+and records its result, as the origin's continuation does. After the last pass of a test, a closing turn enters the barrier that
 ends the test and wires what follows it. The final task prints
 `TRANSFERS_OK <puts> <gets>` and calls `ocrShutdown()`.
 
@@ -260,20 +279,20 @@ ends the test and wires what follows it. The final task prints
 | `distributed::barrier::synchronize()`, at the start and the end of each test | driver wait — collective, six per locality | a barrier task on rank 0 per call, entered and left through one point per rank |
 | `when_all(final_list).then(reduce)` and `result.get()`, once per pass | driver wait — the pass's join, per locality | the per-rank per-pass latch of `S` output events, gating the next turn |
 | the write continuation's `fut.get()` | start wait — a ready future inside its continuation | the put task's output event |
-| `transfer_data`'s `f.get()` and the counting continuation | start wait — the reply, already arrived | the get task's read-only dependence on the destination's slot |
-| the tally `all_reduce(...).get()` | teardown collective, after the end stamp | a tally task per rank feeding the final task |
+| `transfer_data`'s `f.get()` and the counting continuation | start wait — the reply, already arrived | the landing task's read-only dependence on the get task's reply block |
+| the tally `all_reduce(...).get()` | end collective, before the end stamp | a tally task per rank feeding the final task |
 
 Mid waits: 0.
 
 **The scalar.** The origin already folds each transfer's `TEST_SUCCESS` in a
 continuation; the edit counts those completions in two per-locality atomics
-and sums them over localities after the end stamp. The warm-up runs through
+and sums them over localities before the end stamp, inside the span. The warm-up runs through
 the same write continuation, so it is counted: with `--localMB=8` the line
 reads `384 256` at one locality and `768 512` at two, and with the row's
 `--globalMB=16` it reads `768 512` at every geometry the gate runs. The
-mirror counts the same transfers — each task counts itself where it runs, a
-put at its destination and a get at its asker, where the origin counts both
-at the requester; only the sums are printed, and they are the same sums. The
+mirror counts the same transfers where the origin counts them — at the
+requester, in the transfer's completion task, against the requester's own
+counters block. The
 mirror's stream is the origin's generator at the origin's default seed
 (5489), and its bounded draw reproduces libstdc++'s
 `uniform_int_distribution` algorithm exactly, so at the same seed the two
@@ -333,9 +352,9 @@ on both sides, since the mirror performs it too.
 
 A rank's slots, its table and its state block are homed at the rank, which
 is where the origin's storage and driver state live. A put task runs at the
-destination rank, where `CopyToStorage` runs; a get task runs at the asker,
-where the reply lands, so the read-only dependence on the destination's slot
-is the reply's payload moving back. Turn, relay, tally and driver tasks run
+destination rank, where `CopyToStorage` runs; a get task runs at the rank
+that owns the slot, where `CopyFromStorage` runs, and its reply block moves
+back to the landing task at the asker. Completion, turn, relay, tally and driver tasks run
 at their rank; the barrier tasks and the final task run on rank 0, the
 barrier's root. Every task and block carries an explicit hint; nothing is
 left to the build's no-hint policy. Points are homed at their consumers
@@ -344,16 +363,31 @@ homes a whole reserved range at the PD that reserved it (xsocr) they all live
 at that one PD, and each satisfy costs a message there and a forward.
 
 What crosses a rank is what the origin moves: a crossing put fetches the
-sender's slot to the destination, and a crossing get fetches the
-destination's slot to the asker, in the direction of the origin's action
-payload and reply. The messages that carry it are the runtime's: a crossing
+sender's slot to the destination, and a crossing get fetches the reply block
+to the asker, in the direction of the origin's action payload and reply. The messages that carry it are the runtime's: a crossing
 transfer also costs its remote task creation, its dependence registrations
-and its completion signal, against the origin's action parcel and its reply.
+and its completion signal, against the origin's action parcel and its reply;
+a crossing put's result is a block the requester fetches and then destroys
+at its home across the rank, where the origin's int rides the reply parcel,
+and a crossing get's reply block is destroyed from the asker, where the
+origin frees its owner-side buffer locally.
 The count per crossing transfer is not measured here. Because a slot read
 across ranks is also written at its home, a reader's copy of it goes stale
 between reads — invalidated at the writer's release under INV, re-validated
 at the next read under VAL — and that traffic is the coherence plane's cost
-on the access pattern the program states. The name tables cross once, at
+on the access pattern the program states. The same plane can also spare
+bytes the origin always moves: a put's source is the sender's slot `i`, read
+by the same destination every pass under the default distribution, and a
+slot nobody wrote since that destination last fetched it is served without
+its payload — a header-only reply under VAL, no message at all under INV —
+where the origin serialises the transfer's bytes into every `CopyToStorage`
+parcel. How many puts that covers follows the drawn offsets (a slot is
+rewritten when another rank's put or the rank's own read lands on it) and is
+not measured here: none at one rank, where nothing crosses, and at two ranks
+and more about the `(1 − 1/S)^S ≈ 37 %` of slots that one pass of `S`
+uniform draws leaves unwritten. A reader caching what it read is the plane's
+design, not an edit to the program, and EXCL's purge arm and FLUSH never do
+it. The name tables cross once, at
 setup: about four messages for each (owner, consumer) pair on different
 ranks — the owner's remote labeled create, its satisfy, and the consumer's
 read-only acquire request and payload reply — and none within a rank. A

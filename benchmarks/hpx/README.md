@@ -46,8 +46,10 @@ A program enters the roster only if all five hold.
 - **A4 — Disclosed edits only.** Allowed: the `[E2E]` window and `[HPX]`
   geometry line (`common/e2e.hpp`), the runtime cfg lines
   (`common/runtime_defaults.hpp`), a result scalar print, exposing an
-  existing constant as a CLI argument, and API modernisation of a program
-  written against an older HPX. Not allowed: changing the algorithm, the
+  existing constant as a CLI argument, API modernisation of a program
+  written against an older HPX, and a *bugfix* — a defect of the origin that
+  would otherwise fail or distort every run, named with its evidence in the
+  program's `ORIGIN.md`. Not allowed: changing the algorithm, the
   decomposition, the communication pattern, or the arithmetic — a dubious
   kernel is mirrored as written, not repaired. Every edit is a hunk in the
   program's `origin.patch` (below), regenerated and compared by a test.
@@ -234,7 +236,10 @@ Both sides compile for the same instruction set. The outer Release tree
 adds `-march=native -mtune=native` to everything it compiles — the ARTS
 runtime, the mirrors, XSOCR, OCR-vx — and the two HPX external projects
 (the runtime and this app project) receive the same pair explicitly, since
-an external project does not inherit the outer tree's options. What the
+an external project does not inherit the outer tree's options. The vendored
+FFTW is the one library held below that: both of its builds — the HPX side's
+archive and the mirror's pinned translation — are compiled at the level the
+pinned artifact's stamp names. What the
 toolchain then does with identical arithmetic is taken as it comes and
 disclosed per row where it shows, never patched (the retired `pi_hpx` row,
 whose one integration loop the two toolchains compiled to a 2.2× per-iteration
@@ -286,7 +291,8 @@ sides time the same span (`[E2E]`, the whole application on rank/locality 0), an
 the other. The roster is the four rows whose origin never suspends a started
 parallel task (its waits are continuations, or a bounded number of driver-thread
 phase joins — the discipline an event-driven program has by construction, so the two
-sides pay for the same thing) and whose parallel width is set by the problem, not
+sides pay for the same thing; the bounded exception is `fib_hpx`'s synchronous call at
+its distribution boundary, counted in the table below) and whose parallel width is set by the problem, not
 fixed by the origin below the machine's (one task per locality, a fixed cell count):
 `fib_hpx`, `stencil1d_hpx`, `network_storage_hpx`, `fft_hpx`. Seven more programs
 went through the same admission, mirroring and calibration and were retired under
@@ -302,10 +308,17 @@ Idiom is drawn from each row's own disclosure below (the wait-site table and
 
 | row | origin's parallel idiom | where the width comes from |
 |---|---|---|
-| `fib_hpx` | continuation (fire-and-forget `async`, a `when_all().then()` join) | `2·I` tasks, `I` the internal-call count below the serial threshold |
+| `fib_hpx` | continuation (fire-and-forget `async`, a `when_all().then()` join); its one mid wait is the synchronous `n-2` call where the distribution boundary routes it off the caller's locality — at most 13 per run at the calibrated arguments (the eight calls at `distribute-at` and the five one above it), none at one node | `2·I` tasks, `I` the internal-call count below the serial threshold |
 | `stencil1d_hpx` | continuation (`dataflow` over already-posted futures; 0 mid waits) | `np`, the partition total |
 | `network_storage_hpx` | continuation (0 mid waits; the driver's own collectives bound each pass) | `globalMB·1024/transferKB` slots in flight per pass |
-| `fft_hpx` | continuation (0 mid waits; two driver-level collective waits between phases) | `min(nx, ny/2+1)`, the row count of the narrower phase |
+| `fft_hpx` | continuation (0 mid waits; two driver-level collective waits between phases) | `min(nx, ny/2+1)`, the row count of the narrower phase, which the origin's default chunking cuts into at most `4·W` tasks per locality — on both sides |
+
+**Both tables below predate two changes to what they measure** and stand
+only until the next campaign replaces them: the HPX `[E2E]` was then a
+narrower in-program window where it is now the whole of `hpx_main`, and the
+`fft_hpx` mirror then ran one task per row where it now runs the origin's
+one task per loop chunk. A number recorded after either change is not
+comparable with these.
 
 **The trend** (the development host, 1/2/4/8 colocated ranks of 15 workers + 1
 progress thread, small arguments, three interleaved repeats) reads each row's *shape*:
@@ -367,6 +380,11 @@ Rows outside parity at the anchor, and what each one is:
   1n column (0.69 at small arguments); the cause is the scheduler's locality named
   above, a runtime property disclosed, not sized around.
 - `stencil1d_hpx` (0.89) and `fib_hpx` (1.17) are inside the parity band.
+  `fib_hpx`'s ratio is not a statement about either runtime: at the
+  calibrated arguments the span is the serial recursion below the threshold
+  (about `1.3·10¹³` calls against about 21 900 tasks), compiled as C++ on
+  one side and as C on the other, and at one node nothing is spawned
+  remotely.
 
 D14 (`present/D14.md`): from the trend's curve and these anchors, the worst cell of the
 1..32-node sweep is `network_storage_hpx` at 2 nodes, ~48 s projected (58 s with the
@@ -402,7 +420,9 @@ locality 0's driver by design).
 | `hpx::when_all(f, r).then(when_all_wrapper())` | end wait — join of the two children | a two-slot `sum` EDT, created before either child |
 | `fibonacci_future(n).get()` in `hpx_main`'s `n-runs` loop | end wait — driver root wait | one EDT with a single RO dependence on the run's root value |
 
-Mirror mapping: one EDT per recursive call, an 8-byte DB carrying each
+Mirror mapping: one EDT per call the origin spawns (the `n-1` branch always,
+the `n-2` branch where its synchronous call leaves the caller's locality — a
+local `n-2` recurses inline, as in the origin), an 8-byte DB carrying each
 delivered value, a two-slot `sum` EDT standing in for
 `when_all().then()`, and the origin's per-locality round-robin counter and
 serial-execution counter mirrored as a per-rank `locality_t` RW DB — not
@@ -427,16 +447,16 @@ each executable its own `HPX_COMPONENT_NAME`, so the runtime's default
 module is not the one they name); *cfg* — the run-everywhere cfg vector
 becomes the runtime defaults, which carry the same `hpx.run_hpx_main` line;
 *markers* — `[HPX]` at the top of `do_all_work`, `[E2E]` around the whole of
-`hpx_main`, with `[PARCELS]` after the end stamp; and *scalar* — the gather loop keeps the partition data
-it already pulls and prints `CHECKSUM %.14g`, the sum of every final
-partition element, by one write.
+`hpx_main`, with `[PARCELS]` after the end stamp; and *scalar* — the gather loop folds each partition
+it already pulls into a sum while it is in hand and prints `CHECKSUM %.14g`,
+the sum of every final partition element, by one write.
 
 | HPX wait site | classification | mirror |
 |---|---|---|
 | `heat_part`'s `dataflow` over `middle_data` and the two `get_data` futures | start wait — every input | the step task's three point dependences |
 | `receive_left(t)` / `receive_right(t)` | start wait — a future handed to `dataflow`, never waited on | the two boundary points, the only ones that cross a rank |
 | `sem->wait(t)` | flow control — a creation-depth limit, not a dependence | the spawner chain: signal from a rank's first partition, waited on `nd` generations later |
-| `overall_result.get()` and the `get_data` gather loop on locality 0 | end wait — the result in hand | the rank gather tasks feeding the checksum task |
+| `overall_result.get()` and the `get_data` gather loop on locality 0 | end wait — the result in hand | the rank gather tasks feeding the collect task's merge, then the serial read chain that folds the checksum |
 
 Mirror mapping (`benchmarks/apps/hpx_origin/stencil1d_hpx.c`): one block per
 partition per generation homed at `i / (np/nl)`, one task per partition per
@@ -446,18 +466,23 @@ edges. Every block a step task or a driver produces travels on a labeled
 STICKY point from one reserved range — a data-block
 dependence in OCR is satisfied when it is added and so carries no ordering,
 and the point is both the ordering edge and the name service. The rule
-states its own exception, and exactly one block is in it: the rank share the
-gather hands to the checksum task is written and released *before* its edge
-is created, so that edge is ordered by construction and needs no point. The
+states its own exception — a block written and released *before* its
+consumer's edge is created is ordered by construction and needs no point —
+and three kinds of block are in it, all at the program's end: the name table
+a gather hands the collect task, the merged table the collect task hands the
+read chain, and the final partitions the read chain takes by name. The
 point's index names its *consumer's* rank, which decides the home only where
 the runtime homes a labeled range by index — ARTS and ocr-vx do (`index %
 nranks`), while xsocr homes a whole reserved range at the PD that reserved it,
 so there every satisfy is a message to that PD and a forward. Where the index
-decides, a within-rank publish is no message at all; a crossing one is four
-(the remote opener's labeled create, the satisfy, the consumer's RO acquire of
-a block homed at the producer, and the consumer's destroy) against the
-origin's three parcels on the same edge — one more per crossing edge, for one structure at both
-distances rather than a separate local path. A fourth point kind carries the
+decides, a within-rank publish is no message at all; a crossing edge is
+seven messages — five on the value path (the remote opener's labeled create,
+the satisfy, the consumer's RO acquire request and reply for a block homed at
+the producer, and the consumer's destroy) and two for the reader's
+acknowledgement, whose point is homed at the block owner's rank — against
+the origin's three parcels on the same edge plus its handle's reference
+counting, all header-sized but the one double: the price of one structure at
+both distances rather than a separate local path. A fourth point kind carries the
 semaphore: a rank's first partition signals its generation done and the
 spawner that creates generation `t + nd` waits on it.
 
@@ -469,17 +494,20 @@ entries agreeing shows that they agree and not that the ring is oriented as
 the origin orients it, which reading the mirror against the origin
 establishes. That limitation is the quantity's and is disclosed in the
 appdoc rather than engineered around. It is exact in binary64 at the default
-coefficients, so all six entries agree bit for bit — but the answer is a
+coefficients and the gate's size — past that the agreement rests on the one
+expression and the one summation order the two sides share — so all six entries agree bit for bit — but the answer is a
 function of the locality count, because the origin initialises partition `i`
 to its index *within its own locality* (`partition(here, nx, double(i))`).
 Hence no cross-geometry pin: the oracle is the entries agreeing at each
 geometry. One caveat on reading the lines: `xsocr` replaces `printf` with
 its own formatter, which converts a double to about a part in `1e15`, so its
-two-locality line reads `4.19225599999999e+06` for a value whose bit pattern
-is identical to every other entry's.
+line can differ in the last printed digit for a value whose bit pattern is
+identical to every other entry's.
 
 Gate arguments: `--nx=64 --nt=16 --np=64 --nd=10` (`CHECKSUM 8386560` at one
-locality, `CHECKSUM 4192256` at two).
+locality and `4192256` at two on the HPX entry's `%.14g`; the OCR entries
+print the same values as `%.14e`, `8.38656000000000e+06` and
+`4.19225600000000e+06`).
 Calibrated arguments: `--nx=270000 --nt=45 --np=4096 --nd=10` — the one-node anchor sizes under `## ARTS versus HPX`.
 
 ```bash
@@ -534,8 +562,8 @@ configuration every table was measured on" above describes.
 | `distributed::barrier::synchronize()` at the start and the end of each test | driver wait — collective, six per locality | one barrier task per call on rank 0, entered and left through one point per rank |
 | `when_all(final_list).then(reduce)` and `result.get()`, once per pass | driver wait — the pass's join, per locality | a latch per rank per pass counting its transfers' output events, gating the next turn |
 | the write continuation's `fut.get()` | start wait — a ready future inside its continuation | the put task's output event |
-| `transfer_data`'s `f.get()` and the counting continuation | start wait — the reply, already arrived | the get task's read-only dependence on the destination's slot |
-| the tally `all_reduce(...).get()` | teardown collective, after the end stamp | a tally task per rank feeding the final task on rank 0 |
+| `transfer_data`'s `f.get()` and the counting continuation | start wait — the reply, already arrived | the landing task's read-only dependence on the get task's reply block |
+| the tally `all_reduce(...).get()` | end collective, before the end stamp | a tally task per rank feeding the final task on rank 0 |
 
 Mid waits: 0.
 
@@ -550,7 +578,10 @@ writing the destination's slot at the drawn offset; two tasks per
 into a fresh reply block, and a land task at the asker that copies that
 reply into the asker's own slot at the same offset and destroys it, exactly
 as the origin's pointer allocator lands the reply through its own second
-copy; one turn task per rank per pass, drawing the
+copy; one completion task per transfer at the requester — the origin's
+continuation — which counts the transfer and records its result, a put's
+result reaching it as a 4-byte block where the origin's action returns its
+`TEST_SUCCESS` through the future; one turn task per rank per pass, drawing the
 pass's destinations and offsets from the rank's `mt19937` at the origin's
 default seed in the origin's order; a latch per pass, the origin's
 `when_all`; and a barrier task on rank 0 per `synchronize()`, with a relay
@@ -565,7 +596,10 @@ tasks acquiring two separate blocks even when the asker is also the
 destination — a legitimate concurrent access to two different blocks, as in
 the origin. A pass over zero slots is an
 empty join (a latch of one and one explicit decrement), so a storage smaller
-than one transfer runs on both sides and prints `TRANSFERS_OK 0 0`.
+than one transfer runs on both sides and prints `TRANSFERS_OK 0 0`. A rank's
+tally task destroys its slot blocks where the origin's
+`delete_local_storage()` frees its array — before the end stamp on both
+sides.
 
 The origin addresses another locality's storage by offset, which an OCR
 program cannot: each driver publishes its slot names in a table on one
@@ -600,12 +634,12 @@ transferKB KiB`. The row runs the origin's own `--globalMB=G`, which gives
 each locality `G/nranks` MB, so the totals are `(iterations + 1) · G · 1024 /
 transferKB` puts and `iterations · G · 1024 / transferKB` gets at every node
 count, provided `--all-to-all` is true, the node count divides `G`, and
-`transferKB` divides `(G/nranks) · 1024`. Each mirror task counts itself where it runs (a put at its
-destination, a get at its asker) where the origin counts both at the
-requester; only the sums are printed. The two sides' destination and offset
-sequences differ — the mirror reduces the stream with `%`, the origin
-through `uniform_int_distribution`, whose algorithm is
-implementation-defined — and the counts do not depend on them.
+`transferKB` divides `(G/nranks) · 1024`. The mirror counts each transfer
+where the origin does — at the requester, in the transfer's completion task.
+The two sides draw the same destination and offset sequence — the mirror's
+generator is `mt19937` at the origin's default seed and its bounded draw is
+libstdc++'s `uniform_int_distribution` algorithm (multiply-high with
+rejection) — and the counts do not depend on it.
 
 Gate arguments: `--globalMB=16 --transferKB=64 --iterations=2 --semaphore=16
 --all-to-all=true --no-local=false --distribution=1` — 16 MB in total,
@@ -667,10 +701,14 @@ collectives between phases.
 Mirror mapping (`benchmarks/apps/hpx_origin/fft_hpx.c`): two blocks per rank —
 its local rows and its local transposed rows, one object each, exactly as the
 origin holds them — one block per (phase, source, destination) chunk homed at
-its source, one task per row per transform, one task per row per split
-(writing a disjoint slice into every destination's chunk, exactly as the
-origin's row-parallel `split_vec`/`split_trans_vec`), and one task per
-(source, row) per transpose. These are the origin's own parallel units,
+its source, and one task per loop chunk of each of the origin's eight
+`for_loop(par, …)` calls: the transforms, the splits (each row writing a
+disjoint slice into every destination's chunk, exactly as the origin's
+row-parallel `split_vec`/`split_trans_vec`) and both levels of the nested
+transposes. The chunk is HPX's own default — the smallest power of two that
+leaves at most four chunks per core, the whole range on one core
+(`default_parameters::get_chunk_size`) — applied by each runtime to its own
+worker count. These are the origin's own parallel units,
 carried unchanged: many split tasks hold one phase's chunk blocks
 `DB_MODE_RW` at once and many transpose tasks hold the phase's destination
 buffer `RW` at once, all writing disjoint bytes. The row is therefore outside
@@ -686,8 +724,16 @@ labeled range is homed by index, which is what ARTS and ocr-vx do
 (`index % nranks`); xsocr homes a whole reserved range at the PD that
 reserved it, so there every point lives at rank 0 and no publish is free.
 A chunk has several readers — every transpose task of the destination reads
-all `nl` arrivals — so a per-phase reap task depending on the same points
-destroys the blocks and the points once the phase's join has fired. The end
+all `nl` arrivals — so a reap task depending on the first exchange's points
+destroys those blocks and points where the origin's second gather assignment
+frees the first exchange's receive vectors. Of what the origin allocates,
+nothing else is destroyed but the two plans: the origin leaks its arrays (`vector_2d` allocates with `new[]`
+under a defaulted destructor) and holds the last arrivals past its end stamp,
+so the mirror leaves the rows, the transposed rows and the second exchange's
+blocks to the runtime's teardown (above one rank the origin's collective
+does release the send buffers it serialised; the mirror's one block per
+chunk is also the arrival, which is held, so it stays — the appdoc's
+teardown paragraph). The end
 is the origin's: the sum task is created before the fork with one slot per
 rank, so shutdown sits behind every rank's last work.
 
@@ -704,9 +750,10 @@ actually uses (16 bytes for the vendored double-precision SSE2/AVX/AVX2/FMA
 build), so plan selection and codelet applicability stay address-independent
 for every row. Its effect on the answer is under `1e-16` relative; the
 remaining cross-runtime disagreement is the same FFTW source compiled
-twice — GCC at the host's `-march=native` for the HPX side, clang-14 at
-`-march=x86-64-v3` for the mirror's translated library, which the tree
-consumes as a pinned assembly artifact rather than compiling on the host —
+twice at one `-march` level (the pinned artifact's, `x86-64-v3`, which the
+HPX side's FFTW build reads from the artifact's stamp) — GCC for the HPX
+side, clang-14 for the mirror's translated library, which the tree consumes
+as a pinned assembly artifact rather than compiling on the host —
 leaving its own mark in the last bits of rounding and FMA contraction.
 
 **The checksum is a function of the locality count**, like `stencil1d_hpx`'s,

@@ -4,7 +4,7 @@
 
 enum { P_NX, P_NT, P_NP, P_ND, P_NL, P_RANK, P_COEF, P_RANGE,
        P_DB_RANGE, P_STEP_TPL, P_SIGNAL_TPL, P_SPAWN_TPL, P_GATHER_TPL,
-       P_SUM_EDT, P_SUM_TPL, P_READ_TPL, P_GATHER_EDT, P_SEM, P_T, P_I, P_REQUEST_NP, P_RESULTS, P_PRINT, P_HEADER, P_SOLVE_START, P_ELAPSED,
+       P_COLLECT_EDT, P_SUM, P_READ_TPL, P_GATHER_EDT, P_SEM, P_T, P_I, P_REQUEST_NP, P_RESULTS, P_PRINT, P_HEADER, P_SOLVE_START, P_ELAPSED,
        P_KERNEL_TPL, P_RETIRE_TPL, P_DRAIN_TPL, P_RETIRED, P_SHUTDOWN_EDT,
        P_SHUTDOWN_TPL, P_COLLECT_TPL, P_DRIVER_TPL, P_COUNT };
 
@@ -363,7 +363,7 @@ static ocrGuid_t gather_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
                            KIND_PARTITION, pv[P_RANK]));
   }
   ocrDbRelease(db);
-  ocrAddDependence(db, mirror_u64_guid(pv[P_SUM_EDT]), (u32)pv[P_RANK], DB_MODE_RO);
+  ocrAddDependence(db, mirror_u64_guid(pv[P_COLLECT_EDT]), (u32)pv[P_RANK], DB_MODE_RO);
   return NULL_GUID;
 }
 
@@ -375,12 +375,8 @@ static ocrGuid_t shutdown_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[])
 static ocrGuid_t drain_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc; (void)depv;
   u64 per = pv[P_NP] / pv[P_NL], first = pv[P_RANK] * per;
-  u64 slots = ring_slots(pv);
-  /* Every slot of the ring was reached: a ring is never deeper than the run
-   * is long, so generations 0..min(nt, K-1) created all K of them. */
-  for (u64 i = 0; i < per; ++i)
-    for (u64 s = 0; s < slots; ++s)
-      ocrDbDestroy(slot_block(pv, first + i, s));
+  /* The ring's blocks stay: the origin's partition allocator keeps every
+   * array it ever handed out on its free list and returns none of them. */
   ocrDbDestroy(mirror_u64_guid(pv[P_SEM]));
   ocrEventDestroy(lifetime_point(pv, pv[P_NT], first, KIND_FINAL));
   if (pv[P_RANK] && pv[P_NT])
@@ -397,50 +393,29 @@ static void release_final(u64 *pv) {
 
 static void print_timing(u64 *pv) {
   if (pv[P_HEADER]) PRINTF("Localities,OS_Threads,Execution_Time_sec,Points_per_Partition,Partitions,Time_Steps\n");
-  PRINTF("%llu, %llu, %.14e, %llu, %llu, %llu\n", (unsigned long long)pv[P_NL],
+  PRINTF("%llu, %llu, %.14g, %llu, %llu, %llu\n", (unsigned long long)pv[P_NL],
          (unsigned long long)ocrNbWorkers(), (double)pv[P_ELAPSED] / 1e9,
          (unsigned long long)pv[P_NX], (unsigned long long)pv[P_REQUEST_NP], (unsigned long long)pv[P_NT]);
 }
 
-static ocrGuid_t sum_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
-  (void)paramc;
-  double sum = 0.0;
-  for (u64 i = 0; i < pv[P_NP]; ++i) {
-    const double *v = depv[i].ptr;
-    for (u64 j = 0; j < pv[P_NX]; ++j) sum += v[j];
-  }
-  PRINTF("CHECKSUM %.14e\n", sum);
-  if (pv[P_RESULTS]) {
-    for (u32 i = 0; i + 1 < depc; ++i) ocrDbRelease(depv[i].guid);
-    pv[P_PRINT] = 1; pv[P_I] = 0;
-    ocrHint_t h; mirror_rank_hint(&h, 0, OCR_HINT_EDT_T);
-    ocrGuid_t read;
-    ocrEdtCreate(&read, mirror_u64_guid(pv[P_READ_TPL]), P_COUNT, pv, 2, NULL, EDT_PROP_NONE, &h, NULL);
-    ocrAddDependence(depv[depc - 1].guid, read, 1, DB_MODE_RO);
-    ocrAddDependence(depv[0].guid, read, 0, DB_MODE_RO);
-  } else {
-    print_timing(pv);
-    for (u32 i = 0; i + 1 < depc; ++i) ocrDbRelease(depv[i].guid);
-    ocrDbDestroy(depv[depc - 1].guid);
-    release_final(pv);
-  }
-  return NULL_GUID;
-}
-
+/* The origin's closing loop: one partition at a time in ascending order, each
+ * pulled once and folded into the checksum while it is in hand.  --results
+ * then walks the partitions a second time, as the origin's print loop does. */
 static ocrGuid_t read_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
   ocrGuid_t *names = depv[1].ptr;
+  const double *v = depv[0].ptr;
   if (pv[P_PRINT]) {
     PRINTF("U[%llu] = {", (unsigned long long)pv[P_I]);
-    const double *v = depv[0].ptr;
-    for (u64 j = 0; j < pv[P_NX]; ++j) PRINTF("%s%.5e", j ? ", " : "", v[j]);
+    for (u64 j = 0; j < pv[P_NX]; ++j) PRINTF("%s%.6g", j ? ", " : "", v[j]);
     PRINTF("}\n");
-    ocrDbRelease(depv[0].guid);
-    if (pv[P_I] + 1 == pv[P_NP]) {
-      print_timing(pv); ocrDbDestroy(depv[1].guid); release_final(pv); return NULL_GUID;
-    }
+  } else {
+    double sum;
+    memcpy(&sum, &pv[P_SUM], sizeof sum);
+    for (u64 j = 0; j < pv[P_NX]; ++j) sum += v[j];
+    memcpy(&pv[P_SUM], &sum, sizeof sum);
   }
-  if (!pv[P_PRINT]) ocrDbRelease(depv[0].guid);
+  ocrDbRelease(depv[0].guid);
   ocrHint_t h; mirror_rank_hint(&h, 0, OCR_HINT_EDT_T);
   ocrGuid_t next;
   if (pv[P_I] + 1 < pv[P_NP]) {
@@ -449,21 +424,33 @@ static ocrGuid_t read_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
                  2, NULL, EDT_PROP_NONE, &h, NULL);
     ocrAddDependence(depv[1].guid, next, 1, DB_MODE_RO);
     ocrAddDependence(names[pv[P_I]], next, 0, DB_MODE_RO);
-  } else {
-    pv[P_ELAPSED] = mirror_now_ns() - pv[P_SOLVE_START];
-    ocrEdtCreate(&next, mirror_u64_guid(pv[P_SUM_TPL]), P_COUNT, pv,
-                 (u32)pv[P_NP] + 1, NULL, EDT_PROP_NONE, &h, NULL);
-    for (u64 i = 0; i < pv[P_NP]; ++i)
-      ocrAddDependence(names[i], next, (u32)i, DB_MODE_RO);
-    ocrAddDependence(depv[1].guid, next, (u32)pv[P_NP], DB_MODE_RO);
+    return NULL_GUID;
   }
+  if (!pv[P_PRINT]) {
+    pv[P_ELAPSED] = mirror_now_ns() - pv[P_SOLVE_START];
+    double sum;
+    memcpy(&sum, &pv[P_SUM], sizeof sum);
+    PRINTF("CHECKSUM %.14e\n", sum);
+    if (pv[P_RESULTS]) {
+      pv[P_PRINT] = 1; pv[P_I] = 0;
+      ocrEdtCreate(&next, mirror_u64_guid(pv[P_READ_TPL]), P_COUNT, pv,
+                   2, NULL, EDT_PROP_NONE, &h, NULL);
+      ocrAddDependence(depv[1].guid, next, 1, DB_MODE_RO);
+      ocrAddDependence(names[0], next, 0, DB_MODE_RO);
+      return NULL_GUID;
+    }
+  }
+  print_timing(pv);
+  ocrDbDestroy(depv[1].guid);
+  release_final(pv);
   return NULL_GUID;
 }
 
 static ocrGuid_t collect_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc;
   ocrGuid_t table, *names;
-  ocrDbCreate(&table, (void **)&names, pv[P_NP] * sizeof(*names), DB_PROP_NONE, NULL_HINT, NO_ALLOC);
+  ocrHint_t dh; mirror_here_hint(&dh, OCR_HINT_DB_T);
+  ocrDbCreate(&table, (void **)&names, pv[P_NP] * sizeof(*names), DB_PROP_NONE, &dh, NO_ALLOC);
   u64 per = pv[P_NP] / pv[P_NL];
   for (u32 r = 0; r < depc; ++r) {
     memcpy(names + r * per, depv[r].ptr, per * sizeof(*names));
@@ -542,10 +529,10 @@ static ocrGuid_t root_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtCreate(&shutdown, mirror_u64_guid(pv[P_SHUTDOWN_TPL]), P_COUNT, pv, (u32)nl, NULL,
                EDT_PROP_NONE, &h0, NULL);
   pv[P_SHUTDOWN_EDT] = mirror_guid_u64(shutdown);
-  ocrGuid_t sum;
-  ocrEdtCreate(&sum, mirror_u64_guid(pv[P_COLLECT_TPL]), P_COUNT, pv, (u32)nl, NULL,
+  ocrGuid_t collect;
+  ocrEdtCreate(&collect, mirror_u64_guid(pv[P_COLLECT_TPL]), P_COUNT, pv, (u32)nl, NULL,
                EDT_PROP_NONE, &h0, NULL);
-  pv[P_SUM_EDT] = mirror_guid_u64(sum);
+  pv[P_COLLECT_EDT] = mirror_guid_u64(collect);
 
   mirror_spmd_fork(mirror_u64_guid(pv[P_DRIVER_TPL]), pv, P_COUNT, P_RANK, nl, 0, NULL);
   return NULL_GUID;
@@ -583,14 +570,13 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
   }
 
-  ocrGuid_t step_tpl, signal_tpl, spawn_tpl, gather_tpl, sum_tpl, collect_tpl, read_tpl, driver_tpl, root_tpl;
+  ocrGuid_t step_tpl, signal_tpl, spawn_tpl, gather_tpl, collect_tpl, read_tpl, driver_tpl, root_tpl;
   ocrEdtTemplateCreate(&step_tpl, step_edt, P_COUNT, 4);
   ocrEdtTemplateCreate(&signal_tpl, signal_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&collect_tpl, collect_edt, P_COUNT, EDT_PARAM_UNK);
   ocrEdtTemplateCreate(&read_tpl, read_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&spawn_tpl, spawn_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&gather_tpl, gather_edt, P_COUNT, EDT_PARAM_UNK);
-  ocrEdtTemplateCreate(&sum_tpl, sum_edt, P_COUNT, EDT_PARAM_UNK);
   ocrEdtTemplateCreate(&driver_tpl, driver_edt, P_COUNT, 0);
   ocrEdtTemplateCreate(&root_tpl, root_edt, P_COUNT, 0);
 
@@ -609,7 +595,6 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   }
   pv[P_SIGNAL_TPL] = mirror_guid_u64(signal_tpl);
   pv[P_READ_TPL] = mirror_guid_u64(read_tpl);
-  pv[P_SUM_TPL] = mirror_guid_u64(sum_tpl);
   pv[P_NX] = nx; pv[P_NT] = nt; pv[P_NP] = np; pv[P_ND] = nd; pv[P_NL] = nl;
   double coef = k * dt / (dx * dx);
   memcpy(&pv[P_COEF], &coef, sizeof coef);

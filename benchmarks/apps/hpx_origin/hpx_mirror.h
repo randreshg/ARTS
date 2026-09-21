@@ -231,11 +231,11 @@ static inline void mirror_spmd_fork(ocrGuid_t tpl, u64 *pv, u32 paramc, u32 rank
 /* A rendezvous point between a producer on one rank and a consumer that
  * another rank created.  Both sides derive the same GUID from a reserved
  * range and an ordinal, so neither has to learn the other's names; the index
- * gives each point exactly one producer and one consumer and never aliases two
- * units of work onto one point.  Whether a point lands on its consumer or on
+ * gives each point exactly one producer and one consuming rank and never aliases
+ * two units of work onto one point.  Whether a point lands on its consumer or on
  * the rank that reserved the range is the runtime's choice of how a labeled
  * range is homed, and only the hop count depends on it.  One producer, one
- * consumer, one generation: an ordinal names a unit of work and is never
+ * consuming rank, one generation: an ordinal names a unit of work and is never
  * reused across a lifetime boundary. */
 static inline ocrGuid_t mirror_edge(ocrGuid_t range, u64 ordinal, u64 consumer_rank, u64 nl) {
   ocrGuid_t g;
