@@ -86,7 +86,11 @@ translated module, its debug metadata stripped, is compiled to assembly with
 and the same `-march` level, read from the artifact's stamp, so the two sides
 differ in compiler and translation and not in the instruction set either was
 allowed. SIMD and FMA configuration comes from `ARTS_FFTW_SIMD`. These compilation and
-representation choices add costs: pointer resolution, callback context passing,
+representation choices add costs — measured on one core against the ordinary
+library built from the same source at the same `-march`, the same row
+transforms take 1.30–1.45 times as long through this library (in-place
+`r2c` of 71 998 points, `c2c` of 72 000, and the 254/256-point pair alike,
+identical output) —: pointer resolution, callback context passing,
 manifest publication, the per-row image attach and lent-buffer binding, and
 unaligned-safe memory accesses. The identity-keyed and offset-ordered arrays
 cost image size — five words per identity and three per retained allocation — in

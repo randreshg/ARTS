@@ -323,7 +323,22 @@ against the image's own identity-keyed and offset-ordered arrays, with no
 per-row allocation. The translated library's own memory accesses, wherever
 the alignment rewrite touches a load, store or inline-asm move, are
 unaligned-safe rather than assuming the plan-time base. Neither changes the
-codelet arithmetic. Destroying the plans costs the same kind of work once per
+codelet arithmetic. **The transform itself is slower on the OCR side, and by
+a measured amount**: every pointer the translated library loads from
+retained state — a plan's children, its twiddle tables, its codelet entries
+— goes through the relocation's resolve step, several times per codelet
+call. The same row transforms, one core, the two libraries back to back:
+`r2c` of 71 998 points takes 1.35–1.45 times the native library's time and
+`c2c` of 72 000 points 1.30–1.35 times, the same at the gate's lengths, with
+identical output. That is a cost of holding a library's plans in data
+blocks, which the HPX side does not pay, and it is against the OCR entries.
+Its share of the span is small at the calibrated size, where the row is
+bound by memory and the transposes rather than by the transforms — about
+1.1 ms and 0.46 ms per row natively on a laptop core, some 100 core-seconds
+in all against a span of tens of seconds on a hundred cores, so an estimate
+of roughly one percent, not a measurement of it — and
+it is the first thing to re-measure if the arguments ever move the row
+toward its transforms. Destroying the plans costs the same kind of work once per
 rank: the finish task reopens the image as a full planner context — one
 object entry per identity and one set insert per retained pointer slot —
 before the two `fftw_destroy_plan` calls and `fftw_cleanup`, about the
