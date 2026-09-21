@@ -44,29 +44,21 @@
                                        hpx::collectives::num_sites_arg(num_localities_), 
                                        hpx::collectives::this_site_arg(this_locality_)));
      }
-@@ -467,6 +473,7 @@
+@@ -465,8 +471,10 @@
+ {
+     ////////////////////////////////////////////////////////////////
      // Parameters and Data structures
++    arts_hpx::run_clock clock;
      const std::size_t this_locality = hpx::get_locality_id(); 
      const std::size_t num_localities = hpx::get_num_localities(hpx::launch::sync);
 +    arts_hpx::print_geometry();
      const std::string run_flag = vm["run"].as<std::string>();
      const std::string plan_flag = vm["plan"].as<std::string>();
      bool print_result = vm["result"].as<bool>();
-@@ -496,6 +503,7 @@
- 
-     ////////////////////////////////////////////////////////////////
-     // Initialization
-+    arts_hpx::run_clock clock;
-     vector_2d<real> values_vec(n_x_local, 2 * dim_c_y);
-     for(std::size_t i = 0; i < n_x_local; ++i)
-     {
-@@ -510,6 +518,26 @@
+@@ -510,6 +518,23 @@
      auto stop_init = t.now();
      values_vec = fft_computer.fft_2d_r2c();
      auto stop_total = t.now();
-+    arts_hpx::print_e2e(clock);
-+    if (arts_hpx::struct_marker())
-+        arts_hpx::print_parcels();
 +    {
 +        double local = 0.0;
 +        for (std::size_t i = 0; i < values_vec.n_row(); ++i)
@@ -87,6 +79,16 @@
      
      // optional: print results 
      if (print_result)
+@@ -585,6 +610,9 @@
+         runtime_file.close();
+     }
+ 
++    arts_hpx::print_e2e(clock);
++    if (arts_hpx::struct_marker())
++        arts_hpx::print_parcels();
+     ////////////////////////////////////////////////////////////////
+     // Finalize HPX runtime
+     return hpx::finalize();
 @@ -611,7 +639,7 @@
  
      // Initialize and run HPX, this example requires to run hpx_main on all

@@ -52,8 +52,6 @@ class CellView:
     rc: int | None = None
     wall_s: float = 0.0
     e2e_s: float | None = None
-    app_s: float | None = None
-    timing_metric: str = "e2e_s"
     scalar: str | None = None
     note: str = ""
     extra: dict[str, str] = field(default_factory=dict)
@@ -84,10 +82,6 @@ class CellView:
         return self.status in (Status.SUBMITTED, Status.RUNNING,
                                Status.ENDING)
 
-    @property
-    def measured_s(self) -> float | None:
-        return self.app_s if self.timing_metric == "app_s" else self.e2e_s
-
 
 def _from_manifest(manifest: Manifest, cell: Cell) -> CellView:
     parts = (cell.entry.cell or "").split("/")
@@ -112,7 +106,6 @@ def _from_manifest(manifest: Manifest, cell: Cell) -> CellView:
         cfg=str(cell.cfg) if cell.cfg else "",
         log_path=Path(log) if log else None,
         timeout_s=cell.timeout_s,
-        timing_metric=cell.app.timing_metric,
     )
 
 
@@ -194,7 +187,7 @@ class RunState:
                 for name in ("cell", "app_name", "version", "entry_key",
                              "kind", "family", "release", "write", "nodes",
                              "repeat", "command", "script", "env", "cfg",
-                             "log_path", "timeout_s", "timing_metric"):
+                             "log_path", "timeout_s"):
                     setattr(seen, name, getattr(fresh, name))
         return True
 
@@ -257,13 +250,9 @@ class RunState:
             view.wall_s = float(row.get("wall_s", 0.0))
             raw_e2e = row.get("e2e_s")
             view.e2e_s = float(raw_e2e) if raw_e2e is not None else None
-            raw_app = row.get("app_s")
-            view.app_s = float(raw_app) if raw_app is not None else None
-            view.timing_metric = row.get("timing_metric", view.timing_metric)
             view.scalar = row.get("scalar")
             view.finished_at = when
-            if view.timing_metric == "e2e_s":
-                view.note = _with_wall_only_note(view.note, view.status, view.e2e_s)
+            view.note = _with_wall_only_note(view.note, view.status, view.e2e_s)
         elif event == "skipped":
             view.status = Status.SKIPPED
             view.verdict = Verdict.NA
@@ -328,12 +317,9 @@ class RunState:
             view.rc = rc
             view.wall_s = wall
             view.e2e_s = result.e2e_s
-            view.app_s = result.app_s
-            view.timing_metric = result.cell.app.timing_metric
             view.scalar = result.scalar
             view.note = result.note or view.note
-            if view.timing_metric == "e2e_s":
-                view.note = _with_wall_only_note(view.note, view.status, view.e2e_s)
+            view.note = _with_wall_only_note(view.note, view.status, view.e2e_s)
             changed = True
         return changed
 
@@ -385,9 +371,7 @@ class RunState:
         rows: dict[tuple, dict[int, float]] = {}
         for key in self.order:
             view = self.views[key]
-            span = view.measured_s
-            if span is None and view.timing_metric == "e2e_s":
-                span = view.wall_s
+            span = view.e2e_s if view.e2e_s is not None else view.wall_s
             if view.status is not Status.OK or not span:
                 continue
             walls = rows.setdefault(

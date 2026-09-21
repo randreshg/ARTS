@@ -14,7 +14,7 @@ enum { P_NL, P_RANK, P_NXL, P_NYL, P_CX, P_CY, P_RY, P_CYPART, P_CXPART,
        P_PLANFLAG, P_RANGE, P_SUM_EDT, P_PLAN_R2C, P_PLAN_C2C, P_IDX,
        P_FFT1_TPL, P_SPLIT1_TPL, P_XPOSE1_TPL, P_FFT2_TPL, P_SPLIT2_TPL,
        P_XPOSE2_TPL, P_REAP1_TPL, P_FINISH_TPL, P_PUBLISH_TPL, P_PHASE,
-       P_PLAN_DB, P_PLAN_SIZE, P_START_NS, P_SRC, P_XPOSE_SCOPE_TPL,
+       P_PLAN_DB, P_PLAN_SIZE, P_SRC, P_XPOSE_SCOPE_TPL,
        P_XPOSE_OUTER_TPL, P_V_DB, P_W_DB, P_COUNT };
 
 /* One rendezvous point per (phase, source, destination): the ordinal names
@@ -172,8 +172,6 @@ static ocrGuid_t finish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   u64 nl = pv[P_NL], nxl = pv[P_NXL], cy = pv[P_CY];
   u64 rank = pv[P_RANK], slot_v = 2 + nl, slot_w = 3 + nl, slot_plan = 4 + nl;
 
-  if (rank == 0) mirror_app_e2e(pv[P_START_NS]);
-
   const double *v = depv[slot_v].ptr;
   double sum = 0.0;
   for (u64 c = 0; c < nxl * 2 * cy; ++c) sum += v[c];
@@ -232,7 +230,6 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   mirror_rank_hint(&dh, rank, OCR_HINT_DB_T);
   mirror_rank_hint(&eh, rank, OCR_HINT_EDT_T);
 
-  u64 start_ns = rank == 0 ? mirror_now_ns() : 0;
   ocrGuid_t *prep = malloc(2 * nl * sizeof(ocrGuid_t));
 
   /* The rank's two numerical buffers, as the origin has them: the local rows
@@ -298,7 +295,6 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   params[P_PLAN_C2C] = c2c;
   params[P_PLAN_DB] = mirror_guid_u64(plan_db);
   params[P_PLAN_SIZE] = plan_size;
-  params[P_START_NS] = start_ns;
   params[P_V_DB] = mirror_guid_u64(varr);
   params[P_W_DB] = mirror_guid_u64(warr);
 

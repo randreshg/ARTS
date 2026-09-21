@@ -471,6 +471,7 @@ int hpx_main(hpx::program_options::variables_map& vm)
 {
     ////////////////////////////////////////////////////////////////
     // Parameters and Data structures
+    arts_hpx::run_clock clock;
     const std::size_t this_locality = hpx::get_locality_id(); 
     const std::size_t num_localities = hpx::get_num_localities(hpx::launch::sync);
     arts_hpx::print_geometry();
@@ -503,7 +504,6 @@ int hpx_main(hpx::program_options::variables_map& vm)
 
     ////////////////////////////////////////////////////////////////
     // Initialization
-    arts_hpx::run_clock clock;
     vector_2d<real> values_vec(n_x_local, 2 * dim_c_y);
     for(std::size_t i = 0; i < n_x_local; ++i)
     {
@@ -518,9 +518,6 @@ int hpx_main(hpx::program_options::variables_map& vm)
     auto stop_init = t.now();
     values_vec = fft_computer.fft_2d_r2c();
     auto stop_total = t.now();
-    arts_hpx::print_e2e(clock);
-    if (arts_hpx::struct_marker())
-        arts_hpx::print_parcels();
     {
         double local = 0.0;
         for (std::size_t i = 0; i < values_vec.n_row(); ++i)
@@ -613,6 +610,9 @@ int hpx_main(hpx::program_options::variables_map& vm)
         runtime_file.close();
     }
 
+    arts_hpx::print_e2e(clock);
+    if (arts_hpx::struct_marker())
+        arts_hpx::print_parcels();
     ////////////////////////////////////////////////////////////////
     // Finalize HPX runtime
     return hpx::finalize();

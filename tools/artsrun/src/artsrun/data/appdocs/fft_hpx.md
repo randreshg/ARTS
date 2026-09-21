@@ -82,7 +82,7 @@ neither is part of the row.
 
 A rejected argument prints usage and calls `ocrShutdown()` with status 0,
 where the origin's own option parsing exits non-zero; the missing
-`CHECKSUM`/`[APP_E2E]` marker fails the cell either way.
+`CHECKSUM` marker fails the cell either way.
 
 ## Structure
 
@@ -293,24 +293,17 @@ and is covered by the row's `1e-09` tolerance with seven orders to spare.
 Mid waits: 0. The two driver waits marked O4 are the origin's own driver
 loop gathering the collectives' futures between phases.
 
-Both sides mark the same logical interval with `[APP_E2E]`, matched to the
-source's own timing scope (the catalog's `timing_contract:
-hpx-origin/fft_hpx/source-interval-v1`, reported as `app_s`). On HPX,
-`run_clock` starts immediately before the array allocation and ramp, so
-allocation, fill, `initialize()` (both plans and the communicators) and
-`fft_2d_r2c()` are inside; `print_e2e` runs right after `stop_total`, before
-the added local sum, the `all_reduce` and the `CHECKSUM` print, and before
-`~fft()` destroys the plans. HPX's `[E2E]` is the same stamp here, since
-`hpx_main` calls the single-clock form of `print_e2e`. On OCR, `start_ns` is
-taken at the top of `driver_edt` for rank 0, before the row buffers are
-created and filled, and travels to `finish_edt` in `paramv`; `finish_edt`
-prints it, for rank 0, before the rank's own fold, before every
-`ocrDbDestroy`, and before `fftw_reloc_destroy_pair`. Both sides therefore
-include buffer allocation and fill, both plans, both transforms and both
-exchanges, and exclude the checksum reduction and the plan/buffer teardown.
-The runtime's own `[E2E]` — the span to `ocrShutdown()` on the OCR side — is
-still printed as a separate observation and is not the metric this row
-reports.
+The measurement is `[E2E]` on both sides, stamped on rank/locality 0 alone:
+the whole application, from its first statement to the point it asks the
+runtime to stop, runtime start-up and teardown excluded. On the OCR side the
+runtime stamps it (the main task becoming eligible, shutdown recognised on
+rank 0). On the HPX side every locality runs `hpx_main`; `run_clock` opens as
+its first statement and `print_e2e` closes it, on locality 0, immediately
+before `hpx::finalize()` — after the checksum reduction every locality takes
+part in, so locality 0's end is the application's. Option handling, buffer
+allocation and fill, both plans, both transforms, both exchanges, the
+checksum reduction and the origin's own timing table are inside the span on
+both sides.
 
 **The scalar is the plain sum of the final array**, because the origin
 computes no printable quantity of its own — it prints a phase-by-phase timing

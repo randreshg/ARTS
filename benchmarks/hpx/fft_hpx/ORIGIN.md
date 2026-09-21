@@ -14,14 +14,14 @@ edits:
 - cfg: the run-everywhere cfg vector becomes the runtime defaults, which carry
   the same `hpx.run_hpx_main` line
 - markers: `[HPX]` geometry from every locality once the locality count is
-  known; `[E2E]` from just before the array is allocated and filled -- so the
-  fill, the plan build and both FFT phases are inside the window -- to
-  immediately after the program's own end stamp; `[PARCELS]` after that when
-  the structural marker is set. The program's own `high_resolution_timer`
-  stays exactly where it was and keeps timing what it timed: its
-  `start_total` is taken after the array has been constructed and the ramp
-  loop has run, so the allocation and the fill are precisely what the marker
-  window holds and the origin's own number does not
+  known; `[E2E]` on locality 0 from the first statement of `hpx_main` to
+  immediately before its `hpx::finalize()` -- the whole application, runtime
+  start-up and teardown excluded, the span every runtime of the comparison
+  reports (every locality runs `hpx_main`; the checksum reduction every
+  locality takes part in precedes locality 0's end); `[PARCELS]` after that
+  when the structural marker is set. The program's own
+  `high_resolution_timer` stays exactly where it was and keeps timing what it
+  timed
 - scalar: the program computes no printable result of its own (it prints a
   phase-by-phase timing table), so the edit is the simplest digest of the
   final state it already holds: each locality sums its own rows and one

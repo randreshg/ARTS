@@ -47,30 +47,15 @@ def _text(table) -> str:
     return console.export_text()
 
 
-def test_application_metric_controls_table_and_keeps_both_raw_times(tmp_path):
-    app = _app().model_copy(update={
-        "timing_metric": "app_s", "timing_contract": "source-interval-v1"})
-    result = _result("a", app=app, wall_s=12.0, e2e_s=9.0)
-    result.app_s = 1.25
+def test_the_scaling_table_reports_the_runtime_stamp(tmp_path):
+    result = _result("a", wall_s=12.0, e2e_s=9.0)
     text = _text(scaling_table([result], ["a"]))
-    assert "1.25" in text and "9.00" not in text and "app seconds" in text
+    assert "9.00" in text and "12.00" not in text and "e2e seconds" in text
     path = tmp_path / "results.csv"
     write_results_csv([result], path)
     row = next(csv.DictReader(path.open()))
-    assert float(row["app_s"]) == 1.25 and float(row["e2e_s"]) == 9.0
-    assert row["timing_metric"] == "app_s"
-    assert row["timing_contract"] == "source-interval-v1"
-
-
-def test_scaling_rejects_mixed_timing_contracts():
-    import pytest
-    legacy = _result("a", wall_s=12.0, e2e_s=9.0)
-    app = _app().model_copy(update={
-        "timing_metric": "app_s", "timing_contract": "source-interval-v1"})
-    current = _result("b", app=app, wall_s=12.0, e2e_s=9.0)
-    current.app_s = 1.25
-    with pytest.raises(ValueError, match="different timing contracts"):
-        scaling_table([legacy, current], ["a", "b"])
+    assert float(row["e2e_s"]) == 9.0
+    assert "app_s" not in row and "timing_metric" not in row
 
 
 def test_a_stamped_cell_carries_no_wall_only_mark(tmp_path):

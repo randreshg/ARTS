@@ -964,6 +964,7 @@ void test_read(uint64_t rank, uint64_t nranks, uint64_t num_transfer_slots,
 // transmit/receive time to see how well we're doing.
 int hpx_main(hpx::program_options::variables_map& vm)
 {
+    arts_hpx::run_clock clock;
     DEBUG_OUTPUT(3, "HPX main");
     //
     hpx::id_type here = hpx::find_here();
@@ -1012,7 +1013,6 @@ int hpx_main(hpx::program_options::variables_map& vm)
 
     DEBUG_OUTPUT(2, "Allocating local storage on rank " << rank);
     allocate_local_storage(options.local_storage_MB * 1024 * 1024);
-    arts_hpx::run_clock clock;
     //
     uint64_t num_transfer_slots =
         1024 * 1024 * options.local_storage_MB / options.transfer_size_B;
@@ -1050,9 +1050,6 @@ int hpx_main(hpx::program_options::variables_map& vm)
     test_read(rank, nranks, num_transfer_slots, gen, random_rank, random_slot,
         options);
     //
-    arts_hpx::print_e2e(clock);
-    if (arts_hpx::struct_marker())
-        arts_hpx::print_parcels();
     {
         auto comm = hpx::collectives::create_communicator(
             "/network_storage/tally", hpx::collectives::num_sites_arg(nranks),
@@ -1071,6 +1068,9 @@ int hpx_main(hpx::program_options::variables_map& vm)
     }
     delete_local_storage();
 
+    arts_hpx::print_e2e(clock);
+    if (arts_hpx::struct_marker())
+        arts_hpx::print_parcels();
     DEBUG_OUTPUT(3, "Calling finalize " << rank);
     if (rank == 0)
         return hpx::finalize();

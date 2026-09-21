@@ -53,10 +53,6 @@ static inline u64 mirror_now_ns(void) {
   return (u64)now.tv_sec * 1000000000ULL + (u64)now.tv_nsec;
 }
 
-static inline void mirror_app_e2e(u64 start) {
-  PRINTF("[APP_E2E] %llu\n", (unsigned long long)(mirror_now_ns() - start));
-}
-
 static inline u64 mirror_rank(u64 nl) {
   ocrGuid_t cur, at;
   ocrAffinityGetCurrent(&cur);

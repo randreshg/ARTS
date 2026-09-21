@@ -17,7 +17,10 @@
 
 namespace arts_hpx {
 
-// Each caller chooses the application's start and result-completion edges.
+// The span every runtime of the comparison reports, stamped on locality 0
+// alone: opened by the first statement of its hpx_main, closed where that
+// same locality asks the runtime to stop.  Runtime start-up and teardown lie
+// outside it; everything the program does lies inside it.
 struct run_clock
 {
     std::chrono::steady_clock::time_point start =
@@ -117,22 +120,13 @@ inline void register_geometry_startup()
     hpx::register_startup_function([] { print_geometry(); });
 }
 
-inline void print_e2e(run_clock const& clock, run_clock const& app_clock)
+inline void print_e2e(run_clock const& clock)
 {
     if (!e2e_enabled() || hpx::get_locality_id() != 0)
         return;
-    auto const now = std::chrono::steady_clock::now();
     auto const ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        now - clock.start).count();
-    auto const app_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        now - app_clock.start).count();
-    write_line("[APP_E2E] " + std::to_string(app_ns) + "\n");
+        std::chrono::steady_clock::now() - clock.start).count();
     write_line("[E2E] " + std::to_string(ns) + "\n");
-}
-
-inline void print_e2e(run_clock const& clock)
-{
-    print_e2e(clock, clock);
 }
 
 // A reduction operator travels to the other sites as an action argument, so

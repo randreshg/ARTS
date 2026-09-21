@@ -38,7 +38,7 @@ output dependence, with a two-slot `sum` EDT standing in for
 
 A malformed or out-of-range argument prints usage and calls `ocrShutdown()`
 with status 0, where the origin's option parsing exits non-zero; the missing
-`[APP_E2E]`/result marker fails the cell either way.
+result marker fails the cell either way.
 
 ## Structure
 
@@ -77,9 +77,8 @@ runs the untimed serial reference when `--test` is `0` or `all` (shutting
 down immediately for `--test=0`, without starting the DAG), then starts run
 0: the round-robin counter (`next_locality`) resets and the root call
 unfolds top-down (spawn) while `sum` joins fold bottom-up. `run_edt` either
-starts the next repetition or, after the last run, stamps `[APP_E2E]`,
-prints the result line, and starts the per-rank serial-count gather that
-ends the program.
+starts the next repetition or, after the last run, prints the result line
+and starts the per-rank serial-count gather that ends the program.
 
 | HPX wait site | classification | mirror |
 |---|---|---|
@@ -88,24 +87,23 @@ ends the program.
 | `hpx::when_all(f, r).then(when_all_wrapper())` | end wait — join of the two children | `sum_edt`, created before either child, fires on its two RO dependences |
 | `fibonacci_future(n).get()` in `hpx_main`'s `n-runs` loop | end wait — driver root wait | `run_edt`, one RO dependence on the run's root value |
 
-`[APP_E2E]` starts in `start_edt`, right before the `n-runs` loop — after the
-untimed serial reference has already run and printed `fibonacci_serial(n) ==
-r` when `--test` is `0` or `all` — and stops in `run_edt` on the last run,
-right after the tree's root value arrives, matching the HPX side: `run_clock`
-opens at the same point (immediately before the `n-runs` loop) and
-`print_e2e` closes it right after, before the origin's own serial-count
-report. The runtime's own `[E2E]` is still printed on both sides and kept as
-a separate observation.
+The measurement is `[E2E]` on both sides, stamped on rank/locality 0 alone:
+the whole application, from its first statement to the point it asks the
+runtime to stop, runtime start-up and teardown excluded. On the OCR side the
+runtime stamps it (the main task becoming eligible, shutdown recognised on
+rank 0); on the HPX side `run_clock` opens as the first statement of
+`hpx_main` and `print_e2e` closes it immediately before `hpx::finalize()`.
+Option handling, the serial reference when `--test` asks for it, the timed
+loop, the result line and the serial-count report are inside it on both
+sides.
 
 `run_edt`'s result line now also carries the round-robin counter's final
-value, `fibonacci_future(n) == r,next_locality,<value>`, printed after the
-stamp. The mirror then keeps the origin's `serial_execution_count` — the
+value, `fibonacci_future(n) == r,next_locality,<value>`. The mirror then keeps the origin's `serial_execution_count` — the
 per-locality atomic incremented on every call below the threshold — and
 gathers it: one query EDT per rank, in ascending rank order, each returning
 its counter, printed as `serial-count,<rank>,<count/runs>`, exactly as the
-origin's own per-locality report after its timed loop. The gather runs after
-`[APP_E2E]` on both sides, so it costs neither side anything inside the
-measured window.
+origin's own per-locality report after its timed loop. The gather is part of
+the program on both sides, and so inside the measured span on both.
 
 ## Placement
 

@@ -87,7 +87,7 @@ prints an error and returns); and `18 · ranks² ≥ 2^32`, the mirror's own
 rendezvous reservation, which only rank counts above about 15,400 reach. Any
 of these prints usage and calls `ocrShutdown()` with status 0, where the
 origin's own rejections exit non-zero or terminate; the missing
-`TRANSFERS_OK`/`[APP_E2E]` marker fails the cell either way. A
+`TRANSFERS_OK` marker fails the cell either way. A
 storage smaller than one transfer — `--localMB=0`, a `transferKB` larger
 than the storage, a `--globalMB` smaller than one transfer per rank — has
 zero slots, and both sides run it: every test and every barrier happens,
@@ -301,22 +301,23 @@ continuation cache and the destructor registered for it with the previous
 worker, so the build keeps that lookup out of line (`benchmarks/hpx/README.md`,
 "The configuration every table was measured on").
 
-`[APP_E2E]`: the HPX window opens immediately after the storage allocation —
-an uninitialised `new char[]`, which touches no page — and before
-`num_transfer_slots`, the `mt19937` seed and the `ActiveFutures` setup; it
-closes once `test_read` has returned (its closing barrier passed and rank
-0's statistics printed), before the tally `all_reduce` and `TRANSFERS_OK`.
-The mirror's window opens right after its own storage DBs, before the
-rank's table/state DB creation, the MT seeding, and the per-rank labeled
-STICKY slot-name rendezvous (`nl²` events overall) — representation work
-the HPX window has no counterpart for, since the origin passes a raw
-pointer in its action arguments instead of naming a block — and closes in
-`tally_edt`, after the read test's `report_test` and after the closing
-barrier has released the rank, before the per-rank count DB and
-`TRANSFERS_OK`. The runtime's own `[E2E]` is still printed on both sides
-and kept as a separate observation.
+The measurement is `[E2E]` on both sides, stamped on rank/locality 0 alone:
+the whole application, from its first statement to the point it asks the
+runtime to stop, runtime start-up and teardown excluded. On the OCR side the
+runtime stamps it (the main task becoming eligible, shutdown recognised on
+rank 0). On the HPX side every locality runs `hpx_main`; `run_clock` opens as
+its first statement and `print_e2e` closes it, on locality 0, immediately
+before the `hpx::finalize()` only that locality calls — after the tally
+`all_reduce` every locality takes part in, so locality 0's end is the
+application's. Option handling, the storage allocation, the warm-up, the
+write and read tests with their barriers and reports, the tally and the
+release of the storage are inside the span on both sides. The mirror's
+span additionally holds representation work the origin has no counterpart
+for — the rank's table/state DBs and the per-rank labeled STICKY slot-name
+rendezvous (`nl²` events overall), since the origin passes a raw pointer in
+its action arguments instead of naming a block.
 
-Inside the window on the HPX side only: every put's keep-alive bookkeeping —
+Inside the span on the HPX side only: every put's keep-alive bookkeeping —
 inserting a `shared_ptr` into a map under a spinlock, later erased from a
 parcel callback under the same lock — which is HPX's own send-buffer
 lifetime mechanism, the job the mirror's DB dependence performs
@@ -325,7 +326,7 @@ unit and it is not free (two spinlock acquisitions and a map insert/erase
 per transfer), so it stays disclosed as a measurement asymmetry rather than
 credited to the mirror. The origin's own `high_resolution_timer`s time each
 test separately — the warm-up's time is printed too; only its CSV record and
-its profile table are suppressed — and the marker window holds the warm-up
+its profile table are suppressed — and the measured span holds the warm-up
 on both sides, since the mirror performs it too.
 
 ## Placement

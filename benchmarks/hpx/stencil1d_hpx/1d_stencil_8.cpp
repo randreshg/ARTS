@@ -657,7 +657,6 @@ void do_all_work(
     std::vector<hpx::id_type> localities = hpx::find_all_localities();
     std::size_t nl = localities.size();    // Number of localities
     arts_hpx::print_geometry();
-    arts_hpx::run_clock clock;
 
     if (np < nl)
     {
@@ -701,9 +700,6 @@ void do_all_work(
         }
 
         std::uint64_t elapsed = hpx::chrono::high_resolution_clock::now() - t;
-        arts_hpx::print_e2e(clock);
-        if (arts_hpx::struct_marker())
-            arts_hpx::print_parcels();
 
         double checksum = 0.0;
         for (partition_data const& d : final_data)
@@ -746,6 +742,8 @@ void do_all_work(
 ///////////////////////////////////////////////////////////////////////////////
 int hpx_main(hpx::program_options::variables_map& vm)
 {
+    arts_hpx::run_clock clock;
+
     std::uint64_t nt = vm["nt"].as<std::uint64_t>();    // Number of steps.
     std::uint64_t nx =
         vm["nx"].as<std::uint64_t>();    // Number of grid points.
@@ -760,6 +758,9 @@ int hpx_main(hpx::program_options::variables_map& vm)
 
     do_all_work(nt, nx, np, nd);
 
+    arts_hpx::print_e2e(clock);
+    if (arts_hpx::struct_marker())
+        arts_hpx::print_parcels();
     return hpx::finalize();
 }
 

@@ -4,8 +4,9 @@
 
 enum { P_NX, P_NT, P_NP, P_ND, P_NL, P_RANK, P_COEF, P_RANGE,
        P_DB_RANGE, P_STEP_TPL, P_SIGNAL_TPL, P_SPAWN_TPL, P_GATHER_TPL,
-       P_SUM_EDT, P_SUM_TPL, P_READ_TPL, P_GATHER_EDT, P_SEM, P_START, P_T, P_I, P_REQUEST_NP, P_RESULTS, P_PRINT, P_HEADER, P_SOLVE_START, P_ELAPSED,
-       P_KERNEL_TPL, P_RETIRE_TPL, P_DRAIN_TPL, P_RETIRED, P_SHUTDOWN_EDT, P_COUNT };
+       P_SUM_EDT, P_SUM_TPL, P_READ_TPL, P_GATHER_EDT, P_SEM, P_T, P_I, P_REQUEST_NP, P_RESULTS, P_PRINT, P_HEADER, P_SOLVE_START, P_ELAPSED,
+       P_KERNEL_TPL, P_RETIRE_TPL, P_DRAIN_TPL, P_RETIRED, P_SHUTDOWN_EDT,
+       P_SHUTDOWN_TPL, P_COLLECT_TPL, P_DRIVER_TPL, P_COUNT };
 
 /* What a generation hands to the next one.  A point's ordinal names one of
  * these for one (generation, partition) and is never reused; the index names
@@ -396,7 +397,7 @@ static void release_final(u64 *pv) {
 
 static void print_timing(u64 *pv) {
   if (pv[P_HEADER]) PRINTF("Localities,OS_Threads,Execution_Time_sec,Points_per_Partition,Partitions,Time_Steps\n");
-  PRINTF("%llu, %llu, %.14g, %llu, %llu, %llu\n", (unsigned long long)pv[P_NL],
+  PRINTF("%llu, %llu, %.14e, %llu, %llu, %llu\n", (unsigned long long)pv[P_NL],
          (unsigned long long)ocrNbWorkers(), (double)pv[P_ELAPSED] / 1e9,
          (unsigned long long)pv[P_NX], (unsigned long long)pv[P_REQUEST_NP], (unsigned long long)pv[P_NT]);
 }
@@ -432,7 +433,7 @@ static ocrGuid_t read_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   if (pv[P_PRINT]) {
     PRINTF("U[%llu] = {", (unsigned long long)pv[P_I]);
     const double *v = depv[0].ptr;
-    for (u64 j = 0; j < pv[P_NX]; ++j) PRINTF("%s%.6g", j ? ", " : "", v[j]);
+    for (u64 j = 0; j < pv[P_NX]; ++j) PRINTF("%s%.5e", j ? ", " : "", v[j]);
     PRINTF("}\n");
     ocrDbRelease(depv[0].guid);
     if (pv[P_I] + 1 == pv[P_NP]) {
@@ -450,7 +451,6 @@ static ocrGuid_t read_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     ocrAddDependence(names[pv[P_I]], next, 0, DB_MODE_RO);
   } else {
     pv[P_ELAPSED] = mirror_now_ns() - pv[P_SOLVE_START];
-    mirror_app_e2e(pv[P_START]);
     ocrEdtCreate(&next, mirror_u64_guid(pv[P_SUM_TPL]), P_COUNT, pv,
                  (u32)pv[P_NP] + 1, NULL, EDT_PROP_NONE, &h, NULL);
     for (u64 i = 0; i < pv[P_NP]; ++i)
@@ -529,6 +529,28 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   return NULL_GUID;
 }
 
+/* The solve is timed on rank 0, where its end is read; a program's main task
+ * may run on any rank, so the clock starts here and not there. */
+static ocrGuid_t root_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
+  (void)paramc; (void)depc; (void)depv;
+  u64 nl = pv[P_NL];
+  pv[P_SOLVE_START] = mirror_now_ns();
+
+  ocrHint_t h0;
+  mirror_rank_hint(&h0, 0, OCR_HINT_EDT_T);
+  ocrGuid_t shutdown;
+  ocrEdtCreate(&shutdown, mirror_u64_guid(pv[P_SHUTDOWN_TPL]), P_COUNT, pv, (u32)nl, NULL,
+               EDT_PROP_NONE, &h0, NULL);
+  pv[P_SHUTDOWN_EDT] = mirror_guid_u64(shutdown);
+  ocrGuid_t sum;
+  ocrEdtCreate(&sum, mirror_u64_guid(pv[P_COLLECT_TPL]), P_COUNT, pv, (u32)nl, NULL,
+               EDT_PROP_NONE, &h0, NULL);
+  pv[P_SUM_EDT] = mirror_guid_u64(sum);
+
+  mirror_spmd_fork(mirror_u64_guid(pv[P_DRIVER_TPL]), pv, P_COUNT, P_RANK, nl, 0, NULL);
+  return NULL_GUID;
+}
+
 ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)paramv; (void)depc;
   void *argdb = depv[0].ptr;
@@ -550,7 +572,6 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   int reject = bad || np < nl || (nt && (nx < 2 || nd == 0))
             || !point_space(nt, np, nl, &points)
             || !block_space(ring_depth(nt, nd), np / nl, nl, &blocks);
-  u64 start = mirror_now_ns();
   ocrGuid_t range = NULL_GUID;
   if (!reject && ocrGuidRangeCreate(&range, points, GUID_USER_EVENT_STICKY) != 0)
     reject = 1;
@@ -562,7 +583,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
   }
 
-  ocrGuid_t step_tpl, signal_tpl, spawn_tpl, gather_tpl, sum_tpl, collect_tpl, read_tpl, driver_tpl;
+  ocrGuid_t step_tpl, signal_tpl, spawn_tpl, gather_tpl, sum_tpl, collect_tpl, read_tpl, driver_tpl, root_tpl;
   ocrEdtTemplateCreate(&step_tpl, step_edt, P_COUNT, 4);
   ocrEdtTemplateCreate(&signal_tpl, signal_edt, P_COUNT, 2);
   ocrEdtTemplateCreate(&collect_tpl, collect_edt, P_COUNT, EDT_PARAM_UNK);
@@ -571,6 +592,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtTemplateCreate(&gather_tpl, gather_edt, P_COUNT, EDT_PARAM_UNK);
   ocrEdtTemplateCreate(&sum_tpl, sum_edt, P_COUNT, EDT_PARAM_UNK);
   ocrEdtTemplateCreate(&driver_tpl, driver_edt, P_COUNT, 0);
+  ocrEdtTemplateCreate(&root_tpl, root_edt, P_COUNT, 0);
 
   ocrGuid_t kernel_tpl, retire_tpl, drain_tpl, shutdown_tpl;
   ocrEdtTemplateCreate(&kernel_tpl, kernel_edt, P_COUNT, EDT_PARAM_UNK);
@@ -580,8 +602,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   u64 pv[P_COUNT] = {0};
   pv[P_KERNEL_TPL] = mirror_guid_u64(kernel_tpl);
   pv[P_RETIRE_TPL] = mirror_guid_u64(retire_tpl); pv[P_DRAIN_TPL] = mirror_guid_u64(drain_tpl);
-  pv[P_START] = start;
-  pv[P_SOLVE_START] = mirror_now_ns(); pv[P_REQUEST_NP] = requested_np; pv[P_HEADER] = 1;
+  pv[P_REQUEST_NP] = requested_np; pv[P_HEADER] = 1;
   for (u64 i = 1; i < argc; ++i) {
     if (!strcmp(getArgv(argdb, i), "--results")) pv[P_RESULTS] = 1;
     if (!strcmp(getArgv(argdb, i), "--no-header")) pv[P_HEADER] = 0;
@@ -597,15 +618,13 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   pv[P_SPAWN_TPL] = mirror_guid_u64(spawn_tpl);
   pv[P_GATHER_TPL] = mirror_guid_u64(gather_tpl);
 
+  pv[P_SHUTDOWN_TPL] = mirror_guid_u64(shutdown_tpl);
+  pv[P_COLLECT_TPL] = mirror_guid_u64(collect_tpl);
+  pv[P_DRIVER_TPL] = mirror_guid_u64(driver_tpl);
+
   ocrHint_t h0;
   mirror_rank_hint(&h0, 0, OCR_HINT_EDT_T);
-  ocrGuid_t shutdown;
-  ocrEdtCreate(&shutdown, shutdown_tpl, P_COUNT, pv, (u32)nl, NULL, EDT_PROP_NONE, &h0, NULL);
-  pv[P_SHUTDOWN_EDT] = mirror_guid_u64(shutdown);
-  ocrGuid_t sum;
-  ocrEdtCreate(&sum, collect_tpl, P_COUNT, pv, (u32)nl, NULL, EDT_PROP_NONE, &h0, NULL);
-  pv[P_SUM_EDT] = mirror_guid_u64(sum);
-
-  mirror_spmd_fork(driver_tpl, pv, P_COUNT, P_RANK, nl, 0, NULL);
+  ocrGuid_t root;
+  ocrEdtCreate(&root, root_tpl, P_COUNT, pv, 0, NULL, EDT_PROP_NONE, &h0, NULL);
   return NULL_GUID;
 }

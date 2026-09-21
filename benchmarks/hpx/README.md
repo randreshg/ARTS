@@ -242,15 +242,23 @@ difference, is the worked example under `archive/hpx-origin-excluded/`).
 
 ### The `[E2E]` span
 
-Every row defines the span the same way: it opens after the collective
-that makes every locality ready and closes at the program's completion
-edge, ahead of any collective that only releases the other localities.
-That is the boundary the runtime it is compared against uses — the ARTS
-stamp opens once initialization is complete, after the start-up
-rendezvous and time sync, and closes when shutdown is recognised, before
-teardown — so neither side's span contains its own start-up collective.
-Each row's own section below states exactly where its span opens and
-closes.
+Every row defines the span the same way, and it is the span every runtime
+of the comparison reports: the whole application on locality 0, from the
+first statement of its `hpx_main` to immediately before that locality's
+`hpx::finalize()`. Runtime start-up (everything `hpx::init` does before
+`hpx_main` runs) and teardown lie outside it; option handling, allocation,
+the program's work, its result and its reports lie inside it. That is the
+boundary the runtimes it is compared against use — the ARTS stamp opens once
+initialization is complete, as the main task becomes eligible, and closes
+when rank 0 recognises shutdown, before teardown; the two reference OCR
+runtimes stamp the same two events on their rank 0 — so one definition holds
+on all four, measured on one node's clock.
+
+Where every locality runs `hpx_main`, any of them may be the first to call
+`hpx::finalize()`; the stamp does not follow that call. It is locality 0's
+own, taken on locality 0's own path, and each such row puts a step every
+locality takes part in (a gather, a reduction) ahead of it, so locality 0's
+end is the application's.
 
 ### The markers
 
@@ -270,25 +278,11 @@ stamp only when `ARTS_E2E_MARKER` is set too; on its own it is bare. There is
 no `[STRUCT]` line in this section: that carried the retired ports' own
 structural counters and none of these programs has any.
 
-Both sides also print `[APP_E2E] <ns>` once, from the row's logical root —
-under the same `ARTS_E2E_MARKER` gate as `[E2E]` on the HPX side, and
-unconditionally on the OCR side, where the mirror's helper prints it — on
-the application interval every row's own section below states: it opens after that row's option/seed/geometry work,
-before the origin's first allocation or setup, and it closes after the
-origin's own result, before any added checksum, report or teardown. The HPX
-side's helper is `benchmarks/hpx/common/e2e.hpp`'s `print_e2e(clock,
-app_clock)` — its single-clock form makes `[APP_E2E]` equal to `[E2E]` where
-a row's two spans coincide, and the two-clock form is what lets them differ
-where they do not. The catalog selects this span as the row's own timing
-metric (`timing_metric: app_s`, `timing_contract:
-hpx-origin/<row>/source-interval-v1`); `[E2E]` keeps printing on both sides
-and remains a separate observation, never the selected metric.
-
 ## ARTS versus HPX
 
 The section's comparison is of **one program on four runtimes** (the admission rules
 above): the OCR mirror keeps the origin's operations, their order and its state, both
-sides time the same application interval (`[APP_E2E]`), and neither side is tuned to
+sides time the same span (`[E2E]`, the whole application on rank/locality 0), and neither side is tuned to
 the other. The roster is the four rows whose origin never suspends a started
 parallel task (its waits are continuations, or a bounded number of driver-thread
 phase joins — the discipline an event-driven program has by construction, so the two
@@ -396,8 +390,8 @@ sentence is in its appdoc.
 
 Origin: HPX's `fibonacci_futures_distributed` quickstart example
 (`third_party/hpx/examples/quickstart/fibonacci_futures_distributed.cpp`,
-pin `v1.11.0`). Edits (from `ORIGIN.md`): the `[E2E]`/`[HPX]` markers
-around the timed `n-runs` loop and the `[PARCELS]` line after it, and the
+pin `v1.11.0`). Edits (from `ORIGIN.md`): the `[HPX]` marker, the `[E2E]`
+marker around the whole of `hpx_main` with the `[PARCELS]` line after it, and the
 runtime cfg lines without `run_hpx_main` (the program's `hpx_main` is
 locality 0's driver by design).
 
@@ -432,8 +426,8 @@ plugin lists its two component registrations refer to (the app project gives
 each executable its own `HPX_COMPONENT_NAME`, so the runtime's default
 module is not the one they name); *cfg* — the run-everywhere cfg vector
 becomes the runtime defaults, which carry the same `hpx.run_hpx_main` line;
-*markers* — `[HPX]`/`[E2E]` around `do_all_work`'s body, with `[PARCELS]`
-after the end stamp; and *scalar* — the gather loop keeps the partition data
+*markers* — `[HPX]` at the top of `do_all_work`, `[E2E]` around the whole of
+`hpx_main`, with `[PARCELS]` after the end stamp; and *scalar* — the gather loop keeps the partition data
 it already pulls and prints `CHECKSUM %.14g`, the sum of every final
 partition element, by one write.
 
@@ -505,14 +499,12 @@ line; *markers* — `[HPX]` from every locality through a startup function,
 which every locality runs before `hpx_main` starts on any of them, so the
 geometry lines precede the test's own output (it writes its lines in
 pieces, and a launcher merging the streams can drop a marker line into the
-middle of one), `[E2E]` from immediately after the storage allocation (an
-uninitialised `new char[]`) to the return of the read test on locality 0
-(its closing barrier and its statistics output), with `[PARCELS]` after the
-end stamp; *scalar* — two per-locality atomics count the transfers the existing
+middle of one), `[E2E]` around the whole of `hpx_main` on locality 0, the
+only one that finalizes, with `[PARCELS]` after the end stamp; *scalar* — two per-locality atomics count the transfers the existing
 continuations complete (the write continuation that passes on
 `CopyToStorage`'s `TEST_SUCCESS`, the read continuation that returns
-`TEST_SUCCESS` once the bytes are copied), an `all_reduce` after the end
-stamp sums them, and locality 0 prints `TRANSFERS_OK <writes> <reads>` by
+`TEST_SUCCESS` once the bytes are copied), an `all_reduce` after the read
+test sums them, and locality 0 prints `TRANSFERS_OK <writes> <reads>` by
 one write; and *bugfix* — the pointer allocator's `deallocate` checks
 `HPX_TEST_EQ(p == pointer_ && n, size_)`, which compares the `bool`
 `p == pointer_ && n` with the transfer size in bytes and so can never pass
@@ -637,12 +629,10 @@ that needs a numerical library (the vendored FFTW, named in its `LINK` list).
 The dataset's download endpoint builds its archive on request, so the archive
 hash is not reproducible and `PROVENANCE.md` pins the two files by SHA256
 instead. Edits: *cfg* — the run-everywhere vector becomes the runtime
-defaults; *markers* — `[HPX]` once the locality count is known, `[E2E]` from
-just before the array is allocated and filled (so the fill, the plan build
-and both phases are inside) to immediately after the program's own end stamp,
-`[PARCELS]` after that; *scalar* — the program computes no printable quantity
+defaults; *markers* — `[HPX]` once the locality count is known, `[E2E]`
+around the whole of `hpx_main` on locality 0, `[PARCELS]` after that; *scalar* — the program computes no printable quantity
 of its own, so each locality sums its rows and one `all_reduce` makes the
-total, written once as `CHECKSUM %.14g` after the end stamp; and one
+total, written once as `CHECKSUM %.14g`; and one
 *bugfix*.
 
 **The bugfix.** `basenames_` held `const char*` and was filled with

@@ -109,6 +109,8 @@ hpx::future<std::uint64_t> fibonacci_future(std::uint64_t n)
 ///////////////////////////////////////////////////////////////////////////////
 int hpx_main(hpx::program_options::variables_map& vm)
 {
+    arts_hpx::run_clock clock;
+
     // extract command line argument, i.e. fib(N)
     std::uint64_t n = vm["n-value"].as<std::uint64_t>();
     std::string test = vm["test"].as<std::string>();
@@ -145,7 +147,6 @@ int hpx_main(hpx::program_options::variables_map& vm)
     if (test == "all" || test == "1")
     {
         // Keep track of the time required to execute.
-        arts_hpx::run_clock clock;
         std::uint64_t start = hpx::chrono::high_resolution_clock::now();
 
         for (std::size_t i = 0; i != max_runs; ++i)
@@ -156,9 +157,6 @@ int hpx_main(hpx::program_options::variables_map& vm)
         }
 
         std::uint64_t d = hpx::chrono::high_resolution_clock::now() - start;
-        arts_hpx::print_e2e(clock);
-        if (arts_hpx::struct_marker())
-            arts_hpx::print_parcels();
         char const* fmt =
             "fibonacci_future({1}) == {2},elapsed time:,{3},[s],{4}\n";
         hpx::util::format_to(
@@ -185,6 +183,9 @@ int hpx_main(hpx::program_options::variables_map& vm)
             << test << std::endl;
     }
 
+    arts_hpx::print_e2e(clock);
+    if (arts_hpx::struct_marker())
+        arts_hpx::print_parcels();
     return hpx::finalize();    // Handles HPX shutdown
 }
 

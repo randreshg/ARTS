@@ -15,8 +15,6 @@
 apps:
   fib_hpx:
     binary: fib_hpx
-    timing_metric: app_s
-    timing_contract: hpx-origin/fib_hpx/source-interval-v1
     default_enabled: false
     class: task
     provenance: 'HPX quickstart example fibonacci_futures_distributed: distributed Fibonacci over futures and plain actions'
@@ -43,8 +41,6 @@ apps:
 
   stencil1d_hpx:
     binary: stencil1d_hpx
-    timing_metric: app_s
-    timing_contract: hpx-origin/stencil1d_hpx/source-interval-v1
     class: spmd
     provenance: 'HPX example 1d_stencil_8: distributed 1D heat equation, one stepper component per locality, partitions exchanged as components and boundary elements pulled by action'
     kind: app
@@ -82,8 +78,6 @@ apps:
 
   network_storage_hpx:
     binary: network_storage_hpx
-    timing_metric: app_s
-    timing_contract: hpx-origin/network_storage_hpx/source-interval-v1
     class: spmd
     provenance: 'HPX performance test network_storage: bulk put/get of fixed-size transfers between per-locality storage arrays, block-cyclic or random targets at random offsets'
     kind: toy
@@ -120,8 +114,6 @@ apps:
 
   fft_hpx:
     binary: fft_hpx
-    timing_metric: app_s
-    timing_contract: hpx-origin/fft_hpx/source-interval-v1
     class: spmd
     provenance: 'hpx-fft (DaRUS doi:10.18419/darus-4520, Strack and Pflüger): distributed 2D real-to-complex FFT over row-blocked data, two scatter exchanges around the transpose'
     kind: app

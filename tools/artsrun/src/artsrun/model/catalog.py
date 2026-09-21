@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from enum import StrEnum
 from functools import lru_cache
-from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field, model_validator
 
@@ -125,8 +124,6 @@ class AppEntry(BaseModel):
     expect_args: list[str] = Field(default_factory=list)
     tolerance: float = 0.0
     extra_scalars: dict[str, str] = Field(default_factory=dict)
-    timing_metric: Literal["e2e_s", "app_s"] = "e2e_s"
-    timing_contract: str | None = None
 
     args: list[str] = Field(default_factory=list)
     args_by_nodes: dict[int, list[str]] = Field(default_factory=dict)
@@ -226,8 +223,6 @@ class AppEntry(BaseModel):
 
     @model_validator(mode="after")
     def _check_origin(self) -> "AppEntry":
-        if self.timing_metric == "app_s" and not self.timing_contract:
-            raise ValueError(f"{self.name}: app_s requires an explicit timing_contract")
         if self.hpx is not None or self.hpx_tier is not None:
             raise ValueError(
                 f"{self.name}: `hpx`/`hpx_tier` are gone — an HPX program is a"

@@ -18,8 +18,7 @@ from artsrun.run.types import CellResult, Skipped, Status
 
 RESULT_COLUMNS = [
     "app", "version", "nodes", "entry", "kind", "repeat",
-    "status", "rc", "wall_s", "e2e_s", "app_s", "timing_metric",
-    "timing_contract", "scalar", "note", "log",
+    "status", "rc", "wall_s", "e2e_s", "scalar", "note", "log",
     "teardown_hang", "maxrss_kb", "minflt",
 ]
 
@@ -115,8 +114,7 @@ def wall_only(r: CellResult) -> bool:
     to qualify, and saying so of every failure would bury the cases where a
     successful run's number is the weaker kind.
     """
-    return (r.status is Status.OK and r.cell.app.timing_metric == "e2e_s"
-            and r.e2e_s is None)
+    return r.status is Status.OK and r.e2e_s is None
 
 
 # What a row whose arguments change with the node count is: a curve at fixed
@@ -160,9 +158,6 @@ def _row(r: CellResult) -> dict:
         "rc": r.rc,
         "wall_s": round(r.wall_s, 3),
         "e2e_s": round(r.e2e_s, 3) if r.e2e_s is not None else "",
-        "app_s": r.app_s if r.app_s is not None else "",
-        "timing_metric": r.cell.app.timing_metric,
-        "timing_contract": r.cell.app.timing_contract or "",
         "scalar": r.scalar or "",
         "note": _note(r),
         "log": str(r.log_path) if r.log_path else "",
@@ -257,16 +252,7 @@ def scaling_table(results: list[CellResult], entries: list[str]) -> Table:
     every column.
     """
     node_counts = sorted({r.cell.nodes for r in results})
-    contracts: dict[str, tuple[str, str | None]] = {}
-    for r in results:
-        app = r.cell.app
-        contract = (app.timing_metric, app.timing_contract)
-        if contracts.setdefault(app.key, contract) != contract:
-            raise ValueError(f"{app.key}: cannot combine different timing contracts")
-    metrics = {r.cell.app.timing_metric for r in results}
-    label = "app seconds" if metrics == {"app_s"} else (
-        "e2e seconds" if metrics <= {"e2e_s"} else "declared metric, seconds")
-    table = Table(title=f"Strong scaling ({label})", expand=False)
+    table = Table(title="Strong scaling (e2e seconds)", expand=False)
     table.add_column("app", style="bold")
     table.add_column("configuration")
     for n in node_counts:
@@ -276,11 +262,7 @@ def scaling_table(results: list[CellResult], entries: list[str]) -> Table:
     for r in results:
         if r.status is not Status.OK:
             continue
-        measured = r.measured_s
-        if measured is None:
-            if r.cell.app.timing_metric == "app_s":
-                continue
-            measured = r.wall_s
+        measured = r.e2e_s if r.e2e_s is not None else r.wall_s
         key = (r.cell.app.key, r.cell.entry.key)
         walls = by_key.setdefault(key, {})
         # Repeats collapse to their best observation, and the mark follows

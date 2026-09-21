@@ -68,8 +68,7 @@ to wrap the product is rejected rather than wrapped past it.
 
 A rejected argument prints usage and calls `ocrShutdown()` with status 0,
 where the origin's own rejection prints a line and returns without ever
-reaching its timer; the missing `CHECKSUM`/`[APP_E2E]` marker fails the cell
-either way.
+reaching its timer; the missing `CHECKSUM` marker fails the cell either way.
 
 ## Structure
 
@@ -222,9 +221,11 @@ table.
 
 ## Flow
 
-`mainEdt` validates the arguments, reserves the point range, creates the
-`nl`-dependence collect task on rank 0, and forks one driver per rank
-(`mirror_spmd_fork`). A driver creates its rank's gather task and registers
+`mainEdt` validates the arguments, reserves the point range, and hands the
+rest to a root task on rank 0 — a runtime may run `mainEdt` on any rank, and
+the root is where the origin's locality-0 driver starts its clock. The root
+creates the `nl`-dependence collect and shutdown tasks on rank 0 and forks
+one driver per rank (`mirror_spmd_fork`). A driver creates its rank's gather task and registers
 it on its `local_np` final-generation partition points; writes and publishes
 generation `0` — each partition initialised to `local_index · nx + j`, plus
 its two edge elements, which is the origin's initial condition and its
@@ -248,10 +249,10 @@ into one table and wires it into the collect task's slot for its rank; the
 collect task merges all `nl` rank tables into one `np`-entry table and
 starts a serial chain of read tasks, one partition at a time in ascending
 index order, that pulls and releases every final partition once — the
-origin's own serial `s[i].get_data(middle).get()` loop. `[APP_E2E]` is
-stamped after the last of those reads, before the chain hands the same `np`
-names to the sum task as a fresh set of `np` RO dependences (a second full
-acquisition of the grid), which computes and prints `CHECKSUM`. With
+origin's own serial `s[i].get_data(middle).get()` loop. After the last of
+those reads the chain hands the same `np` names to the sum task as a fresh
+set of `np` RO dependences (a second full acquisition of the grid), which
+computes and prints `CHECKSUM`. With
 `--results`, the sum task then starts a second, independent serial read
 chain — the origin's own separate `--results` print loop — that prints
 every partition's values before the timing line and the shutdown release;
@@ -266,19 +267,26 @@ without it, the timing line and the shutdown release follow directly.
 
 Mid waits: 0.
 
-`[APP_E2E]` opens on the HPX side at the top of `do_all_work`'s body — before
-the `np < nl` guard, the stepper component and its AGAS basename
-registration, and `do_work` — and closes with `print_e2e` after the serial
-final reads, before the checksum; the single-argument `print_e2e` makes
-`[APP_E2E] == [E2E]` on that side. The mirror opens after option parsing and
-the affinity count, before the point-range reservation, the twelve
-template creations and the `nl` driver forks (which therefore sit inside the
-mirror's interval only, with no HPX-side counterpart), and closes in the
-last serial read, after the final partition has been pulled and before the
-checksum fan-in is created. Printed exactly once. The runtime's own `[E2E]`
-is still printed on both sides and kept as a separate observation; on the
-OCR side it still ends at shutdown recognition, once every rank's drain has
-completed and the dedicated shutdown task calls `ocrShutdown()`.
+The measurement is `[E2E]` on both sides, stamped on rank/locality 0 alone:
+the whole application, from its first statement to the point it asks the
+runtime to stop, runtime start-up and teardown excluded. On the OCR side the
+runtime stamps it (the main task becoming eligible, shutdown recognised on
+rank 0, once every rank's drain has completed and the dedicated shutdown task
+calls `ocrShutdown()`). On the HPX side every locality runs `hpx_main`;
+`run_clock` opens as its first statement and `print_e2e` closes it, on
+locality 0, immediately before `hpx::finalize()` — locality 0 gathers every
+other locality's partitions before it returns from `do_all_work`, so its end
+is the application's.
+
+The origin's own `Execution_Time_sec` is a different, narrower span and both
+sides keep it where the origin has it: from just before the steppers start to
+the final partitions in hand on locality 0. The mirror takes both of its ends
+on rank 0 — the start in the rank-0 root task that creates the collect and
+shutdown tasks and forks the drivers, never in the main task, which a runtime
+may run on any rank and whose clock is then another node's. The mirror prints
+it, like every floating-point value it prints, in `%e` form where the origin
+uses `%g`: one of the OCR runtimes' `printf` has no `%g` and prints a
+placeholder for it.
 
 `CHECKSUM` is the sum of every element of the final state — the simplest
 digest of what the program already holds, since `1d_stencil_8` computes no

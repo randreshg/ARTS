@@ -57,7 +57,6 @@ def extract(text: str, marker: str, scalar_re: str) -> tuple[bool, str | None]:
 # while trailing text still disqualifies a line so a sentence that merely
 # mentions the token cannot be read as a stamp.
 _E2E_RE = re.compile(r"\[E2E\]\s+(\d+)\s*$", re.M)
-_APP_E2E_RE = re.compile(r"\[APP_E2E\]\s+(\d+)\s*$", re.M)
 
 # One line per violated check, printed by the CPU-envelope wrapper every
 # reference rank runs under.  The line, not the exit code, is the signal: a
@@ -148,8 +147,6 @@ def apply_to(result: CellResult) -> CellResult:
     completed, scalar = extract(text, result.cell.app.marker, result.cell.app.scalar_re)
     result.scalar = scalar
     result.e2e_s = extract_e2e(text)
-    app_stamps = _APP_E2E_RE.findall(text)
-    result.app_s = int(app_stamps[0]) / 1e9 if len(app_stamps) == 1 else None
     result.extra.update(extract_extra(text, result.cell.app.extra_scalars))
     result.extra.update(extract_rusage(text))
     # Both demotions run BEFORE the timeout-leniency promotion below: a cell
@@ -159,11 +156,6 @@ def apply_to(result: CellResult) -> CellResult:
     if envelope:
         result.status = Status.FAIL
         result.note = f"envelope: {envelope.group(1)}"
-        return result
-    if result.cell.app.timing_metric == "app_s" and len(app_stamps) != 1:
-        if result.status is Status.OK or completed:
-            result.status = Status.FAIL
-            result.note = f"expected one [APP_E2E] stamp, found {len(app_stamps)}"
         return result
     stamps = len(_E2E_RE.findall(text))
     if stamps > 1:

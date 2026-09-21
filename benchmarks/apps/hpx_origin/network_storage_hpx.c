@@ -6,7 +6,7 @@
 enum { P_SLOTS, P_BYTES, P_ITERS, P_NL, P_RANK, P_ALL2ALL, P_NOLOCAL, P_RANDOM,
        P_TEST, P_TURN, P_BARRIER, P_RANGE, P_FINAL, P_TURN_TPL, P_RELAY_TPL,
        P_TALLY_TPL, P_PUT_TPL, P_GET_TPL, P_LAND_TPL, P_COMPLETE_TPL,
-       P_COUNTERS, P_TO, P_OFFSET, P_BLOCKS, P_STORAGE, P_START, P_OPTIONS, P_RESULTS, P_INDEX,
+       P_COUNTERS, P_TO, P_OFFSET, P_BLOCKS, P_STORAGE, P_OPTIONS, P_RESULTS, P_INDEX,
        P_SRC_ALIAS, P_COUNT };
 
 /* The origin sizes a per-locality array at compile time and refuses to run
@@ -413,7 +413,6 @@ static ocrGuid_t tally_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   u64 rank = pv[P_RANK];
   if (rank == 0) PRINTF("\n");
   report_test(pv, depv[2].ptr, depv[3].ptr);
-  if (rank == 0) mirror_app_e2e(pv[P_START]);
   ocrEventDestroy(release_point(pv, BARRIER_COUNT - 1, rank));
   ocrHint_t dh;
   mirror_rank_hint(&dh, rank, OCR_HINT_DB_T);
@@ -467,7 +466,6 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
                          DB_PROP_NO_ACQUIRE, &dh, NO_ALLOC) != 0;
   }
   if (failed) { free(storage); PRINTF("network_storage_hpx: out of memory\n"); ocrShutdown(); return NULL_GUID; }
-  pv[P_START] = mirror_now_ns();
   ocrGuid_t table, state; ocrGuid_t *names; state_t *st;
   ocrDbCreate(&table, (void **)&names, (blocks ? blocks : 1) * sizeof(*names), DB_PROP_NONE, &dh, NO_ALLOC);
   memcpy(names, storage, blocks * sizeof(*names)); free(storage);

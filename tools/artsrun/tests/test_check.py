@@ -60,36 +60,16 @@ def test_e2e_marker_is_parsed_in_seconds():
     assert extract_e2e("noise\n[E2E] 1500000000\n") == 1.5
 
 
-def test_application_timing_is_separate_from_runtime_timing(tmp_path):
-    app = _app(timing_metric="app_s", timing_contract="source-interval-v1")
+def test_the_runtime_stamp_is_the_measurement_whatever_else_a_log_carries(tmp_path):
+    # A log written before the application-interval marker was retired still
+    # carries its line; the cell is judged and measured by [E2E] alone.
     log = tmp_path / "app.log"
     log.write_text("RESULT = 42\n[APP_E2E] 1250000000\n[E2E] 9000000000\n")
-    result = CellResult(_cell("a", app), Status.OK, log_path=log)
+    result = CellResult(_cell("a", _app()), Status.OK, log_path=log)
     apply_to(result)
     assert result.status is Status.OK
-    assert result.app_s == 1.25
     assert result.e2e_s == 9.0
-    assert result.measured_s == 1.25
-
-
-def test_application_timing_never_falls_back_to_runtime_marker(tmp_path):
-    app = _app(timing_metric="app_s", timing_contract="source-interval-v1")
-    log = tmp_path / "old.log"
-    log.write_text("RESULT = 42\n[E2E] 9000000000\n")
-    result = CellResult(_cell("a", app), Status.OK, log_path=log)
-    apply_to(result)
-    assert result.status is Status.FAIL
-    assert "APP_E2E" in result.note
-
-
-def test_duplicate_application_markers_cannot_select_an_arbitrary_interval(tmp_path):
-    app = _app(timing_metric="app_s", timing_contract="source-interval-v1")
-    log = tmp_path / "duplicate.log"
-    log.write_text("RESULT = 42\n[APP_E2E] 100\n[APP_E2E] 200\n[E2E] 900\n")
-    result = CellResult(_cell("a", app), Status.OK, log_path=log)
-    apply_to(result)
-    assert result.status is Status.FAIL
-    assert "APP_E2E" in result.note
+    assert not hasattr(result, "app_s")
 
 
 def test_e2e_last_marker_wins_and_absence_is_none():

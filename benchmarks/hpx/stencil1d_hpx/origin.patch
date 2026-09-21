@@ -25,16 +25,15 @@
  HPX_REGISTER_COMPONENT(partition_server_type, partition_server)
  
  // HPX_REGISTER_ACTION() exposes the component member function for remote
-@@ -647,6 +656,8 @@
+@@ -647,6 +656,7 @@
  {
      std::vector<hpx::id_type> localities = hpx::find_all_localities();
      std::size_t nl = localities.size();    // Number of localities
 +    arts_hpx::print_geometry();
-+    arts_hpx::run_clock clock;
  
      if (np < nl)
      {
-@@ -678,16 +689,29 @@
+@@ -678,17 +688,27 @@
              });
  
          std::vector<stepper_server::space> solution = overall_result.get();
@@ -51,10 +50,7 @@
          }
  
          std::uint64_t elapsed = hpx::chrono::high_resolution_clock::now() - t;
-+        arts_hpx::print_e2e(clock);
-+        if (arts_hpx::struct_marker())
-+            arts_hpx::print_parcels();
-+
+ 
 +        double checksum = 0.0;
 +        for (partition_data const& d : final_data)
 +            for (std::size_t j = 0; j != d.size(); ++j)
@@ -62,10 +58,30 @@
 +        char line[64];
 +        std::snprintf(line, sizeof line, "CHECKSUM %.14g\n", checksum);
 +        arts_hpx::write_stdout_line(line);
- 
++
          // Print the solution at time-step 'nt'.
          if (print_results)
-@@ -761,7 +785,7 @@
+         {
+@@ -722,6 +742,8 @@
+ ///////////////////////////////////////////////////////////////////////////////
+ int hpx_main(hpx::program_options::variables_map& vm)
+ {
++    arts_hpx::run_clock clock;
++
+     std::uint64_t nt = vm["nt"].as<std::uint64_t>();    // Number of steps.
+     std::uint64_t nx =
+         vm["nx"].as<std::uint64_t>();    // Number of grid points.
+@@ -736,6 +758,9 @@
+ 
+     do_all_work(nt, nx, np, nd);
+ 
++    arts_hpx::print_e2e(clock);
++    if (arts_hpx::struct_marker())
++        arts_hpx::print_parcels();
+     return hpx::finalize();
+ }
+ 
+@@ -761,7 +786,7 @@
  
      // Initialize and run HPX, this example requires to run hpx_main on all
      // localities

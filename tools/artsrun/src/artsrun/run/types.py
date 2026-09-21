@@ -75,7 +75,6 @@ class CellResult:
     rc: int = 0
     wall_s: float = 0.0
     e2e_s: float | None = None
-    app_s: float | None = None
     log_path: Path | None = None
     scalar: str | None = None
     extra: dict[str, str] = field(default_factory=dict)
@@ -86,10 +85,6 @@ class CellResult:
     # flag set rather than as a new status, so a reader can still ask "is
     # this cell OK" with one check.
     teardown_hang: bool = False
-
-    @property
-    def measured_s(self) -> float | None:
-        return getattr(self, self.cell.app.timing_metric)
 
     @property
     def ran(self) -> bool:

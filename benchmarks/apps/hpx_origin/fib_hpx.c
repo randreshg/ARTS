@@ -7,7 +7,7 @@
 
 enum { P_N, P_PARENT, P_SLOT, P_THRESHOLD, P_DIST_AT, P_LOC_REPEAT, P_NL,
        P_FIB_TPL, P_SUM_TPL, P_RUN_TPL, P_RUN, P_RUNS, P_RANK, P_TABLE,
-       P_START, P_TEST, P_QUERY_TPL, P_COUNT_TPL, P_QUERY_RANK, P_COUNT };
+       P_TEST, P_QUERY_TPL, P_COUNT_TPL, P_QUERY_RANK, P_COUNT };
 
 typedef struct { _Atomic u64 next_locality, serial_execution_count; } locality_t;
 
@@ -137,7 +137,6 @@ static ocrGuid_t run_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     start_run(pv, depv[2].ptr, depv[1].ptr, pv[P_RUN] + 1);
     return NULL_GUID;
   }
-  mirror_app_e2e(pv[P_START]);
   locality_t *root = depv[2].ptr;
   PRINTF("fibonacci_future(%lu) == %lu,next_locality,%lu\n", (unsigned long)pv[P_N],
          (unsigned long)value, (unsigned long)atomic_load(&root->next_locality));
@@ -164,7 +163,6 @@ static ocrGuid_t start_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     PRINTF("fibonacci_serial(%lu) == %lu\n", (unsigned long)pv[P_N], (unsigned long)value);
   }
   if (pv[P_TEST] == 0) { ocrShutdown(); return NULL_GUID; }
-  pv[P_START] = mirror_now_ns();
   start_run(pv, depv[0].ptr, depv[1].ptr, 0);
   return NULL_GUID;
 }

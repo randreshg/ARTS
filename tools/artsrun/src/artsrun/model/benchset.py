@@ -9,9 +9,8 @@ only has to carry its deltas.
 from __future__ import annotations
 
 import sys
-from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from artsrun.model.catalog import (AppClass, AppEntry, Catalog, ScalarKind,
                                    Version, expand_repo)
@@ -39,8 +38,6 @@ class ResolvedApp(BaseModel):
     expect_args: list[str] = Field(default_factory=list)
     tolerance: float = 0.0
     extra_scalars: dict[str, str] = Field(default_factory=dict)
-    timing_metric: Literal["e2e_s", "app_s"] = "e2e_s"
-    timing_contract: str | None = None
     args: list[str] = Field(default_factory=list)
     args_by_nodes: dict[int, list[str]] = Field(default_factory=dict)
     unsupported: str | None = None
@@ -58,12 +55,6 @@ class ResolvedApp(BaseModel):
     # and empty otherwise.
     hpx_binary: str | None = None
     hpx_versions: list[Version] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _check_timing(self) -> "ResolvedApp":
-        if self.timing_metric == "app_s" and not self.timing_contract:
-            raise ValueError(f"{self.name}: app_s requires an explicit timing_contract")
-        return self
 
     @property
     def key(self) -> str:
@@ -188,8 +179,6 @@ class Benchset(BaseModel):
                         expect_args=source.expect_args,
                         tolerance=source.tolerance,
                         extra_scalars=source.extra_scalars,
-                        timing_metric=source.timing_metric,
-                        timing_contract=source.timing_contract,
                         args=args,
                         args_by_nodes=args_by_nodes,
                         unsupported=app.unsupported,
