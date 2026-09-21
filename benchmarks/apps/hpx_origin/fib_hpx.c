@@ -30,16 +30,10 @@ static u64 rank_of_index(u64 index, u64 nl, u64 repeat, u64 me) {
   return j < me ? j : j + 1;
 }
 
-/* The origin's serial kernel statement for statement, linkage included: a
- * run is almost entirely this function, so how it is written is what the
- * compiler is given to work with on both sides. */
-u64 fib_serial_sub(u64 n);
-__attribute__((noinline)) u64 fib_serial_sub(u64 n) {
-  if (n < 2)
-    return n;
-  return fib_serial_sub(n - 1) + fib_serial_sub(n - 2);
-}
-static u64 fib_serial(u64 n, locality_t *state) { atomic_fetch_add(&state->serial_execution_count, 1); return fib_serial_sub(n); }
+/* The serial kernel is the row's one shared translation unit
+ * (fib_serial_kernel.c), linked by every runtime's program. */
+uint64_t fibonacci_serial_sub(uint64_t n);
+static u64 fib_serial(u64 n, locality_t *state) { atomic_fetch_add(&state->serial_execution_count, 1); return fibonacci_serial_sub(n); }
 
 /* Deliver a ready value to (parent, slot): the origin's make_ready_future. */
 static void deliver(u64 value, ocrGuid_t parent, u32 slot) {

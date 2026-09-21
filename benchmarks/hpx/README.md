@@ -47,9 +47,14 @@ A program enters the roster only if all five hold.
   geometry line (`common/e2e.hpp`), the runtime cfg lines
   (`common/runtime_defaults.hpp`), a result scalar print, exposing an
   existing constant as a CLI argument, API modernisation of a program
-  written against an older HPX, and a *bugfix* — a defect of the origin that
+  written against an older HPX, a *bugfix* — a defect of the origin that
   would otherwise fail or distort every run, named with its evidence in the
-  program's `ORIGIN.md`. Not allowed: changing the algorithm, the
+  program's `ORIGIN.md` — and a *kernel* — where a row's measured span is one
+  sequential function, that function's definition moves, text unchanged, into
+  one translation unit that every runtime's program links, so the entries
+  differ in their runtimes and not in what two compilations made of the same
+  lines (the practice of cross-runtime benchmarks that keep their kernels in
+  one shared library). Not allowed: changing the algorithm, the
   decomposition, the communication pattern, or the arithmetic — a dubious
   kernel is mirrored as written, not repaired. Every edit is a hunk in the
   program's `origin.patch` (below), regenerated and compared by a test.
@@ -380,11 +385,12 @@ Rows outside parity at the anchor, and what each one is:
   1n column (0.69 at small arguments); the cause is the scheduler's locality named
   above, a runtime property disclosed, not sized around.
 - `stencil1d_hpx` (0.89) and `fib_hpx` (1.17) are inside the parity band.
-  `fib_hpx`'s ratio is not a statement about either runtime: at the
+  `fib_hpx`'s recorded ratio is not a statement about either runtime: at the
   calibrated arguments the span is the serial recursion below the threshold
-  (about `1.3·10¹³` calls against about 21 900 tasks), compiled as C++ on
-  one side and as C on the other, and at one node nothing is spawned
-  remotely.
+  (about `1.3·10¹³` calls against about 21 900 tasks), which was then
+  compiled as C++ on one side and as C on the other, and at one node nothing
+  is spawned remotely. The function is now one shared translation unit (the
+  *kernel* edit), so a ratio recorded after that is the runtimes'.
 
 D14 (`present/D14.md`): from the trend's curve and these anchors, the worst cell of the
 1..32-node sweep is `network_storage_hpx` at 2 nodes, ~48 s projected (58 s with the
@@ -424,7 +430,9 @@ Mirror mapping: one EDT per call the origin spawns (the `n-1` branch always,
 the `n-2` branch where its synchronous call leaves the caller's locality — a
 local `n-2` recurses inline, as in the origin), an 8-byte DB carrying each
 delivered value, a two-slot `sum` EDT standing in for
-`when_all().then()`, and the origin's per-locality round-robin counter and
+`when_all().then()`, the serial recursion below the threshold linked from
+the row's one shared translation unit (`fib_serial_kernel.c`, the *kernel*
+edit — the origin's program links the same archive), and the origin's per-locality round-robin counter and
 serial-execution counter mirrored as a per-rank `locality_t` RW DB — not
 process memory — homed at each rank (`benchmarks/apps/hpx_origin/fib_hpx.c`).
 

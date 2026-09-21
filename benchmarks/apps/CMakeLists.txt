@@ -1515,7 +1515,8 @@ add_bespoke_app(NAME serial_rounds DIR attack SOURCES serial_rounds.c ARTS_ONLY)
 add_bespoke_app(NAME mapreduce_wordcount SOURCES mapreduce_wordcount.c EXTRA_LINK_LIBS m)
 
 # HPX-origin mirrors (sources under hpx_origin/)
-add_bespoke_app(NAME fib_hpx DIR hpx_origin SOURCES fib_hpx.c)
+add_bespoke_app(NAME fib_hpx DIR hpx_origin SOURCES fib_hpx.c
+    EXTRA_LINK_LIBS arts_fib_kernel)
 add_bespoke_app(NAME stencil1d_hpx DIR hpx_origin SOURCES stencil1d_hpx.c)
 add_bespoke_app(NAME network_storage_hpx DIR hpx_origin SOURCES network_storage_hpx.c)
 # Retained library pointers use acquired object identities across tasks.

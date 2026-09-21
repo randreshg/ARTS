@@ -107,11 +107,18 @@ the origin does both in a startup function every locality runs before
 **What the span holds at the calibrated arguments is the serial kernel.** A
 run is about 21 900 tasks against about `1.3·10¹³` calls of the serial
 recursion below the threshold, so the runtime's share of the span is under a
-percent on either side and the row's ratio is, to first order, how two
-compilations of one four-line function compare — the origin's as C++, the
-mirror's as C, same statements, same flags. Interleaved timings of that
-function alone differ by up to a tenth between equally valid compilations of
-it, so a ratio inside that band says nothing about either runtime. And at
+percent on either side. Left to each side's own build, the row's ratio
+would be, to first order, how two compilations of one four-line function
+compare — the origin's as C++, the mirror's as C, same statements, same
+flags — and interleaved timings of that function alone differ by up to a
+tenth between equally valid compilations of it. So the function is one
+translation unit, `fib_serial_kernel.c`, compiled once and linked by all
+four programs (the origin's *kernel* edit declares it `extern "C"` and
+drops its own definition): the span's bulk is the same machine code on
+every entry, starting on a 64-byte boundary in every program — the same
+instructions placed differently against that boundary by four linkers
+measured a tenth apart on their own — and what is left to differ is the
+runtimes. And at
 one rank every routed index resolves to the caller's own locality, so the
 one-node cell spawns nothing remotely: the row's distributed content starts
 at two ranks.

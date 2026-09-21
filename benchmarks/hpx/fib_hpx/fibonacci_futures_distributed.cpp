@@ -54,12 +54,9 @@ struct when_all_wrapper
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-HPX_NOINLINE std::uint64_t fibonacci_serial_sub(std::uint64_t n)
-{
-    if (n < 2)
-        return n;
-    return fibonacci_serial_sub(n - 1) + fibonacci_serial_sub(n - 2);
-}
+// One translation unit for every runtime's program:
+// ../../apps/hpx_origin/fib_serial_kernel.c, this function unchanged.
+extern "C" std::uint64_t fibonacci_serial_sub(std::uint64_t n);
 
 std::uint64_t fibonacci_serial(std::uint64_t n)
 {

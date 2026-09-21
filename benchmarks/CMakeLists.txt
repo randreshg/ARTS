@@ -27,6 +27,19 @@ endif()
 if(ARTS_BUILD_OCRVX)
     add_subdirectory(ocrvx)
 endif()
+# The fib row's serial recursion, compiled once.  At the row's arguments the
+# measured span is this function, so every runtime's program -- the HPX one
+# too -- links this one archive rather than its own compilation of the same
+# four lines: what then differs between the entries is the runtime, and
+# nothing a compiler did to the kernel.  Compiled as an executable's object,
+# which is what it is on every side.
+add_library(arts_fib_kernel STATIC apps/hpx_origin/fib_serial_kernel.c)
+set_target_properties(arts_fib_kernel PROPERTIES
+    POSITION_INDEPENDENT_CODE OFF
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_options(arts_fib_kernel PRIVATE ${BENCH_C_OPT} -fPIE)
+set(ARTS_FIB_KERNEL_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/libarts_fib_kernel.a")
+
 if(ARTS_BUILD_HPX AND ARTS_HPX_AVAILABLE)
     include(ExternalProject)
 
@@ -73,6 +86,7 @@ if(ARTS_BUILD_HPX AND ARTS_HPX_AVAILABLE)
             # in as paths: the app project configures standalone against an
             # install, so it takes prefixes from outside, never targets.
             -DARTS_FFTW_DIR=${ARTS_FFTW_INSTALL_DIR}
+            -DARTS_FIB_KERNEL_ARCHIVE=${ARTS_FIB_KERNEL_ARCHIVE}
             -DARTS_HPXFFT_ROOT=${CMAKE_SOURCE_DIR}/third_party/hpx-fft
             -DARTS_MPIEXEC=${MPIEXEC_EXECUTABLE}
             -DARTS_HPX_SMOKE=${ARTS_HPX_SMOKE}
@@ -86,7 +100,7 @@ if(ARTS_BUILD_HPX AND ARTS_HPX_AVAILABLE)
         TEST_COMMAND ctest --test-dir "${ARTS_HPX_APPS_BUILD_DIR}" --output-on-failure
         BUILD_ALWAYS TRUE
         BUILD_BYPRODUCTS ${_hpx_byproducts}
-        DEPENDS hpx_ep fftw_ep
+        DEPENDS hpx_ep fftw_ep arts_fib_kernel
         LOG_CONFIGURE 1
         LOG_BUILD 1
     )

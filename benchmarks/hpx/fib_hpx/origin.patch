@@ -10,7 +10,23 @@
  #include <atomic>
  #include <cstddef>
  #include <cstdint>
-@@ -106,6 +109,8 @@
+@@ -51,12 +54,9 @@
+ };
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+-HPX_NOINLINE std::uint64_t fibonacci_serial_sub(std::uint64_t n)
+-{
+-    if (n < 2)
+-        return n;
+-    return fibonacci_serial_sub(n - 1) + fibonacci_serial_sub(n - 2);
+-}
++// One translation unit for every runtime's program:
++// ../../apps/hpx_origin/fib_serial_kernel.c, this function unchanged.
++extern "C" std::uint64_t fibonacci_serial_sub(std::uint64_t n);
+ 
+ std::uint64_t fibonacci_serial(std::uint64_t n)
+ {
+@@ -106,6 +106,8 @@
  ///////////////////////////////////////////////////////////////////////////////
  int hpx_main(hpx::program_options::variables_map& vm)
  {
@@ -19,7 +35,7 @@
      // extract command line argument, i.e. fib(N)
      std::uint64_t n = vm["n-value"].as<std::uint64_t>();
      std::string test = vm["test"].as<std::string>();
-@@ -178,6 +183,9 @@
+@@ -178,6 +180,9 @@
              << test << std::endl;
      }
  
@@ -29,7 +45,7 @@
      return hpx::finalize();    // Handles HPX shutdown
  }
  
-@@ -266,7 +274,9 @@
+@@ -266,7 +271,9 @@
  {
      // Initialize and run HPX
      hpx::register_startup_function(&init_globals);

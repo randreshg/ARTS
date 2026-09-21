@@ -119,8 +119,27 @@ function(add_hpx_origin_app)
     endif()
 endfunction()
 
+# The fib row's serial kernel is one translation unit for every runtime's
+# program: the outer tree compiles it once and hands the archive in as a
+# path, like its other inputs.  Configured on its own, this project compiles
+# the same source for the same instruction set.
+set(ARTS_FIB_KERNEL_ARCHIVE "" CACHE FILEPATH
+    "The fib row's serial kernel archive, compiled once by the outer tree")
+if(ARTS_FIB_KERNEL_ARCHIVE AND EXISTS "${ARTS_FIB_KERNEL_ARCHIVE}")
+    add_library(arts_fib_kernel STATIC IMPORTED GLOBAL)
+    set_target_properties(arts_fib_kernel PROPERTIES
+        IMPORTED_LOCATION "${ARTS_FIB_KERNEL_ARCHIVE}")
+else()
+    enable_language(C)
+    add_library(arts_fib_kernel STATIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/../apps/hpx_origin/fib_serial_kernel.c")
+    target_compile_options(arts_fib_kernel PRIVATE
+        -march=native -mtune=native -fPIE)
+endif()
+
 add_hpx_origin_app(NAME fib_hpx
-    SOURCES fibonacci_futures_distributed.cpp)
+    SOURCES fibonacci_futures_distributed.cpp
+    LINK arts_fib_kernel)
 
 add_hpx_origin_app(NAME stencil1d_hpx
     SOURCES 1d_stencil_8.cpp)
