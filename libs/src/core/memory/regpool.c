@@ -365,9 +365,9 @@ static void regpool_store_forced_full_locked(uint64_t mask) {
 /* Read at init, like the force-full knob: print the pool's shape at cleanup. */
 static bool g_report_enabled;
 
-/* Kernels predating the populate advice report EINVAL; there demand
- * faulting is the only behavior available, for the process lifetime.
- * Latched on first sight, by mapping code that runs outside g_lock. */
+/* Kernels predating the populate advice report EINVAL; there a slab is
+ * populated by a write per page instead, for the process lifetime.  Latched
+ * on first sight, by mapping code that runs outside g_lock. */
 static _Atomic bool g_populate_unsupported;
 
 /* Per-thread allocator heap, bound to one exclusive arena at a time.  The
@@ -547,6 +547,50 @@ static size_t regpool_node_avail_bytes(int node) {
   return r;
 }
 
+/* Fault every page of a fresh anonymous mapping whose placement policy is
+ * already set.  False means the range could not be made resident and the
+ * caller must give the mapping up.
+ *
+ * Without the advice a write per page populates and places the range
+ * identically, from this thread alone and with no effect on any other CPU,
+ * but it cannot report: a range its node cannot back ends in the kernel's
+ * out-of-memory handling rather than in a failed map.  The advice fares no
+ * better there — population walks the ordinary fault path either way — so
+ * what keeps a slab within its node is the size it is mapped at, not the
+ * result read here. */
+static bool regpool_populate(void *base, size_t len) {
+  if (!atomic_load_explicit(&g_populate_unsupported, memory_order_relaxed)) {
+    for (int tries = 0;; tries++) {
+      if (madvise(base, len, MADV_POPULATE_WRITE) == 0) {
+        return true;
+      }
+      if (errno == EINVAL) {
+        /* A fresh anonymous mapping admits no other reading of EINVAL than
+         * a kernel without the advice. */
+        break;
+      }
+      if ((errno != EINTR && errno != EAGAIN) || tries >= 1000) {
+        ARTS_WARN("regpool: populate(%zu MiB) failed: %s", len >> 20,
+                  strerror(errno));
+        return false;
+      }
+    }
+    bool expected = false;
+    if (atomic_compare_exchange_strong_explicit(
+            &g_populate_unsupported, &expected, true, memory_order_relaxed,
+            memory_order_relaxed)) {
+      ARTS_WARN("regpool: MADV_POPULATE_WRITE unsupported by this kernel — "
+                "slabs are populated by a write per page");
+    }
+  }
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  volatile unsigned char *bytes = (volatile unsigned char *)base;
+  for (size_t off = 0; off < len; off += page) {
+    bytes[off] = 0;
+  }
+  return true;
+}
+
 /* Map `len` bytes aligned to `align`, apply the NUMA placement preference
  * (`set` non-empty interleaves over it, else `node` is preferred — see
  * regpool_place), populate, and (when a domain is set) register.  Over-maps
@@ -595,28 +639,9 @@ static bool regpool_map_slab(int node, uint64_t set, size_t len, size_t align,
    * over the whole range (populated pages are cheap no-ops); a real failure
    * fails the map so the caller can step down or relocate.  The cost is
    * that a slab commits in full at creation. */
-  if (!atomic_load_explicit(&g_populate_unsupported, memory_order_relaxed)) {
-    for (int tries = 0;; tries++) {
-      if (madvise(base, len, MADV_POPULATE_WRITE) == 0) {
-        break;
-      }
-      if (errno == EINVAL) {
-        /* Unsupported advice on this kernel — a fresh anonymous mapping
-         * admits no other reading of EINVAL.  Not a failure: fall back to
-         * demand faulting for the process lifetime. */
-        atomic_store_explicit(&g_populate_unsupported, true,
-                              memory_order_relaxed);
-        ARTS_WARN("regpool: MADV_POPULATE_WRITE unsupported by this kernel "
-                  "— slabs fall back to demand faulting");
-        break;
-      }
-      if ((errno != EINTR && errno != EAGAIN) || tries >= 1000) {
-        ARTS_WARN("regpool: populate(%zu MiB) failed: %s", len >> 20,
-                  strerror(errno));
-        munmap(base, len);
-        return false;
-      }
-    }
+  if (!regpool_populate(base, len)) {
+    munmap(base, len);
+    return false;
   }
 
   struct fid_mr *mr = NULL;
