@@ -208,9 +208,9 @@ set(NUMACTL_DIST_VERSION "2.0.19")
 set(NUMACTL_DIST_URL "https://github.com/numactl/numactl/releases/download/v${NUMACTL_DIST_VERSION}/numactl-${NUMACTL_DIST_VERSION}.tar.gz")
 set(NUMACTL_DIST_SHA256 "f2672a0381cb59196e9c246bf8bcc43d5568bc457700a697f1a1df762b9af884")
 
-set(OFI_DIST_VERSION "2.6.0")
+set(OFI_DIST_VERSION "2.7.0")
 set(OFI_DIST_URL "https://github.com/ofiwg/libfabric/releases/download/v${OFI_DIST_VERSION}/libfabric-${OFI_DIST_VERSION}.tar.bz2")
-set(OFI_DIST_SHA256 "1ee2ab6eb16462c0fe7a836f9df52b8f12309dfee3f3774aa93a86f521a8e8b1")
+set(OFI_DIST_SHA256 "366000427e194d4ce22e272519b608afbebb1fc9915bcf5da924157a8a47fe10")
 
 set(LIBNL_DIST_VERSION "3.11.0")
 set(LIBNL_DIST_URL "https://github.com/thom311/libnl/releases/download/libnl3_11_0/libnl-${LIBNL_DIST_VERSION}.tar.gz")
