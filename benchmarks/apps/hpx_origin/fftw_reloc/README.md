@@ -82,10 +82,10 @@ operations; the level names what the configured SIMD sets need (AVX2 and FMA)
 rather than the generating host, so the artifact runs on every x86-64 host the
 experiments use and its code does not depend on where it was generated. The
 translated module, its debug metadata stripped, is compiled to assembly with
-`-O3 -fPIC -fno-addrsig -S`; the native HPX side's FFTW is compiled at the
-consuming host's `-march=native`, so the two sides can differ in the
-compiler's own vectorisation of the library's scalar code as well as in
-compiler. SIMD and FMA configuration comes from `ARTS_FFTW_SIMD`. These compilation and
+`-O3 -fPIC -fno-addrsig -S`; the native HPX side's FFTW is compiled at `-O3`
+and the same `-march` level, read from the artifact's stamp, so the two sides
+differ in compiler and translation and not in the instruction set either was
+allowed. SIMD and FMA configuration comes from `ARTS_FFTW_SIMD`. These compilation and
 representation choices add costs: pointer resolution, callback context passing,
 manifest publication, the per-row image attach and lent-buffer binding, and
 unaligned-safe memory accesses. The identity-keyed and offset-ordered arrays

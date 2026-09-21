@@ -580,36 +580,6 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
             LOG_INSTALL 1
         )
 
-        # FFTW as the sequential transform kernel: the distribution is the
-        # program's own, so the library needs neither its threading layer
-        # nor its MPI layer -- only the per-rank one-dimensional transforms.
-        arts_fetch_dist_tarball(FFTW_TARBALL
-            "fftw-${FFTW_DIST_VERSION}.tar.gz" "${FFTW_DIST_URL}" "${FFTW_DIST_SHA256}")
-        set(FFTW_SRC_DIR "${CMAKE_BINARY_DIR}/third_party/fftw-${FFTW_DIST_VERSION}")
-        if(NOT EXISTS "${FFTW_SRC_DIR}/configure")
-            file(ARCHIVE_EXTRACT INPUT "${FFTW_TARBALL}"
-                 DESTINATION "${CMAKE_BINARY_DIR}/third_party")
-        endif()
-        set(ARTS_FFTW_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/fftw_install")
-        ExternalProject_Add(fftw_ep
-            SOURCE_DIR "${FFTW_SRC_DIR}"
-            BINARY_DIR "${CMAKE_BINARY_DIR}/third_party/fftw-build"
-            DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
-            CONFIGURE_COMMAND "${FFTW_SRC_DIR}/configure"
-                --prefix=${ARTS_FFTW_INSTALL_DIR}
-                --enable-static --disable-shared --disable-fortran
-                --disable-mpi --disable-threads --disable-openmp
-                --with-pic ${ARTS_FFTW_SIMD}
-                "CFLAGS=-O3 -march=native -mtune=native"
-            BUILD_COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
-            INSTALL_COMMAND make install
-            BUILD_BYPRODUCTS "${ARTS_FFTW_INSTALL_DIR}/lib/libfftw3.a"
-            LOG_CONFIGURE 1 LOG_BUILD 1 LOG_INSTALL 1)
-        set(ARTS_FFTW_INSTALL_DIR "${ARTS_FFTW_INSTALL_DIR}" PARENT_SCOPE)
-        # The OCR mirror's relocation library is derived from this same
-        # source archive; it takes the archive, not the built library.
-        set(ARTS_FFTW_TARBALL "${FFTW_TARBALL}" PARENT_SCOPE)
-
         set(ARTS_HPX_AVAILABLE ON PARENT_SCOPE)
         set(ARTS_HPX_INSTALL_DIR "${ARTS_HPX_INSTALL_DIR}" PARENT_SCOPE)
         set(HPX_HWLOC_INSTALL_DIR "${HPX_HWLOC_INSTALL_DIR}" PARENT_SCOPE)
@@ -617,6 +587,53 @@ if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
         message(STATUS
             "HPX reference skipped: an MPI C++ implementation is required")
     endif()
+endif()
+
+# FFTW as the sequential transform kernel of the FFT row: the distribution is
+# the program's own, so the library needs neither its threading layer nor its
+# MPI layer -- only the per-rank one-dimensional transforms.  Both sides of
+# the row take it from here, and the OCR side needs nothing else, so it is
+# built with the benchmarks whether or not the HPX reference is.
+if(ARTS_BUILD_BENCHMARKS)
+    arts_fetch_dist_tarball(FFTW_TARBALL
+        "fftw-${FFTW_DIST_VERSION}.tar.gz" "${FFTW_DIST_URL}" "${FFTW_DIST_SHA256}")
+    set(FFTW_SRC_DIR "${CMAKE_BINARY_DIR}/third_party/fftw-${FFTW_DIST_VERSION}")
+    if(NOT EXISTS "${FFTW_SRC_DIR}/configure")
+        file(ARCHIVE_EXTRACT INPUT "${FFTW_TARBALL}"
+             DESTINATION "${CMAKE_BINARY_DIR}/third_party")
+    endif()
+    set(ARTS_FFTW_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/fftw_install")
+    # The OCR side's library is this same source translated once and pinned
+    # at one instruction-set level, which its stamp records.  The library the
+    # HPX side links is compiled at that level too, so the two sides of the
+    # row differ in the translation and not in what the compiler was allowed
+    # to use.
+    set(_fftw_march "x86-64-v3")
+    set(_fftw_stamp "${CMAKE_SOURCE_DIR}/benchmarks/apps/hpx_origin/fftw_reloc/pinned/fftw-reloc.stamp")
+    if(EXISTS "${_fftw_stamp}")
+        file(STRINGS "${_fftw_stamp}" _fftw_stamp_march REGEX "^march=")
+        if(_fftw_stamp_march MATCHES "^march=(.+)$")
+            set(_fftw_march "${CMAKE_MATCH_1}")
+        endif()
+    endif()
+    ExternalProject_Add(fftw_ep
+        SOURCE_DIR "${FFTW_SRC_DIR}"
+        BINARY_DIR "${CMAKE_BINARY_DIR}/third_party/fftw-build"
+        DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
+        CONFIGURE_COMMAND "${FFTW_SRC_DIR}/configure"
+            --prefix=${ARTS_FFTW_INSTALL_DIR}
+            --enable-static --disable-shared --disable-fortran
+            --disable-mpi --disable-threads --disable-openmp
+            --with-pic ${ARTS_FFTW_SIMD}
+            "CFLAGS=-O3 -march=${_fftw_march}"
+        BUILD_COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
+        INSTALL_COMMAND make install
+        BUILD_BYPRODUCTS "${ARTS_FFTW_INSTALL_DIR}/lib/libfftw3.a"
+        LOG_CONFIGURE 1 LOG_BUILD 1 LOG_INSTALL 1)
+    set(ARTS_FFTW_INSTALL_DIR "${ARTS_FFTW_INSTALL_DIR}" PARENT_SCOPE)
+    # The OCR mirror's relocation library is derived from this same
+    # source archive; it takes the archive, not the built library.
+    set(ARTS_FFTW_TARBALL "${FFTW_TARBALL}" PARENT_SCOPE)
 endif()
 
 # The vendored archive as a proper target: a consumer names arts::hwloc and
