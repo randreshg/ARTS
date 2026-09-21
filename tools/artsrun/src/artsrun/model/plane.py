@@ -183,6 +183,20 @@ class Plane(BaseModel):
     def entry_keys(self) -> list[str]:
         return [e.key for e in self.entries]
 
+    def default_entries(self, named: list[str] | None) -> list[str]:
+        """The entries a campaign runs when it names none: the ones its
+        profile lists, in the plane's order, or all of them.  A name the plane
+        does not have is refused rather than dropped — a list that silently
+        shrank would leave a study running less than it states."""
+        if named is None:
+            return self.entry_keys
+        wanted = [modern_entry_key(k) for k in named]
+        unknown = [k for k in wanted if k not in self.entry_keys]
+        if unknown:
+            raise ValueError(
+                f"profile lists unknown plane entries: {', '.join(unknown)}")
+        return [k for k in self.entry_keys if k in wanted]
+
     def columns(self) -> list[tuple[Release, Write]]:
         """Column order: the write policy groups, the release policy divides.
 

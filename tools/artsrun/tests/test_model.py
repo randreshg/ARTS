@@ -73,6 +73,52 @@ def test_the_db_wrf_section_offers_flush_and_draws_its_retired_arm():
     assert entry.binary("nqueens", hinted=False) == "nqueens_arts_wrf_flush"
 
 
+def test_a_profile_names_the_entries_its_campaigns_run_unasked():
+    plane = load_plane()
+    assert plane.default_entries(None) == plane.entry_keys
+    # Plane order, whatever order the profile wrote them in.
+    assert plane.default_entries(["hpx", "arts_val_wb"]) == ["arts_val_wb", "hpx"]
+    with pytest.raises(ValueError, match="unknown plane entries: nope"):
+        plane.default_entries(["arts_val_wb", "nope"])
+
+
+def test_the_dane_profiles_leave_the_db_wrf_section_out():
+    from artsrun import store
+
+    plane = load_plane()
+    for name in ("dane", "dane-p1", "dane-p8"):
+        keys = plane.default_entries(store.load_profile(name).entries)
+        assert "arts_wrf_flush" not in keys
+        assert all(plane.entry(k).model == "OCR" for k in keys)
+        assert len(keys) == len(plane.entry_keys) - 1
+    # A profile that says nothing still runs everything.
+    assert store.load_profile("ferrari-local").entries is None
+
+
+def test_every_profile_field_is_one_the_form_carries():
+    """The screens rebuild a profile from the form's fields, so a field the
+    form does not know is silently reset to its default in every campaign
+    started from them."""
+    from pydantic import BaseModel
+
+    from artsrun.model.profile import Profile
+    from artsrun.tui import form
+
+    def keys(model: type[BaseModel], prefix: str = "") -> set[str]:
+        out: set[str] = set()
+        for name, info in model.model_fields.items():
+            inner = [a for a in getattr(info.annotation, "__args__", ())
+                     if isinstance(a, type) and issubclass(a, BaseModel)]
+            if inner:
+                out |= keys(inner[0], f"{prefix}{name}.")
+            else:
+                out.add(f"{prefix}{name}")
+        return out
+
+    carried = {spec.key for spec in form.PROFILE_FIELDS} | {"name", "nodes"}
+    assert keys(Profile) - carried == set()
+
+
 def test_grid_entries_belong_to_the_ocr_model():
     plane = load_plane()
     assert {e.model for e in plane.entries if e.cell and "/" in e.cell and e.cell.count("/") == 2} == {"OCR"}

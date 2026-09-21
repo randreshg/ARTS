@@ -156,7 +156,20 @@ cell's own timeout, so the backfill scheduler can slot short jobs early;
 the in-job `timeout -k` fires first, which is what lets even a timed-out
 cell write its marker. `slurm.build_partition` (e.g. a debug partition)
 and `slurm.build_cpus` (default 8) shape where and how wide build work
-queues.
+queues. The one thing a site does meter is how many jobs one user may have
+submitted, and a full roster is several thousand cells: `slurm.max_queued`
+keeps at most that many of a campaign's jobs in the queue, pending or
+running, and submits the rest as they end. With a cap the submitter has work
+left until the last cell is out, so a campaign whose submitter died is
+continued with `--resume` rather than merely watched.
+
+A profile may also name the plane `entries` its campaigns run. The plane
+holds every protocol any study uses, and a study that leaves some out — the
+DB-WRF section, say — states it once in its profile rather than on every
+command line: those are the entries a run with no `-e` takes, and the ones
+the Coherence screen starts with checked. Naming an entry with `-e`, or
+checking it on the screen, still runs it; a profile without the field runs
+everything.
 
 Only what a campaign actually decides is a field. The width a run occupies
 follows from workers + progress, so nothing else states a core count: a local

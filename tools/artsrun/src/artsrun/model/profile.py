@@ -38,10 +38,9 @@ class SshSettings(BaseModel):
 class SlurmSettings(BaseModel):
     """Submission parameters.
 
-    Each cell is its own exclusive job, submitted up front — scheduling the
-    queue is Slurm's whole purpose, so no budget of ours meters it, and the
-    campaign survives the submitting login node because every job records
-    its own outcome.
+    Each cell is its own exclusive job — scheduling the queue is Slurm's whole
+    purpose, so no node budget of ours meters it, and every job records its
+    own outcome, so what is already queued survives the submitting login node.
     """
 
     model_config = _STRICT
@@ -55,6 +54,14 @@ class SlurmSettings(BaseModel):
     build_cpus: int = Field(default=8, ge=1)
     account: str | None = None
     qos: str | None = None
+    # The most jobs of this campaign that sit in the queue, pending or
+    # running, at one time.  A site caps the jobs one user may have submitted,
+    # and a campaign of several thousand cells crosses it; the rest are
+    # submitted as these finish.  Unset submits everything up front.  With a
+    # cap the submitter has work left until the last cell is out, so a
+    # submitter that dies is continued with --resume rather than merely
+    # watched.
+    max_queued: int | None = Field(default=None, ge=1)
     # srun's --mpi plugin for the reference cells (pmi2/pmix).  Unset relies
     # on the site's MpiDefault; set it when the site default cannot form the
     # MPI world — the failure that produces is otherwise SILENT (each rank
@@ -144,6 +151,12 @@ class Profile(BaseModel):
 
     cell_timeout_s: int = Field(default=300, ge=1)
     repeats: int = Field(default=1, ge=1)
+
+    # The plane entries a campaign under this profile runs when it names none,
+    # and the ones the selection screens start with checked.  The plane holds
+    # every protocol any study uses; a study that leaves some out says so
+    # here, once, instead of on every command line.  Unset means all of them.
+    entries: list[str] | None = Field(default=None, min_length=1)
 
     # Wrap every cell's binary in a getrusage witness (`/usr/bin/time -v`) to
     # recover peak resident set size and minor-fault counts alongside the

@@ -40,6 +40,12 @@ PROFILE_FIELDS: list[FieldSpec] = [
     FieldSpec("cell_timeout_s", "cell timeout (s)", "int",
               "wall budget per cell unless the application overrides it",
               example="300"),
+    FieldSpec("entries", "plane entries", "str_list",
+              "the plane entries a campaign under this profile runs when it "
+              "names none, and the ones the Coherence screen starts with "
+              "checked — a study that leaves some protocols out says so here "
+              "once. Names as `artsrun plane` prints them (empty = all)",
+              example="arts_val_wb,xsocr,hpx", optional=True),
 
     FieldSpec("provider", "provider", "choice",
               "data plane: tcp anywhere, verbs;ofi_rxm on InfiniBand (one "
@@ -110,6 +116,10 @@ PROFILE_FIELDS: list[FieldSpec] = [
     FieldSpec("core_dump", "core dumps", "bool",
               "let a crashing rank write a core file for post-mortem "
               "debugging, at the cost of disk on a bad run", section="flags"),
+    FieldSpec("rusage_witness", "rusage witness", "bool",
+              "wrap every rank in `/usr/bin/time -v` to record peak resident "
+              "set and minor faults beside the runtime's own stamp; a node "
+              "without the binary runs unwrapped", section="flags"),
 
     FieldSpec("slurm.partition", "partition", "text",
               "which set of nodes the cells run on — clusters group their "
@@ -133,6 +143,22 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "quality-of-service policy: the priority and resource limits "
               "the jobs run under (empty = the default QoS)",
               example="normal", optional=True, section="slurm"),
+    FieldSpec("slurm.max_queued", "max queued jobs", "int",
+              "the most jobs of one campaign in the queue at a time, pending "
+              "or running; the rest are submitted as these end. For a site "
+              "that caps a user's submitted jobs. The submitter must then "
+              "stay alive, or be continued with --resume, until the last "
+              "cell is out (empty = submit everything up front)",
+              example="5000", optional=True, section="slurm"),
+    FieldSpec("slurm.mpi", "srun --mpi", "text",
+              "srun's MPI plugin for the reference cells (pmi2/pmix), for a "
+              "site whose default cannot form the MPI world — a failure that "
+              "is otherwise silent, each rank succeeding alone "
+              "(empty = the site default)",
+              example="pmix", optional=True, section="slurm"),
+    FieldSpec("slurm.extra_sbatch", "extra sbatch args", "str_list",
+              "further arguments every job's sbatch line carries",
+              example="--exclude=n17", optional=True, section="slurm"),
     FieldSpec("slurm.poll_interval_s", "poll interval (s)", "float",
               "how often a submitted job's state is checked; longer is "
               "gentler on a busy controller",
@@ -309,9 +335,11 @@ def blank_values() -> dict[str, Any]:
         "repeats": "1", "cell_timeout_s": "300", "stack_size_mb": "256",
         "provider": "", "net_interface": "", "route_table_size": "16",
         "regpool_slab_mb": "", "ports": "", "hosts": "",
-        "pin": True, "core_dump": False,
+        "pin": True, "core_dump": False, "rusage_witness": False,
+        "entries": "",
         "slurm.partition": "", "slurm.build_partition": "", "slurm.build_cpus": "",
         "slurm.account": "", "slurm.qos": "", "slurm.poll_interval_s": "",
+        "slurm.max_queued": "", "slurm.mpi": "", "slurm.extra_sbatch": "",
         "flux.queue": "", "flux.build_queue": "", "flux.build_cpus": "",
         "flux.build_time": "", "flux.bank": "", "flux.pmi": "",
         "flux.mpibind": True, "flux.extra_batch": "", "flux.extra_run": "",

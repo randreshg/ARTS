@@ -1,13 +1,19 @@
-"""Submit each cell as its own node-exclusive Slurm job, all at once.
+"""Submit each cell as its own node-exclusive Slurm job.
 
 There is no long-lived allocation: a cell gets exactly the nodes it needs and
 nothing else runs on them, so a runtime only ever observes the nodes of its own
 job.  Every job is submitted up front — scheduling is Slurm's whole purpose,
-so no admission budget stands between the campaign and the queue — and each
-job writes its own outcome marker on the shared filesystem as it ends.  The
+so no node budget stands between the campaign and the queue — and each job
+writes its own outcome marker on the shared filesystem as it ends.  The
 submitting process is thereby optional: a login node may die with the queue
 full, and any later look at the run directory reconstructs what happened
 from the markers alone.
+
+The one thing a site does meter is how many jobs a user may have submitted,
+and a campaign can be larger than that.  `slurm.max_queued` keeps at most
+that many of the campaign's jobs in the queue and submits the rest as they
+end; the submitter then has work left until the last cell is out, and a
+campaign whose submitter died is continued with --resume.
 """
 
 from __future__ import annotations
@@ -170,8 +176,9 @@ def sbatch_argv(cell: Cell, profile: Profile, log_path: Path) -> list[str]:
 
 
 class SlurmBackend:
-    # Scheduling a full queue is Slurm's job, not this process's: every cell
-    # is admitted immediately, and nothing here meters the cluster.
+    # Scheduling a full queue is Slurm's job, not this process's: nothing
+    # here meters the cluster's nodes, and without a cap on queued jobs every
+    # cell is admitted immediately.
     UNBOUNDED = 1 << 30
 
     def __init__(self, profile: Profile, log_dir: Path):
@@ -181,13 +188,15 @@ class SlurmBackend:
         self.settings = profile.slurm
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.capacity = self.UNBOUNDED
+        # Unmetered unless the site's cap on submitted jobs says otherwise; a
+        # cap counts jobs, whatever their width.
+        self.capacity = self.settings.max_queued or self.UNBOUNDED
         self._jobs: dict[str, CellResult] = {}
         self._submitted_at: dict[str, float] = {}
         self._running_at: dict[str, float] = {}
 
     def cost(self, cell: Cell) -> int:
-        return cell.nodes
+        return 1 if self.settings.max_queued else cell.nodes
 
     # -- submission --------------------------------------------------------
     def submit(self, cell: Cell) -> CellResult:

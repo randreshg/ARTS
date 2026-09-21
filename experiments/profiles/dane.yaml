@@ -28,6 +28,9 @@ ports: [25000]
 
 slurm:
   poll_interval_s: 10
+  # The site refuses new jobs once a user has 10 000 submitted; a full
+  # roster is several thousand cells, and other work shares the limit.
+  max_queued: 5000
 
 cell_timeout_s: 1800
 # Five measurements per cell: the scaling reading is the median with a
@@ -38,3 +41,9 @@ repeats: 5
 # alongside the runtime's own e2e stamp; guarded at launch, so a compute
 # node without the witness binary simply runs without it.
 rusage_witness: true
+# The entries this study measures: the OCR plane with its two references, and
+# HPX.  The DB-WRF section is another study's and is never part of a campaign
+# here unless it is named with -e.
+entries: [arts_excl_purge, xsocr, arts_excl_retain, arts_inv_wt_purge,
+          arts_inv_wt, arts_inv_wb, ocrvx, arts_val_wt_purge, arts_val_wt,
+          arts_val_wb, hpx]

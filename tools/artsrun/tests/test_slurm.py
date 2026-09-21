@@ -199,3 +199,60 @@ def test_local_openmpi_gets_oversubscribe_and_bind_to_none(monkeypatch):
     # meant to colocate in their taskset blocks.
     assert "--map-by" not in multi
     assert "ppr:1:node" not in multi
+
+
+# -- a cap on queued jobs ----------------------------------------------------
+def test_without_a_cap_every_slurm_cell_is_admitted_at_once(tmp_path):
+    from artsrun.run.slurm import SlurmBackend
+
+    backend = SlurmBackend(_slurm_profile(), tmp_path)
+    assert backend.capacity == SlurmBackend.UNBOUNDED
+    assert backend.cost(_cell(RuntimeKind.ARTS, 4)) == 4
+
+
+def test_a_cap_on_queued_jobs_counts_jobs_not_nodes(tmp_path):
+    from artsrun.run.slurm import SlurmBackend
+
+    backend = SlurmBackend(_slurm_profile(max_queued=3), tmp_path)
+    assert backend.capacity == 3
+    assert backend.cost(_cell(RuntimeKind.ARTS, 1)) == 1
+    assert backend.cost(_cell(RuntimeKind.ARTS, 4)) == 1
+
+
+def test_a_capped_campaign_keeps_at_most_that_many_jobs_out(tmp_path):
+    """The admission loop is the one every launcher shares; a job cap is a
+    capacity in jobs, so ten one-job cells under a cap of three never have
+    more than three in flight."""
+    from artsrun.run.scheduler import Scheduler, WallCache
+    from artsrun.run.slurm import SlurmBackend
+    from artsrun.run.types import CellResult, Status
+
+    class Counting(SlurmBackend):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.out = 0
+            self.peak = 0
+
+        def submit(self, cell):
+            self.out += 1
+            self.peak = max(self.peak, self.out)
+            return CellResult(cell=cell, status=Status.SUBMITTED)
+
+        def poll(self, result):
+            self.out -= 1
+            result.status = Status.OK
+            result.rc = 0
+            return result
+
+        def shutdown(self):
+            pass
+
+    backend = Counting(_slurm_profile(max_queued=3), tmp_path)
+    import dataclasses
+
+    cells = [dataclasses.replace(_cell(RuntimeKind.ARTS, 2), repeat=i + 1)
+             for i in range(10)]
+    done = Scheduler(backend, cells, WallCache(tmp_path / "walls.json"),
+                     poll_interval_s=0.0).run()
+    assert len(done) == 10
+    assert backend.peak == 3

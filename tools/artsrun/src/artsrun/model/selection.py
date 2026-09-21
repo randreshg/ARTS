@@ -227,7 +227,8 @@ class Selection(BaseModel):
         *,
         build_dir: str | None = None,
     ) -> "Selection":
-        """The default state of the selection screens: all of it."""
+        """The default state of the selection screens: every application the
+        roster enables, on the profile's entries or on all of them."""
         apps = {
             app.name: benchset.versions_for(app)
             for app in catalog.rows
@@ -236,7 +237,7 @@ class Selection(BaseModel):
         return cls(
             profile=profile.name,
             benchset=benchset.name,
-            entries=plane.entry_keys,
+            entries=plane.default_entries(profile.entries),
             apps=apps,
             node_counts=list(profile.nodes),
             repeats=profile.repeats,

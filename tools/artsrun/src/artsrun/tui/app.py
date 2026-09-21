@@ -80,7 +80,8 @@ class ArtsRunApp(App):
         yield Header()
         with TabbedContent(initial="tab-plane"):
             with TabPane("Coherence", id="tab-plane"):
-                yield PlanePanel(self.plane, id="plane")
+                yield PlanePanel(self.plane, entries=self.profile.entries,
+                                 id="plane")
             with TabPane("Profile", id="tab-profile"):
                 yield ProfilePanel(self.profile, id="profile")
             with TabPane("Applications", id="tab-bench"):
@@ -199,6 +200,7 @@ class ArtsRunApp(App):
         if str(event.value) != self.profile.name:
             self.query_one("#profile", ProfilePanel).reload(str(event.value))
             self.profile = self.query_one("#profile", ProfilePanel).profile
+            self.query_one("#plane", PlanePanel).select(self.profile.entries)
             self._refresh_size()
 
     @on(Button.Pressed, "#run-button")

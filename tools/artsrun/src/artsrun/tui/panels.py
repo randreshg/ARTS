@@ -38,9 +38,26 @@ class PlanePanel(Vertical):
     WB×PURGE cell, is the point of showing the axes as axes.
     """
 
-    def __init__(self, plane: Plane, **kwargs):
+    def __init__(self, plane: Plane, *, entries: list[str] | None = None,
+                 **kwargs):
         super().__init__(**kwargs)
         self.plane = plane
+        self._entries = entries
+
+    def on_mount(self) -> None:
+        self.select(self._entries)
+
+    def select(self, entries: list[str] | None) -> None:
+        """Check what a profile lists — everything when it lists nothing.  A
+        list the plane cannot honour leaves everything checked and says so,
+        rather than starting a campaign on part of what the profile states."""
+        try:
+            wanted = set(self.plane.default_entries(entries))
+        except ValueError as exc:
+            self.app.notify(str(exc), severity="error")
+            wanted = set(self.plane.entry_keys)
+        for toggle in self.toggles:
+            toggle.value = toggle.ident in wanted
 
     def compose(self) -> ComposeResult:
         yield Static("[b]OCR coherence plane[/b]  [dim]which protocol "

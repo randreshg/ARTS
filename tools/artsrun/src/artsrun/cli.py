@@ -277,7 +277,8 @@ def run_cmd(
     counters: str = typer.Option(None, "--counters", "-c",
                                  help="counter set to compile in"),
     entries: str = typer.Option(None, "--entries", "-e",
-                                help="comma-separated plane entries (default: all)"),
+                                help="comma-separated plane entries (default: the "
+                                     "profile's `entries`, or all)"),
     apps: str = typer.Option(None, "--apps", "-a",
                              help="app[:version[+version]] list (default: benchset)"),
     nodes: str = typer.Option(None, "--nodes", "-n",
@@ -321,7 +322,10 @@ def run_cmd(
         if not profile:
             _fail("--profile is required unless --resume or --from names a run")
         plane, catalog, prof, bs = _load(profile, benchset)
-        keys = _split(entries) or plane.entry_keys
+        try:
+            keys = _split(entries) or plane.default_entries(prof.entries)
+        except ValueError as exc:
+            _fail(str(exc))
         unknown = [k for k in keys if k not in plane.entry_keys]
         if unknown:
             _fail(f"unknown plane entries: {', '.join(unknown)}")

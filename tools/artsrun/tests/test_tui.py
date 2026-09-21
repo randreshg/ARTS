@@ -1309,3 +1309,23 @@ def test_only_unfinished_runs_are_offered():
     # A completed campaign has nothing left to run, so offering it would be
     # offering a no-op.
     assert offered <= resumable
+
+
+def test_a_profile_that_lists_entries_starts_the_plane_with_those_checked():
+    async def main():
+        app = ArtsRunApp(profile="dane", benchset="controls-gate")
+        async with app.run_test(size=(160, 50)) as pilot:
+            await pilot.pause()
+            plane = app.query_one("#plane", PlanePanel)
+            panel = app.query_one("#profile", ProfilePanel)
+            return sorted(plane.selected()), panel.effective_profile()
+
+    import asyncio
+
+    entries, effective = asyncio.run(main())
+    assert "arts_wrf_flush" not in entries
+    assert len(entries) == 11
+    # What the form does not show as a box of its own still reaches the run.
+    assert effective.rusage_witness is True
+    assert effective.entries is not None and "arts_wrf_flush" not in effective.entries
+    assert effective.slurm.max_queued == 5000
