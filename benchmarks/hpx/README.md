@@ -691,8 +691,8 @@ that as usage instead, the one place it is stricter.
 | HPX wait site | classification | mirror |
 |---|---|---|
 | each `for_loop(par, …)` phase | driver wait — a phase barrier | that phase's per-rank join |
-| `communication_futures_[i].get()`, generation 1 | driver wait — the exchange (O4) | each transpose task's `nl` point dependences |
-| `communication_futures_[i].get()`, generation 2 | driver wait — the exchange (O4) | each final transpose's `nl` point dependences |
+| `communication_futures_[i].get()`, generation 1 | driver wait — the exchange (O4) | the transpose scope's `nl` control dependences on the arrivals' points |
+| `communication_futures_[i].get()`, generation 2 | driver wait — the exchange (O4) | the final transpose scope's `nl` control dependences on the arrivals' points |
 | `all_reduce(…).get()` (the added tally) | end — collective, every locality present | the sum task's `nl` rank shares |
 
 Mid waits: 0; the two O4 waits are the origin's own driver loop gathering the
@@ -723,17 +723,23 @@ names, `2·nl(nl−1)` of them crossing a rank. Those counts hold where a
 labeled range is homed by index, which is what ARTS and ocr-vx do
 (`index % nranks`); xsocr homes a whole reserved range at the PD that
 reserved it, so there every point lives at rank 0 and no publish is free.
-A chunk has several readers — every transpose task of the destination reads
-all `nl` arrivals — so a reap task depending on the first exchange's points
-destroys those blocks and points where the origin's second gather assignment
-frees the first exchange's receive vectors. Of what the origin allocates,
+An arrival is acquired only by the tasks that read its bytes: the scope task
+joins the arrivals' points with control dependences, and each transpose
+registers on its source's point read-only — one acquisition turn for the
+origin's one delivery, where an acquisition taken to learn a name, to join or
+to destroy would be another delivery on any arm that returns a copy at the
+end of a read turn. A chunk has several readers, so a reap task destroys the
+first exchange's blocks — by the names their first readers recorded, without
+acquiring them — and their points, where the origin's second gather
+assignment frees the first exchange's receive vectors. Of what the origin allocates,
 nothing else is destroyed but the two plans: the origin leaks its arrays (`vector_2d` allocates with `new[]`
 under a defaulted destructor) and holds the last arrivals past its end stamp,
 so the mirror leaves the rows, the transposed rows and the second exchange's
-blocks to the runtime's teardown (above one rank the origin's collective
-does release the send buffers it serialised; the mirror's one block per
-chunk is also the arrival, which is held, so it stays — the appdoc's
-teardown paragraph). The end
+blocks to the runtime's teardown. The rule follows the program's objects:
+the origin gives its send buffers to the collective and holds its arrivals,
+and when the collective frees what it was given is its runtime's business;
+the mirror's one block per chunk is the arrival the program holds (the
+appdoc's teardown paragraph). The end
 is the origin's: the sum task is created before the fork with one slot per
 rank, so shutdown sits behind every rank's last work.
 

@@ -114,21 +114,22 @@ source per outer chunk — whenever `4·W ≥ nl`. Per run:
 | `fft1_edt` (r2c transform) | `Kx` — one per chunk of rows | 2 — rows buffer RW, plan image RO |
 | `split1_edt` | `Kx` — one per chunk of rows | `2 + nl` — phase-transform join NULL, rows buffer RO, `nl` outgoing chunk blocks RW |
 | `publish_edt`, phase 1 | 1 | `1 + nl` — split join NULL, `nl` chunk blocks RO |
-| `xpose_scope_edt`, phase 1 | 1 | `1 + nl` — phase gate NULL, `nl` arriving chunks RO |
-| `xpose_outer_edt`, phase 1 | `Kl` — one per chunk of sources | one arriving chunk RO per source of the chunk (`nl` over the phase) |
-| `xpose1_edt` | `nl·Ky` — one per (source, chunk of rows) | 2 — arriving chunk RO, transposed-rows buffer RW |
+| `xpose_scope_edt`, phase 1 | 1 | `1 + nl` — phase gate NULL, the `nl` arrivals' points NULL (a join of their publication, not of their bytes) |
+| `xpose_outer_edt`, phase 1 | `Kl` — one per chunk of sources | 0 |
+| `xpose1_edt` | `nl·Ky` — one per (source, chunk of rows) | 2 — the source's arrival RO through its point, transposed-rows buffer RW; the first chunk of each source 3, adding the names block RW |
 | `fft2_edt` (c2c transform) | `Ky` — one per chunk of rows | 3 — scope output NULL, transposed-rows buffer RW, plan image RO |
 | `split2_edt` | `Ky` — one per chunk of rows | `2 + nl` — phase-transform join NULL, transposed-rows buffer RO, `nl` return chunk blocks RW |
 | `publish_edt`, phase 2 | 1 | `1 + nl` — split join NULL, `nl` chunk blocks RO |
-| `xpose_scope_edt`, phase 2 | 1 | `1 + nl` — phase gate NULL, `nl` arriving chunks RO |
-| `xpose_outer_edt`, phase 2 | `Kl` — one per chunk of sources | one arriving chunk RO per source of the chunk (`nl` over the phase) |
-| `xpose2_edt` | `nl·Ky` — one per (source, chunk of rows) | 2 — arriving chunk RO, rows buffer RW |
-| `reap1_edt` | 1 | `1 + 2·nl` — join NULL, `2·nl` phase-0/1 chunk points RO |
+| `xpose_scope_edt`, phase 2 | 1 | `1 + nl` — phase gate NULL, the `nl` arrivals' points NULL |
+| `xpose_outer_edt`, phase 2 | `Kl` — one per chunk of sources | 0 |
+| `xpose2_edt` | `nl·Ky` — one per (source, chunk of rows) | 2 — the source's arrival RO through its point, rows buffer RW |
+| `reap1_edt` | 1 | `2 + nl` — join NULL, the second exchange's `nl` points NULL, names block RO |
 | `finish_edt` | 1 | 4 — scope output NULL, reap output NULL, rows RO, plan image RW |
 | `sum_edt` (rank 0 only, once) | 1 | `nl` — one share per rank RO |
 | rows buffer `varr` | 1 | `nxl·2·cy` doubles |
 | transposed-rows buffer `warr` | 1 | `nyl·2·cx` doubles |
 | chunk blocks | `2·nl` (`nl` per phase) | `nxl·cypart` doubles (phase 1) / `nyl·cxpart` doubles (phase 2) |
+| names block | 1 | `nl` GUIDs — the first exchange's arrivals, as their readers recorded them |
 | plan image | 1 | see Sizing, below (varies with `--plan`) |
 | rank share | 1 | one double |
 | exchange points (global) | `2·nl²`, of which `2·nl(nl−1)` cross a rank | — |
@@ -137,11 +138,11 @@ source per outer chunk — whenever `4·W ≥ nl`. Per run:
 Per-rank dependence-slot total:
 
 ```
-S = Kx·(4 + nl) + Ky·(5 + nl) + 4·nl·Ky + 8·nl + 9            (+ nl on rank 0)
+S = Kx·(4 + nl) + Ky·(5 + nl) + 4·nl·Ky + 6·nl + 10           (+ nl on rank 0)
 ```
 
 — block and event dependences; each transform and split task adds one
-latch-decrement edge of its output event on top, `2·(Kx + Ky)` in all — and per-rank block count is `4 + 2·nl` (the two buffers, `2·nl` chunk blocks,
+latch-decrement edge of its output event on top, `2·(Kx + Ky)` in all — and per-rank block count is `5 + 2·nl` (the two buffers, `2·nl` chunk blocks, the names block,
 the plan image, one share). The global reservation is `2·nl²` names — two
 phases × one point per (source, destination) pair — which is the whole
 rendezvous this program needs.
@@ -220,23 +221,40 @@ live at rank 0 and every publish costs a message there and a forward. The
 answer is the same on all four runtimes; the traffic is not, and that is
 disclosed rather than equalised.
 
-**A chunk has one producer and several readers** — every transpose task of
-the destination rank reads all `nl` arrivals — so no reader can be its
-destroyer. Each rank has one reap task that depends on the first exchange's
-points and destroys both the blocks and the points, where the origin's
-second gather assignment frees the first exchange's receive vectors.
+**An arrival is acquired by the tasks that read its bytes and by nothing
+else.** The origin receives each chunk once and every transpose of the
+destination reads it in memory; an acquisition taken only to learn a block's
+name, to join on it, or to destroy it would be a second and a third delivery
+wherever a runtime gives a copy back at the end of a read turn (the purge
+arm of EXCL, by definition). So the scope task joins the arrivals' *points*
+with control dependences, the per-source tasks take nothing, and each
+transpose registers on its source's point read-only — the one acquisition
+turn the origin's one delivery corresponds to.
+
+**A chunk has one producer and several readers**, so no reader can be its
+destroyer, and the destroyer must not acquire it either. The first chunk of
+each source's first-phase transposes — a reader, holding the arrival —
+records its name in a small per-rank names block; the rank's one reap task
+takes that block, waits with control dependences for the second split join
+and the second exchange's points, and destroys the first exchange's blocks
+by name and their points, where the origin's second gather assignment frees
+the first exchange's receive vectors.
 
 **What the origin holds to its end, the mirror never destroys.** `vector_2d`
 allocates with `new[]` and its destructor is defaulted, so the rows and the
 transposed rows are leaked outright; the second exchange's arrivals live in
 `communication_vec_` until `hpx_main` returns, after the end stamp. The
 mirror therefore leaves `varr`, `warr` and the second exchange's chunk blocks
-to the runtime's teardown, outside the span on both sides. One asymmetry
-follows from the mapping and favours the OCR side above one rank: the
-origin's send buffers are moved into `scatter_to`, which releases the
-`nl − 1` it serialised inside the span, while a mirror chunk block is one
-object for the send buffer and the arrival — and the arrival is held to the
-end. What the mirror does destroy inside the span is the OCR-only objects —
+to the runtime's teardown, outside the span on both sides. The rule follows
+the program's objects, not either runtime's buffers. The origin's program
+gives its send buffers away (`std::move` into `scatter_to`) and holds its
+arrivals; when the collective frees what it was given — after serialising
+the `nl − 1` that cross, inside the span — is the HPX runtime's business,
+exactly as what becomes of a block's home copy once a reader elsewhere holds
+it is the OCR runtime's. A mirror chunk block is the one program object both
+roles map to, and the program holds it, as an arrival, to the end. Above one
+rank that leaves a free on the HPX side with no OCR counterpart, of
+`(nl − 1)/nl` of a phase's chunk bytes per rank. What the mirror does destroy inside the span is the OCR-only objects —
 the exchange points, the plan image's block, the rank shares — and the two
 FFTW plans `~fft()` names, whose destructor runs after the stamp on the HPX
 side, at `hpx_main`'s return.
@@ -328,11 +346,11 @@ and is covered by the row's `1e-09` tolerance with seven orders to spare.
 |---|---|---|
 | `for_loop(par, …)` over the r2c transforms | driver wait — a phase barrier | the per-rank transform join |
 | `for_loop(par, …)` over `split_vec` | driver wait — a phase barrier | the first publication task waits for all local split outputs |
-| `communication_futures_[i].get()`, phase 1 | driver wait — the exchange (O4, one of two) | each transpose task's `nl` point dependences |
+| `communication_futures_[i].get()`, phase 1 | driver wait — the exchange (O4, one of two) | the transpose scope's `nl` control dependences on the arrivals' points; each transpose then reads its source's arrival through that point |
 | `for_loop(par, …)` over `transpose_y_to_x` | driver wait — a phase barrier | the transpose join |
 | `for_loop(par, …)` over the c2c transforms | driver wait — a phase barrier | the second transform join |
 | `for_loop(par, …)` over `split_trans_vec` | driver wait — a phase barrier | the second publication task waits for all local split outputs; the split latch also gates cleanup |
-| `communication_futures_[i].get()`, phase 2 | driver wait — the exchange (O4, two of two) | each final transpose's `nl` point dependences |
+| `communication_futures_[i].get()`, phase 2 | driver wait — the exchange (O4, two of two) | the final transpose scope's `nl` control dependences on the arrivals' points |
 | `all_reduce(…).get()` (the added tally) | end — collective, every locality present | the sum task's `nl` rank shares |
 
 Mid waits: 0. The two driver waits marked O4 are the origin's own driver
