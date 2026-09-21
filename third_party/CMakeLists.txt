@@ -694,8 +694,11 @@ endif()
 # rdma_cm paths.  What that path serves is Ethernet UD address handles on
 # kernels too old to resolve the destination MAC kernel-side; connected
 # (RC) endpoints established through rdma_cm never enter it.
-# PKG_CONFIG_LIBDIR points at an empty directory so optional host packages
-# (systemd, udev) cannot alter what gets built.  INSTALL_RUNDIR must be a
+# Its configure demands a pkg-config and then asks it only about optional
+# host packages (systemd, libdrm), which must not alter what gets built
+# whatever the host carries.  It is handed one that knows no package, so the
+# answer is the same on every host and no host tool is consulted.
+# INSTALL_RUNDIR must be a
 # short absolute path: the daemon socket path is compiled into librdmacm
 # and a deep build tree would overflow sockaddr_un's sun_path limit.
 # Static consumers must pull hardware-provider objects explicitly
@@ -707,9 +710,13 @@ function(build_rdma_core)
   arts_init_submodule(third_party/rdma-core CMakeLists.txt)
   set(RDMA_CORE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rdma-core")
   set(RDMA_CORE_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/rdma-core")
-  set(RDMA_CORE_EMPTY_PKGCONFIG "${CMAKE_BINARY_DIR}/third_party/pkgconfig_empty")
+  set(RDMA_CORE_NO_PKGCONFIG "${CMAKE_BINARY_DIR}/third_party/pkg-config-none")
   file(MAKE_DIRECTORY ${RDMA_CORE_BUILD_DIR})
-  file(MAKE_DIRECTORY ${RDMA_CORE_EMPTY_PKGCONFIG})
+  file(WRITE "${RDMA_CORE_NO_PKGCONFIG}"
+       "#!/bin/sh\ncase \"$1\" in --version) echo 0.29.2; exit 0;; esac\nexit 1\n")
+  file(CHMOD "${RDMA_CORE_NO_PKGCONFIG}" PERMISSIONS
+       OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+       WORLD_READ WORLD_EXECUTE)
 
   if(NOT CMAKE_BUILD_PARALLEL_LEVEL)
     set(CMAKE_BUILD_PARALLEL_LEVEL 4)
@@ -717,10 +724,9 @@ function(build_rdma_core)
 
   message(STATUS "Configuring rdma-core with prefix: ${RDMA_CORE_INSTALL_DIR}")
   execute_process(
-    COMMAND ${CMAKE_COMMAND} -E env
-        PKG_CONFIG_LIBDIR=${RDMA_CORE_EMPTY_PKGCONFIG}
-        ${CMAKE_COMMAND} -S ${RDMA_CORE_SRC_DIR} -B ${RDMA_CORE_BUILD_DIR}
+    COMMAND ${CMAKE_COMMAND} -S ${RDMA_CORE_SRC_DIR} -B ${RDMA_CORE_BUILD_DIR}
         -GNinja
+        -DPKG_CONFIG_EXECUTABLE=${RDMA_CORE_NO_PKGCONFIG}
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_INSTALL_PREFIX=${RDMA_CORE_INSTALL_DIR}
@@ -780,24 +786,56 @@ if(NOT EXISTS "${RDMA_CORE_INSTALL_DIR}/lib64")
   file(CREATE_LINK "lib" "${RDMA_CORE_INSTALL_DIR}/lib64" SYMBOLIC)
 endif()
 
-# Everything the statically linked verbs provider drags in, as pkg-config
-# describes it (core libraries plus every hardware-provider archive, in
-# link order).  The archives are mutually referential — the static provider
-# table names the providers, the providers call back into the core — so
-# consumers link the set as one group.
-execute_process(
-  COMMAND ${CMAKE_COMMAND} -E env
-      PKG_CONFIG_LIBDIR=${RDMA_CORE_INSTALL_DIR}/lib/pkgconfig
-      pkg-config --static --libs libibverbs librdmacm
-  OUTPUT_VARIABLE RDMA_STATIC_LINK_LINE
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  RESULT_VARIABLE _rdma_pc_rc
-)
-if(NOT _rdma_pc_rc EQUAL 0)
-  message(FATAL_ERROR
-      "pkg-config could not describe the vendored rdma-core static link line")
-endif()
-separate_arguments(RDMA_STATIC_LINK_FLAGS UNIX_COMMAND "${RDMA_STATIC_LINK_LINE}")
+# The static link flags one module's .pc file describes, in the order a
+# static pkg-config query states them: the module's Libs, its Libs.private,
+# then the same for every module it requires.  Read here, from the vendored
+# prefix's own files, so the link line is a function of what was built and
+# of no tool the host may or may not carry.
+function(arts_pc_static_flags pc_dir module out)
+  set(_pc_file "${pc_dir}/${module}.pc")
+  if(NOT EXISTS "${_pc_file}")
+    message(FATAL_ERROR "No ${module}.pc under ${pc_dir}")
+  endif()
+  file(STRINGS "${_pc_file}" _pc_lines)
+  set(_names "")
+  set(_flags "")
+  set(_requires "")
+  foreach(_line IN LISTS _pc_lines)
+    foreach(_name IN LISTS _names)
+      string(REPLACE "\${${_name}}" "${_pc_var_${_name}}" _line "${_line}")
+    endforeach()
+    if(_line MATCHES "^([A-Za-z_][A-Za-z0-9_.]*)=(.*)$")
+      list(APPEND _names "${CMAKE_MATCH_1}")
+      set(_pc_var_${CMAKE_MATCH_1} "${CMAKE_MATCH_2}")
+    elseif(_line MATCHES "^Libs: *(.*)$")
+      set(_libs "${CMAKE_MATCH_1}")
+    elseif(_line MATCHES "^Libs\\.private: *(.*)$")
+      set(_libs_private "${CMAKE_MATCH_1}")
+    elseif(_line MATCHES "^Requires(\\.private)?: *(.*)$")
+      string(REGEX REPLACE "[<>=!]+ *[^ ,]+" "" _required "${CMAKE_MATCH_2}")
+      string(REGEX MATCHALL "[^ ,]+" _required "${_required}")
+      list(APPEND _requires ${_required})
+    endif()
+  endforeach()
+  separate_arguments(_flags UNIX_COMMAND "${_libs} ${_libs_private}")
+  foreach(_module IN LISTS _requires)
+    arts_pc_static_flags("${pc_dir}" "${_module}" _more)
+    list(APPEND _flags ${_more})
+  endforeach()
+  set(${out} "${_flags}" PARENT_SCOPE)
+endfunction()
+
+# Everything the statically linked verbs provider drags in, as the prefix's
+# .pc files describe it (core libraries plus every hardware-provider
+# archive, in link order).  The archives are mutually referential — the
+# static provider table names the providers, the providers call back into
+# the core — so consumers link the set as one group.
+set(RDMA_STATIC_LINK_FLAGS "")
+foreach(_module libibverbs librdmacm)
+  arts_pc_static_flags("${RDMA_CORE_INSTALL_DIR}/lib/pkgconfig" ${_module}
+                       _module_flags)
+  list(APPEND RDMA_STATIC_LINK_FLAGS ${_module_flags})
+endforeach()
 set(RDMA_VERBS_LINK_SET
     "-Wl,--start-group" ${RDMA_STATIC_LINK_FLAGS} "-Wl,--end-group")
 # The same set for links that pass through libtool, which deduplicates
@@ -854,20 +892,12 @@ list(REMOVE_DUPLICATES RDMA_VERBS_ARCHIVES)
 # library is three translation units plus a one-line config.h; its only
 # library-side link dependency is libnl-3 core.
 if(ARTS_OFI_CXI)
-  # libnl's dist tarball ships grammar sources (.l/.y) without their
-  # generated scanners, so flex and bison are genuine build-host
-  # prerequisites for this stack.  A repo-local ./install/bin provisioning
-  # is honored ahead of the host toolchain.
-  find_program(ARTS_FLEX flex HINTS "${CMAKE_SOURCE_DIR}/install/bin")
-  find_program(ARTS_BISON bison HINTS "${CMAKE_SOURCE_DIR}/install/bin")
-  if(NOT ARTS_FLEX OR NOT ARTS_BISON)
-    message(FATAL_ERROR
-        "ARTS_OFI_CXI=ON requires flex and bison to build the vendored "
-        "libnl (its dist tarball ships no generated scanners).  Provision "
-        "them (e.g. under ${CMAKE_SOURCE_DIR}/install/bin) or configure "
-        "with -DARTS_OFI_CXI=OFF.")
-  endif()
-
+  # What this stack takes from libnl is the core library alone: libcxi's
+  # netlink transport calls nothing outside it.  libnl's dist tarball ships
+  # two classifier grammars as .l/.y sources with no generated scanner, but
+  # both belong to its route library, so building the core target and
+  # installing it with the core headers needs no scanner generator — and the
+  # stack adds no build-host prerequisite of its own.
   set(LIBNL_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/libnl_install")
   set(LIBNL_LIB_A "${LIBNL_INSTALL_DIR}/lib/libnl-3.a")
   if(NOT EXISTS "${LIBNL_LIB_A}")
@@ -888,14 +918,14 @@ if(ARTS_OFI_CXI)
     message(STATUS "Configuring libnl ${LIBNL_DIST_VERSION}")
     # Static only: libtool hoists a shared object's absolute path ahead of
     # --as-needed on consumer link lines, where it is then discarded;
-    # archives keep their position.  LEX/YACC are pinned to the resolved
-    # tools so configure cannot silently pick a different host pair.
+    # archives keep their position.
     execute_process(
-      # libnl's configure resolves the tools through FLEX/YACC (its own
-      # prerequisite check tests $FLEX, not $LEX); LEX rides along for the
-      # generated automake rules.
+      # libnl's configure refuses to finish unless FLEX and YACC name
+      # something, whatever is then built.  They name a command that fails,
+      # so a rule that ever reached for a generator would stop the build
+      # instead of picking up whichever pair the host carries.
       COMMAND ${CMAKE_COMMAND} -E env CFLAGS=-fPIC
-          "FLEX=${ARTS_FLEX}" "LEX=${ARTS_FLEX}" "YACC=${ARTS_BISON} -y"
+          FLEX=false LEX=false YACC=false
           ${LIBNL_SRC_DIR}/configure
           --prefix=${LIBNL_INSTALL_DIR}
           --enable-static --disable-shared --disable-cli
@@ -905,11 +935,15 @@ if(ARTS_OFI_CXI)
       message(FATAL_ERROR "Failed to configure libnl")
     endif()
     execute_process(COMMAND make -j${CMAKE_BUILD_PARALLEL_LEVEL}
+          lib/libnl-3.la
       WORKING_DIRECTORY ${LIBNL_BUILD_DIR} RESULT_VARIABLE _rc)
     if(NOT _rc EQUAL 0)
       message(FATAL_ERROR "Failed to build libnl")
     endif()
-    execute_process(COMMAND make install
+    # The install rules take their library list from a variable, so naming
+    # the core library there keeps them from building the rest first.
+    execute_process(COMMAND make install-libLTLIBRARIES
+          install-libnlinclude_netlinkHEADERS lib_LTLIBRARIES=lib/libnl-3.la
       WORKING_DIRECTORY ${LIBNL_BUILD_DIR} RESULT_VARIABLE _rc)
     if(NOT _rc EQUAL 0)
       message(FATAL_ERROR "Failed to install libnl")

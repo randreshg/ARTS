@@ -60,7 +60,7 @@ Dependencies
 | hwloc | pinned in `third_party/CMakeLists.txt` | Bundled | Built from the official release tarball — no system install, no autotools needed. |
 | libfabric | pinned in `third_party/CMakeLists.txt` | Bundled | Built from the official release tarball — no system install, no autotools needed. |
 | rdma-core | pinned submodule (`third_party/rdma-core`) | Bundled | Verbs (RDMA) userspace stack, built statically with CMake; makes the libfabric verbs provider available on every build. |
-| pkg-config, python3 | system | Required | pkg-config describes the bundled rdma-core link set; python3 runs rdma-core's build scripts. |
+| python3, make | system | Required | python3 runs rdma-core's build scripts; make drives the bundled autotools packages. No pkg-config, flex or bison is needed: the bundled stack neither consults the host's packages nor generates a scanner. |
 | CUDA Toolkit | >= 11 (tested) | Optional | Only when `ARTS_USE_GPU=ON`. |
 | MPI | any | Optional | Only needed by the OCR reference benchmarks (`ARTS_BUILD_BENCHMARKS=ON`). |
 
