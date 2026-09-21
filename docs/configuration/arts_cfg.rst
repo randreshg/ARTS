@@ -141,6 +141,19 @@ Networking
        set, this overrides the ambient ``FI_PROVIDER`` environment variable
        for the process — the config is the deliberate, versioned artifact;
        the environment variable is ambient and host-specific.
+   * - ``net_interface``
+     - unset
+     - Interface whose first IPv4 address the endpoint's source address is
+       bound to (exact name, else name prefix). Under ``tcp`` it steers the
+       transport onto that network. Under ``verbs;ofi_rxm`` it makes every
+       rank's fabric address the IPv4 address of that interface (IPoIB,
+       RoCE) and connections are resolved over it; left unset, the verbs
+       stack is pinned to its native address format instead, which a fabric
+       node offers whatever its interfaces carry. Either way every rank
+       opens the same format — an address vector holds exactly one, and the
+       provider on its own leads with a format that follows each node's
+       interfaces. Naming an interface with no usable address is fatal.
+       ``cxi`` ignores the key.
    * - ``regpool_slab_mb``
      - 256
      - Registered-memory base slab size in MB: the first slab carved for a

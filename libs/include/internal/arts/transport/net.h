@@ -224,10 +224,15 @@ struct fid_ep;
  * source address to the first AF_INET address of the interface with that
  * exact name (or, failing that, that name prefix) — the way to steer an IP
  * provider onto a specific network (e.g. IPoIB) when the host's default
- * route points elsewhere.  Ignored for non-IP providers, whose addressing is
- * not interface-based.  Naming an interface that has no usable address is
- * fatal: silently falling back to the default route would move all data
- * traffic to the wrong network. */
+ * route points elsewhere.  The verbs stack takes it the same way: its
+ * connections are then resolved over that interface (IPoIB, RoCE) and every
+ * rank's address is IPv4.  Without it the verbs stack is pinned to its native
+ * address format, the one a fabric node offers whatever its interfaces carry
+ * — left unasked the provider leads with a format that follows each node's
+ * own interfaces, and an address vector holds exactly one.  Ignored for the
+ * remaining providers, whose addressing is not interface-based.  Naming an
+ * interface that has no usable address is fatal: silently falling back to
+ * the default route would move all data traffic to the wrong network. */
 void arts_net_init(const char *provider, const char *fabric_domain,
                    const char *net_interface);
 

@@ -145,8 +145,9 @@ void arts_net_exchange_addresses(void) {
                  strerror(errno));
     }
     if (!arts_net_addr_frame_ok(in.rank, in.len, n, own_len)) {
-      ARTS_ERROR("arts_net_exchange: bad frame (rank=%u len=%u; expected "
-                 "rank<%u len=%u)",
+      ARTS_ERROR("arts_net_exchange: bad address frame (rank=%u len=%u; "
+                 "expected rank<%u len=%u) — a length other than this rank's "
+                 "means the peer's endpoint carries another address format",
                  in.rank, in.len, n, own_len);
     }
     if (!xfer_read_all(fd, in.addr, in.len)) {

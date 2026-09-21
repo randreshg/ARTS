@@ -79,6 +79,19 @@ static uint64_t now_ns(void) {
 int main(void) {
   int failures = 0;
 
+  /* --- (0) which requests commit the verbs address-format decision: the
+   * core named alone or under a utility layer, as a whole list entry. ---- */
+  if (!net_provider_names_verbs("verbs") ||
+      !net_provider_names_verbs("verbs;ofi_rxm") ||
+      !net_provider_names_verbs("tcp,verbs;ofi_rxm") ||
+      net_provider_names_verbs(NULL) || net_provider_names_verbs("") ||
+      net_provider_names_verbs("tcp") || net_provider_names_verbs("verbsx") ||
+      net_provider_names_verbs("^verbs") ||
+      net_provider_names_verbs("ofi_rxm;verbs")) {
+    fprintf(stderr, "FAIL net_src_bind: verbs provider naming misjudged\n");
+    failures++;
+  }
+
   /* --- (4) missing interface is fatal: probe in a forked child first, so a
    * regression to silent-fallback cannot take down the whole test. ------- */
   pid_t pid = fork();

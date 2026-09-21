@@ -254,6 +254,27 @@ static bool net_provider_names_cxi(const char *s) {
   }
 }
 
+/* True when `s` names the verbs core, alone or under a utility layer
+ * ("verbs;ofi_rxm"), as a whole entry of a comma list; an exclusion list never
+ * counts.  Naming it is what commits the address-format decision below. */
+static bool net_provider_names_verbs(const char *s) {
+  if (s == NULL || s[0] == '^') {
+    return false;
+  }
+  const char *p = s;
+  for (;;) {
+    const char *e = strchr(p, ',');
+    size_t n = (e != NULL) ? (size_t)(e - p) : strlen(p);
+    if (n >= 5 && strncmp(p, "verbs", 5) == 0 && (n == 5 || p[5] == ';')) {
+      return true;
+    }
+    if (e == NULL) {
+      return false;
+    }
+    p = e + 1;
+  }
+}
+
 static struct net_ring_s *net_get_ring(void) {
   if (t_ring != NULL) {
     return t_ring;
@@ -1292,15 +1313,18 @@ void arts_net_init(const char *provider, const char *fabric_domain,
     hints->domain_attr->name = strdup(fabric_domain);
   }
 
-  /* Source-interface bind, IP providers only.  The effective provider is an
-   * IP one when it was explicitly named tcp/sockets, or when the tcp-first
-   * default is in play.  For anything else (verbs, cxi, ...) an interface
+  /* Source-interface bind.  The effective provider addresses by IP when it
+   * was explicitly named tcp/sockets, or when the tcp-first default is in
+   * play; the verbs stack does when its connections are to be resolved over
+   * an IP interface (IPoIB, RoCE).  For anything else (cxi, ...) an interface
    * name is meaningless — addressing there is by fabric domain. */
+  bool verbs_effective = net_provider_names_verbs(effective_provider);
   bool ip_provider =
       tcp_first ||
       (effective_provider != NULL && (strcmp(effective_provider, "tcp") == 0 ||
                                       strcmp(effective_provider, "sockets") == 0));
-  if (net_interface && net_interface[0] != '\0' && ip_provider) {
+  if (net_interface && net_interface[0] != '\0' &&
+      (ip_provider || verbs_effective)) {
     /* fi_freeinfo frees hints->src_addr, so it must be heap-owned. */
     struct sockaddr_in *src =
         (struct sockaddr_in *)calloc(1, sizeof(struct sockaddr_in));
@@ -1313,6 +1337,16 @@ void arts_net_init(const char *provider, const char *fabric_domain,
     hints->addr_format = FI_SOCKADDR_IN;
     hints->src_addr = src;
     hints->src_addrlen = sizeof(struct sockaddr_in);
+  } else if (verbs_effective) {
+    /* An address vector holds one format, so every rank must open the same
+     * one, and the verbs provider offers several under its one name: per
+     * device, the IP addresses of whatever interfaces resolve to it, then
+     * its native address — in an order that follows each node's own
+     * interfaces.  Left unasked, a node without a usable IP interface leads
+     * with the native format while its neighbours lead with IPv4.  The
+     * native format is the one a fabric node offers whatever its interfaces
+     * carry, so it is the choice that is the same on every rank. */
+    hints->addr_format = FI_SOCKADDR_IB;
   }
 
   int rc = fi_getinfo(FI_VERSION(FI_MAJOR_VERSION, FI_MINOR_VERSION), NULL, NULL,
@@ -1467,11 +1501,13 @@ void arts_net_init(const char *provider, const char *fabric_domain,
                fi_strerror(-rc));
   }
 
-  ARTS_INFO("arts_net: fabric up provider=%s inject_size=%zu mr_mode=0x%x "
+  ARTS_INFO("arts_net: fabric up provider=%s domain=%s addr_format=%s "
+            "inject_size=%zu mr_mode=0x%x "
             "mr_local=%d multi_recv=%uMiB max_msg=%zu msg_order=0x%llx sas=%d "
             "mr_cnt=%zu",
-            use->fabric_attr->prov_name, g_net.inject_size, g_net.mr_mode,
-            g_net.mr_local,
+            use->fabric_attr->prov_name, use->domain_attr->name,
+            fi_tostr(&use->addr_format, FI_TYPE_ADDR_FORMAT),
+            g_net.inject_size, g_net.mr_mode, g_net.mr_local,
             (unsigned)(ARTS_NET_RECV_BUF_SIZE / (1024 * 1024)), g_net.max_msg,
             (unsigned long long)g_net.tx_order,
             (g_net.tx_order & FI_ORDER_SAS) == FI_ORDER_SAS,

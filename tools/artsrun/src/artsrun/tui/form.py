@@ -52,12 +52,13 @@ PROFILE_FIELDS: list[FieldSpec] = [
               none_choice="auto",
               optional=True, section="transport"),
     FieldSpec("net_interface", "interface", "text",
-              "IP providers only (tcp): binds the source address to this "
-              "interface, e.g. ib0 to run tcp over IPoIB when the default "
-              "route points at the management network. Naming one with no "
-              "usable address is fatal rather than a silent fallback. Empty "
-              "leaves the source unconstrained; verbs and cxi ignore it "
-              "entirely",
+              "binds the source address to this interface's IPv4 address. "
+              "tcp: e.g. ib0 to run over IPoIB when the default route points "
+              "at the management network. verbs: connections are resolved "
+              "over it and every rank's address is IPv4; empty pins verbs to "
+              "its native address format instead, which needs no IP "
+              "interface. Naming one with no usable address is fatal rather "
+              "than a silent fallback. cxi ignores it entirely",
               optional=True, section="transport"),
     FieldSpec("fabric_domain", "fabric domain", "text",
               "RDMA providers: pins one NIC on a multi-rail host, named "
