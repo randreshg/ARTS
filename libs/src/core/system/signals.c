@@ -298,21 +298,32 @@ void arts_stop_signal_watcher_thread(void) {
 #include <sys/prctl.h>
 #include <sys/resource.h>
 
-void arts_turn_on_core_dumps(void) {
-  (void)prctl(PR_SET_DUMPABLE, 1);
-
+void arts_configure_core_dumps(bool enabled) {
   struct rlimit limit;
-  limit.rlim_cur = RLIM_INFINITY;
-  limit.rlim_max = RLIM_INFINITY;
+  if (enabled) {
+    (void)prctl(PR_SET_DUMPABLE, 1);
+    limit.rlim_cur = RLIM_INFINITY;
+    limit.rlim_max = RLIM_INFINITY;
+  } else {
+    /* Only the soft limit drops: a file-backed core pattern then writes
+     * nothing, and the process stays dumpable so a debugger can still attach.
+     * A piped core pattern is handed the crash regardless of this limit. */
+    if (getrlimit(RLIMIT_CORE, &limit) != 0) {
+      ARTS_INFO("Failed to read the core dump limit");
+      return;
+    }
+    limit.rlim_cur = 0;
+  }
   if (setrlimit(RLIMIT_CORE, &limit) != 0) {
-    ARTS_INFO("Failed to force core dumps");
+    ARTS_INFO("Failed to %s core dumps", enabled ? "force" : "suppress");
   }
 }
 
 #else
 
-void arts_turn_on_core_dumps(void) {
-  ARTS_INFO("Core dumps not supported on OS X.");
+void arts_configure_core_dumps(bool enabled) {
+  (void)enabled;
+  ARTS_INFO("Core dump control not supported on OS X.");
 }
 
 #endif

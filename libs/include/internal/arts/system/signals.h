@@ -38,12 +38,13 @@
 ******************************************************************************/
 #ifndef ARTS_SYSTEM_SIGNALS_H
 #define ARTS_SYSTEM_SIGNALS_H
+#include <stdbool.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void arts_install_signal_handlers(void);
-void arts_turn_on_core_dumps(void);
+void arts_configure_core_dumps(bool enabled);
 
 /* Block termination signals on the calling thread + start a dedicated
  * sigwait watcher thread that drives graceful shutdown. Must be called

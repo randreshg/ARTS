@@ -225,7 +225,8 @@ Debug / Utility
      - Description
    * - ``core_dump``
      - 0
-     - Enable core dumps on crash.
+     - 1 forces core dumps on crash; 0 lowers the soft core limit to zero, so
+       a crash leaves no core file in the working directory.
    * - ``kill_mode``
      - 0
      - Kill leftover processes on SSH nodes before launch.

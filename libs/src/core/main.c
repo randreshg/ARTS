@@ -61,9 +61,7 @@ int arts_rt(int argc, char **argv) {
    * inherited by every downstream thread.  Watcher then drives graceful
    * shutdown via arts_enter_shutdown_state on signal arrival. */
   arts_install_signal_watcher_thread();
-  if (config.core_dump) {
-    arts_turn_on_core_dumps();
-  }
+  arts_configure_core_dumps(config.core_dump);
 
   arts_global_rank_id = 0;
   arts_global_rank_count = config.table_length;
