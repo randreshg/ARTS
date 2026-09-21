@@ -395,3 +395,47 @@ def test_a_late_attach_starts_near_the_end_of_a_big_log(tmp_path):
     assert "earlier bytes not shown" in first
     assert first.endswith("tail line\n")
     assert "x" * 50 not in first
+
+
+def _git(root: Path, *args: str) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", *args],
+        check=True, capture_output=True)
+
+
+def test_source_revision_names_the_commit_and_what_differs_from_it(tmp_path):
+    from artsrun.run.manifest import source_revision
+
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "tracked").write_text("one\n")
+    _git(tmp_path, "add", "tracked")
+    _git(tmp_path, "commit", "-q", "-m", "first")
+
+    clean = source_revision(tmp_path)
+    assert len(clean["commit"]) == 40
+    assert clean["dirty"] is False and clean["dirty_paths"] == []
+    assert clean["submodules"] == []
+
+    (tmp_path / "tracked").write_text("two\n")
+    (tmp_path / "untracked").write_text("ignored by the dirty test\n")
+    edited = source_revision(tmp_path)
+    assert edited["commit"] == clean["commit"]
+    assert edited["dirty"] is True and edited["dirty_paths"] == ["tracked"]
+
+
+def test_source_revision_outside_a_checkout_answers_nothing(tmp_path):
+    from artsrun.run.manifest import source_revision
+
+    assert source_revision(tmp_path) == {
+        "commit": None, "dirty": None, "dirty_paths": None,
+        "submodules": None,
+    }
+
+
+def test_the_manifest_records_the_source_revision(tmp_path):
+    _write(tmp_path, [_cell("arts_val_wb")])
+    source = json.loads((tmp_path / "manifest.json").read_text())["source"]
+    assert set(source) == {"commit", "dirty", "dirty_paths", "submodules"}

@@ -10,13 +10,14 @@ the selection against profiles or benchsets that may have changed since.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 
 from artsrun.model.benchset import ResolvedApp
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.profile import Launcher, Profile
-from artsrun.paths import scratch_dir
+from artsrun.paths import repo_root, scratch_dir
 from artsrun.run.command import (build_command, build_env, render,
                                  with_post_verify, with_timeout)
 from artsrun.run.types import Cell, Skipped
@@ -58,6 +59,52 @@ def describe_command(cell: Cell, profile: Profile, log_path: Path) -> dict:
             with_post_verify(build_command(cell, profile), cell),
             cell.timeout_s)),
         "script": None,
+    }
+
+
+_DIRTY_PATHS_KEPT = 50
+
+
+def _git(root: Path, *args: str) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True,
+            timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def source_revision(root: Path) -> dict:
+    """Which sources a campaign ran from: the checkout's commit, the tracked
+    paths that differ from it, and every submodule's commit.
+
+    A result is a claim about code, and the run directory outlives the
+    checkout's state — without this a reader cannot tell a published commit
+    from a tree someone edited on the machine.  Every field is None where
+    git cannot answer (no git, not a checkout), never a guess.
+    """
+    head = _git(root, "rev-parse", "HEAD")
+    status = _git(root, "status", "--porcelain", "--untracked-files=no")
+    subs = _git(root, "submodule", "status")
+    dirty = None if status is None else [
+        line[3:] for line in status.splitlines() if line.strip()]
+    submodules = None
+    if subs is not None:
+        submodules = []
+        for line in subs.splitlines():
+            if not line.strip():
+                continue
+            # "<flag><sha> <path> [(describe)]": the flag is ' ' at the
+            # recorded commit, '+' off it, '-' uninitialised, 'U' conflicted.
+            flag, rest = line[0], line[1:].split()
+            submodules.append({"path": rest[1], "commit": rest[0],
+                               "at_recorded_commit": flag == " "})
+    return {
+        "commit": head.strip() if head else None,
+        "dirty": None if dirty is None else bool(dirty),
+        "dirty_paths": None if dirty is None else dirty[:_DIRTY_PATHS_KEPT],
+        "submodules": submodules,
     }
 
 
@@ -117,6 +164,7 @@ def write_manifest(
         "launcher": profile.launcher.value,
         "mpi_flavor": flavor,
         "profile": profile.name,
+        "source": source_revision(repo_root()),
         "build_dir": str(build_dir),
         "cwd": str(scratch_dir()),
         "stderr": "merged into stdout",

@@ -224,7 +224,9 @@ column, held fixed across the sweep -- not a machine-filling frontier.
 | Campaign output | `logs/exp/<timestamp>/` |
 
 A campaign directory holds `manifest.json` (every cell with the exact command
-it runs under — written before anything runs), `track.jsonl` (events as they
+it runs under, and the sources it ran from: the checkout's commit, the tracked
+paths that differed from it, and every submodule's commit — written before
+anything runs), `track.jsonl` (events as they
 happen: submitted / started / running / finished, with the final status and
 scalar), `selection.yaml` (replayable), per-cell logs under `cells/`, and the
 end-of-run `results.csv` / `report.json` / `summary.txt`. The live view is a
