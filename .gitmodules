@@ -45,3 +45,6 @@
 	path = third_party/json-c
 	url = https://github.com/json-c/json-c.git
 	shallow = true
+[submodule "third_party/fake_arts_cxl_lib"]
+	path = third_party/fake_arts_cxl_lib
+	url = https://github.com/akhilred36/fake_arts_cxl_lib.git

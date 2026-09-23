@@ -313,6 +313,9 @@ set(ARTS_CXL_RAPID_INCLUDE_DIR "" CACHE PATH
     "Path to Rapid API include directory (required when ARTS_USE_CXL=ON)")
 set(ARTS_CXL_LIB_DIR "" CACHE PATH
     "Path to arts_cxl_lib directory (required when ARTS_USE_CXL=ON)")
+option(ARTS_USE_FAKE_CXL_LIB
+    "Build and link the vendored fake CXL library (third_party/fake_arts_cxl_lib, a POSIX-shm emulation of the Rapid API) instead of a real one; overrides ARTS_CXL_RAPID_INCLUDE_DIR and ARTS_CXL_LIB_DIR"
+    OFF)
 
 # ── No-hint placement policies (runtime-wide) ───────────────────────────────
 # Select what the runtime does when the caller expresses no placement
@@ -755,6 +758,47 @@ if(ARTS_USE_CXL)
         message(STATUS "CXL: ${CMAKE_C_COMPILER_ID} not supported, disabling")
     endif()
 endif()
+if(ARTS_USE_CXL AND ARTS_USE_FAKE_CXL_LIB)
+    # The fake library stands in for both the Rapid SDK (inc/ plus the stub
+    # rapid-config.cmake one level up) and arts_cxl_lib.  Plain variables
+    # shadow the cache entries, so switching the option off later restores
+    # whatever paths the cache holds instead of leaving these behind.
+    set(_fake_cxl_src "${PROJECT_SOURCE_DIR}/third_party/fake_arts_cxl_lib")
+    foreach(_var ARTS_CXL_RAPID_INCLUDE_DIR ARTS_CXL_LIB_DIR)
+        if(${_var})
+            message(WARNING "ARTS_USE_FAKE_CXL_LIB=ON ignores ${_var}=${${_var}}")
+        endif()
+    endforeach()
+    set(ARTS_CXL_RAPID_INCLUDE_DIR "${_fake_cxl_src}/inc")
+    set(ARTS_CXL_LIB_DIR "${_fake_cxl_src}")
+
+    # Built at configure time because the checks below need the .so to exist.
+    # The build tree lives under this build directory rather than inside the
+    # submodule, so the submodule stays clean and build directories with
+    # different compilers do not share one library.  Re-running the build on
+    # every configure is a no-op when nothing changed and picks up edits to
+    # the fake library when something did.
+    include(${PROJECT_SOURCE_DIR}/cmake/ArtsSubmodule.cmake)
+    arts_init_submodule(third_party/fake_arts_cxl_lib CMakeLists.txt)
+    set(_fake_cxl_build "${CMAKE_BINARY_DIR}/third_party/fake_arts_cxl_lib-build")
+    message(STATUS "Building vendored fake CXL library")
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -S ${_fake_cxl_src} -B ${_fake_cxl_build}
+            -G ${CMAKE_GENERATOR}
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        RESULT_VARIABLE _rc)
+    if(NOT _rc EQUAL 0)
+        message(FATAL_ERROR "Failed to configure the fake CXL library")
+    endif()
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} --build ${_fake_cxl_build} --target arts_cxl_lib
+        RESULT_VARIABLE _rc)
+    if(NOT _rc EQUAL 0)
+        message(FATAL_ERROR "Failed to build the fake CXL library")
+    endif()
+    set(ARTS_CXL_LIB_PATH "${_fake_cxl_build}/src/libarts_cxl_lib.so")
+endif()
 if(ARTS_USE_CXL)
     # Validate required paths
     if(NOT ARTS_CXL_RAPID_INCLUDE_DIR)
@@ -768,8 +812,10 @@ if(ARTS_USE_CXL)
             "  -DARTS_CXL_LIB_DIR=/path/to/arts_cxl_lib")
     endif()
 
-    # Derive library and include paths
-    set(ARTS_CXL_LIB_PATH "${ARTS_CXL_LIB_DIR}/build/src/libarts_cxl_lib.so")
+    # Derive library and include paths (the fake library sets its own above)
+    if(NOT ARTS_USE_FAKE_CXL_LIB)
+        set(ARTS_CXL_LIB_PATH "${ARTS_CXL_LIB_DIR}/build/src/libarts_cxl_lib.so")
+    endif()
     set(ARTS_CXL_INCLUDE_DIR "${ARTS_CXL_LIB_DIR}/inc")
 
     # Verify paths exist
