@@ -192,6 +192,7 @@ set(TEST_PROGRAMS
     finish_event_nested
     coherence_multi_writer_dist
     coherence_writer_ro_overlap
+    coherence_grant_chain_visibility
 )
 
 # Whitebox tests of the INLINE payload layout.  Where the canonical store is
@@ -256,10 +257,9 @@ endif()
 
 # CXL datablocks exist only in a CXL build, and there only under EXCL x PURGE
 # (the top-level CMakeLists refuses every other pairing), so the test that
-# exercises their grant chain is added to the list conditionally rather than
-# guarded with #ifdef inside the source.
+# exercises their alias-slot behavior is added to the list conditionally
+# rather than guarded with #ifdef inside the source.
 if(ARTS_USE_CXL)
-    list(APPEND TEST_PROGRAMS coherence_cxl_grant_chain)
     list(APPEND TEST_PROGRAMS coherence_cxl_alias_slots)
 endif()
 
@@ -1437,31 +1437,28 @@ endif()
 register_single_node_test(coherence_owner_confirm_gate TIMEOUT 120)
 register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120)
 
-# coherence_cxl_grant_chain: the CXL permission-only chain — remote write then
-# remote read, a concurrent reader cohort, and a writer that must wait the
-# cohort out.  On one rank the home is local, but every transition still runs
-# through the real arbiter and both flush edges, so this is a genuine
-# regression signal and not a no-op.
-#
-# The multinode variants are registered DISABLED rather than omitted, because
-# what blocks them is the emulation and not the protocol.  A non-zero rank
-# joins the shared CXL segment through arts_cxl_deque_get(), which is
-# LAST_SHARED_MALLOC — "hand me the allocation rank 0 already made".  The
-# fake_arts_cxl_lib implements that as a plain bump allocation, so every
-# non-zero rank receives a fresh zeroed block instead of rank 0's deque and
-# dies in arts_runtime_init with "CXL DB arena is missing or uninitialized",
-# before any datablock exists.  Enable these the moment the CXL library in use
-# can hand a second process the first process's allocation.
-if(ARTS_USE_CXL)
-    register_single_node_test(coherence_cxl_grant_chain TIMEOUT 60)
-    set_tests_properties(coherence_cxl_grant_chain PROPERTIES
+# coherence_grant_chain_visibility: a grant chain — remote write then remote
+# read, one holding reader per rank, and a writer whose RW request is issued
+# while that cohort still holds (it waits on a latch the readers count down
+# once they hold, not on their completion).  Under exclusion the request waits
+# at the home behind the cohort and is granted by the cohort's last read
+# release; the verdict is on values only (readers see the pre-write value, the
+# increment lands exactly once).  A portable OCR program — no storage kind, no
+# write policy — registered under every arm and rank count; valid under DB-WRF
+# too, since its writers are ordered.
+register_single_node_test(coherence_grant_chain_visibility TIMEOUT 60)
+register_multinode_test(coherence_grant_chain_visibility TIMEOUT 120 VARIANTS 2n 3n 4n)
+set_tests_properties(coherence_grant_chain_visibility PROPERTIES
+    FAIL_REGULAR_EXPRESSION "FAIL")
+foreach(_v 2n 3n 4n)
+    set_tests_properties(coherence_grant_chain_visibility_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
-    register_multinode_test(coherence_cxl_grant_chain TIMEOUT 120 VARIANTS 2n 3n 4n)
-    foreach(_v 2n 3n 4n)
-        set_tests_properties(coherence_cxl_grant_chain_${_v} PROPERTIES
-            FAIL_REGULAR_EXPRESSION "FAIL"
-            DISABLED TRUE)
-    endforeach()
+endforeach()
+
+# coherence_cxl_alias_slots: CXL datablocks exist only in a CXL build, and
+# there only under EXCL x PURGE (the top-level CMakeLists refuses every other
+# pairing).
+if(ARTS_USE_CXL)
     register_single_node_test(coherence_cxl_alias_slots TIMEOUT 60)
     set_tests_properties(coherence_cxl_alias_slots PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
