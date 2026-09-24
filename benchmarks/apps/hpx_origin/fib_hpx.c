@@ -121,8 +121,9 @@ static void query_count(u64 *pv) {
   ocrEdtCreate(&next, mirror_u64_guid(pv[P_COUNT_TPL]), PARAMC(pv), pv,
                1, NULL, EDT_PROP_NONE, &h, NULL);
   mirror_rank_hint(&h, pv[P_QUERY_RANK], OCR_HINT_EDT_T);
+  out = mirror_counted(1);    /* the count task's one slot */
   ocrEdtCreate(&query, mirror_u64_guid(pv[P_QUERY_TPL]), PARAMC(pv), pv,
-               1, NULL, EDT_PROP_NONE, &h, &out);
+               1, NULL, EDT_PROP_OEVT_VALID, &h, &out);
   ocrAddDependence(out, next, 0, DB_MODE_RO);
   ocrAddDependence(STATE_OF(pv, pv[P_QUERY_RANK]), query, 0, DB_MODE_RO);
 }

@@ -1,8 +1,8 @@
 /* Idioms shared by the OCR mirrors of HPX programs: the placement an HPX
  * program states, the layout its distribution policy uses, its option
- * syntax, the fork that gives every rank a driver, and the rendezvous that
- * carries a value from a producer on one rank to a consumer another rank
- * created. */
+ * syntax, the fork that gives every rank a driver, and the labeled points
+ * that carry a value or a signal between tasks that cannot learn each
+ * other's names. */
 #ifndef HPX_MIRROR_H
 #define HPX_MIRROR_H
 
@@ -228,33 +228,61 @@ static inline void mirror_spmd_fork(ocrGuid_t tpl, u64 *pv, u32 paramc, u32 rank
   }
 }
 
-/* A rendezvous point between a producer on one rank and a consumer that
- * another rank created.  Both sides derive the same GUID from a reserved
- * range and an ordinal, so neither has to learn the other's names; the index
- * gives each point exactly one producer and one consuming rank and never aliases
- * two units of work onto one point.  Whether a point lands on its consumer or on
- * the rank that reserved the range is the runtime's choice of how a labeled
- * range is homed, and only the hop count depends on it.  One producer, one
- * consuming rank, one generation: an ordinal names a unit of work and is never
- * reused across a lifetime boundary. */
-static inline ocrGuid_t mirror_edge(ocrGuid_t range, u64 ordinal, u64 consumer_rank, u64 nl) {
+/* A single-fire event whose consumers are all known when it is made: the
+ * count is exactly the number of dependences that will ever be added from
+ * it, and the event is reclaimed once it has fired and the last of them has
+ * registered, so no task destroys it.  An EDT's output event is made this
+ * way and handed to the create with EDT_PROP_OEVT_VALID. */
+static inline ocrGuid_t mirror_counted(u64 consumers) {
+  ocrEventParams_t params;
+  params.EVENT_COUNTED.nbDeps = consumers;
+  ocrGuid_t e;
+  ocrEventCreateParams(&e, OCR_EVENT_COUNTED_T, EVT_PROP_TAKES_ARG, &params);
+  return e;
+}
+
+/* The name of a labeled point.  Every party derives it from a reserved range
+ * and an ordinal, so no party has to learn another's names; the index adds
+ * the consuming rank, so an ordinal names one unit of work and never aliases
+ * two onto one point.  Where a point lands -- on its consumer or on the rank
+ * that reserved the range -- is the runtime's choice of how a labeled range
+ * is homed, and only the hop count depends on it.  A point is never created
+ * again under the same name. */
+static inline ocrGuid_t mirror_point(ocrGuid_t range, u64 ordinal, u64 consumer_rank, u64 nl) {
   ocrGuid_t g;
   ocrGuidFromIndex(&g, range, ordinal * nl + consumer_rank);
   return g;
 }
 
-/* Both sides open the point before using it.  A runtime that reports a
- * taken label tells whoever arrives second that the first one made it; one
- * that installs first-wins silently tells nobody.  Either is the expected
- * outcome and not an error. */
-static inline void mirror_edge_open(ocrGuid_t evt) {
-  ocrGuid_t g = evt;
-  u8 err = ocrEventCreate(&g, OCR_EVENT_STICKY_T,
-                          GUID_PROP_IS_LABELED | GUID_PROP_CHECK | EVT_PROP_TAKES_ARG);
-  if (err && err != OCR_EGUIDEXISTS) {
-    PRINTF("mirror: rendezvous point could not be opened (%u)\n", (unsigned)err);
+/* A point has exactly one creator, and its create is ordered before every
+ * satisfy and every dependence that names the point: a runtime may require
+ * the object to exist by the time either reaches it.  The range it is named
+ * from is reserved with the kind it is created as. */
+static inline void mirror_point_create(ocrGuid_t point, ocrEventTypes_t type, u64 consumers) {
+  ocrGuid_t g = point;
+  ocrEventParams_t params;
+  u8 err;
+  if (type == OCR_EVENT_COUNTED_T) {
+    params.EVENT_COUNTED.nbDeps = consumers;
+    err = ocrEventCreateParams(&g, type, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG, &params);
+  } else {
+    err = ocrEventCreate(&g, type, GUID_PROP_IS_LABELED | EVT_PROP_TAKES_ARG);
+  }
+  if (err) {
+    PRINTF("mirror: a labeled point could not be created (%u)\n", (unsigned)err);
     ocrShutdown();
   }
+}
+
+/* A point every one of whose consumers is known to its creator. */
+static inline void mirror_point_counted(ocrGuid_t point, u64 consumers) {
+  mirror_point_create(point, OCR_EVENT_COUNTED_T, consumers);
+}
+
+/* A point whose consumers its creator cannot count.  It is destroyed by the
+ * task that retires what it carried, once every consumer has registered. */
+static inline void mirror_point_sticky(ocrGuid_t point) {
+  mirror_point_create(point, OCR_EVENT_STICKY_T, 0);
 }
 
 #endif /* HPX_MIRROR_H */

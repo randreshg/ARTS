@@ -18,12 +18,16 @@ enum { MAX_RANKS = 16384 };
 enum { TEST_WARMUP, TEST_WRITE, TEST_READ, TEST_COUNT };
 enum { BARRIER_COUNT = 2 * TEST_COUNT };
 
-/* Three kinds of rendezvous point.  A table carries an owner's slot names to
- * a rank that has no other way to learn them; an entry carries one rank's
- * arrival at a barrier to the rank that holds the barrier, and a release
- * carries the barrier's end back to each rank.  Every entry of a barrier has
- * the same consumer, so an entry's unit names its sender; the kind stride
- * keeps the kinds from aliasing one another. */
+/* Three kinds of labeled point, each with one consumer.  A table carries an
+ * owner's slot names to a rank that has no other way to learn them; an entry
+ * carries one rank's arrival at a barrier to the rank that holds the
+ * barrier, and a release carries the barrier's end back to each rank.  Every
+ * entry of a barrier has the same consumer, so an entry's unit names its
+ * sender; the kind stride keeps the kinds from aliasing one another.  Tables
+ * and entries are created by the root before any driver runs, because their
+ * producer and consumer are on two ranks that nothing else orders; a release
+ * is created by the rank that waits on it, before that rank enters the
+ * barrier that raises it. */
 enum { KIND_TABLE, KIND_ENTRY, KIND_RELEASE, KIND_COUNT };
 
 typedef struct {
@@ -82,7 +86,7 @@ static void report_test(u64 *pv, state_t *st, const char *network) {
 }
 
 static inline ocrGuid_t point(u64 *pv, u64 unit, u64 kind, u64 consumer) {
-  return mirror_edge(mirror_u64_guid(pv[P_RANGE]), unit * KIND_COUNT + kind,
+  return mirror_point(mirror_u64_guid(pv[P_RANGE]), unit * KIND_COUNT + kind,
                      consumer, pv[P_NL]);
 }
 static inline ocrGuid_t table_point(u64 *pv, u64 owner, u64 consumer) {
@@ -98,8 +102,14 @@ static inline ocrGuid_t release_point(u64 *pv, u64 barrier, u64 rank) {
 /* A signal carries no block, so there is no release for it to follow and it
  * may be raised from a body. */
 static void raise_point(ocrGuid_t p) {
-  mirror_edge_open(p);
   ocrEventSatisfy(p, NULL_GUID);
+}
+
+/* The release this rank waits on, wired to the task that waits. */
+static void await_release(u64 *pv, u64 barrier, ocrGuid_t waiter) {
+  ocrGuid_t p = release_point(pv, barrier, pv[P_RANK]);
+  mirror_point_counted(p, 1);
+  ocrAddDependence(p, waiter, 0, DB_MODE_NULL);
 }
 
 /* The point reservation: every kind of every unit for every consumer, the
@@ -197,24 +207,25 @@ static void issue(u64 *pv, const state_t *st, ocrGuid_t join, u64 i, u64 to, u64
   }
   int get = pv[P_TEST] == TEST_READ;
   ocrHint_t h; mirror_rank_hint(&h, rank, OCR_HINT_EDT_T);
-  ocrGuid_t complete, counted;
+  ocrGuid_t complete, counted = mirror_counted(1);    /* the pass's join */
   ocrEdtCreate(&complete, mirror_u64_guid(pv[P_COMPLETE_TPL]), P_COUNT, params,
-               3, NULL, EDT_PROP_NONE, &h, &counted);
+               3, NULL, EDT_PROP_OEVT_VALID, &h, &counted);
   ocrAddDependence(counted, join, OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
   ocrAddDependence(mirror_u64_guid(pv[P_COUNTERS]), complete, 1, DB_MODE_RW);
   ocrAddDependence(mirror_u64_guid(pv[P_RESULTS]), complete, 2, DB_MODE_RW);
-  ocrGuid_t action, result;
+  /* Every output event below has the one consumer it is wired to. */
+  ocrGuid_t action, result = mirror_counted(1);
   if (get) {
-    ocrGuid_t landing, landed;
+    ocrGuid_t landing, landed = mirror_counted(1);
     ocrEdtCreate(&landing, mirror_u64_guid(pv[P_LAND_TPL]), P_COUNT, params,
-                 3, NULL, EDT_PROP_NONE, &h, &landed);
+                 3, NULL, EDT_PROP_OEVT_VALID, &h, &landed);
     ocrAddDependence(landed, complete, 0, DB_MODE_NULL);
     ocrAddDependence(st->names[rank * blocks + block], landing, 0, DB_MODE_RW);
     ocrAddDependence(params[P_OFFSET] ? st->names[rank * blocks + block + 1] : NULL_GUID,
                      landing, 1, params[P_OFFSET] ? DB_MODE_RW : DB_MODE_NULL);
     mirror_rank_hint(&h, to, OCR_HINT_EDT_T);
     ocrEdtCreate(&action, mirror_u64_guid(pv[P_GET_TPL]), P_COUNT, params,
-                 2, NULL, EDT_PROP_NONE, &h, &result);
+                 2, NULL, EDT_PROP_OEVT_VALID, &h, &result);
     ocrAddDependence(result, landing, 2, DB_MODE_RO);
     ocrAddDependence(st->names[to * blocks + block], action, 0, DB_MODE_RO);
     ocrAddDependence(params[P_OFFSET] ? st->names[to * blocks + block + 1] : NULL_GUID,
@@ -222,7 +233,7 @@ static void issue(u64 *pv, const state_t *st, ocrGuid_t join, u64 i, u64 to, u64
   } else {
     mirror_rank_hint(&h, to, OCR_HINT_EDT_T);
     ocrEdtCreate(&action, mirror_u64_guid(pv[P_PUT_TPL]), P_COUNT, params,
-                 3, NULL, EDT_PROP_NONE, &h, &result);
+                 3, NULL, EDT_PROP_OEVT_VALID, &h, &result);
     ocrAddDependence(result, complete, 0, DB_MODE_RO);
     ocrAddDependence(st->names[to * blocks + block], action, 0, DB_MODE_RW);
     ocrAddDependence(params[P_OFFSET] ? st->names[to * blocks + block + 1] : NULL_GUID,
@@ -258,13 +269,9 @@ static ocrGuid_t turn_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     st->phase_start = mirror_now_ns();
     memset(st->phase, 0, sizeof(st->phase));
     if (rank == 0) PRINTF("Iteration ");
-    ocrEventDestroy(release_point(pv, 2 * test, rank));
-    if (test == TEST_WARMUP) {
-      for (u64 q = 0; q < nl; ++q) {
+    if (test == TEST_WARMUP)
+      for (u64 q = 0; q < nl; ++q)
         memcpy(st->names + q * blocks, depv[1 + q].ptr, blocks * sizeof(ocrGuid_t));
-        ocrEventDestroy(table_point(pv, q, rank));
-      }
-    }
   }
 
   if (turn) {
@@ -353,18 +360,14 @@ static ocrGuid_t turn_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     ocrEdtCreate(&relay, mirror_u64_guid(pv[P_RELAY_TPL]), P_COUNT, params, 3, NULL,
                  EDT_PROP_NONE, &h, NULL);
     ocrAddDependence(mirror_u64_guid(pv[P_OPTIONS]), relay, 2, DB_MODE_RO);
-    ocrGuid_t released = release_point(pv, closing, rank);
-    mirror_edge_open(released);
-    ocrAddDependence(released, relay, 0, DB_MODE_NULL);
+    await_release(pv, closing, relay);
 
     params[P_TEST] = test + 1;
     params[P_TURN] = 0;
     ocrGuid_t first;
     ocrEdtCreate(&first, mirror_u64_guid(pv[P_TURN_TPL]), P_COUNT, params, 2, NULL,
                  EDT_PROP_NONE, &h, NULL);
-    ocrGuid_t opened = release_point(pv, closing + 1, rank);
-    mirror_edge_open(opened);
-    ocrAddDependence(opened, first, 0, DB_MODE_NULL);
+    await_release(pv, closing + 1, first);
     ocrDbRelease(state);
     ocrAddDependence(state, relay, 1, DB_MODE_RW);
     ocrAddDependence(state, first, 1, DB_MODE_RW);
@@ -372,9 +375,7 @@ static ocrGuid_t turn_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     ocrGuid_t tally;
     ocrEdtCreate(&tally, mirror_u64_guid(pv[P_TALLY_TPL]), P_COUNT, params, 4, NULL,
                  EDT_PROP_NONE, &h, NULL);
-    ocrGuid_t released = release_point(pv, closing, rank);
-    mirror_edge_open(released);
-    ocrAddDependence(released, tally, 0, DB_MODE_NULL);
+    await_release(pv, closing, tally);
     ocrAddDependence(mirror_u64_guid(pv[P_COUNTERS]), tally, 1, DB_MODE_RW);
     ocrAddDependence(mirror_u64_guid(pv[P_OPTIONS]), tally, 3, DB_MODE_RO);
     ocrDbRelease(state);
@@ -390,7 +391,6 @@ static ocrGuid_t relay_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc; (void)depv;
   u64 barrier = pv[P_BARRIER], rank = pv[P_RANK];
   report_test(pv, depv[1].ptr, depv[2].ptr);
-  ocrEventDestroy(release_point(pv, barrier, rank));
   raise_point(entry_point(pv, barrier + 1, rank));
   return NULL_GUID;
 }
@@ -400,7 +400,6 @@ static ocrGuid_t relay_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
 static ocrGuid_t barrier_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc; (void)depv;
   u64 barrier = pv[P_BARRIER], nl = pv[P_NL];
-  for (u64 q = 0; q < nl; ++q) ocrEventDestroy(entry_point(pv, barrier, q));
   for (u64 q = 0; q < nl; ++q) raise_point(release_point(pv, barrier, q));
   return NULL_GUID;
 }
@@ -417,7 +416,6 @@ static ocrGuid_t tally_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
    * once its last test has reported. */
   state_t *st = depv[2].ptr;
   for (u64 i = 0; i < pv[P_BLOCKS]; ++i) ocrDbDestroy(st->names[rank * pv[P_BLOCKS] + i]);
-  ocrEventDestroy(release_point(pv, BARRIER_COUNT - 1, rank));
   ocrHint_t dh;
   mirror_rank_hint(&dh, rank, OCR_HINT_DB_T);
   ocrGuid_t db;
@@ -479,11 +477,7 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   mirror_mt_seed(&st->gen, 5489u);
   ocrDbRelease(table);
   ocrDbRelease(state);
-  for (u64 c = 0; c < nl; ++c) {
-    ocrGuid_t pt = table_point(pv, rank, c);
-    mirror_edge_open(pt);
-    ocrEventSatisfy(pt, table);
-  }
+  for (u64 c = 0; c < nl; ++c) ocrEventSatisfy(table_point(pv, rank, c), table);
 
   u64 params[P_COUNT];
   memcpy(params, pv, sizeof params);
@@ -492,14 +486,9 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   ocrGuid_t first;
   ocrEdtCreate(&first, mirror_u64_guid(pv[P_TURN_TPL]), P_COUNT, params, (u32)(nl + 2),
                NULL, EDT_PROP_NONE, &h, NULL);
-  ocrGuid_t opened = release_point(pv, 0, rank);
-  mirror_edge_open(opened);
-  ocrAddDependence(opened, first, 0, DB_MODE_NULL);
-  for (u64 q = 0; q < nl; ++q) {
-    ocrGuid_t pt = table_point(pv, q, rank);
-    mirror_edge_open(pt);
-    ocrAddDependence(pt, first, (u32)(1 + q), DB_MODE_RO);
-  }
+  await_release(pv, 0, first);
+  for (u64 q = 0; q < nl; ++q)
+    ocrAddDependence(table_point(pv, q, rank), first, (u32)(1 + q), DB_MODE_RO);
   ocrAddDependence(state, first, (u32)(nl + 1), DB_MODE_RW);
   raise_point(entry_point(pv, 0, rank));
   return NULL_GUID;
@@ -546,7 +535,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     sane = slots <= (u64)INT32_MAX && point_space(nl, &points);
   }
   ocrGuid_t range = NULL_GUID;
-  if (sane && ocrGuidRangeCreate(&range, points, GUID_USER_EVENT_STICKY) != 0) sane = 0;
+  if (sane && ocrGuidRangeCreate(&range, points, GUID_USER_EVENT_COUNTED) != 0) sane = 0;
   if (!sane) {
     PRINTF("network_storage_hpx: usage --localMB=M --globalMB=G --transferKB=K"
            " --semaphore=S --iterations=I --all-to-all=B --no-local=B"
@@ -590,8 +579,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   pv[P_PUT_TPL] = mirror_guid_u64(put_tpl);
   pv[P_GET_TPL] = mirror_guid_u64(get_tpl);
 
-  /* The end and the barriers belong to the root, and exist before any rank
-   * can reach them. */
+  /* The end, the barriers and the tables belong to the root, and exist
+   * before any rank can reach them. */
   ocrHint_t h0;
   mirror_rank_hint(&h0, 0, OCR_HINT_EDT_T);
   ocrGuid_t final;
@@ -603,11 +592,13 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
     ocrEdtCreate(&e, barrier_tpl, P_COUNT, pv, (u32)nl, NULL, EDT_PROP_NONE, &h0, NULL);
     for (u64 q = 0; q < nl; ++q) {
       ocrGuid_t pt = entry_point(pv, b, q);
-      mirror_edge_open(pt);
+      mirror_point_counted(pt, 1);
       ocrAddDependence(pt, e, (u32)q, DB_MODE_NULL);
     }
   }
   pv[P_BARRIER] = 0;
+  for (u64 owner = 0; owner < nl; ++owner)
+    for (u64 q = 0; q < nl; ++q) mirror_point_counted(table_point(pv, owner, q), 1);
 
   mirror_spmd_fork(driver_tpl, pv, P_COUNT, P_RANK, nl, 0, NULL);
   return NULL_GUID;

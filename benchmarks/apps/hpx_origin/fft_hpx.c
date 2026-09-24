@@ -12,22 +12,27 @@
 #include "fftw_reloc/reloc.h"
 
 enum { P_NL, P_RANK, P_NXL, P_NYL, P_CX, P_CY, P_RY, P_CYPART, P_CXPART,
-       P_PLANFLAG, P_RANGE, P_SUM_EDT, P_PLAN_R2C, P_PLAN_C2C, P_IDX,
+       P_PLANFLAG, P_RANGE0, P_RANGE1, P_SUM_EDT, P_PLAN_R2C, P_PLAN_C2C, P_IDX,
        P_FFT1_TPL, P_SPLIT1_TPL, P_XPOSE1_TPL, P_FFT2_TPL, P_SPLIT2_TPL,
        P_XPOSE2_TPL, P_REAP1_TPL, P_FINISH_TPL, P_PUBLISH_TPL, P_PHASE,
        P_PLAN_DB, P_PLAN_SIZE, P_SRC, P_XPOSE_SCOPE_TPL,
        P_XPOSE_OUTER_TPL, P_V_DB, P_W_DB, P_END, P_SRC_END, P_NAMES, P_COUNT };
 
-/* One rendezvous point per (phase, source, destination): the ordinal names
- * the phase and the source, the index the destination, so a point has one
- * producing task, one consuming rank and one destroyer, and no two units of
- * work share a name.  Several tasks of that rank read it -- every transpose
- * of the destination reads all of its arrivals -- which is why the destroyer
- * is a task of its own rather than the reader.  Two phases, hence 2*nl*nl
- * names in the reservation. */
+/* One point per (phase, source, destination): the ordinal names the source,
+ * the index the destination, and each phase has a range of its own, so a
+ * point has one producing task and one consuming rank, and no two units of
+ * work share a name.  The consumers are the destination's scope, which joins
+ * the arrival, and every transpose chunk of the destination that reads it.
+ * The first exchange's producer and consumer are ordered by nothing but the
+ * root, which creates those points before any rank runs; the consumer's
+ * chunk count is its own worker count's, so they are STICKY, and the task
+ * that frees the first exchange's arrivals destroys them.  A second-exchange
+ * point is created by its destination rank before that rank publishes its
+ * first exchange, which every producer of the second waits on; its reap task
+ * joins it as well, and the count is the destination's own, so it is
+ * COUNTED. */
 static inline ocrGuid_t chunk_point(u64 *pv, u64 phase, u64 src, u64 dst) {
-  return mirror_edge(mirror_u64_guid(pv[P_RANGE]), phase * pv[P_NL] + src, dst,
-                     pv[P_NL]);
+  return mirror_point(mirror_u64_guid(pv[phase ? P_RANGE1 : P_RANGE0]), src, dst, pv[P_NL]);
 }
 
 /* A parallel loop of the origin runs under its runtime's default chunking:
@@ -75,11 +80,8 @@ static ocrGuid_t split1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
 
 static ocrGuid_t publish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc;
-  for (u32 j = 0; j + 1 < depc; ++j) {
-    ocrGuid_t p = chunk_point(pv, pv[P_PHASE], pv[P_RANK], j);
-    mirror_edge_open(p);
-    ocrEventSatisfy(p, depv[1 + j].guid);
-  }
+  for (u32 j = 0; j + 1 < depc; ++j)
+    ocrEventSatisfy(chunk_point(pv, pv[P_PHASE], pv[P_RANK], j), depv[1 + j].guid);
   return NULL_GUID;
 }
 
@@ -203,7 +205,8 @@ static ocrGuid_t xpose_scope_edt(u32 paramc, u64 *pv, u32 depc,
  * run and the second exchange has arrived, where the origin's gather
  * assignment frees them.  A chunk has one producer and several readers, so no
  * reader can be its destroyer; this task destroys the arrivals by the names
- * their readers recorded, without acquiring them. */
+ * their readers recorded, without acquiring them, and the points that
+ * carried them. */
 static ocrGuid_t reap1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
   u64 nl = pv[P_NL], rank = pv[P_RANK];
@@ -221,7 +224,7 @@ static ocrGuid_t reap1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
  * the last exchange's arrivals stay, as the origin never releases them. */
 static ocrGuid_t finish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  u64 nl = pv[P_NL], nxl = pv[P_NXL], cy = pv[P_CY];
+  u64 nxl = pv[P_NXL], cy = pv[P_CY];
   u64 rank = pv[P_RANK], slot_v = 2, slot_plan = 3;
 
   const double *v = depv[slot_v].ptr;
@@ -236,8 +239,6 @@ static ocrGuid_t finish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   *s = sum;
   ocrDbRelease(share);
 
-  for (u64 q = 0; q < nl; ++q)
-    ocrEventDestroy(chunk_point(pv, 1, q, rank));
   void *image = fftw_reloc_image_at(depv[slot_plan].ptr);
   fftw_reloc_image_protect(image, pv[P_PLAN_SIZE], 0);
   fftw_reloc_destroy_pair(image, pv[P_PLAN_SIZE], pv[P_PLAN_R2C],
@@ -277,6 +278,10 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   ocrHint_t dh, eh;
   mirror_rank_hint(&dh, rank, OCR_HINT_DB_T);
   mirror_rank_hint(&eh, rank, OCR_HINT_EDT_T);
+
+  /* The second exchange's arrivals here: joined by the scope and the reap
+   * task, read by every transpose chunk of each source. */
+  for (u64 q = 0; q < nl; ++q) mirror_point_counted(chunk_point(pv, 1, q, rank), 2 + loop_chunks(nyl));
 
   ocrGuid_t *prep = malloc(2 * nl * sizeof(ocrGuid_t));
 
@@ -368,16 +373,16 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   }
   params[P_PHASE] = 0;
 
-  ocrGuid_t e, out, reaped;
+  /* Every output event below has its consumers counted where it is made:
+   * the reap's completion starts the final scope and the finish task, a
+   * loop chunk's completion counts into its phase's join. */
+  ocrGuid_t e, out, reaped = mirror_counted(2);
   ocrEdtCreate(&e, mirror_u64_guid(pv[P_REAP1_TPL]), P_COUNT, params,
-               (u32)(2 + nl), NULL, EDT_PROP_NONE, &eh, &reaped);
+               (u32)(2 + nl), NULL, EDT_PROP_OEVT_VALID, &eh, &reaped);
   ocrAddDependence(join_s2, e, 0, DB_MODE_NULL);
   ocrAddDependence(names, e, (u32)(1 + nl), DB_MODE_RO);
-  for (u64 q = 0; q < nl; ++q) {
-    ocrGuid_t p = chunk_point(params, 1, q, rank);
-    mirror_edge_open(p);
-    ocrAddDependence(p, e, (u32)(1 + q), DB_MODE_NULL);
-  }
+  for (u64 q = 0; q < nl; ++q)
+    ocrAddDependence(chunk_point(params, 1, q, rank), e, (u32)(1 + q), DB_MODE_NULL);
 
   ocrEdtCreate(&e, mirror_u64_guid(pv[P_FINISH_TPL]), P_COUNT, params, 4, NULL,
                EDT_PROP_NONE, &eh, NULL);
@@ -396,18 +401,16 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
       ocrAddDependence(prep[phase * nl + j], e, (u32)(1 + j), DB_MODE_RO);
 
     ocrAddDependence(phase ? reaped : join_split, xpose[phase], 0, DB_MODE_NULL);
-    for (u64 q = 0; q < nl; ++q) {
-      ocrGuid_t p = chunk_point(params, phase, q, rank);
-      mirror_edge_open(p);
-      ocrAddDependence(p, xpose[phase], (u32)(1 + q), DB_MODE_NULL);
-    }
+    for (u64 q = 0; q < nl; ++q)
+      ocrAddDependence(chunk_point(params, phase, q, rank), xpose[phase], (u32)(1 + q), DB_MODE_NULL);
 
     u64 count = phase ? nyl : nxl, chunk = phase ? ychunk : xchunk;
     for (u64 i = 0; i < count; i += chunk) {
       params[P_IDX] = i;
       params[P_END] = i + chunk < count ? i + chunk : count;
+      out = mirror_counted(1);
       ocrEdtCreate(&e, mirror_u64_guid(pv[phase ? P_SPLIT2_TPL : P_SPLIT1_TPL]),
-                   P_COUNT, params, (u32)(2 + nl), NULL, EDT_PROP_NONE, &eh, &out);
+                   P_COUNT, params, (u32)(2 + nl), NULL, EDT_PROP_OEVT_VALID, &eh, &out);
       ocrAddDependence(out, join_split, OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
       ocrAddDependence(phase ? join_f2 : join_f1, e, 0, DB_MODE_NULL);
       ocrAddDependence(phase ? warr : varr, e, 1, DB_MODE_RO);
@@ -420,8 +423,9 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   for (u64 k = 0; k < nyl; k += ychunk) {
     params[P_IDX] = k;
     params[P_END] = k + ychunk < nyl ? k + ychunk : nyl;
+    out = mirror_counted(1);
     ocrEdtCreate(&e, mirror_u64_guid(pv[P_FFT2_TPL]), P_COUNT, params, 3,
-                 NULL, EDT_PROP_NONE, &eh, &out);
+                 NULL, EDT_PROP_OEVT_VALID, &eh, &out);
     ocrAddDependence(out, join_f2, OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
     ocrAddDependence(xout[0], e, 0, DB_MODE_NULL);
     ocrAddDependence(plan_db, e, 2, DB_MODE_RO);
@@ -431,8 +435,9 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   for (u64 i = 0; i < nxl; i += xchunk) {
     params[P_IDX] = i;
     params[P_END] = i + xchunk < nxl ? i + xchunk : nxl;
+    out = mirror_counted(1);
     ocrEdtCreate(&e, mirror_u64_guid(pv[P_FFT1_TPL]), P_COUNT, params, 2, NULL,
-                 EDT_PROP_NONE, &eh, &out);
+                 EDT_PROP_OEVT_VALID, &eh, &out);
     ocrAddDependence(out, join_f1, OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
     ocrAddDependence(plan_db, e, 1, DB_MODE_RO);
     ocrAddDependence(varr, e, 0, DB_MODE_RW);
@@ -471,21 +476,22 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
    * from the arriving chunk, (nyl*cxpart)/cypart, is equal to nxl for every
    * input the divisibility test already admits, so it is an identity and
    * cannot stand in for this. */
-  u64 points = 2;
+  u64 points = 1;
   if (sane)
     sane = mirror_fits(&points, nl, 0xffffffffu)
            && mirror_fits(&points, nl, 0xffffffffu)
            && (nyl <= nxl || nyl == 1);
 
-  ocrGuid_t range = NULL_GUID;
-  if (sane && ocrGuidRangeCreate(&range, points, GUID_USER_EVENT_STICKY) != 0)
+  ocrGuid_t range0 = NULL_GUID, range1 = NULL_GUID;
+  if (sane && (ocrGuidRangeCreate(&range0, points, GUID_USER_EVENT_STICKY) != 0
+               || ocrGuidRangeCreate(&range1, points, GUID_USER_EVENT_COUNTED) != 0))
     sane = 0;
   if (!sane) {
     PRINTF("fft_hpx: usage --nx=X --ny=Y"
            " [--plan=estimate|measure|patient|exhaustive] [--run=scatter]"
            " (X and Y/2+1 each a multiple of the rank count, Y >= 2,"
            " Y/2+1 at most X or equal to the rank count,"
-           " 2*ranks*ranks < 2^32; this row carries the scatter scheme,"
+           " ranks*ranks < 2^32; this row carries the scatter scheme,"
            " the origin's all_to_all is a different collective)\n");
     ocrShutdown();
     return NULL_GUID;
@@ -519,7 +525,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
   pv[P_NL] = nl; pv[P_NXL] = nxl; pv[P_NYL] = nyl;
   pv[P_CX] = cx; pv[P_CY] = cy; pv[P_RY] = ry;
   pv[P_CYPART] = cypart; pv[P_CXPART] = cxpart; pv[P_PLANFLAG] = flag;
-  pv[P_RANGE] = mirror_guid_u64(range);
+  pv[P_RANGE0] = mirror_guid_u64(range0);
+  pv[P_RANGE1] = mirror_guid_u64(range1);
   pv[P_FFT1_TPL] = mirror_guid_u64(fft1_tpl);
   pv[P_SPLIT1_TPL] = mirror_guid_u64(split1_tpl);
   pv[P_XPOSE1_TPL] = mirror_guid_u64(xpose1_tpl);
@@ -539,6 +546,8 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
                NULL);
   pv[P_SUM_EDT] = mirror_guid_u64(sum);
 
+  for (u64 q = 0; q < nl; ++q)
+    for (u64 r = 0; r < nl; ++r) mirror_point_sticky(chunk_point(pv, 0, q, r));
   mirror_spmd_fork(driver_tpl, pv, P_COUNT, P_RANK, nl, 0, NULL);
   return NULL_GUID;
 }

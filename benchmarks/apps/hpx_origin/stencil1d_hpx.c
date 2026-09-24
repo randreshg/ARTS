@@ -8,11 +8,12 @@ enum { P_NX, P_NT, P_NP, P_ND, P_NL, P_RANK, P_COEF, P_RANGE,
        P_KERNEL_TPL, P_RETIRE_TPL, P_DRAIN_TPL, P_RETIRED, P_SHUTDOWN_EDT,
        P_SHUTDOWN_TPL, P_COLLECT_TPL, P_DRIVER_TPL, P_COUNT };
 
-/* What a generation hands to the next one.  A point's ordinal names one of
- * these for one (generation, partition) and is never reused; the index names
- * the consumer, which decides the home only where a labeled range is homed by
- * index, and what follows from that is the hop count and nothing else.  The
- * control consumers receive identities without acquiring their payloads. */
+/* What a generation hands to the next one, and what the readers of its
+ * block tell the block's owner.  A point's ordinal names one of these for one
+ * (generation, partition) and is never reused; the index names the
+ * consumer's rank.  Every point is COUNTED -- each consumer is known when the
+ * point is made -- so no task destroys one.  The control consumers receive
+ * identities without acquiring their payloads. */
 enum { KIND_PARTITION, KIND_LEFT, KIND_RIGHT, KIND_USE_MIDDLE, KIND_USE_LEFT, KIND_USE_RIGHT,
        KIND_SLOT_RELEASE, KIND_SIGNAL_RELEASE, KIND_FINAL, KIND_STEPPER_RELEASE,
        KIND_RETIRED, KIND_COUNT };
@@ -23,7 +24,7 @@ static inline double heat(double coef, double l, double m, double r) {
 }
 
 static inline ocrGuid_t point(u64 *pv, u64 t, u64 i, u64 kind, u64 consumer) {
-  return mirror_edge(mirror_u64_guid(pv[P_RANGE]),
+  return mirror_point(mirror_u64_guid(pv[P_RANGE]),
                      (t * pv[P_NP] + i) * KIND_COUNT + kind, consumer, pv[P_NL]);
 }
 
@@ -58,7 +59,7 @@ static inline u64 ring_slots(u64 *pv) {
  * object's name and its metadata are on the same rank on both. */
 static inline ocrGuid_t slot_block(u64 *pv, u64 i, u64 g) {
   u64 k = ring_slots(pv), per = pv[P_NP] / pv[P_NL];
-  return mirror_edge(mirror_u64_guid(pv[P_DB_RANGE]),
+  return mirror_point(mirror_u64_guid(pv[P_DB_RANGE]),
                      (i - pv[P_RANK] * per) * k + g % k, pv[P_RANK], pv[P_NL]);
 }
 
@@ -98,9 +99,7 @@ static int block_space(u64 slots, u64 np, u64 nl, u64 *out) {
 
 /* Published payloads are released before any consumer can acquire them. */
 static void publish(u64 *pv, u64 t, u64 i, u64 kind, u64 consumer, ocrGuid_t db) {
-  ocrGuid_t p = point(pv, t, i, kind, consumer);
-  mirror_edge_open(p);
-  ocrEventSatisfy(p, db);
+  ocrEventSatisfy(point(pv, t, i, kind, consumer), db);
 }
 
 /* Local views retain their backing buffer; remote views serialize one element. */
@@ -125,9 +124,56 @@ static ocrGuid_t lifetime_point(u64 *pv, u64 g, u64 i, u64 kind) {
 }
 
 static void lifetime_edge(u64 *pv, ocrGuid_t done, u64 g, u64 i, u64 kind) {
-  ocrGuid_t event = lifetime_point(pv, g, i, kind);
-  mirror_edge_open(event);
-  ocrAddDependence(done, event, 0, DB_MODE_NULL);
+  ocrAddDependence(done, lifetime_point(pv, g, i, kind), 0, DB_MODE_NULL);
+}
+
+/* A rank's first partition checkpoints the semaphore every nd generations:
+ * its step of generation g - 1 raises the signal, and generation g's
+ * retirement waits for the signal task to be done with it. */
+static inline int checkpoint(u64 *pv, u64 g, u64 i) {
+  return g && i % (pv[P_NP] / pv[P_NL]) == 0 && (g - 1) % pv[P_ND] == 0;
+}
+
+/* Every point of generation g of partition i whose consumers run on the
+ * partition's own rank: the partition point, the edges a same-rank
+ * neighbour reads, and what the generation's retirement waits on or
+ * publishes.  They are created where the task producing the generation is
+ * created -- by the driver, before it publishes, for generation 0 -- which
+ * is ordered before that producer, before the task that creates the
+ * retirement and before every same-rank reader.  A reader on another rank
+ * acknowledges from a task that read this partition's edge of generation g,
+ * which the producer published after this. */
+static void open_generation(u64 *pv, u64 g, u64 i) {
+  u64 nt = pv[P_NT], np = pv[P_NP], own = owner_of(pv, i);
+  /* The interior and the boundary task read a partition; the gather reads
+   * the last one. */
+  mirror_point_counted(point(pv, g, i, KIND_PARTITION, own), g < nt ? 2 : 1);
+  if (g < nt) {
+    if (owner_of(pv, (i + np - 1) % np) == own)
+      mirror_point_counted(point(pv, g, i, KIND_LEFT, own), 1);
+    if (owner_of(pv, (i + 1) % np) == own)
+      mirror_point_counted(point(pv, g, i, KIND_RIGHT, own), 1);
+    for (u64 k = KIND_USE_MIDDLE; k <= KIND_USE_RIGHT; ++k)
+      mirror_point_counted(lifetime_point(pv, g, i, k), 1);
+  }
+  if (g + 1 < nt) mirror_point_counted(lifetime_point(pv, g, i, KIND_SLOT_RELEASE), 1);
+  if (checkpoint(pv, g, i)) mirror_point_counted(lifetime_point(pv, g, i, KIND_SIGNAL_RELEASE), 1);
+  if (g + ring_slots(pv) <= nt) mirror_point_counted(lifetime_point(pv, g, i, KIND_RETIRED), 1);
+}
+
+/* The edges partition i reads at generation g from a neighbour on another
+ * rank.  Nothing of the producing rank is ordered before this rank's reader,
+ * so the reader's rank creates them, early enough to come before the
+ * producer too: the task producing a neighbour's edge of generation g reads
+ * this partition's edge of generation g - 1, so the create goes where the
+ * task producing that edge is created, two generations ahead.  Generation 1
+ * is created by the driver before it publishes generation 0, and generation
+ * 0 by the root before any driver runs. */
+static void open_crossing_inputs(u64 *pv, u64 g, u64 i) {
+  u64 np = pv[P_NP], own = owner_of(pv, i);
+  u64 left = (i + np - 1) % np, right = (i + 1) % np;
+  if (owner_of(pv, left) != own) mirror_point_counted(point(pv, g, left, KIND_RIGHT, own), 1);
+  if (owner_of(pv, right) != own) mirror_point_counted(point(pv, g, right, KIND_LEFT, own), 1);
 }
 
 /* A generation's block is freed once every reader has acknowledged it and the
@@ -137,48 +183,37 @@ static void retire_generation(u64 *pv, u64 g, u64 i) {
   u64 params[P_COUNT]; memcpy(params, pv, sizeof params);
   params[P_T] = g; params[P_I] = i;
   u64 per = pv[P_NP] / pv[P_NL];
-  int checkpoint = g && i % per == 0 && (g - 1) % pv[P_ND] == 0;
-  u32 controls = (g < pv[P_NT] ? 3 : 0) + 1 + checkpoint;
+  int signalled = checkpoint(pv, g, i);
+  u32 controls = (g < pv[P_NT] ? 3 : 0) + 1 + signalled;
   ocrHint_t h; mirror_rank_hint(&h, owner_of(pv, i), OCR_HINT_EDT_T);
-  ocrGuid_t retire, done;
+  ocrGuid_t retire, done = mirror_counted(1);    /* the rank's retirement latch */
   ocrEdtCreate(&retire, mirror_u64_guid(pv[P_RETIRE_TPL]), P_COUNT, params,
-               controls, NULL, EDT_PROP_NONE, &h, &done);
+               controls, NULL, EDT_PROP_OEVT_VALID, &h, &done);
   ocrAddDependence(done, mirror_u64_guid(pv[P_RETIRED]), OCR_EVENT_LATCH_DECR_SLOT, DB_MODE_NULL);
   u32 slot = 0;
-  if (g < pv[P_NT]) {
-    for (u64 k = KIND_USE_MIDDLE; k <= KIND_USE_RIGHT; ++k) {
-      ocrGuid_t e = lifetime_point(pv, g, i, k); mirror_edge_open(e);
-      ocrAddDependence(e, retire, slot++, DB_MODE_NULL);
-    }
-  }
+  if (g < pv[P_NT])
+    for (u64 k = KIND_USE_MIDDLE; k <= KIND_USE_RIGHT; ++k)
+      ocrAddDependence(lifetime_point(pv, g, i, k), retire, slot++, DB_MODE_NULL);
   u64 kind = g + 1 < pv[P_NT] ? KIND_SLOT_RELEASE : KIND_FINAL;
   if (kind == KIND_FINAL && g < pv[P_NT] && owner_of(pv, i) != 0)
     kind = KIND_STEPPER_RELEASE;
   ocrGuid_t e = kind == KIND_SLOT_RELEASE
       ? lifetime_point(pv, g, i, kind)
       : lifetime_point(pv, pv[P_NT], (i / per) * per, kind);
-  mirror_edge_open(e); ocrAddDependence(e, retire, slot++, DB_MODE_NULL);
-  if (checkpoint) {
-    e = lifetime_point(pv, g, i, KIND_SIGNAL_RELEASE); mirror_edge_open(e);
-    ocrAddDependence(e, retire, slot++, DB_MODE_NULL);
-  }
+  ocrAddDependence(e, retire, slot++, DB_MODE_NULL);
+  if (signalled)
+    ocrAddDependence(lifetime_point(pv, g, i, KIND_SIGNAL_RELEASE), retire, slot++, DB_MODE_NULL);
 }
 
 static ocrGuid_t retire_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc; (void)depv;
-  u64 g = pv[P_T], i = pv[P_I], per = pv[P_NP] / pv[P_NL];
+  u64 g = pv[P_T], i = pv[P_I];
   /* The slot is free.  The generation that writes it next is told, and told
    * the block's name with it, so that it asks for the write permission only
    * now; a slot no later generation reaches tells nobody and its block lives
    * until its rank's teardown. */
   if (g + ring_slots(pv) <= pv[P_NT])
     publish(pv, g, i, KIND_RETIRED, owner_of(pv, i), slot_block(pv, i, g));
-  if (g < pv[P_NT])
-    for (u64 k = KIND_USE_MIDDLE; k <= KIND_USE_RIGHT; ++k)
-      ocrEventDestroy(lifetime_point(pv, g, i, k));
-  if (g + 1 < pv[P_NT]) ocrEventDestroy(lifetime_point(pv, g, i, KIND_SLOT_RELEASE));
-  if (g && i % per == 0 && (g - 1) % pv[P_ND] == 0)
-    ocrEventDestroy(lifetime_point(pv, g, i, KIND_SIGNAL_RELEASE));
   return NULL_GUID;
 }
 
@@ -197,19 +232,11 @@ static ocrGuid_t kernel_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   if (depc > 1) {
     db = depv[1].guid;
     next = depv[1].ptr;
-    ocrEventDestroy(lifetime_point(pv, g - ring_slots(pv), i, KIND_RETIRED));
   } else {
     ocrHint_t h; mirror_rank_hint(&h, pv[P_RANK], OCR_HINT_DB_T);
     db = slot_block(pv, i, g);
     ocrDbCreate(&db, (void **)&next, pv[P_NX] * sizeof(double),
                 GUID_PROP_IS_LABELED | DB_PROP_NONE, &h, NO_ALLOC);
-    if (next == NULL) {
-      /* A slot has exactly one creator, on one rank: the first generation
-       * that reaches it.  An installed label here means two. */
-      PRINTF("stencil1d_hpx: ring slot already installed\n");
-      ocrShutdown();
-      return NULL_GUID;
-    }
   }
   for (u64 j = 1; j + 1 < pv[P_NX]; ++j)
     next[j] = heat(coef, m[j - 1], m[j], m[j + 1]);
@@ -260,7 +287,9 @@ static ocrGuid_t step_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   double coef; memcpy(&coef, &pv[P_COEF], sizeof coef);
   double *next = depv[0].ptr;
   const double *m = depv[1].ptr;
-  u64 left_index = owner_of(pv, (i + np - 1) % np) == own ? nx - 1 : 0;
+  u64 left_of = (i + np - 1) % np, right_of = (i + 1) % np;
+  int left_away = owner_of(pv, left_of) != own, right_away = owner_of(pv, right_of) != own;
+  u64 left_index = left_away ? 0 : nx - 1;
   next[0] = heat(coef, ((double *)depv[2].ptr)[left_index], m[0], m[1]);
   next[nx - 1] = heat(coef, m[nx - 2], m[nx - 1], *(double *)depv[3].ptr);
   double left = next[0], right = next[nx - 1];
@@ -270,11 +299,17 @@ static ocrGuid_t step_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     ocrHint_t h; mirror_here_hint(&h, OCR_HINT_DB_T);
     publish_edges(pv, t + 1, i, depv[0].guid, left, right, &h);
   }
-  ocrEventDestroy(point(pv, t, i, KIND_PARTITION, own));
-  ocrEventDestroy(point(pv, t, (i + np - 1) % np, KIND_RIGHT, own));
-  ocrEventDestroy(point(pv, t, (i + 1) % np, KIND_LEFT, own));
-  if (owner_of(pv, (i + np - 1) % np) != own) ocrDbDestroy(depv[2].guid);
-  if (owner_of(pv, (i + 1) % np) != own) ocrDbDestroy(depv[3].guid);
+  /* An edge from another rank is this task's own copy: it is read, so the
+   * edge's owner is told here rather than through this task's completion,
+   * which only a reader of the owner's block has to wait for. */
+  if (left_away) {
+    ocrDbDestroy(depv[2].guid);
+    ocrEventSatisfy(lifetime_point(pv, t, left_of, KIND_USE_RIGHT), NULL_GUID);
+  }
+  if (right_away) {
+    ocrDbDestroy(depv[3].guid);
+    ocrEventSatisfy(lifetime_point(pv, t, right_of, KIND_USE_LEFT), NULL_GUID);
+  }
   return NULL_GUID;
 }
 
@@ -283,28 +318,37 @@ static void create_step(u64 *pv, u64 t, u64 i) {
   params[P_T] = t; params[P_I] = i;
   u64 own = owner_of(pv, i), np = pv[P_NP];
   ocrHint_t h; mirror_rank_hint(&h, own, OCR_HINT_EDT_T);
-  u64 slots = ring_slots(pv);
-  ocrGuid_t kernel, boundary, done, computed;
+  u64 slots = ring_slots(pv), left_of = (i + np - 1) % np, right_of = (i + 1) % np;
+  int left_here = owner_of(pv, left_of) == own, right_here = owner_of(pv, right_of) == own;
+  int signals = checkpoint(pv, t + 1, i);
+  open_generation(pv, t + 1, i);
+  if (t + 2 < pv[P_NT]) open_crossing_inputs(pv, t + 2, i);
+  if (t + 1 == pv[P_NT])
+    ocrAddDependence(point(pv, t + 1, i, KIND_PARTITION, own), mirror_u64_guid(pv[P_GATHER_EDT]),
+                     (u32)(i - pv[P_RANK] * (np / pv[P_NL])), DB_MODE_RO);
+  /* The boundary task's completion tells the owners of the blocks it read on
+   * this rank, and starts the signal when there is one. */
+  ocrGuid_t kernel, boundary, done = mirror_counted(1 + left_here + right_here + signals);
+  ocrGuid_t computed = mirror_counted(1);
   ocrEdtCreate(&boundary, mirror_u64_guid(pv[P_STEP_TPL]), P_COUNT, params,
-               4, NULL, EDT_PROP_NONE, &h, &done);
+               4, NULL, EDT_PROP_OEVT_VALID, &h, &done);
   ocrEdtCreate(&kernel, mirror_u64_guid(pv[P_KERNEL_TPL]), P_COUNT, params,
-               t + 1 >= slots ? 2 : 1, NULL, EDT_PROP_NONE, &h, &computed);
+               t + 1 >= slots ? 2 : 1, NULL, EDT_PROP_OEVT_VALID, &h, &computed);
   ocrAddDependence(computed, boundary, 0, DB_MODE_RW);
   lifetime_edge(pv, done, t, i, KIND_USE_MIDDLE);
-  lifetime_edge(pv, done, t, (i + np - 1) % np, KIND_USE_RIGHT);
-  lifetime_edge(pv, done, t, (i + 1) % np, KIND_USE_LEFT);
-  if (i == pv[P_RANK] * (np / pv[P_NL]) && t % pv[P_ND] == 0) {
-    ocrGuid_t signal, signal_done;
+  if (left_here) lifetime_edge(pv, done, t, left_of, KIND_USE_RIGHT);
+  if (right_here) lifetime_edge(pv, done, t, right_of, KIND_USE_LEFT);
+  if (signals) {
+    ocrGuid_t signal, signal_done = mirror_counted(1);
     ocrEdtCreate(&signal, mirror_u64_guid(pv[P_SIGNAL_TPL]), P_COUNT, params,
-                 2, NULL, EDT_PROP_NONE, &h, &signal_done);
+                 2, NULL, EDT_PROP_OEVT_VALID, &h, &signal_done);
     lifetime_edge(pv, signal_done, t + 1, i, KIND_SIGNAL_RELEASE);
     ocrAddDependence(mirror_u64_guid(pv[P_SEM]), signal, 1, DB_MODE_RW);
     ocrAddDependence(done, signal, 0, DB_MODE_NULL);
   }
   ocrGuid_t mine = point(pv, t, i, KIND_PARTITION, own);
-  ocrGuid_t left = point(pv, t, (i + np - 1) % np, KIND_RIGHT, own);
-  ocrGuid_t right = point(pv, t, (i + 1) % np, KIND_LEFT, own);
-  mirror_edge_open(mine); mirror_edge_open(left); mirror_edge_open(right);
+  ocrGuid_t left = point(pv, t, left_of, KIND_RIGHT, own);
+  ocrGuid_t right = point(pv, t, right_of, KIND_LEFT, own);
   ocrAddDependence(mine, boundary, 1, DB_MODE_RO);
   ocrAddDependence(left, boundary, 2, DB_MODE_RO);
   ocrAddDependence(right, boundary, 3, DB_MODE_RO);
@@ -316,9 +360,7 @@ static void create_step(u64 *pv, u64 t, u64 i) {
      * would ask for the write permission while readers are still to come,
      * and a queue-fair arm would then order a reader that has not arrived
      * behind a writer waiting for that reader. */
-    ocrGuid_t freed = lifetime_point(pv, t + 1 - slots, i, KIND_RETIRED);
-    mirror_edge_open(freed);
-    ocrAddDependence(freed, kernel, 1, DB_MODE_RW);
+    ocrAddDependence(lifetime_point(pv, t + 1 - slots, i, KIND_RETIRED), kernel, 1, DB_MODE_RW);
   }
   if (t) publish(pv, t - 1, i, KIND_SLOT_RELEASE, own, NULL_GUID);
 }
@@ -331,8 +373,7 @@ static void issue_generations(u64 *pv, u64 first_t, semaphore_t *sem) {
     if (blocked) {
       u64 params[P_COUNT]; memcpy(params, pv, sizeof params); params[P_T] = t + 1;
       ocrHint_t h; mirror_rank_hint(&h, pv[P_RANK], OCR_HINT_EDT_T);
-      ocrGuid_t next, event;
-      ocrEventCreate(&event, OCR_EVENT_ONCE_T, EVT_PROP_NONE);
+      ocrGuid_t next, event = mirror_counted(1);    /* the spawner's wake */
       ocrEdtCreate(&next, mirror_u64_guid(pv[P_SPAWN_TPL]), P_COUNT, params,
                    2, NULL, EDT_PROP_NONE, &h, NULL);
       ocrAddDependence(event, next, 0, DB_MODE_NULL);
@@ -357,11 +398,7 @@ static ocrGuid_t gather_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   ocrHint_t h; mirror_here_hint(&h, OCR_HINT_DB_T);
   ocrGuid_t db, *names;
   ocrDbCreate(&db, (void **)&names, (depc - 1) * sizeof(*names), DB_PROP_NONE, &h, NO_ALLOC);
-  for (u32 i = 0; i + 1 < depc; ++i) {
-    names[i] = depv[i].guid;
-    ocrEventDestroy(point(pv, pv[P_NT], pv[P_RANK] * (pv[P_NP] / pv[P_NL]) + i,
-                           KIND_PARTITION, pv[P_RANK]));
-  }
+  for (u32 i = 0; i + 1 < depc; ++i) names[i] = depv[i].guid;
   ocrDbRelease(db);
   ocrAddDependence(db, mirror_u64_guid(pv[P_COLLECT_EDT]), (u32)pv[P_RANK], DB_MODE_RO);
   return NULL_GUID;
@@ -374,13 +411,9 @@ static ocrGuid_t shutdown_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[])
 
 static ocrGuid_t drain_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc; (void)depv;
-  u64 per = pv[P_NP] / pv[P_NL], first = pv[P_RANK] * per;
   /* The ring's blocks stay: the origin's partition allocator keeps every
    * array it ever handed out on its free list and returns none of them. */
   ocrDbDestroy(mirror_u64_guid(pv[P_SEM]));
-  ocrEventDestroy(lifetime_point(pv, pv[P_NT], first, KIND_FINAL));
-  if (pv[P_RANK] && pv[P_NT])
-    ocrEventDestroy(lifetime_point(pv, pv[P_NT], first, KIND_STEPPER_RELEASE));
   ocrAddDependence(NULL_GUID, mirror_u64_guid(pv[P_SHUTDOWN_EDT]), (u32)pv[P_RANK], DB_MODE_NULL);
   return NULL_GUID;
 }
@@ -477,17 +510,20 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
     return NULL_GUID;
   }
   pv[P_DB_RANGE] = mirror_guid_u64(db_range);
+  /* The rank's teardown points.  Every retirement of the last generation
+   * waits on FINAL, and so does every retirement of the one before on rank
+   * 0, whose stepper outlives the gather; on another rank those wait on
+   * STEPPER_RELEASE, which its gather's completion raises. */
+  int stepper = rank && pv[P_NT];
+  mirror_point_counted(lifetime_point(pv, pv[P_NT], rank * per, KIND_FINAL),
+                       rank == 0 && pv[P_NT] ? 2 * per : per);
+  if (stepper) mirror_point_counted(lifetime_point(pv, pv[P_NT], rank * per, KIND_STEPPER_RELEASE), per);
   ocrHint_t h; mirror_rank_hint(&h, rank, OCR_HINT_EDT_T);
-  ocrGuid_t gather, gathered;
-  ocrEdtCreate(&gather, mirror_u64_guid(pv[P_GATHER_TPL]), P_COUNT, pv,
-               (u32)per + 1, NULL, EDT_PROP_NONE, &h, rank && pv[P_NT] ? &gathered : NULL);
-  if (rank && pv[P_NT])
-    lifetime_edge(pv, gathered, pv[P_NT], rank * per, KIND_STEPPER_RELEASE);
+  ocrGuid_t gather, gathered = stepper ? mirror_counted(1) : NULL_GUID;
+  ocrEdtCreate(&gather, mirror_u64_guid(pv[P_GATHER_TPL]), P_COUNT, pv, (u32)per + 1, NULL,
+               stepper ? EDT_PROP_OEVT_VALID : EDT_PROP_NONE, &h, stepper ? &gathered : NULL);
+  if (stepper) lifetime_edge(pv, gathered, pv[P_NT], rank * per, KIND_STEPPER_RELEASE);
   pv[P_GATHER_EDT] = mirror_guid_u64(gather);
-  for (u64 i = 0; i < per; ++i) {
-    ocrGuid_t event = point(pv, pv[P_NT], rank * per + i, KIND_PARTITION, rank);
-    mirror_edge_open(event); ocrAddDependence(event, gather, (u32)i, DB_MODE_RO);
-  }
   mirror_rank_hint(&h, rank, OCR_HINT_DB_T);
   pv[P_RETIRED] = mirror_guid_u64(mirror_latch((pv[P_NT] + 1) * per));
   ocrGuid_t sem_db; semaphore_t *sem;
@@ -499,6 +535,10 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   ocrEdtCreate(&drain, mirror_u64_guid(pv[P_DRAIN_TPL]), P_COUNT, pv, 1, NULL, EDT_PROP_NONE, &eh, NULL);
   ocrAddDependence(mirror_u64_guid(pv[P_RETIRED]), drain, 0, DB_MODE_NULL);
   for (u64 i = 0; i < per; ++i) {
+    open_generation(pv, 0, rank * per + i);
+    if (1 < pv[P_NT]) open_crossing_inputs(pv, 1, rank * per + i);
+    if (!pv[P_NT])
+      ocrAddDependence(point(pv, 0, rank * per + i, KIND_PARTITION, rank), gather, (u32)i, DB_MODE_RO);
     double *p;
     ocrGuid_t db = slot_block(pv, rank * per + i, 0);
     ocrDbCreate(&db, (void **)&p, nx * sizeof(double),
@@ -534,6 +574,15 @@ static ocrGuid_t root_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
                EDT_PROP_NONE, &h0, NULL);
   pv[P_COLLECT_EDT] = mirror_guid_u64(collect);
 
+  /* The edges that cross a rank in generation 0 are published by one driver
+   * and read by another, and only the root is ordered before both. */
+  if (pv[P_NT]) {
+    u64 per = pv[P_NP] / nl;
+    for (u64 r = 0; r < nl; ++r) {
+      open_crossing_inputs(pv, 0, r * per);
+      if (per > 1) open_crossing_inputs(pv, 0, r * per + per - 1);
+    }
+  }
   mirror_spmd_fork(mirror_u64_guid(pv[P_DRIVER_TPL]), pv, P_COUNT, P_RANK, nl, 0, NULL);
   return NULL_GUID;
 }
@@ -560,7 +609,7 @@ ocrGuid_t mainEdt(u32 paramc, u64 *paramv, u32 depc, ocrEdtDep_t depv[]) {
             || !point_space(nt, np, nl, &points)
             || !block_space(ring_depth(nt, nd), np / nl, nl, &blocks);
   ocrGuid_t range = NULL_GUID;
-  if (!reject && ocrGuidRangeCreate(&range, points, GUID_USER_EVENT_STICKY) != 0)
+  if (!reject && ocrGuidRangeCreate(&range, points, GUID_USER_EVENT_COUNTED) != 0)
     reject = 1;
   if (reject) {
     PRINTF("stencil1d_hpx: usage --nx=N --nt=T --np=P --nd=D [--k=K --dt=S --dx=X]"

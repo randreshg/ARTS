@@ -21,6 +21,27 @@ project into `build/benchmarks/hpx/`. `<row>_arts_<variant>`,
 `build/benchmarks/apps/`. One row in the catalog carries all four
 binaries: `tools/artsrun/src/artsrun/data/hpx_apps.yaml`.
 
+The mirrors name their cross-task events with labels, one creator per label
+and the create ordered before every use. Where every consumer of a
+single-fire event is known, they state its count up front (OCR's COUNTED
+event, also supplied as the output event of every task whose output has known
+consumers), so ARTS and xsocr reclaim it after its last consumer; the one
+labeled exception is `fft_hpx`'s first exchange, whose points are STICKY and
+destroyed by the task that frees that exchange's arrivals, and the latches
+and `fft_hpx`'s finish-scope outputs carry no count. ocr-vx declares COUNTED but does
+not implement it: its event create accepts the type only with assertions
+compiled out, as the release build has them, and then keeps the event like a
+STICKY one to teardown. On that reference the mirrors' event memory therefore
+grows with the run where the other two reclaim it — a property of the
+reference, disclosed in each row's appdoc and not patched. Its size at the
+catalog's calibrated arguments, estimated from the event's layout at about
+1.5 KB each (the object and the two `std::deque` buffers it constructs), not
+measured: `stencil1d_hpx` about `12 · np · nt ≈ 2.2·10⁶` events, 3.3 GB over
+the run, divided among the ranks; `network_storage_hpx` about `1.8·10⁶`
+(two per put, three per get), 2.7 GB; `fft_hpx` and `fib_hpx` negligible.
+The one-node ocr-vx cells are checked against the memory budget where they
+run, since the estimate cannot be measured on the development host.
+
 ## Admission rules
 
 A program enters the roster only if all five hold.
@@ -466,33 +487,42 @@ the sum of every final partition element, by one write.
 | `sem->wait(t)` | flow control — a creation-depth limit, not a dependence | the spawner chain: signal from a rank's first partition, waited on `nd` generations later |
 | `overall_result.get()` and the `get_data` gather loop on locality 0 | end wait — the result in hand | the rank gather tasks feeding the collect task's merge, then the serial read chain that folds the checksum |
 
-Mirror mapping (`benchmarks/apps/hpx_origin/stencil1d_hpx.c`): one block per
-partition per generation homed at `i / (np/nl)`, one task per partition per
-generation hinted there, reading its own partition and the two neighbouring
-edge elements and producing the next generation's partition and its two
-edges. Every block a step task or a driver produces travels on a labeled
-STICKY point from one reserved range — a data-block
-dependence in OCR is satisfied when it is added and so carries no ordering,
-and the point is both the ordering edge and the name service. The rule
-states its own exception — a block written and released *before* its
-consumer's edge is created is ordered by construction and needs no point —
-and three kinds of block are in it, all at the program's end: the name table
-a gather hands the collect task, the merged table the collect task hands the
-read chain, and the final partitions the read chain takes by name. The
-point's index names its *consumer's* rank, which decides the home only where
-the runtime homes a labeled range by index — ARTS and ocr-vx do (`index %
-nranks`), while xsocr homes a whole reserved range at the PD that reserved it,
-so there every satisfy is a message to that PD and a forward. Where the index
-decides, a within-rank publish is no message at all; a crossing edge is
-seven messages — five on the value path (the remote opener's labeled create,
-the satisfy, the consumer's RO acquire request and reply for a block homed at
-the producer, and the consumer's destroy) and two for the reader's
-acknowledgement, whose point is homed at the block owner's rank — against
-the origin's three parcels on the same edge plus its handle's reference
-counting, all header-sized but the one double: the price of one structure at
-both distances rather than a separate local path. A fourth point kind carries the
-semaphore: a rank's first partition signals its generation done and the
-spawner that creates generation `t + nd` waits on it.
+Mirror mapping (`benchmarks/apps/hpx_origin/stencil1d_hpx.c`): a ring of
+`min(nd + 2, nt + 1)` blocks per partition homed at `i / (np/nl)`, the origin's
+free list, and one task pair per partition per generation hinted there,
+reading its own partition and the two neighbouring edge elements and
+producing the next generation's partition and its two edges. Every block a
+step task or a driver produces travels on a labeled point from one reserved
+range — a data-block dependence in OCR is satisfied when it is added and so
+carries no ordering, and the point is both the ordering edge and the name
+service. The rule states its own exception — a block written and released
+*before* its consumer's edge is created is ordered by construction and needs
+no point — and three kinds of block are in it, all at the program's end: the
+name table a gather hands the collect task, the merged table the collect task
+hands the read chain, and the final partitions the read chain takes by name.
+Every point is a COUNTED event with exactly one creator, whose create is
+ordered before every satisfy and every dependence that names it: a point
+read on its producer's rank is created where the step producing it is
+created, and an edge read across a rank is created by the reader's rank two
+generations ahead — the producer of that edge reads the reader's previous
+edge, so the create is ordered before it — with generation 1 created by the
+reader's driver and generation 0 by the root before the fork. A point's
+consumers are all known to its creator, so it is reclaimed after the last of
+them registers and no task destroys one. The point's index names its
+*consumer's* rank, which decides the home only where the runtime homes a
+labeled range by index — ARTS and ocr-vx do (`index % nranks`), while xsocr
+homes a whole reserved range at the PD that reserved it, so there every
+create and satisfy is a message to that PD. Where the index decides, a
+within-rank publish is no message at all; a crossing edge is five messages —
+four on the value path (the satisfy, the consumer's RO acquire request and
+reply for a block homed at the producer, and the consumer's destroy of it)
+and one for the reader's acknowledgement, raised from its body on a point
+homed at the block owner's rank — against the origin's three parcels on the
+same edge plus its handle's reference counting, all header-sized but the one
+double: the price of one structure at both distances rather than a separate
+local path. The semaphore needs no point: every task that touches it runs on
+its rank, and a blocked spawner waits on an unlabeled single-fire event that
+the signal from the rank's first partition raises.
 
 The digest is the plain sum of the final state — the origin computes no
 printable quantity of its own. It is *conserved* by the periodic update for
@@ -611,7 +641,9 @@ sides.
 
 The origin addresses another locality's storage by offset, which an OCR
 program cannot: each driver publishes its slot names in a table on one
-labeled STICKY point per rank, and each rank's first turn copies every table
+labeled point per consumer rank — created by the root before the fork, since
+nothing else orders one driver's publication against another's first turn —
+and each rank's first turn copies every table
 into its own state block, which then rides from turn to turn, released
 before each handover, together with the random stream the origin's driver
 keeps across its three tests. That exchange has no counterpart in the origin
@@ -725,9 +757,16 @@ event-order are exactly what that model requires to be ordered — and no
 coherence-plane cell runs it. The copies, the bytes and the
 one message per (source, destination) are unchanged.
 
-Each `scatter_to` is `nl` labeled STICKY points from the program's one
-reserved range, indexed `(phase·nl + source)·nl + destination` — `2·nl²`
-names, `2·nl(nl−1)` of them crossing a rank. Those counts hold where a
+Each `scatter_to` is `nl` labeled points, one per (source, destination),
+from a reserved range per exchange indexed `source·nl + destination` —
+`2·nl²` names, `2·nl(nl−1)` of them crossing a rank. Every point has one
+creator, ordered before its producer and its consumers: the first exchange's
+points are created by the root before the fork, since nothing else orders a
+source's publication against its destination's registration, and they are
+STICKY because their consumer count is the destination's own chunk count; a
+second-exchange point is COUNTED and created by its destination rank before
+that rank publishes its first exchange, which every source's second
+publication waits on. Those counts hold where a
 labeled range is homed by index, which is what ARTS and ocr-vx do
 (`index % nranks`); xsocr homes a whole reserved range at the PD that
 reserved it, so there every point lives at rank 0 and no publish is free.
