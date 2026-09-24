@@ -49,6 +49,7 @@
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
 #include "arts/edt.h"
+#include "arts/fam/pool.h" /* arts_fam_alloc / arts_fam_free (ARTS_FAM only) */
 #include "arts/gas/guid.h" /* GUID kind extraction (quiescence debug check) */
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
@@ -113,6 +114,9 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   /* Every cache starts without a buffer; the install path clears this the
    * moment one is in the slot, whoever put it there. */
   __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
+#ifdef ARTS_FAM
+  c->fam_addr = 0;
+#endif
   arts_db_create_hold_seed(c, kind);
   /* Snapshot reorder-buffer: a Treiber stack (zero-initializable, but init
    * explicitly for clarity).  Nodes are heap-allocated on the case-3 push path
@@ -156,6 +160,68 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * armed by the protocol init hook above. */
 }
 #endif /* arms sharing the common cache shape */
+
+#ifdef ARTS_FAM
+bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
+  if (cache == NULL || addr == 0) {
+    return false;
+  }
+  uint64_t expect = 0;
+  if (__atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
+                                  __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+    return true;
+  }
+  if (expect != addr) {
+    /* One block, one slot.  Two different addresses for one GUID means two
+     * creators each minted a store for it — outside the contract (a create
+     * of a label another rank is still creating), and keeping both would
+     * silently split the block.  This is the slot rule's only loud
+     * failure, and the home reaches it on the announce it coalesces. */
+    ARTS_ERROR("fam: guid %lu was handed two different slots — two "
+               "creators of one label",
+               (unsigned long)cache->db_guid);
+  }
+  return false;
+}
+
+bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
+  if (cache == NULL || cache->db_size == 0 ||
+      __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE) != 0) {
+    return false;
+  }
+  void *slot = arts_fam_alloc((size_t)cache->db_size);
+  if (!arts_db_fam_slot_record(cache, (uint64_t)(uintptr_t)slot)) {
+    arts_fam_free(slot);
+    return false;
+  }
+  return true;
+}
+
+void arts_db_fam_slot_discard(struct arts_db_cache_s *cache) {
+  uint64_t addr = __atomic_exchange_n(&cache->fam_addr, (uint64_t)0,
+                                      __ATOMIC_ACQ_REL);
+  if (addr != 0) {
+    arts_fam_free((void *)(uintptr_t)addr);
+  }
+}
+
+/* A slot is freed at exactly one of three points: a create that allocated
+ * one and then made nothing (discard, above), the block's teardown at the
+ * home (here), and the free-to-owner handler on the rank whose slice it
+ * came from.  The cache destructor never frees a slot — a creator's cache
+ * can die while the home still serves the block from the slot that creator
+ * allocated.  The address alone is meaningful: its owner is derived from
+ * it, never stored beside it, so there is no second field a free could
+ * leave inconsistent. */
+void arts_db_fam_slot_release(struct arts_db_cache_s *cache) {
+  uint64_t addr = __atomic_exchange_n(&cache->fam_addr, (uint64_t)0,
+                                      __ATOMIC_ACQ_REL);
+  if (addr == 0) {
+    return;
+  }
+  arts_send_db_fam_free(addr);
+}
+#endif /* ARTS_FAM */
 
 /* ================================================================== */
 /* ===== Acquire path =============================================== */

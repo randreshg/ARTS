@@ -452,6 +452,16 @@ struct arts_db_cache_s {
 #endif
   arts_guid_t db_guid;
   uint64_t db_size;
+#ifdef ARTS_FAM
+  /* The block's canonical store between turns.  Written once per block per
+   * rank — by the create that made it, or by the first grant that names it —
+   * and read by both funnels.  The rank whose slice it came from is NOT
+   * stored: one slice per rank makes the owner a function of the address
+   * (arts_fam_owner_of), so there is no pair to publish and nothing to tear.
+   * A plain integer accessed with the atomic builtins, like payload_pending,
+   * so the C and C++ views of this struct stay identical. */
+  uint64_t fam_addr;
+#endif
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
    * whose create left it no storage is what installs one, and every later
@@ -489,6 +499,16 @@ struct arts_db_cache_s {
 #endif
   arts_guid_t db_guid;
   uint64_t db_size;
+#ifdef ARTS_FAM
+  /* The block's canonical store between turns.  Written once per block per
+   * rank — by the create that made it, or by the first grant that names it —
+   * and read by both funnels.  The rank whose slice it came from is NOT
+   * stored: one slice per rank makes the owner a function of the address
+   * (arts_fam_owner_of), so there is no pair to publish and nothing to tear.
+   * A plain integer accessed with the atomic builtins, like payload_pending,
+   * so the C and C++ views of this struct stay identical. */
+  uint64_t fam_addr;
+#endif
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
    * whose create left it no storage is what installs one, and every later

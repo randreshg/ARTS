@@ -355,6 +355,31 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache);
 void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
 #endif
 
+#ifdef ARTS_FAM
+/* Record this block's slot in a cache that has none.  Returns true when this
+ * call installed it.  A second call naming the SAME slot is a no-op; a second
+ * call naming a different one is a protocol error (one block, one slot) —
+ * and it is the ONE loud failure of the slot rule: the home runs it on every
+ * announce it coalesces, which is where a racing second creator shows up. */
+bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
+/* Allocate out of this rank's slice, for the size the cache DECLARES, and
+ * record it.  False when the block is sentinel-sized (db_size == 0) or
+ * already carries a slot — in which case nothing was allocated.  The caller
+ * must have recorded cache->db_size first: a first-touch stub carries none,
+ * and a create that finds such a cache is the block's declaration of its
+ * size.  Only a create that MADE the block may call it, and only for
+ * db_type == ARTS_DB — a kind that keeps no coherence state has no funnel to
+ * read the slot and no teardown to free it. */
+bool arts_db_fam_slot_create(struct arts_db_cache_s *cache);
+/* Drop a slot this rank allocated for a create that turned out to create
+ * nothing.  Only the allocating rank may call it — arts_fam_free requires
+ * the caller's own slice and is fatal otherwise, which is the check. */
+void arts_db_fam_slot_discard(struct arts_db_cache_s *cache);
+/* The block is gone: free the slot here, or tell its owner to.  Exactly one
+ * caller per block — the teardown that claimed the route slot. */
+void arts_db_fam_slot_release(struct arts_db_cache_s *cache);
+#endif /* ARTS_FAM */
+
 /* Case-D (arts_handler_db_create) per-protocol leaf function.
  * install_home_buffer: WT/WB defer the install to the creator's first
  * PUBLISH (no-op here).  Defined once per protocol TU. */

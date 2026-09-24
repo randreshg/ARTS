@@ -1546,6 +1546,47 @@ set_tests_properties(runtime_edt_event_layout_compare PROPERTIES
     PASS_REGULAR_EXPRESSION
         "PASS runtime_edt_event_layout_compare: C/C\\+\\+ fingerprints match")
 
+# excl/types.h maintains two hand-written views of arts_db_cache_s; the FAM
+# slot field is the one this arm adds to both.  Registered only where this
+# tree's own library is FAM-enabled -- the fingerprint is meaningless with no
+# fam_addr member to compare.
+if(ARTS_FAM_TREE_RESIDENCY)
+    add_pure_unit_src(fam_cache_fields PASS_REGEX "PASS fam_cache_fields \\[c\\]"
+                      TIMEOUT 30)
+
+    add_executable(fam_cache_fields_cpp
+        unit/fam_cache_fields_cpp.cpp)
+    target_include_directories(fam_cache_fields_cpp PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR}
+        ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(fam_cache_fields_cpp
+        ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    set_property(TARGET fam_cache_fields_cpp
+        PROPERTY POSITION_INDEPENDENT_CODE OFF)
+    target_compile_options(fam_cache_fields_cpp PRIVATE -fno-pie -fno-PIE)
+    target_link_options(fam_cache_fields_cpp PRIVATE
+        -no-pie -fno-pie -fno-PIE)
+    target_link_libraries(fam_cache_fields_cpp PRIVATE Threads::Threads)
+
+    register_pure_unit_test(fam_cache_fields_cpp TIMEOUT 60)
+    set_tests_properties(fam_cache_fields_cpp PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS fam_cache_fields \\[cpp\\]")
+
+    add_test(
+        NAME fam_cache_fields_compare
+        COMMAND ${CMAKE_COMMAND}
+            "-DC_EXECUTABLE=$<TARGET_FILE:fam_cache_fields>"
+            "-DCPP_EXECUTABLE=$<TARGET_FILE:fam_cache_fields_cpp>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_fam_cache_fields.cmake)
+    set_tests_properties(fam_cache_fields_compare PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 60
+        RESOURCE_LOCK "pure_unit_test"
+        PASS_REGULAR_EXPRESSION
+            "PASS fam_cache_fields_compare: C/C\\+\\+ fingerprints match")
+endif()
+
 # ============================================================================
 # Cross-rank failure channel.
 #
