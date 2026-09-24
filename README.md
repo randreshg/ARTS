@@ -62,15 +62,15 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 | `ARTS_COHERENCE_PROTOCOL` | `VAL` | Coherence protocol — who keeps reader copies valid: `VAL` (default; acquire-time version validation, readers never blocked/tracked/invalidated), `INV` (release-time invalidation rounds), or `EXCL` (per-DB distributed reader-writer lock), all under the `OCR` model; or `FLUSH` (fetch the whole payload at every remote acquire, write it back at every remote RW release, block for the home's ACK) under the `DB_WRF` model, with no write- or release-policy axis. Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH. |
 | `ARTS_WRITE_POLICY` | `WB` | Write policy at release granularity — `WT` (write-through: payload flushed to the block's home at every release; home serves reads) or `WB` (default; write-back: payload stays with the last writer, directory forwards on demand). Live in INV/VAL; EXCL requires WB. |
 | `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with its write grant when the last local user finishes — `PURGE` (hand copy and permission back to the home) or `RETAIN` (default; keep both until another node asks). Live in EXCL and in WT × {VAL, INV}; WB requires RETAIN. |
-| `ARTS_DEFAULT_DB_KIND` | `ARTS_DB` | Default DB storage kind that the `ARTS_DB_DEFAULT` macro expands to — `ARTS_DB` (regular DRAM) or `ARTS_DB_CXL` (CXL shared). |
-| `ARTS_USE_CXL` | `OFF` | Enable CXL shared-memory DataBlocks (requires the Rapid API). |
-| `ARTS_CXL_RAPID_INCLUDE_DIR` | — | Path to the Rapid API include dir (required when `ARTS_USE_CXL=ON`). |
-| `ARTS_CXL_LIB_DIR` | — | Path to the `arts_cxl_lib` dir (required when `ARTS_USE_CXL=ON`). |
+| `ARTS_DEFAULT_DB_KIND` | `ARTS_DB` | Default DB storage kind that the `ARTS_DB_DEFAULT` macro expands to — `ARTS_DB` (regular DRAM). |
+| `ARTS_USE_CXL` | `OFF` (DEPRECATED) | Enable the CXL DataBlock storage kind — forced OFF: enabling it is a configure error. The kind predates the current coherence design and is unmaintained; the sources stay for reference. For fabric-attached memory, configure `ARTS_FAM_BACKEND` / `ARTS_FAM_RESIDENCY` below instead. |
+| `ARTS_FAM_BACKEND` | `OFF` | Fabric-attached-memory backend: `OFF` (default), `SHM` (local-launcher emulation) or `DEVICE` (builds against the device library). No `AUTO`; every mismatch is a configure error. |
+| `ARTS_FAM_RESIDENCY` | (empty) | Where an EDT's working bytes live when this tree's own library is FAM-enabled: a rank-local copy staged from the block's slot at the two ownership edges (`STAGED`), or the slot itself, with the edges reduced to a flush each (`DIRECT`). |
 | `ARTS_USE_FAKE_CXL_LIB` | `OFF` | With `ARTS_USE_CXL=ON`, fetch and build the vendored `third_party/fake_arts_cxl_lib` (POSIX-shm emulation of CXL memory, single node) and point `ARTS_CXL_RAPID_INCLUDE_DIR` / `ARTS_CXL_LIB_DIR` at it; neither path needs to be set. |
 | `ARTS_LOG_LEVEL` | `3` (Debug) / `1` (Release) | Log verbosity: `0`=ERROR, `1`=+WARN, `2`=+INFO, `3`=+DEBUG. |
 | `ARTS_USE_SANS` | `OFF` | Enable ASan + UBSan + LSan in Debug builds (excludes CUDA). Mutually exclusive with `ARTS_USE_TSAN`. |
 | `ARTS_USE_TSAN` | `OFF` | Enable ThreadSanitizer in Debug builds (excludes CUDA). Compiler-incompatible with `ARTS_USE_SANS`; use a separate build dir. |
-| `ARTS_COUNTER_CONFIG` | `configs/counters.cfg` | Counter configuration file parsed at configure time into introspection macros. |
+| `ARTS_COUNTER_CONFIG` | `configs/counters_off.cfg` | Counter configuration file parsed at configure time into introspection macros. The default is the all-OFF file; `configs/counters.cfg` is the profiling example, not the default. |
 
 Standard CMake variables also apply: `CMAKE_BUILD_TYPE` (`Debug` default, or `Release`),
 `CMAKE_INSTALL_PREFIX` (`./install` default), `CMAKE_CUDA_ARCHITECTURES` (see `ARTS_USE_LOCAL_CUDA_ARCHITECTURES`),

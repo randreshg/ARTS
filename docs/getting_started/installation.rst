@@ -155,16 +155,25 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
    * - ``ARTS_DEFAULT_DB_KIND``
      - ARTS_DB
      - Default DB storage kind the ``ARTS_DB_DEFAULT`` macro expands to:
-       ``ARTS_DB`` (regular DRAM) or ``ARTS_DB_CXL`` (CXL shared).
-   * - ``ARTS_USE_CXL``
+       ``ARTS_DB`` (regular DRAM).
+   * - ``ARTS_USE_CXL`` (DEPRECATED)
      - OFF
-     - Enable CXL shared-memory DataBlocks (requires the Rapid API).
-   * - ``ARTS_CXL_RAPID_INCLUDE_DIR``
+     - Enable the CXL DataBlock storage kind — forced OFF: enabling it is
+       a configure error. The kind predates the current coherence design
+       and is unmaintained; the sources stay for reference. For
+       fabric-attached memory, configure ``ARTS_FAM_BACKEND`` /
+       ``ARTS_FAM_RESIDENCY`` below instead.
+   * - ``ARTS_FAM_BACKEND``
+     - OFF
+     - Fabric-attached-memory backend: ``OFF`` (default), ``SHM``
+       (local-launcher emulation) or ``DEVICE`` (builds against the
+       device library). No ``AUTO``; every mismatch is a configure error.
+   * - ``ARTS_FAM_RESIDENCY``
      - (empty)
-     - Path to the Rapid API includes (required when ``ARTS_USE_CXL=ON``).
-   * - ``ARTS_CXL_LIB_DIR``
-     - (empty)
-     - Path to ``arts_cxl_lib`` (required when ``ARTS_USE_CXL=ON``).
+     - Where an EDT's working bytes live when this tree's own library is
+       FAM-enabled: a rank-local copy staged from the block's slot at the
+       two ownership edges (``STAGED``), or the slot itself, with the
+       edges reduced to a flush each (``DIRECT``).
    * - ``ARTS_NOHINT_EDT_PLACEMENT``
      - ROUNDROBIN
      - Where an EDT created with no placement preference (NULL hint, or
@@ -204,8 +213,10 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        in a run must build with the same setting. Hot-path; enable only to
        debug transport ordering.
    * - ``ARTS_COUNTER_CONFIG``
-     - configs/counters.cfg
-     - Counter configuration file parsed into introspection macros.
+     - configs/counters_off.cfg
+     - Counter configuration file parsed into introspection macros. The
+       default is the all-OFF file; ``configs/counters.cfg`` is the
+       profiling example, not the default.
 
 To pick a faster linker, use CMake's own ``-DCMAKE_LINKER_TYPE=MOLD`` (cmake ≥ 3.29);
 there is no ARTS-specific linker option.

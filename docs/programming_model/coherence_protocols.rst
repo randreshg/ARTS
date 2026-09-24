@@ -203,10 +203,15 @@ exactly one protocol and CMake refuses the rest.
 
 .. warning::
 
-   DB-WRF exists to measure the cost of coherence obligations in benchmarks,
-   and as the fabric-side stand-in for a CXL build (acquire becomes a
-   consumer flush over a shared pool, RW release a producer flush). Never
-   use it as a correctness baseline. The experiment driver's catalog marks
+   DB-WRF exists to measure the cost of coherence obligations in benchmarks.
+   A fabric-attached canonical store is reached a different way: on
+   ``EXCL`` × ``PURGE`` the store a payload rests in between write turns is
+   selectable — the home's DRAM (default) or a fabric-attached pool
+   (``ARTS_FAM_BACKEND``) — with the same state machine, the same PURGE
+   rule and the same re-fetch every turn; the two residencies differ only
+   in whether an ownership edge stages a rank-local copy or flushes in
+   place against the pool. Never use DB-WRF as a correctness baseline. The
+   experiment driver's catalog marks
    applications whose wiring relies on guarantees outside this contract with
    ``unordered_writes`` (a reason plus file:line — a contract-ineligibility
    declaration, not a bug mask); such a row is ``N/A`` on the FLUSH entry
@@ -374,10 +379,10 @@ line in place, exactly as they would use a pool.
 
 The home keeps a sharer bitset — ranks that ever fetched the line or were
 told its credential — used only by destroy fan-out; it is lifecycle
-bookkeeping, not coherence state. FLUSH is the fabric-side stand-in for a
-CXL build, where acquire becomes a consumer flush over a shared pool and RW
-release a producer flush; it also serves as the no-optimization baseline
-against the OCR-model protocols.
+bookkeeping, not coherence state. FLUSH also serves as the no-optimization
+baseline against the OCR-model protocols; it is a different mechanism from
+the fabric-attached canonical store described above, which lives entirely
+inside ``EXCL`` × ``PURGE`` and keeps that protocol's own state machine.
 
 Retired and rejected arms
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -568,10 +573,10 @@ kinds carry their own fixed, documented semantics regardless of the global
 axes: ``ARTS_DB_PIN`` and ``ARTS_DB_GPU_PIN`` perform no DB-level coherence;
 ``ARTS_DB_GPU`` allows concurrent per-device replicas merged by reduction at
 release; ``ARTS_DB_CXL`` relies on hardware cache coherence intra-node and
-application-driven ordering across nodes. All of these are **app-ordered
-(full DRF) contracts**: the application must event-order *every* conflicting
-access pair — read-write included — because there is no snapshot or admission
-machinery underneath.
+application-driven ordering across nodes, but is unmaintained and cannot be
+built. All of these are **app-ordered (full DRF) contracts**: the
+application must event-order *every* conflicting access pair — read-write
+included — because there is no snapshot or admission machinery underneath.
 
 .. _cdag_dropped:
 
