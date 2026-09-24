@@ -378,6 +378,22 @@ void arts_db_fam_slot_discard(struct arts_db_cache_s *cache);
 /* The block is gone: free the slot here, or tell its owner to.  Exactly one
  * caller per block — the teardown that claimed the route slot. */
 void arts_db_fam_slot_release(struct arts_db_cache_s *cache);
+
+/* The slot this rank knows for the block, 0 when it knows none.  There is no
+ * owner beside it: the owning rank of a slot is a pure function of its
+ * address. */
+static inline uint64_t
+arts_db_fam_slot_addr(const struct arts_db_cache_s *cache) {
+  return __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE);
+}
+#else
+/* Every create announces the address it knows, and a build with no fabric
+ * memory knows none — so the call site is the same one in both builds. */
+static inline uint64_t
+arts_db_fam_slot_addr(const struct arts_db_cache_s *cache) {
+  (void)cache;
+  return 0u;
+}
 #endif /* ARTS_FAM */
 
 /* Case-D (arts_handler_db_create) per-protocol leaf function.

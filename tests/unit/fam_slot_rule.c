@@ -1,0 +1,305 @@
+/// @file fam_slot_rule.c
+/// @brief One block, one slot: the rank that MADE the block allocated it, and
+/// every rank that knows the block names that same address.
+///
+/// Whitebox, because a slot is cache state with no public reader: the checks
+/// resolve the block through the route table and read the cache the runtime
+/// keeps there.  The owner of an address is a pure function of the address, so
+/// there is no second word to compare it against.
+///
+/// Six legs: a create that acquires nothing at the block's home; the same from
+/// a non-home rank, where the home is the one that must allocate; two ranks
+/// creating ONE label with no acquisition, which one label's store must
+/// survive; an acquiring create made off-home, whose announce the home must
+/// record unchanged; a create of a label a dependence on this rank has already
+/// touched; and a create of a label whose store this rank already knows --
+/// which must make nothing, hand back no pointer, and leave the slot alone.
+
+#include "arts.h"
+
+#include "arts/coherence/coherence.h"
+#include "arts/coherence/excl/types.h"
+#include "arts/fam/pool.h"
+#include "arts/gas/route_table.h"
+#include "arts/utils/shared.h"
+
+#include "../test_failure_status.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#define N 64
+/* Labels two ranks create at once.  One is enough to state the rule and far
+ * too few to meet it: the two creates have to overlap inside the home's own
+ * install window, so the leg is a population, not a single try. */
+#define RACE_LABELS 128u
+
+static void fail(const char *what) {
+  (void)fprintf(stderr, "FAIL: %s\n", what);
+  arts_test_fail();
+}
+
+/* The block's slot as this rank knows it, or 0 when this rank keeps no cache
+ * for the block. */
+static uint64_t slot_of(arts_guid_t g) {
+  uint64_t addr = 0;
+  arts_shared_ptr_t h = arts_route_table_lookup_db(g);
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
+  if (db != NULL) {
+    addr = arts_db_fam_slot_addr(&db->cache);
+  }
+  arts_shared_release(&h);
+  return addr;
+}
+
+static void check_owned_here(uint64_t addr, const char *what) {
+  if (addr == 0) {
+    fail(what);
+    return;
+  }
+  if (!arts_fam_contains((const void *)(uintptr_t)addr)) {
+    fail("a recorded slot is not pool memory");
+    return;
+  }
+  if (arts_fam_owner_of((const void *)(uintptr_t)addr) !=
+      arts_get_current_rank()) {
+    fail("the allocating rank does not own its slot's slice");
+  }
+}
+
+/* The reader whose dependence makes the first touch; it only has to run. */
+static void mark_reader_edt(uint32_t paramc, const uint64_t *paramv,
+                            uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+}
+
+static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]);
+
+/* Both ranks create every label of the range, with no acquisition and no
+ * ordering between them -- which the programming model allows, because such a
+ * create takes no hold there could be two of.  One of the two makes the block
+ * and the other makes nothing, and the loser's store must not outlive its
+ * create.
+ *
+ * The peer's sweep is started from the off-home rank, one message ahead of
+ * its own: the home's create of a label and the peer's announce of it then
+ * begin the range in step and stay within microseconds of each other across
+ * it.  Started from the home instead, the home's whole sweep runs before the
+ * first announce can arrive and every announce finds the block already made
+ * -- which asserts the rule only where it is easy. */
+static void race_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t base = (arts_guid_t)paramv[0];
+  unsigned int n = (unsigned int)paramv[1];
+  if (paramv[2] != 0u) {
+    uint64_t pv[3] = {(uint64_t)base, (uint64_t)n, 0u};
+    (void)arts_edt_create(race_edt, 3, pv, 0,
+                          &(arts_edt_hint_t){.rank = 0u});
+  }
+  for (unsigned int i = 0; i < n; i++) {
+    void *p = arts_db_create_with_guid(arts_guid_from_index(base, i),
+                                       N * sizeof(unsigned int), ARTS_DB,
+                                       ARTS_DB_PROP_NO_ACQUIRE, NULL);
+    if (p != NULL) {
+      fail("a create that acquires nothing handed out a pointer");
+      return;
+    }
+  }
+}
+
+/* Runs at the range's home once both racers are done.  Every label has an
+ * object here by then: this rank's own create of it either installed one or
+ * found one, so the home's answer is complete whichever create won. */
+static void race_check_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t base = (arts_guid_t)paramv[0];
+  unsigned int n = (unsigned int)paramv[1];
+  for (unsigned int i = 0; i < n; i++) {
+    check_owned_here(slot_of(arts_guid_from_index(base, i)),
+                     "a label two ranks created without acquiring it kept no "
+                     "slot at its home");
+  }
+  (void)arts_edt_create(creator_edt, 0, NULL, 0,
+                        &(arts_edt_hint_t){.rank = 1u});
+}
+
+/* paramv = {the creator's slot, the acquiring create's guid, the creator's
+ * rank, shut down when this check is the run's last act, the guid of the
+ * create that acquired nothing}.  The two read dependences are the checks'
+ * ordering against the creates: the home serves them only once each block's
+ * announce has installed the object here. */
+static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
+                           uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  uint64_t want_addr = paramv[0];
+  uint64_t got_addr = slot_of((arts_guid_t)paramv[1]);
+  if (got_addr != want_addr) {
+    fail("the home recorded a different slot than the creator allocated");
+  }
+  if (got_addr != 0 && arts_fam_owner_of((const void *)(uintptr_t)got_addr) !=
+                           (unsigned int)paramv[2]) {
+    fail("the home derives the wrong owner for the creator's slot");
+  }
+  /* The create that acquired nothing named no store, so the home is the rank
+   * that had to allocate one. */
+  check_owned_here(slot_of((arts_guid_t)paramv[4]),
+                   "a create that acquires nothing off-home left its home "
+                   "with no slot");
+  if (paramv[3] != 0) {
+    arts_shutdown();
+  }
+}
+
+/* A create of a label whose store this rank already knows makes nothing: no
+ * pointer, no second slot, and success.  Slot 0 is the block, acquired read
+ * only, and the dependence is released before the create runs. */
+static void recreate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t dg = (arts_guid_t)paramv[0];
+  arts_db_release(dg, DB_MODE_RO);
+  uint64_t before = slot_of(dg);
+  /* The leg's subject is a create of a label whose store this rank already
+   * knows; a rank that knows none would be MAKING the block, which the legs
+   * above cover.  Which of the two ran is printed, so a green log says what
+   * was asserted. */
+  if (before == 0) {
+    (void)fprintf(stderr, "LEG create-nothing: no subject on this rank\n");
+    arts_shutdown();
+    return;
+  }
+  (void)fprintf(stderr, "LEG create-nothing: live\n");
+  void *dp = arts_db_create_with_guid(dg, N * sizeof(unsigned int), ARTS_DB,
+                                      ARTS_DB_PROP_NONE, NULL);
+  if (dp != NULL) {
+    fail("a create of a label this rank already holds a slot for made "
+         "something");
+  }
+  if (slot_of(dg) != before) {
+    fail("a create of an existing label changed the block's slot");
+  }
+  arts_shutdown();
+}
+
+static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  /* An acquiring create whose home is rank 0, made on rank 1. */
+  void *p = NULL;
+  arts_guid_t g = arts_db_create(&p, N * sizeof(unsigned int), ARTS_DB,
+                                 ARTS_DB_PROP_NONE,
+                                 &(arts_db_hint_t){.rank = 0u});
+  if (g == NULL_GUID || p == NULL) {
+    fail("an acquiring create off-home returned nothing");
+    arts_shutdown();
+    return;
+  }
+  uint64_t addr = slot_of(g);
+  check_owned_here(addr, "an acquiring create off-home allocated no slot");
+  arts_db_release(g, DB_MODE_RW);
+
+  /* First touch, then a create of the same label, on ONE rank.  The dependence
+   * is asked for FIRST, so a first touch may install the cache here and park;
+   * the create then either wins its own install or finds that cache and wins
+   * its create mark.  Which one is a race this test does not control, and need
+   * not: on both paths this create MAKES the block -- the label's home has no
+   * object for the GUID until this create's announce installs one, so no grant
+   * can precede it -- and the invariant asserted is the one an admitted
+   * waiter's pointer depends on: a non-NULL pointer and a slot out of this
+   * rank's own slice.  The cache a first touch leaves behind declares no size,
+   * so a create that failed to declare one before allocating would be handed
+   * nothing. */
+  arts_guid_t lg = arts_guid_reserve(ARTS_GUID_DB, 0u);
+  arts_guid_t consumer =
+      arts_edt_create(mark_reader_edt, 0, NULL, 1,
+                      &(arts_edt_hint_t){.rank = arts_get_current_rank()});
+  arts_add_dependence(lg, consumer, 0, DB_MODE_RO);
+  void *lp = arts_db_create_with_guid(lg, N * sizeof(unsigned int), ARTS_DB,
+                                      ARTS_DB_PROP_NONE, NULL);
+  uint64_t laddr = slot_of(lg);
+  if (lp == NULL) {
+    fail("a create after a first touch of the same label made nothing");
+  }
+  check_owned_here(laddr, "a create after a first touch allocated no slot");
+  arts_db_release(lg, DB_MODE_RW);
+
+  /* A create that acquires nothing, made away from the block's home: this rank
+   * keeps no cache for it and names no store, so the home is the only rank
+   * left that can allocate one.  Checked at the home. */
+  arts_guid_t ng = arts_guid_reserve(ARTS_GUID_DB, 0u);
+  void *np = arts_db_create_with_guid(ng, N * sizeof(unsigned int), ARTS_DB,
+                                      ARTS_DB_PROP_NO_ACQUIRE, NULL);
+  if (np != NULL) {
+    fail("a create that acquires nothing handed out a pointer");
+  }
+
+  /* The create-nothing leg needs a third rank: a home, this creator, and a
+   * rank the block is granted to.  With fewer ranks the home's own check ends
+   * the run instead. */
+  uint64_t last = (arts_get_total_ranks() >= 3u) ? 0u : 1u;
+  if (last == 0u) {
+    uint64_t dpv[1] = {(uint64_t)lg};
+    arts_guid_t again = arts_edt_create(recreate_edt, 1, dpv, 1,
+                                        &(arts_edt_hint_t){.rank = 2u});
+    arts_add_dependence(lg, again, 0, DB_MODE_RO);
+  }
+  uint64_t pv[5] = {addr, (uint64_t)g, (uint64_t)arts_get_current_rank(), last,
+                    (uint64_t)ng};
+  arts_guid_t check = arts_edt_create(home_check_edt, 5, pv, 2,
+                                      &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(g, check, 0, DB_MODE_RO);
+  arts_add_dependence(ng, check, 1, DB_MODE_RO);
+}
+
+void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  /* A create that acquires nothing, at the block's home: the home allocates,
+   * out of its own slice. */
+  void *q = NULL;
+  arts_guid_t b =
+      arts_db_create(&q, N * sizeof(unsigned int), ARTS_DB,
+                     ARTS_DB_PROP_NO_ACQUIRE, &(arts_db_hint_t){.rank = 0u});
+  check_owned_here(slot_of(b),
+                   "a create that acquires nothing allocated no slot at its "
+                   "home");
+  if (arts_get_total_ranks() < 2u) {
+    arts_shutdown();
+    return;
+  }
+  /* The two-rank leg runs first and the rest of the run hangs off its check. */
+  arts_guid_t base = arts_guid_reserve_range(ARTS_GUID_DB, RACE_LABELS, 0u);
+  uint64_t rv[3] = {(uint64_t)base, (uint64_t)RACE_LABELS, 1u};
+  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t chk = arts_edt_create(race_check_edt, 2, rv, 1,
+                                    &(arts_edt_hint_t){.rank = 0u});
+  arts_add_dependence(fe, chk, 0, DB_MODE_NULL);
+  (void)arts_edt_create(race_edt, 3, rv, 0,
+                        &(arts_edt_hint_t){.rank = 1u, .finish_event = fe});
+}
+
+int main(int argc, char **argv) {
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
+}

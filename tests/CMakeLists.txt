@@ -208,6 +208,7 @@ endif()
 # backend, whose fixed pool address it dereferences.
 if(ARTS_FAM_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS fam_alloc_dist)
+    list(APPEND TEST_PROGRAMS fam_slot_rule)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND TEST_PROGRAMS fam_slices)
         # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
@@ -1446,6 +1447,14 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # below is the point.
     register_multinode_test(fam_alloc_dist TIMEOUT 120 VARIANTS 2n 4n)
     set_tests_properties(fam_alloc_dist_2n fam_alloc_dist_4n PROPERTIES
+                         FAIL_REGULAR_EXPRESSION "FAIL")
+    # The slot rule holds on one rank and on every multinode flavour: a
+    # non-master rank's verdict travels as printed output, the master's as the
+    # exit status.
+    register_single_node_test(fam_slot_rule TIMEOUT 30)
+    register_multinode_test(fam_slot_rule TIMEOUT 60)
+    set_tests_properties(fam_slot_rule fam_slot_rule_2n fam_slot_rule_3n
+                         fam_slot_rule_4n fam_slot_rule_2n_io PROPERTIES
                          FAIL_REGULAR_EXPRESSION "FAIL")
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         # Whitebox test of the inherited mapping's fixed address: fam_slices.c

@@ -53,6 +53,7 @@
 #include "arts/counter/Preamble.h"
 #include "arts/edt.h"
 #include "arts/edt_context.h" /* current_edt + created-DB tracking */
+#include "arts/fam/pool.h" /* arts_fam_strict_hold (inert without a pool) */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
@@ -149,7 +150,21 @@ void *arts_db_user_ptr(struct arts_db_s *db) {
  * exactly like one inside it — the alternative leaves the hold stamped and
  * nothing owning its release.
  */
-static void arts_db_auto_acquire(struct arts_db_s *db) {
+static void arts_db_auto_acquire(struct arts_db_s *db, uint64_t bytes) {
+  (void)bytes;
+#ifdef ARTS_FAM
+  /* A create's write turn begins here, and it ends at the zero edge its
+   * release drives.  What a second coherency domain may write back under the
+   * turn is registered over the block's slot for exactly that span: one hold
+   * per turn, one unhold at the edge.  The span is the one the slot was
+   * allocated for, which the caller knows and a published cache only agrees
+   * with.  A create that takes no turn registers nothing — it never reaches
+   * this call. */
+  uint64_t slot = arts_db_fam_slot_addr(&db->cache);
+  if (slot != 0) {
+    arts_fam_strict_hold((const void *)(uintptr_t)slot, (size_t)bytes);
+  }
+#endif
   arts_track_created_db(db->cache.db_guid);
 }
 
@@ -354,6 +369,17 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
   if (db_type == ARTS_DB) {
     arts_db_cache_init(cache, guid, len, ARTS_DB_INIT_CREATOR_HOME,
                        arts_global_rank_id);
+#ifdef ARTS_FAM
+    /* The block's canonical store, in place while the cache is still private:
+     * the caller's install replays whatever this rank deferred for the GUID
+     * and a replayed request can be granted at once, the pointer this create
+     * hands out may BE the slot, and the buffer install below adopts the slot
+     * on the residency that keeps no copy.  After the cache's init, which is
+     * what zeroes the field, and before both.  Inside the coherent branch on
+     * purpose — a kind that keeps no coherence state has no funnel to read a
+     * slot and no teardown to free one. */
+    (void)arts_db_fam_slot_create(cache);
+#endif
     /* Install a fresh buffer so subsequent coherent acquires
      * (acquire_local / mark_edt_ready_by_guid) find a non-NULL
      * cache->buffer.  The user pointer returned by arts_db_create
@@ -532,7 +558,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
            * EDT epilogue, or the scheduler entry for a startup hook) is what
            * drives the matching release.  Without the entry the seeded hold
            * never returns and the first foreign writer queues forever. */
-          arts_db_auto_acquire(db);
+          arts_db_auto_acquire(db, len);
         }
         arts_route_table_install(db, guid, arts_global_rank_id, true);
         if (!is_home) {
@@ -639,11 +665,16 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
              * is only ever handed back through a hold this create took.  The
              * descriptor is torn down rather than left as an orphan whose
              * writes nothing would publish. */
+#ifdef ARTS_FAM
+            /* A losing labeled creator never received a pointer, and the slot
+             * it minted is its own slice's. */
+            arts_db_fam_slot_discard(&((struct arts_db_s *)ptr)->cache);
+#endif
             arts_db_free(ptr);
             ptr = NULL;
             *addr = NULL;
           } else if (!no_acquire && !arts_db_creator_skip_hold(db_type)) {
-            arts_db_auto_acquire((struct arts_db_s *)ptr);
+            arts_db_auto_acquire((struct arts_db_s *)ptr, len);
           }
         } else {
           guid = arts_db_guid_stamp_szhint(
@@ -709,7 +740,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
            * construction and the hold is this create's. */
           arts_route_table_install(ptr, guid, arts_global_rank_id, true);
           if (!no_acquire && !arts_db_creator_skip_hold(db_type)) {
-            arts_db_auto_acquire((struct arts_db_s *)ptr);
+            arts_db_auto_acquire((struct arts_db_s *)ptr, len);
           }
         }
         /* A pointer is handed out only under a hold, and a NO_ACQUIRE create
@@ -798,8 +829,17 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * create takes once and never gives back: a create that finds it
          * taken creates nothing at all. */
         bool took_hold = true;
+        /* The bytes this create's turn covers: its own length, or the length
+         * the cache it found already declares. */
+        uint64_t turn_bytes = len;
         arts_db_cache_init(creator_cache, guid, len,
                            ARTS_DB_INIT_CREATOR_REMOTE, /*creator_rank=*/0);
+#ifdef ARTS_FAM
+        /* Still private: the stub is not installed and *addr is unwritten, so
+         * the slot is in place before anything can be admitted to the block,
+         * handed a pointer into it, or adopt it as this block's descriptor. */
+        (void)arts_db_fam_slot_create(creator_cache);
+#endif
         if (len > 0) {
           arts_db_buf_install(creator_cache, /*new_version=*/1,
                               /*data_payload=*/NULL, len);
@@ -807,6 +847,11 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
         if (!arts_route_table_install_if_absent(creator_stub, guid,
                                                 arts_global_rank_id,
                                                 /*used=*/true)) {
+#ifdef ARTS_FAM
+          /* This create installed nothing, so the slot it minted a moment ago
+           * — out of this rank's own slice — belongs to no block. */
+          arts_db_fam_slot_discard(creator_cache);
+#endif
           arts_db_free(creator_stub);
           creator_cache = NULL;
           took_hold = false;
@@ -819,10 +864,32 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
              * a create that loses it leaves nothing behind: no image in the
              * slot, no claim to one, no hold. */
             if (arts_db_create_hold_once(cache)) {
+#ifdef ARTS_FAM
+              /* A slot already known here was delivered with the block's
+               * bytes, so the block exists elsewhere and this create makes
+               * nothing: no store, no image, no hold, no announce, a NULL
+               * pointer and success — one label names one object for its
+               * lifetime. */
+              if (arts_db_fam_slot_addr(cache) == 0) {
+#endif
               /* The block's first image, into a cache a first touch left
                * without one.  Size from whatever this rank has been taught,
                * else this create's own length. */
               uint64_t size = (cache->db_size != 0) ? cache->db_size : len;
+              turn_bytes = size;
+#ifdef ARTS_FAM
+              /* A first touch's cache declares no size, and the store is
+               * allocated for the size the cache declares: this create is the
+               * block's declaration of one.  Before the store, before the
+               * image and before the hold — taking the hold admits the
+               * waiters an earlier request from this rank parked, an admitted
+               * waiter's pointer may BE the slot, and the ensure below adopts
+               * the slot on the residency that keeps no copy. */
+              if (cache->db_size == 0) {
+                cache->db_size = size;
+              }
+              bool made_slot = arts_db_fam_slot_create(cache);
+#endif
               if (size > 0) {
                 (void)arts_db_buf_ensure(cache, size);
               }
@@ -836,6 +903,15 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                 creator_cache = cache;
                 took_hold = true;
               }
+#ifdef ARTS_FAM
+              else if (made_slot) {
+                /* The hold was refused, so this create made nothing after all
+                 * and the store goes back — the same rule as a lost install,
+                 * and the same outcome as the branch above. */
+                arts_db_fam_slot_discard(cache);
+              }
+              }
+#endif
             }
           }
           arts_shared_release(&found_h);
@@ -845,7 +921,16 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * and that create's own announce is the home's. */
         if (took_hold) {
           arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NONE,
-                                       (uint16_t)db_type, 0);
+                                       (uint16_t)db_type,
+                                       arts_db_fam_slot_addr(creator_cache));
+        }
+        if (took_hold && !arts_db_creator_skip_hold(ARTS_DB)) {
+          /* Register the DB on the creating thread's created-DB list so the
+           * release that drops this hold runs at the end of the creating EDT
+           * (or, for a startup hook, at that thread's scheduler entry).
+           * Before the pointer below: the turn must be registered before the
+           * storage it covers can be written through it. */
+          arts_db_auto_acquire(arts_db_of_cache(creator_cache), turn_bytes);
         }
         /* The creator-side buffer pointer, so the user can write the local
          * copy its release publishes — handed out only through the hold this
@@ -856,12 +941,6 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
             (struct arts_db_buffer_s *)arts_shared_get(creator_buf_h);
         *addr = creator_buf ? (void *)creator_buf->data : NULL;
         arts_db_buf_release(&creator_buf_h);
-        if (took_hold && !arts_db_creator_skip_hold(ARTS_DB)) {
-          /* Register the DB on the creating thread's created-DB list so the
-           * release that drops this hold runs at the end of the creating EDT
-           * (or, for a startup hook, at that thread's scheduler entry). */
-          arts_db_auto_acquire(arts_db_of_cache(creator_cache));
-        }
       }
       ARTS_DEBUG("arts_db_create: DB[Guid:%lu, Type:%s, Size:%lu] "
                  "created remotely on rank %u via DB_CREATE_COHERENT",
