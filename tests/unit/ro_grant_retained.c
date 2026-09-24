@@ -22,6 +22,8 @@
  * retain. Configurations without a retained read grant self-skip.
  */
 
+#include <stdatomic.h>
+
 #include "arts.h"
 
 #include <stdint.h>
@@ -54,7 +56,7 @@ static void ro_state(arts_guid_t db, unsigned int *ro_st, unsigned int *rc,
   arts_shared_ptr_t h = arts_route_table_lookup_db(db);
   struct arts_db_s *d = (struct arts_db_s *)arts_shared_get(h);
   uint64_t w =
-      (d != NULL) ? arts_atomic_read_u64(&d->cache.cache_state) : 0u;
+      (d != NULL) ? atomic_load_explicit(&d->cache.cache_state, memory_order_acquire) : 0u;
   *ro_st = CACHE_RO_ST(w);
   *rc = CACHE_RO_CNT(w);
   *own = CACHE_OWNER(w);

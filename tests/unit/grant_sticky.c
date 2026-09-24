@@ -37,6 +37,8 @@
  * a writer, so the property is vacuous there and the test skips.
  */
 
+#include <stdatomic.h>
+
 #include "arts.h"
 
 #include <stdbool.h>
@@ -70,7 +72,7 @@ static void excl_perm(arts_guid_t db, unsigned int *rw_st, unsigned int *wc) {
   arts_shared_ptr_t h = arts_route_table_lookup_db(db);
   struct arts_db_s *d = (struct arts_db_s *)arts_shared_get(h);
   uint64_t w =
-      (d != NULL) ? arts_atomic_read_u64(&d->cache.cache_state) : 0u;
+      (d != NULL) ? atomic_load_explicit(&d->cache.cache_state, memory_order_acquire) : 0u;
   *rw_st = CACHE_RW_ST(w);
   *wc = CACHE_RW_CNT(w);
   arts_shared_release(&h);
