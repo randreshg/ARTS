@@ -700,6 +700,16 @@ if(ARTS_BUILD_BENCHMARKS)
     arts_variant(ocr_inv_wb        INV     WB RETAIN OFF)
     arts_variant(ocr_inv_wt_purge  INV     WT PURGE  OFF)
     arts_variant(wrf_flush         FLUSH   WB RETAIN OFF)
+
+    # The two fabric-attached-memory entries of the EXCL x PURGE x WB
+    # cell: one variable changes against ocr_excl_purge -- where the
+    # canonical store a purge returns to lives -- so arm, write policy,
+    # release policy and combining are shared with it.  A tree that
+    # names no backend builds neither.
+    if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
+        arts_variant(ocr_excl_purge_fam_staged EXCL WB PURGE OFF STAGED)
+        arts_variant(ocr_excl_purge_fam_direct EXCL WB PURGE OFF DIRECT)
+    endif()
 endif()
 
 # Link mimalloc-static when selected.  The OBJECT library arts_utils needs

@@ -13,6 +13,13 @@ set(ARTS_VARIANT_SUFFIXES
     ocr_excl_purge ocr_excl_retain ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge
     wrf_flush)
 
+# The two fam entries exist only where a backend is named; every app
+# built from this list is unaffected by whether one is.
+if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
+    list(APPEND ARTS_VARIANT_SUFFIXES
+        ocr_excl_purge_fam_staged ocr_excl_purge_fam_direct)
+endif()
+
 set(OCR_APPS_ROOT "${CMAKE_SOURCE_DIR}/third_party/ocr-apps/apps")
 set(OCR_LIBS_ROOT "${OCR_APPS_ROOT}/libs/src")
 set(OCR_INC_DIR "${CMAKE_SOURCE_DIR}/third_party/ocr/ocr/inc")
