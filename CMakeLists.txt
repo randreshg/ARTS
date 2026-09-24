@@ -544,10 +544,10 @@ else()
   message(FATAL_ERROR "ARTS_MALLOC must be 'mimalloc' or 'system', got '${ARTS_MALLOC}'")
 endif()
 
-# -- Fabric-attached memory ------------------------------------------------
+# ── Fabric-attached memory ─────────────────────────────────────────────────
 # Declarative, never inferred: a value names the medium, and every mismatch is
-# an error rather than a quiet downgrade.  Task 3 extends this block; nothing
-# FAM appears anywhere else in this file.
+# an error rather than a quiet downgrade.  Nothing FAM appears anywhere else
+# in this file.
 set(ARTS_FAM_BACKEND "OFF" CACHE STRING
     "Fabric-attached-memory backend: OFF (default), SHM (local-launcher emulation) or DEVICE (the device library)")
 set_property(CACHE ARTS_FAM_BACKEND PROPERTY STRINGS OFF SHM DEVICE)
@@ -580,6 +580,63 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
             "ARTS_FAM_BASE must be a non-zero, page-aligned address; "
             "${ARTS_FAM_BASE} is not (offset within its page: ${_arts_fam_base_rem})")
   endif()
+endif()
+
+set(ARTS_FAM_RESIDENCY "" CACHE STRING
+    "Where an EDT's working bytes reside: STAGED or DIRECT. Required when this tree's own library is FAM-enabled")
+set_property(CACHE ARTS_FAM_RESIDENCY PROPERTY STRINGS "" STAGED DIRECT)
+set(ARTS_FAM_DEVICE_INCLUDE_DIR "" CACHE PATH
+    "Include directory of the device library (required when ARTS_FAM_BACKEND=DEVICE)")
+set(ARTS_FAM_DEVICE_LIBRARY "" CACHE FILEPATH
+    "The device library to link (required when ARTS_FAM_BACKEND=DEVICE)")
+
+if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND ARTS_USE_CXL)
+  message(FATAL_ERROR
+          "ARTS_FAM_BACKEND=${ARTS_FAM_BACKEND} and ARTS_USE_CXL=ON are "
+          "mutually exclusive: they are two different features that would "
+          "both claim a rank's fabric-attached memory. Pick one.")
+endif()
+if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
+  if(NOT ARTS_FAM_DEVICE_INCLUDE_DIR OR NOT EXISTS "${ARTS_FAM_DEVICE_INCLUDE_DIR}")
+    message(FATAL_ERROR
+            "ARTS_FAM_BACKEND=DEVICE needs the device library's headers "
+            "(-DARTS_FAM_DEVICE_INCLUDE_DIR=<dir>) and the library itself "
+            "(-DARTS_FAM_DEVICE_LIBRARY=<file>)")
+  endif()
+  if(NOT ARTS_FAM_DEVICE_LIBRARY OR NOT EXISTS "${ARTS_FAM_DEVICE_LIBRARY}")
+    message(FATAL_ERROR
+            "ARTS_FAM_BACKEND=DEVICE needs the device library itself "
+            "(-DARTS_FAM_DEVICE_LIBRARY=<file>) and its headers "
+            "(-DARTS_FAM_DEVICE_INCLUDE_DIR=<dir>)")
+  endif()
+endif()
+
+# Whether THIS tree's own library is FAM-enabled, and with which residency.
+# One variable carries both, because a target either has a residency or has no
+# fabric-attached memory at all; arts_apply_protocol reads it as the default
+# for a target that does not name one.  Empty means "not a FAM tree".
+set(ARTS_FAM_TREE_RESIDENCY "")
+if(NOT ARTS_FAM_BACKEND STREQUAL "OFF"
+   AND ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL"
+   AND ARTS_RELEASE_POLICY STREQUAL "PURGE")
+  if(ARTS_FAM_RESIDENCY STREQUAL "")
+    message(FATAL_ERROR
+            "This tree's library is FAM-enabled (EXCL x PURGE with "
+            "ARTS_FAM_BACKEND=${ARTS_FAM_BACKEND}), so it must name where an "
+            "EDT's working bytes reside: -DARTS_FAM_RESIDENCY=STAGED|DIRECT")
+  endif()
+  if(NOT ARTS_FAM_RESIDENCY STREQUAL "STAGED" AND
+     NOT ARTS_FAM_RESIDENCY STREQUAL "DIRECT")
+    message(FATAL_ERROR
+            "ARTS_FAM_RESIDENCY must be STAGED or DIRECT, got: ${ARTS_FAM_RESIDENCY}")
+  endif()
+  set(ARTS_FAM_TREE_RESIDENCY "${ARTS_FAM_RESIDENCY}")
+  message(STATUS "ARTS FAM: backend ${ARTS_FAM_BACKEND}, this tree's library "
+                 "FAM-enabled (EXCL x PURGE, residency ${ARTS_FAM_TREE_RESIDENCY})")
+elseif(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
+  message(STATUS "ARTS FAM: backend ${ARTS_FAM_BACKEND}, benchmark variants "
+                 "only - this tree's library is not FAM-enabled "
+                 "(${ARTS_COHERENCE_PROTOCOL} x ${ARTS_RELEASE_POLICY}, not EXCL x PURGE)")
 endif()
 
 if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND

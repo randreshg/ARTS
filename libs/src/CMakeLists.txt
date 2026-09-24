@@ -97,7 +97,8 @@ function(arts_coherence_model_tus out arm write_policy release_policy)
     set(${out} ${tus} PARENT_SCOPE)
 endfunction()
 
-# Applies the family + second-axis compile definitions to <target> (PRIVATE).
+# Applies the family + second-axis compile definitions to <target> (PRIVATE),
+# and the fabric-attached-memory definitions that travel with them.
 # ARTS_PROTOCOL_<arm> is always emitted; VAL/INV/EXCL additionally get one of
 # ARTS_WRITE_POLICY_WT/WB and one of ARTS_RELEASE_PURGE/RETAIN (each arm's
 # sources test only its live axis: EXCL: ARTS_RELEASE_*; INV/VAL and the
@@ -126,6 +127,33 @@ function(arts_apply_protocol target arm write_policy release_policy)
         target_compile_definitions(${target} PRIVATE ARTS_NO_RO_COMBINING=1)
     endif()
     target_compile_definitions(${target} PRIVATE ARTS_PROTOCOL_${arm}=1)
+    # The fabric-attached-memory definitions travel with the protocol ones,
+    # for the same reason and by the same route: the runtime is assembled from
+    # object libraries that each receive their own definitions, so a
+    # definition applied to a library target alone reaches one translation
+    # unit -- and two TUs of one binary that disagree about ARTS_FAM disagree
+    # about a packet layout.  An optional 6th argument names this target's
+    # residency; OFF means no fabric-attached memory for this target, and no
+    # argument at all means "whatever this tree's own library uses".  A
+    # variant always names one, so it can never inherit the tree's.
+    if(ARGC GREATER 5)
+        set(fam_residency "${ARGV5}")
+    else()
+        set(fam_residency "${ARTS_FAM_TREE_RESIDENCY}")
+    endif()
+    if(NOT fam_residency STREQUAL "" AND NOT fam_residency STREQUAL "OFF")
+        target_compile_definitions(${target} PRIVATE
+            ARTS_FAM=1
+            ARTS_FAM_BACKEND_${ARTS_FAM_BACKEND}=1
+            ARTS_FAM_${fam_residency}=1)
+        if(ARTS_FAM_BACKEND STREQUAL "SHM")
+            target_compile_definitions(${target} PRIVATE
+                ARTS_FAM_BASE=${ARTS_FAM_BASE}ULL)
+        else()
+            target_include_directories(${target} PRIVATE
+                ${ARTS_FAM_DEVICE_INCLUDE_DIR})
+        endif()
+    endif()
     if(arm STREQUAL "FLUSH")
         # FLUSH has neither second axis: every remote acquire fetches and every
         # remote RW release writes through, so no selection chain branches on
@@ -277,6 +305,12 @@ target_sources(arts_static PRIVATE
     $<TARGET_OBJECTS:arts_utils>
     $<TARGET_OBJECTS:arts_graph>
 )
+if(ARTS_FAM_TREE_RESIDENCY)
+    target_sources(arts_static PRIVATE $<TARGET_OBJECTS:arts_fam>)
+    if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
+        target_link_libraries(arts_static PUBLIC ${ARTS_FAM_DEVICE_LIBRARY})
+    endif()
+endif()
 
 target_link_libraries(arts_static PUBLIC arts_interface)
 
@@ -351,6 +385,12 @@ if(ARTS_BUILD_SHARED)
         $<TARGET_OBJECTS:arts_utils>
         $<TARGET_OBJECTS:arts_graph>
     )
+    if(ARTS_FAM_TREE_RESIDENCY)
+        target_sources(arts_shared PRIVATE $<TARGET_OBJECTS:arts_fam>)
+        if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
+            target_link_libraries(arts_shared PUBLIC ${ARTS_FAM_DEVICE_LIBRARY})
+        endif()
+    endif()
 
     target_link_libraries(arts_shared PUBLIC arts_interface)
 
@@ -423,6 +463,12 @@ if(BUILD_CUDA_LIBRARY)
         $<TARGET_OBJECTS:arts_gpu>
         $<TARGET_OBJECTS:arts_graph>
     )
+    if(ARTS_FAM_TREE_RESIDENCY)
+        target_sources(arts_cuda_static PRIVATE $<TARGET_OBJECTS:arts_fam>)
+        if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
+            target_link_libraries(arts_cuda_static PUBLIC ${ARTS_FAM_DEVICE_LIBRARY})
+        endif()
+    endif()
 
     target_link_libraries(arts_cuda_static PUBLIC arts_interface)
 
@@ -493,6 +539,12 @@ if(BUILD_CUDA_LIBRARY)
             $<TARGET_OBJECTS:arts_gpu>
             $<TARGET_OBJECTS:arts_graph>
         )
+        if(ARTS_FAM_TREE_RESIDENCY)
+            target_sources(arts_cuda_shared PRIVATE $<TARGET_OBJECTS:arts_fam>)
+            if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
+                target_link_libraries(arts_cuda_shared PUBLIC ${ARTS_FAM_DEVICE_LIBRARY})
+            endif()
+        endif()
 
         target_link_libraries(arts_cuda_shared PUBLIC arts_interface)
 
@@ -543,8 +595,20 @@ if(ARTS_BUILD_BENCHMARKS)
     set(_ARTS_VARIANT_OBJLIBS
         arts_compute arts_memory arts_sync arts_ooo arts_regpool arts_scheduler
         arts_transport arts_gas arts_system arts_utils arts_counter arts_graph)
+    if(TARGET arts_fam)
+        list(APPEND _ARTS_VARIANT_OBJLIBS arts_fam)
+    endif()
 
     function(arts_variant suffix arm write_policy release_policy nocomb)
+        # Optional 6th argument: the residency this variant's store uses.  A
+        # variant that names one compiles the fam module; every other variant
+        # passes OFF and never sees it -- including in a FAM-enabled tree,
+        # where the tree's own residency must not leak into wrf_flush or any
+        # other arm.  (ARGC counts the declared parameters too.)
+        set(fam_residency "OFF")
+        if(ARGC GREATER 5)
+            set(fam_residency "${ARGV5}")
+        endif()
         # Gather all protocol-independent sources (absolute paths) from the
         # object libs, dropping any coherence MODEL TU (path contains
         # /coherence/<model>/), which is variant-specific.
@@ -561,7 +625,11 @@ if(ARTS_BUILD_BENCHMARKS)
                 # Skip variant-specific coherence TUs: the per-arm subdirs, the
                 # grant plane (linked only by arms whose ownership migrates), and
                 # the version ledger (only by arms that keep versions).
-                if(NOT abs MATCHES "/coherence/(val|excl|inv|flush)/|/coherence/(grant(_wt|_wb|_queue|_purge|_retain)?|rank_u64_map)\\.c$")
+                if(abs MATCHES "/core/fam/")
+                    # The store is a per-variant choice like the protocol, so a
+                    # variant that does not name it must not compile it.
+                    list(APPEND fam_srcs "${abs}")
+                elseif(NOT abs MATCHES "/coherence/(val|excl|inv|flush)/|/coherence/(grant(_wt|_wb|_queue|_purge|_retain)?|rank_u64_map)\\.c$")
                     list(APPEND srcs "${abs}")
                 endif()
             endforeach()
@@ -571,6 +639,16 @@ if(ARTS_BUILD_BENCHMARKS)
         foreach(tu ${model})
             list(APPEND srcs "${CMAKE_CURRENT_SOURCE_DIR}/core/${tu}")
         endforeach()
+
+        if(NOT fam_residency STREQUAL "OFF")
+            if(NOT fam_srcs)
+                message(FATAL_ERROR
+                        "arts_variant(${suffix} ... ${fam_residency}) names a "
+                        "residency, but no fam translation unit was gathered: "
+                        "ARTS_FAM_BACKEND is ${ARTS_FAM_BACKEND}")
+            endif()
+            list(APPEND srcs ${fam_srcs})
+        endif()
 
         add_library(arts_static_${suffix} STATIC ${srcs})
         target_include_directories(arts_static_${suffix} BEFORE PRIVATE
@@ -594,7 +672,11 @@ if(ARTS_BUILD_BENCHMARKS)
         # the static lib resolves fi_* symbols from libfabric.
         target_link_libraries(arts_static_${suffix} PRIVATE arts::libfabric)
         arts_apply_protocol(arts_static_${suffix} "${arm}" "${write_policy}"
-                            "${release_policy}" "${nocomb}")
+                            "${release_policy}" "${nocomb}" "${fam_residency}")
+        if(NOT fam_residency STREQUAL "OFF" AND ARTS_FAM_BACKEND STREQUAL "DEVICE")
+            target_link_libraries(arts_static_${suffix} PRIVATE
+                                  ${ARTS_FAM_DEVICE_LIBRARY})
+        endif()
     endfunction()
 
     # Suffix = <memory model>_<family>_<live second axis>; the second argument
