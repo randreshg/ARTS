@@ -32,6 +32,8 @@ RESULT_COLUMNS = [
 # NAME still carries them).
 RT_LABEL = {
     "arts_excl_purge": "EXCL·WB·PURGE",
+    "arts_excl_purge_fam_staged": "EXCL·WB·PURGE FAM-STAGED",
+    "arts_excl_purge_fam_direct": "EXCL·WB·PURGE FAM-DIRECT",
     "arts_excl_retain": "EXCL·WB·RETAIN",
     "arts_inv_wt": "INV·WT·RETAIN",
     "arts_inv_wb": "INV·WB·RETAIN",
@@ -54,6 +56,8 @@ RT_LABEL = {
 }
 RT_COLOR = {
     "arts_excl_purge": "#4C72B0",
+    "arts_excl_purge_fam_staged": "#2C3E64",
+    "arts_excl_purge_fam_direct": "#A8C4E8",
     "arts_excl_retain": "#7BA3D8",
     "arts_inv_wt": "#DD8452",
     "arts_inv_wb": "#F0B08A",

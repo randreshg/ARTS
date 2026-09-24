@@ -172,6 +172,16 @@ def test_the_wrf_flush_entry_has_a_label_and_a_colour_of_its_own():
     assert rt_key("wrf_flush") == "arts_wrf_flush"
 
 
+def test_the_fam_entries_name_their_design_point_and_have_colours_of_their_own():
+    from artsrun.report import RT_COLOR, RT_LABEL, rt_key
+
+    assert RT_LABEL["arts_excl_purge_fam_staged"] == "EXCL·WB·PURGE FAM-STAGED"
+    assert RT_LABEL["arts_excl_purge_fam_direct"] == "EXCL·WB·PURGE FAM-DIRECT"
+    for key in ("arts_excl_purge_fam_staged", "arts_excl_purge_fam_direct"):
+        assert RT_COLOR[key] not in {v for k, v in RT_COLOR.items() if k != key}
+        assert rt_key(key) == key
+
+
 def test_the_summary_explains_the_ladder_mark_only_when_one_appears(tmp_path):
     from artsrun.model.plane import load_plane
 
