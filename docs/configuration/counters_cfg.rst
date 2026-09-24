@@ -337,8 +337,9 @@ Out-of-Order
    * - Counter
      - Description
    * - ``NUM_OO_ENQUEUE``
-     - Number of OO list insertions (deferred operations for not-yet-created
-       targets).
+     - Number of pushes onto a route slot's OoO list, one per park or
+       re-park of a payload: a non-create operation whose target is not
+       installed, or a create whose GUID is still occupied.
 
 Validation Arm (VAL) — Snapshot Requests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

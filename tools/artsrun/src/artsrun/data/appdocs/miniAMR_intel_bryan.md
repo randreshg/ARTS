@@ -101,11 +101,13 @@ direction per block) plus one "receive" pickup per real neighbour direction —
 `2(E_x+E_y+E_z)` where `E_x=(npx−1)·npy·npz`, `E_y=npx·(npy−1)·npz`,
 `E_z=npx·npy·(npz−1)` are the grid's adjacent-block-pair counts per axis (a
 "receive" pickup targets the SAME labeled GUID the neighbouring block's own
-"send" installs, so `2(E_x+E_y+E_z)` is both sides' attempts on
-`E_x+E_y+E_z` links, not new objects) — **plus one harmless duplicate**:
+"send" installs, so `2(E_x+E_y+E_z)` is both sides' creates on
+`E_x+E_y+E_z` links, the second of each parked behind the first, not new
+objects) — **plus one harmless duplicate**:
 `blockInit`'s `case 2` (the y⁻ direction) re-issues the "send"
-`ocrEventCreate` a second time whenever `yPos>0`, redundantly re-announcing an
-already-installed GUID (source quirk, see notes) — `E_y` more per grid.
+`ocrEventCreate` a second time whenever `yPos>0`, a second create of a GUID
+the same EDT already created, which parks at the label's home for the rest of
+the run (source quirk) — `E_y` more per grid.
 Output events add one per `stencilEdt` (`&stencilOutEVT`) and one per
 `haloRcv` (`&rcvOUT`) — i.e. `7` per block per timestep, `7RT` in total, the
 dominant term. `realMainEdt` is the only `EDT_PROP_FINISH` EDT and also takes

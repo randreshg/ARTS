@@ -185,7 +185,11 @@ early — required when the EDT blocks inside its body (e.g. via
 
 :c:func:`arts_db_destroy` destroys all copies of a DB system-wide; any
 acquire held by the calling EDT is implicitly released first, and actual
-deallocation is deferred until outstanding references drain:
+deallocation is deferred until outstanding references drain.  The destroy
+is not acknowledged: the home tears the block down and notifies every rank
+that caches it, and a rank's copy is retired when that notice lands.  A
+labeled GUID may be created again, before or after the destroy (see
+:ref:`labeled-guid-reuse`):
 
 .. code-block:: c
 

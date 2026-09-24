@@ -1971,7 +1971,7 @@ apps:
     scalar_kind: bool
     args: ['48', '8000000', '6000']
     default_enabled: false
-    unsupported: 'cycles a wrapping label index across a lifetime boundary (prodcon.c:174-180 with the per-round destroy at :118-119) — labeled-GUID reuse the runtime does not support'
+    unsupported: 're-creates a wrapping label index (prodcon.c:174-181) whose previous generation another thread''s consumer destroys (:116-119) with nothing ordering that destroy before the new generation''s dependences (:199-200), and creates each mapCons label from two loops per round (:177-181) — outside the labeled-GUID contract (docs/programming_model/guids.rst)'
     unordered_writes: 'the creating task hands the block on in RW without releasing it (prodcon.c:155, :206)'
 
   quicksort:
@@ -3423,6 +3423,7 @@ apps:
     scalar_re: '9 49\s+([0-9.]+)'
     args: ['48', '50', '340000']
     default_enabled: false
+    unsupported: 'creates each labeled event from both ends every timestep and destroys it once (stencil1DstickyLG.c:144-183 with the destroy at :80-82) — a concurrent create of one label, which the runtime leaves undefined; the parked creates would grow by one per cycle per label'
     unordered_writes: 'the shared block is RW to all N init tasks, and again while held (stencil1DstickyLG.c:409, :492)'
 
   Stencil2D_intel_chandra:

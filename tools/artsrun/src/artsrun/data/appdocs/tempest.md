@@ -38,9 +38,10 @@ disclosed with the measurement:
 
 1. **Persistent CHANNEL events replace the published per-timestep labeled
    sticky create/destroy.** The published idiom re-creates a shared labeled
-   GUID every timestep; labeled-GUID reuse is not supported (a create
-   *replaces*), and the satisfy-vs-destroy race it implies is not orderable
-   without a transport ordering contract. The substitution also removes ~16
+   GUID every timestep, and nothing orders the next generation's satisfy
+   behind the previous generation's destroy through the label's home, which
+   label reuse requires (`docs/programming_model/guids.rst`, Known
+   weaknesses). The substitution also removes ~16
    event operations per patch per timestep from the steady state of a program
    that is nothing but event traffic.
 2. **`duration` became `argv[2]`** (the compile-time `#define DURATION 100`
@@ -98,8 +99,10 @@ re-minted.
 
 Event accounting: one `OCR_EVENT_CHANNEL_T` per directed edge, plus **two**
 `ocrEventCreate` calls per labeled sticky slot — publisher and learner both
-create the same `GUID_PROP_IS_LABELED | GUID_PROP_CHECK` GUID and the loser's
-install is rejected, so `2·E(k)` creates yield `E(k)` objects. Exactly one
+create the same `GUID_PROP_IS_LABELED | GUID_PROP_CHECK` GUID; the second
+create parks at the label's home behind the first for the rest of the run
+(nothing is destroyed), so `2·E(k)` creates yield `E(k)` objects and `E(k)`
+parked creates. Exactly one
 `ocrEdtCreate` passes a non-NULL `outputEvent` (`realmain`, feeding `wrapup`)
 and that same EDT is the only `EDT_PROP_FINISH`, whose finish event the shim
 pre-creates: `+2`. Every other `ocrEdtCreate` passes NULL and creates nothing.

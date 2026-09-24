@@ -86,7 +86,7 @@ exception); `2^31` slots or more (the origin's slot index is an `int`);
 `--no-local` on one rank (the origin prints a fatal error and terminates);
 more than 16384 ranks (the origin's compile-time `MAX_RANKS`, where it
 prints an error and returns); and `18 · ranks² ≥ 2^32`, the mirror's own
-rendezvous reservation, which only rank counts above about 15,400 reach. Any
+point reservation, which only rank counts above about 15,400 reach. Any
 of these prints usage and calls `ocrShutdown()` with status 0, where the
 origin's own rejections exit non-zero or terminate; the missing
 `TRANSFERS_OK` marker fails the cell either way. A
@@ -125,7 +125,12 @@ transferring ranks (`nl` with `--all-to-all`, 1 without). Per run:
 
 The point reservation is `18·nl²` names: three kinds for every unit, the
 largest unit space being the entries' (six barriers times `nl` senders),
-each for every consumer rank.
+each for every consumer rank. Every point is a COUNTED event with one
+consumer, reserved as `GUID_USER_EVENT_COUNTED`, so none is destroyed: each is
+reclaimed once its consumer has registered and it has fired. Every output
+event the program asks for is one it made itself with its one consumer stated
+(`EDT_PROP_OEVT_VALID`); the per-pass latches are the only events a runtime
+that keeps a fired event keeps.
 
 Read against the origin: the put and get tasks are its actions one for one,
 and the slot blocks are its storage — the same bytes, cut where every
@@ -162,10 +167,13 @@ block is written**, so every handover is checked against the rail:
   unordered.
 * **The names need one.** A rank cannot guess another rank's slot GUIDs, so
   each driver writes its names into a table homed at itself, releases it,
-  and satisfies one labeled STICKY point per consumer rank; each rank's first
-  turn registers on all `nl` of them, copies the tables into its state block
-  and destroys its points. The index is `mirror_edge`'s: one producer and one
-  consumer per point, never two units of work on one. Where a labeled range is
+  and satisfies one labeled point per consumer rank; each rank's first turn
+  registers on all `nl` of them and copies the tables into its state block.
+  A table point is published by one driver and awaited by another, and
+  nothing orders the two but the root, so the root creates all `nl²` of them
+  before the fork: a point has exactly one creator, ordered before its
+  satisfy and its registration. The index is `mirror_point`'s: one producer
+  and one consumer per point, never two units of work on one. Where a labeled range is
   homed by index — ARTS and ocr-vx both spread it `index % nranks` — a point's
   home is its consumer and a within-rank publish is no message; where the whole
   reserved range is homed at the PD that reserved it, as on xsocr, each satisfy
@@ -179,7 +187,10 @@ block is written**, so every handover is checked against the rail:
   it.
 * **The barriers are signals.** An entry point carries one rank's arrival at
   a barrier to rank 0, a release point carries the barrier's end back to one
-  rank; both carry no block and are raised from task bodies.
+  rank; both carry no block and are raised from task bodies. The root creates
+  every entry point before the fork, with its barrier task; a rank creates
+  each release point it waits on, and registers its waiting task on it,
+  before it enters the barrier that raises it.
 
 **Nothing orders two transfers that land on one slot.** Two puts can draw
 the same destination slot; two gets on one rank can draw the same offset,
@@ -252,14 +263,14 @@ before its last pass has joined.
 
 `mainEdt` validates the arguments, reserves the `18·nl²` point names, creates
 the ten templates, creates the final task and the six barrier tasks on
-rank 0 (each registered on its `nl` entry points), and forks one driver per
-rank.
+rank 0 (each registered on the `nl` entry points it creates), creates the
+`nl²` table points, and forks one driver per rank.
 
 A driver creates its table, its state block (the stream seeded with the
 default `mt19937` seed, 5489) and its `S` slots, publishes the table on one
 point per rank, creates its first turn on the release point of the barrier
-that opens the warm-up, the `nl` table points and the state block, and
-enters that barrier.
+that opens the warm-up (which it creates), the `nl` table points and the
+state block, and enters that barrier.
 
 A pass turn draws, for each slot `i` in order, the destination — `(rank + i)
 % nl`, or a uniform draw under `--distribution=0`, redrawn while
@@ -332,9 +343,13 @@ application's. Option handling, the storage allocation, the warm-up, the
 write and read tests with their barriers and reports, the tally and the
 release of the storage are inside the span on both sides. The mirror's
 span additionally holds representation work the origin has no counterpart
-for — the rank's table/state DBs and the per-rank labeled STICKY slot-name
-rendezvous (`nl²` events overall), since the origin passes a raw pointer in
-its action arguments instead of naming a block.
+for — the rank's table/state DBs and the labeled slot-name points (`nl²`
+events overall, created by the root), since the origin passes a raw pointer
+in its action arguments instead of naming a block. One line of the origin's
+has no counterpart: every locality's `hello world from OS-thread …` greeting
+at the top of `hpx_main`, which names the worker thread it runs on — a
+quantity the OCR API does not expose — so the mirror prints nothing in its
+place rather than a number it would have to invent.
 
 Inside the span on the HPX side only: every put's keep-alive bookkeeping —
 inserting a `shared_ptr` into a map under a spinlock, later erased from a
@@ -347,6 +362,22 @@ credited to the mirror. The origin's own `high_resolution_timer`s time each
 test separately — the warm-up's time is printed too; only its CSV record and
 its profile table are suppressed — and the measured span holds the warm-up
 on both sides, since the mirror performs it too.
+
+**On ocr-vx the points are kept.** The points and output events here are
+COUNTED, reclaimed after their consumer on ARTS and xsocr; ocr-vx does not
+implement COUNTED and keeps each to teardown — the `nl²` tables, `12·nl`
+barrier points and two or three events per transfer, about `1.8·10⁶` events
+(some 2.7 GB at an estimated 1.5 KB each) at the calibrated arguments,
+divided among the ranks — a property of that
+reference, disclosed and not patched (`benchmarks/hpx/README.md`, "One row,
+four runtimes").
+
+**Setup inside the span, and one asymmetry.** The root's `nl²` table-point
+creates are part of the name service the origin has no counterpart for
+(above). The barrier points (`12·nl` creates) are inside the span, where
+HPX's global barrier is built at runtime start-up, before `hpx_main` — a
+setup cost on the OCR side only, which no OCR program can move ahead of its
+main task.
 
 ## Placement
 
@@ -388,13 +419,13 @@ and more about the `(1 − 1/S)^S ≈ 37 %` of slots that one pass of `S`
 uniform draws leaves unwritten. A reader caching what it read is the plane's
 design, not an edit to the program, and EXCL's purge arm and FLUSH never do
 it. The name tables cross once, at
-setup: about four messages for each (owner, consumer) pair on different
-ranks — the owner's remote labeled create, its satisfy, and the consumer's
-read-only acquire request and payload reply — and none within a rank. A
-barrier costs each non-root rank about four — the remote labeled create and
-the satisfy of its entry point, then the same for its release point — and
-rank 0 none; HPX's star sends one action and one reply per non-root
-locality.
+setup: about three messages for each (owner, consumer) pair on different
+ranks — the owner's satisfy and the consumer's read-only acquire request and
+payload reply — and none within a rank, plus the root's create of each table
+point homed on another rank. A barrier costs each non-root rank about two —
+the satisfy of its entry point and the satisfy of its release point, each
+point created where it is homed — and rank 0 none; HPX's star sends one
+action and one reply per non-root locality.
 
 ## Sizing
 

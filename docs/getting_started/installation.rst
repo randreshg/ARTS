@@ -78,6 +78,14 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
    * - ``ARTS_BUILD_BENCHMARKS``
      - ON
      - Build the benchmark apps (ARTS and the enabled reference runtimes).
+       Requires ``ARTS_BUILD_SHIM``.
+   * - ``ARTS_BUILD_SHIM``
+     - ON
+     - Build the OCR-to-ARTS compatibility shim against this tree's runtime
+       and the vendored OCR headers.  With ``ARTS_BUILD_TESTS`` its tests
+       are registered with ctest in every configuration.  Turning it off
+       while ``ARTS_BUILD_BENCHMARKS`` is on is a configure error, since
+       every ARTS variant of a benchmark app links the shim.
    * - ``ARTS_BUILD_XSOCR``
      - ON
      - Build the XSOCR reference runtime and its ``*_xsocr`` app variants

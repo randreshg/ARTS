@@ -86,7 +86,7 @@ reduction tree). Per-rank DOF count is `P³·E`; `NBN_REAL` is `double`.
 | — derivative matrices `dxm1`, `dxTm1` | 2 per rank | `(P² + 1)·8` B |
 | halo envelopes | `D·(N+3)` | `(ddof+1)·16` B |
 | reduction scalars | `(3R-2)·(1+3N)` | 8 B |
-| events | `5·D + 6R + I - 4` — 3 CHANNEL creates plus 2 labeled-STICKY `ocrEventCreate` *attempts* per directed halo edge (both endpoints race to install the same rendezvous GUID; the losing call still increments the counter), plus the reduction's per-rank `returnEVT` channel, per-non-root-rank up/down channels, 2 labeled-STICKY attempts per tree edge, and output events on the channel-install EDTs and on `finalEDT` | — |
+| events | `5·D + 6R + I - 4` — 3 CHANNEL creates plus 2 labeled-STICKY `ocrEventCreate` *attempts* per directed halo edge (both endpoints create the same rendezvous GUID; the second create parks at the label's home behind the first for the rest of the run and still increments the counter), plus the reduction's per-rank `returnEVT` channel, per-non-root-rank up/down channels, 2 labeled-STICKY attempts per tree edge, and output events on the channel-install EDTs and on `finalEDT` | — |
 
 A rank's neighbour count is `n(rx,Rx)·n(ry,Ry)·n(rz,Rz) - 1`, with `n = 3`
 interior, `2` on a boundary, `1` on a degenerate axis: 26 for an interior

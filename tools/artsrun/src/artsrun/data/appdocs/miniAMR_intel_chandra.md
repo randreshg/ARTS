@@ -170,8 +170,9 @@ Setup is a rendezvous, not a tree. Each octree node computes the labeled GUIDs o
 its 6 face neighbours (at its own level, at the coarser level, and the 4 finer
 sub-faces), its parent, its 8 children and its 8 siblings — indices into
 `haloRangeGUID[level]`, derived arithmetically from the block's global (i,j,k) —
-creates each event with `GUID_PROP_CHECK` so whichever side gets there first
-installs it, satisfies its own `sharedOcrObj_t` handle into it, and makes its
+creates each event with `GUID_PROP_CHECK` — whichever create reaches the
+label's home first installs it and the others park behind it for the rest of
+the run — satisfies its own `sharedOcrObj_t` handle into it, and makes its
 `channelSetupEdt` depend on all `6·nNbrs + 17` of them. Because the meeting point
 is the labeled GUID and not the order in which blocks were built, the blocks of
 one rank are independent of one another: `initEdt` spawns one `blockSetupEdt` per

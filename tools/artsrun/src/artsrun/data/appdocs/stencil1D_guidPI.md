@@ -63,9 +63,10 @@ boundary is computed independently by **both** sides of that boundary via
 `rightrcv`) and the sending node's own `stencilInitEdt` call
 (`rightsend`/`leftsend` one node over) resolve to the *same* address, and
 **each side calls `ocrEventCreate` on it independently**
-(`stencil1DguidPI.c:344-389`); `GUID_PROP_CHECK` makes the second call an
-idempotent no-op rather than a duplicate object, but `NUM_EVENT_CREATE`
-still counts both calls. So the create-call count is `4(N-1)`, double the
+(`stencil1DguidPI.c:344-389`); the second call parks at the label's home
+behind the first instead of making a duplicate object (and installs as an
+unused generation once the program destroys the label), but
+`NUM_EVENT_CREATE` still counts both calls. So the create-call count is `4(N-1)`, double the
 `2(N-1)` distinct event objects that actually exist.
 
 Worked numbers at the calibrated args (`48 50 340000`): EDTs ≈

@@ -60,7 +60,10 @@ per interior boundary and independent of `T`: 2 ONCE events (the initial
 grandchild's left/right dependences), 2 STICKY events (`leftrcv`/
 `rightrcv`, the receive side of the very first cross-rank handoff), and 2
 STICKY events (`leftsend`/`rightsend`, its send side) — 6 events per
-interior boundary, `stencil1DoncePI.c:288-394`.
+interior boundary, `stencil1DoncePI.c:288-394`. A boundary's receive-side
+labels are its neighbour's send-side labels, so the second create of each
+parks at the label's home behind the first and, once the program destroys the
+label, installs as an unused generation.
 
 Worked numbers at the calibrated args (`48 50 340000`): EDTs ≈
 `48×340000 + 4×48 + 3 = 16,320,195`; DBs = `191`, ≈43 KB payload

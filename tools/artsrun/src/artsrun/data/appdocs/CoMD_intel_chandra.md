@@ -96,8 +96,8 @@ force-acknowledgment channels — the third of the three per-direction channels
 rendezvous calls `ocrEventCreate(GUID_PROP_CHECK)` on each of a
 cell's 27 labeled sticky indices from *both* sides — the owning cell's "send"
 create and the neighbouring cell's "receive" create land on the same index —
-and the shim increments `NUM_EVENT_CREATE` before the check resolves the race
-(`arts_event_create`, `event.c:219-221`), so both attempts count: 54 sticky
+and `arts_event_create` counts every call, the one that parks at the label's
+home behind the other included (`event.c`), so both attempts count: 54 sticky
 creates per cell, not 27 (+27 per cell, i.e. +1728 at the calibrated small
 grid).  The reduction library's own labeled-GUID pairing has the identical
 shape — `reductionEdt`'s parent-side `recvEVT` create
@@ -132,8 +132,9 @@ event** at index `27·myCell + dir` of a `27B`-wide GUID range, satisfies it wit
 a 48-byte block holding {its own position channel, its own redistribute channel,
 its own force channel, its `linkCellH` GUID, its `atomData` GUID}, and registers
 on the *neighbour's* labeled event at index `27·nbr + (26−dir)` — a symmetric
-rendezvous in which whichever side reaches `ocrEventCreate(GUID_PROP_CHECK)`
-first wins.  `channelInitEdt` unpacks the 27 replies into the cell's
+rendezvous: whichever side's `ocrEventCreate` reaches the label's home first
+installs the event, and the other create parks behind it for the rest of the
+run.  `channelInitEdt` unpacks the 27 replies into the cell's
 neighbour-GUID cache.  All three channels are pairwise and one-per-direction, so
 each carries exactly one satisfy and one dependence per step.
 

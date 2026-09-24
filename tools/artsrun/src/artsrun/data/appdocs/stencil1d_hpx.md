@@ -90,11 +90,11 @@ Let `nl` = ranks, `local_np` = `np / nl`. Per run:
 | rank-share blocks | `nl`, plus the collect task's one merged table | `local_np` guids each; the merged table `np` |
 | partition points | `(nt + 1) × np` | — |
 | edge points | `2 × nt × np`, of which `2 × nt × nl` cross a rank | — |
-| signal points | `nl × ⌈nt/nd⌉` (`SIGNAL_RELEASE`); a spawner's wake is an unlabeled once-event of its own | — |
+| signal points | `nl × ⌈nt/nd⌉` (`SIGNAL_RELEASE`); a spawner's wake is an unlabeled COUNTED event of its own | — |
 | lifetime/retire points | `3 × nt × np` (`USE_MIDDLE`/`USE_LEFT`/`USE_RIGHT`) plus `(nt − 1) × np` (`SLOT_RELEASE`) plus `np × max(0, nt + 1 − K)` (`KIND_RETIRED`, one per ring-slot reuse) plus `2 × nl − 1` (`FINAL` per rank, `STEPPER_RELEASE` per rank but rank 0) | — |
 
-Every point is a labeled STICKY event from one range reserved in `mainEdt`
-and named by `ordinal = (t · np + i) · KIND_COUNT + kind`, `KIND_COUNT` = 11:
+Every point is a labeled COUNTED event from one range reserved in `mainEdt`
+(kind `GUID_USER_EVENT_COUNTED`) and named by `ordinal = (t · np + i) · KIND_COUNT + kind`, `KIND_COUNT` = 11:
 the three the origin's own graph produces (partition, left edge, right edge),
 plus eight more that exist only to sequence a generation's lifetime and its
 block's reuse — three per-generation life-cycle acknowledgements
@@ -131,14 +131,39 @@ carries no ordering — so a consumer wired straight to a block GUID may run
 before the producer has written it. Ordering therefore has to ride on an
 event, and the mirror uses one rail for it: the producing task writes the
 block, releases it, and satisfies the point; the consuming task registers on
-the point in `DB_MODE_RO` and destroys the point when it is done — and the
-block with it only where that is a crossing edge's one-double block; a
-partition block is never destroyed (below). A point has one producer and one
-consuming *rank*: a generation's partition point is read by both of that
-partition's tasks, the interior and the boundary one, where the origin hands
-one `shared_future` to both. The points are single-fire and persistent, so registration and
-publication may happen in either order, which is what lets a spawner create
-a generation's tasks long after its inputs' producers were created.
+the point in `DB_MODE_RO`, and destroys the block only where that is a
+crossing edge's one-double block; a partition block is never destroyed
+(below). A point has one producer and one consuming *rank*: a generation's
+partition point is read by both of that partition's tasks, the interior and
+the boundary one, where the origin hands one `shared_future` to both. A point
+fires once and keeps its value until its last declared consumer has
+registered, so registration and publication may happen in either order,
+which is what lets a spawner create a generation's tasks long after its
+inputs' producers were created; every consumer is known when the point is
+made, so the point is reclaimed after the last of them and no task destroys
+one.
+
+**Every point has exactly one creator, and the create is ordered before
+everything that names it** — the producer's satisfy and every consumer's
+registration. OCR's contract is create-before-use, and xsocr holds a program
+to it for events (an early satisfy finds no object), so the mirror does not
+lean on a runtime that parks early messages. Three creators cover every
+point. The step task that produces generation `g` of partition `i` is
+created by `create_step(g − 1, i)`, which first creates every point of that
+generation whose consumers run on `i`'s rank — the partition point, an edge
+read by a same-rank neighbour, the three reader acknowledgements, the slot
+release, the signal release, and the ring hand-over — so the create precedes
+the producer, the task that will create the retirement, and every same-rank
+reader, all of which are created after it on that rank (for generation `0`
+the driver does the same before it publishes). An edge read across a rank has
+no such place on the producer's side, so the reader's rank creates it, two
+generations ahead: the step that produces a neighbour's edge of generation
+`g` reads this partition's edge of generation `g − 1`, which is published by
+the step `create_step(g − 2, reader)` creates, so creating it there orders it
+before the producer too — the reader's driver creates generation `1` before
+it publishes generation `0`, and the root creates generation `0` before the
+fork. The rank's teardown points (`FINAL`, `STEPPER_RELEASE`) are created by
+its driver first of all.
 
 The rail's rule states its own exception: a block that is already complete
 when its consumer's edge is created needs no point, because the edge is then
@@ -153,27 +178,30 @@ exists when the block does not yet, and so goes on the rail.
 The point's index is `ordinal · nl + consumer_rank`, which gives every point
 one producer and one consumer; and where a range's names are spread
 `index % nranks` — ARTS and ocr-vx both do — **a point's home is its
-consumer's rank**. Within a rank that makes a publish no message at all, which
-is the case the great majority of points are in. Across a rank the value path
-is five messages: the remote opener's labeled create, the satisfy, the
+consumer's rank**, which is also where it is created — except generation 0's
+crossing edges, which the root creates (Setup inside the span, below). Within a rank that makes
+a publish no message at all, which is the case the great majority of points
+are in. Across a rank the value path is four messages: the satisfy, the
 consumer's RO acquire of a block homed at the producer (a request and its
 reply), and the consumer's destroy of that block. The acknowledgement path
-adds two: the point through which a reader tells a block's owner it is done
-with that generation is homed at the *owner's* rank, so a crossing reader
-opens it remotely and its boundary task's output event satisfies it
-remotely. The origin spends three parcels on the same edge — the `post` that
-pushes the handle and the `get_data` request and reply — plus whatever its
-own reference counting of the pushed handle returns when the reader drops
-it, so the rail costs about seven messages against about three per crossing
-edge, all of them header-sized but the one double, and buys one structure at
-both distances for it: a handle
+adds one: the point through which a reader tells a block's owner it is done
+with that generation is homed at the *owner's* rank, and a crossing reader —
+which holds only its own copy of the edge, never the owner's block —
+satisfies it from its body once the copy is read, where a same-rank reader
+does so through its completion, after its release of the block. The origin
+spends three parcels on the same edge — the `post` that pushes the handle and
+the `get_data` request and reply — plus whatever its own reference counting
+of the pushed handle returns when the reader drops it, so the rail costs about
+five messages against about three per crossing edge, all of them
+header-sized but the one double, and buys one structure at both distances
+for it: a handle
 announced to the consumer and the element then pulled is the origin's own
 mechanism, and here it is the only mechanism, with no second path for the
 local case to drift away from. Those counts are the ones a runtime that homes
 a labeled range by index gives; on xsocr, which stamps the reserving PD's own
 location into every GUID of the range, every point of every generation lives
-at rank 0 instead, so no publish is free and each costs a message there and a
-forward.
+at rank 0 instead, so no create or publish is free and each costs a message
+there.
 
 The consumers, which are the ring the origin's wrapping index describes:
 
@@ -196,14 +224,15 @@ is per-rank state (a DB), and every task that touches it — the spawner that
 creates generation `t + nd`, and the dedicated `signal_edt` a rank's first
 partition's step spawns at every `nd`-th generation — runs on that same
 rank, so the origin's `sem->signal(t)`/`sem->wait(t)` pair (creating step `u`
-needs step `u − nd` complete) needs no cross-rank rendezvous: a blocked
-`issue_generations` mints an ordinary (non-labeled) `OCR_EVENT_ONCE_T` and
+needs step `u − nd` complete) needs nothing across a rank: a blocked
+`issue_generations` mints an unlabeled `OCR_EVENT_COUNTED_T` with its one
+consumer, the spawner, and
 stores it in the semaphore's own `waiter` field, and the `signal_edt` that
 later raises `lower` past the blocking threshold satisfies that event
 directly, under the semaphore's own spinlock. What *is* a point kind is the
 signal's own retirement: `signal_edt`'s output event feeds a
 `SIGNAL_RELEASE` point, one of the eight life-cycle/retirement kinds above,
-so the generation whose checkpoint the signal represents can be destroyed
+so the generation whose checkpoint the signal represents is retired only
 once the signal has fired.
 
 **A generation's block is freed for reuse once every reader has
@@ -214,9 +243,9 @@ that neighbour's own partition block, which it must not destroy). A
 partition block is different: once every reader of a generation has
 signalled it (the three `USE_*` acknowledgements plus the retirement point
 that follows from `SLOT_RELEASE`/`SIGNAL_RELEASE`/`FINAL`/`STEPPER_RELEASE`),
-the dedicated `retire_edt` destroys only those acknowledgement points —
-never the block. If a later generation still owes that ring slot a write
-(`g + K ≤ nt`), `retire_edt` instead publishes `KIND_RETIRED` with the
+the dedicated `retire_edt` runs — it destroys nothing, neither the block nor
+the points, which reclaim themselves. If a later generation still owes that
+ring slot a write (`g + K ≤ nt`), `retire_edt` publishes `KIND_RETIRED` with the
 block's own guid as payload, so the task licensed to reuse it
 (`create_step` at generation `g + K`) receives that same block as a
 `DB_MODE_RW` dependence and writes into it directly — no `pool_push`, no
@@ -228,12 +257,13 @@ an array: its `partition_allocator` keeps every array it ever handed out on
 its free list for the life of the process. `drain_edt`, behind the rank's
 `RETIRED` latch of `(nt + 1) × local_np` retirements (every retire task,
 whether or not it published, counts into it), destroys the semaphore block
-and the rank's teardown points (`FINAL`, and `STEPPER_RELEASE` on every rank
-but rank 0) and signals shutdown. The gather task destroys the
-final-generation points it concatenated (`ocrEventDestroy`, not the
-partition blocks), the collect task destroys the `nl` per-rank gather tables
-once it has copied their names into the merged table, and the last read
-task destroys the merged table.
+and signals shutdown. The collect task destroys the `nl` per-rank gather
+tables once it has copied their names into the merged table, and the last
+read task destroys the merged table. Every output event the program asks
+for is one it made itself, a COUNTED event with its consumers stated
+(`EDT_PROP_OEVT_VALID`), so none outlives its last consumer; the rank's
+retirement latch is the one event per rank that a runtime which keeps a
+fired event keeps.
 
 ## Flow
 
@@ -241,8 +271,12 @@ task destroys the merged table.
 rest to a root task on rank 0 — a runtime may run `mainEdt` on any rank, and
 the root is where the origin's locality-0 driver starts its clock. The root
 creates the `nl`-dependence collect and shutdown tasks on rank 0 and forks
-one driver per rank (`mirror_spmd_fork`). A driver creates its rank's gather task and registers
-it on its `local_np` final-generation partition points; writes and publishes
+one driver per rank (`mirror_spmd_fork`), after creating the points of the
+edges that cross a rank in generation `0`. A driver creates its rank's
+teardown points and its gather task, whose `local_np` final-generation
+partition points are registered by the step creations that create them;
+creates generation `0`'s points and the crossing points its partitions read
+at generation `1`; writes and publishes
 generation `0` — each partition initialised to `local_index · nx + j`, plus
 its two edge elements, which is the origin's initial condition and its
 initial `send_left`/`send_right`; creates the step tasks of generations
@@ -256,8 +290,9 @@ task then computes the two edges, in `heat_part`'s order, releases and
 publishes the same block as the next generation's partition
 and (unless it is the last) its two edges, raises the signal if it is its
 rank's first partition, and destroys the edge blocks it consumed that
-crossed a rank (a same-rank edge is an alias of a still-live neighbour
-buffer and is left alone — see Wiring). A spawner creates its generation's
+crossed a rank, acknowledging each to its owner as it does (a same-rank edge
+is an alias of a still-live neighbour buffer and is left alone, and is
+acknowledged by the task's completion — see Wiring). A spawner creates its generation's
 step tasks for its rank and spends the signal it waited on.
 
 The gather task concatenates its rank's final-generation partition names
@@ -339,6 +374,19 @@ limit of one reference runtime's output path, not a difference in the
 answer; the row's `1e-09` relative tolerance covers it with four orders of
 magnitude to spare.
 
+**On ocr-vx the points are kept.** Every point and every output event here is
+COUNTED, reclaimed after its last consumer on ARTS and xsocr; ocr-vx does not
+implement COUNTED and keeps each one to teardown, so its event memory grows
+with `nt · np` (about a dozen events per partition per generation — about
+`2.2·10⁶` at the calibrated arguments, some 3.3 GB at an estimated 1.5 KB
+each, divided among the ranks) where the other two stay at the live window — a property of that reference, disclosed
+and not patched (`benchmarks/hpx/README.md`, "One row, four runtimes").
+
+**Setup inside the span, as the origin's.** The root's `2 · nl` creates of
+generation 0's crossing edges sit inside the span; the origin's counterparts
+— the steppers' basename registration and lookup and each `receive_buffer`
+entry, made when first touched — are inside its `hpx_main` too.
+
 ## Placement
 
 `local_np = np / nl`, and partition `i` belongs to rank `i / local_np` —
@@ -358,7 +406,7 @@ leaves its rank is announced locally, and the two boundary elements per rank
 per generation — `2 × nt × nl` of the `2 × nt × np` edge points — are the
 only ones a message is spent on. The origin spends three parcels on each of
 those edges (`post`, then the `get_data` request and reply); the mirror
-spends seven (the five of the value path and the two of the reader's
+spends five (the four of the value path and the one of the reader's
 acknowledgement, named under Wiring above). The extra messages per crossing
 edge are what one structure at both distances costs, and the set of edges
 that cross is identical.
@@ -369,10 +417,10 @@ neighbour's edge point, exactly as HPX's `get_data(left_partition)` returns
 a proxy over the neighbour's array and copies nothing when the neighbour is
 local — one structure serves both distances, and only a crossing edge pays
 for a second one. A crossing edge allocates a fresh one-double block and a
-labeled point per side (opened, satisfied, registered and destroyed once
-each), where the origin's `post` plus its `get_data` request/reply pay for
-the same handoff in three parcels; the mirror pays seven messages for it
-(named under Wiring above). That cost scales with `2 · nt · nl`, not
+labeled point per side (created by the reader's rank, satisfied and
+registered once each), where the origin's `post` plus its `get_data`
+request/reply pay for the same handoff in three parcels; the mirror pays five
+messages for it (named under Wiring above). That cost scales with `2 · nt · nl`, not
 with `np`: at the gate's two ranks it is 64 blocks and 64 points, and it
 does not grow with how many partitions each rank runs. The alternatives are
 worse under this rail: letting a step read its neighbours' whole partition

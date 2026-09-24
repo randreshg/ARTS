@@ -131,6 +131,12 @@ its counter, printed as `serial-count,<rank>,<count/runs>`, exactly as the
 origin's own per-locality report after its timed loop. The gather is part of
 the program on both sides, and so inside the measured span on both.
 
+**On ocr-vx the query's event is kept.** The one event per serial-count
+query is a COUNTED output event with its one consumer stated, reclaimed after
+it on ARTS and xsocr; ocr-vx does not implement COUNTED and keeps it to
+teardown — `nl` events per run, a property of that reference
+(`benchmarks/hpx/README.md`, "One row, four runtimes").
+
 ## Placement
 
 The origin builds a per-locality `localities` list — itself (`here`) at

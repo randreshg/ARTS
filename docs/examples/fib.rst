@@ -67,10 +67,10 @@ Initialization
        char **argv = (char **)paramv[1];
        uint64_t num = strtol(argv[1], NULL, 10);
        arts_guid_t done_guid =
-           arts_edt_create(fib_done, 1, &num, 1, &(arts_hint_t){.route = 0});
+           arts_edt_create(fib_done, 1, &num, 1, &(arts_edt_hint_t){.rank = 0});
        uint64_t args[3] = {(uint64_t)done_guid, 0, num};
        start = arts_get_time_stamp();
-       arts_edt_create(fib_fork, 3, args, 0, &(arts_hint_t){.route = 0});
+       arts_edt_create(fib_fork, 3, args, 0, &(arts_edt_hint_t){.rank = 0});
    }
 
 ``main_edt`` is scheduled by the runtime on rank 0 after init.
@@ -98,8 +98,10 @@ Join
 ~~~~
 
 ``fib_join`` receives two values via ``depv[0].guid`` and
-``depv[1].guid`` (using :c:func:`arts_signal_edt_value`), sums them,
-and signals the result up to the parent EDT.
+``depv[1].guid`` (each child supplies its result with
+:c:func:`arts_edt_satisfy_slot` in ``DB_MODE_NULL``, which carries the
+value as opaque bits), sums them, and signals the result up to the parent
+EDT.
 
 Running
 -------

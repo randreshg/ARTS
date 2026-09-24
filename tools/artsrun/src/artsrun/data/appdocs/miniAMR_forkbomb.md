@@ -93,8 +93,9 @@ unlike `miniAMR_intel_bryan` there is no `rRcv` — this port never wires a
 refine-channel pair) plus `6G` unconditional labeled-sticky "send"
 announcements plus one "receive" pickup per real neighbour direction —
 `2(E_x+E_y+E_z)` where `E_x=(nx−1)·ny·nz` etc. are the grid's adjacent-block
-pair counts per axis (both sides' attempts on the same `E_x+E_y+E_z` links,
-not new objects), **plus one harmless duplicate**: `blockInit`'s `case 2`
+pair counts per axis (both sides' creates on the same `E_x+E_y+E_z` links,
+not new objects: the second create of each parks at the label's home behind
+the first for the rest of the run), **plus one harmless duplicate**: `blockInit`'s `case 2`
 (the y⁻ direction) re-issues the "send" `ocrEventCreate` a second time
 whenever `yPos>0` — `E_y` more, a source quirk shared with
 `miniAMR_intel_bryan`'s `blockInit` (same code, `mainOCR.c:294-301`). Output

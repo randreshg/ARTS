@@ -166,8 +166,12 @@ checksum/plot/unrefine service a block requests, one fresh outgoing halo event
 per face sent, 16 per refine fork (8 `conveyEighthBlockToJoin` + 8 new
 service-request events), and the labeled halo events materialized on first use
 through `ocrGuidFromIndex` + `GUID_PROP_IS_LABELED|GUID_PROP_CHECK` — each
-directed channel is created by both endpoints, the loser installing nothing but
-still counting as a create. Output events: **none** — every
+directed channel is created by both endpoints; the second create parks at the
+label's home behind the first until the receiver destroys the label, then
+installs as an unused generation, and counts as a create either way. A label
+re-armed after a refine or unrefine is created again by both ends, so each
+re-arm leaves one more parked create behind it; results are unchanged (both
+creators pass the same arguments). Output events: **none** — every
 `gasket__ocrEdtCreate` passes `NULL` for `outputEvent`. Finish EDTs: **none** —
 every create uses `EDT_PROP_NONE`.
 

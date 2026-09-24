@@ -90,7 +90,9 @@ The legacy ``arts_edt_create_*`` variants are collapsed into the single
 
 - ``rank`` — home node (``ARTS_HINT_CURRENT_RANK`` = current node).
 - ``guid`` — create at a pre-reserved GUID (``NULL_GUID`` =
-  auto-allocate; when set, the GUID's rank overrides ``rank``).
+  auto-allocate; when set, the GUID's rank overrides ``rank``).  A
+  create of a GUID whose EDT is live waits, parked at the home, until
+  that EDT completes or is destroyed (see :doc:`guids`).
 - ``finish_event`` — join a finish scope for termination detection
   (see :doc:`finish_events`).
 - ``output_event`` — per-EDT result channel satisfied after the EDT's

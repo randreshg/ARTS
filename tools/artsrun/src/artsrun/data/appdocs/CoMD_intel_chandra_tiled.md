@@ -109,8 +109,8 @@ the y and z axes, three `exchangeData` EDTs, six `loadAtomsBuffer`/
 Two constants needed a fix past the first pass, both invisible in a same-`S`
 delta (which is why Pair A's deltas already checked out) and both explained by
 the same mechanism as the sibling port: the runtime counts *every*
-`ocrEventCreate` call, not just the one that wins a `GUID_PROP_CHECK` race
-(`arts_event_create` increments before the check, `event.c`).
+`ocrEventCreate` call, the one that parks behind the installed event included
+(`arts_event_create` counts before it installs or parks, `event.c`).
 
 - **The event constant is `89`, not `80`** (and the EDT constant needs a flat
   `+3`, not `+2`).  `initEdt`'s halo rendezvous (`CoMD.c`'s `ocrGuidFromIndex`
@@ -481,10 +481,12 @@ teardown, not step-loop behaviour.
 
 The rendezvous is also the row's one undisclosed runtime dependency: both
 endpoints create the *same* labeled sticky GUID with `GUID_PROP_CHECK`, and the
-program is correct only if the loser's create leaves the winner's (already
-satisfied) event standing.  ARTS implements exactly that; the project's GUID
-document describes the checked variants as unimplemented, which is a doc drift,
-not an app problem.
+program is correct only if the second create leaves the first's (possibly
+already satisfied) event standing.  ARTS does: the second create parks at the
+label's home behind the first and, since the label is never destroyed, stays
+parked for the rest of the run.  Two creates of one live label are outside
+ARTS's labeled-GUID contract (`docs/programming_model/guids.rst`); this shape
+costs one parked create per label and changes no result.
 
 **Per-step wire law.**  Each face DB is sized for the worst case and travels
 whole: `6 × bufCapacity` bytes per rank per step regardless of how many atoms

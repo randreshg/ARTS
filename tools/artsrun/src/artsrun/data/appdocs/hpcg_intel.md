@@ -136,10 +136,11 @@ STICKY GUIDs, creates a CHANNEL event per outgoing direction, ships its GUID in
 an 8-byte DB through the sticky at index `26·myrank+ind`, and collects the
 mirror at `26·neighbour + (25−ind)`; `channelInitEdt` installs the arrivals as
 `haloRecvEVT[]`. Both ends create the same labeled slot, with `GUID_PROP_CHECK`,
-and the rendezvous depends on that being *fail-if-exists*: the shim honours it
-(`benchmarks/ocr_shim/arts_ocr.c:1252-1263` returns `OCR_EGUIDEXISTS` without
-touching the caller's GUID, so the first creator wins and a satisfied event is
-never replaced). Reductions use the same idiom: `reduction.c` builds a 10-ary
+and the rendezvous depends on the second create leaving the first's event
+standing: the shim ignores `CHECK`, and the runtime parks the second create at
+the label's home behind the installed event (for the rest of the run, since
+the label is never destroyed), so a satisfied event is never replaced
+(`docs/programming_model/guids.rst`). Reductions use the same idiom: `reduction.c` builds a 10-ary
 tree over labeled stickies and moves 8-byte blocks up (**RO** into the parent's
 `yourdata` slots, destroyed there) and back down. The only DB with many
 concurrent readers anywhere is the 56-byte shared block (`N` RO readers at

@@ -143,9 +143,9 @@ S = Kx·(4 + nl) + Ky·(5 + nl) + 4·nl·Ky + 6·nl + 10           (+ nl on rank
 
 — block and event dependences; each transform and split task adds one
 latch-decrement edge of its output event on top, `2·(Kx + Ky)` in all — and per-rank block count is `5 + 2·nl` (the two buffers, `2·nl` chunk blocks, the names block,
-the plan image, one share). The global reservation is `2·nl²` names — two
-phases × one point per (source, destination) pair — which is the whole
-rendezvous this program needs.
+the plan image, one share). The global reservation is two ranges of `nl²`
+names — one per exchange, one point per (source, destination) pair — which
+is every name this program needs.
 
 The mirror's tasks are the origin's own parallel units, unchanged:
 `split1_edt`/`split2_edt` run one task per chunk of rows, each row handled
@@ -197,14 +197,24 @@ handovers that need the rail and three that do not:
 * **The chunks need it.** A rank cannot guess the GUID another rank's split
   task chose for the chunk bound for it — this is the origin's collective —
   so the producer writes and releases the chunk, then the publication task
-  satisfies its labeled STICKY point after every local split is complete; the consumers register on the same point in `DB_MODE_RO`.
-  The points come from the program's single
-  `ocrGuidRangeCreate(…, GUID_USER_EVENT_STICKY)` range, indexed through
-  `mirror_edge` as `(phase·nl + source)·nl + destination`, which gives each
-  point exactly one producing task, one consuming rank and one destroyer, and
-  never aliases two units of work onto one — several tasks of that rank read
-  it, which is why the destroyer is a task of its own. Both sides open the point and `OCR_EGUIDEXISTS` is the
-  expected second arrival.
+  satisfies its labeled point after every local split is complete; the
+  consumers register on the same point in `DB_MODE_RO`. Each exchange has its
+  own range, indexed through `mirror_point` as `source·nl + destination`,
+  which gives each point exactly one producing task and one consuming rank
+  and never aliases two units of work onto one. Each point also has exactly
+  one creator, whose create is ordered before the publication and every
+  registration. Nothing but the root orders a source's first publication
+  against its destination's registrations, so the root creates the first
+  exchange's `nl²` points before the fork; they are STICKY
+  (`GUID_USER_EVENT_STICKY`), because their consumers are the destination's
+  scope and its per-chunk transposes, a count the destination's own worker
+  count sets, and the reap task below destroys them. A second-exchange point
+  is created by its destination's driver before anything else it does, which
+  is ordered before every source's second publication — that waits on the
+  source's first transpose scope, which joins the destination's first
+  publication — and is COUNTED (`GUID_USER_EVENT_COUNTED`) with its consumers
+  stated: the scope, the reap task and the transposes, so it is reclaimed
+  after the last of them and nothing destroys it.
 * **The rows do not.** `varr` and `warr` are created, filled and released by
   their rank's driver before any task that reads or writes them exists, and
   every later writer is ordered behind the previous phase by a join. All
@@ -217,7 +227,7 @@ on it.** A labeled range is homed by index on ARTS and ocr-vx
 (`index % nranks`), so a point's home is its consumer's rank and a
 within-rank publish is no message; xsocr stamps the reserving PD's own
 location into every GUID of a reserved range, so there all `2·nl²` points
-live at rank 0 and every publish costs a message there and a forward. The
+live at rank 0 and every create and publish costs a message there. The
 answer is the same on all four runtimes; the traffic is not, and that is
 disclosed rather than equalised.
 
@@ -237,8 +247,8 @@ each source's first-phase transposes — a reader, holding the arrival —
 records its name in a small per-rank names block; the rank's one reap task
 takes that block, waits with control dependences for the second split join
 and the second exchange's points, and destroys the first exchange's blocks
-by name and their points, where the origin's second gather assignment frees
-the first exchange's receive vectors.
+by name and their STICKY points, where the origin's second gather assignment
+frees the first exchange's receive vectors.
 
 **What the origin holds to its end, the mirror never destroys.** `vector_2d`
 allocates with `new[]` and its destructor is defaulted, so the rows and the
@@ -255,7 +265,8 @@ it is the OCR runtime's. A mirror chunk block is the one program object both
 roles map to, and the program holds it, as an arrival, to the end. Above one
 rank that leaves a free on the HPX side with no OCR counterpart, of
 `(nl − 1)/nl` of a phase's chunk bytes per rank. What the mirror does destroy inside the span is the OCR-only objects —
-the exchange points, the plan image's block, the rank shares — and the two
+the first exchange's points (the second's reclaim themselves), the plan
+image's block, the rank shares — and the two
 FFTW plans `~fft()` names, whose destructor runs after the stamp on the HPX
 side, at `hpx_main`'s return.
 
@@ -284,10 +295,12 @@ rather than behind a timing margin.
 
 `mainEdt` derives the origin's sizes (including its recomputation of the real
 length from the complex one, so an odd `--ny` transforms one point fewer),
-validates them, reserves the `2·nl²` point names, creates the thirteen templates
-and the sum task, and forks one driver per rank.
+validates them, reserves the two `nl²` point ranges, creates the thirteen
+templates and the sum task, creates the first exchange's points, and forks
+one driver per rank.
 
-A driver creates its rank's rows and fills each with the ramp, creates its
+A driver first creates the second exchange's `nl` points it will consume,
+then creates its rank's rows and fills each with the ramp, creates its
 transposed rows zeroed, and builds the two FFTW plans — once per rank, on the
 first row of each array, exactly where the origin builds them, so a planner
 that writes (every flag but `estimate`) overwrites what it overwrites there.
@@ -437,6 +450,19 @@ overreading the chunk block by 65280 elements. What follows for the oracle is wo
 stating: the checksum sees the whole final array, so a mis-indexed exchange
 *would* move it — but it cannot tell this arithmetic from a corrected one,
 because both sides run the same arithmetic.
+
+**On ocr-vx the second exchange's points are kept.** Those points and the
+chunk tasks' output events are COUNTED, reclaimed after their last consumer
+on ARTS and xsocr; ocr-vx does not implement COUNTED and keeps each to
+teardown — `nl` points and about `2·(Kx + Ky)` events per rank — a property of
+that reference, disclosed and not patched (`benchmarks/hpx/README.md`, "One
+row, four runtimes"). The first exchange's points are STICKY and destroyed
+on every runtime.
+
+**Setup inside the span, as the origin's.** The root creates the first
+exchange's `nl²` points before the fork, inside the span; the origin's
+`initialize` creates its `nl` scatter communicators per locality — `nl²`
+registrations in all — inside `hpx_main`'s window too.
 
 ## Placement
 

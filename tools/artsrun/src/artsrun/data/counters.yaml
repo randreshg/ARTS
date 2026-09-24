@@ -48,7 +48,7 @@ counters:
   NUM_EDT_SIGNAL:
     group: 'EDT counts'
     unit: count
-    help: 'Number of EDT dependency signals (arts_signal_edt calls)'
+    help: 'Number of EDT dependency signals (arts_edt_satisfy_slot calls)'
 
   NUM_YIELD:
     group: 'EDT counts'
@@ -203,7 +203,7 @@ counters:
   NUM_OO_ENQUEUE:
     group: 'Out-of-order'
     unit: count
-    help: 'Number of OO list insertions (deferred operations for not-yet-created targets)'
+    help: 'Pushes onto a route slot''s OoO list, one per park or re-park (a non-create operation whose target is not installed, or a create whose GUID is still occupied)'
 
   NUM_SNAPSHOT_REQUEST:
     group: 'Validation arm'

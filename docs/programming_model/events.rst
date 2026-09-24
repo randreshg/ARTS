@@ -44,11 +44,9 @@ selects between the two event kinds and their parameters:
    * - ``guid``
      - Pre-reserved GUID from :c:func:`arts_guid_reserve`
        (``NULL_GUID`` = auto-allocate).  The GUID's rank field then
-       overrides ``rank``.
-   * - ``check``
-     - ``true`` makes a create at an already-occupied GUID fail
-       (return ``NULL_GUID``) instead of replacing it — OCR
-       rendezvous semantics for labeled GUIDs.
+       overrides ``rank``.  A create of a GUID whose event is live
+       waits, parked at the home, until that event is destroyed, and
+       then installs as the GUID's next event (see :doc:`guids`).
    * - ``finish``
      - ``true`` selects a FINISH event (see below); all other fields
        are ignored.
@@ -155,9 +153,14 @@ released with:
 
    void arts_event_destroy(arts_guid_t guid);
 
-Destroy removes the event's route-table entry; the same GUID may be
-re-created afterward.  In-flight satisfies and dependence registrations
-for the GUID are handled through the runtime's out-of-order queue.
+Destroy removes the event's route-table entry.  A labeled GUID may be
+created again, before or after the destroy lands: a create that finds the
+event still live waits for the destroy and then installs as the GUID's
+next generation.  A satisfy or dependence registration that reaches the
+home while no event is installed waits for the next install; one that
+arrives while an event is installed runs against it, so the next
+generation's satisfies are issued only once the destroy is known to have
+landed (see :ref:`labeled-guid-reuse`).
 Finish events auto-destroy when they fire and must not be destroyed
 manually.
 

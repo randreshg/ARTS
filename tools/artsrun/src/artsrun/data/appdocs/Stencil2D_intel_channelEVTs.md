@@ -257,10 +257,12 @@ Four qualifications the "hinted through the tile" summary does not cover:
   (`stencil_2d.c:1416`), which is exactly the label its neighbour creates as
   that neighbour's own send event — so at a block edge two ranks race one label,
   and one of them races its create against the other's `ocrEventSatisfy`
-  (`stencil_2d.c:1409`). That rendezvous is correct only under fail-if-exists
-  `GUID_PROP_CHECK` semantics, which is what the shim implements (first creator
-  wins, `OCR_EGUIDEXISTS` to the loser — `benchmarks/ocr_shim/arts_ocr.c:1250-1263`).
-  A change that makes `CHECK` an unconditional replace breaks this row's setup.
+  (`stencil_2d.c:1409`). That rendezvous is correct because no create of a live
+  label touches the installed event: the first create to reach the label's home
+  installs, a satisfy that arrives before it waits for it, and the other create
+  parks behind it. The receiver's one destroy (`stencil_2d.c:1164`) then admits
+  the parked create as an unused generation — one leftover sticky event per such
+  label for the rest of the run (`docs/programming_model/guids.rst`).
 - The one-time handshake's labeled sticky events live in a reserved GUID
   range, and a range's homes are spread by GUID index (`idx % nrank`), not by
   the tile map — so most of the `4·NR` handshake creates/satisfies are
