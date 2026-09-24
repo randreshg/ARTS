@@ -124,12 +124,30 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
   arts_pending_rw_queue_push(&cache->pending_rw, w);
   arts_sched_fuzz_point(); /* widen the push<->coalescing-flag-CAS window */
 
-  /* Kick GRANT_REQUEST if no one else has — GRANT is what eventually
-   * triggers our drain in FIFO order.  One request per round, so this counts
-   * grants that had to move rather than waiters. */
+  /* Open a request only for a waiter no grant covers.  Winning the flag
+   * proves the last grant's take already ran (the consumer takes before it
+   * clears), so an empty stack means a grant served this waiter and nothing
+   * is owed; a non-empty one holds only waiters pushed after that take.  With
+   * nothing to ask for the flag goes back down, and the stack is looked at
+   * once more behind a full barrier: a waiter that pushed meanwhile and lost
+   * its CAS to this transient flag is then either seen here or wins the flag
+   * itself.  One request per grant, so this counts grants that had to move
+   * rather than waiters. */
   if (arts_atomic_cswap(&cache->grant_req_in_flight, 0, 1) == 0) {
-    INCREMENT_NUM_GRANT_MIGRATE_BY(1);
-    arts_send_db_grant_request(cache);
+    for (;;) {
+      arts_sched_fuzz_point(); /* widen the flag-win<->pending-check window */
+      if (arts_pending_rw_queue_pending(&cache->pending_rw)) {
+        INCREMENT_NUM_GRANT_MIGRATE_BY(1);
+        arts_send_db_grant_request(cache);
+        break;
+      }
+      __atomic_store_n(&cache->grant_req_in_flight, 0u, __ATOMIC_SEQ_CST);
+      atomic_thread_fence(memory_order_seq_cst);
+      if (!arts_pending_rw_queue_pending(&cache->pending_rw) ||
+          arts_atomic_cswap(&cache->grant_req_in_flight, 0, 1) != 0) {
+        break;
+      }
+    }
   }
   return ARTS_DB_ACQUIRE_PARK;
 }
@@ -160,6 +178,27 @@ static void rw_drain_cb(arts_guid_t edt_guid, unsigned int slot, void *vctx) {
   mark_edt_ready_by_guid(edt_guid, slot);
 }
 
+/* The coalescing flag's consumer half.  The chain is TAKEN before the flag
+ * is cleared, so a producer that wins the flag afterwards finds every waiter
+ * this grant serves already gone and requests nothing for them; what it does
+ * find was pushed after the take, and no grant covers it.  The clear is then
+ * followed, behind a full barrier, by one more look at the stack: a waiter
+ * that pushed after the take while the flag was still up lost its CAS and
+ * relies on this re-check to open its request.  Both halves are RMW or
+ * seq_cst, so neither side's store can pass its own later load. */
+arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache) {
+  arts_lf_link_t *chain = arts_pending_rw_queue_take(&cache->pending_rw);
+  __atomic_store_n(&cache->grant_req_in_flight, 0u, __ATOMIC_SEQ_CST);
+  atomic_thread_fence(memory_order_seq_cst);
+  arts_sched_fuzz_point(); /* widen the clear<->re-check window */
+  if (arts_pending_rw_queue_pending(&cache->pending_rw) &&
+      arts_atomic_cswap(&cache->grant_req_in_flight, 0, 1) == 0) {
+    INCREMENT_NUM_GRANT_MIGRATE_BY(1);
+    arts_send_db_grant_request(cache);
+  }
+  return chain;
+}
+
 void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache,
                                           uint64_t version, bool has_next) {
   (void)version;
@@ -168,7 +207,8 @@ void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache,
                  * the new owner when the queue is still non-empty); the owner
                  * no longer self-withdraws its sentinel. */
   struct rw_drain_ctx_s ctx = {.cache = cache};
-  arts_pending_rw_queue_drain(&cache->pending_rw, rw_drain_cb, &ctx);
+  arts_pending_rw_chain_wake(arts_db_grant_take_waiters(cache), rw_drain_cb,
+                             &ctx);
 }
 
 /* ===== Shared owner→owner transfer ship (WT + WB) =============
@@ -388,6 +428,12 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
 
   struct arts_db_s *db = arts_db_of_cache(cache);
+  /* A requester of the write right holds a cache of the block from here on,
+   * so the destroy must reach it: its cache would otherwise outlive the
+   * block and hold its rank's slot for the GUID against the next create. */
+  if (requester != arts_global_rank_id) {
+    (void)arts_rank_bitset_set(&db->cached_ranks, requester);
+  }
 #ifdef ARTS_WRITE_POLICY_WT
   /* The write-through home holds this block's canonical bytes for its whole
    * lifetime, and from here on it owes them to someone: the grant it is
@@ -532,6 +578,7 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_msg_grant_cts_packet_s *p =
       (struct arts_msg_grant_cts_packet_s *)args_v;
+  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   if (cache->db_size == 0) {
     cache->db_size = p->db_size;
   }

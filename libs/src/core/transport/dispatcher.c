@@ -179,12 +179,28 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
   }
   case MSG_EDT_CREATE: {
     ARTS_DEBUG("EDT Create Received");
-    arts_handler_edt_create(packet);
+    struct arts_msg_object_blob_packet_s *pack =
+        (struct arts_msg_object_blob_packet_s *)(packet);
+    if (pack->header.size < sizeof(*pack) + sizeof(struct arts_edt_s)) {
+      ARTS_ERROR("EDT create blob of %lu bytes, below the minimum %lu bytes",
+                 (unsigned long)pack->header.size,
+                 (unsigned long)(sizeof(*pack) + sizeof(struct arts_edt_s)));
+    }
+    arts_edt_create_enter(pack, pack + 1,
+                          (uint32_t)(pack->header.size - sizeof(*pack)));
     break;
   }
   case MSG_EVENT_CREATE: {
-    ARTS_DEBUG("Event Move Received");
-    arts_handler_event_create(packet);
+    ARTS_DEBUG("Event Create Received");
+    struct arts_msg_object_blob_packet_s *pack =
+        (struct arts_msg_object_blob_packet_s *)(packet);
+    if (pack->header.size !=
+        sizeof(*pack) + sizeof(struct arts_event_s)) {
+      ARTS_ERROR("event create blob of %lu bytes, expected %lu",
+                 (unsigned long)pack->header.size,
+                 (unsigned long)(sizeof(*pack) + sizeof(struct arts_event_s)));
+    }
+    arts_event_create_enter(pack, pack + 1);
     break;
   }
   case MSG_TIME_SYNC_REQUEST: {
@@ -250,6 +266,7 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     struct arts_ooo_args_db_grant_return_s args = {
         .returner = pack->header.rank,
         .db_guid = pack->db_guid,
+        .cv = pack->cv,
     };
     arts_ooo_dispatch_or_defer_guid(pack->db_guid, OOO_DB_GRANT_RETURN, &args,
                                     sizeof(args));
@@ -387,7 +404,7 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
 #endif /* ARTS_PROTOCOL_EXCL */
   case MSG_DB_CREATE: {
     ARTS_DEBUG("Coh DB_CREATE_COHERENT Received");
-    arts_handler_db_create(
+    arts_db_create_announce_enter(
         (struct arts_msg_db_create_coherent_packet_s *)(packet));
     break;
   }
@@ -617,10 +634,15 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     /* Cat-C lookup-or-drop: record the creator's first flush credit.  The
      * creator always installed its descriptor before sending the create this
      * answers, so a MISS means the DB is already destroyed — the credit dies
-     * with it (a credit is a hint, never a precondition). */
+     * with it (a credit is a hint, never a precondition).  A HIT on another
+     * descriptor of the GUID (a later create's) is dropped the same way: the
+     * credit names the line of the block this create made, which may already
+     * be released. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL && pack->credit_txid != 0) {
+    if (db != NULL && pack->credit_txid != 0 &&
+        __atomic_load_n(&db->cache.create_token, __ATOMIC_ACQUIRE) ==
+            pack->create_token) {
       struct arts_db_cache_s *cache = &db->cache;
       __atomic_store_n(&cache->home_line_addr, pack->credit_addr,
                        __ATOMIC_RELAXED);
@@ -693,10 +715,15 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     /* Cat-C lookup-or-drop: record the creator's first publish credit.  The
      * creator always installed its descriptor before sending the create this
      * answers, so a MISS means the DB is already destroyed — the credit dies
-     * with it (a credit is a hint, never a precondition). */
+     * with it (a credit is a hint, never a precondition).  A HIT on another
+     * descriptor of the GUID (a later create's) is dropped the same way: the
+     * credit names the home buffer of the block this create made, which may
+     * already be released. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL && pack->credit_txid != 0) {
+    if (db != NULL && pack->credit_txid != 0 &&
+        __atomic_load_n(&db->cache.create_token, __ATOMIC_ACQUIRE) ==
+            pack->create_token) {
       struct arts_db_cache_s *cache = &db->cache;
       __atomic_store_n(&cache->home_pub_addr, pack->credit_addr,
                        __ATOMIC_RELAXED);

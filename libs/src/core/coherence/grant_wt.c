@@ -117,12 +117,6 @@ static void home_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
    * mid-drain and hand the grant on prematurely.  The 0-crossing is deferred
    * to the guard removal below. */
   arts_db_grant_install(cache);
-  /* Clear BEFORE the drain below, and with a full barrier.  The producer is
-   * push-then-flag-CAS, so a waiter this drain misses must find the flag
-   * already clear and open its own request; the drain's own exchange is
-   * acquire-only, so the ordering has to come from this store rather than
-   * from the architecture the drain happens to run on. */
-  __atomic_store_n(&cache->grant_req_in_flight, 0u, __ATOMIC_SEQ_CST);
 
   /* WT drains + runs NOW (no confirm-ack gate): home serves RO so there is
    * no stale-RO window.  Then tell home we installed (CONFIRM), which flips
@@ -187,7 +181,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
-    db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0);
+    db_h = arts_db_cache_stub_install_answered(db_guid, /*db_size=*/0);
     db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db == NULL) {
       arts_shared_release(&db_h);
@@ -198,6 +192,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     }
   }
   struct arts_db_cache_s *cache = &db->cache;
+  arts_db_cache_note_answered(cache); /* before it takes effect */
 
   /* A hinted first touch may reach its first grant with the size still
    * unlearned (no CTS leg ran); the response's data_size is the sender's

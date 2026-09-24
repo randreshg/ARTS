@@ -498,13 +498,11 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
-  /* This rank's create mark for the block: 0 while no create here has held
-   * it, 1 once one has.  One rank's create makes one block once, so the mark
-   * never returns to 0 — a rank whose create released the block holds no
-   * image of it a later create could be handed — and a create that finds it
-   * set creates nothing.  The arm's permission word says what a hold is
-   * doing; this byte says only that a create here took one. */
-  uint8_t creator_hold;
+  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
+   * the home's directory, or a dependence's first touch.  A create that
+   * claims a first touch's cache turns it into its own
+   * (arts_db_create_claims_stub); nothing else writes it after init. */
+  uint8_t init_kind;
 };
 #else
 struct arts_db_cache_s {
@@ -545,13 +543,11 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
-  /* This rank's create mark for the block: 0 while no create here has held
-   * it, 1 once one has.  One rank's create makes one block once, so the mark
-   * never returns to 0 — a rank whose create released the block holds no
-   * image of it a later create could be handed — and a create that finds it
-   * set creates nothing.  The arm's permission word says what a hold is
-   * doing; this byte says only that a create here took one. */
-  uint8_t creator_hold;
+  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
+   * the home's directory, or a dependence's first touch.  A create that
+   * claims a first touch's cache turns it into its own
+   * (arts_db_create_claims_stub); nothing else writes it after init. */
+  uint8_t init_kind;
 };
 #endif
 

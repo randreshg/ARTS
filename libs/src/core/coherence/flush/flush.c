@@ -83,7 +83,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->db_guid = db_guid;
   c->db_size = db_size;
   __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
-  arts_db_create_hold_seed(c, kind);
+  arts_db_cache_kind_seed(c, kind);
   arts_lf_pool_init(&c->buf_freelist, 0);
   c->home_line_addr = 0;
   c->home_line_rkey = 0;
@@ -312,6 +312,7 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_db_fetch_response_args_s *a =
       (struct arts_db_fetch_response_args_s *)args_v;
+  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   if (cache->db_size == 0 && a->db_size > 0) {
     cache->db_size = a->db_size;
   }
@@ -433,9 +434,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
 
 /* The create's own hold.  Its bytes are the copy the create installed in this
  * rank's slot, so the release writes that copy back and empties the slot: a
- * non-home rank keeps no resident copy of a block it is not holding.  The
- * create mark stays set — the rank has no image left for a later create of
- * the same label to be handed. */
+ * non-home rank keeps no resident copy of a block it is not holding. */
 void arts_db_release_created(struct arts_db_cache_s *cache) {
   if (is_home(cache)) {
     return; /* the creator wrote the line in place */
@@ -584,9 +583,9 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
   }
 }
 
-/* This arm keeps no permission word for a create to step: the mark the create
- * already took is the whole of its state, and the bytes under the hold are
- * the line the create installed in this rank's slot. */
+/* This arm keeps no permission word for a create to step: the claim of the
+ * cache is the whole of its state, and the bytes under the hold are the line
+ * the create installed in this rank's slot. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
   (void)cache;
   return true;
@@ -609,5 +608,5 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
       arts_send_db_cache_destroy(r, a->db_guid);
     }
   }
-  (void)arts_route_table_set_destroyed(a->db_guid);
+  (void)arts_ooo_retire_item(a->db_guid, item_v);
 }

@@ -68,6 +68,10 @@ arts_lf_link_t *arts_pending_rw_queue_take(arts_lf_stack_t *q) {
   return arts_lf_stack_drain(q);
 }
 
+bool arts_pending_rw_queue_pending(arts_lf_stack_t *q) {
+  return atomic_load_explicit(&q->head, memory_order_seq_cst) != NULL;
+}
+
 unsigned int arts_pending_rw_chain_count(arts_lf_link_t *chain) {
   unsigned int n = 0u;
   for (arts_lf_link_t *c = chain; c != NULL;

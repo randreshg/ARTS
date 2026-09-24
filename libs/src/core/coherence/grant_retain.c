@@ -176,10 +176,12 @@ void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache) {
 /* The shared publish paths ask the home to accept a hand-back that rode a
  * release.  No release here carries one, so the flag they unwrap is never
  * set and this is the arm's answer to a question it never gets asked. */
-void arts_db_grant_return_arrived(struct arts_db_s *db,
-                                  unsigned int returner) {
+void arts_db_grant_return_arrived(
+    struct arts_db_s *db, unsigned int returner,
+    const struct arts_db_grant_return_reply_s *reply) {
   (void)db;
   (void)returner;
+  (void)reply;
 }
 
 /* ===== Holder: the word's possession-setting and count-dropping edges ==== */

@@ -255,8 +255,8 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
    * holding the lock — its matching release drives the count back to 0.
    * NO_ACQUIRE resets this to the idle state in arts_db_create. */
 #ifdef ARTS_RELEASE_PURGE
-  (void)rw_holder; /* HOME tracks mode via lock_state phase bit, not a
-                    * separate rw_holder field */
+  /* HOME tracks mode via the lock_state phase bit, not a separate rw_holder
+   * field. */
   atomic_store_explicit(&db->lock_state, LOCK_MAKE_STATE(0u, 1u, 0u),
                         memory_order_relaxed);
 #else /* ARTS_RELEASE_RETAIN */
@@ -274,6 +274,13 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->rw_waiters);
   arts_lf_stack_init(&db->ro_waiters);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
+  /* A creator on another rank holds a cache of the block from the moment it
+   * made it, so the destroy must reach that rank too: its cache would
+   * otherwise outlive the block and hold the rank's slot for the GUID against
+   * the next create of it. */
+  if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
+    arts_rank_bitset_set(&db->cached_ranks, rw_holder);
+  }
 #ifdef ARTS_RELEASE_RETAIN
   arts_rank_bitset_init(&db->ro_retainers, nranks);
 #endif
@@ -306,17 +313,17 @@ void arts_db_home_teardown(struct arts_db_s *db) {
  * to every rank in cached_ranks (the destroy roster), wake parked waiters,
  * then detach the route-table slot. */
 /* Tear the home down: notify every rank that ever cached this DB, then return
- * the route slot.  The fan-out sits INSIDE arts_route_table_set_destroyed's
- * single-flight rather than before it: duplicate destroys are produced by the
- * protocol on purpose, and only the caller that actually detaches the object
- * may put DESTROY_NOTIFY on the wire. */
+ * the route slot.  The fan-out sits INSIDE the retire's single flight rather
+ * than before it: duplicate destroys are produced by the protocol on purpose,
+ * and only the caller whose retire actually detaches the object may put
+ * DESTROY_NOTIFY on the wire. */
 void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid) {
   /* Claim first: only the caller that actually detaches the object may put
    * DESTROY_NOTIFY on the wire.  Duplicate destroys are produced by the
    * protocol on purpose, and a second fan-out would tell every cache to drop a
    * DB twice.  Reading db below stays safe after the detach — the dispatch
    * that reached this handler pins the object across the call. */
-  if (!arts_route_table_set_destroyed(db_guid)) {
+  if (!arts_ooo_retire_item(db_guid, db)) {
     return;
   }
   unsigned int self = arts_global_rank_id;

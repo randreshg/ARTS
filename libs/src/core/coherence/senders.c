@@ -204,6 +204,7 @@ void arts_send_db_create_return(unsigned int creator_rank,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE_RETURN);
   p.header.rank = arts_global_rank_id;
   p.db_guid = home_cache->db_guid;
+  p.create_token = home_cache->create_token;
   p.credit_addr = 0;
   p.credit_rkey = 0;
   p.credit_txid = 0;
@@ -356,12 +357,14 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
 
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t fam_addr) {
+                                  uint16_t db_type, uint64_t fam_addr,
+                                  uint64_t create_token) {
   struct arts_msg_db_create_coherent_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.db_size = db_size;
+  p.create_token = create_token;
 #ifdef ARTS_FAM
   p.fam_addr = fam_addr;
 #else
@@ -371,10 +374,27 @@ void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
   p.db_type = db_type;
   memset(p.pad, 0, sizeof(p.pad));
   if (home_rank == arts_global_rank_id) {
-    arts_handler_db_create(&p);
+    arts_db_create_announce_enter(&p);
     return;
   }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
+}
+
+void arts_db_create_announce_enter(
+    const struct arts_msg_db_create_coherent_packet_s *p) {
+  struct arts_ooo_args_db_create_s a = {
+      .size = (uint32_t)sizeof(struct arts_ooo_args_db_create_s),
+      .creator = p->header.rank,
+      .db_guid = p->db_guid,
+      .db_size = p->db_size,
+      .create_token = p->create_token,
+#ifdef ARTS_FAM
+      .fam_addr = p->fam_addr,
+#endif
+      .flags = p->flags,
+      .db_type = p->db_type,
+  };
+  arts_ooo_dispatch_or_defer_guid(p->db_guid, OOO_DB_CREATE, &a, sizeof(a));
 }
 
 void arts_send_db_destroy(unsigned int home_rank, arts_guid_t db_guid) {

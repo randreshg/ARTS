@@ -151,6 +151,13 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu);
 
 void arts_db_free(void *ptr);
 
+/* Install a descriptor a create built on this rank, named by the control
+ * block arts_route_table_make_handle made for it.  On success the slot takes
+ * over the ref `cb` carries and, when this rank is not the block's home, the
+ * block is announced to its home.  On a loss nothing changes: the ref is
+ * still the caller's.  The OOO_DB_CREATE body's local shape. */
+bool arts_db_create_install_local(arts_shared_ptr_t cb);
+
 /* User-visible payload pointer for a DB: a coherent DB's installed coherence
  * buffer, and the inline payload after the wrapping struct for every other
  * subtype.  Defined in the per-protocol-compiled runtime so the inline offset

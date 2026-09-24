@@ -52,10 +52,9 @@ extern "C" {
 #ifndef __cplusplus
 #include <stdatomic.h>
 #endif
-/* Lazy home metadata embeds a per-rank reader bit-set by value. */
-#ifdef ARTS_WRITE_POLICY_WB
+/* The home metadata embeds its destroy roster, a per-rank bit-set, by
+ * value. */
 #include "arts/rank_bitset.h"
-#endif
 
 /* Sentinel for arts_db_cache_s.incoming_new_owner meaning "no ownership
  * transfer pending".  A real rank is always < rank_count, so UINT_MAX is a safe

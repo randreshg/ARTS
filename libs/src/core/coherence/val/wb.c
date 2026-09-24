@@ -183,6 +183,13 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->invalidate_in_flight, 0, memory_order_relaxed);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
+  /* A creator on another rank holds a cache of the block from the moment it
+   * made it, so the destroy must reach that rank too: its cache would
+   * otherwise outlive the block and hold the rank's slot for the GUID against
+   * the next create of it. */
+  if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
+    arts_rank_bitset_set(&db->cached_ranks, rw_holder);
+  }
   db->pending_install_owner = 0;
 }
 
@@ -236,24 +243,34 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
                                  slot, &a->rdzv);
 }
 
-/* Fan-out callback for arts_rank_bitset_for_each during destroy.
- * ctx carries the db_guid encoded as uintptr_t (no heap allocation
- * needed since the callback is synchronous). */
-static void owner_destroy_fanout_cb(unsigned int rank, void *ctx) {
-  arts_guid_t db_guid = (arts_guid_t)(uintptr_t)ctx;
-  unsigned int self = arts_global_rank_id;
-  if (rank != self) {
-    arts_send_db_cache_destroy(rank, db_guid);
+/* Fan-out callback for arts_rank_bitset_for_each during destroy.  ctx is the
+ * fan-out's own record of the ranks already told. */
+struct owner_destroy_fanout_s {
+  arts_guid_t db_guid;
+  struct arts_rank_bitset_s told;
+};
+
+/* A rank is told once per destroy.  A DESTROY_NOTIFY retires whatever the
+ * rank's slot holds for the GUID when it lands, so a second one for the same
+ * generation would retire the next generation a create has installed there
+ * after the first. */
+static void owner_destroy_notify(struct owner_destroy_fanout_s *f,
+                                 unsigned int rank) {
+  if (rank != arts_global_rank_id && arts_rank_bitset_set(&f->told, rank)) {
+    arts_send_db_cache_destroy(rank, f->db_guid);
   }
+}
+
+static void owner_destroy_fanout_cb(unsigned int rank, void *ctx) {
+  owner_destroy_notify((struct owner_destroy_fanout_s *)ctx, rank);
 }
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
- * member).  Order: roster fan-out, then
- * arts_route_table_set_destroyed LAST (parked waiter at destroy = UB, cleaned
- * up by the refcount-0 destructor).  WB roster source = rw_holder
- * (current RW owner) + the RO cached-ranks bit-set + the queued ownership
- * requesters. */
+ * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (parked
+ * waiter at destroy = UB, cleaned up by the refcount-0 destructor).  WB roster
+ * source = rw_holder (current RW owner) + the cached-ranks bit-set, which
+ * every requester joins when its request arrives. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -262,41 +279,27 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
   if (db == NULL) {
     return;
   }
-  unsigned int self = arts_global_rank_id;
+  struct owner_destroy_fanout_s fan = {.db_guid = a->db_guid};
+  arts_rank_bitset_init(&fan.told, arts_global_rank_count);
   /* WB: notify the current RW owner first (rw_holder, not the cached-ranks
-   * bit-set), then the RO cached-ranks bit-set, then the queued requesters. */
-  {
-    unsigned int holder =
-        atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-    if (holder != self) {
-      arts_send_db_cache_destroy(holder, a->db_guid);
-    }
-  }
-  arts_rank_bitset_for_each(&db->cached_ranks, owner_destroy_fanout_cb,
-                            (void *)(uintptr_t)a->db_guid);
-  {
-    unsigned int q_rank;
-    while (arts_home_grantreq_queue_pop(&db->pending_rw, &q_rank, NULL, NULL)) {
-      if (q_rank != self) {
-        arts_send_db_cache_destroy(q_rank, a->db_guid);
-      }
-    }
-  }
+   * bit-set), then the cached-ranks bit-set.  The request FIFO is not read:
+   * its one consumer is the baton holder, and every queued requester is
+   * already on the bit-set. */
+  owner_destroy_notify(&fan,
+                       atomic_load_explicit(&db->rw_holder,
+                                            memory_order_acquire));
+  arts_rank_bitset_for_each(&db->cached_ranks, owner_destroy_fanout_cb, &fan);
   /* In-flight ownership transfer: the new owner C lives only in
    * pending_install_owner during [pop at round-start .. rw_holder flip] and is
    * in none of the rosters above. With the confirm gate it parks its RW waiter
    * until CONFIRM_ACK, so a destroy that races the transfer must wake it here
-   * or it hangs. Notify it (dedup against rw_holder / self). */
+   * or it hangs. Notify it. */
   if (atomic_load_explicit(&db->invalidate_in_flight, memory_order_acquire) !=
       0u) {
-    unsigned int in_flight = db->pending_install_owner;
-    unsigned int holder =
-        atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-    if (in_flight != self && in_flight != holder) {
-      arts_send_db_cache_destroy(in_flight, a->db_guid);
-    }
+    owner_destroy_notify(&fan, db->pending_install_owner);
   }
-  (void)arts_route_table_set_destroyed(a->db_guid);
+  arts_rank_bitset_destroy(&fan.told);
+  (void)arts_ooo_retire_item(a->db_guid, item_v);
 }
 
 /* Retract nothing: this arm's readers hold no durable copy claim — every

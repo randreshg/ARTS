@@ -247,6 +247,13 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   db->round_entries = NULL;
   arts_rank_bitset_init(&db->roster, nranks);
   arts_rank_bitset_init(&db->cached_ranks, nranks);
+  /* A creator on another rank holds a cache of the block from the moment it
+   * made it, so the destroy must reach that rank too: its cache would
+   * otherwise outlive the block and hold the rank's slot for the GUID against
+   * the next create of it. */
+  if (rw_holder < nranks) {
+    (void)arts_rank_bitset_set(&db->cached_ranks, rw_holder);
+  }
 }
 
 void arts_db_home_teardown(struct arts_db_s *db) {

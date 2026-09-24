@@ -380,13 +380,11 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
-  /* This rank's create mark for the block: 0 while no create here has held
-   * it, 1 once one has.  One rank's create makes one block once, so the mark
-   * never returns to 0 — a rank whose create released the block holds no
-   * image of it a later create could be handed — and a create that finds it
-   * set creates nothing.  The arm's permission word says what a hold is
-   * doing; this byte says only that a create here took one. */
-  uint8_t creator_hold;
+  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
+   * the home's directory, or a dependence's first touch.  A create that
+   * claims a first touch's cache turns it into its own
+   * (arts_db_create_claims_stub); nothing else writes it after init. */
+  uint8_t init_kind;
 
   /* WT publish write-combining — the write-side twin of the RO combining
    * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
@@ -408,6 +406,11 @@ struct arts_db_cache_s {
   uint64_t home_pub_addr;
   uint64_t home_pub_rkey;
   volatile uint64_t home_pub_txid;
+  /* A remote creator's name for this descriptor, carried by its announce and
+   * echoed by the home's CREATE_RETURN: the create's credit is applied only
+   * where the two match, never to a later descriptor of the same GUID.  0 on
+   * every other cache. */
+  uint64_t create_token;
 #ifdef ARTS_RELEASE_PURGE
   /* The hand-back obligation: (grant_generation << 1) | armed, or zero.
    * Armed by a release that gave the write right up while its payload was
@@ -463,13 +466,11 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
-  /* This rank's create mark for the block: 0 while no create here has held
-   * it, 1 once one has.  One rank's create makes one block once, so the mark
-   * never returns to 0 — a rank whose create released the block holds no
-   * image of it a later create could be handed — and a create that finds it
-   * set creates nothing.  The arm's permission word says what a hold is
-   * doing; this byte says only that a create here took one. */
-  uint8_t creator_hold;
+  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
+   * the home's directory, or a dependence's first touch.  A create that
+   * claims a first touch's cache turns it into its own
+   * (arts_db_create_claims_stub); nothing else writes it after init. */
+  uint8_t init_kind;
 
   /* WT publish write-combining — the write-side twin of the RO combining
    * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
@@ -491,6 +492,11 @@ struct arts_db_cache_s {
   uint64_t home_pub_addr;
   uint64_t home_pub_rkey;
   volatile uint64_t home_pub_txid;
+  /* A remote creator's name for this descriptor, carried by its announce and
+   * echoed by the home's CREATE_RETURN: the create's credit is applied only
+   * where the two match, never to a later descriptor of the same GUID.  0 on
+   * every other cache. */
+  uint64_t create_token;
 #ifdef ARTS_RELEASE_PURGE
   /* The hand-back obligation: (grant_generation << 1) | armed, or zero.
    * Armed by a release that gave the write right up while its payload was
@@ -539,6 +545,13 @@ struct arts_db_s {
    * exactly one of them accepts any given return.  Grants are serialized, so
    * at most one return can be outstanding and one slot suffices. */
   arts_db_atomic_uint_t pending_return_from;
+  /* The reply the returner waits on, owned by the latched return: written
+   * before the latch CAS publishes the slot, read by the latch's one
+   * consumer after its consuming CAS. */
+  uint64_t pending_return_cv;
+  uint64_t pending_return_version;
+  uint8_t pending_return_ack;
+  uint8_t pending_return_credit;
 #endif
 
   /* ---- invalidation round (home side; INV's own) ---- */

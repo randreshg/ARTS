@@ -143,7 +143,8 @@ enum arts_msg_type {
   MSG_DB_CREATE_RETURN, /* home -> remote creator, after the home-side
                          * install: the DB's stable home buffer as a durable
                          * publish credit.  Pure hint (Cat-C lookup-or-drop
-                         * at the creator). */
+                         * at the creator, applied only to the descriptor
+                         * whose create it answers). */
   /* EXCL RETAIN-only: home -> retainer, "give the RO grant back".  Data-less;
    * shares arts_msg_excl_confirm_packet_s with CONFIRM/RORET.  Appended at the
    * end so no existing ordinal moves.  There is no ack: the completion signal
@@ -401,12 +402,16 @@ struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
   struct arts_msg_rdzv_landing_s new_owner_rdzv;
 };
 
-/* GRANT_RETURN: holder → home. Body = db_guid(8); the returner is the
- * header's rank.  Nothing else rides it — the right is handed back whole, and
- * the bytes went home with the release's publish. */
+/* GRANT_RETURN: holder → home. Body = db_guid(8) + cv(8); the returner is
+ * the header's rank.  No bytes ride it: the right is handed back whole, and a
+ * writer's bytes went home with its release's publish (a writer that holds no
+ * buffer wrote none). */
 struct ARTS_PACKED arts_msg_grant_return_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+  /* The returner's wait, posted once the home has applied the hand-back;
+   * 0 = nobody waits. */
+  uint64_t cv;
 };
 
 /* GRANT_CONFIRM_ACK: home → new owner C. Body = db_guid(8). No version: C
@@ -465,17 +470,19 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
 };
 
 /* DB_CREATE_COHERENT — no trailing payload.  Body:
- *   db_guid(8) + db_size(8) [+ fam_addr(8) under ARTS_FAM]
- *   + flags(2) + db_type(2) + pad[4]  =  24 bytes, or 32 under ARTS_FAM,
- * 8-aligned either way.  The block's store is named by its ADDRESS alone:
- * the pool carves one slice per rank, so the rank that owns a slot is a
- * function of it.  The one conditional member makes the layout
- * build-conditional, like the sequence-number header: every rank in a run
- * must be built alike. */
+ *   db_guid(8) + db_size(8) + create_token(8) [+ fam_addr(8) under ARTS_FAM]
+ *   + flags(2) + db_type(2) + pad[4]  =  32 bytes, or 40 under ARTS_FAM,
+ * 8-aligned either way.  create_token names the creator's descriptor (0 = the
+ * creator keeps none) and is echoed in CREATE_RETURN.  The block's store is
+ * named by its ADDRESS alone: the pool carves one slice per rank, so the rank
+ * that owns a slot is a function of it.  The one conditional member makes the
+ * layout build-conditional, like the sequence-number header: every rank in a
+ * run must be built alike. */
 struct ARTS_PACKED arts_msg_db_create_coherent_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
+  uint64_t create_token;
 #ifdef ARTS_FAM
   uint64_t fam_addr; /* the block's slot, 0 when the creator allocated none */
 #endif
@@ -550,10 +557,12 @@ struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
 };
 
 /* CREATE_RETURN — see the enum comment.  The credit triple mirrors the
- * publish-ACK refill fields. */
+ * publish-ACK refill fields; create_token echoes the announce's, and the
+ * creator applies the credit only to the descriptor that carries it. */
 struct ARTS_PACKED arts_msg_db_create_return_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+  uint64_t create_token;
   uint64_t credit_addr;
   uint64_t credit_rkey;
   uint64_t credit_txid;

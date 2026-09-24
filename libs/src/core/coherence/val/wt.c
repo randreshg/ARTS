@@ -7,6 +7,7 @@
  * ARTS_WRITE_POLICY=WT (selected in libs/src/core/CMakeLists.txt).
  * Contains NO protocol/write-policy preprocessor logic.
  */
+#include <assert.h>
 #include <semaphore.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,7 +20,7 @@
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
 #include "arts/edt.h"             /* arts_edt_dep_t (acquire body) */
-#include "arts/gas/guid.h" /* creator slice arithmetic */
+#include "arts/gas/guid.h"
 #include "arts/gas/route_table.h" /* arts_route_table_lookup_db (pin db_s) */
 #include "arts/ooo.h"             /* OOO_DB_* args (handler bodies) */
 #include "arts/runtime_state.h"
@@ -244,6 +245,14 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->invalidate_in_flight, 0, memory_order_relaxed);
   db->cached_version = arts_rank_u64_map_create(nranks);
+  arts_rank_bitset_init(&db->cached_ranks, nranks);
+  /* A creator on another rank holds a cache of the block from the moment it
+   * made it, so the destroy must reach that rank too: its cache would
+   * otherwise outlive the block and hold the rank's slot for the GUID against
+   * the next create of it. */
+  if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
+    arts_rank_bitset_set(&db->cached_ranks, rw_holder);
+  }
   db->pending_install_owner = 0;
 #ifdef ARTS_RELEASE_PURGE
   atomic_store_explicit(&db->pending_return_from, ARTS_GRANT_NO_RETURNER,
@@ -257,6 +266,7 @@ void arts_db_home_teardown(struct arts_db_s *db) {
   }
   arts_home_grantreq_queue_destroy(&db->pending_rw);
   arts_rank_u64_map_destroy(db->cached_version);
+  arts_rank_bitset_destroy(&db->cached_ranks);
   /* No free: home fields are inlined in the arts_db_s. */
 }
 
@@ -354,6 +364,12 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
   arts_guid_t edt_guid = a->edt_guid;
   uint32_t slot = a->slot;
+  /* A reader holds a cache of the block from here on, so the destroy must
+   * reach it (a size-0 block's reply credits no version to the ledger). */
+  if (requester != arts_global_rank_id) {
+    (void)arts_rank_bitset_set(&arts_db_of_cache(cache)->cached_ranks,
+                               requester);
+  }
 
   /* A remote first use of a block whose create took no hold: the home is the
    * canonical holder on this arm and the reply must carry the block's first
@@ -462,15 +478,22 @@ static void pub_landed_cb(void *arg) {
      * acquires and re-issue home-parked SNAPSHOT_REQUEST serves. */
     arts_db_drain_pending_snapshot(&db->cache);
   }
-  arts_send_db_publish_ack(ctx->releaser, ctx->db_guid, ctx->cv, ctx->version,
-                             db != NULL ? &db->cache : NULL);
   if (ctx->returns_grant && db != NULL) {
     /* The releaser handed the write right back with these bytes.  Accepting
      * here and not a moment earlier is what makes the two one event: the
      * stamp above is already in place, so a block handed straight on carries
-     * a version this release has not moved past.  A block destroyed while the
-     * bytes were in flight owes nothing — its directory went with it. */
-    arts_db_grant_return_arrived(db, ctx->releaser);
+     * a version this release has not moved past.  The publish's
+     * acknowledgement rides the hand-back and leaves once the home has
+     * applied it.  A block destroyed while the bytes were in flight owes
+     * nothing but the acknowledgement — its directory went with it. */
+    struct arts_db_grant_return_reply_s reply = {.cv = ctx->cv,
+                                                 .version = ctx->version,
+                                                 .ack = true,
+                                                 .credit = true};
+    arts_db_grant_return_arrived(db, ctx->releaser, &reply);
+  } else {
+    arts_send_db_publish_ack(ctx->releaser, ctx->db_guid, ctx->cv,
+                             ctx->version, db != NULL ? &db->cache : NULL);
   }
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
@@ -482,7 +505,10 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_publish_s *)args_v;
 
   if (a->data_size == 0) {
-    /* Data-less ordering round (sentinel DB): install nothing, ACK. */
+    /* Data-less ordering round (sentinel DB): install nothing, ACK.  A
+     * hand-back rides payload legs only. */
+    assert(a->returns_grant == 0u &&
+           "a hand-back never rides a data-less publish");
     arts_send_db_publish_ack(a->releaser, a->db_guid, a->cv, a->version,
                                cache);
     return;
@@ -539,12 +565,11 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
- * member).  Order: roster fan-out, then
- * arts_route_table_set_destroyed LAST (detach the slot cb + drop the install
- * ref); a waiter left parked at destroy (UB) is cleaned up by the destructor detaches the slot cb + drops the install
- * ref; the cb deleter frees the cache once outstanding lookup refs drain.  A
- * second DESTROY_REQ finds the slot absent and is a no-op.  WT roster
- * source = home->cached_version + the creator-slice probe. */
+ * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (detach the
+ * slot cb + drop the install ref); a waiter left parked at destroy (UB) is
+ * freed by the refcount-0 destructor, and the cb deleter frees the cache once
+ * outstanding lookup refs drain.  A second DESTROY_REQ finds the slot absent
+ * and is a no-op.  WT roster source = home->cached_ranks. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -554,37 +579,28 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
     return;
   }
   unsigned int self = arts_global_rank_id;
-  /* WT: home->cached_version is the readers roster. */
   {
-    unsigned int n = arts_global_rank_count;
-    for (unsigned int r = 0; r < n; r++) {
-      if (r == self) {
-        continue;
-      }
-      if (arts_rank_u64_map_get(db->cached_version, r) > 0) {
-        arts_send_db_cache_destroy(r, a->db_guid);
+    const struct arts_rank_bitset_s *bs = &db->cached_ranks;
+    for (unsigned int w = 0; w < bs->nwords; w++) {
+      uint64_t snap = atomic_load_explicit(&bs->words[w], memory_order_acquire);
+      while (snap) {
+        unsigned int b = (unsigned int)__builtin_ctzll(snap);
+        unsigned int rank = w * 64u + b;
+        if (rank != self) {
+          arts_send_db_cache_destroy(rank, a->db_guid);
+        }
+        snap &= snap - 1;
       }
     }
   }
   /* The queued ownership requesters are NOT drained for the roster: the FIFO
    * has exactly one consumer — the rank holding the transfer baton — and a
-   * destroy popping it concurrently is a second one.  A requester that has
-   * touched this block is already in the version ledger above, and a
-   * first-touch requester is covered by the creator-slice probe below. */
-  /* The creator may hold an in-place publish credit taught at create
-   * (CREATE_RETURN) without ever having published, so the version ledger
-   * cannot name it.  A credit holder must join the teardown roster, or a
-   * labeled-GUID reuse would find the stale credit still armed against a
-   * buffer that no longer exists. */
-  if (arts_db_seq_budget != 0) {
-    uint64_t slice = ARTS_GUID_DB_GET_SEQ(a->db_guid) / arts_db_seq_budget;
-    if (slice < (uint64_t)arts_global_rank_count &&
-        (unsigned int)slice != self &&
-        arts_rank_u64_map_get(db->cached_version, (unsigned int)slice) == 0) {
-      arts_send_db_cache_destroy((unsigned int)slice, a->db_guid);
-    }
-  }
-  (void)arts_route_table_set_destroyed(a->db_guid);
+   * destroy popping it concurrently is a second one.  The roster is exact
+   * without them: the creator is set at create, and every read or write
+   * requester at its request.  A notice is retired by key where it lands, so
+   * one to a rank caching nothing of this block would retire that rank's next
+   * generation of the GUID. */
+  (void)arts_ooo_retire_item(a->db_guid, item_v);
   /* After the slot withdrawal — see arts_db_pub_flight_abandon. */
   arts_db_pub_flight_abandon(cache);
 }

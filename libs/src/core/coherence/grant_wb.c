@@ -87,7 +87,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
-    db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0);
+    db_h = arts_db_cache_stub_install_answered(db_guid, /*db_size=*/0);
     db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db == NULL) {
       arts_shared_release(&db_h);
@@ -98,6 +98,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     }
   }
   struct arts_db_cache_s *cache = &db->cache;
+  arts_db_cache_note_answered(cache); /* before it takes effect */
 
   /* A hinted first touch may reach its first grant with the size still
    * unlearned (no CTS leg ran); the response's data_size is the sender's
@@ -318,13 +319,12 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
    * path.  Clearing the marker is an atomic SUB of ARTS_GRANT_UNCONFIRMED, not
    * a masking store: it is exact mod 2^32 whatever the low bits hold and it
    * commutes with any concurrent ±1, so the count underneath survives
-   * untouched.  The coalescing flag is released so a future round can
-   * re-issue. */
+   * untouched. */
   arts_atomic_sub(&cache->writer_count, ARTS_GRANT_UNCONFIRMED);
-  cache->grant_req_in_flight = 0u;
 
-  /* Drain the RW waiters that the GRANT_RESPONSE handler deferred (this is the work
-   * moved out of arts_handler_db_grant_response). */
+  /* Drain the RW waiters that the GRANT_RESPONSE handler deferred (this is the
+   * work moved out of arts_handler_db_grant_response); the drain takes them
+   * and then releases the coalescing flag. */
   arts_db_drain_pending_rw_after_grant(cache, /*version=*/0,
                                        /*has_next=*/false);
 

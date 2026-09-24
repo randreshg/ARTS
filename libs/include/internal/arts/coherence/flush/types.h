@@ -38,14 +38,11 @@ struct arts_db_cache_s {
   arts_guid_t db_guid;
   uint64_t db_size;
   uint8_t payload_pending; /* see the VAL layout: 1 until a line is installed */
-  /* This rank's create mark for the block: 0 while no create here has held
-   * it, 1 once one has.  One rank's create makes one block once, so the mark
-   * never returns to 0 — a rank whose create released the block holds no
-   * image of it a later create could be handed — and a create that finds it
-   * set creates nothing.  This arm keeps no permission word beside it: a
-   * create's hold is the only hold it records, every other acquisition owning
-   * the private copy it was given. */
-  uint8_t creator_hold;
+  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
+   * the home's directory, or a dependence's first touch.  A create that
+   * claims a first touch's cache turns it into its own
+   * (arts_db_create_claims_stub); nothing else writes it after init. */
+  uint8_t init_kind;
   /* The home line's wire address, learned from the first response that
    * names it (a fetch response or the create's return), constant for the
    * block's life.  flush_txid is the pairing id the home minted for this
@@ -54,6 +51,11 @@ struct arts_db_cache_s {
   uint64_t home_line_addr;
   uint64_t home_line_rkey;
   volatile uint64_t flush_txid;
+  /* A remote creator's name for this descriptor, carried by its announce and
+   * echoed by the home's CREATE_RETURN: the create's line credit is applied
+   * only where the two match, never to a later descriptor of the same GUID.
+   * 0 on every other cache. */
+  uint64_t create_token;
 };
 
 struct arts_db_s {

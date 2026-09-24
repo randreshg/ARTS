@@ -71,12 +71,12 @@
  * OoO-table / link parity) — so their whole bodies live in
  * each arm's own write-policy TU. */
 
-/* arts_handler_db_destroy is protocol-specific — the roster fan-out source
- * differs (WT walks home->cached_version; WB walks rw_holder +
- * cached_ranks + pending_rw) — so its whole body lives in
- * each arm's own write-policy TU.  All three skeletons run the roster fan-out,
- * then arts_route_table_set_destroyed; any waiter left parked at destroy time
- * (UB per OCR) is cleaned up by the refcount-0 cache destructor. */
+/* arts_handler_db_destroy is protocol-specific — each arm keeps its own exact
+ * destroy roster (the creator, the readers, every write requester) — so its
+ * whole body lives in each arm's own write-policy TU.  Every body runs the
+ * roster fan-out, then retires the slot by the dispatched item; any waiter
+ * left parked at destroy time (UB per OCR) is cleaned up by the refcount-0
+ * cache destructor. */
 
 /* NO_ACQUIRE home normalization.  The creator neither acquires nor releases,
  * so the home is the sole idle owner.  Every home create path seeds a
@@ -128,8 +128,7 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
   /* Grant-bearing arms: with no creator hold this rank is the idle owner —
    * possession, and no hold under it.  The store is atomic because this word
    * is what a concurrent acquire's admission CAS and, where grants come back
-   * unasked, a returning holder's claim both arbitrate against; on the
-   * coalesce arms the descriptor is already visible when this runs. */
+   * unasked, a returning holder's claim both arbitrate against. */
   (void)arts_atomic_swap(&db->cache.writer_count, ARTS_GRANT_SEED_IDLE);
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
   /* The directory must name THIS rank too.  A creator that never acquires
@@ -156,151 +155,46 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
  * the home never issued reaches one of those, and those states are reachable
  * no other way. */
 
-#ifdef ARTS_FAM
-/* Offer a slot this rank minted to a cache that may already have one, and say
- * whether it was taken.  The two kinds of address are not alike: one a
- * CREATOR announced is authoritative, so a second address for the block is
- * the protocol error arts_db_fam_slot_record refuses; one minted HERE for a
- * create that named none is PROVISIONAL until an install wins, because
- * several ranks may create one label with no acquisition and each will mint
- * for it.  Exactly one of those survives and the losers free their own. */
-static bool fam_slot_offer(struct arts_db_cache_s *cache, uint64_t addr) {
-  uint64_t expect = 0;
-  return __atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
-                                     __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
-}
 
-/* A creator that acquires caches the block from create without ever
- * requesting a turn, so the destroy roster is the only thing that can tell it
- * the block is gone and its store may be handed out again.  The roster is a
- * home field, absent from a cache-only stub. */
-static void fam_roster_creator(struct arts_db_s *db,
-                               unsigned int creator_rank) {
-  if (db->home_initialized) {
-    (void)arts_rank_bitset_set(&db->cached_ranks, creator_rank);
+/* The OOO_DB_CREATE body.  The engine runs it only while the GUID's slot on
+ * this rank is empty; a create that finds the slot occupied is parked there
+ * and dispatched by the occupant's destroy.  Two shapes:
+ *   - the announce (arts_ooo_args_db_create_s): the home builds the block's
+ *     directory for a creator on another rank, or for a creator here that
+ *     acquires nothing;
+ *   - a creator's own descriptor (arts_ooo_args_create_local_s), built
+ *     privately on this rank: it is installed as is, and a creator that is
+ *     not the block's home announces the block once its descriptor is
+ *     installed.
+ * A lost install re-enters the engine with the same args, which parks. */
+void arts_handler_db_create(void *item_v, void *args_v) {
+  (void)item_v;
+  if (((const struct arts_ooo_args_create_local_s *)args_v)->size ==
+      ARTS_OOO_CREATE_ADOPT) {
+    const struct arts_ooo_args_create_local_s *l =
+        (const struct arts_ooo_args_create_local_s *)args_v;
+    if (!arts_db_create_install_local((arts_shared_ptr_t)l->descriptor)) {
+      arts_ooo_dispatch_or_defer_guid(l->guid, OOO_DB_CREATE, l, sizeof(*l));
+    }
+    return;
   }
-}
-
-/* The same, for a block whose route slot is ALREADY published: a bit set on a
- * pinned object is not ordered against a destroy's scan of the roster, so it
- * is re-checked against the route slot and the creator is told directly if the
- * block is already gone.  The destroy fences between detaching the object and
- * scanning; this fences between setting and looking up — so the two cannot
- * both miss, and both telling the creator is harmless because the message is
- * idempotent.  Reports what the re-check saw: true once the block is gone, so
- * a caller still holding something of the block's can stop handing it over. */
-static bool fam_roster_creator_published(struct arts_db_s *db,
-                                         arts_guid_t db_guid,
-                                         unsigned int creator_rank) {
-  fam_roster_creator(db, creator_rank);
-  atomic_thread_fence(memory_order_seq_cst);
-  arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-  bool gone = (arts_shared_get(h) == NULL);
-  arts_shared_release(&h);
-  if (gone && creator_rank != arts_global_rank_id) {
-    arts_send_db_cache_destroy(creator_rank, db_guid);
-  }
-  return gone;
-}
-#endif
-
-void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
-  /* Home-side init for non-home creator.  Per coherence design plan
-   * §968-988: install zero-init buffer, home struct with rw_holder =
-   * creator_rank, writer_count = 0 (home is non-owner). */
-  unsigned int creator_rank = p->header.rank;
+  const struct arts_ooo_args_db_create_s *p =
+      (const struct arts_ooo_args_db_create_s *)args_v;
+  unsigned int creator_rank = p->creator;
   arts_guid_t db_guid = p->db_guid;
   uint64_t db_size = p->db_size;
   /* NO_ACQUIRE: the creator neither acquires nor publishes, so the home is
    * the sole idle owner (not a non-owner awaiting a creator publish). */
   bool no_acquire = (p->flags & ARTS_DB_PROP_NO_ACQUIRE) != 0;
 
-  /* This handler installs/initializes the home directory, so it is only ever
-   * dispatched to the GUID's home rank — where the descriptor is always a
-   * full allocation.  A cache-only stub (which omits the home-arm fields)
-   * is only ever installed on non-home ranks, so the home-field writes below
-   * (arts_db_home_init / rw_holder) stay in bounds. */
+  /* The block's home directory is built only on the GUID's home rank, where
+   * the descriptor is a full allocation.  Every descriptor installed on a
+   * home rank is one a create built: an acquire of a block its own rank homes
+   * parks on the empty slot instead of installing a cache-only stub. */
   assert((unsigned int)arts_guid_get_rank(db_guid) == arts_global_rank_id &&
          "home-directory init must run on the GUID home rank");
 
-  /* Race against stub_install or another path that already set up an
-   * empty cache_s on this rank — coalesce by promoting the existing
-   * OWNER entry rather than allocating a duplicate. */
-  arts_shared_ptr_t existing_h = arts_route_table_lookup_db(db_guid);
-  struct arts_db_s *existing = (struct arts_db_s *)arts_shared_get(existing_h);
-  if (existing != NULL && existing->db_type == ARTS_DB) {
-    struct arts_db_cache_s *cache = &existing->cache;
-    struct arts_db_s *db = existing;
-    if (cache->db_size == 0) {
-      cache->db_size = db_size;
-    }
-#ifdef ARTS_FAM
-    /* One block, one store, named by the create that made the object before
-     * the object was published.  An ANNOUNCED address is authoritative: a
-     * create whose announce reaches an object the home already has made no
-     * block, so the address it names must be the one the home already holds,
-     * and a different one means two creators minted a store for one label --
-     * which the record refuses.  An announce that names no address brings
-     * nothing to record.
-     *
-     * Before the buffer install below, which adopts the store on the
-     * residency that keeps no copy: a home that installs before it knows the
-     * address adopts nothing, and the block would then have storage here only
-     * once something else happened to ask for it. */
-    if (p->fam_addr != 0) {
-      (void)arts_db_fam_slot_record(cache, p->fam_addr);
-    }
-#endif
-    arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-    bool buf_absent = (arts_shared_get(buf_h) == NULL);
-    arts_db_buf_release(&buf_h);
-    if (buf_absent && db_size > 0 && !no_acquire) {
-      /* Same seam as the fresh-stub path below: the coalesce winner must end
-       * in the identical buffer state, or the arm's publication predicate
-       * (buffer presence / version zero) reads differently depending on who
-       * won an internal race. */
-      arts_db_create_install_home_buffer(cache, db_size);
-    }
-    /* The home-directory fields below are out of bounds on a cache-only
-     * stub, and a stub is never installed on a block's own home rank: the
-     * acquire path installs one only when the owner is not this rank, and a
-     * transfer response cannot land here in a supported program.  So a
-     * coalesce target on the home always carries its directory already —
-     * asserted, and then GUARDED, because an assert says nothing about the
-     * build where the write would actually land past the allocation. */
-    assert(db->home_initialized &&
-           "a home rank's descriptor carries its home directory");
-    /* The directory is NOT re-seeded here.  It is live protocol state from
-     * the moment this block's create installed it, and a create reaching
-     * this arm made no block: naming a holder now would either restate what
-     * the directory already says or hand the right to a rank that does not
-     * hold it — and the next hand-back would then be discharged from a word
-     * the home had already taken possession of.  A block's holder is named
-     * once, by the create that made it. */
-#ifdef ARTS_FAM
-    if (!no_acquire) {
-      (void)fam_roster_creator_published(db, db_guid, creator_rank);
-    }
-#endif
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
-    defined(ARTS_PROTOCOL_FLUSH)
-    if (!no_acquire) {
-      arts_send_db_create_return(creator_rank, cache);
-    }
-#endif
-    arts_shared_release(&existing_h);
-    return;
-  }
-  if (existing != NULL) {
-    /* existing non-ARTS_DB entry (no coherence cache) — drop the ref and
-     * proceed to the install/coalesce branch below. */
-    arts_shared_release(&existing_h);
-  }
-
-  /* No existing entry -- allocate the db_s stub (cache embedded), install in
-   * route_table.
-   *
-   * Whether the home installs a buffer here is the arm's decision
+  /* Whether the home installs a buffer here is the arm's decision
    * (arts_db_create_install_home_buffer): an arm whose home holds the
    * canonical copy installs one now, an arm whose payload lives with its
    * owner leaves the home metadata-only.  A create that acquires nothing
@@ -323,7 +217,7 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * creator) would route the first GRANT_INVALIDATE to a creator that holds
      * no cache — a phantom holder — and the acquire would stall forever.
      *
-     * CREATOR_HOME sets writer_count = sentinel(1) + creator_hold(1) = 2, but
+     * CREATOR_HOME sets writer_count = sentinel(1) + creator hold(1) = 2, but
      * NO_ACQUIRE means no EDT will ever release the creator hold.  Decrement
      * to 1 (sentinel only) so the first GRANT_REQUEST's INVALIDATE-to-self
      * drives
@@ -344,6 +238,11 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
     arts_db_cache_init(&stub->cache, db_guid, db_size, ARTS_DB_INIT_HOME_RECV,
                        creator_rank);
   }
+#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
+    defined(ARTS_PROTOCOL_FLUSH)
+  /* Kept for the return below, which echoes it to the creator. */
+  stub->cache.create_token = p->create_token;
+#endif
 #ifdef ARTS_FAM
   /* The creator either names the block's store or leaves it to the home: the
    * home is the only other rank that can make one before a request can be
@@ -357,11 +256,6 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   } else {
     stub_slot_minted = arts_db_fam_slot_create(&stub->cache);
   }
-  /* No re-check here: the route install below publishes the object, so a
-   * destroy that can scan the roster at all runs after this set. */
-  if (!no_acquire) {
-    fam_roster_creator(stub, creator_rank);
-  }
 #endif
   /* The home's create-time buffer is the target a publish lands in, at
    * version 0 — "unpublished", which is what every serve and park predicate
@@ -374,112 +268,41 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
     arts_db_create_install_home_buffer(&stub->cache, db_size);
   }
 
-  if (arts_route_table_install_if_absent(stub, db_guid, arts_global_rank_id,
-                                         /*used=*/true)) {
-    arts_ooo_drain_guid(db_guid);
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
-    defined(ARTS_PROTOCOL_FLUSH)
-    /* Off the critical path: the credit flies while the creator EDT is still
-     * writing, so a create -> write -> release sequence publishes with no
-     * announce round.  A creator that took no right never publishes — no
-     * credit.
-     * Re-acquire through the route table rather than using the raw stub
-     * pointer: the drain above can run a deferred DESTROY that frees the
-     * stub, and a dead slot must not advertise a recycled buffer. */
-    if (!no_acquire) {
-      arts_shared_ptr_t live_h = arts_route_table_lookup_db(db_guid);
-      struct arts_db_s *live = (struct arts_db_s *)arts_shared_get(live_h);
-      if (live != NULL) {
-        arts_send_db_create_return(creator_rank, &live->cache);
-      }
-      arts_shared_release(&live_h);
+  arts_shared_ptr_t installed_h = arts_route_table_install_if_absent(
+      stub, db_guid, arts_global_rank_id, /*used=*/true);
+  if (installed_h == NULL) {
+    /* The descriptor was never published, so its store is this create's
+     * alone: one this rank minted goes back to its slice, and an announced
+     * one stays the creator's, named again by the replay. */
+#ifdef ARTS_FAM
+    if (stub_slot_minted) {
+      arts_db_fam_slot_discard(&stub->cache);
+    } else {
+      __atomic_store_n(&stub->cache.fam_addr, (uint64_t)0, __ATOMIC_RELEASE);
     }
 #endif
+    arts_db_free(stub);
+    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_CREATE, p, sizeof(*p));
     return;
   }
-
-  /* Lost race — free our stub and coalesce into the existing entry. */
-#ifdef ARTS_FAM
-  /* The stub dies before the winner is resolved, so its store travels in a
-   * local. */
-  uint64_t lost_addr = arts_db_fam_slot_addr(&stub->cache);
-  __atomic_store_n(&stub->cache.fam_addr, (uint64_t)0, __ATOMIC_RELEASE);
-  bool winner_gone = false;
-#endif
-  arts_db_free(stub);
-  arts_shared_ptr_t winner_h = arts_route_table_lookup_db(db_guid);
-  struct arts_db_s *winner = (struct arts_db_s *)arts_shared_get(winner_h);
-  if (winner != NULL && winner->db_type == ARTS_DB) {
-    struct arts_db_cache_s *cache = &winner->cache;
-    struct arts_db_s *db = winner;
-    if (cache->db_size == 0) {
-      cache->db_size = db_size;
-    }
-    /* The home-directory fields below are out of bounds on a cache-only
-     * stub, and a stub is never installed on a block's own home rank: the
-     * acquire path installs one only when the owner is not this rank, and a
-     * transfer response cannot land here in a supported program.  So a
-     * coalesce target on the home always carries its directory already —
-     * asserted, and then GUARDED, because an assert says nothing about the
-     * build where the write would actually land past the allocation. */
-    assert(db->home_initialized &&
-           "a home rank's descriptor carries its home directory");
-    (void)db;
-    /* The directory is NOT re-seeded here — see the coalesce branch above. */
-#ifdef ARTS_FAM
-    if (!no_acquire) {
-      winner_gone = fam_roster_creator_published(db, db_guid, creator_rank);
-    }
-    /* The store the dead stub carried is the winner's, because one block has
-     * one store — but only an announced address may insist on it.  A store
-     * this rank minted was provisional: it is offered to the winner, and what
-     * the winner does not take stays in the local for the free below.  A
-     * winner the re-check just found already destroyed takes neither: a store
-     * must not be recorded on a cache whose teardown has passed.
-     *
-     * Before the buffer install below, for the same reason as the coalesce
-     * branch above: the install adopts the store on the residency that keeps
-     * no copy, and it can only adopt an address the cache already names.  It
-     * follows the re-check rather than preceding it, as the other branches'
-     * store step precedes their announce, because the re-check is what says
-     * whether there is still a cache to record onto. */
-    if (lost_addr != 0 && !winner_gone) {
-      if (stub_slot_minted) {
-        if (fam_slot_offer(cache, lost_addr)) {
-          lost_addr = 0;
-        }
-      } else {
-        (void)arts_db_fam_slot_record(cache, lost_addr);
-        lost_addr = 0;
-      }
-    }
-#endif
-    arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-    bool buf_absent = (arts_shared_get(buf_h) == NULL);
-    arts_db_buf_release(&buf_h);
-    if (buf_absent && db_size > 0 && !no_acquire) {
-      /* Same seam as the fresh-stub path — see the coalesce branch above. */
-      arts_db_create_install_home_buffer(cache, db_size);
-    }
 #if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
     defined(ARTS_PROTOCOL_FLUSH)
-    if (!no_acquire) {
-      arts_send_db_create_return(creator_rank, cache);
+  /* Off the critical path: the credit flies while the creator EDT is still
+   * writing, so a create -> write -> release sequence publishes with no
+   * announce round.  A creator that took no right never publishes — no
+   * credit.  Only while this descriptor is still the one installed: the
+   * install's drain can run a deferred destroy of it, and a retired block
+   * must not advertise its buffer to the creator of whatever the slot holds
+   * next. */
+  if (!no_acquire) {
+    arts_shared_ptr_t live_h = arts_route_table_lookup_db(db_guid);
+    if (arts_shared_get(live_h) == (void *)stub) {
+      arts_send_db_create_return(creator_rank, &stub->cache);
     }
-#endif
-  }
-#ifdef ARTS_FAM
-  /* A provisional store no cache took goes back to this rank's slice.  An
-   * announced one is never freed here — the free demands the caller's own
-   * slice, and the creator's block still rests in it; a winner that is
-   * already gone leaves it to the creator the re-check above notified. */
-  if (lost_addr != 0 && stub_slot_minted) {
-    arts_fam_free((void *)(uintptr_t)lost_addr);
+    arts_shared_release(&live_h);
   }
 #endif
-  if (winner != NULL) {
-    arts_shared_release(&winner_h);
-  }
+  arts_shared_release(&installed_h);
 }
 
 /* ===== Sharer-side response handlers =============================== */
@@ -576,6 +399,7 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
       (struct arts_db_snapshot_response_args_s *)args_v;
   arts_guid_t edt_guid = a->edt_guid;
   uint32_t slot = a->slot;
+  arts_db_cache_note_answered(cache); /* before the answer takes effect */
 
   /* Every response kind carries the server's descriptor size; a hinted
    * first touch may reach any of them with the size still unlearned. */
@@ -710,15 +534,16 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
  * dispatcher's MISS branch SILENTLY DROPS (already torn down on this rank;
  * cb-NULL = idempotent, a second DESTROY_NOTIFY is a no-op).
  *
- * Destroy is just the route-slot detach (CAS value→NULL + drop the install
- * ref); the cb deleter (arts_db_cache_destructor) runs at refcount 0 and does
- * the cleanup (free the parked-waiter nodes).  Destroying a DB that an EDT
+ * Destroy is just the route-slot detach of the object the message was
+ * dispatched on (CAS value→NULL + drop the install ref); the cb deleter
+ * (arts_db_cache_destructor) runs at refcount 0 and does the cleanup (free
+ * the parked-waiter nodes).  Destroying a DB that an EDT
  * still has a pending dependence on is undefined per OCR (ocrDbDestroy: the
  * user ensures the DB is not in use), so no parked-EDT wake is attempted. */
 void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_destroy_args_s *a =
       (struct arts_db_cache_destroy_args_s *)args_v;
-  (void)arts_route_table_set_destroyed(a->db_guid);
+  (void)arts_ooo_retire_item(a->db_guid, item_v);
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
   /* AFTER the slot withdrawal, so a releaser registering concurrently either
@@ -736,8 +561,8 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
 /* FAM_FREE handler: the address alone names the slot, so there is no
  * route-table lookup and no cache pinned by a dispatcher — this is a Cat-E
  * (state-less) message, ordered by construction (a home sends it only from
- * the teardown that claimed arts_route_table_set_destroyed, and only the
- * home ever frees a slot it handed out). */
+ * the teardown whose retire detached the block, and only the home ever
+ * frees a slot it handed out). */
 void arts_handler_db_fam_free(struct arts_msg_db_fam_free_packet_s *p) {
   void *slot = (void *)(uintptr_t)p->fam_addr;
   if (slot == NULL) {

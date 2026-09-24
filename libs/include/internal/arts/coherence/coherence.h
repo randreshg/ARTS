@@ -76,9 +76,12 @@ typedef enum {
    * buffer (zero-init), writer_count = 0, home struct with rw_holder
    * = creator_rank. */
   ARTS_DB_INIT_HOME_RECV,
-  /* Stub install on a sharer that is neither creator nor home, or
-   * pre-DB_CREATE arrival on home: no buffer, writer_count = 0. */
+  /* Stub install by a dependence's first touch on a rank that is not the
+   * block's home: no buffer, writer_count = 0. */
   ARTS_DB_INIT_STUB,
+  /* Not an init: a first touch's cache after an answer to it has arrived.
+   * The block it caches exists, so no create may claim it. */
+  ARTS_DB_INIT_ANSWERED,
 } arts_db_init_kind_t;
 
 /* Initialize a coherence cache_s in place for db_guid.  The cache is
@@ -132,6 +135,12 @@ typedef enum {
  * the DB was destroyed before the install could be observed. */
 arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
                                              uint64_t db_size);
+/* The same install for an answer that finds no cache: the stub is published
+ * already marked answered (ARTS_DB_INIT_ANSWERED), so no create can claim it
+ * between the install and the answer taking effect.  A cache that was already
+ * there is returned as it is; the caller still marks it. */
+arts_shared_ptr_t arts_db_cache_stub_install_answered(arts_guid_t db_guid,
+                                                      uint64_t db_size);
 
 /* OOO_DB_ACQUIRE Cat-B body (per model). item = the installed db_s; args =
  * arts_ooo_args_db_acquire_s {edt, db_guid, slot}. Attempts the one dep's
@@ -361,8 +370,9 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
 /* Record this block's slot in a cache that has none.  Returns true when this
  * call installed it.  A second call naming the SAME slot is a no-op; a second
  * call naming a different one is a protocol error (one block, one slot) —
- * and it is the ONE loud failure of the slot rule: the home runs it on every
- * announce it coalesces, which is where a racing second creator shows up. */
+ * and it is the ONE loud failure of the slot rule: a grant naming a store
+ * other than the one this rank's cache already names means two creators
+ * minted a store for one block. */
 bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
 /* Allocate out of this rank's slice, for the size the cache DECLARES, and
  * record it.  False when the block is sentinel-sized (db_size == 0) or
@@ -416,29 +426,34 @@ arts_db_fam_slot_addr(const struct arts_db_cache_s *cache) {
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size);
 
-/* Seed the create mark while a cache is still private to its builder: set on
- * the cache a create installs for the block it is making, clear on every
- * other.  Called from each arm's arts_db_cache_init, so the mark means the
- * same thing in every build. */
-void arts_db_create_hold_seed(struct arts_db_cache_s *c,
-                              arts_db_init_kind_t kind);
+/* Record what made a cache while it is still private to its builder: a
+ * create's own descriptor, the home's directory, or a dependence's first touch
+ * (ARTS_DB_INIT_STUB).  Called from each arm's arts_db_cache_init. */
+void arts_db_cache_kind_seed(struct arts_db_cache_s *c,
+                             arts_db_init_kind_t kind);
 
-/* Arbitrate a create against the block's whole lifetime on this rank: one
- * rank's create makes one block once, so the mark is taken 0 -> 1 and never
- * put back, and only the create that takes it created anything.  A create
- * that loses is handed no image and takes no hold — the rank whose create
- * released the block holds nothing of it a later create could be given.
- * Asked before anything is materialised for the create, since a loser must
- * leave no trace. */
-bool arts_db_create_hold_once(struct arts_db_cache_s *cache);
+/* A create on a rank other than the block's home that finds this rank's slot
+ * holding a cache a dependence made is not parked behind it: that cache is
+ * the rank's view of the block the create is making, and the create makes it
+ * its own.  Turns the kind from ARTS_DB_INIT_STUB into the creator's
+ * (ARTS_DB_INIT_CREATOR_REMOTE) in one step, so exactly one create claims a
+ * given cache and every later create of the label on this rank finds a
+ * creator's cache and parks.  False when the cache was not a dependence's. */
+bool arts_db_create_claims_stub(struct arts_db_cache_s *cache);
+
+/* Mark a first touch's cache answered (ARTS_DB_INIT_STUB ->
+ * ARTS_DB_INIT_ANSWERED), before the answer takes effect.  The same word as
+ * the create's claim, so of an answer and a claim exactly one succeeds on a
+ * given cache.  A no-op on any other cache. */
+void arts_db_cache_note_answered(struct arts_db_cache_s *cache);
 
 /* Record the create's own hold in this rank's cache, each arm naming it in
  * its own state: the migrating-grant arms take possession plus one writer on
  * the grant word, the exclusion arm takes its cache word's RW grant, and an
  * arm that keeps no permission word takes nothing.  Runs only for a create
- * that won the mark, so this is the state step and not the arbitration; it
- * still reports whether it committed, because possession is never seeded over
- * a word that already carries a hold.  Defined once per protocol TU. */
+ * that claimed the cache, so this is the state step and not the arbitration;
+ * it still reports whether it committed, because possession is never seeded
+ * over a word that already carries a hold.  Defined once per protocol TU. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache);
 
 /* The counterpart, for a create that gives the block its first image in a
@@ -523,7 +538,13 @@ void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
                                  unsigned int drained);
 /* Chain primitives for a commit that counts before it wakes (grant_queue.c). */
 arts_lf_link_t *arts_pending_rw_queue_take(arts_lf_stack_t *q);
+/* Whether any waiter is parked (a snapshot: a push may land right after). */
+bool arts_pending_rw_queue_pending(arts_lf_stack_t *q);
 unsigned int arts_pending_rw_chain_count(arts_lf_link_t *chain);
+/* A grant's arrival: take every waiter it serves and release the coalescing
+ * flag, opening a request for any waiter pushed after the take.  The caller
+ * counts and wakes the returned chain. */
+arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache);
 void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
                                 void (*cb)(arts_guid_t edt_guid,
                                            unsigned int slot, void *ctx),
@@ -563,14 +584,25 @@ void arts_db_grant_home_idle_transition(struct arts_db_s *db);
  *         never two.
  * abandoned: the flight owner's discharge when no further leg will leave —
  *         whatever is armed converts to the standalone message.
- * arrived: the home side of a hand-back, however it travelled. */
+ * arrived: the home side of a hand-back, however it travelled.  `reply` is
+ *         what the returner waits on — the standalone form's rendezvous, or
+ *         the carried form's publish acknowledgement — and is sent by
+ *         whoever APPLIES the hand-back, never on its arrival alone. */
 uint64_t arts_db_grant_release_claim(struct arts_db_cache_s *cache,
                                      bool will_publish);
 bool arts_db_grant_return_claim_leg(struct arts_db_cache_s *cache);
 void arts_db_grant_release_settle(struct arts_db_cache_s *cache,
                                   uint64_t token);
 void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache);
-void arts_db_grant_return_arrived(struct arts_db_s *db, unsigned int returner);
+struct arts_db_grant_return_reply_s {
+  uint64_t cv;      /* echoed verbatim */
+  uint64_t version; /* the covering version of a carried publish, else 0 */
+  bool ack;         /* the returner waits on a reply */
+  bool credit;      /* the reply refills the returner's in-place credit */
+};
+void arts_db_grant_return_arrived(
+    struct arts_db_s *db, unsigned int returner,
+    const struct arts_db_grant_return_reply_s *reply);
 /* The install's possession-setting transition (sentinel + drain guard under
  * RETAIN; the possession bit and that same guard under PURGE).  Possession is
  * never set by an add: an add cannot state the precondition it depends on. */

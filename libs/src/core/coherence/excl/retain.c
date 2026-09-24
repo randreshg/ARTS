@@ -732,6 +732,7 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_msg_excl_cts_packet_s *p =
       (struct arts_msg_excl_cts_packet_s *)args_v;
+  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   if (cache->db_size == 0) {
     cache->db_size = p->db_size;
   }
@@ -1206,6 +1207,7 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
     arts_shared_release(&db_h);
     return;
   }
+  arts_db_cache_note_answered(&db->cache); /* before it takes effect */
 
   /* Hinted first touch: the size may still be unlearned here. */
   if (db->cache.db_size == 0 && p->data_size > 0) {

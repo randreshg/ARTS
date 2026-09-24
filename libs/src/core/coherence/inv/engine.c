@@ -37,7 +37,7 @@
 #include "arts/coherence/handlers.h"
 #include "arts/db.h"
 #include "arts/edt.h"
-#include "arts/gas/guid.h" /* creator slice arithmetic */
+#include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
 #include "arts/ooo.h"
@@ -240,8 +240,8 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
  * from a copy it never held, and the ensure that materializes a first image
  * would do so on a rank with no right to one.  Retract the claim instead, and
  * only the claim: an in-flight fetch and a parked reader chain live in the
- * same word and must survive (this runs on a create that may be coalescing
- * onto a cache readers already reached). */
+ * same word and must survive (this runs on a create that claims a cache
+ * readers already reached). */
 /* The hold is possession plus this create's own writer, from a word that
  * holds nothing. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
@@ -328,23 +328,16 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
       }
     }
   }
-  /* The creator may hold an in-place publish credit taught at create
-   * (CREATE_RETURN) without ever having published or read, so neither the
-   * sharer roster nor the queue can name it.  A credit holder must join the
-   * teardown roster (the receiver drops duplicates), or a labeled-GUID reuse
-   * would find the stale credit still armed. */
-  if (arts_db_seq_budget != 0) {
-    uint64_t slice = ARTS_GUID_DB_GET_SEQ(a->db_guid) / arts_db_seq_budget;
-    if (slice < (uint64_t)arts_global_rank_count &&
-        (unsigned int)slice != self) {
-      arts_send_db_cache_destroy((unsigned int)slice, a->db_guid);
-    }
-  }
+  /* The roster is exact: every rank holding a cache of the block (its
+   * creator, every read requester and every write requester) has one bit, so
+   * each is told once.  A notice is retired by key where it lands, so a
+   * second one, or one to a rank caching nothing of this block, would retire
+   * that rank's next generation of the GUID. */
   /* No pending_rw drain: the grant request queue is single-consumer (the
    * transfer baton's holder), and a legitimately destroyed DB has no
    * outstanding acquires — draining here would be a second, unsynchronized
    * consumer. */
-  (void)arts_route_table_set_destroyed(a->db_guid);
+  (void)arts_ooo_retire_item(a->db_guid, item_v);
   /* After the slot withdrawal — see arts_db_pub_flight_abandon. */
   arts_db_pub_flight_abandon(cache);
 }
@@ -377,6 +370,7 @@ static void inv_home_round_close(struct arts_db_s *db,
   /* At most one entry in a batch can hand the write right back: only its
    * holder can, and there is exactly one. */
   unsigned int returner = ARTS_GRANT_NO_RETURNER;
+  struct arts_db_inv_pub_s *returning = NULL;
   while (entries != NULL) {
     struct arts_db_inv_pub_s *e = entries;
     entries = (struct arts_db_inv_pub_s *)(uintptr_t)atomic_load_explicit(
@@ -385,6 +379,10 @@ static void inv_home_round_close(struct arts_db_s *db,
       assert(returner == ARTS_GRANT_NO_RETURNER &&
              "one batch cannot carry two hand-backs of one write right");
       returner = e->releaser_rank;
+      /* Its acknowledgement rides the hand-back and leaves once the home
+       * has applied it. */
+      returning = e;
+      continue;
     }
     /* Unconditional: a flight-plane entry carries cv 0 and completes through
      * the releaser cache's waiter drain. */
@@ -413,7 +411,18 @@ static void inv_home_round_close(struct arts_db_s *db,
      * stamped the publication axis, so a block handed straight on from here
      * carries no copy this release has already invalidated.  After the claim
      * drops, too, so the acceptance may open a round of its own. */
-    arts_db_grant_return_arrived(db, returner);
+    struct arts_db_grant_return_reply_s reply = {
+        .cv = returning->cv,
+        .version = returning->vnew,
+        .ack = true,
+#ifdef ARTS_WRITE_POLICY_WT
+        .credit = true,
+#else
+        .credit = false,
+#endif
+    };
+    arts_free(returning);
+    arts_db_grant_return_arrived(db, returner, &reply);
   }
 }
 
@@ -689,6 +698,7 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 void arts_handler_db_inv_cts(struct arts_db_s *db,
                              struct arts_msg_inv_cts_packet_s *p) {
   struct arts_db_cache_s *cache = &db->cache;
+  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   if (cache->db_size == 0) {
     cache->db_size = p->db_size;
   }
@@ -778,6 +788,8 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
     arts_shared_release(&db_h);
     return;
   }
+  /* Before the answer takes effect. */
+  arts_db_cache_note_answered(&db->cache);
   /* Hinted first touch: the size may still be unlearned here. */
   if (db->cache.db_size == 0 && p->data_size > 0) {
     db->cache.db_size = p->data_size;

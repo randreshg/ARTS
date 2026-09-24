@@ -133,13 +133,11 @@ struct arts_db_cache_s {
    * it.  The slot is monotone for a live cache — only the destructor puts
    * NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
-  /* This rank's create mark for the block: 0 while no create here has held
-   * it, 1 once one has.  One rank's create makes one block once, so the mark
-   * never returns to 0 — a rank whose create released the block holds no
-   * image of it a later create could be handed — and a create that finds it
-   * set creates nothing.  The arm's permission word says what a hold is
-   * doing; this byte says only that a create here took one. */
-  uint8_t creator_hold;
+  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
+   * the home's directory, or a dependence's first touch.  A create that
+   * claims a first touch's cache turns it into its own
+   * (arts_db_create_claims_stub); nothing else writes it after init. */
+  uint8_t init_kind;
   /* New owner rank for the next ownership transfer, published by this round's
    * GRANT_INVALIDATE handler BEFORE it withdraws the sentinel.  Sentinel
    * ARTS_NO_PENDING_OWNER == no transfer pending.  The publish-before-
@@ -205,6 +203,11 @@ struct arts_db_cache_s {
   uint64_t home_pub_addr;
   uint64_t home_pub_rkey;
   volatile uint64_t home_pub_txid;
+  /* A remote creator's name for this descriptor, carried by its announce and
+   * echoed by the home's CREATE_RETURN: the create's credit is applied only
+   * where the two match, never to a later descriptor of the same GUID.  0 on
+   * every other cache. */
+  uint64_t create_token;
 #endif
 #ifdef ARTS_RELEASE_PURGE
   /* The hand-back obligation: (grant_generation << 1) | armed, or zero.
@@ -268,16 +271,18 @@ struct arts_db_s {
   arts_db_atomic_uint_t rw_holder;
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
   arts_db_atomic_uint_t invalidate_in_flight;
-  struct arts_rank_bitset_s
-      cached_ranks; /* RO cached-rank roster, destroy fan-out */
+  /* destroy fan-out roster: creator, readers, writers */
+  struct arts_rank_bitset_s cached_ranks;
   unsigned int pending_install_owner; /* baton-holder-written transfer target */
 #else                                 /* WT */
   arts_db_atomic_uint_t rw_holder;
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
   arts_db_atomic_uint_t invalidate_in_flight;
-  /* WT uses cached_version as both the RO dedup watermark (SNAPSHOT_REQUEST
-   * reply) AND its destroy roster (no cached_ranks bit-set). */
+  /* The RO dedup watermark (SNAPSHOT_REQUEST reply).  Not the destroy
+   * roster: a rank can hold a cache the ledger never credits (a version-0
+   * reply, a holder with no buffer). */
   struct arts_rank_to_u64_map_s *cached_version;
+  struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
   /* Baton-holder-written transfer target (CONFIRM-driven advance, same as
    * WB). */
   unsigned int pending_install_owner;
@@ -289,6 +294,13 @@ struct arts_db_s {
    * exactly one of them accepts any given return.  Grants are serialized, so
    * at most one return can be outstanding and one slot suffices. */
   arts_db_atomic_uint_t pending_return_from;
+  /* The reply the returner waits on, owned by the latched return: written
+   * before the latch CAS publishes the slot, read by the latch's one
+   * consumer after its consuming CAS. */
+  uint64_t pending_return_cv;
+  uint64_t pending_return_version;
+  uint8_t pending_return_ack;
+  uint8_t pending_return_credit;
 #endif
   /* GPU staging locks / version stamps (GPU DB path; full arts_db_s alloc). */
   volatile unsigned int reader;  /**< GPU staging reader lock. */

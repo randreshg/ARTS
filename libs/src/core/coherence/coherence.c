@@ -29,14 +29,14 @@
  *
  *   4. Destroy lifecycle (arts_db_destroy_remote public entry).  Final teardown
  *      is driven by the cb (shared-ptr) deferred-free model: destroy fans out,
- *      then
- *      arts_route_table_set_destroyed frees the cache_s via
- *      arts_db_cache_destructor once all refs drain.
+ *      then the slot's retire (by the dispatched item) drops the install ref,
+ *      and arts_db_cache_destructor frees the cache_s once all refs drain.
  */
 
 #include <errno.h>
 #include <semaphore.h>
 #include <stdbool.h>
+#include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -70,27 +70,25 @@
 /* ===== Cache lifecycle ============================================ */
 /* ================================================================== */
 
-/* The create mark's seed.  A create that installs a fresh descriptor here is
- * the block's creator on this rank, so its cache starts marked; every other
- * cache — a first touch's stub, the home's own — starts unmarked.  The cache
- * is still private to the caller at this point, so a plain store is the whole
- * of it. */
-void arts_db_create_hold_seed(struct arts_db_cache_s *c,
-                              arts_db_init_kind_t kind) {
-  __atomic_store_n(&c->creator_hold,
-                   (uint8_t)(kind == ARTS_DB_INIT_CREATOR_REMOTE ? 1 : 0),
-                   __ATOMIC_RELAXED);
+void arts_db_cache_kind_seed(struct arts_db_cache_s *c,
+                             arts_db_init_kind_t kind) {
+  __atomic_store_n(&c->init_kind, (uint8_t)kind, __ATOMIC_RELAXED);
 }
 
-/* One rank's create makes one block once.  The mark outlives the hold it
- * records, because a rank whose create released the block holds no image of
- * it that a later create could be handed; so exactly one create per rank
- * wins the mark, and every later one creates nothing. */
-bool arts_db_create_hold_once(struct arts_db_cache_s *cache) {
-  uint8_t expected = 0;
-  return __atomic_compare_exchange_n(&cache->creator_hold, &expected,
-                                     (uint8_t)1, /*weak=*/false,
-                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+void arts_db_cache_note_answered(struct arts_db_cache_s *cache) {
+  uint8_t expected = (uint8_t)ARTS_DB_INIT_STUB;
+  (void)__atomic_compare_exchange_n(&cache->init_kind, &expected,
+                                    (uint8_t)ARTS_DB_INIT_ANSWERED,
+                                    /*weak=*/false, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_ACQUIRE);
+}
+
+bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
+  uint8_t expected = (uint8_t)ARTS_DB_INIT_STUB;
+  return __atomic_compare_exchange_n(&cache->init_kind, &expected,
+                                     (uint8_t)ARTS_DB_INIT_CREATOR_REMOTE,
+                                     /*weak=*/false, __ATOMIC_ACQ_REL,
+                                     __ATOMIC_ACQUIRE);
 }
 
 /* Protocol-agnostic cache_s field init.  The per-protocol arts_db_cache_init
@@ -117,7 +115,7 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #ifdef ARTS_FAM
   c->fam_addr = 0;
 #endif
-  arts_db_create_hold_seed(c, kind);
+  arts_db_cache_kind_seed(c, kind);
   /* Snapshot reorder-buffer: a Treiber stack (zero-initializable, but init
    * explicitly for clarity).  Nodes are heap-allocated on the case-3 push path
    * and freed when drained by the next install. */
@@ -176,7 +174,7 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
      * creators each minted a store for it — outside the contract (a create
      * of a label another rank is still creating), and keeping both would
      * silently split the block.  This is the slot rule's only loud
-     * failure, and the home reaches it on the announce it coalesces. */
+     * failure. */
     ARTS_ERROR("fam: guid %lu was handed two different slots — two "
                "creators of one label",
                (unsigned long)cache->db_guid);
@@ -475,8 +473,10 @@ void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
  * cache is no longer needed (on every control-flow path).  A NULL handle
  * means the DB was destroyed before the install could be observed (the
  * lost-race lookup found no live entry). */
-arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
-                                             uint64_t db_size) {
+static arts_shared_ptr_t stub_install(arts_guid_t db_guid, uint64_t db_size,
+                                      arts_db_init_kind_t kind) {
+  assert(arts_guid_get_rank(db_guid) != arts_global_rank_id &&
+         "a first-touch cache is never made on the block's home rank");
   /* First check if it already exists (someone else stub-installed or
    * a wire-receive fired). */
   arts_shared_ptr_t existing = arts_route_table_lookup_db(db_guid);
@@ -502,9 +502,15 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
   arts_db_cache_init(&stub->cache, db_guid, /*db_size=*/db_size,
                      ARTS_DB_INIT_STUB,
                      /*creator_rank=*/0);
+  /* Before the install publishes it: a create on this rank claims only a
+   * STUB, so a cache an answer made is never one a create can take. */
+  arts_db_cache_kind_seed(&stub->cache, kind);
 
-  if (arts_route_table_install_if_absent(stub, db_guid, arts_global_rank_id,
-                                         /*used=*/true)) {
+  arts_shared_ptr_t installed_h = arts_route_table_install_if_absent(
+      stub, db_guid, arts_global_rank_id, /*used=*/true);
+  bool installed = installed_h != NULL;
+  arts_shared_release(&installed_h);
+  if (installed) {
     arts_ooo_drain_guid(db_guid);
     /* Pin the just-installed db_s (one cb ref) for the caller. */
     return arts_route_table_lookup_db(db_guid);
@@ -514,6 +520,16 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
    * stub and return a pinned handle to the established db_s. */
   arts_db_free(stub);
   return arts_route_table_lookup_db(db_guid);
+}
+
+arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
+                                             uint64_t db_size) {
+  return stub_install(db_guid, db_size, ARTS_DB_INIT_STUB);
+}
+
+arts_shared_ptr_t arts_db_cache_stub_install_answered(arts_guid_t db_guid,
+                                                      uint64_t db_size) {
+  return stub_install(db_guid, db_size, ARTS_DB_INIT_ANSWERED);
 }
 
 /* ===== Case 1/3/5: local-buffer acquire ============================= */
@@ -988,8 +1004,8 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
 void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache) {
   INCREMENT_NUM_PUB_FLIGHT_ABANDON_BY(1);
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-  /* No further leg will leave this cache, so a hand-back still riding on one
-   * would never arrive.  Convert whatever is armed to its own message. */
+  /* No further leg will leave this cache: whatever hand-back is still armed
+   * is discharged with the block. */
   arts_db_grant_return_flight_abandoned(cache);
 #endif
   arts_lf_link_t *n =
@@ -1299,12 +1315,16 @@ void arts_db_debug_quiescence_check(void) {
    * jobs discarded, release waits cut short, self-sends never dispatched,
    * and EDTs admitted (every dependence satisfied, acquisition begun) that
    * never finished -- the last covers an EDT parked mid acquisition, which
-   * sits in no queue a discard site sees, and it overlaps the first.  Each is
-   * read after every runtime thread has joined, so no poster can add to what
-   * is counted, and before anything frees it.  A message from another rank
-   * still undelivered is not one: a release in flight to a home strands no
-   * waiter, and a grant still owed to a requester leaves that requester's
-   * EDT admitted and unfinished. */
+   * sits in no queue a discard site sees, and it overlaps the first -- and
+   * messages parked on a route slot's OoO list: a create waiting for a
+   * destroy, or any other message waiting for an install, that never came.
+   * A parked message is residue whatever parked it -- a late message for a
+   * destroyed GUID included -- so a program whose shutdown leaves one was not
+   * quiescent.  Each is read after every runtime thread has joined, so no
+   * poster can add to what is counted, and before anything frees it.  A
+   * message from another rank still undelivered is not one: a release in
+   * flight to a home strands no waiter, and a grant still owed to a requester
+   * leaves that requester's EDT admitted and unfinished. */
   unsigned int ab_queued = __atomic_load_n(&arts_shutdown_abandon.queued_edts,
                                            __ATOMIC_RELAXED);
   unsigned int ab_jobs =
@@ -1312,6 +1332,13 @@ void arts_db_debug_quiescence_check(void) {
   unsigned int ab_waits =
       __atomic_load_n(&arts_shutdown_abandon.waits, __ATOMIC_RELAXED);
   unsigned int ab_loopback = arts_loopback_pending_count();
+  unsigned int ab_ooo = 0;
+  for (unsigned int t = 0; t < nt; t++) {
+    arts_route_table_t *table = quiescence_table(t);
+    if (table != NULL) {
+      ab_ooo += arts_route_table_parked_count(table);
+    }
+  }
   unsigned int ab_admitted = 0;
   for (unsigned int t = 0; t < nt; t++) {
     arts_route_table_t *table = quiescence_table(t);
@@ -1340,7 +1367,8 @@ void arts_db_debug_quiescence_check(void) {
     }
   }
   bool quiescent =
-      (ab_queued | ab_jobs | ab_waits | ab_loopback | ab_admitted) == 0u;
+      (ab_queued | ab_jobs | ab_waits | ab_loopback | ab_ooo | ab_admitted) ==
+      0u;
   for (unsigned int t = 0; t < nt; t++) {
     arts_route_table_t *table = quiescence_table(t);
     if (table == NULL) {
@@ -1683,9 +1711,10 @@ void arts_db_debug_quiescence_check(void) {
    * two look identical from the violation count alone. */
   if (viol != 0 || !quiescent) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
-               "queued_edts=%u jobs=%u waits=%u loopback=%u "
+               "queued_edts=%u jobs=%u waits=%u loopback=%u ooo=%u "
                "admitted_edts=%u)",
-               viol, ab_queued, ab_jobs, ab_waits, ab_loopback, ab_admitted);
+               viol, ab_queued, ab_jobs, ab_waits, ab_loopback, ab_ooo,
+               ab_admitted);
   }
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }

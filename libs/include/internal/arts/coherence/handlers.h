@@ -197,7 +197,15 @@ void arts_handler_db_publish(void *item_v, void *args_v);
  * arts_ooo_args_db_destroy_s.  The wire dispatcher decodes DESTROY_REQ into
  * those args and routes through arts_ooo_dispatch_or_defer_guid. */
 void arts_handler_db_destroy(void *item_v, void *args_v);
-void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p);
+/* OOO_DB_CREATE body (g_ooo_table): item_v is NULL (the engine runs a create
+ * only on an empty slot); args_v is an arts_ooo_args_db_create_s (an announce)
+ * or an arts_ooo_args_create_local_s naming a descriptor built on this rank.
+ * The wire dispatcher and the self-send enter it through
+ * arts_ooo_dispatch_or_defer_guid. */
+void arts_handler_db_create(void *item_v, void *args_v);
+/* An announce, received or self-sent, entering the engine as OOO_DB_CREATE. */
+void arts_db_create_announce_enter(
+    const struct arts_msg_db_create_coherent_packet_s *p);
 
 /* ===== Sharer-side (response) handlers =============================== */
 
@@ -312,7 +320,7 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
  * creator's FIRST publish credit, so create -> write -> release needs no
  * announce round.  Fire-and-forget hint; minting nothing (self-rank,
  * single-rank, data-less DB) sends nothing and leaves the creator on the
- * announce leg. */
+ * announce leg.  Echoes home_cache->create_token, the announce's. */
 void arts_send_db_create_return(unsigned int creator_rank,
                                 struct arts_db_cache_s *home_cache);
 /* new_owner_rank: rank home selected as next owner; new_owner_rdzv: that
@@ -340,9 +348,12 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
                                     uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h);
+/* create_token names the creator's descriptor (0 when it keeps none); the
+ * home echoes it in CREATE_RETURN. */
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t fam_addr);
+                                  uint16_t db_type, uint64_t fam_addr,
+                                  uint64_t create_token);
 void arts_send_db_destroy(unsigned int home_rank, arts_guid_t db_guid);
 void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid);
 
