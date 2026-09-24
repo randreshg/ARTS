@@ -13,7 +13,7 @@ from pathlib import Path
 
 from artsrun.model.profile import Profile
 from artsrun.paths import scratch_dir
-from artsrun.run.command import (build_command, build_env, render,
+from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
                                  with_post_verify, with_timeout)
 from artsrun.run.types import Cell, CellResult, Status
 
@@ -62,7 +62,7 @@ class LocalBackend:
 
     def submit(self, cell: Cell) -> CellResult:
         argv = with_timeout(
-            with_post_verify(build_command(cell, self.profile), cell),
+            with_post_verify(cxl_wrap(build_command(cell, self.profile), cell), cell),
             cell.timeout_s)
         env = os.environ.copy()
         env.update(build_env(cell, self.profile))

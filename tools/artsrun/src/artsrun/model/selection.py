@@ -64,6 +64,9 @@ class Selection(BaseModel):
     node_counts: list[int] = Field(min_length=1)
     repeats: int = 1
     build_dir: str | None = None
+    cxl: bool = False
+    cxl_rapid_include_dir: str | None = None
+    cxl_lib_dir: str | None = None
 
     def validate_against(
         self, plane: Plane, catalog: Catalog, profile: Profile
@@ -71,6 +74,13 @@ class Selection(BaseModel):
         unknown = [k for k in self.entries if k not in plane.entry_keys]
         if unknown:
             raise ValueError(f"unknown plane entries: {', '.join(unknown)}")
+        if self.cxl:
+            incompatible = [k for k in self.entries if k not in plane.cxl_entry_keys]
+            if incompatible:
+                raise ValueError(
+                    "CXL requires EXCL + PURGE (WB): remove incompatible entries "
+                    + ", ".join(incompatible)
+                )
         for name, versions in self.apps.items():
             if name not in catalog.apps:
                 raise ValueError(f"unknown application: {name}")
