@@ -157,7 +157,7 @@ static void wire_consumers(arts_guid_t db, unsigned int cell_idx, axis_t axis,
    * is published only when the writer EDT finishes and its RW hold is
    * released (publish).  A bare DB->consumer dep satisfies immediately, so
    * the consumer's RO acquire would race ahead of that publish and read the
-   * home's v1 zero placeholder -- an UNDEFINED RO/RW overlap per the OCR
+   * home's v1 placeholder -- an UNDEFINED RO/RW overlap per the OCR
    * model, not a coherence bug.  The gate event (the writer's OUTPUT EVENT,
    * satisfied strictly AFTER the writer's DBs are released) is added as an
    * extra consumer pre-slot so the consumer becomes runnable -- and thus does

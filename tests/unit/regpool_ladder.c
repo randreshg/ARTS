@@ -16,6 +16,18 @@
 #include "arts/memory/regpool.h"
 
 #define SLAB_BYTES ((size_t)64 * 1024 * 1024)
+#define LADDER_MIB (64 + 96 + 160 + 256)
+
+/* Node 0's free bytes, read the way the pool reads them; SIZE_MAX when the
+ * kernel does not say, which the pool takes as room. */
+static size_t node0_free_bytes(void) {
+  FILE *f = fopen("/sys/devices/system/node/node0/meminfo", "r");
+  if (f == NULL)
+    return SIZE_MAX;
+  size_t r = arts_regpool_parse_node_avail(f);
+  fclose(f);
+  return r;
+}
 
 /* Node 0's line of the report: arena count, mapped MiB, grow count. */
 static void node0_line(unsigned *arenas, unsigned *mapped, unsigned *grows) {
@@ -36,6 +48,16 @@ static void node0_line(unsigned *arenas, unsigned *mapped, unsigned *grows) {
 }
 
 int main(void) {
+  /* Every rung must land on node 0, and each one populated lowers what the
+   * node has left for the next. */
+  size_t free0 = node0_free_bytes();
+  if (free0 != SIZE_MAX &&
+      free0 < ARTS_REGPOOL_NODE_HEADROOM + ((size_t)LADDER_MIB << 20)) {
+    printf("SKIP regpool_ladder: node 0 has %zu MiB free, below the pool's "
+           "carve threshold\n",
+           free0 >> 20);
+    return 0;
+  }
   assert(arts_regpool_init(NULL, NULL, SLAB_BYTES, 1));
 
   unsigned arenas = 0, mapped = 0, grows = 0;

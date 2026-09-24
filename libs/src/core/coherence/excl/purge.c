@@ -544,9 +544,9 @@ void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
  * EXCL home init: the home leaves a create holding the block's storage.
  *
  * Where the home is the canonical backing store, that storage is its own
- * buffer, zero-initialized here: the first GRANT carries its data (empty /
- * zero at first) to the requester, and the requester's first RW release sends
- * the updated contents back via EXCL_RELEASE publish.
+ * buffer, its bytes unspecified until a holder writes them: the first GRANT
+ * carries whatever it holds to the requester, and the requester's first RW
+ * release sends the updated contents back via EXCL_RELEASE publish.
  *
  * Where the block's bytes live in a store of their own, this is the home's
  * handle on that store — a working copy the home's own turns fetch into and
@@ -579,8 +579,9 @@ static bool lock_stable_landing(struct arts_db_cache_s *cache,
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
-    /* First touch: materialize the one stable buffer (zero-filled — the
-     * grant PUT fully overwrites it before any drained waiter reads).
+    /* First touch: materialize the one stable buffer (bytes unspecified —
+     * the grant PUT fully overwrites it before any drained waiter reads, and
+     * a grant with no PUT is one for a block nobody has written).
      * fetch_size may be the GUID bound — an ALLOCATION size only; the DB's
      * size is declared exclusively by the wire (prepare never records it). */
     arts_db_buf_prepare_inplace(cache, fetch_size);

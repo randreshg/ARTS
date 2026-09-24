@@ -11,7 +11,9 @@
  * Whitebox unit test: no ARTS runtime, no ports, no config.  Needs >= 2 NUMA
  * nodes; prints SKIP otherwise, so an environment that cannot exercise the
  * property does not read as an exercised pass. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <assert.h>
 #include <ctype.h>
 #include <dirent.h>

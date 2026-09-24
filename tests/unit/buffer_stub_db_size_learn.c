@@ -46,6 +46,13 @@
 static struct arts_db_cache_s g_cache;
 static _Atomic int g_start;
 
+/* Emptying the slot recycles its buffer onto the cache's free-list, so the
+ * free-list is drained too; the next reset would otherwise forget it. */
+static void cache_teardown(void) {
+  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
+}
+
 static int part1_single(void) {
   memset(&g_cache, 0, sizeof(g_cache)); /* db_size == 0 (deferred) */
   unsigned char payload[DB_SIZE];
@@ -73,7 +80,7 @@ static int part1_single(void) {
                   (unsigned long long)g_cache.db_size, DB_SIZE);
     return 1;
   }
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  cache_teardown();
   return 0;
 }
 
@@ -127,7 +134,7 @@ static int part2_race(void) {
                   cur ? cur->version : 0, expected_max);
   }
   arts_db_buf_release(&h);
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  cache_teardown();
   return rc;
 }
 
@@ -158,11 +165,6 @@ void *arts_malloc_aligned(size_t size, size_t align) {
 }
 void *arts_regpool_alloc_aligned(size_t size, size_t align) {
   return arts_malloc_aligned(size, align);
-}
-void *arts_regpool_zalloc_aligned(size_t size, size_t align) {
-  void *p = arts_regpool_alloc_aligned(size, align);
-  if (p) memset(p, 0, size);
-  return p;
 }
 void arts_regpool_free(void *p) { free(p); }
 

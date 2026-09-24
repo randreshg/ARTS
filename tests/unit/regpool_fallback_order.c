@@ -9,7 +9,9 @@
  * inside it.
  *
  * Whitebox unit test: no ARTS runtime, no ports, no config. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>

@@ -73,7 +73,7 @@ typedef enum {
    * writer_count = 2 (sentinel + creator EDT), no home struct. */
   ARTS_DB_INIT_CREATOR_REMOTE,
   /* Home side, creator != self (DB_CREATE handler): install
-   * buffer (zero-init), writer_count = 0, home struct with rw_holder
+   * buffer (bytes unspecified), writer_count = 0, home struct with rw_holder
    * = creator_rank. */
   ARTS_DB_INIT_HOME_RECV,
   /* Stub install by a dependence's first touch on a rank that is not the

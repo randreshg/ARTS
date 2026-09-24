@@ -298,8 +298,8 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
   /* Metadata-only home until the creator's first publish: the write-back
    * home holds routing and permission, never payload.  Pre-publication read
    * serves hold on pending_snapshot and the first install drains them.
-   * (The NO_ACQUIRE create path zero-installs in the shared create flow
-   * instead: with no creator hold, creation itself is the publication.) */
+   * (The NO_ACQUIRE create path installs a first image in the shared create
+   * flow instead: with no creator hold, creation itself is the publication.) */
   (void)cache;
   (void)db_size;
 #endif
@@ -483,7 +483,7 @@ void inv_home_round_try_open(struct arts_db_s *db) {
       }
       /* First publication wakes the pre-publication read holds (readers
        * event-ordered after the creator's writes must see released bytes,
-       * never the never-published zero state).  Published = an installed
+       * never the never-published version-0 state).  Published = an installed
        * buffer whose version has been bumped past the create-time zero. */
       {
         arts_shared_ptr_t pub_h = arts_db_buf_acquire(cache);
@@ -814,7 +814,7 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
     /* Stamped at version 1 when the server held nothing: a live image may
      * never carry the version that means "holds nothing", or the first
      * release of real bytes would mint the same stamp and its install would
-     * retreat as stale against the invented zero image. */
+     * retreat as stale against the invented first image. */
     (void)arts_db_buf_adopt_landing(
         &db->cache, p->version ? p->version : 1u,
         (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie,

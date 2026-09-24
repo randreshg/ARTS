@@ -68,7 +68,7 @@
 ///
 /// The phase barrier matters: without it a remotely-homed DB's init writer must
 /// first migrate to its home rank, letting workers on other ranks race ahead
-/// and acquire the still-zero DB — a coherence-ordering artifact unrelated to
+/// and acquire the still-unwritten DB — a coherence-ordering artifact unrelated to
 /// the framing this test targets.  A framing bug instead surfaces as garbage
 /// bytes (checksum mismatch -> FAIL), a hard RX framing abort, or a
 /// mis-dispatched raw payload frame (spurious shutdown -> finish scope never

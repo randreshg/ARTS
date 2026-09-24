@@ -325,7 +325,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
          * ARTS_GRANT_VERSION_NONE, "holds nothing", so a live image carrying
          * it could not be told from an absent one — and this rank's first
          * release would then mint 1 for REAL bytes, the same stamp an
-         * invented zero image elsewhere already carries, which makes a
+         * invented first image elsewhere already carries, which makes a
          * genuine install retreat as stale. */
         (void)arts_db_buf_adopt_landing(cache, version ? version : 1u, landing,
                                         cache->db_size);

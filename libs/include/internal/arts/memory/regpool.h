@@ -178,12 +178,6 @@ void arts_regpool_unregister(void);
  * a fatal error. */
 void *arts_regpool_alloc_aligned(size_t size, size_t align);
 
-/* As arts_regpool_alloc_aligned, but the returned bytes are zero.  Prefer
- * this over alloc+memset for zero-initialized payloads: fresh slab memory is
- * kernel-zeroed and declared so to the allocator, so only memory recycled
- * from a previous owner is actually cleared. */
-void *arts_regpool_zalloc_aligned(size_t size, size_t align);
-
 /* Return a pointer previously obtained from arts_regpool_alloc_aligned.  The
  * caller must have finished with the memory, transport operations against it
  * included: the pointer stops resolving through arts_regpool_lookup here.
@@ -213,6 +207,12 @@ bool arts_regpool_grow(int numa_node);
  * must not veto placement).  Pure over the stream — exposed for hermetic
  * testing. */
 size_t arts_regpool_parse_node_avail(FILE *f);
+
+/* Held back from a node's availability estimate before a mapping is sized
+ * against it — room for concurrent consumers, so a slab sized to the
+ * estimate still lands where it was placed.  A node whose estimate does not
+ * exceed a slab plus this is not carved: the slab is placed by the kernel. */
+#define ARTS_REGPOOL_NODE_HEADROOM ((size_t)2 * 1024 * 1024 * 1024)
 
 /* Diagnostic override, the programmatic form of the
  * ARTS_REGPOOL_FORCE_FULL_NODES environment list: every node whose bit is

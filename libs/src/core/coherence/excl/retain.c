@@ -656,8 +656,9 @@ static bool lock_owner_request_landing(struct arts_db_cache_s *cache,
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
-    /* First touch: materialize the one stable buffer (zero-filled; the
-     * migration PUT fully overwrites it before any drained waiter reads).
+    /* First touch: materialize the one stable buffer (bytes unspecified; the
+     * migration PUT fully overwrites it before any drained waiter reads, and
+     * a data-less deliver is one for a block nobody has written).
      * fetch_size may be the GUID bound — an ALLOCATION size only; the DB's
      * size is declared exclusively by the wire (prepare never records it). */
     arts_db_buf_prepare_inplace(cache, fetch_size);

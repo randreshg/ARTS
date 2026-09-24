@@ -4,11 +4,12 @@
  * allocation, so the next request of the same length and alignment gets it
  * back while the freed pointer stops resolving.  Exercised here at several
  * sizes with the pool's confinement lookup on every pointer, plus the
- * zeroing obligation a recycled mapping carries and the placement: an
- * oversize mapping is spread over the caller's node set rather than placed
- * on one node, and with a member of that set reporting full it is still
- * spread over the rest rather than refused. */
+ * placement: an oversize mapping is spread over the caller's node set rather
+ * than placed on one node, and with a member of that set reporting full it is
+ * still spread over the rest rather than refused. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -104,7 +105,7 @@ int main(void) {
   check_one((size_t)48 * 1024 * 1024);
   arts_regpool_cleanup();
 
-  /* Reuse, zeroing, and the bound on what reuse may hand out.  A fresh pool,
+  /* Reuse, and the bound on what reuse may hand out.  A fresh pool,
    * so the report's counts are exactly this leg's. */
   assert(arts_regpool_init(NULL, NULL, SLAB_BYTES, 0));
   const size_t big = (size_t)64 * 1024 * 1024;
@@ -117,14 +118,7 @@ int main(void) {
   unsigned char *again = (unsigned char *)arts_regpool_alloc_aligned(big, 64);
   assert(again == first);
 
-  /* A recycled mapping holds what its last owner wrote, so the zeroing
-   * entry point owes the caller a cleared block. */
-  memset(again, 0x5A, big);
   arts_regpool_free(again);
-  unsigned char *zeroed = (unsigned char *)arts_regpool_zalloc_aligned(big, 64);
-  assert(zeroed == first);
-  assert(zeroed[0] == 0 && zeroed[big / 2] == 0 && zeroed[big - 1] == 0);
-  arts_regpool_free(zeroed);
 
   /* A different length must not be served from the retired mapping, which
    * stays retired and available for its own shape. */

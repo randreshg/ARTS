@@ -10,7 +10,9 @@
  *
  * Requires >= 2 NUMA nodes and the arena allocator; skipped (pass) below
  * that, and registered only for arena-allocator builds. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <assert.h>
 #include <ctype.h>
 #include <dirent.h>

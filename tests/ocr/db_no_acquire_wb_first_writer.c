@@ -25,7 +25,7 @@
  *     runtime satisfies only after the writer's datablocks are released.  It
  *     must see the sentinel: if a first image were minted at the version the
  *     writer's release goes on to use, the release's install would retreat as
- *     stale and this reader would read zeroes forever.
+ *     stale and this reader would read the first image forever.
  *
  * The readers run two ranks along from the home so the ordered read is served
  * across the directory; on a two-rank run that is the home itself, which

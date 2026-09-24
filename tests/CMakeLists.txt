@@ -740,16 +740,20 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         PASS_REGULAR_EXPRESSION
         "PASS regpool_lazy_carve|SKIP regpool_lazy_carve")
     # The slab ladder's exact rungs (a node's next slab is half again the
-    # last one mapped for it, on the allocator's granule).
+    # last one mapped for it, on the allocator's granule).  Every rung must
+    # be placed on node 0, so a node 0 without that much free memory above
+    # the pool's headroom SKIPs rather than reading as a pass.
     register_pure_unit_test(regpool_ladder TIMEOUT 60)
     set_tests_properties(regpool_ladder PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_ladder")
+        PASS_REGULAR_EXPRESSION "PASS regpool_ladder|SKIP regpool_ladder")
     # Eviction of retired mappings and the unplaced fallback behind it,
     # driven by the force-full override (so it needs no memory pressure and
-    # no second NUMA node).
+    # no second NUMA node).  Init must carve node 0 first; a node 0 below the
+    # pool's carve threshold SKIPs.
     register_pure_unit_test(regpool_evict_retired TIMEOUT 60)
     set_tests_properties(regpool_evict_retired PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_evict_retired")
+        PASS_REGULAR_EXPRESSION
+        "PASS regpool_evict_retired|SKIP regpool_evict_retired")
     # An oversize mapping is spread over the caller's node set, which needs
     # >= 2 NUMA nodes to be distinguishable from a placed one; the PASS/SKIP
     # markers keep a one-node environment from reading as an exercised pass.

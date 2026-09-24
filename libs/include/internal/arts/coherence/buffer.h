@@ -59,15 +59,6 @@ extern "C" {
 struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
                                            uint64_t db_size);
 
-#ifndef ARTS_FAM_DIRECT
-/* As arts_db_buf_alloc, but buf->data reads as zero (recycled buffers are
- * cleared; fresh pool memory arrives zeroed untouched).  Absent where the
- * payload is external: zeroing a store the descriptor does not own is not
- * this layer's to do. */
-struct arts_db_buffer_s *arts_db_buf_alloc_zeroed(struct arts_db_cache_s *cache,
-                                                  uint64_t db_size);
-#endif
-
 /* A buffer that belongs to no cache: its last drop frees it to the
  * registered pool, never to a free-list.  The caller owns the one strong
  * ref and reads the buffer through *out. */
@@ -91,8 +82,8 @@ arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache);
  * frees the buffer.  Sets *h = NULL. */
 void arts_db_buf_release(arts_shared_ptr_t *h);
 
-/* Materialize this cache's payload buffer if it has none: db_size zeroed
- * bytes at version 1 — the value a block nobody has written reads as.
+/* Materialize this cache's payload buffer if it has none: db_size bytes at
+ * version 1, whose contents are unspecified — nobody has written the block.
  * Returns whether this call installed it.
  *
  * Exists because a block created WITHOUT an acquire has no first user at
@@ -106,7 +97,7 @@ void arts_db_buf_release(arts_shared_ptr_t *h);
  * Only a rank ENTITLED to hold the block may call it: the caller must
  * already have established that its own copy is the one to answer from (it
  * is the home of a home-canonical arm, or it holds the block's ownership).
- * A rank that installs zeroes without that right invents a value.
+ * A rank that installs an image without that right invents a value.
  *
  * Where the payload is external this call adopts the block's store and
  * invents nothing, so installing a value without the right to cannot arise;
@@ -189,8 +180,7 @@ static inline struct arts_db_buffer_s *arts_db_buf_from_data(void *data) {
 /* Install a new buffer carrying `new_version` at cache.buffer.
  *
  * data_payload semantics:
- *   NULL  ⇒ zero-init the new buffer (used by DB_CREATE so the
- *           backing store starts predictable).
+ *   NULL  ⇒ the new buffer's bytes are unspecified (a create's image).
  *   non-NULL ⇒ memcpy db_size bytes from data_payload.
  *
  * Returns the buffer that became (or remains) cache.buffer.  Stale installs
@@ -234,8 +224,9 @@ arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
 void arts_db_buf_landing_recycle(struct arts_db_cache_s *cache,
                                  struct arts_db_buffer_s *b);
 
-/* Make an unused landing this cache's buffer IF the cache has none, zero-filled
- * and stamped `version`; recycle it otherwise.  Returns whether it was adopted.
+/* Make an unused landing this cache's buffer IF the cache has none, its bytes
+ * unspecified and stamped `version`; recycle it otherwise.  Returns whether it
+ * was adopted.
  *
  * This is the answer to a reply that grants access but carries no payload
  * because the SENDER held none: the block has a declared size, so its holder is
@@ -271,8 +262,9 @@ void arts_db_buf_ref_release_cb(void *arg);
  * into their own backing store therefore stay valid across writes.
  *
  * The first call (no buffer yet) allocates the one stable buffer; every call
- * memcpy's `data` (or zero-fills when data == NULL) into the existing buffer's
- * data in place.  Never reallocates or version-swaps once established.
+ * memcpy's `data` into the buffer's data in place; data == NULL writes
+ * nothing, so a first call without data leaves the bytes unspecified.  Never
+ * reallocates or version-swaps once established.
  *
  * Correct ONLY when no concurrent reader holds the buffer while it is written:
  * the caller's protocol must serialize access so an overwrite never races a
@@ -286,11 +278,12 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
  * publish discipline makes that unreachable in a legal run. */
 void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache, uint64_t version);
 
-/* First-touch stable-buffer materialization from a size BOUND: allocates and
- * zero-fills at `capacity` WITHOUT recording `cache->db_size` — the size is
- * only ever declared by a wire-carried exact value, never by a locally
- * decoded bound (a bound recorded as the size would later be sent as an
- * exact wire length).  Established buffers are left untouched. */
+/* First-touch stable-buffer materialization from a size BOUND: allocates at
+ * `capacity`, bytes unspecified until a fetch lands in it, WITHOUT recording
+ * `cache->db_size` — the size is only ever declared by a wire-carried exact
+ * value, never by a locally decoded bound (a bound recorded as the size would
+ * later be sent as an exact wire length).  Established buffers are left
+ * untouched. */
 void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
                                  uint64_t capacity);
 

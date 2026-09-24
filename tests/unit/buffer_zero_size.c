@@ -41,8 +41,11 @@ static void cache_init(uint64_t db_size) {
   memset(&g_cache, 0, sizeof(g_cache));
   g_cache.db_size = db_size;
 }
+/* Emptying the slot recycles its buffer onto the cache's free-list, so the
+ * free-list is drained too; the next cache_init would otherwise forget it. */
 static void cache_teardown(void) {
   arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
 }
 
 static int check_zero_install(uint64_t v, const void *payload,
@@ -138,11 +141,6 @@ void *arts_malloc_aligned(size_t size, size_t align) {
 }
 void *arts_regpool_alloc_aligned(size_t size, size_t align) {
   return arts_malloc_aligned(size, align);
-}
-void *arts_regpool_zalloc_aligned(size_t size, size_t align) {
-  void *p = arts_regpool_alloc_aligned(size, align);
-  if (p) memset(p, 0, size);
-  return p;
 }
 void arts_regpool_free(void *p) { free(p); }
 

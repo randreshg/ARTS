@@ -9,7 +9,9 @@
  * everything by construction.
  *
  * Whitebox unit test: no ARTS runtime, no ports, no config. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include <assert.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -23,6 +25,17 @@
 #define SLAB_BYTES ((size_t)64 * 1024 * 1024)
 #define FIRST_SIZE ((size_t)40 * 1024 * 1024)
 #define SECOND_SIZE ((size_t)48 * 1024 * 1024)
+
+/* Node 0's free bytes, read the way the pool reads them; SIZE_MAX when the
+ * kernel does not say, which the pool takes as room. */
+static size_t node0_free_bytes(void) {
+  FILE *f = fopen("/sys/devices/system/node/node0/meminfo", "r");
+  if (f == NULL)
+    return SIZE_MAX;
+  size_t r = arts_regpool_parse_node_avail(f);
+  fclose(f);
+  return r;
+}
 
 static unsigned count_nodes(void) {
   DIR *d = opendir("/sys/devices/system/node");
@@ -79,6 +92,14 @@ static unsigned unplaced_mib(void) {
 }
 
 int main(void) {
+  /* The pool's init must carve node 0 before anything is forced full. */
+  size_t free0 = node0_free_bytes();
+  if (free0 != SIZE_MAX && free0 < ARTS_REGPOOL_NODE_HEADROOM + SLAB_BYTES) {
+    printf("SKIP regpool_evict_retired: node 0 has %zu MiB free, below the "
+           "pool's carve threshold\n",
+           free0 >> 20);
+    return 0;
+  }
   unsigned nodes = count_nodes();
   assert(arts_regpool_init(NULL, NULL, SLAB_BYTES, 0));
 

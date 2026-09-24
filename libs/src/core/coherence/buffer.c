@@ -73,23 +73,6 @@ struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
 #endif
 }
 
-#ifndef ARTS_FAM_DIRECT
-/* As arts_db_buf_alloc, but buf->data reads as zero.  A recycled buffer is
- * cleared here (its previous contents are arbitrary); a fresh pool
- * allocation arrives zeroed without being touched. */
-struct arts_db_buffer_s *arts_db_buf_alloc_zeroed(struct arts_db_cache_s *cache,
-                                                  uint64_t db_size) {
-  arts_lf_link_t *node = arts_lf_pool_pop_or_null(&cache->buf_freelist);
-  if (node != NULL) {
-    struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)node;
-    memset(b->data, 0, (size_t)db_size);
-    return b;
-  }
-  return (struct arts_db_buffer_s *)arts_regpool_zalloc_aligned(
-      sizeof(struct arts_db_buffer_s) + db_size, 64);
-}
-#endif
-
 arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
                                        struct arts_db_buffer_s **out) {
 #ifdef ARTS_FAM_DIRECT
@@ -242,7 +225,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
     arts_db_buf_release(&h);
     return false;
   }
-  struct arts_db_buffer_s *nb = arts_db_buf_alloc_zeroed(cache, db_size);
+  struct arts_db_buffer_s *nb = arts_db_buf_alloc(cache, db_size);
   if (nb == NULL) {
     return false; /* OOM — caller decides how to surface. */
   }
@@ -256,8 +239,8 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   nb->cb = cb;
   /* Install-if-absent, never the version-conditional publish: this buffer
    * may only ever fill a hole.  Two first users therefore agree by
-   * construction — one installs, the other adopts a buffer whose bytes are
-   * identical to the one it built. */
+   * construction — one installs, the other adopts the installed image, and
+   * neither image holds a value anyone wrote. */
   if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
     arts_shared_release(&cb); /* last ref: the deleter recycles nb */
     buf_note_present(cache);
@@ -373,17 +356,7 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
   arts_db_buf_release(&h);
   return b;
 #else
-  /* data_payload == NULL ⇒ initial install at create-time.  A fresh
-   * payload's contents are unspecified to the program; zeroing here is an
-   * implementation choice that keeps a recycled buffer from carrying an
-   * earlier block's bytes.  Take the zeroed allocation path so only a
-   * recycled buffer is actually cleared — fresh pool memory is kernel-zeroed
-   * already, and skipping the redundant full-payload memset keeps the touch
-   * (and its page faults) off the creator's critical path. */
-  struct arts_db_buffer_s *new_buf =
-      (data_payload == NULL && db_size > 0)
-          ? arts_db_buf_alloc_zeroed(cache, db_size)
-          : arts_db_buf_alloc(cache, db_size);
+  struct arts_db_buffer_s *new_buf = arts_db_buf_alloc(cache, db_size);
   if (new_buf == NULL) {
     return NULL; /* OOM — caller decides how to surface. */
   }
@@ -513,9 +486,6 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
   }
   landing->owner_cache = cache;
   landing->version = version;
-  /* The landing may be recycled memory, so its bytes are arbitrary.  Clear
-   * them, so "contents undefined" cannot mean "another block's contents". */
-  memset(landing->data, 0, (size_t)db_size);
   arts_shared_ptr_t cb = arts_shared_make(landing, buffer_deleter);
   landing->cb = cb;
   /* Install-if-absent, NOT the version-conditional publish: this landing
@@ -602,14 +572,11 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
   }
   nb->owner_cache = cache;
   nb->version = 0;
-  if (capacity > 0) {
-    memset(nb->data, 0, (size_t)capacity);
-  }
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
   if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
-    /* Lost the install race: adopt the winner (both first images are
-     * zero-identical). */
+    /* Lost the install race: adopt the winner (the fetch overwrites
+     * either). */
     arts_shared_release(&cb);
   }
   buf_note_present(cache);
@@ -650,7 +617,7 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
    * would REPLACE the winner's established buffer, detaching any
    * fixed-address landing already advertised on it (silently discarding
    * data already landed there) while later readers re-derive their pointers
-   * from the fresh, still-zero instance. */
+   * from the fresh, never-written instance. */
   struct arts_db_buffer_s *nb = arts_db_buf_alloc(cache, db_size);
   if (nb == NULL) {
     return; /* OOM — caller decides how to surface. */
@@ -660,8 +627,6 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
   if (db_size > 0) {
     if (data != NULL) {
       memcpy(nb->data, data, (size_t)db_size);
-    } else {
-      memset(nb->data, 0, (size_t)db_size);
     }
     if (cache->db_size == 0) {
       cache->db_size = db_size;
@@ -670,9 +635,9 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
   if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
-    /* Lost the install race.  Racing first touches publish the same zero
-     * first image, so adopting the winner is value-identical; a
-     * data-carrying caller (whose write the coherence protocol serializes
+    /* Lost the install race.  A first touch without data holds no value
+     * anyone wrote, so adopting the winner loses nothing; a data-carrying
+     * caller (whose write the coherence protocol serializes
      * against every reader) writes its bytes through the established buffer
      * instead. */
     arts_shared_release(&cb);

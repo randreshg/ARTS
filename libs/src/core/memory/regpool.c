@@ -204,10 +204,6 @@ _Static_assert(REGPOOL_MAX_ARENA_OBJ == MI_ARENA_MAX_CHUNK_OBJ_SIZE,
 #define REGPOOL_GROWTH_DEN 2
 /* Payload alignment floor (matches the DB/CXL 64-byte payload invariant). */
 #define REGPOOL_ALIGN_FLOOR ((size_t)64)
-/* Held back from a node's availability estimate before a mapping is sized
- * against it — room for concurrent consumers, so a slab sized to the
- * estimate still lands where it was placed. */
-#define REGPOOL_NODE_HEADROOM ((size_t)2 * 1024 * 1024 * 1024)
 
 /* Lifecycle of one table entry.  An arena slab is created LIVE and stays
  * LIVE; the other two states belong to direct slabs. */
@@ -972,8 +968,8 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve) {
   size_t node_avail = regpool_node_avail_bytes(node);
   bool fits_node = true;
   if (node_avail != SIZE_MAX) {
-    size_t usable = node_avail > REGPOOL_NODE_HEADROOM
-                        ? node_avail - REGPOOL_NODE_HEADROOM
+    size_t usable = node_avail > ARTS_REGPOOL_NODE_HEADROOM
+                        ? node_avail - ARTS_REGPOOL_NODE_HEADROOM
                         : 0;
     while (want > usable && want > floor_bytes)
       want = regpool_step_down(want, floor_bytes);
@@ -1023,9 +1019,7 @@ static bool regpool_grow_node(int node, size_t seen_slabs, bool carve) {
      * range), exclusive=true (only heaps created for this arena draw from
      * it — the confinement mechanism), is_zero=true (a fresh anonymous
      * mapping is kernel-zeroed and nothing between map and manage writes
-     * into it: registration only pins, placement only sets policy), which
-     * lets the allocator's zeroed-allocation path clear only recycled
-     * blocks.
+     * into it: registration only pins, placement only sets policy).
      *
      * No retry on refusal: the range is granule-sized and at most one
      * slot's worth, so nothing about it can be "too big" — the only refusal
@@ -1149,8 +1143,8 @@ static bool regpool_map_screened(size_t len, size_t a, int node,
   for (unsigned k = 0; k < cnt; k++) {
     int cand = order[k];
     size_t av = regpool_node_avail_bytes(cand);
-    if (av != SIZE_MAX &&
-        (av <= REGPOOL_NODE_HEADROOM || av - REGPOOL_NODE_HEADROOM < len))
+    if (av != SIZE_MAX && (av <= ARTS_REGPOOL_NODE_HEADROOM ||
+                           av - ARTS_REGPOOL_NODE_HEADROOM < len))
       continue;
     if (regpool_map_slab(cand, /*set=*/0, len, a, out_base, out_mr, out_rkey)) {
       *out_node = cand;
@@ -1179,7 +1173,7 @@ static uint64_t regpool_interleave_set(size_t len) {
     if (av == SIZE_MAX)
       return set;
     size_t usable =
-        (av > REGPOOL_NODE_HEADROOM) ? av - REGPOOL_NODE_HEADROOM : 0;
+        (av > ARTS_REGPOOL_NODE_HEADROOM) ? av - ARTS_REGPOOL_NODE_HEADROOM : 0;
     if (usable == 0)
       continue;
     usable_set |= 1ULL << i;
@@ -1237,8 +1231,7 @@ static bool regpool_map_placed(size_t len, size_t a, int node, int *out_node,
  * fall back to a single node, and then to the kernel's own choice.  A
  * reused retired mapping keeps whatever placement it was created with:
  * re-binding cannot move pages that are already resident. */
-static void *regpool_alloc_direct(size_t size, size_t align, int node,
-                                  bool zero) {
+static void *regpool_alloc_direct(size_t size, size_t align, int node) {
   size_t a = align > REGPOOL_BASE_ALIGN ? align : REGPOOL_BASE_ALIGN;
   size_t len = align_up_sz(size, a);
   void *base = NULL;
@@ -1249,10 +1242,6 @@ static void *regpool_alloc_direct(size_t size, size_t align, int node,
   regpool_slab_t *reused = regpool_claim_retired_locked(len, a, node);
   pthread_mutex_unlock(&g_lock);
   if (reused != NULL) {
-    /* The block is the caller's now, and a retired mapping holds whatever
-     * its previous owner wrote — where a fresh mapping is kernel-zeroed. */
-    if (zero)
-      memset(reused->mr.base, 0, size);
     return reused->mr.base;
   }
 
@@ -1333,8 +1322,8 @@ static bool regpool_thread_bind(mi_arena_id_t arena, int node) {
  * node's arenas — the locality-fallback pass; NUMA placement is a
  * preference, never a reason to refuse memory that exists.  Skips the arena
  * that already refused this request. */
-static void *regpool_sweep_arenas(size_t size, size_t align, bool zero,
-                                  int node_filter, mi_arena_id_t refused) {
+static void *regpool_sweep_arenas(size_t size, size_t align, int node_filter,
+                                  mi_arena_id_t refused) {
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_acquire);
   for (size_t i = n; i-- > 0;) {
     regpool_slab_t *s = &g_slabs[i];
@@ -1351,8 +1340,7 @@ static void *regpool_sweep_arenas(size_t size, size_t align, bool zero,
       continue;
     if (!regpool_thread_bind(s->arena, (int)s->mr.numa_node))
       return NULL;
-    void *p = zero ? mi_heap_zalloc_aligned(t_heap, size, align)
-                   : mi_heap_malloc_aligned(t_heap, size, align);
+    void *p = mi_heap_malloc_aligned(t_heap, size, align);
     if (p != NULL)
       return p;
   }
@@ -1370,11 +1358,11 @@ static void *regpool_sweep_arenas(size_t size, size_t align, bool zero,
  * `refused` names the one arena that already failed this request (NULL
  * when none was tried — entry from a node with no arena of its own), so
  * the sweeps skip exactly the arena known to be exhausted and no other. */
-static void *regpool_alloc_arena_slow(size_t size, size_t align, bool zero,
-                                      int node, mi_arena_id_t refused) {
+static void *regpool_alloc_arena_slow(size_t size, size_t align, int node,
+                                      mi_arena_id_t refused) {
   for (;;) {
     size_t seen = atomic_load_explicit(&g_slab_count, memory_order_acquire);
-    void *p = regpool_sweep_arenas(size, align, zero, node, refused);
+    void *p = regpool_sweep_arenas(size, align, node, refused);
     if (p != NULL)
       return p;
 
@@ -1393,15 +1381,14 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, bool zero,
         ARTS_WARN("regpool: heap re-bind failed for node %d", node);
         return NULL;
       }
-      p = zero ? mi_heap_zalloc_aligned(t_heap, size, align)
-               : mi_heap_malloc_aligned(t_heap, size, align);
+      p = mi_heap_malloc_aligned(t_heap, size, align);
       if (p != NULL)
         return p;
       continue; /* raced away — re-enter the cascade */
     }
 
     /* This node cannot grow: fall back across nodes before failing. */
-    p = regpool_sweep_arenas(size, align, zero, -1, refused);
+    p = regpool_sweep_arenas(size, align, -1, refused);
     if (p != NULL)
       return p;
     bool grew = false;
@@ -1433,8 +1420,7 @@ static void *regpool_alloc_arena_slow(size_t size, size_t align, bool zero,
  * node's arena on this same fast path — the node's own slot is re-checked
  * every call, so a later successful grow reclaims its threads
  * automatically. */
-static void *regpool_alloc_arena(size_t size, size_t align, bool zero,
-                                 int node) {
+static void *regpool_alloc_arena(size_t size, size_t align, int node) {
   mi_arena_id_t cur = atomic_load_explicit(&g_node_arena[node],
                                            memory_order_acquire);
   int home = node;
@@ -1471,7 +1457,7 @@ static void *regpool_alloc_arena(size_t size, size_t align, bool zero,
     if (cur == NULL) {
       /* No node has an arena yet: let the cascade try to grow this one
        * (nothing was tried, so nothing is refused). */
-      return regpool_alloc_arena_slow(size, align, zero, node, NULL);
+      return regpool_alloc_arena_slow(size, align, node, NULL);
     }
   }
   if (t_heap == NULL || t_arena != cur || t_node != home) {
@@ -1479,8 +1465,7 @@ static void *regpool_alloc_arena(size_t size, size_t align, bool zero,
       return NULL;
   }
 
-  void *p = zero ? mi_heap_zalloc_aligned(t_heap, size, align)
-                 : mi_heap_malloc_aligned(t_heap, size, align);
+  void *p = mi_heap_malloc_aligned(t_heap, size, align);
   if (p != NULL)
     return p;
   /* The preferred node (not the fallback) leads the cascade, so a starved
@@ -1491,7 +1476,7 @@ static void *regpool_alloc_arena(size_t size, size_t align, bool zero,
   if (home != node) {
     atomic_store_explicit(&g_node_fallback[node], -1, memory_order_release);
   }
-  return regpool_alloc_arena_slow(size, align, zero, node, t_arena);
+  return regpool_alloc_arena_slow(size, align, node, t_arena);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1870,7 +1855,7 @@ bool arts_regpool_grow(int numa_node) {
       /*carve=*/false);
 }
 
-static void *regpool_alloc_common(size_t size, size_t align, bool zero) {
+void *arts_regpool_alloc_aligned(size_t size, size_t align) {
   if (size == 0)
     return NULL;
   size_t slab = g_slab_bytes;
@@ -1889,9 +1874,8 @@ static void *regpool_alloc_common(size_t size, size_t align, bool zero) {
   size_t direct_above = slab / 2;
   if (direct_above > REGPOOL_MAX_ARENA_OBJ)
     direct_above = REGPOOL_MAX_ARENA_OBJ;
-  void *p = (size > direct_above)
-                ? regpool_alloc_direct(size, align, node, zero)
-                : regpool_alloc_arena(size, align, zero, node);
+  void *p = (size > direct_above) ? regpool_alloc_direct(size, align, node)
+                                  : regpool_alloc_arena(size, align, node);
 
   /* Fail loudly: an allocation that could not be satisfied even after a grow
    * cannot be papered over — the payload it would back has nowhere to live.
@@ -1911,18 +1895,6 @@ static void *regpool_alloc_common(size_t size, size_t align, bool zero) {
     ARTS_ERROR("regpool: allocation %p (size %zu) escaped all registered slabs",
                p, size);
   return p;
-}
-
-void *arts_regpool_alloc_aligned(size_t size, size_t align) {
-  return regpool_alloc_common(size, align, /*zero=*/false);
-}
-
-/* Zeroed variant: the allocator clears only blocks recycled from dirty
- * pages — fresh slab memory is kernel-zeroed and declared so at manage
- * time, so the common create-then-initialize pattern skips a full payload
- * memset (and the page faults it forces) on the caller's critical path. */
-void *arts_regpool_zalloc_aligned(size_t size, size_t align) {
-  return regpool_alloc_common(size, align, /*zero=*/true);
 }
 
 void arts_regpool_free(void *p) {
@@ -2031,12 +2003,6 @@ void *arts_regpool_alloc_aligned(size_t size, size_t align) {
   if (posix_memalign(&p, a, size) != 0) {
     return NULL;
   }
-  return p;
-}
-void *arts_regpool_zalloc_aligned(size_t size, size_t align) {
-  void *p = arts_regpool_alloc_aligned(size, align);
-  if (p != NULL)
-    memset(p, 0, size);
   return p;
 }
 void arts_regpool_free(void *p) { free(p); }
