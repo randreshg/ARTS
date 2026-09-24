@@ -339,6 +339,84 @@ void *arts_fam_alloc(size_t bytes) {
   return p;
 }
 
+/* MemAvailable, in MB, or 0 when it cannot be read: a missing proc file must
+ * not refuse a run, so the fixed cap alone applies then. */
+static unsigned fam_mem_available_mb(void) {
+  FILE *f = fopen("/proc/meminfo", "r");
+  if (!f) {
+    return 0;
+  }
+  char line[256];
+  unsigned long kb = 0;
+  while (fgets(line, sizeof(line), f)) {
+    if (sscanf(line, "MemAvailable: %lu kB", &kb) == 1) {
+      break;
+    }
+  }
+  (void)fclose(f);
+  return (unsigned)(kb / 1024u);
+}
+
+void arts_fam_config_check(const struct arts_config_s *config) {
+  if (config->fam_pool_mb == 0) {
+    ARTS_ERROR("fam_pool_mb=%u must name at least 1 MB", config->fam_pool_mb);
+  }
+  unsigned nranks = config->table_length ? config->table_length : 1u;
+  uint64_t bytes = (uint64_t)config->fam_pool_mb * 1024u * 1024u;
+  if (bytes <= (uint64_t)ARTS_FAM_HEADER_BYTES) {
+    ARTS_ERROR("fam_pool_mb=%u does not cover the pool's %u-byte header",
+               config->fam_pool_mb, ARTS_FAM_HEADER_BYTES);
+  }
+  uint64_t per = (bytes - ARTS_FAM_HEADER_BYTES) / nranks;
+  per -= per % ARTS_FAM_PAGE;
+  if (per == 0) {
+    ARTS_ERROR("fam_pool_mb=%u leaves rank slices shorter than one %u-byte "
+               "page across %u ranks",
+               config->fam_pool_mb, ARTS_FAM_PAGE, nranks);
+  }
+
+  /* Coarse and deliberately conservative: plain mode is one mapping for the
+   * run plus each rank's DRAM metadata; strict mode adds a private
+   * copy-on-write view and a per-line hold array per rank.  A pool larger than free
+   * memory is an OOM kill mid-run, not a clean failure, because a shared
+   * anonymous object has no size limit of its own.  Carried in 64 bits: two
+   * 32-bit config values multiplied together can exceed UINT32_MAX (a large
+   * fam_pool_mb times a large node count), and a wrapped result can read as
+   * comfortably under the cap it should have failed. */
+  uint64_t need_mb = config->fam_strict
+                         ? ((uint64_t)nranks + 2u) * (uint64_t)config->fam_pool_mb
+                         : 2u * (uint64_t)config->fam_pool_mb;
+  uint64_t avail_mb = (uint64_t)fam_mem_available_mb();
+  uint64_t budget_mb = ARTS_FAM_BUDGET_CAP_MB;
+  if (avail_mb && avail_mb / 2u < budget_mb) {
+    budget_mb = avail_mb / 2u;
+  }
+  if (need_mb > budget_mb) {
+    ARTS_ERROR("fam_pool_mb=%u over %u rank(s)%s needs about %llu MB, and "
+               "this host allows %llu MB (cap %u MB, MemAvailable %llu MB) - "
+               "lower fam_pool_mb or the node count",
+               config->fam_pool_mb, nranks,
+               config->fam_strict ? " in strict mode" : "",
+               (unsigned long long)need_mb, (unsigned long long)budget_mb,
+               ARTS_FAM_BUDGET_CAP_MB, (unsigned long long)avail_mb);
+  }
+
+  /* The allocator's free-list head packs a tag with the granule index and
+   * reserves this value to mean "no granule" (FAM_NO_GRANULE); a slice whose
+   * granule count reached it would collide with the sentinel.  Unreachable
+   * under the budget cap above -- stated here as the contract's own bound,
+   * not a path a run can actually take. */
+  if (per / ARTS_FAM_GRANULE >= (uint64_t)FAM_NO_GRANULE) {
+    ARTS_ERROR("fam_pool_mb=%u leaves a rank slice of %llu granules, at or "
+               "past the allocator's %u-granule index sentinel - lower "
+               "fam_pool_mb or raise the node count",
+               config->fam_pool_mb,
+               (unsigned long long)(per / ARTS_FAM_GRANULE), FAM_NO_GRANULE);
+  }
+
+  arts_fam_backend_config_check(config);
+}
+
 void arts_fam_free(void *p) {
   if (!p) {
     return;

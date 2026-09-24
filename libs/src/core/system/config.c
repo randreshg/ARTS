@@ -50,6 +50,7 @@
 #include <unistd.h>
 
 #include "arts.h"
+#include "arts/fam/pool.h"
 #include "arts/system/print.h"
 #include "arts/transport/launcher.h"
 #include "arts/utils/malloc.h"
@@ -853,6 +854,8 @@ static const struct arts_config_entry_s config_entries[] = {
     {"provider", CONFIG_STRING, OFF(provider), NULL, NULL},
     {"fabric_domain", CONFIG_STRING, OFF(fabric_domain), NULL, NULL},
     {"regpool_slab_mb", CONFIG_UINT, OFF(regpool_slab_mb), "256", NULL},
+    {"fam_pool_mb", CONFIG_UINT, OFF(fam_pool_mb), "64", NULL},
+    {"fam_strict", CONFIG_BOOL, OFF(fam_strict), "0", NULL},
     /* --- Debug --- */
     {"kill_mode", CONFIG_UINT, OFF(kill_mode), "0", NULL},
     {"core_dump", CONFIG_BOOL, OFF(core_dump), "0", NULL},
@@ -1319,6 +1322,10 @@ static void config_compute_derived(struct arts_config_s *config) {
   }
   config->thread_count =
       config->worker_thread_count + config->progress_thread_count;
+
+#ifdef ARTS_FAM
+  arts_fam_config_check(config);
+#endif
 }
 
 static void config_print_warnings(struct arts_config_s *config) {

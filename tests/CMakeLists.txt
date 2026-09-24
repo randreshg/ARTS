@@ -160,6 +160,7 @@ set(TEST_PROGRAMS
     coherence_buffer_test
     grant_purge_word_model
     config_ports_contract
+    config_fam_contract
     config_flux_setup
     port_block_relocation
     stdio_forward_scale_test
@@ -562,6 +563,13 @@ set_tests_properties(grant_purge_word_model PROPERTIES
 register_pure_unit_test(config_ports_contract TIMEOUT 30)
 set_tests_properties(config_ports_contract PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_ports_contract")
+# What the fabric-attached-memory cfg keys accept and refuse.  Unguarded,
+# deliberately: it links no fam symbol (arts_config_load alone) and half its
+# job is proving the two keys parse and stay inert in a tree with no FAM
+# backend, which a guard would delete the evidence for.
+register_pure_unit_test(config_fam_contract TIMEOUT 30)
+set_tests_properties(config_fam_contract PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS config_fam_contract")
 # Forks to probe the flux launcher arm's ARTS_ERROR death paths against a
 # stub flux CLI the test writes itself; loads cfgs only, binds nothing.
 register_pure_unit_test(config_flux_setup TIMEOUT 30)

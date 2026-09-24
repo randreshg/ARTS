@@ -63,4 +63,8 @@ void arts_launcher_local_cleanup_processes(struct arts_launcher_s *l) {
   (void)l;
 }
 
+#ifdef ARTS_FAM
+void arts_fam_config_check(const struct arts_config_s *config) { (void)config; }
+#endif
+
 #endif /* CONFIG_TEST_COMMON_H */
