@@ -2,7 +2,8 @@
 #
 # Directory structure:
 #   xsocr/     - Native XSOCR library (reference OCR x86 implementation)
-#   ocr_shim/  - ARTS-backed OCR compatibility shim
+#   ocr_shim/  - ARTS-backed OCR compatibility shim (added from the top level
+#                under ARTS_BUILD_SHIM, which a benchmark build requires)
 #   apps/      - OCR benchmark apps built against both backends
 #   hpx/       - Standalone HPX reference apps
 
@@ -108,7 +109,6 @@ if(ARTS_BUILD_HPX AND ARTS_HPX_AVAILABLE)
         add_custom_target(${_app}_hpx DEPENDS hpx_apps_ep)
     endforeach()
 endif()
-add_subdirectory(ocr_shim)
 add_subdirectory(apps)
 if(ARTS_BUILD_BASELINES)
     add_subdirectory(baseline)

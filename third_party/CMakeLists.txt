@@ -1194,15 +1194,18 @@ set(OFI_VERSION_NODES_MAP ${OFI_VERSION_NODES_MAP} PARENT_SCOPE)
 # Its one consumer is the tiled Cholesky whose kernels are CBLAS/LAPACKE
 # calls, so the external project stays out of the default target: building it
 # is a consequence of building that application, not of building the tree.
+# The OCR headers: the shim compiles against them, and so does every app, and
+# a benchmark build requires the shim.
+if(ARTS_BUILD_SHIM)
+  arts_init_submodule(third_party/ocr ocr/inc/ocr.h)
+endif()
 if(ARTS_BUILD_BENCHMARKS)
-  # The benchmark sources every configuration of this tree consumes: the OCR
-  # headers (the shim and every app compile against them), the applications
-  # themselves, and OpenBLAS.  Fetching a submodule costs network and disk and
+  # The benchmark sources every configuration of this tree consumes: the
+  # applications themselves and OpenBLAS.  Fetching a submodule costs network and disk and
   # fails outright where neither is available, so a submodule whose consumer
   # is conditional is ensured at that consumer instead -- ocr-vx and TBB are
   # fetched in benchmarks/ocrvx, which alone knows whether the host has the
   # MPI that reference runtime is built on.
-  arts_init_submodule(third_party/ocr ocr/inc/ocr.h)
   arts_init_submodule(third_party/ocr-apps apps)
   arts_init_submodule(third_party/OpenBLAS Makefile)
 

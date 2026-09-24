@@ -177,6 +177,15 @@ endif()
 # that a benchmark/experiment build never uses.  Validation builds opt in.
 option(ARTS_BUILD_TESTS      "Build test programs (enables ctest)"             OFF)
 option(ARTS_BUILD_BENCHMARKS "Build benchmark apps (ARTS + reference runtimes)" ON)
+# The OCR shim is one translation unit against the tree's own runtime and the
+# vendored OCR headers.  The benchmark apps link it, and a validation tree
+# builds it on its own so the shim's tests run against every configuration.
+option(ARTS_BUILD_SHIM       "Build the OCR-to-ARTS compatibility shim"        ON)
+if(ARTS_BUILD_BENCHMARKS AND NOT ARTS_BUILD_SHIM)
+    message(FATAL_ERROR
+        "ARTS_BUILD_BENCHMARKS=ON requires ARTS_BUILD_SHIM=ON: every ARTS "
+        "variant of a benchmark app links the OCR shim.")
+endif()
 # The native (non-OCR) OpenMP/MPI implementations predate the current
 # experiment driver and sit outside its catalog/consensus surface; they are
 # an explicit opt-in so the default build carries no extra link surface.
@@ -1015,6 +1024,10 @@ if(ARTS_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+if(ARTS_BUILD_SHIM)
+    add_subdirectory(benchmarks/ocr_shim)
+endif()
+
 if(ARTS_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()
@@ -1189,6 +1202,7 @@ endif()
 message(STATUS "  Examples:        ${ARTS_BUILD_EXAMPLES}")
 message(STATUS "  Tests:           ${ARTS_BUILD_TESTS}")
 message(STATUS "  Benchmarks:      ${ARTS_BUILD_BENCHMARKS}")
+message(STATUS "  OCR shim:        ${ARTS_BUILD_SHIM}")
 if(ARTS_BUILD_BENCHMARKS)
     set(_arts_ref_runtimes "")
     if(TARGET ocr_xsocr_static)
