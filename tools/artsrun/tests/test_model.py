@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from artsrun.model import (
     AppEntry,
@@ -97,28 +97,39 @@ def test_the_dane_profiles_leave_the_db_wrf_section_out():
     assert store.load_profile("ferrari-local").entries is None
 
 
+def _model_keys(model: type[BaseModel], prefix: str = "") -> set[str]:
+    out: set[str] = set()
+    for name, info in model.model_fields.items():
+        inner = [a for a in getattr(info.annotation, "__args__", ())
+                 if isinstance(a, type) and issubclass(a, BaseModel)]
+        if inner:
+            out |= _model_keys(inner[0], f"{prefix}{name}.")
+        else:
+            out.add(f"{prefix}{name}")
+    return out
+
+
+def _orphan_form_keys(specs, model) -> set[str]:
+    """Form keys that name no field of the model (dotted for nested)."""
+    return {spec.key for spec in specs} - _model_keys(model)
+
+
 def test_every_profile_field_is_one_the_form_carries():
     """The screens rebuild a profile from the form's fields, so a field the
     form does not know is silently reset to its default in every campaign
-    started from them."""
-    from pydantic import BaseModel
-
+    started from them; a form field that names no `Profile` field either
+    raises `ValidationError` at rebuild time or is silently dropped,
+    depending on where it is consumed."""
     from artsrun.model.profile import Profile
     from artsrun.tui import form
 
-    def keys(model: type[BaseModel], prefix: str = "") -> set[str]:
-        out: set[str] = set()
-        for name, info in model.model_fields.items():
-            inner = [a for a in getattr(info.annotation, "__args__", ())
-                     if isinstance(a, type) and issubclass(a, BaseModel)]
-            if inner:
-                out |= keys(inner[0], f"{prefix}{name}.")
-            else:
-                out.add(f"{prefix}{name}")
-        return out
-
     carried = {spec.key for spec in form.PROFILE_FIELDS} | {"name", "nodes"}
-    assert keys(Profile) - carried == set()
+    assert _model_keys(Profile) - carried == set()
+    assert _orphan_form_keys(form.PROFILE_FIELDS, Profile) == set()
+    bogus = [*form.PROFILE_FIELDS,
+             form.FieldSpec("not_a_profile_field", "x", "int", "x",
+                            section="run")]
+    assert _orphan_form_keys(bogus, Profile) == {"not_a_profile_field"}
 
 
 def test_grid_entries_belong_to_the_ocr_model():

@@ -16,6 +16,27 @@ from artsrun.paths import repo_root
 from artsrun.render import render_counters
 
 
+def _plan_targets_stub(*args, **kwargs):
+    """Stand in for plan_targets while BINDING its real signature.
+
+    A stub that accepts anything turns a signature change into a green
+    run; binding makes the same change a loud TypeError here.
+    """
+    import inspect
+
+    from artsrun.build import plan_targets
+
+    inspect.signature(plan_targets).bind(*args, **kwargs)
+    return "plan"
+
+
+def test_the_plan_targets_stub_rejects_a_call_the_real_one_would():
+    with pytest.raises(TypeError):
+        _plan_targets_stub(1, 2, 3, 4, 5, 6, 7, 8, 9)
+    with pytest.raises(TypeError):
+        _plan_targets_stub(1, 2, 3, 4, 5, nonsense=True)
+
+
 def test_the_catalog_mirrors_the_runtime_declaration_list():
     # counter.h's X-macro list is the authority; a name only the driver knows
     # would be silently ignored by the build's parser.
@@ -211,7 +232,7 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
     monkeypatch.setattr(campaign_mod, "write_counter_config", lambda cs, d: wanted)
     monkeypatch.setattr(campaign_mod, "configure_counters",
                         lambda bd, w, **k: reconfigured.append((bd, w)))
-    monkeypatch.setattr(campaign_mod, "plan_targets", lambda *a: "plan")
+    monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
         selection=None, plane=None, catalog=None, benchset=None,
@@ -257,7 +278,7 @@ def test_a_counterless_campaign_refuses_an_instrumented_tree(tmp_path,
     (build_dir / "CMakeCache.txt").write_text(
         "ARTS_COUNTER_CONFIG:FILEPATH=/somewhere/counters_census.cfg\n")
     monkeypatch.setattr(campaign_mod, "ensure_build_dir", lambda *a, **k: None)
-    monkeypatch.setattr(campaign_mod, "plan_targets", lambda *a: "plan")
+    monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
         selection=None, plane=None, catalog=None, benchset=None,
@@ -292,7 +313,7 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
     monkeypatch.setattr(campaign_mod, "write_counter_config", lambda cs, d: wanted)
     monkeypatch.setattr(campaign_mod, "configure_counters",
                         lambda bd, w, **k: reconfigured.append((bd, w)))
-    monkeypatch.setattr(campaign_mod, "plan_targets", lambda *a: "plan")
+    monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
         selection=None, plane=None, catalog=None, benchset=None,

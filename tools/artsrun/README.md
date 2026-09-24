@@ -12,15 +12,19 @@ votes a consensus on their result scalars.
 The repository's `.venv` is uv-managed:
 
 ```bash
-uv pip install -e tools/artsrun
+uv pip install -e "tools/artsrun[dev]"
 ```
 
 Without uv:
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/pip install -e tools/artsrun
+.venv/bin/pip install -e "tools/artsrun[dev]"
 ```
+
+The `dev` extra is what carries `pytest`; `requirements.txt` is compiled from
+`pyproject.toml`'s base dependency set only (runtime dependencies), so
+installing it alone leaves pytest absent from the venv.
 
 `requirements.txt` at the repository root is generated from this package's
 `pyproject.toml` (`uv pip compile tools/artsrun/pyproject.toml -o
@@ -312,6 +316,9 @@ runtime reads those from its own configuration, so they move freely.
 ```bash
 .venv/bin/python -m pytest tools/artsrun/tests -q
 ```
+
+This needs the venv from Install with the `dev` extra; a venv installed
+without it has no `pytest` module.
 
 The configuration-rendering tests compare against the committed `configs/`
 trees, so they fail if a template drifts from what the runtimes have been

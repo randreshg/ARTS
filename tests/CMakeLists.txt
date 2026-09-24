@@ -1720,6 +1720,11 @@ if(TARGET arts_shared)
 elseif(TARGET arts_static)
     target_link_libraries(coherence_mode_mismatch PRIVATE arts_static)
 endif()
+# Protocol-sensitive internal headers need the compile-time coherence
+# selection applied per-target (see add_arts_test) — this binary links the
+# tree's own compiled library like any other test.
+arts_apply_protocol(coherence_mode_mismatch
+    ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 
 # --- GPU tests ---
 
@@ -2061,3 +2066,30 @@ add_pure_unit_src(buffer_external_payload
             ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c
     PASS_REGEX "PASS buffer_external_payload|SKIP buffer_external_payload"
     TIMEOUT 60)
+
+# Every test target that links the compiled ARTS library compiles against
+# the tree's protocol too: a helper that registers such a target without
+# applying the definitions would build its own translation units against a
+# library it disagrees with, which is a silent ABI mismatch (a protocol-
+# conditional struct laid out one way in the library and another way in the
+# test) rather than a failed test.  Scoped to library-linking targets: a
+# standalone test that links none of them compiles no library object to
+# disagree with, so it has nothing here to check against.
+get_property(_arts_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(_t IN LISTS _arts_test_targets)
+    get_target_property(_kind ${_t} TYPE)
+    if(NOT _kind STREQUAL "EXECUTABLE")
+        continue()
+    endif()
+    get_target_property(_libs ${_t} LINK_LIBRARIES)
+    if(NOT _libs MATCHES "arts_static|arts_cuda_static|arts_shared")
+        continue()
+    endif()
+    get_target_property(_defs ${_t} COMPILE_DEFINITIONS)
+    if(NOT _defs MATCHES "ARTS_PROTOCOL_")
+        message(FATAL_ERROR
+                "test target ${_t} was registered without "
+                "arts_apply_protocol(): it would compile against a "
+                "protocol the library does not implement")
+    endif()
+endforeach()
