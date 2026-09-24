@@ -98,14 +98,6 @@ void *arts_db_user_ptr(struct arts_db_s *db) {
   if (db == NULL) {
     return NULL;
   }
-#ifdef ARTS_CXL_COHERENT
-  if (db->db_type == ARTS_DB_CXL) {
-    /* The payload never left the CXL window and the descriptor is DRAM-side
-     * metadata, so the user pointer is derived from the GUID, not from an
-     * offset into this struct. */
-    return arts_cxl_get_ptr(db->cache.db_guid);
-  }
-#endif
   if (db->db_type == ARTS_DB) {
     /* Deliberately NOT a first-use point, although asking for the pointer
      * looks like one: a create that takes no hold is handed no pointer at
@@ -259,7 +251,7 @@ void arts_db_free(void *ptr) {
    * destructor tears down its sub-resources (the buffer slot's shared_ptr ref +
    * home_s) in place — we do NOT free it separately; the db_s free below
    * reclaims its storage. */
-  if (arts_db_type_is_coherent(db->db_type)) {
+  if (db->db_type == ARTS_DB) {
     arts_db_cache_destructor(&db->cache);
   }
 #ifdef ARTS_USE_GPU
@@ -291,41 +283,6 @@ void arts_db_deleter(void *self) { arts_db_free(self); }
 __attribute__((constructor)) static void arts_db_register_cb_deleter(void) {
   arts_route_table_register_deleter(ARTS_GUID_DB, arts_db_deleter);
 }
-
-#ifdef ARTS_CXL_COHERENT
-/*
- * cxl_descriptor_new — Allocate and initialize the DRAM-side descriptor of a
- * CXL datablock.
- *
- * Nothing about a CXL block's coherence state lives in the CXL window: the
- * window holds the payload and only the payload.  The synchronization metadata
- * — this rank's cache word, and on the home rank the whole directory (lock
- * word, waiter queues, cached-rank roster) — is ordinary DRAM, where ordinary
- * atomics are available and where a hardware fabric without cache coherence
- * cannot reorder it underneath us.
- *
- * As for every coherent block, the home rank allocates the full descriptor and
- * every other rank allocates the cache-only stub (which stops before the
- * home-directory fields).  The difference from an ordinary DB is only WHICH
- * rank that is: an ordinary GUID names its home in its rank field, while a CXL
- * GUID spends that field on the CXL marker, so the home is derived from the
- * payload offset by arts_db_home_rank.
- */
-static struct arts_db_s *cxl_descriptor_new(arts_guid_t guid, uint64_t len,
-                                            arts_db_init_kind_t kind,
-                                            unsigned int creator_rank) {
-  bool is_home = (arts_db_home_rank(guid) == arts_global_rank_id);
-  uint64_t sz = is_home ? sizeof(struct arts_db_s) : arts_db_cache_stub_size();
-  struct arts_db_s *db =
-      (struct arts_db_s *)arts_malloc_aligned(sz, ARTS_CACHE_LINE_SIZE);
-  memset(db, 0, (size_t)sz);
-  db->db_type = ARTS_DB_CXL;
-  db->cache.db_size = len;
-  db->cache.db_guid = guid;
-  arts_db_cache_init(&db->cache, guid, len, kind, creator_rank);
-  return db;
-}
-#endif /* ARTS_CXL_COHERENT */
 
 /*
  * db_create_in_place — Initialize a DB header in pre-allocated memory.
@@ -458,138 +415,8 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
   bool no_acquire = (flags & ARTS_DB_PROP_NO_ACQUIRE) != 0;
   arts_guid_t guid = NULL_GUID;
 
-#ifdef ARTS_USE_CXL
-  if (db_type == ARTS_DB_CXL) {
-    /* A CXL block is ALLOCATED where it is created — the GUID is minted from
-     * the payload's address in the shared window, so there is no "create it on
-     * rank N" to honour and a placement hint has nothing to place.  The block
-     * is reachable from every rank regardless; which rank ARBITRATES it is a
-     * separate question, answered by arts_db_home_rank from the offset, and
-     * the creator tells that rank about the block below.
-     *
-     * For the same reason a pre-reserved (labeled) GUID cannot name a CXL
-     * block: its GUID is minted FROM the payload address, which does not exist
-     * until the allocator has run.  Both hint fields are therefore ignored
-     * here, and saying so beats letting a caller believe a placement it asked
-     * for was honoured. */
-    if (hint != NULL && hint->rank != ARTS_HINT_CURRENT_RANK &&
-        hint->rank != arts_global_rank_id) {
-      ARTS_WARN("arts_db_create: ARTS_DB_CXL ignores hint->rank (%u) — a CXL "
-                "block is allocated where it is created; its arbitrating home "
-                "is derived from the payload offset",
-                hint->rank);
-    }
-    if (pre_guid != NULL_GUID) {
-      ARTS_WARN("arts_db_create: ARTS_DB_CXL ignores hint->guid — a CXL GUID "
-                "encodes the payload's offset in the shared window and cannot "
-                "be pre-reserved");
-    }
-    rank = arts_global_rank_id;
-  }
-#endif
-
   if (rank == arts_global_rank_id) {
     uint64_t db_span = db_descriptor_span(db_type, len);
-#ifdef ARTS_CXL_COHERENT
-    if (db_type == ARTS_DB_CXL) {
-      /* PAYLOAD ONLY in the CXL window.  The GUID names the payload's offset
-       * directly, so every rank in the job addresses the same bytes without
-       * ever being sent them; what the protocol hands around is the RIGHT to
-       * touch those bytes, and the flush/invalidate pair that makes one rank's
-       * turn visible to the next.  The descriptor that used to sit in front of
-       * the payload is gone from CXL entirely — it is DRAM now, one per rank
-       * (cxl_descriptor_new), because a lock word in memory with no hardware
-       * coherence cannot be a lock word.
-       *
-       * The allocator already rounds to a 64-byte granule; rounding here as
-       * well keeps the flush ranges (which cover whole cache lines) provably
-       * inside the block, so a flush of one DB can never reach another's
-       * bytes. */
-      uint64_t payload_size = ALIGN_UP(len, CACHELINE_SIZE);
-      void *payload = db_descriptor_alloc(
-          ARTS_DB_CXL, payload_size > 0 ? payload_size : CACHELINE_SIZE);
-      if (payload) {
-        guid = arts_cxl_make_guid(payload);
-        unsigned int home = arts_db_home_rank(guid);
-        bool is_home = (home == arts_global_rank_id);
-        struct arts_db_s *db = cxl_descriptor_new(
-            guid, len,
-            is_home ? ARTS_DB_INIT_CREATOR_HOME : ARTS_DB_INIT_CREATOR_REMOTE,
-            arts_global_rank_id);
-        if (no_acquire) {
-          /* No EDT will ever release the create-time hold, so it must not be
-           * taken: undo the creator RW seed on this rank's cache word and, if
-           * this rank is also the directory, on the home word.  Otherwise the
-           * first real acquirer queues behind a writer that does not exist.
-           *
-           * The same undo the coherent local-create path performs, written
-           * against the same protocol-conditional field set — this file is
-           * compiled once per protocol arm (the benchmark variants build VAL
-           * and INV from these very sources), so the arms that have no
-           * lock_state must not see a reference to one. */
-#if defined(ARTS_PROTOCOL_EXCL)
-#if defined(ARTS_RELEASE_RETAIN)
-          atomic_store_explicit(&db->cache.cache_state,
-                                CACHE_MAKE_FULL(1u, CACHE_ST_IDLE,
-                                                CACHE_ST_IDLE,
-                                                ARTS_EXCL_NO_TARGET, 0u, 0u),
-                                memory_order_relaxed);
-          if (is_home) {
-            atomic_store_explicit(
-                &db->lock_state,
-                LOCK_MAKE(EXCL_PHASE_IDLE, arts_global_rank_id, 0u, 0u),
-                memory_order_relaxed);
-          }
-#else  /* ARTS_RELEASE_PURGE — the configuration CXL is built for */
-          atomic_store_explicit(&db->cache.cache_state, 0ULL,
-                                memory_order_relaxed);
-          if (is_home) {
-            atomic_store_explicit(&db->lock_state, 0ULL, memory_order_relaxed);
-          }
-#endif /* ARTS_RELEASE_* */
-#else
-          (void)is_home;
-          db->cache.writer_count = ARTS_GRANT_SEED_IDLE;
-#endif /* ARTS_PROTOCOL_EXCL */
-          /* The creator was given no storage, so any create-time claim to a
-           * reader copy of it is false and goes with the write hold. */
-          arts_db_create_retract_creator_copy(db);
-        }
-        if (!no_acquire && !arts_db_creator_skip_hold(ARTS_DB_CXL)) {
-          /* Register the creator's hold BEFORE the block becomes visible.  The
-           * create-time RW seed above is a real hold in the state machine now
-           * — under the frontier model a CXL block had none, so nothing had to
-           * release it — and whoever drains this thread's created-DB list (the
-           * EDT epilogue, or the scheduler entry for a startup hook) is what
-           * drives the matching release.  Without the entry the seeded hold
-           * never returns and the first foreign writer queues forever. */
-          arts_db_auto_acquire(db, len);
-        }
-        arts_route_table_install(db, guid, arts_global_rank_id, true);
-        if (!is_home) {
-          /* The directory lives on another rank and nothing there knows this
-           * block exists yet — least of all that its creator is holding it RW.
-           * The same message an ordinary remote-home create sends carries
-           * that, tagged with the CXL storage kind so the home builds a
-           * payload-free directory. */
-          arts_send_db_create_coherent(
-              home, guid, len,
-              no_acquire ? ARTS_DB_PROP_NO_ACQUIRE : ARTS_DB_PROP_NONE,
-              (uint16_t)ARTS_DB_CXL, 0);
-        }
-        *addr = no_acquire ? NULL : payload;
-        ARTS_DEBUG("arts_db_create: CXL DB[Guid:%lu, Size:%lu] created, "
-                   "directory home rank %u",
-                   guid, len, home);
-      } else {
-        /* A silent NULL_GUID here would surface as arbitrary downstream
-         * failures instead of the real cause. */
-        ARTS_ERROR("arts_db_create: CXL window arena exhausted for a "
-                   "%lu-byte block",
-                   (unsigned long)len);
-      }
-    } else
-#endif
     {
       void *ptr = db_descriptor_alloc(db_type, db_span);
       if (ptr) {
@@ -1002,12 +829,7 @@ void arts_db_destroy(arts_guid_t guid) {
 
   /* Coherent ARTS_DB path: hand off to the coherence-layer destroy entry,
    * which sends DESTROY_REQ to home and runs the fan-out / finalize there. */
-  if (db_res != NULL && arts_db_type_is_coherent(db_res->db_type)) {
-    /* CXL blocks take this path too: the bytes are not freed (the CXL window
-     * is a bump arena, and the real library's free is the one that reclaims
-     * them), but the DIRECTORY must be torn down under arbitration, because
-     * the home may still be holding the block open for a grant whose release
-     * is in flight. */
+  if (db_res != NULL && db_res->db_type == ARTS_DB) {
     arts_shared_release(&db_res_h);
     arts_db_destroy_remote(guid);
     return;
@@ -1040,10 +862,7 @@ void arts_db_destroy(arts_guid_t guid) {
 static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
                             uint32_t i) {
   arts_db_access_mode_t access_mode = depv[i].mode;
-  /* The rank that ARBITRATES this block, which for a CXL GUID is derived from
-   * the payload offset rather than read out of the (marker-occupied) rank
-   * field.  See arts_db_home_rank. */
-  unsigned int owner = arts_db_home_rank(depv[i].guid);
+  unsigned int owner = arts_guid_get_rank(depv[i].guid);
   arts_guid_kind_t guid_type = arts_guid_get_kind(depv[i].guid);
 
   if (guid_type != ARTS_GUID_DB) {
@@ -1086,28 +905,14 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
    * recycle pool embedded in it — for the slot's whole acquire->release span.
    */
   arts_shared_ptr_t *cache_owner_h = NULL;
-  if (db_temp != NULL && arts_db_type_is_coherent(db_temp->db_type)) {
+  if (db_temp != NULL && db_temp->db_type == ARTS_DB) {
     cache = &db_temp->cache;
     cache_owner_h = &db_temp_h;
   } else if (db_temp == NULL && owner != arts_global_rank_id) {
     /* db_size=0 means "size learned on first GRANT/SNAPSHOT_RESPONSE
-     * install_buffer".  The home is agreed by every rank from the GUID alone
-     * (rank field for an ordinary block, derived offset for a CXL one), so
-     * this arm is reached on exactly the non-home ranks and the stub it
-     * installs correctly omits the home-directory fields.
-     *
-     * A CXL block's size is likewise unknown here, and for a different reason
-     * than an ordinary block's: its key is spent on the payload offset, so it
-     * carries no size hint to fall back on.  It is learned from the first
-     * grant, which states it (the home always knows it), before that grant's
-     * invalidate needs a range to cover. */
-    arts_db_types_t stub_type = ARTS_DB;
-#ifdef ARTS_CXL_COHERENT
-    if (arts_guid_is_cxl(depv[i].guid)) {
-      stub_type = ARTS_DB_CXL;
-    }
-#endif
-    stub_h = arts_db_cache_stub_install(depv[i].guid, /*db_size=*/0, stub_type);
+     * install_buffer".  The home is encoded in the GUID, so all ranks
+     * agree. */
+    stub_h = arts_db_cache_stub_install(depv[i].guid, /*db_size=*/0);
     struct arts_db_s *stub_db = (struct arts_db_s *)arts_shared_get(stub_h);
     if (stub_db != NULL) {
       cache = &stub_db->cache;
@@ -1121,7 +926,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
      * Record the coherent subtype now (before any park) so release routes by
      * dep->subtype regardless of whether the handler resolves locally or the
      * async data-response fills depv[i].ptr later. */
-    depv[i].subtype = arts_db_of_cache(cache)->db_type;
+    depv[i].subtype = ARTS_DB;
     struct arts_ooo_args_db_acquire_s a = {
         .edt = edt, .db_guid = depv[i].guid, .slot = i};
     arts_handler_db_acquire(arts_db_of_cache(cache), &a);
@@ -1201,13 +1006,12 @@ static void rw_fire_from_cursor(struct arts_edt_s *edt);
 static void resume_enqueue(arts_guid_t edt_guid);
 
 /* OOO_DB_ACQUIRE replay table entry — see db.h.  Re-attempts the single
- * deferred dep through acquire_one_dep's subtype-aware 3-way: for a coherent
- * kind this lands in arts_handler_db_acquire, for a kind the protocol does not
- * acquire in the pinned ptr path, and a still-absent DB re-defers.  Mapping
- * OOO_DB_ACQUIRE straight to arts_handler_db_acquire would mishandle the kinds
- * it does not serve (their embedded cache is zeroed — its pending_rw queue is
- * uninitialised, so the coherent RW path would push onto a NULL-headed queue
- * and crash). */
+ * deferred dep through acquire_one_dep's subtype-aware 3-way: for an ARTS_DB
+ * this lands in arts_handler_db_acquire (coherent), for a PIN/GPU/CXL DB in the
+ * pinned ptr path, and a still-absent DB re-defers.  Mapping OOO_DB_ACQUIRE
+ * straight to arts_handler_db_acquire would mishandle non-coherent subtypes
+ * (their embedded cache is zeroed — its pending_rw queue is uninitialised, so
+ * the coherent RW path would push onto a NULL-headed queue and crash). */
 void arts_db_acquire_replay_dep(void *item, void *args) {
   (void)item; /* the 3-way re-looks-up the installed db_s; the drain pins it */
   struct arts_ooo_args_db_acquire_s *a =
@@ -1273,10 +1077,10 @@ static bool dep_needs_acquire(arts_edt_dep_t *depv, uint32_t i) {
  *
  * Only the slots that share a block's coherence acquisition are classified —
  * DB_MODE_RO and DB_MODE_RW.  A NULL GUID, a value slot (DB_MODE_NULL), a
- * non-DB kind, an already-resolved slot, a storage kind the protocol does not
- * acquire and a device-side internal mode (DB_MODE_LC_SYNC / MEMSET and the
- * like, which resolve on their own per-mode terms) are neither owner nor alias
- * and are left exactly as they are.
+ * non-DB kind, an already-resolved slot, a CXL block and a device-side internal
+ * mode (DB_MODE_LC_SYNC / MEMSET and the like, which the coherence protocol
+ * does not acquire and which resolve on their own per-mode terms) are neither
+ * owner nor alias and are left exactly as they are.
  *
  * A pure function of depv, which is fixed once the EDT is ready — so the answer
  * is the same for every frame that consumes it and nothing re-derives it. */
@@ -1303,10 +1107,9 @@ void arts_dep_sort_and_classify(arts_edt_dep_t *depv, uint32_t depc,
         (depv[i].mode != DB_MODE_RO && depv[i].mode != DB_MODE_RW)) {
       continue;
     }
-#if defined(ARTS_USE_CXL) && !defined(ARTS_CXL_COHERENT)
-    /* With no protocol able to serve it, a CXL block has no descriptor to
-     * pin and no coherence acquisition to share: every slot naming it
-     * resolves on its own from the window. */
+#ifdef ARTS_USE_CXL
+    /* A CXL block has no descriptor to pin and no coherence acquisition to
+     * share: every slot naming it resolves on its own from the segment. */
     if (arts_guid_is_cxl(depv[i].guid)) {
       continue;
     }
@@ -1316,12 +1119,10 @@ void arts_dep_sort_and_classify(arts_edt_dep_t *depv, uint32_t depc,
   }
 }
 
-/* Ownership-serialized (RW cursor) dep?  A storage kind the protocol does
- * not acquire bypasses DB coherence entirely — no ownership round, so
- * never serialized; it fires in Pass 1.  A kind the protocol DOES acquire
- * answers by its access mode alone, whatever medium its bytes live in. */
+/* Ownership-serialized (RW cursor) dep? CXL DBs bypass DB coherence (no
+ * ownership round), so they are never serialized — they fire in Pass 1. */
 bool arts_dep_is_serialized(arts_edt_dep_t *depv, uint32_t i) {
-#if defined(ARTS_USE_CXL) && !defined(ARTS_CXL_COHERENT)
+#ifdef ARTS_USE_CXL
   if (arts_guid_is_cxl(depv[i].guid)) {
     return false;
   }
@@ -1764,22 +1565,16 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
     if (depv[i].guid == NULL_GUID || depv[i].ptr == NULL) {
       continue;
     }
-    /* Skip via the subtype recorded at acquire — NOT a borrowed
-     * (non-refcounted) route pointer, which would use-after-free if a
-     * concurrent destroy freed the arts_db_s while we read db->db_type through
-     * it.  The pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU) have
-     * no DB-level coherence and fall through to their per-subtype prep; their
-     * dep->ptr is db+1, so the recovery below is valid for them.
-     *
-     * Both coherent kinds are excluded here, and for the same reason: their
-     * dep->ptr is NOT (db_s + 1), so the pointer arithmetic below would not
-     * land on a descriptor.  For ARTS_DB it points into the installed buffer;
-     * for ARTS_DB_CXL it points into the CXL window, with the descriptor in
-     * DRAM somewhere else entirely.  Both drive their visibility work inside
-     * the coherence layer — for CXL, the reader's invalidate now happens at
-     * the moment the grant arrives rather than here, which is what makes it
-     * ordered against the writer's flush instead of merely adjacent to it. */
-    if (arts_db_type_is_coherent(depv[i].subtype)) {
+    /* For coherent ARTS_DB, dep->ptr is buf->data and pointer arithmetic to
+     * recover db_s would not land on a db_s.  Skip via the subtype recorded
+     * at acquire — NOT a borrowed (non-refcounted) route pointer, which would
+     * use-after-free if a concurrent destroy freed the arts_db_s while we read
+     * db->db_type through it.  Coherent ARTS_DB drives invalidation inside
+     * the coherence layer; non-coherent pinned subtypes (ARTS_DB_PIN,
+     * ARTS_DB_GPU_PIN, ARTS_DB_GPU, ARTS_DB_CXL) have no DB-level coherence
+     * and fall through to their per-subtype prep (their dep->ptr is db+1, so
+     * the recovery below is valid for them). */
+    if (depv[i].subtype == ARTS_DB) {
       continue;
     }
 #ifdef ARTS_USE_GPU
@@ -1810,12 +1605,10 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
  *     dep built from a created_db_list entry)
  *
  * Per access mode:
- *   - DB_MODE_RO / DB_MODE_RW: a coherent kind (ARTS_DB always, ARTS_DB_CXL
- *     where the build gives it a coherence arm) routes through the coherent
- *     release entry points (arts_db_release_ro / arts_db_release_rw); the RW
- *     arm's own release is where a kind's producer-side visibility edge, if
- *     it has one, runs.  Non-coherent pinned subtypes have no DB-level
- *     coherence — release is a no-op.
+ *   - DB_MODE_RO / DB_MODE_RW: only ARTS_DB needs DB-level coherence
+ *     work; route through the coherent release entry points
+ *     (arts_db_release_ro / arts_db_release_rw).  Non-coherent pinned
+ *     subtypes have no DB-level coherence — release is a no-op.
  *   - ARTS_DB_GPU subtype (GPU build, non-LC_SYNC mode): release the GPU-LC
  *     reader lock — pure intra-rank multi-device coordination.
  *
@@ -1842,7 +1635,7 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
    * / release_ro only while the cache is still installed; once destroyed there
    * is no publish / version work left to do (that ref drop is the only cleanup
    * needed). */
-  if (arts_db_type_is_coherent(dep->subtype) &&
+  if (dep->subtype == ARTS_DB &&
       (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW)) {
     /* B1: take the stashed descriptor pin (set when this slot's buffer ref was
      * secured at acquire).  It is released LAST — after the arm's release and
@@ -1885,7 +1678,7 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
         db_fallback = arts_route_table_lookup_db(dep->guid);
         db = (struct arts_db_s *)arts_shared_get(db_fallback);
       }
-      if (db != NULL && arts_db_type_is_coherent(db->db_type)) {
+      if (db != NULL && db->db_type == ARTS_DB) {
         if (access_mode == DB_MODE_RW) {
           arts_db_release_rw(&db->cache, dep->ptr);
         } else {
@@ -1896,11 +1689,8 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
     /* Drop the EDT's per-acquire buffer ref AFTER the arm's release: an arm
      * whose release moves the EDT's own bytes needs them alive until its
      * transfer has completed.  An alias slot takes this path too — it holds
-     * a ref of its own, it just never held the coherence hold.  A CXL dep
-     * holds none at all: its dep->ptr addresses the CXL window, which no
-     * control block wraps and which the acquire path never took a reference
-     * on. */
-    if (arts_db_type_has_buffer(dep->subtype) && dep->ptr != NULL) {
+     * a ref of its own, it just never held the coherence hold. */
+    if (dep->ptr != NULL) {
 #ifdef ARTS_FAM_DIRECT
       /* Header-relative arithmetic on dep->ptr lands in the shared store, not
        * in a header, so the descriptor is the one this slot's own pin names:
@@ -1977,14 +1767,12 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
 /*
  * release_one_created — Release a single created DB by GUID.
  *
- * Looks up the DB struct via the route table; for a coherent kind (ARTS_DB
- * always, ARTS_DB_CXL where the build gives it a coherence arm) the
- * creator's hold is the arm's own state, seeded at ARTS_DB_INIT_CREATOR_HOME
- * / ARTS_DB_INIT_CREATOR_REMOTE and released through the arm's own entry
- * point with NO buffer ref to drop (auto_acquire never called acquire_buf).
- * For the remaining, non-coherent pinned subtypes (ARTS_DB_PIN,
- * ARTS_DB_GPU_PIN, ARTS_DB_GPU, and ARTS_DB_CXL where no coherence arm
- * claims it) the creator EDT has no DB-level coherence hold to drop;
+ * Looks up the DB struct via the route table; for ARTS_DB the creator's hold
+ * is the arm's own state, seeded at ARTS_DB_INIT_CREATOR_HOME /
+ * ARTS_DB_INIT_CREATOR_REMOTE and released through the arm's own entry point
+ * with NO buffer ref to drop (auto_acquire never called acquire_buf).  For
+ * non-coherent pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU,
+ * ARTS_DB_CXL) the creator EDT has no DB-level coherence hold to drop;
  * building a synthetic RW-mode dep and dispatching through release_one_dep
  * handles only the per-mode non-coherence work (GPU-LC reader unlock).
  */
@@ -1994,7 +1782,7 @@ static void release_one_created(arts_guid_t guid, arts_db_access_mode_t mode) {
   if (!db) {
     return;
   }
-  if (arts_db_type_is_coherent(db->db_type)) {
+  if (db->db_type == ARTS_DB) {
     /* Coherent creator release.  No buffer ref to drop (auto_acquire is a
      * no-op for ARTS_DB — the hold is the seed arts_db_cache_init stamped on
      * the cache).  The arm's create-hold entry point runs it: the creating
@@ -2144,42 +1932,3 @@ void arts_release_created_dbs(void) {
  */
 void arts_wait_release_dbs(void) {}
 void arts_wait_reacquire_dbs(void) {}
-
-/* ── CXL cache-flush helpers ────────────────────────────────────────────────
- */
-
-#ifdef ARTS_CXL_COHERENT
-/* Both edges cover the payload and nothing else.  Under the permission-only
- * protocol the CXL window holds no descriptor, no lock word and no counter —
- * every byte of coherence state is DRAM at the home rank, reached by message —
- * so there is no metadata line to flush and no chicken-and-egg round where the
- * size must be read out of shared memory before the payload can be flushed.
- * The size is already local: the DRAM descriptor carries it.
- *
- * The range is rounded up to a whole number of cache lines because the CXL
- * allocator hands out 64-byte-aligned blocks: rounding cannot reach a
- * neighbouring block's bytes, and stopping short would leave the tail line of
- * an odd-sized payload unflushed. */
-static void cxl_flush_range(arts_guid_t guid, bool producer) {
-  arts_shared_ptr_t db_h = arts_route_table_lookup_db(guid);
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-  if (db != NULL && db->cache.db_size > 0) {
-    void *payload = arts_cxl_get_ptr(guid);
-    uint64_t span = ALIGN_UP(db->cache.db_size, CACHELINE_SIZE);
-    if (producer) {
-      FLUSH_FENCE_PRODUCER(payload, span);
-    } else {
-      FLUSH_FENCE_CONSUMER(payload, span);
-    }
-  }
-  arts_shared_release(&db_h);
-}
-
-void arts_cxl_producer_flush(arts_guid_t guid) {
-  cxl_flush_range(guid, /*producer=*/true);
-}
-
-void arts_cxl_consumer_flush(arts_guid_t guid) {
-  cxl_flush_range(guid, /*producer=*/false);
-}
-#endif /* ARTS_CXL_COHERENT */

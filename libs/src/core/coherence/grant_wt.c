@@ -187,7 +187,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
-    db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0, ARTS_DB);
+    db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0);
     db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db == NULL) {
       arts_shared_release(&db_h);

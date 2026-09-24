@@ -285,54 +285,7 @@ static inline bool arts_guid_is_cxl(arts_guid_t guid) {
   return ARTS_GUID_GET_RANK(guid) == ARTS_CXL_RANK;
 }
 
-/* Declared in system/identity.h; repeated here (as cxl/deque.h does) so the
- * GUID helpers stay includable from headers that must not pull in the runtime
- * identity surface. */
-extern unsigned int arts_global_rank_count;
-
-/** Directory home of a CXL-encoded GUID.
- *
- *  A CXL GUID spends its whole rank field on the ARTS_CXL_RANK marker and its
- *  whole key on the payload's offset in the FAM window, so unlike an ordinary
- *  DB GUID it names no home rank.  The home is therefore DERIVED from the
- *  offset: every rank computes the same answer from the GUID alone, with no
- *  communication and no registry, and consecutive allocations land on
- *  different homes so the directory load spreads.
- *
- *  The payload is 64-byte aligned (CXL cache-line granularity), so the low 6
- *  bits of the offset are always zero and carry no entropy — hash the GRANULE
- *  index instead.  The mixer is splitmix64's finalizer: a rank count that is a
- *  small power of two would otherwise see only the low granule bits, which for
- *  a bump allocator advance in lockstep with allocation order.
- */
-static inline unsigned int arts_cxl_home_rank(arts_guid_t guid) {
-  uint64_t x = ARTS_GUID_GET_KEY(guid) >> 6; /* granule index */
-  x += 0x9e3779b97f4a7c15ULL;
-  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
-  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
-  x = x ^ (x >> 31);
-  unsigned int n = arts_global_rank_count;
-  return (n == 0u) ? 0u : (unsigned int)(x % (uint64_t)n);
-}
-
 #endif /* ARTS_USE_CXL */
-
-/** Directory home of a DB GUID, for any storage kind.
- *
- *  An ordinary DB GUID carries its home in the rank field; a CXL GUID derives
- *  it from the payload offset (see arts_cxl_home_rank).  Every coherence site
- *  that asks "who arbitrates this block" goes through here — using
- *  arts_guid_get_rank directly would send a CXL block's traffic to the
- *  ARTS_CXL_RANK marker, which is not a rank.
- */
-static inline unsigned int arts_db_home_rank(arts_guid_t guid) {
-#ifdef ARTS_USE_CXL
-  if (arts_guid_is_cxl(guid)) {
-    return arts_cxl_home_rank(guid);
-  }
-#endif
-  return (unsigned int)ARTS_GUID_GET_RANK(guid);
-}
 
 #ifdef __cplusplus
 }

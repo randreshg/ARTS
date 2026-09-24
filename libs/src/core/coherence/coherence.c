@@ -321,16 +321,6 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
    * defined value is NULL) or the DB was destroyed under a pending
    * acquire, which the programming model leaves undefined. */
   void *data = buf ? buf->data : NULL;
-#ifdef ARTS_CXL_COHERENT
-  if (data == NULL && db_h != NULL && depv[slot].guid != NULL_GUID &&
-      arts_guid_is_cxl(depv[slot].guid)) {
-    /* Permission-only: nothing was fetched and nothing is installed, so the
-     * payload address is a pure function of the GUID.  The claim below is
-     * still the same CAS — two delivery paths can wake one slot and exactly
-     * one may account. */
-    data = arts_cxl_get_ptr(depv[slot].guid);
-  }
-#endif
   /* The descriptor this resolution belongs to, borrowed for the alias fill
    * below: the aliases pin THIS handle rather than looking the block up again,
    * because a lookup can miss under a concurrent destroy while the payload is
@@ -500,8 +490,7 @@ void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
  * means the DB was destroyed before the install could be observed (the
  * lost-race lookup found no live entry). */
 arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
-                                             uint64_t db_size,
-                                             arts_db_types_t db_type) {
+                                             uint64_t db_size) {
   /* First check if it already exists (someone else stub-installed or
    * a wire-receive fired). */
   arts_shared_ptr_t existing = arts_route_table_lookup_db(db_guid);
@@ -517,7 +506,7 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
   struct arts_db_s *stub =
       (struct arts_db_s *)arts_malloc_aligned(stub_sz, ARTS_CACHE_LINE_SIZE);
   memset(stub, 0, stub_sz);
-  stub->db_type = db_type;
+  stub->db_type = ARTS_DB;
 
   /* db_size==0 ⇒ stub install: buffer alloc deferred until first wire
    * arrival (install_buffer with the actual db_size).  Cache-only: this path
@@ -544,14 +533,6 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
 /* ===== Case 1/3/5: local-buffer acquire ============================= */
 
 void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
-#ifdef ARTS_CXL_COHERENT
-  if (arts_db_of_cache(cache)->db_type == ARTS_DB_CXL) {
-    /* The bytes are already addressable and were never anyone's to install;
-     * holding a grant is the whole of "having" them. */
-    INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    return arts_cxl_get_ptr(cache->db_guid);
-  }
-#endif
   /* Take the EDT's strong ref on the buffer and return buf->data.  The handle
    * is intentionally NOT released here — the ref is the EDT's hold for its
    * whole lifetime; release_one_dep drops it through the block's descriptor.
@@ -1226,7 +1207,7 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
  * self gets the message via self-loop).  Caller is responsible for
  * the OCR-spec contract: no concurrent acquires/uses in flight. */
 void arts_db_destroy_remote(arts_guid_t db_guid) {
-  unsigned int home_rank = arts_db_home_rank(db_guid);
+  unsigned int home_rank = arts_guid_get_rank(db_guid);
   arts_send_db_destroy(home_rank, db_guid);
 }
 
