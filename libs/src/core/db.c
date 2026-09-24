@@ -783,18 +783,13 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
 }
 
 /*
- * arts_db_destroy — Mark a DataBlock for deferred destruction.
+ * arts_db_destroy — destroy a DataBlock system-wide, from any rank.
  *
- * If the calling EDT currently holds an acquire on this DB (either via
- * the auto-acquired created_db_list or via a dependency slot), the
- * acquire is implicitly released first.  This matches OCR's ocrDbDestroy
- * semantics: "If the EDT has acquired this DB, this call implicitly
- * releases the DB."
- *
- * After the implicit release, the route-table entry is marked for
- * deletion.  New acquire attempts (inc_item) will fail once DELETE_ITEM
- * is set.  The actual memory is freed when the last outstanding
- * route-table reference is returned (deferred deletion).
+ * An acquire the calling EDT holds on the block (its own create's hold or a
+ * dependence slot) is released first.  A coherent block's destroy is then a
+ * message to the block's home, which tears the block down and notifies every
+ * caching rank; a pinned kind is retired on the creating rank it lives on.
+ * Storage goes when the last outstanding reference drops.
  */
 void arts_db_destroy(arts_guid_t guid) {
   INCREMENT_NUM_DB_DESTROY_BY(1);
@@ -811,20 +806,6 @@ void arts_db_destroy(arts_guid_t guid) {
   }
 #endif
 
-  /* The block's kind, from the descriptor this task created when it did:
-   * this rank's slot may hold no descriptor for the GUID at this moment (its
-   * previous block retired, this task's create not yet installed). */
-  bool created_coherent = false;
-  arts_vector_t *list = arts_get_created_db_list();
-  for (uint64_t i = arts_vector_count(list); i > 0; i--) {
-    struct arts_db_s *c = (struct arts_db_s *)arts_shared_get(
-        *(arts_shared_ptr_t *)arts_vector_at(list, i - 1));
-    if (c->cache.db_guid == guid) {
-      created_coherent = (c->db_type == ARTS_DB);
-      break;
-    }
-  }
-
   /* Implicit release: if the calling EDT holds an acquire on this DB,
    * release it first (matches OCR ocrDbDestroy semantics).  A created/owned
    * DB releases as RW; a dep release reads the slot mode in Path 2 regardless.
@@ -834,26 +815,19 @@ void arts_db_destroy(arts_guid_t guid) {
   arts_shared_ptr_t db_res_h = arts_route_table_lookup_db(guid);
   struct arts_db_s *db_res = (struct arts_db_s *)arts_shared_get(db_res_h);
 
-  /* Coherent ARTS_DB path: hand off to the coherence-layer destroy entry,
-   * which sends DESTROY_REQ to home and runs the fan-out / finalize there.
-   * A block this task created coherent is destroyed so even while its
-   * descriptor is not the one this rank's slot holds; the destroy waits at
-   * the home like any other message for it. */
-  if ((db_res != NULL && db_res->db_type == ARTS_DB) ||
-      (db_res == NULL && created_coherent)) {
-    arts_shared_release(&db_res_h);
-    arts_db_destroy_remote(guid);
-    return;
-  }
-
-  /* Non-coherent pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU,
-   * ARTS_DB_CXL): the DB lives only on the creator rank.  Retire the
-   * descriptor this lookup found — once outstanding refs drop, the cb deleter
-   * (arts_db_deleter) runs. */
-  if (db_res != NULL) {
+  /* A coherent block's destroy goes to its home, which is derived from the
+   * GUID and fans the teardown out to every caching rank, this one included.
+   * The lookup exists only to recognise a pinned kind, which the GUID does
+   * not encode: such a block lives on its creating rank alone and has no
+   * home protocol, so its descriptor is retired here and, once outstanding
+   * refs drop, the cb deleter (arts_db_deleter) runs. */
+  if (db_res != NULL && db_res->db_type != ARTS_DB) {
     (void)arts_route_table_set_destroyed_item(guid, db_res_h);
     arts_shared_release(&db_res_h);
+    return;
   }
+  arts_shared_release(&db_res_h);
+  arts_db_destroy_remote(guid);
 }
 
 /**********************DB MEMORY MODEL*************************************/

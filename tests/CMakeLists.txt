@@ -1428,6 +1428,22 @@ foreach(_v 2n 3n 4n 2n_io)
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
+# db_destroy_untouched_rank: a block homed on the first rank is destroyed by a
+# task on the last rank that never acquired it, and the home then creates the
+# label again; a destroy that never left the last rank would leave the second
+# create parked behind a live first generation.  On 1n the destroying task
+# runs on the home, so it passes without exercising that path.
+add_arts_test(db_destroy_untouched_rank)
+register_single_node_test(db_destroy_untouched_rank TIMEOUT 30)
+register_multinode_test(db_destroy_untouched_rank TIMEOUT 60)
+foreach(_t db_destroy_untouched_rank db_destroy_untouched_rank_2n
+        db_destroy_untouched_rank_3n db_destroy_untouched_rank_4n
+        db_destroy_untouched_rank_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
 # rendezvous_loser_parks: every rank creates one event label, one install
 # stands and the rest park at the home; the home destroys each generation in
 # turn, so every parked create installs, is read and is destroyed.  The
