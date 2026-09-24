@@ -47,6 +47,7 @@ static void churn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
           break;
         }
       }
+      arts_fam_flush_producer(live[i], len[i]);
       arts_fam_free(live[i]);
       live[i] = NULL;
     } else {
@@ -66,6 +67,7 @@ static void churn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   for (int i = 0; i < LIVE; i++) {
     if (live[i]) {
+      arts_fam_flush_producer(live[i], len[i]);
       arts_fam_free(live[i]);
     }
   }

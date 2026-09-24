@@ -247,11 +247,31 @@ void arts_fam_backend_config_check(const struct arts_config_s *config) {
              decider ? decider : "");
 }
 
+static inline void fam_flush_line(const void *p) {
+  if (g_clflushopt) {
+    __asm__ __volatile__(".byte 0x66; clflush %0" : "+m"(*(volatile char *)p));
+  } else {
+    __asm__ __volatile__("clflush %0" : "+m"(*(volatile char *)p));
+  }
+}
+
 void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
-  (void)p;
-  (void)bytes;
-  (void)producer;
-  __asm__ __volatile__("sfence" ::: "memory");
+  /* The instruction writes back AND invalidates, so one sweep serves both
+   * roles; only the fence differs. */
+  const char *s =
+      (const char *)((uintptr_t)p & ~(uintptr_t)(ARTS_FAM_GRANULE - 1u));
+  const char *e = (const char *)p + bytes;
+  for (; s < e; s += ARTS_FAM_GRANULE) {
+    fam_flush_line(s);
+  }
+  if (producer) {
+    /* The write-backs must precede whatever tells a peer to read them. */
+    __asm__ __volatile__("sfence" ::: "memory");
+  } else {
+    /* The invalidations must precede the loads that follow, which is a
+     * load-ordering property a store fence does not give. */
+    __asm__ __volatile__("mfence" ::: "memory");
+  }
 }
 
 void arts_fam_backend_poison(void *p, size_t bytes) {

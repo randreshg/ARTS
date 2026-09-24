@@ -121,11 +121,12 @@ void arts_fam_backend_config_check(const struct arts_config_s *config);
  * answers false. */
 static inline bool arts_fam_strict(void) { return arts_fam_backend_strict(); }
 
-/* Both flushes end in a store fence and a compiler memory barrier: without
- * them the copy that follows a consumer flush may be hoisted above it.  A
- * store fence orders STORES, so neither flush is a StoreLoad barrier: a
- * releaser that publishes its bytes and then LOADS a peer's word to decide
- * whether it may stand down must place an
+/* Both flushes end in a fence and a compiler memory barrier: the producer's
+ * is a store fence, so its write-backs precede whatever tells a peer to read
+ * them; the consumer's is a full fence, so the loads that follow it see the
+ * invalidated lines.  The producer flush is therefore not a StoreLoad
+ * barrier: a releaser that publishes its bytes and then LOADS a peer's word
+ * to decide whether it may stand down must place an
  * atomic_thread_fence(memory_order_seq_cst) between the publication and that
  * load.  The flush does not stand in for it. */
 static inline void arts_fam_flush_producer(const void *p, size_t bytes) {
