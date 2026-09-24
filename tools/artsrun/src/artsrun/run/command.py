@@ -25,6 +25,7 @@ import functools
 import os
 import shlex
 import subprocess
+from pathlib import Path
 
 from artsrun.model.plane import RuntimeKind
 from artsrun.model.profile import Launcher, Profile
@@ -173,12 +174,13 @@ def build_command(cell: Cell, profile: Profile) -> list[str]:
 
 
 def cxl_wrap(argv: list[str], cell: Cell) -> list[str]:
-    """Region setup surrounds the complete launch, never individual ranks."""
-    if not cell.cxl or cell.entry.kind is not RuntimeKind.ARTS:
+    """The device's region setup surrounds the complete launch of a
+    FAM-device cell, never individual ranks."""
+    if not cell.fam_device:
         return argv
     script = cxl_script()
     if not script.is_file():
-        raise FileNotFoundError(f"CXL wrapper missing: {script}")
+        raise FileNotFoundError(f"FAM-device region wrapper missing: {script}")
     return ["bash", str(script), *argv]
 
 
@@ -195,8 +197,20 @@ def with_post_verify(argv: list[str], cell: Cell) -> list[str]:
     return ["sh", "-c", f"{render(argv)} && {{ {hook} ; }}"]
 
 
-def build_env(cell: Cell, profile: Profile) -> dict[str, str]:
+def flush_log_path(log_dir: Path, cell: Cell) -> Path:
+    return log_dir / f"{cell.slug}.flush.bin"
+
+
+def build_env(cell: Cell, profile: Profile,
+              log_dir: Path | None = None) -> dict[str, str]:
     env = dict(cell.env)
+    # The device library writes its flush trace where ARTS_FLUSH_LOG points,
+    # else into the working directory.  It takes one path for all ranks, so
+    # with more than one rank every rank on a host would overwrite the same
+    # file: only a one-rank cell keeps its trace, beside the cell's log.
+    if cell.fam_device and log_dir is not None:
+        env["ARTS_FLUSH_LOG"] = (str(flush_log_path(log_dir, cell))
+                                 if cell.nodes == 1 else "/dev/null")
     # All three runtimes carry the same env-gated end-to-end stamp — rank 0
     # prints "[E2E] <ns>" spanning application start to shutdown recognition
     # (runtime init and teardown excluded on both ends) — so every cell asks

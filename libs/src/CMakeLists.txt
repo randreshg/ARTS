@@ -46,10 +46,6 @@ target_include_directories(arts_interface INTERFACE
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-if(ARTS_USE_CXL)
-    target_link_libraries(arts_interface INTERFACE arts_cxl_lib)
-endif()
-
 # --- Coherence-protocol helpers (shared by main lib + benchmark variants) -----
 # Sets ${out} (caller scope) to the coherence model TU paths for
 # (proto,placement), RELATIVE to libs/src/core/.  Mirrors
@@ -332,10 +328,6 @@ if(APPLE AND HWLOC_FOUND)
     target_link_libraries(arts_static PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
 endif()
 
-if(ARTS_USE_CXL)
-    target_link_libraries(arts_static PUBLIC arts_cxl_lib)
-endif()
-
 target_link_libraries(arts_static PRIVATE arts::libfabric)
 
 arts_apply_protocol(arts_static ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
@@ -412,10 +404,6 @@ if(ARTS_BUILD_SHARED)
     # Add macOS framework dependencies for hwloc
     if(APPLE AND HWLOC_FOUND)
         target_link_libraries(arts_shared PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
-    endif()
-
-    if(ARTS_USE_CXL)
-        target_link_libraries(arts_shared PUBLIC arts_cxl_lib)
     endif()
 
     arts_apply_protocol(arts_shared ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})

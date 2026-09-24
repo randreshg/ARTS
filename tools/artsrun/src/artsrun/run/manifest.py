@@ -136,7 +136,7 @@ def write_manifest(
             "args": list(cell.args),
             "timeout_s": cell.timeout_s,
             "cfg": str(cell.cfg) if cell.cfg else None,
-            "env": build_env(cell, profile),
+            "env": build_env(cell, profile, log_path.parent),
             "cpu_width": cell.cpu_width,
             "log": str(log_path),
             **describe_command(cell, profile, log_path),

@@ -53,6 +53,12 @@ class Cell:
     cxl: bool = False
 
     @property
+    def fam_device(self) -> bool:
+        """A fabric-attached-memory cell of a FAM-device campaign: its ranks
+        run on the device library, inside the device's region setup."""
+        return self.cxl and self.entry.is_fam
+
+    @property
     def key(self) -> str:
         return f"{self.app.key}@{self.nodes}n/{self.entry.key}#{self.repeat}"
 

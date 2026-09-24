@@ -469,6 +469,23 @@ function(register_multinode_test test_name)
     endforeach()
 endfunction()
 
+# A device library may write per-process byproducts into the working
+# directory -- the vendored emulation dumps a flush trace at exit unless
+# ARTS_FLUSH_LOG names another path -- and a test's working directory is the
+# build tree, so every test of a DEVICE tree sends the trace nowhere.  A
+# test's properties can be set only from the directory that added it, so each
+# directory that registers tests calls this once, after its last add_test.
+function(arts_fam_device_test_env)
+    if(NOT ARTS_FAM_BACKEND STREQUAL "DEVICE")
+        return()
+    endif()
+    get_property(_tests DIRECTORY PROPERTY TESTS)
+    if(_tests)
+        set_property(TEST ${_tests} APPEND PROPERTY
+                     ENVIRONMENT "ARTS_FLUSH_LOG=/dev/null")
+    endif()
+endfunction()
+
 # The store-backed arm's own entries.  They DELEGATE to the two helpers above
 # rather than resolving a cfg of their own: ARTS_TEST_CFG_DIR is the one root
 # and arts_test_cfg is the one resolver, so these tests move to the strict
@@ -2066,3 +2083,5 @@ foreach(_t IN LISTS _arts_test_targets)
                 "protocol the library does not implement")
     endif()
 endforeach()
+
+arts_fam_device_test_env()

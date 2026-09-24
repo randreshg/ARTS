@@ -156,7 +156,7 @@ class ArtsRunApp(App):
         entries = plane_panel.selected()
         apps = bench_panel.selected()
         nodes = profile_panel.node_counts()
-        cxl = self.query_one("#run-cxl", Switch).value
+        cxl = self.query_one("#run-fam-device", Switch).value
 
         def path_input(name: str) -> str | None:
             value = self.query_one(name, Input).value.strip()
@@ -176,8 +176,8 @@ class ArtsRunApp(App):
             repeats=profile_panel.profile.repeats,
             build_dir=path_input("#run-build-dir"),
             cxl=cxl,
-            cxl_rapid_include_dir=path_input("#run-cxl-rapid") if cxl else None,
-            cxl_lib_dir=path_input("#run-cxl-lib") if cxl else None,
+            fam_device_include_dir=path_input("#run-fam-include") if cxl else None,
+            fam_device_library=path_input("#run-fam-library") if cxl else None,
         )
 
     def _refresh_size(self) -> None:
@@ -223,9 +223,9 @@ class ArtsRunApp(App):
     def _dry_pressed(self) -> None:
         self.action_dry_run()
 
-    @on(Switch.Changed, "#run-cxl")
-    def _cxl_changed(self, event: Switch.Changed) -> None:
-        self.query_one("#plane", PlanePanel).set_cxl_mode(event.value)
+    @on(Switch.Changed, "#run-fam-device")
+    def _fam_device_changed(self, event: Switch.Changed) -> None:
+        self.query_one("#plane", PlanePanel).set_fam_device_mode(event.value)
         self._refresh_size()
 
     @on(Button.Pressed, "#stop-button")

@@ -227,27 +227,27 @@ AppDocScreen {
     color: $text-muted;
 }
 
-.cxl-controls {
+.fam-device-controls {
     height: auto;
     align: left middle;
     padding: 0 1;
 }
 
-.cxl-label {
+.fam-device-label {
     width: auto;
     margin-right: 1;
 }
 
-.cxl-controls Switch {
+.fam-device-controls Switch {
     margin-right: 2;
 }
 
-.cxl-controls Input {
+.fam-device-controls Input {
     width: 36;
     margin-right: 2;
 }
 
-.cxl-help {
+.fam-device-help {
     color: $text-muted;
 }
 

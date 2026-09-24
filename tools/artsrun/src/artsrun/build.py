@@ -47,43 +47,49 @@ def _cache_value(build_dir: Path, key: str) -> str | None:
     return None
 
 
+# Where the vendored emulation of the device library lives in the checkout.
+_VENDORED_DEVICE = "third_party/fake_arts_cxl_lib"
+
+
 def require_cxl(build_dir: Path, selection: Selection) -> None:
-    """Reject a build whose CXL implementation differs from this campaign."""
+    """Reject a tree whose fabric-attached-memory backend differs from this
+    campaign's mode.
+
+    A FAM-device campaign (`--cxl`) runs on the device library itself: the
+    tree must name ARTS_FAM_BACKEND=DEVICE with both device paths real, and
+    the vendored emulation of the library, which is for development runs,
+    cannot stand in for a measurement.  A DEVICE tree is equally refused to
+    any other campaign, whose cells would run outside the device's region
+    setup.
+    """
     def is_on(key: str) -> bool:
         return (_cache_value(build_dir, key) or "OFF").upper() in ("ON", "TRUE", "YES", "1")
 
-    enabled = is_on("ARTS_USE_CXL")
-    fake = is_on("ARTS_USE_FAKE_CXL_LIB")
-    if selection.cxl != enabled:
+    backend = fam_backend_of(build_dir) or "OFF"
+    if selection.cxl != (backend == "DEVICE"):
+        want = ("ARTS_FAM_BACKEND=DEVICE" if selection.cxl
+                else "a backend other than DEVICE (only --cxl runs a DEVICE tree)")
         raise BuildError(
-            f"{build_dir} has ARTS_USE_CXL={'ON' if enabled else 'OFF'}; "
-            f"this campaign requires ARTS_USE_CXL={'ON' if selection.cxl else 'OFF'}. "
-            "Use a build tree configured for this mode."
+            f"{build_dir} has ARTS_FAM_BACKEND={backend}; this campaign requires "
+            f"{want}. Use a build tree configured for this mode."
         )
     if not selection.cxl:
         return
-    axes = (("ARTS_MEMORY_MODEL", "OCR"),
-            ("ARTS_COHERENCE_PROTOCOL", "EXCL"),
-            ("ARTS_RELEASE_POLICY", "PURGE"),
-            ("ARTS_WRITE_POLICY", "WB"))
-    mismatches = [f"{key}={_cache_value(build_dir, key) or '(unset)'} (need {value})"
-                  for key, value in axes if _cache_value(build_dir, key) != value]
-    if mismatches:
-        raise BuildError(f"{build_dir}: CXL requires OCR / EXCL + PURGE / WB; "
-                         "build cache has " + ", ".join(mismatches))
-    rapid = _cache_value(build_dir, "ARTS_CXL_RAPID_INCLUDE_DIR")
-    lib = _cache_value(build_dir, "ARTS_CXL_LIB_DIR")
-    if fake or any("fake_arts_cxl_lib" in str(Path(p).resolve()) for p in (rapid, lib) if p):
-        raise BuildError("CXL runs require real Rapid headers and arts_cxl_lib; "
-                         "ARTS_USE_FAKE_CXL_LIB / fake_arts_cxl_lib cannot be used")
-    if not rapid or not Path(rapid).is_dir() or not lib or not (Path(lib) / "build/src/libarts_cxl_lib.so").is_file():
+    include = _cache_value(build_dir, "ARTS_FAM_DEVICE_INCLUDE_DIR")
+    library = _cache_value(build_dir, "ARTS_FAM_DEVICE_LIBRARY")
+    if is_on("ARTS_FAM_DEVICE_VENDORED") or any(
+            _VENDORED_DEVICE in str(Path(p).resolve()) for p in (include, library) if p):
         raise BuildError(
-            f"{build_dir} needs real ARTS_CXL_RAPID_INCLUDE_DIR and ARTS_CXL_LIB_DIR "
-            "(with build/src/libarts_cxl_lib.so). Configure with "
-            "-DARTS_USE_CXL=On -DARTS_USE_FAKE_CXL_LIB=Off and both paths."
+            f"{build_dir}: a measured campaign needs the device library itself; "
+            f"ARTS_FAM_DEVICE_VENDORED / {_VENDORED_DEVICE} is for development runs")
+    if not include or not Path(include).is_dir() or not library or not Path(library).is_file():
+        raise BuildError(
+            f"{build_dir} needs real ARTS_FAM_DEVICE_INCLUDE_DIR and "
+            "ARTS_FAM_DEVICE_LIBRARY. Configure with -DARTS_FAM_BACKEND=DEVICE "
+            "-DARTS_FAM_DEVICE_VENDORED=OFF and both paths."
         )
-    for key, want, have in (("ARTS_CXL_RAPID_INCLUDE_DIR", selection.cxl_rapid_include_dir, rapid),
-                            ("ARTS_CXL_LIB_DIR", selection.cxl_lib_dir, lib)):
+    for key, want, have in (("ARTS_FAM_DEVICE_INCLUDE_DIR", selection.fam_device_include_dir, include),
+                            ("ARTS_FAM_DEVICE_LIBRARY", selection.fam_device_library, library)):
         if want and Path(want).resolve() != Path(have).resolve():
             raise BuildError(f"{build_dir} has {key}={have}, but this campaign requested {want}")
 
@@ -274,19 +280,21 @@ def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
         say = on_line or (lambda _msg: None)
         say(f"{build_dir} does not exist yet — configuring it "
             "(the first build also compiles the vendored dependencies)")
-        cxl_opts = []
+        # The fabric-attached entries are benchmark variants that carry their
+        # own protocol, so a FAM-device tree names only the backend and the
+        # library; the tree's own protocol stays at its default.
+        fam_opts = []
         if selection and selection.cxl:
-            if not selection.cxl_rapid_include_dir or not selection.cxl_lib_dir:
-                raise BuildError("a new CXL build requires --cxl-rapid-include-dir "
-                                 "and --cxl-lib-dir (real Rapid / arts_cxl_lib)")
-            cxl_opts = ["-DARTS_USE_CXL=On", "-DARTS_USE_FAKE_CXL_LIB=Off",
-                        "-DARTS_MEMORY_MODEL=OCR", "-DARTS_COHERENCE_PROTOCOL=EXCL",
-                        "-DARTS_RELEASE_POLICY=PURGE", "-DARTS_WRITE_POLICY=WB",
-                        f"-DARTS_CXL_RAPID_INCLUDE_DIR={selection.cxl_rapid_include_dir}",
-                        f"-DARTS_CXL_LIB_DIR={selection.cxl_lib_dir}"]
+            if not selection.fam_device_include_dir or not selection.fam_device_library:
+                raise BuildError("a new FAM-device build requires "
+                                 "--fam-device-include-dir and --fam-device-library "
+                                 "(the device library itself)")
+            fam_opts = ["-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=OFF",
+                        f"-DARTS_FAM_DEVICE_INCLUDE_DIR={selection.fam_device_include_dir}",
+                        f"-DARTS_FAM_DEVICE_LIBRARY={selection.fam_device_library}"]
         proc = subprocess.Popen(
             [*(prefix or []), "cmake", "-S", str(repo_root()), "-GNinja",
-             f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release", *cxl_opts],
+             f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release", *fam_opts],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )

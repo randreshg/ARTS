@@ -182,6 +182,17 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        FAM-enabled: a rank-local copy staged from the block's slot at the
        two ownership edges (``STAGED``), or the slot itself, with the
        edges reduced to a flush each (``DIRECT``).
+   * - ``ARTS_FAM_DEVICE_VENDORED``
+     - OFF
+     - With ``ARTS_FAM_BACKEND=DEVICE``, build the vendored emulation of
+       the device library (``third_party/fake_arts_cxl_lib``: one host's
+       shared memory at the device's fixed address) into the build tree
+       and link it in place of ``ARTS_FAM_DEVICE_INCLUDE_DIR`` /
+       ``ARTS_FAM_DEVICE_LIBRARY``. For development runs only; every run
+       needs ``ARTS_FAKE_CXL_REGION_SIZE`` sized for the host, and each
+       process writes a flush trace to ``ARTS_FLUSH_LOG`` (default
+       ``./arts_flush_trace.bin``). The old ``ARTS_USE_FAKE_CXL_LIB`` is a
+       configure error naming this option.
    * - ``ARTS_NOHINT_EDT_PLACEMENT``
      - ROUNDROBIN
      - Where an EDT created with no placement preference (NULL hint, or

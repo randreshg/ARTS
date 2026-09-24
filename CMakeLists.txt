@@ -316,13 +316,6 @@ if(ARTS_USE_CXL)
         "and no protocol serves it.  For fabric-attached memory, configure "
         "-DARTS_FAM_BACKEND=SHM|DEVICE with -DARTS_FAM_RESIDENCY=STAGED|DIRECT.")
 endif()
-set(ARTS_CXL_RAPID_INCLUDE_DIR "" CACHE PATH
-    "Path to Rapid API include directory (required when ARTS_USE_CXL=ON)")
-set(ARTS_CXL_LIB_DIR "" CACHE PATH
-    "Path to arts_cxl_lib directory (required when ARTS_USE_CXL=ON)")
-option(ARTS_USE_FAKE_CXL_LIB
-    "Build and link the vendored fake CXL library (third_party/fake_arts_cxl_lib, a POSIX-shm emulation of the Rapid API) instead of a real one; overrides ARTS_CXL_RAPID_INCLUDE_DIR and ARTS_CXL_LIB_DIR"
-    OFF)
 
 # ── No-hint placement policies (runtime-wide) ───────────────────────────────
 # Select what the runtime does when the caller expresses no placement
@@ -610,12 +603,59 @@ set(ARTS_FAM_DEVICE_INCLUDE_DIR "" CACHE PATH
     "Include directory of the device library (required when ARTS_FAM_BACKEND=DEVICE)")
 set(ARTS_FAM_DEVICE_LIBRARY "" CACHE FILEPATH
     "The device library to link (required when ARTS_FAM_BACKEND=DEVICE)")
-
-if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND ARTS_USE_CXL)
+option(ARTS_FAM_DEVICE_VENDORED
+    "With ARTS_FAM_BACKEND=DEVICE, build and link the vendored emulation of the device library (third_party/fake_arts_cxl_lib: one host's shared memory at the device's fixed address) instead of naming ARTS_FAM_DEVICE_INCLUDE_DIR / ARTS_FAM_DEVICE_LIBRARY; for development runs, never for measurement"
+    OFF)
+if(ARTS_USE_FAKE_CXL_LIB)
   message(FATAL_ERROR
-          "ARTS_FAM_BACKEND=${ARTS_FAM_BACKEND} and ARTS_USE_CXL=ON are "
-          "mutually exclusive: they are two different features that would "
-          "both claim a rank's fabric-attached memory. Pick one.")
+          "ARTS_USE_FAKE_CXL_LIB is gone: the vendored library is the DEVICE "
+          "backend's emulation of the device library now. Configure "
+          "-DARTS_FAM_BACKEND=DEVICE -DARTS_FAM_DEVICE_VENDORED=ON (with "
+          "-DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE "
+          "-DARTS_FAM_RESIDENCY=STAGED|DIRECT for a tree whose own library "
+          "is FAM-enabled).")
+endif()
+unset(ARTS_USE_FAKE_CXL_LIB CACHE)
+if(ARTS_FAM_DEVICE_VENDORED AND NOT ARTS_FAM_BACKEND STREQUAL "DEVICE")
+  message(FATAL_ERROR
+          "ARTS_FAM_DEVICE_VENDORED=ON stands in for the device library, which "
+          "only ARTS_FAM_BACKEND=DEVICE links (got ${ARTS_FAM_BACKEND})")
+endif()
+
+if(ARTS_FAM_DEVICE_VENDORED)
+  # Plain variables shadow the cache entries, so turning the option off later
+  # restores whatever paths the cache holds instead of leaving these behind.
+  # Built at configure time because the checks below need the library to
+  # exist; its build tree lives under this build directory, so the submodule
+  # stays clean and trees with different compilers never share one library.
+  # Re-running the build on every configure is a no-op when nothing changed.
+  foreach(_var ARTS_FAM_DEVICE_INCLUDE_DIR ARTS_FAM_DEVICE_LIBRARY)
+    if(${_var})
+      message(WARNING "ARTS_FAM_DEVICE_VENDORED=ON ignores ${_var}=${${_var}}")
+    endif()
+  endforeach()
+  include(${PROJECT_SOURCE_DIR}/cmake/ArtsSubmodule.cmake)
+  arts_init_submodule(third_party/fake_arts_cxl_lib CMakeLists.txt)
+  set(_fam_vendored_src "${PROJECT_SOURCE_DIR}/third_party/fake_arts_cxl_lib")
+  set(_fam_vendored_build "${CMAKE_BINARY_DIR}/third_party/fake_arts_cxl_lib-build")
+  message(STATUS "ARTS FAM: building the vendored emulation of the device library")
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -S ${_fam_vendored_src} -B ${_fam_vendored_build}
+            -G ${CMAKE_GENERATOR}
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+    RESULT_VARIABLE _rc)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "Failed to configure the vendored device library")
+  endif()
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} --build ${_fam_vendored_build} --target arts_cxl_lib
+    RESULT_VARIABLE _rc)
+  if(NOT _rc EQUAL 0)
+    message(FATAL_ERROR "Failed to build the vendored device library")
+  endif()
+  set(ARTS_FAM_DEVICE_INCLUDE_DIR "${_fam_vendored_src}/inc")
+  set(ARTS_FAM_DEVICE_LIBRARY "${_fam_vendored_build}/src/libarts_cxl_lib.so")
 endif()
 if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
   if(NOT ARTS_FAM_DEVICE_INCLUDE_DIR OR NOT EXISTS "${ARTS_FAM_DEVICE_INCLUDE_DIR}")
@@ -688,44 +728,6 @@ if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND
           "got: ${ARTS_DEFAULT_DB_KIND}")
 endif()
 add_compile_definitions(ARTS_DB_DEFAULT=${ARTS_DEFAULT_DB_KIND})
-
-# ── CXL shared memory x coherence protocol ─────────────────────────────────
-# A CXL datablock keeps its payload in the shared window for its whole life and
-# lets the protocol move only the PERMISSION to touch it.  That is the EXCL
-# family's shape and nobody else's: a validation family serves readers from
-# versioned copies and an invalidation family retires reader copies, but a CXL
-# block has exactly one copy and no rank owns it, so there is nothing to
-# version and nothing to retire.  Within EXCL it is specifically the PURGE
-# release policy: the holder hands the turn back at its own idle edge and the
-# home arbitrates every hand-over, which is what puts the writer's flush before
-# the next reader's invalidate.  RETAIN's answer — the holder keeps the turn
-# until recalled, and the payload migrates owner to owner — has no meaning for
-# a payload that never moves.
-if(ARTS_USE_CXL)
-  if(NOT ARTS_COHERENCE_ARM STREQUAL "EXCL")
-    message(FATAL_ERROR
-            "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL "
-            "(got model ${ARTS_MEMORY_MODEL}, family "
-            "${ARTS_COHERENCE_PROTOCOL} -> arm ${ARTS_COHERENCE_ARM}). "
-            "CXL datablocks move permission, not payload: the home arbitrates "
-            "access to bytes that stay in the shared window, which is what "
-            "EXCL does and what the copy-based families (VAL, INV) and the "
-            "DB-WRF publish arm do not. "
-            "Configure with -DARTS_COHERENCE_PROTOCOL=EXCL "
-            "-DARTS_RELEASE_POLICY=PURGE.")
-  endif()
-  if(NOT ARTS_RELEASE_POLICY STREQUAL "PURGE")
-    message(FATAL_ERROR
-            "ARTS_USE_CXL=ON requires ARTS_RELEASE_POLICY=PURGE "
-            "(got ${ARTS_RELEASE_POLICY}). RETAIN keeps the grant at the "
-            "holder until the home recalls it and migrates the payload from "
-            "owner to owner; a CXL payload never moves, so there is nothing "
-            "to migrate and no reason for the home to lose sight of the turn. "
-            "Add -DARTS_RELEASE_POLICY=PURGE.")
-  endif()
-  message(STATUS "ARTS: CXL datablocks use EXCL x PURGE (permission-only grants, "
-                 "flush on release, invalidate on grant)")
-endif()
 
 # ── Mutually-exclusive sanitizer guard ─────────────────────────────────────
 if(ARTS_USE_SANS AND ARTS_USE_TSAN)
@@ -877,116 +879,6 @@ else()
     set(RT_LIBRARY "")
     set(M_LIBRARY "")
     set(ANL_LIBRARY "")
-endif()
-
-# ── CXL shared-memory support ─────────────────────────────────────────────
-if(ARTS_USE_CXL)
-    # Validate compiler support
-    if(NOT (CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang"))
-        set(ARTS_USE_CXL OFF)
-        message(STATUS "CXL: ${CMAKE_C_COMPILER_ID} not supported, disabling")
-    endif()
-endif()
-if(ARTS_USE_CXL AND ARTS_USE_FAKE_CXL_LIB)
-    # The fake library stands in for both the Rapid SDK (inc/ plus the stub
-    # rapid-config.cmake one level up) and arts_cxl_lib.  Plain variables
-    # shadow the cache entries, so switching the option off later restores
-    # whatever paths the cache holds instead of leaving these behind.
-    set(_fake_cxl_src "${PROJECT_SOURCE_DIR}/third_party/fake_arts_cxl_lib")
-    foreach(_var ARTS_CXL_RAPID_INCLUDE_DIR ARTS_CXL_LIB_DIR)
-        if(${_var})
-            message(WARNING "ARTS_USE_FAKE_CXL_LIB=ON ignores ${_var}=${${_var}}")
-        endif()
-    endforeach()
-    set(ARTS_CXL_RAPID_INCLUDE_DIR "${_fake_cxl_src}/inc")
-    set(ARTS_CXL_LIB_DIR "${_fake_cxl_src}")
-
-    # Built at configure time because the checks below need the .so to exist.
-    # The build tree lives under this build directory rather than inside the
-    # submodule, so the submodule stays clean and build directories with
-    # different compilers do not share one library.  Re-running the build on
-    # every configure is a no-op when nothing changed and picks up edits to
-    # the fake library when something did.
-    include(${PROJECT_SOURCE_DIR}/cmake/ArtsSubmodule.cmake)
-    arts_init_submodule(third_party/fake_arts_cxl_lib CMakeLists.txt)
-    set(_fake_cxl_build "${CMAKE_BINARY_DIR}/third_party/fake_arts_cxl_lib-build")
-    message(STATUS "Building vendored fake CXL library")
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} -S ${_fake_cxl_src} -B ${_fake_cxl_build}
-            -G ${CMAKE_GENERATOR}
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-        RESULT_VARIABLE _rc)
-    if(NOT _rc EQUAL 0)
-        message(FATAL_ERROR "Failed to configure the fake CXL library")
-    endif()
-    execute_process(
-        COMMAND ${CMAKE_COMMAND} --build ${_fake_cxl_build} --target arts_cxl_lib
-        RESULT_VARIABLE _rc)
-    if(NOT _rc EQUAL 0)
-        message(FATAL_ERROR "Failed to build the fake CXL library")
-    endif()
-    set(ARTS_CXL_LIB_PATH "${_fake_cxl_build}/src/libarts_cxl_lib.so")
-endif()
-if(ARTS_USE_CXL)
-    # Validate required paths
-    if(NOT ARTS_CXL_RAPID_INCLUDE_DIR)
-        message(FATAL_ERROR
-            "ARTS_USE_CXL is ON but ARTS_CXL_RAPID_INCLUDE_DIR is not set.\n"
-            "  -DARTS_CXL_RAPID_INCLUDE_DIR=/path/to/rapid/include")
-    endif()
-    if(NOT ARTS_CXL_LIB_DIR)
-        message(FATAL_ERROR
-            "ARTS_USE_CXL is ON but ARTS_CXL_LIB_DIR is not set.\n"
-            "  -DARTS_CXL_LIB_DIR=/path/to/arts_cxl_lib")
-    endif()
-
-    # Derive library and include paths (the fake library sets its own above)
-    if(NOT ARTS_USE_FAKE_CXL_LIB)
-        set(ARTS_CXL_LIB_PATH "${ARTS_CXL_LIB_DIR}/build/src/libarts_cxl_lib.so")
-    endif()
-    set(ARTS_CXL_INCLUDE_DIR "${ARTS_CXL_LIB_DIR}/inc")
-
-    # Verify paths exist
-    if(NOT EXISTS "${ARTS_CXL_RAPID_INCLUDE_DIR}")
-        message(FATAL_ERROR "ARTS_CXL_RAPID_INCLUDE_DIR not found: ${ARTS_CXL_RAPID_INCLUDE_DIR}")
-    endif()
-    if(NOT EXISTS "${ARTS_CXL_LIB_PATH}")
-        message(FATAL_ERROR "CXL ARTS library not found: ${ARTS_CXL_LIB_PATH}")
-    endif()
-    if(NOT EXISTS "${ARTS_CXL_INCLUDE_DIR}")
-        message(FATAL_ERROR "CXL ARTS include dir not found: ${ARTS_CXL_INCLUDE_DIR}")
-    endif()
-
-    # Try to find Rapid API
-    list(APPEND CMAKE_PREFIX_PATH "${ARTS_CXL_RAPID_INCLUDE_DIR}/..")
-    find_package(rapid CONFIG QUIET)
-    if(rapid_FOUND)
-        message(STATUS "CXL: Enabled - ARTS_USE_CXL + ARTS_CXL_NATIVE defined")
-        add_compile_definitions(ARTS_USE_CXL ARTS_CXL_NATIVE)
-        message(STATUS "  Rapid include:    ${ARTS_CXL_RAPID_INCLUDE_DIR}")
-        message(STATUS "  ARTS CXL lib dir: ${ARTS_CXL_LIB_DIR}")
-        message(STATUS "  ARTS CXL library: ${ARTS_CXL_LIB_PATH}")
-        message(STATUS "  ARTS CXL include: ${ARTS_CXL_INCLUDE_DIR}")
-    else()
-        set(ARTS_USE_CXL OFF)
-        message(STATUS "CXL: Rapid API not found at ${ARTS_CXL_RAPID_INCLUDE_DIR}, disabling")
-    endif()
-endif()
-if(ARTS_USE_CXL)
-    add_library(arts_cxl_lib SHARED IMPORTED)
-    set_target_properties(arts_cxl_lib PROPERTIES
-        IMPORTED_LOCATION "${ARTS_CXL_LIB_PATH}"
-        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_CXL_INCLUDE_DIR};${ARTS_CXL_RAPID_INCLUDE_DIR}"
-    )
-
-    find_package(rapid CONFIG REQUIRED
-        PATHS "${ARTS_CXL_RAPID_INCLUDE_DIR}/..")
-        set_target_properties(arts_cxl_lib PROPERTIES
-        IMPORTED_LOCATION "${ARTS_CXL_LIB_PATH}"
-        INTERFACE_INCLUDE_DIRECTORIES "${ARTS_CXL_INCLUDE_DIR};${ARTS_CXL_RAPID_INCLUDE_DIR}"
-        INTERFACE_LINK_LIBRARIES "rapid::rapid"
-    )
 endif()
 
 # Add third-party dependencies

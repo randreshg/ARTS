@@ -15,6 +15,7 @@
 #include "arts/system/print.h"
 
 static void *g_arena;
+static void *g_arena_alloc;
 static uint64_t g_arena_bytes;
 static uint64_t g_recorded_base;
 static uint64_t g_recorded_bytes;
@@ -40,13 +41,20 @@ static uint64_t fam_slice_len(uint64_t bytes, unsigned nranks) {
 
 static void fam_take_arena(unsigned nranks) {
   uint64_t bytes = fam_pool_bytes();
-  void *base = GLOBAL_CXL_MALLOC((size_t)bytes);
-  if (!base) {
+  /* The device library promises no alignment beyond a cache line, and the
+   * pool needs a page-aligned base: one page more is taken and the base is
+   * aligned up inside it, so [base, base + bytes) always lies within the
+   * allocation and the size every rank is told is exactly the pool's. */
+  void *alloc = GLOBAL_CXL_MALLOC((size_t)(bytes + ARTS_FAM_PAGE));
+  if (!alloc) {
     ARTS_ERROR("fam: the device library returned no arena for %llu bytes - "
                "raise or lower fam_pool_mb",
-               (unsigned long long)bytes);
+               (unsigned long long)(bytes + ARTS_FAM_PAGE));
   }
-  if (!IS_FAM_PTR(base)) {
+  void *base = (void *)(((uintptr_t)alloc + ARTS_FAM_PAGE - 1) &
+                        ~(uintptr_t)(ARTS_FAM_PAGE - 1));
+  if (!IS_FAM_PTR(base) ||
+      !IS_FAM_PTR((char *)base + bytes - 1)) {
     ARTS_ERROR("fam: the arena the device library returned is not "
                "fabric-attached memory");
   }
@@ -58,6 +66,7 @@ static void fam_take_arena(unsigned nranks) {
   h->nranks = nranks;
   FLUSH_FENCE_PRODUCER(h, sizeof(*h));
   g_arena = base;
+  g_arena_alloc = alloc;
   g_arena_bytes = bytes;
 }
 
@@ -152,9 +161,10 @@ void arts_fam_backend_unmap(void *base, uint64_t bytes) {
    * knows every peer has stopped reading.  Past one rank the arena is left to
    * process teardown. */
   if (base && base == g_arena && arts_global_rank_count == 1) {
-    GLOBAL_CXL_FREE(base);
+    GLOBAL_CXL_FREE(g_arena_alloc);
   }
   g_arena = NULL;
+  g_arena_alloc = NULL;
   g_arena_bytes = 0;
 }
 

@@ -285,9 +285,18 @@ def run_cmd(
                               help="comma-separated node counts (default: profile)"),
     repeats: int = typer.Option(None, "--repeats"),
     build_dir: Path = typer.Option(None, "--build-dir"),
-    cxl: bool = typer.Option(False, "--cxl", help="run ARTS cells with real CXL support"),
-    cxl_rapid_include_dir: Path = typer.Option(None, "--cxl-rapid-include-dir"),
-    cxl_lib_dir: Path = typer.Option(None, "--cxl-lib-dir"),
+    cxl: bool = typer.Option(
+        False, "--cxl",
+        help="FAM-device mode: run the fabric-attached-memory entries on the "
+             "device library, inside the device's region setup"),
+    fam_device_include_dir: Path = typer.Option(
+        None, "--fam-device-include-dir",
+        help="the device library's headers, for a tree --cxl configures"),
+    fam_device_library: Path = typer.Option(
+        None, "--fam-device-library",
+        help="the device library itself, for a tree --cxl configures"),
+    old_include_dir: Path = typer.Option(None, "--cxl-rapid-include-dir", hidden=True),
+    old_lib_dir: Path = typer.Option(None, "--cxl-lib-dir", hidden=True),
     from_file: Path = typer.Option(None, "--from", help="replay a saved selection"),
     resume: str = typer.Option(None, "--resume", help="run id to continue"),
     retry_failed: bool = typer.Option(
@@ -306,10 +315,16 @@ def run_cmd(
     from artsrun.campaign import Campaign
 
     run_dir = None
-    if (resume or from_file) and (cxl or cxl_rapid_include_dir or cxl_lib_dir):
-        _fail("--resume/--from use the saved CXL selection; omit CXL options")
-    if not cxl and (cxl_rapid_include_dir or cxl_lib_dir):
-        _fail("--cxl-rapid-include-dir and --cxl-lib-dir require --cxl")
+    if old_include_dir:
+        _fail("--cxl-rapid-include-dir is now --fam-device-include-dir")
+    if old_lib_dir:
+        _fail("--cxl-lib-dir is now --fam-device-library (the library file "
+              "itself, not its directory)")
+    if (resume or from_file) and (cxl or fam_device_include_dir or fam_device_library):
+        _fail("--resume/--from use the saved FAM-device selection; omit "
+              "--cxl and the device paths")
+    if not cxl and (fam_device_include_dir or fam_device_library):
+        _fail("--fam-device-include-dir and --fam-device-library require --cxl")
     if resume:
         # Continuing means continuing THAT campaign: its selection is what was
         # measured against, and its directory is where the halves meet.
@@ -331,7 +346,7 @@ def run_cmd(
         plane, catalog, prof, bs = _load(profile, benchset)
         try:
             keys = _split(entries) or (
-                plane.cxl_entry_keys if cxl else plane.default_entries(prof.entries))
+                plane.fam_entry_keys if cxl else plane.default_entries(prof.entries))
         except ValueError as exc:
             _fail(str(exc))
         unknown = [k for k in keys if k not in plane.entry_keys]
@@ -347,8 +362,8 @@ def run_cmd(
             repeats=repeats or prof.repeats,
             build_dir=str(build_dir) if build_dir else None,
             cxl=cxl,
-            cxl_rapid_include_dir=str(cxl_rapid_include_dir.expanduser().resolve()) if cxl_rapid_include_dir else None,
-            cxl_lib_dir=str(cxl_lib_dir.expanduser().resolve()) if cxl_lib_dir else None,
+            fam_device_include_dir=str(fam_device_include_dir.expanduser().resolve()) if fam_device_include_dir else None,
+            fam_device_library=str(fam_device_library.expanduser().resolve()) if fam_device_library else None,
         )
 
     try:

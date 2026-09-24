@@ -66,7 +66,7 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 | `ARTS_USE_CXL` | `OFF` (DEPRECATED) | Enable the CXL DataBlock storage kind — forced OFF: enabling it is a configure error. The kind predates the current coherence design and is unmaintained; the sources stay for reference. For fabric-attached memory, configure `ARTS_FAM_BACKEND` / `ARTS_FAM_RESIDENCY` below instead. |
 | `ARTS_FAM_BACKEND` | `OFF` | Fabric-attached-memory backend: `OFF` (default), `SHM` (local-launcher emulation) or `DEVICE` (builds against the device library). No `AUTO`; every mismatch is a configure error. |
 | `ARTS_FAM_RESIDENCY` | (empty) | Where an EDT's working bytes live when this tree's own library is FAM-enabled: a rank-local copy staged from the block's slot at the two ownership edges (`STAGED`), or the slot itself, with the edges reduced to a flush each (`DIRECT`). |
-| `ARTS_USE_FAKE_CXL_LIB` | `OFF` | With `ARTS_USE_CXL=ON`, fetch and build the vendored `third_party/fake_arts_cxl_lib` (POSIX-shm emulation of CXL memory, single node) and point `ARTS_CXL_RAPID_INCLUDE_DIR` / `ARTS_CXL_LIB_DIR` at it; neither path needs to be set. |
+| `ARTS_FAM_DEVICE_VENDORED` | `OFF` | With `ARTS_FAM_BACKEND=DEVICE`, build the vendored emulation of the device library (`third_party/fake_arts_cxl_lib`: one host's shared memory mapped at the device's fixed address) into the build tree and link it in place of `ARTS_FAM_DEVICE_INCLUDE_DIR` / `ARTS_FAM_DEVICE_LIBRARY`, which need not be set. For development runs only — `artsrun` refuses such a tree for a measurement. The old `ARTS_USE_FAKE_CXL_LIB` is a configure error naming this option. |
 | `ARTS_LOG_LEVEL` | `3` (Debug) / `1` (Release) | Log verbosity: `0`=ERROR, `1`=+WARN, `2`=+INFO, `3`=+DEBUG. |
 | `ARTS_USE_SANS` | `OFF` | Enable ASan + UBSan + LSan in Debug builds (excludes CUDA). Mutually exclusive with `ARTS_USE_TSAN`. |
 | `ARTS_USE_TSAN` | `OFF` | Enable ThreadSanitizer in Debug builds (excludes CUDA). Compiler-incompatible with `ARTS_USE_SANS`; use a separate build dir. |
@@ -95,38 +95,44 @@ linking a program, multi-node configurations, the complete key reference —
 is in the Sphinx guides: `docs/getting_started/quickstart.rst` and
 `docs/configuration/arts_cfg.rst`.
 
-### CXL without CXL hardware (fake_arts_cxl_lib)
+### The DEVICE backend on a machine without the device
 
-`third_party/fake_arts_cxl_lib` emulates CXL fabric-attached memory with a
-POSIX shared-memory segment, so CXL datablocks can be developed and tested on a
-single machine. CMake fetches the submodule, builds it into the build tree, and
-points `ARTS_CXL_RAPID_INCLUDE_DIR` / `ARTS_CXL_LIB_DIR` at it:
+`third_party/fake_arts_cxl_lib` emulates the device library with a POSIX
+shared-memory segment mapped at the device's fixed address, so the `DEVICE`
+backend of fabric-attached memory can be built and tested on one machine.
+CMake fetches the submodule, builds it into the build tree, and links it as
+the device library:
 
 ```bash
-cmake -GNinja -Bbuild \
-  -DARTS_USE_CXL=ON -DARTS_USE_FAKE_CXL_LIB=ON \
-  -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE
+cmake -GNinja -Bbuild -DARTS_BUILD_TESTS=ON \
+  -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE \
+  -DARTS_FAM_BACKEND=DEVICE -DARTS_FAM_RESIDENCY=STAGED \
+  -DARTS_FAM_DEVICE_VENDORED=ON
 ninja -C build
 ```
 
-CXL datablocks require `EXCL` × `PURGE`. Every rank started by the local
-launcher attaches to the same segment (`/dev/shm/arts_fake_cxl`), so the
-multi-rank shapes in `configs/local/test/` work as-is:
+A tree on another cell builds the fabric-attached benchmark variants against
+the same library (its own library is not FAM-enabled, so it names no
+residency). Every rank started by the local launcher attaches to the same
+segment (`/dev/shm/arts_fake_cxl`), so the multi-rank shapes in
+`configs/local/test/` work as-is:
 
 ```bash
-ARTS_FAKE_CXL_REGION_SIZE=$((16<<30)) \
-ARTS_CONFIG=configs/local/test/2n.cfg \
-  ./build/examples/cpu/cholesky/cholesky_arts_native 100 50
+ARTS_FAKE_CXL_REGION_SIZE=$((2<<30)) ctest --test-dir build -L multinode
 ```
 
-- `ARTS_FAKE_CXL_REGION_SIZE` (bytes, default 32 GiB) sizes the segment. ARTS
-  reserves two DB arenas of `ARTS_CXL_DB_ARENA_SIZE_BYTES` (5 GB by default)
-  up front, so the region must be larger than 10 GB. It is allocated sparsely
-  and only touched pages count against `/dev/shm`. To shrink the arenas, build
-  with `-DCMAKE_C_FLAGS=-DARTS_CXL_DB_ARENA_SIZE_BYTES=536870912`.
-- `ARTS_FLUSH_LOG` sets where each process writes its binary flush trace
-  (default `./arts_flush_trace.bin`). With several ranks, give each one its own
-  path or send the traces to `/dev/null`.
+- `ARTS_FAKE_CXL_REGION_SIZE` (bytes, default 32 GiB) sizes the segment. The
+  runtime takes one arena of `fam_pool_mb` plus one page from it, so the
+  region must exceed the configured pool; it is allocated sparsely and only
+  touched pages count against `/dev/shm`. Where the default does not fit the
+  host's address space or `/dev/shm`, set it for every run.
+- `ARTS_FLUSH_LOG` names where each process writes its binary flush trace at
+  exit (default `./arts_flush_trace.bin`, in the working directory). The
+  ctest registration of a `DEVICE` tree sets it to `/dev/null` for every test;
+  `artsrun` sets it to `<cell>.flush.bin` beside a one-rank FAM-device cell's
+  log, and to `/dev/null` for a cell with more than one rank: the library
+  takes one path for all ranks, so every rank on a host would overwrite the
+  same file.
 - The emulation covers one node only; see
   `third_party/fake_arts_cxl_lib/README.md` for details.
 

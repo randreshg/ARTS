@@ -222,10 +222,9 @@ class Plane(BaseModel):
         return [k for k in self.entry_keys if k in wanted]
 
     @property
-    def cxl_entry_keys(self) -> list[str]:
-        """The EXCL × PURGE × WB cell, including its matched reference."""
-        cell = self.cell(Family.EXCL, Release.PURGE, Write.WB).key
-        return [e.key for e in self.entries if e.cell == cell]
+    def fam_entry_keys(self) -> list[str]:
+        """The entries whose store is fabric-attached memory, in plane order."""
+        return [e.key for e in self.entries if e.is_fam]
 
     def columns(self) -> list[tuple[Release, Write]]:
         """Column order: the write policy groups, the release policy divides.

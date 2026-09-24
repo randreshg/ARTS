@@ -89,9 +89,12 @@ class Selection(BaseModel):
     node_counts: list[int] = Field(min_length=1)
     repeats: int = 1
     build_dir: str | None = None
+    # The FAM-device mode (`--cxl`): only the fabric-attached entries run,
+    # against a tree built on the device library itself.  The two paths are
+    # what a tree this campaign configures from nothing is pointed at.
     cxl: bool = False
-    cxl_rapid_include_dir: str | None = None
-    cxl_lib_dir: str | None = None
+    fam_device_include_dir: str | None = None
+    fam_device_library: str | None = None
 
     def validate_against(
         self,
@@ -104,11 +107,11 @@ class Selection(BaseModel):
         if unknown:
             raise ValueError(f"unknown plane entries: {', '.join(unknown)}")
         if self.cxl:
-            incompatible = [k for k in self.entries if k not in plane.cxl_entry_keys]
+            incompatible = [k for k in self.entries if k not in plane.fam_entry_keys]
             if incompatible:
                 raise ValueError(
-                    "CXL requires EXCL + PURGE (WB): remove incompatible entries "
-                    + ", ".join(incompatible)
+                    "the FAM-device mode runs only the fabric-attached-memory "
+                    "entries: remove " + ", ".join(incompatible)
                 )
         for name, versions in self.apps.items():
             if name not in catalog.apps:

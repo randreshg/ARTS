@@ -73,35 +73,43 @@ artsrun counterset list | show X | render X
 artsrun run -p ferrari-local -b paper-main -c census
 ```
 
-### Real CXL runs
+### FAM-device runs
 
-Use `--cxl` to launch ARTS cells through the root `run_cxl.sh` region wrapper.
-In the TUI, press `5` for the **Run** tab, turn on **Real CXL**, and enter
-the build tree. For a new build tree, fill in **Rapid include** and
-**arts_cxl_lib** there as well; an existing real-CXL tree can use its cached
-paths. The Coherence screen narrows to **EXCL × PURGE** (ARTS and its matched
-XSOCR reference) while CXL is on; it restores your previous selections when
-you turn CXL off. The `a` key on that screen toggles only the eligible entries.
-For a new build tree, supply real Rapid headers and `arts_cxl_lib` (built at
-`<lib-dir>/build/src/libarts_cxl_lib.so`):
+`--cxl` is the FAM-device mode: it runs the fabric-attached-memory entries
+of the plane (`arts_excl_purge_fam_staged`, `arts_excl_purge_fam_direct` —
+the two residencies) on the device library itself, and launches each of
+their cells through the root `run_cxl.sh` wrapper, which sets the device's
+regions up once around the whole launch (its utilities must be on `PATH` on
+the compute nodes). In the TUI, press `5` for the **Run** tab, turn on **FAM
+device**, and enter the build tree; for a new build tree fill in **device
+include** and **device library** as well. The Coherence screen narrows to
+the two FAM entries while the mode is on and restores your previous
+selection when you turn it off; the `a` key there toggles only the eligible
+entries. From the command line:
 
 ```bash
-artsrun run -p junction -b paper-main --cxl --build-dir build_cxl \
-  --cxl-rapid-include-dir /path/to/rapid/include \
-  --cxl-lib-dir /path/to/arts_cxl_lib
+artsrun run -p <profile> -b <benchset> --cxl --build-dir build_fam_device \
+  --fam-device-include-dir /path/to/device/include \
+  --fam-device-library /path/to/device/libdevice.so
 ```
 
-An existing build must have `ARTS_USE_CXL=On`, both real paths, and
-`ARTS_USE_FAKE_CXL_LIB=Off`; artsrun verifies these before building or
-running. Configure the build with `-DARTS_USE_CXL=On` and the matching
-`-DARTS_CXL_RAPID_INCLUDE_DIR` / `-DARTS_CXL_LIB_DIR` if necessary. CXL
-builds are configured for OCR / EXCL × PURGE / WB and existing trees are
-checked for those axes. `--cxl` defaults to that one plane cell; explicit
-`--entries` and saved selections with other entries are rejected. The CXL
-choice is saved for `--from` and `--resume`. Reference-runtime
-cells in the same campaign run normally. The wrapper locates its preparation
-script relative to the checkout and runs in the cell's scratch directory; the
-compute environment must provide the real Rapid Python module and `rapidutil`.
+A new tree is configured with `-DARTS_FAM_BACKEND=DEVICE
+-DARTS_FAM_DEVICE_VENDORED=OFF` and the two paths (the FAM entries are
+benchmark variants carrying their own protocol, so the tree's own protocol is
+left at its default). An existing tree must have `ARTS_FAM_BACKEND=DEVICE`,
+`ARTS_FAM_DEVICE_VENDORED=OFF` and both paths real; artsrun verifies this
+before building or running. The vendored emulation of the device library
+(`-DARTS_FAM_DEVICE_VENDORED=ON`) is for development runs and is refused for a
+measurement, and a `DEVICE` tree is refused to any campaign without `--cxl`.
+The old `--cxl-rapid-include-dir` / `--cxl-lib-dir` are errors naming the new
+options. Explicit `--entries` and saved selections with non-FAM entries are
+rejected; the mode and the paths are saved for `--from` and `--resume`. A one-rank
+FAM-device cell's launch environment sets `ARTS_FLUSH_LOG` to
+`<cell>.flush.bin` beside the cell's log, where the device library writes its
+flush trace; a cell with more than one rank sets it to `/dev/null`, because the
+library takes one path for all ranks and every rank on a host would overwrite
+the same file. The wrapper locates its preparation script relative to
+the checkout and runs in the cell's scratch directory.
 
 ## External runtimes
 
