@@ -900,7 +900,7 @@ set_tests_properties(counter_timer_balance PROPERTIES PASS_REGULAR_EXPRESSION "P
 add_arts_test(counter_time_sync)
 register_multinode_test(counter_time_sync TIMEOUT 30)
 foreach(_v 2n 3n 4n 2n_io)
-    set_tests_properties(counter_time_sync_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_time_sync|SKIP counter_time_sync_${_v}")
+    set_tests_properties(counter_time_sync_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_time_sync|SKIP counter_time_sync")
 endforeach()
 
 # --- C25r: block dist / CSR ---

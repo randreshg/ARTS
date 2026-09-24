@@ -39,14 +39,17 @@
 
 # Many tests here are whitebox: they compile runtime TUs directly instead of
 # linking an arts target, which is how they reach file-static symbols.  In a
-# CXL build those TUs call into the CXL library (arts_free consults
-# IS_CXL_PTR, the deque and lock headers call the flush intrinsics), so every
-# test in this directory needs it on the link line whether or not it links
-# libarts.  Declared once for the directory rather than per target: the
-# ARTS_USE_CXL definition that creates the dependency is itself directory-wide,
-# and a per-target list would go stale the next time a test is added.
+# CXL build those TUs include ARTS internal headers that pull in <MemOps.h>,
+# so the header path is declared once for the directory rather than per
+# target: the ARTS_USE_CXL definition that demands it is itself directory-wide,
+# and a per-target list would go stale the next time a test is added.  The CXL
+# library itself (arts_free consults IS_CXL_PTR, the deque and lock headers
+# call the flush intrinsics) reaches a test through arts_static's own link
+# requirement; only a test that doesn't link an arts target needs it added
+# explicitly, at that target.
 if(ARTS_USE_CXL)
-    link_libraries(arts_cxl_lib)
+    include_directories(SYSTEM
+        "${ARTS_CXL_INCLUDE_DIR}" "${ARTS_CXL_RAPID_INCLUDE_DIR}")
 endif()
 
 # Define test programs to build
@@ -855,6 +858,13 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         target_link_libraries(${t} PRIVATE mimalloc-static)
     endforeach()
 endif()
+# malloc.c's ARTS_USE_CXL path calls into the device library directly; these
+# tests don't link arts_static, so they need it named explicitly.
+if(ARTS_USE_CXL AND TARGET arts_cxl_lib)
+    foreach(t malloc_footprint_balance malloc_alignment)
+        target_link_libraries(${t} PRIVATE arts_cxl_lib)
+    endforeach()
+endif()
 register_pure_unit_test(malloc_footprint_balance TIMEOUT 60)
 register_pure_unit_test(malloc_alignment)
 register_pure_unit_test(diag_timestamp TIMEOUT 60)
@@ -1196,12 +1206,6 @@ endif()
 register_single_node_test(coherence_owner_confirm_gate TIMEOUT 120)
 register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120)
 
-# coherence_multi_writer_dist: multinode cross-rank RW same-address.  The
-# requester is NOT the home rank, so increments cross the wire (LOCK_REQUEST/
-# GRANT or each protocol's equivalent) and the final RO read must observe every
-# writer's atomic update.  An ordinary OCR program — registered under every
-# protocol; at >=3 ranks a DB homed on a non-zero rank has two distinct remote
-# writer ranks, exercising the cross-rank publish handoff that 2n cannot.
 # coherence_cxl_grant_chain: the CXL permission-only chain — remote write then
 # remote read, a concurrent reader cohort, and a writer that must wait the
 # cohort out.  On one rank the home is local, but every transition still runs
@@ -1232,6 +1236,12 @@ if(ARTS_USE_CXL)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
+# coherence_multi_writer_dist: multinode cross-rank RW same-address.  The
+# requester is NOT the home rank, so increments cross the wire (LOCK_REQUEST/
+# GRANT or each protocol's equivalent) and the final RO read must observe every
+# writer's atomic update.  An ordinary OCR program — registered under every
+# protocol; at >=3 ranks a DB homed on a non-zero rank has two distinct remote
+# writer ranks, exercising the cross-rank publish handoff that 2n cannot.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.

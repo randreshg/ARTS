@@ -185,7 +185,7 @@ option(ARTS_BUILD_BASELINES  "Build native OpenMP/MPI baseline implementations" 
 option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime" ON)
 option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime" ON)
 option(ARTS_BUILD_HPX        "Build HPX and the HPX benchmark apps" ON)
-option(ARTS_OFI_CXI          "Compile the libfabric cxi provider (HPE Slingshot) from the vendored Cassini/libcxi stack" OFF)
+option(ARTS_OFI_CXI          "Compile the libfabric cxi provider (HPE Slingshot) from the vendored Cassini/libcxi stack" ON)
 option(ARTS_BUILD_DOCS       "Build documentation (requires Doxygen + Sphinx)" OFF)
 
 # ── GPU / CUDA ─────────────────────────────────────────────────────────────
@@ -843,15 +843,6 @@ if(ARTS_USE_CXL)
         INTERFACE_INCLUDE_DIRECTORIES "${ARTS_CXL_INCLUDE_DIR};${ARTS_CXL_RAPID_INCLUDE_DIR}"
     )
 
-    # The ARTS_USE_CXL definition is directory-wide (above), so anything that
-    # includes an ARTS internal header ends up including <MemOps.h> — including
-    # the whitebox tests, which compile runtime TUs directly and do not link
-    # the arts targets that carry the CXL include path.  Make the header path
-    # as global as the define that demands it; keeping them out of step is what
-    # makes an ARTS_USE_CXL build fail the moment tests are switched on.
-    include_directories(SYSTEM
-        "${ARTS_CXL_INCLUDE_DIR}" "${ARTS_CXL_RAPID_INCLUDE_DIR}")
-
     find_package(rapid CONFIG REQUIRED
         PATHS "${ARTS_CXL_RAPID_INCLUDE_DIR}/..")
         set_target_properties(arts_cxl_lib PROPERTIES
@@ -887,10 +878,7 @@ set(COUNTER_CONFIG_FILE "${ARTS_COUNTER_CONFIG}")
 add_subdirectory(libs)
 
 # Optional components
-# CXL examples (cholesky/lulesh/smithwaterman/cxl_stream) have been modernized
-# to the current API; include examples/ whenever CXL is enabled even though the
-# general ARTS_BUILD_EXAMPLES flag is deprecated.
-if(ARTS_BUILD_EXAMPLES OR ARTS_USE_CXL)
+if(ARTS_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
