@@ -778,25 +778,26 @@ static void fam_slot_required(const struct arts_db_cache_s *cache,
  * filled.  The buffer ref and the block's handle are held across it, and the
  * store cannot be freed under it because this rank has been counted at the
  * home from the moment it asked, and the home frees only at a zero edge.
- * False when this rank has no working copy to fill — a destroy has emptied the
- * route slot — which is the documented boundary: the grant is then dropped. */
-static bool fam_fetch_working_copy(struct arts_db_cache_s *cache) {
+ * The block's handle keeps the descriptor's destructor away, so a working copy
+ * is missing here only when the ensure could not allocate one — and a grant
+ * whose cohort cannot be served is a hang, never a soft drop. */
+static void fam_fetch_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = cache->db_size;
   fam_slot_required(cache, "grant");
   if (n == 0) {
-    return true; /* a sentinel-sized block has no bytes and no store */
+    return; /* a sentinel-sized block has no bytes and no store */
   }
   (void)arts_db_buf_ensure(cache, n);
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
-    arts_db_buf_release(&h);
-    return false;
+    ARTS_ERROR("fam: guid %lu has no working copy of %llu bytes to fetch its "
+               "grant into",
+               (unsigned long)cache->db_guid, (unsigned long long)n);
   }
   fam_fetch_body(cache, buf);
   arts_db_buf_release(&h);
   __atomic_fetch_add(&arts_fam_fetches, 1u, __ATOMIC_RELAXED);
-  return true;
 }
 
 /* Return this rank's turn's bytes to the block's canonical store.
@@ -975,8 +976,11 @@ void arts_handler_db_acquire(void *item, void *args) {
  * must precede that CAS — once the axis reads GRANT an arriving acquire
  * self-serves out of the working copy — and it is taken only for a grant the
  * CAS will admit under, decided on the word the CAS then compares.  A word
- * that moved meanwhile is re-decided, and a fetch already taken stands: the
- * granted axis stays at REQ until this CAS, so no one has touched the copy.
+ * that moved meanwhile is re-decided, and a fetch already taken stands.  That
+ * holds inside the labeled-GUID contract only: there the granted axis stays at
+ * REQ until this CAS, so nothing admits a holder of the copy in between; a
+ * create hold of the same GUID racing a grant of an earlier generation is
+ * undefined, and may write the copy before a CAS that then re-decides.
  * A grant that admits nobody goes back to the home with nothing fetched.
  * Consumes db_h. */
 static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
@@ -992,10 +996,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     next = cache_compute_next(cur, op, &act);
     if (!fetched &&
         (act == CACHE_ACT_DRAIN_BOTH || act == CACHE_ACT_DRAIN_RO)) {
-      if (!fam_fetch_working_copy(cache)) {
-        arts_shared_release(&db_h); /* destroyed mid-flight: drop */
-        return;
-      }
+      fam_fetch_working_copy(cache);
       fetched = true;
       cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
       continue;
@@ -1015,12 +1016,14 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
     break;
   case CACHE_ACT_REL_RW_EMPTY:
-    if (CACHE_RW_CNT(cur) > 0u) {
-      /* A write right returned while writers are counted on it is a wait
-       * nothing will end: the home has no second grant to send for a request
-       * it has already answered. */
-      ARTS_ERROR("fam: guid %lu returns a write right with %u writers counted "
-                 "on it (word=%llx)",
+    if (CACHE_RW_ST(cur) == CACHE_ST_REQ && CACHE_RW_ST(next) == CACHE_ST_IDLE &&
+        CACHE_RW_CNT(cur) > 0u) {
+      /* A write request cleared while writers are still parked on it: nothing
+       * will wake them, since the home has no second grant to send for a
+       * request it has already answered.  A write axis already held keeps its
+       * word, and its writers are served by that hold. */
+      ARTS_ERROR("fam: guid %lu clears its write request with %u writers "
+                 "parked on it (word=%llx)",
                  (unsigned long)db_guid, (unsigned)CACHE_RW_CNT(cur),
                  (unsigned long long)cur);
     }

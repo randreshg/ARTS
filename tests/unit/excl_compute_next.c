@@ -205,7 +205,7 @@ int main(void) {
             0, 0, CACHE_ACT_REL_RW_EMPTY);
   chk_cache("rwgrant at idle leaves parked readers to their request", I, Q, 0,
             1, CACHE_OP_GRANT_RW, I, Q, 0, 1, CACHE_ACT_REL_RW_EMPTY);
-  chk_cache("rwgrant at a live hold goes back untouched", G, I, 1, 0,
+  chk_cache("rwgrant at a live hold goes back untouched; the hold serves its writers", G, I, 1, 0,
             CACHE_OP_GRANT_RW, G, I, 1, 0, CACHE_ACT_REL_RW_EMPTY);
   chk_cache("rwgrant req refused by ro grant clears req", Q, G, 1, 1,
             CACHE_OP_GRANT_RW, I, G, 1, 1, CACHE_ACT_REL_RW_EMPTY);
@@ -309,7 +309,7 @@ int main(void) {
                CACHE_ACT_SEND_RW);
     step_cache("hold round: the create takes the hold", &w,
                CACHE_OP_CREATE_HOLD, G, I, 2, 0, CACHE_ACT_DRAIN_BOTH);
-    step_cache("hold round: a grant while the hold is live goes back", &w,
+    step_cache("hold round: a grant while the hold is live goes back; the hold serves both writers", &w,
                CACHE_OP_GRANT_RW, G, I, 2, 0, CACHE_ACT_REL_RW_EMPTY);
     step_cache("hold round: a holder releases", &w, CACHE_OP_REL_RW, G, I, 1, 0,
                CACHE_ACT_NONE);

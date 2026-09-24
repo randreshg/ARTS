@@ -174,9 +174,11 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     /* One grant answers one request, so it is taken only by an axis still at
      * REQ.  Every other arrival is handed back and the other axis is never
      * rewritten: at IDLE a create hold served this request's cohort and has
-     * since let go, and at GRANT the axis is already held.  A read turn held
-     * on the other axis also sends it back, clearing the REQ it answers, since
-     * no second grant is coming for that request. */
+     * since let go, and at GRANT the axis is already held and its counted
+     * writers are that hold's to serve.  A read turn held on the other axis
+     * also sends it back, clearing the REQ it answers, since no second grant
+     * is coming for that request; writers still counted on that REQ would
+     * then wait on nothing, which the committer reports. */
     if (rws != CACHE_ST_REQ) {
       act = CACHE_ACT_REL_RW_EMPTY;
       break;
