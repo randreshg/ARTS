@@ -129,12 +129,10 @@ typedef enum {
  *
  *   ARTS_DB         — regular DRAM; contract/protocol selected at build time
  *   ARTS_DB_PIN     — regular DRAM, node-pinned, no DB-level coherence
- *   ARTS_DB_CXL     — CXL shared; the payload lives in the shared window for
- *                     the block's whole life and the protocol moves only the
- *                     PERMISSION to touch it, with a flush at release and an
- *                     invalidate at grant supplying visibility.  Requires a
- *                     build with ARTS_USE_CXL and ARTS_COHERENCE_PROTOCOL=EXCL
- *                     (ARTS_RELEASE_POLICY=PURGE).
+ *   ARTS_DB_CXL     — CXL shared memory; hardware cache coherence intra-node,
+ *                     application-ordered across nodes; pinned to its creator,
+ *                     no DB-level coherence.  Unmaintained: no supported build
+ *                     configuration compiles this kind.
  *   ARTS_DB_GPU     — GPU staging; concurrent per-device replicas merged by
  *                     reduction at release (app-ordered)
  *   ARTS_DB_GPU_PIN — GPU staging, no DB-level coherence
@@ -142,8 +140,8 @@ typedef enum {
 typedef enum {
   ARTS_DB = 0, /**< Regular DRAM; contract/protocol selected at build time. */
   ARTS_DB_PIN, /**< Node-pinned regular DRAM, no DB-level coherence. */
-  ARTS_DB_CXL, /**< CXL shared; permission-coherent under EXCL, payload never
-                  moves (requires a CXL x EXCL build). */
+  ARTS_DB_CXL, /**< CXL shared; creator-pinned, application-ordered, no
+                  DB-level coherence (unmaintained; not buildable). */
   ARTS_DB_GPU, /**< GPU staging; per-device replicas merged at release (app-ordered
                   style). */
   ARTS_DB_GPU_PIN, /**< GPU staging (host pinned + per-device replica). */

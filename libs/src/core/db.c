@@ -417,6 +417,29 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
 
   if (rank == arts_global_rank_id) {
     uint64_t db_span = db_descriptor_span(db_type, len);
+#ifdef ARTS_USE_CXL
+    if (db_type == ARTS_DB_CXL) {
+      db_span = ALIGN_UP(db_span, CACHELINE_SIZE);
+      void *ptr = db_descriptor_alloc(ARTS_DB_CXL, db_span);
+      if (ptr) {
+        guid = arts_cxl_make_guid(ptr);
+        db_create_in_place(guid, ptr, len, ARTS_DB_CXL,
+                           /*acquires=*/!no_acquire);
+        /* No route table entry — GUID encodes CXL pointer directly */
+        // FLUSH_FENCE_PRODUCER(ptr, db_span);
+        FLUSH_FENCE_PRODUCER(ptr, sizeof(struct arts_db_s));
+        *addr = no_acquire ? NULL : (void *)((struct arts_db_s *)ptr + 1);
+        ARTS_DEBUG("arts_db_create: CXL DB[Guid:%lu, Size:%lu] created", guid,
+                   len);
+      } else {
+        /* A silent NULL_GUID here would surface as arbitrary downstream
+         * failures instead of the real cause. */
+        ARTS_ERROR("arts_db_create: ARTS_DB_CXL arena exhausted for a "
+                   "%lu-byte block",
+                   (unsigned long)len);
+      }
+    } else
+#endif
     {
       void *ptr = db_descriptor_alloc(db_type, db_span);
       if (ptr) {
@@ -818,6 +841,12 @@ void arts_db_destroy(arts_guid_t guid) {
     return;
   }
 
+#ifdef ARTS_USE_CXL
+  if (arts_guid_is_cxl(guid)) {
+    return;
+  }
+#endif
+
   /* Implicit release: if the calling EDT holds an acquire on this DB,
    * release it first (matches OCR ocrDbDestroy semantics).  A created/owned
    * DB releases as RW; a dep release reads the slot mode in Path 2 regardless.
@@ -880,6 +909,31 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
             "Rank:%u] in EDT[Guid:%lu, Slot:%u]",
             depv[i].guid, guid_type, access_mode, owner, arts_global_rank_id,
             edt->guid, i);
+
+#ifdef ARTS_USE_CXL
+  if (arts_guid_is_cxl(depv[i].guid)) {
+    struct arts_db_s *cxl_db =
+        (struct arts_db_s *)arts_cxl_get_ptr(depv[i].guid);
+    /* Consumer flush deferred to prep_dbs (just before user func) to avoid
+     * stale reads after deque wait. */
+    if (cxl_db) {
+      depv[i].ptr = cxl_db + 1;
+      depv[i].subtype = ARTS_DB_CXL;
+      arts_db_acquire_resolved(edt, i);
+      return;
+    }
+    /* Not yet allocated in the shared segment — OoO defer (park); the CXL deque
+     * ordering makes the producer's allocation visible before the consumer
+     * runs.  Data/cursor arrive on the drain replay; no resolved here. */
+    {
+      struct arts_ooo_args_db_acquire_s a = {
+          .edt = edt, .db_guid = depv[i].guid, .slot = i};
+      arts_ooo_dispatch_or_defer_guid(depv[i].guid, OOO_DB_ACQUIRE, &a,
+                                      sizeof(a));
+    }
+    return;
+  }
+#endif
 
   // Look up DB first — subtype dispatch requires the struct.  lookup_db pairs
   // with the release below (every successful lookup => one release).
@@ -1577,6 +1631,14 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
     if (depv[i].subtype == ARTS_DB) {
       continue;
     }
+#ifdef ARTS_USE_CXL
+    {
+      struct arts_db_s *db_cxl = ((struct arts_db_s *)depv[i].ptr) - 1;
+      if (db_cxl->db_type == ARTS_DB_CXL) {
+        arts_cxl_consumer_flush(db_cxl->cache.db_guid);
+      }
+    }
+#endif
 #ifdef ARTS_USE_GPU
     if (!gpu && access_mode != DB_MODE_LC_SYNC) {
       struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
@@ -1611,6 +1673,7 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
  *     subtypes have no DB-level coherence — release is a no-op.
  *   - ARTS_DB_GPU subtype (GPU build, non-LC_SYNC mode): release the GPU-LC
  *     reader lock — pure intra-rank multi-device coordination.
+ *   - ARTS_DB_CXL subtype: producer-flush and return.
  *
  * Does NOT nullify caller-visible state (guid/ptr/mode).  Callers that
  * need to mark the slot as released (mid-EDT release) do that themselves.
@@ -1739,6 +1802,20 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
   ARTS_DEBUG("Releasing DB[Guid:%lu] [AccessMode:%s, DbSubtype:%s]", dep->guid,
              GET_DB_MODE_NAME(access_mode), GET_DB_TYPE_NAME(db_subtype));
 
+#ifdef ARTS_USE_CXL
+  if (db_subtype == ARTS_DB_CXL) {
+    if (dep->guid != NULL_GUID && dep->ptr &&
+        (access_mode == DB_MODE_RW
+#ifdef ARTS_USE_GPU
+         || access_mode == DB_MODE_MEMSET
+#endif
+        )) {
+      arts_cxl_producer_flush(dep->guid);
+    }
+    return; /* CXL: no route table, HW MESI handles intra-node coherence */
+  }
+#endif
+
   if (!gpu && db_subtype == ARTS_DB_GPU) {
     if (dep->ptr) {
       struct arts_db_s *db = ((struct arts_db_s *)dep->ptr) - 1;
@@ -1774,7 +1851,8 @@ void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu) {
  * non-coherent pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU,
  * ARTS_DB_CXL) the creator EDT has no DB-level coherence hold to drop;
  * building a synthetic RW-mode dep and dispatching through release_one_dep
- * handles only the per-mode non-coherence work (GPU-LC reader unlock).
+ * handles only the per-mode non-coherence work (GPU-LC reader unlock, CXL
+ * producer flush).
  */
 static void release_one_created(arts_guid_t guid, arts_db_access_mode_t mode) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(guid);
@@ -1932,3 +2010,23 @@ void arts_release_created_dbs(void) {
  */
 void arts_wait_release_dbs(void) {}
 void arts_wait_reacquire_dbs(void) {}
+
+/* ── CXL cache-flush helpers ────────────────────────────────────────────────
+ */
+
+#ifdef ARTS_USE_CXL
+void arts_cxl_producer_flush(arts_guid_t guid) {
+  struct arts_db_s *db = (struct arts_db_s *)arts_cxl_get_ptr(guid);
+  FLUSH_FENCE_PRODUCER(db, ALIGN_UP(arts_db_total_size(db), CACHELINE_SIZE));
+}
+
+void arts_cxl_consumer_flush(arts_guid_t guid) {
+  struct arts_db_s *db = (struct arts_db_s *)arts_cxl_get_ptr(guid);
+  /* First flush the struct to read the actual size (db_size in the cache). */
+  FLUSH_FENCE_CONSUMER(db, ALIGN_UP(sizeof(struct arts_db_s), CACHELINE_SIZE));
+  /* Then flush the full DB (struct + payload). */
+  if (db->cache.db_size > 0) {
+    FLUSH_FENCE_CONSUMER(db, ALIGN_UP(arts_db_total_size(db), CACHELINE_SIZE));
+  }
+}
+#endif /* ARTS_USE_CXL */
