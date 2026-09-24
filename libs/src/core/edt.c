@@ -525,6 +525,9 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
      * that the prep_dbs/release_dbs flush helpers see the right pointer. */
     if (mode != DB_MODE_NULL && arts_guid_is_cxl(data_guid)) {
       ptr = (void *)((struct arts_db_s *)arts_cxl_get_ptr(data_guid) + 1);
+      /* A pre-filled slot is never acquired, so it is named here what the
+       * acquire would name it: its kind is what routes its flushes. */
+      edt_dep[slot].subtype = ARTS_DB_CXL;
     }
     edt_dep[slot].ptr = ptr;
 #else
