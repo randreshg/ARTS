@@ -543,6 +543,45 @@ elseif(ARTS_MALLOC STREQUAL "system")
 else()
   message(FATAL_ERROR "ARTS_MALLOC must be 'mimalloc' or 'system', got '${ARTS_MALLOC}'")
 endif()
+
+# -- Fabric-attached memory ------------------------------------------------
+# Declarative, never inferred: a value names the medium, and every mismatch is
+# an error rather than a quiet downgrade.  Task 3 extends this block; nothing
+# FAM appears anywhere else in this file.
+set(ARTS_FAM_BACKEND "OFF" CACHE STRING
+    "Fabric-attached-memory backend: OFF (default), SHM (local-launcher emulation) or DEVICE (the device library)")
+set_property(CACHE ARTS_FAM_BACKEND PROPERTY STRINGS OFF SHM DEVICE)
+if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND
+   NOT ARTS_FAM_BACKEND STREQUAL "SHM" AND
+   NOT ARTS_FAM_BACKEND STREQUAL "DEVICE")
+  message(FATAL_ERROR
+          "ARTS_FAM_BACKEND must be OFF, SHM or DEVICE, got: ${ARTS_FAM_BACKEND}")
+endif()
+
+# Where the run's pool is mapped.  Every rank maps the pool at ONE address, so
+# a slot address is meaningful in any rank's address space without
+# translation; the value is therefore a property of the build, not of a
+# process, and it must be free in every rank and in every sanitizer
+# configuration the tests use -- which the fam_base_address test asserts in
+# each build tree.  An SHM concern only: under DEVICE the address comes from
+# the device library.
+if(ARTS_FAM_BACKEND STREQUAL "SHM")
+  set(ARTS_FAM_BASE "0x00007a0000000000" CACHE STRING
+      "Virtual address the fabric-attached-memory pool is mapped at in every rank")
+  if(NOT ARTS_FAM_BASE MATCHES "^0x[0-9a-fA-F]+$")
+    message(FATAL_ERROR
+            "ARTS_FAM_BASE must be a hexadecimal literal like 0x00007a0000000000, "
+            "got: ${ARTS_FAM_BASE}")
+  endif()
+  math(EXPR _arts_fam_base_rem "${ARTS_FAM_BASE} % 4096")
+  math(EXPR _arts_fam_base_val "${ARTS_FAM_BASE} + 0")
+  if(NOT _arts_fam_base_rem EQUAL 0 OR _arts_fam_base_val EQUAL 0)
+    message(FATAL_ERROR
+            "ARTS_FAM_BASE must be a non-zero, page-aligned address; "
+            "${ARTS_FAM_BASE} is not (offset within its page: ${_arts_fam_base_rem})")
+  endif()
+endif()
+
 if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND
    NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB_CXL")
   message(FATAL_ERROR

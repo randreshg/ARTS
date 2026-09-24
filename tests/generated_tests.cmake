@@ -1239,3 +1239,11 @@ set_tests_properties(route_table_remote_guid_2n_io PROPERTIES FAIL_REGULAR_EXPRE
 set_tests_properties(stdio_forward_scale_test PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(stress_edt PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(utility_api PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+
+# Fabric-attached memory.  Registered only where the tree has the backend the
+# test is about: the pool's address is an SHM concern, and a tree that never
+# names the option must be untouched by this module.
+if(ARTS_FAM_BACKEND STREQUAL "SHM")
+    add_pure_unit_src(fam_base_address PASS_REGEX "PASS fam_base_address"
+                      DEFINES ARTS_FAM_BASE=${ARTS_FAM_BASE}ULL TIMEOUT 60)
+endif()
