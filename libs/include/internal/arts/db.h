@@ -139,8 +139,9 @@ void arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot);
 void arts_db_drain_resume_list(void);
 
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep
- * through the per-dep 3-way (subtype-aware — ARTS_DB → arts_handler_db_acquire,
- * PIN/GPU/CXL → pinned ptr path, still-absent → re-defer).  item = the
+ * through the per-dep 3-way (subtype-aware — a coherent kind →
+ * arts_handler_db_acquire, the kinds the protocol does not acquire → pinned
+ * ptr path, still-absent → re-defer).  item = the
  * just-installed db_s (ignored; the 3-way re-looks-it-up under the drain's
  * pinned ref); args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the
  * coherent handler directly — that would mishandle non-coherent subtypes. */

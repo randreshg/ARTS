@@ -756,7 +756,8 @@ void arts_handler_db_acquire(void *item, void *args) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   arts_db_access_mode_t mode = depv[slot].mode;
 
-  if (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id) {
+  if (!lock_is_cxl(cache) &&
+      arts_db_home_rank(cache->db_guid) == arts_global_rank_id) {
     /* First use of a block whose create took no hold: its storage was left
      * for whoever uses it first, and under this release policy only the home
      * may hold the canonical copy — so if the block has none, this acquiring
@@ -886,7 +887,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
      * written under it, so the write right goes back with no payload — the
      * home's release handler takes the same no-data path an RO release
      * takes. */
-    arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RW,
+    arts_send_db_excl_release(arts_db_home_rank(db_guid), db_guid, DB_MODE_RW,
                               /*version=*/0u, /*cv=*/0u, NULL, 0u,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;

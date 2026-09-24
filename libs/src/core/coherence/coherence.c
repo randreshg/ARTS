@@ -225,6 +225,16 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
    * defined value is NULL) or the DB was destroyed under a pending
    * acquire, which the programming model leaves undefined. */
   void *data = buf ? buf->data : NULL;
+#ifdef ARTS_CXL_COHERENT
+  if (data == NULL && db_h != NULL && depv[slot].guid != NULL_GUID &&
+      arts_guid_is_cxl(depv[slot].guid)) {
+    /* Permission-only: nothing was fetched and nothing is installed, so the
+     * payload address is a pure function of the GUID.  The claim below is
+     * still the same CAS — two delivery paths can wake one slot and exactly
+     * one may account. */
+    data = arts_cxl_get_ptr(depv[slot].guid);
+  }
+#endif
   /* The descriptor this resolution belongs to, borrowed for the alias fill
    * below: the aliases pin THIS handle rather than looking the block up again,
    * because a lookup can miss under a concurrent destroy while the payload is
@@ -355,30 +365,6 @@ static void resume_cache_slot(arts_guid_t edt_guid, unsigned int slot) {
   if (db_guid != NULL_GUID) {
     db_h = arts_route_table_lookup_db(db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
-#ifdef ARTS_CXL_COHERENT
-    if (db != NULL && db->db_type == ARTS_DB_CXL) {
-      /* Permission-only: nothing was fetched and nothing is installed, so
-       * there is no buffer to reference and the payload address is a pure
-       * function of the GUID.  The slot claim below stays a CAS for the same
-       * reason it is one for an ordinary block — two delivery paths can wake
-       * the same (edt, slot), and exactly one must account. */
-      void *data = arts_cxl_get_ptr(db_guid);
-      void *expected = NULL;
-      if (atomic_compare_exchange_strong((_Atomic(void *) *)&depv[slot].ptr,
-                                         &expected, data)) {
-        if (__atomic_load_n(&depv[slot].db_pin, __ATOMIC_ACQUIRE) == NULL) {
-          __atomic_store_n(&depv[slot].db_pin, (void *)db_h, __ATOMIC_RELEASE);
-          db_h = NULL;
-        }
-        arts_object_record_db_bytes(edt->arts_id, db->cache.db_size);
-        arts_object_trace_db(edt->arts_id, db->cache.db_size, 1);
-      } else {
-        arts_shared_release(&db_h);
-        arts_shared_release(&edt_h);
-        return;
-      }
-    } else
-#endif
     if (db != NULL && db->db_type == ARTS_DB) {
       buf_h = arts_db_buf_acquire(&db->cache);
     }
@@ -467,7 +453,6 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
     /* The bytes are already addressable and were never anyone's to install;
      * holding a grant is the whole of "having" them. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    arts_object_acquire(false);
     return arts_cxl_get_ptr(cache->db_guid);
   }
 #endif

@@ -69,6 +69,7 @@
 /// pair, and passes.
 
 #include "arts.h"
+#include "../test_failure_status.h"
 
 #define ELEMS 16u
 
@@ -81,6 +82,7 @@ void cxl_writer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t *d = (uint64_t *)depv[0].ptr;
   if (d == NULL) {
     arts_printf("  FAIL: writer got a NULL payload pointer\n");
+    arts_test_fail();
     return;
   }
   for (unsigned int i = 0; i < ELEMS; i++) {
@@ -97,6 +99,7 @@ void cxl_incrementer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t *d = (uint64_t *)depv[0].ptr;
   if (d == NULL) {
     arts_printf("  FAIL: incrementer got a NULL payload pointer\n");
+    arts_test_fail();
     return;
   }
   for (unsigned int i = 0; i < ELEMS; i++) {
@@ -114,12 +117,14 @@ void cxl_reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int stage = (unsigned int)paramv[1];
   if (d == NULL) {
     arts_printf("  FAIL: stage %u reader got a NULL payload pointer\n", stage);
+    arts_test_fail();
     return;
   }
   for (unsigned int i = 0; i < ELEMS; i++) {
     if (d[i] != base + i) {
       arts_printf("  FAIL: stage %u reader saw [%u]=%lu, expected %lu\n", stage,
                   i, (unsigned long)d[i], (unsigned long)(base + i));
+      arts_test_fail();
       return;
     }
   }
@@ -163,6 +168,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                   ARTS_DB_PROP_NONE, NULL);
   if (db == NULL_GUID || ptr == NULL) {
     arts_printf("  FAIL: CXL create returned no payload\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }
@@ -223,7 +229,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  /* Non-zero when a rank this process spawned ended badly (their exit status
+     reaches nobody else) or when a check inside an EDT on this rank failed. */
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -195,6 +195,7 @@ set(TEST_PROGRAMS
 # guarded with #ifdef inside the source.
 if(ARTS_USE_CXL)
     list(APPEND TEST_PROGRAMS coherence_cxl_grant_chain)
+    list(APPEND TEST_PROGRAMS coherence_cxl_alias_slots)
 endif()
 
 # Function to create a test executable
@@ -1226,6 +1227,9 @@ if(ARTS_USE_CXL)
             FAIL_REGULAR_EXPRESSION "FAIL"
             DISABLED TRUE)
     endforeach()
+    register_single_node_test(coherence_cxl_alias_slots TIMEOUT 60)
+    set_tests_properties(coherence_cxl_alias_slots PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
 # These assert what the runtime's exclusive-RW serialization guarantees; under
