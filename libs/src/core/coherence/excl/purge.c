@@ -1018,6 +1018,25 @@ static void fam_purge_body(struct arts_db_cache_s *cache,
   arts_fam_flush_producer(slot, (size_t)n);
 }
 #endif /* ARTS_FAM_STAGED */
+
+#ifdef ARTS_FAM_DIRECT
+/* The working bytes ARE the block's store here: the claim's arts_db_buf_ensure
+ * adopted the slot, so this descriptor names it and there is nothing to copy.
+ * A fetch is the consumer flush that makes this rank's private lines the
+ * store's; the claim is what keeps them to this frame while it runs. */
+static void fam_fetch_body(struct arts_db_cache_s *cache,
+                           struct arts_db_buffer_s *buf) {
+  arts_fam_flush_consumer(buf->data, (size_t)cache->db_size);
+}
+
+/* A purge is the producer flush that publishes this turn's writes to the
+ * store.  It runs before the release is committed or sent, which is what makes
+ * it precede every onward admission. */
+static void fam_purge_body(struct arts_db_cache_s *cache,
+                           struct arts_db_buffer_s *buf) {
+  arts_fam_flush_producer(buf->data, (size_t)cache->db_size);
+}
+#endif /* ARTS_FAM_DIRECT */
 #endif /* ARTS_FAM */
 
 /* ===== arts_handler_db_acquire =========================================

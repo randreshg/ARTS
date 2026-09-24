@@ -22,7 +22,9 @@
  *   4. home_initialized is laid out AFTER db_type which is AFTER the cache —
  *      i.e. offsetof(cache)==0 < offsetof(db_type) <
  * offsetof(home_initialized).
- *   5. Buffer FAM data[] lands at offset 64 (cache-line / CXL boundary).
+ *   5. The buffer's payload member lands at offset 64 (cache-line
+ *      boundary), whether it is the inline bytes or a pointer to storage
+ *      the descriptor does not own.
  *   6. snapshot_waiter.link is FIRST (offset 0) — required by arts_lf_stack_t.
  *   7. arts_db_total_size(db) spans the descriptor allocation: sizeof(arts_db_s)
  *      alone for a coherent DB (whose payload is its coherence buffer), and
@@ -57,9 +59,10 @@
 
 /* --- Compile-time invariants (the load-bearing ones) ------------------- */
 
-/* (5) buffer data[] at offset 64. */
+/* (5) the buffer's payload member at offset 64. */
 _Static_assert(offsetof(struct arts_db_buffer_s, data) == 64,
-               "buffer FAM data[] must land at offset 64 (cache-line / CXL)");
+               "the buffer's payload member must land at offset 64 "
+               "(cache-line boundary)");
 
 /* (6) snapshot waiter link first (Treiber/arts_lf_stack_t contract). */
 _Static_assert(offsetof(struct arts_db_snapshot_waiter_s, link) == 0,

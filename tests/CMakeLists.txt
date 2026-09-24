@@ -193,6 +193,39 @@ set(TEST_PROGRAMS
     coherence_writer_ro_overlap
 )
 
+# Whitebox tests of the INLINE payload layout.  Where the canonical store is
+# fabric-attached and an EDT works in place, a buffer descriptor refers to
+# storage it does not own: the payload is not inline after the header, no
+# payload is ever published into it, and one descriptor serves the block for
+# its whole life.  These programs assert that representation itself, so in
+# such a tree they describe something that is not built -- a structural
+# exclusion, like an application that cannot run multinode, never a masked
+# failure.  buffer_external_payload is the descriptor's own test there.
+set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
+    buffer_payload_roundtrip
+    buffer_zero_size
+    buffer_version_guard
+    buffer_stub_db_size_learn
+    buffer_destroy_vs_acquire
+    per_db_buf_pool
+    coherence_buffer_test
+    mark_edt_ready_idempotent)
+# The one list every consumer reads: the tree's own registrations below, and
+# any acceptance check outside this file.  Empty in every tree but one.
+set(ARTS_FAM_DIRECT_EXCLUDED "")
+if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
+    set(ARTS_FAM_DIRECT_EXCLUDED ${ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX})
+    # Reaches the two names that are built from this list; the rest create
+    # their own targets, and the if() guards at their registration sites are
+    # what leaves those out.
+    list(REMOVE_ITEM TEST_PROGRAMS ${ARTS_FAM_DIRECT_EXCLUDED})
+    message(STATUS "ARTS: excluding ${ARTS_FAM_DIRECT_EXCLUDED} — whitebox tests of the inline payload layout")
+endif()
+# The DIRECT-only targets.  Their sources arrive with their tasks; the names
+# are appended there, in the same edit as each .c file, never here.
+if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
+endif()
+
 # CXL datablocks exist only in a CXL build, and there only under EXCL x PURGE
 # (the top-level CMakeLists refuses every other pairing), so the test that
 # exercises their grant chain is added to the list conditionally rather than
@@ -680,7 +713,9 @@ set_tests_properties(term_sigsegv PROPERTIES
     PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGSEGV")
 
 # --- Pure unit tests (no ARTS runtime) ---
-register_pure_unit_test(coherence_buffer_test TIMEOUT 60)
+if(NOT "coherence_buffer_test" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
+    register_pure_unit_test(coherence_buffer_test TIMEOUT 60)
+endif()
 # Exhaustive model check of the PURGE release policy's grant word decider
 # (coherence/grant_purge.c); self-skips (PASS) outside a VAL/INV x PURGE build.
 register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
@@ -1026,7 +1061,9 @@ register_single_node_test(event_hint_presets)
 
 register_single_node_test(db_labeled_guid)
 
-register_pure_unit_test(per_db_buf_pool)
+if(NOT "per_db_buf_pool" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
+    register_pure_unit_test(per_db_buf_pool)
+endif()
 
 # --- Finish-EDT mechanism tests ---
 register_single_node_test(finish_event_basic)
@@ -1857,7 +1894,9 @@ set_tests_properties(excl_samerank_rw_grant_race_2n PROPERTIES FAIL_REGULAR_EXPR
 set_tests_properties(excl_samerank_rw_grant_race_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(excl_samerank_rw_grant_race_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(excl_samerank_rw_grant_race_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(mark_edt_ready_idempotent PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
+    set_tests_properties(mark_edt_ready_idempotent PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
 set_tests_properties(publish_ack_post_on_miss PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(publish_ack_post_on_miss_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(publish_ack_post_on_miss_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -1920,3 +1959,13 @@ set_tests_properties(val_wt_vs_wb_divergence_2n_io PROPERTIES FAIL_REGULAR_EXPRE
 set_tests_properties(val_wt_vs_wb_divergence_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(val_wt_vs_wb_divergence_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 
+
+# The descriptor's own test.  Registered in every tree: outside a build whose
+# payload store is external it reports SKIP, because the representation it
+# describes exists in one.  It lives here rather than in the generated file
+# because new registrations belong in the hand-maintained list.
+add_pure_unit_src(buffer_external_payload
+    SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c
+            ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c
+    PASS_REGEX "PASS buffer_external_payload|SKIP buffer_external_payload"
+    TIMEOUT 60)

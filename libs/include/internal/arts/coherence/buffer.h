@@ -59,10 +59,14 @@ extern "C" {
 struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
                                            uint64_t db_size);
 
+#ifndef ARTS_FAM_DIRECT
 /* As arts_db_buf_alloc, but buf->data reads as zero (recycled buffers are
- * cleared; fresh pool memory arrives zeroed untouched). */
+ * cleared; fresh pool memory arrives zeroed untouched).  Absent where the
+ * payload is external: zeroing a store the descriptor does not own is not
+ * this layer's to do. */
 struct arts_db_buffer_s *arts_db_buf_alloc_zeroed(struct arts_db_cache_s *cache,
                                                   uint64_t db_size);
+#endif
 
 /* A buffer that belongs to no cache: its last drop frees it to the
  * registered pool, never to a free-list.  The caller owns the one strong
@@ -102,13 +106,47 @@ void arts_db_buf_release(arts_shared_ptr_t *h);
  * Only a rank ENTITLED to hold the block may call it: the caller must
  * already have established that its own copy is the one to answer from (it
  * is the home of a home-canonical arm, or it holds the block's ownership).
- * A rank that installs zeroes without that right invents a value. */
+ * A rank that installs zeroes without that right invents a value.
+ *
+ * Where the payload is external this call adopts the block's store and
+ * invents nothing, so installing a value without the right to cannot arise;
+ * a caller that has not yet learned the store gets false, and only a create
+ * site may read that as normal. */
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size);
 
-/* Recover the enclosing arts_db_buffer_s from a data pointer (which aliases
- * buf->data, the FAM canonical payload).  Pointer arithmetic only — does NOT
- * touch the buffer, so it is safe even if the buffer has since been freed
- * (the caller must already hold a ref or know the buffer is alive). */
+#ifdef ARTS_FAM_DIRECT
+/* Make `payload` this cache's payload if the cache has none, stamped
+ * `version`.  The descriptor does not own the bytes: its deleter recycles the
+ * descriptor and never touches them.  Returns whether this call installed it;
+ * install-if-absent, so two first users of one store agree — the loser is told
+ * false and the installed descriptor stands.  `payload == NULL` installs
+ * nothing and returns false — a rank that has not learned the block's store
+ * yet, or a zero-sized block, has nothing to adopt.  A second adopt naming a
+ * DIFFERENT pointer is not a race but two stores for one block: fatal here,
+ * since one descriptor serves a block for its life.
+ *
+ * Install-once makes the first adopt's version final, so the two version
+ * conventions of this file (0 from the in-place entries, 1 from ensure and
+ * install) can no longer disagree and no stale-retreat comparison is reachable
+ * on this arm. */
+bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
+                                uint64_t version, uint64_t db_size);
+
+/* The descriptor this cache installed, when it is the one `payload` belongs
+ * to, else NULL.  Borrowed, no ref taken: the caller already holds the very
+ * ref it is about to drop, which is what keeps the descriptor alive across
+ * this call — the same precondition arts_db_buf_from_data carries where the
+ * payload is inline. */
+struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
+                                                 void *payload);
+#endif
+
+/* Recover the enclosing arts_db_buffer_s from a data pointer that aliases
+ * buf->data.  Header-relative pointer arithmetic, so it is valid only where
+ * the descriptor CARRIES the payload: where the store is external the same
+ * arithmetic addresses the store, not a header.  It does NOT touch the
+ * buffer, so it is safe even if the buffer has since been freed (the caller
+ * must already hold a ref or know the buffer is alive). */
 static inline struct arts_db_buffer_s *arts_db_buf_from_data(void *data) {
   if (data == NULL) {
     return NULL;
@@ -128,7 +166,11 @@ static inline struct arts_db_buffer_s *arts_db_buf_from_data(void *data) {
  * (new_version <= old->version) retreat and return the old buffer unchanged.
  * Publishes via a version-conditional shared-ptr compare-exchange; the slot
  * takes the cache-hold ref and the retired buffer's ref is dropped (its cb
- * deleter frees it once the last in-flight acquirer releases). */
+ * deleter frees it once the last in-flight acquirer releases).
+ *
+ * db_size == 0 installs nothing on either representation: a zero-sized block
+ * has no storage to hold and NULL is its defined value, which is the same
+ * answer arts_db_buf_ensure gives it. */
 struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
                                              uint64_t new_version,
                                              const void *data_payload,

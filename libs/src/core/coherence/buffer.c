@@ -44,6 +44,20 @@ struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
                                            uint64_t db_size) {
   /* Pull a recycled buffer from the per-DB free-list when available. */
   arts_lf_link_t *node = arts_lf_pool_pop_or_null(&cache->buf_freelist);
+#ifdef ARTS_FAM_DIRECT
+  /* The payload is not the descriptor's to size, so every descriptor is one
+   * size and the per-DB recycle pool stays uniform.  A descriptor leaves this
+   * call naming no storage, recycled or fresh. */
+  (void)db_size;
+  struct arts_db_buffer_s *b =
+      (node != NULL) ? (struct arts_db_buffer_s *)node
+                     : (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
+                           sizeof(struct arts_db_buffer_s), 64);
+  if (b != NULL) {
+    b->data = NULL;
+  }
+  return b;
+#else
   if (node != NULL) {
     return (
         struct arts_db_buffer_s *)node; /* recycled; caller re-inits fields */
@@ -56,8 +70,10 @@ struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
    * owner_cache is NULL (shouldn't happen in normal operation). */
   return (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
       sizeof(struct arts_db_buffer_s) + db_size, 64);
+#endif
 }
 
+#ifndef ARTS_FAM_DIRECT
 /* As arts_db_buf_alloc, but buf->data reads as zero.  A recycled buffer is
  * cleared here (its previous contents are arbitrary); a fresh pool
  * allocation arrives zeroed without being touched. */
@@ -72,9 +88,17 @@ struct arts_db_buffer_s *arts_db_buf_alloc_zeroed(struct arts_db_cache_s *cache,
   return (struct arts_db_buffer_s *)arts_regpool_zalloc_aligned(
       sizeof(struct arts_db_buffer_s) + db_size, 64);
 }
+#endif
 
 arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
                                        struct arts_db_buffer_s **out) {
+#ifdef ARTS_FAM_DIRECT
+  (void)db_size;
+  (void)out;
+  ARTS_ERROR("coherence: a detached payload has no meaning where the store "
+             "is not this rank's");
+  return NULL;
+#else
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
       sizeof(struct arts_db_buffer_s) + db_size, 64);
   if (b == NULL) {
@@ -86,6 +110,7 @@ arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
   b->cb = arts_shared_make(b, buffer_deleter);
   *out = b;
   return b->cb;
+#endif
 }
 
 arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
@@ -108,6 +133,70 @@ static inline void buf_note_present(struct arts_db_cache_s *cache) {
   __atomic_store_n(&cache->payload_pending, (uint8_t)0, __ATOMIC_RELEASE);
 }
 
+#ifdef ARTS_FAM_DIRECT
+bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
+                                uint64_t version, uint64_t db_size) {
+  if (payload == NULL) {
+    /* A rank that has not learned the block's store, or a block with none,
+     * has nothing to adopt. */
+    return false;
+  }
+  if (__atomic_load_n(&cache->payload_pending, __ATOMIC_RELAXED) == 0u) {
+    return false;
+  }
+  struct arts_db_buffer_s *nb = arts_db_buf_alloc(cache, 0);
+  if (nb == NULL) {
+    return false; /* OOM — caller decides how to surface. */
+  }
+  nb->owner_cache = cache;
+  nb->version = version;
+  nb->data = (char *)payload;
+  arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
+  nb->cb = cb;
+  if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
+    arts_shared_release(&cb); /* last ref: the deleter recycles nb */
+    /* One descriptor serves a block for its whole life: the store does not
+     * move, so a second descriptor would be two names for one range and
+     * arts_db_buf_for_payload could not answer.  Losing this CAS to the SAME
+     * store is an ordinary race between two first users; losing it to a
+     * different pointer is two stores for one block. */
+    arts_shared_ptr_t cur = arts_db_buf_acquire(cache);
+    struct arts_db_buffer_s *inc =
+        (struct arts_db_buffer_s *)arts_shared_get(cur);
+    if (inc == NULL) {
+      /* The winner's descriptor has since been withdrawn, so the block has no
+       * payload again: this call installed none either, and the slot still
+       * needs materializing. */
+      arts_db_buf_release(&cur);
+      return false;
+    }
+    if ((void *)inc->data != payload) {
+      ARTS_ERROR("coherence: a block already has a descriptor naming other "
+                 "storage");
+    }
+    arts_db_buf_release(&cur);
+    buf_note_present(cache);
+    return false;
+  }
+  if (cache->db_size == 0) {
+    cache->db_size = db_size;
+  }
+  buf_note_present(cache);
+  return true;
+}
+
+struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
+                                                 void *payload) {
+  arts_shared_ptr_t h = arts_db_buf_acquire(cache);
+  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
+  if (b != NULL && (void *)b->data != payload) {
+    b = NULL;
+  }
+  arts_db_buf_release(&h);
+  return b;
+}
+#endif /* ARTS_FAM_DIRECT */
+
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   /* A byte load answers the common case: once anything has installed a
    * buffer, no later use has to materialize one, and asking the slot itself
@@ -124,6 +213,10 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
      * value. */
     return false;
   }
+#ifdef ARTS_FAM_DIRECT
+  return arts_db_buf_adopt_external(
+      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), 1u, db_size);
+#else
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   if (arts_shared_get(h) != NULL) {
     arts_db_buf_release(&h);
@@ -155,6 +248,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   }
   buf_note_present(cache);
   return true;
+#endif
 }
 
 /* Version-conditional publish of a fully-initialized private buffer (fields +
@@ -220,6 +314,19 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
                                              uint64_t new_version,
                                              const void *data_payload,
                                              uint64_t db_size) {
+#ifdef ARTS_FAM_DIRECT
+  if (data_payload != NULL) {
+    ARTS_ERROR("coherence: a payload cannot be published into the block's "
+               "store");
+  }
+  (void)arts_db_buf_adopt_external(
+      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), new_version,
+      db_size);
+  arts_shared_ptr_t h = arts_db_buf_acquire(cache);
+  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
+  arts_db_buf_release(&h);
+  return b;
+#else
   /* data_payload == NULL ⇒ initial install at create-time: the payload must
    * read as zero (deterministic state).  Take the zeroed allocation path so
    * only a recycled buffer is actually cleared — fresh pool memory is
@@ -246,6 +353,7 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
     }
   }
   return buf_publish(cache, new_buf, new_version);
+#endif
 }
 
 /* In-place publish commit: stamp the stable buffer with the published
@@ -257,6 +365,12 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
  * stale-retreat contract for the grant plane). */
 void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
                               uint64_t version) {
+#ifdef ARTS_FAM_DIRECT
+  (void)cache;
+  (void)version;
+  ARTS_ERROR("coherence: a version bump publishes nothing where the store is "
+             "not this rank's");
+#else
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
@@ -277,6 +391,7 @@ void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
     __atomic_store_n(&buf->version, version, __ATOMIC_RELEASE);
   }
   arts_db_buf_release(&h);
+#endif
 }
 
 /* ===== Rendezvous landing lifecycle (see buffer.h) ======================= */
@@ -284,6 +399,14 @@ void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
 struct arts_db_buffer_s *
 arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
                           struct arts_rdzv_landing_s *out) {
+#ifdef ARTS_FAM_DIRECT
+  (void)cache;
+  (void)db_size;
+  (void)out;
+  ARTS_ERROR("coherence: a landing has no meaning where the payload "
+             "is not this rank's");
+  return NULL;
+#else
   struct arts_db_buffer_s *b = arts_db_buf_alloc(cache, db_size);
   if (b == NULL) {
     ARTS_ERROR("coherence: rendezvous landing alloc failed (%llu bytes)",
@@ -300,21 +423,38 @@ arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
   out->txid = arts_net_rdzv_txid_next();
   out->cookie = (uint64_t)(uintptr_t)b;
   return b;
+#endif
 }
 
 void arts_db_buf_landing_recycle(struct arts_db_cache_s *cache,
                                  struct arts_db_buffer_s *b) {
+#ifdef ARTS_FAM_DIRECT
+  (void)cache;
+  (void)b;
+  ARTS_ERROR("coherence: a landing has no meaning where the payload "
+             "is not this rank's");
+#else
   if (b == NULL) {
     return;
   }
   b->cb = NULL;
   b->owner_cache = cache;
   arts_lf_pool_release(&cache->buf_freelist, &b->pool_link);
+#endif
 }
 
 bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
                                struct arts_db_buffer_s *landing,
                                uint64_t db_size) {
+#ifdef ARTS_FAM_DIRECT
+  (void)cache;
+  (void)version;
+  (void)landing;
+  (void)db_size;
+  ARTS_ERROR("coherence: a landing has no meaning where the payload "
+             "is not this rank's");
+  return false;
+#else
   if (landing == NULL) {
     return false;
   }
@@ -345,18 +485,29 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
   }
   buf_note_present(cache);
   return true;
+#endif
 }
 
 struct arts_db_buffer_s *
 arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
                            struct arts_db_buffer_s *landing,
                            uint64_t db_size) {
+#ifdef ARTS_FAM_DIRECT
+  (void)cache;
+  (void)new_version;
+  (void)landing;
+  (void)db_size;
+  ARTS_ERROR("coherence: a landing has no meaning where the payload "
+             "is not this rank's");
+  return NULL;
+#else
   landing->owner_cache = cache;
   landing->version = new_version;
   if (db_size > 0 && cache->db_size == 0) {
     cache->db_size = db_size;
   }
   return buf_publish(cache, landing, new_version);
+#endif
 }
 
 void arts_db_buf_ref_release_cb(void *arg) {
@@ -376,6 +527,14 @@ uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache) {
 
 void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
                                  uint64_t capacity) {
+#ifdef ARTS_FAM_DIRECT
+  /* A first touch adopts the block's own store, so a capacity bound sizes
+   * nothing and declares nothing. */
+  (void)capacity;
+  (void)arts_db_buf_adopt_external(
+      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), 0u,
+      cache->db_size);
+#else
   /* First-touch variant that sizes the ALLOCATION without declaring the
    * DB's size: `cache->db_size` only ever records a wire-derived exact
    * value, so a requester materializing its stable buffer from a GUID size
@@ -407,10 +566,19 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
     arts_shared_release(&cb);
   }
   buf_note_present(cache);
+#endif
 }
 
 void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
                                uint64_t db_size) {
+#ifdef ARTS_FAM_DIRECT
+  if (data != NULL) {
+    ARTS_ERROR("coherence: a payload cannot be published into the block's "
+               "store");
+  }
+  (void)arts_db_buf_adopt_external(
+      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), 0u, db_size);
+#else
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf != NULL) {
@@ -472,4 +640,5 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
     }
   }
   buf_note_present(cache);
+#endif
 }

@@ -178,7 +178,7 @@ typedef _Atomic(unsigned int) arts_db_atomic_uint_t;
 #endif
 
 /*--- Buffer ---------------------------------------------------------------
- * Holds version + user-visible data bytes (FAM).  Lifetime is managed by an
+ * Holds version + user-visible data bytes.  Lifetime is managed by an
  * arts_shared_ptr_t control block (cache.buffer is the atomic slot; each
  * acquirer holds a strong ref).  No embedded refcount: the cb's strong count
  * IS the "cache-hold + per-acquirer" count, and the cb deleter frees the
@@ -186,19 +186,27 @@ typedef _Atomic(unsigned int) arts_db_atomic_uint_t;
  * in-flight acquire can never free the bytes out from under a reader.
  *   version  monotonic per-buffer version stamp.
  *   cb       this buffer's own control block (== the slot's cb while
- *            installed).  An EDT recovers it via buf_from_data(dep->ptr)->cb
- *            to drop its acquire ref at release — safe because the EDT's own
- *            ref keeps the buffer (hence buf->cb) alive until that release.
- *   data     FAM holding db_size bytes — user-visible canonical payload,
- *            64-byte aligned (cache-line / CXL atomicity). */
+ *            installed).  A holder recovers it from the descriptor its dep
+ *            slot pins, to drop its acquire ref at release — safe because
+ *            the holder's own ref keeps the buffer (hence buf->cb) alive
+ *            until that release.
+ *   data     this block's user-visible payload, db_size bytes, 64-byte
+ *            aligned (cache-line atomicity).  Where the descriptor carries
+ *            the bytes itself they follow the header at that offset; where
+ *            the store is external the member points at it from that same
+ *            offset, and the descriptor never owns, frees or zeroes them. */
 struct arts_db_buffer_s {
   arts_lf_link_t pool_link; /* FIRST — per-DB free-list node when recycled */
   uint64_t version;         /* monotonic per buffer (stale while free-listed) */
   arts_shared_ptr_t cb;     /* this buffer's control block */
   struct arts_db_cache_s
       *owner_cache; /* deleter pushes here; read only at strong==0 */
-  char _pad[32];    /* data[] lands at offset 64 (cache-line aligned) */
-  char data[];      /* db_size bytes — user-visible */
+  char _pad[32];    /* the payload member lands at offset 64 */
+#ifdef ARTS_FAM_DIRECT
+  char *data; /* storage this descriptor refers to and does not own */
+#else
+  char data[]; /* db_size bytes — user-visible */
+#endif
 };
 
 /* Forward decl; per-rank cache (owner of the per-DB buffer free-list). */

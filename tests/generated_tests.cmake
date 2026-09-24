@@ -12,6 +12,10 @@
 # Tests that EXPOSE a runtime bug and are designed to fail/crash are registered
 # WITHOUT a PASS_REGULAR_EXPRESSION so they show up as failing (documenting the
 # defect). They are NOT masked with WILL_FAIL.
+#
+# The two if() guards below are hand-maintained: they key on the exclusion list
+# tests/CMakeLists.txt sets, and a regeneration from the census must preserve
+# them.  No generated registration LINE is edited by them.
 # ============================================================================
 
 # Helper: build a standalone pure_unit test that compiles specific libs/src .c
@@ -77,11 +81,13 @@ add_pure_unit_src(guid_hash_key_divzero PASS_REGEX "PASS guid_hash_key_divzero" 
 add_pure_unit_src(guid_db_seq_alloc_stress PASS_REGEX "PASS guid_db_seq_alloc_stress" TIMEOUT 120)
 add_pure_unit_src(route_table_db_shard PASS_REGEX "PASS route_table_db_shard" TIMEOUT 60)
 add_pure_unit_src(db_cache_layout PASS_REGEX "PASS db_cache_layout" TIMEOUT 60)
+if(NOT "buffer_payload_roundtrip" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
 add_pure_unit_src(buffer_payload_roundtrip SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_payload_roundtrip" TIMEOUT 60)
 add_pure_unit_src(buffer_zero_size SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_zero_size" TIMEOUT 60)
 add_pure_unit_src(buffer_version_guard SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_version_guard" TIMEOUT 60)
 add_pure_unit_src(buffer_stub_db_size_learn SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_stub_db_size_learn" TIMEOUT 60)
 add_pure_unit_src(buffer_destroy_vs_acquire SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_destroy_vs_acquire" TIMEOUT 60)
+endif()
 add_pure_unit_src(rank_u64_map_roundtrip SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_u64_map.c PASS_REGEX "PASS rank_u64_map_roundtrip" TIMEOUT 60)
 add_pure_unit_src(rank_u64_map_advance SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_u64_map.c PASS_REGEX "PASS rank_u64_map_advance" TIMEOUT 60)
 # T056 rank_bitset: the arts_rank_bitset_* symbols live in the protocol-specific
@@ -613,8 +619,10 @@ set_tests_properties(coherence_install_version_monotone_2n PROPERTIES PASS_REGUL
 
 # T059 EXPOSES B-mark-double-dec: expected to FAIL (delta==2 not 1). runtime_single (boots
 # arts_rt for route-table/EDT alloc). Lives in tests/unit/. Do not mask.
+if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
 add_arts_test(mark_edt_ready_idempotent)
 register_single_node_test(mark_edt_ready_idempotent TIMEOUT 60)
+endif()
 
 add_arts_test(snapshot_drain_case3)
 register_multinode_test(snapshot_drain_case3 TIMEOUT 180)
