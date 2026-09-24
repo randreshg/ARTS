@@ -544,7 +544,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
           arts_send_db_create_coherent(
               home, guid, len,
               no_acquire ? ARTS_DB_PROP_NO_ACQUIRE : ARTS_DB_PROP_NONE,
-              (uint16_t)ARTS_DB_CXL);
+              (uint16_t)ARTS_DB_CXL, 0);
         }
         *addr = no_acquire ? NULL : payload;
         ARTS_DEBUG("arts_db_create: CXL DB[Guid:%lu, Size:%lu] created, "
@@ -775,7 +775,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * normal GRANT_REQUEST to acquire ownership.  Wire only carries
          * metadata (no payload bytes). */
         arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NO_ACQUIRE,
-                                     (uint16_t)db_type);
+                                     (uint16_t)db_type, 0);
         *addr = NULL;
       } else {
         /* Creator-remote (home != self): cache-only stub — no home directory.
@@ -845,7 +845,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * and that create's own announce is the home's. */
         if (took_hold) {
           arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NONE,
-                                       (uint16_t)db_type);
+                                       (uint16_t)db_type, 0);
         }
         /* The creator-side buffer pointer, so the user can write the local
          * copy its release publishes — handed out only through the hold this

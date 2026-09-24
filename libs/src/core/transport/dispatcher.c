@@ -418,6 +418,18 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     arts_shared_release(&h);
     break;
   }
+#ifdef ARTS_FAM
+  case MSG_DB_FAM_FREE: {
+    arts_handler_db_fam_free(
+        (struct arts_msg_db_fam_free_packet_s *)(packet));
+    break;
+  }
+  case MSG_DB_FAM_FETCH_DONE: {
+    arts_handler_db_fam_fetch_done(
+        (struct arts_msg_db_fam_fetch_done_packet_s *)(packet));
+    break;
+  }
+#endif /* ARTS_FAM */
   /* The FLUSH arm's own rounds: the fetch that serves an acquire, and the
    * write-back round that serves an RW release. */
 #if defined(ARTS_PROTOCOL_FLUSH)
@@ -1103,7 +1115,9 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
   case MSG_DB_EXCL_DELIVER:
   case MSG_DB_EXCL_CONFIRM:
   case MSG_DB_EXCL_RORET:
-  case MSG_DB_EXCL_RECALL: {
+  case MSG_DB_EXCL_RECALL:
+  case MSG_DB_FAM_FREE:
+  case MSG_DB_FAM_FETCH_DONE: {
     ARTS_ERROR("FLUSH build received an OCR-model coherence message (type %d) "
                "from rank %u — binary mode mismatch?",
                packet->message_type, packet->rank);

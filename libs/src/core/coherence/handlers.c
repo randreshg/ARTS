@@ -45,6 +45,7 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
+#include "arts/fam/pool.h" /* arts_fam_contains / arts_fam_free (ARTS_FAM only) */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h" /* arts_regpool_free (orphaned landing) */
@@ -646,6 +647,26 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   (void)item_v;
 #endif
 }
+
+#ifdef ARTS_FAM
+/* FAM_FREE handler: the address alone names the slot, so there is no
+ * route-table lookup and no cache pinned by a dispatcher — this is a Cat-E
+ * (state-less) message, ordered by construction (a home sends it only from
+ * the teardown that claimed arts_route_table_set_destroyed, and only the
+ * home ever frees a slot it handed out). */
+void arts_handler_db_fam_free(struct arts_msg_db_fam_free_packet_s *p) {
+  void *slot = (void *)(uintptr_t)p->fam_addr;
+  if (slot == NULL) {
+    return;
+  }
+  if (!arts_fam_contains(slot)) {
+    ARTS_ERROR("fam: rank %u asked this rank to free an address outside its "
+               "pool",
+               p->header.rank);
+  }
+  arts_fam_free(slot);
+}
+#endif /* ARTS_FAM */
 
 /* The WB SNAPSHOT_REDIRECT handler arts_handler_db_snapshot_redirect lives in
  * coherence/val/wb.c (owner-side, REDIRECT only exists under WB). */

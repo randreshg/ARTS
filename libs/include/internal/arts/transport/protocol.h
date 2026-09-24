@@ -169,6 +169,14 @@ enum arts_msg_type {
   MSG_DB_FLUSH_ANNOUNCE, /* FLUSH: releaser → home, a release with no credit asks for one */
   MSG_DB_FLUSH_CTS,      /* FLUSH: home → releaser, the credit for an announced release */
 
+  /* Fabric-attached memory: home -> the slot's allocating rank at the
+   * block's teardown, handing the slot back to its own allocator. */
+  MSG_DB_FAM_FREE,
+  /* Fabric-attached memory: self-addressed, worker -> this rank's own
+   * grant committer, carrying a claimed grant's copy back for commit.
+   * Never leaves the rank. */
+  MSG_DB_FAM_FETCH_DONE,
+
   MSG_COUNT, /* sentinel — keep last; used for array sizing */
 };
 
@@ -456,14 +464,21 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
   uint64_t rdzv_cookie; /* requester's landing handle, echoed verbatim */
 };
 
-/* DB_CREATE_COHERENT — no trailing payload (zero-init buffer at home).
- * Body: db_guid(8) + db_size(8) + flags(2) + db_type(2) = 20,
- * total = 44 + 20 = 64 (already 8-aligned).  Keep pad[4] anyway so any
- * future ABI growth has space without changing on-wire size. */
+/* DB_CREATE_COHERENT — no trailing payload.  Body:
+ *   db_guid(8) + db_size(8) [+ fam_addr(8) under ARTS_FAM]
+ *   + flags(2) + db_type(2) + pad[4]  =  24 bytes, or 32 under ARTS_FAM,
+ * 8-aligned either way.  The block's store is named by its ADDRESS alone:
+ * the pool carves one slice per rank, so the rank that owns a slot is a
+ * function of it.  The one conditional member makes the layout
+ * build-conditional, like the sequence-number header: every rank in a run
+ * must be built alike. */
 struct ARTS_PACKED arts_msg_db_create_coherent_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
+#ifdef ARTS_FAM
+  uint64_t fam_addr; /* the block's slot, 0 when the creator allocated none */
+#endif
   uint16_t flags;
   uint16_t db_type;
   uint8_t pad[4];
@@ -477,6 +492,24 @@ struct ARTS_PACKED arts_msg_destroy_packet_s {
 struct ARTS_PACKED arts_msg_cache_destroy_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
+};
+
+/* FAM_FREE — home -> the slot's allocating rank at the block's teardown.  The
+ * address alone: a slot is pool memory, not an object, so nothing is looked
+ * up, and the receiving rank is the one the address's slice belongs to. */
+struct ARTS_PACKED arts_msg_db_fam_free_packet_s {
+  struct arts_msg_header_s header;
+  uint64_t fam_addr;
+};
+
+/* FAM_FETCH_DONE — self-addressed: the worker that copied a claimed grant's
+ * bytes hands the commit back to the rank's own loopback drainer, the one
+ * thread that commits grants.  Never leaves the rank. */
+struct ARTS_PACKED arts_msg_db_fam_fetch_done_packet_s {
+  struct arts_msg_header_s header;
+  arts_guid_t db_guid;
+  uint32_t mode;
+  uint32_t pad;
 };
 
 /* ===== WB-write-policy-only wire packets ====================================

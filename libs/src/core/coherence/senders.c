@@ -29,6 +29,7 @@
 
 #include "arts/coherence/coherence.h" /* the handler arg structs */
 #include "arts/db.h" /* struct arts_db_s (Cat-C self-send lookup-acquire) */
+#include "arts/fam/pool.h" /* arts_fam_owner_of / arts_fam_free (ARTS_FAM only) */
 #include "arts/gas/route_table.h" /* arts_route_table_lookup_db (Cat-C self-send) */
 #include "arts/ooo.h" /* arts_ooo_dispatch_or_defer_guid (self-send replay) */
 #include "arts/system/print.h"
@@ -355,12 +356,17 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
 
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type) {
+                                  uint16_t db_type, uint64_t fam_addr) {
   struct arts_msg_db_create_coherent_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.db_size = db_size;
+#ifdef ARTS_FAM
+  p.fam_addr = fam_addr;
+#else
+  (void)fam_addr;
+#endif
   p.flags = flags;
   p.db_type = db_type;
   memset(p.pad, 0, sizeof(p.pad));
@@ -413,6 +419,26 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
   }
   arts_transport_send_async((int)sharer_rank, (char *)&p, sizeof(p));
 }
+
+#ifdef ARTS_FAM
+void arts_send_db_fam_free(uint64_t fam_addr) {
+  if (fam_addr == 0) {
+    return;
+  }
+  /* One slice per rank, so the owner IS the address.  A slot this rank
+   * allocated goes straight back to the allocator — no message to self. */
+  unsigned int owner = arts_fam_owner_of((const void *)(uintptr_t)fam_addr);
+  if (owner == arts_global_rank_id) {
+    arts_fam_free((void *)(uintptr_t)fam_addr);
+    return;
+  }
+  struct arts_msg_db_fam_free_packet_s p;
+  arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_FAM_FREE);
+  p.header.rank = arts_global_rank_id;
+  p.fam_addr = fam_addr;
+  arts_transport_send_async((int)owner, (char *)&p, sizeof(p));
+}
+#endif /* ARTS_FAM */
 
 #ifdef ARTS_PROTOCOL_EXCL
 #endif /* ARTS_PROTOCOL_EXCL */

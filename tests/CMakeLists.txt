@@ -1505,6 +1505,12 @@ endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/generated_tests.cmake)
 
+# Wire-shape guard for the create packet's fabric-attached-memory slot and the
+# two appended messages.  Registered UNGUARDED (no FAM-tree condition): the
+# test's own #ifdef ARTS_FAM branches on the tree it compiles in, and it must
+# pass in a FAM tree and in a tree with no FAM backend alike.
+add_pure_unit_src(fam_wire_layout PASS_REGEX "PASS fam_wire_layout" TIMEOUT 30)
+
 # runtime_types.h has separate C11-atomic and C++/nvcc declarations for the
 # event descriptor.  The generated census owns the C probe; compile the exact
 # same source through a C++ wrapper and compare their complete fingerprints.

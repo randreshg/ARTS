@@ -1247,3 +1247,10 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
     lock_send_release_ro(cache);
   }
 }
+
+#ifdef ARTS_FAM
+void arts_handler_db_fam_fetch_done(struct arts_msg_db_fam_fetch_done_packet_s *p) {
+  (void)p;
+  ARTS_ERROR("fam: a fetch-done message arrived before the copy runs off the committer");
+}
+#endif /* ARTS_FAM */
