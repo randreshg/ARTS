@@ -28,6 +28,8 @@ extern "C" {
  *           rw_count:30 (59..30) | ro_count:30 (29..0) ]
  *
  *   rw_state/ro_state ∈ {IDLE, REQ (request sent to home), GRANT (grant held)}
+ *     — plus FETCH (granted, bytes being read in) where the arm that stages
+ *       a block through fabric-attached memory claims a grant before its copy
  *   rw_count/ro_count = #RW/#RO EDTs on this rank acquired-not-released.
  *
  * Every transition — including the acquire's count++ — happens inside ONE
@@ -38,6 +40,14 @@ extern "C" {
 #define CACHE_ST_IDLE 0u
 #define CACHE_ST_REQ 1u
 #define CACHE_ST_GRANT 2u
+#ifdef ARTS_FAM
+/* A granted axis whose bytes are being read out of the block's store.  The
+ * fourth value of a 2-bit state field, so the word's layout is unchanged.  An
+ * acquire parks at FETCH exactly as at REQ, and a create hold is refused
+ * exactly as at GRANT: while the copy runs, nothing may read or write the
+ * working copy it is filling. */
+#define CACHE_ST_FETCH 3u
+#endif
 #define CACHE_CNT_BITS 30
 #define CACHE_CNT_MASK ((uint64_t)0x3fffffffULL)
 #define CACHE_RO_CNT(s) ((uint32_t)((s) & CACHE_CNT_MASK))
@@ -313,6 +323,11 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
 /* A create recording its own hold in a cache this rank already made for the
  * block (see the arbiter for the word it admits). */
 #define CACHE_OP_CREATE_HOLD 6
+#ifdef ARTS_FAM
+#define CACHE_OP_GRANT_RW_CLAIM 7
+#define CACHE_OP_GRANT_RO_CLAIM 8
+#define CACHE_OP_GRANT_COMMIT 9
+#endif
 
 #define CACHE_ACT_NONE 0
 #define CACHE_ACT_SELF_SERVE 1 /* covering grant held: serve the dep directly */
@@ -327,6 +342,16 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
  * payload.  Distinct from CACHE_ACT_REL_RW, which carries a publish — nothing
  * was written under a grant nobody held. */
 #define CACHE_ACT_REL_RW_EMPTY 9
+#ifdef ARTS_FAM
+/* The claim was taken: copy the block's bytes in, then commit. */
+#define CACHE_ACT_FETCH 10
+/* The op cannot be applied to this word without breaking the protocol: a
+ * second grant for a right this rank already holds or is fetching, a commit
+ * with no claim to commit, or a release of a turn no commit ever admitted.
+ * The word is returned UNCHANGED, so the caller's CAS commits nothing and the
+ * caller — not this pure function — reports the violation. */
+#define CACHE_ACT_INVALID 11
+#endif
 
 /* Defined in arbiters.c (included by purge.c); exposed non-static for the
  * cache-state model test (mirrors excl_compute_next's exposure). */

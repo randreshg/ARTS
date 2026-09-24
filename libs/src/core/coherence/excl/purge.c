@@ -1223,6 +1223,13 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
+#ifdef ARTS_FAM
+  if (act == CACHE_ACT_INVALID) {
+    ARTS_ERROR("excl: guid %lu was released for writing with no committed "
+               "write turn to release",
+               (unsigned long)cache->db_guid);
+  }
+#endif
   if (act == CACHE_ACT_REL_RW) {
     lock_send_release_rw(cache);
   }
@@ -1240,6 +1247,13 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
                                                   next, memory_order_acq_rel,
                                                   memory_order_acquire));
+#ifdef ARTS_FAM
+  if (act == CACHE_ACT_INVALID) {
+    ARTS_ERROR("excl: guid %lu was released for reading with no committed "
+               "read turn to release",
+               (unsigned long)cache->db_guid);
+  }
+#endif
   if (act == CACHE_ACT_REL_RW) {
     lock_send_release_rw(
         cache); /* last RO joiner under an RW grant → publish */
