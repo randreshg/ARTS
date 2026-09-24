@@ -294,7 +294,19 @@ set(ARTS_DEFAULT_DB_KIND "ARTS_DB" CACHE STRING
 set_property(CACHE ARTS_DEFAULT_DB_KIND PROPERTY STRINGS ARTS_DB ARTS_DB_CXL)
 
 # ── CXL shared memory (requires the Rapid API) ─────────────────────────────
-option(ARTS_USE_CXL "Enable CXL shared-memory DB support" OFF)
+# The CXL storage kind predates the current coherence design and is
+# unmaintained: its GUID encodes a pointer, its home is derived from an
+# offset, and its shared-memory headers carry known defects (see the notes in
+# libs/include/internal/arts/cxl/).  Fabric-attached memory reaches the
+# runtime through ARTS_FAM_BACKEND instead, as the store an ordinary
+# ARTS_DB's coherence protocol returns to.  The sources stay for reference.
+option(ARTS_USE_CXL "Enable CXL shared-memory DataBlocks (DEPRECATED: forced OFF)" OFF)
+if(ARTS_USE_CXL)
+    message(FATAL_ERROR
+        "ARTS_USE_CXL cannot be enabled: the CXL storage kind is unmaintained "
+        "and no protocol serves it.  For fabric-attached memory, configure "
+        "-DARTS_FAM_BACKEND=SHM|DEVICE with -DARTS_FAM_RESIDENCY=STAGED|DIRECT.")
+endif()
 set(ARTS_CXL_RAPID_INCLUDE_DIR "" CACHE PATH
     "Path to Rapid API include directory (required when ARTS_USE_CXL=ON)")
 set(ARTS_CXL_LIB_DIR "" CACHE PATH
