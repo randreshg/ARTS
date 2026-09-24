@@ -205,6 +205,7 @@ list(APPEND TEST_PROGRAMS fam_ro_turn_overlap)
 if(ARTS_FAM_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS fam_alloc_dist)
     list(APPEND TEST_PROGRAMS fam_slot_rule)
+    list(APPEND TEST_PROGRAMS fam_stale_generation_grant)
     list(APPEND TEST_PROGRAMS fam_creator_roster)
     list(APPEND TEST_PROGRAMS fam_quiescence_marker)
     list(APPEND TEST_PROGRAMS fam_slot_reuse_after_destroy)
@@ -1632,6 +1633,10 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # and the run's last act prints the line required here, so a run that shut
     # down before its checks ran cannot pass.
     register_fam_single_node_test(fam_slot_rule TIMEOUT 30)
+    # A grant naming a store other than the one the cache names is refused:
+    # a cache of an earlier generation of a reused label, whose store has
+    # been freed.  One rank: the refusal is a check on one rank's cache.
+    register_fam_single_node_test(fam_stale_generation_grant TIMEOUT 30)
     register_fam_multinode_test(fam_slot_rule TIMEOUT 60)
     if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
         # A store handed back leaves nothing naming it.  Where a descriptor

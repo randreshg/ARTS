@@ -809,7 +809,8 @@ static void fam_fetch_working_copy(struct arts_db_cache_s *cache) {
  *
  * PRECONDITION, enforced rather than assumed: the caller holds the turn whose
  * zero edge this is, and the store is the one this block's creator allocated.
- * One label has one store because a second address for one GUID aborts where
+ * One generation has one store because its creator mints it once, and a grant
+ * naming a store other than the one this rank's cache names is refused where
  * it is recorded. */
 static void fam_purge_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = cache->db_size;
@@ -1149,9 +1150,19 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
    * nothing else: the owner is the address's slice, and the landing's key,
    * txid and the version are unread here.  A rank that created the block
    * already knows the store and records nothing.  A zero address is legal for
-   * a sentinel-sized block, which has none. */
-  if (p->pub.addr != 0) {
-    (void)arts_db_fam_slot_record(cache, p->pub.addr);
+   * a sentinel-sized block, which has none.
+   *
+   * A cache naming a DIFFERENT store is a cache of an earlier generation of a
+   * reused label, reached by a later generation's grant before its teardown
+   * notice: its store has been freed and may already belong to another block.
+   * Dropping the grant would strand the home's count, and fetching would read
+   * or write memory the block no longer owns, so the grant is refused. */
+  if (arts_db_fam_slot_record(cache, p->pub.addr) == ARTS_FAM_SLOT_CONFLICT) {
+    ARTS_ERROR("fam: guid %lu: a grant names slot %#llx but this rank's cache "
+               "names slot %#llx — a cache from before the block's teardown "
+               "notice received a later generation's grant",
+               (unsigned long)p->db_guid, (unsigned long long)p->pub.addr,
+               (unsigned long long)arts_db_fam_slot_addr(cache));
   }
   lock_grant_commit(db_h, p->db_guid, mode); /* consumes db_h */
 }

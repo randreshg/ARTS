@@ -160,13 +160,17 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #endif /* arms sharing the common cache shape */
 
 #ifdef ARTS_FAM
-bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
+arts_fam_slot_record_t arts_db_fam_slot_record(struct arts_db_cache_s *cache,
+                                               uint64_t addr) {
   if (cache == NULL || addr == 0) {
-    return false;
+    return ARTS_FAM_SLOT_KNOWN;
   }
   uint64_t expect = 0;
-  return __atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
-                                     __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
+  if (__atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
+                                  __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+    return ARTS_FAM_SLOT_RECORDED;
+  }
+  return (expect == addr) ? ARTS_FAM_SLOT_KNOWN : ARTS_FAM_SLOT_CONFLICT;
 }
 
 uint64_t arts_db_fam_slot_mint(uint64_t db_size) {
@@ -182,7 +186,7 @@ bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
     return false;
   }
   uint64_t addr = arts_db_fam_slot_mint(cache->db_size);
-  if (!arts_db_fam_slot_record(cache, addr)) {
+  if (arts_db_fam_slot_record(cache, addr) != ARTS_FAM_SLOT_RECORDED) {
     arts_fam_free((void *)(uintptr_t)addr);
     return false;
   }

@@ -367,11 +367,18 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
 #endif
 
 #ifdef ARTS_FAM
-/* Record this block's slot in a cache that has none.  Returns true when this
- * call installed it; a cache that already names a slot keeps it.  Every slot
- * has one origin: the block's creator mints it from its own slice before the
- * create is sent, and every other rank learns it from the create or a grant. */
-bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
+/* Record this block's slot in a cache that has none; a cache that already
+ * names a slot keeps it.  Every slot has one origin: the block's creator mints
+ * it from its own slice before the create is sent, and every other rank learns
+ * it from the create or a grant.  The result tells a repeat of the address the
+ * cache already names (or no address at all) from a different one. */
+typedef enum {
+  ARTS_FAM_SLOT_RECORDED, /* this call installed addr */
+  ARTS_FAM_SLOT_KNOWN,    /* the cache already names addr, or addr is 0 */
+  ARTS_FAM_SLOT_CONFLICT, /* the cache already names a different slot */
+} arts_fam_slot_record_t;
+arts_fam_slot_record_t arts_db_fam_slot_record(struct arts_db_cache_s *cache,
+                                               uint64_t addr);
 /* Allocate a slot of db_size bytes out of this rank's slice for a create that
  * builds no descriptor here; 0 for a sentinel-sized block, which has none. */
 uint64_t arts_db_fam_slot_mint(uint64_t db_size);
