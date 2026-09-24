@@ -74,6 +74,7 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
 #include "arts/ooo.h"
 #include "arts/runtime_state.h" /* arts_node_info */
 #include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"    /* outbound send helpers */
 #include "arts/transport/protocol.h"  /* wire packet structs */
@@ -146,14 +147,9 @@ static void event_free_typed(struct arts_event_s *e) { arts_event_deleter(e); }
 
 /* --- Internal allocation / install --------------------------------------- */
 
-static struct arts_event_s *event_alloc(const arts_event_hint_t *h) {
-  struct arts_event_s *e =
-      arts_calloc_aligned(1, sizeof(struct arts_event_s), ARTS_CACHE_LINE_SIZE);
-  if (!e) {
-    return NULL;
-  }
-  /* lifecycle/deleter handled by the route_table cb (deleter-by-kind) on
-   * install — no per-object shared field to initialize. */
+/* Initialize a zeroed event from its hint.  The route_table cb installed with
+ * it owns its lifetime (deleter-by-kind), so there is no shared field here. */
+static void event_init(struct arts_event_s *e, const arts_event_hint_t *h) {
   e->is_channel = h->channel ? 1 : 0;
 
   if (e->is_channel) {
@@ -189,56 +185,51 @@ static struct arts_event_s *event_alloc(const arts_event_hint_t *h) {
     e->simple.data = NULL_GUID;
     arts_lf_stack_init(&e->simple.deps_stack);
   }
-  return e;
 }
 
-static bool event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
+/* The engine's create args for an event: the args header, the blob packet,
+ * the event image, contiguous. */
+#define EVENT_CREATE_ARGS_SIZE                                                 \
+  (sizeof(struct arts_ooo_args_create_blob_s) +                                \
+   sizeof(struct arts_msg_object_blob_packet_s) + sizeof(struct arts_event_s))
+
+void arts_event_create_enter(const struct arts_msg_object_blob_packet_s *packet,
+                             const void *event) {
+  _Alignas(uint64_t) unsigned char args[EVENT_CREATE_ARGS_SIZE];
+  struct arts_ooo_args_create_blob_s a = {
+      .size = (uint32_t)(sizeof(*packet) + sizeof(struct arts_event_s))};
+  memcpy(args, &a, sizeof(a));
+  memcpy(args + sizeof(a), packet, sizeof(*packet));
+  memcpy(args + sizeof(a) + sizeof(*packet), event,
+         sizeof(struct arts_event_s));
+  arts_ooo_dispatch_or_defer_guid(packet->guid, OOO_EVENT_CREATE, args,
+                                  (uint32_t)sizeof(args));
+}
+
+static void event_install(arts_guid_t *guid, const arts_event_hint_t *h_in) {
   arts_event_hint_t h = hint_or_defaults(h_in);
   unsigned int rank = h.rank;
   if (rank == ARTS_HINT_CURRENT_RANK) {
     rank = arts_global_rank_id;
   }
-
-  struct arts_event_s *event = event_alloc(&h);
-  if (!event) {
-    return false;
-  }
-
-  if (rank == arts_global_rank_id) {
-    if (*guid) {
-      if (h.check) {
-        /* CHECK / rendezvous (e.g. OCR GUID_PROP_CHECK): fail if the GUID
-         * already exists so the first creator wins and a later one observes
-         * the collision.  add_item_race CAS-installs (firing the OoO list on
-         * win); on loss the object stays ours, so we free it and return
-         * NULL_GUID via the caller. */
-        if (!arts_route_table_install_if_absent(event, *guid, rank, false)) {
-          arts_event_deleter(event);
-          return false;
-        }
-      } else {
-        /* Default: unconditional install — a labeled-GUID reuse REPLACES the
-         * prior generation (the displaced cb is released).  Drains the OoO
-         * list internally. */
-        arts_route_table_install(event, *guid, rank, false);
-      }
-    } else {
-      *guid = arts_guid_create_for_rank(rank, ARTS_GUID_EVENT);
-      arts_route_table_install(event, *guid, rank, false);
-    }
-    return true;
-  }
-  /* Cross-rank: reserve the GUID on the target rank first (mirroring the EDT
-   * create path, which reserves regardless of locality) so the caller gets a
-   * valid handle back; then forward as a marshaled buffer.  Receiver
-   * arts_handler_event_create performs add_item_race.  Discard the local
-   * allocation since the remote will materialise its own copy. */
   if (*guid == NULL_GUID) {
     *guid = arts_guid_create_for_rank(rank, ARTS_GUID_EVENT);
   }
+  struct arts_event_s *event =
+      arts_calloc_aligned(1, sizeof(struct arts_event_s), ARTS_CACHE_LINE_SIZE);
+  event_init(event, &h);
+
+  if (rank == arts_global_rank_id) {
+    /* The engine installs this very object; it is the create's until then. */
+    struct arts_ooo_args_create_local_s a = {
+        .size = ARTS_OOO_CREATE_ADOPT, .guid = *guid, .descriptor = event};
+    arts_ooo_dispatch_or_defer_guid(*guid, OOO_EVENT_CREATE, &a, sizeof(a));
+    return;
+  }
+  /* The GUID is minted for the home rank before the ship, so the caller has
+   * its handle at once; the home installs the object when the blob lands. */
   arts_send_object_blob(rank, *guid, event, sizeof(*event), MSG_EVENT_CREATE,
                         arts_event_deleter);
-  return true;
 }
 
 arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
@@ -249,7 +240,6 @@ arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
     /* finish overrides everything: simple latch=1 on current rank, auto-GUID.
      */
     h.channel = false;
-    h.check = false;
     h.guid = NULL_GUID;
     h.rank = ARTS_HINT_CURRENT_RANK;
     h.latch = 1;
@@ -258,8 +248,8 @@ arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
   if (g != NULL_GUID) {
     h.rank = arts_guid_get_rank(g);
   }
-  bool ok = event_install(&g, &h);
-  if (ok && h.finish && g != NULL_GUID) {
+  event_install(&g, &h);
+  if (h.finish) {
     /* Mechanism A — auto-chain to the ambient finish scope (if any). */
     arts_guid_t ambient = arts_current_finish_event();
     if (ambient != NULL_GUID) {
@@ -270,24 +260,20 @@ arts_guid_t arts_event_create(const arts_event_hint_t *hint) {
     arts_owned_finish_register(g);
   }
   TIME_EVENT_CREATE_STOP();
-  if (h.guid != NULL_GUID) {
-    return ok ? g : NULL_GUID;
-  }
   return g;
 }
 
 /* ── Event destroy ──────────────────────────────────────────────────── */
 
 /* Pure Cat-B body (g_ooo_table[OOO_EVENT_DESTROY]).  The event is installed and
- * ref-pinned by dispatch_or_defer; the destroy action detaches the slot cb so
- * the deleter runs once outstanding refs drain.  arts_route_table_set_destroyed
- * is idempotent (slot value exchange -> NULL), so a duplicate/late replay is a
- * safe no-op.  item_v is unused — the action keys on the GUID. */
+ * ref-pinned by dispatch_or_defer; the destroy retires that event — the
+ * generation the dispatch chose — by identity, and the deleter runs once
+ * outstanding refs drain.  A duplicate or late replay finds its event already
+ * retired and does nothing. */
 void arts_handler_event_destroy(void *item_v, void *args_v) {
-  (void)item_v;
   struct arts_ooo_args_event_destroy_s *a =
       (struct arts_ooo_args_event_destroy_s *)args_v;
-  if (arts_route_table_set_destroyed(a->guid)) {
+  if (arts_ooo_retire_item(a->guid, item_v)) {
     INCREMENT_NUM_EVENT_DESTROY_BY(1);
   }
 }
@@ -517,7 +503,7 @@ static void event_simple_step(struct arts_event_s *e, arts_guid_t guid, int op,
     break;
   }
   if (act & EV_ACT_DESTROY) {
-    if (arts_route_table_set_destroyed(guid)) {
+    if (arts_ooo_retire_item(guid, e)) {
       INCREMENT_NUM_EVENT_DESTROY_BY(1);
     }
   }
@@ -619,7 +605,7 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
    * destroy after — must not lean on that: a destroy executed instead of a
    * park drops the very consumer counted events exist to serve. */
   if (act & EV_ACT_DESTROY) {
-    if (arts_route_table_set_destroyed(source)) {
+    if (arts_ooo_retire_item(source, event)) {
       INCREMENT_NUM_EVENT_DESTROY_BY(1);
     }
   }
@@ -700,47 +686,62 @@ void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
                                     destination, slot, rank, mode);
 }
 
-void arts_handler_event_create(void *ptr) {
-  struct arts_msg_object_blob_packet_s *packet =
-      (struct arts_msg_object_blob_packet_s *)ptr;
-  uint64_t size =
-      packet->header.size - sizeof(struct arts_msg_object_blob_packet_s);
+/* g_ooo_table[OOO_EVENT_CREATE]: the engine runs it while the GUID's slot is
+ * empty (`item_v` is NULL).  A local create hands over the event it built,
+ * which is installed as is.  A received blob is copied into a fresh object;
+ * its queue and stack words hold the building rank's addresses, so they are
+ * re-initialized, while the state word and the flags travel as built.  A lost
+ * install CAS means another create filled the slot after the engine saw it
+ * empty, so this one re-enters the engine and parks behind it — with the same
+ * object when it was handed over. */
+void arts_handler_event_create(void *item_v, void *args_v) {
+  (void)item_v;
+  const struct arts_ooo_args_create_blob_s *a =
+      (const struct arts_ooo_args_create_blob_s *)args_v;
+  if (a->size == ARTS_OOO_CREATE_ADOPT) {
+    const struct arts_ooo_args_create_local_s *l =
+        (const struct arts_ooo_args_create_local_s *)args_v;
+    arts_sched_fuzz_point(); /* widen the empty-seen<->install window */
+    arts_shared_ptr_t h = arts_route_table_install_if_absent(
+        l->descriptor, l->guid, arts_global_rank_id, false);
+    if (h == NULL) {
+      arts_ooo_dispatch_or_defer_guid(l->guid, OOO_EVENT_CREATE, args_v,
+                                      (uint32_t)sizeof(*l));
+    }
+    arts_shared_release(&h);
+    return;
+  }
+  const unsigned char *packet = (const unsigned char *)(a + 1);
+  arts_guid_t guid;
+  memcpy(&guid, packet + offsetof(struct arts_msg_object_blob_packet_s, guid),
+         sizeof(guid));
+  size_t size = a->size - sizeof(struct arts_msg_object_blob_packet_s);
 
-  struct arts_event_s *mem_packet =
+  struct arts_event_s *e =
       (struct arts_event_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
-
-  memcpy(mem_packet, packet + 1, size);
-  /* Re-init local-only pointer state.  Event move only happens at create
-   * time (queues / stack always empty at source), so re-initing to empty
-   * is correct.  The sender-rank heap pointers in the wire image are
-   * meaningless here. */
-  if (mem_packet->is_channel) {
-    arts_mpsc_init(&mem_packet->channel.data_queue);
-    arts_mpsc_init(&mem_packet->channel.dep_queue);
-    atomic_store_explicit(&mem_packet->channel.nb_sat, 0u,
-                          memory_order_relaxed);
-    atomic_store_explicit(&mem_packet->channel.nb_deps, 0u,
-                          memory_order_relaxed);
-    atomic_store_explicit(&mem_packet->channel.draining, 0,
-                          memory_order_relaxed);
+  memcpy(e, packet + sizeof(struct arts_msg_object_blob_packet_s), size);
+  if (e->is_channel) {
+    arts_mpsc_init(&e->channel.data_queue);
+    arts_mpsc_init(&e->channel.dep_queue);
+    atomic_store_explicit(&e->channel.nb_sat, 0u, memory_order_relaxed);
+    atomic_store_explicit(&e->channel.nb_deps, 0u, memory_order_relaxed);
+    atomic_store_explicit(&e->channel.draining, 0, memory_order_relaxed);
   } else {
-    arts_lf_stack_init(&mem_packet->simple.deps_stack);
-    /* state word / counted / auto_destroy / data preserved from the sender's
-     * post-init state. */
+    arts_lf_stack_init(&e->simple.deps_stack);
   }
 
-  /* add_item_race installs the event under the route_table lock; on
-   * success it also fires OoO replay internally, so no extra fire_oo
-   * is required.  On rejection (another rank won the install race),
-   * release the freshly-unmarshaled buffer through event_deleter (via
-   * event_free_typed) — raw arts_free would skip the dep-stack
-   * drain.  In practice the dep stack is empty at this point (nothing
-   * has been pushed locally yet), but using the proper deleter keeps
-   * lifecycle ownership symmetric with event_alloc. */
-  if (!arts_route_table_install_if_absent(mem_packet, packet->guid,
-                                          arts_global_rank_id, false)) {
-    event_free_typed(mem_packet);
+  arts_sched_fuzz_point(); /* widen the empty-seen<->install window */
+  /* A successful install drains the slot, which may already retire the event;
+   * the handle is released without another read of it. */
+  arts_shared_ptr_t h =
+      arts_route_table_install_if_absent(e, guid, arts_global_rank_id, false);
+  if (h != NULL) {
+    arts_shared_release(&h);
+    return;
   }
+  event_free_typed(e);
+  arts_ooo_dispatch_or_defer_guid(guid, OOO_EVENT_CREATE, args_v,
+                                  (uint32_t)(sizeof(*a) + a->size));
 }
 
 void arts_send_event_destroy(arts_guid_t guid) {
@@ -761,6 +762,11 @@ void arts_send_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
                           MSG_EVENT_SATISFY_SLOT);
   arts_transport_send_async((int)arts_guid_get_rank(event_guid),
                             (char *)&packet, sizeof(packet));
+}
+
+void arts_event_release_creator_token(arts_guid_t event_guid) {
+  arts_owned_finish_consume(event_guid);
+  arts_event_satisfy_slot(event_guid, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /*

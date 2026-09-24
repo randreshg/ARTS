@@ -73,6 +73,10 @@ _Static_assert(offsetof(struct arts_event_dep_s, link) == 0,
 void arts_handler_event_satisfy_slot(void *item, void *args);
 void arts_handler_event_add_dependence(void *item, void *args);
 void arts_handler_event_destroy(void *item, void *args);
+/* OOO_EVENT_CREATE body: installs the event the args carry into the empty
+ * slot of its GUID, or parks the create behind an object that took the slot
+ * first. */
+void arts_handler_event_create(void *item, void *args);
 
 /* Cross-rank wire TX/RX for event ops. */
 void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
@@ -80,14 +84,20 @@ void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
                                     arts_db_access_mode_t mode);
 void arts_send_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
                                   uint32_t slot);
-void arts_handler_event_create(void *ptr);
+/* A received event create enters the OoO engine here (a local create enters
+ * through `event_install`'s adopt payload instead): `packet` is the blob
+ * packet naming the GUID and `event` the event image. */
+struct arts_msg_object_blob_packet_s;
+void arts_event_create_enter(const struct arts_msg_object_blob_packet_s *packet,
+                             const void *event);
 /* Cross-rank arts_event_destroy forwarder: serializes the GUID into
  * MSG_EVENT_DESTROY.  The home-rank RX handler is arts_handler_event_destroy
  * (declared above as the Cat-B OoO body): the dispatcher decodes the GUID and
  * routes through arts_ooo_dispatch_or_defer_guid(OOO_EVENT_DESTROY), so a
  * DESTROY that races ahead of the event's CREATE defers and replays on the
- * create handler's drain.  The body's arts_route_table_set_destroyed is
- * idempotent (slot value exchange -> NULL), so duplicate messages are safe. */
+ * create handler's drain.  The body retires by identity via
+ * `arts_ooo_retire_item`, so a duplicate destroy finds its event already
+ * retired. */
 void arts_send_event_destroy(arts_guid_t guid);
 
 #ifdef __cplusplus
