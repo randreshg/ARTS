@@ -103,9 +103,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       &(arts_edt_hint_t){.rank = 1u, .output_event = written});
   arts_add_dependence(g, w, 0, DB_MODE_RW);
 
-  arts_guid_t r =
-      arts_edt_create(reader_edt, 0, NULL, 2,
-                      &(arts_edt_hint_t){.rank = nranks - 1u});
+  /* The reader goes on the last rank, except where that IS the writer: with
+   * two ranks it reads at the block's home instead.  A reader on the writer's
+   * own rank asserts nothing about a value leaving the rank that wrote it, and
+   * on an arm that lets a writer keep its copy it would be served out of that
+   * copy. */
+  unsigned int reader_rank = (nranks > 2u) ? (nranks - 1u) : 0u;
+  arts_guid_t r = arts_edt_create(reader_edt, 0, NULL, 2,
+                                  &(arts_edt_hint_t){.rank = reader_rank});
   arts_add_dependence(written, r, 0, DB_MODE_NULL);
   arts_add_dependence(g, r, 1, DB_MODE_RO);
 }

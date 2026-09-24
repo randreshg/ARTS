@@ -100,7 +100,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* The creator's own output event is what orders the reader after the turn:
    * an EDT releases every block it holds before its post-event is satisfied. */
   arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-  uint64_t pv[2] = {(uint64_t)(nranks - 1u), (uint64_t)done};
+  /* The reader goes on the last rank, except where that IS the creator: with
+   * two ranks it reads at the block's home instead.  What the test is about is
+   * a turn's bytes leaving the rank that took the turn, so a reader placed on
+   * the creator's own rank would assert nothing at the smallest geometry. */
+  unsigned int reader_rank = (nranks > 2u) ? (nranks - 1u) : 0u;
+  uint64_t pv[2] = {(uint64_t)reader_rank, (uint64_t)done};
   (void)arts_edt_create(creator_edt, 2, pv, 0,
                         &(arts_edt_hint_t){.rank = 1u, .output_event = done});
 }

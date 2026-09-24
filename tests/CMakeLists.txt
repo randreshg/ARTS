@@ -202,6 +202,14 @@ if(ARTS_USE_CXL)
     list(APPEND TEST_PROGRAMS coherence_cxl_alias_slots)
 endif()
 
+# Portable OCR programs that came out of the store-backed work and assert
+# coherence alone: they include arts.h and nothing else, so every arm builds
+# and runs them and they are the same oracle everywhere.  Their names say
+# which work wrote them, not which tree may run them.
+list(APPEND TEST_PROGRAMS fam_remote_write_read)
+list(APPEND TEST_PROGRAMS fam_ro_cohort)
+list(APPEND TEST_PROGRAMS fam_create_release_remote)
+
 # Fabric-attached memory: registered only where this tree's own library is
 # FAM-enabled, so an unguarded entry does not need to compile against a tree
 # with no fam symbols at all.  fam_slices is further restricted to the SHM
@@ -209,11 +217,17 @@ endif()
 if(ARTS_FAM_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS fam_alloc_dist)
     list(APPEND TEST_PROGRAMS fam_slot_rule)
-    list(APPEND TEST_PROGRAMS fam_remote_write_read)
-    list(APPEND TEST_PROGRAMS fam_ro_cohort)
-    list(APPEND TEST_PROGRAMS fam_create_release_remote)
+    list(APPEND TEST_PROGRAMS fam_creator_roster)
     list(APPEND TEST_PROGRAMS fam_quiescence_marker)
     list(APPEND TEST_PROGRAMS fam_slot_reuse_after_destroy)
+    list(APPEND TEST_PROGRAMS fam_no_acquire_first_use)
+    list(APPEND TEST_PROGRAMS fam_labeled_create)
+    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "STAGED")
+        # What a turn costs is a claim about the residency that stages the
+        # block's bytes into a working copy; another residency answers for its
+        # own.
+        list(APPEND TEST_PROGRAMS fam_home_turn_costs)
+    endif()
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND TEST_PROGRAMS fam_slices)
         # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
@@ -444,6 +458,46 @@ function(register_multinode_test test_name)
             RESOURCE_LOCK "arts_runtime"
             ENVIRONMENT "ARTS_CONFIG=${_cfg}"
         )
+    endforeach()
+endfunction()
+
+# The store-backed arm's own entries.  They DELEGATE to the two helpers above
+# rather than resolving a cfg of their own: ARTS_TEST_CFG_DIR is the one root
+# and arts_test_cfg is the one resolver, so these tests move to the strict
+# twins with the rest of the suite instead of being the set a second spelling
+# leaves behind.  What they add is the verdict channel each of them needs --
+# only the master rank's exit status reaches ctest, so a peer's verdict has to
+# be matched in its printed output -- and a default timeout for a suite whose
+# turns cross ranks.
+function(register_fam_single_node_test test_name)
+    cmake_parse_arguments(ARG "" "TIMEOUT;FAIL_REGEX" "" ${ARGN})
+    if(NOT ARG_TIMEOUT)
+        set(ARG_TIMEOUT 30)
+    endif()
+    if(NOT ARG_FAIL_REGEX)
+        set(ARG_FAIL_REGEX "FAIL")
+    endif()
+    register_single_node_test(${test_name} TIMEOUT ${ARG_TIMEOUT})
+    set_tests_properties(${test_name} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "${ARG_FAIL_REGEX}")
+endfunction()
+
+function(register_fam_multinode_test test_name)
+    cmake_parse_arguments(ARG "" "TIMEOUT;FAIL_REGEX" "VARIANTS" ${ARGN})
+    if(NOT ARG_TIMEOUT)
+        set(ARG_TIMEOUT 60)
+    endif()
+    if(NOT ARG_FAIL_REGEX)
+        set(ARG_FAIL_REGEX "FAIL")
+    endif()
+    if(NOT ARG_VARIANTS)
+        set(ARG_VARIANTS 2n 3n 4n 2n_io)
+    endif()
+    register_multinode_test(${test_name} TIMEOUT ${ARG_TIMEOUT}
+                            VARIANTS ${ARG_VARIANTS})
+    foreach(variant IN LISTS ARG_VARIANTS)
+        set_tests_properties(${test_name}_${variant} PROPERTIES
+            FAIL_REGULAR_EXPRESSION "${ARG_FAIL_REGEX}")
     endforeach()
 endfunction()
 
@@ -1443,6 +1497,17 @@ if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     endforeach()
 endif()
 
+# The three portable programs, as an OCR program sees the two funnels: a value
+# written on one rank and read on another, a reader cohort with two readers on
+# one rank, and a creator's own turn released away from the block's home.
+# UNGUARDED, because each asserts coherence alone: every arm answers the same
+# oracle, and an arm that answers it differently is the thing worth catching.
+# Multinode only — every one of them needs a rank that is not the block's home.
+foreach(_fam_portable fam_remote_write_read fam_ro_cohort
+                      fam_create_release_remote)
+    register_fam_multinode_test(${_fam_portable} TIMEOUT 60)
+endforeach()
+
 # Fabric-attached memory.  Registered only where this tree's own library is
 # FAM-enabled: everywhere else arts_static holds no arts_fam_* at all, and an
 # unguarded entry would fail the BUILD of all nine existing validation trees.
@@ -1450,28 +1515,24 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # fam_alloc_dist names no backend-specific symbol, so the residency guard
     # alone is right for it -- deliberately, and the asymmetry with fam_slices
     # below is the point.
-    register_multinode_test(fam_alloc_dist TIMEOUT 120 VARIANTS 2n 4n)
-    set_tests_properties(fam_alloc_dist_2n fam_alloc_dist_4n PROPERTIES
-                         FAIL_REGULAR_EXPRESSION "FAIL")
+    register_fam_multinode_test(fam_alloc_dist TIMEOUT 120 VARIANTS 2n 4n)
     # The slot rule holds on one rank and on every multinode flavour: a
     # non-master rank's verdict travels as printed output, the master's as the
     # exit status.
-    register_single_node_test(fam_slot_rule TIMEOUT 30)
-    register_multinode_test(fam_slot_rule TIMEOUT 60)
-    set_tests_properties(fam_slot_rule fam_slot_rule_2n fam_slot_rule_3n
-                         fam_slot_rule_4n fam_slot_rule_2n_io PROPERTIES
-                         FAIL_REGULAR_EXPRESSION "FAIL")
-    # The two funnels, as an OCR program sees them: a value written on one rank
-    # and read on another, a reader cohort with two readers on one rank, and a
-    # creator's own turn released away from the block's home.  Multinode only —
-    # every one of them needs a rank that is not the block's home.
-    foreach(_fam_arm fam_remote_write_read fam_ro_cohort
-                     fam_create_release_remote)
-        register_multinode_test(${_fam_arm} TIMEOUT 60)
-        set_tests_properties(${_fam_arm}_2n ${_fam_arm}_3n ${_fam_arm}_4n
-                             ${_fam_arm}_2n_io PROPERTIES
-                             FAIL_REGULAR_EXPRESSION "FAIL")
-    endforeach()
+    register_fam_single_node_test(fam_slot_rule TIMEOUT 30)
+    register_fam_multinode_test(fam_slot_rule TIMEOUT 60)
+    # A cache made by an acquiring create is on the block's destroy roster, so
+    # it gives its store up with the block instead of outliving it.  Needs a
+    # rank that is not the block's home.
+    register_fam_multinode_test(fam_creator_roster TIMEOUT 60)
+    # A block nobody has written still has ONE store: every rank's first read
+    # of it agrees, and one write turn then defines what all of them see.
+    register_fam_multinode_test(fam_no_acquire_first_use TIMEOUT 60)
+    # One label names one block and therefore one store, with every rank
+    # creating the label and the losing creators allocating nothing.  The
+    # budget is the churn's: the cycle count has to clear a rank's share of
+    # the pool for a leaked store to exhaust it.
+    register_fam_multinode_test(fam_labeled_create TIMEOUT 180)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         # Whitebox test of the inherited mapping's fixed address: fam_slices.c
         # dereferences ARTS_FAM_BASE, which only the SHM backend defines --
@@ -1479,31 +1540,26 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # and a configured value would mean nothing.  Excluded at
         # REGISTRATION with that structural reason, never skipped at run
         # time.
-        register_multinode_test(fam_slices TIMEOUT 60 VARIANTS 2n 4n)
-        set_tests_properties(fam_slices_2n fam_slices_4n PROPERTIES
-                             FAIL_REGULAR_EXPRESSION "FAIL")
+        register_fam_multinode_test(fam_slices TIMEOUT 60 VARIANTS 2n 4n)
+    endif()
+    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "STAGED")
+        # What a turn costs is a claim about the residency that stages a
+        # block's bytes into a working copy; another residency answers for its
+        # own.  One rank, because that is where every turn is home-local.
+        register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
     endif()
     # The arm's teardown walk: six blocks, every one released and every
     # dependence satisfied, must leave the walk silent -- a QUIESCENCE-DEBUG
     # marker on this shape is the oracle catching a real defect, not a test
     # artifact.
-    register_multinode_test(fam_quiescence_marker TIMEOUT 60)
-    set_tests_properties(fam_quiescence_marker_2n fam_quiescence_marker_3n
-                         fam_quiescence_marker_4n fam_quiescence_marker_2n_io
-                         PROPERTIES
-                         FAIL_REGULAR_EXPRESSION "QUIESCENCE-DEBUG|FAIL")
+    register_fam_multinode_test(fam_quiescence_marker TIMEOUT 60
+                                FAIL_REGEX "QUIESCENCE-DEBUG|FAIL")
     # Create/destroy churn on a fixed pool: a store that is not returned at
     # its block's teardown exhausts one rank's share of the pool long before
     # the last iteration, so this holds on one rank and on every multinode
     # flavour.
-    register_single_node_test(fam_slot_reuse_after_destroy TIMEOUT 90)
-    register_multinode_test(fam_slot_reuse_after_destroy TIMEOUT 90)
-    set_tests_properties(fam_slot_reuse_after_destroy
-                         fam_slot_reuse_after_destroy_2n
-                         fam_slot_reuse_after_destroy_3n
-                         fam_slot_reuse_after_destroy_4n
-                         fam_slot_reuse_after_destroy_2n_io PROPERTIES
-                         FAIL_REGULAR_EXPRESSION "FAIL")
+    register_fam_single_node_test(fam_slot_reuse_after_destroy TIMEOUT 90)
+    register_fam_multinode_test(fam_slot_reuse_after_destroy TIMEOUT 90)
 endif()
 
 if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
@@ -1511,9 +1567,7 @@ if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
     # oracle exists: under the device backend fam_strict is a config-load
     # error, because that memory already has the second coherency domain this
     # emulates.  Structural, at registration, never a run-time skip.
-    register_multinode_test(fam_strict_flush TIMEOUT 120 VARIANTS 2n_strict)
-    set_tests_properties(fam_strict_flush_2n_strict PROPERTIES
-                         FAIL_REGULAR_EXPRESSION "FAIL")
+    register_fam_multinode_test(fam_strict_flush TIMEOUT 120 VARIANTS 2n_strict)
 endif()
 
 # --- Mode-mismatch detection binary (no CTest entry — driven by run_mode_mismatch.sh) ---
