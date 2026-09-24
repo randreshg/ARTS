@@ -28,7 +28,7 @@ REQUIRED_SECTIONS = [
 
 def drive(coro_factory):
     async def main():
-        app = ArtsRunApp(profile="ferrari-local", benchset="paper-main")
+        app = ArtsRunApp(profile="ferrari-local", experiment="paper-main")
         async with app.run_test() as pilot:
             return await coro_factory(app, pilot)
 
@@ -78,7 +78,7 @@ def test_an_entry_without_a_document_still_renders_its_facts():
 
 def test_clicking_an_application_name_opens_its_document():
     async def check(app, pilot):
-        app.query_one("#bench")
+        app.query_one("#exp")
         await app.run_action("show_app_doc('fibonacci')")
         await pilot.pause()
         opened = isinstance(app.screen, AppDocScreen)
@@ -103,9 +103,9 @@ def test_an_unknown_name_from_a_stale_label_is_ignored():
 
 def test_an_unsupported_row_shows_its_boxes_but_takes_no_selection():
     """The row stays visible — the document and the reason are the point —
-    but no benchset, click, or all/none sweep can turn it on."""
+    but no experiment, click, or all/none sweep can turn it on."""
     async def check(app, pilot):
-        bench = app.query_one("#bench")
+        bench = app.query_one("#exp")
         from artsrun.tui.widgets import Toggle
 
         dead = [t for t in bench.query(".app-toggle").results(Toggle)
@@ -124,21 +124,23 @@ def test_an_unsupported_row_shows_its_boxes_but_takes_no_selection():
     catalog = load_catalog()
     for name in ("CoMD_intel_chandra", "CoMD_sdsc2"):
         assert catalog.apps[name].unsupported
-        # No benchset can override an unsupported row.
+        # No experiment can override an unsupported row.
         from artsrun import store
 
-        assert not store.default_benchset().is_enabled(catalog.apps[name])
+        assert not store.default_experiment().is_enabled(catalog.apps[name])
 
 
 def test_clicking_a_roster_name_opens_that_row_s_document():
     async def check(app, pilot):
-        await pilot.press("3")
+        await pilot.press("1")
         await pilot.pause()
         # The first .bench-name is the header row's empty label; the first
         # roster row follows it.  The link spans only the name's own
         # characters and the label is padded, so aim at its first column
         # rather than its centre.
         target = app.query(".bench-name").nodes[1]
+        target.scroll_visible(animate=False)
+        await pilot.pause()
         await pilot.click(target, offset=(1, 0))
         await pilot.pause()
         opened = isinstance(app.screen, AppDocScreen)

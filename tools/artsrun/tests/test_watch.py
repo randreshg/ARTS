@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from artsrun.check import Verdict
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.catalog import AppClass, ScalarKind, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.profile import Profile

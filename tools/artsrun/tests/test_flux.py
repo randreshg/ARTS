@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.catalog import AppClass, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.profile import Profile

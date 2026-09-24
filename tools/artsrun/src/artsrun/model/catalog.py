@@ -2,7 +2,7 @@
 
 Structural facts (binary name, completion marker, which versions exist, which
 node counts it can run) ship with the tool.  Everything a campaign changes —
-which apps run, with which arguments — lives in a benchset instead.
+which apps run, with which arguments — lives in an experiment instead.
 """
 
 from __future__ import annotations

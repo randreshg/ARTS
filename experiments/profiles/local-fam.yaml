@@ -5,7 +5,11 @@
 # its logical CPU count (an SMT sibling is not a second core to pin a rank
 # to):
 # 2 nodes x (2 workers + 1 progress) = 6 physical cores.  Timings from
-# this host are never evidence of anything.
+# this host are never evidence of anything.  The entries are named per run,
+# since no experiment lists a FAM entry by default:
+#
+#   artsrun run -p local-fam -x paper-gate -n 1 \
+#       -e arts_excl_purge,arts_excl_purge_fam_staged,arts_excl_purge_fam_direct,xsocr
 name: local-fam
 launcher: local
 
@@ -20,7 +24,7 @@ core_dump: false
 # The whole pool, split into one slice per rank: a capacity cap, not a
 # reservation (the store commits only the pages a run touches), and the
 # smoke rosters need gigabytes of it at two ranks.
-fam_pool_mb: 4096
+fam_pool_mb: 512    # the runtime budgets (ranks+2)x the pool under strict mode against a 2048 MB cap, so 512 fits two ranks
 # The library the FAM entries link; the build tree is reconfigured to it or
 # the campaign does not start.  launcher: local implies fake and refuses real
 # (one host, no fabric), so this line only states what the launcher forces.
@@ -29,8 +33,3 @@ fam_device: fake
 # Sized for correctness runs on a laptop at this narrow width, never for timing.
 cell_timeout_s: 600
 repeats: 1
-
-# One cell's worth: the base ARTS entry, its two fam residencies, and
-# the reference that implements the same design point.
-entries: [arts_excl_purge, arts_excl_purge_fam_staged,
-          arts_excl_purge_fam_direct, xsocr]

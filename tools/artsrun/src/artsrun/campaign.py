@@ -24,7 +24,7 @@ from artsrun.build import (
     fam_device_mismatch, fam_device_options, plan_targets,
     require_default_counters,
 )
-from artsrun.model.benchset import Benchset
+from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import Catalog
 from artsrun.model.counters import Counterset
 from artsrun.model.plane import Plane
@@ -43,7 +43,7 @@ class Campaign:
     selection: Selection
     plane: Plane
     catalog: Catalog
-    benchset: Benchset
+    experiment: Experiment
     profile: Profile
     build_dir: Path
     run_dir: Path
@@ -68,14 +68,14 @@ class Campaign:
         selection: Selection,
         plane: Plane,
         catalog: Catalog,
-        benchset: Benchset,
+        experiment: Experiment,
         profile: Profile,
         *,
         counterset: Counterset | None = None,
         build_dir: Path | None = None,
         run_dir: Path | None = None,
     ) -> "Campaign":
-        selection.validate_against(plane, catalog, profile, benchset)
+        selection.validate_against(plane, catalog, profile, experiment)
         if profile.launcher is Launcher.SSH:
             _check_ssh_submitter(profile)
         bd = build_dir or (
@@ -89,7 +89,7 @@ class Campaign:
             selection=selection,
             plane=plane,
             catalog=catalog,
-            benchset=benchset,
+            experiment=experiment,
             profile=profile,
             build_dir=bd,
             run_dir=run_dir or (logs_root() / stamp),
@@ -148,7 +148,7 @@ class Campaign:
         else:
             require_default_counters(self.build_dir)
         return plan_targets(
-            self.selection, self.plane, self.catalog, self.benchset,
+            self.selection, self.plane, self.catalog, self.experiment,
             self.build_dir, self.profile,
         )
 
@@ -180,8 +180,9 @@ class Campaign:
     def cells(self):
         counters = self.counterset
         on = bool(counters and counters.enabled)
+        fam = bool(self.selection.fam_entries(self.plane))
         configs = {
-            n: write_configs(self.profile, n, self.run_dir / "cfg")
+            n: write_configs(self.profile, n, self.run_dir / "cfg", fam=fam)
             for n in self.selection.node_counts
         }
         # Counters name their output directory in the configuration, so a
@@ -201,10 +202,11 @@ class Campaign:
                     self.run_dir / "cfg" / f"arts_{cell.slug}.cfg",
                     counter_folder=str(out),
                     capture_interval=counters.capture_interval,
+                    fam=fam,
                 )
 
         return expand(
-            self.selection, self.plane, self.catalog, self.benchset,
+            self.selection, self.plane, self.catalog, self.experiment,
             self.profile, self.apps_dir(), configs, cell_cfg=cell_cfg,
         )
 

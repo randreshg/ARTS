@@ -52,7 +52,7 @@ problem instance (32 instances × 176,000,000 lookups), not this row's
 restructured tier. Whether this row carries a restructured tier is the
 catalog's to state, and the position is in flux: the standing catalog text
 says any distribution-friendly rebuild converges on that sibling, while
-`experiments/benchsets/paper-main.yaml` says the tier is held back until its
+`experiments/experiments/paper-main.yaml` says the tier is held back until its
 source lands — and a source tree for one
 (`third_party/ocr-apps/apps/XSBench/refactored/ocr/intel-dist/`, appdoc
 `XSBench_intel_dist.md`) now exists and shares this row's generator header, so

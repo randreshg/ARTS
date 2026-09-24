@@ -7,7 +7,7 @@ import pytest
 
 from pathlib import Path
 
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.catalog import AppClass, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry, load_plane
 from artsrun.model.profile import Profile
@@ -133,7 +133,7 @@ def test_a_remote_reference_cell_keeps_the_site_transport(kind):
 def _selection(**kw):
     from artsrun.model.selection import Selection
 
-    base = dict(profile="t", benchset="b", entries=["xsocr"],
+    base = dict(profile="t", experiment="b", entries=["xsocr"],
                 apps={"nqueens": [Version.BASE]}, node_counts=[1])
     base.update(kw)
     return Selection.model_validate(base)
@@ -398,3 +398,51 @@ def test_an_early_reap_is_judged_as_a_completed_measured_run(tmp_path):
                                   log_path=log))
     assert r.status is Status.OK and r.teardown_hang
     assert r.scalar == "42" and r.e2e_s == 2.5
+
+
+# --- the experiment on the command line -------------------------------------
+def _cli(*args):
+    from typer.testing import CliRunner
+
+    from artsrun.cli import app
+
+    return CliRunner().invoke(app, list(args), env={"COLUMNS": "400"})
+
+
+@pytest.mark.parametrize("args", [
+    ["run", "-p", "local-fam", "-b", "paper-main", "--dry-run"],
+    ["run", "-p", "local-fam", "--benchset", "paper-main", "--dry-run"],
+    ["apps", "-b", "paper-main"],
+    ["benchset", "list"],
+])
+def test_the_benchset_spellings_name_the_rename(args):
+    result = _cli(*args)
+    assert result.exit_code != 0
+    assert "-x/--experiment" in result.output
+
+
+def test_a_run_takes_the_experiment_s_entries_by_default():
+    result = _cli("run", "-p", "local-fam", "-x", "control-gate", "-n", "1",
+                  "-a", "nqueens", "--dry-run", "--plain")
+    assert result.exit_code == 0, result.output
+    assert ("experiment control-gate · entries (its defaults): "
+            "arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, "
+            "arts_inv_wt, arts_inv_wb, arts_val_wt_purge, arts_val_wt, "
+            "arts_val_wb, hpx") in result.output
+
+
+def test_e_replaces_the_experiment_s_entries_and_may_name_any_of_them():
+    # FAM and DB-WRF entries are listed by no shipped experiment; -e is the
+    # whole set for the run, in the plane's order.
+    result = _cli("run", "-p", "local-fam", "-x", "paper-gate", "-n", "1",
+                  "-a", "nqueens", "-e",
+                  "arts_wrf_flush,arts_excl_purge_fam_staged",
+                  "--dry-run", "--plain")
+    assert result.exit_code == 0, result.output
+    assert ("entries (chosen for this run): arts_excl_purge_fam_staged, "
+            "arts_wrf_flush") in result.output
+    assert "= 2 entries" in result.output
+    bad = _cli("run", "-p", "local-fam", "-x", "paper-gate", "-e", "nope",
+               "--dry-run")
+    assert bad.exit_code != 0
+    assert "-e names unknown plane entries: nope" in bad.output

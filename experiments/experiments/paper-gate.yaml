@@ -1,12 +1,15 @@
-# Consensus gate for the main application roster: every row of paper-main, in
-# every version it offers, at arguments small enough that the whole roster runs
-# in minutes on a development host.  It is what a change to a program or to the
-# runtime is checked against before anything is measured; nothing timed here is
-# a paper number -- the calibrated paper-main arguments remain the measurement.
+# Experiment paper-gate: the consensus gate for paper-main -- every row of
+# paper-main, in every version it offers, at arguments small enough that the
+# whole experiment runs in minutes on a development host.  It is what a change
+# to a program or to the runtime is checked against before anything is
+# measured; nothing timed here is a paper number -- the calibrated paper-main
+# arguments remain the measurement.
 #
-#   artsrun run -p ferrari-local -b main-gate \
-#       -e arts_val_wb,arts_inv_wb,arts_excl_retain,xsocr,ocrvx \
-#       -n 1,2,4,8 --repeats 1 --build-dir build_release
+#   artsrun run -p <profile> -x paper-gate -n 1,2,4,8 --repeats 1 \
+#       --build-dir build_release
+#
+# A main experiment runs the OCR-model ARTS entries and the two OCR reference
+# runtimes by default; any other plane entry is turned on for one run with -e.
 #
 # Sizing rule: shrink the duration/size knob, keep the width knob only as large
 # as the geometry needs (a gate has no width floor to defend), leave every
@@ -18,8 +21,11 @@
 # still grades every cell, and that vote is the gate.  A restructured row's
 # arguments are addressed by the rewrite's own name -- the driver never carries
 # a row's override into a different CLI.
-name: main-gate
+name: paper-gate
 description: small-argument consensus gate for every paper-main row and version
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
 
 apps:
   cholesky_blas:

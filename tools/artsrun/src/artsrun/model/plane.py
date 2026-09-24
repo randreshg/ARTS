@@ -207,19 +207,26 @@ class Plane(BaseModel):
     def entry_keys(self) -> list[str]:
         return [e.key for e in self.entries]
 
-    def default_entries(self, named: list[str] | None) -> list[str]:
-        """The entries a campaign runs when it names none: the ones its
-        profile lists, in the plane's order, or all of them.  A name the plane
+    def ordered(self, named: list[str], owner: str) -> list[str]:
+        """These entries in the plane's order, deduplicated.  A name the plane
         does not have is refused rather than dropped — a list that silently
-        shrank would leave a study running less than it states."""
-        if named is None:
-            return self.entry_keys
+        shrank would leave a study running less than it states.  `owner` is
+        what named them, for the message."""
         wanted = [modern_entry_key(k) for k in named]
         unknown = [k for k in wanted if k not in self.entry_keys]
         if unknown:
             raise ValueError(
-                f"profile lists unknown plane entries: {', '.join(unknown)}")
+                f"{owner} names unknown plane entries: {', '.join(unknown)}")
         return [k for k in self.entry_keys if k in wanted]
+
+    @property
+    def standard_entries(self) -> list[str]:
+        """The entries any program can run on any node profile: the OCR-model
+        ones whose store is not fabric-attached memory.  Another memory model
+        obliges the program, and a fabric-attached store needs a device the
+        node profile may not have, so both are chosen per run."""
+        return [e.key for e in self.entries
+                if e.model == "OCR" and not e.is_fam]
 
     def columns(self) -> list[tuple[Release, Write]]:
         """Column order: the write policy groups, the release policy divides.

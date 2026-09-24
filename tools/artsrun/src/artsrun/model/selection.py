@@ -1,4 +1,5 @@
-"""A campaign selection: the three surfaces, resolved and serializable.
+"""A campaign selection: node profile x experiment x counters x node counts,
+resolved and serializable.
 
 A saved selection replays a campaign exactly, so it is written next to every
 run's results.
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from artsrun.model.benchset import Benchset
+from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import AppClass, Catalog, Version
 from artsrun.model.plane import Plane, modern_entry_key
 from artsrun.model.profile import Launcher, Profile
@@ -69,9 +70,23 @@ def _first_sibling_cpu_count() -> int | None:
     return len(firsts) if firsts else None
 
 
+# Earlier names of experiment files: a selection saved under one replays
+# under the current name.
+LEGACY_EXPERIMENT_NAMES = {
+    "main-gate": "paper-gate",
+    "paper-controls": "control-main",
+    "controls-gate": "control-gate",
+}
+
+
 class Selection(BaseModel):
     profile: str
-    benchset: str
+    experiment: str
+    # The experiment's own entry list, recorded beside the entries this
+    # campaign actually runs so a reader can tell a default run from one
+    # whose entries were chosen for it.  None on selections saved before
+    # experiments carried entries.
+    default_entries: list[str] | None = None
     entries: list[str] = Field(min_length=1)
     apps: dict[str, list[Version]] = Field(min_length=1)
 
@@ -89,6 +104,18 @@ class Selection(BaseModel):
     node_counts: list[int] = Field(min_length=1)
     repeats: int = 1
     build_dir: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _experiment_from_benchset(cls, data):
+        """Selections saved before rosters became experiments name a
+        `benchset`; it is the same file under its current name."""
+        if not isinstance(data, dict) or "benchset" not in data:
+            return data
+        data = dict(data)
+        old = data.pop("benchset")
+        data.setdefault("experiment", LEGACY_EXPERIMENT_NAMES.get(old, old))
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -113,7 +140,7 @@ class Selection(BaseModel):
         plane: Plane,
         catalog: Catalog,
         profile: Profile,
-        benchset: Benchset | None = None,
+        experiment: Experiment | None = None,
     ) -> None:
         unknown = [k for k in self.entries if k not in plane.entry_keys]
         if unknown:
@@ -134,12 +161,13 @@ class Selection(BaseModel):
                 f"node counts {off_sweep} are not in profile "
                 f"'{profile.name}' sweep {profile.nodes}"
             )
-        self._check_width(catalog, profile, benchset)
+        self._check_width(catalog, profile, experiment)
         if any(plane.entry(k).is_reference for k in self.entries):
             self._check_reference_geometry(profile)
 
     def _check_width(
-        self, catalog: Catalog, profile: Profile, benchset: Benchset | None = None
+        self, catalog: Catalog, profile: Profile,
+        experiment: Experiment | None = None,
     ) -> None:
         """Refuse a row whose declared width cannot fill the machine.
 
@@ -162,7 +190,7 @@ class Selection(BaseModel):
         it must not be turned into a build-time error.
         """
         total = profile.max_nodes * profile.workers
-        overridden = self._overridden_args(catalog, benchset)
+        overridden = self._overridden_args(catalog, experiment)
         for name, versions in self.apps.items():
             for version in versions:
                 source, _ = catalog.resolve(name, version)
@@ -171,8 +199,8 @@ class Selection(BaseModel):
                     continue
                 if (name, version) in overridden:
                     print(
-                        f"artsrun: {source.name}: benchset "
-                        f"'{benchset.name}' overrides the arguments "
+                        f"artsrun: {source.name}: experiment "
+                        f"'{experiment.name}' overrides the arguments "
                         f"width_max={width} was declared for — width not "
                         f"checked for this campaign",
                         file=sys.stderr,
@@ -199,13 +227,13 @@ class Selection(BaseModel):
 
     @staticmethod
     def _overridden_args(
-        catalog: Catalog, benchset: Benchset | None
+        catalog: Catalog, experiment: Experiment | None
     ) -> set[tuple[str, Version]]:
         """The (row, version) pairs whose arguments the roster replaced."""
-        if benchset is None:
+        if experiment is None:
             return set()
         return {
-            (r.name, r.version) for r in benchset.resolve(catalog)
+            (r.name, r.version) for r in experiment.resolve(catalog)
             if r.args_overridden
         }
 
@@ -265,22 +293,23 @@ class Selection(BaseModel):
         cls,
         plane: Plane,
         catalog: Catalog,
-        benchset: Benchset,
+        experiment: Experiment,
         profile: Profile,
         *,
         build_dir: str | None = None,
     ) -> "Selection":
         """The default state of the selection screens: every application the
-        roster enables, on the profile's entries or on all of them."""
+        experiment enables, on the experiment's own entries."""
         apps = {
-            app.name: benchset.versions_for(app)
+            app.name: experiment.versions_for(app)
             for app in catalog.rows
-            if benchset.is_enabled(app)
+            if experiment.is_enabled(app)
         }
         return cls(
             profile=profile.name,
-            benchset=benchset.name,
-            entries=plane.default_entries(profile.entries),
+            experiment=experiment.name,
+            default_entries=list(experiment.entries),
+            entries=list(experiment.entries),
             apps=apps,
             node_counts=list(profile.nodes),
             repeats=profile.repeats,

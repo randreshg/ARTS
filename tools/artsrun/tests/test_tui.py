@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 
 from artsrun.tui.app import ArtsRunApp
-from artsrun.tui.panels import BenchsetPanel, PlanePanel, ProfilePanel
+from artsrun.tui.panels import ExperimentPanel, PlanePanel, ProfilePanel
 from artsrun.tui.widgets import Toggle
 
 
@@ -14,7 +14,7 @@ def drive(coro_factory, size=None):
     """Run one piloted session and return whatever it produced."""
 
     async def main():
-        app = ArtsRunApp(profile="ferrari-local", benchset="paper-main")
+        app = ArtsRunApp(profile="ferrari-local", experiment="paper-main")
         async with app.run_test(size=size) as pilot:
             return await coro_factory(app, pilot)
 
@@ -25,7 +25,7 @@ def test_everything_is_selected_by_default():
     async def check(app, pilot):
         plane = app.query_one("#plane", PlanePanel)
         profile = app.query_one("#profile", ProfilePanel)
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         return (
             sorted(plane.selected()),
             profile.node_counts(),
@@ -33,9 +33,12 @@ def test_everything_is_selected_by_default():
         )
 
     entries, nodes, apps = drive(check)
-    # the default profile runs every entry but the two FAM ones (FAM is off)
-    assert len(entries) == 12
-    assert "hpx" in entries
+    # the experiment's own entries: the OCR-model ARTS ones and the two OCR
+    # references
+    from artsrun import store
+    assert entries == sorted(store.load_experiment("paper-main").entries)
+    assert len(entries) == 10
+    assert "hpx" not in entries
     assert nodes == [1, 2, 4, 8]
     assert apps > 0
 
@@ -54,6 +57,8 @@ def test_the_plane_draws_every_position_but_only_offers_eight():
 def test_one_control_clears_then_restores_the_whole_plane():
     async def check(app, pilot):
         plane = app.query_one("#plane", PlanePanel)
+        plane.toggles[0].focus()
+        await pilot.pause()
         first = len(plane.selected())
         await pilot.press("a")
         cleared = len(plane.selected())
@@ -62,28 +67,28 @@ def test_one_control_clears_then_restores_the_whole_plane():
         return first, cleared, restored
 
     first, cleared, restored = drive(check)
-    # the default profile leaves the two FAM entries out; the control's
-    # second press selects the whole plane
-    assert first == 12
+    # the experiment leaves the FAM, DB-WRF and HPX entries out; the
+    # control's second press selects the whole plane
+    assert first == 10
     assert cleared == 0
     assert restored == 14
 
 
 def test_the_control_acts_on_the_surface_that_is_showing():
     async def check(app, pilot):
-        app.query_one("#bench").focus()
+        app.query_one("#exp").focus()
         from textual.widgets import TabbedContent
 
-        app.query_one(TabbedContent).active = "tab-bench"
+        app.query_one(TabbedContent).active = "tab-exp"
         await pilot.pause()
         await pilot.press("a")
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         plane = app.query_one("#plane", PlanePanel)
         return len(bench.selected()), len(plane.selected())
 
     apps, entries = drive(check)
-    assert apps == 0        # the visible surface cleared
-    assert entries == 12    # the others did not
+    assert apps == 0        # the focused half cleared
+    assert entries == 10    # the plane did not
 
 
 def test_a_version_the_application_lacks_is_absent_not_unchecked():
@@ -96,7 +101,7 @@ def test_a_version_the_application_lacks_is_absent_not_unchecked():
     hinted = next(a for a in rows if a.hinted).name
 
     async def check(app, pilot):
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         idents = {t.ident for t in bench.toggles}
         return (f"{bare}:hinted" in idents, f"{hinted}:hinted" in idents,
                 len(bench.query(".bench-cell.blank")))
@@ -119,7 +124,7 @@ def test_an_unsupported_only_row_still_explains_why_in_its_tooltip():
     async def check(app, pilot):
         from textual.widgets import Label
 
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         name = next(label for label in bench.query(Label)
                     if "CoMD_sdsc2" in str(label.content))
         return name.tooltip
@@ -146,7 +151,7 @@ def test_a_rewrite_line_carries_the_rewrite_s_own_verdict():
     async def check(app, pilot):
         from textual.widgets import Label
 
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         labels = list(bench.query(Label))
         name = next(l for l in labels if f"]{row.name}[/]" in str(l.content))
         sub = next(l for l in labels if f"└ {rewrite.name}" in str(l.content))
@@ -182,7 +187,7 @@ async def _rendered_fills(app, pilot) -> dict:
 
     from textual.widgets import TabbedContent
 
-    app.query_one(TabbedContent).active = "tab-bench"
+    app.query_one(TabbedContent).active = "tab-exp"
     await pilot.pause()
     await pilot.pause()
     svg = app.export_screenshot()
@@ -223,8 +228,7 @@ def test_the_selection_becomes_a_campaign_of_the_expected_size():
 
     cells, entries, nodes = drive(check)
     assert cells == len(entries) * 4 * (cells // (len(entries) * 4))
-    # the default profile runs every entry but the two FAM ones (FAM is off)
-    assert len(entries) == 12
+    assert len(entries) == 10
     assert nodes == [1, 2, 4, 8]
 
 
@@ -252,13 +256,13 @@ def test_number_keys_switch_surfaces():
         from textual.widgets import TabbedContent
 
         seen = []
-        for key in ("2", "3", "4", "5", "1"):
+        for key in ("2", "3", "4", "1"):
             await pilot.press(key)
             seen.append(app.query_one(TabbedContent).active)
         return seen
 
-    assert drive(check) == ["tab-profile", "tab-bench", "tab-counters",
-                            "tab-run", "tab-plane"]
+    assert drive(check) == ["tab-profile", "tab-counters", "tab-run",
+                            "tab-exp"]
 
 
 def test_reference_labels_fit_their_cells():
@@ -286,10 +290,10 @@ def test_clearing_a_surface_raises_no_notifications():
     async def check(app, pilot):
         calls = []
         app.notify = lambda *a, **k: calls.append(a)
-        await pilot.press("3")      # applications
-        await pilot.press("a")      # clear them all
+        await pilot.press("1")      # the experiment
+        await pilot.press("a")      # clear its applications
         await pilot.pause()
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         return len(calls), len(bench.selected())
 
     calls, remaining = drive(check)
@@ -301,7 +305,7 @@ def test_asking_to_run_an_empty_selection_warns_once():
     async def check(app, pilot):
         calls = []
         app.notify = lambda *a, **k: calls.append(a)
-        await pilot.press("3")
+        await pilot.press("1")
         await pilot.press("a")
         await pilot.pause()
         app.action_dry_run()
@@ -372,15 +376,26 @@ def test_a_split_cell_fits_both_of_its_toggles():
         assert need <= avail, f"{labels} needs {need} columns, row has {avail}"
 
 
-def test_every_save_button_survives_its_own_dropdown_refresh():
+def test_every_save_button_survives_its_own_dropdown_refresh(tmp_path,
+                                                             monkeypatch):
     # Saving refreshes the dropdown with set_options(), which clears the
     # Select to its blank sentinel before the saver restores the value; that
     # transient Changed is processed after the restore, so the handler must
-    # judge the event's value, not the widget's current state.
+    # judge the event's value, not the widget's current state.  The saves
+    # land in copies: a test never writes a tracked file.
+    import shutil
+
+    from artsrun import store
+
+    for surface in ("profiles_dir", "experiments_dir", "countersets_dir"):
+        copy = tmp_path / surface
+        shutil.copytree(getattr(store, surface)(), copy)
+        monkeypatch.setattr(f"artsrun.store.{surface}", lambda c=copy: c)
+
     async def check(app, pilot):
         alive = []
-        for tab, button in (("4", "#counter-save"), ("2", "#profile-save"),
-                            ("3", "#bench-save")):
+        for tab, button in (("3", "#counter-save"), ("2", "#profile-save"),
+                            ("1", "#exp-save")):
             await pilot.press(tab)
             await pilot.pause()
             await pilot.click(button)
@@ -392,12 +407,12 @@ def test_every_save_button_survives_its_own_dropdown_refresh():
 
 
 def test_a_fresh_checkout_opens_on_unsaved_defaults(tmp_path, monkeypatch):
-    # No profiles, no benchsets, no counter sets — the screens open anyway:
+    # No profiles, no experiments, no counter sets — the screens open anyway:
     # an unsaved single-node local profile, the catalog's own roster, no
     # counters.  Save on the Profile tab writes the machine's first file.
     from artsrun import store
 
-    for surface in ("profiles_dir", "benchsets_dir", "countersets_dir"):
+    for surface in ("profiles_dir", "experiments_dir", "countersets_dir"):
         monkeypatch.setattr(f"artsrun.store.{surface}",
                             lambda s=surface: tmp_path / s)
 
@@ -408,13 +423,13 @@ def test_a_fresh_checkout_opens_on_unsaved_defaults(tmp_path, monkeypatch):
             panel = app.query_one("#profile", ProfilePanel)
             before = store.list_profiles()
             saved = panel.save(as_new=False)
-            return (app.profile.name, app.profile.nodes, app.benchset.name,
+            return (app.profile.name, app.profile.nodes, app.experiment.name,
                     before, saved is not None, store.list_profiles())
 
-    name, nodes, benchset, before, saved, after = asyncio.run(main())
+    name, nodes, experiment, before, saved, after = asyncio.run(main())
     assert name == "local"
     assert nodes == [1]
-    assert benchset == "catalog-default"
+    assert experiment == "catalog-default"
     assert before == []
     assert saved
     assert after == ["local"]
@@ -519,12 +534,12 @@ def test_reverting_restores_the_stored_values():
     assert drive(check) == "15"
 
 
-# --- benchset editing -----------------------------------------------------
+# --- experiment editing -----------------------------------------------------
 def test_argument_boxes_show_the_catalog_default_as_a_placeholder():
     async def check(app, pilot):
         from textual.widgets import Input
 
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         box = bench.query_one("#a-nqueens", Input)
         return box.value, box.placeholder
 
@@ -541,9 +556,9 @@ def test_an_edited_argument_becomes_an_override():
     async def check(app, pilot):
         from textual.widgets import Input
 
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         bench.query_one("#a-nqueens", Input).value = "12 4"
-        edited = bench.edited_benchset("scratch")
+        edited = bench.edited_experiment("scratch")
         resolved = {a.key: a for a in edited.resolve(app.catalog)}
         # The override reaches every tier the row has; which tiers those are
         # is the catalog's business, not this test's.
@@ -572,7 +587,7 @@ def test_a_rewrite_gets_its_own_argument_line():
     async def check(app, pilot):
         from textual.widgets import Input
 
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         box = bench.query_one(f"#a-{rewrite}", Input)
         return box.value, box.placeholder
 
@@ -589,9 +604,9 @@ def test_editing_the_rewrites_line_overrides_only_the_rewrite():
     async def check(app, pilot):
         from textual.widgets import Input
 
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         bench.query_one(f"#a-{rewrite}", Input).value = "7 3"
-        edited = bench.edited_benchset("scratch")
+        edited = bench.edited_experiment("scratch")
         resolved = {a.key: a for a in edited.resolve(app.catalog)}
         return (resolved[f"{row}:restructured"].args,
                 resolved[f"{row}:base"].args)
@@ -607,8 +622,8 @@ def test_an_empty_rewrite_line_writes_no_override():
     row, rewrite = _a_row_with_a_rewrite()
 
     async def check(app, pilot):
-        bench = app.query_one("#bench", BenchsetPanel)
-        edited = bench.edited_benchset("scratch")
+        bench = app.query_one("#exp", ExperimentPanel)
+        edited = bench.edited_experiment("scratch")
         resolved = {a.key: a for a in edited.resolve(app.catalog)}
         return (rewrite in edited.apps,
                 resolved[f"{row}:restructured"].args_overridden)
@@ -620,11 +635,11 @@ def test_an_empty_rewrite_line_writes_no_override():
 
 def test_an_unchecked_application_is_saved_as_disabled():
     async def check(app, pilot):
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         for t in bench.toggles:
             if t.ident.startswith("nqueens:"):
                 t.value = False
-        edited = bench.edited_benchset("scratch")
+        edited = bench.edited_experiment("scratch")
         return edited.apps["nqueens"].enabled, [
             a.name for a in edited.resolve(app.catalog) if a.name == "nqueens"
         ]
@@ -646,7 +661,7 @@ def test_node_toggles_fit_two_digit_counts():
                 for t in panel.query(".node-toggle").results(Toggle)]
 
     async def main():
-        app = ArtsRunApp(profile="junction", benchset="paper-main")
+        app = ArtsRunApp(profile="junction", experiment="paper-main")
         async with app.run_test() as pilot:
             return await check(app, pilot)
 
@@ -741,7 +756,7 @@ def test_the_last_node_count_cannot_be_removed():
 
 def _launcher_view(profile_name):
     async def main():
-        app = ArtsRunApp(profile=profile_name, benchset="paper-main")
+        app = ArtsRunApp(profile=profile_name, experiment="paper-main")
         async with app.run_test() as pilot:
             from textual.containers import Vertical
             from textual.widgets import Input
@@ -866,7 +881,7 @@ def _visible_field_slack(profile_name, launcher=None):
         from textual.widgets import Select
         from artsrun.tui import form
 
-        app = ArtsRunApp(profile=profile_name, benchset="paper-main")
+        app = ArtsRunApp(profile=profile_name, experiment="paper-main")
         async with app.run_test(size=(150, 55)) as pilot:
             from textual.widgets import TabbedContent
 
@@ -895,10 +910,6 @@ def test_no_visible_field_clips_its_text():
     for profile, launcher in (("ferrari-local", None), ("junction", None),
                               ("junction", "ssh")):
         for key, text, width in _visible_field_slack(profile, launcher):
-            # A stored entry list is as long as the plane a study names and
-            # no fixed column holds it; the input scrolls.
-            if key == "entries":
-                continue
             assert width >= len(text), (
                 f"{profile}/{launcher or 'stored'}: {key} shows {text!r} "
                 f"in {width} columns"
@@ -960,9 +971,9 @@ def test_an_application_checkbox_is_only_as_wide_as_its_box():
     async def check(app, pilot):
         from textual.widgets import TabbedContent
 
-        app.query_one(TabbedContent).active = "tab-bench"
+        app.query_one(TabbedContent).active = "tab-exp"
         await pilot.pause()
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         widths = {t.size.width for t in bench.toggles}
         cells = {c.size.width for c in bench.query(".bench-cell")
                  if c.size.width}
@@ -979,9 +990,9 @@ def test_an_application_checkbox_fits_inside_its_row():
     async def check(app, pilot):
         from textual.widgets import TabbedContent
 
-        app.query_one(TabbedContent).active = "tab-bench"
+        app.query_one(TabbedContent).active = "tab-exp"
         await pilot.pause()
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         return [(t.outer_size.height, t.parent.size.height)
                 for t in bench.toggles[:6]]
 
@@ -993,7 +1004,7 @@ def test_application_checkboxes_are_actually_painted():
     async def check(app, pilot):
         from textual.widgets import TabbedContent
 
-        app.query_one(TabbedContent).active = "tab-bench"
+        app.query_one(TabbedContent).active = "tab-exp"
         await pilot.pause()
         svg = app.export_screenshot()
         return svg.count("✓"), svg.count("…")
@@ -1016,9 +1027,12 @@ def test_a_checked_box_is_filled_and_an_unchecked_one_is_not():
     # State shown by the glyph's colour alone reads the same at a glance; the
     # box itself has to carry it.
     async def check(app, pilot):
+        from artsrun.tui.widgets import toggle_all
+
         plane = app.query_one(PlanePanel)
         on = _green_count(app.export_screenshot())
         plane.toggle_all()
+        toggle_all(app.query_one("#exp", ExperimentPanel).toggles)
         await pilot.pause()
         off = _green_count(app.export_screenshot())
         return on, off
@@ -1034,14 +1048,15 @@ def test_the_application_boxes_show_state_the_same_way():
     async def check(app, pilot):
         from textual.widgets import TabbedContent
 
-        app.query_one(TabbedContent).active = "tab-bench"
+        app.query_one(TabbedContent).active = "tab-exp"
+        app.query_one(PlanePanel).toggle_all()      # only the rows stay green
         await pilot.pause()
         on = _green_count(app.export_screenshot())
-        app.query_one("#bench", BenchsetPanel).toggle_all()
+        app.query_one("#exp", ExperimentPanel).toggle_all()
         await pilot.pause()
         return on, _green_count(app.export_screenshot())
 
-    on, off = drive(check)
+    on, off = drive(check, size=ROSTER_SCREEN)
     assert on > 0
     assert off == 0
 
@@ -1052,7 +1067,7 @@ def test_the_application_screen_hides_the_attack_suite_unless_named():
     async def check(app, pilot):
         from textual.widgets import Static
 
-        bench = app.query_one("#bench", BenchsetPanel)
+        bench = app.query_one("#exp", ExperimentPanel)
         headings = [str(g.render())
                     for g in bench.query(".bench-group").results(Static)]
         idents = {t.ident for t in bench.toggles}
@@ -1170,7 +1185,7 @@ def test_switching_a_saved_set_leaves_one_panel_behind():
     # the same id before the first was gone.
     async def check(app, pilot):
         from textual.widgets import TabbedContent, Select
-        from artsrun.tui.panels import BenchsetPanel, CounterPanel
+        from artsrun.tui.panels import ExperimentPanel, CounterPanel
 
         app.query_one(TabbedContent).active = "tab-counters"
         await pilot.pause()
@@ -1179,12 +1194,12 @@ def test_switching_a_saved_set_leaves_one_panel_behind():
             await pilot.pause()
         counters = len(app.query("#counters"))
 
-        app.query_one(TabbedContent).active = "tab-bench"
+        app.query_one(TabbedContent).active = "tab-exp"
         await pilot.pause()
-        for name in ("controls-gate", "paper-main", "controls-gate"):
-            app.query_one("#bench-select", Select).value = name
+        for name in ("control-gate", "paper-main", "control-gate"):
+            app.query_one("#exp-select", Select).value = name
             await pilot.pause()
-        return counters, len(app.query("#bench"))
+        return counters, len(app.query("#exp"))
 
     counters, benches = drive(check)
     assert counters == 1
@@ -1213,25 +1228,25 @@ def test_loading_a_counter_set_shows_that_set_s_values():
     assert wide > 0 and empty == 0
 
 
-def test_loading_a_benchset_shows_that_roster():
+def test_loading_an_experiment_shows_that_roster():
     async def check(app, pilot):
         from textual.widgets import TabbedContent, Select
-        from artsrun.tui.panels import BenchsetPanel
+        from artsrun.tui.panels import ExperimentPanel
 
-        app.query_one(TabbedContent).active = "tab-bench"
+        app.query_one(TabbedContent).active = "tab-exp"
         await pilot.pause()
-        panel = app.query_one("#bench", BenchsetPanel)
-        panel.query_one("#bench-select", Select).value = "controls-gate"
+        panel = app.query_one("#exp", ExperimentPanel)
+        panel.query_one("#exp-select", Select).value = "control-gate"
         await pilot.pause()
         small = set(panel.selected())
-        panel.query_one("#bench-select", Select).value = "paper-main"
+        panel.query_one("#exp-select", Select).value = "paper-main"
         await pilot.pause()
         big = set(panel.selected())
         return small, big
 
     small, big = drive(check)
     from artsrun import store
-    assert small == set(store.load_benchset("controls-gate").apps)
+    assert small == set(store.load_experiment("control-gate").apps)
     assert len(big) > len(small)
 
 
@@ -1356,21 +1371,62 @@ def test_only_unfinished_runs_are_offered():
     assert offered <= resumable
 
 
-def test_a_profile_that_lists_entries_starts_the_plane_with_those_checked():
+def test_the_experiment_s_entries_start_checked_and_the_profile_holds_none():
     async def main():
-        app = ArtsRunApp(profile="dane", benchset="controls-gate")
+        app = ArtsRunApp(profile="dane", experiment="control-gate")
         async with app.run_test(size=(160, 50)) as pilot:
             await pilot.pause()
             plane = app.query_one("#plane", PlanePanel)
             panel = app.query_one("#profile", ProfilePanel)
-            return sorted(plane.selected()), panel.effective_profile()
+            return (plane.selected(), panel.effective_profile(),
+                    len(list(panel.query(Toggle))),
+                    len(list(panel.query(PlanePanel))))
 
     import asyncio
 
-    entries, effective = asyncio.run(main())
-    assert "arts_wrf_flush" not in entries
-    assert len(entries) == 11
+    entries, effective, toggles, planes = asyncio.run(main())
+    from artsrun import store
+    assert entries == store.load_experiment("control-gate").entries
+    assert "hpx" in entries and "xsocr" not in entries
+    # The profile tab carries host facts only: node counts are its only
+    # toggles, and no plane is drawn there.
+    assert planes == 0
+    assert toggles == len(effective.nodes)
     # What the form does not show as a box of its own still reaches the run.
     assert effective.rusage_witness is True
-    assert effective.entries is not None and "arts_wrf_flush" not in effective.entries
     assert effective.slurm.max_queued == 5000
+
+
+def test_any_entry_may_be_turned_on_for_one_run():
+    # The experiment's list is the default check-set, not a limit: a FAM entry
+    # and the DB-WRF entry are toggled on here and reach the selection, while
+    # the saved default is recorded beside them.
+    async def check(app, pilot):
+        plane = app.query_one("#plane", PlanePanel)
+        for t in plane.toggles:
+            if t.ident in ("arts_excl_purge_fam_staged", "arts_wrf_flush"):
+                t.value = True
+        await pilot.pause()
+        selection = app.build_selection()
+        return selection.entries, selection.default_entries, selection.experiment
+
+    entries, defaults, name = drive(check)
+    assert name == "paper-main"
+    assert "arts_excl_purge_fam_staged" in entries
+    assert "arts_wrf_flush" in entries
+    assert len(entries) == 12
+    from artsrun import store
+    assert defaults == store.load_experiment("paper-main").entries
+
+
+def test_loading_another_experiment_checks_its_own_entries():
+    async def check(app, pilot):
+        from textual.widgets import Select
+
+        app.query_one("#exp-select", Select).value = "control-gate"
+        await pilot.pause()
+        await pilot.pause()
+        return app.query_one("#plane", PlanePanel).selected()
+
+    from artsrun import store
+    assert drive(check) == store.load_experiment("control-gate").entries

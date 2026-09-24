@@ -1,23 +1,24 @@
-"""A benchmark set: which applications a campaign runs, in which versions,
-with which arguments.
+"""An experiment: which applications a campaign runs, in which versions,
+with which arguments, and on which coherence entries by default.
 
-The catalog says what an application is; a benchset says what this campaign
-does with it.  Anything omitted falls through to the catalog, so a benchset
-only has to carry its deltas.
+The catalog says what an application is; an experiment says what this
+campaign does with it.  Anything omitted falls through to the catalog, so an
+experiment only has to carry its deltas.  Its entry list is the default
+check-set, not a restriction: a run may name any plane entries instead.
 """
 
 from __future__ import annotations
 
 import sys
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from artsrun.model.catalog import (AppClass, AppEntry, Catalog, ScalarKind,
                                    Version, expand_repo)
 from artsrun.paths import repo_root
 
 
-class BenchsetEntry(BaseModel):
+class ExperimentApp(BaseModel):
     enabled: bool | None = None
     args: list[str] | None = None
     args_by_nodes: dict[int, list[str]] | None = None
@@ -69,22 +70,37 @@ class ResolvedApp(BaseModel):
         return self.timeout
 
 
-class Benchset(BaseModel):
+class Experiment(BaseModel):
     name: str
     description: str | None = None
-    apps: dict[str, BenchsetEntry] = Field(default_factory=dict)
+    # The plane entries a campaign of this experiment runs when it names
+    # none, and the ones the selection screen starts with checked.
+    entries: list[str] = Field(min_length=1)
+    apps: dict[str, ExperimentApp] = Field(default_factory=dict)
+
+    @field_validator("entries")
+    @classmethod
+    def _plane_entries(cls, entries: list[str]) -> list[str]:
+        """Every key must name a plane entry; kept in the plane's order.
+
+        A name the plane does not have is refused rather than dropped: a list
+        that silently shrank would leave a study running less than it states.
+        """
+        from artsrun.model.plane import load_plane
+
+        return load_plane().ordered(entries, "experiment")
 
     def is_enabled(self, app: AppEntry) -> bool:
         """Whether this campaign runs the application at all.
 
-        Naming applications defines the roster: a benchset that lists any
+        Naming applications defines the roster: an experiment that lists any
         application runs only the ones it lists, so a short file is a short
         campaign rather than the whole catalog with three entries annotated.
-        A benchset that lists none defers to the catalog's own defaults.
+        An experiment that lists none defers to the catalog's own defaults.
         """
         if app.unsupported:
             # Not a roster choice: the application needs semantics the
-            # runtime does not implement, so no benchset can turn it on.
+            # runtime does not implement, so no experiment can turn it on.
             return False
         entry = self.apps.get(app.name)
         if entry is not None and entry.enabled is not None:

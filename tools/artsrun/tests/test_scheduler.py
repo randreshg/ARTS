@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.catalog import AppClass, ScalarKind, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.run.scheduler import Scheduler, WallCache, order

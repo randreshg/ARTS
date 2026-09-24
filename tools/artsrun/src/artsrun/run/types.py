@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.plane import SelectionEntry
 from artsrun.model.profile import FamDevice
 

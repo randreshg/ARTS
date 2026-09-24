@@ -1,15 +1,15 @@
-# Gate roster for the controls: the adversarial columns and the HPX-origin
-# rows of paper-controls at arguments small enough that the whole roster runs
-# in minutes on the development host.  Timing from this roster is never
-# reported; the catalog's calibrated arguments remain the measurement.  The
-# cross-runtime consensus vote is the gate:
+# Experiment control-gate: the consensus gate for control-main -- its
+# adversarial columns and its HPX-origin rows at arguments small enough that
+# the whole experiment runs in minutes on a development host.  Timing from it
+# is never reported; the catalog's calibrated arguments remain the
+# measurement.  The cross-runtime consensus vote is the gate:
 #
-#   artsrun run -p ferrari-local -b controls-gate \
-#       -e arts_val_wb,arts_inv_wb,arts_excl_retain,xsocr,ocrvx,hpx -n 1,2,4,8 --repeats 1
+#   artsrun run -p <profile> -x control-gate -n 1,2,4,8 --repeats 1
 #
-# The adversarial rows are ARTS-only by design (they compare the plane's own
-# arms against each other), so the xsocr/ocrvx entries above are structurally
-# ineligible for them and only reach this roster's HPX-origin rows.
+# A control experiment runs the ARTS entries and HPX by default: the
+# adversarial rows are ARTS-only by design (they compare the plane's own arms
+# against each other), and the HPX-origin rows are what HPX runs.  Any other
+# plane entry is turned on for one run with -e.
 #
 # Every adversarial row's op count is the catalog vector's cut to a tenth (a
 # coupled row's two counts keep their ratio), so an arm that the row is built
@@ -18,8 +18,11 @@
 # argument -- size, spread, hold and think times, lattice geometry -- is the
 # catalog's own.  Population is the program's, derived from the rank count,
 # not a roster concern.
-name: controls-gate
+name: control-gate
 description: small-size consensus gate for the adversarial columns and the HPX-origin rows
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
 apps:
   own_reread_64k:
     enabled: true

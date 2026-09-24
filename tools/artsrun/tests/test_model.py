@@ -5,8 +5,8 @@ from pydantic import BaseModel, ValidationError
 
 from artsrun.model import (
     AppEntry,
-    Benchset,
-    BenchsetEntry,
+    Experiment,
+    ExperimentApp,
     Catalog,
     Family,
     Kind,
@@ -73,28 +73,114 @@ def test_the_db_wrf_section_offers_flush_and_draws_its_retired_arm():
     assert entry.binary("nqueens", hinted=False) == "nqueens_arts_wrf_flush"
 
 
-def test_a_profile_names_the_entries_its_campaigns_run_unasked():
+def test_the_plane_orders_and_checks_a_named_entry_list():
     plane = load_plane()
-    assert plane.default_entries(None) == plane.entry_keys
-    # Plane order, whatever order the profile wrote them in.
-    assert plane.default_entries(["hpx", "arts_val_wb"]) == ["arts_val_wb", "hpx"]
-    with pytest.raises(ValueError, match="unknown plane entries: nope"):
-        plane.default_entries(["arts_val_wb", "nope"])
+    # Plane order, whatever order the list was written in.
+    assert plane.ordered(["hpx", "arts_val_wb"], "x") == ["arts_val_wb", "hpx"]
+    with pytest.raises(ValueError, match="x names unknown plane entries: nope"):
+        plane.ordered(["arts_val_wb", "nope"], "x")
+    # The standard entries: every OCR-model entry whose store is not
+    # fabric-attached memory.
+    assert set(plane.entry_keys) - set(plane.standard_entries) == {
+        "arts_wrf_flush"} | {e.key for e in plane.entries if e.is_fam}
 
 
-def test_the_dane_profiles_leave_the_db_wrf_section_out():
+ARTS8 = ["arts_excl_purge", "arts_excl_retain", "arts_inv_wt_purge",
+         "arts_inv_wt", "arts_inv_wb", "arts_val_wt_purge", "arts_val_wt",
+         "arts_val_wb"]
+SHIPPED_ENTRIES = {
+    "paper-main": ARTS8 + ["xsocr", "ocrvx"],
+    "paper-gate": ARTS8 + ["xsocr", "ocrvx"],
+    "control-main": ARTS8 + ["hpx"],
+    "control-gate": ARTS8 + ["hpx"],
+    "trend": ARTS8 + ["xsocr", "ocrvx", "hpx"],
+    "smoke": ARTS8 + ["xsocr", "ocrvx"],
+}
+
+
+def test_every_shipped_experiment_validates_and_states_its_entries():
     from artsrun import store
 
     plane = load_plane()
-    for name in ("dane", "dane-p1", "dane-p8"):
-        keys = plane.default_entries(store.load_profile(name).entries)
-        assert "arts_wrf_flush" not in keys
-        assert all(plane.entry(k).model == "OCR" for k in keys)
-        left_out = set(plane.entry_keys) - set(keys)
-        assert left_out == {"arts_wrf_flush"} | {
-            e.key for e in plane.entries if e.is_fam}
-    # A profile that lists no entries still runs everything.
-    assert plane.default_entries(None) == plane.entry_keys
+    assert store.list_experiments() == sorted(SHIPPED_ENTRIES)
+    catalog = load_catalog()
+    for name, want in SHIPPED_ENTRIES.items():
+        x = store.load_experiment(name)
+        assert x.name == name
+        assert set(x.entries) == set(want), name
+        assert x.entries == plane.ordered(want, name)
+        # No shipped default reaches the DB-WRF model or a fabric-attached
+        # store: those are turned on per run.
+        assert not any(plane.entry(k).is_fam or plane.entry(k).model != "OCR"
+                       for k in x.entries), name
+        assert x.resolve(catalog), name
+        # Every file says what it is for.
+        head = store.experiment_path(name).read_text().splitlines()[0]
+        assert head.startswith(f"# Experiment {name}:"), name
+    assert store.load_experiment("trend").entries == plane.standard_entries
+
+
+def test_smoke_runs_every_paper_gate_row_at_its_own_arguments():
+    """smoke is paper-gate's roster shrunk again, not a different roster.
+
+    Same app keys (every paper-gate row, base/hinted/restructured and the
+    restructured tier's own rewrite-CLI entries alike) and the same per-key
+    `versions` -- only the argument vectors are free to differ.
+    """
+    from artsrun import store
+
+    gate, smoke = store.load_experiment("paper-gate"), store.load_experiment("smoke")
+    assert set(smoke.apps) == set(gate.apps)
+    for name, app in gate.apps.items():
+        other = smoke.apps[name]
+        assert other.versions == app.versions, name
+        assert other.enabled == app.enabled, name
+    # At least one row's vector actually shrank -- smoke is not a copy.
+    assert any(smoke.apps[name].args != app.args for name, app in gate.apps.items())
+
+
+def test_an_experiment_must_name_plane_entries():
+    with pytest.raises(ValidationError, match="experiment names unknown plane "
+                                              "entries: nope"):
+        Experiment.model_validate({"name": "x", "entries": ["nope"]})
+    with pytest.raises(ValidationError, match="entries"):
+        Experiment.model_validate({"name": "x"})
+    # Any plane entry may be a default, fabric-attached and DB-WRF included.
+    x = Experiment.model_validate({"name": "x", "entries": [
+        "arts_wrf_flush", "arts_excl_purge_fam_staged"]})
+    assert x.entries == ["arts_excl_purge_fam_staged", "arts_wrf_flush"]
+
+
+def test_a_node_profile_that_lists_entries_is_refused_naming_the_move():
+    with pytest.raises(ValidationError, match="no longer lists entries.*moved "
+                                              "to the experiment"):
+        Profile.model_validate(_local(entries=["arts_excl_purge"]))
+    from artsrun import store
+
+    for name in store.list_profiles():
+        assert "entries" not in store.load_profile(name).model_dump(), name
+
+
+def test_a_selection_saved_under_a_benchset_replays_as_its_experiment():
+    base = {"profile": "p", "entries": ["arts_val_wb"],
+            "apps": {"nqueens": ["base"]}, "node_counts": [1]}
+    for old, new in (("main-gate", "paper-gate"),
+                     ("paper-controls", "control-main"),
+                     ("controls-gate", "control-gate"),
+                     ("paper-main", "paper-main")):
+        sel = Selection.model_validate(base | {"benchset": old})
+        assert sel.experiment == new
+        assert sel.default_entries is None
+
+
+def test_everything_starts_from_the_experiment_entries():
+    from artsrun import store
+
+    plane, catalog = load_plane(), load_catalog()
+    x = store.load_experiment("control-gate")
+    sel = Selection.everything(plane, catalog, x, Profile.model_validate(_local()))
+    assert sel.experiment == "control-gate"
+    assert sel.entries == sel.default_entries == x.entries
 
 
 def _model_keys(model: type[BaseModel], prefix: str = "") -> set[str]:
@@ -255,15 +341,15 @@ def test_a_dry_run_configures_nothing(tmp_path):
 
 def test_the_old_hinted_name_still_parses_as_optimized():
     # The version was recorded as "hinted" before the rename; selections and
-    # benchsets written under that name must replay unchanged.
+    # experiments written under that name must replay unchanged.
     assert Version("hinted") is Version.HINTED
     selection = Selection.model_validate({
-        "profile": "p", "benchset": "b", "entries": ["arts_val_wb"],
+        "profile": "p", "experiment": "b", "entries": ["arts_val_wb"],
         "apps": {"nqueens": ["hinted"]}, "node_counts": [1],
     })
     assert selection.apps["nqueens"] == [Version.HINTED]
-    bench = Benchset.model_validate(
-        {"name": "b", "apps": {"nqueens": {"versions": ["hinted"]}}})
+    bench = Experiment.model_validate(
+        {"name": "b", "entries": ["arts_val_wb"], "apps": {"nqueens": {"versions": ["hinted"]}}})
     assert bench.apps["nqueens"].versions == [Version.HINTED]
 
 
@@ -271,7 +357,6 @@ def test_the_old_hinted_name_still_parses_as_optimized():
 def _local(**over):
     base = dict(
         name="t", launcher="local", nodes=[1, 2], workers=3, progress=1,
-        entries=["arts_excl_purge", "xsocr"],
     )
     base.update(over)
     return base
@@ -296,8 +381,10 @@ def test_the_local_fam_smoke_profile_loads_and_fits_the_host(monkeypatch,
     profile = store.load_profile("local-fam")
     assert profile.launcher is Launcher.LOCAL
     assert profile.fam_pool_mb is not None
-    # what a campaign actually runs is the plane's order, not the file's
-    entries = plane.default_entries(profile.entries)
+    # the smoke's entries are named for the run: one cell's worth
+    entries = plane.ordered(["xsocr", "arts_excl_purge",
+                             "arts_excl_purge_fam_staged",
+                             "arts_excl_purge_fam_direct"], "-e")
     assert entries == [
         "arts_excl_purge", "arts_excl_purge_fam_staged",
         "arts_excl_purge_fam_direct", "xsocr",
@@ -308,7 +395,7 @@ def test_the_local_fam_smoke_profile_loads_and_fits_the_host(monkeypatch,
     # count — so this exercises the real check a campaign runs into, rather
     # than reimplementing it and drifting from it.
     selection = Selection(
-        profile=profile.name, benchset="b", entries=entries,
+        profile=profile.name, experiment="b", entries=entries,
         apps={"nqueens": [Version.BASE]}, node_counts=profile.nodes,
     )
     selection.validate_against(plane, load_catalog(), profile)
@@ -359,17 +446,17 @@ def test_slurm_needs_no_budget_and_defaults_its_build_slot():
     assert profile.slurm.build_cpus == 8
 
 
-# --- benchset -------------------------------------------------------------
-def test_benchset_falls_through_to_the_catalog():
+# --- experiment -----------------------------------------------------------
+def test_experiment_falls_through_to_the_catalog():
     catalog = load_catalog()
-    resolved = {a.key: a for a in Benchset(name="empty").resolve(catalog)}
+    resolved = {a.key: a for a in Experiment(entries=["arts_excl_purge"], name="empty").resolve(catalog)}
     assert resolved["nqueens:base"].args == catalog.apps["nqueens"].args
     assert not resolved["nqueens:base"].args_overridden
 
 
-def test_benchset_override_marks_the_argument_source():
+def test_experiment_override_marks_the_argument_source():
     catalog = load_catalog()
-    bs = Benchset(name="o", apps={"nqueens": BenchsetEntry(args=["8", "2"])})
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={"nqueens": ExperimentApp(args=["8", "2"])})
     resolved = {a.key: a for a in bs.resolve(catalog)}
     assert resolved["nqueens:base"].args == ["8", "2"]
     assert resolved["nqueens:base"].args_overridden
@@ -394,7 +481,7 @@ def test_a_roster_args_override_replaces_the_catalogs_per_node_editions():
     # for any node count -- otherwise the override is dead exactly where
     # the catalog is most specific.
     catalog, row = _catalog_with_a_node_laddered_row()
-    bs = Benchset(name="o", apps={row.name: BenchsetEntry(args=["1", "2"])})
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={row.name: ExperimentApp(args=["1", "2"])})
     got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
     assert got.args_overridden
     assert got.args_by_nodes == {}
@@ -404,7 +491,7 @@ def test_a_roster_args_override_replaces_the_catalogs_per_node_editions():
 
 def test_a_roster_keeps_its_own_per_node_editions_beside_its_args():
     catalog, row = _catalog_with_a_node_laddered_row()
-    bs = Benchset(name="o", apps={row.name: BenchsetEntry(
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={row.name: ExperimentApp(
         args=["1", "2"], args_by_nodes={2: ["3", "4"]})})
     got = {a.key: a for a in bs.resolve(catalog)}[f"{row.name}:base"]
     assert got.args_for(2) == ["3", "4"]
@@ -422,21 +509,21 @@ def test_a_rewrites_override_replaces_its_per_node_editions_too():
             "marker": "DONE", "args": ["9"],
             "args_by_nodes": {1: ["8"], 2: ["7"]}}),
     })
-    bs = Benchset(name="o", apps={
-        "r": BenchsetEntry(versions=[Version.RESTRUCTURED]),
-        "r_dist": BenchsetEntry(args=["1"]),
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+        "r": ExperimentApp(versions=[Version.RESTRUCTURED]),
+        "r_dist": ExperimentApp(args=["1"]),
     })
     got = {a.key: a for a in bs.resolve(catalog)}["r:restructured"]
     assert got.args_overridden
     assert got.args_for(1) == ["1"] and got.args_for(2) == ["1"]
 
 
-def test_benchset_overrides_a_restructured_row_by_the_rewrites_name():
+def test_experiment_overrides_a_restructured_row_by_the_rewrites_name():
     catalog = load_catalog()
     row = next(a for a in catalog.rows if a.restructured_as)
-    bs = Benchset(name="o", apps={
-        row.name: BenchsetEntry(versions=[Version.RESTRUCTURED]),
-        row.restructured_as: BenchsetEntry(args=["7", "3"]),
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+        row.name: ExperimentApp(versions=[Version.RESTRUCTURED]),
+        row.restructured_as: ExperimentApp(args=["7", "3"]),
     })
     resolved = {a.key: a for a in bs.resolve(catalog)}
     got = resolved[f"{row.name}:restructured"]
@@ -447,8 +534,8 @@ def test_benchset_overrides_a_restructured_row_by_the_rewrites_name():
 def test_a_row_override_never_follows_into_the_rewrites_cli():
     catalog = load_catalog()
     row = next(a for a in catalog.rows if a.restructured_as)
-    bs = Benchset(name="o", apps={
-        row.name: BenchsetEntry(versions=[Version.RESTRUCTURED],
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+        row.name: ExperimentApp(versions=[Version.RESTRUCTURED],
                                 args=["9", "9"]),
     })
     resolved = {a.key: a for a in bs.resolve(catalog)}
@@ -463,9 +550,9 @@ def test_a_rows_override_reaches_its_own_tiers_and_stops_at_the_rewrite():
     # override may cross into the other's arguments.
     catalog = load_catalog()
     row = next(a for a in catalog.rows if a.restructured_as and a.hinted)
-    bs = Benchset(name="o", apps={
-        row.name: BenchsetEntry(args=["4", "4"]),
-        row.restructured_as: BenchsetEntry(args=["7", "3"]),
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={
+        row.name: ExperimentApp(args=["4", "4"]),
+        row.restructured_as: ExperimentApp(args=["7", "3"]),
     })
     resolved = {a.key: a for a in bs.resolve(catalog)}
     assert resolved[f"{row.name}:base"].args == ["4", "4"]
@@ -473,9 +560,9 @@ def test_a_rows_override_reaches_its_own_tiers_and_stops_at_the_rewrite():
     assert resolved[f"{row.name}:restructured"].args == ["7", "3"]
 
 
-def test_benchset_disable_removes_every_version():
+def test_experiment_disable_removes_every_version():
     catalog = load_catalog()
-    bs = Benchset(name="o", apps={"nqueens": BenchsetEntry(enabled=False)})
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={"nqueens": ExperimentApp(enabled=False)})
     assert not [a for a in bs.resolve(catalog) if a.name == "nqueens"]
 
 
@@ -485,7 +572,7 @@ def test_a_version_an_application_lacks_is_dropped_and_said_out_loud(capsys):
     # the campaign running as though it had measured it.
     catalog = load_catalog()
     bare = next(a for a in catalog.rows if not a.hinted)
-    bs = Benchset(name="o", apps={bare.name: BenchsetEntry(
+    bs = Experiment(entries=["arts_excl_purge"], name="o", apps={bare.name: ExperimentApp(
         versions=[Version.BASE, Version.HINTED])})
     got = bs.resolve(catalog)
     assert [a.key for a in got] == [f"{bare.name}:base"]
@@ -497,7 +584,7 @@ def test_selection_rejects_a_node_count_outside_the_profile_sweep():
     plane, catalog = load_plane(), load_catalog()
     profile = Profile.model_validate(_local())
     sel = Selection(
-        profile="t", benchset="b", entries=["arts_val_wb"],
+        profile="t", experiment="b", entries=["arts_val_wb"],
         apps={"nqueens": [Version.BASE]}, node_counts=[8],
     )
     with pytest.raises(ValueError, match="not in profile"):
@@ -514,7 +601,7 @@ def _width_catalog(cls: str, width: int | None) -> Catalog:
 
 def _width_selection() -> Selection:
     return Selection(
-        profile="t", benchset="b", entries=["arts_val_wb"],
+        profile="t", experiment="b", entries=["arts_val_wb"],
         apps={"w": [Version.BASE]}, node_counts=[1, 2],
     )
 
@@ -556,7 +643,7 @@ def test_a_roster_override_suspends_the_width_check_and_says_so(capsys):
     # for, so the campaign is told instead.
     profile = Profile.model_validate(_local())
     catalog = _width_catalog("mw", 7)          # would be refused as declared
-    bs = Benchset(name="smoke", apps={"w": BenchsetEntry(args=["2"])})
+    bs = Experiment(entries=["arts_excl_purge"], name="smoke", apps={"w": ExperimentApp(args=["2"])})
     _width_selection().validate_against(load_plane(), catalog, profile, bs)
     err = capsys.readouterr().err
     assert "width_max=7" in err and "smoke" in err
@@ -565,7 +652,7 @@ def test_a_roster_override_suspends_the_width_check_and_says_so(capsys):
 def test_a_roster_that_leaves_the_arguments_alone_is_still_checked():
     profile = Profile.model_validate(_local())
     catalog = _width_catalog("mw", 7)
-    bs = Benchset(name="full", apps={"w": BenchsetEntry()})
+    bs = Experiment(entries=["arts_excl_purge"], name="full", apps={"w": ExperimentApp()})
     with pytest.raises(ValueError, match="not a whole multiple"):
         _width_selection().validate_against(
             load_plane(), catalog, profile, bs)
@@ -573,25 +660,25 @@ def test_a_roster_that_leaves_the_arguments_alone_is_still_checked():
 
 def test_cell_count_is_the_product_of_the_three_surfaces():
     sel = Selection(
-        profile="t", benchset="b", entries=["arts_val_wb", "xsocr"],
+        profile="t", experiment="b", entries=["arts_val_wb", "xsocr"],
         apps={"nqueens": [Version.BASE, Version.HINTED]},
         node_counts=[1, 2], repeats=3,
     )
     assert sel.cell_count == 2 * 2 * 2 * 3
 
 
-def test_a_benchset_that_names_applications_defines_the_roster():
-    # A short benchset is a short campaign, not the whole catalog with three
+def test_an_experiment_that_names_applications_defines_the_roster():
+    # A short experiment is a short campaign, not the whole catalog with three
     # entries annotated.
     catalog = load_catalog()
-    bs = Benchset(name="small", apps={"nqueens": BenchsetEntry()})
+    bs = Experiment(entries=["arts_excl_purge"], name="small", apps={"nqueens": ExperimentApp()})
     names = {a.name for a in bs.resolve(catalog)}
     assert names == {"nqueens"}
 
 
-def test_an_empty_benchset_defers_to_the_catalog_defaults():
+def test_an_empty_experiment_defers_to_the_catalog_defaults():
     catalog = load_catalog()
-    names = {a.name for a in Benchset(name="empty").resolve(catalog)}
+    names = {a.name for a in Experiment(entries=["arts_excl_purge"], name="empty").resolve(catalog)}
     assert names == {a.name for a in catalog.rows if a.default_enabled}
 
 
@@ -685,7 +772,7 @@ def test_the_old_probe_spelling_still_parses():
 
 def test_no_probe_or_toy_is_enabled_by_default():
     # A toy is a regression check and an attack row runs in the
-    # paper-controls roster; neither belongs in a fresh comparison campaign.
+    # control-main roster; neither belongs in a fresh comparison campaign.
     # Every row of every section is held to this, so a new section inherits
     # the rule.
     catalog = load_catalog()
@@ -871,9 +958,9 @@ def test_a_dry_run_leaves_nothing_under_the_campaign_log_root(tmp_path, monkeypa
     monkeypatch.setattr(mod, "logs_root", lambda: exp)
     plane, catalog = load_plane(), load_catalog()
     prof = store.load_profile("ferrari-local")
-    bs = store.default_benchset()
+    bs = store.default_experiment()
     selection = Selection(
-        profile=prof.name, benchset=bs.name, entries=["arts_val_wb"],
+        profile=prof.name, experiment=bs.name, entries=["arts_val_wb"],
         apps={"nqueens": [Version.BASE]}, node_counts=[1], repeats=1,
     )
     with mod.scratch_run_dir() as scratch:
@@ -963,7 +1050,7 @@ def test_a_row_outside_db_wrf_is_dropped_on_the_wrf_flush_entry_only():
     from artsrun.run.plan import _ineligible
     plane = load_plane()
     catalog = load_catalog()
-    bs = Benchset(name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
     resolved = {a.key: a for a in bs.resolve(catalog)}
     app = resolved["quicksort:base"]
     assert app.unordered_writes
@@ -982,7 +1069,7 @@ def test_a_restructured_row_carries_the_rewrites_own_unordered_writes():
     from artsrun.run.plan import _ineligible
     plane = load_plane()
     catalog = load_catalog()
-    bs = Benchset(name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
     resolved = {a.key: a for a in bs.resolve(catalog)}
 
     # fft's base row is annotated; its rewrite (fft_dist) is not.
@@ -1044,7 +1131,7 @@ def _reference_fixture():
     from artsrun.model.profile import Launcher, Profile, SlurmSettings
 
     plane = load_plane()
-    bs = Benchset(name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
     app = {a.key: a for a in bs.resolve(load_catalog())}["nqueens:base"]
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
                     workers=2, progress=1)
@@ -1055,7 +1142,7 @@ def _reference_fixture():
 
 
 def _hpx_row():
-    bs = Benchset(name="t", apps={})
+    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={})
     return {a.key: a for a in bs.resolve(load_catalog())}["stencil1d_hpx:base"]
 
 
@@ -1110,15 +1197,15 @@ def test_a_reference_stays_eligible_on_a_half_split_host(
 def test_the_build_plan_skips_the_reference_the_expansion_skips(
         tmp_path, monkeypatch):
     from artsrun.build import plan_targets
-    from artsrun.model.benchset import BenchsetEntry
+    from artsrun.model.experiment import ExperimentApp
     from artsrun.model.selection import Selection
 
     plane, _, local, _ = _reference_fixture()
-    sel = Selection(profile="p", benchset="t",
+    sel = Selection(profile="p", experiment="t",
                     entries=["arts_excl_purge", "xsocr"],
                     apps={"nqueens": [Version.BASE]}, node_counts=[1, 2],
                     repeats=1)
-    bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
+    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
 
     _use_topology(monkeypatch, tmp_path, SIBLING_ADJACENT)
     adjacent = plan_targets(sel, plane, load_catalog(), bs, tmp_path, local)

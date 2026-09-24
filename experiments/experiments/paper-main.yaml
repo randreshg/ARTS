@@ -1,4 +1,7 @@
-# Paper campaign roster.
+# Experiment paper-main: the paper campaign -- the application roster of the
+# coherence comparison, run by default on the OCR-model ARTS entries and the
+# two OCR reference runtimes; any other plane entry is turned on for one run
+# with -e.
 #
 # Omitted fields fall through to the catalog, so this file only has to
 # carry what this campaign changes: which applications run, in which
@@ -16,6 +19,9 @@
 
 name: paper-main
 description: curated roster for the coherence comparison
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
 
 apps:
   basicIO:

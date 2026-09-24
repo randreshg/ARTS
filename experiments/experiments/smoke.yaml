@@ -1,0 +1,314 @@
+# Experiment smoke: every row of paper-gate, in every version paper-gate
+# offers, at argument vectors shrunk again so each row's DRAM cell finishes
+# in about 10 s at one rank with 2 workers -- this is a correctness smoke for
+# a laptop and for pre-flight gates, never a timing number.  A FAM cell's
+# rank is sized to fit a 256 MB slice (two ranks in a 512 MB pool), so the
+# same file also validates under the FAM-backed local profile.  Vectors here
+# were sized on a two-worker host and reported per-row in
+# .superpowers/sdd/2026-09-24-port-to-ipdps27/task-68b-report.md; nothing
+# timed here is a paper number, and nothing here replaces paper-gate as the
+# pre-measurement conformance check.
+#
+#   artsrun run -p <profile> -x smoke -n 1 -e <entry> --dry-run --plain
+#   artsrun run -p <profile> -x smoke -n 1 --repeats 1 --build-dir <dir>
+#
+# A main experiment runs the OCR-model ARTS entries and the two OCR reference
+# runtimes by default; any other plane entry is turned on for one run with -e.
+#
+# Sizing rule: same as paper-gate's -- shrink the duration/size knob, keep the
+# width knob only as large as the geometry needs (a smoke has no width floor
+# to defend: every row here overrides the catalog's own arguments, so the
+# selection layer's width_max check is inert for all 45 keys below), leave a
+# height knob a program pins at its published value unless shrinking it stays
+# correct and only trims duration.  Every argument list is legal at 1, 2, 4
+# and 8 ranks, so no row needs an args_by_nodes ladder.  A restructured row's
+# arguments are addressed by the rewrite's own name -- the driver never
+# carries a row's override into a different CLI.  Because the scalar pin
+# (`expect`) is keyed to the catalog's own argument vector, none of these
+# shrunk rows re-arms it; correctness here rides the cross-runtime consensus
+# vote alone, which is what a smoke needs.
+name: smoke
+description: laptop-scale consensus smoke for every paper-gate row and version
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
+
+apps:
+  cholesky_blas:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # ds must be a whole multiple of ts; t = ds/ts = 4 tiles per dimension.
+    args: ['--ds', '40', '--ts', '10']
+  cholesky_dist:
+    # places must lie in 1..t^2 = 16.
+    args: ['--ds', '40', '--ts', '10', '--places', '8']
+
+  CoMD_intel_chandra_tiled:
+    enabled: true
+    versions: [base, hinted]
+    # sanityChecks demands n_a >= 3.203 * proc_a on every axis (proc = i,j,k);
+    # 16/8/8 clears 12.8/6.4/6.4 with margin.  i*j*k stays 16, unchanged from
+    # the gate row, since it need not shrink for a smoke.
+    args: ['-x', '16', '-y', '8', '-z', '8', '-N', '2', '-n', '1',
+           '-i', '4', '-j', '2', '-k', '2']
+
+  CoMD_sdsc:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # g = floor(0.6246*n) must clear the initLinkCells gs_a >= 2 floor; n = 8
+    # gives g = 4.  -N must be a whole multiple of -n.
+    args: ['-x', '8', '-y', '8', '-z', '8', '-N', '2', '-n', '1']
+  CoMD_sdsc_dist:
+    args: ['-x', '8', '-y', '8', '-z', '8', '-N', '2', '-n', '1', '-w', '8']
+
+  fft:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # power >= 1 is the only hard floor (fft.c); below ~15 the split/combine
+    # tree collapses to a single leaf -- still a correct, if unparallel, FFT.
+    args: ['8']
+  fft_dist:
+    # places must not exceed the tile count.
+    args: ['8', '4', '2']
+
+  fibonacci:
+    enabled: true
+    versions: [base, hinted]
+    args: ['15', '5']
+
+  graph500:
+    enabled: true
+    versions: [base, restructured]
+    # R*C must divide 2^SCALE: 4*4=16 divides 2^8=256.
+    args: ['8', '16', '4', '4']
+  graph500_dist:
+    # The base row's instance, so the two tiers' digest is comparable cell by cell.
+    args: ['8', '16', '4', '4']
+
+  hpcg_intel:
+    enabled: true
+    versions: [base, restructured]
+    # m must be a multiple of 16 (four multigrid levels); 16 is the floor.
+    args: ['2', '2', '2', '16', '5']
+  hpcg_intel_dist:
+    args: ['2', '2', '2', '16', '5']
+
+  hpgmg:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # log2_box_dim must be >= 4 (hpgmg.c); target_boxes=8 gives boxes_in_i=2,
+    # whose level table (checked by hpgmg_check_geometry) agglomerates at
+    # most 8 fine boxes per coarse step and bottoms out on a single box.
+    args: ['4', '8']
+  hpgmg_dist:
+    args: ['4', '8']
+
+  LCS_all_db_distributed:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # N/base must be a positive power of two: 1024/64 = 16.
+    args: ['1024', '64']
+  LCS_wavefront:
+    # This row only requires N % base == 0, but the same pair keeps the two
+    # tiers on one instance.
+    args: ['1024', '64']
+  LCS_distributed_ST:
+    enabled: true
+    versions: [base, hinted]
+    # N/base must be a positive power of two.
+    args: ['1024', '64']
+  LCS_shared:
+    enabled: true
+    versions: [base, hinted]
+    args: ['1024', '64']
+
+  miniAMR_intel:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # Cells per block must be even; num_refine stays in [1,4] at this block
+    # count and num_tsteps is trimmed to the duration a smoke needs.
+    args: ['--nx', '4', '--ny', '4', '--nz', '4',
+           '--npx', '2', '--npy', '2', '--npz', '2',
+           '--num_refine', '1', '--num_tsteps', '2']
+  miniAMR_intel_dist:
+    args: ['--nx', '4', '--ny', '4', '--nz', '4',
+           '--npx', '2', '--npy', '2', '--npz', '2',
+           '--num_refine', '1', '--num_tsteps', '2']
+
+  miniAMR_intel_chandra:
+    enabled: true
+    versions: [base, hinted]
+    # npx*npy*npz is the SPMD rank grid and the unit of node distribution, so
+    # it stays 8; init_x/y/z=1 gives one block per rank, under max_blocks.
+    # num_tsteps/checksum_freq stay at the catalog's 5/5: the catalog's own
+    # scalar_re is anchored to the literal "ts 5" the app prints, so unlike
+    # every other row's duration knob these two are not free to shrink.
+    args: ['--npx', '2', '--npy', '2', '--npz', '2',
+           '--init_x', '1', '--init_y', '1', '--init_z', '1',
+           '--nx', '4', '--ny', '4', '--nz', '4',
+           '--max_blocks', '2',
+           '--num_tsteps', '5', '--num_refine', '0',
+           '--stages_per_ts', '2', '--num_vars', '4',
+           '--report_diffusion', '1', '--checksum_freq', '5']
+
+  nekbone:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # Rx >= Ry >= Rz and Ex >= Ey >= Ez are hard; CGcount is the duration knob.
+    args: ['2', '2', '2', '2', '2', '2', '8', '2']
+  nekbone_dist:
+    args: ['2', '2', '2', '2', '2', '2', '8', '2']
+
+  npb_cg:
+    enabled: true
+    versions: [base, restructured]
+    # Class S is NPB's smallest class; -b must divide na and does at 4.
+    args: ['-t', 'S', '-b', '4']
+  npb_cg_dist:
+    # -c must stay at or below the rows a rank owns, na/nranks, at the widest
+    # geometry -- ample headroom at class S.
+    args: ['-t', 'S', '-c', '16']
+
+  nqueens:
+    enabled: true
+    versions: [base, hinted]
+    # cutoff must lie in [0, n) and the scatter depth has a floor of 2.
+    args: ['8', '4', '1', '2']
+
+  p2p:
+    enabled: true
+    versions: [base]
+    # m >= p (a logical rank owns at least one column) and n >= 2.
+    args: ['8', '256', '100', '10']
+
+  quicksort:
+    enabled: true
+    versions: [base, hinted, restructured]
+    args: ['2000', '1000']
+  quicksort_dist:
+    # places must not exceed either the bucket or the chunk count.
+    args: ['8000', '1000', '8', '8', '8']
+
+  RSBench_intel:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # -s stays at the dataset's published size class; -l is the run-length
+    # knob and -b the in-flight width.
+    args: ['-s', 'large', '-l', '300', '-b', '8']
+  RSBench_intel_dist:
+    # Partition p is pinned to place p % ranks, so the partition count is a
+    # whole multiple of the widest rung.
+    args: ['-s', 'large', '-l', '300', '-r', '8', '-b', '2']
+
+  RSBench_intel_sharedDB:
+    enabled: true
+    versions: [base]
+    # -p replicates the run rather than partitioning it, so one instance per
+    # node at the widest geometry is the same job at every rung.
+    args: ['-s', 'large', '-l', '300', '-t', '2', '-p', '8']
+
+  sar_pss:
+    enabled: true
+    versions: [base, restructured]
+    # Parameter0.txt (Ix=Iy=400) is the smallest shipped ladder point; the
+    # tile block must lie in [1, Ix] and the detections file is not written
+    # at the last argument 0.
+    args: ['{repo}/datasets/sar-huge/Data.bin',
+           '{repo}/datasets/sar-huge/PlatformPosition.bin',
+           '{repo}/datasets/sar-huge/PulseTransmissionTime.bin',
+           '{repo}/scratch/sar_detects.txt',
+           '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter0.txt',
+           '50', '100', '250', '0']
+  sar_dist:
+    # Its own output path -- sharing one with the base row is shared mutable
+    # state between two rows of one campaign.  Ix moves total compute
+    # quadratically (the appdoc), and the coverage floor -- shortest 8-rank
+    # stripe >= min_rows = max(C+28, A+64, 47), and A+64 >= 65 for any legal
+    # A -- makes Parameter1.txt (Ix=Iy=800) the smallest shipped point that
+    # can clear it at all (800/8=100 just clears it; 400/8=50 cannot, at any
+    # B/C/A).  B=100 puts the achieved stripe at exactly 100, and C=70/A=34
+    # (min_rows=98) are as coarse as that margin allows, holding every stage's
+    # task count to a small multiple of the fixed 3600-task correlation floor.
+    args: ['{repo}/datasets/sar-huge/Data.bin',
+           '{repo}/datasets/sar-huge/PlatformPosition.bin',
+           '{repo}/datasets/sar-huge/PulseTransmissionTime.bin',
+           '{repo}/scratch/sar_dist_detects.txt',
+           '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter1.txt',
+           '100', '70', '34', '0']
+
+  smithwaterman:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # Total DP work is set by the dataset, not the tile: the 2000-character
+    # gate pair is already laptop-scale (quadratic in length against the
+    # 9.4 s / 140,000-character anchor puts this pair at ~2 ms of DP work),
+    # so it is unchanged from paper-gate.
+    args: ['100', '100',
+           '{repo}/datasets/smithwaterman/string1-gate.txt',
+           '{repo}/datasets/smithwaterman/string2-gate.txt',
+           '{repo}/datasets/smithwaterman/score-gate.txt']
+  smithwaterman_dist:
+    # places must lie between the rank count and the tile row count H+1; 8
+    # clears both at every rung of the sweep.
+    args: ['100', '100',
+           '{repo}/datasets/smithwaterman/string1-gate.txt',
+           '{repo}/datasets/smithwaterman/string2-gate.txt',
+           '{repo}/datasets/smithwaterman/score-gate.txt',
+           '8']
+
+  Stencil2D_intel_channelEVTs:
+    enabled: true
+    versions: [base]
+    # NR <= NP and every tile must be at least the halo radius (2) wide on
+    # both axes after NR is factored into a near-square grid.
+    args: ['12', '4', '2']
+
+  stream:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # The element count divides the chain count exactly, or the tail
+    # elements reach no datablock at all; well clear of the 512 KiB
+    # per-chain cliff on the small side.
+    args: ['400', '4', '2']
+  stream_dist:
+    # The same triple as the row it re-implements.
+    args: ['400', '4', '2']
+
+  tempest:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # k is the width dial (6k^2 patches) and duration the length dial;
+    # duration >= 2 so the neighbour exchange completes on more than one rank.
+    args: ['4', '3']
+  tempest_dist:
+    # The third argument is the target number of tiles a rank cuts its box into.
+    args: ['4', '3', '4']
+
+  triangle:
+    enabled: true
+    versions: [base, hinted]
+    # depth must lie in [1, holes-2]; omitting rows keeps the author's
+    # hand-written 5-row board (holes=15), the most-exercised path.
+    args: ['3', '1']
+
+  XSBench_intel:
+    enabled: true
+    versions: [base, hinted, restructured]
+    # -s stays large: it is what sets the fuel fan-in (321 vs 34 nuclides)
+    # this row exists to exercise, so it is not a knob to shrink away.  -g
+    # scales the exploded unionized-grid plane and its init cost linearly
+    # (the -l lookups themselves already run in single-digit ms), so -g is
+    # the row's own size knob and comes down from the campaign's 96 to 8.
+    args: ['-s', 'large', '-g', '8', '-l', '300', '-b', '8']
+  XSBench_intel_dist:
+    # A place is a producer and a table replica, placed at place % nodes, so
+    # the place count is a whole multiple of the widest rung; 1 <= p <= l.
+    args: ['-s', 'large', '-g', '8', '-l', '300', '-p', '8', '-b', '2']
+
+  XSBench_intel_sharedDB:
+    enabled: true
+    versions: [base]
+    # -p is refused below the policy-domain count (a node would own no
+    # instance), and each instance runs the full lookup count, so one
+    # instance per node at the widest geometry is the same job at every rung.
+    args: ['-s', 'large', '-g', '8', '-l', '300', '-t', '2', '-p', '8']

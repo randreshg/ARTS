@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.run.command import with_post_verify
 
 

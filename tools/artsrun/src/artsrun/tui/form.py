@@ -40,12 +40,6 @@ PROFILE_FIELDS: list[FieldSpec] = [
     FieldSpec("cell_timeout_s", "cell timeout (s)", "int",
               "wall budget per cell unless the application overrides it",
               example="300"),
-    FieldSpec("entries", "plane entries", "str_list",
-              "the plane entries a campaign under this profile runs when it "
-              "names none, and the ones the Coherence screen starts with "
-              "checked — a study that leaves some protocols out says so here "
-              "once. Names as `artsrun plane` prints them (empty = all)",
-              example="arts_val_wb,xsocr,hpx", optional=True),
     FieldSpec("fam_pool_mb", "fam pool (MB)", "int",
               "size of the fabric-attached-memory pool the run maps, "
               "shared by every rank and carved into one slice each "
@@ -53,13 +47,14 @@ PROFILE_FIELDS: list[FieldSpec] = [
               example="64", optional=True, section="run"),
     FieldSpec("fam_device", "fam device library", "choice",
               "whether and on which library the fabric-attached-memory "
-              "entries run: off = not available here (the default; a FAM "
-              "entry is then refused), fake = the vendored emulation, real = "
-              "the device library named by the two paths below. A local "
-              "profile that lists a FAM entry takes fake and refuses real; "
+              "entries run: off = not available here (a FAM entry is then "
+              "refused), fake = the vendored emulation, real = the device "
+              "library named by the two paths below; default = fake under "
+              "launcher=local and off elsewhere. launcher=local refuses real; "
               "off the local launcher fake needs nodes [1]. The build tree is "
               "reconfigured to it or the campaign stops",
-              choices=("off", "fake", "real"), none_choice="off",
+              choices=("default", "off", "fake", "real"),
+              none_choice="default",
               optional=True, section="run"),
     FieldSpec("fam_device_include_dir", "device include dir", "text",
               "fam_device=real only: the device library's headers "
@@ -371,7 +366,6 @@ def blank_values() -> dict[str, Any]:
         "provider": "", "net_interface": "", "route_table_size": "16",
         "regpool_slab_mb": "", "ports": "", "hosts": "",
         "pin": True, "core_dump": False, "rusage_witness": False,
-        "entries": "",
         "slurm.partition": "", "slurm.build_partition": "", "slurm.build_cpus": "",
         "slurm.account": "", "slurm.qos": "", "slurm.poll_interval_s": "",
         "slurm.max_queued": "", "slurm.mpi": "", "slurm.extra_sbatch": "",

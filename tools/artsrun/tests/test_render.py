@@ -52,9 +52,8 @@ def test_arts_config_names_fam_pool_mb_and_strict_when_set():
 
     profile = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
                        workers=3, progress=1, fam_pool_mb=16,
-                       fam_strict=False,
-                       entries=["arts_excl_purge_fam_staged"])
-    text = render_arts(profile, 2)
+                       fam_strict=False)
+    text = render_arts(profile, 2, fam=True)
     assert "fam_pool_mb=16" in text
     assert "fam_strict=0" in text
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from artsrun.check import (Verdict, apply_to, extract, extract_rusage,
                            minority_report, vote)
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.catalog import AppClass, ScalarKind, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.run.types import Cell, CellResult, Status

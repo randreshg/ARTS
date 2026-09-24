@@ -29,11 +29,13 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 profile_app = typer.Typer(help="Machine and node settings.")
-benchset_app = typer.Typer(help="Application rosters and calibration.")
+experiment_app = typer.Typer(
+    help="Experiments: application rosters, their calibration and the "
+         "coherence entries they run by default.")
 counterset_app = typer.Typer(help="Counter sets compiled into a build.")
 config_app = typer.Typer(help="Rendered runtime configurations.")
 app.add_typer(profile_app, name="profile")
-app.add_typer(benchset_app, name="benchset")
+app.add_typer(experiment_app, name="experiment")
 app.add_typer(counterset_app, name="counterset")
 app.add_typer(config_app, name="config")
 
@@ -51,13 +53,13 @@ def _split(value: str | None) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
-def _parse_apps(spec: str | None, catalog, benchset) -> dict[str, list[Version]]:
+def _parse_apps(spec: str | None, catalog, experiment) -> dict[str, list[Version]]:
     """`--apps quicksort,nqueens:hinted,fft:base+restructured` -> versions."""
     if not spec:
         return {
-            a.name: benchset.versions_for(a)
+            a.name: experiment.versions_for(a)
             for a in catalog.rows
-            if benchset.is_enabled(a)
+            if experiment.is_enabled(a)
         }
     out: dict[str, list[Version]] = {}
     for item in _split(spec):
@@ -79,7 +81,7 @@ def _parse_apps(spec: str | None, catalog, benchset) -> dict[str, list[Version]]
                     f"(has {', '.join(v.value for v in available)})"
                 )
         else:
-            picked = benchset.versions_for(catalog.apps[name])
+            picked = experiment.versions_for(catalog.apps[name])
         out.setdefault(name, []).extend(v for v in picked if v not in out.get(name, []))
     return out
 
@@ -99,7 +101,34 @@ def _revalidate_profile(name: str) -> None:
     console.print("[green]valid[/green]")
 
 
-def _load(profile_name: str, benchset_name: str | None):
+_BENCHSET_GONE = (
+    "benchsets are experiments now: an experiment is the application roster "
+    "plus the coherence entries it runs by default, under "
+    "experiments/experiments/ — name one with -x/--experiment (-b/--benchset "
+    "is gone), and manage them with `artsrun experiment`")
+
+
+def _no_benchset(value) -> None:
+    # Only a string is a value the command line gave; a direct call leaves
+    # the option's declaration in its place.
+    if isinstance(value, str):
+        _fail(_BENCHSET_GONE)
+
+
+def _load_experiment(name: str | None):
+    if not name:
+        return store.default_experiment()
+    try:
+        return store.load_experiment(name)
+    except store.NotFound as exc:
+        if name == store.default_experiment().name:
+            return store.default_experiment()
+        _fail(str(exc))
+    except ValueError as exc:
+        _fail(f"experiment '{name}' is invalid: {exc}")
+
+
+def _load(profile_name: str, experiment_name: str | None):
     plane = load_plane()
     catalog = load_catalog()
     try:
@@ -108,14 +137,7 @@ def _load(profile_name: str, benchset_name: str | None):
         _fail(str(exc))
     except ValueError as exc:
         _fail(f"profile '{profile_name}' is invalid: {exc}")
-    if benchset_name:
-        try:
-            benchset = store.load_benchset(benchset_name)
-        except store.NotFound as exc:
-            _fail(str(exc))
-    else:
-        benchset = store.default_benchset()
-    return plane, catalog, profile, benchset
+    return plane, catalog, profile, _load_experiment(experiment_name)
 
 
 # --------------------------------------------------------------------------
@@ -181,10 +203,12 @@ def show_apps(
     name: str = typer.Argument(None,
                                help="One application: print its structural "
                                     "document instead of the catalog table."),
-    benchset: str = typer.Option(None, "--benchset", "-b"),
+    experiment: str = typer.Option(None, "--experiment", "-x"),
     enabled_only: bool = typer.Option(False, "--enabled"),
+    gone_benchset: str = typer.Option(None, "--benchset", "-b", hidden=True),
 ) -> None:
     """Print the application catalog, or one application's document."""
+    _no_benchset(gone_benchset)
     catalog = load_catalog()
     if name is not None:
         if name not in catalog.apps:
@@ -197,7 +221,7 @@ def show_apps(
 
         console.print(Markdown(document(catalog.apps[name])))
         return
-    bs = store.load_benchset(benchset) if benchset else store.default_benchset()
+    xp = _load_experiment(experiment)
     table = Table(title="Applications", expand=False)
     table.add_column("app", no_wrap=True)
     table.add_column("kind")
@@ -228,7 +252,7 @@ def show_apps(
     ]
     for heading, group in groups:
         rows = [a for a in group
-                if not enabled_only or bs.is_enabled(a)]
+                if not enabled_only or xp.is_enabled(a)]
         if not rows:
             continue
         if not first:
@@ -237,7 +261,7 @@ def show_apps(
         if heading:
             table.add_row(f"[b]{heading}[/b]")
         for entry in rows:
-            on = bs.is_enabled(entry)
+            on = xp.is_enabled(entry)
             name = entry.name if on else f"[dim]{entry.name}[/dim]"
             binary = entry.binary if entry.binary != entry.name else "[dim]·[/dim]"
             table.add_row(
@@ -264,7 +288,7 @@ def show_apps(
     console.print(
         "[dim]app = a benchmark with a provenance, what a result is claimed "
         "about · attack = a parameterized characterization probe, run in "
-        "the paper-controls roster · toy = one runtime mechanism or a "
+        "the control-main experiment · toy = one runtime mechanism or a "
         "fixture with no workload, regression material[/dim]"
     )
 
@@ -275,18 +299,26 @@ def run_cmd(
     # selected against, and taking a different one would silently
     # re-measure against another machine.
     profile: str = typer.Option(None, "--profile", "-p"),
-    benchset: str = typer.Option(None, "--benchset", "-b"),
+    experiment: str = typer.Option(
+        None, "--experiment", "-x",
+        help="experiment: the application roster and the entries it runs by "
+             "default (default: the catalog's own roster on the standard "
+             "entries)"),
     counters: str = typer.Option(None, "--counters", "-c",
                                  help="counter set to compile in"),
-    entries: str = typer.Option(None, "--entries", "-e",
-                                help="comma-separated plane entries (default: the "
-                                     "profile's `entries`, or all)"),
+    entries: str = typer.Option(
+        None, "--entries", "-e",
+        help="comma-separated plane entries: the whole set this run measures, "
+             "any plane entry allowed (default: the experiment's `entries`)"),
     apps: str = typer.Option(None, "--apps", "-a",
-                             help="app[:version[+version]] list (default: benchset)"),
+                             help="app[:version[+version]] list: the whole "
+                                  "roster this run measures (default: the "
+                                  "experiment's)"),
     nodes: str = typer.Option(None, "--nodes", "-n",
                               help="comma-separated node counts (default: profile)"),
     repeats: int = typer.Option(None, "--repeats"),
     build_dir: Path = typer.Option(None, "--build-dir"),
+    gone_benchset: str = typer.Option(None, "--benchset", "-b", hidden=True),
     # The device library is the profile's to name; these spellings remain
     # only to say so.
     gone_cxl: bool = typer.Option(False, "--cxl", hidden=True),
@@ -312,12 +344,13 @@ def run_cmd(
     from artsrun.campaign import Campaign
 
     run_dir = None
+    _no_benchset(gone_benchset)
     if gone_cxl or gone_include or gone_library:
         _fail("the FAM device library is named by the profile, not the command "
               "line: set fam_device: off | fake | real in the profile (real "
               "also takes fam_device_include_dir and fam_device_library; "
-              "absent means off, and a local profile listing a FAM entry "
-              "takes fake), and the fabric-attached-memory entries run on it")
+              "absent means off, except under launcher=local, which takes "
+              "fake), and the fabric-attached-memory entries run on it")
     if resume:
         # Continuing means continuing THAT campaign: its selection is what was
         # measured against, and its directory is where the halves meet.
@@ -327,7 +360,7 @@ def run_cmd(
             selection, run_dir = load_past(resume)
         except (FileNotFoundError, ValueError) as exc:
             _fail(str(exc))
-        plane, catalog, prof, bs = _load(selection.profile, selection.benchset)
+        plane, catalog, prof, xp = _load(selection.profile, selection.experiment)
     elif from_file:
         import json
 
@@ -335,31 +368,30 @@ def run_cmd(
             selection = Selection.model_validate(json.loads(from_file.read_text()))
         except ValueError as exc:
             _fail(f"{from_file}: {exc}")
-        plane, catalog, prof, bs = _load(selection.profile, selection.benchset)
+        plane, catalog, prof, xp = _load(selection.profile, selection.experiment)
     else:
         if not profile:
             _fail("--profile is required unless --resume or --from names a run")
-        plane, catalog, prof, bs = _load(profile, benchset)
+        plane, catalog, prof, xp = _load(profile, experiment)
         try:
-            keys = _split(entries) or plane.default_entries(prof.entries)
+            keys = (plane.ordered(_split(entries), "-e") if _split(entries)
+                    else list(xp.entries))
         except ValueError as exc:
             _fail(str(exc))
-        unknown = [k for k in keys if k not in plane.entry_keys]
-        if unknown:
-            _fail(f"unknown plane entries: {', '.join(unknown)}")
         node_counts = [int(n) for n in _split(nodes)] or list(prof.nodes)
         selection = Selection(
             profile=prof.name,
-            benchset=bs.name,
+            experiment=xp.name,
+            default_entries=list(xp.entries),
             entries=keys,
-            apps=_parse_apps(apps, catalog, bs),
+            apps=_parse_apps(apps, catalog, xp),
             node_counts=node_counts,
             repeats=repeats or prof.repeats,
             build_dir=str(build_dir) if build_dir else None,
         )
 
     try:
-        selection.validate_against(plane, catalog, prof, bs)
+        selection.validate_against(plane, catalog, prof, xp)
     except ValueError as exc:
         _fail(str(exc))
 
@@ -375,14 +407,14 @@ def run_cmd(
 
         with scratch_run_dir() as scratch:
             campaign = Campaign.prepare(
-                selection, plane, catalog, bs, prof, counterset=cset,
+                selection, plane, catalog, xp, prof, counterset=cset,
                 build_dir=build_dir, run_dir=scratch,
             )
             _dry_run(campaign, selection)
         return
 
     campaign = Campaign.prepare(
-        selection, plane, catalog, bs, prof, counterset=cset,
+        selection, plane, catalog, xp, prof, counterset=cset,
         build_dir=build_dir, run_dir=run_dir,
     )
 
@@ -463,6 +495,10 @@ def _tier_mark(catalog, entry, version: Version) -> str:
 
 
 def _dry_run(campaign, selection: Selection) -> None:
+    chosen = ("its defaults" if selection.entries == selection.default_entries
+              else "chosen for this run")
+    console.print(f"experiment {selection.experiment} · entries ({chosen}): "
+                  f"{', '.join(selection.entries)}", highlight=False)
     console.print(f"[bold]{selection.cell_count} cells[/bold] "
                   f"= {len(selection.entries)} entries "
                   f"x {sum(len(v) for v in selection.apps.values())} app-versions "
@@ -757,7 +793,7 @@ def profile_validate(name: str = typer.Argument(None)) -> None:
     raise typer.Exit(1 if bad else 0)
 
 
-# --- benchset -------------------------------------------------------------
+# --- counters ------------------------------------------------------------
 @app.command("counters")
 def show_counters(
     counterset: str = typer.Option(None, "--set", "-s"),
@@ -822,60 +858,66 @@ def counterset_render(name: str) -> None:
                   highlight=False, markup=False)
 
 
-@benchset_app.command("list")
-def benchset_list() -> None:
-    for name in store.list_benchsets() or []:
-        bs = store.load_benchset(name)
-        on = sum(1 for e in bs.apps.values() if e.enabled)
-        console.print(f"{name:16s} {on} enabled")
+@experiment_app.command("list")
+def experiment_list() -> None:
+    for name in store.list_experiments() or []:
+        try:
+            x = store.load_experiment(name)
+        except Exception as exc:
+            console.print(f"{name:16s} [red]invalid[/red]: {exc}")
+            continue
+        on = sum(1 for e in x.apps.values() if e.enabled)
+        console.print(f"{name:16s} {on:3d} enabled  entries: "
+                      f"{', '.join(x.entries)}")
 
 
-@benchset_app.command("new")
-def benchset_new(
+@experiment_app.command("new")
+def experiment_new(
     name: str,
     copy_from: str = typer.Option(None, "--from"),
     edit: bool = typer.Option(True, "--edit/--no-edit"),
 ) -> None:
-    """Create a benchmark set, optionally copied from an existing one."""
-    from artsrun.model.benchset import Benchset
+    """Create an experiment, optionally copied from an existing one."""
+    from artsrun.model.experiment import Experiment
 
-    if name in store.list_benchsets():
-        _fail(f"benchset '{name}' already exists")
+    if name in store.list_experiments():
+        _fail(f"experiment '{name}' already exists")
     if copy_from:
-        data = store.load_benchset(copy_from).model_dump(mode="json")
+        data = store.load_experiment(copy_from).model_dump(mode="json")
         data["name"] = name
-        benchset = Benchset.model_validate(data)
+        experiment = Experiment.model_validate(data)
     else:
         # An empty roster defers to the catalog's own defaults, which is the
         # useful starting point for narrowing rather than for building up.
-        benchset = Benchset(name=name, description="")
-    path = store.save_benchset(benchset)
+        experiment = store.default_experiment().model_copy(
+            update={"name": name, "description": ""})
+    path = store.save_experiment(experiment)
     console.print(f"wrote {path}")
     if edit:
         _open_editor(path)
         try:
-            store.load_benchset(name)
+            store.load_experiment(name)
         except Exception as exc:
             _fail(f"invalid after editing: {exc}")
         console.print("[green]valid[/green]")
 
 
-@benchset_app.command("edit")
-def benchset_edit(name: str) -> None:
-    """Open a benchmark set in $EDITOR, then re-validate it."""
-    path = store.benchset_path(name)
+@experiment_app.command("edit")
+def experiment_edit(name: str) -> None:
+    """Open an experiment in $EDITOR, then re-validate it."""
+    path = store.experiment_path(name)
     if not path.is_file():
-        _fail(f"no benchset '{name}'")
+        _fail(f"no experiment '{name}'")
     _open_editor(path)
     try:
-        store.load_benchset(name).resolve(load_catalog())
+        store.load_experiment(name).resolve(load_catalog())
     except Exception as exc:
         _fail(f"invalid after editing: {exc}")
     console.print("[green]valid[/green]")
 
 
-@benchset_app.command("set")
-def benchset_set(
+@experiment_app.command("set")
+def experiment_set(
     name: str,
     app_name: str = typer.Argument(..., metavar="APP"),
     args: str = typer.Option(None, "--args", help="override the calibration"),
@@ -883,17 +925,17 @@ def benchset_set(
                                  help="base,hinted,restructured"),
     enabled: bool = typer.Option(None, "--enable/--disable"),
 ) -> None:
-    """Change one application's entry in a benchmark set."""
-    from artsrun.model.benchset import BenchsetEntry
+    """Change one application's entry in an experiment."""
+    from artsrun.model.experiment import ExperimentApp
 
     catalog = load_catalog()
     if app_name not in catalog.apps:
         _fail(f"unknown application: {app_name}")
     try:
-        benchset = store.load_benchset(name)
+        experiment = store.load_experiment(name)
     except store.NotFound as exc:
         _fail(str(exc))
-    entry = benchset.apps.get(app_name) or BenchsetEntry()
+    entry = experiment.apps.get(app_name) or ExperimentApp()
     if args is not None:
         entry.args = args.split() or None
     if versions is not None:
@@ -903,23 +945,45 @@ def benchset_set(
             _fail(str(exc))
     if enabled is not None:
         entry.enabled = enabled
-    benchset.apps[app_name] = entry
+    experiment.apps[app_name] = entry
     try:
-        benchset.resolve(catalog)
+        experiment.resolve(catalog)
     except ValueError as exc:
         _fail(str(exc))
-    path = store.save_benchset(benchset)
+    path = store.save_experiment(experiment)
     console.print(f"updated {path}")
 
 
-@benchset_app.command("show")
-def benchset_show(name: str) -> None:
+@experiment_app.command("entries")
+def experiment_entries(
+    name: str,
+    keys: str = typer.Argument(..., help="comma-separated plane entries"),
+) -> None:
+    """Replace the coherence entries an experiment runs by default."""
+    try:
+        experiment = store.load_experiment(name)
+    except store.NotFound as exc:
+        _fail(str(exc))
+    from artsrun.model.experiment import Experiment
+
+    try:
+        experiment = Experiment.model_validate(
+            experiment.model_dump(mode="json") | {"entries": _split(keys)})
+    except ValueError as exc:
+        _fail(str(exc))
+    path = store.save_experiment(experiment)
+    console.print(f"updated {path}: {', '.join(experiment.entries)}")
+
+
+@experiment_app.command("show")
+def experiment_show(name: str) -> None:
     catalog = load_catalog()
-    bs = store.load_benchset(name)
-    table = Table(title=f"benchset {name}", expand=False)
+    x = _load_experiment(name)
+    console.print(f"[b]entries[/b] (default): {', '.join(x.entries)}")
+    table = Table(title=f"experiment {name}", expand=False)
     for column in ("app", "versions", "args", "source"):
         table.add_column(column)
-    for resolved in bs.resolve(catalog):
+    for resolved in x.resolve(catalog):
         table.add_row(
             resolved.name, resolved.version.value,
             " ".join(resolved.args) or "[dim]none[/dim]",
@@ -928,18 +992,28 @@ def benchset_show(name: str) -> None:
     console.print(table)
 
 
+@app.command("benchset", hidden=True, context_settings={
+    "allow_extra_args": True, "ignore_unknown_options": True})
+def benchset_gone(ctx: typer.Context) -> None:
+    _fail(_BENCHSET_GONE)
+
+
 # --- config ---------------------------------------------------------------
 @config_app.command("render")
 def config_render(
     profile: str = typer.Option(..., "--profile", "-p"),
     nodes: int = typer.Option(..., "--nodes", "-n"),
     runtime: str = typer.Option("arts", "--runtime", help="arts | ocr"),
+    fam: bool = typer.Option(
+        False, "--fam",
+        help="as for a campaign that runs a fabric-attached-memory entry"),
 ) -> None:
     """Print a rendered runtime configuration."""
     from artsrun.render import render_arts, render_ocr
 
     prof = store.load_profile(profile)
-    text = render_arts(prof, nodes) if runtime == "arts" else render_ocr(prof, nodes)
+    text = (render_arts(prof, nodes, fam=fam) if runtime == "arts"
+            else render_ocr(prof, nodes))
     console.print(text, highlight=False, markup=False)
 
 

@@ -4,7 +4,7 @@ The track file records what happened; the manifest records what was asked —
 every cell with the exact command it will run under, and enough of the
 application metadata to vote a consensus.  Together the two files let a reader
 rebuild the whole campaign from the run directory alone, without re-resolving
-the selection against profiles or benchsets that may have changed since.
+the selection against profiles or experiments that may have changed since.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.profile import FamDevice, Launcher, Profile
 from artsrun.paths import repo_root, scratch_dir

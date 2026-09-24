@@ -101,6 +101,16 @@ HeaderIcon {
     margin: 0;
 }
 
+/* The plane sits inside the experiment's scrolling surface, so it takes the
+   height of its rows rather than a share of the screen. */
+#plane, #exp-body {
+    height: auto;
+}
+
+.apps-head {
+    margin-top: 1;
+}
+
 /* --- profile ----------------------------------------------------------- */
 #profile-summary {
     padding: 0 1;
@@ -118,7 +128,7 @@ HeaderIcon {
     border: none;
 }
 
-/* --- benchset ---------------------------------------------------------- */
+/* --- experiment: application rows -------------------------------------- */
 .bench-row {
     height: 1;
 }
@@ -257,20 +267,20 @@ AppDocScreen {
 }
 
 /* --- editors ----------------------------------------------------------- */
-#profile-bar, #bench-bar {
+#profile-bar, #exp-bar {
     height: auto;
     padding: 0 1;
 }
 
-#profile-bar Select, #bench-bar Select {
+#profile-bar Select, #exp-bar Select {
     width: 24;
 }
 
-#profile-name, #bench-name-input {
+#profile-name, #exp-name-input {
     width: 22;
 }
 
-#profile-status, #bench-status {
+#profile-status, #exp-status {
     padding: 0 1;
     height: auto;
 }

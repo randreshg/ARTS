@@ -14,7 +14,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from artsrun.model.benchset import Benchset
+from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import Catalog
 from artsrun.model.plane import Plane, RuntimeKind
 from artsrun.model.profile import FamDevice, Profile
@@ -424,14 +424,14 @@ def plan_targets(
     selection: Selection,
     plane: Plane,
     catalog: Catalog,
-    benchset: Benchset,
+    experiment: Experiment,
     build_dir: Path,
     profile: Profile | None = None,
 ) -> BuildPlan:
     """Every executable this campaign will run, deduplicated.
 
     The same rows and the same eligibility the expansion applies: a name the
-    benchset does not enable runs no cell, so it needs nothing built, and a
+    experiment does not enable runs no cell, so it needs nothing built, and a
     row's own exclusions (ARTS-only, no ocr-vx, outside DB-WRF) hold for the
     build exactly as they hold for the run — as does a reference this host
     cannot place, reported with its reason rather than as a target that is
@@ -440,7 +440,7 @@ def plan_targets(
     from artsrun.run.plan import reference_ineligible
 
     entries = [plane.entry(k) for k in selection.entries]
-    resolved = {a.key: a for a in benchset.resolve(catalog)}
+    resolved = {a.key: a for a in experiment.resolve(catalog)}
 
     wanted: list[str] = []
     for name, versions in selection.apps.items():

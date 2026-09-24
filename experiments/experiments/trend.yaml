@@ -1,22 +1,26 @@
-# Local trend roster: the scalability SHAPE of every paper-main row and of the
-# HPX-origin rows on the development host (ferrari-local profile, 1/2/4/8 ranks x
-# 15 workers + 1 progress thread), at arguments small enough to finish in seconds and wide enough to
-# saturate the 120 workers of the widest local geometry.  Nothing measured
-# here is a paper number: the Dane campaign (paper-main) carries the timing,
-# this roster carries the base-scales / anti-scales / hinted-earned /
+# Experiment trend: the scalability SHAPE of every paper-main row and of the
+# HPX-origin rows on a development host (1/2/4/8 ranks x 15 workers + 1
+# progress thread), at arguments small enough to finish in seconds and wide
+# enough to saturate the 120 workers of the widest local geometry.  Nothing
+# measured here is a paper number: paper-main carries the timing, this
+# experiment carries the base-scales / anti-scales / hinted-earned /
 # restructured-scales verdicts and the small-size liveness of every runtime
-# entry.  Every argument list overrides the catalog's calibrated one, so the
-# catalog pins do not apply (check.py pins only when args == expect_args);
-# the cross-runtime consensus vote still grades every cell.
+# entry -- so it runs every plane entry by default except the DB-WRF and the
+# fabric-attached-memory ones, which are turned on for one run with -e.  Every
+# argument list overrides the catalog's calibrated one, so the catalog pins do
+# not apply (check.py pins only when args == expect_args); the cross-runtime
+# consensus vote still grades every cell.
 #
-# Sizing rules (audit 2026-09-03, section 3, with the verifiers' corrections):
-# width >= 2 x 120 at 8 ranks (an exact multiple for SPMD / manager-worker
-# rows), height knobs at their published defaults, base 1-rank cell in the
-# 5-15 s band where the structure allows it.  A restructured row's arguments
-# are addressed by the rewrite's own name (the driver never carries a row's
-# override into a different CLI).
+# Sizing rules: width >= 2 x 120 at 8 ranks (an exact multiple for SPMD /
+# manager-worker rows), height knobs at their published defaults, base 1-rank
+# cell in the 5-15 s band where the structure allows it.  A restructured row's
+# arguments are addressed by the rewrite's own name (the driver never carries
+# a row's override into a different CLI).
 name: trend
 description: local 1/2/4/8-rank scalability trend at small saturating arguments (verdicts only, never timing)
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx, hpx]
 
 # Sizes re-derived 2026-09-08: every tier judged here runs 5-15 s at one trend node
 # (15w+1p), the band where neither a latency floor nor a fixed cost can carry the

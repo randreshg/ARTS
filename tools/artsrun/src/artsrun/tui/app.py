@@ -1,8 +1,10 @@
 """The selection screens.
 
-Three surfaces, one campaign: the configuration plane, the node profile and
-the application roster.  Everything is selected by default, because the common
-case is a full sweep and the interesting cases are subtractions from it.
+Three surfaces, one campaign: the experiment (its applications and the
+coherence entries it runs by default, every entry toggleable), the node
+profile (host facts) and the counter set.  An experiment's own selection is
+checked by default, because the common case is the study as its file states
+it and the interesting cases are edits of it.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from artsrun.model.catalog import load_catalog
 from artsrun.model.plane import load_plane
 from artsrun.model.selection import Selection
 from artsrun.tui.panels import (
-    BenchsetPanel, CounterPanel, LauncherChanged, NodeListChanged,
+    CounterPanel, ExperimentPanel, LauncherChanged, NodeListChanged,
     PlanePanel, ProfilePanel, RunPanel,
 )
 from artsrun.tui.runview import RunView
@@ -33,11 +35,10 @@ class ArtsRunApp(App):
     SUB_TITLE = "experiment driver"
 
     BINDINGS = [
-        ("1", "show('tab-plane')", "coherence"),
+        ("1", "show('tab-exp')", "experiment"),
         ("2", "show('tab-profile')", "profile"),
-        ("3", "show('tab-bench')", "apps"),
-        ("4", "show('tab-counters')", "counters"),
-        ("5", "show('tab-run')", "run tab"),
+        ("3", "show('tab-counters')", "counters"),
+        ("4", "show('tab-run')", "run tab"),
         ("a", "toggle_all", "all / none"),
         ("r", "run", "run"),
         ("d", "dry_run", "dry run"),
@@ -47,7 +48,8 @@ class ArtsRunApp(App):
         ("q", "quit", "quit"),
     ]
 
-    def __init__(self, profile: str | None = None, benchset: str | None = None):
+    def __init__(self, profile: str | None = None,
+                 experiment: str | None = None):
         super().__init__()
         self._log_pinned = False
         self.plane = load_plane()
@@ -66,10 +68,10 @@ class ArtsRunApp(App):
                 form.values_to_profile_data(profile or "local",
                                             form.blank_values())
             )
-        benchsets = store.list_benchsets()
-        self.benchset = (
-            store.load_benchset(benchset or benchsets[0])
-            if benchsets else store.default_benchset()
+        experiments = store.list_experiments()
+        self.experiment = (
+            store.load_experiment(experiment or experiments[0])
+            if experiments else store.default_experiment()
         )
         sets = store.list_countersets()
         self.counterset = (store.load_counterset(sets[0]) if sets
@@ -80,14 +82,12 @@ class ArtsRunApp(App):
     # -- layout ------------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Header()
-        with TabbedContent(initial="tab-plane"):
-            with TabPane("Coherence", id="tab-plane"):
-                yield PlanePanel(self.plane, entries=self.profile.entries,
-                                 id="plane")
+        with TabbedContent(initial="tab-exp"):
+            with TabPane("Experiments", id="tab-exp"):
+                yield ExperimentPanel(self.plane, self.catalog,
+                                      self.experiment, id="exp")
             with TabPane("Profile", id="tab-profile"):
                 yield ProfilePanel(self.profile, id="profile")
-            with TabPane("Applications", id="tab-bench"):
-                yield BenchsetPanel(self.catalog, self.benchset, id="bench")
             with TabPane("Counters", id="tab-counters"):
                 yield CounterPanel(self.counterset, id="counters")
             with TabPane("Run", id="tab-run"):
@@ -133,11 +133,11 @@ class ArtsRunApp(App):
         """Which surfaces are empty, in the words the footer uses."""
         plane_panel = self.query_one("#plane", PlanePanel)
         profile_panel = self.query_one("#profile", ProfilePanel)
-        bench_panel = self.query_one("#bench", BenchsetPanel)
+        exp_panel = self.query_one("#exp", ExperimentPanel)
         return [
             name for name, ok in
             (("a configuration", plane_panel.selected()),
-             ("an application", bench_panel.selected()),
+             ("an application", exp_panel.selected()),
              ("a node count", profile_panel.node_counts()))
             if not ok
         ]
@@ -151,10 +151,10 @@ class ArtsRunApp(App):
         """
         plane_panel = self.query_one("#plane", PlanePanel)
         profile_panel = self.query_one("#profile", ProfilePanel)
-        bench_panel = self.query_one("#bench", BenchsetPanel)
+        exp_panel = self.query_one("#exp", ExperimentPanel)
 
         entries = plane_panel.selected()
-        apps = bench_panel.selected()
+        apps = exp_panel.selected()
         nodes = profile_panel.node_counts()
 
         def path_input(name: str) -> str | None:
@@ -168,7 +168,8 @@ class ArtsRunApp(App):
             return None
         return Selection(
             profile=profile_panel.profile.name,
-            benchset=self.benchset.name,
+            experiment=self.experiment.name,
+            default_entries=list(self.experiment.entries),
             entries=entries,
             apps=apps,
             node_counts=sorted(nodes),
@@ -208,7 +209,6 @@ class ArtsRunApp(App):
         if str(event.value) != self.profile.name:
             self.query_one("#profile", ProfilePanel).reload(str(event.value))
             self.profile = self.query_one("#profile", ProfilePanel).profile
-            self.query_one("#plane", PlanePanel).select(self.profile.entries)
             self._refresh_size()
 
     @on(Button.Pressed, "#run-button")
@@ -252,13 +252,13 @@ class ArtsRunApp(App):
             self.profile = panel.profile
             self._refresh_size()
 
-    # -- benchset editing --------------------------------------------------
-    @on(Select.Changed, "#bench-select")
-    def _benchset_changed(self, event: Select.Changed) -> None:
+    # -- experiment editing ------------------------------------------------
+    @on(Select.Changed, "#exp-select")
+    def _experiment_changed(self, event: Select.Changed) -> None:
         if not isinstance(event.value, str):
             return
-        if str(event.value) != self.benchset.name:
-            self._reload_benchset(str(event.value))
+        if str(event.value) != self.experiment.name:
+            self._reload_experiment(str(event.value))
 
     # -- counter set editing -----------------------------------------------
     @on(Select.Changed, "#counter-select")
@@ -287,30 +287,32 @@ class ArtsRunApp(App):
         panel.reload(name)
         self.counterset = panel.counterset
 
-    @on(Button.Pressed, "#bench-save")
-    def _bench_save(self) -> None:
-        self._save_benchset(as_new=False)
+    @on(Button.Pressed, "#exp-save")
+    def _exp_save(self) -> None:
+        self._save_experiment(as_new=False)
 
-    @on(Button.Pressed, "#bench-saveas")
-    def _bench_save_as(self) -> None:
-        self._save_benchset(as_new=True)
+    @on(Button.Pressed, "#exp-saveas")
+    def _exp_save_as(self) -> None:
+        self._save_experiment(as_new=True)
 
-    @on(Button.Pressed, "#bench-revert")
-    def _bench_revert(self) -> None:
-        self._reload_benchset(self.benchset.name)
+    @on(Button.Pressed, "#exp-revert")
+    def _exp_revert(self) -> None:
+        self._reload_experiment(self.experiment.name)
 
-    def _save_benchset(self, *, as_new: bool) -> None:
-        panel = self.query_one("#bench", BenchsetPanel)
+    def _save_experiment(self, *, as_new: bool) -> None:
+        panel = self.query_one("#exp", ExperimentPanel)
         saved = panel.save(as_new=as_new)
         if saved:
-            self.benchset = saved
+            self.experiment = saved
             self._refresh_size()
 
-    def _reload_benchset(self, name: str) -> None:
-        panel = self.query_one("#bench", BenchsetPanel)
+    def _reload_experiment(self, name: str) -> None:
+        panel = self.query_one("#exp", ExperimentPanel)
         panel.reload(name)
-        self.benchset = panel.benchset
-        self._refresh_size()
+        self.experiment = panel.experiment
+        # The surface recomposes after this handler returns; the size is
+        # counted once its new toggles exist.
+        self.call_after_refresh(self._refresh_size)
 
     def on_checkbox_changed(self) -> None:
         self._refresh_size()
@@ -339,9 +341,8 @@ class ArtsRunApp(App):
         """One control for both directions, on whichever surface is showing."""
         active = self.query_one(TabbedContent).active
         panel = {
-            "tab-plane": ("#plane", PlanePanel),
+            "tab-exp": ("#exp", ExperimentPanel),
             "tab-profile": ("#profile", ProfilePanel),
-            "tab-bench": ("#bench", BenchsetPanel),
             "tab-counters": ("#counters", CounterPanel),
         }.get(active)
         if panel is None:
@@ -445,7 +446,7 @@ class ArtsRunApp(App):
         profile = self.query_one("#profile", ProfilePanel).effective_profile()
         counters = self.query_one("#counters", CounterPanel).effective_counterset()
         campaign = Campaign.prepare(
-            selection, self.plane, self.catalog, self.benchset, profile,
+            selection, self.plane, self.catalog, self.experiment, profile,
             counterset=counters,
         )
         try:
@@ -478,7 +479,7 @@ class ArtsRunApp(App):
             profile = self.query_one("#profile", ProfilePanel).effective_profile()
             counters = self.query_one("#counters", CounterPanel).effective_counterset()
             campaign = Campaign.prepare(
-                selection, self.plane, self.catalog, self.benchset, profile,
+                selection, self.plane, self.catalog, self.experiment, profile,
                 counterset=counters, run_dir=run_dir,
             )
             self._campaign = campaign
@@ -519,6 +520,6 @@ class ArtsRunApp(App):
             self.call_from_thread(self._set_running, False)
 
 
-def run_tui(profile: str | None = None, benchset: str | None = None) -> int:
-    ArtsRunApp(profile=profile, benchset=benchset).run()
+def run_tui(profile: str | None = None, experiment: str | None = None) -> int:
+    ArtsRunApp(profile=profile, experiment=experiment).run()
     return 0

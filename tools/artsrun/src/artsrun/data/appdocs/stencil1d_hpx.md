@@ -445,7 +445,7 @@ space. At the gate arguments it is 23,936 names at two ranks; at `nt = 45`,
 away — but it is a usage rejection, not a degradation, so a size is checked
 against it rather than discovered to exceed it.
 
-The `controls-gate` roster runs `--nx=64 --nt=16 --np=64 --nd=10`
+The `control-gate` experiment runs `--nx=64 --nt=16 --np=64 --nd=10`
 (`CHECKSUM 8386560` at one locality, `4192256` at two), which
 finishes in milliseconds on one rank. At two ranks that cell is
 latency-bound by construction — 4096 points in total, and one `post` plus

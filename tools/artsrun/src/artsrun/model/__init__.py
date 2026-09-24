@@ -1,6 +1,6 @@
-"""Typed models for the three selection surfaces and the campaign they form."""
+"""Typed models for the selection surfaces and the campaign they form."""
 
-from artsrun.model.benchset import Benchset, BenchsetEntry, ResolvedApp
+from artsrun.model.experiment import Experiment, ExperimentApp, ResolvedApp
 from artsrun.model.catalog import (
     AppClass, AppEntry, Catalog, Kind, Version, load_catalog,
 )
@@ -23,9 +23,9 @@ from artsrun.model.selection import Selection
 __all__ = [
     "AppClass",
     "AppEntry",
-    "Benchset",
-    "BenchsetEntry",
     "Catalog",
+    "Experiment",
+    "ExperimentApp",
     "Family",
     "FluxSettings",
     "Kind",

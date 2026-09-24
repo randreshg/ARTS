@@ -5,7 +5,7 @@ programs and, on the same host, made the configure fail on a tool it could
 not find; the failed configure left the tree's previous generation in place,
 the plan read its target list from that generation, and the campaign
 reported the new programs as "no target" with a hint about MPI compilers —
-the real error never surfaced.  And a program the benchset does not enable
+the real error never surfaced.  And a program the experiment does not enable
 had its targets wanted anyway, without the row's own eligibility, so an
 ARTS-only probe was asked for as an XSOCR binary.
 """
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from artsrun.build import BuildError, available_targets, ensure_build_dir, plan_targets
-from artsrun.model.benchset import Benchset, BenchsetEntry
+from artsrun.model.experiment import Experiment, ExperimentApp
 from artsrun.model.catalog import Version, load_catalog
 from artsrun.model.plane import load_plane
 from artsrun.model.profile import Launcher, Profile, SlurmSettings
@@ -33,7 +33,7 @@ PROBE_BINARY = "alternating_bomb"
 
 
 def _selection(entries: list[str], apps: dict) -> Selection:
-    return Selection(profile="t", benchset="t", entries=entries, apps=apps,
+    return Selection(profile="t", experiment="t", entries=entries, apps=apps,
                      node_counts=[1], repeats=1)
 
 
@@ -41,7 +41,7 @@ def test_an_arts_only_row_wants_only_its_arts_targets(tmp_path):
     plane, catalog = load_plane(), load_catalog()
     plan = plan_targets(
         _selection(["arts_val_wb", "xsocr"], {PROBE: [Version.BASE]}),
-        plane, catalog, Benchset(name="t", apps={PROBE: BenchsetEntry()}), tmp_path,
+        plane, catalog, Experiment(entries=["arts_excl_purge"], name="t", apps={PROBE: ExperimentApp()}), tmp_path,
     )
     assert plan.targets == [f"{PROBE_BINARY}_arts_ocr_val_wb"]
 
@@ -52,7 +52,7 @@ def test_a_fam_entry_always_wants_its_target(tmp_path):
     plane, catalog = load_plane(), load_catalog()
     sel = _selection(["arts_excl_purge", "arts_excl_purge_fam_staged"],
                      {"nqueens": [Version.BASE]})
-    bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
+    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
                     workers=2, progress=1)
     remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1], fam_device="fake",
@@ -64,14 +64,14 @@ def test_a_fam_entry_always_wants_its_target(tmp_path):
                                 "nqueens_arts_ocr_excl_purge_fam_staged"]
 
 
-def test_a_row_the_benchset_does_not_enable_wants_no_target(tmp_path):
-    # Expansion records such a row as skipped ("not enabled in the benchset"),
+def test_a_row_the_experiment_does_not_enable_wants_no_target(tmp_path):
+    # Expansion records such a row as skipped ("not enabled in the experiment"),
     # so no cell runs it and nothing of it needs building — least of all the
     # reference binaries an ARTS-only program never has.
     plane, catalog = load_plane(), load_catalog()
     plan = plan_targets(
         _selection(["arts_val_wb", "xsocr"], {PROBE: [Version.BASE]}),
-        plane, catalog, Benchset(name="t", apps={"fib_hpx": BenchsetEntry()}),
+        plane, catalog, Experiment(entries=["arts_excl_purge"], name="t", apps={"fib_hpx": ExperimentApp()}),
         tmp_path,
     )
     assert plan.targets == []

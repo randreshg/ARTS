@@ -260,7 +260,7 @@ at `20 16`:
 Only `scatter = max_set + 2` — every task placed by key — meets R2's
 "imbalance close to 1 at 2, 8, 16 and 32 ranks".  **A measurement roster must
 use it.**  Values in `[2, max_set + 1]` are legal (the program accepts them and
-they are useful for a gate — `experiments/benchsets/main-gate.yaml` runs a
+they are useful for a gate — `experiments/experiments/paper-gate.yaml` runs a
 small one), but at 32 ranks scatter 2 leaves 15 of 32 ranks with no task at
 all, and scatter 3 still runs 2.27× imbalance.  The program rejects only the
 total funnel (`scatter < 2`, which places nothing but the empty board); the

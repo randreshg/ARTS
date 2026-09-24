@@ -236,7 +236,7 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
 
     c = Campaign(
         selection=SimpleNamespace(fam_entries=lambda _plane: []),
-        plane=None, catalog=None, benchset=None,
+        plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",
         counterset=Counterset(name="e2e", counters={}, allow_empty=True),
@@ -288,7 +288,7 @@ def test_a_counterless_campaign_refuses_an_instrumented_tree(tmp_path,
 
     c = Campaign(
         selection=SimpleNamespace(fam_entries=lambda _plane: []),
-        plane=None, catalog=None, benchset=None,
+        plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run", counterset=None,
     )
@@ -324,7 +324,7 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
 
     c = Campaign(
         selection=SimpleNamespace(fam_entries=lambda _plane: []),
-        plane=None, catalog=None, benchset=None,
+        plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",
         counterset=Counterset(name="x", counters={

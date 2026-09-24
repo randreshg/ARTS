@@ -44,8 +44,8 @@ def profiles_dir() -> Path:
     return repo_root() / "experiments" / "profiles"
 
 
-def benchsets_dir() -> Path:
-    return repo_root() / "experiments" / "benchsets"
+def experiments_dir() -> Path:
+    return repo_root() / "experiments" / "experiments"
 
 
 def countersets_dir() -> Path:

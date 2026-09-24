@@ -4,7 +4,7 @@
 # its binary, how a completed run announces itself, how its result scalar
 # is read, which versions exist, and the structural reasons a cell cannot
 # run.  `args` is the calibrated strong-scaling workload and is the only
-# field a benchset routinely overrides.
+# field an experiment routinely overrides.
 #
 # `kind` separates what the program is from whether a campaign runs it. An
 # application is one a field cites by name (graph500, HPCG, CoMD, XSBench,
@@ -1823,7 +1823,7 @@ apps:
     #   s4 1.02/1.14/1.20;  s5 1.03/1.03/1.06;  s6 1.009/1.012/1.017.
     # Only s6 meets R2's "close to 1 at 2, 8, 16 and 32".  Values in
     # [2, max_set+1] stay LEGAL and are useful for functional smokes
-    # (experiments/benchsets/smoke.yaml runs `13 10 1 2`), but they are not
+    # (an experiment may run `13 10 1 2`), but they are not
     # measurement settings.  The program rejects only the total funnel
     # (scatter < 2, which places nothing but the empty board and runs the
     # whole search on one rank) -- as it rejects rounds < 1, a negative token,

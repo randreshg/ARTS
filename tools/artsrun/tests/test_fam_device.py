@@ -28,10 +28,9 @@ INCLUDE = "/opt/device/include"
 LIBRARY = "/opt/device/lib/libdevice.so"
 
 
-def profile(launcher="local", entries=None, **extra):
+def profile(launcher="local", **extra):
     data = {"name": "t", "launcher": launcher, "nodes": [1, 2],
-            "workers": 15, "progress": 1,
-            "entries": entries if entries is not None else ["arts_excl_purge", *FAM]}
+            "workers": 15, "progress": 1}
     if launcher != "local":
         data["ports"] = [25000]
     if launcher == "slurm":
@@ -61,6 +60,15 @@ def fam_cell(nodes, device=FamDevice.REAL, key="arts_excl_purge_fam_staged"):
 
 # -- the profile ---------------------------------------------------------------
 
+def _check(prof, entries=FAM):
+    """A campaign of these entries against this profile."""
+    from artsrun.model.catalog import load_catalog
+
+    Selection(profile="t", experiment="b", entries=entries,
+              apps={"nqueens": ["base"]}, node_counts=[1]).validate_against(
+        load_plane(), load_catalog(), prof)
+
+
 def test_local_implies_fake_and_refuses_real():
     assert profile().fam_device is None
     assert profile().resolved_fam_device is FamDevice.FAKE
@@ -71,31 +79,27 @@ def test_local_implies_fake_and_refuses_real():
     assert "local takes off or fake" in str(exc.value)
 
 
-def test_a_local_profile_without_fam_entries_is_off():
-    plain = profile(entries=["arts_excl_purge", "xsocr"])
-    assert plain.fam_device is None
-    assert plain.resolved_fam_device is FamDevice.OFF
-    assert profile(entries=["arts_excl_purge"], fam_device="off").fam_device \
-        is FamDevice.OFF
+def test_a_local_profile_may_say_off():
+    assert profile(fam_device="off").resolved_fam_device is FamDevice.OFF
+    _check(profile(), ["arts_excl_purge"])
+    _check(profile(fam_device="off"), ["arts_excl_purge", "xsocr"])
 
 
 @pytest.mark.parametrize("launcher", ["local", "slurm", "flux", "ssh"])
 def test_off_refuses_a_fam_entry_by_name(launcher):
+    prof = profile(launcher, fam_device="off")
     with pytest.raises(ValueError, match="profile 't' has fam_device: off") as exc:
-        profile(launcher, fam_device="off")
+        _check(prof)
     assert "arts_excl_purge_fam_staged" in str(exc.value)
 
 
 @pytest.mark.parametrize("launcher", ["slurm", "flux", "ssh"])
 def test_every_other_launcher_is_off_unless_it_says_otherwise(launcher):
+    assert profile(launcher).resolved_fam_device is FamDevice.OFF
     with pytest.raises(ValueError, match="fam_device: off"):
-        profile(launcher)
-    # a profile that lists no entries runs the whole plane, FAM entries included
-    with pytest.raises(ValueError, match="fam_device: off"):
-        Profile.model_validate({"name": "t", "launcher": launcher, "nodes": [1, 2],
-                                "workers": 15, "progress": 1, "ports": [25000],
-                                "slurm": {}, "flux": {},
-                                "ssh": {"budget": 2, "hosts": ["n01", "n02"]}})
+        _check(profile(launcher))
+    # a campaign without a FAM entry never asks
+    _check(profile(launcher), ["arts_excl_purge"])
     assert profile(launcher, fam_device="fake", nodes=[1]).resolved_fam_device \
         is FamDevice.FAKE
     assert real(launcher).resolved_fam_device is FamDevice.REAL
@@ -113,6 +117,8 @@ def test_real_requires_both_absolute_paths_and_fake_forbids_them():
         with pytest.raises(ValueError, match="belong to fam_device: real"):
             profile(launcher, fam_device="fake", fam_device_library=LIBRARY,
                     nodes=[1])
+    with pytest.raises(ValueError, match="belong to fam_device: real"):
+        profile("slurm", fam_device_library=LIBRARY)
 
 
 @pytest.mark.parametrize("launcher", ["slurm", "flux", "ssh"])
@@ -124,18 +130,6 @@ def test_fake_off_the_local_launcher_runs_on_one_host_only(launcher):
     # local ranks share one host at any count; real reaches every node
     assert profile(fam_device="fake").nodes == [1, 2]
     assert real(launcher).nodes == [1, 2]
-
-
-def test_a_profile_without_fam_entries_rejects_the_fields():
-    for device in ("fake", "real"):
-        with pytest.raises(ValueError, match="entries hold none of them"):
-            profile("slurm", entries=["arts_excl_purge", "xsocr"], fam_device=device,
-                    nodes=[1], fam_device_include_dir=INCLUDE,
-                    fam_device_library=LIBRARY)
-    with pytest.raises(ValueError, match="belong to fam_device: real"):
-        profile("slurm", entries=["arts_excl_purge"], fam_device_library=LIBRARY)
-    assert profile("slurm", entries=["arts_excl_purge"]).resolved_fam_device \
-        is FamDevice.OFF
 
 
 def test_fam_strict_is_on_by_default_under_fake_and_may_be_turned_off():
@@ -156,23 +150,25 @@ def test_fam_strict_is_refused_beside_real_and_off(value):
                                          "fam_device: fake only") as exc:
         real(fam_strict=value)
     assert "fam_device is real" in str(exc.value)
-    # off, stated or implied by entries that hold no FAM one
+    # off, stated or implied by a launcher other than local
     with pytest.raises(ValueError, match="fam_device is off"):
-        profile(entries=["arts_excl_purge"], fam_strict=value)
+        profile(fam_device="off", fam_strict=value)
     with pytest.raises(ValueError, match="fam_device is off"):
-        profile("slurm", entries=["arts_excl_purge"], fam_strict=value)
+        profile("slurm", fam_strict=value)
     assert real().resolved_fam_strict is None
-    assert profile(entries=["arts_excl_purge"]).resolved_fam_strict is None
+    assert profile(fam_device="off").resolved_fam_strict is None
 
 
 def test_the_rendered_cfg_carries_fam_strict_only_under_fake():
     from artsrun.render import render_arts
 
-    assert "fam_strict=1" in render_arts(profile(), 2)
-    assert "fam_strict=0" in render_arts(profile(fam_strict=False), 2)
-    assert "fam_strict=1" in render_arts(profile(fam_strict=True), 2)
-    assert "fam_strict" not in render_arts(real(), 2)
-    assert "fam_strict" not in render_arts(profile(entries=["arts_excl_purge"]), 2)
+    assert "fam_strict=1" in render_arts(profile(), 2, fam=True)
+    assert "fam_strict=0" in render_arts(profile(fam_strict=False), 2, fam=True)
+    assert "fam_strict=1" in render_arts(profile(fam_strict=True), 2, fam=True)
+    assert "fam_strict" not in render_arts(real(), 2, fam=True)
+    assert "fam_strict" not in render_arts(profile(fam_device="off"), 2, fam=True)
+    # a campaign that runs no FAM entry leaves the key unstated
+    assert "fam_strict" not in render_arts(profile(), 2)
 
 
 def test_shipped_profiles_name_their_library():
@@ -180,8 +176,7 @@ def test_shipped_profiles_name_their_library():
 
     for name in store.list_profiles():
         prof = store.load_profile(name)
-        if prof.fam_entries():
-            assert prof.resolved_fam_device is not FamDevice.OFF, name
+        assert prof.resolved_fam_device in FamDevice, name
 
 
 def test_crete_validates_with_its_placeholder_paths():
@@ -192,32 +187,27 @@ def test_crete_validates_with_its_placeholder_paths():
     assert crete.fam_device_include_dir == "/PATH/TO/device-library/inc"
     assert crete.fam_device_library == \
         "/PATH/TO/device-library/lib/libarts_cxl_lib.so"
-    for name in ("dane", "dane-p1", "dane-p8", "junction", "tuolumne",
-                 "ferrari-dane", "ferrari-local"):
+    for name in ("dane", "dane-p1", "dane-p8", "junction", "tuolumne"):
         prof = store.load_profile(name)
-        assert prof.fam_device is None and not prof.fam_entries(), name
+        assert prof.fam_device is None, name
         assert prof.resolved_fam_device is FamDevice.OFF, name
+    for name in ("ferrari-dane", "ferrari-local"):
+        assert store.load_profile(name).resolved_fam_device is FamDevice.FAKE
     assert store.load_profile("local-fam").fam_device is FamDevice.FAKE
 
 
 def test_a_campaign_entry_list_is_checked_against_the_profile():
-    from artsrun.model.catalog import load_catalog
-
-    plane, catalog = load_plane(), load_catalog()
-    slurm = profile("slurm", entries=["arts_excl_purge"])
-    sel = Selection(profile="t", benchset="b", entries=FAM,
-                    apps={"nqueens": ["base"]}, node_counts=[1])
+    slurm = profile("slurm")
     with pytest.raises(ValueError, match="profile 't' has fam_device: off"):
-        sel.validate_against(plane, catalog, slurm)
-    # a local profile whose own entries hold no FAM one is off as well
+        _check(slurm)
     with pytest.raises(ValueError, match="fam_device: off"):
-        sel.validate_against(plane, catalog, profile(entries=["arts_excl_purge"]))
-    sel.validate_against(plane, catalog, profile())
-    sel.validate_against(plane, catalog, real())
+        _check(profile(fam_device="off"))
+    _check(profile())
+    _check(real())
 
 
 def test_selections_saved_in_the_old_campaign_mode_are_refused():
-    base = {"profile": "t", "benchset": "b", "entries": FAM,
+    base = {"profile": "t", "experiment": "b", "entries": FAM,
             "apps": {"nqueens": ["base"]}, "node_counts": [1]}
     with pytest.raises(ValueError, match="profile setting now"):
         Selection.model_validate(base | {"cxl": True})
@@ -310,13 +300,13 @@ def test_a_configure_that_leaves_the_cache_different_is_an_error(tmp_path, monke
 
 def _campaign(tmp_path, prof):
     from artsrun.campaign import Campaign
-    from artsrun.model.benchset import Benchset
+    from artsrun.model.experiment import Experiment
     from artsrun.model.catalog import load_catalog
 
-    sel = Selection(profile="t", benchset="b", entries=["arts_excl_purge", *FAM],
+    sel = Selection(profile="t", experiment="b", entries=["arts_excl_purge", *FAM],
                     apps={"nqueens": ["base"]}, node_counts=[1])
     return Campaign(selection=sel, plane=load_plane(), catalog=load_catalog(),
-                    benchset=Benchset(name="b", apps={}), profile=prof,
+                    experiment=Experiment(entries=["arts_excl_purge"], name="b", apps={}), profile=prof,
                     build_dir=tmp_path, run_dir=tmp_path / "run")
 
 
@@ -373,13 +363,13 @@ def test_a_dry_run_on_a_missing_tree_names_the_configure(tmp_path):
 # -- the cells -----------------------------------------------------------------
 
 def test_expansion_stamps_the_profile_library_on_fam_cells_only(tmp_path):
-    from artsrun.model.benchset import Benchset, BenchsetEntry
+    from artsrun.model.experiment import Experiment, ExperimentApp
     from artsrun.model.catalog import Version, load_catalog
     from artsrun.run.plan import expand
 
-    sel = Selection(profile="t", benchset="t", entries=["arts_excl_purge", *FAM],
+    sel = Selection(profile="t", experiment="t", entries=["arts_excl_purge", *FAM],
                     apps={"nqueens": [Version.BASE]}, node_counts=[1])
-    bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
+    bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
     for prof, want in ((profile(), FamDevice.FAKE), (real(), FamDevice.REAL)):
         cells, skipped = expand(sel, load_plane(), load_catalog(), bs, prof,
                                 tmp_path / "apps",

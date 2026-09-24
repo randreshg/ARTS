@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from artsrun.build import plan_targets
-from artsrun.model.benchset import Benchset, BenchsetEntry
+from artsrun.model.experiment import Experiment, ExperimentApp
 from artsrun.model.catalog import AppEntry, Kind, Origin, Version, load_catalog
 from artsrun.model.plane import RuntimeKind, load_plane
 from artsrun.model.profile import Profile
@@ -42,14 +42,14 @@ def _first_threads_first(tmp_path, monkeypatch):
     monkeypatch.setattr(selection, "SYSFS_CPU_ROOT", root)
 
 
-def _roster(*names: str) -> Benchset:
+def _roster(*names: str) -> Experiment:
     """The rows named outright, the way a roster names them.
 
     The section's rows are toys and so are off by the catalog's default
     (`test_no_probe_or_toy_is_enabled_by_default`); a roster that wants one
     says so, and that is the path these tests exercise.
     """
-    return Benchset(name="t", apps={n: BenchsetEntry() for n in (names or (ROW,))})
+    return Experiment(entries=["arts_excl_purge"], name="t", apps={n: ExperimentApp() for n in (names or (ROW,))})
 
 
 def _profile() -> Profile:
@@ -61,7 +61,7 @@ def _profile() -> Profile:
 
 def _selection(entries: list[str], apps=None) -> Selection:
     return Selection(
-        profile="t", benchset="paper-main", entries=entries,
+        profile="t", experiment="paper-main", entries=entries,
         apps=apps or {ROW: [Version.BASE]},
         node_counts=[1, 2], repeats=1,
     )
@@ -153,7 +153,7 @@ def test_an_ocr_origin_row_is_ineligible_for_the_hpx_entry(tmp_path):
 def test_expansion_records_a_skip_once_however_many_repeats(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
-    sel = Selection(profile="t", benchset="paper-main", entries=["hpx"],
+    sel = Selection(profile="t", experiment="paper-main", entries=["hpx"],
                     apps={"fft": [Version.BASE]}, node_counts=[1], repeats=3)
     cells, skipped = expand(sel, plane, catalog, _roster("fft"),
                             _profile(), tmp_path / "apps", {1: {}})
@@ -281,7 +281,7 @@ def test_the_apps_listing_shows_the_hpx_origin_section_as_its_own_group(monkeypa
 
     buf = io.StringIO()
     monkeypatch.setattr(cli, "console", Console(file=buf, width=200))
-    cli.show_apps(name=None, benchset=None, enabled_only=False)
+    cli.show_apps(name=None, experiment=None, enabled_only=False)
     out = buf.getvalue()
     heading = out.find("HPX-origin applications")
     row = out.find(ROW)

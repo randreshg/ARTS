@@ -1,10 +1,12 @@
-# The controls of the coherence comparison, as their own roster: rows built
-# to isolate one thing, kept out of paper-main on purpose.  That roster
-# answers "what do real applications cost on each arm"; the two halves here
-# answer "what is each arm's best and worst case, by construction" (the
-# adversarial columns) and "what does the same program cost on a runtime of
-# another programming model" (the HPX-origin rows).  Different claims, run
-# separately, at the profile's own geometry.
+# Experiment control-main: the controls of the coherence comparison, as their
+# own experiment -- rows built to isolate one thing, kept out of paper-main on
+# purpose.  paper-main answers "what do real applications cost on each arm";
+# the two halves here answer "what is each arm's best and worst case, by
+# construction" (the adversarial columns) and "what does the same program
+# cost on a runtime of another programming model" (the HPX-origin rows).
+# Different claims, run separately, at the profile's own geometry.  It runs
+# the ARTS entries and HPX by default; any other plane entry is turned on for
+# one run with -e.
 #
 # The adversarial half: every row is one program plus one designed workload,
 # and the catalog entry states which arm the column is built to crown and
@@ -17,11 +19,14 @@
 # (parked acquires, batched invalidation rounds, publish flights), so VAL's
 # window is part of its definition. This suite deliberately carries no
 # combining column: the off-plane `_nocomb` twins that ablate it live outside
-# this roster, and VAL's numbers here are numbers for the combining
+# this experiment, and VAL's numbers here are numbers for the combining
 # implementation, not for the validation philosophy on its own.
 
-name: paper-controls
+name: control-main
 description: the adversarial columns of the protocol suite with the grain dial, and the HPX-origin rows
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
 
 apps:
   # C1 — the release-axis spectrometer: a holder touching its own data, where

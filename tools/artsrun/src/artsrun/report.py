@@ -42,7 +42,7 @@ RT_LABEL = {
     "arts_val_wb": "VAL·WB·RETAIN",
     "arts_val_wt_purge": "VAL·WT·PURGE",
     # The non-combining ablation twins are build variants, not plane entries;
-    # a benchset selects one directly by naming it as an entry.
+    # an experiment selects one directly by naming it as an entry.
     "arts_val_wt_nocomb": "VAL·WT·RETAIN nocomb",
     "arts_val_wb_nocomb": "VAL·WB·RETAIN nocomb",
     "arts_val_wt_purge_nocomb": "VAL·WT·PURGE nocomb",

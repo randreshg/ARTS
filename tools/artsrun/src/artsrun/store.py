@@ -1,6 +1,6 @@
-"""Discovery and persistence of the two saved surfaces.
+"""Discovery and persistence of the saved surfaces.
 
-Profiles and benchsets are values, not code: they live under experiments/ as
+Node profiles, experiments and counter sets are values, not code: they live under experiments/ as
 tracked files, so a campaign can be reshaped without touching the tool.
 """
 
@@ -11,10 +11,10 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from artsrun.model.benchset import Benchset
+from artsrun.model.experiment import Experiment
 from artsrun.model.counters import Counterset
 from artsrun.model.profile import Profile
-from artsrun.paths import benchsets_dir, countersets_dir, profiles_dir
+from artsrun.paths import countersets_dir, experiments_dir, profiles_dir
 
 _yaml = YAML()
 _yaml.preserve_quotes = True
@@ -68,34 +68,39 @@ def save_profile(profile: Profile) -> Path:
     return path
 
 
-# --- benchsets ------------------------------------------------------------
-def list_benchsets() -> list[str]:
-    return _list(benchsets_dir())
+# --- experiments ----------------------------------------------------------
+def list_experiments() -> list[str]:
+    return _list(experiments_dir())
 
 
-def benchset_path(name: str) -> Path:
-    return benchsets_dir() / f"{name}.yaml"
+def experiment_path(name: str) -> Path:
+    return experiments_dir() / f"{name}.yaml"
 
 
-def load_benchset(name: str) -> Benchset:
-    path = benchset_path(name)
+def load_experiment(name: str) -> Experiment:
+    path = experiment_path(name)
     if not path.is_file():
-        known = ", ".join(list_benchsets()) or "none"
-        raise NotFound(f"no benchset '{name}' in {benchsets_dir()} (have: {known})")
+        known = ", ".join(list_experiments()) or "none"
+        raise NotFound(f"no experiment '{name}' in {experiments_dir()} "
+                       f"(have: {known})")
     data = _read(path)
     data.setdefault("name", name)
-    return Benchset.model_validate(data)
+    return Experiment.model_validate(data)
 
 
-def save_benchset(benchset: Benchset) -> Path:
-    path = benchset_path(benchset.name)
-    _write(path, benchset.model_dump(mode="json", exclude_none=True))
+def save_experiment(experiment: Experiment) -> Path:
+    path = experiment_path(experiment.name)
+    _write(path, experiment.model_dump(mode="json", exclude_none=True))
     return path
 
 
-def default_benchset() -> Benchset:
-    """The catalog's own defaults, for a run that names no benchset."""
-    return Benchset(name="catalog-default", description="catalog defaults")
+def default_experiment() -> Experiment:
+    """The catalog's own defaults on the plane's standard entries, for a run
+    that names no experiment."""
+    from artsrun.model.plane import load_plane
+
+    return Experiment(name="catalog-default", description="catalog defaults",
+                      entries=load_plane().standard_entries)
 
 
 # --- counter sets ---------------------------------------------------------

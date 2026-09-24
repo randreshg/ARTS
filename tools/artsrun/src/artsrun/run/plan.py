@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from artsrun.model.benchset import Benchset, ResolvedApp
+from artsrun.model.experiment import Experiment, ResolvedApp
 from artsrun.model.catalog import Catalog
 from artsrun.model.plane import Plane, RuntimeKind, SelectionEntry
 from artsrun.model.profile import Launcher, Profile
@@ -98,7 +98,7 @@ def expand(
     selection: Selection,
     plane: Plane,
     catalog: Catalog,
-    benchset: Benchset,
+    experiment: Experiment,
     profile: Profile,
     apps_dir: Path,
     configs: dict[int, dict[str, Path]],
@@ -113,7 +113,7 @@ def expand(
     """
     from artsrun.render import config_for
 
-    resolved = {a.key: a for a in benchset.resolve(catalog)}
+    resolved = {a.key: a for a in experiment.resolve(catalog)}
     entries = [plane.entry(k) for k in selection.entries]
 
     cells: list[Cell] = []
@@ -125,7 +125,7 @@ def expand(
             if app is None:
                 skipped.append(
                     Skipped("*", f"{name}:{version.value}", 0,
-                            "not enabled in the benchset")
+                            "not enabled in the experiment")
                 )
                 continue
             for nodes in selection.node_counts:

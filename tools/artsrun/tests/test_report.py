@@ -10,7 +10,7 @@ from pathlib import Path
 from rich.console import Console
 
 from artsrun.check import vote
-from artsrun.model.benchset import ResolvedApp
+from artsrun.model.experiment import ResolvedApp
 from artsrun.model.catalog import AppClass, ScalarKind, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.selection import Selection
@@ -107,7 +107,7 @@ def test_the_summary_explains_the_mark_only_when_one_appears(tmp_path):
     from artsrun.model.plane import load_plane
 
     selection = Selection(
-        profile="t", benchset="b", entries=["a"],
+        profile="t", experiment="b", entries=["a"],
         apps={"app": [Version.BASE]}, node_counts=[1],
     )
     plane = load_plane()
@@ -123,7 +123,7 @@ def test_the_summary_explains_the_mark_only_when_one_appears(tmp_path):
 
 def _laddered_app() -> ResolvedApp:
     """A row whose arguments follow the node count.  Synthetic: attack rows
-    run in the paper-controls roster at one argument vector, so no shipped
+    run in the control-main roster at one argument vector, so no shipped
     row actually ladders like this; the fixture exists only to exercise the
     scaling table's marking rule."""
     return ResolvedApp(
@@ -188,7 +188,7 @@ def test_the_summary_explains_the_ladder_mark_only_when_one_appears(tmp_path):
     plane = load_plane()
     app = _laddered_app()
     selection = Selection(
-        profile="t", benchset="b", entries=["a"],
+        profile="t", experiment="b", entries=["a"],
         apps={"app": [Version.BASE]}, node_counts=[1, 4],
     )
     laddered = [_result("a", wall_s=9.0, e2e_s=1.0, nodes=n, app=app)

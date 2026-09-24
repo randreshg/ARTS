@@ -1,4 +1,5 @@
-"""The three selection surfaces."""
+"""The selection surfaces: the experiment (applications and coherence
+entries), the node profile and the counter set."""
 
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Input, Label, Select, Static, Switch
 
 from artsrun import store
-from artsrun.model.benchset import Benchset, BenchsetEntry
+from artsrun.model.experiment import Experiment, ExperimentApp
 from artsrun.model.catalog import Catalog, Kind, Version
 from artsrun.model.counters import (
     Counterset, CounterSetting, Level, Mode, Reduce,
@@ -48,11 +49,13 @@ class PlanePanel(Vertical):
         self.select(self._entries)
 
     def select(self, entries: list[str] | None) -> None:
-        """Check what a profile lists — everything when it lists nothing.  A
+        """Check what an experiment lists — everything when given nothing.  A
         list the plane cannot honour leaves everything checked and says so,
-        rather than starting a campaign on part of what the profile states."""
+        rather than starting a campaign on part of what the experiment
+        states."""
         try:
-            wanted = set(self.plane.default_entries(entries))
+            wanted = set(self.plane.entry_keys if entries is None
+                         else self.plane.ordered(entries, "experiment"))
         except ValueError as exc:
             self.app.notify(str(exc), severity="error")
             wanted = set(self.plane.entry_keys)
@@ -60,8 +63,10 @@ class PlanePanel(Vertical):
             toggle.value = toggle.ident in wanted
 
     def compose(self) -> ComposeResult:
-        yield Static("[b]OCR coherence plane[/b]  [dim]which protocol "
-                     "arms to measure · space toggles · a = all/none[/dim]",
+        yield Static("[b]Coherence entries[/b]  [dim]the experiment's "
+                     "defaults start checked; any entry may be turned on or "
+                     "off for this run · space toggles · a = all/none while "
+                     "the plane has focus[/dim]",
                      classes="panel-head")
         # Two header rows rather than one compound name: the write policy
         # spans its pair of release policies, so the grid reads as two axes
@@ -471,43 +476,71 @@ class ProfilePanel(VerticalScroll):
 
 
 
-class BenchsetPanel(VerticalScroll):
-    """Applications as rows, versions as columns.
+class _ExperimentBody(Vertical):
+    """The part of the experiment surface a load rebuilds."""
 
-    A version an application does not have is drawn as an absence rather than
-    an unchecked box, so the three columns stay readable as a claim about the
-    application and not about the selection.
+    def __init__(self, owner: "ExperimentPanel", **kwargs):
+        super().__init__(**kwargs)
+        self.owner = owner
+
+    def compose(self) -> ComposeResult:
+        yield from self.owner.compose_body()
+
+
+class ExperimentPanel(VerticalScroll):
+    """One experiment: its coherence entries, then its applications.
+
+    The plane is drawn whole, every entry toggleable, with the experiment's
+    own entries checked: the file states the default check-set, not a limit.
+    Applications are rows and versions columns; a version an application
+    does not have is drawn as an absence rather than an unchecked box, so
+    the three columns stay readable as a claim about the application and not
+    about the selection.
     """
 
-    def __init__(self, catalog: Catalog, benchset: Benchset, **kwargs):
+    def __init__(self, plane: Plane, catalog: Catalog, experiment: Experiment,
+                 **kwargs):
         super().__init__(**kwargs)
+        self.plane = plane
         self.catalog = catalog
-        self.benchset = benchset
+        self.experiment = experiment
         self.last_status = ""
 
     def compose(self) -> ComposeResult:
         yield Static(
+            "[b]Experiment[/b]  [dim]the application roster and the "
+            "coherence entries it runs by default · Save writes both[/dim]",
+            classes="panel-head",
+        )
+        names = store.list_experiments()
+        if self.experiment.name not in names:
+            # A machine with no saved experiments runs on the catalog's own
+            # defaults; the dropdown carries that unsaved name rather than
+            # refuse a value it does not know.
+            names = [self.experiment.name, *names]
+        with Horizontal(id="exp-bar"):
+            yield Select([(n, n) for n in names],
+                         value=self.experiment.name, id="exp-select",
+                         allow_blank=False)
+            yield Input(value=self.experiment.name, placeholder="name",
+                        id="exp-name-input")
+            yield Button("Save", id="exp-save", variant="primary")
+            yield Button("Save as new", id="exp-saveas")
+            yield Button("Revert", id="exp-revert")
+        yield Static("", id="exp-status")
+        yield _ExperimentBody(self, id="exp-body")
+
+    def compose_body(self) -> ComposeResult:
+        """Everything the loaded experiment decides: the plane's checks and
+        the application rows."""
+        yield PlanePanel(self.plane, entries=self.experiment.entries,
+                         id="plane")
+        yield Static(
             "[b]Applications[/b]  [dim]a = all/none · arguments are editable; "
             "an empty box means the catalog's own calibration · a name in "
             "green also runs under DB-WRF·FLUSH[/dim]",
-            classes="panel-head",
+            classes="panel-head apps-head",
         )
-        names = store.list_benchsets()
-        if self.benchset.name not in names:
-            # A machine with no saved benchsets runs on the catalog's own
-            # defaults; the dropdown carries that unsaved name rather than
-            # refuse a value it does not know.
-            names = [self.benchset.name, *names]
-        with Horizontal(id="bench-bar"):
-            yield Select([(n, n) for n in names],
-                         value=self.benchset.name, id="bench-select",
-                         allow_blank=False)
-            yield Input(value=self.benchset.name, placeholder="name",
-                        id="bench-name-input")
-            yield Button("Save", id="bench-save", variant="primary")
-            yield Button("Save as new", id="bench-saveas")
-            yield Button("Revert", id="bench-revert")
-        yield Static("", id="bench-status")
 
         with Horizontal(classes="bench-row head"):
             yield Label("", classes="bench-name")
@@ -539,12 +572,12 @@ class BenchsetPanel(VerticalScroll):
 
         The attack suite belongs to its own roster; on a general application
         surface its rows only invite checking probes into an application
-        campaign, so they appear exactly when the loaded benchset names
+        campaign, so they appear exactly when the loaded experiment names
         them.
         """
         rows = self.catalog.rows_of(kind)
         if kind is Kind.ATTACK:
-            rows = [a for a in rows if a.name in self.benchset.apps]
+            rows = [a for a in rows if a.name in self.experiment.apps]
         return rows
 
     def _rendered_names(self) -> set[str]:
@@ -555,8 +588,8 @@ class BenchsetPanel(VerticalScroll):
 
     def _app_rows(self, rows) -> ComposeResult:
         for app in rows:
-            enabled = self.benchset.is_enabled(app)
-            picked = self.benchset.versions_for(app) if enabled else []
+            enabled = self.experiment.is_enabled(app)
+            picked = self.experiment.versions_for(app) if enabled else []
             with Horizontal(classes="bench-row"):
                 # The name opens the application's structural document —
                 # what the parameters mean and how they size the task graph.
@@ -616,7 +649,7 @@ class BenchsetPanel(VerticalScroll):
                                 value=version in picked,
                                 classes="app-toggle",
                             )
-                entry = self.benchset.apps.get(app.name)
+                entry = self.experiment.apps.get(app.name)
                 override = entry.args if entry and entry.args is not None else None
                 yield Input(
                     value=" ".join(override) if override else "",
@@ -629,7 +662,7 @@ class BenchsetPanel(VerticalScroll):
             # it runs is already the row's `restructured` box.
             if app.restructured_as:
                 rewrite = self.catalog.apps[app.restructured_as]
-                sub = self.benchset.apps.get(rewrite.name)
+                sub = self.experiment.apps.get(rewrite.name)
                 sub_args = sub.args if sub and sub.args is not None else None
                 with Horizontal(classes="bench-row"):
                     # Its own verdict, coloured like the row's name: the
@@ -670,36 +703,55 @@ class BenchsetPanel(VerticalScroll):
             out.setdefault(name, []).append(Version(version))
         return out
 
+    @property
+    def plane_panel(self) -> PlanePanel:
+        return self.query_one(PlanePanel)
+
+    def entries(self) -> list[str]:
+        return self.plane_panel.selected()
+
     def toggle_all(self) -> None:
-        toggle_all(self.toggles)
+        """All or none of whichever half has focus: the plane's entries while
+        one of them is focused, the applications otherwise."""
+        focused = self.app.focused
+        plane = self.plane_panel
+        if focused is not None and plane in focused.ancestors_with_self:
+            plane.toggle_all()
+        else:
+            toggle_all(self.toggles)
 
     # -- editing -----------------------------------------------------------
     def reload(self, name: str) -> None:
-        """Load another roster and rebuild the surface around it.
+        """Load another experiment and rebuild the surface around it.
 
         Which rows exist depends on the roster itself — an attack row is
-        drawn only when the loaded set names it — so loading recomposes the
-        rows rather than repainting values into a fixed set of them (the
-        compose path already reads every tick and argument box from the
-        benchset).
+        drawn only when the loaded experiment names it — so loading
+        recomposes the surface rather than repainting values into a fixed set
+        of rows (the compose path already reads every tick, argument box and
+        entry from the experiment).
         """
         try:
-            self.benchset = store.load_benchset(name)
+            self.experiment = store.load_experiment(name)
         except store.NotFound:
             self.status("nothing saved to reload", error=True)
             return
-        self.last_status = ""
-        self.refresh(recompose=True)
+        self.status("")
+        # Only the body is rebuilt: the file bar holds the dropdown whose
+        # change started this load, and replacing a widget from inside its
+        # own change leaves the screen holding a successor whose children
+        # are not mounted yet.
+        self.query_one(_ExperimentBody).refresh(recompose=True)
 
     def status(self, message: str, *, error: bool = False) -> None:
         self.last_status = message
         style = "red" if error else "green"
-        self.query_one("#bench-status", Static).update(
+        self.query_one("#exp-status", Static).update(
             f"[{style}]{message}[/{style}]" if message else ""
         )
 
-    def edited_benchset(self, name: str) -> Benchset:
-        """The roster the screen currently describes.
+    def edited_experiment(self, name: str) -> Experiment:
+        """The experiment the screen currently describes: the checked entries
+        become its defaults, the checked rows its roster.
 
         An application with no version checked is written as disabled rather
         than dropped, so a saved set states its own roster instead of leaving
@@ -707,7 +759,7 @@ class BenchsetPanel(VerticalScroll):
         """
         picked = self.selected()
         rendered = self._rendered_names()
-        apps: dict[str, BenchsetEntry] = {}
+        apps: dict[str, ExperimentApp] = {}
         for app in self.catalog.rows:
             if app.name not in rendered:
                 # A row the surface does not draw cannot be edited; absent
@@ -717,7 +769,7 @@ class BenchsetPanel(VerticalScroll):
             versions = picked.get(app.name, [])
             box = self.query_one(f"#a-{app.name}", Input).value.strip()
             args = box.split() if box else None
-            apps[app.name] = BenchsetEntry(
+            apps[app.name] = ExperimentApp(
                 enabled=bool(versions),
                 versions=versions or None,
                 args=args,
@@ -730,33 +782,36 @@ class BenchsetPanel(VerticalScroll):
                 sub_box = self.query_one(
                     f"#a-{app.restructured_as}", Input).value.strip()
                 if sub_box:
-                    apps[app.restructured_as] = BenchsetEntry(
+                    apps[app.restructured_as] = ExperimentApp(
                         args=sub_box.split())
-        return Benchset(name=name, description=self.benchset.description,
-                        apps=apps)
+        return Experiment(name=name, description=self.experiment.description,
+                          entries=self.entries(), apps=apps)
 
-    def save(self, *, as_new: bool) -> Benchset | None:
-        name = self.query_one("#bench-name-input", Input).value.strip()
+    def save(self, *, as_new: bool) -> Experiment | None:
+        name = self.query_one("#exp-name-input", Input).value.strip()
         if not name:
             self.status("name is required", error=True)
             return None
-        if as_new and name in store.list_benchsets():
+        if as_new and name in store.list_experiments():
             self.status(f"'{name}' already exists — pick another name",
                         error=True)
             return None
         try:
-            benchset = self.edited_benchset(name)
-            benchset.resolve(self.catalog)          # surfaces bad versions
+            experiment = self.edited_experiment(name)
+            experiment.resolve(self.catalog)        # surfaces bad versions
+        except ValidationError as exc:
+            self.status(form.first_problem(exc), error=True)
+            return None
         except ValueError as exc:
             self.status(str(exc), error=True)
             return None
-        path = store.save_benchset(benchset)
-        self.benchset = benchset
-        select = self.query_one("#bench-select", Select)
-        select.set_options([(n, n) for n in store.list_benchsets()])
+        path = store.save_experiment(experiment)
+        self.experiment = experiment
+        select = self.query_one("#exp-select", Select)
+        select.set_options([(n, n) for n in store.list_experiments()])
         select.value = name
         self.status(f"saved {path}")
-        return benchset
+        return experiment
 
 
 class RunPanel(Vertical):

@@ -155,9 +155,9 @@ class Profile(BaseModel):
     # The device library the fabric-attached-memory entries run on.  Named
     # here and nowhere else: the build tree is made to match it or the
     # campaign does not start, so which library a FAM cell ran on is always
-    # the one its profile states.  Absent means off, except that a local
-    # profile that runs a FAM entry takes `fake` (one host, no fabric: the
-    # vendored library is the only one that applies there).
+    # the one its profile states.  Absent means off, except under
+    # launcher=local, which takes `fake` (one host, no fabric: the vendored
+    # library is the only one that applies there).
     fam_device: FamDevice | None = None
     # The device library's headers and the library file; `real` only.
     fam_device_include_dir: str | None = None
@@ -190,12 +190,6 @@ class Profile(BaseModel):
 
     cell_timeout_s: int = Field(default=300, ge=1)
     repeats: int = Field(default=1, ge=1)
-
-    # The plane entries a campaign under this profile runs when it names none,
-    # and the ones the selection screens start with checked.  The plane holds
-    # every protocol any study uses; a study that leaves some out says so
-    # here, once, instead of on every command line.  Unset means all of them.
-    entries: list[str] | None = Field(default=None, min_length=1)
 
     # Wrap every cell's binary in a getrusage witness (`/usr/bin/time -v`) to
     # recover peak resident set size and minor-fault counts alongside the
@@ -240,11 +234,11 @@ class Profile(BaseModel):
     @property
     def resolved_fam_device(self) -> FamDevice:
         """What a FAM entry run under this profile links: the stated value;
-        absent, `fake` for a local profile whose own entries run a FAM entry
-        and `off` for every other profile."""
+        absent, `fake` under launcher=local (one host, no fabric: the vendored
+        library is the only one that applies there) and `off` elsewhere."""
         if self.fam_device is not None:
             return self.fam_device
-        if self.launcher is Launcher.LOCAL and self.fam_entries():
+        if self.launcher is Launcher.LOCAL:
             return FamDevice.FAKE
         return FamDevice.OFF
 
@@ -256,19 +250,8 @@ class Profile(BaseModel):
             return None
         return True if self.fam_strict is None else self.fam_strict
 
-    def fam_entries(self) -> list[str]:
-        """The FAM entries this profile runs when a campaign names none: its
-        own `entries`, or the whole plane when it lists none."""
-        from artsrun.model.plane import load_plane
-
-        plane = load_plane()
-        keys = plane.default_entries(self.entries)
-        return [k for k in keys if plane.entry(k).is_fam]
-
-    def check_fam_device(self, fam_entries: list[str]) -> None:
-        """Refuse a device-library statement that cannot run these
-        fabric-attached-memory entries.  Asked of the profile's own entries
-        and again of a campaign whose entry list differs from them."""
+    def _check_fam_statement(self) -> None:
+        """Refuse a device-library statement that is wrong whatever runs."""
         device = self.resolved_fam_device
         paths = [k for k in ("fam_device_include_dir", "fam_device_library")
                  if getattr(self, k)]
@@ -276,15 +259,6 @@ class Profile(BaseModel):
             raise ValueError(
                 f"profile '{self.name}': {' and '.join(paths)} belong to "
                 f"fam_device: real, and this profile's fam_device is {device}")
-        if not fam_entries:
-            return
-        shown = ", ".join(fam_entries)
-        if device is FamDevice.OFF:
-            raise ValueError(
-                f"profile '{self.name}' has fam_device: off (absent means off: "
-                "fabric-attached memory is not available where it runs), so it "
-                f"cannot run {shown}; select a profile whose fam_device is "
-                "fake or real, or leave these entries out")
         if self.launcher is Launcher.LOCAL and device is FamDevice.REAL:
             raise ValueError(
                 "fam_device: real is not allowed under launcher=local: one "
@@ -309,6 +283,38 @@ class Profile(BaseModel):
                 f"nodes: [1] (got {self.nodes}): the vendored library is one "
                 "host's shared memory, so its pool reaches only ranks that "
                 "share a host")
+        if self.fam_strict is not None and device is not FamDevice.FAKE:
+            raise ValueError(
+                f"fam_strict is a setting of fam_device: fake only, and this "
+                f"profile's fam_device is {device}: strict mode gives one "
+                "host's memory the second coherency domain a store that is "
+                "not coherent across hosts has, so it means nothing over the "
+                "device library (real) or with no fabric-attached memory "
+                "(off); remove fam_strict")
+
+    def check_fam_device(self, fam_entries: list[str]) -> None:
+        """Refuse a campaign whose fabric-attached-memory entries this
+        profile's device library cannot run."""
+        if fam_entries and self.resolved_fam_device is FamDevice.OFF:
+            raise ValueError(
+                f"profile '{self.name}' has fam_device: off (absent means off "
+                "except under launcher=local: fabric-attached memory is not "
+                "available where it runs), so it cannot run "
+                f"{', '.join(fam_entries)}; select a profile whose fam_device "
+                "is fake or real, or leave these entries out")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_entries(cls, data):
+        """The entry list moved to the experiment: a node profile states
+        host facts, and which coherence entries run is the study's choice."""
+        if isinstance(data, dict) and "entries" in data:
+            raise ValueError(
+                "a node profile no longer lists entries: the coherence entries "
+                "a campaign runs by default moved to the experiment "
+                "(experiments/experiments/<name>.yaml, `entries:`), and -e "
+                "names others for one run; remove `entries` from this profile")
+        return data
 
     @model_validator(mode="after")
     def _check(self) -> "Profile":
@@ -362,20 +368,5 @@ class Profile(BaseModel):
             )
         if any(n < 1 for n in self.nodes):
             raise ValueError("node counts must be >= 1")
-        fam = self.fam_entries()
-        if not fam and self.fam_device in (FamDevice.FAKE, FamDevice.REAL):
-            raise ValueError(
-                f"fam_device: {self.fam_device} names the library of the "
-                "fabric-attached-memory entries, and this profile's entries "
-                "hold none of them; use off (or leave it out)")
-        self.check_fam_device(fam)
-        device = self.resolved_fam_device
-        if self.fam_strict is not None and device is not FamDevice.FAKE:
-            raise ValueError(
-                f"fam_strict is a setting of fam_device: fake only, and this "
-                f"profile's fam_device is {device}: strict mode gives one "
-                "host's memory the second coherency domain a store that is "
-                "not coherent across hosts has, so it means nothing over the "
-                "device library (real) or with no fabric-attached memory "
-                "(off); remove fam_strict")
+        self._check_fam_statement()
         return self
