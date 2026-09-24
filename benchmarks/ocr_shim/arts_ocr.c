@@ -8,6 +8,20 @@
  * This file is part of the ARTS benchmark infrastructure — it is NOT
  * general-purpose user code. It deliberately accesses ARTS internal headers
  * (route table, runtime types) to implement features like artsDbDataFromGuid().
+ *
+ * Labeled GUIDs: one rule for every labeled create (data block, event or EDT),
+ * whatever properties it carries.  A create whose label names a live object
+ * parks where the label's object lives (for a data block, the creating
+ * rank's cache or the home) until that object's life ends (a destroy, or an
+ * EDT's completion), then installs as the label's next generation; nothing is
+ * replaced and no creator is told anything.  GUID_PROP_CHECK and
+ * GUID_PROP_BLOCK are accepted and ignored.  Only the create waits: every
+ * other message for the next generation (a satisfy, a dependence, including
+ * the create-time dependences ocrEdtCreate issues for a labeled EDT) runs
+ * against whatever object the label names when it lands, so it must be issued
+ * from a point ordered after the previous generation's end through the
+ * label's home, or from the home itself.  Two creates of one label with no
+ * end of life between them leave one parked for good.
  */
 
 #include <inttypes.h>
@@ -84,19 +98,6 @@
  * overread.  Copy byte-by-byte for the last partial word to keep
  * ASAN clean while matching original OCR runtime behavior.
  * ========================================================================= */
-/* Every labeled create is first-wins and reports nothing.  The standard's
- * CHECK (tell the loser) and BLOCK (wait until the label can be re-created)
- * both presuppose that "already exists" is a fact the creator can be told
- * at the moment it asks; here a remote creator's install is fire-and-forget,
- * and the only ordering between a destroy and a create of one label is the
- * order they happen to land at the label's home, so a report would reach
- * some creators, miss others, and sometimes name a generation the program
- * had already retired.  So the two properties are accepted and ignored: the
- * first install stands, every creator's label names that object, and a
- * label reused across a lifetime boundary is unsupported -- what follows is
- * the engine's, an operation parked on a slot no install will fill, or a
- * destroy landing on the wrong generation. */
-
 static inline void ocr_copy_paramv(uint64_t *dst, const u64 *src, u32 paramc) {
   if (paramc > 0 && src != NULL) {
     memcpy(dst, src, paramc * sizeof(uint64_t));
@@ -395,18 +396,14 @@ static arts_guid_t collective_edge_guid(arts_guid_t coll_guid, u32 nrank,
   return ARTS_GUID_MAKE(ARTS_GUID_EVENT, home, key);
 }
 
-/* Create (idempotently, first-create-wins) a labeled STICKY ARTS event at
- * the given pre-derived GUID.  Concurrent creators on any rank converge on
- * the same single event; losers are silent no-ops. */
+/* Create a labeled STICKY ARTS event at the given pre-derived GUID.  An edge
+ * has exactly one creator, its consumer, which creates it once per generation
+ * just before binding to it; the producer only satisfies it, and a satisfy
+ * that reaches the edge's home before the create waits there for the install.
+ * Edge GUIDs embed the generation, so no edge GUID is ever created twice. */
 static void collective_edge_event_ensure(arts_guid_t edge) {
   arts_event_hint_t h = ARTS_EVENT_HINT_STICKY;
   h.guid = edge;
-  /* install-if-absent: this ensure is idempotent (first-create-wins).  A
-   * concurrent or repeat create of the same edge GUID must NOT replace the live
-   * event, which would orphan dependents already registered on the displaced
-   * instance and strand the reduction.  Without this, the default unconditional
-   * install replaces the prior generation. */
-  h.check = true;
   (void)arts_event_create(&h);
 }
 
@@ -649,11 +646,9 @@ static void collective_up_edt(uint32_t paramc, const uint64_t *paramv,
   if (r == 0) {
     /* Root: seed the broadcast.  The full reduction is the root's partial. */
     arts_guid_t down = collective_edge_guid(coll, nrank, gen, 0, 1);
-    collective_edge_event_ensure(down);
     arts_event_satisfy_slot(down, partialDb, ARTS_EVENT_LATCH_DECR_SLOT);
   } else {
     arts_guid_t up = collective_edge_guid(coll, nrank, gen, r, 0);
-    collective_edge_event_ensure(up);
     arts_event_satisfy_slot(up, partialDb, ARTS_EVENT_LATCH_DECR_SLOT);
   }
 }
@@ -690,7 +685,6 @@ static void collective_down_edt(uint32_t paramc, const uint64_t *paramv,
       }
       arts_db_release(fwdDb, ARTS_MODE_RW);
       arts_guid_t cdown = collective_edge_guid(coll, nrank, gen, child, 1);
-      collective_edge_event_ensure(cdown);
       arts_event_satisfy_slot(cdown, fwdDb, ARTS_EVENT_LATCH_DECR_SLOT);
     }
   }
@@ -1064,6 +1058,10 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   if (templateGuid.guid == 0) {
     return OCR_EINVAL;
   }
+  if ((properties & GUID_PROP_IS_LABELED) &&
+      (guid == NULL || arts_guid_get_kind(guid->guid) != ARTS_GUID_EDT)) {
+    return OCR_EINVAL;
+  }
   OcrEdtTemplate templ_local = arts_tpl_decode(templateGuid);
   OcrEdtTemplate *templ = &templ_local;
 
@@ -1104,14 +1102,14 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   artsParamv[1] = (uint64_t)actualParamc;
   ocr_copy_paramv_safe(&artsParamv[2], paramv, actualParamc);
 
-  /* For finish EDTs, create the finish event explicitly so the shim owns it
-   * and can chain it to outEvt immediately — without querying the EDT after
-   * creation.  The finish event's latch is pre-decremented by the EDT itself
-   * (creator-token); when all descendants complete it drains to zero and fires,
-   * satisfying outEvt and signalling the OCR scope boundary.  ARTS_MODE_NULL is
-   * the correct dependency mode: the scope-drain signal carries no data
-   * payload.
-   */
+  /* A finish EDT's scope is a finish event created here, on the creating
+   * rank, and handed to the finish EDT as its scope; its descendants inherit
+   * it.  Once the finish EDT has joined and the event is chained to outEvt,
+   * the shim hands the creator-token back: the finish EDT's own join holds the
+   * scope open, so the token would only delay the fire until the creating task
+   * returns, which OCR does not require.  The event then fires when the finish
+   * EDT and every descendant have completed, satisfying outEvt.  The
+   * dependence carries no data (ARTS_MODE_NULL). */
   arts_guid_t fe = NULL_GUID;
   if (isFinishEdt) {
     arts_event_hint_t feh = ARTS_EVENT_HINT_FINISH;
@@ -1142,6 +1140,14 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
    * data-block releases.  Finish EDTs get their outputEvent chained to the
    * finish event below instead. */
   arts_edt_hint_t edtHint = {.rank = edtRank};
+  /* A labeled EDT is created at its label, whose rank is then its home: the
+   * GUID's rank is authoritative over any affinity, as for every create of a
+   * reserved GUID.  The create-time dependences below reach that home as
+   * ordinary messages, so they bind this generation only if the label's
+   * previous EDT has already ended. */
+  if (properties & GUID_PROP_IS_LABELED) {
+    edtHint.guid = guid->guid;
+  }
   if (isFinishEdt) {
     edtHint.finish_event = fe;
   } else {
@@ -1150,9 +1156,11 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
   arts_guid_t edtGuid = arts_edt_create(ocr_edt_trampoline, artsParamc,
                                         artsParamv, actualDepc, &edtHint);
 
-  if (isFinishEdt && outEvt != NULL_GUID && edtGuid != NULL_GUID &&
-      fe != NULL_GUID) {
-    arts_add_dependence(fe, outEvt, 0, ARTS_MODE_NULL);
+  if (isFinishEdt && edtGuid != NULL_GUID && fe != NULL_GUID) {
+    if (outEvt != NULL_GUID) {
+      arts_add_dependence(fe, outEvt, 0, ARTS_MODE_NULL);
+    }
+    arts_event_release_creator_token(fe);
   }
 
   arts_free(artsParamv);
@@ -1252,12 +1260,12 @@ static arts_event_hint_t ocr_event_kind_to_hint(ocrEventTypes_t kind,
 }
 
 u8 ocrEventCreate(ocrGuid_t *guid, ocrEventTypes_t eventType, u16 properties) {
+  if (guid == NULL) {
+    return OCR_EINVAL;
+  }
   arts_event_hint_t h = ocr_event_kind_to_hint(eventType, properties);
   if (properties & GUID_PROP_IS_LABELED) {
     h.guid = guid->guid;
-    /* First-wins: a losing create leaves the winner's object under the label
-     * and is not told (arts_event_create returns NULL_GUID to the loser). */
-    h.check = true;
     (void)arts_event_create(&h);
     return 0;
   }
@@ -1302,6 +1310,9 @@ u8 ocrEventSatisfySlot(ocrGuid_t eventGuid, ocrGuid_t dataGuid, u32 slot) {
 
 u8 ocrEventCreateParams(ocrGuid_t *guid, ocrEventTypes_t eventType,
                         u16 properties, ocrEventParams_t *params) {
+  if (guid == NULL) {
+    return OCR_EINVAL;
+  }
 
   if (eventType == OCR_EVENT_COLLECTIVE_T && params != NULL) {
     u32 nbContribs = params->EVENT_COLLECTIVE.nbContribs;
@@ -1425,8 +1436,6 @@ u8 ocrEventCreateParams(ocrGuid_t *guid, ocrEventTypes_t eventType,
 
   if (properties & GUID_PROP_IS_LABELED) {
     h.guid = guid->guid;
-    /* First-wins, the loser not told (see ocrEventCreate). */
-    h.check = true;
     (void)arts_event_create(&h);
     return 0;
   }
@@ -1494,41 +1503,24 @@ u8 ocrEventCollectiveSatisfySlot(ocrGuid_t eventGuid, void *dataPtr,
 u8 ocrDbCreate(ocrGuid_t *db, void **addr, u64 len, u16 flags, ocrHint_t *hint,
                ocrInDbAllocator_t allocator) {
   (void)allocator;
+  if (db == NULL) {
+    return OCR_EINVAL;
+  }
   int aff = extract_db_affinity(hint);
 
   if (flags & GUID_PROP_IS_LABELED) {
     arts_guid_t labeledGuid = db->guid;
 
-    /* First-wins install; a loser gets the winner's block below. */
-    arts_db_hint_t lh = ARTS_DB_HINT_DEFAULTS;
-    lh.check = true;
     /* DB_PROP_NO_ACQUIRE: same translation as the non-labeled branch below --
-     * the creator does not acquire; home stays the sole idle owner. */
+     * the creator does not acquire; home stays the sole idle owner and no
+     * pointer is handed back.  Otherwise the pointer is this create's image
+     * of the block, whether the create installs now or waits for the
+     * label's previous block to be destroyed. */
     unsigned int arts_flags = (flags & DB_PROP_NO_ACQUIRE)
                                   ? ARTS_DB_PROP_NO_ACQUIRE
                                   : ARTS_DB_PROP_NONE;
-    void *data = arts_db_create_with_guid(labeledGuid, len, ARTS_DB_DEFAULT,
-                                          arts_flags, &lh);
-    if (flags & DB_PROP_NO_ACQUIRE) {
-      /* Mirror the non-labeled NO_ACQUIRE return: no hold, no pointer.  The
-       * core always hands back NULL here on this path (success or not), so
-       * this must be checked before the "already taken" NULL-data test below
-       * -- that test's meaning is specific to the acquiring path. */
-      *addr = NULL;
-      return 0;
-    }
-    if (data == NULL) {
-      /* The label is already taken: a labeled create is first-wins, and
-       * every later create of that label creates nothing — it takes no hold
-       * and so is handed no pointer, because a pointer is only ever valid
-       * through a hold the create took.  No creator is told: a later creator
-       * that goes on to use the label does so through a dependence on the
-       * GUID, like any other task, and that is what every rendezvous in the
-       * roster does. */
-      *addr = NULL;
-      return 0;
-    }
-    *addr = data;
+    *addr = arts_db_create_with_guid(labeledGuid, len, ARTS_DB_DEFAULT,
+                                      arts_flags, NULL);
     return 0;
   }
 

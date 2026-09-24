@@ -230,7 +230,8 @@ typedef enum {
  *  six EDT-create variants into a single entry point:
  *    - @c rank   selects the home node (default current rank).
  *    - @c guid   when non-NULL_GUID pre-reserves the EDT GUID; the home
- *                rank is then taken from that GUID and @c rank is ignored.
+ *                rank is then taken from that GUID and @c rank is ignored,
+ *                and a create of a live GUID parks until it ends.
  *    - @c finish_event when non-NULL_GUID joins this EDT to that finish scope.
  *    - @c flags  bitfield of ARTS_EDT_FLAG_* (default ARTS_EDT_FLAG_NONE). */
 typedef struct {
@@ -238,11 +239,19 @@ typedef struct {
    *  ARTS_HINT_ANY_RANK = no preference (policy-selected, same as passing a
    *  NULL hint) | specific rank. */
   unsigned int rank;
-  /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default). */
+  /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When set, the
+   *  GUID's rank is the EDT's home and @c rank is ignored.  A create of a GUID
+   *  whose EDT is live (neither completed nor destroyed) waits, parked at the
+   *  home, until that EDT completes or is destroyed, and then installs as the
+   *  GUID's next EDT.  Two creates of one GUID with no end of life between
+   *  them are undefined: one of them stays parked. */
   arts_guid_t guid;
   /** Finish event to join (bulk sync).  NULL_GUID = inherit the caller's
    *  ambient finish scope (default).  When set, this EDT (and its descendants)
-   *  join that finish event: INCR at create, DECR at completion. */
+   *  join that finish event: INCR at create, DECR at completion.  The event
+   *  must be homed on the creating rank (a finish event created here), since
+   *  the join INCR is local and only a local INCR is ordered before the
+   *  member's DECR; naming another rank's scope is undefined. */
   arts_guid_t finish_event;
   /** Output event (per-EDT result channel; OCR-style).  NULL_GUID = none
    *  (default).  When set, the runtime satisfies this event (DECR slot)
@@ -280,21 +289,20 @@ typedef struct {
   uint64_t access_size;
   /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When
    *  non-zero, the GUID's rank field is authoritative for routing and
-   *  overrides @c rank above. */
+   *  overrides @c rank above.  A create of a GUID whose block is live waits,
+   *  parked (on the creating rank behind its cache of the previous
+   *  generation, or at the home) until that block is destroyed, and then
+   *  installs as the GUID's next block (see @c arts_db_create for the
+   *  pointer it returns).  Two creates of one GUID with no destroy between
+   *  them are undefined: one of them stays parked. */
   arts_guid_t guid;
-  /** The OCR standard's GUID_PROP_CHECK, accepted for source compatibility
-   *  and changing nothing: every labeled create is first-wins, so a create of
-   *  a label that already exists creates nothing and hands back no pointer
-   *  whether or not this is set.  Default false. */
-  bool check;
 } arts_db_hint_t;
 
 #define ARTS_DB_HINT_DEFAULTS                                                  \
   ((arts_db_hint_t){.rank = ARTS_HINT_CURRENT_RANK,                            \
                     .access_offset = 0,                                        \
                     .access_size = UINT64_MAX,                                 \
-                    .guid = NULL_GUID,                                         \
-                    .check = false})
+                    .guid = NULL_GUID})
 
 /** @} */
 
@@ -449,16 +457,14 @@ typedef struct {
    *  are ignored.  Default false. */
   bool channel;
   /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When non-zero,
-   *  the GUID's rank field is authoritative and overrides @c rank above. */
+   *  the GUID's rank field is authoritative and overrides @c rank above.  A
+   *  create of a GUID whose event is live waits, parked at the home, until
+   *  that event is destroyed, and then installs as the GUID's next event.
+   *  Two creates of one GUID with no destroy between them are undefined: one
+   *  of them stays parked. */
   arts_guid_t guid;
-  /** If true, a create at an already-occupied (home-local) GUID FAILS (returns
-   * NULL_GUID) instead of overwriting — OCR GUID_PROP_CHECK / rendezvous
-   * semantics (the first creator wins; a later one observes the collision).
-   * Default false = unconditional replace (a labeled-GUID reuse overwrites the
-   * prior generation, releasing it). */
-  bool check;
   /** If true, this is a FINISH event: a bulk-synchronization latch. All other
-   *  fields (latch, channel, guid, check) are ignored — forced to a simple
+   *  fields (latch, channel, guid) are ignored — forced to a simple
    *  latch=1 (creator-token), current rank, auto-allocated GUID, auto_destroy.
    *  The runtime auto-chains it to the ambient finish scope and tracks its
    *  creator-token for cleanup. Wait on it with arts_event_wait. Default false.
@@ -686,7 +692,9 @@ int arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
  * @param depc     Number of dependency slots.
  * @param hint     Advisory metadata (rank, guid, finish_event, output_event).
  *                 NULL = defaults.
- * @return GUID of the newly created EDT.
+ * @return GUID of the EDT (== hint->guid when pre-reserved), whether the
+ *         create installed at once or parked behind the GUID's live EDT;
+ *         NULL_GUID if the EDT could not be built.
  * @see arts_add_dependence, arts_edt_destroy
  */
 arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
@@ -745,14 +753,15 @@ void arts_edt_destroy(arts_guid_t guid);
  * defaults.  The runtime is kind-unaware: there is no event type tag.
  *
  * When @c hint->guid is non-zero the GUID is pre-reserved (labeled-GUID
- * path): the GUID's rank is the event home, cross-rank creates are
- * forwarded via MSG_EVENT_CREATE, and concurrent installs with
- * the same GUID are race-safe (first install wins, others are silent
- * no-ops per OCR labeled-event spec).
+ * path) and the GUID's rank is the event home.  A create of a GUID whose
+ * event is live waits, parked at the home, until that event is destroyed, and
+ * then installs as the GUID's next generation.
  *
  * @param hint Hint snapshot (NULL = ARTS_EVENT_HINT_DEFAULTS).
- * @return The event GUID (== hint->guid when pre-reserved), or NULL_GUID
- *         on failure or when a concurrent caller won the install race.
+ * @return The event GUID (== hint->guid when pre-reserved), whether the
+ *         create installed at once or parked.  An allocation failure aborts
+ *         the run, on the creating rank or at the home that receives a remote
+ *         create; the call never returns NULL_GUID.
  * @see arts_event_satisfy_slot, arts_event_destroy
  */
 arts_guid_t arts_event_create(const arts_event_hint_t *hint);
@@ -796,12 +805,6 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
 void arts_edt_satisfy_slot(arts_guid_t edt_guid, uint32_t slot,
                            arts_guid_t data_guid, arts_db_access_mode_t mode);
 
-/** Deprecated alias of @c arts_edt_satisfy_slot (backward-compat). */
-static inline void arts_signal_edt(arts_guid_t edt_guid, uint32_t slot,
-                                   arts_guid_t db, arts_db_access_mode_t mode) {
-  arts_edt_satisfy_slot(edt_guid, slot, db, mode);
-}
-
 /**
  * @brief Register a dependent on an event source (OCR-standard).
  *
@@ -835,6 +838,21 @@ void arts_event_destroy(arts_guid_t guid);
  * events. Returns true on success.
  */
 bool arts_event_wait(arts_guid_t event_guid);
+
+/**
+ * @brief Hand a FINISH event's creator-token back without waiting.
+ *
+ * The creator of a finish event holds one token that keeps the scope open
+ * until the creator completes (or waits on it).  Releasing it here lets the
+ * scope fire as soon as its members finish, while the creator keeps running.
+ * Call it only from the token's owner — the EDT that created @p event_guid,
+ * on the thread running that EDT — at most once, and only after that EDT has
+ * joined every member it wants the scope to cover (a join after the release
+ * may find the scope already fired).  Calling it twice, from any other EDT,
+ * or together with arts_event_wait on the same event (which releases the
+ * token too) decrements the scope one time too many and is undefined.
+ */
+void arts_event_release_creator_token(arts_guid_t event_guid);
 
 /**
  * @brief Return the finish event the calling EDT currently belongs to.
@@ -896,6 +914,12 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
  *                     no preference: the build's no-hint DB home policy
  *                     picks the rank (ARTS_NOHINT_DB_HOME: CREATOR default
  *                     — first-touch — or ROUNDROBIN).
+ *
+ * A create of a pre-reserved GUID whose previous block is still live waits,
+ * parked, until that block is destroyed, and then installs as the GUID's next
+ * block.  The call returns at once either way, and @p addr names this
+ * create's own image of the block, which becomes the block's when the create
+ * installs.
  * @return GUID of the created DB.
  * @see arts_db_destroy
  */
@@ -906,7 +930,8 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
  * @brief Convenience wrapper: create a DataBlock with a pre-reserved GUID.
  *
  * Equivalent to setting @c hint->guid and calling @c arts_db_create; the
- * GUID must be local.  Returns the payload pointer directly (NULL when
+ * GUID's rank is the block's home, which may be another rank for an
+ * @c ARTS_DB block.  Returns the payload pointer directly (NULL when
  * @c ARTS_DB_PROP_NO_ACQUIRE is set).
  */
 static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,

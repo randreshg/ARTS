@@ -14,10 +14,10 @@ static ocrGuid_t check_payload(u32 pc, u64 *pv, u32 dc, ocrEdtDep_t dv[]) {
   int ok[7];
   ok[0] = ocrGuidIsNull(dv[0].guid) && !dv[0].ptr;
   ok[1] = ocrGuidIsNull(dv[1].guid) && !dv[1].ptr;
-  ok[2] = dv[2].guid.guid == pv[0] && dv[2].ptr && *(u64 *)dv[2].ptr == 42;
-  ok[3] = dv[3].guid.guid == pv[0] && dv[3].ptr && *(u64 *)dv[3].ptr == 42;
-  ok[4] = dv[4].guid.guid == pv[0] && !dv[4].ptr;
-  ok[5] = dv[5].guid.guid == pv[1] && !dv[5].ptr;
+  ok[2] = (u64)dv[2].guid.guid == pv[0] && dv[2].ptr && *(u64 *)dv[2].ptr == 42;
+  ok[3] = (u64)dv[3].guid.guid == pv[0] && dv[3].ptr && *(u64 *)dv[3].ptr == 42;
+  ok[4] = (u64)dv[4].guid.guid == pv[0] && !dv[4].ptr;
+  ok[5] = (u64)dv[5].guid.guid == pv[1] && !dv[5].ptr;
   ok[6] = ocrGuidIsNull(dv[6].guid) && !dv[6].ptr;
   for (u32 i = 0; i < 7 && i < dc; ++i) {
     if (!ok[i]) {
