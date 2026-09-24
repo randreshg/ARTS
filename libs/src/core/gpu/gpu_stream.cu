@@ -520,7 +520,9 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
 
     host_gc_ptr->edt->func_ptr(paramc, host_paramv, depc, host_depv);
 
-    arts_unset_thread_local_edt_info();
+    /* The EDT's own finish DECR is a completion signal, so it leaves from the
+     * wrap-up after the GUID is retired, not from here. */
+    arts_unset_thread_local_edt_info(false);
     /* Release DBs created during the lib function NOW, on the worker thread.
        The wrap-up callback runs on the CUDA callback thread whose TLS
        created_db_list is empty, so arts_release_created_dbs() there would be
@@ -830,6 +832,19 @@ void arts_gpu_host_wrap_up(void *edt_packet, arts_guid_t to_signal,
     arts_ooo_drain_guid(edt->wrapper_edt.guid);
   }
 
+  /* Retire the GUID before any completion signal leaves (as arts_run_edt
+   * does); the runnable-phase ref taken in arts_handle_ready_edt keeps the EDT
+   * alive past the detach, and its release below is the last drop.  The drain
+   * above stays ahead of the retire: the payloads parked on this EDT's slot
+   * must dispatch while the slot still names it. */
+  arts_shared_ptr_t sref = ((struct arts_edt_s *)edt_packet)->self_cb;
+  arts_edt_delete((struct arts_edt_s *)edt_packet);
+
+  if (edt->wrapper_edt.finish_event != NULL_GUID) {
+    arts_event_satisfy_slot(edt->wrapper_edt.finish_event, NULL_GUID,
+                            ARTS_EVENT_LATCH_DECR_SLOT);
+  }
+
   // Signal next
   if (to_signal) {
     if (edt->passthrough) {
@@ -844,12 +859,6 @@ void arts_gpu_host_wrap_up(void *edt_packet, arts_guid_t to_signal,
       }
     }
   }
-  /* Drop the runnable-phase ref taken in arts_handle_ready_edt (mirrors the CPU
-   * arts_run_edt completion): capture the self alias, detach the route slot,
-   * then release — the last drop frees the EDT even if a concurrent destroy
-   * already detached the slot. */
-  arts_shared_ptr_t sref = ((struct arts_edt_s *)edt_packet)->self_cb;
-  arts_edt_delete((struct arts_edt_s *)edt_packet);
   arts_shared_release(&sref);
 }
 

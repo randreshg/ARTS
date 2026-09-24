@@ -45,6 +45,8 @@ extern "C" {
 #include "arts/runtime_types.h"
 #include "arts/utils/atomics.h"
 
+struct arts_msg_object_blob_packet_s;
+
 bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                           arts_guid_t *guid, unsigned int rank,
                           unsigned int edt_space, arts_edt_t func_ptr,
@@ -52,8 +54,7 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                           uint32_t depc, arts_guid_t hint_finish_event,
                           arts_guid_t hint_output_event, uint32_t flags);
 void arts_edt_delete(struct arts_edt_s *edt);
-/* deleter pointer for foreign TUs that allocate arts_edt_s stubs
- * (e.g. remote handler.c arts_handler_edt_create's race-loser cleanup). */
+/* deleter pointer for foreign TUs that compare against or install it. */
 void (*arts_edt_get_deleter(void))(void *);
 
 /* arts_edt_satisfy_slot is the OCR-standard API — declared once in the public
@@ -71,7 +72,12 @@ void arts_handler_edt_destroy(void *item, void *args);
 void arts_send_object_blob(unsigned int rank, arts_guid_t guid, void *ptr,
                            unsigned int mem_size, unsigned message_type,
                            void (*free_method)(void *));
-void arts_handler_edt_create(void *ptr);
+/* OOO_EDT_CREATE body; arts_edt_create_enter composes its args from a
+ * received blob packet and EDT image and enters the engine on the EDT's
+ * GUID. */
+void arts_handler_edt_create(void *item, void *args);
+void arts_edt_create_enter(const struct arts_msg_object_blob_packet_s *packet,
+                           const void *edt, uint32_t edt_size);
 /* Cross-rank EDT destroy forwarder: forward to the EDT's home rank.  The
  * home-rank RX handler is arts_handler_edt_destroy (declared above as the Cat-B
  * OoO body): the dispatcher decodes the GUID and routes through

@@ -73,15 +73,20 @@ typedef struct {
 
 /* Run-start / run-end context management (called from the EDT run path). */
 void arts_set_thread_local_edt_info(struct arts_edt_s *edt);
-void arts_unset_thread_local_edt_info();
+/* `decr_finish`: emit the EDT's own finish-scope DECR here; false when the
+ * caller emits it later, after the EDT's GUID is retired. */
+void arts_unset_thread_local_edt_info(bool decr_finish);
 void arts_edt_ctx_save(arts_edt_ctx_t *tl);
 void arts_edt_ctx_restore(arts_edt_ctx_t *tl);
 void arts_cleanup_edt_tls(void);
 
 /* Created-DB tracking on the current worker (auto-acquire / release path).
- * A label names one object for its lifetime — the create that installs it is
- * its only creator — so the GUID identifies the hold's object. */
-void arts_track_created_db(arts_guid_t guid);
+ * Each entry is the descriptor handle of a block this worker created, one
+ * strong ref per entry, and the creator's release goes through it.  A
+ * creator's operations on its own block name the descriptor it made, because
+ * the route slot may hold another generation of the GUID until that
+ * descriptor installs. */
+void arts_track_created_db(arts_shared_ptr_t h);
 arts_vector_t *arts_get_created_db_list(void);
 
 /* Finish-event owned-list: register creator-token, consume on wait, cleanup. */

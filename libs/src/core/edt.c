@@ -40,6 +40,7 @@
 #include "arts/db.h"
 #include "arts/utils/malloc.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "arts/edt_context.h" /* current_edt + run-start/end ctx hooks */
@@ -83,13 +84,11 @@
 /*
  * arts_edt_deleter — shared_t deleter.
  *
- * Invoked by route_table free_item once the slot's lock count hits 0 with
- * DELETE set.  Mirrors the DB pattern (the DB deleter ->
- * arts_db_free): delegates to arts_edt_free, which is the canonical struct-free
- * path.
+ * Runs at the cb's last release.  Mirrors the DB pattern (the DB deleter ->
+ * arts_db_free): delegates to arts_edt_free, which is the canonical
+ * struct-free path.
  *
- * Static-file-scope; remote handler.c reaches the same pointer via
- * arts_edt_get_deleter() so there's a single source of truth.
+ * Foreign TUs reach the same pointer via arts_edt_get_deleter().
  */
 /* canonical struct-free path; sole caller is arts_edt_deleter in this TU. */
 static void arts_edt_free(struct arts_edt_s *edt);
@@ -104,46 +103,40 @@ __attribute__((constructor)) static void arts_edt_register_cb_deleter(void) {
   arts_route_table_register_deleter(ARTS_GUID_EDT, arts_edt_deleter);
 }
 
-/* Getter for foreign TUs (e.g. remote handler.c) that allocate arts_edt_s
- * stubs and need to install the same deleter pointer. */
+/* Getter for foreign TUs that compare against or install the same deleter
+ * pointer. */
 void (*arts_edt_get_deleter(void))(void *) { return arts_edt_deleter; }
 
-/* Arm the EDT's non-owning self-cb alias immediately after install, before the
- * EDT can become runnable.  Looks up the cb just published into the route slot
- * and stores the bare pointer (the lookup's transient +1 is released so the
- * alias adds no strong count — see the field comment in runtime_types.h).
- * Must be called on the installing thread, with the EDT still pinned against a
- * premature fire (depc > 0 with no queued signals, or the sentinel held). */
-static void arts_edt_arm_self_cb(struct arts_edt_s *edt, arts_guid_t guid) {
-  arts_shared_ptr_t cb = arts_route_table_lookup_edt(guid);
-  edt->self_cb = cb;
-  arts_shared_release(&cb);
+/* The engine's create args for an EDT received off the wire: the args header,
+ * the blob packet, the EDT image, contiguous.  Images that fit are composed on
+ * the stack. */
+#define EDT_CREATE_ARGS_INLINE 1024
+
+void arts_edt_create_enter(const struct arts_msg_object_blob_packet_s *packet,
+                           const void *edt, uint32_t edt_size) {
+  struct arts_ooo_args_create_blob_s a = {
+      .size = (uint32_t)sizeof(*packet) + edt_size};
+  uint32_t args_size = (uint32_t)sizeof(a) + a.size;
+  _Alignas(uint64_t) unsigned char inline_args[EDT_CREATE_ARGS_INLINE];
+  unsigned char *args = args_size <= sizeof(inline_args)
+                            ? inline_args
+                            : (unsigned char *)arts_malloc(args_size);
+  memcpy(args, &a, sizeof(a));
+  memcpy(args + sizeof(a), packet, sizeof(*packet));
+  memcpy(args + sizeof(a) + sizeof(*packet), edt, edt_size);
+  arts_ooo_dispatch_or_defer_guid(packet->guid, OOO_EDT_CREATE, args,
+                                  args_size);
+  if (args != inline_args) {
+    arts_free(args);
+  }
 }
 
 /*
- * arts_edt_create_core — Core EDT allocation and registration.
- *
- * Allocates the EDT struct (header + paramv + depv + modes), assigns its GUID,
- * copies parameters, joins its finish scope (if any), and places the EDT into
- * the route table so that incoming signals can find it.
- *
- * Two paths exist depending on whether a GUID was pre-reserved:
- *   1. New GUID (created_guid == true):
- *        - arts_route_table_install (no race — nobody else knows the GUID
- * yet).
- *        - If depc == 0, the EDT is immediately ready.
- *   2. Pre-reserved GUID (created_guid == false):
- *        - The GUID may already have received out-of-order signals while it was
- *          in RESERVED state. A sentinel (+1 on depc_needed) prevents premature
- *          firing during the race window between route-table insertion and
- *          OOO replay.  See the inline comments for the full protocol.
- *
- * Concurrency notes:
- *   - depc_needed is the primary synchronisation counter.  Every satisfied
- *     dependency atomically decrements it; exactly one thread observes 0
- *     and calls arts_handle_ready_edt.
- *   - The EDT must NOT be visible (in the route table) while its fields
- *     are still being written.
+ * arts_edt_create_core — build an EDT (header + paramv + depv), assign its
+ * GUID, copy its parameters and join its finish scope, then hand it to its
+ * home: a remote home receives the serialized image; on the local home the
+ * built object itself enters the OoO engine, where the OOO_EDT_CREATE body
+ * installs it (or parks it behind a live occupant of the GUID).
  */
 bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                           arts_guid_t *guid, unsigned int rank,
@@ -162,18 +155,15 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
   /* lifecycle/deleter handled by the route_table cb (deleter-by-kind) on
    * install.  The only per-object shared field is self_cb (a non-owning alias
    * to that cb): zero-initialised here (calloc / left NULL on a caller-provided
-   * buffer) and armed by arts_edt_arm_self_cb right after install.  Kind comes
+   * buffer) and armed by the create body from its install handle.  Kind comes
    * from the GUID (bits 63-62); total size from
    * arts_edt_total_size(paramc/depc) — no per-object header stores them. */
   (void)edt_space;
 
-  bool created_guid = false;
   if (*guid == NULL_GUID) {
-    created_guid = true;
-    edt->guid = *guid = arts_guid_create_for_rank(rank, guid_kind);
-  } else {
-    edt->guid = *guid;
+    *guid = arts_guid_create_for_rank(rank, guid_kind);
   }
+  edt->guid = *guid;
 
   edt->func_ptr = func_ptr;
   edt->depc = depc;
@@ -191,6 +181,17 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
    * access, no route_table lookup needed (same TU). */
   arts_guid_t parent_fe;
   if (hint_finish_event != NULL_GUID) {
+#if ARTS_LOG_LEVEL >= 3
+    /* The join INCR must be local: an INCR shipped to another rank's scope is
+     * not ordered against the member's completion DECR. */
+    if (arts_guid_get_rank(hint_finish_event) != arts_global_rank_id) {
+      ARTS_ERROR("EDT create names finish scope %lu homed on rank %u; a scope "
+                 "in hint.finish_event must be homed on the creating rank %u "
+                 "(create it here or inherit the ambient scope)",
+                 (unsigned long)hint_finish_event,
+                 arts_guid_get_rank(hint_finish_event), arts_global_rank_id);
+    }
+#endif
     parent_fe = hint_finish_event;
   } else if (current_edt) {
     parent_fe = current_edt->finish_event;
@@ -234,10 +235,8 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
     memcpy(tmp, paramv, sizeof(uint64_t) * paramc);
   }
 
-  ARTS_INFO("EDT create [Guid:%lu, Depc:%u, Route:%u, PreReserved:%s, "
-            "FuncPtr:%p]",
-            *guid, edt->depc, rank, created_guid ? "no" : "yes",
-            (void *)func_ptr);
+  ARTS_INFO("EDT create [Guid:%lu, Depc:%u, Route:%u, FuncPtr:%p]", *guid,
+            edt->depc, rank, (void *)func_ptr);
 
   if (rank != arts_global_rank_id) {
     /* Remote EDT: serialise and send to the target node.  A task's
@@ -257,52 +256,10 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
                           (unsigned int)arts_edt_total_size(edt),
                           MSG_EDT_CREATE, arts_free);
   } else {
-    /* Local EDT: register in the route table and check readiness. */
-    if (created_guid) {
-      /* New GUID path — no race, safe non-atomic insert. */
-      arts_route_table_install(edt, *guid, arts_global_rank_id, false);
-      arts_edt_arm_self_cb(edt, *guid);
-      if (edt->depc_needed == 0) {
-        ARTS_INFO("EDT[Guid:%lu] immediately ready (depc=0)", *guid);
-        arts_handle_ready_edt(edt);
-      } else {
-        ARTS_DEBUG("EDT[Guid:%lu] waiting for %u deps", *guid,
-                   edt->depc_needed);
-      }
-    } else {
-      /*
-       * Pre-reserved GUID path — other threads may already hold this GUID
-       * and could have queued out-of-order (OOO) signals.
-       *
-       * Protocol:
-       *   1. Set depc_needed = depc + 1  (sentinel prevents premature 0)
-       *   2. Insert into route table (EDT is now globally visible)
-       *   3. Replay any queued OOO signals (they decrement depc_needed)
-       *   4. Atomically remove sentinel (-1); if result is 0, all deps
-       *      were already satisfied and we fire the EDT.
-       *
-       * Exactly one thread (either the OOO replay callback or us at step 4)
-       * will observe depc_needed == 0 and call arts_handle_ready_edt.
-       */
-      edt->depc_needed = depc + 1;
-      ARTS_INFO("EDT[Guid:%lu] pre-reserved path: sentinel depc_needed=%u",
-                *guid, edt->depc_needed);
-      /* add_item installs the cb unconditionally and fires the OoO list
-       * internally (replaying queued signals) — the sentinel set above
-       * guarantees those replays cannot drive depc_needed to 0 before we
-       * remove it below.  An EDT GUID has a single creator (no rendezvous), so
-       * the unconditional install matches the default create contract; on the
-       * normal empty slot it is a plain install, and a (UB) re-create replaces
-       * the prior generation rather than leaking the new object. */
-      arts_route_table_install(edt, *guid, arts_global_rank_id, false);
-      arts_edt_arm_self_cb(edt, *guid);
-      unsigned int remaining = arts_atomic_sub(&edt->depc_needed, 1U);
-      ARTS_INFO("EDT[Guid:%lu] sentinel removed: depc_needed=%u", *guid,
-                remaining);
-      if (remaining == 0) {
-        arts_handle_ready_edt(edt);
-      }
-    }
+    /* The engine installs this very object; it is the create's until then. */
+    struct arts_ooo_args_create_local_s a = {
+        .size = ARTS_OOO_CREATE_ADOPT, .guid = *guid, .descriptor = edt};
+    arts_ooo_dispatch_or_defer_guid(*guid, OOO_EDT_CREATE, &a, sizeof(a));
   }
 
   INCREMENT_NUM_EDT_CREATE_BY(1);
@@ -382,34 +339,30 @@ static void arts_edt_free(struct arts_edt_s *edt) {
   arts_thread_info.edt_free = 0;
 }
 
+/* Retire a completed EDT's GUID by identity: only this EDT's own cb, since
+ * under label reuse the slot may already hold the next generation.  A
+ * concurrent retire holding the slot is waited out rather than missed: a
+ * missed retire would leave the completed EDT installed and park the next
+ * create for good.  The detach drops the
+ * install ref, so the deleter (arts_edt_deleter -> arts_edt_free) runs at the
+ * last release; `edt` stays dereferenceable after the call only while the
+ * caller holds its own reference (the run path's runnable-phase ref). */
 void arts_edt_delete(struct arts_edt_s *edt) {
-  if (!edt) {
-    ARTS_INFO("EDT delete called with NULL edt on rank %u",
-              arts_global_rank_id);
-    return;
-  }
   ARTS_INFO("EDT delete [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
             edt->guid, edt->depc, edt->depc_needed, arts_global_rank_id);
-  /* route through arts_route_table_set_destroyed so the deleter
-   * (arts_edt_deleter -> arts_edt_free) runs once outstanding refs are
-   * returned.  Capturing the GUID up front, then calling mark_delete:
-   * if no other thread holds an acquire ref, this drops the install ref
-   * and free_item invokes the deleter inline.  If another thread holds
-   * a transient lookup_edt_safe ref, free_item is deferred to the last
-   * release_item.  Either way `edt` is no longer safe to dereference
-   * after this call returns. */
-  arts_guid_t guid = edt->guid;
-  arts_route_table_set_destroyed(guid);
+  arts_route_table_set_destroyed_item(edt->guid, edt->self_cb);
 }
 
 /* Pure Cat-B body (g_ooo_table[OOO_EDT_DESTROY]).  The EDT is installed and
- * ref-pinned by dispatch_or_defer; this body operates on the live item without
- * any lookup / pin / release of its own.  OCR restricts ocrEdtDestroy to
+ * ref-pinned by dispatch_or_defer.  OCR restricts ocrEdtDestroy to
  * pre-runnable EDTs (depc_needed > 0); destroying a runnable/queued/running EDT
- * is UB and is skipped.  arts_route_table_set_destroyed detaches the slot cb so
- * the deleter (arts_edt_deleter -> arts_edt_free) runs once outstanding refs
- * (including dispatch_or_defer's own pin) drain; it is idempotent, so a
- * duplicate/late replay is a safe no-op. */
+ * is UB and is skipped.  The retire names the object the dispatch chose, so it
+ * fails when the EDT's own completion retired it first.  A destroyed EDT never
+ * completes, so the destroy that wins the retire sends the finish-scope DECR
+ * its completion would have: to the local proxy when the scope is remote (its
+ * fire forwards the DECR and reclaims it), else to the scope itself.  The
+ * output event is left alone: the programming model does not say what a
+ * destroyed EDT's output event does. */
 void arts_handler_edt_destroy(void *item_v, void *args_v) {
   struct arts_edt_s *edt = (struct arts_edt_s *)item_v;
   struct arts_ooo_args_edt_destroy_s *a =
@@ -421,7 +374,11 @@ void arts_handler_edt_destroy(void *item_v, void *args_v) {
   }
   ARTS_INFO("EDT destroy [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
             edt->guid, edt->depc, edt->depc_needed, arts_global_rank_id);
-  arts_route_table_set_destroyed(a->guid);
+  arts_guid_t finish_event = edt->finish_event;
+  if (arts_ooo_retire_item(a->guid, item_v) && finish_event != NULL_GUID) {
+    arts_event_satisfy_slot(finish_event, NULL_GUID,
+                            ARTS_EVENT_LATCH_DECR_SLOT);
+  }
 }
 
 /* Cross-rank send: forward the destroy to the EDT's home rank (symmetric with
@@ -562,8 +519,7 @@ void arts_handler_edt_satisfy_slot(void *item, void *vargs) {
  *   GPU LC (wrapper has outstanding device-replica invalidations) →
  * force-defer on the wrapper's slot; the replay re-signals this EDT after
  * drain. The satisfy logic lives once in edt_apply_satisfy (the handler);
- * this entry only routes.  arts_signal_edt is a deprecated alias of the same
- * signature. */
+ * this entry only routes. */
 void arts_edt_satisfy_slot(arts_guid_t edt_guid, uint32_t slot,
                            arts_guid_t data_guid, arts_db_access_mode_t mode) {
   TIME_EDT_SIGNAL_START();
@@ -622,85 +578,83 @@ void arts_send_object_blob(unsigned int rank, arts_guid_t guid, void *ptr,
   TIME_REMOTE_MOVE_STOP();
 }
 
-void arts_handler_edt_create(void *ptr) {
-  struct arts_msg_object_blob_packet_s *packet =
-      (struct arts_msg_object_blob_packet_s *)ptr;
-  uint64_t size =
-      packet->header.size - sizeof(struct arts_msg_object_blob_packet_s);
-  struct arts_edt_s *edt =
-      (struct arts_edt_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
-
-  memcpy(edt, packet + 1, size);
-  /* lifecycle/deleter handled by the route_table cb (deleter-by-kind) when
-   * this EDT is installed below — no per-object shared field to stamp. */
-  /* finish-scope chain: if the EDT arrived with a non-NULL finish_event,
-   * the field currently holds the *parent* finish_event GUID (which lives
-   * on the source rank).  Allocate a local proxy LATCH and rewrite the
-   * field so this EDT's finish_event is local-home.  Register a dep so
-   * that proxy fire emits DECR on the remote parent.
-   *
-   * The matching INCR on the remote parent was already emitted on the
-   * source rank inside arts_edt_create_core before the EDT was
-   * shipped — race-free under source-rank local sync ordering. */
-  if (edt->finish_event != NULL_GUID) {
-    arts_guid_t parent_fe = edt->finish_event;
-    /* Single-shot proxy: auto_destroy is set at creation (immutable) so the
-     * proxy is reclaimed the instant it fires rather than lingering.  A plain
-     * LATCH, not a finish hint — the proxy chains explicitly to the remote
-     * parent below, not to the local ambient finish scope. */
+/* g_ooo_table[OOO_EDT_CREATE]: the engine runs it while the GUID's slot is
+ * empty (`item_v` is NULL).  A local create hands over the EDT it built, which
+ * is installed as is; a received blob is copied into a fresh object.  The
+ * sentinel (+1 on depc_needed) holds the EDT unrunnable from the install until
+ * it is removed below, so the satisfies the install's drain replays, and any
+ * that land concurrently, cannot fire it before its finish-scope field is
+ * final; exactly one party then observes the 0 transition.  A lost install CAS
+ * means another create filled the slot after the engine saw it empty, so this
+ * one re-enters the engine and parks behind it — with the same object when it
+ * was handed over.  A parked create keeps open the finish-scope INCR its
+ * creating rank emitted until it installs. */
+void arts_handler_edt_create(void *item_v, void *args_v) {
+  (void)item_v;
+  const struct arts_ooo_args_create_blob_s *a =
+      (const struct arts_ooo_args_create_blob_s *)args_v;
+  struct arts_edt_s *edt;
+  arts_guid_t guid;
+  arts_shared_ptr_t pin;
+  if (a->size == ARTS_OOO_CREATE_ADOPT) {
+    const struct arts_ooo_args_create_local_s *l =
+        (const struct arts_ooo_args_create_local_s *)args_v;
+    edt = (struct arts_edt_s *)l->descriptor;
+    guid = l->guid;
+    edt->depc_needed += 1;
+    pin = arts_route_table_install_if_absent(edt, guid, arts_global_rank_id,
+                                             false);
+    if (pin == NULL) {
+      edt->depc_needed -= 1;
+      arts_ooo_dispatch_or_defer_guid(guid, OOO_EDT_CREATE, args_v,
+                                      (uint32_t)sizeof(*l));
+      return;
+    }
+  } else {
+    const unsigned char *packet = (const unsigned char *)(a + 1);
+    memcpy(&guid,
+           packet + offsetof(struct arts_msg_object_blob_packet_s, guid),
+           sizeof(guid));
+    size_t size = a->size - sizeof(struct arts_msg_object_blob_packet_s);
+    edt = (struct arts_edt_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
+    memcpy(edt, packet + sizeof(struct arts_msg_object_blob_packet_s), size);
+    edt->depc_needed += 1;
+    pin = arts_route_table_install_if_absent(edt, guid, arts_global_rank_id,
+                                             false);
+    if (pin == NULL) {
+      arts_edt_deleter(edt);
+      arts_ooo_dispatch_or_defer_guid(guid, OOO_EDT_CREATE, args_v,
+                                      (uint32_t)(sizeof(*a) + a->size));
+      return;
+    }
+  }
+  /* `pin` keeps the EDT alive from the install to the end of this body, even
+   * when the install's drain replays a destroy that retires it.  self_cb is a
+   * non-owning alias of the installed cb, armed from the handle itself (a
+   * lookup could return a later generation's cb). */
+  edt->self_cb = pin;
+  /* A finish scope homed on another rank is joined through a local LATCH
+   * proxy whose fire carries the DECR to it; one homed here is decremented
+   * directly by the EDT's completion.  A retire clears the cb's tag, so an EDT
+   * the install's drain already destroyed gets no proxy (it never
+   * completes). */
+  if (edt->finish_event != NULL_GUID &&
+      arts_guid_get_rank(edt->finish_event) != arts_global_rank_id &&
+      arts_shared_tag(pin) == (uint64_t)guid) {
     arts_event_hint_t proxy_hint = ARTS_EVENT_HINT_LATCH(1);
     proxy_hint.auto_destroy = true;
     arts_guid_t proxy = arts_event_create(&proxy_hint);
-    /* add_dependence registers the proxy in its own waiter list (local op).
-     * The cross-node satisfy-on-fire is emitted automatically by the
-     * LATCH fire path when proxy.counter reaches 0. */
-    arts_add_dependence(proxy, parent_fe, ARTS_EVENT_LATCH_DECR_SLOT,
+    arts_add_dependence(proxy, edt->finish_event, ARTS_EVENT_LATCH_DECR_SLOT,
                         DB_MODE_NULL);
     edt->finish_event = proxy;
   }
-  /* Sentinel protocol (mirrors the pre-reserved path in
-   * arts_edt_create_core): bump depc_needed by 1 before the EDT becomes
-   * globally visible.  add_item_race installs the EDT and replays any queued
-   * dependency satisfies, and once installed a satisfy may also land
-   * concurrently on another receiver thread.  Without the sentinel both that
-   * satisfy (observing depc_needed hit 0) and this handler's own readiness
-   * check would fire arts_handle_ready_edt for the same EDT — a double
-   * dispatch.  The sentinel keeps depc_needed >= 1 across install + replay,
-   * so exactly one party observes the 0 transition: the sentinel removal
-   * below, or the last satisfy after we return. */
-  edt->depc_needed += 1;
-  /* add_item_race installs the EDT under the route_table lock.  On
-   * rejection (another thread won the install race) free the freshly
-   * unmarshaled buffer through the deleter — mirrors event_move's
-   * race-loser cleanup pattern. */
-  if (!arts_route_table_install_if_absent(edt, packet->guid,
-                                          arts_global_rank_id, false)) {
-    /* race-loser cleanup: if we allocated a proxy LATCH for the
-     * finish-scope chain, drain it.  proxy.counter == 1 (self-alive
-     * token, just allocated above).  DECR drives counter to 0 → fire,
-     * which emits the cross-node DECR to the remote parent_fe via the
-     * dep we just registered.  This cancels the source-rank INCR that
-     * was emitted before this EDT was shipped, keeping the parent
-     * finish-scope balanced.  proxy itself self-destroys on fire (LATCH
-     * auto_destroy semantics). */
-    if (edt->finish_event != NULL_GUID) {
-      arts_event_satisfy_slot(edt->finish_event, NULL_GUID,
-                              ARTS_EVENT_LATCH_DECR_SLOT);
-    }
-    arts_edt_get_deleter()(edt);
-    return;
-  }
-  ARTS_INFO("EDT[Guid:%lu] Moved to Rank: %d", packet->guid,
-            arts_global_rank_id);
-  arts_edt_arm_self_cb(edt, packet->guid);
-  /* Remove the sentinel.  add_item_race already replayed queued satisfies and
-   * any concurrent satisfy decremented too; the unique observer of the 0
-   * transition fires the EDT exactly once (here, or the last late satisfy).
-   */
-  unsigned int remaining = arts_atomic_sub(&edt->depc_needed, 1U);
-  if (remaining == 0) {
+  /* arts_handle_ready_edt takes the runnable-phase ref from self_cb, which is
+   * sound only while `pin` is held; nothing touches the EDT after the
+   * release. */
+  if (arts_atomic_sub(&edt->depc_needed, 1U) == 0) {
     arts_handle_ready_edt(edt);
   }
+  arts_shared_release(&pin);
 }
 
 void arts_send_edt_satisfy_slot(arts_guid_t edt, arts_guid_t db, uint32_t slot,

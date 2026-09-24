@@ -42,6 +42,7 @@
 #include "arts/counter/Preamble.h" /* TIME_CONTEXT_SWITCH_START/STOP */
 #include "arts/runtime_state.h"    /* arts_thread_info */
 #include "arts/system/print.h"
+#include "arts/utils/shared.h"
 #include "arts/utils/vector.h"
 
 ARTS_THREAD_LOCAL struct arts_edt_s *current_edt = NULL;
@@ -86,11 +87,22 @@ arts_guid_t arts_current_finish_event(void) {
   return current_edt ? current_edt->finish_event : NULL_GUID;
 }
 
-void arts_track_created_db(arts_guid_t guid) {
+void arts_track_created_db(arts_shared_ptr_t h) {
   if (created_db_list.element_size == 0) {
-    arts_vector_init(&created_db_list, sizeof(arts_guid_t), 8);
+    arts_vector_init(&created_db_list, sizeof(arts_shared_ptr_t), 8);
   }
-  arts_vector_push(&created_db_list, &guid);
+  arts_vector_push(&created_db_list, &h);
+}
+
+/* Frees a created-DB list's storage, dropping the ref of every entry still in
+ * it.  Only a list whose holds were already released, or abandoned with their
+ * task, reaches here with entries. */
+static void created_db_list_free(arts_vector_t *list) {
+  uint64_t n = arts_vector_count(list);
+  for (uint64_t i = 0; i < n; i++) {
+    arts_shared_release((arts_shared_ptr_t *)arts_vector_at(list, i));
+  }
+  arts_vector_free(list);
 }
 
 arts_vector_t *arts_get_created_db_list(void) { return &created_db_list; }
@@ -132,7 +144,7 @@ void arts_edt_ctx_restore(arts_edt_ctx_t *tl) {
   TIME_CONTEXT_SWITCH_START();
   arts_thread_info.current_edt_guid = tl->current_edt_guid;
   current_edt = tl->current_edt;
-  arts_vector_free(&created_db_list);
+  created_db_list_free(&created_db_list);
   created_db_list = tl->created_db_list;
   arts_vector_free(&owned_finish_list);
   owned_finish_list = tl->owned_finish_list;
@@ -140,17 +152,17 @@ void arts_edt_ctx_restore(arts_edt_ctx_t *tl) {
 }
 
 void arts_cleanup_edt_tls() {
-  arts_vector_free(&created_db_list);
+  created_db_list_free(&created_db_list);
   arts_vector_free(&owned_finish_list);
 }
 
-void arts_unset_thread_local_edt_info() {
+void arts_unset_thread_local_edt_info(bool decr_finish) {
   /* finish_event tracking: emit DECR on completion of the current EDT.
    * - Joined/inherited finish_event: balances the INCR emitted at create time.
    * - Cross-node proxy finish_event: counter==0 fires the latch, propagating
    *   DECR to the parent's finish_event via the dep registered at allocation.
    * `current_edt` is still valid here (cleared on the next line). */
-  if (current_edt && current_edt->finish_event != NULL_GUID) {
+  if (decr_finish && current_edt && current_edt->finish_event != NULL_GUID) {
     arts_event_satisfy_slot(current_edt->finish_event, NULL_GUID,
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }

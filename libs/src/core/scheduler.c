@@ -213,6 +213,22 @@ void arts_run_edt(struct arts_edt_s *edt) {
   release_dbs(depc, depv, false);
   arts_release_created_dbs();
 
+  /* Retire the GUID before any completion signal leaves: whoever observes the
+   * completion (output event, finish scope) may create the GUID's next
+   * generation and satisfy it at once, and those messages must find this
+   * generation gone rather than run against it.  The runnable-phase ref taken
+   * in arts_handle_ready_edt keeps the EDT alive past the detach, and its
+   * release below is the last drop that runs the deleter. */
+  arts_shared_ptr_t sref = edt->self_cb;
+#ifdef ARTS_USE_CXL
+  bool retire = !IS_CXL_PTR(edt);
+#else
+  bool retire = true;
+#endif
+  if (retire) {
+    arts_edt_delete(edt);
+  }
+
   /* Output event: satisfied only now, after every release above, so a
    * consumer it wakes cannot acquire one of this EDT's data blocks before
    * the writes are published (a satisfy sent from the EDT body would
@@ -224,25 +240,12 @@ void arts_run_edt(struct arts_edt_s *edt) {
                             ARTS_EVENT_LATCH_DECR_SLOT);
   }
 
-  arts_unset_thread_local_edt_info();
+  arts_unset_thread_local_edt_info(true);
 
   ARTS_INFO("EDT[Guid:%lu] finished (exec_ns=%lu)", edt->guid, exec_ns);
-  /* Drop the runnable-phase ref taken in arts_handle_ready_edt.  Capture the
-   * alias first: arts_edt_delete detaches the route slot (dropping the install
-   * ref), but the EDT is kept alive by this ref, so the final release below is
-   * the last drop that runs the deleter (free).  If a concurrent destroy
-   * already detached the slot, arts_edt_delete's set_destroyed is an idempotent
-   * no-op and this release is still the last drop. */
-  arts_shared_ptr_t sref = edt->self_cb;
-#ifdef ARTS_USE_CXL
-  if (!IS_CXL_PTR(edt)) {
-    arts_edt_delete(edt);
+  if (retire) {
     arts_shared_release(&sref);
   }
-#else
-  arts_edt_delete(edt);
-  arts_shared_release(&sref);
-#endif
 }
 
 inline struct arts_edt_s *arts_runtime_steal_from_network() {
