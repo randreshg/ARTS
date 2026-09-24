@@ -142,10 +142,8 @@ _Static_assert(MSG_DB_FLUSH_ANNOUNCE == 46,
                "ordinal MSG_DB_FLUSH_ANNOUNCE drifted");
 _Static_assert(MSG_DB_FLUSH_CTS == 47, "ordinal MSG_DB_FLUSH_CTS drifted");
 _Static_assert(MSG_DB_FAM_FREE == 48, "ordinal MSG_DB_FAM_FREE drifted");
-_Static_assert(MSG_DB_FAM_FETCH_DONE == 49,
-               "ordinal MSG_DB_FAM_FETCH_DONE drifted");
-_Static_assert(MSG_COUNT == 50,
-               "MSG_COUNT drifted (wire-compat: must be 50 in all configs)");
+_Static_assert(MSG_COUNT == 49,
+               "MSG_COUNT drifted (wire-compat: must be 49 in all configs)");
 
 /* ===== (1b) the bootstrap address frame is wire too, and its header
  * transfer's size is computed from offsetof(addr) on BOTH sides of the
@@ -243,8 +241,6 @@ _Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s,
 #ifdef ARTS_FAM
 _Static_assert(sizeof(struct arts_msg_db_fam_free_packet_s) == 24,
                "db_fam_free sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_db_fam_fetch_done_packet_s) == 32,
-               "db_fam_fetch_done sizeof drifted");
 #endif
 _Static_assert(sizeof(struct arts_msg_destroy_packet_s) == 24,
                "destroy sizeof drifted");

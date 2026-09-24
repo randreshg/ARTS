@@ -151,9 +151,8 @@ endif()
 #
 # The two FAM trees are one compile-time switch (ARTS_FAM_TREE_RESIDENCY)
 # apart: the slot rule, the wire, the messages, the arbiter actions, the
-# funnel positions, the claim, fam_slot_required, the zero-size exemption, the
-# two edge flushes, and the three tallies and their two readers are identical
-# on both, and the only differences are residency itself -- the two
+# funnel positions, fam_slot_required, the zero-size exemption, the two edge
+# flushes, and the two tallies and their reader are identical on both, and the only differences are residency itself -- the two
 # body definitions and the buffer representation -- and the test surface that
 # describes that representation:
 #
@@ -163,7 +162,7 @@ endif()
 #   buffer_external_payload                  | registered, SKIPs | registered, runs         | the external descriptor's own contract
 #   fam_slot_discard_unadopt                 | not registered    | registered 1n            | the withdrawal it asserts exists only where a descriptor adopts the store
 #   fam_direct_payload_identity              | not registered    | registered 1n/2n/3n      | the property is false by construction under STAGED
-#   fam_home_turn_costs, fam_fetch_off_progress | registered      | registered (this residency's own entry) | the tallies are incremented by the funnel both residencies fetch and purge through
+#   fam_home_turn_costs                      | registered        | registered               | the tallies are incremented by the funnel both residencies fetch and purge through
 #   db_cache_layout, coherence_zero_size_xfer, db_create_after_first_touch, the arm's other fam_* programs, coherence_grant_chain_visibility, everything else | registered | registered | one behaviour, two representations
 set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_payload_roundtrip
@@ -211,23 +210,9 @@ if(ARTS_FAM_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS fam_slot_reuse_after_destroy)
     list(APPEND TEST_PROGRAMS fam_no_acquire_first_use)
     list(APPEND TEST_PROGRAMS fam_labeled_create)
-    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "STAGED")
-        # What a turn costs is a claim about the residency that stages the
-        # block's bytes into a working copy; another residency answers for its
-        # own.
-        list(APPEND TEST_PROGRAMS fam_home_turn_costs)
-        # Where that copy runs is a claim about the same residency.
-        list(APPEND TEST_PROGRAMS fam_fetch_off_progress)
-    endif()
-    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
-        # The tallies these two read (fetches, purges, progress-thread
-        # fetches) are incremented by the funnel both residencies fetch and
-        # purge through, so the programs are valid on this residency too and
-        # get their own build entry here; this residency's own ctest
-        # registration is the sibling DIRECT-only block below.
-        list(APPEND TEST_PROGRAMS fam_home_turn_costs)
-        list(APPEND TEST_PROGRAMS fam_fetch_off_progress)
-    endif()
+    # The tallies it reads (fetches, purges) are incremented by the funnel
+    # both residencies fetch and purge through.
+    list(APPEND TEST_PROGRAMS fam_home_turn_costs)
     list(APPEND TEST_PROGRAMS fam_slices)
 endif()
 
@@ -1666,12 +1651,6 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # every rank that holds it.  Needs more than one rank to say anything.
         register_fam_multinode_test(fam_direct_payload_identity TIMEOUT 120
                                     VARIANTS 2n 3n)
-        # The tallies these two read are incremented by the funnel both
-        # residencies fetch and purge through (see the TEST_PROGRAMS list
-        # above), so one fetch and one purge per turn, and no fetch step on a
-        # progress thread, are checkable on this residency's own entry too.
-        register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
-        register_fam_multinode_test(fam_fetch_off_progress TIMEOUT 60)
     endif()
     # A cache made by an acquiring create is on the block's destroy roster, so
     # it gives its store up with the block instead of outliving it.  Needs a
@@ -1686,16 +1665,9 @@ if(ARTS_FAM_TREE_RESIDENCY)
     register_fam_multinode_test(fam_labeled_create TIMEOUT 180)
     # One pool at one address in every rank, cut into disjoint slices.
     register_fam_multinode_test(fam_slices TIMEOUT 60 VARIANTS 2n 4n)
-    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "STAGED")
-        # What a turn costs is a claim about the residency that stages a
-        # block's bytes into a working copy; another residency answers for its
-        # own.  One rank, because that is where every turn is home-local.
-        register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
-        # Where that copy runs.  Multinode only: a progress thread is what a
-        # rank has when it has peers, so on one rank the property holds
-        # vacuously and asserts nothing.
-        register_fam_multinode_test(fam_fetch_off_progress TIMEOUT 60)
-    endif()
+    # One fetch and one purge per turn, on either residency.  One rank,
+    # because that is where every turn is home-local.
+    register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
     # The arm's teardown walk: six blocks, every one released and every
     # dependence satisfied, must leave the walk silent -- a QUIESCENCE-DEBUG
     # marker on this shape is the oracle catching a real defect, not a test

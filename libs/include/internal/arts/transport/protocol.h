@@ -173,10 +173,6 @@ enum arts_msg_type {
   /* Fabric-attached memory: home -> the slot's allocating rank at the
    * block's teardown, handing the slot back to its own allocator. */
   MSG_DB_FAM_FREE,
-  /* Fabric-attached memory: self-addressed, worker -> this rank's own
-   * grant committer, carrying a claimed grant's copy back for commit.
-   * Never leaves the rank. */
-  MSG_DB_FAM_FETCH_DONE,
 
   MSG_COUNT, /* sentinel — keep last; used for array sizing */
 };
@@ -507,16 +503,6 @@ struct ARTS_PACKED arts_msg_cache_destroy_packet_s {
 struct ARTS_PACKED arts_msg_db_fam_free_packet_s {
   struct arts_msg_header_s header;
   uint64_t fam_addr;
-};
-
-/* FAM_FETCH_DONE — self-addressed: the worker that copied a claimed grant's
- * bytes hands the commit back to the rank's own loopback drainer, the one
- * thread that commits grants.  Never leaves the rank. */
-struct ARTS_PACKED arts_msg_db_fam_fetch_done_packet_s {
-  struct arts_msg_header_s header;
-  arts_guid_t db_guid;
-  uint32_t mode;
-  uint32_t pad;
 };
 
 /* ===== WB-write-policy-only wire packets ====================================

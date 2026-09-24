@@ -59,17 +59,6 @@ struct arts_runtime_shared_s {
   struct arts_deque_s **deque;
   struct arts_deque_s **progress_deque;
   struct arts_deque_s **gpu_deque;
-#ifdef ARTS_FAM
-  /* Runtime-internal work, indexed by thread_id -- NOT by group_pos: every
-   * thread runs arts_runtime_private_init, and a progress thread's group_pos
-   * collides with a worker's (progress_deque is indexed by it), so a
-   * group_pos-keyed array would have two owners for one slot.  worker_ids maps
-   * a worker's group_pos to its thread_id, the way progress_deque maps a
-   * progress thread's, so a poster can pick a worker without walking roles. */
-  struct arts_job_queue_s *job_queue;  /* total_thread_count entries */
-  unsigned int *worker_ids;            /* worker_thread_count entries */
-  volatile unsigned int job_rr;        /* round-robin cursor for posting */
-#endif
 #ifdef ARTS_USE_CXL
   arts_cxl_deque_t *cxl_deque;
   pthread_mutex_t cxl_local_lock;
@@ -176,7 +165,6 @@ extern ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
  * -- it says whether a shutdown was quiescent. */
 struct arts_shutdown_abandon_s {
   unsigned int queued_edts; /* runnable EDTs dropped from a deque unrun */
-  unsigned int jobs;        /* runtime jobs discarded instead of run */
   /* Release waits the shutdown cut short or left unawaited, one per wait,
    * counted wherever a release stops waiting for its reply because the
    * shutdown began -- on any arm, so an arm with nothing for the walk to

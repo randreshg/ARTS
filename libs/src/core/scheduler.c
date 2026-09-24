@@ -73,16 +73,6 @@
 bool arts_cxl_scheduler_loop(void);
 #endif
 
-/* Runtime-internal work a worker runs between EDTs.  The one guard in this
- * file: the loops below are compiled into every library and every variant, so
- * the call site has to exist where the facility does not. */
-#ifdef ARTS_FAM
-#include "arts/job_queue.h"
-static inline bool sched_drain_jobs(void) { return arts_job_queue_drain(); }
-#else
-static inline bool sched_drain_jobs(void) { return false; }
-#endif
-
 extern unsigned int num_numa_domains;
 
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -285,7 +275,6 @@ inline struct arts_edt_s *arts_runtime_steal_from_worker() {
 }
 
 bool arts_network_first_scheduler_loop() {
-  bool jobs = sched_drain_jobs();
   /* Single-node only: a worker drains self-loopback (no receiver thread
    * exists). On multinode the receiver thread is the sole loopback drainer, so
    * all coherence stays serialized on one thread; workers must not also drain.
@@ -303,11 +292,10 @@ bool arts_network_first_scheduler_loop() {
     arts_run_edt(edt_found);
     return true;
   }
-  return drained || jobs;
+  return drained;
 }
 
 bool arts_network_before_steal_scheduler_loop() {
-  bool jobs = sched_drain_jobs();
   /* Single-node only: a worker drains self-loopback (no receiver thread
    * exists). On multinode the receiver thread is the sole loopback drainer, so
    * all coherence stays serialized on one thread; workers must not also drain.
@@ -326,11 +314,10 @@ bool arts_network_before_steal_scheduler_loop() {
     arts_run_edt(edt_found);
     return true;
   }
-  return drained || jobs;
+  return drained;
 }
 
 bool arts_default_scheduler_loop() {
-  bool jobs = sched_drain_jobs();
   /* Deliver self-sends first so a same-rank acquire/transfer round advances on
    * a fresh stack (the asynchronous receiver paradigm; a single-node rank has
    * no receiver thread to carry a message addressed to itself). */
@@ -355,8 +342,8 @@ bool arts_default_scheduler_loop() {
     // arts_wake_up_context();
     return true;
   }
-  if (drained || jobs) {
-    return true; /* made progress off the deque; loop again before idling */
+  if (drained) {
+    return true; /* made progress via self-loopback; loop again before idling */
   }
   arts_runtime_idle_pause();
   return false;

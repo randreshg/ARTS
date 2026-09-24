@@ -19,8 +19,7 @@
 ///   4. a read turn on B
 /// where B is another rank when there is one.  At every point a task checks
 /// that its rank's record for the block is exactly the flushes the turns so
-/// far imply for that rank, in that order, each covering the whole slot, and
-/// none on a progress thread.
+/// far imply for that rank, in that order, each covering the whole slot.
 
 #include "arts.h"
 
@@ -134,10 +133,6 @@ static bool check_record(const char *phase, uint64_t slot, size_t bytes,
     }
     if (lo != slot || r.bytes != bytes) {
       fail(phase, "a flush covered part of the block's slot, not all of it");
-      return false;
-    }
-    if (r.role == (unsigned)ARTS_ROLE_PROGRESS) {
-      fail(phase, "a flush of the block ran on a progress thread");
       return false;
     }
     if (ng + 1u >= sizeof(got)) {

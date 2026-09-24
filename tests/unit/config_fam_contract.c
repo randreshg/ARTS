@@ -5,8 +5,6 @@
 ///   - the two keys parse in EVERY tree, FAM-enabled or not: the cfg files are
 ///     shared by all of them, and a tree that cannot use a key ignores it
 ///   - fam_pool_mb defaults to 64 and must name at least 1 MB
-///   - a rank with no worker thread is refused: nobody would bring a block's
-///     bytes in
 ///   - a pool is never refused for its size, only past the allocator's own
 ///     granule-index bound
 ///   - over the vendored fake library (SHM), a run of more than one rank is
@@ -29,32 +27,22 @@
 
 static int fails;
 
-/* What a case that says nothing about the run's shape is written on top of.
- * The parser keeps the FIRST value it sees for a key, so a case ABOUT one of
- * these keys must be written without it -- see write_cfg_on. */
-#define CFG_PRELUDE                                                            \
-  "worker_threads=2\n"                                                         \
-  "progress_threads=1\n"                                                       \
-  "route_table_size=14\n"
-
-static int write_cfg_on(char *path_out, size_t path_cap, const char *tag,
-                        const char *prelude, const char *body) {
+static int write_cfg(char *path_out, size_t path_cap, const char *tag,
+                     const char *body) {
   snprintf(path_out, path_cap, "config_fam_contract_%s_%ld.cfg", tag,
            (long)getpid());
   FILE *f = fopen(path_out, "w");
   if (!f) {
     return -1;
   }
-  fputs("[ARTS]\n", f);
-  fputs(prelude, f);
+  fputs("[ARTS]\n"
+        "worker_threads=2\n"
+        "progress_threads=1\n"
+        "route_table_size=14\n",
+        f);
   fputs(body, f);
   (void)fclose(f);
   return 0;
-}
-
-static int write_cfg(char *path_out, size_t path_cap, const char *tag,
-                     const char *body) {
-  return write_cfg_on(path_out, path_cap, tag, CFG_PRELUDE, body);
 }
 
 /* Load in a forked child; returns the child's output and whether it died. */
@@ -93,11 +81,11 @@ static int load_dies(const char *cfg_path, char *out, size_t cap) {
   return WIFSIGNALED(status) || (WIFEXITED(status) && WEXITSTATUS(status));
 }
 
-static void expect_refused_on(const char *tag, const char *prelude,
-                              const char *body, const char *must_say) {
+static void expect_refused(const char *tag, const char *body,
+                           const char *must_say) {
   char cfg[256];
   char out[4096];
-  if (write_cfg_on(cfg, sizeof(cfg), tag, prelude, body) != 0) {
+  if (write_cfg(cfg, sizeof(cfg), tag, body) != 0) {
     printf("FAIL config_fam_contract: cannot write %s cfg\n", tag);
     fails++;
     return;
@@ -114,11 +102,6 @@ static void expect_refused_on(const char *tag, const char *prelude,
            tag, must_say, out);
     fails++;
   }
-}
-
-static void expect_refused(const char *tag, const char *body,
-                           const char *must_say) {
-  expect_refused_on(tag, CFG_PRELUDE, body, must_say);
 }
 
 static void expect_parsed(const char *tag, const char *body,
@@ -154,16 +137,6 @@ int main(void) {
                  "fam_strict no longer exists");
 
 #ifdef ARTS_FAM
-  /* A rank with no worker has nobody to bring a block's bytes in.  Written
-   * with NO prelude, because the prelude names both thread counts and the
-   * first value for a key is the one that stands; both are named here so the
-   * single-node reclaim still leaves the derived worker count at zero, which
-   * is what the check reads.  The must-say is the key and its value, which no
-   * other refusal in this file can produce. */
-  expect_refused_on("no_worker", "route_table_size=14\n",
-                    "launcher=local\nnode_count=1\nworker_threads=0\n"
-                    "progress_threads=0\nfam_pool_mb=8\n",
-                    "worker_threads=0");
   expect_refused("zero", "launcher=local\nnode_count=1\nfam_pool_mb=0\n",
                  "fam_pool_mb");
   /* A pool is never refused for its size, only past the allocator's own

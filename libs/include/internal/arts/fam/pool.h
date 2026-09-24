@@ -126,7 +126,6 @@ struct arts_fam_flush_record_s {
   uintptr_t addr;
   size_t bytes;
   bool producer;
-  unsigned role; /* the flushing thread's enum arts_thread_role */
 };
 /* How many flushes this rank has entered, overflow included. */
 uint64_t arts_fam_flush_record_count(void);

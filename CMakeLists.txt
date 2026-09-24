@@ -688,23 +688,16 @@ elseif(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
 endif()
 # Keyed on this tree's OWN FAM enablement, never on the backend: the
 # fabric-attached benchmark variants build from the CPU scheduler objects, so a
-# GPU tree that only adds them has neither hazard below.
-if(ARTS_FAM_TREE_RESIDENCY AND ARTS_USE_GPU)
-  set(_arts_fam_gpu_holdless "")
-  if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
-    string(CONCAT _arts_fam_gpu_holdless
-           "  And the device access modes take no DataBlock hold, so where an "
-           "EDT's working bytes are the store itself they would address "
-           "memory several hosts share with nothing ordering the access.")
-  endif()
+# GPU tree that only adds them has not the hazard below.
+if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT" AND ARTS_USE_GPU)
   message(FATAL_ERROR
           "ARTS_USE_GPU=ON cannot be combined with a tree whose own library is "
-          "FAM-enabled (ARTS_FAM_RESIDENCY=${ARTS_FAM_TREE_RESIDENCY} on EXCL x "
-          "PURGE): the GPU scheduler loops do not run the job queue that brings "
-          "a block's bytes in, so a fetch would never complete there."
-          "${_arts_fam_gpu_holdless}  A GPU tree may still build the "
-          "fabric-attached variants -- set ARTS_FAM_BACKEND and leave this "
-          "tree's own protocol alone.")
+          "FAM-enabled with ARTS_FAM_RESIDENCY=DIRECT (EXCL x PURGE): the "
+          "device access modes take no DataBlock hold, so where an EDT's "
+          "working bytes are the store itself they would address memory "
+          "several hosts share with nothing ordering the access.  A GPU tree "
+          "may still build the fabric-attached variants -- set "
+          "ARTS_FAM_BACKEND and leave this tree's own protocol alone.")
 endif()
 
 if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND

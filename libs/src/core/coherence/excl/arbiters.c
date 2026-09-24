@@ -155,9 +155,7 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
       rws = CACHE_ST_REQ;
       act = CACHE_ACT_SEND_RW; /* first writer of the round: request home */
     } else {
-      /* REQ, or FETCH while a claimed grant's copy runs — an in-flight grant,
-       * claimed or not, covers this acquire: park. */
-      act = CACHE_ACT_PARK;
+      act = CACHE_ACT_PARK; /* covered by the in-flight request */
     }
     break;
   case CACHE_OP_ACQ_RO:
@@ -168,12 +166,27 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
       ros = CACHE_ST_REQ;
       act = CACHE_ACT_SEND_RO;
     } else {
-      /* REQ, or FETCH while a claimed grant's copy runs — an in-flight grant,
-       * claimed or not, covers this acquire: park. */
-      act = CACHE_ACT_PARK;
+      act = CACHE_ACT_PARK; /* covered by the in-flight request */
     }
     break;
   case CACHE_OP_GRANT_RW:
+#ifdef ARTS_FAM
+    /* One grant answers one request, so it is taken only by an axis still at
+     * REQ.  Every other arrival is handed back and the other axis is never
+     * rewritten: at IDLE a create hold served this request's cohort and has
+     * since let go, and at GRANT the axis is already held.  A read turn held
+     * on the other axis also sends it back, clearing the REQ it answers, since
+     * no second grant is coming for that request. */
+    if (rws != CACHE_ST_REQ) {
+      act = CACHE_ACT_REL_RW_EMPTY;
+      break;
+    }
+    if (ros == CACHE_ST_GRANT) {
+      rws = CACHE_ST_IDLE;
+      act = CACHE_ACT_REL_RW_EMPTY;
+      break;
+    }
+#endif
     /* Normally rws==REQ and wc>=1: the request opener is counted and cannot
      * have been served before its grant, so an RW grant finds its cohort.
      * One arrival breaks that — a request this rank sent BEFORE its own
@@ -197,6 +210,20 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     act = CACHE_ACT_DRAIN_BOTH; /* RW grant serves this rank's RW + RO cohort */
     break;
   case CACHE_OP_GRANT_RO: /* precond: ros==REQ, rws!=GRANT */
+#ifdef ARTS_FAM
+    /* The read mirror of the rule above.  A write turn held here has already
+     * served this rank's readers (RW ⊇ RO), so the read request it covers is
+     * cleared with the grant's return rather than left at REQ. */
+    if (ros != CACHE_ST_REQ) {
+      act = CACHE_ACT_REL_RO;
+      break;
+    }
+    if (rws == CACHE_ST_GRANT) {
+      ros = CACHE_ST_IDLE;
+      act = CACHE_ACT_REL_RO;
+      break;
+    }
+#endif
     if (rc > 0) {
       ros = CACHE_ST_GRANT;
       act = CACHE_ACT_DRAIN_RO;
@@ -213,15 +240,8 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
      * cohorts a granted RW phase serves: a request this rank had already sent
      * stays counted and becomes a joiner under it, readers too (RW ⊇ RO).
      * A grant on either axis is the one refusal — the block exists elsewhere,
-     * and nothing here may take a turn over it.  A claimed grant whose copy is
-     * still running refuses for the same reason: the turn is already owed to
-     * that grant, and the working copy it fills may not be written under a
-     * hold. */
-    if (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT
-#ifdef ARTS_FAM
-        || rws == CACHE_ST_FETCH || ros == CACHE_ST_FETCH
-#endif
-    ) {
+     * and nothing here may take a turn over it. */
+    if (rws == CACHE_ST_GRANT || ros == CACHE_ST_GRANT) {
       break; /* act stays NONE: this create records no hold */
     }
     rws = CACHE_ST_GRANT;
@@ -229,14 +249,6 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     act = CACHE_ACT_DRAIN_BOTH;
     break;
   case CACHE_OP_REL_RW: /* precond: rws==GRANT */
-#ifdef ARTS_FAM
-    if (rws == CACHE_ST_FETCH) {
-      /* A release cannot precede the commit that admitted its holder: nothing
-       * is admitted while the axis is FETCH, and only the commit clears it. */
-      act = CACHE_ACT_INVALID;
-      break;
-    }
-#endif
     wc -= 1;
     if (wc == 0 && rc == 0) {
       rws = CACHE_ST_IDLE;
@@ -244,16 +256,6 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     }
     break;
   case CACHE_OP_REL_RO:
-#ifdef ARTS_FAM
-    if (ros == CACHE_ST_FETCH && rws != CACHE_ST_GRANT) {
-      /* The read mirror: nothing holds a read right through the read axis
-       * while it fetches.  A held write turn is the exception — its readers
-       * joined under it (RW ⊇ RO) and owe their release to it, not to the
-       * axis being fetched. */
-      act = CACHE_ACT_INVALID;
-      break;
-    }
-#endif
     rc -= 1;
     if (rws == CACHE_ST_GRANT && wc == 0 && rc == 0) {
       rws = CACHE_ST_IDLE;
@@ -263,86 +265,6 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
       act = CACHE_ACT_REL_RO; /* last holder of the RO grant → notify */
     }
     break;
-#ifdef ARTS_FAM
-  case CACHE_OP_GRANT_RW_CLAIM:
-    /* One grant answers one request, so the axis is normally REQ.  A grant
-     * that arrives for a right this axis already holds is a violation and is
-     * reported; every other answer is a hand-back, COMMITTED in this same
-     * atom: the request this grant answered is cleared, because no second
-     * grant is coming for it, and the other axis is never rewritten. */
-    if (rws == CACHE_ST_REQ &&
-        (ros == CACHE_ST_GRANT || ros == CACHE_ST_FETCH)) {
-      rws = CACHE_ST_IDLE; /* the REQ this grant answered is returned */
-      act = CACHE_ACT_REL_RW_EMPTY;
-      break;
-    }
-    if (rws == CACHE_ST_GRANT || rws == CACHE_ST_FETCH) {
-      /* A second grant for a write right this rank already holds or is
-       * fetching: one request is answered once, so the home cannot have sent
-       * it.  The word stands and the caller reports. */
-      act = CACHE_ACT_INVALID;
-      break;
-    }
-    if (rws != CACHE_ST_REQ) {
-      /* IDLE: a create hold served this request's cohort and has since let
-       * go, so the axis rests and the home's late grant simply goes back. */
-      act = CACHE_ACT_REL_RW_EMPTY;
-      break;
-    }
-    if (wc == 0u && rc == 0u) {
-      rws = CACHE_ST_IDLE;
-      act = CACHE_ACT_REL_RW_EMPTY;
-      break;
-    }
-    rws = CACHE_ST_FETCH;
-    act = CACHE_ACT_FETCH; /* an RW turn covers this rank's readers too */
-    break;
-  case CACHE_OP_GRANT_RO_CLAIM:
-    if (ros == CACHE_ST_REQ &&
-        (rws == CACHE_ST_GRANT || rws == CACHE_ST_FETCH)) {
-      /* An RW turn here serves this rank's readers (RW ⊇ RO), so the RO
-       * request is answered by that turn and its axis is cleared with the
-       * grant's return — never left at REQ for a grant nobody will send. */
-      ros = CACHE_ST_IDLE;
-      act = CACHE_ACT_REL_RO;
-      break;
-    }
-    if (ros == CACHE_ST_GRANT || ros == CACHE_ST_FETCH) {
-      /* The read mirror: a second grant for a read right already held or
-       * being fetched.  The word stands and the caller reports. */
-      act = CACHE_ACT_INVALID;
-      break;
-    }
-    if (ros != CACHE_ST_REQ) {
-      act = CACHE_ACT_REL_RO; /* IDLE: the late grant goes back */
-      break;
-    }
-    if (rc == 0u) {
-      ros = CACHE_ST_IDLE;
-      act = CACHE_ACT_REL_RO; /* phantom: the readers were served already */
-      break;
-    }
-    ros = CACHE_ST_FETCH;
-    act = CACHE_ACT_FETCH;
-    break;
-  case CACHE_OP_GRANT_COMMIT:
-    /* The copy is in the working copy: publish the grant and hand back the
-     * population to admit, as of this CAS.  Nothing was admitted or
-     * self-served while the axis was FETCH, so the counts here are exactly
-     * the parked waiters.  One axis at most is FETCH — each claim refuses
-     * while the other axis holds or fetches — so no mode argument is
-     * needed. */
-    if (rws == CACHE_ST_FETCH) {
-      rws = CACHE_ST_GRANT;
-      act = CACHE_ACT_DRAIN_BOTH;
-    } else if (ros == CACHE_ST_FETCH) {
-      ros = CACHE_ST_GRANT;
-      act = CACHE_ACT_DRAIN_RO;
-    } else {
-      act = CACHE_ACT_INVALID; /* no claim to commit */
-    }
-    break;
-#endif
   default:
     break;
   }

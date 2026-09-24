@@ -234,7 +234,15 @@ the two ownership edges: when the right arrives at a node, a *consumer*
 flush of the block's slot, then the copy into the working copy (or, where a
 turn works in the slot itself, the first access); when the node hands the
 right back after a write turn, the copy back, then a *producer* flush of the
-slot. Nothing between the edges flushes, and a read turn's edge flushes
+slot. Each transfer is a plain flush and copy, done synchronously where
+the transfer happens — by whichever thread applies the grant (a progress
+thread for a grant from another rank; for a home-local grant, the worker or
+progress thread whose request, release or install produced it), before the
+grant admits anyone, and by the releasing worker at the zero edge, before
+the right leaves. Nothing is deferred to another thread and nothing is
+acknowledged beyond the protocol's own release: the acquiring task runs only
+after its grant was applied, and the release the home waits on follows that
+task. Nothing between the edges flushes, and a read turn's edge flushes
 nothing. A recording test (``fam_edge_flush_order``) pins exactly these two
 sites on both residencies; the values are checked by the experiment
 driver's cross-entry consensus and on the device itself.

@@ -18,8 +18,6 @@
 #include <string.h>
 #ifdef ARTS_FAM_FLUSH_RECORDER
 #include <stdatomic.h>
-
-#include "arts/runtime_state.h"
 #endif
 
 #include "arts.h"
@@ -196,8 +194,7 @@ static void fam_flush_record(const void *p, size_t bytes, bool producer) {
       .seq = seq,
       .addr = (uintptr_t)p,
       .bytes = bytes,
-      .producer = producer,
-      .role = (unsigned)arts_thread_info.role};
+      .producer = producer};
   atomic_store_explicit(&g_flush_ring[seq].stamp, seq + 1u,
                         memory_order_release);
 }

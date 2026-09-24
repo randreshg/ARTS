@@ -1311,9 +1311,9 @@ void arts_db_debug_quiescence_check(void) {
   const unsigned int nt = (unsigned int)num_tables + ARTS_REMOTE_ROUTE_SHARDS;
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
-   * the shutdown left undone: runnable EDTs dropped from a deque, runtime
-   * jobs discarded, release waits cut short, self-sends never dispatched,
-   * and EDTs admitted (every dependence satisfied, acquisition begun) that
+   * the shutdown left undone: runnable EDTs dropped from a deque, release
+   * waits cut short, self-sends never dispatched, and EDTs admitted (every
+   * dependence satisfied, acquisition begun) that
    * never finished -- the last covers an EDT parked mid acquisition, which
    * sits in no queue a discard site sees, and it overlaps the first -- and
    * messages parked on a route slot's OoO list: a create waiting for a
@@ -1327,8 +1327,6 @@ void arts_db_debug_quiescence_check(void) {
    * leaves that requester's EDT admitted and unfinished. */
   unsigned int ab_queued = __atomic_load_n(&arts_shutdown_abandon.queued_edts,
                                            __ATOMIC_RELAXED);
-  unsigned int ab_jobs =
-      __atomic_load_n(&arts_shutdown_abandon.jobs, __ATOMIC_RELAXED);
   unsigned int ab_waits =
       __atomic_load_n(&arts_shutdown_abandon.waits, __ATOMIC_RELAXED);
   unsigned int ab_loopback = arts_loopback_pending_count();
@@ -1367,7 +1365,7 @@ void arts_db_debug_quiescence_check(void) {
     }
   }
   bool quiescent =
-      (ab_queued | ab_jobs | ab_waits | ab_loopback | ab_ooo | ab_admitted) ==
+      (ab_queued | ab_waits | ab_loopback | ab_ooo | ab_admitted) ==
       0u;
   for (unsigned int t = 0; t < nt; t++) {
     arts_route_table_t *table = quiescence_table(t);
@@ -1549,12 +1547,11 @@ void arts_db_debug_quiescence_check(void) {
                        (unsigned long long)c->db_size);
             viol++;
           }
-          /* 2. Each axis rests only where the single-CAS acquire / claim /
+          /* 2. Each axis rests only where the single-CAS acquire / grant /
            * release discipline can leave it.  That discipline makes two
            * shapes unreachable on its own: an axis IDLE with its own count
            * still nonzero (going idle happens only at that count's own zero
-           * edge), and an axis in GRANT, or, where the arm stages bytes
-           * through a claim, FETCH, with nothing counted on EITHER axis --
+           * edge), and an axis in GRANT with nothing counted on EITHER axis --
            * the zero edge that ends a turn returns its grant in the same
            * CAS, so this can only be a lost zero edge.  Both are reported
            * unconditionally.  REQUEST with nothing counted is exempt: it is
@@ -1697,9 +1694,9 @@ void arts_db_debug_quiescence_check(void) {
    * two look identical from the violation count alone. */
   if (viol != 0 || !quiescent) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
-               "queued_edts=%u jobs=%u waits=%u loopback=%u ooo=%u "
+               "queued_edts=%u waits=%u loopback=%u ooo=%u "
                "admitted_edts=%u)",
-               viol, ab_queued, ab_jobs, ab_waits, ab_loopback, ab_ooo,
+               viol, ab_queued, ab_waits, ab_loopback, ab_ooo,
                ab_admitted);
   }
 #endif /* ARTS_LOG_LEVEL >= 3 */

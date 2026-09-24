@@ -362,7 +362,6 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid);
  * caller names no rank: one block, one slot, one owner. */
 void arts_send_db_fam_free(uint64_t fam_addr);
 void arts_handler_db_fam_free(struct arts_msg_db_fam_free_packet_s *p);
-void arts_handler_db_fam_fetch_done(struct arts_msg_db_fam_fetch_done_packet_s *p);
 #endif
 
 #ifdef ARTS_WRITE_POLICY_WB
