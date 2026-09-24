@@ -105,7 +105,7 @@ compute environment must provide the real Rapid Python module and `rapidutil`.
 
 ## External runtimes
 
-Besides the eleven-entry coherence plane, `hpx` is an off-plane entry: the
+Besides the thirteen-entry coherence plane, `hpx` is an off-plane entry: the
 STE||AR HPX runtime (MPI parcelport, static-linked like the other
 references), a cross-programming-model reference tied to no coherence
 position. It multiplies by nothing, and its scalar joins the ordinary
