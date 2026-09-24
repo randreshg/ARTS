@@ -127,25 +127,30 @@ void arts_fam_boot_prepare(const struct arts_config_s *config) {
     creator = true;
   }
 
-  if (g_strict) {
-    ARTS_ERROR("fam: fam_strict is not available in this backend yet");
-  }
-
   /* Sparse and never populated: a run pays for the granules it touches. */
   void *want = (void *)(uintptr_t)ARTS_FAM_BASE;
-  void *view = mmap(want, (size_t)bytes, PROT_READ | PROT_WRITE,
-                    MAP_SHARED | MAP_FIXED_NOREPLACE, g_fd, 0);
-  if (view == MAP_FAILED || view != want) {
-    ARTS_ERROR("fam: the pool's address %p is not available in this rank: %s",
-               want, view == MAP_FAILED ? strerror(errno) : "taken");
+  void *view;
+  struct arts_fam_header_s *hdr;
+  if (g_strict) {
+    view = arts_fam_strict_map(g_fd, want, bytes);
+    /* Through the BACKING: a header written through the private view would
+     * privatise its page and leave the backing zero for every peer. */
+    hdr = (struct arts_fam_header_s *)arts_fam_strict_shared_base();
+  } else {
+    view = mmap(want, (size_t)bytes, PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_FIXED_NOREPLACE, g_fd, 0);
+    if (view == MAP_FAILED || view != want) {
+      ARTS_ERROR("fam: the pool's address %p is not available in this rank: %s",
+                 want, view == MAP_FAILED ? strerror(errno) : "taken");
+    }
+    hdr = (struct arts_fam_header_s *)view;
   }
   if (creator) {
-    struct arts_fam_header_s *h = (struct arts_fam_header_s *)view;
-    memset(h, 0, sizeof(*h));
-    h->magic = ARTS_FAM_MAGIC;
-    h->bytes = bytes;
-    h->slice_len = fam_slice_len(bytes, nranks);
-    h->nranks = nranks;
+    memset(hdr, 0, sizeof(*hdr));
+    hdr->magic = ARTS_FAM_MAGIC;
+    hdr->bytes = bytes;
+    hdr->slice_len = fam_slice_len(bytes, nranks);
+    hdr->nranks = nranks;
   }
 
   /* Reached only with a mapping at the one address, so a later reader of
@@ -223,7 +228,11 @@ void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
 }
 
 void arts_fam_backend_unmap(void *base, uint64_t bytes) {
-  if (base) {
+  if (g_strict) {
+    /* Two mappings and the oracle's own DRAM go together; only strict.c knows
+     * where the second one landed. */
+    arts_fam_strict_unmap(base, bytes);
+  } else if (base) {
     munmap(base, (size_t)bytes);
   }
   g_mapped = NULL;
@@ -272,6 +281,13 @@ static inline void fam_flush_line(const void *p) {
 }
 
 void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
+  if (g_strict) {
+    /* With two views there is no one sweep that serves both roles: a producer
+     * copies its range out, a consumer reloads its range, and neither does the
+     * other's half. */
+    arts_fam_strict_flush(p, bytes, producer);
+    return;
+  }
   /* The instruction writes back AND invalidates, so one sweep serves both
    * roles; only the fence differs.  An empty range sweeps nothing but still
    * fences, as the contract promises. */
@@ -294,12 +310,15 @@ void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
 }
 
 void arts_fam_backend_poison(void *p, size_t bytes) {
-  (void)p;
-  (void)bytes;
+  /* One predictable branch and no memory traffic when strict mode is off,
+   * which is every measurement build: the poison exists for the oracle. */
+  if (g_strict) {
+    arts_fam_strict_poison(p, bytes);
+  }
 }
 
 void arts_fam_backend_hold(const void *p, size_t bytes, bool hold) {
-  (void)p;
-  (void)bytes;
-  (void)hold;
+  if (g_strict) {
+    arts_fam_strict_hold_range(p, bytes, hold);
+  }
 }

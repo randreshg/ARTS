@@ -128,7 +128,15 @@ static inline bool arts_fam_strict(void) { return arts_fam_backend_strict(); }
  * barrier: a releaser that publishes its bytes and then LOADS a peer's word
  * to decide whether it may stand down must place an
  * atomic_thread_fence(memory_order_seq_cst) between the publication and that
- * load.  The flush does not stand in for it. */
+ * load.  The flush does not stand in for it.  An empty range sweeps no line
+ * and still ends in its fence.
+ *
+ * Under strict mode that fence is necessary and still not sufficient for a
+ * word that LIVES IN THE POOL: nothing refreshes such a word except a consumer
+ * flush, and that flush reloads the whole line it sits in, discarding any
+ * unflushed write this rank made anywhere in that line.  A word two parties
+ * poll to coordinate therefore belongs in DRAM, where the runtime's own
+ * protocol words are, and never in the pool. */
 static inline void arts_fam_flush_producer(const void *p, size_t bytes) {
   arts_fam_backend_flush(p, bytes, true);
 }
@@ -138,7 +146,19 @@ static inline void arts_fam_flush_consumer(const void *p, size_t bytes) {
 
 /* Strict-mode hooks.  A range registered here is one this rank currently
  * holds, which is the only range the oracle's random write-back may touch.
- * No-ops when strict mode is off. */
+ * No-ops when strict mode is off.
+ *
+ * The order is reload, then hold: a range is consumer-flushed BEFORE it is
+ * registered, and a block is reloaded whole before its first write.  A hold --
+ * or a producer flush of part of a block -- over lines this rank never
+ * reloaded republishes whatever its pages captured over the previous writer's
+ * bytes.  Once a range is registered the other direction is forbidden: a
+ * consumer flush that covers a held line is fatal, because it would discard a
+ * write only this rank has.
+ *
+ * A write-back moves a whole 64-byte line and is not atomic: the medium
+ * carries no atomicity above eight bytes either, so a reader of bytes in a
+ * line it holds no right to may see a mixture of two writers' values. */
 static inline void arts_fam_strict_hold(const void *p, size_t bytes) {
   arts_fam_backend_hold(p, bytes, true);
 }
@@ -175,6 +195,27 @@ static inline void arts_fam_strict_unhold(const void *p, size_t bytes) {
 }
 
 #endif /* ARTS_FAM */
+
+/* Module-internal: the strict oracle, which exists only under the inherited
+ * mapping.  Named from shm.c, and from nowhere else but the read-only query
+ * below -- which is what makes a DEVICE build's freedom from these symbols
+ * structural rather than inspected.  The poison is written through the
+ * backing as well as the private view: a block just allocated has no holder
+ * and no reload yet, so this is the one write outside a producer flush and
+ * the sampled eviction that can reach the backing, and it can meet no other
+ * copy of its lines. */
+#if defined(ARTS_FAM) && defined(ARTS_FAM_BACKEND_SHM)
+void *arts_fam_strict_map(int fd, void *want, uint64_t bytes);
+void *arts_fam_strict_shared_base(void);
+void arts_fam_strict_unmap(void *base, uint64_t bytes);
+void arts_fam_strict_flush(const void *p, size_t bytes, bool producer);
+void arts_fam_strict_poison(void *p, size_t bytes);
+void arts_fam_strict_hold_range(const void *p, size_t bytes, bool hold);
+/* True when any line of [p, p+bytes) the oracle tracks is currently held.
+ * Read-only -- claims, releases and moves no byte -- so a teardown walk may
+ * call it to find a hold whose matching unhold never ran. */
+bool arts_fam_strict_range_held(const void *p, size_t bytes);
+#endif
 
 #ifdef __cplusplus
 }

@@ -11,9 +11,13 @@ if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
     # compiled.
     set(ARTS_FAM_SOURCES pool.c)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        list(APPEND ARTS_FAM_SOURCES shm.c)
+        # strict.c belongs to this backend alone: the second coherency domain
+        # is what an inherited mapping can be given and a device region cannot.
+        list(APPEND ARTS_FAM_SOURCES shm.c strict.c)
+        set(_arts_fam_tu_floor 3)
     else()
         list(APPEND ARTS_FAM_SOURCES device.c)
+        set(_arts_fam_tu_floor 2)
     endif()
     if(ARTS_FAM_TREE_RESIDENCY STREQUAL "")
         # Source-list carrier: these objects are never compiled in this tree.
@@ -29,10 +33,12 @@ if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
     # one would give them ARTS_FAM with no allocator behind it.
     get_target_property(_arts_fam_tus arts_fam SOURCES)
     list(LENGTH _arts_fam_tus _arts_fam_tu_count)
-    if(_arts_fam_tu_count LESS 2)
+    if(_arts_fam_tu_count LESS _arts_fam_tu_floor)
         message(FATAL_ERROR
                 "the fam module's source list holds ${_arts_fam_tu_count} "
-                "translation unit(s): a build needs pool.c and one backend")
+                "translation unit(s): a build needs pool.c and everything the "
+                "${ARTS_FAM_BACKEND} backend is made of "
+                "(${_arts_fam_tu_floor} in all)")
     endif()
     message(STATUS "ARTS FAM: module holds ${_arts_fam_tu_count} translation unit(s)")
 endif()

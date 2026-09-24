@@ -1285,15 +1285,16 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
                       TIMEOUT 30)
     # The conformance probe builds its own struct arts_config_s and never
     # links a runtime -- so it is the one registered test that runs the
-    # PLAIN backend whatever the tree's ARTS_FAM_TEST_STRICT says, which
-    # makes it strict.c's opening guard's permanent counterpart on the
-    # plain side and the only test of arts_fam_strict()'s false case.
-    # strict.c joins SOURCES once it exists.
+    # PLAIN backend whatever the tree's ARTS_FAM_TEST_STRICT says, and the
+    # only test of arts_fam_strict()'s false case.  strict.c is in SOURCES
+    # all the same: shm.c names it, so a probe without it does not link even
+    # though it never takes the branch.
     add_pure_unit_src(fam_conformance PASS_REGEX "PASS fam_conformance"
                       TIMEOUT 120
                       DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
                               ARTS_FAM_BASE=${ARTS_FAM_BASE}ULL
                       SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
                               ${CMAKE_SOURCE_DIR}/libs/src/core/fam/shm.c
+                              ${CMAKE_SOURCE_DIR}/libs/src/core/fam/strict.c
                               unit/fam_stubs.c)
 endif()
