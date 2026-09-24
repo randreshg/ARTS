@@ -15,6 +15,12 @@ extern "C" {
 /** Round @p x up to the nearest multiple of @p a (power of two). */
 #define ALIGN_UP(x, a) (((x) + ((a) - 1)) & ~((a) - 1))
 
+/* UNMAINTAINED.  Kept for reference; the option that compiled it is a
+ * configure error.  The flush intrinsics it wraps are the legacy kind's: the
+ * runtime accesses fabric-attached memory through the fam module's own
+ * flushes.
+ */
+
 /*
  * Two-level CXL configuration:
  *

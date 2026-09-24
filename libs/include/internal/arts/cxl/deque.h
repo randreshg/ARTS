@@ -2,6 +2,17 @@
  * Copyright 2019 Battelle Memorial Institute
  * Licensed under the Apache License, Version 2.0
  ******************************************************************************/
+/* UNMAINTAINED.  Kept for reference; the option that compiled it is a
+ * configure error.  Two defect classes are known and are NOT fixed here:
+ *
+ *   - The container's padding arm accounts for ONE element rather than the
+ *     element count the struct arm declares, so it states an alignment intent
+ *     it does not carry.
+ *   - A push advances its index before the allocation that fills the slot,
+ *     and the allocation is fallible: a failed allocation leaves the index
+ *     moved, and with assertions compiled out it also leaves a null pointer
+ *     in a slot the container reports as occupied.
+ */
 #ifndef ARTS_CXL_DEQUE_H
 #define ARTS_CXL_DEQUE_H
 #ifdef __cplusplus
