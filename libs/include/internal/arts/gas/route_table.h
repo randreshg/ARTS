@@ -57,11 +57,12 @@ extern "C" {
  * word, not a lock beside it: one CAS from the GUID to this sentinel carries
  * both halves of what a teardown needs — proof the slot still names that
  * GUID, and sole ownership of the teardown — so there is nothing to hold and
- * nothing to wait on, and a loser is simply not the destroyer.  No observer
- * ever waits on it either: it is not 0, so a claim CAS skips the slot, and it
- * carries kind ARTS_GUID_RESERVED (never a valid object), so it equals no
- * real GUID and a key search stops matching at once — a request arriving
- * mid-teardown resolves to a fresh reservation instead of waiting. */
+ * nothing to wait on, and a loser is simply not the destroyer.  It is not 0,
+ * so a claim CAS skips the slot, and it carries kind ARTS_GUID_RESERVED (never
+ * a valid object), so it equals no real GUID and a key search stops matching
+ * at once — a request arriving mid-teardown resolves to a fresh reservation.
+ * That reservation publishes only after the retire settles, because an
+ * identity retire that finds another object hands the key back. */
 #define ARTS_ROUTE_KEY_RETIRING ((arts_guid_t)1)
 /* Number of independent shards for the remote_route_table.  Must be a
  * power of 2 so (key & (N-1)) is the shard selector. */
@@ -70,26 +71,25 @@ extern "C" {
 /* Route_item: GUID slot.  Permanent (init-array, never freed).
  *
  * `value` is an atomic shared-ptr cb slot (arts_shared_ptr_t).  The cb
- * carries the strong refcount + per-object deleter + object pointer, so the
- * old lock bitfield ([DELETE | gen | count]) is gone entirely:
- *   - count  → cb strong refcount,
- *   - DELETE → value == NULL (a destroyer atomic_exchanges it to NULL),
- *   - gen    → the cb pool's DWCAS tag (allocator ABA) + the load-side slot
- *              revalidation (load ABA).
- * Lookups acquire a caller-owned ref via arts_atomic_shared_load and release
- * it on the local handle.  The ooList is preserved across destroy/reinstall. */
+ * carries the strong refcount, the per-object deleter and the object pointer;
+ * absence is value == NULL, and a retire exchanges the value to NULL.  No
+ * generation is kept: a lookup acquires a caller-owned ref via
+ * arts_atomic_shared_load and accepts the object only while the pinned cb's
+ * tag names the key looked up, and a retire clears that tag.  A retire
+ * returns the slot and re-drives its OoO chain by each payload's own GUID. */
 struct arts_route_item_s {
   arts_guid_t key;
   /* value == NULL means "absent" — deliberately NOT distinguishing
-   * "never created" from "destroyed".  The OoO defer path treats both
-   * uniformly; create-vs-destroy semantics are resolved by handler category
-   * (Cat B request/publish defers + drains on the next install or shutdown;
-   * Cat C response/ack silent-drops on absent), not by a per-slot state bit.
+   * "never created" from "destroyed".  The OoO engine treats both
+   * uniformly and resolves by kind: a create parks while the slot is
+   * occupied and runs while it is empty; a Cat B request/publish parks while
+   * it is empty until the next install; a Cat C response/ack, which never
+   * enters the engine, is dropped on absent.
    *
    * key == 0 means the slot is FREE.  A destroy returns the slot by zeroing
    * the key, so occupancy tracks live objects rather than every object the
-   * run ever made; a claim stays the single key-CAS below because a returned
-   * slot is indistinguishable from a never-used one. */
+   * run ever made, and a returned slot is claimed exactly like a never-used
+   * one. */
   arts_atomic_shared_ptr_t value; /* cb: event/db/edt (NULL = absent) */
   arts_lf_stack_t ooo_list; /* OoO defer chain (Treiber) */
 } ARTS_ALIGNED_MAX;
@@ -139,37 +139,81 @@ arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
 void arts_route_table_register_deleter(arts_guid_kind_t kind,
                                        void (*deleter)(void *));
 
-/* Install `obj` under `key`.  Wraps it in a cb whose deleter is selected by
- * the GUID kind (registered via arts_route_table_register_deleter). Idempotent:
- * if the slot already holds a cb, the existing object is returned and `obj` is
- * NOT wrapped (caller still owns it).  Returns the object now installed. */
-void *arts_route_table_install(void *obj, arts_guid_t key, unsigned int rank,
-                               bool used);
+/* Free an object that was built for `key` but never installed, with the
+ * deleter its GUID kind installs with. */
+void arts_route_table_delete_unpublished(arts_guid_t key, void *obj);
 
-/* Race install: CAS the cb into an empty slot.  Returns true only if this
- * caller won (and fired the OoO list).  On loss, `obj` is left untouched
- * (caller owns it).  On win, the slot owns the object via its cb. */
-bool arts_route_table_install_if_absent(void *obj, arts_guid_t key,
-                                        unsigned int rank, bool used);
+/* The one install rule of the global table: an object is installed only into
+ * an EMPTY slot that names its key, decided in one atom with the slot's
+ * identity, and it never replaces an occupant.  An occupied slot is the
+ * caller's to wait for (the OoO engine parks a create there until the occupant
+ * is retired).
+ *
+ * install_if_absent: install `obj` under `key` if the slot is empty, then
+ * drain the slot's OoO list.  On a win the slot owns the object through its
+ * cb and the call returns a handle holding one strong ref, which the caller
+ * owns and must release: the drain may already have retired the object (a
+ * destroy parked before the install runs inside it), and that ref keeps the
+ * caller's reads valid.  On a loss (the slot holds an object under `key`) it
+ * returns NULL, abandons its cb without running the deleter, and `obj` stays
+ * the caller's. */
+arts_shared_ptr_t arts_route_table_install_if_absent(void *obj,
+                                                     arts_guid_t key,
+                                                     unsigned int rank,
+                                                     bool used);
 
-/* Idempotent install with an EXPLICIT deleter, bypassing deleter-by-kind.
- * Pass NULL to install a cb that never frees the object (route_table holds it
- * for lookup only; the caller frees it manually).  Returns the object now
- * installed. */
-void *arts_route_table_install_with_deleter(void *obj, arts_guid_t key,
-                                            void (*deleter)(void *));
+/* The control block install_if_absent would wrap `obj` in: the GUID kind's
+ * deleter, tagged with `key`.  One ref, the caller's.  For an object that must
+ * be referenced before it is installed. */
+arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key);
+
+/* install_if_absent for a control block made by arts_route_table_make_handle.
+ * On a win the slot takes over the ref the caller passed and the slot's OoO
+ * list is drained; the caller keeps whatever other refs it holds, and must
+ * hold one of its own if it reads the object after the call.  On a loss
+ * nothing changes and the passed ref stays the caller's. */
+bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
+                                               arts_guid_t key);
 
 int arts_route_table_lookup_rank(arts_guid_t key);
 
-/* Destroy: atomically detach the cb from `key`'s slot and drop the install
- * ref.  Single-flight (only the caller whose exchange observes a non-NULL cb
- * "wins"); idempotent.  The object's deleter runs once the last outstanding
- * reader ref is released.  Returns true if this call detached the cb.
+/* Retires, one teardown.  Each detaches an object, drops the install ref, and
+ * RETURNS the slot: the key is zeroed and the slot's parked payloads are
+ * re-driven to wherever their GUIDs live now, so occupancy tracks live
+ * objects.  The object's deleter runs once the last reader ref is released.
+ * A retire clears the retired cb's tag, so a holder of a stale handle can tell
+ * a retired object from a live one.  An installed object is never moved
+ * between slots, so a live object is always in the one slot its key names.
  *
- * Also RETURNS the slot: the deferred payloads are drained and the key is
- * zeroed, so the slot is claimable again by the ordinary key-CAS.  Occupancy
- * therefore tracks live objects, not every object the run ever made. */
-bool arts_route_table_set_destroyed(arts_guid_t key);
+ * Every form retires one OBJECT, never "whatever the slot holds".  The
+ * dispatched-item and object forms wait out another retire holding the slot
+ * and retry only while their object is still installed, so none of them takes
+ * a generation installed after it looked.  Two retires of one object may be
+ * in flight at once (a duplicate teardown notice, a completion racing a
+ * destroy): exactly one of them returns true.  A slot being retired hides its
+ * key from a search, and when that retire hands the key back (it named an
+ * object the slot no longer held) the slot's occupant is still the key's; the
+ * object form therefore looks through a RETIRING slot of the key's window
+ * rather than miss it.  Waits are bounded; outliving the bound is fatal. */
+
+/* Identity form: retires only while `key`'s slot holds exactly `cb`, on which
+ * the caller holds a ref; otherwise retires nothing and returns false, without
+ * waiting.  For an object retiring itself (a completion): under label reuse
+ * the slot may hold the key's next generation by then, which is not the
+ * caller's to retire. */
+bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb);
+
+/* Dispatched-item form: the object a DISPATCH chose.  As the identity form,
+ * but a concurrent retire holding the slot is waited out, so the retire lands
+ * unless another one retired `cb` first.  Returns false once `cb` is
+ * retired. */
+bool arts_route_table_set_destroyed_item(arts_guid_t key, arts_shared_ptr_t cb);
+
+/* Object form: the object at `obj`, for a caller that has the object but no
+ * handle on it: pins whatever `key` currently publishes, looking through a
+ * retire in flight, and retires it by the dispatched-item form only if it is
+ * `obj`.  Returns false when `key` publishes another object or none. */
+bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj);
 
 /* Type-aware safe lookups: return a caller-owned cb handle (strong ref held)
  * or NULL if the slot is absent / destroyed / a kind mismatch.  Use
@@ -181,37 +225,28 @@ arts_shared_ptr_t arts_route_table_lookup_edt(arts_guid_t guid);
 /* Kind-agnostic handle lookup (no kind validation). */
 arts_shared_ptr_t arts_route_table_lookup(arts_guid_t key);
 
-/* Relocate the object from old_key's slot to new_key's slot by moving the
- * SAME cb (no re-wrap, no extra ref) — preserving the single-owner
- * invariant.  Used by DB rename / copy-to-new-type, which must keep one cb
- * owning the descriptor across the GUID change (creating a second cb would
- * make two slots each free the same object).  Detaches old_key (its slot
- * becomes absent) and CAS-installs the cb into new_key, firing new_key's OoO
- * list.  Returns true on success; false if old_key is absent or new_key was
- * already occupied (in which case the moved cb is released). */
-bool arts_route_table_move_item(arts_guid_t old_key, arts_guid_t new_key);
-
 arts_route_item_t *
 arts_route_table_search_for_key(arts_route_table_t *route_table,
                                 arts_guid_t key);
 
 /* Linearly scan for an empty slot and CAS-claim it for `key` (or return the
- * already-claimed slot for `key`).  Operates on the GIVEN table, so it works
- * for non-global mirror tables.  `mark_used` is currently ignored. */
+ * already-claimed slot for `key`).  Operates on the GIVEN table, and is only
+ * sound for a table no retire returns slots of (the GPU mirror tables): the
+ * global table reserves through arts_route_table_reserve_or_lookup.
+ * `mark_used` is ignored. */
 arts_route_item_t *
 arts_route_table_search_for_empty(arts_route_table_t *route_table,
                                   arts_guid_t key, bool mark_used);
 
 /* Safe C-linkage acquire of a slot's published object; returns a caller-owned
  * handle (NULL if empty); release via arts_shared_release.  The C++/.cu bridge
- * for the otherwise C-only atomic-slot API — replaces the removed raw peek. */
+ * for the otherwise C-only atomic-slot API. */
 arts_shared_ptr_t arts_route_item_acquire(arts_route_item_t *item);
 
-/* Publish `obj` into THIS slot's cb with an explicit deleter (idempotent CAS).
- * Unlike add_item/add_item_with_deleter, which locate the slot via the global
- * key→table map, this installs into a caller-located slot — required for
- * non-global mirror tables (e.g. the GPU per-device route tables) where the
- * slot lives in a different table than the one the global map would pick.
+/* Publish `obj` into THIS slot's cb with an explicit deleter (CAS into an
+ * empty value).  It installs into a caller-located slot of a non-global mirror
+ * table (the GPU per-device route tables), whose slots stay bound to their key
+ * for the table's life; never point it at the global table.
  * C-linkage bridge (slot CAS is otherwise C11-only) so C++/nvcc translation
  * units can publish a persistent mirror payload (pass NULL deleter for a cb
  * that never frees the object).  Returns true iff this caller won the install;
@@ -231,6 +266,10 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter);
 void arts_print_item(arts_route_item_t *item);
 
 uint64_t arts_clean_up_route_table(arts_route_table_t *route_table);
+/* Payloads parked on the OoO lists of every slot of `route_table` (its whole
+ * segment chain), read in place without consuming them.  Only meaningful once
+ * no thread can push or drain. */
+unsigned int arts_route_table_parked_count(arts_route_table_t *route_table);
 void arts_delete_route_table(arts_route_table_t *route_table);
 void arts_clean_up_dbs();
 

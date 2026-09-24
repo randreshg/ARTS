@@ -298,8 +298,6 @@ arts_guid_t arts_guid_reserve(arts_guid_kind_t kind, unsigned int rank) {
   } else {
     ARTS_INFO("Invalid type %u", kind);
   }
-  //    if(route == arts_global_rank_id)
-  //        arts_route_table_install(NULL, guid, arts_global_rank_id, false);
   return guid;
 }
 

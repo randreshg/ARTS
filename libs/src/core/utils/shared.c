@@ -264,3 +264,33 @@ bool arts_atomic_shared_compare_exchange(arts_atomic_shared_ptr_t *slot,
      * expected) the loop retries the install; if cb changed it bails above. */
   }
 }
+
+bool arts_atomic_shared_peek_empty(arts_atomic_shared_ptr_t *slot,
+                                   uint64_t *ext) {
+  arts_shared_slot_t cur = atomic_load_explicit(slot, memory_order_acquire);
+  if (cur.cb != NULL) {
+    return false;
+  }
+  *ext = cur.ext;
+  return true;
+}
+
+bool arts_atomic_shared_install_empty(arts_atomic_shared_ptr_t *slot,
+                                      uint64_t ext, arts_shared_ptr_t new_val) {
+  /* An empty slot carries no claims (a load never claims NULL), so its word
+   * changes only by a store or an exchange; one strong CAS decides. */
+  arts_shared_slot_t expected = {NULL, ext};
+  arts_shared_slot_t desired = {new_val, shared_next_gen_ext(ext)};
+  if (new_val != NULL) {
+    atomic_fetch_add_explicit(&new_val->count, -1, memory_order_relaxed);
+  }
+  if (atomic_compare_exchange_strong_explicit(
+          slot, &expected, desired, memory_order_acq_rel,
+          memory_order_acquire)) {
+    return true;
+  }
+  if (new_val != NULL) {
+    atomic_fetch_add_explicit(&new_val->count, 1, memory_order_relaxed);
+  }
+  return false;
+}

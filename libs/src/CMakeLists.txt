@@ -111,7 +111,7 @@ function(arts_apply_protocol target arm write_policy release_policy)
     # the others calling through an implicit int -- which silently narrows a
     # pointer or a bool return.  Compilers that still default this to a warning
     # let it accumulate unseen; the ones that do not simply refuse to build.
-    target_compile_options(${target} PRIVATE -Werror=implicit-function-declaration)
+    target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C>:-Werror=implicit-function-declaration>)
     # An optional 5th argument pins read combining OFF for this target (the
     # ablation twins); without it the target follows the directory-wide
     # disable option (default off, so combining is compiled in).  Targets that

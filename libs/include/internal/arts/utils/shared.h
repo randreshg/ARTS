@@ -119,6 +119,14 @@ static inline bool arts_atomic_shared_empty(arts_atomic_shared_ptr_t *slot) {
   return atomic_load_explicit(slot, memory_order_acquire).cb == NULL;
 }
 
+/* Non-owning peek: whether the slot holds exactly `cb`.  Sound only while
+ * the caller holds its own ref on `cb`, which keeps the cb from being
+ * recycled, so pointer equality is identity. */
+static inline bool arts_atomic_shared_holds(arts_atomic_shared_ptr_t *slot,
+                                            arts_shared_ptr_t cb) {
+  return atomic_load_explicit(slot, memory_order_acquire).cb == cb;
+}
+
 /* Publish new_val into the slot (slot takes ownership of new_val's ref);
  * the previous slot value, if any, is released. */
 void arts_atomic_shared_store(arts_atomic_shared_ptr_t *slot,
@@ -138,6 +146,20 @@ arts_shared_ptr_t arts_atomic_shared_exchange(arts_atomic_shared_ptr_t *slot,
 bool arts_atomic_shared_compare_exchange(arts_atomic_shared_ptr_t *slot,
                                          arts_shared_ptr_t expected,
                                          arts_shared_ptr_t new_val);
+
+/* Snapshot of an empty slot.  Returns true, with the slot's whole generation
+ * word in *ext, when the slot holds nothing; takes no ref.  Every store or
+ * exchange into the slot moves that word, even one that leaves it empty. */
+bool arts_atomic_shared_peek_empty(arts_atomic_shared_ptr_t *slot,
+                                   uint64_t *ext);
+
+/* Install new_val only if the slot still holds exactly the empty word a
+ * peek_empty returned (slot takes new_val's ref).  Fails, leaving the slot
+ * and new_val's ref untouched, once anything was stored or exchanged into the
+ * slot after the peek — so a decision made from state read after the peek is
+ * committed together with the install, or not at all. */
+bool arts_atomic_shared_install_empty(arts_atomic_shared_ptr_t *slot,
+                                      uint64_t ext, arts_shared_ptr_t new_val);
 
 #endif /* !__cplusplus */
 

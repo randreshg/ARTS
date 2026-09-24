@@ -59,10 +59,15 @@ extern "C" {
  * module while the GUID directory it replays against stays in route_table.
  * ===========================================================================*/
 
-/* OoO replay kind — dispatch tag for OoO-deferrable (Cat B) handlers only.
- * Identifies which g_ooo_table[] handler replays a deferred operation once its
- * target object is installed in the route table.  Install-trigger (Cat A),
- * silent-drop (Cat C) and state-less (Cat E) handlers reach their handler only
+/* OoO replay kind — dispatch tag for the handlers the engine gates on a slot's
+ * occupancy.  Two polarities share the table:
+ *   - a create kind (OOO_*_CREATE) runs while the slot is EMPTY: its body
+ *     installs the object and drains the slot.  While the slot is occupied the
+ *     create is parked, and the occupant's destroy dispatches it — the next
+ *     generation of the GUID;
+ *   - every other kind runs while the slot is OCCUPIED, against the occupant,
+ *     and is parked until an install while it is empty.
+ * Silent-drop (Cat C) and state-less (Cat E) handlers reach their handler only
  * through the wire dispatcher's MSG_* mapping and have NO kind here.
  *
  * Naming invariant: OOO_<NAME> == the handler arts_handler_<name> with the
@@ -78,6 +83,10 @@ extern "C" {
  * OOO_KIND_COUNT is therefore per-model — sound because every TU in one build
  * sees the same model define. */
 enum arts_ooo_kind {
+  /* ===== Model-agnostic creates — the inverted polarity ===== */
+  OOO_EDT_CREATE,   /* → arts_handler_edt_create */
+  OOO_EVENT_CREATE, /* → arts_handler_event_create */
+  OOO_DB_CREATE,    /* → arts_handler_db_create */
   /* ===== Model-agnostic — always active (all Cat B) ===== */
   OOO_EVENT_SATISFY_SLOT, /* → arts_handler_event_satisfy_slot */
   OOO_EDT_SATISFY_SLOT,     /* → arts_handler_edt_satisfy_slot */
@@ -188,8 +197,7 @@ typedef enum arts_ooo_kind ooo_kind_t;
 /* Unified OoO payload.  The link is the FIRST member so a node address equals
  * its link address (Treiber stack contract).  A variable-size args blob trails
  * the header (heap-allocated as sizeof(payload) + args_size); each kind casts
- * the blob back to its own args struct.  This single type replaces the former
- * per-kind node structs and the separate oo_node wrapper. */
+ * the blob back to its own args struct. */
 struct arts_ooo_payload_s {
   arts_lf_link_t link; /* MUST be first */
   ooo_kind_t kind;
@@ -198,9 +206,9 @@ struct arts_ooo_payload_s {
    * on destroy, so the slot a thread resolved before that destroy may belong
    * to a different GUID by the time it pushes — the slot alone is no longer
    * proof of identity, and a dispatch against the wrong object would be
-   * silent corruption rather than a miss.  Checked in dispatch; a mismatch
-   * drops the payload, which is correct because an ordinary GUID is minted
-   * from a monotonic sequence and never comes back. */
+   * silent corruption rather than a miss.  Checked in dispatch: on a mismatch
+   * the payload, of any kind, follows its GUID to whichever slot names it now,
+   * because a GUID comes back when it is created again. */
   arts_guid_t guid;
   /* args blob follows here */
 };
@@ -214,6 +222,56 @@ static inline void *arts_ooo_payload_args(struct arts_ooo_payload_s *p) {
  * g_ooo_table[kind] handler casts the blob back and replays the operation
  * against the now-installed target (re-issuing the entry, so the install
  * race / fire-and-linger logic stays in one place). */
+
+/* A create kind's args take one of two shapes, told apart by the leading
+ * `size` word, which both shapes place first:
+ *   - size != ARTS_OOO_CREATE_ADOPT: struct arts_ooo_args_create_blob_s — the
+ *     object blob packet (struct arts_msg_object_blob_packet_s, header
+ *     included, the serialized object trailing it) follows, `size` bytes of
+ *     it.  This is the shape of a create received off the wire; the body
+ *     copies the object out, so the bytes need no alignment.
+ *   - size == ARTS_OOO_CREATE_ADOPT: struct arts_ooo_args_create_local_s — a
+ *     create issued on the rank whose slot the object will occupy, which
+ *     already holds the built object: the body installs that object itself,
+ *     without a copy.  The payload owns the object until the install; a lost
+ *     install re-parks the same object, and a payload freed without dispatch
+ *     (teardown) frees it with the GUID kind's deleter.  A data block's
+ *     descriptor is named by its control block (an arts_shared_ptr_t made
+ *     before the install) instead, because its creator keeps a reference to
+ *     it while the create is parked; the payload owns the reference the slot
+ *     takes over at the install, and a payload freed without dispatch drops
+ *     it.
+ * A data block's announce to its home is the third shape, struct
+ * arts_ooo_args_db_create_s, which leads with the same word.
+ * One kind per object keeps the kind ↔ body naming 1:1; every create body
+ * handles each shape its object has. */
+#define ARTS_OOO_CREATE_ADOPT 0u
+
+struct arts_ooo_args_create_blob_s {
+  uint32_t size; /* != ARTS_OOO_CREATE_ADOPT */
+  /* the object blob packet follows */
+};
+
+/* Create of a data block announced to its home: the shape tag, then the
+ * fields of struct arts_msg_db_create_coherent_packet_s after its header. */
+struct arts_ooo_args_db_create_s {
+  uint32_t size;        /* sizeof(struct arts_ooo_args_db_create_s) */
+  unsigned int creator; /* the announcing rank (the wire header's sender) */
+  arts_guid_t db_guid;
+  uint64_t db_size;
+  uint64_t create_token; /* the creator descriptor's, echoed in the return */
+#ifdef ARTS_FAM
+  uint64_t fam_addr; /* the block's slot, 0 when the creator allocated none */
+#endif
+  uint16_t flags;
+  uint16_t db_type;
+};
+
+struct arts_ooo_args_create_local_s {
+  uint32_t size; /* == ARTS_OOO_CREATE_ADOPT */
+  arts_guid_t guid;
+  void *descriptor; /* the built object, installed as is */
+};
 
 /* EDT satisfy args (OOO_EDT_SATISFY_SLOT) — a GUID/value reference only,
  * fixed size. */
@@ -260,6 +318,7 @@ struct arts_ooo_args_db_grant_request_s {
 struct arts_ooo_args_db_grant_return_s {
   unsigned int returner;
   arts_guid_t db_guid;
+  uint64_t cv;
 };
 
 struct arts_ooo_args_db_snapshot_request_s {
@@ -385,28 +444,45 @@ struct arts_ooo_args_db_excl_release_s {
   uint32_t data_inline;
 };
 
-/* g_ooo_table handler: operate on an already-acquired, valid item with the
- * decoded args.  The handler performs NO route-table lookup / NULL-check /
- * acquire / push — dispatch_or_defer guarantees `item` is live and ref-pinned
- * for the duration of the call. */
+/* g_ooo_table handler, both polarities.  A non-create handler operates on an
+ * already-acquired item with the decoded args and performs NO route-table
+ * lookup / NULL-check / acquire / push — dispatch_or_defer guarantees `item`
+ * is live and ref-pinned for the duration of the call.  A create body gets
+ * `item == NULL`: the engine saw the GUID's slot empty, and the body installs
+ * its object there with install_if_absent, re-entering the engine (which parks
+ * it) when another install won the slot first. */
 typedef void (*arts_ooo_handler_fn_t)(void *item, void *args);
 
-/* Universal non-create entry — wire RX dispatcher, API drivers, and the drain
- * walk all enter here.
+/* Universal entry — wire RX dispatcher, API drivers, and the drain walk all
+ * enter here, for every kind.
  *
- *   payload == NULL : fresh entry (wire RX / API).  On miss a payload is
+ *   payload == NULL : fresh entry (wire RX / API).  On park a payload is
  *                     allocated (args copied) and pushed.
- *   payload != NULL : drain re-entry.  On miss the SAME payload is re-pushed
- *                     (no alloc/free) to await a future install.
+ *   payload != NULL : drain re-entry.  On park the SAME payload is re-pushed
+ *                     (no alloc/free); on dispatch it is consumed.
  *
- * Per-call acquire: the slot value is (re)loaded on every call so that a
- * destroy that NULLed the slot earlier in the same drain walk is observed and
- * the node re-defers (labeled-reuse: a later create re-installs and re-drains).
+ * A non-create kind runs against the occupant and parks while the slot is
+ * empty; a create kind runs its body (item == NULL) while the slot is empty and
+ * parks while it is occupied.  The slot value is (re)loaded on every call, so a
+ * destroy or an install earlier in the same drain walk is observed.
  */
 void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
                                 struct arts_ooo_payload_s *payload,
                                 ooo_kind_t kind, arts_guid_t guid,
                                 const void *args, uint32_t args_size);
+
+/* The handle the engine pinned for the non-create handler running on this
+ * thread, if that handler's item is `item`; NULL otherwise. */
+arts_shared_ptr_t arts_ooo_dispatched_handle(const void *item);
+
+/* Retire `item` under `key`: always that object, never whatever the slot
+ * holds.  From a body the engine dispatched on `item` it uses the handle the
+ * dispatch pinned (arts_route_table_set_destroyed_item); anywhere else — a
+ * teardown owed by a release that runs on the object directly — it pins the
+ * key's object and retires it only if it is `item`
+ * (arts_route_table_set_destroyed_object).  Returns true if this call
+ * detached the object. */
+bool arts_ooo_retire_item(arts_guid_t key, const void *item);
 
 /* Convenience fresh entry: reserve/lookup the slot for `guid`, then
  * dispatch_or_defer with payload == NULL. */
@@ -431,8 +507,8 @@ void arts_ooo_drain(struct arts_route_item_s *slot);
 void arts_ooo_drain_guid(arts_guid_t guid);
 
 /* Free every payload still queued on a slot's chain without dispatching —
- * route-table teardown only (the chain is otherwise preserved across
- * destroy/reinstall). */
+ * route-table teardown only (a retire returns the slot and re-drives its
+ * chain; it never frees one). */
 void arts_ooo_free_all(struct arts_route_item_s *slot);
 
 /* Re-resolve every parked node against its own GUID and defer it again.  A

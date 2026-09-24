@@ -239,14 +239,14 @@ bool arts_gpu_route_table_return_db(arts_guid_t key, bool mark_to_delete,
 
 bool arts_gpu_invalidate_route_tables(arts_guid_t key,
                                       unsigned int keep_on_this_gpu) {
-  /* internal_route_table_remove_item removed -- task 1a.4 will revisit. */
+  /* Not implemented: a mirror slot is never invalidated. */
   (void)key;
   (void)keep_on_this_gpu;
   return false;
 }
 
 bool arts_gpu_invalidate_on_route_table(arts_guid_t key, unsigned int gpu_id) {
-  /* internal_route_table_remove_item removed -- task 1a.4 will revisit. */
+  /* Not implemented: a mirror slot is never invalidated. */
   (void)key;
   (void)gpu_id;
   return false;

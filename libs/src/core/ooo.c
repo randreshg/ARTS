@@ -51,6 +51,7 @@
 #include "arts/event.h" /* arts_handler_event_satisfy_slot / add_dependence */
 #include "arts/gas/route_table.h"
 #include "arts/system/print.h" /* ARTS_WARN / ARTS_INFO */
+#include "arts/system/schedfuzz.h"
 #include "arts/utils/lockfree_lifo.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
@@ -60,23 +61,29 @@
  * OoO engine — unified dispatch_or_defer.
  *
  * One Treiber stack (ooo_list) per route_table slot accumulates deferred
- * operations that arrived before their target object was installed.  A single
- * arts_ooo_payload_s node type (link first, kind tag, trailing args blob)
- * replaces the former per-kind structs + oo_node wrapper.
+ * operations that arrived before their target object was installed.  Every
+ * deferred operation is one arts_ooo_payload_s node (link first, kind tag,
+ * trailing args blob).
  *
- * Two roles, cleanly split:
- *   - Create handler (Cat A) installs the object then calls arts_ooo_drain as
- *     its last step.
+ * Two polarities, one engine:
+ *   - Create body (OOO_*_CREATE) runs while the slot is empty: it installs
+ *     the object, which drains the slot.  While the slot is occupied the
+ *     create parks; the occupant's destroy re-drives it and it installs as
+ *     the GUID's next generation.  Several parked creates of one GUID are the
+ *     undefined concurrent-create shape: each destroy admits one of them and
+ *     the rest re-park, in no promised order.
  *   - Non-create handler (Cat B/C) receives an already-acquired, valid item
  *     from dispatch_or_defer and operates on it — no lookup/acquire/push in
  *     the handler body.  The g_ooo_table[kind] entries are these handler
  *     bodies, defined in each subsystem TU.
  *
- * Concurrency (lock-free, per-call acquire):
+ * Concurrency of the non-create polarity (lock-free, per-call acquire):
  *   - A producer's dispatch_or_defer reloads slot.value every call.  HIT
  *     (value != NULL) → run the handler with a ref pinned across the call.
- *     MISS (value == NULL) → push the payload; then re-check value and, if an
- *     installer raced in, drain (so the node is not stranded).
+ *     MISS (value == NULL) → push the payload; then re-check value and key
+ *     and, if an installer raced in or the slot was returned, drain (so the
+ *     node is not stranded).  A payload whose slot no longer names its GUID
+ *     follows the GUID to the slot that names it now; it is never dropped.
  *   - A producer only ever pushes while value == NULL.  Once value is
  *     installed, every producer HITs and dispatches inline (never pushes), so
  *     no push races a create handler's drain.  Pre-install pushes are caught
@@ -136,6 +143,9 @@
  * present, and each build's OOO_DB_* arm initializes only that model's kinds
  * (each kind ↔ its handler 1:1). */
 static const arts_ooo_handler_fn_t g_ooo_table[OOO_KIND_COUNT] = {
+    [OOO_EDT_CREATE] = arts_handler_edt_create,
+    [OOO_EVENT_CREATE] = arts_handler_event_create,
+    [OOO_DB_CREATE] = arts_handler_db_create,
     [OOO_EVENT_SATISFY_SLOT] = arts_handler_event_satisfy_slot,
     [OOO_EDT_SATISFY_SLOT] = arts_handler_edt_satisfy_slot,
     [OOO_EVENT_ADD_DEPENDENCE] = arts_handler_event_add_dependence,
@@ -197,51 +207,146 @@ arts_ooo_payload_alloc(ooo_kind_t kind, arts_guid_t guid, const void *args,
 
 /* ===== dispatch_or_defer ================================================== */
 
+/* The handle pinned for the non-create handler running on this thread. */
+static ARTS_THREAD_LOCAL arts_shared_ptr_t ooo_dispatched;
+
+arts_shared_ptr_t arts_ooo_dispatched_handle(const void *item) {
+  arts_shared_ptr_t h = ooo_dispatched;
+  return (h != NULL && arts_shared_get(h) == item) ? h : NULL;
+}
+
+bool arts_ooo_retire_item(arts_guid_t key, const void *item) {
+  arts_shared_ptr_t h = arts_ooo_dispatched_handle(item);
+  if (h == NULL) {
+    return arts_route_table_set_destroyed_object(key, item);
+  }
+  return arts_route_table_set_destroyed_item(key, h);
+}
+
+/* Runs between a park's push and its rescue re-read: a scheduling-fuzz point
+ * in the runtime, and where a whitebox test that compiles this file drives a
+ * concurrent install or teardown into exactly that window. */
+#ifndef OOO_AFTER_PARK
+#define OOO_AFTER_PARK(slot) ((void)(slot), arts_sched_fuzz_point())
+#endif
+
+static bool ooo_kind_is_create(ooo_kind_t k) {
+  return k == OOO_EDT_CREATE || k == OOO_EVENT_CREATE || k == OOO_DB_CREATE;
+}
+
+/* The create polarity: run the body while the slot is empty, park while it is
+ * occupied.  A parked create is dispatched by the drain that follows the
+ * occupant's destroy (the teardown's re-drive), finds the slot empty, and
+ * installs.  A create whose body loses the install CAS re-enters here and
+ * parks behind the object that won it. */
+static void ooo_dispatch_create(struct arts_route_item_s *slot,
+                                struct arts_ooo_payload_s *payload,
+                                ooo_kind_t kind, arts_guid_t guid,
+                                const void *args, uint32_t args_size) {
+  for (;;) {
+    /* A returned slot answers for another GUID now (or none); the create
+     * follows its own GUID to the slot that names it. */
+    if (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+      arts_route_table_reserve_or_lookup(guid, &slot);
+      continue;
+    }
+    arts_shared_ptr_t h = arts_atomic_shared_load(&slot->value);
+    if (h == NULL) {
+      g_ooo_table[kind](NULL, (void *)args);
+      if (payload != NULL) {
+        arts_free(payload); /* drain context: the popped node is consumed */
+      }
+      return;
+    }
+    /* A value published under another key means the slot changed hands
+     * between the key check and the load; resolve again.  This cannot repeat
+     * on one slot: an object is only installed into a slot that named its key
+     * at the install (install_if_absent), so a slot keyed `guid` never keeps
+     * a stranger's value.  This loop terminates only because EVERY install
+     * path checks the key in the same atom as the install. */
+    bool ours = arts_shared_tag(h) == (uint64_t)guid;
+    arts_shared_release(&h);
+    if (ours) {
+      break;
+    }
+  }
+
+  /* Occupied — park behind the occupant. */
+  if (payload == NULL) {
+    payload = arts_ooo_payload_alloc(kind, guid, args, args_size);
+  }
+  INCREMENT_NUM_OO_ENQUEUE_BY(1);
+  arts_lf_stack_push(&slot->ooo_list, &payload->link);
+  OOO_AFTER_PARK(slot);
+
+  /* TOCTOU rescue, the non-create one inverted.  The occupant's teardown
+   * clears the value, returns the key, then (behind a full fence) re-drives
+   * the chain; we push, then (behind a full fence) re-read the value and the
+   * key.  Each stores before it loads the other's word, so at least one of us
+   * sees the other: either the teardown's re-drive carries our node, or we see
+   * the slot emptied or returned and drain it ourselves.  Draining — never
+   * re-entering with a copy — keeps the node single-owner: whichever side
+   * detaches it from the chain dispatches it, and the other finds it gone. */
+  atomic_thread_fence(memory_order_seq_cst);
+  arts_shared_ptr_t h = arts_atomic_shared_load(&slot->value);
+  bool occupied = (h != NULL) && arts_shared_tag(h) == (uint64_t)guid;
+  if (h != NULL) {
+    arts_shared_release(&h);
+  }
+  if (!occupied || __atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+    arts_ooo_drain(slot);
+  }
+}
+
 void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
                                 struct arts_ooo_payload_s *payload,
                                 ooo_kind_t kind, arts_guid_t guid,
                                 const void *args, uint32_t args_size) {
-  /* Identity check before anything else: destroy returns the slot, so this
-   * slot may already belong to a different GUID.  Dispatching then would run
-   * the handler against the wrong object — silent corruption, not a miss —
-   * and re-deferring would strand the payload on a stranger's list.  Drop it:
-   * the GUID it was deferred for is gone, and an ordinary GUID never
-   * returns.  (A zero key means the slot is free; the payload still cannot be
-   * dispatched, and holding it would only wait for an install of a different
-   * GUID.) */
-  if (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
-    if (payload != NULL) {
-      arts_free(payload);
-    }
+  if (ooo_kind_is_create(kind)) {
+    ooo_dispatch_create(slot, payload, kind, guid, args, args_size);
     return;
   }
-  /* Per-call acquire: (re)load the slot value every entry so a destroy that
-   * NULLed it earlier in the same drain walk is observed here. */
-  arts_shared_ptr_t h = arts_atomic_shared_load(&slot->value);
-  /* Verify the VALUE, not the slot.  The check above only proves the slot was
-   * ours BEFORE the load; a reclaim between the two would hand us the next
-   * owner's object, and dispatching this payload against it would run a
-   * handler over storage of a different kind.  Re-reading the slot's key is
-   * not a proof — the word is not monotone, and a late message for a
-   * destroyed GUID legally re-reserves the same key into a freed slot, so it
-   * can match again around a stranger's value.  The pinned cb's tag is: it
-   * names the key the object was published under, and the ref from the load
-   * keeps that cb from being recycled underneath the comparison.  A mismatch
-   * means the object this payload was deferred for is gone (an ordinary GUID
-   * never returns), so the payload is dropped, not re-parked. */
-  if (h != NULL && arts_shared_tag(h) != (uint64_t)guid) {
-    arts_shared_release(&h);
-    if (payload != NULL) {
-      arts_free(payload);
+  arts_shared_ptr_t h;
+  for (;;) {
+    /* Identity check before anything else: destroy returns the slot, so this
+     * slot may belong to a different GUID (or none) by now.  Dispatching then
+     * would run the handler against the wrong object, and parking would put
+     * the payload on a stranger's list.  A GUID comes back when it is created
+     * again, so the payload follows its GUID to the slot that names it now. */
+    if (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+      arts_route_table_reserve_or_lookup(guid, &slot);
+      continue;
     }
-    return;
+    /* Per-call acquire: (re)load the slot value every entry so a destroy that
+     * NULLed it earlier in the same drain walk is observed here. */
+    h = arts_atomic_shared_load(&slot->value);
+    /* Verify the VALUE, not the slot.  The check above only proves the slot
+     * was ours BEFORE the load; a reclaim between the two would hand us the
+     * next owner's object, and dispatching this payload against it would run
+     * a handler over storage of a different kind.  Re-reading the slot's key
+     * is not a proof — the word is not monotone, so it can match again around
+     * a stranger's value.  The pinned cb's tag is: it names the key the object
+     * was published under, and the ref from the load keeps that cb from being
+     * recycled underneath the comparison.  A mismatch means the slot changed
+     * hands, so the payload resolves its GUID again. */
+    if (h != NULL && arts_shared_tag(h) != (uint64_t)guid) {
+      arts_shared_release(&h);
+      arts_route_table_reserve_or_lookup(guid, &slot);
+      continue;
+    }
+    break;
   }
   if (h) {
     void *item = arts_shared_get(h);
     /* Ref pinned across the whole handler call — a concurrent destroy's
      * exchange-to-NULL drops only the install ref; `h` keeps the object alive
-     * until we release below. */
+     * until we release below.  The handle is published to the handler's
+     * thread (nested dispatches stack), so a body can retire the object it was
+     * dispatched on by identity. */
+    arts_shared_ptr_t outer = ooo_dispatched;
+    ooo_dispatched = h;
     g_ooo_table[kind](item, (void *)args);
+    ooo_dispatched = outer;
     arts_shared_release(&h);
     if (payload != NULL) {
       arts_free(payload); /* drain context: the popped node is consumed */
@@ -264,31 +369,28 @@ void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
    * pop on this stack. */
   INCREMENT_NUM_OO_ENQUEUE_BY(1);
   arts_lf_stack_push(&slot->ooo_list, &payload->link);
+  OOO_AFTER_PARK(slot);
 
-  /* TOCTOU rescue: an installer may have published value between our initial
-   * load and the push above.  A full fence before the re-check guarantees we
-   * observe that install rather than a stale pre-install NULL: the installer's
-   * value-store is sequenced before its reverse_drain (an atomic_exchange of
-   * the very head our push just CAS'd), so without the fence a node pushed
-   * just after the installer's drain snapshot could be stranded on weak memory
-   * models.  If installed, drain so our node is not left waiting. */
+  /* TOCTOU rescue, against an install and against a teardown.  An installer
+   * publishes the value and then, behind a full fence, detaches the chain; a
+   * teardown clears the value, returns the key and then, behind a full fence,
+   * detaches the chain.
+   * We push and then, behind a full fence, re-read the value and the key.
+   * Each side stores before it loads the other's word, so at least one sees
+   * the other: either the installer's drain or the teardown's re-drive carries
+   * our node, or we see the value published or the key moved and drain the
+   * slot ourselves.  Draining — never re-entering with a copy — keeps the node
+   * single-owner: whichever side detaches it dispatches it (to the installed
+   * object, or on to the slot its GUID names now), and the other finds it
+   * gone. */
   atomic_thread_fence(memory_order_seq_cst);
   h = arts_atomic_shared_load(&slot->value);
+  bool installed = (h != NULL);
   if (h) {
     arts_shared_release(&h);
-    arts_ooo_drain(slot);
-    return;
   }
-  /* Second half of the same rescue, against a teardown rather than an install:
-   * the slot may have been returned between our resolution and the push above,
-   * in which case this node is parked on a slot that no longer answers for our
-   * GUID.  The teardown stores the key before it reads the chain and we push
-   * before we read the key, so at most one of us can miss the other — and if
-   * it was the teardown, we are the one that must move.  Re-resolve and defer
-   * again; the node we leave behind is inert (the dispatch-side GUID check
-   * drops it) rather than lost. */
-  if (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
-    arts_ooo_dispatch_or_defer_guid(guid, kind, args, args_size);
+  if (installed || __atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+    arts_ooo_drain(slot);
   }
 }
 
@@ -361,7 +463,24 @@ void arts_ooo_free_all(struct arts_route_item_s *slot) {
   while (head != NULL) {
     arts_lf_link_t *next =
         atomic_load_explicit(&head->next, memory_order_relaxed);
-    arts_free((struct arts_ooo_payload_s *)head);
+    struct arts_ooo_payload_s *payload = (struct arts_ooo_payload_s *)head;
+    /* A parked create in the adopt shape owns the object it never
+     * installed. */
+    if (ooo_kind_is_create(payload->kind) &&
+        payload->args_size == sizeof(struct arts_ooo_args_create_local_s)) {
+      const struct arts_ooo_args_create_local_s *a =
+          (const struct arts_ooo_args_create_local_s *)arts_ooo_payload_args(
+              payload);
+      if (a->size == ARTS_OOO_CREATE_ADOPT) {
+        if (payload->kind == OOO_DB_CREATE) {
+          arts_shared_ptr_t cb = (arts_shared_ptr_t)a->descriptor;
+          arts_shared_release(&cb);
+        } else {
+          arts_route_table_delete_unpublished(a->guid, a->descriptor);
+        }
+      }
+    }
+    arts_free(payload);
     head = next;
   }
 }

@@ -171,7 +171,9 @@ extern ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
  * sites that drop it (relaxed stores; the thread joins teardown already does
  * are what make a later read see them).  Together with what the teardown can
  * still count in place -- undispatched self-sends, EDTs admitted but never
- * finished -- it says whether a shutdown was quiescent. */
+ * finished, messages still parked on a route slot's OoO list (a create whose
+ * occupant was never destroyed, or any message whose object never installed)
+ * -- it says whether a shutdown was quiescent. */
 struct arts_shutdown_abandon_s {
   unsigned int queued_edts; /* runnable EDTs dropped from a deque unrun */
   unsigned int jobs;        /* runtime jobs discarded instead of run */
