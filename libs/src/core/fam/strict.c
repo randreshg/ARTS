@@ -1,9 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
+ * Why this exists: on one host every rank sits behind one hardware-coherent
+ * cache, so a missing or misplaced flush can never produce a wrong value there
+ * -- and that is exactly the defect a store that is not coherent across hosts
+ * turns into one.  This oracle makes it visible on one host.  It checks the
+ * flush discipline such a store needs; it is never a performance mode.
+ *
  * Two coherency domains on one host: a private copy-on-write view of the pool
  * at the pool's address, and the shared backing elsewhere.  A write that was
  * not flushed therefore does not exist for anyone else, so a missing or
- * misplaced flush is a wrong value rather than nothing at all.
+ * misplaced flush is a wrong value rather than nothing at all.  Fresh blocks
+ * are poisoned, so a read before the first write is reproducibly wrong too.
  *
  * The two flush roles are DISJOINT.  A producer flush copies its range out and
  * reloads nothing; a consumer flush reloads its range and copies nothing out.
@@ -18,16 +25,29 @@
  * this rank is the only writer, so the backing has not moved since this rank
  * last reloaded that line and "differs from the backing" means "I wrote it".
  * Never compare contents outside a registered range, and never against a
- * stored snapshot. */
+ * stored snapshot.  It is what catches code that is correct only because an
+ * eviction never happened.
+ *
+ * The two views are built in one of two ways, with everything past that
+ * identical: from a descriptor this process holds, both mapped fresh
+ * (arts_fam_strict_map), or over a pool the device library has already mapped
+ * shared, by re-mapping exactly the pool's pages private at their own address
+ * and the same backing object shared elsewhere (arts_fam_strict_remap). */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
 
 #include "arts.h"
 #include "arts/fam/pool.h"
@@ -82,18 +102,20 @@ static void fam_reload(uint64_t line) {
   memcpy(fam_priv(line), fam_back(line), ARTS_FAM_GRANULE);
 }
 
-void *arts_fam_strict_map(int fd, void *want, uint64_t bytes) {
-  /* Shared first, and never at the base: the base is where pointers point,
-   * and a shared mapping there would make the private one fail.  The
-   * descriptor must still be open for both. */
+/* The shared view first, and never at the base: the base is where pointers
+ * point.  The private view then takes the base -- fresh where nothing is
+ * mapped there yet, or over the device library's own shared pages when those
+ * are what occupies it.  The descriptor must still be open for both. */
+static void *fam_strict_views(int fd, off_t off, void *want, uint64_t bytes,
+                              int fixed) {
   g_shared =
-      mmap(NULL, (size_t)bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+      mmap(NULL, (size_t)bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
   if (g_shared == MAP_FAILED) {
     ARTS_ERROR("fam: the pool's backing could not be mapped: %s",
                strerror(errno));
   }
   g_private = mmap(want, (size_t)bytes, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_FIXED_NOREPLACE, fd, 0);
+                   MAP_PRIVATE | fixed, fd, off);
   if (g_private == MAP_FAILED || g_private != want) {
     ARTS_ERROR("fam: the pool's address %p is not available in this rank: %s",
                want, g_private == MAP_FAILED ? strerror(errno) : "taken");
@@ -111,6 +133,119 @@ void *arts_fam_strict_map(int fd, void *want, uint64_t bytes) {
   g_seed_base = s ? (unsigned)strtoul(s, NULL, 0) : 0u;
   return g_private;
 }
+
+void *arts_fam_strict_map(int fd, void *want, uint64_t bytes) {
+  return fam_strict_views(fd, 0, want, bytes, MAP_FIXED_NOREPLACE);
+}
+
+#ifdef ARTS_FAM_BACKEND_DEVICE
+/* One row of the process's mapping table: the range, whether it is shared,
+ * the backing object's offset, device and inode, and its path. */
+struct fam_vma_s {
+  uintptr_t lo, hi;
+  bool shared;
+  unsigned long long off, inode;
+  unsigned dev_major, dev_minor;
+  char path[PATH_MAX];
+};
+
+static bool fam_vma_parse(const char *line, struct fam_vma_s *v) {
+  char perms[8] = {0};
+  unsigned long long lo = 0, hi = 0;
+  int at = 0;
+  if (sscanf(line, "%llx-%llx %7s %llx %x:%x %llu %n", &lo, &hi, perms, &v->off,
+             &v->dev_major, &v->dev_minor, &v->inode, &at) < 7) {
+    return false;
+  }
+  v->lo = (uintptr_t)lo;
+  v->hi = (uintptr_t)hi;
+  v->shared = perms[3] == 's';
+  v->path[0] = '\0';
+  if (at > 0) {
+    (void)snprintf(v->path, sizeof(v->path), "%s", line + at);
+    v->path[strcspn(v->path, "\n")] = '\0';
+  }
+  return true;
+}
+
+/* INVARIANT the discovery rests on: the device library maps ONE shared object
+ * at one fixed address, the pool lies wholly inside that mapping, and the
+ * library's own first page -- where it keeps its allocation cursor and its
+ * publication fields -- lies below the pool.  So the object behind the page
+ * that holds the pool's base is the pool's backing; rows the kernel split off
+ * one mapping are rejoined by requiring the same object at a contiguous
+ * offset; and the re-mapping covers exactly [base, base + bytes), never a byte
+ * of the library's own state.  Anything else is refused by name rather than
+ * guessed around. */
+void *arts_fam_strict_remap(void *base, uint64_t bytes) {
+  uintptr_t lo = (uintptr_t)base;
+  uintptr_t hi = lo + (uintptr_t)bytes;
+  FILE *f = fopen("/proc/self/maps", "r");
+  if (!f) {
+    ARTS_ERROR("fam: strict mode cannot read this process's mapping table: %s",
+               strerror(errno));
+  }
+  char line[PATH_MAX + 256];
+  struct fam_vma_s head = {0}, v;
+  bool found = false;
+  uintptr_t covered = 0;
+  unsigned long long next_off = 0;
+  while (fgets(line, sizeof(line), f)) {
+    if (!fam_vma_parse(line, &v)) {
+      continue;
+    }
+    if (!found) {
+      if (v.lo <= lo && lo < v.hi) {
+        head = v;
+        found = true;
+        covered = v.hi;
+        next_off = v.off + (v.hi - v.lo);
+      }
+    } else if (covered < hi) {
+      if (v.lo != covered || v.inode != head.inode ||
+          v.dev_major != head.dev_major || v.dev_minor != head.dev_minor ||
+          v.off != next_off || !v.shared) {
+        break;
+      }
+      covered = v.hi;
+      next_off = v.off + (v.hi - v.lo);
+    }
+  }
+  (void)fclose(f);
+  if (!found || !head.shared || head.inode == 0 || head.path[0] != '/') {
+    ARTS_ERROR("fam: strict mode needs the pool at %p to lie in a shared "
+               "mapping of a named object, and it does not",
+               base);
+  }
+  if (covered < hi) {
+    ARTS_ERROR("fam: strict mode needs the pool [%p, +%llu) to lie in ONE "
+               "shared mapping, and the mapping of %s ends at 0x%llx",
+               base, (unsigned long long)bytes, head.path,
+               (unsigned long long)covered);
+  }
+  if (head.lo >= lo) {
+    ARTS_ERROR("fam: the pool at %p starts on the first page of its mapping, "
+               "where the device library keeps its own state",
+               base);
+  }
+  int fd = open(head.path, O_RDWR | O_CLOEXEC);
+  if (fd < 0) {
+    ARTS_ERROR("fam: strict mode cannot open the pool's backing %s: %s",
+               head.path, strerror(errno));
+  }
+  struct stat st;
+  if (fstat(fd, &st) != 0 || (unsigned long long)st.st_ino != head.inode ||
+      major(st.st_dev) != head.dev_major ||
+      minor(st.st_dev) != head.dev_minor) {
+    ARTS_ERROR("fam: %s is no longer the object mapped under the pool",
+               head.path);
+  }
+  off_t off = (off_t)(head.off + (lo - head.lo));
+  void *view = fam_strict_views(fd, off, base, bytes, MAP_FIXED);
+  (void)close(fd);
+  return view;
+}
+#endif
 
 void *arts_fam_strict_shared_base(void) { return g_shared; }
 

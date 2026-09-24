@@ -9,7 +9,9 @@
 ///     bytes in
 ///   - a pool this host cannot afford is refused at load, in both modes
 ///   - under the inherited-mapping backend, any launcher but local is refused
-///   - fam_strict parses under that backend and is refused under the other
+///   - fam_strict parses wherever the store is one host's memory (that backend,
+///     and the device backend over the vendored fake library, where it is ON
+///     by default) and is refused over a real device library
 ///
 /// Config-parser test: arts_config_load() against crafted temp cfgs, no
 /// runtime started. The rejections are ARTS_ERROR death paths, so they are
@@ -145,8 +147,24 @@ static void expect_parsed(const char *tag, const char *body,
 
 int main(void) {
   /* Parsed in every tree: the keys are inert where they cannot be used. */
-  expect_parsed("named", "launcher=local\nnode_count=1\nfam_pool_mb=8\n", 8u, 0);
-  expect_parsed("default", "launcher=local\nnode_count=1\n", 64u, 0);
+  const int strict_default = ARTS_FAM_STRICT_DEFAULT[0] == '1';
+#ifdef ARTS_FAM_DEVICE_VENDORED
+  if (!strict_default) {
+    printf("FAIL config_fam_contract: fam_strict is not on by default over "
+           "the vendored fake library\n");
+    fails++;
+  }
+#else
+  if (strict_default) {
+    printf("FAIL config_fam_contract: fam_strict is on by default in a tree "
+           "whose store is not the vendored fake library\n");
+    fails++;
+  }
+#endif
+  expect_parsed("named", "launcher=local\nnode_count=1\nfam_pool_mb=8\n", 8u,
+                strict_default);
+  expect_parsed("default", "launcher=local\nnode_count=1\n", 64u,
+                strict_default);
 
 #ifdef ARTS_FAM
   /* A rank with no worker has nobody to bring a block's bytes in.  Written
@@ -182,7 +200,14 @@ int main(void) {
                  "ports=25000\nfam_pool_mb=8\n",
                  "launcher=local");
 #endif
-#if defined(ARTS_FAM) && !defined(ARTS_FAM_BACKEND_SHM)
+#ifdef ARTS_FAM_DEVICE_VENDORED
+  expect_parsed("strict", "launcher=local\nnode_count=1\nfam_strict=1\n", 64u,
+                1);
+  expect_parsed("strict_off", "launcher=local\nnode_count=1\nfam_strict=0\n",
+                64u, 0);
+#endif
+#if defined(ARTS_FAM) && !defined(ARTS_FAM_BACKEND_SHM) &&                     \
+    !defined(ARTS_FAM_DEVICE_VENDORED)
   expect_refused("strict_unsupported",
                  "launcher=local\nnode_count=1\nfam_strict=1\n", "fam_strict");
 #endif

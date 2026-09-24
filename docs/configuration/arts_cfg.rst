@@ -213,6 +213,48 @@ Flux variable leaking into a ``local`` or ``ssh`` run changes nothing.  A
 config with **no** ``launcher`` line and no scheduler environment still
 defaults to ``ssh``, Flux environment or not.
 
+Fabric-Attached Memory
+----------------------
+
+Read only by a build whose own library is FAM-enabled (``EXCL`` × ``PURGE``
+with ``ARTS_FAM_BACKEND`` set); every other build parses and ignores them.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 12 63
+
+   * - Key
+     - Default
+     - Description
+   * - ``fam_pool_mb``
+     - 64
+     - The run's pool, in MB, carved into one page-aligned slice per rank.
+       Refused at load when this host cannot afford it (strict mode costs a
+       private view per rank on top of the shared object).
+   * - ``fam_strict``
+     - 1 over the vendored fake library, else 0
+     - Strict mode: the test oracle for the flush discipline (see below).
+       Accepted only where the store is one host's memory — the inherited
+       mapping (``ARTS_FAM_BACKEND=SHM``, off unless named) and the device
+       backend over the vendored fake library (``ARTS_FAM_DEVICE_VENDORED=ON``,
+       on unless named ``0``). Over a real device library ``fam_strict=1`` is
+       a configuration error at load.
+
+Why strict mode exists.  On one host every rank sits behind one
+hardware-coherent cache, so a missing or misplaced flush in the
+fabric-attached arms can never produce a wrong value there — which is
+exactly the defect a real fabric-attached store, not coherent across hosts,
+turns into a wrong value.  Strict mode gives each rank a private
+copy-on-write view of the pool at the pool's address and maps the shared
+backing elsewhere, so a byte exists for a peer only after its producer
+flushed it and the consumer reloaded it; a sampled eviction inside the
+ranges a rank holds catches code that is correct only because an eviction
+never happened; and fresh allocations are poisoned, so a read before the
+first write is reproducibly wrong.  It checks correctness and is never a
+performance mode: every flush becomes a copy, and the real flush
+instructions do not run.  The eviction sequence is replayable:
+``ARTS_FAM_STRICT_SEED`` (environment, default 0) names its base.
+
 Debug / Utility
 ---------------
 

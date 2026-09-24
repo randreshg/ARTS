@@ -20,6 +20,7 @@ static uint64_t g_arena_bytes;
 static uint64_t g_recorded_base;
 static uint64_t g_recorded_bytes;
 static unsigned g_pool_mb;
+static bool g_strict;
 
 /* The pool size this rank's own config names, settled in
  * arts_fam_boot_prepare.  Zero means that hook never ran, which nothing later
@@ -74,6 +75,7 @@ void arts_fam_boot_prepare(const struct arts_config_s *config) {
   /* The arena is taken at the exchange, which is where its base can be told
    * to the other ranks; only the size is known this early. */
   g_pool_mb = config->fam_pool_mb;
+  g_strict = config->fam_strict;
 }
 
 void arts_fam_boot_child_exec(void) {}
@@ -104,6 +106,20 @@ void arts_fam_device_record(unsigned from_rank, uint64_t base, uint64_t size) {
 /* A window into this backend's file statics, for fam_device_frame alone. */
 uint64_t arts_fam_device_recorded_base(void) { return g_recorded_base; }
 
+/* Strict mode's two views are built here, once the arena's address is known
+ * and before the allocator touches a byte of it; the pool header was written
+ * through the library's shared mapping before, so it is in the backing. */
+static void fam_strict_views_over(void *base, uint64_t bytes) {
+#ifdef ARTS_FAM_DEVICE_VENDORED
+  if (g_strict) {
+    (void)arts_fam_strict_remap(base, bytes);
+  }
+#else
+  (void)base;
+  (void)bytes;
+#endif
+}
+
 void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
                           uint64_t *out_bytes) {
   (void)rank;
@@ -112,11 +128,13 @@ void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
     if (!g_arena) {
       fam_take_arena(1);
     }
+    fam_strict_views_over(g_arena, g_arena_bytes);
     *out_base = g_arena;
     *out_bytes = g_arena_bytes;
     return;
   }
   if (arts_global_rank_id == 0) {
+    fam_strict_views_over(g_arena, g_arena_bytes);
     *out_base = g_arena;
     *out_bytes = g_arena_bytes;
     return;
@@ -149,13 +167,22 @@ void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
                (unsigned long long)g_recorded_bytes, g_pool_mb,
                (unsigned long long)want);
   }
+  fam_strict_views_over(base, g_recorded_bytes);
   *out_base = base;
   *out_bytes = g_recorded_bytes;
-  FLUSH_FENCE_CONSUMER(*out_base, sizeof(struct arts_fam_header_s));
+  arts_fam_backend_flush(*out_base, sizeof(struct arts_fam_header_s), false);
 }
 
 void arts_fam_backend_unmap(void *base, uint64_t bytes) {
+#ifdef ARTS_FAM_DEVICE_VENDORED
+  if (g_strict) {
+    /* Both views, and the oracle's DRAM, are this rank's own; the library's
+     * mapping outside the arena, and every peer's view, are untouched. */
+    arts_fam_strict_unmap(base, bytes);
+  }
+#else
   (void)bytes;
+#endif
   /* Only where no peer can still hold it: the shutdown protocol drains
    * messages, not mappings, so there is no point at which the allocating rank
    * knows every peer has stopped reading.  Past one rank the arena is left to
@@ -169,6 +196,12 @@ void arts_fam_backend_unmap(void *base, uint64_t bytes) {
 }
 
 void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
+#ifdef ARTS_FAM_DEVICE_VENDORED
+  if (g_strict) {
+    arts_fam_strict_flush(p, bytes, producer);
+    return;
+  }
+#endif
   /* The device library's own sweep over the range, then the fence pool.h's
    * contract puts at the end of both flushes: a store fence with a compiler
    * barrier for the producer, and a full fence for the consumer, whose
@@ -183,10 +216,30 @@ void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
   }
 }
 
-/* The device has the second coherency domain the strict oracle emulates, so
- * both hooks are nothing here, and the predicate is always false -- and
- * because all three are DEFINED here, a DEVICE build never names a strict
- * symbol at all. */
+#ifdef ARTS_FAM_DEVICE_VENDORED
+/* The vendored fake library is one host's shared memory, which has no second
+ * coherency domain; strict mode gives it one, exactly as on the inherited
+ * mapping. */
+void arts_fam_backend_poison(void *p, size_t bytes) {
+  if (g_strict) {
+    arts_fam_strict_poison(p, bytes);
+  }
+}
+void arts_fam_backend_hold(const void *p, size_t bytes, bool hold) {
+  if (g_strict) {
+    arts_fam_strict_hold_range(p, bytes, hold);
+  }
+}
+bool arts_fam_backend_strict(void) { return g_strict; }
+
+void arts_fam_backend_config_check(const struct arts_config_s *config) {
+  (void)config;
+}
+#else
+/* A real device has the second coherency domain the strict oracle emulates,
+ * so both hooks are nothing here, and the predicate is always false -- and
+ * because all three are DEFINED here, a build over a real device library
+ * never names a strict symbol at all. */
 void arts_fam_backend_poison(void *p, size_t bytes) {
   (void)p;
   (void)bytes;
@@ -200,7 +253,10 @@ bool arts_fam_backend_strict(void) { return false; }
 
 void arts_fam_backend_config_check(const struct arts_config_s *config) {
   if (config->fam_strict) {
-    ARTS_ERROR("fam_strict emulates a second coherency domain, which this "
-               "build's memory already has; remove fam_strict from the cfg");
+    ARTS_ERROR("fam_strict emulates a second coherency domain on one host's "
+               "memory, so it is available only over the inherited mapping "
+               "or the vendored fake library; this build's device library "
+               "already has that domain - remove fam_strict from the cfg");
   }
 }
+#endif

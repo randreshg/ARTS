@@ -84,6 +84,7 @@ and which one is a profile setting, never a campaign option or a guess:
 | `fam_device` | `off` (fabric-attached memory is not available where the profile runs; the default), `fake` (the vendored emulation of the device library) or `real` (the device library itself) |
 | `fam_device_include_dir` | `real` only: the device library's headers (absolute path) |
 | `fam_device_library` | `real` only: the library file itself (absolute path) |
+| `fam_strict` | `fake` only: `true` (the default there) or `false` |
 
 An absent `fam_device` means `off`, and under `off` a FAM entry is refused
 by name — in the profile's own `entries` (or, when it lists none, the whole
@@ -96,8 +97,19 @@ other launcher takes `off`, `real` with both paths (absolute; whether they
 exist is the configure's check), or `fake` only with `nodes: [1]` (the
 vendored library's pool is one host's shared memory). Paths belong to `real`
 alone.
-`fam_strict` cannot be set beside a FAM entry: it emulates a second coherency
-domain, which the DEVICE backend has and refuses at config load.
+`fam_strict` is strict mode, a setting of `fam_device: fake` alone, on unless
+the profile says `false`; the rendered cfg then carries `fam_strict=1` or `0`.
+Beside `real` or `off` any value is a validation error, and no key is
+rendered. Why: on one host every rank sits behind one hardware-coherent cache,
+so a missing or misplaced flush in the FAM arms can never produce a wrong
+value there, which is exactly the defect a real fabric-attached store (not
+coherent across hosts) turns into one. Strict mode gives each rank a private
+copy-on-write view of the pool at the pool's address over the shared backing
+mapped elsewhere, so a byte reaches a peer only after its producer flushed it
+and the consumer reloaded it; a sampled eviction inside held ranges and
+poisoned fresh blocks sharpen it. It is a test oracle for the flush
+discipline the real store needs, never a performance mode: turn it off
+(`fam_strict: false`) to exercise the vendored library's own flush path.
 
 artsrun's FAM entries always run on the `DEVICE` backend; `SHM` is a
 test-tree backend (ctest) only. Before building, a campaign that runs a FAM

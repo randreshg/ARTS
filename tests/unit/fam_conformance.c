@@ -10,6 +10,10 @@
 ///      libs/src/core/fam/pool.c libs/src/core/fam/device.c
 ///      -o fam_conformance -lpthread <device library>
 /// then start one process per rank with --rank i --nranks n --rendezvous PATH.
+///
+/// --strict 0|1 names the mode, defaulting to the build's own default for the
+/// fam_strict key.  Under strict mode a write that was not flushed must NOT
+/// cross, so question 3 is asserted there rather than recorded.
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -24,6 +28,7 @@
 
 #include "arts/fam/pool.h"
 #include "arts/system/config.h"
+#include "arts/system/identity.h"
 
 #define BLOCK_BYTES 256u
 #define PAT_A 0x11
@@ -34,6 +39,7 @@
 static int g_fails;
 static unsigned g_rank, g_nranks = 2u, g_pool_mb = 8u;
 static char g_rv[512] = "fam_conformance_rv";
+static bool g_strict = ARTS_FAM_STRICT_DEFAULT[0] == '1';
 
 static void say(const char *fmt, ...) {
   va_list ap;
@@ -125,7 +131,7 @@ static void boot(unsigned mb, unsigned nranks) {
   struct arts_config_s config;
   memset(&config, 0, sizeof(config));
   config.fam_pool_mb = mb;
-  config.fam_strict = false;
+  config.fam_strict = g_strict;
   config.table_length = nranks;
   config.master_rank = 0;
   config.launcher = (char *)"local";
@@ -190,6 +196,8 @@ int main(int argc, char **argv) {
       (void)snprintf(g_rv, sizeof(g_rv), "%s", argv[++i]);
     } else if (!strcmp(argv[i], "--pool-mb") && i + 1 < argc) {
       g_pool_mb = (unsigned)atoi(argv[++i]);
+    } else if (!strcmp(argv[i], "--strict") && i + 1 < argc) {
+      g_strict = atoi(argv[++i]) != 0;
     }
   }
   if (g_nranks < 2u || g_nranks > 16u) {
@@ -215,7 +223,8 @@ int main(int argc, char **argv) {
         (void)snprintf(ns, sizeof(ns), "%u", g_nranks);
         (void)snprintf(ms, sizeof(ms), "%u", g_pool_mb);
         execl(argv[0], argv[0], "--rank", rs, "--nranks", ns, "--rendezvous",
-              g_rv, "--pool-mb", ms, (char *)NULL);
+              g_rv, "--pool-mb", ms, "--strict", g_strict ? "1" : "0",
+              (char *)NULL);
         _exit(127);
       }
       kids[nkids++] = pid;
@@ -226,14 +235,38 @@ int main(int argc, char **argv) {
     arts_fam_boot_launched();
   }
 
+  /* The runtime's address exchange, by rendezvous: a backend whose arena is
+   * taken by rank 0 names it here, and one whose ranks inherit the pool names
+   * nothing and ignores what it is told. */
+  arts_global_rank_id = g_rank;
+  arts_global_rank_count = g_nranks;
+  if (g_rank == 0) {
+    uint64_t base = 0, size = 0;
+    arts_fam_device_publish(&base, &size);
+    char text[64];
+    (void)snprintf(text, sizeof(text), "%llu %llu", (unsigned long long)base,
+                   (unsigned long long)size);
+    rv_write("arena", text);
+  } else {
+    char text[64];
+    unsigned long long base = 0, size = 0;
+    if (!rv_read("arena", text, sizeof(text)) ||
+        sscanf(text, "%llu %llu", &base, &size) != 2) {
+      fail("rank 0 never named its arena");
+      return 1;
+    }
+    arts_fam_device_record(0u, (uint64_t)base, (uint64_t)size);
+  }
+
   arts_fam_init(g_rank, g_nranks);
 
-  /* boot() asked for fam_strict = false, so the predicate must say so: this
-   * is the probe's one assertion about the MODE, and it is what makes the
-   * probe the plain flush path's permanent runner rather than a test that
-   * happens to be plain today. */
-  if (arts_fam_strict()) {
-    fail("this probe must run the plain backend, not the oracle");
+  /* The predicate must answer the mode boot() asked for: this is the probe's
+   * one assertion about the MODE, and it is what makes each registration the
+   * permanent runner of the flush path it names rather than a test that
+   * happens to run that path today. */
+  if (arts_fam_strict() != g_strict) {
+    fail(g_strict ? "this run asked for the oracle and got the plain backend"
+                  : "this run asked for the plain backend and got the oracle");
   }
 
   /* Q1 + Q2: one address, and bytes that cross after both flushes. */
@@ -277,8 +310,11 @@ int main(int argc, char **argv) {
   }
   if (alive && g_rank != 0) {
     arts_fam_flush_consumer(block, BLOCK_BYTES);
-    say("q3 stale-without-flush = %s",
-        all_bytes_are(block, PAT_B) ? "no" : "yes");
+    bool stale = !all_bytes_are(block, PAT_B);
+    say("q3 stale-without-flush = %s", stale ? "yes" : "no");
+    if (g_strict && !stale) {
+      fail("q3 under strict mode: a write crossed with no producer flush");
+    }
   }
   if (alive) {
     alive = rv_barrier(3);
@@ -329,6 +365,8 @@ int main(int argc, char **argv) {
     }
     char path[sizeof(glob_cmd) + 8];
     (void)snprintf(path, sizeof(path), "%sblock", glob_cmd);
+    (void)unlink(path);
+    (void)snprintf(path, sizeof(path), "%sarena", glob_cmd);
     (void)unlink(path);
   }
 

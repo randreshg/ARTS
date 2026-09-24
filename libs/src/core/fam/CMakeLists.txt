@@ -11,9 +11,14 @@ if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
     # compiled.
     set(ARTS_FAM_SOURCES pool.c)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        # strict.c belongs to this backend alone: the second coherency domain
-        # is what an inherited mapping can be given and a device region cannot.
+        # strict.c gives one host's memory the second coherency domain a store
+        # that is not coherent across hosts has.
         list(APPEND ARTS_FAM_SOURCES shm.c strict.c)
+        set(_arts_fam_tu_floor 3)
+    elseif(ARTS_FAM_DEVICE_VENDORED)
+        # The vendored fake library is one host's memory as well, so the
+        # oracle applies to it; over a real device library it does not.
+        list(APPEND ARTS_FAM_SOURCES device.c strict.c)
         set(_arts_fam_tu_floor 3)
     else()
         list(APPEND ARTS_FAM_SOURCES device.c)

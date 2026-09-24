@@ -148,6 +148,10 @@ function(arts_apply_protocol target arm write_policy release_policy)
         else()
             target_include_directories(${target} PRIVATE
                 ${ARTS_FAM_DEVICE_INCLUDE_DIR})
+            if(ARTS_FAM_DEVICE_VENDORED)
+                target_compile_definitions(${target} PRIVATE
+                    ARTS_FAM_DEVICE_VENDORED=1)
+            endif()
         endif()
     endif()
     if(arm STREQUAL "FLUSH")

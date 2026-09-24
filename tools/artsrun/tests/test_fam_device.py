@@ -138,10 +138,41 @@ def test_a_profile_without_fam_entries_rejects_the_fields():
         is FamDevice.OFF
 
 
-def test_fam_strict_cannot_ride_with_a_fam_entry():
-    with pytest.raises(ValueError, match="fam_strict"):
-        profile(fam_strict=True)
-    assert profile(entries=["arts_excl_purge"], fam_strict=True).fam_strict
+def test_fam_strict_is_on_by_default_under_fake_and_may_be_turned_off():
+    assert profile().fam_strict is None
+    assert profile().resolved_fam_strict is True
+    assert profile(fam_strict=True).resolved_fam_strict is True
+    assert profile(fam_strict=False).resolved_fam_strict is False
+    for launcher in ("slurm", "flux", "ssh"):
+        fake = profile(launcher, fam_device="fake", nodes=[1])
+        assert fake.resolved_fam_strict is True
+        assert profile(launcher, fam_device="fake", nodes=[1],
+                       fam_strict=False).resolved_fam_strict is False
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_fam_strict_is_refused_beside_real_and_off(value):
+    with pytest.raises(ValueError, match="fam_strict is a setting of "
+                                         "fam_device: fake only") as exc:
+        real(fam_strict=value)
+    assert "fam_device is real" in str(exc.value)
+    # off, stated or implied by entries that hold no FAM one
+    with pytest.raises(ValueError, match="fam_device is off"):
+        profile(entries=["arts_excl_purge"], fam_strict=value)
+    with pytest.raises(ValueError, match="fam_device is off"):
+        profile("slurm", entries=["arts_excl_purge"], fam_strict=value)
+    assert real().resolved_fam_strict is None
+    assert profile(entries=["arts_excl_purge"]).resolved_fam_strict is None
+
+
+def test_the_rendered_cfg_carries_fam_strict_only_under_fake():
+    from artsrun.render import render_arts
+
+    assert "fam_strict=1" in render_arts(profile(), 2)
+    assert "fam_strict=0" in render_arts(profile(fam_strict=False), 2)
+    assert "fam_strict=1" in render_arts(profile(fam_strict=True), 2)
+    assert "fam_strict" not in render_arts(real(), 2)
+    assert "fam_strict" not in render_arts(profile(entries=["arts_excl_purge"]), 2)
 
 
 def test_shipped_profiles_name_their_library():

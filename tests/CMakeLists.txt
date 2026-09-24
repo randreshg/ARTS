@@ -190,11 +190,10 @@ endif()
 if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
     list(APPEND TEST_PROGRAMS fam_slot_discard_unadopt)
     list(APPEND TEST_PROGRAMS fam_direct_payload_identity)
-    if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
-        # inherited-mapping backend has, like fam_strict_flush below: the other
-        # backend refuses fam_strict at config load, so its strict cfg is not a
-        # run this test could make.
+    if(ARTS_FAM_BACKEND STREQUAL "SHM" OR ARTS_FAM_DEVICE_VENDORED)
+        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only a
+        # store that is one host's memory has, like fam_strict_flush below: a
+        # build over a real device library refuses fam_strict at config load.
         list(APPEND TEST_PROGRAMS fam_direct_fresh_slot)
     endif()
 endif()
@@ -238,8 +237,10 @@ if(ARTS_FAM_TREE_RESIDENCY)
     endif()
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND TEST_PROGRAMS fam_slices)
-        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
-        # inherited-mapping backend has, like fam_slices above it.
+    endif()
+    if(ARTS_FAM_BACKEND STREQUAL "SHM" OR ARTS_FAM_DEVICE_VENDORED)
+        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only a
+        # store that is one host's memory has.
         list(APPEND TEST_PROGRAMS fam_strict_flush)
     endif()
 endif()
@@ -374,8 +375,9 @@ endif()
 
 # Where a test's ARTS_CONFIG comes from.  A tree whose own library is
 # FAM-enabled reads the fam root: every cfg there is its configs/local/test/
-# namesake plus fam_pool_mb and fam_strict, so the whole suite runs with a pool
-# sized for the tree instead of the 64 MB default.  ONE variable, used by every
+# namesake plus fam_pool_mb (fam_strict is named only by the strict twins), so
+# the whole suite runs with a pool sized for the tree instead of the 64 MB
+# default.  ONE variable, used by every
 # helper and by every hand-registered test -- a second spelling is how five
 # tests end up on the wrong root.  CACHE INTERNAL, not a plain set(): the
 # helpers below are called from outside this directory too (benchmarks/ocr_shim
@@ -390,20 +392,22 @@ if(ARTS_FAM_TREE_RESIDENCY)
 endif()
 
 # A whole-suite pass under the strict oracle, which is what a full validation
-# pass of a FAM tree asks for.  OFF by default: the DEFAULT pass must stay
-# plain, because strict mode forwards every flush to the oracle and the real
-# flush instructions would otherwise never execute.  A topology has a strict
-# pass iff its twin exists, so the four twins are the single source of which
-# topologies get one -- no list here to drift.
+# pass of an inherited-mapping FAM tree asks for.  OFF by default: that
+# backend's DEFAULT pass must stay plain, because strict mode forwards every
+# flush to the oracle and the real flush instructions would otherwise never
+# execute.  A tree over the vendored fake library needs no such pass: the
+# root's plain cfgs leave fam_strict unset, and that library's default is on.
+# A topology has a strict pass iff its twin exists, so the four twins are the
+# single source of which topologies get one -- no list here to drift.
 option(ARTS_FAM_TEST_STRICT
        "Point each test at its <variant>_strict.cfg twin where one exists" OFF)
 if(ARTS_FAM_TEST_STRICT AND NOT (ARTS_FAM_TREE_RESIDENCY AND
                                  ARTS_FAM_BACKEND STREQUAL "SHM"))
     message(FATAL_ERROR
             "ARTS_FAM_TEST_STRICT needs a tree whose own library is FAM-enabled "
-            "over the inherited mapping: the strict twins live only under "
-            "configs/local/test/fam/ and the other backend makes fam_strict a "
-            "config-load error")
+            "over the inherited mapping: a tree over the vendored fake library "
+            "is strict by default already, and one over a real device library "
+            "makes fam_strict a config-load error")
 endif()
 
 # Resolves one variant name to the cfg a test should run.  Every site that
@@ -1677,7 +1681,11 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # progress thread, are checkable on this residency's own entry too.
         register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
         register_fam_multinode_test(fam_fetch_off_progress TIMEOUT 60)
-        if(ARTS_FAM_BACKEND STREQUAL "SHM")
+        if(ARTS_FAM_DEVICE_VENDORED)
+            # Strict is this tree's default, so the resolver's cfg is a run
+            # under the oracle in every pass.
+            register_fam_single_node_test(fam_direct_fresh_slot TIMEOUT 60)
+        elseif(ARTS_FAM_BACKEND STREQUAL "SHM")
             # The one test that names its cfg instead of going through the
             # resolver.  What it asserts -- a fresh store reads as the poison
             # byte -- exists only under the second coherency domain, so it has
@@ -1748,12 +1756,16 @@ if(ARTS_FAM_TREE_RESIDENCY)
     endforeach()
 endif()
 
+# The oracle is what this test IS, so it is registered only where the oracle
+# exists: over a real device library fam_strict is a config-load error,
+# because that memory already has the second coherency domain this emulates.
+# Structural, at registration, never a run-time skip.  Over the vendored fake
+# library the plain cfg is the strict run -- the test itself asserts the mode
+# -- which is what proves strict is that library's default.
 if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
-    # The oracle is what this test IS, so it is registered only where the
-    # oracle exists: under the device backend fam_strict is a config-load
-    # error, because that memory already has the second coherency domain this
-    # emulates.  Structural, at registration, never a run-time skip.
     register_fam_multinode_test(fam_strict_flush TIMEOUT 120 VARIANTS 2n_strict)
+elseif(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_DEVICE_VENDORED)
+    register_fam_multinode_test(fam_strict_flush TIMEOUT 120 VARIANTS 2n)
 endif()
 
 # --- GPU tests ---

@@ -1648,12 +1648,15 @@ void arts_db_debug_quiescence_check(void) {
             }
           }
 #endif
-#ifdef ARTS_FAM_BACKEND_SHM
+#ifdef ARTS_FAM_HAS_STRICT
           /* Strict mode's hold registry: a count still nonzero for a line
            * of this block's slot at teardown is a hold whose matching
-           * unhold never ran.  Off (and this whole check inert) whenever
-           * the run is not under the second coherency domain. */
-          if (arts_fam_strict() && addr != 0 && c->db_size != 0 &&
+           * unhold never ran -- a defect only after a quiescent shutdown,
+           * since an admitted EDT a shutdown abandoned keeps its hold
+           * legally.  Off (and this whole check inert) whenever the run is
+           * not under the second coherency domain. */
+          if (quiescent && arts_fam_strict() && addr != 0 &&
+              c->db_size != 0 &&
               arts_fam_strict_range_held((const void *)(uintptr_t)addr,
                                          (size_t)c->db_size)) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a strict-mode hold "

@@ -43,7 +43,7 @@ def render_arts(profile: Profile, nodes: int, *, counter_folder: str | None = No
         fabric_domain=profile.fabric_domain,
         regpool_slab_mb=profile.regpool_slab_mb,
         fam_pool_mb=profile.fam_pool_mb,
-        fam_strict=profile.fam_strict,
+        fam_strict=profile.resolved_fam_strict,
         # Both runtimes take the stack in BYTES and both read zero as "leave
         # the platform default"; the profile states the size once, in MiB, so
         # the two cannot drift apart.

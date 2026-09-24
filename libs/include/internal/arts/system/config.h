@@ -78,6 +78,15 @@ typedef enum {
    parses -- and so that the cfg surface stays the two keys below. */
 #define ARTS_FAM_STRICT_SEED_ENV "ARTS_FAM_STRICT_SEED"
 
+/* fam_strict's default: on where the pool is the vendored fake library, whose
+   one host's memory cannot show a missing flush otherwise; off everywhere
+   else, so that a real device's flush path is the one that runs. */
+#ifdef ARTS_FAM_DEVICE_VENDORED
+#define ARTS_FAM_STRICT_DEFAULT "1"
+#else
+#define ARTS_FAM_STRICT_DEFAULT "0"
+#endif
+
 struct arts_config_table_s {
   unsigned int rank;
   char *ip_address;

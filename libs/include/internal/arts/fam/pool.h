@@ -196,16 +196,26 @@ static inline void arts_fam_strict_unhold(const void *p, size_t bytes) {
 
 #endif /* ARTS_FAM */
 
-/* Module-internal: the strict oracle, which exists only under the inherited
- * mapping.  Named from shm.c, and from nowhere else but the read-only query
- * below -- which is what makes a DEVICE build's freedom from these symbols
- * structural rather than inspected.  The poison is written through the
- * backing as well as the private view: a block just allocated has no holder
- * and no reload yet, so this is the one write outside a producer flush and
- * the sampled eviction that can reach the backing, and it can meet no other
- * copy of its lines. */
-#if defined(ARTS_FAM) && defined(ARTS_FAM_BACKEND_SHM)
+/* Module-internal: the strict oracle, which exists wherever the store is one
+ * host's memory -- the inherited mapping, and the device backend over the
+ * vendored fake library -- and nowhere else.  Named from the backend TU and
+ * from nowhere else but the read-only query below, which is what makes a
+ * build over a real device library's freedom from these symbols structural
+ * rather than inspected.  The poison is written through the backing as well
+ * as the private view: a block just allocated has no holder and no reload
+ * yet, so this is the one write outside a producer flush and the sampled
+ * eviction that can reach the backing, and it can meet no other copy of its
+ * lines. */
+#if defined(ARTS_FAM) &&                                                       \
+    (defined(ARTS_FAM_BACKEND_SHM) || defined(ARTS_FAM_DEVICE_VENDORED))
+#define ARTS_FAM_HAS_STRICT 1
 void *arts_fam_strict_map(int fd, void *want, uint64_t bytes);
+#ifdef ARTS_FAM_BACKEND_DEVICE
+/* Re-maps [base, base + bytes) of the device library's shared mapping private
+ * at its own address, with the same backing object shared elsewhere; nothing
+ * outside that range is touched.  Returns base. */
+void *arts_fam_strict_remap(void *base, uint64_t bytes);
+#endif
 void *arts_fam_strict_shared_base(void);
 void arts_fam_strict_unmap(void *base, uint64_t bytes);
 void arts_fam_strict_flush(const void *p, size_t bytes, bool producer);

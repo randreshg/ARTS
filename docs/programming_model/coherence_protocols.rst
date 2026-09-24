@@ -217,6 +217,42 @@ exactly one protocol and CMake refuses the rest.
    declaration, not a bug mask); such a row is ``N/A`` on the FLUSH entry
    and runs unaffected on every OCR-model entry.
 
+.. _fam_strict_mode:
+
+Fabric-attached store: strict mode
+----------------------------------
+
+A fabric-attached store is not coherent across hosts: a write reaches the
+store only when its writer flushes it, and a reader sees it only after
+reloading its own copy. The two flush roles are distinct — a *producer*
+flush publishes a range, a *consumer* flush reloads one — and the
+fabric-attached arms place them at the ownership edges. On one host none of
+this can go visibly wrong: every rank sits behind one hardware-coherent
+cache, so a flush that is missing or in the wrong place still reads the
+right value, and the defect waits for a machine whose store is not coherent.
+
+Strict mode is the oracle that makes it visible on one host. Each rank maps
+the pool privately, copy-on-write, at the pool's own address, and the
+shared backing elsewhere; a producer flush copies its lines out to the
+backing and a consumer flush reloads them, and nothing else moves bytes
+between the two. So a byte exists for a peer only after its producer
+flushed it and the consumer reloaded it. Two more rules sharpen it: a
+sampled eviction writes a line back early, but only inside a range the rank
+has registered as held (where it is the only writer), which catches code
+that is correct only because an eviction never happened; and a fresh block
+is poisoned, so a read before the first write is reproducibly wrong rather
+than zero. A consumer flush never publishes: copy-on-write is per page, so
+anything a reader could write back is a neighbour's byte its page captured.
+
+Strict mode is selected by the ``fam_strict`` configuration key (see
+:doc:`/configuration/arts_cfg`) and exists only where the store is one
+host's memory: the inherited mapping (off unless a configuration names it —
+the test root's strict twins do) and the device backend over the vendored
+fake library (on by default). Over a real device library it is refused at
+load, because that memory already has the second coherency domain strict
+mode emulates. It is a test oracle for the flush discipline the real store
+needs, never a performance mode.
+
 .. _protocols:
 
 The protocols

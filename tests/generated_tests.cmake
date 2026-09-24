@@ -843,8 +843,23 @@ set_tests_properties(stress_edt PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 # Everything after it is registered only where the tree has the backend the
 # test is about: the pool's address is an SHM concern, and a tree that never
 # names the option must be untouched by this module.
-add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
-                  TIMEOUT 30)
+if(ARTS_FAM_BACKEND STREQUAL "DEVICE" AND ARTS_FAM_TREE_RESIDENCY)
+    # The recorder half compiles here, so the backend it asserts is linked in.
+    set(_fam_frame_sources ${CMAKE_SOURCE_DIR}/libs/src/core/fam/device.c
+                           unit/fam_stubs.c)
+    if(ARTS_FAM_DEVICE_VENDORED)
+        list(APPEND _fam_frame_sources
+             ${CMAKE_SOURCE_DIR}/libs/src/core/fam/strict.c)
+    endif()
+    add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
+                      TIMEOUT 30 SOURCES ${_fam_frame_sources}
+                      LIBS ${ARTS_FAM_DEVICE_LIBRARY})
+    set_tests_properties(fam_device_frame PROPERTIES
+                         RESOURCE_LOCK "arts_runtime")
+else()
+    add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
+                      TIMEOUT 30)
+endif()
 if(ARTS_FAM_BACKEND STREQUAL "SHM")
     add_pure_unit_src(fam_base_address PASS_REGEX "PASS fam_base_address"
                       DEFINES ARTS_FAM_BASE=${ARTS_FAM_BASE}ULL TIMEOUT 60)
@@ -894,4 +909,54 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
                               ${CMAKE_SOURCE_DIR}/libs/src/core/fam/shm.c
                               ${CMAKE_SOURCE_DIR}/libs/src/core/fam/strict.c
                               unit/fam_stubs.c)
+endif()
+# The device backend over the vendored fake library: the same probe, which
+# takes the arena rank 0 names over its rendezvous as the runtime takes it over
+# the address exchange.  Its default run is the tree's default, strict; the
+# plain twin keeps the library's own flush path under test.  Only a tree whose
+# own library is FAM-enabled carries the backend definitions these need.
+if(ARTS_FAM_DEVICE_VENDORED AND ARTS_FAM_TREE_RESIDENCY)
+    foreach(_fam_mode "" _plain)
+        set(_fam_probe fam_conformance${_fam_mode})
+        if(_fam_mode STREQUAL "")
+            set(_fam_args)
+        else()
+            set(_fam_args --strict 0)
+        endif()
+        add_executable(${_fam_probe} unit/fam_conformance.c
+                       ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
+                       ${CMAKE_SOURCE_DIR}/libs/src/core/fam/device.c
+                       ${CMAKE_SOURCE_DIR}/libs/src/core/fam/strict.c
+                       unit/fam_stubs.c)
+        target_include_directories(${_fam_probe} PRIVATE
+            ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+            ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+        arts_apply_protocol(${_fam_probe} ${ARTS_COHERENCE_ARM}
+                            ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+        target_link_libraries(${_fam_probe} PRIVATE Threads::Threads
+                              ${ARTS_FAM_DEVICE_LIBRARY})
+        add_test(NAME ${_fam_probe} COMMAND ${_fam_probe} ${_fam_args}
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(${_fam_probe} PROPERTIES
+            LABELS "single_node" TIMEOUT 120
+            RESOURCE_LOCK "arts_runtime"
+            PASS_REGULAR_EXPRESSION "PASS fam_conformance"
+            FAIL_REGULAR_EXPRESSION "FAIL")
+    endforeach()
+endif()
+# The device backend as a real device library compiles it: the vendored
+# flag undefined, so the rule that library is held to -- fam_strict refused,
+# and off by default -- is checked in a tree that can link it.
+if(ARTS_FAM_BACKEND STREQUAL "DEVICE" AND ARTS_FAM_TREE_RESIDENCY)
+    add_pure_unit_src(fam_strict_device_rule
+                      PASS_REGEX "PASS fam_strict_device_rule" TIMEOUT 30
+                      SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
+                              ${CMAKE_SOURCE_DIR}/libs/src/core/fam/device.c
+                              unit/fam_stubs.c
+                      LIBS ${ARTS_FAM_DEVICE_LIBRARY})
+    target_compile_options(fam_strict_device_rule PRIVATE
+                           -UARTS_FAM_DEVICE_VENDORED)
+    # The library maps its one named region at load, like every rank does.
+    set_tests_properties(fam_strict_device_rule PROPERTIES
+                         RESOURCE_LOCK "arts_runtime")
 endif()
