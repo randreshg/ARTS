@@ -40,6 +40,7 @@
 #define _FILE_OFFSET_BITS 64 // NOLINT(readability-identifier-naming)
 #include "arts.h"
 #include "arts/counter/counter.h"
+#include "arts/fam/pool.h"
 #include "arts/gas/guid.h"
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
@@ -62,6 +63,16 @@ int arts_rt(int argc, char **argv) {
    * shutdown via arts_enter_shutdown_state on signal arrival. */
   arts_install_signal_watcher_thread();
   arts_configure_core_dumps(config.core_dump);
+
+#ifdef ARTS_FAM
+  /* Before the fabric, before the registered pool's carve, and before the
+   * launcher forks: a backend whose region is inherited has no later chance to
+   * create it, and a rank that mapped a fixed address after those two could
+   * find it taken while another rank did not.  It must stay BELOW the config
+   * load, whose values it reads, and it runs on every rank and must not branch
+   * on the rank id, which is not assigned yet. */
+  arts_fam_boot_prepare(&config);
+#endif
 
   arts_global_rank_id = 0;
   arts_global_rank_count = config.table_length;
@@ -89,6 +100,14 @@ int arts_rt(int argc, char **argv) {
     config.launcher_data->argv = argv;
     config.launcher_data->launch_processes(config.launcher_data);
   }
+#ifdef ARTS_FAM
+  /* Every rank this one spawns has inherited the environment by now.  The
+   * threads alive here (the signal watcher, the output forwarders) never read
+   * the environment; the first that may is the fabric's, so the handoff must
+   * be gone before arts_net_init.  Unconditional, so that a run which spawns
+   * nobody still leaves nothing behind. */
+  arts_fam_boot_launched();
+#endif
 
   if (arts_global_rank_count > 1) {
     arts_transport_setup_outgoing();

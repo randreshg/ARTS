@@ -90,10 +90,15 @@ void arts_fam_config_check(const struct arts_config_s *config);
  * no later chance to create it, and a rank that mapped after the fabric and
  * the registered pool could find its fixed address taken while another rank
  * did not.  arts_fam_boot_child_exec runs in a forked child immediately before
- * it execs.  The two device hooks ride the address exchange, the one round
- * every rank already performs before a worker thread exists. */
+ * it execs.  arts_fam_boot_launched runs on the rank that spawned the others
+ * as soon as they are forked: a handoff a backend placed in the environment is
+ * dropped there, before any thread that reads the environment exists, and a
+ * rank that adopted the region has already dropped its own.  The two device
+ * hooks ride the address exchange, the one round every rank already performs
+ * before a worker thread exists. */
 void arts_fam_boot_prepare(const struct arts_config_s *config);
 void arts_fam_boot_child_exec(void);
+void arts_fam_boot_launched(void);
 void arts_fam_device_publish(uint64_t *base, uint64_t *size);
 void arts_fam_device_record(unsigned from_rank, uint64_t base, uint64_t size);
 
@@ -117,7 +122,12 @@ void arts_fam_backend_config_check(const struct arts_config_s *config);
 static inline bool arts_fam_strict(void) { return arts_fam_backend_strict(); }
 
 /* Both flushes end in a store fence and a compiler memory barrier: without
- * them the copy that follows a consumer flush may be hoisted above it. */
+ * them the copy that follows a consumer flush may be hoisted above it.  A
+ * store fence orders STORES, so neither flush is a StoreLoad barrier: a
+ * releaser that publishes its bytes and then LOADS a peer's word to decide
+ * whether it may stand down must place an
+ * atomic_thread_fence(memory_order_seq_cst) between the publication and that
+ * load.  The flush does not stand in for it. */
 static inline void arts_fam_flush_producer(const void *p, size_t bytes) {
   arts_fam_backend_flush(p, bytes, true);
 }

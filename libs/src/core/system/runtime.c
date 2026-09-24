@@ -51,6 +51,7 @@
 #include "arts/defs.h"
 #include "arts/edt.h"
 #include "arts/edt_context.h" /* arts_owned_finish_cleanup, ctx tls */
+#include "arts/fam/pool.h"
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
@@ -145,6 +146,14 @@ void arts_runtime_node_init(struct arts_config_s *config) {
       ARTS_ERROR("arts_runtime_node_init: registered pool init failed");
     }
   }
+
+#ifdef ARTS_FAM
+  /* After the transport and the registered pool exist, because a backend may
+   * learn the pool's base from the address exchange, and before this rank has
+   * created a single worker thread — so the allocator's state is built once,
+   * by one thread, with nothing able to allocate from it yet. */
+  arts_fam_init(arts_global_rank_id, arts_global_rank_count);
+#endif
 
   /* Scheduler */
 #ifdef ARTS_USE_GPU
@@ -479,6 +488,10 @@ void arts_runtime_global_cleanup() {
    * still allocating at this point (called after every worker/sender/
    * receiver thread has joined). */
   arts_regpool_cleanup();
+
+#ifdef ARTS_FAM
+  arts_fam_fini();
+#endif
 
   /* Phase 2: the pool's slab MRs (backing both sends and the recv buffers) are
    * now closed, so the net module can close the domain and fabric — no memory

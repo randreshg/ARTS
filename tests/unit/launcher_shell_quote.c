@@ -62,6 +62,9 @@ void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
 void *arts_realloc(void *p, size_t size) { return realloc(p, size); }
 void arts_free(void *p) { free(p); }
+#ifdef ARTS_FAM
+void arts_fam_boot_child_exec(void) {}
+#endif
 void *arts_malloc_aligned(size_t size, size_t align) {
   (void)align;
   return malloc(size);
