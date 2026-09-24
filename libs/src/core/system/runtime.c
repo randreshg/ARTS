@@ -54,6 +54,7 @@
 #include "arts/fam/pool.h"
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
+#include "arts/job_queue.h"
 #include "arts/memory/regpool.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
@@ -206,6 +207,16 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.local_spin = (volatile bool **)arts_calloc(tc, sizeof(bool *));
   arts_node_info.thread_roles =
       (unsigned int *)arts_calloc(tc, sizeof(unsigned int));
+#ifdef ARTS_FAM
+  /* One job slot per thread, each on its own cache line, plus the table a
+   * poster picks a worker out of.  Both are written by their own thread in
+   * arts_runtime_private_init, before the barrier that lets anything post. */
+  arts_node_info.job_queue = (struct arts_job_queue_s *)arts_calloc_aligned(
+      tc, sizeof(struct arts_job_queue_s), ARTS_CACHE_LINE_SIZE);
+  arts_node_info.worker_ids = (unsigned int *)arts_calloc(
+      config->worker_thread_count, sizeof(unsigned int));
+  arts_node_info.job_rr = 0U;
+#endif
 
   /* Thread counts */
   arts_node_info.worker_thread_count = config->worker_thread_count;
@@ -460,6 +471,10 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.gpu_route_table);
   arts_free((void *)arts_node_info.local_spin);
   arts_free(arts_node_info.thread_roles);
+#ifdef ARTS_FAM
+  arts_free(arts_node_info.job_queue);
+  arts_free(arts_node_info.worker_ids);
+#endif
   arts_free(arts_node_info.buf);
   for (unsigned int i = 0; i < tc; i++) {
     arts_free(arts_node_info.keys[i]);
@@ -607,6 +622,14 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
   arts_thread_info.role = thread->role;
   arts_thread_info.current_edt_guid = 0;
 
+#ifdef ARTS_FAM
+  /* After this thread's id, group_pos and role are set -- the slot is keyed by
+   * the first and the worker table by the second -- and before the
+   * ready_to_push barrier below, which is the publication point: EDTs run only
+   * after it, so by the time anything can post every worker's entry is set. */
+  arts_job_queue_private_init();
+#endif
+
   // Register thread-local counter storage with nodeInfo
   arts_node_info.live_counters[thread->id] = arts_thread_local_counters;
 
@@ -640,6 +663,12 @@ void arts_runtime_private_cleanup() {
   arts_atomic_sub(&arts_node_info.ready_to_clean, 1U);
   while (arts_node_info.ready_to_clean) {
   };
+#ifdef ARTS_FAM
+  /* Every thread has left its loop, so this slot still has exactly one
+   * consumer and no poster is left to add to it.  What is left is released,
+   * not performed: the turn a queued job belongs to ended with the loop. */
+  arts_job_queue_private_drain();
+#endif
   /* Drain runnable-but-never-executed EDTs from this thread's deques before
    * deleting them, dropping each one's self_cb ref (arts_run_edt would have on
    * completion).  The ready_to_clean barrier above guarantees every thread has

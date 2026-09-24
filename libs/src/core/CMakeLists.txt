@@ -117,8 +117,10 @@ target_link_libraries(arts_regpool PRIVATE arts::libfabric)
 arts_apply_protocol(arts_regpool ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY}
                     ${ARTS_RELEASE_POLICY})
 
-# Scheduler (scheduler.c at core/ top level, needs GPU wrapper for CUDA builds)
-add_library(arts_scheduler OBJECT scheduler.c)
+# Scheduler (scheduler.c at core/ top level, needs GPU wrapper for CUDA builds).
+# job_queue.c joins it because the scheduler loops are the only consumer of a
+# job: the two travel together into every library and every variant.
+add_library(arts_scheduler OBJECT scheduler.c job_queue.c)
 target_link_libraries(arts_scheduler PRIVATE arts_interface)
 if(HWLOC_INCLUDE_DIRS)
     target_include_directories(arts_scheduler PRIVATE ${HWLOC_INCLUDE_DIRS})

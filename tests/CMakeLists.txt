@@ -227,6 +227,8 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # block's bytes into a working copy; another residency answers for its
         # own.
         list(APPEND TEST_PROGRAMS fam_home_turn_costs)
+        # Where that copy runs is a claim about the same residency.
+        list(APPEND TEST_PROGRAMS fam_fetch_off_progress)
     endif()
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND TEST_PROGRAMS fam_slices)
@@ -1547,6 +1549,10 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # block's bytes into a working copy; another residency answers for its
         # own.  One rank, because that is where every turn is home-local.
         register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
+        # Where that copy runs.  Multinode only: a progress thread is what a
+        # rank has when it has peers, so on one rank the property holds
+        # vacuously and asserts nothing.
+        register_fam_multinode_test(fam_fetch_off_progress TIMEOUT 60)
     endif()
     # The arm's teardown walk: six blocks, every one released and every
     # dependence satisfied, must leave the walk silent -- a QUIESCENCE-DEBUG

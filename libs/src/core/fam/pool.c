@@ -358,6 +358,15 @@ static unsigned fam_mem_available_mb(void) {
 }
 
 void arts_fam_config_check(const struct arts_config_s *config) {
+  /* A block's bytes are brought in by a worker, so a rank with no worker
+   * thread has nobody to bring them in and nothing to hand the work to.
+   * Checked on the DERIVED count, which is what a rank actually runs with
+   * after a single-node run reclaims its progress threads. */
+  if (config->worker_thread_count == 0) {
+    ARTS_ERROR("worker_threads=%u leaves this rank no worker to bring a "
+               "block's bytes in; this pool needs at least one per rank",
+               config->worker_thread_count);
+  }
   if (config->fam_pool_mb == 0) {
     ARTS_ERROR("fam_pool_mb=%u must name at least 1 MB", config->fam_pool_mb);
   }

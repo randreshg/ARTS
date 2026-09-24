@@ -1317,6 +1317,11 @@ static void config_compute_derived(struct arts_config_s *config) {
      If thread_count was set directly (SLURM/env), derive worker count from it.
      Otherwise compute total from worker + progress. */
   if (config->thread_count > 0) {
+    if (config->progress_thread_count > config->thread_count) {
+      ARTS_ERROR("progress_threads=%u exceeds the %u thread(s) this rank was "
+                 "given - the worker count would wrap",
+                 config->progress_thread_count, config->thread_count);
+    }
     config->worker_thread_count =
         config->thread_count - config->progress_thread_count;
   }

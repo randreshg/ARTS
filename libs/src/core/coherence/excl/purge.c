@@ -41,6 +41,7 @@
 #include "arts/fam/pool.h"
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
+#include "arts/job_queue.h"
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -1120,6 +1121,25 @@ void arts_handler_db_acquire(void *item, void *args) {
  * that many nodes — serving is exactly-once with no other drain path that
  * could run against a later round. */
 #ifdef ARTS_FAM
+/* The commit CAS needs no mode — at most one axis is FETCH, since each claim
+ * refuses while the other axis holds or fetches — so the axis the claim took
+ * travels back to the committer only to be checked against the axis the word
+ * says was fetching.  They disagree only if a commit ran against some other
+ * claim's fetch. */
+static void lock_grant_commit_axis(arts_guid_t db_guid,
+                                   arts_db_access_mode_t claimed,
+                                   arts_db_access_mode_t committed,
+                                   uint64_t word) {
+  if (claimed != committed) {
+    ARTS_ERROR("fam: guid %lu claimed a %s right and committed a %s one "
+               "(word=%llx)",
+               (unsigned long)db_guid,
+               (claimed == DB_MODE_RW) ? "write" : "read",
+               (committed == DB_MODE_RW) ? "write" : "read",
+               (unsigned long long)word);
+  }
+}
+
 /* Publish the claimed grant and admit its cohort: FETCH -> GRANT, one CAS,
  * whose counts are exactly the parked population (nothing self-serves while
  * the axis is FETCH).  Runs only where grants are committed — the rank's one
@@ -1139,15 +1159,17 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                                                   memory_order_acquire));
   switch (act) {
   case CACHE_ACT_DRAIN_BOTH: /* an RW turn serves this rank's RW + RO cohort */
+    lock_grant_commit_axis(db_guid, mode, DB_MODE_RW, cur);
     lock_drain_pending(&cache->rw_pending, CACHE_RW_CNT(cur));
     lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
     break;
   case CACHE_ACT_DRAIN_RO:
+    lock_grant_commit_axis(db_guid, mode, DB_MODE_RO, cur);
     lock_drain_pending(&cache->ro_pending, CACHE_RO_CNT(cur));
     break;
   default:
     /* A commit with no claim on the word: one claim yields exactly one
-     * commit, so there is no second one to run. */
+     * fetch-done message, and the loopback dispatches each message once. */
     ARTS_ERROR("fam: guid %lu committed a grant it never claimed (word=%llx, "
                "mode=%d)",
                (unsigned long)db_guid, (unsigned long long)cur, (int)mode);
@@ -1258,6 +1280,54 @@ static void lock_grant_landed_cb(void *arg) {
 #endif /* ARTS_FAM */
 
 #ifdef ARTS_FAM
+/* A claimed grant's copy, waiting for a worker to run it.  The handle is the
+ * one the claiming thread looked the block up with: it is HANDED OVER to the
+ * job, so the descriptor and its working copy outlive the claim's stack and
+ * cannot be freed while the bytes are being written. */
+struct fam_fetch_job_s {
+  arts_shared_ptr_t db_h;
+  arts_guid_t db_guid;
+  uint32_t mode;
+};
+
+/* Give the block's handle back and free the job.  Both ends of the job's life
+ * pass through here, so the handle the claim transferred in is released
+ * exactly once whether the copy was taken or not. */
+static void fam_fetch_job_release(struct fam_fetch_job_s *j) {
+  arts_shared_release(&j->db_h);
+  arts_free(j);
+}
+
+/* The worker's half of a claimed grant: the copy, then a self-addressed
+ * message that puts the commit back on the rank's grant committer — the one
+ * thread allowed to drain a pend stack.  Nothing here drains a waiter queue or
+ * sends on the transport.  A block with no working copy to fill drops the
+ * grant and posts nothing: the axis then rests at FETCH, which the teardown
+ * walk reports. */
+static void fam_fetch_job_run(void *arg) {
+  struct fam_fetch_job_s *j = (struct fam_fetch_job_s *)arg;
+  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(j->db_h);
+  if (fam_fetch_working_copy(&db->cache)) {
+    struct arts_msg_db_fam_fetch_done_packet_s p;
+    arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_FAM_FETCH_DONE);
+    p.header.rank = arts_global_rank_id;
+    p.db_guid = j->db_guid;
+    p.mode = j->mode;
+    p.pad = 0;
+    arts_transport_loopback_post(&p, sizeof(p));
+  }
+  fam_fetch_job_release(j);
+}
+
+/* The same grant when the runtime tears down before a worker reaches it: the
+ * copy is NOT taken.  A fetch registers the store as held for the turn and the
+ * zero edge that would unregister it can no longer arrive, so taking it here
+ * would leave a hold nothing ever balances on top of a turn already lost.  The
+ * axis stays where the claim left it and the teardown walk reports that once. */
+static void fam_fetch_job_discard(void *arg) {
+  fam_fetch_job_release((struct fam_fetch_job_s *)arg);
+}
+
 void arts_handler_db_excl_grant(void *payload, size_t size) {
   struct arts_msg_excl_grant_packet_s *p =
       (struct arts_msg_excl_grant_packet_s *)payload;
@@ -1291,11 +1361,20 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
     arts_shared_release(&db_h);
     return;
   }
-  if (!fam_fetch_working_copy(cache)) {
-    arts_shared_release(&db_h); /* the route slot is gone: drop the grant */
-    return;
-  }
-  lock_grant_commit(db_h, p->db_guid, mode); /* consumes db_h */
+  /* The claim is this thread's; the COPY is not.  Reading a whole block here
+   * would spend the rank's single inbound coherence processor on bytes, so the
+   * copy goes to a worker and the commit comes back through this rank's own
+   * loopback.  One claim yields one job and one job one commit.  The claimed
+   * axis is now held across a worker's scheduling quantum rather than a
+   * handler's stack, which widens no window that was not already open: a
+   * destroy racing an acquire this block still owes is outside the contract,
+   * and everything inside it waits on the commit either way. */
+  struct fam_fetch_job_s *j =
+      (struct fam_fetch_job_s *)arts_malloc(sizeof(*j));
+  j->db_h = db_h; /* the lookup's ref travels with the job */
+  j->db_guid = p->db_guid;
+  j->mode = (uint32_t)mode;
+  arts_job_post(fam_fetch_job_run, fam_fetch_job_discard, j);
 }
 #else
 void arts_handler_db_excl_grant(void *payload, size_t size) {
@@ -1675,8 +1754,20 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
 }
 
 #ifdef ARTS_FAM
-void arts_handler_db_fam_fetch_done(struct arts_msg_db_fam_fetch_done_packet_s *p) {
-  (void)p;
-  ARTS_ERROR("fam: a fetch-done message arrived before the copy runs off the committer");
+/* The copy a worker took for a claimed grant is in the working copy.  This
+ * runs on the rank's loopback drainer — the thread that commits grants — so
+ * the cohort is admitted where the pend stacks have their single drainer.  A
+ * block destroyed between the copy and this dispatch leaves its axis at FETCH:
+ * the same drop a vanished working copy takes, and what the teardown walk
+ * reports. */
+void arts_handler_db_fam_fetch_done(
+    struct arts_msg_db_fam_fetch_done_packet_s *p) {
+  arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
+  if (arts_shared_get(db_h) == NULL) {
+    arts_shared_release(&db_h);
+    return;
+  }
+  lock_grant_commit(db_h, p->db_guid,
+                    (arts_db_access_mode_t)p->mode); /* consumes db_h */
 }
 #endif /* ARTS_FAM */

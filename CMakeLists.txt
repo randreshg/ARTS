@@ -596,6 +596,13 @@ if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND ARTS_USE_CXL)
           "mutually exclusive: they are two different features that would "
           "both claim a rank's fabric-attached memory. Pick one.")
 endif()
+if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND ARTS_USE_GPU)
+  message(FATAL_ERROR
+          "ARTS_FAM_BACKEND=${ARTS_FAM_BACKEND} and ARTS_USE_GPU=ON are "
+          "mutually exclusive: the GPU scheduler loops do not run the job "
+          "queue that brings a block's bytes in, so a fetch would never "
+          "complete there.")
+endif()
 if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
   if(NOT ARTS_FAM_DEVICE_INCLUDE_DIR OR NOT EXISTS "${ARTS_FAM_DEVICE_INCLUDE_DIR}")
     message(FATAL_ERROR
