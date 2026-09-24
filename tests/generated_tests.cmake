@@ -1240,9 +1240,18 @@ set_tests_properties(stdio_forward_scale_test PROPERTIES FAIL_REGULAR_EXPRESSION
 set_tests_properties(stress_edt PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(utility_api PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 
-# Fabric-attached memory.  Registered only where the tree has the backend the
+# Fabric-attached memory.  The bootstrap address frame carries {base,size}
+# whatever backend (if any) a tree configures, and its layout half asserts the
+# frame against the transport header alone -- no fam TU, no FAM define -- so
+# it is asserted in EVERY tree.  Only its second half, gated in the source by
+# #ifdef ARTS_FAM_BACKEND_DEVICE, compiles for the one backend no tree here
+# can configure.
+#
+# Everything after it is registered only where the tree has the backend the
 # test is about: the pool's address is an SHM concern, and a tree that never
 # names the option must be untouched by this module.
+add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
+                  TIMEOUT 30)
 if(ARTS_FAM_BACKEND STREQUAL "SHM")
     add_pure_unit_src(fam_base_address PASS_REGEX "PASS fam_base_address"
                       DEFINES ARTS_FAM_BASE=${ARTS_FAM_BASE}ULL TIMEOUT 60)
@@ -1255,21 +1264,22 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
     # against pool.h's non-FAM arm: a `static inline` arts_fam_contains followed
     # by pool.c's non-static definition, and an undeclared arts_fam_backend_map
     # under the -Werror=implicit-function-declaration arts_apply_protocol itself
-    # adds.  Naming the definitions per target is what makes these three
-    # independent of the tree's arm; they are the ONLY fam targets that do,
-    # because they are the only ones that compile a fam TU.
+    # adds.  Naming the backend definitions per target is what makes these
+    # independent of the tree's arm; the residency, if the tree has one, is
+    # the tree's own.  They are the ONLY fam targets that do, because they
+    # are the only ones that compile a fam TU.
     add_pure_unit_src(fam_pool_alloc PASS_REGEX "PASS fam_pool_alloc" TIMEOUT 120
-                      DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
+                      DEFINES ARTS_FAM=1 ARTS_FAM_BACKEND_SHM=1
                       SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
                               unit/fam_stubs.c)
     add_pure_unit_src(fam_contains_preinit PASS_REGEX "PASS fam_contains_preinit"
                       TIMEOUT 30
-                      DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
+                      DEFINES ARTS_FAM=1 ARTS_FAM_BACKEND_SHM=1
                       SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
                               unit/fam_stubs.c)
     add_pure_unit_src(fam_double_free PASS_REGEX "PASS fam_double_free"
                       TIMEOUT 60
-                      DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
+                      DEFINES ARTS_FAM=1 ARTS_FAM_BACKEND_SHM=1
                       SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
                               unit/fam_stubs.c)
     # Links nothing of the module -- it performs the pool object's own
@@ -1277,12 +1287,6 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
     # fam_stubs.c.
     add_pure_unit_src(fam_shm_handoff PASS_REGEX "PASS fam_shm_handoff"
                       TIMEOUT 60)
-    # Asserts the bootstrap address frame against the transport header itself,
-    # so it needs no fam TU at all: that half runs wherever this registration
-    # does.  Its second half compiles only where device.c does, which is the
-    # one backend no tree here can configure.
-    add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
-                      TIMEOUT 30)
     # The conformance probe builds its own struct arts_config_s and never
     # links a runtime -- so it is the one registered test that runs the
     # PLAIN backend whatever the tree's ARTS_FAM_TEST_STRICT says, and the
@@ -1291,7 +1295,7 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
     # though it never takes the branch.
     add_pure_unit_src(fam_conformance PASS_REGEX "PASS fam_conformance"
                       TIMEOUT 120
-                      DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
+                      DEFINES ARTS_FAM=1 ARTS_FAM_BACKEND_SHM=1
                               ARTS_FAM_BASE=${ARTS_FAM_BASE}ULL
                       SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
                               ${CMAKE_SOURCE_DIR}/libs/src/core/fam/shm.c

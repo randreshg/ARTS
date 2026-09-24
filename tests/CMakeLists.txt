@@ -210,6 +210,9 @@ if(ARTS_FAM_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS fam_alloc_dist)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND TEST_PROGRAMS fam_slices)
+        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
+        # inherited-mapping backend has, like fam_slices above it.
+        list(APPEND TEST_PROGRAMS fam_strict_flush)
     endif()
 endif()
 
@@ -341,11 +344,57 @@ endif()
 # base here: a fixed base is exactly the shared state that made one test's
 # leftovers everyone else's problem.
 
+# Where a test's ARTS_CONFIG comes from.  A tree whose own library is
+# FAM-enabled reads the fam root: every cfg there is its configs/local/test/
+# namesake plus fam_pool_mb and fam_strict, so the whole suite runs with a pool
+# sized for the tree instead of the 64 MB default.  ONE variable, used by every
+# helper and by every hand-registered test -- a second spelling is how five
+# tests end up on the wrong root.  CACHE INTERNAL, not a plain set(): the
+# helpers below are called from outside this directory too (benchmarks/ocr_shim
+# registers its tests through the same functions), and a plain directory-scoped
+# variable is invisible there -- every call would silently resolve against an
+# empty prefix instead of refusing to configure.
+set(ARTS_TEST_CFG_DIR "${CMAKE_SOURCE_DIR}/configs/local/test"
+    CACHE INTERNAL "cfg root every register_*_test call resolves ARTS_CONFIG against" FORCE)
+if(ARTS_FAM_TREE_RESIDENCY)
+    set(ARTS_TEST_CFG_DIR "${CMAKE_SOURCE_DIR}/configs/local/test/fam"
+        CACHE INTERNAL "cfg root every register_*_test call resolves ARTS_CONFIG against" FORCE)
+endif()
+
+# A whole-suite pass under the strict oracle, which is what a full validation
+# pass of a FAM tree asks for.  OFF by default: the DEFAULT pass must stay
+# plain, because strict mode forwards every flush to the oracle and the real
+# flush instructions would otherwise never execute.  A topology has a strict
+# pass iff its twin exists, so the four twins are the single source of which
+# topologies get one -- no list here to drift.
+option(ARTS_FAM_TEST_STRICT
+       "Point each test at its <variant>_strict.cfg twin where one exists" OFF)
+if(ARTS_FAM_TEST_STRICT AND NOT (ARTS_FAM_TREE_RESIDENCY AND
+                                 ARTS_FAM_BACKEND STREQUAL "SHM"))
+    message(FATAL_ERROR
+            "ARTS_FAM_TEST_STRICT needs a tree whose own library is FAM-enabled "
+            "over the inherited mapping: the strict twins live only under "
+            "configs/local/test/fam/ and the other backend makes fam_strict a "
+            "config-load error")
+endif()
+
+# Resolves one variant name to the cfg a test should run.  Every site that
+# names a cfg calls this; none spells a directory.
+function(arts_test_cfg out variant)
+    set(_c "${ARTS_TEST_CFG_DIR}/${variant}.cfg")
+    if(ARTS_FAM_TEST_STRICT AND
+       EXISTS "${ARTS_TEST_CFG_DIR}/${variant}_strict.cfg")
+        set(_c "${ARTS_TEST_CFG_DIR}/${variant}_strict.cfg")
+    endif()
+    set(${out} "${_c}" PARENT_SCOPE)
+endfunction()
+
 function(register_single_node_test test_name)
     cmake_parse_arguments(ARG "" "TIMEOUT" "ARGS" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 10)
     endif()
+    arts_test_cfg(_cfg 1n)
     add_test(
         NAME ${test_name}
         COMMAND ${test_name} ${ARG_ARGS}
@@ -355,7 +404,7 @@ function(register_single_node_test test_name)
         LABELS "single_node"
         TIMEOUT ${ARG_TIMEOUT}
         RESOURCE_LOCK "arts_runtime"
-        ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/1n.cfg"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg}"
     )
 endfunction()
 
@@ -377,11 +426,7 @@ function(register_multinode_test test_name)
         set(ARG_VARIANTS 2n 3n 4n 2n_io)
     endif()
     foreach(variant IN LISTS ARG_VARIANTS)
-        if(variant STREQUAL "2n_io")
-            set(_variant_port_count 2)
-        else()
-            set(_variant_port_count 1)
-        endif()
+        arts_test_cfg(_cfg ${variant})
         add_test(
             NAME ${test_name}_${variant}
             COMMAND ${test_name} ${ARG_ARGS}
@@ -391,13 +436,21 @@ function(register_multinode_test test_name)
             LABELS "multinode"
             TIMEOUT ${ARG_TIMEOUT}
             RESOURCE_LOCK "arts_runtime"
-            ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/${variant}.cfg"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg}"
         )
     endforeach()
 endfunction()
 
 
 function(register_gpu_test test_name)
+    if(ARTS_FAM_TREE_RESIDENCY)
+        # No fam cfg root exists for the GPU topology, and a FAM tree's test
+        # must name a sized pool; a GPU FAM tree is not a configuration this
+        # effort validates.  Excluded at registration, not skipped at run time.
+        message(STATUS "Skipping GPU test ${test_name}: a FAM-enabled tree has "
+                       "no GPU cfg carrying fam_pool_mb")
+        return()
+    endif()
     cmake_parse_arguments(ARG "" "TIMEOUT" "ARGS" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 10)
@@ -538,6 +591,7 @@ set_tests_properties(term_abort PROPERTIES
 # matches [ARTS] Crashed: SIG* in the captured output.  Hand-registered, so
 # ARTS_CONFIG has to be set here too: without it the runtime falls back to
 # ./arts.cfg in the working directory, which the build tree does not contain.
+arts_test_cfg(_cfg 1n)
 add_test(
     NAME term_sigfpe
     COMMAND bash -c "ASAN_OPTIONS=handle_sigfpe=0:handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigfpe 2>&1; true"
@@ -547,9 +601,10 @@ set_tests_properties(term_sigfpe PROPERTIES
     LABELS "single_node"
     TIMEOUT 10
     RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/1n.cfg"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
     PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGFPE")
 
+arts_test_cfg(_cfg 1n)
 add_test(
     NAME term_sigsegv
     COMMAND bash -c "ASAN_OPTIONS=handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigsegv 2>&1; true"
@@ -559,7 +614,7 @@ set_tests_properties(term_sigsegv PROPERTIES
     LABELS "single_node"
     TIMEOUT 10
     RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/1n.cfg"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
     PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGSEGV")
 
 # --- Pure unit tests (no ARTS runtime) ---
@@ -570,10 +625,16 @@ register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
 set_tests_properties(grant_purge_word_model PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS grant_purge_word_model")
 # Forks to probe the ARTS_ERROR death paths of the port contract; loads cfgs
-# only, so it binds nothing and needs no runtime.
+# only, so it binds nothing and needs no runtime.  Its fixtures name remote
+# launchers, which a tree whose own library refuses them at config load (an
+# inherited-mapping backend under the arm that uses it) cannot parse as far
+# as the port contract, so that tree cannot host the test (the contract
+# itself is the same everywhere).
+if(NOT (ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM"))
 register_pure_unit_test(config_ports_contract TIMEOUT 30)
 set_tests_properties(config_ports_contract PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_ports_contract")
+endif()
 # What the fabric-attached-memory cfg keys accept and refuse.  Unguarded,
 # deliberately: it links no fam symbol (arts_config_load alone) and half its
 # job is proving the two keys parse and stay inert in a tree with no FAM
@@ -582,10 +643,14 @@ register_pure_unit_test(config_fam_contract TIMEOUT 30)
 set_tests_properties(config_fam_contract PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_fam_contract")
 # Forks to probe the flux launcher arm's ARTS_ERROR death paths against a
-# stub flux CLI the test writes itself; loads cfgs only, binds nothing.
+# stub flux CLI the test writes itself; loads cfgs only, binds nothing.  Same
+# exclusion as config_ports_contract: an inherited-mapping tree refuses the
+# flux launcher at config load.
+if(NOT (ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM"))
 register_pure_unit_test(config_flux_setup TIMEOUT 30)
 set_tests_properties(config_flux_setup PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_flux_setup")
+endif()
 # Binds real sockets to occupy a block, then checks the selector moves off it.
 register_pure_unit_test(port_block_relocation TIMEOUT 30)
 set_tests_properties(port_block_relocation PROPERTIES
@@ -948,6 +1013,7 @@ endforeach()
 # Three nodes, because the racing read has to reach the home from a rank that
 # is neither the home nor the writer — with two there is no such rank and the
 # window cannot be reached at all.
+arts_test_cfg(_cfg 3n)
 add_test(
     NAME db_no_acquire_wb_first_writer_3n_fuzz
     COMMAND db_no_acquire_wb_first_writer
@@ -958,7 +1024,7 @@ set_tests_properties(db_no_acquire_wb_first_writer_3n_fuzz PROPERTIES
     TIMEOUT 120
     RESOURCE_LOCK "arts_runtime"
     FAIL_REGULAR_EXPRESSION "FAIL"
-    ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/3n.cfg;ARTS_SCHED_FUZZ=25")
+    ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
 # A create that lands where a dependence on the same label has already asked
 # the block's home about it: the create may install the block, but it may not
 # take the write right out from under a request already in flight.  Both
@@ -1135,6 +1201,7 @@ register_single_node_test(lockfree_pool_stress TIMEOUT 60)
 
 # Distributed coherence stress: B.2.  Uses arts_2n.cfg (the test SKIPs
 # cleanly if rank_count < 2).
+arts_test_cfg(_cfg 2n)
 add_test(
     NAME coherence_stress_dist
     COMMAND coherence_stress_dist
@@ -1144,7 +1211,7 @@ set_tests_properties(coherence_stress_dist PROPERTIES
     LABELS "coherence_stress;multinode"
     TIMEOUT 120
     RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/2n.cfg"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
 )
 
 # Large-payload cross-rank coherence transfer: a ~256 KiB DB is stamped by a
@@ -1204,6 +1271,7 @@ endif()
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+arts_test_cfg(_cfg 2n_io)
 add_test(
     NAME coherence_owner_ownership_reorder
     COMMAND coherence_owner_ownership_reorder
@@ -1213,7 +1281,7 @@ set_tests_properties(coherence_owner_ownership_reorder PROPERTIES
     LABELS "coherence_stress;multinode"
     TIMEOUT 120
     RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/test/2n_io.cfg"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
 )
 endif()
 
@@ -1390,6 +1458,16 @@ if(ARTS_FAM_TREE_RESIDENCY)
         set_tests_properties(fam_slices_2n fam_slices_4n PROPERTIES
                              FAIL_REGULAR_EXPRESSION "FAIL")
     endif()
+endif()
+
+if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
+    # The oracle is what this test IS, so it is registered only where the
+    # oracle exists: under the device backend fam_strict is a config-load
+    # error, because that memory already has the second coherency domain this
+    # emulates.  Structural, at registration, never a run-time skip.
+    register_multinode_test(fam_strict_flush TIMEOUT 120 VARIANTS 2n_strict)
+    set_tests_properties(fam_strict_flush_2n_strict PROPERTIES
+                         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
 # --- Mode-mismatch detection binary (no CTest entry — driven by run_mode_mismatch.sh) ---
