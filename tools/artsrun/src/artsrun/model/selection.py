@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from artsrun.model.benchset import Benchset
 from artsrun.model.catalog import AppClass, Catalog, Version
@@ -89,12 +89,24 @@ class Selection(BaseModel):
     node_counts: list[int] = Field(min_length=1)
     repeats: int = 1
     build_dir: str | None = None
-    # The FAM-device mode (`--cxl`): only the fabric-attached entries run,
-    # against a tree built on the device library itself.  The two paths are
-    # what a tree this campaign configures from nothing is pointed at.
-    cxl: bool = False
-    fam_device_include_dir: str | None = None
-    fam_device_library: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_campaign_device_mode(cls, data):
+        """Selections saved while the device library was a campaign option
+        carry it; the profile names it now, and nothing else may."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        old = {k: data.pop(k, None) for k in
+               ("cxl", "fam_device_include_dir", "fam_device_library")}
+        if any(old.values()):
+            raise ValueError(
+                "this selection was saved in the FAM-device campaign mode; the "
+                "device library is a profile setting now (fam_device: fake | "
+                "real, with fam_device_include_dir and fam_device_library for "
+                "real) — select a profile that names it")
+        return data
 
     def validate_against(
         self,
@@ -106,13 +118,7 @@ class Selection(BaseModel):
         unknown = [k for k in self.entries if k not in plane.entry_keys]
         if unknown:
             raise ValueError(f"unknown plane entries: {', '.join(unknown)}")
-        if self.cxl:
-            incompatible = [k for k in self.entries if k not in plane.fam_entry_keys]
-            if incompatible:
-                raise ValueError(
-                    "the FAM-device mode runs only the fabric-attached-memory "
-                    "entries: remove " + ", ".join(incompatible)
-                )
+        profile.check_fam_device(self.fam_entries(plane))
         for name, versions in self.apps.items():
             if name not in catalog.apps:
                 raise ValueError(f"unknown application: {name}")
@@ -280,6 +286,9 @@ class Selection(BaseModel):
             repeats=profile.repeats,
             build_dir=build_dir,
         )
+
+    def fam_entries(self, plane: Plane) -> list[str]:
+        return [k for k in self.entries if plane.entry(k).is_fam]
 
     @property
     def cell_count(self) -> int:

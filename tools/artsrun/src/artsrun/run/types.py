@@ -8,6 +8,7 @@ from pathlib import Path
 
 from artsrun.model.benchset import ResolvedApp
 from artsrun.model.plane import SelectionEntry
+from artsrun.model.profile import FamDevice
 
 
 class Status(StrEnum):
@@ -50,13 +51,16 @@ class Cell:
     # The core block one rank was granted; a reference's realised geometry is
     # judged against it.
     cpu_width: int | None = None
-    cxl: bool = False
+    # The device library a fabric-attached-memory cell links, as its profile
+    # named it; None for every other cell.
+    fam_device: FamDevice | None = None
 
     @property
-    def fam_device(self) -> bool:
-        """A fabric-attached-memory cell of a FAM-device campaign: its ranks
-        run on the device library, inside the device's region setup."""
-        return self.cxl and self.entry.is_fam
+    def region_setup(self) -> bool:
+        """Whether the launch runs inside the device's region setup: a FAM
+        cell on the device library itself.  The vendored library maps its
+        own region and needs none."""
+        return self.fam_device is FamDevice.REAL
 
     @property
     def key(self) -> str:

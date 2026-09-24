@@ -7,6 +7,7 @@ already current costs nothing to ask for again.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ from pathlib import Path
 from artsrun.model.benchset import Benchset
 from artsrun.model.catalog import Catalog
 from artsrun.model.plane import Plane, RuntimeKind
-from artsrun.model.profile import Profile
+from artsrun.model.profile import FamDevice, Profile
 from artsrun.model.selection import Selection
 
 
@@ -47,65 +48,108 @@ def _cache_value(build_dir: Path, key: str) -> str | None:
     return None
 
 
-# Where the vendored emulation of the device library lives in the checkout.
-_VENDORED_DEVICE = "third_party/fake_arts_cxl_lib"
+def fam_device_options(profile: Profile) -> list[str]:
+    """The cache values a tree needs to run this profile's fabric-attached
+    entries on the library it names.
 
-
-def require_cxl(build_dir: Path, selection: Selection) -> None:
-    """Reject a tree whose fabric-attached-memory backend differs from this
-    campaign's mode.
-
-    A FAM-device campaign (`--cxl`) runs on the device library itself: the
-    tree must name ARTS_FAM_BACKEND=DEVICE with both device paths real, and
-    the vendored emulation of the library, which is for development runs,
-    cannot stand in for a measurement.  A DEVICE tree is equally refused to
-    any other campaign, whose cells would run outside the device's region
-    setup.
+    The entries are benchmark variants that carry their own protocol, so
+    only the backend and the library are named; the tree's own protocol
+    stays what it is.  Under `fake` the two paths are cleared: the vendored
+    option shadows them, and a stale path left in the cache is exactly the
+    kind of state that makes a later configure mean something else.
     """
-    def is_on(key: str) -> bool:
-        return (_cache_value(build_dir, key) or "OFF").upper() in ("ON", "TRUE", "YES", "1")
+    if profile.resolved_fam_device is FamDevice.REAL:
+        return ["-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=OFF",
+                f"-DARTS_FAM_DEVICE_INCLUDE_DIR={profile.fam_device_include_dir}",
+                f"-DARTS_FAM_DEVICE_LIBRARY={profile.fam_device_library}"]
+    return ["-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=ON",
+            "-DARTS_FAM_DEVICE_INCLUDE_DIR=", "-DARTS_FAM_DEVICE_LIBRARY="]
 
-    backend = fam_backend_of(build_dir) or "OFF"
-    if selection.cxl != (backend == "DEVICE"):
-        want = ("ARTS_FAM_BACKEND=DEVICE" if selection.cxl
-                else "a backend other than DEVICE (only --cxl runs a DEVICE tree)")
+
+def _is_on(value: str | None) -> bool:
+    return (value or "OFF").upper() in ("ON", "TRUE", "YES", "Y", "1")
+
+
+def fam_device_mismatch(build_dir: Path, profile: Profile) -> list[str]:
+    """How this tree's cache differs from the library the profile names,
+    one `KEY: have X, want Y` line per differing value; empty when it
+    matches."""
+    device = profile.resolved_fam_device
+    have = {k: _cache_value(build_dir, k) for k in (
+        "ARTS_FAM_BACKEND", "ARTS_FAM_DEVICE_VENDORED",
+        "ARTS_FAM_DEVICE_INCLUDE_DIR", "ARTS_FAM_DEVICE_LIBRARY")}
+    out = []
+    if have["ARTS_FAM_BACKEND"] != "DEVICE":
+        out.append(f"ARTS_FAM_BACKEND: have {have['ARTS_FAM_BACKEND'] or 'OFF'}, "
+                   "want DEVICE")
+    vendored = _is_on(have["ARTS_FAM_DEVICE_VENDORED"])
+    if device is FamDevice.REAL:
+        if vendored:
+            out.append("ARTS_FAM_DEVICE_VENDORED: have ON, want OFF")
+        for key, want in (("ARTS_FAM_DEVICE_INCLUDE_DIR", profile.fam_device_include_dir),
+                          ("ARTS_FAM_DEVICE_LIBRARY", profile.fam_device_library)):
+            got = have[key]
+            if not got or os.path.normpath(got) != os.path.normpath(want):
+                out.append(f"{key}: have {got or '(unset)'}, want {want}")
+    elif not vendored:
+        out.append("ARTS_FAM_DEVICE_VENDORED: have OFF, want ON")
+    return out
+
+
+def _cmake_error(text: str) -> str:
+    """cmake's own error report, from its first `CMake Error` on; the tail
+    of the output when it printed none."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("CMake Error"):
+            return "\n".join(lines[i:i + 40])
+    return "\n".join(lines[-25:])
+
+
+def fam_device_configure_command(build_dir: Path, profile: Profile, *,
+                                 prefix: list[str] | None = None) -> list[str]:
+    from artsrun.paths import repo_root
+
+    # -S for the same reason as the counter reconfigure: without it cmake
+    # takes the source directory from the caller's cwd.
+    return [*(prefix or []), "cmake", "-S", str(repo_root()), "-B", str(build_dir),
+            *fam_device_options(profile)]
+
+
+def configure_fam_device(build_dir: Path, profile: Profile, *, on_line=None,
+                         prefix: list[str] | None = None) -> None:
+    """Reconfigure a tree to the device library the profile names, or die.
+
+    Only the FAM options are passed; everything else stays in the cache.
+    The configure is the check: when the named library cannot be built or
+    found, cmake's own error ends the campaign, since a FAM cell must run
+    on the library its profile states or not at all.
+    """
+    import shlex
+
+    say = on_line or (lambda _msg: None)
+    if shutil.which("cmake") is None:
+        raise BuildError("cmake not found on PATH")
+    cmd = fam_device_configure_command(build_dir, profile, prefix=prefix)
+    say(f"fam_device: {profile.resolved_fam_device} — reconfiguring {build_dir} "
+        "to that library (this rebuilds everything):")
+    say(f"  $ {shlex.join(cmd)}")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
         raise BuildError(
-            f"{build_dir} has ARTS_FAM_BACKEND={backend}; this campaign requires "
-            f"{want}. Use a build tree configured for this mode."
-        )
-    if not selection.cxl:
-        return
-    include = _cache_value(build_dir, "ARTS_FAM_DEVICE_INCLUDE_DIR")
-    library = _cache_value(build_dir, "ARTS_FAM_DEVICE_LIBRARY")
-    if is_on("ARTS_FAM_DEVICE_VENDORED") or any(
-            _VENDORED_DEVICE in str(Path(p).resolve()) for p in (include, library) if p):
+            f"could not configure {build_dir} for fam_device: "
+            f"{profile.resolved_fam_device}; cmake reported:\n"
+            + _cmake_error((proc.stdout or "") + "\n" + (proc.stderr or "")))
+    left = fam_device_mismatch(build_dir, profile)
+    if left:
         raise BuildError(
-            f"{build_dir}: a measured campaign needs the device library itself; "
-            f"ARTS_FAM_DEVICE_VENDORED / {_VENDORED_DEVICE} is for development runs")
-    if not include or not Path(include).is_dir() or not library or not Path(library).is_file():
-        raise BuildError(
-            f"{build_dir} needs real ARTS_FAM_DEVICE_INCLUDE_DIR and "
-            "ARTS_FAM_DEVICE_LIBRARY. Configure with -DARTS_FAM_BACKEND=DEVICE "
-            "-DARTS_FAM_DEVICE_VENDORED=OFF and both paths."
-        )
-    for key, want, have in (("ARTS_FAM_DEVICE_INCLUDE_DIR", selection.fam_device_include_dir, include),
-                            ("ARTS_FAM_DEVICE_LIBRARY", selection.fam_device_library, library)):
-        if want and Path(want).resolve() != Path(have).resolve():
-            raise BuildError(f"{build_dir} has {key}={have}, but this campaign requested {want}")
+            f"{build_dir} was reconfigured but its cache still differs from "
+            "the profile's device library:\n  " + "\n  ".join(left))
 
 
 def counter_config_of(build_dir: Path) -> str | None:
     """Which counter file this tree was configured against."""
     return _cache_value(build_dir, "ARTS_COUNTER_CONFIG")
-
-
-def fam_backend_of(build_dir: Path) -> str | None:
-    """Which ARTS_FAM_BACKEND this tree was configured with.
-
-    None for a tree that predates the option or names none, which the
-    eligibility gate reads the same way as OFF.
-    """
-    return _cache_value(build_dir, "ARTS_FAM_BACKEND")
 
 
 # How the configure step encodes a counter's settings into the header it
@@ -254,61 +298,54 @@ def configure_counters(build_dir: Path, wanted: Path, *, on_line=None,
 
 def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
                      on_line=None, prefix: list[str] | None = None,
-                     selection: Selection | None = None) -> None:
+                     fam_options: list[str] | None = None) -> None:
     """Configure a tree that never was; verify one that already is.
 
     The experiment tree is fully determined — Release, benchmarks on — so a
     missing one is a first run rather than an error, and the configure is
     simply run.  A tree that EXISTS is only verified, never reconfigured
     behind its owner's back: a Debug or no-benchmark tree is somebody's
-    deliberate configuration, and the counter reconfigure elsewhere changes
-    exactly one option for the same reason.  A dry run configures nothing —
+    deliberate configuration, and the counter and FAM-device reconfigures
+    elsewhere change only the options they own for the same reason.  A dry run configures nothing —
     dry means dry — and reports what a real run would do instead.
+
+    `fam_options` are the device-library values a campaign that runs the
+    fabric-attached entries needs; a new tree is configured with them.
     """
+    from artsrun.paths import repo_root
+
     fresh = False
+    configure = [*(prefix or []), "cmake", "-S", str(repo_root()), "-GNinja",
+                 f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release",
+                 *(fam_options or [])]
     if not (build_dir / "build.ninja").is_file():
         if not bootstrap:
+            import shlex
+
             raise BuildError(
                 f"{build_dir} is not a configured build tree; a real run "
-                f"configures it first (Release, benchmarks on)"
+                f"configures it first:\n  $ {shlex.join(configure)}"
             )
         fresh = True
         if shutil.which("cmake") is None:
             raise BuildError("cmake not found on PATH")
-        from artsrun.paths import repo_root
 
         say = on_line or (lambda _msg: None)
         say(f"{build_dir} does not exist yet — configuring it "
             "(the first build also compiles the vendored dependencies)")
-        # The fabric-attached entries are benchmark variants that carry their
-        # own protocol, so a FAM-device tree names only the backend and the
-        # library; the tree's own protocol stays at its default.
-        fam_opts = []
-        if selection and selection.cxl:
-            if not selection.fam_device_include_dir or not selection.fam_device_library:
-                raise BuildError("a new FAM-device build requires "
-                                 "--fam-device-include-dir and --fam-device-library "
-                                 "(the device library itself)")
-            fam_opts = ["-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=OFF",
-                        f"-DARTS_FAM_DEVICE_INCLUDE_DIR={selection.fam_device_include_dir}",
-                        f"-DARTS_FAM_DEVICE_LIBRARY={selection.fam_device_library}"]
         proc = subprocess.Popen(
-            [*(prefix or []), "cmake", "-S", str(repo_root()), "-GNinja",
-             f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release", *fam_opts],
+            configure,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
-        tail: list[str] = []
+        output: list[str] = []
         assert proc.stdout is not None
         for line in proc.stdout:
             line = line.rstrip("\n")
-            tail.append(line)
-            del tail[:-25]
+            output.append(line)
             say(line)
         if proc.wait() != 0:
-            raise BuildError("configure failed:\n" + "\n".join(tail))
-    if selection is not None:
-        require_cxl(build_dir, selection)
+            raise BuildError("configure failed:\n" + _cmake_error("\n".join(output)))
     if (_cache_value(build_dir, "ARTS_BUILD_BENCHMARKS") or "ON") == "OFF":
         raise BuildError(
             f"{build_dir} was configured with ARTS_BUILD_BENCHMARKS=OFF; the "
@@ -390,18 +427,17 @@ def plan_targets(
     benchset: Benchset,
     build_dir: Path,
     profile: Profile | None = None,
-    fam_backend: str | None = None,
 ) -> BuildPlan:
     """Every executable this campaign will run, deduplicated.
 
     The same rows and the same eligibility the expansion applies: a name the
     benchset does not enable runs no cell, so it needs nothing built, and a
     row's own exclusions (ARTS-only, no ocr-vx, outside DB-WRF) hold for the
-    build exactly as they hold for the run — as does an entry this tree has
-    no backend for or a reference this host cannot place, each reported
-    with its reason rather than as a target that is missing.
+    build exactly as they hold for the run — as does a reference this host
+    cannot place, reported with its reason rather than as a target that is
+    missing.
     """
-    from artsrun.run.plan import fam_ineligible, reference_ineligible
+    from artsrun.run.plan import reference_ineligible
 
     entries = [plane.entry(k) for k in selection.entries]
     resolved = {a.key: a for a in benchset.resolve(catalog)}
@@ -413,9 +449,7 @@ def plan_targets(
             if app is None:
                 continue
             for entry in entries:
-                if profile is not None and (
-                        fam_ineligible(entry, profile, fam_backend)
-                        or reference_ineligible(entry, profile)):
+                if profile is not None and reference_ineligible(entry, profile):
                     continue
                 if entry.kind is RuntimeKind.HPX:
                     # The HPX program is the row's _hpx target; nothing is

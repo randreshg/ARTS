@@ -93,8 +93,8 @@ def test_the_dane_profiles_leave_the_db_wrf_section_out():
         left_out = set(plane.entry_keys) - set(keys)
         assert left_out == {"arts_wrf_flush"} | {
             e.key for e in plane.entries if e.is_fam}
-    # A profile that says nothing still runs everything.
-    assert store.load_profile("ferrari-local").entries is None
+    # A profile that lists no entries still runs everything.
+    assert plane.default_entries(None) == plane.entry_keys
 
 
 def _model_keys(model: type[BaseModel], prefix: str = "") -> set[str]:
@@ -271,6 +271,7 @@ def test_the_old_hinted_name_still_parses_as_optimized():
 def _local(**over):
     base = dict(
         name="t", launcher="local", nodes=[1, 2], workers=3, progress=1,
+        entries=["arts_excl_purge", "xsocr"],
     )
     base.update(over)
     return base
@@ -958,73 +959,6 @@ def test_arts_only_probe_excludes_every_reference():
     assert _ineligible(_Entry(RuntimeKind.ARTS), _App(), 1) is None
 
 
-def test_a_fam_entry_needs_a_matching_backend_and_launcher(tmp_path, monkeypatch):
-    from artsrun.model.profile import Launcher, Profile, SlurmSettings
-    from artsrun.run.plan import _ineligible
-
-    # the reference's own placement rule reads the host topology; pin one
-    # under which it admits the reference, so only the fam rule is observed
-    _use_topology(monkeypatch, tmp_path, HALF_SPLIT)
-
-    plane = load_plane()
-    catalog = load_catalog()
-    bs = Benchset(name="t", apps={})
-    app = {a.key: a for a in bs.resolve(catalog)}["nqueens:base"]
-
-    local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
-                    workers=2, progress=1)
-    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
-                     workers=2, progress=1, ports=[25000],
-                     slurm=SlurmSettings())
-    staged = plane.entry("arts_excl_purge_fam_staged")
-    direct = plane.entry("arts_excl_purge_fam_direct")
-
-    # (1) a tree that names no backend has no binaries for them
-    assert "ARTS_FAM_BACKEND" in _ineligible(staged, app, 1, local, None)
-    assert "ARTS_FAM_BACKEND" in _ineligible(staged, app, 1, local, "OFF")
-    # (2) the SHM backend is one machine's mapping
-    assert _ineligible(staged, app, 1, local, "SHM") is None
-    assert "launcher: local" in _ineligible(staged, app, 1, remote, "SHM")
-    # the device backend is refused nowhere: a one-rank local run is the
-    # shape that takes the arena directly
-    assert _ineligible(direct, app, 1, local, "DEVICE") is None
-    assert _ineligible(direct, app, 1, remote, "DEVICE") is None
-    # the strict oracle is refused by the device backend at config load
-    strict = local.model_copy(update={"fam_strict": True})
-    for entry in (staged, direct):
-        assert "fam_strict" in _ineligible(entry, app, 1, strict, "DEVICE")
-    assert _ineligible(staged, app, 1, strict, "SHM") is None
-    assert _ineligible(plane.entry("arts_excl_purge"), app, 1, strict,
-                       "DEVICE") is None
-    # no non-fam entry is touched, on any tree
-    assert _ineligible(plane.entry("arts_val_wb"), app, 1, remote, None) is None
-    assert _ineligible(plane.entry("xsocr"), app, 1, local, None) is None
-    # every pre-existing call site passes three arguments and is unchanged
-    assert _ineligible(staged, app, 1) is None
-
-
-def test_a_fam_entry_on_a_tree_without_a_backend_is_shown_not_raised(tmp_path):
-    from artsrun.model.profile import Launcher, Profile
-    from artsrun.run.plan import expand
-
-    plane, catalog = load_plane(), load_catalog()
-    bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
-    sel = Selection(profile="t", benchset="t",
-                    entries=["arts_excl_purge",
-                             "arts_excl_purge_fam_staged"],
-                    apps={"nqueens": [Version.BASE]},
-                    node_counts=[1], repeats=1)
-    local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
-                    workers=2, progress=1)
-    cells, skipped = expand(sel, plane, catalog, bs, local,
-                            tmp_path / "apps",
-                            {1: {"arts": tmp_path / "arts_1.cfg"}},
-                            fam_backend=None)
-    assert [c.entry.key for c in cells] == ["arts_excl_purge"]
-    assert [s.entry_key for s in skipped] == ["arts_excl_purge_fam_staged"]
-    assert "ARTS_FAM_BACKEND" in skipped[0].reason
-
-
 def test_a_row_outside_db_wrf_is_dropped_on_the_wrf_flush_entry_only():
     from artsrun.run.plan import _ineligible
     plane = load_plane()
@@ -1114,7 +1048,7 @@ def _reference_fixture():
     app = {a.key: a for a in bs.resolve(load_catalog())}["nqueens:base"]
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
                     workers=2, progress=1)
-    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
+    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1], fam_device="fake",
                      workers=2, progress=1, ports=[25000],
                      slurm=SlurmSettings())
     return plane, app, local, remote
@@ -1153,12 +1087,12 @@ def test_a_reference_is_skipped_where_siblings_interleave(
 
     for key, row in (("xsocr", app), ("ocrvx", app), ("hpx", hpx_app)):
         for nodes in (1, 2):
-            why = _ineligible(plane.entry(key), row, nodes, local, None)
+            why = _ineligible(plane.entry(key), row, nodes, local)
             assert why is not None and "absolute cpu id" in why, key
         # a remote rank owns a host whose numbering this host cannot see
-        assert _ineligible(plane.entry(key), row, 1, remote, None) is None
+        assert _ineligible(plane.entry(key), row, 1, remote) is None
     # the runtime under test pins itself from the topology and is untouched
-    assert _ineligible(plane.entry("arts_excl_purge"), app, 2, local, None) is None
+    assert _ineligible(plane.entry("arts_excl_purge"), app, 2, local) is None
 
 
 def test_a_reference_stays_eligible_on_a_half_split_host(
@@ -1170,7 +1104,7 @@ def test_a_reference_stays_eligible_on_a_half_split_host(
     _use_topology(monkeypatch, tmp_path, HALF_SPLIT)
     for key, row in (("xsocr", app), ("ocrvx", app), ("hpx", hpx_app)):
         for nodes in (1, 2):
-            assert _ineligible(plane.entry(key), row, nodes, local, None) is None
+            assert _ineligible(plane.entry(key), row, nodes, local) is None
 
 
 def test_the_build_plan_skips_the_reference_the_expansion_skips(

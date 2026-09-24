@@ -37,7 +37,8 @@ def _cell(kind: RuntimeKind, nodes: int, cfg: Path | None = None):
 
 def _ssh_profile() -> Profile:
     return Profile.model_validate({
-        "name": "t", "launcher": "ssh", "nodes": [1, 2, 4],
+        "name": "t", "launcher": "ssh", "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
+        "fam_device_library": "/opt/device/lib/libdevice.so", "nodes": [1, 2, 4],
         "workers": 15, "progress": 1, "ports": [25000],
         "ssh": {"budget": 4, "hosts": ["n01", "n02", "n03", "n04"]},
     })

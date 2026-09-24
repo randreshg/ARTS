@@ -73,43 +73,73 @@ artsrun counterset list | show X | render X
 artsrun run -p ferrari-local -b paper-main -c census
 ```
 
-### FAM-device runs
+### FAM device library
 
-`--cxl` is the FAM-device mode: it runs the fabric-attached-memory entries
-of the plane (`arts_excl_purge_fam_staged`, `arts_excl_purge_fam_direct` —
-the two residencies) on the device library itself, and launches each of
-their cells through the root `run_cxl.sh` wrapper, which sets the device's
-regions up once around the whole launch (its utilities must be on `PATH` on
-the compute nodes). In the TUI, press `5` for the **Run** tab, turn on **FAM
-device**, and enter the build tree; for a new build tree fill in **device
-include** and **device library** as well. The Coherence screen narrows to
-the two FAM entries while the mode is on and restores your previous
-selection when you turn it off; the `a` key there toggles only the eligible
-entries. From the command line:
+The plane's fabric-attached-memory entries (`arts_excl_purge_fam_staged`,
+`arts_excl_purge_fam_direct` — the two residencies) link a device library,
+and which one is a profile setting, never a campaign option or a guess:
 
-```bash
-artsrun run -p <profile> -b <benchset> --cxl --build-dir build_fam_device \
-  --fam-device-include-dir /path/to/device/include \
-  --fam-device-library /path/to/device/libdevice.so
+| field | meaning |
+|---|---|
+| `fam_device` | `off` (fabric-attached memory is not available where the profile runs; the default), `fake` (the vendored emulation of the device library) or `real` (the device library itself) |
+| `fam_device_include_dir` | `real` only: the device library's headers (absolute path) |
+| `fam_device_library` | `real` only: the library file itself (absolute path) |
+
+An absent `fam_device` means `off`, and under `off` a FAM entry is refused
+by name — in the profile's own `entries` (or, when it lists none, the whole
+plane) and in a campaign's `--entries` alike; it is never silently skipped.
+A profile whose entries hold no FAM entry may not name `fake` or `real`.
+`launcher: local` takes `off` or `fake` and refuses `real` (one host, no
+fabric: the vendored library is the only one that applies); a local profile
+whose own entries list a FAM entry and names nothing takes `fake`. Every
+other launcher takes `off`, `real` with both paths (absolute; whether they
+exist is the configure's check), or `fake` only with `nodes: [1]` (the
+vendored library's pool is one host's shared memory). Paths belong to `real`
+alone.
+`fam_strict` cannot be set beside a FAM entry: it emulates a second coherency
+domain, which the DEVICE backend has and refuses at config load.
+
+artsrun's FAM entries always run on the `DEVICE` backend; `SHM` is a
+test-tree backend (ctest) only. Before building, a campaign that runs a FAM
+entry compares the tree's cache with the profile — `ARTS_FAM_BACKEND=DEVICE`,
+and `ARTS_FAM_DEVICE_VENDORED=ON` for `fake`, or `OFF` with
+`ARTS_FAM_DEVICE_INCLUDE_DIR`/`ARTS_FAM_DEVICE_LIBRARY` equal to the profile's
+paths for `real` — and on any difference reconfigures the tree with exactly
+those values (printing the cmake command; `fake` also clears the two paths).
+A new tree is configured with them from the start. If cmake fails — the
+vendored library does not build, the real headers or library are missing —
+the campaign stops with cmake's own error: there is no fallback and no FAM
+cell is skipped for want of a library. A dry run prints the command a real
+run would use and changes nothing. The FAM entries are benchmark variants
+carrying their own protocol, so the tree's own protocol is left as it is.
+
+A `real` profile, as a sketch (the paths are placeholders):
+
+```yaml
+launcher: slurm
+# ...
+entries: [arts_excl_purge, arts_excl_purge_fam_staged,
+          arts_excl_purge_fam_direct, xsocr]
+fam_device: real
+fam_device_include_dir: /path/to/device/include
+fam_device_library: /path/to/device/lib/libdevice.so
 ```
 
-A new tree is configured with `-DARTS_FAM_BACKEND=DEVICE
--DARTS_FAM_DEVICE_VENDORED=OFF` and the two paths (the FAM entries are
-benchmark variants carrying their own protocol, so the tree's own protocol is
-left at its default). An existing tree must have `ARTS_FAM_BACKEND=DEVICE`,
-`ARTS_FAM_DEVICE_VENDORED=OFF` and both paths real; artsrun verifies this
-before building or running. The vendored emulation of the device library
-(`-DARTS_FAM_DEVICE_VENDORED=ON`) is for development runs and is refused for a
-measurement, and a `DEVICE` tree is refused to any campaign without `--cxl`.
-The old `--cxl-rapid-include-dir` / `--cxl-lib-dir` are errors naming the new
-options. Explicit `--entries` and saved selections with non-FAM entries are
-rejected; the mode and the paths are saved for `--from` and `--resume`. A one-rank
-FAM-device cell's launch environment sets `ARTS_FLUSH_LOG` to
-`<cell>.flush.bin` beside the cell's log, where the device library writes its
-flush trace; a cell with more than one rank sets it to `/dev/null`, because the
-library takes one path for all ranks and every rank on a host would overwrite
-the same file. The wrapper locates its preparation script relative to
-the checkout and runs in the cell's scratch directory.
+Under `real` each FAM cell is launched through the root `run_cxl.sh`
+wrapper, which sets the device's regions up once around the whole launch
+(its utilities must be on `PATH` on the compute nodes); under `fake` nothing
+wraps, since the vendored library maps its own region. The manifest records
+each cell's `fam_device`. A one-rank FAM cell's launch environment sets
+`ARTS_FLUSH_LOG` to `<cell>.flush.bin` beside the cell's log, where the
+library writes its flush trace; a cell with more than one rank sets it to
+`/dev/null`, because the library takes one path for all ranks and every rank
+on a host would overwrite the same file. The wrapper locates its preparation
+script relative to the checkout and runs in the cell's scratch directory.
+
+The old `--cxl`, `--fam-device-include-dir` and `--fam-device-library` options
+(and their older `--cxl-rapid-include-dir` / `--cxl-lib-dir` spellings) are
+errors naming the profile fields, as is a saved selection recorded in the
+old mode.
 
 ## External runtimes
 

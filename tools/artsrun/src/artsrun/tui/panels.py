@@ -43,7 +43,6 @@ class PlanePanel(Vertical):
         super().__init__(**kwargs)
         self.plane = plane
         self._entries = entries
-        self._before_fam_device: dict[str, bool] | None = None
 
     def on_mount(self) -> None:
         self.select(self._entries)
@@ -175,27 +174,6 @@ class PlanePanel(Vertical):
 
     def toggle_all(self) -> None:
         toggle_all([t for t in self.toggles if not t.disabled])
-
-    def set_fam_device_mode(self, enabled: bool) -> None:
-        """Limit the selection to the fabric-attached-memory entries; restore
-        the previous one on exit."""
-        if enabled and self._before_fam_device is None:
-            self._before_fam_device = {t.ident: t.value for t in self.toggles}
-            allowed = set(self.plane.fam_entry_keys)
-            for toggle in self.toggles:
-                if toggle.ident not in allowed:
-                    toggle.value = False
-                    toggle.disabled = True
-            # A sweep that had none of them starts with all of them.
-            if not any(t.value for t in self.toggles if t.ident in allowed):
-                for toggle in self.toggles:
-                    if toggle.ident in allowed:
-                        toggle.value = True
-        elif not enabled and self._before_fam_device is not None:
-            for toggle in self.toggles:
-                toggle.disabled = False
-                toggle.value = self._before_fam_device[toggle.ident]
-            self._before_fam_device = None
 
 
 class ProfilePanel(VerticalScroll):
@@ -810,25 +788,11 @@ class RunPanel(Vertical):
             )
             yield Button("Continue", id="resume-button", disabled=True)
             yield Static("", id="run-size")
-        with Horizontal(classes="fam-device-controls"):
-            yield Label("FAM device", classes="fam-device-label")
-            yield Switch(id="run-fam-device")
-            yield Label("build tree", classes="fam-device-label")
+        with Horizontal(classes="run-options"):
+            yield Label("build tree", classes="run-options-label")
             yield Input(placeholder="build_release (default)", id="run-build-dir")
-            yield Label("FAM entries only; the device library itself",
-                        classes="fam-device-help")
-        with Horizontal(classes="fam-device-controls"):
-            yield Label("device include", classes="fam-device-label")
-            yield Input(placeholder="/path/to/device/include (new build)",
-                        id="run-fam-include", disabled=True)
-            yield Label("device library", classes="fam-device-label")
-            yield Input(placeholder="/path/to/device/library (new build)",
-                        id="run-fam-library", disabled=True)
-
-    @on(Switch.Changed, "#run-fam-device")
-    def _fam_device_changed(self, event: Switch.Changed) -> None:
-        for name in ("#run-fam-include", "#run-fam-library"):
-            self.query_one(name, Input).disabled = not event.value
+            yield Label("the FAM entries' device library is the profile's "
+                        "fam_device", classes="run-options-help")
 
     def refresh_runs(self) -> None:
         """Re-read what is resumable, after a campaign changes the answer."""

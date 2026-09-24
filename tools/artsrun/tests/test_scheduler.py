@@ -117,7 +117,8 @@ def test_a_slurm_job_asks_for_the_width_it_will_use(tmp_path):
     from artsrun.run.slurm import job_script, sbatch_argv
 
     profile = Profile.model_validate({
-        "name": "t", "launcher": "slurm", "nodes": [1, 2],
+        "name": "t", "launcher": "slurm", "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
+        "fam_device_library": "/opt/device/lib/libdevice.so", "nodes": [1, 2],
         "workers": 63, "progress": 1, "ports": [25000],
         "slurm": {},
     })
@@ -209,7 +210,8 @@ def test_a_marker_is_the_authority_on_how_a_job_ended(tmp_path):
     from artsrun.run.slurm import SlurmBackend
 
     profile = Profile.model_validate({
-        "name": "t", "launcher": "slurm", "nodes": [1, 2],
+        "name": "t", "launcher": "slurm", "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
+        "fam_device_library": "/opt/device/lib/libdevice.so", "nodes": [1, 2],
         "workers": 2, "progress": 1, "ports": [25000], "slurm": {},
     })
     backend = SlurmBackend(profile, tmp_path)
@@ -265,7 +267,8 @@ def test_build_work_on_slurm_rides_a_small_job_not_a_node():
     from artsrun.run.slurm import srun_build_prefix
 
     profile = Profile.model_validate({
-        "name": "t", "launcher": "slurm", "nodes": [1, 2],
+        "name": "t", "launcher": "slurm", "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
+        "fam_device_library": "/opt/device/lib/libdevice.so", "nodes": [1, 2],
         "workers": 63, "progress": 1, "ports": [25000],
         "slurm": {"partition": "pbatch", "build_partition": "pdebug"},
     })

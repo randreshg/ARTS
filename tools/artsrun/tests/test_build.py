@@ -46,35 +46,22 @@ def test_an_arts_only_row_wants_only_its_arts_targets(tmp_path):
     assert plan.targets == [f"{PROBE_BINARY}_arts_ocr_val_wb"]
 
 
-def test_a_fam_entry_wants_no_target_where_the_tree_has_none(tmp_path):
+def test_a_fam_entry_always_wants_its_target(tmp_path):
+    # The tree is made to carry the FAM variants before the plan is read,
+    # so no launcher or tree state drops them from the build.
     plane, catalog = load_plane(), load_catalog()
     sel = _selection(["arts_excl_purge", "arts_excl_purge_fam_staged"],
                      {"nqueens": [Version.BASE]})
     bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
                     workers=2, progress=1)
-
-    off = plan_targets(sel, plane, catalog, bs, tmp_path, local, None)
-    assert off.targets == ["nqueens_arts_ocr_excl_purge"]
-    assert off.missing == [] and off.ok
-
-    on = plan_targets(sel, plane, catalog, bs, tmp_path, local, "SHM")
-    assert "nqueens_arts_ocr_excl_purge_fam_staged" in on.targets
-
-    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
+    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1], fam_device="fake",
                      workers=2, progress=1, ports=[25000],
                      slurm=SlurmSettings())
-    shm_elsewhere = plan_targets(sel, plane, catalog, bs, tmp_path,
-                                 remote, "SHM")
-    assert shm_elsewhere.targets == ["nqueens_arts_ocr_excl_purge"]
-
-    device_local = plan_targets(sel, plane, catalog, bs, tmp_path,
-                                local, "DEVICE")
-    assert "nqueens_arts_ocr_excl_purge_fam_staged" in device_local.targets
-
-    # a caller that knows neither (every pre-existing one) is unchanged
-    blind = plan_targets(sel, plane, catalog, bs, tmp_path)
-    assert "nqueens_arts_ocr_excl_purge_fam_staged" in blind.targets
+    for prof in (local, remote, None):
+        plan = plan_targets(sel, plane, catalog, bs, tmp_path, prof)
+        assert plan.targets == ["nqueens_arts_ocr_excl_purge",
+                                "nqueens_arts_ocr_excl_purge_fam_staged"]
 
 
 def test_a_row_the_benchset_does_not_enable_wants_no_target(tmp_path):
@@ -167,17 +154,3 @@ def test_a_dry_run_regenerates_nothing_and_says_the_sources_moved(tmp_path):
     assert any("changed since it was generated" in line for line in lines)
     # Dry means dry: the previous generation is what the tree still holds.
     assert "new_app" not in available_targets(build)
-
-
-def test_fam_backend_is_read_from_the_cache(tmp_path):
-    from artsrun.build import fam_backend_of
-
-    build_dir = tmp_path / "build"
-    build_dir.mkdir()
-    assert fam_backend_of(build_dir) is None        # no cache at all
-    (build_dir / "CMakeCache.txt").write_text(
-        "ARTS_COUNTER_CONFIG:FILEPATH=/x/counters_off.cfg\n")
-    assert fam_backend_of(build_dir) is None        # a tree without the option
-    (build_dir / "CMakeCache.txt").write_text(
-        "ARTS_FAM_BACKEND:STRING=SHM\n")
-    assert fam_backend_of(build_dir) == "SHM"

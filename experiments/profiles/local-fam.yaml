@@ -1,9 +1,9 @@
-# Local correctness smoke for the fabric-attached-memory entries: the
-# SHM backend's pool is one machine's mapping, so this profile is
-# launcher: local.  A reference entry's colocated local ranks are each
-# pinned to one physical core, so the geometry a campaign requests here
-# must fit the machine's physical core count, not its logical CPU count
-# (an SMT sibling is not a second core to pin a rank to):
+# Local correctness smoke for the fabric-attached-memory entries, on the
+# vendored emulation of the device library.  A reference entry's colocated
+# local ranks are each pinned to one physical core, so the geometry a
+# campaign requests here must fit the machine's physical core count, not
+# its logical CPU count (an SMT sibling is not a second core to pin a rank
+# to):
 # 2 nodes x (2 workers + 1 progress) = 6 physical cores.  Timings from
 # this host are never evidence of anything.
 name: local-fam
@@ -17,13 +17,17 @@ pin: true
 provider: tcp
 route_table_size: 14
 core_dump: false
-# A slot comes out of one rank's slice, so what an application can
-# allocate is pool / ranks, not pool: stated explicitly rather than
-# inherited, and sized by the same per-rank-count rule the ctest cfgs use
-# (here 64 / 2 = 32 MiB a rank at the widest geometry).
-fam_pool_mb: 64
+# The whole pool, split into one slice per rank: a capacity cap, not a
+# reservation (the store commits only the pages a run touches), and the
+# smoke rosters need gigabytes of it at two ranks.
+fam_pool_mb: 4096
+# The library the FAM entries link; the build tree is reconfigured to it or
+# the campaign does not start.  launcher: local implies fake and refuses real
+# (one host, no fabric), so this line only states what the launcher forces.
+fam_device: fake
 
-cell_timeout_s: 120
+# Sized for correctness runs on a laptop at this narrow width, never for timing.
+cell_timeout_s: 600
 repeats: 1
 
 # One cell's worth: the base ARTS entry, its two fam residencies, and

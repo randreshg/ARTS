@@ -38,30 +38,6 @@ def _missing_inputs(app: ResolvedApp) -> list[str]:
     return stage(app.fixtures)
 
 
-def fam_ineligible(
-    entry: SelectionEntry, profile: Profile, fam_backend: str | None
-) -> str | None:
-    """Why a fabric-attached-memory entry cannot run here.
-
-    The backend is a property of the build tree — one tree builds both
-    residencies of whichever backend it was configured with — so this
-    never depends on the application, and the build planner asks it the
-    same question the expansion does.
-    """
-    if not entry.is_fam:
-        return None
-    if fam_backend in (None, "OFF"):
-        return ("this build tree names no ARTS_FAM_BACKEND, so the "
-                "fabric-attached-memory entries have no binaries in it")
-    if fam_backend == "SHM" and profile.launcher is not Launcher.LOCAL:
-        return ("the SHM backend's pool is one machine's shared "
-                "mapping, so it runs only under launcher: local")
-    if fam_backend == "DEVICE" and profile.fam_strict:
-        return ("fam_strict is an oracle for a second coherency domain, "
-                "which the DEVICE backend refuses at config load")
-    return None
-
-
 def reference_ineligible(entry: SelectionEntry, profile: Profile) -> str | None:
     """Why a reference cannot be placed one thread per core on this host.
 
@@ -91,7 +67,7 @@ def reference_ineligible(entry: SelectionEntry, profile: Profile) -> str | None:
 
 def _ineligible(
     entry: SelectionEntry, app: ResolvedApp, nodes: int,
-    profile: Profile | None = None, fam_backend: str | None = None,
+    profile: Profile | None = None,
 ) -> str | None:
     # Belt over the selection surfaces' braces: a replayed selection.yaml can
     # predate the catalog marking an application unsupported.
@@ -109,8 +85,7 @@ def _ineligible(
         return ("no HPX program: an OCR-origin row (the HPX entry runs the "
                 "HPX-origin section)")
     if profile is not None:
-        why = (fam_ineligible(entry, profile, fam_backend)
-               or reference_ineligible(entry, profile))
+        why = reference_ineligible(entry, profile)
         if why:
             return why
     absent = _missing_inputs(app)
@@ -128,7 +103,6 @@ def expand(
     apps_dir: Path,
     configs: dict[int, dict[str, Path]],
     cell_cfg: Callable[[Cell], Path] | None = None,
-    fam_backend: str | None = None,
 ) -> tuple[list[Cell], list[Skipped]]:
     """Expand into cells.
 
@@ -157,7 +131,7 @@ def expand(
             for nodes in selection.node_counts:
                 runnable: list[tuple] = []
                 for entry in entries:
-                    why = _ineligible(entry, app, nodes, profile, fam_backend)
+                    why = _ineligible(entry, app, nodes, profile)
                     if why:
                         skipped.append(Skipped(entry.key, app.key, nodes, why))
                         continue
@@ -181,7 +155,8 @@ def expand(
                             timeout_s=app.timeout_for(nodes) or profile.cell_timeout_s,
                             cfg=config_for(entry.kind, configs[nodes]),
                             cpu_width=profile.threads_per_node,
-                            cxl=selection.cxl,
+                            fam_device=(profile.resolved_fam_device
+                                        if entry.is_fam else None),
                         )
                         if cell_cfg is not None and entry.kind is RuntimeKind.ARTS:
                             cell = replace(cell, cfg=cell_cfg(cell))

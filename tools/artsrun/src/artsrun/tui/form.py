@@ -51,6 +51,25 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "shared by every rank and carved into one slice each "
               "(empty = the runtime's own default)",
               example="64", optional=True, section="run"),
+    FieldSpec("fam_device", "fam device library", "choice",
+              "whether and on which library the fabric-attached-memory "
+              "entries run: off = not available here (the default; a FAM "
+              "entry is then refused), fake = the vendored emulation, real = "
+              "the device library named by the two paths below. A local "
+              "profile that lists a FAM entry takes fake and refuses real; "
+              "off the local launcher fake needs nodes [1]. The build tree is "
+              "reconfigured to it or the campaign stops",
+              choices=("off", "fake", "real"), none_choice="off",
+              optional=True, section="run"),
+    FieldSpec("fam_device_include_dir", "device include dir", "text",
+              "fam_device=real only: the device library's headers "
+              "(absolute path)",
+              example="/path/to/include", optional=True, section="run"),
+    FieldSpec("fam_device_library", "device library", "text",
+              "fam_device=real only: the device library file itself "
+              "(absolute path)",
+              example="/path/to/libdevice.so", optional=True,
+              section="run"),
 
     FieldSpec("provider", "provider", "choice",
               "data plane: tcp anywhere, verbs;ofi_rxm on InfiniBand (one "

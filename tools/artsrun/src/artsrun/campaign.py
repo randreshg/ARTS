@@ -19,8 +19,10 @@ from pathlib import Path
 
 from artsrun import check, report
 from artsrun.build import (
-    BuildPlan, build, configure_counters, counter_mismatch, ensure_build_dir,
-    fam_backend_of, plan_targets, require_default_counters,
+    BuildPlan, build, configure_counters, configure_fam_device,
+    counter_mismatch, ensure_build_dir, fam_device_configure_command,
+    fam_device_mismatch, fam_device_options, plan_targets,
+    require_default_counters,
 )
 from artsrun.model.benchset import Benchset
 from artsrun.model.catalog import Catalog
@@ -110,8 +112,15 @@ class Campaign:
     # -- phases ------------------------------------------------------------
     def build_plan(self, *, on_line=None, bootstrap: bool = False) -> BuildPlan:
         prefix = self._build_prefix()
+        # A fabric-attached entry's binaries are the tree's, so the tree is
+        # made to link the library the profile names before anything is
+        # planned from it; when that cannot be done the campaign ends here.
+        fam = bool(self.selection.fam_entries(self.plane))
         ensure_build_dir(self.build_dir, bootstrap=bootstrap, on_line=on_line,
-                         prefix=prefix, selection=self.selection)
+                         prefix=prefix,
+                         fam_options=fam_device_options(self.profile) if fam else None)
+        if fam:
+            self._match_fam_device(on_line, prefix, dry=not bootstrap)
         self.counters_cfg = None
         if self.counterset:
             # A selected set constrains the tree even when it turns nothing
@@ -125,15 +134,42 @@ class Campaign:
             if self.counterset.enabled:
                 self.counters_cfg = wanted
             differing = counter_mismatch(self.build_dir, self.counterset)
-            if differing:
+            if differing and not bootstrap:
+                # A dry run never writes the tree; it says what a real run
+                # would change, and the target check reads the tree as is.
+                (on_line or (lambda _msg: None))(
+                    f"{self.build_dir} compiles {len(differing)} counter(s) "
+                    f"differently from the set ({', '.join(differing[:6])}); "
+                    f"a real run reconfigures it first with "
+                    f"-DARTS_COUNTER_CONFIG={wanted}")
+            elif differing:
                 configure_counters(self.build_dir, wanted, on_line=on_line,
                                    prefix=prefix)
         else:
             require_default_counters(self.build_dir)
         return plan_targets(
             self.selection, self.plane, self.catalog, self.benchset,
-            self.build_dir, self.profile, fam_backend_of(self.build_dir),
+            self.build_dir, self.profile,
         )
+
+    def _match_fam_device(self, on_line, prefix: list[str], *, dry: bool) -> None:
+        import shlex
+
+        say = on_line or (lambda _msg: None)
+        device = self.profile.resolved_fam_device
+        differing = fam_device_mismatch(self.build_dir, self.profile)
+        if not differing:
+            say(f"{self.build_dir}: ARTS_FAM_BACKEND=DEVICE on the {device} "
+                "library — the tree matches the profile's fam_device")
+            return
+        if dry:
+            say(f"{self.build_dir} differs from the profile's fam_device: "
+                f"{device} ({'; '.join(differing)}); a real run reconfigures "
+                "it first:\n  $ " + shlex.join(fam_device_configure_command(
+                    self.build_dir, self.profile, prefix=prefix)))
+            return
+        configure_fam_device(self.build_dir, self.profile, on_line=on_line,
+                             prefix=prefix)
 
     def apps_dir(self) -> Path:
         return self.build_dir / "benchmarks" / "apps"
@@ -170,7 +206,6 @@ class Campaign:
         return expand(
             self.selection, self.plane, self.catalog, self.benchset,
             self.profile, self.apps_dir(), configs, cell_cfg=cell_cfg,
-            fam_backend=fam_backend_of(self.build_dir),
         )
 
     def backend(self):

@@ -43,3 +43,8 @@ repeats: 5
 # a size is chosen against a memory ceiling as much as against a time window,
 # and neither number is observable without the witness.
 rusage_witness: true
+
+# Fabric-attached memory is off here: every plane entry but the two FAM ones.
+entries: [arts_excl_purge, xsocr, arts_excl_retain, arts_inv_wt_purge,
+          arts_inv_wt, arts_inv_wb, ocrvx, arts_val_wt_purge, arts_val_wt,
+          arts_val_wb, arts_wrf_flush, hpx]

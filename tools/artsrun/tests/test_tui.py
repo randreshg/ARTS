@@ -33,7 +33,8 @@ def test_everything_is_selected_by_default():
         )
 
     entries, nodes, apps = drive(check)
-    assert len(entries) == 14
+    # the default profile runs every entry but the two FAM ones (FAM is off)
+    assert len(entries) == 12
     assert "hpx" in entries
     assert nodes == [1, 2, 4, 8]
     assert apps > 0
@@ -61,7 +62,9 @@ def test_one_control_clears_then_restores_the_whole_plane():
         return first, cleared, restored
 
     first, cleared, restored = drive(check)
-    assert first == 14
+    # the default profile leaves the two FAM entries out; the control's
+    # second press selects the whole plane
+    assert first == 12
     assert cleared == 0
     assert restored == 14
 
@@ -80,7 +83,7 @@ def test_the_control_acts_on_the_surface_that_is_showing():
 
     apps, entries = drive(check)
     assert apps == 0        # the visible surface cleared
-    assert entries == 14    # the others did not
+    assert entries == 12    # the others did not
 
 
 def test_a_version_the_application_lacks_is_absent_not_unchecked():
@@ -220,7 +223,8 @@ def test_the_selection_becomes_a_campaign_of_the_expected_size():
 
     cells, entries, nodes = drive(check)
     assert cells == len(entries) * 4 * (cells // (len(entries) * 4))
-    assert len(entries) == 14
+    # the default profile runs every entry but the two FAM ones (FAM is off)
+    assert len(entries) == 12
     assert nodes == [1, 2, 4, 8]
 
 
@@ -891,6 +895,10 @@ def test_no_visible_field_clips_its_text():
     for profile, launcher in (("ferrari-local", None), ("junction", None),
                               ("junction", "ssh")):
         for key, text, width in _visible_field_slack(profile, launcher):
+            # A stored entry list is as long as the plane a study names and
+            # no fixed column holds it; the input scrolls.
+            if key == "entries":
+                continue
             assert width >= len(text), (
                 f"{profile}/{launcher or 'stored'}: {key} shows {text!r} "
                 f"in {width} columns"

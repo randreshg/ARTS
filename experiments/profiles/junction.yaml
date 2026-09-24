@@ -24,3 +24,8 @@ cell_timeout_s: 600
 # Five measurements per cell, as on Dane: the reading is the median with a
 # min/max band.
 repeats: 5
+
+# Fabric-attached memory is off here: every plane entry but the two FAM ones.
+entries: [arts_excl_purge, xsocr, arts_excl_retain, arts_inv_wt_purge,
+          arts_inv_wt, arts_inv_wb, ocrvx, arts_val_wt_purge, arts_val_wt,
+          arts_val_wb, arts_wrf_flush, hpx]

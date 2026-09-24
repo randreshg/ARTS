@@ -174,9 +174,9 @@ def build_command(cell: Cell, profile: Profile) -> list[str]:
 
 
 def cxl_wrap(argv: list[str], cell: Cell) -> list[str]:
-    """The device's region setup surrounds the complete launch of a
-    FAM-device cell, never individual ranks."""
-    if not cell.fam_device:
+    """The device's region setup surrounds the complete launch of a FAM
+    cell on the device library itself, never individual ranks."""
+    if not cell.region_setup:
         return argv
     script = cxl_script()
     if not script.is_file():
@@ -204,11 +204,12 @@ def flush_log_path(log_dir: Path, cell: Cell) -> Path:
 def build_env(cell: Cell, profile: Profile,
               log_dir: Path | None = None) -> dict[str, str]:
     env = dict(cell.env)
-    # The device library writes its flush trace where ARTS_FLUSH_LOG points,
-    # else into the working directory.  It takes one path for all ranks, so
-    # with more than one rank every rank on a host would overwrite the same
-    # file: only a one-rank cell keeps its trace, beside the cell's log.
-    if cell.fam_device and log_dir is not None:
+    # The device library, vendored or not, writes its flush trace where
+    # ARTS_FLUSH_LOG points, else into the working directory.  It takes one
+    # path for all ranks, so with more than one rank every rank on a host
+    # would overwrite the same file: only a one-rank cell keeps its trace,
+    # beside the cell's log.
+    if cell.fam_device is not None and log_dir is not None:
         env["ARTS_FLUSH_LOG"] = (str(flush_log_path(log_dir, cell))
                                  if cell.nodes == 1 else "/dev/null")
     # All three runtimes carry the same env-gated end-to-end stamp — rank 0

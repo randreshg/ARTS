@@ -235,12 +235,18 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
     monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
-        selection=None, plane=None, catalog=None, benchset=None,
+        selection=SimpleNamespace(fam_entries=lambda _plane: []),
+        plane=None, catalog=None, benchset=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",
         counterset=Counterset(name="e2e", counters={}, allow_empty=True),
     )
-    assert c.build_plan() == "plan"
+    said = []
+    assert c.build_plan(on_line=said.append) == "plan"
+    # A dry run never writes the tree: it only says what a real run would do.
+    assert reconfigured == []
+    assert any("a real run reconfigures it first" in line for line in said)
+    assert c.build_plan(bootstrap=True) == "plan"
     assert reconfigured == [(build_dir, wanted)]
     # Nothing is on, so there is no counter output to read back through.
     assert c.counters_cfg is None
@@ -281,7 +287,8 @@ def test_a_counterless_campaign_refuses_an_instrumented_tree(tmp_path,
     monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
-        selection=None, plane=None, catalog=None, benchset=None,
+        selection=SimpleNamespace(fam_entries=lambda _plane: []),
+        plane=None, catalog=None, benchset=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run", counterset=None,
     )
@@ -316,7 +323,8 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
     monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
-        selection=None, plane=None, catalog=None, benchset=None,
+        selection=SimpleNamespace(fam_entries=lambda _plane: []),
+        plane=None, catalog=None, benchset=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",
         counterset=Counterset(name="x", counters={

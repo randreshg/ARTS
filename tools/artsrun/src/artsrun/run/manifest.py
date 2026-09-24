@@ -16,7 +16,7 @@ from pathlib import Path
 
 from artsrun.model.benchset import ResolvedApp
 from artsrun.model.plane import RuntimeKind, SelectionEntry
-from artsrun.model.profile import Launcher, Profile
+from artsrun.model.profile import FamDevice, Launcher, Profile
 from artsrun.paths import repo_root, scratch_dir
 from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
                                  with_post_verify, with_timeout)
@@ -138,6 +138,7 @@ def write_manifest(
             "cfg": str(cell.cfg) if cell.cfg else None,
             "env": build_env(cell, profile, log_path.parent),
             "cpu_width": cell.cpu_width,
+            "fam_device": cell.fam_device.value if cell.fam_device else None,
             "log": str(log_path),
             **describe_command(cell, profile, log_path),
         })
@@ -219,6 +220,8 @@ class Manifest:
                 cfg=Path(row["cfg"]) if row.get("cfg") else None,
                 env=dict(row.get("env", {})),
                 cpu_width=row.get("cpu_width"),
+                fam_device=(FamDevice(row["fam_device"])
+                            if row.get("fam_device") else None),
             )
             self.cells.append(cell)
             self.commands[cell.key] = {

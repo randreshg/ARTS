@@ -235,7 +235,9 @@ def test_a_scheduled_hpx_cell_keeps_the_site_mpi_defaults(tmp_path, launcher,
 
     remote = Profile.model_validate({
         "name": "t", "launcher": launcher, "nodes": [1, 2],
-        "workers": 15, "progress": 1, "ports": [20000], **extra,
+        "workers": 15, "progress": 1, "ports": [20000], "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
+        "fam_device_library": "/opt/device/lib/libdevice.so",
+        **extra,
     })
     env = build_env(_hpx_cell(tmp_path), remote)
     assert "UCX_TLS" not in env and "UCX_NET_DEVICES" not in env

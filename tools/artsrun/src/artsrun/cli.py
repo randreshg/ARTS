@@ -106,6 +106,8 @@ def _load(profile_name: str, benchset_name: str | None):
         profile = store.load_profile(profile_name)
     except store.NotFound as exc:
         _fail(str(exc))
+    except ValueError as exc:
+        _fail(f"profile '{profile_name}' is invalid: {exc}")
     if benchset_name:
         try:
             benchset = store.load_benchset(benchset_name)
@@ -285,18 +287,13 @@ def run_cmd(
                               help="comma-separated node counts (default: profile)"),
     repeats: int = typer.Option(None, "--repeats"),
     build_dir: Path = typer.Option(None, "--build-dir"),
-    cxl: bool = typer.Option(
-        False, "--cxl",
-        help="FAM-device mode: run the fabric-attached-memory entries on the "
-             "device library, inside the device's region setup"),
-    fam_device_include_dir: Path = typer.Option(
-        None, "--fam-device-include-dir",
-        help="the device library's headers, for a tree --cxl configures"),
-    fam_device_library: Path = typer.Option(
-        None, "--fam-device-library",
-        help="the device library itself, for a tree --cxl configures"),
-    old_include_dir: Path = typer.Option(None, "--cxl-rapid-include-dir", hidden=True),
-    old_lib_dir: Path = typer.Option(None, "--cxl-lib-dir", hidden=True),
+    # The device library is the profile's to name; these spellings remain
+    # only to say so.
+    gone_cxl: bool = typer.Option(False, "--cxl", hidden=True),
+    gone_include: str = typer.Option(
+        None, "--fam-device-include-dir", "--cxl-rapid-include-dir", hidden=True),
+    gone_library: str = typer.Option(
+        None, "--fam-device-library", "--cxl-lib-dir", hidden=True),
     from_file: Path = typer.Option(None, "--from", help="replay a saved selection"),
     resume: str = typer.Option(None, "--resume", help="run id to continue"),
     retry_failed: bool = typer.Option(
@@ -315,16 +312,12 @@ def run_cmd(
     from artsrun.campaign import Campaign
 
     run_dir = None
-    if old_include_dir:
-        _fail("--cxl-rapid-include-dir is now --fam-device-include-dir")
-    if old_lib_dir:
-        _fail("--cxl-lib-dir is now --fam-device-library (the library file "
-              "itself, not its directory)")
-    if (resume or from_file) and (cxl or fam_device_include_dir or fam_device_library):
-        _fail("--resume/--from use the saved FAM-device selection; omit "
-              "--cxl and the device paths")
-    if not cxl and (fam_device_include_dir or fam_device_library):
-        _fail("--fam-device-include-dir and --fam-device-library require --cxl")
+    if gone_cxl or gone_include or gone_library:
+        _fail("the FAM device library is named by the profile, not the command "
+              "line: set fam_device: off | fake | real in the profile (real "
+              "also takes fam_device_include_dir and fam_device_library; "
+              "absent means off, and a local profile listing a FAM entry "
+              "takes fake), and the fabric-attached-memory entries run on it")
     if resume:
         # Continuing means continuing THAT campaign: its selection is what was
         # measured against, and its directory is where the halves meet.
@@ -338,15 +331,17 @@ def run_cmd(
     elif from_file:
         import json
 
-        selection = Selection.model_validate(json.loads(from_file.read_text()))
+        try:
+            selection = Selection.model_validate(json.loads(from_file.read_text()))
+        except ValueError as exc:
+            _fail(f"{from_file}: {exc}")
         plane, catalog, prof, bs = _load(selection.profile, selection.benchset)
     else:
         if not profile:
             _fail("--profile is required unless --resume or --from names a run")
         plane, catalog, prof, bs = _load(profile, benchset)
         try:
-            keys = _split(entries) or (
-                plane.fam_entry_keys if cxl else plane.default_entries(prof.entries))
+            keys = _split(entries) or plane.default_entries(prof.entries)
         except ValueError as exc:
             _fail(str(exc))
         unknown = [k for k in keys if k not in plane.entry_keys]
@@ -361,9 +356,6 @@ def run_cmd(
             node_counts=node_counts,
             repeats=repeats or prof.repeats,
             build_dir=str(build_dir) if build_dir else None,
-            cxl=cxl,
-            fam_device_include_dir=str(fam_device_include_dir.expanduser().resolve()) if fam_device_include_dir else None,
-            fam_device_library=str(fam_device_library.expanduser().resolve()) if fam_device_library else None,
         )
 
     try:
@@ -477,7 +469,9 @@ def _dry_run(campaign, selection: Selection) -> None:
                   f"x {len(selection.node_counts)} node counts "
                   f"x {selection.repeats} repeats")
     try:
-        plan = campaign.build_plan()
+        plan = campaign.build_plan(
+            on_line=lambda line: console.print(line, highlight=False,
+                                               markup=False))
         console.print(f"build: {len(plan.targets)} targets in {campaign.build_dir}")
         if plan.missing:
             console.print(f"[red]missing targets:[/red] {', '.join(plan.missing[:10])}")

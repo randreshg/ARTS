@@ -15,6 +15,20 @@ class Launcher(StrEnum):
     FLUX = "flux"
 
 
+class FamDevice(StrEnum):
+    """Whether, and on which device library, the fabric-attached-memory
+    entries run.
+
+    `off`: fabric-attached memory is not available where this profile runs.
+    `fake`: the vendored emulation (one host's shared memory standing in for
+    the device).  `real`: the device library itself, named by path.
+    """
+
+    OFF = "off"
+    FAKE = "fake"
+    REAL = "real"
+
+
 # A typoed profile key must refuse, not vanish: some keys (slurm.mpi in
 # particular) are the only handle against failures that are otherwise
 # silent, so a key that "took" while doing nothing is the worst outcome.
@@ -131,6 +145,17 @@ class Profile(BaseModel):
     fam_pool_mb: int | None = Field(default=None, ge=1)
     fam_strict: bool = False
 
+    # The device library the fabric-attached-memory entries run on.  Named
+    # here and nowhere else: the build tree is made to match it or the
+    # campaign does not start, so which library a FAM cell ran on is always
+    # the one its profile states.  Absent means off, except that a local
+    # profile that runs a FAM entry takes `fake` (one host, no fabric: the
+    # vendored library is the only one that applies there).
+    fam_device: FamDevice | None = None
+    # The device library's headers and the library file; `real` only.
+    fam_device_include_dir: str | None = None
+    fam_device_library: str | None = None
+
     # Worker stack, in MiB, given to EVERY runtime a campaign measures — the
     # runtime under test and the references alike.  A runtime whose message
     # handling recurses on the worker stack has a multinode depth bounded by
@@ -205,6 +230,77 @@ class Profile(BaseModel):
             return self.flux
         return None
 
+    @property
+    def resolved_fam_device(self) -> FamDevice:
+        """What a FAM entry run under this profile links: the stated value;
+        absent, `fake` for a local profile whose own entries run a FAM entry
+        and `off` for every other profile."""
+        if self.fam_device is not None:
+            return self.fam_device
+        if self.launcher is Launcher.LOCAL and self.fam_entries():
+            return FamDevice.FAKE
+        return FamDevice.OFF
+
+    def fam_entries(self) -> list[str]:
+        """The FAM entries this profile runs when a campaign names none: its
+        own `entries`, or the whole plane when it lists none."""
+        from artsrun.model.plane import load_plane
+
+        plane = load_plane()
+        keys = plane.default_entries(self.entries)
+        return [k for k in keys if plane.entry(k).is_fam]
+
+    def check_fam_device(self, fam_entries: list[str]) -> None:
+        """Refuse a device-library statement that cannot run these
+        fabric-attached-memory entries.  Asked of the profile's own entries
+        and again of a campaign whose entry list differs from them."""
+        device = self.resolved_fam_device
+        paths = [k for k in ("fam_device_include_dir", "fam_device_library")
+                 if getattr(self, k)]
+        if device is not FamDevice.REAL and paths:
+            raise ValueError(
+                f"profile '{self.name}': {' and '.join(paths)} belong to "
+                f"fam_device: real, and this profile's fam_device is {device}")
+        if not fam_entries:
+            return
+        shown = ", ".join(fam_entries)
+        if device is FamDevice.OFF:
+            raise ValueError(
+                f"profile '{self.name}' has fam_device: off (absent means off: "
+                "fabric-attached memory is not available where it runs), so it "
+                f"cannot run {shown}; select a profile whose fam_device is "
+                "fake or real, or leave these entries out")
+        if self.launcher is Launcher.LOCAL and device is FamDevice.REAL:
+            raise ValueError(
+                "fam_device: real is not allowed under launcher=local: one "
+                "host has no fabric, so the vendored library is the only one "
+                "that applies (local takes off or fake)")
+        if device is FamDevice.REAL:
+            missing = [k for k in ("fam_device_include_dir", "fam_device_library")
+                       if not getattr(self, k)]
+            if missing:
+                raise ValueError(
+                    f"fam_device: real requires {' and '.join(missing)}: the "
+                    "device library's headers and the library file")
+            relative = [k for k in paths if not getattr(self, k).startswith("/")]
+            if relative:
+                raise ValueError(
+                    f"{' and '.join(relative)} must be absolute paths: the "
+                    "build tree is configured from them wherever the build runs")
+        if (device is FamDevice.FAKE and self.launcher is not Launcher.LOCAL
+                and self.nodes != [1]):
+            raise ValueError(
+                f"fam_device: fake under launcher={self.launcher} requires "
+                f"nodes: [1] (got {self.nodes}): the vendored library is one "
+                "host's shared memory, so its pool reaches only ranks that "
+                "share a host")
+        if self.fam_strict:
+            raise ValueError(
+                "fam_strict cannot be set with a fabric-attached-memory entry: "
+                "it emulates a second coherency domain, which the DEVICE "
+                "backend these entries always run on has and refuses at "
+                "config load")
+
     @model_validator(mode="after")
     def _check(self) -> "Profile":
         if self.launcher is Launcher.LOCAL:
@@ -257,4 +353,11 @@ class Profile(BaseModel):
             )
         if any(n < 1 for n in self.nodes):
             raise ValueError("node counts must be >= 1")
+        fam = self.fam_entries()
+        if not fam and self.fam_device in (FamDevice.FAKE, FamDevice.REAL):
+            raise ValueError(
+                f"fam_device: {self.fam_device} names the library of the "
+                "fabric-attached-memory entries, and this profile's entries "
+                "hold none of them; use off (or leave it out)")
+        self.check_fam_device(fam)
         return self

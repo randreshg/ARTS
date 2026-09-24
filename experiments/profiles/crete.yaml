@@ -42,3 +42,9 @@ repeats: 5
 # Peak resident set and minor-fault counts alongside the runtime's own stamp;
 # guarded at launch, so a node without the witness binary runs without it.
 rusage_witness: true
+
+# The device library the fabric-attached-memory entries link here.  Fill in
+# before a FAM campaign; a placeholder fails at configure, never silently.
+fam_device: real
+fam_device_include_dir: /PATH/TO/device-library/inc
+fam_device_library: /PATH/TO/device-library/lib/libarts_cxl_lib.so

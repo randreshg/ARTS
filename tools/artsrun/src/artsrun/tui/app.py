@@ -13,7 +13,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import (
-    Button, Footer, Header, Input, RichLog, Select, Switch, TabbedContent, TabPane,
+    Button, Footer, Header, Input, RichLog, Select, TabbedContent, TabPane,
 )
 
 from artsrun import store
@@ -156,7 +156,6 @@ class ArtsRunApp(App):
         entries = plane_panel.selected()
         apps = bench_panel.selected()
         nodes = profile_panel.node_counts()
-        cxl = self.query_one("#run-fam-device", Switch).value
 
         def path_input(name: str) -> str | None:
             value = self.query_one(name, Input).value.strip()
@@ -175,9 +174,6 @@ class ArtsRunApp(App):
             node_counts=sorted(nodes),
             repeats=profile_panel.profile.repeats,
             build_dir=path_input("#run-build-dir"),
-            cxl=cxl,
-            fam_device_include_dir=path_input("#run-fam-include") if cxl else None,
-            fam_device_library=path_input("#run-fam-library") if cxl else None,
         )
 
     def _refresh_size(self) -> None:
@@ -222,11 +218,6 @@ class ArtsRunApp(App):
     @on(Button.Pressed, "#dry-button")
     def _dry_pressed(self) -> None:
         self.action_dry_run()
-
-    @on(Switch.Changed, "#run-fam-device")
-    def _fam_device_changed(self, event: Switch.Changed) -> None:
-        self.query_one("#plane", PlanePanel).set_fam_device_mode(event.value)
-        self._refresh_size()
 
     @on(Button.Pressed, "#stop-button")
     def _stop_pressed(self) -> None:
