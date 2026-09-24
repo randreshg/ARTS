@@ -1272,4 +1272,9 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
                       DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
                       SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
                               unit/fam_stubs.c)
+    # Links nothing of the module -- it performs the pool object's own
+    # create/handoff sequence itself -- so it needs neither pool.c nor
+    # fam_stubs.c.
+    add_pure_unit_src(fam_shm_handoff PASS_REGEX "PASS fam_shm_handoff"
+                      TIMEOUT 60)
 endif()

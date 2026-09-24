@@ -202,6 +202,17 @@ if(ARTS_USE_CXL)
     list(APPEND TEST_PROGRAMS coherence_cxl_alias_slots)
 endif()
 
+# Fabric-attached memory: registered only where this tree's own library is
+# FAM-enabled, so an unguarded entry does not need to compile against a tree
+# with no fam symbols at all.  fam_slices is further restricted to the SHM
+# backend, whose fixed pool address it dereferences.
+if(ARTS_FAM_TREE_RESIDENCY)
+    list(APPEND TEST_PROGRAMS fam_alloc_dist)
+    if(ARTS_FAM_BACKEND STREQUAL "SHM")
+        list(APPEND TEST_PROGRAMS fam_slices)
+    endif()
+endif()
+
 # Function to create a test executable
 function(add_arts_test test_name)
     # Sources live under one of the ocr/ unit/ subdirectories.
@@ -1356,6 +1367,29 @@ if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
                                  FAIL_REGULAR_EXPRESSION "FAIL:")
         endforeach()
     endforeach()
+endif()
+
+# Fabric-attached memory.  Registered only where this tree's own library is
+# FAM-enabled: everywhere else arts_static holds no arts_fam_* at all, and an
+# unguarded entry would fail the BUILD of all nine existing validation trees.
+if(ARTS_FAM_TREE_RESIDENCY)
+    # fam_alloc_dist names no backend-specific symbol, so the residency guard
+    # alone is right for it -- deliberately, and the asymmetry with fam_slices
+    # below is the point.
+    register_multinode_test(fam_alloc_dist TIMEOUT 120 VARIANTS 2n 4n)
+    set_tests_properties(fam_alloc_dist_2n fam_alloc_dist_4n PROPERTIES
+                         FAIL_REGULAR_EXPRESSION "FAIL")
+    if(ARTS_FAM_BACKEND STREQUAL "SHM")
+        # Whitebox test of the inherited mapping's fixed address: fam_slices.c
+        # dereferences ARTS_FAM_BASE, which only the SHM backend defines --
+        # under the device backend the address comes from the device library
+        # and a configured value would mean nothing.  Excluded at
+        # REGISTRATION with that structural reason, never skipped at run
+        # time.
+        register_multinode_test(fam_slices TIMEOUT 60 VARIANTS 2n 4n)
+        set_tests_properties(fam_slices_2n fam_slices_4n PROPERTIES
+                             FAIL_REGULAR_EXPRESSION "FAIL")
+    endif()
 endif()
 
 # --- Mode-mismatch detection binary (no CTest entry — driven by run_mode_mismatch.sh) ---
