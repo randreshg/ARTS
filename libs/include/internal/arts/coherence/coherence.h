@@ -368,12 +368,13 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
 
 #ifdef ARTS_FAM
 /* Record this block's slot in a cache that has none.  Returns true when this
- * call installed it.  A second call naming the SAME slot is a no-op; a second
- * call naming a different one is a protocol error (one block, one slot) —
- * and it is the ONE loud failure of the slot rule: a grant naming a store
- * other than the one this rank's cache already names means two creators
- * minted a store for one block. */
+ * call installed it; a cache that already names a slot keeps it.  Every slot
+ * has one origin: the block's creator mints it from its own slice before the
+ * create is sent, and every other rank learns it from the create or a grant. */
 bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
+/* Allocate a slot of db_size bytes out of this rank's slice for a create that
+ * builds no descriptor here; 0 for a sentinel-sized block, which has none. */
+uint64_t arts_db_fam_slot_mint(uint64_t db_size);
 /* Allocate out of this rank's slice, for the size the cache DECLARES, and
  * record it.  False when the block is sentinel-sized (db_size == 0) or
  * already carries a slot — in which case nothing was allocated.  The caller
@@ -416,6 +417,10 @@ arts_db_fam_slot_addr(const struct arts_db_cache_s *cache) {
 static inline uint64_t
 arts_db_fam_slot_addr(const struct arts_db_cache_s *cache) {
   (void)cache;
+  return 0u;
+}
+static inline uint64_t arts_db_fam_slot_mint(uint64_t db_size) {
+  (void)db_size;
   return 0u;
 }
 #endif /* ARTS_FAM */

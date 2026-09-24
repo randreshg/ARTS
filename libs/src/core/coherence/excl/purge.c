@@ -772,28 +772,6 @@ static void fam_slot_required(const struct arts_db_cache_s *cache,
   }
 }
 
-/* Hand an unusable grant back to the home: the write right with no payload,
- * the read right that found no reader, or a right this rank cannot take
- * because a hold already owns the axis.  On this arm that is a FREQUENT path,
- * so the home-local case takes the same direct route the release path takes:
- * routing it through a GUID-keyed self-send would re-resolve the block through
- * its route slot, which a concurrent (legal) destroy may already have
- * detached, and the release would then MISS and defer on the OoO list forever,
- * losing the home's w/r decrement — on a fixed arena that is the pool's
- * exhaustion fatal rather than a bounded leak.  The caller keeps the
- * descriptor pinned across this call. */
-static void lock_grant_hand_back(struct arts_db_cache_s *cache,
-                                 arts_guid_t db_guid,
-                                 arts_db_access_mode_t mode) {
-  unsigned int home = arts_guid_get_rank(db_guid);
-  if (home == arts_global_rank_id) {
-    lock_release_commit(arts_db_of_cache(cache), cache, mode);
-    return;
-  }
-  arts_send_db_excl_release(home, db_guid, mode, /*version=*/0u, /*cv=*/0u,
-                            NULL, 0u, /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
-}
-
 /* Bring the block's canonical bytes under this rank's grant.  Runs before the
  * grant's admitting CAS, while the granted axis still rests at REQ, so every
  * acquire of it is parked and nothing reads or writes the working copy being
@@ -1046,10 +1024,14 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                  (unsigned long)db_guid, (unsigned)CACHE_RW_CNT(cur),
                  (unsigned long long)cur);
     }
-    lock_grant_hand_back(cache, db_guid, mode);
+    arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RW,
+                              /*version=*/0u, /*cv=*/0u, NULL, 0u,
+                              /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;
-  case CACHE_ACT_REL_RO:
-    lock_grant_hand_back(cache, db_guid, mode);
+  case CACHE_ACT_REL_RO: /* phantom RO grant: nothing to serve, return home */
+    arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RO,
+                              /*version=*/0u, /*cv=*/0u, NULL, 0u,
+                              /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;
   default:
     break;

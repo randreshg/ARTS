@@ -686,19 +686,6 @@ elseif(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
                  "only - this tree's library is not FAM-enabled "
                  "(${ARTS_COHERENCE_PROTOCOL} x ${ARTS_RELEASE_POLICY}, not EXCL x PURGE)")
 endif()
-# Keyed on this tree's OWN FAM enablement, never on the backend: the
-# fabric-attached benchmark variants build from the CPU scheduler objects, so a
-# GPU tree that only adds them has not the hazard below.
-if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT" AND ARTS_USE_GPU)
-  message(FATAL_ERROR
-          "ARTS_USE_GPU=ON cannot be combined with a tree whose own library is "
-          "FAM-enabled with ARTS_FAM_RESIDENCY=DIRECT (EXCL x PURGE): the "
-          "device access modes take no DataBlock hold, so where an EDT's "
-          "working bytes are the store itself they would address memory "
-          "several hosts share with nothing ordering the access.  A GPU tree "
-          "may still build the fabric-attached variants -- set "
-          "ARTS_FAM_BACKEND and leave this tree's own protocol alone.")
-endif()
 
 if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND
    NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB_CXL")

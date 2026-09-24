@@ -751,9 +751,12 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
       if (no_acquire) {
         /* NO_ACQUIRE: no creator-side descriptor.  The home is the sole idle
          * owner; the first consumer's request acquires ownership.  The
-         * announce carries metadata only. */
+         * block's store is minted here, as for every create, and named on
+         * the announce. */
         arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NO_ACQUIRE,
-                                     (uint16_t)db_type, 0, /*create_token=*/0);
+                                     (uint16_t)db_type,
+                                     arts_db_fam_slot_mint(len),
+                                     /*create_token=*/0);
         *addr = NULL;
       } else {
         db_create_remote_creator(guid, len, rank, pre_guid != NULL_GUID,
@@ -1010,13 +1013,6 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
           depv[i].guid, GET_DB_TYPE_NAME(db_temp->db_type), arts_global_rank_id,
           owner);
     }
-#ifdef ARTS_FAM_DIRECT
-    if (db_temp->db_type == ARTS_DB) {
-      ARTS_ERROR("db: access mode %u takes no hold, so it cannot address a "
-                 "shared store — use DB_MODE_RO or DB_MODE_RW",
-                 (unsigned)access_mode);
-    }
-#endif
     depv[i].ptr = arts_db_user_ptr(db_temp);
     depv[i].subtype = db_temp->db_type;
     arts_shared_release(&db_temp_h);

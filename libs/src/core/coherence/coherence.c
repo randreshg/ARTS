@@ -165,21 +165,15 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
     return false;
   }
   uint64_t expect = 0;
-  if (__atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
-                                  __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
-    return true;
+  return __atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
+                                     __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
+}
+
+uint64_t arts_db_fam_slot_mint(uint64_t db_size) {
+  if (db_size == 0) {
+    return 0;
   }
-  if (expect != addr) {
-    /* One block, one slot.  Two different addresses for one GUID means two
-     * creators each minted a store for it — outside the contract (a create
-     * of a label another rank is still creating), and keeping both would
-     * silently split the block.  This is the slot rule's only loud
-     * failure. */
-    ARTS_ERROR("fam: guid %lu was handed two different slots — two "
-               "creators of one label",
-               (unsigned long)cache->db_guid);
-  }
-  return false;
+  return (uint64_t)(uintptr_t)arts_fam_alloc((size_t)db_size);
 }
 
 bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
@@ -187,9 +181,9 @@ bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
       __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE) != 0) {
     return false;
   }
-  void *slot = arts_fam_alloc((size_t)cache->db_size);
-  if (!arts_db_fam_slot_record(cache, (uint64_t)(uintptr_t)slot)) {
-    arts_fam_free(slot);
+  uint64_t addr = arts_db_fam_slot_mint(cache->db_size);
+  if (!arts_db_fam_slot_record(cache, addr)) {
+    arts_fam_free((void *)(uintptr_t)addr);
     return false;
   }
   return true;

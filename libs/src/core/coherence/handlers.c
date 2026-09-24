@@ -244,18 +244,11 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   stub->cache.create_token = p->create_token;
 #endif
 #ifdef ARTS_FAM
-  /* The creator either names the block's store or leaves it to the home: the
-   * home is the only other rank that can make one before a request can be
-   * granted.  Before the home's buffer install, which adopts the slot on the
-   * residency that keeps no copy, and before the route install, whose drain
-   * can serve a request out of it.  The stub's init has recorded the size the
-   * create declares, so the allocation has one. */
-  bool stub_slot_minted = false;
-  if (p->fam_addr != 0) {
-    (void)arts_db_fam_slot_record(&stub->cache, p->fam_addr);
-  } else {
-    stub_slot_minted = arts_db_fam_slot_create(&stub->cache);
-  }
+  /* The creator minted the block's store before sending this create; the home
+   * records it and allocates none.  Before the home's buffer install, which
+   * adopts the slot on the residency that keeps no copy, and before the route
+   * install, whose drain can serve a request out of it. */
+  (void)arts_db_fam_slot_record(&stub->cache, p->fam_addr);
 #endif
   /* The home's create-time buffer is the target a publish lands in, at
    * version 0 — "unpublished", which is what every serve and park predicate
@@ -271,15 +264,10 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   arts_shared_ptr_t installed_h = arts_route_table_install_if_absent(
       stub, db_guid, arts_global_rank_id, /*used=*/true);
   if (installed_h == NULL) {
-    /* The descriptor was never published, so its store is this create's
-     * alone: one this rank minted goes back to its slice, and an announced
-     * one stays the creator's, named again by the replay. */
+    /* The descriptor was never published; the store stays the creator's,
+     * named again by the replay. */
 #ifdef ARTS_FAM
-    if (stub_slot_minted) {
-      arts_db_fam_slot_discard(&stub->cache);
-    } else {
-      __atomic_store_n(&stub->cache.fam_addr, (uint64_t)0, __ATOMIC_RELEASE);
-    }
+    __atomic_store_n(&stub->cache.fam_addr, (uint64_t)0, __ATOMIC_RELEASE);
 #endif
     arts_db_free(stub);
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_CREATE, p, sizeof(*p));

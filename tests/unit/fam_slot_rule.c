@@ -1,6 +1,8 @@
 /// @file fam_slot_rule.c
-/// @brief One block, one slot: the rank that MADE the block allocated it, and
-/// every rank that knows the block names that same address.
+/// @brief One block, one slot, one origin: the rank that MADE the block
+/// allocated it from its own slice before the create left it, whether or not
+/// the create acquires, and every rank that knows the block names that same
+/// address — the home records it and allocates none.
 ///
 /// Whitebox, because a slot is cache state with no public reader: the checks
 /// resolve the block through the route table and read the cache the runtime
@@ -8,13 +10,14 @@
 /// there is no second word to compare it against.
 ///
 /// Six legs: a create that acquires nothing at the block's home; the same from
-/// a non-home rank, where the home is the one that must allocate; two ranks
+/// a non-home rank, whose slot is the creator's, not the home's; two ranks
 /// creating ONE label with no acquisition, where one create installs and the
-/// other waits for the block's destroy and then installs with a store of its
-/// own; an acquiring create made off-home, whose announce the home must record
-/// unchanged; a create of a label a dependence on this rank has already
-/// touched; and a create of a label whose block is live, which waits at the
-/// home and has minted nothing until it installs.
+/// other waits for the block's destroy and then installs with the store its
+/// own creator minted; an acquiring create made off-home, whose announce the
+/// home must record unchanged; a create of a label a dependence on this rank
+/// has already touched; and a create of a label whose block is live, which
+/// waits at the home and replaces nothing, then installs with its creator's
+/// store.
 ///
 /// A destroy is fire-and-forget, and a create's announce from another rank is
 /// not ordered against anything else that rank sends.  So the block that
@@ -65,18 +68,26 @@ static uint64_t slot_of(arts_guid_t g) {
   return addr;
 }
 
-static void check_owned_here(uint64_t addr, const char *what) {
+/* The slot's owner, or ~0u when there is no slot or it is not pool memory
+ * (both reported). */
+static unsigned int slot_owner(uint64_t addr, const char *what) {
   if (addr == 0) {
     fail(what);
-    return;
+    return ~0u;
   }
   if (!arts_fam_contains((const void *)(uintptr_t)addr)) {
     fail("a recorded slot is not pool memory");
-    return;
+    return ~0u;
   }
-  if (arts_fam_owner_of((const void *)(uintptr_t)addr) !=
-      arts_get_current_rank()) {
-    fail("the allocating rank does not own its slot's slice");
+  return arts_fam_owner_of((const void *)(uintptr_t)addr);
+}
+
+/* The slot exists and came out of the creating rank's slice. */
+static void check_owned_by(uint64_t addr, unsigned int creator,
+                           const char *what) {
+  unsigned int owner = slot_owner(addr, what);
+  if (owner != ~0u && owner != creator) {
+    fail("a block's slot is not out of its creator's slice");
   }
 }
 
@@ -124,24 +135,26 @@ static void race_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* Holds the block that replaced a destroyed generation of its label (slot
- * 0), and runs at the home.  paramv = {what the check asserts}. */
+ * 0), and runs at the home.  paramv = {what the check asserts, the rank that
+ * created this generation}. */
 static void next_generation_check_edt(uint32_t paramc, const uint64_t *paramv,
                                       uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   arts_guid_t g = depv[0].guid;
-  check_owned_here(slot_of(g), (const char *)(uintptr_t)paramv[0]);
+  check_owned_by(slot_of(g), (unsigned int)paramv[1],
+                 (const char *)(uintptr_t)paramv[0]);
   arts_db_destroy(g);
 }
 
 /* Destroys the generation of g installed at this rank, g's home, and hands
- * the next one to a check that waits for it to install. */
+ * the next one, made by `creator`, to a check that waits for it to install. */
 static void destroy_then_check_next(arts_guid_t g, const char *what,
-                                    arts_guid_t finish) {
+                                    unsigned int creator, arts_guid_t finish) {
   arts_db_destroy(g);
-  uint64_t pv[1] = {(uint64_t)(uintptr_t)what};
+  uint64_t pv[2] = {(uint64_t)(uintptr_t)what, (uint64_t)creator};
   arts_guid_t c = arts_edt_create(
-      next_generation_check_edt, 1, pv, 1,
+      next_generation_check_edt, 2, pv, 1,
       &(arts_edt_hint_t){.rank = arts_get_current_rank(),
                          .finish_event = finish});
   arts_add_dependence(g, c, 0, DB_MODE_RO);
@@ -150,8 +163,9 @@ static void destroy_then_check_next(arts_guid_t g, const char *what,
 /* Runs at the range's home once both racers are done.  Every label has a
  * block here by then: this rank's own create of it installed one or is
  * waiting behind the other's.  The peer's announce, though, may still be in
- * flight.  Each label is destroyed, and the create that installs next, parked
- * or late, is checked for a store of its own and destroyed too. */
+ * flight.  The installed block's store is its creator's, one of the two
+ * racers; each label is destroyed, and the create that installs next, parked
+ * or late, is the other racer's and is checked for that racer's store. */
 static void race_check_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -165,12 +179,16 @@ static void race_check_edt(uint32_t paramc, const uint64_t *paramv,
   arts_add_dependence(checked, next, 0, DB_MODE_NULL);
   for (unsigned int i = 0; i < n; i++) {
     arts_guid_t g = arts_guid_from_index(base, i);
-    check_owned_here(slot_of(g), "a label two ranks created without "
-                                 "acquiring it kept no slot at its home");
+    unsigned int first = slot_owner(slot_of(g), "a label two ranks created "
+                                                "without acquiring it kept "
+                                                "no slot at its home");
+    if (first != ~0u && first != 0u && first != 1u) {
+      fail("a label's slot is out of neither creator's slice");
+    }
     destroy_then_check_next(g,
                             "the create that waited for a label's destroy "
                             "installed no block with a slot at its home",
-                            checked);
+                            first == 0u ? 1u : 0u, checked);
   }
 }
 
@@ -215,16 +233,16 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
                            (unsigned int)paramv[2]) {
     fail("the home derives the wrong owner for the creator's slot");
   }
-  /* The create that acquired nothing named no store, so the home is the rank
-   * that had to allocate one. */
-  check_owned_here(slot_of((arts_guid_t)paramv[3]),
-                   "a create that acquires nothing off-home left its home "
-                   "with no slot");
+  /* The create that acquired nothing minted its store on the creating rank
+   * and named it on the announce; the home allocated none. */
+  check_owned_by(slot_of((arts_guid_t)paramv[3]), (unsigned int)paramv[2],
+                 "a create that acquires nothing off-home left its home "
+                 "with no slot");
   if (arts_get_total_ranks() >= 3u) {
-    /* The waiting create of the first-touched label minted nothing: the live
-     * block still names the slot its creator allocated.  Once that block is
-     * destroyed the waiting create installs, and the home, which it named no
-     * store to, allocates one. */
+    /* The waiting create of the first-touched label replaced nothing: the
+     * live block still names the slot its creator allocated.  Once that block
+     * is destroyed the waiting create installs, with the store its own
+     * creator, rank 2, minted and named on the announce. */
     arts_guid_t lg = (arts_guid_t)paramv[4];
     if (slot_of(lg) != paramv[5]) {
       fail("a create waiting behind a live block changed that block's slot");
@@ -237,7 +255,7 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
     destroy_then_check_next(lg,
                             "a create that waited for its label's destroy "
                             "installed no block with a slot at its home",
-                            checked);
+                            2u, checked);
     return;
   }
   pass_and_shut_down();
@@ -283,7 +301,8 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   uint64_t addr = slot_of(g);
-  check_owned_here(addr, "an acquiring create off-home allocated no slot");
+  check_owned_by(addr, arts_get_current_rank(),
+                 "an acquiring create off-home allocated no slot");
   arts_db_release(g, DB_MODE_RW);
 
   /* First touch, then a create of the same label, on ONE rank.  The dependence
@@ -310,12 +329,13 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (lp == NULL) {
     fail("a create after a first touch of the same label made nothing");
   }
-  check_owned_here(laddr, "a create after a first touch allocated no slot");
+  check_owned_by(laddr, arts_get_current_rank(),
+                 "a create after a first touch allocated no slot");
   arts_db_release(lg, DB_MODE_RW);
 
   /* A create that acquires nothing, made away from the block's home: this rank
-   * keeps no cache for it and names no store, so the home is the only rank
-   * left that can allocate one.  Checked at the home. */
+   * keeps no cache for it, but it mints the block's store from its own slice
+   * and names it on the announce.  Checked at the home. */
   arts_guid_t ng = arts_guid_reserve(ARTS_GUID_DB, 0u);
   void *np = arts_db_create_with_guid(ng, N * sizeof(unsigned int), ARTS_DB,
                                       ARTS_DB_PROP_NO_ACQUIRE, NULL);
@@ -355,15 +375,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  /* A create that acquires nothing, at the block's home: the home allocates,
-   * out of its own slice. */
+  /* A create that acquires nothing, at the block's home: the home is the
+   * creator, so the store is out of its own slice. */
   void *q = NULL;
   arts_guid_t b =
       arts_db_create(&q, N * sizeof(unsigned int), ARTS_DB,
                      ARTS_DB_PROP_NO_ACQUIRE, &(arts_db_hint_t){.rank = 0u});
-  check_owned_here(slot_of(b),
-                   "a create that acquires nothing allocated no slot at its "
-                   "home");
+  check_owned_by(slot_of(b), arts_get_current_rank(),
+                 "a create that acquires nothing allocated no slot at its "
+                 "home");
   if (arts_get_total_ranks() < 2u) {
     __atomic_store_n(&g_check_ran, 1, __ATOMIC_RELEASE);
     (void)fprintf(stderr, "PASS fam_slot_rule: one-rank check ran\n");
