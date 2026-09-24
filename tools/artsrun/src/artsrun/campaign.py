@@ -20,7 +20,7 @@ from pathlib import Path
 from artsrun import check, report
 from artsrun.build import (
     BuildPlan, build, configure_counters, counter_mismatch, ensure_build_dir,
-    plan_targets, require_default_counters,
+    fam_backend_of, plan_targets, require_default_counters,
 )
 from artsrun.model.benchset import Benchset
 from artsrun.model.catalog import Catalog
@@ -131,7 +131,8 @@ class Campaign:
         else:
             require_default_counters(self.build_dir)
         return plan_targets(
-            self.selection, self.plane, self.catalog, self.benchset, self.build_dir
+            self.selection, self.plane, self.catalog, self.benchset,
+            self.build_dir, self.profile, fam_backend_of(self.build_dir),
         )
 
     def apps_dir(self) -> Path:
@@ -169,6 +170,7 @@ class Campaign:
         return expand(
             self.selection, self.plane, self.catalog, self.benchset,
             self.profile, self.apps_dir(), configs, cell_cfg=cell_cfg,
+            fam_backend=fam_backend_of(self.build_dir),
         )
 
     def backend(self):

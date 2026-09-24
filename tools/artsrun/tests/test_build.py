@@ -24,6 +24,7 @@ from artsrun.build import BuildError, available_targets, ensure_build_dir, plan_
 from artsrun.model.benchset import Benchset, BenchsetEntry
 from artsrun.model.catalog import Version, load_catalog
 from artsrun.model.plane import load_plane
+from artsrun.model.profile import Launcher, Profile, SlurmSettings
 from artsrun.model.selection import Selection
 
 # An ARTS-only probe, off by the catalog's default: a roster has to name it.
@@ -43,6 +44,37 @@ def test_an_arts_only_row_wants_only_its_arts_targets(tmp_path):
         plane, catalog, Benchset(name="t", apps={PROBE: BenchsetEntry()}), tmp_path,
     )
     assert plan.targets == [f"{PROBE_BINARY}_arts_ocr_val_wb"]
+
+
+def test_a_fam_entry_wants_no_target_where_the_tree_has_none(tmp_path):
+    plane, catalog = load_plane(), load_catalog()
+    sel = _selection(["arts_excl_purge", "arts_excl_purge_fam_staged"],
+                     {"nqueens": [Version.BASE]})
+    bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
+    local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
+                    workers=2, progress=1)
+
+    off = plan_targets(sel, plane, catalog, bs, tmp_path, local, None)
+    assert off.targets == ["nqueens_arts_ocr_excl_purge"]
+    assert off.missing == [] and off.ok
+
+    on = plan_targets(sel, plane, catalog, bs, tmp_path, local, "SHM")
+    assert "nqueens_arts_ocr_excl_purge_fam_staged" in on.targets
+
+    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
+                     workers=2, progress=1, ports=[25000],
+                     slurm=SlurmSettings())
+    shm_elsewhere = plan_targets(sel, plane, catalog, bs, tmp_path,
+                                 remote, "SHM")
+    assert shm_elsewhere.targets == ["nqueens_arts_ocr_excl_purge"]
+
+    device_local = plan_targets(sel, plane, catalog, bs, tmp_path,
+                                local, "DEVICE")
+    assert "nqueens_arts_ocr_excl_purge_fam_staged" in device_local.targets
+
+    # a caller that knows neither (every pre-existing one) is unchanged
+    blind = plan_targets(sel, plane, catalog, bs, tmp_path)
+    assert "nqueens_arts_ocr_excl_purge_fam_staged" in blind.targets
 
 
 def test_a_row_the_benchset_does_not_enable_wants_no_target(tmp_path):

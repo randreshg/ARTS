@@ -16,6 +16,7 @@ from pathlib import Path
 from artsrun.model.benchset import Benchset
 from artsrun.model.catalog import Catalog
 from artsrun.model.plane import Plane, RuntimeKind
+from artsrun.model.profile import Profile
 from artsrun.model.selection import Selection
 
 
@@ -380,14 +381,20 @@ def plan_targets(
     catalog: Catalog,
     benchset: Benchset,
     build_dir: Path,
+    profile: Profile | None = None,
+    fam_backend: str | None = None,
 ) -> BuildPlan:
     """Every executable this campaign will run, deduplicated.
 
     The same rows and the same eligibility the expansion applies: a name the
     benchset does not enable runs no cell, so it needs nothing built, and a
     row's own exclusions (ARTS-only, no ocr-vx, outside DB-WRF) hold for the
-    build exactly as they hold for the run.
+    build exactly as they hold for the run — as does an entry this tree has
+    no backend for, which is reported with its reason rather than as a
+    target that is missing.
     """
+    from artsrun.run.plan import fam_ineligible
+
     entries = [plane.entry(k) for k in selection.entries]
     resolved = {a.key: a for a in benchset.resolve(catalog)}
 
@@ -398,6 +405,9 @@ def plan_targets(
             if app is None:
                 continue
             for entry in entries:
+                if profile is not None and fam_ineligible(
+                        entry, profile, fam_backend):
+                    continue
                 if entry.kind is RuntimeKind.HPX:
                     # The HPX program is the row's _hpx target; nothing is
                     # derived from a version stem.

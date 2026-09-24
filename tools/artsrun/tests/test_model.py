@@ -915,6 +915,62 @@ def test_arts_only_probe_excludes_every_reference():
     assert _ineligible(_Entry(RuntimeKind.ARTS), _App(), 1) is None
 
 
+def test_a_fam_entry_needs_a_matching_backend_and_launcher():
+    from artsrun.model.profile import Launcher, Profile, SlurmSettings
+    from artsrun.run.plan import _ineligible
+
+    plane = load_plane()
+    catalog = load_catalog()
+    bs = Benchset(name="t", apps={})
+    app = {a.key: a for a in bs.resolve(catalog)}["nqueens:base"]
+
+    local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
+                    workers=2, progress=1)
+    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
+                     workers=2, progress=1, ports=[25000],
+                     slurm=SlurmSettings())
+    staged = plane.entry("arts_excl_purge_fam_staged")
+    direct = plane.entry("arts_excl_purge_fam_direct")
+
+    # (1) a tree that names no backend has no binaries for them
+    assert "ARTS_FAM_BACKEND" in _ineligible(staged, app, 1, local, None)
+    assert "ARTS_FAM_BACKEND" in _ineligible(staged, app, 1, local, "OFF")
+    # (2) the SHM backend is one machine's mapping
+    assert _ineligible(staged, app, 1, local, "SHM") is None
+    assert "launcher: local" in _ineligible(staged, app, 1, remote, "SHM")
+    # the device backend is refused nowhere: a one-rank local run is the
+    # shape that takes the arena directly
+    assert _ineligible(direct, app, 1, local, "DEVICE") is None
+    assert _ineligible(direct, app, 1, remote, "DEVICE") is None
+    # no non-fam entry is touched, on any tree
+    assert _ineligible(plane.entry("arts_val_wb"), app, 1, remote, None) is None
+    assert _ineligible(plane.entry("xsocr"), app, 1, local, None) is None
+    # every pre-existing call site passes three arguments and is unchanged
+    assert _ineligible(staged, app, 1) is None
+
+
+def test_a_fam_entry_on_a_tree_without_a_backend_is_shown_not_raised(tmp_path):
+    from artsrun.model.profile import Launcher, Profile
+    from artsrun.run.plan import expand
+
+    plane, catalog = load_plane(), load_catalog()
+    bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
+    sel = Selection(profile="t", benchset="t",
+                    entries=["arts_excl_purge",
+                             "arts_excl_purge_fam_staged"],
+                    apps={"nqueens": [Version.BASE]},
+                    node_counts=[1], repeats=1)
+    local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
+                    workers=2, progress=1)
+    cells, skipped = expand(sel, plane, catalog, bs, local,
+                            tmp_path / "apps",
+                            {1: {"arts": tmp_path / "arts_1.cfg"}},
+                            fam_backend=None)
+    assert [c.entry.key for c in cells] == ["arts_excl_purge"]
+    assert [s.entry_key for s in skipped] == ["arts_excl_purge_fam_staged"]
+    assert "ARTS_FAM_BACKEND" in skipped[0].reason
+
+
 def test_a_row_outside_db_wrf_is_dropped_on_the_wrf_flush_entry_only():
     from artsrun.run.plan import _ineligible
     plane = load_plane()
