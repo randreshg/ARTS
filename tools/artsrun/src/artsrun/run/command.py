@@ -28,7 +28,7 @@ import subprocess
 
 from artsrun.model.plane import RuntimeKind
 from artsrun.model.profile import Launcher, Profile
-from artsrun.paths import envelope_script
+from artsrun.paths import cxl_script, envelope_script
 from artsrun.run.types import Cell
 
 
@@ -170,6 +170,16 @@ def build_command(cell: Cell, profile: Profile) -> list[str]:
     # A single ocr-vx or hpx rank needs no launcher at all (MPI singleton
     # init).
     return [*wrap, *tail]
+
+
+def cxl_wrap(argv: list[str], cell: Cell) -> list[str]:
+    """Region setup surrounds the complete launch, never individual ranks."""
+    if not cell.cxl or cell.entry.kind is not RuntimeKind.ARTS:
+        return argv
+    script = cxl_script()
+    if not script.is_file():
+        raise FileNotFoundError(f"CXL wrapper missing: {script}")
+    return ["bash", str(script), *argv]
 
 
 def with_post_verify(argv: list[str], cell: Cell) -> list[str]:

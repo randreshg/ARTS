@@ -43,6 +43,7 @@ class PlanePanel(Vertical):
         super().__init__(**kwargs)
         self.plane = plane
         self._entries = entries
+        self._before_cxl: dict[str, bool] | None = None
 
     def on_mount(self) -> None:
         self.select(self._entries)
@@ -159,7 +160,28 @@ class PlanePanel(Vertical):
         return [t.ident for t in self.toggles if t.value]
 
     def toggle_all(self) -> None:
-        toggle_all(self.toggles)
+        toggle_all([t for t in self.toggles if not t.disabled])
+
+    def set_cxl_mode(self, enabled: bool) -> None:
+        """Limit CXL selections to EXCL × PURGE; restore on exit."""
+        if enabled and self._before_cxl is None:
+            self._before_cxl = {t.ident: t.value for t in self.toggles}
+            allowed = set(self.plane.cxl_entry_keys)
+            for toggle in self.toggles:
+                if toggle.ident not in allowed:
+                    toggle.value = False
+                    toggle.disabled = True
+            # If the previous sweep had neither entry, start with the ARTS
+            # arm; do not silently add a reference the user had unchecked.
+            if not any(t.value for t in self.toggles if t.ident in allowed):
+                next(t for t in self.toggles
+                     if t.ident in allowed and self.plane.entry(t.ident).kind
+                     is RuntimeKind.ARTS).value = True
+        elif not enabled and self._before_cxl is not None:
+            for toggle in self.toggles:
+                toggle.disabled = False
+                toggle.value = self._before_cxl[toggle.ident]
+            self._before_cxl = None
 
 
 class ProfilePanel(VerticalScroll):
@@ -774,6 +796,25 @@ class RunPanel(Vertical):
             )
             yield Button("Continue", id="resume-button", disabled=True)
             yield Static("", id="run-size")
+        with Horizontal(classes="cxl-controls"):
+            yield Label("Real CXL", classes="cxl-label")
+            yield Switch(id="run-cxl")
+            yield Label("build tree", classes="cxl-label")
+            yield Input(placeholder="build_release (default)", id="run-build-dir")
+            yield Label("CXL: EXCL × PURGE only; real Rapid / arts_cxl_lib",
+                        classes="cxl-help")
+        with Horizontal(classes="cxl-controls"):
+            yield Label("Rapid include", classes="cxl-label")
+            yield Input(placeholder="/path/to/rapid/include (new build)",
+                        id="run-cxl-rapid", disabled=True)
+            yield Label("arts_cxl_lib", classes="cxl-label")
+            yield Input(placeholder="/path/to/arts_cxl_lib (new build)",
+                        id="run-cxl-lib", disabled=True)
+
+    @on(Switch.Changed, "#run-cxl")
+    def _cxl_changed(self, event: Switch.Changed) -> None:
+        for name in ("#run-cxl-rapid", "#run-cxl-lib"):
+            self.query_one(name, Input).disabled = not event.value
 
     def refresh_runs(self) -> None:
         """Re-read what is resumable, after a campaign changes the answer."""

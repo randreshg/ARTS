@@ -18,7 +18,7 @@ from artsrun.model.benchset import ResolvedApp
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.profile import Launcher, Profile
 from artsrun.paths import repo_root, scratch_dir
-from artsrun.run.command import (build_command, build_env, render,
+from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
                                  with_post_verify, with_timeout)
 from artsrun.run.types import Cell, Skipped
 
@@ -56,7 +56,7 @@ def describe_command(cell: Cell, profile: Profile, log_path: Path) -> dict:
         }
     return {
         "command": render(with_timeout(
-            with_post_verify(build_command(cell, profile), cell),
+            with_post_verify(cxl_wrap(build_command(cell, profile), cell), cell),
             cell.timeout_s)),
         "script": None,
     }

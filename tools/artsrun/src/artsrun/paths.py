@@ -65,6 +65,10 @@ def envelope_script() -> Path:
     return repo_root() / "tools" / "artsrun" / "envelope.sh"
 
 
+def cxl_script() -> Path:
+    return repo_root() / "run_cxl.sh"
+
+
 def scratch_dir() -> Path:
     """Where application byproducts land; runs chdir here."""
     return repo_root() / "scratch"

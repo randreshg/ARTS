@@ -69,6 +69,36 @@ artsrun counterset list | show X | render X
 artsrun run -p ferrari-local -b paper-main -c census
 ```
 
+### Real CXL runs
+
+Use `--cxl` to launch ARTS cells through the root `run_cxl.sh` region wrapper.
+In the TUI, press `5` for the **Run** tab, turn on **Real CXL**, and enter
+the build tree. For a new build tree, fill in **Rapid include** and
+**arts_cxl_lib** there as well; an existing real-CXL tree can use its cached
+paths. The Coherence screen narrows to **EXCL × PURGE** (ARTS and its matched
+XSOCR reference) while CXL is on; it restores your previous selections when
+you turn CXL off. The `a` key on that screen toggles only the eligible entries.
+For a new build tree, supply real Rapid headers and `arts_cxl_lib` (built at
+`<lib-dir>/build/src/libarts_cxl_lib.so`):
+
+```bash
+artsrun run -p junction -b paper-main --cxl --build-dir build_cxl \
+  --cxl-rapid-include-dir /path/to/rapid/include \
+  --cxl-lib-dir /path/to/arts_cxl_lib
+```
+
+An existing build must have `ARTS_USE_CXL=On`, both real paths, and
+`ARTS_USE_FAKE_CXL_LIB=Off`; artsrun verifies these before building or
+running. Configure the build with `-DARTS_USE_CXL=On` and the matching
+`-DARTS_CXL_RAPID_INCLUDE_DIR` / `-DARTS_CXL_LIB_DIR` if necessary. CXL
+builds are configured for OCR / EXCL × PURGE / WB and existing trees are
+checked for those axes. `--cxl` defaults to that one plane cell; explicit
+`--entries` and saved selections with other entries are rejected. The CXL
+choice is saved for `--from` and `--resume`. Reference-runtime
+cells in the same campaign run normally. The wrapper locates its preparation
+script relative to the checkout and runs in the cell's scratch directory; the
+compute environment must provide the real Rapid Python module and `rapidutil`.
+
 ## External runtimes
 
 Besides the eleven-entry coherence plane, `hpx` is an off-plane entry: the

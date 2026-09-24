@@ -46,6 +46,47 @@ def _cache_value(build_dir: Path, key: str) -> str | None:
     return None
 
 
+def require_cxl(build_dir: Path, selection: Selection) -> None:
+    """Reject a build whose CXL implementation differs from this campaign."""
+    def is_on(key: str) -> bool:
+        return (_cache_value(build_dir, key) or "OFF").upper() in ("ON", "TRUE", "YES", "1")
+
+    enabled = is_on("ARTS_USE_CXL")
+    fake = is_on("ARTS_USE_FAKE_CXL_LIB")
+    if selection.cxl != enabled:
+        raise BuildError(
+            f"{build_dir} has ARTS_USE_CXL={'ON' if enabled else 'OFF'}; "
+            f"this campaign requires ARTS_USE_CXL={'ON' if selection.cxl else 'OFF'}. "
+            "Use a build tree configured for this mode."
+        )
+    if not selection.cxl:
+        return
+    axes = (("ARTS_MEMORY_MODEL", "OCR"),
+            ("ARTS_COHERENCE_PROTOCOL", "EXCL"),
+            ("ARTS_RELEASE_POLICY", "PURGE"),
+            ("ARTS_WRITE_POLICY", "WB"))
+    mismatches = [f"{key}={_cache_value(build_dir, key) or '(unset)'} (need {value})"
+                  for key, value in axes if _cache_value(build_dir, key) != value]
+    if mismatches:
+        raise BuildError(f"{build_dir}: CXL requires OCR / EXCL + PURGE / WB; "
+                         "build cache has " + ", ".join(mismatches))
+    rapid = _cache_value(build_dir, "ARTS_CXL_RAPID_INCLUDE_DIR")
+    lib = _cache_value(build_dir, "ARTS_CXL_LIB_DIR")
+    if fake or any("fake_arts_cxl_lib" in str(Path(p).resolve()) for p in (rapid, lib) if p):
+        raise BuildError("CXL runs require real Rapid headers and arts_cxl_lib; "
+                         "ARTS_USE_FAKE_CXL_LIB / fake_arts_cxl_lib cannot be used")
+    if not rapid or not Path(rapid).is_dir() or not lib or not (Path(lib) / "build/src/libarts_cxl_lib.so").is_file():
+        raise BuildError(
+            f"{build_dir} needs real ARTS_CXL_RAPID_INCLUDE_DIR and ARTS_CXL_LIB_DIR "
+            "(with build/src/libarts_cxl_lib.so). Configure with "
+            "-DARTS_USE_CXL=On -DARTS_USE_FAKE_CXL_LIB=Off and both paths."
+        )
+    for key, want, have in (("ARTS_CXL_RAPID_INCLUDE_DIR", selection.cxl_rapid_include_dir, rapid),
+                            ("ARTS_CXL_LIB_DIR", selection.cxl_lib_dir, lib)):
+        if want and Path(want).resolve() != Path(have).resolve():
+            raise BuildError(f"{build_dir} has {key}={have}, but this campaign requested {want}")
+
+
 def counter_config_of(build_dir: Path) -> str | None:
     """Which counter file this tree was configured against."""
     return _cache_value(build_dir, "ARTS_COUNTER_CONFIG")
@@ -196,7 +237,8 @@ def configure_counters(build_dir: Path, wanted: Path, *, on_line=None,
 
 
 def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
-                     on_line=None, prefix: list[str] | None = None) -> None:
+                     on_line=None, prefix: list[str] | None = None,
+                     selection: Selection | None = None) -> None:
     """Configure a tree that never was; verify one that already is.
 
     The experiment tree is fully determined — Release, benchmarks on — so a
@@ -222,9 +264,19 @@ def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
         say = on_line or (lambda _msg: None)
         say(f"{build_dir} does not exist yet — configuring it "
             "(the first build also compiles the vendored dependencies)")
+        cxl_opts = []
+        if selection and selection.cxl:
+            if not selection.cxl_rapid_include_dir or not selection.cxl_lib_dir:
+                raise BuildError("a new CXL build requires --cxl-rapid-include-dir "
+                                 "and --cxl-lib-dir (real Rapid / arts_cxl_lib)")
+            cxl_opts = ["-DARTS_USE_CXL=On", "-DARTS_USE_FAKE_CXL_LIB=Off",
+                        "-DARTS_MEMORY_MODEL=OCR", "-DARTS_COHERENCE_PROTOCOL=EXCL",
+                        "-DARTS_RELEASE_POLICY=PURGE", "-DARTS_WRITE_POLICY=WB",
+                        f"-DARTS_CXL_RAPID_INCLUDE_DIR={selection.cxl_rapid_include_dir}",
+                        f"-DARTS_CXL_LIB_DIR={selection.cxl_lib_dir}"]
         proc = subprocess.Popen(
             [*(prefix or []), "cmake", "-S", str(repo_root()), "-GNinja",
-             f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release"],
+             f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release", *cxl_opts],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
         )
@@ -237,6 +289,8 @@ def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
             say(line)
         if proc.wait() != 0:
             raise BuildError("configure failed:\n" + "\n".join(tail))
+    if selection is not None:
+        require_cxl(build_dir, selection)
     if (_cache_value(build_dir, "ARTS_BUILD_BENCHMARKS") or "ON") == "OFF":
         raise BuildError(
             f"{build_dir} was configured with ARTS_BUILD_BENCHMARKS=OFF; the "

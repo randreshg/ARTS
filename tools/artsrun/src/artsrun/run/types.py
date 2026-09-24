@@ -50,6 +50,7 @@ class Cell:
     # The core block one rank was granted; a reference's realised geometry is
     # judged against it.
     cpu_width: int | None = None
+    cxl: bool = False
 
     @property
     def key(self) -> str:

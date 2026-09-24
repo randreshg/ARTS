@@ -58,3 +58,6 @@ third_party/ocrPNNL/
 # uv's project lockfile — artsrun installs via requirements.txt / editable
 # pip, so a stray `uv run` must not leave a lock behind as tracked noise
 uv.lock
+
+# Test-sweep logs (script/test_excl_purge_crete.py)
+results/

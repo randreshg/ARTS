@@ -7,11 +7,13 @@ case is a full sweep and the interesting cases are subtractions from it.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import (
-    Button, Footer, Header, RichLog, Select, TabbedContent, TabPane,
+    Button, Footer, Header, Input, RichLog, Select, Switch, TabbedContent, TabPane,
 )
 
 from artsrun import store
@@ -154,6 +156,12 @@ class ArtsRunApp(App):
         entries = plane_panel.selected()
         apps = bench_panel.selected()
         nodes = profile_panel.node_counts()
+        cxl = self.query_one("#run-cxl", Switch).value
+
+        def path_input(name: str) -> str | None:
+            value = self.query_one(name, Input).value.strip()
+            return str(Path(value).expanduser().resolve()) if value else None
+
         if not entries or not apps or not nodes:
             if announce:
                 self.notify(f"select {', '.join(self._missing())}",
@@ -166,6 +174,10 @@ class ArtsRunApp(App):
             apps=apps,
             node_counts=sorted(nodes),
             repeats=profile_panel.profile.repeats,
+            build_dir=path_input("#run-build-dir"),
+            cxl=cxl,
+            cxl_rapid_include_dir=path_input("#run-cxl-rapid") if cxl else None,
+            cxl_lib_dir=path_input("#run-cxl-lib") if cxl else None,
         )
 
     def _refresh_size(self) -> None:
@@ -210,6 +222,11 @@ class ArtsRunApp(App):
     @on(Button.Pressed, "#dry-button")
     def _dry_pressed(self) -> None:
         self.action_dry_run()
+
+    @on(Switch.Changed, "#run-cxl")
+    def _cxl_changed(self, event: Switch.Changed) -> None:
+        self.query_one("#plane", PlanePanel).set_cxl_mode(event.value)
+        self._refresh_size()
 
     @on(Button.Pressed, "#stop-button")
     def _stop_pressed(self) -> None:

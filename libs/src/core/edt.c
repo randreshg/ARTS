@@ -519,15 +519,14 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
   }
   if (writes_slot) {
     edt_dep[slot].guid = data_guid;
-    void *ptr = NULL;
-#ifdef ARTS_USE_CXL
-    /* CXL GUID encodes the pointer directly — surface it on the dep slot so
-     * that the prep_dbs/release_dbs flush helpers see the right pointer. */
-    if (mode != DB_MODE_NULL && arts_guid_is_cxl(data_guid)) {
-      ptr = (void *)((struct arts_db_s *)arts_cxl_get_ptr(data_guid) + 1);
-    }
-#endif
-    edt_dep[slot].ptr = ptr;
+    /* The slot's pointer stays NULL here for EVERY storage kind, CXL
+     * included.  A satisfy says which block the slot names, not that the EDT
+     * may touch it; the acquire path fills ptr when the access has actually
+     * been granted.  Pre-filling it for a CXL block — which the frontier model
+     * did, since a CXL GUID addresses its payload directly — would let the
+     * resolution CAS in the coherence wake path find the slot already claimed
+     * and drop the grant's accounting on the floor. */
+    edt_dep[slot].ptr = NULL;
     edt_dep[slot].mode = mode;
   }
   /* Decrement readiness for both a real in-range slot and the no-slot

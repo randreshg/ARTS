@@ -26,7 +26,7 @@ from pathlib import Path
 from artsrun.model.plane import RuntimeKind
 from artsrun.model.profile import FluxSettings, Profile
 from artsrun.paths import scratch_dir
-from artsrun.run.command import build_command, build_env, render, with_post_verify
+from artsrun.run.command import build_command, build_env, cxl_wrap, render, with_post_verify
 from artsrun.run.markers import marker_path, read_marker
 from artsrun.run.types import Cell, CellResult, Status
 
@@ -178,7 +178,7 @@ def _launch(cell: Cell, profile: Profile) -> str:
     if cell.entry.kind is not RuntimeKind.ARTS and settings.pmi:
         prefix += ["-o", f"pmi={settings.pmi}"]
     prefix += list(settings.extra_run)
-    argv = with_post_verify([*prefix, *build_command(cell, profile)], cell)
+    argv = with_post_verify(cxl_wrap([*prefix, *build_command(cell, profile)], cell), cell)
     return render(argv)
 
 

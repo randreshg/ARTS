@@ -285,6 +285,9 @@ def run_cmd(
                               help="comma-separated node counts (default: profile)"),
     repeats: int = typer.Option(None, "--repeats"),
     build_dir: Path = typer.Option(None, "--build-dir"),
+    cxl: bool = typer.Option(False, "--cxl", help="run ARTS cells with real CXL support"),
+    cxl_rapid_include_dir: Path = typer.Option(None, "--cxl-rapid-include-dir"),
+    cxl_lib_dir: Path = typer.Option(None, "--cxl-lib-dir"),
     from_file: Path = typer.Option(None, "--from", help="replay a saved selection"),
     resume: str = typer.Option(None, "--resume", help="run id to continue"),
     retry_failed: bool = typer.Option(
@@ -303,6 +306,10 @@ def run_cmd(
     from artsrun.campaign import Campaign
 
     run_dir = None
+    if (resume or from_file) and (cxl or cxl_rapid_include_dir or cxl_lib_dir):
+        _fail("--resume/--from use the saved CXL selection; omit CXL options")
+    if not cxl and (cxl_rapid_include_dir or cxl_lib_dir):
+        _fail("--cxl-rapid-include-dir and --cxl-lib-dir require --cxl")
     if resume:
         # Continuing means continuing THAT campaign: its selection is what was
         # measured against, and its directory is where the halves meet.
@@ -323,7 +330,8 @@ def run_cmd(
             _fail("--profile is required unless --resume or --from names a run")
         plane, catalog, prof, bs = _load(profile, benchset)
         try:
-            keys = _split(entries) or plane.default_entries(prof.entries)
+            keys = _split(entries) or (
+                plane.cxl_entry_keys if cxl else plane.default_entries(prof.entries))
         except ValueError as exc:
             _fail(str(exc))
         unknown = [k for k in keys if k not in plane.entry_keys]
@@ -338,6 +346,9 @@ def run_cmd(
             node_counts=node_counts,
             repeats=repeats or prof.repeats,
             build_dir=str(build_dir) if build_dir else None,
+            cxl=cxl,
+            cxl_rapid_include_dir=str(cxl_rapid_include_dir.expanduser().resolve()) if cxl_rapid_include_dir else None,
+            cxl_lib_dir=str(cxl_lib_dir.expanduser().resolve()) if cxl_lib_dir else None,
         )
 
     try:
@@ -479,11 +490,11 @@ def _dry_run(campaign, selection: Selection) -> None:
 
                 line = _launch(cell, campaign.profile)
             else:
-                from artsrun.run.command import (build_command, render,
+                from artsrun.run.command import (build_command, cxl_wrap, render,
                                                  with_post_verify, with_timeout)
 
                 line = render(with_timeout(
-                    with_post_verify(build_command(cell, campaign.profile), cell),
+                    with_post_verify(cxl_wrap(build_command(cell, campaign.profile), cell), cell),
                     cell.timeout_s))
             console.print(f"  [dim]{kind} @{nodes}n[/dim] $ {line}")
 

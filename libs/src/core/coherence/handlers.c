@@ -45,6 +45,7 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
+#include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h" /* arts_regpool_free (orphaned landing) */
 #include "arts/ooo.h"
@@ -171,8 +172,56 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
    * full allocation.  A cache-only stub (which omits the home-arm fields)
    * is only ever installed on non-home ranks, so the home-field writes below
    * (arts_db_home_init / rw_holder) stay in bounds. */
-  assert((unsigned int)arts_guid_get_rank(db_guid) == arts_global_rank_id &&
-         "home-directory init must run on the GUID home rank");
+  assert(arts_db_home_rank(db_guid) == arts_global_rank_id &&
+         "home-directory init must run on the block's home rank");
+
+#ifdef ARTS_CXL_COHERENT
+  if ((arts_db_types_t)p->db_type == ARTS_DB_CXL) {
+    /* A CXL block's create message carries no payload obligation: the bytes
+     * were allocated by the creator directly in the shared window, and this
+     * rank already addresses them.  What the creator is telling us is the two
+     * things only it knows — that the block exists, and that it is holding it
+     * RW right now — so that a writer arriving from a third rank queues behind
+     * that hold instead of being granted alongside it.
+     *
+     * Nothing installs a buffer here, and no create-return credit goes back:
+     * a credit exists to let a write-through creator publish without an
+     * announce round, and a CXL release publishes nothing. */
+    arts_shared_ptr_t cxl_h = arts_route_table_lookup_db(db_guid);
+    struct arts_db_s *cxl_live = (struct arts_db_s *)arts_shared_get(cxl_h);
+    if (cxl_live != NULL) {
+      /* Already present — the only way that happens is a duplicate create for
+       * a labeled GUID, or a destroy/recreate.  Learn the size and leave the
+       * live directory alone. */
+      if (cxl_live->cache.db_size == 0) {
+        cxl_live->cache.db_size = db_size;
+      }
+      arts_shared_release(&cxl_h);
+      return;
+    }
+    arts_shared_release(&cxl_h);
+
+    struct arts_db_s *cxl_home = (struct arts_db_s *)arts_malloc_aligned(
+        sizeof(struct arts_db_s), ARTS_CACHE_LINE_SIZE);
+    memset(cxl_home, 0, sizeof(struct arts_db_s));
+    cxl_home->db_type = ARTS_DB_CXL;
+    /* HOME_RECV seeds the directory with the creator's RW hold (w = 1), which
+     * its release drives back to zero — the same accounting an ordinary
+     * remote-home create gets.  NO_ACQUIRE then idles both words, because no
+     * EDT will ever run that release. */
+    arts_db_cache_init(&cxl_home->cache, db_guid, db_size,
+                       ARTS_DB_INIT_HOME_RECV, creator_rank);
+    db_create_no_acquire_idle(cxl_home, no_acquire);
+    if (arts_route_table_install_if_absent(cxl_home, db_guid,
+                                           arts_global_rank_id,
+                                           /*used=*/true)) {
+      arts_ooo_drain_guid(db_guid);
+      return;
+    }
+    arts_db_free(cxl_home); /* lost the race — the winner is equivalent */
+    return;
+  }
+#endif /* ARTS_CXL_COHERENT */
 
   /* Race against stub_install or another path that already set up an
    * empty cache_s on this rank — coalesce by promoting the existing

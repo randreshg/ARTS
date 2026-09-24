@@ -121,6 +121,7 @@ def expand(
                             timeout_s=app.timeout_for(nodes) or profile.cell_timeout_s,
                             cfg=config_for(entry.kind, configs[nodes]),
                             cpu_width=profile.threads_per_node,
+                            cxl=selection.cxl,
                         )
                         if cell_cfg is not None and entry.kind is RuntimeKind.ARTS:
                             cell = replace(cell, cfg=cell_cfg(cell))

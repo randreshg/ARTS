@@ -185,7 +185,7 @@ option(ARTS_BUILD_BASELINES  "Build native OpenMP/MPI baseline implementations" 
 option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime" ON)
 option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime" ON)
 option(ARTS_BUILD_HPX        "Build HPX and the HPX benchmark apps" ON)
-option(ARTS_OFI_CXI          "Compile the libfabric cxi provider (HPE Slingshot) from the vendored Cassini/libcxi stack" ON)
+option(ARTS_OFI_CXI          "Compile the libfabric cxi provider (HPE Slingshot) from the vendored Cassini/libcxi stack" OFF)
 option(ARTS_BUILD_DOCS       "Build documentation (requires Doxygen + Sphinx)" OFF)
 
 # ── GPU / CUDA ─────────────────────────────────────────────────────────────
@@ -299,6 +299,9 @@ set(ARTS_CXL_RAPID_INCLUDE_DIR "" CACHE PATH
     "Path to Rapid API include directory (required when ARTS_USE_CXL=ON)")
 set(ARTS_CXL_LIB_DIR "" CACHE PATH
     "Path to arts_cxl_lib directory (required when ARTS_USE_CXL=ON)")
+option(ARTS_USE_FAKE_CXL_LIB
+    "Build and link the vendored fake CXL library (third_party/fake_arts_cxl_lib, a POSIX-shm emulation of the Rapid API) instead of a real one; overrides ARTS_CXL_RAPID_INCLUDE_DIR and ARTS_CXL_LIB_DIR"
+    OFF)
 
 # ── No-hint placement policies (runtime-wide) ───────────────────────────────
 # Select what the runtime does when the caller expresses no placement
@@ -549,6 +552,44 @@ if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND
 endif()
 add_compile_definitions(ARTS_DB_DEFAULT=${ARTS_DEFAULT_DB_KIND})
 
+# ── CXL shared memory x coherence protocol ─────────────────────────────────
+# A CXL datablock keeps its payload in the shared window for its whole life and
+# lets the protocol move only the PERMISSION to touch it.  That is the EXCL
+# family's shape and nobody else's: a validation family serves readers from
+# versioned copies and an invalidation family retires reader copies, but a CXL
+# block has exactly one copy and no rank owns it, so there is nothing to
+# version and nothing to retire.  Within EXCL it is specifically the PURGE
+# release policy: the holder hands the turn back at its own idle edge and the
+# home arbitrates every hand-over, which is what puts the writer's flush before
+# the next reader's invalidate.  RETAIN's answer — the holder keeps the turn
+# until recalled, and the payload migrates owner to owner — has no meaning for
+# a payload that never moves.
+if(ARTS_USE_CXL)
+  if(NOT ARTS_COHERENCE_ARM STREQUAL "EXCL")
+    message(FATAL_ERROR
+            "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL "
+            "(got model ${ARTS_MEMORY_MODEL}, family "
+            "${ARTS_COHERENCE_PROTOCOL} -> arm ${ARTS_COHERENCE_ARM}). "
+            "CXL datablocks move permission, not payload: the home arbitrates "
+            "access to bytes that stay in the shared window, which is what "
+            "EXCL does and what the copy-based families (VAL, INV) and the "
+            "DB-WRF publish arm do not. "
+            "Configure with -DARTS_COHERENCE_PROTOCOL=EXCL "
+            "-DARTS_RELEASE_POLICY=PURGE.")
+  endif()
+  if(NOT ARTS_RELEASE_POLICY STREQUAL "PURGE")
+    message(FATAL_ERROR
+            "ARTS_USE_CXL=ON requires ARTS_RELEASE_POLICY=PURGE "
+            "(got ${ARTS_RELEASE_POLICY}). RETAIN keeps the grant at the "
+            "holder until the home recalls it and migrates the payload from "
+            "owner to owner; a CXL payload never moves, so there is nothing "
+            "to migrate and no reason for the home to lose sight of the turn. "
+            "Add -DARTS_RELEASE_POLICY=PURGE.")
+  endif()
+  message(STATUS "ARTS: CXL datablocks use EXCL x PURGE (permission-only grants, "
+                 "flush on release, invalidate on grant)")
+endif()
+
 # ── Mutually-exclusive sanitizer guard ─────────────────────────────────────
 if(ARTS_USE_SANS AND ARTS_USE_TSAN)
   message(FATAL_ERROR
@@ -709,6 +750,47 @@ if(ARTS_USE_CXL)
         message(STATUS "CXL: ${CMAKE_C_COMPILER_ID} not supported, disabling")
     endif()
 endif()
+if(ARTS_USE_CXL AND ARTS_USE_FAKE_CXL_LIB)
+    # The fake library stands in for both the Rapid SDK (inc/ plus the stub
+    # rapid-config.cmake one level up) and arts_cxl_lib.  Plain variables
+    # shadow the cache entries, so switching the option off later restores
+    # whatever paths the cache holds instead of leaving these behind.
+    set(_fake_cxl_src "${PROJECT_SOURCE_DIR}/third_party/fake_arts_cxl_lib")
+    foreach(_var ARTS_CXL_RAPID_INCLUDE_DIR ARTS_CXL_LIB_DIR)
+        if(${_var})
+            message(WARNING "ARTS_USE_FAKE_CXL_LIB=ON ignores ${_var}=${${_var}}")
+        endif()
+    endforeach()
+    set(ARTS_CXL_RAPID_INCLUDE_DIR "${_fake_cxl_src}/inc")
+    set(ARTS_CXL_LIB_DIR "${_fake_cxl_src}")
+
+    # Built at configure time because the checks below need the .so to exist.
+    # The build tree lives under this build directory rather than inside the
+    # submodule, so the submodule stays clean and build directories with
+    # different compilers do not share one library.  Re-running the build on
+    # every configure is a no-op when nothing changed and picks up edits to
+    # the fake library when something did.
+    include(${PROJECT_SOURCE_DIR}/cmake/ArtsSubmodule.cmake)
+    arts_init_submodule(third_party/fake_arts_cxl_lib CMakeLists.txt)
+    set(_fake_cxl_build "${CMAKE_BINARY_DIR}/third_party/fake_arts_cxl_lib-build")
+    message(STATUS "Building vendored fake CXL library")
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} -S ${_fake_cxl_src} -B ${_fake_cxl_build}
+            -G ${CMAKE_GENERATOR}
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        RESULT_VARIABLE _rc)
+    if(NOT _rc EQUAL 0)
+        message(FATAL_ERROR "Failed to configure the fake CXL library")
+    endif()
+    execute_process(
+        COMMAND ${CMAKE_COMMAND} --build ${_fake_cxl_build} --target arts_cxl_lib
+        RESULT_VARIABLE _rc)
+    if(NOT _rc EQUAL 0)
+        message(FATAL_ERROR "Failed to build the fake CXL library")
+    endif()
+    set(ARTS_CXL_LIB_PATH "${_fake_cxl_build}/src/libarts_cxl_lib.so")
+endif()
 if(ARTS_USE_CXL)
     # Validate required paths
     if(NOT ARTS_CXL_RAPID_INCLUDE_DIR)
@@ -722,8 +804,10 @@ if(ARTS_USE_CXL)
             "  -DARTS_CXL_LIB_DIR=/path/to/arts_cxl_lib")
     endif()
 
-    # Derive library and include paths
-    set(ARTS_CXL_LIB_PATH "${ARTS_CXL_LIB_DIR}/build/src/libarts_cxl_lib.so")
+    # Derive library and include paths (the fake library sets its own above)
+    if(NOT ARTS_USE_FAKE_CXL_LIB)
+        set(ARTS_CXL_LIB_PATH "${ARTS_CXL_LIB_DIR}/build/src/libarts_cxl_lib.so")
+    endif()
     set(ARTS_CXL_INCLUDE_DIR "${ARTS_CXL_LIB_DIR}/inc")
 
     # Verify paths exist
@@ -758,6 +842,15 @@ if(ARTS_USE_CXL)
         IMPORTED_LOCATION "${ARTS_CXL_LIB_PATH}"
         INTERFACE_INCLUDE_DIRECTORIES "${ARTS_CXL_INCLUDE_DIR};${ARTS_CXL_RAPID_INCLUDE_DIR}"
     )
+
+    # The ARTS_USE_CXL definition is directory-wide (above), so anything that
+    # includes an ARTS internal header ends up including <MemOps.h> — including
+    # the whitebox tests, which compile runtime TUs directly and do not link
+    # the arts targets that carry the CXL include path.  Make the header path
+    # as global as the define that demands it; keeping them out of step is what
+    # makes an ARTS_USE_CXL build fail the moment tests are switched on.
+    include_directories(SYSTEM
+        "${ARTS_CXL_INCLUDE_DIR}" "${ARTS_CXL_RAPID_INCLUDE_DIR}")
 
     find_package(rapid CONFIG REQUIRED
         PATHS "${ARTS_CXL_RAPID_INCLUDE_DIR}/..")
@@ -794,7 +887,10 @@ set(COUNTER_CONFIG_FILE "${ARTS_COUNTER_CONFIG}")
 add_subdirectory(libs)
 
 # Optional components
-if(ARTS_BUILD_EXAMPLES)
+# CXL examples (cholesky/lulesh/smithwaterman/cxl_stream) have been modernized
+# to the current API; include examples/ whenever CXL is enabled even though the
+# general ARTS_BUILD_EXAMPLES flag is deprecated.
+if(ARTS_BUILD_EXAMPLES OR ARTS_USE_CXL)
     add_subdirectory(examples)
 endif()
 

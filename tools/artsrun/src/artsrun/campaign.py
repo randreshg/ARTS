@@ -111,7 +111,7 @@ class Campaign:
     def build_plan(self, *, on_line=None, bootstrap: bool = False) -> BuildPlan:
         prefix = self._build_prefix()
         ensure_build_dir(self.build_dir, bootstrap=bootstrap, on_line=on_line,
-                         prefix=prefix)
+                         prefix=prefix, selection=self.selection)
         self.counters_cfg = None
         if self.counterset:
             # A selected set constrains the tree even when it turns nothing
