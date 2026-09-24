@@ -610,10 +610,17 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== arts_db_create_install_home_buffer ================================
- * EXCL home init: install the zero-init home buffer at creation time so the
- * home always holds the canonical backing store.  The first GRANT carries
- * this data (empty / zero at first) to the requester; the requester's first
- * RW release sends back the updated contents via EXCL_RELEASE publish. */
+ * EXCL home init: install the zero-init buffer at creation time.
+ *
+ * Where the home is the canonical backing store, this is that store: the first
+ * GRANT carries its data (empty / zero at first) to the requester, and the
+ * requester's first RW release sends the updated contents back via
+ * EXCL_RELEASE publish.
+ *
+ * Where the block's bytes live in a store of their own, this buffer is a
+ * WORKING COPY like every other: the creator's own turn purges it into the
+ * store at its zero edge, and any later turn here fetches over it before
+ * admitting anyone — nothing ever reads it as the canonical copy. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size) {
   if (lock_is_cxl(cache)) {
@@ -1040,6 +1047,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   arts_db_access_mode_t mode = depv[slot].mode;
 
+#ifndef ARTS_FAM
   if (!lock_is_cxl(cache) &&
       arts_db_home_rank(cache->db_guid) == arts_global_rank_id) {
     /* First use of a block whose create took no hold: its storage was left
@@ -1050,6 +1058,12 @@ void arts_handler_db_acquire(void *item, void *args) {
      * own before it asks. */
     (void)arts_db_buf_ensure(cache, cache->db_size);
   }
+#else
+  /* The home materializes nothing here: it is an ordinary participant, and a
+   * working copy is placed by the fetch that fills it under its claim — this
+   * arm's single materialization point.  An acquire that placed one before the
+   * grant would offer an empty copy to whoever the grant then admits. */
+#endif /* ARTS_FAM */
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_ACQ_RW : CACHE_OP_ACQ_RO;
   uint32_t act;
