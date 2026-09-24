@@ -1648,8 +1648,8 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # it gives its store up with the block instead of outliving it.  Needs a
     # rank that is not the block's home.
     register_fam_multinode_test(fam_creator_roster TIMEOUT 60)
-    # A block nobody has written still has ONE store: every rank's first read
-    # of it agrees, and one write turn then defines what all of them see.
+    # A block nobody has written is acquirable by a first user on every rank,
+    # and one write turn then defines what all of them see.
     register_fam_multinode_test(fam_no_acquire_first_use TIMEOUT 60)
     # One label names one block and therefore one store, with every rank
     # creating the label and the losing creators allocating nothing.  The

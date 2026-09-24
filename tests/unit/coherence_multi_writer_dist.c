@@ -48,8 +48,9 @@
 ///
 /// Structure (per iteration):
 ///   - N_DBS DBs homed round-robin across ranks 1..(nnodes-1) (never rank 0,
-///     so every access from a rank-0 worker is a cross-rank acquire).  Each DB
-///     is zero-initialized at create.
+///     so every access from a rank-0 worker is a cross-rank acquire).  The
+///     creator writes each counter's starting value, 0, through its own hold:
+///     a new DB's contents are unspecified until a holder writes them.
 ///   - N_WORKERS RW-worker EDTs fanned out across all ranks round-robin; each
 ///     acquires one DB in RW mode and atomically increments the counter.
 ///   - After all workers complete (finish scope), a verify EDT on rank 0
@@ -77,7 +78,7 @@
 /// Workers assigned to each DB per iteration (round-robin spread).
 #define WORKERS_PER_DB (N_WORKERS / N_DBS) /* integer; N_WORKERS%N_DBS==0 */
 
-/// Expected final counter value per DB: zero-initialized at DB create, then
+/// Expected final counter value per DB: set to 0 by its creator, then
 /// WORKERS_PER_DB workers each atomically increment by 1.
 #define EXPECTED_FINAL WORKERS_PER_DB
 
@@ -186,9 +187,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       unsigned int home = (unsigned int)(1 + (i % (int)(nnodes - 1)));
       dbs[i] = arts_db_create(&raw, sizeof(int), ARTS_DB, ARTS_DB_PROP_NONE,
                               &(arts_db_hint_t){.rank = home});
-      /* DB is zero-initialized by arts_db_create_install_home_buffer; workers
-       * then atomically increment, so the expected final value is the worker
-       * count alone (no separate init writer needed). */
+      /* The starting value is the program's: the creator writes it through
+       * the hold its create took, which is released before any worker's RW
+       * acquire is granted, so the expected final value is the worker count
+       * alone. */
+      if (raw == NULL) {
+        arts_printf("FAIL: create of DB %d returned no pointer\n", i);
+        arts_abort(1);
+        return;
+      }
+      *(int *)raw = 0;
     }
 
     /* Fan out N_WORKERS RW workers across all ranks round-robin.  Each

@@ -334,13 +334,8 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
      * on the residency that keeps no copy.  After the cache's init, which is
      * what zeroes the field, and before both.  Inside the coherent branch on
      * purpose — a kind that keeps no coherence state has no funnel to read a
-     * slot and no teardown to free one.
-     *
-     * A create that acquires hands its caller an uninitialized payload, so
-     * its store owes no value; a create that does not hands out no pointer,
-     * and its block's first acquire reads zero, which only this call can
-     * establish. */
-    (void)arts_db_fam_slot_create(cache, /*zero_first=*/!acquires);
+     * slot and no teardown to free one. */
+    (void)arts_db_fam_slot_create(cache);
 #endif
     /* Install a fresh buffer so subsequent coherent acquires
      * (acquire_local / mark_edt_ready_by_guid) find a non-NULL
@@ -693,7 +688,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
         /* Still private: the stub is not installed and *addr is unwritten, so
          * the slot is in place before anything can be admitted to the block,
          * handed a pointer into it, or adopt it as this block's descriptor. */
-        (void)arts_db_fam_slot_create(creator_cache, /*zero_first=*/false);
+        (void)arts_db_fam_slot_create(creator_cache);
 #endif
         if (len > 0) {
           arts_db_buf_install(creator_cache, /*new_version=*/1,
@@ -743,7 +738,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
               if (cache->db_size == 0) {
                 cache->db_size = size;
               }
-              (void)arts_db_fam_slot_create(cache, /*zero_first=*/false);
+              (void)arts_db_fam_slot_create(cache);
 #endif
               if (size > 0) {
                 (void)arts_db_buf_ensure(cache, size);

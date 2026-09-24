@@ -184,26 +184,12 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
   return false;
 }
 
-/* A fresh store's bytes carry no promised value.  A create that takes a write
- * turn owes nothing better, since the payload it hands its caller is
- * uninitialized by contract; a create that takes none hands out no pointer,
- * and the first acquire of its block reads zero, so `zero_first` establishes
- * that value here.  It runs on the address the allocation returned, BEFORE
- * the cache names it: a store is served to whoever asks for the block, so the
- * value it promises has to be in it by the time it can be named.  No hold is
- * registered for that write -- a create that takes no write turn has none to
- * register it under -- and a producer flush over an unheld range is otherwise
- * the same call every write turn's purge makes. */
-bool arts_db_fam_slot_create(struct arts_db_cache_s *cache, bool zero_first) {
+bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
   if (cache == NULL || cache->db_size == 0 ||
       __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE) != 0) {
     return false;
   }
   void *slot = arts_fam_alloc((size_t)cache->db_size);
-  if (zero_first) {
-    memset(slot, 0, (size_t)cache->db_size);
-    arts_fam_flush_producer(slot, (size_t)cache->db_size);
-  }
   if (!arts_db_fam_slot_record(cache, (uint64_t)(uintptr_t)slot)) {
     arts_fam_free(slot);
     return false;

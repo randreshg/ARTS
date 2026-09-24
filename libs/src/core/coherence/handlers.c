@@ -250,16 +250,7 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
     if (p->fam_addr != 0) {
       (void)arts_db_fam_slot_record(cache, p->fam_addr);
     } else {
-      /* An announce carrying no address is a creator with no write turn of
-       * its own coming, so nothing will write the store before a first
-       * acquirer reads it and the declared-zero contract has to be
-       * established at the mint.  This cache is already PUBLISHED, so the
-       * zero cannot run after the store is named: a grant is served out of
-       * the store the cache names, and a grantee could be fetching the
-       * granule while a zero that followed the record was still writing it.
-       * The mint zeroes before it records, so the store is never named
-       * before it carries the value it promises. */
-      (void)arts_db_fam_slot_create(cache, /*zero_first=*/no_acquire);
+      (void)arts_db_fam_slot_create(cache);
     }
 #endif
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
@@ -366,12 +357,7 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   if (p->fam_addr != 0) {
     (void)arts_db_fam_slot_record(&stub->cache, p->fam_addr);
   } else {
-    /* An announce carrying no address is a creator with no write turn of its
-     * own coming, so the mint has to establish the declared-zero contract
-     * itself: nothing else will write the store before a first acquirer
-     * reads it. */
-    stub_slot_minted =
-        arts_db_fam_slot_create(&stub->cache, /*zero_first=*/no_acquire);
+    stub_slot_minted = arts_db_fam_slot_create(&stub->cache);
   }
   /* No re-check here: the route install below publishes the object, so a
    * destroy that can scan the roster at all runs after this set. */
@@ -630,10 +616,10 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
   /* No PUT consumed the advertised landing.  Two readings, told apart by the
    * version the reply carries, and the landing's fate differs:
    *   - version 0 (ARTS_GRANT_VERSION_NONE, "the server holds nothing"):
-   *     nobody has written the block, its value IS zero, and this rank is
-   *     entitled to storage of the declared size whatever its contents —
-   *     adopt the landing it already allocated, stamped 1 rather than the 0
-   *     that means "nothing";
+   *     nobody has written the block, so there are no bytes to fetch, and
+   *     this rank is entitled to storage of the declared size whatever its
+   *     contents — adopt the landing it already allocated, stamped 1 rather
+   *     than the 0 that means "nothing";
    *   - any other version is the server's dedup verdict (known_v >= cur_v)
    *     or a same-rank inline serve: bytes at that version reached this rank
    *     (the ledger credits a rank only where a serve PUT them or it

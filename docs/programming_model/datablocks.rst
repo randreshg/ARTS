@@ -146,6 +146,10 @@ Pass ``ARTS_DB_PROP_NO_ACQUIRE`` in ``flags`` to skip the creator's
 automatic RW acquire (``*addr`` is then set to ``NULL`` and the first
 consumer EDT performs a normal acquire).
 
+With or without the flag, a new DB's payload is uninitialized: its contents
+are unspecified until a holder writes them, so a program must not rely on
+what an acquire of a never-written DB reads.
+
 Accessing Data
 --------------
 

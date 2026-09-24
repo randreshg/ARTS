@@ -6,8 +6,8 @@
  * storage is allocated by whichever thread first acquires it.  Two
  * properties have to survive that deferral, and this test pins both:
  *
- *   - a block nobody has written reads as ZERO, for its whole declared
- *     extent, on the very first acquire;
+ *   - the very first acquire of the block is served with storage, although
+ *     nobody has written it and its contents are therefore unspecified;
  *   - a write to it is then seen by an event-ordered later reader, so the
  *     deferred allocation produced the block's ONE storage rather than a
  *     private copy per acquirer.
@@ -76,7 +76,8 @@ void write_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* depv[0] = the block, RO.  The block's first user: it must read as zero. */
+/* depv[0] = the block, RO.  The block's first user: it gets storage, whose
+ * contents nothing has defined yet. */
 void first_read_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -88,16 +89,6 @@ void first_read_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     fail("RO acquire of a datablock created without an acquire returned no "
          "storage");
     return;
-  }
-  const uint64_t *p = (const uint64_t *)depv[0].ptr;
-  for (unsigned i = 0; i < DB_ELEMS; i++) {
-    if (p[i] != 0) {
-      arts_printf("FAIL: element %u of a never-written datablock reads %llu\n",
-                  i, (unsigned long long)p[i]);
-      arts_test_fail();
-      arts_shutdown();
-      return;
-    }
   }
 
   /* A writer somewhere else again where the run is wide enough, and the

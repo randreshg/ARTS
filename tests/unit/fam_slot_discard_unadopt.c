@@ -64,7 +64,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      ARTS_DB_INIT_STUB, rank);
   struct arts_db_cache_s *cache = &g_db.cache;
 
-  if (!arts_db_fam_slot_create(cache, /*zero_first=*/false)) {
+  if (!arts_db_fam_slot_create(cache)) {
     fail("a sized block with no store was given none");
     arts_shutdown();
     return;
@@ -90,7 +90,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * is says nothing — a store handed back is one the next allocation may be
    * handed straight back out — so what is asserted is that the block has
    * storage and that it really is storage. */
-  if (!arts_db_fam_slot_create(cache, /*zero_first=*/false)) {
+  if (!arts_db_fam_slot_create(cache)) {
     fail("a block that gave its store back was given no other");
     arts_shutdown();
     return;

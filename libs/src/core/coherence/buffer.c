@@ -373,11 +373,13 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
   arts_db_buf_release(&h);
   return b;
 #else
-  /* data_payload == NULL ⇒ initial install at create-time: the payload must
-   * read as zero (deterministic state).  Take the zeroed allocation path so
-   * only a recycled buffer is actually cleared — fresh pool memory is
-   * kernel-zeroed already, and skipping the redundant full-payload memset
-   * keeps the touch (and its page faults) off the creator's critical path. */
+  /* data_payload == NULL ⇒ initial install at create-time.  A fresh
+   * payload's contents are unspecified to the program; zeroing here is an
+   * implementation choice that keeps a recycled buffer from carrying an
+   * earlier block's bytes.  Take the zeroed allocation path so only a
+   * recycled buffer is actually cleared — fresh pool memory is kernel-zeroed
+   * already, and skipping the redundant full-payload memset keeps the touch
+   * (and its page faults) off the creator's critical path. */
   struct arts_db_buffer_s *new_buf =
       (data_payload == NULL && db_size > 0)
           ? arts_db_buf_alloc_zeroed(cache, db_size)
@@ -511,9 +513,8 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
   }
   landing->owner_cache = cache;
   landing->version = version;
-  /* The landing may be recycled memory, so its bytes are arbitrary.  Every
-   * other path that materializes a never-written block hands out zeroes; match
-   * it, so "contents undefined" cannot mean "another block's contents". */
+  /* The landing may be recycled memory, so its bytes are arbitrary.  Clear
+   * them, so "contents undefined" cannot mean "another block's contents". */
   memset(landing->data, 0, (size_t)db_size);
   arts_shared_ptr_t cb = arts_shared_make(landing, buffer_deleter);
   landing->cb = cb;

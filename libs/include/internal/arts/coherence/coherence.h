@@ -370,17 +370,9 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
  * db_type == ARTS_DB — a kind that keeps no coherence state has no funnel to
  * read the slot and no teardown to free it.
  *
- * A create that takes a write turn hands its caller a payload the public
- * contract calls UNINITIALIZED, so its store owes no value and is not written
- * here.  A create that takes no write turn hands out no pointer, and the
- * first acquire of its block reads zero for the whole declared extent, so
- * that store must already be zero when this call returns: that is what
- * `zero_first` asks for, and it is done on the allocation's own address
- * BEFORE the cache names it, so the store is never nameable before it carries
- * the value it promises.  A slot this rank only RECORDED
- * (arts_db_fam_slot_record) is bytes another creator is answerable for and is
- * never zeroed here. */
-bool arts_db_fam_slot_create(struct arts_db_cache_s *cache, bool zero_first);
+ * The store is not written: a fresh store's contents are unspecified until a
+ * holder writes them. */
+bool arts_db_fam_slot_create(struct arts_db_cache_s *cache);
 /* Drop a slot this rank allocated for a create that turned out to create
  * nothing.  Only the allocating rank may call it — arts_fam_free requires
  * the caller's own slice and is fatal otherwise, which is the check.  The
