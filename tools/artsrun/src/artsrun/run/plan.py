@@ -56,7 +56,37 @@ def fam_ineligible(
     if fam_backend == "SHM" and profile.launcher is not Launcher.LOCAL:
         return ("the SHM backend's pool is one machine's shared "
                 "mapping, so it runs only under launcher: local")
+    if fam_backend == "DEVICE" and profile.fam_strict:
+        return ("fam_strict is an oracle for a second coherency domain, "
+                "which the DEVICE backend refuses at config load")
     return None
+
+
+def reference_ineligible(entry: SelectionEntry, profile: Profile) -> str | None:
+    """Why a reference cannot be placed one thread per core on this host.
+
+    Every reference rank runs inside an envelope of absolute CPU ids — the
+    block r*width..(r+1)*width-1 for colocated rank r — that must consist of
+    per-core first SMT threads.  Where the host numbers a core's threads
+    adjacently, no block of width >= 2 does, so the cells are dropped rather
+    than failed by the envelope or run on different hardware from the other
+    entries.  xsocr has a second reason of its own: it pins thread j of rank
+    r to the absolute id j + width*r, replacing the mask it inherited.
+    Local only: a remote rank's host is not the one whose topology is
+    visible here, and the envelope still checks it there.
+    """
+    from artsrun.model.selection import siblings_interleaved
+
+    if not entry.is_reference:
+        return None
+    if profile.launcher is not Launcher.LOCAL or profile.threads_per_node < 2:
+        return None
+    if not siblings_interleaved():
+        return None
+    return ("the reference envelope binds absolute cpu id blocks, which "
+            "cannot be one thread per core on a host whose numbering "
+            "interleaves SMT siblings; its cells run on a host that numbers "
+            "every core's first thread first")
 
 
 def _ineligible(
@@ -79,7 +109,8 @@ def _ineligible(
         return ("no HPX program: an OCR-origin row (the HPX entry runs the "
                 "HPX-origin section)")
     if profile is not None:
-        why = fam_ineligible(entry, profile, fam_backend)
+        why = (fam_ineligible(entry, profile, fam_backend)
+               or reference_ineligible(entry, profile))
         if why:
             return why
     absent = _missing_inputs(app)

@@ -25,6 +25,23 @@ from artsrun.run.plan import expand
 ROW = "fib_hpx"
 
 
+@pytest.fixture(autouse=True)
+def _first_threads_first(tmp_path, monkeypatch):
+    """A host that numbers every core's first SMT thread first.
+
+    Whether a reference can be placed on the host running the suite is a
+    property of that host, not of the HPX surface under test here.
+    """
+    from artsrun.model import selection
+
+    root = tmp_path / "cpu"
+    for cpu in range(64):
+        d = root / f"cpu{cpu}" / "topology"
+        d.mkdir(parents=True)
+        (d / "thread_siblings_list").write_text(f"{cpu % 32},{cpu % 32 + 32}\n")
+    monkeypatch.setattr(selection, "SYSFS_CPU_ROOT", root)
+
+
 def _roster(*names: str) -> Benchset:
     """The rows named outright, the way a roster names them.
 

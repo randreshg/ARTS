@@ -281,10 +281,16 @@ def test_local_profile_rejects_ports():
         Profile.model_validate(_local(ports=[25000]))
 
 
-def test_the_local_fam_smoke_profile_loads_and_fits_the_host():
+def test_the_local_fam_smoke_profile_loads_and_fits_the_host(monkeypatch,
+                                                              tmp_path):
     from artsrun import store
     from artsrun.model.profile import Launcher
 
+    # The rule is judged against a half-split eight-core topology, not the
+    # machine the suite happens to run on.
+    _use_topology(monkeypatch, tmp_path,
+                  {c: f"{c},{c + 8}" for c in range(8)}
+                  | {c + 8: f"{c},{c + 8}" for c in range(8)})
     plane = load_plane()
     profile = store.load_profile("local-fam")
     assert profile.launcher is Launcher.LOCAL
@@ -952,9 +958,13 @@ def test_arts_only_probe_excludes_every_reference():
     assert _ineligible(_Entry(RuntimeKind.ARTS), _App(), 1) is None
 
 
-def test_a_fam_entry_needs_a_matching_backend_and_launcher():
+def test_a_fam_entry_needs_a_matching_backend_and_launcher(tmp_path, monkeypatch):
     from artsrun.model.profile import Launcher, Profile, SlurmSettings
     from artsrun.run.plan import _ineligible
+
+    # the reference's own placement rule reads the host topology; pin one
+    # under which it admits the reference, so only the fam rule is observed
+    _use_topology(monkeypatch, tmp_path, HALF_SPLIT)
 
     plane = load_plane()
     catalog = load_catalog()
@@ -979,6 +989,13 @@ def test_a_fam_entry_needs_a_matching_backend_and_launcher():
     # shape that takes the arena directly
     assert _ineligible(direct, app, 1, local, "DEVICE") is None
     assert _ineligible(direct, app, 1, remote, "DEVICE") is None
+    # the strict oracle is refused by the device backend at config load
+    strict = local.model_copy(update={"fam_strict": True})
+    for entry in (staged, direct):
+        assert "fam_strict" in _ineligible(entry, app, 1, strict, "DEVICE")
+    assert _ineligible(staged, app, 1, strict, "SHM") is None
+    assert _ineligible(plane.entry("arts_excl_purge"), app, 1, strict,
+                       "DEVICE") is None
     # no non-fam entry is touched, on any tree
     assert _ineligible(plane.entry("arts_val_wb"), app, 1, remote, None) is None
     assert _ineligible(plane.entry("xsocr"), app, 1, local, None) is None
@@ -1062,3 +1079,117 @@ def test_the_two_section_loader_rejects_a_name_in_both_sections():
     assert set(merge_sections([(ocr, Origin.OCR)], "/repo")) == {"twin"}
     with pytest.raises(ValueError, match="named in two catalog sections"):
         merge_sections([(ocr, Origin.OCR), (hpx, Origin.HPX)], "/repo")
+
+
+# --- reference envelopes of absolute cpu ids vs the host's SMT numbering ----
+# Two numbering schemes of one 4-core, 2-thread host: sibling-adjacent puts a
+# core's threads next to each other (0-1, 2-3, ...), half-split numbers every
+# core's first thread before any second one (0,4  1,5  ...).
+
+SIBLING_ADJACENT = {c: f"{c - c % 2}-{c - c % 2 + 1}" for c in range(8)}
+HALF_SPLIT = {c: f"{c % 4},{c % 4 + 4}" for c in range(8)}
+
+
+def _cpu_topology(root, siblings: dict[int, str]):
+    for cpu, lst in siblings.items():
+        d = root / f"cpu{cpu}" / "topology"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "thread_siblings_list").write_text(lst + "\n")
+    return root
+
+
+def _use_topology(monkeypatch, tmp_path, siblings):
+    from artsrun.model import selection
+
+    root = _cpu_topology(tmp_path / f"cpu-{len(siblings)}-{id(siblings)}",
+                         siblings)
+    monkeypatch.setattr(selection, "SYSFS_CPU_ROOT", root, raising=False)
+
+
+def _reference_fixture():
+    from artsrun.model.profile import Launcher, Profile, SlurmSettings
+
+    plane = load_plane()
+    bs = Benchset(name="t", apps={})
+    app = {a.key: a for a in bs.resolve(load_catalog())}["nqueens:base"]
+    local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
+                    workers=2, progress=1)
+    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
+                     workers=2, progress=1, ports=[25000],
+                     slurm=SlurmSettings())
+    return plane, app, local, remote
+
+
+def _hpx_row():
+    bs = Benchset(name="t", apps={})
+    return {a.key: a for a in bs.resolve(load_catalog())}["stencil1d_hpx:base"]
+
+
+def test_first_sibling_cpus_reads_both_numbering_schemes(tmp_path, monkeypatch):
+    from artsrun.model import selection
+
+    _use_topology(monkeypatch, tmp_path, SIBLING_ADJACENT)
+    assert selection.first_sibling_cpus() == [0, 2, 4, 6]
+    assert selection.siblings_interleaved() is True
+    assert selection._first_sibling_cpu_count() == 4
+
+    _use_topology(monkeypatch, tmp_path, HALF_SPLIT)
+    assert selection.first_sibling_cpus() == [0, 1, 2, 3]
+    assert selection.siblings_interleaved() is False
+    assert selection._first_sibling_cpu_count() == 4
+
+    monkeypatch.setattr(selection, "SYSFS_CPU_ROOT", tmp_path / "absent")
+    assert selection.first_sibling_cpus() is None
+    assert selection.siblings_interleaved() is False
+
+
+def test_a_reference_is_skipped_where_siblings_interleave(
+        tmp_path, monkeypatch):
+    from artsrun.run.plan import _ineligible
+
+    plane, app, local, remote = _reference_fixture()
+    hpx_app = _hpx_row()
+    _use_topology(monkeypatch, tmp_path, SIBLING_ADJACENT)
+
+    for key, row in (("xsocr", app), ("ocrvx", app), ("hpx", hpx_app)):
+        for nodes in (1, 2):
+            why = _ineligible(plane.entry(key), row, nodes, local, None)
+            assert why is not None and "absolute cpu id" in why, key
+        # a remote rank owns a host whose numbering this host cannot see
+        assert _ineligible(plane.entry(key), row, 1, remote, None) is None
+    # the runtime under test pins itself from the topology and is untouched
+    assert _ineligible(plane.entry("arts_excl_purge"), app, 2, local, None) is None
+
+
+def test_a_reference_stays_eligible_on_a_half_split_host(
+        tmp_path, monkeypatch):
+    from artsrun.run.plan import _ineligible
+
+    plane, app, local, _ = _reference_fixture()
+    hpx_app = _hpx_row()
+    _use_topology(monkeypatch, tmp_path, HALF_SPLIT)
+    for key, row in (("xsocr", app), ("ocrvx", app), ("hpx", hpx_app)):
+        for nodes in (1, 2):
+            assert _ineligible(plane.entry(key), row, nodes, local, None) is None
+
+
+def test_the_build_plan_skips_the_reference_the_expansion_skips(
+        tmp_path, monkeypatch):
+    from artsrun.build import plan_targets
+    from artsrun.model.benchset import BenchsetEntry
+    from artsrun.model.selection import Selection
+
+    plane, _, local, _ = _reference_fixture()
+    sel = Selection(profile="p", benchset="t",
+                    entries=["arts_excl_purge", "xsocr"],
+                    apps={"nqueens": [Version.BASE]}, node_counts=[1, 2],
+                    repeats=1)
+    bs = Benchset(name="t", apps={"nqueens": BenchsetEntry()})
+
+    _use_topology(monkeypatch, tmp_path, SIBLING_ADJACENT)
+    adjacent = plan_targets(sel, plane, load_catalog(), bs, tmp_path, local)
+    assert adjacent.targets == ["nqueens_arts_ocr_excl_purge"]
+
+    _use_topology(monkeypatch, tmp_path, HALF_SPLIT)
+    split = plan_targets(sel, plane, load_catalog(), bs, tmp_path, local)
+    assert "nqueens_xsocr" in split.targets

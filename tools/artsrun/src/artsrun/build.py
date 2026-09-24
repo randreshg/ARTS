@@ -390,10 +390,10 @@ def plan_targets(
     benchset does not enable runs no cell, so it needs nothing built, and a
     row's own exclusions (ARTS-only, no ocr-vx, outside DB-WRF) hold for the
     build exactly as they hold for the run — as does an entry this tree has
-    no backend for, which is reported with its reason rather than as a
-    target that is missing.
+    no backend for or a reference this host cannot place, each reported
+    with its reason rather than as a target that is missing.
     """
-    from artsrun.run.plan import fam_ineligible
+    from artsrun.run.plan import fam_ineligible, reference_ineligible
 
     entries = [plane.entry(k) for k in selection.entries]
     resolved = {a.key: a for a in benchset.resolve(catalog)}
@@ -405,8 +405,9 @@ def plan_targets(
             if app is None:
                 continue
             for entry in entries:
-                if profile is not None and fam_ineligible(
-                        entry, profile, fam_backend):
+                if profile is not None and (
+                        fam_ineligible(entry, profile, fam_backend)
+                        or reference_ineligible(entry, profile)):
                     continue
                 if entry.kind is RuntimeKind.HPX:
                     # The HPX program is the row's _hpx target; nothing is

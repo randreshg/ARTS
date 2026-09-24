@@ -18,20 +18,22 @@ from artsrun.model.plane import Plane, modern_entry_key
 from artsrun.model.profile import Launcher, Profile
 
 
-def _first_sibling_cpu_count() -> int | None:
-    """How many per-core first SMT threads this host exposes.
+SYSFS_CPU_ROOT = Path("/sys/devices/system/cpu")
 
-    The envelope confines ranks to per-core first threads, so this — not the
-    logical CPU count — is the budget colocated local blocks must fit in.
-    None when the topology is unreadable; the envelope wrapper re-checks the
-    same property per cell either way.
+
+def first_sibling_cpus() -> list[int] | None:
+    """The per-core first SMT threads this host exposes, ascending.
+
+    A CPU is a first thread when it heads its own sibling list.  None when
+    the topology is unreadable; the envelope wrapper re-checks the property
+    per cell either way.
     """
-    root = Path("/sys/devices/system/cpu")
+    root = SYSFS_CPU_ROOT
     try:
         cpus = [p for p in root.iterdir() if re.fullmatch(r"cpu\d+", p.name)]
     except OSError:
         return None
-    count = 0
+    firsts: list[int] = []
     for p in cpus:
         f = p / "topology" / "thread_siblings_list"
         if not f.is_file():
@@ -41,8 +43,30 @@ def _first_sibling_cpu_count() -> int | None:
         except OSError:
             continue
         if first == p.name[3:]:
-            count += 1
-    return count or None
+            firsts.append(int(first))
+    return sorted(firsts) or None
+
+
+def siblings_interleaved() -> bool:
+    """Whether a core's second SMT thread is numbered before the last core's
+    first one, i.e. the first threads are not the prefix 0..cores-1.
+
+    A runtime that pins its threads to absolute CPU ids 0..width-1 lands one
+    thread per core only when they are.  False when the topology is
+    unreadable.
+    """
+    firsts = first_sibling_cpus()
+    return firsts is not None and firsts != list(range(len(firsts)))
+
+
+def _first_sibling_cpu_count() -> int | None:
+    """How many per-core first SMT threads this host exposes.
+
+    The envelope confines ranks to per-core first threads, so this — not the
+    logical CPU count — is the budget colocated local blocks must fit in.
+    """
+    firsts = first_sibling_cpus()
+    return len(firsts) if firsts else None
 
 
 class Selection(BaseModel):
