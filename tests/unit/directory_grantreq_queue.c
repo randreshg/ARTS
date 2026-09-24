@@ -332,6 +332,9 @@ bool arts_route_table_set_destroyed(arts_guid_t key) {
   (void)key;
   return false;
 }
+#ifdef ARTS_FAM
+void arts_db_fam_slot_release(struct arts_db_cache_s *cache) { (void)cache; }
+#endif
 #endif /* ARTS_PROTOCOL_EXCL */
 #endif
 

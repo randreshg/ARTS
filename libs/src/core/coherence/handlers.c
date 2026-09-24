@@ -170,6 +170,39 @@ static bool fam_slot_offer(struct arts_db_cache_s *cache, uint64_t addr) {
   return __atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
                                      __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
 }
+
+/* A creator that acquires caches the block from create without ever
+ * requesting a turn, so the destroy roster is the only thing that can tell it
+ * the block is gone and its store may be handed out again.  The roster is a
+ * home field, absent from a cache-only stub. */
+static void fam_roster_creator(struct arts_db_s *db,
+                               unsigned int creator_rank) {
+  if (db->home_initialized) {
+    (void)arts_rank_bitset_set(&db->cached_ranks, creator_rank);
+  }
+}
+
+/* The same, for a block whose route slot is ALREADY published: a bit set on a
+ * pinned object is not ordered against a destroy's scan of the roster, so it
+ * is re-checked against the route slot and the creator is told directly if the
+ * block is already gone.  The destroy fences between detaching the object and
+ * scanning; this fences between setting and looking up — so the two cannot
+ * both miss, and both telling the creator is harmless because the message is
+ * idempotent.  Reports what the re-check saw: true once the block is gone, so
+ * a caller still holding something of the block's can stop handing it over. */
+static bool fam_roster_creator_published(struct arts_db_s *db,
+                                         arts_guid_t db_guid,
+                                         unsigned int creator_rank) {
+  fam_roster_creator(db, creator_rank);
+  atomic_thread_fence(memory_order_seq_cst);
+  arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
+  bool gone = (arts_shared_get(h) == NULL);
+  arts_shared_release(&h);
+  if (gone && creator_rank != arts_global_rank_id) {
+    arts_send_db_cache_destroy(creator_rank, db_guid);
+  }
+  return gone;
+}
 #endif
 
 void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
@@ -287,6 +320,11 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * hold it — and the next hand-back would then be discharged from a word
      * the home had already taken possession of.  A block's holder is named
      * once, by the create that made it. */
+#ifdef ARTS_FAM
+    if (!no_acquire) {
+      (void)fam_roster_creator_published(db, db_guid, creator_rank);
+    }
+#endif
 #if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
     defined(ARTS_PROTOCOL_FLUSH)
     if (!no_acquire) {
@@ -362,6 +400,11 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   } else {
     stub_slot_minted = arts_db_fam_slot_create(&stub->cache);
   }
+  /* No re-check here: the route install below publishes the object, so a
+   * destroy that can scan the roster at all runs after this set. */
+  if (!no_acquire) {
+    fam_roster_creator(stub, creator_rank);
+  }
 #endif
   /* The home's create-time buffer is the target a publish lands in, at
    * version 0 — "unpublished", which is what every serve and park predicate
@@ -404,6 +447,7 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
    * local. */
   uint64_t lost_addr = arts_db_fam_slot_addr(&stub->cache);
   __atomic_store_n(&stub->cache.fam_addr, (uint64_t)0, __ATOMIC_RELEASE);
+  bool winner_gone = false;
 #endif
   arts_db_free(stub);
   arts_shared_ptr_t winner_h = arts_route_table_lookup_db(db_guid);
@@ -432,6 +476,11 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
            "a home rank's descriptor carries its home directory");
     (void)db;
     /* The directory is NOT re-seeded here — see the coalesce branch above. */
+#ifdef ARTS_FAM
+    if (!no_acquire) {
+      winner_gone = fam_roster_creator_published(db, db_guid, creator_rank);
+    }
+#endif
 #if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
     defined(ARTS_PROTOCOL_FLUSH)
     if (!no_acquire) {
@@ -445,14 +494,19 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
    * rank minted was provisional: it is offered to the winner and, if the
    * winner already has one, goes back to this rank's slice.  A store the
    * creator announced is never freed here — the free demands the caller's own
-   * slice, and the creator's block still rests in it. */
+   * slice, and the creator's block still rests in it.  A winner the re-check
+   * above found already destroyed takes neither: a provisional store goes
+   * straight back to this rank's slice instead of onto a cache whose teardown
+   * has passed, and an announced one is left to the creator that re-check just
+   * notified — a foreign slice cannot be freed here, and a second free of a
+   * store the winner did record would hand one granule out twice. */
   if (lost_addr != 0) {
     if (stub_slot_minted) {
-      if (winner == NULL || winner->db_type != ARTS_DB ||
+      if (winner_gone || winner == NULL || winner->db_type != ARTS_DB ||
           !fam_slot_offer(&winner->cache, lost_addr)) {
         arts_fam_free((void *)(uintptr_t)lost_addr);
       }
-    } else if (winner != NULL && winner->db_type == ARTS_DB) {
+    } else if (!winner_gone && winner != NULL && winner->db_type == ARTS_DB) {
       (void)arts_db_fam_slot_record(&winner->cache, lost_addr);
     }
   }
