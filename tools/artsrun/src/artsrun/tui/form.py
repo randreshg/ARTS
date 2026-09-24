@@ -46,6 +46,11 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "checked — a study that leaves some protocols out says so here "
               "once. Names as `artsrun plane` prints them (empty = all)",
               example="arts_val_wb,xsocr,hpx", optional=True),
+    FieldSpec("fam_pool_mb", "fam pool (MB)", "int",
+              "size of the fabric-attached-memory pool the run maps, "
+              "shared by every rank and carved into one slice each "
+              "(empty = the runtime's own default)",
+              example="64", optional=True, section="run"),
 
     FieldSpec("provider", "provider", "choice",
               "data plane: tcp anywhere, verbs;ofi_rxm on InfiniBand (one "
@@ -120,6 +125,11 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "wrap every rank in `/usr/bin/time -v` to record peak resident "
               "set and minor faults beside the runtime's own stamp; a node "
               "without the binary runs unwrapped", section="flags"),
+    FieldSpec("fam_strict", "fam strict mode", "bool",
+              "treat the pool as a second coherency domain: every "
+              "producer and consumer edge is enforced rather than "
+              "assumed, which is slower and catches a missing one",
+              section="flags"),
 
     FieldSpec("slurm.partition", "partition", "text",
               "which set of nodes the cells run on — clusters group their "

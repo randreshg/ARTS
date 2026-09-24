@@ -124,6 +124,13 @@ class Profile(BaseModel):
     fabric_domain: str | None = None
     regpool_slab_mb: int | None = None
 
+    # The fabric-attached-memory pool's size and the strict-mode
+    # toggle: cfg keys a fam-enabled binary reads and any other simply
+    # never looks up, unset by default like every other opt-in knob
+    # here.  Unset leaves the runtime's own default in force.
+    fam_pool_mb: int | None = Field(default=None, ge=1)
+    fam_strict: bool = False
+
     # Worker stack, in MiB, given to EVERY runtime a campaign measures — the
     # runtime under test and the references alike.  A runtime whose message
     # handling recurses on the worker stack has a multinode depth bounded by

@@ -40,6 +40,24 @@ def test_arts_config_omits_ports_for_a_local_run():
     assert "ports" not in render_arts(profile, 4)
 
 
+def test_arts_config_omits_the_fam_keys_when_the_profile_sets_neither():
+    profile = load_profile("ferrari-local")
+    text = render_arts(profile, 2)
+    assert "fam_pool_mb" not in text
+    assert "fam_strict" not in text
+
+
+def test_arts_config_names_fam_pool_mb_and_strict_when_set():
+    from artsrun.model.profile import Launcher, Profile
+
+    profile = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
+                       workers=3, progress=1, fam_pool_mb=16,
+                       fam_strict=True)
+    text = render_arts(profile, 2)
+    assert "fam_pool_mb=16" in text
+    assert "fam_strict=1" in text
+
+
 def test_arts_config_names_ports_for_a_cluster_run():
     profile = load_profile("junction")
     text = render_arts(profile, 8)
