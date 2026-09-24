@@ -41,7 +41,7 @@ def test_every_unbuildable_position_states_a_reason():
 
 def test_two_configurations_offer_a_reference_and_the_rest_do_not():
     plane = load_plane()
-    assert len(plane.entries) == 12
+    assert len(plane.entries) == 14
     refs = [e for e in plane.entries if e.is_reference and not e.is_external]
     assert {e.key for e in refs} == {"xsocr", "ocrvx"}
     assert plane.entry("xsocr").cell == "EXCL/PURGE/WB"
@@ -90,7 +90,9 @@ def test_the_dane_profiles_leave_the_db_wrf_section_out():
         keys = plane.default_entries(store.load_profile(name).entries)
         assert "arts_wrf_flush" not in keys
         assert all(plane.entry(k).model == "OCR" for k in keys)
-        assert len(keys) == len(plane.entry_keys) - 1
+        left_out = set(plane.entry_keys) - set(keys)
+        assert left_out == {"arts_wrf_flush"} | {
+            e.key for e in plane.entries if e.is_fam}
     # A profile that says nothing still runs everything.
     assert store.load_profile("ferrari-local").entries is None
 
@@ -131,6 +133,35 @@ def test_binary_names_follow_the_build_convention():
     assert arts.binary("nqueens", hinted=True) == "nqueens_hinted_arts_ocr_val_wb"
     assert plane.entry("xsocr").binary("nqueens", hinted=False) == "nqueens_xsocr"
     assert plane.entry("ocrvx").kind is RuntimeKind.OCRVX
+
+
+def test_the_excl_purge_wb_cell_offers_two_fam_entries_beside_arts_and_xsocr():
+    plane = load_plane()
+    cell = plane.cell(Family.EXCL, Release.PURGE, Write.WB)
+    assert [e.label for e in plane.entries_of(cell)] == [
+        "arts_excl_purge", "ARTS-FAM-STAGED", "ARTS-FAM-DIRECT", "XSOCR"]
+    staged = plane.entry("arts_excl_purge_fam_staged")
+    assert staged.kind is RuntimeKind.ARTS and staged.cell == cell.key
+    assert staged.variant == "ocr_excl_purge_fam_staged"
+    assert not staged.is_reference and not staged.is_external
+    assert staged.is_fam
+    assert staged.binary("nqueens", hinted=False) == \
+        "nqueens_arts_ocr_excl_purge_fam_staged"
+    direct = plane.entry("arts_excl_purge_fam_direct")
+    assert direct.is_fam
+    assert direct.binary("nqueens", hinted=True) == \
+        "nqueens_hinted_arts_ocr_excl_purge_fam_direct"
+    assert not plane.entry("xsocr").is_fam
+    assert not plane.entry("arts_excl_purge").is_fam
+
+
+def test_every_other_buildable_cell_still_offers_at_most_two_entries():
+    plane = load_plane()
+    fam_cell = plane.cell(Family.EXCL, Release.PURGE, Write.WB).key
+    for cell in plane.cells:
+        if cell.buildable and cell.key != fam_cell:
+            assert cell.entries == []
+            assert len(plane.entries_of(cell)) <= 2
 
 
 # --- catalog --------------------------------------------------------------

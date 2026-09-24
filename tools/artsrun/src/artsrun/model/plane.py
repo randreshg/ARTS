@@ -87,6 +87,16 @@ class SelectionEntry(BaseModel):
     def is_external(self) -> bool:
         return self.cell is None
 
+    @property
+    def is_fam(self) -> bool:
+        """Whether this entry's store is fabric-attached memory.
+
+        Read off the variant name, which the naming contract gives an
+        internal `_fam_` token, rather than a field: nothing at the model
+        level needs more than the distinction.
+        """
+        return self.variant is not None and "_fam_" in self.variant
+
     def binary(self, app_binary: str, *, hinted: bool) -> str:
         """Executable name this entry runs a given application under.
 
@@ -111,6 +121,7 @@ class PlaneCell(BaseModel):
     variant: str | None = None
     reference: str | None = None
     reason: str | None = None
+    entries: list[PlaneCellEntry] = Field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -119,6 +130,19 @@ class PlaneCell(BaseModel):
     @property
     def buildable(self) -> bool:
         return self.variant is not None
+
+
+class PlaneCellEntry(BaseModel):
+    """A further ARTS configuration a cell offers beside its base one.
+
+    Most cells offer one ARTS configuration and, on two of them, the
+    external runtime that implements the same design point; a cell whose
+    comparison has more than one ARTS configuration of its own names each
+    here instead of growing a fixed set of fields.
+    """
+
+    label: str
+    variant: str
 
 
 class ModelCell(BaseModel):
@@ -263,6 +287,7 @@ def load_plane() -> Plane:
                 write=write,
                 variant=spec["variant"],
                 reference=spec.get("reference"),
+                entries=[PlaneCellEntry(**e) for e in spec.get("entries", [])],
             )
             cells.append(cell)
             entries.append(
@@ -279,6 +304,16 @@ def load_plane() -> Plane:
                     variant=cell.variant,
                 )
             )
+            for extra in cell.entries:
+                entries.append(
+                    SelectionEntry(
+                        key=_arts_key(extra.variant),
+                        label=extra.label,
+                        kind=RuntimeKind.ARTS,
+                        cell=cell.key,
+                        variant=extra.variant,
+                    )
+                )
             if cell.reference:
                 ref = refs[cell.reference]
                 entries.append(

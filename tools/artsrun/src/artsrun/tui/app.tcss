@@ -63,6 +63,14 @@ HeaderIcon {
     align: left middle;
 }
 
+/* A cell with more than the usual pair stacks its choices: the column
+   width is the grid's, so a longer label goes down, not sideways. */
+.plane-cell-row {
+    width: 1fr;
+    height: auto;
+    align: left middle;
+}
+
 .plane-cell.blank {
     color: $text-disabled;
     text-align: center;

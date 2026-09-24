@@ -39,6 +39,11 @@ cells:
     write: WB
     variant: ocr_excl_purge
     reference: xsocr
+    entries:
+      - label: ARTS-FAM-STAGED
+        variant: ocr_excl_purge_fam_staged
+      - label: ARTS-FAM-DIRECT
+        variant: ocr_excl_purge_fam_direct
   - family: EXCL
     release: RETAIN
     write: WB

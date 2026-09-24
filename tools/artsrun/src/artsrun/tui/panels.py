@@ -98,13 +98,19 @@ class PlanePanel(Vertical):
                         blank.tooltip = cell.reason
                         yield blank
                     else:
-                        with Horizontal(classes="plane-cell" + gap):
-                            for entry in self.plane.entries_of(cell):
-                                yield Toggle(
-                                    entry.label if entry.is_reference else "ARTS",
-                                    entry.key,
-                                    classes="entry-toggle",
-                                )
+                        cell_entries = self.plane.entries_of(cell)
+                        if len(cell_entries) > 2:
+                            # Two 15-column labels cannot share a 22-column
+                            # cell, and the cell's width is the grid's column
+                            # width.
+                            with Vertical(classes="plane-cell" + gap):
+                                for entry in cell_entries:
+                                    with Horizontal(classes="plane-cell-row"):
+                                        yield self._entry_toggle(cell, entry)
+                        else:
+                            with Horizontal(classes="plane-cell" + gap):
+                                for entry in cell_entries:
+                                    yield self._entry_toggle(cell, entry)
         for section in self.plane.models:
             yield Static(f"[b]{section.label} memory model[/b]  [dim]protocols "
                          "correct only for programs whose write acquisitions "
@@ -151,6 +157,14 @@ class PlanePanel(Vertical):
                         "[dim]not an OCR runtime — runs the HPX-origin "
                         f"section: {names}[/dim]",
                         classes="external-note")
+
+    def _entry_toggle(self, cell, entry) -> Toggle:
+        base = not entry.is_reference and entry.variant == cell.variant
+        return Toggle(
+            "ARTS" if base else entry.label,
+            entry.key,
+            classes="entry-toggle",
+        )
 
     @property
     def toggles(self) -> list[Toggle]:

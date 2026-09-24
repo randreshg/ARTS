@@ -33,7 +33,7 @@ def test_everything_is_selected_by_default():
         )
 
     entries, nodes, apps = drive(check)
-    assert len(entries) == 12
+    assert len(entries) == 14
     assert "hpx" in entries
     assert nodes == [1, 2, 4, 8]
     assert apps > 0
@@ -46,7 +46,7 @@ def test_the_plane_draws_every_position_but_only_offers_eight():
         return len(plane.toggles), len(blanks)
 
     toggles, blanks = drive(check)
-    assert toggles == 12
+    assert toggles == 14
     assert blanks == 5
 
 
@@ -61,9 +61,9 @@ def test_one_control_clears_then_restores_the_whole_plane():
         return first, cleared, restored
 
     first, cleared, restored = drive(check)
-    assert first == 12
+    assert first == 14
     assert cleared == 0
-    assert restored == 12
+    assert restored == 14
 
 
 def test_the_control_acts_on_the_surface_that_is_showing():
@@ -80,7 +80,7 @@ def test_the_control_acts_on_the_surface_that_is_showing():
 
     apps, entries = drive(check)
     assert apps == 0        # the visible surface cleared
-    assert entries == 12    # the others did not
+    assert entries == 14    # the others did not
 
 
 def test_a_version_the_application_lacks_is_absent_not_unchecked():
@@ -220,7 +220,7 @@ def test_the_selection_becomes_a_campaign_of_the_expected_size():
 
     cells, entries, nodes = drive(check)
     assert cells == len(entries) * 4 * (cells // (len(entries) * 4))
-    assert len(entries) == 12
+    assert len(entries) == 14
     assert nodes == [1, 2, 4, 8]
 
 
@@ -308,27 +308,64 @@ def test_asking_to_run_an_empty_selection_warns_once():
     assert "an application" in calls[0][0]
 
 
+def test_the_excl_purge_cell_shows_each_arts_entrys_own_label():
+    async def check(app, pilot):
+        plane = app.query_one(PlanePanel)
+        return {t.ident: t.label.plain for t in plane.toggles}
+
+    labels = drive(check)
+    assert labels["arts_excl_purge"] == "ARTS"
+    assert labels["arts_excl_purge_fam_staged"] == "ARTS-FAM-STAGED"
+    assert labels["arts_excl_purge_fam_direct"] == "ARTS-FAM-DIRECT"
+    assert labels["xsocr"] == "XSOCR"
+
+
+def test_a_cell_past_the_usual_pair_stacks_its_toggles_and_keeps_its_column():
+    # The grid is a fixed-width table; a cell that grew sideways would push
+    # its column out of line with the headers and the rows below.
+    async def check(app, pilot):
+        plane = app.query_one(PlanePanel)
+        owner = next(c for c in plane.query(".plane-cell")
+                     if any(t.ident == "arts_excl_purge_fam_staged"
+                            for t in c.query(Toggle)))
+        rows = list(owner.query(".plane-cell-row"))
+        widths = {c.size.width for c in plane.query(".plane-cell")}
+        return (len(list(owner.query(Toggle))), len(rows), widths,
+                [(len(list(r.query(Toggle))), r.size.height) for r in rows],
+                [t.outer_size.height for t in owner.query(Toggle)])
+
+    toggles, rows, widths, per_row, heights = drive(check)
+    assert (toggles, rows) == (4, 4)          # one toggle per row
+    assert widths == {22}                     # every cell keeps its width
+    assert all(n == 1 for n, _ in per_row)
+    assert all(h <= rh for (_, rh), h in zip(per_row, heights))
+
+
 def test_a_split_cell_fits_both_of_its_toggles():
     # Measuring each toggle alone misses the case that actually clips: two of
-    # them side by side in one cell.
+    # them side by side in one row.  A cell that stacks its choices is
+    # measured row by row, which is what it lays out.
     async def check(app, pilot):
         from artsrun.tui.widgets import Toggle
 
         plane = app.query_one(PlanePanel)
         out = []
         for cell in plane.query(".plane-cell"):
-            toggles = list(cell.query(Toggle))
-            if not toggles:
-                continue
-            labels = [t.label.plain for t in toggles]
-            need = sum(len(t) + 4 for t in labels)
-            out.append((" + ".join(labels), need, cell.content_size.width))
+            rows = list(cell.query(".plane-cell-row")) or [cell]
+            for row in rows:
+                toggles = list(row.query(Toggle))
+                if not toggles:
+                    continue
+                labels = [t.label.plain for t in toggles]
+                need = sum(len(t) + 4 for t in labels)
+                out.append((" + ".join(labels), need,
+                            row.content_size.width))
         return out
 
-    cells = drive(check)
-    assert any(" + " in labels for labels, _, _ in cells), "no split cell found"
-    for labels, need, avail in cells:
-        assert need <= avail, f"{labels} needs {need} columns, cell has {avail}"
+    rows = drive(check)
+    assert any(" + " in labels for labels, _, _ in rows), "no split cell found"
+    for labels, need, avail in rows:
+        assert need <= avail, f"{labels} needs {need} columns, row has {avail}"
 
 
 def test_every_save_button_survives_its_own_dropdown_refresh():
