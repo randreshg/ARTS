@@ -7,9 +7,10 @@
 ///      -DARTS_FAM_STAGED=1 -I<device headers> -I<repo>/libs/include/internal
 ///      -I<repo>/libs/include/public -I<generated include dir>
 ///      tests/unit/fam_conformance.c tests/unit/fam_stubs.c
-///      libs/src/core/fam/pool.c libs/src/core/fam/device.c
+///      libs/src/core/fam/pool.c libs/src/core/fam/library.c
 ///      -o fam_conformance -lpthread <device library>
 /// then start one process per rank with --rank i --nranks n --rendezvous PATH.
+/// Rank 0 must be the first process to load the library.
 ///
 /// --strict 0|1 names the mode, defaulting to the build's own default for the
 /// fam_strict key.  Under strict mode a write that was not flushed must NOT
@@ -139,8 +140,8 @@ static void boot(unsigned mb, unsigned nranks) {
 }
 
 /* Question 4 runs each candidate in a child: a refusal aborts, and the child
- * must start from nothing, so it releases the inherited pool and forgets the
- * handoff before taking a fresh one. */
+ * must start from nothing, so it releases the pool it forked with before
+ * taking a fresh arena. */
 static uint64_t arena_limit_mb(void) {
   uint64_t best = 0;
   for (unsigned mb = 1; mb <= (1u << 14); mb <<= 1) {
@@ -217,11 +218,13 @@ int main(int argc, char **argv) {
     for (unsigned r = 1; r < g_nranks; r++) {
       pid_t pid = fork();
       if (pid == 0) {
-        arts_fam_boot_child_exec();
         char rs[16], ns[16], ms[16];
         (void)snprintf(rs, sizeof(rs), "%u", r);
         (void)snprintf(ns, sizeof(ns), "%u", g_nranks);
         (void)snprintf(ms, sizeof(ms), "%u", g_pool_mb);
+        /* The rank identity the library reads when it loads, as the launcher
+         * sets it: a process without it would claim the region as rank 0. */
+        setenv("ARTS_RANK", rs, 1);
         execl(argv[0], argv[0], "--rank", rs, "--nranks", ns, "--rendezvous",
               g_rv, "--pool-mb", ms, "--strict", g_strict ? "1" : "0",
               (char *)NULL);
@@ -229,15 +232,10 @@ int main(int argc, char **argv) {
       }
       kids[nkids++] = pid;
     }
-    /* The handoff a backend placed in the environment to reach the children
-     * just forked is dropped here, before this process has a second thread
-     * that could read it. */
-    arts_fam_boot_launched();
   }
 
-  /* The runtime's address exchange, by rendezvous: a backend whose arena is
-   * taken by rank 0 names it here, and one whose ranks inherit the pool names
-   * nothing and ignores what it is told. */
+  /* The runtime's address exchange, by rendezvous: rank 0 takes the arena
+   * and names it here, and every other rank records what it named. */
   arts_global_rank_id = g_rank;
   arts_global_rank_count = g_nranks;
   if (g_rank == 0) {

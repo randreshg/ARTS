@@ -173,26 +173,26 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        ``ARTS_FAM_RESIDENCY`` below instead.
    * - ``ARTS_FAM_BACKEND``
      - OFF
-     - Fabric-attached-memory backend: ``OFF`` (default), ``SHM``
-       (local-launcher emulation) or ``DEVICE`` (builds against the
-       device library). No ``AUTO``; every mismatch is a configure error.
+     - Fabric-attached-memory backend: ``OFF`` (default), ``SHM`` or
+       ``DEVICE``. Both speak the device library API through one adapter;
+       the backend picks the library. ``SHM`` is the vendored fake library
+       (``third_party/fake_arts_cxl_lib``, built into the build tree at
+       configure time): one host's shared memory, one region at one fixed
+       address, so one run per host and ``launcher=local`` past one rank;
+       every run needs ``ARTS_FAKE_CXL_REGION_SIZE`` (bytes, at least the
+       pool plus a page) and writes a flush trace to ``ARTS_FLUSH_LOG``
+       (default ``./arts_flush_trace.bin``). ``DEVICE`` links the device
+       library named by ``ARTS_FAM_DEVICE_INCLUDE_DIR`` and
+       ``ARTS_FAM_DEVICE_LIBRARY`` (both required, both must exist). No
+       ``AUTO``; every mismatch is a configure error, and the old
+       ``ARTS_FAM_DEVICE_VENDORED`` / ``ARTS_USE_FAKE_CXL_LIB`` name
+       ``SHM``.
    * - ``ARTS_FAM_RESIDENCY``
      - (empty)
      - Where an EDT's working bytes live when this tree's own library is
        FAM-enabled: a rank-local copy staged from the block's slot at the
        two ownership edges (``STAGED``), or the slot itself, with the
        edges reduced to a flush each (``DIRECT``).
-   * - ``ARTS_FAM_DEVICE_VENDORED``
-     - OFF
-     - With ``ARTS_FAM_BACKEND=DEVICE``, build the vendored emulation of
-       the device library (``third_party/fake_arts_cxl_lib``: one host's
-       shared memory at the device's fixed address) into the build tree
-       and link it in place of ``ARTS_FAM_DEVICE_INCLUDE_DIR`` /
-       ``ARTS_FAM_DEVICE_LIBRARY``. For development runs only; every run
-       needs ``ARTS_FAKE_CXL_REGION_SIZE`` sized for the host, and each
-       process writes a flush trace to ``ARTS_FLUSH_LOG`` (default
-       ``./arts_flush_trace.bin``). The old ``ARTS_USE_FAKE_CXL_LIB`` is a
-       configure error naming this option.
    * - ``ARTS_NOHINT_EDT_PLACEMENT``
      - ROUNDROBIN
      - Where an EDT created with no placement preference (NULL hint, or

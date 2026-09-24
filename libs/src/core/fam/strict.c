@@ -28,9 +28,7 @@
  * stored snapshot.  It is what catches code that is correct only because an
  * eviction never happened.
  *
- * The two views are built in one of two ways, with everything past that
- * identical: from a descriptor this process holds, both mapped fresh
- * (arts_fam_strict_map), or over a pool the device library has already mapped
+ * The two views are built over the pool the library has already mapped
  * shared, by re-mapping exactly the pool's pages private at their own address
  * and the same backing object shared elsewhere (arts_fam_strict_remap). */
 #ifndef _GNU_SOURCE
@@ -103,22 +101,20 @@ static void fam_reload(uint64_t line) {
 }
 
 /* The shared view first, and never at the base: the base is where pointers
- * point.  The private view then takes the base -- fresh where nothing is
- * mapped there yet, or over the device library's own shared pages when those
- * are what occupies it.  The descriptor must still be open for both. */
-static void *fam_strict_views(int fd, off_t off, void *want, uint64_t bytes,
-                              int fixed) {
+ * point.  The private view then takes the base, over the library's own shared
+ * pages.  The descriptor must still be open for both. */
+static void *fam_strict_views(int fd, off_t off, void *base, uint64_t bytes) {
   g_shared =
       mmap(NULL, (size_t)bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
   if (g_shared == MAP_FAILED) {
     ARTS_ERROR("fam: the pool's backing could not be mapped: %s",
                strerror(errno));
   }
-  g_private = mmap(want, (size_t)bytes, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | fixed, fd, off);
-  if (g_private == MAP_FAILED || g_private != want) {
-    ARTS_ERROR("fam: the pool's address %p is not available in this rank: %s",
-               want, g_private == MAP_FAILED ? strerror(errno) : "taken");
+  g_private = mmap(base, (size_t)bytes, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_FIXED, fd, off);
+  if (g_private == MAP_FAILED || g_private != base) {
+    ARTS_ERROR("fam: the pool's private view could not be placed at %p: %s",
+               base, g_private == MAP_FAILED ? strerror(errno) : "moved");
   }
   g_bytes = bytes;
   g_lines = bytes / ARTS_FAM_GRANULE;
@@ -134,11 +130,6 @@ static void *fam_strict_views(int fd, off_t off, void *want, uint64_t bytes,
   return g_private;
 }
 
-void *arts_fam_strict_map(int fd, void *want, uint64_t bytes) {
-  return fam_strict_views(fd, 0, want, bytes, MAP_FIXED_NOREPLACE);
-}
-
-#ifdef ARTS_FAM_BACKEND_DEVICE
 /* One row of the process's mapping table: the range, whether it is shared,
  * the backing object's offset, device and inode, and its path. */
 struct fam_vma_s {
@@ -168,7 +159,7 @@ static bool fam_vma_parse(const char *line, struct fam_vma_s *v) {
   return true;
 }
 
-/* INVARIANT the discovery rests on: the device library maps ONE shared object
+/* INVARIANT the discovery rests on: the library maps ONE shared object
  * at one fixed address, the pool lies wholly inside that mapping, and the
  * library's own first page -- where it keeps its allocation cursor and its
  * publication fields -- lies below the pool.  So the object behind the page
@@ -225,7 +216,7 @@ void *arts_fam_strict_remap(void *base, uint64_t bytes) {
   }
   if (head.lo >= lo) {
     ARTS_ERROR("fam: the pool at %p starts on the first page of its mapping, "
-               "where the device library keeps its own state",
+               "where the library keeps its own state",
                base);
   }
   int fd = open(head.path, O_RDWR | O_CLOEXEC);
@@ -241,13 +232,10 @@ void *arts_fam_strict_remap(void *base, uint64_t bytes) {
                head.path);
   }
   off_t off = (off_t)(head.off + (lo - head.lo));
-  void *view = fam_strict_views(fd, off, base, bytes, MAP_FIXED);
+  void *view = fam_strict_views(fd, off, base, bytes);
   (void)close(fd);
   return view;
 }
-#endif
-
-void *arts_fam_strict_shared_base(void) { return g_shared; }
 
 void arts_fam_strict_unmap(void *base, uint64_t bytes) {
   if (base) {

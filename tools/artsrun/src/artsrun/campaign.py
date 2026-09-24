@@ -21,7 +21,7 @@ from artsrun import check, report
 from artsrun.build import (
     BuildPlan, build, configure_counters, configure_fam_device,
     counter_mismatch, ensure_build_dir, fam_device_configure_command,
-    fam_device_mismatch, fam_device_options, plan_targets,
+    fam_backend_of, fam_device_mismatch, fam_device_options, plan_targets,
     require_default_counters,
 )
 from artsrun.model.experiment import Experiment
@@ -159,8 +159,8 @@ class Campaign:
         device = self.profile.resolved_fam_device
         differing = fam_device_mismatch(self.build_dir, self.profile)
         if not differing:
-            say(f"{self.build_dir}: ARTS_FAM_BACKEND=DEVICE on the {device} "
-                "library — the tree matches the profile's fam_device")
+            say(f"{self.build_dir}: ARTS_FAM_BACKEND={fam_backend_of(device)} "
+                f"— the tree matches the profile's fam_device: {device}")
             return
         if dry:
             say(f"{self.build_dir} differs from the profile's fam_device: "

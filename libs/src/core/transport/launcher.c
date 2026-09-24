@@ -51,7 +51,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "arts/fam/pool.h"
 #include "arts/system/config.h"
 #include "arts/system/print.h"
 #include "arts/transport/stdio_forward.h"
@@ -518,12 +517,6 @@ void arts_launcher_local_startup_processes(struct arts_launcher_s *launcher) {
           close(forward_err_wfd);
         }
       }
-
-#ifdef ARTS_FAM
-      /* Only a rank inherits the pool's descriptor: once a rank has mapped
-       * the pool, the descriptor is never inheritable again. */
-      arts_fam_boot_child_exec();
-#endif
 
       execv(self_exe, new_argv);
       _exit(127);

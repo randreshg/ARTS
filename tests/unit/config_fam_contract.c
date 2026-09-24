@@ -7,11 +7,13 @@
 ///   - fam_pool_mb defaults to 64 and must name at least 1 MB
 ///   - a rank with no worker thread is refused: nobody would bring a block's
 ///     bytes in
-///   - a pool this host cannot afford is refused at load, in both modes
-///   - under the inherited-mapping backend, any launcher but local is refused
-///   - fam_strict parses wherever the store is one host's memory (that backend,
-///     and the device backend over the vendored fake library, where it is ON
-///     by default) and is refused over a real device library
+///   - a pool is never refused for its size, only past the allocator's own
+///     granule-index bound
+///   - over the vendored fake library (SHM), a run of more than one rank is
+///     refused under any launcher but local, since the store is one host's
+///     memory
+///   - fam_strict parses over the vendored fake library, where it is ON by
+///     default, and is refused over a device library
 ///
 /// Config-parser test: arts_config_load() against crafted temp cfgs, no
 /// runtime started. The rejections are ARTS_ERROR death paths, so they are
@@ -148,7 +150,7 @@ static void expect_parsed(const char *tag, const char *body,
 int main(void) {
   /* Parsed in every tree: the keys are inert where they cannot be used. */
   const int strict_default = ARTS_FAM_STRICT_DEFAULT[0] == '1';
-#ifdef ARTS_FAM_DEVICE_VENDORED
+#ifdef ARTS_FAM_BACKEND_SHM
   if (!strict_default) {
     printf("FAIL config_fam_contract: fam_strict is not on by default over "
            "the vendored fake library\n");
@@ -165,6 +167,10 @@ int main(void) {
                 strict_default);
   expect_parsed("default", "launcher=local\nnode_count=1\n", 64u,
                 strict_default);
+  /* Larger than any laptop has free, and still accepted: the runtime never
+   * refuses a pool for its size. */
+  expect_parsed("large", "launcher=local\nnode_count=1\nfam_pool_mb=65536\n",
+                65536u, strict_default);
 
 #ifdef ARTS_FAM
   /* A rank with no worker has nobody to bring a block's bytes in.  Written
@@ -179,35 +185,25 @@ int main(void) {
                     "worker_threads=0");
   expect_refused("zero", "launcher=local\nnode_count=1\nfam_pool_mb=0\n",
                  "fam_pool_mb");
-  /* A pool no host of this class can afford, in either mode. */
-  expect_refused("unaffordable",
+  /* A pool is never refused for its size, only past the allocator's own
+   * bound: a 1 TB pool on one rank leaves a slice whose granule count reaches
+   * the index sentinel. */
+  expect_refused("sentinel",
                  "launcher=local\nnode_count=1\nfam_pool_mb=1048576\n",
-                 "host allows");
-  /* fam_pool_mb=2^31+1000: 2 * fam_pool_mb overflows a 32-bit accumulator
-   * and wraps to ~2000 MB, comfortably under the cap it should have failed.
-   * Must refuse with the budget message specifically -- a wrapped
-   * computation would still be refused, but by the granule-sentinel check
-   * instead, with a different message. */
-  expect_refused("budget_wrap",
-                 "launcher=local\nnode_count=1\nfam_pool_mb=2147484648\n",
-                 "host allows");
+                 "index sentinel");
 #endif
 
 #ifdef ARTS_FAM_BACKEND_SHM
-  expect_parsed("strict", "launcher=local\nnode_count=1\nfam_strict=1\n", 64u, 1);
+  expect_parsed("strict", "launcher=local\nnode_count=1\nfam_strict=1\n", 64u,
+                1);
+  expect_parsed("strict_off", "launcher=local\nnode_count=1\nfam_strict=0\n",
+                64u, 0);
   expect_refused("remote",
                  "launcher=ssh\nnodes=localhost,localhost\nnode_count=2\n"
                  "ports=25000\nfam_pool_mb=8\n",
                  "launcher=local");
 #endif
-#ifdef ARTS_FAM_DEVICE_VENDORED
-  expect_parsed("strict", "launcher=local\nnode_count=1\nfam_strict=1\n", 64u,
-                1);
-  expect_parsed("strict_off", "launcher=local\nnode_count=1\nfam_strict=0\n",
-                64u, 0);
-#endif
-#if defined(ARTS_FAM) && !defined(ARTS_FAM_BACKEND_SHM) &&                     \
-    !defined(ARTS_FAM_DEVICE_VENDORED)
+#ifdef ARTS_FAM_BACKEND_DEVICE
   expect_refused("strict_unsupported",
                  "launcher=local\nnode_count=1\nfam_strict=1\n", "fam_strict");
 #endif

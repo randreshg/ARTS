@@ -560,10 +560,12 @@ endif()
 
 # ── Fabric-attached memory ─────────────────────────────────────────────────
 # Declarative, never inferred: a value names the medium, and every mismatch is
-# an error rather than a quiet downgrade.  Nothing FAM appears anywhere else
-# in this file.
+# an error rather than a quiet downgrade.  Both backends are one API, spoken
+# by one adapter; the backend decides only which library is linked and
+# whether the strict oracle exists.  Nothing FAM appears anywhere else in this
+# file.
 set(ARTS_FAM_BACKEND "OFF" CACHE STRING
-    "Fabric-attached-memory backend: OFF (default), SHM (local-launcher emulation) or DEVICE (the device library)")
+    "Fabric-attached-memory backend: OFF (default), SHM (the vendored fake library: one host's shared memory) or DEVICE (a device library named by path)")
 set_property(CACHE ARTS_FAM_BACKEND PROPERTY STRINGS OFF SHM DEVICE)
 if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND
    NOT ARTS_FAM_BACKEND STREQUAL "SHM" AND
@@ -572,73 +574,53 @@ if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND
           "ARTS_FAM_BACKEND must be OFF, SHM or DEVICE, got: ${ARTS_FAM_BACKEND}")
 endif()
 
-# Where the run's pool is mapped.  Every rank maps the pool at ONE address, so
-# a slot address is meaningful in any rank's address space without
-# translation; the value is therefore a property of the build, not of a
-# process, and it must be free in every rank and in every sanitizer
-# configuration the tests use -- which the fam_base_address test asserts in
-# each build tree.  An SHM concern only: under DEVICE the address comes from
-# the device library.
-if(ARTS_FAM_BACKEND STREQUAL "SHM")
-  set(ARTS_FAM_BASE "0x00007a0000000000" CACHE STRING
-      "Virtual address the fabric-attached-memory pool is mapped at in every rank")
-  if(NOT ARTS_FAM_BASE MATCHES "^0x[0-9a-fA-F]+$")
-    message(FATAL_ERROR
-            "ARTS_FAM_BASE must be a hexadecimal literal like 0x00007a0000000000, "
-            "got: ${ARTS_FAM_BASE}")
-  endif()
-  math(EXPR _arts_fam_base_rem "${ARTS_FAM_BASE} % 4096")
-  math(EXPR _arts_fam_base_val "${ARTS_FAM_BASE} + 0")
-  if(NOT _arts_fam_base_rem EQUAL 0 OR _arts_fam_base_val EQUAL 0)
-    message(FATAL_ERROR
-            "ARTS_FAM_BASE must be a non-zero, page-aligned address; "
-            "${ARTS_FAM_BASE} is not (offset within its page: ${_arts_fam_base_rem})")
-  endif()
-endif()
-
 set(ARTS_FAM_RESIDENCY "" CACHE STRING
     "Where an EDT's working bytes reside: STAGED or DIRECT. Required when this tree's own library is FAM-enabled")
 set_property(CACHE ARTS_FAM_RESIDENCY PROPERTY STRINGS "" STAGED DIRECT)
 set(ARTS_FAM_DEVICE_INCLUDE_DIR "" CACHE PATH
-    "Include directory of the device library (required when ARTS_FAM_BACKEND=DEVICE)")
+    "Include directory of the device library (ARTS_FAM_BACKEND=DEVICE only)")
 set(ARTS_FAM_DEVICE_LIBRARY "" CACHE FILEPATH
-    "The device library to link (required when ARTS_FAM_BACKEND=DEVICE)")
-option(ARTS_FAM_DEVICE_VENDORED
-    "With ARTS_FAM_BACKEND=DEVICE, build and link the vendored emulation of the device library (third_party/fake_arts_cxl_lib: one host's shared memory at the device's fixed address) instead of naming ARTS_FAM_DEVICE_INCLUDE_DIR / ARTS_FAM_DEVICE_LIBRARY; for development runs, never for measurement"
-    OFF)
+    "The device library to link (ARTS_FAM_BACKEND=DEVICE only)")
 if(ARTS_USE_FAKE_CXL_LIB)
   message(FATAL_ERROR
-          "ARTS_USE_FAKE_CXL_LIB is gone: the vendored library is the DEVICE "
-          "backend's emulation of the device library now. Configure "
-          "-DARTS_FAM_BACKEND=DEVICE -DARTS_FAM_DEVICE_VENDORED=ON (with "
+          "ARTS_USE_FAKE_CXL_LIB is gone: the vendored fake library is the SHM "
+          "backend. Configure -DARTS_FAM_BACKEND=SHM (with "
           "-DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE "
           "-DARTS_FAM_RESIDENCY=STAGED|DIRECT for a tree whose own library "
           "is FAM-enabled).")
 endif()
 unset(ARTS_USE_FAKE_CXL_LIB CACHE)
-if(ARTS_FAM_DEVICE_VENDORED AND NOT ARTS_FAM_BACKEND STREQUAL "DEVICE")
-  message(FATAL_ERROR
-          "ARTS_FAM_DEVICE_VENDORED=ON stands in for the device library, which "
-          "only ARTS_FAM_BACKEND=DEVICE links (got ${ARTS_FAM_BACKEND})")
-endif()
-
+# A cache entry an earlier configure left at OFF cannot be told apart from an
+# OFF passed now, so only a value that asks for the old behaviour is refused.
 if(ARTS_FAM_DEVICE_VENDORED)
-  # Plain variables shadow the cache entries, so turning the option off later
-  # restores whatever paths the cache holds instead of leaving these behind.
-  # Built at configure time because the checks below need the library to
-  # exist; its build tree lives under this build directory, so the submodule
-  # stays clean and trees with different compilers never share one library.
-  # Re-running the build on every configure is a no-op when nothing changed.
+  message(FATAL_ERROR
+          "ARTS_FAM_DEVICE_VENDORED is gone: the vendored fake library is the "
+          "SHM backend. Configure -DARTS_FAM_BACKEND=SHM instead, and drop "
+          "ARTS_FAM_DEVICE_VENDORED.")
+endif()
+unset(ARTS_FAM_DEVICE_VENDORED CACHE)
+unset(ARTS_FAM_BASE CACHE)
+
+# The library the runtime speaks the device API to: ARTS_FAM_LIB_INCLUDE_DIR
+# and ARTS_FAM_LIB are the only names anything below this block reads.
+if(ARTS_FAM_BACKEND STREQUAL "SHM")
   foreach(_var ARTS_FAM_DEVICE_INCLUDE_DIR ARTS_FAM_DEVICE_LIBRARY)
     if(${_var})
-      message(WARNING "ARTS_FAM_DEVICE_VENDORED=ON ignores ${_var}=${${_var}}")
+      message(FATAL_ERROR
+              "${_var}=${${_var}} names a device library, which only "
+              "ARTS_FAM_BACKEND=DEVICE links; the SHM backend is the vendored "
+              "fake library. Clear it (-D${_var}=) or configure DEVICE.")
     endif()
   endforeach()
+  # Built at configure time because the targets below need the file to exist;
+  # its build tree lives under this build directory, so the submodule stays
+  # clean and trees with different compilers never share one library.
+  # Re-running the build on every configure is a no-op when nothing changed.
   include(${PROJECT_SOURCE_DIR}/cmake/ArtsSubmodule.cmake)
   arts_init_submodule(third_party/fake_arts_cxl_lib CMakeLists.txt)
   set(_fam_vendored_src "${PROJECT_SOURCE_DIR}/third_party/fake_arts_cxl_lib")
   set(_fam_vendored_build "${CMAKE_BINARY_DIR}/third_party/fake_arts_cxl_lib-build")
-  message(STATUS "ARTS FAM: building the vendored emulation of the device library")
+  message(STATUS "ARTS FAM: building the vendored fake library")
   execute_process(
     COMMAND ${CMAKE_COMMAND} -S ${_fam_vendored_src} -B ${_fam_vendored_build}
             -G ${CMAKE_GENERATOR}
@@ -646,30 +628,36 @@ if(ARTS_FAM_DEVICE_VENDORED)
             -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
     RESULT_VARIABLE _rc)
   if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "Failed to configure the vendored device library")
+    message(FATAL_ERROR "Failed to configure the vendored fake library")
   endif()
   execute_process(
     COMMAND ${CMAKE_COMMAND} --build ${_fam_vendored_build} --target arts_cxl_lib
     RESULT_VARIABLE _rc)
   if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "Failed to build the vendored device library")
+    message(FATAL_ERROR "Failed to build the vendored fake library")
   endif()
-  set(ARTS_FAM_DEVICE_INCLUDE_DIR "${_fam_vendored_src}/inc")
-  set(ARTS_FAM_DEVICE_LIBRARY "${_fam_vendored_build}/src/libarts_cxl_lib.so")
-endif()
-if(ARTS_FAM_BACKEND STREQUAL "DEVICE")
+  set(ARTS_FAM_LIB_INCLUDE_DIR "${_fam_vendored_src}/inc")
+  set(ARTS_FAM_LIB "${_fam_vendored_build}/src/libarts_cxl_lib.so")
+elseif(ARTS_FAM_BACKEND STREQUAL "DEVICE")
   if(NOT ARTS_FAM_DEVICE_INCLUDE_DIR OR NOT EXISTS "${ARTS_FAM_DEVICE_INCLUDE_DIR}")
     message(FATAL_ERROR
             "ARTS_FAM_BACKEND=DEVICE needs the device library's headers "
             "(-DARTS_FAM_DEVICE_INCLUDE_DIR=<dir>) and the library itself "
-            "(-DARTS_FAM_DEVICE_LIBRARY=<file>)")
+            "(-DARTS_FAM_DEVICE_LIBRARY=<file>); got include dir "
+            "'${ARTS_FAM_DEVICE_INCLUDE_DIR}'")
   endif()
   if(NOT ARTS_FAM_DEVICE_LIBRARY OR NOT EXISTS "${ARTS_FAM_DEVICE_LIBRARY}")
     message(FATAL_ERROR
             "ARTS_FAM_BACKEND=DEVICE needs the device library itself "
             "(-DARTS_FAM_DEVICE_LIBRARY=<file>) and its headers "
-            "(-DARTS_FAM_DEVICE_INCLUDE_DIR=<dir>)")
+            "(-DARTS_FAM_DEVICE_INCLUDE_DIR=<dir>); got library "
+            "'${ARTS_FAM_DEVICE_LIBRARY}'")
   endif()
+  set(ARTS_FAM_LIB_INCLUDE_DIR "${ARTS_FAM_DEVICE_INCLUDE_DIR}")
+  set(ARTS_FAM_LIB "${ARTS_FAM_DEVICE_LIBRARY}")
+else()
+  set(ARTS_FAM_LIB_INCLUDE_DIR "")
+  set(ARTS_FAM_LIB "")
 endif()
 
 # Whether THIS tree's own library is FAM-enabled, and with which residency.

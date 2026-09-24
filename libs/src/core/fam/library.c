@@ -1,11 +1,20 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * One global allocation per run, taken by rank 0 and carved into equal
+ * The runtime's one adapter to the device library API, for both backends:
+ * one global allocation per run, taken by rank 0 and carved into equal
  * slices.  Allocation on this medium is mediated and expensive, so it happens
- * exactly once; every subsequent placement is software. */
+ * exactly once; every subsequent placement is software.
+ *
+ * The library maps one region at one fixed address in every process that
+ * loads it, which is what lets a pool address mean the same thing in every
+ * rank.  Under SHM that region is one host's shared memory with one fixed
+ * name, so a host runs one FAM run at a time: a second run would find the
+ * first one's region live. */
 #include <MemOps.h>
 #include <SharedAlloc.h>
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "arts.h"
@@ -78,10 +87,6 @@ void arts_fam_boot_prepare(const struct arts_config_s *config) {
   g_strict = config->fam_strict;
 }
 
-void arts_fam_boot_child_exec(void) {}
-
-void arts_fam_boot_launched(void) {}
-
 void arts_fam_device_publish(uint64_t *base, uint64_t *size) {
   if (arts_global_rank_id != 0) {
     *base = 0;
@@ -103,14 +108,14 @@ void arts_fam_device_record(unsigned from_rank, uint64_t base, uint64_t size) {
   g_recorded_bytes = size;
 }
 
-/* A window into this backend's file statics, for fam_device_frame alone. */
+/* A window into this adapter's file statics, for fam_device_frame alone. */
 uint64_t arts_fam_device_recorded_base(void) { return g_recorded_base; }
 
 /* Strict mode's two views are built here, once the arena's address is known
  * and before the allocator touches a byte of it; the pool header was written
  * through the library's shared mapping before, so it is in the backing. */
 static void fam_strict_views_over(void *base, uint64_t bytes) {
-#ifdef ARTS_FAM_DEVICE_VENDORED
+#ifdef ARTS_FAM_HAS_STRICT
   if (g_strict) {
     (void)arts_fam_strict_remap(base, bytes);
   }
@@ -142,10 +147,9 @@ void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
   /* Everything below is a peer's word taken off the wire, and the consumer
    * flush at the end of this branch is the first thing that touches it, so
    * every property the arena must have is established before that, not after.
-   * The size is checked against this rank's OWN configured pool size for the
-   * same reason the inherited backend checks its adopted object's: every rank
-   * parses its own cfg, so two ranks can name different fam_pool_mb values,
-   * and only the allocating rank's is the size the arena actually has. */
+   * The size is checked against this rank's OWN configured pool size: every
+   * rank parses its own cfg, so two ranks can name different fam_pool_mb
+   * values, and only the allocating rank's is the size the arena has. */
   if (!g_recorded_base) {
     ARTS_ERROR("fam: no arena arrived with the address exchange");
   }
@@ -174,7 +178,7 @@ void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
 }
 
 void arts_fam_backend_unmap(void *base, uint64_t bytes) {
-#ifdef ARTS_FAM_DEVICE_VENDORED
+#ifdef ARTS_FAM_HAS_STRICT
   if (g_strict) {
     /* Both views, and the oracle's DRAM, are this rank's own; the library's
      * mapping outside the arena, and every peer's view, are untouched. */
@@ -196,7 +200,7 @@ void arts_fam_backend_unmap(void *base, uint64_t bytes) {
 }
 
 void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
-#ifdef ARTS_FAM_DEVICE_VENDORED
+#ifdef ARTS_FAM_HAS_STRICT
   if (g_strict) {
     arts_fam_strict_flush(p, bytes, producer);
     return;
@@ -216,10 +220,9 @@ void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
   }
 }
 
-#ifdef ARTS_FAM_DEVICE_VENDORED
+#ifdef ARTS_FAM_HAS_STRICT
 /* The vendored fake library is one host's shared memory, which has no second
- * coherency domain; strict mode gives it one, exactly as on the inherited
- * mapping. */
+ * coherency domain; strict mode gives it one. */
 void arts_fam_backend_poison(void *p, size_t bytes) {
   if (g_strict) {
     arts_fam_strict_poison(p, bytes);
@@ -232,13 +235,64 @@ void arts_fam_backend_hold(const void *p, size_t bytes, bool hold) {
 }
 bool arts_fam_backend_strict(void) { return g_strict; }
 
+/* MemAvailable, in MB, or 0 when it cannot be read. */
+static uint64_t fam_mem_available_mb(void) {
+  FILE *f = fopen("/proc/meminfo", "r");
+  if (!f) {
+    return 0;
+  }
+  char line[256];
+  unsigned long long kb = 0;
+  while (fgets(line, sizeof(line), f)) {
+    if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
+      break;
+    }
+  }
+  (void)fclose(f);
+  return (uint64_t)(kb / 1024u);
+}
+
+/* The region is one host's memory, so every rank must share that host.  A
+ * remote launcher puts each rank on its own host, so past one rank only the
+ * local launcher can run.  The launcher is decided by handle_launcher, where a
+ * scheduler's variables in the environment override the cfg and an absent key
+ * defaults to ssh, so the message names whichever decided it. */
 void arts_fam_backend_config_check(const struct arts_config_s *config) {
-  (void)config;
+  /* The region is this host's RAM, so a pool past what the host has free is
+   * worth a word; it is never refused, since the host fails loudly if memory
+   * really runs out. */
+  uint64_t avail_mb = fam_mem_available_mb();
+  if (avail_mb && (uint64_t)config->fam_pool_mb > avail_mb) {
+    ARTS_WARN("fam: fam_pool_mb=%u exceeds this host's MemAvailable of %llu MB",
+              config->fam_pool_mb, (unsigned long long)avail_mb);
+  }
+  unsigned nranks = config->table_length ? config->table_length : 1u;
+  if (nranks == 1u ||
+      (config->launcher && strcmp(config->launcher, "local") == 0)) {
+    return;
+  }
+  static const char *const deciders[] = {"SLURM_PROCID", "SLURM_NNODES",
+                                         "LSB_HOSTS", "LSB_MCPU_HOSTS",
+                                         "FLUX_TASK_RANK"};
+  const char *decider = NULL;
+  for (unsigned i = 0; i < sizeof(deciders) / sizeof(deciders[0]); i++) {
+    if (getenv(deciders[i])) {
+      decider = deciders[i];
+      break;
+    }
+  }
+  ARTS_ERROR("fam: this build's fabric-attached memory is the vendored fake "
+             "library, one host's shared memory, so a run of more than one "
+             "rank needs launcher=local; this run has %u ranks under "
+             "launcher=%s%s%s",
+             nranks, config->launcher ? config->launcher : "(unset)",
+             decider ? ", decided by the environment variable " : "",
+             decider ? decider : "");
 }
 #else
-/* A real device has the second coherency domain the strict oracle emulates,
- * so both hooks are nothing here, and the predicate is always false -- and
- * because all three are DEFINED here, a build over a real device library
+/* A device library has the second coherency domain the strict oracle
+ * emulates, so both hooks are nothing here, and the predicate is always false
+ * -- and because all three are DEFINED here, a build over a device library
  * never names a strict symbol at all. */
 void arts_fam_backend_poison(void *p, size_t bytes) {
   (void)p;
@@ -254,9 +308,9 @@ bool arts_fam_backend_strict(void) { return false; }
 void arts_fam_backend_config_check(const struct arts_config_s *config) {
   if (config->fam_strict) {
     ARTS_ERROR("fam_strict emulates a second coherency domain on one host's "
-               "memory, so it is available only over the inherited mapping "
-               "or the vendored fake library; this build's device library "
-               "already has that domain - remove fam_strict from the cfg");
+               "memory, so it exists only over the vendored fake library "
+               "(ARTS_FAM_BACKEND=SHM); a device library has that domain "
+               "already - remove fam_strict from the cfg");
   }
 }
 #endif

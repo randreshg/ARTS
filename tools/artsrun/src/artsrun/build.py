@@ -54,20 +54,23 @@ def fam_device_options(profile: Profile) -> list[str]:
 
     The entries are benchmark variants that carry their own protocol, so
     only the backend and the library are named; the tree's own protocol
-    stays what it is.  Under `fake` the two paths are cleared: the vendored
-    option shadows them, and a stale path left in the cache is exactly the
-    kind of state that makes a later configure mean something else.
+    stays what it is.  `fake` is the SHM backend, which is the vendored
+    fake library, so the two device paths are cleared: a stale path left in
+    the cache is exactly the kind of state that makes a later configure mean
+    something else, and the SHM backend refuses one.
     """
     if profile.resolved_fam_device is FamDevice.REAL:
-        return ["-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=OFF",
+        return ["-DARTS_FAM_BACKEND=DEVICE",
                 f"-DARTS_FAM_DEVICE_INCLUDE_DIR={profile.fam_device_include_dir}",
                 f"-DARTS_FAM_DEVICE_LIBRARY={profile.fam_device_library}"]
-    return ["-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=ON",
+    return ["-DARTS_FAM_BACKEND=SHM",
             "-DARTS_FAM_DEVICE_INCLUDE_DIR=", "-DARTS_FAM_DEVICE_LIBRARY="]
 
 
-def _is_on(value: str | None) -> bool:
-    return (value or "OFF").upper() in ("ON", "TRUE", "YES", "Y", "1")
+def fam_backend_of(device: FamDevice) -> str:
+    """The ARTS_FAM_BACKEND value a fam_device maps to."""
+    return {FamDevice.FAKE: "SHM", FamDevice.REAL: "DEVICE",
+            FamDevice.OFF: "OFF"}[device]
 
 
 def fam_device_mismatch(build_dir: Path, profile: Profile) -> list[str]:
@@ -76,23 +79,23 @@ def fam_device_mismatch(build_dir: Path, profile: Profile) -> list[str]:
     matches."""
     device = profile.resolved_fam_device
     have = {k: _cache_value(build_dir, k) for k in (
-        "ARTS_FAM_BACKEND", "ARTS_FAM_DEVICE_VENDORED",
-        "ARTS_FAM_DEVICE_INCLUDE_DIR", "ARTS_FAM_DEVICE_LIBRARY")}
+        "ARTS_FAM_BACKEND", "ARTS_FAM_DEVICE_INCLUDE_DIR",
+        "ARTS_FAM_DEVICE_LIBRARY")}
+    want_backend = fam_backend_of(device)
     out = []
-    if have["ARTS_FAM_BACKEND"] != "DEVICE":
+    if (have["ARTS_FAM_BACKEND"] or "OFF") != want_backend:
         out.append(f"ARTS_FAM_BACKEND: have {have['ARTS_FAM_BACKEND'] or 'OFF'}, "
-                   "want DEVICE")
-    vendored = _is_on(have["ARTS_FAM_DEVICE_VENDORED"])
+                   f"want {want_backend}")
     if device is FamDevice.REAL:
-        if vendored:
-            out.append("ARTS_FAM_DEVICE_VENDORED: have ON, want OFF")
         for key, want in (("ARTS_FAM_DEVICE_INCLUDE_DIR", profile.fam_device_include_dir),
                           ("ARTS_FAM_DEVICE_LIBRARY", profile.fam_device_library)):
             got = have[key]
             if not got or os.path.normpath(got) != os.path.normpath(want):
                 out.append(f"{key}: have {got or '(unset)'}, want {want}")
-    elif not vendored:
-        out.append("ARTS_FAM_DEVICE_VENDORED: have OFF, want ON")
+    else:
+        for key in ("ARTS_FAM_DEVICE_INCLUDE_DIR", "ARTS_FAM_DEVICE_LIBRARY"):
+            if have[key]:
+                out.append(f"{key}: have {have[key]}, want (unset)")
     return out
 
 

@@ -64,9 +64,8 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 | `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with its write grant when the last local user finishes — `PURGE` (hand copy and permission back to the home) or `RETAIN` (default; keep both until another node asks). Live in EXCL and in WT × {VAL, INV}; WB requires RETAIN. |
 | `ARTS_DEFAULT_DB_KIND` | `ARTS_DB` | Default DB storage kind that the `ARTS_DB_DEFAULT` macro expands to — `ARTS_DB` (regular DRAM). |
 | `ARTS_USE_CXL` | `OFF` (DEPRECATED) | Enable the CXL DataBlock storage kind — forced OFF: enabling it is a configure error. The kind predates the current coherence design and is unmaintained; the sources stay for reference. For fabric-attached memory, configure `ARTS_FAM_BACKEND` / `ARTS_FAM_RESIDENCY` below instead. |
-| `ARTS_FAM_BACKEND` | `OFF` | Fabric-attached-memory backend: `OFF` (default), `SHM` (local-launcher emulation) or `DEVICE` (builds against the device library). No `AUTO`; every mismatch is a configure error. |
+| `ARTS_FAM_BACKEND` | `OFF` | Fabric-attached-memory backend: `OFF` (default), `SHM` or `DEVICE`, one device-library API spoken by one adapter. `SHM` is the vendored fake library (`third_party/fake_arts_cxl_lib`, built into the build tree at configure time: one host's shared memory at one fixed address — see below); `DEVICE` links the device library named by `ARTS_FAM_DEVICE_INCLUDE_DIR` and `ARTS_FAM_DEVICE_LIBRARY` (both required, both must exist). No `AUTO`; every mismatch is a configure error, and the old `ARTS_FAM_DEVICE_VENDORED` / `ARTS_USE_FAKE_CXL_LIB` are errors naming `SHM`. |
 | `ARTS_FAM_RESIDENCY` | (empty) | Where an EDT's working bytes live when this tree's own library is FAM-enabled: a rank-local copy staged from the block's slot at the two ownership edges (`STAGED`), or the slot itself, with the edges reduced to a flush each (`DIRECT`). |
-| `ARTS_FAM_DEVICE_VENDORED` | `OFF` | With `ARTS_FAM_BACKEND=DEVICE`, build the vendored emulation of the device library (`third_party/fake_arts_cxl_lib`: one host's shared memory mapped at the device's fixed address) into the build tree and link it in place of `ARTS_FAM_DEVICE_INCLUDE_DIR` / `ARTS_FAM_DEVICE_LIBRARY`, which need not be set. For development runs only — `artsrun` refuses such a tree for a measurement. The old `ARTS_USE_FAKE_CXL_LIB` is a configure error naming this option. |
 | `ARTS_LOG_LEVEL` | `3` (Debug) / `1` (Release) | Log verbosity: `0`=ERROR, `1`=+WARN, `2`=+INFO, `3`=+DEBUG. |
 | `ARTS_USE_SANS` | `OFF` | Enable ASan + UBSan + LSan in Debug builds (excludes CUDA). Mutually exclusive with `ARTS_USE_TSAN`. |
 | `ARTS_USE_TSAN` | `OFF` | Enable ThreadSanitizer in Debug builds (excludes CUDA). Compiler-incompatible with `ARTS_USE_SANS`; use a separate build dir. |
@@ -95,46 +94,49 @@ linking a program, multi-node configurations, the complete key reference —
 is in the Sphinx guides: `docs/getting_started/quickstart.rst` and
 `docs/configuration/arts_cfg.rst`.
 
-### The DEVICE backend on a machine without the device
+### The SHM backend: fabric-attached memory on one machine
 
-`third_party/fake_arts_cxl_lib` emulates the device library with a POSIX
-shared-memory segment mapped at the device's fixed address, so the `DEVICE`
-backend of fabric-attached memory can be built and tested on one machine.
-CMake fetches the submodule, builds it into the build tree, and links it as
-the device library:
+`third_party/fake_arts_cxl_lib` is the vendored fake library: it implements
+the device library's API over one POSIX shared-memory region mapped at the
+device's fixed address, so the fabric-attached arms can be built and tested
+on one machine. `ARTS_FAM_BACKEND=SHM` is that library; CMake fetches the
+submodule, builds it into the build tree, and links it:
 
 ```bash
 cmake -GNinja -Bbuild -DARTS_BUILD_TESTS=ON \
   -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE \
-  -DARTS_FAM_BACKEND=DEVICE -DARTS_FAM_RESIDENCY=STAGED \
-  -DARTS_FAM_DEVICE_VENDORED=ON
+  -DARTS_FAM_BACKEND=SHM -DARTS_FAM_RESIDENCY=STAGED
 ninja -C build
+ctest --test-dir build -L multinode
 ```
 
 A tree on another cell builds the fabric-attached benchmark variants against
 the same library (its own library is not FAM-enabled, so it names no
 residency). Every rank started by the local launcher attaches to the same
-segment (`/dev/shm/arts_fake_cxl`), so the multi-rank shapes in
-`configs/local/test/` work as-is:
+region (`/dev/shm/arts_fake_cxl`); the strict oracle (`fam_strict`) is on by
+default in such a tree.
 
-```bash
-ARTS_FAKE_CXL_REGION_SIZE=$((2<<30)) ctest --test-dir build -L multinode
-```
-
-- `ARTS_FAKE_CXL_REGION_SIZE` (bytes, default 32 GiB) sizes the segment. The
-  runtime takes one arena of `fam_pool_mb` plus one page from it, so the
-  region must exceed the configured pool; it is allocated sparsely and only
-  touched pages count against `/dev/shm`. Where the default does not fit the
-  host's address space or `/dev/shm`, set it for every run.
+- `ARTS_FAKE_CXL_REGION_SIZE` (bytes, default 32 GiB) sizes the region when
+  the library loads, before the runtime reads its cfg. The runtime takes one
+  arena of `fam_pool_mb` plus one page from it, so the region must exceed
+  the configured pool; it is allocated sparsely and only touched pages count
+  against `/dev/shm`. The ctest registration of an SHM tree sets 2 GiB for
+  every test; `artsrun` sets the profile's `fam_pool_mb` plus 64 MiB for
+  every FAM cell; a manual run sets it itself.
 - `ARTS_FLUSH_LOG` names where each process writes its binary flush trace at
   exit (default `./arts_flush_trace.bin`, in the working directory). The
-  ctest registration of a `DEVICE` tree sets it to `/dev/null` for every test;
-  `artsrun` sets it to `<cell>.flush.bin` beside a one-rank FAM-device cell's
-  log, and to `/dev/null` for a cell with more than one rank: the library
-  takes one path for all ranks, so every rank on a host would overwrite the
-  same file.
-- The emulation covers one node only; see
-  `third_party/fake_arts_cxl_lib/README.md` for details.
+  ctest registration of a FAM tree sets it to `/dev/null` for every test;
+  `artsrun` sets it to `<cell>.flush.bin` beside a one-rank FAM cell's log,
+  and to `/dev/null` for a cell with more than one rank: the library takes
+  one path for all ranks, so every rank on a host would overwrite the same
+  file.
+- The region has one name and one address per host, so a host runs one FAM
+  run at a time. The library does not refuse a second concurrent run — it
+  attaches to the live region — so keeping runs apart is the runner's job
+  (ctest's `RESOURCE_LOCK` within one invocation, one runner per host
+  beyond it).
+- It covers one host only: a run of more than one rank is refused at load
+  unless `launcher=local`. See `third_party/fake_arts_cxl_lib/README.md`.
 
 Benchmarks and experiment campaigns are driven by `artsrun` rather than run
 by hand — see `tools/artsrun/README.md`.

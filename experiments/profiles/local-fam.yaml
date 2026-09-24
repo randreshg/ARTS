@@ -1,5 +1,6 @@
 # Local correctness smoke for the fabric-attached-memory entries, on the
-# vendored emulation of the device library.  A reference entry's colocated
+# vendored fake library (fam_device: fake, i.e. ARTS_FAM_BACKEND=SHM), with
+# the strict oracle on by default.  A reference entry's colocated
 # local ranks are each pinned to one physical core, so the geometry a
 # campaign requests here must fit the machine's physical core count, not
 # its logical CPU count (an SMT sibling is not a second core to pin a rank
@@ -22,12 +23,15 @@ provider: tcp
 route_table_size: 14
 core_dump: false
 # The whole pool, split into one slice per rank: a capacity cap, not a
-# reservation (the store commits only the pages a run touches), and the
-# smoke rosters need gigabytes of it at two ranks.
-fam_pool_mb: 512    # the runtime budgets (ranks+2)x the pool under strict mode against a 2048 MB cap, so 512 fits two ranks
-# The library the FAM entries link; the build tree is reconfigured to it or
-# the campaign does not start.  launcher: local implies fake and refuses real
-# (one host, no fabric), so this line only states what the launcher forces.
+# reservation (the store commits only the pages a run touches), sized so a
+# two-rank smoke never runs a slice dry.
+fam_pool_mb: 4096
+# The library the FAM entries link; the build tree is reconfigured to it
+# (fake = ARTS_FAM_BACKEND=SHM) or the campaign does not start.  launcher:
+# local implies fake and refuses real (one host, no fabric), so this line only
+# states what the launcher forces.  The library's region is sized from
+# fam_pool_mb for every FAM cell, and it has one name per host, so one
+# campaign runs on this host at a time.
 fam_device: fake
 
 # Sized for correctness runs on a laptop at this narrow width, never for timing.

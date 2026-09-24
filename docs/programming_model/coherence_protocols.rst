@@ -210,7 +210,12 @@ exactly one protocol and CMake refuses the rest.
    (``ARTS_FAM_BACKEND``) — with the same state machine, the same PURGE
    rule and the same re-fetch every turn; the two residencies differ only
    in whether an ownership edge stages a rank-local copy or flushes in
-   place against the pool. Never use DB-WRF as a correctness baseline. The
+   place against the pool. The pool is one arena rank 0 takes from the
+   device library API and names to every rank at the address exchange; the
+   backend selects which library answers that API — ``SHM``, the vendored
+   fake library (one host's shared memory, one region at one fixed address,
+   so one run per host), or ``DEVICE``, a device library named by path —
+   and nothing else. Never use DB-WRF as a correctness baseline. The
    experiment driver's catalog marks
    applications whose wiring relies on guarantees outside this contract with
    ``unordered_writes`` (a reason plus file:line — a contract-ineligibility
@@ -246,12 +251,14 @@ anything a reader could write back is a neighbour's byte its page captured.
 
 Strict mode is selected by the ``fam_strict`` configuration key (see
 :doc:`/configuration/arts_cfg`) and exists only where the store is one
-host's memory: the inherited mapping (off unless a configuration names it —
-the test root's strict twins do) and the device backend over the vendored
-fake library (on by default). Over a real device library it is refused at
-load, because that memory already has the second coherency domain strict
-mode emulates. It is a test oracle for the flush discipline the real store
-needs, never a performance mode.
+host's memory: the ``SHM`` backend, which is the vendored fake library, and
+where it is on by default (a configuration turns it off with
+``fam_strict=0``). The private view is built over the library's own mapping
+of the arena, re-mapped over exactly the arena's pages. Under ``DEVICE`` it
+is refused at load, because that memory already has the second coherency
+domain strict mode emulates — the hardware is the oracle there. It is a test
+oracle for the flush discipline the real store needs, never a performance
+mode.
 
 .. _protocols:
 

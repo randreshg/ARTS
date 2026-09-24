@@ -30,11 +30,10 @@ struct slice_report_s {
 static struct slice_report_s g_reports[FAM_SLICES_MAX_RANKS];
 static atomic_uint g_reported;
 
-/* Whitebox, and deliberately: the header is at a compile-time address under
- * this backend, so a rank can state the layout it believes in without a new
- * entry point. */
+/* Whitebox, and deliberately: the header lives at the pool's base, so a rank
+ * can state the layout it believes in. */
 static const struct arts_fam_header_s *fam_header(void) {
-  return (const struct arts_fam_header_s *)(uintptr_t)ARTS_FAM_BASE;
+  return (const struct arts_fam_header_s *)arts_fam_pool_base();
 }
 
 /* Exactly one mapping must cover the whole pool: mappings never overlap, so a
@@ -182,7 +181,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   unsigned me = arts_get_current_rank();
   const struct arts_fam_header_s *h = fam_header();
-  uint64_t pool_lo = (uint64_t)(uintptr_t)ARTS_FAM_BASE;
+  uint64_t pool_lo = (uint64_t)(uintptr_t)arts_fam_pool_base();
   uint64_t slice_lo =
       pool_lo + ARTS_FAM_HEADER_BYTES + (uint64_t)me * h->slice_len;
 

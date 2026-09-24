@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from artsrun.build import (BuildError, configure_fam_device, ensure_build_dir,
-                           fam_device_mismatch, fam_device_options)
+                           fam_backend_of, fam_device_mismatch, fam_device_options)
 from artsrun.model.plane import RuntimeKind, load_plane
 from artsrun.model.profile import FamDevice, Profile
 from artsrun.model.selection import Selection
@@ -220,38 +220,47 @@ def test_selections_saved_in_the_old_campaign_mode_are_refused():
 
 def test_the_decision_reads_the_tree_against_the_profile(tmp_path):
     fake = profile()
-    cache(tmp_path, ARTS_FAM_BACKEND="DEVICE", ARTS_FAM_DEVICE_VENDORED="ON")
+    cache(tmp_path, ARTS_FAM_BACKEND="SHM")
     assert fam_device_mismatch(tmp_path, fake) == []
     assert fam_device_mismatch(tmp_path, real()) == [
-        "ARTS_FAM_DEVICE_VENDORED: have ON, want OFF",
+        "ARTS_FAM_BACKEND: have SHM, want DEVICE",
         f"ARTS_FAM_DEVICE_INCLUDE_DIR: have (unset), want {INCLUDE}",
         f"ARTS_FAM_DEVICE_LIBRARY: have (unset), want {LIBRARY}",
     ]
-    cache(tmp_path, ARTS_FAM_BACKEND="DEVICE", ARTS_FAM_DEVICE_VENDORED="OFF",
+    cache(tmp_path, ARTS_FAM_BACKEND="DEVICE",
           ARTS_FAM_DEVICE_INCLUDE_DIR=INCLUDE + "/", ARTS_FAM_DEVICE_LIBRARY=LIBRARY)
     assert fam_device_mismatch(tmp_path, real()) == []
     assert fam_device_mismatch(tmp_path, fake) == [
-        "ARTS_FAM_DEVICE_VENDORED: have OFF, want ON"]
-    cache(tmp_path, ARTS_FAM_BACKEND="DEVICE", ARTS_FAM_DEVICE_VENDORED="OFF",
+        "ARTS_FAM_BACKEND: have DEVICE, want SHM",
+        f"ARTS_FAM_DEVICE_INCLUDE_DIR: have {INCLUDE}/, want (unset)",
+        f"ARTS_FAM_DEVICE_LIBRARY: have {LIBRARY}, want (unset)"]
+    cache(tmp_path, ARTS_FAM_BACKEND="DEVICE",
           ARTS_FAM_DEVICE_INCLUDE_DIR=INCLUDE, ARTS_FAM_DEVICE_LIBRARY="/other.so")
     assert fam_device_mismatch(tmp_path, real()) == [
         f"ARTS_FAM_DEVICE_LIBRARY: have /other.so, want {LIBRARY}"]
-    for backend in ("SHM", "OFF"):
-        cache(tmp_path, ARTS_FAM_BACKEND=backend)
-        assert fam_device_mismatch(tmp_path, fake)[0] == \
-            f"ARTS_FAM_BACKEND: have {backend}, want DEVICE"
+    cache(tmp_path, ARTS_FAM_BACKEND="OFF")
+    assert fam_device_mismatch(tmp_path, fake) == [
+        "ARTS_FAM_BACKEND: have OFF, want SHM"]
     cache(tmp_path)                           # a tree that predates the option
-    assert "have OFF" in fam_device_mismatch(tmp_path, fake)[0]
+    assert fam_device_mismatch(tmp_path, fake) == [
+        "ARTS_FAM_BACKEND: have OFF, want SHM"]
 
 
 def test_the_options_are_exactly_the_profile_library():
     assert fam_device_options(profile()) == [
-        "-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=ON",
+        "-DARTS_FAM_BACKEND=SHM",
         "-DARTS_FAM_DEVICE_INCLUDE_DIR=", "-DARTS_FAM_DEVICE_LIBRARY="]
     assert fam_device_options(real()) == [
-        "-DARTS_FAM_BACKEND=DEVICE", "-DARTS_FAM_DEVICE_VENDORED=OFF",
+        "-DARTS_FAM_BACKEND=DEVICE",
         f"-DARTS_FAM_DEVICE_INCLUDE_DIR={INCLUDE}",
         f"-DARTS_FAM_DEVICE_LIBRARY={LIBRARY}"]
+    for opts in (fam_device_options(profile()), fam_device_options(real())):
+        assert not any("VENDORED" in o for o in opts)
+
+
+def test_each_fam_device_names_one_backend():
+    assert {d: fam_backend_of(d) for d in FamDevice} == {
+        FamDevice.OFF: "OFF", FamDevice.FAKE: "SHM", FamDevice.REAL: "DEVICE"}
 
 
 def _fake_cmake(monkeypatch, tree, *, rc=0, then=None, output=""):
@@ -271,12 +280,12 @@ def _fake_cmake(monkeypatch, tree, *, rc=0, then=None, output=""):
 def test_a_mismatched_tree_is_reconfigured_and_says_how(tmp_path, monkeypatch):
     cache(tmp_path, ARTS_FAM_BACKEND="OFF")
     calls = _fake_cmake(monkeypatch, tmp_path, then={
-        "ARTS_FAM_BACKEND": "DEVICE", "ARTS_FAM_DEVICE_VENDORED": "OFF",
+        "ARTS_FAM_BACKEND": "DEVICE",
         "ARTS_FAM_DEVICE_INCLUDE_DIR": INCLUDE, "ARTS_FAM_DEVICE_LIBRARY": LIBRARY})
     said = []
     configure_fam_device(tmp_path, real(), on_line=said.append, prefix=["srun"])
     assert calls[0][:2] == ["srun", "cmake"]
-    assert calls[0][-4:] == fam_device_options(real())
+    assert calls[0][-3:] == fam_device_options(real())
     assert any("$ srun cmake -S" in line for line in said)
 
 
@@ -293,7 +302,7 @@ def test_a_failed_configure_ends_the_campaign_with_cmakes_text(tmp_path, monkeyp
 
 def test_a_configure_that_leaves_the_cache_different_is_an_error(tmp_path, monkeypatch):
     cache(tmp_path, ARTS_FAM_BACKEND="OFF")
-    _fake_cmake(monkeypatch, tmp_path, then={"ARTS_FAM_BACKEND": "SHM"})
+    _fake_cmake(monkeypatch, tmp_path, then={"ARTS_FAM_BACKEND": "DEVICE"})
     with pytest.raises(BuildError, match="still differs"):
         configure_fam_device(tmp_path, profile())
 
@@ -317,19 +326,18 @@ def test_a_dry_run_shows_the_reconfigure_and_changes_nothing(tmp_path, monkeypat
     said = []
     _campaign(tmp_path, profile())._match_fam_device(said.append, [], dry=True)
     assert "a real run reconfigures it first" in said[0]
-    assert "-DARTS_FAM_DEVICE_VENDORED=ON" in said[0]
-    cache(tmp_path, ARTS_FAM_BACKEND="DEVICE", ARTS_FAM_DEVICE_VENDORED="ON")
+    assert "-DARTS_FAM_BACKEND=SHM" in said[0]
+    cache(tmp_path, ARTS_FAM_BACKEND="SHM")
     said.clear()
     _campaign(tmp_path, profile())._match_fam_device(said.append, [], dry=True)
     assert "matches the profile" in said[0]
 
 
 def test_a_real_run_reconfigures(tmp_path, monkeypatch):
-    cache(tmp_path, ARTS_FAM_BACKEND="SHM")
-    calls = _fake_cmake(monkeypatch, tmp_path, then={
-        "ARTS_FAM_BACKEND": "DEVICE", "ARTS_FAM_DEVICE_VENDORED": "ON"})
+    cache(tmp_path, ARTS_FAM_BACKEND="DEVICE")
+    calls = _fake_cmake(monkeypatch, tmp_path, then={"ARTS_FAM_BACKEND": "SHM"})
     _campaign(tmp_path, profile())._match_fam_device(None, [], dry=False)
-    assert calls and calls[0][-4:] == fam_device_options(profile())
+    assert calls and calls[0][-3:] == fam_device_options(profile())
 
 
 def test_a_new_tree_is_configured_on_the_profile_library(tmp_path, monkeypatch):
@@ -357,7 +365,8 @@ def test_a_new_tree_is_configured_on_the_profile_library(tmp_path, monkeypatch):
 def test_a_dry_run_on_a_missing_tree_names_the_configure(tmp_path):
     with pytest.raises(BuildError) as exc:
         ensure_build_dir(tmp_path / "none", fam_options=fam_device_options(profile()))
-    assert "-DARTS_FAM_BACKEND=DEVICE -DARTS_FAM_DEVICE_VENDORED=ON" in str(exc.value)
+    assert "-DARTS_FAM_BACKEND=SHM" in str(exc.value)
+    assert "VENDORED" not in str(exc.value)
 
 
 # -- the cells -----------------------------------------------------------------
@@ -425,6 +434,25 @@ def test_one_rank_flush_trace_lands_beside_the_cell_log(tmp_path, device):
     trace = f"export ARTS_FLUSH_LOG={flush_log_path(tmp_path, fam)}"
     assert trace in slurm_job_script(fam, real("slurm"), marker)
     assert trace in flux_job_script(fam, real("flux"), marker)
+
+
+def test_a_fake_cell_states_the_region_size_to_the_library(tmp_path):
+    # The library sizes its region at load, before the cfg is parsed, so the
+    # pool the profile names (or the runtime's default) plus the margin is
+    # handed to it; nothing else carries the variable.
+    fam = fam_cell(1, FamDevice.FAKE)
+    assert build_env(fam, profile(), tmp_path)["ARTS_FAKE_CXL_REGION_SIZE"] == \
+        str((64 + 64) << 20)
+    assert build_env(fam, profile(fam_pool_mb=512), tmp_path)[
+        "ARTS_FAKE_CXL_REGION_SIZE"] == str((512 + 64) << 20)
+    assert "ARTS_FAKE_CXL_REGION_SIZE" not in build_env(
+        fam_cell(1, FamDevice.REAL), real(), tmp_path)
+    assert "ARTS_FAKE_CXL_REGION_SIZE" not in build_env(
+        _cell(RuntimeKind.ARTS, 1), profile(), tmp_path)
+    marker = tmp_path / f"{fam.slug}.rc"
+    slurm_fake = profile("slurm", fam_device="fake", nodes=[1], fam_pool_mb=32)
+    assert f"export ARTS_FAKE_CXL_REGION_SIZE={(32 + 64) << 20}" in \
+        slurm_job_script(fam, slurm_fake, marker)
 
 
 def test_multi_rank_flush_trace_is_discarded(tmp_path):

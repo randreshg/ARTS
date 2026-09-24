@@ -28,12 +28,6 @@ extern "C" {
 #define ARTS_FAM_PAGE 4096u
 #define ARTS_FAM_HEADER_BYTES ARTS_FAM_PAGE
 
-/* Ceiling on what one run's pool may cost the host it runs on, checked at
- * config load against that machine's own free memory: a pool may claim only a
- * fraction of what is free, leaving the runtime, the ranks and the page cache
- * the rest. */
-#define ARTS_FAM_BUDGET_CAP_MB 2048u
-
 /* The byte a fresh block is filled with, so that a read before the first write
  * is reproducible on every rank instead of reading the object's zeroes.  Spelled
  * here and nowhere else: strict.c writes it and the test that checks it reads
@@ -73,6 +67,10 @@ void *arts_fam_alloc(size_t bytes);
 void arts_fam_free(void *p);
 bool arts_fam_contains(const void *p);
 
+/* The pool's base, where its header lives, or NULL outside the window between
+ * arts_fam_init and arts_fam_fini. */
+const void *arts_fam_pool_base(void);
+
 /* Which rank's slice holds p, as a pure function of the address: the slice
  * index.  A slot's owner is therefore never a field and never a wire member --
  * the address alone says it, so no two-field publication can tear.  p must be
@@ -82,23 +80,15 @@ bool arts_fam_contains(const void *p);
 unsigned arts_fam_owner_of(const void *p);
 
 /* Refuses, at config load and on every rank, a configuration this build's
- * backend cannot serve or this host cannot afford. */
+ * backend cannot serve.  A pool is never refused for its size. */
 void arts_fam_config_check(const struct arts_config_s *config);
 
-/* Boot hooks.  arts_fam_boot_prepare runs on EVERY rank before anything else
- * maps and before the launcher forks: a backend whose region is inherited has
- * no later chance to create it, and a rank that mapped after the fabric and
- * the registered pool could find its fixed address taken while another rank
- * did not.  arts_fam_boot_child_exec runs in a forked child immediately before
- * it execs.  arts_fam_boot_launched runs on the rank that spawned the others
- * as soon as they are forked: a handoff a backend placed in the environment is
- * dropped there, before any thread that reads the environment exists, and a
- * rank that adopted the region has already dropped its own.  The two device
- * hooks ride the address exchange, the one round every rank already performs
- * before a worker thread exists. */
+/* Boot hook, on EVERY rank before the fabric and the registered pool exist:
+ * it settles the pool size and the strict mode from the rank's own parsed
+ * config.  The arena itself is taken at the address exchange, the one round
+ * every rank already performs before a worker thread exists: rank 0 takes it
+ * and publishes its base, and every other rank records what rank 0 named. */
 void arts_fam_boot_prepare(const struct arts_config_s *config);
-void arts_fam_boot_child_exec(void);
-void arts_fam_boot_launched(void);
 void arts_fam_device_publish(uint64_t *base, uint64_t *size);
 void arts_fam_device_record(unsigned from_rank, uint64_t base, uint64_t size);
 
@@ -196,27 +186,20 @@ static inline void arts_fam_strict_unhold(const void *p, size_t bytes) {
 
 #endif /* ARTS_FAM */
 
-/* Module-internal: the strict oracle, which exists wherever the store is one
- * host's memory -- the inherited mapping, and the device backend over the
- * vendored fake library -- and nowhere else.  Named from the backend TU and
+/* Module-internal: the strict oracle, which exists over the vendored fake
+ * library, one host's memory, and nowhere else.  Named from the adapter and
  * from nowhere else but the read-only query below, which is what makes a
- * build over a real device library's freedom from these symbols structural
- * rather than inspected.  The poison is written through the backing as well
- * as the private view: a block just allocated has no holder and no reload
- * yet, so this is the one write outside a producer flush and the sampled
- * eviction that can reach the backing, and it can meet no other copy of its
- * lines. */
-#if defined(ARTS_FAM) &&                                                       \
-    (defined(ARTS_FAM_BACKEND_SHM) || defined(ARTS_FAM_DEVICE_VENDORED))
+ * build over a device library's freedom from these symbols structural rather
+ * than inspected.  The poison is written through the backing as well as the
+ * private view: a block just allocated has no holder and no reload yet, so
+ * this is the one write outside a producer flush and the sampled eviction
+ * that can reach the backing, and it can meet no other copy of its lines. */
+#if defined(ARTS_FAM) && defined(ARTS_FAM_BACKEND_SHM)
 #define ARTS_FAM_HAS_STRICT 1
-void *arts_fam_strict_map(int fd, void *want, uint64_t bytes);
-#ifdef ARTS_FAM_BACKEND_DEVICE
-/* Re-maps [base, base + bytes) of the device library's shared mapping private
- * at its own address, with the same backing object shared elsewhere; nothing
- * outside that range is touched.  Returns base. */
+/* Re-maps [base, base + bytes) of the library's shared mapping private at its
+ * own address, with the same backing object shared elsewhere; nothing outside
+ * that range is touched.  Returns base. */
 void *arts_fam_strict_remap(void *base, uint64_t bytes);
-#endif
-void *arts_fam_strict_shared_base(void);
 void arts_fam_strict_unmap(void *base, uint64_t bytes);
 void arts_fam_strict_flush(const void *p, size_t bytes, bool producer);
 void arts_fam_strict_poison(void *p, size_t bytes);

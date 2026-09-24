@@ -10,8 +10,8 @@
  * the first round's slot back.  A first leg reaches the pool directly and
  * proves the free itself poisons: a slot written, published and freed reads
  * the poison byte while it waits on the free list, before any allocation
- * could have re-poisoned it.  Registered against the strict cfg, so the knob
- * is never read from the program.
+ * could have re-poisoned it.  Registered only where strict mode is the
+ * tree's default, so the knob is never read from the program.
  */
 #include "arts.h"
 #include "arts/fam/pool.h"
@@ -36,8 +36,8 @@ static void one_round(void) {
   void *p = NULL;
   arts_guid_t g = arts_db_create(&p, BYTES, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   if (!arts_fam_strict()) {
-    /* The registration names a strict cfg; a run without the mode is a
-     * misconfiguration, not a reason to pass quietly. */
+    /* The registration runs under the tree's strict default; a run without
+     * the mode is a misconfiguration, not a reason to pass quietly. */
     (void)fprintf(stderr, "FAIL fam_direct_fresh_slot: strict mode is off\n");
     arts_test_fail();
     arts_shutdown();

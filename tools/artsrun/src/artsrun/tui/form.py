@@ -48,7 +48,7 @@ PROFILE_FIELDS: list[FieldSpec] = [
     FieldSpec("fam_device", "fam device library", "choice",
               "whether and on which library the fabric-attached-memory "
               "entries run: off = not available here (a FAM entry is then "
-              "refused), fake = the vendored emulation, real = the device "
+              "refused), fake = the vendored fake library (the SHM backend), real = the device "
               "library named by the two paths below; default = fake under "
               "launcher=local and off elsewhere. launcher=local refuses real; "
               "off the local launcher fake needs nodes [1]. The build tree is "

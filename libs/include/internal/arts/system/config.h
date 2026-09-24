@@ -65,11 +65,6 @@ typedef enum {
    attempt to name ports by hand. */
 #define ARTS_RESOLVED_PORTS_ENV "ARTS_RESOLVED_PORTS"
 
-/* How the spawning rank tells the ranks it spawns which object the run's
-   fabric-attached-memory pool is.  Not a config key: it is an internal
-   handoff, like the resolved port block. */
-#define ARTS_FAM_SHM_ENV "ARTS_FAM_SHM"
-
 /* Base of the strict oracle's random write-back sequence.  Unset means 0, and
    0 is a perfectly good base: the sequence a (thread, rank) draws is a pure
    function of this value and its own two indices, with no process entropy
@@ -80,8 +75,8 @@ typedef enum {
 
 /* fam_strict's default: on where the pool is the vendored fake library, whose
    one host's memory cannot show a missing flush otherwise; off everywhere
-   else, so that a real device's flush path is the one that runs. */
-#ifdef ARTS_FAM_DEVICE_VENDORED
+   else, so that a device library's flush path is the one that runs. */
+#ifdef ARTS_FAM_BACKEND_SHM
 #define ARTS_FAM_STRICT_DEFAULT "1"
 #else
 #define ARTS_FAM_STRICT_DEFAULT "0"

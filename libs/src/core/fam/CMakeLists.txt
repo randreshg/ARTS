@@ -3,26 +3,17 @@
 # TUs into their own libraries with their own definitions; only a tree whose
 # own library is FAM-enabled compiles and links these objects.
 if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
-    # Exactly one backend TU belongs beside pool.c -- the two backends cannot
-    # both compile in one tree (device.c includes headers that exist only
-    # where the device library does), so the selection happens here, not
-    # behind an internal #ifdef.  Choosing at this level is what guarantees
-    # that every member of the backend seam is defined by the TU the build
-    # compiled.
-    set(ARTS_FAM_SOURCES pool.c)
+    # library.c speaks the device library's API for both backends; the
+    # backend decides only which library it links and whether strict.c is
+    # compiled beside it.  strict.c gives one host's memory the second
+    # coherency domain a store that is not coherent across hosts has, so it
+    # exists over the vendored fake library and never over a device library,
+    # which has that domain already.
+    set(ARTS_FAM_SOURCES pool.c library.c)
+    set(_arts_fam_tu_floor 2)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        # strict.c gives one host's memory the second coherency domain a store
-        # that is not coherent across hosts has.
-        list(APPEND ARTS_FAM_SOURCES shm.c strict.c)
+        list(APPEND ARTS_FAM_SOURCES strict.c)
         set(_arts_fam_tu_floor 3)
-    elseif(ARTS_FAM_DEVICE_VENDORED)
-        # The vendored fake library is one host's memory as well, so the
-        # oracle applies to it; over a real device library it does not.
-        list(APPEND ARTS_FAM_SOURCES device.c strict.c)
-        set(_arts_fam_tu_floor 3)
-    else()
-        list(APPEND ARTS_FAM_SOURCES device.c)
-        set(_arts_fam_tu_floor 2)
     endif()
     if(ARTS_FAM_TREE_RESIDENCY STREQUAL "")
         # Source-list carrier: these objects are never compiled in this tree.

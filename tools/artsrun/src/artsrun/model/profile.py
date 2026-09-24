@@ -19,9 +19,10 @@ class FamDevice(StrEnum):
     """Whether, and on which device library, the fabric-attached-memory
     entries run.
 
-    `off`: fabric-attached memory is not available where this profile runs.
-    `fake`: the vendored emulation (one host's shared memory standing in for
-    the device).  `real`: the device library itself, named by path.
+    `off`: fabric-attached memory is not available where this profile runs
+    (ARTS_FAM_BACKEND=OFF).  `fake`: the vendored fake library, one host's
+    shared memory standing in for the device (ARTS_FAM_BACKEND=SHM).
+    `real`: the device library itself, named by path (ARTS_FAM_BACKEND=DEVICE).
     """
 
     OFF = "off"

@@ -84,7 +84,7 @@ and which one is a profile setting, never a campaign option or a guess:
 
 | field | meaning |
 |---|---|
-| `fam_device` | `off` (fabric-attached memory is not available where the profile runs; the default), `fake` (the vendored emulation of the device library) or `real` (the device library itself) |
+| `fam_device` | `off` (fabric-attached memory is not available where the profile runs; the default), `fake` (the vendored fake library, `ARTS_FAM_BACKEND=SHM`) or `real` (the device library itself, `ARTS_FAM_BACKEND=DEVICE`) |
 | `fam_device_include_dir` | `real` only: the device library's headers (absolute path) |
 | `fam_device_library` | `real` only: the library file itself (absolute path) |
 | `fam_strict` | `fake` only: `true` (the default there) or `false` |
@@ -114,13 +114,14 @@ poisoned fresh blocks sharpen it. It is a test oracle for the flush
 discipline the real store needs, never a performance mode: turn it off
 (`fam_strict: false`) to exercise the vendored library's own flush path.
 
-artsrun's FAM entries always run on the `DEVICE` backend; `SHM` is a
-test-tree backend (ctest) only. Before building, a campaign that runs a FAM
-entry compares the tree's cache with the profile — `ARTS_FAM_BACKEND=DEVICE`,
-and `ARTS_FAM_DEVICE_VENDORED=ON` for `fake`, or `OFF` with
-`ARTS_FAM_DEVICE_INCLUDE_DIR`/`ARTS_FAM_DEVICE_LIBRARY` equal to the profile's
-paths for `real` — and on any difference reconfigures the tree with exactly
-those values (printing the cmake command; `fake` also clears the two paths).
+Each `fam_device` names one backend: `off` ↔ `ARTS_FAM_BACKEND=OFF`, `fake`
+↔ `SHM` (the vendored fake library), `real` ↔ `DEVICE`. Before building, a
+campaign that runs a FAM entry compares the tree's cache with the profile —
+`ARTS_FAM_BACKEND=SHM` with both device paths unset for `fake`, or
+`ARTS_FAM_BACKEND=DEVICE` with `ARTS_FAM_DEVICE_INCLUDE_DIR`/
+`ARTS_FAM_DEVICE_LIBRARY` equal to the profile's paths for `real` — and on
+any difference reconfigures the tree with exactly those values (printing the
+cmake command; `fake` also clears the two paths).
 A new tree is configured with them from the start. If cmake fails — the
 vendored library does not build, the real headers or library are missing —
 the campaign stops with cmake's own error: there is no fallback and no FAM
@@ -141,8 +142,13 @@ fam_device_library: /path/to/device/lib/libdevice.so
 Under `real` each FAM cell is launched through the root `run_cxl.sh`
 wrapper, which sets the device's regions up once around the whole launch
 (its utilities must be on `PATH` on the compute nodes); under `fake` nothing
-wraps, since the vendored library maps its own region. The manifest records
-each cell's `fam_device`. A one-rank FAM cell's launch environment sets
+wraps, since the vendored library maps its own region. That region is sized
+when the library loads, before the cfg is read, so a `fake` cell's launch
+environment sets `ARTS_FAKE_CXL_REGION_SIZE` to the profile's `fam_pool_mb`
+(the runtime's 64 MB when unset) plus 64 MiB. The region has one name and
+one address per host, so a host runs one `fake` campaign at a time. The
+manifest records each cell's `fam_device`. A one-rank FAM cell's launch
+environment sets
 `ARTS_FLUSH_LOG` to `<cell>.flush.bin` beside the cell's log, where the
 library writes its flush trace; a cell with more than one rank sets it to
 `/dev/null`, because the library takes one path for all ranks and every rank

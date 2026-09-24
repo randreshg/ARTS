@@ -107,5 +107,5 @@ if(ARTS_BUILD_TESTS)
             PASS_REGULAR_EXPRESSION "PASS: finish EDT output fired"
             FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
-    arts_fam_device_test_env()
+    arts_fam_test_env()
 endif()

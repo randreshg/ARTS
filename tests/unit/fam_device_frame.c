@@ -3,10 +3,10 @@
 /// rank 0.
 ///
 /// Fails on: a frame layout in which the header transfer (offsetof(addr)
-/// bytes) does not carry the two fields; and, where device.c is compiled, on a
-/// recorder that accepts an arena from a rank other than 0.  Under any other
-/// backend only the layout half runs, which is what keeps the frame honest in
-/// every tree.
+/// bytes) does not carry the two fields; and, where the library adapter is
+/// compiled, on a recorder that accepts an arena from a rank other than 0.  In
+/// a tree with no FAM backend only the layout half runs, which is what keeps
+/// the frame honest in every tree.
 ///
 /// The struct comes from arts/transport/net.h, which compiles standalone.  A
 /// private copy of it would be green whatever the real struct does, because
@@ -69,7 +69,7 @@ int main(void) {
   close(sv[0]);
   close(sv[1]);
 
-#ifdef ARTS_FAM_BACKEND_DEVICE
+#if defined(ARTS_FAM_BACKEND_SHM) || defined(ARTS_FAM_BACKEND_DEVICE)
   /* Only rank 0's arena is recorded, and a zero base is never recorded. */
   extern void arts_fam_device_record(unsigned from_rank, uint64_t base,
                                      uint64_t size);

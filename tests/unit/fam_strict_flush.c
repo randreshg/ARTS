@@ -200,7 +200,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   if (!arts_fam_strict()) {
     arts_printf("FAIL fam_strict_flush: this test needs the oracle; its cfg "
-                "does not set fam_strict\n");
+                "or its build turns fam_strict off\n");
     arts_test_fail();
     arts_shutdown();
     return;
