@@ -114,6 +114,24 @@ void arts_db_buf_release(arts_shared_ptr_t *h);
  * site may read that as normal. */
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size);
 
+#ifdef ARTS_FAM
+/* Withdraw the cache's descriptor when it names `payload`, leaving the block
+ * with no payload and needing materialization again, and say whether this
+ * call withdrew it.  The bytes are not this call's: the descriptor is
+ * recycled through its own deleter and the storage is untouched.
+ *
+ * The caller's obligation: it installed that descriptor, over storage it is
+ * about to hand back, and no other user of the block is holding it — storage
+ * that may be handed back is storage the block has no holder for.
+ *
+ * The match is by ADDRESS, and that is what makes the call safe where a
+ * descriptor carries its payload inside itself: storage that can be handed
+ * back never lies inside a descriptor, so the compare fails and a live buffer
+ * is never withdrawn.  That is an assumption about where the two kinds of
+ * storage come from, not a property of the layout. */
+bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload);
+#endif
+
 #ifdef ARTS_FAM_DIRECT
 /* Make `payload` this cache's payload if the cache has none, stamped
  * `version`.  The descriptor does not own the bytes: its deleter recycles the

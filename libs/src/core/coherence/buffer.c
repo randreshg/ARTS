@@ -251,6 +251,32 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
 #endif
 }
 
+#ifdef ARTS_FAM
+bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
+  if (cache == NULL || payload == NULL) {
+    return false;
+  }
+  arts_shared_ptr_t h = arts_db_buf_acquire(cache);
+  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
+  bool withdrawn = false;
+  if (b != NULL && (const void *)b->data == payload) {
+    /* The load ref pins the descriptor against recycle, so the slot's own
+     * identity cannot have drifted and returned under the compare. */
+    withdrawn = arts_atomic_shared_compare_exchange(&cache->buffer, h, NULL);
+    if (withdrawn) {
+      /* The slot is empty again, so the block needs materializing again.  The
+       * flag is a hint with one safe direction: a 1 over a descriptor another
+       * thread installs in between costs that descriptor's next materialize
+       * one failed install and nothing else, whereas a 0 over an empty slot
+       * is a claim no later call corrects -- so the restore is unconditional. */
+      __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
+    }
+  }
+  arts_db_buf_release(&h);
+  return withdrawn;
+}
+#endif
+
 /* Version-conditional publish of a fully-initialized private buffer (fields +
  * payload bytes already set; no cb yet).  Shared by the copy install
  * (arts_db_buf_install) and the rendezvous landed install

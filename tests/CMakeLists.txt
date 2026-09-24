@@ -179,6 +179,7 @@ set(TEST_PROGRAMS
     edt_dep_variants
     event_hint_presets
     db_labeled_guid
+    db_create_after_first_touch
     multinode_labeled_guid
     multinode_event_hint
     per_db_buf_pool
@@ -224,6 +225,7 @@ endif()
 # The DIRECT-only targets.  Their sources arrive with their tasks; the names
 # are appended there, in the same edit as each .c file, never here.
 if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
+    list(APPEND TEST_PROGRAMS fam_slot_discard_unadopt)
 endif()
 
 # CXL datablocks exist only in a CXL build, and there only under EXCL x PURGE
@@ -1061,6 +1063,14 @@ register_single_node_test(event_hint_presets)
 
 register_single_node_test(db_labeled_guid)
 
+register_single_node_test(db_create_after_first_touch TIMEOUT 60)
+register_multinode_test(db_create_after_first_touch TIMEOUT 120 VARIANTS 2n 3n 4n)
+set_tests_properties(db_create_after_first_touch PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+foreach(_v 2n 3n 4n)
+    set_tests_properties(db_create_after_first_touch_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
+
 if(NOT "per_db_buf_pool" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
     register_pure_unit_test(per_db_buf_pool)
 endif()
@@ -1560,6 +1570,15 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # exit status.
     register_fam_single_node_test(fam_slot_rule TIMEOUT 30)
     register_fam_multinode_test(fam_slot_rule TIMEOUT 60)
+    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
+        # A store handed back leaves nothing naming it.  Where a descriptor
+        # carries its payload it names no storage that can be handed back, so
+        # the assertions hold there by address disjointness rather than by the
+        # withdrawal they are written for -- a residency this test cannot
+        # fail.  One rank: the cache it asserts on is private to the rank that
+        # makes it, so peers add nothing.
+        register_fam_single_node_test(fam_slot_discard_unadopt TIMEOUT 30)
+    endif()
     # A cache made by an acquiring create is on the block's destroy roster, so
     # it gives its store up with the block instead of outliving it.  Needs a
     # rank that is not the block's home.

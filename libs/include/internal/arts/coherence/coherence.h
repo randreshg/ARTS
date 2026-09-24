@@ -373,7 +373,9 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
 bool arts_db_fam_slot_create(struct arts_db_cache_s *cache);
 /* Drop a slot this rank allocated for a create that turned out to create
  * nothing.  Only the allocating rank may call it — arts_fam_free requires
- * the caller's own slice and is fatal otherwise, which is the check. */
+ * the caller's own slice and is fatal otherwise, which is the check.  The
+ * cache is left naming neither the slot nor a payload in it: a store that
+ * goes back leaves nothing behind that could hand it out again. */
 void arts_db_fam_slot_discard(struct arts_db_cache_s *cache);
 /* The block is gone: free the slot here, or tell its owner to.  Exactly one
  * caller per block — the teardown that claimed the route slot. */

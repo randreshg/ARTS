@@ -611,24 +611,25 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== arts_db_create_install_home_buffer ================================
- * EXCL home init: install the zero-init buffer at creation time.
+ * EXCL home init: the home leaves a create holding the block's storage.
  *
- * Where the home is the canonical backing store, this is that store: the first
- * GRANT carries its data (empty / zero at first) to the requester, and the
- * requester's first RW release sends the updated contents back via
- * EXCL_RELEASE publish.
+ * Where the home is the canonical backing store, that storage is its own
+ * buffer, zero-initialized here: the first GRANT carries its data (empty /
+ * zero at first) to the requester, and the requester's first RW release sends
+ * the updated contents back via EXCL_RELEASE publish.
  *
- * Where the block's bytes live in a store of their own, this buffer is a
- * WORKING COPY like every other: the creator's own turn purges it into the
- * store at its zero edge, and any later turn here fetches over it before
- * admitting anyone — nothing ever reads it as the canonical copy. */
+ * Where the block's bytes live in a store of their own, this is the home's
+ * handle on that store — a working copy the home's own turns fetch into and
+ * purge out of, or the store itself where no copy is kept.  Nothing is
+ * invented there: a create's bytes are the creator's, and the handle is made
+ * against the store the caller must already have recorded. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size) {
   if (lock_is_cxl(cache)) {
     return; /* the canonical bytes are in CXL and belong to no rank's buffer */
   }
   if (db_size > 0) {
-    arts_db_buf_write_inplace(cache, /*data=*/NULL, db_size); /* zero-init */
+    arts_db_buf_write_inplace(cache, /*data=*/NULL, db_size);
   }
 }
 

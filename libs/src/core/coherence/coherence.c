@@ -197,12 +197,21 @@ bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
   return true;
 }
 
+/* A store that goes back leaves nothing naming it.  The cache stops naming it
+ * first, so nothing can adopt it after this point; then the descriptor that
+ * named it is withdrawn, because a descriptor outliving its storage would
+ * hand a later, legitimate first user a pointer into a granule that belongs
+ * to some other block by then.  Only a create that made nothing reaches here,
+ * so the descriptor being withdrawn is the one that create installed a moment
+ * earlier, over the store it is handing back. */
 void arts_db_fam_slot_discard(struct arts_db_cache_s *cache) {
   uint64_t addr = __atomic_exchange_n(&cache->fam_addr, (uint64_t)0,
                                       __ATOMIC_ACQ_REL);
-  if (addr != 0) {
-    arts_fam_free((void *)(uintptr_t)addr);
+  if (addr == 0) {
+    return;
   }
+  (void)arts_db_buf_withdraw(cache, (const void *)(uintptr_t)addr);
+  arts_fam_free((void *)(uintptr_t)addr);
 }
 
 /* A slot is freed at exactly one of three points: a create that allocated

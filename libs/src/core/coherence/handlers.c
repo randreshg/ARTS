@@ -280,6 +280,44 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   if (existing != NULL && existing->db_type == ARTS_DB) {
     struct arts_db_cache_s *cache = &existing->cache;
     struct arts_db_s *db = existing;
+    if (cache->db_size == 0) {
+      cache->db_size = db_size;
+    }
+#ifdef ARTS_FAM
+    /* One block, one store.  An ANNOUNCED address is authoritative: a create
+     * whose announce reaches an object the home already has made no block, so
+     * the address it names must be the one the home already holds, and a
+     * different one means two creators minted a store for one label -- which
+     * the record refuses.  A create that named no address leaves the store to
+     * the home, which is the only other rank that can make one.
+     *
+     * Before the buffer install below, which adopts the store on the
+     * residency that keeps no copy: a home that installs before it knows the
+     * address adopts nothing, and the block would then have storage here only
+     * once something else happened to ask for it.  After the size, which is
+     * what the allocation is made against. */
+    bool home_slot_minted = false;
+    if (p->fam_addr != 0) {
+      (void)arts_db_fam_slot_record(cache, p->fam_addr);
+    } else {
+      home_slot_minted = arts_db_fam_slot_create(cache);
+    }
+    /* An announce carrying no address is a creator with no write turn of its
+     * own coming, so nothing will write the store before a first acquirer
+     * reads it and the declared-zero contract has to be established here.
+     *
+     * Unlike the fresh stub below, this cache is already published, so the
+     * zero is not protected by being pre-install.  It does not need to be:
+     * the mint it is conditional on succeeds only on a cache that named no
+     * store, and a grant is served out of the store the cache names, so a
+     * cache with none has served nobody.  Reaching it at all takes an object
+     * that declares a size and holds no store, a state no sequence of
+     * same-sized creates of one label produces -- the first of them makes
+     * the store and every later one finds it. */
+    if (home_slot_minted && no_acquire) {
+      arts_db_fam_slot_zero(cache);
+    }
+#endif
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
     bool buf_absent = (arts_shared_get(buf_h) == NULL);
     arts_db_buf_release(&buf_h);
@@ -290,20 +328,6 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
        * won an internal race. */
       arts_db_create_install_home_buffer(cache, db_size);
     }
-    if (cache->db_size == 0) {
-      cache->db_size = db_size;
-    }
-#ifdef ARTS_FAM
-    /* One block, one store.  An ANNOUNCED address is authoritative: a create
-     * whose announce reaches an object the home already has made no block, so
-     * the address it names must be the one the home already holds, and a
-     * different one means two creators minted a store for one label -- which
-     * the record refuses.  A create that named no address says nothing here,
-     * and the store the home minted for the block stands. */
-    if (p->fam_addr != 0) {
-      (void)arts_db_fam_slot_record(cache, p->fam_addr);
-    }
-#endif
     /* The home-directory fields below are out of bounds on a cache-only
      * stub, and a stub is never installed on a block's own home rank: the
      * acquire path installs one only when the owner is not this rank, and a
@@ -462,13 +486,6 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   if (winner != NULL && winner->db_type == ARTS_DB) {
     struct arts_db_cache_s *cache = &winner->cache;
     struct arts_db_s *db = winner;
-    arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-    bool buf_absent = (arts_shared_get(buf_h) == NULL);
-    arts_db_buf_release(&buf_h);
-    if (buf_absent && db_size > 0 && !no_acquire) {
-      /* Same seam as the fresh-stub path — see the coalesce branch above. */
-      arts_db_create_install_home_buffer(cache, db_size);
-    }
     if (cache->db_size == 0) {
       cache->db_size = db_size;
     }
@@ -487,7 +504,37 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
     if (!no_acquire) {
       winner_gone = fam_roster_creator_published(db, db_guid, creator_rank);
     }
+    /* The store the dead stub carried is the winner's, because one block has
+     * one store — but only an announced address may insist on it.  A store
+     * this rank minted was provisional: it is offered to the winner, and what
+     * the winner does not take stays in the local for the free below.  A
+     * winner the re-check just found already destroyed takes neither: a store
+     * must not be recorded on a cache whose teardown has passed.
+     *
+     * Before the buffer install below, for the same reason as the coalesce
+     * branch above: the install adopts the store on the residency that keeps
+     * no copy, and it can only adopt an address the cache already names.  It
+     * follows the re-check rather than preceding it, as the other branches'
+     * store step precedes their announce, because the re-check is what says
+     * whether there is still a cache to record onto. */
+    if (lost_addr != 0 && !winner_gone) {
+      if (stub_slot_minted) {
+        if (fam_slot_offer(cache, lost_addr)) {
+          lost_addr = 0;
+        }
+      } else {
+        (void)arts_db_fam_slot_record(cache, lost_addr);
+        lost_addr = 0;
+      }
+    }
 #endif
+    arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
+    bool buf_absent = (arts_shared_get(buf_h) == NULL);
+    arts_db_buf_release(&buf_h);
+    if (buf_absent && db_size > 0 && !no_acquire) {
+      /* Same seam as the fresh-stub path — see the coalesce branch above. */
+      arts_db_create_install_home_buffer(cache, db_size);
+    }
 #if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
     defined(ARTS_PROTOCOL_FLUSH)
     if (!no_acquire) {
@@ -496,26 +543,12 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
 #endif
   }
 #ifdef ARTS_FAM
-  /* The store the dead stub carried is the winner's, because one block has
-   * one store — but only an announced address may insist on it.  A store this
-   * rank minted was provisional: it is offered to the winner and, if the
-   * winner already has one, goes back to this rank's slice.  A store the
-   * creator announced is never freed here — the free demands the caller's own
-   * slice, and the creator's block still rests in it.  A winner the re-check
-   * above found already destroyed takes neither: a provisional store goes
-   * straight back to this rank's slice instead of onto a cache whose teardown
-   * has passed, and an announced one is left to the creator that re-check just
-   * notified — a foreign slice cannot be freed here, and a second free of a
-   * store the winner did record would hand one granule out twice. */
-  if (lost_addr != 0) {
-    if (stub_slot_minted) {
-      if (winner_gone || winner == NULL || winner->db_type != ARTS_DB ||
-          !fam_slot_offer(&winner->cache, lost_addr)) {
-        arts_fam_free((void *)(uintptr_t)lost_addr);
-      }
-    } else if (!winner_gone && winner != NULL && winner->db_type == ARTS_DB) {
-      (void)arts_db_fam_slot_record(&winner->cache, lost_addr);
-    }
+  /* A provisional store no cache took goes back to this rank's slice.  An
+   * announced one is never freed here — the free demands the caller's own
+   * slice, and the creator's block still rests in it; a winner that is
+   * already gone leaves it to the creator the re-check above notified. */
+  if (lost_addr != 0 && stub_slot_minted) {
+    arts_fam_free((void *)(uintptr_t)lost_addr);
   }
 #endif
   if (winner != NULL) {
