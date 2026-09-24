@@ -1687,6 +1687,14 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # flavour.
     register_fam_single_node_test(fam_slot_reuse_after_destroy TIMEOUT 90)
     register_fam_multinode_test(fam_slot_reuse_after_destroy TIMEOUT 90)
+
+    # 7 ranks x (1 worker + 1 progress) exercises the arm at the widest
+    # geometry a 14-CPU host can hold without oversubscribing.
+    foreach(t fam_slot_rule fam_remote_write_read fam_ro_cohort
+              fam_create_release_remote fam_slot_reuse_after_destroy
+              fam_no_acquire_first_use fam_labeled_create)
+        register_fam_multinode_test(${t} VARIANTS 7n TIMEOUT 120)
+    endforeach()
 endif()
 
 if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
