@@ -235,22 +235,20 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
       cache->db_size = db_size;
     }
 #ifdef ARTS_FAM
-    /* One block, one store.  An ANNOUNCED address is authoritative: a create
-     * whose announce reaches an object the home already has made no block, so
-     * the address it names must be the one the home already holds, and a
-     * different one means two creators minted a store for one label -- which
-     * the record refuses.  A create that named no address leaves the store to
-     * the home, which is the only other rank that can make one.
+    /* One block, one store, named by the create that made the object before
+     * the object was published.  An ANNOUNCED address is authoritative: a
+     * create whose announce reaches an object the home already has made no
+     * block, so the address it names must be the one the home already holds,
+     * and a different one means two creators minted a store for one label --
+     * which the record refuses.  An announce that names no address brings
+     * nothing to record.
      *
      * Before the buffer install below, which adopts the store on the
      * residency that keeps no copy: a home that installs before it knows the
      * address adopts nothing, and the block would then have storage here only
-     * once something else happened to ask for it.  After the size, which is
-     * what the allocation is made against. */
+     * once something else happened to ask for it. */
     if (p->fam_addr != 0) {
       (void)arts_db_fam_slot_record(cache, p->fam_addr);
-    } else {
-      (void)arts_db_fam_slot_create(cache);
     }
 #endif
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
