@@ -378,8 +378,8 @@ static bool shutting_down(void) {
  * consumed with one exchange; a release that finds none asks for one first.
  *
  * The source must stay valid for the whole call — the caller's hold on the
- * bytes is what keeps it so.  Answers false only for the shutdown escape, the
- * one exit that leaves the round unfinished and the wait state alive for a
+ * bytes is what keeps it so.  Answers false only under shutdown, the one
+ * exit that leaves the round unfinished and its wait state leaked for a
  * reply that may still arrive; a home that no longer has the block is a
  * finished round with nothing to write into. */
 static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
@@ -394,8 +394,13 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
     w->line_rkey = __atomic_load_n(&cache->home_line_rkey, __ATOMIC_RELAXED);
   } else {
     send_flush_announce(home, cache->db_guid, w);
-    arts_db_await_ack(&w->sem);
+    if (!arts_db_await_ack(&w->sem)) {
+      return false; /* the escape is recorded by the await */
+    }
     if (shutting_down()) {
+      /* The reply came, but the write-back it credits is dropped: its own
+       * wait is the one left unawaited. */
+      __atomic_fetch_add(&arts_shutdown_abandon.waits, 1u, __ATOMIC_RELAXED);
       return false;
     }
     if (w->txid == 0) {
@@ -408,8 +413,7 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
   arts_net_put_payload((int)home, w->line_addr, w->line_rkey, w->txid, payload,
                        cache->db_size, NULL, NULL);
   send_flush_commit(home, cache->db_guid, w->txid, w);
-  arts_db_await_ack(&w->sem);
-  if (shutting_down()) {
+  if (!arts_db_await_ack(&w->sem)) {
     return false;
   }
   sem_destroy(&w->sem);

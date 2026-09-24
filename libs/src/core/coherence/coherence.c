@@ -769,7 +769,7 @@ void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache) {
  * on a stack-local (or heap) semaphore matched by pointer identity: the
  * address rides the request and every reply posts it.  Compiled for every
  * arm; declared in coherence/coherence.h so the arm TUs can invoke it. */
-void arts_db_await_ack(sem_t *cv) {
+bool arts_db_await_ack(sem_t *cv) {
   /* Block until the arm's ACK/CTS handler posts this semaphore by pointer
    * identity.  The wait state is the caller's — a stack frame on one arm, a
    * heap object on another — so nothing here may assume either.  No busy-wait:
@@ -782,11 +782,13 @@ void arts_db_await_ack(sem_t *cv) {
     (void)clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 1; /* shutdown re-check cadence, not a timeout on the ACK */
     if (sem_timedwait(cv, &ts) == 0) {
-      return; /* ACK arrived (pointer-identity post) */
+      return true; /* ACK arrived (pointer-identity post) */
     }
     if (errno == ETIMEDOUT &&
         arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
-      return; /* teardown: ACK will never come */
+      /* teardown: ACK will never come */
+      __atomic_fetch_add(&arts_shutdown_abandon.waits, 1u, __ATOMIC_RELAXED);
+      return false;
     }
     /* ETIMEDOUT (not shutting down) or EINTR: re-arm the blocking wait. */
   }
@@ -1052,17 +1054,28 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
       arts_db_pub_flight_abandon(cache);
     }
   }
-  arts_db_await_ack(&w->sem);
+  (void)arts_db_await_ack(&w->sem);
   if (arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
-    return; /* possible shutdown escape: a late drain may still post — leak
-             * w (and the gate, which stays parked) */
+    /* possible shutdown escape: a late drain may still post — leak w.  A wait
+     * the escape cut short is already recorded by the await.  The gate shares
+     * w's version, so the ACK that covered w may have posted it already: then
+     * it is off the stack and nothing was left unawaited; otherwise its wait
+     * is recorded here and it stays parked. */
+    if (gate != NULL) {
+      if (sem_trywait(&gate->sem) == 0) {
+        sem_destroy(&gate->sem);
+        arts_free(gate);
+      } else {
+        __atomic_fetch_add(&arts_shutdown_abandon.waits, 1u, __ATOMIC_RELAXED);
+      }
+    }
+    return;
   }
   sem_destroy(&w->sem);
   arts_free(w);
   if (gate != NULL) {
-    arts_db_await_ack(&gate->sem);
-    if (arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
-      return; /* shutdown escape — leak the gate */
+    if (!arts_db_await_ack(&gate->sem)) {
+      return; /* shutdown escape — leak the gate (the escape is recorded) */
     }
     sem_destroy(&gate->sem);
     arts_free(gate);
@@ -1240,55 +1253,73 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
  * tear down the inlined home-directory sub-resources.  Runs AFTER the protocol
  * field-destroy (pending_rw in HOME and OWNER builds). */
 /* Debug-only terminal-quiescence check.  Runs once, after every runtime
- * thread has joined and before teardown frees the caches: at that point
- * every coherence wait-structure must be empty — a survivor is a lost wake
+ * thread has joined and before teardown frees the caches.  It reports two
+ * things: states the protocols can never reach, and waiters or holds left
+ * behind by a shutdown that was quiescent -- a survivor there is a lost wake
  * that the run's own success criteria may have masked (a reader that never
- * ran, a release that never completed).  Violations print a QUIESCENCE-DEBUG
- * marker; the stress suites turn that marker into a test failure.  Signal-
- * driven shutdowns legitimately strand waiters mid-flight, which is why
- * this reports rather than aborts.
+ * ran, a release that never completed).  Work a shutdown abandoned is the one
+ * legal source of such a residue, so after a shutdown that left work undone
+ * residues are not reported; the contributors say what was left undone.
+ * Violations print a QUIESCENCE-DEBUG marker; tests whose shutdown is
+ * quiescent turn that marker into a failure.
  *
  * The walk exists only to produce diagnostic messages, so it is gated on
  * the log level that compiles those messages: below DEBUG the whole check
  * is compiled out — its cost (a full route-table scan at teardown) never
  * lands in a measurement build. */
+#if ARTS_LOG_LEVEL >= 3
+extern uint64_t num_tables;
+
+/* The rank's route tables in one index space: one per thread, then the
+ * remote shards. */
+static arts_route_table_t *quiescence_table(unsigned int t) {
+  return t < (unsigned int)num_tables
+             ? arts_node_info.route_table[t]
+             : arts_node_info.remote_route_table[t - (unsigned int)num_tables];
+}
+#endif
+
 void arts_db_debug_quiescence_check(void) {
 #if ARTS_LOG_LEVEL >= 3
-  extern uint64_t num_tables;
+  /* Every read below assumes the runtime's threads are gone.  A thread the
+   * shutdown gave up joining may still be mid transition, so the walk cannot
+   * judge and says so instead. */
+  unsigned int unjoined = __atomic_load_n(
+      &arts_shutdown_abandon.unjoined_threads, __ATOMIC_RELAXED);
+  if (unjoined != 0) {
+    ARTS_DEBUG("quiescence check skipped: %u thread(s) never joined",
+               unjoined);
+    return;
+  }
   unsigned int viol = 0;
-  arts_route_table_t *tables[ARTS_REMOTE_ROUTE_SHARDS + 64];
-  unsigned int nt = 0;
-  for (uint64_t i = 0; i < num_tables && nt < 64; i++) {
-    tables[nt++] = arts_node_info.route_table[i];
-  }
-  for (unsigned int i = 0; i < ARTS_REMOTE_ROUTE_SHARDS; i++) {
-    tables[nt++] = arts_node_info.remote_route_table[i];
-  }
-#ifdef ARTS_FAM
+  const unsigned int nt = (unsigned int)num_tables + ARTS_REMOTE_ROUTE_SHARDS;
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
    * the shutdown left undone: runnable EDTs dropped from a deque, runtime
-   * jobs discarded, self-sends never dispatched, and EDTs admitted (every
-   * dependence satisfied, acquisition begun) that never finished -- the last
-   * covers an EDT parked mid acquisition, which sits in no queue a discard
-   * site sees, and it overlaps the first.  Each is read after every runtime
-   * thread has joined, so no poster can add to what is counted, and before
-   * anything frees it.  A message from another rank still undelivered is
-   * not one: a release in flight to a home strands nothing on a cache word,
-   * and a grant still owed to a requester leaves that requester's EDT
-   * admitted and unfinished. */
+   * jobs discarded, release waits cut short, self-sends never dispatched,
+   * and EDTs admitted (every dependence satisfied, acquisition begun) that
+   * never finished -- the last covers an EDT parked mid acquisition, which
+   * sits in no queue a discard site sees, and it overlaps the first.  Each is
+   * read after every runtime thread has joined, so no poster can add to what
+   * is counted, and before anything frees it.  A message from another rank
+   * still undelivered is not one: a release in flight to a home strands no
+   * waiter, and a grant still owed to a requester leaves that requester's
+   * EDT admitted and unfinished. */
   unsigned int ab_queued = __atomic_load_n(&arts_shutdown_abandon.queued_edts,
                                            __ATOMIC_RELAXED);
   unsigned int ab_jobs =
       __atomic_load_n(&arts_shutdown_abandon.jobs, __ATOMIC_RELAXED);
+  unsigned int ab_waits =
+      __atomic_load_n(&arts_shutdown_abandon.waits, __ATOMIC_RELAXED);
   unsigned int ab_loopback = arts_loopback_pending_count();
   unsigned int ab_admitted = 0;
   for (unsigned int t = 0; t < nt; t++) {
-    if (tables[t] == NULL) {
+    arts_route_table_t *table = quiescence_table(t);
+    if (table == NULL) {
       continue;
     }
     arts_route_table_iterator_t iter;
-    arts_reset_route_table_iterator(&iter, tables[t]);
+    arts_reset_route_table_iterator(&iter, table);
     for (arts_route_item_t *item = arts_route_table_iterate(&iter);
          item != NULL; item = arts_route_table_iterate(&iter)) {
       if (ARTS_GUID_GET_TYPE(item->key) != ARTS_GUID_EDT) {
@@ -1308,14 +1339,15 @@ void arts_db_debug_quiescence_check(void) {
       }
     }
   }
-  bool quiescent = (ab_queued | ab_jobs | ab_loopback | ab_admitted) == 0u;
-#endif
+  bool quiescent =
+      (ab_queued | ab_jobs | ab_waits | ab_loopback | ab_admitted) == 0u;
   for (unsigned int t = 0; t < nt; t++) {
-    if (tables[t] == NULL) {
+    arts_route_table_t *table = quiescence_table(t);
+    if (table == NULL) {
       continue;
     }
     arts_route_table_iterator_t iter;
-    arts_reset_route_table_iterator(&iter, tables[t]);
+    arts_reset_route_table_iterator(&iter, table);
     for (arts_route_item_t *item = arts_route_table_iterate(&iter);
          item != NULL; item = arts_route_table_iterate(&iter)) {
       if (ARTS_GUID_GET_TYPE(item->key) != ARTS_GUID_DB) {
@@ -1331,73 +1363,110 @@ void arts_db_debug_quiescence_check(void) {
          * nothing to report. */
 #else
         struct arts_db_cache_s *c = &db->cache;
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+        /* What each rule can see.  A waiter or a releaser that is still
+         * blocked belongs to an EDT that has not finished; that EDT makes its
+         * own rank's shutdown non-quiescent, and in a program whose shutdown
+         * waits for it a lost wake shows as the run never ending, not as a
+         * residue here.  So the rules gated on a quiescent shutdown catch
+         * what completed work left behind: a node no drain removed, a hold
+         * whose EDT finished without releasing it.  The ungated rules are
+         * states no interleaving and no message still in flight can leave,
+         * and they hold after any shutdown. */
+#endif
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
-        if (!arts_lf_stack_empty(&c->pub_waiters) ||
-            __atomic_load_n(&c->pub_parked, __ATOMIC_ACQUIRE) != NULL) {
+        if (quiescent && (!arts_lf_stack_empty(&c->pub_waiters) ||
+                          __atomic_load_n(&c->pub_parked, __ATOMIC_ACQUIRE) !=
+                              NULL)) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has parked publish "
-                     "waiters at teardown",
+                     "waiters after a quiescent shutdown",
                      (unsigned long)c->db_guid);
           viol++;
         }
 #endif
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-        if (!arts_lf_stack_empty(&c->pending_rw)) {
-          ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has parked RW waiters at "
-                     "teardown",
+        if (quiescent && !arts_lf_stack_empty(&c->pending_rw)) {
+          ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has parked RW waiters after "
+                     "a quiescent shutdown",
                      (unsigned long)c->db_guid);
           viol++;
         }
+        /* The home directory.  An open round (the baton), the requests
+         * queued behind one and a remote holder that has not yet handed the
+         * right back are each explained by a message still in flight when
+         * the network stopped, so none is reported by itself.  Home fields
+         * only — a cache-only stub does not carry them. */
         if (db->home_initialized) {
           bool baton = atomic_load_explicit(&db->invalidate_in_flight,
                                             memory_order_acquire) != 0;
-          bool queued = !arts_home_grantreq_queue_empty(&db->pending_rw);
-          if (baton || queued) {
-            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home directory not "
-                       "quiescent (baton=%d queued=%d)",
-                       (unsigned long)c->db_guid, baton ? 1 : 0,
-                       queued ? 1 : 0);
-            viol++;
-          }
-          /* Directory and word must agree.  Naming this rank as the holder
-           * while the word says it possesses nothing is the silent shape of a
-           * lost hand-over: every later requester queues behind a server that
-           * has nothing to serve.  Home fields only — a cache-only stub does
-           * not carry them. */
+          bool named = atomic_load_explicit(&db->rw_holder,
+                                            memory_order_acquire) ==
+                       arts_global_rank_id;
           unsigned int hw = arts_atomic_read(&c->writer_count);
-          if (atomic_load_explicit(&db->rw_holder, memory_order_acquire) ==
-                  arts_global_rank_id &&
-              !ARTS_GRANT_OWN_OF(hw)) {
+          /* Directory and word must agree outside a round.  Inside one the
+           * home has shipped the right and names the new holder only at its
+           * confirmation, so the two legitimately disagree until the baton
+           * is put down; with no round open, naming this rank as the holder
+           * while the word possesses nothing is a lost hand-over, and every
+           * later requester queues behind a server with nothing to serve. */
+          if (!baton && named && !ARTS_GRANT_OWN_OF(hw)) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home is named the holder "
                        "but its word holds nothing (word=%u)",
                        (unsigned long)c->db_guid, hw);
             viol++;
           }
-#ifdef ARTS_RELEASE_PURGE
-          /* Where the right comes back unasked, quiescence means it came
-           * back: a directory still naming a remote holder is one that never
-           * returned, and nothing will ever ask it to. */
-          unsigned int holder =
-              atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-          if (holder != arts_global_rank_id) {
-            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests with rank %u holding "
-                       "the write right, which is never asked to give it back",
-                       (unsigned long)c->db_guid, holder);
+          /* A request is served by the round its arrival or the previous
+           * round's close opens, and the home serves synchronously when it
+           * holds the right idle.  So a request queued with no round open
+           * behind a home that holds the right with no hold under it is one
+           * nothing will ever serve: stranded, whatever else the shutdown
+           * abandoned. */
+          if (!baton && named && ARTS_GRANT_OWN_OF(hw) &&
+              ARTS_GRANT_COUNT_OF(hw) == 0u &&
+              !arts_home_grantreq_queue_empty(&db->pending_rw)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a request queued "
+                       "behind an idle home with no round open (word=%u)",
+                       (unsigned long)c->db_guid, hw);
             viol++;
           }
-#endif
         }
-        /* Every hold has a named releaser, so nothing may rest holding one;
-         * an underflowed count is what a release with no matching acquire
-         * leaves behind. */
         {
           unsigned int w = arts_atomic_read(&c->writer_count);
-          if (ARTS_GRANT_COUNT_OF(w) != 0u) {
+          /* Every hold has a named releaser, so after a quiescent shutdown
+           * nothing may rest holding one. */
+          if (quiescent && ARTS_GRANT_COUNT_OF(w) != 0u) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests with %u unreleased "
-                       "hold(s) (word=%u)",
+                       "hold(s) after a quiescent shutdown (word=%u)",
                        (unsigned long)c->db_guid, ARTS_GRANT_COUNT_OF(w), w);
             viol++;
           }
+#ifndef ARTS_WRITE_POLICY_WB
+          /* Without the unconfirmed-install marker nothing sets the word's
+           * sign bit, so a negative word is a count that underflowed: a
+           * release with no matching acquire.  (Under write-back the marker
+           * makes a negative word an install awaiting its confirmation.) */
+          if ((int)w < 0) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests with an "
+                       "underflowed hold count (word=%u)",
+                       (unsigned long)c->db_guid, w);
+            viol++;
+          }
+#endif
+#ifdef ARTS_RELEASE_PURGE
+          /* Where the right goes back unasked, the edge that drops a
+           * non-home holder's last hold returns the right in the same step,
+           * so possession with no hold under it and no return owed is a
+           * state that edge cannot leave. */
+          if (arts_guid_get_rank(c->db_guid) != arts_global_rank_id &&
+              arts_global_rank_count > 1 && w == ARTS_GRANT_OWN &&
+              arts_atomic_read_u64(&c->pending_grant_return) == 0u) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests holding the write "
+                       "right with no hold under it and no return owed",
+                       (unsigned long)c->db_guid);
+            viol++;
+          }
+#endif
         }
 #ifdef ARTS_RELEASE_PURGE
         if (arts_atomic_read_u64(&c->pending_grant_return) != 0u) {
@@ -1609,20 +1678,15 @@ void arts_db_debug_quiescence_check(void) {
       }
     }
   }
-#ifdef ARTS_FAM
   /* Every contributor is printed, so "nothing was left undone" and "work was
    * left undone, and it is why a residue went unreported" read apart -- the
    * two look identical from the violation count alone. */
   if (viol != 0 || !quiescent) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
-               "queued_edts=%u jobs=%u loopback=%u admitted_edts=%u)",
-               viol, ab_queued, ab_jobs, ab_loopback, ab_admitted);
+               "queued_edts=%u jobs=%u waits=%u loopback=%u "
+               "admitted_edts=%u)",
+               viol, ab_queued, ab_jobs, ab_waits, ab_loopback, ab_admitted);
   }
-#else
-  if (viol != 0) {
-    ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s)", viol);
-  }
-#endif
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
 

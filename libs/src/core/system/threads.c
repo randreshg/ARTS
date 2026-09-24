@@ -174,6 +174,8 @@ void arts_thread_main_join() {
         ARTS_INFO("arts_thread_main_join: thread %u did not join after "
                   "cancel (rc=%d); leaking and continuing",
                   i, rc);
+        __atomic_fetch_add(&arts_shutdown_abandon.unjoined_threads, 1u,
+                           __ATOMIC_RELAXED);
       }
     }
   }

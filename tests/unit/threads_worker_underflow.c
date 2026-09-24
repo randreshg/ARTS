@@ -79,6 +79,7 @@ void arts_free(void *p) { free(p); }
 
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 struct arts_runtime_shared_s arts_node_info;
+struct arts_shutdown_abandon_s arts_shutdown_abandon;
 ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
 
 void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,

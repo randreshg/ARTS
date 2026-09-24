@@ -373,9 +373,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 #endif
 }
 
-#ifdef ARTS_FAM
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
-#endif
 
 /* Drop the runnable-phase self_cb ref of every EDT left sitting in a deque at
  * teardown.  arts_handle_ready_edt takes that ref when an EDT becomes runnable
@@ -393,11 +391,9 @@ static void arts_drain_pending_edts(struct arts_deque_s *dq) {
   void *e;
   while ((e = arts_deque_pop_front(dq)) != NULL) {
     struct arts_edt_s *edt = (struct arts_edt_s *)e;
-#ifdef ARTS_FAM
     /* Whatever this EDT holds ends here rather than at its release. */
     __atomic_fetch_add(&arts_shutdown_abandon.queued_edts, 1u,
                        __ATOMIC_RELAXED);
-#endif
 #ifdef ARTS_USE_CXL
     if (IS_CXL_PTR(edt)) {
       continue; /* CXL EDTs carry no self_cb ref (see arts_run_edt) */

@@ -167,19 +167,28 @@ struct arts_runtime_private_s {
 extern struct arts_runtime_shared_s arts_node_info;
 extern ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
-#ifdef ARTS_FAM
 /* Pending work a shutdown dropped instead of performing, counted by the
- * teardown sites that drop it (relaxed stores; the thread joins teardown
- * already does are what make a later read see them).  Together with what the
- * teardown can still count in place -- undispatched self-sends and inbound
- * messages, EDTs admitted but never finished -- it says whether a shutdown
- * was quiescent. */
+ * sites that drop it (relaxed stores; the thread joins teardown already does
+ * are what make a later read see them).  Together with what the teardown can
+ * still count in place -- undispatched self-sends, EDTs admitted but never
+ * finished -- it says whether a shutdown was quiescent. */
 struct arts_shutdown_abandon_s {
   unsigned int queued_edts; /* runnable EDTs dropped from a deque unrun */
   unsigned int jobs;        /* runtime jobs discarded instead of run */
+  /* Release waits the shutdown cut short or left unawaited, one per wait,
+   * counted wherever a release stops waiting for its reply because the
+   * shutdown began -- on any arm, so an arm with nothing for the walk to
+   * judge still counts.  That can only make a shutdown read as
+   * non-quiescent more often; the states the walk reports unconditionally
+   * are never masked by it. */
+  unsigned int waits;
+  /* Runtime threads the shutdown gave up joining.  Not work left undone but
+   * the premise every teardown read rests on: while one is nonzero the
+   * quiescence walk does not run, since a thread still alive may be mid
+   * transition on anything it would read. */
+  unsigned int unjoined_threads;
 };
 extern struct arts_shutdown_abandon_s arts_shutdown_abandon;
-#endif
 
 #define ARTS_LOOK_UP_CONFIG(name) arts_node_info.name
 

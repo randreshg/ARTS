@@ -240,8 +240,10 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
 
 /* Block on a stack-local semaphore until the matching reply posts it (pointer
  * identity); returns early if teardown begins.  The one blocking wait of the
- * release path, in every arm that has one. */
-void arts_db_await_ack(sem_t *cv);
+ * release path, in every arm that has one.  Returns whether the reply came:
+ * false is a wait the shutdown cut short, which it records -- a caller that
+ * then drops the rest of its round records the waits it never began. */
+bool arts_db_await_ack(sem_t *cv);
 
 /* Wake every waiter parked on the cache's publish flight (destroy paths and
  * teardown: the cache-keyed ACK completion cannot reach a withdrawn slot's
@@ -252,10 +254,11 @@ void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache);
 #endif
 
 /* Debug-only one-shot teardown-time invariant check over every live DB (see
- * the definition): prints QUIESCENCE-DEBUG markers for wait-structures that
- * should be empty once all runtime threads have joined.  Compiled out below
- * ARTS_LOG_LEVEL DEBUG — the call is always legal, the walk only exists
- * where its messages do. */
+ * the definition): once all runtime threads have joined, prints
+ * QUIESCENCE-DEBUG markers for states the protocol can never leave behind
+ * and, after a shutdown that abandoned no work, for residues a quiescent run
+ * must not leave either.  Compiled out below ARTS_LOG_LEVEL DEBUG — the call
+ * is always legal, the walk only exists where its messages do. */
 void arts_db_debug_quiescence_check(void);
 
 /* Take the EDT's strong buffer ref and return buf->data (NULL when no buffer is

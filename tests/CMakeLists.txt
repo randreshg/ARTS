@@ -193,6 +193,7 @@ set(TEST_PROGRAMS
     coherence_multi_writer_dist
     coherence_writer_ro_overlap
     coherence_grant_chain_visibility
+    quiescent_shutdown_no_residue
 )
 
 # Whitebox tests of the INLINE payload layout.  Where the canonical store is
@@ -1454,6 +1455,29 @@ foreach(_v 2n 3n 4n)
     set_tests_properties(coherence_grant_chain_visibility_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
+
+# quiescent_shutdown_no_residue: a shutdown that leaves no work undone -- every
+# EDT touching a block inside a finish scope the shutting-down EDT waits on,
+# and that EDT holding nothing -- must leave the teardown walk silent, so any
+# QUIESCENCE-DEBUG marker fails it.  The shapes are the ones whose interrupted
+# forms leave residue: on one rank, home-local write turns and write holders
+# sharing a turn; with peers, every rank writes both counters, so each is
+# written off its home (a release off the home waits for it where the arm
+# publishes, requesters park, the home runs hand-overs), plus a remote write
+# first touch.  Its writers are unordered, which DB-WRF does not admit, so
+# every other arm runs it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+register_single_node_test(quiescent_shutdown_no_residue TIMEOUT 60)
+register_multinode_test(quiescent_shutdown_no_residue TIMEOUT 120)
+foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n
+        quiescent_shutdown_no_residue_3n quiescent_shutdown_no_residue_4n
+        quiescent_shutdown_no_residue_2n_io)
+    # The checker's verdict reaches the exit status only on the master rank,
+    # so its printed FAIL is matched too.
+    set_tests_properties(${_t} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+endif()
 
 # coherence_cxl_alias_slots: CXL datablocks exist only in a CXL build, and
 # there only under EXCL x PURGE (the top-level CMakeLists refuses every other
