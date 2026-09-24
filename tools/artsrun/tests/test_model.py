@@ -270,6 +270,22 @@ def test_local_profile_rejects_ports():
         Profile.model_validate(_local(ports=[25000]))
 
 
+def test_the_local_fam_smoke_profile_loads_and_fits_the_host():
+    from artsrun import store
+    from artsrun.model.profile import Launcher
+
+    plane = load_plane()
+    profile = store.load_profile("local-fam")
+    assert profile.launcher is Launcher.LOCAL
+    assert profile.fam_pool_mb is not None
+    assert max(profile.nodes) * profile.threads_per_node <= 14
+    # what a campaign actually runs is the plane's order, not the file's
+    assert plane.default_entries(profile.entries) == [
+        "arts_excl_purge", "arts_excl_purge_fam_staged",
+        "arts_excl_purge_fam_direct", "xsocr",
+    ]
+
+
 def test_a_geometry_wider_than_the_machine_is_not_the_tool_s_call():
     # ARTS does not oversubscribe and says so at startup; the profile only
     # records the shape asked for.

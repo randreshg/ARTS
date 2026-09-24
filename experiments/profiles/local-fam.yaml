@@ -1,0 +1,29 @@
+# Local correctness smoke for the fabric-attached-memory entries: the
+# SHM backend's pool is one machine's mapping, so this profile is
+# launcher: local, and the host's 14 CPUs bound the geometry
+# (2 nodes x (3 workers + 1 progress) = 8).  Timings from this host are
+# never evidence of anything.
+name: local-fam
+launcher: local
+
+nodes: [1, 2]
+workers: 3
+progress: 1
+
+pin: true
+provider: tcp
+route_table_size: 14
+core_dump: false
+# A slot comes out of one rank's slice, so what an application can
+# allocate is pool / ranks, not pool: stated explicitly rather than
+# inherited, and sized by the same per-rank-count rule the ctest cfgs use
+# (here 64 / 2 = 32 MiB a rank at the widest geometry).
+fam_pool_mb: 64
+
+cell_timeout_s: 120
+repeats: 1
+
+# One cell's worth: the base ARTS entry, its two fam residencies, and
+# the reference that implements the same design point.
+entries: [arts_excl_purge, arts_excl_purge_fam_staged,
+          arts_excl_purge_fam_direct, xsocr]
