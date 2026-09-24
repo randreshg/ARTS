@@ -184,12 +184,26 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
   return false;
 }
 
-bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
+/* A fresh store's bytes are a recycled granule, never zero.  A create that
+ * takes a write turn hides that behind its own first write, purged to the
+ * store before anyone else can read it; a create that takes none has no such
+ * write coming, so `zero_first` establishes the block's declared value here
+ * instead.  It runs on the address the allocation returned, BEFORE the cache
+ * names it: a store is served to whoever asks for the block, so the value it
+ * promises has to be in it by the time it can be named.  No hold is
+ * registered for that write — a create that takes no write turn has none to
+ * register it under — and a producer flush over an unheld range is otherwise
+ * the same call every write turn's purge makes. */
+bool arts_db_fam_slot_create(struct arts_db_cache_s *cache, bool zero_first) {
   if (cache == NULL || cache->db_size == 0 ||
       __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE) != 0) {
     return false;
   }
   void *slot = arts_fam_alloc((size_t)cache->db_size);
+  if (zero_first) {
+    memset(slot, 0, (size_t)cache->db_size);
+    arts_fam_flush_producer(slot, (size_t)cache->db_size);
+  }
   if (!arts_db_fam_slot_record(cache, (uint64_t)(uintptr_t)slot)) {
     arts_fam_free(slot);
     return false;
@@ -201,9 +215,15 @@ bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
  * first, so nothing can adopt it after this point; then the descriptor that
  * named it is withdrawn, because a descriptor outliving its storage would
  * hand a later, legitimate first user a pointer into a granule that belongs
- * to some other block by then.  Only a create that made nothing reaches here,
- * so the descriptor being withdrawn is the one that create installed a moment
- * earlier, over the store it is handing back. */
+ * to some other block by then.
+ *
+ * Reached only on a cache nothing else can name: a create whose route install
+ * FAILED, whose object is private and about to be freed.  That is what makes
+ * both steps safe — no other party can be holding the descriptor, fetching
+ * into the store, or about to adopt it — and it is a property of the call
+ * sites, not of this function, so a new caller has to establish it.  A create
+ * whose object IS published never hands its store back: the store belongs to
+ * the block from the moment the cache names it. */
 void arts_db_fam_slot_discard(struct arts_db_cache_s *cache) {
   uint64_t addr = __atomic_exchange_n(&cache->fam_addr, (uint64_t)0,
                                       __ATOMIC_ACQ_REL);
@@ -231,23 +251,6 @@ void arts_db_fam_slot_release(struct arts_db_cache_s *cache) {
   arts_send_db_fam_free(addr);
 }
 
-/* A fresh slot's bytes are a recycled granule (or poisoned outright, under
- * the strict oracle), never zero.  A create that takes a write turn hides
- * that behind its own zero-installed buffer and a purge to the store before
- * anyone else can read it; a create that takes none has no such write coming,
- * so the store must be zeroed here instead.  No hold is registered for this
- * write — a NO_ACQUIRE create takes no write turn to register one under —
- * and a producer flush over an unheld range is otherwise the same call every
- * write turn's purge makes. */
-void arts_db_fam_slot_zero(struct arts_db_cache_s *cache) {
-  uint64_t addr = __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE);
-  if (addr == 0 || cache->db_size == 0) {
-    return;
-  }
-  void *slot = (void *)(uintptr_t)addr;
-  memset(slot, 0, (size_t)cache->db_size);
-  arts_fam_flush_producer(slot, (size_t)cache->db_size);
-}
 #endif /* ARTS_FAM */
 
 /* ================================================================== */
@@ -263,7 +266,7 @@ void arts_db_fam_slot_zero(struct arts_db_cache_s *cache) {
  *
  * The ref in buf_h is what the EDT's dep slot will hold for the rest of its
  * life: on a won claim it becomes the EDT's hold (release_one_dep drops it
- * via buf_from_data(ptr)->cb) and the descriptor is pinned for that same
+ * through the block's descriptor) and the descriptor is pinned for that same
  * span.  A lost claim leaves the ref with the caller, which is the only way
  * the two delivery paths that can wake one slot both stay leak-free.
  *
@@ -551,8 +554,8 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
 #endif
   /* Take the EDT's strong ref on the buffer and return buf->data.  The handle
    * is intentionally NOT released here — the ref is the EDT's hold for its
-   * whole lifetime; release_one_dep drops it via buf_from_data(ptr)->cb.  The
-   * ref keeps the buffer alive against a concurrent destroy.
+   * whole lifetime; release_one_dep drops it through the block's descriptor.
+   * The ref keeps the buffer alive against a concurrent destroy.
    *
    * No materialization here either: this helper is reached from every arm's
    * acquire body and cannot tell whether this rank may hold the block.  Each

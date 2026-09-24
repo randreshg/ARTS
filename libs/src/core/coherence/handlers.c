@@ -296,26 +296,19 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
      * address adopts nothing, and the block would then have storage here only
      * once something else happened to ask for it.  After the size, which is
      * what the allocation is made against. */
-    bool home_slot_minted = false;
     if (p->fam_addr != 0) {
       (void)arts_db_fam_slot_record(cache, p->fam_addr);
     } else {
-      home_slot_minted = arts_db_fam_slot_create(cache);
-    }
-    /* An announce carrying no address is a creator with no write turn of its
-     * own coming, so nothing will write the store before a first acquirer
-     * reads it and the declared-zero contract has to be established here.
-     *
-     * Unlike the fresh stub below, this cache is already published, so the
-     * zero is not protected by being pre-install.  It does not need to be:
-     * the mint it is conditional on succeeds only on a cache that named no
-     * store, and a grant is served out of the store the cache names, so a
-     * cache with none has served nobody.  Reaching it at all takes an object
-     * that declares a size and holds no store, a state no sequence of
-     * same-sized creates of one label produces -- the first of them makes
-     * the store and every later one finds it. */
-    if (home_slot_minted && no_acquire) {
-      arts_db_fam_slot_zero(cache);
+      /* An announce carrying no address is a creator with no write turn of
+       * its own coming, so nothing will write the store before a first
+       * acquirer reads it and the declared-zero contract has to be
+       * established at the mint.  This cache is already PUBLISHED, so the
+       * zero cannot run after the store is named: a grant is served out of
+       * the store the cache names, and a grantee could be fetching the
+       * granule while a zero that followed the record was still writing it.
+       * The mint zeroes before it records, so the store is never named
+       * before it carries the value it promises. */
+      (void)arts_db_fam_slot_create(cache, /*zero_first=*/no_acquire);
     }
 #endif
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
@@ -422,14 +415,12 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   if (p->fam_addr != 0) {
     (void)arts_db_fam_slot_record(&stub->cache, p->fam_addr);
   } else {
-    stub_slot_minted = arts_db_fam_slot_create(&stub->cache);
-  }
-  /* An announce carrying no address is a creator with no write turn of its
-   * own coming (NO_ACQUIRE) — the mint above just gave the block its store,
-   * and nothing else will ever write it before a first acquirer reads it, so
-   * the declared-zero contract has to be established right here. */
-  if (stub_slot_minted && no_acquire) {
-    arts_db_fam_slot_zero(&stub->cache);
+    /* An announce carrying no address is a creator with no write turn of its
+     * own coming, so the mint has to establish the declared-zero contract
+     * itself: nothing else will write the store before a first acquirer
+     * reads it. */
+    stub_slot_minted =
+        arts_db_fam_slot_create(&stub->cache, /*zero_first=*/no_acquire);
   }
   /* No re-check here: the route install below publishes the object, so a
    * destroy that can scan the roster at all runs after this set. */

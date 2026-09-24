@@ -57,6 +57,7 @@ typedef arts_shared_slot_t arts_atomic_shared_ptr_t;
 #else
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
 typedef _Atomic(arts_shared_slot_t) arts_atomic_shared_ptr_t;
 #endif
 
@@ -105,6 +106,13 @@ uint64_t arts_shared_tag(arts_shared_ptr_t p);
  * incremented) or NULL if the slot is empty / the cb is dying.  The caller
  * must arts_shared_release the result. */
 arts_shared_ptr_t arts_atomic_shared_load(arts_atomic_shared_ptr_t *slot);
+
+/* Non-owning peek: whether the slot holds anything.  Takes no ref, so the
+ * answer is only as fresh as the acquire load behind it -- sound for "is
+ * there something to install", never for reaching the object. */
+static inline bool arts_atomic_shared_empty(arts_atomic_shared_ptr_t *slot) {
+  return atomic_load_explicit(slot, memory_order_acquire).cb == NULL;
+}
 
 /* Publish new_val into the slot (slot takes ownership of new_val's ref);
  * the previous slot value, if any, is released. */

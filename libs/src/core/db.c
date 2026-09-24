@@ -383,9 +383,7 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
      * install below, purged to the store at its zero edge) to establish the
      * block's declared-zero contract; a create that does not must establish
      * it here, since no write turn is coming to do it later. */
-    if (arts_db_fam_slot_create(cache) && !acquires) {
-      arts_db_fam_slot_zero(cache);
-    }
+    (void)arts_db_fam_slot_create(cache, /*zero_first=*/!acquires);
 #endif
     /* Install a fresh buffer so subsequent coherent acquires
      * (acquire_local / mark_edt_ready_by_guid) find a non-NULL
@@ -845,7 +843,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
         /* Still private: the stub is not installed and *addr is unwritten, so
          * the slot is in place before anything can be admitted to the block,
          * handed a pointer into it, or adopt it as this block's descriptor. */
-        (void)arts_db_fam_slot_create(creator_cache);
+        (void)arts_db_fam_slot_create(creator_cache, /*zero_first=*/false);
 #endif
         if (len > 0) {
           arts_db_buf_install(creator_cache, /*new_version=*/1,
@@ -895,7 +893,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
               if (cache->db_size == 0) {
                 cache->db_size = size;
               }
-              bool made_slot = arts_db_fam_slot_create(cache);
+              (void)arts_db_fam_slot_create(cache, /*zero_first=*/false);
 #endif
               if (size > 0) {
                 (void)arts_db_buf_ensure(cache, size);
@@ -911,12 +909,13 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                 took_hold = true;
               }
 #ifdef ARTS_FAM
-              else if (made_slot) {
-                /* The hold was refused, so this create made nothing after all
-                 * and the store goes back — the same rule as a lost install,
-                 * and the same outcome as the branch above. */
-                arts_db_fam_slot_discard(cache);
-              }
+              /* A refused hold hands nothing back.  The refusal means another
+               * party on this rank already holds or is fetching the block, and
+               * that party is served out of the store this cache names — so the
+               * store belongs to the block, not to this create, and it goes
+               * back with the block's teardown.  Handing it back here would
+               * free a granule under a live holder and re-issue it to another
+               * block. */
               }
 #endif
             }
@@ -1540,6 +1539,28 @@ static bool fill_one_alias(arts_edt_dep_t *depv, uint32_t slot, void *payload,
                                        payload, false, __ATOMIC_ACQ_REL,
                                        __ATOMIC_ACQUIRE);
   }
+#ifdef ARTS_FAM_DIRECT
+  /* Header-relative arithmetic on the payload lands in the block's store, not
+   * in a header, so the descriptor comes from the cache the caller has already
+   * pinned.  pin_src is non-NULL here by arts_db_fill_aliases's rule — with no
+   * descriptor to pin it hands out no bytes — and the owner slot's own ref
+   * keeps this descriptor alive across the acquire.  The handle is OWNED, as
+   * the copy below is, and it is taken before this frame touches the slot, so
+   * a block that no longer names a descriptor takes the same shape here as any
+   * other block with no bytes to hand out: NULL, and no ref. */
+  struct arts_db_s *pin_db = (struct arts_db_s *)arts_shared_get(pin_src);
+  arts_shared_ptr_t buf_h = arts_db_buf_acquire(&pin_db->cache);
+  struct arts_db_buffer_s *ob =
+      (struct arts_db_buffer_s *)arts_shared_get(buf_h);
+  if (ob == NULL) {
+    arts_db_buf_release(&buf_h);
+    return fill_one_alias(depv, slot, NULL, subtype, pin_src);
+  }
+  if ((void *)ob->data != payload) {
+    ARTS_ERROR("db: a block's descriptor names storage other than the payload "
+               "an alias was handed");
+  }
+#endif
   /* The pin goes in BEFORE the payload: a slot takes a pin only while it
    * carries none, so publishing the pin first leaves exactly one pin however
    * two frames interleave.  Publish the other way round and both can read
@@ -1552,11 +1573,13 @@ static bool fill_one_alias(arts_edt_dep_t *depv, uint32_t slot, void *payload,
     db_h = NULL; /* the slot owns it now; release_one_dep drops it last */
   }
   arts_shared_release(&db_h); /* no-op when the slot took it */
+#ifndef ARTS_FAM_DIRECT
   /* The ref is taken BEFORE the claim so the losing side's drop is symmetric.
    * It is a ref on the owner's buffer, not on whatever the block's cache holds
    * now, which is what makes the two slots the same address by construction. */
   arts_shared_ptr_t buf_h =
       arts_shared_copy(arts_db_buf_from_data(payload)->cb);
+#endif
   void *expected = NULL;
   if (!__atomic_compare_exchange_n(&depv[slot].ptr, &expected, payload, false,
                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
@@ -1804,10 +1827,11 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
    * pointer arithmetic below would read a wild address — fatal once a
    * concurrent destroy has removed the route entry (cache lookup then misses).
    * The EDT's per-acquire buffer ref (taken at acquire time: acquire_local /
-   * the parked-EDT resume each do arts_db_buf_acquire) is dropped
-   * unconditionally at the tail of this block via the buffer's own cb: the
-   * EDT's ref kept the buffer (hence buf->cb) alive up to there, so the deref
-   * is never use-after-free even under a racing destroy.  Dispatch release_rw
+   * the parked-EDT resume each do arts_db_buf_acquire) is dropped at the tail
+   * of this block via the buffer's own cb, on every path on which the block
+   * still names that buffer: the EDT's ref kept the buffer (hence buf->cb)
+   * alive up to there, so the deref is never use-after-free even under a
+   * racing destroy.  Dispatch release_rw
    * / release_ro only while the cache is still installed; once destroyed there
    * is no publish / version work left to do (that ref drop is the only cleanup
    * needed). */
@@ -1844,10 +1868,13 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
          * destroyed-but-lingering-DB re-lookup miss the old path risked. */
         db = (struct arts_db_s *)arts_shared_get(db_pin);
       } else if (dep->guid != NULL_GUID) {
-        /* No pin stashed (a buffer-ref path not covered by B1, or a destroyed
-         * DB): fall back to the ref-counted route re-lookup — identical to
-         * pre-B1 behavior, correct for the held writer_count; it only loses
-         * the destroy-race robustness the pin provides. */
+        /* No pin stashed, so this slot took no buffer ref either: its resolved
+         * value is NULL, or the block was destroyed before a ref was taken.  A
+         * pin-less slot that DOES carry a ref is a runtime-invariant break,
+         * since every site that takes the ref installs the pin in the same
+         * frame.  What is left to do here is the arm's release, for which the
+         * ref-counted route re-lookup is correct for the held writer_count; it
+         * only loses the destroy-race robustness the pin provides. */
         db_fallback = arts_route_table_lookup_db(dep->guid);
         db = (struct arts_db_s *)arts_shared_get(db_fallback);
       }
@@ -1867,7 +1894,24 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
      * control block wraps and which the acquire path never took a reference
      * on. */
     if (arts_db_type_has_buffer(dep->subtype) && dep->ptr != NULL) {
+#ifdef ARTS_FAM_DIRECT
+      /* Header-relative arithmetic on dep->ptr lands in the shared store, not
+       * in a header, so the descriptor is the one this slot's own pin names:
+       * every site that takes this ref installs that pin in the same frame, so
+       * the two name one object.  A cache whose descriptor slot has already
+       * been cleared answers NULL and this ref is then not dropped — one
+       * descriptor left behind until teardown, on the path where a block is
+       * destroyed under a live holder, which the model leaves undefined. */
+      if (db_pin == NULL) {
+        ARTS_ERROR("db: a resolved dep carries a buffer ref with no "
+                   "descriptor pin");
+      }
+      struct arts_db_s *pin_db = (struct arts_db_s *)arts_shared_get(db_pin);
+      struct arts_db_buffer_s *buf =
+          arts_db_buf_for_payload(&pin_db->cache, dep->ptr);
+#else
       struct arts_db_buffer_s *buf = arts_db_buf_from_data(dep->ptr);
+#endif
       if (buf != NULL) {
         arts_shared_ptr_t buf_cb = buf->cb;
         arts_db_buf_release(&buf_cb);

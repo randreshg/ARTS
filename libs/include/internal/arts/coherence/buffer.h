@@ -120,9 +120,14 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size);
  * call withdrew it.  The bytes are not this call's: the descriptor is
  * recycled through its own deleter and the storage is untouched.
  *
- * The caller's obligation: it installed that descriptor, over storage it is
- * about to hand back, and no other user of the block is holding it — storage
- * that may be handed back is storage the block has no holder for.
+ * The caller's obligation, and the one thing that makes this call sound: the
+ * cache is one NOTHING ELSE CAN REACH.  Every caller is a create whose route
+ * install failed, so the object is private and about to be freed; no other
+ * thread can be holding the descriptor, installing one, or about to adopt the
+ * storage.  Without that, emptying the slot races every materialization of
+ * the block — a claimer that decided there was nothing to do finds none
+ * afterwards, and a claimer that installed one has it taken away between its
+ * install and whatever it does next.
  *
  * The match is by ADDRESS, and that is what makes the call safe where a
  * descriptor carries its payload inside itself: storage that can be handed
@@ -154,15 +159,22 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
  * to, else NULL.  Borrowed, no ref taken: the caller already holds the very
  * ref it is about to drop, which is what keeps the descriptor alive across
  * this call — the same precondition arts_db_buf_from_data carries where the
- * payload is inline. */
+ * payload is inline.
+ *
+ * The match is by ADDRESS, so it answers for the caller's descriptor only
+ * because no other descriptor can have taken that address in the meantime: a
+ * descriptor is withdrawn only from storage the block has no holder for, and
+ * this caller is a holder. */
 struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
                                                  void *payload);
 #endif
 
+#ifndef ARTS_FAM_DIRECT
 /* Recover the enclosing arts_db_buffer_s from a data pointer that aliases
  * buf->data.  Header-relative pointer arithmetic, so it is valid only where
  * the descriptor CARRIES the payload: where the store is external the same
- * arithmetic addresses the store, not a header.  It does NOT touch the
+ * arithmetic addresses the store, not a header, which is why the declaration
+ * is absent there rather than answering wrongly.  It does NOT touch the
  * buffer, so it is safe even if the buffer has since been freed (the caller
  * must already hold a ref or know the buffer is alive). */
 static inline struct arts_db_buffer_s *arts_db_buf_from_data(void *data) {
@@ -172,6 +184,7 @@ static inline struct arts_db_buffer_s *arts_db_buf_from_data(void *data) {
   return (struct arts_db_buffer_s *)((char *)data -
                                      offsetof(struct arts_db_buffer_s, data));
 }
+#endif
 
 /* Install a new buffer carrying `new_version` at cache.buffer.
  *

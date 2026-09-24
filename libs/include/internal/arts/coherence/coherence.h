@@ -369,27 +369,35 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
  * and a create that finds such a cache is the block's declaration of its
  * size.  Only a create that MADE the block may call it, and only for
  * db_type == ARTS_DB — a kind that keeps no coherence state has no funnel to
- * read the slot and no teardown to free it. */
-bool arts_db_fam_slot_create(struct arts_db_cache_s *cache);
+ * read the slot and no teardown to free it.
+ *
+ * A block nobody has written reads as zero, for its whole declared extent, on
+ * its first acquire — the contract a create that takes a write turn meets by
+ * writing through a buffer this rank zero-installs and later purges to the
+ * store.  A create that takes no write turn has no such write coming, so the
+ * store itself must already be zero when this call returns: that is what
+ * `zero_first` asks for, and it is done on the allocation's own address
+ * BEFORE the cache names it, so the store is never nameable before it carries
+ * the value it promises.  A slot this rank only RECORDED
+ * (arts_db_fam_slot_record) is bytes another creator is answerable for and is
+ * never zeroed here. */
+bool arts_db_fam_slot_create(struct arts_db_cache_s *cache, bool zero_first);
 /* Drop a slot this rank allocated for a create that turned out to create
  * nothing.  Only the allocating rank may call it — arts_fam_free requires
  * the caller's own slice and is fatal otherwise, which is the check.  The
  * cache is left naming neither the slot nor a payload in it: a store that
- * goes back leaves nothing behind that could hand it out again. */
+ * goes back leaves nothing behind that could hand it out again.
+ *
+ * The cache must be one NOTHING ELSE CAN NAME — a create whose route install
+ * failed, whose object is private and about to be freed.  A published cache
+ * may have a holder, a fetch in flight or a first user about to adopt the
+ * store, and freeing the granule under any of them re-issues it to another
+ * block; so a create that published its object keeps the store and lets the
+ * block's teardown return it. */
 void arts_db_fam_slot_discard(struct arts_db_cache_s *cache);
 /* The block is gone: free the slot here, or tell its owner to.  Exactly one
  * caller per block — the teardown that claimed the route slot. */
 void arts_db_fam_slot_release(struct arts_db_cache_s *cache);
-
-/* A block nobody has written reads as zero, for its whole declared extent, on
- * its first acquire — the contract a create that takes a write turn meets by
- * writing through a buffer this rank zero-installs and later purges to the
- * store.  A create that takes no write turn has no such write coming, so the
- * store itself must already be zero when this call returns.  A no-op unless
- * this call's cache just minted the slot (arts_db_fam_slot_create returned
- * true) — a slot this rank only recorded (arts_db_fam_slot_record) is bytes
- * another creator is answerable for. */
-void arts_db_fam_slot_zero(struct arts_db_cache_s *cache);
 
 /* The slot this rank knows for the block, 0 when it knows none.  There is no
  * owner beside it: the owning rank of a slot is a pure function of its

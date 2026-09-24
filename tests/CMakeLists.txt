@@ -226,6 +226,7 @@ endif()
 # are appended there, in the same edit as each .c file, never here.
 if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
     list(APPEND TEST_PROGRAMS fam_slot_discard_unadopt)
+    list(APPEND TEST_PROGRAMS fam_direct_payload_identity)
 endif()
 
 # CXL datablocks exist only in a CXL build, and there only under EXCL x PURGE
@@ -1578,6 +1579,12 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # fail.  One rank: the cache it asserts on is private to the rank that
         # makes it, so peers add nothing.
         register_fam_single_node_test(fam_slot_discard_unadopt TIMEOUT 30)
+        # A holder's working bytes ARE the block's store: one address from the
+        # create through every turn, and the bytes a turn writes are the bytes
+        # the next turn reads.  Where each turn works in its own copy the
+        # addresses differ by construction, so this asserts a residency rather
+        # than a protocol.
+        register_fam_single_node_test(fam_direct_payload_identity TIMEOUT 60)
     endif()
     # A cache made by an acquiring create is on the block's destroy roster, so
     # it gives its store up with the block instead of outliving it.  Needs a

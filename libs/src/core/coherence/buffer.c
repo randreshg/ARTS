@@ -134,6 +134,17 @@ static inline void buf_note_present(struct arts_db_cache_s *cache) {
 }
 
 #ifdef ARTS_FAM_DIRECT
+/* Does this cache already name a descriptor?  Read from the slot itself, with
+ * no ref taken.  Where the descriptor's payload is the block's own storage the
+ * slot is the only sound answer to "does this block still need materializing":
+ * a presence HINT is written after the transition it reports, so a thread
+ * whose install was undone in between can leave the hint saying "present" over
+ * an empty slot, and every later materialization would then stand down
+ * forever.  The slot cannot say that: it is the thing being decided. */
+static inline bool buf_slot_filled(struct arts_db_cache_s *cache) {
+  return !arts_atomic_shared_empty(&cache->buffer);
+}
+
 bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
                                 uint64_t version, uint64_t db_size) {
   if (payload == NULL) {
@@ -141,9 +152,10 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
      * has nothing to adopt. */
     return false;
   }
-  if (__atomic_load_n(&cache->payload_pending, __ATOMIC_RELAXED) == 0u) {
-    return false;
-  }
+  /* No pre-gate: the install CAS below is this call's first access to the
+   * slot, and it is the only arbiter.  A cheaper look first could only report
+   * the slot as it was, and the answer a caller needs is the slot as it is
+   * when the descriptor goes in. */
   struct arts_db_buffer_s *nb = arts_db_buf_alloc(cache, 0);
   if (nb == NULL) {
     return false; /* OOM — caller decides how to surface. */
@@ -198,6 +210,13 @@ struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
 #endif /* ARTS_FAM_DIRECT */
 
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
+#ifdef ARTS_FAM_DIRECT
+  /* The slot, not the presence hint: see buf_slot_filled.  It costs a wide
+   * atomic load instead of a byte load and takes no ref. */
+  if (buf_slot_filled(cache)) {
+    return false;
+  }
+#else
   /* A byte load answers the common case: once anything has installed a
    * buffer, no later use has to materialize one, and asking the slot itself
    * would cost every acquire a refcount round-trip on a shared line.
@@ -208,6 +227,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   if (__atomic_load_n(&cache->payload_pending, __ATOMIC_RELAXED) == 0u) {
     return false;
   }
+#endif
   if (db_size == 0) {
     /* A zero-sized block has no storage to hold: NULL is its defined
      * value. */

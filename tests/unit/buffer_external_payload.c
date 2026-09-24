@@ -19,6 +19,12 @@
  *   5. The deleter does not free or write the external bytes: the last drop
  *      recycles the installed descriptor itself -- exactly one node, that
  *      descriptor -- and a sentinel written before the drop is still there.
+ *   6. A withdraw empties the slot, and the block can be materialized again
+ *      afterwards EVEN IF the cache's presence hint still says there is
+ *      nothing to do.  The hint is written after the transition it reports,
+ *      so a thread whose install was undone in between can leave it saying
+ *      "present" over an empty slot; the gate is the slot itself, so that
+ *      cannot stop the block from ever being materialized again.
  *
  * Standalone: links buffer.c + shared.c with libc-backed alloc shims.
  */
@@ -65,9 +71,9 @@ int main(void) {
     fail = 1;
   }
   /* Install-once: the same store adopted twice keeps one descriptor.  The
-   * flag the first adopt cleared is the fast exit, so restore it -- otherwise
-   * this call returns before the CAS and the branch under test never runs. */
-  g_cache.payload_pending = 1u;
+   * adopt has no pre-gate -- its first access to the slot is the install CAS
+   * -- so this call reaches the losing branch the way a racing second first
+   * user does. */
   if (arts_db_buf_adopt_external(&g_cache, g_external, 2u, DB_SIZE)) {
     printf("FAIL: a second adopt of the same store installed again\n");
     fail = 1;
@@ -91,6 +97,37 @@ int main(void) {
   }
   if (arts_db_buf_for_payload(&g_cache, g_other) != NULL) {
     printf("FAIL: buf_for_payload does not discriminate\n");
+    fail = 1;
+  }
+  /* The slot is emptied, and the descriptor that named the store comes back
+   * through its own deleter -- the external bytes are not its to free. */
+  if (!arts_db_buf_withdraw(&g_cache, g_external)) {
+    printf("FAIL: the installed descriptor was not withdrawn\n");
+    fail = 1;
+  }
+  if (arts_db_buf_for_payload(&g_cache, g_external) != NULL) {
+    printf("FAIL: a withdrawn descriptor is still handed out\n");
+    fail = 1;
+  }
+  arts_lf_link_t *gone = arts_lf_pool_pop_or_null(&g_cache.buf_freelist);
+  if ((struct arts_db_buffer_s *)gone != b) {
+    printf("FAIL: the withdraw did not recycle the descriptor it removed\n");
+    fail = 1;
+  }
+  if (gone != NULL) {
+    arts_regpool_free(gone);
+  }
+  /* The hint at its worst: "nothing to do" over an empty slot.  Both entries
+   * must still materialize the block. */
+  g_cache.payload_pending = 0u;
+  g_cache.fam_addr = (uint64_t)(uintptr_t)g_external;
+  if (!arts_db_buf_ensure(&g_cache, DB_SIZE)) {
+    printf("FAIL: an emptied slot was not materialized again\n");
+    fail = 1;
+  }
+  b = arts_db_buf_for_payload(&g_cache, g_external);
+  if (b == NULL || (void *)b->data != (void *)g_external) {
+    printf("FAIL: the re-adopted descriptor does not name the store\n");
     fail = 1;
   }
   /* Drop the cache-hold ref: the deleter runs and recycles the installed
