@@ -4,7 +4,7 @@ static void check(uint32_t pc, const uint64_t *pv, uint32_t dc,
                   arts_edt_dep_t dv[]) {
   (void)pc;
   (void)dc;
-  if (dv[0].guid != pv[0] || dv[0].ptr != NULL ||
+  if ((uint64_t)dv[0].guid != pv[0] || dv[0].ptr != NULL ||
       dv[0].mode != DB_MODE_NULL) {
     arts_printf("FAIL: event payload policy was not preserved\n");
     arts_abort(1);

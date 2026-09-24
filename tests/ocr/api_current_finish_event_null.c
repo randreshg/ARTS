@@ -4,9 +4,8 @@
  *
  * Target: the public ambient-finish-scope accessor arts_current_finish_event(),
  * which "returns the ambient finish-scope GUID inherited or joined by the
- * running EDT, or NULL_GUID if it belongs to no finish scope."  The only prior
- * exercise was inside termination_detection; the NULL_GUID (no-scope) return is
- * the thin/under-tested branch.
+ * running EDT, or NULL_GUID if it belongs to no finish scope."  The NULL_GUID
+ * (no-scope) return is the branch no other test reaches.
  *
  * Correct behavior pinned:
  *   - main_edt is created with ARTS_EDT_HINT_DEFAULTS (finish_event =

@@ -51,9 +51,9 @@
  * Atomic because the checks run on whatever worker the scheduler picked, and
  * several may find a failure at once.
  *
- * SCOPE: one process, so this carries a rank's OWN verdict.  A multinode
- * test's other ranks are separate processes whose status the launcher does not
- * forward, so their verdicts still travel as printed output.
+ * SCOPE: one process, so this carries a rank's OWN verdict.  Every rank's
+ * main() returns it; the local launcher judges each spawned rank's exit status,
+ * so a failing peer makes the master's arts_rt() return non-zero.
  */
 
 #include <stdatomic.h>

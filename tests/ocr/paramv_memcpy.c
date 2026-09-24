@@ -44,6 +44,8 @@
 #include "arts.h"
 #include <string.h>
 
+#include "../test_failure_status.h"
+
 /// Test passing double through paramv via memcpy.
 void check_double(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
@@ -58,6 +60,7 @@ void check_double(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: double via memcpy: %f\n", val);
   } else {
     arts_printf("  FAIL: double via memcpy: %f\n", val);
+    arts_test_fail();
   }
 }
 
@@ -74,6 +77,7 @@ void check_float(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: float via memcpy: %f\n", (double)val);
   } else {
     arts_printf("  FAIL: float via memcpy: %f\n", (double)val);
+    arts_test_fail();
   }
 }
 
@@ -90,6 +94,7 @@ void check_int32(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: int32 via memcpy: %d\n", val);
   } else {
     arts_printf("  FAIL: int32 via memcpy: %d\n", val);
+    arts_test_fail();
   }
 }
 
@@ -113,6 +118,7 @@ void check_struct(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: struct via memcpy\n");
   } else {
     arts_printf("  FAIL: struct via memcpy\n");
+    arts_test_fail();
   }
 }
 
@@ -131,6 +137,7 @@ void check_multi(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 (unsigned long)paramv[2]);
   } else {
     arts_printf("  FAIL: multi-param\n");
+    arts_test_fail();
   }
 }
 
@@ -183,7 +190,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

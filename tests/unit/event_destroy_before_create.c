@@ -10,17 +10,17 @@
  * arts_event_destroy on a home-local GUID routes through
  * arts_ooo_dispatch_or_defer_guid(OOO_EVENT_DESTROY).  If the destroy races
  * AHEAD of the event's create (the slot is still absent), it must DEFER on the
- * slot and replay when the event installs: event_install (replace path) drains
- * the OoO list, running the deferred destroy body
- * (arts_route_table_set_destroyed, idempotent).  Net effect: a destroy that
- * arrived before the create still tears the event down once it appears.
+ * slot and replay when the event installs: the create's install drains the
+ * OoO list, running the deferred destroy body, which retires the event by
+ * identity (arts_ooo_retire_item).  Net effect: a destroy that arrived before
+ * the create still tears the event down once it appears.
  *
  * Deterministic single-run scenario (home-local on rank 0):
  *   1. Reserve an event GUID on the current rank.
  *   2. arts_event_destroy(g) BEFORE any create -> the destroy DEFERS (slot
  *      absent).
- *   3. arts_event_create at g (check=false replace) -> install drains the OoO
- *      list and replays the deferred destroy.
+ *   3. arts_event_create at g -> the slot is empty, so the create installs,
+ *      and the install drains the OoO list and replays the deferred destroy.
  *   4. Assert the event is NOT present (the deferred destroy applied on
  * install).
  *
@@ -56,7 +56,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    */
   arts_event_hint_t h = ARTS_EVENT_HINT_LATCH(1);
   h.guid = g;
-  h.check = false; /* unconditional replace path drains the OoO list */
   arts_guid_t r = arts_event_create(&h);
   if (r != g) {
     (void)fprintf(stderr,

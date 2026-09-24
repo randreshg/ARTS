@@ -5,25 +5,21 @@
  * Target: the latch-counter arithmetic behind arts_event_satisfy_slot's
  * ARTS_EVENT_LATCH_INCR_SLOT (increment) vs ARTS_EVENT_LATCH_DECR_SLOT
  * (decrement), with a non-default initial latch.  The event fires when
- * curr_latch reaches <= 0.  INCR and explicit latch=N are only lightly tested
- * (print-only in event_basic), with no assertion that firing happens EXACTLY
- * once and only after the matching number of decrements.
+ * curr_latch reaches <= 0.
  *
- * Correct behavior pinned:
- *   - latch = 3, then one INCR (3 -> 4) and four DECR (4 -> 0) -> the wired
- *     dependent fires EXACTLY once.  Fewer than four DECR would leave
- *     curr_latch > 0 and the dependent would not run.
- *   - fire-and-linger: a SECOND dependent added AFTER the event has fired is
- *     satisfied immediately (curr_latch already <= 0), also firing exactly
- * once.
- *   - the total fire count observed across both dependents is exactly 2.
- *
- * An atomic fire-counter DB records each dependent invocation; a finalizer
- * gated on a finish scope reads it back and asserts the exact count, so a
- * premature/duplicate/missed fire is caught as a wrong count (not a hang).
+ * Every DECR carries its own ordinal as data, and a dependent bound before the
+ * first satisfy receives the data of the DECR that fired the event, so the
+ * dependent names the exact DECR that fired it:
+ *   - latch = 3, one INCR (3 -> 4), four DECR: it must be fired by the FOURTH
+ *     DECR.  Fired by the third means the INCR was lost.
+ *   - control, latch = 3 with no INCR, three DECR: it must be fired by the
+ *     THIRD DECR — without the INCR the latch reaches zero one DECR earlier.
+ *   - fire-and-linger: a dependent bound to the first event AFTER it fired is
+ *     satisfied at once from the stored fire state, with the same data.
+ * Each dependent runs exactly once; a finalizer gated on a finish scope reads
+ * the recorded data back.
  *
  * Config-agnostic single-node public-API check.
- * exposes_runtime_bug = false (pins INCR/DECR latch accounting + linger).
  */
 #include "arts.h"
 #include <stdatomic.h>
@@ -31,39 +27,72 @@
 
 static int g_failed = 0;
 
-/* Each wired dependent increments the shared fire counter (depv[0] = ctr RW).
- */
+enum { SEEN_INCR, SEEN_LINGER, SEEN_NO_INCR, SEEN_COUNT };
+
+typedef struct {
+  _Atomic unsigned int fires;
+  _Atomic uint64_t seen[SEEN_COUNT];
+} record_t;
+
+#define DECR_DATA(i) ((arts_guid_t)(0x100 + (i)))
+
+/* depv[0] = record RW, depv[1] = the latch event; paramv[0] = record index. */
 void fire_counter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
-  _Atomic unsigned int *ctr = (_Atomic unsigned int *)depv[0].ptr;
-  if (ctr) {
-    atomic_fetch_add_explicit(ctr, 1u, memory_order_relaxed);
+  record_t *rec = (record_t *)depv[0].ptr;
+  if (rec) {
+    atomic_fetch_add_explicit(&rec->fires, 1u, memory_order_relaxed);
+    atomic_store_explicit(&rec->seen[paramv[0]], (uint64_t)depv[1].guid,
+                          memory_order_relaxed);
   }
 }
 
-/* Finalizer gated on the finish scope: both dependents have run by now. */
+static void expect_seen(const record_t *rec, unsigned int idx, int decr,
+                        const char *what) {
+  uint64_t got = atomic_load_explicit(&rec->seen[idx], memory_order_relaxed);
+  if (got != (uint64_t)DECR_DATA(decr)) {
+    arts_printf("FAIL api_latch_incr_slot: %s fired by data 0x%lx, want the "
+                "DECR #%d (0x%lx)\n",
+                what, (unsigned long)got, decr,
+                (unsigned long)DECR_DATA(decr));
+    g_failed = 1;
+  }
+}
+
+/* Finalizer gated on the finish scope: every dependent has run by now. */
 void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic unsigned int *ctr = (_Atomic unsigned int *)depv[0].ptr;
-  unsigned int n =
-      ctr ? atomic_load_explicit(ctr, memory_order_relaxed) : 0xFFFFu;
-  if (n != 2u) {
-    arts_printf("FAIL api_latch_incr_slot: dependents fired %u times, expected "
-                "2 (1 multi-step latch + 1 linger)\n",
-                n);
+  const record_t *rec = (const record_t *)depv[0].ptr;
+  unsigned int n = atomic_load_explicit(&rec->fires, memory_order_relaxed);
+  if (n != SEEN_COUNT) {
+    arts_printf("FAIL api_latch_incr_slot: dependents fired %u times, "
+                "expected %d\n",
+                n, SEEN_COUNT);
     g_failed = 1;
-  } else {
-    arts_printf(
-        "PASS api_latch_incr_slot: INCR/DECR latch=3 fired once, linger "
-        "re-bind fired once (total 2)\n");
+  }
+  expect_seen(rec, SEEN_INCR, 4, "latch=3 + INCR");
+  expect_seen(rec, SEEN_LINGER, 4, "the late binder of latch=3 + INCR");
+  expect_seen(rec, SEEN_NO_INCR, 3, "latch=3 without INCR");
+  if (!g_failed) {
+    arts_printf("PASS api_latch_incr_slot: INCR held the fire to the 4th "
+                "DECR, no INCR fired at the 3rd, linger re-bind fired once\n");
   }
   arts_shutdown();
+}
+
+static arts_guid_t bind_dependent(arts_guid_t rec_db, arts_guid_t ev,
+                                  arts_guid_t fe, uint64_t idx) {
+  arts_edt_hint_t dh = ARTS_EDT_HINT_DEFAULTS;
+  dh.finish_event = fe;
+  arts_guid_t d = arts_edt_create(fire_counter_edt, 1, &idx, 2, &dh);
+  arts_add_dependence(rec_db, d, 0, DB_MODE_RW);
+  arts_add_dependence(ev, d, 1, DB_MODE_NULL);
+  return d;
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -75,55 +104,48 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== api_latch_incr_slot ===\n");
 
-  /* Shared atomic fire counter. */
-  void *cp = NULL;
-  arts_guid_t ctr_db = arts_db_create(&cp, sizeof(_Atomic unsigned int),
-                                      ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  atomic_init((_Atomic unsigned int *)cp, 0u);
-  arts_db_release(ctr_db, DB_MODE_RW);
+  void *rp = NULL;
+  arts_guid_t rec_db = arts_db_create(&rp, sizeof(record_t), ARTS_DB,
+                                      ARTS_DB_PROP_NONE, NULL);
+  record_t *rec = (record_t *)rp;
+  atomic_init(&rec->fires, 0u);
+  for (int i = 0; i < SEEN_COUNT; i++) {
+    atomic_init(&rec->seen[i], 0u);
+  }
+  arts_db_release(rec_db, DB_MODE_RW);
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
-  /* Event with explicit initial latch = 3.  Use a labeled GUID so we can both
-   * wire dependents and satisfy it, and keep it addressable for the linger
-   * re-bind. */
   arts_event_hint_t eh = ARTS_EVENT_HINT_DEFAULTS;
   eh.latch = 3;
+
+  /* latch = 3, one INCR, four DECR. */
   arts_guid_t ev = arts_event_create(&eh);
-
-  /* First dependent: fires when curr_latch reaches <= 0. */
-  arts_edt_hint_t dh1 = ARTS_EDT_HINT_DEFAULTS;
-  dh1.finish_event = fe;
-  arts_guid_t dep1 = arts_edt_create(fire_counter_edt, 0, NULL, 1, &dh1);
-  arts_add_dependence(ctr_db, dep1, 0, DB_MODE_RW);
-  arts_add_dependence(ev, dep1, 1, DB_MODE_NULL);
-
-  /* One INCR (3 -> 4) then four DECR (4 -> 0) -> fire exactly once. */
+  (void)bind_dependent(rec_db, ev, fe, SEEN_INCR);
   arts_event_satisfy_slot(ev, NULL_GUID, ARTS_EVENT_LATCH_INCR_SLOT);
-  arts_event_satisfy_slot(ev, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-  arts_event_satisfy_slot(ev, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-  arts_event_satisfy_slot(ev, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-  arts_event_satisfy_slot(ev, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
-
-  /* Second dependent registered AFTER the fire: fire-and-linger satisfies it
-   * immediately from stored fire state -> fires once more. */
-  arts_edt_hint_t dh2 = ARTS_EDT_HINT_DEFAULTS;
-  dh2.finish_event = fe;
-  arts_guid_t dep2 = arts_edt_create(fire_counter_edt, 0, NULL, 1, &dh2);
-  arts_add_dependence(ctr_db, dep2, 0, DB_MODE_RW);
-  arts_add_dependence(ev, dep2, 1, DB_MODE_NULL);
-
+  for (int i = 1; i <= 4; i++) {
+    arts_event_satisfy_slot(ev, DECR_DATA(i), ARTS_EVENT_LATCH_DECR_SLOT);
+  }
+  /* Bound after the fire: fire-and-linger satisfies it from the stored
+   * state. */
+  (void)bind_dependent(rec_db, ev, fe, SEEN_LINGER);
   arts_event_destroy(ev);
 
-  /* Finalizer: gated on both dependents draining the finish scope, then reads
-   * the fire counter. */
+  /* Control: latch = 3, no INCR, three DECR. */
+  arts_guid_t ctl = arts_event_create(&eh);
+  (void)bind_dependent(rec_db, ctl, fe, SEEN_NO_INCR);
+  for (int i = 1; i <= 3; i++) {
+    arts_event_satisfy_slot(ctl, DECR_DATA(i), ARTS_EVENT_LATCH_DECR_SLOT);
+  }
+  arts_event_destroy(ctl);
+
   arts_edt_hint_t ch = ARTS_EDT_HINT_DEFAULTS;
   arts_guid_t chk = arts_edt_create(check_edt, 0, NULL, 2, &ch);
-  arts_add_dependence(ctr_db, chk, 0, DB_MODE_RO);
+  arts_add_dependence(rec_db, chk, 0, DB_MODE_RO);
   arts_add_dependence(fe, chk, 1, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return g_failed;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : g_failed;
 }

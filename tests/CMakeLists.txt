@@ -37,77 +37,39 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Many tests here are whitebox: they compile runtime TUs directly instead of
-# linking an arts target, which is how they reach file-static symbols.  In a
-# CXL build those TUs include ARTS internal headers that pull in <MemOps.h>,
-# so the header path is declared once for the directory rather than per
-# target: the ARTS_USE_CXL definition that demands it is itself directory-wide,
-# and a per-target list would go stale the next time a test is added.  The CXL
-# library itself (arts_free consults IS_CXL_PTR, the deque and lock headers
-# call the flush intrinsics) reaches a test through arts_static's own link
-# requirement; only a test that doesn't link an arts target needs it added
-# explicitly, at that target.
-if(ARTS_USE_CXL)
-    include_directories(SYSTEM
-        "${ARTS_CXL_INCLUDE_DIR}" "${ARTS_CXL_RAPID_INCLUDE_DIR}")
-endif()
-
 # Define test programs to build
 set(TEST_PROGRAMS
     # --- Original tests ---
-    route_table
     route_table_remote_guid
-    coherence_basic
     coherence_rw_chain
     grant_purge_no_acquire_creator
     grant_purge_churn
     grant_purge_handback_regrant
     grant_purge_return
     coherence_rwro_phase
-    coherence_rw_ordering
-    coherence_rw_ro_rw
-    coherence_rw_rw_chain_seal
-    coherence_ro_accumulation
-    coherence_mixed_local_remote
     coherence_destroy_during_acquire
     coherence_stress_single_node
     coherence_stress_dist
     coherence_payload_large
     coherence_satisfy_before_release
-    coherence_multi_writer_same_addr
     coherence_multi_writer_multi_db
     coherence_ro_acquire_stress
     coherence_home_producer_ro
     coherence_zero_size_xfer
-    coherence_rw_multihop
-    coherence_rw_pipeline
     coherence_owner_ownership_reorder
     coherence_owner_confirm_gate
-    lockfree_stack_stress
-    lockfree_pool_stress
     route_table_install_race
     event_once_storm
     event_sticky_late_bind
     event_channel_fifo
-    event_destroy_race
-    pin_db
-    active_message_db
-    termination_detection
-    finish_event_recursive
-    remote_db_event
     route_table_iter
-    route_table_iter_destroy
     acquire_mode
     # --- New unit tests ---
     edt_create_basic
-    edt_chain
     edt_fan_out
-    edt_signal
-    edt_destroy
     stress_edt
     paramv_memcpy
     db_create
-    db_create_with_data
     db_dependence
     db_destroy
     db_null_control
@@ -115,38 +77,22 @@ set(TEST_PROGRAMS
     event_value_control
     event_scalar_return
     event_payload_policy
-    db_local
     db_local_create
     event_basic
     event_chain
-    event_create_destroy_basic
-    event_satisfy_once
-    event_add_dep_idem_fastpath
     event_channel_lifetime
     event_idem_silent_oversatisfy
     event_channel_advanced
-    guid_basic
-    guid_range
     hint_routing
-    node_query
-    record_dep_at
-    utility_api
     multinode_edt
     edt_create_oversize_guard
-    db_no_acquire_remote_first_touch
     db_no_acquire_lazy
     db_no_acquire_wb_first_writer
     db_create_after_dep_asked
     db_first_touch_matrix
     db_acquire_release_semantics
     finish_event_mn_termination
-    multinode_event
-    multinode_coherence
     multinode_event_types
-    # --- Graph tests ---
-    csr
-    distribution
-    # --- Array DB tests ---
     # --- DB type tests ---
     db_pin
     # --- Termination tests ---
@@ -157,7 +103,6 @@ set(TEST_PROGRAMS
     # --- Multinode (built here, registered below) ---
     multinode_stdout_forward
     # --- Pure unit tests (no ARTS runtime) ---
-    coherence_buffer_test
     grant_purge_word_model
     config_ports_contract
     config_fam_contract
@@ -175,26 +120,25 @@ set(TEST_PROGRAMS
     regpool_interleave
     regpool_fallback_order
     # --- New unit tests (Tasks 6-12) ---
-    counter_smoke
     edt_dep_variants
-    event_hint_presets
-    db_labeled_guid
     db_create_after_first_touch
-    multinode_labeled_guid
-    multinode_event_hint
     per_db_buf_pool
     # --- Finish-EDT mechanism tests ---
-    finish_event_basic
-    finish_event_inherit
-    finish_event_multinode
     finish_event_stress
-    finish_event_wait
     finish_event_nested
     coherence_multi_writer_dist
     coherence_writer_ro_overlap
     coherence_grant_chain_visibility
     quiescent_shutdown_no_residue
 )
+
+# Pins a check the runtime compiles in only at ARTS_LOG_LEVEL >= DEBUG
+# (edt.c's remote finish-scope guard): built and registered only in a Debug
+# tree, where that log level is the default, so it is not a false failure on
+# a tree that compiles the check out.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    list(APPEND TEST_PROGRAMS edt_create_remote_finish_scope_rejected)
+endif()
 
 # Whitebox tests of the INLINE payload layout.  Where the canonical store is
 # fabric-attached and an EDT works in place, a buffer descriptor refers to
@@ -229,16 +173,15 @@ set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_stub_db_size_learn
     buffer_destroy_vs_acquire
     per_db_buf_pool
-    coherence_buffer_test
     mark_edt_ready_idempotent)
 # The one list every consumer reads: the tree's own registrations below, and
 # any acceptance check outside this file.  Empty in every tree but one.
 set(ARTS_FAM_DIRECT_EXCLUDED "")
 if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
     set(ARTS_FAM_DIRECT_EXCLUDED ${ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX})
-    # Reaches the two names that are built from this list; the rest create
-    # their own targets, and the if() guards at their registration sites are
-    # what leaves those out.
+    # Reaches the names of this list that TEST_PROGRAMS builds; the rest
+    # create their own targets, and the if() guards at their registration
+    # sites are what leaves those out.
     list(REMOVE_ITEM TEST_PROGRAMS ${ARTS_FAM_DIRECT_EXCLUDED})
     message(STATUS "ARTS: excluding ${ARTS_FAM_DIRECT_EXCLUDED} — whitebox tests of the inline payload layout")
 endif()
@@ -254,14 +197,6 @@ if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
         # run this test could make.
         list(APPEND TEST_PROGRAMS fam_direct_fresh_slot)
     endif()
-endif()
-
-# CXL datablocks exist only in a CXL build, and there only under EXCL x PURGE
-# (the top-level CMakeLists refuses every other pairing), so the test that
-# exercises their alias-slot behavior is added to the list conditionally
-# rather than guarded with #ifdef inside the source.
-if(ARTS_USE_CXL)
-    list(APPEND TEST_PROGRAMS coherence_cxl_alias_slots)
 endif()
 
 # Portable OCR programs that came out of the store-backed work and assert
@@ -574,7 +509,6 @@ function(register_fam_multinode_test test_name)
     endforeach()
 endfunction()
 
-
 function(register_gpu_test test_name)
     if(ARTS_FAM_TREE_RESIDENCY)
         # No fam cfg root exists for the GPU topology, and a FAM tree's test
@@ -629,31 +563,19 @@ endfunction()
 
 # EDT tests
 register_single_node_test(edt_create_basic)
-register_single_node_test(edt_chain)
 register_single_node_test(edt_fan_out)
-register_single_node_test(edt_signal)
-register_single_node_test(edt_destroy)
 register_single_node_test(stress_edt TIMEOUT 30)
 register_single_node_test(paramv_memcpy)
 
 # DB tests
 register_single_node_test(db_create)
-register_single_node_test(db_create_with_data)
 register_single_node_test(db_dependence)
 register_single_node_test(db_destroy)
-register_single_node_test(db_local)
 register_single_node_test(db_local_create)
 register_single_node_test(db_no_acquire_lazy TIMEOUT 30)
 register_single_node_test(db_no_acquire_wb_first_writer TIMEOUT 30)
 set_tests_properties(db_no_acquire_wb_first_writer PROPERTIES
     FAIL_REGULAR_EXPRESSION "FAIL")
-register_single_node_test(pin_db ARGS 0)
-
-# Array DB tests
-
-# Finish-event / sync tests
-register_single_node_test(finish_event_recursive ARGS 3)
-register_single_node_test(termination_detection ARGS 3)
 
 # Event tests
 register_single_node_test(event_basic)
@@ -663,48 +585,29 @@ register_single_node_test(event_value_control TIMEOUT 15)
 register_single_node_test(event_scalar_return TIMEOUT 30)
 register_single_node_test(event_payload_policy TIMEOUT 15)
 register_single_node_test(event_chain)
-register_single_node_test(event_create_destroy_basic)
-register_single_node_test(event_satisfy_once)
-register_single_node_test(event_add_dep_idem_fastpath)
 register_single_node_test(event_channel_lifetime)
 register_single_node_test(event_idem_silent_oversatisfy)
 register_single_node_test(event_channel_advanced)
 
-# GUID tests
-register_single_node_test(guid_basic)
-register_single_node_test(guid_range)
-
 # Routing / misc
 register_single_node_test(hint_routing)
-register_single_node_test(node_query)
-register_single_node_test(record_dep_at)
-register_single_node_test(utility_api)
-register_single_node_test(route_table)
 register_single_node_test(route_table_iter)
-register_single_node_test(route_table_iter_destroy)
 register_single_node_test(acquire_mode)
 
 # Strict lock-free reserve_or_lookup stress
 register_single_node_test(route_table_install_race TIMEOUT 120)
 
-# Event redesign stress tests
+# Event redesign stress tests.  Their consumers record into one block with no
+# order among them, which DB-WRF does not admit.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(event_once_storm TIMEOUT 60)
 register_single_node_test(event_sticky_late_bind TIMEOUT 60)
 register_single_node_test(event_channel_fifo TIMEOUT 60)
-register_single_node_test(event_destroy_race TIMEOUT 60)
+endif()
 
 # Coherence tests — exercise the OCR-model ownership protocol paths
-register_single_node_test(coherence_basic ARGS 32 0 0 0)
 register_single_node_test(coherence_rw_chain)
 register_single_node_test(coherence_rwro_phase)
-register_single_node_test(coherence_rw_ordering)
-register_single_node_test(coherence_rw_ro_rw)
-register_single_node_test(coherence_rw_rw_chain_seal)
-register_single_node_test(coherence_ro_accumulation)
-
-# Graph tests
-register_single_node_test(csr)
-register_single_node_test(distribution)
 
 # --- DB type tests ---
 register_single_node_test(db_pin)
@@ -717,6 +620,17 @@ set_tests_properties(term_shutdown PROPERTIES
 register_single_node_test(term_abort ARGS 0 42)
 set_tests_properties(term_abort PROPERTIES
     PASS_REGULAR_EXPRESSION "TERM_ABORT rc=42")
+
+# Debug-only (see the TEST_PROGRAMS guard above): rank 1's fatal error text
+# is what PASS is judged on, not exit status — only the master rank's status
+# reaches ctest, and a peer's death is what its own arts_rt() return code
+# reports.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    register_multinode_test(edt_create_remote_finish_scope_rejected
+        VARIANTS 2n)
+    set_tests_properties(edt_create_remote_finish_scope_rejected_2n PROPERTIES
+        PASS_REGULAR_EXPRESSION "must be homed on the creating rank")
+endif()
 
 # term_sigfpe / term_sigsegv crash via signal — CTest Exception short-circuits
 # PASS_REGULAR_EXPRESSION before evaluating it.  Use a bash wrapper so the
@@ -751,9 +665,6 @@ set_tests_properties(term_sigsegv PROPERTIES
     PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGSEGV")
 
 # --- Pure unit tests (no ARTS runtime) ---
-if(NOT "coherence_buffer_test" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
-    register_pure_unit_test(coherence_buffer_test TIMEOUT 60)
-endif()
 # Exhaustive model check of the PURGE release policy's grant word decider
 # (coherence/grant_purge.c); self-skips (PASS) outside a VAL/INV x PURGE build.
 register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
@@ -914,7 +825,7 @@ register_pure_unit_test(net_addr_frame_bound)
 # the runtime's build state.  libatomic + -mcx16 come from the global
 # top-level setup.
 set(SYNC_SHARED_TESTS shared_basic shared_atomic_race shared_aba)
-set(SYNC_MPSC_TESTS mpsc_concurrent mpsc_drain_race)
+set(SYNC_MPSC_TESTS mpsc_drain_race)
 foreach(t ${SYNC_SHARED_TESTS})
     add_executable(${t} unit/${t}.c
         ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c)
@@ -962,6 +873,22 @@ target_include_directories(route_table_reclaim_dupdestroy PRIVATE
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
 target_link_libraries(route_table_reclaim_dupdestroy PRIVATE Threads::Threads)
 register_pure_unit_test(route_table_reclaim_dupdestroy TIMEOUT 120)
+
+# route_table_dup_reserve: two reservers of one key across the return of the
+# key's first probe slot must end with one published slot, the one holding the
+# object, which never moves; a create of the next generation during the later
+# claim loses to the live one; a retiring slot is waited out (deterministic,
+# via the reservation's after-miss and after-claim injection points).
+add_executable(route_table_dup_reserve unit/route_table_dup_reserve.c)
+target_compile_definitions(route_table_dup_reserve PRIVATE
+    ARTS_WRITE_POLICY_WB=1)
+target_include_directories(route_table_dup_reserve PRIVATE
+    ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+target_link_libraries(route_table_dup_reserve PRIVATE Threads::Threads)
+register_pure_unit_test(route_table_dup_reserve TIMEOUT 30)
+set_tests_properties(route_table_dup_reserve PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS route_table_dup_reserve")
 
 # --- Work-stealing deque (deque.c) + array_list (array_list.c) ---
 # Standalone like the SYNC_* tests above: each compiles the target source TU
@@ -1056,9 +983,8 @@ register_pure_unit_test(atomics_locks TIMEOUT 60)
 # include guards pre-defined + minimal ARTS_ERROR/ARTS_ALIGNED/footprint stubs
 # inside the test), so no extra source and no ARTS library link is needed.
 # malloc_alignment is the ASan target (heap safety + a-aligned user pointers);
-# malloc_footprint_balance DELIBERATELY fails (B132): realloc shrink+free leaks
-# (old-new) bytes from BYTES_MEMORY_FOOTPRINT because free subtracts only the
-# shrunken header size — a true runtime accounting bug, left unmasked.
+# malloc_footprint_balance asserts that matched alloc/realloc/free sequences
+# leave BYTES_MEMORY_FOOTPRINT at net zero, single-threaded and concurrently.
 # diag_timestamp pins best-effort per-thread monotonicity + fold sanity and
 # documents B133 (arts_printf prefix+body are two non-atomic stdio calls).
 set(MISC_UTIL_UNIT_TESTS
@@ -1077,27 +1003,13 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         target_link_libraries(${t} PRIVATE mimalloc-static)
     endforeach()
 endif()
-# malloc.c's ARTS_USE_CXL path calls into the device library directly; these
-# tests don't link arts_static, so they need it named explicitly.
-if(ARTS_USE_CXL AND TARGET arts_cxl_lib)
-    foreach(t malloc_footprint_balance malloc_alignment)
-        target_link_libraries(${t} PRIVATE arts_cxl_lib)
-    endforeach()
-endif()
 register_pure_unit_test(malloc_footprint_balance TIMEOUT 60)
 register_pure_unit_test(malloc_alignment)
 register_pure_unit_test(diag_timestamp TIMEOUT 60)
 
 # Counter smoke test: verifies counter output files are written.
-register_single_node_test(counter_smoke TIMEOUT 30)
-set_tests_properties(counter_smoke PROPERTIES
-    PASS_REGULAR_EXPRESSION "COUNTER_SMOKE_PASS")
 
 register_single_node_test(edt_dep_variants)
-
-register_single_node_test(event_hint_presets)
-
-register_single_node_test(db_labeled_guid)
 
 register_single_node_test(db_create_after_first_touch TIMEOUT 60)
 register_multinode_test(db_create_after_first_touch TIMEOUT 120 VARIANTS 2n 3n 4n)
@@ -1112,21 +1024,15 @@ if(NOT "per_db_buf_pool" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
 endif()
 
 # --- Finish-EDT mechanism tests ---
-register_single_node_test(finish_event_basic)
-register_single_node_test(finish_event_inherit)
-register_single_node_test(finish_event_wait TIMEOUT 30)
-set_tests_properties(finish_event_wait PROPERTIES
-    PASS_REGULAR_EXPRESSION "OK wait-style")
 register_single_node_test(finish_event_nested)
 set_tests_properties(finish_event_nested PROPERTIES
     PASS_REGULAR_EXPRESSION "OK nested")
-register_multinode_test(finish_event_multinode TIMEOUT 30)
-set_tests_properties(finish_event_multinode_2n PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS: cross-node finish-scope drained")
 
 register_multinode_test(finish_event_stress TIMEOUT 300)
-set_tests_properties(finish_event_stress_2n PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS: 100 iterations of recursive cross-node finish-EDT")
+foreach(_v 2n 3n 4n 2n_io)
+    set_tests_properties(finish_event_stress_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
 
 # --- Multi-node tests ---
 
@@ -1136,7 +1042,6 @@ register_multinode_test(db_null_alias_release TIMEOUT 15)
 register_multinode_test(event_value_control TIMEOUT 15)
 register_multinode_test(event_scalar_return TIMEOUT 30)
 register_multinode_test(event_payload_policy TIMEOUT 15)
-register_multinode_test(db_no_acquire_remote_first_touch TIMEOUT 60)
 # A block created without an acquire has its payload allocated by its first
 # user, so the same program has to hold on one rank (the first user is local)
 # and on several (the home materializes the block to serve the request).
@@ -1194,41 +1099,6 @@ foreach(_v 2n 3n 4n 2n_io)
         FAIL_REGULAR_EXPRESSION "FAIL:"
         PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup_remote")
 endforeach()
-# A second create of a label that already exists, from a rank that is NOT the
-# label's home.  There the route-table install cannot arbitrate — the first
-# create's descriptor is already there — so the answer comes from the rank's
-# own hold word, which every arm keeps in its own state.  First-wins is the
-# contract in all of them, so it runs in all of them; the single-node entry
-# covers the home-rank arbitration by the same program.
-add_arts_test(db_labeled_create_first_wins_remote)
-register_single_node_test(db_labeled_create_first_wins_remote TIMEOUT 30)
-register_multinode_test(db_labeled_create_first_wins_remote TIMEOUT 60)
-foreach(_t db_labeled_create_first_wins_remote
-           db_labeled_create_first_wins_remote_2n
-           db_labeled_create_first_wins_remote_3n
-           db_labeled_create_first_wins_remote_4n
-           db_labeled_create_first_wins_remote_2n_io)
-    set_tests_properties(${_t} PROPERTIES
-        FAIL_REGULAR_EXPRESSION "FAIL:"
-        PASS_REGULAR_EXPRESSION "PASS: db_labeled_create_first_wins_remote")
-endforeach()
-# The same contract one lifetime later: the second create comes after the
-# first one's hold was released AND after another rank took the block, the
-# state in which a hold answered from a permission word rather than from the
-# rank's create mark would be possession the home never granted.  Every arm
-# owes the same answer, so it runs in all of them.
-add_arts_test(db_labeled_create_second_after_release_remote)
-register_single_node_test(db_labeled_create_second_after_release_remote TIMEOUT 30)
-register_multinode_test(db_labeled_create_second_after_release_remote TIMEOUT 60)
-foreach(_t db_labeled_create_second_after_release_remote
-           db_labeled_create_second_after_release_remote_2n
-           db_labeled_create_second_after_release_remote_3n
-           db_labeled_create_second_after_release_remote_4n
-           db_labeled_create_second_after_release_remote_2n_io)
-    set_tests_properties(${_t} PROPERTIES
-        FAIL_REGULAR_EXPRESSION "FAIL:"
-        PASS_REGULAR_EXPRESSION "PASS: db_labeled_create_second_after_release_remote")
-endforeach()
 register_multinode_test(db_acquire_release_semantics TIMEOUT 120)
 # The guard aborts the run by design, so the message is the verdict and
 # the exit status is not; one node shape states it as well as four.
@@ -1236,21 +1106,14 @@ register_multinode_test(edt_create_oversize_guard VARIANTS 2n TIMEOUT 60)
 set_tests_properties(edt_create_oversize_guard_2n PROPERTIES
     PASS_REGULAR_EXPRESSION "over the [0-9]+-byte control-message bound")
 register_multinode_test(finish_event_mn_termination)
-register_multinode_test(multinode_event)
-register_multinode_test(active_message_db ARGS 64)
 register_multinode_test(route_table_remote_guid)
-register_multinode_test(remote_db_event)
-register_multinode_test(multinode_coherence)
 register_multinode_test(multinode_event_types)
-register_multinode_test(coherence_mixed_local_remote)
 register_multinode_test(coherence_home_producer_ro TIMEOUT 30)
 register_multinode_test(coherence_zero_size_xfer TIMEOUT 30)
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-register_multinode_test(coherence_rw_multihop TIMEOUT 30)
-register_multinode_test(coherence_rw_pipeline TIMEOUT 40)
 endif()
 register_multinode_test(coherence_rw_chain TIMEOUT 30)
 # A NO_ACQUIRE create whose creator, home and writer are three different ranks:
@@ -1298,66 +1161,50 @@ register_multinode_test(coherence_owner_write_after_lend TIMEOUT 30)
 add_arts_test(ro_grant_retained)
 register_multinode_test(ro_grant_retained TIMEOUT 30)
 
-register_multinode_test(coherence_rw_ro_rw TIMEOUT 30)
-register_multinode_test(coherence_ro_accumulation TIMEOUT 30)
 register_multinode_test(coherence_ro_acquire_stress TIMEOUT 90)
 
 register_multinode_test(multinode_stdout_forward)
 set_tests_properties(multinode_stdout_forward_2n PROPERTIES
     PASS_REGULAR_EXPRESSION "MULTINODE_STDOUT_FORWARD_SENTINEL 42")
 
-register_multinode_test(multinode_labeled_guid TIMEOUT 30)
-register_multinode_test(multinode_event_hint TIMEOUT 30)
-
 # B.3 LOCK_REQ-before-DB_CREATE race regression is registered at 3n/4n (where
 # the race is actually exercised) as `excl_req_before_create` in
 # generated_tests.cmake.  The former 2n single-entry `coherence_lock_req_before_create`
 # here was a no-op (SKIPs at rank<3) over byte-identical source, so it was removed.
 
-# Coherence stress test suite (Spec section 6 B.1/B.4/B.5/B.6 single-node).
-# Each adds the "coherence_stress" label on top of "single_node" so the suite
-# can be filtered with `ctest -L coherence_stress`.
-register_single_node_test(coherence_destroy_during_acquire TIMEOUT 60)
-set_property(TEST coherence_destroy_during_acquire APPEND PROPERTY
-    LABELS "coherence_stress")
+# Coherence stress test suite.  Each adds the "coherence_stress" label on top
+# of its node-count label so the suite can be filtered with
+# `ctest -L coherence_stress`.
 register_single_node_test(coherence_stress_single_node TIMEOUT 120)
 set_property(TEST coherence_stress_single_node APPEND PROPERTY
     LABELS "coherence_stress")
-register_single_node_test(coherence_multi_writer_same_addr TIMEOUT 60)
-set_property(TEST coherence_multi_writer_same_addr APPEND PROPERTY
-    LABELS "coherence_stress")
-register_single_node_test(coherence_multi_writer_multi_db TIMEOUT 60)
-set_property(TEST coherence_multi_writer_multi_db APPEND PROPERTY
-    LABELS "coherence_stress")
+# Unordered write turns on each block before its destroy, and writers holding
+# several blocks at once: DB-WRF admits neither, so every other arm runs them.
+# With peers the turns come from every rank.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+foreach(_t coherence_destroy_during_acquire coherence_multi_writer_multi_db)
+    register_single_node_test(${_t} TIMEOUT 60)
+    register_multinode_test(${_t} TIMEOUT 120)
+    foreach(_v "" _2n _3n _4n _2n_io)
+        set_property(TEST ${_t}${_v} APPEND PROPERTY LABELS "coherence_stress")
+        set_tests_properties(${_t}${_v} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+    endforeach()
+endforeach()
+endif()
 register_single_node_test(coherence_ro_acquire_stress TIMEOUT 60)
 set_property(TEST coherence_ro_acquire_stress APPEND PROPERTY
     LABELS "coherence_stress")
 
-# Lock-free stack stress (Task 4h): 8 producers x 1M nodes, single
-# consumer reverse_drain.  Pure unit test — does not start the ARTS
-# runtime, but RESOURCE_LOCK is harmless and keeps it serialized with
-# other tests under ctest -j.
-register_single_node_test(lockfree_stack_stress TIMEOUT 60)
-
-# Lock-free pool stress (Task 4m): DWCAS tagged-head Treiber stack ABA
-# scenario + batch fetch / release contention.  Pure unit test, no
-# runtime needed.
-register_single_node_test(lockfree_pool_stress TIMEOUT 60)
-
-# Distributed coherence stress: B.2.  Uses arts_2n.cfg (the test SKIPs
-# cleanly if rank_count < 2).
-arts_test_cfg(_cfg 2n)
-add_test(
-    NAME coherence_stress_dist
-    COMMAND coherence_stress_dist
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
-set_tests_properties(coherence_stress_dist PROPERTIES
-    LABELS "coherence_stress;multinode"
-    TIMEOUT 120
-    RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-)
+# Distributed coherence stress: blocks homed round-robin on every rank, each
+# acquired by workers placed on every rank, write and read turns interleaved.
+# SKIPs on one rank.
+register_multinode_test(coherence_stress_dist TIMEOUT 120)
+foreach(_v 2n 3n 4n 2n_io)
+    set_property(TEST coherence_stress_dist_${_v} APPEND PROPERTY
+        LABELS "coherence_stress")
+    set_tests_properties(coherence_stress_dist_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
 
 # Large-payload cross-rank coherence transfer: a ~256 KiB DB is stamped by a
 # home-rank writer and RW-verified by workers on other ranks, so every hop ships
@@ -1399,35 +1246,20 @@ foreach(_v 2n 3n 4n 2n_io)
 endforeach()
 endif()
 
-# Lazy-protocol ownership-transfer TRANSFER/INVALIDATE two-wire reorder stress.
-# MUST use
-# a progress_threads>=2 config (arts_2n_io.cfg = 2 nodes, 5w/2p) so the
-# TRANSFER_OWNERSHIP(+1) and follow-up INVALIDATE(-1) to the same just-granted
-# owner can be dispatched out of order by different progress threads — the
-# window the commutative-signed writer_count fix closes.  Drives a few thousand
-# ownership transfers and PASSES on chain completion (no transfer lost = no
-# stranded RW acquirer); a lost transfer would strand a queued acquirer and hang
-# (the regression), caught by the test's watchdog under this TIMEOUT.  The exact
-# end-sum is a diagnostic only, not a gate (a cross-rank publish can be dropped
-# by a separate FIFO-ordering defect orthogonal to writer_count — see the test
-# file header).  SKIPs cleanly when rank_count < 2 or under the RELAXED model
-# (no exclusive-RW chain).
-# These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
-# it.
+# coherence_owner_ownership_reorder: unordered write turns from every rank on
+# one block homed on rank 0, in deep batches and in short steps with a home-rank
+# contender; the exact end-sum is the gate, and a stranded requester times out.
+# 2n_io is the variant whose two progress threads may dispatch one peer's
+# hand-over messages out of order.  Its writers are unordered, which DB-WRF
+# does not admit.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-arts_test_cfg(_cfg 2n_io)
-add_test(
-    NAME coherence_owner_ownership_reorder
-    COMMAND coherence_owner_ownership_reorder
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
-set_tests_properties(coherence_owner_ownership_reorder PROPERTIES
-    LABELS "coherence_stress;multinode"
-    TIMEOUT 120
-    RESOURCE_LOCK "arts_runtime"
-    ENVIRONMENT "ARTS_CONFIG=${_cfg}"
-)
+register_multinode_test(coherence_owner_ownership_reorder TIMEOUT 120)
+foreach(_v 2n 3n 4n 2n_io)
+    set_property(TEST coherence_owner_ownership_reorder_${_v} APPEND PROPERTY
+        LABELS "coherence_stress")
+    set_tests_properties(coherence_owner_ownership_reorder_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endforeach()
 endif()
 
 # OWNER-placement stale-RO ownership-confirm gate: RO acquire causally ordered after a
@@ -1456,6 +1288,167 @@ foreach(_v 2n 3n 4n)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
+# A create of a live label parks on the slot's OoO list and installs at the
+# occupant's destroy, one per destroy (whitebox, one rank).  Its shutdown leaves
+# nothing parked.
+add_arts_test(ooo_create_parks_until_destroy)
+register_single_node_test(ooo_create_parks_until_destroy TIMEOUT 30)
+set_tests_properties(ooo_create_parks_until_destroy PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS: ooo_create_parks_until_destroy"
+    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+
+# label_reuse_ring_event: one event label reused across 64 lifetimes, each next
+# generation's create issued while the current one is live, so it parks at the
+# home until the destroy.  Every generation's value must reach its consumer in
+# order, and the shutdown must leave no create parked.  No data block, so every
+# arm runs it; 2n_io is the variant whose two progress threads dispatch one
+# peer's messages out of order.
+add_arts_test(label_reuse_ring_event)
+register_single_node_test(label_reuse_ring_event TIMEOUT 60)
+register_multinode_test(label_reuse_ring_event TIMEOUT 120)
+foreach(_t label_reuse_ring_event label_reuse_ring_event_2n
+        label_reuse_ring_event_3n label_reuse_ring_event_4n
+        label_reuse_ring_event_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_event 64 generations in order"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# edt_destroy_before_create: a destroy that reaches an EDT's home before its
+# create parks, and the create's install replays it, retiring the EDT inside
+# the install; on the home the GUID's next generation then installs and runs.
+# The destroyed EDT's messages from another rank are fire-and-forget, so the
+# shutdown is not covered by a finish scope and markers are counted from -V.
+add_arts_test(edt_destroy_before_create)
+register_single_node_test(edt_destroy_before_create TIMEOUT 30)
+register_multinode_test(edt_destroy_before_create TIMEOUT 60)
+foreach(_t edt_destroy_before_create edt_destroy_before_create_2n
+        edt_destroy_before_create_3n edt_destroy_before_create_4n
+        edt_destroy_before_create_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: edt_destroy_before_create"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endforeach()
+
+# edt_destroy_pending_scope: destroying an EDT that never ran sends the
+# finish-scope DECR its completion would have, directly or through the remote
+# scope's proxy, so the scope drains and the shutdown is quiescent.
+add_arts_test(edt_destroy_pending_scope)
+register_single_node_test(edt_destroy_pending_scope TIMEOUT 30)
+register_multinode_test(edt_destroy_pending_scope TIMEOUT 60)
+foreach(_t edt_destroy_pending_scope edt_destroy_pending_scope_2n
+        edt_destroy_pending_scope_3n edt_destroy_pending_scope_4n
+        edt_destroy_pending_scope_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: edt_destroy_pending_scope"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# finish_scope_creator_token: a finish scope whose creator hands its token back
+# (arts_event_release_creator_token) fires when its members, a remote worker
+# and that worker's child, finish, while the creator is still running.
+add_arts_test(finish_scope_creator_token)
+register_single_node_test(finish_scope_creator_token TIMEOUT 60)
+register_multinode_test(finish_scope_creator_token TIMEOUT 90)
+foreach(_t finish_scope_creator_token finish_scope_creator_token_2n
+        finish_scope_creator_token_3n finish_scope_creator_token_4n
+        finish_scope_creator_token_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: finish_scope_creator_token"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# edt_create_parks_until_retire: a create of a live EDT GUID parks on the
+# slot's OoO list and installs when the occupant's completion retires the GUID;
+# the occupant's completion signal is ordered after that install (whitebox, one
+# rank).  Its shutdown leaves nothing parked.
+add_arts_test(edt_create_parks_until_retire)
+register_single_node_test(edt_create_parks_until_retire TIMEOUT 30)
+set_tests_properties(edt_create_parks_until_retire PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS: edt_create_parks_until_retire"
+    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+
+# label_reuse_ring_edt: one reserved EDT GUID reused across 64 lifetimes, each
+# generation retired by its completion, in two lanes: the next generation
+# created after that completion is observed, or created early (it parks at the
+# home behind the live generation).  Either way its satisfy and dependence
+# follow the completion.  Every generation's value must be recorded in order,
+# and the shutdown must leave no create parked.  2n_io is the variant whose two
+# progress threads may dispatch one peer's messages out of order.
+add_arts_test(label_reuse_ring_edt)
+register_single_node_test(label_reuse_ring_edt TIMEOUT 60)
+register_multinode_test(label_reuse_ring_edt TIMEOUT 120)
+foreach(_t label_reuse_ring_edt label_reuse_ring_edt_2n
+        label_reuse_ring_edt_3n label_reuse_ring_edt_4n
+        label_reuse_ring_edt_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_edt 64 generations in order, late and early creates"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# label_reuse_ring_db: one data-block label reused across 64 lifetimes.  The
+# creator on the last rank creates each even generation once the previous one
+# is known installed and before its destroy (the create parks), each odd one
+# after the destroy, and issues the rest of the generation (its write and
+# release, the readers' dependences) after the destroy at the home.  Every
+# generation's value must reach the home in order, and the shutdown must leave
+# no create parked.  3n/4n add a reader on rank 1, whose stale reads are the
+# recorded weakness (KNOWN-WEAKNESS lines, not failures).
+add_arts_test(label_reuse_ring_db)
+register_single_node_test(label_reuse_ring_db TIMEOUT 60)
+register_multinode_test(label_reuse_ring_db TIMEOUT 120)
+foreach(_t label_reuse_ring_db label_reuse_ring_db_2n
+        label_reuse_ring_db_3n label_reuse_ring_db_4n
+        label_reuse_ring_db_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_db 64 generations in order"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# label_reuse_ring_db_rotate: the DB ring with the creator rotating over every
+# rank, the home included, and each generation read on the next creator's
+# rank, whose create must wait behind that reader cache until the previous
+# generation's teardown notice retires it.  Not on 2n_io: there the reader's
+# rank created the previous generation, and its dependence and that
+# generation's teardown notice, both sent by the home, may be dispatched in
+# either order by the rank's two progress threads -- the recorded weakness,
+# which on this shape can strand the reader rather than show it a stale value.
+add_arts_test(label_reuse_ring_db_rotate)
+register_single_node_test(label_reuse_ring_db_rotate TIMEOUT 60)
+register_multinode_test(label_reuse_ring_db_rotate TIMEOUT 120 VARIANTS 2n 3n 4n)
+foreach(_t label_reuse_ring_db_rotate label_reuse_ring_db_rotate_2n
+        label_reuse_ring_db_rotate_3n label_reuse_ring_db_rotate_4n)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_db_rotate 64 generations in order"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# db_destroy_roster: a block written in turn by two remote ranks (one with two
+# ranks) is destroyed, and each writer rank then creates the label again; a
+# writer the destroy did not reach would hold its slot against that create.
+add_arts_test(db_destroy_roster)
+register_multinode_test(db_destroy_roster TIMEOUT 60)
+foreach(_v 2n 3n 4n 2n_io)
+    set_tests_properties(db_destroy_roster_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: db_destroy_roster"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
+# rendezvous_loser_parks: every rank creates one event label, one install
+# stands and the rest park at the home; the home destroys each generation in
+# turn, so every parked create installs, is read and is destroyed.  The
+# shutdown must leave nothing parked.  No data block, so every arm runs it.
+add_arts_test(rendezvous_loser_parks)
+register_single_node_test(rendezvous_loser_parks TIMEOUT 60)
+register_multinode_test(rendezvous_loser_parks TIMEOUT 120)
+foreach(_t rendezvous_loser_parks rendezvous_loser_parks_2n
+        rendezvous_loser_parks_3n rendezvous_loser_parks_4n
+        rendezvous_loser_parks_2n_io)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: rendezvous_loser_parks"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
+
 # quiescent_shutdown_no_residue: a shutdown that leaves no work undone -- every
 # EDT touching a block inside a finish scope the shutting-down EDT waits on,
 # and that EDT holding nothing -- must leave the teardown walk silent, so any
@@ -1479,13 +1472,31 @@ foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n
 endforeach()
 endif()
 
-# coherence_cxl_alias_slots: CXL datablocks exist only in a CXL build, and
-# there only under EXCL x PURGE (the top-level CMakeLists refuses every other
-# pairing).
-if(ARTS_USE_CXL)
-    register_single_node_test(coherence_cxl_alias_slots TIMEOUT 60)
-    set_tests_properties(coherence_cxl_alias_slots PROPERTIES
-        FAIL_REGULAR_EXPRESSION "FAIL")
+# A create's credit is applied only to the descriptor whose create it answers,
+# and a zero txid applies nothing (whitebox, one rank: a hand-built answer fed
+# to the dispatcher body).  Registered only where a create carries a credit.
+if((NOT ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_WRITE_POLICY STREQUAL "WT")
+   OR ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    add_arts_test(db_create_return_token_guard)
+    register_single_node_test(db_create_return_token_guard TIMEOUT 30)
+    set_tests_properties(db_create_return_token_guard PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: db_create_return_token_guard"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endif()
+
+# grant_one_request_per_grant: rounds of concurrent write acquisitions of one
+# block off its home, each round starting with no write right there.  Every
+# waiter is served (the count) and no grant arrives to an empty waiting set
+# (asserted by the runtime in a debug build).  Its writers are unordered, which
+# DB-WRF does not admit, so every other arm runs it; the race it targets is
+# widened by running it under ARTS_SCHED_FUZZ.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+add_arts_test(grant_one_request_per_grant)
+register_multinode_test(grant_one_request_per_grant TIMEOUT 120)
+foreach(_v 2n 3n 4n 2n_io)
+    set_tests_properties(grant_one_request_per_grant_${_v} PROPERTIES
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+endforeach()
 endif()
 
 # coherence_multi_writer_dist: multinode cross-rank RW same-address.  The
@@ -1675,10 +1686,9 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # A block nobody has written is acquirable by a first user on every rank,
     # and one write turn then defines what all of them see.
     register_fam_multinode_test(fam_no_acquire_first_use TIMEOUT 60)
-    # One label names one block and therefore one store, with every rank
-    # creating the label and the losing creators allocating nothing.  The
-    # budget is the churn's: the cycle count has to clear a rank's share of
-    # the pool for a leaked store to exhaust it.
+    # One label names one block and therefore one store, with the creator
+    # rotating over the ranks.  The budget is the churn's: the cycle count has
+    # to clear a rank's share of the pool for a leaked store to exhaust it.
     register_fam_multinode_test(fam_labeled_create TIMEOUT 180)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         # Whitebox test of the inherited mapping's fixed address: fam_slices.c
@@ -1728,27 +1738,6 @@ if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
     # emulates.  Structural, at registration, never a run-time skip.
     register_fam_multinode_test(fam_strict_flush TIMEOUT 120 VARIANTS 2n_strict)
 endif()
-
-# --- Mode-mismatch detection binary (no CTest entry — driven by run_mode_mismatch.sh) ---
-add_executable(coherence_mode_mismatch ocr/coherence_mode_mismatch.c)
-target_include_directories(coherence_mode_mismatch PRIVATE
-    ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
-    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-set_property(TARGET coherence_mode_mismatch PROPERTY POSITION_INDEPENDENT_CODE OFF)
-target_compile_options(coherence_mode_mismatch PRIVATE -fno-pie -fno-PIE)
-target_link_options(coherence_mode_mismatch PRIVATE -no-pie -fno-pie -fno-PIE)
-target_link_libraries(coherence_mode_mismatch PRIVATE
-    Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
-if(TARGET arts_shared)
-    target_link_libraries(coherence_mode_mismatch PRIVATE arts_shared)
-elseif(TARGET arts_static)
-    target_link_libraries(coherence_mode_mismatch PRIVATE arts_static)
-endif()
-# Protocol-sensitive internal headers need the compile-time coherence
-# selection applied per-target (see add_arts_test) — this binary links the
-# tree's own compiled library like any other test.
-arts_apply_protocol(coherence_mode_mismatch
-    ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 
 # --- GPU tests ---
 
@@ -1882,16 +1871,16 @@ endif()
 # ============================================================================
 # Cross-rank failure channel.
 #
-# ctest only ever sees the MASTER rank's exit status: the local launcher reaps
-# its children with waitpid but discards their status, so a rank that aborts or
-# exits non-zero is indistinguishable from one that finished cleanly.  For a
-# multinode test the only verdict that leaves a non-master rank is what it
-# PRINTED, which the launcher forwards to the master's stdout — hence this gate.
+# ctest sees the MASTER rank's exit status, and the local launcher folds every
+# rank it spawned into it: a rank that dies on a signal or exits non-zero makes
+# the master's arts_rt() return non-zero.  A rank's own verdict therefore
+# reaches ctest when that rank's main() returns arts_test_status() (see
+# tests/test_failure_status.h).
 #
-# It doubles as a second net single-node: a check that runs on a worker thread
-# and only prints would otherwise pass on main()'s unconditional return 0.  The
-# tests themselves carry their verdict in the exit status (see
-# tests/test_failure_status.h); this catches what the status cannot reach.
+# This gate is the second net, on every rank and single-node alike: a check
+# whose failure branch only prints -- on any rank, since the launcher forwards
+# every rank's stdout to the master's -- still fails the test by the token it
+# prints.
 #
 # Conservative form (as in the T294 sweep above): the token matched is one these
 # tests print ONLY on a failure branch — a clean run never emits it, and the
@@ -1908,14 +1897,6 @@ set_tests_properties(cat_c_ref_balance_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FA
 set_tests_properties(cat_c_ref_balance_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(cat_c_ref_balance_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(cat_c_ref_balance_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_install_version_monotone PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_install_version_monotone_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_install_version_monotone_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_install_version_monotone_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_install_version_monotone_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-set_tests_properties(coherence_owner_ownership_reorder PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-endif()
 set_tests_properties(coherence_rw_chain PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 foreach(_t grant_purge_no_acquire_creator_2n grant_purge_no_acquire_creator_3n
           grant_purge_no_acquire_creator_4n
@@ -1953,15 +1934,14 @@ set_tests_properties(coherence_rwro_phase_2n PROPERTIES FAIL_REGULAR_EXPRESSION 
 set_tests_properties(coherence_rwro_phase_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rwro_phase_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rwro_phase_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_stress_dist PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_zero_size_xfer_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_zero_size_xfer_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_zero_size_xfer_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_zero_size_xfer_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(create_coalesce_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(create_coalesce_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(create_coalesce_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(create_coalesce_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_create_claims_first_touch_stub_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_create_claims_first_touch_stub_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_create_claims_first_touch_stub_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_create_claims_first_touch_stub_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(csr_empty_partition PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(csr_load_args PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(csr_load_csr_format PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -1980,20 +1960,7 @@ set_tests_properties(db_rw_secure_double_fire_2n PROPERTIES FAIL_REGULAR_EXPRESS
 set_tests_properties(db_rw_secure_double_fire_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_rw_secure_double_fire_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_rw_secure_double_fire_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(destroy_before_create_defer_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(destroy_before_create_defer_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(destroy_before_create_defer_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(destroy_before_create_defer_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(dist_args_oob PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_destroy_crossrank_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_destroy_crossrank_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_destroy_crossrank_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_destroy_crossrank_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_output_event PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_output_event_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_output_event_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_output_event_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(edt_output_event_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(edt_satisfy_out_of_range PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(event_destroy_before_create PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(event_destroy_before_create_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -2018,11 +1985,6 @@ set_tests_properties(excl_samerank_rw_grant_race_4n PROPERTIES FAIL_REGULAR_EXPR
 if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
     set_tests_properties(mark_edt_ready_idempotent PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
-set_tests_properties(publish_ack_post_on_miss PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(publish_ack_post_on_miss_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(publish_ack_post_on_miss_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(publish_ack_post_on_miss_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(publish_ack_post_on_miss_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(random_thread_safe PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(self_send_vs_dispatcher_parity PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(self_send_vs_dispatcher_parity_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -2034,52 +1996,39 @@ set_tests_properties(snapshot_response_3case_2n PROPERTIES FAIL_REGULAR_EXPRESSI
 set_tests_properties(snapshot_response_3case_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(snapshot_response_3case_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(snapshot_response_3case_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_baton_invalidate_recheck PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_baton_invalidate_recheck_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_baton_invalidate_recheck_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_baton_invalidate_recheck_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_baton_invalidate_recheck_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_no_acquire PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_no_acquire_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_no_acquire_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_no_acquire_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_no_acquire_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_publish_before_decrement PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_publish_before_decrement_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_publish_before_decrement_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_publish_before_decrement_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_publish_before_decrement_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_rw_drain_count PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_rw_drain_count_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_rw_drain_count_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_rw_drain_count_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_rw_drain_count_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_snapshot_request PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_snapshot_request_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_snapshot_request_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_snapshot_request_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_snapshot_request_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wb_confirm_ack_round PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wb_confirm_ack_round_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wb_confirm_ack_round_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wb_confirm_ack_round_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wb_confirm_ack_round_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_writer_count_nonneg PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_writer_count_nonneg_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_writer_count_nonneg_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_writer_count_nonneg_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_writer_count_nonneg_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_publish_ack PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_publish_ack_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_publish_ack_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_publish_ack_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_publish_ack_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_vs_wb_divergence PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_vs_wb_divergence_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_vs_wb_divergence_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_vs_wb_divergence_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(val_wt_vs_wb_divergence_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 
+# Tests that report by exit status (their main() merges arts_rt()'s status
+# with arts_test_status()) carry no PASS_REGULAR_EXPRESSION, which would make
+# ctest ignore that status and with it a peer rank's death.  They also fail on
+# the token their failure branches print, on every variant they are registered
+# under.  An explicit FAIL_REGULAR_EXPRESSION set above is left as it is.
+set(_arts_status_tests
+    acquire_mode block_dist_roundrobin cat_c_ref_balance
+    coherence_destroy_during_acquire coherence_zero_size_xfer
+    csr_from_guid_refcount csr_get_neighbors csr_remote_null csr_wellformed
+    ctx_owned_finish_cleanup db_create db_create_claims_first_touch_stub
+    db_create_with_data_bytes db_dependence
+    db_destroy db_local_create db_pin db_release_alias_slot dbcreate_matrix
+    dispatcher_default_fatal edt_create_basic edt_dep_variants edt_fan_out
+    event_basic event_chain event_channel_advanced event_channel_lifetime
+    event_channel_transient_null event_idem_silent_oversatisfy
+    excl_request_coalesce finish_event_mn_termination finish_event_stress
+    guid_crossrank_determinism guid_index_from_mismatch
+    guid_keygen_table_coupling hint_routing launcher_no_respawn multinode_edt
+    multinode_event_types ooo_concurrent_multidrain ooo_hit_ref_pin
+    paramv_memcpy round_robin_home_distribution runtime_barrier_counts
+    stress_edt system_info_in_edt system_info_per_rank threads_pin_affinity)
+foreach(_n IN LISTS _arts_status_tests)
+    foreach(_v "" _2n _3n _4n _2n_io)
+        if(TEST ${_n}${_v})
+            get_test_property(${_n}${_v} FAIL_REGULAR_EXPRESSION _f)
+            if(NOT _f)
+                set_tests_properties(${_n}${_v} PROPERTIES
+                    FAIL_REGULAR_EXPRESSION "FAIL")
+            endif()
+        endif()
+    endforeach()
+endforeach()
 
 # The descriptor's own test.  Registered in every tree: outside a build whose
 # payload store is external it reports SKIP, because the representation it

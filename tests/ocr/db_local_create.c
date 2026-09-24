@@ -43,6 +43,8 @@
 #include "arts.h"
 #include <string.h>
 
+#include "../test_failure_status.h"
+
 #define NUM_ELEMS (128 / sizeof(unsigned int))
 
 /// Test 1: Local creation with explicit hint — verify data and GUID type.
@@ -65,6 +67,9 @@ void check_local(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     ok = (arts_guid_get_kind(guid) == ARTS_GUID_DB);
   }
   arts_printf("  %s: arts_db_local_create local path\n", ok ? "PASS" : "FAIL");
+  if (!ok) {
+    arts_test_fail();
+  }
 }
 
 /// Test 2: NULL hint => current node.
@@ -80,6 +85,9 @@ void check_null_hint(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_printf("  %s: arts_db_local_create with NULL hint\n",
               ok ? "PASS" : "FAIL");
+  if (!ok) {
+    arts_test_fail();
+  }
 }
 
 /// Test 3a: EW writer — multiply by 3.
@@ -113,6 +121,9 @@ void ew_verify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   arts_printf("  %s: arts_db_local_create EW ordering\n", ok ? "PASS" : "FAIL");
+  if (!ok) {
+    arts_test_fail();
+  }
   arts_shutdown();
 }
 
@@ -178,7 +189,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

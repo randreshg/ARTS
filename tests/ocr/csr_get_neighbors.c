@@ -56,6 +56,8 @@
 #include "arts.h"
 #include "arts/graph.h"
 
+#include "../test_failure_status.h"
+
 /// 6 vertices, single partition.
 ///   0 -> {1, 2}
 ///   1 -> {}            (zero-neighbour, interior)
@@ -100,6 +102,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   if (csr == NULL) {
     arts_printf("FAIL: init returned NULL\n");
+    arts_test_fail();
     arts_block_dist_free(dist);
     arts_shutdown();
     return;
@@ -116,6 +119,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (cnt != EXPECT_DEG[v]) {
       arts_printf("FAIL: vertex %lu count %lu expected %lu\n", (unsigned long)v,
                   (unsigned long)cnt, (unsigned long)EXPECT_DEG[v]);
+      arts_test_fail();
       ok = false;
       break;
     }
@@ -139,6 +143,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         if (got[k] != expect[k]) {
           arts_printf("FAIL: vertex %lu neighbour mismatch at %lu\n",
                       (unsigned long)v, (unsigned long)k);
+          arts_test_fail();
           ok = false;
           break;
         }
@@ -150,6 +155,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (pstart + (arts_vertex_t)li != v) {
       arts_printf("FAIL: round-trip vertex %lu local %lu start %lu\n",
                   (unsigned long)v, (unsigned long)li, (unsigned long)pstart);
+      arts_test_fail();
       ok = false;
     }
   }
@@ -164,7 +170,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

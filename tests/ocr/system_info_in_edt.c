@@ -50,13 +50,15 @@
 ///          - arts_get_gpus_per_rank()    is readable (>=0 trivially for an
 ///            unsigned; on a CPU build it is 0).
 ///
-/// The current-GUID check is stronger than utility_api.c's "non-NULL" smoke:
-/// we pre-reserve the EDT's GUID via the hint and confirm the in-EDT getter
-/// returns exactly that value.  Protocol-agnostic, no DB coherence involved.
+/// The current-GUID check is exact, not a non-NULL smoke: we pre-reserve the
+/// EDT's GUID via the hint and confirm the in-EDT getter returns exactly that
+/// value.  Protocol-agnostic, no DB coherence involved.
 
 #include <stdint.h>
 
 #include "arts.h"
+
+#include "../test_failure_status.h"
 
 /// paramv[0] holds the GUID this EDT was created with (passed by reference as a
 /// 64-bit value so the body can compare it against the in-EDT getter).
@@ -71,10 +73,12 @@ void info_probe(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t guid = arts_edt_get_current_guid();
   if (guid == NULL_GUID) {
     arts_printf("  FAIL: get_current_guid returned NULL_GUID inside EDT\n");
+    arts_test_fail();
     pass = false;
   } else if (guid != expected) {
     arts_printf("  FAIL: get_current_guid=%lu != reserved guid=%lu\n",
                 (uint64_t)guid, (uint64_t)expected);
+    arts_test_fail();
     pass = false;
   } else {
     arts_printf("  PASS: get_current_guid == reserved guid (%lu)\n",
@@ -89,6 +93,7 @@ void info_probe(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("  FAIL: current_worker=%u workers_per_rank=%u\n", worker,
                 per_rank);
+    arts_test_fail();
     pass = false;
   }
 
@@ -100,6 +105,7 @@ void info_probe(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("  FAIL: numa_domain=%u total_numa_domains=%u\n", numa,
                 total_numa);
+    arts_test_fail();
     pass = false;
   }
 
@@ -113,6 +119,7 @@ void info_probe(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("PASS system_info_in_edt\n");
   } else {
     arts_printf("FAIL system_info_in_edt\n");
+    arts_test_fail();
   }
   arts_shutdown();
 }
@@ -135,7 +142,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -27,10 +27,9 @@
  * shared counter exactly once.  A lost fire → the scope never drains →
  * TIMEOUT; a double fire → counter == 2 → FAIL.
  *
- * Creating one pre-reserved GUID twice is outside the labeled-GUID contract
- * (the runtime carries nothing to survive it), so this test drives ONE
- * create.  Requires >1 rank to exercise the remote path; SKIPs cleanly to a
- * trivial single-rank check on 1n.
+ * A second create of a live GUID parks until the occupant is destroyed, so
+ * this test drives ONE create.  Requires >1 rank to exercise the remote path;
+ * SKIPs cleanly to a trivial single-rank check on 1n.
  */
 
 #include "arts.h"

@@ -39,10 +39,13 @@
 
 /// @file db_dependence.c
 /// @brief Tests DB dependence with immediate satisfy: arts_add_dependence
-///        with DB sources in various access modes.
+///        with DB sources in various access modes; a delivered block carries
+///        its own GUID.
 
 #include "arts.h"
 #include <string.h>
+
+#include "../test_failure_status.h"
 
 /// Test 1: arts_db_add_dependence — fire EDT when DB's internal event triggers.
 void check_db_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -56,6 +59,7 @@ void check_db_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: db_add_dependence delivered DB data\n");
   } else {
     arts_printf("  FAIL: db_add_dependence\n");
+    arts_test_fail();
   }
 }
 
@@ -71,6 +75,7 @@ void check_db_dep_mode(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: db_add_dependence_with_mode OK\n");
   } else {
     arts_printf("  FAIL: db_add_dependence_with_mode\n");
+    arts_test_fail();
   }
 }
 
@@ -86,7 +91,22 @@ void check_db_dep_mode_diff(uint32_t paramc, const uint64_t *paramv,
     arts_printf("  PASS: db_add_dependence_with_mode_and_diff OK\n");
   } else {
     arts_printf("  FAIL: db_add_dependence_with_mode_and_diff\n");
+    arts_test_fail();
   }
+}
+
+/// Test 4: the delivered dependence names the block it acquired.
+/// paramv[0] = the block's GUID.
+void check_dep_guid(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                    arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  if (depv[0].guid != (arts_guid_t)paramv[0] || depv[0].ptr == NULL) {
+    arts_printf("  FAIL: delivered dependence does not name its block\n");
+    arts_test_fail();
+    return;
+  }
+  arts_printf("  PASS: delivered dependence names its block\n");
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -136,12 +156,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
   arts_add_dependence(db4, e4, 0, DB_MODE_RO);
 
+  // Test 4: a delivered block carries its own GUID.
+  uint64_t guid_param = (uint64_t)db4;
+  arts_guid_t e5 =
+      arts_edt_create(check_dep_guid, 1, &guid_param, 1,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+  arts_add_dependence(db4, e5, 0, DB_MODE_RO);
+
   arts_event_wait(fe);
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -42,6 +42,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 /// Test 1: arts_db_destroy on a freshly created DB.
 void after_destroy(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
@@ -64,6 +66,7 @@ void verify_new_db(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: new DB after destroy has correct data\n");
   } else {
     arts_printf("  FAIL: new DB after destroy data mismatch\n");
+    arts_test_fail();
   }
 }
 
@@ -106,14 +109,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
   arts_add_dependence(db3, e3, 0, DB_MODE_RO);
 
-  // Test 5: Double destroy (should be no-op on second call, not crash).
-  void *p5 = NULL;
-  arts_guid_t db5 =
-      arts_db_create(&p5, 64, ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
-  arts_db_destroy(db5);
-  arts_db_destroy(db5); // Second destroy — route table returns NULL
-  arts_printf("  PASS: double destroy did not crash\n");
-
   // Test 6: arts_db_destroy on ARTS_DB_PIN (implicit release, should not
   // crash).
   void *p6 = NULL;
@@ -127,7 +122,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -45,6 +45,8 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "../test_failure_status.h"
+
 /// Number of sub-tests.
 #define NUM_SUBTESTS 5
 
@@ -72,6 +74,7 @@ static void report(arts_edt_dep_t depv[], const uint64_t *paramv,
   } else {
     atomic_fetch_add_explicit(&ctr->failed, 1u, memory_order_relaxed);
     arts_printf("  FAIL: %s\n", name);
+    arts_test_fail();
   }
   arts_guid_t coll_guid = (arts_guid_t)paramv[PV_COLL];
   arts_edt_satisfy_slot(coll_guid, slot, (arts_guid_t)(1), DB_MODE_NULL);
@@ -226,7 +229,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

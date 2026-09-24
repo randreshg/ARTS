@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "../test_failure_status.h"
+
 #define DB_SIZE (sizeof(uint64_t) * 4)
 
 static void ro_reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -17,6 +19,9 @@ static void ro_reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   const uint64_t *data = (const uint64_t *)depv[0].ptr;
   bool ok = (data != NULL && data[0] == 0xDEADULL && data[1] == 0xBEEFULL);
   arts_printf("  %s: RO dep sees written values\n", ok ? "PASS" : "FAIL");
+  if (!ok) {
+    arts_test_fail();
+  }
 }
 
 static void rw_writer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -40,6 +45,9 @@ static void rw_verifier(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   bool ok = (data != NULL && data[0] == 0xCAFEULL && data[1] == 0xBABEULL);
   arts_printf("  %s: RW modification visible via RO after RW releases\n",
               ok ? "PASS" : "FAIL");
+  if (!ok) {
+    arts_test_fail();
+  }
 }
 
 static void val_receiver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -51,6 +59,9 @@ static void val_receiver(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   bool ok = (received == 0x42ULL);
   arts_printf("  %s: VAL dep delivers raw value (got 0x%lx)\n",
               ok ? "PASS" : "FAIL", (unsigned long)received);
+  if (!ok) {
+    arts_test_fail();
+  }
 }
 
 static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -118,7 +129,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

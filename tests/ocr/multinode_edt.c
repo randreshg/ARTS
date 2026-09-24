@@ -44,6 +44,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 // ---------------------------------------------------------------------------
 // Test 1: Remote EDT signals back to master.
 // ---------------------------------------------------------------------------
@@ -71,6 +73,7 @@ void check_remote_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("  FAIL: expected rank %u got %lu\n", expected,
                 (unsigned long)remote_rank);
+    arts_test_fail();
   }
 }
 
@@ -104,6 +107,7 @@ void check_all_nodes(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: EDTs ran on all %u nodes\n", depc);
   } else {
     arts_printf("  FAIL: EDT distribution incorrect\n");
+    arts_test_fail();
   }
 }
 
@@ -134,6 +138,7 @@ void chain_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("  FAIL: multi-hop chain value=%lu expected=%lu\n",
                 (unsigned long)value, (unsigned long)expected);
+    arts_test_fail();
   }
 }
 
@@ -156,6 +161,7 @@ void check_paramv(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: paramv delivered correctly to remote node\n");
   } else {
     arts_printf("  FAIL: paramv mismatch on remote node\n");
+    arts_test_fail();
   }
 }
 
@@ -237,7 +243,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

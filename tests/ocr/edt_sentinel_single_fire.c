@@ -4,9 +4,9 @@
  *
  * Property under test
  * -------------------
- * arts_edt_create_core's pre-reserved-GUID path sets depc_needed = depc + 1
- * (the sentinel) BEFORE installing the EDT, replays any out-of-order satisfies
- * queued against the still-RESERVED GUID, then removes the sentinel (-1).  The
+ * The EDT create body sets depc_needed = depc + 1 (the sentinel) BEFORE
+ * installing the EDT, replays any out-of-order satisfies queued against the
+ * still-RESERVED GUID, then removes the sentinel (-1).  The
  * invariant is: exactly ONE party observes the depc_needed==0 transition and
  * fires the EDT — never zero (lost wakeup) and never two (double dispatch).
  *

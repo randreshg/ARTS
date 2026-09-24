@@ -14,19 +14,20 @@
 ******************************************************************************/
 
 /// @file db_create_with_data_bytes.c
-/// @brief T057 — byte-exact DB payload after acquire (strengthen the
-///        scalar-only db_create_with_data integration test).
+/// @brief T057 — byte-exact DB payload after acquire.
 ///
 /// Exercises the install memcpy path (buffer.c `arts_db_buf_install` with a
 /// non-NULL data_payload) end-to-end: create-time the creator fills the DB
 /// buffer with a non-trivial byte pattern; a consumer EDT then acquires the DB
 /// RO and asserts EVERY byte matches with memcmp (not just a scalar sample).
 ///
-/// Covers buffer-census gap #1 (the memcpy branch's byte correctness was never
-/// checked — Phase 1-4 of coherence_buffer_test all zero-init).  Several sizes
+/// Covers the memcpy branch's byte correctness.  Several sizes
 /// are exercised (including an unaligned tail and a single-byte DB) so the
 /// memcpy length handling is fully driven.  Config-agnostic: the create+RO read
 /// path is identical under all 6 build configs (single node — no transfer).
+///
+/// A zero-length labeled create is part of the same contract: it installs a
+/// block a dependence can acquire, with no bytes to check.
 ///
 /// A stranded waiter is caught by the ctest TIMEOUT (no in-test watchdog).
 
@@ -35,7 +36,9 @@
 #include <stdint.h>
 #include <string.h>
 
-#define NUM_CASES 4u
+#include "../test_failure_status.h"
+
+#define NUM_CASES 5u
 
 /// Per-case parameters live in paramv:
 ///   paramv[0] = db_guid (to recompute the expected pattern)
@@ -60,16 +63,18 @@ void check_bytes(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t size = paramv[PV_SIZE];
   unsigned int id = (unsigned int)paramv[PV_ID];
   const unsigned char *data = (const unsigned char *)depv[0].ptr;
-  if (data == NULL) {
+  if (data == NULL && size != 0) {
     arts_printf("  FAIL: case %u RO acquire returned NULL\n", id);
-    arts_abort(1);
+    arts_test_fail();
+    return;
   }
   for (uint64_t i = 0; i < size; i++) {
     unsigned char want = pattern_byte(key, i);
     if (data[i] != want) {
       arts_printf("  FAIL: case %u byte %lu = 0x%02x want 0x%02x\n", id,
                   (unsigned long)i, data[i], want);
-      arts_abort(1);
+      arts_test_fail();
+      return;
     }
   }
   arts_printf("  PASS: case %u byte-exact %lu bytes\n", id,
@@ -85,9 +90,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_create_with_data_bytes ===\n");
 
-  /* Sizes chosen to exercise: sub-word, exact-word, unaligned tail, and a
-   * large buffer that spans well past the 64-byte buffer header. */
-  const uint64_t sizes[NUM_CASES] = {1u, 7u, 64u, 1000u};
+  /* Sizes chosen to exercise: sub-word, exact-word, unaligned tail, a large
+   * buffer that spans well past the 64-byte buffer header, and no bytes. */
+  const uint64_t sizes[NUM_CASES] = {1u, 7u, 64u, 1000u, 0u};
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
@@ -109,13 +114,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   arts_event_wait(fe);
-  arts_printf("PASS: db_create_with_data_bytes %u cases byte-exact\n",
-              NUM_CASES);
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: db_create_with_data_bytes %u cases byte-exact\n",
+                NUM_CASES);
+  }
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

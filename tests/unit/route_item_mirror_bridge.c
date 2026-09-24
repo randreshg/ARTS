@@ -1,15 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * route_item_mirror_bridge — arts_route_item_install_data / _acquire, the
- * C-linkage bridge for non-global mirror tables (GPU per-device route tables)
- * (census 18-gas GAP 6).
+ * C-linkage bridge for non-global mirror tables (GPU per-device route tables).
  *
  * Unlike the global installs, these operate on a CALLER-LOCATED slot:
  *   - arts_route_item_install_data(item, obj, deleter): install-or-fail CAS.
  *     If the slot is already occupied it releases the read handle and returns
- *     false (the caller keeps owning obj — install-race loser semantics).  On
- *     an empty slot it makes a cb and CAS-installs it; on a lost CAS it
- *     ABANDONS the spare cb (no deleter run) and returns false.  A NULL
+ *     false (an install that loses keeps its object — the caller still owns
+ *     obj).  On an empty slot it makes a cb and CAS-installs it; on a lost
+ *     CAS it ABANDONS the spare cb (no deleter run) and returns false.  A NULL
  *     deleter means the cb never frees obj.  It does NOT drain the OoO list.
  *   - arts_route_item_acquire(item): returns a caller-owned handle (ref held)
  *     or NULL; the caller must arts_shared_release it.  NULL-safe on item.

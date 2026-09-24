@@ -41,7 +41,7 @@
 /// @brief B.2 — Distributed coherence stress (multinode counterpart of
 ///        B.1).
 ///
-/// 4-rank scenario (auto-skipped on smaller configs).  Per iteration the
+/// Needs 2+ ranks (SKIP on one).  Per iteration the
 /// driver creates N_DBS DBs round-robin across all ranks (home routing
 /// via arts_edt_hint_t.rank = i % nnodes) and spawns N_EDTS workers, each
 /// pinned to a deterministic rank and acquiring a deterministic DB in a
@@ -167,9 +167,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * has not yet seen any RW may observe NULL ptr (the RO snapshot
      * install path lazily fetches from home only after the first RW
      * grant releases).  Validating cross-rank RO is left to the
-     * dedicated coherence_ro_acquire_stress test (single-node) and to
-     * coherence_mixed_local_remote (which interleaves explicit RW
-     * fences). */
+     * dedicated coherence_ro_acquire_stress test. */
     for (int i = 0; i < N_EDTS; i++) {
       int db_idx = (iter * 7 + i * 13) % N_DBS;
       unsigned int worker_route = (unsigned int)(i % (int)nnodes);

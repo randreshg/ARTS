@@ -69,6 +69,8 @@
 #include "arts.h"
 #include "arts/graph.h"
 
+#include "../test_failure_status.h"
+
 #define LOOKUPS 2048
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -102,6 +104,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   if (built == NULL) {
     arts_printf("FAIL: local init returned NULL\n");
+    arts_test_fail();
     arts_block_dist_free(dist);
     arts_shutdown();
     return;
@@ -115,6 +118,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (got != built) {
       arts_printf("FAIL: lookup %d returned %p, expected %p\n", i, (void *)got,
                   (void *)built);
+      arts_test_fail();
       ok = false;
       break;
     }
@@ -122,6 +126,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * under ASan if a missing release had freed it). */
     if (got->partGuid != g0) {
       arts_printf("FAIL: lookup %d partGuid mismatch\n", i);
+      arts_test_fail();
       ok = false;
       break;
     }
@@ -130,6 +135,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* from_partition(0) == from_guid(g0). */
   if (ok && arts_csr_from_partition(0, dist) != built) {
     arts_printf("FAIL: from_partition(0) != built\n");
+    arts_test_fail();
     ok = false;
   }
 
@@ -140,6 +146,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_guid_reserve(ARTS_GUID_DB, arts_get_current_rank());
     if (arts_csr_from_guid(never) != NULL) {
       arts_printf("FAIL: never-created GUID lookup not NULL\n");
+      arts_test_fail();
       ok = false;
     }
   }
@@ -150,6 +157,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (rem != NULL) {
       arts_printf("FAIL: remote partition lookup not NULL (got %p)\n",
                   (void *)rem);
+      arts_test_fail();
       ok = false;
     }
   }
@@ -164,7 +172,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

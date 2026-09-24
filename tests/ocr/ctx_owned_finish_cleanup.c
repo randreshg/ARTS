@@ -1,60 +1,45 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T147 — owned-finish creator-token balance: exactly-one-DECR per unconsumed
- * finish event, zero-extra-DECR for consumed ones.
+ * ctx_owned_finish_cleanup — a finish event's creator token is dropped exactly
+ * once: by arts_event_wait when the creator waits on the event (consumed), or
+ * by the creator EDT's epilogue when it returns without waiting (unconsumed).
  *
- * Target: arts_owned_finish_cleanup / arts_owned_finish_consume
- * (libs/src/core/edt_context.c), driven through the public finish-event API:
- *   - arts_event_create(FINISH) registers a creator-token on the worker
- *     (Mechanism B) + biases the latch by one (the create-time INCR).
- *   - arts_event_wait CONSUMES the token (zeroes the list slot) and issues the
- *     paired DECR itself.
- *   - EDT-epilogue arts_owned_finish_cleanup DECRs every UN-consumed token
- *     exactly once.
+ * The token list is private to the runtime, so the contract is checked through
+ * what it controls: every finish scope fires exactly once, and only after its
+ * member finished.  A missing drop leaves a scope that never fires (the run
+ * times out); an extra drop fires a scope early (its successor sees the member
+ * unfinished) or twice (a successor count above one).
  *
- * Balance contract this pins (the owned_finish_list is file-static and cannot
- * be read; we verify the contract through OBSERVABLE latch firing):
+ * Two shapes, one checker:
+ *  (1) One orchestrator creates K scopes; it waits on the even ones and
+ *      returns with the odd ones unconsumed, so a wait must clear only the
+ *      token it names and leave the rest to the epilogue.
+ *  (2) WAVES producer EDTs each create SCOPES scopes and return without
+ *      waiting, so every token of every wave is dropped by an epilogue; the
+ *      producers run back to back on the workers' reused per-thread lists,
+ *      each of which must be left empty.
  *
- *   - An UNCONSUMED finish event (orchestrator returns without waiting) must
- *     fire EXACTLY once: its successor runs exactly once AND only after its
- *     leaf completed.  A missing cleanup DECR -> never fires -> ctest TIMEOUT.
- *     A spurious extra DECR -> premature fire (successor sees leaf slot 0).
- *
- *   - A CONSUMED finish event (orchestrator arts_event_wait's it) must ALSO
- *     fire exactly once.  If cleanup wrongly DECR'd a consumed token (the
- *     zero-for-consumed property failing), the latch would underflow: either a
- *     premature/duplicate fire (successor count != 1 or leaf slot 0).
- *
- * Mix per orchestrator: K finish scopes, the EVEN-indexed ones are waited
- * (consumed), the ODD-indexed ones are returned-without-wait (unconsumed via
- * cleanup).  Each scope has one leaf (writes its slot) and one successor
- * (increments its own success-count slot).  All successors join an OUTER finish
- * scope F; when F drains a checker EDT verifies every leaf slot == 1 and every
- * successor count == EXACTLY 1 (no double fire, no missing fire).
- *
- * The first-match semantics of arts_owned_finish_consume are exercised by
- * mixing consumed/unconsumed distinct GUIDs: consume must zero only the
- * matching entry, leaving the others for cleanup.  (The GUID-reuse first-match
- * HAZARD documented for B-owned-finish-consume cannot be forced within one
- * EDT-run cycle — unique GUID minting prevents intra-list aliasing — so this
- * test pins the CORRECT first-match-on-distinct-GUIDs behavior rather than the
- * latent mis-fire; exposes_runtime_bug = false.)
+ * Each scope has one member, a leaf that marks its slot, and one successor,
+ * gated on the scope, that checks the leaf's mark and counts itself.  Every
+ * successor joins an outer scope F that gates the checker.
  */
 #include "arts.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
-#define K 6 /* finish scopes per orchestrator (3 consumed, 3 unconsumed) */
+#include "../test_failure_status.h"
 
-/* Counter DB layout: K leaf slots [0..K), then K successor-count slots
- * [K..2K). */
-#define LEAF_SLOT(i) (i)
-#define SUCC_SLOT(i) (K + (i))
-#define N_SLOTS (2 * K)
+#define K 6 /* orchestrator scopes: even ones waited on, odd ones not */
+#define WAVES 4
+#define SCOPES 5
+#define TOTAL (K + WAVES * SCOPES)
 
-static int g_failed = 0;
+/* Counter block: TOTAL leaf slots, then TOTAL successor-count slots. */
+#define LEAF_SLOT(g) (g)
+#define SUCC_SLOT(g) (TOTAL + (g))
+#define N_SLOTS (2 * TOTAL)
 
-/* leaf: RW dep on counter DB; paramv[0] = scope index. Marks its leaf slot. */
 void leaf(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
           arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -65,113 +50,109 @@ void leaf(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* successor: RW dep on counter DB (slot 0), depends on a finish event (slot 1,
- * NULL). paramv[0] = scope index. Increments its success-count slot and checks
- * its leaf already ran (no premature fire). */
 void succ(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
           arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  int idx = (int)paramv[0];
+  int g = (int)paramv[0];
   int *c = (int *)depv[0].ptr;
   if (c == NULL) {
-    arts_printf("FAIL ctx_owned_finish_cleanup: succ %d NULL counter DB\n",
-                idx);
-    g_failed = 1;
+    arts_printf("FAIL ctx_owned_finish_cleanup: successor %d got a NULL "
+                "counter block\n",
+                g);
+    arts_test_fail();
     return;
   }
-  if (c[LEAF_SLOT(idx)] != 1) {
-    arts_printf("FAIL ctx_owned_finish_cleanup: scope %d fired BEFORE its leaf "
-                "(premature DECR / latch underflow)\n",
-                idx);
-    g_failed = 1;
+  if (c[LEAF_SLOT(g)] != 1) {
+    arts_printf("FAIL ctx_owned_finish_cleanup: scope %d fired before its "
+                "leaf finished\n",
+                g);
+    arts_test_fail();
   }
-  c[SUCC_SLOT(idx)] += 1; /* must end at exactly 1 */
+  c[SUCC_SLOT(g)] += 1;
 }
 
-/* checker: fires when OUTER scope F drains. RO dep on counter DB. */
+/* One scope with index g: a leaf member and a successor gated on the scope. */
+static arts_guid_t make_scope(int g, arts_guid_t cdb, arts_guid_t outer) {
+  arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
+  arts_guid_t fe = arts_event_create(&fh);
+
+  arts_edt_hint_t lh = ARTS_EDT_HINT_DEFAULTS;
+  lh.finish_event = fe;
+  uint64_t pg = (uint64_t)g;
+  arts_guid_t l = arts_edt_create(leaf, 1, &pg, 1, &lh);
+  arts_add_dependence(cdb, l, 0, DB_MODE_RW);
+
+  arts_edt_hint_t sh = ARTS_EDT_HINT_DEFAULTS;
+  sh.finish_event = outer;
+  arts_guid_t s = arts_edt_create(succ, 1, &pg, 2, &sh);
+  arts_add_dependence(cdb, s, 0, DB_MODE_RW);
+  arts_add_dependence(fe, s, 1, DB_MODE_NULL);
+  return fe;
+}
+
 void checker(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
              arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  int *c = (int *)depv[1].ptr;
+  const int *c = (const int *)depv[1].ptr;
   if (c == NULL) {
-    arts_printf("FAIL ctx_owned_finish_cleanup: checker NULL counter DB\n");
-    g_failed = 1;
+    arts_printf("FAIL ctx_owned_finish_cleanup: checker got a NULL counter "
+                "block\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }
-  for (int i = 0; i < K; i++) {
-    if (c[LEAF_SLOT(i)] != 1) {
+  for (int g = 0; g < TOTAL; g++) {
+    if (c[LEAF_SLOT(g)] != 1) {
       arts_printf("FAIL ctx_owned_finish_cleanup: scope %d leaf never ran\n",
-                  i);
-      g_failed = 1;
+                  g);
+      arts_test_fail();
     }
-    if (c[SUCC_SLOT(i)] != 1) {
+    if (c[SUCC_SLOT(g)] != 1) {
       arts_printf("FAIL ctx_owned_finish_cleanup: scope %d successor fired %d "
-                  "times (expected exactly 1 — token DECR imbalance)\n",
-                  i, c[SUCC_SLOT(i)]);
-      g_failed = 1;
+                  "times, want 1\n",
+                  g, c[SUCC_SLOT(g)]);
+      arts_test_fail();
     }
   }
-  if (!g_failed) {
-    arts_printf("PASS ctx_owned_finish_cleanup: %d scopes (3 consumed/3 "
-                "unconsumed) each fired exactly once\n",
-                K);
+  if (arts_test_status() == 0) {
+    arts_printf("PASS ctx_owned_finish_cleanup: %d scopes (%d waited on, %d "
+                "dropped by an epilogue) each fired exactly once\n",
+                TOTAL, (K + 1) / 2, TOTAL - (K + 1) / 2);
   }
   arts_shutdown();
 }
 
+/* The orchestrator holds no grant on the counter block: it waits on scopes
+ * whose leaves need the block for writing. */
 void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  /* cdb passed by VALUE (its GUID): the orchestrator only wires children to it
-   * and never reads/writes the buffer.  It must NOT hold a DB grant here —
-   * holding cdb RW across the arts_event_wait below self-deadlocks under a
-   * sequential single-writer protocol: the awaited leaf needs cdb RW but cannot
-   * get the writer token while this parked EDT holds it.  (Protocols that allow
-   * intra-node concurrent RW would mask the hazard.) */
   arts_guid_t cdb = (arts_guid_t)paramv[0];
-
-  /* Outer finish scope F: gates the checker until ALL successors complete. */
-  arts_event_hint_t Fh = ARTS_EVENT_HINT_FINISH;
-  arts_guid_t F = arts_event_create(&Fh);
-
+  arts_guid_t outer = (arts_guid_t)paramv[1];
   for (int i = 0; i < K; i++) {
-    arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
-    arts_guid_t fe = arts_event_create(&fh); /* registers creator-token i */
-
-    /* leaf under fe. */
-    arts_edt_hint_t lh = ARTS_EDT_HINT_DEFAULTS;
-    lh.finish_event = fe;
-    uint64_t pi = (uint64_t)i;
-    arts_guid_t l = arts_edt_create(leaf, 1, &pi, 1, &lh);
-    arts_add_dependence(cdb, l, 0, DB_MODE_RW);
-
-    /* successor on fe, joined to F so the checker waits for it. */
-    arts_edt_hint_t sh = ARTS_EDT_HINT_DEFAULTS;
-    sh.finish_event = F;
-    arts_guid_t s = arts_edt_create(succ, 1, &pi, 2, &sh);
-    arts_add_dependence(cdb, s, 0, DB_MODE_RW);
-    arts_add_dependence(fe, s, 1, DB_MODE_NULL);
-
+    arts_guid_t fe = make_scope(i, cdb, outer);
     if ((i % 2) == 0) {
-      /* CONSUMED: wait closes scope fe; cleanup must skip its token. */
       arts_event_wait(fe);
     }
-    /* ODD: leave fe UNCONSUMED -> orchestrator-epilogue cleanup DECRs it. */
   }
+}
 
-  /* checker depends on F (drains when every successor done) + RO counter DB. */
-  arts_edt_hint_t ch = ARTS_EDT_HINT_DEFAULTS;
-  arts_guid_t chk = arts_edt_create(checker, 0, NULL, 2, &ch);
-  arts_add_dependence(F, chk, 0, DB_MODE_NULL);
-  arts_add_dependence(cdb, chk, 1, DB_MODE_RO);
-  /* orchestrator returns: epilogue cleanup DECRs F's token AND every
-   * unconsumed odd fe token. */
+void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  int w = (int)paramv[0];
+  arts_guid_t cdb = (arts_guid_t)paramv[1];
+  arts_guid_t outer = (arts_guid_t)paramv[2];
+  for (int j = 0; j < SCOPES; j++) {
+    (void)make_scope(K + w * SCOPES + j, cdb, outer);
+  }
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -189,13 +170,28 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_db_release(cdb, DB_MODE_RW);
 
+  arts_event_hint_t Fh = ARTS_EVENT_HINT_FINISH;
+  arts_guid_t F = arts_event_create(&Fh);
+
   arts_edt_hint_t oh = ARTS_EDT_HINT_DEFAULTS;
-  uint64_t op =
-      (uint64_t)cdb; /* pass cdb by value; orchestrator holds no grant */
-  arts_guid_t o = arts_edt_create(orchestrator, 1, &op, 0, &oh);
+  oh.finish_event = F;
+  uint64_t op[2] = {(uint64_t)cdb, (uint64_t)F};
+  (void)arts_edt_create(orchestrator, 2, op, 0, &oh);
+
+  for (int w = 0; w < WAVES; w++) {
+    arts_edt_hint_t ph = ARTS_EDT_HINT_DEFAULTS;
+    ph.finish_event = F;
+    uint64_t pv[3] = {(uint64_t)w, (uint64_t)cdb, (uint64_t)F};
+    (void)arts_edt_create(producer, 3, pv, 0, &ph);
+  }
+
+  arts_edt_hint_t ch = ARTS_EDT_HINT_DEFAULTS;
+  arts_guid_t chk = arts_edt_create(checker, 0, NULL, 2, &ch);
+  arts_add_dependence(F, chk, 0, DB_MODE_NULL);
+  arts_add_dependence(cdb, chk, 1, DB_MODE_RO);
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return g_failed;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

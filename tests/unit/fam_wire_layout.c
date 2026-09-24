@@ -19,14 +19,14 @@ static int fails;
 int main(void) {
   const size_t hdr = sizeof(struct arts_msg_header_s);
 #ifdef ARTS_FAM
-  CHECK(sizeof(struct arts_msg_db_create_coherent_packet_s) == hdr + 32,
-        "create packet body is %zu, expected 32",
+  CHECK(sizeof(struct arts_msg_db_create_coherent_packet_s) == hdr + 40,
+        "create packet body is %zu, expected 40",
         sizeof(struct arts_msg_db_create_coherent_packet_s) - hdr);
   CHECK(offsetof(struct arts_msg_db_create_coherent_packet_s, fam_addr) ==
-            hdr + 16,
-        "fam_addr must follow db_size");
+            hdr + 24,
+        "fam_addr must follow create_token");
 #else
-  CHECK(sizeof(struct arts_msg_db_create_coherent_packet_s) == hdr + 24,
+  CHECK(sizeof(struct arts_msg_db_create_coherent_packet_s) == hdr + 32,
         "a non-FAM create packet keeps its body");
 #endif
   /* Both messages exist in every build: only struct layouts are conditional. */

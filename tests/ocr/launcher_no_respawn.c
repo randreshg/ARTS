@@ -38,25 +38,20 @@
 ******************************************************************************/
 
 /// @file launcher_no_respawn.c
-/// @brief Validates the ARTS_RANK recursive-spawn guard of the launcher.
+/// @brief The local launcher brings up exactly the configured ranks, each once,
+///        with its identity handed down, and no spawned rank launches again.
 ///
-/// The local launcher spawns exactly `table_length - 1` non-master ranks, and
-/// every spawned child receives ARTS_RANK in its environment.  That env var is
-/// what `arts_transport_setup` keys off to short-circuit rank discovery and,
-/// crucially, prevent a spawned child from itself running the launcher and
-/// re-spawning the whole cluster (which would be an exponential fork storm).
-///
-/// If the guard were broken, the cluster would contain many MORE ranks than the
-/// config requests (each child re-launching N more children).  This test pins
-/// down the contract by asserting:
-///   1. arts_get_total_ranks() == the configured rank count (no extra ranks).
-///   2. Every non-master rank reports ARTS_RANK set and equal to its own rank,
-///      and a single ancestor master (no recursive launcher invocation).
-///
-/// A finish event per rank gates main_edt so the test completes
-/// deterministically; a stranded check is caught by the ctest TIMEOUT (no
-/// in-test spin/watchdog). Protocol-agnostic: the launcher carries no coherence
-/// state, runs in all configs.
+/// The launcher spawns the configured number of non-master ranks and hands
+/// each its rank through ARTS_RANK, which is also what keeps a spawned rank
+/// from running the launcher itself (a rank that did would re-spawn the whole
+/// cluster).  Asserted per rank, by a probe placed on it:
+///   1. it runs on the rank it was placed on, and sees the configured total;
+///   2. on every non-master rank, ARTS_RANK is set and names that rank;
+///   3. it stamps its own slot of a marker block, and the master then reads
+///      every slot 0..total-1 filled exactly once with its own rank's marker,
+///      so the live ranks are exactly 0..total-1 with no gap and no duplicate.
+/// A rank that never came up leaves its probe unrun (the run times out).
+/// Protocol-agnostic: the launcher carries no coherence state.
 
 #include "arts.h"
 
@@ -64,51 +59,72 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-/// Per-rank probe: verify this rank's identity against ARTS_RANK and confirm it
-/// did not itself launch a cluster.  Runs in the target rank's own process.
+#include "../test_failure_status.h"
+
+#define MARKER_BASE 0x5A5A0000u
+
 void rank_probe_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  (void)depv;
   unsigned int expected_rank = (unsigned int)paramv[0];
   unsigned int total = (unsigned int)paramv[1];
+  uint32_t *marks = (uint32_t *)depv[0].ptr;
 
   unsigned int me = arts_get_current_rank();
   unsigned int seen_total = arts_get_total_ranks();
 
   if (me != expected_rank) {
-    arts_printf("FAIL: rank probe ran on %u, expected %u\n", me, expected_rank);
-    arts_abort(1);
+    arts_printf("FAIL: launcher_no_respawn probe ran on %u, expected %u\n", me,
+                expected_rank);
+    arts_test_fail();
     return;
   }
   if (seen_total != total) {
-    arts_printf("FAIL: rank %u sees total_ranks %u, expected %u (respawn?)\n",
-                me, seen_total, total);
-    arts_abort(1);
+    arts_printf(
+        "FAIL: launcher_no_respawn rank %u sees %u ranks, expected %u\n", me,
+        seen_total, total);
+    arts_test_fail();
     return;
   }
 
-  /* The master (rank 0) has no ARTS_RANK in its env; every spawned child must
-   * have it set to its own rank.  A missing/wrong value on a non-master rank
-   * means the recursive-spawn guard was not applied. */
+  /* The master has no ARTS_RANK; every spawned rank must carry its own. */
   const char *rank_env = getenv("ARTS_RANK");
   if (me != 0) {
-    if (rank_env == NULL) {
-      arts_printf("FAIL: rank %u has no ARTS_RANK in env\n", me);
-      arts_abort(1);
-      return;
-    }
-    unsigned int env_rank = (unsigned int)strtoul(rank_env, NULL, 10);
-    if (env_rank != me) {
-      arts_printf("FAIL: rank %u has ARTS_RANK=%s (mismatch)\n", me, rank_env);
-      arts_abort(1);
+    if (rank_env == NULL || (unsigned int)strtoul(rank_env, NULL, 10) != me) {
+      arts_printf("FAIL: launcher_no_respawn rank %u has ARTS_RANK=%s\n", me,
+                  rank_env ? rank_env : "(unset)");
+      arts_test_fail();
       return;
     }
   }
+  if (marks == NULL) {
+    arts_printf("FAIL: launcher_no_respawn rank %u got a NULL marker block\n",
+                me);
+    arts_test_fail();
+    return;
+  }
+  marks[me] = MARKER_BASE | me;
+}
 
-  arts_printf("  PASS: rank %u identity ok (total=%u, ARTS_RANK=%s)\n", me,
-              seen_total, rank_env ? rank_env : "(unset/master)");
+void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  unsigned int total = (unsigned int)paramv[0];
+  const uint32_t *marks = (const uint32_t *)depv[0].ptr;
+  if (marks == NULL) {
+    arts_printf("FAIL: launcher_no_respawn verifier got a NULL marker block\n");
+    arts_test_fail();
+    return;
+  }
+  for (unsigned int r = 0; r < total; r++) {
+    if (marks[r] != (MARKER_BASE | r)) {
+      arts_printf("FAIL: launcher_no_respawn slot %u = 0x%x, expected 0x%x\n",
+                  r, marks[r], MARKER_BASE | r);
+      arts_test_fail();
+    }
+  }
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -118,27 +134,43 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  arts_printf("=== launcher_no_respawn ===\n");
-
   unsigned int total = arts_get_total_ranks();
 
-  /* Fan a probe onto every rank (including the master) and wait on each so the
-   * test ends deterministically once all ranks have reported. */
+  void *ptr = NULL;
+  arts_guid_t db =
+      arts_db_create(&ptr, total * sizeof(uint32_t), ARTS_DB, ARTS_DB_PROP_NONE,
+                     &(arts_db_hint_t){.rank = 0});
+  for (unsigned int r = 0; r < total; r++) {
+    ((uint32_t *)ptr)[r] = 0u;
+  }
+  arts_db_release(db, DB_MODE_RW);
+
+  /* One probe at a time: each write turn is ordered before the next. */
   for (unsigned int r = 0; r < total; r++) {
     arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     uint64_t params[2] = {(uint64_t)r, (uint64_t)total};
-    arts_edt_create(rank_probe_edt, 2, params, 0,
-                    &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_guid_t p =
+        arts_edt_create(rank_probe_edt, 2, params, 1,
+                        &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+    arts_add_dependence(db, p, 0, DB_MODE_RW);
     arts_event_wait(fe);
   }
 
-  arts_printf("PASS: launcher_no_respawn (%u ranks, no recursive spawn)\n",
+  arts_guid_t vfe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  uint64_t vparams[1] = {(uint64_t)total};
+  arts_guid_t v =
+      arts_edt_create(verify_edt, 1, vparams, 1,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = vfe});
+  arts_add_dependence(db, v, 0, DB_MODE_RO);
+  arts_event_wait(vfe);
+
+  arts_printf("PASS: launcher_no_respawn (%u ranks, each once, no recursive "
+              "spawn)\n",
               total);
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

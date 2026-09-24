@@ -35,6 +35,7 @@
 #include "arts.h"
 #include "arts/utils/vector.h"
 
+#include "arts/coherence/types.h" /* struct arts_db_s */
 #include "arts/edt_context.h"   /* current_edt, arts_get_created_db_list */
 #include "arts/runtime_state.h" /* arts_thread_info.current_edt_guid */
 #include "arts/utils/array_list.h"
@@ -156,8 +157,10 @@ void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_shutdown();
       return;
     }
-    arts_guid_t *tracked = (arts_guid_t *)arts_vector_at(outer_list, 0);
-    if (tracked == NULL || *tracked != odb) {
+    arts_shared_ptr_t *tracked =
+        (arts_shared_ptr_t *)arts_vector_at(outer_list, 0);
+    if (tracked == NULL ||
+        ((struct arts_db_s *)arts_shared_get(*tracked))->cache.db_guid != odb) {
       arts_printf("FAIL ctx_save_restore_nested: outer tracked entry "
                   "corrupted after wait %d\n",
                   w);

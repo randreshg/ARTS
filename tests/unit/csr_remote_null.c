@@ -57,6 +57,8 @@
 #include "arts/gas/guid.h" /* ARTS_GUID_GET_RANK */
 #include "arts/graph.h"
 
+#include "../test_failure_status.h"
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -111,10 +113,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       if (csr == NULL) {
         arts_printf("FAIL: rank %u local partition %u init returned NULL\n", me,
                     i);
+        arts_test_fail();
         ok = false;
       } else if (arts_csr_from_partition(i, dist) == NULL) {
         arts_printf("FAIL: rank %u local partition %u not in route table\n", me,
                     i);
+        arts_test_fail();
         ok = false;
       }
       if (csr) {
@@ -124,11 +128,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       if (csr != NULL) {
         arts_printf("FAIL: rank %u remote partition %u init returned %p\n", me,
                     i, (void *)csr);
+        arts_test_fail();
         ok = false;
       }
       if (arts_csr_from_partition(i, dist) != NULL) {
         arts_printf("FAIL: rank %u remote partition %u lookup not NULL\n", me,
                     i);
+        arts_test_fail();
         ok = false;
       }
     }
@@ -139,11 +145,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (ok && local_count != 1) {
     arts_printf("FAIL: rank %u owns %u local partitions (expected 1)\n", me,
                 local_count);
+    arts_test_fail();
     ok = false;
   }
   if (ok && my_partition != me) {
     arts_printf("FAIL: rank %u local partition is %u (expected %u)\n", me,
                 my_partition, me);
+    arts_test_fail();
     ok = false;
   }
 
@@ -156,7 +164,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

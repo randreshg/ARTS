@@ -66,6 +66,8 @@
 #include "arts.h"
 #include <stdint.h>
 
+#include "../test_failure_status.h"
+
 #define RESERVERS_PER_RANK 32 /* > workers so all worker threads participate   \
                                */
 #define GUIDS_PER_RESERVER 16
@@ -106,6 +108,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int me = arts_get_current_rank();
   if (!slots) {
     arts_printf("  FAIL: rank %u checker got NULL collection\n", me);
+    arts_test_fail();
     return;
   }
 
@@ -113,6 +116,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int i = 0; i < TOTAL_PER_RANK && ok; i++) {
     if (slots[i] == (uint64_t)NULL_GUID) {
       arts_printf("  FAIL: rank %u slot %u never filled (NULL_GUID)\n", me, i);
+      arts_test_fail();
       ok = false;
       break;
     }
@@ -121,6 +125,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         arts_printf("  FAIL: rank %u duplicate GUID at slots %u,%u "
                     "(key-block aliasing)\n",
                     me, i, j);
+        arts_test_fail();
         ok = false;
         break;
       }
@@ -147,9 +152,9 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
                             uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   (void)depc;
   (void)depv;
-  arts_guid_t outer = (arts_guid_t)paramv[0];
   unsigned int me = arts_get_current_rank();
 
   /* Per-rank collection DB, homed on this rank. */
@@ -163,11 +168,11 @@ static void rank_driver_edt(uint32_t paramc, const uint64_t *paramv,
   }
   arts_db_release(coll, DB_MODE_RW);
 
-  /* Checker runs after all reservers (slot 1 = inner finish), joined to outer
-   * so shutdown waits for it. */
+  /* Checker runs after all reservers (slot 1 = inner finish); it inherits
+   * this driver's scope (outer, joined through this rank's proxy), so shutdown
+   * waits for it. */
   arts_guid_t checker =
-      arts_edt_create(checker_edt, 0, NULL, 2,
-                      &(arts_edt_hint_t){.rank = me, .finish_event = outer});
+      arts_edt_create(checker_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = me});
   arts_add_dependence(coll, checker, 0, DB_MODE_RO);
 
   arts_guid_t inner = arts_event_create(&ARTS_EVENT_HINT_FINISH);
@@ -197,15 +202,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t outer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(outer, shut, 0, DB_MODE_NULL);
 
-  uint64_t op = (uint64_t)outer;
   for (unsigned int r = 0; r < nrank; r++) {
-    arts_edt_create(rank_driver_edt, 1, &op, 0,
+    arts_edt_create(rank_driver_edt, 0, NULL, 0,
                     &(arts_edt_hint_t){.rank = r, .finish_event = outer});
   }
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

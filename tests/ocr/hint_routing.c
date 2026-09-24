@@ -44,6 +44,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 /// EDT created with NULL hint — should run on current node.
 void null_hint_task(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
@@ -67,6 +69,7 @@ void explicit_route_task(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: explicit route=0 -> ran on node 0\n");
   } else {
     arts_printf("  FAIL: explicit route=0 but ran on node %u\n", my_rank);
+    arts_test_fail();
   }
 }
 
@@ -95,6 +98,7 @@ void check_db_hint(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: DB NULL hint on rank %u\n", db_rank);
   } else {
     arts_printf("  FAIL: DB NULL hint rank=%u\n", db_rank);
+    arts_test_fail();
   }
   (void)depv;
 }
@@ -152,7 +156,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

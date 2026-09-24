@@ -44,6 +44,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 /// Test 1: Linear chain: Event1 → Event2 → EDT.
 void chain_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
@@ -76,6 +78,7 @@ void chain_data_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: event chain propagated data correctly\n");
   } else {
     arts_printf("  FAIL: event chain data mismatch\n");
+    arts_test_fail();
   }
 }
 
@@ -162,7 +165,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

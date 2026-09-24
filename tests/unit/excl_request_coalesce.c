@@ -44,6 +44,8 @@ int main(void) {
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 #define M_ITERS 48
 #define N_RW 4
 #define N_RO 4
@@ -59,15 +61,16 @@ int main(void) {
 #define STATE_ROSEEN 1
 #define STATE_NELEMS 2
 
-/* RW acquirer: bump the per-iteration DB accumulator + the global RW count,
- * drop latch.  paramv: [state_db, latch]. */
+/* Every acquirer's output event is the LATCH, decremented once the EDT's
+ * blocks are released, so the verifier gated on it is ordered after every
+ * write to the state block. */
+
+/* RW acquirer: bump the per-iteration DB accumulator + the global RW count. */
 static void rw_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   (void)depc;
-  arts_guid_t state_db = (arts_guid_t)paramv[0];
-  arts_guid_t latch = (arts_guid_t)paramv[1];
-  (void)state_db;
   _Atomic uint64_t *cell = (_Atomic uint64_t *)depv[0].ptr;
   if (cell != NULL) {
     atomic_fetch_add_explicit(cell, 1u, memory_order_acq_rel);
@@ -77,23 +80,21 @@ static void rw_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     atomic_fetch_add_explicit((_Atomic uint64_t *)&state[STATE_RWWRITES], 1u,
                               memory_order_acq_rel);
   }
-  arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /* RO acquirer: read the per-iteration DB (must be non-NULL → it coalesced onto
- * a covering phase), record the observation, drop latch. paramv: [latch]. */
+ * a covering phase) and record the observation. */
 static void ro_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   (void)depc;
-  arts_guid_t latch = (arts_guid_t)paramv[0];
   const void *cell = depv[0].ptr;
   uint64_t *state = (uint64_t *)depv[1].ptr;
   if (cell != NULL && state != NULL) {
     atomic_fetch_add_explicit((_Atomic uint64_t *)&state[STATE_ROSEEN], 1u,
                               memory_order_acq_rel);
   }
-  arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /* verify_edt — bound to all-done LATCH (slot 0) + state DB RO (slot 1). */
@@ -168,15 +169,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * frequently in flight when an RW acquire arrives (RW must still request)
      * and vice-versa (RO must coalesce).  depc=0 → all hit the not-held path
      * concurrently. */
-    uint64_t rw_pv[2] = {(uint64_t)state_db, (uint64_t)latch};
-    uint64_t ro_pv[1] = {(uint64_t)latch};
+    arts_edt_hint_t eh = {.rank = ARTS_HINT_ANY_RANK, .output_event = latch};
     for (int k = 0; k < PER_ITER; k++) {
       if (k % 2 == 0 && (k / 2) < N_RW) {
-        arts_guid_t e = arts_edt_create(rw_edt, 2, rw_pv, 2, NULL);
+        arts_guid_t e = arts_edt_create(rw_edt, 0, NULL, 2, &eh);
         arts_add_dependence(db, e, 0, DB_MODE_RW);
         arts_add_dependence(state_db, e, 1, DB_MODE_RW);
       } else {
-        arts_guid_t e = arts_edt_create(ro_edt, 1, ro_pv, 2, NULL);
+        arts_guid_t e = arts_edt_create(ro_edt, 0, NULL, 2, &eh);
         arts_add_dependence(db, e, 0, DB_MODE_RO);
         arts_add_dependence(state_db, e, 1, DB_MODE_RW);
       }
@@ -190,9 +190,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }
 
 #endif /* ARTS_PROTOCOL_EXCL */

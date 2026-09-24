@@ -7,22 +7,19 @@
  * releases it, so it never reaches an idle edge and can never hand the write
  * right on.  It does not even keep a cache for the block.  The only rank that
  * can hold that right at rest is therefore the block's home, and the home-side
- * create must end saying so on every one of its arms.  Name the creator
+ * create must end saying so.  Name the creator
  * instead and the first writer's request is addressed to a rank that holds
  * nothing — and has nothing to be asked with: nothing answers, and the write
  * never runs.
  *
- * The home-side create has three arms, and only ONE of them is reached by an
- * ordinary create: a fresh install.  The other two coalesce onto a descriptor
- * some other message already put in the route table, and reaching them takes a
- * second create of the SAME block.  That is what the two creators below are
- * for — the first lands on the fresh arm, the second on a coalesce arm.  A
- * single creator exercises neither, and would pass against a home that names
- * the creator on both.
+ * The creator runs on a rank that is neither the home nor the writer, so the
+ * first write turn is asked for by a third rank: a home that named the
+ * creator as the holder would send that request's round to a rank that holds
+ * nothing, and it would never be answered.
  *
  * The failure is a WEDGE, not a wrong value, so the ctest timeout is half the
  * oracle here and the value check is the other half.  Three distinct ranks are
- * needed to keep home, creators and writer apart, which is exactly the
+ * needed to keep home, creator and writer apart, which is exactly the
  * configuration in which the creator can be neither.
  */
 
@@ -73,9 +70,8 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_shutdown();
 }
 
-/* Creator: runs on ranks 1 and 2, both naming the SAME labelled block homed on
- * rank 0, and neither taking a hold on it.  One of the two create messages
- * finds the home descriptor already installed and takes a coalesce arm. */
+/* Creator: runs on rank 1, naming a labelled block homed on rank 0, and
+ * taking no hold on it. */
 static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -94,8 +90,7 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* Wiring runs only once both creates have been made, so the coalesce arm has
- * certainly run by the time the first write turn is asked for. */
+/* Wiring runs only once the create has been made. */
 static void wirer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -128,22 +123,19 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 3u) {
     arts_printf("SKIP grant_purge_no_acquire_creator: needs >= 3 ranks "
-                "(have %u) to keep home, creators and writer apart\n",
+                "(have %u) to keep home, creator and writer apart\n",
                 nranks);
     arts_shutdown();
     return;
   }
 
-  /* A one-element labelled range homed on rank 0: both creators derive the
-   * identical child GUID from it, so the home sees two creates of one block. */
+  /* A one-element labelled range homed on rank 0. */
   arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_DB, 1, 0);
   uint64_t rparam = (uint64_t)range;
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   (void)arts_edt_create(creator_edt, 1, &rparam, 0,
                         &(arts_edt_hint_t){.rank = 1u, .finish_event = fe});
-  (void)arts_edt_create(creator_edt, 1, &rparam, 0,
-                        &(arts_edt_hint_t){.rank = 2u, .finish_event = fe});
 
   arts_guid_t wire =
       arts_edt_create(wirer_edt, 1, &rparam, 1, &(arts_edt_hint_t){.rank = 0u});

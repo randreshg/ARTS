@@ -56,6 +56,8 @@
 #include "arts/gas/guid.h" /* ARTS_GUID_GET_RANK */
 #include "arts/graph.h"
 
+#include "../test_failure_status.h"
+
 /// Recompute the expected rank for partition index `blk` under the same
 /// contiguous round-robin the constructor uses, then compare against the rank
 /// encoded in the reserved GUID.  Returns true on full match.
@@ -64,6 +66,7 @@ static bool check_roundrobin(unsigned int num_blocks, unsigned int ranks) {
       arts_block_dist_init(1024, 0, num_blocks, ARTS_GUID_DB);
   if (dist == NULL) {
     arts_printf("FAIL: init returned NULL for nb=%u\n", num_blocks);
+    arts_test_fail();
     return false;
   }
 
@@ -79,6 +82,7 @@ static bool check_roundrobin(unsigned int num_blocks, unsigned int ranks) {
       if (grank != r) {
         arts_printf("FAIL: nb=%u block %u expected rank %u got %u\n",
                     num_blocks, blk, r, grank);
+        arts_test_fail();
         ok = false;
         break;
       }
@@ -88,6 +92,7 @@ static bool check_roundrobin(unsigned int num_blocks, unsigned int ranks) {
   if (ok && blk != num_blocks) {
     arts_printf("FAIL: nb=%u filled %u blocks, expected %u\n", num_blocks, blk,
                 num_blocks);
+    arts_test_fail();
     ok = false;
   }
   arts_block_dist_free(dist);
@@ -126,7 +131,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

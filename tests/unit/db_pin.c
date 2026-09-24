@@ -44,6 +44,8 @@
 #include "arts.h"
 #include <string.h>
 
+#include "../test_failure_status.h"
+
 #define DB_SIZE 128
 
 /// Verify ARTS_DB_PIN with RW mode.
@@ -71,6 +73,7 @@ void check_pin_rw(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: DB_PIN with RW mode read/write OK\n");
   } else {
     arts_printf("  FAIL: DB_PIN with RW mode failed\n");
+    arts_test_fail();
   }
 }
 
@@ -94,6 +97,7 @@ void check_modified(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: DB_PIN modification persisted\n");
   } else {
     arts_printf("  FAIL: DB_PIN modification lost\n");
+    arts_test_fail();
   }
 }
 
@@ -141,7 +145,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

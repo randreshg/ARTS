@@ -14,6 +14,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "../test_failure_status.h"
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -40,6 +42,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   struct arts_event_s *e = (struct arts_event_s *)arts_shared_get(h);
   if (!e) {
     arts_printf("FAIL: IDEM destroyed after over-satisfy\n");
+    arts_test_fail();
     arts_shared_release(&h);
     arts_shutdown();
     return;
@@ -52,7 +55,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

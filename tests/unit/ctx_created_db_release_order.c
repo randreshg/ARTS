@@ -11,7 +11,7 @@
  * Pinned properties (white-box reads on the running worker thread):
  *
  *   1. Footprint: the first DB created on a worker lazily allocates
- *      created_db_list with element_size == sizeof(arts_guid_t), and the
+ *      created_db_list with element_size == sizeof(arts_shared_ptr_t), and the
  *      block GROWS to hold what was pushed — NDB exceeds the small initial
  *      capacity, so the doubling is actually exercised, not just permitted.
  *
@@ -115,13 +115,13 @@ void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * first push), carries guid-sized elements, and has grown past its initial
    * capacity to hold NDB entries. */
   arts_vector_t *list = arts_get_created_db_list();
-  if (list->data == NULL || list->element_size != sizeof(arts_guid_t) ||
+  if (list->data == NULL || list->element_size != sizeof(arts_shared_ptr_t) ||
       list->capacity < (uint64_t)NDB) {
     arts_printf("FAIL ctx_created_db_release_order: footprint wrong "
                 "(data=%p element_size=%zu capacity=%llu, expected non-NULL, "
                 "%zu, >= %d)\n",
                 list->data, list->element_size,
-                (unsigned long long)list->capacity, sizeof(arts_guid_t), NDB);
+                (unsigned long long)list->capacity, sizeof(arts_shared_ptr_t), NDB);
     g_failed = 1;
     arts_shutdown();
     return;

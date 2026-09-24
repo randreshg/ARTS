@@ -2,18 +2,16 @@
  *
  * fam_labeled_create — one label names one block, so it names one store.
  *
- * Every rank creates the same pre-reserved label without acquiring it, which
- * the programming model allows precisely because such a create takes no hold
- * there could be two of: one of them makes the block and the rest make
- * nothing.  The label's home is among the creators, so the losing create is
- * exercised both where the block was made and where it was not.
+ * Each cycle one rank creates a pre-reserved label without acquiring it; the
+ * creator rotates over the ranks, so the label's home creates some blocks
+ * itself and has the others announced to it.
  *
  * Two verdicts.  The block's bytes: one write turn on a rank that is not the
  * home, and every rank reads back exactly what it left — a second store for
  * the label would show up as a reader seeing an unwritten block.  And the
- * pool: each cycle destroys its block, so only one is ever live, and a losing
- * create that allocated anyway would leave one store behind per cycle and
- * exhaust a rank's share of the pool long before the last one.
+ * pool: each cycle destroys its block, so only one is ever live, and a create
+ * that allocated a store the block does not use would leave one behind per
+ * cycle and exhaust a rank's share of the pool long before the last one.
  *
  * Portable: it asserts COHERENCE alone and passes under every protocol.
  */
@@ -119,8 +117,8 @@ static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  arts_printf("fam_labeled_create: %u labels of %u KiB, each created on every "
-              "one of %u ranks, read back on all of them and destroyed — "
+  arts_printf("fam_labeled_create: %u labels of %u KiB, each created by one "
+              "of %u ranks in turn, read back on all of them and destroyed — "
               "PASS\n",
               CYCLES, (N * (unsigned int)sizeof(uint32_t)) / 1024u,
               arts_get_total_ranks());
@@ -128,7 +126,7 @@ static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /* paramv = {the range, the cycle, the rank count}.  Gated on the cycle's
- * creates, so the label exists on every rank before a turn is asked for. */
+ * create, so the label exists before a turn is asked for. */
 static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -191,10 +189,9 @@ static void iter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   uint64_t cpv[1] = {(uint64_t)arts_guid_from_index(base, iter)};
-  for (unsigned int r = 0; r < nranks; r++) {
-    (void)arts_edt_create(create_edt, 1, cpv, 0,
-                          &(arts_edt_hint_t){.rank = r, .finish_event = fe});
-  }
+  (void)arts_edt_create(
+      create_edt, 1, cpv, 0,
+      &(arts_edt_hint_t){.rank = iter % nranks, .finish_event = fe});
   uint64_t tpv[3] = {(uint64_t)base, (uint64_t)iter, (uint64_t)nranks};
   arts_guid_t t = arts_edt_create(turn_edt, 3, tpv, 1,
                                   &(arts_edt_hint_t){.rank = 0u});
@@ -216,9 +213,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
-  /* All homed on rank 0, which therefore creates labels of its own making as
-   * well as labels another rank made first.  One label per cycle and never
-   * reused: a label whose block was destroyed is not created again. */
+  /* All homed on rank 0.  One label per cycle and never reused: a label
+   * whose block was destroyed is not created again. */
   arts_guid_t base = arts_guid_reserve_range(ARTS_GUID_DB, CYCLES, 0u);
   if (base == NULL_GUID) {
     (void)fprintf(stderr, "FAIL: fam_labeled_create could not reserve its "

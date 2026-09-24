@@ -46,6 +46,9 @@
     g_tag_##name++;                                                            \
   }
 
+MK_HANDLER(arts_handler_edt_create)
+MK_HANDLER(arts_handler_event_create)
+MK_HANDLER(arts_handler_db_create)
 MK_HANDLER(arts_handler_event_satisfy_slot)
 MK_HANDLER(arts_handler_edt_satisfy_slot)
 MK_HANDLER(arts_handler_event_add_dependence)
@@ -90,6 +93,24 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void arts_free(void *p) { free(p); }
+#ifndef NDEBUG
+void arts_sched_fuzz_point(void) {}
+#endif
+bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
+  (void)key;
+  (void)obj;
+  return false;
+}
+bool arts_route_table_set_destroyed_item(arts_guid_t key,
+                                         arts_shared_ptr_t cb) {
+  (void)key;
+  (void)cb;
+  return false;
+}
+void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
+  (void)key;
+  (void)obj;
+}
 
 /* Expose the file-static g_ooo_table by compiling ooo.c into this TU. */
 #include "../../libs/src/core/ooo.c"
@@ -104,6 +125,9 @@ struct expect_s {
 #define E(K, F) {K, F, #K " -> " #F}
 
 static const struct expect_s g_expect[] = {
+    E(OOO_EDT_CREATE, arts_handler_edt_create),
+    E(OOO_EVENT_CREATE, arts_handler_event_create),
+    E(OOO_DB_CREATE, arts_handler_db_create),
     E(OOO_EVENT_SATISFY_SLOT, arts_handler_event_satisfy_slot),
     E(OOO_EDT_SATISFY_SLOT, arts_handler_edt_satisfy_slot),
     E(OOO_EVENT_ADD_DEPENDENCE, arts_handler_event_add_dependence),

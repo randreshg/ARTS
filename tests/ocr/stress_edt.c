@@ -42,6 +42,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 #define NUM_EDTS 1000
 
 /// Simple EDT that increments a shared counter via value signal.
@@ -70,6 +72,7 @@ void stress_collector(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: stress test %u EDTs completed\n", NUM_EDTS);
   } else {
     arts_printf("  FAIL: stress test got %u/%u completions\n", count, NUM_EDTS);
+    arts_test_fail();
   }
 }
 
@@ -98,6 +101,7 @@ void chain_final(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("  FAIL: chain stress val=%lu expected %u\n",
                 (unsigned long)val, CHAIN_LEN);
+    arts_test_fail();
   }
 }
 
@@ -144,7 +148,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

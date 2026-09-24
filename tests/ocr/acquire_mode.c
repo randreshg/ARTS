@@ -220,9 +220,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t writer_edt_guid =
       arts_edt_create(writer_edt, 1, writer_pv, 1,
                       &(arts_edt_hint_t){.rank = 0, .finish_event = fe_writer});
-  arts_add_dependence(data_guid, writer_edt_guid, 0, DB_MODE_RW);
-  // Release the creator's auto-acquired WRITE hold so the writer can run.
+  // The creator's write hold ends before the writer's dependence is added,
+  // so the two write acquisitions are ordered.
   arts_db_release(data_guid, DB_MODE_RW);
+  arts_add_dependence(data_guid, writer_edt_guid, 0, DB_MODE_RW);
   arts_printf("[Phase 1] Writer dispatched; waiting for it to finish\n");
   arts_event_wait(fe_writer);
 

@@ -41,17 +41,19 @@
 /// @brief Verify clean destroy AFTER all DB users have quiesced.
 ///
 /// A DB is destroyed only after every EDT that held a dependence on it has
-/// completed: workers are collected under a dedicated per-iteration finish
-/// event (few), and the destroyer depends on few via DB_MODE_NULL so it
-/// cannot run until all workers have released the DB.  Destroyer is pinned
-/// to the DB home rank (rank 0) to satisfy the OWNER placement's requirement
-/// that destroy originates at the owner.  Exercising destroy-in-use is OCR
-/// undefined behaviour; this test verifies the legal, quiesced path.
+/// completed: workers, placed round-robin over the ranks, are collected under
+/// a dedicated per-iteration finish event (few), and the destroyer on the
+/// DB's home depends on few via DB_MODE_NULL so it cannot run until all
+/// workers have released the DB.  Exercising destroy-in-use is OCR undefined
+/// behaviour; this test verifies the legal, quiesced path.  The workers'
+/// write turns are unordered, which DB-WRF does not admit.
 
 #include "arts.h"
 
 #include <stdint.h>
 #include <stdio.h>
+
+#include "../test_failure_status.h"
 
 #define N_EDTS 50
 #define N_ITERATIONS 20
@@ -119,8 +121,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t few = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
     for (int i = 0; i < N_EDTS; i++) {
-      arts_guid_t w = arts_edt_create(worker_edt, 0, NULL, 1,
-                                      &(arts_edt_hint_t){.finish_event = few});
+      arts_guid_t w = arts_edt_create(
+          worker_edt, 0, NULL, 1,
+          &(arts_edt_hint_t){.rank = (unsigned int)i % arts_get_total_ranks(),
+                             .finish_event = few});
       arts_add_dependence(db_guid, w, 0, DB_MODE_RW);
     }
 
@@ -134,7 +138,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

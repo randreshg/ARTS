@@ -21,6 +21,10 @@
  *   The dispatch handler increments a per-round atomic counter; after join we
  *   assert dispatched == pushed and the slot's ooo_list is empty.
  *
+ * Create polarity (deterministic, via the engine's after-park injection
+ * point): the three shapes of a teardown racing a parked create, each of
+ * which must run the create body exactly once.
+ *
  * This is a standalone unit test: it #includes the runtime's ooo.c so the
  * file-static g_ooo_table + engine bodies are compiled in, links shared.c for
  * the cb shared-ptr slot, and provides a single-slot
@@ -56,6 +60,15 @@ static void recorder(void *item, void *args) {
  * by name (the model-agnostic set + the active model's OOO_DB_* set).  Provide
  * every one as the same recorder so any build links.  Signatures must match
  * arts_ooo_handler_fn_t exactly. */
+void arts_handler_edt_create(void *i, void *a) { recorder(i, a); }
+/* The create polarity's body: counted apart from the non-create recorder. */
+static _Atomic uint64_t g_creates;
+void arts_handler_event_create(void *i, void *a) {
+  (void)i;
+  (void)a;
+  atomic_fetch_add_explicit(&g_creates, 1, memory_order_relaxed);
+}
+void arts_handler_db_create(void *i, void *a) { recorder(i, a); }
 void arts_handler_event_satisfy_slot(void *i, void *a) { recorder(i, a); }
 void arts_handler_edt_satisfy_slot(void *i, void *a) { recorder(i, a); }
 void arts_handler_event_add_dependence(void *i, void *a) { recorder(i, a); }
@@ -87,17 +100,65 @@ void arts_handler_db_grant_return(void *i, void *a) { recorder(i, a); }
 #endif
 #endif
 
-/* ── Single fixed slot the test fully controls ────────────────────────────
+/* ── A few slots the test fully controls ──────────────────────────────────
  * The OoO engine reaches a slot's ooo_list / value through
- * arts_route_table_reserve_or_lookup; we override it to hand back one static
- * slot so the test drives value publish/destroy directly. */
-static arts_route_item_t g_slot;
+ * arts_route_table_reserve_or_lookup; we override it with a tiny table (the
+ * slot keyed `key`, else the first free slot, claimed) so the test drives
+ * value publish/destroy and slot return directly.  g_slot is slot 0. */
+#define NSLOTS 4
+static arts_route_item_t g_slots[NSLOTS];
+#define g_slot (g_slots[0])
 
 void arts_route_table_reserve_or_lookup(arts_guid_t key,
                                         arts_route_item_t **out) {
-  (void)key;
-  *out = &g_slot;
+  for (int i = 0; i < NSLOTS; i++) {
+    if (__atomic_load_n(&g_slots[i].key, __ATOMIC_ACQUIRE) == key) {
+      *out = &g_slots[i];
+      return;
+    }
+  }
+  for (int i = 0; i < NSLOTS; i++) {
+    arts_guid_t expect = 0;
+    if (__atomic_compare_exchange_n(&g_slots[i].key, &expect, key, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) ||
+        expect == key) {
+      *out = &g_slots[i];
+      return;
+    }
+  }
+  (void)fprintf(stderr, "FAIL: test slot table full\n");
+  abort();
 }
+
+bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
+  (void)key;
+  (void)obj;
+  return false;
+}
+bool arts_route_table_set_destroyed_item(arts_guid_t key,
+                                         arts_shared_ptr_t cb) {
+  (void)key;
+  (void)cb;
+  return false;
+}
+void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
+  (void)key;
+  (void)obj;
+}
+
+/* Between a create's park and its rescue re-read, drive one of three shapes
+ * of a concurrent teardown into the slot (see main). */
+enum hook_mode {
+  HOOK_OFF,
+  HOOK_EMPTY_NO_REDRIVE,
+  HOOK_TEARDOWN,
+  HOOK_RECLAIM,
+  HOOK_NC_MOVED,
+  HOOK_NC_TEARDOWN
+};
+static enum hook_mode g_hook;
+static void after_park_hook(arts_route_item_t *slot);
+#define OOO_AFTER_PARK(slot) after_park_hook(slot)
 
 /* libc-backed allocator shims (ooo.c payloads + shared.c cb pool). */
 void *arts_malloc(size_t size) { return malloc(size); }
@@ -110,6 +171,152 @@ void arts_free(void *p) { free(p); }
 /* A dummy object the installer publishes into the slot. */
 static int g_obj = 0xABCD;
 static void noop_deleter(void *o) { (void)o; }
+
+#define G_CREATE ((arts_guid_t)0x5001u)
+#define G_OTHER ((arts_guid_t)0x5002u)
+
+static void after_park_hook(arts_route_item_t *slot) {
+  enum hook_mode m = g_hook;
+  g_hook = HOOK_OFF;
+  if (m == HOOK_OFF) {
+    return;
+  }
+  if (m == HOOK_NC_MOVED || m == HOOK_NC_TEARDOWN) {
+    /* A non-create parked on its GUID's reservation (slot 0) while that slot
+     * is returned and the GUID's object installs in slot 1.  MOVED: the slot
+     * is re-claimed by another GUID with no re-drive, so the parker must move
+     * its own node.  TEARDOWN: the teardown's re-drive takes the node. */
+    __atomic_store_n(&slot->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+    atomic_thread_fence(memory_order_seq_cst);
+    __atomic_store_n(&g_slots[1].key, G_CREATE, __ATOMIC_RELEASE);
+    arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
+    arts_shared_set_tag(cb, (uint64_t)G_CREATE);
+    arts_atomic_shared_store(&g_slots[1].value, cb);
+    if (m == HOOK_NC_MOVED) {
+      __atomic_store_n(&slot->key, G_OTHER, __ATOMIC_RELEASE);
+    } else {
+      arts_ooo_redrive_all(slot);
+    }
+    return;
+  }
+  /* Every shape starts as a destroy does: the value leaves the slot. */
+  arts_shared_ptr_t old =
+      arts_atomic_shared_exchange(&slot->value, (arts_shared_ptr_t)NULL);
+  arts_shared_release(&old);
+  if (m == HOOK_EMPTY_NO_REDRIVE) {
+    __atomic_store_n(&slot->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+  } else if (m == HOOK_TEARDOWN) {
+    __atomic_store_n(&slot->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+    atomic_thread_fence(memory_order_seq_cst);
+    arts_ooo_redrive_all(slot);
+  } else { /* HOOK_RECLAIM: the returned slot is claimed by another GUID,
+              which parks a message of its own there. */
+    __atomic_store_n(&slot->key, G_OTHER, __ATOMIC_RELEASE);
+    uint64_t a = 0;
+    struct arts_ooo_payload_s *p = arts_ooo_payload_alloc(
+        OOO_EVENT_SATISFY_SLOT, G_OTHER, &a, sizeof(a));
+    arts_lf_stack_push(&slot->ooo_list, &p->link);
+  }
+}
+
+static void reset_slots(void) {
+  for (int i = 0; i < NSLOTS; i++) {
+    arts_ooo_free_all(&g_slots[i]);
+    arts_shared_ptr_t old = arts_atomic_shared_exchange(
+        &g_slots[i].value, (arts_shared_ptr_t)NULL);
+    arts_shared_release(&old);
+    __atomic_store_n(&g_slots[i].key, (arts_guid_t)0, __ATOMIC_RELAXED);
+  }
+  atomic_store_explicit(&g_creates, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_dispatched, 0, memory_order_relaxed);
+}
+
+static unsigned int chain_len(arts_route_item_t *slot, arts_guid_t *guid) {
+  unsigned int n = 0;
+  for (arts_lf_link_t *l =
+           atomic_load_explicit(&slot->ooo_list.head, memory_order_acquire);
+       l != NULL; l = atomic_load_explicit(&l->next, memory_order_relaxed)) {
+    if (guid != NULL) {
+      *guid = ((struct arts_ooo_payload_s *)l)->guid;
+    }
+    n++;
+  }
+  return n;
+}
+
+/* One create-polarity case: an occupant tagged G_CREATE on slot 0, a create of
+ * G_CREATE parks behind it, and `mode` runs between the park and the rescue
+ * re-read.  The body must run exactly once. */
+/* A non-create of G_CREATE parks on G_CREATE's empty reservation in slot 0,
+ * and `mode` returns that slot between the park and the rescue re-read.  The
+ * message must follow its GUID to slot 1 and be dispatched exactly once. */
+static int noncreate_case(enum hook_mode mode, const char *name) {
+  reset_slots();
+  __atomic_store_n(&g_slot.key, G_CREATE, __ATOMIC_RELAXED);
+  g_hook = mode;
+  uint64_t args = 0;
+  arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_SATISFY_SLOT, G_CREATE,
+                             &args, sizeof(args));
+  uint64_t got = atomic_load_explicit(&g_dispatched, memory_order_relaxed);
+  if (got != 1u) {
+    (void)fprintf(stderr, "FAIL %s: dispatched %" PRIu64 " times, want 1\n",
+                  name, got);
+    return 1;
+  }
+  for (int i = 0; i < NSLOTS; i++) {
+    if (chain_len(&g_slots[i], NULL) != 0u) {
+      (void)fprintf(stderr, "FAIL %s: a node is left on slot %d\n", name, i);
+      return 1;
+    }
+  }
+  reset_slots();
+  return 0;
+}
+
+static int create_case(enum hook_mode mode, const char *name) {
+  reset_slots();
+  __atomic_store_n(&g_slot.key, G_CREATE, __ATOMIC_RELAXED);
+  arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
+  arts_shared_set_tag(cb, (uint64_t)G_CREATE);
+  arts_atomic_shared_store(&g_slot.value, cb);
+  g_hook = mode;
+  uint64_t args = 0;
+  arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_CREATE, G_CREATE, &args,
+                             sizeof(args));
+  uint64_t creates = atomic_load_explicit(&g_creates, memory_order_relaxed);
+  if (creates != 1u) {
+    (void)fprintf(stderr, "FAIL %s: create body ran %" PRIu64 " times\n",
+                  name, creates);
+    return 1;
+  }
+  if (mode == HOOK_RECLAIM) {
+    arts_guid_t g = 0;
+    if (chain_len(&g_slot, &g) != 1u || g != G_OTHER ||
+        atomic_load_explicit(&g_dispatched, memory_order_relaxed) != 0u) {
+      (void)fprintf(stderr, "FAIL %s: the other GUID's parked message was "
+                            "moved or run\n",
+                    name);
+      return 1;
+    }
+    for (int i = 1; i < NSLOTS; i++) {
+      if (chain_len(&g_slots[i], NULL) != 0u) {
+        (void)fprintf(stderr, "FAIL %s: a node is left on slot %d\n", name,
+                      i);
+        return 1;
+      }
+    }
+  } else {
+    for (int i = 0; i < NSLOTS; i++) {
+      if (chain_len(&g_slots[i], NULL) != 0u) {
+        (void)fprintf(stderr, "FAIL %s: a node is left on slot %d\n", name,
+                      i);
+        return 1;
+      }
+    }
+  }
+  reset_slots();
+  return 0;
+}
 
 #define ROUNDS 4000
 #define PRODUCERS 6
@@ -220,7 +427,22 @@ int main(void) {
     }
   }
 
-  printf("PASS ooo_toctou_rescue: %d rounds x %d producers, no strand/dup\n",
+  /* The create polarity's rescue, one deterministic interleaving each:
+   * (a) the occupant is emptied and its key returned, with no re-drive — the
+   *     parker must drain and install; (b) a full teardown whose re-drive
+   *     takes the node — the parker's drain finds nothing; (c) the returned
+   *     slot is claimed by another GUID — the node follows its own GUID and
+   *     the other GUID's message stays where it was. */
+  if (create_case(HOOK_EMPTY_NO_REDRIVE, "create/empty-no-redrive") ||
+      create_case(HOOK_TEARDOWN, "create/teardown-redrive") ||
+      create_case(HOOK_RECLAIM, "create/reclaimed-by-other") ||
+      noncreate_case(HOOK_NC_MOVED, "noncreate/slot-reclaimed") ||
+      noncreate_case(HOOK_NC_TEARDOWN, "noncreate/teardown-redrive")) {
+    return 1;
+  }
+
+  printf("PASS ooo_toctou_rescue: %d rounds x %d producers, no strand/dup; "
+         "3 create-polarity and 2 non-create teardown rescues, once each\n",
          ROUNDS, PRODUCERS);
   return 0;
 }

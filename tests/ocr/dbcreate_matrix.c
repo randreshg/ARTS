@@ -75,13 +75,14 @@
 /// program-order sequencing inside one EDT body guarantees the hand-off).
 /// ACQUIRE cells avoid this entirely: the driver itself holds the write from
 /// creation, writes, releases, and only then wires the consumer -- pure
-/// program order within one function, the same pattern used by
-/// tests/ocr/db_labeled_guid.c.
+/// program order within one function.
 
 #include "arts.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+
+#include "../test_failure_status.h"
 
 #define NUM_CELLS 12
 #define PAYLOAD_COUNT 4
@@ -122,6 +123,9 @@ static void consumer_edt(uint32_t paramc, const uint64_t *paramv,
               ok ? "PASS" : "FAIL", data_ok ? "ok" : "BAD",
               (want_home == HOME_SKIP) ? "n/a" : (home_ok ? "ok" : "BAD"),
               create_ok ? "ok" : "BAD");
+  if (!ok) {
+    arts_test_fail();
+  }
 }
 
 /* Wires the RO-consumer(s) that validate a cell's DB.
@@ -332,7 +336,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

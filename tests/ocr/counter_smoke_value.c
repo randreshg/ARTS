@@ -4,23 +4,17 @@
 ******************************************************************************/
 
 /// @file counter_smoke_value.c
-/// @brief Strengthens the existence-only counter smoke test (counter_smoke.c)
-///        by asserting an actual counter VALUE in n0.json, exercising the
-///        increment path (arts_counter_increment_by) end-to-end through node
-///        reduction + JSON write.
+/// @brief A counter VALUE in n0.json, end to end: the increment path
+///        (arts_counter_increment_by), node reduction and the JSON write.
 ///
-/// Under the default counters.cfg, NUM_EDT_CREATE is PERIODIC,CLUSTER, so the
-/// per-node JSON (n0.json) carries a "NUM_EDT_CREATE" object with a numeric
-/// "value" reduced (SUM) across this node's worker threads.  We create a known
-/// number N of EDTs; the recorded NUM_EDT_CREATE value must be >= N (the
-/// runtime also creates internal EDTs, so it is a lower bound, not equality).
-///
-/// This is config-specific on the *counter* axis: it requires a build whose
-/// counter config enables NUM_EDT_CREATE at CLUSTER/NODE level (the default
-/// counters.cfg and full_counters.cfg both do).  If the counter is absent from
-/// n0.json (disabled in this build's counter config) the test SKIPs cleanly
-/// instead of asserting a value that cannot exist.  Config-agnostic across
-/// coherence protocols.
+/// Where the counter config captures NUM_EDT_CREATE (configs/counters.cfg
+/// makes it PERIODIC,CLUSTER), the per-node JSON (n0.json) carries a
+/// "NUM_EDT_CREATE" object whose numeric "value" is reduced (SUM) across this
+/// node's worker threads.  We create a known number N of EDTs; the recorded
+/// value must be >= N (the runtime also creates internal EDTs, so it is a
+/// lower bound, not equality).  The test is registered only in a tree whose
+/// counter config captures the counter; if the file lacks it anyway the test
+/// SKIPs.  Config-agnostic across coherence protocols.
 
 #include "arts.h"
 

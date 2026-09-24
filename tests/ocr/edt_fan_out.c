@@ -43,6 +43,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 #define FAN_WIDTH 32
 
 /// Each child signals the collector with its index as a value.
@@ -77,6 +79,7 @@ void collector(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: fan-out/fan-in %u children, sum=%u\n", FAN_WIDTH, sum);
   } else {
     arts_printf("  FAIL: fan-out/fan-in sum=%u expected=%u\n", sum, expected);
+    arts_test_fail();
   }
 }
 
@@ -122,6 +125,7 @@ void db_collector(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: fan-out DB mode, sum=%d\n", sum);
   } else {
     arts_printf("  FAIL: fan-out DB mode, sum=%d expected=%d\n", sum, expected);
+    arts_test_fail();
   }
 }
 
@@ -168,7 +172,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

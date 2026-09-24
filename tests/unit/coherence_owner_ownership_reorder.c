@@ -36,100 +36,45 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-
-/// @file coherence_owner_grant_reorder.c
-/// @brief Stress the OWNER-placement ownership-transfer TRANSFER/INVALIDATE
-///        two-wire reorder window under progress_threads>1.
+/// @file coherence_owner_ownership_reorder.c
+/// @brief Unordered write turns from every rank on one block homed on rank 0:
+///        every hand-over of the write right between ranks carries the latest
+///        bytes and strands no queued requester.
 ///
-/// THE WINDOW UNDER TEST.  Under the OWNER placement, a shared RW
-/// DataBlock's ownership moves
-/// owner->owner: home INVALIDATEs the current owner, which ships
-/// TRANSFER_OWNERSHIP (carrying a +1 writer_count sentinel) directly to the new
-/// owner.  When a *further* requester is already queued, home (after the new
-/// owner's INSTALL_ACK advances rw_holder) immediately sends that new owner an
-/// INVALIDATE (a -1) for the NEXT round.  The TRANSFER_OWNERSHIP(+1) and the
-/// follow-up INVALIDATE(-1) are therefore TWO messages to the SAME rank.  With
-/// a single progress thread they keep per-peer FIFO order (sentinel installs
-/// first); with progress_threads>1 they can be dispatched by different progress
-/// threads OUT OF ORDER.  An INVALIDATE that wins the race arrives while
-/// writer_count is still 0, momentarily driving it negative.
+/// Two shapes, each ending in an exact sum read after every writer finished:
+///  (1) Deep batches: INCS_PER_BATCH incrementers per batch, round-robin over
+///      every rank and gated only on the block, so the home always holds a
+///      queue of remote requesters and the write right moves rank to rank
+///      back to back.  With two progress threads (2n_io) the messages of one
+///      hand-over and of the next one addressed to the same rank can be
+///      dispatched in either order.
+///  (2) Short contended steps: three incrementers per step, one on the home and
+///      two remote contenders -- on ranks 1 and 2 when there are three or more
+///      ranks, both on rank 1 with two -- so a holder's release meets the
+///      home's demand for the next requester at every step and the write right
+///      also returns to its home between remote holders.
 ///
-/// WHY THE FIX MATTERS.  With the old absolute scheme (TRANSFER did
-/// swap(writer_count, 1); INVALIDATE did an unsigned `rest = sub(...); if
-/// (rest == 0) ship`), a reordered INVALIDATE-then-TRANSFER pair was NOT
-/// commutative: the INVALIDATE's decrement underflowed an unsigned counter (or
-/// was clobbered by the swap(1) that followed), so the positive->0 transfer
-/// edge was lost and the ownership transfer to the FOLLOWING requester never
-/// shipped -> a queued RW acquirer is stranded forever (distributed hang).  The
-/// fix makes writer_count commutative & signed (matching the HOME placement):
-/// TRANSFER does
-/// add(+1), INVALIDATE/release do a signed `int rest = sub(...); if (rest != 0)
-/// return;`, shipping TRANSFER_OWNERSHIP only on the unique positive->0 edge; a
-/// transient negative simply means "INVALIDATE raced ahead of its sentinel —
-/// the +1 will drive the count back through exactly 0 and THAT decrement
-/// ships."  Order-independent, so no transfer is lost regardless of delivery
-/// order.
+/// A lost hand-over strands a queued requester (the run times out); a hand-over
+/// that ships stale bytes drops increments (the sum is short).
 ///
-/// HOW THIS TEST DRIVES THE WINDOW.  Many short RW-incrementer EDTs are spawned
-/// round-robin across ALL ranks, all gated ONLY on the SAME DB, inside one
-/// finish scope per batch.  Because they are mutually unordered, home sees a
-/// deep pending_rw queue and fires a tight stream of GRANT-then-INVALIDATE
-/// pairs (the `has_next` chain) — every transfer in the batch is a fresh
-/// TRANSFER(+1)/INVALIDATE(-1) pair to a just-granted owner, i.e. a fresh
-/// reorder opportunity.  Repeated over many batches this drives a few thousand
-/// ownership transfers.  arts_event_wait blocks until the batch's every
-/// incrementer has run AND shipped its transfer.
+/// A write dependence is exclusive per rank, not per EDT: several incrementers
+/// holding the block on one rank run concurrently on that rank's workers, so
+/// the increment is atomic, as for any shared-memory counter.
 ///
-/// WHAT THIS TEST ASSERTS.  Two things:
-///  (1) PROGRESS / no stranding — the commutative-signed writer_count fix
-///      guarantees an ownership transfer is never *lost* under the
-///      TRANSFER/INVALIDATE reorder, so a queued RW acquirer is never stranded.
-///      Observable as completion: every batch's finish scope quiesces and
-///      arts_event_wait returns.  With the old absolute swap(1)/unsigned scheme
-///      a reordered pair lost the positive->0 transfer edge, stranding the next
-///      acquirer forever; the run would hang and be caught by the ctest
-///      TIMEOUT.
-///  (2) NO DATA LOSS in the ownership chain — every one of the `total`
-///      increments survives, so the canonical value sums to exactly `total`.
-///      This verifies each owner->owner transfer carries the owner's latest
-///      write (a stale-data transfer would drop increments and the exact-sum
-///      gate would catch it).
-///
-/// NOTE on the increment being atomic.  DB_MODE_RW is exclusive per NODE only —
-/// inter-node, where there is no hardware coherence, the ownership protocol
-/// hands the single writable copy to one rank at a time.  WITHIN a node it
-/// follows hardware cache coherence: the protocol serializes ranks, NOT the
-/// local EDTs on the owning rank, so several of a batch's incrementers run
-/// concurrently on that rank's worker threads sharing the buffer (a deep
-/// pending_rw queue is exactly the stress that drives the tight
-/// GRANT/TRANSFER+INVALIDATE chain under test). Concurrent same-node
-/// read-modify-write must therefore synchronize itself like any multithreaded
-/// shared-memory counter — hence inc_edt uses an atomic add. A plain data[0]++
-/// would self-race and drop counts purely from that local concurrency
-/// (worker_threads>1), with no bearing on the ownership-transfer path — i.e. it
-/// would be a test bug, not a runtime defect.
-///
-/// Requires 2+ ranks and a progress_threads>=2 config (arts_2n_io.cfg) to make
-/// the two-wire reorder physically possible; SKIPs cleanly otherwise (and under
-/// the relaxed model, which has no exclusive-RW ownership-transfer chain).
-/// A stranded waiter is caught by the ctest TIMEOUT (no in-test watchdog).
+/// Needs 2+ ranks (SKIP on one).  Its writers are unordered, so it is outside
+/// the DB-WRF model.
 
 #include "arts.h"
 
 #include <stdint.h>
 #include <stdio.h>
 
-/// Batches of concurrent RW incrementers.  Each batch's incrementers are
-/// mutually unordered (gated only on the DB), so home builds a deep pending_rw
-/// queue and fires a tight GRANT-then-INVALIDATE chain — one
-/// TRANSFER/INVALIDATE reorder window per transfer.  INCS_PER_BATCH > nranks
-/// keeps several RW acquirers pending PER rank, deepening the queue.  Total
-/// ownership transfers driven ~= N_BATCHES * INCS_PER_BATCH (a few thousand),
-/// printed at the end.
+#include "../test_failure_status.h"
+
 #define N_BATCHES 40
 #define INCS_PER_BATCH 64
+#define STEPS 80u
 
-/// RW incrementer: data[0]++ under exclusive (per-node) RW access.
 static void inc_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -137,48 +82,38 @@ static void inc_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   uint64_t *data = (uint64_t *)depv[0].ptr;
   if (data == NULL) {
-    (void)fprintf(stderr, "FAIL: inc_edt got NULL ptr\n");
-    arts_abort(1);
+    arts_printf("FAIL: coherence_owner_ownership_reorder incrementer got a "
+                "NULL block\n");
+    arts_test_fail();
+    return;
   }
-  /* DB_MODE_RW is exclusive per NODE (inter-node, where there is no hardware
-   * coherence) but WITHIN a node follows hardware cache coherence: the
-   * ownership protocol serializes ranks, NOT the local EDTs on the owning rank,
-   * so several of this batch's incrementers run concurrently on one rank's
-   * worker threads sharing the same buffer.  That is the intended stress (a
-   * deep pending_rw queue is what drives the tight GRANT/TRANSFER+INVALIDATE
-   * chain this test targets), so the concurrent same-node read-modify-write
-   * must synchronize itself exactly as any multithreaded shared-memory counter
-   * would — hence the atomic increment.  (A plain data[0]++ here would
-   * self-race and drop counts with no bearing on the ownership-transfer path
-   * under test.) */
   __atomic_fetch_add(&data[0], (uint64_t)1, __ATOMIC_RELAXED);
 }
 
-/// Final RO reader, created only after every batch has quiesced, so its
-/// snapshot observes every increment.  Hard gate: with atomic increments and a
-/// correct ownership chain the canonical value MUST equal `total`.
-/// arts_abort(1) on any mismatch so the exit code is non-zero.
 static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  uint64_t *data = (uint64_t *)depv[0].ptr;
+  const uint64_t *data = (const uint64_t *)depv[0].ptr;
   uint64_t expected = paramv[0];
-  long long got = data ? (long long)data[0] : (long long)-1;
-
-  if (data == NULL || (uint64_t)got != expected) {
-    (void)fprintf(
-        stderr,
-        "FAIL: OWNER ownership-transfer reorder stress: sum %lld != %llu — "
-        "the ownership chain lost/duplicated a write (a transfer shipped "
-        "stale data, or a transfer was lost)\n",
-        got, (unsigned long long)expected);
-    arts_abort(1);
+  if (data == NULL || data[0] != expected) {
+    arts_printf("FAIL: coherence_owner_ownership_reorder sum %lld != %llu "
+                "(a hand-over shipped stale bytes or a write was lost)\n",
+                data ? (long long)data[0] : -1LL, (unsigned long long)expected);
+    arts_test_fail();
+    return;
   }
+  arts_printf("PASS: coherence_owner_ownership_reorder summed to %llu\n",
+              (unsigned long long)expected);
+}
 
-  arts_printf("PASS: OWNER ownership-transfer reorder stress summed to %llu "
-              "(%llu transfers driven; no transfer lost, no write dropped)\n",
-              (unsigned long long)expected, (unsigned long long)expected);
+static arts_guid_t spawn_inc(arts_guid_t db, unsigned int rank,
+                             arts_guid_t fe) {
+  arts_guid_t w =
+      arts_edt_create(inc_edt, 0, NULL, 1,
+                      &(arts_edt_hint_t){.rank = rank, .finish_event = fe});
+  arts_add_dependence(db, w, 0, DB_MODE_RW);
+  return w;
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -188,17 +123,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  arts_printf("=== coherence_owner_grant_reorder ===\n");
-
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
-    arts_printf("SKIP: requires 2+ ranks (got %u)\n", nranks);
+    arts_printf("SKIP: coherence_owner_ownership_reorder requires 2+ ranks "
+                "(got %u)\n",
+                nranks);
     arts_shutdown();
     return;
   }
 
-  /* Shared RW DB homed on rank 0 (the home directory drives the transfer
-   * chain).  A uint64 counter incremented once per RW incrementer EDT. */
   void *ptr = NULL;
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -208,41 +141,36 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t total = 0;
   for (int b = 0; b < N_BATCHES; b++) {
-    /* One batch of mutually-unordered RW incrementers, round-robin across all
-     * ranks, all gated ONLY on the SAME db.  The coherence layer serializes
-     * them into an ownership-transfer chain; because multiple LOCK_REQs reach
-     * home concurrently, home's pending_rw queue stays deep and it fires
-     * back-to-back GRANT-then-INVALIDATE pairs — one
-     * TRANSFER(+1)/INVALIDATE(-1) reorder window per transfer. */
     arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     for (int i = 0; i < INCS_PER_BATCH; i++) {
-      unsigned int r = (((unsigned)b * INCS_PER_BATCH + (unsigned)i) % nranks);
-      arts_guid_t w =
-          arts_edt_create(inc_edt, 0, NULL, 1,
-                          &(arts_edt_hint_t){.rank = r, .finish_event = fe});
-      arts_add_dependence(db, w, 0, DB_MODE_RW);
+      spawn_inc(db, ((unsigned)b * INCS_PER_BATCH + (unsigned)i) % nranks, fe);
       total++;
     }
-    /* Blocks until ALL of this batch's incrementers ran + transferred away.  A
-     * lost transfer leaves a queued acquirer stranded -> this never returns
-     * (caught by the ctest TIMEOUT). */
     arts_event_wait(fe);
   }
 
-  /* Final RO reader, created only now that every batch has fully quiesced, so
-   * its snapshot deterministically observes every increment. */
-  arts_guid_t e2 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  unsigned int r1 = 1u;
+  unsigned int r2 = (nranks > 2) ? 2u : 1u;
+  for (unsigned int s = 0; s < STEPS; s++) {
+    arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+    spawn_inc(db, 0u, fe);
+    spawn_inc(db, r1, fe);
+    spawn_inc(db, r2, fe);
+    total += 3;
+    arts_event_wait(fe);
+  }
+
+  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t chk =
       arts_edt_create(check_edt, 1, &total, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e2});
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
   arts_add_dependence(db, chk, 0, DB_MODE_RO);
-  arts_event_wait(e2);
+  arts_event_wait(fe);
 
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

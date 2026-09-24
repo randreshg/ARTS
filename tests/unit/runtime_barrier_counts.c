@@ -28,6 +28,8 @@
 #include "arts.h"
 #include "arts/runtime_state.h"
 
+#include "../test_failure_status.h"
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -50,18 +52,22 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * runs (it is scheduled only after the execute rendezvous). */
   if (push != 0) {
     arts_printf("  FAIL: ready_to_push=%u (expected 0)\n", push);
+    arts_test_fail();
     ok = false;
   }
   if (par != 0) {
     arts_printf("  FAIL: ready_to_parallel_start=%u (expected 0)\n", par);
+    arts_test_fail();
     ok = false;
   }
   if (insp != 0) {
     arts_printf("  FAIL: ready_to_inspect=%u (expected 0)\n", insp);
+    arts_test_fail();
     ok = false;
   }
   if (exec != 0) {
     arts_printf("  FAIL: ready_to_execute=%u (expected 0)\n", exec);
+    arts_test_fail();
     ok = false;
   }
 
@@ -70,6 +76,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * This pins the "init = total_thread_count" invariant for the count. */
   if (tc == 0 || clean != tc) {
     arts_printf("  FAIL: ready_to_clean=%u (expected tc=%u)\n", clean, tc);
+    arts_test_fail();
     ok = false;
   }
 
@@ -83,7 +90,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -40,11 +40,12 @@
 /// @file coherence_multi_writer_multi_db.c
 /// @brief Multi-writer, multi-DB RW determinism + liveness check.
 ///
-/// Generalizes coherence_multi_writer_same_addr (one shared DB) to a SET of
-/// M shared RW DBs that each of N writer EDTs acquires.  Every writer takes
-/// all M DBs RW (the runtime acquires an EDT's RW deps one at a time in a
-/// single global order), increments each, then drops a fan-in LATCH.  A final
-/// RO verify EDT checks every DB reached N and shuts down.
+/// A SET of M shared RW DBs that each of N writer EDTs acquires.  Every
+/// writer takes all M DBs RW (the runtime acquires an EDT's RW deps one at a
+/// time in a single global order), increments each, then drops a fan-in LATCH.
+/// A final RO verify EDT checks every DB reached N and shuts down.  Writers and
+/// the verifier are placed by the no-hint policy, so with peers they spread
+/// over the ranks.
 ///
 /// Why this exists separately from the single-DB test: an EDT that holds an
 /// already-acquired RW DB while it is still acquiring its next RW dep is the
@@ -68,11 +69,13 @@
 #define N_WRITERS 8
 #define M_DBS 4
 
-/// writer_edt -- atomic-increment each of the M RW DB deps, then LATCH decr.
-/// paramv[0] = LATCH event GUID (count N_WRITERS).
+/// writer_edt -- atomic-increment each of the M RW DB deps.  Its output event
+/// is the LATCH, which the runtime decrements once this EDT's blocks are
+/// released, so the verifier gated on the LATCH is ordered after every write.
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
+  (void)paramv;
   for (uint32_t i = 0; i < depc; i++) {
     _Atomic int *data = (_Atomic int *)depv[i].ptr;
     if (data == NULL) {
@@ -83,8 +86,6 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * job is buffer visibility + single-writer hand-off, not per-EDT mutex). */
     atomic_fetch_add_explicit(data, 1, memory_order_relaxed);
   }
-  arts_guid_t evt = (arts_guid_t)paramv[0];
-  arts_event_satisfy_slot(evt, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /// verify_edt -- slot 0..M-1 = the M DBs (RO), slot M = LATCH (fires after all
@@ -137,10 +138,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* N writers, each acquiring ALL M DBs RW (slots 0..M-1).  The runtime walks
    * the RW deps in one global (GUID-sorted) order, holding each acquired DB
    * while it acquires the next. */
-  uint64_t wpv[1] = {(uint64_t)latch};
   for (int i = 0; i < N_WRITERS; i++) {
-    arts_guid_t w = arts_edt_create(writer_edt, /*paramc=*/1, wpv,
-                                    /*depc=*/M_DBS, NULL);
+    arts_guid_t w = arts_edt_create(
+        writer_edt, /*paramc=*/0, NULL, /*depc=*/M_DBS,
+        &(arts_edt_hint_t){.rank = ARTS_HINT_ANY_RANK, .output_event = latch});
     for (int j = 0; j < M_DBS; j++) {
       arts_add_dependence(dbs[j], w, /*slot=*/(uint32_t)j, DB_MODE_RW);
     }

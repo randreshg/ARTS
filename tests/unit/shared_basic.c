@@ -83,8 +83,8 @@ int main(void) {
   arts_atomic_shared_store(&slot, (arts_shared_ptr_t)NULL); /* c2 released */
   assert(atomic_load(&g_deleted) == 4);
 
-  /* abandon: cancel an unpublished cb WITHOUT running the deleter — the
-   * object stays owned by the caller (install-race loser semantics). */
+  /* abandon: cancel an unpublished cb WITHOUT running the deleter — an
+   * install that loses keeps its object, so the caller still owns it. */
   int obj_c = 0xC;
   arts_shared_ptr_t aborted = arts_shared_make(&obj_c, counting_deleter);
   arts_shared_abandon(&aborted);

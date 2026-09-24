@@ -45,6 +45,8 @@
 #include "arts.h"
 #include <string.h>
 
+#include "../test_failure_status.h"
+
 #define DB_SIZE 256
 #define DB_ELEMS (DB_SIZE / sizeof(uint64_t))
 
@@ -65,6 +67,7 @@ void check_db_create(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: db_create data intact via EW signal\n");
   } else {
     arts_printf("  FAIL: db_create data corrupted\n");
+    arts_test_fail();
   }
 }
 
@@ -88,6 +91,7 @@ void check_db_with_guid(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: db_create_with_guid data & GUID correct\n");
   } else {
     arts_printf("  FAIL: db_create_with_guid mismatch\n");
+    arts_test_fail();
   }
 }
 
@@ -108,6 +112,7 @@ void check_db_with_data(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: db_create_with_guid_and_data initial data correct\n");
   } else {
     arts_printf("  FAIL: db_create_with_guid_and_data mismatch\n");
+    arts_test_fail();
   }
 }
 
@@ -186,7 +191,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

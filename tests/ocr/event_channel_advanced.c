@@ -46,6 +46,8 @@
 #include "arts.h"
 #include <string.h>
 
+#include "../test_failure_status.h"
+
 /// Test 1: arts_event_satisfy_slot on a CHANNEL event.
 void pe_satisfy_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
@@ -58,6 +60,7 @@ void pe_satisfy_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: channel event satisfy delivered data\n");
   } else {
     arts_printf("  FAIL: channel event satisfy\n");
+    arts_test_fail();
   }
 }
 
@@ -78,6 +81,7 @@ void pe_byte_offset_check(uint32_t paramc, const uint64_t *paramv,
     arts_printf("  FAIL: channel event full-DB delivery (data_ok=%d, "
                 "guid_ok=%d)\n",
                 ok, guid_ok);
+    arts_test_fail();
   }
 }
 
@@ -93,6 +97,7 @@ void pe_mode_diff_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: channel event with_mode OK\n");
   } else {
     arts_printf("  FAIL: channel event with_mode\n");
+    arts_test_fail();
   }
 }
 
@@ -164,7 +169,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -64,6 +64,8 @@
 #include "arts.h"
 #include "arts/graph.h"
 
+#include "../test_failure_status.h"
+
 /// Edge list over 8 vertices.  Vertices 2, 5, 6 deliberately have NO out-edges
 /// (interior gaps + a trailing gap) to exercise the gap-fill path.  Vertex 0
 /// is the first source; vertex 7 the last source (no trailing tail-fill gap on
@@ -115,6 +117,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   if (csr == NULL) {
     arts_printf("FAIL: init returned NULL\n");
+    arts_test_fail();
     arts_block_dist_free(dist);
     arts_shutdown();
     return;
@@ -126,6 +129,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL: header localv=%lu locale=%lu\n",
                 (unsigned long)csr->num_local_vertices,
                 (unsigned long)csr->num_local_edges);
+    arts_test_fail();
   }
 
   arts_vertex_t *prev_ptr = NULL;
@@ -142,6 +146,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_printf("FAIL: vertex %lu degree %lu expected %lu\n",
                   (unsigned long)v, (unsigned long)cnt,
                   (unsigned long)EXPECT_DEG[v]);
+      arts_test_fail();
       ok = false;
       break;
     }
@@ -155,6 +160,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       if (nbrs != prev_ptr + prev_cnt) {
         arts_printf("FAIL: vertex %lu start not contiguous with prev end\n",
                     (unsigned long)v);
+        arts_test_fail();
         ok = false;
         break;
       }
@@ -179,6 +185,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         if (got[k] != expect[k]) {
           arts_printf("FAIL: vertex %lu neighbour mismatch\n",
                       (unsigned long)v);
+          arts_test_fail();
           ok = false;
           break;
         }
@@ -194,11 +201,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (ok && total != (arts_graph_sz_t)NEDGES) {
     arts_printf("FAIL: total degree %lu != locale %d\n", (unsigned long)total,
                 NEDGES);
+    arts_test_fail();
     ok = false;
   }
   /* row_indices[0]==0: first vertex columns start at the column base. */
   if (ok && first_ptr == NULL && EXPECT_DEG[0] > 0) {
     arts_printf("FAIL: vertex 0 has NULL neighbour base\n");
+    arts_test_fail();
     ok = false;
   }
 
@@ -212,7 +221,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

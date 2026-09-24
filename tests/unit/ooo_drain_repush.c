@@ -62,6 +62,9 @@ static void recorder(void *item, void *args) {
   atomic_fetch_add_explicit(&g_dispatched, 1, memory_order_relaxed);
 }
 
+void arts_handler_edt_create(void *i, void *a) { recorder(i, a); }
+void arts_handler_event_create(void *i, void *a) { recorder(i, a); }
+void arts_handler_db_create(void *i, void *a) { recorder(i, a); }
 void arts_handler_event_satisfy_slot(void *i, void *a) { recorder(i, a); }
 void arts_handler_edt_satisfy_slot(void *i, void *a) { recorder(i, a); }
 void arts_handler_event_add_dependence(void *i, void *a) { recorder(i, a); }
@@ -104,6 +107,24 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void arts_free(void *p) { free(p); }
+#ifndef NDEBUG
+void arts_sched_fuzz_point(void) {}
+#endif
+bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
+  (void)key;
+  (void)obj;
+  return false;
+}
+bool arts_route_table_set_destroyed_item(arts_guid_t key,
+                                         arts_shared_ptr_t cb) {
+  (void)key;
+  (void)cb;
+  return false;
+}
+void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
+  (void)key;
+  (void)obj;
+}
 
 #include "../../libs/src/core/ooo.c"
 

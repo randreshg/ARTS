@@ -56,6 +56,8 @@
 #include "arts.h"
 #include <stdint.h>
 
+#include "../test_failure_status.h"
+
 #define RR_PER_RANK 5 /* indices per rank -> range size = RR_PER_RANK * nrank  \
                        */
 
@@ -85,14 +87,17 @@ static void verifier_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (arts_guid_get_rank(g) != expect_home) {
       arts_printf("  FAIL: rank %u idx %u home=%u expected %u\n", me, i,
                   arts_guid_get_rank(g), expect_home);
+      arts_test_fail();
       ok = false;
     }
     if (arts_guid_get_kind(g) != ARTS_GUID_DB) {
       arts_printf("  FAIL: rank %u idx %u kind mismatch\n", me, i);
+      arts_test_fail();
       ok = false;
     }
     if (arts_guid_index_from(range, g) != (int)i) {
       arts_printf("  FAIL: rank %u idx %u did not round-trip\n", me, i);
+      arts_test_fail();
       ok = false;
     }
   }
@@ -136,6 +141,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                               ARTS_HINT_ROUND_ROBIN);
   if (range == NULL_GUID) {
     arts_printf("  FAIL: round_robin reserve_range returned NULL_GUID\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }
@@ -152,7 +158,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

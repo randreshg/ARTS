@@ -15,7 +15,7 @@
  * thread count.
  *
  * ARTS_ERROR aborts the process, so each rejection case is driven in a forked
- * child (same discipline as config_port_count_agreement.c) and the parent
+ * child (same discipline as config_ports_contract.c) and the parent
  * asserts the child died with a nonzero status.  A third case loads a cfg
  * using ONLY the new `progress_threads` key and asserts it loads normally (in
  * the parent process, since nothing should abort) — proving the hard error is

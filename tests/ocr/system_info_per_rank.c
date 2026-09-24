@@ -57,6 +57,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 /// Runs on a specific rank: paramv[0] = expected rank, paramv[1] = total ranks.
 void rank_verifier(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
@@ -74,16 +76,19 @@ void rank_verifier(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   bool ok = true;
   if (rank != expect_rank) {
     arts_printf("  FAIL: rank %u ran on rank %u\n", expect_rank, rank);
+    arts_test_fail();
     ok = false;
   }
   if (total != expect_total) {
     arts_printf("  FAIL: rank %u sees total_ranks=%u (expected %u)\n",
                 expect_rank, total, expect_total);
+    arts_test_fail();
     ok = false;
   }
   if (total_workers != per_rank * total) {
     arts_printf("  FAIL: rank %u total_workers=%u != per_rank(%u)*ranks(%u)\n",
                 expect_rank, total_workers, per_rank, total);
+    arts_test_fail();
     ok = false;
   }
   if (ok) {
@@ -134,7 +139,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -36,23 +36,50 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+/* route_table_iter — the iterator walks every published slot, and the one
+ * install rule holds for a caller-made control block: an occupied slot is
+ * never replaced.  The objects are static sentinels installed with no deleter,
+ * so no retire frees them. */
+
+#include <stdint.h>
 #include <stdio.h>
 
 #include "arts.h"
 #include "arts/gas/route_table.h"
 #include "arts/runtime_state.h"
-#include "arts/utils/atomics.h"
+#include "arts/utils/shared.h"
+#include "../test_failure_status.h"
 
 #define MYSIZE 10
 
-void print_rt() {
-  arts_route_table_iterator_t iter;
-  arts_reset_route_table_iterator(&iter, arts_node_info.route_table[0]);
-  arts_route_item_t *item = arts_route_table_iterate(&iter);
-  while (item) {
-    arts_print_item(item);
-    item = arts_route_table_iterate(&iter);
+static int g_obj[MYSIZE];
+static int g_other;
+
+static bool install_sentinel(void *obj, arts_guid_t key) {
+  arts_shared_ptr_t cb = arts_shared_make(obj, NULL);
+  arts_shared_set_tag(cb, (uint64_t)key);
+  if (arts_route_table_install_handle_if_absent(cb, key)) {
+    return true;
   }
+  arts_shared_abandon(&cb);
+  return false;
+}
+
+static unsigned int count_sentinels(arts_route_table_t *table) {
+  unsigned int n = 0;
+  arts_route_table_iterator_t iter;
+  arts_reset_route_table_iterator(&iter, table);
+  for (arts_route_item_t *item = arts_route_table_iterate(&iter); item != NULL;
+       item = arts_route_table_iterate(&iter)) {
+    arts_shared_ptr_t h = arts_route_table_lookup(
+        __atomic_load_n(&item->key, __ATOMIC_ACQUIRE));
+    void *obj = h ? arts_shared_get(h) : NULL;
+    if (obj >= (void *)&g_obj[0] && obj < (void *)&g_obj[MYSIZE]) {
+      n++;
+    }
+    arts_shared_release(&h);
+  }
+  return n;
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -61,66 +88,55 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  unsigned int node_id = arts_get_current_rank();
-  printf("Init per node\n");
-  arts_guid_t range_start =
-      arts_guid_reserve_range(ARTS_GUID_EDT, MYSIZE, node_id);
-  for (uint64_t i = 0; i < MYSIZE; i++) {
-    /* Install a non-owned sentinel (fake integer ptr) for the iterator-walk
-     * exercise.  NULL deleter so the cb does not free this bogus address at
-     * shutdown (deleter-by-kind would pick arts_edt_deleter and crash). */
-    void *location = arts_route_table_install_with_deleter(
-        (void *)(uintptr_t)range_start, arts_guid_from_index(range_start, i),
-        NULL);
-    (void)location;
+  arts_guid_t range =
+      arts_guid_reserve_range(ARTS_GUID_EDT, MYSIZE, arts_get_current_rank());
+  for (unsigned int i = 0; i < MYSIZE; i++) {
+    if (!install_sentinel(&g_obj[i], arts_guid_from_index(range, i))) {
+      arts_printf("FAIL: route_table_iter install into an empty slot %u lost\n",
+                  i);
+      arts_test_fail();
+    }
   }
 
-  print_rt();
+  unsigned int seen = 0;
+  for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
+    seen += count_sentinels(arts_node_info.route_table[t]);
+  }
+  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
+    seen += count_sentinels(arts_node_info.remote_route_table[s]);
+  }
+  if (seen != MYSIZE) {
+    arts_printf("FAIL: route_table_iter walked %u installed slots, want %u\n",
+                seen, MYSIZE);
+    arts_test_fail();
+  }
 
-  arts_guid_t guid = arts_guid_from_index(range_start, 0);
-
-  /* Legacy arts_route_table_lookup_db(guid, &rank, mark_to_delete) is gone
-   * post-Phase-6.  The replacement split: lookup_item / lookup_data return
-   * the data pointer atomically; lookup_rank returns the rank.  Neither
-   * carries a "mark to delete" flag — destruction lives on the
-   * acquire_item / release_item / mark_delete API.  The iterator-walk and
-   * post-walk add_item exercise here verifies the data path only. */
-
-  arts_shared_ptr_t h = arts_route_table_lookup(guid);
-  void *ptr = arts_shared_get(h);
-  int rank = arts_route_table_lookup_rank(guid);
-  arts_printf("Lookup %lu %p (rank %d)\n", guid, ptr, rank);
+  arts_guid_t first = arts_guid_from_index(range, 0);
+  if (install_sentinel(&g_other, first)) {
+    arts_printf("FAIL: route_table_iter an install replaced a live object\n");
+    arts_test_fail();
+  }
+  arts_shared_ptr_t h = arts_route_table_lookup(first);
+  if (h == NULL || arts_shared_get(h) != (void *)&g_obj[0]) {
+    arts_printf("FAIL: route_table_iter the live object left its slot\n");
+    arts_test_fail();
+  }
   arts_shared_release(&h);
 
-  h = arts_route_table_lookup(guid);
-  ptr = arts_shared_get(h);
-  arts_printf("DB Lookup %lu %p\n", guid, ptr);
-  arts_shared_release(&h);
-
-  /* Install a sentinel (non-owned integer) for the data-path exercise.  Use
-   * the explicit-deleter install with NULL so the cb does NOT try to free this
-   * fake pointer as a real DB at shutdown (deleter-by-kind would pick
-   * arts_db_deleter and crash on the bogus address). */
-  (void)node_id;
-  void *location = arts_route_table_install_with_deleter(
-      (void *)(uintptr_t)range_start, guid, NULL);
-  (void)location;
-
-  h = arts_route_table_lookup(guid);
-  ptr = arts_shared_get(h);
-  arts_printf("Lookup2 %lu %p\n", guid, ptr);
-  arts_shared_release(&h);
-
-  h = arts_route_table_lookup(guid);
-  ptr = arts_shared_get(h);
-  arts_printf("DB Lookup2 %lu %p\n", guid, ptr);
-  arts_shared_release(&h);
-
+  for (unsigned int i = 0; i < MYSIZE; i++) {
+    if (!arts_route_table_set_destroyed_object(arts_guid_from_index(range, i),
+                                              &g_obj[i])) {
+      arts_printf("FAIL: route_table_iter retire of slot %u failed\n", i);
+      arts_test_fail();
+    }
+  }
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: route_table_iter %u slots walked, no replace\n", MYSIZE);
+  }
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

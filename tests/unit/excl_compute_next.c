@@ -508,10 +508,6 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
   (void)sharer_rank;
   (void)db_guid;
 }
-bool arts_route_table_set_destroyed(arts_guid_t key) {
-  (void)key;
-  return false;
-}
 #endif
 
 #endif /* ARTS_PROTOCOL_EXCL */

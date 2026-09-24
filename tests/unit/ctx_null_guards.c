@@ -1,31 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T148 — NULL-guard asymmetry between arts_owned_finish_register and
- * arts_track_created_db (libs/src/core/edt_context.c).
+ * T148 — the created-DB list and the owned-finish list on a NULL argument
+ * (libs/src/core/edt_context.c).
  *
- * Documented asymmetry (census f14, suspected-bug #3, LOW):
- *   - arts_owned_finish_register GUARDS NULL: `if (!fe_guid) return;` — a
- *     NULL_GUID registration is a no-op (and the list is not even lazily
- *     allocated by it).
- *   - arts_track_created_db has NO guard: a NULL_GUID is appended to
- *     created_db_list (release later skips NULL_GUID entries, so harmless, but
- *     the list length still reflects the bogus entry).
+ *   - arts_owned_finish_register GUARDS NULL: a NULL_GUID registration is a
+ *     no-op, and it does not perturb the created-DB list.
+ *   - The created-DB list holds exactly one entry per create that took a hold:
+ *     each entry is that create's descriptor handle, so the list grows by one
+ *     per acquiring create and shrinks by one per explicit release, and the
+ *     epilogue finds nothing left.
  *
- * This test calls both internal functions directly from inside an EDT body
- * (white-box; both operate only on the CURRENT worker's thread-locals, so this
- * is safe and thread-confined), and pins the asymmetry via the observable
- * created_db_list length:
- *
- *   1. arts_track_created_db(NULL_GUID) INCREASES created_db_list length by 1
- *      (no guard) — the NULL entry is present.
- *   2. arts_owned_finish_register(NULL_GUID) is a clean no-op: it neither
- *      crashes nor perturbs subsequent behavior; a following real DB create
- *      still tracks normally and a real finish-event flow still completes.
- *   3. arts_release_created_dbs tolerates the NULL entry (the EDT epilogue runs
- *      it; the test simply completing proves no crash on the bogus entry).
- *
- * exposes_runtime_bug = false (the asymmetry is benign today; this pins the
- * documented contract so a future guard change is caught).
+ * White-box: both lists are the CURRENT worker's thread-locals, read from
+ * inside an EDT body.
  */
 #include "arts.h"
 #include "arts/utils/vector.h"
@@ -61,20 +47,9 @@ void probe(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
-  /* (1) track has NO NULL guard: appends a NULL_GUID entry -> length +1. */
-  arts_track_created_db(NULL_GUID);
-  uint64_t after_track = arts_vector_count(arts_get_created_db_list());
-  if (after_track != base + 1) {
-    arts_printf("FAIL ctx_null_guards: arts_track_created_db(NULL) did not "
-                "append (len %llu -> %llu, expected +1) — guard added?\n",
-                (unsigned long long)base, (unsigned long long)after_track);
-    g_failed = 1;
-    arts_db_release(db, DB_MODE_RW);
-    arts_shutdown();
-    return;
-  }
+  uint64_t after_track = base;
 
-  /* (2) register HAS a NULL guard: must be a clean no-op (no crash). The
+  /* register HAS a NULL guard: must be a clean no-op (no crash). The
    * owned_finish_list is file-static and not directly observable; the contract
    * we can pin is that the call returns harmlessly and does not perturb the
    * created_db_list. */
@@ -104,15 +79,20 @@ void probe(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     g_failed = 1;
   }
 
-  /* (3) release the real DBs explicitly; the epilogue's
-   * arts_release_created_dbs then iterates the list (including the bogus NULL
-   * entry, which it skips). The test simply completing proves no crash. */
+  /* Explicit releases remove both entries; the epilogue finds nothing. */
   arts_db_release(db, DB_MODE_RW);
   arts_db_release(db2, DB_MODE_RW);
+  uint64_t after_release = arts_vector_count(arts_get_created_db_list());
+  if (after_release != after_real - 2u) {
+    arts_printf("FAIL ctx_null_guards: releases left %llu entries of %llu\n",
+                (unsigned long long)after_release,
+                (unsigned long long)after_real);
+    g_failed = 1;
+  }
 
   if (!g_failed) {
-    arts_printf("PASS ctx_null_guards: track(NULL) appends, register(NULL) is "
-                "a no-op (guard asymmetry confirmed)\n");
+    arts_printf("PASS ctx_null_guards: register(NULL) is a no-op, one list "
+                "entry per acquiring create\n");
   }
   arts_shutdown();
 }

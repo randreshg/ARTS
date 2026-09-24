@@ -67,6 +67,8 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include "../test_failure_status.h"
+
 #define NUM_WRITERS 24u
 
 /// Bookkeeping DB: one atomic ran-count per writer plus a global total.
@@ -111,6 +113,7 @@ void mw_verify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       if (n != 1u) {
         ok = false;
         arts_printf("  FAIL: writer %u ran %u times (expected 1)\n", i, n);
+        arts_test_fail();
       }
     }
     if (ok) {
@@ -122,6 +125,7 @@ void mw_verify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 NUM_WRITERS);
   } else {
     arts_printf("FAIL: ooo_concurrent_multidrain\n");
+    arts_test_fail();
   }
 }
 
@@ -184,7 +188,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

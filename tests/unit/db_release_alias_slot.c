@@ -59,7 +59,9 @@
 /// Scenario: the EDT writes a value through slot 0, releases the GUID once
 /// mid-body, and returns; the epilogue must find nothing left to release for
 /// that block.  Then a follow-up RW writer and an RO reader prove the block is
-/// grantable again and carries the follow-up's value.
+/// grantable again and carries the follow-up's value.  The aliasing EDT and
+/// the follow-up writer run on the last rank and the reader on the block's
+/// home, so with peers the hold being dropped is a remote cache's.
 ///
 /// No in-test watchdog: a hang is reaped by the ctest TIMEOUT.
 
@@ -67,6 +69,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
+
+#include "../test_failure_status.h"
 
 #define V0 0xAB0u
 #define V1 0xAB1u
@@ -132,6 +136,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 
   arts_printf("=== db_release_alias_slot ===\n");
+  unsigned int last = arts_get_total_ranks() - 1;
 
   void *ptr = NULL;
   arts_guid_t db =
@@ -145,7 +150,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_a = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t a =
       arts_edt_create(alias_releaser, 0, NULL, 2,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_a});
+                      &(arts_edt_hint_t){.rank = last, .finish_event = e_a});
   arts_add_dependence(db, a, 0, DB_MODE_RW);
   arts_add_dependence(db, a, 1, DB_MODE_RW);
   arts_event_wait(e_a);
@@ -154,7 +159,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t w =
       arts_edt_create(followup_writer, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_w});
+                      &(arts_edt_hint_t){.rank = last, .finish_event = e_w});
   arts_add_dependence(db, w, 0, DB_MODE_RW);
   arts_event_wait(e_w);
 
@@ -170,7 +175,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

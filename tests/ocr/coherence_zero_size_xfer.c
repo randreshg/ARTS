@@ -58,6 +58,8 @@
 
 #include <stdio.h>
 
+#include "../test_failure_status.h"
+
 /// RW holder on a sentinel DB.  The dep pointer is NULL (no payload); acquiring
 /// it RW is what makes this rank the owner and forces a transfer when the next
 /// rank's RW grant arrives.
@@ -124,7 +126,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

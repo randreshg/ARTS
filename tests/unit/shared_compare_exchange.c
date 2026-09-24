@@ -170,7 +170,7 @@ static void *installer(void *arg) {
       /* Won: slot took `fresh`, dropped its ref on `expected`. */
     } else {
       /* Lost: slot unchanged; `fresh` never published -> abandon it and free
-       * its object ourselves (object stays ours, install-race-loser idiom). */
+       * its object ourselves (a losing install keeps its object). */
       void *obj = arts_shared_get(fresh);
       arts_shared_abandon(&fresh);
       del_obj(obj);

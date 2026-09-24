@@ -45,6 +45,8 @@
 
 #include "arts.h"
 
+#include "../test_failure_status.h"
+
 #define TASKS_PER_NODE 10
 #define MAX_NODES 64
 
@@ -72,6 +74,7 @@ void check_results(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     unsigned int rank = (unsigned int)(uint64_t)depv[i].guid;
     if (rank >= total_nodes) {
       arts_printf("  FAIL: task %u reported invalid rank %u\n", i, rank);
+      arts_test_fail();
       ok = false;
     } else {
       counts[rank]++;
@@ -82,6 +85,7 @@ void check_results(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (counts[r] != TASKS_PER_NODE) {
       arts_printf("  FAIL: rank %u ran %u tasks, expected %u\n", r, counts[r],
                   (unsigned int)TASKS_PER_NODE);
+      arts_test_fail();
       ok = false;
     }
   }
@@ -142,7 +146,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

@@ -13,7 +13,7 @@
  * Oracles (all derived from the public contract, none from comments):
  *  O1  a cb deleter must not run for an object whose owner never asked for a
  *      destroy                        -> "duplicate destroy freed a stranger"
- *  O2  right after install_if_absent() returns true, lookup(g) must find that
+ *  O2  right after install_if_absent() returns a handle, lookup(g) must find that
  *      object                          -> "stale key=0 orphaned a live install"
  *  O3  lookup(g) must never return another GUID's object.
  */
@@ -184,7 +184,11 @@ static void *destroyer(void *vp) {
   for (int r = 0; r < ROUNDS; r++) {
     pthread_barrier_wait(&bar);
     arts_guid_t g = atomic_load_explicit(&g_victim, memory_order_acquire);
-    (void)arts_route_table_set_destroyed(g);
+    arts_shared_ptr_t h = arts_route_table_lookup(g);
+    if (h != NULL) {
+      (void)arts_route_table_set_destroyed_object(g, arts_shared_get(h));
+      arts_shared_release(&h);
+    }
     pthread_barrier_wait(&bar);
   }
   return NULL;
@@ -202,10 +206,12 @@ static void *churn(void *vp) {
       obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
       o->guid = g;
       atomic_store_explicit(&o->destroy_requested, 0, memory_order_release);
-      if (!arts_route_table_install_if_absent(o, g, 0, false)) {
+      arts_shared_ptr_t ih = arts_route_table_install_if_absent(o, g, 0, false);
+      if (ih == NULL) {
         free(o);
         continue;
       }
+      arts_shared_release(&ih);
       atomic_fetch_add_explicit(&n_installs, 1, memory_order_relaxed);
       arts_shared_ptr_t h = arts_route_table_lookup(g);
       void *got = h ? arts_shared_get(h) : NULL;
@@ -216,7 +222,7 @@ static void *churn(void *vp) {
       }
       if (h) { arts_shared_release(&h); }
       atomic_store_explicit(&o->destroy_requested, 1, memory_order_release);
-      (void)arts_route_table_set_destroyed(g);
+      (void)arts_route_table_set_destroyed_object(g, o);
       if ((r & 15) == 0 && k == 0) {
         dead_push(g); /* sampled: keeps the reservation growth bounded */
       }
@@ -242,7 +248,8 @@ int main(void) {
     obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
     o->guid = g;
     atomic_store_explicit(&o->destroy_requested, 1, memory_order_release);
-    (void)arts_route_table_install_if_absent(o, g, 0, false);
+    arts_shared_ptr_t h = arts_route_table_install_if_absent(o, g, 0, false);
+    arts_shared_release(&h);
     atomic_store_explicit(&g_victim, g, memory_order_release);
     /* Into the ring BEFORE it dies: the sweep then re-reserves this GUID the
      * moment the destroyers return its slot, while the readers are still

@@ -3,34 +3,29 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_channel_transient_null — C15 / T153.
+/* event_channel_transient_null — a CHANNEL event pairs every satisfy with
+ * exactly one dependence, however the two queues are contended.
  *
- * Target: try_drain_channel's MPSC pop spin-on-transient-NULL (event.c).
+ * A producer links its node into the channel's queue before it bumps the
+ * matching count, so a drainer can pop a node whose successor link is still
+ * in flight and read it as NULL.  It must retry, never drop the partner it
+ * already popped: a dropped node strands a consumer, a count decremented
+ * without its node wraps and spins the drainer.
  *
- * The CHANNEL drainer pops one node from each of data_queue and dep_queue per
- * fire.  A producer first links its node (mpsc_push) and only THEN bumps the
- * matching counter (nb_sat / nb_deps).  A concurrent producer can leave the
- * popped node's `next` momentarily NULL (the link store is in flight).  The
- * drainer MUST spin-retry on that transient NULL — never drop the
- * already-popped partner — or the counter/queue pair desyncs and a consumer is
- * stranded forever (lost-wakeup regression).
+ * Two storms on channel events, all satisfies and dependences issued by EDTs
+ * with no dependences, so the workers run them concurrently:
+ *  (1) M_ITERS events, each with K_PAIRS single-satisfy EDTs (each its own
+ *      data block) and K_PAIRS single-dependence EDTs;
+ *  (2) one event with P_SAT EDTs each issuing BURST satisfies of one data
+ *      block, and P_DEP EDTs each adding BURST dependences, so several
+ *      pushes of one producer are in flight back to back.
+ * Each dependence's EDT checks that the GUID it received is one its storm
+ * satisfied, counts itself, and decrements a LATCH over every pairing; the
+ * verifier runs when the LATCH fires and requires the exact count.  A dropped
+ * node leaves the LATCH unfired (the run times out).
  *
- * Strategy: deliberately interleave MANY satisfiers and MANY add-deppers on the
- * SAME channel event so the two MPSC queues are simultaneously contended and
- * the transient-NULL window opens repeatedly.  Each satisfy carries a unique
- * data DB; each add-dep wires a counter_edt that records the GUID it received
- * and decrements a storm-wide LATCH.  CHANNEL pairs satisfies with deps in
- * arrival order (FIFO), so when exactly K satisfies meet K deps, EXACTLY K
- * counter_edts must fire — none dropped — and every delivered GUID must be one
- * of the K satisfied GUIDs (a matched pair, never NULL/garbage).
- *
- * PASS criterion: across M iters x K pairs, all M*K deliveries land (the
- * storm-wide LATCH fires => no node dropped, no consumer stranded) AND every
- * delivered GUID is a real satisfied data GUID.  A dropped node strands the
- * LATCH and the ctest TIMEOUT reaps it (no in-test spin).
- *
- * No EDT busy-waits.  main_edt sets everything up and terminates, releasing the
- * creator-hold on the shared state DB so the RW counter_edts can acquire.
+ * The counting EDTs increment one block with no order among them, which DB-WRF
+ * does not admit.
  */
 
 #include <stdatomic.h>
@@ -38,39 +33,43 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "../test_failure_status.h"
 #include "arts.h"
 
 #define M_ITERS 24
 #define K_PAIRS 64
-#define TOTAL (M_ITERS * K_PAIRS)
+#define P_SAT 8
+#define P_DEP 8
+#define BURST 64
+#define PAIR_TOTAL (M_ITERS * K_PAIRS)
+#define BURST_TOTAL (P_SAT * BURST) /* == P_DEP * BURST */
+#define TOTAL (PAIR_TOTAL + BURST_TOTAL)
 
-/* State DB (uint64_t elements):
- *   [0]                  — delivered_count (atomic)
- *   [1]                  — bad_guid_count  (atomic; delivered GUID not in set)
- *   [2 .. 1+TOTAL]       — satisfied[] : the TOTAL satisfied data GUIDs
+/* State block (uint64_t elements): delivered count, foreign-GUID count, the
+ * PAIR_TOTAL data GUIDs of storm (1), then the P_SAT data GUIDs of storm (2).
  */
 #define ST_DELIVERED 0
 #define ST_BAD 1
 #define ST_SAT_OFF 2
-#define ST_NELEMS (ST_SAT_OFF + TOTAL)
+#define ST_BURST_OFF (ST_SAT_OFF + PAIR_TOTAL)
+#define ST_NELEMS (ST_BURST_OFF + P_SAT)
 
-/* counter_edt — fired by one CHANNEL pairing.
- * paramv: [state_db, latch, it].
- * depv[0] = channel data (RW), depv[1] = state DB (RW). */
+/* paramv: [state_db, latch, first slot of the valid GUID set, set length].
+ * depv[0] = channel payload, depv[1] = state block (RW).  Its output event is
+ * the LATCH, decremented once its blocks are released, so the verifier gated
+ * on the LATCH is ordered after every count. */
 static void counter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  arts_guid_t latch = (arts_guid_t)paramv[1];
-  uint64_t it = paramv[2];
+  uint64_t off = paramv[2];
+  uint64_t len = paramv[3];
   uint64_t *state = (uint64_t *)depv[1].ptr;
   arts_guid_t received = depv[0].guid;
 
-  /* The received GUID must be one of the K satisfied GUIDs for this iter. */
   int found = 0;
-  for (int g = 0; g < K_PAIRS; g++) {
-    _Atomic uint64_t *s =
-        (_Atomic uint64_t *)&state[ST_SAT_OFF + it * K_PAIRS + g];
+  for (uint64_t g = 0; g < len; g++) {
+    _Atomic uint64_t *s = (_Atomic uint64_t *)&state[off + g];
     if ((arts_guid_t)atomic_load_explicit(s, memory_order_acquire) ==
         received) {
       found = 1;
@@ -78,37 +77,40 @@ static void counter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   if (!found) {
-    _Atomic uint64_t *bad = (_Atomic uint64_t *)&state[ST_BAD];
-    atomic_fetch_add_explicit(bad, 1u, memory_order_acq_rel);
+    atomic_fetch_add_explicit((_Atomic uint64_t *)&state[ST_BAD], 1u,
+                              memory_order_acq_rel);
   }
-  _Atomic uint64_t *cnt = (_Atomic uint64_t *)&state[ST_DELIVERED];
-  atomic_fetch_add_explicit(cnt, 1u, memory_order_acq_rel);
-
-  arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
+  atomic_fetch_add_explicit((_Atomic uint64_t *)&state[ST_DELIVERED], 1u,
+                            memory_order_acq_rel);
 }
 
-/* satisfier_edt — push one satisfy onto the channel.
- * paramv: [event, data]. */
+/* paramv: [event, data, count]. */
 static void satisfier_edt(uint32_t paramc, const uint64_t *paramv,
                           uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  arts_event_satisfy((arts_guid_t)paramv[0], (arts_guid_t)paramv[1]);
+  for (uint64_t i = 0; i < paramv[2]; i++) {
+    arts_event_satisfy((arts_guid_t)paramv[0], (arts_guid_t)paramv[1]);
+  }
 }
 
-/* depper_edt — register one addDep (counter_edt) onto the channel.
- * paramv: [event, state_db, latch, it]. */
+/* paramv: [event, count, state_db, latch, set offset, set length]. */
 static void depper_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
   arts_guid_t event = (arts_guid_t)paramv[0];
-  uint64_t cpv[3] = {paramv[1], paramv[2], paramv[3]};
-  arts_guid_t edt = arts_edt_create(counter_edt, 3, cpv, 2, NULL);
-  arts_add_dependence(event, edt, 0, DB_MODE_RW);
-  arts_add_dependence((arts_guid_t)paramv[1], edt, 1, DB_MODE_RW);
+  uint64_t cpv[4] = {paramv[2], paramv[3], paramv[4], paramv[5]};
+  for (uint64_t i = 0; i < paramv[1]; i++) {
+    arts_guid_t edt = arts_edt_create(
+        counter_edt, 4, cpv, 2,
+        &(arts_edt_hint_t){.rank = ARTS_HINT_ANY_RANK,
+                           .output_event = (arts_guid_t)paramv[3]});
+    arts_add_dependence(event, edt, 0, DB_MODE_RW);
+    arts_add_dependence((arts_guid_t)paramv[2], edt, 1, DB_MODE_RW);
+  }
 }
 
 static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -117,25 +119,33 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   uint64_t *state = (uint64_t *)depv[1].ptr;
-
+  if (state == NULL) {
+    arts_printf("FAIL: event_channel_transient_null verifier got a NULL "
+                "state block\n");
+    arts_test_fail();
+    arts_shutdown();
+    return;
+  }
   uint64_t got = atomic_load_explicit((_Atomic uint64_t *)&state[ST_DELIVERED],
                                       memory_order_acquire);
   uint64_t bad = atomic_load_explicit((_Atomic uint64_t *)&state[ST_BAD],
                                       memory_order_acquire);
   if (got != (uint64_t)TOTAL) {
-    (void)fprintf(stderr, "FAIL: delivered=%llu want %d (dropped node)\n",
-                  (unsigned long long)got, TOTAL);
-    arts_abort(1);
+    arts_printf("FAIL: event_channel_transient_null delivered=%llu want %d\n",
+                (unsigned long long)got, TOTAL);
+    arts_test_fail();
   }
   if (bad != 0) {
-    (void)fprintf(stderr,
-                  "FAIL: %llu deliveries carried a non-satisfied GUID\n",
-                  (unsigned long long)bad);
-    arts_abort(1);
+    arts_printf("FAIL: event_channel_transient_null %llu deliveries carried a "
+                "GUID their storm never satisfied\n",
+                (unsigned long long)bad);
+    arts_test_fail();
   }
-  printf("event_channel_transient_null: %d iters x %d pairs = %d matched "
-         "deliveries, no drop — PASS\n",
-         M_ITERS, K_PAIRS, TOTAL);
+  if (arts_test_status() == 0) {
+    arts_printf("event_channel_transient_null: %d single pairs + %d burst "
+                "pairs = %d matched deliveries, no drop — PASS\n",
+                PAIR_TOTAL, BURST_TOTAL, TOTAL);
+  }
   arts_shutdown();
 }
 
@@ -150,47 +160,48 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t state_db =
       arts_db_create((void **)&state, ST_NELEMS * sizeof(uint64_t), ARTS_DB,
                      ARTS_DB_PROP_NONE, NULL);
-  if (state_db == NULL_GUID) {
-    (void)fprintf(stderr, "FAIL: state_db NULL_GUID\n");
-    arts_abort(1);
-  }
   memset(state, 0, ST_NELEMS * sizeof(uint64_t));
 
   arts_event_hint_t lh = ARTS_EVENT_HINT_LATCH(TOTAL);
   lh.rank = 0;
   arts_guid_t latch = arts_event_create(&lh);
-  if (latch == NULL_GUID) {
-    (void)fprintf(stderr, "FAIL: latch NULL_GUID\n");
-    arts_abort(1);
-  }
 
   for (int it = 0; it < M_ITERS; it++) {
     arts_event_hint_t ch = ARTS_EVENT_HINT_CHANNEL;
     arts_guid_t ev = arts_event_create(&ch);
-    if (ev == NULL_GUID) {
-      (void)fprintf(stderr, "FAIL [it=%d]: CHANNEL create\n", it);
-      arts_abort(1);
-    }
-
-    /* Pre-record the K data GUIDs this iteration will satisfy, then spawn K
-     * satisfier EDTs and K depper EDTs all depc=0 so the worker pool runs
-     * them concurrently — opening the transient-NULL window on both queues. */
+    uint64_t off = ST_SAT_OFF + (uint64_t)it * K_PAIRS;
     for (int g = 0; g < K_PAIRS; g++) {
       void *dbp = NULL;
-      arts_guid_t dg = arts_db_create(&dbp, sizeof(uint64_t), ARTS_DB,
-                                      ARTS_DB_PROP_NONE, NULL);
-      state[ST_SAT_OFF + it * K_PAIRS + g] = (uint64_t)dg;
+      state[off + g] = (uint64_t)arts_db_create(&dbp, sizeof(uint64_t), ARTS_DB,
+                                                ARTS_DB_PROP_NONE, NULL);
     }
     for (int g = 0; g < K_PAIRS; g++) {
-      uint64_t spv[2] = {(uint64_t)ev, state[ST_SAT_OFF + it * K_PAIRS + g]};
-      arts_edt_create(satisfier_edt, 2, spv, 0, NULL);
-      uint64_t dpv[4] = {(uint64_t)ev, (uint64_t)state_db, (uint64_t)latch,
-                         (uint64_t)it};
-      arts_edt_create(depper_edt, 4, dpv, 0, NULL);
+      uint64_t spv[3] = {(uint64_t)ev, state[off + g], 1};
+      arts_edt_create(satisfier_edt, 3, spv, 0, NULL);
+      uint64_t dpv[6] = {(uint64_t)ev,    1,   (uint64_t)state_db,
+                         (uint64_t)latch, off, K_PAIRS};
+      arts_edt_create(depper_edt, 6, dpv, 0, NULL);
     }
   }
 
-  /* Publish the state DB to the counter EDTs by releasing the creator hold. */
+  arts_event_hint_t bh = ARTS_EVENT_HINT_CHANNEL;
+  arts_guid_t evb = arts_event_create(&bh);
+  for (int p = 0; p < P_SAT; p++) {
+    void *dbp = NULL;
+    state[ST_BURST_OFF + p] = (uint64_t)arts_db_create(
+        &dbp, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  }
+  for (int p = 0; p < P_SAT; p++) {
+    uint64_t spv[3] = {(uint64_t)evb, state[ST_BURST_OFF + p], BURST};
+    arts_edt_create(satisfier_edt, 3, spv, 0, NULL);
+  }
+  for (int p = 0; p < P_DEP; p++) {
+    uint64_t dpv[6] = {(uint64_t)evb,   BURST,        (uint64_t)state_db,
+                       (uint64_t)latch, ST_BURST_OFF, P_SAT};
+    arts_edt_create(depper_edt, 6, dpv, 0, NULL);
+  }
+
+  /* The counting EDTs acquire the state block once this creator hold ends. */
   arts_db_release(state_db, DB_MODE_RW);
 
   arts_guid_t v = arts_edt_create(verify_edt, 0, NULL, 2, NULL);
@@ -199,7 +210,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

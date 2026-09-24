@@ -54,6 +54,8 @@
 #include "arts.h"
 #include <stdint.h>
 
+#include "../test_failure_status.h"
+
 #define RR_PER_RANK 3 /* range size = RR_PER_RANK * nrank */
 
 /// Per-rank checker.  paramv[0] = broadcast range GUID, paramv[1] = nrank.
@@ -78,6 +80,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (arts_guid_get_rank(g) != expect_home) {
       arts_printf("  FAIL: rank %u idx %u home=%u expected %u\n", me, i,
                   arts_guid_get_rank(g), expect_home);
+      arts_test_fail();
       ok = false;
       continue;
     }
@@ -87,6 +90,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (arts_guid_is_local(g) != should_be_local) {
       arts_printf("  FAIL: rank %u idx %u is_local=%d expected %d\n", me, i,
                   (int)arts_guid_is_local(g), (int)should_be_local);
+      arts_test_fail();
       ok = false;
       continue;
     }
@@ -99,6 +103,7 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       if (ptr == NULL) {
         arts_printf("  FAIL: rank %u idx %u local DB create returned NULL\n",
                     me, i);
+        arts_test_fail();
         ok = false;
       } else {
         ptr[0] = (uint64_t)i;
@@ -144,6 +149,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                               ARTS_HINT_ROUND_ROBIN);
   if (range == NULL_GUID) {
     arts_printf("  FAIL: round_robin reserve_range returned NULL_GUID\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }
@@ -160,7 +166,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

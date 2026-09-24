@@ -53,6 +53,8 @@
 #include "arts.h"
 #include "arts/gas/guid.h"
 
+#include "../test_failure_status.h"
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -75,6 +77,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_reserve_range(ARTS_GUID_EDT, RANGE_SIZE, my_node);
   if (db_range == NULL_GUID || edt_range == NULL_GUID) {
     arts_printf("  FAIL: reserve_range returned NULL_GUID\n");
+    arts_test_fail();
     arts_shutdown();
     return;
   }
@@ -83,6 +86,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t g3 = arts_guid_from_index(db_range, 3);
   if (arts_guid_index_from(db_range, g3) != 3) {
     arts_printf("  FAIL: positive control round-trip != 3\n");
+    arts_test_fail();
     all_pass = false;
   } else {
     arts_printf("  PASS: positive control round-trips (idx 3)\n");
@@ -93,6 +97,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t edt_g0 = arts_guid_from_index(edt_range, 0);
   if (arts_guid_index_from(db_range, edt_g0) != -1) {
     arts_printf("  FAIL: type mismatch did not return -1\n");
+    arts_test_fail();
     all_pass = false;
   } else {
     arts_printf("  PASS: type mismatch returns -1\n");
@@ -107,6 +112,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t wrong_rank = ARTS_GUID_MAKE(ARTS_GUID_DB, foreign_rank, key);
     if (arts_guid_index_from(db_range, wrong_rank) != -1) {
       arts_printf("  FAIL: rank mismatch did not return -1\n");
+      arts_test_fail();
       all_pass = false;
     } else {
       arts_printf("  PASS: rank mismatch returns -1\n");
@@ -124,6 +130,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t before = ARTS_GUID_MAKE(ARTS_GUID_DB, my_node, start_key - 1);
       if (arts_guid_index_from(db_range, before) != -1) {
         arts_printf("  FAIL: key-before-start did not return -1\n");
+        arts_test_fail();
         all_pass = false;
       } else {
         arts_printf("  PASS: key-before-start returns -1\n");
@@ -136,6 +143,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_reserve_range(ARTS_GUID_DB, RANGE_SIZE, ARTS_HINT_ROUND_ROBIN);
   if (dist_range == NULL_GUID) {
     arts_printf("  FAIL: distributed reserve_range returned NULL_GUID\n");
+    arts_test_fail();
     all_pass = false;
   } else {
     uint64_t base_key = ARTS_GUID_GET_KEY(dist_range);
@@ -144,6 +152,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t d0 = arts_guid_from_index(dist_range, 0);
     if (arts_guid_index_from(dist_range, d0) != 0) {
       arts_printf("  FAIL: distributed positive control != 0\n");
+      arts_test_fail();
       all_pass = false;
     } else {
       arts_printf("  PASS: distributed positive control round-trips (idx 0)\n");
@@ -157,6 +166,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_guid_t below = ARTS_GUID_MAKE(ARTS_GUID_DB, 0u, base_key - 1);
       if (arts_guid_index_from(dist_range, below) != -1) {
         arts_printf("  FAIL: distributed key-before-base did not return -1\n");
+        arts_test_fail();
         all_pass = false;
       } else {
         arts_printf("  PASS: distributed key-before-base returns -1\n");
@@ -177,6 +187,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     "sentinel\n");
       } else if (arts_guid_index_from(dist_range, bad) != -1) {
         arts_printf("  FAIL: distributed home>=nrank did not return -1\n");
+        arts_test_fail();
         all_pass = false;
       } else {
         arts_printf("  PASS: distributed home>=nrank returns -1\n");
@@ -186,11 +197,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== guid_index_from_mismatch: %s ===\n",
               all_pass ? "ALL PASSED" : "FAILED");
+  if (!all_pass) {
+    arts_test_fail();
+  }
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

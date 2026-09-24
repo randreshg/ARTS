@@ -38,6 +38,8 @@
 #include <sched.h>
 #endif
 
+#include "../test_failure_status.h"
+
 /// Per-worker hook: runs on each worker thread after affinity is applied.
 /// Asserts the thread is bound to exactly its assigned pu_id when pinned.
 void init_per_worker(unsigned int node_id, unsigned int worker_id, int argc,
@@ -66,6 +68,7 @@ void init_per_worker(unsigned int node_id, unsigned int worker_id, int argc,
       arts_printf("  FAIL pin affinity: worker pu_id=%u not the single bound "
                   "CPU\n",
                   my_pu);
+      arts_test_fail();
     }
   } else {
     /* Not pinned (pin_threads off): affinity spans %d CPUs -> nothing to pin.
@@ -90,7 +93,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

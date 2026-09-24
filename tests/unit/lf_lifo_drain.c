@@ -19,6 +19,11 @@
  *      push (release CAS); a drainer reads it after drain (acquire exchange).
  *      A torn read would mean the release/acquire pairing is broken.
  *
+ *  (4) PER-PRODUCER FIFO (concurrent): P producers push while ONE consumer
+ *      repeatedly reverse_drain()s.  Each producer's pushes are
+ * program-ordered, so every chain -- and the sequence of chains -- delivers
+ * each producer's nodes in push order, every node exactly once.
+ *
  * The no-reentry invariant is respected: drained nodes are NEVER re-pushed to
  * the same stack — each drainer collects them into a private list and we tally
  * at the end.
@@ -215,6 +220,75 @@ static int concurrent_check(void) {
   return 0;
 }
 
+/* ---- Part 4: concurrent producers, one reverse-draining consumer ---- */
+static arts_lf_stack_t g_fifo;
+static node_t *g_fifo_nodes;
+
+static void *fifo_producer(void *arg) {
+  uint32_t base = (uint32_t)(uintptr_t)arg * PER_PRODUCER;
+  while (atomic_load_explicit(&g_start, memory_order_acquire) == 0) {
+  }
+  for (uint32_t i = 0; i < PER_PRODUCER; i++) {
+    node_t *n = &g_fifo_nodes[base + i];
+    n->id = base + i;
+    n->magic = MAGIC;
+    arts_lf_stack_push(&g_fifo, &n->link);
+  }
+  return NULL;
+}
+
+static int fifo_check(void) {
+  arts_lf_stack_init(&g_fifo);
+  atomic_store_explicit(&g_start, 0, memory_order_relaxed);
+  g_fifo_nodes = (node_t *)calloc(TOTAL, sizeof(node_t));
+  uint32_t next[PRODUCERS] = {0};
+  if (!g_fifo_nodes) {
+    return 1;
+  }
+  pthread_t prod[PRODUCERS];
+  for (int i = 0; i < PRODUCERS; i++) {
+    pthread_create(&prod[i], NULL, fifo_producer, (void *)(uintptr_t)i);
+  }
+  atomic_store_explicit(&g_start, 1, memory_order_release);
+
+  size_t consumed = 0;
+  int rc = 0;
+  while (consumed < TOTAL && rc == 0) {
+    arts_lf_link_t *l = arts_lf_stack_reverse_drain(&g_fifo);
+    while (l) {
+      arts_lf_link_t *nx = atomic_load_explicit(&l->next, memory_order_relaxed);
+      node_t *n = (node_t *)l;
+      uint32_t p = n->id / PER_PRODUCER;
+      if (n->magic != MAGIC || n->id >= TOTAL) {
+        (void)fprintf(stderr, "FAIL lf_lifo_drain: torn FIFO node id=%u\n",
+                      n->id);
+        rc = 1;
+        break;
+      }
+      if (n->id % PER_PRODUCER != next[p]) {
+        (void)fprintf(stderr,
+                      "FAIL lf_lifo_drain: producer %u delivered seq %u, "
+                      "expected %u\n",
+                      p, n->id % PER_PRODUCER, next[p]);
+        rc = 1;
+        break;
+      }
+      next[p]++;
+      consumed++;
+      l = nx;
+    }
+  }
+  for (int i = 0; i < PRODUCERS; i++) {
+    pthread_join(prod[i], NULL);
+  }
+  if (rc == 0 && arts_lf_stack_reverse_drain(&g_fifo) != NULL) {
+    (void)fprintf(stderr, "FAIL lf_lifo_drain: FIFO stack not empty at end\n");
+    rc = 1;
+  }
+  free(g_fifo_nodes);
+  return rc;
+}
+
 int main(void) {
   if (ordering_check() != 0) {
     return 1;
@@ -222,8 +296,12 @@ int main(void) {
   if (concurrent_check() != 0) {
     return 1;
   }
+  if (fifo_check() != 0) {
+    return 1;
+  }
   printf("PASS lf_lifo_drain: LIFO/FIFO ordering pinned; %zu nodes drained "
-         "disjointly by %d drainers, no loss/dup/torn\n",
+         "disjointly by %d drainers, no loss/dup/torn; per-producer FIFO "
+         "across concurrent reverse drains\n",
          TOTAL, DRAINERS);
   return 0;
 }

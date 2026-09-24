@@ -40,11 +40,15 @@
 /// @file event_basic.c
 /// @brief Single-node test for event hint variants: defaults (ONCE-equivalent),
 ///        LATCH, IDEM, STICKY, COUNTED, plus pre-reserved GUID (hint->guid) and
-///        arts_event_destroy on an unfired event.
+///        arts_event_destroy on an unfired event.  Every dependent must run
+///        (the finish scope the test waits on counts them); a create given a
+///        reserved GUID must return that GUID.
 
 #include "arts.h"
 
 #include <stdint.h>
+
+#include "../test_failure_status.h"
 
 /// EDT wired via arts_add_dependence from an event.
 void dependent_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -94,6 +98,16 @@ void idem_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_printf("  PASS: IDEM event fired dependent\n");
+}
+
+/// EDT for the IDEM late-dependence test.
+void idem_late_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                   arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_printf("  PASS: IDEM late dependence fired at once\n");
 }
 
 /// EDT for COUNTED event test.
@@ -156,7 +170,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t reserved_ev = arts_guid_reserve(ARTS_GUID_EVENT, 0);
     arts_event_hint_t h4 = ARTS_EVENT_HINT_DEFAULTS;
     h4.guid = reserved_ev;
-    arts_event_create(&h4);
+    if (arts_event_create(&h4) != reserved_ev) {
+      arts_printf("  FAIL: event create did not return its reserved GUID\n");
+      arts_test_fail();
+    }
     arts_guid_t dep4 =
         arts_edt_create(guid_event_dep, 0, NULL, 1,
                         &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
@@ -231,12 +248,26 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_destroy(ev10);
   }
 
+  // Test 11: IDEM — satisfied first, then a dependence added: it fires at once
+  // from the stored satisfy.
+  {
+    arts_event_hint_t h = ARTS_EVENT_HINT_IDEMPOTENT;
+    arts_guid_t ev11 = arts_event_create(&h);
+    arts_event_satisfy(ev11, NULL_GUID);
+    arts_guid_t dep11 =
+        arts_edt_create(idem_late_dep, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(ev11, dep11, 0, DB_MODE_RW);
+  }
+
   arts_event_wait(fe);
+  if (arts_test_status() == 0) {
+    arts_printf("PASS: event_basic\n");
+  }
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

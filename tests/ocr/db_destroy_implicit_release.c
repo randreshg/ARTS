@@ -39,25 +39,22 @@
 
 /// @file db_destroy_implicit_release.c
 /// @brief arts_db_destroy implicit release: Path-1 (created_db_list) fires for
-/// a
-///        DB the EDT created, even when the same GUID is also a dep slot — the
-///        RO dep slot is then left to the epilogue.  Benign-coverage of the
-///        documented Path-1-wins / Path-2-RO-left interaction.
+///        a DB the destroying EDT created and still holds.
 ///
 /// arts_db_destroy(guid) unconditionally calls arts_db_release(guid, RW) first
 /// (OCR ocrDbDestroy semantics).  arts_db_release scans created_db_list (Path
-/// 1) before depv (Path 2); on a match in Path 1 it releases the created hold
-/// (RW) and returns early.  So when an EDT BOTH created a DB AND holds it as a
-/// dep slot, the implicit release fires Path 1 (the created RW hold), and the
-/// dep slot is left for the epilogue release_dbs to clean.
+/// 1) before depv (Path 2); on a match it releases the created hold and removes
+/// the entry, so the epilogue finds nothing left to release.
 ///
-/// This test exercises that exact shape: an EDT creates a DB, also receives it
-/// as a RO dep, then destroys it mid-body.  It must not crash, double-release,
-/// or leak, and a follow-up EDT must run cleanly after the DB is gone.  A
-/// double-free / underflow tends to crash under sanitizers; a leaked hold that
-/// blocks teardown manifests as a hang caught by the ctest TIMEOUT.
+/// Shape: an EDT creates a fresh labeled DB, writes it, and destroys it
+/// mid-body while it still holds the creator's hold.  It must not crash,
+/// double-release, or leak: a second EDT then creates the same label again
+/// (the first block is gone, so that create installs at once), writes a new
+/// value, and a reader checks it.  A hold the destroy failed to release keeps
+/// the first block's teardown from completing and the reader never sees the
+/// second value — the ctest TIMEOUT or the value check catches it.
 ///
-/// All configs.  Home the DB on rank 0 so create + dep + destroy are co-located
+/// All configs.  Home the DB on rank 0 so create + destroy are co-located
 /// on the running EDT's worker (the created_db_list is thread-local).
 
 #include "arts.h"
@@ -65,47 +62,61 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "../test_failure_status.h"
+
 #define SENTINEL 0xDED0Du
 
-/// creator_and_holder: receives a DB as a RO dep (slot 0), then RE-CREATES the
-/// same labeled GUID in-body so that GUID lands on this EDT's created_db_list
-/// (Path-1 hold).  Now the GUID is BOTH a dep slot (RO, old generation, already
-/// resolved) AND a created hold.  Destroying it must fire Path 1 (the created
-/// RW hold) and return early, leaving the RO dep slot to the epilogue.
-void creator_and_holder(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                        arts_edt_dep_t depv[]) {
+/// creator_destroyer: creates the label, writes it, destroys it while holding
+/// the creator's hold (Path 1 releases it).
+void creator_destroyer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
+  (void)depv;
   arts_guid_t db = (arts_guid_t)paramv[0];
-  /* depv[0] is the DB in RO mode (old generation); reading it is valid here. */
-  unsigned int *ro = (unsigned int *)depv[0].ptr;
-  if (ro == NULL) {
-    (void)fprintf(stderr,
-                  "FAIL: db_destroy_implicit_release RO dep NULL ptr\n");
-    arts_abort(1);
+  unsigned int *p = (unsigned int *)arts_db_create_with_guid(
+      db, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  if (p == NULL) {
+    arts_printf("FAIL: db_destroy_implicit_release NULL pointer\n");
+    arts_test_fail();
     return;
   }
-  /* Re-create at the SAME labeled GUID: this EDT becomes the creator, so the
-   * GUID is recorded on created_db_list (Path-1 hold).  Default props =>
-   * auto-acquire RW. */
-  void *p = (void *)arts_db_create_with_guid(db, sizeof(unsigned int), ARTS_DB,
-                                             ARTS_DB_PROP_NONE, NULL);
-  if (p != NULL) {
-    ((unsigned int *)p)[0] = SENTINEL + 1u;
-  }
-  /* Destroy: implicit RW release fires Path 1 (the created hold) and returns
-   * early; the RO dep slot is left to the epilogue release_dbs. */
+  p[0] = SENTINEL;
   arts_db_destroy(db);
 }
 
-/// after_edt: runs after the destroying EDT's finish scope drains; proves the
-/// runtime stayed healthy (no crash / no stuck teardown).
-void after_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+/// recreator: the label's next block, created after the destroy.
+void recreator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  arts_guid_t db = (arts_guid_t)paramv[0];
+  unsigned int *p = (unsigned int *)arts_db_create_with_guid(
+      db, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  if (p == NULL) {
+    arts_printf("FAIL: db_destroy_implicit_release NULL pointer on the "
+                "re-create\n");
+    arts_test_fail();
+    return;
+  }
+  p[0] = SENTINEL + 1u;
+}
+
+/// reader: RO dependence on the second block.
+void reader(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+            arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  (void)depv;
+  const unsigned int *v = (const unsigned int *)depv[0].ptr;
+  if (v == NULL || v[0] != SENTINEL + 1u) {
+    arts_printf("FAIL: db_destroy_implicit_release read 0x%x, expected "
+                "0x%x\n",
+                v ? v[0] : 0u, SENTINEL + 1u);
+    arts_test_fail();
+    return;
+  }
   arts_printf("PASS: db_destroy_implicit_release\n");
 }
 
@@ -118,43 +129,30 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_destroy_implicit_release ===\n");
 
-  /* Create on rank 0, fill, release so the DB carries data, then create an EDT
-   * that BOTH re-creates(no) — instead we create the DB here and pass its GUID
-   * to an EDT that will also depend on it.  To make the EDT the CREATOR of the
-   * DB on its created_db_list, the EDT must itself call arts_db_create; but it
-   * also needs the DB as a dep.  We satisfy both: the EDT creates a fresh DB
-   * (Path-1 created hold) AND depends on a pre-existing DB at the same GUID via
-   * labeled reuse.  Simpler and faithful to the contract: have the EDT create
-   * the DB at a labeled GUID it already holds as a RO dep. */
   arts_guid_t db = arts_guid_reserve(ARTS_GUID_DB, 0);
-
-  /* Pre-create + fill so the RO dep has data when the EDT runs. */
-  void *p = (void *)arts_db_create_with_guid(db, sizeof(unsigned int), ARTS_DB,
-                                             ARTS_DB_PROP_NONE, NULL);
-  if (p != NULL) {
-    ((unsigned int *)p)[0] = SENTINEL;
-  }
-  arts_db_release(db, DB_MODE_RW);
-
   uint64_t param = (uint64_t)db;
+
   arts_guid_t e_c = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t c =
-      arts_edt_create(creator_and_holder, 1, &param, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = e_c});
-  arts_add_dependence(db, c, 0, DB_MODE_RO);
+  arts_edt_create(creator_destroyer, 1, &param, 0,
+                  &(arts_edt_hint_t){.rank = 0, .finish_event = e_c});
   arts_event_wait(e_c);
 
-  /* Health check after the DB is destroyed. */
+  arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_edt_create(recreator, 1, &param, 0,
+                  &(arts_edt_hint_t){.rank = 0, .finish_event = e_r});
+  arts_event_wait(e_r);
+
   arts_guid_t e_a = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_edt_create(after_edt, 0, NULL, 0,
-                  &(arts_edt_hint_t){.rank = 0, .finish_event = e_a});
+  arts_guid_t r = arts_edt_create(
+      reader, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = e_a});
+  arts_add_dependence(db, r, 0, DB_MODE_RO);
   arts_event_wait(e_a);
 
+  arts_db_destroy(db);
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  /* Non-zero when a rank this process spawned ended badly: their exit status
-     reaches nobody else, and a run with a dead rank did not succeed. */
-  return arts_rt(argc, argv) != 0 ? 1 : 0;
+  int rc = arts_rt(argc, argv);
+  return rc ? 1 : arts_test_status();
 }

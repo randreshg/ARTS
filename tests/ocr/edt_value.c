@@ -5,7 +5,7 @@ static void check(uint32_t pc, const uint64_t *pv, uint32_t dc,
   if (pc != dc)
     arts_abort(1);
   for (uint32_t i = 0; i < dc; ++i) {
-    if (dv[i].guid != pv[i] || dv[i].ptr != NULL ||
+    if ((uint64_t)dv[i].guid != pv[i] || dv[i].ptr != NULL ||
         dv[i].mode != DB_MODE_NULL) {
       arts_printf("FAIL edt_value: slot %u changed value, mode, or pointer\n", i);
       arts_abort(1);

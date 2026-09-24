@@ -217,8 +217,11 @@ _Static_assert(sizeof(struct arts_msg_publish_packet_s) == 72,
                "publish sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_ack_packet_s) == 64,
                "publish_ack sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_db_create_return_packet_s) == 48,
+_Static_assert(sizeof(struct arts_msg_db_create_return_packet_s) == 56,
                "db_create_return sizeof drifted");
+_Static_assert(offsetof(struct arts_msg_db_create_return_packet_s,
+                        create_token) == 24,
+               "db_create_return's token must follow db_guid");
 _Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 64,
                "ownership_invalidate sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 64,
@@ -228,12 +231,15 @@ _Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 72,
 _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 72,
                "snapshot_response sizeof drifted");
 #ifdef ARTS_FAM
-_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
+_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 56,
                "db_create_coherent sizeof drifted (FAM build)");
 #else
-_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 40,
+_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
                "db_create_coherent sizeof drifted");
 #endif
+_Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s,
+                        create_token) == 32,
+               "db_create_coherent's token must follow db_size");
 #ifdef ARTS_FAM
 _Static_assert(sizeof(struct arts_msg_db_fam_free_packet_s) == 24,
                "db_fam_free sizeof drifted");
@@ -250,7 +256,7 @@ _Static_assert(sizeof(struct arts_msg_rank_version_pair_s) == 16,
                "rank_version_pair sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_rdzv_landing_s) == 32,
                "rdzv_landing sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_grant_return_packet_s) == 24,
+_Static_assert(sizeof(struct arts_msg_grant_return_packet_s) == 32,
                "grant_return sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 32,
                "ownership_cts sizeof drifted");

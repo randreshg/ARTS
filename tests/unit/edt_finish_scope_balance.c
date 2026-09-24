@@ -11,10 +11,10 @@
  * releases its token (arts_event_wait) AND every joined EDT has completed.
  *
  * For a REMOTE EDT the INCR is emitted on the source rank inside create_core
- * (against the parent finish event there), and the RX side (arts_handler_edt_
- * create) installs a local proxy LATCH(1) wired to forward a DECR to the remote
- * parent when the proxy drains.  So a remote member still contributes a clean
- * +1/-1 to the parent scope.  If any INCR or DECR is dropped (or doubled) the
+ * (against the parent finish event there), and the create body at the EDT's
+ * home, finding the parent homed on another rank, installs a local proxy
+ * LATCH(1) wired to forward a DECR to the parent when the proxy drains.  So a
+ * remote member still contributes a clean +1/-1 to the parent scope.  If any INCR or DECR is dropped (or doubled) the
  * scope never drains and arts_event_wait hangs forever (caught by ctest
  * TIMEOUT); an over-DECR would fire the scope early before members ran, which
  * the per-member tally would expose.

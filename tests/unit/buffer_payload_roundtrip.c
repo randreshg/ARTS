@@ -15,7 +15,7 @@
  *   - from_data(NULL) == NULL.
  *
  * Single-threaded; the value is the byte-exactness of the memcpy publish path
- * and the payload offset, which the existing coherence_buffer_test does not assert.
+ * and the payload offset.
  * Run under ASan to catch any over/under-copy of the payload.
  *
  * Standalone: links buffer.c + shared.c with libc-backed alloc shims.

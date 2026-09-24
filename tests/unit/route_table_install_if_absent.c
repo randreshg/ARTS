@@ -1,29 +1,50 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * route_table_install_if_absent — CAS-install win/loss + set_destroyed
- * single-flight + slot return (census 18-gas GAPs 2 & 3).
+ * route_table_install_if_absent — the install primitive's promise and the
+ * retire forms' single flight.
  *
- * arts_route_table_install_if_absent CASes a fresh cb into an empty slot:
- * exactly ONE caller wins per generation; losers arts_shared_abandon their cb
- * (the abandon must NOT run the deleter — the loser keeps owning its object).
- * arts_route_table_set_destroyed is single-flight (only the caller that wins
- * the key claim returns true) and RETURNS the slot: the key is zeroed after
+ * arts_route_table_install_if_absent installs into an empty slot only and
+ * hands the winner a ref it releases: of concurrent installs of one key
+ * exactly ONE wins; a loser abandons its cb (the abandon must NOT run the
+ * deleter — the loser keeps owning its object).  What a losing create does
+ * next (the engine parks it) is not this primitive's.
+ * Every retire form is single-flight (of concurrent retires of one object
+ * exactly one returns true) and RETURNS the slot: the key is zeroed after
  * the cb is released, so the slot is claimable again.
  *
  * Scenarios:
  *
- *   A. install_if_absent storm on ONE empty slot: exactly one true return; the
+ *   A. install_if_absent storm on ONE empty slot: exactly one handle returned; the
  *      slot holds the winner's object; the deleter has NOT run for any loser
  *      object (losers keep theirs); winner freed exactly once at teardown.
  *
- *   B. set_destroyed single-flight: N threads race set_destroyed on a populated
- *      slot — exactly one returns true; the object's deleter runs exactly once;
- *      the slot's key is returned to 0.
+ *   B. retire single-flight: N threads race a retire (the object form) on a
+ *      populated slot — exactly one returns true; the object's deleter runs
+ *      exactly once; the slot's key is returned to 0.
  *
- *   C. install_if_absent racing set_destroyed across rounds: repeated
- *      create→destroy on the same GUID; every round has exactly one creator and
- *      at most one destroyer; no double-free / no leak (ASan); the slot comes
- *      back every round.
+ *   C. create→destroy churn on one GUID: every round installs into the
+ *      returned slot and one retire takes it; no double-free / no leak (ASan);
+ *      the slot comes back every round.
+ *
+ *   D. an identity retire takes only its own generation.
+ *
+ *   E. a retire that pinned generation 1 and runs after generation 1 was
+ *      retired and generation 2 installed takes nothing: the retire is bound
+ *      to the object it saw.
+ *
+ *   F. a handle-less retire (the object form, pinning whatever the key
+ *      currently publishes) that arrives while another retire of the
+ *      previous generation holds the slot RETIRING and then hands the key
+ *      back (it named generation 1, the slot holds generation 2) retires
+ *      generation 2: it looks through the RETIRING slot instead of missing
+ *      it.
+ *
+ *   G. a handle-less retire that arrives while a real retire of generation 1
+ *      holds the slot RETIRING waits it out and returns false; generation 2,
+ *      installed right after, stays.
+ *
+ * F and G park the retire inside set_destroyed_if through the file's
+ * retire-claim hooks, so the interleavings are forced, not sampled.
  *
  * No runtime: route_table.c + guid.c + shared.c #include'd; OoO drain is a
  * no-op (no OoO payloads pushed).
@@ -70,6 +91,27 @@ uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
 }
 
 #include "../../libs/src/core/gas/guid.c"
+/* Retire-claim hooks: a thread with a hook armed runs it in its identity
+ * retire, before the key claim (BEFORE) or after a won claim (AFTER). */
+static __thread void (*t_before_claim)(void);
+static __thread void (*t_after_claim)(void);
+static void hook_before_claim(void) {
+  void (*f)(void) = t_before_claim;
+  t_before_claim = NULL;
+  if (f != NULL) {
+    f();
+  }
+}
+static void hook_after_claim(void) {
+  void (*f)(void) = t_after_claim;
+  t_after_claim = NULL;
+  if (f != NULL) {
+    f();
+  }
+}
+#define ROUTE_TABLE_BEFORE_RETIRE_CLAIM(key) ((void)(key), hook_before_claim())
+#define ROUTE_TABLE_AFTER_RETIRE_CLAIM(key) ((void)(key), hook_after_claim())
+
 #include "../../libs/src/core/gas/route_table.c"
 #include "../../libs/src/core/utils/shared.c"
 
@@ -143,8 +185,10 @@ static void *a_worker(void *vp) {
   a_ctx_t *c = (a_ctx_t *)vp;
   while (atomic_load_explicit(c->gate, memory_order_acquire) == 0) {
   }
-  c->won =
-      arts_route_table_install_if_absent(c->obj, c->guid, 0, false) ? 1 : 0;
+  arts_shared_ptr_t h =
+      arts_route_table_install_if_absent(c->obj, c->guid, 0, false);
+  c->won = h != NULL ? 1 : 0;
+  arts_shared_release(&h);
   return NULL;
 }
 
@@ -153,6 +197,7 @@ static void *a_worker(void *vp) {
 
 typedef struct {
   arts_guid_t guid;
+  void *obj;
   atomic_int *gate;
   int won;
 } b_ctx_t;
@@ -161,8 +206,136 @@ static void *b_worker(void *vp) {
   b_ctx_t *c = (b_ctx_t *)vp;
   while (atomic_load_explicit(c->gate, memory_order_acquire) == 0) {
   }
-  c->won = arts_route_table_set_destroyed(c->guid) ? 1 : 0;
+  c->won = arts_route_table_set_destroyed_object(c->guid, c->obj) ? 1 : 0;
   return NULL;
+}
+
+/* ── Scenarios F and G: a handle-less retire meets a retire in flight ───── */
+static arts_guid_t g_fg_guid;
+static arts_shared_ptr_t g_fg_gen1;
+static int *g_fg_obj2;
+static atomic_int g_fg_parked;  /* the identity retire holds RETIRING */
+static atomic_int g_fg_release; /* let it go on */
+
+static void fg_install_gen2(void) {
+  g_fg_obj2 = (int *)malloc(sizeof(int));
+  arts_shared_ptr_t h =
+      arts_route_table_install_if_absent(g_fg_obj2, g_fg_guid, 0, false);
+  if (h == NULL) {
+    (void)fprintf(stderr, "FAIL route_table_install_if_absent: F/G "
+                          "generation 2 install lost\n");
+    _exit(1);
+  }
+  arts_shared_release(&h);
+}
+
+/* F, before the claim: another retire takes generation 1 and generation 2
+ * installs, so the parked retire's claim lands on generation 2's slot. */
+static void f_before(void) {
+  void (*after)(void) = t_after_claim;
+  t_after_claim = NULL;
+  bool inner = arts_route_table_set_destroyed_if(g_fg_guid, g_fg_gen1);
+  t_after_claim = after;
+  if (!inner) {
+    (void)fprintf(stderr, "FAIL route_table_install_if_absent: F inner "
+                          "retire of generation 1 failed\n");
+    _exit(1);
+  }
+  fg_install_gen2();
+}
+
+static void park_after_claim(void) {
+  atomic_store(&g_fg_parked, 1);
+  while (atomic_load(&g_fg_release) == 0) {
+    sched_yield();
+  }
+}
+
+static void *fg_retire_worker(void *vp) {
+  if (vp != NULL) {
+    t_before_claim = f_before;
+  }
+  t_after_claim = park_after_claim;
+  return (void *)(uintptr_t)arts_route_table_set_destroyed_if(g_fg_guid,
+                                                               g_fg_gen1);
+}
+
+static void *fg_key_worker(void *vp) {
+  return (void *)(uintptr_t)arts_route_table_set_destroyed_object(g_fg_guid,
+                                                                  vp);
+}
+
+static int run_fg(bool hand_back) {
+  const char *name = hand_back ? "F" : "G";
+  g_fg_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
+  atomic_store(&g_fg_parked, 0);
+  atomic_store(&g_fg_release, 0);
+  atomic_store(&g_deletes, 0);
+  int *o1 = (int *)malloc(sizeof(int));
+  arts_shared_ptr_t h =
+      arts_route_table_install_if_absent(o1, g_fg_guid, 0, false);
+  arts_shared_release(&h);
+  g_fg_gen1 = arts_route_table_lookup(g_fg_guid);
+
+  pthread_t retire_tid, key_tid;
+  if (pthread_create(&retire_tid, NULL, fg_retire_worker,
+                     hand_back ? (void *)1 : NULL) != 0) {
+    FAIL("%s: pthread_create\n", name);
+  }
+  for (int i = 0; atomic_load(&g_fg_parked) == 0; i++) {
+    if (i > 5000) {
+      FAIL("%s: the identity retire never held the slot RETIRING\n", name);
+    }
+    usleep(1000);
+  }
+  /* By the time the identity retire parks holding RETIRING, F has already
+   * installed generation 2 (inside its before-claim hook) and G has not
+   * (its install runs later, from this thread): the object a handle-less
+   * retire will find through the RETIRING window is generation 2 for F,
+   * generation 1 for G. */
+  void *fg_key_expect = hand_back ? (void *)g_fg_obj2 : (void *)o1;
+  if (pthread_create(&key_tid, NULL, fg_key_worker, fg_key_expect) != 0) {
+    FAIL("%s: pthread_create\n", name);
+  }
+  usleep(100000);
+  atomic_store(&g_fg_release, 1);
+  void *rv = NULL;
+  pthread_join(retire_tid, &rv);
+  bool retire_won = rv != NULL;
+  if (!hand_back) {
+    fg_install_gen2();
+  }
+  pthread_join(key_tid, &rv);
+  bool key_won = rv != NULL;
+  arts_shared_release(&g_fg_gen1);
+
+  arts_shared_ptr_t lh = arts_route_table_lookup(g_fg_guid);
+  if (hand_back) {
+    if (retire_won) {
+      FAIL("F: the parked retire of generation 1 took generation 2\n");
+    }
+    if (!key_won || lh != NULL) {
+      FAIL(
+          "F: the handle-less retire missed generation 2 behind a "
+          "hand-back\n");
+    }
+  } else {
+    if (!retire_won) {
+      FAIL("G: the retire of generation 1 failed\n");
+    }
+    if (key_won || lh == NULL || arts_shared_get(lh) != g_fg_obj2) {
+      FAIL("G: the handle-less retire took generation 2\n");
+    }
+    arts_shared_release(&lh);
+    if (!arts_route_table_set_destroyed_object(g_fg_guid, g_fg_obj2)) {
+      FAIL("G: retire of generation 2 failed\n");
+    }
+  }
+  if (atomic_load(&g_deletes) != 2) {
+    FAIL("%s: %d frees for two generations\n", name,
+         atomic_load(&g_deletes));
+  }
+  return 0;
 }
 
 int main(void) {
@@ -217,7 +390,7 @@ int main(void) {
       }
     }
     /* destroy the winner cb → deleter frees winner exactly once. */
-    if (!arts_route_table_set_destroyed(g)) {
+    if (!arts_route_table_set_destroyed_object(g, ctx[win_idx].obj)) {
       FAIL("A: set_destroyed on winner returned false\n");
     }
     if (atomic_load(&g_deletes) != 1) {
@@ -230,7 +403,8 @@ int main(void) {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     int *obj = (int *)malloc(sizeof(int));
     *obj = 0x77;
-    arts_route_table_install_if_absent(obj, g, 0, false);
+    arts_shared_ptr_t h = arts_route_table_install_if_absent(obj, g, 0, false);
+    arts_shared_release(&h);
     /* Hold the slot pointer: after the destroy the key is zeroed, so a fresh
      * lookup would reserve a new slot rather than find this one.  Slots are
      * never freed, only re-keyed, so the pointer stays valid. */
@@ -244,6 +418,7 @@ int main(void) {
     atomic_init(&gate, 0);
     for (int i = 0; i < B_THREADS; i++) {
       ctx[i].guid = g;
+      ctx[i].obj = obj;
       ctx[i].gate = &gate;
       ctx[i].won = 0;
       if (pthread_create(&tids[i], NULL, b_worker, &ctx[i]) != 0) {
@@ -278,11 +453,13 @@ int main(void) {
     for (int r = 0; r < ROUNDS; r++) {
       int *obj = (int *)malloc(sizeof(int));
       *obj = r;
-      bool won = arts_route_table_install_if_absent(obj, g, 0, false);
+      arts_shared_ptr_t h = arts_route_table_install_if_absent(obj, g, 0, false);
+      bool won = h != NULL;
+      arts_shared_release(&h);
       if (!won) {
         FAIL("C round %d: install_if_absent on a known-empty slot lost\n", r);
       }
-      bool destroyed = arts_route_table_set_destroyed(g);
+      bool destroyed = arts_route_table_set_destroyed_object(g, obj);
       if (!destroyed) {
         FAIL("C round %d: set_destroyed on a known-live slot returned false\n",
              r);
@@ -299,7 +476,91 @@ int main(void) {
     }
   }
 
-  printf("PASS route_table_install_if_absent: single CAS winner, abandon "
-         "keeps loser objects, set_destroyed single-flight + monotone gen\n");
+  /* ---- Scenario D: a retire by identity takes only its own generation ---- */
+  {
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    atomic_store(&g_deletes, 0);
+    int *o1 = (int *)malloc(sizeof(int));
+    arts_shared_ptr_t h1 = arts_route_table_install_if_absent(o1, g, 0, false);
+    if (h1 == NULL) {
+      FAIL("D: first install lost\n");
+    }
+    arts_shared_ptr_t stranger = arts_shared_make(NULL, NULL);
+    if (arts_route_table_set_destroyed_if(g, stranger)) {
+      FAIL("D: a retire by a stranger's identity retired the slot\n");
+    }
+    arts_shared_abandon(&stranger);
+    /* A handle-less retire takes generation 1; generation 2 installs. */
+    if (!arts_route_table_set_destroyed_object(g, o1)) {
+      FAIL("D: retire of generation 1 failed\n");
+    }
+    int *o2 = (int *)malloc(sizeof(int));
+    arts_shared_ptr_t h2 = arts_route_table_install_if_absent(o2, g, 0, false);
+    if (h2 == NULL) {
+      FAIL("D: generation 2 install lost\n");
+    }
+    if (arts_route_table_set_destroyed_if(g, h1)) {
+      FAIL("D: generation 1's identity retired generation 2\n");
+    }
+    arts_shared_ptr_t lh = arts_route_table_lookup(g);
+    if (arts_shared_get(lh) != o2) {
+      FAIL("D: generation 2 is not installed after a stale identity retire\n");
+    }
+    arts_shared_release(&lh);
+    if (!arts_route_table_set_destroyed_if(g, h2)) {
+      FAIL("D: generation 2's own identity did not retire it\n");
+    }
+    lh = arts_route_table_lookup(g);
+    if (lh != NULL) {
+      FAIL("D: an object is installed after its identity retire\n");
+    }
+    arts_shared_release(&h1);
+    arts_shared_release(&h2);
+    if (atomic_load(&g_deletes) != 2) {
+      FAIL("D: %d frees for two generations\n", atomic_load(&g_deletes));
+    }
+  }
+
+  /* ---- Scenario E: a pinned retire never takes a later generation ---- */
+  {
+    arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
+    atomic_store(&g_deletes, 0);
+    int *o1 = (int *)malloc(sizeof(int));
+    arts_shared_ptr_t h = arts_route_table_install_if_absent(o1, g, 0, false);
+    arts_shared_release(&h);
+    arts_shared_ptr_t pinned = arts_route_table_lookup(g);
+    if (!arts_route_table_set_destroyed_object(g, o1)) {
+      FAIL("E: retire of generation 1 failed\n");
+    }
+    int *o2 = (int *)malloc(sizeof(int));
+    h = arts_route_table_install_if_absent(o2, g, 0, false);
+    if (h == NULL) {
+      FAIL("E: generation 2 install lost\n");
+    }
+    arts_shared_release(&h);
+    if (arts_route_table_set_destroyed_item(g, pinned)) {
+      FAIL("E: a retire pinned on generation 1 took generation 2\n");
+    }
+    arts_shared_ptr_t lh = arts_route_table_lookup(g);
+    if (arts_shared_get(lh) != o2) {
+      FAIL("E: generation 2 left its slot\n");
+    }
+    arts_shared_release(&lh);
+    arts_shared_release(&pinned);
+    if (!arts_route_table_set_destroyed_object(g, o2)) {
+      FAIL("E: retire of generation 2 failed\n");
+    }
+    if (atomic_load(&g_deletes) != 2) {
+      FAIL("E: %d frees for two generations\n", atomic_load(&g_deletes));
+    }
+  }
+
+  if (run_fg(true) != 0 || run_fg(false) != 0) {
+    return 1;
+  }
+
+  printf("PASS route_table_install_if_absent: single install winner, abandon "
+         "keeps loser objects, retire single-flight and bound to the object "
+         "it saw\n");
   return 0;
 }
