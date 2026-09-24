@@ -1219,7 +1219,7 @@ void arts_db_destroy_remote(arts_guid_t db_guid) {
  * (the buffer-NULL that must run first) and post (snapshot drain + home
  * teardown), so the per-arm wrapper runs pre, its own teardown, then post.
  * cache_s itself is
- * freed by the route_table after the wrapper returns; buffers (FAM data) are
+ * freed by the route_table after the wrapper returns; buffers (payload storage) are
  * recycled / freed by the cb deleter chain once outstanding refs drain. */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \

@@ -6,7 +6,7 @@
  * the coherence_zero_size_xfer integration path).  arts_db_buf_install with
  * db_size == 0 must:
  *   - return a NON-NULL buffer (the header is always allocated even with no
- *     FAM payload),
+ *     payload),
  *   - stamp the requested version,
  *   - never touch data[] (no memcpy / memset of 0 bytes — but more importantly,
  *     never read/write past the header),

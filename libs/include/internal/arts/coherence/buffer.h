@@ -170,13 +170,13 @@ struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
 #endif
 
 #ifndef ARTS_FAM_DIRECT
-/* Recover the enclosing arts_db_buffer_s from a data pointer that aliases
- * buf->data.  Header-relative pointer arithmetic, so it is valid only where
- * the descriptor CARRIES the payload: where the store is external the same
- * arithmetic addresses the store, not a header, which is why the declaration
- * is absent there rather than answering wrongly.  It does NOT touch the
- * buffer, so it is safe even if the buffer has since been freed (the caller
- * must already hold a ref or know the buffer is alive). */
+/* Recover the enclosing arts_db_buffer_s from a data pointer (which aliases
+ * the buffer's payload).  Header-relative pointer arithmetic, so it is valid
+ * only where the descriptor CARRIES the payload: where the store is external
+ * the same arithmetic addresses the store, not a header, which is why the
+ * declaration is absent there rather than answering wrongly.  It does NOT
+ * touch the buffer, so it is safe even if the buffer has since been freed
+ * (the caller must already hold a ref or know the buffer is alive). */
 static inline struct arts_db_buffer_s *arts_db_buf_from_data(void *data) {
   if (data == NULL) {
     return NULL;

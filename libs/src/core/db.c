@@ -107,7 +107,7 @@ void *arts_db_user_ptr(struct arts_db_s *db) {
      * where that right is established, and they are the only points that
      * materialize. */
     /* Single-owner context: acquire a ref, read the payload pointer, release.
-     * buf->data is the buffer's FAM and stays valid for the single owner that
+     * buf->data is the buffer's payload and stays valid for the single owner that
      * consumes the returned pointer. */
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(&db->cache);
     struct arts_db_buffer_s *buf =
@@ -345,7 +345,7 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
     /* Install a fresh buffer so subsequent coherent acquires
      * (acquire_local / mark_edt_ready_by_guid) find a non-NULL
      * cache->buffer.  The user pointer returned by arts_db_create
-     * points into this buffer's data[] FAM, so writes by the creator
+     * points into this buffer's payload, so writes by the creator
      * EDT land in buf->data and are published when release_rw bumps
      * the version.  No initial value: the payload an acquiring create
      * hands out is uninitialized by contract.

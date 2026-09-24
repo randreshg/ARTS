@@ -387,7 +387,7 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
   }
   new_buf->owner_cache = cache;
   new_buf->version = new_version;
-  /* Publish bytes into buf->data (FAM, canonical user-visible storage). */
+  /* Publish bytes into the buffer's payload (canonical user-visible storage). */
   if (db_size > 0) {
     if (data_payload != NULL) {
       memcpy(new_buf->data, data_payload, (size_t)db_size);
