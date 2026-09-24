@@ -379,6 +379,16 @@ void arts_db_fam_slot_discard(struct arts_db_cache_s *cache);
  * caller per block — the teardown that claimed the route slot. */
 void arts_db_fam_slot_release(struct arts_db_cache_s *cache);
 
+/* A block nobody has written reads as zero, for its whole declared extent, on
+ * its first acquire — the contract a create that takes a write turn meets by
+ * writing through a buffer this rank zero-installs and later purges to the
+ * store.  A create that takes no write turn has no such write coming, so the
+ * store itself must already be zero when this call returns.  A no-op unless
+ * this call's cache just minted the slot (arts_db_fam_slot_create returned
+ * true) — a slot this rank only recorded (arts_db_fam_slot_record) is bytes
+ * another creator is answerable for. */
+void arts_db_fam_slot_zero(struct arts_db_cache_s *cache);
+
 /* The slot this rank knows for the block, 0 when it knows none.  There is no
  * owner beside it: the owning rank of a slot is a pure function of its
  * address. */

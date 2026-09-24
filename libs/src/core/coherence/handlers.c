@@ -400,6 +400,13 @@ void arts_handler_db_create(struct arts_msg_db_create_coherent_packet_s *p) {
   } else {
     stub_slot_minted = arts_db_fam_slot_create(&stub->cache);
   }
+  /* An announce carrying no address is a creator with no write turn of its
+   * own coming (NO_ACQUIRE) — the mint above just gave the block its store,
+   * and nothing else will ever write it before a first acquirer reads it, so
+   * the declared-zero contract has to be established right here. */
+  if (stub_slot_minted && no_acquire) {
+    arts_db_fam_slot_zero(&stub->cache);
+  }
   /* No re-check here: the route install below publishes the object, so a
    * destroy that can scan the roster at all runs after this set. */
   if (!no_acquire) {

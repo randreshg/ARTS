@@ -221,6 +221,24 @@ void arts_db_fam_slot_release(struct arts_db_cache_s *cache) {
   }
   arts_send_db_fam_free(addr);
 }
+
+/* A fresh slot's bytes are a recycled granule (or poisoned outright, under
+ * the strict oracle), never zero.  A create that takes a write turn hides
+ * that behind its own zero-installed buffer and a purge to the store before
+ * anyone else can read it; a create that takes none has no such write coming,
+ * so the store must be zeroed here instead.  No hold is registered for this
+ * write — a NO_ACQUIRE create takes no write turn to register one under —
+ * and a producer flush over an unheld range is otherwise the same call every
+ * write turn's purge makes. */
+void arts_db_fam_slot_zero(struct arts_db_cache_s *cache) {
+  uint64_t addr = __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE);
+  if (addr == 0 || cache->db_size == 0) {
+    return;
+  }
+  void *slot = (void *)(uintptr_t)addr;
+  memset(slot, 0, (size_t)cache->db_size);
+  arts_fam_flush_producer(slot, (size_t)cache->db_size);
+}
 #endif /* ARTS_FAM */
 
 /* ================================================================== */

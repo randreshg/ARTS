@@ -377,8 +377,15 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
      * on the residency that keeps no copy.  After the cache's init, which is
      * what zeroes the field, and before both.  Inside the coherent branch on
      * purpose — a kind that keeps no coherence state has no funnel to read a
-     * slot and no teardown to free one. */
-    (void)arts_db_fam_slot_create(cache);
+     * slot and no teardown to free one.
+     *
+     * A create that acquires has its own first-write coming (the buffer
+     * install below, purged to the store at its zero edge) to establish the
+     * block's declared-zero contract; a create that does not must establish
+     * it here, since no write turn is coming to do it later. */
+    if (arts_db_fam_slot_create(cache) && !acquires) {
+      arts_db_fam_slot_zero(cache);
+    }
 #endif
     /* Install a fresh buffer so subsequent coherent acquires
      * (acquire_local / mark_edt_ready_by_guid) find a non-NULL
