@@ -135,3 +135,17 @@ def test_a_dry_run_regenerates_nothing_and_says_the_sources_moved(tmp_path):
     assert any("changed since it was generated" in line for line in lines)
     # Dry means dry: the previous generation is what the tree still holds.
     assert "new_app" not in available_targets(build)
+
+
+def test_fam_backend_is_read_from_the_cache(tmp_path):
+    from artsrun.build import fam_backend_of
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    assert fam_backend_of(build_dir) is None        # no cache at all
+    (build_dir / "CMakeCache.txt").write_text(
+        "ARTS_COUNTER_CONFIG:FILEPATH=/x/counters_off.cfg\n")
+    assert fam_backend_of(build_dir) is None        # a tree without the option
+    (build_dir / "CMakeCache.txt").write_text(
+        "ARTS_FAM_BACKEND:STRING=SHM\n")
+    assert fam_backend_of(build_dir) == "SHM"

@@ -92,6 +92,15 @@ def counter_config_of(build_dir: Path) -> str | None:
     return _cache_value(build_dir, "ARTS_COUNTER_CONFIG")
 
 
+def fam_backend_of(build_dir: Path) -> str | None:
+    """Which ARTS_FAM_BACKEND this tree was configured with.
+
+    None for a tree that predates the option or names none, which the
+    eligibility gate reads the same way as OFF.
+    """
+    return _cache_value(build_dir, "ARTS_FAM_BACKEND")
+
+
 # How the configure step encodes a counter's settings into the header it
 # generates.  Reading them back is what lets a tree be checked against a set
 # rather than against the file it happened to be configured from.
