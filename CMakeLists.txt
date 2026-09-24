@@ -561,9 +561,8 @@ endif()
 # ── Fabric-attached memory ─────────────────────────────────────────────────
 # Declarative, never inferred: a value names the medium, and every mismatch is
 # an error rather than a quiet downgrade.  Both backends are one API, spoken
-# by one adapter; the backend decides only which library is linked and
-# whether the strict oracle exists.  Nothing FAM appears anywhere else in this
-# file.
+# by one adapter; the backend decides only which library is linked.  Nothing
+# FAM appears anywhere else in this file.
 set(ARTS_FAM_BACKEND "OFF" CACHE STRING
     "Fabric-attached-memory backend: OFF (default), SHM (the vendored fake library: one host's shared memory) or DEVICE (a device library named by path)")
 set_property(CACHE ARTS_FAM_BACKEND PROPERTY STRINGS OFF SHM DEVICE)

@@ -41,16 +41,6 @@ void arts_fam_backend_flush(const void *p, size_t n, bool producer) {
   (void)n;
   (void)producer;
 }
-void arts_fam_backend_poison(void *p, size_t n) {
-  (void)p;
-  (void)n;
-}
-void arts_fam_backend_hold(const void *p, size_t n, bool hold) {
-  (void)p;
-  (void)n;
-  (void)hold;
-}
-bool arts_fam_backend_strict(void) { return false; }
 void arts_fam_backend_config_check(const struct arts_config_s *c) { (void)c; }
 
 static void body_double_free(void) {

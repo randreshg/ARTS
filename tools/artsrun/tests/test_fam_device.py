@@ -132,43 +132,14 @@ def test_fake_off_the_local_launcher_runs_on_one_host_only(launcher):
     assert real(launcher).nodes == [1, 2]
 
 
-def test_fam_strict_is_on_by_default_under_fake_and_may_be_turned_off():
-    assert profile().fam_strict is None
-    assert profile().resolved_fam_strict is True
-    assert profile(fam_strict=True).resolved_fam_strict is True
-    assert profile(fam_strict=False).resolved_fam_strict is False
-    for launcher in ("slurm", "flux", "ssh"):
-        fake = profile(launcher, fam_device="fake", nodes=[1])
-        assert fake.resolved_fam_strict is True
-        assert profile(launcher, fam_device="fake", nodes=[1],
-                       fam_strict=False).resolved_fam_strict is False
-
-
-@pytest.mark.parametrize("value", [True, False])
-def test_fam_strict_is_refused_beside_real_and_off(value):
-    with pytest.raises(ValueError, match="fam_strict is a setting of "
-                                         "fam_device: fake only") as exc:
-        real(fam_strict=value)
-    assert "fam_device is real" in str(exc.value)
-    # off, stated or implied by a launcher other than local
-    with pytest.raises(ValueError, match="fam_device is off"):
-        profile(fam_device="off", fam_strict=value)
-    with pytest.raises(ValueError, match="fam_device is off"):
-        profile("slurm", fam_strict=value)
-    assert real().resolved_fam_strict is None
-    assert profile(fam_device="off").resolved_fam_strict is None
-
-
-def test_the_rendered_cfg_carries_fam_strict_only_under_fake():
+def test_no_profile_states_fam_strict_and_no_cfg_carries_it():
+    # The runtime refuses the key at load, so nothing may render it.
     from artsrun.render import render_arts
 
-    assert "fam_strict=1" in render_arts(profile(), 2, fam=True)
-    assert "fam_strict=0" in render_arts(profile(fam_strict=False), 2, fam=True)
-    assert "fam_strict=1" in render_arts(profile(fam_strict=True), 2, fam=True)
-    assert "fam_strict" not in render_arts(real(), 2, fam=True)
-    assert "fam_strict" not in render_arts(profile(fam_device="off"), 2, fam=True)
-    # a campaign that runs no FAM entry leaves the key unstated
-    assert "fam_strict" not in render_arts(profile(), 2)
+    with pytest.raises(ValueError, match="fam_strict"):
+        profile(fam_strict=True)
+    for p in (profile(), real(), profile(fam_device="off")):
+        assert "fam_strict" not in render_arts(p, 2)
 
 
 def test_shipped_profiles_name_their_library():

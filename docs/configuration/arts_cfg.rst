@@ -217,7 +217,8 @@ Fabric-Attached Memory
 ----------------------
 
 Read only by a build whose own library is FAM-enabled (``EXCL`` × ``PURGE``
-with ``ARTS_FAM_BACKEND`` set); every other build parses and ignores them.
+with ``ARTS_FAM_BACKEND`` set); every other build parses and ignores it.
+The former ``fam_strict`` key is refused at load in every build.
 
 .. list-table::
    :header-rows: 1
@@ -231,39 +232,15 @@ with ``ARTS_FAM_BACKEND`` set); every other build parses and ignores them.
      - The run's pool, in MB, carved into one page-aligned slice per rank.
        Never refused for its size (only past the allocator's granule-index
        bound, a slice of 256 GiB per rank); under ``SHM`` a pool larger than
-       the host's ``MemAvailable`` draws a one-line warning at load, and
-       strict mode adds a private view per rank on top of it.  Under
+       the host's ``MemAvailable`` draws a one-line warning at load.  Under
        ``ARTS_FAM_BACKEND=SHM`` the vendored fake library's region, sized by
        ``ARTS_FAKE_CXL_REGION_SIZE`` in the environment when the library
        loads, must hold the pool plus one page.
-   * - ``fam_strict``
-     - 1 under ``ARTS_FAM_BACKEND=SHM``, else 0
-     - Strict mode: the test oracle for the flush discipline (see below).
-       Available only where the store is one host's memory — the ``SHM``
-       backend, which is the vendored fake library, where it is on unless a
-       configuration names ``fam_strict=0``.  Under ``DEVICE``
-       ``fam_strict=1`` is a configuration error at load: the device
-       library's hardware is the oracle there.
 
 Under ``SHM`` the store is one host's shared memory: a run of more than one
 rank is refused at load unless ``launcher=local``, and the library's one
 region has one fixed name and address, so a host runs one such run at a
 time.
-
-Why strict mode exists.  On one host every rank sits behind one
-hardware-coherent cache, so a missing or misplaced flush in the
-fabric-attached arms can never produce a wrong value there — which is
-exactly the defect a real fabric-attached store, not coherent across hosts,
-turns into a wrong value.  Strict mode gives each rank a private
-copy-on-write view of the pool at the pool's address and maps the shared
-backing elsewhere, so a byte exists for a peer only after its producer
-flushed it and the consumer reloaded it; a sampled eviction inside the
-ranges a rank holds catches code that is correct only because an eviction
-never happened; and fresh allocations are poisoned, so a read before the
-first write is reproducibly wrong.  It checks correctness and is never a
-performance mode: every flush becomes a copy, and the real flush
-instructions do not run.  The eviction sequence is replayable:
-``ARTS_FAM_STRICT_SEED`` (environment, default 0) names its base.
 
 Debug / Utility
 ---------------

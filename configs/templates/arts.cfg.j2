@@ -27,9 +27,6 @@ regpool_slab_mb={{ regpool_slab_mb }}
 {%- if fam_pool_mb %}
 fam_pool_mb={{ fam_pool_mb }}
 {%- endif %}
-{%- if fam_strict is not none %}
-fam_strict={{ 1 if fam_strict else 0 }}
-{%- endif %}
 port_count={{ port_count }}
 {%- if ports %}
 ports={{ ports | join(',') }}

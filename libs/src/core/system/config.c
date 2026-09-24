@@ -855,8 +855,6 @@ static const struct arts_config_entry_s config_entries[] = {
     {"fabric_domain", CONFIG_STRING, OFF(fabric_domain), NULL, NULL},
     {"regpool_slab_mb", CONFIG_UINT, OFF(regpool_slab_mb), "256", NULL},
     {"fam_pool_mb", CONFIG_UINT, OFF(fam_pool_mb), "64", NULL},
-    {"fam_strict", CONFIG_BOOL, OFF(fam_strict), ARTS_FAM_STRICT_DEFAULT,
-     NULL},
     /* --- Debug --- */
     {"kill_mode", CONFIG_UINT, OFF(kill_mode), "0", NULL},
     {"core_dump", CONFIG_BOOL, OFF(core_dump), "0", NULL},
@@ -1408,6 +1406,10 @@ static void config_reject_removed_keys(struct arts_config_variable_s **vars) {
                "defaults them any more -- the list must name exactly "
                "port_count ports, and may be omitted only on launcher=local "
                "with port_auto_select on");
+  }
+  if (config_lookup(vars, "fam_strict")) {
+    ARTS_ERROR("fam_strict no longer exists: the fabric-attached store has "
+               "one mode; remove the key");
   }
 }
 

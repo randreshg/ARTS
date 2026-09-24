@@ -1,10 +1,9 @@
 # Local correctness smoke for the fabric-attached-memory entries, on the
-# vendored fake library (fam_device: fake, i.e. ARTS_FAM_BACKEND=SHM), with
-# the strict oracle on by default.  A reference entry's colocated
-# local ranks are each pinned to one physical core, so the geometry a
-# campaign requests here must fit the machine's physical core count, not
-# its logical CPU count (an SMT sibling is not a second core to pin a rank
-# to):
+# vendored fake library (fam_device: fake, i.e. ARTS_FAM_BACKEND=SHM).  A
+# reference entry's colocated local ranks are each pinned to one physical
+# core, so the geometry a campaign requests here must fit the machine's
+# physical core count, not its logical CPU count (an SMT sibling is not a
+# second core to pin a rank to):
 # 2 nodes x (2 workers + 1 progress) = 6 physical cores.  Timings from
 # this host are never evidence of anything.  The entries are named per run,
 # since no experiment lists a FAM entry by default:

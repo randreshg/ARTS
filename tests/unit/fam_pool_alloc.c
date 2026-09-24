@@ -43,16 +43,6 @@ void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
   (void)bytes;
   (void)producer;
 }
-void arts_fam_backend_poison(void *p, size_t bytes) {
-  (void)p;
-  (void)bytes;
-}
-void arts_fam_backend_hold(const void *p, size_t bytes, bool hold) {
-  (void)p;
-  (void)bytes;
-  (void)hold;
-}
-bool arts_fam_backend_strict(void) { return false; }
 void arts_fam_backend_config_check(const struct arts_config_s *c) { (void)c; }
 
 static int failures;

@@ -23,17 +23,9 @@ extern "C" {
 #define ARTS_FAM_GRANULE 64u
 
 /* A slice's base and length are page multiples, and the header takes a whole
- * page: the strict oracle's privacy is page-granular, so a page that held two
- * ranks' lines would let one rank's write-back carry the other's. */
+ * page, so no page holds bytes of two ranks' slices. */
 #define ARTS_FAM_PAGE 4096u
 #define ARTS_FAM_HEADER_BYTES ARTS_FAM_PAGE
-
-/* The byte a fresh block is filled with, so that a read before the first write
- * is reproducible on every rank instead of reading the object's zeroes.  Spelled
- * here and nowhere else: strict.c writes it and the test that checks it reads
- * it, and two spellings of one oracle value is a test that can pass while the
- * code changed. */
-#define ARTS_FAM_POISON_BYTE 0xA5u
 
 #define ARTS_FAM_MAGIC 0x46414D5F41525453ULL
 
@@ -84,8 +76,7 @@ unsigned arts_fam_owner_of(const void *p);
 void arts_fam_config_check(const struct arts_config_s *config);
 
 /* Boot hook, on EVERY rank before the fabric and the registered pool exist:
- * it settles the pool size and the strict mode from the rank's own parsed
- * config.  The arena itself is taken at the address exchange, the one round
+ * it settles the pool size from the rank's own parsed config.  The arena itself is taken at the address exchange, the one round
  * every rank already performs before a worker thread exists: rank 0 takes it
  * and publishes its base, and every other rank records what rank 0 named. */
 void arts_fam_boot_prepare(const struct arts_config_s *config);
@@ -99,17 +90,7 @@ void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
                           uint64_t *out_bytes);
 void arts_fam_backend_unmap(void *base, uint64_t bytes);
 void arts_fam_backend_flush(const void *p, size_t bytes, bool producer);
-void arts_fam_backend_poison(void *p, size_t bytes);
-void arts_fam_backend_hold(const void *p, size_t bytes, bool hold);
-bool arts_fam_backend_strict(void);
 void arts_fam_backend_config_check(const struct arts_config_s *config);
-
-/* Whether this rank runs with the second coherency domain emulated, so
- * that a test can assert the mode it is running under instead of passing
- * vacuously in the other one.  It is a per-rank fact of the rank's own parsed
- * config, decided before the first mapping; a backend that has no such mode
- * answers false. */
-static inline bool arts_fam_strict(void) { return arts_fam_backend_strict(); }
 
 /* Both flushes end in a fence and a compiler memory barrier: the producer's
  * is a store fence, so its write-backs precede whatever tells a peer to read
@@ -121,12 +102,12 @@ static inline bool arts_fam_strict(void) { return arts_fam_backend_strict(); }
  * load.  The flush does not stand in for it.  An empty range sweeps no line
  * and still ends in its fence.
  *
- * Under strict mode that fence is necessary and still not sufficient for a
- * word that LIVES IN THE POOL: nothing refreshes such a word except a consumer
- * flush, and that flush reloads the whole line it sits in, discarding any
- * unflushed write this rank made anywhere in that line.  A word two parties
- * poll to coordinate therefore belongs in DRAM, where the runtime's own
- * protocol words are, and never in the pool. */
+ * The pool is not coherent across hosts, so nothing but a consumer flush
+ * refreshes a word that lives in it: a word two parties poll to coordinate
+ * belongs in DRAM, where the runtime's own protocol words are, and never in
+ * the pool.  A write-back moves a whole 64-byte line and is not atomic: the
+ * medium carries no atomicity above eight bytes either, so a reader of bytes
+ * in a line it holds no right to may see a mixture of two writers' values. */
 static inline void arts_fam_flush_producer(const void *p, size_t bytes) {
   arts_fam_backend_flush(p, bytes, true);
 }
@@ -134,31 +115,30 @@ static inline void arts_fam_flush_consumer(const void *p, size_t bytes) {
   arts_fam_backend_flush(p, bytes, false);
 }
 
-/* Strict-mode hooks.  A range registered here is one this rank currently
- * holds, which is the only range the oracle's random write-back may touch.
- * No-ops when strict mode is off.
- *
- * The order is reload, then hold: a range is consumer-flushed BEFORE it is
- * registered, and a block is reloaded whole before its first write.  A hold --
- * or a producer flush of part of a block -- over lines this rank never
- * reloaded republishes whatever its pages captured over the previous writer's
- * bytes.  Once a range is registered the other direction is forbidden: a
- * consumer flush that covers a held line is fatal, because it would discard a
- * write only this rank has.
- *
- * A write-back moves a whole 64-byte line and is not atomic: the medium
- * carries no atomicity above eight bytes either, so a reader of bytes in a
- * line it holds no right to may see a mixture of two writers' values. */
-static inline void arts_fam_strict_hold(const void *p, size_t bytes) {
-  arts_fam_backend_hold(p, bytes, true);
-}
-static inline void arts_fam_strict_unhold(const void *p, size_t bytes) {
-  arts_fam_backend_hold(p, bytes, false);
-}
+#ifdef ARTS_FAM_FLUSH_RECORDER
+/* Test-only: with this defined, the adapter appends every flush it performs
+ * to a fixed per-rank ring, in the order the flushes were entered.  A ring
+ * that fills stops recording and says so; it never wraps, so a record once
+ * readable never changes. */
+#define ARTS_FAM_FLUSH_RECORD_CAP 4096u
+struct arts_fam_flush_record_s {
+  uint64_t seq; /* position in this rank's order, from 0 */
+  uintptr_t addr;
+  size_t bytes;
+  bool producer;
+  unsigned role; /* the flushing thread's enum arts_thread_role */
+};
+/* How many flushes this rank has entered, overflow included. */
+uint64_t arts_fam_flush_record_count(void);
+/* Copies record i into *out; false while it is not yet complete, or past the
+ * ring's capacity. */
+bool arts_fam_flush_record_get(uint64_t i,
+                               struct arts_fam_flush_record_s *out);
+#endif /* ARTS_FAM_FLUSH_RECORDER */
 
 #else /* no fabric-attached memory in this build */
 
-/* The six entry points the arm asks or tells on paths that exist in both
+/* The three entry points the arm asks or tells on paths that exist in both
  * builds keep their names and signatures and answer inertly, so no call site
  * carries a conditional.  Every other entry point is absent on purpose: there
  * is no pool to allocate from, and a silent no-op would be a wrong answer. */
@@ -166,7 +146,6 @@ static inline bool arts_fam_contains(const void *p) {
   (void)p;
   return false;
 }
-static inline bool arts_fam_strict(void) { return false; }
 static inline void arts_fam_flush_producer(const void *p, size_t bytes) {
   (void)p;
   (void)bytes;
@@ -175,40 +154,8 @@ static inline void arts_fam_flush_consumer(const void *p, size_t bytes) {
   (void)p;
   (void)bytes;
 }
-static inline void arts_fam_strict_hold(const void *p, size_t bytes) {
-  (void)p;
-  (void)bytes;
-}
-static inline void arts_fam_strict_unhold(const void *p, size_t bytes) {
-  (void)p;
-  (void)bytes;
-}
 
 #endif /* ARTS_FAM */
-
-/* Module-internal: the strict oracle, which exists over the vendored fake
- * library, one host's memory, and nowhere else.  Named from the adapter and
- * from nowhere else but the read-only query below, which is what makes a
- * build over a device library's freedom from these symbols structural rather
- * than inspected.  The poison is written through the backing as well as the
- * private view: a block just allocated has no holder and no reload yet, so
- * this is the one write outside a producer flush and the sampled eviction
- * that can reach the backing, and it can meet no other copy of its lines. */
-#if defined(ARTS_FAM) && defined(ARTS_FAM_BACKEND_SHM)
-#define ARTS_FAM_HAS_STRICT 1
-/* Re-maps [base, base + bytes) of the library's shared mapping private at its
- * own address, with the same backing object shared elsewhere; nothing outside
- * that range is touched.  Returns base. */
-void *arts_fam_strict_remap(void *base, uint64_t bytes);
-void arts_fam_strict_unmap(void *base, uint64_t bytes);
-void arts_fam_strict_flush(const void *p, size_t bytes, bool producer);
-void arts_fam_strict_poison(void *p, size_t bytes);
-void arts_fam_strict_hold_range(const void *p, size_t bytes, bool hold);
-/* True when any line of [p, p+bytes) the oracle tracks is currently held.
- * Read-only -- claims, releases and moves no byte -- so a teardown walk may
- * call it to find a hold whose matching unhold never ran. */
-bool arts_fam_strict_range_held(const void *p, size_t bytes);
-#endif
 
 #ifdef __cplusplus
 }

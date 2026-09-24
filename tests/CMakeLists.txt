@@ -152,8 +152,8 @@ endif()
 # The two FAM trees are one compile-time switch (ARTS_FAM_TREE_RESIDENCY)
 # apart: the slot rule, the wire, the messages, the arbiter actions, the
 # funnel positions, the claim, fam_slot_required, the zero-size exemption, the
-# strict-mode hold/unhold, and the three tallies and their two readers are
-# identical on both, and the only differences are residency itself -- the two
+# two edge flushes, and the three tallies and their two readers are identical
+# on both, and the only differences are residency itself -- the two
 # body definitions and the buffer representation -- and the test surface that
 # describes that representation:
 #
@@ -163,7 +163,6 @@ endif()
 #   buffer_external_payload                  | registered, SKIPs | registered, runs         | the external descriptor's own contract
 #   fam_slot_discard_unadopt                 | not registered    | registered 1n            | the withdrawal it asserts exists only where a descriptor adopts the store
 #   fam_direct_payload_identity              | not registered    | registered 1n/2n/3n      | the property is false by construction under STAGED
-#   fam_direct_fresh_slot (SHM backend only) | not registered    | registered 1n (strict by the tree's default) | poison is only reproducible where the EDT reads the slot itself
 #   fam_home_turn_costs, fam_fetch_off_progress | registered      | registered (this residency's own entry) | the tallies are incremented by the funnel both residencies fetch and purge through
 #   db_cache_layout, coherence_zero_size_xfer, db_create_after_first_touch, the arm's other fam_* programs, coherence_grant_chain_visibility, everything else | registered | registered | one behaviour, two representations
 set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
@@ -190,12 +189,6 @@ endif()
 if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
     list(APPEND TEST_PROGRAMS fam_slot_discard_unadopt)
     list(APPEND TEST_PROGRAMS fam_direct_payload_identity)
-    if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only a
-        # store that is one host's memory has, like fam_strict_flush below: a
-        # build over a device library refuses fam_strict at config load.
-        list(APPEND TEST_PROGRAMS fam_direct_fresh_slot)
-    endif()
 endif()
 
 # Portable OCR programs that came out of the store-backed work and assert
@@ -205,6 +198,7 @@ endif()
 list(APPEND TEST_PROGRAMS fam_remote_write_read)
 list(APPEND TEST_PROGRAMS fam_ro_cohort)
 list(APPEND TEST_PROGRAMS fam_create_release_remote)
+list(APPEND TEST_PROGRAMS fam_ro_turn_overlap)
 
 # Fabric-attached memory: registered only where this tree's own library is
 # FAM-enabled, so an unguarded entry does not need to compile against a tree
@@ -235,15 +229,15 @@ if(ARTS_FAM_TREE_RESIDENCY)
         list(APPEND TEST_PROGRAMS fam_fetch_off_progress)
     endif()
     list(APPEND TEST_PROGRAMS fam_slices)
-    if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only a
-        # store that is one host's memory has.
-        list(APPEND TEST_PROGRAMS fam_strict_flush)
-    endif()
 endif()
 
-# Function to create a test executable
+# Function to create a test executable.  RUNTIME names the runtime library it
+# links, arts_static unless a test needs a twin of it.
 function(add_arts_test test_name)
+    cmake_parse_arguments(ARG "" "RUNTIME" "" ${ARGN})
+    if(NOT ARG_RUNTIME)
+        set(ARG_RUNTIME arts_static)
+    endif()
     # Sources live under one of the ocr/ unit/ subdirectories.
     #   ocr/  — portable OCR programs (arts_rt main, no globals, no protocol
     #           #if; valid under any coherence protocol)
@@ -281,7 +275,7 @@ function(add_arts_test test_name)
     # test is the build tree's by construction, with no dynamic resolution
     # point an environment (LD_LIBRARY_PATH) could redirect to another copy
     # at run time.
-    target_link_libraries(${test_name} PRIVATE arts_static)
+    target_link_libraries(${test_name} PRIVATE ${ARG_RUNTIME})
 endfunction()
 
 # Create test executables
@@ -373,9 +367,7 @@ endif()
 # Where a test's ARTS_CONFIG comes from.  A tree whose own library is
 # FAM-enabled reads the fam root: every cfg there is its configs/local/test/
 # namesake plus fam_pool_mb, so the whole suite runs with a pool sized for the
-# tree instead of the 64 MB default.  None names fam_strict, so each runs in the
-# tree's default mode: strict over the vendored fake library, plain over a
-# device library.  A test that wants the other mode names a cfg that says so.  ONE variable, used by every
+# tree instead of the 64 MB default.  ONE variable, used by every
 # helper and by every hand-registered test -- a second spelling is how five
 # tests end up on the wrong root.  CACHE INTERNAL, not a plain set(): the
 # helpers below are called from outside this directory too (benchmarks/ocr_shim
@@ -388,15 +380,6 @@ if(ARTS_FAM_TREE_RESIDENCY)
     set(ARTS_TEST_CFG_DIR "${CMAKE_SOURCE_DIR}/configs/local/test/fam"
         CACHE INTERNAL "cfg root every register_*_test call resolves ARTS_CONFIG against" FORCE)
 endif()
-
-if(ARTS_FAM_TEST_STRICT)
-    message(FATAL_ERROR
-            "ARTS_FAM_TEST_STRICT is gone: strict mode is the default of a tree "
-            "over the vendored fake library (ARTS_FAM_BACKEND=SHM), so every "
-            "pass of that tree is strict; a test that wants it off names a cfg "
-            "with fam_strict=0")
-endif()
-unset(ARTS_FAM_TEST_STRICT CACHE)
 
 # Resolves one variant name to the cfg a test should run.  Every site that
 # names a cfg calls this; none spells a directory.
@@ -1642,6 +1625,10 @@ foreach(_fam_portable fam_remote_write_read fam_ro_cohort
                       fam_create_release_remote)
     register_fam_multinode_test(${_fam_portable} TIMEOUT 60)
 endforeach()
+# Read turns of one block ending and beginning back to back on its home rank,
+# where the request, the grant and the fetch are all local.
+register_fam_single_node_test(fam_ro_turn_overlap TIMEOUT 60)
+register_fam_multinode_test(fam_ro_turn_overlap TIMEOUT 60)
 
 # Fabric-attached memory.  Registered only where this tree's own library is
 # FAM-enabled: everywhere else arts_static holds no arts_fam_* at all, and an
@@ -1681,11 +1668,6 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # progress thread, are checkable on this residency's own entry too.
         register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
         register_fam_multinode_test(fam_fetch_off_progress TIMEOUT 60)
-        if(ARTS_FAM_BACKEND STREQUAL "SHM")
-            # Strict is this tree's default, so the resolver's cfg is a run
-            # under the oracle.
-            register_fam_single_node_test(fam_direct_fresh_slot TIMEOUT 60)
-        endif()
     endif()
     # A cache made by an acquiring create is on the block's destroy roster, so
     # it gives its store up with the block instead of outliving it.  Needs a
@@ -1722,6 +1704,15 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # flavour.
     register_fam_single_node_test(fam_slot_reuse_after_destroy TIMEOUT 90)
     register_fam_multinode_test(fam_slot_reuse_after_destroy TIMEOUT 90)
+    # The store's two flushes, each at its one edge of a turn: a consumer
+    # flush when a rank's first acquire is admitted, a producer flush when its
+    # last write holder releases, nothing between and no producer flush after
+    # a read turn.  Linked with the runtime whose adapter records its flushes.
+    add_arts_test(fam_edge_flush_order RUNTIME arts_static_fam_flush_recorder)
+    target_compile_definitions(fam_edge_flush_order PRIVATE
+                               ARTS_FAM_FLUSH_RECORDER=1)
+    register_fam_single_node_test(fam_edge_flush_order TIMEOUT 30)
+    register_fam_multinode_test(fam_edge_flush_order TIMEOUT 60)
 
     # 7 ranks x (1 worker + 1 progress) exercises the arm at the widest
     # geometry a 14-CPU host can hold without oversubscribing.
@@ -1730,16 +1721,6 @@ if(ARTS_FAM_TREE_RESIDENCY)
               fam_no_acquire_first_use fam_labeled_create)
         register_fam_multinode_test(${t} VARIANTS 7n TIMEOUT 120)
     endforeach()
-endif()
-
-# The oracle is what this test IS, so it is registered only where the oracle
-# exists: over a device library fam_strict is a config-load error, because
-# that memory already has the second coherency domain this emulates.
-# Structural, at registration, never a run-time skip.  Over the vendored fake
-# library the plain cfg is the strict run -- the test itself asserts the mode
-# -- which is what proves strict is that library's default.
-if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
-    register_fam_multinode_test(fam_strict_flush TIMEOUT 120 VARIANTS 2n)
 endif()
 
 # --- GPU tests ---

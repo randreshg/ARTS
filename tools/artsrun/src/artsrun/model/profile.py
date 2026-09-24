@@ -143,15 +143,6 @@ class Profile(BaseModel):
     # reads and any other simply never looks up.  Unset leaves the runtime's
     # own default in force.
     fam_pool_mb: int | None = Field(default=None, ge=1)
-    # Strict mode: a private copy-on-write view of the pool per rank over a
-    # shared backing, so a byte reaches a peer only once its producer flushed
-    # it and the consumer reloaded it.  On one host every rank shares one
-    # coherent cache, so without it a missing flush can never show as a wrong
-    # value; a store that is not coherent across hosts has that second
-    # domain already.  So it is a setting of fam_device: fake alone, on
-    # unless stated otherwise there, and an error beside real or off.  A
-    # test oracle, never a measurement mode.
-    fam_strict: bool | None = None
 
     # The device library the fabric-attached-memory entries run on.  Named
     # here and nowhere else: the build tree is made to match it or the
@@ -243,14 +234,6 @@ class Profile(BaseModel):
             return FamDevice.FAKE
         return FamDevice.OFF
 
-    @property
-    def resolved_fam_strict(self) -> bool | None:
-        """The fam_strict value the rendered cfg carries: the stated one, on
-        by default under fam_device: fake, and none at all elsewhere."""
-        if self.resolved_fam_device is not FamDevice.FAKE:
-            return None
-        return True if self.fam_strict is None else self.fam_strict
-
     def _check_fam_statement(self) -> None:
         """Refuse a device-library statement that is wrong whatever runs."""
         device = self.resolved_fam_device
@@ -284,14 +267,6 @@ class Profile(BaseModel):
                 f"nodes: [1] (got {self.nodes}): the vendored library is one "
                 "host's shared memory, so its pool reaches only ranks that "
                 "share a host")
-        if self.fam_strict is not None and device is not FamDevice.FAKE:
-            raise ValueError(
-                f"fam_strict is a setting of fam_device: fake only, and this "
-                f"profile's fam_device is {device}: strict mode gives one "
-                "host's memory the second coherency domain a store that is "
-                "not coherent across hosts has, so it means nothing over the "
-                "device library (real) or with no fabric-attached memory "
-                "(off); remove fam_strict")
 
     def check_fam_device(self, fam_entries: list[str]) -> None:
         """Refuse a campaign whose fabric-attached-memory entries this

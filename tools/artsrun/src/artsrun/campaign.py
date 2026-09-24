@@ -180,9 +180,8 @@ class Campaign:
     def cells(self):
         counters = self.counterset
         on = bool(counters and counters.enabled)
-        fam = bool(self.selection.fam_entries(self.plane))
         configs = {
-            n: write_configs(self.profile, n, self.run_dir / "cfg", fam=fam)
+            n: write_configs(self.profile, n, self.run_dir / "cfg")
             for n in self.selection.node_counts
         }
         # Counters name their output directory in the configuration, so a
@@ -202,7 +201,6 @@ class Campaign:
                     self.run_dir / "cfg" / f"arts_{cell.slug}.cfg",
                     counter_folder=str(out),
                     capture_interval=counters.capture_interval,
-                    fam=fam,
                 )
 
         return expand(

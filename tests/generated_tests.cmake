@@ -845,10 +845,6 @@ set_tests_properties(stress_edt PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 # runtime lock like every rank does.
 if(ARTS_FAM_TREE_RESIDENCY)
     set(_fam_adapter_sources ${CMAKE_SOURCE_DIR}/libs/src/core/fam/library.c)
-    if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        list(APPEND _fam_adapter_sources
-             ${CMAKE_SOURCE_DIR}/libs/src/core/fam/strict.c)
-    endif()
     add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
                       TIMEOUT 30 SOURCES ${_fam_adapter_sources} unit/fam_stubs.c
                       LIBS ${ARTS_FAM_LIB})
@@ -881,81 +877,25 @@ if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
     endforeach()
 endif()
 # The conformance probe takes the arena rank 0 names over its rendezvous, as
-# the runtime takes it over the address exchange.  Over the vendored fake
-# library its default run is the tree's default, strict, and the plain twin
-# keeps the library's own flush path under test; over a device library the
-# one run is plain.  Only a tree whose own library is FAM-enabled carries the
-# backend definitions these need.
+# the runtime takes it over the address exchange.  Only a tree whose own
+# library is FAM-enabled carries the backend definitions it needs.
 if(ARTS_FAM_TREE_RESIDENCY)
-    set(_fam_plain_twin "")
-    if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        set(_fam_plain_twin _plain)
-    endif()
-    foreach(_fam_mode IN ITEMS "" ${_fam_plain_twin})
-        set(_fam_probe fam_conformance${_fam_mode})
-        if(_fam_mode STREQUAL "")
-            set(_fam_args)
-        else()
-            set(_fam_args --strict 0)
-        endif()
-        add_executable(${_fam_probe} unit/fam_conformance.c
-                       ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
-                       ${_fam_adapter_sources}
-                       unit/fam_stubs.c)
-        target_include_directories(${_fam_probe} PRIVATE
-            ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
-            ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-        arts_apply_protocol(${_fam_probe} ${ARTS_COHERENCE_ARM}
-                            ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
-        target_link_libraries(${_fam_probe} PRIVATE Threads::Threads
-                              ${ARTS_FAM_LIB})
-        add_test(NAME ${_fam_probe} COMMAND ${_fam_probe} ${_fam_args}
-                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-        set_tests_properties(${_fam_probe} PROPERTIES
-            LABELS "single_node" TIMEOUT 120
-            RESOURCE_LOCK "arts_runtime"
-            PASS_REGULAR_EXPRESSION "PASS fam_conformance"
-            FAIL_REGULAR_EXPRESSION "FAIL")
-    endforeach()
-    # Which backend may run the strict oracle, one compilation per backend.
-    # The SHM compilation takes the tree's own definitions; the DEVICE one
-    # replaces the backend definition and drops strict.c, which is how a
-    # device library's build compiles the adapter.  Both link whichever
-    # library the tree has for the API's symbols.
-    set(_fam_rule_backends ${ARTS_FAM_BACKEND})
-    if(ARTS_FAM_BACKEND STREQUAL "SHM")
-        list(APPEND _fam_rule_backends DEVICE)
-    endif()
-    foreach(_fam_rule_backend IN LISTS _fam_rule_backends)
-        string(TOLOWER "${_fam_rule_backend}" _fam_rule_suffix)
-        set(_fam_rule fam_strict_backend_rule_${_fam_rule_suffix})
-        set(_fam_rule_sources unit/fam_strict_backend_rule.c
-                              ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
-                              ${CMAKE_SOURCE_DIR}/libs/src/core/fam/library.c
-                              unit/fam_stubs.c)
-        if(_fam_rule_backend STREQUAL "SHM")
-            list(APPEND _fam_rule_sources
-                 ${CMAKE_SOURCE_DIR}/libs/src/core/fam/strict.c)
-        endif()
-        add_executable(${_fam_rule} ${_fam_rule_sources})
-        target_include_directories(${_fam_rule} PRIVATE
-            ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
-            ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-        arts_apply_protocol(${_fam_rule} ${ARTS_COHERENCE_ARM}
-                            ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
-        if(NOT _fam_rule_backend STREQUAL ARTS_FAM_BACKEND)
-            target_compile_options(${_fam_rule} PRIVATE
-                -UARTS_FAM_BACKEND_${ARTS_FAM_BACKEND}
-                -DARTS_FAM_BACKEND_${_fam_rule_backend}=1)
-        endif()
-        target_link_libraries(${_fam_rule} PRIVATE Threads::Threads
-                              ${ARTS_FAM_LIB})
-        add_test(NAME ${_fam_rule} COMMAND ${_fam_rule}
-                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-        set_tests_properties(${_fam_rule} PROPERTIES
-            LABELS "single_node" TIMEOUT 30
-            RESOURCE_LOCK "arts_runtime"
-            PASS_REGULAR_EXPRESSION "PASS fam_strict_backend_rule ${_fam_rule_backend}"
-            FAIL_REGULAR_EXPRESSION "FAIL")
-    endforeach()
+    add_executable(fam_conformance unit/fam_conformance.c
+                   ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
+                   ${_fam_adapter_sources}
+                   unit/fam_stubs.c)
+    target_include_directories(fam_conformance PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(fam_conformance ${ARTS_COHERENCE_ARM}
+                        ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    target_link_libraries(fam_conformance PRIVATE Threads::Threads
+                          ${ARTS_FAM_LIB})
+    add_test(NAME fam_conformance COMMAND fam_conformance
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(fam_conformance PROPERTIES
+        LABELS "single_node" TIMEOUT 120
+        RESOURCE_LOCK "arts_runtime"
+        PASS_REGULAR_EXPRESSION "PASS fam_conformance"
+        FAIL_REGULAR_EXPRESSION "FAIL")
 endif()

@@ -703,6 +703,30 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     endif()
 endif()
 
+# arts_static with the flush-recording adapter in place of its own: the same
+# objects, the same link interface and the same vendored bundle, so a test that
+# links it runs the runtime under test and differs only in what the adapter
+# records.
+if(TARGET arts_fam_flush_recorder)
+    add_library(arts_static_fam_flush_recorder STATIC EXCLUDE_FROM_ALL
+                ${ARTS_MAIN_SOURCES})
+    get_target_property(_arts_rec_srcs arts_static SOURCES)
+    list(REMOVE_ITEM _arts_rec_srcs ${ARTS_MAIN_SOURCES}
+         "$<TARGET_OBJECTS:arts_fam>")
+    target_sources(arts_static_fam_flush_recorder PRIVATE ${_arts_rec_srcs}
+                   $<TARGET_OBJECTS:arts_fam_flush_recorder>)
+    foreach(_arts_rec_prop INCLUDE_DIRECTORIES COMPILE_DEFINITIONS
+                           COMPILE_OPTIONS LINK_LIBRARIES
+                           INTERFACE_LINK_LIBRARIES)
+        get_target_property(_arts_rec_val arts_static ${_arts_rec_prop})
+        if(_arts_rec_val)
+            set_property(TARGET arts_static_fam_flush_recorder
+                         PROPERTY ${_arts_rec_prop} "${_arts_rec_val}")
+        endif()
+    endforeach()
+    arts_bundle_vendored_archives(arts_static_fam_flush_recorder)
+endif()
+
 # Create alias targets for convenience (prefer shared over static)
 if(ARTS_BUILD_SHARED)
     add_library(ARTS::arts ALIAS arts_shared)

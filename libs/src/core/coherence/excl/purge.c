@@ -753,21 +753,19 @@ static void fam_purge_body(struct arts_db_cache_s *cache,
 #error "a FAM build names a residency"
 #endif
 
-/* The block's store address, required of a SIZED block.  A create records the
+/* A SIZED block must know its store address.  A create records the
  * store before the block can be asked for and every grant names it, so a zero
  * here is a create that skipped its allocation or a grant that carried none —
  * the same defect, with the same answer, on either residency.  It lives in the
  * shared part for that reason: the slot rule is what it checks, not a funnel.
  * A block whose declared size is 0 is exempt: a sentinel has no bytes, so it
  * has no store and a grant for it carries address 0 legitimately. */
-static uint64_t fam_slot_required(const struct arts_db_cache_s *cache,
-                                  const char *edge) {
-  uint64_t addr = arts_db_fam_slot_addr(cache);
-  if (addr == 0 && cache->db_size != 0) {
+static void fam_slot_required(const struct arts_db_cache_s *cache,
+                              const char *edge) {
+  if (arts_db_fam_slot_addr(cache) == 0 && cache->db_size != 0) {
     ARTS_ERROR("fam: guid %lu has no slot at its %s edge",
                (unsigned long)cache->db_guid, edge);
   }
-  return addr;
 }
 
 /* Hand an unusable grant back to the home: the write right with no payload,
@@ -850,7 +848,7 @@ static bool lock_grant_claim(struct arts_db_cache_s *cache, arts_guid_t db_guid,
  * which is the documented boundary: the grant is then dropped. */
 static bool fam_fetch_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = cache->db_size;
-  uint64_t addr = fam_slot_required(cache, "grant");
+  fam_slot_required(cache, "grant");
   if (n == 0) {
     return true; /* a sentinel-sized block has no bytes and no store */
   }
@@ -863,14 +861,6 @@ static bool fam_fetch_working_copy(struct arts_db_cache_s *cache) {
   }
   fam_fetch_body(cache, buf);
   arts_db_buf_release(&h);
-  /* The turn now holds the store: what a second coherency domain may write
-   * back under it is registered for the turn's duration, and unregistered at
-   * the zero edge that ends the turn.  In the shared part on purpose — a
-   * missing flush is a defect on both residencies, and a hold taken inside one
-   * residency's body would leave the other's write-back inert.  Reload first,
-   * hold second: a hold over lines this rank never reloaded republishes
-   * whatever its own pages captured over the previous writer's bytes. */
-  arts_fam_strict_hold((const void *)(uintptr_t)addr, (size_t)n);
   __atomic_fetch_add(&arts_fam_fetches, 1u, __ATOMIC_RELAXED);
   if (arts_thread_info.role == ARTS_ROLE_PROGRESS) {
     __atomic_fetch_add(&arts_fam_progress_fetches, 1u, __ATOMIC_RELAXED);
@@ -891,7 +881,7 @@ static bool fam_fetch_working_copy(struct arts_db_cache_s *cache) {
  * it is recorded. */
 static void fam_purge_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = cache->db_size;
-  uint64_t addr = fam_slot_required(cache, "release");
+  fam_slot_required(cache, "release");
   if (n == 0) {
     return;
   }
@@ -899,26 +889,13 @@ static void fam_purge_working_copy(struct arts_db_cache_s *cache) {
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
     /* The route slot is gone under a holder that still owed its release: the
-     * documented boundary.  Nothing is written, but the turn ends here, so
-     * the store stops being held exactly as it would after a write-back. */
+     * documented boundary.  Nothing is written. */
     arts_db_buf_release(&h);
-    arts_fam_strict_unhold((const void *)(uintptr_t)addr, (size_t)n);
     return;
   }
   fam_purge_body(cache, buf);
   arts_db_buf_release(&h);
-  arts_fam_strict_unhold((const void *)(uintptr_t)addr, (size_t)n);
   __atomic_fetch_add(&arts_fam_purges, 1u, __ATOMIC_RELAXED);
-}
-
-/* The read side of a turn writes nothing back, but the turn is over: the store
- * stops being held at this edge too. */
-static void fam_unhold_slot(struct arts_db_cache_s *cache) {
-  uint64_t n = cache->db_size;
-  uint64_t addr = arts_db_fam_slot_addr(cache);
-  if (n != 0 && addr != 0) {
-    arts_fam_strict_unhold((const void *)(uintptr_t)addr, (size_t)n);
-  }
 }
 
 #ifdef ARTS_FAM_STAGED
@@ -1458,9 +1435,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
    * reads the store.  The home's own turn takes the same two copies every
    * other rank's does, which is why the purge precedes the home-local branch
    * below — a write-back edge that holds only when the home happens to be the
-   * writer is not one worth having.  This is also the one unhold of the
-   * turn's hold on the store, whether that turn came from a grant or from the
-   * create that made the block. */
+   * writer is not one worth having. */
   fam_purge_working_copy(cache);
   if (home == arts_global_rank_id) {
     lock_release_commit(arts_db_of_cache(cache), cache, DB_MODE_RW);
@@ -1563,11 +1538,6 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
 
 static void lock_send_release_ro(struct arts_db_cache_s *cache) {
   unsigned int home = (unsigned int)arts_guid_get_rank(cache->db_guid);
-#ifdef ARTS_FAM
-  /* A read turn writes nothing back, but it is over: the store stops being
-   * held at this edge exactly as it does at a write turn's. */
-  fam_unhold_slot(cache);
-#endif
   if (home == arts_global_rank_id) {
     /* Home-local RO release: commit the home lock_state transition + onward
      * grant directly, for the same reason the RW path does — a destroy that

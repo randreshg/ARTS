@@ -1004,15 +1004,12 @@ def config_render(
     profile: str = typer.Option(..., "--profile", "-p"),
     nodes: int = typer.Option(..., "--nodes", "-n"),
     runtime: str = typer.Option("arts", "--runtime", help="arts | ocr"),
-    fam: bool = typer.Option(
-        False, "--fam",
-        help="as for a campaign that runs a fabric-attached-memory entry"),
 ) -> None:
     """Print a rendered runtime configuration."""
     from artsrun.render import render_arts, render_ocr
 
     prof = store.load_profile(profile)
-    text = (render_arts(prof, nodes, fam=fam) if runtime == "arts"
+    text = (render_arts(prof, nodes) if runtime == "arts"
             else render_ocr(prof, nodes))
     console.print(text, highlight=False, markup=False)
 

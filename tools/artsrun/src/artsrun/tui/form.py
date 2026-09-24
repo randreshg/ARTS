@@ -139,15 +139,6 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "wrap every rank in `/usr/bin/time -v` to record peak resident "
               "set and minor faults beside the runtime's own stamp; a node "
               "without the binary runs unwrapped", section="flags"),
-    FieldSpec("fam_strict", "fam strict mode", "choice",
-              "fam_device=fake only (an error beside real or off): give each "
-              "rank a private view of the pool, so a byte reaches a peer only "
-              "after its producer flushed it and the consumer reloaded it -- "
-              "one host's shared cache otherwise hides a missing flush. A "
-              "test oracle, never a measurement mode (default = on under "
-              "fake)",
-              choices=("default", "true", "false"), none_choice="default",
-              optional=True, section="flags"),
 
     FieldSpec("slurm.partition", "partition", "text",
               "which set of nodes the cells run on — clusters group their "

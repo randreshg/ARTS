@@ -65,23 +65,6 @@ typedef enum {
    attempt to name ports by hand. */
 #define ARTS_RESOLVED_PORTS_ENV "ARTS_RESOLVED_PORTS"
 
-/* Base of the strict oracle's random write-back sequence.  Unset means 0, and
-   0 is a perfectly good base: the sequence a (thread, rank) draws is a pure
-   function of this value and its own two indices, with no process entropy
-   anywhere, so a failing schedule is replayed by naming the same value again.
-   An env var rather than a cfg key so that a replay changes nothing a rank
-   parses -- and so that the cfg surface stays the two keys below. */
-#define ARTS_FAM_STRICT_SEED_ENV "ARTS_FAM_STRICT_SEED"
-
-/* fam_strict's default: on where the pool is the vendored fake library, whose
-   one host's memory cannot show a missing flush otherwise; off everywhere
-   else, so that a device library's flush path is the one that runs. */
-#ifdef ARTS_FAM_BACKEND_SHM
-#define ARTS_FAM_STRICT_DEFAULT "1"
-#else
-#define ARTS_FAM_STRICT_DEFAULT "0"
-#endif
-
 struct arts_config_table_s {
   unsigned int rank;
   char *ip_address;
@@ -114,7 +97,6 @@ struct arts_config_s {
                           NULL/empty = provider's first domain. */
   unsigned int regpool_slab_mb; /* registered-memory slab pool size, MB */
   unsigned int fam_pool_mb; /* fabric-attached-memory pool, MB for the run */
-  bool fam_strict;          /* emulate a second coherency domain */
   unsigned int worker_thread_count;
   unsigned int progress_thread_count;
   unsigned int thread_count;

@@ -53,7 +53,6 @@
 #include "arts/counter/Preamble.h"
 #include "arts/edt.h"
 #include "arts/edt_context.h" /* current_edt + created-DB tracking */
-#include "arts/fam/pool.h" /* arts_fam_strict_hold (inert without a pool) */
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
@@ -139,22 +138,7 @@ void *arts_db_user_ptr(struct arts_db_s *db) {
  * context, so a create outside a task is tracked exactly like one inside it —
  * the alternative leaves the hold stamped and nothing owning its release.
  */
-static void arts_db_auto_acquire(arts_shared_ptr_t h, uint64_t bytes) {
-  (void)bytes;
-#ifdef ARTS_FAM
-  /* A create's write turn begins here, and it ends at the zero edge its
-   * release drives.  What a second coherency domain may write back under the
-   * turn is registered over the block's slot for exactly that span: one hold
-   * per turn, one unhold at the edge.  The span is the one the slot was
-   * allocated for, which the caller knows and a published cache only agrees
-   * with.  A create that takes no turn registers nothing — it never reaches
-   * this call. */
-  struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-  uint64_t slot = arts_db_fam_slot_addr(&db->cache);
-  if (slot != 0) {
-    arts_fam_strict_hold((const void *)(uintptr_t)slot, (size_t)bytes);
-  }
-#endif
+static void arts_db_auto_acquire(arts_shared_ptr_t h) {
   arts_track_created_db(h);
 }
 
@@ -511,10 +495,10 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb) {
  * descriptor, whether the create installs now or parks behind an object the
  * GUID still names on this rank. */
 static void db_create_enter(struct arts_db_s *db, arts_guid_t guid,
-                            uint64_t turn_bytes, bool acquires, void **addr) {
+                            bool acquires, void **addr) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(db, guid);
   if (acquires) {
-    arts_db_auto_acquire(arts_shared_copy(cb), turn_bytes);
+    arts_db_auto_acquire(arts_shared_copy(cb));
   }
   *addr = acquires ? arts_db_user_ptr(db) : NULL;
   struct arts_ooo_args_create_local_s a = {
@@ -531,13 +515,12 @@ static void db_create_enter(struct arts_db_s *db, arts_guid_t guid,
  * teardown notice has not landed here yet; the create parks behind it like
  * behind any occupant, and installs when that notice retires it.  The claim
  * and every answer transition the same word, so one of them wins. */
-static bool db_create_claim_first_touch(struct arts_db_s *found, uint64_t len,
-                                        uint64_t *turn_bytes) {
+static bool db_create_claim_first_touch(struct arts_db_s *found,
+                                        uint64_t len) {
   struct arts_db_cache_s *cache = &found->cache;
   if (!arts_db_create_claims_stub(cache)) {
     return false;
   }
-  *turn_bytes = len;
   /* This create is the block's declaration of its size.  Before the store,
    * before the image and before the hold — taking the hold admits the
    * waiters an earlier request from this rank parked, an admitted waiter's
@@ -615,9 +598,8 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
     arts_shared_ptr_t found_h = arts_route_table_lookup_db(guid);
     struct arts_db_s *found = (struct arts_db_s *)arts_shared_get(found_h);
     if (found != NULL) {
-      uint64_t turn_bytes = len;
       if (found->db_type == ARTS_DB &&
-          db_create_claim_first_touch(found, len, &turn_bytes)) {
+          db_create_claim_first_touch(found, len)) {
         if (stub != NULL) {
 #ifdef ARTS_FAM
           /* Never published: the store this create minted for its own
@@ -635,7 +617,7 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
                                      arts_db_fam_slot_addr(&found->cache),
                                      db_create_token_mint(&found->cache));
         *addr = arts_db_user_ptr(found);
-        arts_db_auto_acquire(found_h, turn_bytes);
+        arts_db_auto_acquire(found_h);
         return;
       }
       arts_shared_release(&found_h);
@@ -646,7 +628,7 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
     }
     if (arts_db_create_install_local(cb)) {
       *addr = arts_db_user_ptr(stub);
-      arts_db_auto_acquire(mine, len);
+      arts_db_auto_acquire(mine);
       return;
     }
   }
@@ -655,7 +637,7 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
     stub = db_creator_descriptor(guid, len, &cb, &mine);
   }
   *addr = arts_db_user_ptr(stub);
-  arts_db_auto_acquire(mine, len);
+  arts_db_auto_acquire(mine);
   struct arts_ooo_args_create_local_s a = {
       .size = ARTS_OOO_CREATE_ADOPT, .guid = guid, .descriptor = (void *)cb};
   arts_ooo_dispatch_or_defer_guid(guid, OOO_DB_CREATE, &a, sizeof(a));
@@ -751,9 +733,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
       if (no_acquire && db_type == ARTS_DB) {
         db_create_no_acquire_local((struct arts_db_s *)ptr);
       }
-      db_create_enter((struct arts_db_s *)ptr, guid, len,
-                      !no_acquire,
-                      addr);
+      db_create_enter((struct arts_db_s *)ptr, guid, !no_acquire, addr);
       ARTS_DEBUG("arts_db_create: DB[Guid:%lu, Type:%s, Size:%lu] "
                  "created locally",
                  guid, GET_DB_TYPE_NAME(db_type), len);

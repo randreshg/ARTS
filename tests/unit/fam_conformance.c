@@ -11,10 +11,6 @@
 ///      -o fam_conformance -lpthread <device library>
 /// then start one process per rank with --rank i --nranks n --rendezvous PATH.
 /// Rank 0 must be the first process to load the library.
-///
-/// --strict 0|1 names the mode, defaulting to the build's own default for the
-/// fam_strict key.  Under strict mode a write that was not flushed must NOT
-/// cross, so question 3 is asserted there rather than recorded.
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -40,7 +36,6 @@
 static int g_fails;
 static unsigned g_rank, g_nranks = 2u, g_pool_mb = 8u;
 static char g_rv[512] = "fam_conformance_rv";
-static bool g_strict = ARTS_FAM_STRICT_DEFAULT[0] == '1';
 
 static void say(const char *fmt, ...) {
   va_list ap;
@@ -132,7 +127,6 @@ static void boot(unsigned mb, unsigned nranks) {
   struct arts_config_s config;
   memset(&config, 0, sizeof(config));
   config.fam_pool_mb = mb;
-  config.fam_strict = g_strict;
   config.table_length = nranks;
   config.master_rank = 0;
   config.launcher = (char *)"local";
@@ -197,8 +191,6 @@ int main(int argc, char **argv) {
       (void)snprintf(g_rv, sizeof(g_rv), "%s", argv[++i]);
     } else if (!strcmp(argv[i], "--pool-mb") && i + 1 < argc) {
       g_pool_mb = (unsigned)atoi(argv[++i]);
-    } else if (!strcmp(argv[i], "--strict") && i + 1 < argc) {
-      g_strict = atoi(argv[++i]) != 0;
     }
   }
   if (g_nranks < 2u || g_nranks > 16u) {
@@ -226,8 +218,7 @@ int main(int argc, char **argv) {
          * sets it: a process without it would claim the region as rank 0. */
         setenv("ARTS_RANK", rs, 1);
         execl(argv[0], argv[0], "--rank", rs, "--nranks", ns, "--rendezvous",
-              g_rv, "--pool-mb", ms, "--strict", g_strict ? "1" : "0",
-              (char *)NULL);
+              g_rv, "--pool-mb", ms, (char *)NULL);
         _exit(127);
       }
       kids[nkids++] = pid;
@@ -257,15 +248,6 @@ int main(int argc, char **argv) {
   }
 
   arts_fam_init(g_rank, g_nranks);
-
-  /* The predicate must answer the mode boot() asked for: this is the probe's
-   * one assertion about the MODE, and it is what makes each registration the
-   * permanent runner of the flush path it names rather than a test that
-   * happens to run that path today. */
-  if (arts_fam_strict() != g_strict) {
-    fail(g_strict ? "this run asked for the oracle and got the plain backend"
-                  : "this run asked for the plain backend and got the oracle");
-  }
 
   /* Q1 + Q2: one address, and bytes that cross after both flushes. */
   void *block = NULL;
@@ -310,9 +292,6 @@ int main(int argc, char **argv) {
     arts_fam_flush_consumer(block, BLOCK_BYTES);
     bool stale = !all_bytes_are(block, PAT_B);
     say("q3 stale-without-flush = %s", stale ? "yes" : "no");
-    if (g_strict && !stale) {
-      fail("q3 under strict mode: a write crossed with no producer flush");
-    }
   }
   if (alive) {
     alive = rv_barrier(3);

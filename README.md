@@ -113,8 +113,7 @@ ctest --test-dir build -L multinode
 A tree on another cell builds the fabric-attached benchmark variants against
 the same library (its own library is not FAM-enabled, so it names no
 residency). Every rank started by the local launcher attaches to the same
-region (`/dev/shm/arts_fake_cxl`); the strict oracle (`fam_strict`) is on by
-default in such a tree.
+region (`/dev/shm/arts_fake_cxl`).
 
 - `ARTS_FAKE_CXL_REGION_SIZE` (bytes, default 32 GiB) sizes the region when
   the library loads, before the runtime reads its cfg. The runtime takes one

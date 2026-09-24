@@ -28,10 +28,8 @@ def _env(root: Path | None = None) -> Environment:
 
 
 def render_arts(profile: Profile, nodes: int, *, counter_folder: str | None = None,
-                capture_interval: int | None = None, fam: bool = False) -> str:
-    """The runtime configuration of one node count.  `fam` is whether the
-    campaign runs a fabric-attached-memory entry: without one the strict-mode
-    key has no reader, so it is left out rather than stated."""
+                capture_interval: int | None = None) -> str:
+    """The runtime configuration of one node count."""
     hosts = profile.hosts[:nodes] if profile.launcher is Launcher.SSH else []
     return _env().get_template("arts.cfg.j2").render(
         workers=profile.workers,
@@ -46,7 +44,6 @@ def render_arts(profile: Profile, nodes: int, *, counter_folder: str | None = No
         fabric_domain=profile.fabric_domain,
         regpool_slab_mb=profile.regpool_slab_mb,
         fam_pool_mb=profile.fam_pool_mb,
-        fam_strict=profile.resolved_fam_strict if fam else None,
         # Both runtimes take the stack in BYTES and both read zero as "leave
         # the platform default"; the profile states the size once, in MiB, so
         # the two cannot drift apart.
@@ -127,13 +124,12 @@ def write_counter_config(counterset, out_dir: Path) -> Path:
 
 def write_configs(profile: Profile, nodes: int, out_dir: Path, *,
                   counter_folder: str | None = None,
-                  capture_interval: int | None = None,
-                  fam: bool = False) -> dict[str, Path]:
+                  capture_interval: int | None = None) -> dict[str, Path]:
     """Write every configuration this node count needs; return the paths."""
     out_dir.mkdir(parents=True, exist_ok=True)
     arts = out_dir / f"arts_{nodes}n.cfg"
     _write_once(arts, render_arts(profile, nodes, counter_folder=counter_folder,
-                                  capture_interval=capture_interval, fam=fam))
+                                  capture_interval=capture_interval))
     ocr = out_dir / f"ocr_{nodes}n.cfg"
     _write_once(ocr, render_ocr(profile, nodes))
     return {"arts": arts, "ocr": ocr}
@@ -141,14 +137,12 @@ def write_configs(profile: Profile, nodes: int, out_dir: Path, *,
 
 def write_arts_cfg(profile: Profile, nodes: int, path: Path, *,
                    counter_folder: str | None = None,
-                   capture_interval: int | None = None,
-                   fam: bool = False) -> Path:
+                   capture_interval: int | None = None) -> Path:
     """Write one ARTS configuration to an exact path."""
     path.parent.mkdir(parents=True, exist_ok=True)
     return _write_once(path, render_arts(profile, nodes,
                                          counter_folder=counter_folder,
-                                         capture_interval=capture_interval,
-                                         fam=fam))
+                                         capture_interval=capture_interval))
 
 
 def config_for(kind: RuntimeKind, configs: dict[str, Path]) -> Path | None:
