@@ -1384,6 +1384,96 @@ void arts_db_debug_quiescence_check(void) {
           }
         }
 #endif
+#ifdef ARTS_FAM
+        /* The arm's own quiescence, beside the RETAIN block above: what a
+         * data block whose storage lives in fabric-attached memory looks
+         * like once every runtime thread has joined.  The skip condition
+         * that wraps this whole per-DB body covers exactly one case — a home
+         * block marked for teardown whose zero edge has not arrived — so a
+         * descriptor reaching here is otherwise live.  Checks 1-3 read only
+         * cache fields and need no guard; the home check runs only where
+         * db->home_initialized says a home directory exists, exactly like
+         * the VAL/INV block above — a cache-only stub ends at lock_state,
+         * and reading past it on a non-home rank would be a heap-buffer
+         * overflow on every cached block of every non-home rank. */
+        {
+          uint64_t cw =
+              atomic_load_explicit(&c->cache_state, memory_order_acquire);
+          uint8_t pending =
+              __atomic_load_n(&c->payload_pending, __ATOMIC_ACQUIRE);
+          uint64_t addr = arts_db_fam_slot_addr(c);
+          /* 1. No slot missing where a working copy exists.  A sentinel-
+           * sized block has no slot on either residency and legitimately
+           * rests at address 0. */
+          if (c->db_size != 0 && pending == 0u && addr == 0) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a working copy but no "
+                       "slot for it (size=%llu)",
+                       (unsigned long)c->db_guid,
+                       (unsigned long long)c->db_size);
+            viol++;
+          }
+          /* 2. No fetch outstanding.  The claim IS the outstanding-fetch
+           * marker (there is no separate in-flight field): a word resting
+           * in FETCH at teardown is a grant claimed whose copy or commit
+           * never ran. */
+          if (CACHE_RW_ST(cw) == CACHE_ST_FETCH ||
+              CACHE_RO_ST(cw) == CACHE_ST_FETCH) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a fetch claimed and "
+                       "never committed (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)cw);
+            viol++;
+          }
+          /* 3. The cache word rests idle.  Resting in REQ is a request
+           * whose grant never came; resting in GRANT with zero counts is a
+           * turn nobody gave back. */
+          if (!(CACHE_RW_ST(cw) == CACHE_ST_IDLE &&
+                CACHE_RO_ST(cw) == CACHE_ST_IDLE && CACHE_RW_CNT(cw) == 0u &&
+                CACHE_RO_CNT(cw) == 0u)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cache word not idle at "
+                       "teardown (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)cw);
+            viol++;
+          }
+#ifdef ARTS_FAM_BACKEND_SHM
+          /* Strict mode's hold registry: a count still nonzero for a line
+           * of this block's slot at teardown is a hold whose matching
+           * unhold never ran.  Off (and this whole check inert) whenever
+           * the run is not under the second coherency domain. */
+          if (arts_fam_strict() && addr != 0 && c->db_size != 0 &&
+              arts_fam_strict_range_held((const void *)(uintptr_t)addr,
+                                         (size_t)c->db_size)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a strict-mode hold "
+                       "outstanding on its slot at teardown",
+                       (unsigned long)c->db_guid);
+            viol++;
+          }
+#endif
+          /* 4. The home rests free. */
+          if (db->home_initialized) {
+            uint64_t ls =
+                atomic_load_explicit(&db->lock_state, memory_order_acquire);
+            if (EXCL_STATE_W(ls) != 0u || EXCL_STATE_R(ls) != 0u) {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home lock_state not "
+                         "idle at teardown (w=%u r=%u)",
+                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
+                         EXCL_STATE_R(ls));
+              viol++;
+            }
+            if (!arts_home_grantreq_queue_empty(&db->rw_waiters)) {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RW waiters "
+                         "at teardown",
+                         (unsigned long)c->db_guid);
+              viol++;
+            }
+            if (!arts_lf_stack_empty(&db->ro_waiters)) {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RO waiters "
+                         "at teardown",
+                         (unsigned long)c->db_guid);
+              viol++;
+            }
+          }
+        }
+#endif /* ARTS_FAM */
 #endif /* ARTS_PROTOCOL_FLUSH */
       }
       if (h) {

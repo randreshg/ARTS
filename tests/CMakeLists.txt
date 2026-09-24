@@ -212,6 +212,8 @@ if(ARTS_FAM_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS fam_remote_write_read)
     list(APPEND TEST_PROGRAMS fam_ro_cohort)
     list(APPEND TEST_PROGRAMS fam_create_release_remote)
+    list(APPEND TEST_PROGRAMS fam_quiescence_marker)
+    list(APPEND TEST_PROGRAMS fam_slot_reuse_after_destroy)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND TEST_PROGRAMS fam_slices)
         # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
@@ -1481,6 +1483,27 @@ if(ARTS_FAM_TREE_RESIDENCY)
         set_tests_properties(fam_slices_2n fam_slices_4n PROPERTIES
                              FAIL_REGULAR_EXPRESSION "FAIL")
     endif()
+    # The arm's teardown walk: six blocks, every one released and every
+    # dependence satisfied, must leave the walk silent -- a QUIESCENCE-DEBUG
+    # marker on this shape is the oracle catching a real defect, not a test
+    # artifact.
+    register_multinode_test(fam_quiescence_marker TIMEOUT 60)
+    set_tests_properties(fam_quiescence_marker_2n fam_quiescence_marker_3n
+                         fam_quiescence_marker_4n fam_quiescence_marker_2n_io
+                         PROPERTIES
+                         FAIL_REGULAR_EXPRESSION "QUIESCENCE-DEBUG|FAIL")
+    # Create/destroy churn on a fixed pool: a store that is not returned at
+    # its block's teardown exhausts one rank's share of the pool long before
+    # the last iteration, so this holds on one rank and on every multinode
+    # flavour.
+    register_single_node_test(fam_slot_reuse_after_destroy TIMEOUT 90)
+    register_multinode_test(fam_slot_reuse_after_destroy TIMEOUT 90)
+    set_tests_properties(fam_slot_reuse_after_destroy
+                         fam_slot_reuse_after_destroy_2n
+                         fam_slot_reuse_after_destroy_3n
+                         fam_slot_reuse_after_destroy_4n
+                         fam_slot_reuse_after_destroy_2n_io PROPERTIES
+                         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
 if(ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM")
@@ -1608,6 +1631,34 @@ if(ARTS_FAM_TREE_RESIDENCY)
         RESOURCE_LOCK "pure_unit_test"
         PASS_REGULAR_EXPRESSION
             "PASS fam_cache_fields_compare: C/C\\+\\+ fingerprints match")
+
+    # Grades this tree's OWN objects, so it is registered only where the
+    # library is store-backed: it asserts that the payload plane is compiled
+    # out, which is true of no other tree.  CMake, not the script, says which
+    # arms this tree builds -- the store-backed variants to grade beside the
+    # tree's library, and whether the non-FAM build of the same source that
+    # gives the check its control exists here at all.
+    set(_fam_graded "")
+    foreach(_v ocr_excl_purge_fam_staged ocr_excl_purge_fam_direct)
+        if(TARGET arts_static_${_v})
+            list(APPEND _fam_graded "arts_static_${_v}")
+        endif()
+    endforeach()
+    set(_fam_require_control OFF)
+    if(TARGET arts_static_ocr_excl_purge)
+        set(_fam_require_control ON)
+    endif()
+    add_test(
+        NAME fam_no_payload_plane
+        COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
+                "-DGRADED_TARGETS=${_fam_graded}"
+                "-DREQUIRE_CONTROL=${_fam_require_control}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fam_no_payload_plane.cmake)
+    set_tests_properties(fam_no_payload_plane PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 60
+        RESOURCE_LOCK "pure_unit_test"
+        PASS_REGULAR_EXPRESSION "PASS fam_no_payload_plane")
 endif()
 
 # ============================================================================
