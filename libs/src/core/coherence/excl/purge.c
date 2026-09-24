@@ -1345,7 +1345,8 @@ static void fam_fetch_job_run(void *arg) {
  * copy is NOT taken.  A fetch registers the store as held for the turn and the
  * zero edge that would unregister it can no longer arrive, so taking it here
  * would leave a hold nothing ever balances on top of a turn already lost.  The
- * axis stays where the claim left it and the teardown walk reports that once. */
+ * axis stays where the claim left it, and the queue counts the discard as work
+ * the shutdown dropped. */
 static void fam_fetch_job_discard(void *arg) {
   fam_fetch_job_release((struct fam_fetch_job_s *)arg);
 }

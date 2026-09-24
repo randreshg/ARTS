@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef __cplusplus
 #define LAYOUT_LANG "cpp"
@@ -130,7 +131,9 @@ static void check_edt_total_size(void) {
 
   /* paramv slot is exactly 8 bytes per the helper's *8 — assert that promise.
    */
-  struct arts_edt_s a = {0}, b = {0};
+  struct arts_edt_s a, b;
+  memset(&a, 0, sizeof(a));
+  memset(&b, 0, sizeof(b));
   a.paramc = 0;
   a.depc = 0;
   b.paramc = 1;

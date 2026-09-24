@@ -123,6 +123,12 @@ bool arts_transport_loopback_drain(void);
 /* Free any self-sends still queued at teardown (quiescent: no dispatch). */
 void arts_loopback_cleanup(void);
 
+/* Self-sends still queued and never dispatched, a shutdown message excluded
+ * since it carries no work.  Exact only once no thread can post, i.e. after
+ * every runtime thread has joined; what it counts is exactly what
+ * arts_loopback_cleanup later frees. */
+unsigned int arts_loopback_pending_count(void);
+
 /* Control-plane sizing.  Two multi-recv landing buffers of RECV_BUF_SIZE each
  * catch all two-sided traffic; the provider keeps landing messages into a
  * buffer while its free tail is >= MIN_MULTI_RECV, so the largest fi_send

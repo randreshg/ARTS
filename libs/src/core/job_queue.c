@@ -33,6 +33,7 @@ static void job_queue_consume(arts_lf_stack_t *s, bool run) {
     if (run) {
       j->fn(j->arg);
     } else {
+      __atomic_fetch_add(&arts_shutdown_abandon.jobs, 1u, __ATOMIC_RELAXED);
       j->discard(j->arg);
     }
     arts_free(j);

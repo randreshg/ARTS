@@ -136,6 +136,20 @@ bool arts_transport_loopback_drain(void) {
   return did_work;
 }
 
+unsigned int arts_loopback_pending_count(void) {
+  unsigned int n = 0;
+  for (arts_lf_link_t *l =
+           atomic_load_explicit(&g_loopback.head, memory_order_acquire);
+       l != NULL; l = atomic_load_explicit(&l->next, memory_order_relaxed)) {
+    const struct arts_msg_header_s *h =
+        (const struct arts_msg_header_s *)((struct loopback_node_s *)l + 1);
+    if (h->message_type != MSG_SHUTDOWN) {
+      n++;
+    }
+  }
+  return n;
+}
+
 void arts_loopback_cleanup(void) {
   /* Quiescent teardown: free any self-sends never drained (no dispatch —
    * handlers must not run against torn-down state at shutdown). */

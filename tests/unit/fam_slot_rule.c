@@ -29,6 +29,11 @@
 #include <stdint.h>
 #include <stdio.h>
 
+/* The verdict is the exit status: the check that decides it must have RUN,
+ * not merely not failed, or a shutdown that wins the race against it would
+ * pass an empty run. */
+static _Atomic int g_check_ran;
+
 #define N 64
 /* Labels two ranks create at once.  One is enough to state the rule and far
  * too few to meet it: the two creates have to overlap inside the home's own
@@ -134,11 +139,15 @@ static void race_check_edt(uint32_t paramc, const uint64_t *paramv,
                         &(arts_edt_hint_t){.rank = 1u});
 }
 
-/* paramv = {the creator's slot, the acquiring create's guid, the creator's
- * rank, shut down when this check is the run's last act, the guid of the
- * create that acquired nothing}.  The two read dependences are the checks'
- * ordering against the creates: the home serves them only once each block's
- * announce has installed the object here. */
+/* The run's last act on every rank count.  paramv = {the creator's slot, the
+ * acquiring create's guid, the creator's rank, the guid of the create that
+ * acquired nothing}.  The two read dependences are the checks' ordering
+ * against the creates: the home serves them only once each block's announce
+ * has installed the object here.  The third slot is the create-nothing leg's
+ * completion where that leg runs, so no leg is still outstanding when this
+ * one shuts the run down and none of them can be skipped by losing a race to
+ * the shutdown.  Its PASS line is what the registration requires, so a run
+ * that never reached these checks cannot pass. */
 static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -155,12 +164,12 @@ static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
   }
   /* The create that acquired nothing named no store, so the home is the rank
    * that had to allocate one. */
-  check_owned_here(slot_of((arts_guid_t)paramv[4]),
+  check_owned_here(slot_of((arts_guid_t)paramv[3]),
                    "a create that acquires nothing off-home left its home "
                    "with no slot");
-  if (paramv[3] != 0) {
-    arts_shutdown();
-  }
+  __atomic_store_n(&g_check_ran, 1, __ATOMIC_RELEASE);
+  (void)fprintf(stderr, "PASS fam_slot_rule: home checks ran\n");
+  arts_shutdown();
 }
 
 /* A create of a label whose store this rank already knows makes nothing: no
@@ -180,7 +189,6 @@ static void recreate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * was asserted. */
   if (before == 0) {
     (void)fprintf(stderr, "LEG create-nothing: no subject on this rank\n");
-    arts_shutdown();
     return;
   }
   (void)fprintf(stderr, "LEG create-nothing: live\n");
@@ -193,7 +201,6 @@ static void recreate_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (slot_of(dg) != before) {
     fail("a create of an existing label changed the block's slot");
   }
-  arts_shutdown();
 }
 
 static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -251,22 +258,28 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     fail("a create that acquires nothing handed out a pointer");
   }
 
-  /* The create-nothing leg needs a third rank: a home, this creator, and a
-   * rank the block is granted to.  With fewer ranks the home's own check ends
-   * the run instead. */
-  uint64_t last = (arts_get_total_ranks() >= 3u) ? 0u : 1u;
-  if (last == 0u) {
-    uint64_t dpv[1] = {(uint64_t)lg};
-    arts_guid_t again = arts_edt_create(recreate_edt, 1, dpv, 1,
-                                        &(arts_edt_hint_t){.rank = 2u});
-    arts_add_dependence(lg, again, 0, DB_MODE_RO);
-  }
-  uint64_t pv[5] = {addr, (uint64_t)g, (uint64_t)arts_get_current_rank(), last,
+  uint64_t pv[4] = {addr, (uint64_t)g, (uint64_t)arts_get_current_rank(),
                     (uint64_t)ng};
-  arts_guid_t check = arts_edt_create(home_check_edt, 5, pv, 2,
+  arts_guid_t check = arts_edt_create(home_check_edt, 4, pv, 3,
                                       &(arts_edt_hint_t){.rank = 0u});
   arts_add_dependence(g, check, 0, DB_MODE_RO);
   arts_add_dependence(ng, check, 1, DB_MODE_RO);
+
+  /* The create-nothing leg needs a third rank: a home, this creator, and a
+   * rank the block is granted to.  Its output event fires only after it has
+   * run and released, and that is what the home's check waits on; with fewer
+   * ranks there is no such leg and nothing to wait for. */
+  if (arts_get_total_ranks() >= 3u) {
+    arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
+    uint64_t dpv[1] = {(uint64_t)lg};
+    arts_guid_t again = arts_edt_create(
+        recreate_edt, 1, dpv, 1,
+        &(arts_edt_hint_t){.rank = 2u, .output_event = done});
+    arts_add_dependence(done, check, 2, DB_MODE_NULL);
+    arts_add_dependence(lg, again, 0, DB_MODE_RO);
+  } else {
+    arts_edt_satisfy_slot(check, 2, NULL_GUID, DB_MODE_NULL);
+  }
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -285,6 +298,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    "a create that acquires nothing allocated no slot at its "
                    "home");
   if (arts_get_total_ranks() < 2u) {
+    __atomic_store_n(&g_check_ran, 1, __ATOMIC_RELEASE);
+    (void)fprintf(stderr, "PASS fam_slot_rule: one-rank check ran\n");
     arts_shutdown();
     return;
   }
@@ -301,5 +316,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 int main(int argc, char **argv) {
   int rc = arts_rt(argc, argv);
-  return rc ? 1 : arts_test_status();
+  if (rc) {
+    return 1;
+  }
+  /* The checks run on the home, rank 0, whose status is the one the launcher
+   * reports; every other rank contributes only through arts_test_status. */
+  if (arts_get_current_rank() == 0u &&
+      !__atomic_load_n(&g_check_ran, __ATOMIC_ACQUIRE)) {
+    (void)fprintf(stderr, "FAIL fam_slot_rule: the deciding check never ran\n");
+    return 1;
+  }
+  return arts_test_status();
 }

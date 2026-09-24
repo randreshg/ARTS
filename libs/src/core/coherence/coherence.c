@@ -1297,6 +1297,52 @@ void arts_db_debug_quiescence_check(void) {
   for (unsigned int i = 0; i < ARTS_REMOTE_ROUTE_SHARDS; i++) {
     tables[nt++] = arts_node_info.remote_route_table[i];
   }
+#ifdef ARTS_FAM
+  /* Whether this shutdown was quiescent, named by contributor so a log's
+   * reader knows why a residue went unreported.  Every one is pending work
+   * the shutdown left undone: runnable EDTs dropped from a deque, runtime
+   * jobs discarded, self-sends never dispatched, and EDTs admitted (every
+   * dependence satisfied, acquisition begun) that never finished -- the last
+   * covers an EDT parked mid acquisition, which sits in no queue a discard
+   * site sees, and it overlaps the first.  Each is read after every runtime
+   * thread has joined, so no poster can add to what is counted, and before
+   * anything frees it.  A message from another rank still undelivered is
+   * not one: a release in flight to a home strands nothing on a cache word,
+   * and a grant still owed to a requester leaves that requester's EDT
+   * admitted and unfinished. */
+  unsigned int ab_queued = __atomic_load_n(&arts_shutdown_abandon.queued_edts,
+                                           __ATOMIC_RELAXED);
+  unsigned int ab_jobs =
+      __atomic_load_n(&arts_shutdown_abandon.jobs, __ATOMIC_RELAXED);
+  unsigned int ab_loopback = arts_loopback_pending_count();
+  unsigned int ab_admitted = 0;
+  for (unsigned int t = 0; t < nt; t++) {
+    if (tables[t] == NULL) {
+      continue;
+    }
+    arts_route_table_iterator_t iter;
+    arts_reset_route_table_iterator(&iter, tables[t]);
+    for (arts_route_item_t *item = arts_route_table_iterate(&iter);
+         item != NULL; item = arts_route_table_iterate(&iter)) {
+      if (ARTS_GUID_GET_TYPE(item->key) != ARTS_GUID_EDT) {
+        continue;
+      }
+      arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
+      /* Only an object the runtime owns as an EDT is read as one. */
+      const struct arts_edt_s *e =
+          (h && arts_shared_deleter(h) == arts_edt_get_deleter())
+              ? (const struct arts_edt_s *)arts_shared_get(h)
+              : NULL;
+      if (e != NULL && e->depc_needed == 0u) {
+        ab_admitted++;
+      }
+      if (h) {
+        arts_shared_release(&h);
+      }
+    }
+  }
+  bool quiescent = (ab_queued | ab_jobs | ab_loopback | ab_admitted) == 0u;
+#endif
   for (unsigned int t = 0; t < nt; t++) {
     if (tables[t] == NULL) {
       continue;
@@ -1439,27 +1485,80 @@ void arts_db_debug_quiescence_check(void) {
                        (unsigned long long)c->db_size);
             viol++;
           }
-          /* 2. No fetch outstanding.  The claim IS the outstanding-fetch
-           * marker (there is no separate in-flight field): a word resting
-           * in FETCH at teardown is a grant claimed whose copy or commit
-           * never ran. */
-          if (CACHE_RW_ST(cw) == CACHE_ST_FETCH ||
-              CACHE_RO_ST(cw) == CACHE_ST_FETCH) {
-            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a fetch claimed and "
-                       "never committed (word=%llx)",
-                       (unsigned long)c->db_guid, (unsigned long long)cw);
-            viol++;
-          }
-          /* 3. The cache word rests idle.  Resting in REQ is a request
-           * whose grant never came; resting in GRANT with zero counts is a
-           * turn nobody gave back. */
-          if (!(CACHE_RW_ST(cw) == CACHE_ST_IDLE &&
-                CACHE_RO_ST(cw) == CACHE_ST_IDLE && CACHE_RW_CNT(cw) == 0u &&
-                CACHE_RO_CNT(cw) == 0u)) {
-            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu cache word not idle at "
-                       "teardown (word=%llx)",
-                       (unsigned long)c->db_guid, (unsigned long long)cw);
-            viol++;
+          /* 2. Each axis rests only where the single-CAS acquire / claim /
+           * release discipline can leave it.  That discipline makes two
+           * shapes unreachable on its own: an axis IDLE with its own count
+           * still nonzero (going idle happens only at that count's own zero
+           * edge), and an axis in GRANT, or, where the arm stages bytes
+           * through a claim, FETCH, with nothing counted on EITHER axis --
+           * the zero edge that ends a turn returns its grant in the same
+           * CAS, so this can only be a lost zero edge.  Both are reported
+           * unconditionally.  REQUEST with nothing counted is exempt: it is
+           * a request whose requesters all left before its grant came, a
+           * legal transient that a late or undispatched grant leaves at
+           * teardown.  A non-idle axis WITH a count still on
+           * it is a THIRD shape: after every thread has joined nothing can
+           * wait on it, and a shutdown that left work undone is the one legal
+           * source of it, so it is reported only when the shutdown was
+           * quiescent. */
+          {
+            uint32_t teardown = 0u;
+            if (db->home_initialized) {
+              teardown = EXCL_STATE_TEARDOWN(atomic_load_explicit(
+                  &db->lock_state, memory_order_acquire));
+            }
+            bool zero_zero =
+                (CACHE_RW_CNT(cw) == 0u && CACHE_RO_CNT(cw) == 0u);
+            if (CACHE_RW_ST(cw) == CACHE_ST_IDLE) {
+              if (CACHE_RW_CNT(cw) != 0u) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rw axis rests idle "
+                           "with a nonzero count (word=%llx teardown=%u)",
+                           (unsigned long)c->db_guid, (unsigned long long)cw,
+                           teardown);
+                viol++;
+              }
+            } else if (zero_zero) {
+              if (CACHE_RW_ST(cw) != CACHE_ST_REQ) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rw axis rests "
+                           "non-idle with nothing counted on it (word=%llx "
+                           "teardown=%u)",
+                           (unsigned long)c->db_guid, (unsigned long long)cw,
+                           teardown);
+                viol++;
+              }
+            } else if (quiescent) {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rw axis rests non-idle "
+                         "with a count still on it after a quiescent "
+                         "shutdown (word=%llx teardown=%u)",
+                         (unsigned long)c->db_guid, (unsigned long long)cw,
+                         teardown);
+              viol++;
+            }
+            if (CACHE_RO_ST(cw) == CACHE_ST_IDLE) {
+              if (CACHE_RO_CNT(cw) != 0u) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu ro axis rests idle "
+                           "with a nonzero count (word=%llx teardown=%u)",
+                           (unsigned long)c->db_guid, (unsigned long long)cw,
+                           teardown);
+                viol++;
+              }
+            } else if (zero_zero) {
+              if (CACHE_RO_ST(cw) != CACHE_ST_REQ) {
+                ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu ro axis rests "
+                           "non-idle with nothing counted on it (word=%llx "
+                           "teardown=%u)",
+                           (unsigned long)c->db_guid, (unsigned long long)cw,
+                           teardown);
+                viol++;
+              }
+            } else if (quiescent) {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu ro axis rests non-idle "
+                         "with a count still on it after a quiescent "
+                         "shutdown (word=%llx teardown=%u)",
+                         (unsigned long)c->db_guid, (unsigned long long)cw,
+                         teardown);
+              viol++;
+            }
           }
 #ifdef ARTS_FAM_DIRECT
           /* 4. Nothing stands between the store and an EDT: where a holder's
@@ -1543,9 +1642,20 @@ void arts_db_debug_quiescence_check(void) {
       }
     }
   }
+#ifdef ARTS_FAM
+  /* Every contributor is printed, so "nothing was left undone" and "work was
+   * left undone, and it is why a residue went unreported" read apart -- the
+   * two look identical from the violation count alone. */
+  if (viol != 0 || !quiescent) {
+    ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
+               "queued_edts=%u jobs=%u loopback=%u admitted_edts=%u)",
+               viol, ab_queued, ab_jobs, ab_loopback, ab_admitted);
+  }
+#else
   if (viol != 0) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s)", viol);
   }
+#endif
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }
 

@@ -202,6 +202,24 @@ set(TEST_PROGRAMS
 # such a tree they describe something that is not built -- a structural
 # exclusion, like an application that cannot run multinode, never a masked
 # failure.  buffer_external_payload is the descriptor's own test there.
+#
+# The two FAM trees are one compile-time switch (ARTS_FAM_TREE_RESIDENCY)
+# apart: the slot rule, the wire, the messages, the arbiter actions, the
+# funnel positions, the claim, fam_slot_required, the zero-size exemption, the
+# strict-mode hold/unhold, and the three tallies and their two readers are
+# identical on both, and the only differences are residency itself -- the two
+# body definitions and the buffer representation -- and the test surface that
+# describes that representation:
+#
+#   Test                                    | STAGED tree      | DIRECT tree            | Why
+#   ---------------------------------------- | ----------------- | ----------------------- | ---
+#   the names in ARTS_FAM_DIRECT_EXCLUDED    | registered        | excluded at registration | they assert the inline representation
+#   buffer_external_payload                  | registered, SKIPs | registered, runs         | the external descriptor's own contract
+#   fam_slot_discard_unadopt                 | not registered    | registered 1n            | the withdrawal it asserts exists only where a descriptor adopts the store
+#   fam_direct_payload_identity              | not registered    | registered 1n/2n/3n      | the property is false by construction under STAGED
+#   fam_direct_fresh_slot (SHM backend only) | not registered    | registered 1n against fam/1n_strict.cfg | poison is only reproducible where the EDT reads the slot itself
+#   fam_home_turn_costs, fam_fetch_off_progress | registered      | registered (this residency's own entry) | the tallies are incremented by the funnel both residencies fetch and purge through
+#   db_cache_layout, coherence_zero_size_xfer, db_create_after_first_touch, the arm's other fam_* programs, coherence_grant_chain_visibility, everything else | registered | registered | one behaviour, two representations
 set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_payload_roundtrip
     buffer_zero_size
@@ -271,6 +289,15 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # own.
         list(APPEND TEST_PROGRAMS fam_home_turn_costs)
         # Where that copy runs is a claim about the same residency.
+        list(APPEND TEST_PROGRAMS fam_fetch_off_progress)
+    endif()
+    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
+        # The tallies these two read (fetches, purges, progress-thread
+        # fetches) are incremented by the funnel both residencies fetch and
+        # purge through, so the programs are valid on this residency too and
+        # get their own build entry here; this residency's own ctest
+        # registration is the sibling DIRECT-only block below.
+        list(APPEND TEST_PROGRAMS fam_home_turn_costs)
         list(APPEND TEST_PROGRAMS fam_fetch_off_progress)
     endif()
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
@@ -1571,9 +1598,10 @@ if(ARTS_FAM_TREE_RESIDENCY)
     # alone is right for it -- deliberately, and the asymmetry with fam_slices
     # below is the point.
     register_fam_multinode_test(fam_alloc_dist TIMEOUT 120 VARIANTS 2n 4n)
-    # The slot rule holds on one rank and on every multinode flavour: a
-    # non-master rank's verdict travels as printed output, the master's as the
-    # exit status.
+    # The slot rule holds on one rank and on every multinode flavour.  Every
+    # verdict travels as printed output: a FAIL line from any rank fails it,
+    # and the run's last act prints the line required here, so a run that shut
+    # down before its checks ran cannot pass.
     register_fam_single_node_test(fam_slot_rule TIMEOUT 30)
     register_fam_multinode_test(fam_slot_rule TIMEOUT 60)
     if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
@@ -1590,6 +1618,16 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # addresses differ by construction, so this asserts a residency rather
         # than a protocol.
         register_fam_single_node_test(fam_direct_payload_identity TIMEOUT 60)
+        # The no-copy half of the same oracle: that address is the SAME on
+        # every rank that holds it.  Needs more than one rank to say anything.
+        register_fam_multinode_test(fam_direct_payload_identity TIMEOUT 120
+                                    VARIANTS 2n 3n)
+        # The tallies these two read are incremented by the funnel both
+        # residencies fetch and purge through (see the TEST_PROGRAMS list
+        # above), so one fetch and one purge per turn, and no fetch step on a
+        # progress thread, are checkable on this residency's own entry too.
+        register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
+        register_fam_multinode_test(fam_fetch_off_progress TIMEOUT 60)
         if(ARTS_FAM_BACKEND STREQUAL "SHM")
             # The one test that names its cfg instead of going through the
             # resolver.  What it asserts -- a fresh store reads as the poison

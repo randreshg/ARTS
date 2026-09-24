@@ -125,6 +125,10 @@ void arts_shared_abandon(arts_shared_ptr_t *p) {
 
 void *arts_shared_get(arts_shared_ptr_t p) { return p ? p->object : NULL; }
 
+void (*arts_shared_deleter(arts_shared_ptr_t p))(void *) {
+  return p ? p->deleter : NULL;
+}
+
 /* Relaxed on both sides: publication order rides the slot.  The stamp is
  * sequenced before the release-CAS that publishes the cb into a slot, and a
  * reader's tag load is sequenced after the acquire load that pinned the cb
