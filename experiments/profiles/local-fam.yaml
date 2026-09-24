@@ -1,13 +1,16 @@
 # Local correctness smoke for the fabric-attached-memory entries: the
 # SHM backend's pool is one machine's mapping, so this profile is
-# launcher: local, and the host's 14 CPUs bound the geometry
-# (2 nodes x (3 workers + 1 progress) = 8).  Timings from this host are
-# never evidence of anything.
+# launcher: local.  A reference entry's colocated local ranks are each
+# pinned to one physical core, so the geometry a campaign requests here
+# must fit the machine's physical core count, not its logical CPU count
+# (an SMT sibling is not a second core to pin a rank to):
+# 2 nodes x (2 workers + 1 progress) = 6 physical cores.  Timings from
+# this host are never evidence of anything.
 name: local-fam
 launcher: local
 
 nodes: [1, 2]
-workers: 3
+workers: 2
 progress: 1
 
 pin: true

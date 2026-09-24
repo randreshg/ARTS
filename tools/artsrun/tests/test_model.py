@@ -289,12 +289,22 @@ def test_the_local_fam_smoke_profile_loads_and_fits_the_host():
     profile = store.load_profile("local-fam")
     assert profile.launcher is Launcher.LOCAL
     assert profile.fam_pool_mb is not None
-    assert max(profile.nodes) * profile.threads_per_node <= 14
     # what a campaign actually runs is the plane's order, not the file's
-    assert plane.default_entries(profile.entries) == [
+    entries = plane.default_entries(profile.entries)
+    assert entries == [
         "arts_excl_purge", "arts_excl_purge_fam_staged",
         "arts_excl_purge_fam_direct", "xsocr",
     ]
+    # The profile's geometry must satisfy the driver's own reference-geometry
+    # rule (a reference entry's colocated local ranks are each pinned to one
+    # physical core), not a hand-computed bound against the logical CPU
+    # count — so this exercises the real check a campaign runs into, rather
+    # than reimplementing it and drifting from it.
+    selection = Selection(
+        profile=profile.name, benchset="b", entries=entries,
+        apps={"nqueens": [Version.BASE]}, node_counts=profile.nodes,
+    )
+    selection.validate_against(plane, load_catalog(), profile)
 
 
 def test_a_geometry_wider_than_the_machine_is_not_the_tool_s_call():
