@@ -977,8 +977,10 @@ static void fam_purge_working_copy(struct arts_db_cache_s *cache) {
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
     /* The route slot is gone under a holder that still owed its release: the
-     * documented boundary.  Nothing is written, and the turn ends here. */
+     * documented boundary.  Nothing is written, but the turn ends here, so
+     * the store stops being held exactly as it would after a write-back. */
     arts_db_buf_release(&h);
+    arts_fam_strict_unhold((const void *)(uintptr_t)addr, (size_t)n);
     return;
   }
   fam_purge_body(cache, buf);

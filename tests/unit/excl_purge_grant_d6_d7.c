@@ -60,12 +60,13 @@ static void chain_writer_edt(uint32_t paramc, const uint64_t *paramv,
   arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
-/* D6 verify: the chain accumulator must equal the writer count. */
+/* D6 verify: the chain accumulator must equal the writer count.  Its drop of
+ * the shutdown latch is what makes a stranded chain writer stall the run. */
 static void chain_verify_edt(uint32_t paramc, const uint64_t *paramv,
                              uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
-  (void)paramv;
   (void)depc;
+  arts_guid_t shutdown_latch = (arts_guid_t)paramv[0];
   _Atomic uint64_t *acc = (_Atomic uint64_t *)depv[1].ptr;
   uint64_t got = atomic_load_explicit(acc, memory_order_acquire);
   if (got != (uint64_t)N_CHAIN_WRITERS) {
@@ -74,6 +75,8 @@ static void chain_verify_edt(uint32_t paramc, const uint64_t *paramv,
     arts_abort(1);
   }
   printf("excl_purge_grant_d6_d7 D6: rw->rw chain %d — OK\n", N_CHAIN_WRITERS);
+  arts_event_satisfy_slot(shutdown_latch, NULL_GUID,
+                          ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /* D7 seed writer: stamp SEED so the extending readers have a defined value. */
@@ -122,15 +125,16 @@ static void trail_writer_edt(uint32_t paramc, const uint64_t *paramv,
   arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
-/* Final shutdown: bound to the D7 latch (which counts all extenders + the
- * trailing writer). */
+/* Final shutdown: bound to the D7 latch, which counts all extenders, the
+ * trailing writer and the D6 verify — so both halves gate the run's end. */
 static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                          arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
   (void)depv;
-  printf("excl_purge_grant_d6_d7 D7: RO-extend %d + trail writer — PASS\n",
+  printf("excl_purge_grant_d6_d7 D7: RO-extend %d + trail writer, D6 chain "
+         "verified — PASS\n",
          N_EXTEND_READERS);
   arts_shutdown();
 }
@@ -145,6 +149,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("=== excl_purge_grant_d6_d7 ===\n");
   unsigned int nranks = arts_get_total_ranks();
   unsigned int home = 0u;
+
+  /* Shutdown latch (the D7 latch): the RO extenders, the trailing writer and
+   * the D6 verify. */
+  arts_event_hint_t d7_latch_hint = ARTS_EVENT_HINT_LATCH(N_EXTEND_READERS + 2);
+  d7_latch_hint.rank = 0;
+  arts_guid_t d7_latch = arts_event_create(&d7_latch_hint);
+  uint64_t d7_pv[1] = {(uint64_t)d7_latch};
 
   /* ---- D6: rw->rw chain on its own DB. ---- */
   void *d6p = NULL;
@@ -164,7 +175,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                                     &(arts_edt_hint_t){.rank = r});
     arts_add_dependence(d6, w, 0, DB_MODE_RW);
   }
-  arts_guid_t d6v = arts_edt_create(chain_verify_edt, 0, NULL, 2,
+  arts_guid_t d6v = arts_edt_create(chain_verify_edt, 1, d7_pv, 2,
                                     &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(d6_latch, d6v, 0, DB_MODE_NULL);
   arts_add_dependence(d6, d6v, 1, DB_MODE_RO);
@@ -184,12 +195,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       &(arts_edt_hint_t){.rank = home, .finish_event = e_seed});
   arts_add_dependence(d7, seed, 0, DB_MODE_RW);
   arts_event_wait(e_seed); /* ownership/value established before the storm */
-
-  /* D7 latch counts the RO extenders + the trailing writer. */
-  arts_event_hint_t d7_latch_hint = ARTS_EVENT_HINT_LATCH(N_EXTEND_READERS + 1);
-  d7_latch_hint.rank = 0;
-  arts_guid_t d7_latch = arts_event_create(&d7_latch_hint);
-  uint64_t d7_pv[1] = {(uint64_t)d7_latch};
 
   /* A trailing RW writer parked at home (w>0) plus a burst of RO requests: the
    * RO phase must extend (D7) and serve all readers, then the writer runs. */

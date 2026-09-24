@@ -379,10 +379,10 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
      * purpose — a kind that keeps no coherence state has no funnel to read a
      * slot and no teardown to free one.
      *
-     * A create that acquires has its own first-write coming (the buffer
-     * install below, purged to the store at its zero edge) to establish the
-     * block's declared-zero contract; a create that does not must establish
-     * it here, since no write turn is coming to do it later. */
+     * A create that acquires hands its caller an uninitialized payload, so
+     * its store owes no value; a create that does not hands out no pointer,
+     * and its block's first acquire reads zero, which only this call can
+     * establish. */
     (void)arts_db_fam_slot_create(cache, /*zero_first=*/!acquires);
 #endif
     /* Install a fresh buffer so subsequent coherent acquires
@@ -390,8 +390,8 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
      * cache->buffer.  The user pointer returned by arts_db_create
      * points into this buffer's data[] FAM, so writes by the creator
      * EDT land in buf->data and are published when release_rw bumps
-     * the version.  No initial data — zero-init is deterministic and
-     * matches the DB_CREATE_COHERENT home-recv path.
+     * the version.  No initial value: the payload an acquiring create
+     * hands out is uninitialized by contract.
      *
      * Only when the create acquires: then the creating thread IS the
      * payload's first user and allocating here places it on that thread's
@@ -1162,6 +1162,13 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
           depv[i].guid, GET_DB_TYPE_NAME(db_temp->db_type), arts_global_rank_id,
           owner);
     }
+#ifdef ARTS_FAM_DIRECT
+    if (db_temp->db_type == ARTS_DB) {
+      ARTS_ERROR("db: access mode %u takes no hold, so it cannot address a "
+                 "shared store — use DB_MODE_RO or DB_MODE_RW",
+                 (unsigned)access_mode);
+    }
+#endif
     depv[i].ptr = arts_db_user_ptr(db_temp);
     depv[i].subtype = db_temp->db_type;
     arts_shared_release(&db_temp_h);

@@ -184,15 +184,15 @@ bool arts_db_fam_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
   return false;
 }
 
-/* A fresh store's bytes are a recycled granule, never zero.  A create that
- * takes a write turn hides that behind its own first write, purged to the
- * store before anyone else can read it; a create that takes none has no such
- * write coming, so `zero_first` establishes the block's declared value here
- * instead.  It runs on the address the allocation returned, BEFORE the cache
- * names it: a store is served to whoever asks for the block, so the value it
- * promises has to be in it by the time it can be named.  No hold is
- * registered for that write — a create that takes no write turn has none to
- * register it under — and a producer flush over an unheld range is otherwise
+/* A fresh store's bytes carry no promised value.  A create that takes a write
+ * turn owes nothing better, since the payload it hands its caller is
+ * uninitialized by contract; a create that takes none hands out no pointer,
+ * and the first acquire of its block reads zero, so `zero_first` establishes
+ * that value here.  It runs on the address the allocation returned, BEFORE
+ * the cache names it: a store is served to whoever asks for the block, so the
+ * value it promises has to be in it by the time it can be named.  No hold is
+ * registered for that write -- a create that takes no write turn has none to
+ * register it under -- and a producer flush over an unheld range is otherwise
  * the same call every write turn's purge makes. */
 bool arts_db_fam_slot_create(struct arts_db_cache_s *cache, bool zero_first) {
   if (cache == NULL || cache->db_size == 0 ||
@@ -1417,15 +1417,12 @@ void arts_db_debug_quiescence_check(void) {
 #ifdef ARTS_FAM
         /* The arm's own quiescence, beside the RETAIN block above: what a
          * data block whose storage lives in fabric-attached memory looks
-         * like once every runtime thread has joined.  The skip condition
-         * that wraps this whole per-DB body covers exactly one case — a home
-         * block marked for teardown whose zero edge has not arrived — so a
-         * descriptor reaching here is otherwise live.  Checks 1-3 read only
-         * cache fields and need no guard; the home check runs only where
-         * db->home_initialized says a home directory exists, exactly like
-         * the VAL/INV block above — a cache-only stub ends at lock_state,
-         * and reading past it on a non-home rank would be a heap-buffer
-         * overflow on every cached block of every non-home rank. */
+         * like once every runtime thread has joined.  Cache fields need no
+         * guard; a home field is read only where db->home_initialized says a
+         * home directory exists, exactly like the VAL/INV block above — a
+         * cache-only stub ends at lock_state, and reading past it on a
+         * non-home rank would be a heap-buffer overflow on every cached
+         * block of every non-home rank. */
         {
           uint64_t cw =
               atomic_load_explicit(&c->cache_state, memory_order_acquire);
@@ -1464,6 +1461,30 @@ void arts_db_debug_quiescence_check(void) {
                        (unsigned long)c->db_guid, (unsigned long long)cw);
             viol++;
           }
+#ifdef ARTS_FAM_DIRECT
+          /* 4. Nothing stands between the store and an EDT: where a holder's
+           * working bytes ARE the block's store, a descriptor naming anything
+           * else is storage some site materialized instead of adopting the
+           * slot.  A home a destroy has marked is left out: a destroy that
+           * found holders leaves the block undefined. */
+          if (!(db->home_initialized &&
+                EXCL_STATE_TEARDOWN(atomic_load_explicit(
+                    &db->lock_state, memory_order_acquire)) != 0u)) {
+            arts_shared_ptr_t bh = arts_db_buf_acquire(c);
+            const struct arts_db_buffer_s *b =
+                (const struct arts_db_buffer_s *)(bh ? arts_shared_get(bh)
+                                                     : NULL);
+            if (b != NULL && !arts_fam_contains(b->data)) {
+              ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests with a payload "
+                         "that is not its slot",
+                         (unsigned long)c->db_guid);
+              viol++;
+            }
+            if (bh) {
+              arts_db_buf_release(&bh);
+            }
+          }
+#endif
 #ifdef ARTS_FAM_BACKEND_SHM
           /* Strict mode's hold registry: a count still nonzero for a line
            * of this block's slot at teardown is a hold whose matching
@@ -1478,27 +1499,38 @@ void arts_db_debug_quiescence_check(void) {
             viol++;
           }
 #endif
-          /* 4. The home rests free. */
+          /* 5. No waiter is stranded at the home.  A count left on the word
+           * with nobody queued behind it is a hold whose fire-and-forget
+           * release was still in flight when the network stopped -- a program
+           * may shut down while holding -- and nothing can ever wait on it;
+           * a count WITH a waiter queued is a release that will never come
+           * for someone who asked. */
           if (db->home_initialized) {
             uint64_t ls =
                 atomic_load_explicit(&db->lock_state, memory_order_acquire);
-            if (EXCL_STATE_W(ls) != 0u || EXCL_STATE_R(ls) != 0u) {
+            bool rwq = !arts_home_grantreq_queue_empty(&db->rw_waiters);
+            bool roq = !arts_lf_stack_empty(&db->ro_waiters);
+            if ((EXCL_STATE_W(ls) != 0u || EXCL_STATE_R(ls) != 0u) &&
+                (rwq || roq)) {
               ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home lock_state not "
-                         "idle at teardown (w=%u r=%u)",
+                         "idle at teardown with a waiter queued "
+                         "(w=%u r=%u teardown=%u)",
                          (unsigned long)c->db_guid, EXCL_STATE_W(ls),
-                         EXCL_STATE_R(ls));
+                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
               viol++;
             }
-            if (!arts_home_grantreq_queue_empty(&db->rw_waiters)) {
+            if (rwq) {
               ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RW waiters "
-                         "at teardown",
-                         (unsigned long)c->db_guid);
+                         "at teardown (w=%u r=%u teardown=%u)",
+                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
+                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
               viol++;
             }
-            if (!arts_lf_stack_empty(&db->ro_waiters)) {
+            if (roq) {
               ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RO waiters "
-                         "at teardown",
-                         (unsigned long)c->db_guid);
+                         "at teardown (w=%u r=%u teardown=%u)",
+                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
+                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
               viol++;
             }
           }

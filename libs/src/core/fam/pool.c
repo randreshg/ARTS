@@ -450,6 +450,19 @@ void arts_fam_free(void *p) {
                                               fam_meta_make(FAM_FREE, c),
                                               memory_order_acq_rel,
                                               memory_order_acquire)) {
+      /* Until the slot is handed out again it still carries its last
+       * block's bytes, so a holder that outlived the block would read
+       * plausible stale values; the poison makes that read reproducibly
+       * wrong.  The write races nothing although it may run on a rank other
+       * than the one that tore the block down: the slot is freed only once
+       * nothing anywhere holds it, it sits on no free list until the push
+       * below publishes these bytes, and only its owner allocates from this
+       * slice. */
+      if (arts_fam_backend_strict()) {
+        size_t n = (size_t)ARTS_FAM_GRANULE << c;
+        memset(p, (int)ARTS_FAM_POISON_BYTE, n);
+        arts_fam_flush_producer(p, n);
+      }
       fam_push(c, g);
       return;
     }

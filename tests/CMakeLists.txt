@@ -227,6 +227,13 @@ endif()
 if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
     list(APPEND TEST_PROGRAMS fam_slot_discard_unadopt)
     list(APPEND TEST_PROGRAMS fam_direct_payload_identity)
+    if(ARTS_FAM_BACKEND STREQUAL "SHM")
+        # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
+        # inherited-mapping backend has, like fam_strict_flush below: the other
+        # backend refuses fam_strict at config load, so its strict cfg is not a
+        # run this test could make.
+        list(APPEND TEST_PROGRAMS fam_direct_fresh_slot)
+    endif()
 endif()
 
 # CXL datablocks exist only in a CXL build, and there only under EXCL x PURGE
@@ -1473,17 +1480,15 @@ set(_writer_ro_cases
     coherence_writer_ro_overlap_2n_io)
 foreach(_t IN LISTS _writer_ro_cases)
     set_property(TEST ${_t} APPEND PROPERTY LABELS "coherence_stress")
-    # A wait-structure that survives to teardown is a lost wake this run's
-    # own pass criteria may have masked — the runtime prints the marker,
-    # the stress oracles turn it into a failure.
-    set_property(TEST ${_t} APPEND PROPERTY
-        FAIL_REGULAR_EXPRESSION "QUIESCENCE-DEBUG:")
     # A protocol that ends the run early (spurious shutdown) would exit 0 with
-    # nothing verified — require the end-of-run scalar, and fail on any
-    # acquirer's violation report.
+    # nothing verified — require the end-of-run scalar.  Fail on any
+    # acquirer's violation report, and on a wait-structure that survives to
+    # teardown: a lost wake this run's own pass criteria may have masked.
+    # One property, both patterns: a later set of FAIL_REGULAR_EXPRESSION
+    # replaces an earlier one.
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: rw-write window/ro-overlap rounds=16 dbs=8 reads=1024 writes=1152"
-        FAIL_REGULAR_EXPRESSION "FAIL:")
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
 # --- DB-WRF / FLUSH arm tests ------------------------------------------------
@@ -1585,6 +1590,24 @@ if(ARTS_FAM_TREE_RESIDENCY)
         # addresses differ by construction, so this asserts a residency rather
         # than a protocol.
         register_fam_single_node_test(fam_direct_payload_identity TIMEOUT 60)
+        if(ARTS_FAM_BACKEND STREQUAL "SHM")
+            # The one test that names its cfg instead of going through the
+            # resolver.  What it asserts -- a fresh store reads as the poison
+            # byte -- exists only under the second coherency domain, so it has
+            # to be strict in BOTH passes of the suite; the resolver makes a
+            # test strict only in the pass ARTS_FAM_TEST_STRICT selects, which
+            # would leave this one doing nothing in the pass everything else
+            # runs in.  Its properties are register_fam_single_node_test's,
+            # with that one line different.
+            add_test(NAME fam_direct_fresh_slot COMMAND fam_direct_fresh_slot
+                     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+            set_tests_properties(fam_direct_fresh_slot PROPERTIES
+                LABELS "single_node" TIMEOUT 60
+                RESOURCE_LOCK "arts_runtime"
+                FAIL_REGULAR_EXPRESSION "FAIL"
+                ENVIRONMENT
+                "ARTS_CONFIG=${ARTS_TEST_CFG_DIR}/1n_strict.cfg")
+        endif()
     endif()
     # A cache made by an acquiring create is on the block's destroy roster, so
     # it gives its store up with the block instead of outliving it.  Needs a

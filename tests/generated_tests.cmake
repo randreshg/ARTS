@@ -481,8 +481,13 @@ register_single_node_test(excl_destroy_during_acquire TIMEOUT 60)
 add_arts_test(excl_purge_grant_d6_d7)
 register_single_node_test(excl_purge_grant_d6_d7 TIMEOUT 60)
 register_multinode_test(excl_purge_grant_d6_d7 TIMEOUT 60)
-set_tests_properties(excl_purge_grant_d6_d7 PROPERTIES PASS_REGULAR_EXPRESSION "excl_purge_grant_d6_d7 D7: .* — PASS|SKIP excl_purge_grant_d6_d7")
-set_tests_properties(excl_purge_grant_d6_d7_2n PROPERTIES PASS_REGULAR_EXPRESSION "excl_purge_grant_d6_d7 D7: .* — PASS|SKIP excl_purge_grant_d6_d7")
+# The end-of-run line is printed only once both halves have finished, so
+# requiring it on every variant turns a stranded writer into a failure.
+foreach(_v "" _2n _3n _4n _2n_io)
+    set_tests_properties(excl_purge_grant_d6_d7${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION
+        "excl_purge_grant_d6_d7 D7: .* D6 chain verified — PASS|SKIP excl_purge_grant_d6_d7")
+endforeach()
 
 # T098 EXPOSES B-lock-grant-destroyed: expected to FAIL (dropped GRANT / stall) under EXCL at
 
