@@ -185,6 +185,20 @@ void arts_fam_boot_launched(void) {
   unsetenv(ARTS_FAM_SHM_ENV);
 }
 
+/* The address frame carries the two fields in every build, so these two hooks
+ * are called in every build; this backend has no arena to name there, because
+ * a rank inherits the pool rather than being told where it is. */
+void arts_fam_device_publish(uint64_t *base, uint64_t *size) {
+  *base = 0;
+  *size = 0;
+}
+
+void arts_fam_device_record(unsigned from_rank, uint64_t base, uint64_t size) {
+  (void)from_rank;
+  (void)base;
+  (void)size;
+}
+
 void arts_fam_backend_map(unsigned rank, unsigned nranks, void **out_base,
                           uint64_t *out_bytes) {
   (void)rank;
@@ -249,6 +263,8 @@ void arts_fam_backend_config_check(const struct arts_config_s *config) {
 
 static inline void fam_flush_line(const void *p) {
   if (g_clflushopt) {
+    /* The 0x66 prefix turns clflush into clflushopt, which no -march is
+     * needed to assemble. */
     __asm__ __volatile__(".byte 0x66; clflush %0" : "+m"(*(volatile char *)p));
   } else {
     __asm__ __volatile__("clflush %0" : "+m"(*(volatile char *)p));
@@ -257,12 +273,15 @@ static inline void fam_flush_line(const void *p) {
 
 void arts_fam_backend_flush(const void *p, size_t bytes, bool producer) {
   /* The instruction writes back AND invalidates, so one sweep serves both
-   * roles; only the fence differs. */
-  const char *s =
-      (const char *)((uintptr_t)p & ~(uintptr_t)(ARTS_FAM_GRANULE - 1u));
-  const char *e = (const char *)p + bytes;
-  for (; s < e; s += ARTS_FAM_GRANULE) {
-    fam_flush_line(s);
+   * roles; only the fence differs.  An empty range sweeps nothing but still
+   * fences, as the contract promises. */
+  if (bytes) {
+    const char *s =
+        (const char *)((uintptr_t)p & ~(uintptr_t)(ARTS_FAM_GRANULE - 1u));
+    const char *e = (const char *)p + bytes;
+    for (; s < e; s += ARTS_FAM_GRANULE) {
+      fam_flush_line(s);
+    }
   }
   if (producer) {
     /* The write-backs must precede whatever tells a peer to read them. */

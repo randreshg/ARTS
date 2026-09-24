@@ -52,6 +52,7 @@
  * a compensating pad), not to report a live defect.
  */
 
+#include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
 
 #include <stddef.h>
@@ -142,6 +143,24 @@ _Static_assert(MSG_DB_FLUSH_ANNOUNCE == 46,
 _Static_assert(MSG_DB_FLUSH_CTS == 47, "ordinal MSG_DB_FLUSH_CTS drifted");
 _Static_assert(MSG_COUNT == 48,
                "MSG_COUNT drifted (wire-compat: must be 48 in all configs)");
+
+/* ===== (1b) the bootstrap address frame is wire too, and its header
+ * transfer's size is computed from offsetof(addr) on BOTH sides of the
+ * exchange.  ARTS_NET_ADDR_MAX is 256u in net.h; the sum is spelled out so
+ * that a change to either number fails here and is read as a wire change,
+ * which it is. ===== */
+_Static_assert(offsetof(struct arts_net_addr_frame_s, rank) == 0u,
+               "address frame: rank drifted");
+_Static_assert(offsetof(struct arts_net_addr_frame_s, len) == 4u,
+               "address frame: len drifted");
+_Static_assert(offsetof(struct arts_net_addr_frame_s, fam_base) == 8u,
+               "address frame: fam_base drifted");
+_Static_assert(offsetof(struct arts_net_addr_frame_s, fam_size) == 16u,
+               "address frame: fam_size drifted");
+_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 24u,
+               "address frame: the blob's offset drifted");
+_Static_assert(sizeof(struct arts_net_addr_frame_s) == 24u + 256u,
+               "address frame: total size drifted");
 
 /* ===== (2) header layout — read before the message type is known. ===== */
 _Static_assert(offsetof(struct arts_msg_header_s, message_type) == 0,

@@ -43,6 +43,7 @@
 #include <string.h>
 #include <sys/socket.h>
 
+#include "arts/fam/pool.h"
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
 #include "arts/utils/malloc.h"
@@ -58,17 +59,6 @@
 extern int *remote_socket_send_list;
 extern int *remote_socket_receive_list;
 extern unsigned int ports;
-
-/* One length-prefixed address frame: the sender's rank (so the receiver can
- * demux acceptance-ordered connections back to rank order), then the fabric
- * address blob length, then the blob.  The rank/len fields are host-endian on
- * the wire: peers share one ABI/endianness (the launcher never spans
- * heterogeneous nodes), so no byte-order conversion is applied. */
-struct net_addr_frame_s {
-  uint32_t rank;
-  uint32_t len;
-  uint8_t addr[ARTS_NET_ADDR_MAX];
-};
 
 static bool xfer_write_all(int fd, const void *buf, size_t len) {
   const uint8_t *p = (const uint8_t *)buf;
@@ -118,11 +108,19 @@ void arts_net_exchange_addresses(void) {
   memcpy(table + (size_t)self * own_len, own, own_len);
 
   /* Send our frame to every peer over that peer's port-0 send socket. */
-  struct net_addr_frame_s out;
+  struct arts_net_addr_frame_s out;
   out.rank = self;
   out.len = own_len;
+  /* Not decoration: `out` is not zero-initialised here, so without these two
+   * stores a build with no fabric-attached memory would ship two words of
+   * stack garbage in every frame. */
+  out.fam_base = 0;
+  out.fam_size = 0;
+#ifdef ARTS_FAM
+  arts_fam_device_publish(&out.fam_base, &out.fam_size);
+#endif
   memcpy(out.addr, own, own_len);
-  size_t frame_bytes = offsetof(struct net_addr_frame_s, addr) + own_len;
+  size_t frame_bytes = offsetof(struct arts_net_addr_frame_s, addr) + own_len;
   for (unsigned r = 0; r < n; r++) {
     if (r == self) {
       continue;
@@ -139,8 +137,8 @@ void arts_net_exchange_addresses(void) {
   unsigned peers = n - 1;
   for (unsigned c = 0; c < peers; c++) {
     int fd = remote_socket_receive_list[(size_t)c * ports + 0];
-    struct net_addr_frame_s in;
-    if (!xfer_read_all(fd, &in, offsetof(struct net_addr_frame_s, addr))) {
+    struct arts_net_addr_frame_s in;
+    if (!xfer_read_all(fd, &in, offsetof(struct arts_net_addr_frame_s, addr))) {
       ARTS_ERROR("arts_net_exchange: address frame header recv failed: %s",
                  strerror(errno));
     }
@@ -150,6 +148,9 @@ void arts_net_exchange_addresses(void) {
                  "means the peer's endpoint carries another address format",
                  in.rank, in.len, n, own_len);
     }
+#ifdef ARTS_FAM
+    arts_fam_device_record(in.rank, in.fam_base, in.fam_size);
+#endif
     if (!xfer_read_all(fd, in.addr, in.len)) {
       ARTS_ERROR("arts_net_exchange: address blob recv from rank %u failed: %s",
                  in.rank, strerror(errno));

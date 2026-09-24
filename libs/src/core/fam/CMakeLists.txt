@@ -4,14 +4,16 @@
 # own library is FAM-enabled compiles and links these objects.
 if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
     # Exactly one backend TU belongs beside pool.c -- the two backends cannot
-    # both compile in one tree, so the selection happens here, not behind an
-    # internal #ifdef.  Until a backend TU exists for the selected value the
-    # module carries pool.c alone, and the assertion below refuses the tree
-    # rather than leaving it to fail at link time for want of the backend
-    # symbols pool.c calls.
+    # both compile in one tree (device.c includes headers that exist only
+    # where the device library does), so the selection happens here, not
+    # behind an internal #ifdef.  Choosing at this level is what guarantees
+    # that every member of the backend seam is defined by the TU the build
+    # compiled.
     set(ARTS_FAM_SOURCES pool.c)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND ARTS_FAM_SOURCES shm.c)
+    else()
+        list(APPEND ARTS_FAM_SOURCES device.c)
     endif()
     if(ARTS_FAM_TREE_RESIDENCY STREQUAL "")
         # Source-list carrier: these objects are never compiled in this tree.

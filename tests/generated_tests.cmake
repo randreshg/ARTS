@@ -1277,4 +1277,10 @@ if(ARTS_FAM_BACKEND STREQUAL "SHM")
     # fam_stubs.c.
     add_pure_unit_src(fam_shm_handoff PASS_REGEX "PASS fam_shm_handoff"
                       TIMEOUT 60)
+    # Asserts the bootstrap address frame against the transport header itself,
+    # so it needs no fam TU at all: that half runs wherever this registration
+    # does.  Its second half compiles only where device.c does, which is the
+    # one backend no tree here can configure.
+    add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
+                      TIMEOUT 30)
 endif()
