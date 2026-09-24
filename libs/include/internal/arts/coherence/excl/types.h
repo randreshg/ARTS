@@ -469,7 +469,7 @@ struct arts_db_cache_s {
    * (single in-flight migration per owner — home serializes by CONFIRM), read
    * by whichever actor ships the DELIVER on the wc 0-edge. */
   struct arts_rdzv_landing_s migrate_rdzv;
-#else
+#elif !defined(ARTS_FAM)
   /* Home's publish landing for THIS grant's release (advertised in the
    * grant, 1:1 with the eventual RW release).  Written by the grant handler
    * before any local writer runs; consumed by the single ACK-gated releaser. */
@@ -519,7 +519,7 @@ struct arts_db_cache_s {
 #ifdef ARTS_RELEASE_RETAIN
   arts_lf_stack_t ro_serve; /* RO-phase serve list (owner only; RETAIN only) */
   struct arts_rdzv_landing_s migrate_rdzv; /* pending migrate target landing */
-#else
+#elif !defined(ARTS_FAM)
   struct arts_rdzv_landing_s home_pub_rdzv; /* grant's publish landing */
 #endif
   arts_guid_t db_guid;
@@ -553,6 +553,18 @@ struct arts_db_cache_s {
    * doing; this byte says only that a create here took one. */
   uint8_t creator_hold;
 };
+#endif
+
+#ifdef ARTS_FAM
+/* The arm's own observables: one read of the block's store and one write back
+ * per turn, and how many of those reads ran on a progress thread.  Plain
+ * integers accessed with the atomic builtins, like the cache's field, so the
+ * C and C++ views of this header stay identical.  Read only by tests — the
+ * counter subsystem is compiled out by the tree's counters-off default, and a
+ * counter-based oracle would change what the whole suite runs under. */
+extern uint64_t arts_fam_fetches;
+extern uint64_t arts_fam_purges;
+extern uint64_t arts_fam_progress_fetches;
 #endif
 
 /** Internal DataBlock descriptor (EXCL protocol).

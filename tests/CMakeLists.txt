@@ -209,6 +209,9 @@ endif()
 if(ARTS_FAM_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS fam_alloc_dist)
     list(APPEND TEST_PROGRAMS fam_slot_rule)
+    list(APPEND TEST_PROGRAMS fam_remote_write_read)
+    list(APPEND TEST_PROGRAMS fam_ro_cohort)
+    list(APPEND TEST_PROGRAMS fam_create_release_remote)
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         list(APPEND TEST_PROGRAMS fam_slices)
         # Names ARTS_FAM_POISON_BYTE through a strict-mode behaviour only the
@@ -1456,6 +1459,17 @@ if(ARTS_FAM_TREE_RESIDENCY)
     set_tests_properties(fam_slot_rule fam_slot_rule_2n fam_slot_rule_3n
                          fam_slot_rule_4n fam_slot_rule_2n_io PROPERTIES
                          FAIL_REGULAR_EXPRESSION "FAIL")
+    # The two funnels, as an OCR program sees them: a value written on one rank
+    # and read on another, a reader cohort with two readers on one rank, and a
+    # creator's own turn released away from the block's home.  Multinode only —
+    # every one of them needs a rank that is not the block's home.
+    foreach(_fam_arm fam_remote_write_read fam_ro_cohort
+                     fam_create_release_remote)
+        register_multinode_test(${_fam_arm} TIMEOUT 60)
+        set_tests_properties(${_fam_arm}_2n ${_fam_arm}_3n ${_fam_arm}_4n
+                             ${_fam_arm}_2n_io PROPERTIES
+                             FAIL_REGULAR_EXPRESSION "FAIL")
+    endforeach()
     if(ARTS_FAM_BACKEND STREQUAL "SHM")
         # Whitebox test of the inherited mapping's fixed address: fam_slices.c
         # dereferences ARTS_FAM_BASE, which only the SHM backend defines --
