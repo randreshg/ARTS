@@ -1,6 +1,5 @@
 /* Standalone: no runtime, no fam module.  Asserts the configured pool base is
  * mappable and stays mapped while the process allocates and threads. */
-#define _GNU_SOURCE
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>

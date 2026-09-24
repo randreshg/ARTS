@@ -1246,4 +1246,30 @@ set_tests_properties(utility_api PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 if(ARTS_FAM_BACKEND STREQUAL "SHM")
     add_pure_unit_src(fam_base_address PASS_REGEX "PASS fam_base_address"
                       DEFINES ARTS_FAM_BASE=${ARTS_FAM_BASE}ULL TIMEOUT 60)
+    # These three COMPILE libs/src/core/fam/pool.c into the test binary, so they
+    # need ARTS_FAM whatever the enclosing tree's protocol is -- and a tree can
+    # legitimately have the backend with a non-EXCL protocol (a benchmark tree
+    # carries the two variants and keeps its own default arm).  In such a tree
+    # add_pure_unit_src's four-argument arts_apply_protocol resolves the
+    # residency to the TREE's, which is empty, and pool.c would then compile
+    # against pool.h's non-FAM arm: a `static inline` arts_fam_contains followed
+    # by pool.c's non-static definition, and an undeclared arts_fam_backend_map
+    # under the -Werror=implicit-function-declaration arts_apply_protocol itself
+    # adds.  Naming the definitions per target is what makes these three
+    # independent of the tree's arm; they are the ONLY fam targets that do,
+    # because they are the only ones that compile a fam TU.
+    add_pure_unit_src(fam_pool_alloc PASS_REGEX "PASS fam_pool_alloc" TIMEOUT 120
+                      DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
+                      SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
+                              unit/fam_stubs.c)
+    add_pure_unit_src(fam_contains_preinit PASS_REGEX "PASS fam_contains_preinit"
+                      TIMEOUT 30
+                      DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
+                      SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
+                              unit/fam_stubs.c)
+    add_pure_unit_src(fam_double_free PASS_REGEX "PASS fam_double_free"
+                      TIMEOUT 60
+                      DEFINES ARTS_FAM=1 ARTS_FAM_STAGED=1 ARTS_FAM_BACKEND_SHM=1
+                      SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
+                              unit/fam_stubs.c)
 endif()
