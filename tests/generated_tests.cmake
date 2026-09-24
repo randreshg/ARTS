@@ -1016,12 +1016,12 @@ foreach(_v "" _2n _3n _4n _2n_io)
     set_tests_properties(edt_finish_scope_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_finish_scope_balance|SKIP edt_finish_scope_balance")
 endforeach()
 
-# edt_remote_create_race: needs 2+ ranks; SKIPs cleanly on 1n.
-add_arts_test(edt_remote_create_race)
-register_multinode_test(edt_remote_create_race TIMEOUT 60)
+# edt_remote_create_reordered_satisfy: needs 2+ ranks; SKIPs cleanly on 1n.
+add_arts_test(edt_remote_create_reordered_satisfy)
+register_multinode_test(edt_remote_create_reordered_satisfy TIMEOUT 60)
 foreach(_v 2n 3n 4n 2n_io)
-    set_tests_properties(edt_remote_create_race_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS edt_remote_create_race|SKIP edt_remote_create_race")
+    set_tests_properties(edt_remote_create_reordered_satisfy_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS edt_remote_create_reordered_satisfy|SKIP edt_remote_create_reordered_satisfy")
 endforeach()
 
 add_arts_test(edt_signal_alias)

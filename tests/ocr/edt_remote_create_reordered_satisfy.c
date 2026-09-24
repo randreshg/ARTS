@@ -1,43 +1,36 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T136 — remote EDT create race-loser cleanup + reordered remote satisfy
- *        (arts_handler_edt_create install_if_absent loser path; sentinel).
+ * T136 — remote pre-reserved EDT create with its satisfies reordered ahead
+ *        (arts_handler_edt_create sentinel; OoO replay on the home rank).
  *
  * Property under test (arts_handler_edt_create)
  * ---------------------------------------------
- * When an EDT is created with a pre-reserved GUID homed on a REMOTE rank, the
- * RX handler arts_handler_edt_create:
+ * When an EDT is created with a pre-reserved GUID homed on a REMOTE rank, a
+ * satisfy or dependence that reaches the home BEFORE the create queues OoO on
+ * the still-reserved slot.  The RX handler arts_handler_edt_create:
  *   - bumps a sentinel (depc_needed += 1) before the EDT becomes visible,
- *   - install_if_absent into the route table,
- *     * WINNER  → removes the sentinel; if 0, fires; any queued/concurrent
- *                 satisfy that observed the 0 transition must NOT also fire
- *                 (single dispatch),
- *     * LOSER   → if a finish-scope proxy LATCH was allocated, DECR it
- * (forwards the DECR to the remote parent, cancelling the source-rank INCR so
- * the parent scope stays balanced), then free via the deleter and return.
- *
- * Two concurrent creates of the SAME migrated GUID therefore must yield exactly
- * one installed EDT (no double fire, no leak) and a balanced parent finish
- * scope.  Additionally a remote satisfy that arrives BEFORE the remote create
- * (reordered ahead) queues OoO on the home rank and is replayed under the
- * sentinel, still firing the EDT exactly once.
+ *   - installs the EDT, replaying the queued satisfies under the sentinel,
+ *   - removes the sentinel; exactly one party observes the 0 transition, so
+ *     the EDT fires exactly once (no double dispatch, no lost fire),
+ *   - chains the EDT's finish scope to the remote parent through a proxy
+ *     latch, so the parent scope drains once the EDT has run.
  *
  * Scenario (deterministic, single driver rank)
  * --------------------------------------------
  * Reserve an EDT GUID homed on rank W (remote when nranks>1, else rank 0).
  *   1) Pre-satisfy the EDT's one real dep (a VAL) against the still-RESERVED
- *      remote GUID — this is the "satisfy reordered ahead of create": it queues
- *      OoO on W.
- *   2) Create that GUID TWICE (same hint.guid, same rank W, same finish scope).
- *      On W the first install wins; the second is the race-loser → its proxy
- *      DECR forwards and it is freed.  The winner, with its dep already queued,
- *      fires exactly once under the sentinel.
+ *      remote GUID, and wire its counter dep — both reach W ahead of the
+ *      create and queue OoO there.
+ *   2) Create that GUID, targeting W under a finish scope.  On W the install
+ *      replays both, and the EDT fires exactly once under the sentinel.
  * A finish event gates a collector; main_edt waits on it.  The member bumps a
- * shared counter exactly once.  Imbalance → the scope never drains → TIMEOUT;
- * a double fire → counter == 2 → FAIL.
+ * shared counter exactly once.  A lost fire → the scope never drains →
+ * TIMEOUT; a double fire → counter == 2 → FAIL.
  *
- * exposes B (race-loser balance / single-fire). Requires >1 rank to exercise
- * the remote proxy path; SKIPs cleanly to a trivial single-rank check on 1n.
+ * Creating one pre-reserved GUID twice is outside the labeled-GUID contract
+ * (the runtime carries nothing to survive it), so this test drives ONE
+ * create.  Requires >1 rank to exercise the remote path; SKIPs cleanly to a
+ * trivial single-rank check on 1n.
  */
 
 #include "arts.h"
@@ -69,11 +62,11 @@ void collector(uint32_t pc, const uint64_t *pv, uint32_t dc,
   (void)dc;
   ctr_t *c = (ctr_t *)dv[1].ptr;
   unsigned int f = atomic_load_explicit(&c->fired, memory_order_relaxed);
-  arts_printf("edt_remote_create_race: member fired=%u\n", f);
+  arts_printf("edt_remote_create_reordered_satisfy: member fired=%u\n", f);
   if (f == 1u) {
-    arts_printf("PASS edt_remote_create_race\n");
+    arts_printf("PASS edt_remote_create_reordered_satisfy\n");
   } else {
-    arts_printf("FAIL edt_remote_create_race: member fired %u times (want 1)\n",
+    arts_printf("FAIL edt_remote_create_reordered_satisfy: member fired %u times (want 1)\n",
                 f);
     arts_abort(1);
   }
@@ -87,14 +80,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  arts_printf("=== edt_remote_create_race ===\n");
+  arts_printf("=== edt_remote_create_reordered_satisfy ===\n");
 
   unsigned int nranks = arts_get_total_ranks();
   if (nranks < 2) {
-    /* The race-loser/proxy path is a REMOTE-create property; with one rank the
-     * pre-reserved create is local (unconditional replace, not the
-     * install_if_absent loser path).  Nothing to exercise — skip cleanly. */
-    arts_printf("SKIP edt_remote_create_race: requires 2+ ranks (got %u)\n",
+    /* The reorder is a REMOTE-create property: with one rank the pre-reserved
+     * create is local and nothing travels ahead of it.  Skip cleanly. */
+    arts_printf("SKIP edt_remote_create_reordered_satisfy: requires 2+ ranks (got %u)\n",
                 nranks);
     arts_shutdown();
     return;
@@ -122,12 +114,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Wire the counter dep (slot 1, RW) — delivered when the EDT installs. */
   arts_add_dependence(cdb, mguid, 1, DB_MODE_RW);
 
-  /* (2) Create the SAME migrated GUID twice; both target rank W with the same
-   * finish scope.  On W the second install loses → proxy DECR forwards (scope
-   * stays balanced) and it is freed; the winner fires once under the sentinel.
-   */
-  arts_edt_create(member, 1, pv, 2,
-                  &(arts_edt_hint_t){.guid = mguid, .finish_event = fe});
+  /* (2) Create the migrated GUID, targeting rank W under the finish scope.
+   * On W the install replays both queued satisfies, and the EDT fires once
+   * under the sentinel. */
   arts_edt_create(member, 1, pv, 2,
                   &(arts_edt_hint_t){.guid = mguid, .finish_event = fe});
 
