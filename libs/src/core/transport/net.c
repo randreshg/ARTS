@@ -38,6 +38,8 @@
 ******************************************************************************/
 #include "arts/transport/net.h"
 #include <errno.h>
+#include <stdio.h>
+#include "arts/runtime_state.h"
 
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -166,6 +168,13 @@ static struct {
                          * order posted: what lets a payload above max_msg go
                          * as pieces paired on the last piece's immediate      */
   bool is_cxi;          /* negotiated provider is the cxi core (selfcheck)     */
+  /* First completion error seen while no shutdown was recognized here, as a
+   * monotonic stamp (0 = none) and the provider's text.  A lost transfer is
+   * fatal on a live run, but a peer already shutting down flushes this rank's
+   * transfers before this rank hears of the shutdown, so the verdict waits a
+   * grace period for shutdown recognition before it is fatal. */
+  _Atomic uint64_t live_cq_err_ns;
+  char live_cq_err_what[160];
 
   fi_addr_t *peers;     /* rank-indexed AV handles (fi_addr_t rank == rank)    */
   unsigned peer_count;
@@ -907,6 +916,38 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
   }
 }
 
+static inline uint64_t net_now_ns(void) {
+  struct timespec ts;
+  (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* How long a live run may carry a completion error before it is judged lost
+ * rather than a peer's teardown this rank has not heard of yet.  Shutdown
+ * reaches every rank within a message hop of its recognition, so the window
+ * only has to cover a slow hop, not a computation. */
+#define ARTS_NET_LIVE_CQ_ERR_GRACE_NS (10ull * 1000000000ull)
+
+/* Polled by every progress pass: a completion error recorded on a live run
+ * becomes fatal once the grace period passes with no shutdown recognized. */
+static inline void net_live_cq_err_check(void) {
+  uint64_t t = atomic_load_explicit(&g_net.live_cq_err_ns, memory_order_acquire);
+  if (t == 0) {
+    return;
+  }
+  if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE) != 0 ||
+      atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
+    return;
+  }
+  if (net_now_ns() - t < ARTS_NET_LIVE_CQ_ERR_GRACE_NS) {
+    return;
+  }
+  ARTS_ERROR("arts_net: cq error on a live run, and no shutdown recognized "
+             "within %llu s — a transfer was lost and nothing retransmits it: %s",
+             (unsigned long long)(ARTS_NET_LIVE_CQ_ERR_GRACE_NS / 1000000000ull),
+             g_net.live_cq_err_what);
+}
+
 /* Reclaim a failed transmit's txn from a CQ error entry (both live and teardown
  * paths).  A failed send still owns its bookkeeping; reclaim it so it does not
  * leak and the outstanding count stays honest for the shutdown drain. */
@@ -914,8 +955,27 @@ static void net_reap_cq_err(void) {
   struct fi_cq_err_entry err;
   memset(&err, 0, sizeof(err));
   if (fi_cq_readerr(g_net.cq, &err, 0) == 1) {
-    ARTS_WARN("arts_net: cq error: %s",
-              fi_cq_strerror(g_net.cq, err.prov_errno, err.err_data, NULL, 0));
+    const char *what =
+        fi_cq_strerror(g_net.cq, err.prov_errno, err.err_data, NULL, 0);
+    ARTS_WARN("arts_net: cq error: %s (flags=0x%llx err=%d prov_errno=%d)",
+              what, (unsigned long long)err.flags, err.err, err.prov_errno);
+    /* A failed transfer is a lost message, and nothing above the transport
+     * retransmits: on a live run the outcome is a wedge that only the cell's
+     * wall budget ends.  Once shutdown is recognized peers tear their
+     * endpoints down in no agreed order, and a transfer flushed by that is
+     * the expected residue — and a peer can be that far ahead of this rank,
+     * so the first live error only starts the clock (net_live_cq_err_check). */
+    if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE) == 0 &&
+        !atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
+      uint64_t none = 0;
+      if (atomic_compare_exchange_strong_explicit(
+              &g_net.live_cq_err_ns, &none, net_now_ns(),
+              memory_order_acq_rel, memory_order_relaxed)) {
+        snprintf(g_net.live_cq_err_what, sizeof(g_net.live_cq_err_what),
+                 "%s (flags=0x%llx err=%d prov_errno=%d)", what,
+                 (unsigned long long)err.flags, err.err, err.prov_errno);
+      }
+    }
     if ((err.flags & (FI_SEND | FI_WRITE)) && err.op_context != NULL) {
       net_txn_complete((struct net_txn_s *)err.op_context);
       atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
@@ -1136,6 +1196,7 @@ bool arts_net_progress(void) {
    * thread busy-polls with the architectural pause hint — a sleeping poll here
    * would put a fixed per-hop latency floor under every message an idle rank
    * receives, which multiplies across latency-bound message chains). */
+  net_live_cq_err_check();
   bool did = net_reap_and_dispatch();
   did |= net_drain_all_rings();
   return did;
