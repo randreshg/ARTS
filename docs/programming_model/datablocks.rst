@@ -34,17 +34,13 @@ coherence for the DB:
      - Regular DRAM, runtime-coherent.  The default type for most use
        cases.  Its consistency contract is the build-time memory model;
        the coherence protocol implementing it is also selected at build
-       time (see :ref:`coherence_protocols`).
+       time (see :ref:`coherence_protocols`).  In a CXL build
+       (``ARTS_USE_CXL``) an ``ARTS_DB``'s bytes rest in the CXL store;
+       the kind does not change.
    * - ``ARTS_DB_PIN``
      - Regular DRAM, node-pinned, no DB-level coherence.  Only directly
        accessible on the creating node; the application orders accesses
        via events.
-   * - ``ARTS_DB_CXL``
-     - CXL shared memory.  DEPRECATED, unmaintained and cannot be built
-       (``ARTS_USE_CXL=ON`` cannot be enabled: it is a configure error).
-       Fabric-attached memory is reached through the coherence protocol's
-       canonical store (``ARTS_FAM_BACKEND``), not through a storage kind,
-       so ``ARTS_DB`` needs no variant for it.
    * - ``ARTS_DB_GPU``
      - GPU staging.  Concurrent per-device replicas merged by reduction
        at release (app-ordered).
@@ -53,8 +49,7 @@ coherence for the DB:
        coherence.
 
 The ``ARTS_DB_DEFAULT`` macro is the experiment-wide subtype every
-benchmark uses; CMake (``ARTS_DEFAULT_DB_KIND``) expands it to
-``ARTS_DB``.
+benchmark uses; it always expands to ``ARTS_DB``.
 
 Access Modes
 ------------
@@ -112,7 +107,6 @@ See :ref:`coherence_protocols` for the normative definition of all axes.  The
 other subtypes (``ARTS_DB_PIN``, ``ARTS_DB_GPU``,
 ``ARTS_DB_GPU_PIN``) carry no DB-level runtime coherence; the
 application orders conflicting accesses with events (full DRF for the non-coherent storage kinds).
-``ARTS_DB_CXL`` is unmaintained and cannot be built.
 
 Creating a DataBlock
 --------------------

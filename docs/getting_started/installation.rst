@@ -160,39 +160,39 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - General allocator — ``mimalloc`` (default; vendored static, the
        only multinode-capable choice) or ``system`` (libc malloc;
        single-node / sanitizer builds only).
-   * - ``ARTS_DEFAULT_DB_KIND``
-     - ARTS_DB
-     - Default DB storage kind the ``ARTS_DB_DEFAULT`` macro expands to:
-       ``ARTS_DB`` (regular DRAM).
-   * - ``ARTS_USE_CXL`` (DEPRECATED)
+   * - ``ARTS_USE_CXL``
      - OFF
-     - Enable the CXL DataBlock storage kind — forced OFF: enabling it is
-       a configure error. The kind predates the current coherence design
-       and is unmaintained; the sources stay for reference. For
-       fabric-attached memory, configure ``ARTS_FAM_BACKEND`` /
-       ``ARTS_FAM_RESIDENCY`` below instead.
-   * - ``ARTS_FAM_BACKEND``
-     - OFF
-     - Fabric-attached-memory backend: ``OFF`` (default), ``SHM`` or
-       ``DEVICE``. Both speak the device library API through one adapter;
-       the backend picks the library. ``SHM`` is the vendored fake library
-       (``third_party/fake_arts_cxl_lib``, built into the build tree at
-       configure time): one host's shared memory, one region at one fixed
-       address, so one run per host and ``launcher=local`` past one rank;
-       every run needs ``ARTS_FAKE_CXL_REGION_SIZE`` (bytes, at least the
-       pool plus a page) and writes a flush trace to ``ARTS_FLUSH_LOG``
-       (default ``./arts_flush_trace.bin``). ``DEVICE`` links the device
-       library named by ``ARTS_FAM_DEVICE_INCLUDE_DIR`` and
-       ``ARTS_FAM_DEVICE_LIBRARY`` (both required, both must exist). No
-       ``AUTO``; every mismatch is a configure error, and the old
-       ``ARTS_FAM_DEVICE_VENDORED`` / ``ARTS_USE_FAKE_CXL_LIB`` name
-       ``SHM``.
-   * - ``ARTS_FAM_RESIDENCY``
+     - This tree's own library keeps every data block's payload in CXL
+       memory.  Requires ``ARTS_COHERENCE_PROTOCOL=EXCL``,
+       ``ARTS_RELEASE_POLICY=PURGE`` and ``ARTS_CXL_RESIDENCY``; anything
+       else is a configure error.
+   * - ``ARTS_CXL_RESIDENCY``
      - (empty)
-     - Where an EDT's working bytes live when this tree's own library is
-       FAM-enabled: a rank-local copy staged from the block's slot at the
-       two ownership edges (``STAGED``), or the slot itself, with the
-       edges reduced to a flush each (``DIRECT``).
+     - ``STAGED`` (a rank-local copy staged from the block's slot at the
+       two ownership edges) or ``DIRECT`` (the slot itself, with the
+       edges reduced to a flush each).  Required with
+       ``ARTS_USE_CXL=ON``, refused otherwise.
+   * - ``ARTS_CXL_REAL``
+     - OFF
+     - OFF: the vendored fake library (``third_party/fake_arts_cxl_lib``,
+       built at configure time).  ON: the device library named by
+       ``ARTS_CXL_RAPID_INCLUDE_DIR`` and ``ARTS_CXL_LIB`` below (both
+       required and must exist).  A path given with ``ARTS_CXL_REAL=OFF``
+       is a configure error.
+   * - ``ARTS_CXL_RAPID_INCLUDE_DIR``
+     - (empty)
+     - ``ARTS_CXL_REAL=ON``: the directory holding the device SDK's
+       ``MemOps.h`` and ``SharedAlloc.h``.
+   * - ``ARTS_CXL_LIB``
+     - (empty)
+     - ``ARTS_CXL_REAL=ON``: the device glue library file
+       (``libarts_cxl_lib.so``), linked by path — no CMake package
+       lookup.
+   * - ``ARTS_CXL_DB_ARENA_SIZE_BYTES``
+     - 5000000000
+     - Bytes per arena the runtime creates from the CXL library (one EDT
+       arena and one data-block arena per device).  Validation trees pass
+       268435456.
    * - ``ARTS_NOHINT_EDT_PLACEMENT``
      - ROUNDROBIN
      - Where an EDT created with no placement preference (NULL hint, or

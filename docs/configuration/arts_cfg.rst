@@ -213,12 +213,15 @@ Flux variable leaking into a ``local`` or ``ssh`` run changes nothing.  A
 config with **no** ``launcher`` line and no scheduler environment still
 defaults to ``ssh``, Flux environment or not.
 
-Fabric-Attached Memory
-----------------------
+CXL Store
+---------
 
-Read only by a build whose own library is FAM-enabled (``EXCL`` × ``PURGE``
-with ``ARTS_FAM_BACKEND`` set); every other build parses and ignores it.
-The former ``fam_strict`` key is refused at load in every build.
+Read only by a build whose own library is CXL-enabled (``ARTS_USE_CXL=ON``,
+which implies ``EXCL`` × ``PURGE``); every other build parses and ignores
+these keys.  The arena a rank allocates from is sized at build time
+(``ARTS_CXL_DB_ARENA_SIZE_BYTES``), not by a config key; the two keys that
+once sized a run's pool no longer exist and are refused at load in every
+build.
 
 .. list-table::
    :header-rows: 1
@@ -227,20 +230,16 @@ The former ``fam_strict`` key is refused at load in every build.
    * - Key
      - Default
      - Description
-   * - ``fam_pool_mb``
-     - 64
-     - The run's pool, in MB, carved into one page-aligned slice per rank.
-       Never refused for its size (only past the allocator's granule-index
-       bound, a slice of 256 GiB per rank); under ``SHM`` a pool larger than
-       the host's ``MemAvailable`` draws a one-line warning at load.  Under
-       ``ARTS_FAM_BACKEND=SHM`` the vendored fake library's region, sized by
-       ``ARTS_FAKE_CXL_REGION_SIZE`` in the environment when the library
-       loads, must hold the pool plus one page.
-
-Under ``SHM`` the store is one host's shared memory: a run of more than one
-rank is refused at load unless ``launcher=local``, and the library's one
-region has one fixed name and address, so a host runs one such run at a
-time.
+   * - ``cxl_db_allocation_strategy``
+     - ``static``
+     - Which arena a data block's payload allocates from — ``static`` (all
+       allocations use the arena at ``cxl_db_allocation_device``'s index) or
+       ``round_robin`` (allocations cycle across every arena the deque
+       spans). Arena creation does not honour device ids today, so both
+       keys select an arena index, not a device.
+   * - ``cxl_db_allocation_device``
+     - 0
+     - Arena index used under ``cxl_db_allocation_strategy=static``.
 
 Debug / Utility
 ---------------

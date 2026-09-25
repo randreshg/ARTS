@@ -237,9 +237,9 @@ generation ``k``'s cache present and, being a non-create message, runs
 against it: it reads generation ``k``.  Ordering the acquire after the
 destroy does not by itself exclude it: the destroy and the notice reach that
 rank by different paths, and no program can observe the notice's arrival
-without an acknowledged destroy.  On the fabric-attached arm the stale
-cache's slot has already been freed, so the runtime refuses the grant loudly
-instead of reading generation ``k``.
+without an acknowledged destroy.  On the CXL store a grant naming a slot
+other than the one the cache names is refused loudly instead of reading
+generation ``k``.
 
 **A key-addressed teardown notice.**  The notice a home sends to each rank
 that caches a block names the GUID, not the generation, and retires whatever

@@ -204,35 +204,36 @@ exactly one protocol and CMake refuses the rest.
 .. warning::
 
    DB-WRF exists to measure the cost of coherence obligations in benchmarks.
-   A fabric-attached canonical store is reached a different way: on
-   ``EXCL`` × ``PURGE`` the store a payload rests in between write turns is
-   selectable — the home's DRAM (default) or a fabric-attached pool
-   (``ARTS_FAM_BACKEND``) — with the same state machine, the same PURGE
-   rule and the same re-fetch every turn; the two residencies differ only
-   in whether an ownership edge stages a rank-local copy or flushes in
-   place against the pool. The pool is one arena rank 0 takes from the
-   device library API and names to every rank at the address exchange; the
-   backend selects which library answers that API — ``SHM``, the vendored
-   fake library (one host's shared memory, one region at one fixed address,
-   so one run per host), or ``DEVICE``, a device library named by path —
-   and nothing else. Never use DB-WRF as a correctness baseline. The
-   experiment driver's catalog marks
-   applications whose wiring relies on guarantees outside this contract with
-   ``unordered_writes`` (a reason plus file:line — a contract-ineligibility
-   declaration, not a bug mask); such a row is ``N/A`` on the FLUSH entry
-   and runs unaffected on every OCR-model entry.
+   Never use DB-WRF as a correctness baseline. The experiment driver's
+   catalog marks applications whose wiring relies on guarantees outside
+   this contract with ``unordered_writes`` (a reason plus file:line — a
+   contract-ineligibility declaration, not a bug mask); such a row is
+   ``N/A`` on the FLUSH entry and runs unaffected on every OCR-model entry.
 
-.. _fam_edge_flushes:
+A CXL store is reached a different way: on ``EXCL`` × ``PURGE`` the
+store a payload rests in between write turns is selectable — the
+home's DRAM (default) or CXL memory (``ARTS_USE_CXL``) — with the same
+state machine, the same PURGE rule and the same re-fetch every turn;
+the two residencies (``ARTS_CXL_RESIDENCY``) differ only in whether an
+ownership edge stages a rank-local copy (``STAGED``) or flushes in
+place against the store (``DIRECT``). The store is one set of arenas
+the first rank creates from the device library; every other rank
+attaches to them through the same library's startup handshake.
+``ARTS_CXL_REAL`` selects which library answers that API — the
+vendored fake library (one host's shared memory, so one run per host)
+or the real device library, named by path — and nothing else.
 
-Fabric-attached store: the two flushes
---------------------------------------
+.. _cxl_edge_flushes:
 
-A fabric-attached store is not coherent across hosts: a write reaches the
-store only when its writer flushes it, and a reader sees it only after
-reloading its own copy. The store changes only how a turn's bytes move, at
-the two ownership edges: when the right arrives at a node, a *consumer*
-flush of the block's slot, then the copy into the working copy (or, where a
-turn works in the slot itself, the first access); when the node hands the
+CXL store: the two flushes
+---------------------------
+
+A CXL store is not coherent across hosts: a write reaches the store only
+when its writer flushes it, and a reader sees it only after reloading its
+own copy. The store changes only how a turn's bytes move, at the two
+ownership edges: when the right arrives at a node, a *consumer* flush of
+the block's slot, then the copy into the working copy (or, where a turn
+works in the slot itself, the first access); when the node hands the
 right back after a write turn, the copy back, then a *producer* flush of the
 slot. Each transfer is a plain flush and copy, done synchronously where
 the transfer happens — by whichever thread applies the grant (a progress
@@ -243,7 +244,7 @@ the right leaves. Nothing is deferred to another thread and nothing is
 acknowledged beyond the protocol's own release: the acquiring task runs only
 after its grant was applied, and the release the home waits on follows that
 task. Nothing between the edges flushes, and a read turn's edge flushes
-nothing. A recording test (``fam_edge_flush_order``) pins exactly these two
+nothing. A recording test (``cxl_edge_flush_order``) pins exactly these two
 sites on both residencies; the values are checked by the experiment
 driver's cross-entry consensus and on the device itself.
 
@@ -411,8 +412,8 @@ The home keeps a sharer bitset — ranks that ever fetched the line or were
 told its credential — used only by destroy fan-out; it is lifecycle
 bookkeeping, not coherence state. FLUSH also serves as the no-optimization
 baseline against the OCR-model protocols; it is a different mechanism from
-the fabric-attached canonical store described above, which lives entirely
-inside ``EXCL`` × ``PURGE`` and keeps that protocol's own state machine.
+the CXL store described above, which lives entirely inside ``EXCL`` ×
+``PURGE`` and keeps that protocol's own state machine.
 
 Retired and rejected arms
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -602,9 +603,7 @@ The global axes govern regular DRAM DBs (``ARTS_DB``). The other storage
 kinds carry their own fixed, documented semantics regardless of the global
 axes: ``ARTS_DB_PIN`` and ``ARTS_DB_GPU_PIN`` perform no DB-level coherence;
 ``ARTS_DB_GPU`` allows concurrent per-device replicas merged by reduction at
-release; ``ARTS_DB_CXL`` relies on hardware cache coherence intra-node and
-application-driven ordering across nodes, but is unmaintained and cannot be
-built. All of these are **app-ordered (full DRF) contracts**: the
+release. All of these are **app-ordered (full DRF) contracts**: the
 application must event-order *every* conflicting access pair — read-write
 included — because there is no snapshot or admission machinery underneath.
 
