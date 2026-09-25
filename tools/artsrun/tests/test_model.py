@@ -93,6 +93,7 @@ SHIPPED_ENTRIES = {
     "paper-gate": ARTS8 + ["xsocr", "ocrvx"],
     "control-main": ARTS8 + ["hpx"],
     "control-gate": ARTS8 + ["hpx"],
+    "control-fft": ARTS8 + ["hpx"],
     "trend": ARTS8 + ["xsocr", "ocrvx", "hpx"],
     "smoke": ARTS8 + ["xsocr", "ocrvx"],
 }

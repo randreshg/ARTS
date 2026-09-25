@@ -1,0 +1,21 @@
+# Experiment control-fft: the FFT row of the HPX-origin section on its own,
+# for re-measuring that one row without re-running control-main.  The row is
+# the only one whose exchange chunks reach gigabytes per transfer, so it is
+# the only row a change on the transport's bulk path can move; every other
+# control row's largest block is 16 MB.
+#
+# Same entries as control-main: the eight ARTS arms and HPX, run together in
+# one campaign so the two sides of the comparison are measured at one time
+# on one machine state -- a comparison across separated campaigns is never
+# made.  The catalog's calibrated arguments apply; --repeats and --nodes come
+# from the profile or the command line as for any experiment.
+
+name: control-fft
+description: the HPX-origin FFT row alone, ARTS arms and HPX in one campaign
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
+
+apps:
+  fft_hpx:
+    enabled: true
+    versions: [base]
