@@ -39,8 +39,10 @@ repeats: 5
 # guarded at launch, so a node without the witness binary runs without it.
 rusage_witness: true
 
-# The device library the fabric-attached-memory entries link here.  Fill in
-# before a FAM campaign; a placeholder fails at configure, never silently.
-fam_device: real
-fam_device_include_dir: /PATH/TO/device-library/inc
-fam_device_library: /PATH/TO/device-library/lib/libarts_cxl_lib.so
+# The device library the CXL entries link here, and the site's launch wrapper
+# that sets the device's regions up around a whole launch.  All three or
+# none: none runs the vendored fake; a placeholder fails at configure or at
+# launch, never silently.
+cxl_include_dir: /PATH/TO/device-sdk/include
+cxl_library: /PATH/TO/glue/libarts_cxl_lib.so
+cxl_launch_wrapper: /PATH/TO/site/run.py

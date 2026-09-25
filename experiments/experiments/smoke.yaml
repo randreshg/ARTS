@@ -1,9 +1,7 @@
 # Experiment smoke: every row of paper-gate, in every version paper-gate
 # offers, at argument vectors shrunk again so each row's DRAM cell finishes
 # in about 10 s at one rank with 2 workers -- this is a correctness smoke for
-# a laptop and for pre-flight gates, never a timing number.  A FAM cell's
-# rank is sized to fit a 256 MB slice (two ranks in a 512 MB pool), so the
-# same file also validates under the FAM-backed local profile.  Vectors here
+# a laptop and for pre-flight gates, never a timing number.  Vectors here
 # were sized on a two-worker host and reported per-row in
 # .superpowers/sdd/2026-09-24-port-to-ipdps27/task-68b-report.md; nothing
 # timed here is a paper number, and nothing here replaces paper-gate as the

@@ -6,10 +6,10 @@
 # experiment carries the base-scales / anti-scales / hinted-earned /
 # restructured-scales verdicts and the small-size liveness of every runtime
 # entry -- so it runs every plane entry by default except the DB-WRF and the
-# fabric-attached-memory ones, which are turned on for one run with -e.  Every
-# argument list overrides the catalog's calibrated one, so the catalog pins do
-# not apply (check.py pins only when args == expect_args); the cross-runtime
-# consensus vote still grades every cell.
+# CXL ones, which are turned on for one run with -e.  Every argument list
+# overrides the catalog's calibrated one, so the catalog pins do not apply
+# (check.py pins only when args == expect_args); the cross-runtime consensus
+# vote still grades every cell.
 #
 # Sizing rules: width >= 2 x 120 at 8 ranks (an exact multiple for SPMD /
 # manager-worker rows), height knobs at their published defaults, base 1-rank
