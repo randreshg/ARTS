@@ -1,4 +1,4 @@
-# crete: four nodes of 96 cores each, reached over ssh.  One rank per node.
+# crete: four nodes of 96 cores each, scheduled by Slurm.  One rank per node.
 #
 # 92 workers + 4 progress threads fills the node on the rule that gives Dane
 # and Tuolumne their four (one progress thread per NUMA domain); crete's
@@ -10,13 +10,10 @@
 # arguments were derived for Dane's 108, and a campaign here re-derives
 # sizes before it measures.
 #
-# The host list is a placeholder: replace each entry with the node's address,
-# in rank order.  The campaign must be launched from hosts[0] (arts runs rank
-# 0 in-process and ssh-launches the rest), and the submitter check refuses
-# any other host by name -- which is also what keeps the placeholders from
-# ever running a cell.
+# Every cell is its own exclusive sbatch job, as on Dane; the partition is
+# the site's default until one is named here.
 name: crete
-launcher: ssh
+launcher: slurm
 
 nodes: [1, 2, 4]
 workers: 92
@@ -32,9 +29,8 @@ core_dump: false
 port_count: 1
 ports: [25000]
 
-ssh:
-  budget: 4
-  hosts: [crete1, crete2, crete3, crete4]
+slurm:
+  poll_interval_s: 10
 
 cell_timeout_s: 1800
 # Five measurements per cell, as on Dane; a gate passes --repeats 1.
