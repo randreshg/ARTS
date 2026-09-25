@@ -100,6 +100,8 @@ int arts_rt(int argc, char **argv) {
   if (arts_global_rank_count > 1) {
     arts_transport_setup_outgoing();
     if (!arts_transport_setup_incoming()) {
+      ARTS_WARN("startup: rank %u leaves without a complete socket mesh",
+                arts_global_rank_id);
       return -1;
     }
   }

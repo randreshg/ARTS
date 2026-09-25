@@ -633,11 +633,14 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
         if (++retry_count >= max_retries) {
           struct sockaddr_in *addr =
               remote_server_send_list + ((size_t)rank * ports) + port;
-          ARTS_INFO(
-              "arts_transport_connect: Failed to connect to rank %d port %d "
-              "after %d retries (target %s:%d, errno=%d: %s)",
-              rank, port, max_retries, inet_ntoa(addr->sin_addr),
-              ntohs(addr->sin_port), errno, strerror(errno));
+          /* Loud: the caller exits the rank on this, and a rank that dies
+           * before its fabric is up leaves no other trace of why. */
+          ARTS_WARN("arts_transport_connect: rank %u could not connect to "
+                    "rank %d port %d in %d retries over %d ms (target %s:%d, "
+                    "errno=%d: %s)",
+                    arts_global_rank_id, rank, port, max_retries,
+                    max_retries * 100, inet_ntoa(addr->sin_addr),
+                    ntohs(addr->sin_port), errno, strerror(errno));
           return false;
         }
         close(remote_socket_send_list[(rank * ports) + port]);
@@ -755,16 +758,20 @@ bool arts_transport_setup_incoming() {
           int poll_res =
               poll(&accept_pfd, 1, 60000); // Increase timeout for Crete
           if (poll_res <= 0) {
-            ARTS_INFO("Accept timed out waiting for remote connection "
-                      "(port index %d, poll=%d, errno=%d: %s)",
-                      z, poll_res, errno, strerror(errno));
+            ARTS_WARN("arts_transport_setup_incoming: rank %u timed out "
+                      "after 60 s waiting for peer connection %d of %d on "
+                      "port index %d (poll=%d, errno=%d: %s)",
+                      arts_global_rank_id, j + 1, count, z, poll_res, errno,
+                      strerror(errno));
             return false;
           }
 
           remote_socket_receive_list[z + (j * ports)] = accept(
               local_socket_receive[z], (struct sockaddr *)&test, &s_length);
           if (remote_socket_receive_list[z + (j * ports)] < 0) {
-            ARTS_INFO("Accept failed: %s", strerror(errno));
+            ARTS_WARN("arts_transport_setup_incoming: rank %u accept failed "
+                      "on port index %d: %s",
+                      arts_global_rank_id, z, strerror(errno));
             return false;
           }
           arts_socket_set_nodelay(remote_socket_receive_list[z + (j * ports)]);
@@ -777,7 +784,10 @@ bool arts_transport_setup_incoming() {
     } else {
       for (int z = 0; z < (int)ports; z++) {
         if (!arts_transport_connect(i, z)) {
-          ARTS_INFO("Could not create initial connection");
+          ARTS_WARN("arts_transport_setup_incoming: rank %u has no "
+                    "connection to rank %d port index %d — startup mesh "
+                    "incomplete",
+                    arts_global_rank_id, i, z);
           return false;
         }
       }
