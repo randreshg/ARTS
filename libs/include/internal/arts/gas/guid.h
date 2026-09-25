@@ -251,10 +251,14 @@ uint64_t arts_guid_hash_key(arts_guid_t guid);
  *  @c arts_guid_reserve_range(kind, size, ARTS_HINT_ROUND_ROBIN).
  *  @c arts_guid_from_index / @c arts_guid_index_from detect this marker
  *  and place individual GUIDs round-robin across ranks (home = idx % nrank).
- *  Must not collide with @ref ARTS_CXL_RANK (0x3FFF).
  *  14-bit rank field => max real rank = 16382 (0x3FFE - 1). */
 #define ARTS_DISTRIBUTED_RANK 0x3FFE
 
+#if 0
+/* Retired: a GUID that encoded a store address (rank sentinel 0x3FFF, key =
+ * offset from the mapping's base).  A data block in a CXL build keeps its
+ * ordinary GUID and home; its slot address travels in the create and grant
+ * messages instead.  Kept for the reader of the earlier design. */
 /* ── CXL GUID helpers ───────────────────────────────────────────────────────
  */
 
@@ -286,6 +290,7 @@ static inline bool arts_guid_is_cxl(arts_guid_t guid) {
 }
 
 #endif /* ARTS_USE_CXL */
+#endif
 
 #ifdef __cplusplus
 }

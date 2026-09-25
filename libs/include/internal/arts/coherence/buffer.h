@@ -105,7 +105,7 @@ void arts_db_buf_release(arts_shared_ptr_t *h);
  * site may read that as normal. */
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size);
 
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 /* Withdraw the cache's descriptor when it names `payload`, leaving the block
  * with no payload and needing materialization again, and say whether this
  * call withdrew it.  The bytes are not this call's: the descriptor is
@@ -128,7 +128,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size);
 bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload);
 #endif
 
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
 /* Make `payload` this cache's payload if the cache has none, stamped
  * `version`.  The descriptor does not own the bytes: its deleter recycles the
  * descriptor and never touches them.  Returns whether this call installed it;
@@ -160,7 +160,7 @@ struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
                                                  void *payload);
 #endif
 
-#ifndef ARTS_FAM_DIRECT
+#ifndef ARTS_CXL_DIRECT
 /* Recover the enclosing arts_db_buffer_s from a data pointer (which aliases
  * the buffer's payload).  Header-relative pointer arithmetic, so it is valid
  * only where the descriptor CARRIES the payload: where the store is external

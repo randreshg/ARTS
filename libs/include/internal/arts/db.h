@@ -84,12 +84,10 @@ extern const char *const db_mode_name[];
 extern const char *const db_mode_internal_name[];
 
 /* Order MUST match the arts_db_types_t enum in arts.h:
- * ARTS_DB(0), ARTS_DB_PIN(1), ARTS_DB_CXL(2), ARTS_DB_GPU(3),
- * ARTS_DB_GPU_PIN(4). */
+ * ARTS_DB(0), ARTS_DB_PIN(1), ARTS_DB_GPU(2), ARTS_DB_GPU_PIN(3). */
 #define ARTS_DB_TYPE_NAME                                                      \
   const char *const arts_db_type_name[] = {"ARTS_DB", "ARTS_DB_PIN",           \
-                                           "ARTS_DB_CXL", "ARTS_DB_GPU",       \
-                                           "ARTS_DB_GPU_PIN"}
+                                           "ARTS_DB_GPU", "ARTS_DB_GPU_PIN"}
 
 #define GET_DB_TYPE_NAME(x) arts_db_type_name[x]
 
@@ -171,11 +169,6 @@ void *arts_db_user_ptr(struct arts_db_s *db);
  * arts_event_wait). Not part of the public ARTS API. */
 void arts_wait_release_dbs(void);
 void arts_wait_reacquire_dbs(void);
-
-#ifdef ARTS_USE_CXL
-void arts_cxl_producer_flush(arts_guid_t guid);
-void arts_cxl_consumer_flush(arts_guid_t guid);
-#endif
 
 #ifdef __cplusplus
 }

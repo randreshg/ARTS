@@ -96,7 +96,6 @@ struct arts_config_s {
                           domain_attr->name, e.g. an HCA like "mlx5_0");
                           NULL/empty = provider's first domain. */
   unsigned int regpool_slab_mb; /* registered-memory slab pool size, MB */
-  unsigned int fam_pool_mb; /* fabric-attached-memory pool, MB for the run */
   unsigned int worker_thread_count;
   unsigned int progress_thread_count;
   unsigned int thread_count;

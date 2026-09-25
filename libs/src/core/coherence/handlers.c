@@ -45,7 +45,6 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
-#include "arts/fam/pool.h" /* arts_fam_contains / arts_fam_free (ARTS_FAM only) */
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h" /* arts_regpool_free (orphaned landing) */
 #include "arts/ooo.h"
@@ -243,12 +242,12 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   /* Kept for the return below, which echoes it to the creator. */
   stub->cache.create_token = p->create_token;
 #endif
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
   /* The creator minted the block's store before sending this create; the home
    * records it and allocates none.  Before the home's buffer install, which
    * adopts the slot on the residency that keeps no copy, and before the route
    * install, whose drain can serve a request out of it. */
-  (void)arts_db_fam_slot_record(&stub->cache, p->fam_addr);
+  (void)arts_db_cxl_slot_record(&stub->cache, p->cxl_addr);
 #endif
   /* The home's create-time buffer is the target a publish lands in, at
    * version 0 — "unpublished", which is what every serve and park predicate
@@ -266,8 +265,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   if (installed_h == NULL) {
     /* The descriptor was never published; the store stays the creator's,
      * named again by the replay. */
-#ifdef ARTS_FAM
-    __atomic_store_n(&stub->cache.fam_addr, (uint64_t)0, __ATOMIC_RELEASE);
+#ifdef ARTS_USE_CXL
+    __atomic_store_n(&stub->cache.cxl_addr, (uint64_t)0, __ATOMIC_RELEASE);
 #endif
     arts_db_free(stub);
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_CREATE, p, sizeof(*p));
@@ -544,26 +543,6 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   (void)item_v;
 #endif
 }
-
-#ifdef ARTS_FAM
-/* FAM_FREE handler: the address alone names the slot, so there is no
- * route-table lookup and no cache pinned by a dispatcher — this is a Cat-E
- * (state-less) message, ordered by construction (a home sends it only from
- * the teardown whose retire detached the block, and only the home ever
- * frees a slot it handed out). */
-void arts_handler_db_fam_free(struct arts_msg_db_fam_free_packet_s *p) {
-  void *slot = (void *)(uintptr_t)p->fam_addr;
-  if (slot == NULL) {
-    return;
-  }
-  if (!arts_fam_contains(slot)) {
-    ARTS_ERROR("fam: rank %u asked this rank to free an address outside its "
-               "pool",
-               p->header.rank);
-  }
-  arts_fam_free(slot);
-}
-#endif /* ARTS_FAM */
 
 /* The WB SNAPSHOT_REDIRECT handler arts_handler_db_snapshot_redirect lives in
  * coherence/val/wb.c (owner-side, REDIRECT only exists under WB). */

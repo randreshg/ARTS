@@ -444,7 +444,7 @@ struct arts_db_cache_s {
    * (single in-flight migration per owner — home serializes by CONFIRM), read
    * by whichever actor ships the DELIVER on the wc 0-edge. */
   struct arts_rdzv_landing_s migrate_rdzv;
-#elif !defined(ARTS_FAM)
+#elif !defined(ARTS_USE_CXL)
   /* Home's publish landing for THIS grant's release (advertised in the
    * grant, 1:1 with the eventual RW release).  Written by the grant handler
    * before any local writer runs; consumed by the single ACK-gated releaser. */
@@ -452,15 +452,13 @@ struct arts_db_cache_s {
 #endif
   arts_guid_t db_guid;
   uint64_t db_size;
-#ifdef ARTS_FAM
-  /* The block's canonical store between turns.  Written once per block per
-   * rank — by the create that made it, or by the first grant that names it —
-   * and read by both funnels.  The rank whose slice it came from is NOT
-   * stored: one slice per rank makes the owner a function of the address
-   * (arts_fam_owner_of), so there is no pair to publish and nothing to tear.
-   * A plain integer accessed with the atomic builtins, like payload_pending,
-   * so the C and C++ views of this struct stay identical. */
-  uint64_t fam_addr;
+#ifdef ARTS_USE_CXL
+  /* The block's slot in the CXL store between turns.  Written once per block
+   * per rank — by the create that made it, or by the first grant that names
+   * it — and read by both funnels.  A plain integer accessed with the atomic
+   * builtins, like payload_pending, so the C and C++ views of this struct stay
+   * identical. */
+  uint64_t cxl_addr;
 #endif
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
@@ -492,20 +490,18 @@ struct arts_db_cache_s {
 #ifdef ARTS_RELEASE_RETAIN
   arts_lf_stack_t ro_serve; /* RO-phase serve list (owner only; RETAIN only) */
   struct arts_rdzv_landing_s migrate_rdzv; /* pending migrate target landing */
-#elif !defined(ARTS_FAM)
+#elif !defined(ARTS_USE_CXL)
   struct arts_rdzv_landing_s home_pub_rdzv; /* grant's publish landing */
 #endif
   arts_guid_t db_guid;
   uint64_t db_size;
-#ifdef ARTS_FAM
-  /* The block's canonical store between turns.  Written once per block per
-   * rank — by the create that made it, or by the first grant that names it —
-   * and read by both funnels.  The rank whose slice it came from is NOT
-   * stored: one slice per rank makes the owner a function of the address
-   * (arts_fam_owner_of), so there is no pair to publish and nothing to tear.
-   * A plain integer accessed with the atomic builtins, like payload_pending,
-   * so the C and C++ views of this struct stay identical. */
-  uint64_t fam_addr;
+#ifdef ARTS_USE_CXL
+  /* The block's slot in the CXL store between turns.  Written once per block
+   * per rank — by the create that made it, or by the first grant that names
+   * it — and read by both funnels.  A plain integer accessed with the atomic
+   * builtins, like payload_pending, so the C and C++ views of this struct stay
+   * identical. */
+  uint64_t cxl_addr;
 #endif
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
@@ -526,15 +522,15 @@ struct arts_db_cache_s {
 };
 #endif
 
-#ifdef ARTS_FAM
-/* The arm's own observables: one read of the block's store and one write back
- * per turn.  Plain
- * integers accessed with the atomic builtins, like the cache's field, so the
- * C and C++ views of this header stay identical.  Read only by tests — the
- * counter subsystem is compiled out by the tree's counters-off default, and a
- * counter-based oracle would change what the whole suite runs under. */
-extern uint64_t arts_fam_fetches;
-extern uint64_t arts_fam_purges;
+#ifdef ARTS_USE_CXL
+/* The arm's own observables: one read of the block's slot and one write back
+ * per turn.  Plain integers accessed with the atomic builtins, like the
+ * cache's field, so the C and C++ views of this header stay identical.  Read
+ * only by tests — the counter subsystem is compiled out by the tree's
+ * counters-off default, and a counter-based oracle would change what the
+ * whole suite runs under. */
+extern uint64_t arts_cxl_fetches;
+extern uint64_t arts_cxl_purges;
 #endif
 
 /** Internal DataBlock descriptor (EXCL protocol).

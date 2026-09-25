@@ -49,7 +49,7 @@
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
 #include "arts/edt.h"
-#include "arts/fam/pool.h" /* arts_fam_alloc / arts_fam_free (ARTS_FAM only) */
+#include "arts/cxl/store.h"
 #include "arts/gas/guid.h" /* GUID kind extraction (quiescence debug check) */
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
@@ -112,8 +112,8 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   /* Every cache starts without a buffer; the install path clears this the
    * moment one is in the slot, whoever put it there. */
   __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
-#ifdef ARTS_FAM
-  c->fam_addr = 0;
+#ifdef ARTS_USE_CXL
+  c->cxl_addr = 0;
 #endif
   arts_db_cache_kind_seed(c, kind);
   /* Snapshot reorder-buffer: a Treiber stack (zero-initializable, but init
@@ -159,81 +159,62 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 }
 #endif /* arms sharing the common cache shape */
 
-#ifdef ARTS_FAM
-arts_fam_slot_record_t arts_db_fam_slot_record(struct arts_db_cache_s *cache,
+#ifdef ARTS_USE_CXL
+arts_cxl_slot_record_t arts_db_cxl_slot_record(struct arts_db_cache_s *cache,
                                                uint64_t addr) {
   if (cache == NULL || addr == 0) {
-    return ARTS_FAM_SLOT_KNOWN;
+    return ARTS_CXL_SLOT_KNOWN;
   }
   uint64_t expect = 0;
-  if (__atomic_compare_exchange_n(&cache->fam_addr, &expect, addr, false,
+  if (__atomic_compare_exchange_n(&cache->cxl_addr, &expect, addr, false,
                                   __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
-    return ARTS_FAM_SLOT_RECORDED;
+    return ARTS_CXL_SLOT_RECORDED;
   }
-  return (expect == addr) ? ARTS_FAM_SLOT_KNOWN : ARTS_FAM_SLOT_CONFLICT;
+  return (expect == addr) ? ARTS_CXL_SLOT_KNOWN : ARTS_CXL_SLOT_CONFLICT;
 }
 
-uint64_t arts_db_fam_slot_mint(uint64_t db_size) {
+uint64_t arts_db_cxl_slot_mint(uint64_t db_size) {
   if (db_size == 0) {
     return 0;
   }
-  return (uint64_t)(uintptr_t)arts_fam_alloc((size_t)db_size);
+  return (uint64_t)(uintptr_t)arts_cxl_store_alloc((size_t)db_size);
 }
 
-bool arts_db_fam_slot_create(struct arts_db_cache_s *cache) {
+bool arts_db_cxl_slot_create(struct arts_db_cache_s *cache) {
   if (cache == NULL || cache->db_size == 0 ||
-      __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE) != 0) {
+      __atomic_load_n(&cache->cxl_addr, __ATOMIC_ACQUIRE) != 0) {
     return false;
   }
-  uint64_t addr = arts_db_fam_slot_mint(cache->db_size);
-  if (arts_db_fam_slot_record(cache, addr) != ARTS_FAM_SLOT_RECORDED) {
-    arts_fam_free((void *)(uintptr_t)addr);
+  uint64_t addr = arts_db_cxl_slot_mint(cache->db_size);
+  if (arts_db_cxl_slot_record(cache, addr) != ARTS_CXL_SLOT_RECORDED) {
+    /* Another party named the slot first; the one minted here is left to
+     * the arena, which reclaims nothing within a run. */
     return false;
   }
   return true;
 }
 
-/* A store that goes back leaves nothing naming it.  The cache stops naming it
- * first, so nothing can adopt it after this point; then the descriptor that
- * named it is withdrawn, because a descriptor outliving its storage would
- * hand a later, legitimate first user a pointer into a granule that belongs
- * to some other block by then.
+/* A discarded slot leaves nothing naming it: the cache stops naming it first,
+ * so nothing can adopt it, then the descriptor that named it is withdrawn.
+ * The bytes stay in the arena.
  *
  * Reached only on a cache nothing else can name: a create whose route install
  * FAILED, whose object is private and about to be freed.  That is what makes
  * both steps safe — no other party can be holding the descriptor, fetching
- * into the store, or about to adopt it — and it is a property of the call
+ * into the slot, or about to adopt it — and it is a property of the call
  * sites, not of this function, so a new caller has to establish it.  A create
- * whose object IS published never hands its store back: the store belongs to
- * the block from the moment the cache names it. */
-void arts_db_fam_slot_discard(struct arts_db_cache_s *cache) {
-  uint64_t addr = __atomic_exchange_n(&cache->fam_addr, (uint64_t)0,
+ * whose object IS published never discards its slot: the slot belongs to the
+ * block from the moment the cache names it. */
+void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
+  uint64_t addr = __atomic_exchange_n(&cache->cxl_addr, (uint64_t)0,
                                       __ATOMIC_ACQ_REL);
   if (addr == 0) {
     return;
   }
   (void)arts_db_buf_withdraw(cache, (const void *)(uintptr_t)addr);
-  arts_fam_free((void *)(uintptr_t)addr);
 }
 
-/* A slot is freed at exactly one of three points: a create that allocated
- * one and then made nothing (discard, above), the block's teardown at the
- * home (here), and the free-to-owner handler on the rank whose slice it
- * came from.  The cache destructor never frees a slot — a creator's cache
- * can die while the home still serves the block from the slot that creator
- * allocated.  The address alone is meaningful: its owner is derived from
- * it, never stored beside it, so there is no second field a free could
- * leave inconsistent. */
-void arts_db_fam_slot_release(struct arts_db_cache_s *cache) {
-  uint64_t addr = __atomic_exchange_n(&cache->fam_addr, (uint64_t)0,
-                                      __ATOMIC_ACQ_REL);
-  if (addr == 0) {
-    return;
-  }
-  arts_send_db_fam_free(addr);
-}
-
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
 /* ================================================================== */
 /* ===== Acquire path =============================================== */
@@ -1520,10 +1501,10 @@ void arts_db_debug_quiescence_check(void) {
           }
         }
 #endif
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
         /* The arm's own quiescence, beside the RETAIN block above: what a
-         * data block whose storage lives in fabric-attached memory looks
-         * like once every runtime thread has joined.  Cache fields need no
+         * data block whose storage lives in the CXL store looks like once
+         * every runtime thread has joined.  Cache fields need no
          * guard; a home field is read only where db->home_initialized says a
          * home directory exists, exactly like the VAL/INV block above — a
          * cache-only stub ends at lock_state, and reading past it on a
@@ -1534,7 +1515,7 @@ void arts_db_debug_quiescence_check(void) {
               atomic_load_explicit(&c->cache_state, memory_order_acquire);
           uint8_t pending =
               __atomic_load_n(&c->payload_pending, __ATOMIC_ACQUIRE);
-          uint64_t addr = arts_db_fam_slot_addr(c);
+          uint64_t addr = arts_db_cxl_slot_addr(c);
           /* 1. No slot missing where a working copy exists.  A sentinel-
            * sized block has no slot on either residency and legitimately
            * rests at address 0. */
@@ -1619,7 +1600,7 @@ void arts_db_debug_quiescence_check(void) {
               viol++;
             }
           }
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
           /* 4. Nothing stands between the store and an EDT: where a holder's
            * working bytes ARE the block's store, a descriptor naming anything
            * else is storage some site materialized instead of adopting the
@@ -1632,7 +1613,7 @@ void arts_db_debug_quiescence_check(void) {
             const struct arts_db_buffer_s *b =
                 (const struct arts_db_buffer_s *)(bh ? arts_shared_get(bh)
                                                      : NULL);
-            if (b != NULL && !arts_fam_contains(b->data)) {
+            if (b != NULL && !arts_cxl_store_contains(b->data)) {
               ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests with a payload "
                          "that is not its slot",
                          (unsigned long)c->db_guid);
@@ -1679,7 +1660,7 @@ void arts_db_debug_quiescence_check(void) {
             }
           }
         }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 #endif /* ARTS_PROTOCOL_FLUSH */
       }
       if (h) {

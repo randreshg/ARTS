@@ -129,10 +129,6 @@ typedef enum {
  *
  *   ARTS_DB         — regular DRAM; contract/protocol selected at build time
  *   ARTS_DB_PIN     — regular DRAM, node-pinned, no DB-level coherence
- *   ARTS_DB_CXL     — CXL shared memory; hardware cache coherence intra-node,
- *                     application-ordered across nodes; pinned to its creator,
- *                     no DB-level coherence.  Unmaintained: no supported build
- *                     configuration compiles this kind.
  *   ARTS_DB_GPU     — GPU staging; concurrent per-device replicas merged by
  *                     reduction at release (app-ordered)
  *   ARTS_DB_GPU_PIN — GPU staging, no DB-level coherence
@@ -140,8 +136,6 @@ typedef enum {
 typedef enum {
   ARTS_DB = 0, /**< Regular DRAM; contract/protocol selected at build time. */
   ARTS_DB_PIN, /**< Node-pinned regular DRAM, no DB-level coherence. */
-  ARTS_DB_CXL, /**< CXL shared; creator-pinned, application-ordered, no
-                  DB-level coherence (unmaintained; not buildable). */
   ARTS_DB_GPU, /**< GPU staging; per-device replicas merged at release (app-ordered
                   style). */
   ARTS_DB_GPU_PIN, /**< GPU staging (host pinned + per-device replica). */
@@ -906,7 +900,7 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
  *                     @c ARTS_DB_PROP_NO_ACQUIRE.
  * @param      len     Length in bytes.
  * @param      db_type Storage/coherence class (ARTS_DB, ARTS_DB_PIN,
- *                     ARTS_DB_GPU_PIN, ARTS_DB_GPU, ARTS_DB_CXL).
+ *                     ARTS_DB_GPU_PIN, ARTS_DB_GPU).
  * @param      flags   Property bits (@c ARTS_DB_PROP_NONE / @c
  *                     ARTS_DB_PROP_NO_ACQUIRE).
  * @param      hint    Advisory metadata.  @c hint->rank selects the home

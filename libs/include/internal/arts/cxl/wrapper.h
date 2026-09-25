@@ -15,29 +15,17 @@ extern "C" {
 /** Round @p x up to the nearest multiple of @p a (power of two). */
 #define ALIGN_UP(x, a) (((x) + ((a) - 1)) & ~((a) - 1))
 
-/* UNMAINTAINED.  Kept for reference; the option that compiled it is a
- * configure error.  The flush intrinsics it wraps are the legacy kind's: the
- * runtime accesses fabric-attached memory through the fam module's own
- * flushes.
- */
-
 /*
- * Two-level CXL configuration:
- *
- *   ARTS_USE_CXL      — Enables CXL code paths (DB type, scheduler, GUID
- *                        encoding).  Always safe to set.
- *
- *   ARTS_CXL_NATIVE   — Set by CMake when the Rapid API + arts_cxl_lib are
- *                        actually found.  Maps SHARED_MALLOC / FLUSH_FENCE
- *                        to real CXL library calls.
- *
- * When ARTS_USE_CXL is defined but ARTS_CXL_NATIVE is NOT, the CXL code
- * compiles and runs with regular heap memory (stubs).  This is useful for
- * development, testing, and CI without CXL hardware.
+ * ARTS_USE_CXL    -- this translation unit belongs to a build whose data
+ *                    blocks rest in CXL memory.
+ * ARTS_CXL_NATIVE -- the device library's headers are on the include path;
+ *                    the runtime always defines it with ARTS_USE_CXL.  The
+ *                    stub arm below stands in for the library where a
+ *                    translation unit is compiled without it.
  */
 
 #if defined(ARTS_USE_CXL) && defined(ARTS_CXL_NATIVE)
-/* ── Real CXL library (Rapid API + arts_cxl_lib) ─────────────────────────── */
+/* ── Real device library (SDK headers + glue library) ── */
 #include <MemOps.h>
 #include <SharedAlloc.h>
 #define SHARED_MALLOC(...) SHARED_CXL_MALLOC(__VA_ARGS__)

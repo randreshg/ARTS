@@ -105,7 +105,6 @@ set(TEST_PROGRAMS
     # --- Pure unit tests (no ARTS runtime) ---
     grant_purge_word_model
     config_ports_contract
-    config_fam_contract
     config_flux_setup
     port_block_relocation
     stdio_forward_scale_test
@@ -140,8 +139,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     list(APPEND TEST_PROGRAMS edt_create_remote_finish_scope_rejected)
 endif()
 
-# Whitebox tests of the INLINE payload layout.  Where the canonical store is
-# fabric-attached and an EDT works in place, a buffer descriptor refers to
+# Whitebox tests of the INLINE payload layout.  Where a block's bytes live in
+# the CXL store and an EDT works in its slot, a buffer descriptor refers to
 # storage it does not own: the payload is not inline after the header, no
 # payload is ever published into it, and one descriptor serves the block for
 # its whole life.  These programs assert that representation itself, so in
@@ -149,21 +148,20 @@ endif()
 # exclusion, like an application that cannot run multinode, never a masked
 # failure.  buffer_external_payload is the descriptor's own test there.
 #
-# The two FAM trees are one compile-time switch (ARTS_FAM_TREE_RESIDENCY)
-# apart: the slot rule, the wire, the messages, the arbiter actions, the
-# funnel positions, fam_slot_required, the zero-size exemption, the two edge
-# flushes, and the two tallies and their reader are identical on both, and the only differences are residency itself -- the two
+# The two CXL trees are one compile-time switch (ARTS_CXL_TREE_RESIDENCY)
+# apart: the slot rule, the wire, the arbiter actions, the funnel positions,
+# the zero-size exemption, the two edge flushes and the two tallies are
+# identical on both; the only differences are residency itself -- the two
 # body definitions and the buffer representation -- and the test surface that
 # describes that representation:
 #
-#   Test                                    | STAGED tree      | DIRECT tree            | Why
-#   ---------------------------------------- | ----------------- | ----------------------- | ---
-#   the names in ARTS_FAM_DIRECT_EXCLUDED    | registered        | excluded at registration | they assert the inline representation
-#   buffer_external_payload                  | registered, SKIPs | registered, runs         | the external descriptor's own contract
-#   fam_slot_discard_unadopt                 | not registered    | registered 1n            | the withdrawal it asserts exists only where a descriptor adopts the store
-#   fam_direct_payload_identity              | not registered    | registered 1n/2n/3n      | the property is false by construction under STAGED
-#   fam_home_turn_costs                      | registered        | registered               | the tallies are incremented by the funnel both residencies fetch and purge through
-#   db_cache_layout, coherence_zero_size_xfer, db_create_after_first_touch, the arm's other fam_* programs, coherence_grant_chain_visibility, everything else | registered | registered | one behaviour, two representations
+#   Test                                 | STAGED tree | DIRECT tree              | Why
+#   ------------------------------------ | ----------- | ------------------------ | ---
+#   the names in ARTS_CXL_DIRECT_EXCLUDED | registered | excluded at registration | they assert the inline representation
+#   buffer_external_payload              | SKIPs       | runs                     | the external descriptor's own contract
+#   cxl_slot_discard_unadopt             | no          | 1n                       | the withdrawal it asserts exists only where a descriptor adopts the slot
+#   cxl_direct_payload_identity          | no          | 1n/2n/3n                 | false by construction under STAGED
+#   everything else                      | registered  | registered               | one behaviour, two representations
 set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_payload_roundtrip
     buffer_zero_size
@@ -172,49 +170,34 @@ set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_destroy_vs_acquire
     per_db_buf_pool
     mark_edt_ready_idempotent)
-# The one list every consumer reads: the tree's own registrations below, and
-# any acceptance check outside this file.  Empty in every tree but one.
-set(ARTS_FAM_DIRECT_EXCLUDED "")
-if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
-    set(ARTS_FAM_DIRECT_EXCLUDED ${ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX})
-    # Reaches the names of this list that TEST_PROGRAMS builds; the rest
-    # create their own targets, and the if() guards at their registration
-    # sites are what leaves those out.
-    list(REMOVE_ITEM TEST_PROGRAMS ${ARTS_FAM_DIRECT_EXCLUDED})
-    message(STATUS "ARTS: excluding ${ARTS_FAM_DIRECT_EXCLUDED} — whitebox tests of the inline payload layout")
-endif()
-# The DIRECT-only targets.  Their sources arrive with their tasks; the names
-# are appended there, in the same edit as each .c file, never here.
-if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
-    list(APPEND TEST_PROGRAMS fam_slot_discard_unadopt)
-    list(APPEND TEST_PROGRAMS fam_direct_payload_identity)
+set(ARTS_CXL_DIRECT_EXCLUDED "")
+if(ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
+    set(ARTS_CXL_DIRECT_EXCLUDED ${ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX})
+    list(REMOVE_ITEM TEST_PROGRAMS ${ARTS_CXL_DIRECT_EXCLUDED})
+    message(STATUS "ARTS: excluding ${ARTS_CXL_DIRECT_EXCLUDED} — whitebox tests of the inline payload layout")
+    list(APPEND TEST_PROGRAMS cxl_slot_discard_unadopt)
+    list(APPEND TEST_PROGRAMS cxl_direct_payload_identity)
 endif()
 
-# Portable OCR programs that came out of the store-backed work and assert
-# coherence alone: they include arts.h and nothing else, so every arm builds
-# and runs them and they are the same oracle everywhere.  Their names say
-# which work wrote them, not which tree may run them.
-list(APPEND TEST_PROGRAMS fam_remote_write_read)
-list(APPEND TEST_PROGRAMS fam_ro_cohort)
-list(APPEND TEST_PROGRAMS fam_create_release_remote)
-list(APPEND TEST_PROGRAMS fam_ro_turn_overlap)
+# Portable OCR programs that assert coherence alone: arts.h and nothing else,
+# so every arm builds and runs them and they are the same oracle everywhere.
+list(APPEND TEST_PROGRAMS cxl_remote_write_read)
+list(APPEND TEST_PROGRAMS cxl_ro_cohort)
+list(APPEND TEST_PROGRAMS cxl_create_release_remote)
+list(APPEND TEST_PROGRAMS cxl_ro_turn_overlap)
 
-# Fabric-attached memory: registered only where this tree's own library is
-# FAM-enabled, so an unguarded entry does not need to compile against a tree
-# with no fam symbols at all.
-if(ARTS_FAM_TREE_RESIDENCY)
-    list(APPEND TEST_PROGRAMS fam_alloc_dist)
-    list(APPEND TEST_PROGRAMS fam_slot_rule)
-    list(APPEND TEST_PROGRAMS fam_stale_generation_grant)
-    list(APPEND TEST_PROGRAMS fam_creator_roster)
-    list(APPEND TEST_PROGRAMS fam_quiescence_marker)
-    list(APPEND TEST_PROGRAMS fam_slot_reuse_after_destroy)
-    list(APPEND TEST_PROGRAMS fam_no_acquire_first_use)
-    list(APPEND TEST_PROGRAMS fam_labeled_create)
-    # The tallies it reads (fetches, purges) are incremented by the funnel
-    # both residencies fetch and purge through.
-    list(APPEND TEST_PROGRAMS fam_home_turn_costs)
-    list(APPEND TEST_PROGRAMS fam_slices)
+# The CXL store: registered only where this tree's own library keeps payloads
+# in it, so an unguarded entry never has to compile against a tree with no
+# store symbols at all.
+if(ARTS_CXL_TREE_RESIDENCY)
+    list(APPEND TEST_PROGRAMS cxl_store_alloc)
+    list(APPEND TEST_PROGRAMS cxl_slot_rule)
+    list(APPEND TEST_PROGRAMS cxl_stale_generation_grant)
+    list(APPEND TEST_PROGRAMS cxl_creator_roster)
+    list(APPEND TEST_PROGRAMS cxl_quiescence_marker)
+    list(APPEND TEST_PROGRAMS cxl_no_acquire_first_use)
+    list(APPEND TEST_PROGRAMS cxl_labeled_create)
+    list(APPEND TEST_PROGRAMS cxl_home_turn_costs)
 endif()
 
 # Function to create a test executable.  RUNTIME names the runtime library it
@@ -350,10 +333,7 @@ endif()
 # base here: a fixed base is exactly the shared state that made one test's
 # leftovers everyone else's problem.
 
-# Where a test's ARTS_CONFIG comes from.  A tree whose own library is
-# FAM-enabled reads the fam root: every cfg there is its configs/local/test/
-# namesake plus fam_pool_mb, so the whole suite runs with a pool sized for the
-# tree instead of the 64 MB default.  ONE variable, used by every
+# Where a test's ARTS_CONFIG comes from.  ONE variable, used by every
 # helper and by every hand-registered test -- a second spelling is how five
 # tests end up on the wrong root.  CACHE INTERNAL, not a plain set(): the
 # helpers below are called from outside this directory too (benchmarks/ocr_shim
@@ -362,10 +342,6 @@ endif()
 # empty prefix instead of refusing to configure.
 set(ARTS_TEST_CFG_DIR "${CMAKE_SOURCE_DIR}/configs/local/test"
     CACHE INTERNAL "cfg root every register_*_test call resolves ARTS_CONFIG against" FORCE)
-if(ARTS_FAM_TREE_RESIDENCY)
-    set(ARTS_TEST_CFG_DIR "${CMAKE_SOURCE_DIR}/configs/local/test/fam"
-        CACHE INTERNAL "cfg root every register_*_test call resolves ARTS_CONFIG against" FORCE)
-endif()
 
 # Resolves one variant name to the cfg a test should run.  Every site that
 # names a cfg calls this; none spells a directory.
@@ -425,38 +401,42 @@ function(register_multinode_test test_name)
     endforeach()
 endfunction()
 
-# Every test of a FAM tree links the library, and the library reads its
+# Every test of a CXL tree links the library, and the library reads its
 # environment when it loads, before the runtime parses a cfg:
 #   - ARTS_FLUSH_LOG: the vendored fake library dumps a flush trace at exit into
 #     the working directory unless this names another path, and a test's
 #     working directory is the build tree, so the trace goes nowhere.
-#   - ARTS_FAKE_CXL_REGION_SIZE (SHM only): the size of the one region the
-#     vendored fake library maps, which must hold the largest pool a test cfg
-#     names plus a page of alignment.  One fixed value for the tree
-#     (ARTS_FAM_TEST_REGION_BYTES, 2 GiB, far above the largest fam_pool_mb
-#     under configs/local/test/fam/); the region is sparse, so a test pays
-#     only for the pages it touches.
+#   - ARTS_FAKE_CXL_REGION_SIZE (fake library only): the size of the one region
+#     it maps, which must hold the build-time arena plus the library's own
+#     structures.  One value for the tree (ARTS_CXL_TEST_REGION_BYTES, derived
+#     from ARTS_CXL_DB_ARENA_SIZE_BYTES below); the region is sparse, so a
+#     test pays only for the pages it touches.
 # The region has one name and one address per host, so two runs on one host
 # must not overlap: RESOURCE_LOCK serializes one ctest's tests, and the
 # one-runner rule covers everything else.  A test's properties can be set
 # only from the directory that added it, so each directory that registers
 # tests calls this once, after its last add_test.
-set(ARTS_FAM_TEST_REGION_BYTES 2147483648 CACHE INTERNAL
-    "ARTS_FAKE_CXL_REGION_SIZE every test of an SHM tree runs under" FORCE)
-function(arts_fam_test_env)
-    if(NOT ARTS_FAM_TREE_RESIDENCY)
+# One data-block arena plus the deque, and headroom.
+math(EXPR ARTS_CXL_TEST_REGION_BYTES "2 * ${ARTS_CXL_DB_ARENA_SIZE_BYTES} + 134217728")
+set(ARTS_CXL_TEST_REGION_BYTES "${ARTS_CXL_TEST_REGION_BYTES}" CACHE INTERNAL
+    "ARTS_FAKE_CXL_REGION_SIZE every test of a fake-library CXL tree runs under" FORCE)
+function(arts_cxl_test_env)
+    if(NOT ARTS_CXL_TREE_RESIDENCY)
         return()
     endif()
     get_property(_tests DIRECTORY PROPERTY TESTS)
     if(NOT _tests)
         return()
     endif()
-    set_property(TEST ${_tests} APPEND PROPERTY
-                 ENVIRONMENT "ARTS_FLUSH_LOG=/dev/null")
-    if(ARTS_FAM_BACKEND STREQUAL "SHM")
+    set_property(TEST ${_tests} APPEND PROPERTY ENVIRONMENT "ARTS_FLUSH_LOG=/dev/null")
+    if(NOT ARTS_CXL_REAL)
         set_property(TEST ${_tests} APPEND PROPERTY ENVIRONMENT
-                     "ARTS_FAKE_CXL_REGION_SIZE=${ARTS_FAM_TEST_REGION_BYTES}")
+                     "ARTS_FAKE_CXL_REGION_SIZE=${ARTS_CXL_TEST_REGION_BYTES}")
     endif()
+    # Every test of a CXL tree loads the fake library, whose constructor maps
+    # and may own the host's one shm region: no two may run at once, pure-unit
+    # ones included.
+    set_property(TEST ${_tests} APPEND PROPERTY RESOURCE_LOCK "arts_runtime")
 endfunction()
 
 # The store-backed arm's own entries.  They DELEGATE to the two helpers above
@@ -467,7 +447,7 @@ endfunction()
 # only the master rank's exit status reaches ctest, so a peer's verdict has to
 # be matched in its printed output -- and a default timeout for a suite whose
 # turns cross ranks.
-function(register_fam_single_node_test test_name)
+function(register_cxl_single_node_test test_name)
     cmake_parse_arguments(ARG "" "TIMEOUT;FAIL_REGEX" "" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 30)
@@ -480,7 +460,7 @@ function(register_fam_single_node_test test_name)
         FAIL_REGULAR_EXPRESSION "${ARG_FAIL_REGEX}")
 endfunction()
 
-function(register_fam_multinode_test test_name)
+function(register_cxl_multinode_test test_name)
     cmake_parse_arguments(ARG "" "TIMEOUT;FAIL_REGEX" "VARIANTS" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 60)
@@ -500,12 +480,10 @@ function(register_fam_multinode_test test_name)
 endfunction()
 
 function(register_gpu_test test_name)
-    if(ARTS_FAM_TREE_RESIDENCY)
-        # No fam cfg root exists for the GPU topology, and a FAM tree's test
-        # must name a sized pool; a GPU FAM tree is not a configuration this
-        # effort validates.  Excluded at registration, not skipped at run time.
-        message(STATUS "Skipping GPU test ${test_name}: a FAM-enabled tree has "
-                       "no GPU cfg carrying fam_pool_mb")
+    if(ARTS_CXL_TREE_RESIDENCY)
+        # A GPU CXL tree is not a configuration this suite validates.
+        # Excluded at registration, not skipped at run time.
+        message(STATUS "Skipping GPU test ${test_name}: a CXL tree has no GPU cfg")
         return()
     endif()
     cmake_parse_arguments(ARG "" "TIMEOUT" "ARGS" ${ARGN})
@@ -661,32 +639,15 @@ register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
 set_tests_properties(grant_purge_word_model PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS grant_purge_word_model")
 # Forks to probe the ARTS_ERROR death paths of the port contract; loads cfgs
-# only, so it binds nothing and needs no runtime.  Its fixtures name remote
-# launchers with several ranks, which a tree whose own library refuses at
-# config load (a store that is one host's memory) cannot parse as far as the
-# port contract, so that tree cannot host the test (the contract itself is
-# the same everywhere).
-if(NOT (ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM"))
+# only, so it binds nothing and needs no runtime.
 register_pure_unit_test(config_ports_contract TIMEOUT 30)
 set_tests_properties(config_ports_contract PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_ports_contract")
-endif()
-# What the fabric-attached-memory cfg keys accept and refuse.  Unguarded,
-# deliberately: it links no fam symbol (arts_config_load alone) and half its
-# job is proving the two keys parse and stay inert in a tree with no FAM
-# backend, which a guard would delete the evidence for.
-register_pure_unit_test(config_fam_contract TIMEOUT 30)
-set_tests_properties(config_fam_contract PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS config_fam_contract")
 # Forks to probe the flux launcher arm's ARTS_ERROR death paths against a
-# stub flux CLI the test writes itself; loads cfgs only, binds nothing.  Same
-# exclusion as config_ports_contract: a tree whose store is one host's memory
-# refuses a several-rank flux run at config load.
-if(NOT (ARTS_FAM_TREE_RESIDENCY AND ARTS_FAM_BACKEND STREQUAL "SHM"))
+# stub flux CLI the test writes itself; loads cfgs only, binds nothing.
 register_pure_unit_test(config_flux_setup TIMEOUT 30)
 set_tests_properties(config_flux_setup PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_flux_setup")
-endif()
 # Binds real sockets to occupy a block, then checks the selector moves off it.
 register_pure_unit_test(port_block_relocation TIMEOUT 30)
 set_tests_properties(port_block_relocation PROPERTIES
@@ -1013,7 +974,7 @@ foreach(_v 2n 3n 4n)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
-if(NOT "per_db_buf_pool" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
+if(NOT "per_db_buf_pool" IN_LIST ARTS_CXL_DIRECT_EXCLUDED)
     register_pure_unit_test(per_db_buf_pool)
 endif()
 
@@ -1663,96 +1624,90 @@ endif()
 # UNGUARDED, because each asserts coherence alone: every arm answers the same
 # oracle, and an arm that answers it differently is the thing worth catching.
 # Multinode only — every one of them needs a rank that is not the block's home.
-foreach(_fam_portable fam_remote_write_read fam_ro_cohort
-                      fam_create_release_remote)
-    register_fam_multinode_test(${_fam_portable} TIMEOUT 60)
+foreach(_cxl_portable cxl_remote_write_read cxl_ro_cohort cxl_create_release_remote)
+    register_cxl_multinode_test(${_cxl_portable} TIMEOUT 60)
 endforeach()
 # Read turns of one block ending and beginning back to back on its home rank,
 # where the request, the grant and the fetch are all local.
-register_fam_single_node_test(fam_ro_turn_overlap TIMEOUT 60)
-register_fam_multinode_test(fam_ro_turn_overlap TIMEOUT 60)
+register_cxl_single_node_test(cxl_ro_turn_overlap TIMEOUT 60)
+register_cxl_multinode_test(cxl_ro_turn_overlap TIMEOUT 60)
 
-# Fabric-attached memory.  Registered only where this tree's own library is
-# FAM-enabled: everywhere else arts_static holds no arts_fam_* at all, and an
-# unguarded entry would fail the BUILD of all nine existing validation trees.
-if(ARTS_FAM_TREE_RESIDENCY)
-    # fam_alloc_dist names no backend-specific symbol, so the residency guard
-    # alone is right for it -- deliberately, and the asymmetry with fam_slices
-    # below is the point.
-    register_fam_multinode_test(fam_alloc_dist TIMEOUT 120 VARIANTS 2n 4n)
+# The CXL store.  Registered only where this tree's own library keeps payloads
+# in it: everywhere else arts_static holds no store symbols at all, and an
+# unguarded entry would fail the BUILD of every other validation tree.
+if(ARTS_CXL_TREE_RESIDENCY)
+    # The seam over the shared arena: alignment, disjointness, containment,
+    # and a fatal, named exhaustion.  One rank: the arena is one object.
+    register_cxl_single_node_test(cxl_store_alloc TIMEOUT 60 FAIL_REGEX "FAIL")
+    # The static strategy with a device other than 0: the one arena is index
+    # 0 whatever device the cfg named.
+    arts_test_cfg(_dev3_cfg 1n_static_dev3)
+    add_test(NAME cxl_store_alloc_static_dev3 COMMAND cxl_store_alloc
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(cxl_store_alloc_static_dev3 PROPERTIES
+        LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_dev3_cfg}"
+        PASS_REGULAR_EXPRESSION "PASS cxl_store_alloc" FAIL_REGULAR_EXPRESSION "FAIL")
     # The slot rule holds on one rank and on every multinode flavour.  Every
     # verdict travels as printed output: a FAIL line from any rank fails it,
     # and the run's last act prints the line required here, so a run that shut
     # down before its checks ran cannot pass.
-    register_fam_single_node_test(fam_slot_rule TIMEOUT 30)
-    # A grant naming a store other than the one the cache names is refused:
-    # a cache of an earlier generation of a reused label, whose store has
-    # been freed.  One rank: the refusal is a check on one rank's cache.
-    register_fam_single_node_test(fam_stale_generation_grant TIMEOUT 30)
-    register_fam_multinode_test(fam_slot_rule TIMEOUT 60)
-    if(ARTS_FAM_TREE_RESIDENCY STREQUAL "DIRECT")
-        # A store handed back leaves nothing naming it.  Where a descriptor
-        # carries its payload it names no storage that can be handed back, so
-        # the assertions hold there by address disjointness rather than by the
+    register_cxl_single_node_test(cxl_slot_rule TIMEOUT 30)
+    # A grant naming a slot other than the one the cache names is refused: a
+    # cache of an earlier generation of a reused label, whose slot belongs to
+    # that generation.  One rank: the refusal is a check on one rank's cache.
+    register_cxl_single_node_test(cxl_stale_generation_grant TIMEOUT 30)
+    register_cxl_multinode_test(cxl_slot_rule TIMEOUT 60)
+    if(ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
+        # A discarded slot leaves nothing naming it.  Where a descriptor
+        # carries its payload it names no slot that can be discarded, so the
+        # assertions hold there by address disjointness rather than by the
         # withdrawal they are written for -- a residency this test cannot
         # fail.  One rank: the cache it asserts on is private to the rank that
         # makes it, so peers add nothing.
-        register_fam_single_node_test(fam_slot_discard_unadopt TIMEOUT 30)
-        # A holder's working bytes ARE the block's store: one address from the
+        register_cxl_single_node_test(cxl_slot_discard_unadopt TIMEOUT 30)
+        # A holder's working bytes ARE the block's slot: one address from the
         # create through every turn, and the bytes a turn writes are the bytes
         # the next turn reads.  Where each turn works in its own copy the
         # addresses differ by construction, so this asserts a residency rather
         # than a protocol.
-        register_fam_single_node_test(fam_direct_payload_identity TIMEOUT 60)
+        register_cxl_single_node_test(cxl_direct_payload_identity TIMEOUT 60)
         # The no-copy half of the same oracle: that address is the SAME on
         # every rank that holds it.  Needs more than one rank to say anything.
-        register_fam_multinode_test(fam_direct_payload_identity TIMEOUT 120
-                                    VARIANTS 2n 3n)
+        register_cxl_multinode_test(cxl_direct_payload_identity TIMEOUT 120 VARIANTS 2n 3n)
     endif()
     # A cache made by an acquiring create is on the block's destroy roster, so
-    # it gives its store up with the block instead of outliving it.  Needs a
-    # rank that is not the block's home.
-    register_fam_multinode_test(fam_creator_roster TIMEOUT 60)
+    # it stops naming the slot with the block instead of outliving it.  Needs
+    # a rank that is not the block's home.
+    register_cxl_multinode_test(cxl_creator_roster TIMEOUT 60)
     # A block nobody has written is acquirable by a first user on every rank,
     # and one write turn then defines what all of them see.
-    register_fam_multinode_test(fam_no_acquire_first_use TIMEOUT 60)
-    # One label names one block and therefore one store, with the creator
-    # rotating over the ranks.  The budget is the churn's: the cycle count has
-    # to clear a rank's share of the pool for a leaked store to exhaust it.
-    register_fam_multinode_test(fam_labeled_create TIMEOUT 180)
-    # One pool at one address in every rank, cut into disjoint slices.
-    register_fam_multinode_test(fam_slices TIMEOUT 60 VARIANTS 2n 4n)
+    register_cxl_multinode_test(cxl_no_acquire_first_use TIMEOUT 60)
+    # One label names one block and therefore one slot.  The timeout covers
+    # eighty create/destroy cycles with the creator rotating over the ranks.
+    register_cxl_multinode_test(cxl_labeled_create TIMEOUT 180)
     # One fetch and one purge per turn, on either residency.  One rank,
     # because that is where every turn is home-local.
-    register_fam_single_node_test(fam_home_turn_costs TIMEOUT 30)
+    register_cxl_single_node_test(cxl_home_turn_costs TIMEOUT 30)
     # The arm's teardown walk: six blocks, every one released and every
     # dependence satisfied, must leave the walk silent -- a QUIESCENCE-DEBUG
     # marker on this shape is the oracle catching a real defect, not a test
     # artifact.
-    register_fam_multinode_test(fam_quiescence_marker TIMEOUT 60
-                                FAIL_REGEX "QUIESCENCE-DEBUG|FAIL")
-    # Create/destroy churn on a fixed pool: a store that is not returned at
-    # its block's teardown exhausts one rank's share of the pool long before
-    # the last iteration, so this holds on one rank and on every multinode
-    # flavour.
-    register_fam_single_node_test(fam_slot_reuse_after_destroy TIMEOUT 90)
-    register_fam_multinode_test(fam_slot_reuse_after_destroy TIMEOUT 90)
+    register_cxl_multinode_test(cxl_quiescence_marker TIMEOUT 60 FAIL_REGEX "QUIESCENCE-DEBUG|FAIL")
     # The store's two flushes, each at its one edge of a turn: a consumer
     # flush when a rank's first acquire is admitted, a producer flush when its
     # last write holder releases, nothing between and no producer flush after
     # a read turn.  Linked with the runtime whose adapter records its flushes.
-    add_arts_test(fam_edge_flush_order RUNTIME arts_static_fam_flush_recorder)
-    target_compile_definitions(fam_edge_flush_order PRIVATE
-                               ARTS_FAM_FLUSH_RECORDER=1)
-    register_fam_single_node_test(fam_edge_flush_order TIMEOUT 30)
-    register_fam_multinode_test(fam_edge_flush_order TIMEOUT 60)
+    add_arts_test(cxl_edge_flush_order RUNTIME arts_static_cxl_flush_recorder)
+    target_compile_definitions(cxl_edge_flush_order PRIVATE ARTS_CXL_FLUSH_RECORDER=1)
+    register_cxl_single_node_test(cxl_edge_flush_order TIMEOUT 30)
+    register_cxl_multinode_test(cxl_edge_flush_order TIMEOUT 60)
 
-    # 7 ranks x (1 worker + 1 progress) exercises the arm at the widest
-    # geometry a 14-CPU host can hold without oversubscribing.
-    foreach(t fam_slot_rule fam_remote_write_read fam_ro_cohort
-              fam_create_release_remote fam_slot_reuse_after_destroy
-              fam_no_acquire_first_use fam_labeled_create)
-        register_fam_multinode_test(${t} VARIANTS 7n TIMEOUT 120)
+    # 7 ranks x (1 worker + 1 progress): the widest geometry a 14-CPU host
+    # holds, and the only one that puts seven ranks on the shared arena.
+    foreach(t cxl_slot_rule cxl_remote_write_read cxl_ro_cohort
+              cxl_create_release_remote cxl_no_acquire_first_use cxl_labeled_create)
+        register_cxl_multinode_test(${t} VARIANTS 7n TIMEOUT 120)
     endforeach()
 endif()
 
@@ -1779,11 +1734,26 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/generated_tests.cmake)
 # roster snapshot (who is retired, who stays).  INV only; self-skips else.
 add_pure_unit_src(inv_round_snapshot DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_round_snapshot:|SKIP" TIMEOUT 60)
 
-# Wire-shape guard for the create packet's fabric-attached-memory slot and the
-# two appended messages.  Registered UNGUARDED (no FAM-tree condition): the
-# test's own #ifdef ARTS_FAM branches on the tree it compiles in, and it must
-# pass in a FAM tree and in a tree with no FAM backend alike.
-add_pure_unit_src(fam_wire_layout PASS_REGEX "PASS fam_wire_layout" TIMEOUT 30)
+# config_cxl_alloc_strategy: the cxl_db_allocation_strategy handler.  Only
+# buildable where the CXL store is configured: defining ARTS_USE_CXL forces
+# config.c down the cxl/deque.h path, which needs the device library's
+# allocator symbols.
+if(ARTS_CXL_TREE_RESIDENCY)
+    add_arts_test(config_cxl_alloc_strategy)
+    target_compile_definitions(config_cxl_alloc_strategy PRIVATE ARTS_USE_CXL)
+    register_pure_unit_test(config_cxl_alloc_strategy TIMEOUT 60)
+    # It links arts_static and so the store library, which maps its one
+    # region when it loads.
+    set_tests_properties(config_cxl_alloc_strategy PROPERTIES
+        RESOURCE_LOCK "arts_runtime"
+        PASS_REGULAR_EXPRESSION "PASS config_cxl_alloc_strategy: round_robin / static\\+dev3 / NULL->static,0")
+endif()
+
+# Wire-shape guard for the create packet's CXL slot.  Registered UNGUARDED
+# (no CXL-tree condition): the test's own #ifdef ARTS_USE_CXL branches on the
+# tree it compiles in, and it must pass in a CXL tree and in a tree with no
+# store alike.
+add_pure_unit_src(cxl_wire_layout PASS_REGEX "PASS cxl_wire_layout" TIMEOUT 30)
 
 # runtime_types.h has separate C11-atomic and C++/nvcc declarations for the
 # event descriptor.  The generated census owns the C probe; compile the exact
@@ -1820,73 +1790,73 @@ set_tests_properties(runtime_edt_event_layout_compare PROPERTIES
     PASS_REGULAR_EXPRESSION
         "PASS runtime_edt_event_layout_compare: C/C\\+\\+ fingerprints match")
 
-# excl/types.h maintains two hand-written views of arts_db_cache_s; the FAM
+# excl/types.h maintains two hand-written views of arts_db_cache_s; the CXL
 # slot field is the one this arm adds to both.  Registered only where this
-# tree's own library is FAM-enabled -- the fingerprint is meaningless with no
-# fam_addr member to compare.
-if(ARTS_FAM_TREE_RESIDENCY)
-    add_pure_unit_src(fam_cache_fields PASS_REGEX "PASS fam_cache_fields \\[c\\]"
+# tree's own library keeps payloads in the store -- the fingerprint is
+# meaningless with no cxl_addr member to compare.
+if(ARTS_CXL_TREE_RESIDENCY)
+    add_pure_unit_src(cxl_cache_fields PASS_REGEX "PASS cxl_cache_fields \\[c\\]"
                       TIMEOUT 30)
 
-    add_executable(fam_cache_fields_cpp
-        unit/fam_cache_fields_cpp.cpp)
-    target_include_directories(fam_cache_fields_cpp PRIVATE
+    add_executable(cxl_cache_fields_cpp
+        unit/cxl_cache_fields_cpp.cpp)
+    target_include_directories(cxl_cache_fields_cpp PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR}
         ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(fam_cache_fields_cpp
+    arts_apply_protocol(cxl_cache_fields_cpp
         ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
-    set_property(TARGET fam_cache_fields_cpp
+    set_property(TARGET cxl_cache_fields_cpp
         PROPERTY POSITION_INDEPENDENT_CODE OFF)
-    target_compile_options(fam_cache_fields_cpp PRIVATE -fno-pie -fno-PIE)
-    target_link_options(fam_cache_fields_cpp PRIVATE
+    target_compile_options(cxl_cache_fields_cpp PRIVATE -fno-pie -fno-PIE)
+    target_link_options(cxl_cache_fields_cpp PRIVATE
         -no-pie -fno-pie -fno-PIE)
-    target_link_libraries(fam_cache_fields_cpp PRIVATE Threads::Threads)
+    target_link_libraries(cxl_cache_fields_cpp PRIVATE Threads::Threads)
 
-    register_pure_unit_test(fam_cache_fields_cpp TIMEOUT 60)
-    set_tests_properties(fam_cache_fields_cpp PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS fam_cache_fields \\[cpp\\]")
+    register_pure_unit_test(cxl_cache_fields_cpp TIMEOUT 60)
+    set_tests_properties(cxl_cache_fields_cpp PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS cxl_cache_fields \\[cpp\\]")
 
     add_test(
-        NAME fam_cache_fields_compare
+        NAME cxl_cache_fields_compare
         COMMAND ${CMAKE_COMMAND}
-            "-DC_EXECUTABLE=$<TARGET_FILE:fam_cache_fields>"
-            "-DCPP_EXECUTABLE=$<TARGET_FILE:fam_cache_fields_cpp>"
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_fam_cache_fields.cmake)
-    set_tests_properties(fam_cache_fields_compare PROPERTIES
+            "-DC_EXECUTABLE=$<TARGET_FILE:cxl_cache_fields>"
+            "-DCPP_EXECUTABLE=$<TARGET_FILE:cxl_cache_fields_cpp>"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_cxl_cache_fields.cmake)
+    set_tests_properties(cxl_cache_fields_compare PROPERTIES
         LABELS "single_node"
         TIMEOUT 60
         RESOURCE_LOCK "pure_unit_test"
         PASS_REGULAR_EXPRESSION
-            "PASS fam_cache_fields_compare: C/C\\+\\+ fingerprints match")
+            "PASS cxl_cache_fields_compare: C/C\\+\\+ fingerprints match")
 
     # Grades this tree's OWN objects, so it is registered only where the
     # library is store-backed: it asserts that the payload plane is compiled
     # out, which is true of no other tree.  CMake, not the script, says which
     # arms this tree builds -- the store-backed variants to grade beside the
-    # tree's library, and whether the non-FAM build of the same source that
+    # tree's library, and whether the non-CXL build of the same source that
     # gives the check its control exists here at all.
-    set(_fam_graded "")
-    foreach(_v ocr_excl_purge_fam_staged ocr_excl_purge_fam_direct)
+    set(_cxl_graded "")
+    foreach(_v ocr_excl_purge_cxl_staged ocr_excl_purge_cxl_direct)
         if(TARGET arts_static_${_v})
-            list(APPEND _fam_graded "arts_static_${_v}")
+            list(APPEND _cxl_graded "arts_static_${_v}")
         endif()
     endforeach()
-    set(_fam_require_control OFF)
+    set(_cxl_require_control OFF)
     if(TARGET arts_static_ocr_excl_purge)
-        set(_fam_require_control ON)
+        set(_cxl_require_control ON)
     endif()
     add_test(
-        NAME fam_no_payload_plane
+        NAME cxl_no_payload_plane
         COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
-                "-DGRADED_TARGETS=${_fam_graded}"
-                "-DREQUIRE_CONTROL=${_fam_require_control}"
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/fam_no_payload_plane.cmake)
-    set_tests_properties(fam_no_payload_plane PROPERTIES
+                "-DGRADED_TARGETS=${_cxl_graded}"
+                "-DREQUIRE_CONTROL=${_cxl_require_control}"
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cxl_no_payload_plane.cmake)
+    set_tests_properties(cxl_no_payload_plane PROPERTIES
         LABELS "single_node"
         TIMEOUT 60
         RESOURCE_LOCK "pure_unit_test"
-        PASS_REGULAR_EXPRESSION "PASS fam_no_payload_plane")
+        PASS_REGULAR_EXPRESSION "PASS cxl_no_payload_plane")
 endif()
 
 # ============================================================================
@@ -2003,7 +1973,7 @@ set_tests_properties(excl_samerank_rw_grant_race_2n PROPERTIES FAIL_REGULAR_EXPR
 set_tests_properties(excl_samerank_rw_grant_race_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(excl_samerank_rw_grant_race_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(excl_samerank_rw_grant_race_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
+if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_CXL_DIRECT_EXCLUDED)
     set_tests_properties(mark_edt_ready_idempotent PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 set_tests_properties(random_thread_safe PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -2088,4 +2058,4 @@ foreach(_t IN LISTS _arts_test_targets)
     endif()
 endforeach()
 
-arts_fam_test_env()
+arts_cxl_test_env()

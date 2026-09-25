@@ -366,71 +366,63 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache);
 void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
 #endif
 
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 /* Record this block's slot in a cache that has none; a cache that already
  * names a slot keeps it.  Every slot has one origin: the block's creator mints
- * it from its own slice before the create is sent, and every other rank learns
+ * it from the arena before the create is sent, and every other rank learns
  * it from the create or a grant.  The result tells a repeat of the address the
  * cache already names (or no address at all) from a different one. */
 typedef enum {
-  ARTS_FAM_SLOT_RECORDED, /* this call installed addr */
-  ARTS_FAM_SLOT_KNOWN,    /* the cache already names addr, or addr is 0 */
-  ARTS_FAM_SLOT_CONFLICT, /* the cache already names a different slot */
-} arts_fam_slot_record_t;
-arts_fam_slot_record_t arts_db_fam_slot_record(struct arts_db_cache_s *cache,
+  ARTS_CXL_SLOT_RECORDED, /* this call installed addr */
+  ARTS_CXL_SLOT_KNOWN,    /* the cache already names addr, or addr is 0 */
+  ARTS_CXL_SLOT_CONFLICT, /* the cache already names a different slot */
+} arts_cxl_slot_record_t;
+arts_cxl_slot_record_t arts_db_cxl_slot_record(struct arts_db_cache_s *cache,
                                                uint64_t addr);
-/* Allocate a slot of db_size bytes out of this rank's slice for a create that
+/* Allocate a slot of db_size bytes out of the arena for a create that
  * builds no descriptor here; 0 for a sentinel-sized block, which has none. */
-uint64_t arts_db_fam_slot_mint(uint64_t db_size);
-/* Allocate out of this rank's slice, for the size the cache DECLARES, and
+uint64_t arts_db_cxl_slot_mint(uint64_t db_size);
+/* Allocate out of the arena, for the size the cache DECLARES, and
  * record it.  False when the block is sentinel-sized (db_size == 0) or
  * already carries a slot — in which case nothing was allocated.  The caller
  * must have recorded cache->db_size first: a first-touch stub carries none,
  * and a create that finds such a cache is the block's declaration of its
  * size.  Only a create that MADE the block may call it, and only for
  * db_type == ARTS_DB — a kind that keeps no coherence state has no funnel to
- * read the slot and no teardown to free it.
+ * read the slot.
  *
- * The store is not written: a fresh store's contents are unspecified until a
+ * The slot is not written: a fresh slot's contents are unspecified until a
  * holder writes them. */
-bool arts_db_fam_slot_create(struct arts_db_cache_s *cache);
-/* Drop a slot this rank allocated for a create that turned out to create
- * nothing.  Only the allocating rank may call it — arts_fam_free requires
- * the caller's own slice and is fatal otherwise, which is the check.  The
- * cache is left naming neither the slot nor a payload in it: a store that
- * goes back leaves nothing behind that could hand it out again.
+bool arts_db_cxl_slot_create(struct arts_db_cache_s *cache);
+/* Drop a slot this rank minted for a create that turned out to create
+ * nothing.  The cache is left naming neither the slot nor a payload in it, so
+ * nothing behind it could hand the slot out again; the bytes stay in the
+ * arena.
  *
  * The cache must be one NOTHING ELSE CAN NAME — a create whose route install
  * failed, whose object is private and about to be freed.  A published cache
  * may have a holder, a fetch in flight or a first user about to adopt the
- * store, and freeing the granule under any of them re-issues it to another
- * block; so a create that published its object keeps the store and lets the
- * block's teardown return it. */
-void arts_db_fam_slot_discard(struct arts_db_cache_s *cache);
-/* The block is gone: free the slot here, or tell its owner to.  Exactly one
- * caller per block — the teardown that claimed the route slot. */
-void arts_db_fam_slot_release(struct arts_db_cache_s *cache);
-
-/* The slot this rank knows for the block, 0 when it knows none.  There is no
- * owner beside it: the owning rank of a slot is a pure function of its
- * address. */
+ * slot; so a create that published its object keeps the slot for the block's
+ * whole life. */
+void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache);
+/* The slot this rank knows for the block, 0 when it knows none. */
 static inline uint64_t
-arts_db_fam_slot_addr(const struct arts_db_cache_s *cache) {
-  return __atomic_load_n(&cache->fam_addr, __ATOMIC_ACQUIRE);
+arts_db_cxl_slot_addr(const struct arts_db_cache_s *cache) {
+  return __atomic_load_n(&cache->cxl_addr, __ATOMIC_ACQUIRE);
 }
 #else
-/* Every create announces the address it knows, and a build with no fabric
- * memory knows none — so the call site is the same one in both builds. */
+/* Every create announces the address it knows, and a build with no CXL
+ * store knows none — so the call site is the same one in both builds. */
 static inline uint64_t
-arts_db_fam_slot_addr(const struct arts_db_cache_s *cache) {
+arts_db_cxl_slot_addr(const struct arts_db_cache_s *cache) {
   (void)cache;
   return 0u;
 }
-static inline uint64_t arts_db_fam_slot_mint(uint64_t db_size) {
+static inline uint64_t arts_db_cxl_slot_mint(uint64_t db_size) {
   (void)db_size;
   return 0u;
 }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
 /* Case-D (arts_handler_db_create) per-protocol leaf function.
  * install_home_buffer: WT/WB defer the install to the creator's first

@@ -38,7 +38,7 @@
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
 #include "arts/edt.h"
-#include "arts/fam/pool.h"
+#include "arts/cxl/store.h"
 #include "arts/gas/route_table.h"
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
@@ -86,13 +86,12 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
     arts_excl_home_teardown(db, cache->db_guid);
     return;
   }
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
   /* The grant carries the block's store, never its bytes: the home holds no
    * canonical copy on this arm, and every grantee reads the store itself.
-   * The landing's address field names it — the only thing that travels, since
-   * the owner is a function of the address — and txid 0 says nothing is in
-   * flight. */
-  struct arts_rdzv_landing_s pub = {arts_db_fam_slot_addr(cache), 0, 0, 0};
+   * The landing's address field names it — the only thing that travels — and
+   * txid 0 says nothing is in flight. */
+  struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0, 0};
   uint64_t data_size = cache->db_size;
   if (grant == LOCK_GRANT_ONE_RW) {
     unsigned int rank;
@@ -170,7 +169,7 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
   if (buf_h != NULL) {
     arts_db_buf_release(&buf_h);
   }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 }
 
 /* ===== arts_send_db_excl_grant ========================================= */
@@ -217,7 +216,7 @@ void arts_send_db_excl_grant(unsigned int requester_rank, arts_guid_t db_guid,
     arts_handler_db_excl_grant(&p, sizeof(p));
     return;
   }
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
   /* Every grant on this arm is data-less: it names the block's store and the
    * grantee reads it, so there is no source buffer to pin and no landing to
    * write into. */
@@ -246,7 +245,7 @@ void arts_send_db_excl_grant(unsigned int requester_rank, arts_guid_t db_guid,
                        req_rdzv->txid, src->data, ds,
                        arts_db_buf_ref_release_cb, (void *)src_h);
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 }
 
 /* ===== arts_handler_db_excl_request ==================================== */
@@ -259,7 +258,7 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
-#ifndef ARTS_FAM
+#ifndef ARTS_USE_CXL
   if (a->rdzv.txid == 0 && cache->db_size > 0 && arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — the grant
@@ -323,7 +322,7 @@ static void lock_release_commit(struct arts_db_s *db,
   lock_home_grant(db, cache, grant);
 }
 
-#ifndef ARTS_FAM
+#ifndef ARTS_USE_CXL
 /* Rendezvous continuation for a committed remote RW release: the dirty bytes
  * have fully landed IN PLACE in home's stable buffer ("imm seen => buffer
  * valid"; the global RW lock excluded every reader while they flew), so there
@@ -343,7 +342,7 @@ static void lock_release_landed_cb(void *arg) {
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
 void arts_handler_db_excl_release(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
@@ -352,12 +351,12 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_excl_release_s *)args_v;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
   /* A release returns a right and nothing else: the turn's bytes reached the
    * block's store before the message left the releaser, so there is nothing
    * here to announce, to pair with a write completion, or to install. */
   if (a->data_size != 0u) {
-    ARTS_ERROR("fam: a release from rank %u carries a payload; on this arm a "
+    ARTS_ERROR("cxl: a release from rank %u carries a payload; on this arm a "
                "release carries the right it returns and nothing else",
                a->releaser);
   }
@@ -419,7 +418,7 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
     const void *data = (const char *)a + sizeof(*a);
     arts_db_buf_write_inplace(cache, data, a->data_size);
   }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
   /* (2)+(3) transition + grant. */
   lock_release_commit(db, cache, mode);
@@ -493,7 +492,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   atomic_store_explicit(&c->cache_state, seed, memory_order_relaxed);
   arts_lf_stack_init(&c->ro_pending);
   arts_lf_stack_init(&c->rw_pending);
-#ifndef ARTS_FAM
+#ifndef ARTS_USE_CXL
   c->home_pub_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
 #endif
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
@@ -563,7 +562,7 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
  * Send MSG_DB_EXCL_REQUEST to the home rank.  Self-send (home == this rank)
  * dispatches through the OoO engine (HIT runs inline; MISS defers until the
  * home db_s is installed).  Remote send goes via the transport. */
-#ifndef ARTS_FAM
+#ifndef ARTS_USE_CXL
 /* Materialize this rank's stable buffer (EXCL's fixed-address backing store)
  * and advertise it as the grant landing: the grant PUT installs IN PLACE,
  * preserving the address across the DB's whole lifetime.  A fresh txid is
@@ -597,7 +596,7 @@ static bool lock_stable_landing(struct arts_db_cache_s *cache,
   arts_db_buf_release(&h);
   return true;
 }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode) {
@@ -606,7 +605,7 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   /* Zeroed outside every conditional: no arm may reach the send with stack
    * garbage where a landing would be. */
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
-#ifndef ARTS_FAM
+#ifndef ARTS_USE_CXL
   (void)lock_stable_landing(cache, &rdzv);
 #endif
   if (home_rank == arts_global_rank_id) {
@@ -727,7 +726,7 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
   return true;
 }
 
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 /* ===== The two funnels =================================================
  *
  * The block's bytes live in its store, not on the wire.  The transfer through
@@ -743,18 +742,18 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
  * of this block. */
 
 /* The arm's own observables. */
-uint64_t arts_fam_fetches;
-uint64_t arts_fam_purges;
+uint64_t arts_cxl_fetches;
+uint64_t arts_cxl_purges;
 
 /* The residency seam: declared once here, defined exactly once per residency,
  * and called only from the two shared funnels below — which have already
  * validated the store, taken the buffer ref and read the size. */
-static void fam_fetch_body(struct arts_db_cache_s *cache,
+static void cxl_fetch_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf);
-static void fam_purge_body(struct arts_db_cache_s *cache,
+static void cxl_purge_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf);
-#if !defined(ARTS_FAM_STAGED) && !defined(ARTS_FAM_DIRECT)
-#error "a FAM build names a residency"
+#if !defined(ARTS_CXL_STAGED) && !defined(ARTS_CXL_DIRECT)
+#error "a CXL build names a residency"
 #endif
 
 /* A SIZED block must know its store address.  A create records the
@@ -764,10 +763,10 @@ static void fam_purge_body(struct arts_db_cache_s *cache,
  * shared part for that reason: the slot rule is what it checks, not a funnel.
  * A block whose declared size is 0 is exempt: a sentinel has no bytes, so it
  * has no store and a grant for it carries address 0 legitimately. */
-static void fam_slot_required(const struct arts_db_cache_s *cache,
+static void cxl_slot_required(const struct arts_db_cache_s *cache,
                               const char *edge) {
-  if (arts_db_fam_slot_addr(cache) == 0 && cache->db_size != 0) {
-    ARTS_ERROR("fam: guid %lu has no slot at its %s edge",
+  if (arts_db_cxl_slot_addr(cache) == 0 && cache->db_size != 0) {
+    ARTS_ERROR("cxl: guid %lu has no slot at its %s edge",
                (unsigned long)cache->db_guid, edge);
   }
 }
@@ -776,14 +775,13 @@ static void fam_slot_required(const struct arts_db_cache_s *cache,
  * grant's admitting CAS, while the granted axis still rests at REQ, so every
  * acquire of it is parked and nothing reads or writes the working copy being
  * filled.  The buffer ref and the block's handle are held across it, and the
- * store cannot be freed under it because this rank has been counted at the
- * home from the moment it asked, and the home frees only at a zero edge.
+ * slot outlives every turn: nothing reclaims it within a run.
  * The block's handle keeps the descriptor's destructor away, so a working copy
  * is missing here only when the ensure could not allocate one — and a grant
  * whose cohort cannot be served is a hang, never a soft drop. */
-static void fam_fetch_working_copy(struct arts_db_cache_s *cache) {
+static void cxl_fetch_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = cache->db_size;
-  fam_slot_required(cache, "grant");
+  cxl_slot_required(cache, "grant");
   if (n == 0) {
     return; /* a sentinel-sized block has no bytes and no store */
   }
@@ -791,16 +789,16 @@ static void fam_fetch_working_copy(struct arts_db_cache_s *cache) {
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
-    ARTS_ERROR("fam: guid %lu has no working copy of %llu bytes to fetch its "
+    ARTS_ERROR("cxl: guid %lu has no working copy of %llu bytes to fetch its "
                "grant into",
                (unsigned long)cache->db_guid, (unsigned long long)n);
   }
-  fam_fetch_body(cache, buf);
+  cxl_fetch_body(cache, buf);
   arts_db_buf_release(&h);
-  __atomic_fetch_add(&arts_fam_fetches, 1u, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&arts_cxl_fetches, 1u, __ATOMIC_RELAXED);
 }
 
-/* Return this rank's turn's bytes to the block's canonical store.
+/* Return this rank's turn's bytes to the block's slot.
  * Synchronous on the releasing worker: the zero edge and the cache word's
  * return to IDLE commit in one CAS before this runs, so a local acquire
  * arriving meanwhile parks or requests and cannot self-serve out of a working
@@ -812,9 +810,9 @@ static void fam_fetch_working_copy(struct arts_db_cache_s *cache) {
  * One generation has one store because its creator mints it once, and a grant
  * naming a store other than the one this rank's cache names is refused where
  * it is recorded. */
-static void fam_purge_working_copy(struct arts_db_cache_s *cache) {
+static void cxl_purge_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = cache->db_size;
-  fam_slot_required(cache, "release");
+  cxl_slot_required(cache, "release");
   if (n == 0) {
     return;
   }
@@ -826,53 +824,53 @@ static void fam_purge_working_copy(struct arts_db_cache_s *cache) {
     arts_db_buf_release(&h);
     return;
   }
-  fam_purge_body(cache, buf);
+  cxl_purge_body(cache, buf);
   arts_db_buf_release(&h);
-  __atomic_fetch_add(&arts_fam_purges, 1u, __ATOMIC_RELAXED);
+  __atomic_fetch_add(&arts_cxl_purges, 1u, __ATOMIC_RELAXED);
 }
 
-#ifdef ARTS_FAM_STAGED
+#ifdef ARTS_CXL_STAGED
 /* Staged residency: the working copy is DRAM, so the bytes are reloaded out of
  * the block's store and copied in.  The consumer flush precedes the read: this
  * rank's private lines may be clean stale copies of the store. */
-static void fam_fetch_body(struct arts_db_cache_s *cache,
+static void cxl_fetch_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
   uint64_t n = cache->db_size;
-  const void *slot = (const void *)(uintptr_t)arts_db_fam_slot_addr(cache);
-  arts_fam_flush_consumer(slot, (size_t)n);
+  const void *slot = (const void *)(uintptr_t)arts_db_cxl_slot_addr(cache);
+  arts_cxl_flush_consumer(slot, (size_t)n);
   memcpy(buf->data, slot, (size_t)n);
 }
 
 /* Staged residency: the turn's bytes are copied out of the DRAM working copy
  * and the producer flush follows the write. */
-static void fam_purge_body(struct arts_db_cache_s *cache,
+static void cxl_purge_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
   uint64_t n = cache->db_size;
-  void *slot = (void *)(uintptr_t)arts_db_fam_slot_addr(cache);
+  void *slot = (void *)(uintptr_t)arts_db_cxl_slot_addr(cache);
   memcpy(slot, buf->data, (size_t)n);
-  arts_fam_flush_producer(slot, (size_t)n);
+  arts_cxl_flush_producer(slot, (size_t)n);
 }
-#endif /* ARTS_FAM_STAGED */
+#endif /* ARTS_CXL_STAGED */
 
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
 /* The working bytes ARE the block's store here: the fetch's arts_db_buf_ensure
  * adopted the slot, so this descriptor names it and there is nothing to copy.
  * A fetch is the consumer flush that makes this rank's private lines the
  * store's. */
-static void fam_fetch_body(struct arts_db_cache_s *cache,
+static void cxl_fetch_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
-  arts_fam_flush_consumer(buf->data, (size_t)cache->db_size);
+  arts_cxl_flush_consumer(buf->data, (size_t)cache->db_size);
 }
 
 /* A purge is the producer flush that publishes this turn's writes to the
  * store.  It runs before the release is committed or sent, which is what makes
  * it precede every onward admission. */
-static void fam_purge_body(struct arts_db_cache_s *cache,
+static void cxl_purge_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
-  arts_fam_flush_producer(buf->data, (size_t)cache->db_size);
+  arts_cxl_flush_producer(buf->data, (size_t)cache->db_size);
 }
-#endif /* ARTS_FAM_DIRECT */
-#endif /* ARTS_FAM */
+#endif /* ARTS_CXL_DIRECT */
+#endif /* ARTS_USE_CXL */
 
 /* ===== arts_handler_db_acquire =========================================
  * OOO_DB_ACQUIRE Cat-B body — protocol-agnostic signature.
@@ -902,7 +900,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   arts_db_access_mode_t mode = depv[slot].mode;
 
-#ifndef ARTS_FAM
+#ifndef ARTS_USE_CXL
   if (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id) {
     /* First use of a block whose create took no hold: its storage was left
      * for whoever uses it first, and under this release policy only the home
@@ -916,7 +914,7 @@ void arts_handler_db_acquire(void *item, void *args) {
   /* The home materializes nothing here: it is an ordinary participant, and a
    * working copy is placed by the grant's fetch that fills it — this arm's
    * single materialization point. */
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
   int op = (mode == DB_MODE_RW) ? CACHE_OP_ACQ_RW : CACHE_OP_ACQ_RO;
   uint32_t act;
@@ -972,7 +970,7 @@ void arts_handler_db_acquire(void *item, void *args) {
  * grant self-serve and never park), and lock_drain_pending consumes exactly
  * that many nodes — serving is exactly-once with no other drain path that
  * could run against a later round. */
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 /* Apply a grant: fetch, then the one CAS that admits the cohort.  The fetch
  * must precede that CAS — once the axis reads GRANT an arriving acquire
  * self-serves out of the working copy — and it is taken only for a grant the
@@ -997,7 +995,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     next = cache_compute_next(cur, op, &act);
     if (!fetched &&
         (act == CACHE_ACT_DRAIN_BOTH || act == CACHE_ACT_DRAIN_RO)) {
-      fam_fetch_working_copy(cache);
+      cxl_fetch_working_copy(cache);
       fetched = true;
       cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
       continue;
@@ -1023,7 +1021,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
        * will wake them, since the home has no second grant to send for a
        * request it has already answered.  A write axis already held keeps its
        * word, and its writers are served by that hold. */
-      ARTS_ERROR("fam: guid %lu clears its write request with %u writers "
+      ARTS_ERROR("cxl: guid %lu clears its write request with %u writers "
                  "parked on it (word=%llx)",
                  (unsigned long)db_guid, (unsigned)CACHE_RW_CNT(cur),
                  (unsigned long long)cur);
@@ -1098,9 +1096,9 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
 
   arts_shared_release(&db_h);
 }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
-#ifndef ARTS_FAM
+#ifndef ARTS_USE_CXL
 /* Rendezvous continuation: the grant bytes have fully landed IN PLACE in this
  * rank's stable buffer (EXCL's fixed-address install; no local holder exists
  * while a grant is in flight — the global lock excluded us).  Nothing to
@@ -1121,16 +1119,16 @@ static void lock_grant_landed_cb(void *arg) {
   }
   arts_free(ctx);
 }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 void arts_handler_db_excl_grant(void *payload, size_t size) {
   struct arts_msg_excl_grant_packet_s *p =
       (struct arts_msg_excl_grant_packet_s *)payload;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)p->mode;
   if (size != sizeof(*p) || p->rdzv_txid != 0) {
-    ARTS_ERROR("fam: a grant from rank %u carries a payload; on this arm a "
-               "grant carries the block's store and nothing else",
+    ARTS_ERROR("cxl: a grant from rank %u carries a payload; on this arm a "
+               "grant carries the block's slot and nothing else",
                p->header.rank);
   }
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
@@ -1146,23 +1144,22 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
   if (cache->db_size == 0 && p->data_size > 0) {
     cache->db_size = p->data_size;
   }
-  /* The grant names the block's store in the landing's address field, and
-   * nothing else: the owner is the address's slice, and the landing's key,
-   * txid and the version are unread here.  A rank that created the block
-   * already knows the store and records nothing.  A zero address is legal for
-   * a sentinel-sized block, which has none.
+  /* The grant names the block's slot in the landing's address field, and
+   * nothing else: the landing's key, txid and the version are unread here.
+   * A rank that created the block already knows the slot and records nothing.
+   * A zero address is legal for a sentinel-sized block, which has none.
    *
-   * A cache naming a DIFFERENT store is a cache of an earlier generation of a
+   * A cache naming a DIFFERENT slot is a cache of an earlier generation of a
    * reused label, reached by a later generation's grant before its teardown
-   * notice: its store has been freed and may already belong to another block.
-   * Dropping the grant would strand the home's count, and fetching would read
-   * or write memory the block no longer owns, so the grant is refused. */
-  if (arts_db_fam_slot_record(cache, p->pub.addr) == ARTS_FAM_SLOT_CONFLICT) {
-    ARTS_ERROR("fam: guid %lu: a grant names slot %#llx but this rank's cache "
+   * notice: its slot holds a block that no longer exists.  Dropping the grant
+   * would strand the home's count, and fetching would read or write bytes the
+   * block does not own, so the grant is refused. */
+  if (arts_db_cxl_slot_record(cache, p->pub.addr) == ARTS_CXL_SLOT_CONFLICT) {
+    ARTS_ERROR("cxl: guid %lu: a grant names slot %#llx but this rank's cache "
                "names slot %#llx — a cache from before the block's teardown "
                "notice received a later generation's grant",
                (unsigned long)p->db_guid, (unsigned long long)p->pub.addr,
-               (unsigned long long)arts_db_fam_slot_addr(cache));
+               (unsigned long long)arts_db_cxl_slot_addr(cache));
   }
   lock_grant_commit(db_h, p->db_guid, mode); /* consumes db_h */
 }
@@ -1215,7 +1212,7 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
   }
   lock_grant_commit(db_h, p->db_guid, mode, &pub); /* consumes db_h */
 }
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 
 /* ===== arts_send_db_excl_release ========================================
  * Send EXCL_RELEASE to the home.  RW carries publish data, version, and cv
@@ -1252,10 +1249,10 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
                                       sizeof(args));
       return;
     }
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
     /* Every release on this arm is data-less: the turn's bytes reached the
      * block's store before this call, so the arm above is the only one. */
-    ARTS_ERROR("fam: a release of guid %lu carries %lu payload bytes",
+    ARTS_ERROR("cxl: a release of guid %lu carries %lu payload bytes",
                (unsigned long)db_guid, (unsigned long)ds);
 #else
     uint32_t asz =
@@ -1276,7 +1273,7 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_RELEASE, abuf, asz);
     arts_free(abuf);
     return;
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
   }
 
   /* Remote send: control-only — a dirty RW release PUT its bytes into the
@@ -1318,14 +1315,14 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
  * address, and there is nowhere to PUT until the home names one. */
 static void lock_send_release_rw(struct arts_db_cache_s *cache) {
   unsigned int home = (unsigned int)arts_guid_get_rank(cache->db_guid);
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
   /* The turn's bytes go back to the block's store BEFORE the home hears
    * anything: the home's next act is to grant somebody, and that somebody
    * reads the store.  The home's own turn takes the same two copies every
    * other rank's does, which is why the purge precedes the home-local branch
    * below — a write-back edge that holds only when the home happens to be the
    * writer is not one worth having. */
-  fam_purge_working_copy(cache);
+  cxl_purge_working_copy(cache);
   if (home == arts_global_rank_id) {
     lock_release_commit(arts_db_of_cache(cache), cache, DB_MODE_RW);
     return;
@@ -1422,7 +1419,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
                             /*cv=*/0u, data, ds, /*rdzv_txid=*/0u,
                             /*rdzv_cookie=*/0u);
   arts_db_buf_release(&buf_h);
-#endif /* ARTS_FAM */
+#endif /* ARTS_USE_CXL */
 }
 
 static void lock_send_release_ro(struct arts_db_cache_s *cache) {

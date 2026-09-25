@@ -40,7 +40,6 @@
 #define _FILE_OFFSET_BITS 64 // NOLINT(readability-identifier-naming)
 #include "arts.h"
 #include "arts/counter/counter.h"
-#include "arts/fam/pool.h"
 #include "arts/gas/guid.h"
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
@@ -64,19 +63,13 @@ int arts_rt(int argc, char **argv) {
   arts_install_signal_watcher_thread();
   arts_configure_core_dumps(config.core_dump);
 
-#ifdef ARTS_FAM
-  /* Below the config load, whose values it reads, and on every rank without
-   * branching on the rank id, which is not assigned yet. */
-  arts_fam_boot_prepare(&config);
-#endif
-
   arts_global_rank_id = 0;
   arts_global_rank_count = config.table_length;
-  /* GUID layout encodes rank in 14 bits, with the top two values reserved
-   * (ARTS_DISTRIBUTED_RANK = 0x3FFE, ARTS_CXL_RANK = 0x3FFF).  Cap the
-   * usable range at 2^14 - 2 = 16382 so encoded ranks never collide with
-   * the sentinels.  Anything higher than the field width would silently
-   * truncate during encoding. */
+  /* GUID layout encodes rank in 14 bits, with the top value reserved as
+   * headroom beside ARTS_DISTRIBUTED_RANK (0x3FFE).  Cap the usable range
+   * at 2^14 - 2 = 16382 so encoded ranks never collide with the sentinel.
+   * Anything higher than the field width would silently truncate during
+   * encoding. */
   if (arts_global_rank_count > (ARTS_GUID_RANK_MASK - 1U)) {
     ARTS_ERROR("Rank count %u exceeds GUID layout limit %u "
                "(14-bit rank field, two values reserved). "

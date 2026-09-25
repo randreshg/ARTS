@@ -201,7 +201,7 @@ struct arts_db_buffer_s {
   struct arts_db_cache_s
       *owner_cache; /* deleter pushes here; read only at strong==0 */
   char _pad[32];    /* the payload member lands at offset 64 */
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   char *data; /* storage this descriptor refers to and does not own */
 #else
   char data[]; /* db_size bytes — user-visible */

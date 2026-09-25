@@ -247,7 +247,7 @@ struct arts_db_cache_s {
  *  cache-to-db_s recovery is a zero-cost cast (cache == &db->cache, and since
  *  cache is first, (struct arts_db_s *)cache aliases the wrapping db_s).  Use
  *  arts_db_of_cache() for that recovery.  Non-coherent pinned subtypes
- *  (ARTS_DB_PIN/ARTS_DB_GPU_PIN/ARTS_DB_GPU/ARTS_DB_CXL) leave the cache
+ *  (ARTS_DB_PIN/ARTS_DB_GPU_PIN/ARTS_DB_GPU) leave the cache
  *  zeroed (no DB-level coherence) and store their payload at (db + 1). */
 struct arts_db_s {
   struct arts_db_cache_s cache; /**< FIRST — coherence state (embedded by

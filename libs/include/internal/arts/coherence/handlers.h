@@ -352,17 +352,10 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
  * home echoes it in CREATE_RETURN. */
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t fam_addr,
+                                  uint16_t db_type, uint64_t cxl_addr,
                                   uint64_t create_token);
 void arts_send_db_destroy(unsigned int home_rank, arts_guid_t db_guid);
 void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid);
-
-#ifdef ARTS_FAM
-/* The slot's owner is derived from its address (arts_fam_owner_of), so the
- * caller names no rank: one block, one slot, one owner. */
-void arts_send_db_fam_free(uint64_t fam_addr);
-void arts_handler_db_fam_free(struct arts_msg_db_fam_free_packet_s *p);
-#endif
 
 #ifdef ARTS_WRITE_POLICY_WB
 /* Send SNAPSHOT_REDIRECT from home to the current owner, asking the owner to

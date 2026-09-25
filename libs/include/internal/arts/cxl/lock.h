@@ -2,18 +2,6 @@
  * Copyright 2019 Battelle Memorial Institute
  * Licensed under the Apache License, Version 2.0
  ******************************************************************************/
-/* UNMAINTAINED.  Kept for reference; the option that compiled it is a
- * configure error.  Two defect classes are known and are NOT fixed here:
- *
- *   - A release writes two fields that fall in different cache lines and
- *     publishes both under a single flush, so on a fabric with no hardware
- *     coherence their arrival order at a peer is undefined: a waiter can
- *     observe one field's new value against the other's old one.
- *   - The padded types reach a cache-line SIZE but are never declared with a
- *     cache-line ALIGNMENT, so nothing places them on a line boundary and two
- *     of them can share one line — which is what the padding exists to
- *     prevent.
- */
 #ifndef ARTS_CXL_LOCK_H
 #define ARTS_CXL_LOCK_H
 #ifdef __cplusplus

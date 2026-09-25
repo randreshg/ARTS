@@ -333,9 +333,6 @@ bool arts_ooo_retire_item(arts_guid_t key, const void *item) {
   (void)item;
   return false;
 }
-#ifdef ARTS_FAM
-void arts_db_fam_slot_release(struct arts_db_cache_s *cache) { (void)cache; }
-#endif
 #endif /* ARTS_PROTOCOL_EXCL */
 #endif
 

@@ -260,8 +260,8 @@ struct arts_ooo_args_db_create_s {
   arts_guid_t db_guid;
   uint64_t db_size;
   uint64_t create_token; /* the creator descriptor's, echoed in the return */
-#ifdef ARTS_FAM
-  uint64_t fam_addr; /* the block's slot, 0 when the creator allocated none */
+#ifdef ARTS_USE_CXL
+  uint64_t cxl_addr; /* the block's slot, 0 when the creator allocated none */
 #endif
   uint16_t flags;
   uint16_t db_type;

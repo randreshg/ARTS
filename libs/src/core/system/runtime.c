@@ -51,7 +51,6 @@
 #include "arts/defs.h"
 #include "arts/edt.h"
 #include "arts/edt_context.h" /* arts_owned_finish_cleanup, ctx tls */
-#include "arts/fam/pool.h"
 #include "arts/gas/guid.h"
 #include "arts/gas/route_table.h"
 #include "arts/memory/regpool.h"
@@ -146,14 +145,6 @@ void arts_runtime_node_init(struct arts_config_s *config) {
       ARTS_ERROR("arts_runtime_node_init: registered pool init failed");
     }
   }
-
-#ifdef ARTS_FAM
-  /* After the transport and the registered pool exist, because a backend may
-   * learn the pool's base from the address exchange, and before this rank has
-   * created a single worker thread — so the allocator's state is built once,
-   * by one thread, with nothing able to allocate from it yet. */
-  arts_fam_init(arts_global_rank_id, arts_global_rank_count);
-#endif
 
   /* Scheduler */
 #ifdef ARTS_USE_GPU
@@ -308,6 +299,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
                                          &arts_node_info.cxl_db_arena_end)) {
     ARTS_ERROR("CXL DB arena is missing or uninitialized");
   }
+#if 0 /* retired with the CXL GUID: a slot is named by its address in a message, never encoded into a GUID, so the arena needs no window */
   {
     unsigned long long window = 1ULL << ARTS_GUID_KEY_BITS;
     unsigned long long start =
@@ -321,6 +313,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
                  start, end, (unsigned long long)ARTS_CXL_BASE_ADDR, window);
     }
   }
+#endif
 #endif
 
   /* GUID generation */
@@ -383,10 +376,12 @@ static void arts_drain_pending_edts(struct arts_deque_s *dq) {
     /* Whatever this EDT holds ends here rather than at its release. */
     __atomic_fetch_add(&arts_shutdown_abandon.queued_edts, 1u,
                        __ATOMIC_RELAXED);
+#if 0 /* retired with the CXL scheduler deque: no EDT rests in the store */
 #ifdef ARTS_USE_CXL
     if (IS_CXL_PTR(edt)) {
       continue; /* CXL EDTs carry no self_cb ref (see arts_run_edt) */
     }
+#endif
 #endif
     arts_shared_ptr_t sref = edt->self_cb;
     arts_shared_release(&sref);
@@ -495,10 +490,6 @@ void arts_runtime_global_cleanup() {
    * still allocating at this point (called after every worker/sender/
    * receiver thread has joined). */
   arts_regpool_cleanup();
-
-#ifdef ARTS_FAM
-  arts_fam_fini();
-#endif
 
   /* Phase 2: the pool's slab MRs (backing both sends and the recv buffers) are
    * now closed, so the net module can close the domain and fabric — no memory

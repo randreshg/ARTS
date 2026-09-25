@@ -46,7 +46,7 @@ static unsigned char g_external[DB_SIZE];
 static unsigned char g_other[DB_SIZE];
 
 int main(void) {
-#ifndef ARTS_FAM_DIRECT
+#ifndef ARTS_CXL_DIRECT
   printf("SKIP buffer_external_payload (not a DIRECT build)\n");
   return 0;
 #else
@@ -120,7 +120,7 @@ int main(void) {
   /* The hint at its worst: "nothing to do" over an empty slot.  Both entries
    * must still materialize the block. */
   g_cache.payload_pending = 0u;
-  g_cache.fam_addr = (uint64_t)(uintptr_t)g_external;
+  g_cache.cxl_addr = (uint64_t)(uintptr_t)g_external;
   if (!arts_db_buf_ensure(&g_cache, DB_SIZE)) {
     printf("FAIL: an emptied slot was not materialized again\n");
     fail = 1;

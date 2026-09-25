@@ -347,15 +347,5 @@ void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid) {
    * (recorded at request time) and was just notified above.  Draining here
    * would be a second, unsynchronized consumer of a single-consumer queue — a
    * use-after-free against a concurrent CONFIRM. */
-#ifdef ARTS_FAM
-  /* The block's store goes back to the rank whose slice it came from, here and
-   * at no other death: this is the one edge at which no rank holds or awaits a
-   * turn, so no fetch or purge can be reading or writing the store, and the
-   * claim above makes the edge exactly-once per block.  A cache's death frees
-   * nothing — a cache that outlives the block, or dies while the block lives,
-   * names a store it does not own.  After the fan-out, so the sequence reads
-   * "tell every holder the block is gone, then return its memory". */
-  arts_db_fam_slot_release(&db->cache);
-#endif
 }
 

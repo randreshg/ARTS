@@ -78,7 +78,7 @@ add_pure_unit_src(guid_reserve_range PASS_REGEX "PASS guid_reserve_range" TIMEOU
 add_pure_unit_src(guid_db_seq_alloc_stress PASS_REGEX "PASS guid_db_seq_alloc_stress" TIMEOUT 120)
 add_pure_unit_src(route_table_db_shard PASS_REGEX "PASS route_table_db_shard" TIMEOUT 60)
 add_pure_unit_src(db_cache_layout PASS_REGEX "PASS db_cache_layout" TIMEOUT 60)
-if(NOT "buffer_payload_roundtrip" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
+if(NOT "buffer_payload_roundtrip" IN_LIST ARTS_CXL_DIRECT_EXCLUDED)
 add_pure_unit_src(buffer_payload_roundtrip SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_payload_roundtrip" TIMEOUT 60)
 add_pure_unit_src(buffer_zero_size SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_zero_size" TIMEOUT 60)
 add_pure_unit_src(buffer_version_guard SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_version_guard" TIMEOUT 60)
@@ -428,7 +428,7 @@ register_single_node_test(db_create_with_data_bytes TIMEOUT 60)
 
 # T059 EXPOSES B-mark-double-dec: expected to FAIL (delta==2 not 1). runtime_single (boots
 # arts_rt for route-table/EDT alloc). Lives in tests/unit/. Do not mask.
-if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_FAM_DIRECT_EXCLUDED)
+if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_CXL_DIRECT_EXCLUDED)
 add_arts_test(mark_edt_ready_idempotent)
 register_single_node_test(mark_edt_ready_idempotent TIMEOUT 60)
 endif()
@@ -832,70 +832,3 @@ set_tests_properties(route_table_remote_guid_4n PROPERTIES FAIL_REGULAR_EXPRESSI
 set_tests_properties(route_table_remote_guid_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(stdio_forward_scale_test PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(stress_edt PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-
-# Fabric-attached memory.  The bootstrap address frame carries {base,size}
-# whatever backend (if any) a tree configures, and its layout half asserts the
-# frame against the transport header alone -- no fam TU, no FAM define -- so
-# it is asserted in EVERY tree.  Its second half, gated in the source on a
-# backend, runs where the library adapter compiles.
-#
-# Everything after it is registered only where the tree has a backend, and a
-# tree that never names the option is untouched by this module.  A test that
-# links the library maps its one named region when it loads, so it takes the
-# runtime lock like every rank does.
-if(ARTS_FAM_TREE_RESIDENCY)
-    set(_fam_adapter_sources ${CMAKE_SOURCE_DIR}/libs/src/core/fam/library.c)
-    add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
-                      TIMEOUT 30 SOURCES ${_fam_adapter_sources} unit/fam_stubs.c
-                      LIBS ${ARTS_FAM_LIB})
-    set_tests_properties(fam_device_frame PROPERTIES
-                         RESOURCE_LOCK "arts_runtime")
-else()
-    add_pure_unit_src(fam_device_frame PASS_REGEX "PASS fam_device_frame"
-                      TIMEOUT 30)
-endif()
-if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
-    # These three COMPILE libs/src/core/fam/pool.c into the test binary, and
-    # the test itself is the backend, so they need ARTS_FAM whatever the
-    # enclosing tree's protocol is -- and a tree can legitimately have the
-    # backend with a non-EXCL protocol (a benchmark tree carries the two
-    # variants and keeps its own default arm).  In such a tree
-    # add_pure_unit_src's four-argument arts_apply_protocol resolves the
-    # residency to the TREE's, which is empty, and pool.c would then compile
-    # against pool.h's non-FAM arm: a `static inline` arts_fam_contains followed
-    # by pool.c's non-static definition, and an undeclared arts_fam_backend_map
-    # under the -Werror=implicit-function-declaration arts_apply_protocol itself
-    # adds.  Naming the backend definitions per target is what makes these
-    # independent of the tree's arm; the residency, if the tree has one, is
-    # the tree's own.
-    foreach(_fam_alloc_probe fam_pool_alloc fam_contains_preinit fam_double_free)
-        add_pure_unit_src(${_fam_alloc_probe}
-                          PASS_REGEX "PASS ${_fam_alloc_probe}" TIMEOUT 120
-                          DEFINES ARTS_FAM=1 ARTS_FAM_BACKEND_${ARTS_FAM_BACKEND}=1
-                          SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
-                                  unit/fam_stubs.c)
-    endforeach()
-endif()
-# The conformance probe takes the arena rank 0 names over its rendezvous, as
-# the runtime takes it over the address exchange.  Only a tree whose own
-# library is FAM-enabled carries the backend definitions it needs.
-if(ARTS_FAM_TREE_RESIDENCY)
-    add_executable(fam_conformance unit/fam_conformance.c
-                   ${CMAKE_SOURCE_DIR}/libs/src/core/fam/pool.c
-                   ${_fam_adapter_sources}
-                   unit/fam_stubs.c)
-    target_include_directories(fam_conformance PRIVATE
-        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
-        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(fam_conformance ${ARTS_COHERENCE_ARM}
-                        ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
-    target_link_libraries(fam_conformance PRIVATE Threads::Threads
-                          ${ARTS_FAM_LIB})
-    add_test(NAME fam_conformance COMMAND fam_conformance
-             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-    set_tests_properties(fam_conformance PROPERTIES
-        LABELS "single_node" TIMEOUT 120
-        RESOURCE_LOCK "arts_runtime"
-        PASS_REGULAR_EXPRESSION "PASS fam_conformance"
-        FAIL_REGULAR_EXPRESSION "FAIL")
-endif()

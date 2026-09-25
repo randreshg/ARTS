@@ -94,7 +94,7 @@ function(arts_coherence_model_tus out arm write_policy release_policy)
 endfunction()
 
 # Applies the family + second-axis compile definitions to <target> (PRIVATE),
-# and the fabric-attached-memory definitions that travel with them.
+# and the CXL store definitions that travel with them.
 # ARTS_PROTOCOL_<arm> is always emitted; VAL/INV/EXCL additionally get one of
 # ARTS_WRITE_POLICY_WT/WB and one of ARTS_RELEASE_PURGE/RETAIN (each arm's
 # sources test only its live axis: EXCL: ARTS_RELEASE_*; INV/VAL and the
@@ -123,26 +123,28 @@ function(arts_apply_protocol target arm write_policy release_policy)
         target_compile_definitions(${target} PRIVATE ARTS_NO_RO_COMBINING=1)
     endif()
     target_compile_definitions(${target} PRIVATE ARTS_PROTOCOL_${arm}=1)
-    # The fabric-attached-memory definitions travel with the protocol ones,
-    # for the same reason and by the same route: the runtime is assembled from
-    # object libraries that each receive their own definitions, so a
-    # definition applied to a library target alone reaches one translation
-    # unit -- and two TUs of one binary that disagree about ARTS_FAM disagree
-    # about a packet layout.  An optional 6th argument names this target's
-    # residency; OFF means no fabric-attached memory for this target, and no
-    # argument at all means "whatever this tree's own library uses".  A
+    # The CXL definitions travel with the protocol ones, by the same route:
+    # the runtime is assembled from object libraries that each receive their
+    # own definitions, and two TUs of one binary that disagree about
+    # ARTS_USE_CXL disagree about a packet layout.  An optional 6th argument
+    # names this target's residency; OFF means no CXL store for this target,
+    # and no argument means "whatever this tree's own library uses".  A
     # variant always names one, so it can never inherit the tree's.
     if(ARGC GREATER 5)
-        set(fam_residency "${ARGV5}")
+        set(cxl_residency "${ARGV5}")
     else()
-        set(fam_residency "${ARTS_FAM_TREE_RESIDENCY}")
+        set(cxl_residency "${ARTS_CXL_TREE_RESIDENCY}")
     endif()
-    if(NOT fam_residency STREQUAL "" AND NOT fam_residency STREQUAL "OFF")
+    if(NOT cxl_residency STREQUAL "" AND NOT cxl_residency STREQUAL "OFF")
+        if(NOT ARTS_CXL_INCLUDE_DIR)
+            message(FATAL_ERROR "${target} names residency ${cxl_residency} but this tree resolved no CXL library")
+        endif()
         target_compile_definitions(${target} PRIVATE
-            ARTS_FAM=1
-            ARTS_FAM_BACKEND_${ARTS_FAM_BACKEND}=1
-            ARTS_FAM_${fam_residency}=1)
-        target_include_directories(${target} PRIVATE ${ARTS_FAM_LIB_INCLUDE_DIR})
+            ARTS_USE_CXL=1
+            ARTS_CXL_NATIVE=1
+            ARTS_CXL_${cxl_residency}=1
+            ARTS_CXL_DB_ARENA_SIZE_BYTES=${ARTS_CXL_DB_ARENA_SIZE_BYTES}ULL)
+        target_include_directories(${target} SYSTEM PRIVATE ${ARTS_CXL_INCLUDE_DIR})
     endif()
     if(arm STREQUAL "FLUSH")
         # FLUSH has neither second axis: every remote acquire fetches and every
@@ -295,9 +297,9 @@ target_sources(arts_static PRIVATE
     $<TARGET_OBJECTS:arts_utils>
     $<TARGET_OBJECTS:arts_graph>
 )
-if(ARTS_FAM_TREE_RESIDENCY)
-    target_sources(arts_static PRIVATE $<TARGET_OBJECTS:arts_fam>)
-    target_link_libraries(arts_static PUBLIC ${ARTS_FAM_LIB})
+if(ARTS_CXL_TREE_RESIDENCY)
+    target_sources(arts_static PRIVATE $<TARGET_OBJECTS:arts_cxl>)
+    target_link_libraries(arts_static PUBLIC ${ARTS_CXL_LIB_PATH})
 endif()
 
 target_link_libraries(arts_static PUBLIC arts_interface)
@@ -369,9 +371,9 @@ if(ARTS_BUILD_SHARED)
         $<TARGET_OBJECTS:arts_utils>
         $<TARGET_OBJECTS:arts_graph>
     )
-    if(ARTS_FAM_TREE_RESIDENCY)
-        target_sources(arts_shared PRIVATE $<TARGET_OBJECTS:arts_fam>)
-        target_link_libraries(arts_shared PUBLIC ${ARTS_FAM_LIB})
+    if(ARTS_CXL_TREE_RESIDENCY)
+        target_sources(arts_shared PRIVATE $<TARGET_OBJECTS:arts_cxl>)
+        target_link_libraries(arts_shared PUBLIC ${ARTS_CXL_LIB_PATH})
     endif()
 
     target_link_libraries(arts_shared PUBLIC arts_interface)
@@ -441,9 +443,9 @@ if(BUILD_CUDA_LIBRARY)
         $<TARGET_OBJECTS:arts_gpu>
         $<TARGET_OBJECTS:arts_graph>
     )
-    if(ARTS_FAM_TREE_RESIDENCY)
-        target_sources(arts_cuda_static PRIVATE $<TARGET_OBJECTS:arts_fam>)
-        target_link_libraries(arts_cuda_static PUBLIC ${ARTS_FAM_LIB})
+    if(ARTS_CXL_TREE_RESIDENCY)
+        target_sources(arts_cuda_static PRIVATE $<TARGET_OBJECTS:arts_cxl>)
+        target_link_libraries(arts_cuda_static PUBLIC ${ARTS_CXL_LIB_PATH})
     endif()
 
     target_link_libraries(arts_cuda_static PUBLIC arts_interface)
@@ -515,9 +517,9 @@ if(BUILD_CUDA_LIBRARY)
             $<TARGET_OBJECTS:arts_gpu>
             $<TARGET_OBJECTS:arts_graph>
         )
-        if(ARTS_FAM_TREE_RESIDENCY)
-            target_sources(arts_cuda_shared PRIVATE $<TARGET_OBJECTS:arts_fam>)
-            target_link_libraries(arts_cuda_shared PUBLIC ${ARTS_FAM_LIB})
+        if(ARTS_CXL_TREE_RESIDENCY)
+            target_sources(arts_cuda_shared PRIVATE $<TARGET_OBJECTS:arts_cxl>)
+            target_link_libraries(arts_cuda_shared PUBLIC ${ARTS_CXL_LIB_PATH})
         endif()
 
         target_link_libraries(arts_cuda_shared PUBLIC arts_interface)
@@ -569,19 +571,19 @@ if(ARTS_BUILD_BENCHMARKS)
     set(_ARTS_VARIANT_OBJLIBS
         arts_compute arts_memory arts_sync arts_ooo arts_regpool arts_scheduler
         arts_transport arts_gas arts_system arts_utils arts_counter arts_graph)
-    if(TARGET arts_fam)
-        list(APPEND _ARTS_VARIANT_OBJLIBS arts_fam)
+    if(TARGET arts_cxl)
+        list(APPEND _ARTS_VARIANT_OBJLIBS arts_cxl)
     endif()
 
     function(arts_variant suffix arm write_policy release_policy nocomb)
         # Optional 6th argument: the residency this variant's store uses.  A
-        # variant that names one compiles the fam module; every other variant
-        # passes OFF and never sees it -- including in a FAM-enabled tree,
+        # variant that names one compiles the cxl module; every other variant
+        # passes OFF and never sees it -- including in a CXL tree,
         # where the tree's own residency must not leak into wrf_flush or any
         # other arm.  (ARGC counts the declared parameters too.)
-        set(fam_residency "OFF")
+        set(cxl_residency "OFF")
         if(ARGC GREATER 5)
-            set(fam_residency "${ARGV5}")
+            set(cxl_residency "${ARGV5}")
         endif()
         # Gather all protocol-independent sources (absolute paths) from the
         # object libs, dropping any coherence MODEL TU (path contains
@@ -599,10 +601,10 @@ if(ARTS_BUILD_BENCHMARKS)
                 # Skip variant-specific coherence TUs: the per-arm subdirs, the
                 # grant plane (linked only by arms whose ownership migrates), and
                 # the version ledger (only by arms that keep versions).
-                if(abs MATCHES "/core/fam/")
+                if(abs MATCHES "/core/cxl/")
                     # The store is a per-variant choice like the protocol, so a
                     # variant that does not name it must not compile it.
-                    list(APPEND fam_srcs "${abs}")
+                    list(APPEND cxl_srcs "${abs}")
                 elseif(NOT abs MATCHES "/coherence/(val|excl|inv|flush)/|/coherence/(grant(_wt|_wb|_queue|_purge|_retain)?|rank_u64_map)\\.c$")
                     list(APPEND srcs "${abs}")
                 endif()
@@ -614,14 +616,13 @@ if(ARTS_BUILD_BENCHMARKS)
             list(APPEND srcs "${CMAKE_CURRENT_SOURCE_DIR}/core/${tu}")
         endforeach()
 
-        if(NOT fam_residency STREQUAL "OFF")
-            if(NOT fam_srcs)
+        if(NOT cxl_residency STREQUAL "OFF")
+            if(NOT cxl_srcs)
                 message(FATAL_ERROR
-                        "arts_variant(${suffix} ... ${fam_residency}) names a "
-                        "residency, but no fam translation unit was gathered: "
-                        "ARTS_FAM_BACKEND is ${ARTS_FAM_BACKEND}")
+                        "arts_variant(${suffix} ... ${cxl_residency}) names a "
+                        "residency, but no cxl translation unit was gathered")
             endif()
-            list(APPEND srcs ${fam_srcs})
+            list(APPEND srcs ${cxl_srcs})
         endif()
 
         add_library(arts_static_${suffix} STATIC ${srcs})
@@ -646,9 +647,9 @@ if(ARTS_BUILD_BENCHMARKS)
         # the static lib resolves fi_* symbols from libfabric.
         target_link_libraries(arts_static_${suffix} PRIVATE arts::libfabric)
         arts_apply_protocol(arts_static_${suffix} "${arm}" "${write_policy}"
-                            "${release_policy}" "${nocomb}" "${fam_residency}")
-        if(NOT fam_residency STREQUAL "OFF")
-            target_link_libraries(arts_static_${suffix} PRIVATE ${ARTS_FAM_LIB})
+                            "${release_policy}" "${nocomb}" "${cxl_residency}")
+        if(NOT cxl_residency STREQUAL "OFF")
+            target_link_libraries(arts_static_${suffix} PRIVATE ${ARTS_CXL_LIB_PATH})
         endif()
     endfunction()
 
@@ -674,15 +675,13 @@ if(ARTS_BUILD_BENCHMARKS)
     arts_variant(ocr_inv_wt_purge  INV     WT PURGE  OFF)
     arts_variant(wrf_flush         FLUSH   WB RETAIN OFF)
 
-    # The two fabric-attached-memory entries of the EXCL x PURGE x WB
-    # cell: one variable changes against ocr_excl_purge -- where the
-    # canonical store a purge returns to lives -- so arm, write policy,
-    # release policy and combining are shared with it.  A tree that
-    # names no backend builds neither.
-    if(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
-        arts_variant(ocr_excl_purge_fam_staged EXCL WB PURGE OFF STAGED)
-        arts_variant(ocr_excl_purge_fam_direct EXCL WB PURGE OFF DIRECT)
-    endif()
+    # The two CXL entries of the EXCL x PURGE x WB cell: one variable changes
+    # against ocr_excl_purge -- where a block's bytes rest -- so arm, write
+    # policy, release policy and combining are shared with it.  Always built:
+    # the library they link is the vendored fake unless ARTS_CXL_REAL names
+    # the device's.
+    arts_variant(ocr_excl_purge_cxl_staged EXCL WB PURGE OFF STAGED)
+    arts_variant(ocr_excl_purge_cxl_direct EXCL WB PURGE OFF DIRECT)
 endif()
 
 # Link mimalloc-static when selected.  The OBJECT library arts_utils needs
@@ -707,24 +706,24 @@ endif()
 # objects, the same link interface and the same vendored bundle, so a test that
 # links it runs the runtime under test and differs only in what the adapter
 # records.
-if(TARGET arts_fam_flush_recorder)
-    add_library(arts_static_fam_flush_recorder STATIC EXCLUDE_FROM_ALL
+if(TARGET arts_cxl_flush_recorder)
+    add_library(arts_static_cxl_flush_recorder STATIC EXCLUDE_FROM_ALL
                 ${ARTS_MAIN_SOURCES})
     get_target_property(_arts_rec_srcs arts_static SOURCES)
     list(REMOVE_ITEM _arts_rec_srcs ${ARTS_MAIN_SOURCES}
-         "$<TARGET_OBJECTS:arts_fam>")
-    target_sources(arts_static_fam_flush_recorder PRIVATE ${_arts_rec_srcs}
-                   $<TARGET_OBJECTS:arts_fam_flush_recorder>)
+         "$<TARGET_OBJECTS:arts_cxl>")
+    target_sources(arts_static_cxl_flush_recorder PRIVATE ${_arts_rec_srcs}
+                   $<TARGET_OBJECTS:arts_cxl_flush_recorder>)
     foreach(_arts_rec_prop INCLUDE_DIRECTORIES COMPILE_DEFINITIONS
                            COMPILE_OPTIONS LINK_LIBRARIES
                            INTERFACE_LINK_LIBRARIES)
         get_target_property(_arts_rec_val arts_static ${_arts_rec_prop})
         if(_arts_rec_val)
-            set_property(TARGET arts_static_fam_flush_recorder
+            set_property(TARGET arts_static_cxl_flush_recorder
                          PROPERTY ${_arts_rec_prop} "${_arts_rec_val}")
         endif()
     endforeach()
-    arts_bundle_vendored_archives(arts_static_fam_flush_recorder)
+    arts_bundle_vendored_archives(arts_static_cxl_flush_recorder)
 endif()
 
 # Create alias targets for convenience (prefer shared over static)

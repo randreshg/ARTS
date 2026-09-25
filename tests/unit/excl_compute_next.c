@@ -82,7 +82,7 @@ static void chk(const char *name, uint32_t in_bit, uint32_t in_w, uint32_t in_r,
   }
 }
 
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 /* Assert: applying `op` to CACHE_MAKE(in_rws,in_ros,in_wc,in_rc) yields
  * CACHE_MAKE(ex_rws,ex_ros,ex_wc,ex_rc) and action == ex_act. */
 static void chk_cache(const char *name, uint32_t in_rws, uint32_t in_ros,
@@ -186,8 +186,8 @@ int main(void) {
   chk("norm rwrel leaves w0 bit0", RO, 1, 0, T_RW_REL, 0, 0, 0, G_NONE);
   chk("norm rorel leaves r0 bit0", RO, 0, 1, T_RO_REL, 0, 0, 0, G_NONE);
 
-#ifdef ARTS_FAM
-  /* ===== cache-word grant (PURGE, fabric-memory arm) =====
+#ifdef ARTS_USE_CXL
+  /* ===== cache-word grant (PURGE, CXL arm) =====
    * One grant answers one request, so only an axis at REQ takes it; every
    * other arrival goes back, the other axis is never rewritten, and a REQ the
    * grant answered is cleared when the grant goes back.  Every case below is
@@ -332,7 +332,7 @@ int main(void) {
   printf("PASS excl_compute_next: %d truth-table transitions "
          "(RW/RO ACQ/REL, D6 rw->rw chain, D7 new-RO-while-RW-waiting, "
          "state_bit normalization"
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
          ", cache-word grant: only a REQ axis takes it, committed hand-backs "
          "that clear the answered REQ, multi-round sequences"
 #endif

@@ -208,23 +208,11 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
 struct arts_net_addr_frame_s {
   uint32_t rank;
   uint32_t len;
-  /* Zero unless the build's payload store is fabric-attached memory, in which
-   * case rank 0's one arena is what every other rank's slice is carved from.
-   * They ride here because this is the only round that happens before a worker
-   * thread exists, so no rank can allocate before it knows the base.  Present
-   * in every build: every rank of a run is the same binary, and a field behind
-   * an #ifdef inside a wire struct is a layout hazard. */
-  uint64_t fam_base;
-  uint64_t fam_size;
   uint8_t addr[ARTS_NET_ADDR_MAX];
 };
 #ifndef __cplusplus
-_Static_assert(offsetof(struct arts_net_addr_frame_s, fam_base) == 8u,
-               "the address frame's header transfer must carry fam_base");
-_Static_assert(offsetof(struct arts_net_addr_frame_s, fam_size) == 16u,
-               "the address frame's header transfer must carry fam_size");
-_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 24u,
-               "the address frame's blob must start at 24: both ranks compute "
+_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 8u,
+               "the address frame's blob must start at 8: both ranks compute "
                "the header transfer's size from this offset");
 #endif
 

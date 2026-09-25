@@ -297,24 +297,63 @@ set(ARTS_MALLOC "mimalloc" CACHE STRING
     "General allocator: mimalloc (default, vendored static) or system (libc malloc)")
 set_property(CACHE ARTS_MALLOC PROPERTY STRINGS mimalloc system)
 
-# ── Default DB storage kind ────────────────────────────────────────────────
-set(ARTS_DEFAULT_DB_KIND "ARTS_DB" CACHE STRING
-    "Default DB storage kind the ARTS_DB_DEFAULT macro expands to: ARTS_DB (regular DRAM) or ARTS_DB_CXL (CXL shared)")
-set_property(CACHE ARTS_DEFAULT_DB_KIND PROPERTY STRINGS ARTS_DB ARTS_DB_CXL)
+# ── CXL: CXL memory as the payload store of EXCL x WB x PURGE ──
+# A data block keeps its GUID, its home and its kind; a CXL build changes only
+# where its bytes rest.  The store is a per-target choice like the protocol,
+# so ONE benchmark tree holds the two CXL variants beside the twelve others,
+# and this option says whether the TREE'S OWN library (what tests link) is one.
+option(ARTS_USE_CXL
+    "This tree's own library keeps every data block's payload in CXL memory (EXCL x WB x PURGE only; needs ARTS_CXL_RESIDENCY)"
+    OFF)
+set(ARTS_CXL_RESIDENCY "" CACHE STRING
+    "Where an EDT's working bytes live under ARTS_USE_CXL=ON: STAGED (a rank-local copy at the two ownership edges) or DIRECT (the CXL slot itself)")
+set_property(CACHE ARTS_CXL_RESIDENCY PROPERTY STRINGS "" STAGED DIRECT)
+option(ARTS_CXL_REAL
+    "Link the device library named by ARTS_CXL_LIB and ARTS_CXL_RAPID_INCLUDE_DIR instead of the vendored fake"
+    OFF)
+set(ARTS_CXL_RAPID_INCLUDE_DIR "" CACHE PATH
+    "ARTS_CXL_REAL=ON: the directory holding the device SDK's MemOps.h and SharedAlloc.h")
+set(ARTS_CXL_LIB "" CACHE FILEPATH
+    "ARTS_CXL_REAL=ON: the device glue library file (libarts_cxl_lib.so)")
+set(ARTS_CXL_DB_ARENA_SIZE_BYTES "5000000000" CACHE STRING
+    "Bytes per CXL arena: one data-block arena per device count (the EDT deque's arena only under ARTS_CXL_EDT_DEQUE)")
+if(NOT ARTS_CXL_DB_ARENA_SIZE_BYTES MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "ARTS_CXL_DB_ARENA_SIZE_BYTES must be a positive integer, got '${ARTS_CXL_DB_ARENA_SIZE_BYTES}'")
+endif()
+# The only storage kind a build can default to: every other kind is a
+# per-block choice, and the store is the protocol's, not the kind's.
+add_compile_definitions(ARTS_DB_DEFAULT=ARTS_DB)
 
-# ── CXL shared memory (requires the Rapid API) ─────────────────────────────
-# The CXL storage kind predates the current coherence design and is
-# unmaintained: its GUID encodes a pointer, its home is derived from an
-# offset, and its shared-memory headers carry known defects (see the notes in
-# libs/include/internal/arts/cxl/).  Fabric-attached memory reaches the
-# runtime through ARTS_FAM_BACKEND instead, as the store an ordinary
-# ARTS_DB's coherence protocol returns to.  The sources stay for reference.
-option(ARTS_USE_CXL "Enable CXL shared-memory DataBlocks (DEPRECATED: forced OFF)" OFF)
-if(ARTS_USE_CXL)
-    message(FATAL_ERROR
-        "ARTS_USE_CXL cannot be enabled: the CXL storage kind is unmaintained "
-        "and no protocol serves it.  For fabric-attached memory, configure "
-        "-DARTS_FAM_BACKEND=SHM|DEVICE with -DARTS_FAM_RESIDENCY=STAGED|DIRECT.")
+# Retired spellings.  A value that means "off" -- what every earlier cache
+# carries -- is dropped from the cache silently; any other value is an error
+# naming what replaced it, so a script from the earlier design cannot
+# configure something else.
+foreach(_gone ARTS_FAM_BACKEND ARTS_FAM_RESIDENCY ARTS_FAM_DEVICE_INCLUDE_DIR
+              ARTS_FAM_DEVICE_LIBRARY ARTS_FAM_DEVICE_VENDORED ARTS_FAM_BASE
+              ARTS_USE_FAKE_CXL_LIB ARTS_CXL_LIB_DIR ARTS_CXL_RAPID_LIB)
+    if(DEFINED ${_gone})
+        if(NOT "${${_gone}}" STREQUAL "" AND NOT "${${_gone}}" STREQUAL "OFF"
+           AND NOT "${${_gone}}" STREQUAL "0" AND NOT "${${_gone}}" STREQUAL "FALSE")
+            message(FATAL_ERROR
+                "${_gone} no longer exists: fabric-attached memory is the CXL store "
+                "(-DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=STAGED|DIRECT; the vendored "
+                "fake library is the default, -DARTS_CXL_REAL=ON with "
+                "-DARTS_CXL_LIB=<libarts_cxl_lib.so> and -DARTS_CXL_RAPID_INCLUDE_DIR=<dir> "
+                "links the device library) — clear the cached value with -U${_gone}, "
+                "or pass -D${_gone}=OFF")
+        endif()
+        unset(${_gone} CACHE)
+    endif()
+endforeach()
+if(DEFINED ARTS_DEFAULT_DB_KIND)
+    if(NOT "${ARTS_DEFAULT_DB_KIND}" STREQUAL "" AND NOT "${ARTS_DEFAULT_DB_KIND}" STREQUAL "ARTS_DB")
+        message(FATAL_ERROR
+            "ARTS_DEFAULT_DB_KIND no longer exists: ARTS_DB is the only global default; "
+            "the CXL store is selected per build by ARTS_USE_CXL, not by a kind — "
+            "clear the cached value with -UARTS_DEFAULT_DB_KIND, or pass "
+            "-DARTS_DEFAULT_DB_KIND=OFF")
+    endif()
+    unset(ARTS_DEFAULT_DB_KIND CACHE)
 endif()
 
 # ── No-hint placement policies (runtime-wide) ───────────────────────────────
@@ -558,143 +597,97 @@ else()
   message(FATAL_ERROR "ARTS_MALLOC must be 'mimalloc' or 'system', got '${ARTS_MALLOC}'")
 endif()
 
-# ── Fabric-attached memory ─────────────────────────────────────────────────
-# Declarative, never inferred: a value names the medium, and every mismatch is
-# an error rather than a quiet downgrade.  Both backends are one API, spoken
-# by one adapter; the backend decides only which library is linked.  Nothing
-# FAM appears anywhere else in this file.
-set(ARTS_FAM_BACKEND "OFF" CACHE STRING
-    "Fabric-attached-memory backend: OFF (default), SHM (the vendored fake library: one host's shared memory) or DEVICE (a device library named by path)")
-set_property(CACHE ARTS_FAM_BACKEND PROPERTY STRINGS OFF SHM DEVICE)
-if(NOT ARTS_FAM_BACKEND STREQUAL "OFF" AND
-   NOT ARTS_FAM_BACKEND STREQUAL "SHM" AND
-   NOT ARTS_FAM_BACKEND STREQUAL "DEVICE")
-  message(FATAL_ERROR
-          "ARTS_FAM_BACKEND must be OFF, SHM or DEVICE, got: ${ARTS_FAM_BACKEND}")
+# ── CXL: which library, and whether this tree's own library is a CXL one ──
+# The two CXL benchmark variants exist in every benchmark tree, so a tree
+# needs the library whenever it builds benchmarks or its own library is CXL.
+set(ARTS_CXL_NEEDED OFF)
+if(ARTS_USE_CXL OR ARTS_BUILD_BENCHMARKS)
+    set(ARTS_CXL_NEEDED ON)
 endif()
 
-set(ARTS_FAM_RESIDENCY "" CACHE STRING
-    "Where an EDT's working bytes reside: STAGED or DIRECT. Required when this tree's own library is FAM-enabled")
-set_property(CACHE ARTS_FAM_RESIDENCY PROPERTY STRINGS "" STAGED DIRECT)
-set(ARTS_FAM_DEVICE_INCLUDE_DIR "" CACHE PATH
-    "Include directory of the device library (ARTS_FAM_BACKEND=DEVICE only)")
-set(ARTS_FAM_DEVICE_LIBRARY "" CACHE FILEPATH
-    "The device library to link (ARTS_FAM_BACKEND=DEVICE only)")
-if(ARTS_USE_FAKE_CXL_LIB)
-  message(FATAL_ERROR
-          "ARTS_USE_FAKE_CXL_LIB is gone: the vendored fake library is the SHM "
-          "backend. Configure -DARTS_FAM_BACKEND=SHM (with "
-          "-DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE "
-          "-DARTS_FAM_RESIDENCY=STAGED|DIRECT for a tree whose own library "
-          "is FAM-enabled).")
-endif()
-unset(ARTS_USE_FAKE_CXL_LIB CACHE)
-# A cache entry an earlier configure left at OFF cannot be told apart from an
-# OFF passed now, so only a value that asks for the old behaviour is refused.
-if(ARTS_FAM_DEVICE_VENDORED)
-  message(FATAL_ERROR
-          "ARTS_FAM_DEVICE_VENDORED is gone: the vendored fake library is the "
-          "SHM backend. Configure -DARTS_FAM_BACKEND=SHM instead, and drop "
-          "ARTS_FAM_DEVICE_VENDORED.")
-endif()
-unset(ARTS_FAM_DEVICE_VENDORED CACHE)
-unset(ARTS_FAM_BASE CACHE)
-
-# The library the runtime speaks the device API to: ARTS_FAM_LIB_INCLUDE_DIR
-# and ARTS_FAM_LIB are the only names anything below this block reads.
-if(ARTS_FAM_BACKEND STREQUAL "SHM")
-  foreach(_var ARTS_FAM_DEVICE_INCLUDE_DIR ARTS_FAM_DEVICE_LIBRARY)
-    if(${_var})
-      message(FATAL_ERROR
-              "${_var}=${${_var}} names a device library, which only "
-              "ARTS_FAM_BACKEND=DEVICE links; the SHM backend is the vendored "
-              "fake library. Clear it (-D${_var}=) or configure DEVICE.")
+set(ARTS_CXL_TREE_RESIDENCY "")
+if(ARTS_USE_CXL)
+    if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" OR NOT ARTS_RELEASE_POLICY STREQUAL "PURGE")
+        message(FATAL_ERROR
+            "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL and "
+            "ARTS_RELEASE_POLICY=PURGE (EXCL already implies WB): the store is "
+            "the cell that moves permission, not payload; got "
+            "${ARTS_COHERENCE_PROTOCOL} x ${ARTS_RELEASE_POLICY}")
     endif()
-  endforeach()
-  # Built at configure time because the targets below need the file to exist;
-  # its build tree lives under this build directory, so the submodule stays
-  # clean and trees with different compilers never share one library.
-  # Re-running the build on every configure is a no-op when nothing changed.
-  include(${PROJECT_SOURCE_DIR}/cmake/ArtsSubmodule.cmake)
-  arts_init_submodule(third_party/fake_arts_cxl_lib CMakeLists.txt)
-  set(_fam_vendored_src "${PROJECT_SOURCE_DIR}/third_party/fake_arts_cxl_lib")
-  set(_fam_vendored_build "${CMAKE_BINARY_DIR}/third_party/fake_arts_cxl_lib-build")
-  message(STATUS "ARTS FAM: building the vendored fake library")
-  execute_process(
-    COMMAND ${CMAKE_COMMAND} -S ${_fam_vendored_src} -B ${_fam_vendored_build}
-            -G ${CMAKE_GENERATOR}
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-    RESULT_VARIABLE _rc)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "Failed to configure the vendored fake library")
-  endif()
-  execute_process(
-    COMMAND ${CMAKE_COMMAND} --build ${_fam_vendored_build} --target arts_cxl_lib
-    RESULT_VARIABLE _rc)
-  if(NOT _rc EQUAL 0)
-    message(FATAL_ERROR "Failed to build the vendored fake library")
-  endif()
-  set(ARTS_FAM_LIB_INCLUDE_DIR "${_fam_vendored_src}/inc")
-  set(ARTS_FAM_LIB "${_fam_vendored_build}/src/libarts_cxl_lib.so")
-elseif(ARTS_FAM_BACKEND STREQUAL "DEVICE")
-  if(NOT ARTS_FAM_DEVICE_INCLUDE_DIR OR NOT EXISTS "${ARTS_FAM_DEVICE_INCLUDE_DIR}")
-    message(FATAL_ERROR
-            "ARTS_FAM_BACKEND=DEVICE needs the device library's headers "
-            "(-DARTS_FAM_DEVICE_INCLUDE_DIR=<dir>) and the library itself "
-            "(-DARTS_FAM_DEVICE_LIBRARY=<file>); got include dir "
-            "'${ARTS_FAM_DEVICE_INCLUDE_DIR}'")
-  endif()
-  if(NOT ARTS_FAM_DEVICE_LIBRARY OR NOT EXISTS "${ARTS_FAM_DEVICE_LIBRARY}")
-    message(FATAL_ERROR
-            "ARTS_FAM_BACKEND=DEVICE needs the device library itself "
-            "(-DARTS_FAM_DEVICE_LIBRARY=<file>) and its headers "
-            "(-DARTS_FAM_DEVICE_INCLUDE_DIR=<dir>); got library "
-            "'${ARTS_FAM_DEVICE_LIBRARY}'")
-  endif()
-  set(ARTS_FAM_LIB_INCLUDE_DIR "${ARTS_FAM_DEVICE_INCLUDE_DIR}")
-  set(ARTS_FAM_LIB "${ARTS_FAM_DEVICE_LIBRARY}")
-else()
-  set(ARTS_FAM_LIB_INCLUDE_DIR "")
-  set(ARTS_FAM_LIB "")
+    if(NOT ARTS_CXL_RESIDENCY MATCHES "^(STAGED|DIRECT)$")
+        message(FATAL_ERROR
+            "ARTS_USE_CXL=ON needs -DARTS_CXL_RESIDENCY=STAGED|DIRECT, got '${ARTS_CXL_RESIDENCY}'")
+    endif()
+    set(ARTS_CXL_TREE_RESIDENCY "${ARTS_CXL_RESIDENCY}")
+    message(STATUS "ARTS CXL: this tree's library keeps payloads in CXL memory (residency ${ARTS_CXL_TREE_RESIDENCY})")
+elseif(NOT ARTS_CXL_RESIDENCY STREQUAL "")
+    message(FATAL_ERROR "ARTS_CXL_RESIDENCY belongs to ARTS_USE_CXL=ON; this tree has it OFF")
 endif()
 
-# Whether THIS tree's own library is FAM-enabled, and with which residency.
-# One variable carries both, because a target either has a residency or has no
-# fabric-attached memory at all; arts_apply_protocol reads it as the default
-# for a target that does not name one.  Empty means "not a FAM tree".
-set(ARTS_FAM_TREE_RESIDENCY "")
-if(NOT ARTS_FAM_BACKEND STREQUAL "OFF"
-   AND ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL"
-   AND ARTS_RELEASE_POLICY STREQUAL "PURGE")
-  if(ARTS_FAM_RESIDENCY STREQUAL "")
+set(ARTS_CXL_INCLUDE_DIR "")
+set(ARTS_CXL_LIB_PATH "")
+if(ARTS_CXL_NEEDED)
+    if(ARTS_CXL_REAL)
+        foreach(_v ARTS_CXL_RAPID_INCLUDE_DIR ARTS_CXL_LIB)
+            if(NOT ${_v} OR NOT EXISTS "${${_v}}")
+                message(FATAL_ERROR
+                    "ARTS_CXL_REAL=ON needs ${_v} to name an existing path; got '${${_v}}'")
+            endif()
+        endforeach()
+        foreach(_h MemOps.h SharedAlloc.h)
+            if(NOT EXISTS "${ARTS_CXL_RAPID_INCLUDE_DIR}/${_h}")
+                message(FATAL_ERROR
+                    "ARTS_CXL_RAPID_INCLUDE_DIR=${ARTS_CXL_RAPID_INCLUDE_DIR} holds no ${_h}")
+            endif()
+        endforeach()
+        set(ARTS_CXL_INCLUDE_DIR "${ARTS_CXL_RAPID_INCLUDE_DIR}")
+        set(ARTS_CXL_LIB_PATH "${ARTS_CXL_LIB}")
+        message(STATUS "ARTS CXL: device library ${ARTS_CXL_LIB_PATH}, headers ${ARTS_CXL_INCLUDE_DIR}")
+    else()
+        if(ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_LIB)
+            message(FATAL_ERROR
+                "ARTS_CXL_RAPID_INCLUDE_DIR and ARTS_CXL_LIB belong to ARTS_CXL_REAL=ON; "
+                "with it OFF the vendored fake library is linked and a path here is a mistake")
+        endif()
+        # The vendored fake: one host's shared memory mapped at one fixed
+        # address, speaking the same MemOps.h/SharedAlloc.h.  Built at
+        # configure time so its path exists when the targets below are made.
+        set(_fake_cxl_src "${PROJECT_SOURCE_DIR}/third_party/fake_arts_cxl_lib")
+        include(${PROJECT_SOURCE_DIR}/cmake/ArtsSubmodule.cmake)
+        arts_init_submodule(third_party/fake_arts_cxl_lib CMakeLists.txt)
+        set(_fake_cxl_build "${CMAKE_BINARY_DIR}/third_party/fake_arts_cxl_lib-build")
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -S ${_fake_cxl_src} -B ${_fake_cxl_build}
+                    -G ${CMAKE_GENERATOR} -DCMAKE_BUILD_TYPE=Release
+                    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+            RESULT_VARIABLE _fake_cxl_rc
+            OUTPUT_VARIABLE _fake_cxl_out ERROR_VARIABLE _fake_cxl_err)
+        if(NOT _fake_cxl_rc EQUAL 0)
+            message(FATAL_ERROR
+                "configuring the vendored fake CXL library failed (${_fake_cxl_rc}):\n"
+                "${_fake_cxl_out}\n${_fake_cxl_err}")
+        endif()
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} --build ${_fake_cxl_build} --target arts_cxl_lib
+            RESULT_VARIABLE _fake_cxl_rc
+            OUTPUT_VARIABLE _fake_cxl_out ERROR_VARIABLE _fake_cxl_err)
+        if(NOT _fake_cxl_rc EQUAL 0)
+            message(FATAL_ERROR
+                "building the vendored fake CXL library failed (${_fake_cxl_rc}):\n"
+                "${_fake_cxl_out}\n${_fake_cxl_err}")
+        endif()
+        set(ARTS_CXL_INCLUDE_DIR "${_fake_cxl_src}/inc")
+        set(ARTS_CXL_LIB_PATH "${_fake_cxl_build}/src/libarts_cxl_lib.so")
+        if(NOT EXISTS "${ARTS_CXL_LIB_PATH}")
+            message(FATAL_ERROR "the vendored fake CXL library did not produce ${ARTS_CXL_LIB_PATH}")
+        endif()
+        message(STATUS "ARTS CXL: vendored fake library ${ARTS_CXL_LIB_PATH}")
+    endif()
+elseif(ARTS_CXL_REAL OR ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_LIB)
     message(FATAL_ERROR
-            "This tree's library is FAM-enabled (EXCL x PURGE with "
-            "ARTS_FAM_BACKEND=${ARTS_FAM_BACKEND}), so it must name where an "
-            "EDT's working bytes reside: -DARTS_FAM_RESIDENCY=STAGED|DIRECT")
-  endif()
-  if(NOT ARTS_FAM_RESIDENCY STREQUAL "STAGED" AND
-     NOT ARTS_FAM_RESIDENCY STREQUAL "DIRECT")
-    message(FATAL_ERROR
-            "ARTS_FAM_RESIDENCY must be STAGED or DIRECT, got: ${ARTS_FAM_RESIDENCY}")
-  endif()
-  set(ARTS_FAM_TREE_RESIDENCY "${ARTS_FAM_RESIDENCY}")
-  message(STATUS "ARTS FAM: backend ${ARTS_FAM_BACKEND}, this tree's library "
-                 "FAM-enabled (EXCL x PURGE, residency ${ARTS_FAM_TREE_RESIDENCY})")
-elseif(NOT ARTS_FAM_BACKEND STREQUAL "OFF")
-  message(STATUS "ARTS FAM: backend ${ARTS_FAM_BACKEND}, benchmark variants "
-                 "only - this tree's library is not FAM-enabled "
-                 "(${ARTS_COHERENCE_PROTOCOL} x ${ARTS_RELEASE_POLICY}, not EXCL x PURGE)")
+        "ARTS_CXL_REAL / ARTS_CXL_RAPID_INCLUDE_DIR / ARTS_CXL_LIB were given, but this "
+        "tree builds nothing that links a CXL library (ARTS_USE_CXL=OFF, ARTS_BUILD_BENCHMARKS=OFF)")
 endif()
-
-if(NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB" AND
-   NOT ARTS_DEFAULT_DB_KIND STREQUAL "ARTS_DB_CXL")
-  message(FATAL_ERROR
-          "ARTS_DEFAULT_DB_KIND must be ARTS_DB or ARTS_DB_CXL "
-          "(node-pinned / GPU storage classes are not valid global defaults), "
-          "got: ${ARTS_DEFAULT_DB_KIND}")
-endif()
-add_compile_definitions(ARTS_DB_DEFAULT=${ARTS_DEFAULT_DB_KIND})
 
 # ── Mutually-exclusive sanitizer guard ─────────────────────────────────────
 if(ARTS_USE_SANS AND ARTS_USE_TSAN)

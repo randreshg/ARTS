@@ -44,7 +44,7 @@ struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
                                            uint64_t db_size) {
   /* Pull a recycled buffer from the per-DB free-list when available. */
   arts_lf_link_t *node = arts_lf_pool_pop_or_null(&cache->buf_freelist);
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   /* The payload is not the descriptor's to size, so every descriptor is one
    * size and the per-DB recycle pool stays uniform.  A descriptor leaves this
    * call naming no storage, recycled or fresh. */
@@ -75,7 +75,7 @@ struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
 
 arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
                                        struct arts_db_buffer_s **out) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   (void)db_size;
   (void)out;
   ARTS_ERROR("coherence: a detached payload has no meaning where the store "
@@ -116,7 +116,7 @@ static inline void buf_note_present(struct arts_db_cache_s *cache) {
   __atomic_store_n(&cache->payload_pending, (uint8_t)0, __ATOMIC_RELEASE);
 }
 
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
 /* Does this cache already name a descriptor?  Read from the slot itself, with
  * no ref taken.  Where the descriptor's payload is the block's own storage the
  * slot is the only sound answer to "does this block still need materializing":
@@ -190,10 +190,10 @@ struct arts_db_buffer_s *arts_db_buf_for_payload(struct arts_db_cache_s *cache,
   arts_db_buf_release(&h);
   return b;
 }
-#endif /* ARTS_FAM_DIRECT */
+#endif /* ARTS_CXL_DIRECT */
 
 bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   /* The slot, not the presence hint: see buf_slot_filled.  It costs a wide
    * atomic load instead of a byte load and takes no ref. */
   if (buf_slot_filled(cache)) {
@@ -216,9 +216,9 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
      * value. */
     return false;
   }
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   return arts_db_buf_adopt_external(
-      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), 1u, db_size);
+      cache, (void *)(uintptr_t)arts_db_cxl_slot_addr(cache), 1u, db_size);
 #else
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   if (arts_shared_get(h) != NULL) {
@@ -254,7 +254,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
 #endif
 }
 
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
   if (cache == NULL || payload == NULL) {
     return false;
@@ -343,13 +343,13 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
                                              uint64_t new_version,
                                              const void *data_payload,
                                              uint64_t db_size) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   if (data_payload != NULL) {
     ARTS_ERROR("coherence: a payload cannot be published into the block's "
                "store");
   }
   (void)arts_db_buf_adopt_external(
-      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), new_version,
+      cache, (void *)(uintptr_t)arts_db_cxl_slot_addr(cache), new_version,
       db_size);
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
@@ -386,7 +386,7 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
  * stale-retreat contract for the grant plane). */
 void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
                               uint64_t version) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   (void)cache;
   (void)version;
   ARTS_ERROR("coherence: a version bump publishes nothing where the store is "
@@ -420,7 +420,7 @@ void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
 struct arts_db_buffer_s *
 arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
                           struct arts_rdzv_landing_s *out) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   (void)cache;
   (void)db_size;
   (void)out;
@@ -449,7 +449,7 @@ arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
 
 void arts_db_buf_landing_recycle(struct arts_db_cache_s *cache,
                                  struct arts_db_buffer_s *b) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   (void)cache;
   (void)b;
   ARTS_ERROR("coherence: a landing has no meaning where the payload "
@@ -467,7 +467,7 @@ void arts_db_buf_landing_recycle(struct arts_db_cache_s *cache,
 bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
                                struct arts_db_buffer_s *landing,
                                uint64_t db_size) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   (void)cache;
   (void)version;
   (void)landing;
@@ -509,7 +509,7 @@ struct arts_db_buffer_s *
 arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
                            struct arts_db_buffer_s *landing,
                            uint64_t db_size) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   (void)cache;
   (void)new_version;
   (void)landing;
@@ -544,12 +544,12 @@ uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache) {
 
 void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
                                  uint64_t capacity) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   /* A first touch adopts the block's own store, so a capacity bound sizes
    * nothing and declares nothing. */
   (void)capacity;
   (void)arts_db_buf_adopt_external(
-      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), 0u,
+      cache, (void *)(uintptr_t)arts_db_cxl_slot_addr(cache), 0u,
       cache->db_size);
 #else
   /* First-touch variant that sizes the ALLOCATION without declaring the
@@ -585,13 +585,13 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
 
 void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
                                uint64_t db_size) {
-#ifdef ARTS_FAM_DIRECT
+#ifdef ARTS_CXL_DIRECT
   if (data != NULL) {
     ARTS_ERROR("coherence: a payload cannot be published into the block's "
                "store");
   }
   (void)arts_db_buf_adopt_external(
-      cache, (void *)(uintptr_t)arts_db_fam_slot_addr(cache), 0u, db_size);
+      cache, (void *)(uintptr_t)arts_db_cxl_slot_addr(cache), 0u, db_size);
 #else
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);

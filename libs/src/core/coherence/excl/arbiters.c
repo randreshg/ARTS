@@ -170,7 +170,7 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     }
     break;
   case CACHE_OP_GRANT_RW:
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
     /* One grant answers one request, so it is taken only by an axis still at
      * REQ.  Every other arrival is handed back and the other axis is never
      * rewritten: at IDLE a create hold served this request's cohort and has
@@ -212,7 +212,7 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action) {
     act = CACHE_ACT_DRAIN_BOTH; /* RW grant serves this rank's RW + RO cohort */
     break;
   case CACHE_OP_GRANT_RO: /* precond: ros==REQ, rws!=GRANT */
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
     /* The read mirror of the rule above.  A write turn held here has already
      * served this rank's readers (RW ⊇ RO), so the read request it covers is
      * cleared with the grant's return rather than left at REQ. */

@@ -62,7 +62,7 @@
 
 #include "arts/defs.h"
 #include "arts/system/print.h"
-#ifdef ARTS_USE_CXL
+#if 0 /* retired with the CXL scheduler deque: nothing the runtime frees rests in the store */
 #include "arts/cxl/wrapper.h"
 #endif
 
@@ -204,7 +204,7 @@ void arts_free(void *ptr) {
   if (!ptr) {
     return;
   }
-#ifdef ARTS_USE_CXL
+#if 0 /* retired with the CXL scheduler deque: nothing the runtime frees rests in the store */
   if (IS_CXL_PTR(ptr)) {
     return; /* CXL arena-managed memory, not individually freeable */
   }

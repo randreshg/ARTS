@@ -141,9 +141,8 @@ _Static_assert(MSG_DB_FLUSH_ACK == 45, "ordinal MSG_DB_FLUSH_ACK drifted");
 _Static_assert(MSG_DB_FLUSH_ANNOUNCE == 46,
                "ordinal MSG_DB_FLUSH_ANNOUNCE drifted");
 _Static_assert(MSG_DB_FLUSH_CTS == 47, "ordinal MSG_DB_FLUSH_CTS drifted");
-_Static_assert(MSG_DB_FAM_FREE == 48, "ordinal MSG_DB_FAM_FREE drifted");
-_Static_assert(MSG_COUNT == 49,
-               "MSG_COUNT drifted (wire-compat: must be 49 in all configs)");
+_Static_assert(MSG_COUNT == 48,
+               "MSG_COUNT drifted (wire-compat: must be 48 in all configs)");
 
 /* ===== (1b) the bootstrap address frame is wire too, and its header
  * transfer's size is computed from offsetof(addr) on BOTH sides of the
@@ -154,13 +153,9 @@ _Static_assert(offsetof(struct arts_net_addr_frame_s, rank) == 0u,
                "address frame: rank drifted");
 _Static_assert(offsetof(struct arts_net_addr_frame_s, len) == 4u,
                "address frame: len drifted");
-_Static_assert(offsetof(struct arts_net_addr_frame_s, fam_base) == 8u,
-               "address frame: fam_base drifted");
-_Static_assert(offsetof(struct arts_net_addr_frame_s, fam_size) == 16u,
-               "address frame: fam_size drifted");
-_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 24u,
+_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 8u,
                "address frame: the blob's offset drifted");
-_Static_assert(sizeof(struct arts_net_addr_frame_s) == 24u + 256u,
+_Static_assert(sizeof(struct arts_net_addr_frame_s) == 8u + 256u,
                "address frame: total size drifted");
 
 /* ===== (2) header layout — read before the message type is known. ===== */
@@ -228,9 +223,9 @@ _Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 72,
                "snapshot_request sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 72,
                "snapshot_response sizeof drifted");
-#ifdef ARTS_FAM
+#ifdef ARTS_USE_CXL
 _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 56,
-               "db_create_coherent sizeof drifted (FAM build)");
+               "db_create_coherent sizeof drifted (CXL build)");
 #else
 _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
                "db_create_coherent sizeof drifted");
@@ -238,10 +233,6 @@ _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
 _Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s,
                         create_token) == 32,
                "db_create_coherent's token must follow db_size");
-#ifdef ARTS_FAM
-_Static_assert(sizeof(struct arts_msg_db_fam_free_packet_s) == 24,
-               "db_fam_free sizeof drifted");
-#endif
 _Static_assert(sizeof(struct arts_msg_destroy_packet_s) == 24,
                "destroy sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_cache_destroy_packet_s) == 24,

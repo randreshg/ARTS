@@ -72,9 +72,6 @@
 #endif
 
 #include "arts/cxl/wrapper.h"
-#ifdef ARTS_USE_CXL
-#include "arts/cxl/deque.h"
-#endif
 
 /* Per-worker EDT-execution context (current_edt, owned-finish-events list,
  * created-DB tracking + save/restore snapshot) lives in sync/edt_context.c.
@@ -476,22 +473,9 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
   }
   if (writes_slot) {
     edt_dep[slot].guid = data_guid;
-#ifdef ARTS_USE_CXL
-    void *ptr = NULL;
-    /* CXL GUID encodes the pointer directly — surface it on the dep slot so
-     * that the prep_dbs/release_dbs flush helpers see the right pointer. */
-    if (mode != DB_MODE_NULL && arts_guid_is_cxl(data_guid)) {
-      ptr = (void *)((struct arts_db_s *)arts_cxl_get_ptr(data_guid) + 1);
-      /* A pre-filled slot is never acquired, so it is named here what the
-       * acquire would name it: its kind is what routes its flushes. */
-      edt_dep[slot].subtype = ARTS_DB_CXL;
-    }
-    edt_dep[slot].ptr = ptr;
-#else
     /* A satisfy says which block the slot names, not that the EDT may touch
      * it; the acquire path fills ptr when the access has been granted. */
     edt_dep[slot].ptr = NULL;
-#endif
     edt_dep[slot].mode = mode;
   }
   /* Decrement readiness for both a real in-range slot and the no-slot

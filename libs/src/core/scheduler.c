@@ -68,7 +68,11 @@
 #include "arts/gpu/gpu_stream.h"
 #endif
 
-#ifdef ARTS_USE_CXL
+/* Retired mechanism, sealed: a scheduler loop that copied a ready EDT into a
+ * deque in CXL memory when the worker's own deque was full, so any rank could
+ * pop and run it.  Every block below is that mechanism; the store holds data
+ * blocks only. */
+#if 0
 #include "arts/cxl/deque.h"
 bool arts_cxl_scheduler_loop(void);
 #endif
@@ -88,7 +92,7 @@ scheduler_t scheduler_loop[] = {
 #else
 scheduler_t scheduler_loop[] = {
     (scheduler_t)arts_default_scheduler_loop,
-#ifdef ARTS_USE_CXL
+#if 0
     (scheduler_t)arts_cxl_scheduler_loop,
 #endif
     (scheduler_t)arts_network_before_steal_scheduler_loop,
@@ -139,7 +143,7 @@ void arts_schedule_ready_edt(struct arts_edt_s *edt) {
 void arts_handle_ready_edt(struct arts_edt_s *edt) {
   ARTS_INFO("EDT[Guid:%lu] ready — entering sequential DB acquire (depc=%u)",
             edt->guid, edt->depc);
-#ifdef ARTS_USE_CXL
+#if 0
   if (arts_node_info.scheduler == (void *)arts_cxl_scheduler_loop &&
       arts_deque_full(arts_thread_info.my_deque)) {
     while (!arts_cxl_deque_push(arts_node_info.cxl_deque,
@@ -210,11 +214,10 @@ void arts_run_edt(struct arts_edt_s *edt) {
    * in arts_handle_ready_edt keeps the EDT alive past the detach, and its
    * release below is the last drop that runs the deleter. */
   arts_shared_ptr_t sref = edt->self_cb;
-#ifdef ARTS_USE_CXL
+#if 0
   bool retire = !IS_CXL_PTR(edt);
-#else
-  bool retire = true;
 #endif
+  bool retire = true;
   if (retire) {
     arts_edt_delete(edt);
   }
@@ -349,7 +352,7 @@ bool arts_default_scheduler_loop() {
   return false;
 }
 
-#ifdef ARTS_USE_CXL
+#if 0
 bool arts_cxl_scheduler_loop() {
   /* Single-node only: a worker drains self-loopback (no receiver thread
    * exists). On multinode the receiver thread is the sole loopback drainer, so
@@ -375,4 +378,4 @@ bool arts_cxl_scheduler_loop() {
   arts_runtime_idle_pause();
   return false;
 }
-#endif /* ARTS_USE_CXL */
+#endif

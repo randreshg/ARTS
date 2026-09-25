@@ -43,7 +43,7 @@ add_subdirectory(gas)
 add_subdirectory(system)
 add_subdirectory(utils)
 add_subdirectory(counter)
-add_subdirectory(fam)
+add_subdirectory(cxl)
 
 # --- Flattened object libraries (former compute/ memory/ sync/ subdirs) -------
 # Object sources now live directly under core/ with object-name prefixes. The
