@@ -130,7 +130,7 @@ def test_hpx_cells_exist_for_the_row_and_skip_nothing(tmp_path):
     catalog = load_catalog()
     cells, skipped = expand(
         _selection(["hpx"]), plane, catalog, _roster(), _profile(),
-        tmp_path / "apps", {1: {}, 2: {}},
+        tmp_path / "apps", {1: {}, 2: {}}, build_dir=tmp_path,
     )
     assert {(c.app.key, c.nodes) for c in cells} == {(f"{ROW}:base", 1), (f"{ROW}:base", 2)}
     assert not skipped
@@ -144,7 +144,8 @@ def test_an_ocr_origin_row_is_ineligible_for_the_hpx_entry(tmp_path):
     catalog = load_catalog()
     sel = _selection(["hpx"], {"fft": [Version.BASE]})
     cells, skipped = expand(sel, plane, catalog, _roster("fft"),
-                            _profile(), tmp_path / "apps", {1: {}})
+                            _profile(), tmp_path / "apps", {1: {}},
+                            build_dir=tmp_path)
     assert not cells
     assert {s.reason for s in skipped} == {
         "no HPX program: an OCR-origin row (the HPX entry runs the HPX-origin section)"}
@@ -156,7 +157,8 @@ def test_expansion_records_a_skip_once_however_many_repeats(tmp_path):
     sel = Selection(profile="t", experiment="paper-main", entries=["hpx"],
                     apps={"fft": [Version.BASE]}, node_counts=[1], repeats=3)
     cells, skipped = expand(sel, plane, catalog, _roster("fft"),
-                            _profile(), tmp_path / "apps", {1: {}})
+                            _profile(), tmp_path / "apps", {1: {}},
+                            build_dir=tmp_path)
     assert not cells and len(skipped) == 1
 
 
@@ -179,6 +181,7 @@ def test_an_hpx_cell_launches_like_a_reference(monkeypatch, tmp_path):
     cells, _ = expand(
         _selection(["hpx"]), plane, catalog,
         _roster(), _profile(), tmp_path / "apps", {1: {}, 2: {}},
+        build_dir=tmp_path,
     )
     by_nodes = {c.nodes: c for c in cells}
     two = build_command(by_nodes[2], _profile())
@@ -203,7 +206,7 @@ def test_cells_carry_the_cpu_block_they_were_granted(tmp_path):
                for n in (1, 2)}
     cells, _ = expand(_selection(["hpx", "arts_val_wb"]), plane, catalog,
                       _roster(), _profile(), tmp_path / "apps",
-                      configs)
+                      configs, build_dir=tmp_path)
     assert cells and all(c.cpu_width == 16 for c in cells)
 
 
@@ -212,7 +215,7 @@ def _hpx_cell(tmp_path):
     catalog = load_catalog()
     cells, _ = expand(_selection(["hpx"]), plane, catalog,
                       _roster(), _profile(), tmp_path / "apps",
-                      {1: {}, 2: {}})
+                      {1: {}, 2: {}}, build_dir=tmp_path)
     return cells[0]
 
 
@@ -235,8 +238,7 @@ def test_a_scheduled_hpx_cell_keeps_the_site_mpi_defaults(tmp_path, launcher,
 
     remote = Profile.model_validate({
         "name": "t", "launcher": launcher, "nodes": [1, 2],
-        "workers": 15, "progress": 1, "ports": [20000], "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
-        "fam_device_library": "/opt/device/lib/libdevice.so",
+        "workers": 15, "progress": 1, "ports": [20000],
         **extra,
     })
     env = build_env(_hpx_cell(tmp_path), remote)
@@ -251,7 +253,7 @@ def test_an_arts_cell_never_carries_the_transport_override(tmp_path):
     configs = {n: {"arts": tmp_path / f"arts_{n}.cfg"} for n in (1, 2)}
     cells, _ = expand(_selection(["arts_val_wb"]), plane,
                       catalog, _roster(), _profile(),
-                      tmp_path / "apps", configs)
+                      tmp_path / "apps", configs, build_dir=tmp_path)
     env = build_env(cells[0], _profile())
     assert "UCX_TLS" not in env and "UCX_NET_DEVICES" not in env
 
@@ -261,7 +263,8 @@ def test_the_struct_marker_is_forwarded_only_when_set(monkeypatch):
     plane = load_plane()
     catalog = load_catalog()
     cells, _ = expand(_selection(["hpx"]), plane, catalog,
-                      _roster(), _profile(), Path("/apps"), {1: {}, 2: {}})
+                      _roster(), _profile(), Path("/apps"), {1: {}, 2: {}},
+                      build_dir=Path("/build"))
     monkeypatch.delenv("ARTS_STRUCT_MARKER", raising=False)
     assert "ARTS_STRUCT_MARKER" not in build_env(cells[0], _profile())
     monkeypatch.setenv("ARTS_STRUCT_MARKER", "1")

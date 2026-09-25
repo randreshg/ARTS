@@ -88,14 +88,14 @@ class SelectionEntry(BaseModel):
         return self.cell is None
 
     @property
-    def is_fam(self) -> bool:
-        """Whether this entry's store is fabric-attached memory.
+    def is_cxl(self) -> bool:
+        """Whether this entry's store is CXL memory.
 
         Read off the variant name, which the naming contract gives an
-        internal `_fam_` token, rather than a field: nothing at the model
+        internal `_cxl_` token, rather than a field: nothing at the model
         level needs more than the distinction.
         """
-        return self.variant is not None and "_fam_" in self.variant
+        return self.variant is not None and "_cxl_" in self.variant
 
     def binary(self, app_binary: str, *, hinted: bool) -> str:
         """Executable name this entry runs a given application under.
@@ -222,11 +222,10 @@ class Plane(BaseModel):
     @property
     def standard_entries(self) -> list[str]:
         """The entries any program can run on any node profile: the OCR-model
-        ones whose store is not fabric-attached memory.  Another memory model
-        obliges the program, and a fabric-attached store needs a device the
-        node profile may not have, so both are chosen per run."""
+        ones whose store is not CXL memory.  Another memory model obliges the
+        program, and a CXL store's entries are chosen per run."""
         return [e.key for e in self.entries
-                if e.model == "OCR" and not e.is_fam]
+                if e.model == "OCR" and not e.is_cxl]
 
     def columns(self) -> list[tuple[Release, Write]]:
         """Column order: the write policy groups, the release policy divides.

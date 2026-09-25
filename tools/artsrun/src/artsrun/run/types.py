@@ -8,7 +8,7 @@ from pathlib import Path
 
 from artsrun.model.experiment import ResolvedApp
 from artsrun.model.plane import SelectionEntry
-from artsrun.model.profile import FamDevice
+from artsrun.model.profile import CxlLibrary
 
 
 class Status(StrEnum):
@@ -51,16 +51,19 @@ class Cell:
     # The core block one rank was granted; a reference's realised geometry is
     # judged against it.
     cpu_width: int | None = None
-    # The device library a fabric-attached-memory cell links, as its profile
-    # named it; None for every other cell.
-    fam_device: FamDevice | None = None
+    # The library a CXL cell links, as its profile named it; None for every
+    # other cell.
+    cxl: CxlLibrary | None = None
+    # The region the vendored fake library maps, sized from the tree's arena
+    # when the cell was expanded; None for every cell not on the fake.
+    cxl_region_bytes: int | None = None
 
     @property
     def region_setup(self) -> bool:
-        """Whether the launch runs inside the device's region setup: a FAM
-        cell on the device library itself.  The vendored library maps its
-        own region and needs none."""
-        return self.fam_device is FamDevice.REAL
+        """Whether the launch runs inside the site's wrapper: a CXL cell on
+        the device library itself.  The vendored library maps its own region
+        and needs none."""
+        return self.cxl is CxlLibrary.REAL
 
     @property
     def key(self) -> str:

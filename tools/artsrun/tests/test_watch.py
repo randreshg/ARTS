@@ -28,9 +28,6 @@ def _profile(launcher: str = "local") -> Profile:
     if launcher in ("slurm", "flux"):
         data["ports"] = [25000]
         data[launcher] = {}
-        data["fam_device"] = "real"
-        data["fam_device_include_dir"] = "/opt/device/include"
-        data["fam_device_library"] = "/opt/device/lib/libdevice.so"
     return Profile.model_validate(data)
 
 

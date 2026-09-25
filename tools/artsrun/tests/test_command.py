@@ -37,8 +37,7 @@ def _cell(kind: RuntimeKind, nodes: int, cfg: Path | None = None):
 
 def _ssh_profile() -> Profile:
     return Profile.model_validate({
-        "name": "t", "launcher": "ssh", "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
-        "fam_device_library": "/opt/device/lib/libdevice.so", "nodes": [1, 2, 4],
+        "name": "t", "launcher": "ssh", "nodes": [1, 2, 4],
         "workers": 15, "progress": 1, "ports": [25000],
         "ssh": {"budget": 4, "hosts": ["n01", "n02", "n03", "n04"]},
     })
@@ -410,8 +409,8 @@ def _cli(*args):
 
 
 @pytest.mark.parametrize("args", [
-    ["run", "-p", "local-fam", "-b", "paper-main", "--dry-run"],
-    ["run", "-p", "local-fam", "--benchset", "paper-main", "--dry-run"],
+    ["run", "-p", "local-cxl", "-b", "paper-main", "--dry-run"],
+    ["run", "-p", "local-cxl", "--benchset", "paper-main", "--dry-run"],
     ["apps", "-b", "paper-main"],
     ["benchset", "list"],
 ])
@@ -422,7 +421,7 @@ def test_the_benchset_spellings_name_the_rename(args):
 
 
 def test_a_run_takes_the_experiment_s_entries_by_default():
-    result = _cli("run", "-p", "local-fam", "-x", "control-gate", "-n", "1",
+    result = _cli("run", "-p", "local-cxl", "-x", "control-gate", "-n", "1",
                   "-a", "nqueens", "--dry-run", "--plain")
     assert result.exit_code == 0, result.output
     assert ("experiment control-gate · entries (its defaults): "
@@ -432,17 +431,17 @@ def test_a_run_takes_the_experiment_s_entries_by_default():
 
 
 def test_e_replaces_the_experiment_s_entries_and_may_name_any_of_them():
-    # FAM and DB-WRF entries are listed by no shipped experiment; -e is the
+    # CXL and DB-WRF entries are listed by no shipped experiment; -e is the
     # whole set for the run, in the plane's order.
-    result = _cli("run", "-p", "local-fam", "-x", "paper-gate", "-n", "1",
+    result = _cli("run", "-p", "local-cxl", "-x", "paper-gate", "-n", "1",
                   "-a", "nqueens", "-e",
-                  "arts_wrf_flush,arts_excl_purge_fam_staged",
+                  "arts_wrf_flush,arts_excl_purge_cxl_staged",
                   "--dry-run", "--plain")
     assert result.exit_code == 0, result.output
-    assert ("entries (chosen for this run): arts_excl_purge_fam_staged, "
+    assert ("entries (chosen for this run): arts_excl_purge_cxl_staged, "
             "arts_wrf_flush") in result.output
     assert "= 2 entries" in result.output
-    bad = _cli("run", "-p", "local-fam", "-x", "paper-gate", "-e", "nope",
+    bad = _cli("run", "-p", "local-cxl", "-x", "paper-gate", "-e", "nope",
                "--dry-run")
     assert bad.exit_code != 0
     assert "-e names unknown plane entries: nope" in bad.output

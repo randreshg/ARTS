@@ -40,31 +40,16 @@ PROFILE_FIELDS: list[FieldSpec] = [
     FieldSpec("cell_timeout_s", "cell timeout (s)", "int",
               "wall budget per cell unless the application overrides it",
               example="300"),
-    FieldSpec("fam_pool_mb", "fam pool (MB)", "int",
-              "size of the fabric-attached-memory pool the run maps, "
-              "shared by every rank and carved into one slice each "
-              "(empty = the runtime's own default)",
-              example="64", optional=True, section="run"),
-    FieldSpec("fam_device", "fam device library", "choice",
-              "whether and on which library the fabric-attached-memory "
-              "entries run: off = not available here (a FAM entry is then "
-              "refused), fake = the vendored fake library (the SHM backend), real = the device "
-              "library named by the two paths below; default = fake under "
-              "launcher=local and off elsewhere. launcher=local refuses real; "
-              "off the local launcher fake needs nodes [1]. The build tree is "
-              "reconfigured to it or the campaign stops",
-              choices=("default", "off", "fake", "real"),
-              none_choice="default",
-              optional=True, section="run"),
-    FieldSpec("fam_device_include_dir", "device include dir", "text",
-              "fam_device=real only: the device library's headers "
-              "(absolute path)",
+    FieldSpec("cxl_include_dir", "cxl include dir", "text",
+              "device SDK include dir (absolute); all three or none",
               example="/path/to/include", optional=True, section="run"),
-    FieldSpec("fam_device_library", "device library", "text",
-              "fam_device=real only: the device library file itself "
-              "(absolute path)",
-              example="/path/to/libdevice.so", optional=True,
+    FieldSpec("cxl_library", "cxl library", "text",
+              "device glue library file (absolute)",
+              example="/path/to/libglue.so", optional=True,
               section="run"),
+    FieldSpec("cxl_launch_wrapper", "cxl launch wrapper", "text",
+              "site launch wrapper the whole launch runs under (absolute)",
+              example="/path/to/run.py", optional=True, section="run"),
 
     FieldSpec("provider", "provider", "choice",
               "data plane: tcp anywhere, verbs;ofi_rxm on InfiniBand (one "

@@ -15,7 +15,7 @@ from pathlib import Path
 from artsrun.model.experiment import Experiment, ResolvedApp
 from artsrun.model.catalog import Catalog
 from artsrun.model.plane import Plane, RuntimeKind, SelectionEntry
-from artsrun.model.profile import Launcher, Profile
+from artsrun.model.profile import CxlLibrary, Launcher, Profile
 from artsrun.model.selection import Selection
 from artsrun.run.types import Cell, Skipped
 
@@ -103,6 +103,8 @@ def expand(
     apps_dir: Path,
     configs: dict[int, dict[str, Path]],
     cell_cfg: Callable[[Cell], Path] | None = None,
+    *,
+    build_dir: Path,
 ) -> tuple[list[Cell], list[Skipped]]:
     """Expand into cells.
 
@@ -110,8 +112,15 @@ def expand(
     one of its own.  Counters are the reason it exists: their output directory
     is a configuration key, so cells sharing a configuration would write over
     each other's counters.
+
+    `build_dir` is the tree the cells' binaries come from; a cell on the
+    vendored fake CXL library sizes its region from that tree's arena.
     """
+    from artsrun.build import fake_region_bytes
     from artsrun.render import config_for
+
+    cxl = profile.cxl_library_kind
+    region = fake_region_bytes(build_dir) if cxl is CxlLibrary.FAKE else None
 
     resolved = {a.key: a for a in experiment.resolve(catalog)}
     entries = [plane.entry(k) for k in selection.entries]
@@ -155,8 +164,8 @@ def expand(
                             timeout_s=app.timeout_for(nodes) or profile.cell_timeout_s,
                             cfg=config_for(entry.kind, configs[nodes]),
                             cpu_width=profile.threads_per_node,
-                            fam_device=(profile.resolved_fam_device
-                                        if entry.is_fam else None),
+                            cxl=cxl if entry.is_cxl else None,
+                            cxl_region_bytes=region if entry.is_cxl else None,
                         )
                         if cell_cfg is not None and entry.kind is RuntimeKind.ARTS:
                             cell = replace(cell, cfg=cell_cfg(cell))

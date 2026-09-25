@@ -76,74 +76,81 @@ artsrun counterset list | show X | render X
 artsrun run -p ferrari-local -x paper-main -c census
 ```
 
-### FAM device library
+### CXL device library
 
-The plane's fabric-attached-memory entries (`arts_excl_purge_fam_staged`,
-`arts_excl_purge_fam_direct` — the two residencies) link a device library,
-and which one is a profile setting, never a campaign option or a guess:
+The plane's CXL entries (`arts_excl_purge_cxl_staged`,
+`arts_excl_purge_cxl_direct` — the two residencies) link a CXL library, and
+which one is a profile setting, never a campaign option or a guess. Three
+fields name the device's own library; all three or none:
 
 | field | meaning |
 |---|---|
-| `fam_device` | `off` (fabric-attached memory is not available where the profile runs; the default), `fake` (the vendored fake library, `ARTS_FAM_BACKEND=SHM`) or `real` (the device library itself, `ARTS_FAM_BACKEND=DEVICE`) |
-| `fam_device_include_dir` | `real` only: the device library's headers (absolute path) |
-| `fam_device_library` | `real` only: the library file itself (absolute path) |
+| `cxl_include_dir` | the device SDK's headers (absolute path) |
+| `cxl_library` | the glue library the runtime links against the device (absolute path) |
+| `cxl_launch_wrapper` | the site's launch wrapper every such cell's whole launch runs under (absolute path) |
 
-An absent `fam_device` means `off`, except under `launcher: local`, where it
-means `fake`. Under `off` a campaign that runs a FAM entry — an experiment's
-default or one named with `-e` — is refused by name; it is never silently
-skipped. No shipped experiment lists a FAM entry: they are turned on per run.
-`launcher: local` takes `off` or `fake` and refuses `real` (one host, no
-fabric: the vendored library is the only one that applies). Every
-other launcher takes `off`, `real` with both paths (absolute; whether they
-exist is the configure's check), or `fake` only with `nodes: [1]` (the
-vendored library's pool is one host's shared memory). Paths belong to `real`
-alone.
+- **None** — the vendored fake library, one host's shared memory standing in
+  for the device, which the tree builds itself (`-DARTS_CXL_REAL=OFF`, both
+  paths cleared). This is every profile that names no path, so any profile
+  can run the CXL entries on the fake; off `launcher: local` a campaign that
+  runs one needs `nodes: [1]`, since the fake's region is one host's shared
+  memory, and is refused by name otherwise (the profile itself still loads —
+  the check is the campaign's).
+- **All three** — the device library (`-DARTS_CXL_REAL=ON`,
+  `-DARTS_CXL_RAPID_INCLUDE_DIR=<cxl_include_dir>`,
+  `-DARTS_CXL_LIB=<cxl_library>`), under any launcher.
+- **A subset** — refused when the profile loads, as is a relative path.
+  Whether the paths exist is the configure's check (and, for the wrapper, the
+  campaign's).
 
-Each `fam_device` names one backend: `off` ↔ `ARTS_FAM_BACKEND=OFF`, `fake`
-↔ `SHM` (the vendored fake library), `real` ↔ `DEVICE`. Before building, a
-campaign that runs a FAM entry compares the tree's cache with the profile —
-`ARTS_FAM_BACKEND=SHM` with both device paths unset for `fake`, or
-`ARTS_FAM_BACKEND=DEVICE` with `ARTS_FAM_DEVICE_INCLUDE_DIR`/
-`ARTS_FAM_DEVICE_LIBRARY` equal to the profile's paths for `real` — and on
-any difference reconfigures the tree with exactly those values (printing the
-cmake command; `fake` also clears the two paths).
-A new tree is configured with them from the start. If cmake fails — the
-vendored library does not build, the real headers or library are missing —
-the campaign stops with cmake's own error: there is no fallback and no FAM
-cell is skipped for want of a library. A dry run prints the command a real
-run would use and changes nothing. The FAM entries are benchmark variants
-carrying their own protocol, so the tree's own protocol is left as it is.
+No shipped experiment lists a CXL entry: they are turned on per run (`-e`).
+Every benchmark tree builds both variants; before building, a campaign that
+runs a CXL entry compares the tree's cache (`ARTS_CXL_REAL`,
+`ARTS_CXL_RAPID_INCLUDE_DIR`, `ARTS_CXL_LIB`) with the profile and on any
+difference reconfigures the tree with exactly the values above, printing the
+cmake command; a new tree is configured with them from the start. If cmake
+fails — the vendored library does not build, the device headers or library
+are missing — the campaign stops with cmake's own error: there is no fallback
+and no CXL cell is skipped for want of a library. A dry run prints the
+command a real run would use and changes nothing. The CXL entries are
+benchmark variants carrying their own protocol and residency, so the tree's
+own protocol is left as it is; `ARTS_USE_CXL` and `ARTS_CXL_RESIDENCY` are
+validation-tree options artsrun never sets.
 
-A `real` profile, as a sketch (the paths are placeholders):
+A device profile, as a sketch (the paths are placeholders):
 
 ```yaml
 launcher: slurm
 # ...
-fam_device: real
-fam_device_include_dir: /path/to/device/include
-fam_device_library: /path/to/device/lib/libdevice.so
+cxl_include_dir: /path/to/device-sdk/include
+cxl_library: /path/to/glue/libarts_cxl_lib.so
+cxl_launch_wrapper: /path/to/site/run.py
 ```
 
-Under `real` each FAM cell is launched through the root `run_cxl.sh`
-wrapper, which sets the device's regions up once around the whole launch
-(its utilities must be on `PATH` on the compute nodes); under `fake` nothing
-wraps, since the vendored library maps its own region. That region is sized
-when the library loads, before the cfg is read, so a `fake` cell's launch
-environment sets `ARTS_FAKE_CXL_REGION_SIZE` to the profile's `fam_pool_mb`
-(the runtime's 64 MB when unset) plus 64 MiB. The region has one name and
-one address per host, so a host runs one `fake` campaign at a time. The
-manifest records each cell's `fam_device`. A one-rank FAM cell's launch
-environment sets
-`ARTS_FLUSH_LOG` to `<cell>.flush.bin` beside the cell's log, where the
-library writes its flush trace; a cell with more than one rank sets it to
-`/dev/null`, because the library takes one path for all ranks and every rank
-on a host would overwrite the same file. The wrapper locates its preparation
-script relative to the checkout and runs in the cell's scratch directory.
+On the device library each CXL cell's launch is
+`python3 <cxl_launch_wrapper> <command…>`, around the whole launch (the
+`srun`/`flux run`/`mpirun` line or the local binary), never around one rank.
+The wrapper is the site's, not the repository's; its contract is to set the
+device's regions up, run the command it is given once, tear the regions
+down, and exit with the command's status. A real (non-dry) campaign refuses
+to start when the wrapper file does not exist; a dry run only renders its
+path. On the fake nothing wraps, since the vendored library maps its own
+region. That region is sized when the library loads, before any cfg is read,
+so a fake cell's launch environment sets `ARTS_FAKE_CXL_REGION_SIZE` to twice
+the tree's `ARTS_CXL_DB_ARENA_SIZE_BYTES` (the runtime maps two arenas of that
+size; the build's default is 5000000000) plus 128 MiB for its deque and headroom. The
+region has one name and one address per host, so a host runs one fake
+campaign at a time. The manifest records each cell's library (`cxl`) and its
+region size. A one-rank CXL cell's launch environment sets `ARTS_FLUSH_LOG`
+to `<cell>.flush.bin` beside the cell's log, where the library writes its
+flush trace; a cell with more than one rank sets it to `/dev/null`, because
+the library takes one path for all ranks and every rank on a host would
+overwrite the same file.
 
-The old `--cxl`, `--fam-device-include-dir` and `--fam-device-library` options
-(and their older `--cxl-rapid-include-dir` / `--cxl-lib-dir` spellings) are
-errors naming the profile fields, as is a saved selection recorded in the
-old mode.
+The old `--cxl`, `--cxl-rapid-include-dir` and `--cxl-lib-dir` options are
+errors naming the profile fields, as is a saved selection recorded with any
+of them; any other key a profile or saved selection carries that no field
+takes is refused when it loads.
 
 ## External runtimes
 
@@ -259,8 +266,8 @@ must be a plane entry. The list is the default check-set, not a restriction:
 plane's order), and `-a` does the same for applications. The saved
 `selection.yaml` records the experiment, its default entries and the entries
 actually run. A run that names no experiment takes the catalog's own roster
-on the plane's standard entries (every OCR-model entry whose store is not
-fabric-attached memory).
+on the plane's standard entries (every OCR-model entry that is not a CXL
+entry).
 
 | experiment | purpose | default entries |
 |---|---|---|
@@ -268,17 +275,18 @@ fabric-attached memory).
 | `paper-gate` | paper-main at small arguments: the consensus gate | as paper-main |
 | `control-main` | the adversarial columns and the HPX-origin rows | the eight ARTS entries, `hpx` |
 | `control-gate` | control-main at small arguments: the consensus gate | as control-main |
-| `trend` | every paper-main and HPX-origin row at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_wrf_flush` and the two FAM entries |
+| `trend` | every paper-main and HPX-origin row at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_wrf_flush` and the two CXL entries |
 | `smoke` | paper-gate at arguments shrunk again to finish in seconds on a two-worker laptop: a correctness smoke, never a timing number | as paper-gate |
 
-No shipped experiment lists the DB-WRF entry or a FAM entry; they are turned
+No shipped experiment lists the DB-WRF entry or a CXL entry; they are turned
 on for a run with `-e` or on the screen. The per-entry eligibility rules hold
-whatever selected the entry: a FAM entry needs the node profile's
-`fam_device`, and an `unordered_writes` row is N/A under the DB-WRF entry.
+whatever selected the entry: a CXL entry runs on the library the node profile
+names (off `launcher: local`, the fake reaches only `nodes: [1]`), and an
+`unordered_writes` row is N/A under the DB-WRF entry.
 
 The **Experiments** screen is one tab: the experiment file (pick, save, save
 as new, revert), the whole plane with every entry's toggle — the
-experiment's defaults pre-checked, any entry (FAM and DB-WRF included)
+experiment's defaults pre-checked, any entry (CXL and DB-WRF included)
 toggleable for this run — and the application rows. Save writes the checked
 entries as the experiment's defaults and the checked rows as its roster.
 Applications come first — benchmarks with a provenance, the ones a result is

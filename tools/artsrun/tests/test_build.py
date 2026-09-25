@@ -46,22 +46,22 @@ def test_an_arts_only_row_wants_only_its_arts_targets(tmp_path):
     assert plan.targets == [f"{PROBE_BINARY}_arts_ocr_val_wb"]
 
 
-def test_a_fam_entry_always_wants_its_target(tmp_path):
-    # The tree is made to carry the FAM variants before the plan is read,
-    # so no launcher or tree state drops them from the build.
+def test_a_cxl_entry_always_wants_its_target(tmp_path):
+    # Every benchmark tree builds the CXL variants, so no launcher or tree
+    # state drops them from the build.
     plane, catalog = load_plane(), load_catalog()
-    sel = _selection(["arts_excl_purge", "arts_excl_purge_fam_staged"],
+    sel = _selection(["arts_excl_purge", "arts_excl_purge_cxl_staged"],
                      {"nqueens": [Version.BASE]})
     bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1],
                     workers=2, progress=1)
-    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1], fam_device="fake",
+    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
                      workers=2, progress=1, ports=[25000],
                      slurm=SlurmSettings())
     for prof in (local, remote, None):
         plan = plan_targets(sel, plane, catalog, bs, tmp_path, prof)
         assert plan.targets == ["nqueens_arts_ocr_excl_purge",
-                                "nqueens_arts_ocr_excl_purge_fam_staged"]
+                                "nqueens_arts_ocr_excl_purge_cxl_staged"]
 
 
 def test_a_row_the_experiment_does_not_enable_wants_no_target(tmp_path):

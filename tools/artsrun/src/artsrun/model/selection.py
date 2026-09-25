@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import AppClass, Catalog, Version
@@ -80,6 +80,10 @@ LEGACY_EXPERIMENT_NAMES = {
 
 
 class Selection(BaseModel):
+    # A key no field takes is a setting that no longer exists; loading past
+    # it would replay the selection as something it never was.
+    model_config = ConfigDict(extra="forbid")
+
     profile: str
     experiment: str
     # The experiment's own entry list, recorded beside the entries this
@@ -126,13 +130,12 @@ class Selection(BaseModel):
             return data
         data = dict(data)
         old = {k: data.pop(k, None) for k in
-               ("cxl", "fam_device_include_dir", "fam_device_library")}
+               ("cxl", "cxl_rapid_include_dir", "cxl_lib_dir")}
         if any(old.values()):
             raise ValueError(
-                "this selection was saved in the FAM-device campaign mode; the "
-                "device library is a profile setting now (fam_device: fake | "
-                "real, with fam_device_include_dir and fam_device_library for "
-                "real) — select a profile that names it")
+                "this selection was saved with a device-library setting of its "
+                "own; the profile names it now (cxl_include_dir, cxl_library, "
+                "cxl_launch_wrapper, or none for the vendored fake)")
         return data
 
     def validate_against(
@@ -145,7 +148,7 @@ class Selection(BaseModel):
         unknown = [k for k in self.entries if k not in plane.entry_keys]
         if unknown:
             raise ValueError(f"unknown plane entries: {', '.join(unknown)}")
-        profile.check_fam_device(self.fam_entries(plane))
+        profile.check_cxl(self.cxl_entries(plane))
         for name, versions in self.apps.items():
             if name not in catalog.apps:
                 raise ValueError(f"unknown application: {name}")
@@ -316,8 +319,8 @@ class Selection(BaseModel):
             build_dir=build_dir,
         )
 
-    def fam_entries(self, plane: Plane) -> list[str]:
-        return [k for k in self.entries if plane.entry(k).is_fam]
+    def cxl_entries(self, plane: Plane) -> list[str]:
+        return [k for k in self.entries if plane.entry(k).is_cxl]
 
     @property
     def cell_count(self) -> int:

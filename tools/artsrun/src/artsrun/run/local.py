@@ -77,7 +77,7 @@ class LocalBackend:
 
     def submit(self, cell: Cell) -> CellResult:
         argv = with_timeout(
-            with_post_verify(cxl_wrap(build_command(cell, self.profile), cell), cell),
+            with_post_verify(cxl_wrap(build_command(cell, self.profile), cell, self.profile), cell),
             cell.timeout_s)
         env = os.environ.copy()
         env.update(build_env(cell, self.profile, self.log_dir))

@@ -28,8 +28,8 @@ import subprocess
 from pathlib import Path
 
 from artsrun.model.plane import RuntimeKind
-from artsrun.model.profile import FamDevice, Launcher, Profile
-from artsrun.paths import cxl_script, envelope_script
+from artsrun.model.profile import CxlLibrary, Launcher, Profile
+from artsrun.paths import envelope_script
 from artsrun.run.types import Cell
 
 
@@ -173,15 +173,14 @@ def build_command(cell: Cell, profile: Profile) -> list[str]:
     return [*wrap, *tail]
 
 
-def cxl_wrap(argv: list[str], cell: Cell) -> list[str]:
-    """The device's region setup surrounds the complete launch of a FAM
-    cell on the device library itself, never individual ranks."""
+def cxl_wrap(argv: list[str], cell: Cell, profile: Profile) -> list[str]:
+    """The site's wrapper surrounds the complete launch of a CXL cell on the
+    device library itself, never individual ranks: it sets the device's
+    regions up, runs the command once, tears down, and exits with the
+    command's status."""
     if not cell.region_setup:
         return argv
-    script = cxl_script()
-    if not script.is_file():
-        raise FileNotFoundError(f"FAM-device region wrapper missing: {script}")
-    return ["bash", str(script), *argv]
+    return ["python3", profile.cxl_launch_wrapper, *argv]
 
 
 def with_post_verify(argv: list[str], cell: Cell) -> list[str]:
@@ -201,34 +200,22 @@ def flush_log_path(log_dir: Path, cell: Cell) -> Path:
     return log_dir / f"{cell.slug}.flush.bin"
 
 
-# The runtime's own fam_pool_mb default, which a profile that names none
-# leaves in force.
-RUNTIME_FAM_POOL_MB = 64
-# The vendored fake library's smallest region, and the headroom above the pool
-# the region keeps for the library's own header and the arena's page of
-# alignment.
-FAKE_REGION_MARGIN_MB = 64
-
-
-def fake_region_bytes(profile: Profile) -> int:
-    """ARTS_FAKE_CXL_REGION_SIZE for a cell on the vendored fake library: the
-    library sizes its one region when it loads, before the runtime has read
-    the cfg, so the region is stated to it from the pool the cfg names."""
-    pool_mb = profile.fam_pool_mb or RUNTIME_FAM_POOL_MB
-    return (pool_mb + FAKE_REGION_MARGIN_MB) << 20
-
-
 def build_env(cell: Cell, profile: Profile,
               log_dir: Path | None = None) -> dict[str, str]:
     env = dict(cell.env)
-    if cell.fam_device is FamDevice.FAKE:
-        env["ARTS_FAKE_CXL_REGION_SIZE"] = str(fake_region_bytes(profile))
+    # The vendored fake sizes its one region when it loads, before any cfg
+    # is read, so the size is handed to it here.
+    if cell.cxl is CxlLibrary.FAKE:
+        if cell.cxl_region_bytes is None:
+            raise ValueError(f"{cell.key}: a cell on the vendored fake CXL "
+                             "library carries no region size")
+        env["ARTS_FAKE_CXL_REGION_SIZE"] = str(cell.cxl_region_bytes)
     # The library, fake or real, writes its flush trace where
     # ARTS_FLUSH_LOG points, else into the working directory.  It takes one
     # path for all ranks, so with more than one rank every rank on a host
     # would overwrite the same file: only a one-rank cell keeps its trace,
     # beside the cell's log.
-    if cell.fam_device is not None and log_dir is not None:
+    if cell.cxl is not None and log_dir is not None:
         env["ARTS_FLUSH_LOG"] = (str(flush_log_path(log_dir, cell))
                                  if cell.nodes == 1 else "/dev/null")
     # All three runtimes carry the same env-gated end-to-end stamp — rank 0

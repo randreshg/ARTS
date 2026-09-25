@@ -235,7 +235,7 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
     monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
-        selection=SimpleNamespace(fam_entries=lambda _plane: []),
+        selection=SimpleNamespace(cxl_entries=lambda _plane: []),
         plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",
@@ -287,7 +287,7 @@ def test_a_counterless_campaign_refuses_an_instrumented_tree(tmp_path,
     monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
-        selection=SimpleNamespace(fam_entries=lambda _plane: []),
+        selection=SimpleNamespace(cxl_entries=lambda _plane: []),
         plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run", counterset=None,
@@ -323,7 +323,7 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
     monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
 
     c = Campaign(
-        selection=SimpleNamespace(fam_entries=lambda _plane: []),
+        selection=SimpleNamespace(cxl_entries=lambda _plane: []),
         plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",

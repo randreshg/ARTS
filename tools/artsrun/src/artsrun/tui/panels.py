@@ -846,8 +846,9 @@ class RunPanel(Vertical):
         with Horizontal(classes="run-options"):
             yield Label("build tree", classes="run-options-label")
             yield Input(placeholder="build_release (default)", id="run-build-dir")
-            yield Label("the FAM entries' device library is the profile's "
-                        "fam_device", classes="run-options-help")
+            yield Label("the CXL entries link the profile's device library "
+                        "(its three cxl_* paths), or the vendored fake when "
+                        "it names none", classes="run-options-help")
 
     def refresh_runs(self) -> None:
         """Re-read what is resumable, after a campaign changes the answer."""

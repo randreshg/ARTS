@@ -323,9 +323,8 @@ def run_cmd(
     # only to say so.
     gone_cxl: bool = typer.Option(False, "--cxl", hidden=True),
     gone_include: str = typer.Option(
-        None, "--fam-device-include-dir", "--cxl-rapid-include-dir", hidden=True),
-    gone_library: str = typer.Option(
-        None, "--fam-device-library", "--cxl-lib-dir", hidden=True),
+        None, "--cxl-rapid-include-dir", hidden=True),
+    gone_library: str = typer.Option(None, "--cxl-lib-dir", hidden=True),
     from_file: Path = typer.Option(None, "--from", help="replay a saved selection"),
     resume: str = typer.Option(None, "--resume", help="run id to continue"),
     retry_failed: bool = typer.Option(
@@ -346,11 +345,9 @@ def run_cmd(
     run_dir = None
     _no_benchset(gone_benchset)
     if gone_cxl or gone_include or gone_library:
-        _fail("the FAM device library is named by the profile, not the command "
-              "line: set fam_device: off | fake | real in the profile (real "
-              "also takes fam_device_include_dir and fam_device_library; "
-              "absent means off, except under launcher=local, which takes "
-              "fake), and the fabric-attached-memory entries run on it")
+        _fail("the CXL device library is named by the profile, not the "
+              "command line: cxl_include_dir, cxl_library and "
+              "cxl_launch_wrapper (all three), or none for the vendored fake")
     if resume:
         # Continuing means continuing THAT campaign: its selection is what was
         # measured against, and its directory is where the halves meet.
@@ -539,7 +536,7 @@ def _dry_run(campaign, selection: Selection) -> None:
                                                  with_post_verify, with_timeout)
 
                 line = render(with_timeout(
-                    with_post_verify(cxl_wrap(build_command(cell, campaign.profile), cell), cell),
+                    with_post_verify(cxl_wrap(build_command(cell, campaign.profile), cell, campaign.profile), cell),
                     cell.timeout_s))
             console.print(f"  [dim]{kind} @{nodes}n[/dim] $ {line}")
 

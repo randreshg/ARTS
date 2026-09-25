@@ -178,7 +178,7 @@ def _launch(cell: Cell, profile: Profile) -> str:
     if cell.entry.kind is not RuntimeKind.ARTS and settings.pmi:
         prefix += ["-o", f"pmi={settings.pmi}"]
     prefix += list(settings.extra_run)
-    argv = with_post_verify(cxl_wrap([*prefix, *build_command(cell, profile)], cell), cell)
+    argv = with_post_verify(cxl_wrap([*prefix, *build_command(cell, profile)], cell, profile), cell)
     return render(argv)
 
 

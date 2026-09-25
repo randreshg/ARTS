@@ -40,19 +40,6 @@ def test_arts_config_omits_ports_for_a_local_run():
     assert "ports" not in render_arts(profile, 4)
 
 
-def test_arts_config_omits_fam_pool_mb_when_the_profile_leaves_it_out():
-    profile = load_profile("ferrari-local")
-    assert "fam_pool_mb" not in render_arts(profile, 2)
-
-
-def test_arts_config_names_fam_pool_mb_when_set():
-    from artsrun.model.profile import Launcher, Profile
-
-    profile = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
-                       workers=3, progress=1, fam_pool_mb=16)
-    assert "fam_pool_mb=16" in render_arts(profile, 2)
-
-
 def test_arts_config_names_ports_for_a_cluster_run():
     profile = load_profile("junction")
     text = render_arts(profile, 8)
@@ -121,8 +108,7 @@ def test_arts_config_for_flux_names_ports_but_no_hosts():
     from artsrun.model.profile import Profile
 
     profile = Profile.model_validate({
-        "name": "t", "launcher": "flux", "fam_device": "real", "fam_device_include_dir": "/opt/device/include",
-        "fam_device_library": "/opt/device/lib/libdevice.so", "nodes": [1, 2, 4],
+        "name": "t", "launcher": "flux", "nodes": [1, 2, 4],
         "workers": 15, "progress": 1, "ports": [25000], "flux": {},
     })
     text = render_arts(profile, 4)

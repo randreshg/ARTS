@@ -4,6 +4,7 @@ ranks are launched."""
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -15,17 +16,11 @@ class Launcher(StrEnum):
     FLUX = "flux"
 
 
-class FamDevice(StrEnum):
-    """Whether, and on which device library, the fabric-attached-memory
-    entries run.
+class CxlLibrary(StrEnum):
+    """Which library the CXL entries link: the vendored fake (one host's
+    shared memory standing in for the device) or the device's own, named by
+    the profile's three paths."""
 
-    `off`: fabric-attached memory is not available where this profile runs
-    (ARTS_FAM_BACKEND=OFF).  `fake`: the vendored fake library, one host's
-    shared memory standing in for the device (ARTS_FAM_BACKEND=SHM).
-    `real`: the device library itself, named by path (ARTS_FAM_BACKEND=DEVICE).
-    """
-
-    OFF = "off"
     FAKE = "fake"
     REAL = "real"
 
@@ -139,21 +134,14 @@ class Profile(BaseModel):
     fabric_domain: str | None = None
     regpool_slab_mb: int | None = None
 
-    # The fabric-attached-memory pool's size: a cfg key a fam-enabled binary
-    # reads and any other simply never looks up.  Unset leaves the runtime's
-    # own default in force.
-    fam_pool_mb: int | None = Field(default=None, ge=1)
-
-    # The device library the fabric-attached-memory entries run on.  Named
-    # here and nowhere else: the build tree is made to match it or the
-    # campaign does not start, so which library a FAM cell ran on is always
-    # the one its profile states.  Absent means off, except under
-    # launcher=local, which takes `fake` (one host, no fabric: the vendored
-    # library is the only one that applies there).
-    fam_device: FamDevice | None = None
-    # The device library's headers and the library file; `real` only.
-    fam_device_include_dir: str | None = None
-    fam_device_library: str | None = None
+    # The device library the CXL entries link, and the site's launch wrapper
+    # that sets the device's regions up around a whole launch.  All three or
+    # none: none is the vendored fake library, which the tree builds itself;
+    # a subset is a mistake, refused here.  Absolute paths: the build tree is
+    # configured from them wherever the build runs.
+    cxl_include_dir: str | None = None
+    cxl_library: str | None = None
+    cxl_launch_wrapper: str | None = None
 
     # Worker stack, in MiB, given to EVERY runtime a campaign measures — the
     # runtime under test and the references alike.  A runtime whose message
@@ -223,61 +211,39 @@ class Profile(BaseModel):
             return self.flux
         return None
 
+    CXL_PATHS: ClassVar[tuple[str, ...]] = ("cxl_include_dir", "cxl_library", "cxl_launch_wrapper")
+
     @property
-    def resolved_fam_device(self) -> FamDevice:
-        """What a FAM entry run under this profile links: the stated value;
-        absent, `fake` under launcher=local (one host, no fabric: the vendored
-        library is the only one that applies there) and `off` elsewhere."""
-        if self.fam_device is not None:
-            return self.fam_device
-        if self.launcher is Launcher.LOCAL:
-            return FamDevice.FAKE
-        return FamDevice.OFF
+    def cxl_library_kind(self) -> CxlLibrary:
+        return CxlLibrary.REAL if self.cxl_library else CxlLibrary.FAKE
 
-    def _check_fam_statement(self) -> None:
-        """Refuse a device-library statement that is wrong whatever runs."""
-        device = self.resolved_fam_device
-        paths = [k for k in ("fam_device_include_dir", "fam_device_library")
-                 if getattr(self, k)]
-        if device is not FamDevice.REAL and paths:
+    def _check_cxl_statement(self) -> None:
+        """All three paths or none, and absolute."""
+        given = [k for k in self.CXL_PATHS if getattr(self, k)]
+        if given and len(given) != len(self.CXL_PATHS):
+            missing = [k for k in self.CXL_PATHS if k not in given]
             raise ValueError(
-                f"profile '{self.name}': {' and '.join(paths)} belong to "
-                f"fam_device: real, and this profile's fam_device is {device}")
-        if self.launcher is Launcher.LOCAL and device is FamDevice.REAL:
+                f"profile '{self.name}': the CXL device library takes all of "
+                f"{', '.join(self.CXL_PATHS)}; {' and '.join(missing)} missing "
+                "(leave all three out for the vendored fake library)")
+        relative = [k for k in given if not getattr(self, k).startswith("/")]
+        if relative:
             raise ValueError(
-                "fam_device: real is not allowed under launcher=local: one "
-                "host has no fabric, so the vendored library is the only one "
-                "that applies (local takes off or fake)")
-        if device is FamDevice.REAL:
-            missing = [k for k in ("fam_device_include_dir", "fam_device_library")
-                       if not getattr(self, k)]
-            if missing:
-                raise ValueError(
-                    f"fam_device: real requires {' and '.join(missing)}: the "
-                    "device library's headers and the library file")
-            relative = [k for k in paths if not getattr(self, k).startswith("/")]
-            if relative:
-                raise ValueError(
-                    f"{' and '.join(relative)} must be absolute paths: the "
-                    "build tree is configured from them wherever the build runs")
-        if (device is FamDevice.FAKE and self.launcher is not Launcher.LOCAL
-                and self.nodes != [1]):
-            raise ValueError(
-                f"fam_device: fake under launcher={self.launcher} requires "
-                f"nodes: [1] (got {self.nodes}): the vendored library is one "
-                "host's shared memory, so its pool reaches only ranks that "
-                "share a host")
+                f"{' and '.join(relative)} must be absolute paths: the build "
+                "tree is configured from them wherever the build runs")
 
-    def check_fam_device(self, fam_entries: list[str]) -> None:
-        """Refuse a campaign whose fabric-attached-memory entries this
-        profile's device library cannot run."""
-        if fam_entries and self.resolved_fam_device is FamDevice.OFF:
+    def check_cxl(self, cxl_entries: list[str]) -> None:
+        """Refuse a campaign whose CXL entries would run on the vendored fake
+        across hosts.  Campaign-time, not load-time: a profile that names no
+        device library is every other campaign's ordinary profile."""
+        if (cxl_entries and self.cxl_library_kind is CxlLibrary.FAKE
+                and self.launcher is not Launcher.LOCAL and self.nodes != [1]):
             raise ValueError(
-                f"profile '{self.name}' has fam_device: off (absent means off "
-                "except under launcher=local: fabric-attached memory is not "
-                "available where it runs), so it cannot run "
-                f"{', '.join(fam_entries)}; select a profile whose fam_device "
-                "is fake or real, or leave these entries out")
+                f"profile '{self.name}' names no CXL device library, so "
+                f"{', '.join(cxl_entries)} would run on the vendored fake, which "
+                f"is one host's shared memory: under launcher={self.launcher} "
+                f"that needs nodes: [1] (got {self.nodes}); name the three cxl_* "
+                "paths for the device, or leave these entries out")
 
     @model_validator(mode="before")
     @classmethod
@@ -344,5 +310,5 @@ class Profile(BaseModel):
             )
         if any(n < 1 for n in self.nodes):
             raise ValueError("node counts must be >= 1")
-        self._check_fam_statement()
+        self._check_cxl_statement()
         return self

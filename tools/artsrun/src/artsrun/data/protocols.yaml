@@ -40,10 +40,10 @@ cells:
     variant: ocr_excl_purge
     reference: xsocr
     entries:
-      - label: ARTS-FAM-STAGED
-        variant: ocr_excl_purge_fam_staged
-      - label: ARTS-FAM-DIRECT
-        variant: ocr_excl_purge_fam_direct
+      - label: ARTS-CXL-STAGED
+        variant: ocr_excl_purge_cxl_staged
+      - label: ARTS-CXL-DIRECT
+        variant: ocr_excl_purge_cxl_direct
   - family: EXCL
     release: RETAIN
     write: WB

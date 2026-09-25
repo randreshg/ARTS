@@ -114,7 +114,7 @@ def _launch(cell: Cell, profile: Profile) -> str:
                   "--cpu-bind=none"]
         if profile.slurm and profile.slurm.mpi:
             prefix.append(f"--mpi={profile.slurm.mpi}")
-    argv = with_post_verify(cxl_wrap([*prefix, *build_command(cell, profile)], cell), cell)
+    argv = with_post_verify(cxl_wrap([*prefix, *build_command(cell, profile)], cell, profile), cell)
     return render(argv)
 
 

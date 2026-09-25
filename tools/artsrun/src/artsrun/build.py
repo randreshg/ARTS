@@ -17,7 +17,7 @@ from pathlib import Path
 from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import Catalog
 from artsrun.model.plane import Plane, RuntimeKind
-from artsrun.model.profile import FamDevice, Profile
+from artsrun.model.profile import CxlLibrary, Profile
 from artsrun.model.selection import Selection
 
 
@@ -48,55 +48,62 @@ def _cache_value(build_dir: Path, key: str) -> str | None:
     return None
 
 
-def fam_device_options(profile: Profile) -> list[str]:
-    """The cache values a tree needs to run this profile's fabric-attached
-    entries on the library it names.
-
-    The entries are benchmark variants that carry their own protocol, so
-    only the backend and the library are named; the tree's own protocol
-    stays what it is.  `fake` is the SHM backend, which is the vendored
-    fake library, so the two device paths are cleared: a stale path left in
-    the cache is exactly the kind of state that makes a later configure mean
-    something else, and the SHM backend refuses one.
-    """
-    if profile.resolved_fam_device is FamDevice.REAL:
-        return ["-DARTS_FAM_BACKEND=DEVICE",
-                f"-DARTS_FAM_DEVICE_INCLUDE_DIR={profile.fam_device_include_dir}",
-                f"-DARTS_FAM_DEVICE_LIBRARY={profile.fam_device_library}"]
-    return ["-DARTS_FAM_BACKEND=SHM",
-            "-DARTS_FAM_DEVICE_INCLUDE_DIR=", "-DARTS_FAM_DEVICE_LIBRARY="]
+def cxl_options(profile: Profile) -> list[str]:
+    """The cache values a tree needs to run this profile's CXL entries on the
+    library it names.  The entries are benchmark variants that carry their own
+    protocol, so only the library is named; a stale path left in the cache is
+    exactly the state that makes a later configure mean something else, so
+    the fake clears both."""
+    if profile.cxl_library_kind is CxlLibrary.REAL:
+        return ["-DARTS_CXL_REAL=ON",
+                f"-DARTS_CXL_RAPID_INCLUDE_DIR={profile.cxl_include_dir}",
+                f"-DARTS_CXL_LIB={profile.cxl_library}"]
+    return ["-DARTS_CXL_REAL=OFF", "-DARTS_CXL_RAPID_INCLUDE_DIR=", "-DARTS_CXL_LIB="]
 
 
-def fam_backend_of(device: FamDevice) -> str:
-    """The ARTS_FAM_BACKEND value a fam_device maps to."""
-    return {FamDevice.FAKE: "SHM", FamDevice.REAL: "DEVICE",
-            FamDevice.OFF: "OFF"}[device]
+def _cxl_real_of(build_dir: Path) -> str:
+    value = _cache_value(build_dir, "ARTS_CXL_REAL") or "OFF"
+    return "ON" if value.upper() in ("ON", "TRUE", "1", "YES", "Y") else "OFF"
 
 
-def fam_device_mismatch(build_dir: Path, profile: Profile) -> list[str]:
-    """How this tree's cache differs from the library the profile names,
-    one `KEY: have X, want Y` line per differing value; empty when it
-    matches."""
-    device = profile.resolved_fam_device
-    have = {k: _cache_value(build_dir, k) for k in (
-        "ARTS_FAM_BACKEND", "ARTS_FAM_DEVICE_INCLUDE_DIR",
-        "ARTS_FAM_DEVICE_LIBRARY")}
-    want_backend = fam_backend_of(device)
+def cxl_mismatch(build_dir: Path, profile: Profile) -> list[str]:
+    """How this tree's cache differs from the library the profile names, one
+    `KEY: have X, want Y` line per differing value; empty when it matches."""
+    real = profile.cxl_library_kind is CxlLibrary.REAL
+    want_real = "ON" if real else "OFF"
+    have_real = _cxl_real_of(build_dir)
     out = []
-    if (have["ARTS_FAM_BACKEND"] or "OFF") != want_backend:
-        out.append(f"ARTS_FAM_BACKEND: have {have['ARTS_FAM_BACKEND'] or 'OFF'}, "
-                   f"want {want_backend}")
-    if device is FamDevice.REAL:
-        for key, want in (("ARTS_FAM_DEVICE_INCLUDE_DIR", profile.fam_device_include_dir),
-                          ("ARTS_FAM_DEVICE_LIBRARY", profile.fam_device_library)):
-            got = have[key]
+    if have_real != want_real:
+        out.append(f"ARTS_CXL_REAL: have {have_real}, want {want_real}")
+    for key, want in (("ARTS_CXL_RAPID_INCLUDE_DIR", profile.cxl_include_dir),
+                      ("ARTS_CXL_LIB", profile.cxl_library)):
+        got = _cache_value(build_dir, key)
+        if real:
             if not got or os.path.normpath(got) != os.path.normpath(want):
                 out.append(f"{key}: have {got or '(unset)'}, want {want}")
-    else:
-        for key in ("ARTS_FAM_DEVICE_INCLUDE_DIR", "ARTS_FAM_DEVICE_LIBRARY"):
-            if have[key]:
-                out.append(f"{key}: have {have[key]}, want (unset)")
+        elif got:
+            out.append(f"{key}: have {got}, want (unset)")
     return out
+
+
+DEFAULT_ARENA_BYTES = 5_000_000_000
+FAKE_REGION_MARGIN_BYTES = 128 << 20
+
+
+def arena_bytes(build_dir: Path) -> int:
+    """ARTS_CXL_DB_ARENA_SIZE_BYTES as the tree was configured, else the
+    build's default."""
+    v = _cache_value(build_dir, "ARTS_CXL_DB_ARENA_SIZE_BYTES")
+    return int(v) if v and v.isdigit() else DEFAULT_ARENA_BYTES
+
+
+def fake_region_bytes(build_dir: Path) -> int:
+    """ARTS_FAKE_CXL_REGION_SIZE for a cell on the vendored fake: the library
+    sizes its one region when it loads, and the region must hold one
+    data-block arena of the tree's arena size, the ~64 MB deque, and headroom
+    for the library's own header; 2x the arena size plus margin comfortably
+    bounds all three."""
+    return 2 * arena_bytes(build_dir) + FAKE_REGION_MARGIN_BYTES
 
 
 def _cmake_error(text: str) -> str:
@@ -109,45 +116,46 @@ def _cmake_error(text: str) -> str:
     return "\n".join(lines[-25:])
 
 
-def fam_device_configure_command(build_dir: Path, profile: Profile, *,
-                                 prefix: list[str] | None = None) -> list[str]:
+def cxl_configure_command(build_dir: Path, profile: Profile, *,
+                          prefix: list[str] | None = None) -> list[str]:
     from artsrun.paths import repo_root
 
     # -S for the same reason as the counter reconfigure: without it cmake
     # takes the source directory from the caller's cwd.
     return [*(prefix or []), "cmake", "-S", str(repo_root()), "-B", str(build_dir),
-            *fam_device_options(profile)]
+            *cxl_options(profile)]
 
 
-def configure_fam_device(build_dir: Path, profile: Profile, *, on_line=None,
-                         prefix: list[str] | None = None) -> None:
-    """Reconfigure a tree to the device library the profile names, or die.
+def configure_cxl(build_dir: Path, profile: Profile, *, on_line=None,
+                  prefix: list[str] | None = None) -> None:
+    """Reconfigure a tree to the CXL library the profile names, or die.
 
-    Only the FAM options are passed; everything else stays in the cache.
-    The configure is the check: when the named library cannot be built or
-    found, cmake's own error ends the campaign, since a FAM cell must run
-    on the library its profile states or not at all.
+    Only the CXL library options are passed; everything else stays in the
+    cache.  The configure is the check: when the named library cannot be
+    built or found, cmake's own error ends the campaign, since a CXL cell
+    must run on the library its profile states or not at all.
     """
     import shlex
 
     say = on_line or (lambda _msg: None)
     if shutil.which("cmake") is None:
         raise BuildError("cmake not found on PATH")
-    cmd = fam_device_configure_command(build_dir, profile, prefix=prefix)
-    say(f"fam_device: {profile.resolved_fam_device} — reconfiguring {build_dir} "
-        "to that library (this rebuilds everything):")
+    kind = profile.cxl_library_kind
+    cmd = cxl_configure_command(build_dir, profile, prefix=prefix)
+    say(f"cxl: {kind} — reconfiguring {build_dir} to that library "
+        "(this rebuilds everything):")
     say(f"  $ {shlex.join(cmd)}")
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         raise BuildError(
-            f"could not configure {build_dir} for fam_device: "
-            f"{profile.resolved_fam_device}; cmake reported:\n"
+            f"could not configure {build_dir} for the CXL library {kind}; "
+            "cmake reported:\n"
             + _cmake_error((proc.stdout or "") + "\n" + (proc.stderr or "")))
-    left = fam_device_mismatch(build_dir, profile)
+    left = cxl_mismatch(build_dir, profile)
     if left:
         raise BuildError(
             f"{build_dir} was reconfigured but its cache still differs from "
-            "the profile's device library:\n  " + "\n  ".join(left))
+            "the profile's CXL library:\n  " + "\n  ".join(left))
 
 
 def counter_config_of(build_dir: Path) -> str | None:
@@ -301,26 +309,26 @@ def configure_counters(build_dir: Path, wanted: Path, *, on_line=None,
 
 def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
                      on_line=None, prefix: list[str] | None = None,
-                     fam_options: list[str] | None = None) -> None:
+                     cxl_options: list[str] | None = None) -> None:
     """Configure a tree that never was; verify one that already is.
 
     The experiment tree is fully determined — Release, benchmarks on — so a
     missing one is a first run rather than an error, and the configure is
     simply run.  A tree that EXISTS is only verified, never reconfigured
     behind its owner's back: a Debug or no-benchmark tree is somebody's
-    deliberate configuration, and the counter and FAM-device reconfigures
+    deliberate configuration, and the counter and CXL-library reconfigures
     elsewhere change only the options they own for the same reason.  A dry run configures nothing —
     dry means dry — and reports what a real run would do instead.
 
-    `fam_options` are the device-library values a campaign that runs the
-    fabric-attached entries needs; a new tree is configured with them.
+    `cxl_options` are the library values a campaign that runs the CXL
+    entries needs; a new tree is configured with them.
     """
     from artsrun.paths import repo_root
 
     fresh = False
     configure = [*(prefix or []), "cmake", "-S", str(repo_root()), "-GNinja",
                  f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release",
-                 *(fam_options or [])]
+                 *(cxl_options or [])]
     if not (build_dir / "build.ninja").is_file():
         if not bootstrap:
             import shlex

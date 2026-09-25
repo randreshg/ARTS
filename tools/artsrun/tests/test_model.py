@@ -79,10 +79,10 @@ def test_the_plane_orders_and_checks_a_named_entry_list():
     assert plane.ordered(["hpx", "arts_val_wb"], "x") == ["arts_val_wb", "hpx"]
     with pytest.raises(ValueError, match="x names unknown plane entries: nope"):
         plane.ordered(["arts_val_wb", "nope"], "x")
-    # The standard entries: every OCR-model entry whose store is not
-    # fabric-attached memory.
+    # The standard entries: every OCR-model entry whose store is not CXL
+    # memory.
     assert set(plane.entry_keys) - set(plane.standard_entries) == {
-        "arts_wrf_flush"} | {e.key for e in plane.entries if e.is_fam}
+        "arts_wrf_flush"} | {e.key for e in plane.entries if e.is_cxl}
 
 
 ARTS8 = ["arts_excl_purge", "arts_excl_retain", "arts_inv_wt_purge",
@@ -110,9 +110,9 @@ def test_every_shipped_experiment_validates_and_states_its_entries():
         assert x.name == name
         assert set(x.entries) == set(want), name
         assert x.entries == plane.ordered(want, name)
-        # No shipped default reaches the DB-WRF model or a fabric-attached
-        # store: those are turned on per run.
-        assert not any(plane.entry(k).is_fam or plane.entry(k).model != "OCR"
+        # No shipped default reaches the DB-WRF model or a CXL store: those
+        # are turned on per run.
+        assert not any(plane.entry(k).is_cxl or plane.entry(k).model != "OCR"
                        for k in x.entries), name
         assert x.resolve(catalog), name
         # Every file says what it is for.
@@ -146,10 +146,10 @@ def test_an_experiment_must_name_plane_entries():
         Experiment.model_validate({"name": "x", "entries": ["nope"]})
     with pytest.raises(ValidationError, match="entries"):
         Experiment.model_validate({"name": "x"})
-    # Any plane entry may be a default, fabric-attached and DB-WRF included.
+    # Any plane entry may be a default, CXL and DB-WRF included.
     x = Experiment.model_validate({"name": "x", "entries": [
-        "arts_wrf_flush", "arts_excl_purge_fam_staged"]})
-    assert x.entries == ["arts_excl_purge_fam_staged", "arts_wrf_flush"]
+        "arts_wrf_flush", "arts_excl_purge_cxl_staged"]})
+    assert x.entries == ["arts_excl_purge_cxl_staged", "arts_wrf_flush"]
 
 
 def test_a_node_profile_that_lists_entries_is_refused_naming_the_move():
@@ -233,31 +233,31 @@ def test_binary_names_follow_the_build_convention():
     assert plane.entry("ocrvx").kind is RuntimeKind.OCRVX
 
 
-def test_the_excl_purge_wb_cell_offers_two_fam_entries_beside_arts_and_xsocr():
+def test_the_excl_purge_wb_cell_offers_two_cxl_entries_beside_arts_and_xsocr():
     plane = load_plane()
     cell = plane.cell(Family.EXCL, Release.PURGE, Write.WB)
     assert [e.label for e in plane.entries_of(cell)] == [
-        "arts_excl_purge", "ARTS-FAM-STAGED", "ARTS-FAM-DIRECT", "XSOCR"]
-    staged = plane.entry("arts_excl_purge_fam_staged")
+        "arts_excl_purge", "ARTS-CXL-STAGED", "ARTS-CXL-DIRECT", "XSOCR"]
+    staged = plane.entry("arts_excl_purge_cxl_staged")
     assert staged.kind is RuntimeKind.ARTS and staged.cell == cell.key
-    assert staged.variant == "ocr_excl_purge_fam_staged"
+    assert staged.variant == "ocr_excl_purge_cxl_staged"
     assert not staged.is_reference and not staged.is_external
-    assert staged.is_fam
+    assert staged.is_cxl
     assert staged.binary("nqueens", hinted=False) == \
-        "nqueens_arts_ocr_excl_purge_fam_staged"
-    direct = plane.entry("arts_excl_purge_fam_direct")
-    assert direct.is_fam
+        "nqueens_arts_ocr_excl_purge_cxl_staged"
+    direct = plane.entry("arts_excl_purge_cxl_direct")
+    assert direct.is_cxl
     assert direct.binary("nqueens", hinted=True) == \
-        "nqueens_hinted_arts_ocr_excl_purge_fam_direct"
-    assert not plane.entry("xsocr").is_fam
-    assert not plane.entry("arts_excl_purge").is_fam
+        "nqueens_hinted_arts_ocr_excl_purge_cxl_direct"
+    assert not plane.entry("xsocr").is_cxl
+    assert not plane.entry("arts_excl_purge").is_cxl
 
 
 def test_every_other_buildable_cell_still_offers_at_most_two_entries():
     plane = load_plane()
-    fam_cell = plane.cell(Family.EXCL, Release.PURGE, Write.WB).key
+    cxl_cell = plane.cell(Family.EXCL, Release.PURGE, Write.WB).key
     for cell in plane.cells:
-        if cell.buildable and cell.key != fam_cell:
+        if cell.buildable and cell.key != cxl_cell:
             assert cell.entries == []
             assert len(plane.entries_of(cell)) <= 2
 
@@ -368,10 +368,10 @@ def test_local_profile_rejects_ports():
         Profile.model_validate(_local(ports=[25000]))
 
 
-def test_the_local_fam_smoke_profile_loads_and_fits_the_host(monkeypatch,
+def test_the_local_cxl_smoke_profile_loads_and_fits_the_host(monkeypatch,
                                                               tmp_path):
     from artsrun import store
-    from artsrun.model.profile import Launcher
+    from artsrun.model.profile import CxlLibrary, Launcher
 
     # The rule is judged against a half-split eight-core topology, not the
     # machine the suite happens to run on.
@@ -379,16 +379,16 @@ def test_the_local_fam_smoke_profile_loads_and_fits_the_host(monkeypatch,
                   {c: f"{c},{c + 8}" for c in range(8)}
                   | {c + 8: f"{c},{c + 8}" for c in range(8)})
     plane = load_plane()
-    profile = store.load_profile("local-fam")
+    profile = store.load_profile("local-cxl")
     assert profile.launcher is Launcher.LOCAL
-    assert profile.fam_pool_mb is not None
+    assert profile.cxl_library_kind is CxlLibrary.FAKE
     # the smoke's entries are named for the run: one cell's worth
     entries = plane.ordered(["xsocr", "arts_excl_purge",
-                             "arts_excl_purge_fam_staged",
-                             "arts_excl_purge_fam_direct"], "-e")
+                             "arts_excl_purge_cxl_staged",
+                             "arts_excl_purge_cxl_direct"], "-e")
     assert entries == [
-        "arts_excl_purge", "arts_excl_purge_fam_staged",
-        "arts_excl_purge_fam_direct", "xsocr",
+        "arts_excl_purge", "arts_excl_purge_cxl_staged",
+        "arts_excl_purge_cxl_direct", "xsocr",
     ]
     # The profile's geometry must satisfy the driver's own reference-geometry
     # rule (a reference entry's colocated local ranks are each pinned to one
@@ -1136,7 +1136,7 @@ def _reference_fixture():
     app = {a.key: a for a in bs.resolve(load_catalog())}["nqueens:base"]
     local = Profile(name="p", launcher=Launcher.LOCAL, nodes=[1, 2],
                     workers=2, progress=1)
-    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1], fam_device="fake",
+    remote = Profile(name="p", launcher=Launcher.SLURM, nodes=[1],
                      workers=2, progress=1, ports=[25000],
                      slurm=SlurmSettings())
     return plane, app, local, remote

@@ -67,7 +67,7 @@ def test_one_control_clears_then_restores_the_whole_plane():
         return first, cleared, restored
 
     first, cleared, restored = drive(check)
-    # the experiment leaves the FAM, DB-WRF and HPX entries out; the
+    # the experiment leaves the CXL, DB-WRF and HPX entries out; the
     # control's second press selects the whole plane
     assert first == 10
     assert cleared == 0
@@ -323,8 +323,8 @@ def test_the_excl_purge_cell_shows_each_arts_entrys_own_label():
 
     labels = drive(check)
     assert labels["arts_excl_purge"] == "ARTS"
-    assert labels["arts_excl_purge_fam_staged"] == "ARTS-FAM-STAGED"
-    assert labels["arts_excl_purge_fam_direct"] == "ARTS-FAM-DIRECT"
+    assert labels["arts_excl_purge_cxl_staged"] == "ARTS-CXL-STAGED"
+    assert labels["arts_excl_purge_cxl_direct"] == "ARTS-CXL-DIRECT"
     assert labels["xsocr"] == "XSOCR"
 
 
@@ -334,7 +334,7 @@ def test_a_cell_past_the_usual_pair_stacks_its_toggles_and_keeps_its_column():
     async def check(app, pilot):
         plane = app.query_one(PlanePanel)
         owner = next(c for c in plane.query(".plane-cell")
-                     if any(t.ident == "arts_excl_purge_fam_staged"
+                     if any(t.ident == "arts_excl_purge_cxl_staged"
                             for t in c.query(Toggle)))
         rows = list(owner.query(".plane-cell-row"))
         widths = {c.size.width for c in plane.query(".plane-cell")}
@@ -1398,13 +1398,13 @@ def test_the_experiment_s_entries_start_checked_and_the_profile_holds_none():
 
 
 def test_any_entry_may_be_turned_on_for_one_run():
-    # The experiment's list is the default check-set, not a limit: a FAM entry
+    # The experiment's list is the default check-set, not a limit: a CXL entry
     # and the DB-WRF entry are toggled on here and reach the selection, while
     # the saved default is recorded beside them.
     async def check(app, pilot):
         plane = app.query_one("#plane", PlanePanel)
         for t in plane.toggles:
-            if t.ident in ("arts_excl_purge_fam_staged", "arts_wrf_flush"):
+            if t.ident in ("arts_excl_purge_cxl_staged", "arts_wrf_flush"):
                 t.value = True
         await pilot.pause()
         selection = app.build_selection()
@@ -1412,7 +1412,7 @@ def test_any_entry_may_be_turned_on_for_one_run():
 
     entries, defaults, name = drive(check)
     assert name == "paper-main"
-    assert "arts_excl_purge_fam_staged" in entries
+    assert "arts_excl_purge_cxl_staged" in entries
     assert "arts_wrf_flush" in entries
     assert len(entries) == 12
     from artsrun import store
