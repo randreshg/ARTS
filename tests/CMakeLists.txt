@@ -1155,6 +1155,21 @@ register_multinode_test(coherence_owner_write_after_lend TIMEOUT 30)
 add_arts_test(ro_grant_retained)
 register_multinode_test(ro_grant_retained TIMEOUT 30)
 
+# grant_release_keeps_sharer: a rank that holds a durable copy, takes the
+# write right and releases stays a sharer — the next owner's first release
+# retires it.  The next requester asks while the holder still holds, so the
+# hand-over is decided before the holder's own release round; a registration
+# that round could erase is what this catches.  2n puts the home as the next
+# owner; 3n/4n put another non-home rank there.  Portable OCR shape, no
+# timing knob (the holder's 3 ms hold only has to outlast one request hop).
+# Its two writers are ordered only by the runtime's exclusive RW turn, never
+# by happens-before, so the program is outside DB-WRF and the FLUSH tree
+# does not register it.
+add_arts_test(grant_release_keeps_sharer)
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    register_multinode_test(grant_release_keeps_sharer TIMEOUT 60)
+endif()
+
 register_multinode_test(coherence_ro_acquire_stress TIMEOUT 90)
 
 register_multinode_test(multinode_stdout_forward)
@@ -1759,6 +1774,10 @@ if(BUILD_CUDA_LIBRARY)
 endif()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/generated_tests.cmake)
+
+# inv_round_snapshot: the pure per-word decision of an invalidation round's
+# roster snapshot (who is retired, who stays).  INV only; self-skips else.
+add_pure_unit_src(inv_round_snapshot DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_round_snapshot:|SKIP" TIMEOUT 60)
 
 # Wire-shape guard for the create packet's fabric-attached-memory slot and the
 # two appended messages.  Registered UNGUARDED (no FAM-tree condition): the

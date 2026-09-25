@@ -24,6 +24,7 @@
 
 #include <semaphore.h>
 #include <assert.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -356,7 +357,9 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
  * that carries data) and a set of commuting wakes.  The roster snapshot is a
  * per-word XCHG, so a rank registered during the round lands in the NEXT
  * one — which is correct, because it will be served the bytes this round
- * installed.  Every producer (a publish push, a close re-arm) calls try_open;
+ * installed — and the batch's releasers are handed back to it, because a
+ * releaser's copy is a sharer's copy from then on and only a later round
+ * may retire it.  Every producer (a publish push, a close re-arm) calls try_open;
  * a claim that raced past the work it saw simply closes empty.  The engine is
  * a while-trampoline: a close that finds more work loops instead of recursing.
  */
@@ -496,13 +499,20 @@ void inv_home_round_try_open(struct arts_db_s *db) {
           arts_db_drain_pending_snapshot(cache);
         }
       }
-      /* Roster snapshot (per-word XCHG) with the grant holder excluded — it is
-       * the writer, its copy is the newest by definition.  The home rank is
-       * excluded ONLY where the home's own buffer is the canonical copy: under
-       * WT it is, and this round just installed into it; under WB the home
-       * holds no canonical bytes, so a reader copy that happens to live on the
-       * home rank is as stale as any other and must be invalidated like one.
-       * Arm the count BEFORE the multicast. */
+      /* Roster snapshot (per-word XCHG) with the writers excluded from the
+       * TARGETS — their copies are the newest by definition — but not from
+       * the roster: a releaser's copy is a sharer's copy from its release on,
+       * durable until a later round retires it, so the snapshot registers
+       * every releaser, found in it or not (inv_round_snapshot_word; a
+       * creator's seeded copy was never served).  That is what lets the next owner's
+       * first release find the ex-holder however that owner's CONFIRM is
+       * timed; a snapshot that dropped the writer left its copy live and
+       * uninvalidated whenever that round beat the CONFIRM.  The home rank is
+       * excluded outright ONLY where the home's own buffer is the canonical
+       * copy: under WT it is, and this round just installed into it; under WB
+       * the home holds no canonical bytes, so a reader copy that happens to
+       * live on the home rank is as stale as any other and must be
+       * invalidated like one.  Arm the count BEFORE the multicast. */
       /* Self-exclusion names the ranks that actually WROTE this round — the
        * batch's releasers — not whatever the directory currently points at.
        * The justification for skipping a rank is "its copy is the newest by
@@ -536,36 +546,27 @@ void inv_home_round_try_open(struct arts_db_s *db) {
 #endif
       unsigned int targets[64];
       unsigned int ntargets = 0;
-      const struct arts_rank_bitset_s *bs = &db->roster;
+      struct arts_rank_bitset_s *bs = &db->roster;
       for (unsigned int wi = 0; wi < bs->nwords; wi++) {
-        uint64_t snap = atomic_exchange_explicit(
-            (_Atomic uint64_t *)&bs->words[wi], 0u, memory_order_acq_rel);
-        while (snap) {
-          unsigned int b = (unsigned int)__builtin_ctzll(snap);
-          unsigned int rank = wi * 64u + b;
-          snap &= snap - 1;
-          if (rank == self) {
-            continue;
-          }
-          bool is_writer = false;
-          for (unsigned int k = 0; k < nwriters; k++) {
-            if (writers[k] == rank) {
-              is_writer = true;
-              break;
-            }
-          }
-          if (is_writer) {
-            continue;
-          }
-          if (ntargets <
-              (unsigned int)(sizeof(targets) / sizeof(targets[0]))) {
-            targets[ntargets++] = rank;
-          } else {
-            /* Rank counts beyond the stack window would need a heap list; the
-             * rank field is 14-bit but deployments here are far smaller — fail
-             * loudly rather than silently truncate a round. */
-            ARTS_ERROR("inv: round target overflow");
-          }
+        uint64_t snap = atomic_exchange_explicit(&bs->words[wi], 0u,
+                                                 memory_order_acq_rel);
+        uint64_t keep = 0u;
+        ntargets = inv_round_snapshot_word(
+            snap, wi * 64u, writers, nwriters, self, targets,
+            (unsigned int)(sizeof(targets) / sizeof(targets[0])), ntargets,
+            &keep);
+        if (ntargets == UINT_MAX) {
+          /* Rank counts beyond the stack window would need a heap list; the
+           * rank field is 14-bit but deployments here are far smaller — fail
+           * loudly rather than silently truncate a round. */
+          ARTS_ERROR("inv: round target overflow");
+        }
+        if (keep != 0u) {
+          /* The releasers are sharers.  Their bits go in before the count is
+           * armed: the next round can only claim after this one closes, so
+           * it takes its snapshot with them in. */
+          (void)atomic_fetch_or_explicit(&bs->words[wi], keep,
+                                         memory_order_acq_rel);
         }
       }
       uint32_t aact;

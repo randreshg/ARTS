@@ -11,11 +11,17 @@
  * its own TU.)
  *
  * Nothing here is protocol-specific — VAL and INV link this same TU.  What a
- * transfer means for the ex-holder's copy IS protocol-specific, so it is a
- * seam: arts_db_grant_note_ex_holder.  VAL has nothing to do (its readers
- * re-check a version at every acquire, so a retained copy is harmless); INV
- * must register the ex-holder as a sharer, or the new owner's first release
- * would leave a live copy uninvalidated.
+ * transfer means for the ex-holder's copy is the protocol's business, and
+ * none of it happens here: the ex-holder keeps the bytes it wrote, VAL's
+ * readers re-check a version at every acquire so that copy is harmless, and
+ * INV keeps every releaser registered as a sharer in the round it releases
+ * through (inv/engine.c), so the new owner's first release already retires
+ * it — nothing this TU could add at the transfer or the CONFIRM would be
+ * earlier than that, and a registration made here was erased by the
+ * ex-holder's own in-flight release round.  The arts_db_grant_note_ex_holder
+ * seam belongs to the policies that do have a point of their own between
+ * the ex-holder's last round and the new owner's first: WB (its gated
+ * CONFIRM) and PURGE (the hand-back).
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -85,15 +91,6 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
   db->pending_install_owner = next_owner;
   unsigned int current_owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
-  /* Credit the outgoing holder as a sharer HERE, not at the CONFIRM: it keeps
-   * the bytes it wrote, and under WT the incoming owner runs the moment it
-   * installs — there is no confirm gate — so it can close a release round
-   * before the home ever processes the CONFIRM.  A roster credited only then
-   * would miss that round, leaving the ex-holder on bytes from a write window
-   * that has already closed, with nothing left to retire them.  Deciding the
-   * transfer strictly precedes the new owner existing, so crediting here
-   * cannot be too late. */
-  arts_db_grant_note_ex_holder(db, current_owner);
   arts_send_db_grant_invalidate(current_owner, cache->db_guid, next_owner,
                                     &next_rdzv);
 }
@@ -267,13 +264,7 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   struct arts_db_s *db = arts_db_of_cache(cache);
 
   unsigned int new_owner = db->pending_install_owner;
-  unsigned int prev_holder =
-      atomic_load_explicit(&db->rw_holder, memory_order_acquire);
   atomic_store_explicit(&db->rw_holder, new_owner, memory_order_release);
-  /* Protocol seam: the ex-holder keeps the bytes it wrote.  Whether that
-   * retained copy needs registering is the protocol's question, not the
-   * placement's. */
-  arts_db_grant_note_ex_holder(db, prev_holder);
 
   /* What the home does once the directory names the new owner — advance the
    * queue by revoking it again, or wait for it to hand the grant back — is

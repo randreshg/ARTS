@@ -630,6 +630,16 @@ uint64_t inv_cache_compute_next(uint64_t cur, int op, uint32_t self_idx,
 uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
                               uint32_t *out_action);
 
+/* The round's roster snapshot, one word at a time: who this round retires and
+ * which bits stay (the batch's releasers remain sharers).  Pure; see
+ * arbiters.c. */
+unsigned int inv_round_snapshot_word(uint64_t snap, unsigned int base,
+                                     const unsigned int *writers,
+                                     unsigned int nwriters,
+                                     unsigned int exempt,
+                                     unsigned int *targets, unsigned int cap,
+                                     unsigned int ntargets, uint64_t *keep);
+
 /* ── shared machinery the write-policy TUs call (inv/directory.c) ──────────── */
 /* Reader chain-node pool: a node is written before the word CAS that links it
  * and read only by the committer that grabbed the chain. */

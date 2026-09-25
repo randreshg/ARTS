@@ -23,6 +23,7 @@
 
 #include "arts/coherence/inv/types.h"
 
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -174,4 +175,49 @@ uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
   return INV_DIR_MAKE(open, acks);
 }
 
+/* ===== inv_round_snapshot_word ==========================================
+ *
+ * One word of the round's roster snapshot, decided purely.  `snap` is the
+ * word the round took (rank `base` at bit 0).  Every rank in it is a target
+ * of this round except two kinds: `exempt` (the write-through home, whose
+ * buffer is the canonical copy) and the batch's releasers, whose bytes are
+ * what this round publishes.  A releaser is a sharer from its release on —
+ * its copy is durable and nothing but a later round's INVALIDATE retires it
+ * — so every releaser of this word goes into the roster through *keep,
+ * whether or not the snapshot found it: a creator's seeded copy was never
+ * served, so nothing else ever registered it.  That is where the next
+ * owner's first round finds the ex-holder however that owner's CONFIRM is
+ * timed.  Targets are appended after `ntargets`; the return is the new
+ * count, or UINT_MAX when a target did not fit below `cap` (the caller
+ * fails loudly).
+ */
+unsigned int inv_round_snapshot_word(uint64_t snap, unsigned int base,
+                                     const unsigned int *writers,
+                                     unsigned int nwriters,
+                                     unsigned int exempt,
+                                     unsigned int *targets, unsigned int cap,
+                                     unsigned int ntargets, uint64_t *keep) {
+  uint64_t kept = 0u;
+  for (unsigned int k = 0; k < nwriters; k++) {
+    unsigned int w = writers[k];
+    if (w != exempt && w >= base && w < base + 64u) {
+      kept |= 1ull << (w - base);
+    }
+  }
+  *keep = kept;
+  snap &= ~kept;
+  while (snap != 0u) {
+    unsigned int b = (unsigned int)__builtin_ctzll(snap);
+    unsigned int rank = base + b;
+    snap &= snap - 1u;
+    if (rank == exempt) {
+      continue;
+    }
+    if (ntargets >= cap) {
+      return UINT_MAX;
+    }
+    targets[ntargets++] = rank;
+  }
+  return ntargets;
+}
 #endif /* ARTS_PROTOCOL_INV */

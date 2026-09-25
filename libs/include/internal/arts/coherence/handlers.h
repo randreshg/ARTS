@@ -602,9 +602,11 @@ void arts_send_db_excl_roret(unsigned int home_rank, arts_guid_t db_guid);
 
 #endif /* ARTS_MEMORY_COHERENCE_HANDLERS_H */
 
-/* Protocol seam invoked by the shared grant when the home flips rw_holder: the
- * PREVIOUS holder still has the bytes it wrote.  A protocol whose readers
- * re-validate at every acquire has nothing to do; a write-invalidate protocol
- * must register that rank as a sharer, or the next owner's first release would
- * leave a live copy uninvalidated. */
+/* Protocol seam invoked where a release policy has a point of its own between
+ * an ex-holder's last release round and the next owner's first — WB's gated
+ * CONFIRM, PURGE's hand-back: the PREVIOUS holder still has the bytes it
+ * wrote.  A protocol whose readers re-validate at every acquire has nothing to
+ * do; a write-invalidate protocol registers that rank as a sharer.  The WT
+ * policy has no such point and never calls it: INV's round keeps every
+ * releaser registered as it releases (inv/engine.c). */
 void arts_db_grant_note_ex_holder(struct arts_db_s *db, unsigned int rank);
