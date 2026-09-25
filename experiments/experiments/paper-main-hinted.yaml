@@ -1,0 +1,91 @@
+# Experiment paper-main-hinted: paper-main's roster at the hinted tier only, so the paper
+# campaign can be submitted in halves; entries as paper-main.  Any other plane
+# entry is turned on for one run with -e.
+#
+# Omitted fields fall through to the catalog, so this file only has to
+# carry what this campaign changes: which applications run, in which
+# versions, and any calibration that differs from the catalog default.
+# Set `enabled: false` to drop one without editing the tool.
+#
+# Version policy: the hinted tier of every paper-main row that offers one --
+# structure untouched, placement hints added or changed as far as hints alone
+# carry it.  Its base tier is paper-main-base: one program differing by a
+# hint layer, so the two campaigns share arguments and the calibration window
+# belongs to base, which hinted follows (a hint layer is a no-op at one
+# place, so the two share an anchor by construction).  The restructured tier
+# is not part of the paper campaign.
+
+name: paper-main-hinted
+description: paper-main at the hinted tier only
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
+
+apps:
+  cholesky_blas:
+    enabled: true
+    versions: [hinted]
+  CoMD_intel_chandra_tiled:
+    enabled: true
+    versions: [hinted]
+  CoMD_sdsc:
+    enabled: true
+    # the block map is 9-22 % faster than the base at 2-8 ranks (kept: a hinted tier is dropped only when it is the base placement)
+    versions: [hinted]
+  fft:
+    enabled: true
+    versions: [hinted]
+  fibonacci:
+    enabled: true
+    versions: [hinted]
+  hpgmg:
+    enabled: true
+    versions: [hinted]
+  LCS_all_db_distributed:
+    enabled: true
+    versions: [hinted]
+  LCS_distributed_ST:
+    enabled: true
+    versions: [hinted]
+  LCS_shared:
+    enabled: true
+    versions: [hinted]
+  miniAMR_intel:
+    enabled: true
+    versions: [hinted]
+  # Off the roster 2026-08-23: reclassified kind: microbench -- same
+  # philosophy as miniAMR_intel and dominated by it, with every EDT pinned to
+  # the creating rank so nothing distributes.
+  miniAMR_intel_chandra:
+    enabled: true
+    versions: [hinted]
+  nekbone:
+    enabled: true
+    # R3: at the campaign grain the hint layer turns the verdict (base anti, hinted scales); a smaller trend lattice once read it as immaterial
+    versions: [hinted]
+  nqueens:
+    enabled: true
+    # the subtree map is 19 % faster at 8 ranks (kept)
+    versions: [hinted]
+  quicksort:
+    enabled: true
+    versions: [hinted]
+  RSBench_intel:
+    enabled: true
+    versions: [hinted]
+  smithwaterman:
+    enabled: true
+    # the band map is 1.3-2x faster than the base at 2-8 ranks (kept)
+    versions: [hinted]
+  stream:
+    enabled: true
+    versions: [hinted]
+  tempest:
+    enabled: true
+    versions: [hinted]
+  triangle:
+    enabled: true
+    versions: [hinted]
+  XSBench_intel:
+    enabled: true
+    versions: [hinted]

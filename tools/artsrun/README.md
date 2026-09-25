@@ -273,6 +273,8 @@ entry).
 |---|---|---|
 | `paper-main` | the paper campaign's application roster | the eight OCR-model ARTS entries, `xsocr`, `ocrvx` |
 | `paper-gate` | paper-main at small arguments: the consensus gate | as paper-main |
+| `paper-main-base` | paper-main's roster at the base tier only, for submitting the campaign in halves | as paper-main |
+| `paper-main-hinted` | paper-main's roster at the hinted tier only (the rows that offer one) | as paper-main |
 | `control-main` | the adversarial columns and the HPX-origin rows | the eight ARTS entries, `hpx` |
 | `control-gate` | control-main at small arguments: the consensus gate | as control-main |
 | `trend` | every paper-main and HPX-origin row at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_wrf_flush` and the two CXL entries |

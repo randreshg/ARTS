@@ -1,24 +1,21 @@
-# Experiment paper-main: the paper campaign -- the application roster of the
-# coherence comparison, run by default on the OCR-model ARTS entries and the
-# two OCR reference runtimes; any other plane entry is turned on for one run
-# with -e.
+# Experiment paper-main-base: paper-main's roster at the base tier only, so the paper
+# campaign can be submitted in halves; entries as paper-main.  Any other plane
+# entry is turned on for one run with -e.
 #
 # Omitted fields fall through to the catalog, so this file only has to
 # carry what this campaign changes: which applications run, in which
 # versions, and any calibration that differs from the catalog default.
 # Set `enabled: false` to drop one without editing the tool.
 #
-# Version policy: every application runs base and, where it offers one,
-# hinted.  The two are one program differing by a hint layer, so they share
-# arguments and the comparison between them is direct; the calibration
-# window belongs to base, the tier that has to survive the whole node sweep,
-# and hinted follows it (a hint layer is a no-op at one place, so the two
-# share an anchor by construction).  The restructured tier -- a different
-# program with its own row and window -- is not part of this campaign; a row
-# that offers one turns it back on by listing `restructured` in its versions.
+# Version policy: the base tier of every row paper-main runs -- the program
+# as published plus the disclosed conformance adaptations, with its own
+# calibration window.  The hinted tier of the same rows is paper-main-hinted:
+# one program differing by a hint layer, so the two campaigns share arguments
+# and their comparison is read across them.  The restructured tier is not
+# part of the paper campaign.
 
-name: paper-main
-description: curated roster for the coherence comparison
+name: paper-main-base
+description: paper-main at the base tier only
 # The coherence entries this experiment runs unless -e names others.
 entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
           arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
@@ -32,18 +29,14 @@ apps:
     versions: [base]
   cholesky_blas:
     enabled: true
-    versions: [base, hinted]
-  CoMD_intel_chandra:
-    enabled: false   # unsupported: needs EW semantics the runtime does not implement
+    versions: [base]
   CoMD_intel_chandra_tiled:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   CoMD_sdsc:
     enabled: true
     # the block map is 9-22 % faster than the base at 2-8 ranks (kept: a hinted tier is dropped only when it is the base placement)
-    versions: [base, hinted]
-  CoMD_sdsc2:
-    enabled: false   # unsupported: needs EW semantics the runtime does not implement
+    versions: [base]
   curvefit:
     enabled: false
     versions: [base]
@@ -55,10 +48,10 @@ apps:
     versions: [base]
   fft:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   fibonacci:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   globalsum_cgNoShim:
     enabled: false
     versions: [base]
@@ -83,22 +76,22 @@ apps:
     versions: [base]
   hpgmg:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   LCS_all_db_distributed:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   LCS_distributed_ST:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   LCS_shared:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   miniAMR_forkbomb:
     enabled: false
     versions: [base]
   miniAMR_intel:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   # Off the roster 2026-08-23: reclassified kind: microbench -- same
   # philosophy as miniAMR_intel and dominated by it, with every EDT pinned to
   # the creating rank so nothing distributes.
@@ -107,7 +100,7 @@ apps:
     versions: [base]
   miniAMR_intel_chandra:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   multigen:
     enabled: false
     versions: [base]
@@ -117,14 +110,14 @@ apps:
   nekbone:
     enabled: true
     # R3: at the campaign grain the hint layer turns the verdict (base anti, hinted scales); a smaller trend lattice once read it as immaterial
-    versions: [base, hinted]
+    versions: [base]
   npb_cg:
     enabled: true
     versions: [base]
   nqueens:
     enabled: true
     # the subtree map is 19 % faster at 8 ranks (kept)
-    versions: [base, hinted]
+    versions: [base]
   p2p:
     enabled: true
     # The source gained an OCR_APP_OPTIMIZED_PLACEMENT map this cycle (the
@@ -140,7 +133,7 @@ apps:
     versions: [base]
   quicksort:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   reduction_intel:
     enabled: false
     versions: [base]
@@ -149,7 +142,7 @@ apps:
     versions: [base]
   RSBench_intel:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   RSBench_intel_sharedDB:
     enabled: true
     # R3 (local trend 2026-09-04): hinted == base at 1-8 ranks; the tier is not registered
@@ -160,7 +153,7 @@ apps:
   smithwaterman:
     enabled: true
     # the band map is 1.3-2x faster than the base at 2-8 ranks (kept)
-    versions: [base, hinted]
+    versions: [base]
   stencil1D_channel:
     enabled: false
     versions: [base]
@@ -193,25 +186,25 @@ apps:
     versions: [base]
   stream:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   task_priorities:
     enabled: false
     versions: [base]
   tempest:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   testlibs:
     enabled: false
     versions: [base]
   triangle:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   xeonNumaSize:
     enabled: false
     versions: [base]
   XSBench_intel:
     enabled: true
-    versions: [base, hinted]
+    versions: [base]
   XSBench_intel_sharedDB:
     enabled: true
     versions: [base]   # SPMD self-placed (fork pins ranks, chains carry rank hints) — no hint layer to add

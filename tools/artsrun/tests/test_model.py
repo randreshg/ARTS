@@ -90,6 +90,8 @@ ARTS8 = ["arts_excl_purge", "arts_excl_retain", "arts_inv_wt_purge",
          "arts_val_wb"]
 SHIPPED_ENTRIES = {
     "paper-main": ARTS8 + ["xsocr", "ocrvx"],
+    "paper-main-base": ARTS8 + ["xsocr", "ocrvx"],
+    "paper-main-hinted": ARTS8 + ["xsocr", "ocrvx"],
     "paper-gate": ARTS8 + ["xsocr", "ocrvx"],
     "control-main": ARTS8 + ["hpx"],
     "control-gate": ARTS8 + ["hpx"],

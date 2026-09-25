@@ -19,9 +19,10 @@
 # selection layer's width_max check is inert for all 45 keys below), leave a
 # height knob a program pins at its published value unless shrinking it stays
 # correct and only trims duration.  Every argument list is legal at 1, 2, 4
-# and 8 ranks, so no row needs an args_by_nodes ladder.  A restructured row's
-# arguments are addressed by the rewrite's own name -- the driver never
-# carries a row's override into a different CLI.  Because the scalar pin
+# and 8 ranks, so no row needs an args_by_nodes ladder.  The restructured
+# tier is not part of this roster, as it is not part of paper-gate; a
+# rewrite's row keeps its arguments, addressed by the rewrite's own name, for
+# when the tier is listed again.  Because the scalar pin
 # (`expect`) is keyed to the catalog's own argument vector, none of these
 # shrunk rows re-arms it; correctness here rides the cross-runtime consensus
 # vote alone, which is what a smoke needs.
@@ -34,7 +35,7 @@ entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
 apps:
   cholesky_blas:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # ds must be a whole multiple of ts; t = ds/ts = 4 tiles per dimension.
     args: ['--ds', '40', '--ts', '10']
   cholesky_dist:
@@ -52,7 +53,7 @@ apps:
 
   CoMD_sdsc:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # g = floor(0.6246*n) must clear the initLinkCells gs_a >= 2 floor; n = 8
     # gives g = 4.  -N must be a whole multiple of -n.
     args: ['-x', '8', '-y', '8', '-z', '8', '-N', '2', '-n', '1']
@@ -61,7 +62,7 @@ apps:
 
   fft:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # power >= 1 is the only hard floor (fft.c); below ~15 the split/combine
     # tree collapses to a single leaf -- still a correct, if unparallel, FFT.
     args: ['8']
@@ -76,7 +77,7 @@ apps:
 
   graph500:
     enabled: true
-    versions: [base, restructured]
+    versions: [base]
     # R*C must divide 2^SCALE: 4*4=16 divides 2^8=256.
     args: ['8', '16', '4', '4']
   graph500_dist:
@@ -85,7 +86,7 @@ apps:
 
   hpcg_intel:
     enabled: true
-    versions: [base, restructured]
+    versions: [base]
     # m must be a multiple of 16 (four multigrid levels); 16 is the floor.
     args: ['2', '2', '2', '16', '5']
   hpcg_intel_dist:
@@ -93,7 +94,7 @@ apps:
 
   hpgmg:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # log2_box_dim must be >= 4 (hpgmg.c); target_boxes=8 gives boxes_in_i=2,
     # whose level table (checked by hpgmg_check_geometry) agglomerates at
     # most 8 fine boxes per coarse step and bottoms out on a single box.
@@ -103,7 +104,7 @@ apps:
 
   LCS_all_db_distributed:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # N/base must be a positive power of two: 1024/64 = 16.
     args: ['1024', '64']
   LCS_wavefront:
@@ -122,7 +123,7 @@ apps:
 
   miniAMR_intel:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # Cells per block must be even; num_refine stays in [1,4] at this block
     # count and num_tsteps is trimmed to the duration a smoke needs.
     args: ['--nx', '4', '--ny', '4', '--nz', '4',
@@ -151,7 +152,7 @@ apps:
 
   nekbone:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # Rx >= Ry >= Rz and Ex >= Ey >= Ez are hard; CGcount is the duration knob.
     args: ['2', '2', '2', '2', '2', '2', '8', '2']
   nekbone_dist:
@@ -159,7 +160,7 @@ apps:
 
   npb_cg:
     enabled: true
-    versions: [base, restructured]
+    versions: [base]
     # Class S is NPB's smallest class; -b must divide na and does at 4.
     args: ['-t', 'S', '-b', '4']
   npb_cg_dist:
@@ -181,7 +182,7 @@ apps:
 
   quicksort:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     args: ['2000', '1000']
   quicksort_dist:
     # places must not exceed either the bucket or the chunk count.
@@ -189,7 +190,7 @@ apps:
 
   RSBench_intel:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # -s stays at the dataset's published size class; -l is the run-length
     # knob and -b the in-flight width.
     args: ['-s', 'large', '-l', '300', '-b', '8']
@@ -207,7 +208,7 @@ apps:
 
   sar_pss:
     enabled: true
-    versions: [base, restructured]
+    versions: [base]
     # Parameter0.txt (Ix=Iy=400) is the smallest shipped ladder point; the
     # tile block must lie in [1, Ix] and the detections file is not written
     # at the last argument 0.
@@ -236,7 +237,7 @@ apps:
 
   smithwaterman:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # Total DP work is set by the dataset, not the tile: the 2000-character
     # gate pair is already laptop-scale (quadratic in length against the
     # 9.4 s / 140,000-character anchor puts this pair at ~2 ms of DP work),
@@ -263,7 +264,7 @@ apps:
 
   stream:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # The element count divides the chain count exactly, or the tail
     # elements reach no datablock at all; well clear of the 512 KiB
     # per-chain cliff on the small side.
@@ -274,7 +275,7 @@ apps:
 
   tempest:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # k is the width dial (6k^2 patches) and duration the length dial;
     # duration >= 2 so the neighbour exchange completes on more than one rank.
     args: ['4', '3']
@@ -291,7 +292,7 @@ apps:
 
   XSBench_intel:
     enabled: true
-    versions: [base, hinted, restructured]
+    versions: [base, hinted]
     # -s stays large: it is what sets the fuel fan-in (321 vs 34 nuclides)
     # this row exists to exercise, so it is not a knob to shrink away.  -g
     # scales the exploded unionized-grid plane and its init cost linearly
