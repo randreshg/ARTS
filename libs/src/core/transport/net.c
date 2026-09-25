@@ -37,6 +37,7 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 #include "arts/transport/net.h"
+#include <errno.h>
 
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -101,7 +102,13 @@
  *                   `imm` is the rendezvous txid delivered to the peer's CQ.
  *                   `free_method` is the on-local-done hook that releases the
  *                   source buffer once the provider no longer reads it. */
-enum net_txn_op { NET_TXN_SEND, NET_TXN_WRITE };
+enum net_txn_op {
+  NET_TXN_SEND,
+  NET_TXN_WRITE,       /* fi_writedata: carries the rendezvous immediate  */
+  NET_TXN_WRITE_PLAIN, /* fi_write: a leading piece of a payload the
+                        * provider's ceiling cut apart — no immediate, the
+                        * last piece's NET_TXN_WRITE carries it            */
+};
 
 struct net_txn_s {
   fi_addr_t addr;
@@ -154,6 +161,10 @@ static struct {
   size_t inject_size;   /* fi_inject ceiling                                   */
   size_t max_msg;       /* provider max message size                          */
   uint64_t tx_order;    /* negotiated tx_attr->msg_order (FI_ORDER_* bits)     */
+  size_t max_order_waw; /* ep_attr->max_order_waw_size                        */
+  bool waw_ordered;     /* RMA writes of up to max_msg bytes are placed in the
+                         * order posted: what lets a payload above max_msg go
+                         * as pieces paired on the last piece's immediate      */
   bool is_cxi;          /* negotiated provider is the cxi core (selfcheck)     */
 
   fi_addr_t *peers;     /* rank-indexed AV handles (fi_addr_t rank == rank)    */
@@ -334,17 +345,33 @@ static struct net_txn_s *net_txn_new(fi_addr_t addr, void *buf, size_t len,
  * outstanding), -FI_EAGAIN = provider busy, other = fatal. */
 static inline ssize_t net_try_post(struct net_txn_s *txn) {
   ssize_t rc;
-  if (txn->op == NET_TXN_WRITE) {
-    rc = fi_writedata(g_net.ep, txn->buf, txn->len, txn->desc, txn->imm,
-                      txn->addr, txn->raddr, txn->rkey, txn);
-  } else {
+  if (txn->op == NET_TXN_SEND) {
     rc = fi_send(g_net.ep, txn->buf, txn->len, txn->desc, txn->addr, txn);
+  } else {
+    /* Never above the provider's ceiling: a verbs scatter-gather entry
+     * carries a 32-bit length, and a work request past the port's maximum
+     * comes back as EAGAIN — silent truncation or an endless retry, never an
+     * error — so the bound is asserted where the length is final. */
+    if (txn->len > g_net.max_msg) {
+      ARTS_ERROR("arts_net: one-sided transfer of %zu bytes exceeds the "
+                 "provider's %zu-byte message ceiling",
+                 txn->len, g_net.max_msg);
+    }
+    if (txn->op == NET_TXN_WRITE) {
+      rc = fi_writedata(g_net.ep, txn->buf, txn->len, txn->desc, txn->imm,
+                        txn->addr, txn->raddr, txn->rkey, txn);
+    } else {
+      rc = fi_write(g_net.ep, txn->buf, txn->len, txn->desc, txn->addr,
+                    txn->raddr, txn->rkey, txn);
+    }
   }
   if (rc == 0) {
     atomic_fetch_add_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
   } else if (rc != -FI_EAGAIN) {
     ARTS_ERROR("arts_net: %s failed: %s",
-               txn->op == NET_TXN_WRITE ? "fi_writedata" : "fi_send",
+               txn->op == NET_TXN_SEND    ? "fi_send"
+               : txn->op == NET_TXN_WRITE ? "fi_writedata"
+                                          : "fi_write",
                fi_strerror((int)-rc));
   }
   return rc;
@@ -785,6 +812,26 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
   return true;
 }
 
+/* The pieces of one payload that the provider's ceiling cut apart.  Pieces
+ * complete on whichever thread reaps the CQ, so the count is atomic; the
+ * caller's hook runs on the thread that retires the last piece. */
+struct net_put_group_s {
+  _Atomic uint64_t remaining;
+  void (*on_local_done)(void *);
+  void *arg;
+};
+
+static void net_put_piece_done(void *arg) {
+  struct net_put_group_s *group = (struct net_put_group_s *)arg;
+  if (atomic_fetch_sub_explicit(&group->remaining, 1,
+                                memory_order_acq_rel) == 1) {
+    if (group->on_local_done != NULL) {
+      group->on_local_done(group->arg);
+    }
+    free(group);
+  }
+}
+
 void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
                           uint64_t txid, const void *src, uint64_t len,
                           void (*on_local_done)(void *), void *arg) {
@@ -809,14 +856,55 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
   /* One-sided payload PUT is its own wire transfer. */
   INCREMENT_BYTES_REMOTE_SENT_BY(len);
   INCREMENT_NUM_REMOTE_SEND_BY(1);
-  struct net_txn_s *txn = net_txn_new(g_net.peers[rank], (void *)src,
-                                      (size_t)len, net_desc(src),
-                                      /*bounce=*/NULL, on_local_done, arg);
-  txn->op = NET_TXN_WRITE;
-  txn->raddr = raddr;
-  txn->rkey = rkey;
-  txn->imm = txid;
-  net_submit(txn, /*is_ack=*/false);
+  fi_addr_t addr = g_net.peers[rank];
+  size_t ceiling = g_net.max_msg;
+  if (len <= ceiling) {
+    struct net_txn_s *txn =
+        net_txn_new(addr, (void *)src, (size_t)len, net_desc(src),
+                    /*bounce=*/NULL, on_local_done, arg);
+    txn->op = NET_TXN_WRITE;
+    txn->raddr = raddr;
+    txn->rkey = rkey;
+    txn->imm = txid;
+    net_submit(txn, /*is_ack=*/false);
+    return;
+  }
+  /* Above the ceiling the payload goes as consecutive pieces of at most the
+   * ceiling each, submitted in order from this thread to one endpoint, so
+   * the peer's completion for the last piece — the only one carrying the
+   * immediate — is generated after every earlier piece has been placed.
+   * The caller's release hook runs once, when the last piece has left the
+   * source. */
+  if (!g_net.waw_ordered) {
+    ARTS_ERROR("arts_net: a %llu-byte payload exceeds the provider's %zu-byte "
+               "message ceiling, and the provider orders no write after "
+               "write across that size (msg_order=0x%llx "
+               "max_order_waw_size=%zu) — its pieces could land out of order",
+               (unsigned long long)len, ceiling,
+               (unsigned long long)g_net.tx_order, g_net.max_order_waw);
+  }
+  uint64_t pieces = (len + ceiling - 1) / ceiling;
+  struct net_put_group_s *group =
+      (struct net_put_group_s *)malloc(sizeof(struct net_put_group_s));
+  if (group == NULL) {
+    ARTS_ERROR("arts_net: put group allocation failed");
+  }
+  atomic_store_explicit(&group->remaining, pieces, memory_order_relaxed);
+  group->on_local_done = on_local_done;
+  group->arg = arg;
+  for (uint64_t off = 0; off < len; off += ceiling) {
+    size_t plen = (size_t)(len - off < ceiling ? len - off : ceiling);
+    const char *piece = (const char *)src + off;
+    bool last = off + plen == len;
+    struct net_txn_s *txn =
+        net_txn_new(addr, (void *)piece, plen, net_desc(piece),
+                    /*bounce=*/NULL, net_put_piece_done, group);
+    txn->op = last ? NET_TXN_WRITE : NET_TXN_WRITE_PLAIN;
+    txn->raddr = raddr + off;
+    txn->rkey = rkey;
+    txn->imm = last ? txid : 0;
+    net_submit(txn, /*is_ack=*/false);
+  }
 }
 
 /* Reclaim a failed transmit's txn from a CQ error entry (both live and teardown
@@ -940,8 +1028,11 @@ static bool net_reap_locked(void) {
        * Queue a rendezvous-data node carrying the immediate (txid); the txid
        * pairing — which may run an install callback that sends — happens on
        * the dispatch side, after the token is released.  A remote write
-       * without immediate data is never issued by this runtime; ignore it
-       * defensively rather than fabricate a zero txid. */
+       * without immediate data is a leading piece of a payload the sender's
+       * ceiling cut apart (where the provider reports one at all): nothing
+       * pairs on it, since only the last piece's immediate says the whole
+       * landing is valid, so it is ignored rather than paired on a zero
+       * txid. */
       if ((e->flags & FI_REMOTE_WRITE) && (e->flags & FI_REMOTE_CQ_DATA)) {
         /* One-sided payload landed: count it as its own remote receive (the
          * pairing control message is counted separately at dispatch). */
@@ -1438,7 +1529,33 @@ void arts_net_init(const char *provider, const char *fabric_domain,
   g_net.mr_local = (g_net.mr_mode & FI_MR_LOCAL) != 0;
   g_net.inject_size = use->tx_attr->inject_size;
   g_net.max_msg = use->ep_attr->max_msg_size;
+  {
+    /* A one-sided transfer is never posted above the provider's ceiling
+     * (arts_net_put_payload splits at it), so lowering the ceiling from the
+     * environment is what lets a test drive the split path on a provider
+     * whose own ceiling no test payload reaches.  It can only lower it. */
+    const char *cap = getenv("ARTS_NET_MAX_MSG");
+    if (cap != NULL && *cap != '\0') {
+      char *end = NULL;
+      errno = 0;
+      unsigned long long v =
+          (*cap >= '0' && *cap <= '9') ? strtoull(cap, &end, 10) : 0;
+      if (end == NULL || end == cap || *end != '\0' || v == 0 ||
+          errno == ERANGE) {
+        ARTS_ERROR("arts_net: ARTS_NET_MAX_MSG=\"%s\" is not a positive byte "
+                   "count",
+                   cap);
+      }
+      if ((size_t)v < g_net.max_msg) {
+        g_net.max_msg = (size_t)v;
+      }
+    }
+  }
   g_net.tx_order = use->tx_attr->msg_order;
+  g_net.max_order_waw = use->ep_attr->max_order_waw_size;
+  g_net.waw_ordered =
+      (g_net.tx_order & (FI_ORDER_WAW | FI_ORDER_RMA_WAW)) != 0 &&
+      g_net.max_order_waw >= g_net.max_msg;
 
   /* The rendezvous txid is receiver-allocated and 32-bit by design, sized to
    * the narrowest immediate a real fabric grants (InfiniBand write-with-imm
@@ -1504,13 +1621,14 @@ void arts_net_init(const char *provider, const char *fabric_domain,
   ARTS_INFO("arts_net: fabric up provider=%s domain=%s addr_format=%s "
             "inject_size=%zu mr_mode=0x%x "
             "mr_local=%d multi_recv=%uMiB max_msg=%zu msg_order=0x%llx sas=%d "
-            "mr_cnt=%zu",
+            "waw=%d(max %zu) mr_cnt=%zu",
             use->fabric_attr->prov_name, use->domain_attr->name,
             fi_tostr(&use->addr_format, FI_TYPE_ADDR_FORMAT),
             g_net.inject_size, g_net.mr_mode, g_net.mr_local,
             (unsigned)(ARTS_NET_RECV_BUF_SIZE / (1024 * 1024)), g_net.max_msg,
             (unsigned long long)g_net.tx_order,
             (g_net.tx_order & FI_ORDER_SAS) == FI_ORDER_SAS,
+            (int)g_net.waw_ordered, g_net.max_order_waw,
             use->domain_attr->mr_cnt);
 }
 

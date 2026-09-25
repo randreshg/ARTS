@@ -1220,6 +1220,27 @@ foreach(_v 2n 3n 4n 2n_io)
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
 
+# The same ladder with the provider's one-sided ceiling lowered to 3 MiB from
+# the environment, so the 8 MiB rung can only arrive as several transfers
+# (3 + 3 + 2 MiB) paired on the last one's immediate.  Whole-payload
+# verification is what catches a piece landing at the wrong offset, or a
+# pairing that fires before the last piece has landed.
+foreach(_v 2n 3n 4n 2n_io)
+    arts_test_cfg(_cfg ${_v})
+    add_test(
+        NAME coherence_payload_split_${_v}
+        COMMAND coherence_payload_large
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(coherence_payload_split_${_v} PROPERTIES
+        LABELS "multinode;coherence_stress"
+        TIMEOUT 120
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_NET_MAX_MSG=3145728"
+        PASS_REGULAR_EXPRESSION "PASS: 4 DBs"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endforeach()
+
 # Add-dependence-then-release hand-off: consumers whose slots satisfied BEFORE
 # the producer's release must observe the release-published bytes.  A DB whose
 # home is neither the creator nor pre-seeded exposes a serve-early bug as a
