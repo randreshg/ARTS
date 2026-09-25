@@ -101,7 +101,24 @@ int main(void) {
     return 0;
   }
   unsigned nodes = count_nodes();
-  assert(arts_regpool_init(NULL, NULL, SLAB_BYTES, 0));
+  if (!arts_regpool_init(NULL, NULL, SLAB_BYTES, 0)) {
+    /* The threshold above is read before the carve, and the memory it saw
+     * can be gone by the time the pool maps: a failure with node 0 now
+     * below the threshold is that pressure, and the test has nothing to
+     * exercise.  A failure with room to spare is the pool's own. */
+    size_t now0 = node0_free_bytes();
+    if (now0 != SIZE_MAX && now0 < ARTS_REGPOOL_NODE_HEADROOM + SLAB_BYTES) {
+      printf("SKIP regpool_evict_retired: pool init failed with node 0 at "
+             "%zu MiB free (was %zu MiB at the threshold check, below the "
+             "pool's carve threshold)\n",
+             now0 >> 20, free0 >> 20);
+      return 0;
+    }
+    printf("FAIL regpool_evict_retired: pool init failed with node 0 at "
+           "%zu MiB free, above the carve threshold\n",
+           now0 >> 20);
+    return 1;
+  }
 
   unsigned live = 0, retired = 0, slots = 0;
 
