@@ -1,0 +1,38 @@
+# Experiment paper-rerun-32n: base-tier rows short of three valid repeats at 32 nodes only
+#
+# A rerun roster for the base campaign 20260925-082512: every row here has at
+# least one ARTS configuration with fewer than three completed repeats at the
+# node counts named in the command below, and the cause was a runtime defect
+# fixed since (a truncated control message on the fabric; the 32-node
+# startup mesh budget), not the program.  The reference runtimes' cells of
+# these rows already stand, so the entries are the eight ARTS
+# configurations.  Run it as
+#   artsrun run -p dane -x paper-rerun-32n -n 32 --repeats 5
+# Everything omitted falls through to the catalog, as in paper-main-base.
+
+name: paper-rerun-32n
+description: base-tier rows short of three valid repeats at 32 nodes only
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb]
+
+apps:
+  cholesky_blas:
+    enabled: true
+    versions: [base]
+  XSBench_intel_sharedDB:
+    enabled: true
+    versions: [base]   # SPMD self-placed (fork pins ranks, chains carry rank hints) — no hint layer to add
+  LCS_shared:
+    enabled: true
+    versions: [base]
+  graph500:
+    enabled: true
+    # The hinted layer stays in the source and stays compiled, but on this
+    # row's square R x C grid it is the same whole-column partition the
+    # shipped map already makes, so the tier is not registered (the catalog
+    # carries hinted: false), so base and the rewrite are the two tiers.
+    versions: [base]
+  nqueens:
+    enabled: true
+    # the subtree map is 19 % faster at 8 ranks (kept)
+    versions: [base]

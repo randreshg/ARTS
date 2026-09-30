@@ -78,7 +78,10 @@ apps:
     # the band map is 1.3-2x faster than the base at 2-8 ranks (kept)
     versions: [hinted]
   stream:
-    enabled: true
+    # Dropped from the paper campaigns: its base tier crashes at four nodes
+    # and beyond on every configuration and the crash has no local
+    # reproduction; the restructured stream_dist is not paper material.
+    enabled: false
     versions: [hinted]
   tempest:
     enabled: true

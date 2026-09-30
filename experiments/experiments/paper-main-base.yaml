@@ -185,7 +185,10 @@ apps:
     enabled: true
     versions: [base]
   stream:
-    enabled: true
+    # Dropped from the paper campaigns: its base tier crashes at four nodes
+    # and beyond on every configuration and the crash has no local
+    # reproduction; the restructured stream_dist is not paper material.
+    enabled: false
     versions: [base]
   task_priorities:
     enabled: false

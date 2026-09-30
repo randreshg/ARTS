@@ -1,0 +1,34 @@
+# Experiment paper-rerun-a: base-tier rows the fabric truncation defect emptied, at every multinode count
+#
+# A rerun roster for the base campaign 20260925-082512: every row here has at
+# least one ARTS configuration with fewer than three completed repeats at the
+# node counts named in the command below, and the cause was a runtime defect
+# fixed since (a truncated control message on the fabric; the 32-node
+# startup mesh budget), not the program.  The reference runtimes' cells of
+# these rows already stand, so the entries are the eight ARTS
+# configurations.  Run it as
+#   artsrun run -p dane -x paper-rerun-a -n 2,4,8,16,32 --repeats 5
+# Everything omitted falls through to the catalog, as in paper-main-base.
+
+name: paper-rerun-a
+description: base-tier rows the fabric truncation defect emptied, at every multinode count
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb]
+
+apps:
+  CoMD_sdsc:
+    enabled: true
+    # the block map is 9-22 % faster than the base at 2-8 ranks (kept: a hinted tier is dropped only when it is the base placement)
+    versions: [base]
+  RSBench_intel:
+    enabled: true
+    versions: [base]
+  miniAMR_intel:
+    enabled: true
+    versions: [base]
+  npb_cg:
+    enabled: true
+    versions: [base]
+  hpgmg:
+    enabled: true
+    versions: [base]

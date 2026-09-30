@@ -98,6 +98,9 @@ SHIPPED_ENTRIES = {
     "control-fft": ARTS8 + ["hpx"],
     "trend": ARTS8 + ["xsocr", "ocrvx", "hpx"],
     "smoke": ARTS8 + ["xsocr", "ocrvx"],
+    "paper-rerun-a": ARTS8,
+    "paper-rerun-32n": ARTS8,
+    "paper-rerun-fib": ARTS8 + ["xsocr", "ocrvx"],
 }
 
 

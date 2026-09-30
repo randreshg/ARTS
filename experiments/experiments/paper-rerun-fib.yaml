@@ -1,0 +1,16 @@
+# Experiment paper-rerun-fib: the fibonacci row at its new rung (39; the
+# catalog carries the reason), every node count and every entry, because a
+# changed argument invalidates the references' cells as well as ARTS's.
+#   artsrun run -p dane -x paper-rerun-fib --repeats 5
+# The hinted tier of the same row runs inside paper-main-hinted at the same
+# rung, from the catalog.
+
+name: paper-rerun-fib
+description: the fibonacci base row at rung 39, every entry
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
+
+apps:
+  fibonacci:
+    enabled: true
+    versions: [base]

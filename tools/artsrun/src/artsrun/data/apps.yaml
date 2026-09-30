@@ -686,16 +686,18 @@ apps:
     # targets 60 s at one node, and both tiers run it: the hint
     # layer resolves to rank 0 at one place, so the two share an anchor and the
     # window belongs to the tier that has to survive the whole node sweep.
-    # Memory: measured rungs only -- 23.0/35.7/84.0/103.0 GB at 37/38/39/40, so
-    # 40 (~106 GB with the added paramv word) is the largest rung with measured
-    # evidence under a 190 GB node.  41 and beyond are calibration pending;
-    # there is no exponential law that fits the measured rungs, so do not
-    # project one.
+    # Memory: measured rungs only -- 23.0/35.7/84.0/103.0 GB at 37/38/39/40
+    # on one node; the base tier's multinode cells hold about 2.3x the
+    # one-node set per rank (249 GB at two nodes for rung 40 on a 256 GB
+    # node, which the kernel kills), so the rung is 39: ~84 GB per rank at
+    # one node and under the node's memory at two.  41 and beyond are
+    # calibration pending; there is no exponential law that fits the
+    # measured rungs, so do not project one.
     # Every multinode base cell is expected to censor at the profile timeout --
     # report the base row as censored, do not draw a curve through it.
-    expect: '102334155'
-    expect_args: ['40', '14']
-    args: ['40', '14']
+    expect: '63245986'
+    expect_args: ['39', '14']
+    args: ['39', '14']
     hinted: true    # kept: scatter-then-pin makes every scattered subtree wire-free; the base is censored at 2 and 8 ranks where hinted scales
 
   globalsum_cgNoShim:

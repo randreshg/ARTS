@@ -279,6 +279,9 @@ entry).
 | `control-gate` | control-main at small arguments: the consensus gate | as control-main |
 | `trend` | every paper-main and HPX-origin row at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_wrf_flush` and the two CXL entries |
 | `smoke` | paper-gate at arguments shrunk again to finish in seconds on a two-worker laptop: a correctness smoke, never a timing number | as paper-gate |
+| `paper-rerun-a` | the base-tier rows a fabric truncation defect emptied at every multinode count (rerun of campaign 20260925-082512, `-n 2,4,8,16,32`) | the eight ARTS entries |
+| `paper-rerun-32n` | the base-tier rows short of three valid repeats at 32 nodes only (`-n 32`) | the eight ARTS entries |
+| `paper-rerun-fib` | the fibonacci base row at its lowered rung, every node count; the changed argument invalidates the references' cells too | as paper-main |
 
 No shipped experiment lists the DB-WRF entry or a CXL entry; they are turned
 on for a run with `-e` or on the screen. The per-entry eligibility rules hold
