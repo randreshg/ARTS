@@ -601,6 +601,25 @@ void arts_socket_cleanup() {
   arts_free(local_socket_receive);
 }
 
+/* How long a rank waits for a peer of the socket mesh to appear, whether it
+ * is connecting to that peer or accepting from it.  The skew between the
+ * ranks of one job is the launcher's, not the runtime's, so the budget is a
+ * knob: ARTS_STARTUP_TIMEOUT_S, in seconds. */
+#define ARTS_STARTUP_TIMEOUT_DEFAULT_S 300u
+static unsigned int arts_startup_budget_ms(void) {
+  static unsigned int cached_ms = 0;
+  if (cached_ms == 0) {
+    const char *s = getenv("ARTS_STARTUP_TIMEOUT_S");
+    char *end = NULL;
+    unsigned long v = (s != NULL) ? strtoul(s, &end, 10) : 0;
+    if (s == NULL || end == s || v == 0 || v > 86400ul) {
+      v = ARTS_STARTUP_TIMEOUT_DEFAULT_S;
+    }
+    cached_ms = (unsigned int)v * 1000u;
+  }
+  return cached_ms;
+}
+
 static inline bool arts_transport_connect(int rank, unsigned int port) {
 
   if (!remote_connection_alive[(rank * ports) + port]) {
@@ -614,19 +633,19 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
       close(remote_socket_send_list[(rank * ports) + port]);
       remote_socket_send_list[(rank * ports) + port] = arts_get_new_socket();
 
-      // Retry with delay to handle SLURM startup skew (srun starts all
-      // processes simultaneously, so the remote may not be listening yet)
-      int max_retries = 300;
+      /* The peer may not be listening yet: ranks of one job start with a
+       * skew the launcher does not bound, so retry until the startup budget
+       * is spent. */
+      int max_retries = (int)(arts_startup_budget_ms() / 100u);
       int retry_count = 0;
       while (connect(remote_socket_send_list[(rank * ports) + port],
                      (struct sockaddr *)(remote_server_send_list +
                                          ((size_t)rank * ports) + port),
                      sizeof(struct sockaddr_in)) < 0) {
         /* Abort the retry loop promptly if a shutdown has been signaled
-         * while we were spinning here. Without this check, a sender
-         * thread caught in the retry loop during shutdown blocks for up
-         * to 300 * 100 ms = 30 s, far longer than the launcher's
-         * timeout. */
+         * while we were spinning here; otherwise a sender thread caught in
+         * it blocks for the whole startup budget, longer than the
+         * launcher's timeout. */
         if (arts_node_info.shutdown_state) {
           return false;
         }
@@ -750,19 +769,18 @@ bool arts_transport_setup_incoming() {
         for (int z = 0; z < (int)ports; z++) {
           s_length = sizeof(struct sockaddr_in);
 
-          // Poll with timeout before blocking accept — prevents indefinite
-          // hang when the SSH-spawned remote process is slow to start or
-          // a previous test's remote still holds the port.
+          /* Poll with the startup budget before the blocking accept, so a
+           * peer that never starts (or a port a stale process still holds)
+           * ends the rank instead of hanging it. */
           struct pollfd accept_pfd = {.fd = local_socket_receive[z],
                                       .events = POLLIN};
-          int poll_res =
-              poll(&accept_pfd, 1, 60000); // Increase timeout for Crete
+          int poll_res = poll(&accept_pfd, 1, (int)arts_startup_budget_ms());
           if (poll_res <= 0) {
             ARTS_WARN("arts_transport_setup_incoming: rank %u timed out "
-                      "after 60 s waiting for peer connection %d of %d on "
+                      "after %u s waiting for peer connection %d of %d on "
                       "port index %d (poll=%d, errno=%d: %s)",
-                      arts_global_rank_id, j + 1, count, z, poll_res, errno,
-                      strerror(errno));
+                      arts_global_rank_id, arts_startup_budget_ms() / 1000u,
+                      j + 1, count, z, poll_res, errno, strerror(errno));
             return false;
           }
 
