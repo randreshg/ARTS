@@ -959,6 +959,24 @@ static void net_reap_cq_err(void) {
         fi_cq_strerror(g_net.cq, err.prov_errno, err.err_data, NULL, 0);
     ARTS_WARN("arts_net: cq error: %s (flags=0x%llx err=%d prov_errno=%d)",
               what, (unsigned long long)err.flags, err.err, err.prov_errno);
+    /* A truncated receive is a control message the landing buffer could not
+     * hold whole: its bytes are gone and the sender will not repeat them, so
+     * no later shutdown recognition can make the run whole.  Fail now, with
+     * the sizes, rather than let the grace period below turn it into a wedge
+     * of unknown cause. */
+    if ((err.flags & FI_RECV) && err.err == FI_ETRUNC) {
+      ARTS_ERROR("arts_net: a %zu-byte inbound message was truncated by %zu "
+                 "bytes (landing buffer too full to hold it whole): the "
+                 "provider's multi-recv threshold is below the control "
+                 "ceiling of %zu bytes",
+                 err.len + err.olen, err.olen, (size_t)ARTS_NET_MSG_MAX);
+    }
+    /* An error completion that carries FI_MULTI_RECV retired its landing
+     * buffer exactly as a successful one would have; without a repost the
+     * rank runs on one buffer, then none. */
+    if ((err.flags & FI_MULTI_RECV) && err.op_context != NULL) {
+      net_post_recv(((struct net_recv_ctx_s *)err.op_context)->idx);
+    }
     /* A failed transfer is a lost message, and nothing above the transport
      * retransmits: on a live run the outcome is a wedge that only the cell's
      * wall budget ends.  Once shutdown is recognized peers tear their
@@ -1666,17 +1684,43 @@ void arts_net_init(const char *provider, const char *fabric_domain,
   if (rc != 0) {
     ARTS_ERROR("arts_net: fi_ep_bind(cq) failed: %s", fi_strerror(-rc));
   }
-  rc = fi_enable(g_net.ep);
-  if (rc != 0) {
-    ARTS_ERROR("arts_net: fi_enable failed: %s", fi_strerror(-rc));
-  }
-
+  /* The multi-recv threshold is what makes ARTS_NET_MSG_MAX a guarantee: a
+   * landing buffer is retired once less than this remains, so a message no
+   * larger than it always finds room.  It must be set BEFORE the endpoint is
+   * enabled: a layered provider builds its receive context at enable time
+   * from the value it holds then, and a later setopt reaches only the
+   * endpoint's own copy while the receive side keeps its default, a fraction
+   * of the ceiling, and truncates any larger message. */
   size_t min_mr = ARTS_NET_MIN_MULTI_RECV;
   rc = fi_setopt(&g_net.ep->fid, FI_OPT_ENDPOINT, FI_OPT_MIN_MULTI_RECV,
                  &min_mr, sizeof(min_mr));
   if (rc != 0) {
     ARTS_ERROR("arts_net: fi_setopt(MIN_MULTI_RECV) failed: %s",
                fi_strerror(-rc));
+  }
+  rc = fi_enable(g_net.ep);
+  if (rc != 0) {
+    ARTS_ERROR("arts_net: fi_enable failed: %s", fi_strerror(-rc));
+  }
+  /* Read the threshold back from the enabled endpoint, which answers for its
+   * receive side: a provider that ignored the request has already voided
+   * the ceiling.  One that cannot report it keeps its own fixed threshold,
+   * and every control message above that can be truncated on the wire. */
+  size_t got_mr = 0;
+  size_t got_len = sizeof(got_mr);
+  rc = fi_getopt(&g_net.ep->fid, FI_OPT_ENDPOINT, FI_OPT_MIN_MULTI_RECV,
+                 &got_mr, &got_len);
+  if (rc == 0) {
+    if (got_mr < ARTS_NET_MIN_MULTI_RECV) {
+      ARTS_ERROR("arts_net: provider kept a %zu-byte multi-recv threshold "
+                 "after %zu was requested; control messages above it would "
+                 "be truncated",
+                 got_mr, (size_t)ARTS_NET_MIN_MULTI_RECV);
+    }
+  } else {
+    ARTS_INFO("arts_net: provider reports no multi-recv threshold (%s); "
+              "its own fixed threshold bounds the control-message ceiling",
+              fi_strerror(-rc));
   }
 
   ARTS_INFO("arts_net: fabric up provider=%s domain=%s addr_format=%s "
