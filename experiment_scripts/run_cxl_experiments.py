@@ -38,6 +38,7 @@ Usage:
   python3 experiment_scripts/run_cxl_experiments.py
   python3 experiment_scripts/run_cxl_experiments.py --apps fft,stream --nodes 1,2
   python3 experiment_scripts/run_cxl_experiments.py --resume <run-dir>
+  python3 experiment_scripts/run_cxl_experiments.py --smoke-test
 """
 
 from __future__ import annotations
@@ -206,6 +207,62 @@ APPS: list[tuple[str, str]] = [
     ("triangle_hinted", "8 1 8"),
     ("XSBench_intel_sharedDB", "-s large -g 96 -l 176000000 -t 216 -p 32"),
 ]
+
+# --smoke-test inputs: each app of APPS shrunk to a correctness smoke that
+# finishes well inside 30 s at every node count (1..4), for checking the campaign
+# end to end before committing to the real matrix.  Nothing timed here is a
+# result.  Most vectors are experiments/experiments/smoke.yaml's (which keeps
+# the per-row legality notes); Stencil2D_intel_chandra and
+# mapreduce_wordcount are sized here.  Each was run directly at 1 and 4
+# local ranks in both VARIANTS.  Apps that need input files (smithwaterman*)
+# have no entry and are skipped under --smoke-test.
+_SMOKE_MINIAMR = (
+    "--npx 2 --npy 2 --npz 2 --init_x 1 --init_y 1 --init_z 1 --nx 4 --ny 4 "
+    "--nz 4 --max_blocks 2 --num_tsteps 5 --num_refine 0 --stages_per_ts 2 "
+    "--num_vars 4 --report_diffusion 1 --checksum_freq 5")
+SMOKE_APPS: dict[str, str] = {
+    "cholesky_blas": "--ds 40 --ts 10",
+    "cholesky_blas_hinted": "--ds 40 --ts 10",
+    "CoMD_intel_chandra_tiled": "-x 16 -y 8 -z 8 -N 2 -n 1 -i 4 -j 2 -k 2",
+    "CoMD_intel_chandra_tiled_hinted": "-x 16 -y 8 -z 8 -N 2 -n 1 -i 4 -j 2 -k 2",
+    "fft": "8",
+    "fft_hinted": "8",
+    "fft_dist": "8 4 2",
+    "fibonacci": "15 5",
+    "fibonacci_hinted": "15 5",
+    "graph500": "8 16 4 4",
+    "graph500_dist": "8 16 4 4",
+    "hpcg_intel": "2 2 2 16 5",
+    "hpcg_intel_dist": "2 2 2 16 5",
+    "hpgmg": "4 8",
+    "hpgmg_hinted": "4 8",
+    "hpgmg_dist": "4 8",
+    "LCS_all_db_distributed": "1024 64",
+    "LCS_all_db_distributed_hinted": "1024 64",
+    "miniAMR_intel_chandra": _SMOKE_MINIAMR,
+    "miniAMR_intel_chandra_hinted": _SMOKE_MINIAMR,
+    "nekbone": "2 2 2 2 2 2 8 2",
+    "nekbone_hinted": "2 2 2 2 2 2 8 2",
+    "nekbone_dist": "2 2 2 2 2 2 8 2",
+    "npb_cg": "-t S -b 4",
+    "npb_cg_dist": "-t S -c 16",
+    "nqueens": "8 4 1 2",
+    "nqueens_hinted": "8 4 1 2",
+    "RSBench_intel_sharedDB": "-s large -l 300 -t 2 -p 8",
+    "mapreduce_wordcount": "1024 10000 8 4 100 0 2 1",
+    "Stencil2D_intel_chandra": "1000 16 10",
+    "Stencil2D_intel_channelEVTs": "12 4 2",
+    "stream": "400 4 2",
+    "stream_hinted": "400 4 2",
+    "stream_dist": "400 4 2",
+    "triangle": "3 1",
+    "triangle_hinted": "3 1",
+    "XSBench_intel_sharedDB": "-s large -g 8 -l 300 -t 2 -p 8",
+}
+# A smoke is one pass, no warm-up, and a short leash.
+SMOKE_REPEATS = 1
+SMOKE_WARMUP_RUNS = 0
+SMOKE_CELL_TIMEOUT_S = 120
 
 # =============================================================================
 # End of user configuration
@@ -579,6 +636,7 @@ def write_manifest(run_dir: Path, cells, args):
             "repeats": args.repeats,
             "warmup_runs": args.warmups,
             "cell_timeout_s": args.timeout,
+            "smoke_test": args.smoke_test,
             "variants": args.variants,
             "app_build_dir": str(APP_BUILD_DIR),
             "run_py": str(RUN_PY),
@@ -632,10 +690,14 @@ def parse_args():
     p.add_argument("--nodes", help="comma-separated subset of node counts")
     p.add_argument("--variants", help="comma-separated build variants "
                    f"(default: {','.join(VARIANTS)})")
-    p.add_argument("--repeats", type=int, default=REPEATS)
-    p.add_argument("--warmups", type=int, default=WARMUP_RUNS)
-    p.add_argument("--timeout", type=int, default=CELL_TIMEOUT_S,
-                   help="per-run timeout, seconds")
+    p.add_argument("--smoke-test", action="store_true",
+                   help="run the shrunk SMOKE_APPS inputs instead (apps without "
+                   "one are skipped); defaults to "
+                   f"{SMOKE_REPEATS} repeat, {SMOKE_WARMUP_RUNS} warm-ups, "
+                   f"{SMOKE_CELL_TIMEOUT_S}s timeout")
+    p.add_argument("--repeats", type=int)
+    p.add_argument("--warmups", type=int)
+    p.add_argument("--timeout", type=int, help="per-run timeout, seconds")
     p.add_argument("--run-id", help="name of the run directory "
                    "(default: a timestamp)")
     p.add_argument("--resume", type=Path, metavar="RUN_DIR",
@@ -648,15 +710,28 @@ def parse_args():
                    help="run despite preflight problems")
     args = p.parse_args()
 
+    smoke = args.smoke_test
+    if args.repeats is None:
+        args.repeats = SMOKE_REPEATS if smoke else REPEATS
+    if args.warmups is None:
+        args.warmups = SMOKE_WARMUP_RUNS if smoke else WARMUP_RUNS
+    if args.timeout is None:
+        args.timeout = SMOKE_CELL_TIMEOUT_S if smoke else CELL_TIMEOUT_S
+
+    roster = ([(a, SMOKE_APPS[a]) for a, _ in APPS if a in SMOKE_APPS]
+              if smoke else APPS)
     if args.apps:
         wanted = args.apps.split(",")
         known = {a for a, _ in APPS}
         unknown = [a for a in wanted if a not in known]
         if unknown:
             p.error(f"unknown app(s): {', '.join(unknown)}")
-        args.apps = [(a, s) for a, s in APPS if a in wanted]
+        no_smoke = [a for a in wanted if smoke and a not in SMOKE_APPS]
+        if no_smoke:
+            p.error(f"no smoke-test input for: {', '.join(no_smoke)}")
+        args.apps = [(a, s) for a, s in roster if a in wanted]
     else:
-        args.apps = APPS
+        args.apps = roster
     args.node_counts = ([int(n) for n in args.nodes.split(",")]
                         if args.nodes else NODE_COUNTS)
     args.variants = args.variants.split(",") if args.variants else VARIANTS
@@ -672,7 +747,8 @@ def main():
         if not (run_dir / "manifest.json").exists():
             sys.exit(f"not a campaign directory: {run_dir}")
     else:
-        run_id = args.run_id or dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        run_id = args.run_id or dt.datetime.now().strftime(
+            "smoke-%Y%m%d-%H%M%S" if args.smoke_test else "%Y%m%d-%H%M%S")
         run_dir = (RESULTS_ROOT / run_id).resolve()
 
     jsonl = run_dir / "runs.jsonl"
