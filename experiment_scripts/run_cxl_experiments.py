@@ -259,10 +259,101 @@ SMOKE_APPS: dict[str, str] = {
     "triangle_hinted": "3 1",
     "XSBench_intel_sharedDB": "-s large -g 8 -l 300 -t 2 -p 8",
 }
-# A smoke is one pass, no warm-up, and a short leash.
-SMOKE_REPEATS = 1
-SMOKE_WARMUP_RUNS = 0
-SMOKE_CELL_TIMEOUT_S = 120
+
+# --profile medium inputs: the whole campaign (3 repeats, no warm-up) in under
+# 8 hours on the testbed.  Sizing rules, per app:
+#   * 1-node e2e ~30-60 s on the testbed, budgeted on the WORST node count for
+#     the apps that slow down with nodes (fft, fibonacci, triangle, npb_cg,
+#     smithwaterman base/hinted, XSBench_sharedDB), so some land below that;
+#   * size and iteration knobs both cut, so setup stays a minor share;
+#   * datablock bytes ALLOCATED over the run (the CXL arena reclaims nothing
+#     within a run) at most ~7 GB of the 15 GB arena -- this, not time, caps
+#     LCS, hpcg, hpgmg, stream, Stencil2D and smithwaterman;
+#   * >= 2 x 376 parallel tasks per wave where the structure allows, and
+#     every rank-following knob balanced at 1, 2, 3 and 4 nodes.
+# Times were scaled from the 20261001 testbed run where it produced one, and
+# estimated from the source otherwise.  Every vector's legality was checked
+# against the source; the geometry-dependent ones were also run at 1-4 local
+# ranks, often at a cut iteration count.  Calibrate on the testbed before
+# trusting the 8 hours: see --estimate.
+_MEDIUM_MINIAMR = (
+    "--npx 6 --npy 2 --npz 2 --init_x 2 --init_y 4 --init_z 4 --nx 8 --ny 8 "
+    "--nz 8 --max_blocks 32 --num_tsteps 5 --num_refine 0 --stages_per_ts 4 "
+    "--num_vars 8 --report_diffusion 1 --checksum_freq 5")
+_MEDIUM_SW = ("{repo}/datasets/smithwaterman/string1-gate.txt "
+              "{repo}/datasets/smithwaterman/string2-gate.txt "
+              "{repo}/datasets/smithwaterman/score-gate.txt")
+MEDIUM_APPS: dict[str, str] = {
+    # t = ds/ts = 96 tiles per side; ts stays at the catalog tile.
+    "cholesky_blas": "--ds 9600 --ts 100",
+    "cholesky_blas_hinted": "--ds 9600 --ts 100",
+    # 768 subdomains (12x8x8) over a box in proportion, ~4.7 GB of blocks.
+    "CoMD_intel_chandra_tiled": "-x 108 -y 72 -z 72 -N 100 -n 10 -i 12 -j 8 -k 8",
+    "CoMD_intel_chandra_tiled_hinted": "-x 108 -y 72 -z 72 -N 100 -n 10 -i 12 -j 8 -k 8",
+    # Small at 1 node on purpose: 5-15x slower at 2-3 nodes in the past run.
+    "fft": "25",
+    "fft_hinted": "25",
+    # power held (arena: 32 * 2^p bytes); 768 tiles over 24 places.
+    "fft_dist": "27 768 24",
+    "fibonacci": "29 14",
+    "fibonacci_hinted": "29 14",
+    "graph500": "19 16 64 64",
+    # Unchanged from main: 24 s at 1 node in the past run, ~2.4 GB.
+    "graph500_dist": "20 16 128 128",
+    # 192 tiles: more at m = 32 does not fit the arena at 50 iterations.
+    "hpcg_intel": "8 6 4 32 50",
+    "hpcg_intel_dist": "8 6 4 32 50",
+    # 10^3 boxes of 32^3; the bottom level agglomerates 125:1.
+    "hpgmg": "5 1000",
+    "hpgmg_hinted": "5 1000",
+    "hpgmg_dist": "5 1000",
+    # The 4(N+1)^2-byte score table is the arena cap; N/base = 128 as in main.
+    "LCS_all_db_distributed": "32768 256",
+    "LCS_all_db_distributed_hinted": "32768 256",
+    # 768 blocks on a 6x2x2 rank grid (balanced at 3 nodes, unlike 4x4x2).
+    "miniAMR_intel_chandra": _MEDIUM_MINIAMR,
+    "miniAMR_intel_chandra_hinted": _MEDIUM_MINIAMR,
+    "nekbone": "12 8 8 2 2 2 8 20",
+    "nekbone_hinted": "12 8 8 2 2 2 8 20",
+    "nekbone_dist": "12 8 8 2 2 2 8 20",
+    # Class W at 12 outer iterations still verifies against W's zeta.
+    "npb_cg": "-t W -b 8 -i 12",
+    # cg_dist has no -b (main's "-t A -b 4" exits at the usage line).
+    "npb_cg_dist": "-t B -c 188",
+    "nqueens": "19 15 1 6",
+    "nqueens_hinted": "19 15 1 6",
+    "RSBench_intel_sharedDB": "-s large -l 1728000 -t 216 -p 16",
+    # Weak-scaling by construction: M = TPN x nodes map tiles.
+    "mapreduce_wordcount": "16384 16000000 188 8 100 0 16 1",
+    # Gate pair (2000 x 2000, staged by artsrun's fixtures); the DP scratch
+    # is ~4 * len1 * len2 bytes and is never reclaimed.
+    "smithwaterman": f"8 8 {_MEDIUM_SW}",
+    "smithwaterman_hinted": f"8 8 {_MEDIUM_SW}",
+    "smithwaterman_dist": f"3 3 {_MEDIUM_SW} 24",
+    # NP is arena-capped (~16 NP^2 bytes); rounds carry the duration.
+    "Stencil2D_intel_chandra": "13824 3456 400",
+    "Stencil2D_intel_channelEVTs": "13824 3456 400",
+    # The base tiers allocate ~32 N K bytes; all three keep one triple.
+    "stream": "884736 3456 200",
+    "stream_hinted": "884736 3456 200",
+    "stream_dist": "884736 3456 200",
+    "triangle": "7 1 8",
+    "triangle_hinted": "7 1 8",
+    "XSBench_intel_sharedDB": "-s large -g 48 -l 25000000 -t 64 -p 24",
+}
+
+# An input profile: which inputs, and the repeats / warm-ups / timeout it
+# runs with unless the command line says otherwise.  An app with no input in
+# a profile is not part of that profile.
+PROFILES: dict[str, dict] = {
+    "main": {"apps": dict(APPS), "repeats": REPEATS,
+             "warmups": WARMUP_RUNS, "timeout": CELL_TIMEOUT_S},
+    "medium": {"apps": MEDIUM_APPS, "repeats": 3, "warmups": 0,
+               "timeout": 300},
+    # A smoke is one pass, no warm-up, and a short leash.
+    "smoke": {"apps": SMOKE_APPS, "repeats": 1, "warmups": 0,
+              "timeout": 120},
+}
 
 # =============================================================================
 # End of user configuration
@@ -636,7 +727,7 @@ def write_manifest(run_dir: Path, cells, args):
             "repeats": args.repeats,
             "warmup_runs": args.warmups,
             "cell_timeout_s": args.timeout,
-            "smoke_test": args.smoke_test,
+            "profile": args.profile,
             "variants": args.variants,
             "app_build_dir": str(APP_BUILD_DIR),
             "run_py": str(RUN_PY),
@@ -668,8 +759,28 @@ def write_manifest(run_dir: Path, cells, args):
 # Main
 # ---------------------------------------------------------------------------
 
+def input_files(cells) -> list[str]:
+    """The repo paths named in the cells' arguments (dataset inputs)."""
+    root = str(REPO_ROOT) + "/"
+    return sorted({tok for c in cells for tok in c["args"].split()
+                   if tok.startswith(root)})
+
+def stage_inputs(cells) -> list[str]:
+    """Generate the missing dataset inputs artsrun knows how to make (the
+    smithwaterman fixtures are synthesized, not checked in); return the ones
+    still missing."""
+    missing = [p for p in input_files(cells) if not Path(p).exists()]
+    if not missing:
+        return []
+    sys.path.insert(0, str(REPO_ROOT / "tools" / "artsrun" / "src"))
+    from artsrun import fixtures
+    for p in missing:
+        print(f"staging input: {p}")
+    return fixtures.stage(missing)
+
 def preflight(cells) -> list[str]:
-    problems = []
+    problems = [f"input file missing: {p}" for p in input_files(cells)
+                if not Path(p).exists()]
     if not RUN_PY.is_file():
         problems.append(f"run.py wrapper not found: {RUN_PY}")
     if max(c["nodes"] for c in cells) > len(NODES):
@@ -684,20 +795,91 @@ def preflight(cells) -> list[str]:
                         f"({socket.gethostname()}); rank 0 runs here")
     return problems
 
+def estimate(cells, paths: list[Path], timeout_s: int):
+    """Project the plan's duration from the wall times of earlier runs at the
+    same (app, variant, args).  A node count with no run borrows the slowest
+    measured node count of that app (strong scaling here is not reliably
+    monotone), then the other variant's.  A failed run carries no time; a
+    timed-out one counts as the full timeout.  Each cell is capped at this
+    plan's timeout."""
+    seen: dict[tuple, list[float]] = {}
+    bad: dict[tuple, set[str]] = {}
+    for path in paths:
+        for r in load_records(path):
+            key = (r["app"], r["variant"], r["args"], r["nodes"])
+            if r["status"] in ("ok", "check_failed", "no_e2e"):
+                seen.setdefault(key, []).append(r["wall_s"])
+            elif r["status"] == "timeout":
+                seen.setdefault(key, []).append(float(timeout_s))
+                bad.setdefault(key[:3], set()).add("timeout")
+            else:
+                bad.setdefault(key[:3], set()).add(r["status"])
+
+    def median(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2]
+
+    def cell_time(c):
+        key = (c["app"], c["variant"], c["args"], c["nodes"])
+        if key in seen:
+            return median(seen[key]), "measured"
+        for variant in (c["variant"], *(v for v in VARIANTS if v != c["variant"])):
+            others = [median(ts) for (a, v, s, _), ts in seen.items()
+                      if (a, v, s) == (c["app"], variant, c["args"])]
+            if others:
+                return max(others), "borrowed"
+        return None, "unknown"
+
+    per_app: dict[str, list] = {}
+    total, unknown, borrowed = 0.0, 0, 0
+    for c in cells:
+        t, how = cell_time(c)
+        row = per_app.setdefault(c["app"], [0.0, 0, 0])
+        if t is None:
+            unknown += 1
+            row[1] += 1
+            continue
+        t = min(t, timeout_s)
+        total += t
+        row[0] += t
+        borrowed += how == "borrowed"
+        row[2] += how == "borrowed"
+
+    print(f"\nestimate: {total / 3600:.2f} h over {len(cells) - unknown} cells "
+          f"({borrowed} with a borrowed node count); {unknown} cells have no "
+          f"time and are not counted")
+    print(f"  {'app':<34} {'hours':>6}  notes")
+    for app, (t, unk, bor) in sorted(per_app.items(), key=lambda kv: -kv[1][0]):
+        notes = []
+        if unk:
+            notes.append(f"{unk} cells unknown")
+        if bor:
+            notes.append(f"{bor} borrowed")
+        statuses = set().union(*(s for (a, _, _), s in bad.items() if a == app))
+        if statuses:
+            notes.append("runs " + "/".join(sorted(statuses)))
+        print(f"  {app:<34} {t / 3600:6.2f}  {'; '.join(notes)}")
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--apps", help="comma-separated subset of app base names")
     p.add_argument("--nodes", help="comma-separated subset of node counts")
     p.add_argument("--variants", help="comma-separated build variants "
                    f"(default: {','.join(VARIANTS)})")
-    p.add_argument("--smoke-test", action="store_true",
-                   help="run the shrunk SMOKE_APPS inputs instead (apps without "
-                   "one are skipped); defaults to "
-                   f"{SMOKE_REPEATS} repeat, {SMOKE_WARMUP_RUNS} warm-ups, "
-                   f"{SMOKE_CELL_TIMEOUT_S}s timeout")
-    p.add_argument("--repeats", type=int)
-    p.add_argument("--warmups", type=int)
-    p.add_argument("--timeout", type=int, help="per-run timeout, seconds")
+    p.add_argument("--profile", choices=PROFILES, default="main",
+                   help="input profile; apps without an input in it are "
+                   "skipped.  " + "; ".join(
+                       f"{n}: {c['repeats']} repeats, {c['warmups']} warm-ups, "
+                       f"{c['timeout']}s timeout" for n, c in PROFILES.items()))
+    p.add_argument("--smoke-test", action="store_const", const="smoke",
+                   dest="profile", help="same as --profile smoke")
+    p.add_argument("--repeats", type=int, help="override the profile's")
+    p.add_argument("--warmups", type=int, help="override the profile's")
+    p.add_argument("--timeout", type=int,
+                   help="per-run timeout, seconds (overrides the profile's)")
+    p.add_argument("--estimate", type=Path, action="append", metavar="RUNS_JSONL",
+                   help="with --dry-run, project the plan's duration from the "
+                   "wall times in a previous runs.jsonl (repeatable)")
     p.add_argument("--run-id", help="name of the run directory "
                    "(default: a timestamp)")
     p.add_argument("--resume", type=Path, metavar="RUN_DIR",
@@ -710,25 +892,24 @@ def parse_args():
                    help="run despite preflight problems")
     args = p.parse_args()
 
-    smoke = args.smoke_test
-    if args.repeats is None:
-        args.repeats = SMOKE_REPEATS if smoke else REPEATS
-    if args.warmups is None:
-        args.warmups = SMOKE_WARMUP_RUNS if smoke else WARMUP_RUNS
-    if args.timeout is None:
-        args.timeout = SMOKE_CELL_TIMEOUT_S if smoke else CELL_TIMEOUT_S
+    profile = PROFILES[args.profile]
+    for key in ("repeats", "warmups", "timeout"):
+        if getattr(args, key) is None:
+            setattr(args, key, profile[key])
+    if args.estimate and not args.dry_run:
+        p.error("--estimate needs --dry-run")
 
-    roster = ([(a, SMOKE_APPS[a]) for a, _ in APPS if a in SMOKE_APPS]
-              if smoke else APPS)
+    inputs = profile["apps"]
+    roster = [(a, inputs[a]) for a, _ in APPS if a in inputs]
     if args.apps:
         wanted = args.apps.split(",")
         known = {a for a, _ in APPS}
         unknown = [a for a in wanted if a not in known]
         if unknown:
             p.error(f"unknown app(s): {', '.join(unknown)}")
-        no_smoke = [a for a in wanted if smoke and a not in SMOKE_APPS]
-        if no_smoke:
-            p.error(f"no smoke-test input for: {', '.join(no_smoke)}")
+        no_input = [a for a in wanted if a not in inputs]
+        if no_input:
+            p.error(f"no {args.profile} input for: {', '.join(no_input)}")
         args.apps = [(a, s) for a, s in roster if a in wanted]
     else:
         args.apps = roster
@@ -747,8 +928,9 @@ def main():
         if not (run_dir / "manifest.json").exists():
             sys.exit(f"not a campaign directory: {run_dir}")
     else:
+        prefix = "" if args.profile == "main" else f"{args.profile}-"
         run_id = args.run_id or dt.datetime.now().strftime(
-            "smoke-%Y%m%d-%H%M%S" if args.smoke_test else "%Y%m%d-%H%M%S")
+            f"{prefix}%Y%m%d-%H%M%S")
         run_dir = (RESULTS_ROOT / run_id).resolve()
 
     jsonl = run_dir / "runs.jsonl"
@@ -762,15 +944,18 @@ def main():
           f"recorded, {len(todo)} to run")
 
     if args.dry_run:
-        for c in todo:
+        for c in ([] if args.estimate else todo):
             spec = {"app": str(APP_BUILD_DIR / c["executable"]), "args": c["args"]}
             print(f"\n[{c['cell_id']}] hosts={','.join(NODES[:c['nodes']])}")
             print(f"  args.json: {json.dumps(spec)}")
             print(f"  {shlex.join(launch_argv(Path('<cell>/args.json')))}")
         for msg in preflight(cells):
             print(f"preflight: {msg}")
+        if args.estimate:
+            estimate(todo, args.estimate, args.timeout)
         return
 
+    stage_inputs(cells)
     problems = preflight(cells)
     for msg in problems:
         print(f"preflight: {msg}", file=sys.stderr)
