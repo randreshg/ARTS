@@ -16,11 +16,11 @@ releases the regions), and records:
 
 Counter selection is a BUILD-TIME property of ARTS: this script only points
 the runtime at a per-cell counter folder.  The binaries must be built with a
-counterset containing the counters in counter_exploration.md (e.g.
-experiments/countersets/arts-cxl-paper.yaml via -DARTS_COUNTER_CONFIG).  Any
-counter present in the rank files is recorded, so counters added later
-(BYTES_CXL_FETCH, BYTES_CXL_PURGE, TIME_EDT_SERVICE, ...) show up without
-changing this script; their derived metrics are null until they exist.
+counter configuration containing the counters in counter_exploration.md
+(configs/counters_cxl_paper.cfg via -DARTS_COUNTER_CONFIG).  Any counter
+present in the rank files is recorded, so counters added later
+(TIME_EDT_SERVICE, TIME_DB_ACQUIRE, ...) show up without changing this
+script; their derived metrics are null until they exist.
 
 Output (under RESULTS_ROOT/<run-id>/):
 
@@ -138,9 +138,14 @@ EXPECTED_COUNTERS = [
     "BYTES_REMOTE_SENT",
     "NUM_REMOTE_SEND",
     "NUM_EXCL_QUEUE_WAIT",
+    "TIME_EDT_EXEC",
+    "NUM_CXL_FLUSH_PRODUCER",
+    "NUM_CXL_FLUSH_CONSUMER",
+    "BYTES_CXL_FLUSH_PRODUCER",
+    "BYTES_CXL_FLUSH_CONSUMER",
+    "TIME_CXL_FLUSH_PRODUCER",
+    "TIME_CXL_FLUSH_CONSUMER",
     # Proposed; not yet in ARTS_COUNTER_LIST.  Uncomment once implemented.
-    # "BYTES_CXL_FETCH",
-    # "BYTES_CXL_PURGE",
     # "TIME_EDT_SERVICE",
     # "TIME_DB_ACQUIRE",
     # "TIME_EDT_QUEUE",
@@ -376,7 +381,9 @@ DERIVED_COLUMNS = [
     "cxl_protocol_total_bytes", "cxl_protocol_read_Bps",
     "cxl_protocol_write_Bps", "cxl_protocol_total_Bps",
     "edt_count", "db_acquire_local_hits", "db_acquire_remote",
-    "excl_queue_waits", "mean_edt_service_ns", "mean_db_acquire_ns",
+    "excl_queue_waits", "mean_edt_exec_ns", "cxl_flush_producer_count",
+    "cxl_flush_consumer_count", "mean_cxl_flush_producer_ns",
+    "mean_cxl_flush_consumer_ns", "mean_edt_service_ns", "mean_db_acquire_ns",
     "mean_edt_queue_ns", "mean_db_release_ns",
 ]
 
@@ -567,7 +574,10 @@ def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
     g = sums.get
     sent, payload = g("BYTES_REMOTE_SENT"), g("BYTES_DB_PAYLOAD_SENT")
     control = sent - payload if sent is not None and payload is not None else None
-    fetch, purge = g("BYTES_CXL_FETCH"), g("BYTES_CXL_PURGE")
+    # A consumer flush is the fetch's read edge, a producer flush the purge's
+    # write edge; their bytes are the block sizes moved on either residency.
+    fetch, purge = g("BYTES_CXL_FLUSH_CONSUMER"), g("BYTES_CXL_FLUSH_PRODUCER")
+    n_prod, n_cons = g("NUM_CXL_FLUSH_PRODUCER"), g("NUM_CXL_FLUSH_CONSUMER")
     cxl_total = fetch + purge if fetch is not None and purge is not None else None
     edts = g("NUM_EDT_FINISH")
     return {
@@ -587,6 +597,11 @@ def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
         "db_acquire_local_hits": g("NUM_DB_ACQUIRE_LOCAL_HIT"),
         "db_acquire_remote": g("NUM_DB_ACQUIRE_REMOTE"),
         "excl_queue_waits": g("NUM_EXCL_QUEUE_WAIT"),
+        "mean_edt_exec_ns": _div(g("TIME_EDT_EXEC"), edts),
+        "cxl_flush_producer_count": n_prod,
+        "cxl_flush_consumer_count": n_cons,
+        "mean_cxl_flush_producer_ns": _div(g("TIME_CXL_FLUSH_PRODUCER"), n_prod),
+        "mean_cxl_flush_consumer_ns": _div(g("TIME_CXL_FLUSH_CONSUMER"), n_cons),
         # Valid only while each finished EDT adds exactly one sample per timer.
         "mean_edt_service_ns": _div(g("TIME_EDT_SERVICE"), edts),
         "mean_db_acquire_ns": _div(g("TIME_DB_ACQUIRE"), edts),
@@ -608,7 +623,8 @@ def sanity_checks(cell, stamps, per_rank, sums, complete) -> list[str]:
     if cell["nodes"] > 1 and complete and sent == 0:
         failed.append("multinode_zero_remote_bytes")
     is_cxl = "cxl" in cell["variant"]
-    cxl_bytes = (sums.get("BYTES_CXL_FETCH") or 0) + (sums.get("BYTES_CXL_PURGE") or 0)
+    cxl_bytes = ((sums.get("BYTES_CXL_FLUSH_CONSUMER") or 0)
+                 + (sums.get("BYTES_CXL_FLUSH_PRODUCER") or 0))
     if not is_cxl and cxl_bytes:
         failed.append("cxl_bytes_in_network_build")
     return failed

@@ -47,6 +47,12 @@ if(NOT EXISTS "${COUNTER_HEADER}")
     message(FATAL_ERROR "counter.h not found at: ${COUNTER_HEADER}")
 endif()
 
+# Both inputs of the generated Preamble.h: a counter added to counter.h or a
+# changed config must re-run this script, or an existing tree compiles
+# against a stale header.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${COUNTER_HEADER}" "${ARTS_COUNTER_CONFIG}")
+
 file(READ "${COUNTER_HEADER}" COUNTER_HEADER_CONTENT)
 
 # Extract counter names from X(counterName) patterns in ARTS_COUNTER_LIST

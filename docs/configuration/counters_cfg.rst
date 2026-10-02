@@ -272,6 +272,37 @@ Network — Time
    * - ``TIME_REMOTE_MOVE``
      - Time spent moving a local DB's data out to a remote rank.
 
+CXL Flush
+~~~~~~~~~
+
+Data-block flushes in a CXL build, counted inside ``arts_cxl_store_flush``
+where every one runs: the cache-line sweep and its fence, not the staged
+build's copy beside it.  The producer flush is the purge that publishes a
+turn's writes to the store; the consumer flush is the fetch that drops this
+rank's stale private lines before a grant is read.  Flushes of the arena
+and deque metadata are not counted.  All six stay zero in a build without
+a CXL store.  Each timed flush adds two clock reads, which is comparable to
+flushing a single cache line, so per-flush means for small blocks run high.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Counter
+     - Description
+   * - ``NUM_CXL_FLUSH_PRODUCER``
+     - Producer flushes (purges).
+   * - ``NUM_CXL_FLUSH_CONSUMER``
+     - Consumer flushes (fetches).
+   * - ``BYTES_CXL_FLUSH_PRODUCER``
+     - Bytes swept by producer flushes.
+   * - ``BYTES_CXL_FLUSH_CONSUMER``
+     - Bytes swept by consumer flushes.
+   * - ``TIME_CXL_FLUSH_PRODUCER``
+     - Time in producer flushes (sweep + ``sfence``).
+   * - ``TIME_CXL_FLUSH_CONSUMER``
+     - Time in consumer flushes (sweep + ``mfence``).
+
 Event — Time
 ~~~~~~~~~~~~
 

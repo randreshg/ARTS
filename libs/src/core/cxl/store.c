@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "arts.h"
+#include "arts/counter/Preamble.h"
 #include "arts/cxl/deque.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
@@ -86,11 +87,21 @@ void arts_cxl_store_flush(const void *p, size_t bytes, bool producer) {
 #ifdef ARTS_CXL_FLUSH_RECORDER
   cxl_flush_record(p, bytes, producer);
 #endif
+  /* The timers bracket the sweep and its fence, so a flush's time includes
+   * the drain the fence waits on. */
   if (producer) {
+    INCREMENT_NUM_CXL_FLUSH_PRODUCER_BY(1);
+    INCREMENT_BYTES_CXL_FLUSH_PRODUCER_BY(bytes);
+    TIME_CXL_FLUSH_PRODUCER_START();
     FLUSH_FENCE_PRODUCER(p, bytes);
     __asm__ __volatile__("sfence" ::: "memory");
+    TIME_CXL_FLUSH_PRODUCER_STOP();
   } else {
+    INCREMENT_NUM_CXL_FLUSH_CONSUMER_BY(1);
+    INCREMENT_BYTES_CXL_FLUSH_CONSUMER_BY(bytes);
+    TIME_CXL_FLUSH_CONSUMER_START();
     FLUSH_FENCE_CONSUMER(p, bytes);
     __asm__ __volatile__("mfence" ::: "memory");
+    TIME_CXL_FLUSH_CONSUMER_STOP();
   }
 }

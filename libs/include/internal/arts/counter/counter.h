@@ -102,6 +102,18 @@ extern "C" {
   X(NET_MSG_TOTAL)                                                             \
   /* Time: network */                                                          \
   X(TIME_REMOTE_MOVE)                                                          \
+  /* Num/Bytes/Time: CXL data-block flushes, counted where every one of them \
+   * runs (arts_cxl_store_flush): the sweep and its fence, never the staged  \
+   * copy beside it.  PRODUCER is the purge that publishes a turn's writes,  \
+   * CONSUMER the fetch that drops stale private lines before a grant is     \
+   * read.  The arena/deque metadata flushes are not counted.  Inert in a    \
+   * build without a CXL store. */                                           \
+  X(NUM_CXL_FLUSH_PRODUCER)                                                    \
+  X(NUM_CXL_FLUSH_CONSUMER)                                                    \
+  X(BYTES_CXL_FLUSH_PRODUCER)                                                  \
+  X(BYTES_CXL_FLUSH_CONSUMER)                                                  \
+  X(TIME_CXL_FLUSH_PRODUCER)                                                   \
+  X(TIME_CXL_FLUSH_CONSUMER)                                                   \
   /* Time: events */                                                           \
   X(TIME_EVENT_CREATE)                                                         \
   X(TIME_EVENT_SIGNAL)                                                         \
