@@ -15,12 +15,11 @@ releases the regions), and records:
     ranks are only reported when every rank's file is present.
 
 Counter selection is a BUILD-TIME property of ARTS: this script only points
-the runtime at a per-cell counter folder.  The binaries must be built with a
-counter configuration containing the counters in counter_exploration.md
-(configs/counters_cxl_paper.cfg via -DARTS_COUNTER_CONFIG).  Any counter
-present in the rank files is recorded, so counters added later
-(TIME_EDT_SERVICE, TIME_DB_ACQUIRE, ...) show up without changing this
-script; their derived metrics are null until they exist.
+the runtime at a per-cell counter folder.  Both variants must be built with
+COUNTER_CONFIG (configs/counters_cxl_ipdps27.cfg, via
+-DARTS_COUNTER_CONFIG); preflight checks the build tree's CMakeCache for it,
+and the counters it lists are the ones every rank file is expected to carry.
+Any other counter present in the rank files is still recorded.
 
 Output (under RESULTS_ROOT/<run-id>/):
 
@@ -128,29 +127,21 @@ EXTRA_ENV: dict[str, str] = {
 # wedged remote rank cannot hold ports or CXL regions into the next run.
 CLEANUP_ON_TIMEOUT = True
 
-# The counters counter_exploration.md asks for.  The run records every counter
-# it finds; this list only drives the "missing counter" warning.
-EXPECTED_COUNTERS = [
-    "NUM_EDT_FINISH",
-    "NUM_DB_ACQUIRE_LOCAL_HIT",
-    "NUM_DB_ACQUIRE_REMOTE",
-    "BYTES_DB_PAYLOAD_SENT",
-    "BYTES_REMOTE_SENT",
-    "NUM_REMOTE_SEND",
-    "NUM_EXCL_QUEUE_WAIT",
-    "TIME_EDT_EXEC",
-    "NUM_CXL_FLUSH_PRODUCER",
-    "NUM_CXL_FLUSH_CONSUMER",
-    "BYTES_CXL_FLUSH_PRODUCER",
-    "BYTES_CXL_FLUSH_CONSUMER",
-    "TIME_CXL_FLUSH_PRODUCER",
-    "TIME_CXL_FLUSH_CONSUMER",
-    # Proposed; not yet in ARTS_COUNTER_LIST.  Uncomment once implemented.
-    # "TIME_EDT_SERVICE",
-    # "TIME_DB_ACQUIRE",
-    # "TIME_EDT_QUEUE",
-    # "TIME_DB_RELEASE",
-]
+# The counter configuration both variants are built with.  The run records
+# every counter it finds; the ones this file turns on drive the "missing
+# counter" warning.
+COUNTER_CONFIG = REPO_ROOT / "configs" / "counters_cxl_ipdps27.cfg"
+
+def _configured_counters(path: Path) -> list[str]:
+    """The counter names a NAME=MODE,LEVEL,REDUCTION config turns on."""
+    names = []
+    for line in path.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "=" in line:
+            names.append(line.split("=", 1)[0].strip())
+    return names
+
+EXPECTED_COUNTERS = _configured_counters(COUNTER_CONFIG)
 
 # Applications (base names, without the _<variant> suffix) and their inputs.
 # "{repo}" is replaced with REPO_ROOT.  Inputs are fixed across node counts
@@ -375,16 +366,16 @@ BASE_COLUMNS = [
     "checks_failed", "started_at",
 ]
 DERIVED_COLUMNS = [
-    "network_total_bytes", "network_payload_bytes", "network_control_bytes",
-    "network_total_Bps", "network_payload_Bps", "network_control_Bps",
+    "edt_count", "mean_edt_exec_ns", "edt_create_count", "mean_edt_create_ns",
+    "edt_signal_count", "mean_edt_signal_ns",
     "cxl_protocol_read_bytes", "cxl_protocol_write_bytes",
     "cxl_protocol_total_bytes", "cxl_protocol_read_Bps",
     "cxl_protocol_write_Bps", "cxl_protocol_total_Bps",
-    "edt_count", "db_acquire_local_hits", "db_acquire_remote",
-    "excl_queue_waits", "mean_edt_exec_ns", "cxl_flush_producer_count",
-    "cxl_flush_consumer_count", "mean_cxl_flush_producer_ns",
-    "mean_cxl_flush_consumer_ns", "mean_edt_service_ns", "mean_db_acquire_ns",
-    "mean_edt_queue_ns", "mean_db_release_ns",
+    "cxl_flush_producer_count", "cxl_flush_consumer_count",
+    "mean_cxl_flush_producer_ns", "mean_cxl_flush_consumer_ns",
+    "cxl_flush_producer_op_Bps", "cxl_flush_consumer_op_Bps",
+    "network_payload_bytes", "network_payload_Bps", "db_payload_put_count",
+    "mean_db_payload_put_ns", "db_payload_put_op_Bps",
 ]
 
 # ---------------------------------------------------------------------------
@@ -569,44 +560,51 @@ def _div(a, b):
     return None if a is None or not b else a / b
 
 def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
-    """The metrics of counter_exploration.md, from cluster sums.  Anything
-    whose counter is absent from the build is None."""
+    """The metrics COUNTER_CONFIG is built for, from cluster sums.  Anything
+    whose counter is absent from the build is None.  TIME_* / NUM_* is the
+    mean per operation; BYTES_* / TIME_* (ns) is one operation's throughput,
+    since operations on different threads overlap; BYTES_* / e2e is the
+    aggregate rate."""
     g = sums.get
-    sent, payload = g("BYTES_REMOTE_SENT"), g("BYTES_DB_PAYLOAD_SENT")
-    control = sent - payload if sent is not None and payload is not None else None
     # A consumer flush is the fetch's read edge, a producer flush the purge's
     # write edge; their bytes are the block sizes moved on either residency.
     fetch, purge = g("BYTES_CXL_FLUSH_CONSUMER"), g("BYTES_CXL_FLUSH_PRODUCER")
     n_prod, n_cons = g("NUM_CXL_FLUSH_PRODUCER"), g("NUM_CXL_FLUSH_CONSUMER")
+    t_prod, t_cons = g("TIME_CXL_FLUSH_PRODUCER"), g("TIME_CXL_FLUSH_CONSUMER")
     cxl_total = fetch + purge if fetch is not None and purge is not None else None
-    edts = g("NUM_EDT_FINISH")
+    payload, n_put = g("BYTES_DB_PAYLOAD_SENT"), g("NUM_DB_PAYLOAD_SENT")
+    t_put = g("TIME_DB_PAYLOAD_PUT")
+    edts, creates, signals = (g("NUM_EDT_FINISH"), g("NUM_EDT_CREATE"),
+                              g("NUM_EDT_SIGNAL"))
+
+    def per_ns(nbytes, ns):
+        rate = _div(nbytes, ns)
+        return None if rate is None else rate * 1e9
+
     return {
-        "network_total_bytes": sent,
-        "network_payload_bytes": payload,
-        "network_control_bytes": control,
-        "network_total_Bps": _div(sent, e2e_s),
-        "network_payload_Bps": _div(payload, e2e_s),
-        "network_control_Bps": _div(control, e2e_s),
+        "edt_count": edts,
+        "mean_edt_exec_ns": _div(g("TIME_EDT_EXEC"), edts),
+        "edt_create_count": creates,
+        "mean_edt_create_ns": _div(g("TIME_EDT_CREATE"), creates),
+        "edt_signal_count": signals,
+        "mean_edt_signal_ns": _div(g("TIME_EDT_SIGNAL"), signals),
         "cxl_protocol_read_bytes": fetch,
         "cxl_protocol_write_bytes": purge,
         "cxl_protocol_total_bytes": cxl_total,
         "cxl_protocol_read_Bps": _div(fetch, e2e_s),
         "cxl_protocol_write_Bps": _div(purge, e2e_s),
         "cxl_protocol_total_Bps": _div(cxl_total, e2e_s),
-        "edt_count": edts,
-        "db_acquire_local_hits": g("NUM_DB_ACQUIRE_LOCAL_HIT"),
-        "db_acquire_remote": g("NUM_DB_ACQUIRE_REMOTE"),
-        "excl_queue_waits": g("NUM_EXCL_QUEUE_WAIT"),
-        "mean_edt_exec_ns": _div(g("TIME_EDT_EXEC"), edts),
         "cxl_flush_producer_count": n_prod,
         "cxl_flush_consumer_count": n_cons,
-        "mean_cxl_flush_producer_ns": _div(g("TIME_CXL_FLUSH_PRODUCER"), n_prod),
-        "mean_cxl_flush_consumer_ns": _div(g("TIME_CXL_FLUSH_CONSUMER"), n_cons),
-        # Valid only while each finished EDT adds exactly one sample per timer.
-        "mean_edt_service_ns": _div(g("TIME_EDT_SERVICE"), edts),
-        "mean_db_acquire_ns": _div(g("TIME_DB_ACQUIRE"), edts),
-        "mean_edt_queue_ns": _div(g("TIME_EDT_QUEUE"), edts),
-        "mean_db_release_ns": _div(g("TIME_DB_RELEASE"), edts),
+        "mean_cxl_flush_producer_ns": _div(t_prod, n_prod),
+        "mean_cxl_flush_consumer_ns": _div(t_cons, n_cons),
+        "cxl_flush_producer_op_Bps": per_ns(purge, t_prod),
+        "cxl_flush_consumer_op_Bps": per_ns(fetch, t_cons),
+        "network_payload_bytes": payload,
+        "network_payload_Bps": _div(payload, e2e_s),
+        "db_payload_put_count": n_put,
+        "mean_db_payload_put_ns": _div(t_put, n_put),
+        "db_payload_put_op_Bps": per_ns(payload, t_put),
     }
 
 def sanity_checks(cell, stamps, per_rank, sums, complete) -> list[str]:
@@ -617,11 +615,6 @@ def sanity_checks(cell, stamps, per_rank, sums, complete) -> list[str]:
         failed.append(f"multiple_e2e_markers:{len(stamps)}")
     if not complete:
         failed.append(f"rank_files:{sorted(per_rank)}_of_{cell['nodes']}")
-    sent, payload = sums.get("BYTES_REMOTE_SENT"), sums.get("BYTES_DB_PAYLOAD_SENT")
-    if sent is not None and payload is not None and payload > sent:
-        failed.append("payload_exceeds_remote_sent")
-    if cell["nodes"] > 1 and complete and sent == 0:
-        failed.append("multinode_zero_remote_bytes")
     is_cxl = "cxl" in cell["variant"]
     cxl_bytes = ((sums.get("BYTES_CXL_FLUSH_CONSUMER") or 0)
                  + (sums.get("BYTES_CXL_FLUSH_PRODUCER") or 0))
@@ -758,6 +751,7 @@ def write_manifest(run_dir: Path, cells, args):
             "counter_capture_interval": COUNTER_CAPTURE_INTERVAL,
             "extra_arts_cfg": EXTRA_ARTS_CFG,
             "extra_env": EXTRA_ENV,
+            "counter_config": str(COUNTER_CONFIG),
             "expected_counters": EXPECTED_COUNTERS,
         },
         "apps": [{"app": a, "args": s.replace("{repo}", str(REPO_ROOT))}
@@ -794,11 +788,30 @@ def stage_inputs(cells) -> list[str]:
         print(f"staging input: {p}")
     return fixtures.stage(missing)
 
+# The build tree APP_BUILD_DIR (<build>/benchmarks/apps) belongs to.
+BUILD_CMAKE_CACHE = APP_BUILD_DIR.parents[1] / "CMakeCache.txt"
+
+def built_counter_config() -> Path | None:
+    """The ARTS_COUNTER_CONFIG the binaries were configured with."""
+    try:
+        text = BUILD_CMAKE_CACHE.read_text(errors="replace")
+    except OSError:
+        return None
+    m = re.search(r"^ARTS_COUNTER_CONFIG:[A-Z]+=(.+)$", text, re.M)
+    return Path(m.group(1).strip()) if m else None
+
 def preflight(cells) -> list[str]:
     problems = [f"input file missing: {p}" for p in input_files(cells)
                 if not Path(p).exists()]
     if not RUN_PY.is_file():
         problems.append(f"run.py wrapper not found: {RUN_PY}")
+    built = built_counter_config()
+    if built is None:
+        problems.append(f"no ARTS_COUNTER_CONFIG in {BUILD_CMAKE_CACHE}; "
+                        "cannot confirm the counter build")
+    elif built.resolve() != COUNTER_CONFIG.resolve():
+        problems.append(f"binaries built with counter config {built}, "
+                        f"not {COUNTER_CONFIG}")
     if max(c["nodes"] for c in cells) > len(NODES):
         problems.append(f"{len(NODES)} hosts in NODES, but a cell needs "
                         f"{max(c['nodes'] for c in cells)}")
