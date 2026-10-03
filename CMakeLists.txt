@@ -312,7 +312,11 @@ option(ARTS_CXL_REAL
     "Link the device library named by ARTS_CXL_LIB and ARTS_CXL_RAPID_INCLUDE_DIR instead of the vendored fake"
     OFF)
 set(ARTS_CXL_RAPID_INCLUDE_DIR "" CACHE PATH
-    "ARTS_CXL_REAL=ON: the directory holding the device SDK's MemOps.h and SharedAlloc.h")
+    "ARTS_CXL_REAL=ON: the directory holding the Rapid SDK headers (MemOps.h, SharedAlloc.h)")
+set(ARTS_CXL_RAPID_LIB_DIR "" CACHE PATH
+    "ARTS_CXL_REAL=ON: the directory holding the Rapid SDK libraries (librapid.so, libWrapper.so)")
+set(ARTS_CXL_LIB_INCLUDE_DIR "" CACHE PATH
+    "ARTS_CXL_REAL=ON: the directory holding the arts_cxl_lib installed headers")
 set(ARTS_CXL_LIB "" CACHE FILEPATH
     "ARTS_CXL_REAL=ON: the device glue library file (libarts_cxl_lib.so)")
 set(ARTS_CXL_DB_ARENA_SIZE_BYTES "5000000000" CACHE STRING
@@ -626,27 +630,26 @@ endif()
 
 set(ARTS_CXL_INCLUDE_DIR "")
 set(ARTS_CXL_LIB_PATH "")
+set(ARTS_CXL_RAPID_LIBS "")
 if(ARTS_CXL_NEEDED)
     if(ARTS_CXL_REAL)
-        foreach(_v ARTS_CXL_RAPID_INCLUDE_DIR ARTS_CXL_LIB)
+        foreach(_v ARTS_CXL_RAPID_INCLUDE_DIR ARTS_CXL_RAPID_LIB_DIR ARTS_CXL_LIB_INCLUDE_DIR ARTS_CXL_LIB)
             if(NOT ${_v} OR NOT EXISTS "${${_v}}")
                 message(FATAL_ERROR
                     "ARTS_CXL_REAL=ON needs ${_v} to name an existing path; got '${${_v}}'")
             endif()
         endforeach()
-        foreach(_h MemOps.h SharedAlloc.h)
-            if(NOT EXISTS "${ARTS_CXL_RAPID_INCLUDE_DIR}/${_h}")
-                message(FATAL_ERROR
-                    "ARTS_CXL_RAPID_INCLUDE_DIR=${ARTS_CXL_RAPID_INCLUDE_DIR} holds no ${_h}")
-            endif()
-        endforeach()
-        set(ARTS_CXL_INCLUDE_DIR "${ARTS_CXL_RAPID_INCLUDE_DIR}")
+        set(ARTS_CXL_INCLUDE_DIR "${ARTS_CXL_LIB_INCLUDE_DIR}" "${ARTS_CXL_RAPID_INCLUDE_DIR}")
         set(ARTS_CXL_LIB_PATH "${ARTS_CXL_LIB}")
-        message(STATUS "ARTS CXL: device library ${ARTS_CXL_LIB_PATH}, headers ${ARTS_CXL_INCLUDE_DIR}")
+        set(ARTS_CXL_RAPID_LIBS
+            "-L${ARTS_CXL_RAPID_LIB_DIR}"
+            "-Wl,-rpath,${ARTS_CXL_RAPID_LIB_DIR}"
+            "-lrapid" "-lWrapper")
+        message(STATUS "ARTS CXL: device library ${ARTS_CXL_LIB_PATH}, headers ${ARTS_CXL_INCLUDE_DIR}, rapid libs ${ARTS_CXL_RAPID_LIB_DIR}")
     else()
-        if(ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_LIB)
+        if(ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_RAPID_LIB_DIR OR ARTS_CXL_LIB_INCLUDE_DIR OR ARTS_CXL_LIB)
             message(FATAL_ERROR
-                "ARTS_CXL_RAPID_INCLUDE_DIR and ARTS_CXL_LIB belong to ARTS_CXL_REAL=ON; "
+                "ARTS_CXL_RAPID_INCLUDE_DIR, ARTS_CXL_RAPID_LIB_DIR, ARTS_CXL_LIB_INCLUDE_DIR, and ARTS_CXL_LIB belong to ARTS_CXL_REAL=ON; "
                 "with it OFF the vendored fake library is linked and a path here is a mistake")
         endif()
         # The vendored fake: one host's shared memory mapped at one fixed
@@ -683,9 +686,9 @@ if(ARTS_CXL_NEEDED)
         endif()
         message(STATUS "ARTS CXL: vendored fake library ${ARTS_CXL_LIB_PATH}")
     endif()
-elseif(ARTS_CXL_REAL OR ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_LIB)
+elseif(ARTS_CXL_REAL OR ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_RAPID_LIB_DIR OR ARTS_CXL_LIB_INCLUDE_DIR OR ARTS_CXL_LIB)
     message(FATAL_ERROR
-        "ARTS_CXL_REAL / ARTS_CXL_RAPID_INCLUDE_DIR / ARTS_CXL_LIB were given, but this "
+        "ARTS_CXL_REAL / ARTS_CXL_RAPID_INCLUDE_DIR / ARTS_CXL_RAPID_LIB_DIR / ARTS_CXL_LIB_INCLUDE_DIR / ARTS_CXL_LIB were given, but this "
         "tree builds nothing that links a CXL library (ARTS_USE_CXL=OFF, ARTS_BUILD_BENCHMARKS=OFF)")
 endif()
 
