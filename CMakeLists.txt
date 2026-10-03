@@ -644,7 +644,7 @@ if(ARTS_CXL_NEEDED)
         set(ARTS_CXL_RAPID_LIBS
             "-L${ARTS_CXL_RAPID_LIB_DIR}"
             "-Wl,-rpath,${ARTS_CXL_RAPID_LIB_DIR}"
-            "-lrapid" "-lWrapper")
+            "-lrapid")
         message(STATUS "ARTS CXL: device library ${ARTS_CXL_LIB_PATH}, headers ${ARTS_CXL_INCLUDE_DIR}, rapid libs ${ARTS_CXL_RAPID_LIB_DIR}")
     else()
         if(ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_RAPID_LIB_DIR OR ARTS_CXL_LIB_INCLUDE_DIR OR ARTS_CXL_LIB)
