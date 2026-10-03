@@ -81,6 +81,13 @@ extern "C" {
   /* Bytes: coherence — payload actually shipped for a datablock, as opposed \
    * to BYTES_REMOTE_SENT which mixes control traffic in. */                 \
   X(BYTES_DB_PAYLOAD_SENT)                                                     \
+  /* Num/Time: the same datablock payloads, one per payload however many     \
+   * pieces the provider's ceiling cut it into.  The time runs from the      \
+   * PUT's post to its last piece's local completion -- the provider done   \
+   * reading the source, not the bytes visible at the peer -- and is added   \
+   * by whichever thread reaps that completion. */                          \
+  X(NUM_DB_PAYLOAD_SENT)                                                       \
+  X(TIME_DB_PAYLOAD_PUT)                                                       \
   /* Bytes: memory */                                                          \
   X(BYTES_MEMORY_FOOTPRINT)                                                    \
   /* Bytes: network */                                                         \

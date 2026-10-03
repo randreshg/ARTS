@@ -190,6 +190,16 @@ Coherence — Bytes
    * - ``BYTES_DB_PAYLOAD_SENT``
      - Payload bytes actually shipped for a DataBlock, as opposed to
        ``BYTES_REMOTE_SENT`` which mixes control traffic in.
+   * - ``NUM_DB_PAYLOAD_SENT``
+     - DataBlock payloads shipped, one per payload however many pieces the
+       provider's message ceiling cut it into.
+   * - ``TIME_DB_PAYLOAD_PUT``
+     - Time from a payload PUT's post to its last piece's local completion
+       (the provider done reading the source, not the bytes visible at the
+       peer).  Added by the thread that reaps that completion, so it
+       includes time queued behind a busy provider.  Concurrent PUTs each
+       add their own time: ``BYTES_DB_PAYLOAD_SENT`` over this is the
+       per-transfer throughput, not the link's aggregate bandwidth.
 
 Memory — Bytes
 ~~~~~~~~~~~~~~

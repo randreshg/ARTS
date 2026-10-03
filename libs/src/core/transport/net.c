@@ -124,7 +124,26 @@ struct net_txn_s {
   uint64_t raddr; /* NET_TXN_WRITE: peer landing address (per peer mr_mode) */
   uint64_t rkey;  /* NET_TXN_WRITE: peer landing protection key             */
   uint64_t imm;   /* NET_TXN_WRITE: immediate data (rendezvous txid)        */
+  uint64_t posted_ns; /* a whole payload PUT's post time; 0 = not timed     */
 };
+
+static inline uint64_t net_now_ns(void);
+
+/* A payload PUT's post-to-local-completion time, added on the thread that
+ * retires it.  Compiled out with the counter, clock reads included. */
+static inline uint64_t net_put_stamp(void) {
+#if ENABLE_TIME_DB_PAYLOAD_PUT
+  return net_now_ns();
+#else
+  return 0;
+#endif
+}
+
+static inline void net_put_retired(uint64_t posted_ns) {
+  if (posted_ns != 0) {
+    INCREMENT_TIME_DB_PAYLOAD_PUT_BY(net_now_ns() - posted_ns);
+  }
+}
 
 /* ------------------------------------------------------------------------- */
 /* Per-thread EAGAIN retry ring (SPSC: the owning thread is the sole producer; a *
@@ -319,6 +338,7 @@ static struct net_ring_s *net_get_ring(void) {
 
 /* Run a transmit's completion-gated releases and free its bookkeeping. */
 static inline void net_txn_complete(struct net_txn_s *txn) {
+  net_put_retired(txn->posted_ns);
   if (txn->free_method != NULL) {
     txn->free_method(txn->free_arg);
   }
@@ -347,6 +367,7 @@ static struct net_txn_s *net_txn_new(fi_addr_t addr, void *buf, size_t len,
   txn->raddr = 0;
   txn->rkey = 0;
   txn->imm = 0;
+  txn->posted_ns = 0;
   return txn;
 }
 
@@ -826,6 +847,7 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
  * caller's hook runs on the thread that retires the last piece. */
 struct net_put_group_s {
   _Atomic uint64_t remaining;
+  uint64_t posted_ns; /* the whole payload's post time; 0 = not timed */
   void (*on_local_done)(void *);
   void *arg;
 };
@@ -834,6 +856,7 @@ static void net_put_piece_done(void *arg) {
   struct net_put_group_s *group = (struct net_put_group_s *)arg;
   if (atomic_fetch_sub_explicit(&group->remaining, 1,
                                 memory_order_acq_rel) == 1) {
+    net_put_retired(group->posted_ns);
     if (group->on_local_done != NULL) {
       group->on_local_done(group->arg);
     }
@@ -853,6 +876,7 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
    * payload half of the traffic can be told apart from the control half that
    * BYTES_REMOTE_SENT lumps together with it. */
   INCREMENT_BYTES_DB_PAYLOAD_SENT_BY(len);
+  INCREMENT_NUM_DB_PAYLOAD_SENT_BY(1);
   /* Teardown has begun: drop the PUT but still run the local-done hook so the
    * source buffer's completion-gated release is not leaked (mirrors
    * arts_net_send_core's quiescing contract). */
@@ -875,6 +899,7 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
     txn->raddr = raddr;
     txn->rkey = rkey;
     txn->imm = txid;
+    txn->posted_ns = net_put_stamp();
     net_submit(txn, /*is_ack=*/false);
     return;
   }
@@ -899,6 +924,7 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
     ARTS_ERROR("arts_net: put group allocation failed");
   }
   atomic_store_explicit(&group->remaining, pieces, memory_order_relaxed);
+  group->posted_ns = net_put_stamp();
   group->on_local_done = on_local_done;
   group->arg = arg;
   for (uint64_t off = 0; off < len; off += ceiling) {
