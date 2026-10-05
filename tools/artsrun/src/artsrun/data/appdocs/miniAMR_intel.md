@@ -352,10 +352,8 @@ at 32 nodes.
 rendezvous homed at `index % nranks` — OCR exposes no per-index affinity on a
 labeled range, so changing it would be a shim or runtime change.
 
-Scaling numbers: `calibration pending`. Every figure previously recorded here was
-taken on a retired host, at 512 blocks over at most 8 nodes, with a static mesh
-and a timestep count 1.5× the program's default — none of which is the
-configuration this row now runs.
+Scaling numbers: see the anchor at the end of Sizing; the catalog runs a
+3456-block mesh (`--npx 24 --npy 12 --npz 12`) over 1..32 nodes.
 
 ## Sizing
 
@@ -371,9 +369,9 @@ configuration this row now runs.
   which is a build define set per target (`EXTRA_DEFINES` in
   `benchmarks/apps/CMakeLists.txt`); its only cost is `RootMeta_t.dbSize[]`, one
   `int` per dependence slot. Do not rely on refinement to reach a width floor:
-  the multiplier is data-dependent. `24 × 24 × 12 = 6912` divides exactly by
+  the multiplier is data-dependent. `24 × 12 × 12 = 3456` divides exactly by
   every policy-domain grid the hinted map produces over 1..32 ranks.
-- **`--num_refine` is bounded at both ends: `1 ≤ R ≤ 4` at 6912 blocks.**
+- **`--num_refine` is bounded at both ends: `1 ≤ R ≤ 4` at 3456 blocks.**
   At the bottom, `R = 0` makes refinement inert again — `check_objects`
   downgrades a `REFINE_BLK` decision to `LEAVE_BLK_AT_LVL` as soon as a block is
   at `num_refine` (`move.c:120`) — so `R = 0` is a static mesh and silently
@@ -392,8 +390,8 @@ configuration this row now runs.
   | 4 | 168,516 | 25,487 |
   | 5 | 1,348,164 | 3,185 |
 
-  So at 6912 blocks the published default `--num_refine 5` is not reachable
-  (9,318,509,568 slots) and the argument list must name `1 ≤ R ≤ 4`.
+  So at 3456 blocks the published default `--num_refine 5` is not reachable
+  (4,659,254,784 slots) and the argument list must name `1 ≤ R ≤ 4`.
 - **`nx·ny·nz` and `num_vars` set grain**: block payload is
   `8 + (nx+2)(ny+2)(nz+2)·num_vars·8` B and face payload
   `40 + comm_vars·(dim1)(dim2)·8` B. Raising them makes each clone move more
@@ -407,13 +405,13 @@ configuration this row now runs.
   level-0-payload-to-peak-RSS multiplier on this program is ≈8× (the allocator
   holding `whoAmI`/`depv`/face churn while the destroy path drains). At
   `nx=ny=nz=10, num_vars=40` the block payload is 552,968 B, so a 190 GB one-node
-  budget allows on the order of 43,000 live blocks. `B = 6912` is 3.8 GB of
+  budget allows on the order of 43,000 live blocks. `B = 3456` is 1.9 GB of
   level-0 payload; how many refinement levels fit inside the remainder depends on
-  how many blocks the object's boundary touches and is `calibration pending` —
-  measure RSS at one node before committing `--num_refine`.
+  how many blocks the object's boundary touches — measure RSS at one node before
+  committing `--num_refine`.
 
-Anchor time and per-cell RSS: `calibration pending`. The previously recorded
-figures belong to a static mesh at 512 blocks with `--num_tsteps` above the
-program's default, and do not transfer. Note when re-taking them that this
-program is unusually sensitive to instrumentation — a campaign counterset cost it
-~31% in the record — so calibrate on a counter-free tree.
+Anchor at the catalog arguments (24x12x12 = 3456 blocks, `--num_refine 1`,
+`--num_tsteps 20`), one node of 108 workers, INV x WB: base 24.0 s / hinted
+21.8 s, 12.7 GB resident. This program is unusually sensitive to
+instrumentation — a campaign counterset cost it ~31% in the record — so
+calibrate on a counter-free tree.

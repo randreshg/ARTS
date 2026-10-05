@@ -67,7 +67,7 @@ perfect 4-ary tree of depth `d`:
 Worked numbers at the calibrated `args = ['409600', '1600']`: `409600/1600
 = 256 = 2⁸`, so `d = 8`. `recLCSEdt` = 87,381; `seqLCSEdt` = 65,536; total
 EDTs = 152,923; Events = `6·4⁸ + 3` = 393,219; templates = 131,076; DBs = 3
-(`score` = 4.19 MB, `S` = `T` = 1.05 MB, unaffected by `d`). Each unit of
+(`score` = 6,553,616 B, `S` = `T` = 1,638,404 B, unaffected by `d`). Each unit of
 `d` (each doubling of `N/base`) multiplies EDT/event counts by ~4, while DB
 *count* never changes and DB *payload* grows only linearly in `N`.
 
@@ -144,8 +144,9 @@ instance.
 
 ## Placement (base)
 
-No `OCR_APP_OPTIMIZED_PLACEMENT` guard exists anywhere in this file —
-every `ocrEdtCreate`/`ocrDbCreate` passes `NULL_HINT`. Effective policy:
+The `OCR_APP_OPTIMIZED_PLACEMENT` guard (the `quadBand`/`quadHint`
+helpers) is off in the base build, where every
+`ocrEdtCreate`/`ocrDbCreate` passes `NULL_HINT`. Effective policy:
 
 - **EDTs**: NULL hint → shim's `ARTS_HINT_ANY_RANK` → runtime round-robin.
   Every `recLCSEdt`/`seqLCSEdt` instance lands on an independently chosen

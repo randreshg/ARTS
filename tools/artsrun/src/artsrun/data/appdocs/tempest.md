@@ -88,7 +88,7 @@ has exactly one publisher and one learner.)
 | object | count | size / note |
 |--------|-------|-------------|
 | EDTs | `6k²·duration + 12k² + 9` | `6k²·duration` `patchEdt` (`6k²` chains × `duration` generations) + `6k²` `patchInit` + `6k²` `channelSetup` + 6 `panelInit` + `realmain` + `wrapup` + 1 `mainEdt` itself (the OCR shim creates it as an EDT — `arts_edt_create(mainEdtTrampoline, ...)` — before its body runs; not one of `mainEdt`'s own explicit `ocrEdtCreate` calls) |
-| DBs | `102k² − 18` | 6 panel (80 B) + `6k²` patch (232 B: `sizeof(patch_t)`) + `E(k)` channel-handoff (8 B) + `48k²` halo seeds (8 B) — all duration-independent |
+| DBs | `102k² − 18` | 6 panel (88 B) + `6k²` patch (232 B: `sizeof(patch_t)`) + `E(k)` channel-handoff (8 B) + `48k²` halo seeds (8 B) — all duration-independent |
 | Events created | `144k² − 70` | see accounting below |
 | Live event objects | `96k² − 46` | `E(k)` CHANNEL + `E(k)` labeled sticky + 2; nothing is ever destroyed |
 | EDT templates | `12k² + 9` | pure GUID encodings under ARTS, not runtime objects |

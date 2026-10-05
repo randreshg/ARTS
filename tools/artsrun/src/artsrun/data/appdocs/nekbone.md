@@ -94,16 +94,17 @@ rank, 7 for a corner. Summed over the lattice,
 `D = (3Rx-2)(3Ry-2)(3Rz-2) - R`. Per-neighbour payload `ddof` is
 `(Ex(P-1)+1)²`, `Ex(P-1)+1` or `1` DOF for a face, edge or corner contact.
 
-Worked, at the catalog's `18 16 12 3 3 3 8 100` (`R=3456, E=27, P=8, N=100`,
+Worked, at the catalog's `18 16 12 4 4 4 8 100` (`R=3456, E=64, P=8, N=100`,
 `D=77,872`, `I=346`): 4,209,410 app + 2,191,614 reduction = **6,401,024 EDTs**
 (+1 runtime baseline, which is the catalog's 6,401,025); 9,182,585 app +
 3,120,166 reduction scalars + 8,020,816 halo envelopes ≈ **20.3M DBs**;
 389,360 halo + 21,078 reduction = **410,438 events**. Each solution vector is
-108 KiB, so the live set is 756 KiB per rank — **2.7 GB of vectors across the
-3456 ranks**, and 15.5 GB measured at one node once runtime metadata for 6.4M
-EDTs and 20.3M DBs is counted. A face envelope is 484 DOF (7,760 B), an edge
-22 and a corner 1, so an interior rank exchanges ~50 KiB per gather-scatter
-round — ~150 MB per round across the lattice, ~15 GB over the run. The
+`(512·64+1)·8` = 262,152 B, so the live set is ~1.75 MiB per rank — **6.3 GB of
+vectors across the 3456 ranks**, and 35 GB resident at one node once runtime
+metadata for 6.4M EDTs and 20.3M DBs is counted. A face envelope is 841 DOF
+(13,472 B), an edge 29 and a corner 1, so an interior rank exchanges ~85 KiB
+per gather-scatter round — ~280 MB per round across the lattice, ~28 GB over
+the run. The
 all-reduces move 8 bytes each and cost latency, not bandwidth.
 
 Object counts do not move with the element block: at 144, 27 and 24 elements a
@@ -154,9 +155,8 @@ DB concurrency is low by construction: every solution vector is created, read
 and written only by its own rank's chain, so no DB has two concurrent writers
 and the maximum reader fan-out is one. The contention point is not a DB at
 all — it is the reduction tree's root, which every iteration passes through
-three times. One irregularity: `nekCG_axi_start` acquires `nekW` as `RO` and
-writes the whole matvec result into it, which is safe only because the block
-never leaves its node (see the notes file).
+three times. `nekCG_axi_start` acquires `nekW` `RW`, since it writes the whole
+matvec result into it.
 
 ## Flow
 
@@ -260,9 +260,9 @@ Measured (15w+1p per node, `18 16 12 2 2 2 12 100`): base 134.46 / 280.75 /
 133.15 / 108.05 / 71.37 / 56.49 s, monotone, 2.36× over one node. At the anchor
 the two tiers are identical (one place — the map is irrelevant), which is the
 check that the change is placement and nothing else. That trend was taken at
-`pDOF 12`, i.e. at the same 13,824 DOF per rank as the catalog's
-`3 3 3 × pDOF 8`, but at a lower flop-per-halo ratio; hinted's scaling at the
-campaign arguments is not yet measured.
+`pDOF 12`, i.e. 13,824 DOF per rank against the catalog's 32,768
+(`4 4 4 × pDOF 8`); hinted's scaling at the campaign arguments is not yet
+measured.
 
 ## Sizing
 
@@ -281,8 +281,8 @@ grain and memory; `CGcount` moves duration only.
   memory ~P³); `Etotal` buys grain and memory linearly, halo as `E^(2/3)`.
 - **Memory** is `7·(P³·E + 1)·8` bytes per rank times `Rtotal` for the live
   vectors, plus a transient generation of four vectors per iteration and the
-  runtime's own metadata for the object counts above. At `18 16 12 3 3 3 8 100`
-  that is 2.7 GB of vectors and 15.5 GB measured on one node — the whole
+  runtime's own metadata for the object counts above. At `18 16 12 4 4 4 8 100`
+  that is 6.3 GB of vectors and 35 GB resident on one node — the whole
   lattice runs on one node at every node count, so this is the figure the
   190 GB per-node budget is read against.
 - **Duration** is reached with the element block, never with `CGcount`:

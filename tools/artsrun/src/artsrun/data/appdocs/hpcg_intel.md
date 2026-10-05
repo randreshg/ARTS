@@ -173,8 +173,8 @@ down. Nothing else prints inside the window at `debug == 0`.
 
 ## Placement (base)
 
-This is **not** a NULL-hint program, and no `OCR_APP_OPTIMIZED_PLACEMENT`
-layer exists in the source — what follows is as published. `mainEdt` calls
+This is **not** a NULL-hint program. The `OCR_APP_OPTIMIZED_PLACEMENT` layer
+(`HPCG_HALO_HOME_HINT`) is off in the base build — what follows is as published. `mainEdt` calls
 `ocrAffinityCount(AFFINITY_PD, &PDcount)` (the ARTS node count) and maps each
 tile through `getMyPD`, a **recursive bisection**: halve the PD range and the
 tile grid's currently longest axis together, recurse. Tile `myrank`'s `initEdt`

@@ -1,5 +1,6 @@
 # LLNL Dane (CTS-2): 2x Intel Xeon Platinum (Sapphire Rapids), 112 physical
-# cores per node, 256 GB, InfiniBand.  One rank per node.
+# cores per node, 256 GB, Cornelis Omni-Path (driven through its verbs
+# interface).  One rank per node.
 #
 # 108 workers + 4 progress threads fills the node exactly, and 108 = 2**2 * 3**3
 # is chosen for its factorisation: the SPMD ports (hpcg, nekbone, CoMD tiled,

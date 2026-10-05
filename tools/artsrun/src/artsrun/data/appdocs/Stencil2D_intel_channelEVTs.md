@@ -218,9 +218,9 @@ exists to exhibit, and is deliberately left alone.
 
 ## Placement (base)
 
-Not a NULL-hint program, and not gated by any hint-layer guard (this
-source carries no `OCR_APP_OPTIMIZED_PLACEMENT` code at all — there is no
-`_hinted` build). `forkSpmdEdts_Cart2D` (`ocrAppUtils.c`, shared with the
+Not a NULL-hint program. The `OCR_APP_OPTIMIZED_PLACEMENT` guard in this
+source adds only the halo-home hint (see Placement (hinted)) and is off in the
+base build, which is the one described here. `forkSpmdEdts_Cart2D` (`ocrAppUtils.c`, shared with the
 chandra port's hand-rolled equivalent) queries
 `ocrAffinityCount(AFFINITY_PD, …)` — the ARTS run's actual node count,
 independent of the app's own `NR` — factors it into a `PD_X×PD_Y` grid via
