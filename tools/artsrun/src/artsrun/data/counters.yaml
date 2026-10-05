@@ -100,6 +100,16 @@ counters:
     unit: bytes
     help: 'Datablock payload shipped, excluding control traffic'
 
+  NUM_DB_PAYLOAD_SENT:
+    group: 'Coherence: payload'
+    unit: count
+    help: 'Datablock payloads shipped, one per payload however many pieces the provider cut it into'
+
+  TIME_DB_PAYLOAD_PUT:
+    group: 'Coherence: payload'
+    unit: ns
+    help: "Time from a payload PUT's post to its last piece's local completion"
+
   BYTES_MEMORY_FOOTPRINT:
     group: 'Memory'
     unit: bytes
@@ -159,6 +169,36 @@ counters:
     group: 'Network time'
     unit: ns
     help: 'Time spent in arts_remote_memory_move() — sending local DB data to remote node'
+
+  NUM_CXL_FLUSH_PRODUCER:
+    group: 'CXL flush'
+    unit: count
+    help: 'Producer flushes of the CXL store (a purge publishing a turn''s writes)'
+
+  NUM_CXL_FLUSH_CONSUMER:
+    group: 'CXL flush'
+    unit: count
+    help: 'Consumer flushes of the CXL store (a fetch dropping stale private lines before a grant is read)'
+
+  BYTES_CXL_FLUSH_PRODUCER:
+    group: 'CXL flush'
+    unit: bytes
+    help: 'Bytes swept by producer flushes'
+
+  BYTES_CXL_FLUSH_CONSUMER:
+    group: 'CXL flush'
+    unit: bytes
+    help: 'Bytes swept by consumer flushes'
+
+  TIME_CXL_FLUSH_PRODUCER:
+    group: 'CXL flush'
+    unit: ns
+    help: 'Time in producer flushes, the cache-line sweep and its sfence'
+
+  TIME_CXL_FLUSH_CONSUMER:
+    group: 'CXL flush'
+    unit: ns
+    help: 'Time in consumer flushes, the cache-line sweep and its mfence'
 
   TIME_EVENT_CREATE:
     group: 'Event time'
