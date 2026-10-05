@@ -1,0 +1,101 @@
+# Experiment paper-grain: the task grain of every paper row, measured once.
+# One node, one coherence entry and one run per program: the quantity read is
+# the TIME_EDT_EXEC counter (time inside EDT bodies, summed over the node),
+# the one counter of the grain counter set; NUM_EDT_FINISH, its divisor, is
+# already in the paper data from the census campaigns of the same programs.
+# A counter sum needs no median, so one repeat suffices.  The roster,
+# arguments and program versions are the paper suite's: the hinted version
+# where one is registered (paper-main-hinted), the base version otherwise.
+#   artsrun run -p dane -x paper-grain -n 1 -c grain --repeats 1
+# Afterwards: consolidate the campaign (copro/tools/consolidate-campaign.py)
+# and add its counter records to the paper data with
+# copro/tools/merge-counters.py .scratch/paper-data/suite.json <grain.json>
+# (not merge-suite.py, which would replace every cell of the programs);
+# gen-suite.py then fills the Avg. EDT time column of Table II by itself.
+
+name: paper-grain
+description: time inside EDT bodies per task, one node, one run per program
+entries: [arts_inv_wb]
+
+apps:
+  cholesky_blas:
+    enabled: true
+    versions: [hinted]
+  CoMD_intel_chandra_tiled:
+    enabled: true
+    versions: [hinted]
+  CoMD_sdsc:
+    enabled: true
+    versions: [hinted]
+  fft:
+    enabled: true
+    versions: [hinted]
+  fibonacci:
+    enabled: true
+    versions: [hinted]
+  graph500:
+    enabled: true
+    versions: [base]
+  hpcg_intel:
+    enabled: true
+    versions: [base]
+  hpgmg:
+    enabled: true
+    versions: [hinted]
+  LCS_all_db_distributed:
+    enabled: true
+    versions: [hinted]
+  LCS_distributed_ST:
+    enabled: true
+    versions: [hinted]
+  LCS_shared:
+    enabled: true
+    versions: [hinted]
+  miniAMR_intel:
+    enabled: true
+    versions: [hinted]
+  miniAMR_intel_chandra:
+    enabled: true
+    versions: [hinted]
+  nekbone:
+    enabled: true
+    versions: [hinted]
+  npb_cg:
+    enabled: true
+    versions: [base]
+  nqueens:
+    enabled: true
+    versions: [hinted]
+  p2p:
+    enabled: true
+    versions: [base]
+  quicksort:
+    enabled: true
+    versions: [hinted]
+  RSBench_intel:
+    enabled: true
+    versions: [hinted]
+  RSBench_intel_sharedDB:
+    enabled: true
+    versions: [base]
+  sar_pss:
+    enabled: true
+    versions: [base]
+  smithwaterman:
+    enabled: true
+    versions: [hinted]
+  Stencil2D_intel_channelEVTs:
+    enabled: true
+    versions: [base]
+  tempest:
+    enabled: true
+    versions: [hinted]
+  triangle:
+    enabled: true
+    versions: [hinted]
+  XSBench_intel:
+    enabled: true
+    versions: [hinted]
+  XSBench_intel_sharedDB:
+    enabled: true
+    versions: [base]

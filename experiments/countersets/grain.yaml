@@ -1,0 +1,10 @@
+name: grain
+description: time inside EDT bodies, summed over the node; over NUM_EDT_FINISH
+  of the same program it is the task grain
+capture_interval: 250
+counters:
+  TIME_EDT_EXEC:
+    mode: ONCE
+    level: NODE
+    reduce: SUM
+allow_empty: false
