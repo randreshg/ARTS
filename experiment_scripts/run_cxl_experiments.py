@@ -368,6 +368,8 @@ BASE_COLUMNS = [
 DERIVED_COLUMNS = [
     "edt_count", "mean_edt_exec_ns", "edt_create_count", "mean_edt_create_ns",
     "edt_signal_count", "mean_edt_signal_ns",
+    "db_create_count", "mean_db_create_ns", "db_create_bytes",
+    "mean_db_create_bytes",
     "cxl_protocol_read_bytes", "cxl_protocol_write_bytes",
     "cxl_protocol_total_bytes", "cxl_protocol_read_Bps",
     "cxl_protocol_write_Bps", "cxl_protocol_total_Bps",
@@ -576,6 +578,8 @@ def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
     t_put = g("TIME_DB_PAYLOAD_PUT")
     edts, creates, signals = (g("NUM_EDT_FINISH"), g("NUM_EDT_CREATE"),
                               g("NUM_EDT_SIGNAL"))
+    # NUM/BYTES count home-local creates only; TIME times every create call.
+    db_creates, db_bytes = g("NUM_DB_CREATE"), g("BYTES_DB_CREATE")
 
     def per_ns(nbytes, ns):
         rate = _div(nbytes, ns)
@@ -588,6 +592,10 @@ def derive(sums: dict[str, int], e2e_s: float | None) -> dict:
         "mean_edt_create_ns": _div(g("TIME_EDT_CREATE"), creates),
         "edt_signal_count": signals,
         "mean_edt_signal_ns": _div(g("TIME_EDT_SIGNAL"), signals),
+        "db_create_count": db_creates,
+        "mean_db_create_ns": _div(g("TIME_DB_CREATE"), db_creates),
+        "db_create_bytes": db_bytes,
+        "mean_db_create_bytes": _div(db_bytes, db_creates),
         "cxl_protocol_read_bytes": fetch,
         "cxl_protocol_write_bytes": purge,
         "cxl_protocol_total_bytes": cxl_total,
