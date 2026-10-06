@@ -60,7 +60,7 @@ static void owner_response_landed_cb(void *arg);
  * and the self-send call the handler body directly. */
 void arts_db_owner_start_invalidate_round(
     struct arts_db_cache_s *cache, unsigned int new_owner,
-    const struct arts_rdzv_landing_s *new_owner_rdzv) {
+    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have) {
   struct arts_db_s *db = arts_db_of_cache(cache);
   unsigned int current_owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
@@ -71,7 +71,7 @@ void arts_db_owner_start_invalidate_round(
    * route it through dispatch_or_defer (the dispatcher / self-send call the
    * handler body directly, guarded by assert(cache != NULL)). */
   arts_send_db_grant_invalidate(current_owner, cache->db_guid, new_owner,
-                                    new_owner_rdzv);
+                                    new_owner_rdzv, new_owner_have);
 }
 
 
@@ -267,10 +267,11 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
    * carries ARTS_NO_PENDING_OWNER and the baton is released below. */
   unsigned int piggyback = ARTS_NO_PENDING_OWNER;
   struct arts_rdzv_landing_s piggyback_rdzv = {0, 0, 0, 0};
+  uint64_t piggyback_have = ARTS_GRANT_VERSION_NONE;
   {
     unsigned int next_owner;
     if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
-                                    &piggyback_rdzv, NULL)) {
+                                    &piggyback_rdzv, &piggyback_have)) {
       db->pending_install_owner = next_owner;
       piggyback = next_owner;
       /* No early PROCEED: the next owner's RW cursor is advanced by the CURRENT
@@ -282,7 +283,7 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
     }
   }
   arts_send_db_grant_confirm_ack(new_owner, cache->db_guid, piggyback,
-                                     &piggyback_rdzv);
+                                     &piggyback_rdzv, piggyback_have);
   if (piggyback != ARTS_NO_PENDING_OWNER) {
     /* Round advanced via the merged ack; the baton stays held until the new
      * owner releases (transfer-commit), as in the standalone-INVALIDATE case.
@@ -340,6 +341,7 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
     cache->incoming_new_owner_rdzv.key = p->new_owner_rdzv.key;
     cache->incoming_new_owner_rdzv.txid = p->new_owner_rdzv.txid;
     cache->incoming_new_owner_rdzv.cookie = p->new_owner_rdzv.cookie;
+    cache->incoming_new_owner_have = p->new_owner_have;
     cache->incoming_new_owner = p->new_owner_rank;
     arts_atomic_sub(&cache->writer_count, 1); /* sentinel withdrawal */
   }
@@ -376,8 +378,9 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
    * writer invariant), so no atomic needed. */
   unsigned int next_owner;
   struct arts_rdzv_landing_s next_rdzv;
+  uint64_t next_have = ARTS_GRANT_VERSION_NONE;
   while (!arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
-                                       &next_rdzv, NULL)) {
+                                       &next_rdzv, &next_have)) {
     /* Empty despite our own push: an earlier round already served it (rounds
      * can complete between the push and this claim).  Release the baton with
      * the SAME re-check discipline as the round close: a requester that
@@ -402,7 +405,8 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
     INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
   }
   db->pending_install_owner = next_owner;
-  arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv);
+  arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv,
+                                       next_have);
   /* No early PROCEED here (see arts_db_send_grant_response): the next
    * owner's RW cursor advances at transfer-commit, not at round start. */
 }
@@ -446,6 +450,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
    * ships.  Only one GRANT_INVALIDATE is in flight per round (home baton
    * gate), so there is no concurrent writer to incoming_new_owner. */
   cache->incoming_new_owner_rdzv = a->new_owner_rdzv;
+  cache->incoming_new_owner_have = a->new_owner_have;
   cache->incoming_new_owner = a->new_owner_rank;
   /* Ship ONLY on the exact 0 edge (see the handler header). */
   int rest = (int)arts_atomic_sub(&cache->writer_count, 1);
@@ -475,7 +480,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
 void arts_send_db_grant_confirm_ack(
     unsigned int new_owner_rank, arts_guid_t db_guid,
     unsigned int piggyback_new_owner,
-    const struct arts_rdzv_landing_s *piggyback_rdzv) {
+    const struct arts_rdzv_landing_s *piggyback_rdzv, uint64_t piggyback_have) {
   struct arts_msg_grant_confirm_ack_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_CONFIRM_ACK);
   p.header.rank = arts_global_rank_id;
@@ -489,6 +494,7 @@ void arts_send_db_grant_confirm_ack(
   } else {
     p.new_owner_rdzv = (struct arts_msg_rdzv_landing_s){0, 0, 0, 0};
   }
+  p.new_owner_have = piggyback_have;
   if (new_owner_rank == arts_global_rank_id) {
     /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop.
      * HIT runs the confirm_ack body on the ref-pinned db_s, passing the packet

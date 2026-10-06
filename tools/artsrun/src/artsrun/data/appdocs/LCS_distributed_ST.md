@@ -92,7 +92,7 @@ As in `LCS_shared`, the upstream orphan STICKY event per leaf and per
   time; the cost of adding nodes is grant migration on most of the `4^d`
   turns, not lost concurrency. `S`/`T` are split into `2L` separate RO
   blocks, so read traffic spreads over `L` homes instead of concentrating
-  on one — 4 KB RO snapshots against a 2 MB RW block that moves nearly
+  on one — 6.4 KB RO snapshots against a 6.55 MB RW block that moves nearly
   every turn, which is why this rung's curve overlaps `LCS_shared`'s.
 
 ## Flow
@@ -172,7 +172,7 @@ tile happens where the tile was born.  The tiles themselves are **not** moved
 the hint on the later `ocrDbCreate` -- and with a two-dimensional quadrant map
 there is no single consumer rank to move an `S` tile to anyway: tile `ti` is
 read by the leaves of a whole tile row, which the map spreads over `G` bands.
-The read-only tiles are small (4 KB) and cached per node after first touch, so
+The read-only tiles are small (6.4 KB) and cached per node after first touch, so
 that is not where the wall time is.
 
 Nothing else changes: no count, size, mode, wiring or decomposition moves, and

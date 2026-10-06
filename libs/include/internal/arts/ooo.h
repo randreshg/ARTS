@@ -381,6 +381,7 @@ struct arts_ooo_args_db_grant_invalidate_s {
   arts_guid_t db_guid;
   unsigned int new_owner_rank;
   struct arts_rdzv_landing_s new_owner_rdzv; /* transfer landing at new owner */
+  uint64_t new_owner_have; /* version the new owner reported holding */
 };
 
 /* INV protocol OoO args (OOO_DB_INV_REQUEST / OOO_DB_PUBLISH). */

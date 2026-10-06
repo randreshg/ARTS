@@ -216,6 +216,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->grant_req_in_flight = 0u;
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   /* INV's sharer plane carries no version ledger by construction; NULL selects
    * the shared transfer helper's empty-map branch. */
   c->cached_version = NULL;

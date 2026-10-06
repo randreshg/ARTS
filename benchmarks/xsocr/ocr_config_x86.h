@@ -158,11 +158,10 @@
 #define ENABLE_EXTENSION_LABELING
 
 // Disable round-robin auto-placement of user EDTs.  With this defined,
-// hint-less EDTs stay on the creator's rank — matching ARTS's behavior
-// and preventing single-node-designed apps (process-local globals) from
-// breaking in distributed mode.
-// #define LOAD_BALANCING_TEST  (disabled to enable auto round-robin for toy
-// deadlock test)
+// hint-less EDTs stay on the creator's rank, which keeps apps with
+// process-local globals working in distributed mode.  Left undefined, so
+// hint-less EDTs are placed round-robin across ranks.
+// #define LOAD_BALANCING_TEST
 
 // Multi-output slot extension (ocrAddDependenceSlot,
 // ocrEventCollectiveSatisfySlot)

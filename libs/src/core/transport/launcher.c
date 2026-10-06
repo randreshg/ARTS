@@ -145,6 +145,23 @@ void arts_launcher_ssh_startup_processes(struct arts_launcher_s *launcher) {
     return;
   }
 
+  // Resolve an absolute path for arts.cfg so remote processes don't depend on
+  // their working directory to find the config file.  If ARTS_CONFIG is already
+  // an absolute path use it directly; if it's relative (or unset, defaulting to
+  // "arts.cfg") prefix it with cwd so the remote `cd` is not load-bearing for
+  // config discovery.
+  char arts_config_abs[4096];
+  {
+    const char *env_cfg = getenv("ARTS_CONFIG");
+    const char *cfg_src = (env_cfg && env_cfg[0] != '\0') ? env_cfg : "arts.cfg";
+    if (cfg_src[0] == '/') {
+      strncpy(arts_config_abs, cfg_src, sizeof(arts_config_abs) - 1);
+      arts_config_abs[sizeof(arts_config_abs) - 1] = '\0';
+    } else {
+      snprintf(arts_config_abs, sizeof(arts_config_abs), "%s/%s", cwd, cfg_src);
+    }
+  }
+
   // Derive the current executable path and basename.
   // self_exe holds the absolute path (used for launch mode — `cd CWD &&
   // /abs/path/to/exe`). binary_name holds the basename only (used for kill mode
@@ -232,12 +249,11 @@ void arts_launcher_ssh_startup_processes(struct arts_launcher_s *launcher) {
       if (self_exe[0] != '\0') {
         arts_cmd_appendf(command, sizeof(command), &final_length, "cd %s && ",
                          cwd);
-        // Pass through arts_config environment variable if set
-        char *arts_config_env = getenv("ARTS_CONFIG");
-        if (arts_config_env) {
-          arts_cmd_appendf(command, sizeof(command), &final_length,
-                           "ARTS_CONFIG=%s ", arts_config_env);
-        }
+        // Always pass an absolute ARTS_CONFIG path so the remote doesn't fall
+        // back to searching in its home directory when the cd fails or the
+        // env var is unset.
+        arts_cmd_appendf(command, sizeof(command), &final_length,
+                         "ARTS_CONFIG=%s ", arts_config_abs);
         // Pass through LD_LIBRARY_PATH if set
         char *ld_library_path = getenv("LD_LIBRARY_PATH");
         if (ld_library_path) {
@@ -259,17 +275,13 @@ void arts_launcher_ssh_startup_processes(struct arts_launcher_s *launcher) {
         // Fallback: attempt to use argv if available, otherwise just cd
         arts_cmd_appendf(command, sizeof(command), &final_length, "cd %s && ",
                          cwd);
-        // Pass through arts_config environment variable if set
-        char *arts_config_env = getenv("ARTS_CONFIG");
-        if (arts_config_env) {
-          arts_cmd_appendf(command, sizeof(command), &final_length,
-                           "ARTS_CONFIG=%s ", arts_config_env);
-        }
+        arts_cmd_appendf(command, sizeof(command), &final_length,
+                         "ARTS_CONFIG=%s ", arts_config_abs);
         // Pass through LD_LIBRARY_PATH if set
-        char *ld_library_path = getenv("LD_LIBRARY_PATH");
-        if (ld_library_path) {
+        char *ld_library_path_fb = getenv("LD_LIBRARY_PATH");
+        if (ld_library_path_fb) {
           arts_cmd_appendf(command, sizeof(command), &final_length,
-                           "LD_LIBRARY_PATH=%s ", ld_library_path);
+                           "LD_LIBRARY_PATH=%s ", ld_library_path_fb);
         }
         // Pass ARTS_RANK to tell spawned process its rank (prevents recursive
         // spawning)

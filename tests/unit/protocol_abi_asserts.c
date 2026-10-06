@@ -215,9 +215,9 @@ _Static_assert(sizeof(struct arts_msg_db_create_return_packet_s) == 56,
 _Static_assert(offsetof(struct arts_msg_db_create_return_packet_s,
                         create_token) == 24,
                "db_create_return's token must follow db_guid");
-_Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 64,
+_Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 72,
                "ownership_invalidate sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 64,
+_Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 72,
                "ownership_confirm_ack sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 72,
                "snapshot_request sizeof drifted");

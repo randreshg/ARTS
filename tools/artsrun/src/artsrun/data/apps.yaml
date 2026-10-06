@@ -1521,9 +1521,9 @@ apps:
     # policy-domain factorisation (see the flag below).
     #
     # The rank grid mirrors the largest geometry, not the worker count.  The EDT
-    # count is set by the block total, not the rank count (518,117,863 against
-    # 518,119,559 for the same mesh), so an oversized grid buys no parallelism,
-    # only overhead, at an equal EDT count.  Width comes from
+    # count is set by the block total, not the rank count (137,897,089 at the
+    # shipped args), so an oversized grid buys no parallelism, only overhead,
+    # at an equal EDT count.  Width comes from
     # init_x*init_y*init_z.
     #
     # stages_per_ts and num_vars are stated rather than left at their defaults
@@ -1773,7 +1773,7 @@ apps:
     # the base tier therefore carries an explicit per-edge reduction (an
     # 8-byte block per task, satisfied onto a ONCE event wired into a
     # per-parent summer).  At the shipped args that adaptation IS the entire
-    # 516,550 blocks / 516,550 events / 52,202 summers this row measures --
+    # 721,635 blocks / 721,635 events / 67,087 summers this row measures --
     # read every DB and event number here as introduced by distribution, not
     # as published behaviour.  The FINISH scopes were not the obstacle (the
     # shim implements them).  Rejected alternatives: one shared counter block
@@ -1801,7 +1801,7 @@ apps:
     # milliseconds of work, so n is the size calibration, and cutoff moves with
     # it so the grain stays fixed -- cutoff 5 at n=19 would mean max_set=14,
     # essentially the whole tree expanded as EDTs, where max_set=4 still leaves
-    # 464,348 sequential-leaf tasks.
+    # 654,548 sequential-leaf tasks.
     #
     # The two remaining dials are one plane, not two knobs: cutoff fixes
     # max_set = n - cutoff, hence how many levels spawn at all, and scatter
@@ -1833,11 +1833,11 @@ apps:
     # (print + abort) rather than ocrAssert, which the reference runtime
     # compiles away.
     #
-    # At the shipped args: T = 516,550 find EDTs, S = 52,202 spawning,
-    # 464,348 sequential leaves (134x the 3456 workers of the widest
-    # geometry), 568,754 EDTs and 516,550 8-byte DBs/events in total, under
+    # At the shipped args: T = 721,635 find EDTs, S = 67,087 spawning,
+    # 654,548 sequential leaves (189x the 3456 workers of the widest
+    # geometry), 788,722 EDTs and 721,635 8-byte DBs/events in total, under
     # 0.3 GB.  Every spawning task creates and destroys its own sum template
-    # (52,202 pairs) -- published idiom, shim-dependent, not a defect to chase
+    # (67,087 pairs) -- published idiom, shim-dependent, not a defect to chase
     # if a reference runtime trips there.
     #
     # Those two settle the WIDTH plane and are held; n carries the size, and
@@ -2340,7 +2340,7 @@ apps:
     expect: '7396750967536631'
     expect_args: ['-s', 'large', '-l', '2000000', '-t', '216', '-p', '32']
     # Strict sweep invariant: every logical count is node-invariant -- 32
-    # instances, 216 chains each, 3000000 lookups per instance.  The
+    # instances, 216 chains each, 2000000 lookups per instance.  The
     # fork's block partition maps the 32 instances onto however many PDs the
     # run has.  The dataset is a pure function of (instance index, position in
     # the array), so the problem instance is identical at every node count and
@@ -2386,9 +2386,9 @@ apps:
     #    SCHEDULER_TYPE 1).
     #  - -p is the app's own SPMD REPLICATION knob, not a partition: each of
     #    the 32 instances runs the full -l against its own dataset.  Aggregate
-    #    work is 32 x 3000000 lookups; it is not a 32-x-larger problem.
+    #    work is 32 x 2000000 lookups; it is not a 32-x-larger problem.
     #
-    # This decomposition SCALES (3456 dependence-free equal-work lanes, one
+    # This decomposition SCALES (6912 dependence-free equal-work lanes, one
     # terminal latch per instance), which is what the pair with the
     # Master/Worker sibling RSBench_intel is for.
     args: ['-s', 'large', '-l', '2000000', '-t', '216', '-p', '32']
@@ -3629,7 +3629,7 @@ apps:
     # only fires when expect_args equals args, so the two move together.
     # Anchor at these arguments, one node of 108 workers, INV x WB: base 20.1
     # s / hinted 19.3 s, 10 GB resident; target 20 s (hinted kept, flat).
-    expect: '233281'   # 5k^2+1 at k=288, the SE neighbour of patch 0
+    expect: '233281'   # 5k^2+1 at k=216, the SE neighbour of patch 0
     expect_args: ['216', '100']
     # Both dials are arguments: k sets how many patches there are (6k^2, each
     # the same size) and duration how many timesteps they take.  duration stays

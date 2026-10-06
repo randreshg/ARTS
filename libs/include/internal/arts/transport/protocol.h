@@ -392,6 +392,10 @@ struct ARTS_PACKED arts_msg_grant_invalidate_packet_s {
    * the current holder can PUT the transfer payload without a home
    * round-trip.  txid==0 = sentinel DB round (data-less transfer). */
   struct arts_msg_rdzv_landing_s new_owner_rdzv;
+  /* The version the new owner reported holding in its GRANT_REQUEST
+   * (ARTS_GRANT_VERSION_NONE when it holds none): the holder ships the
+   * permission alone when its canonical bytes are at that version. */
+  uint64_t new_owner_have;
 };
 
 /* GRANT_RETURN: holder → home. Body = db_guid(8) + cv(8); the returner is
@@ -422,6 +426,8 @@ struct ARTS_PACKED arts_msg_grant_confirm_ack_packet_s {
   uint8_t pad[4];
   /* Piggybacked next-owner landing (mirrors GRANT_INVALIDATE's field). */
   struct arts_msg_rdzv_landing_s new_owner_rdzv;
+  /* Piggybacked next owner's reported version (mirrors GRANT_INVALIDATE). */
+  uint64_t new_owner_have;
 };
 
 struct ARTS_PACKED arts_msg_snapshot_request_packet_s {

@@ -321,6 +321,7 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
                            .key = pack->new_owner_rdzv.key,
                            .txid = pack->new_owner_rdzv.txid,
                            .cookie = pack->new_owner_rdzv.cookie},
+        .new_owner_have = pack->new_owner_have,
     };
     /* Pin the db_s for the handler's duration (the embedded cache is its FIRST
      * member, offset 0) so a concurrent DESTROY on another receiver thread

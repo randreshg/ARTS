@@ -26,6 +26,7 @@
  * prototypes, and arts_db_excl_waiter_s for the EXCL build. */
 #include "arts/coherence/excl/types.h"
 
+#include <assert.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -41,7 +42,6 @@
 #include "arts/db.h"
 #include "arts/edt.h"
 #include "arts/gas/route_table.h"
-#include "arts/memory/regpool.h" /* arts_regpool_free (orphaned landing) */
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
@@ -65,7 +65,7 @@ struct arts_lock_ro_serve_node_s {
    * an untagged FORWARD blocked behind a live writer can sit here while a
    * tagged one arrives, so one drain must be able to carry both. */
   uint32_t tag;
-  struct arts_rdzv_landing_s rdzv; /* reader's serve landing (fresh buffer) */
+  struct arts_rdzv_landing_s rdzv; /* reader's serve landing (its stable buffer) */
 };
 
 /* fetch_add units for the cas1 count bump (the OWNER cache_state has different
@@ -627,38 +627,29 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
  * dispatches through the OoO engine (HIT runs inline; MISS defers until the
  * home db_s is installed) — a REQUEST can race the home CREATE on a cross-rank
  * stub-install path.  Remote send goes via the transport. */
-/* Advertise this rank's deliver landing.  RW: the stable buffer, installed
- * IN PLACE by the migration DELIVER (safe — the global RW lock excludes every
- * holder while the migration flies; fixed address preserved).  RO: a FRESH
- * landing buffer — a stale RO grant can race a newer ownership install on
- * this rank (the deliver handler's ro_return arm), and an in-place PUT could
- * not be un-written, so RO serves land aside and install (one copy) only when
- * the state machine accepts them. */
-static bool lock_owner_request_landing(struct arts_db_cache_s *cache,
-                                      arts_db_access_mode_t mode,
-                                      struct arts_rdzv_landing_s *out) {
+/* Advertise this rank's deliver landing: the stable buffer (the fixed-address
+ * backing store), installed IN PLACE by the DELIVER for either mode.  Phase
+ * exclusion keeps the buffer quiescent for the whole flight of a request:
+ * this rank's readers park on ro_st==REQ and its writers park at the home
+ * behind the outstanding read count, the home opens no write phase until
+ * every read grant has come back, and a grant comes back only after its
+ * bytes have landed — so neither a migration nor a local access can reach
+ * the buffer while a serve is in flight, and the serve leaves an owner only
+ * while that owner's write permission is relinquished.  A fresh txid is
+ * drawn per request (each request is served by at most one grant). */
+static bool lock_stable_landing(struct arts_db_cache_s *cache,
+                                struct arts_rdzv_landing_s *out) {
   *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
   if (fetch_size == 0 || arts_global_rank_count <= 1) {
     return false;
   }
-  if (mode == DB_MODE_RO) {
-    /* Mirror the RW branch's explicit failure handling: on a landing-alloc
-     * failure do not advertise a partially-filled landing — re-zero it and
-     * report no landing, exactly as the RW path does on rdzv-registration
-     * failure. */
-    if (arts_db_buf_landing_alloc(cache, fetch_size, out) == NULL) {
-      *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-      return false;
-    }
-    return true;
-  }
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
     /* First touch: materialize the one stable buffer (bytes unspecified; the
-     * migration PUT fully overwrites it before any drained waiter reads, and
-     * a data-less deliver is one for a block nobody has written).
+     * PUT fully overwrites it before any drained waiter reads, and a
+     * data-less deliver is one for a block nobody has written).
      * fetch_size may be the GUID bound — an ALLOCATION size only; the DB's
      * size is declared exclusively by the wire (prepare never records it). */
     arts_db_buf_prepare_inplace(cache, fetch_size);
@@ -682,7 +673,7 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   struct arts_rdzv_landing_s rdzv;
-  (void)lock_owner_request_landing(cache, mode, &rdzv);
+  (void)lock_stable_landing(cache, &rdzv);
   if (home_rank == arts_global_rank_id) {
     struct arts_ooo_args_db_excl_request_s args = {
         .requester = arts_global_rank_id,
@@ -775,7 +766,7 @@ void arts_send_db_excl_forward(unsigned int owner_rank, arts_guid_t db_guid,
  * by home).  Versionless — exclusive-lock serialization guarantees no stale
  * write can race.  The payload travels one-sided into the target's forwarded
  * landing; a self-send builds the contiguous (header + data) buffer and calls
- * the handler body directly (recycling an unused fresh landing). */
+ * the handler body directly (the target's advertised landing goes unused). */
 void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
                                uint32_t mode, uint32_t tag,
                                const struct arts_rdzv_landing_s *rdzv,
@@ -793,18 +784,9 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
   p.rdzv_txid = 0;
   p.rdzv_cookie = (rdzv != NULL) ? rdzv->cookie : 0;
   if (target_rank == arts_global_rank_id) {
-    /* Self-serve: inline (header + data) — the target's advertised landing
-     * goes unused; recycle a fresh RO landing (cookie names it; RW landings
-     * are the stable buffer itself, cookie 0). */
-    if (rdzv != NULL && rdzv->cookie != 0) {
-      arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-      struct arts_db_s *own = (struct arts_db_s *)arts_shared_get(h);
-      if (own != NULL) {
-        arts_db_buf_landing_recycle(
-            &own->cache, (struct arts_db_buffer_s *)(uintptr_t)rdzv->cookie);
-      }
-      arts_shared_release(&h);
-    }
+    /* Self-serve: inline (header + data).  The target's advertised landing
+     * is its own stable buffer and goes unused; the handler's phantom arm
+     * installs nothing, since the bytes are this rank's own. */
     uint64_t ds = (src != NULL) ? data_size : 0; /* trailing bytes only */
     uint64_t total = sizeof(p) + ds;
     p.header.size = total;
@@ -1108,12 +1090,6 @@ void arts_handler_db_excl_forward(void *item_v) {
       } while (!atomic_compare_exchange_weak_explicit(
           &cache->cache_state, &cur, next, memory_order_acq_rel,
           memory_order_acquire));
-      /* The request's landing was allocated by this rank and is spent — the
-       * deliver self-send used to be what recycled it. */
-      if (p->rdzv.cookie != 0u) {
-        arts_db_buf_landing_recycle(
-            cache, (struct arts_db_buffer_s *)(uintptr_t)p->rdzv.cookie);
-      }
       if (CACHE_RO_ST(cur) != CACHE_ST_IDLE) {
         arts_send_db_excl_roret(arts_guid_get_rank(cache->db_guid),
                                 cache->db_guid);
@@ -1151,29 +1127,26 @@ void arts_handler_db_excl_forward(void *item_v) {
  * Cat-C route-table lookup: NULL ⇒ DB destroyed concurrently ⇒ drop.
  * Data is installed BEFORE the CAS so drained waiters observe it. */
 /* Post-arrival tail of the DELIVER handler: the state transition + drains /
- * CONFIRM / return, run once the payload bytes are available.  `landing` is
- * non-NULL only for a one-sided RO serve (the fresh aside buffer the bytes
- * landed in; installed or recycled per the ro_return decision).  `data` is
- * the inline same-rank payload (NULL on the one-sided path).  Consumes db_h. */
+ * CONFIRM / return, run once the payload bytes are available.  `data` is the
+ * inline same-rank payload; NULL on the one-sided path, whose bytes already
+ * sit in the stable buffer.  Consumes db_h. */
 static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                                 uint32_t tag,
                                 arts_db_access_mode_t mode, const void *data,
-                                uint64_t data_size,
-                                struct arts_db_buffer_s *landing);
+                                uint64_t data_size);
 
-/* Rendezvous continuation: the deliver payload fully landed (RW: in place in
- * the stable buffer; RO: in the fresh aside landing).  Runs the commit. */
+/* Rendezvous continuation: the deliver payload fully landed, in place in the
+ * stable buffer for either mode.  Runs the commit. */
 struct lock_deliver_landed_ctx_s {
   arts_shared_ptr_t db_h;
   arts_guid_t db_guid;
   arts_db_access_mode_t mode;
   uint64_t data_size;
-  struct arts_db_buffer_s *landing; /* RO aside landing; NULL for RW */
   /* A one-sided DELIVER splits the packet frame from the commit frame: the
    * handler hands off to the rendezvous continuation and the packet's lifetime
    * ends there, while the CAS that decides GRANT vs GRANT_PURGE runs later in
    * lock_deliver_commit, which never sees the packet.  Every multinode RO serve
-   * takes that path, so the tag MUST ride here — exactly as `landing` does. */
+   * takes that path, so the tag MUST ride here. */
   uint32_t tag;
 };
 
@@ -1182,11 +1155,8 @@ static void lock_deliver_landed_cb(void *arg) {
       (struct lock_deliver_landed_ctx_s *)arg;
   if (arts_shared_get(ctx->db_h) != NULL) {
     lock_deliver_commit(ctx->db_h, ctx->db_guid, ctx->tag, ctx->mode, NULL,
-                        ctx->data_size, ctx->landing);
+                        ctx->data_size);
   } else {
-    if (ctx->landing != NULL) {
-      arts_regpool_free(ctx->landing); /* cache gone — free the aside bytes */
-    }
     arts_shared_release(&ctx->db_h);
   }
   arts_free(ctx);
@@ -1202,8 +1172,8 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
-    /* Destroyed mid-flight: consume any pairing (frees an RO aside landing;
-     * an RW in-place landing has cookie 0 — nothing to free). */
+    /* Destroyed mid-flight: consume any pairing (the landing is the stable
+     * buffer, cookie 0 — nothing to free). */
     arts_db_rdzv_discard_landing(p->rdzv_txid, p->rdzv_cookie);
     arts_shared_release(&db_h);
     return;
@@ -1224,7 +1194,6 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
     ctx->db_guid = p->db_guid;
     ctx->mode = mode;
     ctx->data_size = p->data_size;
-    ctx->landing = (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie;
     ctx->tag = p->tag;
     arts_net_rdzv_expect(p->rdzv_txid, lock_deliver_landed_cb, ctx);
     return;
@@ -1232,15 +1201,14 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
 
   /* Same-rank / data-less deliver: inline payload (if any), no landing. */
   lock_deliver_commit(db_h, p->db_guid, p->tag, mode,
-                      (data_size > 0u) ? data : NULL, data_size,
-                      NULL); /* consumes db_h */
+                      (data_size > 0u) ? data : NULL,
+                      data_size); /* consumes db_h */
 }
 
 static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                                 uint32_t tag,
                                 arts_db_access_mode_t mode, const void *data,
-                                uint64_t data_size,
-                                struct arts_db_buffer_s *landing) {
+                                uint64_t data_size) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   struct arts_db_cache_s *cache = &db->cache;
 
@@ -1279,21 +1247,21 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
      * action); drive it. */
     owner_try_execute(cache);
   } else {
-    /* RO grant: a borrower may receive a read-only copy.  Decide on the
-     * snapshot, install BEFORE publishing, then CAS:
-     *   ro_return (rw_st==GRANT || rc==0): nothing to serve here.  rw_st==GRANT
-     *       means this rank already holds the data as the RW owner (RW⊇RO
-     * covers its readers); rc==0 means its readers were already served (e.g.
-     * via an RW⊇RO join while it was a past owner).  In BOTH cases do NOT drain
-     *       and do NOT install (installing would override valid owner data), do
-     *       NOT take ros/ro_granted; set ros=IDLE and immediately return the
-     *       unneeded grant (RO_RETURN) to balance the home's r.  This is the
-     * one uniform handler for current-owner / past-owner / phantom — the home
-     *       sends RO grants unconditionally and needs no owner tracking.
-     *   serve (rw_st!=GRANT && rc>0): the rank held stale data, so install the
-     *       granted copy (override is correct, like HOME's RO-grant memcpy),
-     * set ros=GRANT + ro_granted (owes one RO_RETURN when its readers drain),
-     *       then serve them. */
+    /* RO grant: a borrower may receive a read-only copy.  Decide, install a
+     * same-rank inline payload BEFORE publishing, then CAS:
+     *   ro_return (rw_st==GRANT || owner-bit): this rank already holds the
+     *       canonical bytes, as the write-permission holder (RW⊇RO covers its
+     *       readers) or as the resident owner; the grant is a phantom — a
+     *       request this rank parked at the home before it became the owner,
+     *       served by itself once the phase turned.  Install nothing, take no
+     *       ro_st/ro_granted, and return the grant at once (RO_RETURN) to
+     *       balance the home's r.  Only a same-rank serve can be a phantom:
+     *       the home opens no write phase while this rank's grant is out, so
+     *       a serve from another owner lands before this rank can become one.
+     *   serve (otherwise): the one-sided bytes already sit in the stable
+     *       buffer, an inline payload installs here; set ro_st=GRANT +
+     *       ro_granted (owes one RO_RETURN when its readers drain), then serve
+     *       them. */
     uint64_t cur, next;
     bool ro_return;
     bool installed = false;
@@ -1306,21 +1274,23 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
        * install an incoming copy over its own newer buffer. */
       ro_return = (CACHE_RW_ST(cur) == CACHE_ST_GRANT) ||
                   (CACHE_OWNER(cur) == 1u);
+      /* A one-sided serve reaching a phantom would already have overwritten
+       * the owner's bytes; phase exclusion makes that unreachable. */
+      assert(!(ro_return && data == NULL && data_size > 0u));
       if (!ro_return && !installed) {
         /* Deferred commit (universal invariant): a grant may become observable
-         * only AFTER its bytes are installed.  Install the granted copy into
-         * the stable buffer (fixed address) BEFORE the CAS that publishes
-         * ros=GRANT: the moment any acquirer observes GRANT (its acquire-load
-         * of cache_state pairing with this CAS's release) it can be granted
-         * locally and read the buffer, so publishing first would hand out the
-         * not-yet-installed (stale) bytes.  Installing pre-publish is safe:
-         * while this rank's RO grant is outstanding the home cannot start an
-         * RW phase (its r-count includes this grant), so no ownership DELIVER
-         * can race this commit; and with ros still REQ every local RO acquire
-         * parks, so no reader touches the buffer until the publish. */
-        if (landing != NULL) {
-          arts_db_buf_write_inplace(cache, landing->data, data_size);
-        } else if (data != NULL && data_size > 0u) {
+         * only AFTER its bytes are installed.  A one-sided serve landed in the
+         * stable buffer before this continuation ran; an inline payload is
+         * installed here, BEFORE the CAS that publishes ros=GRANT: the moment
+         * any acquirer observes GRANT (its acquire-load of cache_state pairing
+         * with this CAS's release) it can be granted locally and read the
+         * buffer, so publishing first would hand out the not-yet-installed
+         * (stale) bytes.  Installing pre-publish is safe: while this rank's RO
+         * grant is outstanding the home cannot start an RW phase (its r-count
+         * includes this grant), so no ownership DELIVER can race this commit;
+         * and with ros still REQ every local RO acquire parks, so no reader
+         * touches the buffer until the publish. */
+        if (data != NULL && data_size > 0u) {
           arts_db_buf_write_inplace(cache, data, data_size);
         }
         installed = true;
@@ -1351,20 +1321,11 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                                                     next, memory_order_acq_rel,
                                                     memory_order_acquire));
     if (ro_return) {
-      /* Nothing to serve — and the granted bytes must NOT touch the stable
-       * buffer (this rank may hold newer owner data).  This is exactly why an
-       * RO serve lands ASIDE: recycle the untouched landing and return the
-       * grant. */
-      if (landing != NULL) {
-        arts_db_buf_landing_recycle(cache, landing);
-      }
+      /* Nothing to serve and nothing installed: return the grant. */
       arts_send_db_excl_roret(arts_guid_get_rank(db_guid), db_guid);
     } else {
-      /* Bytes were installed before the publish above; the landing is spent —
-       * recycle it and wake the parked readers. */
-      if (landing != NULL) {
-        arts_db_buf_landing_recycle(cache, landing);
-      }
+      /* Bytes were installed before the publish above; wake the parked
+       * readers. */
       lock_drain_pending(&cache->ro_pending);
       /* A grant marked to return while no reader holds it is returned by
        * whichever side observes the complete state second.
@@ -1627,9 +1588,9 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
  * Held-RO readers (an RO REQUEST that arrived during the RW phase) wait in
  * db->ro_waiters until the RW→RO flip drains them.  Same shape as the
  * file-local node in purge.c (ro_waiters is the Treiber db->ro_waiters
- * that TU also uses); the SERVE_ONE path serves the requester directly and
- * never touches this queue, so the only producers/consumers are the home
- * REQUEST hold-push and the CONFIRM SERVE_ALL drain. */
+ * that TU also uses); the SERVE_ONE path drains it as well, so its producers
+ * are the home REQUEST push and its consumers the REQUEST and CONFIRM
+ * SERVE_ALL drains. */
 struct arts_lock_ro_node_s {
   arts_lf_link_t link; /* FIRST */
   unsigned int rank;
@@ -1667,27 +1628,59 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
      * The error directions are asymmetric and settle it: over-stamping costs a
      * re-fetch, under-stamping hangs.  Moving the drain ahead of the forward, or
      * reverting to the committed word, silently reopens that hang. */
-    /* RW → RO flip: drain every held RO waiter and FORWARD-serve each
-     * UNCONDITIONALLY (the fixed single-target packet, same shape as
-     * SERVE_ONE). No owner identity tracking here: a rank that is (or was) the
-     * owner gets the grant like any other, and its cache returns it immediately
-     * (RO_RETURN) when it already holds the data (rw_st==GRANT) or has nothing
-     * to serve (rc==0) — see arts_handler_db_excl_deliver's RO arm.  Keeping
-     * the home side unconditional avoids tracking owner identity across
-     * migrations. */
-    arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);
-    uint64_t fresh =
-        atomic_load_explicit(&db->lock_state, memory_order_acquire);
-    uint32_t tag = (LOCK_W(fresh) > 0u) ? 1u : 0u;
-    while (node != NULL) {
-      arts_lf_link_t *nx =
-          atomic_load_explicit(&node->next, memory_order_relaxed);
-      struct arts_lock_ro_node_s *rn =
-          ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
-      arts_send_db_excl_forward(owner, db->cache.db_guid, (uint32_t)DB_MODE_RO,
-                                rn->rank, tag, &rn->rdzv);
-      arts_free(rn);
-      node = nx;
+    /* The owner comes from that same fresh load, for the same reason: a frame
+     * preempted between its CAS and its drain can resume after the phase it
+     * committed has passed, and then drain readers that arrived in the write
+     * phase that followed.  Forwarding those to the owner of its own word
+     * would serve them from a rank that has migrated away (the serve node
+     * strands there and r never falls) or alongside a migration PUT into the
+     * same reader's buffer.  Every queued node is a counted reader, so a
+     * post-drain load that shows the read phase pins both the phase and the
+     * owner until these readers are served; any other phase means the nodes
+     * are held readers that the next flip must serve — put them back and look
+     * once more, since that flip may have drained between the drain and the
+     * push-back (its CAS precedes its drain, the push-back precedes the
+     * re-load, both RMW).
+     *
+     * FORWARD-serve each reader UNCONDITIONALLY (the fixed single-target
+     * packet, same shape as SERVE_ONE).  No owner identity tracking here: a
+     * rank that is (or was) the owner gets the grant like any other, and its
+     * cache returns it immediately (RO_RETURN) when it already holds the data
+     * — see arts_handler_db_excl_deliver's RO arm. */
+    for (;;) {
+      arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);
+      if (node == NULL) {
+        break;
+      }
+      uint64_t fresh =
+          atomic_load_explicit(&db->lock_state, memory_order_acquire);
+      if (LOCK_PHASE(fresh) == EXCL_PHASE_RO) {
+        unsigned int serve_owner = LOCK_OWNER(fresh);
+        uint32_t tag = (LOCK_W(fresh) > 0u) ? 1u : 0u;
+        while (node != NULL) {
+          arts_lf_link_t *nx =
+              atomic_load_explicit(&node->next, memory_order_relaxed);
+          struct arts_lock_ro_node_s *rn =
+              ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
+          arts_send_db_excl_forward(serve_owner, db->cache.db_guid,
+                                    (uint32_t)DB_MODE_RO, rn->rank, tag,
+                                    &rn->rdzv);
+          arts_free(rn);
+          node = nx;
+        }
+        break;
+      }
+      while (node != NULL) {
+        arts_lf_link_t *nx =
+            atomic_load_explicit(&node->next, memory_order_relaxed);
+        arts_lf_stack_push(&db->ro_waiters, node);
+        node = nx;
+      }
+      atomic_thread_fence(memory_order_seq_cst);
+      fresh = atomic_load_explicit(&db->lock_state, memory_order_acquire);
+      if (LOCK_PHASE(fresh) != EXCL_PHASE_RO) {
+        break; /* still held: the flip that ends this write phase serves them */
+      }
     }
   }
 }
@@ -1696,9 +1689,11 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
  * Cat-B @home (OoO OOO_DB_EXCL_REQUEST).  item_v is the pre-pinned home db_s;
  * args_v is {requester, db_guid, mode}.
  *
- * Both modes push the requester onto their waiter queue BEFORE the CAS, so
- * "queued ⟹ counted" holds and any transition that observes the count also finds
- * the node.  A write request that finds the lock idle FORWARDs the owner to
+ * A write request pushes onto its queue BEFORE the CAS, so "queued ⟹ counted"
+ * holds and any transition that observes w also finds the node; a read request
+ * pushes AFTER its CAS, so "queued ⟹ counted" holds the other way round — a
+ * drain never forwards a serve for a reader the word does not yet count (see
+ * the RO arm).  A write request that finds the lock idle FORWARDs the owner to
  * migrate to the queue front; a read request is served at once in the read-only
  * or idle phase and otherwise held for the eventual flip. */
 void arts_handler_db_excl_request(void *item_v, void *args_v) {
@@ -1762,13 +1757,10 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
       }
     }
   } else {
-    /* Enqueue BEFORE the r++ CAS, so whichever transition observes that r++ —
-     * this request's own serve, or a concurrent flip's SERVE_ALL — finds the node
-     * already queued and serves it from the freshly-CAS'd owner.  Serving is
-     * ALWAYS a queue drain; there is deliberately no path that serves the
-     * requester directly from a snapshot, because such a snapshot can name an
-     * owner that has since migrated, stranding both the reader and the home's
-     * r. */
+    /* Serving is ALWAYS a queue drain; there is deliberately no path that
+     * serves the requester directly from a snapshot, because such a snapshot
+     * can name an owner that has since migrated, stranding both the reader and
+     * the home's r. */
     /* Roster the requester BEFORE the lock_state CAS.  That ordering is what
      * makes "served untagged implies eventually recalled" hold: the fetch_or
      * precedes this rank's r++ CAS, which precedes any later writer's w:0->1
@@ -1780,7 +1772,6 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
         (struct arts_lock_ro_node_s *)arts_malloc(sizeof(*n));
     n->rank = requester;
     n->rdzv = a->rdzv;
-    arts_lf_stack_push(&db->ro_waiters, &n->link);
     do {
       cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
       next = lock_owner_compute_next(cur, EXCL_OP_RO_ACQ, /*new_owner=*/0u,
@@ -1788,13 +1779,34 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
     } while (!atomic_compare_exchange_weak_explicit(&db->lock_state, &cur, next,
                                                     memory_order_acq_rel,
                                                     memory_order_acquire));
+    /* Queue AFTER the r++ CAS.  Every serve is a drain of the whole stack, so
+     * a node queued before its count commits could be forwarded by another
+     * frame while r does not yet hold it against the next write phase — and
+     * the serve's PUT lands in the reader's stable buffer, which a migration
+     * granted in that phase may then be writing.  Queued after the count, a
+     * forwarded reader is always one the word pins the read phase on.
+     *
+     * The converse gap — a flip that observed this r++ and drained before the
+     * push — is closed by the re-check below: the push and the flip's CAS are
+     * both RMWs and a full fence separates the push from the load, so either
+     * the flip's drain finds this node or the load finds the phase already
+     * read-only (the read phase, never idle: this request's own count is
+     * unserved). */
+    arts_lf_stack_push(&db->ro_waiters, &n->link);
     /* RO/idle phase (SERVE_ONE): drain ro_waiters and FORWARD each reader to
      * the freshly-CAS'd owner — this serves the just-pushed node (plus any
      * reader a concurrent request pushed; XCHG drain partitions are disjoint).
-     * RW phase (NONE): leave the node held; the RW→RO flip's SERVE_ALL drains
-     * it. */
+     * RW phase (NONE): the node stays held for the RW→RO flip's SERVE_ALL,
+     * unless that flip already ran. */
     if (action == EXCL_ACTION_FORWARD_SERVE_ONE) {
       lock_owner_home_forward(db, EXCL_ACTION_FORWARD_SERVE_ALL, next);
+    } else {
+      atomic_thread_fence(memory_order_seq_cst);
+      uint64_t fresh =
+          atomic_load_explicit(&db->lock_state, memory_order_acquire);
+      if (LOCK_PHASE(fresh) == EXCL_PHASE_RO) {
+        lock_owner_home_forward(db, EXCL_ACTION_FORWARD_SERVE_ALL, fresh);
+      }
     }
   }
 }

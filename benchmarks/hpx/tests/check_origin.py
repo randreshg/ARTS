@@ -167,7 +167,10 @@ def selftest() -> int:
 
     expected = [0, 1, 1, 1, 2]
     failures = 0
-    for (name, got), want in zip(cases, expected, strict=True):
+    if len(cases) != len(expected):
+        print(f"check_origin selftest: case count mismatch: {len(cases)} vs {len(expected)}")
+        return 1
+    for (name, got), want in zip(cases, expected):
         if got != want:
             print(f"check_origin selftest: {name}: expected {want}, got {got}")
             failures += 1

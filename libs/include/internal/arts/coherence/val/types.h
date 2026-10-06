@@ -153,6 +153,10 @@ struct arts_db_cache_s {
    * under the same single-writer / publish-before-withdraw discipline as)
    * incoming_new_owner: the 0-edge actor PUTs the transfer payload here. */
   struct arts_rdzv_landing_s incoming_new_owner_rdzv;
+  /* The version the pending new owner reported holding (its request's
+   * have_version), published with the two fields above; the 0-edge actor
+   * ships no payload when the canonical bytes are at that very version. */
+  uint64_t incoming_new_owner_have;
 #ifdef ARTS_WRITE_POLICY_WB
   /* WB: owner-side dedup map.  Allocated lazily on first ownership; preserved
    * across ownership transfer (GRANT_RESPONSE serializes it). */
