@@ -92,7 +92,7 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
   unsigned int current_owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
   arts_send_db_grant_invalidate(current_owner, cache->db_guid, next_owner,
-                                    &next_rdzv);
+                                    &next_rdzv, ARTS_GRANT_VERSION_NONE);
 }
 
 /* ===== WT GRANT_RESPONSE handler (new owner C) ================ */
@@ -307,6 +307,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
    * the WT INVALIDATE carries new_owner (home embeds the FIFO front),
    * making the WT and WB transfer paths structurally identical. */
   cache->incoming_new_owner_rdzv = a->new_owner_rdzv;
+  cache->incoming_new_owner_have = a->new_owner_have;
   cache->incoming_new_owner = a->new_owner_rank;
   /* Sentinel withdrawal (writer_count -= 1).  Home's invalidate_in_flight gate
    * sends AT MOST ONE GRANT_INVALIDATE to this rank per transfer round, after

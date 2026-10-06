@@ -63,12 +63,14 @@ void arts_db_grant_round_close(struct arts_db_cache_s *cache,
   while (1) {
     unsigned int next_owner;
     struct arts_rdzv_landing_s next_rdzv;
-    if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner, &next_rdzv, NULL)) {
+    uint64_t next_have = ARTS_GRANT_VERSION_NONE;
+    if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner, &next_rdzv,
+                                    &next_have)) {
       db->pending_install_owner = next_owner;
       unsigned int current =
           atomic_load_explicit(&db->rw_holder, memory_order_acquire);
       arts_send_db_grant_invalidate(current, cache->db_guid, next_owner,
-                                        &next_rdzv);
+                                        &next_rdzv, next_have);
       return;
     }
     arts_sched_fuzz_point(); /* widen the pop-empty<->release window */
@@ -127,10 +129,12 @@ void arts_db_grant_round_close(struct arts_db_cache_s *cache,
      * current rw_holder, exactly like the first-round request-handler path. */
     unsigned int next_owner;
     struct arts_rdzv_landing_s next_rdzv;
+    uint64_t next_have = ARTS_GRANT_VERSION_NONE;
     if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
-                                    &next_rdzv, NULL)) {
+                                    &next_rdzv, &next_have)) {
       db->pending_install_owner = next_owner;
-      arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv);
+      arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv,
+                                           next_have);
       return;
     }
     /* The racer was already consumed by whoever we contended with; loop to

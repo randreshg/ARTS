@@ -161,6 +161,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->cached_version = arts_rank_u64_map_create(arts_global_rank_count);
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
 }
 

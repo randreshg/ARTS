@@ -217,6 +217,7 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * it. */
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
   /* WT has no owner-side dedup map (home serves RO via SNAPSHOT_REQUEST): the
    * owner→owner transfer always ships an empty map.  NULL so the shared ship
    * helper's map-build gate takes its empty-map branch. */

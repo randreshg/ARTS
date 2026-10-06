@@ -401,9 +401,29 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
 void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   unsigned int new_owner = cache->incoming_new_owner;
   struct arts_rdzv_landing_s rdzv = cache->incoming_new_owner_rdzv;
+  uint64_t have = cache->incoming_new_owner_have;
   cache->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   cache->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-  arts_db_send_grant_response(cache, new_owner, &rdzv, /*data_less=*/false);
+  cache->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
+  bool data_less = false;
+#ifdef ARTS_WRITE_POLICY_WB
+  /* The new owner's copy is current when it carries this buffer's version:
+   * under write-back the owner's buffer version is the one axis every copy
+   * is stamped on, each release advances it before any copy is retired or
+   * re-served, and nothing advances it on the 0-edge this ship runs on.  A
+   * requester that reported no version holds nothing worth keeping.  Under
+   * write-through the copies are stamped on the home's own axis, which this
+   * buffer does not carry, so the comparison is not made there. */
+  if (have != ARTS_GRANT_VERSION_NONE) {
+    arts_shared_ptr_t h = arts_db_buf_acquire(cache);
+    struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
+    data_less = (b != NULL && arts_atomic_read_u64(&b->version) == have);
+    arts_db_buf_release(&h);
+  }
+#else
+  (void)have;
+#endif
+  arts_db_send_grant_response(cache, new_owner, &rdzv, data_less);
 }
 
 /* ===== Home-side ownership handlers (VAL; moved from handlers.c) =====
@@ -587,7 +607,7 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v) {
 
 void arts_send_db_grant_invalidate(
     unsigned int owner_rank, arts_guid_t db_guid, unsigned int new_owner_rank,
-    const struct arts_rdzv_landing_s *new_owner_rdzv) {
+    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have) {
   struct arts_rdzv_landing_s rdzv =
       (new_owner_rdzv != NULL) ? *new_owner_rdzv
                                : (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -601,6 +621,7 @@ void arts_send_db_grant_invalidate(
   p.new_owner_rdzv.key = rdzv.key;
   p.new_owner_rdzv.txid = rdzv.txid;
   p.new_owner_rdzv.cookie = rdzv.cookie;
+  p.new_owner_have = new_owner_have;
   if (owner_rank == arts_global_rank_id) {
     /* Self-send: both placements now dispatch the INVALIDATE handler directly.
      *
@@ -624,6 +645,7 @@ void arts_send_db_grant_invalidate(
         .db_guid = db_guid,
         .new_owner_rank = new_owner_rank,
         .new_owner_rdzv = rdzv,
+        .new_owner_have = new_owner_have,
     };
     /* Pin the db_s for the handler's duration (cache is its FIRST member,
      * offset 0) — keeps it alive against a concurrent DESTROY.  Target is the

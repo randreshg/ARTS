@@ -329,7 +329,7 @@ void arts_send_db_create_return(unsigned int creator_rank,
  * sentinel/data-less round). */
 void arts_send_db_grant_invalidate(
     unsigned int owner_rank, arts_guid_t db_guid, unsigned int new_owner_rank,
-    const struct arts_rdzv_landing_s *new_owner_rdzv);
+    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have);
 /* Send SNAPSHOT_REQUEST to the DB's home, advertising a fresh
  * snapshot landing when db_size is known (multi-rank runs); a size-unknown
  * first touch sends landing-less and the server answers a size-only CTS
@@ -375,7 +375,7 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
 void arts_send_db_grant_confirm_ack(
     unsigned int new_owner_rank, arts_guid_t db_guid,
     unsigned int piggyback_new_owner,
-    const struct arts_rdzv_landing_s *piggyback_rdzv);
+    const struct arts_rdzv_landing_s *piggyback_rdzv, uint64_t piggyback_have);
 /* Cat-C pure body (CONFIRM_ACK, new-owner side): item_v is the db_s the
  * dispatcher acquired (cache is its first member); args_v is the
  * CONFIRM_ACK packet (its new_owner_rank carries the piggybacked invalidate
@@ -392,7 +392,7 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v);
  * holder carrying new_owner as the GRANT_RESPONSE target. */
 void arts_db_owner_start_invalidate_round(
     struct arts_db_cache_s *cache, unsigned int new_owner,
-    const struct arts_rdzv_landing_s *new_owner_rdzv);
+    const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have);
 #endif /* ARTS_WRITE_POLICY_WB */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)

@@ -366,6 +366,10 @@ struct arts_db_cache_s {
   unsigned int grant_req_in_flight;
   unsigned int incoming_new_owner;
   struct arts_rdzv_landing_s incoming_new_owner_rdzv;
+  /* The version the pending new owner reported holding (its request's
+   * have_version), published with the two fields above; the 0-edge actor
+   * ships no payload when the canonical bytes are at that very version. */
+  uint64_t incoming_new_owner_have;
   struct arts_rank_to_u64_map_s *cached_version;
   arts_guid_t db_guid;
   uint64_t db_size;
@@ -448,6 +452,10 @@ struct arts_db_cache_s {
    * actor drives writer_count to exactly 0 reads this field and ships. */
   unsigned int incoming_new_owner;
   struct arts_rdzv_landing_s incoming_new_owner_rdzv;
+  /* The version the pending new owner reported holding (its request's
+   * have_version), published with the two fields above; the 0-edge actor
+   * ships no payload when the canonical bytes are at that very version. */
+  uint64_t incoming_new_owner_have;
   /* Always NULL in this arm.  INV's sharer plane deliberately carries no
    * version ledger — a dedup watermark on it would stop the plane being
    * write-driven — but the shared transfer helper reads this field to decide
