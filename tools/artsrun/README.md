@@ -393,9 +393,14 @@ mode (`OFF` / `ONCE` / `PERIODIC`), a level, and a reduction:
 **Counter selection is a build-time decision.** The set is parsed at configure
 time into `Preamble.h`, whose indices are compiled into every file that
 touches a counter, so switching sets means a reconfigure and a full rebuild.
-The driver refuses to run against a tree configured with a different counter
-file rather than measure with the wrong ones, and prints the `cmake` line to
-fix it. A campaign that selects no set at all is checked the same way against
+A campaign with `-c` reconfigures a tree whose compiled counters differ from
+the set (a dry run only says so), and always from the tree's own copy of the
+set, `<build>/counters/counters_<set>.cfg`: the file is an input of the
+configure, so a copy kept with one campaign's logs would stop every later
+build of the tree once those logs are removed. A tree still configured from
+such a file is pointed at its own copy by the next campaign with `-c`, and a
+campaign without one points an uninstrumented tree whose file is gone at the
+default. A campaign that selects no set at all is checked the same way against
 the build's default of no counters (`configs/counters_off.cfg`) and refuses a
 tree an earlier counted campaign left instrumented, naming the file the cache
 points at. The sampling interval and the output folder are the exception — the

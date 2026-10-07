@@ -247,7 +247,10 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
     assert reconfigured == []
     assert any("a real run reconfigures it first" in line for line in said)
     assert c.build_plan(bootstrap=True) == "plan"
-    assert reconfigured == [(build_dir, wanted)]
+    # The tree is configured from its own copy, never from the run's.
+    tree_cfg = (build_dir / "counters" / "counters_e2e.cfg").resolve()
+    assert reconfigured == [(build_dir, tree_cfg)]
+    assert tree_cfg.is_file()
     # Nothing is on, so there is no counter output to read back through.
     assert c.counters_cfg is None
 
@@ -333,6 +336,102 @@ def test_a_selected_set_the_tree_already_carries_still_runs(tmp_path,
     )
     assert c.build_plan() == "plan"
     assert reconfigured == []
+
+
+def _counted_campaign(tmp_path, monkeypatch, build_dir, counterset):
+    """A campaign whose reconfigures are recorded instead of run."""
+    from types import SimpleNamespace
+
+    import artsrun.campaign as campaign_mod
+    from artsrun.campaign import Campaign
+    from artsrun.model.profile import Launcher
+
+    reconfigured = []
+    monkeypatch.setattr(campaign_mod, "ensure_build_dir", lambda *a, **k: None)
+    monkeypatch.setattr(campaign_mod, "configure_counters",
+                        lambda bd, w, **k: reconfigured.append((bd, w)))
+    monkeypatch.setattr(campaign_mod, "plan_targets", _plan_targets_stub)
+    c = Campaign(
+        selection=SimpleNamespace(cxl_entries=lambda _plane: []),
+        plane=None, catalog=None, experiment=None,
+        profile=SimpleNamespace(launcher=Launcher.LOCAL),
+        build_dir=build_dir, run_dir=tmp_path / "run", counterset=counterset,
+    )
+    return c, reconfigured
+
+
+def _census_like():
+    from artsrun.model.counters import Counterset, CounterSetting, Level, Mode
+
+    return Counterset(name="x", counters={
+        "NUM_EDT_CREATE": CounterSetting(mode=Mode.PERIODIC, level=Level.CLUSTER)})
+
+
+def test_a_tree_configured_from_a_removed_run_file_is_repointed(tmp_path,
+                                                                 monkeypatch):
+    # The tree compiles exactly the set, but its cache names a file that
+    # lived with an earlier campaign's logs.  The file is an input of the
+    # configure, so once it is gone the next build cannot regenerate; the
+    # campaign points the tree at its own copy instead of trusting a match.
+    build_dir = _tree_with_counters(tmp_path / "build", {
+        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+    })
+    gone = tmp_path / "logs/exp/20260925-082512/cfg/counters_x.cfg"
+    (build_dir / "CMakeCache.txt").write_text(
+        f"ARTS_COUNTER_CONFIG:FILEPATH={gone}\n")
+    c, reconfigured = _counted_campaign(tmp_path, monkeypatch, build_dir,
+                                        _census_like())
+    said = []
+    assert c.build_plan(on_line=said.append) == "plan"
+    tree_cfg = (build_dir / "counters" / "counters_x.cfg").resolve()
+    assert reconfigured == [] and not tree_cfg.exists()
+    assert any(str(gone) in line and str(tree_cfg) in line for line in said)
+    assert c.build_plan(bootstrap=True) == "plan"
+    assert reconfigured == [(build_dir, tree_cfg)]
+    from artsrun.render import render_counters
+    assert tree_cfg.read_text() == render_counters(_census_like())
+
+
+def test_a_tree_already_on_its_own_copy_is_left_alone(tmp_path, monkeypatch):
+    # Matching counters and the tree's own file: nothing to reconfigure, so
+    # nothing that would rewrite the generated header and rebuild everything.
+    from artsrun.build import write_tree_counter_config
+
+    build_dir = _tree_with_counters(tmp_path / "build", {
+        "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
+    })
+    tree_cfg = write_tree_counter_config(build_dir, _census_like())
+    stamp = tree_cfg.stat().st_mtime_ns
+    (build_dir / "CMakeCache.txt").write_text(
+        f"ARTS_COUNTER_CONFIG:FILEPATH={tree_cfg}\n")
+    c, reconfigured = _counted_campaign(tmp_path, monkeypatch, build_dir,
+                                        _census_like())
+    assert c.build_plan(bootstrap=True) == "plan"
+    assert reconfigured == []
+    # Unchanged contents are not rewritten: a newer configure input would
+    # make the next build regenerate.
+    assert tree_cfg.stat().st_mtime_ns == stamp
+
+
+def test_a_counterless_campaign_repoints_a_removed_file_to_the_default(
+        tmp_path, monkeypatch):
+    # An uninstrumented tree whose file is gone takes the build's default,
+    # which compiles the same nothing; an instrumented one is still refused.
+    from artsrun.paths import repo_root
+
+    build_dir = _tree_with_counters(tmp_path / "build", {
+        "NUM_EDT_CREATE": ("OFF", "NODE", "SUM"),
+    })
+    gone = tmp_path / "logs/exp/old/cfg/counters_e2e.cfg"
+    (build_dir / "CMakeCache.txt").write_text(
+        f"ARTS_COUNTER_CONFIG:FILEPATH={gone}\n")
+    c, reconfigured = _counted_campaign(tmp_path, monkeypatch, build_dir, None)
+    said = []
+    assert c.build_plan(on_line=said.append) == "plan"
+    assert reconfigured == []
+    assert any(str(gone) in line for line in said)
+    assert c.build_plan(bootstrap=True) == "plan"
+    assert reconfigured == [(build_dir, repo_root() / "configs/counters_off.cfg")]
 
 
 def test_the_shipped_off_cfg_turns_every_declared_counter_off():

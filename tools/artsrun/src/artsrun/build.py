@@ -163,6 +163,37 @@ def counter_config_of(build_dir: Path) -> str | None:
     return _cache_value(build_dir, "ARTS_COUNTER_CONFIG")
 
 
+def tree_counter_config(build_dir: Path, counterset) -> Path:
+    """Where a tree keeps the counter file it is configured from.
+
+    The configure step records that file as one of its inputs, so the file
+    has to live as long as the tree: one kept with a campaign's logs leaves
+    the tree unable to regenerate once those logs are removed.
+    """
+    return (build_dir / "counters" / f"counters_{counterset.name}.cfg").resolve()
+
+
+def write_tree_counter_config(build_dir: Path, counterset) -> Path:
+    """Bring the tree's copy of a set up to date, writing only on a change:
+    a newer input makes the next build re-run the configure."""
+    from artsrun.render import render_counters
+
+    path = tree_counter_config(build_dir, counterset)
+    text = render_counters(counterset)
+    if not path.is_file() or path.read_text() != text:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return path
+
+
+def missing_counter_config(build_dir: Path) -> str | None:
+    """The counter file the tree's cache names, if that file is gone."""
+    configured = counter_config_of(build_dir)
+    if configured and not Path(configured).is_file():
+        return configured
+    return None
+
+
 # How the configure step encodes a counter's settings into the header it
 # generates.  Reading them back is what lets a tree be checked against a set
 # rather than against the file it happened to be configured from.
@@ -273,7 +304,8 @@ def require_default_counters(build_dir: Path) -> None:
 
 
 def configure_counters(build_dir: Path, wanted: Path, *, on_line=None,
-                       prefix: list[str] | None = None) -> None:
+                       prefix: list[str] | None = None,
+                       why: str = "counters changed") -> None:
     """Point an existing tree at a counter configuration and reconfigure it.
 
     Counter selection is compiled in, so making a tree match is a build step
@@ -288,7 +320,7 @@ def configure_counters(build_dir: Path, wanted: Path, *, on_line=None,
     say = on_line or (lambda _msg: None)
     if shutil.which("cmake") is None:
         raise BuildError("cmake not found on PATH")
-    say(f"counters changed — reconfiguring {build_dir} (this rebuilds everything)")
+    say(f"{why} — reconfiguring {build_dir} (this rebuilds everything)")
     # -S is required even for an existing cache: without it cmake derives the
     # source directory from the CALLER'S cwd, and a campaign launched from
     # anywhere but the repo root reconfigures against the wrong source.

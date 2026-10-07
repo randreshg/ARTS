@@ -19,9 +19,11 @@ from pathlib import Path
 
 from artsrun import check, report
 from artsrun.build import (
-    BuildError, BuildPlan, build, configure_counters, configure_cxl,
-    counter_mismatch, cxl_configure_command, cxl_mismatch, cxl_options,
-    ensure_build_dir, plan_targets, require_default_counters,
+    DEFAULT_COUNTER_CONFIG, BuildError, BuildPlan, build, configure_counters,
+    configure_cxl, counter_config_of, counter_mismatch, cxl_configure_command,
+    cxl_mismatch, cxl_options, ensure_build_dir, missing_counter_config,
+    plan_targets, require_default_counters, tree_counter_config,
+    write_tree_counter_config,
 )
 from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import Catalog
@@ -121,31 +123,61 @@ class Campaign:
         if cxl:
             self._match_cxl(on_line, prefix, dry=not bootstrap)
         self.counters_cfg = None
+        say = on_line or (lambda _msg: None)
         if self.counterset:
             # A selected set constrains the tree even when it turns nothing
             # on: the compiled selection must match what the campaign asked
             # for, or the cells measure with whatever counters an earlier
             # campaign left compiled in.  Only the counter-output plumbing
             # needs a counter to actually be enabled.
-            # Written next to the run so the file the build was configured
-            # against is the one the results can be read back through.
+            # The run keeps its own rendering to read its results back
+            # through; the tree is configured from a copy it owns, since a
+            # configure input that disappears with a run's logs stops every
+            # later build of the tree.
             wanted = write_counter_config(self.counterset, self.run_dir / "cfg")
             if self.counterset.enabled:
                 self.counters_cfg = wanted
+            tree_cfg = tree_counter_config(self.build_dir, self.counterset)
             differing = counter_mismatch(self.build_dir, self.counterset)
-            if differing and not bootstrap:
+            configured = counter_config_of(self.build_dir)
+            elsewhere = (configured is not None
+                         and Path(configured).resolve() != tree_cfg)
+            if not bootstrap:
                 # A dry run never writes the tree; it says what a real run
                 # would change, and the target check reads the tree as is.
-                (on_line or (lambda _msg: None))(
-                    f"{self.build_dir} compiles {len(differing)} counter(s) "
-                    f"differently from the set ({', '.join(differing[:6])}); "
-                    f"a real run reconfigures it first with "
-                    f"-DARTS_COUNTER_CONFIG={wanted}")
-            elif differing:
-                configure_counters(self.build_dir, wanted, on_line=on_line,
-                                   prefix=prefix)
+                if differing:
+                    say(f"{self.build_dir} compiles {len(differing)} counter(s) "
+                        f"differently from the set ({', '.join(differing[:6])}); "
+                        f"a real run reconfigures it first with "
+                        f"-DARTS_COUNTER_CONFIG={tree_cfg}")
+                elif elsewhere:
+                    say(f"{self.build_dir} is configured from {configured}, "
+                        f"a file the tree does not own; a real run points it "
+                        f"at -DARTS_COUNTER_CONFIG={tree_cfg}")
+            else:
+                write_tree_counter_config(self.build_dir, self.counterset)
+                if differing or elsewhere:
+                    configure_counters(
+                        self.build_dir, tree_cfg, on_line=on_line, prefix=prefix,
+                        why=("counters changed" if differing else
+                             f"counter file {configured} is not the tree's own"))
         else:
             require_default_counters(self.build_dir)
+            # The tree compiles no counter, so the build's default file is
+            # an equivalent configure input for one whose file is gone.
+            gone = missing_counter_config(self.build_dir)
+            if gone:
+                from artsrun.paths import repo_root
+
+                off = repo_root() / DEFAULT_COUNTER_CONFIG
+                if not bootstrap:
+                    say(f"{self.build_dir} is configured from {gone}, which no "
+                        f"longer exists; a real run points it at "
+                        f"-DARTS_COUNTER_CONFIG={off}")
+                else:
+                    configure_counters(self.build_dir, off, on_line=on_line,
+                                       prefix=prefix,
+                                       why=f"counter file {gone} is gone")
         return plan_targets(
             self.selection, self.plane, self.catalog, self.experiment,
             self.build_dir, self.profile,
