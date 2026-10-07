@@ -92,6 +92,8 @@ SHIPPED_ENTRIES = {
     "paper-main": ARTS8 + ["xsocr", "ocrvx"],
     "paper-main-base": ARTS8 + ["xsocr", "ocrvx"],
     "paper-main-hinted": ARTS8 + ["xsocr", "ocrvx"],
+    "paper-main-restructured": ARTS8 + ["xsocr", "ocrvx"],
+    "paper-grain": ["arts_inv_wb"],
     "paper-gate": ARTS8 + ["xsocr", "ocrvx"],
     "control-main": ARTS8 + ["hpx"],
     "control-gate": ARTS8 + ["hpx"],

@@ -1,0 +1,45 @@
+# Experiment paper-main-restructured: the restructured tier of the rows that
+# offer one, on paper-main's entries, so the rewrite of each program can be
+# read against the same eight configurations and the two OCR references.
+#   artsrun run -p dane -x paper-main-restructured -c census --repeats 3 --detach
+#
+# Each row runs its rewrite only (`versions: [restructured]`): a different
+# program registered as its own target, so it takes the rewrite's own
+# calibrated arguments from the catalog, never the row's.  The rewrites are
+# LCS_wavefront, smithwaterman_dist, fft_dist, quicksort_dist, hpgmg_dist,
+# cholesky_dist, npb_cg_dist, sar_dist and stream_dist.  Everything omitted
+# falls through to the catalog, as in paper-main-base.
+
+name: paper-main-restructured
+description: the restructured tier on paper-main's entries
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, xsocr, ocrvx]
+
+apps:
+  cholesky_blas:
+    enabled: true
+    versions: [restructured]
+  fft:
+    enabled: true
+    versions: [restructured]
+  hpgmg:
+    enabled: true
+    versions: [restructured]
+  LCS_all_db_distributed:
+    enabled: true
+    versions: [restructured]
+  npb_cg:
+    enabled: true
+    versions: [restructured]
+  quicksort:
+    enabled: true
+    versions: [restructured]
+  sar_pss:
+    enabled: true
+    versions: [restructured]
+  smithwaterman:
+    enabled: true
+    versions: [restructured]
+  stream:
+    enabled: true
+    versions: [restructured]
