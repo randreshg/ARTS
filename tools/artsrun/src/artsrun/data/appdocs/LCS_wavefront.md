@@ -133,11 +133,11 @@ fixed work.  Fixed-work granularity on the Dane-mirror geometry (1 node,
 2097152/512 = 122.6 s, 3145728/512 = 275.8 s.  The calibrated point is
 **`1769472 256`**: `L = 6912`, whose average anti-diagonal width (3456)
 equals the 32-node x 108-worker campaign's total worker count, and the
-nearest feasible point to the ~150 s anchor.  `calibration pending` on the
-anchor itself — the 141.0 s figure was measured with the serial creation
-chain, whose `L² = 47.8 M` sequential creates were a floor of the same
-order as the compute; with the spine gone the point should be re-measured
-before it is quoted, and the 16- and 32-node cells re-run.
+nearest feasible point to the window.  The anchor at that point, one node
+of 108 workers under INV x WB, is 100.7 s and 4.3 GB resident, inside the
+restructured tier's 120 s band; the earlier 141.0 s was measured with the
+serial creation chain, whose `L² = 47.8 M` sequential creates were a floor
+of the same order as the compute.
 
 Memory is frontier-bound by construction: strips are `≈ L · 3 · base` ints
 plus the `2L` string tiles (tens of MB at the calibrated point), the score
@@ -148,5 +148,5 @@ original's eager `4·(N+1)²` ≈ 69 GB table at its own calibrated size.
 The scalar to pin is `LCS checksum:` (the final tile's digest), which the
 tiled original prints identically at a shared power-of-two `N`/`base`
 validation run (see Overview); `LCS length:`
-is still printed and remains a useful cross-row cross-check.  Both pins
-must be re-derived: `calibration pending`.
+is still printed and remains a useful cross-row cross-check.  The pinned
+checksum matched at the anchor.

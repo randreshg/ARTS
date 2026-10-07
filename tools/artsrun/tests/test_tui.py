@@ -581,6 +581,16 @@ def _a_row_with_a_rewrite() -> tuple[str, str]:
     return row.name, row.restructured_as
 
 
+def _enable(bench, ident: str) -> None:
+    """Check one version box: the loaded experiment may leave a tier off,
+    and a rewrite's line only reaches the run when its tier runs."""
+    for t in bench.toggles:
+        if t.ident == ident:
+            t.value = True
+            return
+    raise AssertionError(f"no toggle {ident}")
+
+
 def test_a_rewrite_gets_its_own_argument_line():
     row, rewrite = _a_row_with_a_rewrite()
 
@@ -605,6 +615,7 @@ def test_editing_the_rewrites_line_overrides_only_the_rewrite():
         from textual.widgets import Input
 
         bench = app.query_one("#exp", ExperimentPanel)
+        _enable(bench, f"{row}:restructured")
         bench.query_one(f"#a-{rewrite}", Input).value = "7 3"
         edited = bench.edited_experiment("scratch")
         resolved = {a.key: a for a in edited.resolve(app.catalog)}
@@ -623,6 +634,7 @@ def test_an_empty_rewrite_line_writes_no_override():
 
     async def check(app, pilot):
         bench = app.query_one("#exp", ExperimentPanel)
+        _enable(bench, f"{row}:restructured")
         edited = bench.edited_experiment("scratch")
         resolved = {a.key: a for a in edited.resolve(app.catalog)}
         return (rewrite in edited.apps,
@@ -1394,7 +1406,7 @@ def test_the_experiment_s_entries_start_checked_and_the_profile_holds_none():
     assert toggles == len(effective.nodes)
     # What the form does not show as a box of its own still reaches the run.
     assert effective.rusage_witness is True
-    assert effective.slurm.max_queued == 5000
+    assert effective.slurm == store.load_profile("dane").slurm
 
 
 def test_any_entry_may_be_turned_on_for_one_run():

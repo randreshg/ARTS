@@ -58,8 +58,8 @@ Against the base row at the same arguments: identical EDT and event counts,
 `T·4` DBs instead of `T·(2 + 4K)`. That difference — `4K` allocate/first-touch/
 free cycles per chain, removed — is the whole of what this row measures.
 
-Worked numbers: calibration pending (the orchestrator sizes `argv[1]` and
-`argv[2]`).
+Worked numbers at the campaign size `1157760000 3456 1000`: 335,000 elements
+per chain, 2.7 MB per array per chain, 3456 chains.
 
 ## Wiring
 
@@ -140,8 +140,9 @@ the validation line.
 
 Same knobs and the same grain arithmetic as the base row — `pts =
 streamArraySize / numThreads` is both the DB payload and the per-kernel work
-size, `numThreads` is the width knob, `nTimes` is depth only — and the row must
-be run at the *same* triple as `stream`.
+size, `numThreads` is the width knob, `nTimes` is depth only.  The row is sized
+in the restructured tier's own window; at the *same* triple as `stream` the two
+rows print the same lines, which is the check that they are one application.
 
 - **Width**: set `numThreads` to the widest geometry's total worker count (or a
   multiple); frontier `1.0x`–`2.0x`, never below `1.0x` before the join.
@@ -151,7 +152,10 @@ be run at the *same* triple as `stream`.
 - **Memory**: `3 · streamArraySize · 8` bytes, flat for the whole run and
   node-count invariant, plus `T·16` bytes of records. There is no allocator
   backlog to add, which is exactly why this row's resident set is lower and
-  steadier than the base row's at the same arguments. Absolute numbers at the
-  campaign size: calibration pending.
+  steadier than the base row's at the same arguments. At one node of 108
+  workers under INV x WB: 13.2 s and 20.0 GB at `233280000` (67,500 elements a
+  chain, just past the cliff, and half the per-element time of the larger
+  sizes), 75.2 s and 51.2 GB at `725760000`; the campaign size `1157760000`
+  extrapolates from the latter to ~120 s and ~79 GB.
 - The verification adds one pass over each chain's own slice, in parallel on the
   chain's own place, and a `T·16`-byte join.

@@ -194,7 +194,7 @@ apps:
   stream:
     # Dropped from the paper campaigns: its base tier crashes at four nodes
     # and beyond on every configuration and the crash has no local
-    # reproduction; the restructured stream_dist is not paper material.
+    # reproduction; its rewrite stream_dist runs in paper-main-restructured.
     enabled: false
     versions: [base, hinted]
   task_priorities:

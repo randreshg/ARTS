@@ -209,7 +209,8 @@ deliveries through the rank that homes the rendezvous events (7168 of each at
 else in the program crosses a rank boundary except the `places` builder tasks,
 the grid block they read and the `places` reports.
 
-**Calibration.** `calibration pending` -- the decomposition changed (the
-repacking stage is gone, the exchange is task-per-block, and the arrivals reach
-their readers through a per-place forwarder), so no earlier timing on this row
-carries over and the trend must be re-taken before the campaign size is fixed.
+**Calibration.** Anchor at `32 6912 32`, one node of 108 workers under
+INV x WB, with the current decomposition (no repacking stage, task-per-block
+exchange, a per-place forwarder): 26.9 s and 129.3 GB resident.  That is under
+the restructured tier's 120 s target, and memory is what holds it there: power
+33 needs 275 GB at one node.

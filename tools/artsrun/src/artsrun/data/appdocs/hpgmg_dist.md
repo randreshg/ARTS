@@ -166,7 +166,7 @@ it is structural, not a layer a hint could add or remove.
 
 ## Sizing
 
-**Campaign size: `['4','13824']`.**  The row's historical value
+**Campaign size: `['5','13824']`.**  The row's historical value
 `['6','4096']` — a 1024³ grid of 64³-cell boxes — gave a width of 4096 = 1.19×
 the 3456 workers of the largest geometry, over the bare floor but under the 2×
 sufficiency a spawn-and-join structure needs, and it cost **~123 GiB** at one
@@ -182,14 +182,18 @@ values are the same as the base row's: `N_0 = s³` is an integer multiple of
 | `['5','13824']` | 768³ | ~58 GiB | 4× |
 | `['5','32768']` | 1024³ | ~136 GiB | 9.5× |
 
-The catalog runs `['4','13824']`, the same 384³ instance the base row runs at
-`['4','13824']` and the same grain (`log2_box_dim = 4`) — the same-instance
-answer comparison holds exactly, and `expect`/`expect_args` are pinned there
-(`||error|| = 0.000000006555138`).  `['5','13824']` would keep a heavier grain
-at the same width; `['5','32768']` keeps today's 1024³ grid and every level's
-`h`, so the pinned `||error||` should carry over — but the operators are
-per-box and the last digit was not verified statically, so one 1-node cell
-must confirm it, together with the actual RSS.
+The catalog runs `['5','13824']`, sized in the restructured tier's own window
+rather than at the base row's instance: at one node of 108 workers under
+INV x WB it runs 42.5 s with 115.6 GB resident, and `expect`/`expect_args` are
+pinned there (`||error|| = 0.000000001647256`).  It is the largest grid the
+width rule admits on one node: a 1024³ grid is reachable only with a box count
+that is not an integer multiple of 3456 (`4096` at 1.19×, `32768` at 9.5×,
+whose estimate the measured resident sets put past a node — 30.4 GB at
+`['4','13824']` and 115.6 GB at `['5','13824']`, two to three and a half times
+the table's figures), and the next admitted grid is 1152³ (`s = 72`), ~350 GB on
+a line through the two measurements.  The row is memory-capped.  The base row's
+instance stays the same-instance check: at `['4','13824']` this row must
+reprint the base row's `||error|| = 0.000000006555138`.
 
 Trend sweep (ferrari, 15w+1p, at the trend size `['5','4096']`, E2E / solve),
 taken **before** the shared initialization, the restored `dot(α,α)`, the restored
