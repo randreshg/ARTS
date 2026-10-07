@@ -1098,24 +1098,26 @@ apps:
     # Kept for the same reason as the base row's pin (see above); at ['5','512']
     # this row must now print the base row's value, since both compute the same
     # instance with the same initialization and verification bodies.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 9.6 s, 30
-    # GB resident; target 120 s (restructured).
-    # Off the 0.8-1.2x band: same instance as the base row by design (the
-    # same-instance answer comparison); the grain decision is the base row's.
-    expect: '0.000000006555138'   # the ||error|| at the campaign arguments; 5 512 must still reprint 0.000000014674034
-    expect_args: ['4', '13824']
+    # Anchor at these arguments, one node of 108 workers, INV x WB: 42.5 s,
+    # 115.6 GB resident; target 120 s (restructured).
+    # Off the 0.8-1.2x band: memory-capped.  Both knobs step by 8x and the box
+    # count is an integer multiple of 3456 only for s = 24k, so the next grid
+    # is 1152^3 (s = 72 at log2_box_dim 4), ~350 GB on a line through the
+    # 384^3 (30.4 GB) and 768^3 (115.6 GB) anchors.
+    expect: '0.000000001647256'   # the ||error|| at the campaign arguments; 5 512 must still reprint 0.000000014674034
+    expect_args: ['5', '13824']
     extra_scalars:
       residual: 'final residual norm =\s*([0-9.eE+-]+)'
       solve_s: 'Total Time =\s*([0-9.eE+-]+)'
     # Scaling row: the 1-node anchor IS the worst cell.  Same dials and the
     # same initialization, verification and per-operator bookkeeping as the
     # base row, so at identical arguments the two rows must print an identical
-    # ||error||: 'hpgmg_dist <base args>' on one node is the same-instance
-    # equality check, and it costs seconds.  Disclosed with the base row: the
+    # ||error||: 'hpgmg_dist 4 13824' on one node must reprint the base row's
+    # 0.000000006555138, and it costs seconds.  Disclosed with the base row: the
     # unread dot(alpha,alpha), and the per-operator timing lines, whose interval
     # is attributed to a different level here than in the base spine (only the
     # whole-run 'Total Time' is comparable row-to-row).
-    args: ['4', '13824']
+    args: ['5', '13824']
     restructured_from: hpgmg
 
   LCS_all_db_distributed:
@@ -1205,13 +1207,12 @@ apps:
     expect: '1860356362'
     expect_args: ['1769472', '256']   # digest is what the driver now reads
     # L = N/base = 6912: the average anti-diagonal width (L/2 = 3456) matches
-    # the largest campaign geometry's total worker count.  The 141.0 s
-    # one-node anchor predates the 2026-09-03 creation-plane rewrite (the
-    # serial row-spawner chain of L^2 = 47.8M creates became
-    # leaf-creates-south-neighbour: O(1) creates per leaf, L-wide, and the
-    # parked-leaf pool bounded at one row instead of L^2), so the point must
-    # be re-measured before it is quoted and 16n/32n re-run.
-    args: ['1769472', '256']    # recommended 1769472 256, pending that re-anchor
+    # the largest campaign geometry's total worker count.  Anchor at these
+    # arguments, one node of 108 workers, INV x WB, with each leaf creating
+    # its south neighbour (O(1) creates per leaf, the parked-leaf pool
+    # bounded at one row): 100.7 s, 4.3 GB resident; target 120 s
+    # (restructured).
+    args: ['1769472', '256']
     # CROSS-TIER ORACLE (a validation step, not a campaign cell).  This row
     # prints the same LCS length and the same digest as
     # LCS_all_db_distributed, but only when both binaries are given the SAME
@@ -3591,18 +3592,21 @@ apps:
     # chain) against persistence (3 blocks per chain for the whole run).  Its
     # datablock count is node-count AND sweep-count invariant: 4*3456.
     #
-    # Same arguments as the row it re-implements, and the two now print the same
-    # validation line AND the same extra-scalar line in the same format, which
-    # is the check that they are one application.
+    # At equal arguments the two rows print the same validation line AND the
+    # same extra-scalar line in the same format, which is the check that they
+    # are one application.  The rewrite is sized in its own window: at the
+    # base row's 233280000 a chain's slice is 67,500 elements, just over the
+    # 512 KiB per-array cache cliff, and it runs at half the per-element
+    # time of the sizes past it (13.2 s, 20 GB at one node).
     #
-    # Memory: 24*233280000 bytes, flat for the whole run.
-    # Anchor at these arguments, one node of 108 workers, INV x WB: 13.2 s, 20
-    # GB resident; target 120 s (restructured).
-    # Off the 0.8-1.2x band: same arguments as the row it re-implements by
-    # design (the paired churn-versus-persistence exhibit).
-    expect: '233280000'
-    expect_args: ['233280000', '3456', '1000']
-    args: ['233280000', '3456', '1000']
+    # Memory: flat for the whole run.  Sized from the anchor at 725760000,
+    # one node of 108 workers, INV x WB: 75.2 s, 51.2 GB resident, the same
+    # per-element time as 836352000 measured earlier; 1157760000 (335,000
+    # per chain) extrapolates to the restructured tier's 120 s target and
+    # ~79 GB.  The tier's own 1-node cell is the anchor to quote.
+    expect: '1157760000'
+    expect_args: ['1157760000', '3456', '1000']
+    args: ['1157760000', '3456', '1000']
     restructured_from: stream
     unordered_writes: 'mainLet''s creator hold outlives the first loop''s start, and the loop holds a/b/c while starting copy/scale (stream_dist.c:425-427, :359-363)'
 
