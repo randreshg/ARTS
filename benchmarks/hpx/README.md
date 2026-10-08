@@ -362,8 +362,11 @@ every such row was investigated, with the cause named under the row above.
 | `network_storage_hpx` | 5.05 / 33.95 / 30.56 / 26.00 | 3.52 / 35.64 / 27.49 / 17.99 | anti / anti | 0.69 · 1.03 · 0.90 · 0.69 | **recorded** |
 | `fft_hpx` | 6.89 / 5.24 / 3.54 / 1.87 | 6.60 / 7.58 / 6.46 / 8.25 | scales / anti | 0.96 · 1.25 · 1.75 · 4.03 | **investigate** |
 
-The row the trend flags is the runtime's, not the program's: `fft_hpx`'s HPX side
-anti-scales because its scatter collectives route through locality zero. The two
+The row the trend flags is `fft_hpx`: its HPX side scaled poorly because the
+program created every scatter communicator with HPX's default root site 0, so
+both exchanges relayed every chunk through locality zero, while the mirror
+delivers each chunk from its source to its destination. These numbers predate
+the root-site fix under `## fft_hpx`, which removes the relay. The two
 rows inside the recorded band are ARTS's: `network_storage_hpx` at one rank is the
 scheduler's locality (the store's slots are served where they were created, with no
 NUMA-aware stealing, so one node carries most of the traffic); `stencil1d_hpx` at
@@ -706,8 +709,8 @@ instead. Edits: *cfg* — the run-everywhere vector becomes the runtime
 defaults; *markers* — `[HPX]` once the locality count is known, `[E2E]`
 around the whole of `hpx_main` on locality 0, `[PARCELS]` after that; *scalar* — the program computes no printable quantity
 of its own, so each locality sums its rows and one `all_reduce` makes the
-total, written once as `CHECKSUM %.14g`; and one
-*bugfix*.
+total, written once as `CHECKSUM %.14g`; one *bugfix*; and one *root-site
+fix*.
 
 **The bugfix.** `basenames_` held `const char*` and was filled with
 `std::move(std::to_string(i).c_str())` — a pointer into a temporary that dies
@@ -720,6 +723,17 @@ the unmodified copy built here ran to completion and exited 0 at one, two,
 four and eight localities, which is recorded as evidence and not as the
 trigger. A dangling read is undefined however benign one toolchain's output
 looks.
+
+**The root-site fix.** The program makes locality `i` the root of scatter
+communicator `i` (it alone calls `scatter_to` there) but created the
+communicator with HPX's default root site, locality 0. A communicator lives at
+its root site and both `scatter_to` and `scatter_from` go through it, so every
+chunk of both exchanges travelled source → locality 0 → destination and
+locality 0 carried the whole exchange. The communicator now passes
+`root_site_arg(i)`: each chunk travels once, as the program's exchange means
+and as the mirror moves it. Collectives, chunks and algorithm are unchanged;
+the checksum is identical at two and four localities, and the parcel bytes at
+the gate size and four localities fall from 174 kB to 128 kB.
 
 Two facts about the arguments, both as written. **`--nx` and `--ny` are the
 dimensions, not their logarithms** (the paper's own script passes

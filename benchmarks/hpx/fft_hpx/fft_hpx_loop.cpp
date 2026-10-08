@@ -408,9 +408,14 @@ void fft::initialize(vector_2d<real> values_vec,
         for(std::size_t i = 0; i < num_localities_; ++i)
         {
             basenames_[i] = std::to_string(i);
+            // Locality i is the scatter root of communicator i (it calls
+            // scatter_to), so the communicator lives there too; left at the
+            // default root, every chunk would relay through locality 0.
             communicators_[i] = std::move(hpx::collectives::create_communicator(basenames_[i].c_str(),
                                           hpx::collectives::num_sites_arg(num_localities_), 
-                                          hpx::collectives::this_site_arg(this_locality_)));
+                                          hpx::collectives::this_site_arg(this_locality_),
+                                          hpx::collectives::generation_arg(),
+                                          hpx::collectives::root_site_arg(i)));
         }
     }
     else if (COMM_FLAG_ == "all_to_all")

@@ -39,3 +39,16 @@ edits:
   collective count and the algorithm untouched. Recorded as evidence rather
   than as the trigger: the unmodified copy built here ran to completion and
   exited 0 at one, two, four and eight localities before the fix was made
+- root site: each of the `num_localities` scatter communicators was created
+  with HPX's default root site, locality 0, although the program makes
+  locality `i` the root of communicator `i` (it alone calls `scatter_to`
+  there). A communicator lives at its root site and both `scatter_to` and
+  `scatter_from` go through it, so every chunk of both exchanges travelled
+  from its source to locality 0 and on to its destination, and locality 0
+  carried the whole exchange. Communicator `i` now passes
+  `root_site_arg(i)` (with the default generation, which precedes it in the
+  signature), so each chunk travels once, from its source to its
+  destination, as the program's exchange means. The collectives, their
+  count, the chunks and the algorithm are unchanged; the checksum is
+  identical at two and four localities, and the parcel bytes at the gate
+  size and four localities fall from 174 kB to 128 kB
