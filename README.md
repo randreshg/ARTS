@@ -83,7 +83,7 @@ An ARTS program reads its runtime configuration from `arts.cfg` in the
 working directory; the `ARTS_CONFIG` environment variable overrides the path:
 
 ```bash
-ARTS_CONFIG=configs/local/test/1n.cfg ./my_program
+ARTS_CONFIG=configs/local/test/1n_20w.cfg ./my_program
 ```
 
 Ready-to-run localhost shapes (single-node and 2/3/4-rank multinode) live in

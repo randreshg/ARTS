@@ -100,9 +100,9 @@ if(ARTS_BUILD_TESTS)
         EXCLUDE_FROM_ALL FALSE)
     register_single_node_test(ocr_shim_finish_release TIMEOUT 60)
     register_multinode_test(ocr_shim_finish_release TIMEOUT 90)
-    foreach(_t ocr_shim_finish_release ocr_shim_finish_release_2n
-            ocr_shim_finish_release_3n ocr_shim_finish_release_4n
-            ocr_shim_finish_release_2n_io)
+    foreach(_t ocr_shim_finish_release ocr_shim_finish_release_2n_9w_1p
+            ocr_shim_finish_release_4n_4w_1p
+            ocr_shim_finish_release_2n_8w_2p)
         set_tests_properties(${_t} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: finish EDT output fired"
             FAIL_REGULAR_EXPRESSION "FAIL")

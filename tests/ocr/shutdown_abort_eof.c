@@ -20,7 +20,7 @@
 /// peers) detect EOF and return 0 from arts_rt.  Each surviving rank prints a
 /// clean token.  ctest TIMEOUT reaps an EOF-detection hang regression.
 ///
-/// runtime_multinode (2n/3n/4n/2n_io).  Self-skips cleanly to a single-node
+/// runtime_multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a single-node
 /// clean shutdown when only one rank is present.
 /// all configs (shutdown sits above the coherence layer).
 

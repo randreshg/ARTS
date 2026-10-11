@@ -62,7 +62,7 @@ into your ``arts.cfg``). Ready-to-run localhost shapes live in
 
 .. code-block:: bash
 
-   cp <arts-root>/configs/local/test/1n.cfg ./arts.cfg
+   cp <arts-root>/configs/local/test/1n_20w.cfg ./arts.cfg
 
 Building and Running
 --------------------

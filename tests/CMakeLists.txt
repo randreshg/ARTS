@@ -159,8 +159,8 @@ endif()
 #   ------------------------------------ | ----------- | ------------------------ | ---
 #   the names in ARTS_CXL_DIRECT_EXCLUDED | registered | excluded at registration | they assert the inline representation
 #   buffer_external_payload              | SKIPs       | runs                     | the external descriptor's own contract
-#   cxl_slot_discard_unadopt             | no          | 1n                       | the withdrawal it asserts exists only where a descriptor adopts the slot
-#   cxl_direct_payload_identity          | no          | 1n/2n/3n                 | false by construction under STAGED
+#   cxl_slot_discard_unadopt             | no          | 1n_20w                   | the withdrawal it asserts exists only where a descriptor adopts the slot
+#   cxl_direct_payload_identity          | no          | 1n_20w/2n_9w_1p/4n_4w_1p | false by construction under STAGED
 #   everything else                      | registered  | registered               | one behaviour, two representations
 set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_payload_roundtrip
@@ -354,7 +354,7 @@ function(register_single_node_test test_name)
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 10)
     endif()
-    arts_test_cfg(_cfg 1n)
+    arts_test_cfg(_cfg 1n_20w)
     add_test(
         NAME ${test_name}
         COMMAND ${test_name} ${ARG_ARGS}
@@ -374,16 +374,16 @@ function(register_multinode_test test_name)
         set(ARG_TIMEOUT 60)
     endif()
     if(NOT ARG_VARIANTS)
-        # All four local multinode flavours.  Names map 1:1 to the cfg files in
-        # configs/local/; each test's ARTS_CONFIG env points straight at the
-        # source cfg (no copy), so ctest runs standalone.
-        #   2n     — 2 nodes, 6w/1p per node (worker-heavy default)
-        #   3n     — 3 nodes, 3w/1p per node
-        #   4n     — 4 nodes, 2w/1p per node
-        #   2n_io  — 2 nodes, 5w/2p per node (network-heavy variant:
-        #            multiple progress threads break per-peer message FIFO,
-        #            exercising concurrent cross-rank handler dispatch)
-        set(ARG_VARIANTS 2n 3n 4n 2n_io)
+        # The three local multinode flavours.  A variant name is the cfg's
+        # file name in configs/local/test/ (<nodes>n_<workers>w[_<progress>p]);
+        # each test's ARTS_CONFIG env points straight at the source cfg (no
+        # copy), so ctest runs standalone.
+        #   2n_9w_1p — 2 nodes, 9 workers + 1 progress thread per node
+        #   4n_4w_1p — 4 nodes, 4 workers + 1 progress thread per node
+        #   2n_8w_2p — 2 nodes, 8 workers + 2 progress threads per node
+        #              (multiple progress threads break per-peer message FIFO,
+        #              exercising concurrent cross-rank handler dispatch)
+        set(ARG_VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     endif()
     foreach(variant IN LISTS ARG_VARIANTS)
         arts_test_cfg(_cfg ${variant})
@@ -469,7 +469,7 @@ function(register_cxl_multinode_test test_name)
         set(ARG_FAIL_REGEX "FAIL")
     endif()
     if(NOT ARG_VARIANTS)
-        set(ARG_VARIANTS 2n 3n 4n 2n_io)
+        set(ARG_VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     endif()
     register_multinode_test(${test_name} TIMEOUT ${ARG_TIMEOUT}
                             VARIANTS ${ARG_VARIANTS})
@@ -490,6 +490,7 @@ function(register_gpu_test test_name)
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 10)
     endif()
+    arts_test_cfg(_cfg 1n_20w)
     add_test(
         NAME ${test_name}
         COMMAND ${test_name} ${ARG_ARGS}
@@ -499,7 +500,7 @@ function(register_gpu_test test_name)
         LABELS "gpu"
         TIMEOUT ${ARG_TIMEOUT}
         RESOURCE_LOCK "arts_runtime"
-        ENVIRONMENT "ARTS_CONFIG=${CMAKE_SOURCE_DIR}/configs/local/gpu/1n.cfg;ASAN_OPTIONS=protect_shadow_gap=0:detect_leaks=0:alloc_dealloc_mismatch=0"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};gpu=1;ASAN_OPTIONS=protect_shadow_gap=0:detect_leaks=0:alloc_dealloc_mismatch=0"
     )
 endfunction()
 
@@ -595,8 +596,8 @@ set_tests_properties(term_abort PROPERTIES
 # reports.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     register_multinode_test(edt_create_remote_finish_scope_rejected
-        VARIANTS 2n)
-    set_tests_properties(edt_create_remote_finish_scope_rejected_2n PROPERTIES
+        VARIANTS 2n_9w_1p)
+    set_tests_properties(edt_create_remote_finish_scope_rejected_2n_9w_1p PROPERTIES
         PASS_REGULAR_EXPRESSION "must be homed on the creating rank")
 endif()
 
@@ -606,7 +607,7 @@ endif()
 # matches [ARTS] Crashed: SIG* in the captured output.  Hand-registered, so
 # ARTS_CONFIG has to be set here too: without it the runtime falls back to
 # ./arts.cfg in the working directory, which the build tree does not contain.
-arts_test_cfg(_cfg 1n)
+arts_test_cfg(_cfg 1n_20w)
 add_test(
     NAME term_sigfpe
     COMMAND bash -c "ASAN_OPTIONS=handle_sigfpe=0:handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigfpe 2>&1; true"
@@ -619,7 +620,7 @@ set_tests_properties(term_sigfpe PROPERTIES
     ENVIRONMENT "ARTS_CONFIG=${_cfg}"
     PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGFPE")
 
-arts_test_cfg(_cfg 1n)
+arts_test_cfg(_cfg 1n_20w)
 add_test(
     NAME term_sigsegv
     COMMAND bash -c "ASAN_OPTIONS=handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigsegv 2>&1; true"
@@ -967,9 +968,9 @@ register_pure_unit_test(diag_timestamp TIMEOUT 60)
 register_single_node_test(edt_dep_variants)
 
 register_single_node_test(db_create_after_first_touch TIMEOUT 60)
-register_multinode_test(db_create_after_first_touch TIMEOUT 120 VARIANTS 2n 3n 4n)
+register_multinode_test(db_create_after_first_touch TIMEOUT 120 VARIANTS 2n_9w_1p 4n_4w_1p)
 set_tests_properties(db_create_after_first_touch PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-foreach(_v 2n 3n 4n)
+foreach(_v 2n_9w_1p 4n_4w_1p)
     set_tests_properties(db_create_after_first_touch_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
@@ -984,7 +985,7 @@ set_tests_properties(finish_event_nested PROPERTIES
     PASS_REGULAR_EXPRESSION "OK nested")
 
 register_multinode_test(finish_event_stress TIMEOUT 300)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(finish_event_stress_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
@@ -1008,23 +1009,23 @@ register_multinode_test(db_no_acquire_lazy TIMEOUT 60)
 # minted at the stamp the writer's own release uses (which makes the real
 # bytes retreat as stale).
 register_multinode_test(db_no_acquire_wb_first_writer TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(db_no_acquire_wb_first_writer_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 # The unordered reader's whole point is a race, so one shape also runs with
 # the scheduler-fuzz injection that widens the lock-free decision-commit
 # windows (compiled out of Release, where the variable is simply inert).
-# Three nodes, because the racing read has to reach the home from a rank that
-# is neither the home nor the writer — with two there is no such rank and the
-# window cannot be reached at all.
-arts_test_cfg(_cfg 3n)
+# At least three ranks are needed, because the racing read has to reach the home
+# from a rank that is neither the home nor the writer — with two there is no
+# such rank and the window cannot be reached at all.
+arts_test_cfg(_cfg 4n_4w_1p)
 add_test(
-    NAME db_no_acquire_wb_first_writer_3n_fuzz
+    NAME db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
     COMMAND db_no_acquire_wb_first_writer
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
-set_tests_properties(db_no_acquire_wb_first_writer_3n_fuzz PROPERTIES
+set_tests_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
     LABELS "multinode"
     TIMEOUT 120
     RESOURCE_LOCK "arts_runtime"
@@ -1036,7 +1037,7 @@ set_tests_properties(db_no_acquire_wb_first_writer_3n_fuzz PROPERTIES
 # request kinds get a lane (RW opens an ownership request, RO a fetch or a
 # snapshot), so this needs a rank that is not the home.
 register_multinode_test(db_create_after_dep_asked TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(db_create_after_dep_asked_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
@@ -1049,7 +1050,7 @@ register_multinode_test(db_first_touch_matrix TIMEOUT 120)
 # Every arm owes the same answer, so it runs in all of them.
 add_arts_test(db_alias_dedup_remote)
 register_multinode_test(db_alias_dedup_remote TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(db_alias_dedup_remote_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:"
         PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup_remote")
@@ -1057,8 +1058,8 @@ endforeach()
 register_multinode_test(db_acquire_release_semantics TIMEOUT 120)
 # The guard aborts the run by design, so the message is the verdict and
 # the exit status is not; one node shape states it as well as four.
-register_multinode_test(edt_create_oversize_guard VARIANTS 2n TIMEOUT 60)
-set_tests_properties(edt_create_oversize_guard_2n PROPERTIES
+register_multinode_test(edt_create_oversize_guard VARIANTS 2n_9w_1p TIMEOUT 60)
+set_tests_properties(edt_create_oversize_guard_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "over the [0-9]+-byte control-message bound")
 register_multinode_test(finish_event_mn_termination)
 register_multinode_test(route_table_remote_guid)
@@ -1075,7 +1076,7 @@ register_multinode_test(coherence_rw_chain TIMEOUT 30)
 # the home-side create handler must end naming ITSELF as the holder on every
 # arm, or the writer's request reaches a rank that holds nothing and the run
 # times out.  Multinode only — one rank cannot separate the three roles, and
-# the 2n variants self-skip for the same reason.
+# the 2n_9w_1p variants self-skip for the same reason.
 register_multinode_test(grant_purge_no_acquire_creator TIMEOUT 60)
 # Write-right churn with home-local turns overlapping remote ones.  It asserts
 # an exact sum, which every release policy must compute, so it runs at every
@@ -1120,8 +1121,8 @@ register_multinode_test(ro_grant_retained TIMEOUT 30)
 # write right and releases stays a sharer — the next owner's first release
 # retires it.  The next requester asks while the holder still holds, so the
 # hand-over is decided before the holder's own release round; a registration
-# that round could erase is what this catches.  2n puts the home as the next
-# owner; 3n/4n put another non-home rank there.  Portable OCR shape, no
+# that round could erase is what this catches.  2n_9w_1p puts the home as the next
+# owner; 4n_4w_1p puts another non-home rank there.  Portable OCR shape, no
 # timing knob (the holder's 3 ms hold only has to outlast one request hop).
 # Its two writers are ordered only by the runtime's exclusive RW turn, never
 # by happens-before, so the program is outside DB-WRF and the FLUSH tree
@@ -1134,12 +1135,12 @@ endif()
 register_multinode_test(coherence_ro_acquire_stress TIMEOUT 90)
 
 register_multinode_test(multinode_stdout_forward)
-set_tests_properties(multinode_stdout_forward_2n PROPERTIES
+set_tests_properties(multinode_stdout_forward_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "MULTINODE_STDOUT_FORWARD_SENTINEL 42")
 
-# B.3 LOCK_REQ-before-DB_CREATE race regression is registered at 3n/4n (where
+# B.3 LOCK_REQ-before-DB_CREATE race regression is registered at 4n_4w_1p (where
 # the race is actually exercised) as `excl_req_before_create` in
-# generated_tests.cmake.  The former 2n single-entry `coherence_lock_req_before_create`
+# generated_tests.cmake.  The former 2n_9w_1p single-entry `coherence_lock_req_before_create`
 # here was a no-op (SKIPs at rank<3) over byte-identical source, so it was removed.
 
 # Coherence stress test suite.  Each adds the "coherence_stress" label on top
@@ -1155,7 +1156,7 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 foreach(_t coherence_destroy_during_acquire coherence_multi_writer_multi_db)
     register_single_node_test(${_t} TIMEOUT 60)
     register_multinode_test(${_t} TIMEOUT 120)
-    foreach(_v "" _2n _3n _4n _2n_io)
+    foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
         set_property(TEST ${_t}${_v} APPEND PROPERTY LABELS "coherence_stress")
         set_tests_properties(${_t}${_v} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
@@ -1180,7 +1181,7 @@ set_tests_properties(runtime_no_libc_alloc PROPERTIES
 # acquired by workers placed on every rank, write and read turns interleaved.
 # SKIPs on one rank.
 register_multinode_test(coherence_stress_dist TIMEOUT 120)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_property(TEST coherence_stress_dist_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
     set_tests_properties(coherence_stress_dist_${_v} PROPERTIES
@@ -1193,9 +1194,9 @@ endforeach()
 # message framing — a payload split across frames the connectionless RX cannot
 # reassemble corrupts silently (checksum mismatch -> FAIL) or mis-dispatches
 # (spurious shutdown -> TIMEOUT); the sizeof(int) DBs elsewhere never reach it.
-# Standard MN variants (2n/3n/4n/2n_io); SKIPs cleanly at rank_count < 2.
+# Standard MN variants (2n_9w_1p/4n_4w_1p/2n_8w_2p); SKIPs cleanly at rank_count < 2.
 register_multinode_test(coherence_payload_large TIMEOUT 120)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_property(TEST coherence_payload_large_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
     # A framing bug can mis-dispatch the raw payload frame -> spurious shutdown,
@@ -1212,7 +1213,7 @@ endforeach()
 # (3 + 3 + 2 MiB) paired on the last one's immediate.  Whole-payload
 # verification is what catches a piece landing at the wrong offset, or a
 # pairing that fires before the last piece has landed.
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     arts_test_cfg(_cfg ${_v})
     add_test(
         NAME coherence_payload_split_${_v}
@@ -1239,7 +1240,7 @@ endforeach()
 # it.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_satisfy_before_release TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_property(TEST coherence_satisfy_before_release_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
     set_tests_properties(coherence_satisfy_before_release_${_v} PROPERTIES
@@ -1251,12 +1252,12 @@ endif()
 # coherence_owner_ownership_reorder: unordered write turns from every rank on
 # one block homed on rank 0, in deep batches and in short steps with a home-rank
 # contender; the exact end-sum is the gate, and a stranded requester times out.
-# 2n_io is the variant whose two progress threads may dispatch one peer's
+# 2n_8w_2p is the variant whose two progress threads may dispatch one peer's
 # hand-over messages out of order.  Its writers are unordered, which DB-WRF
 # does not admit.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(coherence_owner_ownership_reorder TIMEOUT 120)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_property(TEST coherence_owner_ownership_reorder_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
     set_tests_properties(coherence_owner_ownership_reorder_${_v} PROPERTIES
@@ -1267,8 +1268,8 @@ endif()
 # OWNER-placement stale-RO ownership-confirm gate: RO acquire causally ordered after a
 # remote RW writer must observe the writer's value, not a stale snapshot from
 # the old owner.  The race window is home's rw_holder lag behind INSTALL_ACK.
-# The 2n_io config (multiple progress threads -> wire reorder) exposes it;
-# 1n passes trivially (no ownership transfer).  RELAXED SKIPs cleanly.
+# The 2n_8w_2p config (multiple progress threads -> wire reorder) exposes it;
+# 1n_20w passes trivially (no ownership transfer).  RELAXED SKIPs cleanly.
 register_single_node_test(coherence_owner_confirm_gate TIMEOUT 120)
 register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120)
 
@@ -1282,10 +1283,10 @@ register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120)
 # write policy — registered under every arm and rank count; valid under DB-WRF
 # too, since its writers are ordered.
 register_single_node_test(coherence_grant_chain_visibility TIMEOUT 60)
-register_multinode_test(coherence_grant_chain_visibility TIMEOUT 120 VARIANTS 2n 3n 4n)
+register_multinode_test(coherence_grant_chain_visibility TIMEOUT 120 VARIANTS 2n_9w_1p 4n_4w_1p)
 set_tests_properties(coherence_grant_chain_visibility PROPERTIES
     FAIL_REGULAR_EXPRESSION "FAIL")
-foreach(_v 2n 3n 4n)
+foreach(_v 2n_9w_1p 4n_4w_1p)
     set_tests_properties(coherence_grant_chain_visibility_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
@@ -1303,14 +1304,14 @@ set_tests_properties(ooo_create_parks_until_destroy PROPERTIES
 # generation's create issued while the current one is live, so it parks at the
 # home until the destroy.  Every generation's value must reach its consumer in
 # order, and the shutdown must leave no create parked.  No data block, so every
-# arm runs it; 2n_io is the variant whose two progress threads dispatch one
+# arm runs it; 2n_8w_2p is the variant whose two progress threads dispatch one
 # peer's messages out of order.
 add_arts_test(label_reuse_ring_event)
 register_single_node_test(label_reuse_ring_event TIMEOUT 60)
 register_multinode_test(label_reuse_ring_event TIMEOUT 120)
-foreach(_t label_reuse_ring_event label_reuse_ring_event_2n
-        label_reuse_ring_event_3n label_reuse_ring_event_4n
-        label_reuse_ring_event_2n_io)
+foreach(_t label_reuse_ring_event label_reuse_ring_event_2n_9w_1p
+        label_reuse_ring_event_4n_4w_1p
+        label_reuse_ring_event_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_event 64 generations in order"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1324,9 +1325,9 @@ endforeach()
 add_arts_test(edt_destroy_before_create)
 register_single_node_test(edt_destroy_before_create TIMEOUT 30)
 register_multinode_test(edt_destroy_before_create TIMEOUT 60)
-foreach(_t edt_destroy_before_create edt_destroy_before_create_2n
-        edt_destroy_before_create_3n edt_destroy_before_create_4n
-        edt_destroy_before_create_2n_io)
+foreach(_t edt_destroy_before_create edt_destroy_before_create_2n_9w_1p
+        edt_destroy_before_create_4n_4w_1p
+        edt_destroy_before_create_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: edt_destroy_before_create"
         FAIL_REGULAR_EXPRESSION "FAIL:")
@@ -1338,9 +1339,9 @@ endforeach()
 add_arts_test(edt_destroy_pending_scope)
 register_single_node_test(edt_destroy_pending_scope TIMEOUT 30)
 register_multinode_test(edt_destroy_pending_scope TIMEOUT 60)
-foreach(_t edt_destroy_pending_scope edt_destroy_pending_scope_2n
-        edt_destroy_pending_scope_3n edt_destroy_pending_scope_4n
-        edt_destroy_pending_scope_2n_io)
+foreach(_t edt_destroy_pending_scope edt_destroy_pending_scope_2n_9w_1p
+        edt_destroy_pending_scope_4n_4w_1p
+        edt_destroy_pending_scope_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: edt_destroy_pending_scope"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1352,9 +1353,9 @@ endforeach()
 add_arts_test(finish_scope_creator_token)
 register_single_node_test(finish_scope_creator_token TIMEOUT 60)
 register_multinode_test(finish_scope_creator_token TIMEOUT 90)
-foreach(_t finish_scope_creator_token finish_scope_creator_token_2n
-        finish_scope_creator_token_3n finish_scope_creator_token_4n
-        finish_scope_creator_token_2n_io)
+foreach(_t finish_scope_creator_token finish_scope_creator_token_2n_9w_1p
+        finish_scope_creator_token_4n_4w_1p
+        finish_scope_creator_token_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: finish_scope_creator_token"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1375,14 +1376,14 @@ set_tests_properties(edt_create_parks_until_retire PROPERTIES
 # created after that completion is observed, or created early (it parks at the
 # home behind the live generation).  Either way its satisfy and dependence
 # follow the completion.  Every generation's value must be recorded in order,
-# and the shutdown must leave no create parked.  2n_io is the variant whose two
+# and the shutdown must leave no create parked.  2n_8w_2p is the variant whose two
 # progress threads may dispatch one peer's messages out of order.
 add_arts_test(label_reuse_ring_edt)
 register_single_node_test(label_reuse_ring_edt TIMEOUT 60)
 register_multinode_test(label_reuse_ring_edt TIMEOUT 120)
-foreach(_t label_reuse_ring_edt label_reuse_ring_edt_2n
-        label_reuse_ring_edt_3n label_reuse_ring_edt_4n
-        label_reuse_ring_edt_2n_io)
+foreach(_t label_reuse_ring_edt label_reuse_ring_edt_2n_9w_1p
+        label_reuse_ring_edt_4n_4w_1p
+        label_reuse_ring_edt_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_edt 64 generations in order, late and early creates"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1394,14 +1395,14 @@ endforeach()
 # after the destroy, and issues the rest of the generation (its write and
 # release, the readers' dependences) after the destroy at the home.  Every
 # generation's value must reach the home in order, and the shutdown must leave
-# no create parked.  3n/4n add a reader on rank 1, whose stale reads are the
+# no create parked.  4n_4w_1p adds a reader on rank 1, whose stale reads are the
 # recorded weakness (KNOWN-WEAKNESS lines, not failures).
 add_arts_test(label_reuse_ring_db)
 register_single_node_test(label_reuse_ring_db TIMEOUT 60)
 register_multinode_test(label_reuse_ring_db TIMEOUT 120)
-foreach(_t label_reuse_ring_db label_reuse_ring_db_2n
-        label_reuse_ring_db_3n label_reuse_ring_db_4n
-        label_reuse_ring_db_2n_io)
+foreach(_t label_reuse_ring_db label_reuse_ring_db_2n_9w_1p
+        label_reuse_ring_db_4n_4w_1p
+        label_reuse_ring_db_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_db 64 generations in order"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1410,16 +1411,16 @@ endforeach()
 # label_reuse_ring_db_rotate: the DB ring with the creator rotating over every
 # rank, the home included, and each generation read on the next creator's
 # rank, whose create must wait behind that reader cache until the previous
-# generation's teardown notice retires it.  Not on 2n_io: there the reader's
+# generation's teardown notice retires it.  Not on 2n_8w_2p: there the reader's
 # rank created the previous generation, and its dependence and that
 # generation's teardown notice, both sent by the home, may be dispatched in
 # either order by the rank's two progress threads -- the recorded weakness,
 # which on this shape can strand the reader rather than show it a stale value.
 add_arts_test(label_reuse_ring_db_rotate)
 register_single_node_test(label_reuse_ring_db_rotate TIMEOUT 60)
-register_multinode_test(label_reuse_ring_db_rotate TIMEOUT 120 VARIANTS 2n 3n 4n)
-foreach(_t label_reuse_ring_db_rotate label_reuse_ring_db_rotate_2n
-        label_reuse_ring_db_rotate_3n label_reuse_ring_db_rotate_4n)
+register_multinode_test(label_reuse_ring_db_rotate TIMEOUT 120 VARIANTS 2n_9w_1p 4n_4w_1p)
+foreach(_t label_reuse_ring_db_rotate label_reuse_ring_db_rotate_2n_9w_1p
+        label_reuse_ring_db_rotate_4n_4w_1p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_db_rotate 64 generations in order"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1430,7 +1431,7 @@ endforeach()
 # writer the destroy did not reach would hold its slot against that create.
 add_arts_test(db_destroy_roster)
 register_multinode_test(db_destroy_roster TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(db_destroy_roster_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: db_destroy_roster"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1439,14 +1440,14 @@ endforeach()
 # db_destroy_untouched_rank: a block homed on the first rank is destroyed by a
 # task on the last rank that never acquired it, and the home then creates the
 # label again; a destroy that never left the last rank would leave the second
-# create parked behind a live first generation.  On 1n the destroying task
+# create parked behind a live first generation.  On 1n_20w the destroying task
 # runs on the home, so it passes without exercising that path.
 add_arts_test(db_destroy_untouched_rank)
 register_single_node_test(db_destroy_untouched_rank TIMEOUT 30)
 register_multinode_test(db_destroy_untouched_rank TIMEOUT 60)
-foreach(_t db_destroy_untouched_rank db_destroy_untouched_rank_2n
-        db_destroy_untouched_rank_3n db_destroy_untouched_rank_4n
-        db_destroy_untouched_rank_2n_io)
+foreach(_t db_destroy_untouched_rank db_destroy_untouched_rank_2n_9w_1p
+        db_destroy_untouched_rank_4n_4w_1p
+        db_destroy_untouched_rank_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1459,9 +1460,9 @@ endforeach()
 add_arts_test(rendezvous_loser_parks)
 register_single_node_test(rendezvous_loser_parks TIMEOUT 60)
 register_multinode_test(rendezvous_loser_parks TIMEOUT 120)
-foreach(_t rendezvous_loser_parks rendezvous_loser_parks_2n
-        rendezvous_loser_parks_3n rendezvous_loser_parks_4n
-        rendezvous_loser_parks_2n_io)
+foreach(_t rendezvous_loser_parks rendezvous_loser_parks_2n_9w_1p
+        rendezvous_loser_parks_4n_4w_1p
+        rendezvous_loser_parks_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: rendezvous_loser_parks"
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
@@ -1480,9 +1481,9 @@ endforeach()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(quiescent_shutdown_no_residue TIMEOUT 60)
 register_multinode_test(quiescent_shutdown_no_residue TIMEOUT 120)
-foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n
-        quiescent_shutdown_no_residue_3n quiescent_shutdown_no_residue_4n
-        quiescent_shutdown_no_residue_2n_io)
+foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n_9w_1p
+        quiescent_shutdown_no_residue_4n_4w_1p
+        quiescent_shutdown_no_residue_2n_8w_2p)
     # The checker's verdict reaches the exit status only on the master rank,
     # so its printed FAIL is matched too.
     set_tests_properties(${_t} PROPERTIES
@@ -1511,7 +1512,7 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(grant_one_request_per_grant)
 register_multinode_test(grant_one_request_per_grant TIMEOUT 120)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(grant_one_request_per_grant_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -1522,13 +1523,13 @@ endif()
 # GRANT or each protocol's equivalent) and the final RO read must observe every
 # writer's atomic update.  An ordinary OCR program — registered under every
 # protocol; at >=3 ranks a DB homed on a non-zero rank has two distinct remote
-# writer ranks, exercising the cross-rank publish handoff that 2n cannot.
+# writer ranks, exercising the cross-rank publish handoff that 2n_9w_1p cannot.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-register_multinode_test(coherence_multi_writer_dist TIMEOUT 120 VARIANTS 2n 3n 4n)
-foreach(_v 2n 3n 4n)
+register_multinode_test(coherence_multi_writer_dist TIMEOUT 120 VARIANTS 2n_9w_1p 4n_4w_1p)
+foreach(_v 2n_9w_1p 4n_4w_1p)
     set_property(TEST coherence_multi_writer_dist_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
 endforeach()
@@ -1551,10 +1552,9 @@ register_single_node_test(coherence_writer_ro_overlap TIMEOUT 120)
 register_multinode_test(coherence_writer_ro_overlap TIMEOUT 180)
 set(_writer_ro_cases
     coherence_writer_ro_overlap
-    coherence_writer_ro_overlap_2n
-    coherence_writer_ro_overlap_3n
-    coherence_writer_ro_overlap_4n
-    coherence_writer_ro_overlap_2n_io)
+    coherence_writer_ro_overlap_2n_9w_1p
+    coherence_writer_ro_overlap_4n_4w_1p
+    coherence_writer_ro_overlap_2n_8w_2p)
 foreach(_t IN LISTS _writer_ro_cases)
     set_property(TEST ${_t} APPEND PROPERTY LABELS "coherence_stress")
     # A protocol that ends the run early (spurious shutdown) would exit 0 with
@@ -1608,21 +1608,21 @@ if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     register_multinode_test(wrf_flush_private_copy TIMEOUT 60)
     # Nothing to separate on one rank: the acquirer IS the home, so the
     # zero-size fetch/announce legs are only reachable multinode.
-    register_multinode_test(wrf_flush_zero_size TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
+    register_multinode_test(wrf_flush_zero_size TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     # Same reason: the spent credit only matters to a non-home releaser.
-    register_multinode_test(wrf_flush_announce TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
+    register_multinode_test(wrf_flush_announce TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     # And the size-only round is asked only by a rank that is not the home.
-    register_multinode_test(wrf_flush_size_discovery TIMEOUT 60 VARIANTS 2n 3n 4n 2n_io)
+    register_multinode_test(wrf_flush_size_discovery TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     foreach(_base wrf_flush_writer_reader wrf_flush_creator_remote_home
                   wrf_flush_no_acquire_first_touch wrf_flush_chain
                   wrf_flush_private_copy)
-        foreach(_t ${_base} ${_base}_2n ${_base}_3n ${_base}_4n ${_base}_2n_io)
+        foreach(_t ${_base} ${_base}_2n_9w_1p ${_base}_4n_4w_1p ${_base}_2n_8w_2p)
             set_tests_properties(${_t} PROPERTIES PASS_REGULAR_EXPRESSION "DB_WRF: PASS"
                                  FAIL_REGULAR_EXPRESSION "FAIL:")
         endforeach()
     endforeach()
     foreach(_base wrf_flush_zero_size wrf_flush_announce wrf_flush_size_discovery)
-        foreach(_t ${_base}_2n ${_base}_3n ${_base}_4n ${_base}_2n_io)
+        foreach(_t ${_base}_2n_9w_1p ${_base}_4n_4w_1p ${_base}_2n_8w_2p)
             set_tests_properties(${_t} PROPERTIES PASS_REGULAR_EXPRESSION "DB_WRF: PASS"
                                  FAIL_REGULAR_EXPRESSION "FAIL:")
         endforeach()
@@ -1651,13 +1651,14 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # and a fatal, named exhaustion.  One rank: the arena is one object.
     register_cxl_single_node_test(cxl_store_alloc TIMEOUT 60 FAIL_REGEX "FAIL")
     # The static strategy with a device other than 0: the one arena is index
-    # 0 whatever device the cfg named.
-    arts_test_cfg(_dev3_cfg 1n_static_dev3)
+    # 0 whatever device the cfg named.  The two cfg keys come through the
+    # environment, which overrides the file.
+    arts_test_cfg(_dev3_cfg 1n_20w)
     add_test(NAME cxl_store_alloc_static_dev3 COMMAND cxl_store_alloc
              WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
     set_tests_properties(cxl_store_alloc_static_dev3 PROPERTIES
         LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
-        ENVIRONMENT "ARTS_CONFIG=${_dev3_cfg}"
+        ENVIRONMENT "ARTS_CONFIG=${_dev3_cfg};cxl_db_allocation_strategy=static;cxl_db_allocation_device=3"
         PASS_REGULAR_EXPRESSION "PASS cxl_store_alloc" FAIL_REGULAR_EXPRESSION "FAIL")
     # The slot rule holds on one rank and on every multinode flavour.  Every
     # verdict travels as printed output: a FAIL line from any rank fails it,
@@ -1685,7 +1686,7 @@ if(ARTS_CXL_TREE_RESIDENCY)
         register_cxl_single_node_test(cxl_direct_payload_identity TIMEOUT 60)
         # The no-copy half of the same oracle: that address is the SAME on
         # every rank that holds it.  Needs more than one rank to say anything.
-        register_cxl_multinode_test(cxl_direct_payload_identity TIMEOUT 120 VARIANTS 2n 3n)
+        register_cxl_multinode_test(cxl_direct_payload_identity TIMEOUT 120 VARIANTS 2n_9w_1p 4n_4w_1p)
     endif()
     # A cache made by an acquiring create is on the block's destroy roster, so
     # it stops naming the slot with the block instead of outliving it.  Needs
@@ -1713,13 +1714,6 @@ if(ARTS_CXL_TREE_RESIDENCY)
     target_compile_definitions(cxl_edge_flush_order PRIVATE ARTS_CXL_FLUSH_RECORDER=1)
     register_cxl_single_node_test(cxl_edge_flush_order TIMEOUT 30)
     register_cxl_multinode_test(cxl_edge_flush_order TIMEOUT 60)
-
-    # 7 ranks x (1 worker + 1 progress): the widest geometry a 14-CPU host
-    # holds, and the only one that puts seven ranks on the shared arena.
-    foreach(t cxl_slot_rule cxl_remote_write_read cxl_ro_cohort
-              cxl_create_release_remote cxl_no_acquire_first_use cxl_labeled_create)
-        register_cxl_multinode_test(${t} VARIANTS 7n TIMEOUT 120)
-    endforeach()
 endif()
 
 # --- GPU tests ---
@@ -1890,27 +1884,25 @@ endif()
 # variant needs its own entry: a multinode test has no bare-name entry.
 # ============================================================================
 set_tests_properties(await_publish_ack_shutdown PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(await_publish_ack_shutdown_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(await_publish_ack_shutdown_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(await_publish_ack_shutdown_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(await_publish_ack_shutdown_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(await_publish_ack_shutdown_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(await_publish_ack_shutdown_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(await_publish_ack_shutdown_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(cat_c_ref_balance PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(cat_c_ref_balance_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(cat_c_ref_balance_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(cat_c_ref_balance_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(cat_c_ref_balance_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(cat_c_ref_balance_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(cat_c_ref_balance_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(cat_c_ref_balance_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rw_chain PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-foreach(_t grant_purge_no_acquire_creator_2n grant_purge_no_acquire_creator_3n
-          grant_purge_no_acquire_creator_4n
-          grant_purge_no_acquire_creator_2n_io)
+foreach(_t grant_purge_no_acquire_creator_2n_9w_1p
+          grant_purge_no_acquire_creator_4n_4w_1p
+          grant_purge_no_acquire_creator_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-foreach(_t grant_purge_churn grant_purge_churn_2n grant_purge_churn_3n
-          grant_purge_churn_4n grant_purge_churn_2n_io
-          grant_purge_handback_regrant grant_purge_handback_regrant_2n
-          grant_purge_handback_regrant_3n grant_purge_handback_regrant_4n
-          grant_purge_handback_regrant_2n_io)
+foreach(_t grant_purge_churn grant_purge_churn_2n_9w_1p
+          grant_purge_churn_4n_4w_1p grant_purge_churn_2n_8w_2p
+          grant_purge_handback_regrant grant_purge_handback_regrant_2n_9w_1p
+          grant_purge_handback_regrant_4n_4w_1p
+          grant_purge_handback_regrant_2n_8w_2p)
     set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 endif()
@@ -1921,83 +1913,70 @@ endif()
 # hand-back at all).  The binary builds in every tree; only the entry is gated.
 if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
    AND ARTS_RELEASE_POLICY STREQUAL "PURGE")
-    register_multinode_test(grant_purge_return TIMEOUT 60 VARIANTS 2n 3n 4n)
-    foreach(_t grant_purge_return_2n grant_purge_return_3n
-              grant_purge_return_4n)
+    register_multinode_test(grant_purge_return TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1p)
+    foreach(_t grant_purge_return_2n_9w_1p
+              grant_purge_return_4n_4w_1p)
         set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
     endforeach()
 endif()
-set_tests_properties(coherence_rw_chain_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_rw_chain_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_rw_chain_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_rw_chain_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_rw_chain_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_rw_chain_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_rw_chain_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_rwro_phase PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_rwro_phase_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_rwro_phase_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_rwro_phase_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_rwro_phase_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_zero_size_xfer_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_zero_size_xfer_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_zero_size_xfer_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_zero_size_xfer_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_claims_first_touch_stub_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_claims_first_touch_stub_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_claims_first_touch_stub_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_create_claims_first_touch_stub_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_rwro_phase_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_rwro_phase_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_rwro_phase_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_zero_size_xfer_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_zero_size_xfer_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_zero_size_xfer_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_create_claims_first_touch_stub_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_create_claims_first_touch_stub_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_create_claims_first_touch_stub_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(csr_empty_partition PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(csr_load_args PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(csr_load_csr_format PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(csr_load_edgelist PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(ctx_crossrank_proxy_finish_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(ctx_crossrank_proxy_finish_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(ctx_crossrank_proxy_finish_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(ctx_crossrank_proxy_finish_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_acquire_all_bias_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_acquire_all_bias_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_acquire_all_bias_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_acquire_all_bias_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(ctx_crossrank_proxy_finish_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(ctx_crossrank_proxy_finish_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(ctx_crossrank_proxy_finish_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_acquire_all_bias_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_acquire_all_bias_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_acquire_all_bias_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_release_alias_slot PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(db_rw_secure_double_fire PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_rw_secure_double_fire_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_rw_secure_double_fire_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_rw_secure_double_fire_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(db_rw_secure_double_fire_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_rw_secure_double_fire_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_rw_secure_double_fire_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(db_rw_secure_double_fire_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(dist_args_oob PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(edt_satisfy_out_of_range PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(event_destroy_before_create PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(event_destroy_before_create_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(event_destroy_before_create_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(event_destroy_before_create_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(event_destroy_before_create_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(event_destroy_before_create_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(event_destroy_before_create_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(event_destroy_before_create_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(excl_multiconsumer_queue PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_multiconsumer_queue_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_multiconsumer_queue_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_multiconsumer_queue_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_multiconsumer_queue_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_multiconsumer_queue_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_multiconsumer_queue_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_multiconsumer_queue_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(excl_purge_grant_d6_d7 PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_purge_grant_d6_d7_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_purge_grant_d6_d7_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_purge_grant_d6_d7_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_purge_grant_d6_d7_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_purge_grant_d6_d7_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_purge_grant_d6_d7_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_purge_grant_d6_d7_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(excl_samerank_rw_grant_race PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_samerank_rw_grant_race_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_samerank_rw_grant_race_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_samerank_rw_grant_race_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(excl_samerank_rw_grant_race_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_samerank_rw_grant_race_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_samerank_rw_grant_race_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(excl_samerank_rw_grant_race_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_CXL_DIRECT_EXCLUDED)
     set_tests_properties(mark_edt_ready_idempotent PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 set_tests_properties(random_thread_safe PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(self_send_vs_dispatcher_parity PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(self_send_vs_dispatcher_parity_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(self_send_vs_dispatcher_parity_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(self_send_vs_dispatcher_parity_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(self_send_vs_dispatcher_parity_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(self_send_vs_dispatcher_parity_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(self_send_vs_dispatcher_parity_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(self_send_vs_dispatcher_parity_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(snapshot_response_3case PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(snapshot_response_3case_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(snapshot_response_3case_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(snapshot_response_3case_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(snapshot_response_3case_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(snapshot_response_3case_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(snapshot_response_3case_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(snapshot_response_3case_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 
 # Tests that report by exit status (their main() merges arts_rt()'s status
 # with arts_test_status()) carry no PASS_REGULAR_EXPRESSION, which would make
@@ -2021,7 +2000,7 @@ set(_arts_status_tests
     paramv_memcpy round_robin_home_distribution runtime_barrier_counts
     stress_edt system_info_in_edt system_info_per_rank threads_pin_affinity)
 foreach(_n IN LISTS _arts_status_tests)
-    foreach(_v "" _2n _3n _4n _2n_io)
+    foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
         if(TEST ${_n}${_v})
             get_test_property(${_n}${_v} FAIL_REGULAR_EXPRESSION _f)
             if(NOT _f)

@@ -380,11 +380,11 @@ def test_the_local_cxl_smoke_profile_loads_and_fits_the_host(monkeypatch,
     from artsrun import store
     from artsrun.model.profile import CxlLibrary, Launcher
 
-    # The rule is judged against a half-split eight-core topology, not the
+    # The rule is judged against a half-split ten-core topology, not the
     # machine the suite happens to run on.
     _use_topology(monkeypatch, tmp_path,
-                  {c: f"{c},{c + 8}" for c in range(8)}
-                  | {c + 8: f"{c},{c + 8}" for c in range(8)})
+                  {c: f"{c},{c + 10}" for c in range(10)}
+                  | {c + 10: f"{c},{c + 10}" for c in range(10)})
     plane = load_plane()
     profile = store.load_profile("local-cxl")
     assert profile.launcher is Launcher.LOCAL

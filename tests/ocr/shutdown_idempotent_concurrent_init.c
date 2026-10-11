@@ -21,7 +21,7 @@
 /// token after arts_rt returns; the integrator's MN harness confirms all ranks
 /// returned (ctest TIMEOUT reaps a storm/deadlock regression).
 ///
-/// runtime_multinode (2n/3n/4n/2n_io).  Self-skips cleanly to a single-node
+/// runtime_multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a single-node
 /// clean shutdown when only one rank is present.
 /// all configs (shutdown sits above the coherence layer).
 

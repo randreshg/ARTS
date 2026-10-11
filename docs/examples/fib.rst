@@ -109,7 +109,7 @@ Running
 .. code-block:: bash
 
    cd build/examples/cpu
-   cp ../../configs/local/test/1n.cfg ./arts.cfg
+   cp ../../configs/local/test/1n_20w.cfg ./arts.cfg
    ./fib 30
 
 Multi-node:

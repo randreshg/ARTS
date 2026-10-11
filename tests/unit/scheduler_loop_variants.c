@@ -27,7 +27,7 @@
  *      network_first) are three DISTINCT function pointers — the table is a
  * real dispatch table, not aliased entries.
  *   3. The runtime installs the configured loop: arts_node_info.scheduler ==
- *      scheduler_loop[0] under the default config (configs/local/1n.cfg sets no
+ *      scheduler_loop[0] under the default config (configs/local/test/1n_20w.cfg sets no
  *      `scheduler` key → it defaults to 0).  This proves index 0 selects the
  *      default loop in the running build, i.e. the positional contract holds
  * for the only index that does not drift.

@@ -172,8 +172,8 @@ CTest is the test runner. Tests are grouped by ctest labels:
 cmake -GNinja -Bbuild -DCMAKE_BUILD_TYPE=Debug
 ninja -C build
 ( cd build && ctest -L single_node --output-on-failure )   # single-node
-( cd build && ctest -L multinode  --output-on-failure )     # 2n/3n/4n localhost
-( cd build && ctest -L gpu        --output-on-failure )     # GPU build only
+( cd build && ctest -L multinode  --output-on-failure )     # 2n_9w_1p/4n_4w_1p/2n_8w_2p localhost
+( cd build && ctest -L gpu        --output-on-failure )     # GPU build only (runs on 1n_20w.cfg with gpu=1)
 ctest --test-dir build -R edt_create_basic                  # one test by name
 ```
 
@@ -187,10 +187,9 @@ An ARTS program reads its runtime configuration from `arts.cfg` in the working
 directory (or the file named by the `ARTS_CONFIG` environment variable).
 Templates live under `configs/`:
 
-- `configs/local/test/{1n,2n,2n_io,3n,4n}.cfg` — localhost, the ctest shapes
-- `configs/local/ferrari/{1n,1n_sc,2n_sc,4n_sc,8n_sc}.cfg` — localhost, the perf shapes for the current host
-- `configs/local/gpu/1n.cfg` — GPU-enabled
-- `configs/mpi/ferrari/{1n,1n_sc,2n_sc,4n_sc,8n_sc}.cfg` — MPI launcher (xsocr), the perf shapes for the current host (regenerated from `configs/templates/ocr.cfg.j2`; golden fixtures for `tools/artsrun`'s render tests)
+- `configs/local/test/{1n_20w,2n_9w_1p,2n_8w_2p,4n_4w_1p}.cfg` — localhost, the ctest shapes (`<nodes>n_<workers>w[_<progress>p]`)
+- `configs/local/ferrari/{1n,1n_sc,2n_sc,4n_sc,8n_sc}.cfg` — localhost perf shapes for a 128-core host (15 workers + 1 progress thread per rank, up to 8 ranks)
+- `configs/mpi/ferrari/{1n,1n_sc,2n_sc,4n_sc,8n_sc}.cfg` — MPI launcher (xsocr), the same 128-core shapes (regenerated from `configs/templates/ocr.cfg.j2`; golden fixtures for `tools/artsrun`'s render tests)
 
 The values most often changed are the launcher, the `worker_threads`/
 `progress_threads` counts, and the GPU count.

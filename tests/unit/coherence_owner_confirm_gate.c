@@ -56,9 +56,9 @@
 /// releasing the creator-token so each scope can drain and the next EDT can
 /// run.
 ///
-/// Config-agnostic: runs under configs/local/{1n,2n,3n,4n,2n_io}.cfg.  The
-/// 2n_io config (multiple sender/receiver threads -> wire reorder) is the one
-/// that exposes the race.  On 1n there is no transfer and the test passes
+/// Config-agnostic: runs under configs/local/test/{1n_20w,2n_9w_1p,4n_4w_1p,2n_8w_2p}.cfg.  The
+/// 2n_8w_2p config (multiple sender/receiver threads -> wire reorder) is the one
+/// that exposes the race.  On 1n_20w there is no transfer and the test passes
 /// trivially.
 /// A stranded waiter is caught by the ctest TIMEOUT (no in-test watchdog).
 

@@ -51,7 +51,7 @@
 /// Each per-rank verifier joins one finish event owned by rank 0; rank 0 waits
 /// on it and shuts the runtime down.  Requires node_count > 1; on a single
 /// node it prints SKIP and exits cleanly (so it is harmless when the runner
-/// lands a 1n config on the binary).
+/// lands a 1n_20w config on the binary).
 
 #include <stdint.h>
 

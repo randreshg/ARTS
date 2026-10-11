@@ -45,7 +45,7 @@
 # how a misregistered test can look green.
 
 # Install the canonical single-node config alongside the ARTS runtime.
-install(FILES local/test/1n.cfg
+install(FILES local/test/1n_20w.cfg
     DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/arts
     RENAME arts.cfg
     COMPONENT config

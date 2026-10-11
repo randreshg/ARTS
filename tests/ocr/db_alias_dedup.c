@@ -66,7 +66,7 @@
 /// state after the aliased EDT released.
 ///
 /// The rule is the engine's, so it holds in every coherence configuration.
-/// Config-agnostic across 1n..4n.  A stranded EDT is caught by the
+/// Config-agnostic across 1n_20w..4n_4w_1p.  A stranded EDT is caught by the
 /// ctest TIMEOUT (no in-test watchdog).
 
 #include "arts.h"

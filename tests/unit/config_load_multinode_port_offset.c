@@ -13,8 +13,8 @@
  * i*port_count. A regression here makes every local multinode run collide on
  * the same TCP ports and flake.
  *
- * Harness: runtime_multinode.  Registered for 2n/3n/4n/2n_io; each variant's
- * ARTS_CONFIG points at configs/local/<variant>.cfg and the per-test
+ * Harness: runtime_multinode.  Registered for 2n_9w_1p/4n_4w_1p/2n_8w_2p; each variant's
+ * ARTS_CONFIG points at configs/local/test/<variant>.cfg and the per-test
  * `ports` env override (set by register_multinode_test) replaces the
  * cfg's ports base.  The test does NOT start the runtime — it calls
  * arts_config_load() directly and inspects the resolved table, so it binds no

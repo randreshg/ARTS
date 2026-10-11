@@ -59,7 +59,7 @@
 ///
 /// A per-writer atomic counter in a separate node-pinned bookkeeping DB proves
 /// each writer ran exactly once (no double-replay, no drop).  Config-agnostic:
-/// all protocols route a remote RW acquire through the OoO defer path.  On 1n
+/// all protocols route a remote RW acquire through the OoO defer path.  On 1n_20w
 /// the deferral is local but the drain logic is identical.
 
 #include "arts.h"

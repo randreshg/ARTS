@@ -56,7 +56,7 @@
 /// handoff), DESTROY + CACHE_DESTROY — and asserts the SAME correctness
 /// invariant in both topologies.  Run single-node it drives the self-send
 /// shortcut for all of them (home == self); run multinode the integrator's
-/// 2n/3n/4n/2n_io variants drive the dispatcher.  Identical PASS in both
+/// 2n_9w_1p/4n_4w_1p/2n_8w_2p variants drive the dispatcher.  Identical PASS in both
 /// topologies is the parity proof; a topology-specific hang is caught by the
 /// ctest TIMEOUT, a topology-specific wrong answer by the in-EDT assertion
 /// (arts_abort).
@@ -112,7 +112,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int it = 0; it < ITERS; it++) {
     uint64_t vnew = (uint64_t)(BASE + it);
 
-    /* DB_CREATE on home (self-send create on 1n, wire create from a remote-home
+    /* DB_CREATE on home (self-send create on 1n_20w, wire create from a remote-home
      * acquire on Nn).  Recreate per iter so DESTROY + CACHE_DESTROY are also
      * exercised every generation. */
     void *ptr = NULL;

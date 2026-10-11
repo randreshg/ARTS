@@ -173,7 +173,7 @@ add_pure_unit_src(csr_free_null TIMEOUT 60)
 #
 # Harness mapping:
 #   runtime_single / config_specific -> register_single_node_test
-#   runtime_multinode                -> register_multinode_test (_2n/_3n/_4n/_2n_io)
+#   runtime_multinode                -> register_multinode_test (_2n_9w_1p/_4n_4w_1p/_2n_8w_2p)
 #   "both" notes                     -> single AND multinode
 # Protocol/placement selection is supplied GLOBALLY by the build dir's coherence
 # configuration; the test bodies self-skip (print SKIP, exit 0) in non-target
@@ -221,11 +221,11 @@ add_arts_test(db_rw_secure_double_fire)
 register_single_node_test(db_rw_secure_double_fire TIMEOUT 60)
 register_multinode_test(db_rw_secure_double_fire TIMEOUT 60)
 set_tests_properties(db_rw_secure_double_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_rw_secure_double_fire|SKIP db_rw_secure_double_fire")
-set_tests_properties(db_rw_secure_double_fire_2n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_rw_secure_double_fire|SKIP db_rw_secure_double_fire")
+set_tests_properties(db_rw_secure_double_fire_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_rw_secure_double_fire|SKIP db_rw_secure_double_fire")
 
 add_arts_test(db_acquire_all_bias)
 register_multinode_test(db_acquire_all_bias TIMEOUT 60)
-set_tests_properties(db_acquire_all_bias_2n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_all_bias|SKIP db_acquire_all_bias")
+set_tests_properties(db_acquire_all_bias_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_all_bias|SKIP db_acquire_all_bias")
 
 add_arts_test(db_destroy_implicit_release)
 register_single_node_test(db_destroy_implicit_release TIMEOUT 30)
@@ -260,7 +260,7 @@ set_tests_properties(ctx_null_guards PROPERTIES PASS_REGULAR_EXPRESSION "PASS ct
 
 add_arts_test(ctx_crossrank_proxy_finish)
 register_multinode_test(ctx_crossrank_proxy_finish TIMEOUT 60)
-set_tests_properties(ctx_crossrank_proxy_finish_2n PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_crossrank_proxy_finish|SKIP ctx_crossrank_proxy_finish")
+set_tests_properties(ctx_crossrank_proxy_finish_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_crossrank_proxy_finish|SKIP ctx_crossrank_proxy_finish")
 
 # ctx_gpu_lib_edt: GPU-only real body (ARTS_TEST_GPU); SKIP stub links CPU libarts otherwise.
 if(BUILD_CUDA_LIBRARY)
@@ -299,7 +299,7 @@ add_arts_test(event_destroy_before_create)
 register_single_node_test(event_destroy_before_create TIMEOUT 30)
 register_multinode_test(event_destroy_before_create TIMEOUT 60)
 set_tests_properties(event_destroy_before_create PROPERTIES PASS_REGULAR_EXPRESSION "event_destroy_before_create:.*PASS|SKIP event_destroy_before_create")
-set_tests_properties(event_destroy_before_create_2n PROPERTIES PASS_REGULAR_EXPRESSION "event_destroy_before_create:.*PASS|SKIP event_destroy_before_create")
+set_tests_properties(event_destroy_before_create_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "event_destroy_before_create:.*PASS|SKIP event_destroy_before_create")
 
 # event_gpu_force_defer: GPU-only real body (ARTS_USE_GPU); SKIP stub otherwise.
 if(BUILD_CUDA_LIBRARY)
@@ -322,10 +322,9 @@ set_tests_properties(grant_sticky PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant
 # by the new owner's rounds.  2+ ranks (the grant has to leave the reader).
 add_arts_test(grant_ex_holder_sharer)
 register_multinode_test(grant_ex_holder_sharer TIMEOUT 120)
-set_tests_properties(grant_ex_holder_sharer_2n PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
-set_tests_properties(grant_ex_holder_sharer_3n PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
-set_tests_properties(grant_ex_holder_sharer_4n PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
-set_tests_properties(grant_ex_holder_sharer_2n_io PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
+set_tests_properties(grant_ex_holder_sharer_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
+set_tests_properties(grant_ex_holder_sharer_4n_4w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
+set_tests_properties(grant_ex_holder_sharer_2n_8w_2p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
 
 # --- C09: EXCL protocol-specific ---
 # T093 EXPOSES B-lock-samerank-rw-grant-loss: expected to FAIL (hang) under EXCL; self-skips
@@ -350,22 +349,21 @@ register_single_node_test(excl_purge_grant_d6_d7 TIMEOUT 60)
 register_multinode_test(excl_purge_grant_d6_d7 TIMEOUT 60)
 # The end-of-run line is printed only once both halves have finished, so
 # requiring it on every variant turns a stranded writer into a failure.
-foreach(_v "" _2n _3n _4n _2n_io)
+foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
     set_tests_properties(excl_purge_grant_d6_d7${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION
         "excl_purge_grant_d6_d7 D7: .* D6 chain verified — PASS|SKIP excl_purge_grant_d6_d7")
 endforeach()
 
 # excl_req_before_create: protocol-agnostic, needs 3+ ranks (verbatim copy of the old
-# coherence_lock_req_before_create into the planned filename); register at 3n/4n.
+# coherence_lock_req_before_create into the planned filename); register at 4n_4w_1p.
 add_arts_test(excl_req_before_create)
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-register_multinode_test(excl_req_before_create TIMEOUT 90 VARIANTS 3n 4n)
-set_tests_properties(excl_req_before_create_3n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed|SKIP excl_req_before_create")
-set_tests_properties(excl_req_before_create_4n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed|SKIP excl_req_before_create")
+register_multinode_test(excl_req_before_create TIMEOUT 90 VARIANTS 4n_4w_1p)
+set_tests_properties(excl_req_before_create_4n_4w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed|SKIP excl_req_before_create")
 endif()
 
 # --- C11: snapshot / publish-ack / destroy-notify / dispatcher-parity (config_specific,
@@ -375,7 +373,7 @@ add_arts_test(snapshot_response_3case)
 register_single_node_test(snapshot_response_3case TIMEOUT 120)
 register_multinode_test(snapshot_response_3case TIMEOUT 120)
 
-# T112 EXPOSES B023 (self-send vs dispatcher parity). All protocols; needs 1n AND multinode.
+# T112 EXPOSES B023 (self-send vs dispatcher parity). All protocols; needs 1n_20w AND multinode.
 add_arts_test(self_send_vs_dispatcher_parity)
 register_single_node_test(self_send_vs_dispatcher_parity TIMEOUT 120)
 register_multinode_test(self_send_vs_dispatcher_parity TIMEOUT 120)
@@ -385,18 +383,18 @@ register_multinode_test(self_send_vs_dispatcher_parity TIMEOUT 120)
 add_arts_test(db_create_claims_first_touch_stub)
 register_multinode_test(db_create_claims_first_touch_stub TIMEOUT 120)
 
-# T115 EXPOSES B024 (Cat-C ref balance) — normally PASSES (regression guard). 1n + multinode.
+# T115 EXPOSES B024 (Cat-C ref balance) — normally PASSES (regression guard). 1n_20w + multinode.
 add_arts_test(cat_c_ref_balance)
 register_single_node_test(cat_c_ref_balance TIMEOUT 120)
 register_multinode_test(cat_c_ref_balance TIMEOUT 120)
 
 # T116 EXPOSES B017 (await_publish_ack under shutdown). WT only; self-skips under WB/EXCL.
-# Normally PASSES (prints token before shutdown). 1n + multinode.
+# Normally PASSES (prints token before shutdown). 1n_20w + multinode.
 add_arts_test(await_publish_ack_shutdown)
 register_single_node_test(await_publish_ack_shutdown TIMEOUT 120)
 register_multinode_test(await_publish_ack_shutdown TIMEOUT 120)
 set_tests_properties(await_publish_ack_shutdown PROPERTIES PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown|SKIP await_publish_ack_shutdown")
-set_tests_properties(await_publish_ack_shutdown_2n PROPERTIES PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown|SKIP await_publish_ack_shutdown")
+set_tests_properties(await_publish_ack_shutdown_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown|SKIP await_publish_ack_shutdown")
 
 # --- C03r: route-table / GUID determinism ---
 
@@ -435,7 +433,7 @@ endif()
 
 add_arts_test(stub_install_winner)
 register_multinode_test(stub_install_winner TIMEOUT 180)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(stub_install_winner_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: stub_install_winner|SKIP stub_install_winner")
 endforeach()
@@ -467,14 +465,14 @@ register_multinode_test(launcher_no_respawn TIMEOUT 60)
 
 add_arts_test(launcher_orphan_prevention)
 register_multinode_test(launcher_orphan_prevention TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(launcher_orphan_prevention_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS: launcher_orphan_prevention|SKIP launcher_orphan_prevention_${_v}")
 endforeach()
 
 # --- C21r: config loading ---
 add_arts_test(config_load_multinode_port_offset)
 register_multinode_test(config_load_multinode_port_offset TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(config_load_multinode_port_offset_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS config_load_multinode_port_offset|SKIP config_load_multinode_port_offset_${_v}")
 endforeach()
@@ -549,13 +547,13 @@ set_tests_properties(main_rank_overflow_abort PROPERTIES
 
 add_arts_test(shutdown_abort_eof)
 register_multinode_test(shutdown_abort_eof TIMEOUT 120)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(shutdown_abort_eof_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT|SKIP shutdown_abort_eof_${_v}")
 endforeach()
 
 add_arts_test(shutdown_idempotent_concurrent_init)
 register_multinode_test(shutdown_idempotent_concurrent_init TIMEOUT 120)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(shutdown_idempotent_concurrent_init_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "IDEMPOTENT_INIT_EXIT|SKIP shutdown_idempotent_concurrent_init_${_v}")
 endforeach()
 
@@ -656,30 +654,30 @@ endif()
 add_arts_test(edt_satisfy_out_of_range)
 register_single_node_test(edt_satisfy_out_of_range TIMEOUT 30)
 
-# edt_output_event: picks consumer_rank 1 when available; runs on 1n too.
+# edt_output_event: picks consumer_rank 1 when available; runs on 1n_20w too.
 # single + multinode.  Its writers are unordered, which DB-WRF does not admit.
 add_arts_test(edt_output_event)
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(edt_output_event TIMEOUT 30)
 register_multinode_test(edt_output_event TIMEOUT 60)
-foreach(_v "" _2n _3n _4n _2n_io)
+foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
     set_tests_properties(edt_output_event${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 endif()
 
-# edt_finish_scope_balance: round-robins members across all ranks; runs on 1n too. single + multinode.
+# edt_finish_scope_balance: round-robins members across all ranks; runs on 1n_20w too. single + multinode.
 add_arts_test(edt_finish_scope_balance)
 register_single_node_test(edt_finish_scope_balance TIMEOUT 30)
 register_multinode_test(edt_finish_scope_balance TIMEOUT 60)
-foreach(_v "" _2n _3n _4n _2n_io)
+foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
     set_tests_properties(edt_finish_scope_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_finish_scope_balance|SKIP edt_finish_scope_balance")
 endforeach()
 
-# edt_remote_create_reordered_satisfy: needs 2+ ranks; SKIPs cleanly on 1n.
+# edt_remote_create_reordered_satisfy: needs 2+ ranks; SKIPs cleanly on 1n_20w.
 add_arts_test(edt_remote_create_reordered_satisfy)
 register_multinode_test(edt_remote_create_reordered_satisfy TIMEOUT 60)
-foreach(_v 2n 3n 4n 2n_io)
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(edt_remote_create_reordered_satisfy_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS edt_remote_create_reordered_satisfy|SKIP edt_remote_create_reordered_satisfy")
 endforeach()
@@ -775,17 +773,15 @@ set_tests_properties(array_list_basic PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(atomics_locks PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(atomics_rmw_contention PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(atomics_rmw_conventions PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_home_producer_ro_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_home_producer_ro_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_home_producer_ro_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_home_producer_ro_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_home_producer_ro_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_home_producer_ro_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_home_producer_ro_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(coherence_owner_confirm_gate PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_owner_confirm_gate_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_owner_confirm_gate_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_owner_confirm_gate_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(coherence_owner_confirm_gate_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_owner_confirm_gate_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_owner_confirm_gate_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(coherence_owner_confirm_gate_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-foreach(_v 2n 3n 4n)
+foreach(_v 2n_9w_1p 4n_4w_1p)
     set_tests_properties(coherence_multi_writer_dist_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL"
         PASS_REGULAR_EXPRESSION "PASS: EXCL distributed arbitration|SKIP coherence_multi_writer_dist")
@@ -809,26 +805,23 @@ set_tests_properties(edt_fan_out PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(event_chain PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(event_channel_lifetime PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(event_idem_silent_oversatisfy PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(finish_event_mn_termination_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(finish_event_mn_termination_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(finish_event_mn_termination_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(finish_event_mn_termination_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(finish_event_mn_termination_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(finish_event_mn_termination_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(finish_event_mn_termination_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(hint_routing PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(malloc_alignment PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL|ERROR")
 set_tests_properties(malloc_footprint_balance PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL|ERROR")
-set_tests_properties(multinode_edt_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(multinode_edt_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(multinode_edt_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(multinode_edt_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(multinode_edt_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(multinode_edt_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(multinode_edt_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(ooo_drain_repush PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(ooo_table_completeness PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(ooo_toctou_rescue PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(paramv_memcpy PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(event_channel_advanced PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(route_table_install_race PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(route_table_remote_guid_2n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(route_table_remote_guid_3n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(route_table_remote_guid_4n PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
-set_tests_properties(route_table_remote_guid_2n_io PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(route_table_remote_guid_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(route_table_remote_guid_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
+set_tests_properties(route_table_remote_guid_2n_8w_2p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(stdio_forward_scale_test PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(stress_edt PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")

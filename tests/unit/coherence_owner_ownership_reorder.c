@@ -45,7 +45,7 @@
 ///  (1) Deep batches: INCS_PER_BATCH incrementers per batch, round-robin over
 ///      every rank and gated only on the block, so the home always holds a
 ///      queue of remote requesters and the write right moves rank to rank
-///      back to back.  With two progress threads (2n_io) the messages of one
+///      back to back.  With two progress threads (2n_8w_2p) the messages of one
 ///      hand-over and of the next one addressed to the same rank can be
 ///      dispatched in either order.
 ///  (2) Short contended steps: three incrementers per step, one on the home and

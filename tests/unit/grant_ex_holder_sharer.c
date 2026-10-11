@@ -21,7 +21,7 @@
  * its handoffs are event-ordered and quiescent, so the directory has always
  * caught up by the time the next round opens. The window only opens when a new
  * owner closes a round BEFORE the home processes its CONFIRM, which needs
- * concurrent home-side dispatch — `coherence_writer_ro_overlap_2n_io` is the
+ * concurrent home-side dispatch — `coherence_writer_ro_overlap_2n_8w_2p` is the
  * only test that produces it (6/10 with the bug restored). Keep both: this one
  * states the invariant in a form a reader can check, that one catches it.
  */

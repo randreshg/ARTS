@@ -29,7 +29,7 @@
  *
  * A second create of a live GUID parks until the occupant is destroyed, so
  * this test drives ONE create.  Requires >1 rank to exercise the remote path;
- * SKIPs cleanly to a trivial single-rank check on 1n.
+ * SKIPs cleanly to a trivial single-rank check on 1n_20w.
  */
 
 #include "arts.h"

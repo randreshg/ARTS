@@ -57,7 +57,7 @@
 /// This is a black-box runtime exercise of those paths.  It builds, per
 /// iteration, a clean producer-write / many-readers happens-before chain so
 /// remote RO acquires generate SNAPSHOT_REQUEST→SNAPSHOT_RESPONSE rounds whose
-/// wire reorder (multiple sender/receiver threads in 2n_io) drives case 2 vs
+/// wire reorder (multiple sender/receiver threads in 2n_8w_2p) drives case 2 vs
 /// case 3.  It runs both a sized DB (case-1/2/3 with payload) and a sentinel
 /// zero-size DB (B028 total-vs-payload predicate).  Every reader asserts it
 /// sees the writer's value; a stranded case-3 reader that never installs is
