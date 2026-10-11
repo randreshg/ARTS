@@ -91,10 +91,16 @@ CELL_TIMEOUT_S = 1800
 
 # Where the executables live and how their names are formed:
 #   <APP_BUILD_DIR>/<app>_<variant>
-# The paper pairs network ARTS (arts_ocr_excl_purge) with CXL-DIRECT ARTS
-# over the same matrix; both builds must use the same counterset.
+# Each release policy pairs network ARTS with a CXL build over the same
+# matrix: PURGE with CXL-DIRECT, RETAIN with CXL-STAGED.  Every build must use
+# the same counterset.  arts_ocr_excl_retain_cxl_staged keeps each rank's
+# working copy in DRAM and uses the CXL slot only as the channel a block
+# crosses when it changes rank: the owner writes it back only when it ships
+# the block (a migration or a read-phase serve), and the receiver copies it in
+# before its EDTs run.
 APP_BUILD_DIR = REPO_ROOT / "build" / "benchmarks" / "apps"
-VARIANTS = ["arts_ocr_excl_purge", "arts_ocr_excl_purge_cxl_direct"]
+VARIANTS = ["arts_ocr_excl_purge", "arts_ocr_excl_purge_cxl_direct",
+            "arts_ocr_excl_retain", "arts_ocr_excl_retain_cxl_staged"]
 
 # The site launch wrapper and the arguments it receives besides
 # --path-to-json.  "--local" runs the binary on this host and lets ARTS
@@ -216,10 +222,14 @@ SMOKE_APPS: dict[str, str] = {
     "nqueens_hinted": "8 4 1 2",
     "RSBench_intel_sharedDB_hinted": "-s large -l 300 -t 2 -p 8",
     "mapreduce_wordcount": "1024 10000 {per_node:12} 4 100 0 2 1",
+    # 12 places, not smoke.yaml's 8: the app reserves event names for
+    # rows/ranks + 2 rows per rank, so a place count the rank count does not
+    # divide (8 at 3 ranks gives rank 0 251 rows against 224) aliases two
+    # tiles' events and the wavefront hangs.
     "smithwaterman_dist": (
         "3 3 {repo}/datasets/smithwaterman/string1-gate.txt "
         "{repo}/datasets/smithwaterman/string2-gate.txt "
-        "{repo}/datasets/smithwaterman/score-gate.txt 8"),
+        "{repo}/datasets/smithwaterman/score-gate.txt 12"),
     "Stencil2D_intel_channelEVTs": "12 4 2",
     "stream_dist": "400 4 2",
     "triangle_hinted": "3 1",
