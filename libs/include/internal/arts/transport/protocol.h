@@ -637,7 +637,10 @@ struct ARTS_PACKED arts_msg_excl_forward_packet_s {
  * (rdzv_cookie echoes the target's landing handle, data_size counts the
  * landed bytes; txid==0 = data-less deliver).  NO version field — EXCL uses
  * versionless buffer-install (exclusive-lock serialization guarantees no
- * stale write can race). */
+ * stale write can race).  Under ARTS_USE_CXL no bytes travel at all: the
+ * deliver names the block's slot, which the target reads, and the trailing
+ * member makes the layout build-conditional exactly as the create packet's
+ * is (56 bytes, or 64 under ARTS_USE_CXL). */
 struct ARTS_PACKED arts_msg_excl_deliver_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -646,6 +649,9 @@ struct ARTS_PACKED arts_msg_excl_deliver_packet_s {
   uint64_t data_size;
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
+#ifdef ARTS_USE_CXL
+  uint64_t cxl_addr; /* the block's slot, 0 for a sentinel-sized block */
+#endif
 };
 
 /* EXCL_CONFIRM / EXCL_RORET share one struct: both are data-less

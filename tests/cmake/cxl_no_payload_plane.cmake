@@ -13,21 +13,24 @@
 #
 # An absence proves nothing on its own -- a renamed symbol, a stale object or a
 # changed nm output shape all read as "clean" -- so the same tree's non-CXL
-# build of this source is the control: where the payload plane is still
-# compiled in, nm must find it.  REQUIRE_CONTROL says this tree has that build,
-# and without it the run grades the absence half alone and says so.
+# build of each graded source is the control: where the payload plane is
+# still compiled in, nm must find it.  CONTROLS names the controls this tree
+# has; a graded source with none is graded on its absence half alone, and the
+# run says so.
+#
+# The two EXCL release policies compile the arm from different translation
+# units (excl/purge.c, excl/retain.c), so every entry of GRADED and CONTROLS
+# is <target>:<source stem>, comma-separated.
 cmake_policy(SET CMP0009 NEW) # GLOB_RECURSE must not follow symlinks
 
 if(NOT DEFINED BUILD_DIR)
     message(FATAL_ERROR "BUILD_DIR is required")
 endif()
-
-set(_control_dir "arts_static_ocr_excl_purge.dir")
-
-set(_graded_dirs "arts_memory.dir")
-foreach(_t IN LISTS GRADED_TARGETS)
-    list(APPEND _graded_dirs "${_t}.dir")
-endforeach()
+if(NOT GRADED)
+    message(FATAL_ERROR "GRADED is required")
+endif()
+string(REPLACE "," ";" _graded "${GRADED}")
+string(REPLACE "," ";" _controls "${CONTROLS}")
 
 set(_forbidden
     arts_net_put_payload arts_net_rdzv_expect arts_net_rdzv_local
@@ -36,13 +39,13 @@ set(_forbidden
 
 # GLOB_RECURSE matches the LAST path component only, so the target directory is
 # a filter over the result rather than part of the expression.
-file(GLOB_RECURSE _all "${BUILD_DIR}/libs/*purge.c.o")
+file(GLOB_RECURSE _all "${BUILD_DIR}/libs/*.c.o")
 
-function(cxl_object_of_dir _dir _out)
+function(cxl_object_of _dir _src _out)
     string(REPLACE "." "\\." _dre "${_dir}")
     set(_hit "")
     foreach(_o IN LISTS _all)
-        if(_o MATCHES "/${_dre}/.*coherence/excl/purge\\.c\\.o$")
+        if(_o MATCHES "/${_dre}/.*coherence/excl/${_src}\\.c\\.o$")
             list(APPEND _hit "${_o}")
         endif()
     endforeach()
@@ -64,12 +67,18 @@ function(cxl_undefined_symbols _obj _out)
 endfunction()
 
 set(_hits "")
-foreach(_d IN LISTS _graded_dirs)
-    cxl_object_of_dir("${_d}" _obj)
+set(_srcs "")
+foreach(_e IN LISTS _graded)
+    string(REPLACE ":" ";" _pair "${_e}")
+    list(GET _pair 0 _t)
+    list(GET _pair 1 _src)
+    list(APPEND _srcs "${_src}")
+    cxl_object_of("${_t}.dir" "${_src}" _obj)
     if(NOT _obj)
         message(FATAL_ERROR
-            "no object for coherence/excl/purge.c under ${BUILD_DIR} for ${_d}, "
-            "which this tree configures -- build the tree before grading it")
+            "no object for coherence/excl/${_src}.c under ${BUILD_DIR} for "
+            "${_t}, which this tree configures -- build the tree before "
+            "grading it")
     endif()
     cxl_undefined_symbols("${_obj}" _syms)
     foreach(_s IN LISTS _forbidden)
@@ -82,32 +91,48 @@ if(_hits)
     message(FATAL_ERROR "the store-backed arm still references the payload "
                         "plane: ${_hits}")
 endif()
+list(REMOVE_DUPLICATES _srcs)
 
-cxl_object_of_dir("${_control_dir}" _control)
-if(_control)
-    cxl_undefined_symbols("${_control}" _syms)
-    set(_seen "")
-    foreach(_s IN LISTS _forbidden)
-        if(_syms MATCHES "[ \t]${_s}(\n|$)")
-            list(APPEND _seen "${_s}")
+set(_control_state "")
+foreach(_src IN LISTS _srcs)
+    set(_control "")
+    foreach(_e IN LISTS _controls)
+        string(REPLACE ":" ";" _pair "${_e}")
+        list(GET _pair 0 _t)
+        list(GET _pair 1 _csrc)
+        if(_csrc STREQUAL _src)
+            cxl_object_of("${_t}.dir" "${_src}" _control)
+            if(NOT _control)
+                message(FATAL_ERROR
+                    "no control object under ${BUILD_DIR} for ${_t}, which "
+                    "this tree configures -- without it the absence above "
+                    "proves nothing")
+            endif()
         endif()
     endforeach()
-    if(NOT _seen)
-        message(FATAL_ERROR
-            "control ${_control} names none of the payload plane either -- the "
-            "absence above proves nothing")
+    if(_control)
+        cxl_undefined_symbols("${_control}" _syms)
+        set(_seen "")
+        foreach(_s IN LISTS _forbidden)
+            if(_syms MATCHES "[ \t]${_s}(\n|$)")
+                list(APPEND _seen "${_s}")
+            endif()
+        endforeach()
+        if(NOT _seen)
+            message(FATAL_ERROR
+                "control ${_control} names none of the payload plane either "
+                "-- the absence above proves nothing")
+        endif()
+        list(LENGTH _seen _n_seen)
+        list(APPEND _control_state
+             "${_src}.c: ${_n_seen} of the plane present in the control")
+    else()
+        list(APPEND _control_state
+             "${_src}.c: no control in this tree, absence half only")
     endif()
-    list(LENGTH _seen _n_seen)
-    set(_control_state "${_n_seen} of the plane present in the control")
-elseif(REQUIRE_CONTROL)
-    message(FATAL_ERROR
-        "no control object under ${BUILD_DIR} for ${_control_dir}, which this "
-        "tree configures -- without it the absence above proves nothing")
-else()
-    set(_control_state
-        "no control in this tree: the absence half is all it can grade")
-endif()
+endforeach()
+string(REPLACE ";" "; " _control_state "${_control_state}")
 
-list(LENGTH _graded_dirs _n_objs)
+list(LENGTH _graded _n_objs)
 message("PASS cxl_no_payload_plane: ${_n_objs} object(s) clean "
-        "(${_graded_dirs}), ${_control_state}")
+        "(${GRADED}); ${_control_state}")

@@ -297,13 +297,13 @@ set(ARTS_MALLOC "mimalloc" CACHE STRING
     "General allocator: mimalloc (default, vendored static) or system (libc malloc)")
 set_property(CACHE ARTS_MALLOC PROPERTY STRINGS mimalloc system)
 
-# ── CXL: CXL memory as the payload store of EXCL x WB x PURGE ──
+# ── CXL: CXL memory as the payload store of EXCL x WB x {PURGE, RETAIN} ──
 # A data block keeps its GUID, its home and its kind; a CXL build changes only
 # where its bytes rest.  The store is a per-target choice like the protocol,
-# so ONE benchmark tree holds the two CXL variants beside the twelve others,
+# so ONE benchmark tree holds the four CXL variants beside the twelve others,
 # and this option says whether the TREE'S OWN library (what tests link) is one.
 option(ARTS_USE_CXL
-    "This tree's own library keeps every data block's payload in CXL memory (EXCL x WB x PURGE only; needs ARTS_CXL_RESIDENCY)"
+    "This tree's own library keeps every data block's payload in CXL memory (EXCL x WB only, either release policy; needs ARTS_CXL_RESIDENCY)"
     OFF)
 set(ARTS_CXL_RESIDENCY "" CACHE STRING
     "Where an EDT's working bytes live under ARTS_USE_CXL=ON: STAGED (a rank-local copy at the two ownership edges) or DIRECT (the CXL slot itself)")
@@ -602,7 +602,7 @@ else()
 endif()
 
 # ── CXL: which library, and whether this tree's own library is a CXL one ──
-# The two CXL benchmark variants exist in every benchmark tree, so a tree
+# The four CXL benchmark variants exist in every benchmark tree, so a tree
 # needs the library whenever it builds benchmarks or its own library is CXL.
 set(ARTS_CXL_NEEDED OFF)
 if(ARTS_USE_CXL OR ARTS_BUILD_BENCHMARKS)
@@ -611,11 +611,11 @@ endif()
 
 set(ARTS_CXL_TREE_RESIDENCY "")
 if(ARTS_USE_CXL)
-    if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" OR NOT ARTS_RELEASE_POLICY STREQUAL "PURGE")
+    if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL")
         message(FATAL_ERROR
-            "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL and "
-            "ARTS_RELEASE_POLICY=PURGE (EXCL already implies WB): the store is "
-            "the cell that moves permission, not payload; got "
+            "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL (which "
+            "already implies WB; either release policy): the store is the cell "
+            "that moves permission, not payload; got "
             "${ARTS_COHERENCE_PROTOCOL} x ${ARTS_RELEASE_POLICY}")
     endif()
     if(NOT ARTS_CXL_RESIDENCY MATCHES "^(STAGED|DIRECT)$")

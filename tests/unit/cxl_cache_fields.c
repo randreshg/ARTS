@@ -16,14 +16,20 @@
 
 int main(void) {
 #ifdef ARTS_USE_CXL
+  /* One line per view: the comparison reads the first fingerprint only, so a
+   * policy's own field rides on it rather than on a line of its own. */
   printf("CXL_LAYOUT %s cache_size=%zu cxl_addr=%zu/%zu "
-         "db_size=%zu payload_pending=%zu stub_end=%zu\n",
+         "db_size=%zu payload_pending=%zu stub_end=%zu",
          CXL_LAYOUT_LANG, sizeof(struct arts_db_cache_s),
          offsetof(struct arts_db_cache_s, cxl_addr),
          sizeof(((struct arts_db_cache_s *)0)->cxl_addr),
          offsetof(struct arts_db_cache_s, db_size),
          offsetof(struct arts_db_cache_s, payload_pending),
          offsetof(struct arts_db_s, lock_state));
+#ifdef ARTS_RELEASE_RETAIN
+  printf(" cxl_unpurged=%zu", offsetof(struct arts_db_cache_s, cxl_unpurged));
+#endif
+  printf("\n");
   printf("PASS cxl_cache_fields [%s]\n", CXL_LAYOUT_LANG);
 #else
   printf("SKIP cxl_cache_fields [%s]: the arm is not compiled here\n",

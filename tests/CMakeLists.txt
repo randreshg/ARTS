@@ -1836,21 +1836,30 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # arms this tree builds -- the store-backed variants to grade beside the
     # tree's library, and whether the non-CXL build of the same source that
     # gives the check its control exists here at all.
-    set(_cxl_graded "")
-    foreach(_v ocr_excl_purge_cxl_staged ocr_excl_purge_cxl_direct)
-        if(TARGET arts_static_${_v})
-            list(APPEND _cxl_graded "arts_static_${_v}")
+    # Each entry is <target>:<release-policy source>, since the two release
+    # policies compile the arm from different translation units.
+    string(TOLOWER "${ARTS_RELEASE_POLICY}" _cxl_tree_src)
+    set(_cxl_graded "arts_memory:${_cxl_tree_src}")
+    foreach(_p purge retain)
+        foreach(_r staged direct)
+            if(TARGET arts_static_ocr_excl_${_p}_cxl_${_r})
+                list(APPEND _cxl_graded "arts_static_ocr_excl_${_p}_cxl_${_r}:${_p}")
+            endif()
+        endforeach()
+    endforeach()
+    set(_cxl_controls "")
+    foreach(_p purge retain)
+        if(TARGET arts_static_ocr_excl_${_p})
+            list(APPEND _cxl_controls "arts_static_ocr_excl_${_p}:${_p}")
         endif()
     endforeach()
-    set(_cxl_require_control OFF)
-    if(TARGET arts_static_ocr_excl_purge)
-        set(_cxl_require_control ON)
-    endif()
+    string(REPLACE ";" "," _cxl_graded "${_cxl_graded}")
+    string(REPLACE ";" "," _cxl_controls "${_cxl_controls}")
     add_test(
         NAME cxl_no_payload_plane
         COMMAND ${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
-                "-DGRADED_TARGETS=${_cxl_graded}"
-                "-DREQUIRE_CONTROL=${_cxl_require_control}"
+                "-DGRADED=${_cxl_graded}"
+                "-DCONTROLS=${_cxl_controls}"
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cxl_no_payload_plane.cmake)
     set_tests_properties(cxl_no_payload_plane PROPERTIES
         LABELS "single_node"

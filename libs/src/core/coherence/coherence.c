@@ -1526,6 +1526,29 @@ void arts_db_debug_quiescence_check(void) {
                        (unsigned long long)c->db_size);
             viol++;
           }
+#ifdef ARTS_RELEASE_RETAIN
+          /* 2r. Under RETAIN a granted axis with nothing counted on it is the
+           * ordinary resting state -- the permission is kept until the home
+           * asks -- so the shapes PURGE reports below are legal here.  What
+           * RETAIN does forbid is a write permission on a rank the bytes have
+           * left (the ship clears both in one CAS), and, once every runtime
+           * thread has joined after a quiescent shutdown, a count still on
+           * either axis: counts cover holders and parked waiters, and both
+           * are gone by then. */
+          if (CACHE_RW_ST(cw) == CACHE_ST_GRANT && CACHE_OWNER(cw) == 0u) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu holds the write permission "
+                       "with its bytes elsewhere (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)cw);
+            viol++;
+          }
+          if (quiescent &&
+              (CACHE_RW_CNT(cw) != 0u || CACHE_RO_CNT(cw) != 0u)) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests with a count still "
+                       "on it after a quiescent shutdown (word=%llx)",
+                       (unsigned long)c->db_guid, (unsigned long long)cw);
+            viol++;
+          }
+#else
           /* 2. Each axis rests only where the single-CAS acquire / grant /
            * release discipline can leave it.  That discipline makes two
            * shapes unreachable on its own: an axis IDLE with its own count
@@ -1600,15 +1623,22 @@ void arts_db_debug_quiescence_check(void) {
               viol++;
             }
           }
+#endif /* ARTS_RELEASE_RETAIN */
 #ifdef ARTS_CXL_DIRECT
           /* 4. Nothing stands between the store and an EDT: where a holder's
            * working bytes ARE the block's store, a descriptor naming anything
            * else is storage some site materialized instead of adopting the
            * slot.  A home a destroy has marked is left out: a destroy that
            * found holders leaves the block undefined. */
-          if (!(db->home_initialized &&
-                EXCL_STATE_TEARDOWN(atomic_load_explicit(
-                    &db->lock_state, memory_order_acquire)) != 0u)) {
+#ifdef ARTS_RELEASE_PURGE
+          bool marked = db->home_initialized &&
+                        EXCL_STATE_TEARDOWN(atomic_load_explicit(
+                            &db->lock_state, memory_order_acquire)) != 0u;
+#else
+          /* RETAIN tears the home down on arrival: there is no mark. */
+          bool marked = false;
+#endif
+          if (!marked) {
             arts_shared_ptr_t bh = arts_db_buf_acquire(c);
             const struct arts_db_buffer_s *b =
                 (const struct arts_db_buffer_s *)(bh ? arts_shared_get(bh)
@@ -1635,27 +1665,44 @@ void arts_db_debug_quiescence_check(void) {
                 atomic_load_explicit(&db->lock_state, memory_order_acquire);
             bool rwq = !arts_home_grantreq_queue_empty(&db->rw_waiters);
             bool roq = !arts_lf_stack_empty(&db->ro_waiters);
-            if ((EXCL_STATE_W(ls) != 0u || EXCL_STATE_R(ls) != 0u) &&
+#ifdef ARTS_RELEASE_PURGE
+            uint32_t hw = EXCL_STATE_W(ls), hr = EXCL_STATE_R(ls);
+            uint32_t td = EXCL_STATE_TEARDOWN(ls);
+#else
+            /* RETAIN's directory word; a retained read grant keeps r up at
+             * rest, which is why only a QUEUED waiter is reported.  The
+             * write queue's front is the migration target until its CONFIRM
+             * reaches the home, and the target's writers may finish -- and
+             * the program shut down -- while that CONFIRM is on the wire.
+             * Only one migration is ever unconfirmed (the next is forwarded
+             * from the CONFIRM), so exactly that shape -- write phase, one
+             * writer, one queued -- is a message in flight, not a stranded
+             * waiter. */
+            uint32_t hw = LOCK_W(ls), hr = LOCK_R(ls);
+            uint32_t td = 0u;
+            if (LOCK_PHASE(ls) == EXCL_PHASE_RW && hw == 1u && rwq) {
+              rwq = false;
+              hw = 0u; /* the confirm in flight settles both */
+            }
+#endif
+            if ((hw != 0u || hr != 0u) &&
                 (rwq || roq)) {
               ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home lock_state not "
                          "idle at teardown with a waiter queued "
                          "(w=%u r=%u teardown=%u)",
-                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
-                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
+                         (unsigned long)c->db_guid, hw, hr, td);
               viol++;
             }
             if (rwq) {
               ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RW waiters "
                          "at teardown (w=%u r=%u teardown=%u)",
-                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
-                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
+                         (unsigned long)c->db_guid, hw, hr, td);
               viol++;
             }
             if (roq) {
               ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has queued RO waiters "
                          "at teardown (w=%u r=%u teardown=%u)",
-                         (unsigned long)c->db_guid, EXCL_STATE_W(ls),
-                         EXCL_STATE_R(ls), EXCL_STATE_TEARDOWN(ls));
+                         (unsigned long)c->db_guid, hw, hr, td);
               viol++;
             }
           }

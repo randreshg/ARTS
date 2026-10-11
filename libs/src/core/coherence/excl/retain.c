@@ -16,6 +16,15 @@
  * price is that a remote read waits out the write phase at the home instead of
  * being served from a second copy — which is what phase exclusion means.
  *
+ * Under ARTS_USE_CXL the bytes rest in the block's CXL slot and no message
+ * carries them: a DELIVER names the slot, the owner PURGES its working copy
+ * into it before the DELIVER leaves, and the target FETCHES it before the CAS
+ * that admits its cohort.  Those are the only two edges.  An owner that writes
+ * again while it still holds the write permission moves nothing — that is the
+ * point of this release policy on CXL, where PURGE pays both edges on every
+ * write turn.  The directory, the phases and every message of the protocol
+ * are unchanged; only what a DELIVER carries is different.
+ *
  * Compiled only for ARTS_COHERENCE_PROTOCOL=EXCL + ARTS_RELEASE_POLICY=RETAIN;
  * the release-policy variant is a link-time file choice, so this TU contains no
  * release-policy preprocessor guards.
@@ -39,6 +48,7 @@
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
+#include "arts/cxl/store.h"
 #include "arts/db.h"
 #include "arts/edt.h"
 #include "arts/gas/route_table.h"
@@ -46,6 +56,7 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/identity.h"
+#include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
@@ -67,6 +78,54 @@ struct arts_lock_ro_serve_node_s {
   uint32_t tag;
   struct arts_rdzv_landing_s rdzv; /* reader's serve landing (its stable buffer) */
 };
+
+#ifdef ARTS_USE_CXL
+/* ===== The two edges through the CXL store =============================
+ * The funnels are shared with PURGE (cxl_edges.c); what is this policy's own
+ * is where they run.
+ *
+ *   fetch  in lock_deliver_commit, before the CAS that admits the DELIVER's
+ *          cohort — a write DELIVER that makes this rank the owner, or a read
+ *          DELIVER that lends it a copy.  A phantom read DELIVER (this rank
+ *          already holds the canonical bytes) fetches nothing.
+ *   purge  where the owner hands the block to ANOTHER rank: the real
+ *          migration (from owner_try_execute or the write zero edge) and the
+ *          read-phase serve.  Both run after the CAS that stops any local
+ *          writer from being admitted, and before the DELIVER leaves.
+ *
+ * A grant the home gives back to the rank that already holds the bytes (the
+ * self-migration) moves nothing, and neither does a local write under a
+ * retained permission: no other rank can read the slot until the owner ships
+ * it, and the owner ships it only through the purge above. */
+#include "cxl_edges.c"
+
+/* This rank is about to be given a write turn: its working copy may soon hold
+ * bytes the slot has not seen.  Called BEFORE the CAS that grants the turn,
+ * so that CAS (acq_rel) publishes the mark to whichever thread later commits
+ * the hand-on CAS and asks cxl_ship_working_copy. */
+static inline void cxl_note_write_turn(struct arts_db_cache_s *cache) {
+  __atomic_store_n(&cache->cxl_unpurged, (uint8_t)1, __ATOMIC_RELAXED);
+}
+
+/* The owner's hand-on edge: purge the working copy into the slot unless no
+ * write turn has run here since the last purge.  The read phase forwards
+ * every reader as a FORWARD of its own, so one phase can reach this once per
+ * reader; with the write permission relinquished in between, only the first
+ * has anything to write back.  Two serves racing on the mark both purge, which
+ * costs a flush and is never wrong; a serve that reads the mark cleared reads
+ * it after the release-store that follows a completed purge. */
+static void cxl_ship_working_copy(struct arts_db_cache_s *cache) {
+  if (__atomic_load_n(&cache->cxl_unpurged, __ATOMIC_ACQUIRE) == 0u) {
+    return;
+  }
+  cxl_purge_working_copy(cache);
+  __atomic_store_n(&cache->cxl_unpurged, (uint8_t)0, __ATOMIC_RELEASE);
+}
+#else
+static inline void cxl_note_write_turn(struct arts_db_cache_s *cache) {
+  (void)cache;
+}
+#endif /* ARTS_USE_CXL */
 
 /* fetch_add units for the cas1 count bump (the OWNER cache_state has different
  * field shifts than HOME, which defines CACHE_RW_UNIT/CACHE_RO_UNIT itself).
@@ -283,6 +342,14 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   arts_lf_stack_init(&c->ro_serve);
   c->migrate_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
+#ifdef ARTS_USE_CXL
+  /* The creator's seeded hold is a write turn like any granted one: what it
+   * writes reaches the slot only through the owner's first purge. */
+  c->cxl_unpurged = (kind == ARTS_DB_INIT_CREATOR_HOME ||
+                     kind == ARTS_DB_INIT_CREATOR_REMOTE)
+                        ? 1u
+                        : 0u;
+#endif
 }
 
 /* ===== arts_db_cache_destructor ========================================
@@ -375,6 +442,9 @@ static void lock_drain_pending(arts_lf_stack_t *q) {
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
   uint32_t act;
   uint64_t cur, next;
+  /* Marked before the CAS that grants the hold.  A refused hold leaves the
+   * mark behind, which costs the next hand-on one purge and nothing else. */
+  cxl_note_write_turn(cache);
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     next = cache_owner_compute_next(cur, CACHE_OP_CREATE_HOLD, &act);
@@ -451,6 +521,10 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
                                       ARTS_EXCL_NO_TARGET, CACHE_RW_CNT(cur),
                                       CACHE_RO_CNT(cur)) |
                       (cur & CACHE_OWNER_LEASED_MASK); /* preserve ro_granted */
+      /* The bytes are already here, so a self-grant fetches nothing — but
+       * it is a write turn, and what it writes reaches the slot only through
+       * this rank's next purge. */
+      cxl_note_write_turn(cache);
       if (atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur, next,
                                                 memory_order_acq_rel,
                                                 memory_order_acquire)) {
@@ -525,6 +599,12 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
        * data-less and the new owner's own prepared buffer becomes the first
        * image — but that owner must still learn the size, or every reader it
        * later serves would be handed an empty copy. */
+#ifdef ARTS_USE_CXL
+      /* The bytes leave through the slot: the CAS above admits no further
+       * local holder, and the purge completes before the DELIVER that lets
+       * the target fetch. */
+      cxl_ship_working_copy(cache);
+#endif
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
       uint64_t ds = cache->db_size;
       /* Consume the pending migrate target's landing (single in-flight
@@ -533,7 +613,8 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
       struct arts_rdzv_landing_s mt_rdzv = cache->migrate_rdzv;
       cache->migrate_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
       arts_send_db_excl_deliver(mt, cache->db_guid, (uint32_t)DB_MODE_RW,
-                                /*tag=*/0u, &mt_rdzv, buf_h, ds);
+                                /*tag=*/0u, &mt_rdzv, buf_h, ds,
+                                arts_db_cxl_slot_addr(cache));
       break;
     }
     /* CAS lost — re-snapshot. */
@@ -601,6 +682,12 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
     (void)arts_db_buf_ensure(cache, cache->db_size);
     arts_lf_link_t *node = arts_lf_stack_drain(&cache->ro_serve);
     if (node != NULL) {
+#ifdef ARTS_USE_CXL
+      /* The readers fetch the slot, so the owner's writes go there first.
+       * The demote above admits no further local writer, and live local
+       * readers only read the copy being written back. */
+      cxl_ship_working_copy(cache);
+#endif
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
       struct arts_db_buffer_s *buf =
           (struct arts_db_buffer_s *)arts_shared_get(buf_h);
@@ -613,7 +700,8 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
         /* Each fan-out PUT pins the source with its own strong ref. */
         arts_send_db_excl_deliver(
             rn->rank, cache->db_guid, (uint32_t)DB_MODE_RO, rn->tag, &rn->rdzv,
-            (buf != NULL) ? arts_shared_copy(buf_h) : NULL, ds);
+            (buf != NULL) ? arts_shared_copy(buf_h) : NULL, ds,
+            arts_db_cxl_slot_addr(cache));
         arts_free(rn);
         node = nx;
       }
@@ -636,7 +724,12 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
  * bytes have landed — so neither a migration nor a local access can reach
  * the buffer while a serve is in flight, and the serve leaves an owner only
  * while that owner's write permission is relinquished.  A fresh txid is
- * drawn per request (each request is served by at most one grant). */
+ * drawn per request (each request is served by at most one grant).
+ *
+ * A CXL build advertises nothing: no DELIVER carries bytes there, so there is
+ * no landing to PUT into, and the size a landing would have needed travels in
+ * the DELIVER itself. */
+#ifndef ARTS_USE_CXL
 static bool lock_stable_landing(struct arts_db_cache_s *cache,
                                 struct arts_rdzv_landing_s *out) {
   *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -667,13 +760,18 @@ static bool lock_stable_landing(struct arts_db_cache_s *cache,
   arts_db_buf_release(&h);
   return true;
 }
+#endif /* ARTS_USE_CXL */
 
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
-  struct arts_rdzv_landing_s rdzv;
+  /* Zeroed outside every conditional: no arm may reach the send with stack
+   * garbage where a landing would be. */
+  struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
+#ifndef ARTS_USE_CXL
   (void)lock_stable_landing(cache, &rdzv);
+#endif
   if (home_rank == arts_global_rank_id) {
     struct arts_ooo_args_db_excl_request_s args = {
         .requester = arts_global_rank_id,
@@ -770,7 +868,8 @@ void arts_send_db_excl_forward(unsigned int owner_rank, arts_guid_t db_guid,
 void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
                                uint32_t mode, uint32_t tag,
                                const struct arts_rdzv_landing_s *rdzv,
-                               arts_shared_ptr_t src_h, uint64_t data_size) {
+                               arts_shared_ptr_t src_h, uint64_t data_size,
+                               uint64_t cxl_addr) {
   struct arts_db_buffer_s *src =
       (struct arts_db_buffer_s *)arts_shared_get(src_h);
   struct arts_msg_excl_deliver_packet_s p;
@@ -783,6 +882,25 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
   p.data_size = data_size;
   p.rdzv_txid = 0;
   p.rdzv_cookie = (rdzv != NULL) ? rdzv->cookie : 0;
+#ifdef ARTS_USE_CXL
+  /* Every deliver on this arm is data-less: the owner purged its copy into
+   * the slot before this call, and the deliver names the slot so the target
+   * can fetch it — the only thing that travels, beside the size.  There is
+   * no source to pin and no landing to write into, so a self-send takes the
+   * same packet as the wire. */
+  (void)rdzv;
+  p.rdzv_cookie = 0;
+  p.cxl_addr = cxl_addr;
+  if (src != NULL) {
+    arts_db_buf_release(&src_h);
+  }
+  if (target_rank == arts_global_rank_id) {
+    arts_handler_db_excl_deliver(&p, sizeof(p));
+    return;
+  }
+  arts_transport_send_async((int)target_rank, (char *)&p, sizeof(p));
+#else
+  (void)cxl_addr;
   if (target_rank == arts_global_rank_id) {
     /* Self-serve: inline (header + data).  The target's advertised landing
      * is its own stable buffer and goes unused; the handler's phantom arm
@@ -820,6 +938,7 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
                        src->data, data_size, arts_db_buf_ref_release_cb,
                        (void *)src_h);
   arts_transport_send_async((int)target_rank, (char *)&p, sizeof(p));
+#endif /* ARTS_USE_CXL */
 }
 
 /* ===== arts_send_db_excl_confirm ========================================
@@ -1135,6 +1254,7 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                                 arts_db_access_mode_t mode, const void *data,
                                 uint64_t data_size);
 
+#ifndef ARTS_USE_CXL
 /* Rendezvous continuation: the deliver payload fully landed, in place in the
  * stable buffer for either mode.  Runs the commit. */
 struct lock_deliver_landed_ctx_s {
@@ -1161,6 +1281,7 @@ static void lock_deliver_landed_cb(void *arg) {
   }
   arts_free(ctx);
 }
+#endif /* ARTS_USE_CXL */
 
 void arts_handler_db_excl_deliver(void *payload, size_t size) {
   struct arts_msg_excl_deliver_packet_s *p =
@@ -1173,8 +1294,10 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
     /* Destroyed mid-flight: consume any pairing (the landing is the stable
-     * buffer, cookie 0 — nothing to free). */
+     * buffer, cookie 0 — nothing to free).  A CXL deliver has no pairing. */
+#ifndef ARTS_USE_CXL
     arts_db_rdzv_discard_landing(p->rdzv_txid, p->rdzv_cookie);
+#endif
     arts_shared_release(&db_h);
     return;
   }
@@ -1185,6 +1308,35 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
     db->cache.db_size = p->data_size;
   }
 
+#ifdef ARTS_USE_CXL
+  if (size != sizeof(*p) || p->rdzv_txid != 0) {
+    ARTS_ERROR("cxl: a deliver from rank %u carries a payload; on this arm a "
+               "deliver carries the block's slot and nothing else",
+               p->header.rank);
+  }
+  /* The deliver names the block's slot, and nothing else: the landing
+   * fields are unread here.  A rank that created the block, or owned it
+   * before, already knows the slot and records nothing.  A zero address is
+   * legal for a sentinel-sized block, which has none.
+   *
+   * A cache naming a DIFFERENT slot is a cache of an earlier generation of a
+   * reused label, reached by a later generation's deliver before its
+   * teardown notice: its slot holds a block that no longer exists.  Dropping
+   * the deliver would strand the home's phase, and fetching would read bytes
+   * the block does not own, so the deliver is refused. */
+  if (arts_db_cxl_slot_record(&db->cache, p->cxl_addr) ==
+      ARTS_CXL_SLOT_CONFLICT) {
+    ARTS_ERROR("cxl: guid %lu: a deliver names slot %#llx but this rank's "
+               "cache names slot %#llx — a cache from before the block's "
+               "teardown notice received a later generation's deliver",
+               (unsigned long)p->db_guid, (unsigned long long)p->cxl_addr,
+               (unsigned long long)arts_db_cxl_slot_addr(&db->cache));
+  }
+  (void)data;
+  (void)data_size;
+  lock_deliver_commit(db_h, p->db_guid, p->tag, mode, NULL,
+                      0u); /* consumes db_h */
+#else
   if (p->rdzv_txid != 0) {
     /* One-sided deliver: pair this packet with the write completion (either
      * order); the commit runs once both are in. */
@@ -1203,6 +1355,7 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
   lock_deliver_commit(db_h, p->db_guid, p->tag, mode,
                       (data_size > 0u) ? data : NULL,
                       data_size); /* consumes db_h */
+#endif /* ARTS_USE_CXL */
 }
 
 static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
@@ -1223,6 +1376,14 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     if (data != NULL && data_size > 0u) {
       arts_db_buf_write_inplace(cache, data, data_size);
     }
+#ifdef ARTS_USE_CXL
+    /* The same point on this arm: the previous owner purged before its
+     * DELIVER left, so the slot holds the block and the fetch brings it under
+     * this rank's working copy before the CAS below admits a writer.  The
+     * write turn that CAS grants is marked first. */
+    cxl_fetch_working_copy(cache);
+    cxl_note_write_turn(cache);
+#endif
     uint64_t cur, next;
     do {
       cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
@@ -1293,6 +1454,13 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
         if (data != NULL && data_size > 0u) {
           arts_db_buf_write_inplace(cache, data, data_size);
         }
+#ifdef ARTS_USE_CXL
+        /* On this arm the install is the fetch: the owner purged before it
+         * served, and the same exclusion argument covers the copy being
+         * filled.  A phantom grant never reaches here, so a rank that holds
+         * the canonical bytes never reloads them from the slot. */
+        cxl_fetch_working_copy(cache);
+#endif
         installed = true;
       }
       /* The grant this DELIVER installs relinquishes voluntarily if the home
@@ -1424,16 +1592,30 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   if (act == CACHE_ACT_MIGRATE) {
     /* owner-bit + migrate_target already cleared (published) inside the CAS;
      * ship the buffer to the target now. */
+#ifdef ARTS_USE_CXL
+    /* Through the slot: this is the last write holder's zero edge, the CAS
+     * above admits no further local holder, and the purge completes before
+     * the DELIVER that lets the target fetch. */
+    cxl_ship_working_copy(cache);
+#endif
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *buf =
         (struct arts_db_buffer_s *)arts_shared_get(buf_h);
+#ifdef ARTS_USE_CXL
+    /* The size is descriptor state, and on this arm it is all a deliver
+     * carries besides the slot: the target needs it to fetch. */
+    (void)buf;
+    uint64_t ds = cache->db_size;
+#else
     uint64_t ds = (buf != NULL) ? cache->db_size : 0u;
+#endif
     /* Consume the pending migrate target's landing; buf_h transfers into the
      * deliver sender (PUT source pin). */
     struct arts_rdzv_landing_s mt_rdzv = cache->migrate_rdzv;
     cache->migrate_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
     arts_send_db_excl_deliver(target, cache->db_guid, (uint32_t)DB_MODE_RW,
-                              /*tag=*/0u, &mt_rdzv, buf_h, ds);
+                              /*tag=*/0u, &mt_rdzv, buf_h, ds,
+                              arts_db_cxl_slot_addr(cache));
   } else if (CACHE_RW_CNT(next) == 0u && CACHE_OWNER(next) == 1u) {
     /* Sticky 0-edge (no pending migration): the writer phase just ended and we
      * remain the owner.  Drive any RO readers the home queued via
@@ -1703,6 +1885,7 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
+#ifndef ARTS_USE_CXL
   if (a->rdzv.txid == 0 && db->cache.db_size > 0 &&
       arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
@@ -1712,6 +1895,12 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
                           (uint32_t)mode);
     return;
   }
+#else
+  /* On the arm whose delivers carry no payload a request advertises no
+   * landing, so its absence says nothing about what the requester knows: the
+   * size travels in the deliver, which the target records before it
+   * fetches. */
+#endif
 
   arts_rank_bitset_set(&db->cached_ranks,
                        requester); /* destroy fan-out roster */

@@ -12,6 +12,12 @@
 /// before its body runs, because the copy precedes admission.  The two EDTs
 /// are ordered by the writer's output event, so nothing else is in flight
 /// while the tallies are read.
+///
+/// Under the RETAIN release policy a home-local turn is the home's own
+/// self-grant on bytes that never leave the rank, and the read turn after it
+/// is a resident read, so neither touches the store: zero and zero.  That
+/// is the release policy's whole difference on this arm, which is why the
+/// counts are pinned rather than merely bounded.
 
 #include "arts.h"
 
@@ -53,11 +59,17 @@ static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   uint64_t f = __atomic_load_n(&arts_cxl_fetches, __ATOMIC_RELAXED) - g_fetch0;
   uint64_t pu = __atomic_load_n(&arts_cxl_purges, __ATOMIC_RELAXED) - g_purge0;
-  if (f != 2u || pu != 1u) {
+#ifdef ARTS_RELEASE_RETAIN
+  const uint64_t want_f = 0u, want_p = 0u;
+#else
+  const uint64_t want_f = 2u, want_p = 1u;
+#endif
+  if (f != want_f || pu != want_p) {
     (void)fprintf(stderr,
                   "FAIL: a home-local write turn plus a read turn cost %llu "
-                  "fetches and %llu purges (want 2 and 1)\n",
-                  (unsigned long long)f, (unsigned long long)pu);
+                  "fetches and %llu purges (want %llu and %llu)\n",
+                  (unsigned long long)f, (unsigned long long)pu,
+                  (unsigned long long)want_f, (unsigned long long)want_p);
     arts_test_fail();
   }
   arts_printf("cxl_home_turn_costs: %llu fetches, %llu purges on the home's "

@@ -13,7 +13,9 @@
 /// message order no program can steer.  The recorder's three answers are
 /// asserted directly on a live block's cache.  The refusal is asserted by
 /// applying a grant naming a foreign store through the grant handler in a
-/// forked child and reading back its exit status and its diagnostic.
+/// forked child and reading back its exit status and its diagnostic.  Under
+/// the RETAIN release policy the message that names a block's store is the
+/// DELIVER, so that is the handler the child drives there.
 
 #include "arts.h"
 
@@ -34,7 +36,11 @@
 #include <unistd.h>
 
 #define BYTES 256u
+#ifdef ARTS_RELEASE_RETAIN
+#define REFUSAL "a later generation's deliver"
+#else
 #define REFUSAL "a later generation's grant"
+#endif
 
 static void fail(const char *what) {
   (void)fprintf(stderr, "FAIL cxl_stale_generation_grant: %s\n", what);
@@ -57,6 +63,15 @@ static int grant_in_child(arts_guid_t g, uint64_t addr, char *buf,
     (void)dup2(fds[1], STDOUT_FILENO);
     (void)dup2(fds[1], STDERR_FILENO);
     (void)alarm(10); /* a handler that went on instead of refusing */
+#ifdef ARTS_RELEASE_RETAIN
+    struct arts_msg_excl_deliver_packet_s p;
+    memset(&p, 0, sizeof(p));
+    p.db_guid = g;
+    p.mode = (uint32_t)DB_MODE_RW;
+    p.data_size = BYTES;
+    p.cxl_addr = addr;
+    arts_handler_db_excl_deliver(&p, sizeof(p));
+#else
     struct arts_msg_excl_grant_packet_s p;
     memset(&p, 0, sizeof(p));
     p.db_guid = g;
@@ -64,6 +79,7 @@ static int grant_in_child(arts_guid_t g, uint64_t addr, char *buf,
     p.data_size = BYTES;
     p.pub.addr = addr;
     arts_handler_db_excl_grant(&p, sizeof(p));
+#endif
     _exit(0);
   }
   (void)close(fds[1]);

@@ -263,8 +263,13 @@ _Static_assert(sizeof(struct arts_msg_excl_cts_packet_s) == 40,
 #ifdef ARTS_RELEASE_RETAIN
 _Static_assert(sizeof(struct arts_msg_excl_forward_packet_s) == 72,
                "lock_forward sizeof drifted");
+#ifdef ARTS_USE_CXL
+_Static_assert(sizeof(struct arts_msg_excl_deliver_packet_s) == 64,
+               "lock_deliver sizeof drifted (CXL build)");
+#else
 _Static_assert(sizeof(struct arts_msg_excl_deliver_packet_s) == 56,
                "lock_deliver sizeof drifted");
+#endif
 _Static_assert(sizeof(struct arts_msg_excl_confirm_packet_s) == 24,
                "lock_confirm sizeof drifted");
 #endif /* ARTS_RELEASE_RETAIN */

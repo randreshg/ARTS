@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the ARTS ctest suites across ALL ELEVEN build configurations
+# Run the ARTS ctest suites across ALL THIRTEEN build configurations
 # (<memory model>_<family>_<live second axis>), each in its own build_<config>
 # tree, then run the application matrix once over the single benchmark build
 # (which holds every coherence configuration at once):
@@ -17,13 +17,15 @@
 #   wrf_flush                   -DARTS_COHERENCE_PROTOCOL=FLUSH
 #   ocr_excl_purge_cxl_staged   -DARTS_MEMORY_MODEL=OCR    -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=STAGED -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456
 #   ocr_excl_purge_cxl_direct   -DARTS_MEMORY_MODEL=OCR    -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=DIRECT -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456
+#   ocr_excl_retain_cxl_staged  -DARTS_MEMORY_MODEL=OCR    -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=RETAIN -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=STAGED -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456
+#   ocr_excl_retain_cxl_direct  -DARTS_MEMORY_MODEL=OCR    -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=RETAIN -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=DIRECT -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456
 #
-# The last-but-two row names no memory model: FLUSH derives DB_WRF, and naming
+# The wrf_flush row names no memory model: FLUSH derives DB_WRF, and naming
 # the model as well only asserts what the protocol already implies.  It also
 # has no second axis, so its cache check compares model and protocol alone.
-# The two `_cxl_*` rows name a canonical-store axis on the OCR×EXCL×WB×PURGE
-# cell, not a tenth and eleventh protocol combination, and are launcher: local
-# only.
+# The four `_cxl_*` rows name a canonical-store axis on the OCR×EXCL×WB cells
+# (two per release policy), not further protocol combinations, and are
+# launcher: local only.
 #
 # Usage:
 #   bash tests/run_all_models.sh                                  # ctest + applications
@@ -36,7 +38,7 @@ set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
-MODELS="ocr_val_wt ocr_val_wb ocr_val_wt_purge ocr_excl_purge ocr_excl_retain ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge wrf_flush ocr_excl_purge_cxl_staged ocr_excl_purge_cxl_direct"
+MODELS="ocr_val_wt ocr_val_wb ocr_val_wt_purge ocr_excl_purge ocr_excl_retain ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge wrf_flush ocr_excl_purge_cxl_staged ocr_excl_purge_cxl_direct ocr_excl_retain_cxl_staged ocr_excl_retain_cxl_direct"
 DO_CTEST=1
 DO_HARNESS=1
 DO_BUILD=1
@@ -66,10 +68,12 @@ model_cmake_flags() {
     wrf_flush)        echo "-DARTS_COHERENCE_PROTOCOL=FLUSH" ;;
     ocr_excl_purge_cxl_staged) echo "-DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=STAGED -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456" ;;
     ocr_excl_purge_cxl_direct) echo "-DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=DIRECT -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456" ;;
+    ocr_excl_retain_cxl_staged) echo "-DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=RETAIN -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=STAGED -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456" ;;
+    ocr_excl_retain_cxl_direct) echo "-DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=RETAIN -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=DIRECT -DARTS_CXL_DB_ARENA_SIZE_BYTES=268435456" ;;
   esac
 }
 # expected CMakeCache values per config.  model_model needs no arm for the
-# two ocr_excl_purge_cxl_* configs: every non-FLUSH config already answers
+# four ocr_excl_*_cxl_* configs: every non-FLUSH config already answers
 # OCR through the trailing wildcard, cxl included.  model_proto keeps an
 # explicit cxl arm alongside its ocr_excl_* wildcard for the same EXCL
 # answer, paired with model_timing's arm below (which IS load-bearing: with
@@ -80,19 +84,21 @@ model_proto()  { case "$1" in wrf_flush) echo FLUSH;; ocr_excl_*) echo EXCL;; oc
 # The live second axis, read off the suffix.  ocr_{val,inv}_wt_purge pin BOTH
 # ARTS_WRITE_POLICY and ARTS_RELEASE_POLICY away from their defaults, so their
 # "timing" is the pair, not a single value.  A config with no live second axis
-# answers the empty string, which the cache check below skips.  The two
-# ocr_excl_purge_cxl_* configs carry ARTS_RELEASE_POLICY=PURGE like their
-# non-CXL namesake; ARTS_USE_CXL/ARTS_CXL_RESIDENCY are the separate
+# answers the empty string, which the cache check below skips.  The four
+# ocr_excl_*_cxl_* configs carry the ARTS_RELEASE_POLICY of their non-CXL
+# namesake; ARTS_USE_CXL/ARTS_CXL_RESIDENCY are the separate
 # canonical-store axis, tracked by model_cxl() below and checked on its own
 # in ensure_build.
-model_timing() { case "$1" in wrf_flush) echo "" ;; ocr_excl_purge_cxl_*) echo PURGE ;; *_wt_purge) echo "WT+PURGE" ;; *_wt) echo WT;; *_wb) echo WB;; ocr_excl_purge) echo PURGE;; ocr_excl_retain) echo RETAIN;; esac; }
+model_timing() { case "$1" in wrf_flush) echo "" ;; ocr_excl_purge_cxl_*) echo PURGE ;; ocr_excl_retain_cxl_*) echo RETAIN ;; *_wt_purge) echo "WT+PURGE" ;; *_wt) echo WT;; *_wb) echo WB;; ocr_excl_purge) echo PURGE;; ocr_excl_retain) echo RETAIN;; esac; }
 # The canonical-store axis: ARTS_USE_CXL and ARTS_CXL_RESIDENCY, expected
 # as one space-separated pair.  Every non-cxl config is OFF with no
-# residency; the two cxl configs are ON with their own residency.
+# residency; the four cxl configs are ON with their own residency.
 model_cxl() {
   case "$1" in
     ocr_excl_purge_cxl_staged) echo "ON STAGED" ;;
     ocr_excl_purge_cxl_direct) echo "ON DIRECT" ;;
+    ocr_excl_retain_cxl_staged) echo "ON STAGED" ;;
+    ocr_excl_retain_cxl_direct) echo "ON DIRECT" ;;
     *)                         echo "OFF" ;;
   esac
 }

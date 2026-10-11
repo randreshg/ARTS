@@ -476,6 +476,14 @@ struct arts_db_cache_s {
    * claims a first touch's cache turns it into its own
    * (arts_db_create_claims_stub); nothing else writes it after init. */
   uint8_t init_kind;
+#if defined(ARTS_USE_CXL) && defined(ARTS_RELEASE_RETAIN)
+  /* May this rank's working copy hold writes the block's slot has not seen?
+   * Set before every CAS that gives this rank a write turn, cleared by the
+   * purge that ships the copy; read where the owner hands the block on, so a
+   * read phase that serves several readers purges once, not once per
+   * reader.  Accessed with the atomic builtins, like payload_pending. */
+  uint8_t cxl_unpurged;
+#endif
 };
 #else
 struct arts_db_cache_s {
@@ -519,6 +527,14 @@ struct arts_db_cache_s {
    * claims a first touch's cache turns it into its own
    * (arts_db_create_claims_stub); nothing else writes it after init. */
   uint8_t init_kind;
+#if defined(ARTS_USE_CXL) && defined(ARTS_RELEASE_RETAIN)
+  /* May this rank's working copy hold writes the block's slot has not seen?
+   * Set before every CAS that gives this rank a write turn, cleared by the
+   * purge that ships the copy; read where the owner hands the block on, so a
+   * read phase that serves several readers purges once, not once per
+   * reader.  Accessed with the atomic builtins, like payload_pending. */
+  uint8_t cxl_unpurged;
+#endif
 };
 #endif
 

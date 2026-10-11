@@ -573,11 +573,14 @@ void arts_send_db_excl_forward(unsigned int owner_rank, arts_guid_t db_guid,
 
 /* arts_send_db_excl_deliver: owner → target.  Versionless (EXCL serialization
  * guarantees ordering).  The payload PUTs into the target's forwarded landing
- * (rdzv); src_h — a strong ref on the owner buffer — is CONSUMED. */
+ * (rdzv); src_h — a strong ref on the owner buffer — is CONSUMED.  cxl_addr is
+ * the block's slot, which a CXL build's deliver names in place of the bytes;
+ * a build with no CXL store passes 0 and ignores it. */
 void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
                                uint32_t mode, uint32_t tag,
                                const struct arts_rdzv_landing_s *rdzv,
-                               arts_shared_ptr_t src_h, uint64_t data_size);
+                               arts_shared_ptr_t src_h, uint64_t data_size,
+                               uint64_t cxl_addr);
 
 /* arts_send_db_excl_confirm: new owner → home: migration done. */
 void arts_send_db_excl_confirm(unsigned int home_rank, arts_guid_t db_guid);

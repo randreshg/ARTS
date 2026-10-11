@@ -675,13 +675,15 @@ if(ARTS_BUILD_BENCHMARKS)
     arts_variant(ocr_inv_wt_purge  INV     WT PURGE  OFF)
     arts_variant(wrf_flush         FLUSH   WB RETAIN OFF)
 
-    # The two CXL entries of the EXCL x PURGE x WB cell: one variable changes
-    # against ocr_excl_purge -- where a block's bytes rest -- so arm, write
-    # policy, release policy and combining are shared with it.  Always built:
-    # the library they link is the vendored fake unless ARTS_CXL_REAL names
-    # the device's.
+    # The CXL entries of the two EXCL x WB cells: one variable changes against
+    # ocr_excl_purge / ocr_excl_retain -- where a block's bytes rest -- so arm,
+    # write policy, release policy and combining are shared with it.  Always
+    # built: the library they link is the vendored fake unless ARTS_CXL_REAL
+    # names the device's.
     arts_variant(ocr_excl_purge_cxl_staged EXCL WB PURGE OFF STAGED)
     arts_variant(ocr_excl_purge_cxl_direct EXCL WB PURGE OFF DIRECT)
+    arts_variant(ocr_excl_retain_cxl_staged EXCL WB RETAIN OFF STAGED)
+    arts_variant(ocr_excl_retain_cxl_direct EXCL WB RETAIN OFF DIRECT)
 endif()
 
 # Link mimalloc-static when selected.  The OBJECT library arts_utils needs

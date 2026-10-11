@@ -20,6 +20,12 @@
 /// where B is another rank when there is one.  At every point a task checks
 /// that its rank's record for the block is exactly the flushes the turns so
 /// far imply for that rank, in that order, each covering the whole slot.
+///
+/// Under the RETAIN release policy the edges move but, across two ranks, the
+/// record does not: a rank purges where it hands the block on (the migration
+/// to B, the migration back to A, A's serve of B's read) instead of at its
+/// release, and each of those precedes the turn that follows it exactly as
+/// the release did.  On one rank nothing changes hands, so nothing flushes.
 
 #include "arts.h"
 
@@ -100,6 +106,11 @@ static bool check_record(const char *phase, uint64_t slot, size_t bytes,
   char want[16] = {0};
   size_t nw = 0;
   unsigned me = arts_get_current_rank();
+#ifdef ARTS_RELEASE_RETAIN
+  if (rank_a() == rank_b()) {
+    upto = 0u; /* every turn is on the owner, which keeps its grant */
+  }
+#endif
   for (unsigned i = 0; i < upto; i++) {
     unsigned who = g_flushes[i].who == R_A ? rank_a() : rank_b();
     if (who == me) {
