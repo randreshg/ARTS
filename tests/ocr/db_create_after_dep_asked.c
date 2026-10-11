@@ -65,8 +65,10 @@
 /// not enforceable from inside the program, and the assertions hold in both:
 /// the create is the block's creator either way, and the ordered chain pins
 /// the value.  Every arm records the hold in its own state (the grant word,
-/// or the exclusion arm's cache word), so this runs everywhere.  Needs >= 2
-/// ranks; SKIPs cleanly otherwise.
+/// or the exclusion arm's cache word), so this runs on every OCR-model arm.
+/// Under DB-WRF the create's hold is a write acquisition left unordered
+/// against the lane's RW acquisitions, so the final value is not defined
+/// there.  Needs >= 2 ranks; SKIPs cleanly otherwise.
 
 #include "arts.h"
 

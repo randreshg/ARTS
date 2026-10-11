@@ -1035,12 +1035,17 @@ set_tests_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
 # the block's home about it: the create may install the block, but it may not
 # take the write right out from under a request already in flight.  Both
 # request kinds get a lane (RW opens an ownership request, RO a fetch or a
-# snapshot), so this needs a rank that is not the home.
-register_multinode_test(db_create_after_dep_asked TIMEOUT 60)
-foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(db_create_after_dep_asked_${_v} PROPERTIES
-        FAIL_REGULAR_EXPRESSION "FAIL")
-endforeach()
+# snapshot), so this needs a rank that is not the home.  The create's hold is a
+# write acquisition the program orders against neither the early RW
+# dependence nor the ordered writer, so the program is outside DB-WRF and the
+# FLUSH tree does not register it.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+    register_multinode_test(db_create_after_dep_asked TIMEOUT 60)
+    foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
+        set_tests_properties(db_create_after_dep_asked_${_v} PROPERTIES
+            FAIL_REGULAR_EXPRESSION "FAIL")
+    endforeach()
+endif()
 register_multinode_test(db_first_touch_matrix TIMEOUT 120)
 # The alias dedup with the aliasing EDT OFF the block's home.  On the home rank
 # every way of asking for the block answers with the rank's own copy, so a
