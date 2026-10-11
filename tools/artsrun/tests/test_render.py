@@ -1,13 +1,9 @@
-"""The rendered configurations must match the ones the runtimes have been
-running, key for key."""
+"""What a node profile renders: the runtime configuration's keys follow the
+profile, and the reference runtimes' configuration follows the launcher and
+the pin flag."""
 
 from __future__ import annotations
 
-import re
-
-import pytest
-
-from artsrun.paths import repo_root
 from artsrun.render import render_arts, render_ocr
 from artsrun.store import load_profile
 
@@ -22,17 +18,16 @@ def _keys(text: str) -> dict[str, str]:
     return out
 
 
-@pytest.mark.parametrize("nodes,name", [(1, "1n_sc"), (2, "2n_sc"), (4, "4n_sc"),
-                                        (8, "8n_sc")])
-def test_arts_config_matches_the_committed_one(nodes, name):
-    reference = repo_root() / "configs" / "local" / "ferrari" / f"{name}.cfg"
-    if not reference.is_file():
-        pytest.skip(f"{reference} not present")
-    profile = load_profile("ferrari-local")
-    rendered = _keys(render_arts(profile, nodes))
-    expected = _keys(reference.read_text())
-    for key, value in expected.items():
-        assert rendered.get(key) == value, f"{name}: {key}"
+def test_arts_config_carries_the_profile_s_shape():
+    profile = load_profile("alia")
+    keys = _keys(render_arts(profile, 2))
+    assert keys["worker_threads"] == "4"
+    assert keys["progress_threads"] == "1"
+    assert keys["launcher"] == "local"
+    assert keys["node_count"] == "2"
+    assert keys["pin"] == "1"
+    assert keys["provider"] == "tcp"
+    assert keys["route_table_size"] == "14"
 
 
 def test_arts_config_omits_ports_for_a_local_run():
@@ -46,27 +41,6 @@ def test_arts_config_names_ports_for_a_cluster_run():
     assert "ports=25000" in text
     assert "node_count=8" in text
     assert "provider=verbs" in text
-
-
-@pytest.mark.parametrize("nodes,name", [(1, "1n_sc"), (2, "2n_sc"), (4, "4n_sc"),
-                                        (8, "8n_sc")])
-def test_reference_config_matches_the_committed_one(nodes, name):
-    reference = repo_root() / "configs" / "mpi" / "ferrari" / f"{name}.cfg"
-    if not reference.is_file():
-        pytest.skip(f"{reference} not present")
-    profile = load_profile("ferrari-local")
-    rendered = render_ocr(profile, nodes)
-
-    def normalize(text: str) -> list[str]:
-        lines = []
-        for line in text.splitlines():
-            line = line.split("#", 1)[0]
-            line = re.sub(r"\s+", " ", line).strip()
-            if line:
-                lines.append(line)
-        return lines
-
-    assert normalize(rendered) == normalize(reference.read_text())
 
 
 def test_reference_config_binds_on_every_launcher_when_pinning():

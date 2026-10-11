@@ -188,8 +188,7 @@ directory (or the file named by the `ARTS_CONFIG` environment variable).
 Templates live under `configs/`:
 
 - `configs/local/test/{1n_20w,2n_9w_1p,2n_8w_2p,4n_4w_1p}.cfg` — localhost, the ctest shapes (`<nodes>n_<workers>w[_<progress>p]`)
-- `configs/local/ferrari/{1n,1n_sc,2n_sc,4n_sc,8n_sc}.cfg` — localhost perf shapes for a 128-core host (15 workers + 1 progress thread per rank, up to 8 ranks)
-- `configs/mpi/ferrari/{1n,1n_sc,2n_sc,4n_sc,8n_sc}.cfg` — MPI launcher (xsocr), the same 128-core shapes (regenerated from `configs/templates/ocr.cfg.j2`; golden fixtures for `tools/artsrun`'s render tests)
+- `configs/templates/{arts,ocr,counters}.cfg.j2` — what `artsrun` renders a campaign's configurations from, per node profile (`experiments/profiles/*.yaml`)
 
 The values most often changed are the launcher, the `worker_threads`/
 `progress_threads` counts, and the GPU count.

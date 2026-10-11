@@ -63,9 +63,9 @@ artsrun profile set junction2 workers=31 slurm.partition=pbatch
 artsrun experiment list | show X | new Y --from X | edit Y
 artsrun experiment set paper-main nqueens --args "12 4" --versions base,hinted
 artsrun experiment entries paper-main arts_val_wb,xsocr   # its default entries
-artsrun config render -p ferrari-local -n 4    # inspect a rendered configuration
-artsrun run -p ferrari-local -x paper-main --dry-run
-artsrun run -p ferrari-local -x paper-main -e arts_val_wb,arts_wrf_flush  # these entries only
+artsrun config render -p alia -n 2    # inspect a rendered configuration
+artsrun run -p alia -x paper-main --dry-run
+artsrun run -p alia -x paper-main -e arts_val_wb,arts_wrf_flush  # these entries only
 artsrun run -p junction -x paper-main --detach
 artsrun watch                             # live view of the latest campaign
 artsrun watch 20260811-220547             # …or of a named one
@@ -73,7 +73,7 @@ artsrun report                            # reprint the latest summary
 
 artsrun counters --set perf --enabled     # what a counter set turns on
 artsrun counterset list | show X | render X
-artsrun run -p ferrari-local -x paper-main -c census
+artsrun run -p alia -x paper-main -c census
 ```
 
 ### CXL device library
@@ -315,7 +315,7 @@ variants (`<app>_arts_ocr_val_*_nocomb`), not plane entries, so no experiment
 or `-e` can select them; what a run selects is the plane's fourteen entries
 (`artsrun plane`) — and the question they
 answer, what the requester-side combining window buys, is why they stay on
-the development host (`-p ferrari-local`) where both settings of one knob fit
+a single-host profile (`-p alia`) where both settings of one knob fit
 in a campaign. A cluster campaign runs the eight plane arms and the
 references.
 

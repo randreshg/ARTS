@@ -409,6 +409,27 @@ def test_the_local_cxl_smoke_profile_loads_and_fits_the_host(monkeypatch,
     selection.validate_against(plane, load_catalog(), profile)
 
 
+def test_the_laptop_profile_fits_its_host_for_every_entry(monkeypatch,
+                                                         tmp_path):
+    from artsrun import store
+    from artsrun.model.profile import CxlLibrary, Launcher
+
+    _use_topology(monkeypatch, tmp_path,
+                  {c: f"{c},{c + 10}" for c in range(10)}
+                  | {c + 10: f"{c},{c + 10}" for c in range(10)})
+    plane = load_plane()
+    profile = store.load_profile("alia")
+    assert profile.launcher is Launcher.LOCAL
+    assert profile.cxl_library_kind is CxlLibrary.FAKE
+    entries = plane.ordered(["arts_val_wb", "arts_excl_purge", "xsocr",
+                             "ocrvx"], "-e")
+    selection = Selection(
+        profile=profile.name, experiment="b", entries=entries,
+        apps={"nqueens": [Version.BASE]}, node_counts=profile.nodes,
+    )
+    selection.validate_against(plane, load_catalog(), profile)
+
+
 def test_a_geometry_wider_than_the_machine_is_not_the_tool_s_call():
     # ARTS does not oversubscribe and says so at startup; the profile only
     # records the shape asked for.

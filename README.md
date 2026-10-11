@@ -147,7 +147,7 @@ by hand — see `tools/artsrun/README.md`.
 - `libs/include/` – Public and internal API headers
 - `libs/src/` – Runtime sources: task scheduler, GUID tables, datablock manager, network transports, logging
 - `cmake/` – Build helpers
-- `configs/` – Runtime configuration files (`local/`, `mpi/`, `twosisters/` subdirs)
+- `configs/` – The ctest configurations (`local/test/`), the counter sets (`counters*.cfg`), the templates artsrun renders a node profile's configurations from (`templates/`), and the crete cluster's configurations (`crete/`)
 - `examples/` – Small standalone programs showing how to create EDTs/datablocks. **Deprecated**: predates the current public API and does not build; `ARTS_BUILD_EXAMPLES` is forced off, kept for historical reference only
 - `benchmarks/` – Runtime microbenchmarks and OCR benchmark applications (XSOCR + ARTS + ocrvx backends)
 - `docs/` – Sphinx/Doxygen documentation sources (see Documentation below)

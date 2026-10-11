@@ -1,0 +1,21 @@
+# Alia: the development laptop.  WSL2 exposes 20 logical CPUs (10 cores x 2)
+# on one NUMA node and about 7.7 GiB of RAM plus 8 GiB of swap, so memory,
+# not CPUs, is the binding limit.  Ranks are self-forked onto the one
+# machine, and a reference entry's colocated ranks are each pinned to one
+# physical core, so 2 ranks x (4 workers + 1 progress) = 10 physical cores is
+# the widest geometry.  Correctness runs only: nothing measured here is
+# evidence for or against a performance claim.
+name: alia
+launcher: local
+
+nodes: [1, 2]
+workers: 4
+progress: 1
+
+pin: true
+provider: tcp
+route_table_size: 14
+core_dump: false
+
+cell_timeout_s: 600
+repeats: 1
