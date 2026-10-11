@@ -93,11 +93,22 @@ static inline void arts_cxl_peterson_lock_acquire(arts_cxl_peterson_lock_t *l,
   FLUSH_FENCE_PRODUCER(&l->lock.owner, sizeof(arts_cxl_cache_line_t));
 }
 
-static inline void arts_cxl_peterson_lock_release(arts_cxl_peterson_lock_t *l) {
-  int64_t id = l->lock.owner.value;
-  l->lock.owner.value = -1;
+/* The releaser names its own side; it is never read back from `owner`.  On a
+ * fabric with no hardware coherence a release that wrote two lines under one
+ * flush let them land in address order -- `flag` (line 0) before `owner`
+ * (line 3) -- so a waiter could enter on the cleared flag, publish itself as
+ * owner, and then have the releaser's late `owner = -1` overwrite it.  Its own
+ * release then read id -1 and cleared flag[-1], a line BEFORE the lock (for
+ * locks[0], the device allocator's header), and walked the tree off its path:
+ * a corruption that surfaced later as a segfault in GLOBAL_FREE at teardown.
+ * Clearing the one line this side owns has no second line to race.  `owner`
+ * is left naming the last acquirer, informational only. */
+static inline void arts_cxl_peterson_lock_release(arts_cxl_peterson_lock_t *l,
+                                                  unsigned int id) {
+  COMPILER_DO_NOT_REORDER_WRITES();
+  HW_MEMORY_FENCE(); /* critical-section writes drain before the flag clears */
   l->lock.flag[id].value = 0;
-  FLUSH_FENCE_PRODUCER(l, sizeof(arts_cxl_peterson_lock_t));
+  FLUSH_FENCE_PRODUCER(&l->lock.flag[id], sizeof(arts_cxl_cache_line_t));
 }
 
 /* ── Tournament lock operations ─────────────────────────────────────────────
@@ -151,15 +162,26 @@ arts_cxl_tournament_lock_acquire(arts_cxl_tournament_lock_t *tl,
   }
 }
 
+/* The path a rank climbs is a function of its id alone, so the release
+ * recomputes it rather than following each node's `owner` down from the root:
+ * `owner` is a shared line another rank may have overwritten (see
+ * arts_cxl_peterson_lock_release), and a stale one sends the walk off the
+ * path and the release onto locks this rank never took.  Released root first,
+ * the reverse of acquisition, as before. */
 static inline void
 arts_cxl_tournament_lock_release(arts_cxl_tournament_lock_t *tl,
                                  pthread_mutex_t *local_lock, unsigned int id) {
-  (void)id;
-  unsigned int node_id = 0;
-  for (unsigned int i = 0; i < tl->lock.k; i++) {
-    unsigned int pid = tl->lock.locks[node_id].lock.owner.value;
-    arts_cxl_peterson_lock_release(&tl->lock.locks[node_id]);
-    node_id = (2 * node_id) + 1 + pid;
+  unsigned int nodes[64];
+  unsigned int pids[64];
+  unsigned int k = (unsigned int)tl->lock.k;
+  unsigned int node_id = id + (tl->lock.num_procs - 1);
+  for (unsigned int i = 0; i < k; i++) {
+    pids[i] = (node_id + 1) % 2;
+    node_id = (node_id - 1) / 2;
+    nodes[i] = node_id;
+  }
+  for (unsigned int i = k; i-- > 0;) {
+    arts_cxl_peterson_lock_release(&tl->lock.locks[nodes[i]], pids[i]);
   }
   pthread_mutex_unlock(local_lock);
 }

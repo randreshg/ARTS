@@ -433,11 +433,6 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.saved_counters);
   arts_free(arts_node_info.live_counters);
 
-#ifdef ARTS_USE_CXL
-  arts_cxl_deque_free(arts_node_info.cxl_deque);
-  pthread_mutex_destroy(&arts_node_info.cxl_local_lock);
-#endif
-
 #ifdef ARTS_USE_GPU
   /* GPU cleanup must run BEFORE route tables are freed — free_gpu_item()
      calls arts_route_table_lookup_db() for LC DB host-side metadata. */
@@ -497,6 +492,19 @@ void arts_runtime_global_cleanup() {
   if (arts_global_rank_count > 1) {
     arts_net_teardown();
   }
+
+#ifdef ARTS_USE_CXL
+  /* The CXL store goes last: everything above may still reach a slot (the
+   * sanitizer sweep, route-table teardown, in-flight fabric traffic), and on
+   * rank 0 freeing it waits for every peer to have detached -- rank 0 can get
+   * here while a peer's workers are still running (see the teardown handshake
+   * in arts/cxl/deque.h).  A thread of this rank that never joined may still
+   * be in the store, so then nothing is freed on any rank. */
+  arts_cxl_deque_free(arts_node_info.cxl_deque,
+                      __atomic_load_n(&arts_shutdown_abandon.unjoined_threads,
+                                      __ATOMIC_RELAXED) != 0u);
+  pthread_mutex_destroy(&arts_node_info.cxl_local_lock);
+#endif
 }
 
 /*

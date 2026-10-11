@@ -74,11 +74,15 @@ typedef union {
         *db_arenas[ARTS_CXL_MAX_DEVICES]; /**< One arena per CXL device. */
     unsigned int db_arena_count; /**< Number of active db_arenas entries. */
     arts_cxl_tournament_lock_t *lock;
+    /** Teardown handshake: one line per rank (see arts_cxl_deque_free).
+     *  Raw allocation; the lines start at its first cache-line boundary. */
+    void *detach_raw;
+    unsigned int detach_count; /**< Ranks with a line in detach_raw. */
   };
   uint8_t pad[((sizeof(int) + sizeof(arts_cxl_arena_t *) +
                 sizeof(arts_cxl_arena_t *) * ARTS_CXL_MAX_DEVICES +
                 sizeof(unsigned int) + sizeof(arts_cxl_tournament_lock_t *) +
-                CACHELINE_SIZE - 1) /
+                sizeof(void *) + sizeof(unsigned int) + CACHELINE_SIZE - 1) /
                CACHELINE_SIZE) *
               (CACHELINE_SIZE / sizeof(uint8_t))];
 } arts_cxl_deque_consts_t;
@@ -168,6 +172,94 @@ static inline void *arts_cxl_arena_malloc(arts_cxl_arena_t *arena,
   return NULL;
 }
 
+/* ── Teardown handshake ─────────────────────────────────────────────────────
+ *
+ * Rank 0 created every shared object below and is the only rank that frees
+ * them, but shutdown is fire-and-forget: the initiator broadcasts SHUTDOWN and
+ * waits only for its own sends, so rank 0 can reach teardown while a peer has
+ * not even received the message and its workers are still in EDTs that touch
+ * slots in the arena, flush them, or take the tournament lock to allocate.  A
+ * device allocator that really reclaims (unlike the fake library, whose free
+ * is a no-op) then hands the peer a freed line or an unmapped page.
+ *
+ * Each rank owns one cache line, written only by it, so the handshake needs no
+ * cross-host atomic -- the fabric may not have one.  A rank stores DETACHED
+ * after its last access to the store, or ABANDONED when a thread of its own
+ * never joined and so may still be touching it; rank 0 frees only when every
+ * peer said DETACHED within the deadline, and otherwise leaves the store to the
+ * process exit / the site wrapper's region release (a leak, never a fault).
+ */
+
+#define ARTS_CXL_DETACH_ATTACHED 0
+#define ARTS_CXL_DETACH_DETACHED 1
+#define ARTS_CXL_DETACH_ABANDONED 2
+
+#ifndef ARTS_CXL_DETACH_TIMEOUT_MS
+#define ARTS_CXL_DETACH_TIMEOUT_MS 10000u
+#endif
+
+static inline arts_cxl_cache_line_t *
+arts_cxl_detach_lines(const arts_cxl_deque_t *dq) {
+  return (arts_cxl_cache_line_t *)ALIGN_UP((uintptr_t)dq->consts.detach_raw,
+                                           (uintptr_t)CACHELINE_SIZE);
+}
+
+static inline void arts_cxl_detach_init(arts_cxl_deque_t *dq,
+                                        unsigned int ranks) {
+  /* One spare line: the allocator's alignment is not part of its contract. */
+  size_t bytes = sizeof(arts_cxl_cache_line_t) * ((size_t)ranks + 1u);
+  dq->consts.detach_raw = GLOBAL_MALLOC(bytes);
+  dq->consts.detach_count = ranks;
+  arts_cxl_cache_line_t *lines = arts_cxl_detach_lines(dq);
+  for (unsigned int r = 0; r < ranks; r++) {
+    lines[r].value = ARTS_CXL_DETACH_ATTACHED;
+  }
+  FLUSH_FENCE_PRODUCER(lines, sizeof(arts_cxl_cache_line_t) * ranks);
+}
+
+static inline void arts_cxl_detach_announce(arts_cxl_deque_t *dq,
+                                            unsigned int rank, int64_t state) {
+  if (dq->consts.detach_raw == NULL || rank >= dq->consts.detach_count) {
+    return;
+  }
+  arts_cxl_cache_line_t *line = &arts_cxl_detach_lines(dq)[rank];
+  HW_MEMORY_FENCE(); /* every earlier store-line flush drains first */
+  line->value = state;
+  FLUSH_FENCE_PRODUCER(line, sizeof(arts_cxl_cache_line_t));
+}
+
+/* Rank 0: wait for every peer's line.  True only when all said DETACHED. */
+static inline bool arts_cxl_detach_wait(arts_cxl_deque_t *dq) {
+  if (dq->consts.detach_raw == NULL) {
+    return false;
+  }
+  arts_cxl_cache_line_t *lines = arts_cxl_detach_lines(dq);
+  unsigned int waited_ms = 0;
+  for (unsigned int r = 1; r < dq->consts.detach_count; r++) {
+    for (;;) {
+      FLUSH_FENCE_CONSUMER(&lines[r], sizeof(arts_cxl_cache_line_t));
+      int64_t v = lines[r].value;
+      if (v == ARTS_CXL_DETACH_DETACHED) {
+        break;
+      }
+      if (v == ARTS_CXL_DETACH_ABANDONED) {
+        fprintf(stderr, "cxl: rank %u left a thread running at teardown; "
+                        "the CXL store is not freed\n", r);
+        return false;
+      }
+      if (waited_ms >= ARTS_CXL_DETACH_TIMEOUT_MS) {
+        fprintf(stderr, "cxl: rank %u did not detach from the CXL store "
+                        "within %u ms; the store is not freed\n",
+                r, (unsigned)ARTS_CXL_DETACH_TIMEOUT_MS);
+        return false;
+      }
+      usleep(1000);
+      waited_ms++;
+    }
+  }
+  return true;
+}
+
 /* ── Deque lifecycle ────────────────────────────────────────────────────────
  */
 
@@ -197,6 +289,7 @@ static inline arts_cxl_deque_t *arts_cxl_deque_create(void) {
   dq->consts.db_arena_count = 1;
 
   dq->consts.lock = arts_cxl_tournament_lock_new(ARTS_CXL_NUM_NODES);
+  arts_cxl_detach_init(dq, ARTS_CXL_NUM_NODES);
 
   assert((sizeof(arts_cxl_deque_t) % CACHELINE_SIZE) == 0 &&
          "arts_cxl_deque_t must be cache-line aligned");
@@ -250,6 +343,7 @@ arts_cxl_deque_create_with_arenas(const uint64_t *dev_ids,
   dq->consts.db_arena_count = dev_count;
 
   dq->consts.lock = arts_cxl_tournament_lock_new(ARTS_CXL_NUM_NODES);
+  arts_cxl_detach_init(dq, ARTS_CXL_NUM_NODES);
 
   assert((sizeof(arts_cxl_deque_t) % CACHELINE_SIZE) == 0 &&
          "arts_cxl_deque_t must be cache-line aligned");
@@ -284,24 +378,47 @@ static inline arts_cxl_deque_t *arts_cxl_deque_init(void) {
 #endif
 }
 
-static inline void arts_cxl_deque_free(arts_cxl_deque_t *dq) {
+/* @p local_abandoned: a thread of THIS rank never joined and may still be
+ * touching the store.  A peer announces it and keeps its hands off; rank 0
+ * frees nothing.  Called after this rank's last access to the store. */
+static inline void arts_cxl_deque_free(arts_cxl_deque_t *dq,
+                                       bool local_abandoned) {
 #ifdef ARTS_CXL_NATIVE
-  /* Real CXL: only rank 0 frees shared resources */
-  if (!arts_global_rank_id) {
-    arts_cxl_arena_free(dq->consts.mem_arena);
-    for (unsigned int i = 0; i < dq->consts.db_arena_count; i++) {
-      arts_cxl_arena_free(dq->consts.db_arenas[i]);
-    }
-    arts_cxl_tournament_lock_delete(dq->consts.lock);
-    SHARED_FREE(dq);
+  /* Real CXL: only rank 0 frees shared resources, and only once every peer
+   * has detached (see the teardown handshake above). */
+  if (arts_global_rank_id) {
+    arts_cxl_detach_announce(dq, arts_global_rank_id,
+                             local_abandoned ? ARTS_CXL_DETACH_ABANDONED
+                                             : ARTS_CXL_DETACH_DETACHED);
+    return;
   }
-#else
-  /* Stub mode: each rank frees its own */
+  if (local_abandoned) {
+    fprintf(stderr, "cxl: rank 0 left a thread running at teardown; the CXL "
+                    "store is not freed\n");
+    return;
+  }
+  if (!arts_cxl_detach_wait(dq)) {
+    return;
+  }
   arts_cxl_arena_free(dq->consts.mem_arena);
   for (unsigned int i = 0; i < dq->consts.db_arena_count; i++) {
     arts_cxl_arena_free(dq->consts.db_arenas[i]);
   }
   arts_cxl_tournament_lock_delete(dq->consts.lock);
+  GLOBAL_FREE(dq->consts.detach_raw);
+  SHARED_FREE(dq);
+#else
+  /* Stub mode: each rank frees its own -- unless a thread of its own may
+   * still be in it. */
+  if (local_abandoned) {
+    return;
+  }
+  arts_cxl_arena_free(dq->consts.mem_arena);
+  for (unsigned int i = 0; i < dq->consts.db_arena_count; i++) {
+    arts_cxl_arena_free(dq->consts.db_arenas[i]);
+  }
+  arts_cxl_tournament_lock_delete(dq->consts.lock);
+  GLOBAL_FREE(dq->consts.detach_raw);
   SHARED_FREE(dq);
 #endif
 }
