@@ -175,6 +175,29 @@ static void remove_white_spaces(char *str) {
   } while (*read++);
 }
 
+/* getline(3) whose line buffer comes from the runtime allocator, so it is
+ * released with arts_free like every other runtime allocation. */
+static ssize_t config_getline(char **line, size_t *cap, FILE *stream) {
+  size_t len = 0;
+  int c;
+  while ((c = getc(stream)) != EOF) {
+    if (len + 2 > *cap) {
+      size_t grown = *cap ? 2 * *cap : 128;
+      *line = (char *)arts_realloc(*line, grown);
+      *cap = grown;
+    }
+    (*line)[len++] = (char)c;
+    if (c == '\n') {
+      break;
+    }
+  }
+  if (len == 0) {
+    return -1;
+  }
+  (*line)[len] = '\0';
+  return (ssize_t)len;
+}
+
 struct arts_config_variable_s *arts_config_get_variables(FILE *config) {
   char *line = NULL;
   size_t len = 0;
@@ -186,7 +209,7 @@ struct arts_config_variable_s *arts_config_get_variables(FILE *config) {
   struct arts_config_variable_s *head = NULL;
   struct arts_config_variable_s *next = NULL;
 
-  while ((read = getline(&line, &len, config)) != -1) {
+  while ((read = config_getline(&line, &len, config)) != -1) {
     var = strtok(line, "=");
     val = strtok(NULL, "=");
 
@@ -217,9 +240,7 @@ struct arts_config_variable_s *arts_config_get_variables(FILE *config) {
       next = c_var;
     }
   }
-  if (line) {
-    free(line);
-  }
+  arts_free(line);
   return head;
 }
 
@@ -1007,7 +1028,7 @@ static void config_setup_flux(struct arts_config_s *config) {
   }
   char *line = NULL;
   size_t line_cap = 0;
-  ssize_t line_len = getline(&line, &line_cap, pipe);
+  ssize_t line_len = config_getline(&line, &line_cap, pipe);
   int status = pclose(pipe);
   if (status < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
     ARTS_ERROR("launcher=flux: 'flux hostlist -e local' failed (%s %d) — "
@@ -1041,7 +1062,7 @@ static void config_setup_flux(struct arts_config_s *config) {
                  i, config->nodes);
     }
   }
-  free(line);
+  arts_free(line);
   config_set_master_from_table(config);
 }
 

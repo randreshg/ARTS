@@ -236,3 +236,9 @@ int main(void) {
          "tripped)\n");
   return 0;
 }
+
+/* libc-backed allocator shims: rank_u64_map.c is compiled standalone, without
+ * the runtime allocator. */
+void *arts_malloc(size_t size) { return malloc(size); }
+void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
+void arts_free(void *ptr) { free(ptr); }

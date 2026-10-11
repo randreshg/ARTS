@@ -40,6 +40,7 @@
 
 #include "arts/system/placement.h"
 #include "arts/system/print.h"
+#include "arts/utils/malloc.h"
 
 #include <hwloc.h>
 #include <hwloc/helper.h>
@@ -167,7 +168,7 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
 
   /* Collect the machine's PUs; the placement itself is the pure core in
      placement.c (unit-tested against synthetic topologies). */
-  struct arts_pu_desc_s *pus = malloc(total_pus * sizeof(*pus));
+  struct arts_pu_desc_s *pus = arts_malloc(total_pus * sizeof(*pus));
   for (unsigned int i = 0; i < total_pus; i++) {
     hwloc_obj_t pu = hwloc_get_obj_by_type(topology, HWLOC_OBJ_PU, i);
     hwloc_obj_t core = ancestor_by_type(pu, HWLOC_OBJ_CORE);
@@ -179,7 +180,7 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
   }
 
   struct arts_placement_s *placed =
-      malloc(config->thread_count * sizeof(*placed));
+      arts_malloc(config->thread_count * sizeof(*placed));
   if (!arts_placement_compute(pus, total_pus, pu_offset,
                               config->worker_thread_count,
                               config->progress_thread_count, placed)) {
@@ -221,8 +222,8 @@ void get_thread_mask(struct arts_config_s *config, struct thread_mask_s *flat,
     read_numa_distances(topology, facts);
   }
 
-  free(placed);
-  free(pus);
+  arts_free(placed);
+  arts_free(pus);
 
   hwloc_topology_destroy(topology);
 }

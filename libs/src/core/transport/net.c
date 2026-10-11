@@ -62,6 +62,7 @@
 #include "arts/counter/Preamble.h" /* INCREMENT_{BYTES,NUM}_REMOTE_* */
 #include "arts/counter/counter.h"
 #include "arts/defs.h"
+#include "arts/utils/malloc.h"
 #include "arts/memory/regpool.h"
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
@@ -319,10 +320,7 @@ static struct net_ring_s *net_get_ring(void) {
     return t_ring;
   }
   struct net_ring_s *r =
-      (struct net_ring_s *)calloc(1, sizeof(struct net_ring_s));
-  if (r == NULL) {
-    ARTS_ERROR("arts_net: retry-ring allocation failed");
-  }
+      (struct net_ring_s *)arts_calloc(1, sizeof(struct net_ring_s));
   pthread_mutex_lock(&g_ring_reg_lock);
   uint32_t idx = atomic_load_explicit(&g_ring_count, memory_order_relaxed);
   if (idx >= ARTS_NET_MAX_RINGS) {
@@ -345,17 +343,15 @@ static inline void net_txn_complete(struct net_txn_s *txn) {
   if (txn->bounce != NULL) {
     arts_regpool_free(txn->bounce);
   }
-  free(txn);
+  arts_free(txn);
 }
 
 static struct net_txn_s *net_txn_new(fi_addr_t addr, void *buf, size_t len,
                                      void *desc, void *bounce,
                                      void (*free_method)(void *),
                                      void *free_arg) {
-  struct net_txn_s *txn = (struct net_txn_s *)malloc(sizeof(struct net_txn_s));
-  if (txn == NULL) {
-    ARTS_ERROR("arts_net: txn allocation failed");
-  }
+  struct net_txn_s *txn =
+      (struct net_txn_s *)arts_malloc(sizeof(struct net_txn_s));
   txn->addr = addr;
   txn->buf = buf;
   txn->len = len;
@@ -755,10 +751,7 @@ static struct net_rdzv_ent_s *net_rdzv_take_locked(uint64_t txid) {
 static void net_rdzv_insert_locked(uint64_t txid, void (*cb)(void *),
                                    void *arg) {
   struct net_rdzv_ent_s *e =
-      (struct net_rdzv_ent_s *)malloc(sizeof(struct net_rdzv_ent_s));
-  if (e == NULL) {
-    ARTS_ERROR("arts_net: rdzv table node alloc failed");
-  }
+      (struct net_rdzv_ent_s *)arts_malloc(sizeof(struct net_rdzv_ent_s));
   e->txid = txid;
   e->cb = cb;
   e->arg = arg;
@@ -792,7 +785,7 @@ void arts_net_rdzv_expect(uint64_t txid, void (*on_data)(void *), void *arg) {
     ARTS_ERROR("arts_net: duplicate rdzv expectation for txid %llx",
                (unsigned long long)txid);
   }
-  free(e); /* arrival marker consumed */
+  arts_free(e); /* arrival marker consumed */
   on_data(arg); /* data already landed: fire inline (dispatch-path caller) */
 }
 
@@ -813,12 +806,12 @@ static void net_rdzv_data_arrived(uint64_t txid) {
   if (e->cb == NULL) {
     ARTS_WARN("arts_net: duplicate rdzv data arrival for txid %llx (dropped)",
               (unsigned long long)txid);
-    free(e);
+    arts_free(e);
     return;
   }
   void (*cb)(void *) = e->cb;
   void *arg = e->arg;
-  free(e);
+  arts_free(e);
   cb(arg);
 }
 
@@ -860,7 +853,7 @@ static void net_put_piece_done(void *arg) {
     if (group->on_local_done != NULL) {
       group->on_local_done(group->arg);
     }
-    free(group);
+    arts_free(group);
   }
 }
 
@@ -919,10 +912,7 @@ void arts_net_put_payload(int rank, uint64_t raddr, uint64_t rkey,
   }
   uint64_t pieces = (len + ceiling - 1) / ceiling;
   struct net_put_group_s *group =
-      (struct net_put_group_s *)malloc(sizeof(struct net_put_group_s));
-  if (group == NULL) {
-    ARTS_ERROR("arts_net: put group allocation failed");
-  }
+      (struct net_put_group_s *)arts_malloc(sizeof(struct net_put_group_s));
   atomic_store_explicit(&group->remaining, pieces, memory_order_relaxed);
   group->posted_ns = net_put_stamp();
   group->on_local_done = on_local_done;
@@ -1107,11 +1097,8 @@ static bool net_reap_locked(void) {
                      (unsigned long long)hdr->size, e->len, hdr->message_type,
                      hdr->rank);
         }
-        struct net_pending_s *pn = (struct net_pending_s *)malloc(
+        struct net_pending_s *pn = (struct net_pending_s *)arts_malloc(
             sizeof(struct net_pending_s) + e->len);
-        if (pn == NULL) {
-          ARTS_ERROR("arts_net: RX copy-out alloc failed (%zu bytes)", e->len);
-        }
         pn->next = NULL;
         pn->len = (unsigned)e->len;
         pn->rdzv_txid = 0;
@@ -1143,10 +1130,7 @@ static bool net_reap_locked(void) {
         INCREMENT_BYTES_REMOTE_RECEIVED_BY(e->len);
         INCREMENT_NUM_REMOTE_RECEIVE_BY(1);
         struct net_pending_s *pn =
-            (struct net_pending_s *)malloc(sizeof(struct net_pending_s));
-        if (pn == NULL) {
-          ARTS_ERROR("arts_net: rdzv completion node alloc failed");
-        }
+            (struct net_pending_s *)arts_malloc(sizeof(struct net_pending_s));
         pn->next = NULL;
         pn->len = 0;
         pn->rdzv_txid = e->data;
@@ -1208,7 +1192,7 @@ static bool net_reap_and_dispatch(void) {
       INCREMENT_NUM_REMOTE_RECEIVE_BY(1);
       arts_transport_dispatch_packet((struct arts_msg_header_s *)(head + 1));
     }
-    free(head);
+    arts_free(head);
     head = next;
     progressed = true;
   }
@@ -1270,7 +1254,7 @@ static bool net_pending_take_rdzv(uint64_t txid) {
       if (g_pending_tail == n) {
         g_pending_tail = prev;
       }
-      free(n);
+      arts_free(n);
       found = true;
       break;
     }
@@ -1359,19 +1343,13 @@ unsigned arts_net_own_address(void *buf, unsigned buflen) {
 
 void arts_net_av_insert_table(const void *addrs, unsigned addrlen,
                               unsigned count) {
-  fi_addr_t *fiaddrs = (fi_addr_t *)malloc(sizeof(fi_addr_t) * count);
-  if (fiaddrs == NULL) {
-    ARTS_ERROR("arts_net: av-insert table alloc failed");
-  }
+  fi_addr_t *fiaddrs = (fi_addr_t *)arts_malloc(sizeof(fi_addr_t) * count);
   int inserted = fi_av_insert(g_net.av, addrs, count, fiaddrs, 0, NULL);
   if (inserted != (int)count) {
     ARTS_ERROR("arts_net: fi_av_insert inserted %d of %u addresses", inserted,
                count);
   }
-  g_net.peers = (fi_addr_t *)malloc(sizeof(fi_addr_t) * count);
-  if (g_net.peers == NULL) {
-    ARTS_ERROR("arts_net: peer table alloc failed");
-  }
+  g_net.peers = (fi_addr_t *)arts_malloc(sizeof(fi_addr_t) * count);
   for (unsigned i = 0; i < count; i++) {
     /* FI_AV_TABLE assigns sequential handles from 0, so inserting in rank order
      * yields fi_addr_t == rank; assert rather than silently mis-route. */
@@ -1383,7 +1361,7 @@ void arts_net_av_insert_table(const void *addrs, unsigned addrlen,
     g_net.peers[i] = fiaddrs[i];
   }
   g_net.peer_count = count;
-  free(fiaddrs);
+  arts_free(fiaddrs);
   /* fi_av_insert strides `addrs` by the provider's own address length; the
    * caller must have laid the table out at exactly that stride. */
   (void)addrlen;
@@ -1812,7 +1790,7 @@ void arts_net_quiesce(void) {
     for (; h != t; h++) {
       net_txn_complete(r->slots[h % ARTS_NET_RING_CAP]);
     }
-    free(r);
+    arts_free(r);
     g_rings[k] = NULL;
   }
   atomic_store_explicit(&g_ring_count, 0, memory_order_release);
@@ -1824,7 +1802,7 @@ void arts_net_quiesce(void) {
    * torn-down state at shutdown (mirrors arts_loopback_cleanup). */
   while (g_pending_head != NULL) {
     struct net_pending_s *next = g_pending_head->next;
-    free(g_pending_head);
+    arts_free(g_pending_head);
     g_pending_head = next;
   }
   g_pending_tail = NULL;
@@ -1837,7 +1815,7 @@ void arts_net_quiesce(void) {
     while (g_rdzv_tab[b] != NULL) {
       struct net_rdzv_ent_s *e = g_rdzv_tab[b];
       g_rdzv_tab[b] = e->next;
-      free(e);
+      arts_free(e);
     }
   }
   pthread_mutex_unlock(&g_rdzv_lock);
@@ -1927,7 +1905,7 @@ void arts_net_teardown(void) {
     g_net.info = NULL;
   }
   if (g_net.peers != NULL) {
-    free(g_net.peers);
+    arts_free(g_net.peers);
     g_net.peers = NULL;
   }
   g_net.peer_count = 0;

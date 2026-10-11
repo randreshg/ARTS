@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "arts/system/print.h"
+#include "arts/utils/malloc.h"
 
 /* Per-stream forwarder state, one heap node per forwarded stream, pushed onto
  * a lock-free Treiber stack.  A launcher forwards both stdout and stderr for
@@ -86,14 +87,7 @@ int arts_stdio_forwarder_make_pipe(unsigned int rank, const char *stream_label,
     return -1;
   }
 
-  forwarder_slot_t *slot = (forwarder_slot_t *)malloc(sizeof(*slot));
-  if (!slot) {
-    ARTS_WARN("stdio_forward: out of memory for rank %u %s", rank,
-              stream_label);
-    close(pipefd[0]);
-    close(pipefd[1]);
-    return -1;
-  }
+  forwarder_slot_t *slot = (forwarder_slot_t *)arts_malloc(sizeof(*slot));
   slot->next = NULL;
   slot->read_fd = pipefd[0];
   slot->sink = sink;
@@ -106,7 +100,7 @@ int arts_stdio_forwarder_make_pipe(unsigned int rank, const char *stream_label,
   if (err != 0) {
     ARTS_WARN("stdio_forward: pthread_create failed for rank %u %s: %s", rank,
               stream_label, strerror(err));
-    free(slot);
+    arts_free(slot);
     close(pipefd[0]);
     close(pipefd[1]);
     return -1;
@@ -141,7 +135,7 @@ void arts_stdio_forwarder_shutdown_all(void) {
     if (list->read_fd >= 0) {
       close(list->read_fd);
     }
-    free(list);
+    arts_free(list);
     list = next;
   }
 }

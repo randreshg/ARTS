@@ -65,7 +65,7 @@ void arts_home_grantreq_queue_push(struct arts_home_grantreq_queue_s *q,
   /* Reached only when the turn could not be granted on arrival. */
   INCREMENT_NUM_EXCL_QUEUE_WAIT_BY(1);
   struct arts_home_grantreq_node_s *n =
-      (struct arts_home_grantreq_node_s *)malloc(sizeof(*n));
+      (struct arts_home_grantreq_node_s *)arts_malloc(sizeof(*n));
   n->rank = rank;
   n->have_version = have_version;
   if (rdzv != NULL) {
@@ -106,7 +106,7 @@ bool arts_home_grantreq_queue_pop(struct arts_home_grantreq_queue_s *q,
     }
     atomic_store_explicit(&q->head, next, memory_order_release);
     if (head != &q->stub) {
-      free(head);
+      arts_free(head);
     }
     return true;
   }
@@ -190,7 +190,7 @@ void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q) {
     struct arts_home_grantreq_node_s *nxt =
         atomic_load_explicit(&cur->next, memory_order_relaxed);
     if (cur != &q->stub) {
-      free(cur);
+      arts_free(cur);
     }
     cur = nxt;
   }
@@ -205,11 +205,12 @@ void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q) {
 void arts_rank_bitset_init(struct arts_rank_bitset_s *r, unsigned int nranks) {
   r->nranks = nranks;
   r->nwords = (nranks + 63) / 64;
-  r->words = (_Atomic(uint64_t) *)calloc(r->nwords, sizeof(_Atomic(uint64_t)));
+  r->words =
+      (_Atomic(uint64_t) *)arts_calloc(r->nwords, sizeof(_Atomic(uint64_t)));
 }
 
 void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r) {
-  free(r->words);
+  arts_free(r->words);
   r->words = NULL;
   r->nwords = 0;
 }

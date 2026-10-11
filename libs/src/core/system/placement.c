@@ -8,6 +8,8 @@
 
 #include <stdlib.h>
 
+#include "arts/utils/malloc.h"
+
 struct pu_sort_s {
   struct arts_pu_desc_s d;
   unsigned int rank_in_core; /* 0 = first PU of its physical core */
@@ -56,10 +58,7 @@ bool arts_placement_compute(const struct arts_pu_desc_s *pus,
     return false;
   }
 
-  struct pu_sort_s *all = malloc(total * sizeof(*all));
-  if (all == NULL) {
-    return false;
-  }
+  struct pu_sort_s *all = arts_malloc(total * sizeof(*all));
   for (unsigned int i = 0; i < total; i++) {
     all[i].d = pus[i];
     all[i].rank_in_core = 0;
@@ -91,6 +90,6 @@ bool arts_placement_compute(const struct arts_pu_desc_s *pus,
     out[t].group_pos = (t < workers) ? t : t - workers;
   }
 
-  free(all);
+  arts_free(all);
   return true;
 }

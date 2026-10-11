@@ -43,6 +43,8 @@ _Noreturn void arts_abort(uint8_t code) {
   fprintf(stderr, "arts_abort(%u)\n", (unsigned)code);
   _exit(code ? code : 1);
 }
+void *arts_malloc(size_t size) { return malloc(size); }
+void arts_free(void *ptr) { free(ptr); }
 
 #include "../../libs/src/core/system/topology.c"
 

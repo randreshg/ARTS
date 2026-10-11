@@ -19,12 +19,14 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "arts/utils/malloc.h"
+
 struct arts_rank_to_u64_map_s *arts_rank_u64_map_create(unsigned int nranks) {
   struct arts_rank_to_u64_map_s *m =
-      (struct arts_rank_to_u64_map_s *)malloc(sizeof(*m));
+      (struct arts_rank_to_u64_map_s *)arts_malloc(sizeof(*m));
   m->nranks = nranks;
-  m->slots =
-      (_Atomic(uint64_t) *)calloc((size_t)nranks, sizeof(_Atomic(uint64_t)));
+  m->slots = (_Atomic(uint64_t) *)arts_calloc((size_t)nranks,
+                                              sizeof(_Atomic(uint64_t)));
   return m;
 }
 
@@ -32,8 +34,8 @@ void arts_rank_u64_map_destroy(struct arts_rank_to_u64_map_s *m) {
   if (m == NULL) {
     return;
   }
-  free(m->slots);
-  free(m);
+  arts_free(m->slots);
+  arts_free(m);
 }
 
 uint64_t arts_rank_u64_map_get(const struct arts_rank_to_u64_map_s *m,

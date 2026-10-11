@@ -45,6 +45,9 @@ unsigned int arts_global_rank_count = 1; /* self-only fabric */
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 struct arts_runtime_shared_s arts_node_info;
 void arts_abort(uint8_t code) { exit(code ? code : 1); }
+void *arts_malloc(size_t size) { return malloc(size); }
+void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
+void arts_free(void *ptr) { free(ptr); }
 
 /* ---- dispatch capture (the stubbed RX sink) ------------------------------ */
 static _Atomic int g_recv_count;

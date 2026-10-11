@@ -1165,6 +1165,17 @@ register_single_node_test(coherence_ro_acquire_stress TIMEOUT 60)
 set_property(TEST coherence_ro_acquire_stress APPEND PROPERTY
     LABELS "coherence_stress")
 
+# Runtime memory comes from the arts_malloc family, never the process C
+# allocator: an interposed or exhausted one must not be reachable from it.
+# A scan of the runtime source, with the sites a foreign owner frees allowed.
+add_test(NAME runtime_no_libc_alloc
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_libc_alloc.sh
+                 ${CMAKE_SOURCE_DIR})
+set_tests_properties(runtime_no_libc_alloc PROPERTIES
+    LABELS "single_node"
+    TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "PASS runtime_no_libc_alloc")
+
 # Distributed coherence stress: blocks homed round-robin on every rank, each
 # acquired by workers placed on every rank, write and read turns interleaved.
 # SKIPs on one rank.

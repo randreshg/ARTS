@@ -19,9 +19,8 @@ extern "C" {
  * ARTS_USE_CXL    -- this translation unit belongs to a build whose data
  *                    blocks rest in CXL memory.
  * ARTS_CXL_NATIVE -- the device library's headers are on the include path;
- *                    the runtime always defines it with ARTS_USE_CXL.  The
- *                    stub arm below stands in for the library where a
- *                    translation unit is compiled without it.
+ *                    the runtime always defines it with ARTS_USE_CXL, so
+ *                    the stub arm below is a placeholder (see there).
  */
 
 #if defined(ARTS_USE_CXL) && defined(ARTS_CXL_NATIVE)
@@ -41,7 +40,11 @@ extern "C" {
 #define GET_CXL_REGION_DEV_ID(...) GET_FAM_REGION_DEV_ID(__VA_ARGS__)
 #define GET_CXL_DEV_COUNT(...) GET_FAM_DEV_COUNT(__VA_ARGS__)
 #else
-/* ── Stubs (no CXL, or CXL code paths without hardware) ──────────────────── */
+/* ── Stubs: a placeholder that nothing uses ────────────────────────────────
+ * Of the three configurations -- no CXL, CXL on the fake library, CXL on the
+ * device library -- the last two always compile the arm above, and a build
+ * without CXL includes this header only in translation units that expand
+ * none of these macros. */
 #define SHARED_MALLOC(...) malloc(__VA_ARGS__)
 #define GLOBAL_MALLOC(...) malloc(__VA_ARGS__)
 #define GLOBAL_FREE(...) free(__VA_ARGS__)

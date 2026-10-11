@@ -71,3 +71,8 @@ int main(void) {
          N);
   return 0;
 }
+
+/* libc-backed allocator shims: the unit under test is compiled without the
+ * runtime allocator. */
+void *arts_malloc(size_t size) { return malloc(size); }
+void arts_free(void *ptr) { free(ptr); }

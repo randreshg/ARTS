@@ -49,7 +49,7 @@ struct arts_placement_s {
  *
  * `pus` is read-only; `total` is the machine PU count; `out` must hold
  * workers + progress entries.  Returns false when the slice does not fit
- * ([offset, offset+W+P) exceeds total) or on allocation failure.
+ * ([offset, offset+W+P) exceeds total).
  */
 bool arts_placement_compute(const struct arts_pu_desc_s *pus,
                             unsigned int total, unsigned int offset,
