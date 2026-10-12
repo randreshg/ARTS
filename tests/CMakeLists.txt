@@ -37,6 +37,11 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
+# Programs here check their verdicts with assert(): a build type that
+# defines NDEBUG must not compile those checks out and let a test pass with
+# nothing checked.
+add_compile_options(-UNDEBUG)
+
 # Define test programs to build
 set(TEST_PROGRAMS
     # --- Original tests ---
