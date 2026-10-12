@@ -263,7 +263,11 @@ void arts_thread_init(struct arts_config_s *config) {
     cpu_set_t set;
     CPU_ZERO(&set);
     CPU_SET(mask[0].pu_id, &set);
-    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &set);
+    int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &set);
+    if (rc != 0) {
+      ARTS_ERROR("thread 0: pinning to pu %u failed: %s", mask[0].pu_id,
+                 strerror(rc));
+    }
   }
 #endif
   arts_runtime_private_init(&mask[0], config);
