@@ -3,54 +3,33 @@
  * A retired mapping holds memory no allocation owns, so a request that no
  * node can place must release the retired mappings before it concludes that
  * there is nowhere to put it — and, placement being a preference, it must
- * then be served by an unplaced mapping rather than refused.  The
+ * then be served by an unplaced mapping rather than refused; the arena path
+ * gives them back the same way before its last resort.  The
  * force-full override makes both reachable without starving a machine: with
  * every node reporting zero availability, the placement screen refuses
- * everything by construction.
+ * everything by construction.  Both rules hold whatever the node count, so
+ * the scenario runs on a declared machine of one node and of two
+ * (regpool_numa_sim.h), each with room for the pool to carve first.
  *
- * Whitebox unit test: no ARTS runtime, no ports, no config. */
+ * Whitebox unit test: no ARTS runtime, no ports, no config; runs on any
+ * host. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 #include <assert.h>
-#include <ctype.h>
-#include <dirent.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "arts/memory/regpool.h"
+#include "regpool_numa_sim.h"
 
 #define SLAB_BYTES ((size_t)64 * 1024 * 1024)
 #define FIRST_SIZE ((size_t)40 * 1024 * 1024)
 #define SECOND_SIZE ((size_t)48 * 1024 * 1024)
-
-/* Node 0's free bytes, read the way the pool reads them; SIZE_MAX when the
- * kernel does not say, which the pool takes as room. */
-static size_t node0_free_bytes(void) {
-  FILE *f = fopen("/sys/devices/system/node/node0/meminfo", "r");
-  if (f == NULL)
-    return SIZE_MAX;
-  size_t r = arts_regpool_parse_node_avail(f);
-  fclose(f);
-  return r;
-}
-
-static unsigned count_nodes(void) {
-  DIR *d = opendir("/sys/devices/system/node");
-  if (d == NULL)
-    return 1;
-  unsigned n = 0;
-  struct dirent *e;
-  while ((e = readdir(d)) != NULL) {
-    if (strncmp(e->d_name, "node", 4) == 0 &&
-        isdigit((unsigned char)e->d_name[4]))
-      n++;
-  }
-  closedir(d);
-  return n ? n : 1;
-}
+#define NODE_FREE ((size_t)4 << 30)
 
 /* The direct-mapping line of the pool's own report. */
 static void direct_counts(unsigned *out_live, unsigned *out_retired,
@@ -64,9 +43,10 @@ static void direct_counts(unsigned *out_live, unsigned *out_retired,
   const char *line = strstr(buf, "[REGPOOL] direct:");
   assert(line != NULL);
   unsigned live = 0, live_mb = 0, retired = 0, retired_mb = 0, slots = 0;
-  assert(sscanf(line,
-                "[REGPOOL] direct: live=%u/%u retired=%u/%u free_slots=%u",
-                &live, &live_mb, &retired, &retired_mb, &slots) == 5);
+  int got =
+      sscanf(line, "[REGPOOL] direct: live=%u/%u retired=%u/%u free_slots=%u",
+             &live, &live_mb, &retired, &retired_mb, &slots);
+  assert(got == 5);
   free(buf);
   *out_live = live;
   *out_retired = retired;
@@ -84,41 +64,22 @@ static unsigned unplaced_mib(void) {
   const char *line = strstr(buf, "[REGPOOL] total:");
   assert(line != NULL);
   unsigned slabs = 0, max = 0, mapped = 0, unplaced = 0, base = 0;
-  assert(sscanf(line,
-                "[REGPOOL] total: slabs=%u/%u mapped=%u unplaced=%u base=%u",
-                &slabs, &max, &mapped, &unplaced, &base) == 5);
+  int got =
+      sscanf(line, "[REGPOOL] total: slabs=%u/%u mapped=%u unplaced=%u base=%u",
+             &slabs, &max, &mapped, &unplaced, &base);
+  assert(got == 5);
   free(buf);
   return unplaced;
 }
 
-int main(void) {
-  /* The pool's init must carve node 0 before anything is forced full. */
-  size_t free0 = node0_free_bytes();
-  if (free0 != SIZE_MAX && free0 < ARTS_REGPOOL_NODE_HEADROOM + SLAB_BYTES) {
-    printf("SKIP regpool_evict_retired: node 0 has %zu MiB free, below the "
-           "pool's carve threshold\n",
-           free0 >> 20);
-    return 0;
-  }
-  unsigned nodes = count_nodes();
-  if (!arts_regpool_init(NULL, NULL, SLAB_BYTES, 0)) {
-    /* The threshold above is read before the carve, and the memory it saw
-     * can be gone by the time the pool maps: a failure with node 0 now
-     * below the threshold is that pressure, and the test has nothing to
-     * exercise.  A failure with room to spare is the pool's own. */
-    size_t now0 = node0_free_bytes();
-    if (now0 != SIZE_MAX && now0 < ARTS_REGPOOL_NODE_HEADROOM + SLAB_BYTES) {
-      printf("SKIP regpool_evict_retired: pool init failed with node 0 at "
-             "%zu MiB free (was %zu MiB at the threshold check, below the "
-             "pool's carve threshold)\n",
-             now0 >> 20, free0 >> 20);
-      return 0;
-    }
-    printf("FAIL regpool_evict_retired: pool init failed with node 0 at "
-           "%zu MiB free, above the carve threshold\n",
-           now0 >> 20);
-    return 1;
-  }
+static void scenario(int nodes) {
+  regpool_sim_declare(nodes, REGPOOL_SIM_FREE);
+  for (int n = 0; n < nodes; n++)
+    regpool_sim_set_node_free(n, NODE_FREE);
+  uint64_t all = ((uint64_t)1 << nodes) - 1;
+  arts_regpool_set_topology((unsigned)nodes, all, NULL);
+  bool inited = arts_regpool_init(NULL, NULL, SLAB_BYTES, (unsigned)nodes);
+  assert(inited);
 
   unsigned live = 0, retired = 0, slots = 0;
 
@@ -139,9 +100,10 @@ int main(void) {
   direct_counts(&live, &retired, &slots);
   assert(live == 0 && retired == 1);
 
-  /* Every node full: no placement can succeed. */
-  uint64_t mask = nodes >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << nodes) - 1;
-  arts_regpool_set_forced_full(mask);
+  /* Every node full: no placement can succeed, and what is mapped from here
+   * on carries no placement policy at all. */
+  arts_regpool_set_forced_full(all);
+  unsigned policies = regpool_sim_mbind_calls;
 
   unsigned char *unplaced =
       (unsigned char *)arts_regpool_alloc_aligned(SECOND_SIZE, 64);
@@ -163,8 +125,8 @@ int main(void) {
   arts_regpool_free(unplaced);
 
   /* The arena path under the same condition: exhausting the node's base
-   * slab makes it grow, no node can place the next slab, and the node must
-   * be given an unplaced base slab rather than a refusal — every block still
+   * slab makes it grow, no node has room for the next slab, and the kernel
+   * must place it rather than the grow be refused — every block still
    * resolves, and the pool's report shows the unplaced capacity. */
   enum { ARENA_BLOCKS = 72 };
   static void *blocks[ARENA_BLOCKS];
@@ -175,14 +137,27 @@ int main(void) {
     assert(arts_regpool_lookup(blocks[i]) != NULL);
     memset(blocks[i], 0xA5, (size_t)1 << 20);
   }
-  assert(unplaced_mib() >= SLAB_BYTES >> 20 &&
-         "the grown slab must be an unplaced base slab");
+  assert(unplaced_mib() == (SLAB_BYTES >> 20) * 3 / 2 &&
+         "the grown slab, the node's next rung, must be placed by the kernel");
+  direct_counts(&live, &retired, &slots);
+  assert(live == 0 && retired == 0 &&
+         "the arena path gives retired mappings back before it maps where "
+         "the kernel chooses");
+  assert(regpool_sim_mbind_calls == policies &&
+         "a mapping no node can place is left to the kernel, unbound");
+  assert(regpool_sim_all_policies_ok());
+  assert(regpool_sim_consulted());
   for (int i = 0; i < ARENA_BLOCKS; i++)
     arts_regpool_free(blocks[i]);
 
   arts_regpool_set_forced_full(0);
   arts_regpool_cleanup();
-  printf("PASS regpool_evict_retired (%u nodes forced full, mapping unplaced)\n",
-         nodes);
+}
+
+int main(void) {
+  scenario(1);
+  scenario(2);
+  printf("PASS regpool_evict_retired: every node forced full on a declared "
+         "machine of 1 and of 2 nodes, mapping unplaced\n");
   return 0;
 }

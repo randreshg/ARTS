@@ -10,8 +10,14 @@
  *      leaked until process exit: repeating an oversize alloc/free cycle
  *      must not leave the freed pointer resolvable, must reuse the one
  *      mapping it needs, and must not exhaust the pool's fixed-capacity
- *      slab table. */
+ *      slab table.
+ * The machine is declared (regpool_numa_sim.h): one node with room for every
+ * slab and mapping, so the pool takes the same path on any host. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "arts/memory/regpool.h"
+#include "regpool_numa_sim.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -41,6 +47,8 @@ static void record_slab(const arts_regpool_mr_t *mr) {
 }
 
 int main(void) {
+  regpool_sim_declare(1, REGPOOL_SIM_FREE);
+  regpool_sim_set_node_free(0, (size_t)8 << 30);
   bool ok = arts_regpool_init(NULL, NULL, SLAB_BYTES, 1);
   assert(ok && "regpool_init must succeed");
 
@@ -107,6 +115,10 @@ int main(void) {
   assert(reclaim_distinct == 1 &&
          "one shape must run on one retained mapping across the cycle");
 
+  assert(regpool_sim_consulted() &&
+         "the pool must take its machine facts from the declared machine");
+  assert(regpool_sim_mbind_calls == 0 &&
+         "a placement policy on a machine of one node places nothing");
   arts_regpool_cleanup();
   printf("REGPOOL_GUARD_OK distinct_slabs=%d oversize=%zuMiB "
          "reclaim_iters=%d reclaim_distinct_bases=%d\n",

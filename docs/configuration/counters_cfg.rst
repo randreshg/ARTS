@@ -548,16 +548,23 @@ Grant Plane Rare Paths
    rank prints the registered pool's shape to stderr at teardown —
    ``[REGPOOL] node <n>:`` per NUMA node (carve state, arena count, mapped
    MiB, grow count, the milliseconds its grows spent mapping and the number
-   and milliseconds of allocations that waited for a grow already in flight
-   on that node — the cost an exhausted node charges the threads that reach
-   it behind the one mapping its next slab), ``[REGPOOL] direct:`` for the
-   oversize mappings (live,
-   retired, free table slots), ``[REGPOOL] direct placement:`` (how many of
-   them, and how many MiB, are ``interleaved`` across the rank's node set,
+   and milliseconds of waits — a grow attempt that found the node's grow
+   already in flight, or the process-wide turn of a kernel-placed grow — the
+   cost an exhausted node charges the threads that reach it behind the
+   mapping of its next slab or another node's kernel-placed one — and
+   ``spills``, the times its allocations were moved onto another node's
+   arena because the node could not grow), ``[REGPOOL] direct:`` for the
+   oversize mappings (live, retired, free table slots),
+   ``[REGPOOL] direct placement:`` (how many of them, and how many MiB, are
+   ``interleaved`` across the rank's node set,
    landed on a single ``node<k>``, or were left ``unplaced`` for the kernel
-   to position) and ``[REGPOOL] total:``.  The pool's resident
-   set is its mapped capacity, so these lines are what a memory measurement
-   is read against; they cost nothing when the variable is unset.
+   to position) and ``[REGPOOL] total:`` (with ``arena_slots``, the
+   allocator arena-table slots the pool's slabs hold out of the table's
+   size, and ``table_refusals``, the slabs the full table refused — nonzero
+   means the pool stopped growing its arenas for the rest of the run).  The
+   pool's resident set is its mapped capacity, so these lines are what a
+   memory measurement is read against; they cost nothing when the variable
+   is unset.
 
 Output
 ------

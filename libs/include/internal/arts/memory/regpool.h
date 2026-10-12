@@ -63,13 +63,14 @@ extern "C" {
  * so the pool fails loudly rather than return one.
  *
  * Shape of the memory it holds, which is what a caller sizing a run needs:
- * a node's base slab is carved when a thread on that node first allocates,
- * the node's next slab is half again the last one mapped for it (up to a
- * per-slab ceiling), and every slab is resident from creation — so the
- * pool's resident set is its mapped capacity, not its live payload.  An
- * oversize payload gets a dedicated mapping, which a free retires for reuse
- * rather than unmaps; retired mappings are released when memory or a table
- * slot is wanted.
+ * a node's base slab is carved when a thread on that node first allocates
+ * (or another node's demand grows it), the node's next slab is half again
+ * the largest one mapped for it, rounded up to the allocator's 32 MiB
+ * granule (up to a per-slab ceiling), and every slab is resident from
+ * creation — so the pool's resident set is its mapped capacity, not its
+ * live payload.  An oversize payload gets a dedicated mapping, which a free
+ * retires for reuse rather than unmaps; retired mappings are released when
+ * memory or a table slot is wanted.
  *
  * Where a block lands: an arena slab is placed on the node whose threads
  * carved it, so a small payload is served by the memory of the node that
@@ -77,9 +78,22 @@ extern "C" {
  * whole node set instead — one object that every thread sweeps has no one
  * owning node, so spreading it puts every memory controller of the set
  * behind it and makes its placement independent of which thread happened to
- * create it.  Neither is a requirement: when a node cannot take a mapping
- * the pool tries the others nearest-first and, failing all of them, lets the
- * kernel place it. */
+ * create it.  Neither is a requirement.  A node with no room for a slab is
+ * full, and its threads are served from memory that exists before any is
+ * mapped where the kernel chooses: its own arenas, then other nodes'
+ * arenas, nearest first, then a slab placed on the nearest node that can
+ * take one (the caller's set before any other), then the memory retired
+ * oversize mappings hold, and only when none of these serves does the
+ * kernel place a slab.  An oversize mapping the set cannot absorb goes to
+ * the nearest single node that can, and failing all of them is placed by
+ * the kernel.
+ *
+ * Reach: every arena slab holds one slot of the allocator's process-wide
+ * arena table, which never gives a slot back.  Once the table refuses a
+ * slab, no arena grows for the rest of the process: an arena-path request
+ * is served only from the slabs the pool has, and one none of them can
+ * serve is fatal.  An oversize request still gets a mapping of its own,
+ * which holds no slot. */
 
 /* Forward declarations of the libfabric object handles keep fabric headers out
  * of every includer of this header.  When the runtime is built without the OFI
@@ -106,20 +120,21 @@ typedef struct arts_regpool_mr_s {
  * carve one base slab for the initializing thread's own node — placing it,
  * registering it against `domain_or_null` and handing it to that node's
  * allocator arena.  Every other node is carved when a thread on it first
- * allocates.  A node without room for a base slab is refused with a warning
- * and left without an arena — its threads are then served from another
- * node's arena and the node joins the pool when a later demand-time grow
- * succeeds; only ZERO carved nodes fails the init, which is what proves at
+ * allocates.  A full node — no room for its slab — is refused with a warning
+ * and left without an arena: init carves the nearest node that can take a slab
+ * instead, its threads are served from there, and the node joins the pool when
+ * a later demand-time grow succeeds.  When no node can, the slab is placed by
+ * the kernel.  Only ZERO carved nodes fails the init, which is what proves at
  * init that the pool can map at all.  A NULL domain skips registration
  * (single-node runs / unit tests) while carving arenas identically, so
  * allocation behavior is unchanged.  A non-NULL `ep_or_null` selects the
  * endpoint-bound registration discipline some providers require
  * (FI_MR_ENDPOINT): each slab MR is bound to that endpoint and enabled after
- * registration, and its remote key is read only after the enable — the
- * endpoint must already be enabled, and it must outlive every registered
- * slab (see arts_regpool_unregister).  `slab_bytes` is rounded up to the
- * allocator's minimum arena granularity.  Returns false if already
- * initialized or a slab could not be mapped/registered. */
+ * registration, and its remote key is read only after the enable — the endpoint
+ * must already be enabled, and it must outlive every registered slab (see
+ * arts_regpool_unregister).  `slab_bytes` is rounded up to the allocator's
+ * minimum arena granularity.  Returns false if already initialized or a slab
+ * could not be mapped/registered. */
 bool arts_regpool_init(struct fid_domain *domain_or_null,
                        struct fid_ep *ep_or_null, size_t slab_bytes,
                        unsigned int numa_nodes);
@@ -129,16 +144,21 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
  * Call BEFORE arts_regpool_init; the values are consumed there.
  *
  *   node_count  NUMA nodes on the machine (0 = let the pool count them).
- *   node_set    the nodes carrying this caller's threads.  Every oversize
- *               object is interleaved across exactly this set, so such an
- *               object is served by every memory controller the caller owns
- *               and by none it does not.  0 = every node the process may run
- *               on (derived from the CPU affinity mask).
+ *   node_set    the nodes carrying this caller's threads.  An oversize
+ *               object is interleaved across the members of this set that
+ *               can take a share of it, so it is served by memory
+ *               controllers the caller owns; only when the set cannot absorb
+ *               it does it go to a single node, nearest first and the
+ *               set's own before any other, and then to the kernel's choice.
+ *               0 = every node the process may run on (derived from the CPU
+ *               affinity mask).
  *   distance    node_count x node_count relative access latencies, row-major
  *               with the requesting node as the row and the smallest value
  *               on the diagonal; copied here.  NULL = every node
  *               equidistant, which leaves free memory the only thing
- *               ordering the fallback.
+ *               ordering the fallback.  A pair outside node_count (an init
+ *               that counts more nodes) is farther than every pair the
+ *               table describes.
  *
  * Cleared by arts_regpool_cleanup: a later init with no fresh call sees only
  * what the pool can discover on its own.  Calling it AFTER init is a fatal
@@ -170,8 +190,10 @@ void arts_regpool_unregister(void);
 
 /* Allocate `size` bytes aligned to at least `align` (floored to the payload
  * alignment invariant) from the calling thread's NUMA-local arena, growing the
- * pool on demand.  An oversize request takes a dedicated mapping instead,
- * reusing a retired one of the same length and alignment when there is one.
+ * pool on demand.  An oversize request, or one aligned past the 64 KiB an
+ * arena honours, takes a dedicated mapping instead (at least 2 MiB, resident
+ * like every slab), reusing a retired one of the same length and an
+ * alignment at least as strict when there is one.
  * NUMA placement is a preference throughout: a request is never refused for
  * want of memory on one node.  The returned pointer is guaranteed to resolve
  * through arts_regpool_lookup; a pointer that escaped the registered slabs is
@@ -193,10 +215,16 @@ void arts_regpool_free(void *p);
  * that is being reused for another mapping. */
 const arts_regpool_mr_t *arts_regpool_lookup(const void *p);
 
-/* Map, place, register, and publish one additional slab for `numa_node`,
- * half again the size of the last one mapped for that node.  Called
- * automatically when an arena is exhausted; exposed so callers can pre-grow.
- * Returns false if the slab could not be created. */
+/* Map, register, and publish one additional slab placed on `numa_node`,
+ * half again the size of the largest one mapped for that node (a node
+ * outside the pool's count means node 0).  Exposed so callers can pre-grow;
+ * the allocation path grows on its own, and only it and init fall back to a
+ * slab the kernel places.  Returns true when the pool's table grew since the
+ * call began — this call's slab, or any entry a concurrent grow or oversize
+ * allocation published — and false otherwise: the node is full (its
+ * threads are served from other nodes' memory), the mapping failed, or the
+ * allocator's arena table has refused a slab, after which no grow maps
+ * again. */
 bool arts_regpool_grow(int numa_node);
 
 /* Availability estimate over one NUMA node's meminfo stream: the node's free
@@ -211,26 +239,35 @@ size_t arts_regpool_parse_node_avail(FILE *f);
 /* Held back from a node's availability estimate before a mapping is sized
  * against it — room for concurrent consumers, so a slab sized to the
  * estimate still lands where it was placed.  A node whose estimate does not
- * exceed a slab plus this is not carved: the slab is placed by the kernel. */
+ * exceed a slab plus this is full: its threads are served from other
+ * nodes' memory, and a slab is placed by the kernel only when no node can
+ * take one. */
 #define ARTS_REGPOOL_NODE_HEADROOM ((size_t)2 * 1024 * 1024 * 1024)
 
 /* Diagnostic override, the programmatic form of the
  * ARTS_REGPOOL_FORCE_FULL_NODES environment list: every node whose bit is
  * set in `node_mask` reports zero availability to later placements, so the
  * refusal, fallover and eviction paths are reachable deterministically
- * without starving a machine.  A mask of 0 clears it.  A diagnostic, never a
- * policy: it changes where memory is placed, never whether an allocation is
- * served (placement is a preference, so a request refused by every node
- * falls back to an unplaced mapping). */
+ * without starving a machine.  A mask of 0 clears it.  It acts on an
+ * initialized pool: init sets the mask from the environment list, and
+ * cleanup clears it.  A diagnostic, never a policy: it changes where memory
+ * is placed, never whether an allocation is served (placement is a
+ * preference, so a request refused by every node falls back to an unplaced
+ * mapping). */
 void arts_regpool_set_forced_full(uint64_t node_mask);
 
 /* Print the pool's shape to `out`: per node its carve state, arena count,
- * mapped MiB and grow count; the direct mappings live, retired, where they
- * landed (per node, interleaved, or unplaced) and the free slots; and the
- * totals.  Takes the pool lock, so the lines are consistent with each other.
- * Printed to stderr at cleanup when ARTS_REGPOOL_REPORT is set in the
- * environment, and before the fatal error of an allocation the pool could
- * not satisfy. */
+ * mapped MiB (of the arena slabs placed on it), grow count (of the slabs grown
+ * for it, wherever they landed), the milliseconds its grows spent mapping, the
+ * number and milliseconds of waits for a grow in flight (on the node, or for
+ * the process-wide turn of a kernel-placed grow) and spills (times its
+ * allocations were moved onto another node's arena because it could not grow);
+ * the direct mappings live, retired, where they landed (per node, interleaved,
+ * or unplaced) and the free slots; and the totals, with the arena-table slots
+ * the pool's slabs hold and the slabs the table refused.  Takes the pool lock,
+ * so the lines are consistent with each other.  Printed to stderr at cleanup
+ * when ARTS_REGPOOL_REPORT is set in the environment, and before the fatal
+ * error of an allocation the pool could not satisfy. */
 void arts_regpool_report(FILE *out);
 
 #ifdef __cplusplus

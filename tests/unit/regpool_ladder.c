@@ -5,29 +5,26 @@
  * what keeps a clamped or halved grow from skipping a rung; this test pins
  * the geometry the arena-table budget was chosen against.
  *
- * Whitebox unit test: no ARTS runtime, no ports, no config.  One NUMA node
- * so the ladder belongs to node 0 alone, and the pool's own report is the
+ * Whitebox unit test: no ARTS runtime, no ports, no config.  A declared
+ * machine of one node (regpool_numa_sim.h) with room above the pool's
+ * headroom for every rung, so the ladder belongs to node 0 alone and no
+ * clamp shortens a rung on any host; the pool's own report is the
  * observation point. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <assert.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "arts/memory/regpool.h"
+#include "regpool_numa_sim.h"
 
 #define SLAB_BYTES ((size_t)64 * 1024 * 1024)
 #define LADDER_MIB (64 + 96 + 160 + 256)
-
-/* Node 0's free bytes, read the way the pool reads them; SIZE_MAX when the
- * kernel does not say, which the pool takes as room. */
-static size_t node0_free_bytes(void) {
-  FILE *f = fopen("/sys/devices/system/node/node0/meminfo", "r");
-  if (f == NULL)
-    return SIZE_MAX;
-  size_t r = arts_regpool_parse_node_avail(f);
-  fclose(f);
-  return r;
-}
+#define NODE_FREE ((size_t)8 << 30)
 
 /* Node 0's line of the report: arena count, mapped MiB, grow count. */
 static void node0_line(unsigned *arenas, unsigned *mapped, unsigned *grows) {
@@ -40,38 +37,40 @@ static void node0_line(unsigned *arenas, unsigned *mapped, unsigned *grows) {
   const char *line = strstr(buf, "[REGPOOL] node 0:");
   assert(line != NULL);
   char state[16];
-  assert(sscanf(line,
-                "[REGPOOL] node 0: state=%15s arenas=%u mapped=%u grows=%u",
-                state, arenas, mapped, grows) == 4);
+  int got =
+      sscanf(line, "[REGPOOL] node 0: state=%15s arenas=%u mapped=%u grows=%u",
+             state, arenas, mapped, grows);
+  assert(got == 4);
   assert(strcmp(state, "carved") == 0);
   free(buf);
 }
 
 int main(void) {
-  /* Every rung must land on node 0, and each one populated lowers what the
-   * node has left for the next. */
-  size_t free0 = node0_free_bytes();
-  if (free0 != SIZE_MAX &&
-      free0 < ARTS_REGPOOL_NODE_HEADROOM + ((size_t)LADDER_MIB << 20)) {
-    printf("SKIP regpool_ladder: node 0 has %zu MiB free, below the pool's "
-           "carve threshold\n",
-           free0 >> 20);
-    return 0;
-  }
-  assert(arts_regpool_init(NULL, NULL, SLAB_BYTES, 1));
+  regpool_sim_declare(1, REGPOOL_SIM_FREE);
+  regpool_sim_set_node_free(0, NODE_FREE);
+  regpool_sim_set_machine_available(NODE_FREE);
+  _Static_assert(NODE_FREE >
+                     ARTS_REGPOOL_NODE_HEADROOM + ((size_t)LADDER_MIB << 20),
+                 "the declared node must hold every rung above the headroom");
+  bool inited = arts_regpool_init(NULL, NULL, SLAB_BYTES, 1);
+  assert(inited);
 
   unsigned arenas = 0, mapped = 0, grows = 0;
   node0_line(&arenas, &mapped, &grows);
   assert(arenas == 1 && mapped == 64 && grows == 1);
 
   for (int i = 0; i < 3; i++) {
-    assert(arts_regpool_grow(0) && "an explicit pre-grow must map a slab");
+    bool grew = arts_regpool_grow(0);
+    assert(grew && "an explicit pre-grow must map a slab");
   }
 
   node0_line(&arenas, &mapped, &grows);
   assert(arenas == 4);
-  assert(mapped == 64 + 96 + 160 + 256);
+  assert(mapped == LADDER_MIB);
   assert(grows == 4);
+  assert(regpool_sim_consulted());
+  assert(regpool_sim_mbind_calls == 0 &&
+         "a placement policy on a machine of one node places nothing");
 
   arts_regpool_cleanup();
   printf("PASS regpool_ladder arenas=%u mapped=%u grows=%u\n", arenas, mapped,

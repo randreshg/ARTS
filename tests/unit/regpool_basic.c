@@ -4,8 +4,14 @@
  * registered slab pool with a NULL fabric domain (registration skipped, arenas
  * carved identically).  Verifies the confinement invariant — every returned
  * pointer resolves through arts_regpool_lookup — across many mixed-size,
- * 64-byte-aligned allocations, then a free-all + re-allocate cycle. */
+ * 64-byte-aligned allocations, then a free-all + re-allocate cycle.  The
+ * machine is declared (regpool_numa_sim.h): one node with room for every
+ * slab, so the pool takes the same path on any host. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "arts/memory/regpool.h"
+#include "regpool_numa_sim.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -37,6 +43,8 @@ static void touch(void *p, size_t size) {
 }
 
 int main(void) {
+  regpool_sim_declare(1, REGPOOL_SIM_FREE);
+  regpool_sim_set_node_free(0, (size_t)8 << 30);
   bool ok = arts_regpool_init(NULL, NULL, SLAB_BYTES, 1);
   assert(ok && "regpool_init(NULL domain, 64 MiB, 1 node) must succeed");
 
@@ -74,6 +82,10 @@ int main(void) {
     arts_regpool_free(p);
   }
 
+  assert(regpool_sim_consulted() &&
+         "the pool must take its machine facts from the declared machine");
+  assert(regpool_sim_mbind_calls == 0 &&
+         "a placement policy on a machine of one node places nothing");
   arts_regpool_cleanup();
   printf("REGPOOL_BASIC_OK allocs=%d slab=%zuMiB\n", N_ALLOC,
          SLAB_BYTES / (1024 * 1024));

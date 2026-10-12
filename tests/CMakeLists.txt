@@ -118,6 +118,9 @@ set(TEST_PROGRAMS
     regpool_evict_retired
     regpool_interleave
     regpool_fallback_order
+    regpool_spill_cycle
+    regpool_spill_target
+    regpool_evict_wait
     # --- New unit tests (Tasks 6-12) ---
     edt_dep_variants
     db_create_after_first_touch
@@ -649,71 +652,110 @@ set_tests_properties(config_ports_contract PROPERTIES
 register_pure_unit_test(config_flux_setup TIMEOUT 30)
 set_tests_properties(config_flux_setup PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS config_flux_setup")
-# Binds real sockets to occupy a block, then checks the selector moves off it.
+# Occupies one port of a block, declared through its own bind and by a real
+# listener, and checks the selector moves off the block.  It defines bind and
+# fopen (the ephemeral port range) and finds the C library's own at run time.
 register_pure_unit_test(port_block_relocation TIMEOUT 30)
+target_link_libraries(port_block_relocation PRIVATE ${CMAKE_DL_LIBS})
 set_tests_properties(port_block_relocation PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS port_block_relocation|SKIP port_block_relocation")
+    PASS_REGULAR_EXPRESSION "PASS port_block_relocation")
 register_pure_unit_test(stdio_forward_scale_test)
 
-# regpool_basic/regpool_guard assert the confinement invariant (every
-# returned pointer resolves through arts_regpool_lookup to a registered
-# slab), which only the arena-allocator implementation provides.  The
-# ARTS_MALLOC=system fallback has no arena/slab concept — it is a plain
+# Programs including unit/regpool_numa_sim.h find the C library's own
+# syscall and fopen at run time.
+foreach(_regpool_sim_test regpool_basic regpool_guard regpool_node_fallover
+        regpool_direct_oversize regpool_lazy_carve regpool_ladder
+        regpool_evict_retired regpool_interleave regpool_fallback_order
+        regpool_spill_cycle regpool_spill_target regpool_evict_wait)
+    target_link_libraries(${_regpool_sim_test} PRIVATE ${CMAKE_DL_LIBS})
+endforeach()
+
+# The pool tests below assert the arena/slab machinery and the confinement
+# invariant (every returned pointer resolves through arts_regpool_lookup to a
+# registered slab), which only the arena-allocator implementation provides.
+# The ARTS_MALLOC=system fallback has no arena/slab concept — it is a plain
 # pass-through allocator, so arts_regpool_lookup always misses there by
-# design (see regpool.c's non-mimalloc branch).  Still built under every
-# ARTS_MALLOC config for compile coverage; only run where the invariant
-# they check actually holds.
+# design (see regpool.c's non-mimalloc branch).  Those in TEST_PROGRAMS are
+# still built under every ARTS_MALLOC config for compile coverage; they run
+# only where the invariant they check holds.  Each one runs on a machine it
+# describes to the pool (tests/unit/regpool_numa_sim.h) — node count, the
+# calling thread's node, each node's free memory, what the machine can still
+# give — so it takes the same path and asserts the same thing on every host,
+# and none has a SKIP.
 if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_basic TIMEOUT 60)
     register_pure_unit_test(regpool_guard TIMEOUT 60)
-    # Fallover needs the arena/slab machinery (a refused node, a fallback
-    # arena, and the confinement lookup) — meaningless on the pass-through
-    # allocator for the same reason as the two above.  The explicit
-    # PASS/SKIP markers keep a skipped environment (one NUMA node) from
-    # reading as an exercised pass.
+    # A node the screen refuses at init is served from another node's arena.
     register_pure_unit_test(regpool_node_fallover TIMEOUT 60)
     set_tests_properties(regpool_node_fallover PROPERTIES
-        PASS_REGULAR_EXPRESSION
-        "PASS regpool_node_fallover|SKIP regpool_node_fallover")
+        PASS_REGULAR_EXPRESSION "PASS regpool_node_fallover")
     register_pure_unit_test(regpool_direct_oversize TIMEOUT 60)
     set_tests_properties(regpool_direct_oversize PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_direct_oversize")
-    # Lazy carving is a property of the arena/slab machinery: exactly one
-    # node carved at init, another carved by the first allocation of a
-    # thread on it.  Needs >= 2 NUMA nodes and a CPU of a second node in
-    # the process's affinity mask; the PASS/SKIP markers keep an
-    # environment that has neither from reading as an exercised pass.
+    # Lazy carving: exactly one node carved at init, another carved by the
+    # first allocation of a thread on it.
     register_pure_unit_test(regpool_lazy_carve TIMEOUT 60)
     set_tests_properties(regpool_lazy_carve PROPERTIES
-        PASS_REGULAR_EXPRESSION
-        "PASS regpool_lazy_carve|SKIP regpool_lazy_carve")
+        PASS_REGULAR_EXPRESSION "PASS regpool_lazy_carve")
     # The slab ladder's exact rungs (a node's next slab is half again the
-    # last one mapped for it, on the allocator's granule).  Every rung must
-    # be placed on node 0, so a node 0 without that much free memory above
-    # the pool's headroom SKIPs rather than reading as a pass.
+    # largest one mapped for it, on the allocator's granule).
     register_pure_unit_test(regpool_ladder TIMEOUT 60)
     set_tests_properties(regpool_ladder PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_ladder|SKIP regpool_ladder")
+        PASS_REGULAR_EXPRESSION "PASS regpool_ladder")
     # Eviction of retired mappings and the unplaced fallback behind it,
-    # driven by the force-full override (so it needs no memory pressure and
-    # no second NUMA node).  Init must carve node 0 first; a node 0 below the
-    # pool's carve threshold SKIPs.
+    # driven by the force-full override on one node and on two.
     register_pure_unit_test(regpool_evict_retired TIMEOUT 60)
     set_tests_properties(regpool_evict_retired PROPERTIES
-        PASS_REGULAR_EXPRESSION
-        "PASS regpool_evict_retired|SKIP regpool_evict_retired")
-    # An oversize mapping is spread over the caller's node set, which needs
-    # >= 2 NUMA nodes to be distinguishable from a placed one; the PASS/SKIP
-    # markers keep a one-node environment from reading as an exercised pass.
+        PASS_REGULAR_EXPRESSION "PASS regpool_evict_retired")
+    # An oversize mapping is spread over the caller's node set.
     register_pure_unit_test(regpool_interleave TIMEOUT 60)
     set_tests_properties(regpool_interleave PROPERTIES
-        PASS_REGULAR_EXPRESSION
-        "PASS regpool_interleave|SKIP regpool_interleave")
-    # The candidate order itself, against a supplied distance table — so it
-    # asserts the ordering rule and not the machine it runs on.
+        PASS_REGULAR_EXPRESSION "PASS regpool_interleave")
+    # The candidate order itself, against a supplied distance table.
     register_pure_unit_test(regpool_fallback_order TIMEOUT 60)
     set_tests_properties(regpool_fallback_order PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_fallback_order")
+    # Every node full to its own grow and roomy to every other reader, so the
+    # node asked in a full node's stead finds itself full too: init and the
+    # exhaustion cascade must still grow.
+    register_pure_unit_test(regpool_spill_cycle TIMEOUT 60)
+    set_tests_properties(regpool_spill_cycle PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_spill_cycle")
+    # What serves a full node's demand, in order: other nodes' arenas, then
+    # slabs placed on other nodes (the caller's set first), then a slab the
+    # kernel places.
+    register_pure_unit_test(regpool_spill_target TIMEOUT 60)
+    set_tests_properties(regpool_spill_target PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_spill_target")
+    # Retired oversize mappings are torn down outside the pool's lock, and a
+    # request that reaches their hand-back waits for a teardown in flight.
+    register_pure_unit_test(regpool_evict_wait TIMEOUT 60)
+    set_tests_properties(regpool_evict_wait PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_evict_wait")
+    # A full node's demand served from the other node, and the pool's end at
+    # the allocator's arena table: it fills the table itself, so it links the
+    # pool's object and the allocator directly (one table between them),
+    # never the runtime archive, whose allocator copy is its own.
+    add_executable(regpool_spill_and_latch unit/regpool_spill_and_latch.c
+        $<TARGET_OBJECTS:arts_regpool>)
+    target_include_directories(regpool_spill_and_latch PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    target_link_libraries(regpool_spill_and_latch PRIVATE
+        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY}
+        ${CMAKE_DL_LIBS})
+    register_pure_unit_test(regpool_spill_and_latch TIMEOUT 60)
+    set_tests_properties(regpool_spill_and_latch PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS regpool_spill_and_latch")
+    # The allocator asks the kernel for the calling thread's node on a
+    # machine of several; held to one node, every node query these programs
+    # answer is the pool's own.
+    set_property(TEST regpool_basic regpool_guard regpool_node_fallover
+        regpool_direct_oversize regpool_lazy_carve regpool_ladder
+        regpool_evict_retired regpool_interleave regpool_fallback_order
+        regpool_spill_cycle regpool_spill_target regpool_evict_wait
+        regpool_spill_and_latch
+        APPEND PROPERTY ENVIRONMENT "MIMALLOC_USE_NUMA_NODES=1")
 endif()
 # The availability parser is allocator-independent (pure over a stream).
 register_pure_unit_test(regpool_node_avail TIMEOUT 30)

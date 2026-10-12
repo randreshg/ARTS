@@ -1,31 +1,33 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T228 — get_thread_mask against the REAL host hwloc topology
+ * get_thread_mask against a DECLARED hwloc topology
  * (libs/src/core/system/topology.c).  This TU #includes topology.c to drive
  * the (public, non-static) get_thread_mask plus the file-static helpers it
  * uses; the runtime symbols that ARTS_ERROR / ARTS_INFO reference are stubbed
- * so the unit links standalone.  It links the system hwloc (-lhwloc), so it is
- * NOT a pure synthetic test — it asserts the host-independent invariants the
- * thread-fabric depends on.
+ * so the unit links standalone.  The machine is declared through hwloc's own
+ * synthetic-topology input (HWLOC_SYNTHETIC, read at every topology load), so
+ * every case runs and asserts the same on any host.  Two machines: one whose
+ * description has no NUMA level (hwloc then gives it a single NUMA node
+ * holding every PU) and one of two packages of two NUMA nodes each.  A
+ * synthetic machine numbers its PUs, cores and NUMA nodes in logical order,
+ * so the exact placement of every thread is known in advance.
  *
- * Invariants asserted (must hold on ANY machine)
- * ----------------------------------------------
+ * Invariants asserted on each machine
+ * -----------------------------------
+ *  - flat[t].pu_id and flat[t].numa_domain_id are exactly the placement rule's
+ *    (first PU of every core before any core's second, NUMA-compact within a
+ *    round, PU index ascending within a node), slice element t for a rank
+ *    whose slice starts at its PU offset;
  *  - every flat[t].pu_id < total_pus (in range);
  *  - all flat[t].pu_id are DISTINCT (no two threads pinned to one PU);
  *  - role counts equal the config split (worker/progress);
  *  - group_pos is 0..count-1 CONTIGUOUS within each role group;
  *  - flat[t].id == t;
- *  - num_numa_domains >= 1 after the call;
+ *  - num_numa_domains is the declared NUMA node count after the call;
  *  - local-multinode (shared_pu_pool=true) gives rank 0 and rank 1 DISJOINT
  *    pu_id slices (the structural oversubscription invariant);
  *  - pu_offset overflow (a slice exceeding total_pus) hits the bounds-check =>
  *    ARTS_ERROR => arts_abort (death test via fork, expect nonzero exit).
- *
- * Suspected bug touch points: B091 (hwloc topology leak on the early
- * ARTS_ERROR offset-overflow path — masked because ARTS_ERROR is fatal; the
- * death test exercises that branch) and B092 (find_numa_for_pu UMA-fallback 0
- * — exercised implicitly: on a UMA host num_numa_domains==1 and all
- * numa_id==0).
  */
 
 #include <stdbool.h>
@@ -54,7 +56,51 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
 /* ------------------------------------------------------------------------- */
 
-static unsigned int host_total_pus(void) {
+/* The declared machines: hwloc synthetic descriptions, what each holds, and
+ * where the placement rule puts each thread of the cases below.  Core k
+ * holds PUs 2k and 2k+1, and on the second machine NUMA node j holds PUs
+ * 8j..8j+7, so the first PU of each core comes in ascending order: 0, 2, 4,
+ * ..., then the second PUs: 1, 3, 5, ... */
+#define SINGLE_TC 4 /* case 1: four threads, the last of them progress */
+#define SLICE_TC 3  /* case 2: three threads per rank, the last progress */
+static const struct {
+  const char *desc;
+  unsigned int pus;
+  unsigned int numa;
+  unsigned int single_pu[SINGLE_TC], single_numa[SINGLE_TC];
+  unsigned int rank0_pu[SLICE_TC], rank0_numa[SLICE_TC];
+  unsigned int rank1_pu[SLICE_TC], rank1_numa[SLICE_TC];
+} machines[] = {
+    {"core:4 pu:2",
+     8,
+     1,
+     {0, 2, 4, 6},
+     {0, 0, 0, 0},
+     {0, 2, 4},
+     {0, 0, 0},
+     {6, 1, 3},
+     {0, 0, 0}},
+    {"pack:2 numa:2 core:4 pu:2",
+     32,
+     4,
+     {0, 2, 4, 6},
+     {0, 0, 0, 0},
+     {0, 2, 4},
+     {0, 0, 0},
+     {6, 8, 10},
+     {0, 1, 1}},
+};
+
+/* Declare `desc` as the machine every later topology load reads, and return
+ * its PU count as hwloc reports it. */
+static unsigned int declare_machine(const char *desc) {
+  unsetenv("HWLOC_COMPONENTS");
+  unsetenv("HWLOC_FSROOT");
+  unsetenv("HWLOC_CPUID_PATH");
+  if (setenv("HWLOC_SYNTHETIC", desc, 1) != 0) {
+    fprintf(stderr, "FAIL topology_thread_mask: setenv\n");
+    exit(1);
+  }
   hwloc_topology_t t;
   if (hwloc_topology_init(&t) < 0 || hwloc_topology_load(t) < 0) {
     fprintf(stderr, "FAIL topology_thread_mask: hwloc init/load failed\n");
@@ -63,7 +109,7 @@ static unsigned int host_total_pus(void) {
   int n = hwloc_get_nbobjs_by_type(t, HWLOC_OBJ_PU);
   hwloc_topology_destroy(t);
   if (n <= 0) {
-    fprintf(stderr, "FAIL topology_thread_mask: host reports 0 PUs\n");
+    fprintf(stderr, "FAIL topology_thread_mask: declared machine has 0 PUs\n");
     exit(1);
   }
   return (unsigned int)n;
@@ -74,11 +120,9 @@ static void fail(const char *msg) {
   exit(1);
 }
 
-/* Build a config with a self-consistent worker/progress split.  After the
- * transport cutover get_thread_mask assigns exactly two roles: workers fill the
- * low slots [0,worker_count), the remainder are progress threads.  Only
- * worker_thread_count drives the split (sender is gone, progress_thread_count
- * is not read by topology). */
+/* A config whose thread count is its worker and progress counts together:
+ * get_thread_mask places that many threads, workers in the low slots
+ * [0, worker_thread_count) and progress threads in the rest. */
 static struct arts_config_s make_config(unsigned int thread_count,
                                         unsigned int progress, bool shared_pool,
                                         unsigned int my_rank) {
@@ -94,7 +138,8 @@ static struct arts_config_s make_config(unsigned int thread_count,
 }
 
 static void check_mask(struct thread_mask_s *flat, struct arts_config_s *c,
-                       unsigned int total_pus, unsigned int pu_offset) {
+                       unsigned int total_pus, const unsigned int *want_pu,
+                       const unsigned int *want_numa) {
   unsigned int tc = c->thread_count;
   unsigned int role_seen[ARTS_ROLE_MAX] = {0};
 
@@ -114,10 +159,15 @@ static void check_mask(struct thread_mask_s *flat, struct arts_config_s *c,
       fail("group_pos not contiguous within role group");
     }
     role_seen[flat[t].role]++;
-    /* pu_id must equal the offset slice element t (in-range, monotone slice).
-     */
-    if (flat[t].pu_id != (unsigned int)0xffffffff) {
-      /* nothing — placeholder to keep loop body uniform */
+    if (flat[t].pu_id != want_pu[t]) {
+      fprintf(stderr, "  thread %u: pu_id %u, expected %u\n", t, flat[t].pu_id,
+              want_pu[t]);
+      fail("pu_id is not the placement rule's slice element");
+    }
+    if (flat[t].numa_domain_id != want_numa[t]) {
+      fprintf(stderr, "  thread %u: numa_domain_id %u, expected %u\n", t,
+              flat[t].numa_domain_id, want_numa[t]);
+      fail("numa_domain_id is not the node holding the thread's PU");
     }
   }
 
@@ -146,12 +196,6 @@ static void check_mask(struct thread_mask_s *flat, struct arts_config_s *c,
       fail("role layout not [workers|progress]");
     }
   }
-
-  /* num_numa_domains must be >=1 after the call. */
-  if (num_numa_domains < 1) {
-    fail("num_numa_domains < 1");
-  }
-  (void)pu_offset;
 }
 
 /* Death test: a slice exceeding total_pus must abort.  Run in a child. */
@@ -175,65 +219,65 @@ static void death_test_offset_overflow(unsigned int total_pus) {
   if (waitpid(pid, &status, 0) < 0) {
     fail("waitpid failed");
   }
-  /* Expect nonzero exit (arts_abort -> _exit(code)).  Exit 0 means no abort. */
-  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-    fail("offset-overflow did NOT trigger the bounds-check abort");
-  }
   if (WIFSIGNALED(status)) {
-    /* A signal (e.g. SIGSEGV) is also an abort, but not the intended path.
-     * The bounds check should exit via arts_abort, not crash. */
-    fprintf(stderr, "  note: child died by signal %d (not clean abort)\n",
-            WTERMSIG(status));
+    fprintf(stderr, "  child died by signal %d\n", WTERMSIG(status));
+    fail("offset-overflow crashed instead of reaching arts_abort");
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) == 0) {
+    fail("offset-overflow did NOT trigger the bounds-check abort");
   }
 }
 
-int main(void) {
-  unsigned int total_pus = host_total_pus();
-
-  /* Pick a thread_count that fits the host and forces BOTH roles to be
-   * non-empty when possible.  Use up to 4 threads, clamped to total_pus. */
-  unsigned int tc = total_pus < 4 ? total_pus : 4;
-  unsigned int progress = (tc >= 2) ? 1 : 0;
+static void run_machine(unsigned int m) {
+  const char *desc = machines[m].desc;
+  unsigned int total_pus = declare_machine(desc);
+  if (total_pus != machines[m].pus) {
+    fprintf(stderr,
+            "FAIL topology_thread_mask: declared \"%s\" loads %u PUs, "
+            "expected %u\n",
+            desc, total_pus, machines[m].pus);
+    exit(1);
+  }
 
   /* Case 1: single-rank (no shared pool). */
   {
     struct arts_config_s c =
-        make_config(tc, progress, /*shared_pool=*/false, /*rank=*/0);
-    struct thread_mask_s *flat = calloc(tc, sizeof(*flat));
+        make_config(SINGLE_TC, 1, /*shared_pool=*/false, /*rank=*/0);
+    struct thread_mask_s *flat = calloc(SINGLE_TC, sizeof(*flat));
     if (!flat) {
       fail("calloc");
     }
     get_thread_mask(&c, flat, NULL);
-    check_mask(flat, &c, total_pus, 0);
+    check_mask(flat, &c, total_pus, machines[m].single_pu,
+               machines[m].single_numa);
+    if (num_numa_domains != machines[m].numa) {
+      fail("num_numa_domains is not the declared NUMA node count");
+    }
     free(flat);
   }
 
-  /* Case 2: local-multinode disjoint slices (shared_pu_pool=true).  Each rank
-   * gets [rank*tc, (rank+1)*tc).  Require 2*slice_tc <= total_pus. */
-  if (total_pus >= 4) {
-    unsigned int slice_tc = total_pus / 2; /* rank 0 and rank 1 each */
-    if (slice_tc > 3) {
-      slice_tc = 3; /* keep the test small but multi-threaded */
-    }
-    unsigned int prog = slice_tc >= 2 ? 1 : 0;
-
+  /* Case 2: local-multinode disjoint slices (shared_pu_pool=true).  Rank r's
+   * slice starts at PU offset r * SLICE_TC of the base order. */
+  {
     struct arts_config_s c0 =
-        make_config(slice_tc, prog, /*shared_pool=*/true, /*rank=*/0);
+        make_config(SLICE_TC, 1, /*shared_pool=*/true, /*rank=*/0);
     struct arts_config_s c1 =
-        make_config(slice_tc, prog, /*shared_pool=*/true, /*rank=*/1);
-    struct thread_mask_s *f0 = calloc(slice_tc, sizeof(*f0));
-    struct thread_mask_s *f1 = calloc(slice_tc, sizeof(*f1));
+        make_config(SLICE_TC, 1, /*shared_pool=*/true, /*rank=*/1);
+    struct thread_mask_s *f0 = calloc(SLICE_TC, sizeof(*f0));
+    struct thread_mask_s *f1 = calloc(SLICE_TC, sizeof(*f1));
     if (!f0 || !f1) {
       fail("calloc");
     }
     get_thread_mask(&c0, f0, NULL);
-    check_mask(f0, &c0, total_pus, 0);
+    check_mask(f0, &c0, total_pus, machines[m].rank0_pu,
+               machines[m].rank0_numa);
     get_thread_mask(&c1, f1, NULL);
-    check_mask(f1, &c1, total_pus, slice_tc);
+    check_mask(f1, &c1, total_pus, machines[m].rank1_pu,
+               machines[m].rank1_numa);
 
     /* Disjointness: no pu_id from rank 0's slice appears in rank 1's slice. */
-    for (unsigned int i = 0; i < slice_tc; i++) {
-      for (unsigned int j = 0; j < slice_tc; j++) {
+    for (unsigned int i = 0; i < SLICE_TC; i++) {
+      for (unsigned int j = 0; j < SLICE_TC; j++) {
         if (f0[i].pu_id == f1[j].pu_id) {
           fail("local-multinode slices NOT disjoint");
         }
@@ -246,9 +290,17 @@ int main(void) {
   /* Case 3: offset-overflow death test. */
   death_test_offset_overflow(total_pus);
 
-  printf("PASS topology_thread_mask: in-range + distinct + role-split + "
-         "group_pos contiguous + disjoint MN slices + offset-overflow abort "
-         "(total_pus=%u num_numa=%u)\n",
-         total_pus, num_numa_domains);
+  printf("  machine \"%s\": exact placement + in-range + distinct + "
+         "role-split + group_pos contiguous + disjoint MN slices + "
+         "offset-overflow abort (total_pus=%u num_numa=%u)\n",
+         desc, total_pus, num_numa_domains);
+}
+
+int main(void) {
+  for (unsigned int m = 0; m < sizeof machines / sizeof machines[0]; m++) {
+    run_machine(m);
+  }
+  printf("PASS topology_thread_mask: %zu declared machines\n",
+         sizeof machines / sizeof machines[0]);
   return 0;
 }
