@@ -84,7 +84,6 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->db_size = db_size;
   __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
   arts_db_cache_kind_seed(c, kind);
-  arts_lf_pool_init(&c->buf_freelist, 0);
   c->home_line_addr = 0;
   c->home_line_rkey = 0;
   c->flush_txid = 0;
@@ -106,7 +105,6 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   }
   arts_atomic_shared_store(&cache->buffer, NULL);
   __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
-  arts_lf_pool_destroy_with(&cache->buf_freelist, arts_regpool_free);
   struct arts_db_s *db = arts_db_of_cache(cache);
   if (db->home_initialized) {
     arts_db_home_teardown(db);

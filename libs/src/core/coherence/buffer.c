@@ -1,15 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Buffer lifecycle implementation.  See coherence_buffer.h for the contract.
+ * Buffer lifecycle implementation.  See buffer.h for the contract.
  *
  * The buffer is managed as an arts_shared_ptr_t: cache.buffer is the atomic
  * slot, the slot holds the "cache-hold" ref, and every acquirer holds one more.
- * The cb deleter frees the buffer on the last drop.  Because the split-
- * reference-counting load pins the cb without dereferencing it (and the buffer
- * carries no back-pointer to its cache), an in-flight acquire is immune to a
- * concurrent destroy: the bytes live until the final holder releases, and the
- * release path touches only the (always-valid) cb handle, never a possibly-
- * freed buffer.
+ * The cb deleter ends the buffer's life on the last drop.  Because the split-
+ * reference-counting load pins the cb without dereferencing it, an in-flight
+ * acquire is immune to a concurrent destroy: the bytes live until the final
+ * holder releases.  That final holder can be anyone (a transfer's local
+ * completion included) and can come after the block's descriptor was
+ * destroyed, so the deleter touches no cache it does not keep alive itself:
+ * where the arm keeps a free-list, a buffer holds its cache's storage until it
+ * is parked; elsewhere the deleter frees the buffer and touches no cache.
  */
 
 #include "arts/coherence/buffer.h"
@@ -26,48 +28,138 @@
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
-/* cb deleter — runs once, on the last strong drop.  When owner_cache is set,
- * recycles the buffer onto the per-DB free-list (unbounded) instead of freeing
- * so that subsequent installs can reuse it without hitting the allocator. */
-static void buffer_deleter(void *obj) {
-  struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)obj;
-  b->cb = NULL;
+#ifdef ARTS_DB_BUF_POOL
+/* buf_holds: the number of buffers drawn from a cache and not parked back, in
+ * the low bits, and HOLDS_DESTROYED, which the storage release sets once the
+ * descriptor's destructor has run.
+ * The storage goes when the word reaches exactly HOLDS_DESTROYED, which one
+ * read-modify-write observes: no buffer can be drawn after the destructor,
+ * since only a holder of the descriptor draws one. */
+#define HOLDS_DESTROYED 0x80000000u
+#define BUF_OUT 1u
+#define BUF_PARKED 2u
+
+/* Only a draw pushes here, and nothing draws from a destroyed descriptor, so
+ * once the destructor has run the stack is drained whole without contention,
+ * whether buffers are still out or not. */
+static void buf_free_retired(struct arts_db_cache_s *cache) {
+  arts_lf_link_t *n = arts_lf_stack_drain(&cache->buf_retired);
+  while (n != NULL) {
+    arts_lf_link_t *next = atomic_load_explicit(&n->next, memory_order_relaxed);
+    arts_regpool_free(n);
+    n = next;
+  }
+}
+
+static void buf_storage_free(struct arts_db_cache_s *cache) {
+  arts_lf_pool_destroy_with(&cache->buf_freelist, arts_regpool_free);
+  arts_free(arts_db_of_cache(cache));
+}
+
+/* Park a buffer drawn from a cache on that cache's list, then let go of the
+ * storage it was keeping: the push lands while the storage is still held. */
+static void buf_park(struct arts_db_buffer_s *b) {
   struct arts_db_cache_s *cache = b->owner_cache;
-  if (cache != NULL) {
-    arts_lf_pool_release(&cache->buf_freelist, &b->pool_link);
+  if (cache == NULL) {
+    arts_regpool_free(b);
     return;
   }
-  arts_regpool_free(b);
+#ifndef NDEBUG
+  /* Ended twice, a buffer would be parked twice and its cache's storage could
+   * go while another buffer drawn from it is still out.  Only an end that
+   * finds the buffer parked is caught: a second end after a re-draw is caught,
+   * if at all, only at a later end, and not reliably once the buffer has been
+   * freed. */
+  if (atomic_exchange_explicit(&b->park_state, BUF_PARKED,
+                               memory_order_relaxed) != BUF_OUT) {
+    ARTS_ERROR("coherence: buffer %p ended twice", (void *)b);
+  }
+#endif
+  b->cb = NULL;
+  arts_lf_pool_release(&cache->buf_freelist, &b->pool_link);
+  if (atomic_fetch_sub_explicit(&cache->buf_holds, 1u, memory_order_acq_rel) ==
+      (HOLDS_DESTROYED | 1u)) {
+    buf_storage_free(cache);
+  }
+}
+#endif
+
+/* cb deleter — runs once, on the last strong drop, which can come after the
+ * block's descriptor was destroyed. */
+static void buffer_deleter(void *obj) {
+#ifdef ARTS_DB_BUF_POOL
+  buf_park((struct arts_db_buffer_s *)obj);
+#else
+  arts_regpool_free(obj);
+#endif
+}
+
+void arts_db_buf_storage_release(struct arts_db_cache_s *cache) {
+#ifdef ARTS_DB_BUF_POOL
+  /* Nothing draws from a destroyed descriptor, so whatever is parked now is
+   * reclaimable at once; only buffers still out park later, and the last of
+   * them (or this release, if none is out) frees the rest with the storage.
+   * The destroyed flag is not set yet, so a concurrent park cannot free. */
+  for (arts_lf_link_t *n;
+       (n = arts_lf_pool_pop_or_null(&cache->buf_freelist)) != NULL;) {
+    arts_regpool_free(n);
+  }
+  buf_free_retired(cache);
+  if (atomic_fetch_add_explicit(&cache->buf_holds, HOLDS_DESTROYED,
+                                memory_order_acq_rel) == 0u) {
+    buf_storage_free(cache);
+  }
+#else
+  arts_free(arts_db_of_cache(cache));
+#endif
 }
 
 struct arts_db_buffer_s *arts_db_buf_alloc(struct arts_db_cache_s *cache,
                                            uint64_t db_size) {
-  /* Pull a recycled buffer from the per-DB free-list when available. */
-  arts_lf_link_t *node = arts_lf_pool_pop_or_null(&cache->buf_freelist);
-#ifdef ARTS_CXL_DIRECT
-  /* The payload is not the descriptor's to size, so every descriptor is one
-   * size and the per-DB recycle pool stays uniform.  A descriptor leaves this
-   * call naming no storage, recycled or fresh. */
+#ifdef ARTS_DB_BUF_POOL
+  struct arts_db_buffer_s *b =
+      (struct arts_db_buffer_s *)arts_lf_pool_pop_or_null(&cache->buf_freelist);
+  if (b != NULL && b->capacity < db_size) {
+    /* Parked for a smaller request (a size bound or an earlier size).  It is
+     * not freed here: a concurrent popper may still be reading its link, so
+     * it is retired and freed by the storage release that follows the
+     * descriptor's destructor. */
+    arts_lf_stack_push(&cache->buf_retired, &b->pool_link);
+    b = NULL;
+  }
+  if (b == NULL) {
+    /* 64-byte aligned so buf->data (offset 64) lands on a cache-line
+     * boundary.  Drawn from the registered pool so every DB payload buffer
+     * falls inside a slab that is (or will be) pinned and pre-registered with
+     * the fabric, resolvable by arts_regpool_lookup for one-sided RDMA. */
+    b = (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
+        sizeof(struct arts_db_buffer_s) + db_size, 64);
+    if (b == NULL) {
+      return NULL;
+    }
+    b->capacity = db_size;
+  }
+  /* The caller holds the descriptor, so its storage is live here. */
+  b->owner_cache = cache;
+#ifndef NDEBUG
+  atomic_store_explicit(&b->park_state, BUF_OUT, memory_order_relaxed);
+#endif
+  atomic_fetch_add_explicit(&cache->buf_holds, 1u, memory_order_relaxed);
+  return b; /* caller re-inits fields */
+#elif defined(ARTS_CXL_DIRECT)
+  /* The payload is not the descriptor's to size: a descriptor leaves this call
+   * naming no storage. */
+  (void)cache;
   (void)db_size;
   struct arts_db_buffer_s *b =
-      (node != NULL) ? (struct arts_db_buffer_s *)node
-                     : (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
-                           sizeof(struct arts_db_buffer_s), 64);
+      (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
+          sizeof(struct arts_db_buffer_s), 64);
   if (b != NULL) {
     b->data = NULL;
   }
   return b;
 #else
-  if (node != NULL) {
-    return (
-        struct arts_db_buffer_s *)node; /* recycled; caller re-inits fields */
-  }
-  /* 64-byte aligned so buf->data (offset 64) lands on a cache-line / CXL
-   * boundary.  Drawn from the registered pool so every DB payload buffer
-   * falls inside a slab that is (or will be) pinned and pre-registered with
-   * the fabric, resolvable by arts_regpool_lookup for one-sided RDMA.
-   * Recycled by the cb deleter via the free-list; freed only when
-   * owner_cache is NULL (shouldn't happen in normal operation). */
+  (void)cache;
   return (struct arts_db_buffer_s *)arts_regpool_alloc_aligned(
       sizeof(struct arts_db_buffer_s) + db_size, 64);
 #endif
@@ -88,7 +180,9 @@ arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
     ARTS_ERROR("coherence: detached buffer alloc failed (%llu bytes)",
                (unsigned long long)db_size);
   }
+#ifdef ARTS_DB_BUF_POOL
   b->owner_cache = NULL;
+#endif
   b->version = 0;
   b->cb = arts_shared_make(b, buffer_deleter);
   *out = b;
@@ -143,13 +237,12 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
   if (nb == NULL) {
     return false; /* OOM — caller decides how to surface. */
   }
-  nb->owner_cache = cache;
   nb->version = version;
   nb->data = (char *)payload;
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
   if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
-    arts_shared_release(&cb); /* last ref: the deleter recycles nb */
+    arts_shared_release(&cb); /* last ref: the deleter ends nb */
     /* One descriptor serves a block for its whole life: the store does not
      * move, so a second descriptor would be two names for one range and
      * arts_db_buf_for_payload could not answer.  Losing this CAS to the SAME
@@ -229,7 +322,6 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   if (nb == NULL) {
     return false; /* OOM — caller decides how to surface. */
   }
-  nb->owner_cache = cache;
   /* Version 1, not 0: the block's first image is its VALUE, not a
    * placeholder awaiting a publication.  An arm whose "has anyone published
    * yet" predicate is version > 0 must read this as published, or a reader
@@ -242,7 +334,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
    * construction — one installs, the other adopts the installed image, and
    * neither image holds a value anyone wrote. */
   if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
-    arts_shared_release(&cb); /* last ref: the deleter recycles nb */
+    arts_shared_release(&cb); /* last ref: the deleter ends nb */
     buf_note_present(cache);
     return false;
   }
@@ -263,7 +355,7 @@ bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
   bool withdrawn = false;
   if (b != NULL && (const void *)b->data == payload) {
-    /* The load ref pins the descriptor against recycle, so the slot's own
+    /* The load ref pins the descriptor against reuse, so the slot's own
      * identity cannot have drifted and returned under the compare. */
     withdrawn = arts_atomic_shared_compare_exchange(&cache->buffer, h, NULL);
     if (withdrawn) {
@@ -283,8 +375,8 @@ bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
 /* Version-conditional publish of a fully-initialized private buffer (fields +
  * payload bytes already set; no cb yet).  Shared by the copy install
  * (arts_db_buf_install) and the rendezvous landed install
- * (arts_db_buf_install_landed).  On a stale loss the private buffer is
- * recycled and the newer installed buffer returned. */
+ * (arts_db_buf_install_landed).  On a stale loss the private buffer's life
+ * ends and the newer installed buffer is returned. */
 static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
                                             struct arts_db_buffer_s *new_buf,
                                             uint64_t new_version) {
@@ -306,7 +398,7 @@ static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
         __atomic_load_n(&old->version, __ATOMIC_ACQUIRE) >= new_version) {
       /* Stale install: a newer (or equal) buffer is already published.
        * Drop our load ref, abandon the unpublished cb (keeps new_buf ours)
-       * and free new_buf.  old stays alive via the slot's sentinel ref.
+       * and end new_buf.  old stays alive via the slot's sentinel ref.
        *
        * The comparison is what keeps an INVENTED first image from displacing
        * real bytes, so the two live at different stamps by construction: an
@@ -318,7 +410,7 @@ static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
        * keeping the published one is right. */
       arts_shared_release(&old_h);
       arts_shared_abandon(&new_cb);
-      buffer_deleter(new_buf); /* recycle the just-allocated buffer */
+      buffer_deleter(new_buf); /* never shared: end it here */
       buf_note_present(cache);
       return old;
     }
@@ -360,7 +452,6 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
   if (new_buf == NULL) {
     return NULL; /* OOM — caller decides how to surface. */
   }
-  new_buf->owner_cache = cache;
   new_buf->version = new_version;
   /* Publish bytes into the buffer's payload (canonical user-visible storage). */
   if (db_size > 0) {
@@ -433,7 +524,6 @@ arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
     ARTS_ERROR("coherence: rendezvous landing alloc failed (%llu bytes)",
                (unsigned long long)db_size);
   }
-  b->owner_cache = cache;
   if (!arts_net_rdzv_local(b->data, db_size, &out->addr, &out->key)) {
     /* The buffer lies in no fabric-registered slab, so no peer can PUT into
      * it.  One-sided bulk transfer requires the registered arena pool. */
@@ -447,20 +537,15 @@ arts_db_buf_landing_alloc(struct arts_db_cache_s *cache, uint64_t db_size,
 #endif
 }
 
-void arts_db_buf_landing_recycle(struct arts_db_cache_s *cache,
-                                 struct arts_db_buffer_s *b) {
-#ifdef ARTS_CXL_DIRECT
-  (void)cache;
-  (void)b;
-  ARTS_ERROR("coherence: a landing has no meaning where the payload "
-             "is not this rank's");
-#else
+void arts_db_buf_landing_return(struct arts_db_buffer_s *b) {
   if (b == NULL) {
     return;
   }
-  b->cb = NULL;
-  b->owner_cache = cache;
-  arts_lf_pool_release(&cache->buf_freelist, &b->pool_link);
+#ifdef ARTS_CXL_DIRECT
+  ARTS_ERROR("coherence: a landing has no meaning where the payload "
+             "is not this rank's");
+#else
+  buffer_deleter(b);
 #endif
 }
 
@@ -481,10 +566,9 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
   }
   if (db_size == 0) {
     /* A zero-sized block has no storage to hold: NULL is its defined value. */
-    arts_db_buf_landing_recycle(cache, landing);
+    arts_db_buf_landing_return(landing);
     return false;
   }
-  landing->owner_cache = cache;
   landing->version = version;
   arts_shared_ptr_t cb = arts_shared_make(landing, buffer_deleter);
   landing->cb = cb;
@@ -493,7 +577,7 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
    * slot holds real bytes at some version — replacing it, at any version,
    * would destroy them. */
   if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
-    arts_shared_release(&cb); /* last ref: the deleter recycles the landing */
+    arts_shared_release(&cb); /* last ref: the deleter ends the landing */
     buf_note_present(cache);
     return false;
   }
@@ -518,7 +602,6 @@ arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
              "is not this rank's");
   return NULL;
 #else
-  landing->owner_cache = cache;
   landing->version = new_version;
   if (db_size > 0 && cache->db_size == 0) {
     cache->db_size = db_size;
@@ -570,7 +653,6 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
   if (nb == NULL) {
     return; /* OOM — caller decides how to surface. */
   }
-  nb->owner_cache = cache;
   nb->version = 0;
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
@@ -622,7 +704,6 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
   if (nb == NULL) {
     return; /* OOM — caller decides how to surface. */
   }
-  nb->owner_cache = cache;
   nb->version = 0;
   if (db_size > 0) {
     if (data != NULL) {

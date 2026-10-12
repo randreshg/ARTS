@@ -111,10 +111,16 @@ struct arts_home_grantreq_queue_s {
  * footprint that stops before them. */
 struct arts_db_cache_s {
   volatile unsigned int writer_count;
+  /* Buffers drawn from this cache and not parked back, plus the flag the
+   * storage release sets once the destructor has run (encoding in buffer.c,
+   * lifetime rule in types_common.h). */
+  arts_db_atomic_uint_t buf_holds;
   arts_atomic_shared_ptr_t buffer;
-  arts_lockfree_pool_t
-      buf_freelist; /* per-DB recycled-buffer pool (push on deleter, pull on
-                       install); unbounded, drained at cache destroy */
+  arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
+  /* Parked buffers a draw found too small: a popper must not free a node
+   * another popper may still be reading, so they wait here for the storage
+   * release, which frees them with the list. */
+  arts_lf_stack_t buf_retired;
   arts_lf_stack_t pending_snapshot;
   /* db_guid stored here for symmetry with the protocol pseudocode —
    * acquire_remote_* needs it for the route_table_return_db pairing on

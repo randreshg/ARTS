@@ -183,7 +183,8 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     if (db == NULL) {
       arts_shared_release(&db_h);
       /* Consume any in-flight one-sided payload so the pairing table stays
-       * leak-free (the landing frees on arrival). */
+       * leak-free; the landing ends when that payload arrives, or at once
+       * when none was sent. */
       arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->rdzv_cookie);
       return; /* DB destroyed before we became owner — drop. */
     }

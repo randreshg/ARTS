@@ -46,7 +46,6 @@
 #include "arts/coherence/directory.h"
 #include "arts/db.h"
 #include "arts/gas/route_table.h"
-#include "arts/memory/regpool.h" /* arts_regpool_free (orphaned landing) */
 #include "arts/ooo.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
@@ -301,8 +300,9 @@ void arts_handler_db_create(void *item_v, void *args_v) {
 /* Cat-C pure body (SNAPSHOT_RESPONSE).  The wire dispatcher / self-send shortcut
  * has already looked the home db_s up with a held ref and passes it as item_v
  * (cache is its FIRST member, offset 0, so item_v IS the cache).  No
- * lookup/NULL-check here — the dispatcher's MISS branch SILENTLY DROPS (this
- * 1:1 response resumes a parked EDT; a missing cache means it was torn down).
+ * lookup/NULL-check here — the dispatcher's MISS branch resumes nothing and
+ * only ends the landing (this 1:1 response resumes a parked EDT; a missing
+ * cache means it was torn down).
  *
  * No acquire-time list registration: this 1:1 response resumes the parked EDT
  * (a->edt_guid, a->slot) directly.  Three cases over a monotonic version:
@@ -316,21 +316,25 @@ void arts_handler_db_create(void *item_v, void *args_v) {
  * Shared verbatim by WT/WB. */
 /* Consume an in-flight rendezvous whose receiver-side object is gone: the
  * metadata packet arrived for a destroyed target, so nobody will ever expect
- * the txid — register a discard continuation that returns the landing's
- * storage to the registered pool once (or as soon as) the write completion
- * arrives, keeping the pairing table leak-free. */
+ * the txid — register a discard continuation that returns the landing once
+ * (or as soon as) the write completion arrives, keeping the pairing table
+ * leak-free.  A data-less reply carries no txid but may still name the
+ * landing the requester advertised; it is returned at once. */
 struct rdzv_discard_ctx_s {
   struct arts_db_buffer_s *landing;
 };
 
 static void rdzv_discard_cb(void *arg) {
   struct rdzv_discard_ctx_s *ctx = (struct rdzv_discard_ctx_s *)arg;
-  arts_regpool_free(ctx->landing);
+  arts_db_buf_landing_return(ctx->landing);
   arts_free(ctx);
 }
 
 void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie) {
   if (txid == 0) {
+    if (cookie != 0) {
+      arts_db_buf_landing_return((struct arts_db_buffer_s *)(uintptr_t)cookie);
+    }
     return;
   }
   struct rdzv_discard_ctx_s *ctx =
@@ -360,10 +364,9 @@ static void snapshot_landed_cb(void *arg) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
   if (db == NULL) {
     /* DB destroyed while the pairing was outstanding (destroy-during-pending-
-     * acquire is app UB): the cache — and its recycle pool — are gone, so
-     * return the landing's storage straight to the registered pool and drop
-     * (the parked EDT was torn down with the DB). */
-    arts_regpool_free(ctx->landing);
+     * acquire is app UB): end the landing and drop (the parked EDT was torn
+     * down with the DB). */
+    arts_db_buf_landing_return(ctx->landing);
     arts_shared_release(&ctx->db_h);
     arts_free(ctx);
     return;
@@ -442,7 +445,7 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     if (a->version == 0) {
       (void)arts_db_buf_adopt_landing(cache, 1u, landing, cache->db_size);
     } else {
-      arts_db_buf_landing_recycle(cache, landing);
+      arts_db_buf_landing_return(landing);
     }
   }
 

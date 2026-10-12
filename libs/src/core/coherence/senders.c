@@ -300,7 +300,8 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
   if (requester_rank == arts_global_rank_id) {
     /* Self-serve (an OWNER REDIRECT round-trip can land back on the requester
      * rank): no RDMA — the bytes ride inline through the args while src_h
-     * pins the buffer; the handler recycles our own unused landing (cookie).
+     * pins the buffer; the handler returns our own unused landing (cookie),
+     * or adopts it as storage when the reply says nothing is held.
      * Mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop. */
     struct arts_db_snapshot_response_args_s args = {
         .edt_guid = edt_guid,
@@ -317,6 +318,11 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
       arts_handler_db_snapshot_response(db, &args);
+    } else if (landing != NULL && landing->cookie != 0) {
+      /* The requester is gone with its descriptor: its unused landing still
+       * has to go back, or the storage it keeps alive never does. */
+      arts_db_buf_landing_return(
+          (struct arts_db_buffer_s *)(uintptr_t)landing->cookie);
     }
     arts_shared_release(&h);
     if (src != NULL) {

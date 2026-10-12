@@ -319,7 +319,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
       struct arts_db_buffer_s *landing =
           (struct arts_db_buffer_s *)(uintptr_t)rdzv.cookie;
       if (buf != NULL) {
-        arts_db_buf_landing_recycle(cache, landing);
+        arts_db_buf_landing_return(landing);
       } else {
         /* A first image is stamped at version 1, never 0: on the wire 0 is
          * ARTS_GRANT_VERSION_NONE, "holds nothing", so a live image carrying

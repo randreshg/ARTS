@@ -208,7 +208,7 @@ void arts_send_db_excl_grant(unsigned int requester_rank, arts_guid_t db_guid,
      * data-less self-grant: the handler skips the in-place install and runs the
      * grant commit (cache-state transition + waiter drain) against the live
      * buffer.  The requester's advertised landing goes unused — for EXCL it is
-     * the stable buffer itself, so there is nothing to recycle. */
+     * the stable buffer itself, so there is nothing to return. */
     if (src != NULL) {
       arts_db_buf_release(&src_h);
     }
@@ -236,8 +236,7 @@ void arts_send_db_excl_grant(unsigned int requester_rank, arts_guid_t db_guid,
   /* One-sided grant: PUT straight from the home buffer into the requester's
    * stable-buffer landing (EXCL's fixed-address install), pairing packet and
    * write completion by txid.  The strong ref transfers to the PUT's local
-   * completion, so a concurrent publish recycling the buffer cannot free
-   * the bytes mid-read. */
+   * completion, so a concurrent destroy cannot free the bytes mid-read. */
   uint64_t ds = data_size;
   p.data_size = ds;
   p.rdzv_txid = req_rdzv->txid;

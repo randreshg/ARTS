@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T050 — zero-size DB buffer install (ASan-focused).
+ * Zero-size DB buffer install.
  *
  * A DB may legitimately carry db_size == 0 (e.g. an empty / placeholder DB,
  * the coherence_zero_size_xfer integration path).  arts_db_buf_install with
@@ -18,9 +18,9 @@
  * recover the buffer.
  *
  * Also checks: when the cache starts db_size==0 and a zero-size install runs,
- * the deferred db_size-learn branch is NOT taken (it is gated on db_size > 0), so
- * cache->db_size stays 0 — documents that a zero-size install does not falsely
- * "learn" a size.
+ * the deferred db_size-learn branch is NOT taken (it is gated on db_size > 0),
+ * so cache->db_size stays 0 — documents that a zero-size install does not
+ * falsely "learn" a size.
  *
  * Standalone: links buffer.c + shared.c with libc-backed alloc shims.
  */
@@ -41,11 +41,14 @@ static void cache_init(uint64_t db_size) {
   memset(&g_cache, 0, sizeof(g_cache));
   g_cache.db_size = db_size;
 }
-/* Emptying the slot recycles its buffer onto the cache's free-list, so the
- * free-list is drained too; the next cache_init would otherwise forget it. */
+/* Emptying the slot ends its buffer, which parks on the cache's free-list
+ * where the arm keeps one, so the list is drained too; the next cache_init
+ * would otherwise forget it. */
 static void cache_teardown(void) {
   arts_atomic_shared_store(&g_cache.buffer, NULL);
+#ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
+#endif
 }
 
 static int check_zero_install(uint64_t v, const void *payload,
@@ -147,9 +150,9 @@ void arts_regpool_free(void *p) { free(p); }
 /* Rendezvous-plane stubs: buffer.c's landing helpers reference the net core's
  * advertisement/txid primitives and the runtime's fatal-print externs; a pure
  * unit run never allocates a landing, so inert stubs satisfy the link. */
-#include <stdint.h>
 #include "arts/runtime_state.h"
 #include "arts/system/threads.h"
+#include <stdint.h>
 unsigned int arts_global_rank_id = 0;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 void arts_abort(uint8_t code) { exit(code ? code : 1); }
@@ -162,4 +165,3 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
   return false;
 }
 uint64_t arts_net_rdzv_txid_next(void) { return 1; }
-

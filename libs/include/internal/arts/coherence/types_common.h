@@ -176,17 +176,34 @@ typedef unsigned int arts_db_atomic_uint_t;
 typedef _Atomic(unsigned int) arts_db_atomic_uint_t;
 #endif
 
+/* Arms that install a fresh buffer for every version a rank fetches (VAL's
+ * snapshots, INV's reader copies) keep a per-DB free-list of buffers to draw
+ * the next one from.  Every other arm draws too rarely for a list to pay: one
+ * buffer per rank for the block's whole life, or a detached copy per
+ * acquire.
+ *
+ * Where the free-list exists, a buffer drawn from a cache keeps that cache's
+ * storage alive until it is parked back: the descriptor's destructor may run
+ * while a transfer still holds the buffer, and the late last drop must still
+ * have a list to park into.  The storage release that follows the
+ * destructor drains whatever is parked when it runs, and the storage goes
+ * with whichever comes last, that release or the last such buffer's park. */
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#define ARTS_DB_BUF_POOL 1
+#endif
+
 /*--- Buffer ---------------------------------------------------------------
  * Holds version + user-visible data bytes.  Lifetime is managed by an
  * arts_shared_ptr_t control block (cache.buffer is the atomic slot; each
  * acquirer holds a strong ref).  No embedded refcount: the cb's strong count
- * IS the "cache-hold + per-acquirer" count, and the cb deleter frees the
+ * IS the "cache-hold + per-acquirer" count, and the cb deleter ends the
  * buffer once the last holder releases — so a destroy concurrent with an
  * in-flight acquire can never free the bytes out from under a reader.
  *   version  monotonic per-buffer version stamp.
  *   cb       this buffer's own control block (== the slot's cb while
- *            installed).  A holder recovers it from the descriptor its dep
- *            slot pins, to drop its acquire ref at release — safe because
+ *            installed).  A holder recovers it from its payload address, or,
+ *            where the payload is external, from the descriptor its dep slot
+ *            pins, to drop its acquire ref at release — safe because
  *            the holder's own ref keeps the buffer (hence buf->cb) alive
  *            until that release.
  *   data     this block's user-visible payload, db_size bytes, 64-byte
@@ -195,12 +212,25 @@ typedef _Atomic(unsigned int) arts_db_atomic_uint_t;
  *            the store is external the member points at it from that same
  *            offset, and the descriptor never owns, frees or zeroes them. */
 struct arts_db_buffer_s {
-  arts_lf_link_t pool_link; /* FIRST — per-DB free-list node when recycled */
-  uint64_t version;         /* monotonic per buffer (stale while free-listed) */
-  arts_shared_ptr_t cb;     /* this buffer's control block */
-  struct arts_db_cache_s
-      *owner_cache; /* deleter pushes here; read only at strong==0 */
-  char _pad[32];    /* the payload member lands at offset 64 */
+#ifdef ARTS_DB_BUF_POOL
+  arts_lf_link_t pool_link; /* FIRST — free-list node while parked */
+#endif
+  uint64_t version;     /* monotonic per buffer (stale while parked) */
+  arts_shared_ptr_t cb; /* this buffer's control block */
+#ifdef ARTS_DB_BUF_POOL
+  /* The cache it was drawn from, whichever cache it is installed in, whose
+   * storage it keeps alive until it is parked there; NULL for a buffer no
+   * cache owns. */
+  struct arts_db_cache_s *owner_cache;
+  uint64_t capacity; /* payload bytes the allocation holds */
+  /* Out or parked, written by a debug build only, which refuses to end a
+   * drawn buffer that is not out; a re-draw marks it out again, so a second
+   * end after one is caught, if at all, only at a later end. */
+  arts_db_atomic_uint_t park_state;
+  char _pad[20]; /* the payload member lands at offset 64 */
+#else
+  char _pad[48]; /* the payload member lands at offset 64 */
+#endif
 #ifdef ARTS_CXL_DIRECT
   char *data; /* storage this descriptor refers to and does not own */
 #else
@@ -208,7 +238,6 @@ struct arts_db_buffer_s {
 #endif
 };
 
-/* Forward decl; per-rank cache (owner of the per-DB buffer free-list). */
 struct arts_db_cache_s;
 
 /* Snapshot reorder-buffer node, three parkers share it:

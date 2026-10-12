@@ -129,7 +129,6 @@ set(TEST_PROGRAMS
     # --- New unit tests (Tasks 6-12) ---
     edt_dep_variants
     db_create_after_first_touch
-    per_db_buf_pool
     # --- Finish-EDT mechanism tests ---
     finish_event_stress
     finish_event_nested
@@ -169,6 +168,7 @@ endif()
 #   buffer_external_payload              | SKIPs       | runs                     | the external descriptor's own contract
 #   cxl_slot_discard_unadopt             | no          | 1n_20w                   | the withdrawal it asserts exists only where a descriptor adopts the slot
 #   cxl_direct_payload_identity          | no          | 1n_20w/2n_9w_1p/4n_4w_1p | false by construction under STAGED
+#   buffer_outlives_cache                | runs        | SKIPs                    | the late drop it asserts is a buffer's, and the slot is not one
 #   everything else                      | registered  | registered               | one behaviour, two representations
 set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_payload_roundtrip
@@ -176,7 +176,6 @@ set(ARTS_TESTS_INLINE_PAYLOAD_WHITEBOX
     buffer_version_guard
     buffer_stub_db_size_learn
     buffer_destroy_vs_acquire
-    per_db_buf_pool
     mark_edt_ready_idempotent)
 set(ARTS_CXL_DIRECT_EXCLUDED "")
 if(ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
@@ -1022,8 +1021,13 @@ foreach(_v 2n_9w_1p 4n_4w_1p)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
 
-if(NOT "per_db_buf_pool" IN_LIST ARTS_CXL_DIRECT_EXCLUDED)
+# Only the arms that keep a per-DB free-list have one to test, and the source
+# refuses to build anywhere else.
+if(ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
+    add_arts_test(per_db_buf_pool)
     register_pure_unit_test(per_db_buf_pool)
+    set_tests_properties(per_db_buf_pool PROPERTIES
+        PASS_REGULAR_EXPRESSION "RECYCLE_OK")
 endif()
 
 # --- Finish-EDT mechanism tests ---
@@ -2071,6 +2075,14 @@ add_pure_unit_src(buffer_external_payload
     SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c
             ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c
     PASS_REGEX "PASS buffer_external_payload|SKIP buffer_external_payload"
+    TIMEOUT 60)
+
+# A buffer's last drop after its block's descriptor is destroyed: registered in
+# every tree; where the payload is external it reports SKIP.
+add_pure_unit_src(buffer_outlives_cache
+    SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c
+            ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c
+    PASS_REGEX "PASS buffer_outlives_cache|SKIP buffer_outlives_cache"
     TIMEOUT 60)
 
 # Every test target that links the compiled ARTS library compiles against

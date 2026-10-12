@@ -8,8 +8,8 @@
  *      at the version given, and reports true exactly once for a cache.
  *   2. A second adopt of the SAME pointer LOSES the install-once CAS: it
  *      reports false, the first descriptor stands at its own version, and the
- *      descriptor the loser built is recycled -- exactly one of them -- onto
- *      the per-DB free-list, its external bytes untouched.  (A second adopt of
+ *      descriptor the loser built goes back to the registered pool -- exactly
+ *      one of them -- its external bytes untouched.  (A second adopt of
  *      a DIFFERENT pointer is the install-once violation and is fatal by
  *      design -- two stores for one block -- so no in-process test can
  *      exercise it.)
@@ -17,7 +17,7 @@
  *   4. buf_for_payload recovers that descriptor from the payload pointer and
  *      the cache, and NULL for a payload the cache does not hold.
  *   5. The deleter does not free or write the external bytes: the last drop
- *      recycles the installed descriptor itself -- exactly one node, that
+ *      returns the installed descriptor itself -- exactly one allocation, that
  *      descriptor -- and a sentinel written before the drop is still there.
  *   6. A withdraw empties the slot, and the block can be materialized again
  *      afterwards EVEN IF the cache's presence hint still says there is
@@ -42,6 +42,12 @@
 #define DB_SIZE 256u
 
 static struct arts_db_cache_s g_cache;
+/* Every pointer the registered pool got back, in order. */
+static void *g_freed[16];
+static unsigned int g_nfreed;
+static int freed_since(unsigned int mark, const void *p) {
+  return g_nfreed == mark + 1 && g_freed[mark] == p;
+}
 static unsigned char g_external[DB_SIZE];
 static unsigned char g_other[DB_SIZE];
 
@@ -74,6 +80,7 @@ int main(void) {
    * adopt has no pre-gate -- its first access to the slot is the install CAS
    * -- so this call reaches the losing branch the way a racing second first
    * user does. */
+  unsigned int mark = g_nfreed;
   if (arts_db_buf_adopt_external(&g_cache, g_external, 2u, DB_SIZE)) {
     printf("FAIL: a second adopt of the same store installed again\n");
     fail = 1;
@@ -82,18 +89,11 @@ int main(void) {
     printf("FAIL: the installed descriptor did not stand\n");
     fail = 1;
   }
-  /* The loser's descriptor -- and only it -- came back to the per-DB pool. */
-  arts_lf_link_t *loser = arts_lf_pool_pop_or_null(&g_cache.buf_freelist);
-  if (loser == NULL || (struct arts_db_buffer_s *)loser == b) {
-    printf("FAIL: the losing adopt did not recycle its own descriptor\n");
+  /* The loser's descriptor -- and only it -- went back to the registered
+   * pool. */
+  if (g_nfreed != mark + 1 || g_freed[mark] == (void *)b) {
+    printf("FAIL: the losing adopt did not free exactly its own descriptor\n");
     fail = 1;
-  }
-  if (arts_lf_pool_pop_or_null(&g_cache.buf_freelist) != NULL) {
-    printf("FAIL: more than one descriptor was recycled\n");
-    fail = 1;
-  }
-  if (loser != NULL) {
-    arts_regpool_free(loser);
   }
   if (arts_db_buf_for_payload(&g_cache, g_other) != NULL) {
     printf("FAIL: buf_for_payload does not discriminate\n");
@@ -101,6 +101,7 @@ int main(void) {
   }
   /* The slot is emptied, and the descriptor that named the store comes back
    * through its own deleter -- the external bytes are not its to free. */
+  mark = g_nfreed;
   if (!arts_db_buf_withdraw(&g_cache, g_external)) {
     printf("FAIL: the installed descriptor was not withdrawn\n");
     fail = 1;
@@ -109,13 +110,9 @@ int main(void) {
     printf("FAIL: a withdrawn descriptor is still handed out\n");
     fail = 1;
   }
-  arts_lf_link_t *gone = arts_lf_pool_pop_or_null(&g_cache.buf_freelist);
-  if ((struct arts_db_buffer_s *)gone != b) {
-    printf("FAIL: the withdraw did not recycle the descriptor it removed\n");
+  if (!freed_since(mark, b)) {
+    printf("FAIL: the withdraw did not free the descriptor it removed\n");
     fail = 1;
-  }
-  if (gone != NULL) {
-    arts_regpool_free(gone);
   }
   /* The hint at its worst: "nothing to do" over an empty slot.  Both entries
    * must still materialize the block. */
@@ -130,21 +127,14 @@ int main(void) {
     printf("FAIL: the re-adopted descriptor does not name the store\n");
     fail = 1;
   }
-  /* Drop the cache-hold ref: the deleter runs and recycles the installed
-   * descriptor onto the per-DB free-list.  The external bytes are not its to
-   * touch, and nothing else is recycled with it. */
+  /* Drop the cache-hold ref: the deleter ends the installed descriptor.  The
+   * external bytes are not its to touch. */
+  mark = g_nfreed;
   arts_atomic_shared_store(&g_cache.buffer, NULL);
-  arts_lf_link_t *node = arts_lf_pool_pop_or_null(&g_cache.buf_freelist);
-  if ((struct arts_db_buffer_s *)node != b) {
-    printf("FAIL: the last drop did not recycle the installed descriptor\n");
+  if (!freed_since(mark, b)) {
+    printf("FAIL: the last drop did not free exactly the installed "
+           "descriptor\n");
     fail = 1;
-  }
-  if (arts_lf_pool_pop_or_null(&g_cache.buf_freelist) != NULL) {
-    printf("FAIL: the last drop recycled more than the descriptor\n");
-    fail = 1;
-  }
-  if (node != NULL) {
-    arts_regpool_free(node);
   }
   for (unsigned int i = 0; i < DB_SIZE; i++) {
     if (g_external[i] != 0x5a) {
@@ -173,7 +163,12 @@ void *arts_malloc_aligned(size_t size, size_t align) {
 void *arts_regpool_alloc_aligned(size_t size, size_t align) {
   return arts_malloc_aligned(size, align);
 }
-void arts_regpool_free(void *p) { free(p); }
+void arts_regpool_free(void *p) {
+  if (p != NULL && g_nfreed < 16) {
+    g_freed[g_nfreed++] = p;
+  }
+  free(p);
+}
 
 /* Rendezvous-plane stubs: buffer.c's landing helpers reference the net core's
  * advertisement/txid primitives and the runtime's fatal-print externs; a pure

@@ -1,11 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T052 — deferred db_size learn (B030: cache->db_size non-atomic deferred learn,
- * buffer.c:63-65).
- *
- * A lazily-installed cache starts with db_size == 0; the first install with a
- * non-zero db_size "learns" the real size by writing cache->db_size = db_size
- * (only while it is still 0).  Two facets:
+ * Deferred db_size learn.  A lazily-installed cache starts with db_size == 0;
+ * the first install with a non-zero db_size "learns" the real size by writing
+ * cache->db_size = db_size (only while it is still 0).  Two facets:
  *
  *  Part 1 (single-thread semantics):
  *    - First install (db_size=N) sets cache->db_size = N.
@@ -13,16 +10,13 @@
  * leaves cache->db_size at N even if a different size is passed (the learn
  * branch is gated on db_size==0, which is now false).
  *
- *  Part 2 (concurrency — targets the SUSPECTED non-atomic learn):
+ *  Part 2 (concurrency — first installs racing on the learn):
  *    - K threads each perform the *first* install on a freshly-zeroed cache,
  *      all carrying the SAME db_size N.  After the join: cache->db_size == N,
  *      exactly one buffer survives in the slot, version == max, no torn write.
- *    The write `cache->db_size = db_size` is a PLAIN (non-atomic) store with no
- *    ordering vs. concurrent readers (db.c's total_size).  Because all writers
- *    write the SAME value here, the result is value-correct, but the store is a
- *    data race on the bytes.  This test is built/run under ThreadSanitizer:
- *    if TSan reports a write/write (or read/write) data race on cache->db_size,
- *    that is the genuine B030 defect surfacing — it is recorded, NOT masked.
+ *    The learn is a plain store, so concurrent first installs race on its
+ *    bytes; every writer here carries the same size, so the value they leave
+ *    is that size.
  *
  * Standalone: links buffer.c + shared.c with libc-backed alloc shims.
  */
@@ -46,11 +40,21 @@
 static struct arts_db_cache_s g_cache;
 static _Atomic int g_start;
 
-/* Emptying the slot recycles its buffer onto the cache's free-list, so the
- * free-list is drained too; the next reset would otherwise forget it. */
+/* Emptying the slot ends its buffer, which parks on the cache's free-list
+ * where the arm keeps one; the list, and any buffer set aside as too small
+ * for a draw, is drained too, since the next reset would otherwise forget
+ * them. */
 static void cache_teardown(void) {
   arts_atomic_shared_store(&g_cache.buffer, NULL);
+#ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
+  for (arts_lf_link_t *n = arts_lf_stack_drain(&g_cache.buf_retired);
+       n != NULL;) {
+    arts_lf_link_t *next = atomic_load_explicit(&n->next, memory_order_relaxed);
+    arts_regpool_free(n);
+    n = next;
+  }
+#endif
 }
 
 static int part1_single(void) {
@@ -59,7 +63,8 @@ static int part1_single(void) {
   memset(payload, 0x11, DB_SIZE);
 
   /* First install learns N. */
-  arts_db_buf_install(&g_cache, 1, payload, DB_SIZE);
+  struct arts_db_buffer_s *first =
+      arts_db_buf_install(&g_cache, 1, payload, DB_SIZE);
   if (g_cache.db_size != DB_SIZE) {
     (void)fprintf(stderr,
                   "FAIL buffer_stub_db_size_learn: first install did not learn "
@@ -80,6 +85,21 @@ static int part1_single(void) {
                   (unsigned long long)g_cache.db_size, DB_SIZE);
     return 1;
   }
+  /* Where the arm keeps a list, the first buffer is parked now and is smaller
+   * than this request: it must not be the one handed out, since the install
+   * would write past its end. */
+  struct arts_db_buffer_s *third =
+      arts_db_buf_install(&g_cache, 3, payload2, DB_SIZE * 2);
+#ifdef ARTS_DB_BUF_POOL
+  if (third == first) {
+    (void)fprintf(stderr, "FAIL buffer_stub_db_size_learn: a parked buffer "
+                          "smaller than the request was handed out\n");
+    return 1;
+  }
+#else
+  (void)first;
+  (void)third;
+#endif
   cache_teardown();
   return 0;
 }
@@ -92,9 +112,8 @@ static void *learner(void *arg) {
   }
   /* A SINGLE install per thread, all racing on the very first install of a
    * freshly-zeroed cache, so each one evaluates the (cache->db_size == 0) learn
-   * branch concurrently — the minimal interleaving that surfaces the non-atomic
-   * learn without unbounded buffer churn. base == this thread's version, so the
-   * global max version is LEARNERS. */
+   * branch concurrently without unbounded buffer churn.  base == this thread's
+   * version, so the global max version is LEARNERS. */
   arts_db_buf_install(&g_cache, base, payload, DB_SIZE);
   return NULL;
 }
@@ -147,7 +166,7 @@ int main(void) {
   }
   printf(
       "PASS buffer_stub_db_size_learn: one-shot learn + %d-thread concurrent "
-      "first-install (run under TSan to surface the non-atomic learn)\n",
+      "first-install\n",
       LEARNERS);
   return 0;
 }
@@ -171,9 +190,9 @@ void arts_regpool_free(void *p) { free(p); }
 /* Rendezvous-plane stubs: buffer.c's landing helpers reference the net core's
  * advertisement/txid primitives and the runtime's fatal-print externs; a pure
  * unit run never allocates a landing, so inert stubs satisfy the link. */
-#include <stdint.h>
 #include "arts/runtime_state.h"
 #include "arts/system/threads.h"
+#include <stdint.h>
 unsigned int arts_global_rank_id = 0;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 void arts_abort(uint8_t code) { exit(code ? code : 1); }
@@ -186,4 +205,3 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
   return false;
 }
 uint64_t arts_net_rdzv_txid_next(void) { return 1; }
-

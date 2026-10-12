@@ -31,10 +31,6 @@ struct arts_db_cache_s {
    * rank is the block's creator: the creator's own copy sits here until its
    * release writes it back and clears the slot. */
   arts_atomic_shared_ptr_t buffer;
-  /* The home line and a creator's copy are owned by this cache, so their
-   * last drop recycles them here; only the detached per-EDT copies, which
-   * no cache owns, go straight back to the pool. */
-  arts_lockfree_pool_t buf_freelist;
   arts_guid_t db_guid;
   uint64_t db_size;
   uint8_t payload_pending; /* see the VAL layout: 1 until a line is installed */

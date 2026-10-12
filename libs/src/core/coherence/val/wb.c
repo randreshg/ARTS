@@ -88,7 +88,7 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
 /* ===== release_rw (WB arm) =======================================
  * The WB write policy drops the buffer ref BEFORE decrementing writer_count, so
  * the slot's cache-hold is the only ref that can keep the buffer alive past
- * writer_count==0 (a concurrent teardown then frees it via the cb deleter with
+ * writer_count==0 (a concurrent teardown then ends it via the cb deleter with
  * no dangling local ref).  In the WT write policy this window does not exist
  * (local_transfer_now restores the sentinel); the WB write policy has no sentinel
  * restoration, so it must close the window by releasing the ref before exposing

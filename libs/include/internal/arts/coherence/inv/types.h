@@ -358,8 +358,10 @@ struct arts_home_grantreq_queue_s {
 struct arts_db_cache_s {
   uint64_t cache_state;
   unsigned int writer_count;
+  arts_db_atomic_uint_t buf_holds;
   arts_atomic_shared_ptr_t buffer;
   arts_lockfree_pool_t buf_freelist;
+  arts_lf_stack_t buf_retired;
   arts_lf_stack_t pending_snapshot;
   arts_lf_stack_t pending_rw;
   struct arts_db_inv_waiter_pool_s waiters;
@@ -435,8 +437,16 @@ struct arts_db_cache_s {
   /* Local writers + the ownership sentinel.  A CAS-loop "increment if > 0"
    * is the whole RW fast path: > 0 means this rank holds the grant. */
   volatile unsigned int writer_count;
+  /* Buffers drawn from this cache and not parked back, plus the flag the
+   * storage release sets once the destructor has run (encoding in buffer.c,
+   * lifetime rule in types_common.h). */
+  arts_db_atomic_uint_t buf_holds;
   arts_atomic_shared_ptr_t buffer;
-  arts_lockfree_pool_t buf_freelist;
+  arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
+  /* Parked buffers a draw found too small: a popper must not free a node
+   * another popper may still be reading, so they wait here for the storage
+   * release, which frees them with the list. */
+  arts_lf_stack_t buf_retired;
   arts_lf_stack_t pending_snapshot; /* pre-publication read holds */
   /* RW waiters parked on this rank (Treiber, order-free drain-all): every
    * waiter is woken regardless of order, so a LIFO stack suffices. */

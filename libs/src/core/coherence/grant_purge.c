@@ -174,8 +174,8 @@ serve: {
       (void)arts_home_grantreq_queue_pop(&db->pending_rw, &self_rank,
                                          &self_rdzv, NULL);
       if (self_rdzv.cookie != 0) {
-        arts_db_buf_landing_recycle(
-            cache, (struct arts_db_buffer_s *)(uintptr_t)self_rdzv.cookie);
+        arts_db_buf_landing_return(
+            (struct arts_db_buffer_s *)(uintptr_t)self_rdzv.cookie);
       }
       /* The drain takes the waiters, then releases the coalescing flag.  A
        * waiter pushed after the take re-requests from inside that drain: the

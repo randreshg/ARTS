@@ -1,4 +1,8 @@
-/* SPDX-License-Identifier: Apache-2.0 — per-DB buffer pool recycle test */
+/* SPDX-License-Identifier: Apache-2.0
+ *
+ * A buffer whose last reference drops parks on its cache's free-list, and the
+ * next install on that cache draws it back.  Only the arms that keep a per-DB
+ * free-list (VAL, INV) have one to test. */
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/types_common.h"
 #include "arts/memory/regpool.h"
@@ -6,13 +10,16 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Minimal cache init: zero it, init the free-list + buffer slot.  The real
- * runtime does this in arts_db_cache_common_init; here we inline the two
- * fields the pool needs so the unit test is self-contained. */
+#ifndef ARTS_DB_BUF_POOL
+#error "per_db_buf_pool is built only where the arm keeps a per-DB free-list"
+#endif
+
+/* Minimal cache init: what arts_db_cache_common_init sets that the free-list
+ * needs, so the test stands alone. */
 static void mini_cache_init(struct arts_db_cache_s *c, uint64_t db_size) {
   memset(c, 0, sizeof(*c));
   c->db_size = db_size;
-  arts_lf_pool_init(&c->buf_freelist, 0); /* DWCAS recycle pool; node_size 0 =
+  arts_lf_pool_init(&c->buf_freelist, 0); /* DWCAS free-list; node_size 0 =
                                              pop-only, alloc is external */
   /* buffer slot starts NULL */
 }
@@ -28,22 +35,20 @@ int main(void) {
   const uint64_t sz = 128;
   mini_cache_init(&c, sz);
 
-  /* install v1, capture address, release it (refcount -> 0 -> recycled) */
+  /* v1's last reference is the slot's: emptying the slot parks it. */
   char payload[128];
   memset(payload, 0xAB, sz);
   struct arts_db_buffer_s *b1 = arts_db_buf_install(&c, 1, payload, sz);
   assert(b1 != NULL);
   void *a1 = (void *)b1;
-  /* drop the cache-hold + our ref by storing NULL (release path frees->recycle)
-   */
   arts_atomic_shared_store(&c.buffer, NULL);
 
-  /* install v2: should PULL the recycled b1 (same address) */
+  /* The next install draws the parked buffer back. */
   struct arts_db_buffer_s *b2 = arts_db_buf_install(&c, 2, payload, sz);
   assert(b2 != NULL);
-  assert((void *)b2 == a1 && "v2 must reuse the recycled v1 buffer");
-  printf("RECYCLE_OK reused=%p\n", (void *)b2);
+  assert((void *)b2 == a1 && "v2 must reuse the parked v1 buffer");
   arts_atomic_shared_store(&c.buffer, NULL);
   arts_regpool_cleanup();
+  printf("RECYCLE_OK reused=%p\n", (void *)b2);
   return 0;
 }

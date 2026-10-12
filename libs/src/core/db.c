@@ -178,10 +178,11 @@ void arts_db_free(void *ptr) {
    * carries coherence state; other subtypes leave the embedded cache zeroed.
    * The cache is embedded by value as the first member of db_s, so the
    * destructor tears down its sub-resources (the buffer slot's shared_ptr ref +
-   * home_s) in place — we do NOT free it separately; the db_s free below
-   * reclaims its storage. */
+   * home_s) in place, and the storage release reclaims the db_s. */
   if (db->db_type == ARTS_DB) {
     arts_db_cache_destructor(&db->cache);
+    arts_db_buf_storage_release(&db->cache);
+    return;
   }
 #ifdef ARTS_USE_GPU
   if (arts_node_info.gpu &&
@@ -829,10 +830,10 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
    * call returns a SEPARATE pinned handle (stub_h) to the just-installed db_s;
    * it must be released on every path below, mirroring db_temp_h. */
   arts_shared_ptr_t stub_h = NULL;
-  /* B1: which of the two handles keeps `cache`'s descriptor (arts_db_s) alive.
+  /* Which of the two handles keeps `cache`'s descriptor (arts_db_s) alive.
    * If the handler resolves locally (takes the EDT's buffer ref), this handle
-   * is MOVED into depv[i].db_pin to pin the descriptor — and the buffer slot +
-   * recycle pool embedded in it — for the slot's whole acquire->release span.
+   * is MOVED into depv[i].db_pin to pin the descriptor for the slot's whole
+   * acquire->release span.
    */
   arts_shared_ptr_t *cache_owner_h = NULL;
   if (db_temp != NULL && db_temp->db_type == ARTS_DB) {
@@ -870,13 +871,13 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
     struct arts_ooo_args_db_acquire_s a = {
         .edt = edt, .db_guid = depv[i].guid, .slot = i};
     arts_handler_db_acquire(arts_db_of_cache(cache), &a);
-    /* B1: a local hit set depv[i].ptr and took the EDT's buffer ref.  Pin the
+    /* A local hit set depv[i].ptr and took the EDT's buffer ref.  Pin the
      * descriptor by MOVING the still-alive cache-owning handle into db_pin
-     * (released last in release_one_dep), so a concurrent destroy cannot free
-     * the cache out from under the outstanding buffer ref / its
-     * recycle-on-drop. A parked handler leaves ptr NULL — the resume site
-     * (mark_edt_ready_by_guid) pins instead.  The db_pin==NULL guard keeps the
-     * pin balanced across OoO replays. */
+     * (consumed in release_one_dep), so the release reaches this descriptor
+     * even after a concurrent destroy has retired its GUID.  A parked handler
+     * leaves ptr NULL — the resume site (mark_edt_ready_by_guid) pins
+     * instead.  The db_pin==NULL guard keeps the pin balanced across OoO
+     * replays. */
     if (depv[i].ptr != NULL &&
         __atomic_load_n(&depv[i].db_pin, __ATOMIC_ACQUIRE) == NULL &&
         cache_owner_h != NULL) {
@@ -1221,13 +1222,11 @@ void arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot) {
  *
  * `pin_src` is a handle on the descriptor the payload belongs to, borrowed from
  * the caller.  INVARIANT: an alias never ends with a buffer ref and no
- * descriptor pin.  A buffer's last drop recycles it into its owning cache's
- * free-list, that cache lives inside the descriptor, and the slots release in
- * index order — so an unpinned alias above the owner would recycle into a cache
- * the owner's pin drop had already freed.  The pin is therefore COPIED from the
- * handle that resolved the payload, never looked up again: a lookup can miss
- * under a concurrent destroy while the payload and its descriptor are still
- * alive under the owner's own pin.
+ * descriptor pin, because a release that cannot derive the buffer from the
+ * payload address finds it through the descriptor.  The pin is therefore
+ * COPIED from the handle that resolved the payload, never looked up again: a
+ * lookup can miss under a concurrent destroy while the payload and its
+ * descriptor are still alive under the owner's own pin.
  *
  * The payload claim is the idempotent CAS a parked resume uses, so a slot
  * resolves exactly once however many frames meet it; the loser drops the ref it
@@ -1556,15 +1555,10 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
    * needed). */
   if (dep->subtype == ARTS_DB &&
       (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW)) {
-    /* B1: take the stashed descriptor pin (set when this slot's buffer ref was
-     * secured at acquire).  It is released LAST — after the arm's release and
-     * after the EDT's buffer ref — because the pin outlives the buffer ref by
-     * contract: a buffer's last drop RECYCLES it into its owning cache's
-     * free-list, so dropping the pin first could free that cache (and its
-     * free-list) and turn the recycle into a write-after-free. */
-    /* Consume the descriptor pin published (with release) at the acquire/wake
-     * site; acquire-load matches that release across the work-stealing handoff
-     * (mirrors the sibling ptr field's atomic discipline — TSan-clean). */
+    /* Consume the descriptor pin published (with release) when this slot's
+     * buffer ref was secured; the acquire-load matches that release across
+     * the work-stealing handoff, as for the sibling ptr field, and the arm's
+     * release below runs against the descriptor the pin names. */
     arts_shared_ptr_t db_pin =
         (arts_shared_ptr_t)__atomic_load_n(&dep->db_pin, __ATOMIC_ACQUIRE);
     __atomic_store_n(&dep->db_pin, NULL, __ATOMIC_RELAXED);
@@ -1582,9 +1576,8 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
     if (!dep->alias) {
       struct arts_db_s *db = NULL;
       if (db_pin != NULL) {
-        /* Resolve the descriptor via the B1 pin — guaranteed alive (it kept
-         * the cache pinned across the whole span), so it is immune to the
-         * destroyed-but-lingering-DB re-lookup miss the old path risked. */
+        /* Resolve the descriptor through the pin, which held it across the
+         * whole span: a re-lookup could miss a block destroyed meanwhile. */
         db = (struct arts_db_s *)arts_shared_get(db_pin);
       } else if (dep->guid != NULL_GUID) {
         /* No pin stashed, so this slot took no buffer ref either: its resolved
@@ -1633,9 +1626,8 @@ static void release_one_dep(arts_edt_dep_t *dep, bool gpu) {
         arts_db_buf_release(&buf_cb);
       }
     }
-    /* The descriptor pin LAST, on every path: the drop above may have been the
-     * buffer's last, and a buffer's deleter recycles it into its owning
-     * cache's free-list — which lives inside the descriptor this pin holds. */
+    /* The descriptor pin last: the CXL-direct branch above resolves the
+     * buffer through it. */
     arts_shared_release(&db_pin);
     arts_shared_release(&db_fallback);
     return;

@@ -377,8 +377,8 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
      * one-sided and pairs by rdzv_txid inside the handler); a data-bearing
      * response is metadata-only.  Cat-C lookup-acquire-or-drop: HIT runs the
      * pure body against the ref-pinned db_s; MISS (DB destroyed / slot
-     * NULL-stored) silently drops — the parked EDT this 1:1 response would
-     * resume was torn down. */
+     * NULL-stored) resumes nothing — the parked EDT this 1:1 response would
+     * resume was torn down — and only ends the landing. */
     struct arts_db_snapshot_response_args_s args = {
         .edt_guid = pack->edt_guid,
         .slot = pack->slot,
@@ -395,8 +395,9 @@ void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
     if (db != NULL) {
       arts_handler_db_snapshot_response(db, &args);
     } else {
-      /* MISS with a one-sided payload in flight: still consume the txid so
-       * the pairing table stays leak-free (the landing frees on arrival). */
+      /* MISS: still consume the txid of any one-sided payload in flight so
+       * the pairing table stays leak-free; the landing ends when that payload
+       * arrives, or at once when none was sent. */
       arts_db_rdzv_discard_landing(pack->rdzv_txid, pack->rdzv_cookie);
     }
     arts_shared_release(&h);

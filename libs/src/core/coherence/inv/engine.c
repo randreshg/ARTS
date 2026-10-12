@@ -60,7 +60,6 @@
 #include "arts/db.h"
 #include "arts/edt.h"
 #include "arts/gas/route_table.h"
-#include "arts/memory/regpool.h"
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h"
@@ -768,9 +767,8 @@ static void inv_landed_cb(void *arg) {
   struct inv_landed_ctx_s *ctx = (struct inv_landed_ctx_s *)arg;
   if (arts_shared_get(ctx->db_h) == NULL) {
     /* Destroyed while the pairing was outstanding (destroy during a pending
-     * acquire is app UB): the cache's recycle pool is gone — return the
-     * landing's storage straight to the registered pool and drop. */
-    arts_regpool_free(ctx->landing);
+     * acquire is app UB): end the landing and drop. */
+    arts_db_buf_landing_return(ctx->landing);
     arts_shared_release(&ctx->db_h);
     arts_free(ctx);
     return;
@@ -1042,7 +1040,7 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
       struct arts_db_buffer_s *landing =
           (struct arts_db_buffer_s *)(uintptr_t)rdzv->cookie;
       if (have_bytes) {
-        arts_db_buf_landing_recycle(cache, landing);
+        arts_db_buf_landing_return(landing);
       } else {
         /* Version 1, never 0 — see the wire-side adopt above. */
         (void)arts_db_buf_adopt_landing(cache, p.version ? p.version : 1u,

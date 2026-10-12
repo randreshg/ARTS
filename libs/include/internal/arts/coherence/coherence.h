@@ -100,12 +100,12 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 void arts_db_destroy_remote(arts_guid_t db_guid);
 
 /* Cache_s destructor: drops the buffer slot's shared_ptr ref (the cb deleter
- * frees the buffer once the last in-flight acquirer releases) and tears down
+ * ends the buffer once the last in-flight acquirer releases) and tears down
  * home_s in place.
  * Called from arts_db_free.  Because the cache is embedded by value as the
- * first member of arts_db_s, the caller frees the wrapping db_s after this
- * routine returns — it does NOT free the cache separately.  Defined in
- * coherence.c. */
+ * first member of arts_db_s, the caller releases the wrapping db_s's storage
+ * after this routine returns (arts_db_buf_storage_release) — it does NOT free
+ * the cache separately.  Defined in coherence.c. */
 void arts_db_cache_destructor(struct arts_db_cache_s *cache);
 
 /*--- Acquire path --------------------------------------------------------
@@ -170,11 +170,11 @@ void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot);
  * owner_db_h is the descriptor handle the calling frame holds for the block,
  * BORROWED for the call (the caller still owns it), or NULL when the frame
  * holds none.  Pass it whenever there is one: an alias must never end with a
- * buffer ref and no descriptor pin — a buffer's last drop recycles it into its
- * cache's free-list, and the slots release in index order — and a fresh lookup
- * can miss under a concurrent destroy while the payload is still alive under
- * the owner's own pin.  With no handle the block is looked up here, and a miss
- * resolves the aliases to NULL with no ref at all. */
+ * buffer ref and no descriptor pin (a release that cannot derive the buffer
+ * from the payload address finds it through the descriptor), and a fresh
+ * lookup can miss under a concurrent destroy while the payload is still alive
+ * under the owner's own pin.  With no handle the block is looked up here, and
+ * a miss resolves the aliases to NULL with no ref at all. */
 void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot,
                           arts_shared_ptr_t owner_db_h);
 
@@ -256,7 +256,7 @@ bool arts_db_await_ack(sem_t *cv);
 
 /* Wake every waiter parked on the cache's publish flight (destroy paths and
  * teardown: the cache-keyed ACK completion cannot reach a withdrawn slot's
- * stack, and a parked waiter's buffer ref keeps the descriptor alive, so no
+ * stack, and a parked waiter's pin keeps the descriptor alive, so no
  * destructor can do it).  Publishing arms only. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache);
@@ -294,9 +294,9 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
  * release_one_dep), a slot that already carries a pin releases it, and every
  * other path — lost claim, NULL data, EDT gone — releases it before
  * returning.  The caller must take it together with buf_h, from the same
- * lookup: the pin is what keeps the cache alive under the buffer ref the same
- * claim installs, so a pin fetched separately could miss a destroy between
- * the two and leave the dep holding bytes whose cache may be freed. */
+ * lookup: the slot's release reaches the descriptor through this pin, so a
+ * pin fetched separately could miss a destroy between the two and leave the
+ * dep holding a buffer ref with no pin to release it against. */
 bool arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
                            arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h);
 

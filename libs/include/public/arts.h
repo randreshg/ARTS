@@ -339,10 +339,8 @@ typedef struct {
    *  on the owning DB descriptor (@c arts_db_s), taken once when this slot's
    *  buffer ref is secured at acquire and dropped LAST in @c release_one_dep
    *  (after the buffer-ref drop and the RW/RO coherence release).  Pinning the
-   *  descriptor for the slot's whole acquire→release span keeps the descriptor
-   *  — and the buffer slot + recycle pool embedded in it — alive while any
-   *  buffer reference is outstanding, so a concurrent destroy cannot free the
-   *  descriptor out from under a buffer's recycle-on-drop.  NULL when unset
+   *  descriptor for the slot's whole acquire→release span lets the release
+   *  reach it after a concurrent destroy has retired its GUID.  NULL when unset
    *  (non-coherent slot).  Typed @c void* here to avoid leaking the internal
    *  @c arts_shared_ptr_t into the public header; the runtime casts it.  User
    *  EDTs ignore this field. */

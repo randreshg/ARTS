@@ -30,7 +30,8 @@
  *   4. Destroy lifecycle (arts_db_destroy_remote public entry).  Final teardown
  *      is driven by the cb (shared-ptr) deferred-free model: destroy fans out,
  *      then the slot's retire (by the dispatched item) drops the install ref,
- *      and arts_db_cache_destructor frees the cache_s once all refs drain.
+ *      and once all refs drain arts_db_free runs the cache destructor and
+ *      releases the descriptor's storage.
  */
 
 #include <errno.h>
@@ -125,7 +126,11 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->ro_combine_group = NULL;
   c->snapshot_req_in_flight = 0;
 #endif
+#ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_init(&c->buf_freelist, 0);
+  arts_lf_stack_init(&c->buf_retired);
+  atomic_store_explicit(&c->buf_holds, 0u, memory_order_relaxed);
+#endif
   /* Initialize the inlined home-directory fields only on the rank that owns
    * this DB's GUID home; non-home ranks leave db_self->home_initialized false
    * (and allocate only the cache-only stub, so the home fields don't exist).
@@ -239,11 +244,10 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
  * NULL handle resolves a zero-size block, whose defined value is NULL.
  *
  * db_h is a pin on the block's descriptor and is CONSUMED: a won claim moves
- * it into the dep slot, so the descriptor cannot be freed under the buffer
- * ref the same claim installed.  The two must be ONE pin taken with the
- * buffer, never a fresh lookup here — a lookup between them could miss a
- * destroy's slot withdrawal and leave the dep holding bytes with nothing
- * keeping their cache alive.
+ * it into the dep slot, where the slot's release reaches the descriptor
+ * through it.  The two must be ONE pin taken with the buffer, never a fresh
+ * lookup here — a lookup between them could miss a destroy's slot withdrawal
+ * and leave the dep holding a buffer ref with no pin to release it against.
  *
  * Whether this wake also discharges the slot's place in the EDT's serialized
  * walk is read off the slot itself — a serialized owner slot, never an alias —
@@ -305,10 +309,10 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
       arts_shared_release(&db_h);
       return false;
     }
-    /* Won: MOVE the pin into the dep slot (released last in release_one_dep)
-     * rather than dropping it here.  The embedded cache is the descriptor's
-     * FIRST member, so this pin is what keeps the cache (buffer slot +
-     * recycle pool) alive for the whole acquire->release span. */
+    /* Won: MOVE the pin into the dep slot (released in release_one_dep)
+     * rather than dropping it here: the release resolves the descriptor
+     * through it, which a lookup cannot do once a destroy has retired the
+     * GUID. */
     if (db_h != NULL &&
         __atomic_load_n(&depv[slot].db_pin, __ATOMIC_ACQUIRE) == NULL) {
       /* Publish with release so the run/release thread (reached via the
@@ -976,8 +980,8 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
  * destroy body, AFTER the route slot is withdrawn) and as a teardown
  * backstop: the ACK completion is cache-KEYED, so once the route slot is
  * NULL a still-flying ACK MISSes and can never reach this stack again — and
- * a parked waiter holds a buffer ref that keeps the descriptor (and this
- * stack) alive, so waiting for the destructor would deadlock.  Racing an ACK
+ * a parked waiter holds a pin that keeps the descriptor (and this stack)
+ * alive, so waiting for the destructor would deadlock.  Racing an ACK
  * drain is safe: the Treiber drain hands each node to exactly one drainer.
  * Nodes are freed by their woken owners. */
 void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache) {
@@ -1212,14 +1216,14 @@ void arts_db_destroy_remote(arts_guid_t db_guid) {
  * and lives with each arm's placement TU.  The agnostic steps split into pre
  * (the buffer-NULL that must run first) and post (snapshot drain + home
  * teardown), so the per-arm wrapper runs pre, its own teardown, then post.
- * cache_s itself is
- * freed by the route_table after the wrapper returns; buffers (payload storage) are
- * recycled / freed by the cb deleter chain once outstanding refs drain. */
+ * The descriptor's storage is released after the wrapper returns
+ * (arts_db_buf_storage_release): freed at once, or, where the arm keeps a
+ * per-DB free-list, once no buffer drawn from it is still out. */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
 /* Step 1: release the cache-hold on the buffer (store NULL into the shared
- * slot).  If no acquirer holds a ref the cb deleter frees the buffer now;
+ * slot).  If no acquirer holds a ref the cb deleter ends the buffer now;
  * otherwise it survives until the last in-flight acquirer releases.  Runs
  * FIRST so it covers the rare race where a wire handler installed a buffer past
  * try_finalize_destroy's NULL-swap. */
@@ -1232,15 +1236,10 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
    * with it: the two are one fact, and leaving a stale 0 would tell a use of
    * a resurrected cache that its payload is already there. */
   __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
-  /* Drain the per-DB recycled-buffer pool, returning leftovers to the
-   * registered pool.  The buffer slot is already NULL'd above, and B1 keeps
-   * the descriptor (hence this pool) alive until the last buffer ref drops,
-   * so no late deleter can push in after this point; the cache is torn down
-   * single-threaded here.  Every node was allocated by arts_db_buf_alloc via
-   * arts_regpool_alloc_aligned (pool_link is at offset 0, so the node ptr is
-   * the buffer base), so the matching free is arts_regpool_free, not the
-   * pool's default arts_free. */
-  arts_lf_pool_destroy_with(&cache->buf_freelist, arts_regpool_free);
+  /* Where the arm keeps a free-list it is not drained here: the storage
+   * release that follows the destructor drains whatever is parked then, and
+   * a buffer still out (a transfer's completion holding it) parks later,
+   * the last of them freeing the storage. */
 }
 #endif /* arms sharing the common cache shape */
 

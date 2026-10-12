@@ -14,7 +14,6 @@
 #include <string.h>
 
 #include "arts/coherence/buffer.h"
-#include "arts/memory/regpool.h" /* arts_regpool_free (orphaned landing) */
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
 #include "arts/coherence/directory.h"
