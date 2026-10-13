@@ -127,7 +127,7 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->snapshot_req_in_flight = 0;
 #endif
 #ifdef ARTS_DB_BUF_POOL
-  arts_lf_pool_init(&c->buf_freelist, 0);
+  arts_lf_pool_init(&c->buf_freelist);
   arts_lf_stack_init(&c->buf_retired);
   atomic_store_explicit(&c->buf_holds, 0u, memory_order_relaxed);
 #endif

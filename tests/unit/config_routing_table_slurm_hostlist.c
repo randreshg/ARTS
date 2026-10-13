@@ -13,6 +13,10 @@
  *     widen per element (j8, j9, j10, j11, j12), not truncate to the start
  *     element's width
  *   - descending ranges expand high→low
+ *   - a padded range reaching more digits than its start keeps the start's
+ *     width ("j[098-100]")
+ * and the name of one element keeps the sample's padding where the value
+ * fits in it and widens to the value's own digits where it does not.
  */
 
 #include "../../libs/src/core/system/config.c"
@@ -64,6 +68,17 @@ static void expect_table(const char *label, char *node_list,
   arts_config_destroy(&cfg);
 }
 
+static void expect_hostname(char *name, char *sample, unsigned int value,
+                            const char *want) {
+  char *got = arts_config_get_slurm_hostname(name, sample, value);
+  if (got == NULL || strcmp(got, want) != 0) {
+    fprintf(stderr, "FAIL hostname(%s,%s,%u)='%s' want '%s'\n", name, sample,
+            value, got ? got : "(null)", want);
+    fails++;
+  }
+  arts_free(got);
+}
+
 int main(void) {
   {
     /* Padded contiguous range (the canonical sbatch/srun output form). */
@@ -102,10 +117,25 @@ int main(void) {
     const char *want[] = {"j003", "j002", "j001"};
     expect_table("descending", list, want, 3);
   }
+  {
+    /* A padded range whose last element has more digits than its first. */
+    char list[] = "j[098-100]";
+    const char *want[] = {"j098", "j099", "j100"};
+    expect_table("padded_digit_growth", list, want, 3);
+  }
+  /* One element: padded to the sample's width, or exactly its width, or
+   * wider than the sample, where dropping high-order digits would name a host
+   * outside the range. */
+  expect_hostname("node", "01", 5, "node05");
+  expect_hostname("node", "001", 42, "node042");
+  expect_hostname("node", "01", 42, "node42");
+  expect_hostname("node", "01", 123, "node123");
+  expect_hostname("host", "000", 4567, "host4567");
 
   if (fails) {
     return 1;
   }
-  printf("PASS config_routing_table_slurm_hostlist: 6 forms expanded\n");
+  printf("PASS config_routing_table_slurm_hostlist: 7 forms expanded, "
+         "element widths kept\n");
   return 0;
 }

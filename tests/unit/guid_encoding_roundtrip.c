@@ -18,7 +18,10 @@
  *   2. is_local matches arts_global_rank_id.
  *   3. A contiguous reserve_range mints `size` distinct GUIDs; from_index /
  *      index_from are exact inverses over [0,size); index_from returns -1 on a
- *      foreign-type GUID and on a key below the range start.
+ *      foreign-type GUID, on a foreign rank and on a key below the range
+ *      start.  A round-robin range homes index i on rank i % nrank and
+ *      inverts the same way, and index_from returns -1 below its base key and
+ *      for a home past the last rank.
  *   4. Per-(rank,type) counters are disjoint: two reserves of the SAME rank
  *      advance, two reserves of DIFFERENT types never alias keys.
  *   5. Exhaustion is a HARD ERROR (no wraparound) — verified in a forked child
@@ -194,6 +197,38 @@ int main(void) {
       ARTS_GUID_MAKE(ARTS_GUID_DB, 0, ARTS_GUID_GET_KEY(start) - 1);
   if (arts_guid_index_from(start, below) != -1) {
     FAIL("index_from did not reject key below start\n");
+  }
+  /* same type and key, another rank → -1 */
+  if (arts_guid_index_from(
+          start, ARTS_GUID_MAKE(ARTS_GUID_DB, 1, ARTS_GUID_GET_KEY(start))) !=
+      -1) {
+    FAIL("index_from did not reject a foreign rank\n");
+  }
+  /* A round-robin range. */
+  arts_guid_t dist =
+      arts_guid_reserve_range(ARTS_GUID_DB, 8, ARTS_HINT_ROUND_ROBIN);
+  if (dist == NULL_GUID) {
+    FAIL("round-robin reserve_range returned NULL_GUID\n");
+  }
+  for (unsigned i = 0; i < 8; i++) {
+    arts_guid_t g = arts_guid_from_index(dist, i);
+    if (arts_guid_get_rank(g) != i % arts_global_rank_count ||
+        arts_guid_index_from(dist, g) != (int)i) {
+      FAIL("round-robin range[%u] home or inverse\n", i);
+    }
+  }
+  uint64_t base_key = ARTS_GUID_GET_KEY(dist);
+  if (base_key == 0) {
+    FAIL("round-robin range has base key 0\n");
+  }
+  if (arts_guid_index_from(
+          dist, ARTS_GUID_MAKE(ARTS_GUID_DB, 0, base_key - 1)) != -1) {
+    FAIL("index_from did not reject a key below the round-robin base\n");
+  }
+  if (arts_guid_index_from(dist,
+                           ARTS_GUID_MAKE(ARTS_GUID_DB, arts_global_rank_count,
+                                          base_key)) != -1) {
+    FAIL("index_from did not reject a home past the last rank\n");
   }
 
   /* ---- Test 4: counter disjointness across type. ---- */

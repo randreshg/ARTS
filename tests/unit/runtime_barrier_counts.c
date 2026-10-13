@@ -21,7 +21,7 @@
 /// which we also assert to pin the init-count invariant.
 ///
 /// White-box: reads arts_node_info via runtime_state.h, mirroring
-/// tests/unit/route_table_install_race.c's internal-state inspection idiom.
+/// the internal-state inspection idiom of the other whitebox tests.
 ///
 /// Single-node, every configuration (protocol-agnostic).
 

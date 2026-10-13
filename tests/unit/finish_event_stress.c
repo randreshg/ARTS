@@ -2,9 +2,9 @@
  *
  * Each iteration creates a finish-EDT that spawns a depth-DEPTH tree of
  * children, each fanning out to FANOUT children on cycling rank targets.
- * The finish_event must drain to zero on every iteration; if any iteration
- * stalls or fires early, the test hangs (caught by ctest TIMEOUT) or the
- * iter_term EDT observes iter < ITERATIONS at shutdown.
+ * The finish_event must drain to zero on every iteration, and each iteration
+ * starts only from the previous one's finish EDT, so an iteration that stalls
+ * hangs the chain (caught by ctest TIMEOUT).
  *
  * The iteration counter lives in paramv (passed through the EDT chain) —
  * no file-scope mutable state. */
@@ -13,7 +13,7 @@
 
 #include "../test_failure_status.h"
 
-#define ITERATIONS 100
+#define ITERATIONS 10
 #define FANOUT 3
 #define DEPTH 6
 

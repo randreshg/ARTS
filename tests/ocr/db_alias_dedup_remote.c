@@ -38,20 +38,21 @@
 ******************************************************************************/
 
 /// @file db_alias_dedup_remote.c
-/// @brief The alias dedup where the acquiring rank is NOT the block's home.
+/// @brief One EDT naming one block in several slots acquires it once, on the
+///        block's home and away from it.
 ///
 /// One EDT acquires each distinct block ONCE: a later slot naming a block an
 /// earlier slot of the same EDT already secured is an alias on that single
-/// acquisition — one coherence acquire, one release.  db_alias_dedup states the
-/// rule with the aliasing EDT on the block's home, where the rank's own copy of
-/// the block is the answer to every way of asking for it, so a second
-/// acquisition is indistinguishable from the first.
-///
-/// Off the home it is distinguishable, and what every arm owes here is that the
-/// HOME sees the aliased write.  Two copies of one block inside one EDT mean
-/// two write-backs, and the copy the EDT never wrote through can be the one
-/// that lands last: the EDT's whole write to the block disappears with no error
-/// anywhere.
+/// acquisition — one coherence acquire, one release.  On the block's home the
+/// rank's own copy is the answer to every way of asking for it, so the rule
+/// shows only in the accounting: a second acquisition would wait behind the
+/// EDT's own hold, and a release that dropped the one hold twice would let the
+/// next writer in early or never.  Off the home it is also visible in the
+/// bytes: two copies of one block inside one EDT mean two write-backs, and the
+/// copy the EDT never wrote through can be the one that lands last, so the
+/// EDT's whole write disappears with no error anywhere.  What every arm owes is
+/// that the HOME sees the aliased write, and that the block is grantable to the
+/// next writer afterwards.
 ///
 /// Whatever modes the slots ask for, they carry the SAME pointer: the engine
 /// classifies an EDT's whole dependence vector before anything fires, so one
@@ -63,9 +64,13 @@
 /// of its slots asks for, so a write slot owns it whatever its index.  Let a
 /// read own it instead and the EDT's stores go out through a read release:
 /// nothing is exclusive, and on an arm whose release is what carries the bytes
-/// home they are dropped outright.  Three EDTs state it: read-then-write,
-/// read-write-read, and a mid-body release that must release the WRITE
-/// acquisition and not the read slot that names the same block.
+/// home they are dropped outright.  The EDTs state it: two write slots,
+/// read-then-write, read-write-read, a mid-body release of a block named in
+/// two write slots (it releases the owner and retires the alias with it, so
+/// the epilogue finds nothing left and the hold falls exactly once), and a
+/// mid-body release that must release the WRITE acquisition and not the read
+/// slot that names the same block.  Every phase after the first is a write
+/// turn, so each one also shows the previous phase left the block grantable.
 ///
 /// The phases are event-ordered rather than left to the runtime, so the test
 /// states the same thing under every memory model.
@@ -79,6 +84,7 @@
 #define MAGIC2 0xA11A6u
 #define MAGIC3 0xA11A7u
 #define MAGIC4 0xA11A8u
+#define MAGIC5 0xA11A9u
 
 /// The aliasing EDT, placed away from the block's home: slot 0 and slot 1 name
 /// one block, both RW.
@@ -191,6 +197,20 @@ void triple_alias_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/// Two write slots on one block, released once in the middle of the body.
+void alias_release_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  if (depc < 2 || depv[0].ptr == NULL) {
+    arts_printf("FAIL: db_alias_dedup_remote alias release bad deps\n");
+    arts_test_fail();
+    return;
+  }
+  ((unsigned int *)depv[0].ptr)[0] = MAGIC5;
+  arts_db_release(depv[0].guid, DB_MODE_RW);
+}
+
 /// Releases the block in the middle of its body and then satisfies an event a
 /// reader depends on.  The release names the WRITE acquisition, so by the time
 /// the event fires the block's bytes are wherever a reader will look for them;
@@ -272,9 +292,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_alias_dedup_remote ===\n");
 
-  /* The block is homed on rank 0 and the aliasing EDT runs elsewhere, so its
-   * acquisitions are the ones that travel.  A single-rank run has nowhere
-   * else to put it and degenerates to db_alias_dedup. */
+  /* The block is homed on rank 0 and, with peers, the aliasing EDT runs
+   * elsewhere, so its acquisitions are the ones that travel.  On one rank it
+   * runs on the home. */
   unsigned int nranks = arts_get_total_ranks();
   unsigned int writer_rank = (nranks > 1u) ? 1u : 0u;
 
@@ -294,6 +314,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * acquisition. */
   phase(mixed_alias_edt, db, writer_rank, 2, ro_rw, MAGIC2, 0u);
   phase(triple_alias_edt, db, writer_rank, 3, ro_rw_ro, MAGIC3, 0u);
+  phase(alias_release_edt, db, writer_rank, 2, rw_rw, MAGIC5, 0u);
 
   /* The mid-body release.  The reader is wired before the releasing EDT
    * exists, so its dependence on the gate is registered before anything can

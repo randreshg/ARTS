@@ -26,7 +26,9 @@
  *      "present" over an empty slot; the gate is the slot itself, so that
  *      cannot stop the block from ever being materialized again.
  *
- * Standalone: links buffer.c + shared.c with libc-backed alloc shims.
+ * Standalone: links buffer.c + shared.c with libc-backed alloc shims.  The
+ * representation exists only where the store is DIRECT, the one tree that
+ * builds the test.
  */
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/types.h"
@@ -52,10 +54,6 @@ static unsigned char g_external[DB_SIZE];
 static unsigned char g_other[DB_SIZE];
 
 int main(void) {
-#ifndef ARTS_CXL_DIRECT
-  printf("SKIP buffer_external_payload (not a DIRECT build)\n");
-  return 0;
-#else
   int fail = 0;
   memset(&g_cache, 0, sizeof(g_cache));
   g_cache.db_size = DB_SIZE;
@@ -146,7 +144,6 @@ int main(void) {
   printf(fail ? "FAIL buffer_external_payload\n"
               : "PASS buffer_external_payload\n");
   return fail;
-#endif
 }
 
 /* -- libc-backed alloc shims so the test links without the ARTS runtime -- */

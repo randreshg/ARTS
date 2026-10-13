@@ -117,6 +117,8 @@ static int write_cfg(char *path_out, size_t path_cap, const char *tag) {
 /* Load the cfg in a forked child; 1 = rejected (nonzero exit / signal),
  * 0 = accepted, -1 = harness failure. */
 static int load_rejected(const char *cfg_path) {
+  /* An exit in the child flushes what it inherited. */
+  fflush(stdout);
   pid_t pid = fork();
   if (pid < 0) {
     perror("fork");

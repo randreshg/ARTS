@@ -46,7 +46,10 @@
 /// from running the launcher itself (a rank that did would re-spawn the whole
 /// cluster).  Asserted per rank, by a probe placed on it:
 ///   1. it runs on the rank it was placed on, and sees the configured total;
-///   2. on every non-master rank, ARTS_RANK is set and names that rank;
+///   2. on every non-master rank, ARTS_RANK is set and names that rank, and
+///      the rank's parent is a live process other than init: a spawned rank
+///      whose launcher died before it armed its parent-death signal is
+///      reparented to init and leaves at startup, never reaching a probe;
 ///   3. it stamps its own slot of a marker block, and the master then reads
 ///      every slot 0..total-1 filled exactly once with its own rank's marker,
 ///      so the live ranks are exactly 0..total-1 with no gap and no duplicate.
@@ -58,6 +61,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "../test_failure_status.h"
 
@@ -94,6 +98,13 @@ void rank_probe_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     if (rank_env == NULL || (unsigned int)strtoul(rank_env, NULL, 10) != me) {
       arts_printf("FAIL: launcher_no_respawn rank %u has ARTS_RANK=%s\n", me,
                   rank_env ? rank_env : "(unset)");
+      arts_test_fail();
+      return;
+    }
+    pid_t ppid = getppid();
+    if (ppid <= 1) {
+      arts_printf("FAIL: launcher_no_respawn rank %u has parent %d\n", me,
+                  (int)ppid);
       arts_test_fail();
       return;
     }

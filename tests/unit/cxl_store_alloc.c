@@ -53,6 +53,8 @@ static void check_alloc(void) {
 }
 
 static void check_exhaustion(void) {
+  /* An exit in the child flushes what it inherited. */
+  fflush(stdout);
   pid_t pid = fork();
   if (pid == 0) {
     for (;;) {

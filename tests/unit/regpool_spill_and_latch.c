@@ -7,7 +7,8 @@
  *
  *   (i)   the full node takes no slab at all — no placed one, and no
  *         kernel-placed one — and its demand is served from the other
- *         node's arena, moved there once and then on the fast path;
+ *         node's arena, whose slab the pool placed on that node, moved there
+ *         once and then on the fast path;
  *   (ii)  once the arena table refuses a slab, no later grow maps again
  *         (the table never gives a slot back, so every such map would be
  *         refused in turn), whether asked for explicitly or by allocations
@@ -183,6 +184,18 @@ int main(void) {
         "node %d spilled %u times for 8 blocks one arena "
         "holds, expected once",
         a, na.spills);
+  /* And the slab serving it was placed on the other node by the policy the
+   * pool handed the kernel, before any of its pages existed. */
+  {
+    void *p = arts_regpool_alloc_aligned(BLOCK, 64);
+    const arts_regpool_mr_t *m = arts_regpool_lookup(p);
+    const regpool_sim_mbind_t *pol =
+        (m != NULL) ? regpool_sim_mbind_at(m->base) : NULL;
+    CHECK(pol != NULL && pol->mode == REGPOOL_SIM_MPOL_PREFERRED &&
+              pol->mask == (1ul << b) && regpool_sim_policy_ok(pol),
+          "the slab serving node %d was not placed on node %d", a, b);
+    arts_regpool_free(p);
+  }
 
   /* (ii) One more slab on the serving node, then a full table. */
   bool pregrew = arts_regpool_grow(b);

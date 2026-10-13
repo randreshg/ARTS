@@ -63,21 +63,9 @@
 /// would be lost -> reader mismatch -> arts_abort.  A stuck lock counter
 /// instead manifests as a hang caught by the ctest TIMEOUT.
 ///
-/// Meaningful only under EXCL.  Self-skips (prints SKIP and
-/// returns 0) under every other protocol.
+/// Meaningful only under EXCL, so built and registered only in an EXCL tree.
 
 #include "arts.h"
-
-#if !defined(ARTS_PROTOCOL_EXCL)
-
-#include <stdio.h>
-
-int main(void) {
-  (void)printf("SKIP db_excl_creator_release_keeps_joiner_write: EXCL-only\n");
-  return 0;
-}
-
-#else /* ARTS_PROTOCOL_EXCL */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -183,5 +171,3 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-
-#endif /* ARTS_PROTOCOL_EXCL */

@@ -19,7 +19,7 @@
  *
  * Multinode by construction: on one rank home, owner and self coincide, a read
  * acquire is a local hit that never touches ro_st, and there is no grant to
- * retain. Configurations without a retained read grant self-skip.
+ * retain.  Built only where a retained read grant exists.
  */
 
 #include <stdatomic.h>
@@ -30,14 +30,8 @@
 #include <stdio.h>
 
 #if !defined(ARTS_PROTOCOL_EXCL) || !defined(ARTS_RELEASE_RETAIN)
-int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  printf("SKIP ro_grant_retained: no retained read grant in this "
-         "configuration\n");
-  return 0;
-}
-#else
+#error "only the exclusion arm's retaining policy keeps a read grant"
+#endif
 
 #include "arts/coherence/excl/types.h"
 #include "arts/gas/route_table.h"
@@ -162,5 +156,3 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 int main(int argc, char **argv) {
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-
-#endif /* EXCL + RETAIN */

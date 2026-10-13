@@ -7,7 +7,7 @@
  * same contract; whichever directory.c the build configures supplies the
  * bodies.  The test #includes the matching protocol's directory.c into a
  * standalone TU (no ARTS runtime) and runs under each of those three
- * protocols; FLUSH has no such queue and self-skips.
+ * protocols; FLUSH has no such queue and does not build the test.
  *
  * Properties exercised:
  *   1. Functional single-thread: empty on init, peek/pop false on empty,
@@ -23,17 +23,6 @@
  * Build: the build's own protocol defines, with -DARTS_UNIT_STANDALONE_SHIMS
  * for the libc alloc shims.
  */
-
-#ifdef ARTS_PROTOCOL_FLUSH
-/* This arm has no home-side request queue: an acquire is answered by the home
- * on arrival and nothing is ever queued for a later turn. */
-#include <stdio.h>
-int main(void) {
-  printf("PASS directory_grantreq_queue: skipped under FLUSH (no home request "
-         "queue in this arm)\n");
-  return 0;
-}
-#else
 
 #include <stdio.h>
 
@@ -345,4 +334,3 @@ bool arts_ooo_retire_item(arts_guid_t key, const void *item) {
 #elif defined(ARTS_PROTOCOL_INV)
 #include "core/coherence/inv/directory.c"
 #endif
-#endif /* !ARTS_PROTOCOL_FLUSH */

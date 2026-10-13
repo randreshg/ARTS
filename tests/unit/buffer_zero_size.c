@@ -3,7 +3,7 @@
  * Zero-size DB buffer install.
  *
  * A DB may legitimately carry db_size == 0 (e.g. an empty / placeholder DB,
- * the coherence_zero_size_xfer integration path).  arts_db_buf_install with
+ * driven across ranks by db_destroy_roster).  arts_db_buf_install with
  * db_size == 0 must:
  *   - return a NON-NULL buffer (the header is always allocated even with no
  *     payload),

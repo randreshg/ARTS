@@ -4,11 +4,16 @@
  * allocation, so the next request of the same length and alignment gets it
  * back while the freed pointer stops resolving.  Exercised here at several
  * sizes with the pool's confinement lookup on every pointer, plus the
- * placement, checked through the policy the pool hands the kernel: an
+ * placement, checked through the policy the pool hands the kernel and through
+ * the pool's own report, either of which can drift from the other: an
  * oversize mapping is interleaved over the caller's whole node set rather
- * than placed on one node, and when that set is one node that is full the
- * mapping is placed on another node rather than refused.  A small request
- * aligned past what an arena honours takes a mapping of its own too.
+ * than placed on one node, on the mapped range before any page of it is
+ * resident; with one member of a two-node set full the set's capacity is the
+ * other member's and the mapping is placed there; and when the set is one node
+ * that is full the mapping is placed on another node rather than refused.  A
+ * small request aligned past what an arena honours takes a mapping of its own
+ * too.  The two legs with a full node are driven by the pool's injected
+ * exhaustion and run only where ARTS_DEBUG_INJECTION compiles it.
  *
  * Whitebox unit test: no ARTS runtime, no ports, no config.  The machine is
  * declared (regpool_numa_sim.h): two nodes, each with room for every mapping
@@ -56,8 +61,10 @@ static void direct_counts(unsigned *out_live, unsigned *out_retired) {
   *out_retired = retired;
 }
 
-/* How many direct mappings the report calls interleaved. */
-static unsigned interleaved_count(void) {
+/* The report's direct placement line: the interleaved mappings (count and
+ * MiB), and the count placed on `node`. */
+static void placement_counts(unsigned node, unsigned *out_interleaved,
+                             unsigned *out_mib, unsigned *out_on_node) {
   char *buf = NULL;
   size_t len = 0;
   FILE *f = open_memstream(&buf, &len);
@@ -65,15 +72,30 @@ static unsigned interleaved_count(void) {
   arts_regpool_report(f);
   fclose(f);
   const char *line = strstr(buf, "[REGPOOL] direct placement:");
-  unsigned count = 0, mib = 0;
+  unsigned count = 0, mib = 0, on_node = 0, on_node_mib = 0;
   if (line != NULL) {
     const char *field = strstr(line, "interleaved=");
     if (field != NULL) {
       int got = sscanf(field, "interleaved=%u/%u", &count, &mib);
       assert(got == 2);
     }
+    char key[16];
+    snprintf(key, sizeof key, " node%u=", node);
+    field = strstr(line, key);
+    if (field != NULL) {
+      int got = sscanf(field + strlen(key), "%u/%u", &on_node, &on_node_mib);
+      assert(got == 2);
+    }
   }
   free(buf);
+  *out_interleaved = count;
+  *out_mib = mib;
+  *out_on_node = on_node;
+}
+
+static unsigned interleaved_count(void) {
+  unsigned count = 0, mib = 0, on_node = 0;
+  placement_counts(0, &count, &mib, &on_node);
   return count;
 }
 
@@ -175,6 +197,49 @@ int main(void) {
   arts_regpool_free(other);
   arts_regpool_cleanup();
 
+#ifdef ARTS_DEBUG_INJECTION
+  /* A two-node set with one member full.  The machine's availability is
+   * unknown here, so the forced-full member is the only thing that says
+   * either node lacks room. */
+  regpool_sim_declare(2, REGPOOL_SIM_UNKNOWN);
+  arts_regpool_set_topology(2, 0x3, NULL);
+  inited = arts_regpool_init(NULL, NULL, SLAB_BYTES, 2);
+  assert(inited);
+  {
+    unsigned char *spread =
+        (unsigned char *)arts_regpool_alloc_aligned(big, 64);
+    assert(spread != NULL);
+    assert_spread(arts_regpool_lookup(spread));
+    unsigned count = 0, mib = 0, on0 = 0;
+    placement_counts(0, &count, &mib, &on0);
+    assert(count == 1 && mib == (unsigned)(big >> 20) &&
+           "the report must call the spread mapping interleaved");
+    spread[0] = 0x5A;
+    spread[big - 1] = 0x5A;
+
+    const size_t wider = big + SLAB_BYTES;
+    arts_regpool_set_forced_full(0x2);
+    unsigned char *q = (unsigned char *)arts_regpool_alloc_aligned(wider, 64);
+    assert(q != NULL);
+    const arts_regpool_mr_t *mq = arts_regpool_lookup(q);
+    assert(mq != NULL && mq->numa_node == 0);
+    const regpool_sim_mbind_t *bq = regpool_sim_mbind_at(q);
+    assert(bq != NULL && bq->mode == REGPOOL_SIM_MPOL_PREFERRED &&
+           bq->mask == 0x1ul &&
+           "with node 1 full the mapping must be placed on node 0");
+    assert(regpool_sim_policy_ok(bq));
+    placement_counts(0, &count, &mib, &on0);
+    assert(count == 1 && on0 == 1);
+    q[0] = 0x5A;
+    q[wider - 1] = 0x5A;
+    assert(regpool_sim_all_policies_ok());
+    assert(regpool_sim_consulted());
+    arts_regpool_set_forced_full(0);
+    arts_regpool_free(q);
+    arts_regpool_free(spread);
+  }
+  arts_regpool_cleanup();
+
   /* Placement fallover.  The caller's node set is the one node its thread
    * runs on, and that node is forced full — so the set cannot absorb the
    * mapping, there is nothing to spread it over, and the pool must place it
@@ -208,5 +273,9 @@ int main(void) {
   arts_regpool_cleanup();
   printf("PASS regpool_direct_oversize (relocated off full node 0 to %d)\n",
          relocated);
+#else
+  printf("PASS regpool_direct_oversize (no injected exhaustion: the full-node "
+         "legs are not compiled)\n");
+#endif
   return 0;
 }

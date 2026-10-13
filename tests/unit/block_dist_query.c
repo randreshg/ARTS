@@ -1,46 +1,31 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Pure-unit test for libs/src/graph/block_distribution.c query arithmetic.
+ * Pure-unit test of the block-distribution query arithmetic
+ * (libs/src/graph/block_distribution.c).
  *
- * The block-distribution QUERY functions (block_size, get_owner,
- * partition_start/end, get_local_index, guid_for_vertex, guid_for_partition)
- * and arts_block_dist_internal_init are pure, single-threaded arithmetic over a
- * caller-owned arts_block_dist_t.  We hand-construct dists (the init() paths
- * call arts_get_total_ranks()/arts_guid_reserve(), stubbed below so init()
- * itself is also exercised for the round-robin GUID->rank assignment) and pin:
+ * The query functions (block_size, get_owner, partition_start/end,
+ * get_local_index, guid_for_vertex, guid_for_partition) and
+ * arts_block_dist_internal_init are pure, single-threaded arithmetic over a
+ * caller-owned arts_block_dist_t.  Dists are built by hand; the init() path's
+ * arts_get_total_ranks()/arts_guid_reserve() are stubbed below so its
+ * round-robin GUID->rank assignment runs too.  Pinned:
  *
- *   - block_size coverage invariant: sum_{i in [0,num_blocks)} block_size(i)
- *     == num_vertices (exact partition, no gap/overlap), for n divisible and
- *     not divisible by num_blocks, and num_blocks==1.
+ *   - coverage: sum_{i in [0,num_blocks)} block_size(i) == num_vertices (no
+ *     gap or overlap), for n divisible and not divisible by num_blocks, and
+ *     num_blocks == 1.
  *   - contiguity: partition_end(i)+1 == partition_start(i+1) for non-last
  *     blocks; partition_end(last) == num_vertices-1.
- *   - get_owner boundary: vertex block_sz-1 -> block 0, block_sz -> block 1,...
- *   - local-index round-trip: get_local_index(v) == v - partition_start(owner);
- *     first vertex of a block -> 0, last -> block_size(owner)-1.
+ *   - get_owner boundary: vertex block_sz-1 -> block 0, block_sz -> block 1.
+ *   - local-index round trip: get_local_index(v) == v - partition_start(owner).
  *   - guid_for_partition / guid_for_vertex return the GUID reserved at init for
- *     that block, with the rank matching the round-robin assignment.
- *
- * Suspected-bug probes (run in CHILD processes; targets B140/B141/B142):
- *   - B140 (B-block-dist last-block underflow): n < num_blocks => block_sz via
- *     ceil >= 1, and (num_blocks-1)*block_sz can exceed num_vertices =>
- *     block_size(last) = num_vertices - (num_blocks-1)*block_sz underflows the
- *     unsigned arts_graph_sz_t to a huge value.
- *   - B141 (B-block-dist div-by-zero): num_blocks==0 => block_sz==0 =>
- *     get_owner does v/block_sz => SIGFPE (integer divide-by-zero).  Also
- *     guid_for_vertex(out-of-range v) indexes graphGuid[owner] OOB
- * (assert-only, gone in Release).
- *   - B142 (B-block-dist partition_end underflow): num_vertices==0 =>
- *     partition_end(last) = num_vertices-1 underflows to UINT64_MAX.
- *
- * Each probe runs in a forked child so the parent observes the outcome
- * (computed-underflow value, or SIGFPE) without dying.  Underflow probes are
- * CORRECT-AND-FAILING evidence of the suspected defects: we record the wrong
- * value and treat the suspected bug as CONFIRMED (we do NOT relax the test to
- * make it green).
+ *     that block, on the rank the round-robin assigned.
+ *   - degenerate shapes: fewer vertices than blocks leaves no block larger
+ *     than the graph, an empty graph's last partition does not end at
+ *     UINT64_MAX, and a distribution with no blocks never divides by zero (run
+ *     in a child, so a fault is observed rather than suffered).
  *
  * The ARTS runtime is NOT started.  block_distribution.c is compiled via
- * #include against in-test stubs (faithful allocator contract + a
- * rank-encoding arts_guid_reserve + fixed arts_get_total_ranks).
+ * #include against in-test stubs.
  */
 
 #define ARTS_SYSTEM_PRINT_H
@@ -174,110 +159,100 @@ static void test_owner_and_local_index(void) {
 
 /* ---- init() round-robin GUID->rank assignment -----------------------------
  */
-static void test_init_roundrobin(void) {
-  /* num_blocks not divisible by ranks: 6 blocks over 4 ranks.
-   * blocks_per_node = 1, mod = 2 -> ranks 0,1 get 2 blocks; ranks 2,3 get 1.
-   * round-robin contiguous fill order:
-   *   rank0: blocks 0,1 ; rank1: blocks 2,3 ; rank2: block 4 ; rank3: block 5
-   */
+/* Rank r owns num_blocks / ranks blocks, plus one for the first
+ * num_blocks % ranks ranks, filled in contiguous partition-index order (rank 0
+ * the lowest indices).  The rank packed into each block's GUID must match. */
+static void check_roundrobin(unsigned int num_blocks) {
   g_reserve_key = 1;
   arts_block_dist_t *d =
-      arts_block_dist_init(/*n=*/60, /*m=*/0, /*num_blocks=*/6, ARTS_GUID_DB);
+      arts_block_dist_init(/*n=*/60, /*m=*/0, num_blocks, ARTS_GUID_DB);
   CHECK(d != NULL, "init returned non-NULL");
-  CHECK(d->num_blocks == 6, "init num_blocks");
-  unsigned int expect_rank[6] = {0, 0, 1, 1, 2, 3};
-  for (unsigned int i = 0; i < 6; i++) {
-    arts_guid_t g = arts_block_dist_guid_for_partition(d, i);
-    unsigned int r = (unsigned int)ARTS_GUID_GET_RANK(g);
-    CHECK(r == expect_rank[i], "guid_for_partition rank == round-robin");
+  if (d == NULL) {
+    return;
   }
-  /* guid_for_vertex: vertex in block i returns block i's GUID. block_sz =
-   * ceil(60/6)=10, so vertex 25 -> block 2. */
-  arts_guid_t gv = arts_block_dist_guid_for_vertex(25, d);
-  CHECK(gv == arts_block_dist_guid_for_partition(d, 2),
-        "guid_for_vertex(25) == guid_for_partition(2)");
+  CHECK(d->num_blocks == num_blocks, "init num_blocks");
+  unsigned int per_rank = num_blocks / STUB_TOTAL_RANKS;
+  unsigned int extra = num_blocks % STUB_TOTAL_RANKS;
+  unsigned int blk = 0;
+  for (unsigned int r = 0; r < STUB_TOTAL_RANKS; r++) {
+    unsigned int owned = per_rank + (r < extra ? 1u : 0u);
+    for (unsigned int j = 0; j < owned && blk < num_blocks; j++, blk++) {
+      arts_guid_t g = arts_block_dist_guid_for_partition(d, blk);
+      CHECK((unsigned int)ARTS_GUID_GET_RANK(g) == r,
+            "guid_for_partition rank == round-robin");
+    }
+  }
+  CHECK(blk == num_blocks, "round-robin covers every block exactly once");
+  /* guid_for_vertex: a vertex inside block num_blocks / 2 returns that
+   * block's GUID. */
+  unsigned int mid = num_blocks / 2u;
+  arts_vertex_t v = (arts_vertex_t)mid * d->block_sz + 1u;
+  CHECK(arts_block_dist_guid_for_vertex(v, d) ==
+            arts_block_dist_guid_for_partition(d, mid),
+        "guid_for_vertex == guid_for_partition of its block");
   free(d);
 }
 
-/* ===================== suspected-bug probes (child) ========================
+/* Over STUB_TOTAL_RANKS ranks: blocks not divisible by the ranks, one block
+ * per rank, more ranks than blocks (some own none), and many blocks per rank
+ * with and without a remainder. */
+static void test_init_roundrobin(void) {
+  static const unsigned int counts[] = {6, 4, 9, 3, 12};
+  for (unsigned int i = 0; i < sizeof(counts) / sizeof(counts[0]); i++) {
+    check_roundrobin(counts[i]);
+  }
+}
+
+/* ======================= degenerate shapes ================================
  */
 
-/* B140: last-block unsigned underflow when n < num_blocks. */
-static void test_b140_last_block_underflow(void) {
-  /* n=3, num_blocks=5 -> block_sz = ceil(3/5)=1.
-   * block_size(last=4) = n - (num_blocks-1)*block_sz = 3 - 4*1 = -1
-   * -> underflows arts_graph_sz_t (uint64) to UINT64_MAX. */
+/* Fewer vertices than blocks: n=3, num_blocks=5 -> block_sz = ceil(3/5) = 1,
+ * so (num_blocks-1)*block_sz exceeds n and the last block must not take the
+ * unsigned difference. */
+static void test_last_block_no_underflow(void) {
   arts_block_dist_t *d = make_dist(3, 5);
-  CHECK(d->block_sz == 1, "B140 setup: ceil(3/5)==1");
+  CHECK(d->block_sz == 1, "setup: ceil(3/5)==1");
   arts_graph_sz_t last = arts_block_dist_block_size(4, d);
-  /* The contract WANTS sum==num_vertices; here block 4 cannot be the huge
-   * underflowed value.  Record CONFIRMED if it underflowed. */
-  if (last > d->num_vertices) {
-    fprintf(stderr,
-            "  B140 CONFIRMED: block_size(last)=%" PRIu64
-            " underflowed (n=3,num_blocks=5)\n",
-            (uint64_t)last);
-    /* This IS the bug; leave the assertion expressing the CORRECT contract so
-     * the test fails loudly and records exposes_runtime_bug. */
-    CHECK(last <= d->num_vertices,
-          "B140: last block_size must not exceed num_vertices (underflow bug)");
-  } else {
-    CHECK(last <= d->num_vertices, "B140: no underflow (would be a fix)");
-  }
+  CHECK(last <= d->num_vertices,
+        "last block_size must not exceed num_vertices when n < num_blocks");
   free(d);
 }
 
-/* B142: partition_end(last) underflow when num_vertices==0. */
-static void test_b142_partition_end_underflow(void) {
-  arts_block_dist_t *d = make_dist(0, 1); /* n=0, single block */
+static void test_empty_partition_end(void) {
+  arts_block_dist_t *d = make_dist(0, 1);
   arts_vertex_t end = arts_block_dist_partition_end(0, d);
-  if (end == UINT64_MAX) {
-    fprintf(stderr,
-            "  B142 CONFIRMED: partition_end(last) underflowed to UINT64_MAX "
-            "(num_vertices==0)\n");
-  }
   CHECK(end != UINT64_MAX,
-        "B142: partition_end on empty graph must not underflow to UINT64_MAX");
+        "partition_end on an empty graph must not underflow to UINT64_MAX");
   free(d);
 }
 
-/* B141: get_owner div-by-zero when block_sz==0 (num_blocks==0).  Runs in a
- * child.  The integer divide-by-zero manifests as a raw SIGFPE in a plain build
- * and as a sanitizer-reported fatal error (UBSan "division by zero" / ASan
- * "FPE") that aborts the child with a nonzero exit code under -fsanitize.  The
- * ONLY way the child reaches _exit(0) is if the divide-by-zero did NOT occur,
- * so any abnormal termination CONFIRMS B141. */
-static void child_b141_divzero(void) {
-  arts_block_dist_t *d = make_dist(10, 0); /* num_blocks==0 -> block_sz==0 */
+/* num_blocks == 0 gives block_sz == 0.  The child reaches _exit(0) only if
+ * get_owner did not divide by zero; a raw SIGFPE or a sanitizer's abort ends
+ * it any other way. */
+static void child_no_blocks_owner(void) {
+  arts_block_dist_t *d = make_dist(10, 0);
   volatile unsigned int owner = arts_block_dist_get_owner(5, d);
   (void)owner;
-  _exit(0); /* reached only if NO div-by-zero occurred */
+  _exit(0);
 }
 
-static void test_b141_divzero(void) {
+static void test_no_blocks_no_divzero(void) {
   pid_t pid = fork();
   if (pid == 0) {
-    child_b141_divzero();
+    child_no_blocks_owner();
     _exit(99);
   }
-  CHECK(pid > 0, "fork for B141 child");
+  CHECK(pid > 0, "fork for the num_blocks==0 child");
   int status = 0;
   waitpid(pid, &status, 0);
-
-  bool clean_no_divzero = WIFEXITED(status) && WEXITSTATUS(status) == 0;
-  bool sigfpe = WIFSIGNALED(status) && WTERMSIG(status) == SIGFPE;
-  bool san_abort = !clean_no_divzero; /* SIGFPE, SIGABRT, or nonzero exit */
-
-  if (clean_no_divzero) {
-    CHECK(1, "B141: no div-by-zero (would be a fix)");
-  } else {
+  if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
     fprintf(stderr,
-            "  B141 CONFIRMED: get_owner with block_sz==0 (num_blocks==0) "
-            "divides by zero (%s, status=0x%x)\n",
-            sigfpe ? "raw SIGFPE" : "sanitizer-reported FPE/abort", status);
-    /* CONFIRMED bug: the correct contract is no crash. Fail loudly. */
-    CHECK(!san_abort,
-          "B141: get_owner must not divide by zero (num_blocks==0)");
+            "  get_owner with num_blocks==0 ended the child (%s, "
+            "status=0x%x)\n",
+            WIFSIGNALED(status) && WTERMSIG(status) == SIGFPE ? "SIGFPE"
+                                                              : "abort",
+            status);
+    CHECK(0, "get_owner must not divide by zero (num_blocks==0)");
   }
 }
 
@@ -285,15 +260,12 @@ int main(void) {
   test_partition_arithmetic();
   test_owner_and_local_index();
   test_init_roundrobin();
-
-  /* suspected-bug probes: these are CORRECT-AND-FAILING if the bugs exist. */
-  test_b140_last_block_underflow();
-  test_b142_partition_end_underflow();
-  test_b141_divzero();
+  test_last_block_no_underflow();
+  test_empty_partition_end();
+  test_no_blocks_no_divzero();
 
   if (g_fail) {
-    fprintf(stderr, "FAIL block_dist_query: one or more checks failed "
-                    "(see CONFIRMED lines for suspected runtime bugs)\n");
+    fprintf(stderr, "FAIL block_dist_query: one or more checks failed\n");
     return 1;
   }
   printf("PASS block_dist_query: coverage/contiguity/owner/local-index "

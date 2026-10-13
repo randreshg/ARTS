@@ -75,8 +75,8 @@
 #define X_BYTES (22 * MIB)
 #define D2_BYTES (24 * MIB)
 #define ROOMY ((size_t)64 << 30)
-#define OBSERVE_MS 1000 /* how long a waiting request is watched */
-#define BOUND_MS 30000  /* how long work that must finish may take */
+#define OBSERVE_MS 250 /* how long a waiting request is watched */
+#define BOUND_MS 30000 /* how long work that must finish may take */
 
 static int g_failed;
 #define CHECK(cond, ...)                                                       \

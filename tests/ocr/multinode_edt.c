@@ -39,12 +39,33 @@
 
 /// @file multinode_edt.c
 /// @brief Tests EDT creation and signaling across nodes: remote execution,
-///        all-nodes fan-in, multi-hop chains, and paramv delivery.
+///        a fan-in of several tasks from every node under one finish scope,
+///        multi-hop chains, and paramv delivery.  The finish scope fires once,
+///        after every member on every node, and shuts the run down: each
+///        check records its verdict in a block that the EDT the scope fires
+///        reads, so a scope that fires before a member finished can leave
+///        that check unrecorded, which fails the run when it does.
 ///        Requires multi-node (node_count > 1).
 
 #include "arts.h"
 
+#include <stdint.h>
+
 #include "../test_failure_status.h"
+
+/* One word per check in the verdict block: unreported until the check runs. */
+enum { V_REMOTE, V_ALL_NODES, V_CHAIN, V_PARAMV, V_COUNT };
+enum { V_UNREPORTED = 0, V_PASS = 1, V_FAIL = 2 };
+
+static const char *const check_names[V_COUNT] = {
+    "remote EDT", "fan-in from every node", "multi-hop chain", "remote paramv"};
+
+static void record(arts_edt_dep_t *verdicts, int check, bool ok) {
+  ((uint64_t *)verdicts->ptr)[check] = ok ? V_PASS : V_FAIL;
+  if (!ok) {
+    arts_test_fail();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Test 1: Remote EDT signals back to master.
@@ -60,6 +81,7 @@ void remote_task(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_satisfy_slot(collector, 0, (arts_guid_t)((uint64_t)my_rank), DB_MODE_NULL);
 }
 
+/// depv[0] = the remote task's rank, depv[1] = the verdict block.
 void check_remote_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -73,13 +95,15 @@ void check_remote_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("  FAIL: expected rank %u got %lu\n", expected,
                 (unsigned long)remote_rank);
-    arts_test_fail();
   }
+  record(&depv[1], V_REMOTE, ok);
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: One EDT per node, fan-in to collector.
+// Test 2: TASKS_PER_NODE EDTs on every node, fan-in to one collector.
 // ---------------------------------------------------------------------------
+
+#define TASKS_PER_NODE 10
 
 void all_nodes_task(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
@@ -92,23 +116,27 @@ void all_nodes_task(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_satisfy_slot(collector, slot, (arts_guid_t)((uint64_t)my_rank), DB_MODE_NULL);
 }
 
+/// Slot i < depc - 1 was given to a task placed on rank i / TASKS_PER_NODE;
+/// the last slot is the verdict block.
 void check_all_nodes(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
+  uint32_t tasks = depc - 1;
   bool ok = true;
-  for (uint32_t i = 0; i < depc; i++) {
+  for (uint32_t i = 0; i < tasks; i++) {
     uint64_t rank = (uint64_t)depv[i].guid;
-    if (rank != (uint64_t)i) {
+    if (rank != (uint64_t)(i / TASKS_PER_NODE)) {
       ok = false;
     }
   }
   if (ok) {
-    arts_printf("  PASS: EDTs ran on all %u nodes\n", depc);
+    arts_printf("  PASS: %u EDTs ran, %u on each of %u nodes\n", tasks,
+                (unsigned int)TASKS_PER_NODE, tasks / TASKS_PER_NODE);
   } else {
     arts_printf("  FAIL: EDT distribution incorrect\n");
-    arts_test_fail();
   }
+  record(&depv[tasks], V_ALL_NODES, ok);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +153,7 @@ void chain_hop(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_edt_satisfy_slot(next, 0, (arts_guid_t)(value + 10), DB_MODE_NULL);
 }
 
-/// Final hop: assert accumulated value.
+/// Final hop: assert accumulated value.  depv[1] = the verdict block.
 void chain_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -138,18 +166,18 @@ void chain_check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else {
     arts_printf("  FAIL: multi-hop chain value=%lu expected=%lu\n",
                 (unsigned long)value, (unsigned long)expected);
-    arts_test_fail();
   }
+  record(&depv[1], V_CHAIN, ok);
 }
 
 // ---------------------------------------------------------------------------
 // Test 4: Paramv delivery to remote node.
 // ---------------------------------------------------------------------------
 
+/// depv[0] = the verdict block.
 void check_paramv(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)depc;
-  (void)depv;
   uint64_t expected[] = {0xDEAD, 0xBEEF, 0xCAFE, 0xF00D};
   bool ok = (paramc == 4);
   for (uint32_t i = 0; i < paramc && ok; i++) {
@@ -161,18 +189,35 @@ void check_paramv(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("  PASS: paramv delivered correctly to remote node\n");
   } else {
     arts_printf("  FAIL: paramv mismatch on remote node\n");
-    arts_test_fail();
   }
+  record(&depv[0], V_PARAMV, ok);
 }
 
 // ---------------------------------------------------------------------------
 
+/// depv[0] = the finish scope, depv[1] = the verdict block (RO).
 void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  (void)depv;
+  const uint64_t *verdicts = (const uint64_t *)depv[1].ptr;
+  bool all = true;
+  for (int i = 0; i < V_COUNT; i++) {
+    if (verdicts[i] == V_UNREPORTED) {
+      arts_printf("  FAIL: the finish scope fired before the %s check "
+                  "reported\n",
+                  check_names[i]);
+      arts_test_fail();
+      all = false;
+    } else if (verdicts[i] != V_PASS) {
+      all = false;
+    }
+  }
+  if (all) {
+    arts_printf("PASS: multinode_edt every check reported before the finish "
+                "scope fired\n");
+  }
   arts_shutdown();
 }
 
@@ -186,32 +231,47 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("=== multinode_edt ===\n");
 
   unsigned int total = arts_get_total_ranks();
-  arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
+  uint64_t *v = NULL;
+  arts_guid_t verdicts =
+      arts_db_create((void **)&v, V_COUNT * sizeof(uint64_t), ARTS_DB,
+                     ARTS_DB_PROP_NONE, &(arts_db_hint_t){.rank = 0});
+  for (int i = 0; i < V_COUNT; i++) {
+    v[i] = V_UNREPORTED;
+  }
+  arts_db_release(verdicts, DB_MODE_RW);
+
+  arts_guid_t shut =
+      arts_edt_create(shutdown_edt, 0, NULL, 2, &(arts_edt_hint_t){.rank = 0});
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
+  arts_add_dependence(verdicts, shut, 1, DB_MODE_RO);
 
   // Test 1: Create EDT on remote node 1, have it signal back.
   {
     uint64_t expected_param = 1;
     arts_guid_t checker =
-        arts_edt_create(check_remote_edt, 1, &expected_param, 1,
+        arts_edt_create(check_remote_edt, 1, &expected_param, 2,
                         &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(verdicts, checker, 1, DB_MODE_RW);
     uint64_t coll_param = (uint64_t)checker;
     arts_edt_create(remote_task, 1, &coll_param, 0,
                     &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
   }
 
-  // Test 2: Create one EDT per node, each reports its rank.
+  // Test 2: TASKS_PER_NODE EDTs on every node, each reports its rank.
   {
+    uint32_t tasks = total * TASKS_PER_NODE;
     arts_guid_t all_coll =
-        arts_edt_create(check_all_nodes, 0, NULL, total,
+        arts_edt_create(check_all_nodes, 0, NULL, tasks + 1,
                         &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
-    for (unsigned int r = 0; r < total; r++) {
+    arts_add_dependence(verdicts, all_coll, tasks, DB_MODE_RW);
+    for (unsigned int i = 0; i < tasks; i++) {
       uint64_t params[2];
       params[0] = (uint64_t)all_coll;
-      params[1] = (uint64_t)r;
-      arts_edt_create(all_nodes_task, 2, params, 0,
-                      &(arts_edt_hint_t){.rank = r, .finish_event = fe});
+      params[1] = (uint64_t)i;
+      arts_edt_create(
+          all_nodes_task, 2, params, 0,
+          &(arts_edt_hint_t){.rank = i / TASKS_PER_NODE, .finish_event = fe});
     }
   }
 
@@ -221,8 +281,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   {
     uint64_t exp3 = 120;
     arts_guid_t c =
-        arts_edt_create(chain_check, 1, &exp3, 1,
+        arts_edt_create(chain_check, 1, &exp3, 2,
                         &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(verdicts, c, 1, DB_MODE_RW);
     uint64_t c_param = (uint64_t)c;
     arts_guid_t b =
         arts_edt_create(chain_hop, 1, &c_param, 1,
@@ -237,8 +298,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   // Test 4: Paramv delivery to remote node.
   {
     uint64_t pv[4] = {0xDEAD, 0xBEEF, 0xCAFE, 0xF00D};
-    arts_edt_create(check_paramv, 4, pv, 0,
-                    &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+    arts_guid_t chk =
+        arts_edt_create(check_paramv, 4, pv, 1,
+                        &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
+    arts_add_dependence(verdicts, chk, 0, DB_MODE_RW);
   }
 }
 

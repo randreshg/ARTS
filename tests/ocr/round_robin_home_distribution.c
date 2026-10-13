@@ -39,12 +39,16 @@
 
 /// @file round_robin_home_distribution.c
 /// @brief ARTS_HINT_ROUND_ROBIN + reserve_range: each labeled index's
-///        home rank equals idx % nrank, and a DB created at that GUID is
-///        actually local to (homed on) that rank.
+///        home rank equals idx % nrank on every rank, and a DB created at
+///        that GUID is actually local to (homed on) that rank.
 ///
 /// reserve_range(ARTS_HINT_ROUND_ROBIN) returns a DISTRIBUTED range whose
-/// from_index plants GUID i at home = idx % nrank.  This test (a) asserts the
-/// decoded rank of every index is idx % nrank, and (b) drives the stronger
+/// from_index plants GUID i at home = idx % nrank.  The range is reserved once
+/// on rank 0 and its GUID handed to a checker on every rank, which recomputes
+/// the whole mapping: from_index is a pure function of the range GUID and the
+/// rank count, so every rank must get the same GUIDs.  The checker (a) asserts
+/// the decoded rank of every index is idx % nrank, its kind is the range's,
+/// and index_from maps it back to its index, and (b) drives the stronger
 /// runtime claim: the rank that homes an index can create the DB with that GUID
 /// and arts_guid_is_local agrees — the rank that does NOT home it sees it as
 /// non-local.  This couples the GUID encoding to actual DB home placement.
@@ -76,10 +80,18 @@ static void checker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_guid_t g = arts_guid_from_index(range, i);
     unsigned int expect_home = i % nrank;
 
-    /* (a) decoded home matches idx % nrank. */
+    /* (a) decoded home matches idx % nrank, the kind is the range's, and the
+     * GUID maps back to its index. */
     if (arts_guid_get_rank(g) != expect_home) {
       arts_printf("  FAIL: rank %u idx %u home=%u expected %u\n", me, i,
                   arts_guid_get_rank(g), expect_home);
+      arts_test_fail();
+      ok = false;
+      continue;
+    }
+    if (arts_guid_get_kind(g) != ARTS_GUID_DB ||
+        arts_guid_index_from(range, g) != (int)i) {
+      arts_printf("  FAIL: rank %u idx %u kind or index round trip\n", me, i);
       arts_test_fail();
       ok = false;
       continue;

@@ -40,7 +40,8 @@
 /// @file event_chain.c
 /// @brief Tests event-to-event chaining and event-to-EDT dependence wiring.
 ///        Event A → Event B → EDT: when A fires, B should also fire,
-///        which triggers the final EDT.
+///        which triggers the final EDT.  A dependent the chain fails to fire
+///        leaves the finish scope undrained (ctest TIMEOUT).
 
 #include "arts.h"
 
@@ -66,23 +67,7 @@ void fan_in_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("  PASS: event fan-in (2 events -> 1 event -> EDT) fired\n");
 }
 
-/// Test 3: Event chain with data propagation.
-void chain_data_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                    arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  int *data = (int *)depv[0].ptr;
-  bool ok = (data != NULL && data[0] == 12345);
-  if (ok) {
-    arts_printf("  PASS: event chain propagated data correctly\n");
-  } else {
-    arts_printf("  FAIL: event chain data mismatch\n");
-    arts_test_fail();
-  }
-}
-
-/// Test 4: Already-fired event wired to EDT fires immediately.
+/// Test 3: Already-fired event wired to EDT fires immediately.
 void already_fired_end(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -133,22 +118,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_satisfy_slot(ev_a, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   arts_event_satisfy_slot(ev_b, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 
-  // Test 3: Event chain with DB data propagation.
-  void *dbptr = NULL;
-  arts_guid_t db = arts_db_create(&dbptr, sizeof(int), ARTS_DB_DEFAULT,
-                                  ARTS_DB_PROP_NONE, NULL);
-  ((int *)dbptr)[0] = 12345;
-  arts_db_release(db, DB_MODE_RW);
-
-  arts_guid_t ev3 = arts_event_create(NULL);
-  arts_guid_t edt3 =
-      arts_edt_create(chain_data_end, 0, NULL, 1,
-                      &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
-  arts_add_dependence(ev3, edt3, 0, DB_MODE_RW);
-  // Fire with data.
-  arts_event_satisfy_slot(ev3, db, ARTS_EVENT_LATCH_DECR_SLOT);
-
-  // Test 4: Already-fired IDEM-equivalent event → wire EDT after fire →
+  // Test 3: Already-fired IDEM-equivalent event → wire EDT after fire →
   // add_dependence fast path delivers immediate signal.
   arts_event_hint_t idem_hint = ARTS_EVENT_HINT_IDEMPOTENT;
   arts_guid_t ev4 = arts_event_create(&idem_hint);

@@ -30,20 +30,9 @@
  * PURE test: no arts_rt, no ports, no threads — runs standalone at any time.
  * The word this decider operates on exists only where a write grant migrates
  * under the PURGE release policy (VAL/INV, never EXCL, which arbitrates a
- * different single word of its own); under RETAIN the test compiles and
- * exits PASS having done nothing, rather than being excluded from the build.
+ * different single word of its own), so only those trees build the test.
  */
 #include <stdio.h>
-
-#if !defined(ARTS_RELEASE_PURGE) || defined(ARTS_PROTOCOL_EXCL)
-int main(void) {
-  printf("PASS grant_purge_word_model: skipped (the [own|count] grant word "
-         "and its decider exist only in a VAL/INV x PURGE build; EXCL "
-         "arbitrates its own lock word and RETAIN keeps the sentinel-only "
-         "word)\n");
-  return 0;
-}
-#else
 
 #include "arts/coherence/types_common.h"
 
@@ -209,5 +198,3 @@ int main(void) {
          g_checks);
   return 0;
 }
-
-#endif /* ARTS_RELEASE_PURGE && !ARTS_PROTOCOL_EXCL */

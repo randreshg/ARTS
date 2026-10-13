@@ -5,30 +5,30 @@
 
 /* event_satisfy_adddep_window.
  *
- * Target: the simple-event satisfy <-> addDep race window
+ * Target: the single-fire event's satisfy <-> addDep race window
  *   - handler_event_satisfy_slot: prev==1 is the UNIQUE fire trigger — only
  *     that thread writes simple.data and CAS-sets fired.
  *   - arts_add_dependence (event source): push onto the Treiber stack, then
  *     re-load fired (race rescue) and drain — but it MUST NOT CAS fired and
  *     MUST NOT write data.
  *
- * Beyond event_once_storm (which checks "all consumers see the same data"),
- * this test pins WHICH data every consumer must see: the data written by the
- * single prev==1 satisfy.  A second, racing over-satisfier carries a DISTINCT
- * data DB.  Because the latch starts at 1, exactly one DECR satisfy (prev==1)
- * fires and writes data; every later DECR is prev<=0 and silently absorbed
- * WITHOUT touching simple.data.  Therefore every delivered GUID must equal
- * exactly one of the two satisfy payloads, and ALL consumers in one iteration
- * must agree (the data slot is written once).  If a future regression let
- * addDep CAS fired or an over-satisfy rewrite data, consumers within an
- * iteration would disagree.
+ * Per iteration, N_SATISFIERS satisfies, each carrying its own data block,
+ * race N_DEPS dependences added from other EDTs, all of them depc=0 EDTs so
+ * the worker pool runs them concurrently: dependences pushed before the fire,
+ * during it, and after it (delivered at once from the stored data).  Even
+ * iterations create the dependence adders first and odd ones the satisfiers,
+ * so both the waiters pushed ahead of the fire and the late binders are
+ * plentiful.  Because
+ * the latch starts at 1, exactly one DECR satisfy (prev==1) fires and writes
+ * the data; every later one is prev<=0 and is absorbed WITHOUT touching it.
+ * So every consumer of an iteration must see the same GUID, and that GUID
+ * must be one of the iteration's payloads.  If addDep CAS-set fired or an
+ * over-satisfy rewrote the data, consumers within an iteration would
+ * disagree; a lost waiter leaves the latch short (ctest TIMEOUT).
  *
- * To make the window real, for each iteration the unique satisfier, the
- * over-satisfier, and N late add-deppers all run as depc=0 EDTs so they race.
- *
- * PASS criterion: M*N deliveries, per iteration all consumers observe the SAME
- * data GUID, and that GUID is one of the two satisfy payloads.  A stranded
- * consumer => ctest TIMEOUT.
+ * The events are IDEMPOTENT so the late binders' delivery is defined however
+ * the race goes.  The consumers record into one block with no order among
+ * them, which the DB-WRF model does not admit.
  */
 
 #include <stdatomic.h>
@@ -38,22 +38,20 @@
 
 #include "arts.h"
 
-#define M_ITERS 48
+#define M_ITERS 64
 #define N_DEPS 8
+#define N_SATISFIERS 8
 #define TOTAL (M_ITERS * N_DEPS)
 
 /* State DB (uint64_t):
- *   [0]                          — delivered_count (atomic)
- *   [1 .. TOTAL]                 — cdata[it*N_DEPS+idx]
- *   [TOTAL+1 .. TOTAL+M_ITERS]   — payload_a[it]
- *   [TOTAL+M_ITERS+1 ..
- *        TOTAL+2*M_ITERS]        — payload_b[it]
+ *   [0]                    — delivered_count (atomic)
+ *   [ST_CDATA + it*N_DEPS + idx]          — what consumer idx received
+ *   [ST_PAYLOAD + it*N_SATISFIERS + s]    — satisfier s's payload
  */
 #define ST_DELIVERED 0
 #define ST_CDATA 1
-#define ST_PA (ST_CDATA + TOTAL)
-#define ST_PB (ST_PA + M_ITERS)
-#define ST_NELEMS (ST_PB + M_ITERS)
+#define ST_PAYLOAD (ST_CDATA + TOTAL)
+#define ST_NELEMS (ST_PAYLOAD + M_ITERS * N_SATISFIERS)
 
 /* counter_edt — paramv: [state_db, latch, it, idx].
  * depv[0] = event data (RW), depv[1] = state DB (RW). */
@@ -112,18 +110,20 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   for (int it = 0; it < M_ITERS; it++) {
-    arts_guid_t pa = (arts_guid_t)atomic_load_explicit(
-        (_Atomic uint64_t *)&state[ST_PA + it], memory_order_acquire);
-    arts_guid_t pb = (arts_guid_t)atomic_load_explicit(
-        (_Atomic uint64_t *)&state[ST_PB + it], memory_order_acquire);
     arts_guid_t first = (arts_guid_t)atomic_load_explicit(
         (_Atomic uint64_t *)&state[ST_CDATA + it * N_DEPS + 0],
         memory_order_acquire);
-    if (first != pa && first != pb) {
+    int payload = -1;
+    for (int s = 0; s < N_SATISFIERS; s++) {
+      if ((arts_guid_t)state[ST_PAYLOAD + it * N_SATISFIERS + s] == first) {
+        payload = s;
+      }
+    }
+    if (payload < 0) {
       (void)fprintf(stderr,
-                    "FAIL [it=%d]: delivered data=%lu is neither satisfy "
-                    "payload (a=%lu b=%lu)\n",
-                    it, (uint64_t)first, (uint64_t)pa, (uint64_t)pb);
+                    "FAIL [it=%d]: delivered data=%lu is none of the "
+                    "iteration's satisfy payloads\n",
+                    it, (uint64_t)first);
       arts_abort(1);
     }
     for (int i = 1; i < N_DEPS; i++) {
@@ -139,9 +139,9 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
     }
   }
-  printf("event_satisfy_adddep_window: %d iters x %d deps = %d deliveries, "
-         "data written once by the unique fire — PASS\n",
-         M_ITERS, N_DEPS, TOTAL);
+  printf("event_satisfy_adddep_window: %d iters x %d deps x %d satisfiers = "
+         "%d deliveries, data written once by the unique fire — PASS\n",
+         M_ITERS, N_DEPS, N_SATISFIERS, TOTAL);
   arts_shutdown();
 }
 
@@ -167,8 +167,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   for (int it = 0; it < M_ITERS; it++) {
-    /* IDEM: latch=1, over-satisfy silently absorbed, event lingers so late
-     * add-deppers still deliver from the fire data. */
     arts_event_hint_t h = ARTS_EVENT_HINT_IDEMPOTENT;
     arts_guid_t ev = arts_event_create(&h);
     if (ev == NULL_GUID) {
@@ -176,25 +174,25 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       arts_abort(1);
     }
 
-    void *ap = NULL;
-    void *bp = NULL;
-    arts_guid_t da =
-        arts_db_create(&ap, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-    arts_guid_t db =
-        arts_db_create(&bp, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-    state[ST_PA + it] = (uint64_t)da;
-    state[ST_PB + it] = (uint64_t)db;
-
-    /* Two satisfiers (one wins the prev==1 fire) + N late add-deppers, all
-     * depc=0 so they race the satisfy<->addDep window. */
-    uint64_t spa[2] = {(uint64_t)ev, (uint64_t)da};
-    uint64_t spb[2] = {(uint64_t)ev, (uint64_t)db};
-    arts_edt_create(satisfier_edt, 2, spa, 0, NULL);
-    arts_edt_create(satisfier_edt, 2, spb, 0, NULL);
-    for (int i = 0; i < N_DEPS; i++) {
-      uint64_t dpv[5] = {(uint64_t)ev, (uint64_t)state_db, (uint64_t)latch,
-                         (uint64_t)it, (uint64_t)i};
-      arts_edt_create(depper_edt, 5, dpv, 0, NULL);
+    /* Deppers created first push their waiters before the fire; satisfiers
+       created first fire before most of the pushes. */
+    for (int half = 0; half < 2; half++) {
+      if ((half == 0) == ((it & 1) == 0)) {
+        for (int i = 0; i < N_DEPS; i++) {
+          uint64_t dpv[5] = {(uint64_t)ev, (uint64_t)state_db, (uint64_t)latch,
+                             (uint64_t)it, (uint64_t)i};
+          arts_edt_create(depper_edt, 5, dpv, 0, NULL);
+        }
+      } else {
+        for (int s = 0; s < N_SATISFIERS; s++) {
+          void *dp = NULL;
+          arts_guid_t data = arts_db_create(&dp, sizeof(uint64_t), ARTS_DB,
+                                            ARTS_DB_PROP_NONE, NULL);
+          state[ST_PAYLOAD + it * N_SATISFIERS + s] = (uint64_t)data;
+          uint64_t spv[2] = {(uint64_t)ev, (uint64_t)data};
+          arts_edt_create(satisfier_edt, 2, spv, 0, NULL);
+        }
+      }
     }
   }
 

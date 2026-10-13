@@ -10,9 +10,9 @@
  * invariant is: exactly ONE party observes the depc_needed==0 transition and
  * fires the EDT — never zero (lost wakeup) and never two (double dispatch).
  *
- * Three scenarios per run, each driving a distinct branch of the protocol:
+ * Five scenarios per run, each driving a distinct branch of the protocol:
  *
- *   A) depc==0, fresh GUID: immediate fire exactly once.
+ *   A) fresh GUID, its one slot satisfied after create: fires exactly once.
  *
  *   B) pre-reserved GUID, all deps satisfied BEFORE create: the satisfies are
  *      queued on the RESERVED slot (OoO).  The sentinel keeps depc_needed >= 1
@@ -23,10 +23,20 @@
  *      sentinel removal sees depc_needed > 0 (does not fire); the trailing
  *      satisfy drives it to 0 and fires.  Must fire exactly once.
  *
+ *   D) a satisfy naming a slot past depc, delivered between the real slots,
+ *      is ignored: the EDT still fires exactly once, with every slot written.
+ *
+ *   E) a satisfy naming a slot past depc is not one of the EDT's dependences,
+ *      so it does not count toward readiness: an EDT with one real slot of two
+ *      satisfied and one out-of-range satisfy is still pending, and destroying
+ *      it ends it unrun.  Counted, the out-of-range satisfy would make the EDT
+ *      runnable, the destroy would be the no-op it is on a runnable EDT, and
+ *      the body would run.  Must never fire.
+ *
  * Each fired EDT increments its own per-scenario atomic counter.  A collector
  * EDT (gated on a finish event that all scenarios join) verifies every counter
- * is EXACTLY 1.  A stranded EDT (counter 0) or a double fire (counter 2) is a
- * FAIL; a deadlock is caught by the ctest TIMEOUT.
+ * of A-D is EXACTLY 1 and E's is 0.  A stranded EDT (counter 0) or a double
+ * fire (counter 2) is a FAIL; a deadlock is caught by the ctest TIMEOUT.
  *
  * Config-agnostic: pure single-rank EDT lifecycle, no coherence transfer.
  */
@@ -37,12 +47,17 @@
 #include <stdint.h>
 #include <stdio.h>
 
-/* Counter DB: one atomic per scenario fire-count, plus a fail flag. */
+/* Counter DB: one atomic per scenario fire-count, plus D's premature fires. */
 typedef struct {
   _Atomic unsigned int fired_a;
   _Atomic unsigned int fired_b;
   _Atomic unsigned int fired_c;
+  _Atomic unsigned int fired_d;
+  _Atomic unsigned int premature_d;
+  _Atomic unsigned int fired_e;
 } counters_t;
+
+#define D_LAST_VALUE ((arts_guid_t)0x5678u)
 
 #define PV_CTR 0 /* paramv[0] = counters DB guid */
 
@@ -51,7 +66,7 @@ static void bump(arts_guid_t ctr_guid, _Atomic unsigned int *which) {
   atomic_fetch_add_explicit(which, 1u, memory_order_relaxed);
 }
 
-/* Scenario A body: fired by depc==0 immediate path. depv[0]=counters(RW). */
+/* Scenario A body: depv[0]=counters(RW). */
 void fire_a(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
             arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -80,6 +95,28 @@ void fire_c(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   bump((arts_guid_t)paramv[PV_CTR], &c->fired_c);
 }
 
+/* Scenario D body: depv[0]=counters (RW), depv[1] = the value satisfied
+ * last. */
+void fire_d(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+            arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  counters_t *c = (counters_t *)depv[0].ptr;
+  if (depv[1].guid != D_LAST_VALUE) {
+    atomic_fetch_add_explicit(&c->premature_d, 1u, memory_order_relaxed);
+  }
+  bump((arts_guid_t)paramv[PV_CTR], &c->fired_d);
+}
+
+/* Scenario E body: must never run -- its slot 1 is never satisfied. */
+void fire_e(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+            arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  counters_t *c = (counters_t *)depv[0].ptr;
+  bump((arts_guid_t)paramv[PV_CTR], &c->fired_e);
+}
+
 /* Collector: reads the counters RO after all scenarios drained. */
 void collector(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
@@ -91,11 +128,19 @@ void collector(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int a = atomic_load_explicit(&c->fired_a, memory_order_relaxed);
   unsigned int b = atomic_load_explicit(&c->fired_b, memory_order_relaxed);
   unsigned int cc = atomic_load_explicit(&c->fired_c, memory_order_relaxed);
-  arts_printf("edt_sentinel_single_fire: A=%u B=%u C=%u\n", a, b, cc);
-  if (a == 1u && b == 1u && cc == 1u) {
+  unsigned int d = atomic_load_explicit(&c->fired_d, memory_order_relaxed);
+  unsigned int e = atomic_load_explicit(&c->fired_e, memory_order_relaxed);
+  unsigned int early =
+      atomic_load_explicit(&c->premature_d, memory_order_relaxed);
+  arts_printf("edt_sentinel_single_fire: A=%u B=%u C=%u D=%u (fired before "
+              "its last slot: %u)\n",
+              a, b, cc, d, early);
+  arts_printf("edt_sentinel_single_fire: E=%u\n", e);
+  if (a == 1u && b == 1u && cc == 1u && d == 1u && early == 0u && e == 0u) {
     arts_printf("PASS edt_sentinel_single_fire\n");
   } else {
-    arts_printf("FAIL edt_sentinel_single_fire: each must fire exactly once\n");
+    arts_printf("FAIL edt_sentinel_single_fire: A-D must each fire exactly "
+                "once, after all of their slots, and E never\n");
     arts_abort(1);
   }
   arts_shutdown();
@@ -118,16 +163,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   atomic_init(&c->fired_a, 0u);
   atomic_init(&c->fired_b, 0u);
   atomic_init(&c->fired_c, 0u);
+  atomic_init(&c->fired_d, 0u);
+  atomic_init(&c->premature_d, 0u);
+  atomic_init(&c->fired_e, 0u);
   arts_db_release(ctr, DB_MODE_RW);
 
   uint64_t pv[1] = {(uint64_t)ctr};
 
-  /* Finish scope: collector waits until A/B/C all drain (their finish-scope
-   * INCRs balance their DECRs at completion). */
+  /* Finish scope: the collector waits until every scenario drains (a fired
+   * EDT's completion and a destroyed one's destroy balance its INCR). */
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
-  /* --- Scenario A: depc==0 immediate fire (fresh GUID). The counters dep is
-   * its only dependency. --- */
+  /* --- Scenario A: fresh GUID; the counters dep is its only dependency. --- */
   {
     arts_guid_t a = arts_edt_create(
         fire_a, 1, pv, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
@@ -162,6 +209,25 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     /* Trailing satisfy that drives readiness to 0 after the sentinel removal.
      */
     arts_edt_satisfy_slot(cg, 1, NULL_GUID, DB_MODE_NULL);
+  }
+
+  /* --- Scenario D: slot 0, then a slot past depc, then the last slot. --- */
+  {
+    arts_guid_t d = arts_edt_create(
+        fire_d, 1, pv, 2, &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(ctr, d, 0, DB_MODE_RW);
+    arts_edt_satisfy_slot(d, 5, NULL_GUID, DB_MODE_NULL);
+    arts_edt_satisfy_slot(d, 1, D_LAST_VALUE, DB_MODE_NULL);
+  }
+
+  /* --- Scenario E: slot 0, a slot past depc, then a destroy while slot 1 is
+   * still missing. --- */
+  {
+    arts_guid_t e = arts_edt_create(
+        fire_e, 1, pv, 2, &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_add_dependence(ctr, e, 0, DB_MODE_RW);
+    arts_edt_satisfy_slot(e, 5, NULL_GUID, DB_MODE_NULL);
+    arts_edt_destroy(e);
   }
 
   /* Collector gated on the finish scope: created last, depends on fe firing. */

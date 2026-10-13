@@ -21,22 +21,14 @@
  * excl_compute_next is non-static (exposed for this test); the file is built
  * standalone by #including coherence/excl/arbiters.c, which also carries the
  * PURGE cache-word arbiter cache_compute_next this test pins alongside it.
- * Both exist only in the EXCL+PURGE build; the test self-skips elsewhere.
+ * Both exist only in the EXCL+PURGE build, the only tree that builds and
+ * registers the test.
  *
  * Build: -DARTS_PROTOCOL_EXCL=1 -DARTS_RELEASE_PURGE=1
  * -DARTS_UNIT_STANDALONE_SHIMS.
  */
 
 #include <stdio.h>
-
-#if !defined(ARTS_PROTOCOL_EXCL) || !defined(ARTS_RELEASE_PURGE)
-int main(void) {
-  printf(
-      "PASS excl_compute_next: skipped (EXCL+PURGE only; the arbiters it pins "
-      "exist only in that build)\n");
-  return 0;
-}
-#else
 
 #include "arts/coherence/excl/types.h"
 
@@ -396,8 +388,4 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
 }
 #endif
 
-#endif /* ARTS_PROTOCOL_EXCL */
-
-#if defined(ARTS_PROTOCOL_EXCL)
 #include "core/coherence/excl/arbiters.c"
-#endif

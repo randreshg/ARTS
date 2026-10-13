@@ -55,9 +55,9 @@
 /// main_edt waits on each scope in that order before creating the next EDT,
 /// releasing the creator-token so the scope can drain.
 ///
-/// Registered single-node and multinode.  Two progress threads per rank,
-/// which reorder one peer's messages, widen the race; on one rank there is no
-/// transfer and the test passes trivially.
+/// Registered on two ranks, with one and with two progress threads per rank;
+/// two, which reorder one peer's messages, widen the race.  On one rank there
+/// is no transfer.
 /// A stranded waiter is caught by the ctest TIMEOUT (no in-test watchdog).
 
 #include "arts.h"

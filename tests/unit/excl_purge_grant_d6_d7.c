@@ -28,16 +28,8 @@
  * happens-before is enforced only where the data value is asserted (the seed
  * writer runs first via a finish-event gate so readers have a defined value).
  *
- * Self-skips on any non-EXCL build at compile time.
+ * Built and registered only in an EXCL tree.
  */
-
-#if !defined(ARTS_PROTOCOL_EXCL)
-#include <stdio.h>
-int main(void) {
-  printf("SKIP excl_purge_grant_d6_d7: EXCL-only\n");
-  return 0;
-}
-#else
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -223,5 +215,3 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-
-#endif /* ARTS_PROTOCOL_EXCL */

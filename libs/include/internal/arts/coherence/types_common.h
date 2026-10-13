@@ -271,13 +271,12 @@ struct arts_db_snapshot_waiter_s {
 /*--- Pending RW waiters --------------------------------------------------
  * edt_guid + slot together identify the parked EDT's dep slot to fill on
  * trigger.  The RW waiter chain is a Treiber stack (cache.pending_rw,
- * arts_lf_stack_t): the embedded link is owned by the stack (push prepends,
- * drain atomic-exchanges the whole chain).  Producers are foreign-rank acquire
- * paths; the single consumer is the home-side dispatcher.  Every consume is
- * order-free — drain-all on GRANT/fail, and a non-destructive single-consumer
- * for_each on PROCEED — so a LIFO Treiber stack suffices; there is no FIFO or
- * drain-one requirement (that is the home grantreq queue, which stays Vyukov
- * MPSC). */
+ * arts_lf_stack_t): the embedded link is owned by the stack (push prepends, a
+ * take atomic-exchanges the whole chain out).  Producers are foreign-rank
+ * acquire paths; the single consumer is the grant drain, which wakes every
+ * waiter it took, so the consume is order-free and a LIFO Treiber stack
+ * suffices; there is no FIFO or drain-one requirement (that is the home
+ * grantreq queue, which stays Vyukov MPSC). */
 struct arts_db_rw_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
   arts_guid_t edt_guid;

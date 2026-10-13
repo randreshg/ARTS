@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_mpsc_pop INV-4 (CRITICAL): transient-empty is NEVER terminal —
- * a lost-wakeup guard (mpsc.h).  Census 29.md §5 INV-4 / SUSPECTED-BUG B081
- * (the historical channel lost-wakeup class).
+ * arts_mpsc_pop: transient-empty is NEVER terminal — a lost-wakeup guard
+ * (mpsc.h).
  *
  * arts_mpsc_push is two steps: xchg(head, n) then prev->next = n.  Between
  * them a concurrent consumer sees the new head but `prev->next` still NULL —
@@ -11,7 +10,7 @@
  * node (lost wakeup).  A correct consumer that keeps polling ALWAYS gets the
  * node once the producer's linking store lands.
  *
- * This test expresses INV-4 as a PROPERTY: under heavy producer/consumer
+ * This test expresses the guard as a PROPERTY: under heavy producer/consumer
  * contention, every pushed node is retrieved within a BOUNDED number of
  * consecutive transient-empty retries.  Concretely the single consumer counts
  * consecutive NULL pops; if it ever exceeds a generous bound WHILE producers
@@ -83,12 +82,6 @@ int main(void) {
   }
   atomic_store_explicit(&g_start, 1, memory_order_release);
 
-  bool gate = arts_mpsc_try_drain_begin(&g_q);
-  if (!gate) {
-    (void)fprintf(stderr, "FAIL mpsc_transient_empty: lost own gate\n");
-    return 1;
-  }
-
   size_t got = 0;
   unsigned long long consecutive_empty = 0;
   while (got < TOTAL) {
@@ -125,7 +118,6 @@ int main(void) {
     free(n);
     ++got;
   }
-  arts_mpsc_drain_end(&g_q);
 
   for (int i = 0; i < PRODUCERS; ++i) {
     pthread_join(prod[i], NULL);

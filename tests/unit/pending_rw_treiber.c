@@ -1,41 +1,36 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * VAL arts_pending_rw_queue_* (cache-side RW waiter chain).
+ * arts_pending_rw_queue_* (cache-side RW waiter chain).
  *
  * A Treiber stack (arts_lf_stack_t) of arts_db_rw_waiter_s nodes (link FIRST).
  * Producers (foreign-rank acquire_remote_rw) prepend via release-CAS; the
- * single home-side consumer either drain-alls (GRANT / fail / destroy) — woken
- * + freed once each — or non-destructively for_each-walks (PROCEED, never
- * frees).  Order is immaterial (every waiter is woken regardless), which is why
- * a LIFO stack suffices vs the home grantreq Vyukov FIFO.
+ * single consumer detaches the whole chain (take), may count it before waking
+ * anyone, then wakes and frees every waiter once (chain_wake); teardown frees
+ * whatever is left (destroy).  Order is immaterial (every waiter is woken
+ * regardless), which is why a LIFO stack suffices vs the home grantreq Vyukov
+ * FIFO.
  *
- * Defined in coherence/grant.c — the shared migrating-grant plane.  #includes the TU standalone
- * (precedent: rank_bitset.c).  Self-skips elsewhere.
+ * Defined in coherence/grant_queue.c, which this TU #includes standalone
+ * (precedent: rank_bitset.c).  One body serves every arm that keeps the
+ * grant's cache-side queue (VAL, INV), so the test runs in the reference tree.
  *
  * Properties exercised:
- *   1. drain-all conservation: push K waiters, one drain wakes + frees EXACTLY
+ *   1. conservation: push K waiters; one take detaches a chain that counts K
+ *      and is still whole after the count, and its wake wakes + frees EXACTLY
  *      K, each once (counted via a per-waiter id seen-array; ASan/LSan catch a
- *      missed free or double-free).
+ *      missed free or double-free).  A take on the emptied stack detaches
+ *      nothing.
  *   2. container_of: each woken cb receives the (edt_guid, slot) the producer
  *      pushed — proves link-is-first ARTS_CONTAINER_OF recovery.
- *   3. for_each never frees: a for_each walk leaves the chain intact, so a
- *      following drain still wakes every node (no premature free).
- *   4. concurrency: N producers push concurrently with repeated drains; a push
- *      racing a drain forms a fresh stack picked up by the NEXT drain — so the
- *      union over all drains wakes EXACTLY the pushed set, no loss, no dup.
+ *   3. concurrency: N producers push concurrently with repeated takes; a push
+ *      racing a take forms a fresh stack picked up by the NEXT take — so the
+ *      union over all takes wakes EXACTLY the pushed set, no loss, no dup.
+ *   4. destroy frees a chain nobody took.
  *
- * Build: -DARTS_PROTOCOL_VAL=1 (+ a placement) -DARTS_UNIT_STANDALONE_SHIMS.
+ * Build: -DARTS_UNIT_STANDALONE_SHIMS.
  */
 
 #include <stdio.h>
-
-#if !defined(ARTS_PROTOCOL_VAL)
-int main(void) {
-  printf("PASS pending_rw_treiber: skipped (VAL-only; cache.pending_rw is a "
-         "Treiber stack only in the VAL engine)\n");
-  return 0;
-}
-#else
 
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/directory.h"
@@ -63,8 +58,8 @@ static void *watchdog(void *arg) {
  * interpretation — the queue only stores/forwards it. */
 static arts_guid_t mk_guid(uint64_t v) { return (arts_guid_t)v; }
 
-/* ---- drain cb: records (guid,slot) per woken waiter ---- */
-struct drain_ctx {
+/* ---- wake cb: records (guid,slot) per woken waiter ---- */
+struct wake_ctx {
   int *seen;    /* seen[id]++ */
   int cap;      /* capacity of seen */
   int count;    /* total woken */
@@ -74,8 +69,8 @@ struct drain_ctx {
 
 /* We encode id into BOTH guid (id) and slot (id ^ 0x5555) so the cb can verify
  * the (guid,slot) pair was delivered together (container_of integrity). */
-static void drain_cb(arts_guid_t edt_guid, unsigned int slot, void *ctxv) {
-  struct drain_ctx *c = (struct drain_ctx *)ctxv;
+static void wake_cb(arts_guid_t edt_guid, unsigned int slot, void *ctxv) {
+  struct wake_ctx *c = (struct wake_ctx *)ctxv;
   long id = (long)(uint64_t)edt_guid;
   if (id < 0 || id >= c->cap) {
     c->oob++;
@@ -96,8 +91,18 @@ static struct arts_db_rw_waiter_s *mk_waiter(long id) {
   return w;
 }
 
-/* ---- Part 1+2: drain-all conservation + container_of ---- */
-static int part1_drain_all(void) {
+/* Detaches the chain, then wakes + frees it; returns how many it counted. */
+static unsigned int take_and_wake(arts_lf_stack_t *q,
+                                  void (*cb)(arts_guid_t, unsigned int, void *),
+                                  void *ctx) {
+  arts_lf_link_t *chain = arts_pending_rw_queue_take(q);
+  unsigned int n = arts_pending_rw_chain_count(chain);
+  arts_pending_rw_chain_wake(chain, cb, ctx);
+  return n;
+}
+
+/* ---- Parts 1, 2 and 4: conservation, container_of, destroy ---- */
+static int part1_take_all(void) {
   arts_lf_stack_t q;
   arts_pending_rw_queue_init(&q);
   const int K = 1000;
@@ -106,12 +111,14 @@ static int part1_drain_all(void) {
   }
   int seen[1000];
   memset(seen, 0, sizeof(seen));
-  struct drain_ctx c = {seen, K, 0, 0, 0};
-  arts_pending_rw_queue_drain(&q, drain_cb, &c);
+  struct wake_ctx c = {seen, K, 0, 0, 0};
+  unsigned int counted = take_and_wake(&q, wake_cb, &c);
   int rc = 0;
-  if (c.count != K || c.bad_guid || c.oob) {
-    (void)fprintf(stderr, "FAIL: drain woke %d (want %d) bad_guid=%d oob=%d\n",
-                  c.count, K, c.bad_guid, c.oob);
+  if (counted != (unsigned int)K || c.count != K || c.bad_guid || c.oob) {
+    (void)fprintf(stderr,
+                  "FAIL: take counted %u, woke %d (want %d) bad_guid=%d "
+                  "oob=%d\n",
+                  counted, c.count, K, c.bad_guid, c.oob);
     rc = 1;
   }
   for (int i = 0; i < K; i++) {
@@ -120,59 +127,20 @@ static int part1_drain_all(void) {
       rc = 1;
     }
   }
-  /* Drain again on the now-empty stack: zero wakes, no crash. */
-  struct drain_ctx c2 = {seen, K, 0, 0, 0};
-  arts_pending_rw_queue_drain(&q, drain_cb, &c2);
-  if (c2.count != 0) {
-    (void)fprintf(stderr, "FAIL: second drain woke %d (want 0)\n", c2.count);
+  if (arts_pending_rw_queue_pending(&q) ||
+      arts_pending_rw_queue_take(&q) != NULL) {
+    (void)fprintf(stderr, "FAIL: the stack is not empty after a take\n");
     rc = 1;
   }
-  arts_pending_rw_queue_destroy(&q);
-  return rc;
-}
-
-/* ---- Part 3: for_each never frees ---- */
-static int part3_for_each_no_free(void) {
-  arts_lf_stack_t q;
-  arts_pending_rw_queue_init(&q);
-  const int K = 200;
-  for (long i = 0; i < K; i++) {
+  /* A chain nobody takes is freed by destroy (LSan reports a leak). */
+  for (long i = 0; i < 16; i++) {
     arts_pending_rw_queue_push(&q, mk_waiter(i));
   }
-  int seen[200];
-  int rc = 0;
-  /* Two for_each walks: both must visit all K, none freed (so the second walk
-   * still sees them).  A premature free → ASan UAF or a short count. */
-  for (int pass = 0; pass < 2; pass++) {
-    memset(seen, 0, sizeof(seen));
-    struct drain_ctx c = {seen, K, 0, 0, 0};
-    arts_pending_rw_queue_for_each(&q, drain_cb, &c);
-    if (c.count != K || c.bad_guid || c.oob) {
-      (void)fprintf(stderr, "FAIL: for_each pass %d count %d (want %d)\n", pass,
-                    c.count, K);
-      rc = 1;
-    }
-    for (int i = 0; i < K; i++) {
-      if (seen[i] != 1) {
-        rc = 1;
-      }
-    }
-  }
-  /* A subsequent drain still frees every node exactly once (proves for_each
-   * left them all on the chain). */
-  memset(seen, 0, sizeof(seen));
-  struct drain_ctx c = {seen, K, 0, 0, 0};
-  arts_pending_rw_queue_drain(&q, drain_cb, &c);
-  if (c.count != K) {
-    (void)fprintf(stderr, "FAIL: drain after for_each woke %d (want %d)\n",
-                  c.count, K);
-    rc = 1;
-  }
   arts_pending_rw_queue_destroy(&q);
   return rc;
 }
 
-/* ---- Part 4: push concurrent with drain — survives to next drain ---- */
+/* ---- Part 3: push concurrent with take — survives to the next take ---- */
 #define NPROD 6
 #define PER_PROD 5000
 #define TOTAL (NPROD * PER_PROD)
@@ -209,7 +177,7 @@ static void *conc_producer(void *arg) {
   return NULL;
 }
 
-static int part4_concurrent(void) {
+static int part3_concurrent(void) {
   arts_pending_rw_queue_init(&g_q);
   atomic_store_explicit(&g_start, 0, memory_order_release);
   atomic_store_explicit(&g_prod_done, 0, memory_order_release);
@@ -223,24 +191,16 @@ static int part4_concurrent(void) {
   }
   atomic_store_explicit(&g_start, 1, memory_order_release);
 
-  /* Single consumer: keep draining while producers run, then drain once more
-   * after they finish to absorb any fresh-stack remainder.  A push racing the
-   * drain's atomic-exchange forms a new stack the next drain claims. */
+  /* Single consumer: keep taking while producers run, then once more after
+   * they finish to absorb any fresh-stack remainder.  A push racing the take's
+   * atomic-exchange forms a new stack the next take claims. */
   while (atomic_load_explicit(&g_prod_done, memory_order_acquire) < NPROD) {
-    arts_pending_rw_queue_drain(&g_q, conc_cb, NULL);
-  }
-  /* Final settling drains (loop until the woken total stabilises at TOTAL). */
-  for (int spin = 0; spin < 1000; spin++) {
-    arts_pending_rw_queue_drain(&g_q, conc_cb, NULL);
-    if (atomic_load_explicit(&g_woken, memory_order_acquire) == TOTAL) {
-      break;
-    }
+    (void)take_and_wake(&g_q, conc_cb, NULL);
   }
   for (int i = 0; i < NPROD; i++) {
     pthread_join(th[i], NULL);
   }
-  /* One more drain after join: guarantees nothing is left on the chain. */
-  arts_pending_rw_queue_drain(&g_q, conc_cb, NULL);
+  (void)take_and_wake(&g_q, conc_cb, NULL);
 
   int rc = 0;
   long w = atomic_load_explicit(&g_woken, memory_order_acquire);
@@ -266,17 +226,15 @@ int main(void) {
   pthread_create(&wd, NULL, watchdog, NULL);
   pthread_detach(wd);
 
-  if (part1_drain_all() != 0) {
+  if (part1_take_all() != 0) {
     return 1;
   }
-  if (part3_for_each_no_free() != 0) {
+  if (part3_concurrent() != 0) {
     return 1;
   }
-  if (part4_concurrent() != 0) {
-    return 1;
-  }
-  printf("PASS pending_rw_treiber: drain-all conservation + container_of + "
-         "for_each-no-free + %d-producer concurrent (%d each) no loss/dup\n",
+  printf("PASS pending_rw_treiber: take-count-wake conservation + "
+         "container_of + destroy + %d-producer concurrent (%d each) no "
+         "loss/dup\n",
          NPROD, PER_PROD);
   return 0;
 }
@@ -287,8 +245,4 @@ void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }
 #endif
 
-#endif /* ARTS_PROTOCOL_VAL */
-
-#if defined(ARTS_PROTOCOL_VAL)
 #include "core/coherence/grant_queue.c"
-#endif

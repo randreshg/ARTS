@@ -28,17 +28,9 @@
  * REQUEST or a lost RO coalesce leaves an EDT parked → LATCH never fires →
  * ctest TIMEOUT (no in-test watchdog, no spin).
  *
- * Self-skips on any non-EXCL build at compile time (the coalesce bits are a
+ * Built and registered only in an EXCL tree (the coalesce bits are an
  * EXCL-cache concept).
  */
-
-#if !defined(ARTS_PROTOCOL_EXCL)
-#include <stdio.h>
-int main(void) {
-  printf("SKIP excl_request_coalesce: EXCL-only\n");
-  return 0;
-}
-#else
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -196,5 +188,3 @@ int main(int argc, char **argv) {
   int rc = arts_rt(argc, argv);
   return rc ? 1 : arts_test_status();
 }
-
-#endif /* ARTS_PROTOCOL_EXCL */

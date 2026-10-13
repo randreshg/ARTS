@@ -1,17 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_mpsc_t — Vyukov intrusive multi-producer / single-consumer queue
- * with a try-acquire-bail drain gate.
+ * arts_mpsc_t — Vyukov intrusive multi-producer / single-consumer queue.
  *
  * Producers append with a single atomic_exchange on the head (wait-free);
  * the linking store that follows is what a concurrent consumer may briefly
  * observe as "inconsistent" (a producer has claimed the tail slot but not
  * yet linked it) — pop reports empty in that window and the next attempt
- * succeeds.  Exactly one consumer may run pop at a time; the drain gate
- * (try_drain_begin / drain_end) elects that consumer without spinning:
- * a thread that loses the CAS returns to its caller and lets the winner
- * drain everything visible up to the winner's drain_end.  Forward progress
- * is always made by some thread, so the gate is lock-free.
+ * succeeds.  Exactly one consumer may run pop at a time: which thread that
+ * is, is the owning structure's discipline, not the queue's.
  *
  * Node type: the queue rides the common intrusive link `arts_lf_link_t`
  * (a single `{ _Atomic next }` cell, also used by arts_lf_stack_t).  Embed
@@ -33,16 +29,14 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-/* Layout-mirror: the C++/nvcc TU drops _Atomic on head/drain_lock so the
- * struct layout stays visible without C11 atomics, exactly the same pattern
- * arts_lf_stack_t uses.  The inline producer/consumer helpers below only
- * compile in C. */
+/* Layout-mirror: the C++/nvcc TU drops _Atomic on head so the struct layout
+ * stays visible without C11 atomics, exactly the same pattern arts_lf_stack_t
+ * uses.  The inline producer/consumer helpers below only compile in C. */
 #ifdef __cplusplus
 typedef struct {
   arts_lf_link_t *head;
   arts_lf_link_t *tail;
   arts_lf_link_t stub;
-  uint8_t drain_lock;
 } arts_mpsc_t;
 #else
 #include <stdatomic.h>
@@ -51,14 +45,12 @@ typedef struct {
   _Atomic(arts_lf_link_t *) head; /* producers tail-append via xchg */
   arts_lf_link_t *tail;           /* single consumer reads/advances */
   arts_lf_link_t stub;            /* embedded sentinel */
-  _Atomic(uint8_t) drain_lock;    /* try-acquire drain election */
 } arts_mpsc_t;
 
 static inline void arts_mpsc_init(arts_mpsc_t *q) {
   atomic_store_explicit(&q->stub.next, NULL, memory_order_relaxed);
   atomic_store_explicit(&q->head, &q->stub, memory_order_relaxed);
   q->tail = &q->stub;
-  atomic_store_explicit(&q->drain_lock, 0u, memory_order_relaxed);
 }
 
 /* Lock-free; any number of producers may run concurrently. */
@@ -69,8 +61,9 @@ static inline void arts_mpsc_push(arts_mpsc_t *q, arts_lf_link_t *n) {
   atomic_store_explicit(&prev->next, n, memory_order_release);
 }
 
-/* Single-consumer pop; caller MUST hold the drain gate.  Returns NULL when
- * the queue is empty or transiently inconsistent (a producer is mid-link). */
+/* Single-consumer pop; the caller MUST be the queue's only consumer.  Returns
+ * NULL when the queue is empty or transiently inconsistent (a producer is
+ * mid-link). */
 static inline arts_lf_link_t *arts_mpsc_pop(arts_mpsc_t *q) {
   arts_lf_link_t *tail = q->tail;
   arts_lf_link_t *next =
@@ -101,27 +94,14 @@ static inline arts_lf_link_t *arts_mpsc_pop(arts_mpsc_t *q) {
   return NULL;
 }
 
-/* Elect the single consumer.  Returns false if another drainer holds the
- * gate (caller does NOT spin — it returns and lets the winner finish). */
-static inline bool arts_mpsc_try_drain_begin(arts_mpsc_t *q) {
-  uint8_t expected = 0u;
-  return atomic_compare_exchange_strong_explicit(&q->drain_lock, &expected, 1u,
-                                                 memory_order_acq_rel,
-                                                 memory_order_relaxed);
-}
-
-static inline void arts_mpsc_drain_end(arts_mpsc_t *q) {
-  atomic_store_explicit(&q->drain_lock, 0u, memory_order_release);
-}
-
 /*
  * arts_mpsc_drain_remaining — single-consumer cleanup.  Pops every node
  * currently linked and returns them as a NULL-terminated chain (the popped
- * node's `next` field re-threaded to the following popped node) for batch
- * release back to a per-rank pool.  The embedded `stub` is never returned.
+ * node's `next` field re-threaded to the following popped node), which the
+ * caller frees.  The embedded `stub` is never returned.
  *
- * Caller MUST be the sole consumer (hold the drain gate, or be in a
- * teardown path where no producer can push and no other consumer runs).
+ * Caller MUST be the sole consumer (a teardown path where no producer can
+ * push and no other consumer runs).
  * Because pop() can transiently report empty while a producer is mid-link,
  * this is intended for a quiescent queue (object teardown): all producers
  * have stopped, so a single pass drains everything.

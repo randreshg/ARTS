@@ -1,30 +1,33 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Cross-rank proxy finish DECR emitted by arts_owned_finish_cleanup.
+ * Cross-rank proxy finish DECR reached through arts_owned_finish_cleanup.
  *
  * Target: the only externally-visible side effect of edt_context.c —
  * arts_owned_finish_cleanup issues arts_event_satisfy_slot(..., DECR) for every
- * un-consumed owned finish token, and that satisfy may route to a REMOTE home
- * (a cross-rank wire send).  This test forces the cleanup-driven DECR to cross
- * a rank boundary.
+ * un-consumed owned finish token — on the path where the scope the token's
+ * event chains to is homed on another rank, so its DECR finally crosses a rank
+ * boundary.
  *
  * Structure (needs node_count >= 2; SKIPs cleanly otherwise):
  *   - rank 0 main_edt creates an OUTER finish scope F (homed on rank 0).
- *   - an ORCHESTRATOR EDT is placed on rank 1 and JOINED to F.  Because F is
- *     remote to rank 1, the orchestrator's membership DECR (emitted from
- *     arts_unset_thread_local_edt_info on completion) crosses rank 1 -> 0.
+ *   - an ORCHESTRATOR EDT is placed on rank 1 and JOINED to F.  F is remote to
+ *     rank 1, so the install joins the orchestrator to a local LATCH proxy of
+ *     F instead; the proxy's fire carries one DECR to F (rank 1 -> 0).
  *   - the orchestrator, running on rank 1, creates an INNER finish scope f
- *     (homed rank 1).  The runtime auto-chains f under the ambient F: it INCRs
- *     F (rank 1 -> 0 wire) and registers f -> F DECR.  f's creator-token is
- *     registered in the orchestrator's owned_finish_list.
+ *     (homed rank 1).  The runtime auto-chains f under the orchestrator's
+ *     scope, the proxy: it INCRs the proxy (local) and registers f -> proxy
+ *     DECR.  f's creator-token is registered in the orchestrator's
+ *     owned_finish_list.
  *   - the orchestrator spawns leaves under f (rank 1) and RETURNS WITHOUT
- *     WAITING.  Its epilogue arts_owned_finish_cleanup DECRs f's creator-token;
- *     once f's leaves also DECR, f fires and its auto-chain DECRs F on rank 0
- *     (another cross-rank wire).  This is the cleanup -> cross-rank-proxy DECR
+ *     WAITING.  Its epilogue DECRs the proxy for its own membership and
+ *     arts_owned_finish_cleanup DECRs f's creator-token; once f's leaves also
+ *     DECR, f fires and DECRs the proxy, which then fires and DECRs F on rank 0
+ *     (the cross-rank wire).  This is the cleanup -> cross-rank-proxy DECR
  *     path under test.
  *   - a CHECKER on rank 0 depends on F and verifies all leaves ran (via a
- *     counter DB), then shuts down.  A lost cross-rank DECR -> F never drains
- *     -> ctest TIMEOUT.
+ *     counter DB), then shuts down.  A lost DECR -> F never drains -> ctest
+ *     TIMEOUT; a DECR that reaches F before f drained -> the checker counts
+ *     fewer leaves.
  *
  * Pins correct cross-rank cleanup DECR routing.
  */
@@ -48,9 +51,9 @@ void leaf(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/* orchestrator on rank 1: member of remote F; creates inner finish f and
- * returns without waiting -> cleanup DECRs f's token (proxy-chains F on rank
- * 0).
+/* orchestrator on rank 1: member of remote F through its local proxy; creates
+ * inner finish f and returns without waiting -> cleanup DECRs f's token, and
+ * f's fire reaches F on rank 0 through the proxy.
  */
 void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
@@ -60,7 +63,7 @@ void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t cdb = depv[0].guid;
 
   arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
-  arts_guid_t f = arts_event_create(&fh); /* auto-chains under ambient F */
+  arts_guid_t f = arts_event_create(&fh); /* auto-chains under F's proxy */
 
   arts_edt_hint_t lh = ARTS_EDT_HINT_DEFAULTS;
   lh.finish_event = f;

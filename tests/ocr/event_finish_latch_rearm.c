@@ -20,17 +20,19 @@
  * Design: ORCHS orchestrator EDTs run under outer finish F1.  Each, while
  * running under F1, creates its own child finish F_child (auto-chained: INCR
  * F1) and spawns LEAVES leaf EDTs joined to F_child; each leaf marks a unique
- * slot. F1's creator-token is released when main_edt completes.  Because every
+ * slot, and so does each orchestrator and each of OUTER leaves joined to F1
+ * directly, so F1's own members are counted beside its child scopes.  F1's
+ * creator-token is released when main_edt completes.  Because every
  * child INCR happens-before the child's own leaves can complete (the
  * orchestrator creates the child and its leaves before returning, and the
  * child's DECR fires only after its leaves finish), F1 drains exactly once
  * after ALL leaves ran.
  *
- * The successor (dep on F1) asserts: (a) every leaf slot is set (no premature
+ * The successor (dep on F1) asserts: (a) every slot is set (no premature
  * drain), and (b) it ran exactly once (re-arm would either deadlock — caught by
  * ctest TIMEOUT — or double-fire — caught by the fire-count slot).
  *
- * PASS criterion: all ORCHS*LEAVES slots set, successor fired once.  No EDT
+ * PASS criterion: every slot set, successor fired once.  No EDT
  * busy-waits; a stranded F1 is reaped by the ctest TIMEOUT.
  */
 
@@ -42,7 +44,12 @@
 
 #define ORCHS 8
 #define LEAVES 8
-#define N_SLOTS (ORCHS * LEAVES)
+#define OUTER 3
+/* Slots: the child scopes' leaves, then F1's direct leaves, then one per
+ * orchestrator. */
+#define OUTER_BASE (ORCHS * LEAVES)
+#define ORCH_BASE (OUTER_BASE + OUTER)
+#define N_SLOTS (ORCH_BASE + ORCHS)
 
 /* leaf_edt: mark slot. depv[0] = counter DB (RW). paramv[0] = slot. */
 static void leaf_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -65,6 +72,13 @@ static void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   arts_guid_t cdb = depv[0].guid;
   uint64_t base = paramv[0];
+  _Atomic int *c = (_Atomic int *)depv[0].ptr;
+  if (c == NULL) {
+    (void)fprintf(stderr, "FAIL: orchestrator NULL counter DB\n");
+    arts_abort(1);
+  }
+  atomic_store_explicit(&c[ORCH_BASE + (int)(base / LEAVES)], 1,
+                        memory_order_release);
 
   arts_event_hint_t fh = ARTS_EVENT_HINT_FINISH;
   arts_guid_t fc = arts_event_create(&fh); /* INCRs ambient F1 */
@@ -108,14 +122,14 @@ static void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   if (set != N_SLOTS) {
     (void)fprintf(stderr,
-                  "FAIL: %d/%d leaf slots set when F1 drained (premature "
+                  "FAIL: %d/%d slots set when F1 drained (premature "
                   "drain / re-arm)\n",
                   set, N_SLOTS);
     arts_abort(1);
   }
-  printf("event_finish_latch_rearm: %d orchestrators x %d leaves all drained "
-         "before single F1 successor — PASS\n",
-         ORCHS, LEAVES);
+  printf("event_finish_latch_rearm: %d orchestrators x %d leaves and %d direct "
+         "leaves all drained before single F1 successor — PASS\n",
+         ORCHS, LEAVES, OUTER);
   arts_shutdown();
 }
 
@@ -149,6 +163,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t base = (uint64_t)(o * LEAVES);
     arts_guid_t orch = arts_edt_create(orchestrator, 1, &base, 1, &oh);
     arts_add_dependence(cdb, orch, 0, DB_MODE_RW);
+  }
+  for (int i = 0; i < OUTER; i++) {
+    uint64_t slot = (uint64_t)(OUTER_BASE + i);
+    arts_guid_t l = arts_edt_create(leaf_edt, 1, &slot, 1, &oh);
+    arts_add_dependence(cdb, l, 0, DB_MODE_RW);
   }
 
   arts_guid_t s = arts_edt_create(successor, 0, NULL, 3, NULL);

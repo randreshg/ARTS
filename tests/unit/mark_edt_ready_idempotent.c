@@ -41,22 +41,11 @@
 /// delta == 2.
 ///
 /// Single-node.  `mark_edt_ready_by_guid` is shared by every arm with a
-/// cache-slot wake: FLUSH has none and SKIPs, and the CXL DIRECT tree does not
-/// register the test, since it reads the inline payload representation that
-/// tree does not use.  Object lifetime is held by the route-table cb handle +
-/// the never-firing gate event for the whole observation.
-
-#ifdef ARTS_PROTOCOL_FLUSH
-/* The cache-slot wake this test drives exists only where a rank's readers
- * share that rank's copy.  Here every acquirer owns its own bytes, so the
- * resume takes an explicit buffer and there is no cache-slot form to
- * double-wake. */
-#include <stdio.h>
-int main(void) {
-  printf("SKIP mark_edt_ready_idempotent: no cache-slot wake in this arm\n");
-  return 0;
-}
-#else
+/// cache-slot wake: FLUSH has none and does not build the test, and the CXL
+/// DIRECT tree does not register it, since it reads the inline payload
+/// representation that tree does not use.  Object lifetime is held by the
+/// route-table cb handle + the never-firing gate event for the whole
+/// observation.
 
 #include "arts.h"
 
@@ -194,4 +183,3 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-#endif /* !ARTS_PROTOCOL_FLUSH */

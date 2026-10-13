@@ -15,18 +15,28 @@
 ///
 /// ARTS reads each config variable from the environment when present
 /// (arts_config_find_variable does getenv(name)), so this test sets
-/// node_count=99999 in its own main() before calling arts_rt.  99999 >> 16382,
-/// so the overflow guard fires and the process must exit with status 1.  The
-/// guard runs before transport setup, so no processes are launched.  The test
-/// is judged on exit status 1 and the guard's message.
+/// node_count=16383 in its own main() before calling arts_rt: the first count
+/// the guard refuses, so a guard that admits one count too many fails the
+/// test.  The guard runs before transport setup and process launch, so it
+/// guarantees that no process is launched.  A regressed guard is bounded by the
+/// tripwire at the top of main(): main() marks the environment before arts_rt,
+/// and every rank the launcher starts inherits the mark and exits at once
+/// reporting RANK_OVERFLOW_NO_ABORT.  The startup budget is cut to one second,
+/// so the spawning rank stops waiting for those ranks at once and a guard that
+/// admits the count fails the test within seconds.  The test is judged on exit
+/// status 1 and the guard's message.
 ///
-/// Single-node, every configuration (the guard sits above the coherence
-/// layer).  Asserts the guard works (clean abort, exit 1).
+/// Single-node; no coherence protocol, write or release policy or payload
+/// store changes the guard (it sits above the coherence layer).  Asserts the
+/// guard works (clean abort, exit 1).
 
 #include "arts.h"
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+
+#define SPAWNED_MARK "MAIN_RANK_OVERFLOW_ABORT_SPAWNED"
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
@@ -41,9 +51,20 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
+  /* A launched rank exists only if the guard admitted the count. */
+  if (getenv(SPAWNED_MARK) != NULL) {
+    printf("RANK_OVERFLOW_NO_ABORT: a rank was launched\n");
+    fflush(stdout);
+    _exit(1);
+  }
+  setenv(SPAWNED_MARK, "1", 1);
+  /* Only a regressed guard reaches the transport, which then waits this long
+   * for ranks the tripwire has already ended. */
+  setenv("ARTS_STARTUP_TIMEOUT_S", "1", 1);
+
   /* Force an over-limit configured rank count via the env override path.  The
-   * GUID rank field is 14 bits (max usable 16382); 99999 exceeds it. */
-  setenv("node_count", "99999", 1);
+   * GUID rank field is 14 bits (max usable 16382); 16383 is one past it. */
+  setenv("node_count", "16383", 1);
 
   arts_rt(argc, argv);
 

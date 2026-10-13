@@ -198,6 +198,9 @@ _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 72,
 #ifdef ARTS_USE_CXL
 _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 56,
                "db_create_coherent sizeof drifted (CXL build)");
+_Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s,
+                        cxl_addr) == 40,
+               "db_create_coherent's CXL slot must follow create_token");
 #else
 _Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
                "db_create_coherent sizeof drifted");

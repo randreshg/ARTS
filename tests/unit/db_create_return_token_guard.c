@@ -20,14 +20,6 @@
 #include "arts.h"
 #include "../test_failure_status.h"
 
-#if !((!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||      \
-      defined(ARTS_PROTOCOL_FLUSH))
-int main(void) {
-  printf("SKIP db_create_return_token_guard: no create credit on this arm\n");
-  return 0;
-}
-#else
-
 #include "arts/coherence/types.h"
 #include "arts/gas/route_table.h"
 #include "arts/transport/dispatcher.h"
@@ -156,4 +148,3 @@ int main(int argc, char **argv) {
   int rc = arts_rt(argc, argv);
   return rc ? 1 : arts_test_status();
 }
-#endif

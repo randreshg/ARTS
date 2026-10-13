@@ -68,19 +68,19 @@ static void check_event_layout(void) {
   size_t sz = sizeof(struct arts_event_s);
   size_t al = alignof(struct arts_event_s);
   if (al == 0 || (sz % al) != 0) {
-    fprintf(
-        stderr,
-        "FAIL T219[%s]: sizeof(arts_event_s)=%zu not multiple of align=%zu\n",
-        LAYOUT_LANG, sz, al);
+    fprintf(stderr,
+            "FAIL runtime_edt_event_layout[%s]: sizeof(arts_event_s)=%zu not "
+            "multiple of align=%zu\n",
+            LAYOUT_LANG, sz, al);
     exit(1);
   }
   /* ARTS_ALIGNED_MAX pins shared objects to a full cache line
    * (ARTS_CACHE_LINE_SIZE) for false-sharing isolation. */
   if (al != ARTS_CACHE_LINE_SIZE) {
-    fprintf(
-        stderr,
-        "FAIL T219[%s]: arts_event_s align=%zu != ARTS_CACHE_LINE_SIZE %d\n",
-        LAYOUT_LANG, al, (int)ARTS_CACHE_LINE_SIZE);
+    fprintf(stderr,
+            "FAIL runtime_edt_event_layout[%s]: arts_event_s align=%zu != "
+            "ARTS_CACHE_LINE_SIZE %d\n",
+            LAYOUT_LANG, al, (int)ARTS_CACHE_LINE_SIZE);
     exit(1);
   }
   /* The struct must be at least big enough to hold the discriminator plus the
@@ -88,7 +88,9 @@ static void check_event_layout(void) {
    * by sizeof of its component types via two mpsc queues + counters — but the
    * simplest robust check is sz >= 1 (discriminator) and sz covers a guid. */
   if (sz < sizeof(arts_guid_t)) {
-    fprintf(stderr, "FAIL T219[%s]: arts_event_s smaller than a guid (%zu)\n",
+    fprintf(stderr,
+            "FAIL runtime_edt_event_layout[%s]: arts_event_s smaller than a "
+            "guid (%zu)\n",
             LAYOUT_LANG, sz);
     exit(1);
   }
@@ -102,7 +104,8 @@ static void check_edt_total_size(void) {
   /* sizeof(struct arts_edt_s) must honor the cache-line alignment too. */
   if (alignof(struct arts_edt_s) != ARTS_CACHE_LINE_SIZE) {
     fprintf(stderr,
-            "FAIL T219[%s]: arts_edt_s align=%zu != ARTS_CACHE_LINE_SIZE %d\n",
+            "FAIL runtime_edt_event_layout[%s]: arts_edt_s align=%zu != "
+            "ARTS_CACHE_LINE_SIZE %d\n",
             LAYOUT_LANG, (size_t)alignof(struct arts_edt_s),
             (int)ARTS_CACHE_LINE_SIZE);
     exit(1);
@@ -119,7 +122,8 @@ static void check_edt_total_size(void) {
       uint64_t want = base + (uint64_t)pcs[i] * 8u + (uint64_t)dcs[j] * depsz;
       if (got != want) {
         fprintf(stderr,
-                "FAIL T219[%s]: total_size(paramc=%u,depc=%u)=%llu want %llu "
+                "FAIL runtime_edt_event_layout[%s]: "
+                "total_size(paramc=%u,depc=%u)=%llu want %llu "
                 "(base=%llu depsz=%llu)\n",
                 LAYOUT_LANG, pcs[i], dcs[j], (unsigned long long)got,
                 (unsigned long long)want, (unsigned long long)base,
@@ -139,13 +143,17 @@ static void check_edt_total_size(void) {
   b.paramc = 1;
   b.depc = 0;
   if (arts_edt_total_size(&b) - arts_edt_total_size(&a) != 8u) {
-    fprintf(stderr, "FAIL T219[%s]: paramv slot not 8 bytes\n", LAYOUT_LANG);
+    fprintf(stderr,
+            "FAIL runtime_edt_event_layout[%s]: paramv slot not 8 bytes\n",
+            LAYOUT_LANG);
     exit(1);
   }
   b.paramc = 0;
   b.depc = 1;
   if (arts_edt_total_size(&b) - arts_edt_total_size(&a) != depsz) {
-    fprintf(stderr, "FAIL T219[%s]: depv slot != sizeof(arts_edt_dep_t)\n",
+    fprintf(stderr,
+            "FAIL runtime_edt_event_layout[%s]: depv slot != "
+            "sizeof(arts_edt_dep_t)\n",
             LAYOUT_LANG);
     exit(1);
   }
@@ -158,7 +166,7 @@ int main(void) {
   /* Print every load-bearing offset so the sibling-language build can be
    * compared byte-for-byte by ctest.  Size/alignment alone cannot detect two
    * fields moving within unchanged padding. */
-  printf("T219_LAYOUT %s edt_size=%zu edt_align=%zu dep_size=%zu "
+  printf("EDT_EVENT_LAYOUT %s edt_size=%zu edt_align=%zu dep_size=%zu "
          "edt_guid=%zu edt_output_data=%zu edt_depc_needed=%zu edt_self_cb=%zu "
          "event_size=%zu event_align=%zu event_is_channel=%zu "
          "simple_size=%zu simple_state=%zu/%zu simple_counted=%zu/%zu "
@@ -168,7 +176,7 @@ int main(void) {
          "channel_data_queue=%zu/%zu channel_dep_queue=%zu/%zu "
          "channel_draining=%zu/%zu "
          "pool_head_size=%zu pool_head_align=%zu pool_size=%zu pool_align=%zu "
-         "pool_head=%zu/%zu pool_count=%zu/%zu pool_node_size=%zu/%zu\n",
+         "pool_head=%zu/%zu\n",
          LAYOUT_LANG, sizeof(struct arts_edt_s),
          (size_t)alignof(struct arts_edt_s), sizeof(arts_edt_dep_t),
          offsetof(struct arts_edt_s, guid),
@@ -204,11 +212,7 @@ int main(void) {
          sizeof(arts_lf_pool_head_t), (size_t)alignof(arts_lf_pool_head_t),
          sizeof(arts_lockfree_pool_t), (size_t)alignof(arts_lockfree_pool_t),
          offsetof(arts_lockfree_pool_t, head),
-         sizeof(((arts_lockfree_pool_t *)0)->head),
-         offsetof(arts_lockfree_pool_t, count),
-         sizeof(((arts_lockfree_pool_t *)0)->count),
-         offsetof(arts_lockfree_pool_t, node_size),
-         sizeof(((arts_lockfree_pool_t *)0)->node_size));
+         sizeof(((arts_lockfree_pool_t *)0)->head));
 
   printf("PASS runtime_edt_event_layout [%s]: edt/event layout + total_size "
          "arithmetic verified\n",

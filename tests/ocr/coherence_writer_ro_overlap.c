@@ -38,13 +38,13 @@
 ******************************************************************************/
 
 /// @file coherence_writer_ro_overlap.c
-/// @brief Cross-rank RW write write windows overlapped by concurrent RO readers.
+/// @brief Cross-rank write windows overlapped by concurrent RO readers.
 ///
 /// The rest of the coherence suite either keeps a DB RW-only across ranks
-/// (coherence_stress_dist) or phase-separates writers from readers
+/// (coherence_multi_writer_dist) or phase-separates writers from readers
 /// (coherence_payload_large, coherence_rwro_phase).  Neither drives the case
-/// where a write write window is OPEN on one rank while readers on other ranks are
-/// acquiring the same DB read-only — the regime in which a protocol must
+/// where a write window is OPEN on one rank while readers on other ranks
+/// are acquiring the same DB read-only — the regime in which a protocol must
 /// decide, per request, whether to hand the reader a durable copy, a transient
 /// one, or nothing at all.  That is the gap this test closes.
 ///
@@ -53,17 +53,17 @@
 /// completed and released.  Inside a round, per DB:
 ///   * WRITERS_PER_DB RW EDTs are issued with no ordering among themselves, in
 ///     runs of consecutive EDTs pinned to the same rank, each run on the NEXT
-///     rank.  A run longer than one keeps that rank's write write window open across
-///     several acquire/release pairs; the run boundaries migrate the write window
-///     mid-round, so reader redirects race live hand-offs.  The run length
-///     varies per DB so both regimes — long write window and hand-off at every
-///     release — are live simultaneously.
+///     rank.  A run longer than one keeps that rank's write window open
+///     across several acquire/release pairs; the run boundaries migrate the
+///     write window mid-round, so reader redirects race live hand-offs.  The
+///     run length varies per DB so both regimes — long write window and
+///     hand-off at every release — are live simultaneously.
 ///   * READERS_PER_DB RO EDTs, interleaved with the writers at create time so
-///     read requests arrive throughout the write windows, pinned to a two-rank window
-///     that rotates every other round.  A rank inside the window across
+///     read requests arrive throughout the write windows, pinned to a two-rank
+///     window that rotates every other round.  A rank inside the window across
 ///     consecutive rounds re-reads with a copy it already held (invalidated or
-///     superseded by the intervening write window); a rank the window has not reached
-///     yet acquires that DB for the first time.
+///     superseded by the intervening write window); a rank the window has not
+///     reached yet acquires that DB for the first time.
 ///
 /// ORACLE.  The payload is a fixed header plus a "churn" region.
 ///   * Header — MAGIC, DB index, churn length, and a mixed check word — is
@@ -78,22 +78,20 @@
 ///     outcome does not depend on which writer lands last.  A round-r acquirer
 ///     is happens-after every round-(r-1) writer and happens-before every
 ///     round-(r+1) EDT, so the only bytes it may legally observe are STAMP(r-1)
-///     (the write window has not reached this byte) and STAMP(r) (it has).  Every
-///     acquirer asserts exactly that, byte by byte.
+///     (the write window has not reached this byte) and STAMP(r) (it has).
+///     Every acquirer asserts exactly that, byte by byte.
 ///
 /// Byte granularity is deliberate: a reader served concurrently with an open
-/// write window may legally observe a mix of the two stamps — that is the racy read
-/// the OCR model permits — but it may never observe a byte from an older round
-/// (a copy that survived a write window it should not have), nor a byte outside the
-/// stamp alphabet (0x00 from an unwritten buffer, junk from a foreign slab).
-/// The assertion is therefore free of any atomicity assumption about how a
-/// snapshot is produced, while still being a true oracle rather than a smoke
-/// test.
+/// write window may legally observe a mix of the two stamps — that is the racy
+/// read the OCR model permits — but it may never observe a byte from an older
+/// round (a copy that survived a write window it should not have), nor a byte
+/// outside the stamp alphabet (0x00 from an unwritten buffer, junk from a
+/// foreign slab). The assertion is therefore free of any atomicity assumption
+/// about how a snapshot is produced, while still being a true oracle rather
+/// than a smoke test.
 ///
-/// Runs under every memory model / protocol / policy combination.  The header
-/// has one event-ordered writer and the churn writers of a round are
-/// value-idempotent, so a whole-DB last-writer-wins publish (the DB-WRF
-/// contract's lossy case) preserves both assertions.
+/// A round's writers of one block are unordered, which DB-WRF does not admit,
+/// so it runs on every arm of the OCR model and not under FLUSH.
 ///
 /// A violation prints FAIL: and aborts; a stranded acquire surfaces as a ctest
 /// TIMEOUT (no in-test watchdog).  The final PASS line is gated on every round
@@ -260,7 +258,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       int w = 0;
       int k = 0;
       /* Interleave the two families so read requests keep arriving while the
-       * write write windows are open, instead of queueing behind them. */
+       * write windows are open, instead of queueing behind them. */
       while (w < WRITERS_PER_DB || k < READERS_PER_DB) {
         if (w < WRITERS_PER_DB) {
           unsigned int wr =

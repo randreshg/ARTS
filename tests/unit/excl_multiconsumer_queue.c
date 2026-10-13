@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * excl_multiconsumer_queue — EXCL-config-specific stress for the home-side
- * rw_waiters Vyukov MPSC queue's single-consumer assumption (census 11-lock
- * §3 + §4 bug A; arts_home_grantreq_queue_pop in lock/home.c).
+ * rw_waiters Vyukov MPSC queue's single-consumer assumption
+ * (arts_home_grantreq_queue_pop).
  *
  * The home rank's rw_waiters queue is a strict single-consumer Vyukov FIFO.
  * It is push'd by concurrent REQUEST handlers (multi-producer) and pop'd by
@@ -28,22 +28,11 @@
  * pre-commit (stale) accumulator (a satisfy-before-release / OCR §"release
  * before signal" violation).
  *
- * Runs under VAL/EXCL — protocols that serialize same-DB RW, so the
- * accumulator deterministically reaches N_WRITERS.
+ * Registered on every arm whose runtime serializes a block's write
+ * acquisitions, so the accumulator deterministically reaches N_WRITERS; not
+ * under FLUSH, whose model leaves overlapping write acquisitions to the
+ * program.
  */
-
-#ifdef ARTS_PROTOCOL_FLUSH
-/* The exact sum this test asserts is what a runtime that serializes same-block
- * write acquisitions computes.  Here that ordering is the program's obligation
- * and this program deliberately omits it: its writers overlap, so the answer
- * is undefined by the model rather than wrong. */
-#include <stdio.h>
-int main(void) {
-  printf("PASS excl_multiconsumer_queue: skipped under FLUSH (overlapping "
-         "write acquisitions are outside the model)\n");
-  return 0;
-}
-#else
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -171,4 +160,3 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-#endif /* !ARTS_PROTOCOL_FLUSH */

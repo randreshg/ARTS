@@ -28,19 +28,11 @@
  * sentinel grant, which lives in plain counters (coherence/grant.c), not in
  * either word.
  *
- * Built standalone by #including coherence/inv/arbiters.c.  INV-only;
- * self-skips elsewhere.
+ * Built standalone by #including coherence/inv/arbiters.c.  Built and
+ * registered only in an INV tree.
  */
 
 #include <stdio.h>
-
-#if !defined(ARTS_PROTOCOL_INV)
-int main(void) {
-  printf("PASS inv_compute_next: skipped (INV only; the packed cache/dir "
-         "words exist only in that build)\n");
-  return 0;
-}
-#else
 
 #include "arts/coherence/inv/types.h"
 
@@ -179,5 +171,3 @@ int main(void) {
          "table\n");
   return 0;
 }
-
-#endif /* ARTS_PROTOCOL_INV */

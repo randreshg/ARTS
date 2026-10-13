@@ -4,13 +4,10 @@
  *
  * Layout: 16-byte head = (arts_lf_link_t *ptr, uintptr_t tag).  Each push
  * increments the tag, so even if a popped node is re-pushed (ABA), the
- * DWCAS observes the tag mismatch and retries.  Lifetime invariant: nodes
- * live until pool destroy — alloc/release transfer ownership only.  This
- * makes the batch_fetch chain-walk safe (no use-after-free on `next`).
- *
- * `count` is a best-effort approximate value used by the tiered-pool
- * watermark heuristics.  Updates are relaxed fetch_add /
- * fetch_sub — never used for correctness.
+ * DWCAS observes the tag mismatch and retries.  Lifetime invariant: no node
+ * is freed while another thread can pop it — fetch/release transfer
+ * ownership only, and only destroy, which no other thread may overlap, frees.
+ * This makes the batch_fetch chain-walk safe (no use-after-free on `next`).
  *
  * Header-only inline — no separate .c file.  All callers compile with
  * -mcx16 on x86_64 (set globally in the top-level CMakeLists.txt).
@@ -20,7 +17,6 @@
 #define ARTS_UTILS_LOCKFREE_POOL_H
 
 #include "arts/utils/lockfree_lifo.h" /* arts_lf_link_t */
-#include "arts/utils/malloc.h"        /* arts_calloc / arts_free */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -54,32 +50,24 @@ _Static_assert(alignof(arts_lf_pool_head_t) == 16, "DWCAS alignment");
 
 typedef struct {
 #ifdef __cplusplus
-  arts_lf_pool_head_t head;
-  uint32_t count; /* layout view — real fields are _Atomic under C */
+  arts_lf_pool_head_t head; /* layout view — the real field is _Atomic in C */
 #else
   _Atomic(arts_lf_pool_head_t) head;
-  _Atomic(uint32_t) count; /* approx — best-effort */
 #endif
-  size_t node_size;        /* fallback alloc size */
 } arts_lockfree_pool_t;
 
 #ifndef __cplusplus
 /* ── Initialization / teardown ─────────────────────────────────────────── */
 
-static inline void arts_lf_pool_init(arts_lockfree_pool_t *p,
-                                     size_t node_size) {
+static inline void arts_lf_pool_init(arts_lockfree_pool_t *p) {
   arts_lf_pool_head_t empty = {.ptr = NULL, .tag = 0};
   atomic_store_explicit(&p->head, empty, memory_order_relaxed);
-  atomic_store_explicit(&p->count, 0u, memory_order_relaxed);
-  p->node_size = node_size;
 }
 
 /** Drain everything and free each node via `free_fn`.  Caller is
  *  responsible for ensuring no other thread touches the pool during destroy,
  *  and that `free_fn` is the matching free for whatever allocator produced
- *  the pool's nodes — a pool seeded from a non-default allocator (e.g. a
- *  registered/pinned pool) must be destroyed with that allocator's free, not
- *  the default arts_free, or the mismatched free is a correctness bug (double
+ *  the pool's nodes: a mismatched free is a correctness bug (double
  *  bookkeeping, or freeing memory the wrong allocator does not own). */
 static inline void arts_lf_pool_destroy_with(arts_lockfree_pool_t *p,
                                              void (*free_fn)(void *)) {
@@ -94,41 +82,9 @@ static inline void arts_lf_pool_destroy_with(arts_lockfree_pool_t *p,
   }
   arts_lf_pool_head_t empty = {.ptr = NULL, .tag = cur.tag};
   atomic_store_explicit(&p->head, empty, memory_order_relaxed);
-  atomic_store_explicit(&p->count, 0u, memory_order_relaxed);
 }
 
-/** Drain everything and free each node via arts_free.  Caller is
- *  responsible for ensuring no other thread touches the pool during
- *  destroy. */
-static inline void arts_lf_pool_destroy(arts_lockfree_pool_t *p) {
-  arts_lf_pool_destroy_with(p, arts_free);
-}
-
-/* ── Single-node alloc / release ──────────────────────────────────────── */
-
-/** DWCAS pop.  On empty pool, falls back to arts_calloc(1, node_size).
- *  Returned object's first sizeof(arts_lf_link_t) bytes are uninitialized
- *  after pop — caller is responsible for re-init. */
-static inline void *arts_lf_pool_alloc(arts_lockfree_pool_t *p) {
-  arts_lf_pool_head_t cur =
-      atomic_load_explicit(&p->head, memory_order_acquire);
-  for (;;) {
-    if (!cur.ptr) {
-      /* Pool empty — heap fallback.  arts_calloc zero-fills, so
-       * subsequent atomic_init on link.next is well-defined. */
-      return arts_calloc(1, p->node_size);
-    }
-    arts_lf_link_t *next =
-        atomic_load_explicit(&cur.ptr->next, memory_order_relaxed);
-    arts_lf_pool_head_t newh = {.ptr = next, .tag = cur.tag + 1};
-    if (atomic_compare_exchange_weak_explicit(
-            &p->head, &cur, newh, memory_order_acquire, memory_order_acquire)) {
-      atomic_fetch_sub_explicit(&p->count, 1u, memory_order_relaxed);
-      return cur.ptr;
-    }
-    /* cur reloaded by CAS — retry */
-  }
-}
+/* ── Single-node release ───────────────────────────────────────────────── */
 
 /** DWCAS push.  Tag is incremented by the writer (CAS install); reader
  *  side increments tag on pop too — both contribute to ABA defense. */
@@ -141,7 +97,6 @@ static inline void arts_lf_pool_release(arts_lockfree_pool_t *p, void *node) {
     arts_lf_pool_head_t newh = {.ptr = n, .tag = cur.tag + 1};
     if (atomic_compare_exchange_weak_explicit(
             &p->head, &cur, newh, memory_order_release, memory_order_relaxed)) {
-      atomic_fetch_add_explicit(&p->count, 1u, memory_order_relaxed);
       return;
     }
     /* cur reloaded by CAS — retry */
@@ -156,7 +111,8 @@ static inline void arts_lf_pool_release(arts_lockfree_pool_t *p, void *node) {
  *  Returns NULL when the pool is empty (sets *got = 0).
  *
  *  Caller becomes the owner of the returned chain — must either re-push
- *  it, install it elsewhere, or free each node before pool destroy. */
+ *  it, install it elsewhere, or free each node once no other thread can pop
+ *  from the pool. */
 static inline arts_lf_link_t *arts_lf_pool_batch_fetch(arts_lockfree_pool_t *p,
                                                        uint32_t want,
                                                        uint32_t *got) {
@@ -175,8 +131,8 @@ static inline arts_lf_link_t *arts_lf_pool_batch_fetch(arts_lockfree_pool_t *p,
       }
       return NULL;
     }
-    /* Walk up to `want` nodes; safe due to lifetime invariant (pool
-     * nodes live until pool destroy). */
+    /* Walk up to `want` nodes: safe because no node is freed while another
+     * thread can pop it. */
     arts_lf_link_t *tail = cur.ptr;
     uint32_t taken = 1;
     arts_lf_link_t *next_after =
@@ -192,7 +148,6 @@ static inline arts_lf_link_t *arts_lf_pool_batch_fetch(arts_lockfree_pool_t *p,
       /* Detach the chain (so caller doesn't accidentally walk into the
        * remaining pool nodes). */
       atomic_store_explicit(&tail->next, NULL, memory_order_relaxed);
-      atomic_fetch_sub_explicit(&p->count, taken, memory_order_relaxed);
       if (got) {
         *got = taken;
       }
@@ -202,88 +157,15 @@ static inline arts_lf_link_t *arts_lf_pool_batch_fetch(arts_lockfree_pool_t *p,
   }
 }
 
-/** Pop exactly one recycled node, or NULL if the pool is empty.  Unlike
- *  arts_lf_pool_alloc this does NOT fall back to the allocator on an empty
- *  pool — the caller (e.g. the per-DB buffer pool, which needs a 64-byte
- *  aligned allocation) does its own allocation on a miss.  Built on
- *  batch_fetch(1) so it shares the DWCAS ABA-safe pop. */
+/** Pop exactly one recycled node, or NULL if the pool is empty: the caller
+ *  allocates on a miss.  Built on batch_fetch(1) so it shares the DWCAS
+ *  ABA-safe pop. */
 static inline arts_lf_link_t *
 arts_lf_pool_pop_or_null(arts_lockfree_pool_t *p) {
   uint32_t got = 0;
-  return arts_lf_pool_batch_fetch(p, 1, &got); /* NULL on empty; no calloc */
+  return arts_lf_pool_batch_fetch(p, 1, &got);
 }
 
-/** Prepend a caller-owned chain of `batch_n` nodes [head .. tail] onto the
- *  pool.  Caller must have already terminated batch_tail->next = NULL is
- *  NOT required here — we overwrite it with the previous head. */
-static inline void arts_lf_pool_batch_release(arts_lockfree_pool_t *p,
-                                              arts_lf_link_t *batch_head,
-                                              arts_lf_link_t *batch_tail,
-                                              uint32_t batch_n) {
-  if (!batch_head || !batch_tail || batch_n == 0) {
-    return;
-  }
-  arts_lf_pool_head_t cur =
-      atomic_load_explicit(&p->head, memory_order_relaxed);
-  for (;;) {
-    atomic_store_explicit(&batch_tail->next, cur.ptr, memory_order_relaxed);
-    arts_lf_pool_head_t newh = {.ptr = batch_head, .tag = cur.tag + 1};
-    if (atomic_compare_exchange_weak_explicit(
-            &p->head, &cur, newh, memory_order_release, memory_order_relaxed)) {
-      atomic_fetch_add_explicit(&p->count, batch_n, memory_order_relaxed);
-      return;
-    }
-    /* cur reloaded — retry. */
-  }
-}
-
-/** Detach up to `want` nodes from the top of the pool, returning chain
- *  head/tail via out-params.  Used by the tiered-pool spill path
- *  (NUMA → global).  Sets both *out_head and *out_tail to NULL when the
- *  pool is empty. */
-static inline void arts_lf_pool_batch_drain(arts_lockfree_pool_t *p,
-                                            uint32_t want,
-                                            arts_lf_link_t **out_head,
-                                            arts_lf_link_t **out_tail) {
-  if (out_head) {
-    *out_head = NULL;
-  }
-  if (out_tail) {
-    *out_tail = NULL;
-  }
-  if (want == 0) {
-    return;
-  }
-  arts_lf_pool_head_t cur =
-      atomic_load_explicit(&p->head, memory_order_acquire);
-  for (;;) {
-    if (!cur.ptr) {
-      return;
-    }
-    arts_lf_link_t *tail = cur.ptr;
-    uint32_t taken = 1;
-    arts_lf_link_t *next_after =
-        atomic_load_explicit(&tail->next, memory_order_relaxed);
-    while (taken < want && next_after) {
-      tail = next_after;
-      next_after = atomic_load_explicit(&tail->next, memory_order_relaxed);
-      taken++;
-    }
-    arts_lf_pool_head_t newh = {.ptr = next_after, .tag = cur.tag + 1};
-    if (atomic_compare_exchange_weak_explicit(
-            &p->head, &cur, newh, memory_order_acquire, memory_order_acquire)) {
-      atomic_store_explicit(&tail->next, NULL, memory_order_relaxed);
-      atomic_fetch_sub_explicit(&p->count, taken, memory_order_relaxed);
-      if (out_head) {
-        *out_head = cur.ptr;
-      }
-      if (out_tail) {
-        *out_tail = tail;
-      }
-      return;
-    }
-  }
-}
 #endif /* !__cplusplus */
 
 #ifdef __cplusplus

@@ -38,15 +38,15 @@
 ******************************************************************************/
 
 /// @file coherence_ro_acquire_stress.c
-/// @brief RO concurrent acquire stress (cache install correctness).
+/// @brief Cache install correctness under concurrent RO acquires.
 ///
-/// Single DB initialized to a known sentinel value (42).  N RO-acquiring
-/// EDTs are spawned concurrently; each verifies that *data == 42.
-/// Every reader runs on rank 0, where main_edt creates the block (each hint
-/// names rank 0), so each acquire is the RO acquire's request served on the
-/// block's home, many at once, none crossing the fabric.  If any reader sees a
-/// corrupted value the acquire handed it the wrong bytes — that is a real
-/// coherence bug.
+/// One DB is stamped with a sentinel (42) and released by its creator, which
+/// is what makes the stamp visible to later acquires; only then are N
+/// RO-acquiring EDTs spread round-robin over the ranks, all at once.  Readers
+/// on the home share its copy, and readers elsewhere race to install the
+/// block in their rank's cache and read through it, so every one must see the
+/// sentinel: a reader that sees anything else read a copy the install
+/// corrupted or took before the release.
 ///
 /// arts_abort() on any mismatch, so ctest sees a non-zero exit; a missed
 /// finish scope manifests as a ctest TIMEOUT.
@@ -71,7 +71,8 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   if (*data != SENTINEL) {
     (void)fprintf(stderr,
-                  "FAIL: reader saw %d (expected %d) — bad cache install\n",
+                  "FAIL: reader saw %d (expected %d) — the cache install "
+                  "lost the released value\n",
                   *data, SENTINEL);
     arts_abort(1);
   }
@@ -102,6 +103,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db = arts_db_create((void **)&data, sizeof(int), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   *data = SENTINEL;
+  arts_db_release(db, DB_MODE_RW);
 
   /* Outer finish scope ensures shutdown_edt runs only after every reader has
    * finished — an early arts_shutdown's MSG_SHUTDOWN would otherwise let the
@@ -112,9 +114,12 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
 
+  unsigned int ranks = arts_get_total_ranks();
   for (int i = 0; i < N_READERS; i++) {
-    arts_guid_t r = arts_edt_create(reader_edt, 0, NULL, 1,
-                                    &(arts_edt_hint_t){.finish_event = fe});
+    arts_guid_t r =
+        arts_edt_create(reader_edt, 0, NULL, 1,
+                        &(arts_edt_hint_t){.rank = (unsigned int)i % ranks,
+                                           .finish_event = fe});
     arts_add_dependence(db, r, 0, DB_MODE_RO);
   }
 }

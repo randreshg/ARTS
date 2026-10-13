@@ -46,18 +46,10 @@ extern "C" {
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_pending_rw_queue_init(arts_lf_stack_t *q);
 /* Push a waiter (multi-producer).  Caller fills edt_guid/slot before
- * calling.  Waiter must be heap-allocated; the stack takes ownership and
- * frees it during drain or destroy. */
+ * calling.  Waiter must be heap-allocated; the stack takes ownership, and the
+ * chain wake or destroy frees it. */
 void arts_pending_rw_queue_push(arts_lf_stack_t *q,
                                 struct arts_db_rw_waiter_s *w);
-/* Drain everything (single consumer): atomic-exchange the whole chain out,
- * then invoke cb(edt_guid, slot, ctx) on each waiter and free it.  Order is
- * LIFO and immaterial (every waiter is woken).  cb must NOT block — drain
- * holds no lock but is intended for short tasks (mark-EDT-ready). */
-void arts_pending_rw_queue_drain(arts_lf_stack_t *q,
-                                 void (*cb)(arts_guid_t edt_guid,
-                                            unsigned int slot, void *ctx),
-                                 void *ctx);
 /* Destroy: free every queued waiter (single-threaded at teardown). */
 void arts_pending_rw_queue_destroy(arts_lf_stack_t *q);
 #endif /* shared grant plane */
@@ -628,12 +620,6 @@ void arts_db_grant_install(struct arts_db_cache_s *cache);
 bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
                                    arts_edt_dep_t *dep);
 
-/* Non-destructive enumeration of a cache pending_rw queue (single consumer):
- * invokes cb(edt_guid, slot, ctx) for each parked waiter without popping. */
-void arts_pending_rw_queue_for_each(arts_lf_stack_t *q,
-                                    void (*cb)(arts_guid_t edt_guid,
-                                               unsigned int slot, void *ctx),
-                                    void *ctx);
 #endif /* shared grant plane */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)

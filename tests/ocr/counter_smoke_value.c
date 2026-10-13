@@ -86,7 +86,10 @@ static bool read_counter_value(const char *json, const char *name,
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
+  if (arts_rt(argc, argv) != 0) {
+    printf("FAIL counter_smoke_value: the runtime run failed\n");
+    return 1;
+  }
 
   FILE *fp = fopen("./counters/n0.json", "r");
   if (!fp) {

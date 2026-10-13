@@ -14,9 +14,9 @@
 ******************************************************************************/
 
 /// @file stub_install_winner.c
-/// @brief Concurrent first-touch stub cache installs of a remote-owned
-///        DB: exactly one winner, every consumer gets a valid pinned handle, no
-///        stub leak.
+/// @brief First-touch stub install on the acquire path, every arm: concurrent
+///        acquires of a remote-owned DB on one rank install exactly one stub,
+///        every consumer gets a valid pinned handle, and no stub leaks.
 ///
 /// THE WINDOW UNDER TEST (coherence.c `arts_db_cache_stub_install`).  When a
 /// rank first touches a remote-owned DB it allocates a cache-only STUB db_s,
@@ -43,24 +43,12 @@
 /// wrong stub would corrupt the read); (3) progress — every wave drains (a
 /// stranded stub install would hang the finish scope → ctest TIMEOUT).
 ///
-/// Multinode only (on a single node every acquire is a local hit and the
-/// stub-install path is never entered), non-EXCL: stub first-touch install is
-/// the VAL remote-acquire mechanism.  EXCL has its own RO acquire path, so
-/// self-skips.
+/// Every arm's acquire of a block this rank has never seen goes through the
+/// same stub install, so the test runs under every protocol.  It needs a
+/// second rank: on one, every acquire is a local hit and the install is never
+/// entered.
 
 #include "arts.h"
-
-#if defined(ARTS_PROTOCOL_EXCL)
-
-#include <stdio.h>
-
-int main(void) {
-  printf("SKIP stub_install_winner: non-EXCL only (EXCL has no stub "
-         "first-touch cache install)\n");
-  return 0;
-}
-
-#else
 
 #include <stdint.h>
 #include <stdio.h>
@@ -157,5 +145,3 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-
-#endif

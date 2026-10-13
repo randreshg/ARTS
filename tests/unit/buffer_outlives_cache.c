@@ -34,7 +34,9 @@
  * every buffer taken from the registered pool must be back there when the
  * property ends.
  *
- * Standalone: links buffer.c + shared.c with libc-backed alloc shims.
+ * Standalone: links buffer.c + shared.c with libc-backed alloc shims.  Where
+ * the store is DIRECT the payload is not a buffer's, so that tree does not
+ * build the test.
  */
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/types.h"
@@ -75,7 +77,6 @@ static void check(int ok, const char *what) {
   }
 }
 
-#ifndef ARTS_CXL_DIRECT
 /* The freed descriptor must still hold the fill, and every buffer must be
  * back in the registered pool; then the descriptor is released for real. */
 static void settle(const char *what) {
@@ -107,7 +108,7 @@ static struct arts_db_s *new_db(void) {
   db->cache.db_size = DB_SIZE;
   db->cache.payload_pending = 1u;
 #ifdef ARTS_DB_BUF_POOL
-  arts_lf_pool_init(&db->cache.buf_freelist, 0);
+  arts_lf_pool_init(&db->cache.buf_freelist);
 #endif
   atomic_store(&g_db_live, db);
   atomic_store(&g_db_frees, 0u);
@@ -153,13 +154,8 @@ static void spawn(pthread_t *t, void *(*fn)(void *), void *arg) {
     exit(1);
   }
 }
-#endif
 
 int main(void) {
-#ifdef ARTS_CXL_DIRECT
-  printf("SKIP buffer_outlives_cache (the payload is not a buffer's here)\n");
-  return 0;
-#else
   /* Unbuffered, so a crash still leaves every verdict printed before it. */
   setvbuf(stdout, NULL, _IONBF, 0);
   /* 1 */
@@ -294,6 +290,10 @@ int main(void) {
   /* A SIGCHLD ignored by whoever started the test would reap the child before
    * waitpid could see how it ended. */
   signal(SIGCHLD, SIG_DFL);
+  /* The child would print its inherited unflushed output again on reopening
+   * its streams. */
+  fflush(stdout);
+  fflush(stderr);
   pid_t pid = fork();
   if (pid == 0) {
     (void)freopen("/dev/null", "w", stdout);
@@ -317,7 +317,6 @@ int main(void) {
   printf(fail ? "FAIL buffer_outlives_cache\n"
               : "PASS buffer_outlives_cache\n");
   return fail;
-#endif
 }
 
 /* libc-backed alloc shims, so the test links without the runtime; the

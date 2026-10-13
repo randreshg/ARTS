@@ -98,6 +98,8 @@ int main(void) {
 
   /* --- (4) missing interface is fatal: probe in a forked child first, so a
    * regression to silent-fallback cannot take down the whole test. ------- */
+  /* An exit in the child flushes what it inherited. */
+  fflush(stdout);
   pid_t pid = fork();
   if (pid == 0) {
     freopen("/dev/null", "w", stderr); /* silence the expected ERROR line */

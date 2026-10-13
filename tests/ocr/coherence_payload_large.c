@@ -166,7 +166,8 @@ static void phase2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
      * used (not RW): the readers only observe, so the flow is well-defined under
      * every protocol, and it still moves the whole payload across ranks. */
     for (int w = 0; w < WORKERS_PER_DB; w++) {
-      unsigned int worker_rank = (home + 1u + (unsigned int)w) % nnodes;
+      unsigned int worker_rank =
+          (home + 1u + (unsigned int)w % (nnodes - 1u)) % nnodes;
       uint64_t wparams[2] = {(uint64_t)d * WORKERS_PER_DB + (uint64_t)w,
                              db_bytes[d] / sizeof(int)};
       arts_guid_t wk = arts_edt_create(

@@ -38,29 +38,29 @@
 ******************************************************************************/
 
 /// @file self_send_vs_dispatcher_parity.c
-/// @brief The self-send shortcut must reproduce the RX dispatcher exactly.
+/// @brief A message sent to the sending rank itself must have the effect the
+///        receive path gives it when it crosses ranks.
 ///
-/// Every `arts_send_db_*` helper has two paths for the same wire message: a
-/// self-send shortcut (destination == local rank — `arts_transport_send_async`
-/// drops self-sends, so the helper dispatches the handler inline) and the RX
-/// dispatcher (cross-rank — the wire packet is decoded and routed).  The two
-/// MUST be behaviorally identical: same defer-vs-inline decision (Cat-B routes
-/// through `arts_ooo_dispatch_or_defer_guid`), same MISS action (Cat-C
-/// lookup-acquire-or-drop / unconditional ACK post).  A divergence shows up as
-/// a bug that reproduces ONLY single-node (self-send) or ONLY cross-rank
-/// (dispatcher) — never both.
+/// A coherence message whose destination is the local rank does not travel:
+/// the sender runs the handler inline.  The same message from another rank is
+/// decoded and dispatched by the receive path.  The two must decide the same
+/// way (defer or run inline, and what a lookup that finds nothing does), or a
+/// defect shows only on one rank or only across ranks.  Each iteration drives
+/// every message family through both: a create, a write turn handed off
+/// (publish and ownership transfer), read turns on every rank (rank 0's is
+/// home-local, the others travel), and a destroy fanned out to every cache.
+/// One rank exercises the inline path for all of them, several ranks the
+/// dispatched one, and the oracle is the same on both.
 ///
-/// This driver exercises EVERY coherence message family — DB_CREATE,
-/// SNAPSHOT_REQUEST/RESPONSE (RO acquire), PUBLISH/ownership transfer (RW
-/// handoff), DESTROY + CACHE_DESTROY — and asserts the SAME correctness
-/// invariant in both topologies.  Run single-node it drives the self-send
-/// shortcut for all of them (home == self); run multinode the integrator's
-/// 2n_9w_1p/4n_4w_1p/2n_8w_2p variants drive the dispatcher.  Identical PASS in both
-/// topologies is the parity proof; a topology-specific hang is caught by the
-/// ctest TIMEOUT, a topology-specific wrong answer by the in-EDT assertion
-/// (arts_abort).
+/// Beside the fresh block, two blocks persist across iterations, written and
+/// read every iteration in the same rounds: a sized one, whose reader ranks
+/// keep the copy the previous iteration left, so every read is answered
+/// against an older installed version, and a zero-size one, which has no bytes
+/// to answer with.  Every reader of a sized block must see the iteration's
+/// value; every reader of the zero-size block must be woken.
 ///
-/// Config-agnostic: runs under every protocol.
+/// Every write turn is ordered before the reads that follow it, and the reads
+/// before the next iteration's write, so it holds under every protocol.
 
 #include "arts.h"
 
@@ -70,7 +70,8 @@
 #define ITERS 200u
 #define BASE 0x40000000u
 
-/// writer: RW acquire; stamp the per-iter value.
+/// writer: RW acquire; stamps the iteration's value into a sized block, takes
+/// the turn and nothing else on the zero-size one.
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -81,8 +82,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// reader: RO acquire, causally after the writer; MUST observe the new value
-/// regardless of whether the snapshot arrived via self-send or the dispatcher.
+/// reader: RO acquire, ordered after the writer; must observe the new value.
 static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -96,6 +96,43 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
+/// A read turn of the zero-size block: there is nothing to read, and the turn
+/// running at all is the assertion.
+static void empty_reader_edt(uint32_t paramc, const uint64_t *paramv,
+                             uint32_t depc, arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+}
+
+static arts_guid_t make_block(unsigned int bytes) {
+  void *ptr = NULL;
+  arts_guid_t db = arts_db_create(&ptr, bytes, ARTS_DB, ARTS_DB_PROP_NONE,
+                                  &(arts_db_hint_t){.rank = 0});
+  if (bytes != 0u) {
+    ((unsigned int *)ptr)[0] = 0u;
+  }
+  arts_db_release(db, DB_MODE_RW);
+  return db;
+}
+
+static void write_turn(arts_guid_t db, uint64_t *value, unsigned int rank,
+                       arts_guid_t scope) {
+  arts_guid_t w =
+      arts_edt_create(writer_edt, 1, value, 1,
+                      &(arts_edt_hint_t){.rank = rank, .finish_event = scope});
+  arts_add_dependence(db, w, 0, DB_MODE_RW);
+}
+
+static void read_turn(arts_edt_t body, arts_guid_t db, uint64_t *value,
+                      unsigned int rank, arts_guid_t scope) {
+  arts_guid_t r =
+      arts_edt_create(body, 1, value, 1,
+                      &(arts_edt_hint_t){.rank = rank, .finish_event = scope});
+  arts_add_dependence(db, r, 0, DB_MODE_RO);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -107,41 +144,27 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
   unsigned int W = (nranks > 1) ? 1u : 0u; /* remote writer when possible */
+  arts_guid_t persistent = make_block(sizeof(unsigned int));
+  arts_guid_t empty = make_block(0u);
 
   for (unsigned int it = 0; it < ITERS; it++) {
     uint64_t vnew = (uint64_t)(BASE + it);
+    arts_guid_t db = make_block(sizeof(unsigned int));
 
-    /* DB_CREATE on home (self-send create on 1n_20w, wire create from a remote-home
-     * acquire on Nn).  Recreate per iter so DESTROY + CACHE_DESTROY are also
-     * exercised every generation. */
-    void *ptr = NULL;
-    arts_guid_t db =
-        arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
-                       &(arts_db_hint_t){.rank = 0});
-    ((unsigned int *)ptr)[0] = 0u;
-    arts_db_release(db, DB_MODE_RW);
-
-    /* RW handoff: publish / ownership-transfer message family. */
     arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    arts_guid_t wr =
-        arts_edt_create(writer_edt, 1, &vnew, 1,
-                        &(arts_edt_hint_t){.rank = W, .finish_event = e_w});
-    arts_add_dependence(db, wr, 0, DB_MODE_RW);
+    write_turn(db, &vnew, W, e_w);
+    write_turn(persistent, &vnew, W, e_w);
+    write_turn(empty, &vnew, W, e_w);
     arts_event_wait(e_w);
 
-    /* RO acquire on every rank: SNAPSHOT_REQUEST/RESPONSE message family.  Rank
-     * 0's reader is the self-send case (home == self); foreign readers are the
-     * dispatcher case. */
     arts_guid_t e_r = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     for (unsigned int r = 0; r < nranks; r++) {
-      arts_guid_t rd =
-          arts_edt_create(reader_edt, 1, &vnew, 1,
-                          &(arts_edt_hint_t){.rank = r, .finish_event = e_r});
-      arts_add_dependence(db, rd, 0, DB_MODE_RO);
+      read_turn(reader_edt, db, &vnew, r, e_r);
+      read_turn(reader_edt, persistent, &vnew, r, e_r);
+      read_turn(empty_reader_edt, empty, &vnew, r, e_r);
     }
     arts_event_wait(e_r);
 
-    /* DESTROY (self-send vs wire) + CACHE_DESTROY fan-out. */
     arts_db_destroy(db);
   }
 

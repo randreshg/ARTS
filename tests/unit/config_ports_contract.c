@@ -47,7 +47,9 @@
 /// independently, and a probe on the launching machine says nothing about a
 /// remote host, so the config must name them.
 ///
-///   - launcher=local, ports absent  -> runtime chooses (port_count of them)
+///   - launcher=local, ports absent  -> runtime chooses (port_count of them),
+///     a disjoint block per node, every node on 127.0.0.1 and sharing this
+///     machine's processing units
 ///   - launcher=local, ports named   -> rejected, it is not the operator's call
 ///   - launcher=ssh,   ports absent  -> rejected, nothing else can supply them
 ///   - launcher=ssh,   ports named   -> used verbatim by every rank
@@ -88,6 +90,8 @@ static int write_cfg(char *path_out, size_t path_cap, const char *tag,
 /* Load the cfg in a forked child; 1 = rejected (nonzero exit / signal),
  * 0 = accepted, -1 = harness failure. */
 static int load_rejected(const char *cfg_path) {
+  /* An exit in the child flushes what it inherited. */
+  fflush(stdout);
   pid_t pid = fork();
   if (pid < 0) {
     perror("fork");
@@ -134,9 +138,10 @@ int main(void) {
   int fails = 0;
   char cfg_path[256];
 
-  /* (A) local + no ports -> the runtime picks them, one per port_count. */
+  /* (A) local + no ports -> the runtime picks them, one per port_count.  Four
+     nodes, so a node's offset is checked past the first two. */
   if (write_cfg(cfg_path, sizeof(cfg_path), "localauto",
-                "launcher=local\nnode_count=2\nport_count=2\n") != 0) {
+                "launcher=local\nnode_count=4\nport_count=2\n") != 0) {
     printf("FAIL config_ports_contract: cannot write localauto cfg\n");
     return 1;
   }
@@ -160,6 +165,30 @@ int main(void) {
     printf("FAIL config_ports_contract: seed %u outside the window %u-%u\n",
            config.ports[0], ARTS_PORT_WINDOW_LO, ARTS_PORT_WINDOW_HI);
     fails++;
+  }
+  /* Every rank of a local run shares this machine's loopback interface and
+     its processing units. */
+  if (config.table == NULL || config.table_length != 4) {
+    printf("FAIL config_ports_contract: routing table %p of %u nodes, want "
+           "4\n",
+           (void *)config.table, config.table_length);
+    fails++;
+  }
+  if (!config.shared_pu_pool) {
+    printf("FAIL config_ports_contract: a local run's nodes do not share "
+           "the processing units\n");
+    fails++;
+  }
+  for (unsigned int i = 0; config.table && i < config.table_length; i++) {
+    if (config.table[i].ip_address == NULL ||
+        strcmp(config.table[i].ip_address, "127.0.0.1") != 0) {
+      printf("FAIL config_ports_contract: node %u address is %s, want "
+             "127.0.0.1\n",
+             i,
+             config.table[i].ip_address ? config.table[i].ip_address
+                                        : "(null)");
+      fails++;
+    }
   }
   for (unsigned int i = 0; config.table && i < config.table_length; i++) {
     for (unsigned int j = 0; j < config.port_count; j++) {

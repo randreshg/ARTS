@@ -28,20 +28,10 @@
  *
  * Linked per arm (generated_tests.cmake): VAL and INV compile their own
  * coherence directory.c (which carries the bitset functions) standalone with
- * the libc-backed alloc shims below; EXCL links the full libarts; FLUSH keeps
- * no bitset and self-skips.
+ * the libc-backed alloc shims below; EXCL links the full libarts.  FLUSH
+ * keeps its destroy roster inline and has no bitset, so it does not build
+ * this test.
  */
-
-#ifdef ARTS_PROTOCOL_FLUSH
-/* This arm keeps its destroy roster inline in its own translation unit and
- * links no rank-bitset module, so there is no symbol here to exercise. */
-#include <stdio.h>
-int main(void) {
-  printf("PASS rank_bitset: skipped under FLUSH (no rank-bitset module in "
-         "this arm)\n");
-  return 0;
-}
-#else
 
 #include "arts/rank_bitset.h"
 #include "arts/coherence/directory.h"
@@ -311,4 +301,3 @@ void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }
 #endif
-#endif /* !ARTS_PROTOCOL_FLUSH */

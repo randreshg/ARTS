@@ -16,16 +16,9 @@
  * WT policy never gates.
  *
  * Expected values are hand-derived.  Built standalone by #including
- * coherence/inv/arbiters.c.  INV-only; self-skips elsewhere.
+ * coherence/inv/arbiters.c.  Built and registered only in an INV tree.
  */
 #include <stdio.h>
-#if !defined(ARTS_PROTOCOL_INV)
-int main(void) {
-  printf("PASS inv_round_snapshot: skipped (INV only; the round's roster "
-         "snapshot exists only in that build)\n");
-  return 0;
-}
-#else
 #include "arts/coherence/inv/types.h"
 
 #include <limits.h>
@@ -158,4 +151,3 @@ int main(void) {
          "exempt rank does neither\n");
   return 0;
 }
-#endif

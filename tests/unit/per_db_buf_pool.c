@@ -19,8 +19,7 @@
 static void mini_cache_init(struct arts_db_cache_s *c, uint64_t db_size) {
   memset(c, 0, sizeof(*c));
   c->db_size = db_size;
-  arts_lf_pool_init(&c->buf_freelist, 0); /* DWCAS free-list; node_size 0 =
-                                             pop-only, alloc is external */
+  arts_lf_pool_init(&c->buf_freelist);
   /* buffer slot starts NULL */
 }
 

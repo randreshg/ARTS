@@ -5,6 +5,10 @@
  * creator: it is handed a pointer, and what it writes through that pointer is
  * what the next holder reads.  The two are raced on purpose; the verdict does
  * not depend on which of them goes first.
+ *
+ * The first round fixes the order instead, on the label's home: the reader's
+ * dependence is added before the block exists, so its acquire finds no block
+ * and waits on the label's slot, and the create's install is what resolves it.
  */
 #include "arts.h"
 
@@ -89,20 +93,43 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int ranks = arts_get_total_ranks();
   unsigned int creator_rank = (ranks > 1u) ? 1u : 0u;
 
-  arts_guid_t prev = NULL_GUID;
-  for (unsigned int r = 0; r < ROUNDS; r++) {
+  /* Round 0, on the home: the reader is ready, and asks, before the block is
+   * created.  The checker is created after the creator's release, so its read
+   * is ordered after the write. */
+  g_round_db[0] = arts_guid_reserve(ARTS_GUID_DB, 0);
+  arts_guid_t touched0 = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t t0 =
+      arts_edt_create(toucher_edt, 0, NULL, 1,
+                      &(arts_edt_hint_t){.finish_event = touched0, .rank = 0u});
+  arts_add_dependence(g_round_db[0], t0, 0, DB_MODE_RO);
+  unsigned int *p0 = (unsigned int *)arts_db_create_with_guid(
+      g_round_db[0], sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+  if (p0 == NULL) {
+    (void)fprintf(stderr, "FAIL db_create_after_first_touch: an acquiring "
+                          "create was handed no pointer\n");
+    arts_test_fail();
+  } else {
+    p0[0] = SENTINEL;
+  }
+  arts_db_release(g_round_db[0], DB_MODE_RW);
+  arts_guid_t prev = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t k0 =
+      arts_edt_create(checker_edt, 0, NULL, 2,
+                      &(arts_edt_hint_t){.finish_event = prev, .rank = 0u});
+  arts_add_dependence(g_round_db[0], k0, 0, DB_MODE_RO);
+  arts_add_dependence(touched0, k0, 1, DB_MODE_NULL);
+
+  for (unsigned int r = 1; r < ROUNDS; r++) {
     g_round_db[r] = arts_guid_reserve(ARTS_GUID_DB, 0);
 
     arts_guid_t touched = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_guid_t made = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-    unsigned int gate = (prev == NULL_GUID) ? 0u : 1u;
-
     arts_edt_hint_t th = {.finish_event = touched, .rank = creator_rank};
-    arts_guid_t t = arts_edt_create(toucher_edt, 0, NULL, 1u + gate, &th);
+    arts_guid_t t = arts_edt_create(toucher_edt, 0, NULL, 2, &th);
 
     uint64_t cpv[1] = {(uint64_t)g_round_db[r]};
     arts_edt_hint_t ch = {.finish_event = made, .rank = creator_rank};
-    arts_guid_t c = arts_edt_create(creator_edt, 1, cpv, gate, &ch);
+    arts_guid_t c = arts_edt_create(creator_edt, 1, cpv, 1, &ch);
 
     arts_guid_t seen = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_edt_hint_t kh = {.finish_event = seen, .rank = creator_rank};
@@ -115,10 +142,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
     /* The two racers: the toucher's acquire fires the moment its gate is
      * satisfied, which is what installs the stub before any create. */
-    if (gate != 0u) {
-      arts_add_dependence(prev, t, 1, DB_MODE_NULL);
-      arts_add_dependence(prev, c, 0, DB_MODE_NULL);
-    }
+    arts_add_dependence(prev, t, 1, DB_MODE_NULL);
+    arts_add_dependence(prev, c, 0, DB_MODE_NULL);
     arts_add_dependence(g_round_db[r], t, 0, DB_MODE_RO);
 
     prev = seen;

@@ -73,19 +73,14 @@ int main(void) {
   }
   atomic_store_explicit(&g_start, 1, memory_order_release);
 
-  /* Single consumer (holds the gate the whole time) — pops one at a time so
-   * the queue is frequently at depth 0/1. */
+  /* The single consumer pops one at a time, so the queue is frequently at
+   * depth 0/1. */
   uint32_t next_seq[PRODUCERS];
   for (int i = 0; i < PRODUCERS; ++i) {
     next_seq[i] = 0;
   }
   size_t got = 0;
   int idle = 0;
-  bool gate = arts_mpsc_try_drain_begin(&g_q);
-  if (!gate) {
-    (void)fprintf(stderr, "FAIL mpsc_rethread_stub: lost own gate\n");
-    return 1;
-  }
   while (got < TOTAL) {
     arts_lf_link_t *l = arts_mpsc_pop(&g_q);
     if (!l) {
@@ -114,7 +109,6 @@ int main(void) {
     free(m);
     ++got;
   }
-  arts_mpsc_drain_end(&g_q);
 
   for (int i = 0; i < PRODUCERS; ++i) {
     pthread_join(prod[i], NULL);

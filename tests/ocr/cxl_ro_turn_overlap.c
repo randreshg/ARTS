@@ -2,8 +2,9 @@
  *
  * cxl_ro_turn_overlap — back-to-back read turns of one block on its home rank.
  *
- * One task on the home creates the block and writes a pattern through its
- * create's write turn.  Two chains of readers then run on that same rank: each
+ * One task on the home creates the block, writes a pattern through its
+ * create's write turn and releases it.  Two chains of readers then run on that
+ * same rank: each
  * reader acquires the block read-only, checks every byte, and creates its
  * successor gated on its own output event, which is satisfied after its
  * release.  With two chains the rank's read count keeps falling to zero while
@@ -83,8 +84,9 @@ static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (uint32_t i = 0; i < BYTES; i++) {
     p[i] = pattern(i);
   }
-  /* The chains' first readers are ordered after the write by the create's
-   * own write turn, which ends when this task releases. */
+  /* The release ends the create's write turn and orders the write before the
+   * chains' first readers, which are wired after it. */
+  arts_db_release(db, DB_MODE_RW);
   for (unsigned c = 0; c < CHAINS; c++) {
     arts_guid_t out = arts_event_create(NULL);
     uint64_t pv[3] = {db, 0u, out};

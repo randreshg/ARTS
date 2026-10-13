@@ -14,8 +14,8 @@
  *
  * Scenarios:
  *
- *   A. install_if_absent storm on ONE empty slot: exactly one handle returned; the
- *      slot holds the winner's object; the deleter has NOT run for any loser
+ *   A. install_if_absent storm on ONE empty slot: exactly one handle returned;
+ * the slot holds the winner's object; the deleter has NOT run for any loser
  *      object (losers keep theirs); winner freed exactly once at teardown.
  *
  *   B. retire single-flight: N threads race a retire (the object form) on a
@@ -42,6 +42,16 @@
  *   G. a handle-less retire that arrives while a real retire of generation 1
  *      holds the slot RETIRING waits it out and returns false; generation 2,
  *      installed right after, stays.
+ *
+ *   H. the iterator walks every published slot, and a caller-made control
+ *      block is installed by the same rule: an occupied slot is never
+ *      replaced (static sentinels with no deleter, so no retire frees them).
+ *
+ *   I. reservers racing fresh keys: threads reserve the same sequence of
+ *      never-seen keys at once, so every key's first reservation is
+ *      contended and the table grows under the race.  Every thread must get
+ *      one slot per key, the same one, and the table must hold exactly one
+ *      slot per key (a census over every table and its segments).
  *
  * F and G park the retire inside set_destroyed_if through the file's
  * retire-claim hooks, so the interleavings are forced, not sampled.
@@ -208,6 +218,160 @@ static void *b_worker(void *vp) {
   }
   c->won = arts_route_table_set_destroyed_object(c->guid, c->obj) ? 1 : 0;
   return NULL;
+}
+
+/* ── Scenario H: the iterator, and an occupied slot never replaced ──────── */
+#define H_SLOTS 10
+
+static int g_h_obj[H_SLOTS];
+static int g_h_other;
+
+static bool h_install(void *obj, arts_guid_t key) {
+  arts_shared_ptr_t cb = arts_shared_make(obj, NULL);
+  arts_shared_set_tag(cb, (uint64_t)key);
+  if (arts_route_table_install_handle_if_absent(cb, key)) {
+    return true;
+  }
+  arts_shared_abandon(&cb);
+  return false;
+}
+
+static unsigned h_count_sentinels(arts_route_table_t *table) {
+  unsigned n = 0;
+  arts_route_table_iterator_t iter;
+  arts_reset_route_table_iterator(&iter, table);
+  for (arts_route_item_t *item = arts_route_table_iterate(&iter); item != NULL;
+       item = arts_route_table_iterate(&iter)) {
+    arts_shared_ptr_t h =
+        arts_route_table_lookup(__atomic_load_n(&item->key, __ATOMIC_ACQUIRE));
+    void *obj = h ? arts_shared_get(h) : NULL;
+    if (obj >= (void *)&g_h_obj[0] && obj < (void *)&g_h_obj[H_SLOTS]) {
+      n++;
+    }
+    arts_shared_release(&h);
+  }
+  return n;
+}
+
+static int run_h(void) {
+  arts_guid_t range = arts_guid_reserve_range(ARTS_GUID_EDT, H_SLOTS, 0);
+  for (unsigned i = 0; i < H_SLOTS; i++) {
+    if (!h_install(&g_h_obj[i], arts_guid_from_index(range, i))) {
+      FAIL("H: install into an empty slot %u lost\n", i);
+    }
+  }
+  unsigned seen = 0;
+  for (unsigned t = 0; t < arts_node_info.total_thread_count; t++) {
+    seen += h_count_sentinels(arts_node_info.route_table[t]);
+  }
+  for (int sh = 0; sh < ARTS_REMOTE_ROUTE_SHARDS; sh++) {
+    seen += h_count_sentinels(arts_node_info.remote_route_table[sh]);
+  }
+  if (seen != H_SLOTS) {
+    FAIL("H: the iterator walked %u installed slots, want %u\n", seen, H_SLOTS);
+  }
+  arts_guid_t first = arts_guid_from_index(range, 0);
+  if (h_install(&g_h_other, first)) {
+    FAIL("H: an install replaced a live object\n");
+  }
+  arts_shared_ptr_t lh = arts_route_table_lookup(first);
+  if (lh == NULL || arts_shared_get(lh) != (void *)&g_h_obj[0]) {
+    FAIL("H: the live object left its slot\n");
+  }
+  arts_shared_release(&lh);
+  for (unsigned i = 0; i < H_SLOTS; i++) {
+    if (!arts_route_table_set_destroyed_object(arts_guid_from_index(range, i),
+                                               &g_h_obj[i])) {
+      FAIL("H: retire of slot %u failed\n", i);
+    }
+  }
+  return 0;
+}
+
+/* ── Scenario I: reservers racing fresh keys ───────────────────────────── */
+#define I_THREADS 8
+#define I_KEYS 20000
+
+static arts_guid_t g_i_keys[I_KEYS];
+static arts_route_item_t *g_i_seen[I_THREADS][I_KEYS];
+
+typedef struct {
+  unsigned id;
+  atomic_int *gate;
+} i_ctx_t;
+
+static void *i_worker(void *vp) {
+  i_ctx_t *c = (i_ctx_t *)vp;
+  while (atomic_load_explicit(c->gate, memory_order_acquire) == 0) {
+  }
+  for (unsigned k = 0; k < I_KEYS; k++) {
+    arts_route_item_t *item = NULL;
+    arts_route_table_reserve_or_lookup(g_i_keys[k], &item);
+    g_i_seen[c->id][k] = item;
+  }
+  return NULL;
+}
+
+/* Slots whose key is `g`, over every table and every segment of it. */
+static unsigned i_census(arts_guid_t g) {
+  unsigned hits = 0;
+  for (unsigned i = 0;
+       i < arts_node_info.total_thread_count + ARTS_REMOTE_ROUTE_SHARDS; i++) {
+    arts_route_table_t *rt =
+        (i < arts_node_info.total_thread_count)
+            ? arts_node_info.route_table[i]
+            : arts_node_info
+                  .remote_route_table[i - arts_node_info.total_thread_count];
+    for (; rt != NULL; rt = rt->next) {
+      uint64_t total = (uint64_t)rt->size * COLLISION_RESOLVES;
+      for (uint64_t j = 0; j < total; j++) {
+        if (__atomic_load_n(&rt->data[j].key, __ATOMIC_ACQUIRE) == g) {
+          hits++;
+        }
+      }
+    }
+  }
+  return hits;
+}
+
+static int run_i(void) {
+  for (unsigned k = 0; k < I_KEYS; k++) {
+    g_i_keys[k] = arts_guid_reserve(ARTS_GUID_DB, 0);
+  }
+  atomic_int gate;
+  atomic_init(&gate, 0);
+  pthread_t tid[I_THREADS];
+  i_ctx_t ctx[I_THREADS];
+  for (unsigned t = 0; t < I_THREADS; t++) {
+    ctx[t].id = t;
+    ctx[t].gate = &gate;
+    if (pthread_create(&tid[t], NULL, i_worker, &ctx[t]) != 0) {
+      FAIL("I: pthread_create\n");
+    }
+  }
+  atomic_store_explicit(&gate, 1, memory_order_release);
+  for (unsigned t = 0; t < I_THREADS; t++) {
+    pthread_join(tid[t], NULL);
+  }
+  for (unsigned k = 0; k < I_KEYS; k++) {
+    if (g_i_seen[0][k] == NULL) {
+      FAIL("I: key %u reserved no slot\n", k);
+    }
+    for (unsigned t = 1; t < I_THREADS; t++) {
+      if (g_i_seen[t][k] != g_i_seen[0][k]) {
+        FAIL("I: key %u reserved slot %p on one thread and %p on another\n", k,
+             (void *)g_i_seen[0][k], (void *)g_i_seen[t][k]);
+      }
+    }
+  }
+  /* The census walks the whole table, so it samples the keys. */
+  for (unsigned k = 0; k < I_KEYS; k += 97) {
+    unsigned hits = i_census(g_i_keys[k]);
+    if (hits != 1u) {
+      FAIL("I: %u slots claim key %u (want 1)\n", hits, k);
+    }
+  }
+  return 0;
 }
 
 /* ── Scenarios F and G: a handle-less retire meets a retire in flight ───── */
@@ -555,12 +719,12 @@ int main(void) {
     }
   }
 
-  if (run_fg(true) != 0 || run_fg(false) != 0) {
+  if (run_fg(true) != 0 || run_fg(false) != 0 || run_h() != 0 || run_i() != 0) {
     return 1;
   }
 
   printf("PASS route_table_install_if_absent: single install winner, abandon "
          "keeps loser objects, retire single-flight and bound to the object "
-         "it saw\n");
+         "it saw, every slot iterated, one slot per raced fresh key\n");
   return 0;
 }

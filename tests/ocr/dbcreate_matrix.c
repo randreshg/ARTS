@@ -41,7 +41,8 @@
 /// @brief DB-create capability matrix: exercises all 12 logical cells of the
 ///        (creator-acquisition A) x (home-determination B) x (locality C)
 ///        grid against the ARTS core create path directly (arts.h, no OCR
-///        shim).  Prints a scalar CELLS_OK=<k>/12.
+///        shim).  Each consumer reports its cell's PASS or FAIL, and a failed
+///        cell fails the run.
 ///
 /// Grid:
 ///   A: ACQUIRE (default hold) | NO_ACQUIRE (DB_PROP_NO_ACQUIRE)
@@ -56,12 +57,12 @@
 ///     6 ACQ/no-hint (b)        12 NOACQ/no-hint (b)
 ///
 /// Each cell is driven once from rank 0 and (when the node count allows) once
-/// from rank 1, for coverage; a cell's pass bit requires every instance that
-/// ran to pass.  Single-node collapses every "remote" C target back onto the
-/// creator (still runs; C.f. Sec.5 "single-node collapses C=remote to
-/// local").  No-hint cells (B(iii)) have no caller-selectable target home, so
-/// only data correctness is asserted for them; affinity/labeled cells assert
-/// both data correctness AND that the DB's encoded home rank
+/// from rank 1, for coverage; each instance reports its own verdict, and any
+/// failing instance fails the run.  Single-node collapses every "remote" C
+/// target back onto the creator (still runs; C.f. Sec.5 "single-node collapses
+/// C=remote to local").  No-hint cells (B(iii)) have no caller-selectable
+/// target home, so only data correctness is asserted for them; affinity/labeled
+/// cells assert both data correctness AND that the DB's encoded home rank
 /// (arts_guid_get_rank) equals the intended target -- this is the ARTS-native
 /// equivalent of an affinity-query home assert (the GUID's rank field is the
 /// authoritative encoding of where the DB's master lives, so this check is
@@ -75,7 +76,9 @@
 /// program-order sequencing inside one EDT body guarantees the hand-off).
 /// ACQUIRE cells avoid this entirely: the driver itself holds the write from
 /// creation, writes, releases, and only then wires the consumer -- pure
-/// program order within one function.
+/// program order within one function.  Every block therefore has exactly one
+/// write acquisition, ordered before its reads, so the program is valid under
+/// the DB-WRF model too.
 
 #include "arts.h"
 #include <stdbool.h>
@@ -92,9 +95,8 @@
 typedef enum { AXIS_AFFINITY, AXIS_LABELED, AXIS_NOHINT } axis_t;
 
 /* ---- consumer_edt: paramv = {cellIdx, wantHome, createOk}; depv[0]=target
- * DB (RO), depv[1]=results DB (RW, uint8_t[NUM_CELLS]).  createOk is 1
- * unless a NO_ACQUIRE cell's create call violated the OCR NO_ACQUIRE
- * contract (addr must come back NULL) -- see run_cell. --------------------
+ * DB (RO).  createOk is 1 unless a NO_ACQUIRE cell's create call violated the
+ * OCR NO_ACQUIRE contract (addr must come back NULL) -- see run_cell. ------
  */
 static void consumer_edt(uint32_t paramc, const uint64_t *paramv,
                          uint32_t depc, arts_edt_dep_t depv[]) {
@@ -116,8 +118,6 @@ static void consumer_edt(uint32_t paramc, const uint64_t *paramv,
   }
 
   bool ok = data_ok && home_ok && create_ok;
-  uint8_t *results = (uint8_t *)depv[1].ptr;
-  results[cell_idx - 1] = results[cell_idx - 1] && (ok ? 1 : 0);
 
   arts_printf("  cell %2u: %s (data=%s home=%s create=%s)\n", cell_idx,
               ok ? "PASS" : "FAIL", data_ok ? "ok" : "BAD",
@@ -151,8 +151,7 @@ static void consumer_edt(uint32_t paramc, const uint64_t *paramv,
  */
 static void wire_consumers(arts_guid_t db, unsigned int cell_idx, axis_t axis,
                            unsigned int home_idx, unsigned int n,
-                           uint64_t create_ok, arts_guid_t results_db,
-                           arts_guid_t gate_event) {
+                           uint64_t create_ok, arts_guid_t gate_event) {
   /* gate_event (NULL_GUID = none): for NO_ACQUIRE cells the writer's payload
    * is published only when the writer EDT finishes and its RW hold is
    * released (publish).  A bare DB->consumer dep satisfies immediately, so
@@ -164,7 +163,7 @@ static void wire_consumers(arts_guid_t db, unsigned int cell_idx, axis_t axis,
    * its RO acquire -- only happens-after the publish.  ACQUIRE cells pass
    * NULL_GUID: they are already release-before-wire in run_cell. */
   bool gated = (gate_event != NULL_GUID);
-  uint32_t depc = gated ? 3 : 2;
+  uint32_t depc = gated ? 2 : 1;
   if (axis == AXIS_LABELED) {
     unsigned int consumer_ranks[2] = {home_idx, (home_idx + 1) % n};
     for (unsigned int j = 0; j < 2; j++) {
@@ -173,9 +172,8 @@ static void wire_consumers(arts_guid_t db, unsigned int cell_idx, axis_t axis,
           consumer_edt, 3, cparam, depc,
           &(arts_edt_hint_t){.rank = consumer_ranks[j]});
       arts_add_dependence(db, consumer, 0, DB_MODE_RO);
-      arts_add_dependence(results_db, consumer, 1, DB_MODE_RW);
       if (gated) {
-        arts_add_dependence(gate_event, consumer, 2, DB_MODE_NULL);
+        arts_add_dependence(gate_event, consumer, 1, DB_MODE_NULL);
       }
     }
   } else {
@@ -184,9 +182,8 @@ static void wire_consumers(arts_guid_t db, unsigned int cell_idx, axis_t axis,
     arts_guid_t consumer =
         arts_edt_create(consumer_edt, 3, cparam, depc, NULL);
     arts_add_dependence(db, consumer, 0, DB_MODE_RO);
-    arts_add_dependence(results_db, consumer, 1, DB_MODE_RW);
     if (gated) {
-      arts_add_dependence(gate_event, consumer, 2, DB_MODE_NULL);
+      arts_add_dependence(gate_event, consumer, 1, DB_MODE_NULL);
     }
   }
 }
@@ -209,7 +206,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 /* Runs one grid cell from the calling (driver) EDT's body. */
 static void run_cell(unsigned int cell_idx, axis_t axis, unsigned int home_idx,
-                     unsigned int n, bool no_acquire, arts_guid_t results_db) {
+                     unsigned int n, bool no_acquire) {
   arts_db_hint_t db_hint = ARTS_DB_HINT_DEFAULTS;
   const arts_db_hint_t *hintp = NULL;
 
@@ -231,7 +228,7 @@ static void run_cell(unsigned int cell_idx, axis_t axis, unsigned int home_idx,
       p[i] = (uint64_t)cell_idx * 1000 + i;
     }
     arts_db_release(db, DB_MODE_RW);
-    wire_consumers(db, cell_idx, axis, home_idx, n, 1, results_db, NULL_GUID);
+    wire_consumers(db, cell_idx, axis, home_idx, n, 1, NULL_GUID);
   } else {
     /* OCR contract: DB_PROP_NO_ACQUIRE must come back with addr==NULL (the
      * creator does not hold). A backend that silently drops the flag hands
@@ -251,14 +248,13 @@ static void run_cell(unsigned int cell_idx, axis_t axis, unsigned int home_idx,
     arts_guid_t writer = arts_edt_create(
         writer_edt, 1, wparam, 1,
         &(arts_edt_hint_t){.output_event = writer_done});
-    wire_consumers(db, cell_idx, axis, home_idx, n, create_ok, results_db,
-                   writer_done);
+    wire_consumers(db, cell_idx, axis, home_idx, n, create_ok, writer_done);
     arts_add_dependence(db, writer, 0, DB_MODE_RW);
   }
 }
 
-/* ---- driver_edt: paramv = {driverRank, resultsDB}. Runs all 12 cells for
- * one creator rank. --------------------------------------------------------
+/* ---- driver_edt: paramv = {driverRank}. Runs all 12 cells for one creator
+ * rank. -------------------------------------------------------------------
  */
 static void driver_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
@@ -266,36 +262,31 @@ static void driver_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   unsigned int d = (unsigned int)paramv[0];
-  arts_guid_t results_db = (arts_guid_t)paramv[1];
   unsigned int n = arts_get_total_ranks();
   unsigned int remote = (d + 1) % n;
 
-  run_cell(1, AXIS_AFFINITY, d, n, false, results_db);
-  run_cell(2, AXIS_AFFINITY, remote, n, false, results_db);
-  run_cell(3, AXIS_LABELED, d, n, false, results_db);
-  run_cell(4, AXIS_LABELED, remote, n, false, results_db);
-  run_cell(5, AXIS_NOHINT, HOME_SKIP, n, false, results_db);
-  run_cell(6, AXIS_NOHINT, HOME_SKIP, n, false, results_db);
-  run_cell(7, AXIS_AFFINITY, d, n, true, results_db);
-  run_cell(8, AXIS_AFFINITY, remote, n, true, results_db);
-  run_cell(9, AXIS_LABELED, d, n, true, results_db);
-  run_cell(10, AXIS_LABELED, remote, n, true, results_db);
-  run_cell(11, AXIS_NOHINT, HOME_SKIP, n, true, results_db);
-  run_cell(12, AXIS_NOHINT, HOME_SKIP, n, true, results_db);
+  run_cell(1, AXIS_AFFINITY, d, n, false);
+  run_cell(2, AXIS_AFFINITY, remote, n, false);
+  run_cell(3, AXIS_LABELED, d, n, false);
+  run_cell(4, AXIS_LABELED, remote, n, false);
+  run_cell(5, AXIS_NOHINT, HOME_SKIP, n, false);
+  run_cell(6, AXIS_NOHINT, HOME_SKIP, n, false);
+  run_cell(7, AXIS_AFFINITY, d, n, true);
+  run_cell(8, AXIS_AFFINITY, remote, n, true);
+  run_cell(9, AXIS_LABELED, d, n, true);
+  run_cell(10, AXIS_LABELED, remote, n, true);
+  run_cell(11, AXIS_NOHINT, HOME_SKIP, n, true);
+  run_cell(12, AXIS_NOHINT, HOME_SKIP, n, true);
 }
 
-/* ---- reduce_edt: depv[0]=outer finish control, depv[1]=results DB (RO). */
-static void reduce_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                       arts_edt_dep_t depv[]) {
+/* ---- done_edt: depv[0]=outer finish control. */
+static void done_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  const uint8_t *results = (const uint8_t *)depv[1].ptr;
-  unsigned int k = 0;
-  for (unsigned int i = 0; i < NUM_CELLS; i++) {
-    k += results[i] ? 1 : 0;
-  }
-  arts_printf("CELLS_OK=%u/12\n", k);
+  (void)depv;
+  arts_printf("dbcreate_matrix: %d cells checked\n", NUM_CELLS);
   arts_shutdown();
 }
 
@@ -309,28 +300,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int n = arts_get_total_ranks();
   arts_printf("=== dbcreate_matrix (%u ranks) ===\n", n);
 
-  void *raddr = NULL;
-  arts_guid_t results_db =
-      arts_db_create(&raddr, NUM_CELLS, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  uint8_t *results = (uint8_t *)raddr;
-  for (unsigned int i = 0; i < NUM_CELLS; i++) {
-    results[i] = 1;
-  }
-  arts_db_release(results_db, DB_MODE_RW);
-
   arts_guid_t outer = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t done = arts_edt_create(done_edt, 0, NULL, 1, NULL);
+  arts_add_dependence(outer, done, 0, DB_MODE_NULL);
 
-  arts_guid_t reduce = arts_edt_create(reduce_edt, 0, NULL, 2, NULL);
-  arts_add_dependence(outer, reduce, 0, DB_MODE_NULL);
-  arts_add_dependence(results_db, reduce, 1, DB_MODE_RO);
-
-  uint64_t d0[2] = {0, (uint64_t)results_db};
-  arts_edt_create(driver_edt, 2, d0, 0,
+  uint64_t d0[1] = {0};
+  arts_edt_create(driver_edt, 1, d0, 0,
                   &(arts_edt_hint_t){.rank = 0, .finish_event = outer});
-
   if (n > 1) {
-    uint64_t d1[2] = {1, (uint64_t)results_db};
-    arts_edt_create(driver_edt, 2, d1, 0,
+    uint64_t d1[1] = {1};
+    arts_edt_create(driver_edt, 1, d1, 0,
                     &(arts_edt_hint_t){.rank = 1, .finish_event = outer});
   }
 }

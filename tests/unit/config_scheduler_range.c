@@ -38,6 +38,8 @@ static int load_refused(unsigned int index) {
           "scheduler=%u\n",
           index);
   (void)fclose(f);
+  /* An exit in the child flushes what it inherited. */
+  fflush(stdout);
   pid_t pid = fork();
   if (pid < 0) {
     (void)remove(path);

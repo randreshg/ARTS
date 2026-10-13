@@ -28,7 +28,7 @@ typedef struct arts_lf_link_s {
  *
  * INVARIANT: a node may belong to at most one arts_lf_stack_t at a
  * time.  After pop/drain, the node must EITHER be freed OR pushed onto a
- * DIFFERENT stack (e.g., the per-rank arts_lockfree_pool_t).  Pushing the
+ * DIFFERENT stack (e.g., an arts_lockfree_pool_t).  Pushing the
  * same node back onto the same stack invalidates the ABA-free guarantee. */
 typedef struct {
   arts_lf_link_t *head;
@@ -49,7 +49,7 @@ typedef struct arts_lf_link_s {
  *
  * INVARIANT: a node may belong to at most one arts_lf_stack_t at a
  * time.  After pop/drain, the node must EITHER be freed OR pushed onto a
- * DIFFERENT stack (e.g., the per-rank arts_lockfree_pool_t).  Pushing the
+ * DIFFERENT stack (e.g., an arts_lockfree_pool_t).  Pushing the
  * same node back onto the same stack invalidates the ABA-free guarantee. */
 typedef struct {
   _Atomic(arts_lf_link_t *) head;
@@ -78,27 +78,6 @@ static inline void arts_lf_stack_push(arts_lf_stack_t *s,
       &s->head, &old, node, memory_order_release, memory_order_relaxed));
 }
 
-/** Pop exactly one node from the top of the stack.  Returns NULL if empty.
- *
- * Uses a CAS loop on head: safe against concurrent pushers.  This stack
- * provides no ABA protection beyond the caller's "no re-entry" invariant,
- * so the popped node must NOT be pushed back onto the same stack. */
-static inline arts_lf_link_t *arts_lf_stack_pop_one(arts_lf_stack_t *s) {
-  arts_lf_link_t *top = atomic_load_explicit(&s->head, memory_order_acquire);
-  for (;;) {
-    if (top == NULL) {
-      return NULL; /* empty */
-    }
-    arts_lf_link_t *next =
-        atomic_load_explicit(&top->next, memory_order_acquire);
-    if (atomic_compare_exchange_weak_explicit(
-            &s->head, &top, next, memory_order_acq_rel, memory_order_acquire)) {
-      return top;
-    }
-    /* CAS lost (concurrent push or another pop) — retry with fresh top. */
-  }
-}
-
 /** Atomically detach the entire chain.  Returns LIFO order (top of stack
  *  first). */
 static inline arts_lf_link_t *arts_lf_stack_drain(arts_lf_stack_t *s) {
@@ -120,5 +99,31 @@ static inline arts_lf_link_t *arts_lf_stack_reverse_drain(arts_lf_stack_t *s) {
 }
 
 #endif /* __cplusplus */
+
+/* Both definitions are one pointer-width cell at offset 0, aligned as a
+ * pointer, so a structure that embeds them has one layout in C and in C++. */
+#ifdef __cplusplus
+#define ARTS_LF_LAYOUT_ASSERT(c, m) static_assert((c), m)
+#define ARTS_LF_ALIGNOF(t) alignof(t)
+#else
+#define ARTS_LF_LAYOUT_ASSERT(c, m) _Static_assert((c), m)
+#define ARTS_LF_ALIGNOF(t) _Alignof(t)
+#endif
+ARTS_LF_LAYOUT_ASSERT(sizeof(arts_lf_link_t) == sizeof(void *),
+                      "arts_lf_link_t must be one pointer wide");
+ARTS_LF_LAYOUT_ASSERT(offsetof(arts_lf_link_t, next) == 0,
+                      "arts_lf_link_t.next must be at offset 0");
+ARTS_LF_LAYOUT_ASSERT(ARTS_LF_ALIGNOF(arts_lf_link_t) ==
+                          ARTS_LF_ALIGNOF(void *),
+                      "arts_lf_link_t must be aligned as a pointer");
+ARTS_LF_LAYOUT_ASSERT(sizeof(arts_lf_stack_t) == sizeof(void *),
+                      "arts_lf_stack_t must be one pointer wide");
+ARTS_LF_LAYOUT_ASSERT(offsetof(arts_lf_stack_t, head) == 0,
+                      "arts_lf_stack_t.head must be at offset 0");
+ARTS_LF_LAYOUT_ASSERT(ARTS_LF_ALIGNOF(arts_lf_stack_t) ==
+                          ARTS_LF_ALIGNOF(void *),
+                      "arts_lf_stack_t must be aligned as a pointer");
+#undef ARTS_LF_LAYOUT_ASSERT
+#undef ARTS_LF_ALIGNOF
 
 #endif /* ARTS_UTILS_LOCKFREE_LIFO_H */

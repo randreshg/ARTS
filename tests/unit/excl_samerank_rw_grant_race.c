@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * excl_samerank_rw_grant_race — EXCL-config-specific reproducer for the
- * confirmed intra-node concurrent-RW grant-loss class (census 11-lock §4
- * bugs A/B; memory: lock-cache-race-event-storm).
+ * intra-node concurrent-RW grant-loss class.
  *
  * SCENARIO
  * --------
@@ -17,9 +16,8 @@
  * LATCH never fires, verify_edt never runs, and the runtime hangs (caught by
  * the ctest TIMEOUT — there is NO in-test watchdog and NO spin).
  *
- * The test is CORRECT-AND-FAILING by design under EXCL while the bug is
- * present: the pass token is only emitted when ALL N*ITERS deliveries land and
- * the per-DB visited-count equals N exactly.  It must NOT be weakened to pass.
+ * A lost wakeup fails it: the pass token is only emitted when ALL N*ITERS
+ * deliveries land and the per-DB visited-count equals N exactly.
  *
  * Each consumer's RW acquire of the per-iteration DB increments depv[0]'s
  * counter word (RW is exclusive on this rank, so the increments are serialized
@@ -28,16 +26,8 @@
  * final counter for each iteration DB must equal N_CONSUMERS; if a grant is
  * lost the cohort never fully runs and the LATCH stays armed.
  *
- * Self-skips on any non-EXCL build at compile time.
+ * Built and registered only in an EXCL tree.
  */
-
-#if !defined(ARTS_PROTOCOL_EXCL)
-#include <stdio.h>
-int main(void) {
-  printf("SKIP excl_samerank_rw_grant_race: EXCL-only\n");
-  return 0;
-}
-#else
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -183,5 +173,3 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-
-#endif /* ARTS_PROTOCOL_EXCL */

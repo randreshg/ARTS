@@ -8,7 +8,8 @@
  * back to the inherited fd" contract holds without leaking resources.
  *
  * This drives the pipe() failure branch by lowering RLIMIT_NOFILE so no new fd
- * can be opened, then asserts:
+ * can be opened — the limit bounds fd NUMBERS, so it is set to the lowest
+ * free one, below which every slot is taken — then asserts:
  *   - make_pipe returns -1 (does not fabricate a fd), and
  *   - no file descriptor is leaked (open-fd count is identical before/after),
  *     which proves the pipe-fail branch left no half-open pipe, and
@@ -22,6 +23,7 @@
 #include "../../libs/src/core/transport/stdio_forward.c"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/resource.h>
@@ -54,8 +56,7 @@ int main(void) {
   forwarder_slot_t *head_before =
       __atomic_load_n(&g_forwarders, __ATOMIC_ACQUIRE);
 
-  /* Lower the soft fd limit to the current usage so pipe() can open no new fd
-   * -> EMFILE. */
+  /* Lower the soft fd limit so pipe() can open no new fd -> EMFILE. */
   struct rlimit rl;
   if (getrlimit(RLIMIT_NOFILE, &rl) != 0) {
     (void)fprintf(stderr, "FAIL make_pipe_fail: getrlimit\n");
@@ -69,8 +70,16 @@ int main(void) {
     return 1;
   }
 
-  /* Set the soft cap to the number of fds currently open (no headroom). */
-  rl.rlim_cur = (rlim_t)fds_before;
+  /* Set the soft cap to the lowest free fd number: every number below it is
+   * open, so a new fd has nowhere to go.  Counting the open fds instead would
+   * leave a hole in the table (an inherited fd above a gap) below the cap. */
+  int lowest_free = open("/dev/null", O_RDONLY);
+  if (lowest_free < 0) {
+    (void)fprintf(stderr, "FAIL make_pipe_fail: open /dev/null\n");
+    return 1;
+  }
+  close(lowest_free);
+  rl.rlim_cur = (rlim_t)lowest_free;
   if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
     (void)fprintf(stderr, "FAIL make_pipe_fail: setrlimit\n");
     return 1;

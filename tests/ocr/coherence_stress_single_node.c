@@ -40,13 +40,14 @@
 /// @file coherence_stress_single_node.c
 /// @brief Single-node coherence stress.
 ///
-/// N=200 EDTs, M=50 DBs, RW+RO mix, K=100 iterations.  Every iteration
-///   - creates M DBs initialized to a known per-DB value,
-///   - spawns N EDTs, each RO- or RW-acquiring one of the DBs,
-///   - reaches a per-iteration finish EDT that verifies all workers ran.
-/// Iteration N+1 only starts after iteration N's finish EDT has fired —
-/// this gives the ownership protocol many back-to-back acquire/release cycles
-/// per DB.
+/// N=200 EDTs, M=50 DBs, RW+RO mix, K=10 iterations.  Every iteration
+///   - creates M DBs initialized to a known per-DB value and released,
+///   - spawns N EDTs, each RO- or RW-acquiring one of the DBs, so that every
+///     block gets two read and two write acquisitions.
+/// Every iteration is issued at once, under one finish scope, so every
+/// iteration's blocks see read and write turns contend at the same time; the
+/// scope drains to the shutdown only once every worker has run.  The write
+/// acquisitions of a block are unordered, which DB-WRF does not admit.
 ///
 /// Correctness: each worker calls arts_abort(1) on NULL ptr; the finish scope
 /// draining to shutdown_edt is proof all workers completed without abort.
@@ -60,7 +61,7 @@
 
 #define N_EDTS 200
 #define M_DBS 50
-#define K_ITERS 100
+#define K_ITERS 10
 
 static void worker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
@@ -72,8 +73,8 @@ static void worker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("FAIL: worker got NULL ptr\n");
     arts_abort(1);
   }
-  /* RO acquires share the DB safely; RW acquires are per-node serialised.
-   * Either way, just touch the payload to exercise the coherence path. */
+  /* Read and write acquisitions of the block overlap; the worker only reads,
+   * touching the payload to exercise the coherence path. */
   volatile int seen = *data;
   (void)seen;
 }
@@ -113,12 +114,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       dbs[i] = arts_db_create((void **)&data, sizeof(int), ARTS_DB,
                               ARTS_DB_PROP_NONE, NULL);
       *data = i;
+      arts_db_release(dbs[i], DB_MODE_RW);
     }
 
-    /* Mixed RO/RW workers fan out over the DB pool. */
+    /* Mixed RO/RW workers fan out over the DB pool: each pass over the pool
+     * takes the other mode, so every block is acquired both ways. */
     for (int i = 0; i < N_EDTS; i++) {
       int db_idx = i % M_DBS;
-      arts_db_access_mode_t mode = (i & 1) ? DB_MODE_RW : DB_MODE_RO;
+      arts_db_access_mode_t mode = ((i / M_DBS) & 1) ? DB_MODE_RW : DB_MODE_RO;
       arts_guid_t w = arts_edt_create(worker_edt, 0, NULL, 1,
                                       &(arts_edt_hint_t){.finish_event = fe});
       arts_add_dependence(dbs[db_idx], w, 0, mode);

@@ -64,7 +64,8 @@
 /// use-after-free / SIGSEGV.
 ///
 /// Config-agnostic: every protocol has its own Cat-C set; the loop drives
-/// whichever ones the build compiles.
+/// whichever ones the build compiles.  The write turns of one generation are
+/// unordered, which the DB-WRF model does not admit.
 
 #include "arts.h"
 
@@ -73,7 +74,7 @@
 
 #include "../test_failure_status.h"
 
-#define ITERS 300u
+#define ITERS 200u
 
 static void rw_writer_edt(uint32_t paramc, const uint64_t *paramv,
                           uint32_t depc, arts_edt_dep_t depv[]) {

@@ -83,8 +83,9 @@ void acquire_test(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// node_setup paramv: [0]=node_id, [1]=edt_guid, [2]=db_guid.  Runs on rank
-/// node_id (>= 1): creates THAT rank's DB under the pre-reserved guid and
-/// wires it to its own slot (node_id - 1) of the rank-0 EDT.
+/// node_id (>= 1): creates THAT rank's DB under the pre-reserved guid, writes
+/// it and releases it, and only then wires it to its own slot (node_id - 1) of
+/// the rank-0 EDT.
 void node_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -97,6 +98,7 @@ void node_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       local_db_guid, sizeof(unsigned int), ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE,
       NULL);
   *ptr = BASE_VALUE + node_id;
+  arts_db_release(local_db_guid, DB_MODE_RW);
   arts_add_dependence(local_db_guid, local_edt_guid, node_id - 1, DB_MODE_RW);
 }
 

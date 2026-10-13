@@ -34,7 +34,7 @@
  *
  * An arm that holds no write right at all — every remote acquire fetches and
  * every remote write acquisition writes back — has nothing that could outlive
- * a writer, so the property is vacuous there and the test skips.
+ * a writer, so the property is vacuous there and the test is not built.
  */
 
 #include <stdatomic.h>
@@ -44,16 +44,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-
-#if (defined(ARTS_PROTOCOL_EXCL) && !defined(ARTS_RELEASE_RETAIN)) ||         \
-    defined(ARTS_PROTOCOL_FLUSH)
-int main(int argc, char **argv) {
-  (void)argc;
-  (void)argv;
-  printf("SKIP grant_sticky: no retained grant in this configuration\n");
-  return 0;
-}
-#else
 
 #include "arts/coherence/types.h"
 #include "arts/gas/route_table.h"
@@ -216,5 +206,3 @@ int main(int argc, char **argv) {
      reaches nobody else, and a run with a dead rank did not succeed. */
   return arts_rt(argc, argv) != 0 ? 1 : 0;
 }
-
-#endif /* grant-bearing protocols */

@@ -11,8 +11,8 @@
 /// arts_atomic_cswap(shutdown_state, 0, 1): exactly one caller wins the 0->1
 /// transition and performs broadcast (MN) + stop_workers; all others observe a
 /// non-zero state and no-op.  Meanwhile arts_runtime_stop*/socket EOF paths
-/// write shutdown_state with a PLAIN store, so a mixed atomic/plain write to
-/// the same word is the documented hazard (B-shutdown-state-dualpath).  Here we
+/// write shutdown_state with a PLAIN store, so the word sees mixed atomic and
+/// plain writes.  Here we
 /// stress N worker EDTs racing into arts_shutdown simultaneously: the runtime
 /// must terminate cleanly (ctest TIMEOUT reaps a hang) and the final
 /// shutdown_state must read 1 (the CAS landed exactly once and was never torn
@@ -22,8 +22,8 @@
 /// a DB lets each EDT observe how many got to run before the runtime stopped;
 /// the property under test is liveness (no deadlock) plus shutdown_state==1.
 ///
-/// Single-node, every configuration (protocol-agnostic).
-/// exposes_runtime_bug: B-shutdown-state-dualpath (mixed atomic/plain store).
+/// The initiators acquire one block RW with no order among them, so the
+/// program lies outside DB-WRF.
 
 #include "arts.h"
 #include "arts/runtime_state.h"
@@ -75,7 +75,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
+  if (arts_rt(argc, argv) != 0) {
+    return 1;
+  }
   /* After arts_rt returns, the runtime has stopped cleanly.  Exactly one CAS
    * must have driven shutdown_state to 1 and nothing torn it back to 0. */
   unsigned int s = arts_node_info.shutdown_state;

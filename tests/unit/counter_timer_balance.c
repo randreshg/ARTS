@@ -38,6 +38,8 @@
 /* Spawn a child running fn; return true iff the child died abnormally
    (nonzero exit code or killed by a signal) — i.e. the abort fired. */
 static bool child_aborts(void (*fn)(void)) {
+  /* An exit in the child flushes what it inherited. */
+  fflush(stdout);
   pid_t pid = fork();
   if (pid == 0) {
     fn();
@@ -132,7 +134,10 @@ int main(int argc, char **argv) {
      forked children do not inherit a live runtime. */
   bool ok = check_timer_contract();
 
-  arts_rt(argc, argv);
+  if (arts_rt(argc, argv) != 0) {
+    printf("FAIL counter_timer_balance: the runtime run failed\n");
+    return 1;
+  }
 
   if (ok) {
     printf("PASS counter_timer_balance\n");

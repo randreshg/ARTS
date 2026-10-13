@@ -14,22 +14,18 @@
 ******************************************************************************/
 
 /// @file db_create_with_data_bytes.c
-/// @brief Byte-exact DB payload after acquire.
+/// @brief A created block's bytes are the creator's, byte for byte, at the
+///        consumer that acquires it next.
 ///
-/// Exercises the install memcpy path (buffer.c `arts_db_buf_install` with a
-/// non-NULL data_payload) end-to-end: create-time the creator fills the DB
-/// buffer with a non-trivial byte pattern; a consumer EDT then acquires the DB
-/// RO and asserts EVERY byte matches with memcmp (not just a scalar sample).
+/// The creator fills each block with a byte pattern through the hold its
+/// create took and releases it; a consumer EDT then acquires the block and
+/// compares every byte, and checks that the dependence names the block it
+/// delivered.  Labeled blocks of several sizes (sub-word, exact word, an
+/// unaligned tail, one well past the buffer header, and no bytes at all) are
+/// read RO; a block with a runtime-minted GUID is acquired RW, so a write turn
+/// starts from the creator's bytes too.
 ///
-/// Covers the memcpy branch's byte correctness.  Several sizes
-/// are exercised (including an unaligned tail and a single-byte DB) so the
-/// memcpy length handling is fully driven.  Config-agnostic: the create+RO read
-/// path is identical under all 6 build configs (single node — no transfer).
-///
-/// A zero-length labeled create is part of the same contract: it installs a
-/// block a dependence can acquire, with no bytes to check.
-///
-/// A stranded waiter is caught by the ctest TIMEOUT (no in-test watchdog).
+/// A stranded waiter is caught by the ctest TIMEOUT.
 
 #include "arts.h"
 
@@ -38,23 +34,21 @@
 
 #include "../test_failure_status.h"
 
-#define NUM_CASES 5u
+#define NUM_LABELED 5u
+#define MINTED_BYTES 256u
 
-/// Per-case parameters live in paramv:
-///   paramv[0] = db_guid (to recompute the expected pattern)
-///   paramv[1] = db_size in bytes
-///   paramv[2] = case id (for the message)
+/// paramv[0] = the block's GUID (also the pattern's key), paramv[1] = its size
+/// in bytes, paramv[2] = the case id.
 #define PV_DB 0
 #define PV_SIZE 1
 #define PV_ID 2
 
-/// Deterministic byte pattern keyed by the DB guid + byte index, so each case
-/// has distinct bytes and a stale/zeroed/short copy is caught.
+/// Keyed by the GUID and the byte index, so each case has distinct bytes and a
+/// stale, zeroed or short copy is caught.
 static unsigned char pattern_byte(uint64_t key, uint64_t i) {
   return (unsigned char)((key * 1315423911u) ^ (i * 2654435761u) ^ (i << 3));
 }
 
-/// Consumer: RO-acquire the DB and assert every byte matches the pattern.
 void check_bytes(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -62,9 +56,14 @@ void check_bytes(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t key = paramv[PV_DB];
   uint64_t size = paramv[PV_SIZE];
   unsigned int id = (unsigned int)paramv[PV_ID];
+  if (depv[0].guid != (arts_guid_t)key) {
+    arts_printf("  FAIL: case %u dependence does not name its block\n", id);
+    arts_test_fail();
+    return;
+  }
   const unsigned char *data = (const unsigned char *)depv[0].ptr;
   if (data == NULL && size != 0) {
-    arts_printf("  FAIL: case %u RO acquire returned NULL\n", id);
+    arts_printf("  FAIL: case %u acquire returned NULL\n", id);
     arts_test_fail();
     return;
   }
@@ -81,6 +80,15 @@ void check_bytes(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               (unsigned long)size);
 }
 
+static void consume(arts_guid_t g, uint64_t size, unsigned int id,
+                    arts_db_access_mode_t mode, arts_guid_t scope) {
+  uint64_t pv[3] = {(uint64_t)g, size, id};
+  arts_guid_t e =
+      arts_edt_create(check_bytes, 3, pv, 1,
+                      &(arts_edt_hint_t){.rank = 0, .finish_event = scope});
+  arts_add_dependence(g, e, 0, mode);
+}
+
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -90,13 +98,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("=== db_create_with_data_bytes ===\n");
 
-  /* Sizes chosen to exercise: sub-word, exact-word, unaligned tail, a large
-   * buffer that spans well past the 64-byte buffer header, and no bytes. */
-  const uint64_t sizes[NUM_CASES] = {1u, 7u, 64u, 1000u, 0u};
-
+  const uint64_t sizes[NUM_LABELED] = {1u, 7u, 64u, 1000u, 0u};
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
 
-  for (unsigned int c = 0; c < NUM_CASES; c++) {
+  for (unsigned int c = 0; c < NUM_LABELED; c++) {
     uint64_t size = sizes[c];
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     unsigned char *p = (unsigned char *)arts_db_create_with_guid(
@@ -105,18 +110,22 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       p[i] = pattern_byte((uint64_t)g, i);
     }
     arts_db_release(g, DB_MODE_RW);
-
-    uint64_t pv[3] = {(uint64_t)g, size, c};
-    arts_guid_t e =
-        arts_edt_create(check_bytes, 3, pv, 1,
-                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
-    arts_add_dependence(g, e, 0, DB_MODE_RO);
+    consume(g, size, c, DB_MODE_RO, fe);
   }
+
+  void *mp = NULL;
+  arts_guid_t minted = arts_db_create(&mp, MINTED_BYTES, ARTS_DB_DEFAULT,
+                                      ARTS_DB_PROP_NONE, NULL);
+  for (uint64_t i = 0; i < MINTED_BYTES; i++) {
+    ((unsigned char *)mp)[i] = pattern_byte((uint64_t)minted, i);
+  }
+  arts_db_release(minted, DB_MODE_RW);
+  consume(minted, MINTED_BYTES, NUM_LABELED, DB_MODE_RW, fe);
 
   arts_event_wait(fe);
   if (arts_test_status() == 0) {
     arts_printf("PASS: db_create_with_data_bytes %u cases byte-exact\n",
-                NUM_CASES);
+                NUM_LABELED + 1u);
   }
   arts_shutdown();
 }

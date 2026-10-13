@@ -13,32 +13,18 @@
  * arts_thread_init derives the role split:
  *   rank_count == 1  =>  progress = 0, worker = thread_count.
  *   rank_count  > 1  =>  worker = thread_count - progress.
- * The multi-node branch has NO guard that progress <= thread_count, so a
- * misconfig (e.g. thread_count=2, progress=4) makes the UNSIGNED subtraction
- * UNDERFLOW worker_thread_count to a near-UINT_MAX value, which then drives
- * get_thread_mask's Phase-4 role split and the spawn loop into a massive
- * over-run.  This is suspected bug B088 (== B102 config-side).  The dedicated
- * sender role that used to also feed this subtraction is gone entirely (its
- * old cfg key is now a hard error in config.c), so progress alone is the
- * only remaining term that can drive the underflow.
+ * The subtraction is unsigned, so it relies on progress <= thread_count, which
+ * the configuration loader enforces: a progress count above the rank's thread
+ * count is refused there before any thread is derived.
  *
  * Test strategy
  * -------------
- * 1. rank_count==1 case: assert progress==0 and worker==thread_count
- *    (the CORRECT, expected behavior — must always pass).
- * 2. rank_count>1, progress==thread_count: worker==0 (boundary, fine).
- * 3. rank_count>1, progress > thread_count: the derivation underflows.
- *    The test asserts the INTENDED contract (worker <= thread_count).  Because
- *    the runtime currently underflows, this assertion FAILS at runtime — that
- *    is the point: it exposes B088.  We do NOT relax it.  The failing-case
- *    invocation is run in a forked child so the harness can observe the
- *    underflow without aborting the whole test; the parent reports the bug and
- *    exits nonzero (exposes_runtime_bug=true).
+ * 1. rank_count==1 case: assert progress==0 and worker==thread_count.
+ * 2. rank_count>1, progress==thread_count: worker==0 (the boundary).
  *
- * To keep the included arts_thread_init from over-running on the bad case, the
- * stubbed get_thread_mask does nothing (no Phase-4 OOB) and the spawn loop is
- * bounded by thread_count (small) — only worker_thread_count is corrupted, and
- * we read it before any consumer would over-run.
+ * The stubbed get_thread_mask does nothing and the spawn loop is bounded by
+ * thread_count (small), so the derived counts are read without starting any
+ * thread.
  */
 
 #ifndef _GNU_SOURCE
@@ -51,7 +37,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 /* ---- runtime collaborator stubs (declared by the headers threads.c pulls) -
@@ -193,8 +178,6 @@ static unsigned int run_derivation(unsigned int rank_count,
 }
 
 int main(void) {
-  int bug_exposed = 0;
-
   /* ---- Case 1: rank_count==1 forces progress to 0, worker=thread_count ----
    */
   {
@@ -227,64 +210,6 @@ int main(void) {
     }
   }
 
-  /* ---- Case 3: rank>1, progress > thread_count => UNDERFLOW (B088) --------
-   */
-  /* Run in a child so an over-run / huge alloc cannot kill the parent. */
-  {
-    pid_t pid = fork();
-    if (pid < 0) {
-      perror("fork");
-      return 1;
-    }
-    if (pid == 0) {
-      unsigned int w = run_derivation(/*rank_count=*/2, /*tc=*/2,
-                                      /*progress=*/4, NULL);
-      /* Intended contract: worker_thread_count must be <= thread_count. */
-      if (w > 2) {
-        /* Underflowed.  Report via a distinctive exit code. */
-        fprintf(stderr,
-                "CHILD: B088 underflow observed: worker_thread_count=%u "
-                "(thread_count=2, progress=4)\n",
-                w);
-        _exit(88); /* sentinel: underflow confirmed */
-      }
-      _exit(0); /* would mean the runtime guarded it (bug fixed) */
-    }
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0) {
-      perror("waitpid");
-      return 1;
-    }
-    if (WIFEXITED(status) && WEXITSTATUS(status) == 88) {
-      bug_exposed = 1;
-      fprintf(stderr,
-              "EXPOSES_RUNTIME_BUG B088: arts_thread_init underflows "
-              "worker_thread_count when progress > thread_count (no guard); "
-              "unsigned wrap -> astronomical worker count.\n");
-    } else if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-      /* The runtime guarded the bad config — bug is fixed; that's fine. */
-      fprintf(stderr,
-              "NOTE: worker_thread_count guarded (<=thread_count); B088 not "
-              "reproduced (runtime fixed).\n");
-    } else {
-      /* Crash / huge-alloc kill while building over-sized structures is ALSO a
-       * manifestation of the underflow. */
-      bug_exposed = 1;
-      fprintf(stderr,
-              "EXPOSES_RUNTIME_BUG B088: child died (status=%d) building "
-              "over-sized thread structures from underflowed worker count.\n",
-              status);
-    }
-  }
-
-  /* Cases 1 and 2 (the correct contracts) PASSED.  Print PASS for the harness;
-   * the B088 exposure is recorded above (correct-and-detecting, not masked). */
-  if (bug_exposed) {
-    printf("PASS threads_worker_underflow: rank1 zeroing + boundary verified; "
-           "B088 underflow EXPOSED (see stderr)\n");
-  } else {
-    printf("PASS threads_worker_underflow: rank1 zeroing + boundary verified; "
-           "B088 not reproduced (guarded)\n");
-  }
+  printf("PASS threads_worker_underflow: rank1 zeroing + boundary verified\n");
   return 0;
 }

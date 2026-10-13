@@ -2,9 +2,10 @@
 ** Copyright 2019 Battelle Memorial Institute
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
-/* Termination-robustness test: trigger EDT calls arts_shutdown() on the
- * rank specified by argv[1]. Expected: runtime terminates cleanly on all
- * ranks; main() prints TERM_TEST_EXIT after arts_rt returns. */
+/* A run that does nothing but shut down: an EDT on the rank argv[1] names (0
+ * by default) calls arts_shutdown(), and main() prints TERM_TEST_EXIT after
+ * arts_rt returns.  The injection-hook refusal tests run it: a refused run
+ * must end at startup, before any of this. */
 #include <stdio.h>
 #include <stdlib.h>
 
