@@ -4,7 +4,7 @@
  * y, cuts each row into one outgoing chunk per rank, exchanges, transposes
  * the arrivals into its share of the transposed array, transforms those rows
  * in x, and sends everything back the same way.  Two exchanges, one message
- * per (source, destination) in each -- what one scatter_to costs. */
+ * per (source, destination) in each -- what the logical scatter moves. */
 #include "hpx_mirror.h"
 #include "extensions/ocr-runtime-itf.h"
 

@@ -94,8 +94,8 @@ apps:
     # `iterations` passes.  So the totals, (iterations + 1)*G*1024/transferKB
     # puts and iterations*G*1024/transferKB gets, are the same at every
     # geometry as long as --all-to-all is true, n divides G, and transferKB
-    # divides (G/n)*1024: 768 and 512 at 1, 2, 4 and 8 nodes with the
-    # arguments below (720 and 480 at 3).  The put count votes and is pinned;
+    # divides (G/n)*1024: 393216 and 327680 at 1, 2, 4, 8, 16 and 32 nodes
+    # with the arguments below.  The put count votes and is pinned;
     # the get count rides as an extra.  The payload is the one thing in this
     # section outside DB-WRF at block granularity: transfers that land on one
     # slot are not ordered, in the origin (its storage array has no lock) or

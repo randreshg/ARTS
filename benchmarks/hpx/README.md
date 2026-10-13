@@ -155,7 +155,17 @@ that shape; the other three rows take all six:
   so an eagerly spawned tree is walked depth-first and the materialised
   frontier is bounded by the tree's *depth*; the stock `local-priority-fifo`
   walks it breadth-first and materialises the whole frontier as started
-  thread objects, each holding a stack. This is the one entry spelled
+  thread objects, each holding a stack. A thief takes from the same end
+  as the owner: every LIFO policy of v1.11.0, `abp-priority-lifo`
+  included, instantiates `lockfree_lifo`, whose `pop` ignores the steal
+  flag, and no policy reaches the opposite-end `lockfree_abp_lifo`
+  (`create_scheduler_local_priority_lifo`,
+  `create_scheduler_abp_priority_lifo` and
+  `create_scheduler_local_workrequesting_lifo` in
+  `libs/core/threadmanager/src/threadmanager.cpp`;
+  `lockfree_lifo_backend::pop` in
+  `libs/core/schedulers/include/hpx/schedulers/lockfree_queue_backends.hpp`).
+  This is the one entry spelled
   without HPX's forcing modifier (`key=value`, not `key!=value`): a forcing
   entry outranks the command line, and a scheduling policy has to stay
   selectable with `--hpx:queuing`.
@@ -175,7 +185,8 @@ master (`6df14adf09`, "Don't apply PU offset for localities that
 explicitly use core bindings"); the configure step applies that commit
 verbatim onto the pristine submodule tree from `third_party/patches/hpx/`
 — idempotently, so the submodule working tree stays at v1.11.0 plus
-exactly that one patch.
+exactly those two patches (this one and the allocator fix described under
+`network_storage_hpx`).
 
 ### Thread-count sensitivity
 
