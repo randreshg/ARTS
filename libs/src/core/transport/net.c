@@ -1667,6 +1667,15 @@ void arts_net_init(const char *provider, const char *fabric_domain,
     g_net.is_cxi = pn != NULL && strncmp(pn, "cxi", 3) == 0 &&
                    (pn[3] == '\0' || pn[3] == ';');
   }
+  /* ofi_rxm in passthru mode answers the multi-recv threshold for a receive
+   * queue its messages do not land in, so the threshold check below could
+   * not hold for it. */
+  if (use->ep_attr->protocol == FI_PROTO_RXM_TCP) {
+    ARTS_ERROR("arts_net: provider %s runs ofi_rxm in passthru mode "
+               "(FI_OFI_RXM_ENABLE_PASSTHRU), whose multi-recv threshold "
+               "is not the one its messages land under",
+               use->fabric_attr->prov_name);
+  }
 
   g_net.mr_mode = (uint32_t)use->domain_attr->mr_mode;
   g_net.mr_local = (g_net.mr_mode & FI_MR_LOCAL) != 0;
@@ -1769,24 +1778,27 @@ void arts_net_init(const char *provider, const char *fabric_domain,
     ARTS_ERROR("arts_net: fi_enable failed: %s", fi_strerror(-rc));
   }
   /* Read the threshold back from the enabled endpoint, which answers for its
-   * receive side: a provider that ignored the request has already voided
-   * the ceiling.  One that cannot report it keeps its own fixed threshold,
-   * and every control message above that can be truncated on the wire. */
+   * receive side.  The control-message ceiling holds only if the threshold
+   * that side applies is at least the ceiling, so a provider whose receive
+   * side applies less, or that cannot report what it applies, cannot carry
+   * this transport. */
+  const char *prov_name = use->fabric_attr->prov_name;
   size_t got_mr = 0;
   size_t got_len = sizeof(got_mr);
   rc = fi_getopt(&g_net.ep->fid, FI_OPT_ENDPOINT, FI_OPT_MIN_MULTI_RECV,
                  &got_mr, &got_len);
-  if (rc == 0) {
-    if (got_mr < ARTS_NET_MIN_MULTI_RECV) {
-      ARTS_ERROR("arts_net: provider kept a %zu-byte multi-recv threshold "
-                 "after %zu was requested; control messages above it would "
-                 "be truncated",
-                 got_mr, (size_t)ARTS_NET_MIN_MULTI_RECV);
-    }
-  } else {
-    ARTS_INFO("arts_net: provider reports no multi-recv threshold (%s); "
-              "its own fixed threshold bounds the control-message ceiling",
-              fi_strerror(-rc));
+  if (rc != 0) {
+    ARTS_ERROR("arts_net: provider %s cannot report its multi-recv "
+               "threshold (%s); the %zu-byte control-message ceiling cannot "
+               "be guaranteed",
+               prov_name, fi_strerror(-rc), (size_t)ARTS_NET_MSG_MAX);
+  }
+  if (got_mr < ARTS_NET_MSG_MAX) {
+    ARTS_ERROR("arts_net: provider %s applies a %zu-byte multi-recv "
+               "threshold, below the %zu-byte control-message ceiling "
+               "(%zu was requested)",
+               prov_name, got_mr, (size_t)ARTS_NET_MSG_MAX,
+               (size_t)ARTS_NET_MIN_MULTI_RECV);
   }
 
   ARTS_INFO("arts_net: fabric up provider=%s domain=%s addr_format=%s "

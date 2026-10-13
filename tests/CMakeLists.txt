@@ -1237,6 +1237,18 @@ register_multinode_test(multinode_event_types VARIANTS 2n_9w_1p)
 register_multinode_test(multinode_stdout_forward VARIANTS 2n_9w_1p)
 set_tests_properties(multinode_stdout_forward_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "MULTINODE_STDOUT_FORWARD_SENTINEL 42")
+# The startup check of the receive side's multi-recv threshold holds only if
+# the endpoint answers for the queue its messages land in; ofi_rxm in
+# passthru mode does not, so a run on it ends at startup with exit 1.
+arts_test_cfg(_mn_cfg 2n_9w_1p)
+arts_add_test(net_rxm_passthru_refused STATUS 1 COMMAND multinode_edt)
+set_tests_properties(net_rxm_passthru_refused PROPERTIES
+    LABELS "multinode"
+    TIMEOUT 30
+    RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT
+    "ARTS_CONFIG=${_mn_cfg};provider=tcp\\;ofi_rxm;FI_OFI_RXM_ENABLE_PASSTHRU=1"
+    PASS_REGULAR_EXPRESSION "runs ofi_rxm in passthru mode")
 endif()
 
 # --- Multi-node tests ---
