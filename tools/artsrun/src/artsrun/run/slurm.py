@@ -133,7 +133,8 @@ def job_script(cell: Cell, profile: Profile, marker: Path) -> str:
                         for k, v in sorted(env.items()))
     return (
         "#!/bin/bash\n"
-        f"cd {scratch_dir()}\n"
+        f"mkdir -p {shlex.quote(str(scratch_dir()))}\n"
+        f"cd {shlex.quote(str(scratch_dir()))}\n"
         f"{exports}\n"
         # The local backend writes the command as its log's first line; the
         # batch script does the same so a cell log is self-describing.

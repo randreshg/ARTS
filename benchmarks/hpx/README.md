@@ -475,8 +475,8 @@ Gate arguments: `--n-value=30 --threshold=12 --distribute-at=25 --n-runs=1 --tes
 Calibrated arguments: `--n-value=62 --threshold=44 --distribute-at=57 --n-runs=1 --test=1` — the one-node anchor sizes under `## ARTS versus HPX`.
 
 ```bash
-cd scratch && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 120 mpirun -n 2 -bind-to none \
-  ../build_release/benchmarks/hpx/fib_hpx_hpx --hpx:threads=4 \
+mkdir -p .scratch/run && cd .scratch/run && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 120 mpirun -n 2 -bind-to none \
+  ../../build_release/benchmarks/hpx/fib_hpx_hpx --hpx:threads=4 \
   --n-value=30 --threshold=12 --distribute-at=25 --n-runs=1 --test=1
 ```
 
@@ -563,8 +563,8 @@ print the same values as `%.14e`, `8.38656000000000e+06` and
 Calibrated arguments: `--nx=270000 --nt=45 --np=4096 --nd=10` — the one-node anchor sizes under `## ARTS versus HPX`.
 
 ```bash
-cd scratch && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 180 mpirun -n 2 -bind-to none \
-  ../build_release/benchmarks/hpx/stencil1d_hpx_hpx --hpx:threads=4 \
+mkdir -p .scratch/run && cd .scratch/run && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 180 mpirun -n 2 -bind-to none \
+  ../../build_release/benchmarks/hpx/stencil1d_hpx_hpx --hpx:threads=4 \
   --nx=64 --nt=16 --np=64 --nd=10
 ```
 
@@ -702,8 +702,8 @@ put count.
 Calibrated arguments: `--globalMB=4096 --transferKB=64 --iterations=5 --semaphore=16 --all-to-all=true --no-local=false --distribution=1` — the one-node anchor sizes under `## ARTS versus HPX`.
 
 ```bash
-cd scratch && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 300 mpirun -n 2 -bind-to none \
-  ../build_release/benchmarks/hpx/network_storage_hpx_hpx --hpx:threads=4 \
+mkdir -p .scratch/run && cd .scratch/run && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 300 mpirun -n 2 -bind-to none \
+  ../../build_release/benchmarks/hpx/network_storage_hpx_hpx --hpx:threads=4 \
   --globalMB=16 --transferKB=64 --iterations=2 --semaphore=16 \
   --all-to-all=true --no-local=false --distribution=1
 ```
@@ -864,8 +864,8 @@ every geometry — 256 and `254/2 + 1 = 128` divide every rung.
 Calibrated arguments: `--nx=72000 --ny=71998 --plan=estimate --run=scatter` — the one-node anchor sizes under `## ARTS versus HPX`.
 
 ```bash
-cd scratch && mkdir -p result && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 300 mpirun -n 2 -bind-to none \
-  ../build_release/benchmarks/hpx/fft_hpx_hpx --hpx:threads=4 \
+mkdir -p .scratch/run && cd .scratch/run && mkdir -p result && ARTS_E2E_MARKER=1 UCX_TLS=tcp,self UCX_NET_DEVICES=lo timeout -k 1 300 mpirun -n 2 -bind-to none \
+  ../../build_release/benchmarks/hpx/fft_hpx_hpx --hpx:threads=4 \
   --nx=256 --ny=254 --plan=estimate --run=scatter
 ```
 

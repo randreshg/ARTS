@@ -185,10 +185,10 @@ apps:
   sar_pss:
     versions: [base, restructured]
     # Parameter2 (Ix = 1200): the base blow-up at 2 ranks is the phenomenon.
-    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter3.txt', '50', '100', '250', '0']
+    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/.scratch/run/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter3.txt', '50', '100', '250', '0']
   sar_dist:
     # Parameter10 (Ix = 4400) covers 8 stripes with the 100/100 blocks.
-    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_dist_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter10.txt', '50', '100', '100', '0']
+    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/.scratch/run/sar_dist_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter10.txt', '50', '100', '100', '0']
 
   smithwaterman:
     versions: [base, hinted, restructured]

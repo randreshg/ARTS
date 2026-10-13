@@ -3072,7 +3072,7 @@ apps:
     scalar_kind: int
     # Anchor at these arguments, one node of 108 workers, INV x WB: 20.4 s, 10
     # GB resident; target 20 s (both tiers anti-scale, clamped).
-    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter17.txt', '50', '100', '250', '0']
+    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/.scratch/run/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter17.txt', '50', '100', '250', '0']
     # Anti-scaler, structurally: every tile family splits the image but writes
     # it back through ONE whole-image block acquired RW, and write permission
     # is exclusive per policy domain, so the block tours the domains and each
@@ -3108,7 +3108,7 @@ apps:
     # compress the very anti-scaling this row exists to show.  argv[9] = 1
     # restores it.
     expect: '10322816'
-    expect_args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter17.txt', '50', '100', '250', '0']
+    expect_args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/.scratch/run/sar_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter17.txt', '50', '100', '250', '0']
     fixtures: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin']
     restructured_as: sar_dist
     unordered_writes: 'every stage''s tile tasks RW the one output block (inputs.c:393-395, back_proj.c:565, ccd.c:203, cfar.c:340-341, registration.c:358, :733-735)'
@@ -3174,9 +3174,9 @@ apps:
     # stripes.
     #
     # Its own detects path: the two rows used to name the same file.
-    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_dist_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter45.txt', '50', '100', '100', '0']
+    args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/.scratch/run/sar_dist_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter45.txt', '50', '100', '100', '0']
     expect: '27114207'
-    expect_args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/scratch/sar_dist_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter45.txt', '50', '100', '100', '0']
+    expect_args: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin', '{repo}/.scratch/run/sar_dist_detects.txt', '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter45.txt', '50', '100', '100', '0']
     fixtures: ['{repo}/datasets/sar-huge/Data.bin', '{repo}/datasets/sar-huge/PlatformPosition.bin', '{repo}/datasets/sar-huge/PulseTransmissionTime.bin']
     restructured_from: sar_pss
     unordered_writes: '128 read_slab_edt take X/Pt/Tp RW concurrently (src/inputs.c:392-394)'

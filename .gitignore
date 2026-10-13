@@ -37,7 +37,9 @@ third_party/ocrPNNL/
 #   research/    discussion docs, plans, specs, handoffs, surveys
 #   logs/        every run / campaign / mission log
 #   experiments/ figure-generation campaigns and their outputs
-#   scratch/     app-run byproducts + staged fixtures (harness chdirs here)
+#   .scratch/    every temporary: run/ holds what a running application
+#                writes (the harness chdirs there), <task>/ an agent's
+#                worktrees, builds and patches
 #   notes/       reading material
 #   datasets/    large staged runtime datasets (README stays tracked)
 /research/
@@ -46,8 +48,7 @@ third_party/ocrPNNL/
 # application rosters, counter sets -- and is tracked whole: a profile or a
 # roster is part of the experiment's definition, not a machine-local scratch
 # value.  Campaign output goes to logs/exp/, never here.
-/scratch/*
-!/scratch/.gitkeep
+/.scratch/
 /notes/
 /datasets/*
 !/datasets/README.md

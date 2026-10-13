@@ -215,7 +215,7 @@ apps:
     args: ['{repo}/datasets/sar-huge/Data.bin',
            '{repo}/datasets/sar-huge/PlatformPosition.bin',
            '{repo}/datasets/sar-huge/PulseTransmissionTime.bin',
-           '{repo}/scratch/sar_detects.txt',
+           '{repo}/.scratch/run/sar_detects.txt',
            '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter0.txt',
            '50', '100', '250', '0']
   sar_dist:
@@ -231,7 +231,7 @@ apps:
     args: ['{repo}/datasets/sar-huge/Data.bin',
            '{repo}/datasets/sar-huge/PlatformPosition.bin',
            '{repo}/datasets/sar-huge/PulseTransmissionTime.bin',
-           '{repo}/scratch/sar_dist_detects.txt',
+           '{repo}/.scratch/run/sar_dist_detects.txt',
            '{repo}/third_party/ocr-apps/apps/sar/ocr/problem_size_scaling/Parameter1.txt',
            '100', '70', '34', '0']
 

@@ -192,7 +192,8 @@ def job_script(cell: Cell, profile: Profile, marker: Path) -> str:
                         for k, v in sorted(env.items()))
     return (
         "#!/bin/bash\n"
-        f"cd {scratch_dir()}\n"
+        f"mkdir -p {shlex.quote(str(scratch_dir()))}\n"
+        f"cd {shlex.quote(str(scratch_dir()))}\n"
         f"{exports}\n"
         f"printf '%s\\n' {shlex.quote('$ ' + launch)}\n"
         's=$(date +%s.%N)\n'

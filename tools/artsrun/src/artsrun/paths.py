@@ -67,7 +67,7 @@ def envelope_script() -> Path:
 
 def scratch_dir() -> Path:
     """Where application byproducts land; runs chdir here."""
-    return repo_root() / "scratch"
+    return repo_root() / ".scratch" / "run"
 
 
 def logs_root() -> Path:
