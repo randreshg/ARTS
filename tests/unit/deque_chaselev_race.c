@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T020 — Chase-Lev work-stealing deque race (libs/src/core/utils/deque.c).
+ * Chase-Lev work-stealing deque race (libs/src/core/utils/deque.c).
  * THE core contract: one OWNER thread that push_front/pop_front, and N
  * STEALER threads that pop_back, must between them observe every pushed item
  * exactly once — no loss, no duplicate, no corruption — while the array grows

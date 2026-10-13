@@ -47,7 +47,6 @@
 #endif
 
 #include "arts.h"
-#include "arts/cxl/wrapper.h"
 #include "arts/coherence/buffer.h"
 #include "arts/coherence/coherence.h"
 #include "arts/coherence/handlers.h"
@@ -928,7 +927,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
   arts_shared_ptr_t db_temp_h = arts_route_table_lookup_db(depv[i].guid);
   struct arts_db_s *db_temp = (struct arts_db_s *)arts_shared_get(db_temp_h);
 
-  /* Coherent ARTS_DB path (either placement, any protocol).  Two entry
+  /* Coherent ARTS_DB path (any protocol, either write policy).  Two entry
    * points:
    *   - Existing local cache_s (db_temp with db_type == ARTS_DB; embedded
    *     cache).
@@ -1830,11 +1829,11 @@ static void release_one_created(arts_shared_ptr_t h,
  * arts_db_release — Release access to a single DB mid-EDT.
  *
  * Two search paths:
- *   1. created_db_list — DBs the current EDT created (auto-acquired EW).
- *   2. depv — DBs received as dependencies (EW or RO mode).
+ *   1. created_db_list — DBs the current EDT created (held RW from the create).
+ *   2. depv — DBs received as dependencies (RW or RO mode).
  *
  * Both paths funnel through release_one_dep / release_one_created so the
- * EW / RO / LOCAL / LC / CXL / route-table-ref rules live in exactly one
+ * per-mode, per-subtype and route-table-ref rules live in exactly one
  * place.  The slot/entry is marked released after the unwind so the
  * epilogue (release_dbs / arts_release_created_dbs) skips it cleanly.
  */

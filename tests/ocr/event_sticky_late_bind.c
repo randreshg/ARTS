@@ -3,11 +3,9 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_sticky_late_bind — Phase: event-redesign, Task §6.2.
- *
- * STICKY persist + concurrent late-bind delivery.  Validates that
- * STICKY events correctly serve cached data to addDep callers that
- * arrive after the satisfy.
+/* event_sticky_late_bind — STICKY persist + concurrent late-bind delivery.
+ * Validates that STICKY events correctly serve cached data to addDep callers
+ * that arrive after the satisfy.
  *
  * For each iteration:
  *   - Create one STICKY event.

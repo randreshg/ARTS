@@ -3,9 +3,8 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_once_storm — Phase: event-redesign, Task §6.1.
- *
- * Stress the ONCE event satisfy↔addDep race window (spec §4.1 R1-R7).
+/* event_once_storm — stress the single-fire event's satisfy↔addDep race
+ * window.
  *
  * For each of M=64 iterations:
  *   - Allocate one fresh ONCE/IDEM event + a unique data DB.
@@ -31,9 +30,9 @@
  * checks once the storm has drained.
  *
  * PASS criterion: 64 × 8 = 512 deliveries, all carrying the same data
- * GUID per iteration.  Stresses spec §4.1 R1 (S→A immediate deliver),
- * R3 (A push before S CAS), R4 (A push after S CAS), R6 (concurrent
- * late binders), R7 (concurrent pre-fire pushes).
+ * GUID per iteration.  Stresses an add-dependence after the satisfy
+ * (immediate delivery), a waiter push before and after the satisfy's CAS,
+ * concurrent late binders, and concurrent pushes before the fire.
  * Any mismatch calls arts_abort(1) for a non-zero exit code.
  * A stranded waiter is caught by the ctest TIMEOUT (no in-test watchdog).
  *
@@ -231,13 +230,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   for (int it = 0; it < M_ITERS; it++) {
-    /* Use IDEMPOTENT instead of ONCE.  Under the new latch+life_count
-     * invariant, ONCE auto-destroys on fire, so a late add_dependence
-     * after the destroy is user-error per OCR §1.4.3.  The single-fire
-     * satisfy↔addDep race rescue path (spec §4.1 R1-R7) is identical for
-     * IDEM, but the event persists so the test's "all consumers must
-     * observe the same data" assertion is well-defined regardless of race
-     * ordering. */
+    /* Use IDEMPOTENT instead of ONCE.  ONCE auto-destroys on fire, so a
+     * late add_dependence after the destroy is user-error per OCR §1.4.3.
+     * The single-fire satisfy↔addDep race path is identical for IDEM, but
+     * the event persists so the test's "all consumers must observe the same
+     * data" assertion is well-defined regardless of race ordering. */
     arts_event_hint_t h = ARTS_EVENT_HINT_IDEMPOTENT;
     arts_guid_t ev = arts_event_create(&h);
     if (ev == NULL_GUID) {

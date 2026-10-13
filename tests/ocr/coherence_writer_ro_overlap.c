@@ -90,7 +90,7 @@
 /// snapshot is produced, while still being a true oracle rather than a smoke
 /// test.
 ///
-/// Runs under every memory model / protocol / placement combination.  The header
+/// Runs under every memory model / protocol / policy combination.  The header
 /// has one event-ordered writer and the churn writers of a round are
 /// value-idempotent, so a whole-DB last-writer-wins publish (the DB-WRF
 /// contract's lossy case) preserves both assertions.

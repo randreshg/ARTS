@@ -118,7 +118,7 @@ static void home_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
   /* WT drains + runs NOW (no confirm-ack gate): home serves RO so there is
    * no stale-RO window.  Then tell home we installed (CONFIRM), which flips
    * rw_holder + advances the next round. */
-  unsigned int drained = arts_db_grant_commit_drain(cache, version);
+  unsigned int drained = arts_db_grant_commit_drain(cache);
   arts_db_drain_pending_snapshot(cache);
 #ifdef ARTS_RO_COMBINING_LIVE
   /* Read waiters batched while this rank had no local copy resume here
@@ -174,7 +174,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   /* Pin the db_s across the install + commit (and, on the rendezvous path,
    * across the pairing wait): the embedded cache is its FIRST member (offset
    * 0), so one cb ref keeps it alive against a concurrent DESTROY on another
-   * receiver thread.  Released by the commit tail. */
+   * progress thread.  Released by the commit tail. */
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
@@ -279,12 +279,11 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
  * already looked the cache up (the target is rw_holder, published only at the
  * post-install CONFIRM owner-swap, so the cache is provably installed when
  * INVALIDATE arrives) and passes the db_s as item_v — cache is its FIRST member
- * (offset 0).  No OoO defer is needed (and none exists for this kind anymore):
- * since rw_holder flips post-install in both write policies, the before-install
- * GRANT/INVALIDATE reorder that once forced WT through the engine cannot
- * occur.  GRANT(+sentinel) strictly precedes INVALIDATE(-1); the install guard
- * (+2) keeps writer_count non-negative even if the next round's INVALIDATE
- * lands mid-install on another receiver thread. */
+ * (offset 0).  No OoO defer is needed: rw_holder flips post-install in both
+ * write policies, so no INVALIDATE can reach a rank ahead of the GRANT it
+ * revokes.  GRANT(+sentinel) strictly precedes INVALIDATE(-1); the install
+ * guard (+2) keeps writer_count non-negative even if the next round's
+ * INVALIDATE lands mid-install on another progress thread. */
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
 #ifdef ARTS_RELEASE_PURGE
   /* Revocation is not this release policy's mechanism: the holder gives the
@@ -303,7 +302,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_grant_invalidate_s *)args_v;
   /* Publish the transfer target BEFORE withdrawing the sentinel: whichever
    * actor drives writer_count to 0 (this handler, or a concurrent last
-   * release_rw) then reads the same new_owner and PROCEEDs it.  Same
+   * release_rw) then reads the same new_owner and ships the grant to it.  Same
    * store-before-decrement discipline the WB arm uses for incoming_new_owner;
    * the WT INVALIDATE carries new_owner (home embeds the FIFO front),
    * making the WT and WB transfer paths structurally identical. */
@@ -320,7 +319,7 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
    * writer_count is non-negative.  The post-install rw_holder flip means this
    * notice targets a rank whose sentinel +1 is already installed (GRANT
    * precedes INVALIDATE); the install guard (+2) holds the count >= 0 if the
-   * next round's INVALIDATE lands mid-install on another receiver thread.  It
+   * next round's INVALIDATE lands mid-install on another progress thread.  It
    * bottoms out at exactly 0, so the (int) cast is defensive — only the
    * decrement that drives writer_count from a positive value to exactly 0 owns
    * the transfer. */

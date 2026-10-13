@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_wellformed.c
-/// @brief T265 — arts_csr_init builds a well-formed CSR including gap-fill for
+/// @brief arts_csr_init builds a well-formed CSR including gap-fill for
 ///        vertices that have no out-edges.
 ///
 /// Verified properties (via the public API only — arts_csr_get_neighbors plus

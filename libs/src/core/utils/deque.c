@@ -104,11 +104,6 @@ static inline struct circular_array_s *new_circular_array(unsigned int size) {
   return array;
 }
 
-bool arts_deque_full(struct arts_deque_s *deque) {
-  struct circular_array_s *a = deque->activeArray;
-  return (deque->bottom >= a->size - 1 + deque->top);
-}
-
 static inline void *get_circular_array(struct circular_array_s *array,
                                        uint64_t i) {
   return array->segment[i % array->size];
@@ -222,10 +217,3 @@ void *arts_deque_pop_back(struct arts_deque_s *deque) {
   }
   return NULL;
 }
-
-/*
- * Only one deque implementation exists (the Chase-Lev work-stealing deque
- * above), so selection is a no-op kept for the scheduler's call contract.
- * The single implementation is always index 0.
- */
-void arts_deque_select(unsigned int type) { (void)type; }

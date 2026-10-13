@@ -269,12 +269,12 @@ int arts_csr_load_from_args(arts_block_dist_t *dist, int argc, char **argv) {
 int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
                             bool flip, bool ignore_self_loops) {
   if (file_path == NULL) {
-    ARTS_INFO("[ERROR] File path is NULL");
+    ARTS_WARN("csr: no file path given");
     return -1;
   }
   FILE *file = fopen(file_path, "r");
   if (file == NULL) {
-    ARTS_INFO("[ERROR] File cannot be opened -- %s", file_path);
+    ARTS_WARN("csr: cannot open %s", file_path);
     return -1;
   }
 
@@ -395,12 +395,12 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
                                 bool flip, bool ignore_self_loops) {
   (void)flip;
   if (file_path == NULL) {
-    ARTS_INFO("[ERROR] File path is NULL");
+    ARTS_WARN("csr: no file path given");
     return -1;
   }
   FILE *file = fopen(file_path, "r");
   if (file == NULL) {
-    ARTS_INFO("[ERROR] File cannot be opened -- %s", file_path);
+    ARTS_WARN("csr: cannot open %s", file_path);
     return -1;
   }
 
@@ -514,8 +514,9 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
       arts_edge_vector_free(&vedges[k]);
     }
   } else {
-    ARTS_INFO("SRC: %lu != num_verts %lu.  Check the line length", src,
-              num_verts);
+    ARTS_WARN("csr: %lu adjacency lines, but the header declares %lu vertices "
+              "(check the line length); no graph is built",
+              src, num_verts);
     // No CSR is built on a header mismatch, but the per-partition edge buffers
     // were still allocated during parsing and must be released.
     for (unsigned int k = 0; k < num_local_parts; k++) {

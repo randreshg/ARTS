@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T019 — single-thread functional + edge coverage of the Chase-Lev deque
+ * Single-thread functional + edge coverage of the Chase-Lev deque
  * (libs/src/core/utils/deque.c).  No concurrency: this pins the owner-side
- * contract that the race tests (T020-T022) build on.
+ * contract that the race tests build on.
  *
  * Properties exercised:
  *   1. LIFO via push_front / pop_front: items come back newest-first; the
@@ -16,19 +16,16 @@
  *      i%size indexing across multiple segments is correct.  We start with a
  *      small deque so the index wraps within a segment too.
  *   4. Interleaved push/pop_front then push again reuses slots via modulo.
+ *   5. A size==1 deque: push_front's grow trigger `b >= a->size - 1 + t` is
+ *      (bottom >= top) there, which holds at init, so the first push grows
+ *      the array — the ordinary ring that keeps one slot free.  Its first
+ *      push and pop work across that grow.
  *
- * Edge cases (suspected-bug pins — record, do NOT fix):
- *   - B054 (deque.c:109): arts_deque_full uses `size - 1` on unsigned size.
- *     For a size==1 deque, size-1 == 0, so full() == (bottom >= top), which is
- *     true immediately after init (bottom==top==1).  We pin that a size==1
- *     deque reports full at once, and that the FIRST push therefore grows the
- *     array (push_front's own `b >= a->size - 1 + t` trigger) — the size-1
- *     arithmetic is load-bearing and the documented near-underflow boundary.
- *     A size==0 deque would make push_front's `a->size - 1` wrap to UINT_MAX
- *     (never grows) and then `i % 0` is UB; we therefore do NOT call
- *     push/pop on a size==0 deque (that is the undefined path).  We instead
- *     pin the size==1 boundary which is the smallest DEFINED capacity and
- *     show its full()==true-at-init behavior.
+ * Suspected-bug pin (record, do NOT fix):
+ *   - B054: a size==0 deque, which worker_init_deque_size=0 gives every
+ *     thread, makes `a->size - 1` wrap to UINT_MAX on the unsigned size, so
+ *     the grow trigger never fires and the first push indexes `b % 0`
+ *     (SIGFPE).  This test never pushes to or pops from a size==0 deque.
  */
 
 #include "arts/utils/deque.h"
@@ -164,15 +161,10 @@ int main(void) {
     arts_deque_delete(d);
   }
 
-  /* ---- 5. B054 boundary: size==1 deque.  size-1 == 0 so full()==(b>=t),
-   *        true at init.  First push therefore must grow. ---- */
+  /* ---- 5. size==1 deque: the grow trigger (b>=t) holds at init, so the
+   *        first push grows. ---- */
   {
     struct arts_deque_s *d = arts_deque_new(1);
-    if (!arts_deque_full(d)) {
-      return fail(
-          "B054 pin: size==1 deque expected full() at init (size-1==0)");
-    }
-    /* push must still succeed (it grows internally on the same condition). */
     arts_deque_push_front(d, enc(7), 0);
     void *o = arts_deque_pop_front(d);
     if (o == NULL || dec(o) != 7)

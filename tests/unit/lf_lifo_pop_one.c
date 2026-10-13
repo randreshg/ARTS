@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T002 — arts_lf_stack_pop_one (lockfree_lifo.h) in isolation.
+ * arts_lf_stack_pop_one (lockfree_lifo.h) in isolation.
  *
  * arts_lf_stack_pop_one is a CAS-loop pop on the 8-byte-head Treiber LIFO that
  * has NO tag/counter; its ABA-freedom rests entirely on the header's
  * documented "no re-entry into the same stack" invariant (a popped node must
  * NEVER be pushed back onto the SAME stack — it must be freed or pushed to a
- * DIFFERENT stack).  The existing stress only exercises reverse_drain, so
- * pop_one (a distinct function with its own acquire/release semantics) was
- * entirely untested (census 29.md §2 GAP).
+ * DIFFERENT stack).  The stack's other stress test exercises only
+ * reverse_drain, and pop_one is a distinct function with its own
+ * acquire/release semantics, so it is tested here on its own.
  *
  * Design that RESPECTS the invariant while still racing pop_one hard:
  *   - SRC stack is pre-seeded with N distinct nodes.

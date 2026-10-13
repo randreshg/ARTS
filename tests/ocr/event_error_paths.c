@@ -3,7 +3,7 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_error_paths — C15 / T158.
+/* event_error_paths.
  *
  * Target: handler_event_satisfy_slot error rejection (event.c).
  *

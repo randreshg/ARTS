@@ -39,7 +39,7 @@
 
 /// @file db_acquire_all_bias.c
 /// @brief The +1 bias in arts_db_acquire_all must prevent a remote GRANT
-///        arriving DURING the Pass-1/Pass-2 fire (on a receiver thread) from
+///        arriving DURING the Pass-1/Pass-2 fire (on a progress thread) from
 ///        driving acquire_remaining to 0 before the final bias decrement.
 ///
 /// arts_db_acquire_all sets acquire_remaining = (1 + n), fires every
@@ -57,7 +57,7 @@
 ///   - several RO deps on DBs homed locally (rank 0) -> immediate local hits
 ///     (resolve synchronously inside Pass 1).
 ///   - several RW deps on DBs homed REMOTELY -> remote ownership rounds that
-///     PARK and resolve later via a GRANT on a receiver thread, racing the
+///     PARK and resolve later via a GRANT on a progress thread, racing the
 ///     worker's fire loop.
 /// The EDT verifies every dep's pointer is non-NULL and the writes land; a
 /// premature schedule corrupts a dep -> arts_abort, a lost decrement hangs ->

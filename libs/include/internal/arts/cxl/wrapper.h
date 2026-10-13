@@ -8,23 +8,14 @@
 extern "C" {
 #endif
 
-#include <stdlib.h>
-
 #define CACHELINE_SIZE 64
 
 /** Round @p x up to the nearest multiple of @p a (power of two). */
 #define ALIGN_UP(x, a) (((x) + ((a) - 1)) & ~((a) - 1))
 
-/*
- * ARTS_USE_CXL    -- this translation unit belongs to a build whose data
- *                    blocks rest in CXL memory.
- * ARTS_CXL_NATIVE -- the device library's headers are on the include path;
- *                    the runtime always defines it with ARTS_USE_CXL, so
- *                    the stub arm below is a placeholder (see there).
- */
-
-#if defined(ARTS_USE_CXL) && defined(ARTS_CXL_NATIVE)
-/* ── Real device library (SDK headers + glue library) ── */
+/* The device library's interface, from whichever library the build resolved
+ * (the vendored fake library or the device SDK); only a translation unit of
+ * a CXL build includes this header. */
 #include <MemOps.h>
 #include <SharedAlloc.h>
 #define SHARED_MALLOC(...) SHARED_CXL_MALLOC(__VA_ARGS__)
@@ -39,29 +30,6 @@ extern "C" {
 #define GET_CXL_DEV_ID(...) GET_FAM_DEV_ID(__VA_ARGS__)
 #define GET_CXL_REGION_DEV_ID(...) GET_FAM_REGION_DEV_ID(__VA_ARGS__)
 #define GET_CXL_DEV_COUNT(...) GET_FAM_DEV_COUNT(__VA_ARGS__)
-#else
-/* ── Stubs: a placeholder that nothing uses ────────────────────────────────
- * Of the three configurations -- no CXL, CXL on the fake library, CXL on the
- * device library -- the last two always compile the arm above, and a build
- * without CXL includes this header only in translation units that expand
- * none of these macros. */
-#define SHARED_MALLOC(...) malloc(__VA_ARGS__)
-#define GLOBAL_MALLOC(...) malloc(__VA_ARGS__)
-#define GLOBAL_FREE(...) free(__VA_ARGS__)
-#define SHARED_FREE(...) free(__VA_ARGS__)
-#define SHARED_MALLOC_INITIALIZED(...)
-#define LAST_SHARED_MALLOC(...) malloc(__VA_ARGS__)
-#define IS_CXL_PTR(...) ((void)0, 0)
-#define GET_CXL_DEV_ID(...) ((void)0, 0)
-#define GET_CXL_DEV_COUNT(...) ((void)0, 0)
-#define GET_CXL_REGION_DEV_ID(...) ((void)0, 0)
-#ifndef FLUSH_FENCE_PRODUCER
-#define FLUSH_FENCE_PRODUCER(...)
-#endif
-#ifndef FLUSH_FENCE_CONSUMER
-#define FLUSH_FENCE_CONSUMER(...)
-#endif
-#endif
 
 #ifdef __cplusplus
 }

@@ -205,13 +205,13 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
                                              uint64_t db_size);
 
 /* ===== Rendezvous landing lifecycle =========================================
- * A landing is a FRESH buffer allocated by the RECEIVER of a bulk payload and
- * advertised (addr/key/txid/cookie) to the sender, which fi_writedata's the
- * payload straight into landing->data.  On {metadata, write-completion}
- * pairing the landing becomes the installed buffer via
- * arts_db_buf_install_landed — today's install logic with the memcpy deleted —
- * preserving the fresh-buffer-per-install invariant (concurrent readers of the
- * old buffer keep a valid snapshot) with zero copies at both ends. */
+ * A landing is a buffer the RECEIVER of a bulk payload advertises
+ * (addr/key/txid/cookie) to the sender, which fi_writedata's the payload
+ * straight into landing->data.  A fresh landing from
+ * arts_db_buf_landing_alloc becomes the installed buffer on {metadata,
+ * write-completion} pairing via arts_db_buf_install_landed, so concurrent
+ * readers of the old buffer keep a valid snapshot and neither end copies; a
+ * publish instead lands in the home's stable buffer in place. */
 
 /* Allocate a fresh landing for `db_size` payload bytes and fill its wire
  * advertisement (addr per negotiated mr_mode, MR key, fresh txid, cookie =

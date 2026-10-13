@@ -22,7 +22,7 @@
 /// a DB lets each EDT observe how many got to run before the runtime stopped;
 /// the property under test is liveness (no deadlock) plus shutdown_state==1.
 ///
-/// runtime_single, all configs (protocol-agnostic).
+/// Single-node, every configuration (protocol-agnostic).
 /// exposes_runtime_bug: B-shutdown-state-dualpath (mixed atomic/plain store).
 
 #include "arts.h"

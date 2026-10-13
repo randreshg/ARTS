@@ -3,7 +3,7 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_gpu_force_defer — C15 / T163 (config_specific: GPU).
+/* event_gpu_force_defer (GPU build only).
  *
  * Target: arts_event_satisfy_slot route 1 (event.c) — the invalidate_count
  * force-defer branch:
@@ -24,7 +24,7 @@
  * successor EDT gated on the latch fires only if the deferred satisfy is
  * correctly replayed.
  *
- * config_specific: compiles to a SKIP stub unless ARTS_USE_GPU is defined (the
+ * Compiles to a SKIP stub unless ARTS_USE_GPU is defined (the
  * GPU symbols arts_edt_create_gpu / arts_dim3_t live only in a GPU libarts).
  *
  * PASS criterion (GPU build): the successor fires after the lib-EDT's

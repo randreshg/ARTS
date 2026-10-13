@@ -40,15 +40,12 @@
 /// @file coherence_payload_large.c
 /// @brief Large-payload cross-rank coherence transfer correctness.
 ///
-/// Every distributed coherence transfer that carries DB data — ownership
-/// GRANT/TRANSFER, RO snapshot, HOME publish — must deliver the whole
-/// payload bit-for-bit.  This test drives DBs across a size ladder that spans
-/// every transport regime: payloads far larger than a control message, one AT
-/// the control-plane message ceiling, and one far ABOVE it (which can only
-/// arrive via the one-sided rendezvous data plane — an inline send of that
-/// size fails loudly by design).  A corrupted or partially-delivered payload
-/// surfaces as a checksum mismatch, a hard framing abort, or a spurious
-/// shutdown, none of which the sizeof(int) DBs elsewhere in the suite can see.
+/// Every distributed coherence transfer that carries DB data — an ownership
+/// grant, an RO snapshot, a write-through publish — must deliver the whole
+/// payload bit-for-bit.  This test drives DBs up a size ladder, 256 KiB to
+/// 8 MiB, far above the sizeof(int) DBs elsewhere in the suite, and checks
+/// every element of every payload, so bytes that land at the wrong offset or
+/// only partly land surface as a mismatch.
 ///
 /// Flow (RW writer -> RO readers, two phases so the pattern is durably
 /// established before any reader):
@@ -61,30 +58,26 @@
 ///     rank != the DB home, acquire RO (which pulls the whole payload
 ///     cross-rank as one snapshot) and verify every element equals PATTERN(j)
 ///     (arts_abort on any mismatch).  RO (not concurrent RW) keeps the flow
-///     well-defined under every protocol
-///     while still exercising the exact large-payload framing under test.
+///     well-defined under every protocol while still moving the whole payload
+///     across ranks.
 ///   * A second finish scope gates a shutdown EDT that prints PASS once every
 ///     reader has completed.
 ///
 /// The phase barrier matters: without it a remotely-homed DB's init writer must
 /// first migrate to its home rank, letting workers on other ranks race ahead
-/// and acquire the still-unwritten DB — a coherence-ordering artifact unrelated to
-/// the framing this test targets.  A framing bug instead surfaces as garbage
-/// bytes (checksum mismatch -> FAIL), a hard RX framing abort, or a
-/// mis-dispatched raw payload frame (spurious shutdown -> finish scope never
-/// completes -> ctest TIMEOUT).  On the correct single-gather path every hop
-/// verifies and the run prints PASS.  Auto-skips on < 2 ranks.
+/// and acquire the still-unwritten DB — a coherence-ordering artifact unrelated
+/// to the transfer this test targets.  A transfer bug instead surfaces as wrong
+/// bytes (element mismatch -> FAIL) or a reader that never completes (ctest
+/// TIMEOUT); when every hop verifies the run prints PASS.  Auto-skips on < 2
+/// ranks.
 
 #include "arts.h"
 
 #include <stdint.h>
 #include <stdio.h>
 
-/* Size ladder — one DB per rung, spanning the transport regimes:
- *   256 KiB : bulk but modest (many control messages' worth).
- *     2 MiB : exactly the control-plane message ceiling (boundary).
- *     8 MiB : 4x the ceiling — deliverable ONLY by the one-sided rendezvous
- *             data plane; proves the ceiling bounds control traffic alone. */
+/* Size ladder — one DB per rung: two at 256 KiB, one at 2 MiB, one at
+ * 8 MiB. */
 #define N_DBS 4
 #define WORKERS_PER_DB 3
 static const uint32_t db_bytes[N_DBS] = {256u * 1024u, 256u * 1024u,
@@ -153,7 +146,7 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 /* Phase 2: gated on the init finish scope (so every init writer has released
  * its RW grant and the pattern is durably at each DB's owner), fan out the
- * cross-rank RW verify workers.  The N_DBS DB GUIDs arrive via paramv. */
+ * cross-rank RO verify readers.  The N_DBS DB GUIDs arrive via paramv. */
 static void phase2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)depc;
@@ -171,8 +164,7 @@ static void phase2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     /* Each reader is pinned to a rank other than the DB's home, so its RO
      * acquire pulls the whole payload across the wire as one snapshot.  RO is
      * used (not RW): the readers only observe, so the flow is well-defined under
-     * every protocol, and it still exercises the exact
-     * large-payload transport framing this test targets. */
+     * every protocol, and it still moves the whole payload across ranks. */
     for (int w = 0; w < WORKERS_PER_DB; w++) {
       unsigned int worker_rank = (home + 1u + (unsigned int)w) % nnodes;
       uint64_t wparams[2] = {(uint64_t)d * WORKERS_PER_DB + (uint64_t)w,

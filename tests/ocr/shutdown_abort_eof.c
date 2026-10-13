@@ -20,9 +20,9 @@
 /// departure and return 0.  Each surviving rank prints a clean token.  ctest
 /// TIMEOUT reaps a departure-detection hang regression.
 ///
-/// runtime_multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a single-node
-/// clean shutdown when only one rank is present.
-/// all configs (shutdown sits above the coherence layer).
+/// Multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a
+/// single-node clean shutdown when only one rank is present.  Every
+/// configuration (shutdown sits above the coherence layer).
 
 #include "arts.h"
 

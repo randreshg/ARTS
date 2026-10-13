@@ -3,7 +3,7 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_satisfy_adddep_window — C15 / T155.
+/* event_satisfy_adddep_window.
  *
  * Target: the simple-event satisfy <-> addDep race window
  *   - handler_event_satisfy_slot: prev==1 is the UNIQUE fire trigger — only

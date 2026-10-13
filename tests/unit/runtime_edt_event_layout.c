@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T219 — arts_edt_s / arts_event_s C-vs-C++ layout parity + arts_edt_total_size
+ * arts_edt_s / arts_event_s C-vs-C++ layout parity + arts_edt_total_size
  * arithmetic (libs/include/internal/arts/runtime_types.h).
  *
  * Property under test

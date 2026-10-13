@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file dist_args_oob.c
-/// @brief T262 — arg-parsing of arts_block_dist_init_from_args /
+/// @brief Arg-parsing of arts_block_dist_init_from_args /
 ///        arts_csr_load_from_args.
 ///
 /// Two behaviours are exercised:

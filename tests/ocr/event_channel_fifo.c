@@ -3,14 +3,13 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_channel_fifo — Phase: event-redesign, Task §6.4.
+/* event_channel_fifo — CHANNEL FIFO ordering test.
  *
- * CHANNEL FIFO ordering test.  A single producer EDT pushes K satisfies
- * with strictly-increasing payloads (sequence numbers boxed in DB GUIDs);
- * a single consumer EDT chain registers K addDeps in order.  Every
- * dispatched counter EDT records the received GUID into its slot of a shared
- * results DB via a RW dep; verify_edt compares the recovered sequence against
- * the producer order once the finish scope drains.
+ * A single producer EDT pushes K satisfies with strictly-increasing payloads
+ * (sequence numbers boxed in DB GUIDs); a single consumer EDT chain registers
+ * K addDeps in order.  Every dispatched counter EDT records the received GUID
+ * into its slot of a shared results DB via a RW dep; verify_edt compares the
+ * recovered sequence against the producer order once the finish scope drains.
  *
  * Producer-before-consumer satisfy/addDep stresses the buffering path
  * (mpsc data_queue accumulating up to K entries before any matching

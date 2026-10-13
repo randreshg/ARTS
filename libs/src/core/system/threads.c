@@ -116,10 +116,9 @@ void arts_thread_main_join() {
     fflush(stderr);
   }
 
-  /* Stop the progress threads.  After the transport cutover they no longer
-   * block in a socket poll (they reap the fabric with a short bounded wait), so
-   * clearing alive is enough — no socket shutdown is needed to wake them, and
-   * the data sockets were already closed once bootstrap finished. */
+  /* Stop the progress threads.  They poll the fabric without ever blocking,
+   * so clearing alive is enough to end their loops; no socket needs closing
+   * to wake them. */
   arts_runtime_stop_network();
 
   arts_runtime_private_cleanup();
@@ -135,10 +134,10 @@ void arts_thread_main_join() {
 
   // File-based counter aggregation: no socket synchronization needed
   // Each node writes its own JSON file independently, master polls filesystem
-  // Join ALL threads (workers and network threads) with timeout + cancel
+  // Join ALL threads (workers and progress threads) with timeout + cancel
   // escalation, so a single stuck thread never wedges the entire process.
   //
-  // Budget (from the shutdown protocol plan):
+  // Budget:
   //   JOIN_DEADLINE_MS   = 1500  per-thread cooperative join deadline
   //   CANCEL_DEADLINE_MS = 500   post-cancel grace window
   //
@@ -159,7 +158,7 @@ void arts_thread_main_join() {
       if (rc == 0) {
         continue;
       }
-      ARTS_INFO("arts_thread_main_join: thread %u did not join within "
+      ARTS_WARN("arts_thread_main_join: thread %u did not join within "
                 "%ld ms (rc=%d), cancelling",
                 i, join_deadline_ns / 1000000L, rc);
       pthread_cancel(node_thread_list[i]);
@@ -171,7 +170,7 @@ void arts_thread_main_join() {
       }
       rc = pthread_timedjoin_np(node_thread_list[i], NULL, &deadline);
       if (rc != 0) {
-        ARTS_INFO("arts_thread_main_join: thread %u did not join after "
+        ARTS_WARN("arts_thread_main_join: thread %u did not join after "
                   "cancel (rc=%d); leaking and continuing",
                   i, rc);
         __atomic_fetch_add(&arts_shutdown_abandon.unjoined_threads, 1u,
@@ -188,11 +187,10 @@ void arts_thread_main_join() {
 void arts_thread_init(struct arts_config_s *config) {
   g_config = config;
 
-  /* Adjust the progress-thread count now that rank_count is known.  The sender
-   * role is gone (its cfg count is folded into workers at config time), and a
-   * single-node run has no progress thread.  Progress threads no longer own a
-   * per-socket partition — they all reap the shared fabric completion queue —
-   * so the old node*port ceiling no longer applies. */
+  /* Adjust the progress-thread count now that rank_count is known: a
+   * single-node run has no progress thread.  Progress threads own no
+   * per-peer partition — they all reap the shared fabric completion queue —
+   * so their count is not bounded by the node or port count. */
   if (arts_global_rank_count == 1) {
     config->progress_thread_count = 0;
   }
@@ -230,7 +228,7 @@ void arts_thread_init(struct arts_config_s *config) {
                  (size_t)page_size;
   }
 
-  /* Create worker and network threads with optional pinning. */
+  /* Create worker and progress threads with optional pinning. */
   for (unsigned int i = 1; i < thread_count; i++) {
     pthread_attr_t attr;
     pthread_attr_init(&attr);

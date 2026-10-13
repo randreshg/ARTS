@@ -16,7 +16,7 @@
 /// completes and shuts down (a regressed promotion would hang -> ctest
 /// TIMEOUT).
 ///
-/// config_specific: GPU build only.  Self-skips (prints SKIP, returns 0) when
+/// GPU build only.  Self-skips (prints SKIP, returns 0) when
 /// ARTS_USE_GPU is not defined (no CI GPU). The real body uses only public API
 /// so it compiles and links on any build.
 

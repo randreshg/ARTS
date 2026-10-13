@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T139 (C13) — arts_edt_register_cb_deleter constructor-order vs route_table.
+ * arts_edt_register_cb_deleter constructor-order vs route_table.
  *
  * arts_edt_register_cb_deleter is a __attribute__((constructor)) that registers
  * the EDT cb deleter into the route table's per-kind deleter table BEFORE main.
@@ -16,7 +16,7 @@
  *      route_table actually invokes the registered deleter (a wrong/absent
  *      registration would leak or crash here under ASan).
  *
- * pure_unit/runtime, all configs.  Single node.
+ * Starts the runtime on a single node; every configuration.
  */
 #include "arts.h"
 #include "arts/edt.h"

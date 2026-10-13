@@ -46,9 +46,9 @@
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
   /* A write acquire can wait on another rank's release (cross-DB cyclic
-   * hazard: acquire-all must issue it in strict slot order).  A read acquire
-   * waits only on the home's reply — never on another EDT's release — so it
-   * carries no cycle risk and may issue in parallel. */
+   * hazard: acquire-all must issue it in the one global GUID order).  A read
+   * acquire waits only on the home's reply — never on another EDT's release —
+   * so it carries no cycle risk and may issue in parallel. */
   return mode == DB_MODE_RW;
 }
 
@@ -256,7 +256,7 @@ uint64_t arts_db_grant_serve_version(struct arts_db_s *db) {
  * buffer ref is dropped by the dep-release path). */
 
 /* ===== arts_handler_db_destroy =========================================
- * OOO_DB_DESTROY Cat-B body.  Fan-out DESTROY_NOTIFY to every rank in
+ * OOO_DB_DESTROY Cat-B body.  Fan-out CACHE_DESTROY to every rank in
  * cached_ranks, then detach the route-table slot. */
 
 /* Deferred pre-publication read serve: re-issued by the pending_snapshot

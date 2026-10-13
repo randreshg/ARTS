@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_get_neighbors.c
-/// @brief T267 — arts_csr_get_neighbors plus the local-index <-> vertex
+/// @brief arts_csr_get_neighbors plus the local-index <-> vertex
 ///        round-trip.
 ///
 /// Covers:

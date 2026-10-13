@@ -100,10 +100,10 @@ def arena_bytes(build_dir: Path) -> int:
 def fake_region_bytes(build_dir: Path) -> int:
     """ARTS_FAKE_CXL_REGION_SIZE for a cell on the vendored fake: the library
     sizes its one region when it loads, and the region must hold one
-    data-block arena of the tree's arena size, the ~64 MB deque, and headroom
-    for the library's own header; 2x the arena size plus margin comfortably
-    bounds all three."""
-    return 2 * arena_bytes(build_dir) + FAKE_REGION_MARGIN_BYTES
+    data-block arena of the tree's arena size (the fake reports one device)
+    plus the arena table, its lock and the library's own header, which the
+    margin bounds."""
+    return arena_bytes(build_dir) + FAKE_REGION_MARGIN_BYTES
 
 
 def _cmake_error(text: str) -> str:

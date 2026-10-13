@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T194 — stdio_forward forwarder_thread_main copy-loop byte fidelity.
+ * stdio_forward forwarder_thread_main copy-loop byte fidelity.
  *
  * Property under test: the reader thread spawned by make_pipe copies bytes
  * VERBATIM from its pipe read-end to the sink fd, with no loss and no

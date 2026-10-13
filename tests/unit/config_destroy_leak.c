@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T216 — arts_config_destroy leak audit (LSan) + double-free documentation.
+ * arts_config_destroy leak audit (LSan) + double-free documentation.
  * Documents B107 (config_destroy launcher_data raw-free + no NULL-after-free).
  *
  * Drives a full arts_config_load() end-to-end over an EMBEDDED cfg (we set the

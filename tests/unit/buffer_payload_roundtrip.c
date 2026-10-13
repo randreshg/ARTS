@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T049 — buffer install/acquire byte-exact round-trip + from_data identity.
+ * Buffer install/acquire byte-exact round-trip + from_data identity.
  *
  * Property: arts_db_buf_install(cache, v, payload, db_size) publishes a buffer
  * whose data[] holds an exact copy of `payload` for db_size bytes, stamped with

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T213 — config_compute_derived route_table_entries = 1U << route_table_size.
+ * config_compute_derived route_table_entries = 1U << route_table_size.
  * Targets B103 (config.c compute_derived, MED/UB).
  *
  * compute_derived sets:

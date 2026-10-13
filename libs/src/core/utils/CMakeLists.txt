@@ -37,11 +37,7 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-# Collect all source files (both deque implementations are always compiled;
-# runtime selection via arts_deque_select() in deque.c)
 file(GLOB UTILS_SOURCES "*.c")
-# Phase 2.2: v3 lock-free primitives (lockfree_stack, marked_list) now
-# build-integrated alongside the coherence layer.
 
 # Create object library for the utils module
 add_library(arts_utils OBJECT ${UTILS_SOURCES})

@@ -1,30 +1,33 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T299 — `provider` and `regpool_slab_mb` cfg-key parsing (config.c).
+ * `provider`, `regpool_slab_mb` and `net_interface` cfg-key parsing
+ * (config.c).
  *
  * Property under test
  * -------------------
- * Two new optional networking/memory keys added by the config-surface
- * cleanup:
  *   provider         - CONFIG_STRING, passed through to fi_getinfo's
- *                       prov_name hint by arts_net_init(); unset/empty means
+ *                       prov_name hint by arts_net_init(); unset means
  *                       auto-select (NULL field).
- *   regpool_slab_mb   - CONFIG_UINT, feeds the registered-memory slab pool
- *                       size; default 64 (matching the pre-cfg-key
- *                       ARTS_REGPOOL_SLAB_BYTES_DEFAULT constant it replaced,
- *                       so an unconfigured cfg keeps the historical
- *                       behaviour).
+ *   regpool_slab_mb   - CONFIG_UINT, the registered-memory pool's base slab
+ *                       size; default 256.
+ *   net_interface    - an empty value, from the cfg or from the environment,
+ *                       is unset (NULL field), so the bootstrap and the fabric
+ *                       agree that no interface was named; as a name prefix
+ *                       it would match every interface.
  *
  * This is a config-parser test: it calls arts_config_load() directly against
  * crafted temp cfgs (no runtime started, no fabric brought up, no ports
  * bound).  Self-contained: it sets its own ARTS_CONFIG and clears the
- * inherited `ports`/`port_count` env overrides.  Orthogonal to the
- * coherence protocol axis (config.c is protocol-agnostic).
+ * inherited `ports`/`port_count`/`provider`/`regpool_slab_mb`/`net_interface`
+ * env overrides, since an environment variable named after a key overrides the
+ * cfg.  Orthogonal to the coherence protocol axis (config.c is
+ * protocol-agnostic).
  */
 
 #include "arts.h"
 #include "arts/system/config.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,7 +53,7 @@ static int write_cfg(char *path_out, size_t path_cap, const char *tag,
 }
 
 static int load_cfg(const char *tag, const char *extra_lines,
-                    struct arts_config_s *out) {
+                    const char *netif_env, struct arts_config_s *out) {
   char cfg_path[256];
   if (write_cfg(cfg_path, sizeof(cfg_path), tag, extra_lines) != 0) {
     return -1;
@@ -58,7 +61,15 @@ static int load_cfg(const char *tag, const char *extra_lines,
   setenv("ARTS_CONFIG", cfg_path, 1);
   unsetenv("ports");
   unsetenv("port_count");
+  unsetenv("provider");
+  unsetenv("regpool_slab_mb");
+  if (netif_env != NULL) {
+    setenv("net_interface", netif_env, 1);
+  } else {
+    unsetenv("net_interface");
+  }
   arts_config_load(out);
+  unsetenv("net_interface");
   (void)remove(cfg_path);
   return 0;
 }
@@ -69,7 +80,7 @@ int main(void) {
   /* (A) Explicit provider + regpool_slab_mb parse into the struct verbatim. */
   {
     struct arts_config_s config;
-    if (load_cfg("explicit", "provider=verbs\nregpool_slab_mb=128\n",
+    if (load_cfg("explicit", "provider=verbs\nregpool_slab_mb=128\n", NULL,
                  &config) != 0) {
       printf("FAIL config_provider_regpool_parse: cannot write explicit "
              "cfg\n");
@@ -95,7 +106,7 @@ int main(void) {
    * node when a cfg names no size. */
   {
     struct arts_config_s config;
-    if (load_cfg("default", "", &config) != 0) {
+    if (load_cfg("default", "", NULL, &config) != 0) {
       printf(
           "FAIL config_provider_regpool_parse: cannot write default cfg\n");
       return 1;
@@ -115,9 +126,46 @@ int main(void) {
     arts_config_destroy(&config);
   }
 
+  /* (C) net_interface: a name is kept verbatim; an empty value is unset
+   * whether the cfg or the environment supplies it. */
+  {
+    static const struct {
+      const char *tag;
+      const char *cfg;
+      const char *env;
+      const char *expect;
+    } cases[] = {
+        {"netif_named", "net_interface=ib0\n", NULL, "ib0"},
+        {"netif_cfg_empty", "net_interface=\n", NULL, NULL},
+        {"netif_env_empty", "net_interface=ib0\n", "", NULL},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      struct arts_config_s config;
+      if (load_cfg(cases[i].tag, cases[i].cfg, cases[i].env, &config) != 0) {
+        printf("FAIL config_provider_regpool_parse: cannot write %s cfg\n",
+               cases[i].tag);
+        return 1;
+      }
+      bool ok = cases[i].expect == NULL
+                    ? config.net_interface == NULL
+                    : (config.net_interface != NULL &&
+                       strcmp(config.net_interface, cases[i].expect) == 0);
+      if (!ok) {
+        printf("FAIL config_provider_regpool_parse: %s: net_interface=%s "
+               "expected %s\n",
+               cases[i].tag,
+               config.net_interface ? config.net_interface : "(null)",
+               cases[i].expect ? cases[i].expect : "(null)");
+        fails++;
+      }
+      arts_config_destroy(&config);
+    }
+  }
+
   if (fails == 0) {
     printf("PASS config_provider_regpool_parse: provider + regpool_slab_mb "
-           "parse explicit values and the unconfigured default (NULL, 64)\n");
+           "parse explicit values and the unconfigured default (NULL, 256); "
+           "an empty net_interface is unset\n");
     return 0;
   }
   return 1;

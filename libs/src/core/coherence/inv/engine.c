@@ -348,16 +348,17 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
  *
  * A release does not return until every copy of the data block it just wrote
  * is dead.  The home serializes that with one claim bit: claim -> drain the
- * queued releases -> install the newest payload -> snapshot the roster ->
- * arm the ack count -> multicast INVALIDATE -> close on the ack that reaches
- * zero.  The closer is unique, so it is the actor that wakes the releasers and
- * re-opens for whatever queued up meanwhile.
+ * queued releases -> stamp the version of the payload that landed in place
+ * -> snapshot the roster -> arm the ack count -> multicast INVALIDATE ->
+ * close on the ack that reaches zero.  The closer is unique, so it is the
+ * actor that wakes the releasers and re-opens for whatever queued up
+ * meanwhile.
  *
- * A batch is order-insensitive: at most one install (the highest-version entry
- * that carries data) and a set of commuting wakes.  The roster snapshot is a
+ * A batch is order-insensitive: at most one version stamp (the entry that
+ * carries data) and a set of commuting wakes.  The roster snapshot is a
  * per-word XCHG, so a rank registered during the round lands in the NEXT
  * one — which is correct, because it will be served the bytes this round
- * installed — and the batch's releasers are handed back to it, because a
+ * published — and the batch's releasers are handed back to it, because a
  * releaser's copy is a sharer's copy from then on and only a later round
  * may retire it.  Every producer (a publish push, a close re-arm) calls try_open;
  * a claim that raced past the work it saw simply closes empty.  The engine is

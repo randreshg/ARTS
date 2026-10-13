@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T241 — single-thread pinning of the exact return-value conventions of the
+ * Single-thread pinning of the exact return-value conventions of the
  * arts_atomic_* RMW wrappers in libs/src/core/utils/atomics.c.
  *
  * The load-bearing contract is

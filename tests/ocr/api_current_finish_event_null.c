@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T291 — arts_current_finish_event NULL_GUID outside a finish scope.
+ * arts_current_finish_event NULL_GUID outside a finish scope.
  *
  * Target: the public ambient-finish-scope accessor arts_current_finish_event(),
  * which "returns the ambient finish-scope GUID inherited or joined by the
@@ -18,7 +18,7 @@
  *     EDT inherits the ambient scope -> also returns fe.
  *
  * Config-agnostic single-node public-API check.
- * exposes_runtime_bug = false (pins the NULL-scope and inherit return values).
+ * Pins the NULL-scope and inherit return values.
  */
 #include "arts.h"
 #include <stdint.h>

@@ -191,9 +191,8 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        lookup.
    * - ``ARTS_CXL_DB_ARENA_SIZE_BYTES``
      - 5000000000
-     - Bytes per arena the runtime creates from the CXL library (one EDT
-       arena and one data-block arena per device).  Validation trees pass
-       268435456.
+     - Bytes per arena the runtime creates from the CXL library (one
+       data-block arena per device).  Validation trees pass 268435456.
    * - ``ARTS_NOHINT_EDT_PLACEMENT``
      - ROUNDROBIN
      - Where an EDT created with no placement preference (NULL hint, or

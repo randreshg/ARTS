@@ -290,7 +290,8 @@ where every one runs: the cache-line sweep and its fence, not the staged
 build's copy beside it.  The producer flush is the purge that publishes a
 turn's writes to the store; the consumer flush is the fetch that drops this
 rank's stale private lines before a grant is read.  Flushes of the arena
-and deque metadata are not counted.  All six stay zero in a build without
+table's own metadata, and of the tournament lock that serializes an arena
+bump across ranks, are not counted.  All six stay zero in a build without
 a CXL store.  Each timed flush adds two clock reads, which is comparable to
 flushing a single cache line, so per-flush means for small blocks run high.
 

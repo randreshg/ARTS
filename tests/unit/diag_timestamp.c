@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T247 — arts_get_time_stamp (and a documentation probe of arts_printf torn
+ * arts_get_time_stamp (and a documentation probe of arts_printf torn
  * output) from libs/src/core/utils/diag.c.
  *
  * arts_get_time_stamp() returns clock_gettime(CLOCK_REALTIME) folded to

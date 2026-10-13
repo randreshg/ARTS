@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T229 — arts_thread_init worker-count derivation after the transport cutover
+ * arts_thread_init worker-count derivation after the transport cutover
  * + config-surface cleanup (libs/src/core/system/threads.c).  This TU
  * #includes threads.c so the real derivation code runs; the runtime
  * collaborators arts_thread_init calls (get_thread_mask, arts_runtime_node_init,

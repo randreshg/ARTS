@@ -8,16 +8,6 @@
  * The handler and the config fields it sets exist only in a CXL tree.
  */
 
-#ifndef ARTS_USE_CXL
-
-#include <stdio.h>
-int main(void) {
-  printf("SKIP config_cxl_alloc_strategy: requires ARTS_USE_CXL build\n");
-  return 0;
-}
-
-#else /* ARTS_USE_CXL */
-
 #include "../../libs/src/core/system/config.c"
 #include "config_test_common.h"
 
@@ -92,5 +82,3 @@ int main(void) {
          "NULL->static,0\n");
   return 0;
 }
-
-#endif /* ARTS_USE_CXL */

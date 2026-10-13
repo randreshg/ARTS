@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * guid_from_index_overflow — pins arts_guid_from_index's overflow behavior
- * per GUID kind (originally suspected bug B047 / census 18-gas B10).
+ * per GUID kind.
  *
  * DB kind: the key is [szhint | seq] and range arithmetic must stay inside
  * the seq field — a carry through the szhint bits would silently change the

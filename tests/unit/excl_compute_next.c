@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T067 — EXCL excl_compute_next (coherence/excl/arbiters.c), the PURE
- *        lock-state transition function over [state_bit | w:31 | r:31].
+ * EXCL excl_compute_next (coherence/excl/arbiters.c), the PURE lock-state
+ * transition function over [state_bit | w:31 | r:31].
  *
  * excl_compute_next(cur, op, &grant) is a deterministic pure function: given
  * the current packed lock_state and an op (RW/RO acquire/release), it returns
@@ -21,9 +21,10 @@
  * excl_compute_next is non-static (exposed for this test); the file is built
  * standalone by #including coherence/excl/arbiters.c, which also carries the
  * PURGE cache-word arbiter cache_compute_next this test pins alongside it.
- * EXCL-only; self-skips elsewhere.
+ * Both exist only in the EXCL+PURGE build; the test self-skips elsewhere.
  *
- * Build: -DARTS_PROTOCOL_EXCL=1 -DARTS_UNIT_STANDALONE_SHIMS.
+ * Build: -DARTS_PROTOCOL_EXCL=1 -DARTS_RELEASE_PURGE=1
+ * -DARTS_UNIT_STANDALONE_SHIMS.
  */
 
 #include <stdio.h>
@@ -31,8 +32,8 @@
 #if !defined(ARTS_PROTOCOL_EXCL) || !defined(ARTS_RELEASE_PURGE)
 int main(void) {
   printf(
-      "PASS excl_compute_next: skipped (HOME EXCL-only; the HOME lock_state "
-      "machine [state_bit|w|r] exists only in the EXCL+HOME build)\n");
+      "PASS excl_compute_next: skipped (EXCL+PURGE only; the arbiters it pins "
+      "exist only in that build)\n");
   return 0;
 }
 #else

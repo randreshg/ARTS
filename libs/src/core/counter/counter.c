@@ -85,7 +85,7 @@ static uint64_t arts_counter_capture_counter(arts_counter_t *counter) {
   /* start/count are mutated by the owning worker via arts_atomic_cswap_u64 /
    * arts_atomic_swap_u64 / arts_atomic_fetch_add_u64 with no happens-before to
    * this capture thread, so every read here MUST be an atomic load — a plain
-   * read would be a data race (B137). */
+   * read would be a data race. */
   uint64_t expected = arts_atomic_read_u64(&counter->start);
   while (expected) {
     uint64_t start = arts_get_time_stamp();
@@ -231,7 +231,7 @@ void arts_counter_capture_start() {
         usleep(1000); // Wait 1ms
       }
       if (!arts_counter_time_sync_received) {
-        ARTS_INFO("Time sync: Timeout waiting for master response, "
+        ARTS_WARN("Time sync: Timeout waiting for master response, "
                   "using local time (offset=0)");
         arts_counter_time_offset = 0;
         arts_counter_time_sync_received = true;
@@ -243,7 +243,7 @@ void arts_counter_capture_start() {
     int ret = pthread_create(&capture_thread, NULL, arts_counter_capture_thread,
                              NULL);
     if (ret) {
-      ARTS_DEBUG("Failed to create capture thread: %d", ret);
+      ARTS_WARN("Failed to create capture thread: %d", ret);
       atomic_store_explicit(&capture_thread_running, false,
                             memory_order_release);
     } else {
@@ -260,7 +260,7 @@ void arts_counter_capture_stop() {
   atomic_store_explicit(&capture_thread_running, false, memory_order_release);
   int ret = pthread_join(capture_thread, NULL);
   if (ret) {
-    ARTS_DEBUG("Failed to join capture thread: %d", ret);
+    ARTS_WARN("Failed to join capture thread: %d", ret);
   }
 }
 
@@ -1099,9 +1099,7 @@ void arts_counter_write_cluster(const char *output_folder,
   }
   for (unsigned int n = 0; n < node_count; n++) {
     if (!node_read[n]) {
-      ARTS_INFO("Warning: Could not read counter file for node %u after "
-                "timeout",
-                n);
+      ARTS_WARN("Could not read counter file for node %u after timeout", n);
     }
   }
   arts_free(node_read);

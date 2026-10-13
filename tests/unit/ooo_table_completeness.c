@@ -7,18 +7,18 @@
  *  (1) NO NULL SLOT.  Every index in [0, OOO_KIND_COUNT) must map to a
  *      non-NULL handler.  A config that adds a kind to the enum but forgets to
  *      wire it in the initializer leaves an implicit NULL function pointer →
- *      call-through-NULL on the first defer of that kind, with no diagnostic
- *      (census 16-ooo.md §6 LOW).  This test makes that a hard, deterministic
- *      failure at run time (and the per-slot mapping below makes it a
- * build-time symbol-resolution failure too, since each expected handler is
- * named).
+ *      call-through-NULL on the first defer of that kind, with no
+ *      diagnostic.  This test makes that a hard, deterministic failure at
+ *      run time (and the per-slot mapping below makes it a build-time
+ *      symbol-resolution failure too, since each expected handler is named).
  *
  *  (2) EXACT PER-CONFIG KIND SET.  The model-agnostic kinds are always present;
  *      each build's OOO_DB_* arm wires only that protocol's coherence kinds
- *      (WT vs WB vs EXCL vs FLUSH).  The test asserts each named enum maps
- *      to its expected handler (the OOO_<NAME> == arts_handler_<name> naming
- *      invariant) and that OOO_KIND_COUNT equals the count of kinds that
- *      protocol defines — pinning the per-config table shape.
+ *      (per protocol, and per write or release policy where that changes
+ *      them).  The test asserts each named enum maps to its expected handler
+ *      (the OOO_<NAME> == arts_handler_<name> naming invariant) and that
+ *      OOO_KIND_COUNT equals the count of kinds that protocol defines —
+ *      pinning the per-config table shape.
  *
  * The g_ooo_table initializer references handler symbols by name, so this TU
  * provides each as a distinct, identifiable stub; the test then checks that the
@@ -184,23 +184,23 @@ _Static_assert(OOO_KIND_COUNT == N_EXPECT,
 int main(void) {
   const char *cfg =
 #if defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_PURGE)
-      "EXCL+HOME"
+      "EXCL+PURGE"
 #elif defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)
-      "EXCL+OWNER"
+      "EXCL+RETAIN"
 #elif defined(ARTS_PROTOCOL_INV) && defined(ARTS_WRITE_POLICY_WB)
-      "INV+OWNER"
+      "INV+WB"
 #elif defined(ARTS_PROTOCOL_INV) && defined(ARTS_RELEASE_PURGE)
-      "INV+HOME+PURGE"
+      "INV+WT+PURGE"
 #elif defined(ARTS_PROTOCOL_INV)
-      "INV+HOME"
+      "INV+WT"
 #elif defined(ARTS_PROTOCOL_FLUSH)
       "FLUSH"
 #elif defined(ARTS_WRITE_POLICY_WT) && defined(ARTS_RELEASE_PURGE)
-      "VAL+HOME+PURGE"
+      "VAL+WT+PURGE"
 #elif defined(ARTS_WRITE_POLICY_WT)
-      "VAL+HOME"
+      "VAL+WT"
 #elif defined(ARTS_WRITE_POLICY_WB)
-      "VAL+OWNER"
+      "VAL+WB"
 #else
       "?"
 #endif

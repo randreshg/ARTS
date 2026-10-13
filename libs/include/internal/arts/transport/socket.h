@@ -70,12 +70,16 @@ bool arts_transport_setup_incoming();
  * listening sockets are closed.  The launcher / stdio sockets are untouched. */
 void arts_socket_sentinel_arm(void);
 
-/* Non-blocking probe of the accept-side sentinels for peer death
+/* Non-blocking probe of the accept-side sentinels for a closed peer
  * (POLLHUP/POLLERR/EOF).  Called from a progress thread's idle cycle; on a
- * dead peer it enters the same idempotent passive-shutdown path an inbound
- * shutdown message uses and returns true.  Stands down (false) once shutdown
- * is already in progress, so an orderly peer exit is never mistaken for a
- * death.  Serialized internally to a single prober. */
+ * closed peer it enters the same idempotent passive-shutdown path an inbound
+ * shutdown message uses and returns true.  Stands down (false) once this
+ * rank's shutdown is in progress.  Nothing orders any rank's close after
+ * every other rank has dispatched the initiator's MSG_SHUTDOWN — the
+ * initiator's drain waits only for its local sends to complete, and a
+ * receiver tears down without waiting for anyone — so an orderly teardown can
+ * reach the probe first; it joins the same shutdown.  Serialized internally to
+ * a single prober. */
 bool arts_socket_sentinel_check(void);
 #ifdef __cplusplus
 }

@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file guid_keygen_table_coupling.c
-/// @brief T038 — the keygen divisor (total_thread_count) must equal the number
+/// @brief The keygen divisor (total_thread_count) must equal the number
 ///        of per-thread key tables; if non-worker threads collapsed onto one
 ///        slot the per-thread key blocks would overlap and produce DUPLICATE
 ///        GUIDs.  Regression for that past bug.
@@ -61,7 +61,7 @@
 /// blocks (the past bug) would surface as duplicates here.
 ///
 /// Multinode by registration (runs per rank independently; correct single-node
-/// too — but registered with the multinode variants per the census).
+/// too — but registered with the multinode variants).
 
 #include "arts.h"
 #include <stdint.h>

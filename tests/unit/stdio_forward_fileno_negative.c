@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T197 — forwarder_thread_main sink_fd<0 early-out.
+ * forwarder_thread_main sink_fd<0 early-out.
  *
  * If fileno(sink) is negative the reader cannot forward anywhere, so the thread
  * must immediately close its read_fd, set read_fd = -1, and return NULL — no

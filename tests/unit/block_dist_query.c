@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Pure-unit test for libs/src/graph/block_distribution.c query arithmetic
- * (T261).
+ * Pure-unit test for libs/src/graph/block_distribution.c query arithmetic.
  *
  * The block-distribution QUERY functions (block_size, get_owner,
  * partition_start/end, get_local_index, guid_for_vertex, guid_for_partition)

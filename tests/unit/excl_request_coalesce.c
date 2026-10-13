@@ -1,24 +1,27 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * excl_request_coalesce — EXCL-config-specific test for the request_in_flight
- * coalesce set-bit logic in arts_handler_db_acquire (lock/acquire.c §not-held
- * path; census 11-lock §2 acquire.c + table row request_in_flight).
+ * excl_request_coalesce — EXCL-config-specific test for the cache-side request
+ * coalescing of arts_handler_db_acquire on its not-held path.  The decision is
+ * the cache arbiter's on either release policy, with the same rules below:
+ * cache_compute_next (coherence/excl/arbiters.c) under PURGE,
+ * cache_owner_compute_next (coherence/excl/retain.c) under RETAIN.
  *
  * The cache-side coalesce rules under test (observed via correctness, not
  * white-box state):
- *   - RW not-held: set LOCK_REQ_RW unless already set — an in-flight RO does
- *     NOT suppress the RW REQUEST (RW ⊇ RO needs the writer).  So even when an
- *     RO REQUEST is already in flight on this rank, a concurrent same-rank RW
- *     acquire must still drive a writer GRANT and the writer's store must be
- *     observable.
- *   - RO not-held: set LOCK_REQ_RO only if NEITHER bit set — an in-flight RW
- *     already covers RO locally, so a co-pending RO must coalesce and be served
- *     by the RW phase's drain (RW grant drains ro_pending too).
+ *   - RW not-held: open an RW request unless one is already in flight — an
+ *     in-flight RO request does NOT suppress the RW REQUEST (RW ⊇ RO needs the
+ *     writer).  So even when an RO REQUEST is already in flight on this rank,
+ *     a concurrent same-rank RW acquire must still drive a writer GRANT and
+ *     the writer's store must be observable.
+ *   - RO not-held: open an RO request only if NEITHER axis has one in flight
+ *     — an in-flight RW already covers RO locally, so a co-pending RO must
+ *     coalesce and be served by the RW phase's drain (RW grant drains
+ *     ro_pending too).
  *
  * Construction: many same-rank cohorts each hold a mix of RW and RO acquirers
  * on the SAME per-iteration DB, launched depc=0 so they all hit the not-held
- * path concurrently and contend on request_in_flight.  Every RW writer stamps
- * a per-iteration sentinel into the DB; the verify step requires the
+ * path concurrently and contend on the cache's request state.  Every RW writer
+ * stamps a per-iteration sentinel into the DB; the verify step requires the
  * accumulated write count to equal the writer count (no RW GRANT suppressed by
  * an in-flight RO) and every RO acquirer to have observed non-NULL data (RO
  * coalesced onto the covering phase rather than being lost).  A suppressed RW

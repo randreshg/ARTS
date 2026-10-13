@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_load_csr_format.c
-/// @brief T269 — arts_csr_load_no_weight_csr: CSR-adjacency-format parsing.
+/// @brief arts_csr_load_no_weight_csr: CSR-adjacency-format parsing.
 ///
 /// Format: first line "num_verts num_edges"; each subsequent line is the
 /// (1-based) adjacency list of the next source vertex (src increments per

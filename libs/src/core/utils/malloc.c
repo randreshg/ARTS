@@ -62,9 +62,6 @@
 
 #include "arts/defs.h"
 #include "arts/system/print.h"
-#if 0 /* retired with the CXL scheduler deque: nothing the runtime frees rests in the store */
-#include "arts/cxl/wrapper.h"
-#endif
 
 #ifdef ARTS_MALLOC_MIMALLOC
 #include <mimalloc.h>
@@ -204,11 +201,6 @@ void arts_free(void *ptr) {
   if (!ptr) {
     return;
   }
-#if 0 /* retired with the CXL scheduler deque: nothing the runtime frees rests in the store */
-  if (IS_CXL_PTR(ptr)) {
-    return; /* CXL arena-managed memory, not individually freeable */
-  }
-#endif
   DECREMENT_BYTES_MEMORY_FOOTPRINT_BY(ARTS_SYS_USABLE(ptr));
   ARTS_SYS_FREE(ptr);
 }

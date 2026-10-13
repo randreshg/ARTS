@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_load_edgelist.c
-/// @brief T268 — arts_csr_load_no_weight: edge-list parsing + CSR build.
+/// @brief arts_csr_load_no_weight: edge-list parsing + CSR build.
 ///
 /// Writes small fixture files at runtime, loads them, and verifies the
 /// resulting CSR via arts_csr_from_partition + arts_csr_get_neighbors.

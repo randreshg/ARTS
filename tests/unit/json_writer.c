@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T250 — arts_json_writer_* well-formedness and string escaping.
+ * arts_json_writer_* well-formedness and string escaping.
  *
  * The JSON writer (libs/src/core/counter/json.c) is a tiny stateful streaming
  * emitter over a FILE* with a depth stack and per-depth comma bookkeeping.  It
@@ -13,7 +13,7 @@
  * well-formedness via a small recursive-descent JSON validator embedded below
  * (so the "well-formed" claim is mechanically verified, not eyeballed).
  *
- * Properties covered (census 33-counter.md §json.c "Boundary properties"):
+ * Properties covered:
  *   1. Nested object/array are well-formed and correctly comma-separated.
  *   2. Empty object {} and empty array [] format with no spurious
  * newline/comma.

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T145 — EDT thread-local context save/restore across nested arts_event_wait.
+ * EDT thread-local context save/restore across nested arts_event_wait.
  *
  * Target: arts_edt_ctx_save / arts_edt_ctx_restore
  * (libs/src/core/edt_context.c) exercised indirectly by arts_event_wait

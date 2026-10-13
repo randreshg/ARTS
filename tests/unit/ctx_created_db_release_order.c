@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T146 — created_db_list drains at the epilogue + grow-to-fit footprint.
+ * created_db_list drains at the epilogue + grow-to-fit footprint.
  *
  * Target: arts_release_created_dbs (db.c EDT epilogue) vs the next EDT's
  * start.  The contract is: the epilogue drains the worker's created_db_list
@@ -27,7 +27,7 @@
  *      successor would never run -> ctest TIMEOUT.  Observing the correct
  *      values proves the auto-release ran.
  *
- * exposes_runtime_bug = false (pins the documented contract + footprint).
+ * Pins the documented contract + footprint.
  */
 #include "arts.h"
 #include "arts/utils/vector.h"

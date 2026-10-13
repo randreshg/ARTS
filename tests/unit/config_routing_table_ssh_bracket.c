@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T209 — arts_config_create_routing_table SSH bracket-range path.
+ * arts_config_create_routing_table SSH bracket-range path.
  *
  * Property: with master_boot=true (SSH parser), node_list "n[01-03]" must
  * expand to three zero-padded hostnames, one per rank:
@@ -13,7 +13,7 @@
  *
  * Pure unit + ASan: exercises the per-node malloc + "%0*u" zero-pad snprintf
  * that is otherwise entirely uncovered.  The node count (3) matches
- * config->nodes (3) so this is the in-bounds happy-path companion to T203's
+ * config->nodes (3) so this is the in-bounds happy-path companion to the
  * overflow case.
  */
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T292 — ARTS_EVENT_LATCH_INCR_SLOT + explicit latch=N accounting.
+ * ARTS_EVENT_LATCH_INCR_SLOT + explicit latch=N accounting.
  *
  * Target: the latch-counter arithmetic behind arts_event_satisfy_slot's
  * ARTS_EVENT_LATCH_INCR_SLOT (increment) vs ARTS_EVENT_LATCH_DECR_SLOT

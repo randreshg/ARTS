@@ -22,12 +22,6 @@ allow_files=(
 # "<path>|<line with surrounding blanks trimmed>": sites whose memory a
 # foreign owner allocates or frees.
 allow_lines=(
-  # The stub arm of the CXL wrapper: a placeholder no build expands.
-  'libs/include/internal/arts/cxl/wrapper.h|#define SHARED_MALLOC(...) malloc(__VA_ARGS__)'
-  'libs/include/internal/arts/cxl/wrapper.h|#define GLOBAL_MALLOC(...) malloc(__VA_ARGS__)'
-  'libs/include/internal/arts/cxl/wrapper.h|#define GLOBAL_FREE(...) free(__VA_ARGS__)'
-  'libs/include/internal/arts/cxl/wrapper.h|#define SHARED_FREE(...) free(__VA_ARGS__)'
-  'libs/include/internal/arts/cxl/wrapper.h|#define LAST_SHARED_MALLOC(...) malloc(__VA_ARGS__)'
   # The registered pool's backend without mimalloc.
   'libs/src/core/memory/regpool.c|if (posix_memalign(&p, a, size) != 0) {'
   'libs/src/core/memory/regpool.c|void arts_regpool_free(void *p) { free(p); }'

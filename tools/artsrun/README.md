@@ -136,9 +136,11 @@ down, and exit with the command's status. A real (non-dry) campaign refuses
 to start when the wrapper file does not exist; a dry run only renders its
 path. On the fake nothing wraps, since the vendored library maps its own
 region. That region is sized when the library loads, before any cfg is read,
-so a fake cell's launch environment sets `ARTS_FAKE_CXL_REGION_SIZE` to twice
-the tree's `ARTS_CXL_DB_ARENA_SIZE_BYTES` (the runtime maps two arenas of that
-size; the build's default is 5000000000) plus 128 MiB for its deque and headroom. The
+so a fake cell's launch environment sets `ARTS_FAKE_CXL_REGION_SIZE` to the
+tree's `ARTS_CXL_DB_ARENA_SIZE_BYTES` (the fake reports one device, so the
+runtime maps one data-block arena of that size; the build's default is
+5000000000) plus 128 MiB for the arena table, its lock and the library's own
+header. The
 region has one name and one address per host, so a host runs one fake
 campaign at a time. The manifest records each cell's library (`cxl`) and its
 region size. A one-rank CXL cell's launch environment sets `ARTS_FLUSH_LOG`

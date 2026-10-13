@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T151 — lib-EDT nested context set/unset (GPU build only).
+ * Lib-EDT nested context set/unset (GPU build only).
  *
  * Target: the GPU library-EDT run path (libs/src/core/gpu/gpu_stream.cu) which
  * brackets the lib function body with arts_set_thread_local_edt_info /
@@ -31,7 +31,7 @@
  * callback thread).  The lib body leaves it to the epilogue auto-release; the
  * test completing without a stranded acquisition is the observable signal.
  *
- * exposes_runtime_bug = false (pins correct lib-EDT nested context handling).
+ * Pins correct lib-EDT nested context handling.
  */
 #include "arts.h"
 

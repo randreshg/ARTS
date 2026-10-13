@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file guid_index_from_mismatch.c
-/// @brief T040 — pin every -1 (mismatch) branch of arts_guid_index_from.
+/// @brief Pin every -1 (mismatch) branch of arts_guid_index_from.
 ///
 /// arts_guid_index_from is the inverse of arts_guid_from_index.  It must return
 /// -1 (not a bogus index) on every kind of mismatch.  This test exercises each

@@ -775,18 +775,6 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter) {
   return NULL;
 }
 
-void arts_print_item(arts_route_item_t *item) {
-  if (item) {
-    arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
-    void *data = h ? arts_shared_get(h) : NULL;
-    ARTS_INFO("GUID: %lu DATA: %p RANK: %u", item->key, data,
-              arts_guid_get_rank(item->key));
-    if (h) {
-      arts_shared_release(&h);
-    }
-  }
-}
-
 uint64_t arts_clean_up_route_table(arts_route_table_t *route_table) {
   arts_route_table_iterator_t iter;
   arts_reset_route_table_iterator(&iter, route_table);

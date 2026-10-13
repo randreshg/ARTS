@@ -196,9 +196,9 @@ void arts_install_signal_handlers(void) {
 /* Dedicated thread that owns SIGTERM/SIGINT/SIGALRM/SIGHUP delivery via
  * sigwait().  Lets graceful-shutdown code paths (which may grab locks
  * and call fprintf) run in a normal thread context instead of inside an
- * async-unsafe signal handler.  Wakes worker/sender/receiver threads via
+ * async-unsafe signal handler.  Stops the worker threads via
  * arts_enter_shutdown_state(true), which broadcasts the cluster-wide
- * SHUTDOWN_MSG and clears their alive flags.
+ * MSG_SHUTDOWN and clears their alive flags.
  *
  * Wake-on-stop: arts_stop_signal_watcher_thread sets stop_flag and
  * sends SIGRTMIN to break out of sigwait. */
@@ -239,7 +239,7 @@ static void *arts_signal_watcher_main(void *arg) {
       ARTS_WARN("signal watcher: caught %d, initiating graceful shutdown",
                 sig);
       /* Now safe to call non-async-signal-safe code: we are in a normal
-       * thread context.  Broadcast SHUTDOWN_MSG to peers and stop our
+       * thread context.  Broadcast MSG_SHUTDOWN to peers and stop our
        * own workers; main thread's arts_thread_main_join will return,
        * launcher cleanup will reap children, normal teardown runs. */
       arts_enter_shutdown_state(true);
@@ -309,13 +309,13 @@ void arts_configure_core_dumps(bool enabled) {
      * nothing, and the process stays dumpable so a debugger can still attach.
      * A piped core pattern is handed the crash regardless of this limit. */
     if (getrlimit(RLIMIT_CORE, &limit) != 0) {
-      ARTS_INFO("Failed to read the core dump limit");
+      ARTS_WARN("Failed to read the core dump limit");
       return;
     }
     limit.rlim_cur = 0;
   }
   if (setrlimit(RLIMIT_CORE, &limit) != 0) {
-    ARTS_INFO("Failed to %s core dumps", enabled ? "force" : "suppress");
+    ARTS_WARN("Failed to %s core dumps", enabled ? "force" : "suppress");
   }
 }
 

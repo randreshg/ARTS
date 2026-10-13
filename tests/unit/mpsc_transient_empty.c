@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T011 — arts_mpsc_pop INV-4 (CRITICAL): transient-empty is NEVER terminal —
+ * arts_mpsc_pop INV-4 (CRITICAL): transient-empty is NEVER terminal —
  * a lost-wakeup guard (mpsc.h).  Census 29.md §5 INV-4 / SUSPECTED-BUG B081
  * (the historical channel lost-wakeup class).
  *

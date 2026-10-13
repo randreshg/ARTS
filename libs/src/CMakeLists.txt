@@ -47,9 +47,6 @@ target_include_directories(arts_interface INTERFACE
 )
 
 # --- Coherence-protocol helpers (shared by main lib + benchmark variants) -----
-# Sets ${out} (caller scope) to the coherence model TU paths for
-# (proto,placement), RELATIVE to libs/src/core/.  Mirrors
-# libs/src/core/CMakeLists.txt selection.
 # The grant plane's release-policy half: WHO initiates a grant's return.  Only
 # a write-through arm can hand the permission back without the payload, so a
 # write-back grant is always demand-revoked.
@@ -61,6 +58,9 @@ function(arts_grant_release_tu out write_policy release_policy)
     endif()
 endfunction()
 
+# Sets ${out} (caller scope) to the coherence model TU paths for one (arm,
+# write policy, release policy), RELATIVE to libs/src/core/; the main library
+# (libs/src/core/CMakeLists.txt) and every benchmark variant select through it.
 # The dense per-rank version map is the ownership plane's ledger, so it is
 # linked by the arms that HAVE one; an arm with no versions carries no ledger
 # and must not compile the TU that keeps it.
@@ -141,7 +141,6 @@ function(arts_apply_protocol target arm write_policy release_policy)
         endif()
         target_compile_definitions(${target} PRIVATE
             ARTS_USE_CXL=1
-            ARTS_CXL_NATIVE=1
             ARTS_CXL_${cxl_residency}=1
             ARTS_CXL_DB_ARENA_SIZE_BYTES=${ARTS_CXL_DB_ARENA_SIZE_BYTES}ULL)
         target_include_directories(${target} SYSTEM PRIVATE ${ARTS_CXL_INCLUDE_DIR})
@@ -563,10 +562,11 @@ if(BUILD_CUDA_LIBRARY)
 endif()
 
 # --- Per-protocol variant libraries (benchmarks/harness only) -----------------
-# Build a full arts static lib for one (proto,placement). The protocol-independent
-# sources are gathered from the CPU object-lib targets (their compiled objects
-# cannot be reused — each variant needs its own protocol defines), the coherence
-# MODEL TUs are swapped for this variant's, and the defines are applied per-target.
+# Build a full arts static lib for one (arm, write policy, release policy).  The
+# protocol-independent sources are gathered from the CPU object-lib targets
+# (their compiled objects cannot be reused — each variant needs its own protocol
+# defines), the coherence MODEL TUs are swapped for this variant's, and the
+# defines are applied per-target.
 if(ARTS_BUILD_BENCHMARKS)
     set(_ARTS_VARIANT_OBJLIBS
         arts_compute arts_memory arts_sync arts_ooo arts_regpool arts_scheduler

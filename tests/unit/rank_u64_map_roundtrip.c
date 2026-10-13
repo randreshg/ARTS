@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T054 — rank_u64_map serialize/load round-trip + robustness
+ * rank_u64_map serialize/load round-trip + robustness
  * (B032: deserialize trusts wire count → OOB read; B034: no NULL/OOB guards).
  *
  * Wire layout: count(u32) + pad(u32) + count * {rank(u32), pad(u32), ver(u64)}.

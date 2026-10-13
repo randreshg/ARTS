@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_empty_partition.c
-/// @brief T264 — arts_csr_init with a local partition that has ZERO edges.
+/// @brief arts_csr_init with a local partition that has ZERO edges.
 ///
 /// B-csr-empty-ub: arts_csr_init reads edges->edge_array[0].source/.target
 /// UNCONDITIONALLY (before the (edges->used)?1:0 guard).  For a local

@@ -38,22 +38,18 @@
 ******************************************************************************/
 
 /// @file coherence_ro_acquire_stress.c
-/// @brief B.6 — RO concurrent acquire stress (cache install correctness).
+/// @brief RO concurrent acquire stress (cache install correctness).
 ///
 /// Single DB initialized to a known sentinel value (42).  N RO-acquiring
 /// EDTs are spawned concurrently; each verifies that *data == 42.
-/// Exercises HOME-placement cases 1/3/7 (concurrent local RO + RO snapshot
-/// install + cached RO version pull).  If any reader sees a corrupted value
-/// the cache install path itself is wrong — that is a real coherence bug.
+/// Every reader runs on rank 0, where main_edt creates the block (each hint
+/// names rank 0), so each acquire is the RO acquire's request served on the
+/// block's home, many at once, none crossing the fabric.  If any reader sees a
+/// corrupted value the acquire handed it the wrong bytes — that is a real
+/// coherence bug.
 ///
-/// Adaptations vs. plan description (line 1882 of plan):
-///   - 4-arg arts_db_create (no ARTS_DB_PROP_NONE in HEAD).
-///   - arts_init_main does not exist; arts_rt() invokes main_edt
-///     automatically on rank 0.
-///   - arts_abort() on any mismatch so ctest sees a non-zero exit; a missed
-///     finish scope manifests as a ctest TIMEOUT.
-///
-/// Spec section 6 B.6.
+/// arts_abort() on any mismatch, so ctest sees a non-zero exit; a missed
+/// finish scope manifests as a ctest TIMEOUT.
 
 #include "arts.h"
 
@@ -108,10 +104,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   *data = SENTINEL;
 
   /* Outer finish scope ensures shutdown_edt runs only after every reader has
-   * finished — a peer-disconnect SHUTDOWN_MSG would otherwise let the
-   * runtime exit while readers are still in flight.  The finish-EDT
-   * must have depc >= 1 so the finish scope's slot-0 satisfy actually gates
-   * it; depc=0 would let it fire before any reader. */
+   * finished — an early arts_shutdown's MSG_SHUTDOWN would otherwise let the
+   * runtime exit while readers are still in flight.  The gated EDT must have
+   * depc >= 1 so the finish scope's slot-0 satisfy actually gates it; depc=0
+   * would let it fire before any reader. */
   arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(fe, shut, 0, DB_MODE_NULL);

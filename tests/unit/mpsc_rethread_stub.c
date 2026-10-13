@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T010 — arts_mpsc_pop INV-5: stub re-thread on the single-remaining-node
- * path (mpsc.h).  Census 29.md §5 GAP / INV-5.
+ * arts_mpsc_pop INV-5: stub re-thread on the single-remaining-node
+ * path (mpsc.h).
  *
  * When the consumer pops down to exactly one node (tail == head), arts_mpsc_pop
  * re-pushes the embedded stub (arts_mpsc_push(&q->stub)) so the last node

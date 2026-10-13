@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_load_args.c
-/// @brief T270 — arts_csr_load_from_args argument dispatch.
+/// @brief arts_csr_load_from_args argument dispatch.
 ///
 /// Covers:
 ///   * --csr-format selects the CSR-adjacency loader; absence selects the

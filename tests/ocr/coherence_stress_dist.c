@@ -38,21 +38,18 @@
 ******************************************************************************/
 
 /// @file coherence_stress_dist.c
-/// @brief B.2 — Distributed coherence stress (multinode counterpart of
-///        B.1).
+/// @brief Distributed coherence stress (multinode counterpart of
+///        coherence_stress_single_node).
 ///
 /// Needs 2+ ranks (SKIP on one).  Per iteration the
 /// driver creates N_DBS DBs round-robin across all ranks (home routing
 /// via arts_edt_hint_t.rank = i % nnodes) and spawns N_EDTS workers, each
-/// pinned to a deterministic rank and acquiring a deterministic DB in a
-/// deterministic mode (RW or RO).  The ownership protocol must transfer
-/// ownership / install RO snapshots across ranks; the final completion count
-/// must equal N_EDTS * K_ITERS.
+/// pinned to a deterministic rank and acquiring a deterministic DB in RW mode,
+/// so every protocol must move write turns across ranks; every worker must
+/// complete before the finish scope releases the PASS line.
 ///
 /// Correctness: each worker calls arts_abort(1) on NULL ptr; a stranded
 /// waiter surfaces as a ctest TIMEOUT.  No global cross-EDT state.
-///
-/// Spec section 6 B.2.
 
 #include "arts.h"
 
@@ -79,26 +76,17 @@ static void init_writer_edt(uint32_t paramc, const uint64_t *paramv,
 
 static void worker_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
   (void)depc;
-  if (paramc < 1) {
-    arts_printf("FAIL: worker missing paramv\n");
-    arts_abort(1);
-  }
-  int mode_is_rw = (int)paramv[0];
   _Atomic int *data = (_Atomic int *)depv[0].ptr;
   if (data == NULL) {
     arts_printf("FAIL: worker got NULL ptr\n");
     arts_abort(1);
   }
-  if (mode_is_rw) {
-    /* RW is exclusive between NODES, not between the writers on one: several
-     * EDTs on this rank hold the block at once, so the increment is atomic. */
-    (void)atomic_fetch_add_explicit(data, 1, memory_order_relaxed);
-  } else {
-    /* RO: just read, do not modify. */
-    int seen = atomic_load_explicit(data, memory_order_relaxed);
-    (void)seen;
-  }
+  /* RW is exclusive between NODES, not between the writers on one: several
+   * EDTs on this rank hold the block at once, so the increment is atomic. */
+  (void)atomic_fetch_add_explicit(data, 1, memory_order_relaxed);
 }
 
 static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -140,13 +128,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (int iter = 0; iter < K_ITERS; iter++) {
     arts_guid_t dbs[N_DBS];
 
-    /* DBs distributed round-robin across all ranks.  For each DB we
-     * also wire an init_writer EDT pinned on the home rank that takes
-     * the first RW grant and stamps the payload to a known value.  This
-     * is required because the ownership protocol does not synthesise an
-     * initial RO snapshot from an unwritten payload — without an
-     * explicit RW writer the first cross-rank RO acquire returns NULL
-     * ptr. */
+    /* DBs distributed round-robin across all ranks.  For each DB an
+     * init_writer EDT pinned on the home rank also takes an RW turn and
+     * stamps the payload; nothing orders it before the workers, and no value
+     * is checked. */
     for (int i = 0; i < N_DBS; i++) {
       void *raw = NULL;
       unsigned int home = (unsigned int)(i % (int)nnodes);
@@ -159,21 +144,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
 
     /* Workers fan out across all ranks, deterministically picking a DB
-     * and an access mode based on (iter, i).  Per-DB grant ordering
-     * serialises every RW behind the init_writer above.
-     *
-     * Note: B.2 uses RW-only across ranks.  Cross-rank RO acquire has
-     * a known issue where the first RO acquire arriving on a rank that
-     * has not yet seen any RW may observe NULL ptr (the RO snapshot
-     * install path lazily fetches from home only after the first RW
-     * grant releases).  Validating cross-rank RO is left to the
-     * dedicated coherence_ro_acquire_stress test. */
+     * based on (iter, i), all in RW mode.  13 is invertible mod N_DBS and
+     * N_EDTS == 2 * N_DBS, so each DB gets exactly two workers, i and
+     * i + N_DBS.  When the rank count divides N_DBS the two share one rank,
+     * which is the DB's home in some iterations and another rank in the
+     * rest. */
     for (int i = 0; i < N_EDTS; i++) {
       int db_idx = (iter * 7 + i * 13) % N_DBS;
       unsigned int worker_route = (unsigned int)(i % (int)nnodes);
-      uint64_t mode_is_rw = 1; /* B.2: RW-only fan-out */
       arts_guid_t w = arts_edt_create(
-          worker_edt, 1, &mode_is_rw, 1,
+          worker_edt, 0, NULL, 1,
           &(arts_edt_hint_t){.rank = worker_route, .finish_event = fe});
       arts_add_dependence(dbs[db_idx], w, 0, DB_MODE_RW);
     }

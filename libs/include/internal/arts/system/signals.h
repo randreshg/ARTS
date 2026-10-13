@@ -48,9 +48,8 @@ void arts_configure_core_dumps(bool enabled);
 
 /* Block termination signals on the calling thread + start a dedicated
  * sigwait watcher thread that drives graceful shutdown. Must be called
- * from the master rank's main thread BEFORE any worker/sender/receiver
- * thread is spawned, so the SIG_BLOCK mask is inherited by every
- * downstream thread. */
+ * from the main thread BEFORE any worker or progress thread is spawned, so
+ * the SIG_BLOCK mask is inherited by every downstream thread. */
 void arts_install_signal_watcher_thread(void);
 
 /* Stop the watcher thread (called from the cleanup path so it does not

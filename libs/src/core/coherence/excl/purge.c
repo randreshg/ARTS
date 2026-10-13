@@ -126,10 +126,8 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
   /* The size is descriptor state — known even before any payload exists;
    * the grant carries it so a hinted (CTS-skipping) first touch learns it. */
   uint64_t data_size = cache->db_size;
-  /* The grant carries the home buffer's own version.  No separate counter is
-   * needed: home commits (RW publish installs) are sequentialized by the
-   * protocol (RW single-owner inter-node + ACK-gated release), so buf->version
-   * is monotone across rounds. */
+  /* The grant carries the home buffer's own version, which no grant handler
+   * reads. */
   uint64_t version = buf ? buf->version : 0;
   if (grant == LOCK_GRANT_ONE_RW) {
     unsigned int rank;
@@ -325,7 +323,8 @@ static void lock_release_commit(struct arts_db_s *db,
 /* Rendezvous continuation for a committed remote RW release: the dirty bytes
  * have fully landed IN PLACE in home's stable buffer ("imm seen => buffer
  * valid"; the global RW lock excluded every reader while they flew), so there
- * is nothing to install — ACK the blocked releaser, then transition + grant. */
+ * is nothing to install — run the transition and the next grant; no releaser
+ * is blocked on this. */
 struct lock_release_landed_ctx_s {
   arts_shared_ptr_t db_h;
   arts_guid_t db_guid;
@@ -395,9 +394,10 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
   if (mode == DB_MODE_RW && a->data_size > 0 && a->data_inline == 0 &&
       a->rdzv_txid != 0) {
     /* Remote dirty release: the publish PUT straight into home's stable
-     * buffer (the landing advertised in this grant).  Pair the release packet
-     * with the write completion; ACK + transition + grant run only once the
-     * bytes are fully placed. */
+     * buffer (the landing advertised in this grant, or in the PUBLISH_CTS that
+     * answered the announce).  Pair the release packet with the write
+     * completion; the transition and the next grant run only once the bytes
+     * are fully placed. */
     struct lock_release_landed_ctx_s *ctx =
         (struct lock_release_landed_ctx_s *)arts_malloc(sizeof(*ctx));
     ctx->db_h = arts_route_table_lookup_db(cache->db_guid);
@@ -406,13 +406,13 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
     return;
   }
 
-  /* (1) RW same-rank: write the publish into home's stable buffer in place,
-   * then ACK.  Under exclusive-lock serialization the releaser held the sole
-   * RW grant and home grants the next holder only after this publish
-   * completes, so no reader is touching the buffer here — the in-place
-   * overwrite is safe and the buffer address stays fixed (preserving DBs with
-   * internal self-pointers).  No versioning: home commits are already
-   * sequentialized by the protocol (RW single-owner + ACK-gated release). */
+  /* (1) RW same-rank: write the publish into home's stable buffer in place.
+   * Under exclusive-lock serialization the releaser held the sole RW grant
+   * and home grants the next holder only after this publish completes, so no
+   * reader is touching the buffer here — the in-place overwrite is safe and
+   * the buffer address stays fixed (preserving DBs with internal
+   * self-pointers).  No versioning: exclusion leaves at most one write turn
+   * of a block outstanding. */
   if (mode == DB_MODE_RW && a->data_size > 0 && a->data_inline != 0) {
     const void *data = (const char *)a + sizeof(*a);
     arts_db_buf_write_inplace(cache, data, a->data_size);
@@ -872,10 +872,11 @@ static void cxl_purge_body(struct arts_db_cache_s *cache,
 #endif /* ARTS_USE_CXL */
 
 /* ===== arts_handler_db_acquire =========================================
- * OOO_DB_ACQUIRE Cat-B body — protocol-agnostic signature.
+ * The coherent acquire of one dep — protocol-agnostic signature; the driver's
+ * acquire_one_dep calls it.
  *
- * item is the pre-pinned home db_s; args is {edt, db_guid, slot}; mode is read
- * from depv[slot].mode.
+ * item is this rank's pre-pinned db_s of the block; args is {edt, db_guid,
+ * slot}; mode is read from depv[slot].mode.
  *
  * Single-atom acquire: ONE CAS carries {count++, decision} together (see
  * cache_compute_next in arbiters.c for why the atomicity is load-bearing).
@@ -1050,7 +1051,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
   struct arts_db_cache_s *cache = &db->cache;
 
   /* Stash home's publish landing for this grant's eventual RW release —
-   * BEFORE the CAS that lets local writers run (the single ACK-gated releaser
+   * BEFORE the CAS that lets local writers run (the single RW releaser
    * consumes it). */
   if (mode == DB_MODE_RW && pub != NULL) {
     cache->home_pub_rdzv = *pub;
@@ -1214,9 +1215,12 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
 #endif /* ARTS_USE_CXL */
 
 /* ===== arts_send_db_excl_release ========================================
- * Send EXCL_RELEASE to the home.  RW carries publish data, version, and cv
- * (the releaser's stack-local sem_t address so home can echo it in the ACK);
- * RO carries none and passes version=0 / cv=0.
+ * Send EXCL_RELEASE to the home.  An RW release's bytes travel by PUT ahead
+ * of this packet, which carries their size and the landing's {txid, cookie}
+ * (a self-send carries them inline); cv is nonzero only on the landing-less
+ * announce, where it is the address of the releaser's heap rendezvous and the
+ * home echoes it in the PUBLISH_CTS.  Nothing acknowledges a release, and
+ * version is always 0.  RO carries none of these.
  * Self-send (home == this rank) routes through the OoO engine so reordering
  * against DB_CREATE is handled identically to the wire path. */
 void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
@@ -1228,8 +1232,8 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
 
   if (home_rank == arts_global_rank_id) {
     /* Self-send: route through the OoO engine exactly as the wire RX
-     * dispatcher does — HIT runs arts_handler_db_excl_release inline (which
-     * posts cv); MISS defers the args until the home db_s is installed.  A
+     * dispatcher does — HIT runs arts_handler_db_excl_release inline; MISS
+     * defers the args until the home db_s is installed.  A
      * data-less release (the common self case) carries stack args directly;
      * only an inline-data release builds the contiguous args buffer. */
     if (data == NULL || ds == 0u) {
@@ -1358,8 +1362,8 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
     /* Dirty release from a hold that never received a grant (the
      * creator-seeded RW grant): no cached landing — run the announce leg.
      * Heap rendezvous, deliberately leaked on the shutdown escape (a late
-     * CTS/ACK writes/posts through the echoed cv; see the HOME-placement
-     * publish sync for the same discipline). */
+     * CTS writes and posts through the echoed cv; see arts_db_publish_sync
+     * for the same discipline). */
     struct arts_db_pub_rendezvous_s *wr =
         (struct arts_db_pub_rendezvous_s *)arts_malloc(sizeof(*wr));
     sem_init(&wr->sem, 0, 0);
@@ -1380,10 +1384,10 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
       return; /* shutdown escape: round abandoned with the runtime — leak wr */
     }
     /* buf_h transfers into the PUT's local completion, which pins the source
-     * bytes until the fabric drains them.  cv=0 asks for no ACK: the home
-     * pairs {packet, write completion} on its own side and commits + grants
-     * from there, so waiting here would only serve the pin the callback
-     * already holds. */
+     * bytes until the fabric drains them.  The commit carries cv 0 and
+     * nothing acknowledges it: the home pairs {packet, write completion} on
+     * its own side and commits + grants from there, so waiting here would
+     * only serve the pin the callback already holds. */
     arts_net_put_payload((int)home, wr->landing.addr, wr->landing.key,
                          wr->landing.txid, data, ds, arts_db_buf_ref_release_cb,
                          (void *)buf_h);

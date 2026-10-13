@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T293 — GPU context accessors inside a library EDT.
+ * GPU context accessors inside a library EDT.
  *
  * Target: the inside-a-lib-EDT GPU context accessors in arts/gpu.h:
  *   arts_dim3_t *arts_get_gpu_grid(void);
@@ -26,7 +26,7 @@
  * GPU build defines it).  In any non-GPU build the file is a clean SKIP that
  * links against the ordinary (CPU) libarts.  Mirrors ctx_gpu_lib_edt.c.
  *
- * exposes_runtime_bug = false (pins correct lib-EDT GPU-context reads).
+ * Pins correct lib-EDT GPU-context reads.
  */
 #include "arts.h"
 

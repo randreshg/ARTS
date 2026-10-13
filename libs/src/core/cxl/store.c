@@ -6,19 +6,19 @@
 
 #include "arts.h"
 #include "arts/counter/Preamble.h"
-#include "arts/cxl/deque.h"
+#include "arts/cxl/arena.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/utils/atomics.h"
 
 /* One arena per device under round_robin, rotated per allocation, bounded by
- * the arena count the published deque carries; one arena, at index 0, under
+ * the arena count the published table carries; one arena, at index 0, under
  * static.  Arena creation currently ignores the device ids it is handed, so
  * an index selects an arena, not a device. */
 static unsigned cxl_store_arena_index(void) {
   unsigned n = arts_node_info.cxl_db_dev_count;
-  if (n > arts_node_info.cxl_deque->consts.db_arena_count) {
-    n = arts_node_info.cxl_deque->consts.db_arena_count;
+  if (n > arts_node_info.cxl_arenas->db_arena_count) {
+    n = arts_node_info.cxl_arenas->db_arena_count;
   }
   if (n > 1u) {
     return arts_atomic_fetch_add(&arts_node_info.cxl_db_rr_idx, 1U) % n;
@@ -31,9 +31,9 @@ void *arts_cxl_store_alloc(size_t bytes) {
   if (span == 0u) {
     span = ARTS_CXL_GRANULE;
   }
-  void *p = arts_cxl_deque_db_malloc_dev(arts_node_info.cxl_deque,
-                                         &arts_node_info.cxl_local_lock, span,
-                                         cxl_store_arena_index());
+  void *p = arts_cxl_arena_table_malloc(arts_node_info.cxl_arenas,
+                                        &arts_node_info.cxl_arena_lock, span,
+                                        cxl_store_arena_index());
   if (p == NULL) {
     ARTS_ERROR("cxl: the store cannot serve %zu bytes: the arena of "
                "%llu bytes is exhausted (ARTS_CXL_DB_ARENA_SIZE_BYTES) - "

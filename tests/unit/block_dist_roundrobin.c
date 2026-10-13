@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file block_dist_roundrobin.c
-/// @brief T263 — multinode: verify arts_block_dist_init round-robins block
+/// @brief Multinode: verify arts_block_dist_init round-robins block
 ///        GUIDs across ranks exactly as the constructor's nested loop does.
 ///
 /// The round-robin assignment is: rank i gets (num_blocks/ranks) blocks, plus

@@ -44,9 +44,9 @@
 #include <string.h> /* memcpy (OoO payload alloc) */
 
 #include "arts.h"
-#include "arts/coherence/coherence.h" /* arts_handler_db_acquire */
-#include "arts/coherence/handlers.h"  /* coherence wire handlers + replay */
-#include "arts/db.h"                  /* arts_db_acquire_all */
+#include "arts/coherence/coherence.h"
+#include "arts/coherence/handlers.h" /* coherence wire handlers + replay */
+#include "arts/db.h"                 /* arts_db_acquire_replay_dep */
 #include "arts/edt.h"   /* arts_handler_edt_satisfy_slot[_ptr], arts_get_depv */
 #include "arts/event.h" /* arts_handler_event_satisfy_slot / add_dependence */
 #include "arts/gas/route_table.h"
@@ -101,8 +101,9 @@
  * arts_handler_db_*, ...).  The entry's own lookup HITs during a drain
  * (drain runs post-install), takes its inline hit path, and does NOT re-enter
  * dispatch_or_defer — so re-issue is one level deep, never recursive.  `item`
- * (the acquired object) is passed through for the one handler (db_acquire)
- * that consumes it directly. */
+ * (the acquired object) is passed through for the pure (item, args) bodies
+ * that operate on it directly; the create replays and
+ * arts_db_acquire_replay_dep ignore it. */
 
 /* EDT satisfy + destroy handlers live in edt.c
  * (arts_handler_edt_satisfy_slot[_ptr], arts_handler_edt_destroy) — pure cores
@@ -113,12 +114,12 @@
  * arts_handler_event_destroy) — pure cores that operate on the acquired
  * event. */
 
-/* The OoO replay of a deferred local DB→EDT dependency is the coherence acquire
- * handler itself: arts_handler_db_acquire(item = installed db_s, args). The
- * drain only fires when the slot value is non-NULL (DB installed), so `item` is
- * always a valid db_s; the handler re-attempts the single dep through the
- * proper coherence path (writer_count / buffer-ref handling) and self-accounts
- * / parks. No whole-driver re-run. */
+/* The OoO replay of a deferred DB→EDT dependency is arts_db_acquire_replay_dep
+ * (db.c), not an arm's arts_handler_db_acquire: a serialized dep re-drives the
+ * acquire loop from the cursor, and any other dep re-attempts its one slot
+ * through the driver's subtype-aware path — a coherent block reaches its
+ * arm's arts_handler_db_acquire, a pinned subtype takes its local pointer, a
+ * block still absent defers again. */
 
 /* The coherence replay bodies are the wire handlers themselves
  * (arts_handler_db_grant_request / _snapshot_request / _publish /
@@ -126,12 +127,11 @@
  * Each model's enum (and this table) carries only that model's OOO_DB_* kinds,
  * so a build references only the bodies it actually defines:
  *   - GRANT_REQUEST: VAL and INV only (grant.c).
- *   - PUBLISH: WT only; WB's enum omits it (WB fatals on the wire).
- *   - GRANT_INVALIDATE: WT only.  WT can see a GRANT/INVALIDATE
- * reorder (or a before-create race) that lands INVALIDATE before the cache
- * installs, so it defers + replays here.  The WB write policy never defers
- * INVALIDATE (home publishes the rw_holder target only after that rank's
- * cache install, so the dispatcher/self-send call the body directly). */
+ *   - PUBLISH: the arms that publish at a release (VAL WT, INV under both
+ *     write policies); VAL WB's enum omits it (VAL WB fatals on the wire).
+ *   - GRANT_INVALIDATE: no arm defers it.  The home names a rank as the
+ *     invalidate target (rw_holder) only after that rank's cache install,
+ *     so the dispatcher and the self-send call the body directly. */
 
 /* Event/EDT destroy replay bodies are the wire handlers themselves
  * (arts_handler_event_destroy / arts_handler_edt_destroy) — pure (item, args)

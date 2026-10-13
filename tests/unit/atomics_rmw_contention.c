@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T242 — contention correctness of arts_atomic_fetch_add_u64 (and the 32-bit
+ * Contention correctness of arts_atomic_fetch_add_u64 (and the 32-bit
  * arts_atomic_fetch_add) in libs/src/core/utils/atomics.c.
  *
  * Property under test: N threads each perform M fetch_add(+1) on one shared

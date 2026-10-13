@@ -14,7 +14,7 @@
 ******************************************************************************/
 
 /// @file stub_install_winner.c
-/// @brief T061 — concurrent first-touch stub cache installs of a remote-owned
+/// @brief Concurrent first-touch stub cache installs of a remote-owned
 ///        DB: exactly one winner, every consumer gets a valid pinned handle, no
 ///        stub leak.
 ///
@@ -43,10 +43,10 @@
 /// wrong stub would corrupt the read); (3) progress — every wave drains (a
 /// stranded stub install would hang the finish scope → ctest TIMEOUT).
 ///
-/// runtime_single+multinode, non-EXCL: stub first-touch install is the
-/// VAL remote-acquire mechanism.  EXCL has its own RO acquire path,
-/// so self-skips.  On a single node every acquire is a local hit (the stub-install path
-/// is never entered) and the test passes trivially.
+/// Multinode only (on a single node every acquire is a local hit and the
+/// stub-install path is never entered), non-EXCL: stub first-touch install is
+/// the VAL remote-acquire mechanism.  EXCL has its own RO acquire path, so
+/// self-skips.
 
 #include "arts.h"
 

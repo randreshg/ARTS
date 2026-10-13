@@ -54,9 +54,9 @@
 
 bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
   /* A write acquire can wait on another rank's release (cross-DB cyclic
-   * hazard: acquire-all must issue it in strict slot order).  A read acquire
-   * waits only on the serve — never on another EDT's release — so it carries
-   * no cycle risk and may issue in parallel. */
+   * hazard: acquire-all must issue it in the one global GUID order).  A read
+   * acquire waits only on the serve — never on another EDT's release — so it
+   * carries no cycle risk and may issue in parallel. */
   return mode == DB_MODE_RW;
 }
 
@@ -270,7 +270,7 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
 }
 
 
-/* ===== OWNER-only senders =============================================== */
+/* ===== WB-only senders ================================================== */
 
 /* home → the current grant holder: serve this reader.  The subject rides in
  * the packet because the holder answers it directly, so the wire sender and

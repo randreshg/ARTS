@@ -16,10 +16,10 @@
 ///
 /// Both raises happen from one EDT, the second once the watcher has taken the
 /// first, so it arrives while the watcher is still in its loop after the first
-/// hit (the first only stops workers; network threads + the watcher stay
+/// hit (the first only stops workers; progress threads + the watcher stay
 /// alive).
 ///
-/// runtime_single, all configs (signals sit above the coherence layer).
+/// Single-node, every configuration (signals sit above the coherence layer).
 /// Expected process exit status: 143.
 
 #include "arts.h"

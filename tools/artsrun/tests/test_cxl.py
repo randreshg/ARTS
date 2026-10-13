@@ -47,7 +47,7 @@ REAL = dict(cxl_include_dir="/dev/inc", cxl_library="/dev/libarts_cxl_lib.so",
 def cxl_cell(nodes=2, cxl=CxlLibrary.REAL, key="arts_excl_purge_cxl_staged",
              region=None) -> Cell:
     if region is None and cxl is CxlLibrary.FAKE:
-        region = 2 * 5_000_000_000 + (128 << 20)
+        region = 5_000_000_000 + (128 << 20)
     return replace(_cell(RuntimeKind.ARTS, nodes),
                    entry=load_plane().entry(key), cxl=cxl,
                    cxl_region_bytes=region)
@@ -176,7 +176,7 @@ def test_the_decision_reads_the_tree_against_the_profile(tmp_path):
 def test_a_fake_cell_states_the_region_size_from_the_trees_arena(tmp_path):
     (tmp_path / "CMakeCache.txt").write_text("ARTS_CXL_DB_ARENA_SIZE_BYTES:STRING=268435456\n")
     assert arena_bytes(tmp_path) == 268435456
-    assert fake_region_bytes(tmp_path) == 2 * 268435456 + (128 << 20)
+    assert fake_region_bytes(tmp_path) == 268435456 + (128 << 20)
     (tmp_path / "CMakeCache.txt").write_text("")
     assert arena_bytes(tmp_path) == 5000000000
 
@@ -313,7 +313,7 @@ def test_expansion_stamps_the_profile_library_on_cxl_cells_only(tmp_path):
 
     tree = tmp_path / "build"
     cache(tree, ARTS_CXL_DB_ARENA_SIZE_BYTES="268435456")
-    region = 2 * 268435456 + (128 << 20)
+    region = 268435456 + (128 << 20)
     sel = Selection(profile="t", experiment="t", entries=["arts_excl_purge", *CXL],
                     apps={"nqueens": [Version.BASE]}, node_counts=[1])
     bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})

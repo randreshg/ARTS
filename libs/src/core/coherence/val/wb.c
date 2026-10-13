@@ -116,7 +116,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     /* Self-credit: this rank now holds the bumped version.  Keeps the
      * owner-side ledger's invariant ("floor of what each rank's cache holds")
      * true for the producer itself; the ship path re-credits before the map
-     * migrates, so a NULL map (never-served owner) can stay NULL here. */
+     * migrates. */
     if (cache->cached_version != NULL) {
       arts_rank_u64_map_advance(cache->cached_version, arts_global_rank_id,
                                 arts_atomic_read_u64(&buf->version));
@@ -144,11 +144,11 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   }
 }
 
-/* ===== cache_s lifecycle (WB: pending_rw + dedup map + sentinel) =
- * Construct: the WB write policy's field-init (the Vyukov MPSC pending_rw queue +
- * the owner-side dedup map [allocated on demand] + the transfer sentinel) runs
- * BEFORE arts_db_cache_common_init.  Destruct order: buffer-NULL (pre) →
- * pending_rw destroy → snapshot drain + home teardown (post). */
+/* ===== cache_s lifecycle (WB) ======================================
+ * Construct: the WB write policy's own fields (the pending_rw Treiber stack,
+ * the owner-side dedup ledger, the transfer target), then
+ * arts_db_cache_common_init.  Destruct order: buffer-NULL (pre) → pending_rw
+ * destroy → ledger free → snapshot drain + home teardown (post). */
 void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank) {
@@ -251,7 +251,7 @@ struct owner_destroy_fanout_s {
   struct arts_rank_bitset_s told;
 };
 
-/* A rank is told once per destroy.  A DESTROY_NOTIFY retires whatever the
+/* A rank is told once per destroy.  A CACHE_DESTROY retires whatever the
  * rank's slot holds for the GUID when it lands, so a second one for the same
  * generation would retire the next generation a create has installed there
  * after the first. */
@@ -406,7 +406,7 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
   if (owner_rank == arts_global_rank_id) {
     /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire.  HIT
      * serves SNAPSHOT_RESPONSE from the ref-pinned owner-side db_s; MISS (DB
-     * destroyed / not yet installed) sends DESTROY_NOTIFY to the requester so
+     * destroyed / not yet installed) sends CACHE_DESTROY to the requester so
      * its parked RO waiter wakes and observes DB_DESTROYED. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = db_guid,

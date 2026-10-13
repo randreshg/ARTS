@@ -56,8 +56,8 @@ static void owner_response_landed_cb(void *arg);
  * The INVALIDATE target is always rw_holder, which the home names only after
  * that rank's cache install (the creator at DB_CREATE, a new owner at
  * CONFIRM).  The target's cache is therefore provably installed by the time
- * the INVALIDATE arrives, so this placement never defers it: the dispatcher
- * and the self-send call the handler body directly. */
+ * the INVALIDATE arrives, so it is never deferred: the dispatcher and the
+ * self-send call the handler body directly. */
 void arts_db_owner_start_invalidate_round(
     struct arts_db_cache_s *cache, unsigned int new_owner,
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have) {
@@ -83,7 +83,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   /* Pin the db_s for the whole handler body (map deserialize + buffer install +
    * snapshot/OoO drains + writer_count RMW): the embedded cache is its FIRST
    * member (offset 0), so one cb ref keeps it alive against a concurrent
-   * DESTROY on another receiver thread.  Released on every return path. */
+   * DESTROY on another progress thread.  Released on every return path. */
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
@@ -255,17 +255,17 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   atomic_store_explicit(&db->rw_holder, new_owner, memory_order_release);
   /* Protocol seam: the ex-holder keeps the bytes it wrote.  Whether that
    * retained copy needs registering is the protocol's question, not the
-   * placement's. */
+   * write policy's. */
   arts_db_grant_note_ex_holder(db, prev_holder);
 
   /* The directory now names the new owner: tell it to run its gated RW EDTs.
    * If a next requester is queued, the round advances in the SAME message —
    * the CONFIRM_ACK piggybacks the next transfer target, and the new owner's
    * handler applies the INVALIDATE effect (publish incoming_new_owner +
-   * withdraw the sentinel) itself.  This merges what used to be two separate
-   * home→new_owner messages (CONFIRM_ACK + INVALIDATE) into one, removing the
-   * CONFIRM_ACK↔INVALIDATE reorder window.  With no pending requester the ack
-   * carries ARTS_NO_PENDING_OWNER and the baton is released below. */
+   * withdraw the sentinel) itself.  One message rather than a CONFIRM_ACK
+   * and a separate INVALIDATE, so the two can never reach the new owner
+   * reordered.  With no pending requester the ack carries
+   * ARTS_NO_PENDING_OWNER and the baton is released below. */
   unsigned int piggyback = ARTS_NO_PENDING_OWNER;
   struct arts_rdzv_landing_s piggyback_rdzv = {0, 0, 0, 0};
   uint64_t piggyback_have = ARTS_GRANT_VERSION_NONE;
@@ -275,12 +275,13 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
                                     &piggyback_rdzv, &piggyback_have)) {
       db->pending_install_owner = next_owner;
       piggyback = next_owner;
-      /* No early PROCEED: the next owner's RW cursor is advanced by the CURRENT
-       * owner at transfer-commit (writer_count->0 in
-       * arts_db_send_grant_response) — the earliest moment its
-       * acquisition of this db is irrevocably committed.  PROCEEDing here
-       * (round start, before the current owner has released) could strand it in
-       * a hold-and-wait cycle. */
+      /* The next owner's waiters are not woken here: they wake when the grant
+       * reaches it — the current owner ships it at its writer_count 0-edge
+       * (arts_db_send_grant_response), the earliest moment the next owner's
+       * acquisition of this db is irrevocably committed, and the next
+       * owner's CONFIRM_ACK drains them.  Waking them at round start, before
+       * the current owner has released, could strand them in a hold-and-wait
+       * cycle. */
     }
   }
   arts_send_db_grant_confirm_ack(new_owner, cache->db_guid, piggyback,
@@ -327,8 +328,7 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
   /* Drain the RW waiters that the GRANT_RESPONSE handler deferred (this is the
    * work moved out of arts_handler_db_grant_response); the drain takes them
    * and then releases the coalescing flag. */
-  arts_db_drain_pending_rw_after_grant(cache, /*version=*/0,
-                                       /*has_next=*/false);
+  arts_db_drain_pending_rw_after_grant(cache);
 
   /* Piggybacked INVALIDATE effect (merged from the former standalone
    * GRANT_INVALIDATE).  Mirror the INVALIDATE handler's discipline: publish
@@ -408,8 +408,9 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
   db->pending_install_owner = next_owner;
   arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv,
                                        next_have);
-  /* No early PROCEED here (see arts_db_send_grant_response): the next
-   * owner's RW cursor advances at transfer-commit, not at round start. */
+  /* The next owner's waiters are not woken at round start: they wake at that
+   * owner's CONFIRM_ACK, after the grant the current owner ships at its
+   * 0-edge (arts_db_send_grant_response) has reached it. */
 }
 
 /* ===== WB GRANT_INVALIDATE handler (pure body, DIRECT-call) ====== */
@@ -464,19 +465,19 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   arts_db_grant_ship_pending(cache);
 }
 
-/* ===== WB SNAPSHOT_REDIRECT handler (owner side, moved from handlers.c) === */
+/* ===== WB SNAPSHOT_REDIRECT handler (owner side) ======================== */
 
 /* Cat-C pure body (SNAPSHOT_REDIRECT, owner side).  The wire dispatcher / self-send
  * shortcut has already looked the owner-side db_s up with a held ref and passes
  * it as item_v (cache is its FIRST member, offset 0).  No lookup/NULL-check
- * here — the dispatcher's MISS branch sends DESTROY_NOTIFY to the requester (DB
+ * here — the dispatcher's MISS branch sends CACHE_DESTROY to the requester (DB
  * destroyed / not yet installed on this rank) so the requester's parked RO
  * waiter wakes and observes DB_DESTROYED rather than hanging. */
 
-/* ===== WB wire senders (moved from coherence/senders.c) =========
- * The GRANT_RESPONSE wire sender + the owner→owner ship are now shared
- * (coherence/grant.c); the CONFIRM sender is shared too.  Only the
- * WB-only CONFIRM_ACK + SNAPSHOT_REDIRECT senders remain here. */
+/* ===== WB wire senders =================================================
+ * The GRANT_RESPONSE wire sender, the owner→owner ship and the CONFIRM
+ * sender are shared (coherence/grant.c); only the WB-only CONFIRM_ACK +
+ * SNAPSHOT_REDIRECT senders are here. */
 
 void arts_send_db_grant_confirm_ack(
     unsigned int new_owner_rank, arts_guid_t db_guid,

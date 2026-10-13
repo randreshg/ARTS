@@ -22,7 +22,7 @@
  *     come back wrapped so a single `sh -c <token>` re-parse yields exactly
  *     the original bytes.
  *
- *  2. Boundary / off-by-one (B113): the embedded-quote branch reserves with
+ *  2. Boundary / off-by-one: the embedded-quote branch reserves with
  *     `out_index + 5 >= output_size` and the final close-quote with
  *     `out_index + 2 > output_size`.  We sweep output_size across the exact
  *     window where the LAST fitting char is a `'`, and assert:
@@ -241,7 +241,7 @@ int main(void) {
    *   out_index + 5 >= output_size  -> -1
    * which (because of the trailing NUL) means it requires out_index + 5 < size
    * i.e. 6 bytes of headroom before writing the 5 escape chars.  This is the
-   * exact off-by-one the census flagged.  Sweep output_size and confirm the
+   * exact off-by-one boundary.  Sweep output_size and confirm the
    * canaries are never touched and the return value matches what actually
    * fits.  We accept WHATEVER the function decides about success/-1 at each
    * size as long as: (a) no OOB write ever happens, and (b) whenever it

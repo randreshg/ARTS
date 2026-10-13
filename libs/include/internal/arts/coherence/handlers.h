@@ -1,34 +1,34 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Coherence protocol wire-message handlers.
+ * Coherence protocol wire-message handlers: the per-message bodies the wire
+ * dispatcher, the OoO engine and the self-send shortcuts call.
  *
- * The 11 wire messages defined in arts/transport/protocol.h each
- * land in their own handler here.  Handlers are dispatched from the
- * single per-rank network handler thread (one of S1's invariants),
- * so home-side state — home.pending_rw, home.cached_version,
- * home.rw_holder — is touched by exactly one writer.  Worker threads
- * concurrently read/write cache.* via the atomic primitives wired up
- * in the data structures (writer_count, the buffer slot's atomic shared_ptr,
- * the pending_rw/pending_snapshot queues).
+ * Handlers run concurrently on every progress thread, and a self-send's
+ * handler runs inline on the sending thread, a worker included, so no thread
+ * is any field's sole writer by role.  A field a handler shares with a worker
+ * or with another handler is accessed atomically, or written plainly before
+ * an atomic RMW on a count or state word that its reader observes first.
  *
  * Drop discipline — two categories:
- *   Cat-B (deferrable: GRANT_REQUEST / SNAPSHOT_REQUEST / PUBLISH / DESTROY /
- *     GRANT_INVALIDATE): the wire dispatcher routes through
- *     arts_ooo_dispatch_or_defer_guid, which acquires the home db_s
- *     ref-pinned and hands the pure (item, args) body a live cache on
- *     HIT, or defers the args for replay once DB_CREATE installs.
- *   Cat-C (non-deferrable: SNAPSHOT_RESPONSE / DESTROY_NOTIFY / PUBLISH_ACK /
- *     SNAPSHOT_REDIRECT / CONFIRM / CONFIRM_ACK): the wire
- * dispatcher (and the matching self-send shortcut) does a ref-pinned lookup via
+ *   Cat-B (deferrable bodies, each an OOO_* kind in ooo.h, run at the home
+ *     except INV WB's INV_REDIRECT, which runs at the grant holder — e.g.
+ *     GRANT_REQUEST / SNAPSHOT_REQUEST / PUBLISH / DESTROY): the wire
+ *     dispatcher routes through arts_ooo_dispatch_or_defer_guid, which
+ *     acquires this rank's db_s ref-pinned and hands the pure (item, args) body
+ *     a live cache on HIT, or defers the args for replay once DB_CREATE
+ *     installs.
+ *   Cat-C (non-deferrable, no OOO_* kind — e.g. SNAPSHOT_RESPONSE /
+ *     CACHE_DESTROY / PUBLISH_ACK / SNAPSHOT_REDIRECT / GRANT_INVALIDATE /
+ *     GRANT_CONFIRM / GRANT_CONFIRM_ACK): the wire dispatcher (and the
+ *     matching self-send shortcut) does a ref-pinned lookup via
  *     arts_route_table_lookup_db; on HIT it calls the pure (item, args)
  *     body, on MISS it applies the handler's exact miss-action (silent
- *     drop, DESTROY_NOTIFY reply, or sem-post — see each body).
- *   Either way the handler body itself performs NO route-table lookup; it
- *   operates on the already-acquired, ref-pinned cache passed by the
- *   dispatcher or OoO engine.
- *
- * Handlers receive the full wire packet; size and rank are accessed
- * via the embedded arts_msg_header_s header. */
+ *     drop, CACHE_DESTROY reply, or sem-post — see each body).
+ *   Either way an (item, args) body is handed its block already acquired
+ *   and ref-pinned by the dispatcher or OoO engine and does not look it up
+ *   to operate on it.  A body handed the whole packet (GRANT_RESPONSE,
+ *   INV_DELIVER, EXCL_GRANT and the EXCL RETAIN messages) looks its block up
+ *   itself. */
 
 #ifndef ARTS_MEMORY_COHERENCE_HANDLERS_H
 #define ARTS_MEMORY_COHERENCE_HANDLERS_H
@@ -47,7 +47,7 @@ struct arts_db_cache_s;
  * carry no OOO_* kind and are never enqueued on a slot's ooo_list.  The wire
  * dispatcher (and the matching self-send shortcut) does the ref-pinned
  * lookup-acquire; on a HIT it calls the pure (item, args) body, and on a MISS
- * it applies that handler's exact miss-action (silent drop, DESTROY_NOTIFY
+ * it applies that handler's exact miss-action (silent drop, CACHE_DESTROY
  * reply, or sem-post — see each handler's contract).  These args structs are
  * stack-built by the dispatcher from the decoded wire packet and passed by
  * pointer to the body; unlike the OoO Cat-B args they are never copied into a
@@ -77,14 +77,16 @@ struct arts_db_cache_destroy_args_s {
 };
 
 /* arts_handler_db_publish_ack body args.  Two wake planes coexist: cv != 0 is
- * the pointer-identity sem-post (legacy announce leg / control-only rounds —
+ * the pointer-identity sem-post of a grant return sent on its own (PURGE) —
  * cache-independent, posted on both HIT and MISS so a torn-down cache never
- * strands the blocked releaser); cv == 0 is the flight-completion plane (the
- * body drains the releaser cache's version-covered waiter stack).  version is
- * the published version the ACK covers; the credit triple is the home's next
- * in-place publish credit (txid == 0 = none issued). */
+ * strands the blocked returner; cv == 0 is the flight-completion plane of
+ * every publish flight, control-only ones included (the body drains the
+ * releaser cache's version-covered waiter stack).  version is the published
+ * version the ACK covers; the credit triple is the home's next in-place
+ * publish credit (txid == 0 = none issued), which only a payload flight's
+ * ACK carries. */
 struct arts_db_publish_ack_args_s {
-  uint64_t cv; /* releaser's heap rendezvous sem_t address, or 0 */
+  uint64_t cv; /* a standalone grant return's heap rendezvous, or 0 */
   uint64_t version;
   uint64_t credit_addr;
   uint64_t credit_rkey;
@@ -235,12 +237,12 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie);
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v);
 /* Cat-C pure body (PUBLISH_ACK): item_v is the releaser-rank db_s the
  * dispatcher acquired; args_v is an arts_db_publish_ack_args_s.  NOT
- * OoO-deferrable.  cv != 0 wakes the pointer-identity sem (cache-independent
- * — posted on BOTH HIT and MISS so a torn-down cache never strands the
- * blocked releaser); cv == 0 runs flight completion on the cache (credit
- * record, covered-waiter drain, trailing-flight decision). */
+ * OoO-deferrable.  cv != 0 wakes a standalone grant return's pointer-identity
+ * sem (cache-independent — posted on BOTH HIT and MISS so a torn-down cache
+ * never strands the blocked returner); cv == 0 runs flight completion on the
+ * cache (credit record, covered-waiter drain, trailing-flight decision). */
 void arts_handler_db_publish_ack(void *item_v, void *args_v);
-/* Cat-C pure body (DESTROY_NOTIFY): item_v is the db_s the dispatcher acquired
+/* Cat-C pure body (CACHE_DESTROY): item_v is the db_s the dispatcher acquired
  * (cache is its first member); args_v is an arts_db_cache_destroy_args_s.
  * NOT OoO-deferrable — the dispatcher looks the cache up with a held ref and,
  * on a MISS (already torn down on this rank), SILENTLY DROPS (idempotent). */
@@ -253,7 +255,7 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
  * acquired (cache is its first member); args_v is an
  * arts_db_snapshot_redirect_args_s.  NOT OoO-deferrable — the dispatcher
  * looks the cache up with a held ref and, on a MISS (DB destroyed / not yet
- * installed on this rank), sends DESTROY_NOTIFY to the requester (so the
+ * installed on this rank), sends CACHE_DESTROY to the requester (so the
  * requester's parked RO waiter wakes and observes DB_DESTROYED). */
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
 #endif /* ARTS_WRITE_POLICY_WB && !ARTS_PROTOCOL_INV */
@@ -292,10 +294,12 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v);
 /* GRANT_CTS sender: home → first-touch requester (db_size reply). */
 void arts_send_db_grant_cts(unsigned int requester_rank,
                                 arts_guid_t db_guid, uint64_t db_size);
-/* cv: address of the releaser's stack-local publish rendezvous
- * (arts_db_pub_rendezvous_s; sem first) as uint64_t, forwarded verbatim and
- * echoed back in PUBLISH_CTS / PUBLISH_ACK for pointer-identity wakeup.
- * Same-rank sends carry `data` inline through the OoO args; remote sends are
+/* cv: nonzero only on an announce — the address of the releaser's heap
+ * rendezvous (arts_db_pub_rendezvous_s; sem first) as uint64_t, forwarded
+ * verbatim and echoed back in the PUBLISH_CTS for pointer-identity wakeup; a
+ * commit and a data-less publish carry 0, and their ACK completes the
+ * releaser's publish flight.  A same-rank send carries `data`, when given,
+ * inline through the OoO args (no caller gives any); remote sends are
  * control-only (announce txid==0 / commit txid!=0 — the payload travels
  * one-sided between them, see arts_db_publish_sync). */
 /* return_grant rides a PAYLOAD COMMIT leg only: it tells the home that the
@@ -305,8 +309,9 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
                             uint64_t version, uint64_t cv, const void *data,
                             uint64_t data_size, uint64_t rdzv_txid,
                             uint64_t rdzv_cookie, bool return_grant);
-/* PUBLISH_CTS: home → releaser, carrying a fresh home landing for an
- * announced dirty publish (cv echoed verbatim). */
+/* PUBLISH_CTS: home → releaser, advertising the home's stable buffer, in
+ * place, as the landing for an announced dirty publish or a landing-less EXCL
+ * PURGE release (cv echoed verbatim). */
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
                                 const struct arts_rdzv_landing_s *landing,
                                 uint64_t cv);
@@ -477,9 +482,11 @@ void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
 void arts_handler_db_excl_request(void *item_v, void *args_v);
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_EXCL_RELEASE]) @home: same item_v
- * shape; args_v is an arts_ooo_args_db_excl_release_s followed by data_size
- * publish bytes when mode==RW.  RW installs publish first, then transitions
- * lock_state, then grant-sends the next holder(s). */
+ * shape; args_v is an arts_ooo_args_db_excl_release_s.  An RW release's
+ * bytes trail it only on a same-rank release; a remote one PUT them into the
+ * home's stable buffer, and in a CXL build they are already in the store.
+ * The bytes are in place before it transitions lock_state, then grant-sends
+ * the next holder(s). */
 void arts_handler_db_excl_release(void *item_v, void *args_v);
 
 /* Cat-C pure body @requester: payload = full contiguous wire buffer
@@ -489,9 +496,10 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
 
 /* NOTE: arts_handler_db_acquire is NOT re-declared here.  It is already
  * declared protocol-agnostically in coherence.h as void
- * arts_handler_db_acquire(void *item, void *args) and serves as both the
- * engine's acquire_one_dep body and the OOO_DB_ACQUIRE replay.  EXCL only
- * *defines* it (coherence/excl/purge.c and coherence/excl/retain.c). */
+ * arts_handler_db_acquire(void *item, void *args), the coherent body the
+ * driver's acquire_one_dep calls (an OOO_DB_ACQUIRE replay reaches it through
+ * arts_db_acquire_replay_dep).  EXCL only *defines* it
+ * (coherence/excl/purge.c and coherence/excl/retain.c). */
 
 /* ===== EXCL senders =================================================== */
 /* Send EXCL_REQUEST to the home, advertising this rank's grant/deliver
@@ -509,20 +517,23 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v);
 /* EXCL_CTS sender: home → first-touch requester (db_size + echoed mode). */
 void arts_send_db_excl_cts(unsigned int requester_rank, arts_guid_t db_guid,
                            uint64_t db_size, uint32_t mode);
-/* arts_send_db_excl_grant: version is the monotone round counter.  The grant
- * payload PUTs into req_rdzv (the requester's advertised landing; src_h — a
- * strong ref on the home buffer — is CONSUMED); `pub`, for RW grants, is
- * home's publish landing for this grant's release (NULL/zero for RO). */
+/* arts_send_db_excl_grant: version is the home buffer's version (0 in a CXL
+ * build), which no grant handler reads.  The grant payload PUTs into
+ * req_rdzv (the requester's advertised landing; src_h — a strong ref on the
+ * home buffer — is CONSUMED); `pub`, for RW grants, is home's publish landing
+ * for this grant's release (NULL/zero for RO). */
 void arts_send_db_excl_grant(unsigned int requester_rank, arts_guid_t db_guid,
                              arts_db_access_mode_t mode, uint64_t version,
                              const struct arts_rdzv_landing_s *req_rdzv,
                              const struct arts_rdzv_landing_s *pub,
                              arts_shared_ptr_t src_h, uint64_t data_size);
-/* arts_send_db_excl_release: cv is the releaser's stack-local sem_t address
- * (RW only; 0 for RO); version is the monotone counter (RW only; 0 for RO).
- * Home echoes cv in the PUBLISH_CTS to unblock the releaser.  A remote
- * RW release PUTs the dirty bytes into the grant's `pub` landing first and
- * echoes {rdzv_txid, rdzv_cookie} here; `data` rides inline only same-rank. */
+/* arts_send_db_excl_release: cv is nonzero only on an RW release's
+ * landing-less announce — the address of the releaser's heap rendezvous,
+ * which the home echoes in the PUBLISH_CTS to unblock the releaser; nothing
+ * acknowledges a release.  version is always 0, and no handler reads it.  A
+ * remote RW release PUTs the dirty bytes into its landing (the grant's `pub`,
+ * or the one the PUBLISH_CTS named) first and echoes {rdzv_txid,
+ * rdzv_cookie} here; `data` rides inline only same-rank. */
 void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
                                arts_db_access_mode_t mode, uint64_t version,
                                uint64_t cv, const void *data,

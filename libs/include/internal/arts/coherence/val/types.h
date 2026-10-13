@@ -150,10 +150,10 @@ struct arts_db_cache_s {
    * sentinel-withdraw ordering makes a separate transfer_pending flag
    * redundant: whichever actor drives writer_count to 0 (the INVALIDATE, or the
    * last release_rw) reads this field — a non-sentinel value names the target,
-   * so that actor fires the commit-PROCEED to it and ships the transfer
-   * (GRANT_RESPONSE in WB, PUBLISH_AND_TRANSFER/local in WT). Single
-   * writer per round (home baton gate), so no atomic needed.  Shared by both
-   * write policies (WT's INVALIDATE now carries new_owner too). */
+   * so that actor ships the grant to it (GRANT_RESPONSE under both write
+   * policies, dispatched inline for a self-transfer).  Single writer per round
+   * (home baton gate), so no atomic needed.  Shared by both write policies:
+   * the INVALIDATE carries new_owner under each. */
   unsigned int incoming_new_owner;
   /* The pending new owner's transfer landing, published together with (and
    * under the same single-writer / publish-before-withdraw discipline as)
@@ -164,8 +164,8 @@ struct arts_db_cache_s {
    * ships no payload when the canonical bytes are at that very version. */
   uint64_t incoming_new_owner_have;
 #ifdef ARTS_WRITE_POLICY_WB
-  /* WB: owner-side dedup map.  Allocated lazily on first ownership; preserved
-   * across ownership transfer (GRANT_RESPONSE serializes it). */
+  /* WB: owner-side dedup map.  Allocated with the cache and freed with it; its
+   * content migrates with ownership (GRANT_RESPONSE serializes it). */
   struct arts_rank_to_u64_map_s *cached_version;
   /* WB per-cache RW exclusivity machinery.  RW GRANT_REQUEST coalescing
    * flag — only the actor that CASes false->true sends GRANT_REQUEST;
@@ -175,10 +175,6 @@ struct arts_db_cache_s {
   /* Treiber stack of RW waiters parked on this rank (order-free drain-all). */
   arts_lf_stack_t pending_rw;
 #else
-  /* WT: the PUBLISH ACK rendezvous is a stack-local sem_t created per
-   * release_rw, matched by pointer identity (the &sem address rides the
-   * PUBLISH packet and is echoed verbatim in the ACK).  Multiple concurrent
-   * releases each get their own sem — no per-cache seq state. */
   /* WT per-cache RW exclusivity machinery.  RW GRANT_REQUEST coalescing
    * flag — only the actor that CASes false->true sends GRANT_REQUEST;
    * same-node RW EDTs piggyback on the in-flight one and are picked up by
@@ -200,7 +196,7 @@ struct arts_db_cache_s {
    * (heap for the same reason the publish rendezvous is — a shutdown-
    * escaped waiter leaks its node and a late drain may still post into
    * it).  home_pub_* is the durable publish credit: the home's stable
-   * buffer plus a receiver-minted txid, refilled by every publish ACK;
+   * buffer plus a receiver-minted txid, refilled by a payload flight's ACK;
    * txid is the presence flag (0 = none), written last with release
    * order so a reader that sees it sees the whole triple. */
   volatile unsigned int pub_flight;

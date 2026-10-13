@@ -71,8 +71,6 @@
 #include "arts/gpu/gpu_internal.h"
 #endif
 
-#include "arts/cxl/wrapper.h"
-
 /* Per-worker EDT-execution context (current_edt, owned-finish-events list,
  * created-DB tracking + save/restore snapshot) lives in sync/edt_context.c.
  * edt.c reads `current_edt` directly and calls the run-start/run-end context

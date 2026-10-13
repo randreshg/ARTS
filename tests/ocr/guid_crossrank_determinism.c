@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file guid_crossrank_determinism.c
-/// @brief T037 — a ROUND_ROBIN range GUID reserved on rank 0 and broadcast to
+/// @brief A ROUND_ROBIN range GUID reserved on rank 0 and broadcast to
 ///        every rank yields the IDENTICAL per-index GUID on every rank, even
 ///        after each rank has perturbed its own per-(rank,kind) auto-counters
 ///        by a different amount.

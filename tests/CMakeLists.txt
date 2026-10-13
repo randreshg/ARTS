@@ -44,7 +44,7 @@ add_compile_options(-UNDEBUG)
 
 # Define test programs to build
 set(TEST_PROGRAMS
-    # --- Original tests ---
+    # --- Coherence, route-table and event tests ---
     route_table_remote_guid
     coherence_rw_chain
     grant_purge_no_acquire_creator
@@ -69,7 +69,7 @@ set(TEST_PROGRAMS
     event_channel_fifo
     route_table_iter
     acquire_mode
-    # --- New unit tests ---
+    # --- EDT, DB and event API tests ---
     edt_create_basic
     edt_fan_out
     stress_edt
@@ -121,10 +121,10 @@ set(TEST_PROGRAMS
     regpool_fallback_order
     regpool_spill_cycle
     regpool_spill_target
-    # --- New unit tests (Tasks 6-12) ---
+    # --- Dependence variants, create after first touch ---
     edt_dep_variants
     db_create_after_first_touch
-    # --- Finish-EDT mechanism tests ---
+    # --- Finish-event and multi-writer coherence tests ---
     finish_event_stress
     finish_event_nested
     coherence_multi_writer_dist
@@ -467,8 +467,9 @@ endfunction()
 # one-runner rule covers everything else.  A test's properties can be set
 # only from the directory that added it, so arts_test_finalize applies this
 # at the end of each directory that registers tests.
-# One data-block arena plus the deque, and headroom.
-math(EXPR ARTS_CXL_TEST_REGION_BYTES "2 * ${ARTS_CXL_DB_ARENA_SIZE_BYTES} + 134217728")
+# One data-block arena (the fake library reports one device), and headroom for
+# the arena table, its lock and the library's own structures.
+math(EXPR ARTS_CXL_TEST_REGION_BYTES "${ARTS_CXL_DB_ARENA_SIZE_BYTES} + 134217728")
 set(ARTS_CXL_TEST_REGION_BYTES "${ARTS_CXL_TEST_REGION_BYTES}" CACHE INTERNAL
     "ARTS_FAKE_CXL_REGION_SIZE every test of a fake-library CXL tree runs under" FORCE)
 function(arts_cxl_test_env)
@@ -1126,11 +1127,12 @@ register_pure_unit_test(array_list_basic)
 # ooo.c so the file-static g_ooo_table + engine bodies are compiled in, links
 # shared.c for the cb shared-ptr slot, and supplies counting handler stubs +
 # a single-slot arts_route_table_reserve_or_lookup + libc malloc shims (no ARTS
-# runtime).  The per-config protocol macros (ARTS_PROTOCOL_*/ARTS_WRITE_POLICY_*/ARTS_RELEASE_*) are
-# inherited from the top-level add_compile_definitions, so the g_ooo_table
-# preprocessor arms + the tests' matching handler-stub arms select the same
-# kind set for whichever protocol this build dir is configured for.  ooo.c pulls
-# the generated counter Preamble.h, hence ARTS_BUILD_INTERNAL_INCLUDE_DIR.
+# runtime).  The per-config protocol macros (ARTS_PROTOCOL_*,
+# ARTS_WRITE_POLICY_*, ARTS_RELEASE_*) are applied to each test target by
+# arts_apply_protocol below, so the g_ooo_table preprocessor arms + the tests'
+# matching handler-stub arms select the same kind set for whichever protocol
+# this build dir is configured for.  ooo.c pulls the generated counter
+# Preamble.h, hence ARTS_BUILD_INTERNAL_INCLUDE_DIR.
 set(OOO_UNIT_TESTS
     ooo_toctou_rescue ooo_drain_repush ooo_table_completeness)
 foreach(t ${OOO_UNIT_TESTS})
@@ -1149,7 +1151,7 @@ register_pure_unit_test(ooo_toctou_rescue TIMEOUT 60)
 register_pure_unit_test(ooo_drain_repush TIMEOUT 60)
 register_pure_unit_test(ooo_table_completeness)
 
-# --- atomics.c primitives + spin locks (C23p) ---
+# --- atomics.c primitives + spin locks ---
 # Standalone like the SYNC_*/deque tests: link the runtime's atomics.c TU
 # directly (libc-only dependency), no ARTS library.  atomics_rmw_conventions
 # pins the per-function pre/post return conventions; atomics_rmw_contention
@@ -1175,7 +1177,7 @@ register_pure_unit_test(atomics_rmw_conventions)
 register_pure_unit_test(atomics_rmw_contention TIMEOUT 60)
 register_pure_unit_test(atomics_locks TIMEOUT 60)
 
-# --- malloc.c allocator + footprint, diag.c timestamp/printf (C23p) ---
+# --- malloc.c allocator + footprint, diag.c timestamp/printf ---
 # Each test #includes the target runtime .c TU directly (with the heavy header
 # include guards pre-defined + minimal ARTS_ERROR/ARTS_ALIGNED/footprint stubs
 # inside the test), so no extra source and no ARTS library link is needed.
@@ -1225,7 +1227,7 @@ if(ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
         PASS_REGULAR_EXPRESSION "RECYCLE_OK")
 endif()
 
-# --- Finish-EDT mechanism tests ---
+# --- Finish-event tests ---
 register_single_node_test(finish_event_nested)
 set_tests_properties(finish_event_nested PROPERTIES
     PASS_REGULAR_EXPRESSION "OK nested")
@@ -1396,11 +1398,6 @@ register_multinode_test(multinode_stdout_forward)
 set_tests_properties(multinode_stdout_forward_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "MULTINODE_STDOUT_FORWARD_SENTINEL 42")
 
-# B.3 LOCK_REQ-before-DB_CREATE race regression is registered at 4n_4w_1p (where
-# the race is actually exercised) as `excl_req_before_create` in
-# generated_tests.cmake.  The former 2n_9w_1p single-entry `coherence_lock_req_before_create`
-# here was a no-op (SKIPs at rank<3) over byte-identical source, so it was removed.
-
 # Coherence stress test suite.  Each adds the "coherence_stress" label on top
 # of its node-count label so the suite can be filtered with
 # `ctest -L coherence_stress`.
@@ -1436,8 +1433,7 @@ set_tests_properties(runtime_no_libc_alloc PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS runtime_no_libc_alloc")
 
 # Distributed coherence stress: blocks homed round-robin on every rank, each
-# acquired by workers placed on every rank, write and read turns interleaved.
-# SKIPs on one rank.
+# written (RW only) by workers placed on every rank.
 register_multinode_test(coherence_stress_dist TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_property(TEST coherence_stress_dist_${_v} APPEND PROPERTY
@@ -1489,21 +1485,18 @@ if(ARTS_DEBUG_DB_QUARANTINE)
         FAIL_REGULAR_EXPRESSION "FAIL")
 endif()
 
-# Large-payload cross-rank coherence transfer: a ~256 KiB DB is stamped by a
-# home-rank writer and RW-verified by workers on other ranks, so every hop ships
-# the whole payload over the wire.  This is the guard for the transport's
-# message framing — a payload split across frames the connectionless RX cannot
-# reassemble corrupts silently (checksum mismatch -> FAIL) or mis-dispatches
-# (spurious shutdown -> TIMEOUT); the sizeof(int) DBs elsewhere never reach it.
-# Standard MN variants (2n_9w_1p/4n_4w_1p/2n_8w_2p); SKIPs cleanly at rank_count < 2.
+# Large-payload cross-rank coherence transfer: a ladder of DBs from 256 KiB to
+# 8 MiB, each stamped by a home-rank writer and then read by RO readers on other
+# ranks, so every hop moves the whole payload across ranks.  Each reader checks
+# every element, which catches bytes landed at the wrong offset or only partly
+# landed (FAIL); the sizeof(int) DBs elsewhere never reach these sizes.
+# Standard MN variants (2n_9w_1p/4n_4w_1p/2n_8w_2p).
 register_multinode_test(coherence_payload_large TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_property(TEST coherence_payload_large_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
-    # A framing bug can mis-dispatch the raw payload frame -> spurious shutdown,
-    # ending the run cleanly (exit 0) BEFORE any worker verifies.  Require the
-    # end-of-run PASS line so that "verification never completed" fails, and
-    # fail on any worker's corruption abort.
+    # Require the end-of-run PASS line, so a run that ends before every reader
+    # has verified fails, and fail on any reader's corruption abort.
     set_tests_properties(coherence_payload_large_${_v} PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS: 4 DBs"
         FAIL_REGULAR_EXPRESSION "FAIL:")
@@ -1546,7 +1539,7 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_property(TEST coherence_satisfy_before_release_${_v} APPEND PROPERTY
         LABELS "coherence_stress")
     set_tests_properties(coherence_satisfy_before_release_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: 4 DBs observed|SKIP"
+        PASS_REGULAR_EXPRESSION "PASS: 4 DBs observed"
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
 endif()
@@ -1567,11 +1560,13 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
 endforeach()
 endif()
 
-# OWNER-placement stale-RO ownership-confirm gate: RO acquire causally ordered after a
+# WB stale-RO ownership-confirm gate: an RO acquire causally ordered after a
 # remote RW writer must observe the writer's value, not a stale snapshot from
-# the old owner.  The race window is home's rw_holder lag behind INSTALL_ACK.
-# The 2n_8w_2p config (multiple progress threads -> wire reorder) exposes it;
-# 1n_20w passes trivially (no ownership transfer).  RELAXED SKIPs cleanly.
+# the old owner.  The window is the home's rw_holder lagging behind the new
+# owner's MSG_DB_GRANT_CONFIRM, which the gate (the writer runs only after
+# CONFIRM_ACK) closes.  The 2n_8w_2p config (two progress threads -> wire
+# reorder) is the one that would expose it; 1n_20w passes trivially (no
+# ownership transfer).
 register_single_node_test(coherence_owner_confirm_gate TIMEOUT 120)
 register_multinode_test(coherence_owner_confirm_gate TIMEOUT 120)
 
@@ -1836,8 +1831,8 @@ endif()
 endif()
 
 # coherence_multi_writer_dist: multinode cross-rank RW same-address.  The
-# requester is NOT the home rank, so increments cross the wire (LOCK_REQUEST/
-# GRANT or each protocol's equivalent) and the final RO read must observe every
+# requester is NOT the home rank, so increments cross the wire (each
+# protocol's write request and grant) and the final RO read must observe every
 # writer's atomic update.  An ordinary OCR program — registered under every
 # protocol; at >=3 ranks a DB homed on a non-zero rank has two distinct remote
 # writer ranks, exercising the cross-rank publish handoff that 2n_9w_1p cannot.
@@ -2055,15 +2050,12 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/generated_tests.cmake)
 
 # inv_round_snapshot: the pure per-word decision of an invalidation round's
 # roster snapshot (who is retired, who stays).  INV only; self-skips else.
-add_pure_unit_src(inv_round_snapshot DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_round_snapshot:|SKIP" TIMEOUT 60)
+add_pure_unit_src(inv_round_snapshot DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_round_snapshot:" TIMEOUT 60)
 
-# config_cxl_alloc_strategy: the cxl_db_allocation_strategy handler.  Only
-# buildable where the CXL store is configured: defining ARTS_USE_CXL forces
-# config.c down the cxl/deque.h path, which needs the device library's
-# allocator symbols.
+# config_cxl_alloc_strategy: the cxl_db_allocation_strategy handler, registered
+# only in a CXL tree: the handler and the fields it sets exist only there.
 if(ARTS_CXL_TREE_RESIDENCY)
     add_arts_test(config_cxl_alloc_strategy)
-    target_compile_definitions(config_cxl_alloc_strategy PRIVATE ARTS_USE_CXL)
     register_pure_unit_test(config_cxl_alloc_strategy TIMEOUT 60)
     # It links arts_static and so the store library, which maps its one
     # region when it loads.
@@ -2079,7 +2071,7 @@ endif()
 add_pure_unit_src(cxl_wire_layout PASS_REGEX "PASS cxl_wire_layout" TIMEOUT 30)
 
 # runtime_types.h has separate C11-atomic and C++/nvcc declarations for the
-# event descriptor.  The generated census owns the C probe; compile the exact
+# event descriptor.  runtime_edt_event_layout is the C probe; compile the exact
 # same source through a C++ wrapper and compare their complete fingerprints.
 add_executable(runtime_edt_event_layout_cpp
     unit/runtime_edt_event_layout_cpp.cpp)
@@ -2196,10 +2188,11 @@ endif()
 # every rank's stdout to the master's -- still fails the test by the token it
 # prints.
 #
-# Conservative form (as in the T294 sweep above): the token matched is one these
-# tests print ONLY on a failure branch — a clean run never emits it, and the
-# runtime's own [ERROR] log aborts, so it cannot appear either.  Each registered
-# variant needs its own entry: a multinode test has no bare-name entry.
+# Conservative form (as in the PASS-gate sweep of generated_tests.cmake): the
+# token matched is one these tests print ONLY on a failure branch — a clean run
+# never emits it, and the runtime's own [ERROR] log aborts, so it cannot appear
+# either.  Each registered variant needs its own entry: a multinode test has no
+# bare-name entry.
 # ============================================================================
 set_tests_properties(await_publish_ack_shutdown PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 set_tests_properties(await_publish_ack_shutdown_2n_9w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -2301,13 +2294,13 @@ set_tests_properties(snapshot_response_3case_4n_4w_1p PROPERTIES FAIL_REGULAR_EX
 # print, on every variant they are registered under.  An explicit
 # FAIL_REGULAR_EXPRESSION set above is left as it is.
 set(_arts_status_tests
-    acquire_mode block_dist_roundrobin cat_c_ref_balance
+    block_dist_roundrobin cat_c_ref_balance
     coherence_destroy_during_acquire coherence_zero_size_xfer
     csr_from_guid_refcount csr_get_neighbors csr_remote_null csr_wellformed
     ctx_owned_finish_cleanup db_create db_create_claims_first_touch_stub
     db_create_with_data_bytes db_dependence
     db_destroy db_local_create db_pin db_release_alias_slot dbcreate_matrix
-    dispatcher_default_fatal edt_create_basic edt_dep_variants edt_fan_out
+    edt_create_basic edt_dep_variants edt_fan_out
     event_basic event_chain event_channel_advanced event_channel_lifetime
     event_channel_transient_null event_idem_silent_oversatisfy
     excl_request_coalesce finish_event_mn_termination finish_event_stress
@@ -2330,8 +2323,7 @@ endforeach()
 
 # The descriptor's own test.  Registered in every tree: outside a build whose
 # payload store is external it reports SKIP, because the representation it
-# describes exists in one.  It lives here rather than in the generated file
-# because new registrations belong in the hand-maintained list.
+# describes exists in one.
 add_pure_unit_src(buffer_external_payload
     SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c
             ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c

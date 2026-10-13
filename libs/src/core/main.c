@@ -57,7 +57,7 @@ int arts_rt(int argc, char **argv) {
 
   arts_install_signal_handlers();
   /* Start the dedicated SIGTERM/SIGINT/SIGHUP/SIGALRM watcher thread BEFORE
-   * any worker/sender/receiver thread is spawned, so the SIG_BLOCK mask is
+   * any worker or progress thread is spawned, so the SIG_BLOCK mask is
    * inherited by every downstream thread.  Watcher then drives graceful
    * shutdown via arts_enter_shutdown_state on signal arrival. */
   arts_install_signal_watcher_thread();
@@ -92,9 +92,10 @@ int arts_rt(int argc, char **argv) {
 
   if (arts_global_rank_count > 1) {
     arts_transport_setup_outgoing();
+    /* Each failure was reported where it happened.  A return for a shutdown
+     * begun during startup reports nothing: only the signal watcher begins
+     * one there, and it reports the signal. */
     if (!arts_transport_setup_incoming()) {
-      ARTS_WARN("startup: rank %u leaves without a complete socket mesh",
-                arts_global_rank_id);
       return -1;
     }
   }

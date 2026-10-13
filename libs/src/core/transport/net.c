@@ -41,7 +41,6 @@
 #include <stdio.h>
 #include "arts/runtime_state.h"
 
-#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -68,6 +67,7 @@
 #include "arts/system/print.h"
 #include "arts/system/threads.h"        /* arts_thread_info, ARTS_THREAD_LOCAL */
 #include "arts/transport/dispatcher.h"  /* arts_transport_dispatch_packet */
+#include "arts/transport/netif.h"       /* arts_netif_ipv4_addr */
 #include "arts/transport/protocol.h"    /* arts_msg_header_s, MSG_* */
 
 /* ------------------------------------------------------------------------- */
@@ -75,12 +75,12 @@
 /* ------------------------------------------------------------------------- */
 
 /* ARTS_NET_RECV_BUF_SIZE / ARTS_NET_MIN_MULTI_RECV / ARTS_NET_MSG_MAX live in
- * net.h: senders on any plane consult the control ceiling to decide inline vs
- * push-rendezvous delivery. */
+ * net.h: a sender outside this file checks a control message against the
+ * ceiling before it builds one. */
 #define ARTS_NET_RECV_BUF_COUNT 2u
 
 /* Per-thread EAGAIN retry ring.  A handful of slots are reserved so
- * progress-side ACK replies (publish/lock-release ACK, shutdown) can always
+ * the ACK-class messages (PUBLISH_ACK, PUBLISH_CTS, MSG_SHUTDOWN) can always
  * be buffered even when data sends have saturated the ring — otherwise a full
  * ring could wedge the very progress that would drain it. */
 #define ARTS_NET_RING_CAP 1024u
@@ -643,8 +643,8 @@ static void net_post_recv(unsigned idx) {
 }
 
 /* The CQ is a single-consumer resource: at most one thread reaps completions
- * and reposts landing buffers at a time.  A send thread that spins progress
- * under backpressure must not race the dedicated progress thread on the CQ — a
+ * and reposts landing buffers at a time.  A sending thread that spins progress
+ * under backpressure must not race a progress thread on the CQ — a
  * concurrent FI_MULTI_RECV repost could hand a landing buffer back to the
  * provider while another thread is still copying a just-received message out of
  * it.  Ring draining stays lock-free (each ring is token-serialized). */
@@ -1468,41 +1468,6 @@ struct fid_domain *arts_net_domain(void) { return g_net.domain; }
 /* Init / teardown                                                             */
 /* ------------------------------------------------------------------------- */
 
-/* First AF_INET address of the interface named `ifname` (exact match wins;
- * a prefix match is accepted so one config can say "ib" across hosts whose
- * suffixes differ).  Returns false if no interface matches or the matching
- * ones carry no IPv4 address. */
-static bool net_lookup_iface_addr(const char *ifname,
-                                  struct sockaddr_in *out) {
-  struct ifaddrs *ifap = NULL;
-  if (getifaddrs(&ifap) != 0) {
-    return false;
-  }
-  bool found = false;
-  bool exact = false;
-  size_t want_len = strlen(ifname);
-  for (struct ifaddrs *ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
-    if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) {
-      continue;
-    }
-    bool is_exact = strcmp(ifa->ifa_name, ifname) == 0;
-    bool is_prefix = strncmp(ifa->ifa_name, ifname, want_len) == 0;
-    if (!is_exact && !is_prefix) {
-      continue;
-    }
-    if (is_exact || !found) {
-      memcpy(out, ifa->ifa_addr, sizeof(*out));
-      found = true;
-      exact = is_exact;
-    }
-    if (exact) {
-      break;
-    }
-  }
-  freeifaddrs(ifap);
-  return found;
-}
-
 void arts_net_init(const char *provider, const char *fabric_domain,
                    const char *net_interface) {
   net_write_delay_init();
@@ -1593,12 +1558,11 @@ void arts_net_init(const char *provider, const char *fabric_domain,
       tcp_first ||
       (effective_provider != NULL && (strcmp(effective_provider, "tcp") == 0 ||
                                       strcmp(effective_provider, "sockets") == 0));
-  if (net_interface && net_interface[0] != '\0' &&
-      (ip_provider || verbs_effective)) {
+  if (net_interface != NULL && (ip_provider || verbs_effective)) {
     /* fi_freeinfo frees hints->src_addr, so it must be heap-owned. */
     struct sockaddr_in *src =
         (struct sockaddr_in *)calloc(1, sizeof(struct sockaddr_in));
-    if (src == NULL || !net_lookup_iface_addr(net_interface, src)) {
+    if (src == NULL || !arts_netif_ipv4_addr(net_interface, src)) {
       ARTS_ERROR("arts_net: net_interface=%s has no usable IPv4 address — "
                  "refusing to fall back to the default route",
                  net_interface);
@@ -1867,14 +1831,14 @@ void arts_net_rx_arm(void) {
 
 void arts_net_quiesce(void) {
   /* Phase 1 of teardown, run BEFORE the registered pool is torn down and after
-   * every worker/sender/receiver thread has joined.  Discarding sends that were
+   * every runtime thread has joined.  Discarding sends that were
    * never accepted by the provider at final teardown is deliberate — it mirrors
    * a bounded drain-then-exit and must never block shutdown on a peer that has
    * already gone.  The ordering matters: everything that references a slab MR
    * (send bounces still queued, and the recv buffers themselves) is released
    * here, while the pool is still live, so the pool cleanup that follows can
-   * close those MRs without any outstanding reference — and no desc ever names a
-   * closed MR. */
+   * close those MRs without any outstanding reference — and no desc ever names
+   * a closed MR. */
   atomic_store_explicit(&g_net.quiescing, true, memory_order_release);
 
   /* Discard queued-but-unposted retry txns.  These never reached the provider,
@@ -2012,9 +1976,9 @@ void arts_net_teardown(void) {
 
 void arts_net_drain_outstanding(unsigned int deadline_ms) {
   /* Bounded wait for accepted fabric sends to complete, so the shutdown
-   * broadcast's frames leave this node before teardown.  The dedicated progress
-   * thread is still running and reaps completions; we assist by reaping too and
-   * poll the outstanding count.  Single-node never brought the fabric up. */
+   * broadcast's frames leave this node before teardown.  The progress threads
+   * are still running and reap completions; we assist by reaping too and poll
+   * the outstanding count.  Single-node never brought the fabric up. */
   if (arts_global_rank_count <= 1) {
     return;
   }
@@ -2032,10 +1996,10 @@ void arts_net_drain_outstanding(unsigned int deadline_ms) {
     uint64_t elapsed = (uint64_t)(now.tv_sec - start.tv_sec) * 1000000000ULL +
                        (uint64_t)(now.tv_nsec - start.tv_nsec);
     if (elapsed >= deadline_ns) {
-      ARTS_INFO("arts_net: shutdown TX drain timeout (%llu sends still "
+      ARTS_WARN("arts_net: shutdown TX drain timeout (%llu sends still "
                 "outstanding)",
-                (unsigned long long)atomic_load_explicit(
-                    &g_net.tx_outstanding, memory_order_relaxed));
+                (unsigned long long)atomic_load_explicit(&g_net.tx_outstanding,
+                                                         memory_order_relaxed));
       return;
     }
     struct timespec ts = {.tv_sec = 0, .tv_nsec = 200000L /* 0.2 ms */};

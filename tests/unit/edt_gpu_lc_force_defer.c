@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T140 (C13) — GPU LC drain force-defer in arts_edt_satisfy_slot (route 2).
+ * GPU LC drain force-defer in arts_edt_satisfy_slot (route 2).
  *
  * When a satisfy is issued from inside a GPU wrapper EDT that still has pending
  * invalidations (current_edt->invalidate_count > 0), arts_edt_satisfy_slot must
@@ -9,7 +9,7 @@
  * after the wrapper's invalidations drain.  This test exercises that
  * push-on-wrapper path.
  *
- * config_specific: requires ARTS_USE_GPU.  The whole body is guarded; a non-GPU
+ * Requires ARTS_USE_GPU.  The whole body is guarded; a non-GPU
  * build self-skips (prints SKIP, exits 0) so the test compiles and passes in
  * the default (CPU) build dir.
  */

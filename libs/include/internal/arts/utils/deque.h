@@ -49,17 +49,12 @@ extern "C" {
 /* Opaque Chase-Lev work-stealing deque. */
 struct arts_deque_s;
 
-/* Retained for the scheduler's call contract; a single deque implementation
- * exists, so this is a no-op. */
-void arts_deque_select(unsigned int type);
-
 struct arts_deque_s *arts_deque_new(unsigned int size);
 void arts_deque_delete(struct arts_deque_s *deque);
 bool arts_deque_push_front(struct arts_deque_s *deque, void *item,
                            unsigned int priority);
 void *arts_deque_pop_front(struct arts_deque_s *deque);
 void *arts_deque_pop_back(struct arts_deque_s *deque);
-bool arts_deque_full(struct arts_deque_s *deque);
 
 #ifdef __cplusplus
 }

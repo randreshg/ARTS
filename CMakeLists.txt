@@ -327,7 +327,7 @@ set(ARTS_CXL_LIB_INCLUDE_DIR "" CACHE PATH
 set(ARTS_CXL_LIB "" CACHE FILEPATH
     "ARTS_CXL_REAL=ON: the device glue library file (libarts_cxl_lib.so)")
 set(ARTS_CXL_DB_ARENA_SIZE_BYTES "5000000000" CACHE STRING
-    "Bytes per CXL arena: one data-block arena per device count (the EDT deque's arena only under ARTS_CXL_EDT_DEQUE)")
+    "Bytes per CXL arena: one data-block arena per device count")
 if(NOT ARTS_CXL_DB_ARENA_SIZE_BYTES MATCHES "^[1-9][0-9]*$")
     message(FATAL_ERROR "ARTS_CXL_DB_ARENA_SIZE_BYTES must be a positive integer, got '${ARTS_CXL_DB_ARENA_SIZE_BYTES}'")
 endif()

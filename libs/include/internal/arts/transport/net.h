@@ -47,8 +47,8 @@
  * before — the registered slab pool so the pool's slabs can register against
  * the domain this module creates.
  *
- * Lifecycle (all on the main thread, before any worker/sender/receiver thread
- * is spawned):
+ * Lifecycle (all on the main thread, before any worker or progress thread is
+ * spawned):
  *   arts_net_init()              — fi_getinfo, fabric/domain/av/cq/ep (no RX yet)
  *   arts_regpool_init(domain,ep) — (caller) registers slabs against
  *                                  arts_net_domain(); arts_net_mr_endpoint()
@@ -243,20 +243,21 @@ struct fid_ep;
  * one HCA (e.g. "mlx5_0") on a multi-rail host, since RDMA domains are named
  * after the device, not after an IP interface.
  *
- * `net_interface`: NULL/empty leaves the source address unconstrained.  For
- * IP-based providers (tcp, sockets) a non-empty value binds the endpoint's
- * source address to the first AF_INET address of the interface with that
- * exact name (or, failing that, that name prefix) — the way to steer an IP
- * provider onto a specific network (e.g. IPoIB) when the host's default
- * route points elsewhere.  The verbs stack takes it the same way: its
- * connections are then resolved over that interface (IPoIB, RoCE) and every
- * rank's address is IPv4.  Without it the verbs stack is pinned to its native
- * address format, the one a fabric node offers whatever its interfaces carry
- * — left unasked the provider leads with a format that follows each node's
- * own interfaces, and an address vector holds exactly one.  Ignored for the
- * remaining providers, whose addressing is not interface-based.  Naming an
- * interface that has no usable address is fatal: silently falling back to
- * the default route would move all data traffic to the wrong network. */
+ * `net_interface`: NULL leaves the source address unconstrained (the config
+ * loader stores an empty value as NULL).  For IP-based providers (tcp,
+ * sockets) a name binds the endpoint's source address to the first AF_INET
+ * address of the interface with that exact name (or, failing that, that name
+ * prefix) — the way to steer an IP provider onto a specific network (e.g.
+ * IPoIB) when the host's default route points elsewhere.  The verbs stack
+ * takes it the same way: its connections are then resolved over that
+ * interface (IPoIB, RoCE) and every rank's address is IPv4.  Without it the
+ * verbs stack is pinned to its native address format, the one a fabric node
+ * offers whatever its interfaces carry — left unasked the provider leads with
+ * a format that follows each node's own interfaces, and an address vector
+ * holds exactly one.  Ignored for the remaining providers, whose addressing
+ * is not interface-based.  Naming an interface that has no usable address is
+ * fatal: silently falling back to the default route would move all data
+ * traffic to the wrong network. */
 void arts_net_init(const char *provider, const char *fabric_domain,
                    const char *net_interface);
 
@@ -280,7 +281,7 @@ void arts_net_selfcheck(void);
 /* Allocate the multi-recv landing buffers from the registered pool and post
  * them.  Must run AFTER arts_regpool_init (the buffers, and their local
  * descriptor on FI_MR_LOCAL providers, come from the pool) and before any
- * fabric traffic can arrive — i.e. before worker/receiver threads spawn. */
+ * fabric traffic can arrive — i.e. before worker and progress threads spawn. */
 void arts_net_rx_arm(void);
 
 /* Swap every rank's fi_getname address over the already-established TCP data

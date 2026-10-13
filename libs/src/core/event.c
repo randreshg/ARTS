@@ -95,9 +95,9 @@ static inline arts_event_hint_t hint_or_defaults(const arts_event_hint_t *h) {
 
 /* --- Per-flavor node free helpers ---------------------------------------- */
 
-/* Free a single mpsc node back to the per-rank dep pool.  CHANNEL queue
- * payload is intrusive: the node IS arts_event_dep_s for both data and
- * dep entries (data uses target=guid, kind=ARTS_NULL marker). */
+/* Free a single mpsc node; every node is its own arts_malloc allocation.
+ * CHANNEL queue payload is intrusive: the node IS arts_event_dep_s for both
+ * data and dep entries (data uses target=guid, kind=ARTS_NULL marker). */
 static inline void event_node_free(arts_lf_link_t *node) { arts_free(node); }
 
 /* --- cb deleter (route_table deleter-by-kind for ARTS_GUID_EVENT) --------- */
@@ -106,7 +106,7 @@ static inline void event_node_free(arts_lf_link_t *node) { arts_free(node); }
  * cb's strong refcount hits 0 (last holder released). */
 void arts_event_deleter(void *p) {
   struct arts_event_s *e = (struct arts_event_s *)p;
-  /* Drain any leftover queued nodes and return them to the per-rank pool.
+  /* Drain and free any leftover queued nodes.
    * strong == 0 by precondition: no producer can push after this point
    * (every producer must hold a lookup ref while pushing). */
   if (e->is_channel) {
@@ -304,7 +304,7 @@ static void event_signal_one(struct arts_event_dep_s *d, arts_guid_t data) {
   }
 }
 
-/* Allocate and populate an mpsc node from the per-rank pool. */
+/* Allocate (one arts_malloc per node) and populate an mpsc node. */
 static struct arts_event_dep_s *event_node_alloc(arts_guid_kind_t kind,
                                                  arts_guid_t target,
                                                  uint32_t slot,

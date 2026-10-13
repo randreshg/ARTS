@@ -4,10 +4,10 @@
  *
  * Selected by arts/coherence/types.h when ARTS_PROTOCOL_EXCL is defined.
  * The EXCL protocol uses a single lock_state word on the home rank to
- * serialize all access-mode transitions.  There is no ownership transfer
- * (no invalidate push, no PUBLISH_AND_TRANSFER); the home simply grants
- * or queues each requester and the requester publishes (RW) or returns
- * silently (RO) at release time.
+ * serialize all access-mode transitions: the home grants or queues each
+ * requester.  What a turn's end sends is the release policy's: PURGE hands
+ * copy and permission back to the home, and RETAIN keeps both until another
+ * node asks for the block.
  *
  * @note Internal header.  User code should include @c arts.h.
  */
@@ -156,7 +156,7 @@ extern "C" {
   ((uint32_t)((1u << CACHE_OWNER_MT_BITS) - 1)) /* 0x3FFF */
 #endif                                         /* ARTS_RELEASE_RETAIN */
 
-/* ── HOME home lock_state ────────────────────────────────────────────────
+/* ── PURGE home lock_state ───────────────────────────────────────────────
  * Layout: [ teardown:1 (63) | state_bit:1 (62) | w:31 (61..31) | r:31 (30..0) ]
  *
  * teardown records that a destroy arrived for a DB whose lock this home still
@@ -195,7 +195,7 @@ extern "C" {
 #define EXCL_PHASE_BIT_RO 1u
 #endif /* ARTS_RELEASE_PURGE */
 
-/* ── OWNER home lock_state ─────────────────────────────────────────────────
+/* ── RETAIN home lock_state ────────────────────────────────────────────────
  * Layout (MSB→LSB): [ phase:2 (63..62) | owner:14 (61..48) |
  *                     w:24 (47..24) | r:24 (23..0) ]
  * (= 2+14+24+24 = 64 bits, no spare)
@@ -203,7 +203,9 @@ extern "C" {
  *   phase  ∈ {IDLE=0, RW=1, RO=2} — current arbitration phase.
  *   owner  = 14-bit rank of the current data-owning node (ARTS_GUID_RANK_BITS).
  *            Packing owner here lets CONFIRM set owner+w--+phase in ONE CAS.
- *   w      = count of pending RW participants (held + queued).
+ *   w      = count of RW requests whose migration the home has not yet
+ *            confirmed (the one migrating plus the queued ones); CONFIRM
+ *            drops it, so an owner whose turn is confirmed is not counted.
  *   r      = count of outstanding RO grants (issued but not yet returned);
  *            the RO→RW flip fires at r==0. r may transiently exceed the number
  *            of distinct reader ranks under network reorder (commutative ±1
@@ -289,7 +291,7 @@ uint64_t excl_compute_next(uint64_t cur, int op, uint32_t *out_grant);
 /* Home arbiter — pure function of the single lock_state word, run in a
  * CAS-retry loop.  new_owner is read only by EXCL_OP_CONFIRM (sets owner in the
  * same word as w--/phase); ignored by the other ops.  The FORWARD recipient is
- * OWNER() of the returned word; the migrate target / served reader(s) are
+ * LOCK_OWNER() of the returned word; the migrate target / served reader(s) are
  * resolved by the caller from rw_waiters/ro_waiters (a pure arbiter cannot peek
  * the queues). */
 uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
@@ -321,7 +323,8 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
 #define CACHE_ACT_PARK 4       /* covered by the in-flight request: park */
 #define CACHE_ACT_DRAIN_BOTH 5 /* RW grant: serve rw_pending + ro_pending */
 #define CACHE_ACT_DRAIN_RO 6   /* RO grant: serve ro_pending */
-#define CACHE_ACT_REL_RW 7     /* send RW RELEASE (publish, ACK-gated) */
+#define CACHE_ACT_REL_RW 7     /* send RW RELEASE (with the payload, unless it
+                                * rests in the CXL store) */
 #define CACHE_ACT_REL_RO 8     /* send RO RELEASE (notify) */
 /* An RW grant that found no cohort at all: return the write right with no
  * payload.  Distinct from CACHE_ACT_REL_RW, which carries a publish — nothing
@@ -444,7 +447,7 @@ struct arts_db_cache_s {
 #elif !defined(ARTS_USE_CXL)
   /* Home's publish landing for THIS grant's release (advertised in the
    * grant, 1:1 with the eventual RW release).  Written by the grant handler
-   * before any local writer runs; consumed by the single ACK-gated releaser. */
+   * before any local writer runs; consumed by the single RW releaser. */
   struct arts_rdzv_landing_s home_pub_rdzv;
 #endif
   arts_guid_t db_guid;

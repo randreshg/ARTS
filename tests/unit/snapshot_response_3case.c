@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file snapshot_response_3case.c
-/// @brief T108 — SNAPSHOT_RESPONSE three-case classifier (B014/B028).
+/// @brief SNAPSHOT_RESPONSE three-case classifier.
 ///
 /// The 1:1 SNAPSHOT_RESPONSE handler classifies an incoming reply by a
 /// monotonic version against the locally-installed buffer:
@@ -49,23 +49,21 @@
 ///   case 3 (NO_DATA + a->version > buf): the with-data reply was reordered
 ///          behind a NO_DATA reply — push onto pending_snapshot, then re-check
 ///          (race recovery) so a concurrent case-2 install does not strand us.
-/// The zero-size / NULL-data branch selection is the `total` (header) vs the
-/// payload predicate (B028): a sentinel (db_size==0) DB drives a snapshot whose
-/// header.total uses `data?data_size:0` while the payload branch additionally
-/// requires `data && data_size>0`.
+/// A sentinel (db_size==0) DB answers every read with a reply that carries no
+/// bytes, which the classifier must still resolve, waking the parked reader.
 ///
 /// This is a black-box runtime exercise of those paths.  It builds, per
 /// iteration, a clean producer-write / many-readers happens-before chain so
 /// remote RO acquires generate SNAPSHOT_REQUEST→SNAPSHOT_RESPONSE rounds whose
-/// wire reorder (multiple sender/receiver threads in 2n_8w_2p) drives case 2 vs
+/// wire reorder (two progress threads in 2n_8w_2p) drives case 2 vs
 /// case 3.  It runs both a sized DB (case-1/2/3 with payload) and a sentinel
-/// zero-size DB (B028 total-vs-payload predicate).  Every reader asserts it
+/// zero-size DB (replies with no bytes).  Every reader asserts it
 /// sees the writer's value; a stranded case-3 reader that never installs is
 /// caught by the ctest TIMEOUT (no in-test spin).
 ///
-/// Config gate: SNAPSHOT_RESPONSE is a snapshot-bearing protocol message that
-/// exists only in the non-EXCL builds (VAL routes RO through the
-/// snapshot path).  EXCL has no snapshot machinery → compile-time self-skip.
+/// Config gate: SNAPSHOT_RESPONSE exists only under VAL, which routes remote
+/// reads through the snapshot path; INV and FLUSH run the same chain through
+/// their own read paths, and EXCL compiles the test out.
 
 #include "arts.h"
 
@@ -74,7 +72,7 @@
 
 #if defined(ARTS_PROTOCOL_EXCL)
 int main(void) {
-  printf("SKIP snapshot_response_3case: non-EXCL (snapshot-bearing) only\n");
+  printf("SKIP snapshot_response_3case: not built under EXCL\n");
   return 0;
 }
 #else
@@ -134,7 +132,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * (case-1 resume), exercising the classifier without reorder. */
   unsigned int W = (nranks > 1) ? 1u : 0u;
 
-  /* ----- Part A: sized DB — case 1/2/3 with payload (B014) ----- */
+  /* ----- Part A: sized DB — case 1/2/3 with payload ----- */
   void *ptr = NULL;
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -166,11 +164,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_event_wait(e_r);
   }
 
-  /* ----- Part B: sentinel zero-size DB — total-vs-payload predicate (B028) ---
-   * The snapshot sender's header `total` uses `data?data_size:0` while the
-   * payload branch requires `data && data_size>0`; a zero-size DB makes those
-   * two predicates differ.  A cross-rank RO acquire of a sentinel DB must still
-   * wake its parked reader (no payload underflow / corrupt install). */
+  /* ----- Part B: sentinel zero-size DB — replies with no bytes -----
+   * A cross-rank RO acquire of a sentinel DB must still wake its parked reader
+   * (no payload underflow / corrupt install). */
   void *sptr = NULL;
   arts_guid_t sdb = arts_db_create(&sptr, 0, ARTS_DB, ARTS_DB_PROP_NONE,
                                    &(arts_db_hint_t){.rank = 0});

@@ -72,7 +72,7 @@
 #endif
 
 #ifdef ARTS_USE_CXL
-#include "arts/cxl/deque.h"
+#include "arts/cxl/arena.h"
 #endif
 
 #define PACKET_SIZE 4096
@@ -126,7 +126,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   size_t regpool_slab_bytes = (size_t)config->regpool_slab_mb * 1024 * 1024;
 
   /* Registered-slab pool for DB payload buffers + fabric bring-up.  The pool
-   * must be live before any worker/sender/receiver thread can allocate a
+   * must be live before any worker or progress thread can allocate a
    * payload (arts_db_buf_alloc draws from it), so it is carved here — before
    * arts_thread_init spawns a single thread.
    *
@@ -135,9 +135,9 @@ void arts_runtime_node_init(struct arts_config_s *config) {
    * before this rank's fabric address is ever published, so no peer can target
    * an unarmed endpoint: the pool is carved, RX landing buffers are posted, and
    * only then does the one-shot fi-address exchange ride the
-   * already-established TCP mesh here on the main thread — before any network
-   * thread exists to contend for those sockets.  A single-node run stays
-   * entirely fabric-free and carves the pool with a NULL (unregistered)
+   * already-established TCP mesh here on the main thread — before any
+   * progress thread exists to contend for those sockets.  A single-node run
+   * stays entirely fabric-free and carves the pool with a NULL (unregistered)
    * domain, identical to the plain-malloc path. */
   if (arts_global_rank_count > 1) {
     arts_net_init(config->provider, config->fabric_domain,
@@ -154,9 +154,9 @@ void arts_runtime_node_init(struct arts_config_s *config) {
     arts_net_selfcheck();
     /* Bootstrap is complete: the fi-address exchange was the last payload to
      * ride the TCP mesh.  All live traffic now flows over the fabric; the mesh
-     * connections stay open as zero-traffic liveness sentinels (a peer's death
-     * surfaces as HUP, probed by the progress thread) and only the listeners
-     * close. */
+     * connections stay open as zero-traffic liveness sentinels (a peer's
+     * close surfaces as HUP, probed by a progress thread) and only the
+     * listeners close. */
     arts_socket_sentinel_arm();
   } else {
 #ifdef ARTS_DEBUG_INJECTION
@@ -193,9 +193,6 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   }
 #endif
   arts_node_info.scheduler = scheduler_loop[config->scheduler];
-
-  /* Deque implementation selection (0=simple, 1=priority) */
-  arts_deque_select(config->deque_type);
 
   /* Per-thread indexed arrays */
   arts_node_info.deque =
@@ -273,9 +270,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.delete_zeros_gpu_gc = config->delete_zeros_gpu_gc;
 
 #ifdef ARTS_USE_CXL
-  /* CXL shared-memory deque and DB arenas */
+  /* CXL store: the data-block arena table and its arenas. */
   uint64_t cxl_total_devs = GET_CXL_DEV_COUNT();
-  arts_printf("CXL FAM device count: %lu\n", cxl_total_devs);
 
   if (config->cxl_db_allocation_strategy == ARTS_CXL_DB_ALLOC_ROUND_ROBIN) {
     /* Round-robin: allocate one arena per available device. */
@@ -290,63 +286,39 @@ void arts_runtime_node_init(struct arts_config_s *config) {
     for (unsigned int i = 0; i < dev_count; i++) {
       dev_ids[i] = (uint64_t)i;
     }
-    arts_printf("CXL DB allocation: round_robin across %u device(s)\n",
-                dev_count);
-#ifdef ARTS_CXL_NATIVE
+    ARTS_INFO("CXL store: %lu device(s), DB allocation round_robin across %u "
+              "device(s)",
+              (unsigned long)cxl_total_devs, dev_count);
     if (!arts_global_rank_id) {
-      arts_node_info.cxl_deque =
-          arts_cxl_deque_create_with_arenas(dev_ids, dev_count);
+      arts_node_info.cxl_arenas =
+          arts_cxl_arena_table_create(dev_ids, dev_count);
     } else {
-      arts_node_info.cxl_deque = arts_cxl_deque_get();
+      arts_node_info.cxl_arenas = arts_cxl_arena_table_attach();
     }
-#else
-    arts_node_info.cxl_deque =
-        arts_cxl_deque_create_with_arenas(dev_ids, dev_count);
-#endif
     arts_node_info.cxl_db_dev_count = dev_count;
   } else {
     /* Static: allocate a single arena on the configured device. */
     uint64_t dev_id = (uint64_t)config->cxl_db_allocation_device;
-    arts_printf("CXL DB allocation: static on device %lu\n", dev_id);
+    ARTS_INFO("CXL store: %lu device(s), DB allocation static on device %lu",
+              (unsigned long)cxl_total_devs, (unsigned long)dev_id);
     uint64_t dev_ids[1] = {dev_id};
-#ifdef ARTS_CXL_NATIVE
     if (!arts_global_rank_id) {
-      arts_node_info.cxl_deque = arts_cxl_deque_create_with_arenas(dev_ids, 1);
+      arts_node_info.cxl_arenas = arts_cxl_arena_table_create(dev_ids, 1);
     } else {
-      arts_node_info.cxl_deque = arts_cxl_deque_get();
+      arts_node_info.cxl_arenas = arts_cxl_arena_table_attach();
     }
-#else
-    arts_node_info.cxl_deque = arts_cxl_deque_create_with_arenas(dev_ids, 1);
-#endif
     arts_node_info.cxl_db_dev_count = 1;
     arts_node_info.cxl_db_static_device = (unsigned int)dev_id;
   }
 
-  arts_printf("CXL FAM device ID: %lu\n",
-              GET_CXL_DEV_ID(arts_node_info.cxl_deque));
-  arts_printf("CXL FAM region device ID: %lu\n", GET_CXL_REGION_DEV_ID());
-  pthread_mutex_init(&arts_node_info.cxl_local_lock, NULL);
+  ARTS_INFO("CXL store: arena table on device %lu, region on device %lu",
+            (unsigned long)GET_CXL_DEV_ID(arts_node_info.cxl_arenas),
+            (unsigned long)GET_CXL_REGION_DEV_ID());
+  pthread_mutex_init(&arts_node_info.cxl_arena_lock, NULL);
   arts_node_info.cxl_db_rr_idx = 0;
-  if (!arts_cxl_deque_get_db_arena_range(arts_node_info.cxl_deque,
-                                         &arts_node_info.cxl_db_arena_start,
-                                         &arts_node_info.cxl_db_arena_end)) {
+  if (!arts_cxl_arena_table_ready(arts_node_info.cxl_arenas)) {
     ARTS_ERROR("CXL DB arena is missing or uninitialized");
   }
-#if 0 /* retired with the CXL GUID: a slot is named by its address in a message, never encoded into a GUID, so the arena needs no window */
-  {
-    unsigned long long window = 1ULL << ARTS_GUID_KEY_BITS;
-    unsigned long long start =
-        (unsigned long long)(uintptr_t)arts_node_info.cxl_db_arena_start;
-    unsigned long long end =
-        (unsigned long long)(uintptr_t)arts_node_info.cxl_db_arena_end;
-    if (start < ARTS_CXL_BASE_ADDR || end - ARTS_CXL_BASE_ADDR > window) {
-      ARTS_ERROR("CXL DB arena [%#llx, %#llx) is outside the GUID-encodable "
-                 "window [%#llx, +%#llx): the FAM allocator returned non-FAM "
-                 "memory",
-                 start, end, (unsigned long long)ARTS_CXL_BASE_ADDR, window);
-    }
-  }
-#endif
 #endif
 
   /* GUID generation */
@@ -396,9 +368,9 @@ struct arts_shutdown_abandon_s arts_shutdown_abandon;
  * executed (still queued when arts_shutdown stopped the workers) keeps it.  The
  * route-table sweep in arts_clean_up_dbs drops only the install ref, so without
  * this drop the EDT's refcount never reaches 0 and it leaks.  Single-threaded
- * here with respect to THIS deque: all worker/sender/receiver threads have
- * already joined, but every thread drains its own deque this way at the same
- * time, so a count shared across them still needs an atomic update. */
+ * here with respect to THIS deque: every runtime thread has left its loop,
+ * but every thread drains its own deque this way at the same time, so a count
+ * shared across them still needs an atomic update. */
 static void arts_drain_pending_edts(struct arts_deque_s *dq) {
   if (dq == NULL) {
     return;
@@ -409,13 +381,6 @@ static void arts_drain_pending_edts(struct arts_deque_s *dq) {
     /* Whatever this EDT holds ends here rather than at its release. */
     __atomic_fetch_add(&arts_shutdown_abandon.queued_edts, 1u,
                        __ATOMIC_RELAXED);
-#if 0 /* retired with the CXL scheduler deque: no EDT rests in the store */
-#ifdef ARTS_USE_CXL
-    if (IS_CXL_PTR(edt)) {
-      continue; /* CXL EDTs carry no self_cb ref (see arts_run_edt) */
-    }
-#endif
-#endif
     arts_shared_ptr_t sref = edt->self_cb;
     arts_shared_release(&sref);
   }
@@ -467,8 +432,8 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.live_counters);
 
 #ifdef ARTS_USE_CXL
-  arts_cxl_deque_free(arts_node_info.cxl_deque);
-  pthread_mutex_destroy(&arts_node_info.cxl_local_lock);
+  arts_cxl_arena_table_free(arts_node_info.cxl_arenas);
+  pthread_mutex_destroy(&arts_node_info.cxl_arena_lock);
 #endif
 
 #ifdef ARTS_USE_GPU
@@ -503,7 +468,7 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.global_guid_thread_id);
   arts_guid_generator_cleanup();
 
-  /* Network outbound queues and sequence tracking arrays */
+  /* Transport-side teardown (the self-loopback queue, which carries nothing) */
   arts_transport_cleanup();
 
   /* Socket server global arrays (safe to call even for single-node) */
@@ -523,8 +488,8 @@ void arts_runtime_global_cleanup() {
 
   /* Registered-slab pool: torn down last, after arts_clean_up_dbs (above)
    * has already released every DB payload buffer back to it — no thread is
-   * still allocating at this point (called after every worker/sender/
-   * receiver thread has joined). */
+   * still allocating at this point (called after every runtime thread has
+   * joined). */
   arts_regpool_cleanup();
 
   /* Phase 2: the pool's slab MRs (backing both sends and the recv buffers) are
@@ -551,7 +516,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   set_global_guid_on();
 
   // PERIODIC counter capture starts AFTER the barriers below (see
-  // arts_counter_capture_start), when receiver threads are running.
+  // arts_counter_capture_start), when progress threads are running.
   //
   // End-to-end marker (rank 0): take the start stamp here — initialization is
   // complete and the application is about to run (init_per_node /
@@ -595,7 +560,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   while (arts_node_info.ready_to_execute) {
   }
 
-  // Start counter capture AFTER all barriers, when receiver threads are in
+  // Start counter capture AFTER all barriers, when progress threads are in
   // their runtime loops. This ensures time sync requests can be processed.
   arts_counter_capture_start();
 }
@@ -609,10 +574,10 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
           ? arts_deque_new(config->deque_size)
           : NULL;
   /* Every thread owns a local route table at its own slot: any thread (workers
-   * AND network threads — multiple receivers run arts_handler_edt_create
-   * concurrently) mints GUIDs into a disjoint key partition keyed by
-   * thread->id, and arts_get_route_table resolves those local GUIDs to
-   * route_table[id]. */
+   * AND progress threads — several progress threads run
+   * arts_handler_edt_create concurrently) mints GUIDs into a disjoint key
+   * partition keyed by thread->id, and arts_get_route_table resolves those
+   * local GUIDs to route_table[id]. */
   arts_node_info.route_table[thread->id] = arts_new_route_table(
       config->route_table_entries, config->route_table_size);
   if (thread->role == ARTS_ROLE_WORKER) {
@@ -693,21 +658,12 @@ void arts_runtime_private_cleanup() {
 }
 
 /*
- * arts_runtime_stop — Stop all worker/network threads.
- *
- * Called from arts_shutdown() (single-node) or from the network send thread
- * after the shutdown timeout (multi-node).
- *
- * Protocol:
- *   1. Wait for each thread to register its local_spin pointer (non-NULL
- *      means the thread has finished arts_runtime_private_init).
- *   2. Set *local_spin[i] = false, which clears arts_thread_info.alive for
- *      that thread, causing it to exit its scheduler/network loop.
- */
-/*
- * Helper: walk the thread table and clear alive=false for every thread
- * whose role matches `role_mask`. The registration spin is bounded to
- * avoid an infinite busy-wait if a thread crashed during init.
+ * Walk the thread table and clear alive for every thread whose role matches
+ * `role_mask`: wait for the thread to register its local_spin pointer
+ * (non-NULL once it has finished arts_runtime_private_init), then set
+ * *local_spin[i] = false, which makes it leave its scheduler/progress loop.
+ * The registration spin is bounded to avoid an infinite busy-wait if a thread
+ * crashed during init.
  */
 static void arts_runtime_stop_by_role(unsigned int role_mask,
                                       const char *role_label) {
@@ -737,8 +693,8 @@ static void arts_runtime_stop_by_role(unsigned int role_mask,
 
 /*
  * arts_runtime_stop_workers — clear alive on worker threads only.
- * Network threads (senders/receivers) stay alive so they can keep
- * handling shutdown-related traffic.
+ * Progress threads stay alive so they can keep handling shutdown-related
+ * traffic.
  */
 void arts_runtime_stop_workers() {
   arts_node_info.shutdown_state = 1U;
@@ -747,7 +703,7 @@ void arts_runtime_stop_workers() {
 }
 
 /*
- * arts_runtime_stop_network — clear alive on sender and receiver threads.
+ * arts_runtime_stop_network — clear alive on the progress threads.
  * Call AFTER arts_runtime_stop_workers and the associated worker loop
  * exits, once no more network traffic is expected.
  */
@@ -757,10 +713,12 @@ void arts_runtime_stop_network() {
 }
 
 void arts_runtime_stop() {
-  /* Legacy entry point: stop everything in one call. Preserved for the
-   * few call sites (e.g. receiver-thread EOF handling in socket.c) that
-   * the shutdown protocol refactor has not yet migrated to the cleaner
-   * arts_enter_shutdown_state(false) path. */
+  /* Stop every thread, progress threads included, in one call: the liveness
+   * sentinel's path once a peer has closed its connection.  Nothing orders
+   * any rank's close after every other rank has dispatched the initiator's
+   * MSG_SHUTDOWN (the initiator's drain waits only for its local sends to
+   * complete, and a receiver tears down without waiting for anyone), so an
+   * orderly teardown takes this path too and joins the same shutdown. */
   arts_node_info.shutdown_state = 1U;
   ARTS_INFO("arts_runtime_stop: stopping %u threads",
             arts_node_info.total_thread_count);
@@ -802,12 +760,7 @@ int arts_runtime_loop() {
   case ARTS_ROLE_PROGRESS: {
     unsigned int sentinel_spin = 0;
     while (arts_thread_info.alive) {
-      /* Multinode: the progress thread is the SOLE self-loopback drainer, so
-       * ALL coherence (wire + self) is processed on this one thread — the
-       * single coherence processor the ownership handlers assume.  (Single-node
-       * has no progress thread; there the worker scheduler loop drains.)
-       *
-       * Busy-poll by design: the thread budget dedicates a PU to every
+      /* Busy-poll by design: the thread budget dedicates a PU to every
        * progress thread (startup aborts on PU oversubscription when the
        * topology mask is built), so idle waiting spins with the architectural
        * pause hint instead of sleeping — a sleeping poll would put a fixed

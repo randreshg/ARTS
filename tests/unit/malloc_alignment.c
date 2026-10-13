@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T246 — alignment + realloc correctness of arts_malloc_aligned /
+ * Alignment + realloc correctness of arts_malloc_aligned /
  * arts_calloc_aligned / arts_realloc in libs/src/core/utils/malloc.c.
  *
  * Properties:

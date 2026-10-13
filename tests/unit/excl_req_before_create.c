@@ -37,38 +37,25 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-/// @file coherence_lock_req_before_create.c
-/// @brief B.3 — LOCK_REQ-before-DB_CREATE race regression test.
+/// @file excl_req_before_create.c
+/// @brief A block created on a remote home, then a writer -> latch ->
+/// consumer RW hand-off across three ranks.
 ///
-/// 3-rank scenario: creator(0), home(1), consumer(2).
-///   Creator  -> home:     DB_CREATE / DB_SEND    (rank 0 -> 1)
-///   Creator  -> writer:   EDT spawn (init data)  (rank 0 -> 1)
-///   Creator  -> consumer: EDT spawn              (rank 0 -> 2)
-///   Consumer -> home:     cross-node EW request  (rank 2 -> 1)
+/// Per iteration: creator(0), home(1), consumer(2).
+///   Creator:  creates the DB with its home on rank 1 (MSG_DB_CREATE, 0 -> 1),
+///             a writer EDT on rank 1 and a consumer EDT on rank 2, both
+///             depending on the DB in RW mode.
+///   Writer:   acquires the DB RW at its home, writes a sentinel and
+///             satisfies a latch event.
+///   Consumer: depends on the DB (RW) and on the latch; acquires the DB from
+///             rank 2 and must read the sentinel.
 ///
-/// The race is between rank 0->1 (DB metadata) and rank 2->1 (the consumer's
-/// cross-node EW request).  Different sources, no FIFO ordering across the
-/// pair.
-///
-/// Legacy: home-side LOCK_REQ may arrive
-/// before the cache_s is installed -> NULL cache -> DESTROY_NOTIFY ->
-/// consumer sees NULL ptr -> SIGSEGV.
-/// Post-LOCK_REQ deferred vian OoO list -> DB_CREATE arrives ->
-/// fire_oo re-issues LOCK_REQ -> consumer sees correct data.
-///
-/// Adaptations vs. plan code:
-///   - ARTS_DB (final) is not defined in HEAD; legacy ARTS_DB_DEFAULT
-///     names the same enum value.
-///   - arts_db_create has a 4-arg signature (no ARTS_DB_PROP_NONE).
-///   - DB_MODE_RW is documented as LOCAL-DB-only in arts.h; the cross-node
-///     ordered-write mode in HEAD is DB_MODE_RW.
-///   - arts_db_create on a remote route returns *addr = NULL, so the data
-///     initialization is performed by a writer EDT pinned on the home rank
-///     (acquires DB in EW mode, writes the sentinel, releases).
-///   - arts_init_main does not exist; the runtime invokes the global
-///     main_edt symbol on rank 0 automatically from arts_rt().
-///
-/// Spec section 6 B.3.
+/// The consumer's request reaches the home only after the create: the
+/// consumer becomes ready only once the writer, which runs against the
+/// installed block, has fired the latch, and adding a dependence from a DB
+/// sends nothing to the home.  What the test checks is the hand-off: the
+/// consumer's RW turn is served after the writer's ends, with the writer's
+/// bytes.
 
 #include "arts.h"
 
@@ -81,14 +68,11 @@
 #define SENTINEL 42
 
 /// Writer EDT -- pinned on the DB home rank (rank 1).  Writes the sentinel
-/// into the DB, then satisfies a LATCH event so the consumer's slot 1 is
-/// satisfied AFTER the writer body completes.  This event chain enforces
-/// the writer -> consumer happens-before that data-race-free OCR semantics
-/// require: the runtime's RW serialization at home only guarantees that
-/// concurrent RW acquires take turns -- it does NOT guarantee that the
-/// turn order matches user wiring order.  Without an explicit event chain
-/// the test was racy on the data value (consumer could read 0 if it won
-/// the LOCK_REQ arrival race at home).
+/// into the DB, then satisfies a LATCH event, the consumer's slot 1.  The
+/// runtime's RW serialization only guarantees that concurrent RW acquires take
+/// turns, not that the turns follow the program's wiring; the latch is what
+/// puts the consumer's turn after the writer's.  Without it the consumer's
+/// turn could come first and read the unwritten block.
 ///
 /// paramv[0] = LATCH event GUID for the iteration.
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -101,20 +85,16 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   *data = SENTINEL;
-  /* Fire the LATCH event so the consumer's parked slot 1 is satisfied.
-   * Writer's release_rw runs after this body returns, so the consumer's
-   * subsequent acquire is guaranteed to land at home AFTER writer's
-   * WB_AND_TRANSFER.  This is the OCR-canonical producer -> event ->
-   * consumer happens-before pattern. */
+  /* Fire the LATCH event so the consumer's parked slot 1 is satisfied.  The
+   * writer still holds its RW turn here; the consumer's RW acquire is served
+   * only once that turn ends, with the release after this body returns. */
   arts_guid_t evt = (arts_guid_t)paramv[0];
   arts_event_satisfy_slot(evt, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
 /// Consumer EDT -- pinned on rank 2.  Two deps: slot 0 = DB (RW), slot 1 =
-/// LATCH event satisfied by the writer.  The event chain ensures consumer
-/// runs AFTER writer's body completes, so the RW acquire at home arrives
-/// after writer's WB_AND_TRANSFER and the consumer reads SENTINEL
-/// deterministically.
+/// LATCH event satisfied by the writer.  Its RW turn follows the writer's, so
+/// it reads SENTINEL deterministically.
 static void consumer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                          arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -158,22 +138,21 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
 
-  arts_printf("=== coherence_lock_req_before_create (%d iterations, ranks=%u)"
-              " ===\n",
+  arts_printf("=== excl_req_before_create (%d iterations, ranks=%u) ===\n",
               N_ITERATIONS, rank_count);
 
   /* Outer finish scope: shutdown_edt fires only after every iteration's writer
    * + consumer have run AND released their DB refs.  Without this fence we
-   * would race shutdown against the in-flight cross-node EW transfers. */
+   * would race shutdown against the in-flight cross-node RW hand-offs. */
   arts_guid_t shut =
       arts_edt_create(shutdown_edt, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0});
   arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_add_dependence(fe, shut, 0, DB_MODE_NULL);
 
   for (int iter = 0; iter < N_ITERATIONS; iter++) {
-    /* Step 1: rank 0 creates DB on rank 1 (home).  Wire message
-     * DB_CREATE_COHERENT travels rank 0 -> 1.  arts_db_create returns
-     * *addr = NULL on remote create (data init is via writer EDT). */
+    /* Step 1: rank 0 creates DB on rank 1 (home); MSG_DB_CREATE travels
+     * rank 0 -> 1.  arts_db_create hands back the creator's image, a hold
+     * this EDT releases when it ends; the data is written by the writer. */
     void *raw = NULL;
     arts_guid_t db =
         arts_db_create(&raw, sizeof(int), ARTS_DB, ARTS_DB_PROP_NONE,
@@ -195,14 +174,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_add_dependence(db, writer, /*slot=*/0, DB_MODE_RW);
 
     /* Step 4: consumer on rank 2.  Slot 0 = DB (RW), slot 1 = LATCH
-     * event.  The event chain (writer -> evt -> consumer) is the
-     * canonical OCR happens-before that races below the RW serialization
-     * at home -- without it, consumer's LOCK_REQ could arrive at home
-     * BEFORE writer's, and home's strict-arrival FIFO grants ownership
-     * to consumer first.  This is the LOCK_REQ-before-DB_CREATE race
-     * regression test (OoO defer must keep the consumer from
-     * SIGSEGV'ing on a NULL ptr in that ordering); the data check below
-     * verifies that the OCR happens-before chain is honored end-to-end. */
+     * event.  The event chain (writer -> evt -> consumer) orders the
+     * consumer's RW turn after the writer's; the data check verifies the
+     * hand-off end to end. */
     arts_guid_t consumer =
         arts_edt_create(consumer_edt, /*paramc=*/0, NULL, /*depc=*/2,
                         &(arts_edt_hint_t){.rank = 2, .finish_event = fe});

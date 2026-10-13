@@ -38,8 +38,7 @@
 ******************************************************************************/
 
 /// @file self_send_vs_dispatcher_parity.c
-/// @brief T112 — self-send shortcut must reproduce the RX dispatcher exactly
-///        (B023).
+/// @brief The self-send shortcut must reproduce the RX dispatcher exactly.
 ///
 /// Every `arts_send_db_*` helper has two paths for the same wire message: a
 /// self-send shortcut (destination == local rank — `arts_transport_send_async`

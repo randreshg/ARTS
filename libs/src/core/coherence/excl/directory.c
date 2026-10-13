@@ -256,17 +256,17 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
    * holding the lock — its matching release drives the count back to 0.
    * NO_ACQUIRE resets this to the idle state in arts_db_create. */
 #ifdef ARTS_RELEASE_PURGE
-  /* HOME tracks mode via the lock_state phase bit, not a separate rw_holder
+  /* PURGE tracks mode via the lock_state phase bit, not a separate rw_holder
    * field. */
   atomic_store_explicit(&db->lock_state, LOCK_MAKE_STATE(0u, 1u, 0u),
                         memory_order_relaxed);
 #else /* ARTS_RELEASE_RETAIN */
-  /* OWNER: the home is a pure directory.  The creator is the first DATA owner
+  /* RETAIN: the home is a pure directory.  The creator is the first DATA owner
    * (cache-side: owner-bit + RW grant), but its RW hold/release are entirely
    * local (sticky — no REQUEST/RELEASE to home), so the home directory must NOT
    * count it.  Seed phase=IDLE, w=0, r=0, owner=creator: the lock is idle (no
    * home-tracked participant) and `owner` names the rank a future migrate/serve
-   * FORWARD routes to.  This differs from HOME, where the creator's RELEASE
+   * FORWARD routes to.  This differs from PURGE, where the creator's RELEASE
    * drives a seeded w=1 back to 0. */
   atomic_store_explicit(&db->lock_state,
                         LOCK_MAKE(EXCL_PHASE_IDLE, rw_holder, 0u, 0u),
@@ -310,17 +310,17 @@ void arts_db_home_teardown(struct arts_db_s *db) {
 }
 
 /* ===== arts_handler_db_destroy =========================================
- * OOO_DB_DESTROY Cat-B body for the EXCL protocol.  Fan-out DESTROY_NOTIFY
+ * OOO_DB_DESTROY Cat-B body for the EXCL protocol.  Fan-out CACHE_DESTROY
  * to every rank in cached_ranks (the destroy roster), wake parked waiters,
  * then detach the route-table slot. */
 /* Tear the home down: notify every rank that ever cached this DB, then return
  * the route slot.  The fan-out sits INSIDE the retire's single flight rather
  * than before it: duplicate destroys are produced by the protocol on purpose,
  * and only the caller whose retire actually detaches the object may put
- * DESTROY_NOTIFY on the wire. */
+ * CACHE_DESTROY on the wire. */
 void arts_excl_home_teardown(struct arts_db_s *db, arts_guid_t db_guid) {
   /* Claim first: only the caller that actually detaches the object may put
-   * DESTROY_NOTIFY on the wire.  Duplicate destroys are produced by the
+   * CACHE_DESTROY on the wire.  Duplicate destroys are produced by the
    * protocol on purpose, and a second fan-out would tell every cache to drop a
    * DB twice.  Reading db below stays safe after the detach — the dispatch
    * that reached this handler pins the object across the call. */

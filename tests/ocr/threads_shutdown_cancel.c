@@ -21,7 +21,7 @@
 /// cancel path is taken.  ctest's per-test TIMEOUT is the backstop for a real
 /// hang regression.
 ///
-/// runtime_single, all configs (protocol-agnostic).
+/// Single-node, every configuration (protocol-agnostic).
 
 #include "arts.h"
 

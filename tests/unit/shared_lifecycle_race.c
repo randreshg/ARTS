@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T018 — arts_shared_ptr_t mixed-API lifecycle race (shared.c).
+ * arts_shared_ptr_t mixed-API lifecycle race (shared.c).
  * Census 28.md gaps #3 (mixed-API churn), #8 (N-way last-drop deleter once),
  * #4 (abandon-vs-make), #6 (make leaves link uninit, B126), #5 (release
  * underflow, B128).

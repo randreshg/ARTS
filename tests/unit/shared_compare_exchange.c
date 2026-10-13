@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T017 — arts_atomic_shared_compare_exchange + load forward-progress
- * (shared.c).  Census 28.md §1.10 / gaps #1 (the single biggest unit-coverage
- * gap: compare_exchange has ZERO direct coverage) + §1.7 load livelock guard.
+ * arts_atomic_shared_compare_exchange + load forward-progress
+ * (shared.c), including the load livelock guard.
  *
  * compare_exchange contract:
  *   success — slot held `expected`, swap to `new_val`: slot takes new_val's
@@ -16,7 +15,8 @@
  * success and mismatch via a counting deleter — success drops exactly the
  * slot's ref on the old value; mismatch drops nothing.
  *
- * Part 2 (race, ASan): the real buffer.c:90 pattern.  N installer threads each
+ * Part 2 (race, ASan): the buffer install's conditional-publish pattern
+ *   (coherence/buffer.c, the cache's buffer slot).  N installer threads each
  *   make a fresh cb and try compare_exchange(slot, expected, fresh) where
  *   `expected` is a value they pinned by an atomic_load.  Exactly the CAS
  *   winners' new values survive; losers abandon their cb (object stays theirs).

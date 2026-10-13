@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * Bit-packed atomic rank bit-set, sized to the cluster's rank count.
- * Used only in OWNER-placement builds — the HOME placement reuses the per-rank version
- * map for the same purpose (set membership = nonzero entry).
+ * Used by the VAL, INV and EXCL homes (the destroy fan-out roster, INV's copy
+ * roster, EXCL's read retainers); FLUSH keeps its own sharer bitmap.
  *
  * Each word covers 64 ranks.  At ARTS_GUID_RANK_BITS = 14 (max 16384
  * ranks), max size is (16384 + 63) / 64 = 256 words = 2 KiB per DB.

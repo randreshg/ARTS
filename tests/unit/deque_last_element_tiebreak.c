@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T021 — last-element tie-break (libs/src/core/utils/deque.c).
+ * Last-element tie-break (libs/src/core/utils/deque.c).
  * When exactly ONE element is in the deque, the owner's pop_front (b==t case,
  * which CASes top: t->t+1) races every stealer's pop_back (which CASes the
  * same top: t->t+1).  The Chase-Lev invariant: EXACTLY ONE of {owner, one

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T243 — spin-lock correctness in libs/src/core/utils/atomics.c:
+ * Spin-lock correctness in libs/src/core/utils/atomics.c:
  *   arts_lock / arts_unlock / arts_try_lock  (mutual-exclusion spin lock)
  *   arts_reader_lock / arts_reader_unlock / arts_writer_lock /
  *   arts_writer_try_lock / arts_writer_unlock  (RW spin lock)

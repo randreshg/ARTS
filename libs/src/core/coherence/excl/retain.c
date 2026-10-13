@@ -68,15 +68,14 @@ struct arts_lock_ro_serve_node_s {
   struct arts_rdzv_landing_s rdzv; /* reader's serve landing (its stable buffer) */
 };
 
-/* fetch_add units for the cas1 count bump (the OWNER cache_state has different
- * field shifts than HOME, which defines CACHE_RW_UNIT/CACHE_RO_UNIT itself).
- * Adding these never touches the higher state fields. */
+/* fetch_add units for the cas1 count bump.  Adding these never touches the
+ * higher state fields. */
 #define CACHE_OWNER_RW_UNIT ((uint64_t)1 << CACHE_OWNER_WC_SHIFT)
 #define CACHE_OWNER_RO_UNIT ((uint64_t)1 << CACHE_OWNER_RC_SHIFT)
 
 /* ===== cache_owner_compute_next =========================================
- * OWNER owner-cache arbiter — pure function of the single cache_state word, run
- * inside a CAS-retry loop.  The cache_state packs owner-bit + rw_st/ro_st +
+ * Cache arbiter — pure function of the single cache_state word, run inside a
+ * CAS-retry loop.  The cache_state packs owner-bit + rw_st/ro_st +
  * migrate_target + wc + rc into one word, so every transition (including the
  * RW-release 0-edge migration decision) is a single CAS.
  *
@@ -259,8 +258,9 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
  * ARTS_DB_PROP_NO_ACQUIRE skips it).  The creator is the first data owner, so
  * we seed cache_state with owner-bit=1, rw_st=GRANT, wc=1, rc=0,
  * migrate_target=NO_TARGET.  The matching arts_db_release drives wc back to 0
- * (a sticky release — the creator stays the owner).  Non-creator (OWNER or
- * HOME_RECV) stubs start with all fields zero/idle (not owner). */
+ * (a sticky release — the creator stays the owner).  Every other cache (the
+ * home's HOME_RECV, a first-touch STUB) starts with all fields zero/idle (not
+ * owner). */
 void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank) {
@@ -335,9 +335,9 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== arts_db_create_install_home_buffer ===============================
- * OWNER: data stays with the owner (the creator); the home holds no canonical
- * buffer.  Nothing to install at create — the creator's own cache buffer is
- * installed by db_create_in_place / the DB_CREATE handler. */
+ * The data lives with its owner, the creator at create time; the home holds no
+ * canonical buffer.  Nothing to install at create — the creator's own cache
+ * buffer is installed by db_create_in_place / the DB_CREATE handler. */
 void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                                         uint64_t db_size) {
   (void)cache;
@@ -942,9 +942,9 @@ void arts_send_db_excl_roret(unsigned int home_rank, arts_guid_t db_guid) {
 }
 
 /* ===== arts_handler_db_acquire =========================================
- * OOO_DB_ACQUIRE Cat-B body — protocol-agnostic signature.  item is the
- * pre-pinned home db_s; args is {edt, db_guid, slot}; mode is read from
- * depv[slot].mode.
+ * The coherent acquire of one dep — protocol-agnostic signature; the driver's
+ * acquire_one_dep calls it.  item is this rank's pre-pinned db_s of the
+ * block; args is {edt, db_guid, slot}; mode is read from depv[slot].mode.
  *
  * Two-CAS acquire (the PURGE EXCL discipline, RETAIN arbiter):
  *   cas1  count++ ONLY (fetch_add), BEFORE the push, so a waiter present in a
@@ -1385,17 +1385,18 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
 }
 
 /* ===== arts_db_release_rw / arts_db_release_ro =========================
- * OWNER release — single-word CAS via cache_owner_compute_next, then dispatch the
+ * Release — single-word CAS via cache_owner_compute_next, then dispatch the
  * returned action.
  *
  * RW: wc-- (+ 0-edge migration decision) in ONE CAS.  CACHE_ACT_MIGRATE means
  *     the 0-edge cleared owner-bit + migrate_target in the same next-state
  *     (publish-before-send); ship DELIVER(RW) to the target.  No home
- * publish, no ACK (the HOME ACK path is not linked in OWNER) — data is sticky
- * on the owner.  No pending target → sticky (no-op). RO: rc--; on the 0-edge —
- * if this rank is still the owner, owner_try_execute (drive any pending RO
- * serve / migration now that readers are gone); else RORET to home (a remote RO
- * copy holder returning its grant).
+ *     publish, no ACK — data is sticky on the owner.  No pending target →
+ *     sticky (no-op).
+ * RO: rc--; on the 0-edge — if this rank is still the owner,
+ *     owner_try_execute (drive any pending RO serve / migration now that
+ *     readers are gone); else RORET to home (a remote RO copy holder
+ *     returning its grant).
  *
  * Destroyed-guard: a dep NULL-woken at destroy never really held the lock; a
  * count of 0 means there is nothing to release — skip rather than underflow. */
@@ -1496,24 +1497,28 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
 }
 
 /* ===== lock_owner_compute_next ==========================================
- * OWNER home arbiter — pure function of the single lock_state word
+ * Home arbiter — pure function of the single lock_state word
  * [phase:2 | owner:14 | w:24 | r:24], run inside a CAS-retry loop.  This IS the
  * home phase-transition table.
  *
  * The transitions:
- *   RW_REQ  : w++; phase==IDLE → phase=RW, action=MIGRATE.  (phase==RW: just
- *             queue, next migrate fires at CONFIRM; phase==RO: hold, r
- * untouched) RO_REQ  : r++; phase==RO → SERVE_ONE; phase==IDLE → phase=RO +
- * SERVE_ONE. (phase==RW: held in ro_waiters by the caller, no action) CONFIRM :
- * w--, owner=new_owner (ONE CAS); w>0 → MIGRATE (RW chain); elif r>0 → phase=RO
- * + SERVE_ALL (RW→RO flip); else phase=IDLE. RO_RET  : r--; on r==0: w>0 →
- * phase=RW + MIGRATE (RO→RW flip); else phase=IDLE.
+ *   RW_REQ  : w++; phase==IDLE → phase=RW, action=MIGRATE.
+ *             (phase==RW: just queue, the next migrate fires at CONFIRM;
+ *             phase==RO: hold, r untouched)
+ *   RO_REQ  : r++; phase==RO → SERVE_ONE; phase==IDLE → phase=RO + SERVE_ONE.
+ *             (phase==RW: held in ro_waiters by the caller, no action)
+ *   CONFIRM : w--, owner=new_owner (ONE CAS); w>0 → MIGRATE (RW chain);
+ *             elif r>0 → phase=RO + SERVE_ALL (RW→RO flip); else phase=IDLE.
+ *   RO_RET  : r--; on r==0: w>0 → phase=RW + MIGRATE (RO→RW flip);
+ *             else phase=IDLE.
  *
- * Equivalences: mig_inflight == (phase==RW), serving_ro == (phase==RO),
- * r == the old rc — no separate flags; everything lives in the word.
+ * phase==RW means a migration is in flight and phase==RO that read grants are
+ * being served; no separate flag carries either — everything lives in the
+ * word.
  *
- * The FORWARD recipient is OWNER() of the returned word.  The migrate target /
- * served reader(s) are resolved by the caller from rw_waiters/ro_waiters. */
+ * The FORWARD recipient is LOCK_OWNER() of the returned word.  The migrate
+ * target / served reader(s) are resolved by the caller from
+ * rw_waiters/ro_waiters. */
 uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
                                 uint32_t *out_action) {
   uint32_t phase = LOCK_PHASE(cur);
@@ -1571,18 +1576,18 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
   return LOCK_MAKE(phase, owner, w, r);
 }
 
-/* ===== Home-side handlers (Task 6) =====================================
+/* ===== Home-side handlers ==============================================
  * The home directory arbiter + action dispatch.  Each handler runs the single-
  * word lock_state CAS via lock_owner_compute_next, then dispatches the returned
- * FORWARD action to the current owner (OWNER() of the freshly-CAS'd word),
+ * FORWARD action to the current owner (LOCK_OWNER() of the freshly-CAS'd word),
  * resolving the migrate target / served reader(s) from the lock-free queues.
  *
- * They run CONCURRENTLY across receiver threads with no mutex; correctness
- * rests entirely on the single-word CAS plus the lock-free queues.  The protocol
- * tolerates message reorder because the transport guarantees no per-peer FIFO:
- * r counts OUTSTANDING RO grants, so it may transiently exceed the rank count,
- * and the write flip is gated on r reaching zero rather than on any arrival
- * order. */
+ * They run CONCURRENTLY across progress threads with no mutex; correctness
+ * rests entirely on the single-word CAS plus the lock-free queues.  The
+ * protocol tolerates message reorder because the transport guarantees no
+ * per-peer FIFO: r counts OUTSTANDING RO grants, so it may transiently exceed
+ * the rank count, and the write flip is gated on r reaching zero rather than on
+ * any arrival order. */
 
 /* ===== RO waiter node (home-side held-RO queue entry) ==================
  * Held-RO readers (an RO REQUEST that arrived during the RW phase) wait in
@@ -1598,8 +1603,8 @@ struct arts_lock_ro_node_s {
 };
 
 /* Dispatch a MIGRATE or SERVE_ALL FORWARD action after the lock_state CAS
- * committed.  `word` is the freshly-CAS'd lock_state, whose OWNER() names the
- * rank to FORWARD to.  SERVE_ONE is not handled here: its target is the
+ * committed.  `word` is the freshly-CAS'd lock_state, whose LOCK_OWNER() names
+ * the rank to FORWARD to.  SERVE_ONE is not handled here: its target is the
  * requesting rank, which the word does not carry. */
 static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
                                    uint64_t word) {

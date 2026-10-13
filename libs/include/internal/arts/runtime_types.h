@@ -102,9 +102,10 @@ struct arts_edt_s {
                                           phase — driven to 0 by event/signal
                                           delivery before DB acquisition). */
   uint32_t rw_cursor;  /**< Index into rw_sorted up to which the EDT's
-                            serialized deps have been *secured* (owned or
-                            guaranteed next-owner). Advanced at the secured point
-                            (PROCEED / local-fast), NOT at data install. */
+                            serialized deps have been *secured*: resolved
+                            locally, or woken by the grant or reply that
+                            resolves them once the slot's bytes are published
+                            to the EDT. */
   uint32_t *rw_sorted; /**< Dep visit order: by GUID, then by DESCENDING mode
                             strength within one GUID, ties keeping slot order.
                             The first slot of a GUID's group owns that block's
@@ -152,7 +153,7 @@ static inline uint64_t arts_edt_total_size(const struct arts_edt_s *edt) {
          ((uint64_t)edt->depc * sizeof(arts_edt_dep_t));
 }
 
-/** Forward-declared dep node (definition in arts/event.h, Task 8). */
+/** Forward-declared dep node (definition in arts/event.h). */
 struct arts_event_dep_s;
 
 /** Internal event descriptor — single generic type, hint-driven behavior.

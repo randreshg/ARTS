@@ -79,12 +79,14 @@ bool arts_network_before_steal_scheduler_loop();
 bool arts_gpu_scheduler_backoff_loop();
 bool arts_gpu_scheduler_demand_loop();
 
-/* Scheduler-loop dispatch table. Defined alongside the scheduler loop bodies
- * (their definitions must share that translation unit). The runtime bring-up
- * code selects an entry by config index, so the table is declared here for
- * cross-module visibility. */
+/* Scheduler-loop dispatch table, indexed by the `scheduler` config key:
+ * default, network_before_steal and network_first at 0..2 in every build, and
+ * a GPU build's three loops appended at 3..5.  Defined alongside the loop
+ * bodies, with its entry count; config load refuses an index at or past that
+ * count. */
 typedef bool (*scheduler_t)(void);
 extern scheduler_t scheduler_loop[];
+extern const unsigned int scheduler_loop_count;
 
 #ifdef __cplusplus
 }

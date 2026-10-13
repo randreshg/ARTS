@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T202 — concurrent multi-reader to ONE shared sink fd: per-source byte count
+ * Concurrent multi-reader to ONE shared sink fd: per-source byte count
  * preserved (no byte loss), WITHOUT assuming line/chunk order.
  *
  * The launcher points many forwarders' sinks at the same master FILE* (e.g.

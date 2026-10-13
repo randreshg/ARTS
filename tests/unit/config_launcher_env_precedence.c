@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T215 — handle_launcher precedence.
+ * handle_launcher precedence.
  * Documents B106 (default-launcher SSH foot-gun).
  *
  * handle_launcher resolves config->launcher with this precedence:

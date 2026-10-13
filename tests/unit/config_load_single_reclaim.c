@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T211 — single-node thread reclaim (config_compute_derived).
+ * Single-node thread reclaim (config_compute_derived).
  *
  * Property: when a `launcher=local` config resolves to ONE node, the derived
  * thread counts must fold progress_threads back into the worker pool (a

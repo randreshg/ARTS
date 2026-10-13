@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T218 — config_open_file priority chain + slurm hostname width contract.
+ * config_open_file priority chain + slurm hostname width contract.
  *
  * Two config-parser behaviours, exercised against the linked libarts (no
  * runtime started):

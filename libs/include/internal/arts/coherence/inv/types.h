@@ -41,10 +41,11 @@
  * ── WB ───────────────────────────────────────────────────────────────
  * The canonical copy lives at the owner and moves owner → owner by
  * migration only; the home is a pure directory that never holds bytes.
- * There is NO publish and no publish ack — that is the only thing this
- * placement drops.  The invalidation ack it does NOT drop: every RW release
- * asks the home for a round, the home snapshots the copy roster,
- * multicasts, collects EVERY ack, and only then does the release return.
+ * A release's publish therefore carries no payload — that is the only thing
+ * this write policy drops.  The publish itself stays, control only, as the
+ * request for the release's invalidation round, and so does its ack: the
+ * home snapshots the copy roster, multicasts, collects EVERY invalidation
+ * ack, and only then acks the publish and lets the release return.
  *
  * A reader never waits anywhere — not at the home, not at the owner, not
  * behind a remote writer, and not behind its own rank's ownership request.
@@ -149,7 +150,7 @@ extern "C" {
 #endif
 
 /* ── cache word: the READER plane, and only the reader plane ─────────────
- * Identical under both placements — what differs between HOME and OWNER is
+ * Identical under both write policies — what differs between WT and WB is
  * where a fetch is SERVED FROM, never what the requester's word does.
  *
  *   [ ro:2 (63..62) | inflight:1 (61) | spare:43 | head_ro:18 (17..0) ]
@@ -171,13 +172,13 @@ extern "C" {
  *              exactly its fetch's cohort and serves it as the continuation of
  *              its own transition, however late that runs).
  *
- * The WRITER plane is not here.  Write ownership is the migrating sentinel
- * grant (coherence/grant.c): writer_count carries local writers plus a +1
- * sentinel while this rank holds the grant, RW waiters park on the cache's
- * pending_rw Treiber stack, and writer_count > 0 IS the ownership predicate.
- * This word therefore carries no rw state, no writer count and no
- * ownership bit: write turns are never arbitrated or returned at the home
- * under either placement.
+ * The WRITER plane is not here.  Write ownership is the migrating grant
+ * (coherence/grant.c): this rank's writers and its possession of the grant
+ * live in writer_count, RW waiters park on the cache's pending_rw Treiber
+ * stack, and the home's rw_holder and grant queue say where the grant is and
+ * who asked for it next.  The write plane lives in writer_count and the grant
+ * plane, never in this word: it carries no rw state, no writer count and no
+ * ownership bit.
  *
  * The install-lane arbitration stamp is not in this word either: it is the
  * buffer's own version field.  Two asynchronous installs can target one rank's
@@ -217,7 +218,7 @@ extern "C" {
    (((uint64_t)(hro) & INV_CACHE_HEAD_MASK) << INV_CACHE_HEAD_RO_SHIFT))
 
 /* ── directory word: the invalidation round, and only the round ──────────
- * Identical under both placements.
+ * Identical under both write policies.
  *
  *   [ round_open:1 (63) | acks:14 (62..49) | spare:49 ]
  *
@@ -294,10 +295,11 @@ struct arts_db_inv_waiter_pool_s {
 
 /* ── publish-queue entry (Treiber, whole-chain drain) ───────────────────── */
 /* One entry per RW release awaiting its invalidation round at the home.  Both
- * placements use it; only `rdzv` differs — HOME advertises a landing so the
- * release's payload lands before the round opens, OWNER leaves it zero because
- * the canonical copy never travels to the home.  A batch is drained whole and
- * is order-insensitive: at most one install (the max-version entry that
+ * write policies use it; only `rdzv` differs — under WT a nonzero address
+ * marks an entry whose payload has already landed in place in the stable
+ * buffer (the commit leg's pairing gates the queue), WB leaves it zero
+ * because the canonical copy never travels to the home.  A batch is drained
+ * whole and is order-insensitive: at most one version stamp (the entry that
  * carries data) and a set of commuting ack wakes. */
 struct arts_db_inv_pub_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
@@ -307,8 +309,9 @@ struct arts_db_inv_pub_s {
    * close is where it is accepted: not before, because the home may not hand
    * the block on while a stale copy of it still stands. */
   unsigned int returns_grant;
-  uint64_t cv;                     /* releaser's ack cookie (sem identity) */
-  struct arts_rdzv_landing_s rdzv; /* payload landing (HOME); zero under OWNER */
+  uint64_t cv; /* the publish's cv: 0, since an announce is answered by the
+                * PUBLISH_CTS and never queued; the ACK completes the flight */
+  struct arts_rdzv_landing_s rdzv; /* addr != 0: bytes landed (WT only) */
 };
 
 /* Home request queue: same Vyukov MPSC shape as the other arms so the shared
@@ -399,7 +402,7 @@ struct arts_db_cache_s {
    * (heap for the same reason the publish rendezvous is — a shutdown-
    * escaped waiter leaks its node and a late drain may still post into
    * it).  home_pub_* is the durable publish credit: the home's stable
-   * buffer plus a receiver-minted txid, refilled by every publish ACK;
+   * buffer plus a receiver-minted txid, refilled by a payload flight's ACK;
    * txid is the presence flag (0 = none), written last with release
    * order so a reader that sees it sees the whole triple. */
   volatile unsigned int pub_flight;
@@ -497,7 +500,7 @@ struct arts_db_cache_s {
    * (heap for the same reason the publish rendezvous is — a shutdown-
    * escaped waiter leaks its node and a late drain may still post into
    * it).  home_pub_* is the durable publish credit: the home's stable
-   * buffer plus a receiver-minted txid, refilled by every publish ACK;
+   * buffer plus a receiver-minted txid, refilled by a payload flight's ACK;
    * txid is the presence flag (0 = none), written last with release
    * order so a reader that sees it sees the whole triple. */
   volatile unsigned int pub_flight;

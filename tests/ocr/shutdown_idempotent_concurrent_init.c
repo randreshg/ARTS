@@ -22,9 +22,9 @@
 /// launcher's verdict on every rank (ctest TIMEOUT reaps a storm/deadlock
 /// regression).
 ///
-/// runtime_multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a single-node
-/// clean shutdown when only one rank is present.
-/// all configs (shutdown sits above the coherence layer).
+/// Multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a
+/// single-node clean shutdown when only one rank is present.  Every
+/// configuration (shutdown sits above the coherence layer).
 
 #include "arts.h"
 

@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T048 — DB cache / db_s static layout invariants (B029: stub_size /
- * home_initialized layout, the historical "P6 teardown SIGSEGV" class).
+ * DB cache / db_s static layout invariants (stub_size / home_initialized
+ * layout, which keeps a stub's teardown from reading past its allocation).
  *
- * A non-home / stub-installed / creator-remote DB is allocated as a *cache-only stub* of
- * arts_db_cache_stub_size() bytes instead of the full sizeof(struct arts_db_s).
- * The cache destructor reads db->home_initialized on EVERY free to decide
- * whether to tear the home directory down; on a stub it must read a (zeroed)
- * false and skip teardown.  Therefore the following MUST hold, by construction,
- * for every protocol:
+ * A non-home / stub-installed / creator-remote DB is allocated as a
+ * *cache-only stub* of arts_db_cache_stub_size() bytes instead of the full
+ * sizeof(struct arts_db_s).  The cache destructor reads db->home_initialized
+ * on EVERY free to decide whether to tear the home directory down; on a stub
+ * it must read a (zeroed) false and skip teardown.  Therefore the following
+ * MUST hold, by construction, for every protocol:
  *
  *   1. stub_size > offsetof(arts_db_s, db_type)         — db_type in bounds
  *      (every coherence lookup/free reads db_type through a stub).

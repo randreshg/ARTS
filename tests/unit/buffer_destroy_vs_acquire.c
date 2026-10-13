@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T053 — buffer destroy-vs-acquire headline race (TSan + ASan).
+ * Buffer destroy-vs-acquire headline race (TSan + ASan).
  *
  * The buffer slot (cache.buffer, an atomic shared_ptr) is concurrently:
  *   - installed + stored-to-NULL by an "owner" thread.  store-NULL is exactly

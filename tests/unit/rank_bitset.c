@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T056 — rank_bitset set / for_each / init / destroy (B035: for_each snapshot
- * vs concurrent set; first-set-wins).  Built VAL+OWNER (the bitset is the OWNER
- * destroy fan-out roster; HOME reuses the version map).
+ * rank_bitset set / for_each / init / destroy (for_each snapshot
+ * vs concurrent set; first-set-wins).  The bitset is a home's per-block rank
+ * set: the destroy fan-out roster, and the arm's sharer or retainer set where
+ * it keeps one.
  *
  * Each word covers 64 ranks; nwords == (nranks+63)/64.  arts_rank_bitset_set
  * returns true IFF the bit was previously clear (first-time set).
@@ -25,8 +26,10 @@
  *      boundaries) → every set returns true once, for_each (after join) visits
  *      every rank exactly once.
  *
- * Standalone: links val/home.c (carries the bitset fns) with libc-backed
- * alloc shims.  Built with -DARTS_PROTOCOL_VAL=1 -DARTS_WRITE_POLICY_WB=1.
+ * Linked per arm (generated_tests.cmake): VAL and INV compile their own
+ * coherence directory.c (which carries the bitset functions) standalone with
+ * the libc-backed alloc shims below; EXCL links the full libarts; FLUSH keeps
+ * no bitset and self-skips.
  */
 
 #ifdef ARTS_PROTOCOL_FLUSH
@@ -298,9 +301,10 @@ int main(void) {
 }
 
 /* ── libc-backed alloc shims so the test links standalone against just the
- * protocol's home.c (VAL).  When linked against the full ARTS library
- * (the EXCL path, which pulls in a monolithic lock/home.c), libarts already
- * provides these, so the shims are compiled out to avoid multiple-definition.
+ * arm's directory.c (VAL, INV).  When linked against the full ARTS library
+ * (EXCL, whose directory.c pulls in transport and EDT dependencies), libarts
+ * already provides these, so the shims are compiled out to avoid
+ * multiple-definition.
  */
 #ifdef ARTS_UNIT_STANDALONE_SHIMS
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }

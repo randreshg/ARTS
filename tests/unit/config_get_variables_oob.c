@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T208 — arts_config_get_variables empty-value + non-terminated key.
+ * arts_config_get_variables empty-value + non-terminated key.
  * Probes B101 (config.c:163,171, suspected HIGH) and PINS the verified result.
  *
  * arts_config_get_variables parses a cfg FILE* line-by-line as key=value.

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T129 — EDT trailing-storage offset agreement.
+ * EDT trailing-storage offset agreement.
  *
  * Property under test
  * -------------------

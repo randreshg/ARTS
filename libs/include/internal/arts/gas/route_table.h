@@ -263,7 +263,6 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
 void arts_reset_route_table_iterator(arts_route_table_iterator_t *iter,
                                      arts_route_table_t *table);
 arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter);
-void arts_print_item(arts_route_item_t *item);
 
 uint64_t arts_clean_up_route_table(arts_route_table_t *route_table);
 /* Payloads parked on the OoO lists of every slot of `route_table` (its whole

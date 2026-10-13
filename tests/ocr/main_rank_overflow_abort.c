@@ -20,8 +20,8 @@
 /// guard runs before transport setup, so no processes are launched.  The test
 /// is judged on exit status 1 and the guard's message.
 ///
-/// runtime_single, all configs (the guard sits above the coherence layer).
-/// exposes_runtime_bug: no — this asserts the guard works (clean abort exit 1).
+/// Single-node, every configuration (the guard sits above the coherence
+/// layer).  Asserts the guard works (clean abort, exit 1).
 
 #include "arts.h"
 

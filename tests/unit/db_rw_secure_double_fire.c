@@ -38,30 +38,29 @@
 ******************************************************************************/
 
 /// @file db_rw_secure_double_fire.c
-/// @brief arts_db_rw_secure must be position-idempotent: mark_edt_ready_by_guid fires TWICE
-///        per RW dep (PROCEED handler + GRANT-drain rw_drain_cb).  A redundant
-///        secure for an already-passed cursor slot must NOT re-fire the
-///        in-flight dep (else a duplicate OWNERSHIP_REQUEST + double-account
-///        drives acquire_remaining to 0 before every RW dep's data arrives ->
-///        premature schedule with stale/NULL data).
+/// @brief Several remote-homed RW dependences of one EDT all see their
+///        writes.
 ///
-/// To force the double-fire path, an EDT acquires SEVERAL distinct DBs in RW
-/// mode, each homed REMOTELY so each goes through a real
-/// OWNERSHIP_REQUEST/GRANT round (the path where arts_db_rw_secure is invoked from both
-/// PROCEED and the GRANT drain).  The sorted RW cursor walks the deps one at a
-/// time; the sorted[rw_cursor]==slot idempotence guard is the entire
-/// correctness of the advance.  If it regresses, the EDT either schedules early
-/// (a dep's data not yet arrived -> the writer reads a stale/zero buffer for
-/// some DB) or never (cursor stalls -> hang).
+/// An EDT on rank 0 acquires SEVERAL distinct DBs in RW mode.  Rank 0 creates
+/// them and homes them round-robin over the ranks, so with more than one rank
+/// some live on another rank: where the write right goes back to the home at
+/// release (PURGE) each of those takes a request/grant round with its home,
+/// and where the creating rank keeps it (RETAIN) the writer takes it locally.
+/// Where RW acquisitions are serialized (VAL, INV, EXCL) the EDT's
+/// walk takes them one at a time in GUID order, and a grant that arrives on
+/// another thread lets the walk past its slot (arts_db_rw_secure) only through
+/// the wake that wins that slot's claim, and only while the walk is still at
+/// that slot.  A walk that advanced wrongly would schedule the EDT before a
+/// dep's data arrived (the writer sees a NULL or stale buffer) or never
+/// (a hang).
 ///
 /// The writer EDT stamps each DB with a per-DB sentinel; a per-DB RO reader
-/// then verifies every DB got its write (proving all RW deps were secured and
-/// accounted exactly once, in order).  A premature schedule corrupts at least
-/// one DB -> arts_abort; a stalled cursor hangs -> ctest TIMEOUT.
+/// then verifies every DB got its write.  A NULL slot or a missing write ->
+/// arts_abort; a stalled walk -> ctest TIMEOUT.
 ///
-/// ownership/EXCL only (RW is serialized; the cursor + arts_db_rw_secure are live).
-/// Runs in all node counts; remote homes only exist when nranks>1, so single-node is a
-/// (still-valid) local-hit smoke of the same multi-RW accounting.
+/// Runs in every node count and every arm: with one rank every home is local,
+/// so the run checks the same multi-RW accounting through local hits, and
+/// FLUSH serializes no acquisition, so there it is a plain multi-RW check.
 
 #include "arts.h"
 
@@ -118,8 +117,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
 
-  /* Create NDBS distinct DBs, spread across ranks so the writer (on rank 0)
-   * acquires each via a real ownership round when nranks>1. */
+  /* Create NDBS distinct DBs, homed round-robin over the ranks. */
   arts_guid_t dbs[NDBS];
   for (unsigned int i = 0; i < NDBS; i++) {
     unsigned int home = (nranks > 1) ? (i % nranks) : 0u;
@@ -132,8 +130,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_db_release(dbs[i], DB_MODE_RW);
   }
 
-  /* The writer holds all NDBS in RW: the serialized cursor walks them one at a
-   * time, each driving arts_db_rw_secure from PROCEED + GRANT drain. */
+  /* The writer holds all NDBS in RW; where RW acquisitions are serialized its
+   * walk takes them one at a time. */
   arts_guid_t e_w = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t w =
       arts_edt_create(multi_writer, 0, NULL, NDBS,

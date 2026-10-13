@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T198 — shutdown_all idempotency.
+ * shutdown_all idempotency.
  *
  * shutdown_all detaches the whole Treiber stack with one atomic exchange to
  * NULL, then joins+frees.  A second call exchanges out an already-NULL head and

@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T064 — arts_home_grantreq_queue_{init,push,pop,peek,empty,destroy}
- *        (the home OWNERSHIP-REQUEST FIFO; a Vyukov MPSC, drain-one).
+ * arts_home_grantreq_queue_{init,push,pop,peek,empty,destroy} (the home
+ * OWNERSHIP-REQUEST FIFO; a Vyukov MPSC, drain-one).
  *
- * This queue type is byte-identical in val/directory.c and
- * excl/directory.c — whichever directory.c the build configures defines the bodies.  The
- * test #includes the matching protocol's directory.c into a standalone TU (no ARTS
- * runtime; precedent: tests/unit/rank_bitset.c, edt_gpu.cu->edt.c) and is
- * validated under all three protocol defines.
+ * Each of the val/, excl/ and inv/ directory.c defines this queue with the
+ * same contract; whichever directory.c the build configures supplies the
+ * bodies.  The test #includes the matching protocol's directory.c into a
+ * standalone TU (no ARTS runtime) and runs under each of those three
+ * protocols; FLUSH has no such queue and self-skips.
  *
  * Properties exercised:
  *   1. Functional single-thread: empty on init, peek/pop false on empty,
@@ -20,9 +20,8 @@
  *      the consumer must observe each producer's values in increasing order).
  *      This also exercises the transient-NULL mid-link spin retry in pop().
  *
- * Build: -DARTS_PROTOCOL_VAL=1 (+ -DARTS_WRITE_POLICY_WB=1 |
- *        -DARTS_PROTOCOL_EXCL=1
- *   with -DARTS_UNIT_STANDALONE_SHIMS for the libc alloc shims.
+ * Build: the build's own protocol defines, with -DARTS_UNIT_STANDALONE_SHIMS
+ * for the libc alloc shims.
  */
 
 #ifdef ARTS_PROTOCOL_FLUSH
@@ -275,8 +274,9 @@ void *arts_malloc(size_t size) { return malloc(size); }
 /* EXCL's directory.c is monolithic: the same TU that defines the queue/bitset bodies
  * we test also defines the EXCL request/release/destroy HANDLERS, which
  * reference the broader runtime (transport, route table, buffer cb, identity).
- * T064 never invokes any of those — it only drives the queue API — so satisfy
- * the linker with inert stubs.  None are reachable from the test's call graph.
+ * The test never invokes any of those — it only drives the queue API — so
+ * satisfy the linker with inert stubs.  None are reachable from the test's
+ * call graph.
  */
 #if defined(ARTS_PROTOCOL_EXCL)
 #include "arts/coherence/buffer.h"

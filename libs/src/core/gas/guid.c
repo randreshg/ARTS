@@ -296,7 +296,8 @@ arts_guid_t arts_guid_reserve(arts_guid_kind_t kind, unsigned int rank) {
     guid = arts_guid_create_for_rank_internal(rank, (unsigned int)kind, 1);
     // ARTS_INFO("Allocation Guid %u", guid);
   } else {
-    ARTS_INFO("Invalid type %u", kind);
+    ARTS_WARN("arts_guid_reserve: %u is not a GUID kind; no GUID reserved",
+              (unsigned int)kind);
   }
   return guid;
 }

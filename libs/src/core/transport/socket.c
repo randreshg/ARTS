@@ -60,6 +60,7 @@
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/dispatcher.h"
+#include "arts/transport/netif.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
@@ -97,111 +98,68 @@ void arts_transport_set_config(struct arts_config_s *config) {
   arts_global_message_table = config;
   ports = config->port_count;
 }
-bool hostname_to_ip(char *host_name, char *ip) {
-  int j;
+/* Resolve `host_name` to a printable IPv4 address in `ip` (>= 100 bytes).
+ * Returns 0, or getaddrinfo's error code; the caller decides what a failure
+ * means. */
+static int hostname_to_ip(const char *host_name, char *ip) {
   struct addrinfo *result;
   struct addrinfo hints;
   memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_INET; // Force IPv4 - inet_addr() doesn't handle IPv6
   int error = getaddrinfo(host_name, NULL, &hints, &result);
   if (error == 0) {
-    if (result->ai_addr->sa_family == AF_INET) {
-      struct sockaddr_in *res = (struct sockaddr_in *)result->ai_addr;
-      inet_ntop(AF_INET, &res->sin_addr, ip, 100);
-    } else if (result->ai_addr->sa_family == AF_INET6) {
-      struct sockaddr_in6 *res = (struct sockaddr_in6 *)result->ai_addr;
-      inet_ntop(AF_INET6, &res->sin6_addr, ip, 100);
-    }
+    struct sockaddr_in *res = (struct sockaddr_in *)result->ai_addr;
+    inet_ntop(AF_INET, &res->sin_addr, ip, 100);
     freeaddrinfo(result);
-    return true;
   }
-  ARTS_INFO("%s", gai_strerror(error));
-
-  return false;
+  return error;
 }
 
-bool arts_transport_set_ip(struct arts_config_s *config) {
-  // Always initialize ip_list - it's used by arts_transport_setup_outgoing()
-  ip_list = (char *)arts_malloc(100 * sizeof(char) * config->table_length);
-  bool result;
-  for (int i = 0; i < (int)config->table_length; i++) {
-    result = hostname_to_ip(config->table[i].ip_address,
-                            ip_list + ((ptrdiff_t)100 * i));
-    // result = hostname_to_ip("www.google.com", ip_list+100*i);
-
-    if (!result) {
-      ARTS_ERROR("Cannot get ip address for '%s'", config->table[i].ip_address);
-    }
+/* The routing-table row whose resolved address one of this host's IPv4
+ * interfaces carries: `prefer` when an interface carries it, else the first
+ * row one does (interfaces in the kernel's order), else -1. */
+static int local_row(const struct arts_config_s *config, int prefer) {
+  struct ifaddrs *ifap = NULL;
+  if (getifaddrs(&ifap) != 0) {
+    ARTS_ERROR("getifaddrs: %s", strerror(errno));
   }
-
-  // When net_interface is set (e.g., "ib0"), remap resolved IPs to the
-  // target interface's subnet.  Each node resolves hostnames to the default
-  // interface (e.g., eno1 172.16.x.x).  We detect the local subnet
-  // difference between the default and target interfaces, then apply the
-  // same transformation to all resolved IPs so that traffic flows over the
-  // target interface (e.g., ib0 172.17.x.x).
-  if (config->net_interface) {
-    char local_hostname[256];
-    char local_default_ip[100];
-    gethostname(local_hostname, sizeof(local_hostname));
-    if (!hostname_to_ip(local_hostname, local_default_ip)) {
-      ARTS_INFO("net_interface=%s: cannot resolve local hostname '%s', "
-                "skipping IP remap",
-                config->net_interface, local_hostname);
-    } else {
-      // Find the target interface's IP via getifaddrs
-      struct in_addr default_addr;
-      struct in_addr iface_addr;
-      bool found_iface = false;
-      struct ifaddrs *ifap;
-      struct ifaddrs *ifa;
-      getifaddrs(&ifap);
-      for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET &&
-            strcmp(ifa->ifa_name, config->net_interface) == 0) {
-          struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
-          iface_addr = sa->sin_addr;
-          found_iface = true;
-          break;
-        }
+  int first = -1;
+  for (struct ifaddrs *ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+    /* An interface with no address has no ifa_addr. */
+    if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET) {
+      continue;
+    }
+    char addr[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr, addr,
+              sizeof(addr));
+    for (int i = 0; i < (int)config->table_length; i++) {
+      if (strcmp(addr, ip_list + ((ptrdiff_t)100 * i)) != 0) {
+        continue;
       }
-      freeifaddrs(ifap);
-
-      if (!found_iface) {
-        ARTS_INFO("net_interface=%s: interface not found, using default IPs",
-                  config->net_interface);
-      } else {
-        inet_pton(AF_INET, local_default_ip, &default_addr);
-        uint32_t offset = ntohl(iface_addr.s_addr) - ntohl(default_addr.s_addr);
-
-        if (offset != 0) {
-          char iface_ip[100];
-          inet_ntop(AF_INET, &iface_addr, iface_ip, sizeof(iface_ip));
-          ARTS_INFO("net_interface=%s: remapping IPs (%s -> %s)",
-                    config->net_interface, local_default_ip, iface_ip);
-          for (int i = 0; i < (int)config->table_length; i++) {
-            struct in_addr addr;
-            char old_ip[100];
-            inet_pton(AF_INET, ip_list + ((ptrdiff_t)100 * i), &addr);
-            inet_ntop(AF_INET, &addr, old_ip, sizeof(old_ip));
-            addr.s_addr = htonl(ntohl(addr.s_addr) + offset);
-            inet_ntop(AF_INET, &addr, ip_list + ((ptrdiff_t)100 * i), 100);
-            ARTS_INFO("  node %d: %s -> %s", i, old_ip,
-                      ip_list + ((ptrdiff_t)100 * i));
-          }
-        } else {
-          ARTS_INFO("net_interface=%s: already on target subnet (%s)",
-                    config->net_interface, local_default_ip);
-        }
+      if (i == prefer) {
+        freeifaddrs(ifap);
+        return i;
+      }
+      if (first < 0) {
+        first = i;
       }
     }
   }
+  freeifaddrs(ifap);
+  return first;
+}
 
-  // Check if rank was passed via environment (SSH-launched child process)
-  // This prevents recursive spawning when multiple nodes resolve to the same IP
+/* This rank's row: the launcher's word where it gives one (the rank a spawning
+ * launcher passes in ARTS_RANK, a flux or Slurm task rank), else the row whose
+ * resolved address a local interface carries. */
+static bool set_my_rank(struct arts_config_s *config) {
   char *arts_rank_env = getenv("ARTS_RANK");
   if (arts_rank_env) {
     arts_global_rank_id = (unsigned int)strtol(arts_rank_env, NULL, 10);
+    if (arts_global_rank_id >= config->table_length) {
+      ARTS_ERROR("ARTS_RANK=%u exceeds the %u-node routing table",
+                 arts_global_rank_id, config->table_length);
+    }
     config->my_rank = arts_global_rank_id;
     arts_global_rank_count = config->table_length;
     return true;
@@ -231,51 +189,25 @@ bool arts_transport_set_ip(struct arts_config_s *config) {
        * address.  Carrying a DIFFERENT row's address instead is an
        * unambiguous ordering violation and fails now, rather than as an
        * unattributable connect timeout; carrying none of them is only
-       * ambiguity (NAT, unmatched interface remap) and warns. */
+       * ambiguity (NAT, a host name that resolves to an address no
+       * interface carries) and warns, except with net_interface set, where
+       * the shift onto the interface refuses a rank whose own row this host
+       * does not carry. */
       unsigned int r = arts_global_rank_id;
-      bool match_self = false;
-      int match_other = -1;
-      struct ifaddrs *ifap = NULL;
-      if (getifaddrs(&ifap) == 0) {
-        for (struct ifaddrs *ifa = ifap; ifa && !match_self;
-             ifa = ifa->ifa_next) {
-          char addr[100];
-          if (ifa->ifa_addr == NULL) {
-            continue;
-          }
-          if (ifa->ifa_addr->sa_family == AF_INET) {
-            struct sockaddr_in *sa = (struct sockaddr_in *)ifa->ifa_addr;
-            inet_ntop(AF_INET, &sa->sin_addr, addr, sizeof(addr));
-          } else if (ifa->ifa_addr->sa_family == AF_INET6) {
-            struct sockaddr_in6 *sa6 = (struct sockaddr_in6 *)ifa->ifa_addr;
-            inet_ntop(AF_INET6, &sa6->sin6_addr, addr, sizeof(addr));
-          } else {
-            continue;
-          }
-          if (strcmp(addr, ip_list + ((ptrdiff_t)100 * r)) == 0) {
-            match_self = true;
-          } else if (match_other < 0) {
-            for (int i = 0; i < (int)config->table_length; i++) {
-              if (strcmp(addr, ip_list + ((ptrdiff_t)100 * i)) == 0) {
-                match_other = i;
-                break;
-              }
-            }
-          }
-        }
-        freeifaddrs(ifap);
-      }
-      if (!match_self) {
-        if (match_other >= 0) {
+      int row = local_row(config, (int)r);
+      if (row != (int)r) {
+        if (row >= 0) {
           ARTS_ERROR("flux task rank %u runs on the host of routing-table "
                      "row %d — task ranks do not follow the job hostlist "
                      "order this table was built in",
-                     r, match_other);
+                     r, row);
         }
-        ARTS_WARN("flux: no local interface carries the address of "
-                  "routing-table row %u — task placement cannot be "
-                  "verified on this host",
-                  r);
+        if (config->net_interface == NULL) {
+          ARTS_WARN("flux: no local interface carries the address of "
+                    "routing-table row %u — task placement cannot be "
+                    "verified on this host",
+                    r);
+        }
       }
       config->my_rank = arts_global_rank_id;
       arts_global_rank_count = config->table_length;
@@ -305,61 +237,118 @@ bool arts_transport_set_ip(struct arts_config_s *config) {
     return true;
   }
 
-  bool found = false;
-  // if(config->net_interface == NULL)
-  {
-    struct ifaddrs *ifap;
-    struct ifaddrs *ifa;
-    struct sockaddr_in *sa;
-    struct sockaddr_in6 *sa6;
-    char addr[100];
+  int row = local_row(config, -1);
+  if (row < 0) {
+    return false;
+  }
+  config->my_rank = (unsigned int)row;
+  arts_global_rank_id = (unsigned int)row;
+  arts_global_rank_count = config->table_length;
+  return true;
+}
 
-    getifaddrs(&ifap);
-    for (ifa = ifap; ifa && !found; ifa = ifa->ifa_next) {
-      // getifaddrs() may return entries whose ifa_addr is NULL (interfaces
-      // with no assigned address); skip them before dereferencing.
-      if (ifa->ifa_addr == NULL) {
-        continue;
-      }
-      if (ifa->ifa_addr->sa_family == AF_INET) {
-        sa = (struct sockaddr_in *)ifa->ifa_addr;
-        inet_ntop(AF_INET, &sa->sin_addr, addr, 100);
+static bool row_is_loopback(int row) {
+  struct in_addr addr;
+  inet_pton(AF_INET, ip_list + ((ptrdiff_t)100 * row), &addr);
+  return (ntohl(addr.s_addr) >> IN_CLASSA_NSHIFT) == IN_LOOPBACKNET;
+}
 
-        for (int i = 0; i < (int)config->table_length && !found; i++) {
-          if (strcmp(addr, ip_list + ((ptrdiff_t)100 * i)) == 0) {
-            found = true;
-            config->my_rank = i;
-            arts_global_rank_id = i;
-            arts_global_rank_count = arts_global_message_table->table_length;
-          }
-        }
-      } else if (ifa->ifa_addr->sa_family == AF_INET6) {
-        sa6 = (struct sockaddr_in6 *)ifa->ifa_addr;
-        inet_ntop(AF_INET6, &sa6->sin6_addr, addr, 100);
-        ;
-
-        for (int i = 0; i < (int)config->table_length && !found; i++) {
-          if (strcmp(addr, ip_list + ((ptrdiff_t)100 * i)) == 0) {
-            found = true;
-            config->my_rank = i;
-            arts_global_rank_id = i;
-            arts_global_rank_count = arts_global_message_table->table_length;
-          }
-        }
+/* Move the bootstrap mesh onto net_interface by shifting every row by one
+ * offset, from this rank's own row to the interface's address.  That holds
+ * when the interface's network numbers the hosts as the resolved rows do: a
+ * row that already names that network stays put, and under launcher=local,
+ * where every row is 127.0.0.1, every row becomes the interface's address. */
+static void remap_rows_to_interface(struct arts_config_s *config) {
+  struct sockaddr_in iface_sa;
+  if (!arts_netif_ipv4_addr(config->net_interface, &iface_sa)) {
+    ARTS_ERROR("net_interface=%s: no interface of that name or prefix has an "
+               "IPv4 address — refusing to fall back to the default route",
+               config->net_interface);
+  }
+  /* The offset is taken from this rank's own row, so that row must be an
+   * address this host carries; a host name that resolves elsewhere (a
+   * loopback alias, NAT) would shift every peer by a meaningless amount. */
+  if (local_row(config, (int)config->my_rank) != (int)config->my_rank) {
+    ARTS_ERROR("net_interface=%s: no local interface carries this rank's "
+               "routing-table address %s ('%s'), so the offset onto the "
+               "interface cannot be computed — name the nodes by an "
+               "address this host carries",
+               config->net_interface,
+               ip_list + ((ptrdiff_t)100 * config->my_rank),
+               config->table[config->my_rank].ip_address);
+  }
+  char my_ip[INET_ADDRSTRLEN];
+  char iface_ip[INET_ADDRSTRLEN];
+  struct in_addr my_addr;
+  inet_pton(AF_INET, ip_list + ((ptrdiff_t)100 * config->my_rank), &my_addr);
+  inet_ntop(AF_INET, &my_addr, my_ip, sizeof(my_ip));
+  inet_ntop(AF_INET, &iface_sa.sin_addr, iface_ip, sizeof(iface_ip));
+  uint32_t offset = ntohl(iface_sa.sin_addr.s_addr) - ntohl(my_addr.s_addr);
+  if (offset == 0) {
+    ARTS_INFO("net_interface=%s: this rank's row already names it (%s)",
+              config->net_interface, iface_ip);
+    return;
+  }
+  /* A loopback address names this host on no network, so an offset taken
+   * from one moves only rows that are loopback too: the all-loopback table
+   * of a one-host run. */
+  if (row_is_loopback((int)config->my_rank)) {
+    for (int i = 0; i < (int)config->table_length; i++) {
+      if (!row_is_loopback(i)) {
+        ARTS_ERROR("net_interface=%s: this rank's routing-table address %s "
+                   "('%s') is a loopback address while node %d's (%s) is "
+                   "not, so the offset onto the interface says nothing "
+                   "about where the other hosts are — name the nodes by "
+                   "their addresses on the network",
+                   config->net_interface, my_ip,
+                   config->table[config->my_rank].ip_address, i,
+                   ip_list + ((ptrdiff_t)100 * i));
       }
     }
-    freeifaddrs(ifap);
   }
-  return found;
+  ARTS_INFO("net_interface=%s: remapping IPs (%s -> %s)",
+            config->net_interface, my_ip, iface_ip);
+  for (int i = 0; i < (int)config->table_length; i++) {
+    char *row_ip = ip_list + ((ptrdiff_t)100 * i);
+    struct in_addr addr;
+    char old_ip[INET_ADDRSTRLEN];
+    inet_pton(AF_INET, row_ip, &addr);
+    inet_ntop(AF_INET, &addr, old_ip, sizeof(old_ip));
+    addr.s_addr = htonl(ntohl(addr.s_addr) + offset);
+    inet_ntop(AF_INET, &addr, row_ip, 100);
+    ARTS_INFO("  node %d: %s -> %s", i, old_ip, row_ip);
+  }
+}
+
+bool arts_transport_set_ip(struct arts_config_s *config) {
+  // Always initialize ip_list - it's used by arts_transport_setup_outgoing()
+  ip_list = (char *)arts_malloc(100 * sizeof(char) * config->table_length);
+  for (int i = 0; i < (int)config->table_length; i++) {
+    int rc = hostname_to_ip(config->table[i].ip_address,
+                            ip_list + ((ptrdiff_t)100 * i));
+    if (rc != 0) {
+      ARTS_ERROR("cannot resolve node '%s': %s", config->table[i].ip_address,
+                 gai_strerror(rc));
+    }
+  }
+  /* The rank comes from the rows as resolved: the net_interface shift is
+   * computed from this rank's own row. */
+  if (!set_my_rank(config)) {
+    return false;
+  }
+  if (config->net_interface != NULL) {
+    remap_rows_to_interface(config);
+  }
+  return true;
 }
 
 void arts_socket_setup(struct arts_config_s *config) {
   arts_transport_set_config(config);
 
   if (!arts_transport_set_ip(config) && config->nodes > 1) {
-    // ARTS_INFO("[%d]Could not connect to %s", arts_global_rank_id,
-    // config->net_interface);
-    ARTS_ERROR("Could not resolve ip to any device");
+    ARTS_ERROR("no local IPv4 interface carries the address of any "
+               "routing-table row, and the launcher named no rank — cannot "
+               "tell which row is this rank");
   }
 }
 
@@ -509,10 +498,13 @@ bool arts_socket_sentinel_check(void) {
    * zero timeout — called from a progress thread's idle cycle, never blocking,
    * and never reading data beyond draining the EOF condition (no payload ever
    * rides these sockets after bootstrap).  A dead peer funnels into the same
-   * idempotent shutdown entry an inbound shutdown message uses.  Once shutdown
-   * is already in progress a peer's close is the expected orderly teardown, so
-   * the probe stands down entirely — an orderly exit is never mistaken for a
-   * death. */
+   * idempotent shutdown entry an inbound shutdown message uses.  Once this
+   * rank's shutdown is in progress the probe stands down.  Nothing orders any
+   * rank's close after every other rank has dispatched the initiator's
+   * MSG_SHUTDOWN (the initiator's drain waits only for its local sends to
+   * complete, and a receiver tears down without waiting for anyone), so an
+   * orderly teardown can reach this probe first too; both enter the same
+   * shutdown, so the probe need not tell them apart. */
   if (!arts_global_message_table || poll_incoming == NULL ||
       arts_node_info.shutdown_state) {
     return false;
@@ -551,7 +543,7 @@ bool arts_socket_sentinel_check(void) {
       }
       if (dead_peer) {
         ARTS_INFO("liveness sentinel %d: peer connection closed before "
-                  "shutdown began — treating as peer exit/death",
+                  "this rank's shutdown began — entering shutdown",
                   i);
         poll_incoming[i].fd = -1; /* negative fd: poll ignores this entry */
       }
@@ -568,10 +560,12 @@ bool arts_socket_sentinel_check(void) {
 }
 
 void arts_socket_cleanup() {
-  /* Orderly close of the liveness sentinels, at the very end of teardown —
-   * the cluster-wide shutdown protocol has already completed over the live
-   * transport (every rank's shutdown_state is set), so a peer observing our
-   * HUP is itself shutting down and its sentinel probe stands down. */
+  /* Close of the liveness sentinels, at the very end of this rank's teardown.
+   * Nothing orders it after every other rank has dispatched the initiator's
+   * MSG_SHUTDOWN (the initiator's drain waits only for its local sends to
+   * complete, and a receiver tears down without waiting for anyone), so a peer
+   * may still observe the HUP before its own shutdown began; its probe then
+   * enters the same idempotent shutdown. */
   if (arts_global_message_table != NULL) {
     int count = (int)arts_global_message_table->table_length;
     if (remote_socket_receive_list) {
@@ -601,10 +595,12 @@ void arts_socket_cleanup() {
   arts_free(local_socket_receive);
 }
 
-/* How long a rank waits for a peer of the socket mesh to appear, whether it
- * is connecting to that peer or accepting from it.  The skew between the
- * ranks of one job is the launcher's, not the runtime's, so the budget is a
- * knob: ARTS_STARTUP_TIMEOUT_S, in seconds. */
+/* The startup budget of one connection of the socket mesh.  An accept waits
+ * up to the budget for its next peer; a connect is retried budget / 100 ms
+ * times, 100 ms apart, and each attempt blocks for as long as the kernel's
+ * connect does, so the connect side counts attempts, not time.  The skew
+ * between the ranks of one job is the launcher's, not the runtime's, so the
+ * budget is a knob: ARTS_STARTUP_TIMEOUT_S, in seconds. */
 #define ARTS_STARTUP_TIMEOUT_DEFAULT_S 300u
 static unsigned int arts_startup_budget_ms(void) {
   static unsigned int cached_ms = 0;
@@ -642,10 +638,8 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
                      (struct sockaddr *)(remote_server_send_list +
                                          ((size_t)rank * ports) + port),
                      sizeof(struct sockaddr_in)) < 0) {
-        /* Abort the retry loop promptly if a shutdown has been signaled
-         * while we were spinning here; otherwise a sender thread caught in
-         * it blocks for the whole startup budget, longer than the
-         * launcher's timeout. */
+        /* Stop retrying once this rank's shutdown has begun.  During startup
+         * only the signal watcher begins one, and it reports the signal. */
         if (arts_node_info.shutdown_state) {
           return false;
         }
@@ -655,11 +649,11 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
           /* Loud: the caller exits the rank on this, and a rank that dies
            * before its fabric is up leaves no other trace of why. */
           ARTS_WARN("arts_transport_connect: rank %u could not connect to "
-                    "rank %d port %d in %d retries over %d ms (target %s:%d, "
-                    "errno=%d: %s)",
+                    "rank %d port %d in %d retries 100 ms apart (target "
+                    "%s:%d, errno=%d: %s)",
                     arts_global_rank_id, rank, port, max_retries,
-                    max_retries * 100, inet_ntoa(addr->sin_addr),
-                    ntohs(addr->sin_port), errno, strerror(errno));
+                    inet_ntoa(addr->sin_addr), ntohs(addr->sin_port), errno,
+                    strerror(errno));
           return false;
         }
         close(remote_socket_send_list[(rank * ports) + port]);
@@ -802,10 +796,6 @@ bool arts_transport_setup_incoming() {
     } else {
       for (int z = 0; z < (int)ports; z++) {
         if (!arts_transport_connect(i, z)) {
-          ARTS_WARN("arts_transport_setup_incoming: rank %u has no "
-                    "connection to rank %d port index %d — startup mesh "
-                    "incomplete",
-                    arts_global_rank_id, i, z);
           return false;
         }
       }

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T003 — arts_lf_stack_drain / arts_lf_stack_reverse_drain (lockfree_lifo.h).
+ * arts_lf_stack_drain / arts_lf_stack_reverse_drain (lockfree_lifo.h).
  *
- * Three properties (census 29.md §2 GAPS):
+ * Three properties:
  *
  *  (1) ORDERING (single-thread, deterministic): push 0..K-1 in order; drain
  *      must return LIFO (K-1 .. 0); on a fresh fill reverse_drain must return

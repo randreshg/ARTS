@@ -1,23 +1,26 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T068 — arts_db_acquire_is_serialized, the per-protocol predicate that tells
- *        the acquire-all engine which dep modes must be acquired in a global
- *        GUID order (so the engine can avoid acquire-cycle deadlock).
+ * arts_db_acquire_is_serialized, the per-protocol predicate that tells the
+ * acquire-all engine which dep modes must be acquired in a global GUID order
+ * (so the engine can avoid acquire-cycle deadlock).
  *
  * The function has a different ANSWER per coherence protocol; this single file
  * is compiled once per build config and asserts the answer for whichever
  * protocol macro is defined:
  *   - VAL (ownership grant, single inter-node writer): RW is
  *     serialized, RO is NOT (RO is a snapshot read, no ordering needed).
+ *   - INV (write-invalidate): RW is serialized (a write grant waits on other
+ *     holders' releases), RO is NOT (a reader waits only on the serve of its
+ *     own request, never on another EDT's release).
  *   - EXCL (blocking RW *and* RO locks): BOTH RW and RO are serialized.
  *   - FLUSH (every remote acquire fetches the home's line into a private
  *     copy): NEITHER is serialized — an acquire waits only on its own home's
  *     reply, never on another EDT's release, so there is no acquire cycle to
  *     order away.
  *
- * The defining TU per protocol (val/{home,owner}.c,
- * lock/acquire.c) drags in the broader runtime, so this test links
- * the real symbol out of the per-config static libarts (needs_full_build)
+ * The defining TU per protocol (val/{wt,wb}.c, inv/{wt,wb}.c,
+ * excl/{purge,retain}.c, flush/flush.c) drags in the broader runtime, so
+ * this test links the real symbol out of the per-config static libarts
  * rather than #including a heavyweight TU — it never starts the runtime, it
  * only calls the pure query function.
  *

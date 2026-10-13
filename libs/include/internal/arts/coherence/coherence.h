@@ -2,8 +2,7 @@
  *
  * Coherence protocol data structures.
  *
- * Per-DB state under the home-directory + node-cache protocol.
- * See the corresponding design plan for the full protocol; this
+ * Per-DB state under the home-directory + node-cache protocol.  This
  * header captures only the struct layouts the runtime needs to
  * manipulate.
  *
@@ -64,7 +63,7 @@ void arts_pending_rw_queue_destroy(arts_lf_stack_t *q);
 #endif /* shared grant plane */
 
 /* Cache_s init kinds — selects how writer_count / home / buffer get
- * initialized.  Per coherence design plan §1006-1031 / §968-988. */
+ * initialized. */
 typedef enum {
   /* Creator side, home == self: install buffer, writer_count = 2
    * (sentinel + creator EDT), home struct with rw_holder = self. */
@@ -90,7 +89,7 @@ typedef enum {
  * db_create_in_place (creator side), the DB_CREATE wire handler (home
  * side), and stub install on consumer ranks.  creator_rank: only consulted
  * when kind == ARTS_DB_INIT_HOME_RECV (used to set home->rw_holder).
- * Defined in coherence.c. */
+ * Defined by each arm, around its own cache fields. */
 void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank);
@@ -105,7 +104,7 @@ void arts_db_destroy_remote(arts_guid_t db_guid);
  * Called from arts_db_free.  Because the cache is embedded by value as the
  * first member of arts_db_s, the caller releases the wrapping db_s's storage
  * after this routine returns (arts_db_buf_storage_release) — it does NOT free
- * the cache separately.  Defined in coherence.c. */
+ * the cache separately.  Defined by each arm, around its own cache fields. */
 void arts_db_cache_destructor(struct arts_db_cache_s *cache);
 
 /*--- Acquire path --------------------------------------------------------
@@ -142,19 +141,22 @@ arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
 arts_shared_ptr_t arts_db_cache_stub_install_answered(arts_guid_t db_guid,
                                                       uint64_t db_size);
 
-/* OOO_DB_ACQUIRE Cat-B body (per model). item = the installed db_s; args =
- * arts_ooo_args_db_acquire_s {edt, db_guid, slot}. Attempts the one dep's
- * acquire (mode x ownership dispatch); on a synchronous resolve calls
- * arts_db_acquire_resolved; on a remote request, parks. Used by BOTH the driver
- * (acquire_one_dep) and the OoO drain — this IS the OOO_DB_ACQUIRE handler. */
+/* The coherent acquire of one dep (per model).  item = the installed db_s;
+ * args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  Attempts the one
+ * dep's acquire (mode x ownership dispatch); on a synchronous resolve calls
+ * arts_db_acquire_resolved; on a remote request, parks.  Called only by the
+ * driver's acquire_one_dep, which an OOO_DB_ACQUIRE replay reaches too: that
+ * kind's table entry is arts_db_acquire_replay_dep, never this body. */
 void arts_handler_db_acquire(void *item, void *args);
 
 /* Decrement acquire_remaining; schedule the EDT if it reaches 0. Caller must
  * not touch the EDT afterward (it may have been scheduled + run). */
 void arts_db_acquire_account(struct arts_edt_s *edt);
 
-/* A dep resolved locally (data now in dep->ptr): count it down, and if it is a
- * serialized (RW) dep advance the cursor + fire the next serialized dep. */
+/* A dep resolved locally (data now in dep->ptr): if it is the serialized dep
+ * at the cursor, advance the cursor (the acquire loop, not this call, fires
+ * the next one); hand the payload to the slots that alias it; then count the
+ * dep down, which may schedule the EDT. */
 void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot);
 
 /* An EDT acquires each distinct block ONCE: the owner slot asks an arm for it,
@@ -188,19 +190,14 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode);
 
 /*--- Release path --------------------------------------------------------
  *
- * release_rw is the user-visible RW release entry point.  It bumps the
- * in-buffer version, decrements writer_count, and depending on
- * (rest_count, home == self) issues the appropriate wire message:
- *
- *   R1 (home == self,  rest > 0):  version++; nothing else
- *   R2 (home == self,  rest == 0): version++; local_transfer
- *   R3 (home != self,  rest > 0):  version++; PUBLISH_NORMAL + await ACK
- *   R4 (home != self,  rest == 0): version++; PUBLISH_AND_TRANSFER + await
- * ACK
- *
- * If destroy is locally marked when release_rw enters, all wire sends are
- * skipped — destroy commits the runtime to teardown and any state we would
- * have published is moot. */
+ * Each arm defines its own RW release.  Under VAL and INV it bumps the
+ * buffer's version, publishes where the arm does and waits for that publish's
+ * ACK — VAL WT ships the payload to the home from any other rank; INV asks
+ * the home for the release's invalidation round, carrying the payload under
+ * WT from a rank other than the home — and then takes the release policy's
+ * count-dropping edge: the last writer of a revoked grant ships it to the
+ * target the round named, and a voluntarily returned grant goes back to the
+ * home, riding the publish where there is one. */
 
 /* Release a RW acquire taken as a DEPENDENCE.  payload is the releasing EDT's
  * pointer into its hold; arms whose release does not move the EDT's own bytes
@@ -223,32 +220,37 @@ void arts_db_release_ro(struct arts_db_cache_s *cache);
  * helpers.  These are the genuinely shared coherence internals the per-model
  * handler bodies reuse; they carry no model #ifdef. */
 
-/* Releaser-side publish rendezvous: the stack-local wait state a blocked
- * RW releaser parks on across the dirty-publish round.  Its ADDRESS travels
- * as the wire `cv` and every reply (PUBLISH_CTS, PUBLISH_ACK) wakes it by
- * pointer identity.  `sem` MUST be the first member: the ACK path posts
- * (sem_t *)cv directly, so &wr == &wr.sem.  The CTS handler writes `landing`
- * before posting (sem_post is the release/acquire edge). */
+/* Releaser-side reply rendezvous: the wait state a blocked releaser parks on
+ * until the home answers one message.  Its ADDRESS travels as the wire `cv`
+ * and the answer posts it by pointer identity: the PUBLISH_CTS to a publish
+ * announce (VAL and INV write-through, EXCL PURGE's landing-less release),
+ * whose handler writes `landing` before posting (sem_post is the
+ * release/acquire edge), or the PUBLISH_ACK to a grant return sent on its own
+ * (VAL and INV PURGE), which posts it alone.  Always on the heap: a wait the
+ * shutdown cuts short leaks it, so a late answer still lands in live memory.
+ * `sem` MUST be the first member: the ACK path posts (sem_t *)cv directly, so
+ * &wr == &wr.sem. */
 struct arts_db_pub_rendezvous_s {
   sem_t sem; /* FIRST — cv posts resolve to this address */
   struct arts_rdzv_landing_s landing;
 };
 
-/* Synchronous publish to the DB's home (HOME-placement ownership protocols +
- * the lossy multi-writer protocol).  Registers the caller as a version-covered
- * waiter on the cache's publish flight: at most one publish is in flight per
- * (DB, rank), the flight ships the cache buffer's CURRENT bytes under its
- * current version, and releases that land mid-flight coalesce into at most
- * one trailing flight.  Returns once a publish covering `version` is ACKed
- * (the source-lifetime pin is the flight's own buffer ref, released at the
- * PUT's local completion).  Blocks the calling worker; returns early only on
- * shutdown. */
+/* Synchronous publish to the DB's home: the write-through releases of VAL and
+ * INV, which ship the payload, and INV WB's release, whose publish is
+ * control-only (the invalidation-round request).  Registers the caller as a
+ * version-covered waiter on the cache's publish flight: at most one publish is
+ * in flight per (DB, rank), a payload flight ships the cache buffer's CURRENT
+ * bytes under its current version, and releases that land mid-flight coalesce
+ * into at most one trailing flight.  Returns once a publish covering `version`
+ * is ACKed (the source-lifetime pin is the flight's own buffer ref, released at
+ * the PUT's local completion).  Blocks the calling worker; returns early only
+ * on shutdown. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version);
 #endif
 
-/* Block on a stack-local semaphore until the matching reply posts it (pointer
- * identity); returns early if teardown begins.  The one blocking wait of the
+/* Block on the caller's heap semaphore until the matching reply posts it;
+ * returns early if teardown begins.  The one blocking wait of the
  * release path, in every arm that has one.  Returns whether the reply came:
  * false is a wait the shutdown cut short, which it records -- a caller that
  * then drops the rest of its round records the waits it never began. */
@@ -356,7 +358,7 @@ void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache);
  * (buffer-NULL) → protocol field-destroy → arts_db_cache_common_destroy_post
  * (snapshot drain → home teardown).  Splitting the destruct into pre/post lets
  * the protocol field-destroy land between the buffer-NULL and the snapshot/home
- * teardown, matching the original single-TU ordering. */
+ * teardown. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||                \
     defined(ARTS_PROTOCOL_EXCL)
 void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
@@ -536,8 +538,7 @@ void arts_db_grant_release_commit(struct arts_db_cache_s *cache);
  * publish.  commit_drain returns how many waiters it woke; commit_finish is
  * given that count because with none there is no release to carry anything and
  * the commit must close the edge itself. */
-unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache,
-                                        uint64_t version);
+unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache);
 void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
                                  unsigned int drained);
 /* Chain primitives for a commit that counts before it wakes (grant_queue.c). */
@@ -637,10 +638,10 @@ void arts_pending_rw_queue_for_each(arts_lf_stack_t *q,
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* GRANT drain: install the granted waiters — pops every pending_rw waiter
- * (bump writer_count per waiter).  Defined in coherence/<proto>/grant.c;
- * called from the HOME GRANT handler and the OWNER CONFIRM_ACK handler. */
-void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache,
-                                          uint64_t version, bool has_next);
+ * (bump writer_count per waiter).  Called where a write grant commits on this
+ * rank: the WB CONFIRM_ACK handler, RETAIN's commit drain, and a PURGE home
+ * that serves its own request from the head of its grant queue. */
+void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache);
 #endif /* shared grant plane */
 
 #ifdef __cplusplus

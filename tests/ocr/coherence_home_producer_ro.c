@@ -42,15 +42,13 @@
 ///        that never transfers ownership, followed by a FOREIGN rank acquiring
 ///        the DB read-only.
 ///
-///        This exercises the path where the home owner has no per-rank dedup
-///        map yet (only an ownership transfer ever lazily creates one), so the
-///        foreign RO request must still be served the producer's real bytes via
-///        a lazily-created map rather than an empty (no-data) response.  A
-///        prior coherence simplification regressed this into serving version-N
-///        with no payload, so the foreign reader observed a NULL / stale
-///        pointer.
+///        This exercises the path where the home owner has served no other
+///        rank, so its dedup ledger holds no entry for the reader: the foreign
+///        RO request must still be served the producer's real bytes rather
+///        than an empty (no-data) response.  Served version-N with no payload,
+///        the foreign reader would observe a NULL / stale pointer.
 ///
-///        Model-agnostic: under every model (HOME/OWNER) the same
+///        Model-agnostic: under every protocol and policy the same
 ///        producer→foreign-RO chain must deliver the written value.  Failure
 ///        aborts the consumer, which propagates as a non-zero exit and a ctest
 ///        FAIL.  Requires 2+ ranks.

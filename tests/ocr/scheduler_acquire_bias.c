@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * scheduler_acquire_bias — runtime_single stress for the +1 acquire bias in
+ * scheduler_acquire_bias — single-node stress for the +1 acquire bias in
  * arts_handle_ready_edt and the release-before-satisfy / outstanding-decrement
- * ordering in arts_run_edt (census 17 §1 arts_handle_ready_edt + arts_run_edt).
+ * ordering in arts_run_edt.
  *
  * Property 1 — the +1 bias (arts_handle_ready_edt: rw_cursor=0,
  * acquire_remaining=1, then arts_db_acquire_all adds the real dep count).  The

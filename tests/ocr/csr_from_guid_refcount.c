@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_from_guid_refcount.c
-/// @brief T266 — arts_csr_from_guid / arts_csr_from_partition lookup +
+/// @brief arts_csr_from_guid / arts_csr_from_partition lookup +
 ///        refcount discipline.
 ///
 /// Checks:

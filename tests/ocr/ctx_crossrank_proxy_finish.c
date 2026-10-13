@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T149 — cross-rank proxy finish DECR emitted by arts_owned_finish_cleanup.
+ * Cross-rank proxy finish DECR emitted by arts_owned_finish_cleanup.
  *
  * Target: the only externally-visible side effect of edt_context.c —
  * arts_owned_finish_cleanup issues arts_event_satisfy_slot(..., DECR) for every
@@ -26,7 +26,7 @@
  *     counter DB), then shuts down.  A lost cross-rank DECR -> F never drains
  *     -> ctest TIMEOUT.
  *
- * exposes_runtime_bug = false (pins correct cross-rank cleanup DECR routing).
+ * Pins correct cross-rank cleanup DECR routing.
  */
 #include "arts.h"
 

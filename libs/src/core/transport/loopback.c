@@ -68,16 +68,10 @@
  * have received it.
  *
  * Delivery is SERIALIZED to one drainer at a time (a CAS token; a thread that
- * loses it does other work, never spins — lock-free, not a lock).  This
- * reproduces the single per-rank inbound processor that orders ALL coherence on
- * a multi-node run: an ownership round depends on that order (a PROCEED reaches
- * the new front before its CONFIRM; an INVALIDATE publishes the transfer target
- * before the matching release ships), and draining with many threads reorders
- * those steps and strands a transfer.  The serialized section is only the brief
- * message PROCESSING — the data reads it unblocks run on the worker pool, fully
- * concurrent.  Within a turn the chain is taken whole (reverse_drain, FIFO) and
- * each node freed after dispatch, never re-pushed — upholding the stack's
- * single-membership invariant. */
+ * loses it does other work, never spins — lock-free, not a lock).  Within a
+ * turn the chain is taken whole (reverse_drain, FIFO) and each node freed
+ * after dispatch, never re-pushed — upholding the stack's single-membership
+ * invariant. */
 static arts_lf_stack_t g_loopback;
 static _Atomic(int) g_loopback_draining;
 

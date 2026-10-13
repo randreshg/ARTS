@@ -38,24 +38,25 @@
 ******************************************************************************/
 
 /// @file cat_c_ref_balance.c
-/// @brief T115 — Cat-C self-send / dispatcher ref get/release balance (B024).
+/// @brief Cat-C self-send / dispatcher ref get/release balance.
 ///
-/// Every Cat-C coherence handler (DATA_RESPONSE / DESTROY_NOTIFY /
-/// PUBLISH_ACK / PUBLISH_CTS / REDIRECT_RO / CONFIRM / CONFIRM_ACK) pins
-/// the home/owner db_s with a ref-counted `arts_route_table_lookup_db` +
-/// `arts_shared_get` and MUST `arts_shared_release` on EVERY path — HIT and
-/// every early-return MISS.  An early-return that skips the release leaks a
-/// ref: the route-table cb (and hence the DB) is never destroyed.  Conversely
-/// the HIT path must keep the ref pinned across the handler body so a
-/// concurrent destroy cannot free the db_s mid-handler (no UAF).
+/// Every Cat-C coherence handler that resolves its block (SNAPSHOT_RESPONSE /
+/// CACHE_DESTROY / PUBLISH_ACK / SNAPSHOT_REDIRECT / GRANT_CONFIRM /
+/// GRANT_CONFIRM_ACK, and each arm's own) pins the home/owner db_s with a
+/// ref-counted `arts_route_table_lookup_db` + `arts_shared_get` and MUST
+/// `arts_shared_release` on EVERY path — HIT and every early-return MISS.  An
+/// early-return that skips the release leaks a ref: the route-table cb (and
+/// hence the DB) is never destroyed.  Conversely the HIT path must keep the
+/// ref pinned across the handler body so a concurrent destroy cannot free the
+/// db_s mid-handler (no UAF).
 ///
 /// Black-box driver: a high-churn create→acquire(RO+RW across ranks)→destroy
 /// loop on a fresh DB GUID every generation.  This drives all Cat-C families:
-///   - DESTROY_NOTIFY fan-out (cache destroy) — both HIT and idempotent MISS,
+///   - CACHE_DESTROY fan-out — both HIT and idempotent MISS,
 ///   - SNAPSHOT_RESPONSE (RO acquire) — HIT and torn-down-home MISS,
 ///   - PUBLISH_ACK / PUBLISH_CTS (RW release) — HIT and MISS,
-///   - REDIRECT_RO / CONFIRM[_ACK] (WB ownership) where the protocol uses
-///   them.
+///   - SNAPSHOT_REDIRECT / GRANT_CONFIRM[_ACK] (ownership transfer) where
+///   the protocol uses them.
 /// Each generation's DB is explicitly destroyed; if any Cat-C path leaked a
 /// ref, the cb would never reach refcount 0 and a parked waiter's
 /// destroy-fan-out wake would be dropped → the finish scope never drains →
@@ -129,7 +130,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     arts_event_wait(fe);
 
-    /* Destroy + idempotent second destroy: drives DESTROY_NOTIFY HIT then MISS.
+    /* Destroy + idempotent second destroy: drives CACHE_DESTROY HIT then MISS.
      * A leaked Cat-C ref would block the cb from reaching refcount 0. */
     arts_db_destroy(db);
     arts_db_destroy(db);

@@ -63,7 +63,7 @@
 /// would be lost -> reader mismatch -> arts_abort.  A stuck lock counter
 /// instead manifests as a hang caught by the ctest TIMEOUT.
 ///
-/// config_specific: meaningful only under EXCL.  Self-skips (prints SKIP and
+/// Meaningful only under EXCL.  Self-skips (prints SKIP and
 /// returns 0) under every other protocol.
 
 #include "arts.h"

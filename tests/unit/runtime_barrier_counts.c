@@ -23,7 +23,7 @@
 /// White-box: reads arts_node_info via runtime_state.h, mirroring
 /// tests/unit/route_table_install_race.c's internal-state inspection idiom.
 ///
-/// runtime_single, all configs (protocol-agnostic).
+/// Single-node, every configuration (protocol-agnostic).
 
 #include "arts.h"
 #include "arts/runtime_state.h"

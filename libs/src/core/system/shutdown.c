@@ -53,10 +53,13 @@
 /*
  * arts_shutdown — Initiate global shutdown of the ARTS runtime.
  *
- * Multi-node: delegates to arts_transport_broadcast_shutdown() which shuts
- *   down all send and receive sockets.  Remote nodes detect the socket closure
- *   in their receive path and call arts_runtime_stop() themselves.
- * Single-node: directly calls arts_runtime_stop() to signal all threads.
+ * Enters the shutdown state as its initiator (arts_enter_shutdown_state): on a
+ * multi-node run it sends MSG_SHUTDOWN to every other rank over the fabric,
+ * like any other message, and waits (bounded) for those sends to complete;
+ * then it stops this rank's worker threads.  A rank that receives the message
+ * enters the same state without rebroadcasting (arts_handler_shutdown).  Once
+ * this rank has entered the shutdown state, by any path, a call changes
+ * nothing.
  *
  * Called from:
  *   - User code via the arts_shutdown() public API.
@@ -83,10 +86,12 @@ _Noreturn void arts_abort(uint8_t error_code) {
  *
  * Called from:
  *   - arts_shutdown() on the user EDT path (initiator = true)
- *   - arts_handler_shutdown() — the MSG_SHUTDOWN wire RX path + the signal
- *     watcher's passive wake (initiator = false)
- *   - legacy EOF-detection paths in socket.c's recv logic
- *     (initiator = false) — defense in depth
+ *   - the signal watcher on a terminating signal (initiator = true)
+ *   - arts_handler_shutdown() — the MSG_SHUTDOWN wire RX path
+ *     (initiator = false)
+ *   - the liveness sentinel (arts_socket_sentinel_check) when a peer's
+ *     bootstrap connection closes before this rank's shutdown began
+ *     (initiator = false)
  *
  * Idempotent: repeated calls after the first are no-ops. The CAS on
  * shutdown_state ensures exactly one caller performs the broadcast and
@@ -107,24 +112,22 @@ void arts_enter_shutdown_state(bool initiator) {
   ARTS_INFO("arts_enter_shutdown_state: rank=%u initiator=%d",
             arts_global_rank_id, (int)initiator);
   if (initiator && arts_global_rank_count > 1) {
-    /* Phase A.1: broadcast SHUTDOWN_MSG to every other rank (over the fabric,
+    /* Phase A.1: broadcast MSG_SHUTDOWN to every other rank (over the fabric,
      * like every other message). */
     arts_transport_broadcast_shutdown();
     /* Phase A.2: wait (bounded) for those fabric sends to complete so the
-     * SHUTDOWN frames leave this node before teardown.  The progress thread is
-     * still running and reaps completions; this assists and polls the
+     * SHUTDOWN frames leave this node before teardown.  The progress threads
+     * are still running and reap completions; this assists and polls the
      * outstanding-TX count. */
     arts_net_drain_outstanding(500U /* SHUTDOWN_DRAIN_MS */);
   }
-  /* Phase A.3: stop worker threads. Network threads (senders,
-   * receivers) remain alive so they can flush any in-flight traffic
-   * and deliver any inbound SHUTDOWN_MSG that helps with defense in
-   * depth. */
+  /* Phase A.3: stop worker threads.  Progress threads remain alive so they
+   * can flush any in-flight traffic and deliver any inbound MSG_SHUTDOWN. */
   arts_runtime_stop_workers();
 }
 
 /*
- * arts_handler_shutdown — passive RX entry (spec Cat E).  The wire dispatcher
+ * arts_handler_shutdown — passive RX entry.  The wire dispatcher
  * calls this directly on MSG_SHUTDOWN.  Lightweight: the idempotent CAS gate
  * (0→1) + worker-thread stop signal, with NO rebroadcast and NO drain-wait
  * (those are the initiator arts_shutdown's responsibility).  Implemented as the

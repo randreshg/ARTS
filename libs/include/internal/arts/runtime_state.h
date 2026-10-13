@@ -48,7 +48,7 @@ extern "C" {
 #include "arts/system/topology.h"
 #include "arts/utils/array_list.h"
 #ifdef ARTS_USE_CXL
-#include "arts/cxl/deque.h"
+#include "arts/cxl/arena.h"
 #include <pthread.h>
 #endif
 
@@ -60,10 +60,8 @@ struct arts_runtime_shared_s {
   struct arts_deque_s **progress_deque;
   struct arts_deque_s **gpu_deque;
 #ifdef ARTS_USE_CXL
-  arts_cxl_deque_t *cxl_deque;
-  pthread_mutex_t cxl_local_lock;
-  void *cxl_db_arena_start;
-  void *cxl_db_arena_end;
+  arts_cxl_arena_table_t *cxl_arenas;
+  pthread_mutex_t cxl_arena_lock;
   unsigned int cxl_db_dev_count; /**< Number of CXL DB arenas (devices). */
   volatile unsigned int cxl_db_rr_idx; /**< Round-robin device index counter. */
   unsigned int cxl_db_static_device; /**< Device index for static allocation. */
@@ -74,7 +72,7 @@ struct arts_runtime_shared_s {
   volatile bool **local_spin;
   /* Per-thread role, indexed by thread_id (0..total_thread_count-1).
    * Populated during arts_runtime_private_init so that shutdown paths
-   * can filter threads by role (workers vs. network). */
+   * can filter threads by role (workers vs. progress). */
   unsigned int *thread_roles;
   unsigned int worker_thread_count;
   unsigned int progress_thread_count;

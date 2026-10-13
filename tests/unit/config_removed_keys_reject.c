@@ -1,31 +1,33 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T298 — removed cfg-key hard errors (config_reject_removed_keys, config.c).
+ * Removed cfg-key hard errors (config_reject_removed_keys, config.c).
  *
  * Property under test
  * -------------------
- * The config-surface cleanup deleted the `sender_threads` key outright (the
- * transport injects directly from workers now; there is no sender role left
- * to configure) and renamed `receiver_threads` to `progress_threads`.  Both
- * old keys must now be a HARD ERROR — arts_config_load() calls ARTS_ERROR
- * (== arts_abort(1) == exit) as soon as either key is present in the parsed
- * variable list, before any of their now-nonexistent defaults could silently
- * apply.  This is deliberately NOT a warning-and-fold like the sender fold
- * used to be: a stale cfg must fail loudly, not run with an unintended
- * thread count.
+ * A key that no longer names anything in the config surface is a HARD ERROR:
+ * arts_config_load() calls ARTS_ERROR (== arts_abort(1) == exit) as soon as
+ * the key is present in the parsed variable list, before any default it used
+ * to carry could silently apply.  A stale cfg must fail loudly, not run with
+ * an unintended setting.  The keys: sender_threads (no sender role exists),
+ * receiver_threads (renamed progress_threads), default_ports (renamed ports),
+ * deque_type (there is one deque), auto_shutdown (the runtime never ends a
+ * run because its work drained), fam_pool_mb and fam_strict (the CXL store's
+ * arenas are sized at build time).
  *
  * ARTS_ERROR aborts the process, so each rejection case is driven in a forked
- * child (same discipline as config_ports_contract.c) and the parent
- * asserts the child died with a nonzero status.  A third case loads a cfg
- * using ONLY the new `progress_threads` key and asserts it loads normally (in
- * the parent process, since nothing should abort) — proving the hard error is
- * specific to the old key names, not an overzealous rejection of any
- * networking key.
+ * child (same discipline as config_ports_contract.c) and the parent asserts
+ * the child exited with ARTS_ERROR's status 1.  A clean exit is an acceptance;
+ * any other end (another status, a signal) is neither a load nor a refusal,
+ * and fails the test too.  A positive control loads a cfg naming the live
+ * `progress_threads` key and asserts it loads normally (in the parent
+ * process, since nothing should abort) — so the refusal is shown to follow
+ * the removed names, not every key the loader reads.
  *
  * This is a config-parser test: it calls arts_config_load() directly against
  * crafted temp cfgs (no runtime started, no ports bound).  Self-contained: it
- * sets its own ARTS_CONFIG and clears the inherited `ports`/
- * `port_count` env overrides.  Orthogonal to the coherence protocol axis.
+ * sets its own ARTS_CONFIG and clears the inherited `ports`, `port_count` and
+ * `progress_threads` env overrides.  Orthogonal to the coherence protocol
+ * axis.
  */
 
 #include "arts.h"
@@ -56,9 +58,11 @@ static int write_cfg(char *path_out, size_t path_cap, const char *tag,
   return 0;
 }
 
-/* Fork, load the given cfg in the child, and report whether it was rejected
- * (nonzero exit / signal) or accepted (clean exit 0). */
-static int child_load_rejected(const char *cfg_path) {
+/* Fork and load the given cfg in the child: 1 when the load was refused (exit
+ * status 1, ARTS_ERROR's), 0 when it loaded (exit 0), -1 for any other end. */
+static int child_load_refused(const char *cfg_path) {
+  /* The child's exit through ARTS_ERROR flushes what it inherited. */
+  (void)fflush(stdout);
   pid_t pid = fork();
   if (pid < 0) {
     perror("fork");
@@ -78,65 +82,65 @@ static int child_load_rejected(const char *cfg_path) {
     perror("waitpid");
     return -1;
   }
-  if (WIFEXITED(status)) {
-    return WEXITSTATUS(status) != 0;
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 1) {
+    return 1;
   }
-  return WIFSIGNALED(status) ? 1 : 0;
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+    return 0;
+  }
+  if (WIFSIGNALED(status)) {
+    printf("config_removed_keys_reject: child died on signal %d\n",
+           WTERMSIG(status));
+  } else {
+    printf("config_removed_keys_reject: child exited with status %d\n",
+           WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+  }
+  return -1;
 }
 
 int main(void) {
   int fails = 0;
   char cfg_path[256];
 
-  /* (A) sender_threads present -> hard error. */
-  if (write_cfg(cfg_path, sizeof(cfg_path), "sender", "sender_threads=1\n") !=
-      0) {
-    printf("FAIL config_removed_keys_reject: cannot write sender_threads "
-           "cfg\n");
-    return 1;
-  }
-  int sender_rejected = child_load_rejected(cfg_path);
-  (void)remove(cfg_path);
-  if (sender_rejected != 1) {
-    printf("FAIL config_removed_keys_reject: sender_threads was ACCEPTED "
-           "(expected hard error)\n");
-    fails++;
-  }
-
-  /* (B) receiver_threads present -> hard error. */
-  if (write_cfg(cfg_path, sizeof(cfg_path), "receiver",
-               "receiver_threads=1\n") != 0) {
-    printf("FAIL config_removed_keys_reject: cannot write receiver_threads "
-           "cfg\n");
-    return 1;
-  }
-  int receiver_rejected = child_load_rejected(cfg_path);
-  (void)remove(cfg_path);
-  if (receiver_rejected != 1) {
-    printf("FAIL config_removed_keys_reject: receiver_threads was ACCEPTED "
-           "(expected hard error)\n");
-    fails++;
-  }
-
-  /* (B2) default_ports present -> hard error (renamed to ports). */
-  if (write_cfg(cfg_path, sizeof(cfg_path), "defaultports",
-                "default_ports=25000\n") != 0) {
-    printf("FAIL config_removed_keys_reject: cannot write default_ports cfg\n");
-    return 1;
-  }
-  int default_ports_rejected = child_load_rejected(cfg_path);
-  (void)remove(cfg_path);
-  if (default_ports_rejected != 1) {
-    printf("FAIL config_removed_keys_reject: default_ports was ACCEPTED "
-           "(expected hard error)\n");
-    fails++;
+  static const struct {
+    const char *key;
+    const char *line;
+  } removed[] = {
+      {"sender_threads", "sender_threads=1\n"},
+      {"receiver_threads", "receiver_threads=1\n"},
+      {"default_ports", "default_ports=25000\n"},
+      {"deque_type", "deque_type=0\n"},
+      {"auto_shutdown", "auto_shutdown=1\n"},
+      {"fam_pool_mb", "fam_pool_mb=1\n"},
+      {"fam_strict", "fam_strict=1\n"},
+  };
+  for (size_t k = 0; k < sizeof(removed) / sizeof(removed[0]); k++) {
+    if (write_cfg(cfg_path, sizeof(cfg_path), removed[k].key,
+                  removed[k].line) != 0) {
+      printf("FAIL config_removed_keys_reject: cannot write %s cfg\n",
+             removed[k].key);
+      return 1;
+    }
+    int refused = child_load_refused(cfg_path);
+    (void)remove(cfg_path);
+    if (refused == 0) {
+      printf("FAIL config_removed_keys_reject: %s was ACCEPTED "
+             "(expected hard error)\n",
+             removed[k].key);
+      fails++;
+    } else if (refused < 0) {
+      printf("FAIL config_removed_keys_reject: %s was neither loaded nor "
+             "refused\n",
+             removed[k].key);
+      fails++;
+    }
   }
 
-  /* (C) sanity: progress_threads (the new key) loads normally -- the hard
-   * error is specific to the removed key NAMES, not networking keys in
-   * general.  Run directly (not forked): this must NOT abort. */
+  /* Positive control: the live progress_threads key loads normally, so
+   * the refusal follows the removed NAMES, not every key the loader reads.
+   * Run directly (not forked): this must NOT abort. */
   if (write_cfg(cfg_path, sizeof(cfg_path), "progress",
-               "progress_threads=1\n") != 0) {
+                "progress_threads=1\n") != 0) {
     printf("FAIL config_removed_keys_reject: cannot write progress_threads "
            "cfg\n");
     return 1;
@@ -144,6 +148,7 @@ int main(void) {
   setenv("ARTS_CONFIG", cfg_path, 1);
   unsetenv("ports");
   unsetenv("port_count");
+  unsetenv("progress_threads");
   struct arts_config_s config;
   arts_config_load(&config);
   if (config.progress_thread_count != 1) {
@@ -156,8 +161,9 @@ int main(void) {
   (void)remove(cfg_path);
 
   if (fails == 0) {
-    printf("PASS config_removed_keys_reject: sender_threads + "
-           "receiver_threads both hard-error; progress_threads loads "
+    printf("PASS config_removed_keys_reject: sender_threads, "
+           "receiver_threads, default_ports, deque_type, auto_shutdown, "
+           "fam_pool_mb and fam_strict hard-error; progress_threads loads "
            "normally\n");
     return 0;
   }

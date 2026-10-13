@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T195 — stdio_forward inner write-loop: partial write + EINTR retry.
+ * stdio_forward inner write-loop: partial write + EINTR retry.
  *
  * forwarder_thread_main's inner loop must drain ALL n bytes of every read
  * chunk to the sink fd, retrying on partial writes (w < n-off) and on EINTR.

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T136 — remote pre-reserved EDT create with its satisfies reordered ahead
- *        (arts_handler_edt_create sentinel; OoO replay on the home rank).
+ * Remote pre-reserved EDT create with its satisfies reordered ahead
+ * (arts_handler_edt_create sentinel; OoO replay on the home rank).
  *
  * Property under test (arts_handler_edt_create)
  * ---------------------------------------------

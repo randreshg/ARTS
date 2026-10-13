@@ -68,15 +68,6 @@
 #include "arts/gpu/gpu_stream.h"
 #endif
 
-/* Retired mechanism, sealed: a scheduler loop that copied a ready EDT into a
- * deque in CXL memory when the worker's own deque was full, so any rank could
- * pop and run it.  Every block below is that mechanism; the store holds data
- * blocks only. */
-#if 0
-#include "arts/cxl/deque.h"
-bool arts_cxl_scheduler_loop(void);
-#endif
-
 extern unsigned int num_numa_domains;
 
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
@@ -92,20 +83,19 @@ scheduler_t scheduler_loop[] = {
 #else
 scheduler_t scheduler_loop[] = {
     (scheduler_t)arts_default_scheduler_loop,
-#if 0
-    (scheduler_t)arts_cxl_scheduler_loop,
-#endif
     (scheduler_t)arts_network_before_steal_scheduler_loop,
     (scheduler_t)arts_network_first_scheduler_loop};
 #endif
+const unsigned int scheduler_loop_count =
+    sizeof(scheduler_loop) / sizeof(scheduler_loop[0]);
 
 /* Schedule a fully DB-acquired EDT onto a work-stealing deque.  Reached when
  * the strict sequential acquire walk in arts_db_acquire_all completes
- * (rw_cursor
- * == depc) — either synchronously (initial arts_handle_ready_edt on a worker)
- * or asynchronously (a coherence wake / OoO drain resumes the walk on a
- * receiver or drain thread).  Hence the deque[0] fallback: the completing
- * thread may have no my_deque. */
+ * (rw_cursor == depc) — either synchronously (initial arts_handle_ready_edt on
+ * a worker) or asynchronously (a coherence wake / OoO drain resumes the walk on
+ * the thread that dispatches the waking message: a progress thread, or for a
+ * self-send the sending thread itself).  The deque[0] fallback covers a
+ * completing thread that owns no deque. */
 void arts_schedule_ready_edt(struct arts_edt_s *edt) {
   INCREMENT_NUM_EDT_ACQUIRE_BY(1);
 #ifdef ARTS_USE_GPU
@@ -143,16 +133,6 @@ void arts_schedule_ready_edt(struct arts_edt_s *edt) {
 void arts_handle_ready_edt(struct arts_edt_s *edt) {
   ARTS_INFO("EDT[Guid:%lu] ready — entering sequential DB acquire (depc=%u)",
             edt->guid, edt->depc);
-#if 0
-  if (arts_node_info.scheduler == (void *)arts_cxl_scheduler_loop &&
-      arts_deque_full(arts_thread_info.my_deque)) {
-    while (!arts_cxl_deque_push(arts_node_info.cxl_deque,
-                                &arts_node_info.cxl_local_lock,
-                                arts_edt_total_size(edt), edt)) {
-    }
-    return;
-  }
-#endif
   /* Take the runnable-phase ref: from here the EDT travels by raw pointer
    * through DB acquire (including asynchronous coherence park/resume on other
    * threads), the work-stealing deque, and execution — none of which can
@@ -199,11 +179,15 @@ void arts_run_edt(struct arts_edt_s *edt) {
 
   INCREMENT_NUM_EDT_FINISH_BY(1);
 
-  /* Release DBs before signaling finish-event completion: any PUBLISH
-   * messages (sent at release under the WT write policy) are
-   * queued to the sender thread before the
-   * finish DECR message, so TCP FIFO ordering guarantees data arrives at home
-   * first. */
+  /* Release DBs before signaling completion.  No message order between a
+   * release and the completion signal is relied on: each arm's release
+   * returns only once a later acquirer is bound to see the writes — an arm
+   * that publishes or invalidates at release waits for the home's
+   * acknowledgement; where the bytes stay at this rank (write-back, a
+   * retained right) the home sends that acquirer here; under exclusion the
+   * home grants nobody else until it has paired the release with its payload;
+   * and where the payload rests in CXL memory the release is sent only after
+   * the bytes are back in the store. */
   release_dbs(depc, depv, false);
   arts_release_created_dbs();
 
@@ -214,13 +198,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
    * in arts_handle_ready_edt keeps the EDT alive past the detach, and its
    * release below is the last drop that runs the deleter. */
   arts_shared_ptr_t sref = edt->self_cb;
-#if 0
-  bool retire = !IS_CXL_PTR(edt);
-#endif
-  bool retire = true;
-  if (retire) {
-    arts_edt_delete(edt);
-  }
+  arts_edt_delete(edt);
 
   /* Output event: satisfied only now, after every release above, so a
    * consumer it wakes cannot acquire one of this EDT's data blocks before
@@ -236,9 +214,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
   arts_unset_thread_local_edt_info(true);
 
   ARTS_INFO("EDT[Guid:%lu] finished (exec_ns=%lu)", edt->guid, exec_ns);
-  if (retire) {
-    arts_shared_release(&sref);
-  }
+  arts_shared_release(&sref);
 }
 
 inline struct arts_edt_s *arts_runtime_steal_from_network() {
@@ -278,10 +254,9 @@ inline struct arts_edt_s *arts_runtime_steal_from_worker() {
 }
 
 bool arts_network_first_scheduler_loop() {
-  /* Single-node only: a worker drains self-loopback (no receiver thread
-   * exists). On multinode the receiver thread is the sole loopback drainer, so
-   * all coherence stays serialized on one thread; workers must not also drain.
-   */
+  /* Single-node only: a worker drains self-loopback (no progress thread
+   * exists).  On multinode the progress threads are its only drainers, so a
+   * worker leaves it to them. */
   bool drained =
       (arts_global_rank_count == 1) && arts_transport_loopback_drain();
   struct arts_edt_s *edt_found;
@@ -299,10 +274,9 @@ bool arts_network_first_scheduler_loop() {
 }
 
 bool arts_network_before_steal_scheduler_loop() {
-  /* Single-node only: a worker drains self-loopback (no receiver thread
-   * exists). On multinode the receiver thread is the sole loopback drainer, so
-   * all coherence stays serialized on one thread; workers must not also drain.
-   */
+  /* Single-node only: a worker drains self-loopback (no progress thread
+   * exists).  On multinode the progress threads are its only drainers, so a
+   * worker leaves it to them. */
   bool drained =
       (arts_global_rank_count == 1) && arts_transport_loopback_drain();
   struct arts_edt_s *edt_found;
@@ -321,13 +295,9 @@ bool arts_network_before_steal_scheduler_loop() {
 }
 
 bool arts_default_scheduler_loop() {
-  /* Deliver self-sends first so a same-rank acquire/transfer round advances on
-   * a fresh stack (the asynchronous receiver paradigm; a single-node rank has
-   * no receiver thread to carry a message addressed to itself). */
-  /* Single-node only: a worker drains self-loopback (no receiver thread
-   * exists). On multinode the receiver thread is the sole loopback drainer, so
-   * all coherence stays serialized on one thread; workers must not also drain.
-   */
+  /* Single-node only: a worker drains self-loopback (no progress thread
+   * exists).  On multinode the progress threads are its only drainers, so a
+   * worker leaves it to them. */
   bool drained =
       (arts_global_rank_count == 1) && arts_transport_loopback_drain();
   struct arts_edt_s *edt_found = NULL;
@@ -351,31 +321,3 @@ bool arts_default_scheduler_loop() {
   arts_runtime_idle_pause();
   return false;
 }
-
-#if 0
-bool arts_cxl_scheduler_loop() {
-  /* Single-node only: a worker drains self-loopback (no receiver thread
-   * exists). On multinode the receiver thread is the sole loopback drainer, so
-   * all coherence stays serialized on one thread; workers must not also drain.
-   */
-  bool drained =
-      (arts_global_rank_count == 1) && arts_transport_loopback_drain();
-  struct arts_edt_s *edt_found = NULL;
-  if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
-            arts_thread_info.my_deque))) {
-    if (!(edt_found = arts_runtime_steal_from_worker())) {
-      arts_cxl_deque_pop(arts_node_info.cxl_deque,
-                         &arts_node_info.cxl_local_lock, (void **)&edt_found);
-    }
-  }
-  if (edt_found) {
-    arts_run_edt(edt_found);
-    return true;
-  }
-  if (drained) {
-    return true;
-  }
-  arts_runtime_idle_pause();
-  return false;
-}
-#endif

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T201 — raw-fd anti-deadlock (the load-bearing design reason for the module).
+ * Raw-fd anti-deadlock (the load-bearing design reason for the module).
  *
  * forwarder_thread_main deliberately uses raw read(2)/write(2) instead of
  * fdopen()+fgets/fputs.  fdopen would register the forwarder fd as a FILE* in

@@ -50,6 +50,7 @@
 #include <unistd.h>
 
 #include "arts.h"
+#include "arts/runtime.h" /* scheduler_loop_count */
 #include "arts/system/print.h"
 #include "arts/transport/launcher.h"
 #include "arts/utils/malloc.h"
@@ -694,7 +695,9 @@ static void handle_net_interface(struct arts_config_s *config,
                                  const char *value,
                                  struct arts_config_variable_s **vars) {
   (void)vars;
-  if (value) {
+  /* Empty is unset on every plane: as a name prefix it would match any
+   * interface. */
+  if (value && value[0] != '\0') {
     config->net_interface = arts_config_make_new_var(value);
   }
 }
@@ -847,7 +850,6 @@ static const struct arts_config_entry_s config_entries[] = {
     {"pin", CONFIG_BOOL, OFF(pin_threads), "1", NULL},
     /* --- Scheduling --- */
     {"scheduler", CONFIG_UINT, OFF(scheduler), "0", NULL},
-    {"deque_type", CONFIG_UINT, OFF(deque_type), "0", NULL},
     {"worker_init_deque_size", CONFIG_UINT, OFF(deque_size), "4096", NULL},
     {"route_table_size", CONFIG_UINT, OFF(route_table_size), "16", NULL},
     /* --- GPU --- */
@@ -1340,6 +1342,13 @@ static void config_compute_derived(struct arts_config_s *config) {
   }
   config->thread_count =
       config->worker_thread_count + config->progress_thread_count;
+
+  if (config->scheduler >= scheduler_loop_count) {
+    ARTS_ERROR("scheduler=%u names no scheduler loop: this build has %u "
+               "(0..%u)",
+               config->scheduler, scheduler_loop_count,
+               scheduler_loop_count - 1u);
+  }
 }
 
 static void config_print_warnings(struct arts_config_s *config) {
@@ -1414,8 +1423,17 @@ static void config_reject_removed_keys(struct arts_config_variable_s **vars) {
   if (config_lookup(vars, "default_ports")) {
     ARTS_ERROR("default_ports was renamed to ports: rename the key.  Nothing "
                "defaults them any more -- the list must name exactly "
-               "port_count ports, and may be omitted only on launcher=local "
-               "with port_auto_select on");
+               "port_count ports, and launcher=local refuses it (a local run "
+               "claims its own port block)");
+  }
+  if (config_lookup(vars, "deque_type")) {
+    ARTS_ERROR("deque_type no longer exists: there is one work-stealing deque; "
+               "remove the key");
+  }
+  if (config_lookup(vars, "auto_shutdown")) {
+    ARTS_ERROR("auto_shutdown no longer exists: the runtime never ends a run "
+               "because its work drained; call arts_shutdown() and remove the "
+               "key");
   }
   if (config_lookup(vars, "fam_pool_mb") || config_lookup(vars, "fam_strict")) {
     ARTS_ERROR("fam_pool_mb and fam_strict no longer exist: the CXL store's "

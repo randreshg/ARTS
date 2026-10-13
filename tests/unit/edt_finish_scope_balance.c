@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T135 — EDT finish-scope INCR/DECR balance (local + remote-create proxy).
+ * EDT finish-scope INCR/DECR balance (local + remote-create proxy).
  *
  * Property under test (create_core join INCR + unset DECR; remote proxy)
  * --------------------------------------------------------------------

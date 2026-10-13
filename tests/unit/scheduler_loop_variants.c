@@ -1,41 +1,27 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * scheduler_loop_variants — verifies the scheduler_loop[] dispatch table layout
- * and that the configured loop is the one the runtime actually installs
- * (census 17 §1 scheduler_loop[] + §4 LOW "scheduler dispatch index drift under
- * CXL").
+ * and that the configured loop is the one the runtime actually installs.
  *
  * scheduler_loop[] (scheduler.c) is a function-pointer dispatch table indexed
- * by config->scheduler.  Its LAYOUT is build-config dependent and the
- * index→loop mapping is positional and undocumented at the config layer:
- *   - non-GPU, non-CXL: {default, network_before_steal, network_first}
- *   - non-GPU,  +CXL  : {default, CXL, network_before_steal, network_first}
- *                        ^ inserting CXL at index 1 SHIFTS the network loops:
- *                          network_before_steal 1→2, network_first 2→3.
- *   - GPU build       : {default, network_before_steal, network_first, gpu,
- *                        gpu_backoff, gpu_demand}.
- * A numeric `scheduler=N` in a config written for one build silently selects a
- * different loop under another (the documented foot-gun).
+ * by the `scheduler` config key.  Every build carries the three CPU loops at
+ * the same indices — {default, network_before_steal, network_first} at 0..2 —
+ * and a GPU build appends its three loops (gpu, gpu_backoff, gpu_demand) at
+ * 3..5, so a numeric `scheduler=N` below 3 selects the same loop in every
+ * build.
  *
- * Build-stable invariants this test asserts at RUNTIME (a test TU cannot see
- * the private per-library ARTS_USE_GPU / ARTS_USE_CXL macros, so it must not
- * hardcode the drifting indices — it checks only what is invariant across every
- * build):
- *   1. scheduler_loop[0] is ALWAYS arts_default_scheduler_loop (index 0 never
- *      shifts — CXL is inserted at 1, GPU loops appended after the CPU loops).
- *   2. The three CPU loop entry points (default / network_before_steal /
- *      network_first) are three DISTINCT function pointers — the table is a
- * real dispatch table, not aliased entries.
+ * Asserted at runtime:
+ *   1. scheduler_loop[0..2] are default, network_before_steal and
+ *      network_first, in that order, and the table holds at least those three.
+ *   2. The three CPU loop entry points are three DISTINCT function pointers —
+ *      the table is a real dispatch table, not aliased entries.
  *   3. The runtime installs the configured loop: arts_node_info.scheduler ==
- *      scheduler_loop[0] under the default config (configs/local/test/1n_20w.cfg sets no
- *      `scheduler` key → it defaults to 0).  This proves index 0 selects the
- *      default loop in the running build, i.e. the positional contract holds
- * for the only index that does not drift.
+ *      scheduler_loop[0] under the default config (the test cfg sets no
+ *      `scheduler` key, so it defaults to 0).
  *
- * config_specific: runs meaningfully in EVERY build (no protocol/loop skip);
- * the checks are layout invariants, not behavior that varies by coherence
- * protocol. No spin, no watchdog — verification is synchronous in main_edt; a
- * hang is not a failure mode here (any assertion failure aborts immediately).
+ * Runs in every build: the checks are layout invariants, not behavior that
+ * varies by coherence protocol.  Verification is synchronous in main_edt; any
+ * failed check aborts immediately.
  */
 
 #include <stdint.h>
@@ -58,13 +44,20 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   scheduler_t s_nfirst = (scheduler_t)arts_network_first_scheduler_loop;
   scheduler_t s_nbefore = (scheduler_t)arts_network_before_steal_scheduler_loop;
 
-  /* Invariant 1: index 0 is the default loop in every build. */
-  if (scheduler_loop[0] != s_default) {
-    (void)fprintf(
-        stderr,
-        "FAIL: scheduler_loop[0]=%p is not arts_default_scheduler_loop"
-        " (%p) — index-0 invariant broken\n",
-        (void *)scheduler_loop[0], (void *)s_default);
+  /* Invariant 1: the three CPU loops sit at 0..2 in every build. */
+  if (scheduler_loop_count < 3u) {
+    (void)fprintf(stderr, "FAIL: scheduler_loop holds %u loops, fewer than 3\n",
+                  scheduler_loop_count);
+    arts_abort(1);
+  }
+  if (scheduler_loop[0] != s_default || scheduler_loop[1] != s_nbefore ||
+      scheduler_loop[2] != s_nfirst) {
+    (void)fprintf(stderr,
+                  "FAIL: scheduler_loop[0..2]={%p,%p,%p}, expected "
+                  "{default=%p, network_before_steal=%p, network_first=%p}\n",
+                  (void *)scheduler_loop[0], (void *)scheduler_loop[1],
+                  (void *)scheduler_loop[2], (void *)s_default,
+                  (void *)s_nbefore, (void *)s_nfirst);
     arts_abort(1);
   }
 
@@ -79,9 +72,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* Invariant 3: the runtime installed the configured (default) loop.  The
-   * stock config selects no scheduler index → it defaults to 0 → the active
-   * loop must be scheduler_loop[0].  This proves the positional contract holds
-   * for index 0 (the only index immune to the CXL/GPU drift). */
+   * test config selects no scheduler index, so it defaults to 0 and the
+   * active loop must be scheduler_loop[0]. */
   if (arts_node_info.scheduler != scheduler_loop[0]) {
     (void)fprintf(stderr,
                   "FAIL: active scheduler %p != scheduler_loop[0] %p — "
@@ -97,7 +89,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
 
-  printf("scheduler_loop_variants: index-0=default, 3 distinct CPU loops, "
+  printf("scheduler_loop_variants: CPU loops at 0..2, 3 distinct CPU loops, "
          "active loop = configured (index 0) — PASS\n");
   arts_shutdown();
 }

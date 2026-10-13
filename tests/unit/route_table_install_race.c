@@ -15,10 +15,8 @@
 
 /* route_table_install_race — route-item install race stress test.
  *
- * Verifies the strict lock-free conversion of
- * arts_route_table_reserve_or_lookup (the per-GUID guid_lock spinlock was
- * removed in Task 4q; concurrent installers race only on the slot
- * key-CAS inside search_for_empty).
+ * Verifies that arts_route_table_reserve_or_lookup is lock-free: concurrent
+ * installers race only on the slot key-CAS inside search_for_empty.
  *
  * Two scenarios run back-to-back inside a single ARTS main_edt:
  *

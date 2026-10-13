@@ -24,5 +24,6 @@ priority-aware scheduling is revisited.
   private to this file (distinct from the simple impl's); a revival must
   reintroduce the vtable (or a compile-time switch) so the two layouts don't
   collide in one `struct arts_deque_s` definition.
-- `arts_deque_select(type)` is now a no-op stub kept only because `scheduler.c`
-  still calls it with `config->deque_type`; wire it back up to choose this impl.
+- `arts_deque_select(type)` and the `deque_type` config key no longer exist
+  (the key is refused at load); a revival must reintroduce both to choose
+  this impl.

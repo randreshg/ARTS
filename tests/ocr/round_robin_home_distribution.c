@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file round_robin_home_distribution.c
-/// @brief T039 — ARTS_HINT_ROUND_ROBIN + reserve_range: each labeled index's
+/// @brief ARTS_HINT_ROUND_ROBIN + reserve_range: each labeled index's
 ///        home rank equals idx % nrank, and a DB created at that GUID is
 ///        actually local to (homed on) that rank.
 ///

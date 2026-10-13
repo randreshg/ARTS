@@ -38,9 +38,7 @@
  ******************************************************************************/
 #include "arts/transport/dispatcher.h"
 
-#include <assert.h>    /* WB-write-policy INVALIDATE direct-call invariant assert */
 #include <semaphore.h> /* sem_post (PUBLISH_CTS inline wake) */
-#include <string.h> /* memcpy (PUBLISH inline-payload copy into OoO args) */
 #include <unistd.h>
 
 #include "arts.h"
@@ -98,7 +96,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   case MSG_SHUTDOWN: {
     ARTS_INFO("Node %u: Received shutdown message from node %u",
               arts_global_rank_id, packet->rank);
-    /* Passive shutdown entry (spec Cat E): we received SHUTDOWN_MSG from
+    /* Passive shutdown entry: we received MSG_SHUTDOWN from
      * another rank, so the dispatcher calls the lightweight RX handler
      * directly — idempotent CAS gate + worker stop, no re-broadcast, no
      * drain-wait.  The main thread handles network stop and bounded join
@@ -184,15 +182,16 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
   /* ===== coherence wire-message dispatch =============
-   * Three handlers (GRANT / PUBLISH / SNAPSHOT_RESPONSE) carry trailing
-   * payload right after sizeof(struct ...); pass that pointer + size as
-   * the data/data_size arguments.
+   * No coherence message carries a block's payload on the wire: payloads
+   * travel one-sided and pair with their packet by rdzv_txid inside the
+   * handler.  Only GRANT_RESPONSE has a trailer, its dedup map.
    *
-   * GRANT_REQUEST: shared between the WT and WB write policies (both use
-   * the migrating grant), but EXCL has no such concept.  Fatal in
+   * GRANT_REQUEST: shared by the arms with a migrating grant (VAL, INV)
+   * under both write policies, but EXCL has no such concept.  Fatal in
    * EXCL builds to catch binary mode mismatch.
-   * GRANT_INVALIDATE is handled in its own three-model block below (WT =
-   * Cat-B defer; WB = direct, never deferred).
+   * GRANT_INVALIDATE is handled in its own block below: a direct call under
+   * both write policies of a RETAIN build, never deferred, and refused by
+   * every other build.
    */
 #if defined(ARTS_PROTOCOL_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
@@ -203,7 +202,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                packet->message_type, packet->rank);
     break;
   }
-#else  /* VAL WT and WB: full handlers */
+#else  /* VAL, INV: full handlers */
   case MSG_DB_GRANT_REQUEST: {
     ARTS_DEBUG("Coh GRANT_REQUEST Received");
     struct arts_msg_grant_request_packet_s *pack =
@@ -222,9 +221,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* ARTS_PROTOCOL_EXCL */
-  /* GRANT_RETURN — the voluntary hand-back, which exists only where the
-   * release policy has the holder initiate.  A build whose grants are revoked
-   * by the home has no such message, so receiving one is a mode mismatch. */
+  /* GRANT_RETURN — the voluntary hand-back of a migrating grant, which
+   * exists only where VAL or INV run the PURGE release policy.  Under RETAIN
+   * the home revokes the grant, and EXCL has no migrating grant, so receiving
+   * one is a mode mismatch. */
 #if defined(ARTS_PROTOCOL_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
 #elif (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
@@ -245,22 +245,21 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #else
   case MSG_DB_GRANT_RETURN: {
     ARTS_ERROR("this build received a voluntary grant return from rank %u — "
-               "its grants are revoked by the home, never handed back "
-               "unasked; binary mode mismatch?",
+               "only a PURGE build of VAL or INV hands a migrating grant "
+               "back; binary mode mismatch?",
                packet->rank);
     break;
   }
 #endif /* grant-arm PURGE */
   /* GRANT_INVALIDATE — protocol-split.
-   *   WT/WB: NOT deferred.  Home publishes the invalidate target
-   *           (rw_holder) only after that rank's cache install — the CONFIRM
-   *           owner-swap (post-install in both write policies) or the DB_CREATE on the
-   *           creator — so the target's cache is provably already installed
-   * when INVALIDATE arrives.  Call the pure handler body directly with the
-   *           looked-up cache.  (The before-install GRANT/INVALIDATE reorder
-   *           that once forced WT through the OoO engine is gone: WT no
-   *           longer flips rw_holder before install.)
-   *   EXCL: no ownership transfer (caught by the fatal group above). */
+   *   VAL, INV under RETAIN (WT and WB): NOT deferred.  Home publishes the
+   *           invalidate target (rw_holder) only after that rank's cache
+   *           install — the CONFIRM owner-swap (post-install in both write
+   *           policies) or the DB_CREATE on the creator — so the target's
+   *           cache is provably already installed when INVALIDATE arrives.
+   *           Call the pure handler body directly with the looked-up cache.
+   *   EXCL: no migrating grant; PURGE: the holder returns the grant itself.
+   *           Both refuse the message below. */
 #if defined(ARTS_PROTOCOL_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
 #elif defined(ARTS_PROTOCOL_EXCL)
@@ -274,12 +273,12 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   case MSG_DB_GRANT_INVALIDATE: {
     ARTS_ERROR("voluntary-return build received INVALIDATE from rank %u — "
                "under this release policy the grant comes back at the "
-               "holder's own idle edge and the home sends the holder "
-               "nothing; binary mode mismatch?",
+               "holder's own idle edge and the home never asks for it; "
+               "binary mode mismatch?",
                packet->rank);
     break;
   }
-#else /* every grant-bearing arm (VAL, INV) shares the direct-call body */
+#else /* VAL and INV under RETAIN share the direct-call body */
   case MSG_DB_GRANT_INVALIDATE: {
     ARTS_DEBUG("Coh GRANT_INVALIDATE Received");
     struct arts_msg_grant_invalidate_packet_s *pack =
@@ -294,7 +293,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .new_owner_have = pack->new_owner_have,
     };
     /* Pin the db_s for the handler's duration (the embedded cache is its FIRST
-     * member, offset 0) so a concurrent DESTROY on another receiver thread
+     * member, offset 0) so a concurrent DESTROY on another progress thread
      * cannot free it mid-handler.  The home publishes the rw_holder target only
      * after that rank's cache install, so the db_s is normally present.  But a
      * destroy may have NULLed the route slot between that publish and this
@@ -393,7 +392,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
   case MSG_DB_CACHE_DESTROY: {
-    ARTS_DEBUG("Coh DESTROY_NOTIFY Received");
+    ARTS_DEBUG("Coh CACHE_DESTROY Received");
     struct arts_msg_cache_destroy_packet_s *pack =
         (struct arts_msg_cache_destroy_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT wakes parked waiters + detaches the
@@ -500,10 +499,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* ARTS_PROTOCOL_FLUSH */
-  /* GRANT_RESPONSE: the single ownership-transfer wire message.  One
-   * converged layout carries the map (WT: map_entry_count=0) plus buffer;
-   * EXCL has no ownership transfer and fatals to catch a binary mode
-   * mismatch. */
+  /* GRANT_RESPONSE: the single ownership-transfer wire message.  One layout
+   * carries the dedup map, which only VAL WB fills (every other arm sends
+   * map_entry_count=0); the payload travels one-sided.  EXCL has no
+   * ownership transfer and fatals to catch a binary mode mismatch. */
 #if defined(ARTS_PROTOCOL_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
 #elif defined(ARTS_PROTOCOL_EXCL)
@@ -515,12 +514,12 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                packet->message_type, packet->rank);
     break;
   }
-#else  /* VAL WT and WB: one converged layout */
+#else  /* VAL, INV: one layout */
   case MSG_DB_GRANT_RESPONSE: {
     ARTS_DEBUG("Coh GRANT_RESPONSE Received");
-    /* The (small) serialized map immediately follows the header; the buffer
-     * payload travels one-sided and pairs by rdzv_txid inside the handler.
-     * Both write policies share the WB-style layout (WT: map_entry_count=0). */
+    /* The (small) serialized map immediately follows the header and nothing
+     * trails it; the buffer payload travels one-sided and pairs by rdzv_txid
+     * inside the handler. */
     arts_handler_db_grant_response((void *)packet, (size_t)packet->size);
     break;
   }
@@ -540,9 +539,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* model dispatch for MSG_DB_GRANT_RESPONSE */
-  /* PUBLISH + PUBLISH_ACK: used by the WT write policy
-   * (sync release publish).  Fatal in the WB write policy — WB uses
-   * async transfer, not synchronous publish. */
 /* The CTS leg exists only when a publish carries payload — i.e. under WT
  * (and EXCL's purge policy).  INV's WB publish is control-only, so it never
  * announces. */
@@ -551,21 +547,20 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #elif (defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_RELEASE_RETAIN)) ||          \
     (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WB))
   case MSG_DB_PUBLISH_CTS: {
-    ARTS_ERROR("WB-write-policy build received PUBLISH_CTS from rank %u — no "
-               "synchronous publish exists; binary mode mismatch?",
+    ARTS_ERROR("this build received PUBLISH_CTS from rank %u — none of its "
+               "publishes carries a payload; binary mode mismatch?",
                packet->rank);
     break;
   }
 #else
-  /* PUBLISH_CTS is valid under EVERY non-WB write policy: the ownership
-   * protocols' and the lossy multi-writer protocol's dirty-publish
-   * announce leg, and the exclusive-lock protocol's landing-less RW release
-   * (a creator-seeded hold that never received a grant). */
+  /* PUBLISH_CTS: the announce leg of a WT payload publish (VAL, INV), and
+   * EXCL PURGE's landing-less RW release (a creator-seeded hold that never
+   * received a grant). */
   case MSG_DB_PUBLISH_CTS: {
     ARTS_DEBUG("Coh PUBLISH_CTS Received");
     struct arts_msg_publish_cts_packet_s *pack =
         (struct arts_msg_publish_cts_packet_s *)(packet);
-    /* Cat-C SPECIAL — pointer-identity wake of the blocked releaser's stack
+    /* Cat-C SPECIAL — pointer-identity wake of the blocked releaser's heap
      * rendezvous (sem first member).  Cache-independent: write the landing
      * fields, THEN post (sem_post is the release/acquire edge), even if the
      * DB is being torn down — a stranded releaser must never hang. */
@@ -580,7 +575,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     }
     break;
   }
-#endif /* PUBLISH_CTS placement dispatch */
+#endif /* arm dispatch for MSG_DB_PUBLISH_CTS */
 /* Every arm that publishes at a release: WT write policies (payload write-through)
  * and INV under either write policy (its release always asks the home for an
  * invalidation round, carrying payload only under WT). */
@@ -651,10 +646,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_publish_ack_packet_s *pack =
         (struct arts_msg_publish_ack_packet_s *)(packet);
     /* Cat-C SPECIAL — call the body on BOTH HIT and MISS.  A nonzero cv is a
-     * cache-independent pointer-identity sem-post (the releaser's heap
-     * rendezvous); a torn-down cache must NOT drop that ACK or the blocked
-     * releaser hangs.  cv == 0 is flight completion, which needs the live
-     * releaser-side cache — the body tolerates a MISS (destroy while a
+     * cache-independent pointer-identity sem-post (the heap rendezvous of a
+     * grant return sent on its own); a torn-down cache must NOT drop that ACK
+     * or the blocked returner hangs.  cv == 0 is flight completion, which needs
+     * the live releaser-side cache — the body tolerates a MISS (destroy while a
      * publish is outstanding is an ordering violation by the program; the
      * escaped waiters unblock through the shutdown path). */
     struct arts_db_publish_ack_args_s args = {.cv = pack->cv,
@@ -732,9 +727,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh SNAPSHOT_REDIRECT Received");
     struct arts_msg_snapshot_redirect_packet_s *pack =
         (struct arts_msg_snapshot_redirect_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-{DESTROY_NOTIFY}: HIT serves SNAPSHOT_RESPONSE from
+    /* Cat-C lookup-acquire-or-{CACHE_DESTROY}: HIT serves SNAPSHOT_RESPONSE from
      * the ref-pinned owner-side db_s; MISS (DB destroyed / not yet installed on
-     * this rank) sends DESTROY_NOTIFY to the requester so its parked RO waiter
+     * this rank) sends CACHE_DESTROY to the requester so its parked RO waiter
      * wakes and observes DB_DESTROYED rather than hanging. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = pack->db_guid,
@@ -807,14 +802,14 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                packet->rank);
     break;
   }
-#else /* VAL */
+#else /* VAL, INV */
   case MSG_DB_GRANT_CONFIRM: {
     ARTS_DEBUG("Coh GRANT_CONFIRM Received");
     struct arts_msg_grant_confirm_packet_s *pack =
         (struct arts_msg_grant_confirm_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT advances the transfer round on the
-     * ref-pinned home db_s; MISS (DB destroyed) silently drops.  WT's
-     * handler reads pending_install_owner and ignores args, so pass NULL. */
+     * ref-pinned home db_s; MISS (DB destroyed) silently drops.  Neither write
+     * policy's handler reads args: the new owner is pending_install_owner. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
@@ -871,7 +866,8 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #ifdef ARTS_RELEASE_PURGE
-  /* PURGE-only: synchronous grant/release/release-ack round-trip. */
+  /* PURGE-only: the grant and the release that returns it; nothing
+   * acknowledges a release. */
   case MSG_DB_EXCL_GRANT: {
     ARTS_DEBUG("Coh EXCL_GRANT Received");
     /* Cat-C: the grant receiver always sent its own REQUEST first, so its cache
@@ -1110,10 +1106,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #endif /* ARTS_PROTOCOL_FLUSH */
   default: {
-    ARTS_INFO("Unknown Packet %d %d %d", packet->message_type, packet->size,
-              packet->rank);
-    arts_shutdown();
-    arts_runtime_stop();
+    ARTS_ERROR("received a message of unknown type %u (%lu bytes) from rank "
+               "%u — binary mode mismatch or a corrupt packet?",
+               packet->message_type, (unsigned long)packet->size, packet->rank);
+    break;
   }
   }
 }

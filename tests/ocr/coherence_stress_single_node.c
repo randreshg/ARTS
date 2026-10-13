@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file coherence_stress_single_node.c
-/// @brief B.1 — Single-node coherence stress.
+/// @brief Single-node coherence stress.
 ///
 /// N=200 EDTs, M=50 DBs, RW+RO mix, K=100 iterations.  Every iteration
 ///   - creates M DBs initialized to a known per-DB value,
@@ -51,8 +51,6 @@
 /// Correctness: each worker calls arts_abort(1) on NULL ptr; the finish scope
 /// draining to shutdown_edt is proof all workers completed without abort.
 /// A stranded waiter surfaces as a ctest TIMEOUT.  No global cross-EDT state.
-///
-/// Spec section 6 B.1.
 
 #include "arts.h"
 

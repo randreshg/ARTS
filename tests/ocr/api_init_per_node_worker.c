@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T290 — init_per_node / init_per_worker weak startup callbacks.
+ * init_per_node / init_per_worker weak startup callbacks.
  *
  * Target: the optional weak-symbol lifecycle hooks in
  * libs/src/core/system/runtime.c:
@@ -22,7 +22,7 @@
  * both callbacks before main_edt; non-rank-0 nodes are not observed here (they
  * have no main_edt to assert from) — single-rank assertion is the invariant.
  *
- * exposes_runtime_bug = false (pins the weak-callback invocation contract).
+ * Pins the weak-callback invocation contract.
  */
 #include "arts.h"
 #include <stdatomic.h>

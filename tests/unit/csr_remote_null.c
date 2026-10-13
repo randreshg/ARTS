@@ -38,7 +38,7 @@
 ******************************************************************************/
 
 /// @file csr_remote_null.c
-/// @brief T271 — multinode: arts_csr_init returns NULL for a remote partition
+/// @brief Multinode: arts_csr_init returns NULL for a remote partition
 ///        and per-rank local-partition selection is exclusive.
 ///
 /// With one block per rank, exactly one partition is local on each rank.

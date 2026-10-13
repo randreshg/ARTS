@@ -38,9 +38,10 @@
 ******************************************************************************/
 
 /// @file db_create.c
-/// @brief Tests all DataBlock creation APIs: arts_db_create,
-///        arts_db_create_with_guid, arts_db_create_with_guid_and_data,
-///        arts_db_release, arts_db_destroy.
+/// @brief Tests the DataBlock creation APIs: arts_db_create,
+///        arts_db_create_with_guid (twice, each block filled by the caller
+///        through the pointer the create returns), arts_db_release,
+///        arts_db_destroy.
 
 #include "arts.h"
 #include <string.h>
@@ -64,7 +65,7 @@ void check_db_create(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   if (ok) {
-    arts_printf("  PASS: db_create data intact via EW signal\n");
+    arts_printf("  PASS: db_create data intact through an RW dependence\n");
   } else {
     arts_printf("  FAIL: db_create data corrupted\n");
     arts_test_fail();
@@ -95,7 +96,7 @@ void check_db_with_guid(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// Test 3: arts_db_create_with_guid_and_data copies initial data.
+/// Test 3: a second reserved-GUID block reads back the caller's fill.
 void check_db_with_data(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
@@ -109,9 +110,9 @@ void check_db_with_data(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   if (ok) {
-    arts_printf("  PASS: db_create_with_guid_and_data initial data correct\n");
+    arts_printf("  PASS: db_create_with_guid caller fill intact\n");
   } else {
-    arts_printf("  FAIL: db_create_with_guid_and_data mismatch\n");
+    arts_printf("  FAIL: db_create_with_guid caller fill mismatch\n");
     arts_test_fail();
   }
 }

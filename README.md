@@ -67,7 +67,7 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 | `ARTS_CXL_REAL` | `OFF` | OFF: the vendored fake library (`third_party/fake_arts_cxl_lib`, built at configure time — see below). ON: the device library named by `ARTS_CXL_RAPID_INCLUDE_DIR` and `ARTS_CXL_LIB` below (both required and must exist). A path given with `ARTS_CXL_REAL=OFF` is a configure error. |
 | `ARTS_CXL_RAPID_INCLUDE_DIR` | (empty) | `ARTS_CXL_REAL=ON`: the directory holding the device SDK's `MemOps.h` and `SharedAlloc.h`. |
 | `ARTS_CXL_LIB` | (empty) | `ARTS_CXL_REAL=ON`: the device glue library file (`libarts_cxl_lib.so`), linked by path — no CMake package lookup. |
-| `ARTS_CXL_DB_ARENA_SIZE_BYTES` | `5000000000` | Bytes per CXL arena: one data-block arena per device count (the EDT deque's arena only under `ARTS_CXL_EDT_DEQUE`). Arena creation ignores the device ids it is handed, so allocation selects an arena index, not a device. Validation trees pass `268435456`. |
+| `ARTS_CXL_DB_ARENA_SIZE_BYTES` | `5000000000` | Bytes per CXL arena: one data-block arena per device count. Arena creation ignores the device ids it is handed, so allocation selects an arena index, not a device. Validation trees pass `268435456`. |
 | `ARTS_LOG_LEVEL` | `3` (Debug) / `1` (Release) | Log verbosity: `0`=ERROR, `1`=+WARN, `2`=+INFO, `3`=+DEBUG; empty = the build type's. A Release build accepts `0` or `1`. |
 | `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan), C/C++ only, never CUDA. One choice, because the compiler cannot combine the two. |
 | `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks, each inert until its environment variable is set — `ARTS_SCHED_FUZZ=<pct>` (short random delays at the lock-free decision points), `ARTS_WRITE_COMPLETION_DELAY_MS=<n>` (hold each one-sided write's local completion for a random 0..n ms), `ARTS_NET_MAX_MSG=<bytes>` (lower the provider's one-sided ceiling), `ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>` (treat NUMA nodes as full). The tests that need a hook register only where this is on. |
@@ -126,13 +126,13 @@ region (`/dev/shm/arts_fake_cxl`).
 - `ARTS_FAKE_CXL_REGION_SIZE` (bytes, default 32 GiB) sizes the region when
   the library loads, before the runtime reads its cfg. The runtime takes its
   arenas from it (`ARTS_CXL_DB_ARENA_SIZE_BYTES`, one data-block arena per
-  device count, plus the EDT deque's arena only under `ARTS_CXL_EDT_DEQUE`),
-  so the region must exceed their total;
+  device count), so the region must exceed their total;
   it is allocated sparsely and only touched pages count against `/dev/shm`.
   The ctest registration of a fake-library tree and `artsrun` both set it to
-  2 × the tree's `ARTS_CXL_DB_ARENA_SIZE_BYTES` plus 128 MiB (the data-block
-  arena, the deque, and headroom) — for every test and every CXL cell,
-  respectively; a manual run sets it itself.
+  the tree's `ARTS_CXL_DB_ARENA_SIZE_BYTES` plus 128 MiB (the data-block
+  arena, since the fake reports one device, and headroom for the arena
+  table, its lock and the library's own header) — for every test and every
+  CXL cell, respectively; a manual run sets it itself.
 - `ARTS_FLUSH_LOG` names where each process writes its binary flush trace at
   exit (default `./arts_flush_trace.bin`, in the working directory). The
   ctest registration of a CXL tree sets it to `/dev/null` for every test;

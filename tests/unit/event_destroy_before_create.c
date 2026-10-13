@@ -3,7 +3,7 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_destroy_before_create — C15 / T161 (single-node + multinode).
+/* event_destroy_before_create (single-node + multinode).
  *
  * Target: arts_event_destroy -> OOO_EVENT_DESTROY defer (event.c).
  *

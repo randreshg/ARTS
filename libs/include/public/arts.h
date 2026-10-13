@@ -990,10 +990,7 @@ unsigned int arts_get_total_ranks();
 unsigned int arts_get_current_worker();
 
 /**
- * @brief Workers per rank on this node (excluding sender/receiver).
- *
- * Per-rank count.  Equivalent to the previous semantic of
- * @c arts_get_total_workers().
+ * @brief Workers per rank on this node (excluding progress threads).
  */
 unsigned int arts_get_workers_per_rank();
 
@@ -1001,7 +998,7 @@ unsigned int arts_get_workers_per_rank();
  * @brief Total worker threads across all ranks.
  *
  * Equals @c arts_get_workers_per_rank() * @c arts_get_total_ranks().
- * Does not include network send/receive threads.
+ * Does not include progress threads.
  */
 unsigned int arts_get_total_workers();
 

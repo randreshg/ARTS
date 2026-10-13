@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T207 — arts_config_count_nodes new-syntax matrix (config.c).
+ * arts_config_count_nodes new-syntax matrix (config.c).
  *
  * Property: arts_config_count_nodes() returns the number of physical nodes a
  * routing-table string expands to:

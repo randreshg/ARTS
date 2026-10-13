@@ -113,8 +113,9 @@ extern "C" {
    * runs (arts_cxl_store_flush): the sweep and its fence, never the staged  \
    * copy beside it.  PRODUCER is the purge that publishes a turn's writes,  \
    * CONSUMER the fetch that drops stale private lines before a grant is     \
-   * read.  The arena/deque metadata flushes are not counted.  Inert in a    \
-   * build without a CXL store. */                                           \
+   * read.  The flushes of the arena table's own metadata and of the         \
+   * tournament lock are not counted.  Inert in a build without a CXL        \
+   * store. */                                                               \
   X(NUM_CXL_FLUSH_PRODUCER)                                                    \
   X(NUM_CXL_FLUSH_CONSUMER)                                                    \
   X(BYTES_CXL_FLUSH_PRODUCER)                                                  \

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T065 — VAL arts_pending_rw_queue_* (cache-side RW waiter chain).
+ * VAL arts_pending_rw_queue_* (cache-side RW waiter chain).
  *
  * A Treiber stack (arts_lf_stack_t) of arts_db_rw_waiter_s nodes (link FIRST).
  * Producers (foreign-rank acquire_remote_rw) prepend via release-CAS; the

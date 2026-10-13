@@ -7,17 +7,16 @@
  * both the wire receive path and the self-loopback drain call.  This test
  * calls it with a header-only packet whose message_type is MSG_COUNT — the
  * sentinel ordinal, which is NOT a live case in ANY build's switch — so
- * routing falls into `default`:
- *     ARTS_INFO("Unknown Packet ...") + arts_shutdown() + arts_runtime_stop().
+ * routing falls into `default`.
  *
- * The contract under test: an unknown/foreign-ordinal packet does not misparse
- * or crash — it routes to the single defensive default arm that idempotently
- * shuts the runtime down (arts_shutdown is a CAS-gated idempotent stop, and the
- * test's main_edt itself ran via the live runtime, so the runtime was up when
- * the dispatcher was invoked).  The dispatcher must RETURN to its caller after
- * the default arm (the switch breaks out of the function), which is what lets
- * this test print its PASS token and end cleanly rather than the process
- * aborting.
+ * The contract under test: a packet of a type the build does not know means
+ * the two ends disagree about the wire (a binary mode mismatch) or the packet
+ * is corrupt, so the dispatcher neither misparses it nor lets the run go on to
+ * end as a success: it reports the type and the sender and aborts the process
+ * with exit status 1, like every other mismatch arm.  The test is registered
+ * with that status and the report as its pass condition; a dispatcher that
+ * returns reaches the FAIL line below and the run then ends with status 0,
+ * which the registered status refuses.
  *
  * White-box: like the tests/unit dispatcher/route-table tests, this includes
  * the internal transport headers to call the dispatcher and to fill a wire
@@ -27,7 +26,7 @@
  *
  * Config-agnostic: the default arm is unconditional in every protocol build, so
  * this runs unchanged under every protocol.
- * Single-node (runtime_single): no wire, no peers — the call is purely local.
+ * Single-node: no wire, no peers — the call is purely local.
  */
 
 #include <stdint.h>
@@ -38,8 +37,6 @@
 /* White-box: the dispatcher + arts_msg_header_s + arts_fill_packet_header. */
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/protocol.h"
-
-#include "../test_failure_status.h"
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
@@ -57,26 +54,18 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   struct arts_msg_header_s pkt;
   arts_fill_packet_header(&pkt, (uint64_t)sizeof(pkt), (unsigned int)MSG_COUNT);
 
-  /* The default arm calls arts_shutdown() + arts_runtime_stop() then breaks
-   * out, returning here.  No crash, no misparse, no infinite loop — the
-   * runtime is told to stop. */
+  /* The default arm aborts the process; it never returns here. */
   arts_transport_dispatch_packet(&pkt);
 
-  /* Reached here ⇒ the dispatcher routed the unknown ordinal to the default
-   * arm and returned cleanly (the runtime stop was already requested inside
-   * it). */
-  arts_printf(
-      "PASS: dispatcher_default_fatal unknown message_type %u routed to "
-      "default (shutdown+runtime_stop)\n",
-      (unsigned int)MSG_COUNT);
-
-  /* arts_shutdown was already invoked by the default arm; calling it again is
-   * the idempotent CAS-gated no-op (safe, matches the runtime's own re-entry).
-   */
+  arts_printf("FAIL: dispatcher_default_fatal: the dispatcher returned from "
+              "unknown message_type %u\n",
+              (unsigned int)MSG_COUNT);
   arts_shutdown();
 }
 
 int main(int argc, char **argv) {
-  int rc = arts_rt(argc, argv);
-  return rc ? 1 : arts_test_status();
+  /* Status 0 whenever the run returns: the expected exit is the dispatcher's
+     own abort with status 1, never a return from here. */
+  (void)arts_rt(argc, argv);
+  return 0;
 }

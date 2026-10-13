@@ -1,13 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T004 — arts_lf_link_t / arts_lf_stack_t layout parity (lockfree_lifo.h).
+ * arts_lf_link_t / arts_lf_stack_t layout parity (lockfree_lifo.h).
  *
  * lockfree_lifo.h defines TWO struct definitions guarded by #ifdef __cplusplus:
  * the C path uses C11 _Atomic on `next`/`head`; the C++/nvcc path drops
  * _Atomic for layout-only visibility (the inline helpers are C-only).  A
  * struct-drift between the two would corrupt cross-language compilation (the
- * header is pulled into .cu TUs via runtime_types.h -> arts_event_s).  Census
- * 29.md §2 GAP: "No C++/nvcc layout-compile test."
+ * header is pulled into .cu TUs via runtime_types.h -> arts_event_s).
  *
  * This file asserts the invariants the layout must satisfy.  It is compiled
  * BOTH as C and as C++ by CMake (same source, two languages); the static

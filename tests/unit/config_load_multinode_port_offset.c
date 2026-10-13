@@ -1,30 +1,25 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T210 — local multi-node port auto-offset discipline (config_compute_derived
- *        + config_setup_local).
+ * Local multi-node port auto-offset discipline (config_compute_derived +
+ * config_setup_local).
  *
- * This is the property the ENTIRE multinode-CTest port-isolation discipline
- * rests on (see CLAUDE.md "Port isolation is structural").  For a
- * `launcher=local` config with node_count > 1, the loader must:
+ * Every rank of a `launcher=local` run with node_count > 1 shares the
+ * loopback interface, so the loader must:
  *   - mark config->shared_pu_pool == true (all nodes share PUs on 127.0.0.1),
  *   - force every table[i].ip_address to "127.0.0.1",
- *   - and, because all nodes share the loopback interface, give each node a
- *     DISJOINT port block:  table[i].ports[j] == ports[j] +
- * i*port_count. A regression here makes every local multinode run collide on
- * the same TCP ports and flake.
+ *   - and give each node a DISJOINT port block:
+ *     table[i].ports[j] == ports[j] + i*port_count.
+ * A regression here makes every local multinode run collide on the same TCP
+ * ports and flake.
  *
- * Harness: runtime_multinode.  Registered for 2n_9w_1p/4n_4w_1p/2n_8w_2p; each variant's
- * ARTS_CONFIG points at configs/local/test/<variant>.cfg and the per-test
- * `ports` env override (set by register_multinode_test) replaces the
- * cfg's ports base.  The test does NOT start the runtime — it calls
- * arts_config_load() directly and inspects the resolved table, so it binds no
- * ports and never oversubscribes.  config.c is protocol-agnostic, so this runs
- * meaningfully in every coherence build.
- *
- * Note: arts_config_load() reads the `ports` env override itself (via
- * arts_config_find_variable), so after load config->ports already holds
- * the harness-assigned base block; we verify the table offset against THAT, so
- * the assertion is independent of which base the harness happened to hand us.
+ * Registered multinode for 2n_9w_1p/4n_4w_1p/2n_8w_2p; each variant's
+ * ARTS_CONFIG points at configs/local/test/<variant>.cfg, which names no
+ * ports, so the loader chooses the base block itself.  The test does NOT
+ * start the runtime — it calls arts_config_load() directly and inspects the
+ * resolved table, so it binds no ports and never oversubscribes.  config.c is
+ * protocol-agnostic, so this runs meaningfully in every coherence build.  The
+ * table offset is checked against whatever base config->ports holds after
+ * load, so the assertion is independent of the base chosen.
  */
 
 #include "arts.h"

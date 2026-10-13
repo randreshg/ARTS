@@ -2,18 +2,23 @@
  *
  * excl_purge_grant_d6_d7 — EXCL-config-specific runtime exercise of the home
  * arbiter's D6 (rw→rw chain) and D7 (new RO grants while RW waiting) decision
- * paths (census 11-lock §1 decision table + excl_compute_next / lock_home_grant
- * in lock/home.c).  The pure truth-table is covered by the unit test
- * excl_compute_next; this drives the same transitions through the live runtime.
+ * paths on either release policy: excl_compute_next (coherence/excl/arbiters.c)
+ * under PURGE, lock_owner_compute_next (coherence/excl/retain.c) under RETAIN,
+ * each applied by its arm's home grant path.  The pure truth table is pinned
+ * for PURGE only, by the unit test excl_compute_next; this drives the same
+ * transitions through the live runtime on both arms.
  *
- * D6 — rw→rw chain: a sequence of RW writers on one DB.  When a writer
- *   releases with another writer still counted (w-1>0), the home grants the
- *   next RW (LOCK_GRANT_ONE_RW pop).  Every writer's increment must land — a
- *   broken chain strands a writer → its finish event never fires → TIMEOUT.
+ * D6 — rw→rw chain: a sequence of RW writers on one DB.  When a writer's turn
+ *   ends with another writer still counted at the home, the home hands the
+ *   write turn straight to the next one (PURGE: a release with w-1>0 pops
+ *   LOCK_GRANT_ONE_RW; RETAIN: a CONFIRM with w>0 forwards a migrate).  Every
+ *   writer's increment must land — a broken chain strands a writer → its
+ *   finish event never fires → TIMEOUT.
  *
- * D7 — RO extends while RW waiting: an active RO phase (bit=RO) with an RW
- *   parked (w>0); a NEW RO request must still be granted immediately
- *   (LOCK_GRANT_ALL_RO, RO phase extends) rather than queued behind the writer.
+ * D7 — RO extends while RW waiting: an active RO phase with an RW parked
+ *   (w>0); a NEW RO request must still be granted immediately (PURGE:
+ *   LOCK_GRANT_ALL_RO; RETAIN: a serve forwarded at once), the RO phase
+ *   extending, rather than queued behind the writer.
  *   The waiting RW is eventually served when the RO phase drains.  All readers
  *   must observe the producer's value and the writer must run — a starved
  *   reader or writer stalls the finish scope → TIMEOUT.

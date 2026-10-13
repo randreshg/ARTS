@@ -31,10 +31,10 @@
 #include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h" /* pairing ctx */      /* arts_atomic_* */
 
-/* ===== 8-case acquire dispatch (HOME arm) ==========================
- * Whole arts_handler_db_acquire body for the HOME build.  Diverges from OWNER
- * only on the RO-has-local-data predicate (HOME: is_home||is_owner — home
- * always holds current data via synchronous PUBLISH).  The remote-RO,
+/* ===== 8-case acquire dispatch (WT) ================================
+ * Whole arts_handler_db_acquire body for the WT build.  Diverges from WB only
+ * on the RO-has-local-data predicate (WT: is_home||is_owner — home always
+ * holds current data via synchronous PUBLISH).  The remote-RO,
  * RW-local-fast, and remote-RW paths are the shared helpers
  * (coherence/coherence.c / coherence/grant.c). */
 void arts_handler_db_acquire(void *item, void *args) {
@@ -63,7 +63,7 @@ void arts_handler_db_acquire(void *item, void *args) {
 
   if (mode == DB_MODE_RO) {
     if (is_home ||
-        is_owner) { /* HOME RO predicate (home holds current data) */
+        is_owner) { /* WT RO predicate (home holds current data) */
       /* Pre-check the publication signal so an unpublished (v0, installed
        * at create) stable buffer parks WITHOUT taking the EDT's acquire
        * hold — the resume re-derives dep->ptr from the published buffer. */
@@ -133,9 +133,10 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
 /* ===== release_rw (WT arm) ========================================
  * The WT write policy keeps home's RO copy fresh with a pure synchronous
  * PUBLISH on every non-home release (home owners already hold the canonical
- * buffer).  Ownership transfer is a SEPARATE owner→owner ship
- * (arts_db_send_grant_response), fired on the 0-edge when a transfer target
- * is pending — structurally identical to the WB arm.  The drain-now /
+ * buffer).  Ownership moves on the grant plane: under RETAIN a separate
+ * owner→owner ship (arts_db_send_grant_response), fired on the 0-edge when a
+ * transfer target is pending, as in the WB arm; under PURGE the right goes
+ * back to the home, on the publish's commit leg when it can.  The drain-now /
  * confirm-ack divergence lives only in the GRANT_RESPONSE / CONFIRM
  * handlers, not here. */
 /* A create's hold is this arm's ordinary write hold, taken when the block was
@@ -166,11 +167,12 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     new_version = arts_atomic_read_u64(&buf->version);
   }
   bool is_home = (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id);
-  /* HOME keeps home's RO copy fresh: pure synchronous publish every release
-   * (a non-home owner; home owners already hold the canonical buffer).  No
-   * WB_AND_TRANSFER mode — ownership transfer is the separate owner→owner ship
-   * below.  Derived ONCE: the hand-back rides this decision, and deriving it
-   * twice is how the two drift apart. */
+  /* WT keeps home's RO copy fresh: pure synchronous publish every release
+   * (a non-home owner; home owners already hold the canonical buffer).  Under
+   * RETAIN the publish moves no ownership (that is the separate owner→owner
+   * ship); under PURGE its commit leg may carry the hand-back.  Derived ONCE:
+   * the hand-back rides this decision, and deriving it twice is how the two
+   * drift apart. */
   bool will_publish = (!is_home && buf != NULL);
   /* Where the write right goes back unasked it can travel with these bytes
    * instead of behind them, which is the whole saving — so the claim is taken
@@ -199,21 +201,19 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   }
 }
 
-/* ===== cache_s lifecycle (WT: pending_rw Vyukov MPSC) =============
- * Construct: the WT write policy's field-init (the Vyukov MPSC pending_rw queue
- * — cannot
- * be zero-initialized, head/tail must point at the embedded stub) runs BEFORE
- * arts_db_cache_common_init so the queue is wired before any push could land.
+/* ===== cache_s lifecycle (WT) ======================================
+ * Construct: the WT write policy's own fields (the pending_rw Treiber stack,
+ * the transfer target, no dedup ledger), then arts_db_cache_common_init.
  * Destruct order: buffer-NULL (pre) → pending_rw destroy → snapshot drain +
  * home teardown (post). */
 void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank) {
   arts_pending_rw_queue_init(&c->pending_rw);
-  /* Transfer target for the commit-PROCEED, published by each round's
-   * INVALIDATE before it withdraws the sentinel.  Start at the sentinel (no
-   * transfer pending); writer_count->0 always implies a prior INVALIDATE set
-   * it. */
+  /* Target of the grant's next ship.  Under RETAIN each round's INVALIDATE
+   * publishes it before withdrawing the sentinel; under PURGE nothing writes
+   * it, since the holder hands the grant back to the home itself.  Starts at
+   * the sentinel: no transfer pending. */
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
@@ -272,12 +272,6 @@ void arts_db_home_teardown(struct arts_db_s *db) {
 
 /* ===== SNAPSHOT_REQUEST reply (home.cached_version atomic-monotonic) ===== */
 
-/* update_cached_version_max: the SNAPSHOT_REQUEST reply path.  Decide send-with-
- * data vs send-no-data based on the home watermark, then advance the
- * watermark.  Under single-threaded handler dispatch the "atomic
- * CAS-loop" the design plan specifies collapses to a plain compare/
- * advance — but we keep the helper signature so future MPMC upgrades
- * are localized. */
 /* SNAPSHOT_REQUEST reply path: decide CTS / no-data / one-sided-data from the home
  * watermark and the requester's landing, then advance the watermark only when
  * payload actually moves.  Consumes master_h (the pinned canonical buffer). */
@@ -355,8 +349,7 @@ static void home_serve_parked_snapshot(struct arts_db_cache_s *cache,
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_SNAPSHOT_REQUEST]): the OoO engine
  * has already acquired the home db_s for db_guid and pinned a ref across this
  * call (cache is its FIRST member), so there is no lookup / NULL-check / defer
- * here.  The HOME protocol serves from home's canonical buffer with
- * cached_version dedup. */
+ * here.  WT serves from home's canonical buffer with cached_version dedup. */
 void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_snapshot_request_s *a =
@@ -440,16 +433,17 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_PUBLISH]): the OoO engine has
  * already acquired the home db_s and pinned a ref across this call (cache is
- * its FIRST member); the dispatcher copies PUBLISH's trailing data payload
- * into the args blob after arts_ooo_args_db_publish_s and this body reads it
- * back from (char *)a + sizeof(*a).  A PUBLISH that races ahead of DB_CREATE
- * MISSes the engine, which defers (trailing data preserved) and re-issues this
- * body on the install's drain.
+ * its FIRST member).  A PUBLISH carries no payload: the bytes travel one-sided
+ * into the stable buffer.  A PUBLISH that races ahead of DB_CREATE MISSes the
+ * engine, which defers the args and re-issues this body on the install's
+ * drain.
  *
- * ACK-exactly-once: the body acks (cv != 0) only when it runs (cache live).  A
+ * ACK-exactly-once: the body answers only when it runs (cache live) — the
+ * announce with its PUBLISH_CTS, every other leg with its PUBLISH_ACK.  A
  * deferred PUBLISH does NOT ack on the defer — the single PUBLISH_ACK is
- * sent on the drain replay.  Pure: it only installs (version-guarded) + acks;
- * ownership transfer is a separate owner→owner GRANT_RESPONSE ship. */
+ * sent on the drain replay.  It stamps the version of the bytes already in
+ * place and acks; ownership moves on the grant plane (under PURGE a commit
+ * may carry the hand-back, accepted once the stamp is in place). */
 /* Rendezvous continuation for a committed publish: the dirty bytes have
  * fully landed IN PLACE in the stable home buffer; publication is the version
  * stamp alone (release-store, sequenced after the {commit packet, write

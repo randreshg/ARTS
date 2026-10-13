@@ -1,13 +1,13 @@
 # ============================================================================
-# Auto-generated Wave-A pure_unit test registrations.
-#
-# Generated from research/test-census/waveA-result.json and maintained by hand
-# since; a regeneration must keep the hand edits.
+# Unit, whitebox and OCR-program test registrations, maintained by hand;
+# tests/CMakeLists.txt includes this file.  add_arts_test takes a test's source
+# from tests/ocr or tests/unit, so programs of both kinds are registered here.
 #
 # Protocol selection (ARTS_PROTOCOL_* / ARTS_WRITE_POLICY_* / ARTS_RELEASE_*)
-# is supplied GLOBALLY by the build directory's coherence configuration --
-# it is deliberately NOT hardcoded here, so each generated test compiles under
-# whatever protocol the enclosing build dir selected.
+# is applied per target from the build directory's coherence configuration
+# (arts_apply_protocol, in add_arts_test and add_pure_unit_src) -- it is
+# deliberately NOT hardcoded here, so each test compiles under whatever
+# protocol the enclosing build dir selected.
 #
 # Tests that EXPOSE a runtime bug and are designed to fail/crash are registered
 # WITHOUT a PASS_REGULAR_EXPRESSION so they show up as failing (documenting the
@@ -60,9 +60,6 @@ add_pure_unit_src(lf_pool_batch PASS_REGEX "PASS lf_pool_batch" TIMEOUT 60)
 add_pure_unit_src(mpsc_drain_remaining PASS_REGEX "PASS mpsc_drain_remaining" TIMEOUT 60)
 add_pure_unit_src(mpsc_rethread_stub PASS_REGEX "PASS mpsc_rethread_stub" TIMEOUT 60)
 add_pure_unit_src(mpsc_transient_empty PASS_REGEX "PASS mpsc_transient_empty" TIMEOUT 60)
-add_pure_unit_src(link_list_mpsc SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/link_list.c PASS_REGEX "PASS link_list_mpsc" TIMEOUT 60)
-# T016 EXPOSES B118: expected to FAIL/crash under sanitizer (documents runtime bug, do not mask)
-add_pure_unit_src(link_list_lifecycle SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/link_list.c TIMEOUT 60)
 add_pure_unit_src(shared_compare_exchange SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_compare_exchange" TIMEOUT 60)
 add_pure_unit_src(shared_lifecycle_race SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS shared_lifecycle_race" TIMEOUT 60)
 add_pure_unit_src(route_table_install_if_absent PASS_REGEX "PASS route_table_install_if_absent" TIMEOUT 60)
@@ -83,12 +80,14 @@ add_pure_unit_src(buffer_destroy_vs_acquire SOURCES ${CMAKE_SOURCE_DIR}/libs/src
 endif()
 add_pure_unit_src(rank_u64_map_roundtrip SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_u64_map.c PASS_REGEX "PASS rank_u64_map_roundtrip" TIMEOUT 60)
 add_pure_unit_src(rank_u64_map_advance SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_u64_map.c PASS_REGEX "PASS rank_u64_map_advance" TIMEOUT 60)
-# T056 rank_bitset: the arts_rank_bitset_* symbols live in the protocol-specific
+# rank_bitset: the arts_rank_bitset_* symbols live in the protocol-specific
 # coherence directory.c, so the source/link selection is keyed on the build dir's
 # ${ARTS_COHERENCE_ARM}:
-#   VAL -> compile val/directory.c standalone (ARTS_UNIT_STANDALONE_SHIMS shims)
-#   EXCL  -> excl/directory.c pulls transport/edt deps, so link the full libarts
-#            (shims auto-compiled-out via the ARTS_UNIT_STANDALONE_SHIMS gate)
+#   VAL, INV -> compile that arm's directory.c standalone
+#               (ARTS_UNIT_STANDALONE_SHIMS shims)
+#   EXCL     -> excl/directory.c pulls transport/edt deps, so link the full
+#               libarts (shims compiled out via the ARTS_UNIT_STANDALONE_SHIMS
+#               gate)
 if(ARTS_COHERENCE_ARM STREQUAL "EXCL")
     add_arts_test(rank_bitset)
     register_pure_unit_test(rank_bitset TIMEOUT 60)
@@ -107,17 +106,13 @@ else()
     add_pure_unit_src(rank_bitset SOURCES ${_rank_bitset_dir}
         DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
 endif()
-# T169 EXPOSES B-set-ip-null: expected to FAIL/crash under sanitizer (documents runtime bug, do not mask)
-add_pure_unit_src(socket_set_ip_null_ifa LIBS ${CMAKE_DL_LIBS} TIMEOUT 60)
+# Regression test: the bootstrap's interface walk skips an interface with no
+# address (a NULL ifa_addr).
+add_pure_unit_src(socket_set_ip_null_ifa LIBS ${CMAKE_DL_LIBS} PASS_REGEX "PASS socket_set_ip_null_ifa" TIMEOUT 60)
 add_pure_unit_src(socket_helpers LIBS ${CMAKE_DL_LIBS} PASS_REGEX "PASS socket_helpers" TIMEOUT 60)
+add_pure_unit_src(socket_net_interface_remap PASS_REGEX "PASS socket_net_interface_remap" TIMEOUT 60)
 add_pure_unit_src(protocol_abi_asserts TIMEOUT 60)
-# Real-hardware Dekker litmus for the grant-baton release/re-check pair: the
-# fenced shape must never lose an item; a weakened fence turns the runtime's
-# 0.2% wedge back into a deterministic failure here.
-# T184 VERIFIES B070 fix: dispatcher now floors header.size >= sizeof(packet)
-add_pure_unit_src(dispatcher_payload_size_underflow TIMEOUT 60)
 add_pure_unit_src(launcher_shell_quote PASS_REGEX "PASS launcher_shell_quote" TIMEOUT 60)
-# T192 VERIFIES B110 fix: launcher command builder is overflow-safe (arts_cmd_appendf bounded-append)
 add_pure_unit_src(stdio_forward_fidelity PASS_REGEX "PASS stdio_forward_fidelity" TIMEOUT 60)
 add_pure_unit_src(stdio_forward_partial_eintr PASS_REGEX "PASS stdio_forward_partial_eintr" TIMEOUT 60)
 add_pure_unit_src(stdio_forward_make_pipe_fail PASS_REGEX "PASS stdio_forward_make_pipe_fail" TIMEOUT 60)
@@ -158,26 +153,21 @@ add_pure_unit_src(block_dist_query TIMEOUT 60)
 add_pure_unit_src(csr_free_null TIMEOUT 60)
 
 # ============================================================================
-# Wave C/D runtime + config_specific tests
+# Runtime and configuration-specific tests.
 #
-# Generated from research/test-census/waveCD-result.json (clusters C02r..C27, C12r..C18r,
-# C19r/C21r/C22r/C23r/C24r/C25r) plus the C13 EDT cluster (scanned from tests/ocr/
-# directly — its census metadata was lost when the authoring agent died).
+# A single-node test registers through register_single_node_test, a multinode
+# one through register_multinode_test (_2n_9w_1p/_4n_4w_1p/_2n_8w_2p), and a
+# test that holds on both shapes through both.  Protocol selection is applied
+# per target, as above.  A test body that does not apply to the configuration
+# prints a SKIP line and exits 0; a PASS regex accepts that line only where the
+# test can print it in a shape it is registered for.
 #
-# Harness mapping:
-#   runtime_single / config_specific -> register_single_node_test
-#   runtime_multinode                -> register_multinode_test (_2n_9w_1p/_4n_4w_1p/_2n_8w_2p)
-#   "both" notes                     -> single AND multinode
-# Protocol/placement selection is supplied GLOBALLY by the build dir's coherence
-# configuration; the test bodies self-skip (print SKIP, exit 0) in non-target
-# configs, so config_specific PASS regexes accept the SKIP line too.
-#
-# Bug-exposing tests (exposes_runtime_bug=true with empty pass_regex) are
-# registered WITHOUT a PASS_REGULAR_EXPRESSION so they visibly FAIL/hang in
-# their target config. They are NOT masked with WILL_FAIL. Do not weaken.
+# Defect-exposing tests with no pass line (an empty pass regex) are registered
+# WITHOUT a PASS_REGULAR_EXPRESSION so they visibly FAIL/hang in their target
+# config.  They are NOT masked with WILL_FAIL.  Do not weaken.
 # ============================================================================
 
-# --- C12: DB lifecycle & acquire/release accounting ---
+# --- DB lifecycle & acquire/release accounting ---
 # dep_alias_classify: pure_unit — the acquire engine's owner/alias rule is a
 # pure function of a dependence vector, so it is driven on stack arrays out of
 # the per-config static libarts; the runtime is never started and the answers
@@ -188,9 +178,9 @@ set_tests_properties(dep_alias_classify PROPERTIES PASS_REGULAR_EXPRESSION "PASS
 
 add_arts_test(db_alias_dedup)
 register_single_node_test(db_alias_dedup TIMEOUT 30)
-set_tests_properties(db_alias_dedup PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup|SKIP db_alias_dedup")
+set_tests_properties(db_alias_dedup PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup")
 
-# config_specific: EXCL-only real body, self-skips elsewhere
+# EXCL-only real body, self-skips elsewhere
 add_arts_test(db_excl_creator_release_keeps_joiner_write)
 register_single_node_test(db_excl_creator_release_keeps_joiner_write TIMEOUT 30)
 set_tests_properties(db_excl_creator_release_keeps_joiner_write PROPERTIES
@@ -198,7 +188,7 @@ set_tests_properties(db_excl_creator_release_keeps_joiner_write PROPERTIES
 
 add_arts_test(db_acquire_replay_local)
 register_single_node_test(db_acquire_replay_local TIMEOUT 30)
-set_tests_properties(db_acquire_replay_local PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_replay_local|SKIP db_acquire_replay_local")
+set_tests_properties(db_acquire_replay_local PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_replay_local")
 
 # A mid-EDT release of a block one EDT names twice must drop the block's single
 # coherence hold exactly once — the owner slot is released and its aliases retire
@@ -209,20 +199,21 @@ add_arts_test(db_release_alias_slot)
 register_single_node_test(db_release_alias_slot TIMEOUT 30)
 register_multinode_test(db_release_alias_slot TIMEOUT 60)
 
-# both single + multinode meaningful (remote homes force the GRANT_REQUEST/GRANT double-fire path)
+# both single + multinode meaningful (with more than one rank some of the
+# writer's RW deps are homed on another rank)
 add_arts_test(db_rw_secure_double_fire)
 register_single_node_test(db_rw_secure_double_fire TIMEOUT 60)
 register_multinode_test(db_rw_secure_double_fire TIMEOUT 60)
-set_tests_properties(db_rw_secure_double_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_rw_secure_double_fire|SKIP db_rw_secure_double_fire")
-set_tests_properties(db_rw_secure_double_fire_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_rw_secure_double_fire|SKIP db_rw_secure_double_fire")
+set_tests_properties(db_rw_secure_double_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_rw_secure_double_fire")
+set_tests_properties(db_rw_secure_double_fire_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_rw_secure_double_fire")
 
 add_arts_test(db_acquire_all_bias)
 register_multinode_test(db_acquire_all_bias TIMEOUT 60)
-set_tests_properties(db_acquire_all_bias_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_all_bias|SKIP db_acquire_all_bias")
+set_tests_properties(db_acquire_all_bias_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_acquire_all_bias")
 
 add_arts_test(db_destroy_implicit_release)
 register_single_node_test(db_destroy_implicit_release TIMEOUT 30)
-set_tests_properties(db_destroy_implicit_release PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_destroy_implicit_release|SKIP db_destroy_implicit_release")
+set_tests_properties(db_destroy_implicit_release PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_destroy_implicit_release")
 
 # dbcreate_matrix: probe of the DB-create capability matrix --
 # (creator-acquisition) x (home-determination) x (locality).  Exercises the
@@ -235,25 +226,25 @@ add_arts_test(dbcreate_matrix)
 register_single_node_test(dbcreate_matrix TIMEOUT 60)
 register_multinode_test(dbcreate_matrix TIMEOUT 60)
 
-# --- C14: EDT context save/restore + created-DB / owned-finish cleanup ---
+# --- EDT context save/restore + created-DB / owned-finish cleanup ---
 add_arts_test(ctx_save_restore_nested)
 register_single_node_test(ctx_save_restore_nested TIMEOUT 30)
-set_tests_properties(ctx_save_restore_nested PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_save_restore_nested|SKIP ctx_save_restore_nested")
+set_tests_properties(ctx_save_restore_nested PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_save_restore_nested")
 
 add_arts_test(ctx_created_db_release_order)
 register_single_node_test(ctx_created_db_release_order TIMEOUT 30)
-set_tests_properties(ctx_created_db_release_order PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_created_db_release_order|SKIP ctx_created_db_release_order")
+set_tests_properties(ctx_created_db_release_order PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_created_db_release_order")
 
 add_arts_test(ctx_owned_finish_cleanup)
 register_single_node_test(ctx_owned_finish_cleanup TIMEOUT 30)
 
 add_arts_test(ctx_null_guards)
 register_single_node_test(ctx_null_guards TIMEOUT 30)
-set_tests_properties(ctx_null_guards PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_null_guards|SKIP ctx_null_guards")
+set_tests_properties(ctx_null_guards PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_null_guards")
 
 add_arts_test(ctx_crossrank_proxy_finish)
 register_multinode_test(ctx_crossrank_proxy_finish TIMEOUT 60)
-set_tests_properties(ctx_crossrank_proxy_finish_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_crossrank_proxy_finish|SKIP ctx_crossrank_proxy_finish")
+set_tests_properties(ctx_crossrank_proxy_finish_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS ctx_crossrank_proxy_finish")
 
 # ctx_gpu_lib_edt: GPU-only real body (ARTS_TEST_GPU); SKIP stub links CPU libarts otherwise.
 if(BUILD_CUDA_LIBRARY)
@@ -264,7 +255,7 @@ if(BUILD_CUDA_LIBRARY)
         PASS_REGULAR_EXPRESSION "PASS ctx_gpu_lib_edt|SKIP ctx_gpu_lib_edt")
 endif()
 
-# --- C15: event channel / satisfy / destroy / create-collision ---
+# --- event channel / satisfy / destroy / create-collision ---
 # These three record into one block from EDTs with no order among them, which
 # DB-WRF does not admit.
 add_arts_test(event_channel_transient_null)
@@ -273,26 +264,27 @@ add_arts_test(event_finish_latch_rearm)
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(event_channel_transient_null TIMEOUT 60)
 register_single_node_test(event_satisfy_adddep_window TIMEOUT 60)
-set_tests_properties(event_satisfy_adddep_window PROPERTIES PASS_REGULAR_EXPRESSION "event_satisfy_adddep_window:.*PASS|SKIP event_satisfy_adddep_window")
+set_tests_properties(event_satisfy_adddep_window PROPERTIES PASS_REGULAR_EXPRESSION "event_satisfy_adddep_window:.*PASS")
 register_single_node_test(event_finish_latch_rearm TIMEOUT 60)
-set_tests_properties(event_finish_latch_rearm PROPERTIES PASS_REGULAR_EXPRESSION "event_finish_latch_rearm:.*PASS|SKIP event_finish_latch_rearm")
+set_tests_properties(event_finish_latch_rearm PROPERTIES PASS_REGULAR_EXPRESSION "event_finish_latch_rearm:.*PASS")
 endif()
 
 add_arts_test(event_error_paths)
 register_single_node_test(event_error_paths TIMEOUT 30 STATUS 1)
 set_tests_properties(event_error_paths PROPERTIES PASS_REGULAR_EXPRESSION "CHANNEL: only DECR")
 
-# both single + multinode (OoO defer is home-rank-local but census asks for multinode too)
-# COUNTED delivery + reclamation, and that an undeclared ONCE still lingers.
-# Whitebox (reads the route table), single-node: the property is local.
+# event_counted_reclaim: COUNTED delivery + reclamation, and that an
+# undeclared ONCE still lingers.  Whitebox (reads the route table),
+# single-node: the property is local.
 add_arts_test(event_counted_reclaim)
 register_single_node_test(event_counted_reclaim TIMEOUT 60)
 
+# event_destroy_before_create: single node and multinode.
 add_arts_test(event_destroy_before_create)
 register_single_node_test(event_destroy_before_create TIMEOUT 30)
 register_multinode_test(event_destroy_before_create TIMEOUT 60)
-set_tests_properties(event_destroy_before_create PROPERTIES PASS_REGULAR_EXPRESSION "event_destroy_before_create:.*PASS|SKIP event_destroy_before_create")
-set_tests_properties(event_destroy_before_create_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "event_destroy_before_create:.*PASS|SKIP event_destroy_before_create")
+set_tests_properties(event_destroy_before_create PROPERTIES PASS_REGULAR_EXPRESSION "event_destroy_before_create:.*PASS")
+set_tests_properties(event_destroy_before_create_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "event_destroy_before_create:.*PASS")
 
 # event_gpu_force_defer: GPU-only real body (ARTS_USE_GPU); SKIP stub otherwise.
 if(BUILD_CUDA_LIBRARY)
@@ -300,10 +292,10 @@ if(BUILD_CUDA_LIBRARY)
     target_compile_definitions(event_gpu_force_defer PRIVATE ARTS_USE_GPU)
     register_gpu_test(event_gpu_force_defer TIMEOUT 30)
     set_tests_properties(event_gpu_force_defer PROPERTIES
-        PASS_REGULAR_EXPRESSION "event_gpu_force_defer:.*PASS|SKIP event_gpu_force_defer")
+        PASS_REGULAR_EXPRESSION "event_gpu_force_defer:.*PASS")
 endif()
 
-# --- C07: grant retention ---
+# --- grant retention ---
 
 # grant_sticky: asserts the grant outlives its writers (single-rank only —
 # a second rank could revoke it, which is what the test must exclude).
@@ -315,11 +307,11 @@ set_tests_properties(grant_sticky PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant
 # by the new owner's rounds.  2+ ranks (the grant has to leave the reader).
 add_arts_test(grant_ex_holder_sharer)
 register_multinode_test(grant_ex_holder_sharer TIMEOUT 120)
-set_tests_properties(grant_ex_holder_sharer_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
-set_tests_properties(grant_ex_holder_sharer_4n_4w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
-set_tests_properties(grant_ex_holder_sharer_2n_8w_2p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer|SKIP grant_ex_holder_sharer")
+set_tests_properties(grant_ex_holder_sharer_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer")
+set_tests_properties(grant_ex_holder_sharer_4n_4w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer")
+set_tests_properties(grant_ex_holder_sharer_2n_8w_2p PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_ex_holder_sharer")
 
-# --- C09: EXCL protocol-specific ---
+# --- EXCL protocol-specific ---
 # T093 EXPOSES B-lock-samerank-rw-grant-loss: expected to FAIL (hang) under EXCL; self-skips
 # elsewhere. Do not mask.
 add_arts_test(excl_samerank_rw_grant_race)
@@ -348,48 +340,55 @@ foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
         "excl_purge_grant_d6_d7 D7: .* D6 chain verified — PASS|SKIP excl_purge_grant_d6_d7")
 endforeach()
 
-# excl_req_before_create: protocol-agnostic, needs 3+ ranks (verbatim copy of the old
-# coherence_lock_req_before_create into the planned filename); register at 4n_4w_1p.
+# excl_req_before_create: protocol-agnostic, needs 3+ ranks; registered at
+# 4n_4w_1p.
 add_arts_test(excl_req_before_create)
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_multinode_test(excl_req_before_create TIMEOUT 90 VARIANTS 4n_4w_1p)
-set_tests_properties(excl_req_before_create_4n_4w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed|SKIP excl_req_before_create")
+set_tests_properties(excl_req_before_create_4n_4w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: [0-9]+ iterations completed")
 endif()
 
-# --- C11: snapshot / publish-ack / destroy-notify / dispatcher-parity (config_specific,
-# but census asks for multinode variants to expose the wire reorder; register both) ---
-# T108 EXPOSES B014/B028. Non-EXCL (snapshot-bearing); self-skips under EXCL.
+# --- snapshot / dispatcher-parity / first-touch claim / Cat-C ref balance /
+# publish-ack (single-node, with multinode variants to expose the wire
+# reorder; register both) ---
+# Regression test: a reader ordered after a writer sees its value, through the
+# SNAPSHOT_RESPONSE three-case classifier under VAL and each other arm's own
+# read path; EXCL compiles it out (SKIP).
 add_arts_test(snapshot_response_3case)
 register_single_node_test(snapshot_response_3case TIMEOUT 120)
 register_multinode_test(snapshot_response_3case TIMEOUT 120)
 
-# T112 EXPOSES B023 (self-send vs dispatcher parity). All protocols; needs 1n_20w AND multinode.
+# Regression test: the self-send shortcut handles every coherence message
+# family as the RX dispatcher does.  Every protocol; one rank drives the
+# self-sends, the multinode variants the dispatcher.
 add_arts_test(self_send_vs_dispatcher_parity)
 register_single_node_test(self_send_vs_dispatcher_parity TIMEOUT 120)
 register_multinode_test(self_send_vs_dispatcher_parity TIMEOUT 120)
 
 # A dependence's first touch installs a stub that the later create claims.
-# runtime_multinode (needs >=2 ranks).
+# Multinode only (needs >=2 ranks).
 add_arts_test(db_create_claims_first_touch_stub)
 register_multinode_test(db_create_claims_first_touch_stub TIMEOUT 120)
 
-# T115 EXPOSES B024 (Cat-C ref balance) — normally PASSES (regression guard). 1n_20w + multinode.
+# Regression test: every Cat-C handler releases the ref it pins, on a HIT and
+# on every MISS.  One rank + multinode.
 add_arts_test(cat_c_ref_balance)
 register_single_node_test(cat_c_ref_balance TIMEOUT 120)
 register_multinode_test(cat_c_ref_balance TIMEOUT 120)
 
-# T116 EXPOSES B017 (await_publish_ack under shutdown). WT only; self-skips under WB/EXCL.
-# Normally PASSES (prints token before shutdown). 1n_20w + multinode.
+# Regression test: a release blocked on the home's answer escapes when a
+# shutdown overtakes it.  Runs under write-through (VAL, INV) and FLUSH; the WB
+# write policy and EXCL compile it out (SKIP).  One rank + multinode.
 add_arts_test(await_publish_ack_shutdown)
 register_single_node_test(await_publish_ack_shutdown TIMEOUT 120)
 register_multinode_test(await_publish_ack_shutdown TIMEOUT 120)
 set_tests_properties(await_publish_ack_shutdown PROPERTIES PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown|SKIP await_publish_ack_shutdown")
 set_tests_properties(await_publish_ack_shutdown_2n_9w_1p PROPERTIES PASS_REGULAR_EXPRESSION "PASS: await_publish_ack_shutdown reached shutdown|SKIP await_publish_ack_shutdown")
 
-# --- C03r: route-table / GUID determinism ---
+# --- route-table / GUID determinism ---
 
 add_arts_test(guid_crossrank_determinism)
 register_multinode_test(guid_crossrank_determinism TIMEOUT 120)
@@ -403,7 +402,7 @@ register_multinode_test(round_robin_home_distribution TIMEOUT 120)
 add_arts_test(guid_index_from_mismatch)
 register_single_node_test(guid_index_from_mismatch TIMEOUT 60)
 
-# --- C04r: OoO defer/replay engine ---
+# --- OoO defer/replay engine ---
 # Its writers are unordered, which DB-WRF does not admit.
 add_arts_test(ooo_concurrent_multidrain)
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
@@ -413,15 +412,17 @@ endif()
 add_arts_test(ooo_hit_ref_pin)
 register_single_node_test(ooo_hit_ref_pin TIMEOUT 120)
 
-# --- C05r: DB create-with-data / stub install ---
+# --- DB create-with-data / stub install ---
 add_arts_test(db_create_with_data_bytes)
 register_single_node_test(db_create_with_data_bytes TIMEOUT 60)
 
-# T059 EXPOSES B-mark-double-dec: expected to FAIL (delta==2 not 1). runtime_single (boots
-# arts_rt for route-table/EDT alloc). Lives in tests/unit/. Do not mask.
+# Regression test: a duplicate wake of one (edt, slot) counts the dependence
+# down once.  It boots arts_rt for the route table and the EDT allocation.
 if(NOT "mark_edt_ready_idempotent" IN_LIST ARTS_CXL_DIRECT_EXCLUDED)
 add_arts_test(mark_edt_ready_idempotent)
 register_single_node_test(mark_edt_ready_idempotent TIMEOUT 60)
+set_tests_properties(mark_edt_ready_idempotent PROPERTIES PASS_REGULAR_EXPRESSION
+    "PASS: mark_edt_ready_idempotent|SKIP mark_edt_ready_idempotent")
 endif()
 
 add_arts_test(stub_install_winner)
@@ -431,28 +432,35 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
         PASS_REGULAR_EXPRESSION "PASS: stub_install_winner|SKIP stub_install_winner")
 endforeach()
 
-# --- C02r: scheduler ---
-# T024 EXPOSES suspected non-owner-push deque[0] race — normally PASSES (guard). runtime_single.
+# --- scheduler ---
+# Regression test (scheduler_async_nonowner_push): an RW hand-off chain's
+# resumes push onto the resuming thread's own deque, and every EDT runs exactly
+# once.  One rank.
 # Both record into one block from EDTs with no order among them, which DB-WRF
 # does not admit.
 add_arts_test(scheduler_async_nonowner_push)
 add_arts_test(scheduler_acquire_bias)
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(scheduler_async_nonowner_push TIMEOUT 120)
-set_tests_properties(scheduler_async_nonowner_push PROPERTIES PASS_REGULAR_EXPRESSION "scheduler_async_nonowner_push: .* each ran once — PASS|SKIP scheduler_async_nonowner_push")
+set_tests_properties(scheduler_async_nonowner_push PROPERTIES PASS_REGULAR_EXPRESSION "scheduler_async_nonowner_push: .* each ran once — PASS")
 register_single_node_test(scheduler_acquire_bias TIMEOUT 120)
-set_tests_properties(scheduler_acquire_bias PROPERTIES PASS_REGULAR_EXPRESSION "scheduler_acquire_bias: .* — PASS|SKIP scheduler_acquire_bias")
+set_tests_properties(scheduler_acquire_bias PROPERTIES PASS_REGULAR_EXPRESSION "scheduler_acquire_bias: .* — PASS")
 endif()
 
 add_arts_test(scheduler_loop_variants)
 register_single_node_test(scheduler_loop_variants TIMEOUT 60)
-set_tests_properties(scheduler_loop_variants PROPERTIES PASS_REGULAR_EXPRESSION "scheduler_loop_variants: .* — PASS|SKIP scheduler_loop_variants")
+set_tests_properties(scheduler_loop_variants PROPERTIES PASS_REGULAR_EXPRESSION "scheduler_loop_variants: .* — PASS")
 
-# --- C18r: dispatcher ---
+# --- dispatcher ---
+# dispatcher_default_fatal: success is the dispatcher's own abort on a message
+# type the build does not know: exit status 1, with its report.
 add_arts_test(dispatcher_default_fatal)
-register_single_node_test(dispatcher_default_fatal TIMEOUT 60)
+register_single_node_test(dispatcher_default_fatal STATUS 1 TIMEOUT 60)
+set_tests_properties(dispatcher_default_fatal PROPERTIES
+    PASS_REGULAR_EXPRESSION "received a message of unknown type [0-9]+"
+    FAIL_REGULAR_EXPRESSION "FAIL")
 
-# --- C19r: launcher ---
+# --- launcher ---
 add_arts_test(launcher_no_respawn)
 register_multinode_test(launcher_no_respawn TIMEOUT 60)
 
@@ -462,7 +470,7 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(launcher_orphan_prevention_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS: launcher_orphan_prevention")
 endforeach()
 
-# --- C21r: config loading ---
+# --- config loading ---
 add_arts_test(config_load_multinode_port_offset)
 register_multinode_test(config_load_multinode_port_offset TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
@@ -472,32 +480,42 @@ endforeach()
 
 add_arts_test(config_load_single_reclaim)
 register_single_node_test(config_load_single_reclaim TIMEOUT 30)
-set_tests_properties(config_load_single_reclaim PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_load_single_reclaim|SKIP config_load_single_reclaim")
+set_tests_properties(config_load_single_reclaim PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_load_single_reclaim")
 
 # config_override_embedded: pure_unit (links libarts, starts no runtime).
 add_arts_test(config_override_embedded)
 register_pure_unit_test(config_override_embedded TIMEOUT 30)
-set_tests_properties(config_override_embedded PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_override_embedded|SKIP config_override_embedded")
+set_tests_properties(config_override_embedded PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_override_embedded")
 
 # config_removed_keys_reject: pure_unit (links libarts, starts no runtime;
-# forks to probe the sender_threads/receiver_threads ARTS_ERROR death paths).
+# forks to probe the refusal of every removed key: sender_threads,
+# receiver_threads, default_ports, deque_type, auto_shutdown, fam_pool_mb and
+# fam_strict).
 add_arts_test(config_removed_keys_reject)
 register_pure_unit_test(config_removed_keys_reject TIMEOUT 30)
-set_tests_properties(config_removed_keys_reject PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_removed_keys_reject|SKIP config_removed_keys_reject")
+set_tests_properties(config_removed_keys_reject PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_removed_keys_reject")
+
+# config_scheduler_range: pure_unit (links libarts, starts no runtime; forks
+# to probe the refusal of a scheduler index past this build's loop table).  The
+# refused child's report and the parent's verdict reach the log in either order.
+add_arts_test(config_scheduler_range)
+register_pure_unit_test(config_scheduler_range TIMEOUT 30)
+set_tests_properties(config_scheduler_range PROPERTIES PASS_REGULAR_EXPRESSION
+    "names no scheduler loop.*PASS config_scheduler_range|PASS config_scheduler_range.*names no scheduler loop")
 
 # config_provider_regpool_parse: pure_unit (links libarts, starts no runtime).
 add_arts_test(config_provider_regpool_parse)
 register_pure_unit_test(config_provider_regpool_parse TIMEOUT 30)
-set_tests_properties(config_provider_regpool_parse PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_provider_regpool_parse|SKIP config_provider_regpool_parse")
+set_tests_properties(config_provider_regpool_parse PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_provider_regpool_parse")
 
-# --- C22r: runtime startup/shutdown/threads/signals ---
+# --- runtime startup/shutdown/threads/signals ---
 add_arts_test(runtime_barrier_counts)
 register_single_node_test(runtime_barrier_counts TIMEOUT 60)
 
 # T221 EXPOSES B-shutdown-state-dualpath — normally green baseline (documented, not deterministic).
 add_arts_test(runtime_concurrent_shutdown)
 register_single_node_test(runtime_concurrent_shutdown TIMEOUT 60)
-set_tests_properties(runtime_concurrent_shutdown PROPERTIES PASS_REGULAR_EXPRESSION "SHUTDOWN_STATE_OK|SKIP runtime_concurrent_shutdown")
+set_tests_properties(runtime_concurrent_shutdown PROPERTIES PASS_REGULAR_EXPRESSION "SHUTDOWN_STATE_OK")
 
 # runtime_gpu_scheduler_promotion: GPU-only (ARTS_USE_GPU); SKIP stub otherwise.
 if(BUILD_CUDA_LIBRARY)
@@ -505,19 +523,19 @@ if(BUILD_CUDA_LIBRARY)
     target_compile_definitions(runtime_gpu_scheduler_promotion PRIVATE ARTS_USE_GPU)
     register_gpu_test(runtime_gpu_scheduler_promotion TIMEOUT 120)
     set_tests_properties(runtime_gpu_scheduler_promotion PROPERTIES
-        PASS_REGULAR_EXPRESSION "GPU_SCHED_PROMOTION_DONE|SKIP runtime_gpu_scheduler_promotion")
+        PASS_REGULAR_EXPRESSION "GPU_SCHED_PROMOTION_DONE")
 endif()
 
 add_arts_test(threads_shutdown_cancel)
 register_single_node_test(threads_shutdown_cancel TIMEOUT 60)
-set_tests_properties(threads_shutdown_cancel PROPERTIES PASS_REGULAR_EXPRESSION "SHUTDOWN_CANCEL_DONE|SKIP threads_shutdown_cancel")
+set_tests_properties(threads_shutdown_cancel PROPERTIES PASS_REGULAR_EXPRESSION "SHUTDOWN_CANCEL_DONE")
 
 add_arts_test(threads_pin_affinity)
 register_single_node_test(threads_pin_affinity TIMEOUT 60)
 
 add_arts_test(signals_sigterm_graceful)
 register_single_node_test(signals_sigterm_graceful TIMEOUT 60)
-set_tests_properties(signals_sigterm_graceful PROPERTIES PASS_REGULAR_EXPRESSION "SIGTERM_GRACEFUL_OK|SKIP signals_sigterm_graceful")
+set_tests_properties(signals_sigterm_graceful PROPERTIES PASS_REGULAR_EXPRESSION "SIGTERM_GRACEFUL_OK")
 
 # signals_double_sigterm: success is exit code 143 (= 128+SIGTERM), the escalation's own exit.
 add_arts_test(signals_double_sigterm)
@@ -543,7 +561,7 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(shutdown_idempotent_concurrent_init_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "IDEMPOTENT_INIT_EXIT")
 endforeach()
 
-# --- C23r: random / system-info ---
+# --- random / system-info ---
 # T244 EXPOSES B129 (sign-extended jrand48): expected to FAIL (high-bits set). Do not mask.
 add_arts_test(random_thread_safe)
 register_single_node_test(random_thread_safe TIMEOUT 60)
@@ -554,7 +572,7 @@ register_multinode_test(system_info_per_rank TIMEOUT 120)
 add_arts_test(system_info_in_edt)
 register_single_node_test(system_info_in_edt TIMEOUT 60)
 
-# --- C24r: counters ---
+# --- counters ---
 # counter_smoke_value reads NUM_EDT_CREATE back from the counter files, which
 # exist only where the tree's counter config captures it; everywhere else there
 # is nothing for the program to read, so it is built but not registered.
@@ -567,9 +585,9 @@ endif()
 
 add_arts_test(counter_timer_balance)
 register_single_node_test(counter_timer_balance TIMEOUT 30)
-set_tests_properties(counter_timer_balance PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_timer_balance|SKIP counter_timer_balance")
+set_tests_properties(counter_timer_balance PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_timer_balance")
 
-# --- C25r: block dist / CSR ---
+# --- block dist / CSR ---
 # T262 EXPOSES B-args-oob: expected to FAIL (ASan OOB). runtime_single (needs arts_rt). Do not mask.
 add_arts_test(dist_args_oob)
 register_single_node_test(dist_args_oob TIMEOUT 10)
@@ -605,18 +623,18 @@ register_single_node_test(csr_load_args TIMEOUT 10)
 add_arts_test(csr_remote_null)
 register_multinode_test(csr_remote_null TIMEOUT 60)
 
-# --- C27: public-API surface ---
+# --- public-API surface ---
 add_arts_test(api_init_per_node_worker)
 register_single_node_test(api_init_per_node_worker TIMEOUT 10)
-set_tests_properties(api_init_per_node_worker PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_init_per_node_worker|SKIP api_init_per_node_worker")
+set_tests_properties(api_init_per_node_worker PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_init_per_node_worker")
 
 add_arts_test(api_current_finish_event_null)
 register_single_node_test(api_current_finish_event_null TIMEOUT 10)
-set_tests_properties(api_current_finish_event_null PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_current_finish_event_null|SKIP api_current_finish_event_null")
+set_tests_properties(api_current_finish_event_null PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_current_finish_event_null")
 
 add_arts_test(api_latch_incr_slot)
 register_single_node_test(api_latch_incr_slot TIMEOUT 10)
-set_tests_properties(api_latch_incr_slot PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_latch_incr_slot|SKIP api_latch_incr_slot")
+set_tests_properties(api_latch_incr_slot PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_latch_incr_slot")
 
 # api_gpu_context_accessors: GPU-only real body (ARTS_TEST_GPU); SKIP stub otherwise.
 if(BUILD_CUDA_LIBRARY)
@@ -627,12 +645,12 @@ if(BUILD_CUDA_LIBRARY)
         PASS_REGULAR_EXPRESSION "PASS api_gpu_context_accessors|SKIP api_gpu_context_accessors")
 endif()
 
-# --- C13: EDT semantics (census metadata lost; classified by scanning tests/ocr/) ---
+# --- EDT semantics ---
 # Its writers are unordered, which DB-WRF does not admit.
 add_arts_test(edt_sentinel_single_fire)
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(edt_sentinel_single_fire TIMEOUT 30)
-set_tests_properties(edt_sentinel_single_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_sentinel_single_fire|SKIP edt_sentinel_single_fire")
+set_tests_properties(edt_sentinel_single_fire PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_sentinel_single_fire")
 endif()
 
 # edt_satisfy_out_of_range EXPOSES a satisfy-out-of-range bug: prints no PASS token (FAIL+abort
@@ -657,102 +675,103 @@ add_arts_test(edt_finish_scope_balance)
 register_single_node_test(edt_finish_scope_balance TIMEOUT 30)
 register_multinode_test(edt_finish_scope_balance TIMEOUT 60)
 foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
-    set_tests_properties(edt_finish_scope_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_finish_scope_balance|SKIP edt_finish_scope_balance")
+    set_tests_properties(edt_finish_scope_balance${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_finish_scope_balance")
 endforeach()
 
-# edt_remote_create_reordered_satisfy: needs 2+ ranks; SKIPs cleanly on 1n_20w.
+# edt_remote_create_reordered_satisfy: needs 2+ ranks, so it is multinode only.
 add_arts_test(edt_remote_create_reordered_satisfy)
 register_multinode_test(edt_remote_create_reordered_satisfy TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(edt_remote_create_reordered_satisfy_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS edt_remote_create_reordered_satisfy|SKIP edt_remote_create_reordered_satisfy")
+        PASS_REGULAR_EXPRESSION "PASS edt_remote_create_reordered_satisfy")
 endforeach()
 
 # edt_size_offsets: pure_unit, but calls libarts symbols (arts_get_depv, check_out_edts) so it
 # links libarts via add_arts_test + register_pure_unit_test (starts no runtime).
 add_arts_test(edt_size_offsets)
 register_pure_unit_test(edt_size_offsets TIMEOUT 30)
-set_tests_properties(edt_size_offsets PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_size_offsets|SKIP edt_size_offsets")
+set_tests_properties(edt_size_offsets PROPERTIES PASS_REGULAR_EXPRESSION "PASS edt_size_offsets")
 
-# --- Wave C/D pure_unit tests (C14 T150 / C15 T162) ---
+# --- pure_unit tests ---
 # vector_basic: #includes vector.c directly (libc shims); pins the contracts
 # the per-worker EDT-context lists lean on (lazy alloc, doubling, swap-remove,
 # clear-keeps-block, free-keeps-sentinel).
 add_pure_unit_src(vector_basic PASS_REGEX "PASS vector_basic" TIMEOUT 30)
 
 # ============================================================================
-# C06 per-protocol pure_unit tests
+# Per-protocol pure_unit tests
 #
 # These compile specific protocol-coherence source TUs directly (NOT linking
 # libarts) via add_pure_unit_src with ARTS_UNIT_STANDALONE_SHIMS, and self-adapt
-# to the build dir's protocol macro (self-skip / print SKIP in non-target
-# configs).
+# to the build dir's protocol macro (outside their target protocol they print a
+# PASS line saying they skipped).
 # ============================================================================
 
-# directory_grantreq_queue: VAL/EXCL (the .c #if-guards select the protocol directory.c).
-add_pure_unit_src(directory_grantreq_queue DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS directory_grantreq_queue:|SKIP" TIMEOUT 60)
+# directory_grantreq_queue: VAL/EXCL/INV (the .c #if-guards select the protocol
+# directory.c; self-skips under FLUSH).
+add_pure_unit_src(directory_grantreq_queue DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS directory_grantreq_queue:" TIMEOUT 60)
 
 # pending_rw_treiber: VAL only (self-skips else).
-add_pure_unit_src(pending_rw_treiber DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS pending_rw_treiber:|SKIP" TIMEOUT 60)
+add_pure_unit_src(pending_rw_treiber DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS pending_rw_treiber:" TIMEOUT 60)
 
-# excl_compute_next: EXCL only (self-skips else).
-add_pure_unit_src(excl_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS excl_compute_next:|SKIP" TIMEOUT 60)
+# excl_compute_next: EXCL+PURGE only (self-skips else).
+add_pure_unit_src(excl_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS excl_compute_next:" TIMEOUT 60)
 
 # inv_compute_next: INV only (self-skips else).  One truth table covers both
-# placements — the arbiters are placement-independent.
-add_pure_unit_src(inv_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_compute_next:|SKIP" TIMEOUT 60)
+# write policies — the arbiters do not depend on the write policy.
+add_pure_unit_src(inv_compute_next DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS inv_compute_next:" TIMEOUT 60)
 
-# acquire_is_serialized (T068): needs_full_build — it does NOT #include a coherence .c; it
-# links the real arts_db_acquire_is_serialized symbol out of the per-config static libarts and
-# never starts the runtime. So it uses add_arts_test (links libarts) + register_pure_unit_test.
-# Runs (and asserts the protocol-correct answer) under all 6 configs.
+# acquire_is_serialized: it does NOT #include a coherence .c; it links the real
+# arts_db_acquire_is_serialized symbol out of the per-config static libarts and
+# never starts the runtime, so it uses add_arts_test (links libarts) +
+# register_pure_unit_test.  Runs (and asserts the protocol-correct answer)
+# under every configuration.
 add_arts_test(acquire_is_serialized)
 register_pure_unit_test(acquire_is_serialized TIMEOUT 30)
-set_tests_properties(acquire_is_serialized PROPERTIES PASS_REGULAR_EXPRESSION "PASS acquire_is_serialized|SKIP acquire_is_serialized")
+set_tests_properties(acquire_is_serialized PROPERTIES PASS_REGULAR_EXPRESSION "PASS acquire_is_serialized")
 
 # ============================================================================
-# C13 — EDT lifecycle, satisfy, finish-scope (T139-T144)
+# EDT lifecycle, satisfy, finish-scope
 #
-# Each links libarts and starts the runtime (except the GPU one, which
-# self-skips out of config).  Single-node ones gate on "PASS <name>|SKIP"; the
-# GPU one is wrapped in BUILD_CUDA_LIBRARY with the ARTS_USE_GPU define so its
-# real body activates only in GPU builds.
+# Each links libarts and starts the runtime.  Single-node ones gate on
+# "PASS <name>"; the GPU one is wrapped in BUILD_CUDA_LIBRARY with the
+# ARTS_USE_GPU define, so only its real body is ever built.
 # ============================================================================
 
-# T139 — arts_edt_register_cb_deleter constructor-order vs route_table.
+# arts_edt_register_cb_deleter constructor-order vs route_table.
 add_arts_test(edt_register_cb_deleter)
 register_single_node_test(edt_register_cb_deleter TIMEOUT 30)
 set_tests_properties(edt_register_cb_deleter PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS edt_register_cb_deleter|SKIP")
+    PASS_REGULAR_EXPRESSION "PASS edt_register_cb_deleter")
 
-# T143 — DB_MODE_NULL raw-uint64 dep delivered to depv[slot].
+# DB_MODE_NULL raw-uint64 dep delivered to depv[slot].
 add_arts_test(edt_value)
 register_single_node_test(edt_value TIMEOUT 30)
 set_tests_properties(edt_value PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS edt_value|SKIP")
+    PASS_REGULAR_EXPRESSION "PASS edt_value")
 
-# T140 — GPU LC drain force-defer (config_specific: GPU). The .c self-skips when
-# ARTS_USE_GPU is undefined; in a CUDA build the define activates the real body.
+# GPU LC drain force-defer (GPU builds only).  The registration defines
+# ARTS_USE_GPU, which selects the real body over the .c's skip stub.
 if(BUILD_CUDA_LIBRARY)
     add_arts_test(edt_gpu_lc_force_defer)
     target_compile_definitions(edt_gpu_lc_force_defer PRIVATE ARTS_USE_GPU)
     register_gpu_test(edt_gpu_lc_force_defer TIMEOUT 30)
     set_tests_properties(edt_gpu_lc_force_defer PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS edt_gpu_lc_force_defer|SKIP")
+        PASS_REGULAR_EXPRESSION "PASS edt_gpu_lc_force_defer")
 endif()
 
 # ============================================================================
-# T294 — PASS-gate sweep: add FAIL_REGULAR_EXPRESSION to pre-existing OCR/unit
-# tests that print a failure token (FAIL/ERROR/MISMATCH) on an internal failure
-# but still exit 0, so a silent failure would pass ctest unnoticed.  This is the
-# CONSERVATIVE form: a FAIL_REGULAR_EXPRESSION only catches the test's actual
-# printed failure token, so it never false-fails a clean run (unlike a PASS
-# regex, which would need an exact, always-present success token).  Every token
+# PASS-gate sweep: FAIL_REGULAR_EXPRESSION for OCR/unit tests that print a
+# failure token (FAIL/ERROR/MISMATCH) on an internal failure but still exit 0,
+# so a silent failure would pass ctest unnoticed.  This is the CONSERVATIVE
+# form: a FAIL_REGULAR_EXPRESSION only catches the test's actual printed
+# failure token, so it never false-fails a clean run (unlike a PASS regex,
+# which would need an exact, always-present success token).  Every token
 # matched here is printed ONLY on a failure branch (the runtime's own [ERROR]
 # log always aborts, so it never appears on a clean run either).  Tests that
 # rely solely on a nonzero exit code, the term_* signal tests, GPU .cu tests,
-# and the Wave-A/C/D generated tests (already gated or intentional bug-exposers)
-# are intentionally NOT included here.
+# and the tests registered earlier in this file (already gated or intentional
+# bug-exposers) are intentionally NOT included here.
 # ============================================================================
 set_tests_properties(acquire_mode PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL|ERROR")
 set_tests_properties(array_list_basic PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
@@ -770,7 +789,7 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 foreach(_v 2n_9w_1p 4n_4w_1p)
     set_tests_properties(coherence_multi_writer_dist_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL"
-        PASS_REGULAR_EXPRESSION "PASS: EXCL distributed arbitration|SKIP coherence_multi_writer_dist")
+        PASS_REGULAR_EXPRESSION "PASS: EXCL distributed arbitration")
 endforeach()
 endif()
 set_tests_properties(coherence_ro_acquire_stress PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")

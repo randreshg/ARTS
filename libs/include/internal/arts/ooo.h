@@ -67,8 +67,9 @@ extern "C" {
  *     generation of the GUID;
  *   - every other kind runs while the slot is OCCUPIED, against the occupant,
  *     and is parked until an install while it is empty.
- * Silent-drop (Cat C) and state-less (Cat E) handlers reach their handler only
- * through the wire dispatcher's MSG_* mapping and have NO kind here.
+ * Silent-drop and state-less handlers have NO kind here: the wire
+ * dispatcher's MSG_* mapping reaches them, and for a self-send the sender
+ * calls the body directly.
  *
  * Naming invariant: OOO_<NAME> == the handler arts_handler_<name> with the
  * arts_handler_ prefix stripped and upper-cased (kind ↔ handler 1:1), e.g.
@@ -129,9 +130,9 @@ enum arts_ooo_kind {
    * carries payload to the home. */
   OOO_DB_INV_REQUEST, /* → arts_handler_db_inv_request @ home (RO fetch) */
   /* Every release asks the home for its invalidation round.  Under WT the
-   * request carries the payload (the home installs it and serves readers from
-   * it); under WB it is pure control.  That is the ONLY difference between
-   * the two write policies' releases. */
+   * release's payload lands in place in the home's stable buffer, which the
+   * home serves readers from; under WB the request is pure control.  That is
+   * the ONLY difference between the two write policies' releases. */
   OOO_DB_PUBLISH, /* → arts_handler_db_publish @ home */
 #ifdef ARTS_RELEASE_PURGE
   /* The voluntary return.  It can overtake the block's home CREATE, and the
@@ -154,10 +155,10 @@ enum arts_ooo_kind {
                    */
   OOO_DB_SNAPSHOT_REQUEST,  /* → arts_handler_db_snapshot_request @ home */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
-  /* NO OOO_DB_GRANT_INVALIDATE — the WT write policy no longer defers
-   * INVALIDATE: rw_holder is flipped only at the post-install CONFIRM (same as
-   * WB), so the target is provably installed when INVALIDATE arrives and the
-   * dispatcher/self-send call the body directly. */
+  /* NO OOO_DB_GRANT_INVALIDATE — rw_holder is flipped only at the
+   * post-install CONFIRM (same as WB), so the target is provably installed
+   * when INVALIDATE arrives and the dispatcher/self-send call the body
+   * directly. */
   OOO_DB_PUBLISH, /* → arts_handler_db_publish @ home */
 #ifdef ARTS_RELEASE_PURGE
   /* The voluntary return.  It can overtake the block's home CREATE, and the
@@ -175,7 +176,7 @@ enum arts_ooo_kind {
  * (home publishes the target rw_holder only after that rank's cache install,
  * so the target is provably installed; the dispatcher/self-send call the body
  * directly).
- * NO OOO_DB_PUBLISH — the WB write policy has no synchronous publish (the
+ * NO OOO_DB_PUBLISH — VAL WB publishes nothing at a release (the
  * dispatcher fatals on the PUBLISH wire message). */
 #elif defined(ARTS_PROTOCOL_FLUSH)
   OOO_DB_ACQUIRE,       /* → arts_db_acquire_replay_dep */
@@ -350,20 +351,24 @@ struct arts_ooo_args_db_destroy_s {
   arts_guid_t db_guid;
 };
 
-/* DB publish.  Three shapes share this args struct (see the PUBLISH wire
+/* DB publish.  The shapes that share this args struct (see the PUBLISH wire
  * doc in protocol.h):
  *   data_inline != 0                : same-rank publish — the payload
- *       (data_size bytes) trails this header in the args blob;
- *   data_inline == 0, rdzv_txid == 0: announce leg — home allocates a fresh
- *       landing and replies PUBLISH_CTS (nothing installs yet);
- *   data_inline == 0, rdzv_txid != 0: commit leg — the payload was PUT into
- *       home's landing (rdzv_cookie); install on {args, txid} pairing.
+ *       (data_size bytes) trails this header in the args blob.  No caller
+ *       passes a payload, and both publish handlers refuse one;
+ *   data_inline == 0, rdzv_txid == 0: announce leg — home advertises its
+ *       stable buffer as the landing and replies PUBLISH_CTS (nothing is
+ *       published yet);
+ *   data_inline == 0, rdzv_txid != 0: commit leg — the payload was PUT in
+ *       place into home's stable buffer; home pairs {args, write completion},
+ *       either order, before the version is stamped;
  *   data_size == 0                  : data-less round — install nothing, ACK. */
 struct arts_ooo_args_db_publish_s {
   unsigned int releaser;
   arts_guid_t db_guid;
   uint64_t version;
-  uint64_t cv; /* releaser's stack rendezvous address, echoed in CTS/ACK */
+  uint64_t cv; /* announce only: the releaser's heap rendezvous, echoed in the
+                * PUBLISH_CTS; 0 on every other leg */
   uint64_t data_size;
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
@@ -423,20 +428,21 @@ struct arts_ooo_args_db_excl_request_s {
   arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
   struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
 };
-/* EXCL_RELEASE: inline publish payload of data_size bytes trails this
- * header (data_size == 0 for RO releases).
- * cv: RW only — releaser's stack-local sem_t address; forwarded verbatim in
- * the PUBLISH_CTS so the releaser wakes by pointer identity.  0 for RO.
- * version: monotone round counter bumped by the releaser; home's buf_install
- * rejects stale overwrites when a reordered/duplicate RELEASE races a newer
- * one (same guard as the VAL publish path). */
+/* EXCL_RELEASE: data_size is an RW release's byte count (0 for RO releases).
+ * cv: nonzero only on an RW release's landing-less announce — the address of
+ * the releaser's heap rendezvous, forwarded verbatim in the PUBLISH_CTS so
+ * the releaser wakes by pointer identity.  No acknowledgement answers a
+ * release.
+ * version: every sender passes 0 and the handler reads none — exclusion
+ * leaves at most one write turn of a block outstanding, so no stale release
+ * can race a newer one. */
 struct arts_ooo_args_db_excl_release_s {
   unsigned int releaser; /* rank that sent MSG_DB_EXCL_RELEASE */
   arts_guid_t db_guid;
   arts_db_access_mode_t mode; /* DB_MODE_RO or DB_MODE_RW */
   uint64_t data_size;         /* 0 for RO; >0 for RW publish */
-  uint64_t cv;                /* RW: releaser sem_t address; 0 for RO */
-  uint64_t version; /* RW: monotone version for buf_install; 0 for RO */
+  uint64_t cv;                /* RW announce: rendezvous address; else 0 */
+  uint64_t version;           /* always 0 */
   /* RW dirty payload delivery: data_inline != 0 = payload trails this header
    * (same-rank release); else the payload was PUT into the grant's pub landing
    * — {rdzv_txid, rdzv_cookie} echo it and install pairs by txid. */

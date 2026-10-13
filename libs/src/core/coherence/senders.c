@@ -72,8 +72,9 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
     /* Route through the OoO engine exactly as the wire RX dispatcher does —
      * HIT runs the publish body inline, MISS defers the args (trailing data
      * preserved) and replays once the home db_s is installed + drained.  A
-     * same-rank publish carries its payload inline after the args struct
-     * (data_inline=1); no rendezvous round exists for it. */
+     * same-rank publish would carry `data` inline after the args struct
+     * (data_inline=1), but a home-resident release's flight is data-less, so
+     * no caller passes any; no rendezvous round exists for it. */
     uint64_t inline_size = (data != NULL) ? data_size : 0;
     uint32_t asz =
         (uint32_t)(sizeof(struct arts_ooo_args_db_publish_s) + inline_size);
@@ -107,9 +108,9 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
 
 #endif /* arms that publish at a release */
 
-/* PUBLISH_CTS — home → releaser: a home landing for an announced dirty
- * publish (a fresh buffer under the ownership/multi-writer protocols; the
- * stable buffer under the exclusive-lock protocol's landing-less release).
+/* PUBLISH_CTS — home → releaser: the home's stable buffer, advertised in
+ * place, as the landing for an announced dirty publish (a WT payload publish
+ * under VAL or INV) or for EXCL PURGE's landing-less release.
  * Never a self-send (a same-rank publish is inline).  Compiled for every
  * protocol with a synchronous publish leg. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
@@ -130,10 +131,11 @@ void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
 }
 #endif /* arms with a synchronous publish leg */
 
-/* PUBLISH_ACK is the reply to a synchronous PUBLISH round, which only
- * the WT write policy uses (the WB write policy transfers ownership
- * owner→owner without a synchronous publish, so it never sends or receives
- * PUBLISH_ACK and its dispatcher fatals on the wire message). */
+/* PUBLISH_ACK answers a publish flight — the WT write policy's payload
+ * publish, and INV WB's control-only request for its invalidation round —
+ * and, under PURGE, a grant return sent on its own.  VAL WB publishes nothing
+ * at a release (ownership moves owner→owner), so it never sends or receives
+ * PUBLISH_ACK and its dispatcher refuses the wire message. */
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
 void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
@@ -262,8 +264,8 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
     /* Self-send: route through the OoO engine exactly as the wire RX
      * dispatcher does — HIT serves the snapshot inline, MISS defers the args
      * and replays once the home db_s is installed + drained.  (The handler is
-     * now a pure (item, args) body; it no longer does its own lookup-or-defer,
-     * so the inline shortcut must enter through dispatch_or_defer.) */
+     * a pure (item, args) body that does no lookup-or-defer of its own, so
+     * the inline shortcut must enter through dispatch_or_defer.) */
     struct arts_ooo_args_db_snapshot_request_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,
@@ -298,10 +300,10 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
   p.rdzv_txid = 0;
   p.rdzv_cookie = (landing != NULL) ? landing->cookie : 0;
   if (requester_rank == arts_global_rank_id) {
-    /* Self-serve (an OWNER REDIRECT round-trip can land back on the requester
-     * rank): no RDMA — the bytes ride inline through the args while src_h
-     * pins the buffer; the handler returns our own unused landing (cookie),
-     * or adopts it as storage when the reply says nothing is held.
+    /* Self-serve (a write-back REDIRECT round-trip can land back on the
+     * requester rank): no RDMA — the bytes ride inline through the args while
+     * src_h pins the buffer; the handler returns our own unused landing
+     * (cookie), or adopts it as storage when the reply says nothing is held.
      * Mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop. */
     struct arts_db_snapshot_response_args_s args = {
         .edt_guid = edt_guid,
@@ -411,8 +413,8 @@ void arts_send_db_destroy(unsigned int home_rank, arts_guid_t db_guid) {
     /* Self-send: route through the OoO engine exactly as the wire RX
      * dispatcher does — HIT runs the destroy body inline, MISS defers the args
      * and replays once the home db_s is installed + drained.  (The handler is
-     * now a pure (item, args) body; it no longer does its own lookup-or-defer,
-     * so the inline shortcut must enter through dispatch_or_defer.) */
+     * a pure (item, args) body that does no lookup-or-defer of its own, so
+     * the inline shortcut must enter through dispatch_or_defer.) */
     struct arts_ooo_args_db_destroy_s args = {
         .requester = p.header.rank,
         .db_guid = db_guid,

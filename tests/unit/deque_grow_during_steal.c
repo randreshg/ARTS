@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T022 — grow-during-steal value-correctness + segment-reclamation safety
+ * Grow-during-steal value-correctness + segment-reclamation safety
  * (libs/src/core/utils/deque.c).  Targets suspected bug B052: push_front grows
  * the array (grow_circular_array copies the live window [t,b) into a 2x
  * segment) and publishes `deque->activeArray = a` with NO store-store fence
@@ -101,7 +101,7 @@ static void *owner(void *arg) {
   /* Pure producer: push in bursts so the deque repeatedly fills and grows
    * while stealers are mid-pop_back.  No owner-side pop here — we want the
    * grow path stressed against steals, not the last-element CAS (that is
-   * T021). */
+   * covered by the last-element tie-break test). */
   for (uint64_t i = 0; i < NITEMS; i++) {
     arts_deque_push_front(g_deque, enc(i), 0);
   }

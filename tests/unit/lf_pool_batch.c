@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T006 — arts_lockfree_pool_t batch + single-node primitives racing one head
- * (lockfree_pool.h).  Census 29.md §3 GAPS:
+ * arts_lockfree_pool_t batch + single-node primitives racing one head
+ * (lockfree_pool.h).  Coverage:
  *   - all four primitives (alloc / release / batch_fetch / batch_release)
  *     racing the same head simultaneously (the real tiered-spill pattern),
  *   - batch edge cases: want==0, want > available, empty pool,
  *   - alloc-fallback calloc zero-fill on empty pool,
- *   - count transient-wrap observation (B125).
+ *   - count transient-wrap observation.
  *
  * The pool's lifetime invariant (nodes live until pool destroy) means a node
  * is never freed by alloc/fetch — ownership only transfers.  So we can pre-

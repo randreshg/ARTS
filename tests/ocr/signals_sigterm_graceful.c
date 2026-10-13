@@ -20,7 +20,7 @@
 /// ctest matches the clean token; a regression that breaks the watcher would
 /// hang (ctest TIMEOUT) or exit with 128+sig.
 ///
-/// runtime_single, all configs (signals sit above the coherence layer).
+/// Single-node, every configuration (signals sit above the coherence layer).
 
 #include "arts.h"
 

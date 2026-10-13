@@ -15,7 +15,7 @@
 /// init_per_worker, which the runtime calls on each worker thread after
 /// affinity has been applied and before scheduler execution.
 ///
-/// config_specific: the expectation follows the run's own config (its `pin`
+/// The expectation follows the run's own config (its `pin`
 /// key, read before the runtime starts).  With pin on, a worker that is not
 /// bound to exactly its pu_id FAILS, whatever the host; with pin off there is
 /// nothing to bind and each worker reports a SKIP for its check (the test
@@ -23,7 +23,7 @@
 /// pinning is a no-op -> the whole hook self-skips.  Uses only the public
 /// init_per_worker hook + arts_thread_info white-box pu_id read.
 ///
-/// runtime_single, all configs (protocol-agnostic; affinity behavior is
+/// Single-node, every configuration (protocol-agnostic; affinity behavior is
 /// config).
 
 #ifndef _GNU_SOURCE

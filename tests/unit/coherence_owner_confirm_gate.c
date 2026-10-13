@@ -40,26 +40,24 @@
 /// @file coherence_owner_confirm_gate.c
 /// @brief Exploit + regression for the WB ownership-confirm gate.
 ///
-/// Reproduces the stale-RO window: when ownership transfers home(0)->W, the
-/// home updates rw_holder only at INSTALL_ACK, after W has already run its RW
-/// EDT.  An RO acquire that is causally-ordered AFTER W's write but races W's
-/// INSTALL_ACK is redirected by home to the OLD owner and reads a stale value.
+/// Guards the stale-RO window: when ownership transfers home(0)->W under
+/// write-back, the home names W in rw_holder only when W's
+/// MSG_DB_GRANT_CONFIRM arrives.  Were W to run its RW EDT before that, an RO
+/// acquire causally ordered AFTER W's write but racing W's CONFIRM would be
+/// redirected by the home to the OLD owner and read a stale value; W runs only
+/// after the home's MSG_DB_GRANT_CONFIRM_ACK, which closes the window.
 ///
-/// Per iteration (a clean write -> read happens-before chain):
-///   reset (rank 0, RW)  : re-own on home, write vprev      [finish_event
-///   e_reset] writer(rank W, RW)  : gated on e_reset; transfer 0->W;
-///                         write vnew                        [finish_event
-///                         e_writer]
-///   reader(rank 0, RO)  : gated on e_writer; MUST read vnew [finish_event
-///   e_reader]
-/// main_edt waits on each finish event in order (e_reset, e_writer, e_reader),
-/// releasing the creator-token so each scope can drain and the next EDT can
-/// run.
+/// Per iteration (a clean write -> read happens-before chain), each EDT in a
+/// finish scope of its own:
+///   reset  (rank 0, RW): re-own on the home, write vprev   [e_reset]
+///   writer (rank W, RW): transfer 0->W, write vnew         [e_writer]
+///   reader (rank 0, RO): MUST read vnew                    [e_reader]
+/// main_edt waits on each scope in that order before creating the next EDT,
+/// releasing the creator-token so the scope can drain.
 ///
-/// Config-agnostic: runs under configs/local/test/{1n_20w,2n_9w_1p,4n_4w_1p,2n_8w_2p}.cfg.  The
-/// 2n_8w_2p config (multiple sender/receiver threads -> wire reorder) is the one
-/// that exposes the race.  On 1n_20w there is no transfer and the test passes
-/// trivially.
+/// Registered single-node and multinode.  Two progress threads per rank,
+/// which reorder one peer's messages, widen the race; on one rank there is no
+/// transfer and the test passes trivially.
 /// A stranded waiter is caught by the ctest TIMEOUT (no in-test watchdog).
 
 #include "arts.h"
@@ -154,14 +152,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     /* Release the e_writer creator-token and wait for the writer EDT to finish.
      * While this call is spinning (DB released for member EDT progress), the
      * writer EDT acquires RW ownership (home redirects 0->W) and writes vnew.
-     * The race window: home updates rw_holder only on INSTALL_ACK, which may
-     * arrive AFTER the writer EDT has completed and e_writer has fired here. */
+     * The window the gate closes: the home flips rw_holder only on W's
+     * CONFIRM, which without the gate could arrive AFTER the writer EDT has
+     * completed and e_writer has fired here. */
     arts_event_wait(e_writer);
 
     /* --- Phase 3: reader EDT on home (rank 0); MUST see vnew. ---
      * Causally ordered AFTER the writer (we only create this EDT after
-     * arts_event_wait(e_writer) returns), but the RO acquire's LOCK_REQ
-     * can race the in-flight INSTALL_ACK at the home — the bug window. */
+     * arts_event_wait(e_writer) returns), but the RO acquire's request can
+     * race W's in-flight CONFIRM at the home — the window the gate closes. */
     arts_guid_t e_reader = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     arts_guid_t rd = arts_edt_create(
         reader_edt, 1, &vnew, 1,

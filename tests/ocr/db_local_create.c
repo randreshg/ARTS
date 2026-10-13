@@ -38,7 +38,8 @@
 ******************************************************************************/
 
 /// @file db_local_create.c
-/// @brief Tests arts_db_local_create() public API.
+/// @brief Tests arts_db_create() of node-pinned (ARTS_DB_PIN) blocks: a hint
+///        naming this rank, a NULL hint, and an RW writer/verifier chain.
 
 #include "arts.h"
 #include <string.h>
@@ -66,7 +67,8 @@ void check_local(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (ok) {
     ok = (arts_guid_get_kind(guid) == ARTS_GUID_DB);
   }
-  arts_printf("  %s: arts_db_local_create local path\n", ok ? "PASS" : "FAIL");
+  arts_printf("  %s: ARTS_DB_PIN create with this rank's hint\n",
+              ok ? "PASS" : "FAIL");
   if (!ok) {
     arts_test_fail();
   }
@@ -83,15 +85,15 @@ void check_null_hint(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (ok) {
     ok = (*data == 42);
   }
-  arts_printf("  %s: arts_db_local_create with NULL hint\n",
+  arts_printf("  %s: ARTS_DB_PIN create with NULL hint\n",
               ok ? "PASS" : "FAIL");
   if (!ok) {
     arts_test_fail();
   }
 }
 
-/// Test 3a: EW writer — multiply by 3.
-void ew_modify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+/// Test 3a: RW writer — multiply by 3.
+void rw_modify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
@@ -104,8 +106,8 @@ void ew_modify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 }
 
-/// Test 3b: EW verifier — check values are (i+1)*3.
-void ew_verify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+/// Test 3b: RW verifier — check values are (i+1)*3.
+void rw_verify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
@@ -120,7 +122,7 @@ void ew_verify(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       }
     }
   }
-  arts_printf("  %s: arts_db_local_create EW ordering\n", ok ? "PASS" : "FAIL");
+  arts_printf("  %s: ARTS_DB_PIN RW ordering\n", ok ? "PASS" : "FAIL");
   if (!ok) {
     arts_test_fail();
   }
@@ -178,10 +180,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_release(g3, DB_MODE_RW);
 
   arts_guid_t oe3 = arts_event_create(&ARTS_EVENT_HINT_LATCH(1));
-  arts_guid_t e3b = arts_edt_create(ew_verify, 0, NULL, 2,
+  arts_guid_t e3b = arts_edt_create(rw_verify, 0, NULL, 2,
                                     &(arts_edt_hint_t){.finish_event = fe});
   arts_guid_t e3a = arts_edt_create(
-      ew_modify, 0, NULL, 1,
+      rw_modify, 0, NULL, 1,
       &(arts_edt_hint_t){.finish_event = fe, .output_event = oe3});
   arts_add_dependence(g3, e3a, 0, DB_MODE_RW);
   arts_add_dependence(g3, e3b, 0, DB_MODE_RW);

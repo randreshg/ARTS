@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T009 — arts_mpsc_drain_remaining (mpsc.h) teardown helper.
+ * arts_mpsc_drain_remaining (mpsc.h) teardown helper.
  *
- * Census 29.md §5 GAP: drain_remaining (the single-consumer object-teardown
- * helper) was entirely untested.  Contract: on a QUIESCENT queue (all
- * producers stopped) a single drain_remaining returns a NULL-terminated chain
- * of EVERY linked node, re-threading each popped node's `next` to the
- * following popped node, and the embedded stub is NEVER returned.
+ * drain_remaining is the single-consumer object-teardown helper.  Contract:
+ * on a QUIESCENT queue (all producers stopped) a single drain_remaining
+ * returns a NULL-terminated chain of EVERY linked node, re-threading each
+ * popped node's `next` to the following popped node, and the embedded stub is
+ * NEVER returned.
  *
  * Scenario:
  *   - Concurrently push K nodes from P producers (so the internal mid-link

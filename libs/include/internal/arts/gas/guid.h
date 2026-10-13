@@ -251,46 +251,9 @@ uint64_t arts_guid_hash_key(arts_guid_t guid);
  *  @c arts_guid_reserve_range(kind, size, ARTS_HINT_ROUND_ROBIN).
  *  @c arts_guid_from_index / @c arts_guid_index_from detect this marker
  *  and place individual GUIDs round-robin across ranks (home = idx % nrank).
- *  14-bit rank field => max real rank = 16382 (0x3FFE - 1). */
+ *  A real rank is below it: a run has at most 16382 ranks (0..0x3FFD), and
+ *  0x3FFF is reserved as well. */
 #define ARTS_DISTRIBUTED_RANK 0x3FFE
-
-#if 0
-/* Retired: a GUID that encoded a store address (rank sentinel 0x3FFF, key =
- * offset from the mapping's base).  A data block in a CXL build keeps its
- * ordinary GUID and home; its slot address travels in the create and grant
- * messages instead.  Kept for the reader of the earlier design. */
-/* ── CXL GUID helpers ───────────────────────────────────────────────────────
- */
-
-#ifdef ARTS_USE_CXL
-
-#include <stdbool.h>
-
-/** Base virtual address of the CXL FAM mapping. */
-#define ARTS_CXL_BASE_ADDR 0x200000000000ULL
-
-/** Sentinel rank value that identifies CXL-encoded GUIDs.
- *  14-bit rank field => use top value (0x3FFF). */
-#define ARTS_CXL_RANK 0x3FFF
-
-/** Extract a CXL pointer from a CXL-encoded GUID. */
-static inline void *arts_cxl_get_ptr(arts_guid_t guid) {
-  return (void *)(ARTS_CXL_BASE_ADDR + ARTS_GUID_GET_KEY(guid));
-}
-
-/** Build a CXL-encoded GUID from a CXL pointer (kind = ARTS_GUID_DB). */
-static inline arts_guid_t arts_cxl_make_guid(void *ptr) {
-  uint64_t offset = (uint64_t)(uintptr_t)ptr - ARTS_CXL_BASE_ADDR;
-  return ARTS_GUID_MAKE(ARTS_GUID_DB, ARTS_CXL_RANK, offset);
-}
-
-/** Return true if the GUID uses CXL pointer encoding. */
-static inline bool arts_guid_is_cxl(arts_guid_t guid) {
-  return ARTS_GUID_GET_RANK(guid) == ARTS_CXL_RANK;
-}
-
-#endif /* ARTS_USE_CXL */
-#endif
 
 #ifdef __cplusplus
 }

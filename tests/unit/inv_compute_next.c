@@ -4,10 +4,10 @@
  * functions over the packed reader word [ro|inflight|head_ro] and the packed
  * directory word [round_open|acks].
  *
- * Both arbiters are identical under either placement (placement decides where
- * bytes come FROM, never what a word does), so this one truth table covers the
- * whole protocol.  Expected values are hand-derived, not produced by an oracle
- * that re-implements the functions.  Covered:
+ * Both arbiters are identical under either write policy (the write policy
+ * decides where bytes come FROM, never what a word does), so this one truth
+ * table covers the whole protocol.  Expected values are hand-derived, not
+ * produced by an oracle that re-implements the functions.  Covered:
  *
  *   cache (reader plane):
  *   - a covering copy makes a read SELF_SERVE with the word UNCHANGED — the

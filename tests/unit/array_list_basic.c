@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T023 — array_list functional coverage + empty/stale-cache get bug pin
+ * array_list functional coverage + empty/stale-cache get bug pin
  * (libs/src/core/utils/array_list.c).  Single-thread (the structure is
  * single-owner / not thread-safe by contract).
  *

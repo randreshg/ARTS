@@ -181,8 +181,7 @@ serve: {
        * waiter pushed after the take re-requests from inside that drain: the
        * request reaches this very tail through the engine, finds the baton
        * held, and stays queued for the re-check below. */
-      arts_db_drain_pending_rw_after_grant(cache, /*version=*/0,
-                                           /*has_next=*/false);
+      arts_db_drain_pending_rw_after_grant(cache);
       arts_ooo_drain_guid(cache->db_guid);
       goto release_recheck;
     }
@@ -568,9 +567,7 @@ static void commit_wake_cb(arts_guid_t edt_guid, unsigned int slot,
   mark_edt_ready_by_guid(edt_guid, slot);
 }
 
-unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache,
-                                        uint64_t version) {
-  (void)version;
+unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache) {
   /* Take the whole chain and COUNT it before waking any of it, then convert
    * the commit's single hold into one hold per waiter in a single step.  The
    * count has to precede the waking: a waiter woken while the walk is still

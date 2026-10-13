@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Common stubs for the config.c pure-unit tests (C21 cluster).
+ * Common stubs for the config.c pure-unit tests.
  *
  * The config parser's static helpers (parse_port_spec, handle_launcher,
  * handle_cxl_db_allocation_strategy, config_compute_derived, ...) have no
  * header prototype, so each test TU pulls the whole translation unit in with
  *     #include "../../libs/src/core/system/config.c"
  * (precedent: tests build edt_gpu.cu by #include'ing edt.c).  That drags in the
- * runtime's allocator / identity / abort / launcher-backend symbols, none of
- * which we want the real runtime for.  This header supplies libc-backed shims
- * for them so the test links standalone.
+ * runtime's allocator / identity / abort / launcher-backend / scheduler-table
+ * symbols, none of which we want the real runtime for.  This header supplies
+ * libc-backed shims for them so the test links standalone.
  *
  * IMPORTANT: include this header AFTER the config.c include, because config.c
  * brings in print.h (which declares arts_global_rank_id / arts_thread_info used
@@ -52,6 +52,9 @@ void arts_abort(uint8_t code) {
   }
   _exit(70);
 }
+
+/* ── scheduler table size (config load bounds the `scheduler` key by it) ─── */
+const unsigned int scheduler_loop_count = 3;
 
 /* ── launcher backend symbols (address-taken only by config_setup_*) ─────── */
 void arts_launcher_ssh_startup_processes(struct arts_launcher_s *l) { (void)l; }

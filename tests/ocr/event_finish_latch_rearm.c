@@ -3,7 +3,7 @@
 ** Licensed under the Apache License, Version 2.0 (the "License").           **
 ******************************************************************************/
 
-/* event_finish_latch_rearm — C15 / T157.
+/* event_finish_latch_rearm.
  *
  * Target: simple.latch INCR (Mechanism A auto-chain) racing the child DECR —
  * the re-arm-after-fire edge ordering on a finish latch (event.c).

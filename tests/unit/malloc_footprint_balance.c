@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T245 — footprint-counter balance of the arts_malloc/arts_calloc/arts_realloc/
+ * Footprint-counter balance of the arts_malloc/arts_calloc/arts_realloc/
  * arts_free family in libs/src/core/utils/malloc.c.
  *
  * The allocator stores no per-allocation header: it bumps

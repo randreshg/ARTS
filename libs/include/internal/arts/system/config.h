@@ -108,7 +108,6 @@ struct arts_config_s {
   char *counter_folder;
   unsigned int counter_capture_interval;
   unsigned int scheduler;
-  unsigned int deque_type;
   bool master_boot;
   bool core_dump;
   bool pin_threads;

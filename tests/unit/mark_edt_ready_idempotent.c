@@ -14,19 +14,17 @@
 ******************************************************************************/
 
 /// @file mark_edt_ready_idempotent.c
-/// @brief T059 — duplicate wake of the same (edt, slot) must NOT double-count
-///        the dependency down (targets suspected bug B-mark-double-dec).
+/// @brief A duplicate wake of one (edt, slot) must count the dependence down
+///        exactly once.
 ///
 /// White-box runtime test.  `mark_edt_ready_by_guid(edt_guid, slot)`
 /// (coherence.c) resolves one parked dep slot: it stamps depv[slot].ptr from
-/// the now-installed buffer and then unconditionally calls
+/// the buffer this rank's cache holds and accounts the slot through
 /// `arts_db_acquire_account(edt)`, which decrements `acquire_remaining`.  Two
-/// distinct delivery paths can wake the SAME (edt, slot) — e.g. a
-/// snapshot_response case-2 drain plus a redundant direct response, or a
-/// drain racing a response.  Each such wake decrements `acquire_remaining`
-/// again; there is no per-slot "already counted" guard (unlike the secured
-/// path).  A duplicate wake therefore drives `acquire_remaining` one step too
-/// far per duplicate — early-scheduling / lost dep accounting.
+/// distinct delivery paths can wake the SAME (edt, slot) — e.g. a drain of the
+/// rank's parked readers racing a direct response.  If every wake accounted,
+/// each duplicate would drive `acquire_remaining` one step too far and the EDT
+/// would be scheduled before its other slots resolve.
 ///
 /// This test builds a parked EDT (gated on an unsatisfied event so it never
 /// enters the acquire phase and is never freed), points its slot 0 at a live
@@ -36,14 +34,17 @@
 ///
 /// CORRECTNESS CONTRACT (what this test asserts): a duplicate wake of one
 /// logical slot must decrement `acquire_remaining` by exactly 1, because the
-/// slot resolves once.  mark_edt_ready_by_guid CAS-claims depv[slot].ptr
-/// (NULL->data) so only the first wake keeps its buffer ref and accounts; a
-/// duplicate drops its extra ref and skips the account.  It must NOT be
-/// weakened to accept delta == 2.
+/// slot resolves once.  The resume claims the slot by CAS on depv[slot].ptr
+/// (NULL->data): only the wake that wins keeps its buffer ref as the EDT's
+/// hold and accounts; a wake that loses the claim drops its extra ref and
+/// skips the account.  The assertion must NOT be weakened to accept
+/// delta == 2.
 ///
-/// runtime_single, config-agnostic: `mark_edt_ready_by_guid` is shared and
-/// builds in all 6 configs.  Object lifetime is held by the route-table cb
-/// handle + the never-firing gate event for the whole observation.
+/// Single-node.  `mark_edt_ready_by_guid` is shared by every arm with a
+/// cache-slot wake: FLUSH has none and SKIPs, and the CXL DIRECT tree does not
+/// register the test, since it reads the inline payload representation that
+/// tree does not use.  Object lifetime is held by the route-table cb handle +
+/// the never-firing gate event for the whole observation.
 
 #ifdef ARTS_PROTOCOL_FLUSH
 /* The cache-slot wake this test drives exists only where a rank's readers

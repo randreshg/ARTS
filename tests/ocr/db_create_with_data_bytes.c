@@ -14,7 +14,7 @@
 ******************************************************************************/
 
 /// @file db_create_with_data_bytes.c
-/// @brief T057 — byte-exact DB payload after acquire.
+/// @brief Byte-exact DB payload after acquire.
 ///
 /// Exercises the install memcpy path (buffer.c `arts_db_buf_install` with a
 /// non-NULL data_payload) end-to-end: create-time the creator fills the DB

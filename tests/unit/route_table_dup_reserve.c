@@ -27,7 +27,6 @@
 
 #include <pthread.h>
 #include <time.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,12 +75,6 @@ static void test_after_claim(arts_guid_t key);
 
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
-
-static _Atomic int g_deletes;
-static void test_deleter(void *obj) {
-  atomic_fetch_add_explicit(&g_deletes, 1, memory_order_relaxed);
-  free(obj);
-}
 
 #define FAIL(...)                                                              \
   do {                                                                         \
@@ -316,6 +309,9 @@ int main(void) {
       /* The retire that returned L took the object in this simulation. */
       arts_shared_ptr_t out = arts_atomic_shared_exchange(
           &g_retiring_slot->value, NULL);
+      if (out == NULL) {
+        FAIL("3: the retiring slot held no object\n");
+      }
       arts_shared_set_tag(out, 0);
       arts_shared_release(&out);
       arts_route_item_t *again = NULL;

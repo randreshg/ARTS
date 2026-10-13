@@ -4,8 +4,9 @@
  *
  * TARGET: the standalone helpers in libs/src/core/transport/socket.c:
  *   - hostname_to_ip(host, ip): resolves a hostname into a printable IPv4
- *     string via getaddrinfo(AF_INET) + inet_ntop(..., ip, 100). Caller
- *     contract: `ip` MUST be a >=100-byte buffer.
+ *     string via getaddrinfo(AF_INET) + inet_ntop(..., ip, 100) and returns 0,
+ *     or getaddrinfo's error code. Caller contract: `ip` MUST be a >=100-byte
+ *     buffer.
  *   - arts_get_new_socket(): TCP socket factory (+ TCP_NODELAY).
  *   - arts_get_socket_listening(sa, port): TCP socket factory; fills sa with
  *     AF_INET / INADDR_ANY / htons(port).
@@ -14,12 +15,12 @@
  *
  * PROPERTIES UNDER TEST:
  *   1. hostname_to_ip on a numeric IPv4 literal round-trips the exact dotted
- *      string back into the caller buffer and returns true.
- *   2. hostname_to_ip on an unresolvable name returns false and does not
+ *      string back into the caller buffer and returns 0.
+ *   2. hostname_to_ip on an unresolvable name returns an error and does not
  *      write past the buffer (we sentinel-guard the 100-byte slot).
  *   3. Socket factories return a valid fd and populate the sockaddr_in with
  *      the exact family/addr/port the contract promises.
- *   4. ai_addr NULL handling: the census flags that hostname_to_ip
+ *   4. ai_addr NULL handling: hostname_to_ip
  *      dereferences result->ai_addr without a NULL check (relying on
  *      getaddrinfo's "success => non-empty list" guarantee). We interpose
  *      getaddrinfo to return success with ai_addr == NULL and run
@@ -160,7 +161,7 @@ static int test_null_ai_addr(void) {
     memset(ip, 0, sizeof(ip));
     /* If hostname_to_ip guards result->ai_addr it returns gracefully;
      * if not, it dereferences NULL and crashes before the sentinel. */
-    bool ok = hostname_to_ip((char *)"whatever.example", ip);
+    bool ok = hostname_to_ip("whatever.example", ip) == 0;
     unsigned char s = ok ? 1 : 2;
     ssize_t w;
     do {
@@ -187,13 +188,13 @@ int main(void) {
     char ip[100];
     /* sentinel just past the documented 100-byte slot to catch overflow */
     memset(ip, 0xAB, sizeof(ip));
-    bool ok = hostname_to_ip((char *)"192.0.2.55", ip);
-    CHECK(ok, "hostname_to_ip(numeric) returned false");
+    bool ok = hostname_to_ip("192.0.2.55", ip) == 0;
+    CHECK(ok, "hostname_to_ip(numeric) returned an error");
     CHECK(strcmp(ip, "192.0.2.55") == 0,
           "hostname_to_ip(numeric) wrong dotted string");
   }
 
-  /* ---- 2. hostname_to_ip on an unresolvable name returns false ---- */
+  /* ---- 2. hostname_to_ip on an unresolvable name returns an error ---- */
   {
     /* A syntactically-invalid name that getaddrinfo will reject. Use the
      * AI flags path: an empty + clearly-bogus label. */
@@ -201,11 +202,12 @@ int main(void) {
     /* place a guard byte at index 100 (just past the contract slot) */
     memset(ip, 0, sizeof(ip));
     ip[100] = (char)0x7E;
-    bool ok = hostname_to_ip(
-        (char *)"this.name.does.not.exist.invalid.arts.test.", ip);
-    /* On failure hostname_to_ip must return false and must NOT have written
-     * the result (the guard byte is untouched because inet_ntop never ran). */
-    CHECK(!ok, "hostname_to_ip(bogus) unexpectedly returned true");
+    bool ok =
+        hostname_to_ip("this.name.does.not.exist.invalid.arts.test.", ip) == 0;
+    /* On failure hostname_to_ip must return an error and must NOT have
+     * written the result (the guard byte is untouched because inet_ntop never
+     * ran). */
+    CHECK(!ok, "hostname_to_ip(bogus) unexpectedly succeeded");
     CHECK(ip[100] == (char)0x7E,
           "hostname_to_ip(bogus) wrote past/inside buffer on failure");
   }
@@ -242,11 +244,11 @@ int main(void) {
   /* ---- 4. ai_addr NULL handling (documented fragile surface) ----
    * This is a DEFENSIVE-ONLY surface, not a reachable defect: POSIX
    * guarantees getaddrinfo() returning 0 yields a non-empty list with a
-   * valid ai_addr, so the only way to reach the unguarded
-   * `result->ai_addr->sa_family` is a contract-violating resolver (which we
+   * valid ai_addr, so the only way to reach the unguarded dereference of
+   * `result->ai_addr` is a contract-violating resolver (which we
    * inject here). We therefore DOCUMENT the outcome but do NOT hard-fail the
-   * helper test on it (unlike T169's set_ip NULL ifa_addr, which IS reachable
-   * because getifaddrs legitimately returns NULL ifa_addr). If a future
+   * helper test on it (unlike a NULL ifa_addr in the interface walk, which IS
+   * reachable because getifaddrs legitimately returns one). If a future
    * change makes hostname_to_ip survive a NULL ai_addr, this prints
    * "guarded"; today it prints "unguarded". */
   {
@@ -257,7 +259,7 @@ int main(void) {
     }
     if (rc == 0) {
       printf("NOTE socket_helpers: hostname_to_ip has NO NULL guard on "
-             "result->ai_addr (socket.c:106); a contract-violating "
+             "result->ai_addr; a contract-violating "
              "getaddrinfo success with ai_addr==NULL would SIGSEGV. "
              "Defensive-only (unreachable with a conforming resolver).\n");
     } else {

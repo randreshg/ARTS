@@ -67,8 +67,10 @@ PROFILE_FIELDS: list[FieldSpec] = [
               "at the management network. verbs: connections are resolved "
               "over it and every rank's address is IPv4; empty pins verbs to "
               "its native address format instead, which needs no IP "
-              "interface. Naming one with no usable address is fatal rather "
-              "than a silent fallback. cxi ignores it entirely",
+              "interface. cxi: the fabric ignores it. The bootstrap mesh "
+              "rides this interface under every provider, cxi included. "
+              "Naming one with no IPv4 address is fatal rather than a silent "
+              "fallback",
               optional=True, section="transport"),
     FieldSpec("fabric_domain", "fabric domain", "text",
               "RDMA providers: pins one NIC on a multi-rail host, named "

@@ -44,6 +44,7 @@ Hardware Pinning
    * - ``pin``
      - 1
      - Enable thread-to-core pinning.
+
 Scheduling
 ----------
 
@@ -56,17 +57,19 @@ Scheduling
      - Description
    * - ``scheduler``
      - 0
-     - Scheduler type: ``0`` = CPU, ``3`` = GPU.
+     - Scheduler loop, by where a worker looks for its next EDT: ``0`` takes
+       its own deque, then makes one steal attempt on a random other
+       thread's deque (progress threads included), then scans the progress
+       threads' deques; ``1`` its own deque, then the progress threads', then
+       one random steal; ``2`` the progress threads', then its own, then one
+       random steal.  A GPU build adds its GPU loops at ``3``-``5``.  An
+       index the build does not have is refused at load.
    * - ``worker_init_deque_size``
      - 4096
      - Initial size of each worker's Chase-Lev deque.
    * - ``route_table_size``
      - 16
      - Routing table size as power of 2 (e.g., 16 → 2\ :sup:`16`).
-   * - ``auto_shutdown``
-     - 0
-     - Terminate when all EDTs complete.  Adds overhead from global EDT
-       tracking; prefer explicit ``arts_shutdown()`` calls.
 
 GPU Support
 -----------
@@ -123,7 +126,8 @@ Networking
    * - ``progress_threads``
      - 1
      - Number of progress threads per node, draining the fabric completion
-       queue (0 for local mode). The transport injects sends directly from
+       queue (a single-node run has none: its count goes to the workers).
+       The transport injects sends directly from
        workers, so there is no separate sender-thread key; fold any sender
        count from an older config into ``worker_threads``. The removed
        ``sender_threads`` key and the old ``receiver_threads`` name are a
@@ -144,16 +148,34 @@ Networking
    * - ``net_interface``
      - unset
      - Interface whose first IPv4 address the endpoint's source address is
-       bound to (exact name, else name prefix). Under ``tcp`` it steers the
-       transport onto that network. Under ``verbs;ofi_rxm`` it makes every
-       rank's fabric address the IPv4 address of that interface (IPoIB,
-       RoCE) and connections are resolved over it; left unset, the verbs
-       stack is pinned to its native address format instead, which a fabric
-       node offers whatever its interfaces carry. Either way every rank
-       opens the same format — an address vector holds exactly one, and the
-       provider on its own leads with a format that follows each node's
-       interfaces. Naming an interface with no usable address is fatal.
-       ``cxi`` ignores the key.
+       bound to (exact name, else name prefix); an empty value is unset.
+       Under ``tcp`` it steers the transport onto that network. Under
+       ``verbs;ofi_rxm`` it makes every rank's fabric address the IPv4
+       address of that interface (IPoIB, RoCE) and connections are resolved
+       over it; left unset, the verbs stack is pinned to its native address
+       format instead, which a fabric node offers whatever its interfaces
+       carry. Either way every rank opens the same format — an address vector
+       holds exactly one, and the provider on its own leads with a format
+       that follows each node's interfaces. The fabric under ``cxi`` ignores
+       the key. The bootstrap socket mesh (the fabric-address exchange, then
+       the liveness sentinels) honours it under every provider, ``cxi``
+       included: a rank first finds its own row of the node table, from the
+       launcher's rank or else by the row a local interface carries, then
+       shifts every node's resolved address by the one offset from its own
+       row to the interface's address. That assumes the interface's network
+       numbers the hosts as their resolved addresses do. A node list that
+       already names that network is left as it is, and under
+       ``launcher=local``, where every row is 127.0.0.1, every rank connects
+       to the interface's address. On a run of more than one rank the
+       bootstrap refuses to start, on every provider and before the fabric
+       comes up, in three cases: the interface has no IPv4 address (the
+       fabric checks that again wherever it binds to the interface); no
+       local interface carries this rank's own row's address (a host name
+       mapped to a loopback alias such as 127.0.1.1); or this rank's row is a
+       loopback address other than the interface's own address (a host name
+       mapped to 127.0.0.1, with an interface other than ``lo``) while another
+       row is not loopback, since an offset from a loopback address says
+       nothing about where the other hosts are.
    * - ``regpool_slab_mb``
      - 256
      - Registered-memory base slab size in MB: the first slab carved for a
@@ -195,6 +217,23 @@ the process id so two runs starting at the same moment do not pick the same
 block.  Naming ``ports`` there is a configure error — it would only reintroduce
 the collisions the search exists to avoid.
 
+At startup every rank opens the bootstrap socket mesh to each of its peers —
+connecting to a peer that may not be listening yet, and accepting the peers
+that connect to it.  Each connection has its own budget, 300 seconds by
+default.  An accept waits up to the budget for the next peer to arrive.  A
+connect counts attempts rather than time: it is retried budget ÷ 100 ms times
+(3000 by default), 100 ms apart, and each attempt is a blocking connect bounded
+only by the kernel, so against a host that never answers a single attempt lasts
+the kernel's own connect timeout.  A rank that misses a budget exits with a
+report; a failed connect names the peer and the address it tried, while a
+timed-out accept can say only which of the expected connections it was waiting
+for, since no peer has identified itself yet.  The skew between the ranks of
+one job is the launcher's, not the runtime's, so the budget comes from the
+environment rather than the config: ``ARTS_STARTUP_TIMEOUT_S`` sets it in
+seconds, read once per process as a leading decimal number (``10s`` reads as
+10); a value that is unset, starts with no number, is ``0`` or exceeds 86400
+leaves the default.
+
 .. tip::
 
    To run several ranks on one machine, use ``launcher=local`` and let it
@@ -234,7 +273,7 @@ build.
      - ``static``
      - Which arena a data block's payload allocates from — ``static`` (all
        allocations use the arena at ``cxl_db_allocation_device``'s index) or
-       ``round_robin`` (allocations cycle across every arena the deque
+       ``round_robin`` (allocations cycle across every arena the arena table
        spans). Arena creation does not honour device ids today, so both
        keys select an arena index, not a device.
    * - ``cxl_db_allocation_device``

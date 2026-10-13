@@ -2,35 +2,28 @@
 /*
  * socket_set_ip_null_ifa — pure_unit (getifaddrs interposition + fork)
  *
- * TARGET: arts_transport_set_ip() in libs/src/core/transport/socket.c,
- *   the rank-determination IP-match loop (around line 229):
+ * TARGET: arts_transport_set_ip() in libs/src/core/transport/socket.c.  When
+ * the launcher names no rank (no ARTS_RANK, no task rank), a rank finds its
+ * routing-table row by walking this host's interfaces for one that carries a
+ * row's resolved address.
  *
- *       for (ifa = ifap; ifa && !found; ifa = ifa->ifa_next) {
- *         if (ifa->ifa_addr->sa_family == AF_INET) {   // <-- NO NULL GUARD
+ * INVARIANT UNDER TEST: getifaddrs(3) may return entries whose ifa_addr is
+ * NULL (an interface with no address, some tunnel/bonding devices); the
+ * interface walk must skip such an entry, never dereference it.
  *
- * INVARIANT UNDER TEST: getifaddrs(3) is documented to return entries whose
- * ifa_addr field MAY be NULL (e.g. an interface that has no address, certain
- * tunnel/bonding devices). The earlier net_interface remap loop guards with
- * `ifa->ifa_addr && ...` (line 158); this rank-match loop does NOT. An entry
- * with ifa_addr==NULL therefore dereferences NULL -> SIGSEGV. This maps to
- * suspected bug B-set-ip-null.
+ * HARNESS: getifaddrs/freeifaddrs are interposed (these definitions win over
+ * libc at link time) to return a list whose FIRST entry has ifa_addr == NULL,
+ * followed by a well-formed AF_INET entry that carries no table row's address,
+ * so the walk visits the NULL entry and finds no row.  The rows are numeric
+ * IPs, which getaddrinfo resolves offline.  ARTS_RANK and SLURM_PROCID are
+ * cleared and neither a launcher nor net_interface is configured, so the rank
+ * can come only from the walk.
  *
- * HARNESS: we interpose getifaddrs/freeifaddrs (our definitions win over
- * libc at link time) to return a deterministic list whose FIRST entry has
- * ifa_addr == NULL, followed by a well-formed AF_INET entry that does NOT
- * match any table IP (so `found` stays false and the loop visits the NULL
- * entry). getaddrinfo over numeric table IPs resolves offline. ARTS_RANK
- * and SLURM_PROCID are cleared so control reaches the ifa loop.
- *
- * arts_transport_set_ip is invoked in a forked child; the parent classifies
- * the child's exit:
- *   - child crashes with SIGSEGV  => the unguarded deref fired. This is the
- *     real runtime defect: we report FAIL (exposes_runtime_bug). The test is
- *     left correct-and-failing; it is NOT weakened to pass.
- *   - child returns normally      => a NULL guard exists; PASS.
- *
- * Note: a separate NULL-skip assertion would also pass once a guard is added,
- * but until then the SIGSEGV is the observable property.
+ * arts_transport_set_ip runs in a forked child, which writes a sentinel byte
+ * to a pipe once the call returns; the parent classifies the child's end:
+ *   - no sentinel (a SIGSEGV, or a sanitizer's exit on the dereference)
+ *     => FAIL;
+ *   - sentinel received => the NULL entry was skipped; PASS.
  */
 
 #ifndef _GNU_SOURCE
@@ -98,8 +91,8 @@ int getifaddrs(struct ifaddrs **ifap) {
   g_ifa_null.ifa_next = &g_ifa_inet;
 
   /* Entry 1: a normal AF_INET interface whose IP (203.0.113.7, TEST-NET-3)
-   * is guaranteed NOT to be in our config table, so the match loop never
-   * sets `found` and must keep iterating past the NULL entry. */
+   * is in no table row, so the walk matches nothing and visits every entry,
+   * the NULL one included. */
   static char name1[] = "fakeeth0";
   g_inet_addr.sin_family = AF_INET;
   g_inet_addr.sin_addr.s_addr = htonl(0xCB007107u); /* 203.0.113.7 */
@@ -124,7 +117,7 @@ void freeifaddrs(struct ifaddrs *ifa) { (void)ifa; /* static storage */ }
 static int g_survive_fd = -1;
 
 static void run_child(void) {
-  /* Ensure the env rank shortcuts are not taken so we reach the ifa loop. */
+  /* No launcher-named rank, so the rank can come only from the walk. */
   unsetenv("ARTS_RANK");
   unsetenv("SLURM_PROCID");
 
@@ -146,15 +139,14 @@ static void run_child(void) {
   cfg.port_count = 1;
   cfg.my_rank = 0;
   cfg.nodes = 2;
-  cfg.net_interface = NULL; /* skip the (guarded) remap loop */
+  cfg.net_interface = NULL;
   cfg.table = table;
 
   arts_transport_set_config(&cfg);
-  /* If a NULL guard exists, this returns (found stays false). If not, the
-   * deref of g_ifa_null.ifa_addr->sa_family crashes before we get here. */
+  /* No interface carries a row's address, so this returns false. */
   bool found = arts_transport_set_ip(&cfg);
 
-  /* Survived the loop -> emit the sentinel byte (1 if found, else 0). */
+  /* Survived the walk: emit the sentinel byte (1 if a row matched, else 2). */
   unsigned char ok = found ? 1 : 2;
   ssize_t w;
   do {
@@ -204,29 +196,24 @@ int main(void) {
   }
 
   if (!survived) {
-    /* Child crashed before emitting the sentinel. Report what we can about
-     * how it died (a bare build shows SIGSEGV; a sanitized build typically
-     * shows a sanitizer-driven exit). Either way the unguarded NULL deref
-     * fired. This is the real defect — the test stays correct-and-failing. */
+    /* Child died before emitting the sentinel: a bare build shows SIGSEGV, a
+     * sanitized one typically a sanitizer-driven exit. */
     if (WIFSIGNALED(status)) {
       fprintf(stderr,
               "FAIL socket_set_ip_null_ifa: arts_transport_set_ip "
-              "crashed (signal %d) on a NULL ifa_addr — unguarded "
-              "ifa->ifa_addr->sa_family at the rank-match loop "
-              "(socket.c:229). EXPOSES RUNTIME BUG B-set-ip-null.\n",
+              "crashed (signal %d) on an interface with a NULL ifa_addr\n",
               WTERMSIG(status));
     } else {
       fprintf(stderr,
               "FAIL socket_set_ip_null_ifa: arts_transport_set_ip aborted "
-              "on a NULL ifa_addr (child exit %d, no survive sentinel) — "
-              "unguarded ifa->ifa_addr->sa_family at the rank-match loop "
-              "(socket.c:229). EXPOSES RUNTIME BUG B-set-ip-null.\n",
+              "on an interface with a NULL ifa_addr (child exit %d, no "
+              "survive sentinel)\n",
               WIFEXITED(status) ? WEXITSTATUS(status) : -1);
     }
     return 1;
   }
 
-  /* Survived: a NULL guard skipped the NULL entry. The sentinel value is
+  /* Survived: the walk skipped the NULL entry.  The sentinel value is
    * incidental (found vs not-found); the property under test is no-crash. */
   printf("PASS socket_set_ip_null_ifa (NULL ifa_addr handled without crash; "
          "sentinel=%u)\n",

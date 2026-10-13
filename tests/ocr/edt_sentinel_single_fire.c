@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T130 — EDT pre-reserved-GUID sentinel single-fire protocol.
+ * EDT pre-reserved-GUID sentinel single-fire protocol.
  *
  * Property under test
  * -------------------

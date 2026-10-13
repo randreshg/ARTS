@@ -5,27 +5,25 @@
  * This translation unit consolidates four phases of the per-rank
  * coherence cache_s:
  *
- *   1. Cache construction / destruction
- *      - arts_db_cache_init: in-place cache_s initializer (creator-home,
- *        creator-remote, home-recv, OWNER).
- *      - arts_db_cache_destructor: chained from arts_db_free.
+ *   1. Cache construction / destruction: the steps every arm with a home
+ *      directory shares (arts_db_cache_common_init, _destroy_pre,
+ *      _destroy_post).  Each arm's own arts_db_cache_init and
+ *      arts_db_cache_destructor wrap them around its own fields.
  *
- *   2. Acquire path (8-case dispatcher + supporting routines).  See the
- *      design plan for the full algorithm; inline comments highlight the
- *      trickier race resolutions.  Wake mechanism: parked EDTs are tracked
- *      via arts_edt_s.depc_needed; a triggered waiter looks up the EDT,
- *      writes the buffer data pointer into depv[slot].ptr, and
- *      atomic_sub(depc_needed); on reaching 0 the EDT is handed to the
- *      scheduler.
+ *   2. Acquire path (the routines every arm's arts_handler_db_acquire body
+ *      shares).  Inline comments highlight the trickier race resolutions.
+ *      Wake mechanism: a wake looks up the parked EDT, claims its slot by
+ *      writing the buffer data pointer into depv[slot].ptr, and counts the
+ *      dep down through arts_db_acquire_account (acquire_remaining); the
+ *      decrement that reaches 0 hands the EDT to the scheduler.
  *
- *   3. Release path (the four release cases R1-R4 and the PUBLISH_ACK
- *      rendezvous).  Wait/wake mechanism: a stack-local binary semaphore;
- *      release_rw sem_init's a sem_t on its stack, embeds its address in the
- *      PUBLISH packet, and sem_waits on it.  The home echoes that address
- *      verbatim in PUBLISH_ACK; arts_handler_db_publish_ack sem_posts it.
- *      Matching is by pointer identity (the address is valid only on the
- *      releaser rank, where the post runs) — no per-cache seq state, no
- *      busy-wait.
+ *   3. Release path and the PUBLISH_ACK rendezvous.  Wait/wake mechanism: a
+ *      releaser registers a heap {sem, version} waiter on the cache and waits
+ *      on it (arts_db_await_ack); at most one publish flight is in the air per
+ *      (DB, rank), and its final PUBLISH_ACK wakes every waiter whose version
+ *      that flight covers.  The announce leg's CTS is matched by pointer
+ *      identity instead: the releaser's rendezvous address rides the packet
+ *      and is echoed back — no per-cache seq state, no busy-wait.
  *
  *   4. Destroy lifecycle (arts_db_destroy_remote public entry).  Final teardown
  *      is driven by the cb (shared-ptr) deferred-free model: destroy fans out,
@@ -92,10 +90,10 @@ bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
                                      __ATOMIC_ACQUIRE);
 }
 
-/* Protocol-agnostic cache_s field init.  The per-protocol arts_db_cache_init
- * wrapper (coherence/<protocol>.c) runs its protocol-specific field-init
- * (WT/WB pending_rw queue + WB dedup-map/sentinel) BEFORE
- * calling this, so the Vyukov MPSC stub is wired before any push could land.
+/* Protocol-agnostic cache_s field init.  Each arm's arts_db_cache_init sets
+ * its own fields first — the grant-bearing arms' pending_rw stack and
+ * transfer target, VAL WB's dedup ledger, INV's reader word, EXCL's cache
+ * word and waiter stacks — and then calls this.
  *
  * The arms that share this shape are the ones whose cache carries a snapshot
  * reorder buffer and a home directory; an arm with neither builds its cache
@@ -157,10 +155,6 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
     c->writer_count = ARTS_GRANT_SEED_HOLDING;
 #endif
   }
-  /* WT PUBLISH ACK rendezvous is a stack-local sem_t per
-   * release_rw (pointer-identity match) — no per-cache seq fields to
-   * initialize.  WB owner-side fields (dedup map + transfer sentinel) are
-   * armed by the protocol init hook above. */
 }
 #endif /* arms sharing the common cache shape */
 
@@ -764,24 +758,23 @@ void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache) {
 
 /* ===== release-reply wait (shared coherence service) ===============
  *
- * A release that must not return before the home has seen its bytes blocks
- * on a stack-local (or heap) semaphore matched by pointer identity: the
- * address rides the request and every reply posts it.  Compiled for every
- * arm; declared in coherence/coherence.h so the arm TUs can invoke it. */
+ * A release that must not return before the home has answered blocks on a
+ * heap semaphore that the answer posts.  Compiled for every arm; declared in
+ * coherence/coherence.h so the arm TUs can invoke it. */
 bool arts_db_await_ack(sem_t *cv) {
-  /* Block until the arm's ACK/CTS handler posts this semaphore by pointer
-   * identity.  The wait state is the caller's — a stack frame on one arm, a
-   * heap object on another — so nothing here may assume either.  No busy-wait:
-   * sem_timedwait sleeps the worker.  We re-arm on a coarse cadence only to
-   * re-check the shutdown flag — once teardown starts the network receiver
-   * stops draining and the reply never arrives, so the EDT epilogue must not
-   * block forever (returning lets the worker exit). */
+  /* Block until the arm's reply handler posts this semaphore.  The wait state
+   * is the caller's heap object, never a stack frame: a wait the shutdown
+   * cuts short leaks it, so a reply that still arrives posts into live
+   * memory.  No busy-wait: sem_timedwait sleeps the worker.  We re-arm on a
+   * coarse cadence only to re-check the shutdown flag — once teardown starts
+   * the progress threads stop draining and the reply never arrives, so the
+   * EDT epilogue must not block forever (returning lets the worker exit). */
   for (;;) {
     struct timespec ts;
     (void)clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 1; /* shutdown re-check cadence, not a timeout on the ACK */
     if (sem_timedwait(cv, &ts) == 0) {
-      return true; /* ACK arrived (pointer-identity post) */
+      return true; /* the reply arrived */
     }
     if (errno == ETIMEDOUT &&
         arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
@@ -796,7 +789,7 @@ bool arts_db_await_ack(sem_t *cv) {
 /* arts_db_release_rw is protocol-specific (the version bump is shared, but the
  * pre-decrement buffer-ref drop and the post-decrement transfer/publish
  * decision differ per protocol), so its whole body lives in each arm's own
- * placement TU.  VAL+WT and INV under either write policy call
+ * TU.  VAL+WT and INV under either write policy call
  * arts_db_publish_sync below for the synchronous-PUBLISH rendezvous (INV's
  * publish doubles as its invalidation-round request). */
 
@@ -1082,11 +1075,12 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
 }
 
 /* Cat-C pure body (PUBLISH_ACK), shared by every publishing arm.  cv != 0 is
- * the pointer-identity sem-post plane (the CTS-leg announce; cache-
- * independent, posted on both HIT and MISS).  cv == 0 is flight completion:
- * record the refilled credit, wake every waiter the ACKed version covers,
- * and either relaunch (uncovered waiters remain — their releases landed
- * after the flight's version stamp) or land the flight.  A DIRTY bit set
+ * the pointer-identity sem-post of a grant return sent on its own (PURGE;
+ * cache-independent, posted on both HIT and MISS).  cv == 0 is the
+ * completion of a publish flight, control-only ones included: record the
+ * refilled credit, wake every waiter the ACKed version covers, and either
+ * relaunch (uncovered waiters remain — their releases landed after the
+ * flight's version stamp) or land the flight.  A DIRTY bit set
  * after the drain forces a re-examination before landing, so a waiter
  * registered mid-completion is never stranded. */
 void arts_handler_db_publish_ack(void *item_v, void *args_v) {
@@ -1213,7 +1207,7 @@ void arts_db_destroy_remote(arts_guid_t db_guid) {
  *
  * The full destructor arts_db_cache_destructor is protocol-specific — it
  * sequences the protocol's own field teardown between these two shared steps —
- * and lives with each arm's placement TU.  The agnostic steps split into pre
+ * and lives in each arm's own TU.  The agnostic steps split into pre
  * (the buffer-NULL that must run first) and post (snapshot drain + home
  * teardown), so the per-arm wrapper runs pre, its own teardown, then post.
  * The descriptor's storage is released after the wrapper returns
@@ -1222,11 +1216,10 @@ void arts_db_destroy_remote(arts_guid_t db_guid) {
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
-/* Step 1: release the cache-hold on the buffer (store NULL into the shared
- * slot).  If no acquirer holds a ref the cb deleter ends the buffer now;
- * otherwise it survives until the last in-flight acquirer releases.  Runs
- * FIRST so it covers the rare race where a wire handler installed a buffer past
- * try_finalize_destroy's NULL-swap. */
+/* Release the cache-hold on the buffer (store NULL into the shared slot).  If
+ * no acquirer holds a ref the cb deleter ends the buffer now; otherwise it
+ * survives until the last in-flight acquirer releases.  Runs first, ahead of
+ * the arm's own field teardown. */
 void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
     return;
@@ -1243,9 +1236,6 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
 }
 #endif /* arms sharing the common cache shape */
 
-/* Steps 3b+4: drain+free the snapshot reorder buffer (a Treiber stack), then
- * tear down the inlined home-directory sub-resources.  Runs AFTER the protocol
- * field-destroy (pending_rw in HOME and OWNER builds). */
 /* Debug-only terminal-quiescence check.  Runs once, after every runtime
  * thread has joined and before teardown frees the caches.  It reports two
  * things: states the protocols can never reach, and waiters or holds left
@@ -1682,6 +1672,9 @@ void arts_db_debug_quiescence_check(void) {
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
+/* Drain and free the snapshot reorder buffer (a Treiber stack), then tear
+ * down the inlined home-directory sub-resources.  Runs AFTER the protocol
+ * field-destroy. */
 void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
     return;

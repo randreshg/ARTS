@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T134 — EDT output_event + arts_edt_set_result delivery and ordering.
+ * EDT output_event + arts_edt_set_result delivery and ordering.
  *
  * Property under test (arts_edt_set_result + run-end output_event satisfy)
  * ----------------------------------------------------------------------

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T055 — rank_u64_map advance / set / get contract + concurrency (B033: set is
+ * rank_u64_map advance / set / get contract + concurrency (B033: set is
  * non-monotonic and can clobber advance; B034: create/get/set no NULL/OOB
  * guard).
  *

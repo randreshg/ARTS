@@ -38,31 +38,29 @@
 ******************************************************************************/
 
 /// @file await_publish_ack_shutdown.c
-/// @brief T116 — arts_db_await_ack escapes under shutdown; no UB on the stale
-///        stack sem (B017).
+/// @brief A release blocked on the home's answer escapes when a shutdown
+///        overtakes it.
 ///
-/// The WT RW release tail blocks in `arts_db_await_ack` on a
-/// stack-local sem_t until the home's PUBLISH_ACK posts it by pointer
-/// identity.  Two failure modes are under test:
-///   1. Lost-ACK under shutdown: once teardown starts the network receiver
-///   stops
-///      draining and the ACK never arrives.  `arts_db_await_ack` must escape
-///      on its coarse shutdown re-check (sem_timedwait + shutdown_state poll)
-///      so the blocked releaser is not stranded → no shutdown hang.
-///   2. Stale-stack post: a late PUBLISH_ACK arriving after the releaser's
-///      stack frame is gone would `sem_post` a freed address (UB).  The escape
-///      + the pointer-identity contract must keep this safe.
+/// A non-home RW release under a write-through publish (VAL, INV) or under
+/// FLUSH's write-back does not return until the home has answered: it parks
+/// on a heap waiter in `arts_db_await_ack` that the home's reply posts.  Once
+/// teardown starts the progress threads stop draining, so that reply may
+/// never come.  `arts_db_await_ack` must escape on its coarse shutdown
+/// re-check (sem_timedwait + shutdown_state poll), so the blocked releaser is
+/// not stranded and the shutdown does not hang.  The waiter an escape
+/// abandons stays allocated, so a reply that still arrives posts into live
+/// memory.
 ///
-/// Black-box driver: a steady stream of cross-rank RW handoffs (each forcing a
-/// synchronous PUBLISH + ACK round, so releasers are frequently mid-await),
+/// Black-box driver: a steady stream of cross-rank RW handoffs (each release
+/// waiting for the home's answer, so releasers are frequently mid-await),
 /// after which an EDT triggers `arts_shutdown()` concurrently with RW releases
 /// still draining.  Correct behavior = the process tears down cleanly (every
-/// blocked releaser escapes); a regressed escape hangs → ctest TIMEOUT FAIL; a
-/// stale-stack post is an ASan use-after-free / SIGSEGV.
+/// blocked releaser escapes); a regressed escape hangs → ctest TIMEOUT FAIL.
 ///
-/// Config gate: the PUBLISH_ACK this waits for exists only under the WT
-/// write policy — WB has no synchronous publish, EXCL
-/// wakes on the publish path.  Compile-time self-skip on WB/EXCL.
+/// Config gate: compiled out under the WB write policy and under EXCL, where
+/// no release in this driver waits for the home's answer to its bytes (VAL WB
+/// publishes nothing and INV WB's publish carries none; an EXCL release waits
+/// only for the CTS of a landing-less announce).
 
 #include "arts.h"
 
@@ -71,7 +69,8 @@
 
 #if defined(ARTS_PROTOCOL_EXCL) || defined(ARTS_WRITE_POLICY_WB)
 int main(void) {
-  printf("SKIP await_publish_ack_shutdown: WT only\n");
+  printf("SKIP await_publish_ack_shutdown: no release here waits for the "
+         "home's answer to its bytes\n");
   return 0;
 }
 #else
@@ -97,8 +96,7 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   /* Trigger teardown.  RW releases from the concurrent burst below may still be
-   * mid-await on their stack sems; each must escape via the shutdown re-check.
-   */
+   * mid-await on their waiters; each must escape via the shutdown re-check. */
   arts_printf("PASS: await_publish_ack_shutdown reached shutdown\n");
   arts_shutdown();
 }
@@ -121,9 +119,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   ((unsigned int *)ptr)[0] = 0u;
   arts_db_release(db, DB_MODE_RW);
 
-  /* Warmup: many completed RW handoffs.  Each release does a real synchronous
-   * PUBLISH + ACK round (HIT path), exercising the normal await/post
-   * rendezvous so the stack-sem contract is hammered before shutdown. */
+  /* Warmup: many completed RW handoffs.  Each non-home release waits for the
+   * home's answer, exercising the normal await/post path before shutdown. */
   for (unsigned int it = 0; it < WARMUP; it++) {
     arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
     unsigned int hops = (nranks > 1) ? (2u * nranks) : 2u;

@@ -73,13 +73,12 @@ enum arts_msg_type {
    * MSG_EVENT_DESTROY / MSG_DB_DESTROY; OoO-deferred on before-create
    * reorder).  Sequential append, no gaps. */
   MSG_EDT_DESTROY,
-  /* WB-write-policy-only coherence messages.  Only sent/received when both
-   * ranks are compiled with the WB write policy.  Sequential append,
-   * no gaps. */
-  MSG_DB_SNAPSHOT_REDIRECT,
-  /* WB-write-policy-only: new owner C → home A, "I have installed the transferred
-   * DB." Home reacts by flipping rw_holder to C and replying with CONFIRM_ACK.
+  /* VAL WB only: the home points a snapshot request at the current owner.
    * Sequential append, no gaps. */
+  MSG_DB_SNAPSHOT_REDIRECT,
+  /* VAL and INV, both write policies: new owner C → home A, "I have installed
+   * the transferred DB."  Home reacts by flipping rw_holder to C and, under
+   * WB, replying with CONFIRM_ACK.  Sequential append, no gaps. */
   MSG_DB_GRANT_CONFIRM,
   /* WB-write-policy-only: home A → new owner C, "the directory now names you; you
    * may run your RW EDT." Acknowledges that home has flipped rw_holder to C (in
@@ -88,16 +87,12 @@ enum arts_msg_type {
    * Sequential append, no gaps. */
   MSG_DB_GRANT_CONFIRM_ACK,
 
-  /* EXCL-protocol coherence messages (REQUEST / GRANT / RELEASE / RELEASE_ACK).
+  /* EXCL-protocol coherence messages (REQUEST / GRANT / RELEASE).
    * Only sent/received in ARTS_COHERENCE_PROTOCOL=EXCL builds; the
    * dispatcher's EXCL cases are #ifdef-guarded.  Sequential append, no gaps. */
   MSG_DB_EXCL_REQUEST,
   MSG_DB_EXCL_GRANT,
   MSG_DB_EXCL_RELEASE,
-  /* Synchronous publish ACK: home → RW releaser after installing the
-   * publish payload.  Unblocks the releaser's await in arts_db_release_rw
-   * so lock_home_grant cannot run before the new data is at home.  RO
-   * releases are fire-and-forget and never send this message. */
   /* EXCL RETAIN-only messages (FORWARD / DELIVER / CONFIRM / RORET).
    * Used only in ARTS_COHERENCE_PROTOCOL=EXCL + ARTS_RELEASE_POLICY=RETAIN
    * builds.  Sequential append, no gaps. */
@@ -113,10 +108,12 @@ enum arts_msg_type {
   MSG_DB_GRANT_CTS, /* home → RW requester: db_size for a first-touch
                            request that carried no landing; the requester
                            allocates a landing and re-issues the request. */
-  MSG_DB_PUBLISH_CTS, /* home → releaser: a fresh home landing for the dirty
-                           publish the releaser announced (PUBLISH with
-                           data_size>0, txid==0); the releaser PUTs then sends
-                           the final PUBLISH carrying the txid. */
+  MSG_DB_PUBLISH_CTS, /* home → releaser: the home's stable buffer, in place,
+                           as the landing for the dirty publish the releaser
+                           announced (PUBLISH with data_size>0, txid==0) or for
+                           a landing-less EXCL PURGE release; the releaser PUTs
+                           then sends the final PUBLISH (EXCL_RELEASE)
+                           carrying the txid. */
   MSG_DB_EXCL_CTS,      /* EXCL home → requester: db_size for a first-touch
                            EXCL_REQUEST that carried no landing. */
 
@@ -287,9 +284,9 @@ struct ARTS_PACKED arts_msg_grant_cts_packet_s {
  * rides INLINE after the header; the buffer payload does NOT ride the wire —
  * it travels one-sided (the old owner PUTs it into the landing the requester
  * advertised in its GRANT_REQUEST) and this packet pairs with that write
- * completion by rdzv_txid.  WT sends map_entry_count=0 (it dedups RO via
- * home's cached_version, not an owner-side map), WB serializes its
- * owner-side map.
+ * completion by rdzv_txid.  VAL WB serializes its owner-side map; WT (which
+ * dedups RO via the home's cached_version) and INV (which keeps no ledger)
+ * send map_entry_count=0.
  *
  *   rdzv_txid != 0 : `data_size` payload bytes were PUT into the requester's
  *                    landing (named by rdzv_cookie, the requester's own
@@ -317,19 +314,22 @@ struct ARTS_PACKED arts_msg_grant_response_packet_s {
 };
 
 /* PUBLISH — the dirty payload does NOT ride the wire; it travels one-sided
- * into a fresh home landing.  Two-phase from one packet layout:
+ * into the home's stable buffer.  Two-phase from one packet layout:
  *   data_size > 0, rdzv_txid == 0 : announce ("I hold data_size dirty bytes")
- *       — home allocates a fresh landing and replies PUBLISH_CTS; nothing
- *       is installed yet.
+ *       — home advertises its stable buffer as the landing and replies
+ *       PUBLISH_CTS; nothing is published yet.
  *   data_size > 0, rdzv_txid != 0 : commit — the releaser PUT the bytes into
- *       the CTS landing (rdzv_cookie echoes home's handle); home pairs
- *       {packet, txid}, installs, and ACKs.
- *   data_size == 0                : data-less publish (sentinel DB /
- *       ordering-only round) — install nothing, ACK immediately.
- * cv: opaque address of the releaser's stack-local rendezvous (sem + landing
- * slot), valid only at the releaser rank; home echoes it verbatim in
- * PUBLISH_CTS and PUBLISH_ACK so the releaser matches by pointer identity
- * (no seq tracking). */
+ *       that landing, or into the one a credit named (an earlier ACK's or
+ *       the block's CREATE_RETURN); home pairs {packet, write completion},
+ *       stamps the version, and ACKs.
+ *   data_size == 0                : data-less publish (a sentinel DB, or an
+ *       INV release that only asks for its invalidation round) — nothing
+ *       lands; home ACKs once it has processed it.
+ * cv: on an announce, the address of the releaser's heap rendezvous (sem +
+ * landing slot), valid only at the releaser rank, which home echoes verbatim
+ * in PUBLISH_CTS so the releaser matches by pointer identity (no seq
+ * tracking).  0 on a commit and a data-less publish: their ACK completes the
+ * releaser's publish flight, found by db_guid. */
 struct ARTS_PACKED arts_msg_publish_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -347,9 +347,10 @@ struct ARTS_PACKED arts_msg_publish_packet_s {
  * announce is answered before any of them have. */
 #define ARTS_PUBLISH_FLAG_GRANT_RETURN 0x1ULL
 
-/* PUBLISH_CTS — home → releaser: the fresh home landing for an announced
- * dirty publish.  cv is echoed verbatim; the releaser-side handler writes
- * the landing into the blocked releaser's stack rendezvous and posts it. */
+/* PUBLISH_CTS — home → releaser: the home landing for an announced dirty
+ * publish (VAL and INV write-through) or a landing-less EXCL PURGE release.
+ * cv is echoed verbatim; the releaser-side handler writes the landing into
+ * the blocked releaser's heap rendezvous and posts it. */
 struct ARTS_PACKED arts_msg_publish_cts_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -360,13 +361,15 @@ struct ARTS_PACKED arts_msg_publish_cts_packet_s {
 struct ARTS_PACKED arts_msg_publish_ack_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  uint64_t cv; /* releaser's sem_t address, forwarded verbatim from PUBLISH
-                * (legacy/control legs; 0 under the WT flight path, whose
-                * ACK is cache-keyed by db_guid instead) */
-  uint64_t version; /* highest version this ACK covers (WT flight path) */
+  uint64_t cv; /* a standalone grant return's rendezvous address, forwarded
+                * verbatim; 0 for a publish flight (a hand-back riding its
+                * commit included), whose ACK is found by db_guid */
+  uint64_t version; /* highest version this ACK covers (a publish flight) */
   /* Next publish credit: the DB's stable home buffer + a receiver-minted
-   * txid.  Every WT ACK refills it, so the legacy CTS leg's final ACK is
-   * what delivers a rank's FIRST durable credit.  Zero under WB/control. */
+   * txid.  The ACK of a WT payload flight refills it while the home's block
+   * lives; a rank's first credit comes from the block's CREATE_RETURN or
+   * from the ACK that closes its first, credit-less publish.  Zero on a
+   * standalone grant return's ACK and under WB. */
   uint64_t credit_addr;
   uint64_t credit_rkey;
   uint64_t credit_txid;
@@ -491,14 +494,14 @@ struct ARTS_PACKED arts_msg_cache_destroy_packet_s {
   arts_guid_t db_guid;
 };
 
-/* ===== WB-write-policy-only wire packets ====================================
- * Sent only between ranks compiled with the WB write policy.
- * A rank compiled with a different protocol that receives these messages fatals
- * immediately (see dispatcher.c). */
+/* ===== Wire packets some arms only send ======================================
+ * Each one's comment names the arms that send it; a rank whose arm neither
+ * sends nor handles one fatals on receipt (see dispatcher.c). */
 
-/* SNAPSHOT_REDIRECT — home forwards an RO grant request to the current owner.
- * The owner will send data directly to requester_rank using SNAPSHOT_RESPONSE,
- * PUTting the payload into the forwarded requester landing. */
+/* SNAPSHOT_REDIRECT — VAL WB: home forwards a SNAPSHOT_REQUEST to the current
+ * owner.  The owner will send data directly to requester_rank using
+ * SNAPSHOT_RESPONSE, PUTting the payload into the forwarded requester
+ * landing. */
 struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -509,28 +512,31 @@ struct ARTS_PACKED arts_msg_snapshot_redirect_packet_s {
   struct arts_msg_rdzv_landing_s rdzv;
 };
 
-/* GRANT_RESPONSE's reader-map trailer — owner sends data + version + reader-map
- * to new owner.  Followed by:
- *   arts_msg_rank_version_pair_s pairs[map_entry_count];
- *   uint8_t                         data[db_size];
- */
+/* One entry of GRANT_RESPONSE's dedup-map trailer: map_entry_count of them
+ * follow the GRANT_RESPONSE header.  Only VAL WB sends any; every other
+ * grant-bearing arm, INV WB included, sends map_entry_count = 0.  Nothing
+ * trails the map on the wire, since the payload travels one-sided; only a
+ * same-rank dispatch appends it. */
 struct ARTS_PACKED arts_msg_rank_version_pair_s {
   uint32_t rank;
   uint32_t pad;
   uint64_t version;
 };
 
-/* GRANT_CONFIRM — new owner C confirms installation of the transferred DB
- * to home A. Carries a fresh version number so home can track the RW round. */
+/* GRANT_CONFIRM — VAL and INV, both write policies: new owner C confirms
+ * installation of the transferred DB to home A.  The home takes the new owner
+ * from pending_install_owner; neither write policy's handler reads version. */
 struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t version;
 };
 
-/* CREATE_RETURN — see the enum comment.  The credit triple mirrors the
- * publish-ACK refill fields; create_token echoes the announce's, and the
- * creator applies the credit only to the descriptor that carries it. */
+/* CREATE_RETURN — see the enum comment; sent by VAL and INV under WT and by
+ * FLUSH.  INV WB sends none but runs the same handler as the write-through
+ * arms.  The credit triple mirrors the publish-ACK refill fields;
+ * create_token echoes the announce's, and the creator applies the credit only
+ * to the descriptor that carries it. */
 struct ARTS_PACKED arts_msg_db_create_return_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -569,7 +575,8 @@ struct ARTS_PACKED arts_msg_excl_grant_packet_s {
   arts_guid_t db_guid;
   uint32_t mode;
   uint32_t pad;
-  uint64_t version; /* monotone round counter; buf_install rejects stale */
+  uint64_t version; /* the home buffer's version (0 in a CXL build); no
+                     * handler reads it */
   /* Grant payload travels by PUT into the requester's landing:
    * rdzv_txid != 0 pairs this packet with the write completion, rdzv_cookie
    * echoes the requester's landing handle.  data_size is the DB's size
@@ -591,9 +598,10 @@ struct ARTS_PACKED arts_msg_excl_release_packet_s {
   arts_guid_t db_guid;
   uint32_t mode;
   uint32_t pad;
-  uint64_t
-      version; /* monotone version bumped by releaser; stale overwrite guard */
-  uint64_t cv; /* RW only: releaser's stack-local sem_t address for ACK */
+  uint64_t version; /* always 0, and no handler reads it: exclusion leaves
+                     * no stale release to reject */
+  uint64_t cv; /* RW announce only: the releaser's heap rendezvous, echoed in
+                * the PUBLISH_CTS; nothing acknowledges a release */
   /* RW dirty payload travels by PUT into the grant's `pub` landing; these echo
    * that landing's {txid, cookie} and count the landed bytes.  txid==0 =
    * data-less release (RO, or sentinel DB). */

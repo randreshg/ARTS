@@ -47,11 +47,11 @@
 #include "arts/system/print.h"
 #include "arts/utils/malloc.h"
 
-/* Data-mesh sockets owned by socket.c.  The exchange rides them once, while
- * the runtime is otherwise quiescent (this runs before any worker / sender /
- * receiver thread is spawned, so no live traffic contends for these fds), and
- * consumes exactly one address frame per peer connection — leaving each socket
- * byte-clean for the live TCP transport that keeps using them afterward.
+/* The bootstrap mesh's sockets, owned by socket.c.  The exchange rides them
+ * once, while the runtime is otherwise quiescent (this runs before any worker
+ * or progress thread is spawned, so no live traffic contends for these fds),
+ * and consumes exactly one address frame per peer connection; afterward the
+ * sockets carry no data and stay open only as liveness sentinels.
  *   remote_socket_send_list[peer*ports + port] — this rank's connection to peer
  *   remote_socket_receive_list[port + conn*ports] — accepted peer connections,
  *     in ACCEPTANCE order (not rank order), hence the embedded-rank demux. */

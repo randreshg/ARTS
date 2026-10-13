@@ -80,8 +80,8 @@ extern "C" {
 
 /* Recover the wrapping struct arts_db_s from a coherence cache pointer.  cache
  * is the FIRST member of arts_db_s; container_of degenerates to the cache
- * address but is written as container_of for correctness-by-construction (and
- * to match the master plan's home-access idiom).  NULL-safe. */
+ * address but is written as container_of for correctness-by-construction.
+ * NULL-safe. */
 static inline struct arts_db_s *arts_db_of_cache(struct arts_db_cache_s *c) {
   if (c == NULL) {
     return NULL;

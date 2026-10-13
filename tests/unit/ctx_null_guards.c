@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T148 — the created-DB list and the owned-finish list on a NULL argument
+ * The created-DB list and the owned-finish list on a NULL argument
  * (libs/src/core/edt_context.c).
  *
  *   - arts_owned_finish_register GUARDS NULL: a NULL_GUID registration is a

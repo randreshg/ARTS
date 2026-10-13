@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T196 — make_pipe failure path: -1 return + no fd/slot leak.
+ * make_pipe failure path: -1 return + no fd/slot leak.
  *
  * arts_stdio_forwarder_make_pipe returns -1 on pipe()/malloc/pthread_create
  * failure, and on each failure branch it must clean up everything it had

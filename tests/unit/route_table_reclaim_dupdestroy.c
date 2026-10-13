@@ -177,7 +177,7 @@ static void *reader(void *vp) {
 }
 
 /* Two destroyer threads issue the SAME destroy concurrently.  Every duplicate
- * DESTROY_NOTIFY / completion-vs-wire-destroy pair in the runtime looks
+ * CACHE_DESTROY / completion-vs-wire-destroy pair in the runtime looks
  * exactly like this. */
 static void *destroyer(void *vp) {
   (void)vp;

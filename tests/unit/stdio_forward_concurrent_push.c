@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T199 — concurrent Treiber push onto g_forwarders (lost-push / ABA).
+ * Concurrent Treiber push onto g_forwarders (lost-push / ABA).
  *
  * make_pipe publishes its node with a release-CAS Treiber push.  The launcher
  * calls it single-threaded in practice, but the CAS must be correct under

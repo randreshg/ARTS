@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * scheduler_async_nonowner_push — runtime_single stress for RW
- * ownership-transfer chain scheduling (census 17 §1 arts_schedule_ready_edt).
+ * scheduler_async_nonowner_push — single-node stress for RW
+ * ownership-transfer chain scheduling (arts_schedule_ready_edt).
  *
  * Background (scheduler.c): a fully DB-acquired EDT is pushed onto a
- * work-stealing deque.  Each runtime thread (worker, sender, receiver) owns its
- * own deque, so a coherence-wake / OoO-drain that resumes an RW acquire walk
- * pushes onto the resuming thread's own deque — a single-producer (owner-only)
- * Chase-Lev push, the contract arts_deque_push_front requires.  (The
+ * work-stealing deque.  Each runtime thread (worker or progress thread) owns
+ * its own deque, so a coherence-wake / OoO-drain that resumes an RW acquire
+ * walk pushes onto the resuming thread's own deque — a single-producer
+ * (owner-only) Chase-Lev push, the contract arts_deque_push_front requires.  (The
  * my_deque == NULL fallback to deque[0] is for non-runtime threads only — e.g.
  * GPU callbacks, which take the new_edts path — and is not exercised here.)
  *

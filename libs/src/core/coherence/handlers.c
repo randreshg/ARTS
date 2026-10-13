@@ -8,28 +8,34 @@
  *
  * Lookup discipline.  Two handler categories, both lookup-then-operate but
  * differing on the MISS action:
- *   - Cat-B (deferrable home-side: GRANT_REQUEST / SNAPSHOT_REQUEST / PUBLISH /
- * DESTROY): the wire dispatcher routes through the OoO engine, which acquires
- * the home db_s (ref-pinned) and hands a pure (item, args) body the live cache
- *     on a HIT, or DEFERS the args and replays them once DB_CREATE installs.
- *   - Cat-C (non-deferrable: SNAPSHOT_RESPONSE / DESTROY_NOTIFY / PUBLISH_ACK /
- *     SNAPSHOT_REDIRECT / CONFIRM / CONFIRM_ACK): the wire
- * dispatcher (and the matching self-send shortcut) does the ref-pinned
- *     lookup-acquire; on a HIT it calls the pure (item, args) body, and on a
- *     MISS it applies that handler's exact miss-action (silent drop,
- *     DESTROY_NOTIFY reply, or the PUBLISH_ACK sem-post — see each body).
- * Either way the handler body itself performs NO route-table lookup; it
- * operates on the already-acquired, ref-pinned cache (the FIRST member of the
- * db_s the caller hands it).
+ *   - Cat-B (deferrable bodies, each an OOO_* kind in ooo.h, run at the home
+ *     except INV WB's INV_REDIRECT, which runs at the grant holder — e.g.
+ *     GRANT_REQUEST / SNAPSHOT_REQUEST / PUBLISH / DESTROY): the wire
+ *     dispatcher routes through the OoO engine, which acquires this rank's db_s
+ *     (ref-pinned) and hands a pure (item, args) body the live cache on a
+ *     HIT, or DEFERS the args and replays them once DB_CREATE installs.
+ *   - Cat-C (non-deferrable, no OOO_* kind — e.g. SNAPSHOT_RESPONSE /
+ *     CACHE_DESTROY / PUBLISH_ACK / SNAPSHOT_REDIRECT / GRANT_INVALIDATE /
+ *     GRANT_CONFIRM / GRANT_CONFIRM_ACK): the wire dispatcher (and the
+ *     matching self-send shortcut) does the ref-pinned lookup-acquire; on a
+ *     HIT it calls the pure (item, args) body, and on a MISS it applies that
+ *     handler's exact miss-action (silent drop, CACHE_DESTROY reply, or the
+ *     PUBLISH_ACK sem-post — see each body).
+ * Either way an (item, args) body operates on the already-acquired,
+ * ref-pinned cache (the FIRST member of the db_s the caller hands it) and
+ * does not look it up to operate on it.  A body handed the whole packet
+ * (GRANT_RESPONSE, INV_DELIVER, EXCL_GRANT and the EXCL RETAIN messages)
+ * looks its block up itself.
  *
- * Memory ordering: ARTS atomics are __sync_*-based (full fence) and
- * the per-rank network thread (S1) is the sole writer of home.*
- * state, so the trickier orderings are confined to:
- *   - cache.writer_count (worker ↔ network handler)
- *   - cache.buffer       (worker ↔ network handler installs)
- *   - cache.pending_count (worker push ↔ marker mark)
- * All accessed via arts_atomic_*, all matching the algorithm in the
- * coherence design plan.
+ * Memory ordering: an ARTS atomic read-modify-write or compare-and-swap
+ * (__sync_*) is a full fence; its swap (__sync_lock_test_and_set) is an acquire
+ * barrier only, and its reads are acquire loads.  Handlers run concurrently on
+ * every progress thread, and a self-send's handler runs inline on the sending
+ * thread, a worker included, so no thread is any field's sole writer by role.
+ * A field a handler shares with a worker or with another handler is accessed
+ * atomically, or written plainly before an atomic RMW on a count or state word
+ * that its reader observes first (incoming_new_owner is stored before the
+ * writer_count decrement whose zero edge reads it).
  */
 
 #include "arts/coherence/handlers.h"
@@ -56,18 +62,22 @@
 
 /* ===== Home-side handlers ========================================== */
 
-/* arts_handler_db_grant_request lives in coherence/grant.c (VAL only). */
+/* arts_handler_db_grant_request lives in coherence/grant.c (VAL, INV). */
 
 /* arts_handler_db_snapshot_request (SNAPSHOT_REQUEST) is protocol-specific —
  * WT serves from home's canonical buffer (dedup), WB records the
  * sharer + REDIRECTs to the owner — so its whole body lives in
  * each arm's own write-policy TU. */
 
-/* arts_handler_db_publish (+_ack) is protocol-specific — WT installs
- * + ACKs (pure: ownership transfer is a separate owner→owner GRANT_RESPONSE
- * ship), WB has no synchronous publish (no-op fillers preserve the
- * OoO-table / link parity) — so their whole bodies live in
- * each arm's own write-policy TU. */
+/* arts_handler_db_publish is protocol-specific — VAL WT stamps the version
+ * of the bytes PUT in place into the stable buffer and ACKs (ownership moves on
+ * the grant plane: under RETAIN the owner-to-owner ship, under PURGE a commit
+ * may carry the hand-back, accepted once the stamp is in place), INV runs the
+ * release's invalidation round under either write policy — so its whole body
+ * lives in the arm's own TU.  VAL WB publishes nothing to the home at a
+ * release, and EXCL and FLUSH have release messages of their own
+ * (EXCL_RELEASE, RETAIN's owner-to-owner EXCL_DELIVER, FLUSH_COMMIT); none
+ * of them sends MSG_DB_PUBLISH, so none defines this body. */
 
 /* arts_handler_db_destroy is protocol-specific — each arm keeps its own exact
  * destroy roster (the creator, the readers, every write requester) — so its
@@ -518,11 +528,11 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
  * !EXCL && (!WB || INV)); the exclusion arm has no synchronous publish and
  * its dispatcher fatals on the message. */
 
-/* Cat-C pure body (DESTROY_NOTIFY).  The wire dispatcher / self-send shortcut
+/* Cat-C pure body (CACHE_DESTROY).  The wire dispatcher / self-send shortcut
  * has already looked the cache up with a held ref and passes the db_s as item_v
  * (cache is its FIRST member, offset 0).  No lookup/NULL-check here — the
  * dispatcher's MISS branch SILENTLY DROPS (already torn down on this rank;
- * cb-NULL = idempotent, a second DESTROY_NOTIFY is a no-op).
+ * cb-NULL = idempotent, a second CACHE_DESTROY is a no-op).
  *
  * Destroy is just the route-slot detach of the object the message was
  * dispatched on (CAS value→NULL + drop the install ref); the cb deleter

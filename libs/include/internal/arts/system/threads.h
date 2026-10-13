@@ -52,15 +52,16 @@ void arts_thread_main_join(void);
 
 /* Shutdown protocol entry points (see libs/src/core/system/shutdown.c).
  *
- * Responsibility split (spec Cat E — state-less, no route_table):
+ * Responsibility split (state-less, no route_table):
  *   - arts_shutdown (public API, the initiator side): owns the cluster
  *     broadcast (MSG_SHUTDOWN × N-1) + arts_net_drain_outstanding, then enters
  *     the local stop state.  The drain wait is the initiator's responsibility
  *     only.
  *   - arts_handler_shutdown (the passive RX side): the lightweight gate the
  *     wire dispatcher calls directly on MSG_SHUTDOWN — idempotent CAS (0→1) +
- *     worker-thread stop signal.  NO rebroadcast, NO drain-wait.  Sender/
- *     receiver shutdown + thread join are the main-thread epilogue's job.
+ *     worker-thread stop signal.  NO rebroadcast, NO drain-wait.  Stopping
+ *     the progress threads and joining every thread are the main-thread
+ *     epilogue's job.
  *
  * arts_enter_shutdown_state is the shared CAS-gated mechanism both sides reach
  * (initiator = true adds the broadcast + drain before the worker stop); the CAS

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T206 — parse_port_spec grammar matrix (config.c, static helper).
+ * parse_port_spec grammar matrix (config.c, static helper).
  *
  * Property: parse_port_spec(spec, &count) translates a port specification into
  * a malloc'd uint array and *count, per its documented grammar:

@@ -78,7 +78,8 @@ static inline void arts_atomic_print(const char *format, ...) {
  *   2 = INFO    — print only
  *   3 = DEBUG   — print only
  *
- * All levels <= ARTS_LOG_LEVEL are compiled in; higher levels are no-ops.
+ * All levels <= ARTS_LOG_LEVEL are compiled in; a higher level expands to
+ * ((void)0), so a compiled-out call is still a statement (an if's body).
  *---------------------------------------------------------------------------*/
 
 #ifndef ARTS_LOG_LEVEL
@@ -114,7 +115,7 @@ static inline void arts_atomic_print(const char *format, ...) {
       ARTS_CLR_YELLOW "[%u:%u] [WARN] " format ARTS_CLR_RESET "\n",            \
       arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__)
 #else
-#define ARTS_WARN(...)
+#define ARTS_WARN(...) ((void)0)
 #endif
 
 /* Level 2: INFO */
@@ -124,7 +125,7 @@ static inline void arts_atomic_print(const char *format, ...) {
       ARTS_CLR_CYAN "[%u:%u] [INFO] " format ARTS_CLR_RESET "\n",              \
       arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__)
 #else
-#define ARTS_INFO(...)
+#define ARTS_INFO(...) ((void)0)
 #endif
 
 /* Level 3: DEBUG */
@@ -134,7 +135,7 @@ static inline void arts_atomic_print(const char *format, ...) {
       ARTS_CLR_DIM "[%u:%u] [DEBUG] " format ARTS_CLR_RESET "\n",              \
       arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__)
 #else
-#define ARTS_DEBUG(...)
+#define ARTS_DEBUG(...) ((void)0)
 #endif
 
 #ifdef __cplusplus
