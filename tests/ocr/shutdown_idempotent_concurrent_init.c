@@ -18,8 +18,9 @@
 ///
 /// Each of the first two ranks schedules a LOCAL shutdown initiator EDT, so two
 /// independent initiations race across the cluster.  Each rank prints a clean
-/// token after arts_rt returns; the integrator's MN harness confirms all ranks
-/// returned (ctest TIMEOUT reaps a storm/deadlock regression).
+/// token after arts_rt returns, and the master's status carries the
+/// launcher's verdict on every rank (ctest TIMEOUT reaps a storm/deadlock
+/// regression).
 ///
 /// runtime_multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a single-node
 /// clean shutdown when only one rank is present.
@@ -69,7 +70,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 int main(int argc, char **argv) {
-  arts_rt(argc, argv);
+  int rc = arts_rt(argc, argv);
   printf("[rank %u] IDEMPOTENT_INIT_EXIT\n", arts_get_current_rank());
-  return 0;
+  return rc ? 1 : 0;
 }

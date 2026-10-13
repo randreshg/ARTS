@@ -11,10 +11,8 @@
  * it places on rank 1.  That EDT, running on rank 1, tries to create a
  * further EDT naming the rank-0 scope as hint.finish_event — the mismatch
  * (scope home 0 != creating rank 1) raises the error on rank 1 and that
- * process exits non-zero.  PASS is judged by the error text reaching the
- * captured output, not by exit status (only the master rank's own status
- * reaches ctest; a peer's death is what the master's own arts_rt() return
- * code reports, and its printed text is what a regex here can see).
+ * process exits non-zero.  The master's arts_rt() reports the failed rank,
+ * so the test passes when it exits 1 and the error text names the guard.
  */
 #include <stdint.h>
 #include <stdio.h>

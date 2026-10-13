@@ -17,9 +17,8 @@
 /// (arts_config_find_variable does getenv(name)), so this test sets
 /// node_count=99999 in its own main() before calling arts_rt.  99999 >> 16382,
 /// so the overflow guard fires and the process must exit with status 1.  The
-/// guard runs before transport setup, so no processes are launched.  ctest
-/// expects exit code 1 (FAIL_REGULAR_EXPRESSION on a clean token, or a
-/// WILL_FAIL / non-zero exit expectation set by the integrator).
+/// guard runs before transport setup, so no processes are launched.  The test
+/// is judged on exit status 1 and the guard's message.
 ///
 /// runtime_single, all configs (the guard sits above the coherence layer).
 /// exposes_runtime_bug: no — this asserts the guard works (clean abort exit 1).

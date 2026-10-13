@@ -11,12 +11,13 @@
 /// exit" and call _exit(128+sig) immediately — bypassing normal teardown so a
 /// hung graceful path is always escapable.  For SIGTERM (15) that is
 /// _exit(143).  We raise two process-directed SIGTERMs so the watcher takes the
-/// escalation arm; the process must terminate with status 143 (ctest matches
-/// exit code 143 and that the normal clean-exit token is NOT printed).
+/// escalation arm; the process must terminate with status 143, which is what
+/// the test is judged on.
 ///
-/// Both raises happen from one EDT, back-to-back, so the second arrives while
-/// the watcher is still in its loop after the first hit (the first only stops
-/// workers; network threads + the watcher stay alive).
+/// Both raises happen from one EDT, the second once the watcher has taken the
+/// first, so it arrives while the watcher is still in its loop after the first
+/// hit (the first only stops workers; network threads + the watcher stay
+/// alive).
 ///
 /// runtime_single, all configs (signals sit above the coherence layer).
 /// Expected process exit status: 143.
@@ -41,6 +42,18 @@ void raise2_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * raised on this worker (which blocks the term set) would stay pending here
    * instead. */
   kill(getpid(), SIGTERM);
+  /* A standard signal sent while another instance is still pending merges
+   * with it, so the second waits for the watcher to take the first (bounded:
+   * if it never does, the second goes out anyway and the test fails). */
+  for (int i = 0; i < 5000; i++) {
+    sigset_t pending;
+    sigpending(&pending);
+    if (!sigismember(&pending, SIGTERM)) {
+      break;
+    }
+    struct timespec tick = {.tv_sec = 0, .tv_nsec = 1000000};
+    nanosleep(&tick, NULL);
+  }
   kill(getpid(), SIGTERM);
   /* Bounded wait so this EDT does not return (and let the runtime reach a clean
    * shutdown) before the watcher's _exit(143) lands.  This is NOT an infinite

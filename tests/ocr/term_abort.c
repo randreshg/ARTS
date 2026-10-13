@@ -4,9 +4,7 @@
 ******************************************************************************/
 /* Termination-robustness test: trigger EDT on rank argv[1] prints
  * "TERM_ABORT rc=<code>" then calls arts_abort(<code>) where <code> is
- * argv[2]. Master-origin expected to exit with that code (regex on the
- * printed sentinel). Non-master origin expected to produce clean
- * TERM_TEST_EXIT from master after EOF detection. */
+ * argv[2].  The rank exits with that code, printing the sentinel. */
 #include <stdio.h>
 #include <stdlib.h>
 

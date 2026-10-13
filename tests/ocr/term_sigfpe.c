@@ -3,11 +3,10 @@
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
 /* Termination-robustness test: trigger EDT on rank argv[1] raises SIGFPE
- * via raise(3). (A naive `1/0` does not reliably generate SIGFPE on
- * modern compilers — the UB may be silently elided.) Master-origin
- * expected to print ARTS's "[ARTS] Crashed: SIGFPE" backtrace line to
- * stderr. Non-master origin expected to produce clean TERM_TEST_EXIT
- * from master. */
+ * via raise(3).  (A naive `1/0` does not reliably generate SIGFPE on
+ * modern compilers — the UB may be silently elided.)  The rank prints
+ * ARTS's "[ARTS] Crashed: SIGFPE" line and its backtrace to stderr and dies
+ * by the signal. */
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>

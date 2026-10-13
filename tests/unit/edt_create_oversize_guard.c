@@ -7,9 +7,8 @@
  * dependence counts are the one control-message size a program chooses.
  * Nothing quietly rescues an over-bound task: it cannot be split, and the
  * transport ceiling below it would report only bytes.  The run is therefore
- * expected to die on that guard, and the verdict is its message rather than
- * the exit status (PASS_REGULAR_EXPRESSION) — reaching the prints below
- * would mean the guard went missing.
+ * expected to die on that guard, exiting 1 with its message — reaching the
+ * prints below would mean the guard went missing.
  */
 
 #include "arts.h"

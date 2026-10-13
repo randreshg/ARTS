@@ -66,7 +66,7 @@ void shutdown_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 void acquire_test(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                   arts_edt_dep_t depv[]) {
   (void)paramc;
-  arts_guid_t shut_guid = (arts_guid_t)paramv[0];
+  (void)paramv;
   for (uint32_t i = 0; i < depc; i++) {
     unsigned int *num = (unsigned int *)depv[i].ptr;
     unsigned int expected = BASE_VALUE + (i + 1);
@@ -80,7 +80,6 @@ void acquire_test(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_printf("%u %u i: %u %u\n", arts_get_current_rank(),
                 arts_get_current_worker(), i, *num);
   }
-  arts_edt_satisfy_slot(shut_guid, 0, (arts_guid_t)(0), DB_MODE_NULL);
 }
 
 /// node_setup paramv: [0]=node_id, [1]=edt_guid, [2]=db_guid.  Runs on rank
@@ -109,14 +108,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   unsigned int nranks = arts_get_total_ranks();
   arts_guid_t local_edt_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
-  arts_guid_t local_shutdown_guid = arts_guid_reserve(ARTS_GUID_EDT, 0);
 
-  uint64_t acq_params[1];
-  acq_params[0] = (uint64_t)local_shutdown_guid;
-  arts_edt_create(acquire_test, 1, acq_params, nranks - 1,
-                  &(arts_edt_hint_t){.guid = local_edt_guid});
-  arts_edt_create(shutdown_edt, 0, NULL, 1,
-                  &(arts_edt_hint_t){.guid = local_shutdown_guid});
+  /* Shutdown waits for the reader and every producer to finish, their
+   * releases included. */
+  arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_guid_t shut = arts_edt_create(shutdown_edt, 0, NULL, 1, NULL);
+  arts_add_dependence(done, shut, 0, DB_MODE_NULL);
+  arts_edt_create(acquire_test, 0, NULL, nranks - 1,
+                  &(arts_edt_hint_t){.guid = local_edt_guid,
+                                     .finish_event = done});
 
   /* One pre-reserved DB guid per non-zero rank, homed on that rank; each
    * rank creates exactly its own guid and signals exactly its own slot. */
@@ -125,7 +125,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     args[0] = (uint64_t)n;
     args[1] = (uint64_t)local_edt_guid;
     args[2] = (uint64_t)arts_guid_reserve(ARTS_GUID_DB, n);
-    arts_edt_create(node_setup, 3, args, 0, &(arts_edt_hint_t){.rank = n});
+    arts_edt_create(node_setup, 3, args, 0,
+                    &(arts_edt_hint_t){.rank = n, .finish_event = done});
   }
 }
 

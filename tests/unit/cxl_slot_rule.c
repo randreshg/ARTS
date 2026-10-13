@@ -204,7 +204,7 @@ static void shutdown_edt(uint32_t paramc, const uint64_t *paramv,
  * and slot 4 takes that label for writing once they are done: the home grants
  * it only after their releases have landed, so no leg is still outstanding
  * when the run shuts down and none of them can be skipped by losing a race to
- * the shutdown.  The PASS line is what the registration requires, so a run
+ * the shutdown.  main fails a run in which this check never ran, so a run
  * that never reached these checks cannot pass. */
 static void home_check_edt(uint32_t paramc, const uint64_t *paramv,
                            uint32_t depc, arts_edt_dep_t depv[]) {

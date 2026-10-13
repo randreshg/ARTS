@@ -2,10 +2,12 @@
 ** Copyright 2019 Battelle Memorial Institute
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
-/* Termination-robustness test: trigger EDT on rank argv[1] NULL-derefs,
- * raising SIGSEGV. Master-origin expected to print ARTS's
- * "[ARTS] Killed by SIGSEGV (rank ...)" backtrace line to stderr. Non-
- * master origin expected to produce clean TERM_TEST_EXIT from master. */
+/* Termination-robustness test: trigger EDT on rank argv[1] raises SIGSEGV
+ * via raise(3).  (A NULL store is undefined behaviour, which the
+ * undefined-behaviour sanitizer reports before the fault.)  The rank prints
+ * ARTS's "[ARTS] Crashed: SIGSEGV" line and its backtrace to stderr and dies
+ * by the signal. */
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -17,11 +19,7 @@ void trigger_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  volatile int *p = (int *)0;
-  /* Intentional null dereference: raises SIGSEGV to exercise the
-   * signal/backtrace handler. */
-  // NOLINTNEXTLINE(clang-analyzer-core.NullDereference)
-  *p = 1;
+  (void)raise(SIGSEGV);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,

@@ -18,9 +18,8 @@
  * Because ARTS_ERROR aborts the process, a single run can exercise exactly one
  * rejection.  This test drives the CHANNEL non-DECR rejection: create a CHANNEL
  * event and satisfy slot INCR (1).  The runtime MUST reject it — the CORRECT
- * behavior is the abort with the documented error message.  ctest matches that
- * message via PASS_REGULAR_EXPRESSION, so the test passes precisely when the
- * runtime correctly rejects the invalid slot.
+ * behavior is the abort with the documented error message, so the test
+ * passes precisely when the run exits 1 and its output carries that message.
  *
  * If the runtime ever silently ACCEPTED the bad slot, no error line would be
  * printed and the marker-only output below would not match the pass regex —

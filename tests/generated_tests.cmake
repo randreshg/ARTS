@@ -1,8 +1,8 @@
 # ============================================================================
 # Auto-generated Wave-A pure_unit test registrations.
 #
-# Generated from research/test-census/waveA-result.json. Do NOT edit by hand;
-# regenerate from the census instead.
+# Generated from research/test-census/waveA-result.json and maintained by hand
+# since; a regeneration must keep the hand edits.
 #
 # Protocol selection (ARTS_PROTOCOL_* / ARTS_WRITE_POLICY_* / ARTS_RELEASE_*)
 # is supplied GLOBALLY by the build directory's coherence configuration --
@@ -12,10 +12,6 @@
 # Tests that EXPOSE a runtime bug and are designed to fail/crash are registered
 # WITHOUT a PASS_REGULAR_EXPRESSION so they show up as failing (documenting the
 # defect). They are NOT masked with WILL_FAIL.
-#
-# The two if() guards below are hand-maintained: they key on the exclusion list
-# tests/CMakeLists.txt sets, and a regeneration from the census must preserve
-# them.  No generated registration LINE is edited by them.
 # ============================================================================
 
 # Helper: build a standalone pure_unit test that compiles specific libs/src .c
@@ -283,8 +279,8 @@ set_tests_properties(event_finish_latch_rearm PROPERTIES PASS_REGULAR_EXPRESSION
 endif()
 
 add_arts_test(event_error_paths)
-register_single_node_test(event_error_paths TIMEOUT 30)
-set_tests_properties(event_error_paths PROPERTIES PASS_REGULAR_EXPRESSION "CHANNEL: only DECR|SKIP event_error_paths")
+register_single_node_test(event_error_paths TIMEOUT 30 STATUS 1)
+set_tests_properties(event_error_paths PROPERTIES PASS_REGULAR_EXPRESSION "CHANNEL: only DECR")
 
 # both single + multinode (OoO defer is home-rank-local but census asks for multinode too)
 # COUNTED delivery + reclamation, and that an undeclared ONCE still lingers.
@@ -463,7 +459,7 @@ register_multinode_test(launcher_no_respawn TIMEOUT 60)
 add_arts_test(launcher_orphan_prevention)
 register_multinode_test(launcher_orphan_prevention TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(launcher_orphan_prevention_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS: launcher_orphan_prevention|SKIP launcher_orphan_prevention_${_v}")
+    set_tests_properties(launcher_orphan_prevention_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "PASS: launcher_orphan_prevention")
 endforeach()
 
 # --- C21r: config loading ---
@@ -471,7 +467,7 @@ add_arts_test(config_load_multinode_port_offset)
 register_multinode_test(config_load_multinode_port_offset TIMEOUT 60)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(config_load_multinode_port_offset_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS config_load_multinode_port_offset|SKIP config_load_multinode_port_offset_${_v}")
+        PASS_REGULAR_EXPRESSION "PASS config_load_multinode_port_offset")
 endforeach()
 
 add_arts_test(config_load_single_reclaim)
@@ -523,35 +519,28 @@ add_arts_test(signals_sigterm_graceful)
 register_single_node_test(signals_sigterm_graceful TIMEOUT 60)
 set_tests_properties(signals_sigterm_graceful PROPERTIES PASS_REGULAR_EXPRESSION "SIGTERM_GRACEFUL_OK|SKIP signals_sigterm_graceful")
 
-# signals_double_sigterm: success criterion is exit code 143 (= 128+SIGTERM), not a stdout
-# token; pass_regex empty per the census. The DOUBLE_SIGTERM_UNEXPECTED_CLEAN_EXIT token marks
-# a regression. Exit-code based: WILL_FAIL accepts the non-zero (143) escalation exit; the
-# FAIL_REGULAR_EXPRESSION catches a regression that exits 0 after printing the clean token.
+# signals_double_sigterm: success is exit code 143 (= 128+SIGTERM), the escalation's own exit.
 add_arts_test(signals_double_sigterm)
-register_single_node_test(signals_double_sigterm TIMEOUT 60)
-set_tests_properties(signals_double_sigterm PROPERTIES
-    WILL_FAIL TRUE
-    FAIL_REGULAR_EXPRESSION "DOUBLE_SIGTERM_UNEXPECTED_CLEAN_EXIT")
+register_single_node_test(signals_double_sigterm STATUS 143 TIMEOUT 60)
 
-# main_rank_overflow_abort: success is abort with exit 1; exit-code based.  WILL_FAIL accepts
-# the non-zero (abort) exit; the FAIL_REGULAR_EXPRESSION catches a regression that returns 0
-# after printing RANK_OVERFLOW_NO_ABORT (the guard failed to fire).
+# main_rank_overflow_abort: success is the overflow guard's own abort: exit
+# code 1, with the guard's message (any other fatal error exits 1 too).
 add_arts_test(main_rank_overflow_abort)
-register_single_node_test(main_rank_overflow_abort TIMEOUT 60)
+register_single_node_test(main_rank_overflow_abort STATUS 1 TIMEOUT 60)
 set_tests_properties(main_rank_overflow_abort PROPERTIES
-    WILL_FAIL TRUE
-    FAIL_REGULAR_EXPRESSION "RANK_OVERFLOW_NO_ABORT")
+    PASS_REGULAR_EXPRESSION "exceeds GUID layout limit")
 
 add_arts_test(shutdown_abort_eof)
 register_multinode_test(shutdown_abort_eof TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(shutdown_abort_eof_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT|SKIP shutdown_abort_eof_${_v}")
+    set_tests_properties(shutdown_abort_eof_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "ABORT_EOF_EXIT"
+        ARTS_EXPECTS_RANK_FAILURE 37)
 endforeach()
 
 add_arts_test(shutdown_idempotent_concurrent_init)
 register_multinode_test(shutdown_idempotent_concurrent_init TIMEOUT 120)
 foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(shutdown_idempotent_concurrent_init_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "IDEMPOTENT_INIT_EXIT|SKIP shutdown_idempotent_concurrent_init_${_v}")
+    set_tests_properties(shutdown_idempotent_concurrent_init_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "IDEMPOTENT_INIT_EXIT")
 endforeach()
 
 # --- C23r: random / system-info ---

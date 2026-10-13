@@ -3,22 +3,22 @@
 ** Licensed under the Apache License, Version 2.0
 ******************************************************************************/
 /// @file shutdown_abort_eof.c
-/// @brief A non-master rank arts_abort()s; peers detect the socket EOF and exit
-///        cleanly via the (non-CAS-gated) arts_runtime_stop EOF path.
+/// @brief A non-master rank arts_abort()s; the surviving ranks detect its
+///        departure and exit cleanly.
 ///
-/// arts_abort does a hard exit(code) with no broadcast/drain — other ranks
-/// learn of the departure only through socket EOF.  The transport RX EOF path
-/// calls arts_runtime_stop() directly (NOT the CAS-gated
-/// arts_enter_shutdown_state), so a peer that learns of shutdown via EOF stops
-/// its threads but leaves shutdown_state == 0.  The properties under test: (a)
-/// a non-master abort makes every surviving rank detect EOF and exit cleanly
-/// (no hang), and (b) the EOF-driven stop leaving shutdown_state == 0 is
-/// harmless to a clean exit.
+/// arts_abort exits at once with no broadcast or drain, so the other ranks
+/// learn of the departure only through the liveness sentinel: the departed
+/// rank's connection closes, and the probe enters the same idempotent shutdown
+/// an inbound shutdown message does.  The property under test: a non-master
+/// abort makes every surviving rank detect the departure and exit cleanly (no
+/// hang).
 ///
 /// An EDT placed on a NON-master rank (the last rank) calls arts_abort with a
-/// sentinel code.  That rank exits with the code; the master (and any other
-/// peers) detect EOF and return 0 from arts_rt.  Each surviving rank prints a
-/// clean token.  ctest TIMEOUT reaps an EOF-detection hang regression.
+/// sentinel code.  That rank exits with the code, which the registration names
+/// as the exit it provokes; the master's arts_rt reports the aborted rank,
+/// which main deliberately ignores, and the surviving peers detect the
+/// departure and return 0.  Each surviving rank prints a clean token.  ctest
+/// TIMEOUT reaps a departure-detection hang regression.
 ///
 /// runtime_multinode (2n_9w_1p/4n_4w_1p/2n_8w_2p).  Self-skips cleanly to a single-node
 /// clean shutdown when only one rank is present.

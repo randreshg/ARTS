@@ -365,17 +365,52 @@ function(arts_test_cfg out variant)
     set(${out} "${ARTS_TEST_CFG_DIR}/${variant}.cfg" PARENT_SCOPE)
 endfunction()
 
+# Every program test runs under run_test.cmake, which judges it by how it
+# ends: its exit status must be STATUS (0 unless given), and its output must
+# match the pass regex the test sets, if any.  CTest itself ignores the exit
+# status of a test it gives a pass regex, so arts_test_finalize hands that
+# regex to the runner.  The helpers below register through this one;
+# CACHE INTERNAL because they are called from other directories too.  A
+# COMMAND element is one argument: a ';' inside one splits it in two.
+set(ARTS_TEST_RUNNER "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_test.cmake"
+    CACHE INTERNAL "the script every program test runs under" FORCE)
+
+function(arts_add_test test_name)
+    cmake_parse_arguments(ARG "" "STATUS" "COMMAND" ${ARGN})
+    if(NOT DEFINED ARG_STATUS)
+        set(ARG_STATUS 0)
+    endif()
+    list(POP_FRONT ARG_COMMAND _program)
+    if(TARGET ${_program})
+        set(_program $<TARGET_FILE:${_program}>)
+    endif()
+    add_test(
+        NAME ${test_name}
+        COMMAND ${CMAKE_COMMAND} -DSTATUS=${ARG_STATUS} -P ${ARTS_TEST_RUNNER}
+                -- ${_program} ${ARG_COMMAND}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(${test_name} PROPERTIES ARTS_TEST_RUN TRUE)
+    # The first registration in a directory schedules its finalize for the
+    # directory's end, so every test it registers, by any route, is covered.
+    get_property(_scheduled DIRECTORY PROPERTY ARTS_TEST_FINALIZE_SCHEDULED)
+    if(NOT _scheduled)
+        set_property(DIRECTORY PROPERTY ARTS_TEST_FINALIZE_SCHEDULED TRUE)
+        cmake_language(DEFER CALL arts_test_finalize)
+    endif()
+endfunction()
+
 function(register_single_node_test test_name)
-    cmake_parse_arguments(ARG "" "TIMEOUT" "ARGS" ${ARGN})
+    cmake_parse_arguments(ARG "" "TIMEOUT;STATUS" "ARGS" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 10)
     endif()
+    if(NOT DEFINED ARG_STATUS)
+        set(ARG_STATUS 0)
+    endif()
     arts_test_cfg(_cfg 1n_20w)
-    add_test(
-        NAME ${test_name}
-        COMMAND ${test_name} ${ARG_ARGS}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
+    arts_add_test(${test_name} STATUS ${ARG_STATUS}
+                  COMMAND ${test_name} ${ARG_ARGS})
     set_tests_properties(${test_name} PROPERTIES
         LABELS "single_node"
         TIMEOUT ${ARG_TIMEOUT}
@@ -385,7 +420,7 @@ function(register_single_node_test test_name)
 endfunction()
 
 function(register_multinode_test test_name)
-    cmake_parse_arguments(ARG "" "TIMEOUT" "ARGS;VARIANTS" ${ARGN})
+    cmake_parse_arguments(ARG "" "TIMEOUT;STATUS" "ARGS;VARIANTS" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 60)
     endif()
@@ -401,13 +436,13 @@ function(register_multinode_test test_name)
         #              exercising concurrent cross-rank handler dispatch)
         set(ARG_VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     endif()
+    if(NOT DEFINED ARG_STATUS)
+        set(ARG_STATUS 0)
+    endif()
     foreach(variant IN LISTS ARG_VARIANTS)
         arts_test_cfg(_cfg ${variant})
-        add_test(
-            NAME ${test_name}_${variant}
-            COMMAND ${test_name} ${ARG_ARGS}
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        )
+        arts_add_test(${test_name}_${variant} STATUS ${ARG_STATUS}
+                      COMMAND ${test_name} ${ARG_ARGS})
         set_tests_properties(${test_name}_${variant} PROPERTIES
             LABELS "multinode"
             TIMEOUT ${ARG_TIMEOUT}
@@ -430,8 +465,8 @@ endfunction()
 # The region has one name and one address per host, so two runs on one host
 # must not overlap: RESOURCE_LOCK serializes one ctest's tests, and the
 # one-runner rule covers everything else.  A test's properties can be set
-# only from the directory that added it, so each directory that registers
-# tests calls this once, after its last add_test.
+# only from the directory that added it, so arts_test_finalize applies this
+# at the end of each directory that registers tests.
 # One data-block arena plus the deque, and headroom.
 math(EXPR ARTS_CXL_TEST_REGION_BYTES "2 * ${ARTS_CXL_DB_ARENA_SIZE_BYTES} + 134217728")
 set(ARTS_CXL_TEST_REGION_BYTES "${ARTS_CXL_TEST_REGION_BYTES}" CACHE INTERNAL
@@ -455,14 +490,83 @@ function(arts_cxl_test_env)
     set_property(TEST ${_tests} APPEND PROPERTY RESOURCE_LOCK "arts_runtime")
 endfunction()
 
-# The store-backed arm's own entries.  They DELEGATE to the two helpers above
-# rather than resolving a cfg of their own: ARTS_TEST_CFG_DIR is the one root
-# and arts_test_cfg is the one resolver, so these tests run in the mode the
-# rest of the suite runs in instead of being the set a second spelling leaves
-# behind.  What they add is the verdict channel each of them needs --
-# only the master rank's exit status reaches ctest, so a peer's verdict has to
-# be matched in its printed output -- and a default timeout for a suite whose
-# turns cross ranks.
+# Run at the end of each directory that registers tests (arts_add_test
+# schedules it).  A test the runner judges has its pass regex moved into the
+# runner, since CTest would otherwise ignore its exit status; one without a
+# regex is given an empty one, so a value in the caller's environment never
+# applies.  Every test then has two kinds of output matched as well, being
+# failures its own exit status may not carry: a sanitizer's report -- UBSan's
+# leaves the status unchanged, and a forked child's reaches only its parent --
+# and the local launcher's verdict on a rank it spawned, which reaches the
+# master's status only where the test passes arts_rt's result on: a rank that
+# died on a signal always, and one that exited non-zero unless the status is
+# the one the test sets in ARTS_EXPECTS_RANK_FAILURE, a rank's exit it
+# provokes.  WILL_FAIL is refused: CTest would invert the verdict, a late
+# failure's included; an expected exit status is the test's STATUS.  A CXL
+# tree's tests get the store's environment too.
+function(arts_test_finalize)
+    arts_cxl_test_env()
+    get_property(_tests DIRECTORY PROPERTY TESTS)
+    foreach(_t IN LISTS _tests)
+        get_test_property(${_t} WILL_FAIL _will_fail)
+        if(_will_fail)
+            message(FATAL_ERROR "${_t}: WILL_FAIL inverts every verdict, a "
+                    "late failure's included; give the expected exit status "
+                    "as the test's STATUS instead")
+        endif()
+        get_test_property(${_t} ARTS_TEST_RUN _run)
+        get_test_property(${_t} PASS_REGULAR_EXPRESSION _pass)
+        if(_run)
+            if(_pass STREQUAL "NOTFOUND")
+                set(_pass "")
+            endif()
+            list(REMOVE_ITEM _pass "")
+            if(_pass)
+                list(JOIN _pass "|" _pass)
+            endif()
+            set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+                         "ARTS_TEST_PASS_REGEX=${_pass}")
+            set_property(TEST ${_t} PROPERTY PASS_REGULAR_EXPRESSION)
+        endif()
+        get_test_property(${_t} FAIL_REGULAR_EXPRESSION _fail)
+        if(_fail STREQUAL "NOTFOUND")
+            set(_fail "")
+        endif()
+        list(APPEND _fail "ERROR: (Address|Leak)Sanitizer"
+             "WARNING: ThreadSanitizer" ": runtime error: "
+             "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) died on signal")
+        get_test_property(${_t} ARTS_EXPECTS_RANK_FAILURE _expects)
+        if(NOT _expects STREQUAL "NOTFOUND" AND
+           NOT _expects MATCHES "^([1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$")
+            message(FATAL_ERROR "${_t}: ARTS_EXPECTS_RANK_FAILURE names the exit "
+                    "status a rank is provoked into (1-255), not '${_expects}'")
+        endif()
+        if(_expects STREQUAL "NOTFOUND")
+            list(APPEND _fail
+                 "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) exited with status")
+        else()
+            set(_others "")
+            foreach(_s RANGE 0 255)
+                if(NOT _s EQUAL _expects)
+                    list(APPEND _others ${_s})
+                endif()
+            endforeach()
+            list(JOIN _others "|" _others)
+            list(APPEND _fail
+                 "Local launcher: rank [0-9]+ \\(pid [0-9]+\\) exited with status (${_others})([^0-9]|$)")
+        endif()
+        set_tests_properties(${_t} PROPERTIES FAIL_REGULAR_EXPRESSION "${_fail}")
+    endforeach()
+endfunction()
+
+# The store-backed arm's own entries.  They DELEGATE to
+# register_single_node_test / register_multinode_test rather than resolving a
+# cfg of their own: ARTS_TEST_CFG_DIR is the one root and arts_test_cfg is the
+# one resolver, so these tests run in the mode the rest of the suite runs in
+# instead of being the set a second spelling leaves behind.  What they add is
+# a second verdict channel -- the FAIL token their failure branches print,
+# which fails the run even where a rank's status does not reach the master --
+# and a longer default timeout for one-rank runs.
 function(register_cxl_single_node_test test_name)
     cmake_parse_arguments(ARG "" "TIMEOUT;FAIL_REGEX" "" ${ARGN})
     if(NOT ARG_TIMEOUT)
@@ -507,11 +611,7 @@ function(register_gpu_test test_name)
         set(ARG_TIMEOUT 10)
     endif()
     arts_test_cfg(_cfg 1n_20w)
-    add_test(
-        NAME ${test_name}
-        COMMAND ${test_name} ${ARG_ARGS}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
+    arts_add_test(${test_name} COMMAND ${test_name} ${ARG_ARGS})
     set_tests_properties(${test_name} PROPERTIES
         LABELS "gpu"
         TIMEOUT ${ARG_TIMEOUT}
@@ -526,11 +626,7 @@ function(register_pure_unit_test test_name)
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 30)
     endif()
-    add_test(
-        NAME ${test_name}
-        COMMAND ${test_name}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
+    arts_add_test(${test_name} COMMAND ${test_name})
     set_tests_properties(${test_name} PROPERTIES
         LABELS "single_node"
         TIMEOUT ${ARG_TIMEOUT}
@@ -611,9 +707,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARTS_DEBUG_INJECTION)
             ARTS_WRITE_COMPLETION_DELAY_MS
             ARTS_NET_MAX_MSG
             ARTS_REGPOOL_FORCE_FULL_NODES)
-        add_test(NAME injection_hook_refused_${_hook}
-                 COMMAND term_shutdown
-                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        arts_add_test(injection_hook_refused_${_hook} STATUS 1
+                      COMMAND term_shutdown)
         set_tests_properties(injection_hook_refused_${_hook} PROPERTIES
             LABELS "single_node"
             TIMEOUT 30
@@ -629,24 +724,24 @@ endif()
 if(ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 1n_20w)
     arts_test_cfg(_mn_cfg 2n_9w_1p)
-    add_test(NAME injection_value_refused_sched_fuzz COMMAND term_shutdown
-             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    arts_add_test(injection_value_refused_sched_fuzz STATUS 1
+                  COMMAND term_shutdown)
     set_tests_properties(injection_value_refused_sched_fuzz PROPERTIES
         LABELS "single_node"
         TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=fast"
         PASS_REGULAR_EXPRESSION "is not a percentage")
-    add_test(NAME injection_value_refused_net_max_msg COMMAND multinode_edt
-             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    arts_add_test(injection_value_refused_net_max_msg STATUS 1
+                  COMMAND multinode_edt)
     set_tests_properties(injection_value_refused_net_max_msg PROPERTIES
         LABELS "multinode"
         TIMEOUT 30
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_MAX_MSG=0"
         PASS_REGULAR_EXPRESSION "is not a positive byte count")
-    add_test(NAME injection_value_refused_write_delay COMMAND multinode_edt
-             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    arts_add_test(injection_value_refused_write_delay STATUS 1
+                  COMMAND multinode_edt)
     set_tests_properties(injection_value_refused_write_delay PROPERTIES
         LABELS "multinode"
         TIMEOUT 30
@@ -657,9 +752,8 @@ if(ARTS_DEBUG_INJECTION)
     foreach(_hook
             ARTS_NET_MAX_MSG
             ARTS_WRITE_COMPLETION_DELAY_MS)
-        add_test(NAME injection_fabric_hook_refused_${_hook}
-                 COMMAND term_shutdown
-                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        arts_add_test(injection_fabric_hook_refused_${_hook} STATUS 1
+                      COMMAND term_shutdown)
         set_tests_properties(injection_fabric_hook_refused_${_hook} PROPERTIES
             LABELS "single_node"
             TIMEOUT 30
@@ -671,16 +765,16 @@ if(ARTS_DEBUG_INJECTION)
     # Only the arena allocator's pool parses the force-full list; the system
     # allocator's refuses any.
     if(ARTS_MALLOC STREQUAL "mimalloc")
-        add_test(NAME injection_value_refused_force_full COMMAND term_shutdown
-                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        arts_add_test(injection_value_refused_force_full STATUS 1
+                      COMMAND term_shutdown)
         set_tests_properties(injection_value_refused_force_full PROPERTIES
             LABELS "single_node"
             TIMEOUT 30
             RESOURCE_LOCK "arts_runtime"
             ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_REGPOOL_FORCE_FULL_NODES=x"
             PASS_REGULAR_EXPRESSION "is not a node number")
-        add_test(NAME injection_value_refused_force_full_node COMMAND term_shutdown
-                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        arts_add_test(injection_value_refused_force_full_node STATUS 1
+                      COMMAND term_shutdown)
         set_tests_properties(injection_value_refused_force_full_node PROPERTIES
             LABELS "single_node"
             TIMEOUT 30
@@ -690,33 +784,31 @@ if(ARTS_DEBUG_INJECTION)
     endif()
 endif()
 
-register_single_node_test(term_abort ARGS 0 42)
+register_single_node_test(term_abort ARGS 0 42 STATUS 42)
 set_tests_properties(term_abort PROPERTIES
     PASS_REGULAR_EXPRESSION "TERM_ABORT rc=42")
 
-# Debug-only (see the TEST_PROGRAMS guard above): rank 1's fatal error text
-# is what PASS is judged on, not exit status — only the master rank's status
-# reaches ctest, and a peer's death is what its own arts_rt() return code
-# reports.
+# Debug-only (see the TEST_PROGRAMS guard above): rank 1's fatal error ends
+# that rank, so the master's arts_rt() reports a failed rank and the test
+# exits 1, and the error text names the guard that ended it.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     register_multinode_test(edt_create_remote_finish_scope_rejected
-        VARIANTS 2n_9w_1p)
+        VARIANTS 2n_9w_1p STATUS 1)
     set_tests_properties(edt_create_remote_finish_scope_rejected_2n_9w_1p PROPERTIES
-        PASS_REGULAR_EXPRESSION "must be homed on the creating rank")
+        PASS_REGULAR_EXPRESSION "must be homed on the creating rank"
+        ARTS_EXPECTS_RANK_FAILURE 1)
 endif()
 
-# term_sigfpe / term_sigsegv crash via signal — CTest Exception short-circuits
-# PASS_REGULAR_EXPRESSION before evaluating it.  Use a bash wrapper so the
-# shell catches the signal exit and CTest sees exit-code 0; the regex then
-# matches [ARTS] Crashed: SIG* in the captured output.  Hand-registered, so
-# ARTS_CONFIG has to be set here too: without it the runtime falls back to
-# ./arts.cfg in the working directory, which the build tree does not contain.
+# term_sigfpe / term_sigsegv crash via signal.  A death by a signal is not an
+# exit status the runner can be told to expect, so a bash wrapper turns the
+# expected one (128 + the signal's number) into status 0 and any other end
+# into a failure, and the crash handler's line is the pass regex.
+# Hand-registered, so ARTS_CONFIG has to be set here too: without it the
+# runtime falls back to ./arts.cfg in the working directory, which the build
+# tree does not contain.
 arts_test_cfg(_cfg 1n_20w)
-add_test(
-    NAME term_sigfpe
-    COMMAND bash -c "ASAN_OPTIONS=handle_sigfpe=0:handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigfpe 2>&1; true"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
+arts_add_test(term_sigfpe COMMAND bash -c
+    "ASAN_OPTIONS=handle_sigfpe=0:handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigfpe 2>&1\ntest $? -eq 136")
 set_tests_properties(term_sigfpe PROPERTIES
     LABELS "single_node"
     TIMEOUT 10
@@ -725,11 +817,8 @@ set_tests_properties(term_sigfpe PROPERTIES
     PASS_REGULAR_EXPRESSION "\\[ARTS\\] Crashed: SIGFPE")
 
 arts_test_cfg(_cfg 1n_20w)
-add_test(
-    NAME term_sigsegv
-    COMMAND bash -c "ASAN_OPTIONS=handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigsegv 2>&1; true"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
+arts_add_test(term_sigsegv COMMAND bash -c
+    "ASAN_OPTIONS=handle_segv=0 ${CMAKE_CURRENT_BINARY_DIR}/term_sigsegv 2>&1\ntest $? -eq 139")
 set_tests_properties(term_sigsegv PROPERTIES
     LABELS "single_node"
     TIMEOUT 10
@@ -1178,11 +1267,8 @@ endforeach()
 # cannot be reached at all.
 if(ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 4n_4w_1p)
-    add_test(
-        NAME db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
-        COMMAND db_no_acquire_wb_first_writer
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
+    arts_add_test(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
+                  COMMAND db_no_acquire_wb_first_writer)
     set_tests_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
@@ -1220,9 +1306,10 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
         PASS_REGULAR_EXPRESSION "PASS: db_alias_dedup_remote")
 endforeach()
 register_multinode_test(db_acquire_release_semantics TIMEOUT 120)
-# The guard aborts the run by design, so the message is the verdict and
-# the exit status is not; one node shape states it as well as four.
-register_multinode_test(edt_create_oversize_guard VARIANTS 2n_9w_1p TIMEOUT 60)
+# The guard aborts the run by design: the run exits 1 and the message names
+# the guard; one node shape states it as well as four.
+register_multinode_test(edt_create_oversize_guard VARIANTS 2n_9w_1p TIMEOUT 60
+                        STATUS 1)
 set_tests_properties(edt_create_oversize_guard_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "over the [0-9]+-byte control-message bound")
 register_multinode_test(finish_event_mn_termination)
@@ -1250,8 +1337,7 @@ register_single_node_test(grant_purge_churn TIMEOUT 60)
 register_multinode_test(grant_purge_churn TIMEOUT 90)
 if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
     arts_test_cfg(_cfg 2n_8w_2p)
-    add_test(NAME grant_purge_churn_2n_8w_2p_fuzz COMMAND grant_purge_churn
-             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    arts_add_test(grant_purge_churn_2n_8w_2p_fuzz COMMAND grant_purge_churn)
     set_tests_properties(grant_purge_churn_2n_8w_2p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
@@ -1372,12 +1458,9 @@ endforeach()
 # is no write completion to hold back and the test is not registered.
 # Its writes are ordered, so every arm that moves payloads registers it, and its
 # shutdown is quiescent.  The end-of-run line guards against a shutdown that
-# came before the work; it also makes CTest ignore the exit status, and the
-# descriptor check runs at teardown, after that line, so the teardown verdicts
-# are matched in its output instead: the runtime's [ERROR] line, or the address
-# sanitizer's report where held descriptors are poisoned, the launcher's verdict
-# on the other ranks, and the teardown work left undone because a thread never
-# joined or a rank had to be stopped.
+# came before the work; the descriptor check's abort at teardown reaches the
+# exit status, and teardown work left undone because a thread never joined or a
+# rank had to be stopped is matched in its output.
 if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
    NOT ARTS_CXL_TREE_RESIDENCY)
     add_arts_test(coherence_late_write_completion)
@@ -1390,7 +1473,7 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
         set_tests_properties(coherence_late_write_completion_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: coherence_late_write_completion"
             FAIL_REGULAR_EXPRESSION
-            "FAIL:;QUIESCENCE-DEBUG:;\\[ERROR\\];use-after-poison;died on signal;exited with status;left unchecked;left unrun;did not exit within")
+            "FAIL:;QUIESCENCE-DEBUG:;left unchecked;left unrun;did not exit within")
     endforeach()
 endif()
 
@@ -1436,11 +1519,8 @@ endforeach()
 if(ARTS_DEBUG_INJECTION AND NOT ARTS_CXL_TREE_RESIDENCY)
     foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
         arts_test_cfg(_cfg ${_v})
-        add_test(
-            NAME coherence_payload_split_${_v}
-            COMMAND coherence_payload_large
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-        )
+        arts_add_test(coherence_payload_split_${_v}
+                      COMMAND coherence_payload_large)
         set_tests_properties(coherence_payload_split_${_v} PROPERTIES
             LABELS "multinode;coherence_stress"
             TIMEOUT 120
@@ -1706,8 +1786,8 @@ register_multinode_test(quiescent_shutdown_no_residue TIMEOUT 120)
 foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n_9w_1p
         quiescent_shutdown_no_residue_4n_4w_1p
         quiescent_shutdown_no_residue_2n_8w_2p)
-    # The checker's verdict reaches the exit status only on the master rank,
-    # so its printed FAIL is matched too.
+    # The quiescence walk only prints, so its markers are matched; a check's
+    # FAIL: line is matched as a second channel beside the exit status.
     set_tests_properties(${_t} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
@@ -1744,11 +1824,8 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
 endforeach()
 if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
     arts_test_cfg(_cfg 2n_8w_2p)
-    add_test(
-        NAME grant_one_request_per_grant_2n_8w_2p_fuzz
-        COMMAND grant_one_request_per_grant
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
+    arts_add_test(grant_one_request_per_grant_2n_8w_2p_fuzz
+                  COMMAND grant_one_request_per_grant)
     set_tests_properties(grant_one_request_per_grant_2n_8w_2p_fuzz PROPERTIES
         LABELS "multinode"
         TIMEOUT 120
@@ -1894,16 +1971,15 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # 0 whatever device the cfg named.  The two cfg keys come through the
     # environment, which overrides the file.
     arts_test_cfg(_dev3_cfg 1n_20w)
-    add_test(NAME cxl_store_alloc_static_dev3 COMMAND cxl_store_alloc
-             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    arts_add_test(cxl_store_alloc_static_dev3 COMMAND cxl_store_alloc)
     set_tests_properties(cxl_store_alloc_static_dev3 PROPERTIES
         LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_dev3_cfg};cxl_db_allocation_strategy=static;cxl_db_allocation_device=3"
         PASS_REGULAR_EXPRESSION "PASS cxl_store_alloc" FAIL_REGULAR_EXPRESSION "FAIL")
-    # The slot rule holds on one rank and on every multinode flavour.  Every
-    # verdict travels as printed output: a FAIL line from any rank fails it,
-    # and the run's last act prints the line required here, so a run that shut
-    # down before its checks ran cannot pass.
+    # The slot rule holds on one rank and on every multinode flavour.  A
+    # check's failure reaches the exit status and a FAIL line from any rank
+    # fails it too, and the home exits non-zero when the deciding check never
+    # ran, so a run that shut down before its checks cannot pass.
     register_cxl_single_node_test(cxl_slot_rule TIMEOUT 30)
     # A grant naming a slot other than the one the cache names is refused: a
     # cache of an earlier generation of a reused label, whose slot belongs to
@@ -2221,10 +2297,9 @@ set_tests_properties(snapshot_response_3case_2n_8w_2p PROPERTIES FAIL_REGULAR_EX
 set_tests_properties(snapshot_response_3case_4n_4w_1p PROPERTIES FAIL_REGULAR_EXPRESSION "FAIL")
 
 # Tests that report by exit status (their main() merges arts_rt()'s status
-# with arts_test_status()) carry no PASS_REGULAR_EXPRESSION, which would make
-# ctest ignore that status and with it a peer rank's death.  They also fail on
-# the token their failure branches print, on every variant they are registered
-# under.  An explicit FAIL_REGULAR_EXPRESSION set above is left as it is.
+# with arts_test_status()) also fail on the token their failure branches
+# print, on every variant they are registered under.  An explicit
+# FAIL_REGULAR_EXPRESSION set above is left as it is.
 set(_arts_status_tests
     acquire_mode block_dist_roundrobin cat_c_ref_balance
     coherence_destroy_during_acquire coherence_zero_size_xfer
@@ -2297,5 +2372,3 @@ foreach(_t IN LISTS _arts_test_targets)
                 "protocol the library does not implement")
     endif()
 endforeach()
-
-arts_cxl_test_env()
