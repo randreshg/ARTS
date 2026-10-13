@@ -3,8 +3,8 @@
  * Coherence protocol wire-message handlers (receive side) + home-side
  * dedup / ownership-transfer helpers.
  *
- * The matching arts_send_db_* SENDERS (packet-fill + outbox enqueue) live
- * in coherence_senders.c.
+ * The matching arts_send_db_* SENDERS (packet fill + send) live in
+ * senders.c.
  *
  * Lookup discipline.  Two handler categories, both lookup-then-operate but
  * differing on the MISS action:

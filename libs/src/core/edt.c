@@ -173,12 +173,12 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
    * joins one by passing it in hint.finish_event, otherwise it inherits the
    * caller's ambient finish_event (transitive membership).  Either way the EDT
    * INCRs the scope at create and DECRs it on completion (in
-   * arts_unset_thread_local_edt_info).  `current_edt` is the file-static
-   * thread-local maintained by arts_set/unset_thread_local_edt_info — direct
-   * access, no route_table lookup needed (same TU). */
+   * arts_unset_thread_local_edt_info).  `current_edt` is the thread-local
+   * arts_set/unset_thread_local_edt_info maintain, read directly with no
+   * route-table lookup. */
   arts_guid_t parent_fe;
   if (hint_finish_event != NULL_GUID) {
-#if ARTS_LOG_LEVEL >= 3
+#ifndef NDEBUG
     /* The join INCR must be local: an INCR shipped to another rank's scope is
      * not ordered against the member's completion DECR. */
     if (arts_guid_get_rank(hint_finish_event) != arts_global_rank_id) {

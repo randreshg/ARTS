@@ -1,6 +1,6 @@
 /* Init on a node the placement screen refuses.
  *
- * The diagnostic override (ARTS_REGPOOL_FORCE_FULL_NODES) marks the CALLING
+ * The injected exhaustion (ARTS_REGPOOL_FORCE_FULL_NODES) marks the CALLING
  * thread's node as full before init, so this exercises deterministically —
  * with no real memory pressure — the path a genuinely starved node takes:
  * placement is a preference, so init must still succeed and the node's

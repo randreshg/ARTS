@@ -38,6 +38,7 @@
 ******************************************************************************/
 #include "arts/coherence/coherence.h" /* terminal quiescence sweep */
 #include "arts/runtime_state.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/random.h"
 
@@ -104,6 +105,22 @@ ARTS_WEAK void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 struct arts_runtime_shared_s arts_node_info;
 
 void arts_runtime_node_init(struct arts_config_s *config) {
+#ifdef ARTS_DEBUG_INJECTION
+  arts_sched_fuzz_init();
+#elif !defined(NDEBUG)
+  /* A hook's variable set where the hooks are not compiled would leave the
+   * run unchanged, and the run would read as one that exercised the hook. */
+  static const char *const hook_vars[] = {"ARTS_SCHED_FUZZ", "ARTS_NET_MAX_MSG",
+                                          "ARTS_REGPOOL_FORCE_FULL_NODES"};
+  for (size_t i = 0; i < sizeof(hook_vars) / sizeof(hook_vars[0]); i++) {
+    const char *v = getenv(hook_vars[i]);
+    if (v != NULL && v[0] != '\0') {
+      ARTS_ERROR("%s is set, but this build compiles no injection hooks "
+                 "(configure it with -DARTS_DEBUG_INJECTION=ON)",
+                 hook_vars[i]);
+    }
+  }
+#endif
   unsigned int tc = config->thread_count;
   size_t regpool_slab_bytes = (size_t)config->regpool_slab_mb * 1024 * 1024;
 
@@ -141,6 +158,20 @@ void arts_runtime_node_init(struct arts_config_s *config) {
      * close. */
     arts_socket_sentinel_arm();
   } else {
+#ifdef ARTS_DEBUG_INJECTION
+    /* A one-rank run brings no fabric up, so a fabric hook it asks for would
+     * leave the run unchanged. */
+    static const char *const fabric_hook_vars[] = {"ARTS_NET_MAX_MSG"};
+    for (size_t i = 0;
+         i < sizeof(fabric_hook_vars) / sizeof(fabric_hook_vars[0]); i++) {
+      const char *v = getenv(fabric_hook_vars[i]);
+      if (v != NULL && v[0] != '\0') {
+        ARTS_ERROR("%s is set, but a one-rank run has no fabric for it to act "
+                   "on",
+                   fabric_hook_vars[i]);
+      }
+    }
+#endif
     if (!arts_regpool_init(NULL, NULL, regpool_slab_bytes, 0)) {
       ARTS_ERROR("arts_runtime_node_init: registered pool init failed");
     }

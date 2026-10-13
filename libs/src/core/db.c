@@ -56,7 +56,6 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
-#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/atomics.h"

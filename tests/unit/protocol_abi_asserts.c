@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T180 — wire-protocol ABI frozen golden table (B071, flags B072).
+ * Wire-protocol ABI frozen golden table.
  *
  * Property under test
  * -------------------
@@ -23,19 +23,9 @@
  * presence, never in the shared ordinals/offsets/sizes: the ARTS_PROTOCOL_EXCL
  * block, the ARTS_RELEASE_RETAIN subset nested inside it, the
  * ARTS_PROTOCOL_INV block and the ARTS_PROTOCOL_FLUSH block, each frozen
- * inside its own guard).  This TU is
- * meant to be COMPILED ONCE PER
+ * inside its own guard).  This TU is meant to be COMPILED ONCE PER
  * -DARTS_PROTOCOL_* config; the `_Static_assert`s catch any config that drifts
  * from the golden table at compile time.
- *
- * SEQ-build skew (B071, second half): when built with -DSEQUENCENUMBERS the
- * header grows two fields, so `sizeof(header)` and `offsetof(size)` change —
- * making a SEQ build wire-incompatible with a non-SEQ build, WITHOUT any fatal
- * guard.  This TU asserts the header layout for whichever variant it is built
- * as, and the `HDR_HAS_SEQ` marker it prints lets the harness diff SEQ vs
- * non-SEQ builds.  (B072: that SEQ build also indexes rec_seq_numbers by the
- * wire-supplied seq_rank with no bounds check — out of scope for a compile
- * assertion, flagged here.)
  *
  * Runtime portion — the 8-byte payload-alignment INVARIANT
  * ---------------------------------------------------------------------------
@@ -161,33 +151,15 @@ _Static_assert(sizeof(struct arts_net_addr_frame_s) == 8u + 256u,
 /* ===== (2) header layout — read before the message type is known. ===== */
 _Static_assert(offsetof(struct arts_msg_header_s, message_type) == 0,
                "header.message_type offset drifted");
-#ifdef SEQUENCENUMBERS
-/* SEQ build: {message_type(4), size(8)@4, rank(4)@12, seq_rank(4)@16,
- * seq_num(8)@20}.  Packed.  This layout is WIRE-INCOMPATIBLE with non-SEQ. */
-_Static_assert(offsetof(struct arts_msg_header_s, size) == 4,
-               "SEQ header.size offset drifted");
-_Static_assert(offsetof(struct arts_msg_header_s, rank) == 12,
-               "SEQ header.rank offset drifted");
-_Static_assert(offsetof(struct arts_msg_header_s, seq_rank) == 16,
-               "SEQ header.seq_rank offset drifted");
-_Static_assert(offsetof(struct arts_msg_header_s, seq_num) == 20,
-               "SEQ header.seq_num offset drifted");
-_Static_assert(sizeof(struct arts_msg_header_s) == 28,
-               "SEQ header size drifted");
-#else
-/* non-SEQ build: {message_type(4), size(8)@4, rank(4)@12}.  Packed → 16. */
+/* {message_type(4), size(8)@4, rank(4)@12}.  Packed → 16. */
 _Static_assert(offsetof(struct arts_msg_header_s, size) == 4,
                "header.size offset drifted");
 _Static_assert(offsetof(struct arts_msg_header_s, rank) == 12,
                "header.rank offset drifted");
 _Static_assert(sizeof(struct arts_msg_header_s) == 16, "header size drifted");
-#endif
 
-/* ===== (3) per-packet sizeof — frozen golden table (non-SEQ).
- * Only assert under the non-SEQ header (the SEQ header adds 12 bytes to every
- * struct, which is the very skew B071 documents).  Each value verified
+/* ===== (3) per-packet sizeof — frozen golden table.  Each value verified
  * identical across every config. */
-#ifndef SEQUENCENUMBERS
 _Static_assert(sizeof(struct arts_msg_guid_only_packet_s) == 24,
                "guid_only sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_object_blob_packet_s) == 24,
@@ -283,7 +255,6 @@ _Static_assert(sizeof(struct arts_msg_flush_announce_packet_s) == 32,
 _Static_assert(sizeof(struct arts_msg_flush_cts_packet_s) == 56,
                "flush_cts sizeof drifted");
 #endif
-#endif /* !SEQUENCENUMBERS */
 
 /* ===== runtime: the documented 8-byte payload-alignment invariant.
  * (Cannot be a hard _Static_assert without breaking the build, and the point of
@@ -295,17 +266,6 @@ struct payload_pkt {
 };
 
 int main(void) {
-  /* Marker line for the harness to diff SEQ vs non-SEQ header layout. */
-#ifdef SEQUENCENUMBERS
-  printf("HDR_HAS_SEQ=1 sizeof_header=%zu offset_size=%zu\n",
-         sizeof(struct arts_msg_header_s),
-         offsetof(struct arts_msg_header_s, size));
-#else
-  printf("HDR_HAS_SEQ=0 sizeof_header=%zu offset_size=%zu\n",
-         sizeof(struct arts_msg_header_s),
-         offsetof(struct arts_msg_header_s, size));
-#endif
-
   const struct payload_pkt pkts[] = {
       {"GRANT_RESPONSE",
        sizeof(struct arts_msg_grant_response_packet_s), 1},
@@ -328,7 +288,7 @@ int main(void) {
           stderr,
           "BUG  payload-carrying %s sizeof=%zu is NOT 8-aligned — trailing "
           "payload starts at an unaligned wire offset, violating protocol.h "
-          "§4 pad-field invariant (B071/ABI)\n",
+          "§4 pad-field invariant\n",
           pkts[i].name, pkts[i].sz);
       violations++;
     }

@@ -41,11 +41,12 @@ ARTS *requires* the Ninja generator. Make is not supported.
    ninja
    ninja install   # installs to CMAKE_INSTALL_PREFIX (default: project/install)
 
-Debug build (add ``-DARTS_USE_SANS=ON`` for ASan/UBSan/LSan, which are OFF by default):
+Debug build, here with AddressSanitizer (every debug facility is an
+``ARTS_DEBUG_*`` option, OFF by default; a Release build carries none):
 
 .. code-block:: bash
 
-   cmake -GNinja .. -DCMAKE_BUILD_TYPE=Debug -DARTS_USE_SANS=ON
+   cmake -GNinja .. -DCMAKE_BUILD_TYPE=Debug -DARTS_DEBUG_SANITIZER=ADDRESS
 
 CMake Options
 ~~~~~~~~~~~~~
@@ -216,21 +217,21 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        ``CREATOR`` (pin to the calling rank).
    * - ``ARTS_LOG_LEVEL``
      - 3 / 1
-     - Log verbosity (3 in Debug, 1 otherwise): 0=ERROR … 3=DEBUG.
-   * - ``ARTS_USE_SANS``
+     - Log verbosity (3 in Debug, 1 in Release; empty = the build type's):
+       0=ERROR … 3=DEBUG.  A Release build accepts 0 or 1.
+   * - ``ARTS_DEBUG_SANITIZER``
      - OFF
-     - ASan + UBSan + LSan in Debug builds (excludes CUDA; mutually exclusive
-       with ``ARTS_USE_TSAN``).
-   * - ``ARTS_USE_TSAN``
+     - Debug builds only: ``ADDRESS`` (ASan + UBSan + LSan) or ``THREAD``
+       (TSan + UBSan), C/C++ only, never CUDA.  One choice, because the
+       compiler cannot combine the two.
+   * - ``ARTS_DEBUG_INJECTION``
      - OFF
-     - ThreadSanitizer in Debug builds (excludes CUDA; mutually exclusive with
-       ``ARTS_USE_SANS``).
-   * - ``ARTS_SEQUENCE_NUMBERS``
-     - OFF
-     - Per-message wire sequence-number drop/reorder diagnostic (per-send
-       lock + per-recv check). Changes the wire header layout — every rank
-       in a run must build with the same setting. Hot-path; enable only to
-       debug transport ordering.
+     - Debug builds only: compile the run-time injection hooks, each inert
+       until its environment variable is set — ``ARTS_SCHED_FUZZ=<pct>``
+       (short random delays at the lock-free decision points),
+       ``ARTS_NET_MAX_MSG=<bytes>`` (lower the provider's one-sided ceiling),
+       ``ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>`` (treat NUMA nodes as full).
+       The tests that need a hook register only where this is on.
    * - ``ARTS_COUNTER_CONFIG``
      - configs/counters_off.cfg
      - Counter configuration file parsed into introspection macros. The

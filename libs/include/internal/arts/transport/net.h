@@ -81,20 +81,17 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-/* Wire ABI (packet structs, arts_msg_type, arts_fill_packet_header).  Included
- * unconditionally so the ~200 control-plane call sites that formerly reached it
- * transitively through outbox.h still compile after the outbox is deleted and
- * their include is repointed here. */
+/* Wire ABI (packet structs, arts_msg_type, arts_fill_packet_header): the
+ * control-plane senders that include this header fill these packets. */
 #include "arts/transport/protocol.h"
 
 /* ==========================================================================
  * Public control-plane send API.
  *
- * These are the sole names the rest of the runtime calls; the outbox that used
- * to back them is gone.  A remote target rides the fabric
- * (arts_net_send_core); a self-addressed or out-of-range target is
- * warned-and-dropped, preserving the former outbox contract exactly (a caller
- * that wants same-rank delivery uses arts_transport_loopback_post, never these).
+ * These are the sole names the rest of the runtime calls.  A remote target
+ * rides the fabric (arts_net_send_core); a self-addressed or out-of-range
+ * target is warned-and-dropped (a caller that wants same-rank delivery uses
+ * arts_transport_loopback_post, never these).
  * In a single-node run every target is self/out-of-range, so these degrade to
  * the same warn-and-drop and the fabric is never touched; only the
  * self-loopback path carries traffic.
@@ -113,11 +110,10 @@ void arts_transport_send_payload_async_free(int rank, char *message,
  * unbounded inline-handler recursion a same-rank acquire round would hit. */
 void arts_transport_loopback_post(const void *packet, unsigned int size);
 
-/* Deliver every pending self-send through arts_transport_dispatch_body.  In a
- * multinode run the sole progress thread is the only drainer (all coherence
- * stays serialized on it); single-node, each worker drains its own from the
- * scheduler loop.  Serialized to one drainer at a time by a CAS token; returns
- * true if it dispatched at least one. */
+/* Deliver every pending self-send through arts_transport_dispatch_packet, in
+ * the order they were posted.  Progress threads drain in a multinode run,
+ * workers from the scheduler loop in a single-node one; a CAS token admits one
+ * drainer at a time.  Returns true if it dispatched at least one. */
 bool arts_transport_loopback_drain(void);
 
 /* Free any self-sends still queued at teardown (quiescent: no dispatch). */
@@ -318,11 +314,11 @@ void arts_net_teardown(void);
 
 /* Fabric send core — thread-safe, callable from any thread.  The caller has
  * already screened out self / out-of-range targets (the public wrappers in
- * loopback.c do that, matching the former outbox contract), so `rank` is always
- * a real remote peer here.  A header-only send passes payload==NULL; otherwise
- * `payload+offset` (`size` bytes) is appended, released by `free_method` (may be
- * NULL) once the send completes.  A total wire size exceeding what the RX
- * landing buffer can accept fails loudly (ARTS_ERROR) rather than corrupting. */
+ * loopback.c do that), so `rank` is always a real remote peer here.  A
+ * header-only send passes payload==NULL; otherwise `payload+offset` (`size`
+ * bytes) is appended, released by `free_method` (may be NULL) once the send
+ * completes.  A total wire size exceeding what the RX landing buffer can
+ * accept fails loudly (ARTS_ERROR) rather than corrupting. */
 void arts_net_send_core(int rank, char *message, unsigned int length,
                         char *payload, unsigned int offset, uint64_t size,
                         void (*free_method)(void *));

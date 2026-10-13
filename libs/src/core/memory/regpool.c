@@ -399,7 +399,8 @@ static unsigned g_evicting;
 #define REGPOOL_WARNED_NONE 4u
 static uint8_t g_node_full_warned[REGPOOL_MAX_NODES];
 
-/* Diagnostic override: nodes whose bit is set report zero available bytes,
+#ifdef ARTS_DEBUG_INJECTION
+/* Injected exhaustion: nodes whose bit is set report zero available bytes,
  * so the refusal, fallover and eviction paths are exercisable
  * deterministically without starving a machine.  Written under g_lock (by
  * the init-time parse of ARTS_REGPOOL_FORCE_FULL_NODES and by
@@ -410,8 +411,9 @@ static _Atomic uint64_t g_forced_full;
 static void regpool_store_forced_full_locked(uint64_t mask) {
   atomic_store_explicit(&g_forced_full, mask, memory_order_relaxed);
 }
+#endif
 
-/* Read at init, like the force-full knob: print the pool's shape at cleanup. */
+/* Read at init: print the pool's shape at cleanup. */
 static bool g_report_enabled;
 
 /* Kernels predating the populate advice report EINVAL; there a slab is
@@ -601,11 +603,13 @@ static bool regpool_node_in_set(int node) {
  * kernel does not expose it (no sysfs, single-node) — unknown must not
  * veto placement. */
 static size_t regpool_node_avail_bytes(int node) {
+#ifdef ARTS_DEBUG_INJECTION
   uint64_t forced = atomic_load_explicit(&g_forced_full, memory_order_relaxed);
   if (node >= 0 && node < (int)REGPOOL_MAX_NODES &&
       (forced & (1ULL << (unsigned)node)) != 0) {
     return 0;
   }
+#endif
   char path[64];
   snprintf(path, sizeof path, "/sys/devices/system/node/node%d/meminfo", node);
   FILE *f = fopen(path, "r");
@@ -1912,6 +1916,7 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
   }
   g_unplaced_growing = false;
   g_report_enabled = getenv("ARTS_REGPOOL_REPORT") != NULL;
+#ifdef ARTS_DEBUG_INJECTION
   {
     uint64_t forced = 0;
     const char *ff = getenv("ARTS_REGPOOL_FORCE_FULL_NODES");
@@ -1920,28 +1925,33 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
       while (*p != '\0') {
         char *end = NULL;
         long v = strtol(p, &end, 10);
-        if (end == p) {
-          /* A diagnostic knob's whole value is determinism: a silently
-           * dropped token would make its absence look like a pass. */
-          ARTS_WARN("regpool: unparsable node list token ignored: \"%s\"", p);
-          break;
+        /* A token dropped would make the run read as one that exercised
+         * the exhaustion it asked for. */
+        const char *comma = strchr(p, ',');
+        int len = comma != NULL ? (int)(comma - p) : (int)strlen(p);
+        if (end == p || (*end != ',' && *end != '\0')) {
+          ARTS_ERROR("regpool: ARTS_REGPOOL_FORCE_FULL_NODES token \"%.*s\" "
+                     "is not a node number",
+                     len, p);
         }
-        if (v >= 0 && v < (long)REGPOOL_MAX_NODES) {
-          forced |= 1ULL << (unsigned)v;
-        } else {
-          ARTS_WARN("regpool: node %ld out of range in force-full list", v);
+        if (v < 0 || v >= (long)g_numa_nodes) {
+          ARTS_ERROR("regpool: ARTS_REGPOOL_FORCE_FULL_NODES names node %ld, "
+                     "but this machine has %u",
+                     v, g_numa_nodes);
         }
+        forced |= 1ULL << (unsigned)v;
         if (*end != ',')
           break;
         p = end + 1;
       }
       if (forced != 0)
-        ARTS_WARN("regpool: diagnostic override — nodes mask 0x%llx treated "
+        ARTS_WARN("regpool: injected exhaustion — nodes mask 0x%llx treated "
                   "as full",
                   (unsigned long long)forced);
     }
     regpool_store_forced_full_locked(forced);
   }
+#endif
   g_inited = true;
   pthread_mutex_unlock(&g_lock);
 
@@ -2094,11 +2104,18 @@ void arts_regpool_report(FILE *out) {
   fflush(out);
 }
 
+#ifdef ARTS_DEBUG_INJECTION
 void arts_regpool_set_forced_full(uint64_t node_mask) {
   pthread_mutex_lock(&g_lock);
+  if (g_numa_nodes < 64u && (node_mask >> g_numa_nodes) != 0) {
+    ARTS_ERROR("regpool: force-full mask 0x%llx names a node this machine "
+               "(%u nodes) lacks",
+               (unsigned long long)node_mask, g_numa_nodes);
+  }
   regpool_store_forced_full_locked(node_mask);
   pthread_mutex_unlock(&g_lock);
 }
+#endif
 
 void arts_regpool_set_topology(unsigned int node_count, uint64_t node_set,
                                const uint32_t *distance) {
@@ -2181,7 +2198,9 @@ void arts_regpool_cleanup(void) {
   /* The table-slot count and the refusal latch are not reset: arena slabs
    * outlive the pool and keep their slots, so both describe the process's
    * arena table, which no cleanup gives back. */
+#ifdef ARTS_DEBUG_INJECTION
   regpool_store_forced_full_locked(0);
+#endif
   g_report_enabled = false;
   g_domain = NULL;
   g_ep = NULL;
@@ -2354,6 +2373,14 @@ bool arts_regpool_init(struct fid_domain *domain_or_null,
   (void)ep_or_null;
   (void)slab_bytes;
   (void)numa_nodes;
+#ifdef ARTS_DEBUG_INJECTION
+  /* No placement here for the list to exhaust. */
+  const char *ff = getenv("ARTS_REGPOOL_FORCE_FULL_NODES");
+  if (ff != NULL && ff[0] != '\0') {
+    ARTS_ERROR("regpool: ARTS_REGPOOL_FORCE_FULL_NODES is set, but this "
+               "build's pool places no memory (ARTS_MALLOC=system)");
+  }
+#endif
   return true;
 }
 void arts_regpool_cleanup(void) {}
@@ -2364,10 +2391,15 @@ void arts_regpool_report(FILE *out) {
   if (out != NULL)
     fprintf(out, "[REGPOOL] no arena allocator: pass-through allocation\n");
 }
+#ifdef ARTS_DEBUG_INJECTION
 void arts_regpool_set_forced_full(uint64_t node_mask) {
-  /* No placement to override in this build. */
-  (void)node_mask;
+  /* No placement here for the mask to exhaust. */
+  if (node_mask != 0) {
+    ARTS_ERROR("regpool: a force-full mask was set, but this build's pool "
+               "places no memory (ARTS_MALLOC=system)");
+  }
 }
+#endif
 void arts_regpool_set_topology(unsigned int node_count, uint64_t node_set,
                                const uint32_t *distance) {
   /* Nothing places memory here, so the topology has nothing to steer. */

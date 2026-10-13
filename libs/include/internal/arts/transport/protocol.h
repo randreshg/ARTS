@@ -42,9 +42,6 @@
 extern "C" {
 #endif
 #include "arts/runtime_types.h"
-/* SEQUENCENUMBERS is a performance-sensitive transport drop/reorder diagnostic
- * (per-send lock + per-receive ordering check).  It is gated by the
- * ARTS_SEQUENCE_NUMBERS CMake option (default OFF); do NOT hardcode it here. */
 
 enum arts_msg_type {
   MSG_SHUTDOWN,
@@ -178,10 +175,6 @@ struct ARTS_PACKED arts_msg_header_s {
   unsigned int message_type;
   uint64_t size;
   unsigned int rank;
-#ifdef SEQUENCENUMBERS
-  unsigned int seq_rank;
-  uint64_t seq_num;
-#endif
 };
 
 struct ARTS_PACKED arts_msg_guid_only_packet_s {

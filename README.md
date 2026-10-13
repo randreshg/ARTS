@@ -68,10 +68,15 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 | `ARTS_CXL_RAPID_INCLUDE_DIR` | (empty) | `ARTS_CXL_REAL=ON`: the directory holding the device SDK's `MemOps.h` and `SharedAlloc.h`. |
 | `ARTS_CXL_LIB` | (empty) | `ARTS_CXL_REAL=ON`: the device glue library file (`libarts_cxl_lib.so`), linked by path — no CMake package lookup. |
 | `ARTS_CXL_DB_ARENA_SIZE_BYTES` | `5000000000` | Bytes per CXL arena: one data-block arena per device count (the EDT deque's arena only under `ARTS_CXL_EDT_DEQUE`). Arena creation ignores the device ids it is handed, so allocation selects an arena index, not a device. Validation trees pass `268435456`. |
-| `ARTS_LOG_LEVEL` | `3` (Debug) / `1` (Release) | Log verbosity: `0`=ERROR, `1`=+WARN, `2`=+INFO, `3`=+DEBUG. |
-| `ARTS_USE_SANS` | `OFF` | Enable ASan + UBSan + LSan in Debug builds (excludes CUDA). Mutually exclusive with `ARTS_USE_TSAN`. |
-| `ARTS_USE_TSAN` | `OFF` | Enable ThreadSanitizer in Debug builds (excludes CUDA). Compiler-incompatible with `ARTS_USE_SANS`; use a separate build dir. |
+| `ARTS_LOG_LEVEL` | `3` (Debug) / `1` (Release) | Log verbosity: `0`=ERROR, `1`=+WARN, `2`=+INFO, `3`=+DEBUG; empty = the build type's. A Release build accepts `0` or `1`. |
+| `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan), C/C++ only, never CUDA. One choice, because the compiler cannot combine the two. |
+| `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks, each inert until its environment variable is set — `ARTS_SCHED_FUZZ=<pct>` (short random delays at the lock-free decision points), `ARTS_NET_MAX_MSG=<bytes>` (lower the provider's one-sided ceiling), `ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>` (treat NUMA nodes as full). The tests that need a hook register only where this is on. |
 | `ARTS_COUNTER_CONFIG` | `configs/counters_off.cfg` | Counter configuration file parsed at configure time into introspection macros. The default is the all-OFF file; `configs/counters.cfg` is the profiling example, not the default. |
+
+A Release build carries no debug facility. A Debug build emits diagnostics by
+`ARTS_LOG_LEVEL` and checks its assertions; every `ARTS_DEBUG_*` facility is
+OFF by default, accepted only with `CMAKE_BUILD_TYPE=Debug`, and combines with
+the others.
 
 Standard CMake variables also apply: `CMAKE_BUILD_TYPE` (`Debug` default, or `Release`),
 `CMAKE_INSTALL_PREFIX` (`./install` default), `CMAKE_CUDA_ARCHITECTURES` (see `ARTS_USE_LOCAL_CUDA_ARCHITECTURES`),
@@ -86,7 +91,7 @@ working directory; the `ARTS_CONFIG` environment variable overrides the path:
 ARTS_CONFIG=configs/local/test/1n_20w.cfg ./my_program
 ```
 
-Ready-to-run localhost shapes (single-node and 2/3/4-rank multinode) live in
+Ready-to-run localhost shapes (single-node and 2- and 4-rank multinode) live in
 `configs/local/test/`, and `configs/example.cfg` is the annotated reference
 listing every recognized key. A `launcher=local` configuration spawns all
 ranks on this machine and claims its own ports; the remote launchers (`ssh`,

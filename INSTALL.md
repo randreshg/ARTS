@@ -127,8 +127,11 @@ with defaults lives in [README.md](README.md#build-options); the most common are
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the ctest suite. |
 | `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (needs MPI). |
-| `ARTS_USE_SANS` | `OFF` | ASan + UBSan + LSan in Debug builds. |
-| `ARTS_USE_TSAN` | `OFF` | ThreadSanitizer in Debug builds (mutually exclusive with `ARTS_USE_SANS`). |
+| `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan). |
+| `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`), each inert until its environment variable is set. |
+
+A Release build carries no debug facility; each `ARTS_DEBUG_*` option is OFF
+by default, accepted only in a Debug build, and combines with the others.
 
 A faster linker is selected with CMake's own `-DCMAKE_LINKER_TYPE=MOLD`
 (cmake >= 3.29) — there is no ARTS-specific linker option.
@@ -153,8 +156,8 @@ release); `ARTS_RELEASE_POLICY` (`PURGE`/`RETAIN`, default `RETAIN`) selects
 the release-time grant behavior under `EXCL` instead. `FLUSH` has neither
 axis: every remote acquire fetches and every remote RW release writes
 through, unconditionally. One binary is exactly one configuration, and every
-rank in a multinode run must use the same build. To cover all meaningful
-configurations:
+rank in a multinode run must use the same build. Each configuration is its
+own build tree, for example:
 
 ```bash
 cmake -GNinja -Bbuild_ocr_val_wt  -DCMAKE_BUILD_TYPE=Debug -DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WT
@@ -169,16 +172,18 @@ Running Tests
 CTest is the test runner. Tests are grouped by ctest labels:
 
 ```bash
-cmake -GNinja -Bbuild -DCMAKE_BUILD_TYPE=Debug
+cmake -GNinja -Bbuild -DCMAKE_BUILD_TYPE=Debug -DARTS_BUILD_TESTS=ON
 ninja -C build
-( cd build && ctest -L single_node --output-on-failure )   # single-node
-( cd build && ctest -L multinode  --output-on-failure )     # 2n_9w_1p/4n_4w_1p/2n_8w_2p localhost
-( cd build && ctest -L gpu        --output-on-failure )     # GPU build only (runs on 1n_20w.cfg with gpu=1)
+ctest --test-dir build -L single_node --output-on-failure   # single-node
+ctest --test-dir build -L multinode --output-on-failure     # 2n_9w_1p/4n_4w_1p/2n_8w_2p localhost
+ctest --test-dir build -L gpu --output-on-failure           # GPU build only (runs on 1n_20w.cfg with gpu=1)
 ctest --test-dir build -R edt_create_basic                  # one test by name
 ```
 
 Each test sets its own `ARTS_CONFIG` to point at the matching cfg under
 `configs/local/test/`, so no config files are copied into the build directory.
+A test that needs a debug facility registers only in a tree that turns it on
+(`-DARTS_DEBUG_INJECTION=ON`).
 
 Configuration
 =============

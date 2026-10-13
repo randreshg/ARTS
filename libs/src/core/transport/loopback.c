@@ -53,7 +53,7 @@
 #include "arts/counter/counter.h" /* NET_MSG_* census */
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
-#include "arts/transport/dispatcher.h" /* arts_transport_dispatch_body */
+#include "arts/transport/dispatcher.h" /* arts_transport_dispatch_packet */
 #include "arts/utils/lockfree_lifo.h"  /* arts_lf_stack_t */
 #include "arts/utils/malloc.h"
 
@@ -124,11 +124,7 @@ bool arts_transport_loopback_drain(void) {
     arts_lf_link_t *next =
         atomic_load_explicit(&head->next, memory_order_relaxed);
     struct loopback_node_s *node = (struct loopback_node_s *)head;
-    /* dispatch_body, not dispatch_packet: a self-send carries no per-sender
-     * wire sequence number, so it must skip the SEQUENCENUMBERS wire-ordering
-     * check (whose rec_seq_numbers[seq_rank] index would read an unstamped
-     * field). */
-    arts_transport_dispatch_body((struct arts_msg_header_s *)(node + 1));
+    arts_transport_dispatch_packet((struct arts_msg_header_s *)(node + 1));
     arts_free(node);
     head = next;
   }
@@ -189,8 +185,8 @@ static inline void size_send_check(uint64_t size) {
 
 /* Reject a self-addressed or out-of-range target.  A caller that wants same-rank
  * delivery uses arts_transport_loopback_post directly; reaching a public send
- * wrapper with a self target is a bug, warned-and-dropped exactly as the former
- * outbox did (this also covers single-node, where every rank is self). */
+ * wrapper with a self target is a bug, warned and dropped (this also covers
+ * single-node, where every rank is self). */
 static inline bool net_target_ok(int rank) {
   if ((unsigned int)rank == arts_global_rank_id ||
       (unsigned int)rank >= arts_global_rank_count) {

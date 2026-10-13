@@ -115,11 +115,11 @@ void arts_set_thread_local_edt_info(struct arts_edt_s *edt) {
    * DROP any hold a broken run path failed to release, and the entries would
    * otherwise be released against the next EDT's epilogue — a stranger's
    * task.  An entry surviving to this point is that bug, made loud. */
-#if ARTS_LOG_LEVEL >= 3
+#ifndef NDEBUG
   if (arts_vector_count(&created_db_list) != 0) {
-    ARTS_WARN("created_db_list carries %lu entries into a new EDT — a hold "
-              "leaked across tasks",
-              (unsigned long)arts_vector_count(&created_db_list));
+    ARTS_ERROR("created_db_list carries %lu entries into a new EDT — a hold "
+               "leaked across tasks",
+               (unsigned long)arts_vector_count(&created_db_list));
   }
 #endif
   arts_thread_info.current_edt_guid = edt->guid;

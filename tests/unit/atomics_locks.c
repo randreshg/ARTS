@@ -10,8 +10,8 @@
  *      lock; nonatomic_counter++; unlock.  Final == N*M.  Because the lock's
  *      acquire (cswap, __sync full barrier) and release (__atomic_store
  *      RELEASE) establish happens-before, the *plain* (non-atomic) counter
- *      update inside the critical section is data-race-free — this is exactly
- *      the property arts_lock must provide for outbox.c's seq_num_lock[].
+ *      update inside the critical section is data-race-free — the property
+ *      every arts_lock critical section relies on.
  *   B. try_lock semantics:  on an unheld lock try_lock succeeds (0->1) and a
  *      second try_lock fails; after unlock it succeeds again.
  *   C. RW exclusion invariant:  a live reader census and a writer-presence

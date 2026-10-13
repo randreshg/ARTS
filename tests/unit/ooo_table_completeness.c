@@ -93,7 +93,7 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
 void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void arts_free(void *p) { free(p); }
-#ifndef NDEBUG
+#ifdef ARTS_DEBUG_INJECTION
 void arts_sched_fuzz_point(void) {}
 #endif
 bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {

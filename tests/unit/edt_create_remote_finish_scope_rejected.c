@@ -6,16 +6,15 @@
  * completion DECR.  arts_edt_create_core raises a fatal error instead of
  * silently shipping such an INCR.
  *
- * Debug-only (the check compiles in only at ARTS_LOG_LEVEL >= DEBUG, the
- * default for a Debug build): rank 0 creates a finish scope homed on itself
- * and hands its GUID to an EDT it places on rank 1.  That EDT, running on
- * rank 1, tries to create a further EDT naming the rank-0 scope as
- * hint.finish_event — the mismatch (scope home 0 != creating rank 1) raises
- * the error on rank 1 and that process exits non-zero.  PASS is judged by
- * the error text reaching the captured output, not by exit status (only the
- * master rank's own status reaches ctest; a peer's death is what the
- * master's own arts_rt() return code reports, and its printed text is what a
- * regex here can see).
+ * Debug-only (the check is an assertion, compiled out of a Release build):
+ * rank 0 creates a finish scope homed on itself and hands its GUID to an EDT
+ * it places on rank 1.  That EDT, running on rank 1, tries to create a
+ * further EDT naming the rank-0 scope as hint.finish_event — the mismatch
+ * (scope home 0 != creating rank 1) raises the error on rank 1 and that
+ * process exits non-zero.  PASS is judged by the error text reaching the
+ * captured output, not by exit status (only the master rank's own status
+ * reaches ctest; a peer's death is what the master's own arts_rt() return
+ * code reports, and its printed text is what a regex here can see).
  */
 #include <stdint.h>
 #include <stdio.h>

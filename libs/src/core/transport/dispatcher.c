@@ -61,10 +61,6 @@
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h" /* arts_shared_get / arts_shared_release */
 
-#ifdef SEQUENCENUMBERS
-uint64_t *rec_seq_numbers;
-#endif
-
 /*
  * arts_transport_broadcast_shutdown — First step of the shutdown protocol.
  *
@@ -89,41 +85,15 @@ void arts_transport_broadcast_shutdown(void) {
 
 void arts_transport_cleanup(void) {
   arts_loopback_cleanup();
-#ifdef SEQUENCENUMBERS
-  arts_free(rec_seq_numbers);
-  rec_seq_numbers = NULL;
-#endif
 }
 
 void arts_transport_setup(struct arts_config_s *config) {
-  /* Establish the bootstrap TCP mesh.  The outbound queue the outbox once
-   * carved here is gone — each producing thread injects its own sends directly
-   * onto the fabric. */
+  /* Establish the bootstrap TCP mesh; each producing thread injects its own
+   * sends directly onto the fabric. */
   arts_socket_setup(config);
-#ifdef SEQUENCENUMBERS
-  rec_seq_numbers =
-      (uint64_t *)arts_calloc(arts_global_rank_count, sizeof(uint64_t));
-#endif
 }
 
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
-#ifdef SEQUENCENUMBERS
-  /* Wire-ordering check — wire RX entry only.  A self-loopback packet never
-   * traverses the wire and carries no per-sender sequence number (it bypasses
-   * the outbox that stamps them), so it enters via arts_transport_dispatch_body
-   * directly and is exempt from this check. */
-  uint64_t exp_seq_number =
-      __sync_fetch_and_add(&rec_seq_numbers[packet->seq_rank], 1U);
-  if (exp_seq_number != packet->seq_num) {
-    ARTS_DEBUG(
-        "MESSAGE RECIEVED OUT OF ORDER exp: %lu rec: %lu source: %u type: %d",
-        exp_seq_number, packet->seq_num, packet->rank, packet->message_type);
-  }
-#endif
-  arts_transport_dispatch_body(packet);
-}
-
-void arts_transport_dispatch_body(struct arts_msg_header_s *packet) {
   switch (packet->message_type) {
   case MSG_SHUTDOWN: {
     ARTS_INFO("Node %u: Received shutdown message from node %u",

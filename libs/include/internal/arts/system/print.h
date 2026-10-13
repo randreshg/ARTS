@@ -71,7 +71,8 @@ static inline void arts_atomic_print(const char *format, ...) {
 
 /*--- Log Level Macros --------------------------------------------------------
  *
- * ARTS_LOG_LEVEL (set via CMake, default 1):
+ * ARTS_LOG_LEVEL (set by the build: Debug 3, Release 1 unless chosen; 1 for
+ * a file compiled outside it):
  *   0 = ERROR   — print + abort (abort fires even when print is compiled out)
  *   1 = WARN    — print only
  *   2 = INFO    — print only

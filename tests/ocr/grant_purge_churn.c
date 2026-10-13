@@ -26,8 +26,9 @@
  * while the turns WITHIN a round are unordered and race freely.
  *
  * Policy-independent by construction: it asserts what every release policy
- * must compute, not how the right travelled — which is why it runs everywhere
- * and is the vehicle for interleaving injection.
+ * must compute, not how the right travelled — which is why it runs at every
+ * release policy, and under the scheduler fuzz where the grant plane carries
+ * fuzz points.
  */
 
 #include "arts.h"

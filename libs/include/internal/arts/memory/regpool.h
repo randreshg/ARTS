@@ -244,17 +244,19 @@ size_t arts_regpool_parse_node_avail(FILE *f);
  * take one. */
 #define ARTS_REGPOOL_NODE_HEADROOM ((size_t)2 * 1024 * 1024 * 1024)
 
-/* Diagnostic override, the programmatic form of the
+#ifdef ARTS_DEBUG_INJECTION
+/* Injected exhaustion, the programmatic form of the
  * ARTS_REGPOOL_FORCE_FULL_NODES environment list: every node whose bit is
  * set in `node_mask` reports zero availability to later placements, so the
  * refusal, fallover and eviction paths are reachable deterministically
  * without starving a machine.  A mask of 0 clears it.  It acts on an
  * initialized pool: init sets the mask from the environment list, and
- * cleanup clears it.  A diagnostic, never a policy: it changes where memory
- * is placed, never whether an allocation is served (placement is a
- * preference, so a request refused by every node falls back to an unplaced
- * mapping). */
+ * cleanup clears it.  It changes where memory is placed, never whether an
+ * allocation is served (placement is a preference, so a request refused by
+ * every node falls back to an unplaced mapping).  A node the machine lacks is
+ * refused, and so is any non-zero mask where the pool places no memory. */
 void arts_regpool_set_forced_full(uint64_t node_mask);
+#endif
 
 /* Print the pool's shape to `out`: per node its carve state, arena count,
  * mapped MiB (of the arena slabs placed on it), grow count (of the slabs grown

@@ -1458,11 +1458,11 @@ void arts_net_init(const char *provider, const char *fabric_domain,
   hints->domain_attr->threading = FI_THREAD_SAFE;
   /* Request send-after-send ordering (FI_ORDER_SAS): two messages this rank
    * sends to a given peer are delivered to that peer's endpoint in send order
-   * (per-EP-pair FIFO).  After the transport cutover this replaces the outbox's
-   * per-(thread->dest) FIFO for the coherence rounds that ship a state update
-   * and then its acknowledgement to the same peer from the same thread.  The
-   * value the provider actually grants is stored and logged below; a provider
-   * that does not honor it would surface here rather than silently. */
+   * (per-EP-pair FIFO).  The coherence rounds that ship a state update and
+   * then its acknowledgement to the same peer from the same thread rely on
+   * it.  The value the provider actually grants is stored and logged below; a
+   * provider that does not honor it would surface here rather than silently.
+   */
   hints->tx_attr->msg_order = FI_ORDER_SAS;
   hints->rx_attr->msg_order = FI_ORDER_SAS;
   /* Offer the common mr_mode bits and accept whatever subset the provider
@@ -1612,6 +1612,7 @@ void arts_net_init(const char *provider, const char *fabric_domain,
   g_net.mr_local = (g_net.mr_mode & FI_MR_LOCAL) != 0;
   g_net.inject_size = use->tx_attr->inject_size;
   g_net.max_msg = use->ep_attr->max_msg_size;
+#ifdef ARTS_DEBUG_INJECTION
   {
     /* A one-sided transfer is never posted above the provider's ceiling
      * (arts_net_put_payload splits at it), so lowering the ceiling from the
@@ -1634,6 +1635,7 @@ void arts_net_init(const char *provider, const char *fabric_domain,
       }
     }
   }
+#endif
   g_net.tx_order = use->tx_attr->msg_order;
   g_net.max_order_waw = use->ep_attr->max_order_waw_size;
   g_net.waw_ordered =

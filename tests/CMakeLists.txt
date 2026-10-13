@@ -116,16 +116,11 @@ set(TEST_PROGRAMS
     regpool_basic
     regpool_guard
     regpool_node_avail
-    regpool_node_fallover
-    regpool_direct_oversize
     regpool_lazy_carve
     regpool_ladder
-    regpool_evict_retired
-    regpool_interleave
     regpool_fallback_order
     regpool_spill_cycle
     regpool_spill_target
-    regpool_evict_wait
     # --- New unit tests (Tasks 6-12) ---
     edt_dep_variants
     db_create_after_first_touch
@@ -135,15 +130,27 @@ set(TEST_PROGRAMS
     coherence_multi_writer_dist
     coherence_writer_ro_overlap
     coherence_grant_chain_visibility
-    quiescent_shutdown_no_residue
 )
 
-# Pins a check the runtime compiles in only at ARTS_LOG_LEVEL >= DEBUG
-# (edt.c's remote finish-scope guard): built and registered only in a Debug
-# tree, where that log level is the default, so it is not a false failure on
-# a tree that compiles the check out.
+# Judged by the teardown quiescence walk, which exists only where
+# ARTS_LOG_LEVEL compiles DEBUG messages: built and registered only there.
+if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+    list(APPEND TEST_PROGRAMS quiescent_shutdown_no_residue)
+endif()
+
+# Pins an assertion of the runtime (edt.c's remote finish-scope guard), which
+# a Debug build checks and a Release build compiles out: built and registered
+# only in a Debug tree.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     list(APPEND TEST_PROGRAMS edt_create_remote_finish_scope_rejected)
+endif()
+
+# Driven by the pool's injected exhaustion (ARTS_REGPOOL_FORCE_FULL_NODES and
+# arts_regpool_set_forced_full), which only ARTS_DEBUG_INJECTION compiles.
+set(ARTS_REGPOOL_INJECTION_TESTS regpool_node_fallover regpool_direct_oversize
+    regpool_evict_retired regpool_interleave regpool_evict_wait)
+if(ARTS_DEBUG_INJECTION)
+    list(APPEND TEST_PROGRAMS ${ARTS_REGPOOL_INJECTION_TESTS})
 endif()
 
 # Whitebox tests of the INLINE payload layout.  Where a block's bytes live in
@@ -201,7 +208,9 @@ if(ARTS_CXL_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS cxl_slot_rule)
     list(APPEND TEST_PROGRAMS cxl_stale_generation_grant)
     list(APPEND TEST_PROGRAMS cxl_creator_roster)
-    list(APPEND TEST_PROGRAMS cxl_quiescence_marker)
+    if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+        list(APPEND TEST_PROGRAMS cxl_quiescence_marker)
+    endif()
     list(APPEND TEST_PROGRAMS cxl_no_acquire_first_use)
     list(APPEND TEST_PROGRAMS cxl_labeled_create)
     list(APPEND TEST_PROGRAMS cxl_home_turn_costs)
@@ -593,6 +602,84 @@ register_single_node_test(term_shutdown)
 set_tests_properties(term_shutdown PROPERTIES
     PASS_REGULAR_EXPRESSION "TERM_TEST_EXIT")
 
+# A Debug tree without the injection hooks refuses a run that sets any
+# hook's variable, rather than running as if it had exercised the hook.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARTS_DEBUG_INJECTION)
+    arts_test_cfg(_cfg 1n_20w)
+    foreach(_hook
+            ARTS_SCHED_FUZZ
+            ARTS_NET_MAX_MSG
+            ARTS_REGPOOL_FORCE_FULL_NODES)
+        add_test(NAME injection_hook_refused_${_hook}
+                 COMMAND term_shutdown
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(injection_hook_refused_${_hook} PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};${_hook}=1"
+            PASS_REGULAR_EXPRESSION
+            "${_hook} is set, but this build compiles no injection hooks")
+    endforeach()
+endif()
+# Where the hooks are compiled, a value a hook cannot use stops the run
+# rather than leaving the hook off.  The provider ceiling is read when the
+# fabric comes up, so that one runs on several ranks.
+if(ARTS_DEBUG_INJECTION)
+    arts_test_cfg(_cfg 1n_20w)
+    arts_test_cfg(_mn_cfg 2n_9w_1p)
+    add_test(NAME injection_value_refused_sched_fuzz COMMAND term_shutdown
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(injection_value_refused_sched_fuzz PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=fast"
+        PASS_REGULAR_EXPRESSION "is not a percentage")
+    add_test(NAME injection_value_refused_net_max_msg COMMAND multinode_edt
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(injection_value_refused_net_max_msg PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_MAX_MSG=0"
+        PASS_REGULAR_EXPRESSION "is not a positive byte count")
+    # A one-rank run brings no fabric up, so it refuses a fabric hook.
+    foreach(_hook
+            ARTS_NET_MAX_MSG)
+        add_test(NAME injection_fabric_hook_refused_${_hook}
+                 COMMAND term_shutdown
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(injection_fabric_hook_refused_${_hook} PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};${_hook}=1"
+            PASS_REGULAR_EXPRESSION
+            "${_hook} is set, but a one-rank run has no fabric")
+    endforeach()
+    # Only the arena allocator's pool parses the force-full list; the system
+    # allocator's refuses any.
+    if(ARTS_MALLOC STREQUAL "mimalloc")
+        add_test(NAME injection_value_refused_force_full COMMAND term_shutdown
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(injection_value_refused_force_full PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_REGPOOL_FORCE_FULL_NODES=x"
+            PASS_REGULAR_EXPRESSION "is not a node number")
+        add_test(NAME injection_value_refused_force_full_node COMMAND term_shutdown
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+        set_tests_properties(injection_value_refused_force_full_node PROPERTIES
+            LABELS "single_node"
+            TIMEOUT 30
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_REGPOOL_FORCE_FULL_NODES=64"
+            PASS_REGULAR_EXPRESSION "names node 64, but this machine has")
+    endif()
+endif()
+
 register_single_node_test(term_abort ARGS 0 42)
 set_tests_properties(term_abort PROPERTIES
     PASS_REGULAR_EXPRESSION "TERM_ABORT rc=42")
@@ -667,10 +754,13 @@ register_pure_unit_test(stdio_forward_scale_test)
 
 # Programs including unit/regpool_numa_sim.h find the C library's own
 # syscall and fopen at run time.
-foreach(_regpool_sim_test regpool_basic regpool_guard regpool_node_fallover
-        regpool_direct_oversize regpool_lazy_carve regpool_ladder
-        regpool_evict_retired regpool_interleave regpool_fallback_order
-        regpool_spill_cycle regpool_spill_target regpool_evict_wait)
+set(_regpool_sim_tests regpool_basic regpool_guard regpool_lazy_carve
+    regpool_ladder regpool_fallback_order regpool_spill_cycle
+    regpool_spill_target)
+if(ARTS_DEBUG_INJECTION)
+    list(APPEND _regpool_sim_tests ${ARTS_REGPOOL_INJECTION_TESTS})
+endif()
+foreach(_regpool_sim_test IN LISTS _regpool_sim_tests)
     target_link_libraries(${_regpool_sim_test} PRIVATE ${CMAKE_DL_LIBS})
 endforeach()
 
@@ -689,13 +779,6 @@ endforeach()
 if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_basic TIMEOUT 60)
     register_pure_unit_test(regpool_guard TIMEOUT 60)
-    # A node the screen refuses at init is served from another node's arena.
-    register_pure_unit_test(regpool_node_fallover TIMEOUT 60)
-    set_tests_properties(regpool_node_fallover PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_node_fallover")
-    register_pure_unit_test(regpool_direct_oversize TIMEOUT 60)
-    set_tests_properties(regpool_direct_oversize PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_direct_oversize")
     # Lazy carving: exactly one node carved at init, another carved by the
     # first allocation of a thread on it.
     register_pure_unit_test(regpool_lazy_carve TIMEOUT 60)
@@ -706,15 +789,6 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_ladder TIMEOUT 60)
     set_tests_properties(regpool_ladder PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_ladder")
-    # Eviction of retired mappings and the unplaced fallback behind it,
-    # driven by the force-full override on one node and on two.
-    register_pure_unit_test(regpool_evict_retired TIMEOUT 60)
-    set_tests_properties(regpool_evict_retired PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_evict_retired")
-    # An oversize mapping is spread over the caller's node set.
-    register_pure_unit_test(regpool_interleave TIMEOUT 60)
-    set_tests_properties(regpool_interleave PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_interleave")
     # The candidate order itself, against a supplied distance table.
     register_pure_unit_test(regpool_fallback_order TIMEOUT 60)
     set_tests_properties(regpool_fallback_order PROPERTIES
@@ -731,34 +805,56 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     register_pure_unit_test(regpool_spill_target TIMEOUT 60)
     set_tests_properties(regpool_spill_target PROPERTIES
         PASS_REGULAR_EXPRESSION "PASS regpool_spill_target")
-    # Retired oversize mappings are torn down outside the pool's lock, and a
-    # request that reaches their hand-back waits for a teardown in flight.
-    register_pure_unit_test(regpool_evict_wait TIMEOUT 60)
-    set_tests_properties(regpool_evict_wait PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_evict_wait")
-    # A full node's demand served from the other node, and the pool's end at
-    # the allocator's arena table: it fills the table itself, so it links the
-    # pool's object and the allocator directly (one table between them),
-    # never the runtime archive, whose allocator copy is its own.
-    add_executable(regpool_spill_and_latch unit/regpool_spill_and_latch.c
-        $<TARGET_OBJECTS:arts_regpool>)
-    target_include_directories(regpool_spill_and_latch PRIVATE
-        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
-        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    target_link_libraries(regpool_spill_and_latch PRIVATE
-        Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY}
-        ${CMAKE_DL_LIBS})
-    register_pure_unit_test(regpool_spill_and_latch TIMEOUT 60)
-    set_tests_properties(regpool_spill_and_latch PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS regpool_spill_and_latch")
+    set(_regpool_numa_tests regpool_basic regpool_guard regpool_lazy_carve
+        regpool_ladder regpool_fallback_order regpool_spill_cycle
+        regpool_spill_target)
+    if(ARTS_DEBUG_INJECTION)
+        # A node the screen refuses at init is served from another node's
+        # arena.
+        register_pure_unit_test(regpool_node_fallover TIMEOUT 60)
+        set_tests_properties(regpool_node_fallover PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS regpool_node_fallover")
+        register_pure_unit_test(regpool_direct_oversize TIMEOUT 60)
+        set_tests_properties(regpool_direct_oversize PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS regpool_direct_oversize")
+        # Eviction of retired mappings and the unplaced fallback behind it,
+        # driven by the force-full override on one node and on two.
+        register_pure_unit_test(regpool_evict_retired TIMEOUT 60)
+        set_tests_properties(regpool_evict_retired PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS regpool_evict_retired")
+        # An oversize mapping is spread over the caller's node set.
+        register_pure_unit_test(regpool_interleave TIMEOUT 60)
+        set_tests_properties(regpool_interleave PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS regpool_interleave")
+        # Retired oversize mappings are torn down outside the pool's lock,
+        # and a request that reaches their hand-back waits for a teardown in
+        # flight.
+        register_pure_unit_test(regpool_evict_wait TIMEOUT 60)
+        set_tests_properties(regpool_evict_wait PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS regpool_evict_wait")
+        # A full node's demand served from the other node, and the pool's end
+        # at the allocator's arena table: it fills the table itself, so it
+        # links the pool's object and the allocator directly (one table
+        # between them), never the runtime archive, whose allocator copy is
+        # its own.
+        add_executable(regpool_spill_and_latch unit/regpool_spill_and_latch.c
+            $<TARGET_OBJECTS:arts_regpool>)
+        target_include_directories(regpool_spill_and_latch PRIVATE
+            ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+            ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+        target_link_libraries(regpool_spill_and_latch PRIVATE
+            Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY}
+            ${CMAKE_DL_LIBS})
+        register_pure_unit_test(regpool_spill_and_latch TIMEOUT 60)
+        set_tests_properties(regpool_spill_and_latch PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS regpool_spill_and_latch")
+        list(APPEND _regpool_numa_tests ${ARTS_REGPOOL_INJECTION_TESTS}
+            regpool_spill_and_latch)
+    endif()
     # The allocator asks the kernel for the calling thread's node on a
     # machine of several; held to one node, every node query these programs
     # answer is the pool's own.
-    set_property(TEST regpool_basic regpool_guard regpool_node_fallover
-        regpool_direct_oversize regpool_lazy_carve regpool_ladder
-        regpool_evict_retired regpool_interleave regpool_fallback_order
-        regpool_spill_cycle regpool_spill_target regpool_evict_wait
-        regpool_spill_and_latch
+    set_property(TEST ${_regpool_numa_tests}
         APPEND PROPERTY ENVIRONMENT "MIMALLOC_USE_NUMA_NODES=1")
 endif()
 # The availability parser is allocator-independent (pure over a stream).
@@ -1064,24 +1160,26 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(db_no_acquire_wb_first_writer_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
-# The unordered reader's whole point is a race, so one shape also runs with
-# the scheduler-fuzz injection that widens the lock-free decision-commit
-# windows (compiled out of Release, where the variable is simply inert).
-# At least three ranks are needed, because the racing read has to reach the home
-# from a rank that is neither the home nor the writer — with two there is no
-# such rank and the window cannot be reached at all.
-arts_test_cfg(_cfg 4n_4w_1p)
-add_test(
-    NAME db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
-    COMMAND db_no_acquire_wb_first_writer
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-)
-set_tests_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
-    LABELS "multinode"
-    TIMEOUT 120
-    RESOURCE_LOCK "arts_runtime"
-    FAIL_REGULAR_EXPRESSION "FAIL"
-    ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
+# The unordered reader's whole point is a race, so where the injection hooks
+# are compiled one shape also runs with the scheduler fuzz, which widens the
+# lock-free decision-commit windows.  At least three ranks are needed,
+# because the racing read has to reach the home from a rank that is neither
+# the home nor the writer — with two there is no such rank and the window
+# cannot be reached at all.
+if(ARTS_DEBUG_INJECTION)
+    arts_test_cfg(_cfg 4n_4w_1p)
+    add_test(
+        NAME db_no_acquire_wb_first_writer_4n_4w_1p_fuzz
+        COMMAND db_no_acquire_wb_first_writer
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(db_no_acquire_wb_first_writer_4n_4w_1p_fuzz PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 120
+        RESOURCE_LOCK "arts_runtime"
+        FAIL_REGULAR_EXPRESSION "FAIL"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
+endif()
 # A create that lands where a dependence on the same label has already asked
 # the block's home about it: the create may install the block, but it may not
 # take the write right out from under a request already in flight.  Both
@@ -1122,11 +1220,6 @@ register_multinode_test(route_table_remote_guid)
 register_multinode_test(multinode_event_types)
 register_multinode_test(coherence_home_producer_ro TIMEOUT 30)
 register_multinode_test(coherence_zero_size_xfer TIMEOUT 30)
-# These assert what the runtime's exclusive-RW serialization guarantees; under
-# DB-WRF that ordering is the program's, and these programs deliberately omit
-# it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-endif()
 register_multinode_test(coherence_rw_chain TIMEOUT 30)
 # A NO_ACQUIRE create whose creator, home and writer are three different ranks:
 # the home-side create handler must end naming ITSELF as the holder on every
@@ -1136,13 +1229,26 @@ register_multinode_test(coherence_rw_chain TIMEOUT 30)
 register_multinode_test(grant_purge_no_acquire_creator TIMEOUT 60)
 # Write-right churn with home-local turns overlapping remote ones.  It asserts
 # an exact sum, which every release policy must compute, so it runs at every
-# release policy; it is also where interleaving injection is aimed.
+# release policy.  On the arms that share the grant plane (VAL, INV), whose
+# decision points carry the scheduler fuzz, the shape with two progress
+# threads also runs under it where the injection hooks are compiled.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(grant_purge_churn TIMEOUT 60)
 register_multinode_test(grant_purge_churn TIMEOUT 90)
+if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
+    arts_test_cfg(_cfg 2n_8w_2p)
+    add_test(NAME grant_purge_churn_2n_8w_2p_fuzz COMMAND grant_purge_churn
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(grant_purge_churn_2n_8w_2p_fuzz PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 120
+        RESOURCE_LOCK "arts_runtime"
+        FAIL_REGULAR_EXPRESSION "FAIL"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
+endif()
 endif()
 # Independent writer chains can re-request a handed-back grant while the
 # previous release is settling. Atomic increments cover concurrent same-rank
@@ -1264,26 +1370,30 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
         FAIL_REGULAR_EXPRESSION "FAIL:")
 endforeach()
 
-# The same ladder with the provider's one-sided ceiling lowered to 3 MiB from
-# the environment, so the 8 MiB rung can only arrive as several transfers
-# (3 + 3 + 2 MiB) paired on the last one's immediate.  Whole-payload
-# verification is what catches a piece landing at the wrong offset, or a
-# pairing that fires before the last piece has landed.
-foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
-    arts_test_cfg(_cfg ${_v})
-    add_test(
-        NAME coherence_payload_split_${_v}
-        COMMAND coherence_payload_large
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-    set_tests_properties(coherence_payload_split_${_v} PROPERTIES
-        LABELS "multinode;coherence_stress"
-        TIMEOUT 120
-        RESOURCE_LOCK "arts_runtime"
-        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_NET_MAX_MSG=3145728"
-        PASS_REGULAR_EXPRESSION "PASS: 4 DBs"
-        FAIL_REGULAR_EXPRESSION "FAIL:")
-endforeach()
+# The same ladder with the provider's one-sided ceiling lowered to 3 MiB by
+# the injected override (ARTS_NET_MAX_MSG), so the 8 MiB rung can only arrive
+# as several transfers (3 + 3 + 2 MiB) paired on the last one's immediate.
+# Whole-payload verification is what catches a piece landing at the wrong
+# offset, or a pairing that fires before the last piece has landed.  Where
+# payloads reach the next holder through the CXL store, the fabric moves none
+# and there is nothing to split.
+if(ARTS_DEBUG_INJECTION AND NOT ARTS_CXL_TREE_RESIDENCY)
+    foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
+        arts_test_cfg(_cfg ${_v})
+        add_test(
+            NAME coherence_payload_split_${_v}
+            COMMAND coherence_payload_large
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        )
+        set_tests_properties(coherence_payload_split_${_v} PROPERTIES
+            LABELS "multinode;coherence_stress"
+            TIMEOUT 120
+            RESOURCE_LOCK "arts_runtime"
+            ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_NET_MAX_MSG=3145728"
+            PASS_REGULAR_EXPRESSION "PASS: 4 DBs"
+            FAIL_REGULAR_EXPRESSION "FAIL:")
+    endforeach()
+endif()
 
 # Add-dependence-then-release hand-off: consumers whose slots satisfied BEFORE
 # the producer's release must observe the release-published bytes.  A DB whose
@@ -1533,8 +1643,8 @@ endforeach()
 # written off its home (a release off the home waits for it where the arm
 # publishes, requesters park, the home runs hand-overs), plus a remote write
 # first touch.  Its writers are unordered, which DB-WRF does not admit, so
-# every other arm runs it.
-if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+# every other arm runs it, wherever the walk is compiled.
+if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH" AND ARTS_LOG_LEVEL GREATER_EQUAL 3)
 register_single_node_test(quiescent_shutdown_no_residue TIMEOUT 60)
 register_multinode_test(quiescent_shutdown_no_residue TIMEOUT 120)
 foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n_9w_1p
@@ -1549,7 +1659,7 @@ endif()
 
 # A create's credit is applied only to the descriptor whose create it answers,
 # and a zero txid applies nothing (whitebox, one rank: a hand-built answer fed
-# to the dispatcher body).  Registered only where a create carries a credit.
+# to the dispatcher).  Registered only where a create carries a credit.
 if((NOT ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_WRITE_POLICY STREQUAL "WT")
    OR ARTS_COHERENCE_ARM STREQUAL "FLUSH")
     add_arts_test(db_create_return_token_guard)
@@ -1561,10 +1671,14 @@ endif()
 
 # grant_one_request_per_grant: rounds of concurrent write acquisitions of one
 # block off its home, each round starting with no write right there.  Every
-# waiter is served (the count) and no grant arrives to an empty waiting set
-# (asserted by the runtime in a debug build).  Its writers are unordered, which
-# DB-WRF does not admit, so every other arm runs it; the race it targets is
-# widened by running it under ARTS_SCHED_FUZZ.
+# waiter is served (the count), and where a grant is handed back at release
+# (write-through with PURGE) a Debug build asserts that no grant arrives to an
+# empty waiting set.  Its writers are unordered, which DB-WRF does not admit,
+# so every other arm runs it.  On the arms that share the grant plane (VAL,
+# INV), whose decision points carry the scheduler fuzz, the shape with two
+# progress threads also runs under it where the injection hooks are compiled,
+# which widens the window between a waiter's park and the grant that takes the
+# waiting set.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(grant_one_request_per_grant)
 register_multinode_test(grant_one_request_per_grant TIMEOUT 120)
@@ -1572,6 +1686,20 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(grant_one_request_per_grant_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
+if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$")
+    arts_test_cfg(_cfg 2n_8w_2p)
+    add_test(
+        NAME grant_one_request_per_grant_2n_8w_2p_fuzz
+        COMMAND grant_one_request_per_grant
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    set_tests_properties(grant_one_request_per_grant_2n_8w_2p_fuzz PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 120
+        RESOURCE_LOCK "arts_runtime"
+        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
+endif()
 endif()
 
 # coherence_multi_writer_dist: multinode cross-rank RW same-address.  The
@@ -1760,8 +1888,10 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # The arm's teardown walk: six blocks, every one released and every
     # dependence satisfied, must leave the walk silent -- a QUIESCENCE-DEBUG
     # marker on this shape is the oracle catching a real defect, not a test
-    # artifact.
-    register_cxl_multinode_test(cxl_quiescence_marker TIMEOUT 60 FAIL_REGEX "QUIESCENCE-DEBUG|FAIL")
+    # artifact.  Registered wherever the walk is compiled.
+    if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
+        register_cxl_multinode_test(cxl_quiescence_marker TIMEOUT 60 FAIL_REGEX "QUIESCENCE-DEBUG|FAIL")
+    endif()
     # The store's two flushes, each at its one edge of a turn: a consumer
     # flush when a rank's first acquire is admitted, a producer flush when its
     # last write holder releases, nothing between and no producer flush after

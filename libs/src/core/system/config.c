@@ -1126,11 +1126,6 @@ static void config_setup_local(struct arts_config_s *config,
     config->master_node = NULL;
   }
 
-  char *threads_user = getenv("USER_THREAD_COUNT");
-  if (threads_user != NULL) {
-    config->worker_thread_count = (unsigned int)strtol(threads_user, NULL, 10);
-  }
-
   /* Determine node count from config file. */
   unsigned int node_count = 1;
   const char *node_count_value = config_lookup(vars, "node_count");

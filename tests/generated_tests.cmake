@@ -114,9 +114,6 @@ endif()
 # T169 EXPOSES B-set-ip-null: expected to FAIL/crash under sanitizer (documents runtime bug, do not mask)
 add_pure_unit_src(socket_set_ip_null_ifa LIBS ${CMAKE_DL_LIBS} TIMEOUT 60)
 add_pure_unit_src(socket_helpers LIBS ${CMAKE_DL_LIBS} PASS_REGEX "PASS socket_helpers" TIMEOUT 60)
-# T180 EXPOSES B071: expected to FAIL/crash under sanitizer (documents runtime bug, do not mask)
-# (SEQUENCENUMBERS is an optional SEQ-header ABI variant supplied by the build dir
-#  when enabled; not forced here so the default wire layout is exercised.)
 add_pure_unit_src(protocol_abi_asserts TIMEOUT 60)
 # Real-hardware Dekker litmus for the grant-baton release/re-check pair: the
 # fenced shape must never lose an item; a weakened fence turns the runtime's

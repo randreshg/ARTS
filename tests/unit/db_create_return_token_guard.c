@@ -79,7 +79,7 @@ static void deliver(arts_guid_t db, uint64_t token, uint64_t txid) {
   p.credit_addr = ADDR;
   p.credit_rkey = RKEY;
   p.credit_txid = txid;
-  arts_transport_dispatch_body(&p.header);
+  arts_transport_dispatch_packet(&p.header);
 }
 
 static int same(struct credit a, struct credit b) {

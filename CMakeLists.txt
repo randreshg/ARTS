@@ -144,6 +144,12 @@ if(NOT CMAKE_BUILD_TYPE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release")
     message(STATUS "Build type not specified, defaulting to Debug")
 endif()
+# Two build types: what a Debug build carries and a Release build does not is
+# decided below by the type, so no third one can fall between them.
+if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
+    message(FATAL_ERROR
+        "CMAKE_BUILD_TYPE='${CMAKE_BUILD_TYPE}': ARTS builds Debug or Release")
+endif()
 
 # Include utilities for modern CMake
 include(GNUInstallDirs)
@@ -288,7 +294,8 @@ if(ARTS_RO_REQUEST_COMBINING)
         "ARTS_RO_REQUEST_COMBINING is gone: read combining is now the VAL "
         "family's default. To build the non-combining ablation, pass "
         "-DARTS_NO_RO_COMBINING=ON (benchmark builds get it per target as the "
-        "*_nocomb variants).")
+        "*_nocomb variants); clear the cached value with "
+        "-UARTS_RO_REQUEST_COMBINING.")
 endif()
 unset(ARTS_RO_REQUEST_COMBINING CACHE)
 option(ARTS_NO_RO_COMBINING
@@ -412,39 +419,92 @@ else()
 endif()
 
 # ── Diagnostics ────────────────────────────────────────────────────────────
-# Default log level: Debug -> 3 (DEBUG), other build types -> 1 (WARN).
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(_arts_log_default 3)
-else()
-    set(_arts_log_default 1)
-endif()
-if(DEFINED ARTS_LOG_LEVEL)
-    set(_arts_log_level "${ARTS_LOG_LEVEL}")
-else()
-    set(_arts_log_level "${_arts_log_default}")
-endif()
-set(ARTS_LOG_LEVEL "${_arts_log_level}" CACHE STRING
-    "Log verbosity: 0=ERROR, 1=+WARN, 2=+INFO, 3=+DEBUG" FORCE)
-set_property(CACHE ARTS_LOG_LEVEL PROPERTY STRINGS 0 1 2 3)
-if(NOT ARTS_LOG_LEVEL MATCHES "^[0-3]$")
+# An empty level is the build type's: Debug -> 3 (DEBUG), Release -> 1 (WARN).
+# A level someone set stays as set; a normal variable carries the resolved one.
+set(ARTS_LOG_LEVEL "" CACHE STRING
+    "Log verbosity: 0=ERROR, 1=+WARN, 2=+INFO, 3=+DEBUG; empty = the build type's (Debug 3, Release 1)")
+set_property(CACHE ARTS_LOG_LEVEL PROPERTY STRINGS "" 0 1 2 3)
+if("${ARTS_LOG_LEVEL}" STREQUAL "")
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(ARTS_LOG_LEVEL 3)
+    else()
+        set(ARTS_LOG_LEVEL 1)
+    endif()
+elseif(NOT ARTS_LOG_LEVEL MATCHES "^[0-3]$")
     message(FATAL_ERROR
-        "Invalid ARTS_LOG_LEVEL='${ARTS_LOG_LEVEL}'. Expected one of: 0, 1, 2, 3")
+        "Invalid ARTS_LOG_LEVEL='${ARTS_LOG_LEVEL}'. Expected one of: 0, 1, 2, 3, "
+        "or empty for the build type's")
 endif()
-# ASan+UBSan+LSan and TSan are compiler-mutually-exclusive (ASan and LSan both
-# conflict with -fsanitize=thread); they need separate build trees.  Wiring is
-# applied in the Debug compiler-flags block below.
-option(ARTS_USE_SANS "Enable ASan + UBSan + LSan in Debug builds (excludes CUDA)" OFF)
-option(ARTS_USE_TSAN "Enable ThreadSanitizer in Debug builds (excludes CUDA; mutually exclusive with ARTS_USE_SANS)" OFF)
 
-# Wire sequence numbers: a per-message seq_num field + a per-send lock around
-# (assign-seq, enqueue) + a per-receive wire-ordering check — a drop/reorder
-# diagnostic.  This is HOT-PATH (every send and receive) and OFF by default;
-# turn it on only to debug transport ordering.  It changes the wire packet
-# header layout, so every rank in a run must use the same setting.
-option(ARTS_SEQUENCE_NUMBERS "Enable per-message wire sequence-number drop/reorder diagnostic (per-send lock + per-recv check; OFF for performance)" OFF)
-if(ARTS_SEQUENCE_NUMBERS)
-  add_compile_definitions(SEQUENCENUMBERS=1)
+# ── Debug facilities ───────────────────────────────────────────────────────
+# A Release build carries none of them.  A Debug build emits diagnostics by
+# ARTS_LOG_LEVEL and checks its assertions (NDEBUG unset); every facility that
+# adds cost or changes what a run does is an option of its own, OFF by default,
+# refused in a Release build, and free to combine with every other one.
+if(ARTS_USE_SANS OR ARTS_USE_TSAN)
+    message(FATAL_ERROR
+        "ARTS_USE_SANS and ARTS_USE_TSAN are gone: pass "
+        "-DARTS_DEBUG_SANITIZER=ADDRESS (ASan + UBSan + LSan) or "
+        "-DARTS_DEBUG_SANITIZER=THREAD (TSan + UBSan) to a Debug build, and "
+        "clear the cached values with -UARTS_USE_SANS -UARTS_USE_TSAN")
 endif()
+unset(ARTS_USE_SANS CACHE)
+unset(ARTS_USE_TSAN CACHE)
+if(ARTS_SEQUENCE_NUMBERS)
+    message(FATAL_ERROR
+        "ARTS_SEQUENCE_NUMBERS is gone: nothing on the fabric transport stamps "
+        "a per-sender sequence number, and with several progress threads one "
+        "sender's messages are dispatched out of wire order by design -- "
+        "clear the cached value with -UARTS_SEQUENCE_NUMBERS")
+endif()
+unset(ARTS_SEQUENCE_NUMBERS CACHE)
+
+# One choice, because the compiler cannot combine AddressSanitizer with
+# ThreadSanitizer in one binary.  C and C++ only: ASan's shadow memory
+# conflicts with the CUDA driver's address-space mappings.
+set(ARTS_DEBUG_SANITIZER "OFF" CACHE STRING
+    "Compiler instrumentation: OFF, ADDRESS (ASan + UBSan + LSan) or THREAD (TSan + UBSan); C/C++ only")
+set_property(CACHE ARTS_DEBUG_SANITIZER PROPERTY STRINGS OFF ADDRESS THREAD)
+if(NOT ARTS_DEBUG_SANITIZER MATCHES "^(OFF|ADDRESS|THREAD)$")
+    message(FATAL_ERROR
+        "ARTS_DEBUG_SANITIZER must be OFF, ADDRESS or THREAD, got "
+        "'${ARTS_DEBUG_SANITIZER}'")
+endif()
+# Each hook stays inert until its own environment variable is set, so one
+# switch compiles them all and the run chooses which to use.
+option(ARTS_DEBUG_INJECTION
+    "Compile the run-time injection hooks, each inert until its environment variable is set: ARTS_SCHED_FUZZ, ARTS_NET_MAX_MSG, ARTS_REGPOOL_FORCE_FULL_NODES" OFF)
+
+set(ARTS_DEBUG_FACILITIES ARTS_DEBUG_INJECTION)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    # INFO and DEBUG messages, and the teardown walk that only DEBUG compiles,
+    # are a Debug build's own emission.  Every refusal is named at once.
+    set(_refused "")
+    if(ARTS_LOG_LEVEL GREATER 1)
+        list(APPEND _refused "-DARTS_LOG_LEVEL=1 (or 0, or empty: the build type's)")
+    endif()
+    if(NOT ARTS_DEBUG_SANITIZER STREQUAL "OFF")
+        list(APPEND _refused "-DARTS_DEBUG_SANITIZER=OFF")
+    endif()
+    foreach(_facility IN LISTS ARTS_DEBUG_FACILITIES)
+        if(${_facility})
+            list(APPEND _refused "-D${_facility}=OFF")
+        endif()
+    endforeach()
+    if(_refused)
+        list(JOIN _refused " " _refused)
+        message(FATAL_ERROR
+            "a Release build carries no debug facility and emits errors and "
+            "warnings only; pass ${_refused}, or configure a separate Debug "
+            "tree")
+    endif()
+endif()
+foreach(_facility IN LISTS ARTS_DEBUG_FACILITIES)
+    if(${_facility})
+        add_compile_definitions(${_facility}=1)
+        message(STATUS "Debug facility: ${_facility}")
+    endif()
+endforeach()
 
 # ── Build tooling ──────────────────────────────────────────────────────────
 # (To pick a faster linker, use CMake's own -DCMAKE_LINKER_TYPE=MOLD/LLD/GOLD
@@ -482,7 +542,8 @@ if(DEFINED ARTS_DATA_PLACEMENT)
           "ARTS_DATA_PLACEMENT was split (2026-07-31 terminology pass) into "
           "ARTS_WRITE_POLICY=WT|WB (live in INV/VAL; old HOME -> WT, "
           "OWNER -> WB) and ARTS_RELEASE_POLICY=PURGE|RETAIN (live in EXCL; "
-          "old HOME -> PURGE, OWNER -> RETAIN).")
+          "old HOME -> PURGE, OWNER -> RETAIN); clear the cached value with "
+          "-UARTS_DATA_PLACEMENT.")
 endif()
 if(NOT ARTS_MEMORY_MODEL STREQUAL "" AND
    NOT ARTS_MEMORY_MODEL STREQUAL "OCR" AND
@@ -692,13 +753,6 @@ elseif(ARTS_CXL_REAL OR ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_RAPID_LIB_DIR OR 
         "tree builds nothing that links a CXL library (ARTS_USE_CXL=OFF, ARTS_BUILD_BENCHMARKS=OFF)")
 endif()
 
-# ── Mutually-exclusive sanitizer guard ─────────────────────────────────────
-if(ARTS_USE_SANS AND ARTS_USE_TSAN)
-  message(FATAL_ERROR
-    "ARTS_USE_SANS (ASan/UBSan/LSan) and ARTS_USE_TSAN are "
-    "compiler-incompatible — use separate build directories.")
-endif()
-
 # Compiler-specific settings
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     message(STATUS "Configuring Debug build")
@@ -708,23 +762,21 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         -O0 -g3 -Wall -Wextra
     )
 
-    # Sanitizers (C/CXX only — CUDA excluded to avoid ASan shadow memory
-    # conflicting with the CUDA driver's virtual address space mapping)
-    if(ARTS_USE_SANS)
+    if(ARTS_DEBUG_SANITIZER STREQUAL "ADDRESS")
         add_compile_options(
             $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-fsanitize=address>
             $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-fsanitize=undefined>
             $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-fsanitize=leak>
         )
         add_link_options(-fsanitize=address -fsanitize=undefined -fsanitize=leak)
-        message(STATUS "Enabled sanitizers for Debug build (C/CXX only, excludes CUDA)")
-    elseif(ARTS_USE_TSAN)
+        message(STATUS "Debug facility: ARTS_DEBUG_SANITIZER=ADDRESS (ASan + UBSan + LSan)")
+    elseif(ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
         add_compile_options(
             $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-fsanitize=thread>
             $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-fsanitize=undefined>
         )
         add_link_options(-fsanitize=thread -fsanitize=undefined)
-        message(STATUS "Enabled ThreadSanitizer for Debug build (C/CXX only, excludes CUDA)")
+        message(STATUS "Debug facility: ARTS_DEBUG_SANITIZER=THREAD (TSan + UBSan)")
     endif()
 else()
     message(STATUS "Configuring Release build")
