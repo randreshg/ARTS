@@ -116,24 +116,28 @@ void arts_dep_sort_and_classify(arts_edt_dep_t *depv, uint32_t depc,
 
 /* Advance one EDT's serialized-acquire cursor past `slot`.  It is
  * position-idempotent: it moves only while the cursor still points at `slot`,
- * so a wake for a slot the walk has already passed changes nothing.  It does
- * NOT touch the acquire count, and it fires no dependence of its own: it either
- * flags the walk running in this execution context to continue, or appends the
- * EDT to the flat resume worklist below — so the calling frame grows the stack
- * by nothing.
+ * so a wake for a slot the walk has already passed changes nothing.  It fires
+ * no dependence of its own: it either flags the walk running in this execution
+ * context to continue, or appends the EDT to the flat resume worklist below —
+ * so the calling frame grows the stack by nothing.
+ *
+ * Returns true when it appended the EDT.  The caller's account for `slot` then
+ * belongs to the worklist entry: the drain issues it after the walk, so the
+ * walk runs while the EDT still owes an account and nothing can schedule it.
+ * On false the caller accounts the slot itself.
  *
  * Call it only once the slot's payload is published.  Passing the cursor is
  * what entitles the next frame to fire the following slot, and that frame may
  * read this slot's payload as final; a cursor ahead of an unpublished payload
  * is therefore a state no reader may observe. */
-void arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot);
+bool arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot);
 
 /* Run the serialized-acquire walk of every EDT on the flat resume worklist, in
- * one loop at this level.  A no-op while a walk is already in progress in this
- * execution context, or while a drain is running: the outermost frame owns the
- * drain, which is what keeps a wake enqueued deep in a nest from stacking a
- * second walk on the first.  Call it where the frame is free of any EDT's
- * acquire state, after the account that may schedule the woken EDT. */
+ * one loop at this level, each followed by the account its entry carries.  A
+ * no-op while a walk is already in progress in this execution context, or
+ * while a drain is running: the outermost frame owns the drain, which is what
+ * keeps a wake enqueued deep in a nest from stacking a second walk on the
+ * first. */
 void arts_db_drain_resume_list(void);
 
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep

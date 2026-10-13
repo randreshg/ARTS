@@ -128,8 +128,9 @@ struct arts_edt_s {
   volatile unsigned int acquire_remaining; /**< Count of real DB deps (RO+RW)
                            whose data is not yet resolved at this rank;
                            decremented on each data arrival, the actor driving
-                           it to 0 schedules the EDT. +1-biased during the
-                           initial fire. */
+                           it to 0 schedules the EDT.  Also counts one hold per
+                           frame still touching the acquire state (the initial
+                           fire's bias, a resume entry, a replay). */
   volatile unsigned int
       invalidate_count; /**< Outstanding cache invalidations. */
   /* Non-owning alias to this EDT's own route-table control block, armed once

@@ -675,8 +675,8 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
  * landed yet — the instruction window between its acquire CAS and its push —
  * is awaited by re-draining, the same bounded-window retry discipline as the
  * home queue's mid-push pop.  Serving = resolve + cursor-advance + account, in
- * that order and in one call; it does NOT touch the count (the count was
- * carried by the waiter's acquire CAS — "counted ⟹ will park"). */
+ * that order; it does NOT touch the count (the count was carried by the
+ * waiter's acquire CAS — "counted ⟹ will park"). */
 static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
   uint32_t served = 0;
   while (served < expected) {

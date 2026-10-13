@@ -943,7 +943,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
   /* Which of the two handles keeps `cache`'s descriptor (arts_db_s) alive.
    * If the handler resolves locally (takes the EDT's buffer ref), this handle
    * is MOVED into depv[i].db_pin to pin the descriptor for the slot's whole
-   * acquire->release span.
+   * acquire->release span, when it wins the pin's claim (see below).
    */
   arts_shared_ptr_t *cache_owner_h = NULL;
   if (db_temp != NULL && db_temp->db_type == ARTS_DB) {
@@ -986,14 +986,17 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
      * (consumed in release_one_dep), so the release reaches this descriptor
      * even after a concurrent destroy has retired its GUID.  A parked handler
      * leaves ptr NULL — the resume site (mark_edt_ready_by_guid) pins
-     * instead.  The db_pin==NULL guard keeps the pin balanced across OoO
-     * replays. */
-    if (depv[i].ptr != NULL &&
-        __atomic_load_n(&depv[i].db_pin, __ATOMIC_ACQUIRE) == NULL &&
+     * instead.  A wake on another thread may resolve the slot between the
+     * handler's park and this check, so the pin is claimed by CAS: one side
+     * installs, the other keeps its handle and drops it below. */
+    if (__atomic_load_n(&depv[i].ptr, __ATOMIC_ACQUIRE) != NULL &&
         cache_owner_h != NULL) {
-      __atomic_store_n(&depv[i].db_pin, (void *)*cache_owner_h,
-                       __ATOMIC_RELEASE);
-      *cache_owner_h = NULL;
+      void *pin_expected = NULL;
+      if (__atomic_compare_exchange_n(&depv[i].db_pin, &pin_expected,
+                                      (void *)*cache_owner_h, false,
+                                      __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+        *cache_owner_h = NULL;
+      }
     }
     arts_shared_release(&db_temp_h);
     arts_shared_release(&stub_h);
@@ -1046,7 +1049,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
 }
 
 static void rw_fire_from_cursor(struct arts_edt_s *edt);
-static void resume_enqueue(arts_guid_t edt_guid);
+static void resume_enqueue(struct arts_edt_s *edt);
 
 /* OOO_DB_ACQUIRE replay table entry — see db.h.  Re-attempts the single
  * deferred dep through acquire_one_dep's subtype-aware 3-way: for an ARTS_DB
@@ -1066,12 +1069,26 @@ void arts_db_acquire_replay_dep(void *item, void *args) {
      * the re-drive stays top-level even when this replay runs nested inside
      * another EDT's acquire loop (an inline OoO drain) — never an inline
      * rw_fire_from_cursor that would recurse. */
-    resume_enqueue(a->edt->guid);
+    /* The entry owes the drain an account like any other.  The walk is parked
+     * at this unaccounted dep, so the count is above zero and the EDT cannot
+     * be scheduled before the drain issues it. */
+    unsigned int owed = arts_atomic_add(&a->edt->acquire_remaining, 1);
+    assert(owed > 1u); /* the deferred slot is still unpaid */
+    (void)owed;
+    resume_enqueue(a->edt);
     arts_db_drain_resume_list();
   } else {
     /* Non-serialized (Pass-1) dep: re-attempt just this slot; it self-accounts
-     * on a local hit and the EDT schedules when the last dep's data lands. */
+     * on a local hit.  The replay holds an account of its own across the
+     * attempt (the deferred slot is still unpaid, so the count is above zero),
+     * because the slot's account may be the one that schedules the EDT and the
+     * attempt still touches the slot after it; this frame's account is its
+     * last touch. */
+    unsigned int owed = arts_atomic_add(&a->edt->acquire_remaining, 1);
+    assert(owed > 1u); /* the deferred slot is still unpaid */
+    (void)owed;
     acquire_one_dep(a->edt, depv, a->slot);
+    arts_db_acquire_account(a->edt);
   }
 }
 
@@ -1185,13 +1202,21 @@ static ARTS_THREAD_LOCAL struct arts_edt_s *tl_acquiring = NULL;
  * resume that EDT's serialized acquire — but it MUST NOT call
  * rw_fire_from_cursor inline: that EDT's loop would then nest on top of the
  * currently-running loop (continuation recursion, O(depth) stack and O(depc²)
- * repeated work).  Instead the woken EDT's GUID is appended to a thread-local
+ * repeated work).  Instead the woken EDT is appended to a thread-local
  * worklist and the resume runs FLAT: when control returns to the top level
  * (no acquire loop in progress, tl_acquiring == NULL) the drain below walks
  * the worklist in a while loop, calling rw_fire_from_cursor once per entry.
  * Re-entrancy-guarded (tl_in_drain) + top-level-guarded (tl_acquiring) so
- * rw_fire_from_cursor can never appear twice on the stack. */
-static ARTS_THREAD_LOCAL arts_guid_t *tl_resume_buf = NULL;
+ * rw_fire_from_cursor can never appear twice on the stack.
+ *
+ * An entry carries one account the EDT still owes, and the drain issues it
+ * only after the walk.  Every walk therefore runs while the EDT is
+ * unschedulable, and the account that may schedule it is the frame's last
+ * touch.  The same owed account keeps the raw pointer valid: an EDT that
+ * cannot be scheduled has not run, so the reference arts_handle_ready_edt took
+ * for the runnable phase is still held.  The entry never names the EDT by its
+ * GUID, which may name a later EDT once this one completes. */
+static ARTS_THREAD_LOCAL struct arts_edt_s **tl_resume_buf = NULL;
 static ARTS_THREAD_LOCAL uint32_t tl_resume_len = 0;
 static ARTS_THREAD_LOCAL uint32_t tl_resume_cap = 0;
 static ARTS_THREAD_LOCAL bool tl_in_drain = false;
@@ -1209,14 +1234,14 @@ static ARTS_THREAD_LOCAL bool tl_in_drain = false;
  * untouchable by other threads' serves, so ownership is race-free. */
 static ARTS_THREAD_LOCAL bool tl_inline_advanced = false;
 
-static void resume_enqueue(arts_guid_t edt_guid) {
+static void resume_enqueue(struct arts_edt_s *edt) {
   if (tl_resume_len == tl_resume_cap) {
     uint32_t ncap = tl_resume_cap ? tl_resume_cap * 2u : 16u;
-    tl_resume_buf =
-        (arts_guid_t *)arts_realloc(tl_resume_buf, ncap * sizeof(arts_guid_t));
+    tl_resume_buf = (struct arts_edt_s **)arts_realloc(
+        tl_resume_buf, ncap * sizeof(struct arts_edt_s *));
     tl_resume_cap = ncap;
   }
-  tl_resume_buf[tl_resume_len++] = edt_guid;
+  tl_resume_buf[tl_resume_len++] = edt;
 }
 
 /* Drain the resume worklist as a flat loop — see db.h.  No-op when called from
@@ -1230,13 +1255,9 @@ void arts_db_drain_resume_list(void) {
   }
   tl_in_drain = true;
   while (tl_resume_len > 0) {
-    arts_guid_t g = tl_resume_buf[--tl_resume_len];
-    arts_shared_ptr_t h = arts_route_table_lookup_edt(g);
-    struct arts_edt_s *e = (struct arts_edt_s *)arts_shared_get(h);
-    if (e != NULL) {
-      rw_fire_from_cursor(e); /* flat: tl_acquiring is NULL here */
-    }
-    arts_shared_release(&h);
+    struct arts_edt_s *e = tl_resume_buf[--tl_resume_len];
+    rw_fire_from_cursor(e); /* flat: tl_acquiring is NULL here */
+    arts_db_acquire_account(e);
   }
   tl_in_drain = false;
 }
@@ -1280,7 +1301,8 @@ static void rw_fire_from_cursor(struct arts_edt_s *edt) {
         i); /* local hit advances the cursor; remote/contended parks */
     if (!tl_inline_advanced) {
       /* Parked (or deferred): the serving side owns the continuation — its
-       * arts_db_rw_secure enqueues the flat resume on its own thread.  Do NOT
+       * arts_db_rw_secure, or for a deferred dep the out-of-order replay,
+       * enqueues the flat resume on its own thread.  Do NOT
        * infer "resolved" from cursor movement: a concurrent other-thread serve
        * also advances the cursor, and continuing here would put two threads in
        * the same EDT's loop (double-firing the next dep). */
@@ -1301,7 +1323,7 @@ static void rw_fire_from_cursor(struct arts_edt_s *edt) {
  *
  * The frame this runs in grows by nothing: the two outcomes are a thread-local
  * flag and an append to the worklist, neither of which fires a dependence. */
-void arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot) {
+bool arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot) {
   uint32_t depc = edt->depc;
   const uint32_t *sorted = edt->rw_sorted; /* sorted ONCE in acquire_all */
   /* A wake follows an acquisition the walk issued, so the walk has begun. */
@@ -1315,11 +1337,12 @@ void arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot) {
      * inline rw_fire_from_cursor, which would nest on the running loop =
      * recursion).  Exactly one side continues the loop, never both. */
     if (edt != tl_acquiring) {
-      resume_enqueue(edt->guid);
-    } else {
-      tl_inline_advanced = true;
+      resume_enqueue(edt);
+      return true;
     }
+    tl_inline_advanced = true;
   }
+  return false;
 }
 
 /* Resolve ONE alias slot onto the block's payload: the same bytes at the same
@@ -1499,10 +1522,10 @@ void arts_db_fill_aliases(struct arts_edt_s *edt, unsigned int owner_slot,
  * recursively (that is the whole point of the loop: acquire_all is the
  * continuation unit, the loop walks deps, and only an ASYNC resume —
  * arts_db_rw_secure / the OoO replay — re-enters the loop).  Then account THIS
- * dep; the +1 bias on acquire_remaining keeps the count above zero until the
- * loop completes, so accounting order is free.  The upstream caller holds an
- * EDT ref across the loop, so a schedule from the final account cannot free the
- * EDT mid-loop. */
+ * dep; every frame that fires or resolves a dependence holds an account of
+ * its own until it is done (acquire_all's +1 bias, the worklist entry a drain
+ * walks under, or a replay's own hold), so this account cannot reach zero and
+ * accounting order is free. */
 void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   if (arts_dep_is_serialized(depv, slot)) {

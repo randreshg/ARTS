@@ -15,7 +15,9 @@
  *      Wake mechanism: a wake looks up the parked EDT, claims its slot by
  *      writing the buffer data pointer into depv[slot].ptr, and counts the
  *      dep down through arts_db_acquire_account (acquire_remaining); the
- *      decrement that reaches 0 hands the EDT to the scheduler.
+ *      decrement that reaches 0 hands the EDT to the scheduler.  A serialized
+ *      slot handed to the resume worklist is counted down by the drain, after
+ *      the walk.
  *
  *   3. Release path and the PUBLISH_ACK rendezvous.  Wait/wake mechanism: a
  *      releaser registers a heap {sem, version} waiter on the cache and waits
@@ -224,7 +226,10 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
 /* Resume `edt`'s parked `slot` on a buffer the caller supplies, and — when the
  * slot is one the EDT's serialized acquire walk is parked at — advance that
  * walk past it, in this one frame.  The caller holds the EDT for the whole
- * call, so the wake reads its acquire state and accounts under a single ref.
+ * call, so the wake reads its acquire state and accounts under a single ref —
+ * except an account the cursor step hands to the resume worklist, which an
+ * outer drain may issue after that ref is gone: an EDT still owing it has not
+ * run, so its runnable-phase reference keeps it alive.
  *
  * The ref in buf_h is what the EDT's dep slot will hold for the rest of its
  * life: on a won claim it becomes the EDT's hold (release_one_dep drops it
@@ -247,7 +252,7 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
  * walk is read off the slot itself — a serialized owner slot, never an alias —
  * and never off the caller, so whichever frame wins the claim is the one that
  * lets the walk past it.  The tail then runs claim, aliases, cursor, account,
- * drain, and both of its orderings are load-bearing:
+ * and both of its orderings are load-bearing:
  *
  *   claim BEFORE cursor — the cursor passing a slot is what entitles a frame
  *   to fire the next one, and such a frame reads the passed slot's payload as
@@ -256,7 +261,9 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
  *
  *   cursor BEFORE account — the account may be the decrement that schedules
  *   the EDT, and a scheduled EDT's acquire state belongs to whoever runs it;
- *   nothing may read or write it afterwards.
+ *   nothing may read or write it afterwards.  When the cursor step handed the
+ *   walk to the resume worklist, the account goes with it and the drain issues
+ *   it after the walk, so the walk too runs before the EDT can be scheduled.
  *
  * A wake that LOSES the claim owes neither step: the winner owns the
  * continuation, and a second frame advancing the same cursor would put two
@@ -307,14 +314,18 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
      * rather than dropping it here: the release resolves the descriptor
      * through it, which a lookup cannot do once a destroy has retired the
      * GUID. */
-    if (db_h != NULL &&
-        __atomic_load_n(&depv[slot].db_pin, __ATOMIC_ACQUIRE) == NULL) {
-      /* Publish with release so the run/release thread (reached via the
+    if (db_h != NULL) {
+      /* Claimed by CAS, as the acquiring walk's tail claims it: the two can
+       * both see the slot resolved, and only one handle may be kept.  Publish
+       * with release so the run/release thread (reached via the
        * work-stealing deque handoff) observes db_pin like the sibling ptr
-       * field's atomic CAS — keeps TSan clean and the ARM ordering explicit
-       * rather than relying on the deque's incidental HW fence. */
-      __atomic_store_n(&depv[slot].db_pin, (void *)db_h, __ATOMIC_RELEASE);
-      db_h = NULL;
+       * field's atomic CAS. */
+      void *pin_expected = NULL;
+      if (__atomic_compare_exchange_n(&depv[slot].db_pin, &pin_expected,
+                                      (void *)db_h, false, __ATOMIC_RELEASE,
+                                      __ATOMIC_RELAXED)) {
+        db_h = NULL;
+      }
     }
   } else if (db_h != NULL) {
     /* A block with no bytes resolves to NULL, which no CAS on the pointer can
@@ -339,28 +350,26 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
    * slot's own account, which may be the one that schedules the EDT. */
   arts_db_fill_aliases(edt, slot, alias_pin);
   arts_shared_release(&alias_pin);
-  if (secured) {
-    /* Every byte this slot resolves to is published, so the walk may pass it. */
-    arts_db_rw_secure(edt, slot);
+  /* Every byte this slot resolves to is published, so the walk may pass it. */
+  if (secured && arts_db_rw_secure(edt, slot)) {
+    /* The walk and this slot's account now belong to the worklist entry. */
+    arts_db_drain_resume_list();
+    return true;
   }
   /* Data resolved for this dep — count it down; the actor that reaches 0
    * schedules. The caller's ref on the EDT keeps it alive even if the schedule
    * lets another worker run (and free) it; do NOT touch edt after
    * arts_db_acquire_account returns. */
   arts_db_acquire_account(edt);
-  if (secured) {
-    /* Free of this EDT's acquire state now, so the walk the cursor step handed
-     * off runs here, as one top-level loop over the worklist. */
-    arts_db_drain_resume_list();
-  }
   return true;
 }
 
 /* Resolve the parked EDT and hold it for the whole wake: every read of its
  * acquire state, and the account that may schedule it, happen under this one
  * ref, so the wake needs no second lookup and can meet no intervening
- * teardown.  NULL means the EDT is no longer there, and the caller has nothing
- * left to wake. */
+ * teardown.  An account handed to the resume worklist is the exception (see
+ * resume_parked).  NULL means the EDT is no longer there, and the caller has
+ * nothing left to wake. */
 static struct arts_edt_s *parked_edt_pin(arts_guid_t edt_guid,
                                          arts_shared_ptr_t *edt_h) {
   *edt_h = arts_route_table_lookup_edt(edt_guid);
