@@ -949,20 +949,17 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
                          (uint64_t)(uintptr_t)wr, /*data=*/NULL,
                          cache->db_size, /*rdzv_txid=*/0, /*rdzv_cookie=*/0,
                          /*return_grant=*/false);
-  arts_db_await_ack(&wr->sem); /* CTS wake — or the shutdown escape */
-  if (wr->landing.txid == 0) {
-    /* Shutdown escape before the CTS landed: the flight is abandoned with
-     * the runtime (a live run's CTS wake always carries a landing).
-     *
-     * This read of wr->landing.txid is UNSYNCHRONIZED on the escape path —
-     * sem_timedwait returned via the shutdown timeout, not a real post, so
-     * there is no happens-before edge against a CTS reply racing in.  That
-     * is precisely why wr must be leaked rather than freed: freeing it and
-     * letting the racing write land afterward would be a use-after-free.
-     * The buffer ref is ours to drop — nothing read the bytes. */
+  if (!arts_db_await_ack(&wr->sem)) {
+    /* Shutdown escape: the flight is abandoned with the runtime.  A CTS
+     * reply may still be writing the landing and posting through wr, so wr
+     * is leaked and nothing in it is read.  The buffer ref is ours to drop —
+     * nothing read the bytes. */
     arts_db_buf_release(&buf_h);
     return gate;
   }
+  /* The post orders the reply's landing stores before these reads, and a
+   * CTS reply always carries a landing. */
+  assert(wr->landing.txid != 0);
   arts_net_put_payload((int)home_rank, wr->landing.addr, wr->landing.key,
                        wr->landing.txid, buf->data, cache->db_size,
                        arts_db_buf_ref_release_cb, (void *)buf_h);
@@ -1055,13 +1052,16 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
       arts_db_pub_flight_abandon(cache);
     }
   }
-  (void)arts_db_await_ack(&w->sem);
-  if (arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
-    /* possible shutdown escape: a late drain may still post — leak w.  A wait
-     * the escape cut short is already recorded by the await.  The gate shares
-     * w's version, so the ACK that covered w may have posted it already: then
-     * it is off the stack and nothing was left unawaited; otherwise its wait
-     * is recorded here and it stays parked. */
+  /* A posted waiter was popped before its post, so nothing posts it again: it
+   * is ours to free whether or not the shutdown has begun; only a wait the
+   * escape cut short leaves its node to a late poster. */
+  if (!arts_db_await_ack(&w->sem)) {
+    /* Shutdown escape: a late drain may still post — leak w.  A wait the
+     * escape cut short is already recorded by the await.  The gate's flight
+     * covers w, so the gate may already be posted (a drain posts it before w,
+     * or the ACK landed after the wait timed out): then it is off the stack
+     * and nothing was left unawaited; otherwise its wait is recorded here and
+     * it stays parked. */
     if (gate != NULL) {
       if (sem_trywait(&gate->sem) == 0) {
         sem_destroy(&gate->sem);

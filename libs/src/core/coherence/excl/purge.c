@@ -25,6 +25,7 @@
  * declare functions that take these types by pointer). */
 #include "arts/coherence/excl/types.h"
 
+#include <assert.h>
 #include <semaphore.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -1360,8 +1361,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
     /* Dirty release from a hold that never received a grant (the
      * creator-seeded RW grant): no cached landing — run the announce leg.
      * Heap rendezvous, deliberately leaked on the shutdown escape (a late
-     * CTS writes and posts through the echoed cv; see arts_db_publish_sync
-     * for the same discipline). */
+     * CTS writes and posts through the echoed cv). */
     struct arts_db_pub_rendezvous_s *wr =
         (struct arts_db_pub_rendezvous_s *)arts_malloc(sizeof(*wr));
     sem_init(&wr->sem, 0, 0);
@@ -1370,17 +1370,16 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
                               /*version=*/0u, (uint64_t)(uintptr_t)wr,
                               /*data=*/NULL, ds, /*rdzv_txid=*/0u,
                               /*rdzv_cookie=*/0u);
-    arts_db_await_ack(&wr->sem); /* CTS wake — or the shutdown escape */
-    if (wr->landing.txid == 0) {
-      /* This read of wr->landing.txid is UNSYNCHRONIZED on the shutdown-
-       * escape path — sem_timedwait returned via the shutdown timeout, not a
-       * real post, so there is no happens-before edge against a CTS reply
-       * that races in concurrently.  That is precisely why wr is leaked
-       * instead of freed: do not "tighten" this into an immediate free, or a
-       * late racing write turns it into a use-after-free. */
+    if (!arts_db_await_ack(&wr->sem)) {
+      /* Shutdown escape: the round is abandoned with the runtime.  A CTS
+       * reply may still be writing the landing and posting through wr, so wr
+       * is leaked and nothing in it is read. */
       arts_db_buf_release(&buf_h);
-      return; /* shutdown escape: round abandoned with the runtime — leak wr */
+      return;
     }
+    /* The post orders the reply's landing stores before these reads, and a
+     * CTS reply always carries a landing. */
+    assert(wr->landing.txid != 0);
     /* buf_h transfers into the PUT's local completion, which pins the source
      * bytes until the fabric drains them.  The commit carries cv 0 and
      * nothing acknowledges it: the home pairs {packet, write completion} on

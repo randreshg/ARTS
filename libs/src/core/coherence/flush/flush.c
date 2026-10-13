@@ -378,9 +378,9 @@ static bool shutting_down(void) {
  *
  * The source must stay valid for the whole call — the caller's hold on the
  * bytes is what keeps it so.  Answers false only under shutdown, the one
- * exit that leaves the round unfinished and its wait state leaked for a
- * reply that may still arrive; a home that no longer has the block is a
- * finished round with nothing to write into. */
+ * exit that leaves the round unfinished; a wait the shutdown cut short leaks
+ * its state for a reply that may still arrive.  A home that no longer has the
+ * block is a finished round with nothing to write into. */
 static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
   unsigned int home = arts_guid_get_rank(cache->db_guid);
   /* The wait lives on the heap: a shutdown-escaped release leaks it, and a
@@ -398,8 +398,11 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
     }
     if (shutting_down()) {
       /* The reply came, but the write-back it credits is dropped: its own
-       * wait is the one left unawaited. */
+       * wait is the one left unawaited.  Nothing posts the wait state after
+       * its reply, so it is freed. */
       __atomic_fetch_add(&arts_shutdown_abandon.waits, 1u, __ATOMIC_RELAXED);
+      sem_destroy(&w->sem);
+      arts_free(w);
       return false;
     }
     if (w->txid == 0) {
