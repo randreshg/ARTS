@@ -160,11 +160,12 @@ lifetime*.  What the undefined shape costs:
   (the creating rank counted it in at creation), so that scope never fires
   and a program that waits for it does not finish.
 - A parked event or data-block create keeps its payload until a destroy of
-  the occupant admits it, or to shutdown if none comes.  A losing data-block creator still receives a pointer — its own
-  image — but what it writes there reaches the block only if its create
-  installs, as the generation after the occupant's destroy, never the
-  occupant itself.  ``ARTS_DB_PROP_NO_ACQUIRE`` changes nothing here: it
-  drops the creator's hold, not the create.
+  the occupant admits it, or to shutdown if none comes.  A losing data-block
+  creator still receives a pointer — its own image — but what it writes
+  there reaches the block only if its create installs, as the generation
+  after the occupant's destroy, never the occupant itself.
+  ``ARTS_DB_PROP_NO_ACQUIRE`` changes nothing here: it drops the creator's
+  hold, not the create.
 - The OCR idiom in which every rank creates the same sticky event and one of
   them satisfies it therefore installs one event and parks every other
   create behind it.  Satisfies and dependences from every rank reach the
@@ -221,13 +222,14 @@ a route slot, and a destroy is fire-and-forget — the home tears the block
 down and notifies the ranks that cache it, and no message tells anyone when
 every rank has done so.  The following are weaknesses of the runtime, not of
 the programs that meet them, and they are left open.  The first three would
-need an acknowledged destroy to close.  The dispatch-order shape is closed
-only by the orderings the program provides, listed at the end: per-peer FIFO
+need an acknowledged destroy to close, and the fourth coherence messages
+that name their round on the wire.  The dispatch-order shape is closed only
+by the orderings the program provides, listed at the end: per-peer FIFO
 dispatch in the transport (each peer's messages dispatched in arrival order
 by one progress thread) would close it for two messages sent by one rank,
-never for two
-messages the program orders through a third rank.  ARTS provides neither an
-acknowledged destroy nor per-peer FIFO dispatch.
+never for two messages the program orders through a third rank.  ARTS
+provides none of the three: no acknowledged destroy, no per-peer FIFO
+dispatch, and no round named on the wire.
 
 **A third rank's stale cache.**  Exposed by a data-block label reused while
 a rank other than its creator and its home still caches the previous
@@ -260,6 +262,27 @@ counts for generation ``k+1`` loses its waiter when generation ``k`` is torn
 down.  A request whose waiter is lost that way is never answered, so the
 task that made it hangs, whether it reads or writes.  The creator's own
 operations name its descriptor and are unaffected.
+
+**A late round message.**  On the arms that keep a write grant past its
+writers (validation and invalidation with write-through and the retaining
+release policy, and exclusion with the retaining release policy), the rank a
+write grant reaches wakes its waiting writers first and only then tells the
+home that the transfer is complete.  No task waits for that message, so the
+writers can finish, the program can destroy generation ``k`` and create
+generation ``k+1``, and the message can still reach the home afterwards.  It
+names the GUID, not the round, so the home applies it to generation ``k+1``:
+it records a holder, or ends a turn, that generation never granted, so the
+next write turn of generation ``k+1`` is sent to a rank that does not hold
+the right, or is granted out of order, and the run hangs.  No ordering a
+program provides excludes it: the message leaves after its writers can
+already have finished, even writers on the same rank, and every later write
+turn of generation ``k`` ends with such a message of its own.  Under
+exclusion with the retaining release policy a reader that gives its read
+grant back at its release sends a round message of its own; one that
+arrives after generation ``k+1`` has granted a read is counted against that
+grant, and a writer of generation ``k+1`` can then be admitted while its
+reader still reads.  The program orders that return only as it orders its
+own messages to the home.
 
 **Dispatch order.**  The home applies a GUID's messages in the order it
 dispatches them, which need not be the order the program issued them in.
@@ -307,5 +330,5 @@ A program that reuses a label therefore provides these orderings:
   wrong order installs generation ``k+1`` first and parks generation ``k``
   behind it.
 
-These orderings close the dispatch-order shape; they do not close the first
-three weaknesses.
+These orderings close the dispatch-order shape; they do not close the other
+four weaknesses.
