@@ -19,6 +19,10 @@ extern "C" {
 #endif
 
 #include "arts/coherence/types_common.h"
+#ifndef ARTS_PROTOCOL_EXCL
+#error                                                                         \
+    "excl/types.h is the EXCL layout; this translation unit's cell is another"
+#endif
 #include "arts/rank_bitset.h"
 #include <stdint.h>
 

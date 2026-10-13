@@ -33,12 +33,12 @@ when a grant goes back:
   DataBlock is live at any time, system-wide — required by ``FLUSH``; see
   :ref:`db_wrf_contract`).
 * ``ARTS_COHERENCE_PROTOCOL`` selects the coherence **protocol**. Under the
-  ``OCR`` model, who keeps reader copies valid: ``VAL`` (default;
-  *validation* — each read acquire checks its cached copy's version at the
-  serving side and refetches only when stale; readers are never blocked,
-  tracked, or invalidated), ``INV`` (*invalidation* — reader copies stay
-  valid until a writer's release retires every standing copy in an
-  acknowledged invalidation round), or ``EXCL`` (*exclusion* — queue-fair
+  ``OCR`` model, who keeps reader copies valid: ``INV`` (default;
+  *invalidation* — reader copies stay valid until a writer's release
+  retires every standing copy in an acknowledged invalidation round),
+  ``VAL`` (*validation* — each read acquire checks its cached copy's version
+  at the serving side and refetches only when stale; readers are never
+  blocked, tracked, or invalidated), or ``EXCL`` (*exclusion* — queue-fair
   distributed reader–writer lock per DB; readers and writers take turns, so
   no stale copy ever exists). Under the ``DB-WRF`` model, the one protocol
   is ``FLUSH`` (fetch the whole payload at every remote acquire, write it
@@ -84,7 +84,7 @@ Every rank in a multinode run must use the same build.
 The OCR contract (reference)
 -----------------------------
 
-The contract delivered by the default build (OCR × VAL) is the memory model
+The contract delivered by the default build (OCR × INV) is the memory model
 of the *Open Community Runtime Interface*, version 1.2.0, §1.6, with the
 ``synchronized-with`` relation completed as in Dokulil, "Consistency model for
 runtime objects in the Open Community Runtime", J. Supercomputing 75:2725–2760,
@@ -253,12 +253,12 @@ driver's cross-entry consensus and on the device itself.
 The protocols
 -------------
 
-VAL — versioned snapshots, externally ordered updates (default)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+VAL — versioned snapshots, externally ordered updates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Status:* implemented (``libs/src/core/coherence/val/`` — ``directory.c`` +
 ``wt.c`` + ``wb.c``, plus the shared grant plane ``coherence/grant.c``);
-selected by ``-DARTS_COHERENCE_PROTOCOL=VAL`` (the default), write policy by
+selected by ``-DARTS_COHERENCE_PROTOCOL=VAL``, write policy by
 ``ARTS_WRITE_POLICY={WT,WB}`` (default ``WB``).
 
 The name is used in McKenney's sense: **readers are never blocked and never
@@ -303,13 +303,13 @@ knob ``ARTS_NO_RO_COMBINING`` compiles the window out — an ablation build
 (the ``*_nocomb`` benchmark variants) for measuring what the window buys,
 not a configuration of the family.
 
-INV — write-invalidate, durable reader copies
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+INV — write-invalidate, durable reader copies (default)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Status:* implemented (``libs/src/core/coherence/inv/`` — ``directory.c`` +
 ``engine.c`` + ``wt.c`` + ``wb.c``, plus the shared grant plane
-``coherence/grant.c``); selected by ``-DARTS_COHERENCE_PROTOCOL=INV``,
-write policy by ``ARTS_WRITE_POLICY={WT,WB}``.
+``coherence/grant.c``); selected by ``-DARTS_COHERENCE_PROTOCOL=INV`` (the
+default), write policy by ``ARTS_WRITE_POLICY={WT,WB}`` (default ``WB``).
 
 The mirror of VAL on the validity-agent axis: the *writer* keeps reader
 copies valid. A reader's copy is durable — holding the copy is the
@@ -660,7 +660,7 @@ orthogonal to the mechanism axis. The mapping from the single-axis era is
 exact and behavior-preserving:
 
 * ``MRNEW + EAGER`` → ``OCR × VAL × WT``
-* ``MRNEW + LAZY``  → ``OCR × VAL × WB`` (default)
+* ``MRNEW + LAZY``  → ``OCR × VAL × WB``
 * ``LOCK + EAGER/LAZY`` → ``OCR × EXCL × PURGE/RETAIN``
 * ``MRMW``          → ``DB_WRF × VAL × WT``
 * ``MRSW``          → retired (``archive/coherence-mrsw/``)

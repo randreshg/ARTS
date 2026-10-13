@@ -4,15 +4,13 @@
 # Helper libraries (reduction, timer, ocrAppUtils) are compiled from
 # third_party/ocr-apps/apps/libs/src/ and linked into apps that need them.
 
-# Every coherence configuration the app factory builds an executable for.  One
-# list, referenced everywhere: a per-app copy of it silently omits new
-# configurations from whichever apps forgot to grow.
-set(ARTS_VARIANT_SUFFIXES
-    ocr_val_wt ocr_val_wb ocr_val_wt_purge ocr_val_wt_nocomb ocr_val_wb_nocomb
-    ocr_val_wt_purge_nocomb
-    ocr_excl_purge ocr_excl_retain ocr_inv_wt ocr_inv_wb ocr_inv_wt_purge
-    wrf_flush
-    ocr_excl_purge_cxl_staged ocr_excl_purge_cxl_direct)
+# Every coherence configuration the app factory builds an executable for: the
+# variants the runtime registered (arts_variant), so no copy of the list can
+# omit one.
+get_property(ARTS_VARIANT_SUFFIXES GLOBAL PROPERTY ARTS_VARIANTS)
+if(NOT ARTS_VARIANT_SUFFIXES)
+    message(FATAL_ERROR "no ARTS variant is registered for the benchmark apps")
+endif()
 
 set(OCR_APPS_ROOT "${CMAKE_SOURCE_DIR}/third_party/ocr-apps/apps")
 set(OCR_LIBS_ROOT "${OCR_APPS_ROOT}/libs/src")
@@ -328,7 +326,7 @@ function(add_benchmark_app)
         # --- ARTS variants (one per coherence configuration) ---
         foreach(sfx ${ARTS_VARIANT_SUFFIXES})
             add_executable(${_app}_arts_${sfx} ${ABS_SOURCES} ${LIB_OBJECTS}
-                           $<TARGET_OBJECTS:ocr_arts_objects>)
+                           $<TARGET_OBJECTS:ocr_arts_objects_${sfx}>)
             target_include_directories(${_app}_arts_${sfx} PRIVATE
                 ${COMMON_INCLUDES} ${OCR_INC_DIR})
             target_compile_definitions(${_app}_arts_${sfx} PRIVATE

@@ -1,7 +1,7 @@
 # OCR-to-ARTS compatibility shim
 # Implements OCR API functions using ARTS v2 primitives
-# Output: ocr_arts_objects — apps combine these objects with the coherence
-# variant they link (arts_static_<suffix>), so no library target exists here
+# Output: object libraries only — apps combine the shim's objects with the
+# coherence variant they link (arts_static_<suffix>)
 
 set(OCR_ROOT "${CMAKE_SOURCE_DIR}/third_party/ocr/ocr")
 
@@ -18,53 +18,63 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ocr-options_arts.h"
 set(SHIM_OCR_TYPE_DEFINE "OCR_TYPE_H=arts.h")
 set(SHIM_OCR_OPTIONS_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 
-add_library(ocr_arts_objects OBJECT arts_ocr.c)
+# The shim reads ARTS internal headers, whose layouts follow the coherence
+# cell, so its objects are compiled once per runtime they are linked with:
+# ocr_arts_objects for this tree's own library (the shim's tests), and
+# ocr_arts_objects_<suffix> for each benchmark variant.
+function(arts_ocr_shim_objects target)
+    add_library(${target} OBJECT arts_ocr.c)
 
-# The shim file uses both OCR headers and ARTS internal headers.
-# C_EXTENSIONS ON because the shim uses VLAs, __sync builtins, typeof, etc.
-set_target_properties(ocr_arts_objects PROPERTIES
-    C_STANDARD 11
-    C_EXTENSIONS ON
-)
+    # C_EXTENSIONS ON because the shim uses VLAs, __sync builtins, typeof, etc.
+    set_target_properties(${target} PROPERTIES
+        C_STANDARD 11
+        C_EXTENSIONS ON
+    )
 
-target_compile_options(ocr_arts_objects PRIVATE
-    ${SHIM_C_OPT}
-    -Wall
-    ${ARTS_WNO_UNUSED}
-)
+    target_compile_options(${target} PRIVATE
+        ${SHIM_C_OPT}
+        -Wall
+        ${ARTS_WNO_UNUSED}
+    )
 
-# OCR extension defines (must come before OCR headers)
-target_compile_definitions(ocr_arts_objects PRIVATE
-    ENABLE_EXTENSION_AFFINITY
-    ENABLE_EXTENSION_PARAMS_EVT
-    ENABLE_EXTENSION_MULTI_OUTPUT_SLOT
-    ENABLE_EXTENSION_COLLECTIVE_EVT
-    ENABLE_EXTENSION_LABELING
-    ENABLE_EXTENSION_RTITF
-    ENABLE_EXTENSION_CHANNEL_EVT
-    ENABLE_EXTENSION_COUNTED_EVT
-    ${SHIM_OCR_TYPE_DEFINE}
-)
+    # OCR extension defines (must come before OCR headers)
+    target_compile_definitions(${target} PRIVATE
+        ENABLE_EXTENSION_AFFINITY
+        ENABLE_EXTENSION_PARAMS_EVT
+        ENABLE_EXTENSION_MULTI_OUTPUT_SLOT
+        ENABLE_EXTENSION_COLLECTIVE_EVT
+        ENABLE_EXTENSION_LABELING
+        ENABLE_EXTENSION_RTITF
+        ENABLE_EXTENSION_CHANNEL_EVT
+        ENABLE_EXTENSION_COUNTED_EVT
+        ${SHIM_OCR_TYPE_DEFINE}
+    )
 
-# No-hint DB home policy selector (see top-level ARTS_SHIM_NOHINT_DB_HOME).
-target_compile_definitions(ocr_arts_objects PRIVATE
-    ARTS_SHIM_NOHINT_DB_HOME_ROUNDROBIN=${_ARTS_SHIM_NOHINT_RR})
+    # No-hint DB home and EDT placement policy selectors (see top-level
+    # ARTS_SHIM_NOHINT_DB_HOME and ARTS_SHIM_NOHINT_EDT_PLACE).
+    target_compile_definitions(${target} PRIVATE
+        ARTS_SHIM_NOHINT_DB_HOME_ROUNDROBIN=${_ARTS_SHIM_NOHINT_RR}
+        ARTS_SHIM_NOHINT_EDT_PLACE_ROUNDROBIN=${_ARTS_SHIM_NOHINT_EDT_RR})
 
-# No-hint EDT placement policy selector (see top-level ARTS_SHIM_NOHINT_EDT_PLACE).
-target_compile_definitions(ocr_arts_objects PRIVATE
-    ARTS_SHIM_NOHINT_EDT_PLACE_ROUNDROBIN=${_ARTS_SHIM_NOHINT_EDT_RR})
+    target_include_directories(${target} PRIVATE
+        ${OCR_ROOT}/inc                # ocr.h, ocr-types.h, etc.
+        ${SHIM_OCR_OPTIONS_DIR}        # generated ocr-options_arts.h
+        ${CMAKE_SOURCE_DIR}/libs/include/public
+        ${CMAKE_SOURCE_DIR}/libs/include/internal
+    )
+endfunction()
 
-# Include: OCR public headers + extension headers
-target_include_directories(ocr_arts_objects PRIVATE
-    ${OCR_ROOT}/inc                # ocr.h, ocr-types.h, etc.
-    ${SHIM_OCR_OPTIONS_DIR}       # generated ocr-options_arts.h
-)
-
-# Include: ARTS public + internal headers (shim needs route table, runtime_types)
-target_include_directories(ocr_arts_objects PRIVATE
-    ${CMAKE_SOURCE_DIR}/libs/include/public
-    ${CMAKE_SOURCE_DIR}/libs/include/internal
-)
+arts_ocr_shim_objects(ocr_arts_objects)
+arts_apply_protocol(ocr_arts_objects
+    ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+if(NOT ARTS_BUILD_TESTS)
+    set_target_properties(ocr_arts_objects PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
+get_property(_arts_variants GLOBAL PROPERTY ARTS_VARIANTS)
+foreach(_sfx IN LISTS _arts_variants)
+    arts_ocr_shim_objects(ocr_arts_objects_${_sfx})
+    arts_apply_variant_protocol(ocr_arts_objects_${_sfx} ${_sfx})
+endforeach()
 
 add_executable(ocr_shim_event_payload EXCLUDE_FROM_ALL
     ${CMAKE_SOURCE_DIR}/tests/shim/event_payload.c

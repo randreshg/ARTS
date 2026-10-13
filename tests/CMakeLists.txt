@@ -42,14 +42,16 @@
 # nothing checked.
 add_compile_options(-UNDEBUG)
 
-# The reference tree: the protocol cell of the build defaults (VAL x WB x
-# RETAIN, payloads in rank memory).  A test whose outcome no coherence
-# protocol, write or release policy or payload store can change is built and
-# registered there only; every other tree runs only what its cell can change.
-# The cell alone decides it, so a sanitizer, injection or quarantine tree of
-# this cell is a reference tree too.
-if(ARTS_COHERENCE_ARM STREQUAL "VAL" AND ARTS_WRITE_POLICY STREQUAL "WB" AND
-   ARTS_RELEASE_POLICY STREQUAL "RETAIN" AND NOT ARTS_USE_CXL)
+# The reference tree: the protocol cell of the build defaults, with payloads in
+# rank memory.  A test whose outcome no coherence protocol, write or release
+# policy or payload store can change is built and registered there only;
+# every other tree runs only what its cell can change.  The cell alone decides
+# it, so a sanitizer, injection or quarantine tree of this cell is a reference
+# tree too.
+if(ARTS_COHERENCE_ARM STREQUAL _ARTS_DEFAULT_COHERENCE_PROTOCOL AND
+   ARTS_WRITE_POLICY STREQUAL _ARTS_DEFAULT_WRITE_POLICY AND
+   ARTS_RELEASE_POLICY STREQUAL _ARTS_DEFAULT_RELEASE_POLICY AND
+   NOT ARTS_USE_CXL)
     set(ARTS_TEST_REFERENCE_TREE ON)
 else()
     set(ARTS_TEST_REFERENCE_TREE OFF)
@@ -998,6 +1000,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         target_include_directories(regpool_spill_and_latch PRIVATE
             ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
             ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+        arts_apply_protocol(regpool_spill_and_latch ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
         target_link_libraries(regpool_spill_and_latch PRIVATE
             Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY}
             ${CMAKE_DL_LIBS})
@@ -1028,6 +1031,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_selfsend PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(net_selfsend ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
     set_test_log_level(net_selfsend 2)
     target_link_libraries(net_selfsend PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1041,6 +1045,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_rendezvous PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(net_rendezvous ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
     set_test_log_level(net_rendezvous 2)
     target_link_libraries(net_rendezvous PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1054,6 +1059,7 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
     target_include_directories(net_src_bind PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+    arts_apply_protocol(net_src_bind ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
     set_test_log_level(net_src_bind 2)
     target_link_libraries(net_src_bind PRIVATE
         Threads::Threads mimalloc-static arts::libfabric ${RT_LIBRARY})
@@ -1067,6 +1073,7 @@ add_executable(net_addr_frame_bound unit/net_addr_frame_bound.c)
 target_include_directories(net_addr_frame_bound PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+arts_apply_protocol(net_addr_frame_bound ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 target_link_libraries(net_addr_frame_bound PRIVATE Threads::Threads)
 register_pure_unit_test(net_addr_frame_bound)
 
@@ -1094,26 +1101,26 @@ add_executable(event_compute_next unit/event_compute_next.c)
 target_include_directories(event_compute_next PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+arts_apply_protocol(event_compute_next ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 register_pure_unit_test(event_compute_next)
 
 # --- Route-table slot reclamation (route_table.c) ---
 # Standalone like the SYNC_* tests: the test TU includes route_table.c, guid.c
 # and shared.c and supplies libc-backed allocator stubs, so no ARTS library
-# link is needed.  route_table.c carries no protocol conditionals, so any one
-# valid coherence combination satisfies ooo.h's arm check and the test covers
-# every arm.  Drives concurrent duplicate destroy against install to assert
-# the slot-return is single-flight: a caller that did not win must not free,
-# drain or unbind a slot that another GUID now owns.  Also drives late
-# re-reservations of destroyed GUIDs against racing lookups — the state in
-# which a freed slot's key word can repeat a key it no longer answers for —
-# pinning that a lookup verifies the object it pinned, not the word.
+# link is needed.  route_table.c carries no protocol conditionals, so the run
+# in the tree's own cell covers every arm.  Drives concurrent duplicate destroy
+# against install to assert the slot-return is single-flight: a caller that did
+# not win must not free, drain or unbind a slot that another GUID now owns.
+# Also drives late re-reservations of destroyed GUIDs against racing lookups —
+# the state in which a freed slot's key word can repeat a key it no longer
+# answers for — pinning that a lookup verifies the object it pinned, not the
+# word.
 add_executable(route_table_reclaim_dupdestroy
     unit/route_table_reclaim_dupdestroy.c)
-target_compile_definitions(route_table_reclaim_dupdestroy PRIVATE
-    ARTS_WRITE_POLICY_WB=1)
 target_include_directories(route_table_reclaim_dupdestroy PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+arts_apply_protocol(route_table_reclaim_dupdestroy ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 target_link_libraries(route_table_reclaim_dupdestroy PRIVATE Threads::Threads)
 register_pure_unit_test(route_table_reclaim_dupdestroy TIMEOUT 120)
 
@@ -1123,11 +1130,10 @@ register_pure_unit_test(route_table_reclaim_dupdestroy TIMEOUT 120)
 # claim loses to the live one; a retiring slot is waited out (deterministic,
 # via the reservation's after-miss and after-claim injection points).
 add_executable(route_table_dup_reserve unit/route_table_dup_reserve.c)
-target_compile_definitions(route_table_dup_reserve PRIVATE
-    ARTS_WRITE_POLICY_WB=1)
 target_include_directories(route_table_dup_reserve PRIVATE
     ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
+arts_apply_protocol(route_table_dup_reserve ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 target_link_libraries(route_table_dup_reserve PRIVATE Threads::Threads)
 register_pure_unit_test(route_table_dup_reserve TIMEOUT 30)
 set_tests_properties(route_table_dup_reserve PROPERTIES
@@ -2241,8 +2247,9 @@ endif()
 # library it disagrees with, which is a silent ABI mismatch (a protocol-
 # conditional struct laid out one way in the library and another way in the
 # test) rather than a failed test.  Scoped to library-linking targets: a
-# standalone test that links none of them compiles no library object to
-# disagree with, so it has nothing here to check against.
+# translation unit that includes a coherence layout without a complete cell
+# does not compile, so the standalone tests that compile runtime sources or
+# objects of their own are held to the same rule by the headers.
 get_property(_arts_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(_t IN LISTS _arts_test_targets)
     get_target_property(_kind ${_t} TYPE)

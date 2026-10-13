@@ -30,8 +30,7 @@ extern "C" {
  * @file val/types.h
  * @brief VAL (Multi-Reader, Node-Exclusive-Writer) cache/db layout.
  *
- * Selected by arts/coherence/types.h as the default, when neither
- * ARTS_PROTOCOL_EXCL nor ARTS_PROTOCOL_INV is defined.
+ * Selected by arts/coherence/types.h when ARTS_PROTOCOL_VAL is defined.
  * The WT vs WB write-policy variant is chosen here by ARTS_WRITE_POLICY_WB.  The
  * protocol-agnostic pieces (buffer, snapshot waiter, defines, container_of)
  * come from types_common.h; the of_cache/total_size/stub_size helpers live in
@@ -41,6 +40,9 @@ extern "C" {
  */
 
 #include "arts/coherence/types_common.h"
+#ifndef ARTS_PROTOCOL_VAL
+#error "val/types.h is the VAL layout; this translation unit's cell is another"
+#endif
 
 /* ========================================================================= */
 /** @addtogroup internal_db_structs

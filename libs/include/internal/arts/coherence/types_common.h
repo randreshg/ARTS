@@ -39,6 +39,41 @@ extern "C" {
  * @note Internal header.  User code should include @c arts.h.
  */
 
+/* A translation unit that sees a coherence layout is compiled for exactly one
+ * cell, the cell of the runtime it links: one protocol; under VAL, INV and
+ * EXCL one write policy and one release policy (FLUSH has neither axis); and
+ * one payload store, which is CXL memory only on the EXCL x PURGE cell, with
+ * exactly one residency. */
+#if defined(ARTS_PROTOCOL_VAL) + defined(ARTS_PROTOCOL_INV) +                  \
+        defined(ARTS_PROTOCOL_EXCL) + defined(ARTS_PROTOCOL_FLUSH) !=          \
+    1
+#error                                                                         \
+    "exactly one of ARTS_PROTOCOL_VAL, ARTS_PROTOCOL_INV, ARTS_PROTOCOL_EXCL and ARTS_PROTOCOL_FLUSH must be defined"
+#endif
+#if defined(ARTS_PROTOCOL_FLUSH)
+#if defined(ARTS_WRITE_POLICY_WT) || defined(ARTS_WRITE_POLICY_WB) ||          \
+    defined(ARTS_RELEASE_PURGE) || defined(ARTS_RELEASE_RETAIN)
+#error                                                                         \
+    "ARTS_PROTOCOL_FLUSH takes no ARTS_WRITE_POLICY_* or ARTS_RELEASE_* macro"
+#endif
+#elif defined(ARTS_WRITE_POLICY_WT) + defined(ARTS_WRITE_POLICY_WB) != 1
+#error                                                                         \
+    "exactly one of ARTS_WRITE_POLICY_WT and ARTS_WRITE_POLICY_WB must be defined"
+#elif defined(ARTS_RELEASE_PURGE) + defined(ARTS_RELEASE_RETAIN) != 1
+#error                                                                         \
+    "exactly one of ARTS_RELEASE_PURGE and ARTS_RELEASE_RETAIN must be defined"
+#endif
+#if defined(ARTS_USE_CXL)
+#if !defined(ARTS_PROTOCOL_EXCL) || !defined(ARTS_RELEASE_PURGE)
+#error "ARTS_USE_CXL belongs to the EXCL x PURGE cell"
+#endif
+#if defined(ARTS_CXL_STAGED) + defined(ARTS_CXL_DIRECT) != 1
+#error "ARTS_USE_CXL needs exactly one of ARTS_CXL_STAGED and ARTS_CXL_DIRECT"
+#endif
+#elif defined(ARTS_CXL_STAGED) || defined(ARTS_CXL_DIRECT)
+#error "a CXL residency (ARTS_CXL_STAGED, ARTS_CXL_DIRECT) needs ARTS_USE_CXL"
+#endif
+
 #include "arts.h"
 
 #include "arts/defs.h"

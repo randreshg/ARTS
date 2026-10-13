@@ -81,7 +81,7 @@ function(arts_coherence_model_tus out arm write_policy release_policy)
         else()
             set(tus coherence/excl/directory.c coherence/excl/purge.c)
         endif()
-    else() # VAL
+    elseif(arm STREQUAL "VAL")
         if(write_policy STREQUAL "WT")
             set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/val/directory.c coherence/rank_u64_map.c)
         else()
@@ -89,6 +89,8 @@ function(arts_coherence_model_tus out arm write_policy release_policy)
         endif()
         arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
         list(APPEND tus ${rel})
+    else()
+        message(FATAL_ERROR "no coherence arm named '${arm}'")
     endif()
     set(${out} ${tus} PARENT_SCOPE)
 endfunction()
@@ -575,6 +577,17 @@ if(ARTS_BUILD_BENCHMARKS)
         list(APPEND _ARTS_VARIANT_OBJLIBS arts_cxl)
     endif()
 
+    # Applies variant <suffix>'s cell to <target>: every translation unit
+    # linked into a variant's executable is compiled for that variant's cell,
+    # never for the tree's.
+    function(arts_apply_variant_protocol target suffix)
+        get_property(cell GLOBAL PROPERTY ARTS_VARIANT_CELL_${suffix})
+        if(NOT cell)
+            message(FATAL_ERROR "no ARTS variant named ${suffix}")
+        endif()
+        arts_apply_protocol(${target} ${cell})
+    endfunction()
+
     function(arts_variant suffix arm write_policy release_policy nocomb)
         # Optional 6th argument: the residency this variant's store uses.  A
         # variant that names one compiles the cxl module; every other variant
@@ -646,8 +659,11 @@ if(ARTS_BUILD_BENCHMARKS)
         # regpool.c (gathered from arts_regpool) includes fabric headers and
         # the static lib resolves fi_* symbols from libfabric.
         target_link_libraries(arts_static_${suffix} PRIVATE arts::libfabric)
-        arts_apply_protocol(arts_static_${suffix} "${arm}" "${write_policy}"
-                            "${release_policy}" "${nocomb}" "${cxl_residency}")
+        set_property(GLOBAL APPEND PROPERTY ARTS_VARIANTS ${suffix})
+        set_property(GLOBAL PROPERTY ARTS_VARIANT_CELL_${suffix}
+                     "${arm}" "${write_policy}" "${release_policy}" "${nocomb}"
+                     "${cxl_residency}")
+        arts_apply_variant_protocol(arts_static_${suffix} ${suffix})
         if(NOT cxl_residency STREQUAL "OFF")
             target_link_libraries(arts_static_${suffix} PRIVATE ${ARTS_CXL_LIB_PATH} ${ARTS_CXL_RAPID_LIBS})
         endif()

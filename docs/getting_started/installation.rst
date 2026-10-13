@@ -125,15 +125,15 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        system-wide; required by ``FLUSH``; evaluation only). Compile-time;
        all ranks must share one build.
    * - ``ARTS_COHERENCE_PROTOCOL``
-     - VAL
-     - Coherence protocol — ``VAL`` (default; validation: versioned
-       snapshots, readers never blocked/invalidated), ``INV`` (invalidation:
-       directory write-invalidate with acknowledged per-release invalidation
-       rounds), or ``EXCL`` (exclusion: per-DB distributed reader-writer
-       lock), all under the ``OCR`` model; or ``FLUSH`` (fetch the whole
-       payload at every remote acquire, write it back at every remote RW
-       release) under the ``DB_WRF`` model, with no write- or release-policy
-       axis of its own.
+     - INV
+     - Coherence protocol — ``INV`` (default; invalidation: directory
+       write-invalidate with acknowledged per-release invalidation rounds),
+       ``VAL`` (validation: versioned snapshots, readers never
+       blocked/invalidated), or ``EXCL`` (exclusion: per-DB distributed
+       reader-writer lock), all under the ``OCR`` model; or ``FLUSH``
+       (fetch the whole payload at every remote acquire, write it back at
+       every remote RW release) under the ``DB_WRF`` model, with no write-
+       or release-policy axis of its own.
        Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN,
        OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH.
    * - ``ARTS_WRITE_POLICY``

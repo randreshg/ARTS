@@ -121,9 +121,9 @@ with defaults lives in [README.md](README.md#build-options); the most common are
 | ------ | ------- | ------- |
 | `CMAKE_BUILD_TYPE` | `Debug` | `Debug` or `Release`. |
 | `ARTS_MEMORY_MODEL` | `OCR` (derived) | Memory model — **derived** from `ARTS_COHERENCE_PROTOCOL`, not chosen independently (passing it explicitly only asserts the value its protocol already implies; a mismatch is a configure error): `OCR` (races legal, the runtime orders every conflict it must; required by `VAL`/`INV`/`EXCL`) or `DB_WRF` (prose DB-WRF; exclusive write acquisition — the program guarantees that at most one write-mode acquisition of a DataBlock is live at any time, system-wide; required by `FLUSH`; evaluation only). Compile-time; all ranks must share one build. |
-| `ARTS_COHERENCE_PROTOCOL` | `VAL` | Coherence protocol — who keeps reader copies valid: `VAL` (default; acquire-time version validation, readers never blocked/tracked/invalidated), `INV` (release-time invalidation rounds), or `EXCL` (per-DB distributed reader-writer lock), all under the `OCR` model; or `FLUSH` (fetch the whole payload at every remote acquire, write it back at every remote RW release, block for the home's ACK) under the `DB_WRF` model, with no write- or release-policy axis. Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH. |
+| `ARTS_COHERENCE_PROTOCOL` | `INV` | Coherence protocol — who keeps reader copies valid: `INV` (default; release-time invalidation rounds), `VAL` (acquire-time version validation, readers never blocked/tracked/invalidated), or `EXCL` (per-DB distributed reader-writer lock), all under the `OCR` model; or `FLUSH` (fetch the whole payload at every remote acquire, write it back at every remote RW release, block for the home's ACK) under the `DB_WRF` model, with no write- or release-policy axis. Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH. |
 | `ARTS_WRITE_POLICY` | `WB` | Write policy at release granularity — `WT` (write-through: payload flushed to the block's home at every release; home serves reads) or `WB` (default; write-back: payload stays with the last writer, directory forwards on demand). Live in INV/VAL; EXCL requires WB. |
-| `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with its write grant when the last local user finishes — `PURGE` (hand copy and permission back to the home) or `RETAIN` (default; keep both until another node asks). Live in EXCL and in WT × {VAL, INV}; WB requires RETAIN. |
+| `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with a grant when its last local user finishes — `PURGE` (hand it back to the home, with the payload when it is an EXCL write grant) or `RETAIN` (default; keep it until another node asks). Live in EXCL (read and write grants) and in WT × {VAL, INV} (the write grant); WB requires RETAIN. |
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the ctest suite. |
 | `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (needs MPI). |
@@ -144,7 +144,7 @@ DataBlock consistency behavior is controlled by one primary compile-time
 knob and two protocol-conditional sub-knobs. `ARTS_COHERENCE_PROTOCOL`
 selects the protocol, which determines the memory model (`ARTS_MEMORY_MODEL`
 is **derived**, not chosen independently — passing it explicitly only
-asserts the value its protocol already implies): `VAL` (default), `INV`, or
+asserts the value its protocol already implies): `INV` (default), `VAL`, or
 `EXCL` require the `OCR` model (implementing the OCR v1.2.0 §1.6 memory
 model); `FLUSH` requires the `DB_WRF` model (prose DB-WRF; exclusive write
 acquisition — the program guarantees that at most one write-mode acquisition
@@ -154,11 +154,13 @@ The sub-knobs depend on the protocol: `ARTS_WRITE_POLICY` (`WT`/`WB`,
 default `WB`) selects **where** the canonical payload lives under `VAL`/`INV`
 — `WB` (with the last writer) or `WT` (flushed back to the DB home at every
 release); `ARTS_RELEASE_POLICY` (`PURGE`/`RETAIN`, default `RETAIN`) selects
-the release-time grant behavior under `EXCL` instead. `FLUSH` has neither
-axis: every remote acquire fetches and every remote RW release writes
-through, unconditionally. One binary is exactly one configuration, and every
-rank in a multinode run must use the same build. Each configuration is its
-own build tree, for example:
+whether a node hands a grant back to the home when its last local user
+finishes or keeps it until another node asks — under `EXCL` its read and
+write grants, under `WT` × {`VAL`, `INV`} the write grant. `FLUSH` has
+neither axis: every remote acquire fetches and every remote RW release
+writes through, unconditionally. One binary is exactly one configuration,
+and every rank in a multinode run must use the same build. Each
+configuration is its own build tree, for example:
 
 ```bash
 cmake -GNinja -Bbuild_ocr_val_wt  -DCMAKE_BUILD_TYPE=Debug -DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WT

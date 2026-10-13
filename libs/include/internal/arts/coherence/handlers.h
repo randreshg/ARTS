@@ -148,7 +148,7 @@ void arts_handler_db_flush_cts(void *item_v, void *args_v);
 void arts_db_flush_discard_landing(uint64_t txid, uint64_t cookie);
 #endif /* ARTS_PROTOCOL_FLUSH */
 
-#ifdef ARTS_WRITE_POLICY_WB
+#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
 /* arts_handler_db_snapshot_redirect body args (owner side). */
 struct arts_db_snapshot_redirect_args_s {
   arts_guid_t db_guid;
@@ -157,13 +157,16 @@ struct arts_db_snapshot_redirect_args_s {
   uint32_t slot;
   struct arts_rdzv_landing_s rdzv; /* requester's landing, forwarded by home */
 };
+#endif
 
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    defined(ARTS_WRITE_POLICY_WB)
 /* arts_handler_db_grant_confirm body args (home side). */
 struct arts_db_grant_response_ack_args_s {
   arts_guid_t db_guid;
   uint64_t version;
 };
-#endif /* ARTS_WRITE_POLICY_WB */
+#endif
 
 /* ===== Home-side handlers ============================================ */
 
@@ -250,7 +253,7 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
 
 /* ===== WB-only handlers ============================================== */
 
-#if defined(ARTS_WRITE_POLICY_WB) && !defined(ARTS_PROTOCOL_INV)
+#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
 /* Cat-C pure body (SNAPSHOT_REDIRECT, owner side): item_v is the db_s the dispatcher
  * acquired (cache is its first member); args_v is an
  * arts_db_snapshot_redirect_args_s.  NOT OoO-deferrable — the dispatcher
@@ -258,7 +261,7 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
  * installed on this rank), sends CACHE_DESTROY to the requester (so the
  * requester's parked RO waiter wakes and observes DB_DESTROYED). */
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
-#endif /* ARTS_WRITE_POLICY_WB && !ARTS_PROTOCOL_INV */
+#endif /* VAL x WB */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* Cat-C pure body (CONFIRM, home side; both write policies): item_v is the db_s the
@@ -362,7 +365,7 @@ void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
 void arts_send_db_destroy(unsigned int home_rank, arts_guid_t db_guid);
 void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid);
 
-#ifdef ARTS_WRITE_POLICY_WB
+#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
 /* Send SNAPSHOT_REDIRECT from home to the current owner, asking the owner to
  * serve SNAPSHOT_RESPONSE or a no-data response directly to requester_rank. */
 void arts_send_db_snapshot_redirect(unsigned int owner_rank,
@@ -370,6 +373,10 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
                                     unsigned int requester_rank,
                                     arts_guid_t edt_guid, uint32_t slot,
                                     const struct arts_rdzv_landing_s *rdzv);
+#endif
+
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    defined(ARTS_WRITE_POLICY_WB)
 
 /* Send CONFIRM_ACK from home to the new owner C after home has flipped
  * rw_holder to C. Self-send dispatches the handler inline.
@@ -398,7 +405,7 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v);
 void arts_db_owner_start_invalidate_round(
     struct arts_db_cache_s *cache, unsigned int new_owner,
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have);
-#endif /* ARTS_WRITE_POLICY_WB */
+#endif /* (VAL or INV) x WB */
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* Shared owner→owner transfer ship (defined in coherence/grant.c): ship the
@@ -543,7 +550,7 @@ void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
                                uint64_t data_size, uint64_t rdzv_txid,
                                uint64_t rdzv_cookie);
 
-#ifdef ARTS_WRITE_POLICY_WB
+#ifdef ARTS_RELEASE_RETAIN
 /* ===== EXCL RETAIN handlers (Cat-C direct dispatch) = */
 
 /* arts_handler_db_excl_forward: Cat-C @owner.  item_v is the full wire packet
@@ -599,7 +606,7 @@ void arts_send_db_excl_confirm(unsigned int home_rank, arts_guid_t db_guid);
 /* arts_send_db_excl_roret: reader → home: RO release (data-less). */
 void arts_send_db_excl_roret(unsigned int home_rank, arts_guid_t db_guid);
 
-#endif /* ARTS_WRITE_POLICY_WB */
+#endif /* ARTS_RELEASE_RETAIN */
 
 #endif /* ARTS_PROTOCOL_EXCL */
 

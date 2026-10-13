@@ -53,7 +53,7 @@
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, dir_state)
 #elif defined(ARTS_PROTOCOL_FLUSH)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, sharers)
-#else
+#elif defined(ARTS_PROTOCOL_VAL)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, rw_holder)
 #endif
 

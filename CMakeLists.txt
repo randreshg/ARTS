@@ -228,13 +228,14 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
 #                            happens-before; read acquisitions are free).
 #                            Passing the option asserts the expectation.
 #   ARTS_COHERENCE_PROTOCOL  Coherence family — who keeps reader copies valid:
-#                            VAL (default) — validation: each read acquire
-#                            checks its cached copy's version at the serving
-#                            side and refetches only when stale; readers are
-#                            never blocked, tracked, or invalidated.
-#                            INV — invalidation: reader copies stay valid until
-#                            a writer's release retires every standing copy in
-#                            an acknowledged invalidation round.
+#                            INV (default) — invalidation: reader copies stay
+#                            valid until a writer's release retires every
+#                            standing copy in an acknowledged invalidation
+#                            round.
+#                            VAL — validation: each read acquire checks its
+#                            cached copy's version at the serving side and
+#                            refetches only when stale; readers are never
+#                            blocked, tracked, or invalidated.
 #                            EXCL — exclusion: queue-fair distributed
 #                            reader-writer lock per DB; readers and writers
 #                            take turns, so no stale copy ever exists.
@@ -270,16 +271,21 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
 # already decides both), INV/VAL×WB×PURGE (a voluntary return hands back only
 # the permission while the bytes stay at the ex-owner, so the home still
 # cannot serve alone — and shipping them home too is write-through).
+# The build's default cell (the memory model follows from the protocol); the
+# test suite's reference tree is the tree of this cell.
+set(_ARTS_DEFAULT_COHERENCE_PROTOCOL "INV")
+set(_ARTS_DEFAULT_WRITE_POLICY "WB")
+set(_ARTS_DEFAULT_RELEASE_POLICY "RETAIN")
 set(ARTS_MEMORY_MODEL "" CACHE STRING
     "Memory model the build implements — DERIVED from ARTS_COHERENCE_PROTOCOL (OCR for VAL/INV/EXCL, DB-WRF for FLUSH); set it only to assert the expected value")
 set_property(CACHE ARTS_MEMORY_MODEL PROPERTY STRINGS "" OCR DB_WRF)
-set(ARTS_COHERENCE_PROTOCOL "VAL" CACHE STRING
-    "Coherence protocol: VAL (default; acquire-time version validation), INV (release-time invalidation rounds), EXCL (per-DB distributed reader-writer lock) — the three OCR-model protocols — or FLUSH (fetch at acquire, flush at release; requires the DB-WRF model: the program keeps every DB's write acquisitions exclusive)")
-set_property(CACHE ARTS_COHERENCE_PROTOCOL PROPERTY STRINGS VAL INV EXCL FLUSH)
-set(ARTS_WRITE_POLICY "WB" CACHE STRING
+set(ARTS_COHERENCE_PROTOCOL "${_ARTS_DEFAULT_COHERENCE_PROTOCOL}" CACHE STRING
+    "Coherence protocol: INV (default; release-time invalidation rounds), VAL (acquire-time version validation), EXCL (per-DB distributed reader-writer lock) — the three OCR-model protocols — or FLUSH (fetch at acquire, flush at release; requires the DB-WRF model: the program keeps every DB's write acquisitions exclusive)")
+set_property(CACHE ARTS_COHERENCE_PROTOCOL PROPERTY STRINGS INV VAL EXCL FLUSH)
+set(ARTS_WRITE_POLICY "${_ARTS_DEFAULT_WRITE_POLICY}" CACHE STRING
     "Write policy at release granularity: WT (flush to the home at every release) or WB (resident with the last writer, default). Live in INV/VAL; EXCL requires WB")
 set_property(CACHE ARTS_WRITE_POLICY PROPERTY STRINGS WT WB)
-set(ARTS_RELEASE_POLICY "RETAIN" CACHE STRING
+set(ARTS_RELEASE_POLICY "${_ARTS_DEFAULT_RELEASE_POLICY}" CACHE STRING
     "Who initiates the grant's return: PURGE (the holder, unasked, at its own idle edge) or RETAIN (the home, on demand; default). Live in EXCL and in WT x {VAL, INV}; INV/VAL x WB require RETAIN")
 set_property(CACHE ARTS_RELEASE_POLICY PROPERTY STRINGS PURGE RETAIN)
 # Read combining is the VAL family's DEFAULT: every other message class already
@@ -614,7 +620,8 @@ if((ARTS_COHERENCE_PROTOCOL STREQUAL "INV" OR ARTS_COHERENCE_PROTOCOL STREQUAL "
           "ARTS_RELEASE_POLICY=RETAIN.")
 endif()
 if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
-  if(NOT ARTS_WRITE_POLICY STREQUAL "WB" OR NOT ARTS_RELEASE_POLICY STREQUAL "RETAIN")
+  if(NOT ARTS_WRITE_POLICY STREQUAL _ARTS_DEFAULT_WRITE_POLICY OR
+     NOT ARTS_RELEASE_POLICY STREQUAL _ARTS_DEFAULT_RELEASE_POLICY)
     message(FATAL_ERROR
             "FLUSH has no write-policy or release-policy axis: every remote "
             "acquire fetches and every remote RW release writes through, so "
@@ -628,10 +635,11 @@ elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "INV")
   # in an invalidation round whose acks it collects before returning.  WT
   # additionally publishes each release to the home (home-canonical); WB
   # keeps the canonical copy at the owner and moves it owner-to-owner by
-  # migration (home is a pure directory that redirects reads), so it drops the
-  # publish and its ack — never the invalidate ack.
+  # migration (home is a pure directory that redirects reads), so its publish
+  # is control only: it opens the round and carries no payload, and its ack is
+  # awaited like the invalidate acks.
   set(ARTS_COHERENCE_ARM "INV")
-  message(STATUS "ARTS: model OCR, family INV, write policy ${ARTS_WRITE_POLICY}")
+  message(STATUS "ARTS: model OCR, family INV, write policy ${ARTS_WRITE_POLICY}, release policy ${ARTS_RELEASE_POLICY}")
 elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL")
   # EXCL (exclusion, entry-consistency style): a DB is held in one access mode
   # at a time (RO-shared or RW-exclusive); reader/writer are time-exclusive;
@@ -641,9 +649,9 @@ elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL")
   # the home, RETAIN keeps both until the home recalls them.
   set(ARTS_COHERENCE_ARM "EXCL")
   message(STATUS "ARTS: model OCR, family EXCL, release policy ${ARTS_RELEASE_POLICY}")
-else()
+elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "VAL")
   set(ARTS_COHERENCE_ARM "VAL")
-  message(STATUS "ARTS: model OCR, family VAL, write policy ${ARTS_WRITE_POLICY}")
+  message(STATUS "ARTS: model OCR, family VAL, write policy ${ARTS_WRITE_POLICY}, release policy ${ARTS_RELEASE_POLICY}")
 endif()
 # Requester-side combining of the MVCC-family remote read path: while one
 # snapshot request per DB is in flight, later same-rank read acquires park
@@ -652,7 +660,9 @@ endif()
 # default; the disable macro is applied per target by arts_apply_protocol,
 # not directory-wide: a build can hold several configurations at once, and
 # each must be able to differ on this axis without the others seeing it.
-if(ARTS_NO_RO_COMBINING)
+if(NOT ARTS_COHERENCE_ARM STREQUAL "VAL")
+  message(STATUS "ARTS RO request combining: none (${ARTS_COHERENCE_ARM} has no snapshot request to combine)")
+elseif(ARTS_NO_RO_COMBINING)
   message(STATUS "ARTS RO request combining: DISABLED (ablation build — concurrent same-DB read acquires each issue their own request)")
 else()
   message(STATUS "ARTS RO request combining: on (one in-flight snapshot request per DB)")

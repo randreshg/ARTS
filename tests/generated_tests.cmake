@@ -61,7 +61,7 @@ add_pure_unit_src(buffer_destroy_vs_acquire SOURCES ${CMAKE_SOURCE_DIR}/libs/src
 endif()
 # rank_bitset: the arts_rank_bitset_* symbols live in each arm's own
 # directory.c, three copies of one body, so the test runs once per copy: in the
-# reference tree (VAL), in the INV x WB tree and in the EXCL x PURGE tree.  The
+# VAL x WB tree, in the INV x WB tree and in the EXCL x PURGE tree.  The
 # source/link selection is keyed on the arm:
 #   VAL, INV -> compile that arm's directory.c standalone
 #               (ARTS_UNIT_STANDALONE_SHIMS shims)
@@ -77,7 +77,7 @@ elseif(ARTS_COHERENCE_ARM STREQUAL "INV" AND ARTS_WRITE_POLICY STREQUAL "WB")
     set(_rank_bitset_dir ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/inv/directory.c)
     add_pure_unit_src(rank_bitset SOURCES ${_rank_bitset_dir}
         DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
-elseif(ARTS_TEST_REFERENCE_TREE)
+elseif(ARTS_COHERENCE_ARM STREQUAL "VAL" AND ARTS_WRITE_POLICY STREQUAL "WB")
     set(_rank_bitset_dir ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/val/directory.c)
     add_pure_unit_src(rank_bitset SOURCES ${_rank_bitset_dir}
         DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)

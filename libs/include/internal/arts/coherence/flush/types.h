@@ -25,6 +25,10 @@ extern "C" {
  */
 
 #include "arts/coherence/types_common.h"
+#ifndef ARTS_PROTOCOL_FLUSH
+#error                                                                         \
+    "flush/types.h is the FLUSH layout; this translation unit's cell is another"
+#endif
 
 struct arts_db_cache_s {
   /* The home's line.  On a non-home stub the slot is empty except while the

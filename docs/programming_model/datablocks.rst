@@ -93,7 +93,7 @@ governed by the build-time protocol selection:
 
 * ``ARTS_COHERENCE_PROTOCOL`` selects the protocol, which determines the
   required memory model (``ARTS_MEMORY_MODEL`` is derived, not chosen
-  independently): ``VAL`` (default), ``INV``, or ``EXCL`` under the ``OCR``
+  independently): ``INV`` (default), ``VAL``, or ``EXCL`` under the ``OCR``
   model (implements the OCR v1.2.0 §1.6 contract), or ``FLUSH`` under the
   ``DB_WRF`` model (exclusive write acquisition, DB-WRF; evaluation only).
 * ``ARTS_WRITE_POLICY`` selects where the canonical payload rests between

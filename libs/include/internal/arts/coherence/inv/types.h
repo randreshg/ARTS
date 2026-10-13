@@ -140,6 +140,9 @@
 #define ARTS_COHERENCE_INV_TYPES_H
 
 #include "arts/coherence/types_common.h"
+#ifndef ARTS_PROTOCOL_INV
+#error "inv/types.h is the INV layout; this translation unit's cell is another"
+#endif
 #include "arts/rank_bitset.h"
 
 #include <stdbool.h>

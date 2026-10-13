@@ -75,7 +75,7 @@ MK_HANDLER(arts_handler_db_inv_redirect)
 #elif defined(ARTS_PROTOCOL_FLUSH)
 MK_HANDLER(arts_handler_db_fetch_request)
 MK_HANDLER(arts_handler_db_flush_announce)
-#elif defined(ARTS_WRITE_POLICY_WT) || defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_PROTOCOL_VAL)
 MK_HANDLER(arts_handler_db_grant_request)
 #ifdef ARTS_RELEASE_PURGE
 MK_HANDLER(arts_handler_db_grant_return)
@@ -156,7 +156,7 @@ static const struct expect_s g_expect[] = {
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_FETCH_REQUEST, arts_handler_db_fetch_request),
     E(OOO_DB_FLUSH_ANNOUNCE, arts_handler_db_flush_announce),
-#elif defined(ARTS_WRITE_POLICY_WT)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_SNAPSHOT_REQUEST, arts_handler_db_snapshot_request),
     E(OOO_DB_GRANT_REQUEST, arts_handler_db_grant_request),
@@ -164,7 +164,7 @@ static const struct expect_s g_expect[] = {
 #ifdef ARTS_RELEASE_PURGE
     E(OOO_DB_GRANT_RETURN, arts_handler_db_grant_return),
 #endif
-#elif defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
     E(OOO_DB_ACQUIRE, arts_db_acquire_replay_dep),
     E(OOO_DB_SNAPSHOT_REQUEST, arts_handler_db_snapshot_request),
     E(OOO_DB_GRANT_REQUEST, arts_handler_db_grant_request),
@@ -195,11 +195,12 @@ int main(void) {
       "INV+WT"
 #elif defined(ARTS_PROTOCOL_FLUSH)
       "FLUSH"
-#elif defined(ARTS_WRITE_POLICY_WT) && defined(ARTS_RELEASE_PURGE)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT) &&           \
+    defined(ARTS_RELEASE_PURGE)
       "VAL+WT+PURGE"
-#elif defined(ARTS_WRITE_POLICY_WT)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
       "VAL+WT"
-#elif defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
       "VAL+WB"
 #else
       "?"

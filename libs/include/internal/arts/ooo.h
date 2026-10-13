@@ -149,7 +149,7 @@ enum arts_ooo_kind {
  * cache when it sent the request; home for the acks) or the MISS action is
  * part of the protocol (INVALIDATE MISS → ACK; DELIVER MISS → landing
  * discard). */
-#elif defined(ARTS_WRITE_POLICY_WT)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by arts_db_acquire_all's per-dep 3-way)
                    */
@@ -166,7 +166,7 @@ enum arts_ooo_kind {
    * and replays on the install's drain like any other home-side body. */
   OOO_DB_GRANT_RETURN, /* → arts_handler_db_grant_return @ home */
 #endif
-#elif defined(ARTS_WRITE_POLICY_WB)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WB)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by arts_db_acquire_all's per-dep 3-way)
                    */
@@ -188,7 +188,7 @@ enum arts_ooo_kind {
                             install's drain */
 #else
 #error                                                                         \
-    "exactly one of ARTS_PROTOCOL_EXCL+ARTS_RELEASE_{PURGE,RETAIN}, ARTS_PROTOCOL_INV+ARTS_WRITE_POLICY_{WT,WB}, ARTS_WRITE_POLICY_{WT,WB} (VAL), or ARTS_PROTOCOL_FLUSH must be defined"
+    "exactly one of ARTS_PROTOCOL_EXCL+ARTS_RELEASE_{PURGE,RETAIN}, ARTS_PROTOCOL_INV+ARTS_WRITE_POLICY_{WT,WB}, ARTS_PROTOCOL_VAL+ARTS_WRITE_POLICY_{WT,WB}, or ARTS_PROTOCOL_FLUSH must be defined"
 #endif
 
   OOO_KIND_COUNT /* sentinel — g_ooo_table size (per-model) */

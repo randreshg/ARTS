@@ -61,16 +61,18 @@ extern "C" {
 #include "arts/coherence/types_common.h"
 
 /* Protocol-specific cache/db layout.  VAL carries the ownership-cache shape,
- * with the WT/WB write-policy split made inside the header via
- * ARTS_WRITE_POLICY_WB. */
+ * with the WT/WB write-policy split made inside the header. */
 #if defined(ARTS_PROTOCOL_EXCL)
 #include "arts/coherence/excl/types.h"
 #elif defined(ARTS_PROTOCOL_INV)
 #include "arts/coherence/inv/types.h"
 #elif defined(ARTS_PROTOCOL_FLUSH)
 #include "arts/coherence/flush/types.h"
-#else
+#elif defined(ARTS_PROTOCOL_VAL)
 #include "arts/coherence/val/types.h"
+#else
+#error                                                                         \
+    "no coherence protocol: define one of ARTS_PROTOCOL_VAL, ARTS_PROTOCOL_INV, ARTS_PROTOCOL_EXCL, ARTS_PROTOCOL_FLUSH"
 #endif
 
 /* ========================================================================= */
@@ -118,7 +120,7 @@ static inline uint64_t arts_db_cache_stub_size(void) {
   return offsetof(struct arts_db_s, dir_state);
 #elif defined(ARTS_PROTOCOL_FLUSH)
   return offsetof(struct arts_db_s, sharers);
-#else
+#elif defined(ARTS_PROTOCOL_VAL)
   return offsetof(struct arts_db_s, rw_holder);
 #endif
 }
