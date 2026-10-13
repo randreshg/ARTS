@@ -42,6 +42,10 @@
 #include <assert.h>
 #include <string.h>
 
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+#include <sanitizer/asan_interface.h>
+#endif
+
 #include "arts.h"
 #include "arts/cxl/wrapper.h"
 #include "arts/coherence/buffer.h"
@@ -170,6 +174,114 @@ static void *db_descriptor_alloc(arts_db_types_t db_type, uint64_t span) {
   }
   return ptr;
 }
+
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+/* A freed coherent descriptor is filled and held back for the next
+ * DB_QUARANTINE_SLOTS frees made by the same thread before the allocator gets
+ * it, and its fill is checked when it leaves.  A reference that outlives the
+ * descriptor and writes through it changes the fill and is reported, instead
+ * of landing in whatever object the allocator places there next; a write that
+ * comes after the descriptor has left goes unseen, so the window is counted in
+ * frees, not in time.  The descriptors still held at teardown are checked once
+ * no completion can run any more.  The whole allocation is filled, a home
+ * descriptor's directory as much as a stub's cache.  Under AddressSanitizer a
+ * held descriptor is poisoned too, so a stray access is reported where it
+ * happens, with its stack.  Each thread holds its own frees, so the quarantine
+ * orders no thread's free with another's: a thread sanitizer sees no
+ * synchronization between them that the program does not have. */
+#define DB_QUARANTINE_SLOTS 1024u
+#define DB_FREED_FILL 0xDF
+#define DB_FREED_WORD ((arts_guid_t)0xDFDFDFDFDFDFDFDFull)
+
+struct db_quarantine_ring_s {
+  struct db_quarantine_ring_s *next; /* every thread's ring, for the drain */
+  unsigned int head;
+  struct arts_db_s *slot[DB_QUARANTINE_SLOTS];
+};
+static ARTS_THREAD_LOCAL struct db_quarantine_ring_s *tl_db_quarantine;
+static struct db_quarantine_ring_s *g_db_quarantine_rings;
+
+static void db_quarantine_release(struct arts_db_s *db) {
+  size_t span = arts_malloc_usable_size(db);
+  ASAN_UNPOISON_MEMORY_REGION(db, span);
+  const unsigned char *p = (const unsigned char *)db;
+  for (size_t i = 0; i < span; i++) {
+    if (p[i] != DB_FREED_FILL) {
+      ARTS_ERROR("freed data-block descriptor %p was written at byte %zu",
+                 (void *)db, i);
+    }
+  }
+  arts_free(db);
+}
+#endif
+
+void arts_db_descriptor_free(struct arts_db_s *db) {
+  if (db == NULL) {
+    return;
+  }
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+  /* A live descriptor's GUID word names a data block, so it is never the fill
+   * word; a held one's always is.  One CAS makes the test and the claim a
+   * single step, so two frees of one descriptor cannot both pass it.  Under
+   * AddressSanitizer the second free is reported by the load of the poisoned
+   * word. */
+  arts_guid_t seen = __atomic_load_n(&db->cache.db_guid, __ATOMIC_RELAXED);
+  if (seen == DB_FREED_WORD ||
+      !__atomic_compare_exchange_n(&db->cache.db_guid, &seen, DB_FREED_WORD,
+                                   false, __ATOMIC_RELAXED,
+                                   __ATOMIC_RELAXED)) {
+    ARTS_ERROR("data-block descriptor %p freed twice", (void *)db);
+  }
+  size_t span = arts_malloc_usable_size(db);
+  memset(db, DB_FREED_FILL, span);
+  ASAN_POISON_MEMORY_REGION(db, span);
+  struct db_quarantine_ring_s *ring = tl_db_quarantine;
+  if (ring == NULL) {
+    ring = (struct db_quarantine_ring_s *)arts_calloc(
+        1, sizeof(struct db_quarantine_ring_s));
+    ring->next = __atomic_load_n(&g_db_quarantine_rings, __ATOMIC_RELAXED);
+    while (!__atomic_compare_exchange_n(&g_db_quarantine_rings, &ring->next,
+                                        ring, true, __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED)) {
+    }
+    tl_db_quarantine = ring;
+  }
+  struct arts_db_s *evicted = ring->slot[ring->head];
+  ring->slot[ring->head] = db;
+  ring->head = (ring->head + 1u) % DB_QUARANTINE_SLOTS;
+  if (evicted != NULL) {
+    db_quarantine_release(evicted);
+  }
+#else
+  arts_free(db);
+#endif
+}
+
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+void arts_db_descriptor_quarantine_drain(void) {
+  /* The caller has joined every other thread that can free a descriptor, so
+   * each ring is complete and visible here; when the shutdown gave up joining
+   * one, that thread may still free into its ring, so no ring is touched. */
+  if (__atomic_load_n(&arts_shutdown_abandon.unjoined_threads,
+                      __ATOMIC_RELAXED) != 0) {
+    ARTS_WARN("freed descriptors left unchecked: a thread never joined");
+    return;
+  }
+  struct db_quarantine_ring_s *ring =
+      __atomic_exchange_n(&g_db_quarantine_rings, NULL, __ATOMIC_RELAXED);
+  while (ring != NULL) {
+    for (unsigned int i = 0; i < DB_QUARANTINE_SLOTS; i++) {
+      if (ring->slot[i] != NULL) {
+        db_quarantine_release(ring->slot[i]);
+      }
+    }
+    struct db_quarantine_ring_s *next = ring->next;
+    arts_free(ring);
+    ring = next;
+  }
+  tl_db_quarantine = NULL;
+}
+#endif
 
 void arts_db_free(void *ptr) {
   struct arts_db_s *db = (struct arts_db_s *)ptr;

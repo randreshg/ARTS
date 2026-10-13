@@ -608,6 +608,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 1n_20w)
     foreach(_hook
             ARTS_SCHED_FUZZ
+            ARTS_WRITE_COMPLETION_DELAY_MS
             ARTS_NET_MAX_MSG
             ARTS_REGPOOL_FORCE_FULL_NODES)
         add_test(NAME injection_hook_refused_${_hook}
@@ -623,8 +624,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT ARTS_DEBUG_INJECTION)
     endforeach()
 endif()
 # Where the hooks are compiled, a value a hook cannot use stops the run
-# rather than leaving the hook off.  The provider ceiling is read when the
-# fabric comes up, so that one runs on several ranks.
+# rather than leaving the hook off.  The provider ceiling and the write delay
+# are read when the fabric comes up, so those two run on several ranks.
 if(ARTS_DEBUG_INJECTION)
     arts_test_cfg(_cfg 1n_20w)
     arts_test_cfg(_mn_cfg 2n_9w_1p)
@@ -644,9 +645,18 @@ if(ARTS_DEBUG_INJECTION)
         RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_NET_MAX_MSG=0"
         PASS_REGULAR_EXPRESSION "is not a positive byte count")
+    add_test(NAME injection_value_refused_write_delay COMMAND multinode_edt
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(injection_value_refused_write_delay PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 30
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_mn_cfg};ARTS_WRITE_COMPLETION_DELAY_MS=soon"
+        PASS_REGULAR_EXPRESSION "is not a delay")
     # A one-rank run brings no fabric up, so it refuses a fabric hook.
     foreach(_hook
-            ARTS_NET_MAX_MSG)
+            ARTS_NET_MAX_MSG
+            ARTS_WRITE_COMPLETION_DELAY_MS)
         add_test(NAME injection_fabric_hook_refused_${_hook}
                  COMMAND term_shutdown
                  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
@@ -1349,6 +1359,52 @@ foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
     set_tests_properties(coherence_stress_dist_${_v} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL")
 endforeach()
+
+# Blocks destroyed while the one-sided writes that moved their payloads may
+# still be awaiting their local completions.  It runs with those completions
+# held back (ARTS_WRITE_COMPLETION_DELAY_MS), so where payloads travel through
+# the fabric a completion that drops a buffer's last reference after its
+# block's descriptor is gone is the common case, and the descriptor
+# quarantine reports a write that lands in a freed descriptor; without the
+# quarantine such a write lands silently, so the test registers only where
+# both the injection hooks and the quarantine are compiled.  Where payloads
+# reach the next holder through the CXL store, the fabric moves none, so there
+# is no write completion to hold back and the test is not registered.
+# Its writes are ordered, so every arm that moves payloads registers it, and its
+# shutdown is quiescent.  The end-of-run line guards against a shutdown that
+# came before the work; it also makes CTest ignore the exit status, and the
+# descriptor check runs at teardown, after that line, so the teardown verdicts
+# are matched in its output instead: the runtime's [ERROR] line, or the address
+# sanitizer's report where held descriptors are poisoned, the launcher's verdict
+# on the other ranks, and the teardown work left undone because a thread never
+# joined or a rank had to be stopped.
+if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
+   NOT ARTS_CXL_TREE_RESIDENCY)
+    add_arts_test(coherence_late_write_completion)
+    register_multinode_test(coherence_late_write_completion TIMEOUT 120)
+    foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
+        set_property(TEST coherence_late_write_completion_${_v} APPEND PROPERTY
+            LABELS "coherence_stress")
+        set_property(TEST coherence_late_write_completion_${_v} APPEND PROPERTY
+            ENVIRONMENT "ARTS_WRITE_COMPLETION_DELAY_MS=20")
+        set_tests_properties(coherence_late_write_completion_${_v} PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: coherence_late_write_completion"
+            FAIL_REGULAR_EXPRESSION
+            "FAIL:;QUIESCENCE-DEBUG:;\\[ERROR\\];use-after-poison;died on signal;exited with status;left unchecked;left unrun;did not exit within")
+    endforeach()
+endif()
+
+# The freed-descriptor quarantine itself (ARTS_DEBUG_DB_QUARANTINE): a write
+# through a stale reference is reported when the descriptor leaves it and at
+# the teardown drain, a second free is refused, and clean frees report
+# nothing.
+if(ARTS_DEBUG_DB_QUARANTINE)
+    add_arts_test(db_descriptor_quarantine)
+    register_pure_unit_test(db_descriptor_quarantine TIMEOUT 60)
+    set_tests_properties(db_descriptor_quarantine PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS db_descriptor_quarantine"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+endif()
 
 # Large-payload cross-rank coherence transfer: a ~256 KiB DB is stamped by a
 # home-rank writer and RW-verified by workers on other ranks, so every hop ships

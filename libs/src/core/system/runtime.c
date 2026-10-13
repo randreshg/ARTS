@@ -110,8 +110,9 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 #elif !defined(NDEBUG)
   /* A hook's variable set where the hooks are not compiled would leave the
    * run unchanged, and the run would read as one that exercised the hook. */
-  static const char *const hook_vars[] = {"ARTS_SCHED_FUZZ", "ARTS_NET_MAX_MSG",
-                                          "ARTS_REGPOOL_FORCE_FULL_NODES"};
+  static const char *const hook_vars[] = {
+      "ARTS_SCHED_FUZZ", "ARTS_WRITE_COMPLETION_DELAY_MS", "ARTS_NET_MAX_MSG",
+      "ARTS_REGPOOL_FORCE_FULL_NODES"};
   for (size_t i = 0; i < sizeof(hook_vars) / sizeof(hook_vars[0]); i++) {
     const char *v = getenv(hook_vars[i]);
     if (v != NULL && v[0] != '\0') {
@@ -161,7 +162,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 #ifdef ARTS_DEBUG_INJECTION
     /* A one-rank run brings no fabric up, so a fabric hook it asks for would
      * leave the run unchanged. */
-    static const char *const fabric_hook_vars[] = {"ARTS_NET_MAX_MSG"};
+    static const char *const fabric_hook_vars[] = {
+        "ARTS_NET_MAX_MSG", "ARTS_WRITE_COMPLETION_DELAY_MS"};
     for (size_t i = 0;
          i < sizeof(fabric_hook_vars) / sizeof(fabric_hook_vars[0]); i++) {
       const char *v = getenv(fabric_hook_vars[i]);
@@ -515,6 +517,9 @@ void arts_runtime_global_cleanup() {
   if (arts_global_rank_count > 1) {
     arts_net_quiesce();
   }
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+  arts_db_descriptor_quarantine_drain();
+#endif
 
   /* Registered-slab pool: torn down last, after arts_clean_up_dbs (above)
    * has already released every DB payload buffer back to it — no thread is

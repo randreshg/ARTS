@@ -130,6 +130,7 @@ int main(void) {
 /* ── libc-backed alloc shims so the test links without the ARTS runtime ── */
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
+void arts_db_descriptor_free(struct arts_db_s *db) { free(db); }
 void *arts_malloc_aligned(size_t size, size_t align) {
   void *p = NULL;
   size_t a = align < sizeof(void *) ? sizeof(void *) : align;

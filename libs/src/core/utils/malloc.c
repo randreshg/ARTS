@@ -212,3 +212,7 @@ void arts_free(void *ptr) {
   DECREMENT_BYTES_MEMORY_FOOTPRINT_BY(ARTS_SYS_USABLE(ptr));
   ARTS_SYS_FREE(ptr);
 }
+
+size_t arts_malloc_usable_size(void *ptr) {
+  return ptr != NULL ? ARTS_SYS_USABLE(ptr) : 0;
+}

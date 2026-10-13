@@ -50,6 +50,8 @@ void *arts_calloc(size_t nmemb, size_t size);
 void *arts_calloc_aligned(size_t nmemb, size_t size, size_t align);
 void *arts_realloc(void *ptr, size_t size);
 void arts_free(void *ptr);
+/* Bytes the allocation at `ptr` provides, at least the size requested. */
+size_t arts_malloc_usable_size(void *ptr);
 
 #ifdef __cplusplus
 }

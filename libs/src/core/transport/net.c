@@ -1048,6 +1048,98 @@ static bool net_reap_tx_only(void) {
   return false;
 }
 
+#ifdef ARTS_DEBUG_INJECTION
+/* ARTS_WRITE_COMPLETION_DELAY_MS=<n> holds each one-sided write's local
+ * completion for a random 0..n ms before running it.  The fabric orders nothing
+ * between a write's local completion and the messages its target sends once
+ * the bytes have landed, so whatever a completion releases must stay valid
+ * however late it runs; a provider that reports completions promptly never
+ * shows that order.  A held completion stays outstanding until it runs, and
+ * quiesce runs every one still held before the endpoint closes. */
+struct net_held_write_s {
+  struct net_held_write_s *next;
+  struct net_txn_s *txn;
+  uint64_t due_ns;
+};
+/* Touched under the CQ token, or at quiesce once every thread has joined. */
+static struct net_held_write_s *g_held_writes;
+static uint64_t g_write_delay_rng;
+/* Set when the fabric comes up, before any thread exists to reap; 0 = off. */
+static int64_t g_write_delay_ns;
+
+static void net_write_delay_init(void) {
+  const char *env = getenv("ARTS_WRITE_COMPLETION_DELAY_MS");
+  long ms = 0;
+  if (env != NULL && env[0] != '\0') {
+    char *end = NULL;
+    ms = strtol(env, &end, 10);
+    if (end == env || *end != '\0' || ms < 0 || ms > 60000) {
+      ARTS_ERROR("arts_net: ARTS_WRITE_COMPLETION_DELAY_MS=\"%s\" is not a "
+                 "delay of 0-60000 ms",
+                 env);
+    }
+  }
+  g_write_delay_ns = (int64_t)ms * 1000000;
+  g_write_delay_rng = net_now_ns() | 1u;
+}
+
+static bool net_hold_write(struct net_txn_s *txn) {
+  if (g_write_delay_ns == 0) {
+    return false;
+  }
+  struct net_held_write_s *h =
+      (struct net_held_write_s *)arts_malloc(sizeof(struct net_held_write_s));
+  h->txn = txn;
+  g_write_delay_rng ^= g_write_delay_rng << 13;
+  g_write_delay_rng ^= g_write_delay_rng >> 7;
+  g_write_delay_rng ^= g_write_delay_rng << 17;
+  h->due_ns =
+      net_now_ns() + g_write_delay_rng % (uint64_t)(g_write_delay_ns + 1);
+  h->next = g_held_writes;
+  g_held_writes = h;
+  return true;
+}
+
+/* Run the held completions that are due, or every one with `all`. */
+static void net_run_held_writes(bool all) {
+  if (g_held_writes == NULL) {
+    return;
+  }
+  uint64_t now = all ? UINT64_MAX : net_now_ns();
+  for (struct net_held_write_s **pp = &g_held_writes; *pp != NULL;) {
+    struct net_held_write_s *h = *pp;
+    if (h->due_ns > now) {
+      pp = &h->next;
+      continue;
+    }
+    *pp = h->next;
+    net_txn_complete(h->txn);
+    atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
+    arts_free(h);
+  }
+}
+/* Quiesce's turn: run every held completion, unless a thread the shutdown
+ * gave up joining may still be reaping, and with it the held list; what it
+ * holds is then left to it. */
+static void net_quiesce_held_writes(void) {
+  if (g_write_delay_ns == 0) {
+    return;
+  }
+  if (__atomic_load_n(&arts_shutdown_abandon.unjoined_threads,
+                      __ATOMIC_RELAXED) != 0) {
+    ARTS_WARN("arts_net: held write completions left unrun: a thread never "
+              "joined");
+    return;
+  }
+  net_run_held_writes(true);
+}
+#else
+#define net_write_delay_init() ((void)0)
+#define net_hold_write(txn) false
+#define net_run_held_writes(all) ((void)0)
+#define net_quiesce_held_writes() ((void)0)
+#endif
+
 /* Reap ONE bounded CQ burst under the CQ token (caller MUST hold it): validate
  * and copy each inbound message onto the pending-dispatch list, repost released
  * landing buffers, and complete TX.  Does NOT dispatch — the caller decides
@@ -1056,6 +1148,7 @@ static bool net_reap_tx_only(void) {
  * held so the multi-recv buffer can be reposted immediately with no borrow
  * outliving the reap.  Returns true if any completion or error entry was seen. */
 static bool net_reap_locked(void) {
+  net_run_held_writes(false);
   /* Retry any landing-buffer repost the provider EAGAIN-deferred: this runs
    * under the CQ token on every reap pass, and each pass drains completions —
    * exactly the action that frees the provider queue slots the repost needs.
@@ -1141,7 +1234,9 @@ static bool net_reap_locked(void) {
         }
         g_pending_tail = pn;
       }
-      if (e->flags & (FI_SEND | FI_WRITE)) {
+      if ((e->flags & (FI_SEND | FI_WRITE)) &&
+          !((e->flags & FI_WRITE) &&
+            net_hold_write((struct net_txn_s *)e->op_context))) {
         net_txn_complete((struct net_txn_s *)e->op_context);
         atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1,
                                   memory_order_relaxed);
@@ -1410,6 +1505,7 @@ static bool net_lookup_iface_addr(const char *ifname,
 
 void arts_net_init(const char *provider, const char *fabric_domain,
                    const char *net_interface) {
+  net_write_delay_init();
   bool provider_pinned = provider && provider[0] != '\0';
   if (provider_pinned) {
     /* Config is the deliberate artifact, the env var is ambient: overwrite
@@ -1828,6 +1924,7 @@ void arts_net_quiesce(void) {
    * bound guards against a completion that never arrives on a wedged provider.
    * Called single-threaded, after every worker/progress thread has joined, so
    * net_reap_tx_only needs no CQ token — no other thread can contend the CQ. */
+  net_quiesce_held_writes();
   for (int i = 0;
        i < 100000 &&
        atomic_load_explicit(&g_net.tx_outstanding, memory_order_relaxed) != 0;

@@ -128,7 +128,8 @@ with defaults lives in [README.md](README.md#build-options); the most common are
 | `ARTS_BUILD_TESTS` | `OFF` | Build the ctest suite. |
 | `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (needs MPI). |
 | `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan). |
-| `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`), each inert until its environment variable is set. |
+| `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_WRITE_COMPLETION_DELAY_MS`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`), each inert until its environment variable is set. |
+| `ARTS_DEBUG_DB_QUARANTINE` | `OFF` | Debug builds only: hold every freed coherent data-block descriptor back, filled, and report a write through a reference that outlived it. |
 
 A Release build carries no debug facility; each `ARTS_DEBUG_*` option is OFF
 by default, accepted only in a Debug build, and combines with the others.
@@ -183,7 +184,7 @@ ctest --test-dir build -R edt_create_basic                  # one test by name
 Each test sets its own `ARTS_CONFIG` to point at the matching cfg under
 `configs/local/test/`, so no config files are copied into the build directory.
 A test that needs a debug facility registers only in a tree that turns it on
-(`-DARTS_DEBUG_INJECTION=ON`).
+(`-DARTS_DEBUG_INJECTION=ON`, `-DARTS_DEBUG_DB_QUARANTINE=ON`).
 
 Configuration
 =============

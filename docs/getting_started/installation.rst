@@ -229,9 +229,19 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - Debug builds only: compile the run-time injection hooks, each inert
        until its environment variable is set — ``ARTS_SCHED_FUZZ=<pct>``
        (short random delays at the lock-free decision points),
+       ``ARTS_WRITE_COMPLETION_DELAY_MS=<n>`` (hold each one-sided write's
+       local completion for a random 0..n ms),
        ``ARTS_NET_MAX_MSG=<bytes>`` (lower the provider's one-sided ceiling),
        ``ARTS_REGPOOL_FORCE_FULL_NODES=<n,...>`` (treat NUMA nodes as full).
        The tests that need a hook register only where this is on.
+   * - ``ARTS_DEBUG_DB_QUARANTINE``
+     - OFF
+     - Debug builds only: fill every freed coherent data-block descriptor and
+       hold it back for the next 1024 frees made by the same thread,
+       reporting a write through a reference that outlived it when the
+       descriptor leaves the quarantine and at teardown, and refusing a second
+       free; under ``ARTS_DEBUG_SANITIZER=ADDRESS`` the held memory is
+       poisoned as well.
    * - ``ARTS_COUNTER_CONFIG``
      - configs/counters_off.cfg
      - Counter configuration file parsed into introspection macros. The

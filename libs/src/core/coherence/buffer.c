@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arts/db.h"       /* arts_db_descriptor_free */
 #include "arts/gas/guid.h" /* arts_db_szhint_bound */
 #include "arts/memory/regpool.h"
 #include "arts/system/print.h"  /* ARTS_ERROR (unadvertisable landing) */
@@ -53,7 +54,7 @@ static void buf_free_retired(struct arts_db_cache_s *cache) {
 
 static void buf_storage_free(struct arts_db_cache_s *cache) {
   arts_lf_pool_destroy_with(&cache->buf_freelist, arts_regpool_free);
-  arts_free(arts_db_of_cache(cache));
+  arts_db_descriptor_free(arts_db_of_cache(cache));
 }
 
 /* Park a buffer drawn from a cache on that cache's list, then let go of the
@@ -110,7 +111,7 @@ void arts_db_buf_storage_release(struct arts_db_cache_s *cache) {
     buf_storage_free(cache);
   }
 #else
-  arts_free(arts_db_of_cache(cache));
+  arts_db_descriptor_free(arts_db_of_cache(cache));
 #endif
 }
 

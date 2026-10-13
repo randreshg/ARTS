@@ -323,7 +323,9 @@ int main(void) {
 /* libc-backed alloc shims, so the test links without the runtime; the
  * descriptor free is held back (see settle) and the registered pool counted. */
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
-void arts_free(void *ptr) {
+void arts_free(void *ptr) { free(ptr); }
+void arts_db_descriptor_free(struct arts_db_s *db) {
+  void *ptr = db;
   void *live = ptr;
   if (ptr != NULL && atomic_compare_exchange_strong(&g_db_live, &live, NULL)) {
     if (!atomic_load(&g_released)) {

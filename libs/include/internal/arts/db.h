@@ -149,6 +149,17 @@ void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu);
 
 void arts_db_free(void *ptr);
 
+/* Free a coherent descriptor's storage.  Under ARTS_DEBUG_DB_QUARANTINE it is
+ * filled and held back instead, and checked when it leaves the quarantine and
+ * at teardown that nothing wrote to it. */
+void arts_db_descriptor_free(struct arts_db_s *db);
+#ifdef ARTS_DEBUG_DB_QUARANTINE
+/* Check and free every descriptor still held back.  Called once every other
+ * thread that can free a descriptor has been joined; skipped, with a warning,
+ * when a thread the shutdown gave up joining may still free. */
+void arts_db_descriptor_quarantine_drain(void);
+#endif
+
 /* Install a descriptor a create built on this rank, named by the control
  * block arts_route_table_make_handle made for it.  On success the slot takes
  * over the ref `cb` carries and, when this rank is not the block's home, the
