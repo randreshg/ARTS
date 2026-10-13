@@ -28,7 +28,7 @@ from artsrun.model.plane import RuntimeKind
 from artsrun.model.profile import Profile
 from artsrun.paths import scratch_dir
 from artsrun.run.command import build_command, build_env, cxl_wrap, render, with_post_verify
-from artsrun.run.markers import marker_path, read_marker
+from artsrun.run.markers import marker_path, marker_status, read_marker
 from artsrun.run.types import Cell, CellResult, Status
 
 _JOB_ID = re.compile(r"(\d+)")
@@ -264,10 +264,7 @@ class SlurmBackend:
             rc, wall = marker
             result.rc = rc
             result.wall_s = wall
-            # timeout(1) reports 124 for a TERM expiry and 137 when the -k
-            # escalation had to kill.
-            result.status = (Status.TIMEOUT if rc in (124, 137)
-                             else Status.OK if rc == 0 else Status.FAIL)
+            result.status = marker_status(rc, wall, result.cell.timeout_s)
             self._jobs.pop(job_id, None)
             self._running_at.pop(job_id, None)
             return result

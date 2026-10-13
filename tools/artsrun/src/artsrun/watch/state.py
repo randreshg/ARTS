@@ -297,7 +297,7 @@ class RunState:
         if now - self._marker_sweep_at < 5.0:
             return False
         self._marker_sweep_at = now
-        from artsrun.run.markers import marker_path, read_marker
+        from artsrun.run.markers import marker_path, marker_status, read_marker
 
         changed = False
         for key in self.order:
@@ -308,8 +308,7 @@ class RunState:
             if marker is None:
                 continue
             rc, wall = marker
-            status = (Status.TIMEOUT if rc in (124, 137)
-                      else Status.OK if rc == 0 else Status.FAIL)
+            status = marker_status(rc, wall, view.cell.timeout_s)
             result = CellResult(cell=view.cell, status=status, rc=rc,
                                 wall_s=wall, log_path=view.log_path)
             apply_to(result)

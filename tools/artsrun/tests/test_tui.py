@@ -1035,7 +1035,9 @@ def _green_count(svg):
     return Counter(re.findall(r'fill="(#[0-9a-fA-F]{6})"', svg))["#4ebf71"]
 
 
-def test_a_checked_box_is_filled_and_an_unchecked_one_is_not():
+def test_a_checked_box_is_filled_and_an_unchecked_one_is_not(monkeypatch):
+    # The screenshot's colours are the oracle, which NO_COLOR would remove.
+    monkeypatch.delenv("NO_COLOR", raising=False)
     # State shown by the glyph's colour alone reads the same at a glance; the
     # box itself has to carry it.
     async def check(app, pilot):
@@ -1056,7 +1058,9 @@ def test_a_checked_box_is_filled_and_an_unchecked_one_is_not():
     assert off == 0
 
 
-def test_the_application_boxes_show_state_the_same_way():
+def test_the_application_boxes_show_state_the_same_way(monkeypatch):
+    # The screenshot's colours are the oracle, which NO_COLOR would remove.
+    monkeypatch.delenv("NO_COLOR", raising=False)
     async def check(app, pilot):
         from textual.widgets import TabbedContent
 
@@ -1289,6 +1293,9 @@ def test_the_run_action_is_not_blocked_before_anything_runs():
     # startup, so the screen reported a campaign already running from the
     # moment it opened and the key did nothing for the life of the process.
     async def check(app, pilot):
+        # Only the flag is under test; a real campaign would need the
+        # profile's machine to exist.
+        app._run_campaign = lambda selection: None
         started = app._campaign_running
         app.action_run()
         return started, app._campaign_running

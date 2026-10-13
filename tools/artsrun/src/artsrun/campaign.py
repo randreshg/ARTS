@@ -473,7 +473,7 @@ def recorded_results(run_dir: Path, cells: list) -> list[CellResult]:
     # A fire-and-forget job finishes whether or not anyone recorded it: its
     # own marker on the shared filesystem carries the outcome the track never
     # saw, because the process that would have written the track was gone.
-    from artsrun.run.markers import marker_path, read_marker
+    from artsrun.run.markers import marker_path, marker_status, read_marker
 
     seen = {r.cell.key for r in out}
     for cell in cells:
@@ -483,8 +483,7 @@ def recorded_results(run_dir: Path, cells: list) -> list[CellResult]:
         if marker is None:
             continue
         rc, wall = marker
-        status = (Status.TIMEOUT if rc in (124, 137)
-                  else Status.OK if rc == 0 else Status.FAIL)
+        status = marker_status(rc, wall, cell.timeout_s)
         log = run_dir / "cells" / cell.log_name
         out.append(CellResult(
             cell=cell, status=status, rc=rc, wall_s=wall,

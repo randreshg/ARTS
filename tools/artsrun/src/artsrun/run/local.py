@@ -16,9 +16,8 @@ from artsrun.model.profile import Profile
 from artsrun.paths import scratch_dir
 from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
                                  with_post_verify, with_timeout)
+from artsrun.run.markers import marker_status
 from artsrun.run.types import Cell, CellResult, Status
-
-TIMEOUT_RC = 124
 
 # How long a cell may go on after it has produced its whole result.  Once the
 # completion marker and the runtime's own end-to-end stamp are both in the log
@@ -113,9 +112,8 @@ class LocalBackend:
         # by the runner, not by itself -- so it is reported as a timeout and
         # the checker decides, from the log alone, whether the run had already
         # measured itself.
-        status = Status.TIMEOUT if (reaped or proc.returncode == TIMEOUT_RC) else (
-            Status.OK if proc.returncode == 0 else Status.FAIL
-        )
+        status = (Status.TIMEOUT if reaped
+                  else marker_status(proc.returncode, wall, cell.timeout_s))
         return CellResult(
             cell=cell, status=status, rc=proc.returncode,
             wall_s=wall, log_path=log_path,

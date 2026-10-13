@@ -256,3 +256,20 @@ def test_a_capped_campaign_keeps_at_most_that_many_jobs_out(tmp_path):
                      poll_interval_s=0.0).run()
     assert len(done) == 10
     assert backend.peak == 3
+
+
+@pytest.mark.parametrize("rc, wall, status", [
+    (0, 12.0, "ok"),
+    (1, 12.0, "fail"),
+    (124, 1800.2, "timeout"),
+    (124, 3.0, "timeout"),
+    (137, 1800.0, "timeout"),
+    (137, 1801.0, "timeout"),
+    (137, 1799.9, "fail"),
+    # srun kills the surviving tasks of a step whose other task crashed,
+    # and exits 137 long before the budget: that run failed.
+    (137, 44.5, "fail"),
+])
+def test_a_marker_status_is_a_timeout_only_at_the_budget(rc, wall, status):
+    from artsrun.run.markers import marker_status
+    assert marker_status(rc, wall, 1800) == status

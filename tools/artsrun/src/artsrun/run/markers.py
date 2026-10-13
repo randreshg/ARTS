@@ -12,12 +12,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artsrun.run.types import Cell
+from artsrun.run.types import Cell, Status
 
 
 def marker_path(log_dir: Path, cell: Cell) -> Path:
     """Where a cell's job records its own outcome."""
     return log_dir / f"{cell.slug}.rc"
+
+
+def marker_status(rc: int, wall_s: float, budget_s: int) -> Status:
+    """How a job ended, from the exit status and wall it recorded.
+
+    timeout(1) exits 124 when its TERM ended the run and 137 when its -k
+    escalation had to kill.  A launcher also exits 137 when it kills a step
+    because another of its tasks crashed, so 137 is a timeout only once the
+    run has reached its budget; earlier it is a failure."""
+    if rc == 0:
+        return Status.OK
+    if rc == 124 or (rc == 137 and wall_s >= budget_s):
+        return Status.TIMEOUT
+    return Status.FAIL
 
 
 def read_marker(path: Path) -> tuple[int, float] | None:

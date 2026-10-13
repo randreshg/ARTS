@@ -246,7 +246,7 @@ class CellDetail(Vertical):
         head.append(status, style=style)
         if view.rc is not None:
             rc = f"rc={view.rc}"
-            if view.rc == 124:
+            if view.status == Status.TIMEOUT:
                 rc += " (timeout)"
             head.append(f"   {rc}", style="red" if view.rc else "green")
         if view.elapsed_s:
