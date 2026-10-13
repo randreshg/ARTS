@@ -56,6 +56,10 @@ struct arts_edt_s;
 void arts_runtime_node_init(struct arts_config_s *config);
 void arts_runtime_global_cleanup();
 void arts_runtime_private_cleanup();
+/* Returns once the shutdown entry's CAS winner has finished its entry (its
+ * stop walk and, on the initiator, its drain); acquire, so what the entry
+ * wrote is visible after it.  Called only after this thread's loop ended. */
+void arts_runtime_wait_shutdown_entry(void);
 void arts_runtime_stop();
 void arts_runtime_stop_workers();
 void arts_runtime_stop_network();

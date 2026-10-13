@@ -506,7 +506,7 @@ bool arts_socket_sentinel_check(void) {
    * orderly teardown can reach this probe first too; both enter the same
    * shutdown, so the probe need not tell them apart. */
   if (!arts_global_message_table || poll_incoming == NULL ||
-      arts_node_info.shutdown_state) {
+      __atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE)) {
     return false;
   }
   int n = (int)(arts_global_message_table->table_length - 1) * (int)ports;
@@ -640,7 +640,7 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
                      sizeof(struct sockaddr_in)) < 0) {
         /* Stop retrying once this rank's shutdown has begun.  During startup
          * only the signal watcher begins one, and it reports the signal. */
-        if (arts_node_info.shutdown_state) {
+        if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE)) {
           return false;
         }
         if (++retry_count >= max_retries) {
@@ -725,7 +725,7 @@ bool arts_transport_setup_incoming() {
       if (errno != EADDRINUSE) {
         break; /* a non-contention error — fail fast */
       }
-      if (arts_node_info.shutdown_state) {
+      if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE)) {
         return false;
       }
       if (++bind_retries >= max_bind_retries) {

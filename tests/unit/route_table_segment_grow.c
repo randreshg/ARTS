@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * route_table_segment_grow — force the lazy segment-chain GROWTH in
- * search_for_empty: band overflow, CAS-loss spare free, and convergence
- * (census 18-gas GAP 7; suspected bugs B041 / B042).
+ * search_for_empty: band overflow, CAS-loss spare free, and convergence.
  *
  * A route_table band is COLLISION_RESOLVES (8) wide.  When >8 DISTINCT GUIDs
  * hash to the same band on the root segment, the 9th claim cannot fit and
@@ -21,11 +20,11 @@
  *      same overflowing key-set → all converge on one slot per key, no
  *      lost/duplicate slot, and (ASan) the CAS-loss spare frees leave no leak.
  *
- *   3. Document B042: the "band full, growth can't help → hard ARTS_ERROR" path
- *      is effectively UNREACHABLE — search_for_empty always extends the chain
- *      when `next == NULL` (calloc-backed), so an arbitrarily large colliding
- *      set is always absorbed by enough growth.  We install far more than one
- *      band's worth of colliding keys and assert NO abort occurs.
+ *   3. Growth always helps: search_for_empty extends the chain whenever
+ *      `next == NULL`, so an arbitrarily large colliding set is absorbed and
+ *      the impossible-state ARTS_ERROR after its loop is never reached.  We
+ *      install far more than one band's worth of colliding keys and assert NO
+ *      abort occurs.
  *
  * No runtime: route_table.c + guid.c + shared.c #include'd; OoO drain no-op.
  */
@@ -233,15 +232,14 @@ int main(void) {
   free(storage);
   arts_delete_route_table(g_root);
 
-  /* ---- 3. B042 unreachable: a large colliding set is always absorbed. ---- *
+  /* ---- 3. A large colliding set is always absorbed. ---------------------- *
    * NCOLLIDE (40) >> one band (8); if growth could ever fail to help, the
    * serial install above would have aborted (ARTS_ERROR → _exit non-zero).
-   * Reaching here proves the chain always extends — the hard-ERROR is dead
-   * code under a calloc-backed allocator. */
+   * Reaching here shows the chain always extends. */
 
   printf("PASS route_table_segment_grow: forced chain growth absorbed %d "
-         "colliding keys, concurrent grow converges, B042 hard-ERROR "
-         "unreachable\n",
+         "colliding keys, concurrent grow converges, no impossible-state "
+         "abort\n",
          NCOLLIDE);
   return 0;
 }

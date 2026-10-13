@@ -56,6 +56,11 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
 void arts_edt_delete(struct arts_edt_s *edt);
 /* deleter pointer for foreign TUs that compare against or install it. */
 void (*arts_edt_get_deleter(void))(void *);
+/* Whether `h` holds an EDT every dependence of which was satisfied, so that
+ * it was admitted to acquire and run.  An installed one that is still found
+ * once every runtime thread has joined never finished: the shutdown abandoned
+ * it, with whatever it acquired. */
+bool arts_edt_admitted(arts_shared_ptr_t h);
 
 /* arts_edt_satisfy_slot is the OCR-standard API — declared once in the public
  * header (arts.h); internal TUs that call it include that.  Not re-declared

@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * handle_launcher precedence.
- * Documents B106 (default-launcher SSH foot-gun).
  *
  * handle_launcher resolves config->launcher with this precedence:
  *   0. cfg value == "flux"                    -> "flux" iff FLUX_TASK_RANK is
@@ -13,18 +12,16 @@
  *   1. SLURM_PROCID or SLURM_NNODES present   -> "slurm"  (env wins over cfg)
  *   2. LSB_HOSTS or LSB_MCPU_HOSTS present    -> "lsf"    (env wins over cfg)
  *   3. no scheduler env, cfg value == "local" -> "local"
- *   4. no scheduler env, value NULL or other  -> "ssh"   (DEFAULT, B106)
- *
- * Case 4 is the foot-gun: a bare cfg with no launcher= line and no scheduler
- * env silently becomes SSH (which spawns ssh children), NOT local — flux env
- * present or not.  This test PINS all outcomes, including that env overrides
- * an explicit value="local" (slurm/lsf win), that the bare default is "ssh",
- * and the flux opt-in contract in both directions.
+ *   4. no scheduler env, value NULL or "ssh"  -> "ssh"   (the documented
+ *      default for a config with no launcher line, flux env present or not)
+ *   5. no scheduler env, value "slurm"/"lsf"  -> HARD ERROR (the scheduler's
+ *      task environment is missing)
+ *   6. no scheduler env, any other value      -> HARD ERROR (names no launcher)
  *
  * Pure unit: each case clears the scheduler env first, drives handle_launcher,
  * checks config->launcher, then frees it (handle_launcher mallocs the string).
- * The flux-without-env case is an ARTS_ERROR death path, probed through the
- * armed longjmp stub in config_test_common.h.
+ * The ARTS_ERROR death paths are probed through the armed longjmp stub in
+ * config_test_common.h.
  */
 
 #include "../../libs/src/core/system/config.c"
@@ -35,6 +32,29 @@
 #include <string.h>
 
 static int fails = 0;
+
+/* Static: its contents stay defined across the abort stub's longjmp. */
+static struct arts_config_s g_refused;
+
+static void expect_refused(const char *desc, const char *cfg_value) {
+  memset(&g_refused, 0, sizeof(g_refused));
+  g_abort_fired = 0;
+  g_abort_armed = 1;
+  if (setjmp(g_abort_jmp) == 0) {
+    handle_launcher(&g_refused, cfg_value, NULL);
+    g_abort_armed = 0;
+    fprintf(stderr, "FAIL launcher[%s]: '%s' accepted as '%s'\n", desc,
+            cfg_value, g_refused.launcher ? g_refused.launcher : "(null)");
+    fails++;
+    arts_free(g_refused.launcher);
+    return;
+  }
+  g_abort_armed = 0;
+  if (!g_abort_fired) {
+    fprintf(stderr, "FAIL launcher[%s]: longjmp without abort\n", desc);
+    fails++;
+  }
+}
 
 static void clear_sched_env(void) {
   unsetenv("SLURM_PROCID");
@@ -77,13 +97,23 @@ int main(void) {
   clear_sched_env();
   run_case("explicit-local", "local", "local");
 
-  /* 4a. no scheduler env, value NULL -> ssh (DEFAULT foot-gun, B106). */
+  /* 4. no scheduler env: no value, or "ssh" -> ssh. */
   clear_sched_env();
   run_case("bare-default-ssh", NULL, "ssh");
-
-  /* 4b. no scheduler env, value="cluster" (unknown) -> ssh. */
   clear_sched_env();
-  run_case("unknown-value-ssh", "cluster", "ssh");
+  run_case("explicit-ssh", "ssh", "ssh");
+
+  /* 5. a scheduler named without its task environment: refused. */
+  clear_sched_env();
+  expect_refused("slurm-no-env", "slurm");
+  clear_sched_env();
+  expect_refused("lsf-no-env", "lsf");
+
+  /* 6. a value that names no launcher, or only begins like one: refused. */
+  clear_sched_env();
+  expect_refused("unknown-value", "cluster");
+  clear_sched_env();
+  expect_refused("local-prefix", "localhost");
 
   /* 0a. value="flux" + flux task env -> flux. */
   clear_sched_env();
@@ -132,6 +162,6 @@ int main(void) {
     return 1;
   }
   printf("PASS config_launcher_env_precedence: flux opt-in both ways, "
-         "slurm/lsf env-win, bare->ssh (B106 foot-gun pinned)\n");
+         "slurm/lsf env-win, bare->ssh, unknown values refused\n");
   return 0;
 }

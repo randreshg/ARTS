@@ -98,20 +98,23 @@ void arts_get_latest_gpu_db(arts_lc_meta_t *host, arts_lc_meta_t *dev) {
 }
 
 void arts_get_random_gpu_db(arts_lc_meta_t *host, arts_lc_meta_t *dev) {
+  /* The first copy-back is the host's only image, so it waits for the lock;
+   * a later one is a random refresh that a held lock skips. */
   bool first_flag = (host->gpu == -1);
   bool random_flag = ((arts_thread_safe_random() & 1) == 0);
-  if (first_flag || random_flag) {
-    if (try_version_lock(host)) {
-      memcpy(host->data, dev->data, host->data_size);
-      host->gpu_version = dev->gpu_version;
-      host->gpu_time_stamp = dev->gpu_time_stamp;
-      *host->host_time_stamp = dev->gpu_time_stamp;
-      host->gpu = dev->gpu;
-      // if(!first_flag && random_flag)
-      // arts_gpu_invalidate_route_tables(host->guid, (unsigned int) -1);
-      version_unlock(host);
-    }
+  if (first_flag) {
+    (void)version_lock(host);
+  } else if (!random_flag || !try_version_lock(host)) {
+    return;
   }
+  memcpy(host->data, dev->data, host->data_size);
+  host->gpu_version = dev->gpu_version;
+  host->gpu_time_stamp = dev->gpu_time_stamp;
+  *host->host_time_stamp = dev->gpu_time_stamp;
+  host->gpu = dev->gpu;
+  // if(!first_flag && random_flag)
+  // arts_gpu_invalidate_route_tables(host->guid, (unsigned int) -1);
+  version_unlock(host);
 }
 
 void arts_get_non_zeros_unsigned_int(arts_lc_meta_t *host,

@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * buffer install version guard ('>=' retreat) monotonicity (B031:
- * same-version distinct-bytes silent loss, documented as by-design).
+ * buffer install version guard ('>=' retreat) monotonicity.
  *
  * arts_db_buf_install publishes a new buffer only when its version is strictly
  * greater than the currently-installed one (the guard is old->version >=

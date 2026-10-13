@@ -3,10 +3,11 @@ ranks are launched."""
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Launcher(StrEnum):
@@ -43,6 +44,23 @@ class SshSettings(BaseModel):
 
     budget: int = Field(ge=1)
     hosts: list[str] = Field(default_factory=list)
+
+    @field_validator("hosts")
+    @classmethod
+    def _plain_host_names(cls, hosts: list[str]) -> list[str]:
+        """Each host becomes one entry of the runtime's `nodes` list, which
+        refuses a port suffix or an empty entry and expands a bracket into
+        several nodes, so an entry holding ',', '[', ']', ':' (an IPv6
+        literal included) or whitespace fails the profile here rather than
+        every cell at load."""
+        for host in hosts:
+            if not host or re.search(r"[,\[\]:\s]", host):
+                raise ValueError(
+                    f"ssh.hosts entry {host!r} is not a plain host name: the "
+                    "runtime's nodes list takes one name per node, with no "
+                    "port suffix (ports come from `ports`), no bracket range "
+                    "and no ':' or whitespace")
+        return hosts
 
 
 class SlurmSettings(BaseModel):

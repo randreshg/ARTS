@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_get_time_stamp (and a documentation probe of arts_printf torn
- * output) from libs/src/core/utils/diag.c.
+ * arts_get_time_stamp and arts_printf's line integrity, from
+ * libs/src/core/utils/diag.c.
  *
  * arts_get_time_stamp() returns clock_gettime(CLOCK_REALTIME) folded to
  * nanoseconds (tv_sec*1e9 + tv_nsec).  Properties:
@@ -9,7 +9,7 @@
  *      consecutive samples must be monotonically non-decreasing under normal
  *      conditions.  REALTIME can step backward on an NTP adjustment, so this
  *      is documented as best-effort: a single backward step is reported as a
- *      NOTE (the census caveat), not a hard failure; the test only hard-fails
+ *      NOTE, not a hard failure; the test only hard-fails
  *      if the clock is grossly broken (every sample identical for a long busy
  *      loop would indicate the fold math collapsed, or a huge backward jump).
  *   B. Folding sanity: the value is a plausible ns-since-epoch (> year 2020,
@@ -17,13 +17,10 @@
  *   C. Resolution: across many threads sampling concurrently the call is
  *      thread-safe (no shared mutable state) — ASan/TSan must stay clean.
  *
- * DOCUMENTED (census bug B133): arts_printf prints the " [rank] " prefix and
- * the body via two separate stdio calls, so concurrent callers can interleave
- * (torn lines).  We exercise that path from many threads writing fixed-length
- * tokens and scan the captured output for torn lines, reporting the tear count
- * as a NOTE.  This documents the non-atomicity without making the test flaky
- * (the property "two stdio calls are not atomic" is the point, not a pass/fail
- * threshold).
+ *   D. Line integrity: arts_printf writes the " [rank] " prefix and the body
+ *      as one piece of output.  Many threads print fixed tokens concurrently
+ *      into a captured stdout; every captured line must be exactly
+ *      " [0] TOKEN_<id>_<nnn>" and every line must arrive.
  *
  * STANDALONE STRATEGY: diag.c reaches arts_global_rank_id via arts.h +
  * arts/system/threads.h.  We pre-define those include guards and provide a
@@ -84,7 +81,7 @@ static void *mono_worker(void *arg) {
   return NULL;
 }
 
-/* ---- Part B: torn-output documentation for arts_printf ---- */
+/* ---- Part D: arts_printf line integrity ---- */
 #define PRINTF_THREADS 6
 #define PRINTF_LINES 300
 
@@ -95,8 +92,6 @@ static void *printf_worker(void *arg) {
   while (atomic_load_explicit(&g_pgate, memory_order_acquire) == 0) {
   }
   for (int i = 0; i < PRINTF_LINES; i++) {
-    /* Body is a fixed token; the runtime prepends " [rank] " as a SEPARATE
-     * stdio call, so concurrent bodies/prefixes can interleave. */
     arts_printf("TOKEN_%ld_%03d\n", id, i);
   }
   return NULL;
@@ -135,14 +130,14 @@ int main(void) {
                   back);
   }
 
-  /* ===== Part B: torn arts_printf output (documentation). ===== */
-  /* Redirect stdout to a temp file so we can scan for torn lines. */
+  /* ===== Part D: arts_printf line integrity. ===== */
+  /* Redirect stdout to a temp file so the lines can be scanned. */
   {
     char tmpl[] = "diag_printf_XXXXXX";
     int fd = mkstemp(tmpl);
     if (fd < 0) {
-      (void)fprintf(stderr, "NOTE diag_timestamp: mkstemp failed, skip torn "
-                            "probe\n");
+      (void)fprintf(stderr, "FAIL diag_timestamp: mkstemp failed\n");
+      rc = 1;
     } else {
       fflush(stdout);
       int saved = dup(STDOUT_FILENO);
@@ -164,32 +159,36 @@ int main(void) {
       close(saved);
       close(fd);
 
-      /* Scan: a well-formed line is " [0] TOKEN_<id>_<nnn>".  A torn line is
-       * one where the prefix and body got separated by another thread's
-       * output.  We count lines that contain the prefix but no TOKEN, or a
-       * TOKEN with no leading prefix on its line. */
+      /* A well-formed line is exactly " [0] TOKEN_<id>_<nnn>\n"; another
+       * thread's output between a prefix and its body breaks two lines. */
       FILE *f = fopen(tmpl, "r");
       uint64_t torn = 0, total = 0;
       if (f) {
         char line[256];
         while (fgets(line, sizeof(line), f)) {
           total++;
-          int has_prefix = (strstr(line, "[0]") != NULL);
-          int has_token = (strstr(line, "TOKEN_") != NULL);
-          /* Atomic line would have BOTH.  Prefix-only or token-only == torn. */
-          if (has_prefix != has_token) {
+          long id = -1;
+          int seq = -1;
+          int end = 0;
+          if (sscanf(line, " [0] TOKEN_%ld_%d\n%n", &id, &seq, &end) != 2 ||
+              strncmp(line, " [0] TOKEN_", 11) != 0 || line[end] != '\0' ||
+              line[end - 1] != '\n' || strstr(line + 11, "TOKEN_") != NULL) {
             torn++;
           }
         }
         fclose(f);
       }
       (void)remove(tmpl);
-      (void)fprintf(stderr,
-                    "NOTE diag_timestamp: arts_printf produced %" PRIu64
-                    " torn line(s) out of %" PRIu64 " under %d concurrent "
-                    "writers (B133: prefix+body are two stdio calls, not "
-                    "atomic)\n",
-                    torn, total, PRINTF_THREADS);
+      if (torn != 0 ||
+          total != (uint64_t)PRINTF_THREADS * (uint64_t)PRINTF_LINES) {
+        (void)fprintf(stderr,
+                      "FAIL diag_timestamp: arts_printf produced %" PRIu64
+                      " broken line(s), %" PRIu64 " line(s) in all (want %d) "
+                      "under %d concurrent writers\n",
+                      torn, total, PRINTF_THREADS * PRINTF_LINES,
+                      PRINTF_THREADS);
+        rc = 1;
+      }
     }
   }
 
@@ -197,7 +196,7 @@ int main(void) {
     return 1;
   }
   printf("PASS diag_timestamp: per-thread non-decreasing (best-effort), fold "
-         "in plausible range, thread-safe concurrent sampling; B133 torn "
-         "arts_printf documented\n");
+         "in plausible range, thread-safe concurrent sampling; arts_printf "
+         "lines whole\n");
   return 0;
 }

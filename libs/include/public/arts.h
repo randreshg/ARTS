@@ -560,9 +560,13 @@ void arts_shutdown();
 /**
  * @brief Abort the ARTS runtime with an error code.
  *
- * Unlike arts_shutdown(), this function does not return.  It flushes
- * standard output streams and terminates the process immediately.
- * Remote nodes will detect the disconnection and shut down.
+ * Unlike arts_shutdown(), this function does not return.  It may be called
+ * from any thread.  It first flushes every stdio stream, as exit() does, and
+ * therefore waits for a stream another thread is in the middle of using; it
+ * then ends the process with @p error_code.  Since other threads may still be
+ * running, nothing else runs on the way out: no atexit handler, no
+ * destructor, no sanitizer exit-time check.  Remote nodes will detect the
+ * disconnection and shut down.
  *
  * @param error_code Process exit code (0-255).
  */
@@ -793,6 +797,10 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
  * MSG_EDT_SATISFY_SLOT when @p edt_guid is remote).
  * With DB_MODE_NULL, @p data_guid is an opaque uint64 value: it is preserved
  * without DB lookup or acquisition, and the slot pointer remains NULL.
+ * A @p slot at or above the EDT's @c depc names no dependence of it: the rank
+ * that holds the EDT ends the process with a fatal error naming the EDT, the
+ * slot and the count, since the caller, possibly on another rank, cannot be
+ * told.
  */
 void arts_edt_satisfy_slot(arts_guid_t edt_guid, uint32_t slot,
                            arts_guid_t data_guid, arts_db_access_mode_t mode);

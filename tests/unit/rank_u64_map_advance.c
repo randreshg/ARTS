@@ -1,8 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * rank_u64_map advance / set / get contract + concurrency (B033: set is
- * non-monotonic and can clobber advance; B034: create/get/set no NULL/OOB
- * guard).
+ * rank_u64_map advance / set / get contract + concurrency.
  *
  * arts_rank_u64_map_advance(m, rank, v) = monotonic-max via CAS-loop; returns
  * true IFF the slot strictly advanced (v > old).  arts_rank_u64_map_set is
@@ -12,8 +10,8 @@
  *   1. Single-thread contract:
  *      - advance from 0: advance(5)->true, advance(5)->false (equal),
  *        advance(4)->false (lower), advance(6)->true.  Slot ends 6.
- *      - set CAN go backward: set(2) after slot==6 leaves slot==2 (documents
- *        B033 — set is non-monotonic).  advance never retreats.
+ *      - set CAN go backward: set(2) after slot==6 leaves slot==2 (set is an
+ *        overwrite by contract).  advance never retreats.
  *      - rank >= nranks: advance/set are no-ops (false / silent); get OOB → 0.
  *   2. Concurrency (stress): K threads each advance the SAME slot with strictly
  *      increasing DISTINCT proposals.  Invariants after join:
@@ -72,7 +70,7 @@ static int part1_contract(void) {
     (void)fprintf(stderr, "FAIL slot should be 6\n");
     rc = 1;
   }
-  /* set CAN go backward (B033). */
+  /* set is an overwrite: it CAN go backward. */
   arts_rank_u64_map_set(m, 0, 2);
   if (arts_rank_u64_map_get(m, 0) != 2) {
     (void)fprintf(stderr, "FAIL set(2) should overwrite backward to 2\n");

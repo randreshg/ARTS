@@ -16,6 +16,7 @@
 #include "arts/transport/protocol.h" /* arts_msg_rank_version_pair_s */
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -98,11 +99,19 @@ size_t arts_rank_u64_map_serialize(const struct arts_rank_to_u64_map_s *m,
   return (sizeof(uint32_t) * 2) + ((size_t)n * sizeof(*entries));
 }
 
-void arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m, const void *in,
+bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m, const void *in,
                             size_t size) {
-  (void)size; /* used by debug assertions; production ignores it */
+  const size_t head = sizeof(uint32_t) * 2;
+  if (size < head) {
+    return false;
+  }
+  const uint32_t *count_field = (const uint32_t *)in;
+  uint32_t n = count_field[0];
+  if (n > (size - head) / sizeof(struct arts_msg_rank_version_pair_s)) {
+    return false;
+  }
   if (m == NULL) {
-    return;
+    return true;
   }
   /* Loading into the LIVE map rather than swapping a fresh one in is what
    * keeps this ledger readable without a lifetime protocol: the slot array is
@@ -115,12 +124,10 @@ void arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m, const void *in,
   for (unsigned int r = 0; r < m->nranks; r++) {
     atomic_store_explicit(&m->slots[r], 0, memory_order_release);
   }
-  const uint32_t *count_field = (const uint32_t *)in;
-  uint32_t n = count_field[0];
   const struct arts_msg_rank_version_pair_s *entries =
-      (const struct arts_msg_rank_version_pair_s *)((const char *)in +
-                                                    (sizeof(uint32_t) * 2));
+      (const struct arts_msg_rank_version_pair_s *)((const char *)in + head);
   for (uint32_t i = 0; i < n; i++) {
     arts_rank_u64_map_set(m, (unsigned int)entries[i].rank, entries[i].version);
   }
+  return true;
 }

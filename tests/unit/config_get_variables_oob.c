@@ -1,31 +1,20 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_config_get_variables empty-value + non-terminated key.
- * Probes B101 (config.c:163,171, suspected HIGH) and PINS the verified result.
+ * arts_config_get_variables on its edge lines (read via fmemopen, so EOF and
+ * the missing final newline are exact).
  *
- * arts_config_get_variables parses a cfg FILE* line-by-line as key=value.
- * Two suspected hazards, exercised via fmemopen (precise EOF / no-newline):
- *   (1) val[size-1] (line 163), size=strlen(val): a line "key=" with NO
- *       trailing newline at EOF makes strtok return val=="" (size 0), so
- *       val[size-1] == val[-1].
- *   (2) strncpy(variable, var, 255) (line 171): a key >= 255 chars is NOT
- *       NUL-terminated, so remove_white_spaces() scans past the 255-byte field.
- *
- * VERIFIED FINDING (this test runs ASan-CLEAN, so exposes_runtime_bug=false):
- * neither suspected hazard is an actual out-of-bounds heap access, because of
- * the getline/struct buffer layout:
- *   (1) `val` always points at least one byte INTO the getline line buffer
- *       (just past the '=' strtok replaced with '\0'); val[-1] therefore lands
- *       on that former-'=' byte, which is in-bounds of the line allocation and
- *       holds '\0' (never '\n'), so the guarded write never executes.  The
- *       suspected val[-1] OOB cannot manifest.
- *   (2) the node is malloc'd sizeof(struct)+size with value[] copied size+1
- *       bytes (NUL included), so remove_white_spaces' scan over the
- *       non-terminated `variable[255]` field runs straight into value[] and
- *       stops at value's own NUL — still inside the allocation.
- * The test therefore PINS that get_variables handles empty trailing values and
- * over-long keys WITHOUT a detectable OOB; a future struct/layout change that
- * makes either land out of bounds would flip ASan to red here.
+ *   (1) strtok never yields an empty token.  A final line "key=" with no
+ *       newline therefore has no value token and is skipped like a line with
+ *       no '=', while "empty=\n" has the token "\n" and stores the empty
+ *       string.
+ *   (2) A line's end, "\n" or "\r\n", is no part of its value: "crlf=local"
+ *       written with "\r\n" stores "local", and every blank (space or tab)
+ *       is dropped from a key and its value, so "tabbed\t=\tlocal\t" stores
+ *       "local" under "tabbed".
+ *   (3) A key longer than the 255-byte name field: the name is cut to fit and
+ *       stays NUL-terminated inside its field, the node's value is intact, and
+ *       the value's terminating NUL lies inside the node's allocation (a
+ *       sanitizer build reports a write past it).
  */
 
 #include "../../libs/src/core/system/config.c"
@@ -35,14 +24,15 @@
 #include <string.h>
 
 int main(void) {
-  /* Build a buffer whose FINAL line is "key=" with no trailing newline, so
-     getline returns "key=" and strtok(val) == "".  Precede it with a normal
-     line and a no-'=' line (must be skipped). */
+  /* The final line is "key=" with no newline, so it has no value token. */
   char buf[512];
   int n = snprintf(buf, sizeof(buf),
-                   "good=val\n" /* normal: parsed */
-                   "noequals\n" /* skipped (val NULL) */
-                   "key=");     /* trailing empty value, NO newline at EOF */
+                   "good=val\n"           /* normal: parsed */
+                   "noequals\n"           /* skipped (val NULL) */
+                   "crlf=local\r\n"       /* CRLF line end */
+                   "tabbed\t=\tlocal\t\n" /* blanks around both */
+                   "empty=\n"             /* value token "\n": stores "" */
+                   "key=");               /* no value token at EOF: skipped */
   (void)n;
 
   FILE *f = fmemopen(buf, strlen(buf), "r");
@@ -53,25 +43,39 @@ int main(void) {
   struct arts_config_variable_s *vars = arts_config_get_variables(f);
   (void)fclose(f);
 
-  /* Walk + free. Only "good=val" yields a node: "noequals" has no '=' (val
-     NULL -> skipped), and the trailing "key=" with an EMPTY field makes
-     strtok(NULL,"=") return NULL too (strtok never yields a "" token for a
-     lone trailing delimiter) -> val is NULL and the val[-1] code at line 163 is
-     NEVER reached.  This is the structural reason the suspected B101 part-1 OOB
-     is unreachable: there is no input for which `val` is the empty string.
-     => exactly 1 node. */
+  /* "noequals" has no '=', and the trailing "key=" has no value token. */
   unsigned int count = 0;
+  const char *crlf = NULL;
+  const char *empty = NULL;
+  const char *tabbed = NULL;
   for (struct arts_config_variable_s *p = vars; p; p = p->next) {
     count++;
+    if (strcmp(p->variable, "crlf") == 0) {
+      crlf = p->value;
+    } else if (strcmp(p->variable, "empty") == 0) {
+      empty = p->value;
+    } else if (strcmp(p->variable, "tabbed") == 0) {
+      tabbed = p->value;
+    }
   }
-  if (count != 1) {
-    fprintf(stderr, "FAIL get_variables: expected 1 node, got %u\n", count);
+  if (count != 4 || crlf == NULL || strcmp(crlf, "local") != 0 ||
+      empty == NULL || empty[0] != '\0' || tabbed == NULL ||
+      strcmp(tabbed, "local") != 0) {
+    fprintf(stderr,
+            "FAIL get_variables: expected good, crlf=\"local\", empty=\"\" "
+            "and tabbed=\"local\" (4 nodes), got %u node(s)%s%s%s\n",
+            count,
+            crlf && strcmp(crlf, "local") != 0 ? ", crlf kept its \\r" : "",
+            empty && empty[0] ? ", empty not empty" : "",
+            tabbed == NULL ? ", no key \"tabbed\" (a tab kept in it)"
+            : strcmp(tabbed, "local") != 0 ? ", tabbed kept a tab"
+                                           : "");
     config_free_variables(vars);
     return 1;
   }
   config_free_variables(vars);
 
-  /* Now the >=255-char key (B101 part 2): non-terminated strncpy. */
+  /* A 300-character key. */
   char big[512];
   memset(big, 'k', 300);
   big[300] = '=';
@@ -85,10 +89,24 @@ int main(void) {
   }
   struct arts_config_variable_s *vars2 = arts_config_get_variables(f2);
   (void)fclose(f2);
-  /* remove_white_spaces over the non-terminated 255-byte field runs inside
-     get_variables already; if ASan is clean, just free. */
+  if (vars2 == NULL || vars2->next != NULL) {
+    fprintf(stderr, "FAIL get_variables: long key should yield one node\n");
+    config_free_variables(vars2);
+    return 1;
+  }
+  if (strnlen(vars2->variable, sizeof(vars2->variable)) !=
+          sizeof(vars2->variable) - 1 ||
+      strcmp(vars2->value, "v") != 0) {
+    fprintf(stderr,
+            "FAIL get_variables: long key not cut to %zu "
+            "terminated characters, or value not \"v\"\n",
+            sizeof(vars2->variable) - 1);
+    config_free_variables(vars2);
+    return 1;
+  }
   config_free_variables(vars2);
 
-  printf("PASS config_get_variables_oob: empty-value + long-key handled\n");
+  printf("PASS config_get_variables_oob: empty value, CRLF line end, blanks "
+         "and long key handled\n");
   return 0;
 }

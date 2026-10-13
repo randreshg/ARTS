@@ -64,9 +64,11 @@ extern "C" {
  * That reservation publishes only after the retire settles, because an
  * identity retire that finds another object hands the key back. */
 #define ARTS_ROUTE_KEY_RETIRING ((arts_guid_t)1)
-/* Number of independent shards for the remote_route_table.  Must be a
- * power of 2 so (key & (N-1)) is the shard selector. */
-#define ARTS_REMOTE_ROUTE_SHARDS 8
+/* Number of independent shards for the remote_route_table: a power of 2, so
+ * (key & (N-1)) is the shard selector and each shard holds
+ * 2^(route_table_size - ARTS_REMOTE_ROUTE_SHARD_BITS) entries. */
+#define ARTS_REMOTE_ROUTE_SHARD_BITS 3
+#define ARTS_REMOTE_ROUTE_SHARDS (1 << ARTS_REMOTE_ROUTE_SHARD_BITS)
 
 /* Route_item: GUID slot.  Permanent (init-array, never freed).
  *
@@ -264,13 +266,19 @@ void arts_reset_route_table_iterator(arts_route_table_iterator_t *iter,
                                      arts_route_table_t *table);
 arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter);
 
-uint64_t arts_clean_up_route_table(arts_route_table_t *route_table);
+/* Retire every object installed in `route_table` for which `keep` (NULL:
+ * none) answers false, free every slot's parked payloads, and return how many
+ * objects stayed installed.  Only meaningful once no thread can reach the
+ * table. */
+uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
+                                   bool (*keep)(arts_shared_ptr_t));
 /* Payloads parked on the OoO lists of every slot of `route_table` (its whole
  * segment chain), read in place without consuming them.  Only meaningful once
  * no thread can push or drain. */
 unsigned int arts_route_table_parked_count(arts_route_table_t *route_table);
 void arts_delete_route_table(arts_route_table_t *route_table);
-void arts_clean_up_dbs();
+/* arts_clean_up_route_table over every table of this rank. */
+uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t));
 
 #ifdef __cplusplus
 }

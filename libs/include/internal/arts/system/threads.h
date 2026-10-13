@@ -70,6 +70,17 @@ void arts_thread_main_join(void);
 void arts_enter_shutdown_state(bool initiator);
 void arts_handler_shutdown(void);
 
+/* Ends the process at once with `status`, waiting for no other thread: stdout
+ * and stderr are flushed only if no thread holds them (a flush to a sink that
+ * accepts nothing can still block), and no exit handler, destructor or
+ * sanitizer exit-time check runs.  Callable from any thread. */
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void arts_exit_now(uint8_t status);
+
 /* Architectural spin-wait hint for idle poll loops (x86 `pause` / arm `yield`;
  * compiler barrier elsewhere).  Cuts the pipeline/power cost of a busy-poll
  * and forces re-reads of polled memory each iteration. */

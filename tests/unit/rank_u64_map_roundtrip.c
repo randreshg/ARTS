@@ -1,32 +1,26 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * rank_u64_map serialize/load round-trip + robustness
- * (B032: deserialize trusts wire count → OOB read; B034: no NULL/OOB guards).
+ * rank_u64_map serialize/load round-trip and the load's bounds.
  *
  * Wire layout: count(u32) + pad(u32) + count * {rank(u32), pad(u32), ver(u64)}.
  * len == 8 + count*16; zero slots are elided.
  *
  * Properties:
  *   1. Sparse round-trip: set a few non-zero (rank,version) pairs, serialize,
- *      deserialize into a fresh map of the SAME nranks → every pair restored,
- *      zeros stay zero.
+ *      load into a map of the SAME nranks -> every pair restored, every other
+ *      slot cleared.
  *   2. count == number of NON-ZERO slots; serialized length == 8 + count*16.
- *   3. Empty map → count==0, length==8, deserialize → all-zero map.
- *   4. Worst-case bound: ALL nranks slots non-zero → length == 8 + nranks*16,
- *      and the caller buffer of exactly that size suffices (no overflow; ASan
- *      red-zones a too-small buffer).
- *   5. rank >= nranks pairs in the wire are DROPPED by deserialize (set() OOB
- *      guard) — they neither crash nor alias another slot.
+ *   3. Empty map -> count==0, length==8, load -> all-zero map.
+ *   4. Worst-case bound: ALL nranks slots non-zero -> length == 8 + nranks*16,
+ *      and a caller buffer of exactly that size suffices.
+ *   5. rank >= nranks pairs in the image are dropped by the load: they neither
+ *      crash nor alias another slot.
+ *   6. The load reads nothing past `size`: an image whose count names more
+ *      pairs than `size` holds, or a `size` shorter than the count header, is
+ *      refused (false) with the map untouched -- the short buffer is a heap
+ *      allocation of exactly `size` bytes, so a read past it is an ASan report.
  *
- *   6. SUSPECTED BUG (B032): deserialize ignores `size` and trusts count[0].
- *      Feeding a SHORT buffer with an inflated count[0] makes it read past the
- *      buffer (OOB read).  This is probed in a forked CHILD so the parent can
- *      report it without aborting the legit checks: under ASan the child dies
- *      with a heap-buffer-overflow (the genuine defect surfacing).  The parent
- *      records exposes_runtime_bug and still PASSES the round-trip obligation.
- *      We do NOT weaken/mask the deserializer.
- *
- * Standalone: links rank_u64_map.c (no shims needed — it uses libc malloc).
+ * Standalone: links rank_u64_map.c (no shims needed -- it uses libc malloc).
  */
 
 #include "arts/coherence/directory.h"
@@ -36,8 +30,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #define NRANKS 8
 
@@ -177,32 +169,47 @@ static int check_oob_rank_dropped(void) {
   return rc;
 }
 
-/* B032 probe: a short buffer with an inflated count → OOB read.  Run in a
- * child; the parent observes whether it crashed (the defect). */
-static int probe_inflated_count_oob(void) {
-  /* Buffer big enough for the header + ONE pair, but count claims 64 pairs.
-   * deserialize will read 64 pairs → far past the buffer. */
+/* A load reads nothing past `size` and refuses an image that does not fit. */
+static int check_load_bounds(void) {
+  int rc = 0;
+  /* Room for the header and ONE pair; the count claims 64. */
   size_t cap = 8 + 1 * 16;
   unsigned char *buf = (unsigned char *)malloc(cap);
   memset(buf, 0, cap);
   uint32_t *cf = (uint32_t *)buf;
-  cf[0] = 64; /* inflated: buffer only holds 1 pair. */
-  cf[1] = 0;
+  cf[0] = 64;
   struct arts_msg_rank_version_pair_s *e =
       (struct arts_msg_rank_version_pair_s *)(buf + 8);
   e[0].rank = 0;
-  e[0].pad = 0;
   e[0].version = 1;
-  /* If deserialize honored `size` this would be safe; it does not (B032). */
   struct arts_rank_to_u64_map_s *m = arts_rank_u64_map_create(NRANKS);
-  arts_rank_u64_map_load(m, buf, cap);
-  /* Reaching here means no OOB read tripped (e.g. non-ASan build read junk
-   * harmlessly).  Consume the result so the call is not optimized away. */
-  volatile uint64_t sink = arts_rank_u64_map_get(m, 0);
-  (void)sink;
+  arts_rank_u64_map_set(m, 2, 22);
+  if (arts_rank_u64_map_load(m, buf, cap)) {
+    (void)fprintf(stderr, "FAIL rank_u64_map_roundtrip: an inflated count "
+                          "was loaded\n");
+    rc = 1;
+  }
+  if (arts_rank_u64_map_load(m, buf, 4)) {
+    (void)fprintf(stderr, "FAIL rank_u64_map_roundtrip: a buffer shorter "
+                          "than the count header was loaded\n");
+    rc = 1;
+  }
+  if (arts_rank_u64_map_get(m, 2) != 22 || arts_rank_u64_map_get(m, 0) != 0) {
+    (void)fprintf(stderr, "FAIL rank_u64_map_roundtrip: a refused load "
+                          "changed the map\n");
+    rc = 1;
+  }
+  /* The same pair with its true count fits exactly and loads. */
+  cf[0] = 1;
+  if (!arts_rank_u64_map_load(m, buf, cap) ||
+      arts_rank_u64_map_get(m, 0) != 1 || arts_rank_u64_map_get(m, 2) != 0) {
+    (void)fprintf(stderr, "FAIL rank_u64_map_roundtrip: an exact-fit image "
+                          "did not load\n");
+    rc = 1;
+  }
   arts_rank_u64_map_destroy(m);
   free(buf);
-  return 0;
+  return rc;
 }
 
 int main(void) {
@@ -211,29 +218,11 @@ int main(void) {
   rc |= check_empty();
   rc |= check_worst_case();
   rc |= check_oob_rank_dropped();
+  rc |= check_load_bounds();
   if (rc != 0) {
-    return 1; /* a real round-trip obligation broke — a test/runtime defect. */
+    return 1;
   }
-
-  /* B032 OOB-read probe in a forked child (isolates a potential ASan abort). */
-  pid_t pid = fork();
-  if (pid == 0) {
-    _exit(probe_inflated_count_oob() == 0 ? 0 : 3);
-  }
-  int status = 0;
-  (void)waitpid(pid, &status, 0);
-  if (WIFSIGNALED(status) || (WIFEXITED(status) && WEXITSTATUS(status) != 0)) {
-    /* The deserializer read past the inflated-count buffer — B032 confirmed.
-     * Report (do NOT mask); the legit round-trip obligations already PASSED. */
-    (void)fprintf(stderr,
-                  "B032 CONFIRMED rank_u64_map_roundtrip: inflated-count "
-                  "deserialize OOB-read crashed child (signal/exit %d)\n",
-                  status);
-  }
-
-  printf("PASS rank_u64_map_roundtrip: sparse/empty/worst-case round-trip, "
-         "OOB-rank drop; inflated-count OOB-read probed (see stderr if B032 "
-         "tripped)\n");
+  printf("PASS rank_u64_map_roundtrip\n");
   return 0;
 }
 

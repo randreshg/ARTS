@@ -104,6 +104,7 @@ void arts_runtime_private_init(struct thread_mask_s *m,
   (void)c;
 }
 void arts_runtime_private_cleanup(void) {}
+void arts_runtime_wait_shutdown_entry(void) {}
 int arts_runtime_loop(void) { return 0; }
 void arts_runtime_global_cleanup(void) {}
 void arts_runtime_stop(void) {}

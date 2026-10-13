@@ -121,8 +121,9 @@ add_pure_unit_src(stdio_forward_concurrent_push PASS_REGEX "PASS stdio_forward_c
 add_pure_unit_src(stdio_forward_fflush_no_deadlock PASS_REGEX "PASS stdio_forward_fflush_no_deadlock" TIMEOUT 60)
 add_pure_unit_src(stdio_forward_multi_source PASS_REGEX "PASS stdio_forward_multi_source" TIMEOUT 60)
 # Configuration parsing stays inside what it allocated: a routing table
-# holds every node of a long list, a single-host LSF list yields no peers, and
-# an environment override spliced into the variable list leaves it well formed.
+# holds no more rows than it was sized for, a single-host LSF list is refused,
+# and an environment override spliced into the variable list leaves it well
+# formed.
 add_pure_unit_src(config_routing_table_overflow PASS_REGEX "PASS config_routing_table_overflow" TIMEOUT 60)
 add_pure_unit_src(config_lsf_single_host_oob PASS_REGEX "PASS config_lsf_single_host_oob" TIMEOUT 60)
 add_pure_unit_src(config_find_variable PASS_REGEX "PASS config_find_variable" TIMEOUT 60)
@@ -133,6 +134,7 @@ add_pure_unit_src(config_routing_table_ssh_bracket PASS_REGEX "PASS config_routi
 add_pure_unit_src(config_routing_table_slurm_hostlist PASS_REGEX "PASS config_routing_table_slurm_hostlist" TIMEOUT 60)
 add_pure_unit_src(placement_invariants SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/system/placement.c PASS_REGEX "PASS placement_invariants" TIMEOUT 60)
 add_pure_unit_src(config_route_table_size_shift PASS_REGEX "PASS config_route_table_size_shift" TIMEOUT 60)
+add_pure_unit_src(config_deque_size_range PASS_REGEX "PASS config_deque_size_range" TIMEOUT 60)
 add_pure_unit_src(config_thread_count_underflow PASS_REGEX "PASS config_thread_count_underflow" TIMEOUT 60)
 add_pure_unit_src(config_launcher_env_precedence PASS_REGEX "PASS config_launcher_env_precedence" TIMEOUT 60)
 add_pure_unit_src(config_destroy_leak PASS_REGEX "PASS config_destroy_leak" TIMEOUT 60)
@@ -197,10 +199,9 @@ set_tests_properties(db_destroy_implicit_release PROPERTIES PASS_REGULAR_EXPRESS
 # dbcreate_matrix: probe of the DB-create capability matrix --
 # (creator-acquisition) x (home-determination) x (locality).  Exercises the
 # ARTS core create path directly (arts.h, no OCR shim), so it is a coverage
-# regression guard rather than a bug-exposing test: each cell reports its
-# result independently, and a failed cell fails the run.  Cross-runtime
-# capability parity (shim vs the reference runtimes) is compared separately
-# through the correctness harness, not here.
+# regression guard: each cell reports its result independently, and a failed
+# cell fails the run.  Cross-runtime capability parity (shim vs the reference
+# runtimes) is compared separately through the correctness harness, not here.
 add_arts_test(dbcreate_matrix)
 register_single_node_test(dbcreate_matrix TIMEOUT 60)
 register_multinode_test(dbcreate_matrix TIMEOUT 60)
@@ -288,6 +289,26 @@ register_single_node_test(grant_sticky TIMEOUT 60)
 set_tests_properties(grant_sticky PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_sticky")
 endif()
 
+# A GRANT_RESPONSE shorter than its header, or declaring a version map longer
+# than the bytes that follow the header, is fatal on the receiving rank.  The
+# migrating grant exists on VAL and INV, with one handler per write policy.
+if(ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+add_arts_test(grant_response_bounds)
+arts_test_cfg(_cfg 1n_20w)
+arts_add_test(grant_response_bounds_short STATUS 1
+              COMMAND grant_response_bounds short)
+arts_add_test(grant_response_bounds_map STATUS 1
+              COMMAND grant_response_bounds map)
+set_tests_properties(grant_response_bounds_short PROPERTIES
+    PASS_REGULAR_EXPRESSION "GRANT_RESPONSE of [0-9]+ bytes is shorter than")
+set_tests_properties(grant_response_bounds_map PROPERTIES
+    PASS_REGULAR_EXPRESSION
+    "declares a [0-9]+-byte version map, but [0-9]+ bytes follow it")
+set_tests_properties(grant_response_bounds_short grant_response_bounds_map
+    PROPERTIES LABELS "single_node" TIMEOUT 30 RESOURCE_LOCK "arts_runtime"
+    ENVIRONMENT "ARTS_CONFIG=${_cfg}")
+endif()
+
 # --- EXCL protocol-specific ---
 # The exclusion arm's own cache and home paths, built and registered in its
 # trees only.
@@ -299,6 +320,10 @@ add_arts_test(excl_samerank_rw_grant_race)
 register_single_node_test(excl_samerank_rw_grant_race TIMEOUT 60)
 register_multinode_test(excl_samerank_rw_grant_race TIMEOUT 60
                         VARIANTS 2n_9w_1p 2n_8w_2p)
+foreach(_v "" _2n_9w_1p _2n_8w_2p)
+    set_tests_properties(excl_samerank_rw_grant_race${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "excl_samerank_rw_grant_race: .* PASS")
+endforeach()
 
 # With peers the cohorts' requests cross the wire to the blocks' home; two
 # ranks already do.
@@ -328,6 +353,10 @@ if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 add_arts_test(excl_multiconsumer_queue)
 register_single_node_test(excl_multiconsumer_queue TIMEOUT 60)
 register_multinode_test(excl_multiconsumer_queue TIMEOUT 60)
+foreach(_v "" _2n_9w_1p _4n_4w_1p _2n_8w_2p)
+    set_tests_properties(excl_multiconsumer_queue${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "excl_multiconsumer_queue: .* PASS")
+endforeach()
 endif()
 
 # excl_req_before_create: protocol-agnostic, needs 3+ ranks; registered at
@@ -581,6 +610,7 @@ endforeach()
 # collide.  Its draws are recorded into one block with no order among them.
 add_arts_test(random_thread_safe)
 register_single_node_test(random_thread_safe TIMEOUT 60)
+set_tests_properties(random_thread_safe PROPERTIES PASS_REGULAR_EXPRESSION "PASS random_thread_safe")
 
 # --- counters ---
 # counter_smoke_value reads NUM_EDT_CREATE back from the counter files, which

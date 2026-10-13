@@ -169,6 +169,11 @@ static void home_response_landed_cb(void *arg) {
 void arts_handler_db_grant_response(void *payload, size_t size) {
   struct arts_msg_grant_response_packet_s *hdr =
       (struct arts_msg_grant_response_packet_s *)payload;
+  if (size < sizeof(*hdr)) {
+    ARTS_ERROR("GRANT_RESPONSE of %zu bytes is shorter than its %zu-byte "
+               "header",
+               size, sizeof(*hdr));
+  }
   arts_guid_t db_guid = hdr->db_guid;
 
   /* Pin the db_s across the install + commit (and, on the rendezvous path,
@@ -205,6 +210,12 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   size_t map_size =
       (sizeof(uint32_t) * 2) + ((size_t)hdr->map_entry_count *
                                 sizeof(struct arts_msg_rank_version_pair_s));
+  if (map_size > size - sizeof(*hdr)) {
+    ARTS_ERROR("GRANT_RESPONSE for DB[Guid:%lu] from rank %u: its header "
+               "declares a %zu-byte version map, but %zu bytes follow it",
+               (unsigned long)db_guid, hdr->header.rank, map_size,
+               size - sizeof(*hdr));
+  }
 
   if (hdr->rdzv_txid != 0) {
     /* The payload travels one-sided: pair this packet with the write

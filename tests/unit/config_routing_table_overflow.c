@@ -1,21 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T203 — arts_config_create_routing_table heap overflow on count mismatch.
- * Targets B097 (config.c:321, HIGH): the routing table is calloc'd with exactly
- * (*config)->nodes entries, and current_node is incremented per emitted node
- * with NO bound check.  If the node_list string parses to MORE nodes than
- * config->nodes, table[current_node] writes past the calloc'd array — a heap
- * buffer overflow.
+ * arts_config_create_routing_table never writes past the table it allocates.
  *
- * Reproduction: master_boot=true (SSH path), config->nodes = 2, but
- * node_list = "a,b,c" parses to 3 comma-separated hosts.  The third host write
- * (table[2]) is out of bounds for a 2-entry array.
- *
- * Run under ASan: a clean run means the overflow was fixed (bounds clamp); a
- * heap-buffer-overflow report means the bug is live.  This test is authored
- * correct-and-failing: it documents the live defect (exposes_runtime_bug=true).
- * It returns 0 only if NO overflow occurred (i.e. the parser clamped to nodes),
- * which is the desired post-fix behavior.
+ * The table holds exactly config->nodes rows.  A node list that names more
+ * hosts than that (here nodes = 2 and the list "a,b,c", on the remote-launcher
+ * path) must stop after the last row instead of writing a third: a sanitizer
+ * build reports such a write, and every build checks that the two rows hold
+ * the list's first two hosts.
  */
 
 #include "../../libs/src/core/system/config.c"
@@ -30,21 +21,24 @@ int main(void) {
   cfg.master_boot = true; /* SSH parser path */
   cfg.nodes = 2;          /* calloc 2 entries ... */
 
-  /* ... but the list parses to 3 hosts. A node_count key disagreeing with the
-     nodes string is a plausible user error. */
+  /* ... but the list parses to 3 hosts.  Config load refuses a node_count
+     that disagrees with the list, so the parser is driven directly. */
   char node_list[] = "a,b,c";
 
   struct arts_config_s *p = &cfg;
   arts_config_create_routing_table(&p, node_list);
 
-  /* If we get here without ASan aborting, the parser must have written exactly
-     table_length == nodes entries (a clamp).  table_length is forced to nodes
-     by the function, so verify the parser did not run past it by checking the
-     in-bounds entries are populated and reporting the count it would have
-     emitted.  We cannot read table[2] (OOB) safely, so success == ASan-clean.
-   */
+  /* table[2] does not exist, so a write to it is visible only to a sanitizer;
+     the rows that do exist must be the list's first hosts, in order. */
   if (cfg.table == NULL) {
     fprintf(stderr, "FAIL routing_table_overflow: table not allocated\n");
+    return 1;
+  }
+  if (cfg.table_length != 2 || cfg.table[0].ip_address == NULL ||
+      cfg.table[1].ip_address == NULL ||
+      strcmp(cfg.table[0].ip_address, "a") != 0 ||
+      strcmp(cfg.table[1].ip_address, "b") != 0) {
+    fprintf(stderr, "FAIL routing_table_overflow: rows are not \"a\", \"b\"\n");
     return 1;
   }
 

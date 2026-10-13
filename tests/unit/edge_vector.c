@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Pure-unit test for libs/src/graph/edge_vector.c (T260).
+ * Pure-unit test for libs/src/graph/edge_vector.c.
  *
  * Properties / invariants exercised:
  *   1. arts_edge_vector_init / push_back / free fidelity:
@@ -22,54 +22,22 @@
  *      - sort_by_source: result grouped by non-decreasing source.
  *      - sort_by_source_and_target: result fully lexicographically ordered.
  *      - sort with used==0 is a no-op and must not crash.
- *   4. B139 (suspected, targets B-edge-vector-zero): init(0) then push_back.
- *      With size==0 the grow branch computes size*=2 -> still 0, then
- *      arts_realloc(ptr, 0).  The census hypothesis is "realloc(ptr,0) returns
- * a non-NULL minimal allocation and the subsequent edge_array[0] write
- *      overflows a 0-byte block".  This test reproduces the EXACT allocator
- *      contract of arts_malloc/arts_realloc (see faithful_alloc below):
- *      arts_malloc(0)->NULL, arts_realloc(NULL,0)->NULL, arts_realloc(ptr,0)->
- *      free+NULL.  Under that contract the grow path gets new_edge_array==NULL,
- *      hits the `if (!new_edge_array)` guard.  In NDEBUG it RETURNS WITHOUT
- *      appending (`used` stays 0, no write to index 0).  In a Debug build (the
- *      default test build, asserts ON) the guard's `assert(false)` ABORTS the
- *      process (SIGABRT) — a legitimate degenerate input is treated as a fatal
- *      realloc failure.  Either way there is NO write to a 0-byte block, so NO
- *      heap overflow.
- *      => B139's heap-overflow manifestation is REFUTED for the real allocator
- *         contract.  Observed defect instead: Debug-build assert-abort (or, in
- *         NDEBUG, a silently-dropped edge) on degenerate zero-init.  We run the
- *         init(0)+push in a CHILD process under ASan and require it to die by
- *         SIGABRT (the assert) and NOT by SIGSEGV/SIGABRT-from-ASan (which an
- *         OOB write would produce) — proving no out-of-bounds access occurs.
+ *   4. A vector of capacity 0 (init(0), or after free) grows on its first
+ *      push: every pushed edge is kept, with its fields, across the doublings
+ *      that follow.
  *
  * The runtime is NOT started.  edge_vector.c is compiled directly via #include
  * so its (header-free) static-less functions link against a faithful in-test
- * reimplementation of the arts allocator contract.  We deliberately do NOT pull
- * the real malloc.c (its arts_alloc_header_t is ARTS_ALIGNED(64) over a 16-byte
- * malloc, an unrelated pre-existing UBSan-misalignment quirk that would pollute
- * this test's signal); instead faithful_alloc mirrors the exact NULL-on-zero
- * semantics that drive B139.
+ * reimplementation of the arts allocator contract (faithful_alloc below), so a
+ * size-0 request answers NULL exactly as the runtime's allocator does.
  */
 
-/* Pre-guard the runtime logging header (it transitively needs the
- * cmake-generated counter Preamble.h) and supply no-op log macros, so
- * edge_vector.c compiles standalone. */
-#define ARTS_SYSTEM_PRINT_H
-#define ARTS_INFO(...) ((void)0)
-#define ARTS_DEBUG(...) ((void)0)
-#define ARTS_WARN(...) ((void)0)
-#define ARTS_ERROR(...) ((void)0)
-
 #include <inttypes.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 /* --- Faithful reimplementation of the arts allocator CONTRACT ---------------
  * Mirrors libs/src/core/utils/malloc.c return semantics exactly for the cases
@@ -254,69 +222,27 @@ static void test_empty_sort(void) {
   arts_edge_vector_free(&v);
 }
 
-/* ---- 4. B139: init(0) then push_back --------------------------------------
+/* ---- 4. capacity 0 grows on the first push --------------------------------
  */
-
-/* init(0) alone must be safe (no allocation, no write). */
-static void test_zero_init_no_push(void) {
+static void test_zero_capacity_push(void) {
   arts_edge_vector_t v;
   arts_edge_vector_init(&v, 0);
-  CHECK(v.edge_array == NULL, "init(0): arts_malloc(0) -> NULL edge_array");
   CHECK(v.size == 0 && v.used == 0, "init(0): size/used zero");
-  arts_edge_vector_free(&v); /* free(NULL) safe */
-}
-
-/* The push that triggers the degenerate grow.  Run in a child: under the
- * default Debug build this aborts via assert(false); we verify it does NOT
- * perform an out-of-bounds write (which would surface as an ASan-reported
- * error / SIGSEGV rather than a clean SIGABRT from the assert). */
-static void child_zero_init_push(void) {
-  arts_edge_vector_t v;
-  arts_edge_vector_init(&v, 0);
-  arts_edge_vector_push_back(&v, 42, 43, 44);
-  /* Reached only in NDEBUG: the guard returned without appending. */
-  if (v.used != 0 || v.edge_array != NULL) {
-    _exit(3); /* phantom append / 0-byte block write */
+  const unsigned N = 37;
+  for (unsigned i = 0; i < N; i++) {
+    arts_edge_vector_push_back(&v, i, i + 1, i * 3u);
   }
-  _exit(0); /* NDEBUG: edge silently dropped, no overflow */
-}
-
-static void test_zero_init_push(void) {
-  pid_t pid = fork();
-  if (pid == 0) {
-    child_zero_init_push();
-    _exit(99); /* unreachable */
+  CHECK(v.used == N && v.size >= N, "init(0): every push appended");
+  for (unsigned i = 0; i < N; i++) {
+    CHECK(v.edge_array[i].source == i && v.edge_array[i].target == i + 1 &&
+              v.edge_array[i].data == i * 3u,
+          "init(0): edges preserved across growth");
   }
-  CHECK(pid > 0, "fork for B139 child succeeded");
-  int status = 0;
-  waitpid(pid, &status, 0);
-
-  if (WIFSIGNALED(status)) {
-    int sig = WTERMSIG(status);
-    /* SIGABRT from assert(false) is the expected Debug outcome and proves the
-     * grow path bailed out (no OOB write). A SIGSEGV would indicate a real
-     * out-of-bounds write -> that WOULD confirm B139's overflow. */
-    CHECK(sig == SIGABRT,
-          "B139: init(0)+push dies by SIGABRT (assert, no OOB) -- "
-          "heap-overflow hypothesis REFUTED; defect is a degenerate-input "
-          "abort, not memory corruption");
-    if (sig != SIGABRT) {
-      fprintf(stderr,
-              "  (child terminated by signal %d -- if SIGSEGV/ASan, B139 "
-              "overflow is CONFIRMED instead)\n",
-              sig);
-    }
-  } else if (WIFEXITED(status)) {
-    int rc = WEXITSTATUS(status);
-    /* NDEBUG path: clean drop (rc 0) is acceptable; rc 3 = phantom write. */
-    CHECK(rc == 0,
-          "B139: NDEBUG init(0)+push drops edge cleanly (no append, no OOB)");
-    if (rc == 3) {
-      fprintf(stderr, "  (child observed a phantom append / 0-byte write)\n");
-    }
-  } else {
-    CHECK(0, "B139: unexpected child wait status");
-  }
+  arts_edge_vector_free(&v);
+  /* A freed vector is a capacity-0 vector too. */
+  arts_edge_vector_push_back(&v, 7, 8, 9);
+  CHECK(v.used == 1 && v.edge_array[0].source == 7, "push after free appends");
+  arts_edge_vector_free(&v);
 }
 
 int main(void) {
@@ -326,16 +252,14 @@ int main(void) {
   test_sort_by_source();
   test_sort_by_source_and_target();
   test_empty_sort();
-  test_zero_init_no_push();
-  test_zero_init_push();
+  test_zero_capacity_push();
 
   if (g_fail) {
     fprintf(stderr, "FAIL edge_vector: one or more checks failed\n");
     return 1;
   }
-  printf(
-      "PASS edge_vector: init/push/free fidelity, growth-across-realloc, "
-      "comparators (by_source group + lexicographic), used==0 sort no-crash, "
-      "B139 init(0)+push no-overflow (edge silently dropped)\n");
+  printf("PASS edge_vector: init/push/free fidelity, growth-across-realloc, "
+         "comparators (by_source group + lexicographic), used==0 sort "
+         "no-crash, capacity-0 growth\n");
   return 0;
 }

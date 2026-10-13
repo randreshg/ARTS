@@ -161,17 +161,21 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_printf("PASS: mark_edt_ready_idempotent (no double-count)\n");
 
-  /* Tear down the deliberately-parked state: the EDT never runs, so it never
-   * releases the buffer ref the wake installed at slot 0.  Drop that ref by
-   * hand (while the EDT is still pinned by `eh`), then destroy the DB + gate so
-   * the observation leaks nothing.  The idempotency contract is already
-   * asserted above; this is pure cleanup. */
+  /* Tear down the hand-made state: the EDT never runs, so it never releases
+   * what the wake installed at slot 0 -- a buffer ref and the descriptor pin.
+   * Drop both by hand, in the order a release drops them (the ref, then the
+   * pin), while `eh` still holds the EDT, then destroy the DB + gate so the
+   * observation leaks nothing.  The idempotency contract is already asserted
+   * above; this is pure cleanup. */
   struct arts_db_buffer_s *b = arts_db_buf_from_data(dv[0].ptr);
   if (b != NULL) {
     arts_shared_ptr_t cb = b->cb;
     arts_db_buf_release(&cb);
   }
   dv[0].ptr = NULL;
+  arts_shared_ptr_t pin = (arts_shared_ptr_t)dv[0].db_pin;
+  dv[0].db_pin = NULL;
+  arts_shared_release(&pin);
   arts_shared_release(&eh);
   arts_db_destroy(db);
   arts_event_destroy(gate);

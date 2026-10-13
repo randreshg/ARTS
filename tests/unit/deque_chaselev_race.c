@@ -4,9 +4,9 @@
  * THE core contract: one OWNER thread that push_front/pop_front, and N
  * STEALER threads that pop_back, must between them observe every pushed item
  * exactly once — no loss, no duplicate, no corruption — while the array grows
- * under concurrent steals.  (Suspected bug B052: missing store-store fence
- * before the activeArray publish in push_front; masked on x86 TSO, surfaced
- * here under TSan and on weak-mem hardware.)
+ * under concurrent steals.  (Nothing orders push_front's copy of the live
+ * window before its activeArray publish: masked on x86 TSO, it surfaces here
+ * under TSan and on weak-memory hardware.)
  *
  * Design (single-producer, multi-consumer = the exact Chase-Lev pattern):
  *   - Owner pushes items 0..NITEMS-1 (each encoded as a unique non-NULL ptr),

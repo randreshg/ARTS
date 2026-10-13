@@ -153,13 +153,16 @@ void arts_writer_lock(const volatile unsigned int *read_lock,
 
 bool arts_writer_try_lock(const volatile unsigned int *read_lock,
                           volatile unsigned int *write_lock) {
-  if (arts_atomic_cswap(write_lock, 0U, 1U) == 0U) {
-    while (*read_lock) {
-      ;
-    }
-    return true;
+  if (arts_atomic_cswap(write_lock, 0U, 1U) != 0U) {
+    return false;
   }
-  return false;
+  /* The write flag now turns new readers away; a reader already counted
+   * holds the lock, so a try hands the flag back rather than wait. */
+  if (*read_lock) {
+    arts_writer_unlock(write_lock);
+    return false;
+  }
+  return true;
 }
 
 /* __atomic_store_n requires a pointer to non-const; the check cannot see the

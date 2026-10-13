@@ -43,6 +43,7 @@
 #include "arts/utils/random.h"
 
 #include <assert.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -211,20 +212,17 @@ void arts_runtime_node_init(struct arts_config_s *config) {
                         config->gpu, sizeof(arts_route_table_t *))
                   : NULL;
   {
-    unsigned int shard_entries =
-        config->route_table_entries / ARTS_REMOTE_ROUTE_SHARDS;
-    if (shard_entries < 1) {
-      shard_entries = 1;
-    }
-    unsigned int shard_shift = (config->route_table_size >= 3)
-                                   ? config->route_table_size - 3
-                                   : config->route_table_size;
+    /* Config load keeps route_table_size above ARTS_REMOTE_ROUTE_SHARD_BITS,
+     * so every shard hashes with a shift of at least 1. */
+    unsigned int shard_shift =
+        config->route_table_size - ARTS_REMOTE_ROUTE_SHARD_BITS;
+    unsigned int shard_entries = 1U << shard_shift;
     for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
       arts_node_info.remote_route_table[s] =
           arts_new_route_table(shard_entries, shard_shift);
     }
   }
-  arts_node_info.local_spin = (volatile bool **)arts_calloc(tc, sizeof(bool *));
+  arts_node_info.local_spin = (bool **)arts_calloc(tc, sizeof(bool *));
   arts_node_info.thread_roles =
       (unsigned int *)arts_calloc(tc, sizeof(unsigned int));
 
@@ -242,7 +240,6 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 
   /* Locks and shutdown coordination */
   arts_node_info.steal_request_lock = 1U;
-  arts_node_info.shutdown_state = 0U;
   /* Seed at our own rank so different ranks pick different first targets;
    * across ranks the round-robin then walks the cluster evenly instead of
    * hammering rank 0. */
@@ -362,27 +359,16 @@ void arts_runtime_node_init(struct arts_config_s *config) {
 
 struct arts_shutdown_abandon_s arts_shutdown_abandon;
 
-/* Drop the runnable-phase self_cb ref of every EDT left sitting in a deque at
- * teardown.  arts_handle_ready_edt takes that ref when an EDT becomes runnable
- * and arts_run_edt drops it at completion — but an EDT made runnable yet never
- * executed (still queued when arts_shutdown stopped the workers) keeps it.  The
- * route-table sweep in arts_clean_up_dbs drops only the install ref, so without
- * this drop the EDT's refcount never reaches 0 and it leaks.  Single-threaded
- * here with respect to THIS deque: every runtime thread has left its loop,
- * but every thread drains its own deque this way at the same time, so a count
- * shared across them still needs an atomic update. */
-static void arts_drain_pending_edts(struct arts_deque_s *dq) {
-  if (dq == NULL) {
-    return;
-  }
-  void *e;
-  while ((e = arts_deque_pop_front(dq)) != NULL) {
-    struct arts_edt_s *edt = (struct arts_edt_s *)e;
-    /* Whatever this EDT holds ends here rather than at its release. */
+/* Count the EDTs left runnable in a deque at teardown.  The shutdown
+ * abandoned them, and they stay as it left them, with every ref and hold they
+ * took: their memory is reclaimed by the process exit, never by ending holds
+ * no thread can release any more.  Every runtime thread has left its loop,
+ * but each counts its own deque at the same time as the others, so the shared
+ * count is updated atomically. */
+static void arts_count_abandoned_edts(struct arts_deque_s *dq) {
+  while (arts_deque_pop_front(dq) != NULL) {
     __atomic_fetch_add(&arts_shutdown_abandon.queued_edts, 1u,
                        __ATOMIC_RELAXED);
-    arts_shared_ptr_t sref = edt->self_cb;
-    arts_shared_release(&sref);
   }
 }
 
@@ -403,14 +389,19 @@ void arts_runtime_global_cleanup() {
    * below (pool unmap / process exit) — on programs that never destroy their
    * objects the per-item sweep costs wall-clock time proportional to the
    * leftover population for no observable effect.  Keep the full sweep only
-   * under leak-checking sanitizers, whose reports require every allocation to
-   * be individually freed. */
+   * under a sanitizer: once it has run, an object kept alive by a reference
+   * nobody will drop is reachable from nothing, which a leak checker reports.
+   * An EDT the shutdown abandoned (admitted, never finished) is the one object
+   * the sweep leaves installed: it keeps the blocks it acquired, and that
+   * residue is the process exit's to reclaim, so when one stays, every route
+   * table is kept and the residue stays reachable through them. */
+  uint64_t abandoned_edts = 0;
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) ||           \
     __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
-  arts_clean_up_dbs();
+  abandoned_edts = arts_clean_up_dbs(arts_edt_admitted);
 #endif
 
   /* Counter cleanup (reverse of arts_runtime_node_init allocation) */
@@ -444,13 +435,14 @@ void arts_runtime_global_cleanup() {
   }
 #endif
 
-  /* Route table cleanup (after entries cleaned by arts_clean_up_dbs) */
-  for (unsigned int i = 0; i < tc; i++) {
-    arts_delete_route_table(arts_node_info.route_table[i]);
-  }
-  arts_free(arts_node_info.route_table);
-  for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_delete_route_table(arts_node_info.remote_route_table[s]);
+  if (abandoned_edts == 0) {
+    for (unsigned int i = 0; i < tc; i++) {
+      arts_delete_route_table(arts_node_info.route_table[i]);
+    }
+    arts_free(arts_node_info.route_table);
+    for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
+      arts_delete_route_table(arts_node_info.remote_route_table[s]);
+    }
   }
 
   /* Per-thread indexed arrays */
@@ -486,10 +478,8 @@ void arts_runtime_global_cleanup() {
   arts_db_descriptor_quarantine_drain();
 #endif
 
-  /* Registered-slab pool: torn down last, after arts_clean_up_dbs (above)
-   * has already released every DB payload buffer back to it — no thread is
-   * still allocating at this point (called after every runtime thread has
-   * joined). */
+  /* Registered-slab pool: torn down last.  Every runtime thread has joined,
+   * so no thread is still allocating from it. */
   arts_regpool_cleanup();
 
   /* Phase 2: the pool's slab MRs (backing both sends and the recv buffers) are
@@ -596,9 +586,19 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
     arts_node_info.progress_deque[thread->group_pos] =
         arts_node_info.deque[thread->id];
   }
-  arts_node_info.local_spin[thread->id] = &arts_thread_info.alive;
   arts_node_info.thread_roles[thread->id] = (unsigned int)thread->role;
-  arts_thread_info.alive = true;
+  __atomic_store_n(&arts_thread_info.alive, true, __ATOMIC_RELAXED);
+  /* Published last: a stopper that finds the pointer reads the role above and
+   * stores its false after this thread's true.  A stop that began before the
+   * stopper could find the pointer is claimed here instead: the publication
+   * and the stopper's CAS on shutdown_state are seq_cst, as are the two loads
+   * after them, so at least one side sees the other. */
+  __atomic_store_n(&arts_node_info.local_spin[thread->id],
+                   &arts_thread_info.alive, __ATOMIC_SEQ_CST);
+  if (thread->role == ARTS_ROLE_WORKER &&
+      __atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_SEQ_CST) != 0U) {
+    __atomic_store_n(&arts_thread_info.alive, false, __ATOMIC_RELAXED);
+  }
   arts_thread_info.pu_id = thread->pu_id;
   arts_thread_info.thread_id = thread->id;
   arts_thread_info.group_pos = thread->group_pos;
@@ -635,23 +635,33 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
   arts_thread_random_init(arts_global_rank_id, thread->id);
 }
 
+/* A thread calls this only after a stop ended its loop, and every stop
+ * follows the CAS of an entry whose winner never waits on teardown, so the
+ * wait ends. */
+void arts_runtime_wait_shutdown_entry(void) {
+  while (__atomic_load_n(&arts_node_info.shutdown_entry_done,
+                         __ATOMIC_ACQUIRE) == 0U) {
+    sched_yield();
+  }
+}
+
 void arts_runtime_private_cleanup() {
+  /* Teardown ends what the shutdown entry's stop walk and drain use: every
+   * thread's TLS stop flag, the stop arrays and the network. */
+  arts_runtime_wait_shutdown_entry();
   arts_atomic_sub(&arts_node_info.ready_to_clean, 1U);
   while (arts_node_info.ready_to_clean) {
   };
-  /* Drain runnable-but-never-executed EDTs from this thread's deques before
-   * deleting them, dropping each one's self_cb ref (arts_run_edt would have on
-   * completion).  The ready_to_clean barrier above guarantees every thread has
-   * left its scheduler loop, so no concurrent push/steal touches these deques.
-   * The route-table sweep in arts_runtime_global_cleanup later drops the
-   * install ref; without this drop the EDT's refcount never reaches 0 and it
-   * leaks. */
+  /* The ready_to_clean barrier above guarantees every thread has left its
+   * scheduler loop, so no concurrent push/steal touches these deques.  An EDT
+   * still in one stays installed, so the deque holds no reference of its own
+   * that freeing it would lose. */
   if (arts_thread_info.my_deque) {
-    arts_drain_pending_edts(arts_thread_info.my_deque);
+    arts_count_abandoned_edts(arts_thread_info.my_deque);
     arts_deque_delete(arts_thread_info.my_deque);
   }
   if (arts_thread_info.my_gpu_deque) {
-    arts_drain_pending_edts(arts_thread_info.my_gpu_deque);
+    arts_count_abandoned_edts(arts_thread_info.my_gpu_deque);
     arts_deque_delete(arts_thread_info.my_gpu_deque);
   }
   arts_cleanup_edt_tls();
@@ -659,30 +669,33 @@ void arts_runtime_private_cleanup() {
 
 /*
  * Walk the thread table and clear alive for every thread whose role matches
- * `role_mask`: wait for the thread to register its local_spin pointer
- * (non-NULL once it has finished arts_runtime_private_init), then set
- * *local_spin[i] = false, which makes it leave its scheduler/progress loop.
- * The registration spin is bounded to avoid an infinite busy-wait if a thread
- * crashed during init.
+ * `role_mask`: wait for each thread to register its local_spin pointer
+ * (non-NULL once it has finished arts_runtime_private_init; its role is
+ * readable from then on), then, if the role matches, set *local_spin[i] =
+ * false, which makes it leave its scheduler/progress loop.  The registration
+ * spin is bounded to avoid an infinite busy-wait if a thread crashed during
+ * init.
  */
 static void arts_runtime_stop_by_role(unsigned int role_mask,
                                       const char *role_label) {
   const unsigned int max_spin = 10000000; /* ~sub-second upper bound */
   unsigned int i;
   for (i = 0; i < arts_node_info.total_thread_count; i++) {
-    /* Skip threads whose role is not in the mask. Thread 0 is the main
-     * thread and always has WORKER role. */
-    if ((1U << arts_node_info.thread_roles[i]) & role_mask) {
-      unsigned int spin = 0;
-      while (!arts_node_info.local_spin[i]) {
-        if (++spin >= max_spin) {
-          ARTS_WARN("arts_runtime_stop_%s: thread %u never registered "
-                    "local_spin — giving up (may leak)",
-                    role_label, i);
-          goto next;
-        }
+    bool *flag;
+    unsigned int spin = 0;
+    while ((flag = __atomic_load_n(&arts_node_info.local_spin[i],
+                                   __ATOMIC_SEQ_CST)) == NULL) {
+      if (++spin >= max_spin) {
+        ARTS_WARN("arts_runtime_stop_%s: thread %u has not registered its "
+                  "stop flag; a worker that registers later stops itself, "
+                  "and the teardown stops a progress thread",
+                  role_label, i);
+        goto next;
       }
-      (*arts_node_info.local_spin[i]) = false;
+    }
+    if ((1U << arts_node_info.thread_roles[i]) & role_mask) {
+      /* Release: a thread that sees the stop sees what preceded it here. */
+      __atomic_store_n(flag, false, __ATOMIC_RELEASE);
       ARTS_DEBUG("arts_runtime_stop_%s: thread %u signaled to stop", role_label,
                  i);
     }
@@ -697,7 +710,6 @@ static void arts_runtime_stop_by_role(unsigned int role_mask,
  * traffic.
  */
 void arts_runtime_stop_workers() {
-  arts_node_info.shutdown_state = 1U;
   ARTS_INFO("arts_runtime_stop_workers");
   arts_runtime_stop_by_role(1U << ARTS_ROLE_WORKER, "workers");
 }
@@ -719,7 +731,6 @@ void arts_runtime_stop() {
    * MSG_SHUTDOWN (the initiator's drain waits only for its local sends to
    * complete, and a receiver tears down without waiting for anyone), so an
    * orderly teardown takes this path too and joins the same shutdown. */
-  arts_node_info.shutdown_state = 1U;
   ARTS_INFO("arts_runtime_stop: stopping %u threads",
             arts_node_info.total_thread_count);
   arts_runtime_stop_by_role(0xFFFFFFFFU, "all");
@@ -759,7 +770,7 @@ int arts_runtime_loop() {
   switch (arts_thread_info.role) {
   case ARTS_ROLE_PROGRESS: {
     unsigned int sentinel_spin = 0;
-    while (arts_thread_info.alive) {
+    while (__atomic_load_n(&arts_thread_info.alive, __ATOMIC_ACQUIRE)) {
       /* Busy-poll by design: the thread budget dedicates a PU to every
        * progress thread (startup aborts on PU oversubscription when the
        * topology mask is built), so idle waiting spins with the architectural
@@ -785,7 +796,7 @@ int arts_runtime_loop() {
     break;
   }
   case ARTS_ROLE_WORKER:
-    while (arts_thread_info.alive) {
+    while (__atomic_load_n(&arts_thread_info.alive, __ATOMIC_ACQUIRE)) {
       arts_node_info.scheduler();
     }
     break;

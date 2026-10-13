@@ -1328,17 +1328,10 @@ void arts_db_debug_quiescence_check(void) {
         continue;
       }
       arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
-      /* Only an object the runtime owns as an EDT is read as one. */
-      const struct arts_edt_s *e =
-          (h && arts_shared_deleter(h) == arts_edt_get_deleter())
-              ? (const struct arts_edt_s *)arts_shared_get(h)
-              : NULL;
-      if (e != NULL && e->depc_needed == 0u) {
+      if (arts_edt_admitted(h)) {
         ab_admitted++;
       }
-      if (h) {
-        arts_shared_release(&h);
-      }
+      arts_shared_release(&h);
     }
   }
   bool quiescent =

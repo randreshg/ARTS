@@ -454,6 +454,17 @@ def test_profile_refuses_unknown_keys():
         ))
 
 
+@pytest.mark.parametrize("host", [
+    "n01:22", "n[01-02]", "fe80::1", "a,b", "", "n 01",
+])
+def test_ssh_hosts_must_be_names_the_runtime_takes_as_one_node(host):
+    with pytest.raises(ValidationError, match="not a plain host name"):
+        Profile.model_validate(_local(
+            launcher="ssh", ports=[25000],
+            ssh={"budget": 2, "hosts": ["n00", host]},
+        ))
+
+
 def test_ssh_hosts_must_be_distinct():
     with pytest.raises(ValidationError, match="distinct"):
         Profile.model_validate(_local(

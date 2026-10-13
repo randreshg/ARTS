@@ -233,7 +233,7 @@ int main(void) {
 
   /* clean_up detaches+releases every surviving slot cb (the storm winner's),
    * then delete frees the table memory. */
-  arts_clean_up_route_table(g_mirror);
+  arts_clean_up_route_table(g_mirror, NULL);
   arts_delete_route_table(g_mirror);
   printf("PASS route_item_mirror_bridge: install-or-fail CAS, NULL-deleter, "
          "acquire handle lifecycle, single concurrent winner\n");

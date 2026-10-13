@@ -53,12 +53,18 @@
 ///   * a CSR is found by its GUID and by its partition, the same pointer on
 ///     every one of many lookups (a lookup takes and drops a reference each
 ///     time), and a GUID that names no CSR finds nothing;
-///   * the edge-list loader skips '%' headers and the line after them and '#'
-///     comments, drops self loops when asked, survives a line with extra
-///     tokens, and adds every reverse edge when flipping;
-///   * the 1-based adjacency loader decrements targets, builds nothing when
-///     the header disagrees with the line count, and skips a 0 token, which
-///     has no 0-based vertex;
+///   * the edge-list loader reads a file that opens with '%' lines as 1-based,
+///     skips one size line after them only when the first line is the
+///     "%%MatrixMarket" banner (a KONECT-style header has none), takes a '%'
+///     or '#' line after the first data line as a comment and nothing more,
+///     skips blank lines, takes a line's first two fields as its edge (a
+///     value column is no endpoint), refuses a line with one field and then
+///     builds nothing, drops self loops when asked, and adds every reverse
+///     edge when flipping;
+///   * the 1-based adjacency loader decrements targets, separates them by any
+///     whitespace, the vertical tab included, refuses a header without an
+///     edge count or a header that disagrees with the line count and then
+///     builds nothing, and skips a 0 token, which has no 0-based vertex;
 ///   * argument dispatch selects the loader and its options, refuses a missing
 ///     path, and never reads a flag's value past the end of the argument
 ///     array, for the loaders and for the distribution constructor alike.
@@ -111,6 +117,22 @@ static bool has_neighbor(arts_block_dist_t *dist, arts_vertex_t v,
     }
   }
   return false;
+}
+
+/* Every edge partition 0 holds. */
+static arts_graph_sz_t total_degree(arts_block_dist_t *dist) {
+  arts_csr_graph_t *csr = arts_csr_from_partition(0, dist);
+  if (csr == NULL) {
+    return 0;
+  }
+  arts_graph_sz_t total = 0;
+  for (arts_vertex_t v = 0; v < csr->num_local_vertices; ++v) {
+    arts_vertex_t *nbrs = NULL;
+    arts_graph_sz_t cnt = 0;
+    arts_csr_get_neighbors(csr, v, &nbrs, &cnt);
+    total += cnt;
+  }
+  return total;
 }
 
 static void free_partition0(arts_block_dist_t *dist) {
@@ -275,17 +297,19 @@ static void case_lookup(void) {
 static void case_load_edgelist(void) {
   char path[256];
   snprintf(path, sizeof(path), "arts_csr_graph_edgelist_%d.txt", (int)getpid());
-  /* An mmio '%' header and the dimension line after it, a '#' comment, a self
-   * loop, and a line with a third token. */
-  if (!write_file(path, "% MatrixMarket header line\n"
-                        "6 6 7\n"
+  /* MatrixMarket coordinate data: a '%' banner, its size line, a '#'
+   * comment, then 1-based entries -- after the shift to 0-based the edges
+   * 0->1, 0->2, 1->0, the self loop 3->3, 4->5 (an entry with a value column)
+   * and 5->0. */
+  if (!write_file(path, "%%MatrixMarket matrix coordinate real general\n"
+                        "6 6 6\n"
                         "# a comment line\n"
-                        "0 1\n"
-                        "0 2\n"
-                        "1 0\n"
-                        "3 3\n"
-                        "4 5 99\n"
-                        "5 0\n")) {
+                        "1 2\n"
+                        "1 3\n"
+                        "2 1\n"
+                        "4 4\n"
+                        "5 6 99\n"
+                        "6 1\n")) {
     fail("edgelist: cannot write the fixture");
     return;
   }
@@ -294,10 +318,13 @@ static void case_load_edgelist(void) {
   if (arts_csr_load_no_weight(path, dist, false, true) != 0) {
     fail("edgelist: load failed");
   } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 0, 2) ||
-             !has_neighbor(dist, 1, 0) || !has_neighbor(dist, 5, 0)) {
+             !has_neighbor(dist, 1, 0) || !has_neighbor(dist, 4, 5) ||
+             !has_neighbor(dist, 5, 0)) {
     fail("edgelist: an edge is missing");
   } else if (has_neighbor(dist, 3, 3)) {
     fail("edgelist: a self loop was kept");
+  } else if (total_degree(dist) != 5) {
+    fail("edgelist: a value column or a 1-based index made an edge");
   }
   free_partition0(dist);
   arts_block_dist_free(dist);
@@ -307,6 +334,68 @@ static void case_load_edgelist(void) {
     fail("edgelist: flipped load failed");
   } else if (!has_neighbor(dist, 2, 0)) {
     fail("edgelist: the flipped load lacks the reverse edge 2->0");
+  }
+  free_partition0(dist);
+  arts_block_dist_free(dist);
+
+  /* A 0-based list with a blank line, self loops kept: the blank line is no
+   * edge, so no 0->0 appears. */
+  if (!write_file(path, "0 1\n\n2 3\n")) {
+    fail("edgelist: cannot write the blank-line fixture");
+    return;
+  }
+  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
+  if (arts_csr_load_no_weight(path, dist, false, false) != 0) {
+    fail("edgelist: the blank-line list did not load");
+  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 2, 3) ||
+             has_neighbor(dist, 0, 0) || total_degree(dist) != 2) {
+    fail("edgelist: a blank line made an edge");
+  }
+  free_partition0(dist);
+  arts_block_dist_free(dist);
+
+  /* A '%' line after the first data line is a comment and nothing more: the
+   * ids stay 0-based and the line after it is an edge. */
+  if (!write_file(path, "0 1\n% a note\n2 3\n4 5\n")) {
+    fail("edgelist: cannot write the mid-file comment fixture");
+    return;
+  }
+  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
+  if (arts_csr_load_no_weight(path, dist, false, false) != 0) {
+    fail("edgelist: the mid-file comment list did not load");
+  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 2, 3) ||
+             !has_neighbor(dist, 4, 5) || total_degree(dist) != 3) {
+    fail("edgelist: a mid-file '%' line changed the edges after it");
+  }
+  free_partition0(dist);
+  arts_block_dist_free(dist);
+
+  /* A KONECT-style header: '%' lines and no size line, 1-based ids. */
+  if (!write_file(path, "% sym unweighted\n% 3 3 3\n1 2\n2 3\n3 1\n")) {
+    fail("edgelist: cannot write the KONECT-style fixture");
+    return;
+  }
+  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
+  if (arts_csr_load_no_weight(path, dist, false, false) != 0) {
+    fail("edgelist: the KONECT-style list did not load");
+  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 1, 2) ||
+             !has_neighbor(dist, 2, 0) || total_degree(dist) != 3) {
+    fail("edgelist: a KONECT-style header lost or shifted an edge");
+  }
+  free_partition0(dist);
+  arts_block_dist_free(dist);
+
+  /* A line with one field is no edge: the load is refused and builds
+   * nothing. */
+  if (!write_file(path, "0 1\n4\n")) {
+    fail("edgelist: cannot write the one-field fixture");
+    return;
+  }
+  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
+  if (arts_csr_load_no_weight(path, dist, false, true) != -1) {
+    fail("edgelist: a one-field line was not refused");
+  } else if (arts_csr_from_partition(0, dist) != NULL) {
+    fail("edgelist: a refused load built a CSR");
   }
   free_partition0(dist);
   arts_block_dist_free(dist);
@@ -341,11 +430,44 @@ static void case_load_adjacency(void) {
     return;
   }
   dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight_csr(path, dist, false, true) != 0) {
-    fail("adjacency: a short file did not load as nothing");
+  if (arts_csr_load_no_weight_csr(path, dist, false, true) != -1) {
+    fail("adjacency: a short file was not refused");
   } else if (arts_csr_from_partition(0, dist) != NULL) {
     fail("adjacency: a short file built a CSR");
   }
+  free_partition0(dist);
+  arts_block_dist_free(dist);
+  remove(path);
+
+  /* A header with no edge count. */
+  snprintf(path, sizeof(path), "arts_csr_graph_header_%d.txt", (int)getpid());
+  if (!write_file(path, "4\n2\n")) {
+    fail("adjacency: cannot write the one-field header fixture");
+    return;
+  }
+  dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
+  if (arts_csr_load_no_weight_csr(path, dist, false, true) != -1) {
+    fail("adjacency: a header without an edge count was not refused");
+  } else if (arts_csr_from_partition(0, dist) != NULL) {
+    fail("adjacency: a refused header built a CSR");
+  }
+  free_partition0(dist);
+  arts_block_dist_free(dist);
+  remove(path);
+
+  /* Vertex 0's line "2<VT>3": the vertical tab separates two targets. */
+  snprintf(path, sizeof(path), "arts_csr_graph_vt_%d.txt", (int)getpid());
+  if (!write_file(path, "3 4\n2\v3\n1\n1\n")) {
+    fail("adjacency: cannot write the vertical-tab fixture");
+    return;
+  }
+  dist = arts_block_dist_init(3, 0, 1, ARTS_GUID_DB);
+  if (arts_csr_load_no_weight_csr(path, dist, false, true) != 0) {
+    fail("adjacency: the vertical-tab file did not load");
+  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 0, 2)) {
+    fail("adjacency: a vertical tab did not separate two targets");
+  }
+  free_partition0(dist);
   arts_block_dist_free(dist);
   remove(path);
 

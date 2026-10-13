@@ -41,7 +41,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/syscall.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "arts.h"
 #include "arts/runtime_state.h"
@@ -73,10 +75,30 @@ void arts_shutdown() {
   (void)fflush(stdout);
 }
 
+/* Other threads may hold any runtime state half-way through an update, so
+ * nothing that assumes a quiescent process may run: no exit handler, no
+ * destructor, no allocator or sanitizer teardown.  It waits for no other
+ * thread: a stream another thread holds is left as it is (a flush to a sink
+ * that accepts nothing can still block in write), and the process ends through
+ * the exit_group system call itself, since a sanitizer interposes _exit with
+ * its own exit-time checks. */
+_Noreturn void arts_exit_now(uint8_t status) {
+  FILE *const streams[] = {stdout, stderr};
+  for (size_t i = 0; i < sizeof(streams) / sizeof(streams[0]); i++) {
+    if (ftrylockfile(streams[i]) == 0) {
+      (void)fflush_unlocked(streams[i]);
+      funlockfile(streams[i]);
+    }
+  }
+  (void)syscall(SYS_exit_group, (int)status);
+  _exit(status);
+}
+
+/* Every stdio stream is flushed first, as exit() does, so the wait for a
+ * stream another thread is in the middle of using is exit()'s too. */
 _Noreturn void arts_abort(uint8_t error_code) {
-  (void)fflush(stdout);
-  (void)fflush(stderr);
-  exit(error_code);
+  (void)fflush(NULL);
+  arts_exit_now(error_code);
 }
 
 /*
@@ -124,6 +146,7 @@ void arts_enter_shutdown_state(bool initiator) {
   /* Phase A.3: stop worker threads.  Progress threads remain alive so they
    * can flush any in-flight traffic and deliver any inbound MSG_SHUTDOWN. */
   arts_runtime_stop_workers();
+  __atomic_store_n(&arts_node_info.shutdown_entry_done, 1U, __ATOMIC_RELEASE);
 }
 
 /*

@@ -19,13 +19,8 @@
  *   5. A size==1 deque: push_front's grow trigger `b >= a->size - 1 + t` is
  *      (bottom >= top) there, which holds at init, so the first push grows
  *      the array — the ordinary ring that keeps one slot free.  Its first
- *      push and pop work across that grow.
- *
- * Suspected-bug pin (record, do NOT fix):
- *   - B054: a size==0 deque, which worker_init_deque_size=0 gives every
- *     thread, makes `a->size - 1` wrap to UINT_MAX on the unsigned size, so
- *     the grow trigger never fires and the first push indexes `b % 0`
- *     (SIGFPE).  This test never pushes to or pops from a size==0 deque.
+ *      push and pop work across that grow.  It is the smallest deque config
+ *      load accepts: worker_init_deque_size=0 is refused.
  */
 
 #include "arts/utils/deque.h"

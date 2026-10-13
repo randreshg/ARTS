@@ -47,6 +47,9 @@ int main(void) {
   assert(b2 != NULL);
   assert((void *)b2 == a1 && "v2 must reuse the parked v1 buffer");
   arts_atomic_shared_store(&c.buffer, NULL);
+  /* A descriptor's storage release frees what its list holds; this cache is
+   * in no descriptor, so the test empties the list itself. */
+  arts_lf_pool_destroy_with(&c.buf_freelist, arts_regpool_free);
   arts_regpool_cleanup();
   printf("RECYCLE_OK reused=%p\n", (void *)b2);
   return 0;

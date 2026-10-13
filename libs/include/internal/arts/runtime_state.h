@@ -69,7 +69,9 @@ struct arts_runtime_shared_s {
   struct arts_route_table_s **route_table;
   struct arts_route_table_s **gpu_route_table;
   struct arts_route_table_s *remote_route_table[ARTS_REMOTE_ROUTE_SHARDS];
-  volatile bool **local_spin;
+  /* local_spin[i] points at thread i's `alive`: NULL until the thread has
+   * written its role and set `alive`, then published with a seq_cst store. */
+  bool **local_spin;
   /* Per-thread role, indexed by thread_id (0..total_thread_count-1).
    * Populated during arts_runtime_private_init so that shutdown paths
    * can filter threads by role (workers vs. progress). */
@@ -83,9 +85,14 @@ struct arts_runtime_shared_s {
   volatile unsigned int ready_to_execute;
   volatile unsigned int ready_to_clean;
   /* Global shutdown flag. 0 = running normally, 1 = shutting down.
-   * Set by arts_runtime_stop() and checked by long-running loops
-   * (e.g. arts_transport_connect retry) so they can bail out promptly. */
+   * Written only by the 0 -> 1 CAS in arts_enter_shutdown_state, which every
+   * path into the shutdown takes first; read with atomic loads by long-running
+   * loops (e.g. the connect retry) so they can bail out promptly. */
   volatile unsigned int shutdown_state;
+  /* Set (release) once the CAS winner's entry has finished, its stop walk
+   * included; teardown waits for it (acquire) before it frees anything the
+   * entry touches.  Accessed with __atomic only. */
+  unsigned int shutdown_entry_done;
   /* End-to-end wall-clock marker (rank 0 only), independent of the counter
    * subsystem.  e2e_start_stamp is taken when the main application EDT
    * becomes runnable (init complete — so application init callbacks run
@@ -140,7 +147,8 @@ struct arts_runtime_private_s {
   unsigned int thread_id;
   unsigned int group_pos;
   unsigned int numa_domain_id;
-  volatile bool alive;
+  /* Cleared by a stopper on another thread; accessed with __atomic only. */
+  bool alive;
   enum arts_thread_role role;
   arts_guid_t current_edt_guid;
   int edt_free;

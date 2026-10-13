@@ -1,20 +1,17 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * excl_samerank_rw_grant_race — EXCL-config-specific reproducer for the
- * intra-node concurrent-RW grant-loss class.
+ * excl_samerank_rw_grant_race — under EXCL, every RW acquirer of one block on
+ * one rank runs exactly once.
  *
  * SCENARIO
  * --------
  * N consumer EDTs concurrently RW-acquire the SAME data DB on the SAME rank.
- * Under the EXCL protocol the home grants one rank-granular GRANT and the
- * grant handler's drain wakes the whole same-rank RW cohort.  The interplay
- * among `local_count` guard up/down, `held_mode` publish, `request_in_flight`
- * clear and the Treiber-stack drain snapshot has a window in which a
- * late-arriving acquire pushes a waiter that is neither drained by the current
- * GRANT nor re-requested for the next round — exactly one wakeup is lost.  The
- * symptom is: the last consumer's EDT never becomes ready, the storm-wide
- * LATCH never fires, verify_edt never runs, and the runtime hangs (caught by
- * the ctest TIMEOUT — there is NO in-test watchdog and NO spin).
+ * The home grants rank-granular permission, and one grant admits the whole
+ * same-rank RW cohort.  An acquire that arrives while the cohort is being
+ * admitted must either join it or request the next turn; a waiter that does
+ * neither is never woken.  Its consumer never runs, the storm-wide LATCH never
+ * fires, verify_edt never runs, and the runtime hangs (caught by the ctest
+ * TIMEOUT — there is NO in-test watchdog and NO spin).
  *
  * A lost wakeup fails it: the pass token is only emitted when ALL N*ITERS
  * deliveries land and the per-DB visited-count equals N exactly.

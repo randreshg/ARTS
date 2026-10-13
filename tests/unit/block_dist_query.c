@@ -19,10 +19,10 @@
  *   - local-index round trip: get_local_index(v) == v - partition_start(owner).
  *   - guid_for_partition / guid_for_vertex return the GUID reserved at init for
  *     that block, on the rank the round-robin assigned.
- *   - degenerate shapes: fewer vertices than blocks leaves no block larger
- *     than the graph, an empty graph's last partition does not end at
- *     UINT64_MAX, and a distribution with no blocks never divides by zero (run
- *     in a child, so a fault is observed rather than suffered).
+ *   - degenerate shapes: fewer vertices than blocks leaves the blocks past
+ *     the last vertex empty (size 0), an empty graph's last partition does not
+ *     end at UINT64_MAX, and a distribution with no blocks never divides by
+ *     zero (run in a child, so a fault is observed rather than suffered).
  *
  * The ARTS runtime is NOT started.  block_distribution.c is compiled via
  * #include against in-test stubs.
@@ -207,14 +207,20 @@ static void test_init_roundrobin(void) {
  */
 
 /* Fewer vertices than blocks: n=3, num_blocks=5 -> block_sz = ceil(3/5) = 1,
- * so (num_blocks-1)*block_sz exceeds n and the last block must not take the
- * unsigned difference. */
+ * so blocks 3 and 4 start at or past the last vertex and are empty.  Their
+ * size is 0 (n - start would wrap the unsigned size), and the sizes still sum
+ * to n. */
 static void test_last_block_no_underflow(void) {
   arts_block_dist_t *d = make_dist(3, 5);
   CHECK(d->block_sz == 1, "setup: ceil(3/5)==1");
-  arts_graph_sz_t last = arts_block_dist_block_size(4, d);
-  CHECK(last <= d->num_vertices,
-        "last block_size must not exceed num_vertices when n < num_blocks");
+  arts_graph_sz_t sum = 0;
+  for (unsigned int i = 0; i < 5; i++) {
+    arts_graph_sz_t sz = arts_block_dist_block_size(i, d);
+    CHECK(sz == (i < 3 ? 1u : 0u),
+          "n=3, 5 blocks: blocks 0..2 hold one vertex, blocks 3..4 none");
+    sum += sz;
+  }
+  CHECK(sum == d->num_vertices, "n=3, 5 blocks: sizes sum to num_vertices");
   free(d);
 }
 

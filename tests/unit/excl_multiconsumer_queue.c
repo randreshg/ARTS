@@ -1,19 +1,18 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * excl_multiconsumer_queue — EXCL-config-specific stress for the home-side
- * rw_waiters Vyukov MPSC queue's single-consumer assumption
- * (arts_home_grantreq_queue_pop).
+ * excl_multiconsumer_queue — RW/RO churn on one home block: every scheduled
+ * writer runs exactly once.
  *
- * The home rank's rw_waiters queue is a strict single-consumer Vyukov FIFO.
- * It is push'd by concurrent REQUEST handlers (multi-producer) and pop'd by
- * lock_home_grant — which is invoked from BOTH the REQUEST handler and the
- * RELEASE handler (the rw→rw D6 chain), and also drained by DESTROY.  If those
- * home bodies can overlap for the same GUID the pop becomes multi-consumer and
- * a writer's rank is double-popped or lost, losing a GRANT.
+ * The home's queue of ranks waiting for a write turn is a single-consumer
+ * Vyukov FIFO (arts_home_grantreq_queue_pop).  Concurrent REQUEST handlers
+ * push it; it is popped only by the step the block's state word admits (the
+ * grant or confirm that hands the next RW turn on), so one consumer pops at a
+ * time.  A second, concurrent pop would double-pop or lose a writer's rank,
+ * and with it a GRANT.
  *
  * This stress drives a high volume of RW acquire/release cycles against one
  * home DB, interleaved with RO acquires that flip/extend phases at the home
- * arbiter (multiplying the number of lock_home_grant pop calls).  Each RW
+ * (multiplying the number of grant transitions).  Each RW
  * writer increments the DB's accumulator; the post-condition checks that EVERY
  * scheduled writer ran exactly once (no lost GRANT) by comparing the
  * accumulator to the writer launch count.  A lost rank/GRANT leaves a writer's

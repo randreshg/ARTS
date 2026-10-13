@@ -1,20 +1,18 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * config_compute_derived route_table_entries = 1U << route_table_size.
+ * config_compute_derived turns route_table_size and gpu_route_table_size into
+ * entry counts (1U << size).  A size whose table cannot exist is refused at
+ * load (ARTS_ERROR), never shifted:
+ *   route_table_size      4..31  (the remote shards hash with shift size - 3,
+ *                                  which must be at least 1; 1U << 32 does not
+ *                                  exist in an unsigned int)
+ *   gpu_route_table_size  1..28  (shift at least 1; 8 slots per entry counted
+ *                                  in an unsigned int)
+ * Both ends of both ranges are accepted with the exact entry count, and the
+ * first value past each end is refused.
  *
- * compute_derived sets:
- *     config->route_table_entries     = 1U << config->route_table_size;
- *     config->gpu_route_table_entries = 1U << config->gpu_route_table_size;
- * with NO clamp on the shift count.  Properties / boundaries:
- *   size=20  -> 1<<20 = 1048576           (normal)
- *   size=31  -> 1<<31 = 0x80000000        (high bit set, still defined)
- * Both are pinned as computed, which documents the absence of a clamp: a
- * config typo route_table_size=31 silently asks for a 2-billion-entry table.
- * A size of 32 or more shifts a 32-bit unsigned by its width, which is
- * undefined, so there is no value to assert for it.
- *
- * compute_derived also derives thread counts; we keep table_length<=1 so it
- * takes the simple single-node reclaim path and does not touch ports.
+ * compute_derived also derives thread counts; table_length<=1 keeps it on the
+ * single-node path, which touches no ports.
  */
 
 #include "../../libs/src/core/system/config.c"
@@ -23,45 +21,68 @@
 #include <stdio.h>
 #include <string.h>
 
-static void minimal(struct arts_config_s *c) {
+static void minimal(struct arts_config_s *c, unsigned int size,
+                    unsigned int gpu_size) {
   memset(c, 0, sizeof(*c));
-  c->table_length = 1; /* single-node path */
+  c->table_length = 1;
   c->worker_thread_count = 4;
-  c->gpu_route_table_size = 12; /* keep gpu shift well-defined */
+  c->deque_size = 4096;
+  c->route_table_size = size;
+  c->gpu_route_table_size = gpu_size;
+}
+
+/* 1 when compute_derived refused the pair, 0 when it accepted it. */
+static int refused(unsigned int size, unsigned int gpu_size,
+                   struct arts_config_s *out) {
+  static struct arts_config_s c;
+  minimal(&c, size, gpu_size);
+  g_abort_fired = 0;
+  g_abort_armed = 1;
+  if (setjmp(g_abort_jmp) == 0) {
+    config_compute_derived(&c);
+    g_abort_armed = 0;
+    *out = c;
+    return 0;
+  }
+  return 1;
 }
 
 int main(void) {
-  /* size = 20 -> 1<<20 */
-  {
+  static const struct {
+    unsigned int size, gpu_size;
+    int refused;
+    unsigned int entries, gpu_entries;
+  } cases[] = {
+      {4, 12, 0, 1u << 4, 1u << 12},
+      {16, 12, 0, 1u << 16, 1u << 12},
+      {31, 12, 0, 0x80000000u, 1u << 12},
+      {16, 1, 0, 1u << 16, 1u << 1},
+      {16, 28, 0, 1u << 16, 1u << 28},
+      {3, 12, 1, 0, 0},
+      {0, 12, 1, 0, 0},
+      {32, 12, 1, 0, 0},
+      {16, 0, 1, 0, 0},
+      {16, 29, 1, 0, 0},
+      {16, 32, 1, 0, 0},
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
     struct arts_config_s c;
-    minimal(&c);
-    c.route_table_size = 20;
-    config_compute_derived(&c);
-    if (c.route_table_entries != (1u << 20)) {
-      fprintf(stderr, "FAIL shift: size 20 -> %u (want %u)\n",
-              c.route_table_entries, 1u << 20);
+    int r = refused(cases[i].size, cases[i].gpu_size, &c);
+    if (r != cases[i].refused) {
+      printf("FAIL config_route_table_size_shift: route_table_size=%u "
+             "gpu_route_table_size=%u was %s\n",
+             cases[i].size, cases[i].gpu_size, r ? "refused" : "accepted");
       return 1;
     }
-    if (c.gpu_route_table_entries != (1u << 12)) {
-      fprintf(stderr, "FAIL shift: gpu size 12 -> %u\n",
-              c.gpu_route_table_entries);
+    if (!r && (c.route_table_entries != cases[i].entries ||
+               c.gpu_route_table_entries != cases[i].gpu_entries)) {
+      printf("FAIL config_route_table_size_shift: sizes %u/%u gave %u/%u "
+             "entries (want %u/%u)\n",
+             cases[i].size, cases[i].gpu_size, c.route_table_entries,
+             c.gpu_route_table_entries, cases[i].entries, cases[i].gpu_entries);
       return 1;
     }
   }
-
-  /* size = 31 -> high bit set, still defined; PIN the unclamped huge value. */
-  {
-    struct arts_config_s c;
-    minimal(&c);
-    c.route_table_size = 31;
-    config_compute_derived(&c);
-    if (c.route_table_entries != 0x80000000u) {
-      fprintf(stderr, "FAIL shift: size 31 -> 0x%x (want 0x80000000)\n",
-              c.route_table_entries);
-      return 1;
-    }
-  }
-
-  printf("PASS config_route_table_size_shift: 20/31 unclamped pinned\n");
+  printf("PASS config_route_table_size_shift\n");
   return 0;
 }

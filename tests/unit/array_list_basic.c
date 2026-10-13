@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * array_list functional coverage + empty/stale-cache get bug pin
- * (libs/src/core/utils/array_list.c).  Single-thread (the structure is
- * single-owner / not thread-safe by contract).
+ * array_list functional coverage (libs/src/core/utils/array_list.c).
+ * Single-thread (the structure is single-owner / not thread-safe by
+ * contract).
  *
  * Properties exercised:
  *   1. push returns the assigned index 0,1,2,...; length tracks the count.
@@ -13,25 +13,14 @@
  *   3. cross-segment indexing: with a small array_length, pushing past the
  *      segment boundary creates new segments at start = k*array_length; get
  *      walks them correctly.
- *   4. get(out-of-range) returns NULL for index >= count (when not the
- *      cached index).
+ *   4. get(out-of-range) returns NULL for index >= count, the cached index
+ *      included: a new or just-reset list caches index 0 with no element
+ *      behind it, and get(0) there is NULL.
  *   5. reset clears logically (length->0) but reuses storage; push-after-reset
  *      re-fills the SAME segments and get returns the new values.
  *   6. snapshot iterator: iter_init snapshots the count; has_next/next walk
  *      exactly [0,count) in order across segment boundaries; pushes after
  *      init are NOT seen (snapshot semantics).
- *
- * Suspected-bug pin (B053 / B1, array_list.c:113-115) — record, do NOT fix:
- *   The "fastest path" `if (index == a_list->lastRequest) return
- * lastRequestPtr` bypasses the bounds check.  After arts_new_array_list (and
- * after arts_reset_array_list), lastRequest==0 and lastRequestPtr==head->array
- *   while the count (index) is 0.  Therefore get(list, 0) on an EMPTY/just-
- *   reset list returns head->array (a pointer into uninitialized segment
- *   memory) instead of NULL.  The CORRECT behavior is NULL (index 0 >= count
- *   0 is out of range).  We assert the BUGGY observed behavior (non-NULL) so
- *   the test PASSES today while documenting the defect; if the runtime is
- *   ever fixed to return NULL, this assertion flips and the test must be
- *   updated to expect NULL.  exposes_runtime_bug=true.
  */
 
 #include "arts/utils/array_list.h"
@@ -167,43 +156,32 @@ int main(void) {
     arts_delete_array_list(l);
   }
 
-  /* ---- B053/B1 pin: empty-list get(0) hits the cache fastest path and
-   *      returns a NON-NULL pointer into uninitialized memory instead of
-   *      NULL.  Asserting the BUGGY behavior so the test passes while
-   *      documenting the defect.  (Correct behavior would be NULL.) ---- */
+  /* ---- 4 (cached index): get(0) on an empty list, new or reset, is NULL,
+   *      though index 0 is the cached request in both states; and once an
+   *      element is pushed, get(0) returns it. ---- */
   {
     arts_array_list_t *l = arts_new_array_list(sizeof(uint64_t), 8);
     if (arts_length_array_list(l) != 0)
-      return fail("B053: fresh list not empty");
-    void *p = arts_get_from_array_list(l, 0); /* index 0 == lastRequest 0 */
-    if (p == NULL) {
-      /* If this ever happens, the bug was FIXED — update the test. */
-      return fail("B053 pin: get(0) on EMPTY list returned NULL — bug appears "
-                  "FIXED; update this test to expect NULL");
-    }
-    /* p == head->array (uninitialized) — the documented out-of-bounds cache
-     * read.  We do NOT dereference it (it is uninitialized). */
-    if (p != l->head->array) {
-      return fail("B053 pin: get(0) empty returned an unexpected pointer");
-    }
+      return fail("fresh list not empty");
+    if (arts_get_from_array_list(l, 0) != NULL)
+      return fail("get(0) on a new, empty list should be NULL");
 
-    /* Same after reset: reset re-arms lastRequest=0 + lastRequestPtr=head. */
     uint64_t v = 42;
     arts_push_to_array_list(l, &v);
     arts_reset_array_list(l);
-    void *p2 = arts_get_from_array_list(l, 0);
-    if (p2 == NULL) {
-      return fail("B053 pin: get(0) after reset returned NULL — bug appears "
-                  "FIXED; update this test to expect NULL");
-    }
-    if (p2 != l->head->array) {
-      return fail("B053 pin: get(0) after reset returned unexpected pointer");
-    }
+    if (arts_get_from_array_list(l, 0) != NULL)
+      return fail("get(0) on a reset, empty list should be NULL");
+
+    uint64_t w = 43;
+    arts_push_to_array_list(l, &w);
+    uint64_t *p = (uint64_t *)arts_get_from_array_list(l, 0);
+    if (p == NULL || *p != 43)
+      return fail("get(0) after a push into the reset list should return it");
     arts_delete_array_list(l);
   }
 
   printf("PASS array_list_basic: push/get(fast+slow+cached)/reset/iterator OK; "
-         "B053 empty-get(0)-returns-non-NULL pinned (suspected bug)\n");
+         "empty get(0) is NULL\n");
   return 0;
 }
 

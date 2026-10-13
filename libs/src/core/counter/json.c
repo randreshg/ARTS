@@ -63,12 +63,13 @@ static void json_writer_prepare_entry(arts_json_writer_t *writer) {
   }
 }
 
-static void json_writer_push(arts_json_writer_t *writer) {
+static void json_writer_push(arts_json_writer_t *writer, char closing) {
   if (writer->depth + 1 >= ARTS_JSON_MAX_DEPTH) {
     return;
   }
   writer->depth++;
   writer->need_comma[writer->depth] = 0;
+  writer->closer[writer->depth] = closing;
 }
 
 static void json_writer_pop(arts_json_writer_t *writer, char closing) {
@@ -96,6 +97,7 @@ void arts_json_writer_init(arts_json_writer_t *writer, FILE *fp,
   writer->depth = 0;
   writer->overflow = 0;
   memset(writer->need_comma, 0, sizeof(writer->need_comma));
+  memset(writer->closer, 0, sizeof(writer->closer));
 }
 
 void arts_json_writer_begin_object(arts_json_writer_t *writer,
@@ -118,7 +120,7 @@ void arts_json_writer_begin_object(arts_json_writer_t *writer,
   } else {
     (void)fputc('{', writer->fp);
   }
-  json_writer_push(writer);
+  json_writer_push(writer, '}');
 }
 
 void arts_json_writer_end_object(arts_json_writer_t *writer) {
@@ -144,7 +146,7 @@ void arts_json_writer_begin_array(arts_json_writer_t *writer, const char *key) {
   } else {
     (void)fputc('[', writer->fp);
   }
-  json_writer_push(writer);
+  json_writer_push(writer, ']');
 }
 
 void arts_json_writer_end_array(arts_json_writer_t *writer) {
@@ -237,6 +239,6 @@ void arts_json_writer_write_raw_array(arts_json_writer_t *writer,
 
 void arts_json_writer_finish(arts_json_writer_t *writer) {
   while (writer->depth) {
-    json_writer_pop(writer, '}');
+    json_writer_pop(writer, writer->closer[writer->depth]);
   }
 }

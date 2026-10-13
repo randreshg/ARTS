@@ -1,0 +1,6 @@
+# LeakSanitizer suppressions for the test suite of an ADDRESS sanitizer tree.
+#
+# libfabric's tcp provider duplicates the connection-manager data of a connect
+# its peer rejected (two endpoints connecting to each other at once) into the
+# error entry of an FI_SHUTDOWN event, and frees the event without that data.
+leak:xnet_ep_disable

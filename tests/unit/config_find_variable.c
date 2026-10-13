@@ -1,29 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * T205 — arts_config_find_variable env-override splice hazards.
- * Targets B099 (uninit new_var->next splice, HIGH) and B100 (flexible-array
- * +size vs memcpy size+1 1-byte OOB; variable[255] unbounded copy, MED).
+ * arts_config_find_variable: an environment variable overrides a cfg key.
  *
- * arts_config_find_variable walks a linked list for `string`; if an env var of
- * that name exists it builds a replacement node and splices it in.  The splice
- * has three cases:
- *   (a) not found, empty list (last==NULL): prepend — new_var->next=*head. OK.
- *   (b) found (next!=NULL): new_var->next = next->next; free(next). OK.
- *   (c) not found, NON-empty list (last!=NULL, next==NULL):  <-- B099
- *       last->next = new_var; but the `if (next)` block that sets
- *       new_var->next is NOT taken → new_var->next is UNINITIALIZED → the list
- *       tail points at a wild pointer.  Traversing/freeing the list then walks
- *       garbage.
- *
- * Allocation hazard B100: the node is malloc'd sizeof(struct)+size where
- * size=strlen(value), but value[] is a flexible array and memcpy copies size+1
- * bytes → 1-byte heap-buffer-overflow of the trailing NUL.  ASan catches it on
- * every override.
- *
- * Authored correct-and-failing (exposes_runtime_bug=true): a clean ASan run
- * means both the uninitialized-next splice and the +size/+size+1 off-by-one
- * were fixed; today ASan reports a heap overflow (B100) and/or the
- * walk-the-list step crashes (B099).
+ * The lookup builds a node for the variable and splices it into the list: in
+ * place of a node of that name, or appended when the list holds none.  This
+ * test takes the append into a non-empty list ("alpha", looking up "beta"):
+ * the appended node must end the list (its link NULL, so the walk below stops
+ * after two nodes), and its value, terminating NUL included, must lie inside
+ * its allocation (a sanitizer build reports a write past it).
  */
 
 #include "../../libs/src/core/system/config.c"
@@ -50,9 +34,8 @@ static struct arts_config_variable_s *make_node(const char *name,
 }
 
 int main(void) {
-  /* List has ONE element named "alpha" that does NOT match the lookup key
-     "beta".  We set env beta so the override path runs with
-     last != NULL (alpha), next == NULL (beta not found) — case (c), B099. */
+  /* One node, "alpha"; the environment supplies "beta", which the list does
+     not hold, so the override is appended after alpha. */
   struct arts_config_variable_s *head = make_node("alpha", "1");
 
   setenv("beta", "value_of_beta", 1);
@@ -67,9 +50,7 @@ int main(void) {
     return 1;
   }
 
-  /* The spliced node is now the tail after alpha.  A well-formed list must be
-     fully traversable and NUL-terminated.  If B099 is live, res->next is
-     uninitialized garbage and this walk dereferences it. */
+  /* The appended node is the tail after alpha: the walk must end there. */
   unsigned int count = 0;
   for (struct arts_config_variable_s *p = head; p != NULL; p = p->next) {
     /* Touch each node's name to force a real read of the (possibly wild)
@@ -86,7 +67,7 @@ int main(void) {
     return 1;
   }
 
-  /* Free the list — exercises the same wild-pointer chain under ASan. */
+  /* Free the list. */
   config_free_variables(head);
 
   printf("PASS config_find_variable: override splice well-formed (%u nodes)\n",

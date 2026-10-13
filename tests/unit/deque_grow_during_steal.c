@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * Grow-during-steal value-correctness + segment-reclamation safety
- * (libs/src/core/utils/deque.c).  Targets suspected bug B052: push_front grows
- * the array (grow_circular_array copies the live window [t,b) into a 2x
- * segment) and publishes `deque->activeArray = a` with NO store-store fence
- * before the publish.  A stealer's pop_back reads activeArray, then reads
+ * (libs/src/core/utils/deque.c).  push_front grows the array
+ * (grow_circular_array copies the live window [t,b) into a 2x segment) and
+ * publishes `deque->activeArray = a` with NO store-store fence before the
+ * publish.  A stealer's pop_back reads activeArray, then reads
  * segment[t]; if it observes the new activeArray before the copied element
  * stores (weak-mem), it reads a stale/garbage slot.  Also: the old segment is
  * deliberately never freed until arts_deque_delete, so a stealer that captured

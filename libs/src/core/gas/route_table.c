@@ -329,8 +329,9 @@ static void route_wait_tick(route_wait_t *w, arts_guid_t key, const char *what,
  * share a marker; mistaking another GUID's claim for one's own costs a wait
  * or a retry, never a second published slot. */
 static inline arts_guid_t route_key_claiming(arts_guid_t key) {
-  arts_guid_t m =
-      key & ~((arts_guid_t)ARTS_GUID_TYPE_MASK << ARTS_GUID_TYPE_SHIFT);
+  /* Unsigned: a shift into the sign bit of arts_guid_t is undefined. */
+  arts_guid_t m = (arts_guid_t)((uint64_t)key &
+                                ~(ARTS_GUID_TYPE_MASK << ARTS_GUID_TYPE_SHIFT));
   return m > ARTS_ROUTE_KEY_RETIRING ? m : ARTS_ROUTE_KEY_RETIRING + 1;
 }
 
@@ -775,23 +776,35 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter) {
   return NULL;
 }
 
-uint64_t arts_clean_up_route_table(arts_route_table_t *route_table) {
+uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
+                                   bool (*keep)(arts_shared_ptr_t)) {
   arts_route_table_iterator_t iter;
   arts_reset_route_table_iterator(&iter, route_table);
 
+  uint64_t kept = 0;
   arts_route_item_t *item = arts_route_table_iterate(&iter);
   while (item) {
-    /* Detach + release the install ref; the cb's per-kind deleter performs
-     * the single teardown once the last ref drops.  No per-type special
-     * casing — the deleter is the sole owner. */
-    arts_shared_ptr_t old = arts_atomic_shared_exchange(&item->value, NULL);
-    if (old) {
-      arts_shared_release(&old);
+    bool stays = false;
+    if (keep != NULL) {
+      arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
+      stays = h != NULL && keep(h);
+      arts_shared_release(&h);
+    }
+    if (stays) {
+      kept++;
+    } else {
+      /* Detach + release the install ref; the cb's per-kind deleter performs
+       * the single teardown once the last ref drops.  No per-type special
+       * casing — the deleter is the sole owner. */
+      arts_shared_ptr_t old = arts_atomic_shared_exchange(&item->value, NULL);
+      if (old) {
+        arts_shared_release(&old);
+      }
     }
     arts_ooo_free_all(item);
     item = arts_route_table_iterate(&iter);
   }
-  return 0;
+  return kept;
 }
 
 unsigned int arts_route_table_parked_count(arts_route_table_t *route_table) {
@@ -823,14 +836,14 @@ void arts_delete_route_table(arts_route_table_t *route_table) {
   arts_free(route_table);
 }
 
-void arts_clean_up_dbs() {
-  uint64_t free_size = 0;
+uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t)) {
+  uint64_t kept = 0;
   for (unsigned int i = 0; i < arts_node_info.total_thread_count; i++) {
-    free_size += arts_clean_up_route_table(arts_node_info.route_table[i]);
+    kept += arts_clean_up_route_table(arts_node_info.route_table[i], keep);
   }
   for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    free_size +=
-        arts_clean_up_route_table(arts_node_info.remote_route_table[s]);
+    kept +=
+        arts_clean_up_route_table(arts_node_info.remote_route_table[s], keep);
   }
-  ARTS_INFO("Cleaned %lu bytes", free_size);
+  return kept;
 }

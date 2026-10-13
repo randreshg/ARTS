@@ -23,10 +23,9 @@
  *   5. write_double uses %.6f.
  *   6. Top-level object with multiple entries: commas between siblings, none
  *      before the first.
- *   7. Depth overflow (> ARTS_JSON_MAX_DEPTH-1 nesting): the writer silently
- *      stops pushing; finish() must still close every brace it opened so the
- *      stream the writer believes it produced stays brace-balanced.  (This
- *      documents the silent-drop behavior, suspected-bug LOW B138.)
+ *   7. Depth overflow (> ARTS_JSON_MAX_DEPTH-1 nesting): a level that cannot be
+ *      opened is dropped with everything written inside it, and finish()
+ *      closes every level that was opened, so the document stays well-formed.
  *
  * On any mismatch: prints FAIL ... to stderr and returns 1.  Deterministic.
  */
@@ -285,6 +284,13 @@ static void b_multi_top(arts_json_writer_t *w) {
   arts_json_writer_end_object(w);
 }
 
+/* An array inside an object, both left open for finish() to close. */
+static void b_open_array(arts_json_writer_t *w) {
+  arts_json_writer_begin_object(w, NULL);
+  arts_json_writer_begin_array(w, "arr");
+  arts_json_writer_write_u_int64(w, NULL, 7);
+}
+
 /* Open more than ARTS_JSON_MAX_DEPTH objects to drive the silent-drop path. */
 static void b_overflow(arts_json_writer_t *w) {
   for (int i = 0; i < ARTS_JSON_MAX_DEPTH + 8; i++) {
@@ -315,6 +321,13 @@ int main(void) {
   capture(b_empty_obj, 2);
   CHECK(json_is_well_formed(g_cap), "empty object not well-formed");
   CHECK(strcmp(g_cap, "{}") == 0, "empty object not '{}'");
+
+  /* 2c. finish() closes each open level with its own bracket. */
+  capture(b_open_array, 2);
+  CHECK(json_is_well_formed(g_cap), "finish() over an open array not "
+                                    "well-formed");
+  CHECK(strcmp(g_cap, "{\n  \"arr\": [\n    7\n  ]\n}") == 0,
+        "finish() did not close the array with ']'");
 
   /* 3. escaping. */
   capture(b_escape, 2);
@@ -351,17 +364,12 @@ int main(void) {
     CHECK(commas == 2, "expected exactly 2 sibling commas at top level");
   }
 
-  /* 7. depth overflow (exposes B138, census §json.c L99/§suspected-bug 6):
-   *    When more than ARTS_JSON_MAX_DEPTH-1 objects are opened,
-   * json_writer_push refuses to increment depth but begin_object STILL emits
-   * `"key": {`, and prepare_entry STILL inserts a comma between those
-   * same-depth siblings. The result is structurally malformed JSON — sequences
-   * like `{,` (a brace immediately followed by a comma) and an unbalanced brace
-   * count, because finish() only pops the capped depth and leaves the surplus
-   * `{` unclosed. A correct writer would either error, drop the over-deep entry
-   * entirely, or keep the document brace-balanced.  This assertion documents
-   * the defect and is expected to FAIL on the current code; we do NOT relax it.
-   */
+  /* 7. depth overflow: ARTS_JSON_MAX_DEPTH + 8 nested objects and a leaf
+   *    inside the deepest.  An opening brace emitted for a level the writer
+   *    does not track would leave a `{` that finish() never closes and a
+   *    comma between same-depth siblings (`{,`); the document must instead be
+   *    brace-balanced and well-formed, and the leaf, written inside a dropped
+   *    level, must not surface in a level that was kept. */
   capture(b_overflow, 2);
   {
     int opens = 0, closes = 0;
@@ -377,12 +385,14 @@ int main(void) {
         !json_is_well_formed(g_cap)) {
       fprintf(stderr,
               "FAIL json_writer: depth-overflow emits MALFORMED JSON "
-              "(opens=%d closes=%d, has '{,'=%d, parses=%d) — exposes B138\n"
+              "(opens=%d closes=%d, has '{,'=%d, parses=%d)\n"
               "  captured:\n%s\n",
               opens, closes, strstr(g_cap, "{,") != NULL,
               json_is_well_formed(g_cap), g_cap);
       return 1;
     }
+    CHECK(strstr(g_cap, "\"leaf\"") == NULL,
+          "depth-overflow: a write inside a dropped level was emitted");
   }
 
   printf("PASS json_writer (nested/empty/escape/double/multi-top/overflow)\n");

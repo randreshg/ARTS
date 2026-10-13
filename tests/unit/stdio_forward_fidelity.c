@@ -9,8 +9,8 @@
  *     read(2) iterations and crosses the 4096-chunk boundary repeatedly), and
  *   - the data-then-EOF ordering: bytes written, then the write-end closed.
  *     Pipe semantics guarantee a pending read returns the buffered tail before
- *     the next read returns 0 (EOF); a regression that broke on the first short
- *     read would silently drop the last chunk (suspected-bug #1, tail-flush).
+ *     the next read returns 0 (EOF); a copy loop that stopped on the first
+ *     short read would silently drop the last chunk.
  *
  * Harness: redirect the sink to a temp file (the FILE* given to make_pipe is
  * backed by a real fd, so the forwarder's fileno(sink) write lands there).

@@ -68,7 +68,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int ranks = arts_get_total_ranks();
   unsigned int me = arts_get_current_rank();
-  arts_printf("=== csr_remote_null (T271) rank %u/%u ===\n", me, ranks);
+  arts_printf("=== csr_remote_null rank %u/%u ===\n", me, ranks);
   if (ranks < 2) {
     arts_printf("SKIP csr_remote_null: needs >= 2 ranks\n");
     arts_shutdown();

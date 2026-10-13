@@ -102,6 +102,14 @@ __attribute__((constructor)) static void arts_edt_register_cb_deleter(void) {
  * pointer. */
 void (*arts_edt_get_deleter(void))(void *) { return arts_edt_deleter; }
 
+bool arts_edt_admitted(arts_shared_ptr_t h) {
+  if (h == NULL || arts_shared_deleter(h) != arts_edt_deleter) {
+    return false;
+  }
+  const struct arts_edt_s *edt = (const struct arts_edt_s *)arts_shared_get(h);
+  return edt->depc_needed == 0u;
+}
+
 /* The engine's create args for an EDT received off the wire: the args header,
  * the blob packet, the EDT image, contiguous.  Images that fit are composed on
  * the stack. */
@@ -460,14 +468,15 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
   /* (uint32_t)-1 is the "no specific slot" sentinel used by control
    * dependences (registered with slot -1): they decrement readiness without
    * writing any dependence-vector entry.  A real, in-range slot writes its
-   * entry and decrements.  ANY OTHER slot is genuinely out of range — it is not
-   * one of this EDT's dependences, so it must neither write past the vector nor
-   * count toward readiness (else the EDT could fire before its real deps land);
-   * ignore it. */
+   * entry and decrements.  Any other slot names no dependence of this EDT: a
+   * program error that only this rank, which holds the EDT, can see, and the
+   * sender has no path back, so it is fatal here. */
   const uint32_t NO_SLOT = (uint32_t)-1;
   bool writes_slot = (slot != NO_SLOT);
   if (writes_slot && slot >= edt->depc) {
-    return;
+    ARTS_ERROR("satisfy of EDT[Guid:%lu] names slot %u, but the EDT has %u "
+               "dependence slot(s)",
+               (unsigned long)edt->guid, slot, edt->depc);
   }
   if (writes_slot) {
     edt_dep[slot].guid = data_guid;
@@ -476,8 +485,6 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
     edt_dep[slot].ptr = NULL;
     edt_dep[slot].mode = mode;
   }
-  /* Decrement readiness for both a real in-range slot and the no-slot
-   * sentinel; only a genuine out-of-range slot (rejected above) is skipped. */
   unsigned int res = arts_atomic_sub(&edt->depc_needed, 1U);
   ARTS_INFO("Signal EDT[Guid:%lu, Slot:%u] DB[Guid:%lu] depc_needed=%u→%u",
             edt->guid, slot, data_guid, res + 1, res);

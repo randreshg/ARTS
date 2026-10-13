@@ -40,6 +40,7 @@ static void config_with_threads(struct arts_config_s *c,
   c->launcher = arts_config_make_new_var("local");
   c->route_table_size = 16;
   c->gpu_route_table_size = 12;
+  c->deque_size = 4096;
 
   c->thread_count = 2; /* pre-set (as if from SLURM_CPUS_PER_TASK) */
   c->progress_thread_count = progress;

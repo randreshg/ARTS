@@ -144,7 +144,6 @@ static void arts_term_signal_handler(int sig) {
   write_signal_line("\n[ARTS] Killed by ", signal_name(sig),
                     arts_global_rank_id, ")\n");
 
-  /* backtrace_symbols_fd is async-signal-safe per glibc; keep it. */
   write_backtrace();
 
   struct sigaction sa;
@@ -163,6 +162,12 @@ static const unsigned arts_term_sig_count =
     sizeof(arts_term_sigs) / sizeof(arts_term_sigs[0]);
 
 void arts_install_signal_handlers(void) {
+  /* backtrace() loads the unwinder on its first call, which allocates; making
+   * that call here, outside any handler, keeps the handlers' calls free of
+   * allocation. */
+  void *warm[1];
+  (void)backtrace(warm, 1);
+
   // Crash handlers — backtrace + re-raise for core dump.
   struct sigaction crash_sa;
   crash_sa.sa_handler = arts_crash_signal_handler;
@@ -246,7 +251,8 @@ static void *arts_signal_watcher_main(void *arg) {
       /* Stay in the loop: a second signal forces exit. */
     } else {
       ARTS_WARN("signal watcher: second signal %d, forcing exit", sig);
-      _exit(128 + sig);
+      /* The way out of a shutdown that hangs must not wait itself. */
+      arts_exit_now((uint8_t)(128 + sig));
     }
   }
   return NULL;

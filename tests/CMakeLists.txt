@@ -105,6 +105,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     finish_event_stress
     term_shutdown
     term_abort
+    edt_satisfy_out_of_range
     term_sigfpe
     term_sigsegv
     config_ports_contract
@@ -504,6 +505,21 @@ function(arts_cxl_test_env)
     set_property(TEST ${_tests} APPEND PROPERTY RESOURCE_LOCK "arts_runtime")
 endfunction()
 
+# An ADDRESS sanitizer tree runs every test, and every rank a test spawns,
+# under the one leak suppression of lsan_suppressions.txt: memory a vendored
+# library leaks in a frame of its own that nothing outside it can reach.
+function(arts_lsan_test_env)
+    if(NOT ARTS_DEBUG_SANITIZER STREQUAL "ADDRESS")
+        return()
+    endif()
+    get_property(_tests DIRECTORY PROPERTY TESTS)
+    if(NOT _tests)
+        return()
+    endif()
+    set_property(TEST ${_tests} APPEND PROPERTY ENVIRONMENT
+                 "LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/lsan_suppressions.txt")
+endfunction()
+
 # Run at the end of each directory that registers tests (arts_add_test
 # schedules it).  A test the runner judges has its pass regex moved into the
 # runner, since CTest would otherwise ignore its exit status; one without a
@@ -522,9 +538,11 @@ endfunction()
 # shutdown (each escape re-checks once a second) has only a few seconds of
 # that period to spare.  WILL_FAIL is refused: CTest would invert the
 # verdict, a late failure's included; an expected exit status is the test's
-# STATUS.  A CXL tree's tests get the store's environment too.
+# STATUS.  A CXL tree's tests get the store's environment too, and an
+# ADDRESS sanitizer tree's the leak suppression.
 function(arts_test_finalize)
     arts_cxl_test_env()
+    arts_lsan_test_env()
     get_property(_tests DIRECTORY PROPERTY TESTS)
     foreach(_t IN LISTS _tests)
         get_test_property(${_t} WILL_FAIL _will_fail)
@@ -783,6 +801,18 @@ endif()
 register_single_node_test(term_abort ARGS 0 42 STATUS 42)
 set_tests_properties(term_abort PROPERTIES
     PASS_REGULAR_EXPRESSION "TERM_ABORT rc=42")
+
+# A satisfy naming a slot past an EDT's depc is fatal on the rank holding the
+# EDT: in the caller's own process on one rank, and on two in rank 1, whose
+# exit the master's arts_rt reports.
+register_single_node_test(edt_satisfy_out_of_range TIMEOUT 30 STATUS 1)
+set_tests_properties(edt_satisfy_out_of_range PROPERTIES
+    PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot")
+register_multinode_test(edt_satisfy_out_of_range TIMEOUT 30 STATUS 1
+                        VARIANTS 2n_9w_1p)
+set_tests_properties(edt_satisfy_out_of_range_2n_9w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot"
+    ARTS_EXPECTS_RANK_FAILURE 1)
 
 # Debug-only (see the program list's guard above): rank 1's fatal error ends
 # that rank, so the master's arts_rt() reports a failed rank and the test
@@ -1143,8 +1173,8 @@ register_pure_unit_test(array_list_basic)
 # pins the per-function pre/post return conventions; atomics_rmw_contention
 # proves the fetch_add tickets form a gap-free partition (linearizability);
 # atomics_locks proves mutual-exclusion (no lost updates), the try_lock state
-# machine, and the reader/writer no-overlap invariant, and documents that
-# writer_try_lock blocks on reader drain.  atomics_locks is functionally
+# machine, the reader/writer no-overlap invariant, and that writer_try_lock
+# fails rather than wait for a reader.  atomics_locks is functionally
 # green under ASan but DELIBERATELY trips ThreadSanitizer: atomics.c's RW lock
 # uses plain `volatile` spin-hint reads of *write_lock/*read_lock racing with
 # the barrier'd atomic RMWs on the same word — a true C-UB data race property
@@ -1171,7 +1201,7 @@ register_pure_unit_test(atomics_locks TIMEOUT 60)
 # malloc_footprint_balance asserts that matched alloc/realloc/free sequences
 # leave BYTES_MEMORY_FOOTPRINT at net zero, single-threaded and concurrently.
 # diag_timestamp pins best-effort per-thread monotonicity + fold sanity and
-# documents that arts_printf's prefix and body are two non-atomic stdio calls.
+# that arts_printf's prefix and body reach stdout as one line.
 set(MISC_UTIL_UNIT_TESTS
     malloc_footprint_balance malloc_alignment diag_timestamp)
 foreach(t ${MISC_UTIL_UNIT_TESTS})
@@ -1533,11 +1563,10 @@ if(ARTS_DEBUG_INJECTION AND NOT ARTS_CXL_TREE_RESIDENCY)
 endif()
 
 # Add-dependence-then-release hand-off: consumers whose slots satisfied BEFORE
-# the producer's release must observe the release-published bytes.  A DB whose
-# home is neither the creator nor pre-seeded exposes a serve-early bug as a
-# consumer NULL/zero read (FAIL/abort — rank death still exits 0 through the
-# survivor's clean shutdown, so require the PASS line) or as a never-woken
-# parked acquire (missing PASS -> timeout).
+# the producer's release must observe the release-published bytes, also for a
+# DB whose home is neither the creator nor pre-seeded.  A read served before
+# the publication shows as a consumer's NULL/zero read (FAIL: and an abort); a
+# parked acquire that is never woken leaves the PASS line unprinted.
 # These assert what the runtime's exclusive-RW serialization guarantees; under
 # DB-WRF that ordering is the program's, and these programs deliberately omit
 # it.

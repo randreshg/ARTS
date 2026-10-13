@@ -58,6 +58,8 @@ typedef struct {
    * brace that was never opened. */
   unsigned overflow;
   uint8_t need_comma[ARTS_JSON_MAX_DEPTH];
+  /* The bracket that closes each open level: '}' or ']'. */
+  char closer[ARTS_JSON_MAX_DEPTH];
 } arts_json_writer_t;
 
 void arts_json_writer_init(arts_json_writer_t *writer, FILE *fp,

@@ -45,12 +45,16 @@
 #include "arts/system/threads.h"
 
 int arts_printf(const char *format, ...) {
+  /* The prefix and the body are one piece of output: the stream stays locked
+   * across both, so no other thread's output lands between them. */
+  flockfile(stdout);
   printf(" [%u] ", arts_global_rank_id);
   va_list arglist;
   va_start(arglist, format);
   int written = vprintf(format, arglist);
   va_end(arglist);
   (void)fflush(stdout);
+  funlockfile(stdout);
   return written >= 0 ? written : 0;
 }
 

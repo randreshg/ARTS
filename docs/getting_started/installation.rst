@@ -222,7 +222,11 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - OFF
      - Debug builds only: ``ADDRESS`` (ASan + UBSan + LSan) or ``THREAD``
        (TSan + UBSan), C/C++ only, never CUDA.  One choice, because the
-       compiler cannot combine the two.
+       compiler cannot combine the two.  Under ``ADDRESS`` the test suite
+       runs with one LeakSanitizer suppression,
+       ``tests/lsan_suppressions.txt`` (a leak inside the vendored
+       libfabric's tcp provider); the work a non-quiescent shutdown
+       abandons stays reachable at exit and is not reported.
    * - ``ARTS_DEBUG_INJECTION``
      - OFF
      - Debug builds only: compile the run-time injection hooks, each inert

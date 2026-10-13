@@ -7,8 +7,8 @@
  * stdout): several reader threads write(2) to the same underlying fd
  * concurrently.  write(2) to a shared fd is only atomic up to a bound, so bytes
  * from different sources can interleave at sub-write granularity — line order
- * is NOT a promise (suspected-bug #3).  The contract that MUST hold is: no byte
- * is lost; every source's bytes all arrive.
+ * is NOT a promise.  The contract that MUST hold is: no byte is lost; every
+ * source's bytes all arrive.
  *
  * Each of N forwarders writes COUNT bytes all equal to its own distinct byte
  * value s (s = 1..N; value 0 is reserved as "absent").  After shutdown the

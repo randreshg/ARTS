@@ -1,9 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * arts_shared_ptr_t mixed-API lifecycle race (shared.c).
- * Census 28.md gaps #3 (mixed-API churn), #8 (N-way last-drop deleter once),
- * #4 (abandon-vs-make), #6 (make leaves link uninit, B126), #5 (release
- * underflow, B128).
+ * Mixed-API churn, N-way last drop, abandon-vs-make, and cb reuse.
  *
  * Parts:
  *
@@ -18,20 +16,13 @@
  *      quiescence make-count == delete-count (refcount conservation, no leak /
  *      no double-free under ASan).
  *
- *  (C) abandon-vs-make no double-pop: a thread makes then abandons in a tight
- *      loop while others make/release — the cb pool must never hand the same cb
- *      to two live owners (caught by an object-identity stamp + ASan).
+ *  (C) abandon-vs-make: a thread makes then abandons in a tight loop while
+ *      others make/release — no cb is ever held by two live owners (caught by
+ *      an object-identity stamp + ASan).
  *
- *  (D) make-leaves-link-uninit invariant (B126, documented): make() does NOT
- *      re-init cb->link.next, relying on release/abandon to overwrite it before
- *      the next pool push.  We pin the OBSERVABLE consequence: a make -> use ->
- *      release -> make cycle reuses cbs cleanly with no corruption (if the
- *      stale link were ever read while live, ASan/logic would break).
- *
- *  (E) release underflow (B128, documented — NOT triggered): a double-release
- *      wraps `strong` silently with no assert.  We do NOT perform a real
- *      double release (that is UB that could resurrect a cb); the gap is
- *      recorded here in the comment.  (Doing it would corrupt the pool.)
+ *  (D) make/use/release cycles: a tight make -> get -> release loop frees and
+ *      re-allocates cbs; every object reads back intact and is deleted exactly
+ *      once.
  */
 
 #include "arts/utils/shared.h"
@@ -245,14 +236,12 @@ static int part_bc(void) {
   return 0;
 }
 
-/* ---- Part D: make/use/release cycles reuse cbs cleanly (B126 invariant) ----
- */
+/* ---- Part D: make/use/release cycles ---- */
 static int part_d(void) {
   atomic_store(&g_made, 0);
   atomic_store(&g_deleted, 0);
-  /* Tight reuse: make -> get -> release N times.  Each release recycles the cb
-   * into the pool; the next make pops it.  If make's failure to re-init
-   * link.next ever corrupted a live cb, this churn (with ASan) would break. */
+  /* Tight reuse: make -> get -> release N times; each release frees the cb
+   * and its object, and the next make allocates afresh. */
   for (int i = 0; i < 200000; i++) {
     arts_shared_ptr_t s = arts_shared_make(make_obj(), del_obj);
     obj_t *o = (obj_t *)arts_shared_get(s);
@@ -280,8 +269,8 @@ int main(void) {
     return 1;
   }
   printf("PASS shared_lifecycle_race: N-way last-drop deleter once; mixed-API "
-         "churn + abandon conserved every object (no UAF/leak); cb reuse clean "
-         "(B126 invariant held)\n");
+         "churn + abandon conserved every object (no UAF/leak); cb reuse "
+         "clean\n");
   return 0;
 }
 

@@ -109,8 +109,9 @@ uint64_t arts_length_array_list(arts_array_list_t *a_list) {
 
 void *arts_get_from_array_list(arts_array_list_t *a_list, uint64_t index) {
   if (a_list) {
-    // Fastest Path
-    if (index == a_list->lastRequest) {
+    // Fastest Path.  A new or reset list caches index 0 before it holds an
+    // element, so the cache answers only for an index below the count.
+    if (index == a_list->lastRequest && index < a_list->index) {
       return a_list->lastRequestPtr;
     }
 

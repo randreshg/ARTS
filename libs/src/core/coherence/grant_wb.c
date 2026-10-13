@@ -31,6 +31,7 @@
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
+#include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
@@ -78,6 +79,11 @@ void arts_db_owner_start_invalidate_round(
 void arts_handler_db_grant_response(void *payload, size_t size) {
   struct arts_msg_grant_response_packet_s *hdr =
       (struct arts_msg_grant_response_packet_s *)payload;
+  if (size < sizeof(*hdr)) {
+    ARTS_ERROR("GRANT_RESPONSE of %zu bytes is shorter than its %zu-byte "
+               "header",
+               size, sizeof(*hdr));
+  }
   arts_guid_t db_guid = hdr->db_guid;
 
   /* Pin the db_s for the whole handler body (map deserialize + buffer install +
@@ -115,6 +121,12 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   size_t map_size =
       (sizeof(uint32_t) * 2) + ((size_t)hdr->map_entry_count *
                                 sizeof(struct arts_msg_rank_version_pair_s));
+  if (map_size > size - sizeof(*hdr)) {
+    ARTS_ERROR("GRANT_RESPONSE for DB[Guid:%lu] from rank %u: its header "
+               "declares a %zu-byte version map, but %zu bytes follow it",
+               (unsigned long)db_guid, hdr->header.rank, map_size,
+               size - sizeof(*hdr));
+  }
 
   /* Reconstruct the owner-side dedup map so this rank can skip redundant
    * SNAPSHOT_RESPONSE sends to readers that already hold a sufficiently fresh
@@ -122,7 +134,11 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
    * after dispatch) — harmless ahead of the install: the map is only consulted
    * once this rank serves REDIRECTs, which requires the ownership this round
    * is still delivering. */
-  arts_rank_u64_map_load(cache->cached_version, map_start, map_size);
+  if (!arts_rank_u64_map_load(cache->cached_version, map_start, map_size)) {
+    ARTS_ERROR("GRANT_RESPONSE for DB[Guid:%lu] from rank %u: its version map "
+               "names more entries than the %u its header declares",
+               (unsigned long)db_guid, hdr->header.rank, hdr->map_entry_count);
+  }
 
   if (hdr->rdzv_txid != 0) {
     /* Payload travels one-sided: pair this packet with the write completion

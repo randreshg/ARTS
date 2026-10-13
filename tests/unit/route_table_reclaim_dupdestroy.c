@@ -229,6 +229,10 @@ static void *churn(void *vp) {
     }
     pthread_barrier_wait(&bar);
   }
+  /* This thread's DB seq cursor: the runtime frees one per runtime thread at
+   * teardown, and these threads are not runtime threads. */
+  free(t_db_cursor);
+  t_db_cursor = NULL;
   return NULL;
 }
 

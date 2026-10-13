@@ -797,7 +797,7 @@ bool arts_event_wait(arts_guid_t event_guid) {
   arts_edt_ctx_t tl;
   arts_edt_ctx_save(&tl);
   TIME_YIELD_START();
-  while (arts_thread_info.alive) {
+  while (__atomic_load_n(&arts_thread_info.alive, __ATOMIC_ACQUIRE)) {
     /* Fire -> auto_destroy -> mark_delete detaches the slot; lookup returns
      * NULL and we exit.  Use the lookup/release pair so we never read freed
      * memory after the deleter runs. */

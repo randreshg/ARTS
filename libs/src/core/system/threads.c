@@ -104,12 +104,18 @@ void arts_thread_main_join() {
              "%u threads",
              arts_node_info.total_thread_count - 1);
 
-  /* End-to-end marker (rank 0): both stamps are set — e2e_start_stamp at the
-   * application start (runtime.c) and e2e_end_stamp at shutdown recognition
-   * (shutdown.c).  Print the span on stderr, gated by $ARTS_E2E_MARKER, in the
-   * same "[E2E] <ns>" form the reference runtimes use, so the harness parses
-   * all three runtimes identically. */
-  if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled) {
+  /* End-to-end marker (rank 0): e2e_start_stamp is taken at the application
+   * start (runtime.c) and e2e_end_stamp by the shutdown entry's CAS winner
+   * (shutdown.c), so the span is printed once that entry has finished, and
+   * ahead of any teardown step that could hang.  Print it on stderr, gated by
+   * $ARTS_E2E_MARKER, in the same "[E2E] <ns>" form the reference runtimes
+   * use, so the harness parses all three runtimes identically.  A shutdown
+   * recognised before the application started has no span, so nothing is
+   * printed for it. */
+  arts_runtime_wait_shutdown_entry();
+  if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled &&
+      arts_node_info.e2e_end_stamp != 0 &&
+      arts_node_info.e2e_end_stamp >= arts_node_info.e2e_start_stamp) {
     fprintf(stderr, "[E2E] %lu\n",
             (unsigned long)(arts_node_info.e2e_end_stamp -
                             arts_node_info.e2e_start_stamp));

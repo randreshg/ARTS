@@ -40,6 +40,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -50,6 +51,7 @@
 #include <unistd.h>
 
 #include "arts.h"
+#include "arts/gas/route_table.h" /* shard bits, COLLISION_RESOLVES */
 #include "arts/runtime.h" /* scheduler_loop_count */
 #include "arts/system/print.h"
 #include "arts/transport/launcher.h"
@@ -76,9 +78,12 @@ char *extract_nodelist_lsf(const char *envr, int stride, unsigned int *cnt) {
   }
   unsigned int nodes_str_len = strlen(lsf_nodes) + 1;
   char *node_list = (char *)arts_malloc(sizeof(char) * nodes_str_len);
+  /* getenv's string must not be modified; strtok writes into its input. */
+  char *tokens = (char *)arts_malloc(nodes_str_len);
+  memcpy(tokens, lsf_nodes, nodes_str_len);
   unsigned int count = 0;
   unsigned int list_str_length = 0;
-  last = res_string = strtok(lsf_nodes, " ");
+  last = res_string = strtok(tokens, " ");
   while (res_string) {
     res_string = strtok(NULL, " ");
     ele++;
@@ -101,6 +106,7 @@ char *extract_nodelist_lsf(const char *envr, int stride, unsigned int *cnt) {
   } else {
     node_list[0] = '\0';
   }
+  arts_free(tokens);
   *cnt = count;
   return node_list;
 }
@@ -166,11 +172,12 @@ arts_config_find_variable(struct arts_config_variable_s **head,
   return found;
 }
 
+/* Drops every blank (space or tab) from a key or value. */
 static void remove_white_spaces(char *str) {
   char *write = str;
   char *read = str;
   do {
-    if (*read != ' ') {
+    if (*read != ' ' && *read != '\t') {
       *write++ = *read;
     }
   } while (*read++);
@@ -216,16 +223,19 @@ struct arts_config_variable_s *arts_config_get_variables(FILE *config) {
 
     if (val != NULL) {
       size = (int)strlen(val);
-
-      if (val[size - 1] == '\n') {
-        val[size - 1] = '\0';
+      /* The line's end, "\n" or "\r\n", is no part of the value. */
+      while (size > 0 && (val[size - 1] == '\n' || val[size - 1] == '\r')) {
+        val[--size] = '\0';
       }
 
+      /* value[] holds size bytes plus the terminating NUL. */
       c_var = (struct arts_config_variable_s *)arts_malloc(
-          sizeof(struct arts_config_variable_s) + size);
+          sizeof(struct arts_config_variable_s) + size + 1);
       c_var->size = size;
 
-      strncpy(c_var->variable, var, 255);
+      /* A name longer than the field is cut, never left unterminated. */
+      strncpy(c_var->variable, var, sizeof(c_var->variable) - 1);
+      c_var->variable[sizeof(c_var->variable) - 1] = '\0';
       memcpy(c_var->value, val, (unsigned int)size + 1);
 
       remove_white_spaces(c_var->variable);
@@ -298,62 +308,62 @@ static bool arts_config_is_all_digits(const char *str) {
   return true;
 }
 
-// Count nodes in new syntax: node[01-10], hostname:port, hostname
-unsigned int arts_config_count_nodes(char *node_list) {
-  unsigned int length = strlen(node_list);
+/* Number of nodes a `nodes` value names.  The value is a comma-separated list
+ * of entries, each a host name or a name followed by one bracketed number or
+ * range ("n[01-10]", ascending or descending) whose bounds are unsigned ints.
+ * Any other shape, or a total that does not fit an unsigned int, is refused,
+ * since the routing-table parser would read it differently from this count;
+ * ports never appear in the list, they come from the `ports` key. */
+unsigned int arts_config_count_nodes(const char *node_list) {
   unsigned int nodes = 0;
-
-  // Count commas to get initial entry count
-  for (unsigned int i = 0; i < length; i++) {
-    if (node_list[i] == ',') {
-      nodes++;
-    }
-  }
-  nodes++; // One more than comma count
-
-  // Adjust for bracket ranges (each range is one entry but multiple nodes)
-  unsigned int i = 0;
-  while (i < length) {
-    // Find bracket range
-    if (node_list[i] == '[') {
-      nodes--; // This entry is a range, not a single node
-      // Find the closing bracket
-      unsigned int bracket_start = i + 1;
-      while (i < length && node_list[i] != ']') {
-        i++;
-      }
-      if (i < length) {
-        // Parse range inside brackets: "01-10" or "1-5"
-        char range_spec[64];
-        unsigned int range_len = i - bracket_start;
-        if (range_len < sizeof(range_spec)) {
-          strncpy(range_spec, node_list + bracket_start, range_len);
-          range_spec[range_len] = '\0';
-
-          // Find the dash
-          char *dash = strchr(range_spec, '-');
-          if (dash) {
-            *dash = '\0';
-            unsigned int start = strtol(range_spec, NULL, 10);
-            unsigned int end = strtol(dash + 1, NULL, 10);
-            if (start <= end) {
-              nodes += (end - start + 1);
-            } else {
-              nodes += (start - end + 1);
-            }
-          } else {
-            // Single number in brackets (unusual but handle it)
-            nodes += 1;
-          }
+  const char *p = node_list;
+  for (;;) {
+    const char *entry = p;
+    size_t name_len = strcspn(p, ",[]: \t\n");
+    p += name_len;
+    unsigned int width = 1;
+    bool ok = name_len > 0;
+    if (ok && *p == '[') {
+      /* The parser copies the bracket into a 64-byte buffer. */
+      char range_spec[64];
+      const char *close = strchr(p, ']');
+      size_t range_len = close ? (size_t)(close - p - 1) : 0;
+      ok = close != NULL && range_len > 0 && range_len < sizeof(range_spec) &&
+           strspn(p + 1, "0123456789-") == range_len;
+      if (ok) {
+        memcpy(range_spec, p + 1, range_len);
+        range_spec[range_len] = '\0';
+        char *dash = strchr(range_spec, '-');
+        ok = dash == NULL || (dash != range_spec && dash[1] != '\0' &&
+                              strchr(dash + 1, '-') == NULL);
+        if (ok) {
+          errno = 0;
+          unsigned long long start = strtoull(range_spec, NULL, 10);
+          unsigned long long end = dash ? strtoull(dash + 1, NULL, 10) : start;
+          unsigned long long span = (start <= end ? end - start : start - end);
+          ok = errno == 0 && start <= UINT_MAX && end <= UINT_MAX &&
+               span < UINT_MAX;
+          width = (unsigned int)(span + 1);
+          p = close + 1;
         }
       }
     }
-    // Note: colon after bracket (for port) or colon for hostname:port
-    // doesn't change node count - it's just port specification
-    i++;
+    if (!ok || (*p != ',' && *p != '\0')) {
+      ARTS_ERROR("nodes='%s': the entry at '%s' is neither a host name nor a "
+                 "name[a-b] range of unsigned ints (ports belong to the ports "
+                 "key)",
+                 node_list, entry);
+    }
+    if (width > UINT_MAX - nodes) {
+      ARTS_ERROR("nodes='%s' names more nodes than an unsigned int counts",
+                 node_list);
+    }
+    nodes += width;
+    if (*p == '\0') {
+      return nodes;
+    }
+    p++;
   }
-
-  return nodes;
 }
 
 char *arts_get_next_partition(char **remainder) {
@@ -683,11 +693,23 @@ static void handle_launcher(struct arts_config_s *config, const char *value,
     config->launcher = arts_config_make_new_var("lsf");
     return;
   }
-  /* No job scheduler env — use config value (ssh or local) */
-  if (value && strncmp(value, "local", 5) == 0) {
-    config->launcher = arts_config_make_new_var("local");
-  } else {
+  /* No scheduler environment: the value names the launcher, and a config
+   * with no launcher line runs ssh.  A scheduler's name is usable only inside
+   * that scheduler's task environment, which the checks above did not find. */
+  if (value == NULL || strcmp(value, "ssh") == 0) {
     config->launcher = arts_config_make_new_var("ssh");
+  } else if (strcmp(value, "local") == 0) {
+    config->launcher = arts_config_make_new_var("local");
+  } else if (strcmp(value, "slurm") == 0 || strcmp(value, "lsf") == 0) {
+    ARTS_ERROR("launcher=%s requires that scheduler's task environment (%s), "
+               "and none is set",
+               value,
+               strcmp(value, "slurm") == 0 ? "SLURM_PROCID or SLURM_NNODES"
+                                           : "LSB_HOSTS or LSB_MCPU_HOSTS");
+  } else {
+    ARTS_ERROR("launcher=%s names no launcher: use local, ssh, slurm, lsf or "
+               "flux",
+               value);
   }
 }
 
@@ -953,11 +975,15 @@ static void config_setup_slurm(struct arts_config_s *config) {
 
   /* srun sets the step-scoped list; a bare sbatch shell (no srun) only has
      the job-scoped one.  Same compressed hostlist format either way. */
-  char *node_list = getenv("SLURM_STEP_NODELIST");
-  if (node_list == NULL) {
-    node_list = getenv("SLURM_JOB_NODELIST");
+  const char *env_list = getenv("SLURM_STEP_NODELIST");
+  if (env_list == NULL) {
+    env_list = getenv("SLURM_JOB_NODELIST");
   }
+  /* The routing-table parser writes into its input, and getenv's string must
+   * not be modified. */
+  char *node_list = env_list ? arts_config_make_new_var(env_list) : NULL;
   arts_config_create_routing_table(&config, node_list);
+  arts_free(node_list);
   config_set_master_from_table(config);
 }
 
@@ -1075,9 +1101,17 @@ static void config_setup_lsf(struct arts_config_s *config) {
   if (!node_list) {
     node_list = extract_nodelist_lsf("LSB_MCPU_HOSTS", 2, &count);
   }
+  /* The walk skips each list's first entry, so a list naming one host leaves
+   * no node: the table would have no row 0 to take the master from. */
+  if (count == 0) {
+    arts_free(node_list);
+    ARTS_ERROR("launcher=lsf: LSB_HOSTS / LSB_MCPU_HOSTS name no host after "
+               "their first entry, so the run has no node");
+  }
   config->nodes = count;
 
   arts_config_create_routing_table(&config, node_list);
+  arts_free(node_list);
   config_set_master_from_table(config);
 }
 
@@ -1088,15 +1122,30 @@ static void config_setup_ssh(struct arts_config_s *config,
       arts_launcher_ssh_cleanup_processes);
   config->master_boot = true;
 
+  /* A node_count must agree with the list the table is built from (no list
+   * is the one host "localhost"): a longer list would lose hosts, a shorter
+   * one would leave rows without a host. */
+  const char *node_count_value = config_lookup(vars, "node_count");
+  if (node_count_value) {
+    const char *listed_value = config_lookup(vars, "nodes");
+    if (listed_value == NULL) {
+      listed_value = "localhost";
+    }
+    unsigned int listed_count = arts_config_count_nodes(listed_value);
+    if ((unsigned int)strtol(node_count_value, NULL, 10) != listed_count) {
+      ARTS_ERROR("launcher=ssh: node_count=%s, but the nodes list '%s' names "
+                 "%u node(s) (a config without one lists the single host "
+                 "localhost)",
+                 node_count_value, listed_value, listed_count);
+    }
+  }
+
   char *node_list = NULL;
   const char *nodes_value = config_lookup(vars, "nodes");
   if (nodes_value) {
-    /* nodes_value points into the linked list — safe to use as strtok input
-       since arts_config_create_routing_table will tokenize it. We need a
-       mutable copy for count_nodes since it may also tokenize. */
+    /* The routing-table parser writes into its input, so it gets a copy. */
     node_list = arts_config_make_new_var(nodes_value);
 
-    const char *node_count_value = config_lookup(vars, "node_count");
     if (node_count_value) {
       config->nodes = (unsigned int)strtol(node_count_value, NULL, 10);
     } else {
@@ -1107,7 +1156,9 @@ static void config_setup_ssh(struct arts_config_s *config,
     config->nodes = 1;
   }
 
+  /* The table keeps copies of the names; the list was only parsed. */
   arts_config_create_routing_table(&config, node_list);
+  arts_free(node_list);
 
   if (config->master_node == NULL) {
     config->master_node = arts_config_make_new_var(config->table[0].ip_address);
@@ -1136,9 +1187,7 @@ static void config_setup_local(struct arts_config_s *config,
   if (node_count_value) {
     node_count = (unsigned int)strtol(node_count_value, NULL, 10);
   } else if (nodes_value) {
-    char *tmp = arts_config_make_new_var(nodes_value);
-    node_count = arts_config_count_nodes(tmp);
-    arts_free(tmp);
+    node_count = arts_config_count_nodes(nodes_value);
   }
 
   if (node_count > 1) {
@@ -1147,30 +1196,12 @@ static void config_setup_local(struct arts_config_s *config,
     config->shared_pu_pool = true;
     config->nodes = node_count;
 
-    /* Build routing table from nodes string (preserves per-node ports)
-       or generate one with node_count entries of 127.0.0.1. */
-    char *node_list = NULL;
-    if (nodes_value) {
-      node_list = arts_config_make_new_var(nodes_value);
-    } else {
-      /* Build "127.0.0.1, 127.0.0.1, ..." for node_count entries. */
-      size_t len = (size_t)node_count * 12; /* "127.0.0.1, " per entry */
-      node_list = (char *)arts_malloc(len);
-      node_list[0] = '\0';
-      for (unsigned int i = 0; i < node_count; i++) {
-        if (i > 0) {
-          strncat(node_list, ", ", len - strlen(node_list) - 1);
-        }
-        strncat(node_list, "127.0.0.1", len - strlen(node_list) - 1);
-      }
-    }
-
-    arts_config_create_routing_table(&config, node_list);
-
-    /* Replace all hostnames with 127.0.0.1 (user may have specified
-       "localhost" or other aliases). */
-    for (unsigned int i = 0; i < config->table_length; i++) {
-      arts_free(config->table[i].ip_address);
+    /* Every rank runs on this machine, so the table is node_count rows of the
+       loopback address whatever names the nodes key lists. */
+    config->table_length = node_count;
+    config->table = (struct arts_config_table_s *)arts_calloc(
+        node_count, sizeof(struct arts_config_table_s));
+    for (unsigned int i = 0; i < node_count; i++) {
       config->table[i].ip_address = arts_config_make_new_var("127.0.0.1");
       config->table[i].rank = i;
     }
@@ -1195,6 +1226,12 @@ static void config_setup_local(struct arts_config_s *config,
 
 static void config_setup_launcher(struct arts_config_s *config,
                                   struct arts_config_variable_s **vars) {
+  /* A malformed nodes value is refused whatever the launcher; only ssh places
+   * ranks by it. */
+  const char *nodes_value = config_lookup(vars, "nodes");
+  if (nodes_value != NULL) {
+    (void)arts_config_count_nodes(nodes_value);
+  }
   if (strcmp(config->launcher, "slurm") == 0) {
     config_setup_slurm(config);
   } else if (strcmp(config->launcher, "flux") == 0) {
@@ -1218,7 +1255,22 @@ static void config_set_pre_defaults(struct arts_config_s *config) {
 }
 
 static void config_compute_derived(struct arts_config_s *config) {
-  /* Power-of-2 route table entries via bit shift. */
+  /* A table hashes with shift log2(entries), which must be at least 1, and a
+   * remote shard has 2^(route_table_size - ARTS_REMOTE_ROUTE_SHARD_BITS)
+   * entries; a GPU table counts its COLLISION_RESOLVES slots per entry in an
+   * unsigned int. */
+  if (config->route_table_size < ARTS_REMOTE_ROUTE_SHARD_BITS + 1U ||
+      config->route_table_size > 31U) {
+    ARTS_ERROR("route_table_size=%u is out of range %u..31",
+               config->route_table_size, ARTS_REMOTE_ROUTE_SHARD_BITS + 1U);
+  }
+  if (config->gpu_route_table_size < 1 || config->gpu_route_table_size > 31 ||
+      ((uint64_t)COLLISION_RESOLVES << config->gpu_route_table_size) >
+          UINT_MAX) {
+    ARTS_ERROR("gpu_route_table_size=%u is out of range: 2^size entries of "
+               "%u slots each must count in an unsigned int",
+               config->gpu_route_table_size, COLLISION_RESOLVES);
+  }
   config->route_table_entries = 1U << config->route_table_size;
   config->gpu_route_table_entries = 1U << config->gpu_route_table_size;
 
@@ -1342,6 +1394,11 @@ static void config_compute_derived(struct arts_config_s *config) {
   }
   config->thread_count =
       config->worker_thread_count + config->progress_thread_count;
+
+  /* A deque indexes its ring modulo its size. */
+  if (config->deque_size == 0) {
+    ARTS_ERROR("worker_init_deque_size=0: a deque needs at least one slot");
+  }
 
   if (config->scheduler >= scheduler_loop_count) {
     ARTS_ERROR("scheduler=%u names no scheduler loop: this build has %u "

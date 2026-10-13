@@ -38,11 +38,8 @@
 ******************************************************************************/
 #include "arts/graph.h"
 
-#include <assert.h>
-#include <inttypes.h>
 #include <stdlib.h>
 
-#include "arts/system/print.h"
 #include "arts/utils/malloc.h"
 
 #define INCREASE_SZ_BY 2
@@ -93,15 +90,11 @@ void arts_edge_vector_init(arts_edge_vector_t *v,
 void arts_edge_vector_push_back(arts_edge_vector_t *v, arts_vertex_t s,
                                 arts_vertex_t t, arts_edge_data_t d) {
   if (v->used == v->size) {
-    v->size *= INCREASE_SZ_BY;
-    arts_edge_t *new_edge_array = (arts_edge_t *)arts_realloc(
-        v->edge_array, v->size * sizeof(arts_edge_t));
-    if (!new_edge_array) {
-      ARTS_INFO("[ERROR] Unable to reallocate memory. Cannot continue.");
-      assert(false);
-      return;
-    }
-    v->edge_array = new_edge_array;
+    /* A vector of capacity 0 (initial size 0, or freed) holds no array yet;
+     * arts_realloc fails loudly, so the array it returns is never NULL. */
+    v->size = v->size ? v->size * INCREASE_SZ_BY : 1;
+    v->edge_array = (arts_edge_t *)arts_realloc(v->edge_array,
+                                                v->size * sizeof(arts_edge_t));
   }
 
   v->edge_array[v->used].source = s;

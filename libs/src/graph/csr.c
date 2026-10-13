@@ -303,39 +303,54 @@ int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
   }
 
   char str[ARTS_GRAPH_MAXCHAR];
-  bool ignore_first = false;
+  /* '%' and '#' lines are comments wherever they stand, but only '%' lines
+   * ahead of the first data line are a header: they mark 1-based vertex ids
+   * (MatrixMarket, KONECT), and when the first line is the "%%MatrixMarket"
+   * banner, the first data line after them is the size line, not an edge. */
+  bool first_line = true;
+  bool in_header = true;
+  bool one_based = false;
+  bool size_line_pending = false;
+  int rc = 0;
   while (fgets(str, ARTS_GRAPH_MAXCHAR, file) != NULL) {
+    bool banner_line = first_line;
+    first_line = false;
     if (str[0] == '%') {
-      ignore_first = true; // for mmio
+      if (in_header) {
+        one_based = true;
+        if (banner_line && strncmp(str, "%%MatrixMarket", 14) == 0) {
+          size_line_pending = true;
+        }
+      }
       continue;
     }
     if (str[0] == '#') {
       continue;
     }
-    if (ignore_first) {
-      ignore_first = false;
+    /* An edge is a line's first two fields; a third (a weight or matrix
+     * value) is not an endpoint.  A line with no field is blank. */
+    char *src_token = strtok(str, " \t\r\n");
+    if (src_token == NULL) {
       continue;
     }
-    // We do not know how many edges we are going to load
-    arts_graph_sz_t src = 0;
-    arts_graph_sz_t target = 0;
-    arts_edge_data_t weight;
-
-    char *token = strtok(str, " \t");
-    int i = 0;
-    while (token != NULL) {
-      if (i == 0) // Source
-      {
-        src = strtoll(token, NULL, 10);
-        ++i;
-      } else if (i == 1) // Target
-      {
-        target = strtoll(token, NULL, 10);
-        i = 0;
-      }
-
-      // printf("src=%lu, target=%lu", src, target);
-      token = strtok(NULL, " ");
+    in_header = false;
+    if (size_line_pending) {
+      size_line_pending = false;
+      continue;
+    }
+    char *target_token = strtok(NULL, " \t\r\n");
+    arts_graph_sz_t src = strtoll(src_token, NULL, 10);
+    arts_graph_sz_t target =
+        target_token != NULL ? strtoll(target_token, NULL, 10) : 0;
+    if (target_token == NULL || (one_based && (src == 0 || target == 0))) {
+      ARTS_WARN("csr: %s: the line starting '%s' is not an edge", file_path,
+                src_token);
+      rc = -1;
+      break;
+    }
+    if (one_based) {
+      src--;
+      target--;
     }
 
     if (ignore_self_loops && (src == target)) {
@@ -375,20 +390,18 @@ int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
   (void)fclose(file);
 
   for (unsigned int k = 0; k < num_local_parts; k++) {
-    // done loading edge -- sort them by source
-    arts_edge_vector_sort_by_source(&vedges[k]);
-    // ARTS_INFO("arts_block_dist_block_size(part_index[k], dist): %lu,
-    // vedges[k].used: %lu ", arts_block_dist_block_size(part_index[k], dist),
-    // vedges[k].used);
-    arts_csr_init(
-        part_index[k], arts_block_dist_block_size(part_index[k], dist),
-        vedges[k].used, dist, &vedges[k], true, dist->graphGuid[part_index[k]]);
-
+    if (rc == 0) {
+      arts_edge_vector_sort_by_source(&vedges[k]);
+      arts_csr_init(part_index[k],
+                    arts_block_dist_block_size(part_index[k], dist),
+                    vedges[k].used, dist, &vedges[k], true,
+                    dist->graphGuid[part_index[k]]);
+    }
     arts_edge_vector_free(&vedges[k]);
   }
   arts_free(part_index);
   arts_free(vedges);
-  return 0;
+  return rc;
 }
 
 int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
@@ -432,17 +445,25 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
   }
 
   char str[ARTS_GRAPH_MAXCHAR];
+  char *verts_token = NULL;
+  char *edges_token = NULL;
   if (fgets(str, ARTS_GRAPH_MAXCHAR, file) != NULL) {
-    char *token = strtok(str, " ");
-    num_verts = strtoll(token, NULL, 10);
-    token = strtok(NULL, " ");
-    num_edges = strtoll(token, NULL, 10);
-  } else {
+    verts_token = strtok(str, " \t\r\n");
+    edges_token = verts_token ? strtok(NULL, " \t\r\n") : NULL;
+  }
+  if (edges_token == NULL) {
+    ARTS_WARN("csr: %s does not start with a '<vertices> <edges>' header",
+              file_path);
     (void)fclose(file);
+    for (unsigned int k = 0; k < num_local_parts; k++) {
+      arts_edge_vector_free(&vedges[k]);
+    }
     arts_free(part_index);
     arts_free(vedges);
     return -1;
   }
+  num_verts = strtoll(verts_token, NULL, 10);
+  num_edges = strtoll(edges_token, NULL, 10);
 
   uint64_t local_edges = 0;
   uint64_t edge_count = 0;
@@ -458,10 +479,10 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
       continue;
     }
 
-    char *token = strtok(str, " \t\\v\f\r");
+    char *token = strtok(str, " \t\v\f\r\n");
     while (token != NULL) {
       arts_graph_sz_t raw = strtoll(token, NULL, 10);
-      token = strtok(NULL, " \t\\v\f\r");
+      token = strtok(NULL, " \t\v\f\r\n");
 
       // Targets are 1-based in this format; a token of 0 (or below) has no
       // valid 0-based vertex and decrementing it would underflow to a bogus
@@ -501,6 +522,7 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
   }
   (void)fclose(file);
 
+  int rc = 0;
   if (src == num_verts) {
     for (unsigned int k = 0; k < num_local_parts; k++) {
       // ARTS_INFO("Sorting edges %lu local %lu vert %lu", edge_count,
@@ -522,11 +544,12 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
     for (unsigned int k = 0; k < num_local_parts; k++) {
       arts_edge_vector_free(&vedges[k]);
     }
+    rc = -1;
   }
 
   arts_free(part_index);
   arts_free(vedges);
-  return 0;
+  return rc;
 }
 
 arts_csr_graph_t *arts_csr_from_guid(arts_guid_t guid) {

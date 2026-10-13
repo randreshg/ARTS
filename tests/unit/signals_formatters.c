@@ -3,9 +3,9 @@
  * Async-signal-safe formatters in signals.c (write_signal_line, signal_name)
  * plus arts_atomic_print truncation (print.h).  write_signal_line and
  * signal_name are file-static in signals.c, so this TU #includes signals.c to
- * pull them in; the two runtime symbols signals.c references
- * (arts_global_rank_id, arts_enter_shutdown_state) are stubbed so the unit
- * links standalone.
+ * pull them in; the runtime symbols signals.c references (arts_global_rank_id,
+ * arts_enter_shutdown_state, arts_exit_now) are stubbed so the unit links
+ * standalone.
  *
  * Properties under test
  * -------------------
@@ -51,6 +51,7 @@
  * include below); define storage here. */
 unsigned int arts_global_rank_id = 0;
 void arts_enter_shutdown_state(bool initiator) { (void)initiator; }
+_Noreturn void arts_exit_now(uint8_t status) { _exit(status); }
 
 /* Pull in the real signals.c (static write_signal_line + signal_name). */
 #include "../../libs/src/core/system/signals.c"

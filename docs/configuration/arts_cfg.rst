@@ -66,10 +66,12 @@ Scheduling
        index the build does not have is refused at load.
    * - ``worker_init_deque_size``
      - 4096
-     - Initial size of each worker's Chase-Lev deque.
+     - Initial size of each worker's Chase-Lev deque, at least 1; ``0`` is
+       refused at load.
    * - ``route_table_size``
      - 16
-     - Routing table size as power of 2 (e.g., 16 → 2\ :sup:`16`).
+     - Routing table size as power of 2 (e.g., 16 → 2\ :sup:`16`), 4..31; a
+       value outside is refused at load.
 
 GPU Support
 -----------
@@ -88,7 +90,8 @@ To enable GPU support, set ``scheduler=3`` and ``gpu=<N>``.
      - Number of GPUs per node.
    * - ``gpu_route_table_size``
      - 12
-     - GPU routing table size (power of 2).
+     - GPU routing table size (power of 2), 1..28; a value outside is refused
+       at load.
    * - ``gpu_locality``
      - 0
      - Locality policy: 0 = random, 1 = allOrNothing, 2 = atLeastOne.
@@ -237,7 +240,18 @@ leaves the default.
 .. tip::
 
    To run several ranks on one machine, use ``launcher=local`` and let it
-   place them.  The nodes list carries hostnames only.
+   place them.
+
+The ``nodes`` list carries hostnames only: each comma-separated entry is a
+host name or a name followed by one bracketed number or range
+(``node[01-10]``) whose bounds are unsigned ints.  Any other entry (a port
+suffix, an empty entry, a malformed bracket) is refused at load whatever the
+launcher.  Only ``launcher=ssh`` places ranks by the list, so only there must
+a ``node_count`` agree with the number of nodes it names; there, a config
+without a ``nodes`` line lists the one host ``localhost``, so
+``launcher=ssh`` with ``node_count=4`` and no list is refused.  Under LSF the
+first entry of ``LSB_HOSTS`` (or ``LSB_MCPU_HOSTS``) is taken as the launch
+host and runs no rank, so a list that names no other host is refused.
 
 Launcher selection is environment-driven for the schedulers that publish
 their layout in the environment: under Slurm or LSF the runtime detects the
@@ -250,7 +264,9 @@ the Flux CLI (Flux publishes no hostlist variable).  Naming ``flux`` outside
 a Flux task environment is a hard error, never a silent fallback; and a
 Flux variable leaking into a ``local`` or ``ssh`` run changes nothing.  A
 config with **no** ``launcher`` line and no scheduler environment still
-defaults to ``ssh``, Flux environment or not.
+defaults to ``ssh``, Flux environment or not.  Outside a Slurm or LSF
+environment the value must otherwise be ``local``, ``ssh`` or ``flux``;
+``slurm`` or ``lsf`` there, or any other value, is refused at load.
 
 CXL Store
 ---------

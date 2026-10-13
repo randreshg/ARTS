@@ -76,6 +76,11 @@ Wire a DataBlock or value into a dependency slot:
 
 If ``depc == 0``, the EDT fires immediately after creation.
 
+A slot is one of ``0 .. depc-1``.  A satisfy or dependence naming a slot at or
+above ``depc`` is a program error that only the EDT's rank can detect, and the
+caller (possibly on another rank) cannot be told, so that rank ends the
+process with a fatal error naming the EDT, the slot and ``depc``.
+
 For a value computed after the consumer is created, connect an event to its
 slot with ``DB_MODE_NULL`` and later satisfy that event with the value.
 ``arts_add_dependence`` interprets its source as an object; direct value

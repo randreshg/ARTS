@@ -10,9 +10,7 @@
 /// arts_shutdown -> arts_enter_shutdown_state(true) gates on
 /// arts_atomic_cswap(shutdown_state, 0, 1): exactly one caller wins the 0->1
 /// transition and performs broadcast (MN) + stop_workers; all others observe a
-/// non-zero state and no-op.  Meanwhile arts_runtime_stop*/socket EOF paths
-/// write shutdown_state with a PLAIN store, so the word sees mixed atomic and
-/// plain writes.  Here we
+/// non-zero state and no-op.  That CAS is the word's only writer.  Here we
 /// stress N worker EDTs racing into arts_shutdown simultaneously: the runtime
 /// must terminate cleanly (ctest TIMEOUT reaps a hang) and the final
 /// shutdown_state must read 1 (the CAS landed exactly once and was never torn
