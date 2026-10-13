@@ -46,6 +46,7 @@
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
 #include "arts/system/identity.h"
+#include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
@@ -627,7 +628,7 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
  * dispatches through the OoO engine (HIT runs inline; MISS defers until the
  * home db_s is installed) — a REQUEST can race the home CREATE on a cross-rank
  * stub-install path.  Remote send goes via the transport. */
-/* Advertise this rank's deliver landing: the stable buffer (the fixed-address
+/* This rank's deliver landing is its stable buffer (the fixed-address
  * backing store), installed IN PLACE by the DELIVER for either mode.  Phase
  * exclusion keeps the buffer quiescent for the whole flight of a request:
  * this rank's readers park on ro_st==REQ and its writers park at the home
@@ -635,32 +636,42 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
  * every read grant has come back, and a grant comes back only after its
  * bytes have landed — so neither a migration nor a local access can reach
  * the buffer while a serve is in flight, and the serve leaves an owner only
- * while that owner's write permission is relinquished.  A fresh txid is
- * drawn per request (each request is served by at most one grant). */
-static bool lock_stable_landing(struct arts_db_cache_s *cache,
-                                struct arts_rdzv_landing_s *out) {
+ * while that owner's write permission is relinquished.  Every advertisement
+ * draws a fresh txid and is served by at most one DELIVER. */
+
+/* Bytes a landing must hold; 0 when no payload can move here. */
+static uint64_t lock_stable_size(const struct arts_db_cache_s *cache) {
+  return (arts_global_rank_count > 1) ? arts_db_first_fetch_size(cache) : 0u;
+}
+
+/* Materialize an n-byte stable buffer if this rank has none.  Run by the
+ * requester, so the pool places it on the requesting thread's node.  The
+ * bytes are unspecified: the PUT fully overwrites them before any drained
+ * waiter reads, and a data-less deliver is one for a block nobody has
+ * written.  n may be the GUID bound — an ALLOCATION size only; the DB's size
+ * is declared exclusively by the wire (prepare never records it). */
+static void lock_stable_place(struct arts_db_cache_s *cache, uint64_t n) {
+  if (n != 0u) {
+    arts_db_buf_prepare_inplace(cache, n);
+  }
+}
+
+/* Advertise the stable buffer placed with the same n.  False only when no
+ * payload can move here (n == 0); a sized block whose buffer cannot be
+ * advertised is fatal, since a landing-less request or FORWARD would be
+ * answered without its bytes. */
+static bool lock_stable_advertise(struct arts_db_cache_s *cache, uint64_t n,
+                                  struct arts_rdzv_landing_s *out) {
   *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-  uint64_t fetch_size = arts_db_first_fetch_size(cache);
-  if (fetch_size == 0 || arts_global_rank_count <= 1) {
+  if (n == 0u) {
     return false;
   }
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
-  if (buf == NULL) {
-    /* First touch: materialize the one stable buffer (bytes unspecified; the
-     * PUT fully overwrites it before any drained waiter reads, and a
-     * data-less deliver is one for a block nobody has written).
-     * fetch_size may be the GUID bound — an ALLOCATION size only; the DB's
-     * size is declared exclusively by the wire (prepare never records it). */
-    arts_db_buf_prepare_inplace(cache, fetch_size);
-    h = arts_db_buf_acquire(cache);
-    buf = (struct arts_db_buffer_s *)arts_shared_get(h);
-  }
   if (buf == NULL ||
-      !arts_net_rdzv_local(buf->data, fetch_size, &out->addr, &out->key)) {
-    arts_db_buf_release(&h);
-    *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-    return false;
+      !arts_net_rdzv_local(buf->data, n, &out->addr, &out->key)) {
+    ARTS_ERROR("lock: stable buffer is unplaced or not fabric-registered — "
+               "one-sided deliver requires the registered pool");
   }
   out->txid = arts_net_rdzv_txid_next();
   out->cookie = 0; /* in-place: this rank finds the buffer via its cache */
@@ -672,19 +683,28 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
-  struct arts_rdzv_landing_s rdzv;
-  (void)lock_stable_landing(cache, &rdzv);
+  /* One reading for both steps: a concurrent size answer may record the
+   * block's size between them, and the advertisement must name the buffer
+   * this reading placed. */
+  uint64_t n = lock_stable_size(cache);
+  lock_stable_place(cache, n);
   if (home_rank == arts_global_rank_id) {
+    /* A home requester advertises no landing: when the owner is another rank
+     * the home draws one for the buffer placed above as it forwards (see
+     * forward_target_landing), and when the owner is this rank no payload
+     * moves at all. */
     struct arts_ooo_args_db_excl_request_s args = {
         .requester = arts_global_rank_id,
         .db_guid = db_guid,
         .mode = mode,
-        .rdzv = rdzv,
+        .rdzv = {0, 0, 0, 0},
     };
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_REQUEST, &args,
                                     sizeof(args));
     return;
   }
+  struct arts_rdzv_landing_s rdzv;
+  (void)lock_stable_advertise(cache, n, &rdzv);
   struct arts_msg_excl_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_REQUEST);
   p.db_guid = db_guid;
@@ -697,7 +717,8 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
-/* EXCL_CTS sender (home → first-touch requester) + requester-side body. */
+/* EXCL_CTS sender (home → first-touch requester on another rank) +
+ * requester-side body. */
 void arts_send_db_excl_cts(unsigned int requester_rank, arts_guid_t db_guid,
                            uint64_t db_size, uint32_t mode) {
   INCREMENT_NUM_EXCL_SIZE_CTS_BY(1);
@@ -708,15 +729,6 @@ void arts_send_db_excl_cts(unsigned int requester_rank, arts_guid_t db_guid,
   p.db_size = db_size;
   p.mode = mode;
   p.pad = 0;
-  if (requester_rank == arts_global_rank_id) {
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_excl_cts(db, &p);
-    }
-    arts_shared_release(&h);
-    return;
-  }
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
 
@@ -784,8 +796,8 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
   p.rdzv_txid = 0;
   p.rdzv_cookie = (rdzv != NULL) ? rdzv->cookie : 0;
   if (target_rank == arts_global_rank_id) {
-    /* Self-serve: inline (header + data).  The target's advertised landing
-     * is its own stable buffer and goes unused; the handler's phantom arm
+    /* Self-serve: inline (header + data).  Any landing the target advertised
+     * names its own stable buffer and goes unused; the handler's phantom arm
      * installs nothing, since the bytes are this rank's own. */
     uint64_t ds = (src != NULL) ? data_size : 0; /* trailing bytes only */
     uint64_t total = sizeof(p) + ds;
@@ -1481,10 +1493,14 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
 }
 
 /* RETAIN tears the home down on arrival.  It needs no teardown mark: the only
- * message a release sends to the home is a data-less RO_RETURN, so a release
- * that arrives after the teardown costs a deferred payload and nothing else —
- * the payload legs of this policy move owner->owner, and a pending migration
- * means a live acquire, which the destroy contract already forbids. */
+ * message a release sends to the home is a data-less RO_RETURN, which finds no
+ * home while the label stays destroyed and is dropped — the payload legs of
+ * this policy move owner->owner, and a pending migration means a live acquire,
+ * which the destroy contract already forbids.  Once the label's next
+ * generation is installed, a late RO_RETURN is counted against that
+ * generation's read grants when it has any outstanding, and dropped when it
+ * has none (arts_handler_db_excl_roret); the program orders that return only
+ * as it orders its own messages to the home. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -1602,6 +1618,24 @@ struct arts_lock_ro_node_s {
   struct arts_rdzv_landing_s rdzv; /* reader's serve landing, forwarded */
 };
 
+/* The landing a FORWARD names for its target.  A target on another rank
+ * advertised its own with its request.  A home target requested without one
+ * but placed its stable buffer then, so the advertisement for it is drawn
+ * here, and only when the owner is another rank (an owner that is the target
+ * moves no payload).  The home's size is fixed from its create on, so this
+ * reading is the one the request placed with. */
+static struct arts_rdzv_landing_s
+forward_target_landing(struct arts_db_s *db, unsigned int owner,
+                       unsigned int target,
+                       const struct arts_rdzv_landing_s *advertised) {
+  struct arts_rdzv_landing_s out = *advertised;
+  if (advertised->txid == 0 && target == arts_global_rank_id &&
+      owner != arts_global_rank_id) {
+    (void)lock_stable_advertise(&db->cache, lock_stable_size(&db->cache), &out);
+  }
+  return out;
+}
+
 /* Dispatch a MIGRATE or SERVE_ALL FORWARD action after the lock_state CAS
  * committed.  `word` is the freshly-CAS'd lock_state, whose LOCK_OWNER() names
  * the rank to FORWARD to.  SERVE_ONE is not handled here: its target is the
@@ -1615,6 +1649,7 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
     unsigned int target;
     struct arts_rdzv_landing_s target_rdzv;
     if (arts_home_grantreq_queue_peek(&db->rw_waiters, &target, &target_rdzv, NULL)) {
+      target_rdzv = forward_target_landing(db, owner, target, &target_rdzv);
       arts_send_db_excl_forward(owner, db->cache.db_guid, (uint32_t)DB_MODE_RW,
                                 target, /*tag=*/0u, &target_rdzv);
     }
@@ -1667,9 +1702,11 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
               atomic_load_explicit(&node->next, memory_order_relaxed);
           struct arts_lock_ro_node_s *rn =
               ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
+          struct arts_rdzv_landing_s serve_rdzv =
+              forward_target_landing(db, serve_owner, rn->rank, &rn->rdzv);
           arts_send_db_excl_forward(serve_owner, db->cache.db_guid,
                                     (uint32_t)DB_MODE_RO, rn->rank, tag,
-                                    &rn->rdzv);
+                                    &serve_rdzv);
           arts_free(rn);
           node = nx;
         }
@@ -1708,8 +1745,8 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   unsigned int requester = a->requester;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
-  if (a->rdzv.txid == 0 && db->cache.db_size > 0 &&
-      arts_global_rank_count > 1) {
+  if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
+      db->cache.db_size > 0 && arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — the deliver
      * plane requires a landing.  The requester re-issues with one. */
@@ -1848,7 +1885,9 @@ void arts_handler_db_excl_confirm(void *item_v) {
    * any real CONFIRM, so a real CONFIRM always pops successfully).  An empty
    * pop therefore means a stale/duplicate CONFIRM — drop it WITHOUT the w--
    * transition, else it underflows w (0 → 0xFFFFFF) and dispatches a spurious
-   * MIGRATE. */
+   * MIGRATE.  It does not cover a stale CONFIRM that lands while the new
+   * generation has a writer queued: the pop takes that writer, and the
+   * transition runs for a turn this generation never granted. */
   unsigned int front;
   if (!arts_home_grantreq_queue_pop(&db->rw_waiters, &front, NULL, NULL)) {
     arts_shared_release(&db_h);
@@ -1895,7 +1934,10 @@ void arts_handler_db_excl_roret(void *item_v) {
      * GUID's fresh home (r==0).  r counts outstanding RO grants; a RO_RETURN
      * can only follow its own grant, so r==0 means a stale/duplicate RO_RETURN
      * — drop it, else r underflows (0 → 0xFFFFFF) and dispatches a spurious
-     * flip. */
+     * flip.  It does not cover a stale RO_RETURN that lands while the new
+     * generation has read grants outstanding (r > 0): that return is counted
+     * as one of them, so r can reach zero, and a queued writer's flip to the
+     * write phase can open, while a reader still holds its copy. */
     if (LOCK_R(cur) == 0u) {
       arts_shared_release(&db_h);
       return;

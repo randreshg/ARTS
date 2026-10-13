@@ -769,6 +769,10 @@ uint64_t arts_net_rdzv_txid_next(void) {
   return 1u + (uint32_t)(ctr % 0xFFFFFFFFULL);
 }
 
+uint64_t arts_net_rdzv_txid_peek(void) {
+  return atomic_load_explicit(&g_rdzv_txid_ctr, memory_order_relaxed);
+}
+
 void arts_net_rdzv_expect(uint64_t txid, void (*on_data)(void *), void *arg) {
   pthread_mutex_lock(&g_rdzv_lock);
   struct net_rdzv_ent_s *e = net_rdzv_take_locked(txid);

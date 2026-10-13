@@ -502,19 +502,22 @@ void arts_handler_db_excl_grant(void *payload, size_t size);
  * (coherence/excl/purge.c and coherence/excl/retain.c). */
 
 /* ===== EXCL senders =================================================== */
-/* Send EXCL_REQUEST to the home, advertising this rank's grant/deliver
- * landing: the stable buffer for RW (in-place install is EXCL's fixed-address
- * contract), a FRESH landing for a RETAIN RO serve (a stale RO grant racing a
- * newer owner install must not clobber the stable buffer — the ro_return arm
- * discards it).  Size-unknown first touch sends landing-less; home answers
- * EXCL_CTS and the handler re-enters this sender. */
+/* Send EXCL_REQUEST to the home.  A request to another rank's home advertises
+ * this rank's stable buffer as the landing of the grant/deliver that answers
+ * it, for either mode (in-place install is EXCL's fixed-address contract); a
+ * size-unknown first touch sends landing-less, the home answers EXCL_CTS and
+ * the handler re-enters this sender.  A request to this rank's own home
+ * advertises none: the home's own grant moves no payload, and a payload a
+ * remote owner owes it lands in a landing the home draws when it forwards.
+ * Where grants carry no payload (the CXL store), no request advertises one. */
 void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode);
 /* Cat-C pure body (EXCL_CTS at the requester): item_v is the db_s; args_v is
  * the EXCL_CTS packet.  Learns db_size and re-issues the request (echoed
  * mode) with a landing. */
 void arts_handler_db_excl_cts(void *item_v, void *args_v);
-/* EXCL_CTS sender: home → first-touch requester (db_size + echoed mode). */
+/* EXCL_CTS sender: home → first-touch requester on another rank (db_size +
+ * echoed mode). */
 void arts_send_db_excl_cts(unsigned int requester_rank, arts_guid_t db_guid,
                            uint64_t db_size, uint32_t mode);
 /* arts_send_db_excl_grant: version is the home buffer's version (0 in a CXL

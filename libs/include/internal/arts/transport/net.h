@@ -162,8 +162,16 @@ void arts_net_drain_outstanding(unsigned int deadline_ms);
  * payload moved" (txid_next never returns it).
  * ========================================================================== */
 
-/* Allocate a process-unique rendezvous txid: (rank << 48) | counter, never 0. */
+/* Allocate a rendezvous txid in [1, 2^32-1] from this rank's draw counter.
+ * Unique only among this rank's own draws, which is all pairing needs: the
+ * rank that advertises a landing draws its txid and is the one that receives
+ * the immediate. */
 uint64_t arts_net_rdzv_txid_next(void);
+
+/* The raw value of this rank's draw counter, which every
+ * arts_net_rdzv_txid_next call advances by one.  It is not a txid; compare two
+ * readings to tell whether draws happened in between. */
+uint64_t arts_net_rdzv_txid_peek(void);
 
 /* Resolve a registered-pool pointer to its wire landing advertisement.  False
  * when `p` lies in no fabric-registered slab (single-node / regpool without a

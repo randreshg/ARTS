@@ -958,11 +958,12 @@ void arts_send_db_inv_request(struct arts_db_cache_s *cache,
    * sentinel fallback (the home answers INV_CTS and the fetch re-issues).
    *
    * Being the home rank does NOT excuse a requester from advertising one.
-   * Under WT the home answers from its own canonical buffer and the landing
-   * simply goes unused; under WB the home holds no bytes at all, so its own
-   * reads are served by a remote holder and need somewhere to land.  Skipping
-   * the allocation there silently produced a data-less reply, leaving the
-   * reader on whatever stale copy it already had. */
+   * Only a write-back home asks (a write-through home serves its own readers
+   * from its canonical buffer), and it holds no bytes at all, so its own reads
+   * are served by the holder, which is another rank except in an
+   * ownership-transfer window, and need somewhere to land.  Skipping the
+   * allocation there silently produced a data-less reply, leaving the reader
+   * on whatever stale copy it already had. */
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
   if (fetch_size != 0 && arts_global_rank_count > 1) {
     (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);

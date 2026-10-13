@@ -205,8 +205,8 @@ void arts_send_db_excl_grant(unsigned int requester_rank, arts_guid_t db_guid,
      * a packet and back into the same buffer would be pure waste.  Emit a
      * data-less self-grant: the handler skips the in-place install and runs the
      * grant commit (cache-state transition + waiter drain) against the live
-     * buffer.  The requester's advertised landing goes unused — for EXCL it is
-     * the stable buffer itself, so there is nothing to return. */
+     * buffer.  A requester on the home advertises no landing: nothing would
+     * land in it. */
     if (src != NULL) {
       arts_db_buf_release(&src_h);
     }
@@ -256,7 +256,8 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
 #ifndef ARTS_USE_CXL
-  if (a->rdzv.txid == 0 && cache->db_size > 0 && arts_global_rank_count > 1) {
+  if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
+      cache->db_size > 0 && arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — the grant
      * plane requires a landing.  The requester re-issues with one. */
@@ -565,7 +566,10 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 /* Materialize this rank's stable buffer (EXCL's fixed-address backing store)
  * and advertise it as the grant landing: the grant PUT installs IN PLACE,
  * preserving the address across the DB's whole lifetime.  A fresh txid is
- * drawn per request (each request is served by at most one grant). */
+ * drawn per request (each request is served by at most one grant).  False
+ * only when no payload can move here; a sized block whose buffer cannot be
+ * advertised is fatal, since a landing-less request is answered with a size
+ * round that would only repeat. */
 static bool lock_stable_landing(struct arts_db_cache_s *cache,
                                 struct arts_rdzv_landing_s *out) {
   *out = (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -587,8 +591,8 @@ static bool lock_stable_landing(struct arts_db_cache_s *cache,
   }
   if (buf == NULL ||
       !arts_net_rdzv_local(buf->data, fetch_size, &out->addr, &out->key)) {
-    arts_db_buf_release(&h);
-    return false;
+    ARTS_ERROR("lock: stable buffer is unplaced or not fabric-registered — "
+               "one-sided grant requires the registered pool");
   }
   out->txid = arts_net_rdzv_txid_next();
   out->cookie = 0; /* in-place: this rank finds the buffer via its cache */
@@ -601,25 +605,27 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
                                arts_db_access_mode_t mode) {
   arts_guid_t db_guid = cache->db_guid;
   unsigned int home_rank = arts_guid_get_rank(db_guid);
+  if (home_rank == arts_global_rank_id) {
+    /* Self-send: route through the OoO engine so before-create reorders are
+     * handled correctly (the engine defers when the slot is absent).  The
+     * home is the canonical store, so its own grant is data-less and no
+     * landing is advertised. */
+    struct arts_ooo_args_db_excl_request_s args = {
+        .requester = arts_global_rank_id,
+        .db_guid = db_guid,
+        .mode = (uint32_t)mode,
+        .rdzv = {0, 0, 0, 0},
+    };
+    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_REQUEST, &args,
+                                    sizeof(args));
+    return;
+  }
   /* Zeroed outside every conditional: no arm may reach the send with stack
    * garbage where a landing would be. */
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
 #ifndef ARTS_USE_CXL
   (void)lock_stable_landing(cache, &rdzv);
 #endif
-  if (home_rank == arts_global_rank_id) {
-    /* Self-send: route through the OoO engine so before-create reorders are
-     * handled correctly (the engine defers when the slot is absent). */
-    struct arts_ooo_args_db_excl_request_s args = {
-        .requester = arts_global_rank_id,
-        .db_guid = db_guid,
-        .mode = (uint32_t)mode,
-        .rdzv = rdzv,
-    };
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_REQUEST, &args,
-                                    sizeof(args));
-    return;
-  }
   struct arts_msg_excl_request_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_REQUEST);
   p.db_guid = db_guid;
@@ -632,7 +638,8 @@ void arts_send_db_excl_request(struct arts_db_cache_s *cache,
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
-/* EXCL_CTS sender (home → first-touch requester) + requester-side body. */
+/* EXCL_CTS sender (home → first-touch requester on another rank) +
+ * requester-side body. */
 void arts_send_db_excl_cts(unsigned int requester_rank, arts_guid_t db_guid,
                            uint64_t db_size, uint32_t mode) {
   INCREMENT_NUM_EXCL_SIZE_CTS_BY(1);
@@ -643,15 +650,6 @@ void arts_send_db_excl_cts(unsigned int requester_rank, arts_guid_t db_guid,
   p.db_size = db_size;
   p.mode = mode;
   p.pad = 0;
-  if (requester_rank == arts_global_rank_id) {
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_excl_cts(db, &p);
-    }
-    arts_shared_release(&h);
-    return;
-  }
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
 

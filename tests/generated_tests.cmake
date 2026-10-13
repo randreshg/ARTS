@@ -332,6 +332,19 @@ register_single_node_test(excl_request_coalesce TIMEOUT 60)
 register_multinode_test(excl_request_coalesce TIMEOUT 120
                         VARIANTS 2n_9w_1p 2n_8w_2p)
 
+# A request homed on the requesting rank advertises no landing, one homed on
+# another rank does, and a payload a remote owner owes a home requester still
+# arrives.  Two ranks show all three; one brings up no fabric, and where grants
+# carry no payload (the CXL store) no request advertises a landing.  Every turn
+# is ordered after the previous one, so one two-rank shape covers the scenario.
+if(NOT ARTS_USE_CXL)
+add_arts_test(excl_self_home_no_landing)
+register_multinode_test(excl_self_home_no_landing TIMEOUT 120
+                        VARIANTS 2n_8w_2p)
+set_tests_properties(excl_self_home_no_landing_2n_8w_2p PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS excl_self_home_no_landing")
+endif()
+
 add_arts_test(excl_purge_grant_d6_d7)
 register_single_node_test(excl_purge_grant_d6_d7 TIMEOUT 60)
 register_multinode_test(excl_purge_grant_d6_d7 TIMEOUT 60)
