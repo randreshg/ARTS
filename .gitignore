@@ -59,3 +59,7 @@ third_party/ocrPNNL/
 # pip, so a stray `uv run` must not leave a lock behind as tracked noise
 uv.lock
 
+# Local working material, never committed: a browser tool's state and local
+# paper sources and notes
+/.playwright-mcp/
+/paper/
