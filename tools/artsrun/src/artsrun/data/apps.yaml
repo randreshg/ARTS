@@ -1200,7 +1200,7 @@ apps:
   LCS_wavefront:
     binary: LCS_wavefront
     class: task
-    provenance: 'LCS; wavefront rewrite (boundary strips on counted events)'
+    provenance: 'LCS; wavefront rewrite (boundary strips on labeled sticky events)'
     marker: 'LCS checksum:'
     scalar_re: 'LCS checksum:\s*(\d+)'
     scalar_kind: int

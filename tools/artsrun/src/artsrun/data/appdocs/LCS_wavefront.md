@@ -2,10 +2,10 @@
 
 *The restructured version of `LCS_all_db_distributed`: the same computation
 with the control plane rebuilt — per-tile boundary strips travel on labeled
-counted events, leaves run in true anti-diagonal wavefront order, each leaf
+sticky events, leaves run in true anti-diagonal wavefront order, each leaf
 creates its own south neighbour, and memory follows the frontier.*
 Source: `third_party/ocr-apps/apps/LCS/refactored/ocr/intel-jesmin-lcs_all_db_distributed/lcs_wavefront.c`
-(~450 lines, C).  Selected as `LCS_all_db_distributed:restructured`.
+(~520 lines, C).  Selected as `LCS_all_db_distributed:restructured`.
 
 ## Overview
 
@@ -42,15 +42,16 @@ rank count by construction (see Placement).
 ## Structure
 
 Per run: `2L` string-tile creates + `2L` init EDTs (each with an
-app-supplied COUNTED(1) completion event — the gate below), **one** row-seed
-EDT, `L²` leaf EDTs, one wrapup and one dedicated shutdown EDT.  Row 1's
-`L` leaves are created by the row-seed EDT; every other leaf is created by
-its north neighbour when that neighbour completes, so creation runs at most
-one row ahead of the wavefront and the parked-leaf pool is `O(L)`, not
-`O(L²)`.  Per interior leaf: 3 strip DBs out (right column `base` ints,
-bottom row `base` ints, corner 1 int) + 3 labeled COUNTED(1) events; edge
-tiles skip the outputs nobody consumes, and the final tile's corner strip
-carries two ints (the answer cell and the digest).  Every strip is
+app-supplied COUNTED(1) completion event — the gate below), **one**
+row-seed EDT, `L²` leaf EDTs, one wrapup and one dedicated shutdown EDT.
+Row 1's `L` leaves are created by the row-seed EDT; every other leaf is
+created by its north neighbour once that neighbour has computed its tile,
+before it emits, so creation runs at most one row ahead of the wavefront
+and the parked-leaf pool is `O(L)`, not `O(L²)`.  Per interior leaf: 3
+strip DBs out (right column `base` ints, bottom row `base` ints, corner 1
+int) + 3 labeled STICKY events; edge tiles skip the outputs nobody
+consumes, and the final tile's corner strip carries two ints (the answer
+cell and the digest).  Every strip, and the event that carried it, is
 destroyed by its single consumer, so steady-state resident data is the
 frontier's strips plus the `2L` string tiles — the score matrix itself
 never exists.  The leaf's working set is 3 rolling rows of `base` ints in
@@ -61,23 +62,30 @@ the leaf parameters; it outlives every leaf and is never destroyed.
 
 Leaf `(bi,bj)` has exactly five dependences: its S tile (RO, band-steered
 home), its T tile (RO, round-robin home), and the west/north/northwest
-strips — each an ordinary DB riding a **labeled COUNTED(1) event** the
-producer creates at satisfy time (a consumer that registered first parks on
-the absent label and is fired by the install; a consumer that registers
-after the install takes the value immediately, and the declared count of
-one reclaims the event as soon as its consumer has registered — nothing
-lingers).  Both orders occur by design now that a leaf's creator is its
-north neighbour: the north strip is always registered after its satisfy,
-the west strip usually before.  Row-1/column-1 leaves take `NULL_GUID` in
-the missing slots and synthesize the boundary strips analytically.  The
-wavefront must not start before the strings exist (an RO read of a tile
-still being written is unordered), so the row-seed EDT is gated on all `2L`
-init-completion COUNTED events.
+strips — each an ordinary DB riding a **labeled STICKY event with exactly
+one creator**: the task that creates the emitting leaf creates the leaf's
+output events (before it adds the leaf's dependences, since the last one
+can make the leaf runnable at once), and `mainEdt` creates the final corner
+event whose consumer it also registers.  That creator precedes every use of
+the event in the dependence order: the producer satisfies it only after
+being created; its south consumer is created by the producer itself, its
+southeast consumer by the task the producer's rc strip wakes, and its east
+consumer by the row-seed task later in its loop (row 1) or by the task the
+creator's own rc strip wakes, which is why a leaf creates its south child
+before emitting.  So producer and consumer need no order between them, and
+no runtime needs `GUID_PROP_CHECK`: each label is created once and lives
+one generation.  The consumer, the only party that knows the strip was
+delivered, destroys the event and the strip.  Row-1/column-1 leaves take
+`NULL_GUID` in the missing slots and synthesize the boundary strips
+analytically.  The wavefront must not start before the strings exist (an RO
+read of a tile still being written is unordered), so the row-seed EDT is
+gated on all `2L` init-completion COUNTED events.
 
 ## Flow
 
-The row-seed EDT creates row 1; each leaf, having emitted its strips,
-creates the leaf directly below it, so the creation plane is as wide as the
+The row-seed EDT creates row 1; each leaf, once its tile is computed and
+before it emits its strips, creates the leaf directly below it (and the
+events that leaf will emit on), so the creation plane is as wide as the
 wavefront.  Leaves fire in anti-diagonal order as their strips arrive,
 width ramps 1→L→1.  The last tile's corner event carries the answer and the
 digest to the wrapup (which prints both), and shutdown runs in its own EDT

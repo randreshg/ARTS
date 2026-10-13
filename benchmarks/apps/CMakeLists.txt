@@ -1162,8 +1162,8 @@ add_benchmark_app(NAME LCS_all_db_distributed
 )
 
 # Wavefront restructuring of the same computation: boundary strips travel on
-# labeled counted events, leaves spawn per row and run in anti-diagonal
-# order, memory follows the frontier.
+# labeled sticky events (one creator each), each leaf creates its south
+# neighbour, leaves run in anti-diagonal order, memory follows the frontier.
 add_benchmark_app(NAME LCS_wavefront
     DIR LCS/refactored/ocr/intel-jesmin-lcs_all_db_distributed
     SOURCES lcs_wavefront.c
