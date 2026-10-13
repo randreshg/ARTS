@@ -1507,7 +1507,7 @@ if(ARTS_DEBUG_INJECTION AND ARTS_DEBUG_DB_QUARANTINE AND
         set_tests_properties(coherence_late_write_completion_${_v} PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: coherence_late_write_completion"
             FAIL_REGULAR_EXPRESSION
-            "FAIL:;QUIESCENCE-DEBUG:;left unchecked;left unrun")
+            "FAIL:;QUIESCENCE-DEBUG:;left unchecked;left unrun;left unfreed")
     endforeach()
 endif()
 

@@ -3305,8 +3305,16 @@ apps:
     # the window (the anchor goes as L^2.2: 7.9 s at 200k, 40.1 s at 400k,
     # 92.7 s at 600k, 178.5 s at 800k) and the tile then sets the width.
     # The anchor is the tightest of the three coherence arms; at 800,000 they
-    # run 178.5 / 163.6 / 155.6 s holding 106 / 88 / 106 GB, so the window
-    # decides the size and the node's memory has room to spare.
+    # run 178.5 / 163.6 / 155.6 s holding 106 / 88 / 106 GiB on a 128-core
+    # host, so the window decides the size.  One node had no memory to spare:
+    # on 112-core nodes the one-node cells held 196-238 GiB per rank (maximum
+    # resident set) and 5 of the 24 ARTS runs were killed at the node's memory
+    # limit, while two nodes held 60-78 GiB per rank and four nodes 28-36 GiB.
+    # The one-rank excess was traced to a route-table defect, since removed:
+    # every GUID of a labeled range lands, on the rank that reserved it, in
+    # the reserving thread's segment chain; each new segment was written in
+    # full when it was created, and every thread that reached the chain's end
+    # built its own copy before the losing copies were freed.
     #
     # places is the ownership decomposition, not the width knob: the width is
     # the tile grid, and 800,000 at tile 100 is 6.4e7 tiles against the 13,824
@@ -3330,7 +3338,7 @@ apps:
     # with room to spare -- where the base row's own window left it at 0.41x,
     # short of the machine.  A finer tile is not available to buy more: at
     # 800,000 a tile of 50 quadruples the tiles and passed 417 GB before it
-    # was stopped, against tile 100's 106 GB, past what a node has.
+    # was stopped, against tile 100's 106 GiB, past what a node has.
     #
     # The answer is pinned by agreement between two independently built graphs
     # (this row and the port it re-implements) rather than by a sequential

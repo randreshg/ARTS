@@ -437,6 +437,15 @@ def test_a_geometry_wider_than_the_machine_is_not_the_tool_s_call():
     assert profile.threads_per_node == 64
 
 
+def test_a_route_table_size_the_runtime_cannot_load_is_refused():
+    for size in (3, 32):
+        with pytest.raises(ValidationError, match="route_table_size"):
+            Profile.model_validate(_local(route_table_size=size))
+    for size in (4, 31):
+        assert Profile.model_validate(
+            _local(route_table_size=size)).route_table_size == size
+
+
 def test_remote_profile_requires_ports():
     with pytest.raises(ValidationError, match="ports is required"):
         Profile.model_validate(_local(launcher="ssh"))

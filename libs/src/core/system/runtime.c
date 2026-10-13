@@ -394,14 +394,21 @@ void arts_runtime_global_cleanup() {
    * An EDT the shutdown abandoned (admitted, never finished) is the one object
    * the sweep leaves installed: it keeps the blocks it acquired, and that
    * residue is the process exit's to reclaim, so when one stays, every route
-   * table is kept and the residue stays reachable through them. */
+   * table is kept and the residue stays reachable through them.  A thread the
+   * shutdown gave up joining may still reach the route tables, so then they
+   * are neither swept nor freed, and the process exit reclaims them. */
   uint64_t abandoned_edts = 0;
+  bool tables_reachable =
+      __atomic_load_n(&arts_shutdown_abandon.unjoined_threads,
+                      __ATOMIC_RELAXED) != 0;
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) ||           \
     __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
-  abandoned_edts = arts_clean_up_dbs(arts_edt_admitted);
+  if (!tables_reachable) {
+    abandoned_edts = arts_clean_up_dbs(arts_edt_admitted);
+  }
 #endif
 
   /* Counter cleanup (reverse of arts_runtime_node_init allocation) */
@@ -435,7 +442,9 @@ void arts_runtime_global_cleanup() {
   }
 #endif
 
-  if (abandoned_edts == 0) {
+  if (tables_reachable) {
+    ARTS_WARN("route tables left unfreed: a thread never joined");
+  } else if (abandoned_edts == 0) {
     for (unsigned int i = 0; i < tc; i++) {
       arts_delete_route_table(arts_node_info.route_table[i]);
     }

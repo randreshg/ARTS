@@ -177,7 +177,7 @@ static void rt_init(void) {
       (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
   arts_node_info.route_table[0] = arts_new_route_table(1024, 10);
   for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 10);
+    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
   }
 }
 

@@ -81,10 +81,11 @@ Names come first, in a phase of their own: every band creates all of its own
 readiness events (`PHASE_NAMES`) before any band binds tasks to them
 (`PHASE_TASKS`). That is what lets creation happen everywhere at once, and it
 is also what sets the memory floor — the whole event grid is live from the end
-of the naming phase, so this row holds 106 GB at the catalog cell against the
-base row's 3. The blocks the events carry are not: a tile's three inputs and
-the three events that carried them are destroyed by their single consumer, so
-the payload live set follows the wavefront rather than the tile count.
+of the naming phase, so this row held 106 GiB at the catalog cell on a 128-core
+host, against the base row's 3 GB. The blocks the events carry are not: a
+tile's three inputs and the three events that carried them are destroyed by
+their single consumer, so the payload live set follows the wavefront rather
+than the tile count.
 
 `placeInit`'s only per-rank table is the first row of each rank, sized from the
 rank count and scanned once over the places.
@@ -193,25 +194,28 @@ points do not agree on it**, so it is a range, not a constant:
 |---|---|---|---|
 | `L = 700,000`, tile 100 | 1.47e8 | 48 GB | 326 B |
 | `L = 700,000`, tile 50 | 5.88e8 | 199 GB | 338 B |
-| `L = 800,000`, tile 100 | 1.92e8 | 106 GB | 552 B |
+| `L = 800,000`, tile 100 | 1.92e8 | 106 GiB | 593 B |
 
 The two `L = 700,000` points agree with each other and disagree with the
-catalog point by 1.65x: 1.31x the names cannot cost 2.2x the memory, and the
+catalog point by 1.8x: 1.31x the names cannot cost 2.4x the memory, and the
 other three terms of `live` are megabytes at every one of them. Something not
 in this model separates the series — a different coherence arm, a different
 worker count, or a peak sampled at a different moment — and nothing on hand
-settles which, so **`c_ev` is 330-550 B and the campaign must size off the
+settles which, so **`c_ev` is 330-590 B and the campaign must size off the
 pessimistic end** until the point is re-taken at the catalog arguments.
 
-**At the anchor** (one node, 108 workers + 4 progress, catalog arguments) the
-tightest of the three coherence arms runs **178.5 s holding 106 GB**, 41% of
-what a node has; the other two run 163.6 s and 155.6 s at 88 and 106 GB. Against
-the 190 GB one-node budget the cap on `3*W*H` is therefore **3.4e8 at 550 B and
-5.7e8 at 330 B** — a square grid of 10,600 to 13,800 tiles a side, `L` between
-1.06e6 and 1.38e6 at tile 100. Size to 3.4e8; the wider figure is only available
-once the discrepancy above is resolved. Beyond one node the grid is split across
-ranks and the per-node figure falls with the node count, so the one-node cell is
-the binding one.
+**At the anchor** (one node of a 128-core host, 108 workers + 4 progress,
+catalog arguments) the tightest of the three coherence arms runs **178.5 s
+holding 106 GiB**; the other two run 163.6 s and 155.6 s at 88 and 106 GiB. In
+a campaign on 112-core nodes the one-node cells held 196-238 GiB per rank and 5
+of the 24 ARTS runs were killed at the node's memory limit, while two nodes
+held 60-78 GiB per rank and four nodes 28-36 GiB; the one-rank excess was a
+route-table defect, since removed. Against the 190 GB one-node budget the cap
+on `3*W*H` is therefore **3.2e8 at 590 B and 5.7e8 at 330 B** — a square grid
+of 10,300 to 13,800 tiles a side, `L` between 1.03e6 and 1.38e6 at tile 100.
+Size to 3.2e8; the wider figure is only available once the discrepancy above is
+resolved. Beyond one node the grid is split across ranks and the per-node
+figure falls with the node count, so the one-node cell is the binding one.
 
 **The trend** is taken at `L = 140,000`, the same tile, at 15 workers a node,
 two runs a cell:

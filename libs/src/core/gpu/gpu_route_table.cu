@@ -105,15 +105,12 @@ unsigned int set_gpu_timestamp(volatile unsigned int *time_stamp) {
 
 arts_route_table_t *arts_gpu_new_route_table(unsigned int route_table_size,
                                              unsigned int shift) {
-  unsigned int total_elems = COLLISION_RESOLVES * route_table_size;
+  uint64_t total_elems = (uint64_t)COLLISION_RESOLVES * route_table_size;
   arts_gpu_route_table_t *gpu_route_table =
       (arts_gpu_route_table_t *)arts_calloc(1, sizeof(arts_gpu_route_table_t));
-  gpu_route_table->routingTable.data = (arts_route_item_t *)arts_calloc_aligned(
-      total_elems, sizeof(arts_route_item_t), ARTS_CACHE_LINE_SIZE);
+  gpu_route_table->routingTable.data = arts_route_table_map_slots(total_elems);
   gpu_route_table->routingTable.size = route_table_size;
   gpu_route_table->routingTable.shift = shift;
-  /* setFunc/freeFunc fields removed in new route_table model -- task 1a.4
-   * will revisit GPU route_table integration. */
   gpu_route_table->routingTable.newFunc = arts_gpu_new_route_table;
 
   /* Persistent per-slot wrapper array (parallel to routingTable.data[]).  The

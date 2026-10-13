@@ -70,7 +70,13 @@ extern "C" {
 #define ARTS_REMOTE_ROUTE_SHARD_BITS 3
 #define ARTS_REMOTE_ROUTE_SHARDS (1 << ARTS_REMOTE_ROUTE_SHARD_BITS)
 
-/* Route_item: GUID slot.  Permanent (init-array, never freed).
+/* Route_item: GUID slot.  Lives as long as its segment, which lives until
+ * teardown.
+ *
+ * An all-zero item is a free slot (key 0) with an absent value (cb NULL,
+ * external count 0) and an empty OoO list (head NULL).  A segment's slots are
+ * zero pages that are never initialized one by one: a page of slots is
+ * populated only by a write to one of its slots.
  *
  * `value` is an atomic shared-ptr cb slot (arts_shared_ptr_t).  The cb
  * carries the strong refcount, the per-object deleter and the object pointer;
@@ -100,20 +106,35 @@ typedef struct arts_route_item_s arts_route_item_t;
 
 typedef struct arts_route_table_s arts_route_table_t;
 
+/* Builds one segment of `route_table_size` windows whose `data` comes from
+ * arts_route_table_map_slots(COLLISION_RESOLVES * route_table_size).
+ * `route_table_size` must be 2^`shift`: a key's window is the top `shift`
+ * bits of its hash, so a larger shift probes past the segment's slots and a
+ * smaller one never reaches its upper windows. */
 typedef arts_route_table_t *(*new_route_table_t)(unsigned int route_table_size,
                                                  unsigned int shift);
+
+/* The value of `next` while its segment is being built. */
+#define ARTS_ROUTE_TABLE_GROWING ((struct arts_route_table_s *)(uintptr_t)1)
 
 struct arts_route_table_s {
   arts_route_item_t *data;
   unsigned int size;
   unsigned int shift;
-  /* The growable segment chain.  Reads use an acquire-load and growth uses a
-   * single NULL->segment CAS (see route_table.c): the chain only ever grows
-   * (a published segment is never unlinked before teardown), so the link is
-   * monotonic and ABA-free — no lock is needed to traverse or extend it. */
+  /* The growable segment chain: NULL -> ARTS_ROUTE_TABLE_GROWING -> segment.
+   * The one thread whose CAS takes the link from NULL to GROWING builds the
+   * next segment and publishes it with a release store; every other thread
+   * that reaches the end of the chain waits for that store, so one growth
+   * builds one segment.  A walker takes GROWING for the end of the chain,
+   * since an unpublished segment holds no key and no claim.  A published
+   * segment is never unlinked before teardown, so the link is monotonic. */
   struct arts_route_table_s *next;
   new_route_table_t newFunc;
 };
+
+/* `slots` zero items in an anonymous mapping, page-aligned, populated only
+ * where written; arts_delete_route_table releases it. */
+arts_route_item_t *arts_route_table_map_slots(uint64_t slots);
 
 typedef struct {
   uint64_t index;
@@ -276,6 +297,7 @@ uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
  * segment chain), read in place without consuming them.  Only meaningful once
  * no thread can push or drain. */
 unsigned int arts_route_table_parked_count(arts_route_table_t *route_table);
+/* Frees a chain no thread can reach any more, with its parked payloads. */
 void arts_delete_route_table(arts_route_table_t *route_table);
 /* arts_clean_up_route_table over every table of this rank. */
 uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t));

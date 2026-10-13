@@ -39,10 +39,15 @@
 
 #include "arts/gas/route_table.h"
 
+#include <assert.h>
+#include <errno.h>
+#include <limits.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
-#include <sched.h>
+#include <string.h>
+#include <sys/mman.h>
 #include <time.h>
 
 #include "arts.h"
@@ -180,122 +185,57 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
   }
 }
 
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)
+/* A leak checker scans the heap and registered roots, not an anonymous
+ * mapping, and a slot may hold the only reference to its object. */
+#include <sanitizer/lsan_interface.h>
+#define ROUTE_TABLE_LEAK_ROOT(p, n) __lsan_register_root_region((p), (n))
+#define ROUTE_TABLE_LEAK_UNROOT(p, n) __lsan_unregister_root_region((p), (n))
+#else
+#define ROUTE_TABLE_LEAK_ROOT(p, n) ((void)0)
+#define ROUTE_TABLE_LEAK_UNROOT(p, n) ((void)0)
+#endif
+
+arts_route_item_t *arts_route_table_map_slots(uint64_t slots) {
+  size_t bytes = (size_t)slots * sizeof(arts_route_item_t);
+  void *p = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (p == MAP_FAILED) {
+    ARTS_ERROR("route table: mapping a segment of %lu slots (%zu bytes) "
+               "failed: %s; route_table_size (gpu_route_table_size for a GPU "
+               "table) sets the first segment, each growth doubles it",
+               (unsigned long)slots, bytes, strerror(errno));
+  }
+  ROUTE_TABLE_LEAK_ROOT(p, bytes);
+  return (arts_route_item_t *)p;
+}
+
+static void route_table_unmap_slots(arts_route_item_t *data, uint64_t slots) {
+  size_t bytes = (size_t)slots * sizeof(arts_route_item_t);
+  ROUTE_TABLE_LEAK_UNROOT(data, bytes);
+  munmap(data, bytes);
+}
+
 arts_route_table_t *arts_new_route_table(unsigned int route_table_size,
                                          unsigned int shift) {
+  assert(route_table_size == (uint64_t)1 << shift);
   arts_route_table_t *route_table =
       (arts_route_table_t *)arts_calloc(1, sizeof(arts_route_table_t));
-  route_table->data = (arts_route_item_t *)arts_calloc_aligned(
-      (size_t)COLLISION_RESOLVES * route_table_size, sizeof(arts_route_item_t),
-      ARTS_CACHE_LINE_SIZE);
+  route_table->data = arts_route_table_map_slots((uint64_t)COLLISION_RESOLVES *
+                                                 route_table_size);
   route_table->size = route_table_size;
   route_table->shift = shift;
   route_table->newFunc = arts_new_route_table;
-  /* The per-slot OoO list is a Treiber stack (LIFO, single head pointer); it
-   * is zero-initializable (an empty head), so this loop is a clarity no-op on
-   * calloc'd storage.  Slot reuse across the table's lifetime is sound
-   * because a retire re-drives the chain by each payload's own GUID after it
-   * returns the slot, and a payload found on a slot that no longer names its
-   * GUID follows the GUID instead of dispatching there. */
-  uint64_t total_slots = (uint64_t)COLLISION_RESOLVES * route_table_size;
-  for (uint64_t i = 0; i < total_slots; i++) {
-    arts_lf_stack_init(&route_table->data[i].ooo_list);
-  }
   return route_table;
 }
 
-/* Slot is empty when key == 0 (ARTS GUIDs never have key value 0).  A slot
- * keyed by a GUID publishes it until a retire returns the slot. */
-arts_route_item_t *
-arts_route_table_search_for_key(arts_route_table_t *route_table,
-                                arts_guid_t key) {
-  arts_route_table_t *current = route_table;
-  arts_route_table_t *next;
-  uint64_t key_val;
-  while (current) {
-    key_val = get_route_table_key((uint64_t)key, current->shift);
-    for (int i = 0; i < COLLISION_RESOLVES; i++) {
-      arts_guid_t slot_key =
-          __atomic_load_n(&current->data[key_val].key, __ATOMIC_ACQUIRE);
-      if (slot_key == key) {
-        return &current->data[key_val];
-      }
-      key_val++;
-    }
-    next = __atomic_load_n(&current->next, __ATOMIC_ACQUIRE);
-    current = next;
-  }
-  return NULL;
-}
-
-/* Linearly scan for an empty slot (key == 0) and atomically claim it for
- * `key` via CAS.  Concurrent reservers race here directly (no per-GUID
- * lock) -- the key-CAS is the single point of serialization.  Accepting a
- * slot whose key already equals `key` makes two concurrent reservers agree
- * on the same canonical slot (no orphan-slot leak on the common path). */
-arts_route_item_t *
-arts_route_table_search_for_empty(arts_route_table_t *route_table,
-                                  arts_guid_t key, bool mark_used) {
-  (void)mark_used;
-  arts_route_table_t *current = route_table;
-  arts_route_table_t *next;
-  uint64_t key_val;
-  while (current != NULL) {
-    key_val = get_route_table_key((uint64_t)key, current->shift);
-    for (int i = 0; i < COLLISION_RESOLVES; i++) {
-      arts_guid_t expected = (arts_guid_t)0;
-      if (__atomic_compare_exchange_n(&current->data[key_val].key, &expected,
-                                      key, false, __ATOMIC_ACQ_REL,
-                                      __ATOMIC_ACQUIRE)) {
-        return &current->data[key_val];
-      }
-      if (expected == key) {
-        return &current->data[key_val];
-      }
-      key_val++;
-    }
-
-    next = __atomic_load_n(&current->next, __ATOMIC_ACQUIRE);
-    if (!next) {
-      /* Lazy-init the next (larger) segment with a single CAS.  The chain
-       * only ever grows — a published segment is never unlinked before
-       * teardown — so NULL->segment is monotonic and ABA-free.  A thread
-       * that loses the CAS frees its spare and adopts the winner's; the
-       * spare was never published, so no other thread inserted into it and
-       * freeing its data + struct is leak-free. */
-      arts_route_table_t *fresh =
-          current->newFunc(2 * current->size, current->shift + 1);
-      arts_route_table_t *expected = NULL;
-      if (__atomic_compare_exchange_n(&current->next, &expected, fresh, false,
-                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        next = fresh;
-      } else {
-        arts_free(fresh->data);
-        arts_free(fresh);
-        next = expected;
-      }
-    }
-    current = next;
-  }
-  ARTS_ERROR("Route table search failed: impossible state (table=%p)",
-             (void *)route_table);
-}
-
-#ifndef ROUTE_TABLE_AFTER_MISS
-/* Runs between a reservation's missed search and its claim.  Empty in the
- * runtime; a whitebox test that compiles this file defines it to drive another
- * reserver's claim into exactly that window. */
-#define ROUTE_TABLE_AFTER_MISS(key) ((void)(key))
-#endif
-
-#ifndef ROUTE_TABLE_AFTER_CLAIM
-/* Runs between a reservation's claim and the scan that settles it.  Empty in
- * the runtime; a whitebox test defines it to act inside that window. */
-#define ROUTE_TABLE_AFTER_CLAIM(key) ((void)(key))
-#endif
-
-/* Bound on waiting for another thread's step on a slot: every step waited on
- * (a claim settling, a retire returning or handing back its slot) is a few
- * instructions that never block, so anything near the bound is a lost step. */
+/* Bound on waiting for another thread's step: every step waited on (a claim
+ * settling, a retire returning or handing back its slot, a grown segment being
+ * published) waits on no other thread and is a few instructions or one
+ * segment's construction, so anything near the bound is a lost step. */
 #define ROUTE_TABLE_WAIT_NS (5ull * 1000000000ull)
 
 typedef struct {
@@ -317,11 +257,122 @@ static void route_wait_tick(route_wait_t *w, arts_guid_t key, const char *what,
   uint64_t ns = (uint64_t)(t.tv_sec - w->t0.tv_sec) * 1000000000ull +
                 (uint64_t)t.tv_nsec - (uint64_t)w->t0.tv_nsec;
   if (ns > ROUTE_TABLE_WAIT_NS) {
-    ARTS_ERROR("GUID %lu: %s (slot key seen 0x%lx) for %.3f s",
-               (unsigned long)key, what, (unsigned long)seen, (double)ns / 1e9);
+    if (seen != 0) {
+      ARTS_ERROR("GUID %lu: %s (slot key seen 0x%lx) for %.3f s",
+                 (unsigned long)key, what, (unsigned long)seen,
+                 (double)ns / 1e9);
+    } else {
+      ARTS_ERROR("GUID %lu: %s for %.3f s", (unsigned long)key, what,
+                 (double)ns / 1e9);
+    }
   }
   sched_yield();
 }
+
+/* The segment after `t`, or NULL at the end of the chain.  A growth in flight
+ * is the end: its segment holds no key and no claim until it is published. */
+static inline arts_route_table_t *
+route_table_next(const arts_route_table_t *t) {
+  arts_route_table_t *next = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE);
+  return next == ARTS_ROUTE_TABLE_GROWING ? NULL : next;
+}
+
+/* The segment after `t`, grown if the chain ends at `t`.  Only the thread
+ * whose CAS takes the link from NULL to GROWING builds the segment; every
+ * other thread waits for its publication instead of building one of its own.
+ * The release store pairs with every walker's acquire load of the link. */
+static arts_route_table_t *route_table_next_or_grow(arts_route_table_t *t,
+                                                    arts_guid_t key) {
+  arts_route_table_t *next = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE);
+  if (next == NULL) {
+    if (t->size > UINT_MAX / 2) {
+      ARTS_ERROR("GUID %lu: its probe window is full in every segment, and "
+                 "the last holds %u windows, the most a segment can; the "
+                 "route table cannot grow (route_table_size sets the first "
+                 "segment, each growth doubles it)",
+                 (unsigned long)key, t->size);
+    }
+    if (__atomic_compare_exchange_n(&t->next, &next, ARTS_ROUTE_TABLE_GROWING,
+                                    false, __ATOMIC_ACQ_REL,
+                                    __ATOMIC_ACQUIRE)) {
+      next = t->newFunc(2 * t->size, t->shift + 1);
+      __atomic_store_n(&t->next, next, __ATOMIC_RELEASE);
+      return next;
+    }
+  }
+  route_wait_t w = {0};
+  while (next == ARTS_ROUTE_TABLE_GROWING) {
+    route_wait_tick(&w, key, "the next segment was never published", 0);
+    next = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE);
+  }
+  return next;
+}
+
+/* Slot is empty when key == 0 (ARTS GUIDs never have key value 0).  A slot
+ * keyed by a GUID publishes it until a retire returns the slot. */
+arts_route_item_t *
+arts_route_table_search_for_key(arts_route_table_t *route_table,
+                                arts_guid_t key) {
+  arts_route_table_t *current = route_table;
+  uint64_t key_val;
+  while (current) {
+    key_val = get_route_table_key((uint64_t)key, current->shift);
+    for (int i = 0; i < COLLISION_RESOLVES; i++) {
+      arts_guid_t slot_key =
+          __atomic_load_n(&current->data[key_val].key, __ATOMIC_ACQUIRE);
+      if (slot_key == key) {
+        return &current->data[key_val];
+      }
+      key_val++;
+    }
+    current = route_table_next(current);
+  }
+  return NULL;
+}
+
+/* Linearly scan for an empty slot (key == 0) and atomically claim it for
+ * `key` via CAS.  Concurrent reservers race here directly (no per-GUID
+ * lock) -- the key-CAS is the single point of serialization.  Accepting a
+ * slot whose key already equals `key` makes two concurrent reservers agree
+ * on the same canonical slot (no orphan-slot leak on the common path). */
+arts_route_item_t *
+arts_route_table_search_for_empty(arts_route_table_t *route_table,
+                                  arts_guid_t key, bool mark_used) {
+  (void)mark_used;
+  arts_route_table_t *current = route_table;
+  uint64_t key_val;
+  while (current != NULL) {
+    key_val = get_route_table_key((uint64_t)key, current->shift);
+    for (int i = 0; i < COLLISION_RESOLVES; i++) {
+      arts_guid_t expected = (arts_guid_t)0;
+      if (__atomic_compare_exchange_n(&current->data[key_val].key, &expected,
+                                      key, false, __ATOMIC_ACQ_REL,
+                                      __ATOMIC_ACQUIRE)) {
+        return &current->data[key_val];
+      }
+      if (expected == key) {
+        return &current->data[key_val];
+      }
+      key_val++;
+    }
+    current = route_table_next_or_grow(current, key);
+  }
+  ARTS_ERROR("Route table search failed: impossible state (table=%p)",
+             (void *)route_table);
+}
+
+#ifndef ROUTE_TABLE_AFTER_MISS
+/* Runs between a reservation's missed search and its claim.  Empty in the
+ * runtime; a whitebox test that compiles this file defines it to drive another
+ * reserver's claim into exactly that window. */
+#define ROUTE_TABLE_AFTER_MISS(key) ((void)(key))
+#endif
+
+#ifndef ROUTE_TABLE_AFTER_CLAIM
+/* Runs between a reservation's claim and the scan that settles it.  Empty in
+ * the runtime; a whitebox test defines it to act inside that window. */
+#define ROUTE_TABLE_AFTER_CLAIM(key) ((void)(key))
+#endif
 
 /* The key a reservation carries until it is known unique: the GUID's bits
  * under kind ARTS_GUID_RESERVED, so it equals no GUID (a key search never
@@ -355,22 +406,7 @@ static arts_route_item_t *route_table_claim(arts_route_table_t *route_table,
         return NULL;
       }
     }
-    arts_route_table_t *next =
-        __atomic_load_n(&current->next, __ATOMIC_ACQUIRE);
-    if (!next) {
-      arts_route_table_t *fresh =
-          current->newFunc(2 * current->size, current->shift + 1);
-      arts_route_table_t *expected = NULL;
-      if (__atomic_compare_exchange_n(&current->next, &expected, fresh, false,
-                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        next = fresh;
-      } else {
-        arts_free(fresh->data);
-        arts_free(fresh);
-        next = expected;
-      }
-    }
-    current = next;
+    current = route_table_next_or_grow(current, key);
   }
 }
 
@@ -391,7 +427,7 @@ static bool route_table_claim_settle(arts_route_table_t *route_table,
                                      arts_route_item_t *mine) {
   bool before_mine = true;
   for (arts_route_table_t *t = route_table; t != NULL;
-       t = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE)) {
+       t = route_table_next(t)) {
     uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
       arts_route_item_t *slot = &t->data[pos];
@@ -589,7 +625,7 @@ static arts_shared_ptr_t route_table_pin_published(arts_guid_t key) {
     return h;
   }
   for (arts_route_table_t *t = arts_get_route_table(key); t != NULL;
-       t = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE)) {
+       t = route_table_next(t)) {
     uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
       arts_route_item_t *slot = &t->data[pos];
@@ -757,7 +793,6 @@ void arts_reset_route_table_iterator(arts_route_table_iterator_t *iter,
 
 arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter) {
   arts_route_table_t *current = iter->table;
-  arts_route_table_t *next;
   while (current != NULL) {
     for (uint64_t i = iter->index;
          i < (uint64_t)current->size * COLLISION_RESOLVES; i++) {
@@ -770,8 +805,7 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter) {
       }
     }
     iter->index = 0;
-    next = __atomic_load_n(&current->next, __ATOMIC_ACQUIRE);
-    current = next;
+    current = route_table_next(current);
   }
   return NULL;
 }
@@ -810,7 +844,7 @@ uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
 unsigned int arts_route_table_parked_count(arts_route_table_t *route_table) {
   unsigned int n = 0;
   for (arts_route_table_t *t = route_table; t != NULL;
-       t = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE)) {
+       t = route_table_next(t)) {
     for (uint64_t i = 0; i < (uint64_t)t->size * COLLISION_RESOLVES; i++) {
       arts_lf_link_t *l = atomic_load_explicit(&t->data[i].ooo_list.head,
                                                memory_order_acquire);
@@ -824,16 +858,20 @@ unsigned int arts_route_table_parked_count(arts_route_table_t *route_table) {
 }
 
 void arts_delete_route_table(arts_route_table_t *route_table) {
-  if (!route_table) {
-    return;
+  while (route_table != NULL) {
+    arts_route_table_t *next = route_table_next(route_table);
+    uint64_t slots = (uint64_t)route_table->size * COLLISION_RESOLVES;
+    for (uint64_t i = 0; i < slots; i++) {
+      /* Read before freeing: a write to every slot would populate every page
+       * the run never touched. */
+      if (!arts_lf_stack_empty(&route_table->data[i].ooo_list)) {
+        arts_ooo_free_all(&route_table->data[i]);
+      }
+    }
+    route_table_unmap_slots(route_table->data, slots);
+    arts_free(route_table);
+    route_table = next;
   }
-  arts_delete_route_table(route_table->next);
-  for (uint64_t i = 0; i < (uint64_t)route_table->size * COLLISION_RESOLVES;
-       i++) {
-    arts_ooo_free_all(&route_table->data[i]);
-  }
-  arts_free(route_table->data);
-  arts_free(route_table);
 }
 
 uint64_t arts_clean_up_dbs(bool (*keep)(arts_shared_ptr_t)) {

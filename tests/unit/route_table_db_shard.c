@@ -96,10 +96,10 @@ static void rt_init(void) {
   arts_node_info.route_table =
       (arts_route_table_t **)calloc(NTABLES, sizeof(arts_route_table_t *));
   for (unsigned t = 0; t < NTABLES; t++) {
-    arts_node_info.route_table[t] = arts_new_route_table(256, 4);
+    arts_node_info.route_table[t] = arts_new_route_table(256, 8);
   }
   for (int s = 0; s < ARTS_REMOTE_ROUTE_SHARDS; s++) {
-    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 4);
+    arts_node_info.remote_route_table[s] = arts_new_route_table(64, 6);
   }
 }
 

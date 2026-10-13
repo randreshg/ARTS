@@ -1,30 +1,36 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * route_table_segment_grow — force the lazy segment-chain GROWTH in
- * search_for_empty: band overflow, CAS-loss spare free, and convergence.
+ * search_for_empty: band overflow, concurrent growth, convergence, and the
+ * largest segment.
  *
  * A route_table band is COLLISION_RESOLVES (8) wide.  When >8 DISTINCT GUIDs
  * hash to the same band on the root segment, the 9th claim cannot fit and
- * search_for_empty lazily grows the chain: it builds a 2x / shift+1 spare and
- * CASes it into `->next`; a thread that loses the grow-CAS frees its spare
- * (never published → leak-free) and adopts the winner's segment.
+ * search_for_empty lazily grows the chain: the one thread whose CAS takes
+ * `->next` from NULL to GROWING builds the 2x / shift+1 segment and publishes
+ * it; every other thread at the chain's end waits for that publication.
  *
- * We hand-pick >8 GUIDs that all hash to band base 0 at the root (size=2,
- * shift=10), forcing at least one growth, then:
+ * We hand-pick >8 GUIDs that all hash to band base 0 at the root (size=16,
+ * shift=4), forcing at least one growth, then:
  *
  *   1. Serial: install all colliding keys → the chain grew (root->next != NULL)
  *      and every key has exactly one canonical slot; lookups return the right
  *      objects; no slot aliasing.
  *
- *   2. Concurrent grow race: many threads simultaneously reserve_or_lookup the
- *      same overflowing key-set → all converge on one slot per key, no
- *      lost/duplicate slot, and (ASan) the CAS-loss spare frees leave no leak.
+ *   2. Concurrent grow race: many threads simultaneously search_for_empty the
+ *      same overflowing key-set → all converge on one slot per key, with no
+ *      lost or duplicate slot.
  *
  *   3. Growth always helps: search_for_empty extends the chain whenever
  *      `next == NULL`, so an arbitrarily large colliding set is absorbed and
  *      the impossible-state ARTS_ERROR after its loop is never reached.  We
  *      install far more than one band's worth of colliding keys and assert NO
  *      abort occurs.
+ *
+ *   4. Except past the largest segment: a segment of 2^31 windows cannot be
+ *      doubled in its unsigned count, so a key whose window is full there ends
+ *      the process with an error naming route_table_size, never a segment of
+ *      a wrapped size (checked in a forked child).
  *
  * No runtime: route_table.c + guid.c + shared.c #include'd; OoO drain no-op.
  */
@@ -35,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 unsigned int arts_global_rank_id = 0;
@@ -88,8 +95,8 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
  * INVARIANT (load-bearing): a route_table's `size` MUST equal 2^`shift` —
  * get_route_table_key returns `(hash >> (64-shift)) * COLLISION_RESOLVES`, a
  * band base in [0, 2^shift * 8), and the slot array has exactly size*8 slots.
- * arts_new_route_table(1024,10) in production satisfies 2^10==1024, and the
- * grow path's newFunc(2*size, shift+1) preserves it (2*2^shift == 2^(shift+1)).
+ * arts_new_route_table asserts it of every table it builds, and the grow
+ * path's newFunc(2*size, shift+1) preserves it (2*2^shift == 2^(shift+1)).
  * We pick a SMALL but invariant-respecting root: shift=4 → size=16 (128 slots),
  * so growth is reached quickly while every grown band base stays in range. */
 static arts_route_table_t *g_root;
@@ -148,6 +155,63 @@ static void *grow_worker(void *vp) {
   return NULL;
 }
 
+/* ── growth past the largest segment ───────────────────────────────────── */
+
+/* A child fills one window of a segment that counts 2^31 windows, then claims
+ * one more key there.  The segment probes with shift 1, so its keys reach only
+ * the slots of the two windows mapped for it; only its count is the largest.
+ * Returns NULL when the child ended with an error naming route_table_size and
+ * the segment's count, else what it did instead. */
+static const char *largest_segment_refuses_growth(char *out, size_t cap) {
+  int fds[2];
+  if (pipe(fds) != 0) {
+    return "pipe failed";
+  }
+  pid_t pid = fork();
+  if (pid < 0) {
+    return "fork failed";
+  }
+  if (pid == 0) {
+    close(fds[0]);
+    dup2(fds[1], STDOUT_FILENO);
+    dup2(fds[1], STDERR_FILENO);
+    arts_route_table_t *last = arts_new_route_table(2, 1);
+    last->size = 1u << 31;
+    int claimed = 0;
+    for (uint64_t k = 1; claimed <= COLLISION_RESOLVES; k++) {
+      arts_guid_t g = ARTS_GUID_MAKE(ARTS_GUID_DB, 0, k);
+      if (get_route_table_key((uint64_t)g, last->shift) == 0) {
+        (void)arts_route_table_search_for_empty(last, g, false);
+        claimed++;
+      }
+    }
+    _exit(0);
+  }
+  close(fds[1]);
+  size_t used = 0;
+  ssize_t r;
+  while (used < cap - 1 && (r = read(fds[0], out + used, cap - 1 - used)) > 0) {
+    used += (size_t)r;
+  }
+  out[used] = '\0';
+  close(fds[0]);
+  int status = 0;
+  if (waitpid(pid, &status, 0) != pid) {
+    return "waitpid failed";
+  }
+  if (WIFSIGNALED(status)) {
+    return "the child died on a signal";
+  }
+  if (WEXITSTATUS(status) == 0) {
+    return "the claim past the largest segment succeeded";
+  }
+  if (strstr(out, "route_table_size") == NULL ||
+      strstr(out, "2147483648 windows") == NULL) {
+    return "the child failed without naming route_table_size and the count";
+  }
+  return NULL;
+}
+
 int main(void) {
   int n = collect_colliding_keys();
   if (n < NCOLLIDE) {
@@ -186,8 +250,7 @@ int main(void) {
   }
   arts_delete_route_table(g_root);
 
-  /* ---- 2. Concurrent grow race (spare alloc/CAS-loss-free under ASan). ----
-   */
+  /* ---- 2. Concurrent grow race. ---- */
   g_root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
   pthread_t tids[GROW_THREADS];
   grow_ctx_t ctx[GROW_THREADS];
@@ -237,9 +300,16 @@ int main(void) {
    * serial install above would have aborted (ARTS_ERROR → _exit non-zero).
    * Reaching here shows the chain always extends. */
 
+  /* ---- 4. The largest segment cannot grow, and says so. ---- */
+  char out[4096] = "";
+  const char *why = largest_segment_refuses_growth(out, sizeof(out));
+  if (why != NULL) {
+    FAIL("4: %s; child output:\n%s\n", why, out);
+  }
+
   printf("PASS route_table_segment_grow: forced chain growth absorbed %d "
          "colliding keys, concurrent grow converges, no impossible-state "
-         "abort\n",
+         "abort, growth past the largest segment refused by name\n",
          NCOLLIDE);
   return 0;
 }
