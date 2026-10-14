@@ -39,8 +39,8 @@ int hpx_main(hpx::program_options::variables_map&)
     check(n == 2, "two localities");
     check(localities()[me] == hpx::find_here(), "locality index equals id");
 
-    bool const structural = struct_enabled();
-    check(structural, "struct marker broadcast reached this locality");
+    bool const structural = struct_marker();
+    check(structural, "struct marker reached this locality");
     hpx::distributed::barrier::synchronize();
 
     // A delivery into the OTHER locality's hub, keyed by the receiver's own
@@ -85,10 +85,7 @@ int hpx_main(hpx::program_options::variables_map&)
     hpx::distributed::barrier::synchronize();          // the completion edge
     print_geometry();
     if (structural)
-    {
-        print_struct({{"tasks", 1}, {"edges", 1}});
         print_parcels();
-    }
     hub<std::uint64_t>::drain_and_report();
     if (me == 0)
         std::printf("SMOKE %s\n", failures == 0 ? "PASS" : "FAIL");

@@ -58,7 +58,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * the same DB while all also race into arts_shutdown). */
   void *ctr_ptr = NULL;
   arts_guid_t ctr_db = arts_db_create(&ctr_ptr, sizeof(_Atomic unsigned int),
-                                      ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
+                                      ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   atomic_init((_Atomic unsigned int *)ctr_ptr, 0u);
   arts_db_release(ctr_db, DB_MODE_RW);
 

@@ -278,7 +278,7 @@ void arts_install_signal_watcher_thread(void) {
                      NULL) != 0) {
     ARTS_WARN("signal watcher: pthread_create failed; "
               "falling back to sigaction handlers");
-    /* Unblock so the legacy sigaction handler can still fire. */
+    /* Unblock so the sigaction handler can still fire. */
     pthread_sigmask(SIG_UNBLOCK, &block_set, NULL);
     atomic_store(&arts_signal_watcher_started, false);
   }

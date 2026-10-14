@@ -39,7 +39,7 @@ static void check_release(uint32_t pc, const uint64_t *pv, uint32_t dc,
 
 static arts_guid_t make_block(uint64_t value) {
   uint64_t *p;
-  arts_guid_t db = arts_db_create((void **)&p, sizeof(*p), ARTS_DB_DEFAULT,
+  arts_guid_t db = arts_db_create((void **)&p, sizeof(*p), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   *p = value;
   arts_db_release(db, DB_MODE_RW);
@@ -56,7 +56,7 @@ void main_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
     for (unsigned int rank = 0; rank < arts_get_total_ranks(); ++rank) {
       arts_guid_t data = make_block(42);
       arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-      arts_guid_t source = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+      arts_guid_t source = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
       uint64_t args[] = {(uint64_t)data};
       arts_guid_t sink = arts_edt_create(
           check_control, 1, args, 2,

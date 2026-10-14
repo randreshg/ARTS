@@ -109,26 +109,33 @@ check_c_source_compiles("
                                        0, __ATOMIC_SEQ_CST,
                                        __ATOMIC_SEQ_CST);
   }
-" ARTS_HAVE_DWCAS)
+" ARTS_DWCAS_LINKS)
 set(CMAKE_REQUIRED_FLAGS "${_arts_saved_required_flags}")
 set(CMAKE_REQUIRED_LIBRARIES "${_arts_saved_required_libs}")
 unset(_arts_saved_required_flags)
 unset(_arts_saved_required_libs)
-if(NOT ARTS_HAVE_DWCAS)
+if(NOT ARTS_DWCAS_LINKS)
     message(FATAL_ERROR
         "ARTS requires a LOCK-FREE 128-bit CAS (cmpxchg16b on x86-64, casp on "
         "ARMv8.1+).  Build with -mcx16 (AMD64) or -march=armv8.1-a / +lse / "
         "-moutline-atomics (ARM64).")
 endif()
-add_compile_definitions(ARTS_HAVE_DWCAS)
 # Make libatomic available to all targets that may emit 16-byte atomic
-# libcalls (lockfree_pool.h users).
+# libcalls (lockfree_pool.h users).  The keyword-less form is transitive, so
+# it is also in the link interface of every library target, exported or not.
 if(ARTS_ATOMIC_LINK)
     link_libraries(${ARTS_ATOMIC_LINK})
 endif()
 
 # Set global properties for all targets
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# A program that runs on ARTS is built non-PIE: every rank execs the same
+# binary and an EDT's function pointer crosses ranks as an address, which
+# names the same function on every rank only when each loads the program at
+# the same address.  The tree's own programs take these options, and the
+# installed library targets hand them to every consumer.
+set(ARTS_NON_PIE_COMPILE_OPTIONS -fno-pie -fno-PIE)
+set(ARTS_NON_PIE_LINK_OPTIONS -no-pie -fno-pie -fno-PIE)
 
 # Set default install prefix if not specified
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
@@ -167,17 +174,6 @@ include(CMakeDependentOption)
 option(ARTS_BUILD_SHARED "Build the shared library (libarts.so)" ON)
 
 # ── Optional components ────────────────────────────────────────────────────
-# examples/ predates the current public API and no longer builds against it.
-# The option stays visible for discoverability, but enabling it is a
-# configure error until the examples are modernized — use tests/ocr/ and
-# benchmarks/ as working usage references in the meantime.
-option(ARTS_BUILD_EXAMPLES   "Build example programs (DEPRECATED: forced OFF pending modernization)" OFF)
-if(ARTS_BUILD_EXAMPLES)
-    message(FATAL_ERROR
-        "ARTS_BUILD_EXAMPLES cannot be enabled: examples/ predates the current "
-        "public API and does not build. The sources are kept for reference "
-        "until modernized; see tests/ocr/ and benchmarks/ for working usage.")
-endif()
 # OFF by default: tests link the static archive (hermetic — see
 # tests/CMakeLists.txt), so a full test tree costs real disk and link time
 # that a benchmark/experiment build never uses.  Validation builds opt in.
@@ -192,15 +188,10 @@ if(ARTS_BUILD_BENCHMARKS AND NOT ARTS_BUILD_SHIM)
         "ARTS_BUILD_BENCHMARKS=ON requires ARTS_BUILD_SHIM=ON: every ARTS "
         "variant of a benchmark app links the OCR shim.")
 endif()
-# The native (non-OCR) OpenMP/MPI implementations predate the current
-# experiment driver and sit outside its catalog/consensus surface; they are
-# an explicit opt-in so the default build carries no extra link surface.
-option(ARTS_BUILD_BASELINES  "Build native OpenMP/MPI baseline implementations" OFF)
 # The reference runtimes are individually optional under ARTS_BUILD_BENCHMARKS.
 option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime" ON)
 option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime" ON)
 option(ARTS_BUILD_HPX        "Build HPX and the HPX benchmark apps" ON)
-option(ARTS_OFI_CXI          "Compile the libfabric cxi provider (HPE Slingshot) from the vendored Cassini/libcxi stack" ON)
 option(ARTS_BUILD_DOCS       "Build documentation (requires Doxygen + Sphinx)" OFF)
 
 # ── GPU / CUDA ─────────────────────────────────────────────────────────────
@@ -214,19 +205,14 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
     "Auto-detect CUDA architectures from local GPUs using nvidia-smi" ON
     "ARTS_USE_GPU" OFF)
 
-# ── Memory model × coherence protocol × data placement ─────────────────────
+# ── Coherence protocol × write policy × release policy ─────────────────────
 # Compile-time switches — one binary is exactly one configuration; all ranks in
-# a multinode run must use the same build.
-#   ARTS_MEMORY_MODEL        Derived from the protocol, never chosen on its own:
-#                            every coherence protocol requires a memory model
-#                            of the program.  VAL/INV/EXCL require OCR (the
-#                            OCR v1.2.0 §1.6 model: races legal, the runtime
-#                            orders every conflict it must).  FLUSH requires
-#                            DB-WRF (exclusive write acquisition: at most one
-#                            write-mode acquisition of a DataBlock is live at
-#                            any time, and the program guarantees it by
-#                            happens-before; read acquisitions are free).
-#                            Passing the option asserts the expectation.
+# a multinode run must use the same build.  Every coherence protocol requires
+# a memory model of the program: VAL/INV/EXCL require OCR (the OCR v1.2.0 §1.6
+# model: races legal, the runtime orders every conflict it must); FLUSH
+# requires DB-WRF (exclusive write acquisition: at most one write-mode
+# acquisition of a DataBlock is live at any time, and the program guarantees
+# it by happens-before; read acquisitions are free).
 #   ARTS_COHERENCE_PROTOCOL  Coherence family — who keeps reader copies valid:
 #                            INV (default) — invalidation: reader copies stay
 #                            valid until a writer's release retires every
@@ -258,27 +244,24 @@ cmake_dependent_option(ARTS_USE_LOCAL_CUDA_ARCHITECTURES
 #                            nothing); RETAIN = the home, on demand, and an
 #                            unasked holder keeps the grant. Live in EXCL and
 #                            in WT × {VAL, INV}.
-# The axes are nominally independent: 12 combinations, 8 built under OCR, plus
-# the ninth build DB_WRF × FLUSH (no write/release policy axis). Everything
-# else is a configure error naming the reason:
-#   OCR    × VAL  × {WT, WB} × RETAIN
-#   OCR    × VAL  × WT × PURGE
-#   OCR    × INV  × {WT, WB} × RETAIN
-#   OCR    × INV  × WT × PURGE
-#   OCR    × EXCL × WB × {PURGE, RETAIN}
-#   DB_WRF × FLUSH (no write/release policy axis)
+# The OCR-model protocols' axes are nominally independent: 12 combinations, 8
+# built, plus the ninth build FLUSH (no write/release policy axis).
+# Everything else is a configure error naming the reason:
+#   VAL  × {WT, WB} × RETAIN
+#   VAL  × WT × PURGE
+#   INV  × {WT, WB} × RETAIN
+#   INV  × WT × PURGE
+#   EXCL × WB × {PURGE, RETAIN}
+#   FLUSH (no write/release policy axis)
 # Not built: EXCL×WT (the payload rides the permission, so the release policy
 # already decides both), INV/VAL×WB×PURGE (a voluntary return hands back only
 # the permission while the bytes stay at the ex-owner, so the home still
 # cannot serve alone — and shipping them home too is write-through).
-# The build's default cell (the memory model follows from the protocol); the
-# test suite's reference tree is the tree of this cell.
+# The build's default cell; the test suite's reference tree is the tree of
+# this cell.
 set(_ARTS_DEFAULT_COHERENCE_PROTOCOL "INV")
 set(_ARTS_DEFAULT_WRITE_POLICY "WB")
 set(_ARTS_DEFAULT_RELEASE_POLICY "RETAIN")
-set(ARTS_MEMORY_MODEL "" CACHE STRING
-    "Memory model the build implements — DERIVED from ARTS_COHERENCE_PROTOCOL (OCR for VAL/INV/EXCL, DB-WRF for FLUSH); set it only to assert the expected value")
-set_property(CACHE ARTS_MEMORY_MODEL PROPERTY STRINGS "" OCR DB_WRF)
 set(ARTS_COHERENCE_PROTOCOL "${_ARTS_DEFAULT_COHERENCE_PROTOCOL}" CACHE STRING
     "Coherence protocol: INV (default; release-time invalidation rounds), VAL (acquire-time version validation), EXCL (per-DB distributed reader-writer lock) — the three OCR-model protocols — or FLUSH (fetch at acquire, flush at release; requires the DB-WRF model: the program keeps every DB's write acquisitions exclusive)")
 set_property(CACHE ARTS_COHERENCE_PROTOCOL PROPERTY STRINGS INV VAL EXCL FLUSH)
@@ -304,7 +287,7 @@ set(ARTS_CXL_RESIDENCY "" CACHE STRING
     "Where an EDT's working bytes live under ARTS_USE_CXL=ON: STAGED (a rank-local copy at the two ownership edges) or DIRECT (the CXL slot itself)")
 set_property(CACHE ARTS_CXL_RESIDENCY PROPERTY STRINGS "" STAGED DIRECT)
 option(ARTS_CXL_REAL
-    "Link the device library named by ARTS_CXL_LIB and ARTS_CXL_RAPID_INCLUDE_DIR instead of the vendored fake"
+    "Link the device library named by ARTS_CXL_RAPID_INCLUDE_DIR, ARTS_CXL_RAPID_LIB_DIR, ARTS_CXL_LIB_INCLUDE_DIR and ARTS_CXL_LIB instead of the vendored fake"
     OFF)
 set(ARTS_CXL_RAPID_INCLUDE_DIR "" CACHE PATH
     "ARTS_CXL_REAL=ON: the directory holding the Rapid SDK headers (MemOps.h, SharedAlloc.h)")
@@ -319,41 +302,6 @@ set(ARTS_CXL_DB_ARENA_SIZE_BYTES "5000000000" CACHE STRING
 if(NOT ARTS_CXL_DB_ARENA_SIZE_BYTES MATCHES "^[1-9][0-9]*$")
     message(FATAL_ERROR "ARTS_CXL_DB_ARENA_SIZE_BYTES must be a positive integer, got '${ARTS_CXL_DB_ARENA_SIZE_BYTES}'")
 endif()
-# The only storage kind a build can default to: every other kind is a
-# per-block choice, and the store is the protocol's, not the kind's.
-add_compile_definitions(ARTS_DB_DEFAULT=ARTS_DB)
-
-# Retired spellings.  A value that means "off" -- what every earlier cache
-# carries -- is dropped from the cache silently; any other value is an error
-# naming what replaced it, so a script from the earlier design cannot
-# configure something else.
-foreach(_gone ARTS_FAM_BACKEND ARTS_FAM_RESIDENCY ARTS_FAM_DEVICE_INCLUDE_DIR
-              ARTS_FAM_DEVICE_LIBRARY ARTS_FAM_DEVICE_VENDORED ARTS_FAM_BASE
-              ARTS_USE_FAKE_CXL_LIB ARTS_CXL_LIB_DIR ARTS_CXL_RAPID_LIB)
-    if(DEFINED ${_gone})
-        if(NOT "${${_gone}}" STREQUAL "" AND NOT "${${_gone}}" STREQUAL "OFF"
-           AND NOT "${${_gone}}" STREQUAL "0" AND NOT "${${_gone}}" STREQUAL "FALSE")
-            message(FATAL_ERROR
-                "${_gone} no longer exists: fabric-attached memory is the CXL store "
-                "(-DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=STAGED|DIRECT; the vendored "
-                "fake library is the default, -DARTS_CXL_REAL=ON with "
-                "-DARTS_CXL_LIB=<libarts_cxl_lib.so> and -DARTS_CXL_RAPID_INCLUDE_DIR=<dir> "
-                "links the device library) — clear the cached value with -U${_gone}, "
-                "or pass -D${_gone}=OFF")
-        endif()
-        unset(${_gone} CACHE)
-    endif()
-endforeach()
-if(DEFINED ARTS_DEFAULT_DB_KIND)
-    if(NOT "${ARTS_DEFAULT_DB_KIND}" STREQUAL "" AND NOT "${ARTS_DEFAULT_DB_KIND}" STREQUAL "ARTS_DB")
-        message(FATAL_ERROR
-            "ARTS_DEFAULT_DB_KIND no longer exists: ARTS_DB is the only global default; "
-            "the CXL store is selected per build by ARTS_USE_CXL, not by a kind — "
-            "clear the cached value with -UARTS_DEFAULT_DB_KIND, or pass "
-            "-DARTS_DEFAULT_DB_KIND=OFF")
-    endif()
-    unset(ARTS_DEFAULT_DB_KIND CACHE)
-endif()
 
 # ── No-hint placement policies (runtime-wide) ───────────────────────────────
 # Select what the runtime does when the caller expresses no placement
@@ -366,6 +314,10 @@ set(ARTS_NOHINT_EDT_PLACEMENT "ROUNDROBIN" CACHE STRING
     "No-hint EDT placement policy (NULL hint or rank == ARTS_HINT_ANY_RANK): \
 ROUNDROBIN (default) or CREATOR")
 set_property(CACHE ARTS_NOHINT_EDT_PLACEMENT PROPERTY STRINGS ROUNDROBIN CREATOR)
+if(NOT ARTS_NOHINT_EDT_PLACEMENT MATCHES "^(ROUNDROBIN|CREATOR)$")
+  message(FATAL_ERROR
+          "ARTS_NOHINT_EDT_PLACEMENT must be ROUNDROBIN or CREATOR, got: ${ARTS_NOHINT_EDT_PLACEMENT}")
+endif()
 if(ARTS_NOHINT_EDT_PLACEMENT STREQUAL "CREATOR")
   set(_ARTS_NOHINT_EDT_RR 0)
 else()
@@ -377,33 +329,14 @@ set(ARTS_NOHINT_DB_HOME "CREATOR" CACHE STRING
 GUID always wins): CREATOR (default; first-touch — home stays on the \
 creating rank) or ROUNDROBIN (distribute homes across ranks)")
 set_property(CACHE ARTS_NOHINT_DB_HOME PROPERTY STRINGS CREATOR ROUNDROBIN)
+if(NOT ARTS_NOHINT_DB_HOME MATCHES "^(CREATOR|ROUNDROBIN)$")
+  message(FATAL_ERROR
+          "ARTS_NOHINT_DB_HOME must be CREATOR or ROUNDROBIN, got: ${ARTS_NOHINT_DB_HOME}")
+endif()
 if(ARTS_NOHINT_DB_HOME STREQUAL "ROUNDROBIN")
   set(_ARTS_NOHINT_DB_RR 1)
 else()
   set(_ARTS_NOHINT_DB_RR 0)
-endif()
-
-# ── OCR shim (benchmarks) ───────────────────────────────────────────────────
-set(ARTS_SHIM_NOHINT_DB_HOME "CREATOR" CACHE STRING
-    "No-hint DB home policy for the OCR shim's ocrDbCreate (no OCR affinity \
-hint given): CREATOR (default; first-touch — defers to arts_db_create's own \
-no-hint policy) or ROUNDROBIN (explicit round-robin home distribution)")
-set_property(CACHE ARTS_SHIM_NOHINT_DB_HOME PROPERTY STRINGS CREATOR ROUNDROBIN)
-if(ARTS_SHIM_NOHINT_DB_HOME STREQUAL "ROUNDROBIN")
-  set(_ARTS_SHIM_NOHINT_RR 1)
-else()
-  set(_ARTS_SHIM_NOHINT_RR 0)
-endif()
-
-set(ARTS_SHIM_NOHINT_EDT_PLACE "ROUNDROBIN" CACHE STRING
-    "No-hint EDT placement policy for the OCR shim's ocrEdtCreate (no OCR \
-affinity hint given): ROUNDROBIN (default, defers to ARTS_NOHINT_EDT_PLACEMENT) \
-or CREATOR (pin to the calling rank)")
-set_property(CACHE ARTS_SHIM_NOHINT_EDT_PLACE PROPERTY STRINGS ROUNDROBIN CREATOR)
-if(ARTS_SHIM_NOHINT_EDT_PLACE STREQUAL "CREATOR")
-  set(_ARTS_SHIM_NOHINT_EDT_RR 0)
-else()
-  set(_ARTS_SHIM_NOHINT_EDT_RR 1)
 endif()
 
 # ── Diagnostics ────────────────────────────────────────────────────────────
@@ -429,23 +362,6 @@ endif()
 # ARTS_LOG_LEVEL and checks its assertions (NDEBUG unset); every facility that
 # adds cost or changes what a run does is an option of its own, OFF by default,
 # refused in a Release build, and free to combine with every other one.
-if(ARTS_USE_SANS OR ARTS_USE_TSAN)
-    message(FATAL_ERROR
-        "ARTS_USE_SANS and ARTS_USE_TSAN are gone: pass "
-        "-DARTS_DEBUG_SANITIZER=ADDRESS (ASan + UBSan + LSan) or "
-        "-DARTS_DEBUG_SANITIZER=THREAD (TSan + UBSan) to a Debug build, and "
-        "clear the cached values with -UARTS_USE_SANS -UARTS_USE_TSAN")
-endif()
-unset(ARTS_USE_SANS CACHE)
-unset(ARTS_USE_TSAN CACHE)
-if(ARTS_SEQUENCE_NUMBERS)
-    message(FATAL_ERROR
-        "ARTS_SEQUENCE_NUMBERS is gone: nothing on the fabric transport stamps "
-        "a per-sender sequence number, and with several progress threads one "
-        "sender's messages are dispatched out of wire order by design -- "
-        "clear the cached value with -UARTS_SEQUENCE_NUMBERS")
-endif()
-unset(ARTS_SEQUENCE_NUMBERS CACHE)
 
 # One choice, because the compiler cannot combine AddressSanitizer with
 # ThreadSanitizer in one binary.  C and C++ only: ASan's shadow memory
@@ -500,79 +416,28 @@ endforeach()
 
 # ── Build tooling ──────────────────────────────────────────────────────────
 # (To pick a faster linker, use CMake's own -DCMAKE_LINKER_TYPE=MOLD/LLD/GOLD
-#  (cmake >= 3.29) or -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold — no ARTS option.)
+#  (cmake >= 3.29) or -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold.)
 # A fresh tree measures with every counter compiled out; a counter set is opted
 # into per campaign (artsrun -c), never inherited from the tree's default.
 set(ARTS_COUNTER_CONFIG
     "${CMAKE_CURRENT_SOURCE_DIR}/configs/counters_off.cfg"
     CACHE FILEPATH "ARTS counter configuration file (parsed to generate introspection macros)")
 
-# ── Memory-model × family × second-axes validation + arm derivation ───────
+# ── Protocol × second-axes validation + arm derivation ─────────────────────
 # The user-facing axes reduce to one protocol ARM — the TU family that gets
 # compiled and the ARTS_PROTOCOL_* macro it defines:
-#   (OCR,    VAL,  WT/WB)  -> arm VAL      (coherence/val/,     ARTS_PROTOCOL_VAL)
-#   (OCR,    INV,  WT/WB)  -> arm INV      (coherence/inv/,     ARTS_PROTOCOL_INV)
-#   (OCR,    EXCL, P/R)    -> arm EXCL     (coherence/excl/,    ARTS_PROTOCOL_EXCL)
-#   (DB_WRF, FLUSH)        -> arm FLUSH    (coherence/flush/,   ARTS_PROTOCOL_FLUSH)
+#   (VAL,  WT/WB)  -> arm VAL      (coherence/val/,     ARTS_PROTOCOL_VAL)
+#   (INV,  WT/WB)  -> arm INV      (coherence/inv/,     ARTS_PROTOCOL_INV)
+#   (EXCL, P/R)    -> arm EXCL     (coherence/excl/,    ARTS_PROTOCOL_EXCL)
+#   (FLUSH)        -> arm FLUSH    (coherence/flush/,   ARTS_PROTOCOL_FLUSH)
 # ARTS_COHERENCE_ARM is internal — downstream CMake (TU selection, tests)
 # branches on the arm, never on the raw axes.
-# Migration guards: pre-rename axis values.
-if(ARTS_COHERENCE_PROTOCOL STREQUAL "MRNEW" OR ARTS_COHERENCE_PROTOCOL STREQUAL "MRMW" OR
-   ARTS_COHERENCE_PROTOCOL STREQUAL "MRSW" OR ARTS_COHERENCE_PROTOCOL STREQUAL "LOCK" OR
-   ARTS_COHERENCE_PROTOCOL STREQUAL "RCU" OR ARTS_COHERENCE_PROTOCOL STREQUAL "RWLOCK" OR
-   ARTS_COHERENCE_PROTOCOL STREQUAL "MSI")
-  message(FATAL_ERROR
-          "ARTS_COHERENCE_PROTOCOL=${ARTS_COHERENCE_PROTOCOL} was renamed "
-          "(2026-07-31 terminology pass). Use the family names: "
-          "RCU -> VAL, MSI -> INV, RWLOCK -> EXCL. "
-          "(Older single-axis values: MRNEW -> VAL, LOCK -> EXCL, "
-          "MRMW -> ARTS_COHERENCE_PROTOCOL=FLUSH, which derives the DB_WRF "
-          "model on its own. MRSW was retired, archive/coherence-mrsw/.)")
-endif()
-if(DEFINED ARTS_DATA_PLACEMENT)
-  message(FATAL_ERROR
-          "ARTS_DATA_PLACEMENT was split (2026-07-31 terminology pass) into "
-          "ARTS_WRITE_POLICY=WT|WB (live in INV/VAL; old HOME -> WT, "
-          "OWNER -> WB) and ARTS_RELEASE_POLICY=PURGE|RETAIN (live in EXCL; "
-          "old HOME -> PURGE, OWNER -> RETAIN); clear the cached value with "
-          "-UARTS_DATA_PLACEMENT.")
-endif()
-if(NOT ARTS_MEMORY_MODEL STREQUAL "" AND
-   NOT ARTS_MEMORY_MODEL STREQUAL "OCR" AND
-   NOT ARTS_MEMORY_MODEL STREQUAL "DB_WRF")
-  message(FATAL_ERROR
-          "ARTS_MEMORY_MODEL must be OCR or DB_WRF, or left unset to derive "
-          "from ARTS_COHERENCE_PROTOCOL, got: ${ARTS_MEMORY_MODEL}")
-endif()
 if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "VAL" AND
    NOT ARTS_COHERENCE_PROTOCOL STREQUAL "INV" AND
    NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" AND
    NOT ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
   message(FATAL_ERROR
           "ARTS_COHERENCE_PROTOCOL must be VAL, INV, EXCL or FLUSH, got: ${ARTS_COHERENCE_PROTOCOL}")
-endif()
-# ARTS_MEMORY_MODEL is derived from the protocol, not chosen on its own:
-# passing it explicitly only asserts the value the protocol already implies.
-if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
-  set(_arts_model_required "DB_WRF")
-else()
-  set(_arts_model_required "OCR")
-endif()
-if(ARTS_MEMORY_MODEL STREQUAL "")
-  set(ARTS_MEMORY_MODEL "${_arts_model_required}")
-elseif(NOT ARTS_MEMORY_MODEL STREQUAL "${_arts_model_required}")
-  if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
-    message(FATAL_ERROR
-            "FLUSH is correct only for programs whose write acquisitions are "
-            "exclusive (the DB_WRF memory model); ARTS_MEMORY_MODEL=${ARTS_MEMORY_MODEL} "
-            "does not describe it. Leave the option unset or pass DB_WRF.")
-  else()
-    message(FATAL_ERROR
-            "DB_WRF has exactly one protocol, FLUSH: ${ARTS_COHERENCE_PROTOCOL} "
-            "orders writers at runtime, which DB_WRF already asks of the program "
-            "(its VAL arm was retired to archive/coherence-wrf-val/). "
-            "Use -DARTS_COHERENCE_PROTOCOL=FLUSH, or drop ARTS_MEMORY_MODEL.")
-  endif()
 endif()
 if(NOT ARTS_WRITE_POLICY STREQUAL "WT" AND NOT ARTS_WRITE_POLICY STREQUAL "WB")
   message(FATAL_ERROR
@@ -610,7 +475,7 @@ if(ARTS_COHERENCE_PROTOCOL STREQUAL "FLUSH")
             "leave ARTS_WRITE_POLICY and ARTS_RELEASE_POLICY at their defaults.")
   endif()
   set(ARTS_COHERENCE_ARM "FLUSH")
-  message(STATUS "ARTS: model DB_WRF, protocol FLUSH")
+  message(STATUS "ARTS: model DB-WRF, protocol FLUSH")
 elseif(ARTS_COHERENCE_PROTOCOL STREQUAL "INV")
   # INV (invalidation): readers are never blocked, tracked only as a
   # node-granular copy roster, and every RW release retires every valid copy
@@ -871,11 +736,9 @@ find_package(Threads REQUIRED)
 if(NOT APPLE)
     find_library(RT_LIBRARY rt REQUIRED)
     find_library(M_LIBRARY m REQUIRED)
-    find_library(ANL_LIBRARY anl REQUIRED)
 else()
     set(RT_LIBRARY "")
     set(M_LIBRARY "")
-    set(ANL_LIBRARY "")
 endif()
 
 # Add third-party dependencies
@@ -904,10 +767,6 @@ set(COUNTER_CONFIG_FILE "${ARTS_COUNTER_CONFIG}")
 add_subdirectory(libs)
 
 # Optional components
-if(ARTS_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-endif()
-
 if(ARTS_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
@@ -1088,7 +947,6 @@ message(STATUS "  Static library:  libarts.a (standard)")
 if(BUILD_CUDA_LIBRARY)
     message(STATUS "                   libarts_cuda.a (CUDA-enabled)")
 endif()
-message(STATUS "  Examples:        ${ARTS_BUILD_EXAMPLES}")
 message(STATUS "  Tests:           ${ARTS_BUILD_TESTS}")
 message(STATUS "  Benchmarks:      ${ARTS_BUILD_BENCHMARKS}")
 message(STATUS "  OCR shim:        ${ARTS_BUILD_SHIM}")
@@ -1111,7 +969,6 @@ if(ARTS_BUILD_BENCHMARKS)
     endif()
     unset(_arts_ref_runtimes)
 endif()
-message(STATUS "  Baselines:       ${ARTS_BUILD_BASELINES}")
 message(STATUS "  XSOCR:           ${ARTS_BUILD_XSOCR}")
 message(STATUS "  OCRVX:           ${ARTS_BUILD_OCRVX}")
 message(STATUS "  HPX:             ${ARTS_BUILD_HPX}")

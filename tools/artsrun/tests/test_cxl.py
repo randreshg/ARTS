@@ -40,8 +40,9 @@ def profile(**kw) -> Profile:
     return Profile(**base)
 
 
-REAL = dict(cxl_include_dir="/dev/inc", cxl_library="/dev/libarts_cxl_lib.so",
-            cxl_launch_wrapper=WRAPPER)
+REAL = dict(cxl_include_dir="/dev/inc", cxl_rapid_lib_dir="/dev/lib",
+            cxl_lib_include_dir="/dev/glue/inc",
+            cxl_library="/dev/libarts_cxl_lib.so", cxl_launch_wrapper=WRAPPER)
 
 
 def cxl_cell(nodes=2, cxl=CxlLibrary.REAL, key="arts_excl_purge_cxl_staged",
@@ -60,21 +61,23 @@ def cache(tree, **values):
 
 
 REAL_CACHE = dict(ARTS_CXL_REAL="ON", ARTS_CXL_RAPID_INCLUDE_DIR="/dev/inc",
+                  ARTS_CXL_RAPID_LIB_DIR="/dev/lib",
+                  ARTS_CXL_LIB_INCLUDE_DIR="/dev/glue/inc",
                   ARTS_CXL_LIB="/dev/libarts_cxl_lib.so")
 
 
 # -- the profile ---------------------------------------------------------------
 
-def test_no_paths_is_fake_and_all_three_is_real():
+def test_no_paths_is_fake_and_all_of_them_is_real():
     assert profile().cxl_library_kind is CxlLibrary.FAKE
     assert profile(**REAL).cxl_library_kind is CxlLibrary.REAL
 
 
-@pytest.mark.parametrize("drop", ["cxl_include_dir", "cxl_library", "cxl_launch_wrapper"])
-def test_real_needs_all_three_paths(drop):
-    two = {k: v for k, v in REAL.items() if k != drop}
+@pytest.mark.parametrize("drop", list(REAL))
+def test_real_needs_every_path(drop):
+    rest = {k: v for k, v in REAL.items() if k != drop}
     with pytest.raises(ValueError, match=drop):
-        profile(**two)
+        profile(**rest)
 
 
 def test_paths_must_be_absolute():
@@ -108,6 +111,8 @@ def test_shipped_profiles_name_their_library():
     crete = store.load_profile("crete")
     assert crete.cxl_library_kind is CxlLibrary.REAL
     assert crete.cxl_include_dir == "/PATH/TO/device-sdk/include"
+    assert crete.cxl_rapid_lib_dir == "/PATH/TO/device-sdk/lib"
+    assert crete.cxl_lib_include_dir == "/PATH/TO/glue/include"
     assert crete.cxl_library == "/PATH/TO/glue/libarts_cxl_lib.so"
     assert crete.cxl_launch_wrapper == "/PATH/TO/site/run.py"
     for name in store.list_profiles():
@@ -119,7 +124,7 @@ def _check(prof, entries=CXL):
     """A campaign of these entries against this profile."""
     from artsrun.model.catalog import load_catalog
 
-    Selection(profile="t", experiment="b", entries=entries,
+    Selection(profile="t", experiment="b", default_entries=[], entries=entries,
               apps={"nqueens": ["base"]}, node_counts=[1]).validate_against(
         load_plane(), load_catalog(), prof)
 
@@ -133,41 +138,47 @@ def test_a_campaign_entry_list_is_checked_against_the_profile():
     _check(profile(launcher="slurm", nodes=[1, 2], **REAL))
 
 
-def test_selections_saved_in_the_old_campaign_mode_are_refused():
-    base = {"profile": "t", "experiment": "b", "entries": CXL,
-            "apps": {"nqueens": ["base"]}, "node_counts": [1]}
-    for old in ({"cxl": True}, {"cxl_rapid_include_dir": "/x"},
-                {"cxl_lib_dir": "/x"}):
-        with pytest.raises(ValueError, match="the profile names it now"):
-            Selection.model_validate(base | old)
+def test_a_selection_key_no_field_takes_is_refused():
+    base = {"profile": "t", "experiment": "b", "default_entries": [],
+            "entries": CXL, "apps": {"nqueens": ["base"]}, "node_counts": [1]}
+    assert Selection.model_validate(base).entries == CXL
     with pytest.raises(ValueError, match="cxl_device"):
         Selection.model_validate(base | {"cxl_device": "/x"})
-    assert Selection.model_validate(base | {"cxl": False}).entries == CXL
 
 
 # -- the tree follows the profile ----------------------------------------------
 
 def test_the_options_are_exactly_the_profile_library():
+    # Switching a tree back to the fake clears every device path, so no
+    # stale one is left for a later configure to read.
     assert cxl_options(profile()) == [
-        "-DARTS_CXL_REAL=OFF", "-DARTS_CXL_RAPID_INCLUDE_DIR=", "-DARTS_CXL_LIB="]
+        "-DARTS_CXL_REAL=OFF", "-DARTS_CXL_RAPID_INCLUDE_DIR=",
+        "-DARTS_CXL_RAPID_LIB_DIR=", "-DARTS_CXL_LIB_INCLUDE_DIR=",
+        "-DARTS_CXL_LIB="]
     assert cxl_options(profile(**REAL)) == [
         "-DARTS_CXL_REAL=ON", "-DARTS_CXL_RAPID_INCLUDE_DIR=/dev/inc",
+        "-DARTS_CXL_RAPID_LIB_DIR=/dev/lib",
+        "-DARTS_CXL_LIB_INCLUDE_DIR=/dev/glue/inc",
         "-DARTS_CXL_LIB=/dev/libarts_cxl_lib.so"]
 
 
 def test_the_decision_reads_the_tree_against_the_profile(tmp_path):
     (tmp_path / "CMakeCache.txt").write_text(
         "ARTS_CXL_REAL:BOOL=ON\nARTS_CXL_RAPID_INCLUDE_DIR:PATH=/old/inc\n"
+        "ARTS_CXL_RAPID_LIB_DIR:PATH=/dev/lib\n"
+        "ARTS_CXL_LIB_INCLUDE_DIR:PATH=/dev/glue/inc\n"
         "ARTS_CXL_LIB:FILEPATH=/dev/libarts_cxl_lib.so\n")
     assert cxl_mismatch(tmp_path, profile(**REAL)) == [
         "ARTS_CXL_RAPID_INCLUDE_DIR: have /old/inc, want /dev/inc"]
     assert cxl_mismatch(tmp_path, profile()) == [
         "ARTS_CXL_REAL: have ON, want OFF",
         "ARTS_CXL_RAPID_INCLUDE_DIR: have /old/inc, want (unset)",
+        "ARTS_CXL_RAPID_LIB_DIR: have /dev/lib, want (unset)",
+        "ARTS_CXL_LIB_INCLUDE_DIR: have /dev/glue/inc, want (unset)",
         "ARTS_CXL_LIB: have /dev/libarts_cxl_lib.so, want (unset)"]
     (tmp_path / "CMakeCache.txt").write_text("ARTS_CXL_REAL:BOOL=OFF\n")
     assert cxl_mismatch(tmp_path, profile()) == []
-    (tmp_path / "CMakeCache.txt").write_text("")    # a tree that predates the option
+    (tmp_path / "CMakeCache.txt").write_text("")    # an empty cache reads as the fake
     assert cxl_mismatch(tmp_path, profile()) == []
     assert cxl_mismatch(tmp_path, profile(**REAL))[0] == \
         "ARTS_CXL_REAL: have OFF, want ON"
@@ -201,7 +212,8 @@ def test_a_mismatched_tree_is_reconfigured_and_says_how(tmp_path, monkeypatch):
     said = []
     configure_cxl(tmp_path, profile(**REAL), on_line=said.append, prefix=["srun"])
     assert calls[0][:2] == ["srun", "cmake"]
-    assert calls[0][-3:] == cxl_options(profile(**REAL))
+    want = cxl_options(profile(**REAL))
+    assert calls[0][-len(want):] == want
     assert any("cxl: real — reconfiguring" in line for line in said)
     assert any("$ srun cmake -S" in line for line in said)
 
@@ -230,7 +242,8 @@ def _campaign(tmp_path, prof):
     from artsrun.model.catalog import load_catalog
     from artsrun.model.experiment import Experiment
 
-    sel = Selection(profile="t", experiment="b", entries=["arts_excl_purge", *CXL],
+    sel = Selection(profile="t", experiment="b", default_entries=[],
+                    entries=["arts_excl_purge", *CXL],
                     apps={"nqueens": ["base"]}, node_counts=[1])
     return Campaign(selection=sel, plane=load_plane(), catalog=load_catalog(),
                     experiment=Experiment(entries=["arts_excl_purge"], name="b", apps={}),
@@ -256,7 +269,7 @@ def test_a_real_run_reconfigures(tmp_path, monkeypatch):
     cache(tmp_path, ARTS_CXL_REAL="ON")
     calls = _fake_cmake(monkeypatch, tmp_path, then={"ARTS_CXL_REAL": "OFF"})
     _campaign(tmp_path, profile())._match_cxl(None, [], dry=False)
-    assert calls and calls[0][-3:] == cxl_options(profile())
+    assert calls and calls[0][-5:] == cxl_options(profile())
 
 
 def test_a_real_run_refuses_a_missing_wrapper(tmp_path, monkeypatch):
@@ -314,7 +327,8 @@ def test_expansion_stamps_the_profile_library_on_cxl_cells_only(tmp_path):
     tree = tmp_path / "build"
     cache(tree, ARTS_CXL_DB_ARENA_SIZE_BYTES="268435456")
     region = 268435456 + (128 << 20)
-    sel = Selection(profile="t", experiment="t", entries=["arts_excl_purge", *CXL],
+    sel = Selection(profile="t", experiment="t", default_entries=[],
+                    entries=["arts_excl_purge", *CXL],
                     apps={"nqueens": [Version.BASE]}, node_counts=[1])
     bs = Experiment(entries=["arts_excl_purge"], name="t", apps={"nqueens": ExperimentApp()})
     for prof, want, size in ((profile(), CxlLibrary.FAKE, region),
@@ -408,19 +422,6 @@ def test_multi_rank_flush_trace_is_discarded(tmp_path):
 
 
 # -- the command line ----------------------------------------------------------
-
-@pytest.mark.parametrize("args", [
-    ["--cxl"], ["--cxl-rapid-include-dir", "/x"], ["--cxl-lib-dir", "/x"],
-])
-def test_the_deleted_options_name_the_profile_fields(args):
-    from typer.testing import CliRunner
-
-    from artsrun.cli import app
-
-    result = CliRunner().invoke(app, ["run", "-p", "local-cxl", *args, "--dry-run"])
-    assert result.exit_code != 0
-    for field in ("cxl_include_dir", "cxl_library", "cxl_launch_wrapper"):
-        assert field in result.output
 
 
 def test_the_run_screen_has_no_device_switch(tmp_path):

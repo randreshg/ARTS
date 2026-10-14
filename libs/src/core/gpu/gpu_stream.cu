@@ -312,16 +312,11 @@ void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
       if (depv[i].subtype == ARTS_DB_GPU_PIN) {
         arts_gpu_invalidate_route_tables(depv[i].guid, gc->gpu_id);
       }
-      // True says to mark it for deletion... Change this to false to further
-      // delay delete!
-      //  bool mark_delete = (arts_guid_get_kind(depv[i].guid) !=
-      //  ARTS_DB_GPU_PIN)
-      //  && arts_node_info.free_db_after_gpu_run;
+      // The return is not implemented (arts_gpu_route_table_return_db does
+      // nothing), so free_db_after_gpu_run, its mark_to_delete, has no effect.
       bool mark_delete = arts_node_info.free_db_after_gpu_run;
       bool res =
           arts_gpu_route_table_return_db(depv[i].guid, mark_delete, gc->gpu_id);
-      // arts_gpu_route_table_return_db(depv[i].guid,
-      // arts_node_info.free_db_after_gpu_run, gc->gpu_id);
       ARTS_DEBUG("Returning Db: %lu id: %d res: %u\n", depv[i].guid, gc->gpu_id,
                  res);
     }

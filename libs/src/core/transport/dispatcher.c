@@ -823,10 +823,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   }
 #endif /* GRANT_CONFIRM model dispatch */
   /* EXCL has its own REQUEST wire (both release policies) and policy-specific grant/
-   * release messages.  The legacy coherence cases are excluded from EXCL builds
-   * (each is already guarded above). */
+   * release messages.  In an EXCL build each shared grant, snapshot and publish
+   * case above is a refusal (guarded there). */
 #ifdef ARTS_PROTOCOL_EXCL
-  /* MSG_DB_EXCL_REQUEST is shared: both PURGE and RETAIN home-dispatch vian OoO
+  /* MSG_DB_EXCL_REQUEST is shared: both PURGE and RETAIN home-dispatch via OoO
    * (a REQUEST can arrive before the home db_s is installed on a remote-create
    * stub-install path). */
   case MSG_DB_EXCL_REQUEST: {

@@ -38,9 +38,9 @@
 ******************************************************************************/
 
 /// @file multinode_event_types.c
-/// @brief Event kinds across ranks: ONCE, STICKY, IDEM and a LATCH fan-in,
-///        each satisfied from another rank than the dependent's, plus late
-///        dependences on persistent events added after the fire.
+/// @brief Events across ranks: single-fire events and a LATCH fan-in, each
+///        satisfied from another rank than the dependent's, a re-satisfy
+///        after the fire, and late dependences added after the fire.
 ///
 /// Every dependent checks it runs on the rank it was placed on; the finish
 /// scope the shutdown waits on counts them all, so a lost delivery never
@@ -74,56 +74,57 @@ void remote_satisfy(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 }
 
 /// Dependent: paramv[0] = the rank it was placed on.
-void once_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+void fired_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+               arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  check_rank("cross-rank single-fire event fired its dependent", paramv[0]);
+}
+
+void early_remote_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                      arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  (void)depv;
+  check_rank("dependence added before a remote satisfy fired", paramv[0]);
+}
+
+void late_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
               arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  check_rank("cross-rank ONCE event fired its dependent", paramv[0]);
+  check_rank("cross-rank late dependence after the fire fired", paramv[0]);
 }
 
-void once_remote_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  check_rank("ONCE dependence added before a remote satisfy fired", paramv[0]);
-}
-
-void sticky_late_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  check_rank("cross-rank STICKY late dependence fired", paramv[0]);
-}
-
-/// Runs once the STICKY event fired; adds a late dependence, then destroys it.
+/// Runs once the event fired; adds a late dependence, then destroys it.
 /// paramv: [event].  The late dependent inherits this EDT's finish scope.
-void sticky_trampoline(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                       arts_edt_dep_t depv[]) {
+void late_dep_trampoline(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                         arts_edt_dep_t depv[]) {
   (void)depc;
   (void)depv;
   (void)paramc;
   arts_guid_t event = (arts_guid_t)paramv[0];
   uint64_t r = 0;
   arts_guid_t late =
-      arts_edt_create(sticky_late_dep, 1, &r, 1, &(arts_edt_hint_t){.rank = 0});
+      arts_edt_create(late_dep, 1, &r, 1, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(event, late, 0, DB_MODE_RW);
   arts_event_destroy(event);
 }
 
-void idem_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-              arts_edt_dep_t depv[]) {
+void resatisfied_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                     arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  check_rank("cross-rank IDEM event fired its dependent", paramv[0]);
+  check_rank("cross-rank event fired its dependent before a re-satisfy",
+             paramv[0]);
 }
 
-/// Runs once the IDEM event fired: a second satisfy is absorbed silently.
-void idem_re_satisfy(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]) {
+/// Runs once the event fired: a re-satisfy after the fire is absorbed silently.
+void re_satisfy(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                arts_edt_dep_t depv[]) {
   (void)depc;
   (void)depv;
   (void)paramc;
@@ -132,24 +133,24 @@ void idem_re_satisfy(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_event_destroy(event);
 }
 
-void idem_late_dep(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                   arts_edt_dep_t depv[]) {
+void late_dep_off_home(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                       arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
-  check_rank("IDEM late dependence off the event's home fired", paramv[0]);
+  check_rank("late dependence off the event's home fired", paramv[0]);
 }
 
-/// Runs on rank 1 once the IDEM event fired; adds a late dependence there.
+/// Runs on rank 1 once the event fired; adds a late dependence there.
 /// paramv: [event].  The late dependent inherits this EDT's finish scope.
-void idem_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                arts_edt_dep_t depv[]) {
+void late_dep_off_home_setup(uint32_t paramc, const uint64_t *paramv,
+                             uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
   (void)depv;
   uint64_t r = 1;
-  arts_guid_t late =
-      arts_edt_create(idem_late_dep, 1, &r, 1, &(arts_edt_hint_t){.rank = 1});
+  arts_guid_t late = arts_edt_create(late_dep_off_home, 1, &r, 1,
+                                     &(arts_edt_hint_t){.rank = 1});
   arts_add_dependence((arts_guid_t)paramv[0], late, 0, DB_MODE_RW);
 }
 
@@ -199,68 +200,70 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t r0 = 0;
   uint64_t r1 = 1;
 
-  // ONCE (defaults) homed on rank 0, dependent on rank 0, satisfied from 1.
+  // Homed on rank 0, dependent on rank 0, satisfied from 1.
   {
     arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
-    arts_guid_t dep = arts_edt_create(
-        once_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t dep =
+        arts_edt_create(fired_dep, 1, &r0, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     satisfy_from(ev, 1, fe);
   }
 
-  // ONCE homed on rank 0 with its dependent on rank 1, the dependence added
+  // Homed on rank 0 with its dependent on rank 1, the dependence added
   // before the satisfier is created.
   {
-    arts_event_hint_t h = ARTS_EVENT_HINT_ONCE;
+    arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
     arts_guid_t dep =
-        arts_edt_create(once_remote_dep, 1, &r1, 1,
+        arts_edt_create(early_remote_dep, 1, &r1, 1,
                         &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     satisfy_from(ev, 0, fe);
   }
 
-  // STICKY: the trampoline runs once the event fired and adds a late
-  // dependence on the same event.
+  // The trampoline runs once the event fired and adds a late dependence on
+  // the same event.
   {
-    arts_event_hint_t h = ARTS_EVENT_HINT_STICKY;
+    arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
     uint64_t tp[1] = {(uint64_t)ev};
     arts_guid_t tramp =
-        arts_edt_create(sticky_trampoline, 1, tp, 1,
+        arts_edt_create(late_dep_trampoline, 1, tp, 1,
                         &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
     arts_add_dependence(ev, tramp, 0, DB_MODE_RW);
     satisfy_from(ev, 1, fe);
   }
 
-  // IDEM satisfied from rank 1; a second satisfy after the fire is absorbed.
+  // Satisfied from rank 1; a second satisfy after the fire is absorbed.
   {
-    arts_event_hint_t h = ARTS_EVENT_HINT_IDEMPOTENT;
+    arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
-    arts_guid_t dep = arts_edt_create(
-        idem_dep, 1, &r0, 1, &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
+    arts_guid_t dep =
+        arts_edt_create(resatisfied_dep, 1, &r0, 1,
+                        &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
     arts_add_dependence(ev, dep, 0, DB_MODE_RW);
     satisfy_from(ev, 1, fe);
     uint64_t rp[1] = {(uint64_t)ev};
     arts_guid_t re =
-        arts_edt_create(idem_re_satisfy, 1, rp, 1,
+        arts_edt_create(re_satisfy, 1, rp, 1,
                         &(arts_edt_hint_t){.rank = 0, .finish_event = fe});
     arts_add_dependence(ev, re, 0, DB_MODE_RW);
   }
 
-  // IDEM satisfied on its home; once it fired, rank 1 adds a late dependence.
+  // Satisfied on its home; once it fired, rank 1 adds a late dependence.
   {
-    arts_event_hint_t h = ARTS_EVENT_HINT_IDEMPOTENT;
+    arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     h.rank = 0;
     arts_guid_t ev = arts_event_create(&h);
     uint64_t sp[1] = {(uint64_t)ev};
     arts_guid_t setup =
-        arts_edt_create(idem_setup, 1, sp, 1,
+        arts_edt_create(late_dep_off_home_setup, 1, sp, 1,
                         &(arts_edt_hint_t){.rank = 1, .finish_event = fe});
     arts_add_dependence(ev, setup, 0, DB_MODE_RW);
     satisfy_from(ev, 0, fe);

@@ -157,7 +157,7 @@ void work(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   float *final_data;
   arts_guid_t final_guid =
       arts_db_create((void **)&final_data, sizeof(float) * (size_t)M * N,
-                     ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
+                     ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   arts_put_in_db_from_gpu(d_c, final_guid, 0, sizeof(float) * (size_t)M * N,
                           true);
   // stat = cublasGetMatrix(M, N, sizeof(*c), d_c, M, c, M);    // cp d_c - >c

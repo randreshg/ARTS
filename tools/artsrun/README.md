@@ -80,24 +80,28 @@ artsrun run -p alia -x paper-main -c census
 
 The plane's CXL entries (`arts_excl_purge_cxl_staged`,
 `arts_excl_purge_cxl_direct` — the two residencies) link a CXL library, and
-which one is a profile setting, never a campaign option or a guess. Three
-fields name the device's own library; all three or none:
+which one is a profile setting, never a campaign option or a guess. Five
+fields name the device's own library; all five or none:
 
 | field | meaning |
 |---|---|
-| `cxl_include_dir` | the device SDK's headers (absolute path) |
-| `cxl_library` | the glue library the runtime links against the device (absolute path) |
+| `cxl_include_dir` | the device SDK's headers (absolute path; `ARTS_CXL_RAPID_INCLUDE_DIR`) |
+| `cxl_rapid_lib_dir` | the device SDK's libraries (absolute path; `ARTS_CXL_RAPID_LIB_DIR`) |
+| `cxl_lib_include_dir` | the glue library's installed headers (absolute path; `ARTS_CXL_LIB_INCLUDE_DIR`) |
+| `cxl_library` | the glue library the runtime links against the device (absolute path; `ARTS_CXL_LIB`) |
 | `cxl_launch_wrapper` | the site's launch wrapper every such cell's whole launch runs under (absolute path) |
 
 - **None** — the vendored fake library, one host's shared memory standing in
-  for the device, which the tree builds itself (`-DARTS_CXL_REAL=OFF`, both
-  paths cleared). This is every profile that names no path, so any profile
-  can run the CXL entries on the fake; off `launcher: local` a campaign that
-  runs one needs `nodes: [1]`, since the fake's region is one host's shared
-  memory, and is refused by name otherwise (the profile itself still loads —
-  the check is the campaign's).
-- **All three** — the device library (`-DARTS_CXL_REAL=ON`,
+  for the device, which the tree builds itself (`-DARTS_CXL_REAL=OFF`, all
+  four cache paths cleared). This is every profile that names no path, so any
+  profile can run the CXL entries on the fake; off `launcher: local` a
+  campaign that runs one needs `nodes: [1]`, since the fake's region is one
+  host's shared memory, and is refused by name otherwise (the profile itself
+  still loads — the check is the campaign's).
+- **All five** — the device library (`-DARTS_CXL_REAL=ON`,
   `-DARTS_CXL_RAPID_INCLUDE_DIR=<cxl_include_dir>`,
+  `-DARTS_CXL_RAPID_LIB_DIR=<cxl_rapid_lib_dir>`,
+  `-DARTS_CXL_LIB_INCLUDE_DIR=<cxl_lib_include_dir>`,
   `-DARTS_CXL_LIB=<cxl_library>`), under any launcher.
 - **A subset** — refused when the profile loads, as is a relative path.
   Whether the paths exist is the configure's check (and, for the wrapper, the
@@ -105,8 +109,8 @@ fields name the device's own library; all three or none:
 
 No shipped experiment lists a CXL entry: they are turned on per run (`-e`).
 Every benchmark tree builds both variants; before building, a campaign that
-runs a CXL entry compares the tree's cache (`ARTS_CXL_REAL`,
-`ARTS_CXL_RAPID_INCLUDE_DIR`, `ARTS_CXL_LIB`) with the profile and on any
+runs a CXL entry compares the tree's cache (`ARTS_CXL_REAL` and the four
+paths) with the profile and on any
 difference reconfigures the tree with exactly the values above, printing the
 cmake command; a new tree is configured with them from the start. If cmake
 fails — the vendored library does not build, the device headers or library
@@ -123,6 +127,8 @@ A device profile, as a sketch (the paths are placeholders):
 launcher: slurm
 # ...
 cxl_include_dir: /path/to/device-sdk/include
+cxl_rapid_lib_dir: /path/to/device-sdk/lib
+cxl_lib_include_dir: /path/to/glue/include
 cxl_library: /path/to/glue/libarts_cxl_lib.so
 cxl_launch_wrapper: /path/to/site/run.py
 ```
@@ -149,10 +155,8 @@ flush trace; a cell with more than one rank sets it to `/dev/null`, because
 the library takes one path for all ranks and every rank on a host would
 overwrite the same file.
 
-The old `--cxl`, `--cxl-rapid-include-dir` and `--cxl-lib-dir` options are
-errors naming the profile fields, as is a saved selection recorded with any
-of them; any other key a profile or saved selection carries that no field
-takes is refused when it loads.
+Any key a profile or saved selection carries that no field takes is refused
+when it loads.
 
 ## External runtimes
 
@@ -171,9 +175,7 @@ is the build list. The rows sit in the `control-main` experiment, and the
 experiment's gate is `paper-gate`). Under `ARTS_STRUCT_MARKER`
 each HPX-origin program prints `[PARCELS] sent=… bytes=… wire=…` from
 locality 0 immediately after its end stamp, so a timing cell never executes
-it; there is no `[STRUCT]` line in this section — that carried the retired
-ports' own structural counters and none of these programs has any. The ARTS
-arms beside it are built with the
+it. The ARTS arms beside it are built with the
 `configs/counters_off.cfg` default, which a `-c`-less campaign checks and
 refuses to run against an instrumented tree. Under `launcher=local` every
 reference cell — HPX, xsocr and OCR-vx — carries `UCX_TLS=tcp,self` and
@@ -192,7 +194,7 @@ it back).
 
 Running on a terminal opens the **live view** — one table row per cell (app,
 version, runtime, coherence axes, node count, repeat), recolored as cells
-queue, run, finish, and vote; `--plain` keeps the old line output. A click
+queue, run, finish, and vote; `--plain` prints line output instead. A click
 (or `enter`) opens the cell: the exact command it runs under (for Slurm, the
 sbatch call and the batch script), its environment, return code, a following
 tail of its log (stderr is merged into stdout; stdin is `/dev/null`), and
@@ -249,8 +251,7 @@ running, and submits the rest as they end. With a cap the submitter has work
 left until the last cell is out, so a campaign whose submitter died is
 continued with `--resume` rather than merely watched.
 
-A node profile states host facts only; it names no plane entries (a profile
-that still carries `entries:` is a validation error naming the move). Which
+A node profile states host facts only; it names no plane entries. Which
 entries run is the experiment's choice — see below.
 
 Only what a campaign actually decides is a field. The width a run occupies
@@ -303,11 +304,6 @@ when the loaded experiment names them), and the toys and fixtures.
 Arguments are edited inline. An empty box means the catalog's own calibration,
 shown as the placeholder; type into it and the experiment records an
 override.
-
-The old spellings — `-b/--benchset` and the `artsrun benchset` commands — are
-errors naming `-x/--experiment`; a selection saved under a `benchset` name
-replays under its experiment (`main-gate` → `paper-gate`, `paper-controls` →
-`control-main`, `controls-gate` → `control-gate`).
 
 ## The cluster selection
 
@@ -365,8 +361,8 @@ end-of-run `results.csv` / `report.json` / `summary.txt`. The live view is a
 pure reader of the first four, which is why it can attach to any campaign
 from anywhere.
 
-Each application offers up to three versions: **as-born** (as published,
-including whatever hints its authors already gave it), **optimized** (the
+Each application offers up to three versions: **base** (as published,
+including whatever hints its authors already gave it), **hinted** (the
 same code structure with EDT/DB placement hints added or changed — as
 statically optimized as hints alone can make it), and **restructured**
 (the decomposition itself redesigned as a separate target, for the cases

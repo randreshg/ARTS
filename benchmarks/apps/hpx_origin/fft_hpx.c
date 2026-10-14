@@ -58,7 +58,7 @@ static inline u64 loop_chunks(u64 count) {
  * disjoint rows. */
 static ocrGuid_t fft1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  const void *image = fftw_reloc_image_at(depv[1].ptr);
+  const void *image = depv[1].ptr;
   for (u64 i = pv[P_IDX]; i < pv[P_END]; ++i)
     fftw_reloc_execute_r2c(image, pv[P_PLAN_SIZE], pv[P_PLAN_R2C], depv[0].ptr,
                            i * 2 * pv[P_CY] * sizeof(double));
@@ -111,7 +111,7 @@ static ocrGuid_t xpose1_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
  * fft_1d_c2c_inplace. */
 static ocrGuid_t fft2_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   (void)paramc; (void)depc;
-  const void *image = fftw_reloc_image_at(depv[2].ptr);
+  const void *image = depv[2].ptr;
   for (u64 i = pv[P_IDX]; i < pv[P_END]; ++i)
     fftw_reloc_execute_c2c(image, pv[P_PLAN_SIZE], pv[P_PLAN_C2C], depv[1].ptr,
                            i * 2 * pv[P_CX] * sizeof(double));
@@ -239,8 +239,7 @@ static ocrGuid_t finish_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   *s = sum;
   ocrDbRelease(share);
 
-  void *image = fftw_reloc_image_at(depv[slot_plan].ptr);
-  fftw_reloc_image_protect(image, pv[P_PLAN_SIZE], 0);
+  void *image = depv[slot_plan].ptr;
   fftw_reloc_destroy_pair(image, pv[P_PLAN_SIZE], pv[P_PLAN_R2C],
                             pv[P_PLAN_C2C]);
   ocrDbDestroy(depv[slot_plan].guid);
@@ -331,13 +330,10 @@ static ocrGuid_t driver_edt(u32 paramc, u64 *pv, u32 depc, ocrEdtDep_t depv[]) {
   u64 c2c = fftw_reloc_plan_c2c(planner, (int)cx, w0, FFTW_FORWARD, flag);
   u64 plan_size = fftw_reloc_snapshot_size(planner);
   ocrGuid_t plan_db;
-  void *plan_storage;
-  ocrDbCreate(&plan_db, &plan_storage, fftw_reloc_image_reserve(plan_size),
-              DB_PROP_NONE, &dh, NO_ALLOC);
-  void *plan_image = fftw_reloc_image_at(plan_storage);
+  void *plan_image;
+  ocrDbCreate(&plan_db, &plan_image, plan_size, DB_PROP_NONE, &dh, NO_ALLOC);
   fftw_reloc_snapshot_write(planner, plan_image);
   fftw_reloc_context_delete(planner);
-  fftw_reloc_image_protect(plan_image, plan_size, 1);
   ocrDbRelease(plan_db);
   ocrDbRelease(varr);
   ocrDbRelease(warr);

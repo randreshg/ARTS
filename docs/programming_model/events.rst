@@ -70,12 +70,12 @@ the fire is satisfied immediately from the stored fire data, until the
 event is explicitly removed with :c:func:`arts_event_destroy`.  A
 satisfy arriving past the fire is silently absorbed.
 
-The single-fire OCR event flavors (ONCE, IDEMPOTENT, STICKY, COUNTED)
-are all subsumed by this unified fire-and-linger + silent-over-satisfy
-model; the macros ``ARTS_EVENT_HINT_ONCE``,
-``ARTS_EVENT_HINT_IDEMPOTENT``, ``ARTS_EVENT_HINT_STICKY``, and
-``ARTS_EVENT_HINT_COUNTED(nb_deps)`` are kept as source-compatibility
-aliases of ``ARTS_EVENT_HINT_LATCH(1)``.
+The lingering single-fire OCR event flavors (ONCE, IDEMPOTENT, STICKY) are
+all subsumed by this unified fire-and-linger + silent-over-satisfy model:
+each is ``ARTS_EVENT_HINT_DEFAULTS`` (``ARTS_EVENT_HINT_LATCH(1)``).
+COUNTED is not: ``ARTS_EVENT_HINT_COUNTED(nb_deps)`` fires once like
+``LATCH(1)``, but its declared consumer count is real — the event destroys
+itself once all ``nb_deps`` dependences have registered.
 
 Signaling (Satisfy)
 -------------------

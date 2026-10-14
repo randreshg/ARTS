@@ -1,0 +1,17 @@
+# A local multi-node shape the tests render and drive; nothing ever runs on
+# it.  15 workers + 1 progress thread per rank, ranks self-forked onto core
+# blocks of 16.
+name: fixture-local
+launcher: local
+
+nodes: [1, 2, 4, 8]
+workers: 15
+progress: 1
+
+pin: true
+provider: tcp
+route_table_size: 14
+core_dump: true
+
+cell_timeout_s: 600
+repeats: 5

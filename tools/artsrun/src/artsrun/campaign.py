@@ -36,7 +36,7 @@ from artsrun.render import write_configs, write_counter_config
 from artsrun.run.manifest import write_manifest
 from artsrun.run.plan import expand
 from artsrun.run.scheduler import Scheduler, WallCache
-from artsrun.run.types import CellResult, Skipped, Status, modern_key
+from artsrun.run.types import CellResult, Skipped, Status
 
 
 @dataclass
@@ -453,7 +453,7 @@ def recorded_results(run_dir: Path, cells: list) -> list[CellResult]:
                 row = json.loads(line)
             except ValueError:
                 continue
-            key = modern_key(row.get("cell", ""))
+            key = row.get("cell", "")
             if row.get("event") == "finished" and key in by_key:
                 rows[key] = row  # a later attempt supersedes an earlier one
     out = []
@@ -509,7 +509,7 @@ def queued_cells(run_dir: Path, cells: list, alive_jobs) -> set[str]:
             row = json.loads(line)
         except ValueError:
             continue
-        key = modern_key(row.get("cell", ""))
+        key = row.get("cell", "")
         job_id = (row.get("extra") or {}).get("job_id")
         if row.get("event") == "submitted" and key in wanted and job_id:
             by_key[key] = job_id  # a later submission supersedes

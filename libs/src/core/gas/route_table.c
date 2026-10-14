@@ -130,11 +130,10 @@ static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
      * both reserve paths claim from this rank's own slice) spread
      * chunk-granular over the local per-thread tables; foreign creators and
      * the startup top region sit outside the slice and take the shared
-     * remote shards, exactly as they did under the flat-key partition.
-     * While arts_db_seq_budget is still 0 (the pre-parallel window) every
-     * DB key falls through to the legacy path, whose keys_per_thread gate
-     * is also still 0 — same remote-shard answer, so the decision for any
-     * key is stable across the flip. */
+     * remote shards.  While arts_db_seq_budget is still 0 (the pre-parallel
+     * window) every DB key falls through to the flat-key partition below,
+     * whose keys_per_thread gate is also still 0 — same remote-shard
+     * answer, so the decision for any key is stable across the flip. */
     uint64_t seq = key & ARTS_GUID_DB_SEQ_MASK;
     if (seq / arts_db_seq_budget == arts_global_rank_id) {
       return arts_node_info

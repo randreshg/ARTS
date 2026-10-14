@@ -12,7 +12,6 @@
 #include <cstdlib>
 #include <string>
 #include <unistd.h>
-#include <utility>
 #include <vector>
 
 namespace arts_hpx {
@@ -34,34 +33,11 @@ inline bool e2e_enabled()
 }
 
 // Whether the structural pass is on, as this locality's own environment
-// states it.  This is the gate for output one locality produces alone; the
-// collective form below is the gate for output every locality takes part in,
-// and the two are not interchangeable — asking for agreement needs every
-// locality to reach the question, which a program whose main runs on one
-// locality cannot promise.
+// states it: the gate for output one locality produces alone, which asks
+// nothing of the other localities.
 inline bool struct_marker()
 {
     static bool const on = std::getenv("ARTS_STRUCT_MARKER") != nullptr;
-    return on;
-}
-
-// The structural pass as every locality agrees on it: decided by locality 0
-// and broadcast, so a variable that did not reach every rank fails as a
-// mismatch instead of desynchronizing the collectives that follow.  This is
-// itself collective, so every locality must reach it, and it must be reached
-// once during setup before any task exists; every later call only reads the
-// cached answer.
-inline bool struct_enabled()
-{
-    static bool const on = [] {
-        auto comm = hpx::collectives::create_communicator("/arts/common/struct",
-            hpx::collectives::num_sites_arg(hpx::get_initial_num_localities()),
-            hpx::collectives::this_site_arg(hpx::get_locality_id()));
-        int flag = struct_marker() ? 1 : 0;
-        if (hpx::get_locality_id() == 0)
-            return hpx::collectives::broadcast_to(comm, flag).get() == 1;
-        return hpx::collectives::broadcast_from<int>(comm).get() == 1;
-    }();
     return on;
 }
 
@@ -144,29 +120,6 @@ struct add_elementwise
         return a;
     }
 };
-
-// Sums a program's own counters over localities and prints them from
-// locality 0.  Every locality calls it (it is a collective), after the end
-// stamp, only when struct_enabled().  It registers its communicator's
-// basename as it goes, and a basename is registered once, so one program
-// calls it at most once.
-inline void print_struct(std::vector<std::pair<char const*, std::uint64_t>> const& fields)
-{
-    std::vector<std::uint64_t> mine;
-    for (auto const& f : fields)
-        mine.push_back(f.second);
-    auto comm = hpx::collectives::create_communicator("/arts/common/struct_sum",
-        hpx::collectives::num_sites_arg(hpx::get_initial_num_localities()),
-        hpx::collectives::this_site_arg(hpx::get_locality_id()));
-    std::vector<std::uint64_t> total =
-        hpx::collectives::all_reduce(comm, mine, add_elementwise{}).get();
-    if (hpx::get_locality_id() != 0)
-        return;
-    std::string line = "[STRUCT]";
-    for (std::size_t i = 0; i != fields.size(); ++i)
-        line += std::string(" ") + fields[i].first + "=" + std::to_string(total[i]);
-    write_line(line + "\n");
-}
 
 // Sums one counter over every locality.  Each locality's instance is named
 // outright rather than through the `locality#*` wildcard: the wildcard needs

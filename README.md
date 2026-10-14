@@ -29,7 +29,7 @@ See `INSTALL.md` for detailed package lists. At a high level you need:
 - CMake + Ninja — the build enforces the Ninja generator; Make is not supported
 - pthreads (system, via glibc); `libhwloc` and `libnuma` are vendored dist tarballs built in-tree, not system packages
 - The libfabric (OFI) transport is a vendored submodule, built in-tree — no external networking library to install
-- Optional: MPI, only for the xsocr/ocr-vx/baseline reference benchmark backends (not needed for ARTS itself)
+- Optional: MPI, only for the xsocr/ocr-vx/HPX reference benchmark backends (not needed for ARTS itself)
 
 ## Building
 
@@ -48,24 +48,23 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 | Option | Default | Purpose |
 |--------|---------|---------|
 | `ARTS_BUILD_SHARED` | `ON` | Build the shared library `libarts.so` alongside `libarts.a`. The static library is unconditional — it is the substrate the benchmark variants, the OCR shim and the installed archive derive from. |
-| `ARTS_BUILD_EXAMPLES` | `OFF` (forced) | **Deprecated** — `examples/` predates the current public API and does not build; enabling is a configure error until the examples are modernized. See `tests/ocr/` and `benchmarks/` for working usage. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the test programs and register them with ctest. Off by default: tests statically link the runtime (hermetic), so a full test tree costs real disk/link time — turn it on for validation builds. |
 | `ARTS_BUILD_BENCHMARKS` | `ON` | Build the benchmark apps (ARTS and the enabled reference runtimes). |
 | `ARTS_BUILD_XSOCR` | `ON` | Build the XSOCR reference runtime and its `*_xsocr` app variants (needs a host MPI). |
 | `ARTS_BUILD_OCRVX` | `ON` | Build the ocr-vx reference runtime and its `*_ocrvx` app variants (needs a host MPI). |
 | `ARTS_BUILD_HPX` | `ON` | Source-build HPX v1.11.0 with its MPI parcelport and build the standalone HPX benchmark apps (needs a host MPI). |
-| `ARTS_BUILD_BASELINES` | `OFF` | Build the native (non-OCR) OpenMP/MPI baseline implementations — outside the experiment driver's catalog, explicit opt-in. |
 | `ARTS_BUILD_DOCS` | `OFF` | Build the Doxygen + Sphinx documentation. |
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support (builds `libarts_cuda`). |
 | `ARTS_USE_LOCAL_CUDA_ARCHITECTURES` | `ON` | When GPU is on, auto-detect the local GPU's CUDA architecture via `nvidia-smi`. Only meaningful with `ARTS_USE_GPU=ON`; pair with the stock `CMAKE_CUDA_ARCHITECTURES` (e.g. `-DCMAKE_CUDA_ARCHITECTURES="80;86"`) to set SM targets by hand. |
-| `ARTS_MEMORY_MODEL` | `OCR` (derived) | Memory model — **derived** from `ARTS_COHERENCE_PROTOCOL`, not chosen independently (passing it explicitly only asserts the value its protocol already implies; a mismatch is a configure error): `OCR` (races legal, the runtime orders every conflict it must; required by `VAL`/`INV`/`EXCL`) or `DB_WRF` (prose DB-WRF; exclusive write acquisition — the program guarantees that at most one write-mode acquisition of a DataBlock is live at any time, system-wide; required by `FLUSH`; evaluation only). Compile-time; all ranks must share one build. |
-| `ARTS_COHERENCE_PROTOCOL` | `INV` | Coherence protocol — who keeps reader copies valid: `INV` (default; release-time invalidation rounds), `VAL` (acquire-time version validation, readers never blocked/tracked/invalidated), or `EXCL` (per-DB distributed reader-writer lock), all under the `OCR` model; or `FLUSH` (fetch the whole payload at every remote acquire, write it back at every remote RW release, block for the home's ACK) under the `DB_WRF` model, with no write- or release-policy axis. Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH. |
+| `ARTS_COHERENCE_PROTOCOL` | `INV` | Coherence protocol — who keeps reader copies valid — which also fixes the memory model the program must satisfy: `INV` (default; release-time invalidation rounds), `VAL` (acquire-time version validation, readers never blocked/tracked/invalidated), or `EXCL` (per-DB distributed reader-writer lock), all under the OCR model (races legal, the runtime orders every conflict it must); or `FLUSH` (fetch the whole payload at every remote acquire, write it back at every remote RW release, block for the home's ACK) under the DB-WRF model (exclusive write acquisition — the program guarantees that at most one write-mode acquisition of a DataBlock is live at any time, system-wide; evaluation only), with no write- or release-policy axis. Valid combos: {VAL,INV}×WT×{PURGE,RETAIN}, {VAL,INV}×WB×RETAIN, EXCL×WB×{PURGE,RETAIN}, FLUSH. Compile-time; all ranks must share one build. |
 | `ARTS_WRITE_POLICY` | `WB` | Write policy at release granularity — `WT` (write-through: payload flushed to the block's home at every release; home serves reads) or `WB` (default; write-back: payload stays with the last writer, directory forwards on demand). Live in INV/VAL; EXCL requires WB. |
 | `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with a grant when its last local user finishes — `PURGE` (hand it back to the home, with the payload when it is an EXCL write grant) or `RETAIN` (default; keep it until another node asks). Live in EXCL (read and write grants) and in WT × {VAL, INV} (the write grant); WB requires RETAIN. |
 | `ARTS_USE_CXL` | `OFF` | This tree's own library keeps every data block's payload in CXL memory. Requires `ARTS_COHERENCE_PROTOCOL=EXCL`, `ARTS_RELEASE_POLICY=PURGE` and `ARTS_CXL_RESIDENCY`; anything else is a configure error. |
 | `ARTS_CXL_RESIDENCY` | (empty) | `STAGED` (a rank-local copy staged from the block's slot at the two ownership edges) or `DIRECT` (the slot itself, with the edges reduced to a flush each). Required with `ARTS_USE_CXL=ON`, refused otherwise. |
-| `ARTS_CXL_REAL` | `OFF` | OFF: the vendored fake library (`third_party/fake_arts_cxl_lib`, built at configure time — see below). ON: the device library named by `ARTS_CXL_RAPID_INCLUDE_DIR` and `ARTS_CXL_LIB` below (both required and must exist). A path given with `ARTS_CXL_REAL=OFF` is a configure error. |
+| `ARTS_CXL_REAL` | `OFF` | OFF: the vendored fake library (`third_party/fake_arts_cxl_lib`, built at configure time — see below). ON: the device library named by the four paths below (all required and must exist). A path given with `ARTS_CXL_REAL=OFF` is a configure error. |
 | `ARTS_CXL_RAPID_INCLUDE_DIR` | (empty) | `ARTS_CXL_REAL=ON`: the directory holding the device SDK's `MemOps.h` and `SharedAlloc.h`. |
+| `ARTS_CXL_RAPID_LIB_DIR` | (empty) | `ARTS_CXL_REAL=ON`: the directory holding the device SDK's libraries (`librapid.so`), linked with `-lrapid` and an rpath. |
+| `ARTS_CXL_LIB_INCLUDE_DIR` | (empty) | `ARTS_CXL_REAL=ON`: the directory holding the glue library's installed headers. |
 | `ARTS_CXL_LIB` | (empty) | `ARTS_CXL_REAL=ON`: the device glue library file (`libarts_cxl_lib.so`), linked by path — no CMake package lookup. |
 | `ARTS_CXL_DB_ARENA_SIZE_BYTES` | `5000000000` | Bytes per CXL arena: one data-block arena per device count. Arena creation ignores the device ids it is handed, so allocation selects an arena index, not a device. Validation trees pass `268435456`. |
 | `ARTS_LOG_LEVEL` | `3` (Debug) / `1` (Release) | Log verbosity: `0`=ERROR, `1`=+WARN, `2`=+INFO, `3`=+DEBUG; empty = the build type's. A Release build accepts `0` or `1`. |
@@ -154,8 +153,8 @@ by hand — see `tools/artsrun/README.md`.
 - `libs/src/` – Runtime sources: task scheduler, GUID tables, datablock manager, network transports, logging
 - `cmake/` – Build helpers
 - `configs/` – The ctest configurations (`local/test/`), the counter sets (`counters*.cfg`), the templates artsrun renders a node profile's configurations from (`templates/`), and the crete cluster's configurations (`crete/`)
-- `examples/` – Small standalone programs showing how to create EDTs/datablocks. **Deprecated**: predates the current public API and does not build; `ARTS_BUILD_EXAMPLES` is forced off, kept for historical reference only
-- `benchmarks/` – Runtime microbenchmarks and OCR benchmark applications (XSOCR + ARTS + ocrvx backends)
+- `examples/` – Small standalone programs showing how to create EDTs/datablocks. They predate the current public API and are not part of the build
+- `benchmarks/` – The OCR benchmark applications (ARTS, XSOCR and ocr-vx backends), the OCR shim, and the HPX-origin section's HPX programs
 - `docs/` – Sphinx/Doxygen documentation sources (see Documentation below)
 
 ## Documentation
@@ -194,4 +193,4 @@ Then open <http://localhost:8000> in a browser.
 
 - `INSTALL.md` – Build instructions and optional components
 - `FULL_LICENSE.md` / `LICENSE.md` – Licensing information
-- Example programs under `examples/` for hands-on API references (**deprecated**: predates the current public API and does not build; kept for historical reference)
+- Example programs under `examples/` (they predate the current public API and are not part of the build; `tests/ocr/` and `benchmarks/` are working usage references)

@@ -333,7 +333,7 @@ function(add_benchmark_app)
                 ${COMMON_DEFINES} ${_flavor_define})
             target_link_libraries(${_app}_arts_${sfx} PRIVATE
                 arts_static_${sfx} pthread ${APP_EXTRA_LINK_LIBS})
-            target_link_options(${_app}_arts_${sfx} PRIVATE -no-pie -fno-pie)
+            target_link_options(${_app}_arts_${sfx} PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
             set_target_properties(${_app}_arts_${sfx} PROPERTIES
                 C_STANDARD 11 C_EXTENSIONS ON
                 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
@@ -766,9 +766,8 @@ add_benchmark_app(NAME hpcg_intel_dist
 # ==========================================================================
 
 # The chandra stencil source is dimension-parameterized (PROBLEM_TYPE 1|2)
-# and the upstream Stencil1D port left the header's default (2) in place, so
-# this target used to build the SAME 2-D problem as Stencil2D_intel_chandra.
-# Select the real 1-D problem here.
+# and its header defaults to 2, the 2-D problem; this target selects the 1-D
+# one.
 add_benchmark_app(NAME Stencil1D_intel_chandra
     DIR Stencil1D/refactored/ocr/intel-chandra
     SOURCES stencil_1d.c timers.c
@@ -964,10 +963,9 @@ add_benchmark_app(NAME miniAMR_intel_chandra
     # its own COUNTED event, so the runtime mints and retains nothing extra.
     # CHANNEL_EVENTS_AT_RECEIVER: the port's published choice (Makefile.x86-base)
     # of which side creates, and so homes, each halo channel event.
-    # VERIFICATION_RUN is gone: it reached exactly one site, the cell fill, which
-    # is now an unconditional index-seeded generator — deterministic across runs,
-    # runtimes and node counts, and unlike the constant field that macro produced,
-    # not a fixed point of the stencil.
+    # The cell fill is an index-seeded generator in every build — deterministic
+    # across runs, runtimes and node counts, and not a fixed point of the
+    # stencil.
     EXTRA_DEFINES OCR_APP_COUNTED_OEVT CHANNEL_EVENTS_AT_RECEIVER
     EXTRA_LINK_LIBS m
     HINTED_PLACEMENT
@@ -1305,18 +1303,12 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# The RAG_IMPLICIT_INPUTS sizes are gone (2026-08-24).  tiny/small/medium/large
-# compiled their datasets into the binary through a datagen -> dataImage ->
-# .incbin pipeline, which is why they took no arguments: each was one rung of
-# the problem_size_scaling ladder frozen at build time.  The ladder itself is
-# Parameter files differing only in the image grid (Ix = 400*(n+1)), so the pss
-# target with a parameter file covers every one of them and the four binaries,
-# their host utilities and their generated data objects buy nothing.  The same
-# rule extends the ladder: Parameter45 is 18400 a side (the restructured
-# row's rung), Parameter10 is 4400, Parameter14 is 6000 and Parameter15 is
-# 6400 (the 32-rank rung of the restructured row at its default blocks).
-# (The submodule holds Parameter0..9, 10, 14, 15 and 45; there is no
-# Parameter41.)
+# SAR's problem-size ladder is a set of Parameter files differing only in the
+# image grid (Ix = 400*(n+1)), so the pss target with a parameter file covers
+# every rung.  Parameter45 is 18400 a side (the restructured row's rung),
+# Parameter10 is 4400, Parameter14 is 6000 and Parameter15 is 6400 (the
+# 32-rank rung of the restructured row at its default blocks).  (The
+# submodule holds Parameter0..9, 10, 14, 15 and 45; there is no Parameter41.)
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------

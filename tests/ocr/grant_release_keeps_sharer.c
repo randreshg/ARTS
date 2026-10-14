@@ -123,7 +123,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   /* Y writes, letting Z ask before it has written. */
-  arts_event_hint_t sticky = ARTS_EVENT_HINT_STICKY;
+  arts_event_hint_t sticky = ARTS_EVENT_HINT_DEFAULTS;
   arts_guid_t ask = arts_event_create(&sticky);
   arts_guid_t f_hold = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   {

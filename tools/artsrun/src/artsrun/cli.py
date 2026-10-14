@@ -101,20 +101,6 @@ def _revalidate_profile(name: str) -> None:
     console.print("[green]valid[/green]")
 
 
-_BENCHSET_GONE = (
-    "benchsets are experiments now: an experiment is the application roster "
-    "plus the coherence entries it runs by default, under "
-    "experiments/experiments/ — name one with -x/--experiment (-b/--benchset "
-    "is gone), and manage them with `artsrun experiment`")
-
-
-def _no_benchset(value) -> None:
-    # Only a string is a value the command line gave; a direct call leaves
-    # the option's declaration in its place.
-    if isinstance(value, str):
-        _fail(_BENCHSET_GONE)
-
-
 def _load_experiment(name: str | None):
     if not name:
         return store.default_experiment()
@@ -175,16 +161,10 @@ def show_plane() -> None:
                        expand=False)
         mtable.add_column("arm", style="bold")
         mtable.add_column("entry")
-        mtable.add_column("note/reason")
+        mtable.add_column("note")
         for cell in section.cells:
-            if not cell.buildable:
-                # cell.reason already opens with "retired — " (it doubles as
-                # the TUI tooltip's prose), so only the styling is added here.
-                mtable.add_row(cell.label, "[dim]····[/dim]",
-                               f"[dim]{cell.reason}[/dim]")
-            else:
-                names = " | ".join(e.label for e in plane.entries_of(cell))
-                mtable.add_row(cell.label, names, cell.note or "")
+            names = " | ".join(e.label for e in plane.entries_of(cell))
+            mtable.add_row(cell.label, names, cell.note or "")
         console.print(mtable)
     for entry in plane.entries:
         if entry.is_external:
@@ -205,10 +185,8 @@ def show_apps(
                                     "document instead of the catalog table."),
     experiment: str = typer.Option(None, "--experiment", "-x"),
     enabled_only: bool = typer.Option(False, "--enabled"),
-    gone_benchset: str = typer.Option(None, "--benchset", "-b", hidden=True),
 ) -> None:
     """Print the application catalog, or one application's document."""
-    _no_benchset(gone_benchset)
     catalog = load_catalog()
     if name is not None:
         if name not in catalog.apps:
@@ -318,13 +296,6 @@ def run_cmd(
                               help="comma-separated node counts (default: profile)"),
     repeats: int = typer.Option(None, "--repeats"),
     build_dir: Path = typer.Option(None, "--build-dir"),
-    gone_benchset: str = typer.Option(None, "--benchset", "-b", hidden=True),
-    # The device library is the profile's to name; these spellings remain
-    # only to say so.
-    gone_cxl: bool = typer.Option(False, "--cxl", hidden=True),
-    gone_include: str = typer.Option(
-        None, "--cxl-rapid-include-dir", hidden=True),
-    gone_library: str = typer.Option(None, "--cxl-lib-dir", hidden=True),
     from_file: Path = typer.Option(None, "--from", help="replay a saved selection"),
     resume: str = typer.Option(None, "--resume", help="run id to continue"),
     retry_failed: bool = typer.Option(
@@ -343,11 +314,6 @@ def run_cmd(
     from artsrun.campaign import Campaign
 
     run_dir = None
-    _no_benchset(gone_benchset)
-    if gone_cxl or gone_include or gone_library:
-        _fail("the CXL device library is named by the profile, not the "
-              "command line: cxl_include_dir, cxl_library and "
-              "cxl_launch_wrapper (all three), or none for the vendored fake")
     if resume:
         # Continuing means continuing THAT campaign: its selection is what was
         # measured against, and its directory is where the halves meet.
@@ -987,12 +953,6 @@ def experiment_show(name: str) -> None:
             "override" if resolved.args_overridden else "[dim]catalog[/dim]",
         )
     console.print(table)
-
-
-@app.command("benchset", hidden=True, context_settings={
-    "allow_extra_args": True, "ignore_unknown_options": True})
-def benchset_gone(ctx: typer.Context) -> None:
-    _fail(_BENCHSET_GONE)
 
 
 # --- config ---------------------------------------------------------------

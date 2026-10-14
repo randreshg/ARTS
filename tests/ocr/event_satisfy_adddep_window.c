@@ -26,9 +26,9 @@
  * over-satisfy rewrote the data, consumers within an iteration would
  * disagree; a lost waiter leaves the latch short (ctest TIMEOUT).
  *
- * The events are IDEMPOTENT so the late binders' delivery is defined however
- * the race goes.  The consumers record into one block with no order among
- * them, which the DB-WRF model does not admit.
+ * The events linger after the fire, so the late binders' delivery is defined
+ * however the race goes.  The consumers record into one block with no order
+ * among them, which the DB-WRF model does not admit.
  */
 
 #include <stdatomic.h>
@@ -167,7 +167,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   for (int it = 0; it < M_ITERS; it++) {
-    arts_event_hint_t h = ARTS_EVENT_HINT_IDEMPOTENT;
+    arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
     arts_guid_t ev = arts_event_create(&h);
     if (ev == NULL_GUID) {
       (void)fprintf(stderr, "FAIL [it=%d]: event create\n", it);

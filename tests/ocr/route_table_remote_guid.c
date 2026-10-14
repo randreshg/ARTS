@@ -95,7 +95,7 @@ void node_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t local_edt_guid = (arts_guid_t)paramv[1];
   arts_guid_t local_db_guid = (arts_guid_t)paramv[2];
   unsigned int *ptr = (unsigned int *)arts_db_create_with_guid(
-      local_db_guid, sizeof(unsigned int), ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE,
+      local_db_guid, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
       NULL);
   *ptr = BASE_VALUE + node_id;
   arts_db_release(local_db_guid, DB_MODE_RW);

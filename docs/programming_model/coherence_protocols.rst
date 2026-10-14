@@ -19,19 +19,15 @@ may legally return, and therefore which programs are valid. A *coherence
 protocol* is an implementation mechanism — replica management, admission
 control, ownership transfer, write-back — that satisfies some contract as a
 consequence of its design. **Each coherence protocol requires a memory
-model of the program**, and ``ARTS_MEMORY_MODEL`` is **derived** from
-``ARTS_COHERENCE_PROTOCOL`` rather than chosen independently: passing it
-explicitly only asserts the value its protocol already implies, and a
-mismatch is a configure-time ``FATAL_ERROR``. ARTS keeps the model and the
-mechanism as build axes, plus two second axes for what a release moves and
-when a grant goes back:
+model of the program**, so the protocol is the build axis and the
+**contract** the build implements follows from it: ``OCR`` (races legal,
+the runtime orders every conflict it must — required by
+``VAL``/``INV``/``EXCL``) or ``DB-WRF`` (exclusive write acquisition: the
+program guarantees that at most one write-mode acquisition of a DataBlock
+is live at any time, system-wide — required by ``FLUSH``; see
+:ref:`db_wrf_contract`). Beside the protocol, two second axes say what a
+release moves and when a grant goes back:
 
-* ``ARTS_MEMORY_MODEL`` selects the **contract** the build implements:
-  ``OCR`` (races legal, the runtime orders every conflict it must — required
-  by ``VAL``/``INV``/``EXCL``) or ``DB-WRF`` (exclusive write acquisition:
-  the program guarantees that at most one write-mode acquisition of a
-  DataBlock is live at any time, system-wide — required by ``FLUSH``; see
-  :ref:`db_wrf_contract`).
 * ``ARTS_COHERENCE_PROTOCOL`` selects the coherence **protocol**. Under the
   ``OCR`` model, who keeps reader copies valid: ``INV`` (default;
   *invalidation* — reader copies stay valid until a writer's release
@@ -67,15 +63,14 @@ OCR×INV×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB-WRF×FLUSH.
 Everything else is a configure-time ``FATAL_ERROR`` naming the reason:
 EXCL×WT (under exclusion no copy outlives a write turn, so the payload
 rides the permission and the release policy already decides both),
-INV/VAL×WB×PURGE (a voluntary return hands back only the permission while
-the bytes stay at the ex-owner, so the home still cannot serve a reader on
-its own — and shipping the bytes home too is, by definition,
+and INV/VAL×WB×PURGE (a voluntary return hands back only the permission
+while the bytes stay at the ex-owner, so the home still cannot serve a
+reader on its own — and shipping the bytes home too is, by definition,
 write-through; at ``WT`` the same return costs no data motion, which is why
-PURGE is built there instead — see :ref:`orthogonal_dimensions`), and
-DB-WRF×VAL/INV/EXCL (each of those mechanisms already orders writers at
-runtime — a migrating grant for VAL/INV, admission for EXCL — making the
-program-side write-ordering obligation redundant; a validation arm was once
-built under DB-WRF and is retired — see Historical vocabulary below).
+PURGE is built there instead — see :ref:`orthogonal_dimensions`). DB-WRF
+pairs with no protocol but FLUSH: VAL, INV and EXCL each already order
+writers at runtime — a migrating grant for VAL/INV, admission for EXCL — so
+under them the program-side write-ordering obligation would be redundant.
 
 Every rank in a multinode run must use the same build.
 
@@ -162,8 +157,8 @@ implementation freedom — including future multi-writer merge protocols.
 The DB-WRF contract
 -------------------
 
-``ARTS_MEMORY_MODEL=DB_WRF`` (prose **DB-WRF**) delivers a deliberately
-**weaker** contract than OCR — *exclusive write acquisition*:
+The DB-WRF model, which ``FLUSH`` requires, is a deliberately **weaker**
+contract than OCR — *exclusive write acquisition*:
 
   A write acquisition of a DataBlock is any acquisition in a write mode: an
   EDT dependence in RW or EW mode, or the hold a creating EDT takes when it
@@ -366,8 +361,8 @@ FLUSH — fetch at acquire, flush at release (requires DB-WRF)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 *Status:* implemented (``libs/src/core/coherence/flush/flush.c``); selected
-by ``-DARTS_COHERENCE_PROTOCOL=FLUSH``, which derives
-``ARTS_MEMORY_MODEL=DB_WRF`` (see :ref:`db_wrf_contract`). No write-policy or
+by ``-DARTS_COHERENCE_PROTOCOL=FLUSH``, whose programs must satisfy the
+DB-WRF model (see :ref:`db_wrf_contract`). No write-policy or
 release-policy axis: every remote acquire fetches and every remote RW
 release writes back, unconditionally.
 
@@ -414,19 +409,13 @@ baseline against the OCR-model protocols; it is a different mechanism from
 the CXL store described above, which lives entirely inside ``EXCL`` ×
 ``PURGE`` and keeps that protocol's own state machine.
 
-Retired and rejected arms
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Rejected arms
+~~~~~~~~~~~~~
 
 * **MRSW** (multi-reader, single *global* writer; version-isolated reads) —
-  implemented in 2026-06 as a mirror of the VAL engine, retired in 2026-07 to
-  ``archive/coherence-mrsw/``. Its extra strength over OCR×VAL (forbidding
-  even node-interleaved writer overlap) bought no benchmark insight for its
-  maintenance cost. No configure value selects it.
-* **Write-invalidate, first pass** — a 2026-06 evaluation set the
-  write-invalidate family aside; that judgment was reversed in 2026-07 and
-  the family is now the first-class INV arm above. OCR-Vx remains the
-  *independent* write-invalidate implementation used as a reference point in
-  cross-runtime comparisons.
+  its extra strength over OCR×VAL (forbidding even node-interleaved writer
+  overlap) buys no benchmark insight for its maintenance cost. A mirror of
+  the VAL engine with that admission is kept in ``archive/coherence-mrsw/``.
 * **SRSW** (fully serialized single-reader/single-writer) — never built;
   useful only as a debug lower bound, and EXCL already provides a strict,
   deterministic baseline.
@@ -615,84 +604,20 @@ Considered and dropped: CDAG
 consistency (Blumofe et al., 1996) in which a task observes the write of the
 immediately preceding ancestor version of a shared location ("last-ancestor"
 read). It effectively maps to a globally single-writer admission policy with
-version-isolated reads — the design point the retired MRSW arm occupied.
+version-isolated reads — the MRSW design point (see the rejected arms
+above).
 
 CDAG was considered as a coherence option for ARTS and was dropped:
 
 1. **Small delta over the VAL engine.** The single-owner grant already
    serializes inter-node writers; adding global writer exclusion and
    last-ancestor reads is a refinement of MRSW, not a separate protocol —
-   and MRSW itself was retired for lack of benchmark insight.
+   and MRSW itself buys no benchmark insight.
 2. **Weaker parallelism.** Forbidding competing concurrent writes entirely
    reduces parallelism for programs that exploit the OCR non-overlapping
    data-race rule.
 3. **Recoverable.** ``archive/coherence-mrsw/`` preserves the engine CDAG
    semantics would build on, should the design point be revisited.
-
-.. note::
-
-   The token "CDAG" formerly appeared as a *misnomer* in GPU-related source
-   comments in this codebase, referring to the GPU Location-Consistency
-   invalidation-drain mechanism (the ``invalidate_count`` gate that holds
-   off an EDT's output-event satisfaction until all outstanding device-replica
-   invalidations drain to zero). That mechanism is entirely unrelated to Cache
-   DAG Consistency. The GPU-LC comments have been updated to "GPU LC
-   invalidation drain" so that no use of "CDAG" remains in the source.
-
-Historical vocabulary
----------------------
-
-**Earlier ARTS release:** the build axis was ``ARTS_MEMORY_MODEL={RC,LRC,LC}``.
-``RC``/``LRC`` were not distinct models — they were the eager/lazy protocols
-of the one OCR contract — and ``LC`` was not the literature's Location
-Consistency. Those terms are retired; the mapping is
-``RC → OCR+EAGER``, ``LRC → OCR+LAZY``, ``LC → RELAXED``.
-
-**Axis history:** an earlier ``ARTS_MEMORY_MODEL`` axis (``OCR`` /
-``RELAXED``) was retired in 2026-06 in favour of a single
-``ARTS_COHERENCE_PROTOCOL`` admission-policy axis (``MRNEW`` / ``MRMW`` /
-``MRSW`` / ``LOCK``). In 2026-07 the memory-model axis was deliberately
-**re-introduced** on a new theoretical footing (OCR vs DB-WRF —
-write-race-freedom at DataBlock granularity; the earlier "DB-DRF" label for
-the weak arm was corrected to DB-WRF, since read-write races remain legal),
-orthogonal to the mechanism axis. The mapping from the single-axis era is
-exact and behavior-preserving:
-
-* ``MRNEW + EAGER`` → ``OCR × VAL × WT``
-* ``MRNEW + LAZY``  → ``OCR × VAL × WB``
-* ``LOCK + EAGER/LAZY`` → ``OCR × EXCL × PURGE/RETAIN``
-* ``MRMW``          → ``DB_WRF × VAL × WT``
-* ``MRSW``          → retired (``archive/coherence-mrsw/``)
-
-Using an old ``-DARTS_COHERENCE_PROTOCOL={MRNEW,MRMW,MRSW,LOCK}`` value causes
-a CMake ``FATAL_ERROR`` with this mapping, so existing build scripts are
-caught at configure time. A 2026-07-31 terminology pass subsequently renamed
-the mechanism axis itself — ``RCU → VAL``, ``RWLOCK → EXCL``, ``MSI → INV``
-— and split the old ``ARTS_DATA_PLACEMENT={HOME,OWNER}`` axis into
-``ARTS_WRITE_POLICY={WT,WB}`` (live under VAL/INV) and
-``ARTS_RELEASE_POLICY={PURGE,RETAIN}`` (at that time live only under EXCL);
-using an old
-``-DARTS_COHERENCE_PROTOCOL={RCU,RWLOCK,MSI}`` or any
-``-DARTS_DATA_PLACEMENT=...`` value is likewise a configure-time
-``FATAL_ERROR`` with a mapping message. This page describes the current
-axes throughout; the intermediate 2026-07 vocabulary (``RCU``/``RWLOCK``/
-``MSI`` × ``HOME``/``OWNER``, and before it the ``ARTS_PROTOCOL_TIMING``
-``EAGER``/``LAZY`` axis) maps onto them as ``HOME → WT`` / ``OWNER → WB``
-under INV/VAL and ``HOME → PURGE`` / ``OWNER → RETAIN`` under EXCL
-(``EAGER``/``LAZY`` map the same way: ``EAGER → WT``/``PURGE``,
-``LAZY → WB``/``RETAIN``).
-
-**2026-09 model/protocol split:** ``DB_WRF × VAL × WT`` (an evaluation arm
-that mirrored the VAL engine with a home-canonical write policy) is
-**retired** to ``archive/coherence-wrf-val/``, succeeded by
-``DB_WRF × FLUSH`` (2026-09). The ``DB_WRF`` memory model keeps its name
-(prose ``DB-WRF``) but is redefined in terms of write acquisitions (see
-:ref:`db_wrf_contract`), and ``ARTS_MEMORY_MODEL`` is now **derived** from
-``ARTS_COHERENCE_PROTOCOL`` rather than chosen independently: each protocol
-requires exactly one memory model (``VAL``/``INV``/``EXCL`` require
-``OCR``, ``FLUSH`` requires ``DB-WRF``), so ``DB_WRF`` has exactly one arm.
-Passing ``-DARTS_COHERENCE_PROTOCOL=VAL`` with ``-DARTS_MEMORY_MODEL=DB_WRF``
-is now a configure-time ``FATAL_ERROR`` naming the retirement.
 
 References
 ----------

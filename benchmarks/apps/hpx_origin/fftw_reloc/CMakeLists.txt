@@ -94,18 +94,6 @@ file(ARCHIVE_EXTRACT INPUT "${ARTS_FFTW_TARBALL}" DESTINATION "${_work}"
 
 add_library(fftw_reloc STATIC reloc.cpp "${_assembly}")
 add_library(arts::fftw_reloc ALIAS fftw_reloc)
-option(FFTW_RELOC_AUDIT "Count FFTW relocation operations for diagnostics" OFF)
-if(FFTW_RELOC_AUDIT)
-    target_compile_definitions(fftw_reloc PRIVATE FFTW_RELOC_AUDIT)
-endif()
-# A published image is read-only by contract; under this diagnostic the pages
-# it occupies are read-only to the hardware as well, which costs the image its
-# own page-aligned placement inside the block that carries it.
-option(FFTW_RELOC_PROTECT
-    "Write-protect the published FFTW image while row transforms execute" OFF)
-if(FFTW_RELOC_PROTECT)
-    target_compile_definitions(fftw_reloc PRIVATE FFTW_RELOC_PROTECT)
-endif()
 target_compile_features(fftw_reloc PRIVATE cxx_std_17)
 target_include_directories(fftw_reloc PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
     "${_work}/fftw-3.3.10/api")

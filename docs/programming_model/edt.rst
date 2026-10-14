@@ -89,9 +89,8 @@ delivery uses ``arts_edt_satisfy_slot`` or ``arts_event_satisfy``.
 Creation Hint Fields
 --------------------
 
-The legacy ``arts_edt_create_*`` variants are collapsed into the single
-:c:func:`arts_edt_create` entry point; optional features ride in
-:c:type:`arts_edt_hint_t`:
+:c:func:`arts_edt_create` is the single entry point; optional features ride
+in :c:type:`arts_edt_hint_t`:
 
 - ``rank`` — home node (``ARTS_HINT_CURRENT_RANK`` = current node).
 - ``guid`` — create at a pre-reserved GUID (``NULL_GUID`` =

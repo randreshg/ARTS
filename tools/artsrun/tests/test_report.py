@@ -34,7 +34,8 @@ def _result(entry_key: str, *, wall_s: float, e2e_s: float | None,
                            variant=entry_key)
     app = app or _app()
     cell = Cell(entry=entry, app=app, nodes=nodes, repeat=1,
-                binary=Path("/nonexistent"), args=app.args, timeout_s=10)
+                binary=Path("/nonexistent"), args=app.args, timeout_s=10,
+                cpu_width=16)
     r = CellResult(cell=cell, status=status, wall_s=wall_s, note=note)
     r.e2e_s = e2e_s
     r.scalar = "1.0"
@@ -55,7 +56,6 @@ def test_the_scaling_table_reports_the_runtime_stamp(tmp_path):
     write_results_csv([result], path)
     row = next(csv.DictReader(path.open()))
     assert float(row["e2e_s"]) == 9.0
-    assert "app_s" not in row and "timing_metric" not in row
 
 
 def test_a_stamped_cell_carries_no_wall_only_mark(tmp_path):
@@ -107,7 +107,7 @@ def test_the_summary_explains_the_mark_only_when_one_appears(tmp_path):
     from artsrun.model.plane import load_plane
 
     selection = Selection(
-        profile="t", experiment="b", entries=["a"],
+        profile="t", experiment="b", default_entries=[], entries=["a"],
         apps={"app": [Version.BASE]}, node_counts=[1],
     )
     plane = load_plane()
@@ -188,7 +188,7 @@ def test_the_summary_explains_the_ladder_mark_only_when_one_appears(tmp_path):
     plane = load_plane()
     app = _laddered_app()
     selection = Selection(
-        profile="t", experiment="b", entries=["a"],
+        profile="t", experiment="b", default_entries=[], entries=["a"],
         apps={"app": [Version.BASE]}, node_counts=[1, 4],
     )
     laddered = [_result("a", wall_s=9.0, e2e_s=1.0, nodes=n, app=app)

@@ -92,7 +92,7 @@ apps:
   miniAMR_intel:
     enabled: true
     versions: [base]
-  # Off the roster 2026-08-23: reclassified kind: microbench -- same
+  # Off the roster: kind toy -- same
   # philosophy as miniAMR_intel and dominated by it, with every EDT pinned to
   # the creating rank so nothing distributes.
   miniAMR_intel_bryan:

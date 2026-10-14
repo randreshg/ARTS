@@ -319,7 +319,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* The mid-body release.  The reader is wired before the releasing EDT
    * exists, so its dependence on the gate is registered before anything can
    * satisfy it. */
-  arts_guid_t gate = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t gate = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   uint64_t want_v[2] = {(uint64_t)MAGIC4, 1u};
   arts_guid_t e_rd = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t r =

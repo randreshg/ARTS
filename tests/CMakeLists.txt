@@ -263,14 +263,14 @@ function(add_arts_test test_name)
     # ARTS library targets receive it.
     arts_apply_protocol(${test_name} ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 
-    # Match CARTS launcher expectations: non-PIE binaries avoid pointer-auth
-    # failures when passing raw function pointers across nodes.
+    # Non-PIE, like every program that runs on ARTS
+    # (ARTS_NON_PIE_COMPILE_OPTIONS).
     set_property(TARGET ${test_name} PROPERTY POSITION_INDEPENDENT_CODE OFF)
-    target_compile_options(${test_name} PRIVATE -fno-pie -fno-PIE)
-    target_link_options(${test_name} PRIVATE -no-pie -fno-pie -fno-PIE)
+    target_compile_options(${test_name} PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+    target_link_options(${test_name} PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
 
     # Link with runtime libraries
-    target_link_libraries(${test_name} PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY})
+    target_link_libraries(${test_name} PRIVATE Threads::Threads ${RT_LIBRARY} ${M_LIBRARY})
 
     # Tests link the static archive, like the benchmarks: the runtime under
     # test is the build tree's by construction, with no dynamic resolution
@@ -316,15 +316,14 @@ if(BUILD_CUDA_LIBRARY)
         arts_apply_protocol(${test_name} ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 
         set_property(TARGET ${test_name} PROPERTY POSITION_INDEPENDENT_CODE OFF)
-        target_compile_options(${test_name} PRIVATE -fno-pie -fno-PIE)
-        target_link_options(${test_name} PRIVATE -no-pie -fno-pie -fno-PIE)
+        target_compile_options(${test_name} PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+        target_link_options(${test_name} PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
 
         # Link with CUDA libraries
         target_link_libraries(${test_name} PRIVATE
             Threads::Threads
             ${RT_LIBRARY}
             ${M_LIBRARY}
-            ${ANL_LIBRARY}
             CUDA::cudart
             CUDA::cuda_driver
             CUDA::cublas
@@ -359,11 +358,10 @@ endif()
 
 # A local multinode run claims its own port block: before spawning the peers
 # the runtime bind-probes a pid-seeded block, slides past whatever holds it, and
-# hands the result down.  So the suites no longer hand out bases by hand, and a
-# straggler, an orphan, or an unrelated process squatting a port is absorbed by
-# the runtime rather than poisoning the next test.  Do not reintroduce a fixed
-# base here: a fixed base is exactly the shared state that made one test's
-# leftovers everyone else's problem.
+# hands the result down.  The suites hand out no port base: a straggler, an
+# orphan or an unrelated process holding a port is absorbed by the runtime's
+# probe instead of failing the next test.  A fixed base here would be state
+# shared between tests, so one test's leftovers would fail the next.
 
 # Where a test's ARTS_CONFIG comes from.  ONE variable, used by every
 # helper and by every hand-registered test -- a second spelling is how five
@@ -2117,9 +2115,10 @@ arts_apply_protocol(runtime_edt_event_layout_cpp
     ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 set_property(TARGET runtime_edt_event_layout_cpp
     PROPERTY POSITION_INDEPENDENT_CODE OFF)
-target_compile_options(runtime_edt_event_layout_cpp PRIVATE -fno-pie -fno-PIE)
+target_compile_options(runtime_edt_event_layout_cpp PRIVATE
+    ${ARTS_NON_PIE_COMPILE_OPTIONS})
 target_link_options(runtime_edt_event_layout_cpp PRIVATE
-    -no-pie -fno-pie -fno-PIE)
+    ${ARTS_NON_PIE_LINK_OPTIONS})
 target_link_libraries(runtime_edt_event_layout_cpp PRIVATE Threads::Threads)
 
 register_pure_unit_test(runtime_edt_event_layout_cpp TIMEOUT 60)
@@ -2158,9 +2157,10 @@ if(ARTS_CXL_TREE_RESIDENCY)
         ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
     set_property(TARGET cxl_cache_fields_cpp
         PROPERTY POSITION_INDEPENDENT_CODE OFF)
-    target_compile_options(cxl_cache_fields_cpp PRIVATE -fno-pie -fno-PIE)
+    target_compile_options(cxl_cache_fields_cpp PRIVATE
+        ${ARTS_NON_PIE_COMPILE_OPTIONS})
     target_link_options(cxl_cache_fields_cpp PRIVATE
-        -no-pie -fno-pie -fno-PIE)
+        ${ARTS_NON_PIE_LINK_OPTIONS})
     target_link_libraries(cxl_cache_fields_cpp PRIVATE Threads::Threads)
 
     register_pure_unit_test(cxl_cache_fields_cpp TIMEOUT 60)

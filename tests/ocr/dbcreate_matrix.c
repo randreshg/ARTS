@@ -243,7 +243,7 @@ static void run_cell(unsigned int cell_idx, axis_t axis, unsigned int home_idx,
      * consumer(s) to the event BEFORE the writer's DB-dep satisfy below
      * (which makes the writer runnable), so the registration lands before the
      * writer can fire the event -- the portable single-fire-event ordering. */
-    arts_guid_t writer_done = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+    arts_guid_t writer_done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
     uint64_t wparam[1] = {cell_idx};
     arts_guid_t writer = arts_edt_create(
         writer_edt, 1, wparam, 1,

@@ -88,7 +88,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* A live coherent DB whose buffer mark_edt_ready_by_guid will re-derive. */
   void *p = NULL;
-  arts_guid_t db = arts_db_create(&p, sizeof(uint64_t), ARTS_DB_DEFAULT,
+  arts_guid_t db = arts_db_create(&p, sizeof(uint64_t), ARTS_DB,
                                   ARTS_DB_PROP_NONE, NULL);
   ((uint64_t *)p)[0] = 0xABCDu;
   arts_db_release(db, DB_MODE_RW);

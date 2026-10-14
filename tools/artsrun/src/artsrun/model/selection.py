@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import AppClass, Catalog, Version
@@ -70,61 +70,22 @@ def _first_sibling_cpu_count() -> int | None:
     return len(firsts) if firsts else None
 
 
-# Earlier names of experiment files: a selection saved under one replays
-# under the current name.
-LEGACY_EXPERIMENT_NAMES = {
-    "main-gate": "paper-gate",
-    "paper-controls": "control-main",
-    "controls-gate": "control-gate",
-}
-
-
 class Selection(BaseModel):
-    # A key no field takes is a setting that no longer exists; loading past
-    # it would replay the selection as something it never was.
+    # A key no field takes is refused: loading past it would replay the
+    # selection as something it never was.
     model_config = ConfigDict(extra="forbid")
 
     profile: str
     experiment: str
     # The experiment's own entry list, recorded beside the entries this
     # campaign actually runs so a reader can tell a default run from one
-    # whose entries were chosen for it.  None on selections saved before
-    # experiments carried entries.
-    default_entries: list[str] | None = None
+    # whose entries were chosen for it.
+    default_entries: list[str]
     entries: list[str] = Field(min_length=1)
     apps: dict[str, list[Version]] = Field(min_length=1)
     node_counts: list[int] = Field(min_length=1)
     repeats: int = 1
     build_dir: str | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _experiment_from_benchset(cls, data):
-        """Selections saved before rosters became experiments name a
-        `benchset`; it is the same file under its current name."""
-        if not isinstance(data, dict) or "benchset" not in data:
-            return data
-        data = dict(data)
-        old = data.pop("benchset")
-        data.setdefault("experiment", LEGACY_EXPERIMENT_NAMES.get(old, old))
-        return data
-
-    @model_validator(mode="before")
-    @classmethod
-    def _no_campaign_device_mode(cls, data):
-        """Selections saved while the device library was a campaign option
-        carry it; the profile names it now, and nothing else may."""
-        if not isinstance(data, dict):
-            return data
-        data = dict(data)
-        old = {k: data.pop(k, None) for k in
-               ("cxl", "cxl_rapid_include_dir", "cxl_lib_dir")}
-        if any(old.values()):
-            raise ValueError(
-                "this selection was saved with a device-library setting of its "
-                "own; the profile names it now (cxl_include_dir, cxl_library, "
-                "cxl_launch_wrapper, or none for the vendored fake)")
-        return data
 
     def validate_against(
         self,

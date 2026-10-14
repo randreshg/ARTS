@@ -37,8 +37,8 @@ function(add_pure_unit_src name)
     # simply leave the macros unused, so this is harmless for all others.
     arts_apply_protocol(${name} ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
     set_property(TARGET ${name} PROPERTY POSITION_INDEPENDENT_CODE OFF)
-    target_compile_options(${name} PRIVATE -fno-pie -fno-PIE)
-    target_link_options(${name} PRIVATE -no-pie -fno-pie -fno-PIE)
+    target_compile_options(${name} PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+    target_link_options(${name} PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
     target_link_libraries(${name} PRIVATE Threads::Threads ${PU_LIBS})
     if(NOT PU_TIMEOUT)
         set(PU_TIMEOUT 60)
@@ -563,14 +563,6 @@ register_multinode_test(launcher_no_respawn TIMEOUT 60 VARIANTS 2n_9w_1p 4n_4w_1
 add_arts_test(config_load_single_reclaim)
 register_single_node_test(config_load_single_reclaim TIMEOUT 30)
 set_tests_properties(config_load_single_reclaim PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_load_single_reclaim")
-
-# config_removed_keys_reject: pure_unit (links libarts, starts no runtime;
-# forks to probe the refusal of every removed key: sender_threads,
-# receiver_threads, default_ports, deque_type, auto_shutdown, fam_pool_mb and
-# fam_strict).
-add_arts_test(config_removed_keys_reject)
-register_pure_unit_test(config_removed_keys_reject TIMEOUT 30)
-set_tests_properties(config_removed_keys_reject PROPERTIES PASS_REGULAR_EXPRESSION "PASS config_removed_keys_reject")
 
 # config_scheduler_range: pure_unit (links libarts, starts no runtime; forks
 # to probe the refusal of a scheduler index past this build's loop table).  The

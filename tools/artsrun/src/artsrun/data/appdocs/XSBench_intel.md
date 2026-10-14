@@ -242,7 +242,7 @@ expressed in placement.
 
 ## Placement (hinted)
 
-As-born round-robins every link of every lookup independently: rankLookup
+The base program round-robins every link of every lookup independently: rankLookup
 lands somewhere, spawns macroxs there, which lands somewhere else, which spawns
 the aggregator on a third rank — each chain's intermediate results cross the
 wire twice for nothing (see above).
@@ -266,7 +266,7 @@ so base ≡ hinted at the one-node anchor by construction). Five maps, `N` =
 | `microxsAggregator` (link 3) | the creating rank (`mcChainEdtHint`), i.e. link 2's rank, i.e. the same leaf home |
 
 Two things the layer buys. **Home spreading**: the readers draw a uniformly
-random index, so no placement can make the *set* of reads local — but as-born
+random index, so no placement can make the *set* of reads local — but in the base program
 every grid object is homed on the one rank that ran its init EDT, which then
 serves the whole machine. Spreading splits that serving load. A singleton
 cannot be split at all, so the nine handle blocks the compute phase acquires

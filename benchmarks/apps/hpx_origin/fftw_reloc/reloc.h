@@ -58,15 +58,6 @@ size_t fftw_reloc_snapshot_size(const fftw_reloc_context *context);
 void fftw_reloc_snapshot_write(const fftw_reloc_context *context, void *image);
 fftw_reloc_context *fftw_reloc_snapshot_open(void *image, size_t size);
 
-/* Placement of a published image inside storage the caller owns.  Reserve
- * tells the caller how much storage an image of that size needs, `at` where
- * the image begins inside it, and `protect` makes the image's own pages
- * read-only for the span of the transforms.  The ordinary build reserves
- * exactly the image, places it at the base and protects nothing. */
-size_t fftw_reloc_image_reserve(size_t size);
-void *fftw_reloc_image_at(void *storage);
-int fftw_reloc_image_protect(void *image, size_t size, int readonly);
-
 /* One row transform: `array` is the currently acquired array bound to the
  * plan's borrowed identity, `offset` the row's byte offset inside it.  An
  * offset that starts on a complex element keeps every row's alignment equal

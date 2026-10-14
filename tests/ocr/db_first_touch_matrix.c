@@ -136,7 +136,7 @@ static void run_case(unsigned int idx) {
   dh.rank = (self + c->home_off) % nranks;
   void *addr = NULL;
   arts_guid_t db =
-      arts_db_create(&addr, DB_BYTES, ARTS_DB_DEFAULT, c->db_flags, &dh);
+      arts_db_create(&addr, DB_BYTES, ARTS_DB, c->db_flags, &dh);
   if (db == NULL_GUID) {
     arts_printf("FAIL: %s — datablock create failed\n", c->name);
     arts_test_fail();

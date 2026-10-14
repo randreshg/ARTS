@@ -104,7 +104,7 @@ static void rank_creator(uint32_t paramc, const uint64_t *paramv,
   (void)depc;
   (void)depv;
   arts_guid_t label = (arts_guid_t)paramv[P_LABEL];
-  arts_event_hint_t h = ARTS_EVENT_HINT_STICKY;
+  arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
   h.guid = label;
   (void)arts_event_create(&h);
   /* The consumer inherits this creator's scope: a scope named explicitly

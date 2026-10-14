@@ -200,7 +200,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
   arts_guid_t label = arts_guid_reserve(ARTS_GUID_DB, 0u);
-  arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_STICKY);
+  arts_guid_t done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
   arts_guid_t t = arts_edt_create(
       tail, 0, NULL, 1, &(arts_edt_hint_t){.rank = 0u, .finish_event = finish});

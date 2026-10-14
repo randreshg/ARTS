@@ -84,7 +84,7 @@ void transfer_to_db(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int *host = NULL;
   arts_guid_t db_guid =
       arts_db_create((void **)&host, sizeof(unsigned int) * N_ELEMENTS,
-                     ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
+                     ARTS_DB, ARTS_DB_PROP_NONE, NULL);
 
   /* Copy from GPU device memory into the host DB */
   arts_put_in_db_from_gpu(dev_data, db_guid, 0,

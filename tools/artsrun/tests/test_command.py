@@ -32,7 +32,7 @@ def _cell(kind: RuntimeKind, nodes: int, cfg: Path | None = None):
     )
     return Cell(entry=_entry(kind), app=app, nodes=nodes, repeat=1,
                 binary=Path("/opt/bin/app"), args=["12", "4"], timeout_s=60,
-                cfg=cfg)
+                cpu_width=16, cfg=cfg)
 
 
 def _ssh_profile() -> Profile:
@@ -132,8 +132,9 @@ def test_a_remote_reference_cell_keeps_the_site_transport(kind):
 def _selection(**kw):
     from artsrun.model.selection import Selection
 
-    base = dict(profile="t", experiment="b", entries=["xsocr"],
-                apps={"nqueens": [Version.BASE]}, node_counts=[1])
+    base = dict(profile="t", experiment="b", default_entries=[],
+                entries=["xsocr"], apps={"nqueens": [Version.BASE]},
+                node_counts=[1])
     base.update(kw)
     return Selection.model_validate(base)
 
@@ -322,7 +323,8 @@ def _measured_cell(post_verify: str | None = None):
         marker="DONE", scalar_re=r"sum (\d+)", post_verify=post_verify,
     )
     return Cell(entry=_entry(RuntimeKind.OCRVX), app=app, nodes=1, repeat=1,
-                binary=Path("/opt/bin/app"), args=[], timeout_s=1800)
+                binary=Path("/opt/bin/app"), args=[], timeout_s=1800,
+                cpu_width=16)
 
 
 def _sleeper(tmp_path, text):
@@ -419,18 +421,6 @@ def _cli(*args):
     from artsrun.cli import app
 
     return CliRunner().invoke(app, list(args), env={"COLUMNS": "400"})
-
-
-@pytest.mark.parametrize("args", [
-    ["run", "-p", "local-cxl", "-b", "paper-main", "--dry-run"],
-    ["run", "-p", "local-cxl", "--benchset", "paper-main", "--dry-run"],
-    ["apps", "-b", "paper-main"],
-    ["benchset", "list"],
-])
-def test_the_benchset_spellings_name_the_rename(args):
-    result = _cli(*args)
-    assert result.exit_code != 0
-    assert "-x/--experiment" in result.output
 
 
 def test_a_run_takes_the_experiment_s_entries_by_default():

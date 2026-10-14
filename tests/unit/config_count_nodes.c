@@ -12,7 +12,7 @@
  *   "node[10-01]" reversed -> 10  (abs diff)
  *   "node[5]"              -> 1   (single number)
  * and refuses at load (ARTS_ERROR) every value the routing-table parser would
- * read differently: a port suffix ("node[1-5]:[50000-50004]", "a:22"), an
+ * read differently: an entry holding ':' ("node[1-5]:[50000-50004]", "a:22"), an
  * unbalanced '[', bracket content too long for the parser's buffer, a bracket
  * that is not digits with at most one '-', text after ']', empty entries, a
  * range bound above UINT_MAX and a total that does not fit an unsigned int.

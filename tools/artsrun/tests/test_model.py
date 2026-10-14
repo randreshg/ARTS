@@ -57,19 +57,17 @@ def test_hpx_is_selectable_but_sits_on_no_plane_position():
     assert all(hpx not in plane.entries_of(c) for c in plane.cells)
 
 
-def test_the_db_wrf_section_offers_flush_and_draws_its_retired_arm():
+def test_the_db_wrf_section_offers_flush():
     plane = load_plane()
     assert [m.model for m in plane.models] == ["DB_WRF"]
     db_wrf = plane.models[0]
-    assert [c.arm for c in db_wrf.cells] == ["FLUSH", "VAL_WT_RETAIN"]
-    flush, retired = db_wrf.cells
-    assert flush.buildable and flush.variant == "wrf_flush"
-    assert not retired.buildable and "retired" in retired.reason
+    assert [c.arm for c in db_wrf.cells] == ["FLUSH"]
+    flush, = db_wrf.cells
+    assert flush.variant == "wrf_flush"
     entry = plane.entry("arts_wrf_flush")
     assert entry.kind is RuntimeKind.ARTS and entry.model == "DB_WRF"
     assert entry.cell == "DB_WRF/FLUSH"
     assert plane.entries_of(flush) == [entry]
-    assert plane.entries_of(retired) == []
     assert entry.binary("nqueens", hinted=False) == "nqueens_arts_wrf_flush"
 
 
@@ -157,28 +155,6 @@ def test_an_experiment_must_name_plane_entries():
     x = Experiment.model_validate({"name": "x", "entries": [
         "arts_wrf_flush", "arts_excl_purge_cxl_staged"]})
     assert x.entries == ["arts_excl_purge_cxl_staged", "arts_wrf_flush"]
-
-
-def test_a_node_profile_that_lists_entries_is_refused_naming_the_move():
-    with pytest.raises(ValidationError, match="no longer lists entries.*moved "
-                                              "to the experiment"):
-        Profile.model_validate(_local(entries=["arts_excl_purge"]))
-    from artsrun import store
-
-    for name in store.list_profiles():
-        assert "entries" not in store.load_profile(name).model_dump(), name
-
-
-def test_a_selection_saved_under_a_benchset_replays_as_its_experiment():
-    base = {"profile": "p", "entries": ["arts_val_wb"],
-            "apps": {"nqueens": ["base"]}, "node_counts": [1]}
-    for old, new in (("main-gate", "paper-gate"),
-                     ("paper-controls", "control-main"),
-                     ("controls-gate", "control-gate"),
-                     ("paper-main", "paper-main")):
-        sel = Selection.model_validate(base | {"benchset": old})
-        assert sel.experiment == new
-        assert sel.default_entries is None
 
 
 def test_everything_starts_from_the_experiment_entries():
@@ -295,13 +271,13 @@ def test_a_restructured_version_resolves_to_the_rewrite_target():
     assert stem == catalog.apps[named.restructured_as].binary
 
 
-def test_optimized_version_resolves_to_the_opt_target():
+def test_the_hinted_version_resolves_to_the_hinted_target():
     catalog = load_catalog()
     _, stem = catalog.resolve("fft", Version.HINTED)
     assert stem.endswith("_hinted")
 
 
-def test_optimized_is_refused_where_the_source_has_no_hint_layer():
+def test_hinted_is_refused_where_the_source_has_no_hint_layer():
     # Whichever application has no layer — naming one here makes the test fail
     # when that application later gains one, which says nothing about the
     # refusal being tested.
@@ -347,20 +323,6 @@ def test_a_dry_run_configures_nothing(tmp_path):
     assert not (tmp_path / "bt").exists()
 
 
-def test_the_old_hinted_name_still_parses_as_optimized():
-    # The version was recorded as "hinted" before the rename; selections and
-    # experiments written under that name must replay unchanged.
-    assert Version("hinted") is Version.HINTED
-    selection = Selection.model_validate({
-        "profile": "p", "experiment": "b", "entries": ["arts_val_wb"],
-        "apps": {"nqueens": ["hinted"]}, "node_counts": [1],
-    })
-    assert selection.apps["nqueens"] == [Version.HINTED]
-    bench = Experiment.model_validate(
-        {"name": "b", "entries": ["arts_val_wb"], "apps": {"nqueens": {"versions": ["hinted"]}}})
-    assert bench.apps["nqueens"].versions == [Version.HINTED]
-
-
 # --- profile --------------------------------------------------------------
 def _local(**over):
     base = dict(
@@ -403,7 +365,7 @@ def test_the_local_cxl_smoke_profile_loads_and_fits_the_host(monkeypatch,
     # count — so this exercises the real check a campaign runs into, rather
     # than reimplementing it and drifting from it.
     selection = Selection(
-        profile=profile.name, experiment="b", entries=entries,
+        profile=profile.name, experiment="b", default_entries=[], entries=entries,
         apps={"nqueens": [Version.BASE]}, node_counts=profile.nodes,
     )
     selection.validate_against(plane, load_catalog(), profile)
@@ -424,7 +386,7 @@ def test_the_laptop_profile_fits_its_host_for_every_entry(monkeypatch,
     entries = plane.ordered(["arts_val_wb", "arts_excl_purge", "xsocr",
                              "ocrvx"], "-e")
     selection = Selection(
-        profile=profile.name, experiment="b", entries=entries,
+        profile=profile.name, experiment="b", default_entries=[], entries=entries,
         apps={"nqueens": [Version.BASE]}, node_counts=profile.nodes,
     )
     selection.validate_against(plane, load_catalog(), profile)
@@ -633,7 +595,7 @@ def test_selection_rejects_a_node_count_outside_the_profile_sweep():
     plane, catalog = load_plane(), load_catalog()
     profile = Profile.model_validate(_local())
     sel = Selection(
-        profile="t", experiment="b", entries=["arts_val_wb"],
+        profile="t", experiment="b", default_entries=[], entries=["arts_val_wb"],
         apps={"nqueens": [Version.BASE]}, node_counts=[8],
     )
     with pytest.raises(ValueError, match="not in profile"):
@@ -650,7 +612,7 @@ def _width_catalog(cls: str, width: int | None) -> Catalog:
 
 def _width_selection() -> Selection:
     return Selection(
-        profile="t", experiment="b", entries=["arts_val_wb"],
+        profile="t", experiment="b", default_entries=[], entries=["arts_val_wb"],
         apps={"w": [Version.BASE]}, node_counts=[1, 2],
     )
 
@@ -709,7 +671,7 @@ def test_a_roster_that_leaves_the_arguments_alone_is_still_checked():
 
 def test_cell_count_is_the_product_of_the_three_surfaces():
     sel = Selection(
-        profile="t", experiment="b", entries=["arts_val_wb", "xsocr"],
+        profile="t", experiment="b", default_entries=[], entries=["arts_val_wb", "xsocr"],
         apps={"nqueens": [Version.BASE, Version.HINTED]},
         node_counts=[1, 2], repeats=3,
     )
@@ -812,11 +774,6 @@ def test_the_catalog_separates_apps_probes_and_toys():
     grouped = {a.name for a in (*apps, *attacks, *toys, *hpx)}
     assert grouped == {a.name for a in catalog.rows}
     assert len(apps) + len(attacks) + len(toys) + len(hpx) == len(catalog.rows)
-
-
-def test_the_old_probe_spelling_still_parses():
-    # The probe group was spelled "microbench" before its rename.
-    assert Kind("microbench") is Kind.ATTACK
 
 
 def test_no_probe_or_toy_is_enabled_by_default():
@@ -1006,10 +963,10 @@ def test_a_dry_run_leaves_nothing_under_the_campaign_log_root(tmp_path, monkeypa
     exp.mkdir()
     monkeypatch.setattr(mod, "logs_root", lambda: exp)
     plane, catalog = load_plane(), load_catalog()
-    prof = store.load_profile("ferrari-local")
+    prof = store.load_profile("fixture-local")
     bs = store.default_experiment()
     selection = Selection(
-        profile=prof.name, experiment=bs.name, entries=["arts_val_wb"],
+        profile=prof.name, experiment=bs.name, default_entries=[], entries=["arts_val_wb"],
         apps={"nqueens": [Version.BASE]}, node_counts=[1], repeats=1,
     )
     with mod.scratch_run_dir() as scratch:
@@ -1250,7 +1207,7 @@ def test_the_build_plan_skips_the_reference_the_expansion_skips(
     from artsrun.model.selection import Selection
 
     plane, _, local, _ = _reference_fixture()
-    sel = Selection(profile="p", experiment="t",
+    sel = Selection(profile="p", experiment="t", default_entries=[],
                     entries=["arts_excl_purge", "xsocr"],
                     apps={"nqueens": [Version.BASE]}, node_counts=[1, 2],
                     repeats=1)

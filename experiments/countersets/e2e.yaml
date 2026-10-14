@@ -5,5 +5,4 @@
 name: e2e
 description: no counters; the run's only output is the end-to-end stamp
 capture_interval: 250
-allow_empty: true
 counters: {}

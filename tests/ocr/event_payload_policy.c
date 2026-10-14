@@ -52,7 +52,7 @@ static void policy_lane(void) {
 static void value_lane(void) {
   for (unsigned int rank = 0; rank < arts_get_total_ranks(); ++rank) {
     arts_guid_t block = arts_guid_reserve(ARTS_GUID_DB, rank);
-    arts_guid_t opaque_event = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+    arts_guid_t opaque_event = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
     uint64_t payloads[] = {0,
                            42,
                            (uint64_t)block,
@@ -61,7 +61,7 @@ static void value_lane(void) {
                            UINT64_C(0x4000000000000001)};
     for (unsigned int i = 0; i < sizeof(payloads) / sizeof(payloads[0]); ++i) {
       arts_guid_t finish = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-      arts_event_hint_t hint = ARTS_EVENT_HINT_ONCE;
+      arts_event_hint_t hint = ARTS_EVENT_HINT_DEFAULTS;
       hint.rank = rank;
       arts_guid_t source = arts_event_create(&hint);
       arts_guid_t sink = arts_edt_create(

@@ -160,7 +160,7 @@ the layer holds the anchor where base does not. What the layer does is
 containment, never distribution — the restructured version carries the
 distribution story.
 
-As-born is placement-blind, and for this program that is structurally fatal at
+The base program is placement-blind, and for this program that is structurally fatal at
 multinode: the entire recursion slices ONE shared data block acquired
 `DB_MODE_RW` (see Wiring), write permission is exclusive at rank granularity,
 and a round-robin-scattered tree therefore cannot compute in parallel across

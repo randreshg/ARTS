@@ -116,8 +116,7 @@ references:
 # the OCR-model protocols: the runtime orders every conflict, so any OCR-legal
 # program is admitted.  The protocols below require the DB-WRF model instead —
 # they are correct only for programs whose write acquisitions are exclusive —
-# so they sit under their own heading and never in the grid.  A cell with no
-# variant is a retired arm: drawn with its reason, never selectable.
+# so they sit under their own heading and never in the grid.
 models:
   DB_WRF:
     label: DB-WRF
@@ -132,9 +131,3 @@ models:
         note: >-
           fetch the whole payload at every remote acquire, write it back at
           every remote RW release, block for the home's acknowledgement
-      - arm: VAL_WT_RETAIN
-        label: VAL·WT·RETAIN
-        reason: >-
-          retired — the validation family carried under a model that needs no
-          validation (buffer versions, a served-version ledger, read and
-          write combining); FLUSH is the model's arm

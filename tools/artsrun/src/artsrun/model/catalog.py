@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import StrEnum
 from functools import lru_cache
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from artsrun.data import load_data
 from artsrun.paths import repo_root
@@ -47,18 +47,6 @@ class Kind(StrEnum):
     TOY = "toy"
     ATTACK = "attack"
 
-    @classmethod
-    def _missing_(cls, value):
-        # Pre-split spelling: "application" named today's APP.  The probe
-        # group was spelled "microbench" before its rename to ATTACK; the
-        # still-older use of that word for today's TOY group predates the
-        # split and is not what the alias restores.
-        if value == "application":
-            return cls.APP
-        if value == "microbench":
-            return cls.ATTACK
-        return None
-
 
 class Origin(StrEnum):
     """Which programming model the row's program was written in.
@@ -87,15 +75,6 @@ class Version(StrEnum):
     HINTED = "hinted"
     RESTRUCTURED = "restructured"
 
-    @classmethod
-    def _missing_(cls, value):
-        # The tiers were recorded as "asborn"/"optimized" before the rename;
-        # accept the old names so recorded selections stay replayable.
-        if value == "asborn":
-            return cls.BASE
-        if value == "optimized":
-            return cls.HINTED
-        return None
 
 class ScalarKind(StrEnum):
     FLOAT = "float"
@@ -141,16 +120,11 @@ class AppEntry(BaseModel):
     # rather than reporting a width the cell will not reach.
     width_max: int | None = Field(default=None, ge=1)
 
-    # "optimized" is the field's pre-rename spelling, accepted on input
-    # so entries renamed in later bundles still parse meanwhile.
-    hinted: bool = Field(default=False, validation_alias=AliasChoices("hinted", "optimized"))
+    hinted: bool = False
     restructured_as: str | None = None
     restructured_from: str | None = None
 
     origin: Origin = Origin.OCR
-    # Retired fields, kept only to name their replacement loudly.
-    hpx: list[str] | None = None
-    hpx_tier: str | None = None
 
     # Optional post-run verifier: a shell command run in the cell's working
     # directory after the binary exits 0 (chained with &&, so its exit status
@@ -223,11 +197,6 @@ class AppEntry(BaseModel):
 
     @model_validator(mode="after")
     def _check_origin(self) -> "AppEntry":
-        if self.hpx is not None or self.hpx_tier is not None:
-            raise ValueError(
-                f"{self.name}: `hpx`/`hpx_tier` are gone — an HPX program is a"
-                " row of the HPX-origin section (hpx_apps.yaml), named"
-                " `<stem>_hpx`, and the HPX entry runs that section only")
         if self.origin is Origin.HPX:
             if not self.name.endswith("_hpx") or self.binary != self.name:
                 raise ValueError(

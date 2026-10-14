@@ -48,7 +48,7 @@ def _cell(kind: RuntimeKind, nodes: int, cfg: Path | None = None,
     )
     return Cell(entry=_entry(kind), app=app, nodes=nodes, repeat=1,
                 binary=Path("/opt/bin/app"), args=["12", "4"], timeout_s=60,
-                cfg=cfg)
+                cpu_width=16, cfg=cfg)
 
 
 def _slurm_profile(**slurm) -> Profile:

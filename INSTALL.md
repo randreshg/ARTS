@@ -55,7 +55,7 @@ Dependencies
 | ---- | ------- | -------- | ----- |
 | CMake | >= 3.22 | Required | The build is CMake-driven. |
 | Ninja | any | Required | ARTS enforces the Ninja generator; Make is **not** supported. |
-| pthreads / librt / libm / libanl | system | Required | Provided by glibc on Linux. |
+| pthreads / librt / libm | system | Required | Provided by glibc on Linux. |
 | libatomic | system | Required | For 16-byte atomics (DWCAS). |
 | hwloc | pinned in `third_party/CMakeLists.txt` | Bundled | Built from the official release tarball — no system install, no autotools needed. |
 | libfabric | pinned in `third_party/CMakeLists.txt` | Bundled | Built from the official release tarball — no system install, no autotools needed. |
@@ -110,6 +110,14 @@ ninja -C build install
 The public headers (`arts.h`, `arts/graph.h`, `arts/gpu.h`)
 and the `libarts` static/shared libraries are installed under the prefix, along
 with a CMake package config so downstream projects can `find_package(ARTS)`.
+A program linking ARTS is built non-PIE, because task function pointers cross
+ranks as addresses: the installed `ARTS::static` and `ARTS::shared` targets
+add `-fno-pie` and `-no-pie` to the executables that link them (a shared
+library or module that links ARTS keeps its `-fPIC`).  Such an executable must
+not combine `POSITION_INDEPENDENT_CODE ON` with `check_pie_supported()`: CMake
+then appends `-fPIE -pie` after those options and builds the program PIE again.
+For the same reason a task's function must live in the executable, since a
+shared library loads at a different address on each rank.
 
 Build Options
 -------------
@@ -120,13 +128,12 @@ with defaults lives in [README.md](README.md#build-options); the most common are
 | Option | Default | Purpose |
 | ------ | ------- | ------- |
 | `CMAKE_BUILD_TYPE` | `Debug` | `Debug` or `Release`. |
-| `ARTS_MEMORY_MODEL` | `OCR` (derived) | Memory model — **derived** from `ARTS_COHERENCE_PROTOCOL`, not chosen independently (passing it explicitly only asserts the value its protocol already implies; a mismatch is a configure error): `OCR` (races legal, the runtime orders every conflict it must; required by `VAL`/`INV`/`EXCL`) or `DB_WRF` (prose DB-WRF; exclusive write acquisition — the program guarantees that at most one write-mode acquisition of a DataBlock is live at any time, system-wide; required by `FLUSH`; evaluation only). Compile-time; all ranks must share one build. |
-| `ARTS_COHERENCE_PROTOCOL` | `INV` | Coherence protocol — who keeps reader copies valid: `INV` (default; release-time invalidation rounds), `VAL` (acquire-time version validation, readers never blocked/tracked/invalidated), or `EXCL` (per-DB distributed reader-writer lock), all under the `OCR` model; or `FLUSH` (fetch the whole payload at every remote acquire, write it back at every remote RW release, block for the home's ACK) under the `DB_WRF` model, with no write- or release-policy axis. Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN, OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH. |
+| `ARTS_COHERENCE_PROTOCOL` | `INV` | Coherence protocol — who keeps reader copies valid — which also fixes the memory model the program must satisfy: `INV` (default; release-time invalidation rounds), `VAL` (acquire-time version validation, readers never blocked/tracked/invalidated), or `EXCL` (per-DB distributed reader-writer lock), all under the OCR model (races legal, the runtime orders every conflict it must); or `FLUSH` (fetch the whole payload at every remote acquire, write it back at every remote RW release, block for the home's ACK) under the DB-WRF model (exclusive write acquisition — the program guarantees that at most one write-mode acquisition of a DataBlock is live at any time, system-wide; evaluation only), with no write- or release-policy axis. Valid combos: {VAL,INV}×WT×{PURGE,RETAIN}, {VAL,INV}×WB×RETAIN, EXCL×WB×{PURGE,RETAIN}, FLUSH. Compile-time; all ranks must share one build. |
 | `ARTS_WRITE_POLICY` | `WB` | Write policy at release granularity — `WT` (write-through: payload flushed to the block's home at every release; home serves reads) or `WB` (default; write-back: payload stays with the last writer, directory forwards on demand). Live in INV/VAL; EXCL requires WB. |
 | `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with a grant when its last local user finishes — `PURGE` (hand it back to the home, with the payload when it is an EXCL write grant) or `RETAIN` (default; keep it until another node asks). Live in EXCL (read and write grants) and in WT × {VAL, INV} (the write grant); WB requires RETAIN. |
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the ctest suite. |
-| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (needs MPI). |
+| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (the reference runtimes need a host MPI; the ARTS variants do not). |
 | `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan). |
 | `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_WRITE_COMPLETION_DELAY_MS`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`), each inert until its environment variable is set. |
 | `ARTS_DEBUG_DB_QUARANTINE` | `OFF` | Debug builds only: hold every freed coherent data-block descriptor back, filled, and report a write through a reference that outlived it. |
@@ -135,21 +142,20 @@ A Release build carries no debug facility; each `ARTS_DEBUG_*` option is OFF
 by default, accepted only in a Debug build, and combines with the others.
 
 A faster linker is selected with CMake's own `-DCMAKE_LINKER_TYPE=MOLD`
-(cmake >= 3.29) — there is no ARTS-specific linker option.
+(cmake >= 3.29).
 
 Coherence Protocols
 -------------------
 
 DataBlock consistency behavior is controlled by one primary compile-time
 knob and two protocol-conditional sub-knobs. `ARTS_COHERENCE_PROTOCOL`
-selects the protocol, which determines the memory model (`ARTS_MEMORY_MODEL`
-is **derived**, not chosen independently — passing it explicitly only
-asserts the value its protocol already implies): `INV` (default), `VAL`, or
-`EXCL` require the `OCR` model (implementing the OCR v1.2.0 §1.6 memory
-model); `FLUSH` requires the `DB_WRF` model (prose DB-WRF; exclusive write
-acquisition — the program guarantees that at most one write-mode acquisition
-of a DataBlock is live at any time, system-wide; evaluation only, and can
-make a program outside that contract yield wrong results).
+selects the protocol, which determines the memory model the program must
+satisfy: `INV` (default), `VAL`, or `EXCL` require the OCR model
+(implementing the OCR v1.2.0 §1.6 memory model); `FLUSH` requires the DB-WRF
+model (exclusive write acquisition — the program guarantees that at most one
+write-mode acquisition of a DataBlock is live at any time, system-wide;
+evaluation only, and can make a program outside that contract yield wrong
+results).
 The sub-knobs depend on the protocol: `ARTS_WRITE_POLICY` (`WT`/`WB`,
 default `WB`) selects **where** the canonical payload lives under `VAL`/`INV`
 — `WB` (with the last writer) or `WT` (flushed back to the DB home at every
@@ -163,8 +169,8 @@ and every rank in a multinode run must use the same build. Each
 configuration is its own build tree, for example:
 
 ```bash
-cmake -GNinja -Bbuild_ocr_val_wt  -DCMAKE_BUILD_TYPE=Debug -DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WT
-cmake -GNinja -Bbuild_ocr_val_wb  -DCMAKE_BUILD_TYPE=Debug -DARTS_MEMORY_MODEL=OCR -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WB
+cmake -GNinja -Bbuild_ocr_val_wt  -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WT
+cmake -GNinja -Bbuild_ocr_val_wb  -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WB
 cmake -GNinja -Bbuild_wrf_flush   -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=FLUSH
 ninja -C build_ocr_val_wt && ninja -C build_ocr_val_wb && ninja -C build_wrf_flush
 ```

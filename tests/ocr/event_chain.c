@@ -120,7 +120,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   // Test 3: Already-fired IDEM-equivalent event → wire EDT after fire →
   // add_dependence fast path delivers immediate signal.
-  arts_event_hint_t idem_hint = ARTS_EVENT_HINT_IDEMPOTENT;
+  arts_event_hint_t idem_hint = ARTS_EVENT_HINT_DEFAULTS;
   arts_guid_t ev4 = arts_event_create(&idem_hint);
   arts_event_satisfy_slot(ev4, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
   // Now wire after fire — fast path self-signals.

@@ -84,7 +84,7 @@ static uint64_t installed_tag(arts_guid_t g) {
 static void event_lane(void) {
   const char *lane = "event";
   arts_guid_t g = arts_guid_reserve(ARTS_GUID_EVENT, arts_get_current_rank());
-  arts_event_hint_t h = ARTS_EVENT_HINT_STICKY;
+  arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
   h.guid = g;
 
   expect(arts_event_create(&h) == g, lane,

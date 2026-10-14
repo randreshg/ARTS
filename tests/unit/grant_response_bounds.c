@@ -37,7 +37,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   } else if (strcmp(which, "map") == 0) {
     void *p = NULL;
     hdr.db_guid =
-        arts_db_create(&p, 64, ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
+        arts_db_create(&p, 64, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     arts_db_release(hdr.db_guid, DB_MODE_RW);
     hdr.header.rank = arts_get_current_rank();
     hdr.map_entry_count = 4;

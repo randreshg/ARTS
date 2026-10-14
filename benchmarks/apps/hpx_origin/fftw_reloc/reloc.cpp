@@ -7,10 +7,6 @@
 #include <map>
 #include <set>
 #include <vector>
-#ifdef FFTW_RELOC_PROTECT
-#include <sys/mman.h>
-#include <unistd.h>
-#endif
 
 namespace {
 constexpr uint64_t object_tag = UINT64_C(0xe000000000000000);
@@ -44,8 +40,7 @@ struct binding {
  * that contains an address is a search over the image's own array.  Neither
  * needs a structure built per invocation. */
 struct image_header {
-  uint64_t magic, size, entries, locators, globals, allocations, frees,
-      fingerprint;
+  uint64_t magic, size, entries, locators, globals, fingerprint;
 };
 struct image_entry { uint64_t size, data, slots, slot_count, borrowed_key; };
 struct image_locator { uint64_t data, size, identity; };
@@ -92,12 +87,6 @@ struct fftw_reloc_context {
   uint64_t next_identity = 0;
   binding borrowed;
   std::vector<binding> scratch;
-  uint64_t allocations = 0;
-  uint64_t frees = 0;
-  uint64_t pointer_stores = 0;
-  uint64_t pointer_loads = 0;
-  uint64_t sort_calls = 0;
-  uint64_t sort_callbacks = 0;
   bool readonly = false;
 
   ~fftw_reloc_context() {
@@ -258,9 +247,6 @@ extern "C" void *fftw_reloc_alloc(void *context, uint64_t size) {
     c->objects[id].owned = true;
     c->objects[id].retained = !c->readonly;
   }
-#ifdef FFTW_RELOC_AUDIT
-  ++c->allocations;
-#endif
   return p;
 }
 
@@ -277,9 +263,6 @@ extern "C" void fftw_reloc_free(void *context, void *pointer) {
       if (at->base == pointer) {
         if (at->owned) std::free(pointer);
         c->scratch.erase(at);
-#ifdef FFTW_RELOC_AUDIT
-        ++c->frees;
-#endif
         return;
       }
     fail("free is not an allocation base");
@@ -289,9 +272,6 @@ extern "C" void fftw_reloc_free(void *context, void *pointer) {
   if (o.owned) std::free(pointer);
   o.alive = false;
   o.pointer_slots.clear();
-#ifdef FFTW_RELOC_AUDIT
-  ++c->frees;
-#endif
 }
 
 extern "C" uint64_t fftw_reloc_reference(fftw_reloc_context *c, const void *p) {
@@ -317,9 +297,6 @@ extern "C" void *fftw_reloc_resolve(fftw_reloc_context *c, uint64_t value) {
 
 extern "C" void *fftw_reloc_load(void *context, void *pointer) {
   auto *c = static_cast<fftw_reloc_context *>(context);
-#ifdef FFTW_RELOC_AUDIT
-  ++c->pointer_loads;
-#endif
   uint64_t address=reinterpret_cast<uintptr_t>(pointer);
   if(address && (address&tag_mask)!=object_tag && (address&tag_mask)!=symbol_tag) {
     for(uint64_t i=0;i<fftw_reloc_initializer_count;++i) {
@@ -363,9 +340,6 @@ extern "C" void *fftw_reloc_store(void *context, void *slot, void *pointer) {
   /* The slot index is metadata for validation and publication; a context that
    * publishes nothing does not carry it. */
   if (!c->image) c->objects[id].pointer_slots.insert(offset);
-#ifdef FFTW_RELOC_AUDIT
-  ++c->pointer_stores;
-#endif
   return reinterpret_cast<void *>(static_cast<uintptr_t>(encode(c, pointer, false)));
 }
 
@@ -448,17 +422,11 @@ extern "C" void fftw_reloc_set(void *context, void *destination,
 struct sort_context { void *context; int (*compare)(void *,const void *,const void *); };
 static int compare_adapter(const void *a, const void *b, void *opaque) {
   auto *s = static_cast<sort_context *>(opaque);
-#ifdef FFTW_RELOC_AUDIT
-  ++static_cast<fftw_reloc_context *>(s->context)->sort_callbacks;
-#endif
   return s->compare(s->context, a, b);
 }
 extern "C" void fftw_reloc_qsort(void *context, void *base, uint64_t count,
                                   uint64_t size, void *compare) {
   sort_context s{context, reinterpret_cast<int (*)(void *,const void *,const void *)>(compare)};
-#ifdef FFTW_RELOC_AUDIT
-  ++static_cast<fftw_reloc_context *>(context)->sort_calls;
-#endif
   qsort_r(base, count, size, compare_adapter, &s);
 }
 
@@ -517,8 +485,8 @@ extern "C" void fftw_reloc_trace(const fftw_reloc_context *c) {
       ++live; bytes += o.size; slots += o.pointer_slots.size();
     }
   }
-  std::printf("FFTW-RELOC allocations=%lu frees=%lu live=%lu bytes=%lu pointer_slots=%lu stores=%lu loads=%lu qsort=%lu callbacks=%lu\n",
-              c->allocations,c->frees,live,bytes,slots,c->pointer_stores,c->pointer_loads,c->sort_calls,c->sort_callbacks);
+  std::printf("FFTW-RELOC live=%lu bytes=%lu pointer_slots=%lu\n",
+              live,bytes,slots);
 }
 
 extern "C" void fftw_reloc_dump(const fftw_reloc_context *c,const char *path) {
@@ -574,7 +542,7 @@ extern "C" void fftw_reloc_snapshot_write(const fftw_reloc_context *c, void *ima
   auto *bytes = static_cast<char *>(image);
   auto *h = reinterpret_cast<image_header *>(bytes);
   *h = {image_magic, fftw_reloc_snapshot_size(c), entries, locators, globals,
-        c->allocations, c->frees, fftw_reloc_fingerprint};
+        fftw_reloc_fingerprint};
   auto *entry = reinterpret_cast<image_entry *>(bytes + sizeof(*h));
   auto *locator = reinterpret_cast<image_locator *>(entry + entries);
   auto *global = reinterpret_cast<uint64_t *>(locator + locators);
@@ -626,8 +594,6 @@ static void attach(fftw_reloc_context *c, const void *image, size_t size) {
   c->global_ids = reinterpret_cast<const uint64_t *>(c->locators + h->locators);
   c->global_count = h->globals;
   c->next_identity = h->entries;
-  c->allocations = h->allocations;
-  c->frees = h->frees;
   c->readonly = true;
 }
 
@@ -683,39 +649,7 @@ extern "C" fftw_reloc_context *fftw_reloc_snapshot_open(void *image,size_t size)
   }
   for(uint64_t i=1;i<h->globals;++i)
     if(global[i]) c->globals.emplace(i,global[i]);
-  c->allocations=h->allocations;
-  c->frees=h->frees;
   return c;
-}
-
-extern "C" size_t fftw_reloc_image_reserve(size_t size) {
-#ifdef FFTW_RELOC_PROTECT
-  const size_t page = (size_t)sysconf(_SC_PAGESIZE);
-  return page + ((size + page - 1) & ~(page - 1));
-#else
-  return size;
-#endif
-}
-
-extern "C" void *fftw_reloc_image_at(void *storage) {
-#ifdef FFTW_RELOC_PROTECT
-  const uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
-  return (void *)(((uintptr_t)storage + page - 1) & ~(page - 1));
-#else
-  return storage;
-#endif
-}
-
-extern "C" int fftw_reloc_image_protect(void *image, size_t size, int readonly) {
-#ifdef FFTW_RELOC_PROTECT
-  const size_t page = (size_t)sysconf(_SC_PAGESIZE);
-  if ((uintptr_t)image & (page - 1)) fail("image is not page aligned");
-  return mprotect(image, (size + page - 1) & ~(page - 1),
-                  readonly ? PROT_READ : (PROT_READ | PROT_WRITE));
-#else
-  (void)image; (void)size; (void)readonly;
-  return 0;
-#endif
 }
 
 extern "C" {

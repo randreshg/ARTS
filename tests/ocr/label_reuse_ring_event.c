@@ -41,7 +41,7 @@ static void producer(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
   arts_guid_t label = (arts_guid_t)paramv[P_LABEL];
   uint64_t k = paramv[P_GEN];
-  arts_event_hint_t h = ARTS_EVENT_HINT_STICKY;
+  arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
   h.guid = label;
   if (k == 0u) {
     (void)arts_event_create(&h);

@@ -59,8 +59,9 @@
 
 /* No-hint EDT placement policy: ROUNDROBIN (default) distributes execution
  * rank across all nodes when the caller expresses no placement preference
- * (NULL hint or ARTS_HINT_ANY_RANK), mirroring arts_db_create's NULL-hint
- * home distribution.  CREATOR pins to the calling rank (legacy behavior).
+ * (NULL hint or ARTS_HINT_ANY_RANK), with a per-node counter, the scheme
+ * arts_db_create uses under ARTS_NOHINT_DB_HOME=ROUNDROBIN.  CREATOR pins to
+ * the calling rank.
  * CMake sets this for every libarts compile; the fallback covers any TU
  * that pulls in edt.c outside the normal build (e.g. direct inclusion). */
 #ifndef ARTS_NOHINT_EDT_ROUNDROBIN
@@ -295,10 +296,11 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
     /* No placement preference (NULL hint, or an explicit hint that still
      * needs other fields populated but leaves rank unpinned via
      * ARTS_HINT_ANY_RANK — e.g. the OCR shim's finish/output-event-bearing
-     * hint).  ROUNDROBIN distributes execution rank across all nodes
-     * (mirrors arts_db_create's NULL-hint home distribution); CREATOR
-     * reproduces the legacy pin-to-creator behavior.  Both arms resolve to
-     * a concrete rank — the sentinel never reaches guid encoding. */
+     * hint).  ROUNDROBIN distributes execution rank across all nodes with a
+     * per-node counter (the scheme arts_db_create uses under
+     * ARTS_NOHINT_DB_HOME=ROUNDROBIN); CREATOR pins the EDT to its creating
+     * rank.  Both arms resolve to a concrete rank — the sentinel never
+     * reaches guid encoding. */
 #if ARTS_NOHINT_EDT_ROUNDROBIN
     rank = arts_atomic_fetch_add(&arts_node_info.edt_rr_route, 1U) %
            arts_global_rank_count;
@@ -424,8 +426,6 @@ void *arts_get_depv(void *edt_ptr) {
   }
   return (void *)((uint64_t *)(edt + 1) + paramc);
 }
-
-/* arts_get_dep_modes removed — mode now lives in arts_edt_dep_t.mode */
 
 /*
  * arts_edt_satisfy_slot — Satisfy one dependency slot on an EDT.

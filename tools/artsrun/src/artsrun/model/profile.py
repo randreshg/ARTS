@@ -20,7 +20,7 @@ class Launcher(StrEnum):
 class CxlLibrary(StrEnum):
     """Which library the CXL entries link: the vendored fake (one host's
     shared memory standing in for the device) or the device's own, named by
-    the profile's three paths."""
+    the profile's cxl_* paths."""
 
     FAKE = "fake"
     REAL = "real"
@@ -49,17 +49,16 @@ class SshSettings(BaseModel):
     @classmethod
     def _plain_host_names(cls, hosts: list[str]) -> list[str]:
         """Each host becomes one entry of the runtime's `nodes` list, which
-        refuses a port suffix or an empty entry and expands a bracket into
-        several nodes, so an entry holding ',', '[', ']', ':' (an IPv6
-        literal included) or whitespace fails the profile here rather than
-        every cell at load."""
+        refuses ':' or an empty entry and expands a bracket into several
+        nodes, so an entry holding ',', '[', ']', ':' (an IPv6 literal
+        included) or whitespace fails the profile here rather than every cell
+        at load."""
         for host in hosts:
             if not host or re.search(r"[,\[\]:\s]", host):
                 raise ValueError(
                     f"ssh.hosts entry {host!r} is not a plain host name: the "
                     "runtime's nodes list takes one name per node, with no "
-                    "port suffix (ports come from `ports`), no bracket range "
-                    "and no ':' or whitespace")
+                    "bracket range and no ',', ':' or whitespace")
         return hosts
 
 
@@ -154,11 +153,17 @@ class Profile(BaseModel):
     regpool_slab_mb: int | None = None
 
     # The device library the CXL entries link, and the site's launch wrapper
-    # that sets the device's regions up around a whole launch.  All three or
+    # that sets the device's regions up around a whole launch.  All five or
     # none: none is the vendored fake library, which the tree builds itself;
     # a subset is a mistake, refused here.  Absolute paths: the build tree is
-    # configured from them wherever the build runs.
+    # configured from them wherever the build runs.  The first four are the
+    # tree's ARTS_CXL_REAL=ON paths: the device SDK's headers
+    # (ARTS_CXL_RAPID_INCLUDE_DIR) and libraries (ARTS_CXL_RAPID_LIB_DIR), and
+    # the glue library's installed headers (ARTS_CXL_LIB_INCLUDE_DIR) and file
+    # (ARTS_CXL_LIB).
     cxl_include_dir: str | None = None
+    cxl_rapid_lib_dir: str | None = None
+    cxl_lib_include_dir: str | None = None
     cxl_library: str | None = None
     cxl_launch_wrapper: str | None = None
 
@@ -230,21 +235,23 @@ class Profile(BaseModel):
             return self.flux
         return None
 
-    CXL_PATHS: ClassVar[tuple[str, ...]] = ("cxl_include_dir", "cxl_library", "cxl_launch_wrapper")
+    CXL_PATHS: ClassVar[tuple[str, ...]] = (
+        "cxl_include_dir", "cxl_rapid_lib_dir", "cxl_lib_include_dir",
+        "cxl_library", "cxl_launch_wrapper")
 
     @property
     def cxl_library_kind(self) -> CxlLibrary:
         return CxlLibrary.REAL if self.cxl_library else CxlLibrary.FAKE
 
     def _check_cxl_statement(self) -> None:
-        """All three paths or none, and absolute."""
+        """All the paths or none, and absolute."""
         given = [k for k in self.CXL_PATHS if getattr(self, k)]
         if given and len(given) != len(self.CXL_PATHS):
             missing = [k for k in self.CXL_PATHS if k not in given]
             raise ValueError(
                 f"profile '{self.name}': the CXL device library takes all of "
                 f"{', '.join(self.CXL_PATHS)}; {' and '.join(missing)} missing "
-                "(leave all three out for the vendored fake library)")
+                "(leave them all out for the vendored fake library)")
         relative = [k for k in given if not getattr(self, k).startswith("/")]
         if relative:
             raise ValueError(
@@ -261,21 +268,8 @@ class Profile(BaseModel):
                 f"profile '{self.name}' names no CXL device library, so "
                 f"{', '.join(cxl_entries)} would run on the vendored fake, which "
                 f"is one host's shared memory: under launcher={self.launcher} "
-                f"that needs nodes: [1] (got {self.nodes}); name the three cxl_* "
+                f"that needs nodes: [1] (got {self.nodes}); name the cxl_* "
                 "paths for the device, or leave these entries out")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _no_entries(cls, data):
-        """The entry list moved to the experiment: a node profile states
-        host facts, and which coherence entries run is the study's choice."""
-        if isinstance(data, dict) and "entries" in data:
-            raise ValueError(
-                "a node profile no longer lists entries: the coherence entries "
-                "a campaign runs by default moved to the experiment "
-                "(experiments/experiments/<name>.yaml, `entries:`), and -e "
-                "names others for one run; remove `entries` from this profile")
-        return data
 
     @model_validator(mode="after")
     def _check(self) -> "Profile":

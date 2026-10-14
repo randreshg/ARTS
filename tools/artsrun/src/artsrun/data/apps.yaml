@@ -1466,9 +1466,9 @@ apps:
   miniAMR_intel_bryan:
     binary: miniAMR_intel_bryan
     kind: toy
-    # Reclassified from application: the same physics as miniAMR_intel and
-    # dominated by it, with every EDT pinned to the rank that created it, so
-    # nothing distributes.  A toy is not campaign material.
+    # A toy, not an app: the same physics as miniAMR_intel and dominated by
+    # it, with every EDT pinned to the rank that created it, so nothing
+    # distributes.  A toy is not campaign material.
     default_enabled: false
     class: task
     provenance: 'miniAMR (Mantevo); full refinement and communication'

@@ -253,7 +253,7 @@ Unusually for this catalog the base program places things explicitly —
 `ENABLE_EXTENSION_AFFINITY` is on for every benchmark build and most of the
 affinity code sits *outside* the `OCR_APP_OPTIMIZED_PLACEMENT` guard.  (The
 guarded layer exists: it swaps the box home for a spatial 3-D partition and adds
-hints to the operators and to the control spine.)  As-born:
+hints to the operators and to the control spine.)  The base program:
 
 - **Box DBs** carry an explicit `OCR_HINT_DB_AFFINITY = box_num % rank_count`
   (the `#else` branch of the guard in `init_create_level`) at every level —

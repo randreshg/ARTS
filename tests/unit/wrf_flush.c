@@ -111,10 +111,10 @@ static void link_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 static void case_chain(unsigned int away, arts_guid_t scope) {
   arts_guid_t db = make_block(sizeof(uint64_t), 0, 0);
-  arts_guid_t start = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t start = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   arts_guid_t done[N_LINKS];
   for (int i = 0; i < N_LINKS; i++) {
-    done[i] = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+    done[i] = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   }
   (void)expect_after(db, done[N_LINKS - 1], N_LINKS, 0, scope);
   /* Back to front: the event a link waits on is created by the link made
@@ -150,10 +150,10 @@ static void case_racing_readers(unsigned int ranks, arts_guid_t scope) {
   unsigned int writer = 1u;
   unsigned int reader = (ranks > 2u) ? 2u : 1u;
   arts_guid_t db = make_block(sizeof(uint64_t), 0, 0);
-  arts_guid_t start = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t start = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   arts_guid_t done[N_RACE_LINKS];
   for (int i = 0; i < N_RACE_LINKS; i++) {
-    done[i] = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+    done[i] = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   }
   (void)expect_after(db, done[N_RACE_LINKS - 1], N_RACE_LINKS, 5, scope);
   for (int i = N_RACE_LINKS - 1; i >= 0; i--) {
@@ -181,10 +181,10 @@ static void case_racing_readers(unsigned int ranks, arts_guid_t scope) {
 static void case_volume(unsigned int ranks, arts_guid_t scope) {
   for (unsigned int b = 0; b < N_VOLUME_BLOCKS; b++) {
     arts_guid_t db = make_block(sizeof(uint64_t), b % ranks, 0);
-    arts_guid_t start = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+    arts_guid_t start = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
     arts_guid_t done[VOLUME_WRITERS];
     for (unsigned int j = 0; j < VOLUME_WRITERS; j++) {
-      done[j] = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+      done[j] = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
     }
     (void)expect_after(db, done[VOLUME_WRITERS - 1], VOLUME_WRITERS, 4, scope);
     for (int j = VOLUME_WRITERS - 1; j >= 0; j--) {
@@ -226,9 +226,9 @@ static void step_writer_edt(uint32_t paramc, const uint64_t *paramv,
 
 static void case_creator_away(unsigned int home, arts_guid_t scope) {
   arts_guid_t db = make_block(sizeof(uint64_t), home, SEED);
-  arts_guid_t after_home = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-  arts_guid_t after_read = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-  arts_guid_t after_rewrite = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t after_home = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  arts_guid_t after_read = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  arts_guid_t after_rewrite = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
 
   (void)expect_after(db, after_rewrite, AFTER_REWRITE, 1, scope);
 
@@ -309,8 +309,8 @@ static void overlap_reader_edt(uint32_t paramc, const uint64_t *paramv,
 
 static void case_private_copy(unsigned int away, arts_guid_t scope) {
   arts_guid_t db = make_block(sizeof(uint64_t), 0, PRIVATE_SEED);
-  arts_guid_t go = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-  arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t go = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
 
   (void)expect_after(db, written, PRIVATE_WRITTEN, 2, scope);
 
@@ -343,7 +343,7 @@ static void zero_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
 static void case_zero_size(unsigned int away, arts_guid_t scope) {
   arts_guid_t db = make_block(0, 0, 0);
-  arts_guid_t after_ro = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t after_ro = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   /* Chained by an output event, so the write acquisition is a turn of its
    * own. */
   arts_guid_t w =
@@ -431,8 +431,8 @@ static void case_size_discovery(arts_guid_t scope) {
   }
   arts_db_release(label, DB_MODE_RW);
 
-  arts_guid_t read_done = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-  arts_guid_t write_done = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t read_done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  arts_guid_t write_done = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
 
   uint64_t final_pv[1] = {1};
   arts_guid_t fin =
@@ -491,7 +491,7 @@ static void credit_writer_edt(uint32_t paramc, const uint64_t *paramv,
 
 static void case_spent_credit(unsigned int away, arts_guid_t scope) {
   arts_guid_t db = make_block(sizeof(uint64_t), 0, CREDIT_SEED);
-  arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t written = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   (void)expect_after(db, written, CREDIT_WRITTEN, 3, scope);
   uint64_t pv[1] = {(uint64_t)db};
   arts_guid_t wtr = arts_edt_create(

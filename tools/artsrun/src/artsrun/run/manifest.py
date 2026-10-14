@@ -220,7 +220,7 @@ class Manifest:
                 timeout_s=int(row["timeout_s"]),
                 cfg=Path(row["cfg"]) if row.get("cfg") else None,
                 env=dict(row.get("env", {})),
-                cpu_width=row.get("cpu_width"),
+                cpu_width=int(row["cpu_width"]),
                 cxl=CxlLibrary(row["cxl"]) if row.get("cxl") else None,
                 cxl_region_bytes=row.get("cxl_region_bytes"),
             )

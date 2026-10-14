@@ -28,6 +28,7 @@ def _cell(entry_key: str, app: ResolvedApp, nodes: int = 1) -> Cell:
     return Cell(
         entry=entry, app=app, nodes=nodes, repeat=1,
         binary=Path("/nonexistent"), args=app.args, timeout_s=10,
+        cpu_width=16,
     )
 
 
@@ -60,16 +61,13 @@ def test_e2e_marker_is_parsed_in_seconds():
     assert extract_e2e("noise\n[E2E] 1500000000\n") == 1.5
 
 
-def test_the_runtime_stamp_is_the_measurement_whatever_else_a_log_carries(tmp_path):
-    # A log written before the application-interval marker was retired still
-    # carries its line; the cell is judged and measured by [E2E] alone.
+def test_the_runtime_stamp_is_the_measurement(tmp_path):
     log = tmp_path / "app.log"
-    log.write_text("RESULT = 42\n[APP_E2E] 1250000000\n[E2E] 9000000000\n")
+    log.write_text("RESULT = 42\n[E2E] 9000000000\n")
     result = CellResult(_cell("a", _app()), Status.OK, log_path=log)
     apply_to(result)
     assert result.status is Status.OK
     assert result.e2e_s == 9.0
-    assert not hasattr(result, "app_s")
 
 
 def test_e2e_last_marker_wins_and_absence_is_none():
@@ -282,7 +280,7 @@ def test_a_failed_group_reaches_the_minority_report():
     assert minority_report(vote(results))
 
 
-def _hpx_result(tmp_path, text: str, nodes: int, width: int | None,
+def _hpx_result(tmp_path, text: str, nodes: int, width: int,
                 status: Status = Status.OK) -> CellResult:
     from dataclasses import replace
     from artsrun.model.plane import RuntimeKind, SelectionEntry
@@ -332,17 +330,6 @@ def test_a_marker_prefixed_by_another_ranks_write_still_counts(tmp_path):
              "starting up [HPX] locality=1 localities=2 threads=16\n"
              "sols: 92\n[E2E] 10\n")
     assert _hpx_result(tmp_path, glued, 2, 16).status is Status.OK
-
-
-def test_an_old_manifest_without_a_width_still_checks_the_id_set(tmp_path):
-    good = "[HPX] locality=0 localities=1 threads=16\nsols: 92\n[E2E] 10\n"
-    assert _hpx_result(tmp_path, good, 1, None).status is Status.OK
-    # Two localities that both believe they are locality 0 are two worlds,
-    # which the id set catches with no width to compare.
-    split = ("[HPX] locality=0 localities=1 threads=16\n"
-             "[HPX] locality=0 localities=1 threads=16\nsols: 92\n[E2E] 10\n")
-    r = _hpx_result(tmp_path, split, 2, None)
-    assert r.status is Status.FAIL and "geometry" in r.note
 
 
 # --- rusage witness ---------------------------------------------------------

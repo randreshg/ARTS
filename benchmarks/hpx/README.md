@@ -316,9 +316,7 @@ version), so a program whose `hpx_main` runs on locality 0 alone can print
 it; those reads are parcels themselves, so the count carries a small fixed
 self-overcount on top of the program's traffic — and a single-locality run
 instantiates no parcelport, so it prints zeros. The line follows the end
-stamp only when `ARTS_E2E_MARKER` is set too; on its own it is bare. There is
-no `[STRUCT]` line in this section: that carried the retired ports' own
-structural counters and none of these programs has any.
+stamp only when `ARTS_E2E_MARKER` is set too; on its own it is bare.
 
 ## ARTS versus HPX
 

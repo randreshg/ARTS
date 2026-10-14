@@ -1,6 +1,6 @@
 # miniAMR_forkbomb
 
-> **Reclassified to `kind: microbench` (2026-08-23).**  Its EDT set is a strict
+> **`kind: toy`.**  Its EDT set is a strict
 > subset of `miniAMR_intel_bryan`'s — the same block chain with halo send and
 > receive, minus the checksum, reduction and wrap-up path — which is why it
 > computes no result to pin.  What it exercises is the refinement spawn storm

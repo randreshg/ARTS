@@ -233,9 +233,8 @@ def consensus_table(groups: list[Group], plane: Plane, entries: list[str]) -> Ta
 def scaling_table(results: list[CellResult], entries: list[str]) -> Table:
     """Measured time per node count, one row per (application, configuration).
 
-    The application's declared metric selects its interval. Runtime timing
-    retains a marked wall-time fallback for legacy observations; application
-    intervals require their own stamp and never substitute another interval.
+    The time shown is the runtime's [E2E] stamp; a cell that completed
+    without one shows its wall time instead, marked "w".
 
     A row is a scaling curve only where the workload is the same at every
     node count, so an application whose arguments vary along the sweep is

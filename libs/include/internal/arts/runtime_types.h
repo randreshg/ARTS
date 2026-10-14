@@ -88,7 +88,7 @@ struct arts_edt_s {
    * load-bearing identity carrier, NOT a redundant self-GUID: do not remove. */
   arts_guid_t guid;
   arts_guid_t finish_event;          /**< LATCH event for finish-scope tracking.
-                                          NULL_GUID = no finish-scope (legacy path). */
+                                          NULL_GUID = no finish scope. */
   arts_guid_t output_event;          /**< Per-EDT result channel (OCR-style).
                                           NULL_GUID = none.  The run path
                                           satisfies this event with output_data

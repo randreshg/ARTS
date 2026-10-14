@@ -129,26 +129,17 @@ class PlaneCellEntry(BaseModel):
 
 
 class ModelCell(BaseModel):
-    """One arm of a memory model that is not the OCR grid's.
-
-    A cell with a variant is selectable; one with a reason is a retired arm,
-    drawn so the section reads as a statement about the model rather than a
-    list of what happens to be built."""
+    """One arm of a memory model that is not the OCR grid's."""
 
     model: str
     arm: str
     label: str
-    variant: str | None = None
+    variant: str
     note: str | None = None
-    reason: str | None = None
 
     @property
     def key(self) -> str:
         return f"{self.model}/{self.arm}"
-
-    @property
-    def buildable(self) -> bool:
-        return self.variant is not None
 
 
 class ModelSection(BaseModel):
@@ -312,11 +303,10 @@ def load_plane() -> Plane:
         models.append(ModelSection(model=model, label=spec["label"],
                                    note=spec["note"], cells=cells_m))
         for cell in cells_m:
-            if cell.buildable:
-                entries.append(SelectionEntry(
-                    key=_arts_key(cell.variant), label=_arts_key(cell.variant),
-                    kind=RuntimeKind.ARTS, cell=cell.key, variant=cell.variant,
-                    note=cell.note, model=model))
+            entries.append(SelectionEntry(
+                key=_arts_key(cell.variant), label=_arts_key(cell.variant),
+                kind=RuntimeKind.ARTS, cell=cell.key, variant=cell.variant,
+                note=cell.note, model=model))
 
     for key, ref in raw.get("external_references", {}).items():
         entries.append(

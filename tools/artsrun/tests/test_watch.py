@@ -44,7 +44,7 @@ def _cell(entry_key: str, nodes: int = 1, repeat: int = 1,
     )
     return Cell(entry=entry, app=app, nodes=nodes, repeat=repeat,
                 binary=Path("/opt/bin/app"), args=["3"], timeout_s=60,
-                cfg=cfg)
+                cpu_width=16, cfg=cfg)
 
 
 def _write(run_dir: Path, cells: list[Cell], *, launcher: str = "local",
@@ -88,18 +88,9 @@ def test_the_manifest_round_trips_cells_and_their_invocations(tmp_path):
 
 def test_the_manifest_round_trips_the_core_block_a_cell_was_granted(tmp_path):
     from dataclasses import replace
-    _write(tmp_path, [replace(_cell("arts_val_wb"), cpu_width=16)])
+    _write(tmp_path, [replace(_cell("arts_val_wb"), cpu_width=12)])
     manifest = Manifest.load(tmp_path)
-    assert manifest is not None and manifest.cells[0].cpu_width == 16
-    # A manifest written before the field existed carries no width, and a
-    # cell with no recorded width is not judged against one.
-    path = tmp_path / "manifest.json"
-    payload = json.loads(path.read_text())
-    for row in payload["cells"]:
-        row.pop("cpu_width")
-    path.write_text(json.dumps(payload))
-    legacy = Manifest.load(tmp_path)
-    assert legacy is not None and legacy.cells[0].cpu_width is None
+    assert manifest is not None and manifest.cells[0].cpu_width == 12
 
 
 def test_the_manifest_names_the_configurations_behind_a_cell(tmp_path):
@@ -317,28 +308,6 @@ def test_a_draining_cell_freezes_its_clock_where_the_run_ended(tmp_path):
     assert view.elapsed_s == 60.0  # frozen, no matter when we look
     assert view.active
     assert not state.finished
-
-
-def test_a_pre_rename_track_still_lands_on_its_cell(tmp_path):
-    # The optimized version was once named "hinted": its value in a saved
-    # manifest parses through the alias, and an old track key still lands on
-    # the freshly keyed cell instead of spawning a stub twin.
-    from artsrun.model.catalog import Version
-
-    cell = _cell("arts_val_wb")
-    cell = Cell(entry=cell.entry,
-                app=cell.app.model_copy(update={"version": Version.HINTED}),
-                nodes=1, repeat=1, binary=cell.binary, args=cell.args,
-                timeout_s=cell.timeout_s)
-    assert cell.key == "app:hinted@1n/arts_val_wb#1"
-    _write(tmp_path, [cell])
-    state = RunState(tmp_path)
-    _track(tmp_path, [{"t": 1.0, "event": "finished",
-                       "cell": "app:optimized@1n/arts_val_wb#1", "status": "ok",
-                       "rc": 0, "wall_s": 2.0, "note": "", "scalar": "1.0"}])
-    state.refresh()
-    assert len(state.order) == 1
-    assert state.views[cell.key].status is Status.OK
 
 
 def test_a_marker_finishes_a_cell_nobody_was_watching(tmp_path):

@@ -3,10 +3,9 @@ Fibonacci Example
 
 .. warning::
 
-   Part of the deprecated ``examples/`` tree — it does not build against the
-   current public API (``ARTS_BUILD_EXAMPLES`` is forced OFF; enabling it is
-   a configure error).  Kept as a reading reference until modernized; the
-   run instructions below are historical.
+   Part of the ``examples/`` tree, which predates the current public API and
+   is not part of the build: this page is a reading reference, and no build
+   tree has the target the run instructions below name.
 
 The Fibonacci example (``examples/cpu/fib.c``) demonstrates recursive
 EDT creation, value-based signaling, and distributed execution.

@@ -268,7 +268,7 @@ placement, the same "worst-case coherence stress by construction" shape as
 
 ## Placement (hinted)
 
-As-born round-robins every link of every lookup independently: rankLookup
+The base program round-robins every link of every lookup independently: rankLookup
 lands somewhere, spawns macroxs there, which lands somewhere else, which spawns
 the aggregator on a third rank — each chain's intermediate results cross the
 wire twice for nothing (see above).

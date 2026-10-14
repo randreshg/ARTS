@@ -76,7 +76,11 @@ Scheduling
 GPU Support
 -----------
 
-To enable GPU support, set ``scheduler=3`` and ``gpu=<N>``.
+To enable GPU support, set ``scheduler=3`` and ``gpu=<N>``.  The four
+device-memory reclamation keys (``free_db_after_gpu_run``,
+``run_gpu_gc_idle``, ``run_gpu_gc_pre_edt``, ``delete_zeros_gpu_gc``) are
+parsed but have no effect: the per-DataBlock return and the
+garbage-collection sweep they gate are not implemented.
 
 .. list-table::
    :header-rows: 1
@@ -115,6 +119,24 @@ To enable GPU support, set ``scheduler=3`` and ``gpu=<N>``.
    * - ``gpu_buff_on``
      - 0
      - Enable GPU stream buffering.
+   * - ``free_db_after_gpu_run``
+     - 0
+     - Mark a DataBlock's device copy for deletion when the GPU EDT that
+       used it completes, instead of keeping it for reuse.  The per-DataBlock
+       return is not implemented, so the key has no effect.
+   * - ``run_gpu_gc_idle``
+     - 1
+     - Run the GPU garbage-collection sweep when a worker is idle.  The
+       sweep is not implemented, so the key has no effect.
+   * - ``run_gpu_gc_pre_edt``
+     - 0
+     - Run the GPU garbage-collection sweep before each GPU EDT executes.
+       The sweep is not implemented, so the key has no effect.
+   * - ``delete_zeros_gpu_gc``
+     - 1
+     - Let the GPU garbage-collection sweep delete DataBlocks with no
+       remaining references.  The sweep is not implemented, so the key has
+       no effect.
 
 Networking
 ----------
@@ -130,12 +152,7 @@ Networking
      - 1
      - Number of progress threads per node, draining the fabric completion
        queue (a single-node run has none: its count goes to the workers).
-       The transport injects sends directly from
-       workers, so there is no separate sender-thread key; fold any sender
-       count from an older config into ``worker_threads``. The removed
-       ``sender_threads`` key and the old ``receiver_threads`` name are a
-       **hard error** at config-parse time, not a silent ignore, so a stale
-       config fails loudly instead of quietly changing its thread budget.
+       The transport injects sends directly from workers.
    * - ``provider``
      - auto
      - libfabric provider name passed to ``fi_getinfo``'s ``prov_name`` hint
@@ -179,6 +196,10 @@ Networking
        mapped to 127.0.0.1, with an interface other than ``lo``) while another
        row is not loopback, since an offset from a loopback address says
        nothing about where the other hosts are.
+   * - ``fabric_domain``
+     - unset
+     - libfabric domain name passed to ``fi_getinfo``'s domain hint (a NIC
+       such as ``cxi0`` or ``mlx5_0``); unset lets the provider choose.
    * - ``regpool_slab_mb``
      - 256
      - Registered-memory base slab size in MB: the first slab carved for a
@@ -202,6 +223,11 @@ Networking
        list (``25000,25010``).  **Required** with ``launcher=ssh``,
        ``slurm``, ``flux``, or ``lsf``, and **rejected** with
        ``launcher=local``.
+   * - ``master_node``
+     - first host of ``nodes``
+     - Host of the master rank under ``launcher=ssh``.  The other launchers
+       ignore it: under Slurm, Flux and LSF the first host of the job's own
+       node list is the master, and a ``launcher=local`` run's is rank 0.
 
 Who fixes the ports depends on where the ranks land.  A remote launcher puts
 one rank on each host, so every rank can listen on the same port — but each of
@@ -244,11 +270,11 @@ leaves the default.
 
 The ``nodes`` list carries hostnames only: each comma-separated entry is a
 host name or a name followed by one bracketed number or range
-(``node[01-10]``) whose bounds are unsigned ints.  Any other entry (a port
-suffix, an empty entry, a malformed bracket) is refused at load whatever the
-launcher.  Only ``launcher=ssh`` places ranks by the list, so only there must
-a ``node_count`` agree with the number of nodes it names; there, a config
-without a ``nodes`` line lists the one host ``localhost``, so
+(``node[01-10]``) whose bounds are unsigned ints.  Any other entry (one
+holding ``:``, an empty entry, a malformed bracket) is refused at load
+whatever the launcher.  Only ``launcher=ssh`` places ranks by the list, so
+only there must a ``node_count`` agree with the number of nodes it names;
+there, a config without a ``nodes`` line lists the one host ``localhost``, so
 ``launcher=ssh`` with ``node_count=4`` and no list is refused.  Under LSF the
 first entry of ``LSB_HOSTS`` (or ``LSB_MCPU_HOSTS``) is taken as the launch
 host and runs no rank, so a list that names no other host is refused.
@@ -274,9 +300,7 @@ CXL Store
 Read only by a build whose own library is CXL-enabled (``ARTS_USE_CXL=ON``,
 which implies ``EXCL`` × ``PURGE``); every other build parses and ignores
 these keys.  The arena a rank allocates from is sized at build time
-(``ARTS_CXL_DB_ARENA_SIZE_BYTES``), not by a config key; the two keys that
-once sized a run's pool no longer exist and are refused at load in every
-build.
+(``ARTS_CXL_DB_ARENA_SIZE_BYTES``), not by a config key.
 
 .. list-table::
    :header-rows: 1

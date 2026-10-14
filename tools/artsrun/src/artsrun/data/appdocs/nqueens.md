@@ -196,7 +196,7 @@ N-Queens's combinatorial (not Fibonacci) growth rate.
 
 ## Placement (hinted)
 
-As-born is placement-blind (see above): `findSolutionsEdt` scatter round-robin
+The base program is placement-blind (see above): `findSolutionsEdt` scatter round-robin
 with no relation to their subtree, and every 8-byte result DB homes wherever
 its producer landed, so the summing side acquires almost everything remotely.
 

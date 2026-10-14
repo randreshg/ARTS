@@ -61,7 +61,7 @@ def _profile() -> Profile:
 
 def _selection(entries: list[str], apps=None) -> Selection:
     return Selection(
-        profile="t", experiment="paper-main", entries=entries,
+        profile="t", experiment="paper-main", default_entries=[], entries=entries,
         apps=apps or {ROW: [Version.BASE]},
         node_counts=[1, 2], repeats=1,
     )
@@ -95,13 +95,6 @@ def test_an_ocr_origin_row_has_no_hpx_program():
     assert e.origin is Origin.OCR
     assert e.hpx_target(Version.BASE) is None
     assert e.hpx_versions == []
-
-
-def test_the_retired_fields_are_loud_errors():
-    with pytest.raises(ValidationError, match="hpx_apps.yaml"):
-        _entry(hpx=["base"])
-    with pytest.raises(ValidationError, match="hpx_apps.yaml"):
-        _entry(hpx_tier="hinted")
 
 
 def test_an_hpx_origin_row_is_one_tier_named_with_the_suffix():
@@ -154,7 +147,7 @@ def test_an_ocr_origin_row_is_ineligible_for_the_hpx_entry(tmp_path):
 def test_expansion_records_a_skip_once_however_many_repeats(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
-    sel = Selection(profile="t", experiment="paper-main", entries=["hpx"],
+    sel = Selection(profile="t", experiment="paper-main", default_entries=[], entries=["hpx"],
                     apps={"fft": [Version.BASE]}, node_counts=[1], repeats=3)
     cells, skipped = expand(sel, plane, catalog, _roster("fft"),
                             _profile(), tmp_path / "apps", {1: {}},

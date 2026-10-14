@@ -82,8 +82,7 @@ typedef intptr_t arts_guid_t;
  * Identifies what kind of object a GUID refers to.  Encoded in the
  * GUID's 2-bit kind field (ARTS_GUID_TYPE_BITS = 2 → 4 valid values
  * + sentinel).  Bit encoding: RESERVED=00, DB=01, EVENT=10, EDT=11.
- * Zero-initialized GUIDs decode to RESERVED (never a valid object),
- * which is more correct than the legacy DB=0 assignment.
+ * Zero-initialized GUIDs decode to RESERVED (never a valid object).
  *
  * All datablocks share the single ARTS_GUID_DB tag; the DB storage
  * subtype is specified via arts_db_types_t at creation time.
@@ -140,14 +139,6 @@ typedef enum {
                   style). */
   ARTS_DB_GPU_PIN, /**< GPU staging (host pinned + per-device replica). */
 } arts_db_types_t;
-
-/* @c ARTS_DB_DEFAULT is the experiment-wide DB storage subtype every benchmark
- * uses.  Its concrete value is decided by the CMake build configuration.
- * Ships as ARTS_DB so the build works without special hardware; flip the cmake
- * option to retarget every benchmark in one place. */
-#ifndef ARTS_DB_DEFAULT
-#define ARTS_DB_DEFAULT ARTS_DB
-#endif
 
 /**
  * @brief DataBlock creation property bits (OCR-spec flags).
@@ -209,19 +200,14 @@ typedef enum {
  *
  *  Three independent hint structs so each creation API can grow features
  *  that do not apply to the others.
- *
- *  Migration from the legacy @c arts_hint_t :
- *    - @c arts_hint_t.rank → @c arts_edt_hint_t.rank or @c
- * arts_db_hint_t.rank
  *  @{ */
 
 /** Bit flags for arts_edt_hint_t.flags.  Reserved for future EDT-create flags;
- *  finish scopes are no longer a flag (use ARTS_EVENT_HINT_FINISH +
- *  arts_edt_hint_t.finish_event instead). */
+ *  a finish scope is an ARTS_EVENT_HINT_FINISH event named in
+ *  arts_edt_hint_t.finish_event. */
 #define ARTS_EDT_FLAG_NONE 0x0000u
 
-/** Hint passed to @c arts_edt_create.  Optional fields collapse the legacy
- *  six EDT-create variants into a single entry point:
+/** Hint passed to @c arts_edt_create.  Optional fields:
  *    - @c rank   selects the home node (default current rank).
  *    - @c guid   when non-NULL_GUID pre-reserves the EDT GUID; the home
  *                rank is then taken from that GUID and @c rank is ignored,
@@ -491,18 +477,14 @@ typedef struct {
                        .channel = false,                                       \
                        .guid = NULL_GUID})
 
-/** Default values: single satisfy fires, then fire-and-linger. */
+/** Default values: single satisfy fires, then fire-and-linger.  The lingering
+ *  single-fire OCR flavors (ONCE, IDEMPOTENT, STICKY) are this event: their
+ *  distinct auto-destroy timing and over-satisfy error are subsumed by the
+ *  fire-and-linger + silent-over-satisfy model.  COUNTED is not — its
+ *  declared consumer count is real and is what reclaims the event (see the
+ *  macro below). */
 #define ARTS_EVENT_HINT_DEFAULTS ARTS_EVENT_HINT_LATCH(1)
 
-/* The lingering single-fire OCR flavors collapse to LATCH(1): the distinct
- * ONCE/IDEM/STICKY semantics (auto-destroy timing, over-satisfy error) are
- * subsumed by the unified fire-and-linger + silent-over-satisfy model.
- * COUNTED is NOT in that collapse — its declared consumer count is real and
- * is what reclaims the event (see the macro below).  Aliases kept for source
- * compatibility. */
-#define ARTS_EVENT_HINT_ONCE ARTS_EVENT_HINT_LATCH(1)
-#define ARTS_EVENT_HINT_IDEMPOTENT ARTS_EVENT_HINT_LATCH(1)
-#define ARTS_EVENT_HINT_STICKY ARTS_EVENT_HINT_LATCH(1)
 /** OCR COUNTED_T — fires once, then self-destroys when all `n` declared
  *  dependences have registered.  See arts_event_hint_t::nb_deps. */
 #define ARTS_EVENT_HINT_COUNTED(n)                                             \
@@ -679,7 +661,7 @@ int arts_guid_index_from(arts_guid_t range_guid, arts_guid_t guid);
  * hint struct.  Pass @c NULL, or a hint with @c rank == ARTS_HINT_ANY_RANK,
  * for "no placement preference": the runtime's compile-time no-hint EDT
  * placement policy (ARTS_NOHINT_EDT_PLACEMENT: ROUNDROBIN default, or
- * CREATOR for the legacy pin-to-creator behavior) picks the execution rank.
+ * CREATOR, which keeps the EDT on its creating rank) picks the execution rank.
  * A NULL hint also inherits the caller's ambient finish scope.
  *
  * @param func_ptr Function to execute.

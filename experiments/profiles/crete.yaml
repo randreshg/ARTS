@@ -40,9 +40,11 @@ repeats: 5
 rusage_witness: true
 
 # The device library the CXL entries link here, and the site's launch wrapper
-# that sets the device's regions up around a whole launch.  All three or
+# that sets the device's regions up around a whole launch.  All five or
 # none: none runs the vendored fake; a placeholder fails at configure or at
 # launch, never silently.
 cxl_include_dir: /PATH/TO/device-sdk/include
+cxl_rapid_lib_dir: /PATH/TO/device-sdk/lib
+cxl_lib_include_dir: /PATH/TO/glue/include
 cxl_library: /PATH/TO/glue/libarts_cxl_lib.so
 cxl_launch_wrapper: /PATH/TO/site/run.py

@@ -123,11 +123,6 @@ class PlanePanel(Vertical):
             with Horizontal(classes="plane-row"):
                 yield Label(section.label, classes="plane-family")
                 for cell in section.cells:
-                    if not cell.buildable:
-                        blank = Static(cell.label, classes="plane-cell blank")
-                        blank.tooltip = cell.reason
-                        yield blank
-                        continue
                     with Horizontal(classes="plane-cell"):
                         for entry in self.plane.entries_of(cell):
                             toggle = Toggle(cell.label, entry.key, classes="entry-toggle")
@@ -847,7 +842,7 @@ class RunPanel(Vertical):
             yield Label("build tree", classes="run-options-label")
             yield Input(placeholder="build_release (default)", id="run-build-dir")
             yield Label("the CXL entries link the profile's device library "
-                        "(its three cxl_* paths), or the vendored fake when "
+                        "(its cxl_* paths), or the vendored fake when "
                         "it names none", classes="run-options-help")
 
     def refresh_runs(self) -> None:

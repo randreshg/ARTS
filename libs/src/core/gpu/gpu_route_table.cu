@@ -196,7 +196,7 @@ void *arts_gpu_route_table_lookup_db_res(arts_guid_t key, int gpu_id,
                                          unsigned int *time_stamp, bool res) {
   void *ret = NULL;
   arts_route_table_t *route_table = arts_node_info.gpu_route_table[gpu_id];
-  /* New model: data ptr lookup (legacy state machine removed). */
+  /* Data pointer lookup. */
   arts_route_item_t *temp = arts_route_table_search_for_key(route_table, key);
   arts_shared_ptr_t h = arts_route_item_acquire(temp);
   arts_item_wrapper_t *wrapper = (arts_item_wrapper_t *)arts_shared_get(h);
@@ -206,8 +206,7 @@ void *arts_gpu_route_table_lookup_db_res(arts_guid_t key, int gpu_id,
       if (time_stamp) {
         *time_stamp = set_gpu_timestamp(&wrapper->time_stamp);
       }
-      /* touched (per-item version) removed in new route_item model --
-       * task 1a.4 will revisit GPU LC versioning. */
+      /* The route item carries no per-item version, so `touched` is unused. */
       (void)touched;
     }
     ret = (void *)wrapper->real_data;
@@ -226,8 +225,8 @@ void *arts_gpu_route_table_lookup_db(arts_guid_t key, int gpu_id,
 
 bool arts_gpu_route_table_return_db(arts_guid_t key, bool mark_to_delete,
                                     unsigned int gpu_id) {
-  /* No ref count: route_table no longer takes refs.  task 1a.4 will
-   * revisit GPU lifecycle. */
+  /* The route table holds no reference, so there is nothing to return; the
+   * call does nothing and returns false. */
   (void)key;
   (void)mark_to_delete;
   (void)gpu_id;
@@ -300,9 +299,8 @@ uint64_t arts_gpu_clean_up_route_table(unsigned int size_to_clean,
 
     arts_route_item_t *item = arts_route_table_iterate(&iter);
     while (item && freed_size < size_to_clean) {
-      /* FIXME: GPU GC sweep needs new model -- task 1a.4
-       * Legacy used item->lock bitfield (DELETE_ITEM/AVAILABLE_ITEM/count)
-       * + dec_item(); both removed.  GC is a no-op until rewritten. */
+      /* FIXME: the sweep is not implemented: it walks the table and frees
+       * nothing. */
       (void)clean_zeros;
       (void)route_table;
       arts_item_wrapper_t *wrapper = gpu_slot_wrapper(item);

@@ -122,7 +122,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_db_hint_t dh = ARTS_DB_HINT_DEFAULTS;
   dh.rank = home;
   void *addr = NULL;
-  arts_guid_t db = arts_db_create(&addr, DB_BYTES, ARTS_DB_DEFAULT,
+  arts_guid_t db = arts_db_create(&addr, DB_BYTES, ARTS_DB,
                                   ARTS_DB_PROP_NO_ACQUIRE, &dh);
   if (db == NULL_GUID) {
     fail("could not create the datablock");

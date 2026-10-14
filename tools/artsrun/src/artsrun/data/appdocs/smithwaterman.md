@@ -161,7 +161,7 @@ read-shared everywhere, never migrated).
 
 ## Placement (hinted)
 
-As-born scatters the W x H wavefront round-robin, so a tile's three inputs
+The base program scatters the W x H wavefront round-robin, so a tile's three inputs
 (West's right column, North's bottom row, NW's corner) almost always live on
 three different remote ranks (see above).
 

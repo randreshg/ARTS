@@ -48,17 +48,25 @@ def _cache_value(build_dir: Path, key: str) -> str | None:
     return None
 
 
+def _cxl_paths(profile: Profile) -> tuple[tuple[str, str | None], ...]:
+    """Each ARTS_CXL_REAL=ON cache key, with the profile path that sets it."""
+    return (("ARTS_CXL_RAPID_INCLUDE_DIR", profile.cxl_include_dir),
+            ("ARTS_CXL_RAPID_LIB_DIR", profile.cxl_rapid_lib_dir),
+            ("ARTS_CXL_LIB_INCLUDE_DIR", profile.cxl_lib_include_dir),
+            ("ARTS_CXL_LIB", profile.cxl_library))
+
+
 def cxl_options(profile: Profile) -> list[str]:
     """The cache values a tree needs to run this profile's CXL entries on the
     library it names.  The entries are benchmark variants that carry their own
     protocol, so only the library is named; a stale path left in the cache is
     exactly the state that makes a later configure mean something else, so
-    the fake clears both."""
+    the fake clears every one."""
     if profile.cxl_library_kind is CxlLibrary.REAL:
         return ["-DARTS_CXL_REAL=ON",
-                f"-DARTS_CXL_RAPID_INCLUDE_DIR={profile.cxl_include_dir}",
-                f"-DARTS_CXL_LIB={profile.cxl_library}"]
-    return ["-DARTS_CXL_REAL=OFF", "-DARTS_CXL_RAPID_INCLUDE_DIR=", "-DARTS_CXL_LIB="]
+                *(f"-D{key}={path}" for key, path in _cxl_paths(profile))]
+    return ["-DARTS_CXL_REAL=OFF",
+            *(f"-D{key}=" for key, _ in _cxl_paths(profile))]
 
 
 def _cxl_real_of(build_dir: Path) -> str:
@@ -75,8 +83,7 @@ def cxl_mismatch(build_dir: Path, profile: Profile) -> list[str]:
     out = []
     if have_real != want_real:
         out.append(f"ARTS_CXL_REAL: have {have_real}, want {want_real}")
-    for key, want in (("ARTS_CXL_RAPID_INCLUDE_DIR", profile.cxl_include_dir),
-                      ("ARTS_CXL_LIB", profile.cxl_library)):
+    for key, want in _cxl_paths(profile):
         got = _cache_value(build_dir, key)
         if real:
             if not got or os.path.normpath(got) != os.path.normpath(want):

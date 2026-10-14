@@ -219,9 +219,9 @@ extern "C" {
   X(NUM_GRANT_PURGE_LATCHED)                                                   \
   X(NUM_GRANT_PURGE_STALE_SETTLE)                                              \
   X(NUM_GRANT_REGRANT_DEDUP)
-/* Note: end-to-end / init wall time is no longer a counter — it is the
- * env-gated "[E2E] <ns>" stderr marker (rank 0; see runtime.c / shutdown.c /
- * threads.c), identical across arts/xsocr/ocr-vx. */
+/* End-to-end wall time is not a counter: it is the env-gated "[E2E] <ns>"
+ * stderr marker (rank 0; see runtime.c / shutdown.c / threads.c), identical
+ * across arts/xsocr/ocr-vx. */
 
 // Generate enum from X-macro
 typedef enum arts_counter_type_t {

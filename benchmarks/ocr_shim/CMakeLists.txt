@@ -50,12 +50,6 @@ function(arts_ocr_shim_objects target)
         ${SHIM_OCR_TYPE_DEFINE}
     )
 
-    # No-hint DB home and EDT placement policy selectors (see top-level
-    # ARTS_SHIM_NOHINT_DB_HOME and ARTS_SHIM_NOHINT_EDT_PLACE).
-    target_compile_definitions(${target} PRIVATE
-        ARTS_SHIM_NOHINT_DB_HOME_ROUNDROBIN=${_ARTS_SHIM_NOHINT_RR}
-        ARTS_SHIM_NOHINT_EDT_PLACE_ROUNDROBIN=${_ARTS_SHIM_NOHINT_EDT_RR})
-
     target_include_directories(${target} PRIVATE
         ${OCR_ROOT}/inc                # ocr.h, ocr-types.h, etc.
         ${SHIM_OCR_OPTIONS_DIR}        # generated ocr-options_arts.h
@@ -84,8 +78,8 @@ target_include_directories(ocr_shim_event_payload PRIVATE
 target_compile_definitions(ocr_shim_event_payload PRIVATE
     ENABLE_EXTENSION_AFFINITY ENABLE_EXTENSION_PARAMS_EVT ${SHIM_OCR_TYPE_DEFINE})
 set_property(TARGET ocr_shim_event_payload PROPERTY POSITION_INDEPENDENT_CODE OFF)
-target_compile_options(ocr_shim_event_payload PRIVATE -fno-pie -fno-PIE)
-target_link_options(ocr_shim_event_payload PRIVATE -no-pie -fno-pie -fno-PIE)
+target_compile_options(ocr_shim_event_payload PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+target_link_options(ocr_shim_event_payload PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
 target_link_libraries(ocr_shim_event_payload PRIVATE arts_static)
 if(ARTS_BUILD_TESTS)
     set_target_properties(ocr_shim_event_payload PROPERTIES EXCLUDE_FROM_ALL FALSE)
@@ -102,8 +96,8 @@ target_compile_definitions(ocr_shim_finish_release PRIVATE
     ENABLE_EXTENSION_AFFINITY ${SHIM_OCR_TYPE_DEFINE})
 set_property(TARGET ocr_shim_finish_release PROPERTY
     POSITION_INDEPENDENT_CODE OFF)
-target_compile_options(ocr_shim_finish_release PRIVATE -fno-pie -fno-PIE)
-target_link_options(ocr_shim_finish_release PRIVATE -no-pie -fno-pie -fno-PIE)
+target_compile_options(ocr_shim_finish_release PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+target_link_options(ocr_shim_finish_release PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
 target_link_libraries(ocr_shim_finish_release PRIVATE arts_static)
 if(ARTS_BUILD_TESTS)
     set_target_properties(ocr_shim_finish_release PROPERTIES

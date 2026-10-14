@@ -56,33 +56,19 @@ set(ARTS_FOUND TRUE)
 
 # Provide information about available components.  The static library is
 # unconditional; only the shared object is a build choice.
-set(ARTS_STATIC_AVAILABLE TRUE)
 set(ARTS_SHARED_AVAILABLE @ARTS_BUILD_SHARED@)
 set(ARTS_CUDA_AVAILABLE @BUILD_CUDA_LIBRARY@)
 
-# Create convenience variables for standard library
-if(ARTS_STATIC_AVAILABLE)
-    set(ARTS_STATIC_TARGET ARTS::static)
-endif()
-
+set(ARTS_STATIC_TARGET ARTS::static)
 if(ARTS_SHARED_AVAILABLE)
     set(ARTS_SHARED_TARGET ARTS::shared)
 endif()
 
-# Create convenience variables for CUDA library
 if(ARTS_CUDA_AVAILABLE)
-    if(ARTS_STATIC_AVAILABLE)
-        set(ARTS_CUDA_STATIC_TARGET ARTS::cuda_static)
-    endif()
+    set(ARTS_CUDA_STATIC_TARGET ARTS::cuda_static)
     if(ARTS_SHARED_AVAILABLE)
         set(ARTS_CUDA_SHARED_TARGET ARTS::cuda_shared)
     endif()
-    set(ARTS_CUDA_TARGET ARTS::arts_cuda)
-endif()
-
-# Default to the main target (standard library)
-if(TARGET ARTS::arts)
-    set(ARTS_TARGET ARTS::arts)
 endif()
 
 check_required_components(ARTS)

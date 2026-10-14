@@ -65,11 +65,6 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - Build the shared library ``libarts.so`` alongside ``libarts.a``.  The
        static library is unconditional — it is the substrate the benchmark
        variants, the OCR shim and the installed archive derive from.
-   * - ``ARTS_BUILD_EXAMPLES``
-     - OFF (forced)
-     - **Deprecated** — ``examples/`` predates the current public API and
-       does not build; enabling is a configure error until the examples are
-       modernized.  See ``tests/ocr/`` and ``benchmarks/`` for working usage.
    * - ``ARTS_BUILD_TESTS``
      - OFF
      - Build the test programs (registers them with ctest).  Off by
@@ -99,10 +94,6 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - ON
      - Source-build HPX v1.11.0 with its MPI parcelport and build the
        standalone HPX benchmark apps (needs a host MPI).
-   * - ``ARTS_BUILD_BASELINES``
-     - OFF
-     - Build the native (non-OCR) OpenMP/MPI baseline implementations —
-       outside the experiment driver's catalog, explicit opt-in.
    * - ``ARTS_BUILD_DOCS``
      - OFF
      - Build the Doxygen + Sphinx documentation.
@@ -113,29 +104,23 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - ON
      - Auto-detect the local GPU's CUDA architecture via ``nvidia-smi`` (only
        when ``ARTS_USE_GPU=ON``; otherwise set ``CMAKE_CUDA_ARCHITECTURES``).
-   * - ``ARTS_MEMORY_MODEL``
-     - OCR (derived)
-     - Memory model — **derived** from ``ARTS_COHERENCE_PROTOCOL``, not
-       chosen independently (passing it explicitly only asserts the value
-       its protocol already implies; a mismatch is a configure error):
-       ``OCR`` (races legal, the runtime orders every conflict it must;
-       required by ``VAL``/``INV``/``EXCL``) or ``DB_WRF`` (prose DB-WRF;
-       exclusive write acquisition — the program guarantees that at most one
-       write-mode acquisition of a DataBlock is live at any time,
-       system-wide; required by ``FLUSH``; evaluation only). Compile-time;
-       all ranks must share one build.
    * - ``ARTS_COHERENCE_PROTOCOL``
      - INV
-     - Coherence protocol — ``INV`` (default; invalidation: directory
+     - Coherence protocol, which also fixes the memory model the program
+       must satisfy — ``INV`` (default; invalidation: directory
        write-invalidate with acknowledged per-release invalidation rounds),
        ``VAL`` (validation: versioned snapshots, readers never
        blocked/invalidated), or ``EXCL`` (exclusion: per-DB distributed
-       reader-writer lock), all under the ``OCR`` model; or ``FLUSH``
-       (fetch the whole payload at every remote acquire, write it back at
-       every remote RW release) under the ``DB_WRF`` model, with no write-
-       or release-policy axis of its own.
-       Valid combos: OCR×{VAL,INV}×WT×{PURGE,RETAIN}, OCR×{VAL,INV}×WB×RETAIN,
-       OCR×EXCL×WB×{PURGE,RETAIN}, DB_WRF×FLUSH.
+       reader-writer lock), all under the OCR model (races legal, the
+       runtime orders every conflict it must); or ``FLUSH`` (fetch the
+       whole payload at every remote acquire, write it back at every remote
+       RW release) under the DB-WRF model (exclusive write acquisition: the
+       program guarantees that at most one write-mode acquisition of a
+       DataBlock is live at any time, system-wide; evaluation only), with
+       no write- or release-policy axis of its own.
+       Valid combos: {VAL,INV}×WT×{PURGE,RETAIN}, {VAL,INV}×WB×RETAIN,
+       EXCL×WB×{PURGE,RETAIN}, FLUSH.  Compile-time; all ranks must share
+       one build.
    * - ``ARTS_WRITE_POLICY``
      - WB
      - Write policy at release granularity, live in INV/VAL — ``WT``
@@ -168,14 +153,21 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
    * - ``ARTS_CXL_REAL``
      - OFF
      - OFF: the vendored fake library (``third_party/fake_arts_cxl_lib``,
-       built at configure time).  ON: the device library named by
-       ``ARTS_CXL_RAPID_INCLUDE_DIR`` and ``ARTS_CXL_LIB`` below (both
-       required and must exist).  A path given with ``ARTS_CXL_REAL=OFF``
-       is a configure error.
+       built at configure time).  ON: the device library named by the four
+       paths below (all required and must exist).  A path given with
+       ``ARTS_CXL_REAL=OFF`` is a configure error.
    * - ``ARTS_CXL_RAPID_INCLUDE_DIR``
      - (empty)
      - ``ARTS_CXL_REAL=ON``: the directory holding the device SDK's
        ``MemOps.h`` and ``SharedAlloc.h``.
+   * - ``ARTS_CXL_RAPID_LIB_DIR``
+     - (empty)
+     - ``ARTS_CXL_REAL=ON``: the directory holding the device SDK's
+       libraries (``librapid.so``), linked with ``-lrapid`` and an rpath.
+   * - ``ARTS_CXL_LIB_INCLUDE_DIR``
+     - (empty)
+     - ``ARTS_CXL_REAL=ON``: the directory holding the glue library's
+       installed headers.
    * - ``ARTS_CXL_LIB``
      - (empty)
      - ``ARTS_CXL_REAL=ON``: the device glue library file
@@ -189,23 +181,15 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - ROUNDROBIN
      - Where an EDT created with no placement preference (NULL hint, or
        hint rank ``ARTS_HINT_ANY_RANK``) lands — ``ROUNDROBIN`` (default)
-       or ``CREATOR``.
+       or ``CREATOR``.  The OCR shim's ``ocrEdtCreate`` with no affinity
+       hint follows it.
    * - ``ARTS_NOHINT_DB_HOME``
      - CREATOR
      - Where a DB created with no placement preference (NULL hint) is
        homed — ``CREATOR`` (default; first-touch, home stays on the
        creating rank) or ``ROUNDROBIN``.  An explicit hint rank or
-       pre-reserved GUID always wins.
-   * - ``ARTS_SHIM_NOHINT_DB_HOME``
-     - CREATOR
-     - No-hint DB home policy for the OCR shim's ``ocrDbCreate`` —
-       ``CREATOR`` (default; defers to ``ARTS_NOHINT_DB_HOME``) or
-       ``ROUNDROBIN`` (its own counter, independent of the runtime policy).
-   * - ``ARTS_SHIM_NOHINT_EDT_PLACE``
-     - ROUNDROBIN
-     - No-hint EDT placement policy for the OCR shim's ``ocrEdtCreate`` —
-       ``ROUNDROBIN`` (default; defers to ``ARTS_NOHINT_EDT_PLACEMENT``) or
-       ``CREATOR`` (pin to the calling rank).
+       pre-reserved GUID always wins.  The OCR shim's ``ocrDbCreate`` with
+       no affinity hint follows it.
    * - ``ARTS_LOG_LEVEL``
      - 3 / 1
      - Log verbosity (3 in Debug, 1 in Release; empty = the build type's):
@@ -243,8 +227,7 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        default is the all-OFF file; ``configs/counters.cfg`` is the
        profiling example, not the default.
 
-To pick a faster linker, use CMake's own ``-DCMAKE_LINKER_TYPE=MOLD`` (cmake ≥ 3.29);
-there is no ARTS-specific linker option.
+To pick a faster linker, use CMake's own ``-DCMAKE_LINKER_TYPE=MOLD`` (cmake ≥ 3.29).
 
 See :ref:`coherence_protocols` for the normative definition of the protocols and their contracts.
 
@@ -253,14 +236,13 @@ GPU Build
 
 .. code-block:: bash
 
-   cmake -GNinja .. -DCMAKE_BUILD_TYPE=Release -DCUDA_ROOT=$CUDAROOT
+   cmake -GNinja .. -DCMAKE_BUILD_TYPE=Release -DARTS_USE_GPU=ON
 
 Verifying the Build
 -------------------
 
 Configure with ``-DARTS_BUILD_TESTS=ON`` and run the single-node test
-suite as a smoke check (the ``examples/`` tree is deprecated and excluded
-from the build — see the option table above):
+suite as a smoke check:
 
 .. code-block:: bash
 

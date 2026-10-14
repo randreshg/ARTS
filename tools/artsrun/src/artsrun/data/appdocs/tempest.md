@@ -207,7 +207,7 @@ even accumulate.
 
 ## Placement (hinted)
 
-As-born is placement-blind: each timestep's patch EDT lands round-robin, so a
+The base program is placement-blind: each timestep's patch EDT lands round-robin, so a
 patch's halo exchange partners are arbitrary ranks and its persistent halo
 blocks (created once at setup, reused every generation) are acquired remotely
 almost every turn.

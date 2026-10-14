@@ -157,9 +157,8 @@ its own locality's fields, against that rank's DB under an ordinary
 Each value block carries an explicit home hint: the rank that wrote it,
 which is where the origin's future holds its value before the consumer
 reads it. The placement is therefore stated by the program rather than
-inherited from the build's no-hint DB policy (`ARTS_NOHINT_DB_HOME` /
-`ARTS_SHIM_NOHINT_DB_HOME`), which under the default build resolves to the
-same rank.
+inherited from the build's no-hint DB policy (`ARTS_NOHINT_DB_HOME`), which
+under the default build resolves to the same rank.
 
 ## Sizing
 

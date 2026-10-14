@@ -33,7 +33,7 @@ PROBE_BINARY = "alternating_bomb"
 
 
 def _selection(entries: list[str], apps: dict) -> Selection:
-    return Selection(profile="t", experiment="t", entries=entries, apps=apps,
+    return Selection(profile="t", experiment="t", default_entries=[], entries=entries, apps=apps,
                      node_counts=[1], repeats=1)
 
 

@@ -14,7 +14,7 @@ def drive(coro_factory, size=None):
     """Run one piloted session and return whatever it produced."""
 
     async def main():
-        app = ArtsRunApp(profile="ferrari-local", experiment="paper-main")
+        app = ArtsRunApp(profile="fixture-local", experiment="paper-main")
         async with app.run_test(size=size) as pilot:
             return await coro_factory(app, pilot)
 
@@ -51,7 +51,8 @@ def test_the_plane_draws_every_position_but_only_offers_eight():
 
     toggles, blanks = drive(check)
     assert toggles == 14
-    assert blanks == 5
+    # the OCR grid's four unbuildable positions
+    assert blanks == 4
 
 
 def test_one_control_clears_then_restores_the_whole_plane():
@@ -452,12 +453,6 @@ def test_a_machine_with_no_profiles_can_bootstrap_one():
 
 
 # --- profile editing ------------------------------------------------------
-def _profiles_dir(tmp):
-    import os
-    os.environ["ARTS_REPO"] = str(tmp)
-    return tmp
-
-
 def test_the_profile_form_shows_every_field_of_the_stored_profile():
     async def check(app, pilot):
         from textual.widgets import Input
@@ -788,7 +783,7 @@ def _launcher_view(profile_name):
 
 
 def test_a_local_profile_hides_every_launcher_section_and_locks_ports():
-    view = _launcher_view("ferrari-local")
+    view = _launcher_view("fixture-local")
     assert view["ssh"] is False
     assert view["slurm"] is False
     assert view["flux"] is False
@@ -919,7 +914,7 @@ def _visible_field_slack(profile_name, launcher=None):
 
 def test_no_visible_field_clips_its_text():
     # "claimed automatically" is the longest placeholder and was being cut.
-    for profile, launcher in (("ferrari-local", None), ("junction", None),
+    for profile, launcher in (("fixture-local", None), ("junction", None),
                               ("junction", "ssh")):
         for key, text, width in _visible_field_slack(profile, launcher):
             assert width >= len(text), (

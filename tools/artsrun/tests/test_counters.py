@@ -116,15 +116,11 @@ def test_the_rendered_syntax_is_what_the_build_parses():
             assert pattern.match(line), line
 
 
-def test_the_shipped_sets_load_and_enable_something():
+def test_the_shipped_sets_load():
     from artsrun import store
 
     for name in store.list_countersets():
-        cset = store.load_counterset(name)
-        assert cset.enabled or cset.allow_empty, (
-            f"{name} turns nothing on and does not say it means to"
-        )
-        assert cset.capture_interval >= 1
+        assert store.load_counterset(name).capture_interval >= 1
 
 
 def _tree_with_counters(build_dir, settings):
@@ -193,7 +189,7 @@ def test_the_sampling_interval_reaches_the_runtime_configuration():
     from artsrun.render import render_arts
     from artsrun.store import load_profile
 
-    text = render_arts(load_profile("ferrari-local"), 2,
+    text = render_arts(load_profile("fixture-local"), 2,
                        counter_folder="/runs/c", capture_interval=250)
     assert "counter_capture_interval=250" in text
     assert "counter_folder=/runs/c" in text
@@ -207,7 +203,7 @@ def test_a_set_that_turns_everything_off_names_the_counters_still_on(tmp_path):
         "NUM_EDT_CREATE": ("PERIODIC", "CLUSTER", "SUM"),
         "NUM_DB_CREATE": ("OFF", "NODE", "SUM"),
     })
-    empty = Counterset(name="e2e", counters={}, allow_empty=True)
+    empty = Counterset(name="e2e", counters={})
     assert counter_mismatch(build_dir, empty) == ["NUM_EDT_CREATE"]
 
 
@@ -239,7 +235,7 @@ def test_an_all_off_set_still_reconfigures_a_counting_tree(tmp_path, monkeypatch
         plane=None, catalog=None, experiment=None,
         profile=SimpleNamespace(launcher=Launcher.LOCAL),
         build_dir=build_dir, run_dir=tmp_path / "run",
-        counterset=Counterset(name="e2e", counters={}, allow_empty=True),
+        counterset=Counterset(name="e2e", counters={}),
     )
     said = []
     assert c.build_plan(on_line=said.append) == "plan"

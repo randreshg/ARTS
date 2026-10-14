@@ -102,7 +102,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* (3) An undeclared single-fire event must still linger — reclaiming it is
    * exactly what ARTS cannot do without a count. */
   atomic_store(&g_ran, 0u);
-  arts_event_hint_t oh = ARTS_EVENT_HINT_ONCE;
+  arts_event_hint_t oh = ARTS_EVENT_HINT_DEFAULTS;
   arts_guid_t once = arts_event_create(&oh);
   arts_guid_t oc = arts_edt_create(consumer, 0, NULL, 1, NULL);
   arts_add_dependence(once, oc, 0, DB_MODE_NULL);

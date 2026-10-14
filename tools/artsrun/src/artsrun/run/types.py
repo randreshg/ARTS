@@ -24,17 +24,6 @@ class Status(StrEnum):
     SKIPPED = "skipped"
 
 
-def modern_key(key: str) -> str:
-    """A recorded cell key, under today's version names.
-
-    Track files carry the version by its name at the time of writing, and
-    the tiers have been renamed ("asborn" -> "base", "optimized" ->
-    "hinted"); a reader matching old records against freshly expanded cells
-    has to speak one language.
-    """
-    return key.replace(":optimized@", ":hinted@").replace(":asborn@", ":base@")
-
-
 @dataclass(frozen=True)
 class Cell:
     """One measured run: a configuration, an application version, a geometry."""
@@ -46,11 +35,11 @@ class Cell:
     binary: Path
     args: list[str]
     timeout_s: int
-    cfg: Path | None = None
-    env: dict[str, str] = field(default_factory=dict)
     # The core block one rank was granted; a reference's realised geometry is
     # judged against it.
-    cpu_width: int | None = None
+    cpu_width: int
+    cfg: Path | None = None
+    env: dict[str, str] = field(default_factory=dict)
     # The library a CXL cell links, as its profile named it; None for every
     # other cell.
     cxl: CxlLibrary | None = None

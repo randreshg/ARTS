@@ -536,13 +536,12 @@ Grant Plane Rare Paths
 
 .. note::
 
-   End-to-end / init wall time is no longer a counter.  ``TIME_INIT`` and
-   ``TIME_TOTAL`` were replaced by the env-gated ``[E2E] <ns>`` stderr
-   marker: set ``ARTS_E2E_MARKER`` in the environment and rank 0 prints the
-   span from application start to shutdown recognition on exit (see
-   ``libs/src/core/system/threads.c`` / ``runtime.c``), in the same form
-   the reference runtimes (xsocr, ocr-vx) use so a harness parses all
-   three identically.
+   End-to-end wall time is not a counter but the env-gated ``[E2E] <ns>``
+   stderr marker: set ``ARTS_E2E_MARKER`` in the environment and rank 0 prints
+   the span from application start to shutdown recognition on exit (see
+   ``libs/src/core/system/threads.c`` / ``runtime.c``), in the same form the
+   reference runtimes (xsocr, ocr-vx) use so a harness parses all three
+   identically.
 
    ``ARTS_REGPOOL_REPORT`` is the other env-gated marker: set it and every
    rank prints the registered pool's shape to stderr at teardown —

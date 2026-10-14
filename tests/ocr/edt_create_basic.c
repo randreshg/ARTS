@@ -167,7 +167,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Counter DB: holds [passed, failed] as atomics. */
   void *ctr_ptr = NULL;
   arts_guid_t ctr_db = arts_db_create(&ctr_ptr, sizeof(counter_db_t),
-                                       ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
+                                       ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   counter_db_t *ctr = (counter_db_t *)ctr_ptr;
   atomic_init(&ctr->passed, 0u);
   atomic_init(&ctr->failed, 0u);
@@ -220,7 +220,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   {
     void *db_ptr = NULL;
     arts_guid_t test_db =
-        arts_db_create(&db_ptr, 64, ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
+        arts_db_create(&db_ptr, 64, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     arts_guid_t e =
         arts_edt_create(dep_true_edt, 2, base, 2, &(arts_edt_hint_t){.rank = 0});
     arts_add_dependence(ctr_db, e, 0, DB_MODE_RW);

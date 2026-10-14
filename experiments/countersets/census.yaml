@@ -71,4 +71,3 @@ counters:
     mode: ONCE
     level: NODE
     reduce: SUM
-allow_empty: false

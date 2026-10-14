@@ -396,13 +396,13 @@ static arts_guid_t collective_edge_guid(arts_guid_t coll_guid, u32 nrank,
   return ARTS_GUID_MAKE(ARTS_GUID_EVENT, home, key);
 }
 
-/* Create a labeled STICKY ARTS event at the given pre-derived GUID.  An edge
+/* Create a labeled ARTS event at the given pre-derived GUID.  An edge
  * has exactly one creator, its consumer, which creates it once per generation
  * just before binding to it; the producer only satisfies it, and a satisfy
  * that reaches the edge's home before the create waits there for the install.
  * Edge GUIDs embed the generation, so no edge GUID is ever created twice. */
 static void collective_edge_event_ensure(arts_guid_t edge) {
-  arts_event_hint_t h = ARTS_EVENT_HINT_STICKY;
+  arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
   h.guid = edge;
   (void)arts_event_create(&h);
 }
@@ -612,7 +612,7 @@ static void collective_up_edt(uint32_t paramc, const uint64_t *paramv,
 
   /* Accumulate own datum (slot 0) with each child's partial (slots 1..). */
   void *partialPtr;
-  arts_guid_t partialDb = arts_db_create(&partialPtr, payload, ARTS_DB_DEFAULT,
+  arts_guid_t partialDb = arts_db_create(&partialPtr, payload, ARTS_DB,
                                          ARTS_DB_PROP_NONE, NULL);
   memcpy(partialPtr, depv[0].ptr, payload);
   for (uint32_t i = 1; i < depc; i++) {
@@ -678,7 +678,7 @@ static void collective_down_edt(uint32_t paramc, const uint64_t *paramv,
     u32 child = (2u * r) + 1u + c;
     if (child < nrank) {
       void *fwdPtr;
-      arts_guid_t fwdDb = arts_db_create(&fwdPtr, payload, ARTS_DB_DEFAULT,
+      arts_guid_t fwdDb = arts_db_create(&fwdPtr, payload, ARTS_DB,
                                          ARTS_DB_PROP_NONE, NULL);
       if (resultPtr != NULL) {
         memcpy(fwdPtr, resultPtr, payload);
@@ -692,7 +692,7 @@ static void collective_down_edt(uint32_t paramc, const uint64_t *paramv,
   /* Deliver the result to the locally-registered dependent for this gen. */
   if (dep != NULL_GUID) {
     void *outPtr;
-    arts_guid_t outDb = arts_db_create(&outPtr, payload, ARTS_DB_DEFAULT,
+    arts_guid_t outDb = arts_db_create(&outPtr, payload, ARTS_DB,
                                        ARTS_DB_PROP_NONE, NULL);
     if (resultPtr != NULL) {
       memcpy(outPtr, resultPtr, payload);
@@ -752,7 +752,7 @@ static void collective_launch_generation(CollectiveMetadata *meta, u32 r,
    * node, which is this node, but a release keeps the coherence state
    * well-formed. */
   void *ownPtr;
-  arts_guid_t ownDb = arts_db_create(&ownPtr, payload, ARTS_DB_DEFAULT,
+  arts_guid_t ownDb = arts_db_create(&ownPtr, payload, ARTS_DB,
                                      ARTS_DB_PROP_NONE, NULL);
   memcpy(ownPtr, dataPtr, payload);
   arts_db_release(ownDb, ARTS_MODE_RW);
@@ -791,11 +791,8 @@ typedef struct {
 
 /* Cross-rank-portable template GUID encoding.
  *
- * The OCR shim previously stored ocrEdtTemplate as a malloc'd struct
- * and used the heap pointer as the "GUID".  That works under
- * single-node OCR but breaks under fork-launched multinode: one
- * rank's heap pointer is meaningless on another, so any cross-rank
- * EDT_MOVE that carries a template GUID dereferences garbage.
+ * A template GUID crosses ranks (an EDT_MOVE carries it), so it cannot be a
+ * heap pointer: one rank's heap address is meaningless on another.
  *
  * Benchmarks build non-PIE, so every funcPtr is a fixed absolute
  * address — identical across forked ranks.  Pack the entire template
@@ -998,12 +995,8 @@ static void warn_oversized_affinity_once(const char *what, u64 val) {
  * The shim is a thin wrapper: distribution decisions belong to the
  * runtime, not here.  These helpers only translate an explicit
  * OCR_HINT_*_AFFINITY value into a rank.  When no affinity hint is set the
- * caller applies the shim's no-hint policies (ARTS_SHIM_NOHINT_EDT_PLACE,
- * ARTS_SHIM_NOHINT_DB_HOME), whose defaults are: an EDT with no hint is
- * placed round-robin across ranks, a datablock with no hint is homed on
- * the creating rank.  The two defaults differ on purpose: a task chain
- * cannot bootstrap distribution from its creator, while a datablock
- * inherits the placement of the task that creates it.
+ * caller leaves the choice to the runtime's own no-hint placement of EDTs
+ * and data-block homes.
  *
  * Both helpers return -1 when no affinity hint is set, signaling to the
  * caller "no override; apply the no-hint policy". */
@@ -1082,7 +1075,7 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
     if (oevtValid) {
       outEvt = outputEvent->guid;
     } else {
-      arts_event_hint_t h = ARTS_EVENT_HINT_IDEMPOTENT;
+      arts_event_hint_t h = ARTS_EVENT_HINT_DEFAULTS;
       h.rank = rank;
       outEvt = arts_event_create(&h);
       if (outEvt == NULL_GUID) {
@@ -1117,22 +1110,12 @@ u8 ocrEdtCreate(ocrGuid_t *guid, ocrGuid_t templateGuid, u32 paramc,
     fe = arts_event_create(&feh);
   }
 
-  /* No affinity hint → policy-selected EDT execution rank.  ROUNDROBIN
-   * (default): pass ARTS_HINT_ANY_RANK so arts_edt_create's own no-hint
-   * placement policy decides, distributing hint-less work across ranks
-   * instead of pinning it to the creator.  CREATOR: keep the explicit
-   * self-rank (legacy behavior).  The hint struct itself must stay
-   * populated regardless — it also carries finish_event/output_event below
-   * — so unlike arts_db_create's no-hint path this cannot simply pass a
-   * NULL hint; ARTS_HINT_ANY_RANK is the struct-preserving equivalent. */
-#ifndef ARTS_SHIM_NOHINT_EDT_PLACE_ROUNDROBIN
-#define ARTS_SHIM_NOHINT_EDT_PLACE_ROUNDROBIN 1
-#endif
-#if ARTS_SHIM_NOHINT_EDT_PLACE_ROUNDROBIN
+  /* No affinity hint: ARTS_HINT_ANY_RANK lets arts_edt_create's own no-hint
+   * placement policy decide.  The hint struct must stay populated either
+   * way — it also carries finish_event/output_event below — so unlike
+   * arts_db_create's no-hint path this cannot simply pass a NULL hint;
+   * ARTS_HINT_ANY_RANK is the struct-preserving equivalent. */
   unsigned int edtRank = (aff < 0) ? ARTS_HINT_ANY_RANK : rank;
-#else
-  unsigned int edtRank = rank;
-#endif
 
   /* Non-finish EDTs deliver the OCR return value through the ARTS output
    * event (hint.output_event; the trampoline registers the value via
@@ -1234,7 +1217,7 @@ static arts_event_hint_t ocr_event_kind_to_hint(ocrEventTypes_t kind,
                                                 u16 properties) {
   (void)properties;
   /* ONCE/IDEM/STICKY map to the unified LATCH(1) fire-and-linger event; their
-   * old auto-destroy / over-satisfy-error semantics are subsumed (silent
+   * distinct auto-destroy timing and over-satisfy error are subsumed (silent
    * over-satisfy, linger until explicit destroy).  COUNTED starts from the
    * same base and adds its consumer count at the create call.  CHANNEL is
    * preserved. */
@@ -1519,35 +1502,19 @@ u8 ocrDbCreate(ocrGuid_t *db, void **addr, u64 len, u16 flags, ocrHint_t *hint,
     unsigned int arts_flags = (flags & DB_PROP_NO_ACQUIRE)
                                   ? ARTS_DB_PROP_NO_ACQUIRE
                                   : ARTS_DB_PROP_NONE;
-    *addr = arts_db_create_with_guid(labeledGuid, len, ARTS_DB_DEFAULT,
+    *addr = arts_db_create_with_guid(labeledGuid, len, ARTS_DB,
                                       arts_flags, NULL);
     return 0;
   }
 
-  /* No affinity hint → policy-selected home.  CREATOR (default): pass NULL
-   * and defer to arts_db_create's own no-hint policy (first-touch by
-   * default).  ROUNDROBIN: distribute homes across ranks with a shim-side
-   * counter, independent of the runtime's configured no-hint policy; the
-   * counter is seeded with this rank so concurrent creators on every rank
-   * start on distinct picks instead of all colliding on rank 0. */
+  /* No affinity hint: a NULL hint defers to arts_db_create's own no-hint
+   * home policy. */
   arts_db_hint_t artsHint;
   const arts_db_hint_t *hintp = NULL;
   if (aff >= 0) {
     artsHint = (arts_db_hint_t){.rank = (unsigned int)aff};
     hintp = &artsHint;
   }
-#ifndef ARTS_SHIM_NOHINT_DB_HOME_ROUNDROBIN
-#define ARTS_SHIM_NOHINT_DB_HOME_ROUNDROBIN 0
-#endif
-#if ARTS_SHIM_NOHINT_DB_HOME_ROUNDROBIN
-  else {
-    static unsigned int s_db_home_rr = 0;
-    unsigned int pick = __atomic_fetch_add(&s_db_home_rr, 1U, __ATOMIC_RELAXED);
-    artsHint = (arts_db_hint_t){
-        .rank = (pick + arts_global_rank_id) % arts_global_rank_count};
-    hintp = &artsHint;
-  }
-#endif
   /* DB_PROP_NO_ACQUIRE: the creating EDT does not acquire the block (it is
    * created for a later consumer).  The runtime leaves the home as the sole
    * idle owner and returns a NULL pointer, so no release is required.  Any
@@ -1555,7 +1522,7 @@ u8 ocrDbCreate(ocrGuid_t *db, void **addr, u64 len, u16 flags, ocrHint_t *hint,
   unsigned int arts_flags = (flags & DB_PROP_NO_ACQUIRE)
                                 ? ARTS_DB_PROP_NO_ACQUIRE
                                 : ARTS_DB_PROP_NONE;
-  db->guid = arts_db_create(addr, len, ARTS_DB_DEFAULT, arts_flags, hintp);
+  db->guid = arts_db_create(addr, len, ARTS_DB, arts_flags, hintp);
   if (db->guid == NULL_GUID) {
     return OCR_ENOMEM;
   }
@@ -1673,8 +1640,8 @@ u8 ocrAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
      * sources (DBs are passive objects — no channel event, no waiting).
      * Map OCR access modes to ARTS: RO→RO, EW/RW→RW (ARTS has no separate
      * EW mode; both OCR EW and RW map to per-node-exclusive DB_MODE_RW).
-     * GUID-sorted acquisition in arts_db_acquire_all prevents acquisition-order
-     * deadlocks that previously required forcing all deps to RO. */
+     * GUID-sorted acquisition in arts_db_acquire_all prevents
+     * acquisition-order deadlocks. */
     if (dstType == ARTS_GUID_EDT) {
       arts_add_dependence(source.guid, destination.guid, slot,
                           ocr_to_arts_mode(mode));
@@ -1688,9 +1655,7 @@ u8 ocrAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
      * are handled by arts_add_dependence. Cross-node: handled natively.
      *
      * Pass the user's access mode through ocr_to_arts_mode so the EDT slot
-     * is registered with the correct ARTS mode (RO/EW).  Previously this
-     * was hardcoded to ARTS_MODE_RO, silently downgrading every Event→EDT
-     * dependence to read-only access. */
+     * is registered with the correct ARTS mode (RO/RW). */
     if (dstType == ARTS_GUID_EDT) {
       arts_add_dependence(source.guid, destination.guid, slot,
                           ocr_to_arts_mode(mode));
@@ -2222,7 +2187,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   size_t totalSize = headerSize + stringsSize;
 
   void *dbPtr;
-  arts_guid_t argsDbGuid = arts_db_create(&dbPtr, totalSize, ARTS_DB_DEFAULT,
+  arts_guid_t argsDbGuid = arts_db_create(&dbPtr, totalSize, ARTS_DB,
                                           ARTS_DB_PROP_NONE, NULL);
 
   u64 *header = (u64 *)dbPtr;

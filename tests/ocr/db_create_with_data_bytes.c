@@ -105,7 +105,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     uint64_t size = sizes[c];
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     unsigned char *p = (unsigned char *)arts_db_create_with_guid(
-        g, size, ARTS_DB_DEFAULT, ARTS_DB_PROP_NONE, NULL);
+        g, size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     for (uint64_t i = 0; i < size; i++) {
       p[i] = pattern_byte((uint64_t)g, i);
     }
@@ -114,7 +114,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
 
   void *mp = NULL;
-  arts_guid_t minted = arts_db_create(&mp, MINTED_BYTES, ARTS_DB_DEFAULT,
+  arts_guid_t minted = arts_db_create(&mp, MINTED_BYTES, ARTS_DB,
                                       ARTS_DB_PROP_NONE, NULL);
   for (uint64_t i = 0; i < MINTED_BYTES; i++) {
     ((unsigned char *)mp)[i] = pattern_byte((uint64_t)minted, i);

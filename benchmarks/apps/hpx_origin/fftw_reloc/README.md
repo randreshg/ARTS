@@ -138,22 +138,6 @@ are rejected rather than silently copied.
 including raw-pointer and dangling-object rejection. `fftw_reloc_dump` writes
 every live allocation's extent, ownership and alignment, followed by every
 retained pointer field and its compiled symbol name when applicable.
-`FFTW_RELOC_AUDIT` additionally counts allocations, frees, pointer loads and
-stores, and sort calls and callbacks, which `fftw_reloc_trace` prints with the
-live object and pointer-field census.
-
-`FFTW_RELOC_PROTECT` is a second diagnostic: the image's own pages become
-read-only to the hardware for the span of the transforms, so a store into
-retained storage traps where it happens instead of being argued about. It needs
-the image page-aligned, and an acquired payload is only 64-byte aligned, so
-under this option `fftw_reloc_image_reserve` asks for one page more than the
-image and `fftw_reloc_image_at` places the image at the first page boundary
-inside the block; both are the identity otherwise, so a caller uses them
-unconditionally and the ordinary build reserves and places nothing extra. The
-protection covers the application's own stores only in the sense that it covers
-every store to those pages: a run whose coherence arm writes that payload from
-outside the application — a write-through publication, or a fetch landing in the
-same buffer — traps on the runtime's own copy. The option therefore belongs to a
-single-locality diagnostic run, never to a measurement.
+`fftw_reloc_trace` prints the live object and pointer-field census.
 
 These diagnostics are separate from ordinary application execution.

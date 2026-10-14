@@ -3,9 +3,9 @@
 The disk is the source of truth: the manifest says what was asked, the track
 file says what has happened so far, and the per-cell logs carry the output.
 This reader owns no campaign machinery, so it can watch a run started in this
-process, a detached one, or one long finished — and a run recorded before the
-manifest existed still replays from its track alone, just without commands or
-verdicts.
+process, a detached one, or one long finished — and a run whose manifest is not
+yet written (it appears after the build phase) replays from its track alone,
+just without commands or verdicts.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pathlib import Path
 from artsrun.check import Group, Verdict, apply_to, close, vote
 from artsrun.report import WALL_ONLY_NOTE
 from artsrun.run.manifest import Manifest
-from artsrun.run.types import Cell, CellResult, Status, modern_key
+from artsrun.run.types import Cell, CellResult, Status
 
 _KEY = re.compile(r"^(?P<app>[^@]+)@(?P<nodes>\d+)n/(?P<entry>[^#]+)#(?P<rep>\d+)$")
 
@@ -216,7 +216,7 @@ class RunState:
         return events
 
     def _apply(self, row: dict) -> None:
-        key = modern_key(row.get("cell", ""))
+        key = row.get("cell", "")
         if not key:
             return
         view = self.views.get(key)

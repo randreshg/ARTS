@@ -250,8 +250,8 @@ still looked complete.
 Audited 2026-09-08 from source rather than assumed: the attempt here is the
 enumeration itself, since every candidate map turns out to be the base's own
 placement or provably negative, so there was nothing left to measure.  A `NULL_HINT` datablock
-is creator-homed in the shim (`arts_ocr.c`, `ARTS_SHIM_NOHINT_DB_HOME` =
-CREATOR), so a hint-less DB created inside a pinned EDT is already homed on
+is creator-homed (the shim defers to `ARTS_NOHINT_DB_HOME` = CREATOR), so a
+hint-less DB created inside a pinned EDT is already homed on
 that EDT's node; every EDT except the final `wrapUpEDT` carries the affinity
 captured in the fork-pinned `initEdt`.  Every create — top level, per
 instance, per lane, per generation, wrap-up — is tabulated in the audit unit

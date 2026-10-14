@@ -270,7 +270,7 @@ stress, not a scaling benchmark.
 
 ## Placement (hinted)
 
-As-born homes every cell on rank 0 and lands each cell's force/energy/advance
+The base program homes every cell on rank 0 and lands each cell's force/energy/advance
 task on an arbitrary — and each step a different — rank, so every box's atoms
 travel every timestep.
 

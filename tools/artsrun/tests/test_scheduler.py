@@ -19,7 +19,8 @@ def _cell(nodes: int, name: str = "app") -> Cell:
         cell="VAL/RETAIN/WB", variant="ocr_val_wb",
     )
     return Cell(entry=entry, app=app, nodes=nodes, repeat=1,
-                binary=Path("/nonexistent"), args=[], timeout_s=1)
+                binary=Path("/nonexistent"), args=[], timeout_s=1,
+                cpu_width=16)
 
 
 class FakeBackend:
@@ -295,7 +296,7 @@ def test_local_submit_announces_pid_and_logs_the_command(tmp_path):
     binary.chmod(0o755)
     cell = Cell(
         entry=_cell(1).entry, app=_cell(1).app, nodes=1, repeat=1,
-        binary=binary, args=["hello"], timeout_s=5,
+        binary=binary, args=["hello"], timeout_s=5, cpu_width=16,
     )
     backend = LocalBackend(profile, tmp_path / "cells")
     events = []
@@ -370,6 +371,7 @@ def _cell_for(entry_key: str, app: ResolvedApp, nodes: int = 1) -> Cell:
     return Cell(
         entry=entry, app=app, nodes=nodes, repeat=1,
         binary=Path("/nonexistent"), args=app.args, timeout_s=10,
+        cpu_width=16,
     )
 
 

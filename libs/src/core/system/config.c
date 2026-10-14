@@ -57,11 +57,6 @@
 #include "arts/transport/launcher.h"
 #include "arts/utils/malloc.h"
 
-/*--- Compiler-injected config overrides ------------------------------------*/
-static char *arts_config_override_path = NULL;
-static char *arts_config_override_data = NULL;
-
-
 char *extract_nodelist_lsf(const char *envr, int stride, unsigned int *cnt) {
   char *lsf_nodes;
   char *res_string;
@@ -312,8 +307,7 @@ static bool arts_config_is_all_digits(const char *str) {
  * of entries, each a host name or a name followed by one bracketed number or
  * range ("n[01-10]", ascending or descending) whose bounds are unsigned ints.
  * Any other shape, or a total that does not fit an unsigned int, is refused,
- * since the routing-table parser would read it differently from this count;
- * ports never appear in the list, they come from the `ports` key. */
+ * since the routing-table parser would read it differently from this count. */
 unsigned int arts_config_count_nodes(const char *node_list) {
   unsigned int nodes = 0;
   const char *p = node_list;
@@ -350,8 +344,7 @@ unsigned int arts_config_count_nodes(const char *node_list) {
     }
     if (!ok || (*p != ',' && *p != '\0')) {
       ARTS_ERROR("nodes='%s': the entry at '%s' is neither a host name nor a "
-                 "name[a-b] range of unsigned ints (ports belong to the ports "
-                 "key)",
+                 "name[a-b] range of unsigned ints",
                  node_list, entry);
     }
     if (width > UINT_MAX - nodes) {
@@ -673,8 +666,8 @@ static void handle_launcher(struct arts_config_s *config, const char *value,
    * allocation, whose leaked variables must not steal a declared flux
    * run.  The value is only usable from inside a task of a flux job (the
    * runtime reads its rank and roster from the task environment), so a
-   * declaration without that environment is a hard error rather than the
-   * silent legacy fall-through to ssh. */
+   * declaration without that environment is a hard error; it never falls
+   * through to ssh. */
   if (value && strcmp(value, "flux") == 0) {
     if (getenv("FLUX_TASK_RANK") == NULL) {
       ARTS_ERROR("launcher=flux requires a Flux task environment — launch "
@@ -1422,26 +1415,7 @@ static void config_print_warnings(struct arts_config_s *config) {
 /*--- Config File Open / Variable Cleanup -----------------------------------*/
 
 static FILE *config_open_file(void) {
-  /* Priority 1: Compiler-embedded config data (self-contained binary). */
-  if (arts_config_override_data && arts_config_override_data[0] != '\0') {
-    size_t len = strlen(arts_config_override_data);
-    FILE *f = fmemopen((void *)arts_config_override_data, len, "r");
-    if (f) {
-      return f;
-    }
-  }
-
-  /* Priority 2: Compiler-injected config path. */
-  if (arts_config_override_path && arts_config_override_path[0] != '\0') {
-    FILE *f = fopen(arts_config_override_path, "r");
-    if (f) {
-      return f;
-    }
-    ARTS_ERROR("Config file not found: %s", arts_config_override_path);
-    return NULL;
-  }
-
-  /* Priority 3: ARTS_CONFIG env var → ./arts.cfg fallback. */
+  /* ARTS_CONFIG names the file; ./arts.cfg otherwise. */
   const char *location = getenv("ARTS_CONFIG");
   FILE *f = fopen(location ? location : "arts.cfg", "r");
   if (!f) {
@@ -1458,54 +1432,12 @@ static void config_free_variables(struct arts_config_variable_s *vars) {
   }
 }
 
-/*--- Removed-Key Rejection --------------------------------------------------
- *
- * Keys that no longer name anything in the current config surface must fail
- * loudly with a message that names the replacement, rather than being
- * silently ignored (a cfg with a stale key would otherwise run with an
- * unintended default).
- *---------------------------------------------------------------------------*/
-
-static void config_reject_removed_keys(struct arts_config_variable_s **vars) {
-  if (config_lookup(vars, "sender_threads")) {
-    ARTS_ERROR(
-        "sender_threads no longer exists: the transport injects directly "
-        "from workers; remove the key and add its count to worker_threads");
-  }
-  if (config_lookup(vars, "receiver_threads")) {
-    ARTS_ERROR("receiver_threads was renamed to progress_threads: rename the "
-               "key (same value/semantics -- one progress thread per node, "
-               "default 1 on multi-node runs, 0 single-node)");
-  }
-  if (config_lookup(vars, "default_ports")) {
-    ARTS_ERROR("default_ports was renamed to ports: rename the key.  Nothing "
-               "defaults them any more -- the list must name exactly "
-               "port_count ports, and launcher=local refuses it (a local run "
-               "claims its own port block)");
-  }
-  if (config_lookup(vars, "deque_type")) {
-    ARTS_ERROR("deque_type no longer exists: there is one work-stealing deque; "
-               "remove the key");
-  }
-  if (config_lookup(vars, "auto_shutdown")) {
-    ARTS_ERROR("auto_shutdown no longer exists: the runtime never ends a run "
-               "because its work drained; call arts_shutdown() and remove the "
-               "key");
-  }
-  if (config_lookup(vars, "fam_pool_mb") || config_lookup(vars, "fam_strict")) {
-    ARTS_ERROR("fam_pool_mb and fam_strict no longer exist: the CXL store's "
-               "arena is sized at build time (ARTS_CXL_DB_ARENA_SIZE_BYTES) and "
-               "placed by cxl_db_allocation_strategy / cxl_db_allocation_device");
-  }
-}
-
 /*=============================================================================
  * arts_config_load — Phased config loading
  *
  * Open file, parse key=value pairs into linked list
- * Reject removed keys
  * Allocate config, set non-zero pre-defaults
- * Table-driven parse (replaces ~280 lines of if-else)
+ * Table-driven parse
  * Launcher-specific setup (nodes, routing table, master)
  * Computed fields, warnings
  *===========================================================================*/
@@ -1515,10 +1447,6 @@ void arts_config_load(struct arts_config_s *config) {
   FILE *fp = config_open_file();
   struct arts_config_variable_s *vars = arts_config_get_variables(fp);
   (void)fclose(fp);
-
-  /* Fail loudly on keys the config surface no longer recognizes, before any
-   * of their (now-absent) defaults could silently apply. */
-  config_reject_removed_keys(&vars);
 
   /* Zero-init and set non-zero pre-defaults. */
   memset(config, 0, sizeof(*config));

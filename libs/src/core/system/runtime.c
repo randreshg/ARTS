@@ -517,9 +517,8 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   // End-to-end marker (rank 0): take the start stamp here — initialization is
   // complete and the application is about to run (init_per_node /
   // init_per_worker, then the main EDT), so the whole application span is
-  // bracketed.  This is a self-contained, env-gated wall-clock marker; it
-  // replaces the counter-based TIME_TOTAL/TIME_INIT e2e timers and matches the
-  // reference runtimes' span definition for a fair comparison.
+  // bracketed.  This is a self-contained, env-gated wall-clock marker that
+  // matches the reference runtimes' span definition for a fair comparison.
   if (!arts_global_rank_id) {
     arts_node_info.e2e_marker_enabled = (getenv("ARTS_E2E_MARKER") != NULL);
     if (arts_node_info.e2e_marker_enabled)

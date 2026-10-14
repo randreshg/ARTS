@@ -48,9 +48,6 @@ coherence for the DB:
      - GPU staging (host pinned + per-device replica), no DB-level
        coherence.
 
-The ``ARTS_DB_DEFAULT`` macro is the experiment-wide subtype every
-benchmark uses; it always expands to ``ARTS_DB``.
-
 Access Modes
 ------------
 
@@ -92,10 +89,10 @@ For regular ``ARTS_DB`` DataBlocks, which values a read may return is
 governed by the build-time protocol selection:
 
 * ``ARTS_COHERENCE_PROTOCOL`` selects the protocol, which determines the
-  required memory model (``ARTS_MEMORY_MODEL`` is derived, not chosen
-  independently): ``INV`` (default), ``VAL``, or ``EXCL`` under the ``OCR``
-  model (implements the OCR v1.2.0 §1.6 contract), or ``FLUSH`` under the
-  ``DB_WRF`` model (exclusive write acquisition, DB-WRF; evaluation only).
+  memory model the program must satisfy: ``INV`` (default), ``VAL``, or
+  ``EXCL`` under the OCR model (implements the OCR v1.2.0 §1.6 contract), or
+  ``FLUSH`` under the DB-WRF model (exclusive write acquisition; evaluation
+  only).
 * ``ARTS_WRITE_POLICY`` selects where the canonical payload rests between
   write turns — ``WB`` (write-back, default) or ``WT`` (write-through at
   release); live under INV/VAL (FLUSH has no write-policy axis).

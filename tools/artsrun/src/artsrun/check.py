@@ -184,19 +184,14 @@ def apply_to(result: CellResult) -> CellResult:
             return result
         ids = sorted(int(i) for i, _, _ in seen)
         got = {(int(n), int(t)) for _, n, t in seen}
-        # The id set and the world size every locality reports are checked
-        # against the cell alone; only the per-rank width needs a granted
-        # core block to compare against.
-        wrong = ids != list(range(want_n)) or {n for n, _ in got} != {want_n}
-        if want_t is not None:
-            wrong = wrong or {t for _, t in got} != {want_t}
+        wrong = (ids != list(range(want_n)) or {n for n, _ in got} != {want_n}
+                 or {t for _, t in got} != {want_t})
         if wrong:
             shape = ", ".join(f"{n}x{t}" for n, t in sorted(got))
-            width = f" x {want_t} threads" if want_t is not None else ""
             result.status = Status.FAIL
             result.note = (f"geometry: HPX realised localities {ids} of {shape}, "
                            f"wanted ids 0..{want_n - 1} at {want_n} "
-                           f"localities{width}")
+                           f"localities x {want_t} threads")
             return result
     if result.status is Status.OK and not completed:
         result.status = Status.FAIL

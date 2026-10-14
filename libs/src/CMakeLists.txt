@@ -199,6 +199,19 @@ function(arts_bundle_vendored_archives target)
         VERBATIM)
 endfunction()
 
+# An executable linking an installed runtime library is built non-PIE (see
+# ARTS_NON_PIE_COMPILE_OPTIONS).  The options reach executables only: a shared
+# library or module that links the runtime keeps its own -fPIC, since only the
+# executable must load at one address on every rank.  The tree's own programs
+# set the options themselves, so only the install side carries them.
+function(arts_export_non_pie target)
+    set(_exe "$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>")
+    target_compile_options(${target} INTERFACE
+        "$<INSTALL_INTERFACE:$<${_exe}:${ARTS_NON_PIE_COMPILE_OPTIONS}>>")
+    target_link_options(${target} INTERFACE
+        "$<INSTALL_INTERFACE:$<${_exe}:${ARTS_NON_PIE_LINK_OPTIONS}>>")
+endfunction()
+
 # Embeds the same archives in a shared <target> and keeps their symbols out of
 # its dynamic exports: a vendored symbol that stays exported can be interposed
 # by a copy in the executable, which would split a library's state between two
@@ -237,22 +250,6 @@ add_subdirectory(graph)
 
 # Main source file (main.c lives in core/; scheduler.c is an OBJECT library)
 set(ARTS_MAIN_SOURCES "core/main.c")
-
-# Some platforms do not provide a standalone libatomic.
-# ARTS uses compiler atomic builtins, so link libatomic only when present.
-# Reuse the top-level ATOMIC_LIBRARY (probed for DWCAS support); fall
-# back to a local find_library if it wasn't set (e.g., older configurations).
-if(ATOMIC_LIBRARY)
-    set(ARTS_ATOMIC_LIBRARY "${ATOMIC_LIBRARY}" CACHE FILEPATH
-        "libatomic path (shared with top-level DWCAS probe)" FORCE)
-else()
-    find_library(ARTS_ATOMIC_LIBRARY atomic)
-endif()
-if(ARTS_ATOMIC_LIBRARY)
-    message(STATUS "Using libatomic: ${ARTS_ATOMIC_LIBRARY}")
-else()
-    message(STATUS "libatomic not found; relying on compiler/runtime atomics")
-endif()
 
 #
 # Standard ARTS Library (always built, no CUDA)
@@ -294,33 +291,36 @@ endif()
 
 target_link_libraries(arts_static PUBLIC arts_interface)
 
-# Link external dependencies statically
+# The vendored archives are folded into a runtime archive's one object (see
+# arts_bundle_vendored_archives), so an installed consumer links only the
+# toolchain libraries that object still references, by name: pthread, dl, rt
+# and m (libatomic comes from the directory-wide link_libraries).  The build
+# tree keeps the vendored targets, which also carry the include directories
+# the sources compile against.
+set(ARTS_INSTALLED_TOOLCHAIN_LINK ${CMAKE_DL_LIBS})
+if(NOT APPLE)
+    list(APPEND ARTS_INSTALLED_TOOLCHAIN_LINK rt m)
+endif()
+list(TRANSFORM ARTS_INSTALLED_TOOLCHAIN_LINK PREPEND "$<INSTALL_INTERFACE:")
+list(TRANSFORM ARTS_INSTALLED_TOOLCHAIN_LINK APPEND ">")
+
 target_link_libraries(arts_static PRIVATE
     Threads::Threads
-    ${RT_LIBRARY}
-    ${M_LIBRARY}
-    ${ANL_LIBRARY}
+    $<BUILD_INTERFACE:${RT_LIBRARY}>
+    $<BUILD_INTERFACE:${M_LIBRARY}>
     $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
+    ${ARTS_INSTALLED_TOOLCHAIN_LINK}
 )
-
-if(ARTS_ATOMIC_LIBRARY)
-    target_link_libraries(arts_static PRIVATE ${ARTS_ATOMIC_LIBRARY})
-endif()
 
 # Add macOS framework dependencies for hwloc
 if(APPLE AND HWLOC_FOUND)
     target_link_libraries(arts_static PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework OpenCL")
 endif()
 
-target_link_libraries(arts_static PRIVATE arts::libfabric)
+target_link_libraries(arts_static PRIVATE $<BUILD_INTERFACE:arts::libfabric>)
 
 arts_apply_protocol(arts_static ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
 
-# The vendored archives above stay on this target's PRIVATE link list even
-# though the merge makes them redundant there: the entries carry the
-# vendored include directories the sources in this directory compile
-# against, and the toolchain libraries (dl, rt) that back-resolve the
-# embedded objects on a consumer's line, which no merge can supply.
 arts_bundle_vendored_archives(arts_static)
 
 # Set library properties
@@ -330,6 +330,7 @@ set_target_properties(arts_static PROPERTIES
     SOVERSION ${PROJECT_VERSION_MAJOR}
     EXPORT_NAME static
 )
+arts_export_non_pie(arts_static)
 
 # Create shared library if requested
 if(ARTS_BUILD_SHARED)
@@ -373,15 +374,10 @@ if(ARTS_BUILD_SHARED)
         Threads::Threads
         ${RT_LIBRARY}
         ${M_LIBRARY}
-        ${ANL_LIBRARY}
         $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
     )
 
     arts_embed_vendored_archives(arts_shared)
-
-    if(ARTS_ATOMIC_LIBRARY)
-        target_link_libraries(arts_shared PRIVATE ${ARTS_ATOMIC_LIBRARY})
-    endif()
 
     # Add macOS framework dependencies for hwloc
     if(APPLE AND HWLOC_FOUND)
@@ -397,6 +393,7 @@ if(ARTS_BUILD_SHARED)
         SOVERSION ${PROJECT_VERSION_MAJOR}
         EXPORT_NAME shared
     )
+    arts_export_non_pie(arts_shared)
 endif()
 
 #
@@ -446,18 +443,14 @@ if(BUILD_CUDA_LIBRARY)
     # Link external dependencies and CUDA libraries
     target_link_libraries(arts_cuda_static PRIVATE
         Threads::Threads
-        ${RT_LIBRARY}
-        ${M_LIBRARY}
-        ${ANL_LIBRARY}
+        $<BUILD_INTERFACE:${RT_LIBRARY}>
+        $<BUILD_INTERFACE:${M_LIBRARY}>
         $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
+        ${ARTS_INSTALLED_TOOLCHAIN_LINK}
         CUDA::cudart
         CUDA::cuda_driver
         CUDA::cublas
     )
-
-    if(ARTS_ATOMIC_LIBRARY)
-        target_link_libraries(arts_cuda_static PRIVATE ${ARTS_ATOMIC_LIBRARY})
-    endif()
 
     # Add macOS framework dependencies for hwloc
     if(APPLE AND HWLOC_FOUND)
@@ -475,6 +468,7 @@ if(BUILD_CUDA_LIBRARY)
         SOVERSION ${PROJECT_VERSION_MAJOR}
         EXPORT_NAME cuda_static
     )
+    arts_export_non_pie(arts_cuda_static)
 
     # Create shared CUDA library if requested
     if(ARTS_BUILD_SHARED)
@@ -522,7 +516,6 @@ if(BUILD_CUDA_LIBRARY)
             Threads::Threads
             ${RT_LIBRARY}
             ${M_LIBRARY}
-            ${ANL_LIBRARY}
             $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>
             CUDA::cudart
             CUDA::cuda_driver
@@ -530,10 +523,6 @@ if(BUILD_CUDA_LIBRARY)
         )
 
         arts_embed_vendored_archives(arts_cuda_shared)
-
-        if(ARTS_ATOMIC_LIBRARY)
-            target_link_libraries(arts_cuda_shared PRIVATE ${ARTS_ATOMIC_LIBRARY})
-        endif()
 
         # Add macOS framework dependencies for hwloc
         if(APPLE AND HWLOC_FOUND)
@@ -549,6 +538,7 @@ if(BUILD_CUDA_LIBRARY)
             SOVERSION ${PROJECT_VERSION_MAJOR}
             EXPORT_NAME cuda_shared
         )
+        arts_export_non_pie(arts_cuda_shared)
     endif()
 endif()
 
@@ -637,11 +627,8 @@ if(ARTS_BUILD_BENCHMARKS)
         endif()
         target_link_libraries(arts_static_${suffix} PUBLIC arts_interface)
         target_link_libraries(arts_static_${suffix} PRIVATE
-            Threads::Threads ${RT_LIBRARY} ${M_LIBRARY} ${ANL_LIBRARY}
+            Threads::Threads ${RT_LIBRARY} ${M_LIBRARY}
             $<BUILD_INTERFACE:${HWLOC_LIBRARIES}>)
-        if(ARTS_ATOMIC_LIBRARY)
-            target_link_libraries(arts_static_${suffix} PRIVATE ${ARTS_ATOMIC_LIBRARY})
-        endif()
         if(ARTS_MALLOC STREQUAL "mimalloc")
             target_link_libraries(arts_static_${suffix} PRIVATE mimalloc-static)
         endif()
@@ -687,12 +674,12 @@ endif()
 # (include dirs) to its compilation unit without introducing a link dep.
 if(ARTS_MALLOC STREQUAL "mimalloc")
     target_link_libraries(arts_utils PRIVATE mimalloc-static)
-    target_link_libraries(arts_static PRIVATE mimalloc-static)
+    target_link_libraries(arts_static PRIVATE $<BUILD_INTERFACE:mimalloc-static>)
     if(ARTS_BUILD_SHARED)
         target_link_libraries(arts_shared PRIVATE mimalloc-static)
     endif()
     if(BUILD_CUDA_LIBRARY)
-        target_link_libraries(arts_cuda_static PRIVATE mimalloc-static)
+        target_link_libraries(arts_cuda_static PRIVATE $<BUILD_INTERFACE:mimalloc-static>)
         if(ARTS_BUILD_SHARED)
             target_link_libraries(arts_cuda_shared PRIVATE mimalloc-static)
         endif()
@@ -723,23 +710,14 @@ if(TARGET arts_cxl_flush_recorder)
     arts_bundle_vendored_archives(arts_static_cxl_flush_recorder)
 endif()
 
-# Create alias targets for convenience (prefer shared over static)
+# The same names the installed package exports.
+add_library(ARTS::static ALIAS arts_static)
 if(ARTS_BUILD_SHARED)
-    add_library(ARTS::arts ALIAS arts_shared)
     add_library(ARTS::shared ALIAS arts_shared)
-    if(BUILD_CUDA_LIBRARY)
-        add_library(ARTS::arts_cuda ALIAS arts_cuda_shared)
+endif()
+if(BUILD_CUDA_LIBRARY)
+    add_library(ARTS::cuda_static ALIAS arts_cuda_static)
+    if(ARTS_BUILD_SHARED)
         add_library(ARTS::cuda_shared ALIAS arts_cuda_shared)
     endif()
-endif()
-
-if(NOT TARGET ARTS::arts)
-    add_library(ARTS::arts ALIAS arts_static)
-endif()
-add_library(ARTS::static ALIAS arts_static)
-if(BUILD_CUDA_LIBRARY)
-    if(NOT TARGET ARTS::arts_cuda)
-        add_library(ARTS::arts_cuda ALIAS arts_cuda_static)
-    endif()
-    add_library(ARTS::cuda_static ALIAS arts_cuda_static)
 endif()

@@ -75,7 +75,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t ctr[2];
   for (unsigned int k = 0; k < 2u; k++) {
     void *p = NULL;
-    ctr[k] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB_DEFAULT,
+    ctr[k] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB,
                             ARTS_DB_PROP_NONE,
                             &(arts_db_hint_t){.rank = k ? last : 0u});
     ((unsigned int *)p)[0] = 0u;
@@ -99,7 +99,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (unsigned int k = 0; k < nranks; k++) {
     void *a = NULL;
     arts_guid_t t =
-        arts_db_create(&a, TOUCH_BYTES, ARTS_DB_DEFAULT,
+        arts_db_create(&a, TOUCH_BYTES, ARTS_DB,
                        ARTS_DB_PROP_NO_ACQUIRE, &(arts_db_hint_t){.rank = k});
     arts_guid_t e = arts_edt_create(
         bump, 0, NULL, 1,

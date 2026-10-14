@@ -30,8 +30,8 @@ static void branch(uint32_t pc, const uint64_t *pv, uint32_t dc,
   (void)dc;
   (void)dv;
   unsigned int rank = arts_get_current_rank();
-  arts_guid_t left = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-  arts_guid_t right = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t left = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  arts_guid_t right = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   uint64_t inputs[] = {left, right};
   arts_edt_hint_t hint = ARTS_EDT_HINT_DEFAULTS;
   hint.rank = rank;
@@ -73,7 +73,7 @@ void main_edt(uint32_t pc, const uint64_t *pv, uint32_t dc,
   (void)pv;
   (void)dc;
   (void)dv;
-  arts_guid_t result = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+  arts_guid_t result = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
   uint64_t args[] = {result};
   arts_guid_t sink = arts_edt_create(check, 1, args, 1, NULL);
   arts_add_dependence(result, sink, 0, DB_MODE_NULL);
