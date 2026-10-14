@@ -4,10 +4,9 @@
  * message_type) arm.
  *
  * The dispatcher has one entry point, arts_transport_dispatch_packet, which
- * both the wire receive path and the self-loopback drain call.  This test
- * calls it with a header-only packet whose message_type is MSG_COUNT — the
- * sentinel ordinal, which is NOT a live case in ANY build's switch — so
- * routing falls into `default`.
+ * the wire receive path calls.  This test calls it with a header-only packet
+ * whose message_type is MSG_COUNT — the sentinel ordinal, which is NOT a live
+ * case in ANY build's switch — so routing falls into `default`.
  *
  * The contract under test: a packet of a type the build does not know means
  * the two ends disagree about the wire (a binary mode mismatch) or the packet

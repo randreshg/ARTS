@@ -4,8 +4,8 @@
  * (transport/net.c).  Brings the fabric up standalone — NO ARTS runtime, no
  * sockets, no worker threads — fakes the minimal runtime globals the module
  * touches, av-inserts this process's own EP address at index 0, and drives the
- * send path straight at the internal core (net_send_core, which skips the
- * production self-send-to-loopback guard) so the message rides the fabric and
+ * send path straight at the internal core (arts_net_send_core, which skips the
+ * production self-target guard) so the message rides the fabric and
  * loops back to our own receive buffers.  A stubbed dispatch symbol captures
  * the delivered bytes.
  *
@@ -64,14 +64,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   atomic_fetch_add_explicit(&g_recv_count, 1, memory_order_acq_rel);
 }
 
-/* net.c references the self-loopback post in the public send wrapper; the test
- * drives net_send_core directly and never hits it, but it must link. */
-void arts_transport_loopback_post(const void *packet, unsigned int size) {
-  (void)packet;
-  (void)size;
-}
-
-/* Compile the module under test (its statics: net_send_core, g_net, ...). */
+/* Compile the module under test (its statics: g_net, the reap paths, ...). */
 #include "../../libs/src/core/transport/net.c"
 
 /* counter stubs: net.c's introspection increments resolve here (this harness

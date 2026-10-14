@@ -38,7 +38,7 @@
 ###############################################################################
 
 # Collect all source files
-file(GLOB COUNTER_SOURCES "*.c")
+file(GLOB COUNTER_SOURCES CONFIGURE_DEPENDS "*.c")
 
 # Create object library for the counter module
 add_library(arts_counter OBJECT ${COUNTER_SOURCES})

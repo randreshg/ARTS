@@ -40,7 +40,7 @@
 # Data structures module source files
 
 # Graph module: CSR data structure + block distribution (one cohesive module).
-file(GLOB GRAPH_SOURCES "*.c")
+file(GLOB GRAPH_SOURCES CONFIGURE_DEPENDS "*.c")
 
 add_library(arts_graph OBJECT ${GRAPH_SOURCES})
 target_link_libraries(arts_graph PRIVATE arts_interface)

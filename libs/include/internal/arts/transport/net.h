@@ -90,11 +90,10 @@ extern "C" {
  *
  * These are the sole names the rest of the runtime calls.  A remote target
  * rides the fabric (arts_net_send_core); a self-addressed or out-of-range
- * target is warned-and-dropped (a caller that wants same-rank delivery uses
- * arts_transport_loopback_post, never these).
- * In a single-node run every target is self/out-of-range, so these degrade to
- * the same warn-and-drop and the fabric is never touched; only the
- * self-loopback path carries traffic.
+ * target is warned-and-dropped (a same-rank message never goes through these:
+ * its sender calls the handler body directly or through the OoO engine).  In
+ * a single-node run every target is self/out-of-range, so these only
+ * warn-and-drop and the fabric is never touched.
  * ========================================================================== */
 void arts_transport_send_async(int rank, char *message, unsigned int length);
 void arts_transport_send_payload_async(int rank, char *message,
@@ -104,26 +103,6 @@ void arts_transport_send_payload_async_free(int rank, char *message,
                                             unsigned int length, char *payload,
                                             unsigned int offset, uint64_t size,
                                             void (*free_method)(void *));
-
-/* Self-loopback: post a self-addressed packet for asynchronous delivery on a
- * scheduler / progress tick (arts_transport_loopback_drain), avoiding the
- * unbounded inline-handler recursion a same-rank acquire round would hit. */
-void arts_transport_loopback_post(const void *packet, unsigned int size);
-
-/* Deliver every pending self-send through arts_transport_dispatch_packet, in
- * the order they were posted.  Progress threads drain in a multinode run,
- * workers from the scheduler loop in a single-node one; a CAS token admits one
- * drainer at a time.  Returns true if it dispatched at least one. */
-bool arts_transport_loopback_drain(void);
-
-/* Free any self-sends still queued at teardown (quiescent: no dispatch). */
-void arts_loopback_cleanup(void);
-
-/* Self-sends still queued and never dispatched, a shutdown message excluded
- * since it carries no work.  Exact only once no thread can post, i.e. after
- * every runtime thread has joined; what it counts is exactly what
- * arts_loopback_cleanup later frees. */
-unsigned int arts_loopback_pending_count(void);
 
 /* Control-plane sizing.  Two multi-recv landing buffers of RECV_BUF_SIZE each
  * catch all two-sided traffic; the provider keeps landing messages into a
@@ -323,7 +302,7 @@ void arts_net_teardown(void);
 
 /* Fabric send core — thread-safe, callable from any thread.  The caller has
  * already screened out self / out-of-range targets (the public wrappers in
- * loopback.c do that), so `rank` is always a real remote peer here.  A
+ * send.c do that), so `rank` is always a real remote peer here.  A
  * header-only send passes payload==NULL; otherwise `payload+offset` (`size`
  * bytes) is appended, released by `free_method` (may be NULL) once the send
  * completes.  A total wire size exceeding what the RX landing buffer can

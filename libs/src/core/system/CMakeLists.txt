@@ -38,7 +38,7 @@
 ###############################################################################
 
 # Collect all source files
-file(GLOB SYSTEM_SOURCES "*.c")
+file(GLOB SYSTEM_SOURCES CONFIGURE_DEPENDS "*.c")
 
 # Create object library for the system module
 add_library(arts_system OBJECT ${SYSTEM_SOURCES})

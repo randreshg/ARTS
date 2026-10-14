@@ -46,14 +46,12 @@ extern "C" {
 
 void arts_socket_setup(struct arts_config_s *config);
 
-/* Route a packet, received from the wire or posted to this rank by itself,
- * to its handler. */
+/* Route a packet received from the wire to its handler. */
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet);
 void arts_socket_cleanup();
 
 void arts_transport_setup(struct arts_config_s *config);
 void arts_transport_broadcast_shutdown(void);
-void arts_transport_cleanup(void);
 #ifdef __cplusplus
 }
 #endif

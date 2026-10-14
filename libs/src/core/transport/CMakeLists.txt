@@ -1,5 +1,5 @@
 # Transport submodule (socket I/O, protocol, message dispatch, launcher)
-file(GLOB TRANSPORT_SOURCES "*.c")
+file(GLOB TRANSPORT_SOURCES CONFIGURE_DEPENDS "*.c")
 
 add_library(arts_transport OBJECT ${TRANSPORT_SOURCES})
 target_link_libraries(arts_transport PRIVATE arts_interface)

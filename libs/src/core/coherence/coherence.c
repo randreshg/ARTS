@@ -1203,9 +1203,10 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
 
 /* ===== arts_db_destroy_remote public API ============================= */
 
-/* Public destroy: forward DESTROY_REQ to home (uniform path; home ==
- * self gets the message via self-loop).  Caller is responsible for
- * the OCR-spec contract: no concurrent acquires/uses in flight. */
+/* Public destroy: send MSG_DB_DESTROY to the home (a home on this rank runs
+ * it through the OoO engine inline, as the wire dispatcher does).  Caller is
+ * responsible for the OCR-spec contract: no concurrent acquires/uses in
+ * flight. */
 void arts_db_destroy_remote(arts_guid_t db_guid) {
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   arts_send_db_destroy(home_rank, db_guid);
@@ -1288,10 +1289,9 @@ void arts_db_debug_quiescence_check(void) {
   /* Whether this shutdown was quiescent, named by contributor so a log's
    * reader knows why a residue went unreported.  Every one is pending work
    * the shutdown left undone: runnable EDTs dropped from a deque, release
-   * waits cut short, self-sends never dispatched, and EDTs admitted (every
-   * dependence satisfied, acquisition begun) that
-   * never finished -- the last covers an EDT parked mid acquisition, which
-   * sits in no queue a discard site sees, and it overlaps the first -- and
+   * waits cut short, EDTs admitted (every dependence satisfied, acquisition
+   * begun) that never finished -- these cover an EDT parked mid acquisition,
+   * which sits in no queue a discard site sees, and overlap the first -- and
    * messages parked on a route slot's OoO list: a create waiting for a
    * destroy, or any other message waiting for an install, that never came.
    * A parked message is residue whatever parked it -- a late message for a
@@ -1305,7 +1305,6 @@ void arts_db_debug_quiescence_check(void) {
                                            __ATOMIC_RELAXED);
   unsigned int ab_waits =
       __atomic_load_n(&arts_shutdown_abandon.waits, __ATOMIC_RELAXED);
-  unsigned int ab_loopback = arts_loopback_pending_count();
   unsigned int ab_ooo = 0;
   for (unsigned int t = 0; t < nt; t++) {
     arts_route_table_t *table = quiescence_table(t);
@@ -1333,9 +1332,7 @@ void arts_db_debug_quiescence_check(void) {
       arts_shared_release(&h);
     }
   }
-  bool quiescent =
-      (ab_queued | ab_waits | ab_loopback | ab_ooo | ab_admitted) ==
-      0u;
+  bool quiescent = (ab_queued | ab_waits | ab_ooo | ab_admitted) == 0u;
   for (unsigned int t = 0; t < nt; t++) {
     arts_route_table_t *table = quiescence_table(t);
     if (table == NULL) {
@@ -1694,10 +1691,9 @@ void arts_db_debug_quiescence_check(void) {
    * two look identical from the violation count alone. */
   if (viol != 0 || !quiescent) {
     ARTS_DEBUG("QUIESCENCE-DEBUG: %u violation(s) (shutdown left undone: "
-               "queued_edts=%u waits=%u loopback=%u ooo=%u "
+               "queued_edts=%u waits=%u ooo=%u "
                "admitted_edts=%u)",
-               viol, ab_queued, ab_waits, ab_loopback, ab_ooo,
-               ab_admitted);
+               viol, ab_queued, ab_waits, ab_ooo, ab_admitted);
   }
 #endif /* ARTS_LOG_LEVEL >= 3 */
 }

@@ -55,7 +55,6 @@
 #include "arts/system/threads.h"
 #include "arts/system/topology.h"
 #include "arts/transport/dispatcher.h"
-#include "arts/transport/net.h" /* arts_transport_loopback_drain */
 #include "arts/transport/protocol.h"
 #include "arts/transport/socket.h"
 #include "arts/utils/array_list.h"
@@ -254,11 +253,6 @@ inline struct arts_edt_s *arts_runtime_steal_from_worker() {
 }
 
 bool arts_network_first_scheduler_loop() {
-  /* Single-node only: a worker drains self-loopback (no progress thread
-   * exists).  On multinode the progress threads are its only drainers, so a
-   * worker leaves it to them. */
-  bool drained =
-      (arts_global_rank_count == 1) && arts_transport_loopback_drain();
   struct arts_edt_s *edt_found;
   if (!(edt_found = arts_runtime_steal_from_network())) {
     if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
@@ -270,15 +264,10 @@ bool arts_network_first_scheduler_loop() {
     arts_run_edt(edt_found);
     return true;
   }
-  return drained;
+  return false;
 }
 
 bool arts_network_before_steal_scheduler_loop() {
-  /* Single-node only: a worker drains self-loopback (no progress thread
-   * exists).  On multinode the progress threads are its only drainers, so a
-   * worker leaves it to them. */
-  bool drained =
-      (arts_global_rank_count == 1) && arts_transport_loopback_drain();
   struct arts_edt_s *edt_found;
   if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
             arts_thread_info.my_deque))) {
@@ -291,15 +280,10 @@ bool arts_network_before_steal_scheduler_loop() {
     arts_run_edt(edt_found);
     return true;
   }
-  return drained;
+  return false;
 }
 
 bool arts_default_scheduler_loop() {
-  /* Single-node only: a worker drains self-loopback (no progress thread
-   * exists).  On multinode the progress threads are its only drainers, so a
-   * worker leaves it to them. */
-  bool drained =
-      (arts_global_rank_count == 1) && arts_transport_loopback_drain();
   struct arts_edt_s *edt_found = NULL;
   if (!(edt_found = (struct arts_edt_s *)arts_deque_pop_front(
             arts_thread_info.my_deque))) {
@@ -314,9 +298,6 @@ bool arts_default_scheduler_loop() {
     arts_run_edt(edt_found);
     // arts_wake_up_context();
     return true;
-  }
-  if (drained) {
-    return true; /* made progress via self-loopback; loop again before idling */
   }
   arts_runtime_idle_pause();
   return false;

@@ -1877,7 +1877,7 @@ void arts_net_quiesce(void) {
   /* Free any inbound messages reaped but not yet dispatched (a producer's
    * net_reap_no_dispatch can leave entries on the pending list).  Quiescent
    * teardown: drop them without dispatch — handlers must not run against
-   * torn-down state at shutdown (mirrors arts_loopback_cleanup). */
+   * torn-down state at shutdown. */
   while (g_pending_head != NULL) {
     struct net_pending_s *next = g_pending_head->next;
     arts_free(g_pending_head);

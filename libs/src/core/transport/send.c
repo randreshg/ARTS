@@ -37,119 +37,17 @@
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
 
-/* Control-plane send facade + self-loopback.
+/* Control-plane send facade.
  *
  * This translation unit holds the public send names the rest of the runtime
- * calls, the outbound-size census, and the same-rank self-loopback queue.  A
- * remote target is forwarded to the fabric core (arts_net_send_core); a
- * single-node run never presents one, so there only the self-loopback carries
- * traffic. */
+ * calls and the outbound-size census.  A remote target is forwarded to the
+ * fabric core (arts_net_send_core); a single-node run never presents one. */
 
 #include "arts/transport/net.h" /* public API + arts_net_send_core */
-
-#include <stdatomic.h>
-#include <string.h>
 
 #include "arts/counter/counter.h" /* NET_MSG_* census */
 #include "arts/system/identity.h" /* arts_global_rank_id / arts_global_rank_count */
 #include "arts/system/print.h"
-#include "arts/transport/dispatcher.h" /* arts_transport_dispatch_packet */
-#include "arts/utils/lockfree_lifo.h"  /* arts_lf_stack_t */
-#include "arts/utils/malloc.h"
-
-/* ===== Self-loopback ======================================================
- * A message addressed to the sending rank itself must NOT be delivered by
- * calling the handler inline: a protocol whose acquire round hops home -> owner
- * -> home all on one rank would re-enter its own handler on the caller's stack
- * and recurse without bound.  A self-send is instead copied onto this lock-free
- * stack and delivered later, on a scheduler / progress tick, through the same
- * dispatch path a wire arrival uses.  This makes a self-send "fire and return,"
- * processed asynchronously on a fresh stack — identical to how a peer rank would
- * have received it.
- *
- * Delivery is SERIALIZED to one drainer at a time (a CAS token; a thread that
- * loses it does other work, never spins — lock-free, not a lock).  Within a
- * turn the chain is taken whole (reverse_drain, FIFO) and each node freed
- * after dispatch, never re-pushed — upholding the stack's single-membership
- * invariant. */
-static arts_lf_stack_t g_loopback;
-static _Atomic(int) g_loopback_draining;
-
-struct loopback_node_s {
-  arts_lf_link_t link;
-  unsigned int size;
-  /* packet bytes follow */
-};
-
-void arts_transport_loopback_post(const void *packet, unsigned int size) {
-  struct loopback_node_s *node = (struct loopback_node_s *)arts_malloc(
-      sizeof(struct loopback_node_s) + size);
-  node->size = size;
-  memcpy(node + 1, packet, size);
-  arts_lf_stack_push(&g_loopback, &node->link);
-}
-
-bool arts_transport_loopback_drain(void) {
-  /* Scalable empty gate: this is polled from every worker's scheduler
-   * iteration, so the nothing-to-do case must stay READ-ONLY — plain loads
-   * keep the head and token lines in shared cache state across all pollers,
-   * whereas an unconditional CAS (even a failing one) takes the line
-   * exclusive on every poll and ping-pongs it between cores/sockets. */
-  if (arts_lf_stack_empty(&g_loopback)) {
-    return false;
-  }
-  if (atomic_load_explicit(&g_loopback_draining, memory_order_relaxed) != 0) {
-    return false; /* someone is already draining — find other work */
-  }
-  /* Single drainer at a time (see the file-scope note): CAS the token; a thread
-   * that loses it returns to find other work rather than spinning. */
-  int expected = 0;
-  if (!atomic_compare_exchange_strong_explicit(&g_loopback_draining, &expected,
-                                                1, memory_order_acq_rel,
-                                                memory_order_relaxed)) {
-    return false;
-  }
-  arts_lf_link_t *head = arts_lf_stack_reverse_drain(&g_loopback);
-  bool did_work = (head != NULL);
-  while (head != NULL) {
-    /* Save next before dispatch: the handler may post fresh self-sends, but
-     * those land on the now-empty stack head (a separate chain) — this node's
-     * link is consumed by the free below. */
-    arts_lf_link_t *next =
-        atomic_load_explicit(&head->next, memory_order_relaxed);
-    struct loopback_node_s *node = (struct loopback_node_s *)head;
-    arts_transport_dispatch_packet((struct arts_msg_header_s *)(node + 1));
-    arts_free(node);
-    head = next;
-  }
-  atomic_store_explicit(&g_loopback_draining, 0, memory_order_release);
-  return did_work;
-}
-
-unsigned int arts_loopback_pending_count(void) {
-  unsigned int n = 0;
-  for (arts_lf_link_t *l =
-           atomic_load_explicit(&g_loopback.head, memory_order_acquire);
-       l != NULL; l = atomic_load_explicit(&l->next, memory_order_relaxed)) {
-    const struct arts_msg_header_s *h =
-        (const struct arts_msg_header_s *)((struct loopback_node_s *)l + 1);
-    if (h->message_type != MSG_SHUTDOWN) {
-      n++;
-    }
-  }
-  return n;
-}
-
-void arts_loopback_cleanup(void) {
-  /* Quiescent teardown: free any self-sends never drained (no dispatch —
-   * handlers must not run against torn-down state at shutdown). */
-  arts_lf_link_t *lb = arts_lf_stack_reverse_drain(&g_loopback);
-  while (lb != NULL) {
-    arts_lf_link_t *next = atomic_load_explicit(&lb->next, memory_order_relaxed);
-    arts_free(lb);
-    lb = next;
-  }
-}
 
 /* ===== Outbound census + guards =========================================== */
 
@@ -177,10 +75,11 @@ static inline void size_send_check(uint64_t size) {
   }
 }
 
-/* Reject a self-addressed or out-of-range target.  A caller that wants same-rank
- * delivery uses arts_transport_loopback_post directly; reaching a public send
- * wrapper with a self target is a bug, warned and dropped (this also covers
- * single-node, where every rank is self). */
+/* Reject a self-addressed or out-of-range target.  A same-rank message never
+ * goes through a send (its sender calls the handler body directly or through
+ * the OoO engine), so a self target reaching a public send wrapper is a bug,
+ * warned and dropped (this also covers single-node, where every rank is
+ * self). */
 static inline bool net_target_ok(int rank) {
   if ((unsigned int)rank == arts_global_rank_id ||
       (unsigned int)rank >= arts_global_rank_count) {

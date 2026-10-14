@@ -469,9 +469,6 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.global_guid_thread_id);
   arts_guid_generator_cleanup();
 
-  /* Transport-side teardown (the self-loopback queue, which carries nothing) */
-  arts_transport_cleanup();
-
   /* Socket server global arrays (safe to call even for single-node) */
   arts_socket_cleanup();
 
@@ -750,8 +747,8 @@ void arts_runtime_stop() {
  * arts_runtime_loop — Main per-thread dispatch loop.
  *
  * Each thread enters exactly one of two roles:
- *   - progress: Reaps fabric completions (dispatching inbound messages) and
- *               drains the self-loopback (multi-node only).
+ *   - progress: Reaps fabric completions (dispatching inbound messages);
+ *               multi-node only.
  *   - worker:   Runs the selected scheduler loop until alive==false.
  *
  * On single-node configurations, all threads are workers (no progress thread).
@@ -786,9 +783,7 @@ int arts_runtime_loop() {
        * pause hint instead of sleeping — a sleeping poll would put a fixed
        * per-hop latency floor under every message an idle rank receives,
        * which multiplies across latency-bound message chains. */
-      bool did = arts_transport_loopback_drain();
-      did |= arts_net_progress();
-      if (!did) {
+      if (!arts_net_progress()) {
         arts_runtime_idle_pause();
       }
       /* Peer-liveness probe: the fabric is connectionless, so a peer that dies

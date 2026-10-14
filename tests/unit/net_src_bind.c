@@ -58,11 +58,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   atomic_fetch_add_explicit(&g_recv_count, 1, memory_order_acq_rel);
 }
 
-void arts_transport_loopback_post(const void *packet, unsigned int size) {
-  (void)packet;
-  (void)size;
-}
-
 /* Compile the module under test (its statics). */
 #include "../../libs/src/core/transport/net.c"
 

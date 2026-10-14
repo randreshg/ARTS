@@ -59,10 +59,6 @@ void arts_free(void *ptr) { free(ptr); }
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   (void)packet;
 }
-void arts_transport_loopback_post(const void *packet, unsigned int size) {
-  (void)packet;
-  (void)size;
-}
 
 /* Compile the module under test (its statics: g_net, reap paths, rdzv table). */
 #include "../../libs/src/core/transport/net.c"

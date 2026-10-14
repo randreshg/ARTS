@@ -37,7 +37,7 @@
 ## License for the specific language governing permissions and limitations
 ###############################################################################
 
-file(GLOB UTILS_SOURCES "*.c")
+file(GLOB UTILS_SOURCES CONFIGURE_DEPENDS "*.c")
 
 # Create object library for the utils module
 add_library(arts_utils OBJECT ${UTILS_SOURCES})

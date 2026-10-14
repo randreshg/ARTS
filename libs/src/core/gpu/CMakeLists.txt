@@ -44,7 +44,7 @@
 # Only build if CUDA library is being built
 if(BUILD_CUDA_LIBRARY)
     # Collect all CUDA source files
-    file(GLOB GPU_SOURCES "*.cu")
+    file(GLOB GPU_SOURCES CONFIGURE_DEPENDS "*.cu")
 
     # Create object library for the GPU module
     add_library(arts_gpu OBJECT ${GPU_SOURCES})

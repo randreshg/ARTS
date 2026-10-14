@@ -257,7 +257,7 @@ extern "C" {
  * the single lock_state word run inside a CAS-retry loop.  Exposed here (not
  * just in purge.c) so the acquire/release handlers can run the SAME arbiter
  * LOCALLY when home == self — a local hit runs the handler logic directly, with
- * no wire / loopback round (HPC: a local op must not touch the network layer).
+ * no wire round (HPC: a local op must not touch the network layer).
  */
 #ifdef ARTS_RELEASE_PURGE
 #define EXCL_OP_RW_ACQ 0

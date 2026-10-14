@@ -353,10 +353,6 @@ void arts_transport_send_async(int rank, char *message, unsigned int length) {
   (void)message;
   (void)length;
 }
-void arts_transport_loopback_post(const void *packet, unsigned int size) {
-  (void)packet;
-  (void)size;
-}
 arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
   (void)cache;
   return NULL;

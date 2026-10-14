@@ -280,10 +280,6 @@ void arts_transport_send_async(int rank, char *message, unsigned int length) {
   (void)message;
   (void)length;
 }
-void arts_transport_loopback_post(const void *packet, unsigned int size) {
-  (void)packet;
-  (void)size;
-}
 void arts_handler_db_excl_grant(void *payload, size_t size) {
   (void)payload;
   (void)size;

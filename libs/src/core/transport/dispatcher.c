@@ -81,10 +81,6 @@ void arts_transport_broadcast_shutdown(void) {
   }
 }
 
-void arts_transport_cleanup(void) {
-  arts_loopback_cleanup();
-}
-
 void arts_transport_setup(struct arts_config_s *config) {
   /* Establish the bootstrap TCP mesh; each producing thread injects its own
    * sends directly onto the fabric. */

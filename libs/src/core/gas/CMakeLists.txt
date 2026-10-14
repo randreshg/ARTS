@@ -38,7 +38,7 @@
 ###############################################################################
 
 # Collect all source files
-file(GLOB GAS_SOURCES "*.c")
+file(GLOB GAS_SOURCES CONFIGURE_DEPENDS "*.c")
 
 # Create object library for the gas module
 add_library(arts_gas OBJECT ${GAS_SOURCES})

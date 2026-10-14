@@ -84,14 +84,14 @@ struct arts_numa_facts_s {
   uint32_t distance[ARTS_MAX_NUMA_NODES * ARTS_MAX_NUMA_NODES];
 };
 
-/* Thread roles.  A thread has exactly one role.  After the transport cutover
- * there is no dedicated sender: every producing thread injects its own outbound
- * traffic straight onto the fabric.  A PROGRESS thread reaps fabric completions
- * (dispatching inbound messages) and drains the self-loopback — the sole inbound
- * coherence processor on a multi-node run. */
+/* Thread roles.  A thread has exactly one role.  There is no dedicated
+ * sender: every producing thread injects its own outbound traffic straight
+ * onto the fabric.  A PROGRESS thread reaps fabric completions (dispatching
+ * inbound messages); a multi-node run may have several, and their dispatches
+ * run concurrently. */
 enum arts_thread_role {
   ARTS_ROLE_WORKER = 0, /* Executes EDTs from work-stealing deque */
-  ARTS_ROLE_PROGRESS,   /* Reaps fabric completions + drains self-loopback */
+  ARTS_ROLE_PROGRESS,   /* Reaps fabric completions */
   ARTS_ROLE_MAX
 };
 
