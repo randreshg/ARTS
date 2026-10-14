@@ -7,13 +7,15 @@
  * ownership install adds +1, and nothing withdraws it except an INVALIDATE.
  * A grant therefore OUTLIVES the writer that opened it (sticky), and
  * consecutive local writers cost no wire traffic at all.  The home is a pure
- * directory: it names the holder (rw_holder), queues requesters (pending_rw,
- * Vyukov MPSC), and admits one transfer round at a time (invalidate_in_flight
- * baton).  The payload itself never routes through the home on a transfer —
- * the INVALIDATE carries the next owner, and whichever actor drives
- * writer_count to exactly 0 (the INVALIDATE handler, or the last release)
- * ships owner -> owner directly.  Under PURGE the holder hands the grant back
- * to the home at its own idle edge, and the home grants it onward.
+ * directory: it queues requesters (pending_rw, Vyukov MPSC), admits one
+ * transfer round at a time (invalidate_in_flight baton), and under RETAIN
+ * names the holder a revocation targets (rw_holder).  Under RETAIN the
+ * payload itself never routes through the home on a transfer — the
+ * INVALIDATE carries the next owner, and whichever actor drives writer_count
+ * to exactly 0 (the INVALIDATE handler, or the last release) ships owner ->
+ * owner directly.  Under PURGE the grant is a possession bit beside the
+ * count: the holder hands it back to the home at its own idle edge, and the
+ * home grants it onward from there (coherence/grant_purge.c).
  *
  * Nothing here is protocol-specific: what a release does BESIDES decrementing
  * the count (publish the payload to home, run an invalidation round, both, or
@@ -25,7 +27,8 @@
  * Write-policy-divergent steps are delegated to seams the write policy
  * defines (coherence/grant_wt.c, coherence/grant_wb.c):
  * arts_db_start_grant_round and the GRANT_INVALIDATE, GRANT_RESPONSE and
- * CONFIRM handlers, where WT drains immediately and WB gates on CONFIRM_ACK.
+ * CONFIRM handlers, where WT drains immediately and WB gates on CONFIRM_ACK
+ * (the round start, INVALIDATE and CONFIRM exist only under RETAIN).
  * Four write-policy guards remain here.  Under WB the ship credits the
  * ex-owner in the dedup ledger (which only VAL WB keeps) and moves no bytes
  * to a new owner that already holds this version; under WT the home
@@ -348,9 +351,9 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
     /* One-sided ship: PUT straight from the live buffer into the new owner's
      * landing — zero copy at the source.  The strong buffer ref transfers to
      * the PUT's local completion, keeping the bytes valid until the fabric no
-     * longer reads them (the protocol additionally keeps this cache's buffer
-     * slot untouched until the new owner CONFIRMs, but the ref makes the
-     * lifetime explicit rather than assumed). */
+     * longer reads them (a revoking home additionally keeps this cache's
+     * buffer slot untouched until the new owner CONFIRMs, but the ref makes
+     * the lifetime explicit rather than assumed). */
     hdr.data_size = cache->db_size;
     hdr.rdzv_txid = rdzv.txid;
     hdr.rdzv_cookie = rdzv.cookie;
@@ -413,9 +416,9 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
 
 /* ===== Home-side ownership handlers (VAL, INV) =======================
  * GRANT_REQUEST exists only in the arms that link this TU.  The
- * home-directory machinery these handlers touch (pending_rw,
- * invalidate_in_flight, rw_holder) is shared by both write policies and both
- * release policies; where they diverge is delegated to the seams in
+ * home-directory machinery these handlers touch (pending_rw and
+ * invalidate_in_flight, and under RETAIN rw_holder) is shared by both write
+ * policies; where they diverge is delegated to the seams in
  * coherence/grant_wt.c / grant_wb.c and coherence/grant_retain.c /
  * grant_purge.c. */
 
@@ -556,9 +559,9 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache) {
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
-/* GRANT_CTS sender (home → first-touch requester) + requester-side body.
- * The requester learns db_size and re-issues the in-flight request with a
- * landing; the coalescing flag stays held (same round continuing). */
+/* GRANT_CTS sender (home → remote first-touch requester) + requester-side
+ * body.  The requester learns db_size and re-issues the in-flight request with
+ * a landing; the coalescing flag stays held (same round continuing). */
 void arts_send_db_grant_cts(unsigned int requester_rank,
                                 arts_guid_t db_guid, uint64_t db_size) {
   INCREMENT_NUM_GRANT_SIZE_CTS_BY(1);
@@ -567,18 +570,6 @@ void arts_send_db_grant_cts(unsigned int requester_rank,
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.db_size = db_size;
-  if (requester_rank == arts_global_rank_id) {
-    /* Self-send cannot occur in a consistent state (home == requester shares
-     * ONE cache, so a size-unknown request implies a size-unknown home), but
-     * mirror the Cat-C lookup-acquire-or-drop for uniformity. */
-    arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
-    struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL) {
-      arts_handler_db_grant_cts(db, &p);
-    }
-    arts_shared_release(&h);
-    return;
-  }
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
 
@@ -593,6 +584,7 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v) {
   arts_send_db_grant_request(cache);
 }
 
+#ifndef ARTS_RELEASE_PURGE
 void arts_send_db_grant_invalidate(
     unsigned int owner_rank, arts_guid_t db_guid, unsigned int new_owner_rank,
     const struct arts_rdzv_landing_s *new_owner_rdzv, uint64_t new_owner_have) {
@@ -652,14 +644,12 @@ void arts_send_db_grant_invalidate(
 /* CONFIRM (new owner C → home A), both write policies.  The home flips
  * rw_holder and advances the next round; under WB its handler also replies
  * CONFIRM_ACK, under WT it does not.  The handler reads pending_install_owner
- * and ignores args, so the self-send passes NULL. */
-void arts_send_db_grant_confirm(unsigned int home_rank, arts_guid_t db_guid,
-                                    uint64_t version) {
+ * and takes no args. */
+void arts_send_db_grant_confirm(unsigned int home_rank, arts_guid_t db_guid) {
   struct arts_msg_grant_confirm_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_GRANT_CONFIRM);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
-  p.version = version;
   if (home_rank == arts_global_rank_id) {
     /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop.
      * HIT advances the transfer round on the ref-pinned home db_s; MISS (DB
@@ -674,3 +664,4 @@ void arts_send_db_grant_confirm(unsigned int home_rank, arts_guid_t db_guid,
   }
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
+#endif /* !ARTS_RELEASE_PURGE */

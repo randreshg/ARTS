@@ -13,11 +13,10 @@
  *   1. stub_size > offsetof(arts_db_s, db_type)         — db_type in bounds
  *      (every coherence lookup/free reads db_type through a stub).
  *   2. stub_size > offsetof(arts_db_s, home_initialized) — home_initialized in
- *      bounds (the destructor reads it on a stub; this is the exact field whose
- *      OOB read caused the P6 SIGSEGV).
+ *      bounds (the destructor reads it on a stub).
  *   3. stub_size == offsetof(arts_db_s, <first home-arm field>) — the stub ends
- *      exactly at the first home-directory field (rw_holder for the ownership
- *      protocols, lock_state for EXCL), so it
+ *      exactly at the first home-directory field (for VAL rw_holder, or
+ *      pending_rw where the home names no holder; lock_state for EXCL), so it
  *      INCLUDES home_initialized but omits the bulky home directory.
  *   4. home_initialized is laid out AFTER db_type which is AFTER the cache —
  *      i.e. offsetof(cache)==0 < offsetof(db_type) <
@@ -53,6 +52,8 @@
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, dir_state)
 #elif defined(ARTS_PROTOCOL_FLUSH)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, sharers)
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_RELEASE_PURGE)
+#define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, pending_rw)
 #elif defined(ARTS_PROTOCOL_VAL)
 #define FIRST_HOME_ARM_OFF offsetof(struct arts_db_s, rw_holder)
 #endif
@@ -93,11 +94,11 @@ int main(void) {
                   (unsigned long long)stub, off_db_type);
     rc = 1;
   }
-  /* (2) home_initialized in bounds — the P6 SIGSEGV guard. */
+  /* (2) home_initialized in bounds. */
   if (!(stub > off_home_init)) {
     (void)fprintf(stderr,
                   "FAIL db_cache_layout: stub_size(%llu) must be > "
-                  "offsetof(home_initialized)=%zu (P6 teardown OOB)\n",
+                  "offsetof(home_initialized)=%zu (the teardown reads it)\n",
                   (unsigned long long)stub, off_home_init);
     rc = 1;
   }

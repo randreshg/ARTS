@@ -159,15 +159,6 @@ struct arts_db_snapshot_redirect_args_s {
 };
 #endif
 
-#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
-    defined(ARTS_WRITE_POLICY_WB)
-/* arts_handler_db_grant_confirm body args (home side). */
-struct arts_db_grant_response_ack_args_s {
-  arts_guid_t db_guid;
-  uint64_t version;
-};
-#endif
-
 /* ===== Home-side handlers ============================================ */
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_REQUEST]): item_v is the
@@ -181,7 +172,7 @@ void arts_handler_db_grant_request(void *item_v, void *args_v);
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_GRANT_RETURN]): item_v is the home
  * db_s the engine acquired; args_v is an arts_ooo_args_db_grant_return_s.
  * Accepts the returned write right, or parks it in the home's single-slot
- * latch for the round close already inbound.  Defined in
+ * latch for the thread already inside the serving tail.  Defined in
  * coherence/grant_purge.c. */
 void arts_handler_db_grant_return(void *item_v, void *args_v);
 #endif
@@ -233,10 +224,11 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie);
 /* Pure (cache, args) body: item_v is the db_s (cache is its first member);
  * args_v is an arts_ooo_args_db_grant_invalidate_s.  The wire dispatcher /
  * self-send looks the cache up and calls this body DIRECTLY — no OoO defer.  In
- * both write policies the home publishes the invalidate target (rw_holder) only at the
- * post-install CONFIRM owner-swap, so the cache is provably installed when
- * INVALIDATE arrives.  WT/WB define the real body (sentinel withdrawal /
- * transfer trigger). */
+ * both write policies the revoking home publishes the invalidate target
+ * (rw_holder) only at the post-install CONFIRM owner-swap, so the cache is
+ * provably installed when INVALIDATE arrives.  WT/WB define the real body
+ * (sentinel withdrawal / transfer trigger); a home whose grants come back
+ * unasked sends no INVALIDATE at all. */
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v);
 /* Cat-C pure body (PUBLISH_ACK): item_v is the releaser-rank db_s the
  * dispatcher acquired; args_v is an arts_db_publish_ack_args_s.  NOT
@@ -263,10 +255,13 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
 #endif /* VAL x WB */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-/* Cat-C pure body (CONFIRM, home side; both write policies): item_v is the db_s the
- * dispatcher acquired (cache is its first member); args_v is unused (the new
- * owner is read from db->pending_install_owner).  NOT OoO-deferrable — the
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    !defined(ARTS_RELEASE_PURGE)
+/* Cat-C pure body (CONFIRM, home side; both write policies of the revoking
+ * release policy — a voluntarily returned grant names no holder, so it has no
+ * CONFIRM): item_v is the db_s the dispatcher acquired (cache is its first
+ * member); args_v is unused (the new owner is read from
+ * db->pending_install_owner).  NOT OoO-deferrable — the
  * dispatcher looks the cache up with a held ref and, on a MISS (DB destroyed),
  * SILENTLY DROPS.  Records the new rw_holder, then starts the next transfer
  * round or releases the invalidate_in_flight baton.  WB additionally replies
@@ -276,9 +271,8 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v);
 
 /* Send CONFIRM from new owner C back to home A once the ownership transfer is
  * complete (both write policies; home flips rw_holder + advances the round). */
-void arts_send_db_grant_confirm(unsigned int home_rank, arts_guid_t db_guid,
-                                    uint64_t version);
-#endif /* shared grant plane */
+void arts_send_db_grant_confirm(unsigned int home_rank, arts_guid_t db_guid);
+#endif /* shared grant plane, revoking release policy */
 
 /* ===== Sender helpers ================================================ */
 
@@ -294,7 +288,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache);
  * coalescing flag stays held — this is the same round continuing).  MISS
  * (DB destroyed) silently drops. */
 void arts_handler_db_grant_cts(void *item_v, void *args_v);
-/* GRANT_CTS sender: home → first-touch requester (db_size reply). */
+/* GRANT_CTS sender: home → remote first-touch requester (db_size reply). */
 void arts_send_db_grant_cts(unsigned int requester_rank,
                                 arts_guid_t db_guid, uint64_t db_size);
 /* cv: nonzero only on an announce — the address of the releaser's heap

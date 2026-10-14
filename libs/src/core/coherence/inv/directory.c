@@ -229,11 +229,17 @@ void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
 void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
                        unsigned int nranks) {
   /* Grant plane: the creator boots holding it (arts_db_create defaults to an
-   * RW acquire under the OCR contract), so name it now.  No count here: ownership lives on the holder's writer_count. */
+   * RW acquire under the OCR contract).  No count here: ownership lives on
+   * the holder's writer_count, and a revoking home also names the holder
+   * now; a home whose grants come back unasked names none. */
+#ifndef ARTS_RELEASE_PURGE
   atomic_store_explicit(&db->rw_holder, rw_holder, memory_order_relaxed);
+#endif
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_relaxed);
+#ifndef ARTS_RELEASE_PURGE
   db->pending_install_owner = 0;
+#endif
 #ifdef ARTS_RELEASE_PURGE
   atomic_store_explicit(&db->pending_return_from, ARTS_GRANT_NO_RETURNER,
                         memory_order_relaxed);

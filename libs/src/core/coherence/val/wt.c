@@ -47,8 +47,9 @@ void arts_handler_db_acquire(void *item, void *args) {
   arts_edt_dep_t *dep = &((arts_edt_dep_t *)arts_get_depv(edt))[slot];
   arts_db_access_mode_t mode = dep->mode;
   bool is_home = (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id);
-  /* writer_count is non-negative (post-install rw_holder flip + install guard),
-   * so > 0 means owner and <= 0 means not-owner; the (int) cast is defensive.
+  /* writer_count is non-negative (install guard; under RETAIN also the
+   * post-install rw_holder flip), so > 0 means owner and <= 0 means
+   * not-owner; the (int) cast is defensive.
    * An owned read here is safe to serve RO from the local buffer. */
   bool is_owner = ((int)arts_atomic_read(&cache->writer_count) > 0);
 
@@ -241,7 +242,11 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
 
 void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
                        unsigned int nranks) {
+  /* A revoking home names the holder it will revoke; a home whose grants
+   * come back unasked names none — its own possession is its directory. */
+#ifndef ARTS_RELEASE_PURGE
   atomic_store_explicit(&db->rw_holder, rw_holder, memory_order_relaxed);
+#endif
   arts_home_grantreq_queue_init(&db->pending_rw);
   atomic_store_explicit(&db->invalidate_in_flight, 0, memory_order_relaxed);
   db->cached_version = arts_rank_u64_map_create(nranks);
@@ -253,7 +258,9 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
     arts_rank_bitset_set(&db->cached_ranks, rw_holder);
   }
+#ifndef ARTS_RELEASE_PURGE
   db->pending_install_owner = 0;
+#endif
 #ifdef ARTS_RELEASE_PURGE
   atomic_store_explicit(&db->pending_return_from, ARTS_GRANT_NO_RETURNER,
                         memory_order_relaxed);

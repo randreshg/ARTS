@@ -57,15 +57,16 @@ void arts_pending_rw_queue_destroy(arts_lf_stack_t *q);
 /* Cache_s init kinds — selects how writer_count / home / buffer get
  * initialized. */
 typedef enum {
-  /* Creator side, home == self: install buffer, writer_count = 2
-   * (sentinel + creator EDT), home struct with rw_holder = self. */
+  /* Creator side, home == self: install buffer, writer_count = the right
+   * plus the creator EDT's hold, home struct with self as the initial
+   * holder. */
   ARTS_DB_INIT_CREATOR_HOME = 0,
   /* Creator side, home != self: install buffer (creator local),
-   * writer_count = 2 (sentinel + creator EDT), no home struct. */
+   * writer_count = the right plus the creator EDT's hold, no home struct. */
   ARTS_DB_INIT_CREATOR_REMOTE,
   /* Home side, creator != self (DB_CREATE handler): install
-   * buffer (bytes unspecified), writer_count = 0, home struct with rw_holder
-   * = creator_rank. */
+   * buffer (bytes unspecified), writer_count = 0, home struct with
+   * creator_rank as the initial holder. */
   ARTS_DB_INIT_HOME_RECV,
   /* Stub install by a dependence's first touch on a rank that is not the
    * block's home: no buffer, writer_count = 0. */
@@ -80,7 +81,8 @@ typedef enum {
  * allocates (and zeroes) the db_s and passes &db->cache.  Used by
  * db_create_in_place (creator side), the DB_CREATE wire handler (home
  * side), and stub install on consumer ranks.  creator_rank: only consulted
- * when kind == ARTS_DB_INIT_HOME_RECV (used to set home->rw_holder).
+ * when kind == ARTS_DB_INIT_HOME_RECV (the initial holder, which a revoking
+ * home names in rw_holder).
  * Defined by each arm, around its own cache fields. */
 void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
@@ -487,39 +489,46 @@ arts_db_acquire_result_t
 arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
                           unsigned int slot);
 
+#ifndef ARTS_RELEASE_PURGE
 /* Per-write-policy ownership-round seams (defined in coherence/grant_wt.c and
- * coherence/grant_wb.c, called from the GRANT_REQUEST handler).  start: the
- * WT write policy INVALIDATEs the current holder; the WB write policy pops
- * the FIFO target + starts the invalidate round.  return: the WT write policy
- * advances the chain; the WB write policy has no separate release message
- * (no-op). */
+ * coherence/grant_wb.c, called from the revoking release policy's request
+ * arrival).  start: the WT write policy INVALIDATEs the current holder; the
+ * WB write policy pops the FIFO target + starts the invalidate round. */
 void arts_db_start_grant_round(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester);
+#endif
 
 /* ===== Release-policy seams (coherence/grant_purge.c / grant_retain.c) =====
  * WHO initiates the grant's return is the release policy's whole question, and
- * these five points are where the two answers differ.  Under RETAIN the home
+ * these points are where the two answers differ.  Under RETAIN the home
  * drives every hand-over (it revokes the current holder and the holder ships
- * onward), so the request arrival starts a round, the round close advances or
- * releases the baton, and the count-dropping edges only ship when a round has
- * already named a target.  Under PURGE the holder gives the right back at its
- * own idle edge and the home hands it out from there, so the request arrival
- * only queues unless the home is already idle, and the count-dropping edges
- * are the return itself.
+ * onward), so the request arrival starts a round, the new owner's CONFIRM
+ * names it as the holder the next revocation targets, the round close
+ * advances or releases the baton, and the count-dropping edges only ship when
+ * a round has already named a target.  Under PURGE the holder gives the right
+ * back at its own idle edge and the home hands it out from there, so the
+ * request arrival only queues unless the home holds the right, the home's
+ * own possession is its whole directory (no holder is named, no CONFIRM is
+ * sent, and no round outlives the serve that grants it), and the
+ * count-dropping edges are the return itself.
  *
  * arrived:      home-side GRANT_REQUEST tail, with the requester queued.
- * round_close:  home-side CONFIRM tail, with rw_holder already flipped.
+ * round_close:  home-side CONFIRM tail, with rw_holder already flipped
+ *               (RETAIN only).
  * release_skip: release_rw's defensive entry guard (true = nothing to drop).
- * release_commit / guard_remove: the two count-dropping edges — a writer's
- *               own release, and the removal of the install-time drain guard.
+ * release_commit: the count-dropping edge of a writer's own release; the
+ *               install's own hold is closed by commit_drain / commit_finish
+ *               below.
  * Every one of them is called with the arm's own state already settled: the
- * release's publish has been acknowledged, the install's drain has run. */
+ * release's publish has been acknowledged. */
 void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester);
+#ifndef ARTS_RELEASE_PURGE
 void arts_db_grant_round_close(struct arts_db_cache_s *cache,
                                struct arts_db_s *db);
+#endif
 bool arts_db_grant_release_skip(struct arts_db_cache_s *cache);
 void arts_db_grant_release_commit(struct arts_db_cache_s *cache);
 /* The install's drain, and what closes it.  Under a demand-revoked policy the
@@ -527,9 +536,9 @@ void arts_db_grant_release_commit(struct arts_db_cache_s *cache);
  * under a voluntary-return policy the commit's hold BECOMES the waiters' holds
  * in one step before any of them is woken, so the last of them to release sees
  * a word carrying exactly its own hold and can hand the right back on its own
- * publish.  commit_drain returns how many waiters it woke; commit_finish is
- * given that count because with none there is no release to carry anything and
- * the commit must close the edge itself. */
+ * publish.  commit_drain returns how many waiters it woke and commit_finish is
+ * given that count: where the hold became the waiters', at least one waiter
+ * must have taken it. */
 unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache);
 void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
                                  unsigned int drained);
@@ -546,14 +555,6 @@ void arts_pending_rw_chain_wake(arts_lf_link_t *chain,
                                 void (*cb)(arts_guid_t edt_guid,
                                            unsigned int slot, void *ctx),
                                 void *ctx);
-/* The home takes the idle holder's place.  A create whose creator never
- * acquires leaves no rank able to reach an idle edge, so the directory must
- * name the home itself; and because the descriptor is already visible when
- * this runs, demand can already be queued behind the holder it replaces.
- * Hence a transition and not a store: whoever ends up serving that demand is
- * decided by a baton, exactly as at any other entry to the home's server. */
-void arts_db_grant_home_idle_transition(struct arts_db_s *db);
-
 /* ===== The hand-back as a rider on the release's own publish =============
  * A write-through release already sends the home its payload, and the home is
  * exactly who the write right goes back to — so the two travel together and

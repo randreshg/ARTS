@@ -143,15 +143,6 @@ void arts_db_grant_round_close(struct arts_db_cache_s *cache,
 }
 #endif /* ARTS_WRITE_POLICY_WT */
 
-void arts_db_grant_home_idle_transition(struct arts_db_s *db) {
-  /* Demand reaches a holder only when the home forwards it, and the home
-   * forwards from whatever the directory names — so naming this rank IS the
-   * whole transition.  The first request revokes the idle grant from here
-   * exactly as it would from any other holder. */
-  atomic_store_explicit(&db->rw_holder, arts_global_rank_id,
-                        memory_order_seq_cst);
-}
-
 /* A grant is never handed back unasked here, so there is no obligation to
  * arm, to carry, or to settle: every release takes the ordinary
  * count-dropping edge, and a home-bound publish carries payload alone. */

@@ -144,21 +144,23 @@ enum arts_ooo_kind {
   OOO_DB_INV_REDIRECT, /* → arts_handler_db_inv_redirect @ the grant holder */
 #endif
 /* GRANT_INVALIDATE / RESPONSE / CONFIRM, and DELIVER / INVALIDATE /
- * INV_ACK / CTS, are Cat-C: their targets are either provably installed (the
- * home names a holder only after that rank installed; a requester pinned its
- * cache when it sent the request; home for the acks) or the MISS action is
- * part of the protocol (INVALIDATE MISS → ACK; DELIVER MISS → landing
- * discard). */
+ * INV_ACK / CTS, are Cat-C: their targets are either provably installed (a
+ * revoking home names a holder only after that rank installed; a requester
+ * pinned its cache when it sent the request; home for the acks) or the MISS
+ * action is part of the protocol (INVALIDATE MISS → ACK; DELIVER MISS →
+ * landing discard).  A home whose grants come back unasked sends no
+ * GRANT_INVALIDATE and receives no CONFIRM. */
 #elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
   OOO_DB_ACQUIRE, /* → arts_db_acquire_replay_dep (re-attempts the one deferred
                      local dep; pushed by arts_db_acquire_all's per-dep 3-way)
                    */
   OOO_DB_SNAPSHOT_REQUEST,  /* → arts_handler_db_snapshot_request @ home */
   OOO_DB_GRANT_REQUEST, /* → arts_handler_db_grant_request @ home */
-  /* NO OOO_DB_GRANT_INVALIDATE — rw_holder is flipped only at the
-   * post-install CONFIRM (same as WB), so the target is provably installed
-   * when INVALIDATE arrives and the dispatcher/self-send call the body
-   * directly. */
+  /* NO OOO_DB_GRANT_INVALIDATE — where the home revokes, rw_holder is
+   * flipped only at the post-install CONFIRM (same as WB), so the target is
+   * provably installed when INVALIDATE arrives and the dispatcher/self-send
+   * call the body directly; where grants come back unasked, the home sends
+   * none. */
   OOO_DB_PUBLISH, /* → arts_handler_db_publish @ home */
 #ifdef ARTS_RELEASE_PURGE
   /* The voluntary return.  It can overtake the block's home CREATE, and the

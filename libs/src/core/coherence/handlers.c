@@ -92,9 +92,9 @@
  * NO_ACQUIRE, no EDT will ever release.  That seed must be undone so the first
  * real acquirer is granted rather than blocked behind a hold nothing releases.
  * Mirrors the local-create path: under a single-writer lock the unreleased hold
- * deadlocks every future writer; the ownership protocols collapse the seed to
- * the sentinel (writer_count = 1).  Idempotent and safe to call on every create
- * path. */
+ * deadlocks every future writer; the grant-bearing arms collapse the seed to
+ * the idle owner.  It runs on the home's descriptor before that descriptor is
+ * published, so nothing else can reach it yet. */
 static inline void db_create_no_acquire_idle(struct arts_db_s *db,
                                              bool no_acquire) {
   if (!no_acquire) {
@@ -134,18 +134,11 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
 #endif /* ARTS_RELEASE_* */
 #else
   /* Grant-bearing arms: with no creator hold this rank is the idle owner —
-   * possession, and no hold under it.  The store is atomic because this word
-   * is what a concurrent acquire's admission CAS and, where grants come back
-   * unasked, a returning holder's claim both arbitrate against. */
-  (void)arts_atomic_swap(&db->cache.writer_count, ARTS_GRANT_SEED_IDLE);
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-  /* The directory must name THIS rank too.  A creator that never acquires
-   * never releases, so it can never reach an idle edge: named as the holder
-   * it would absorb the first requester's round and keep the block forever.
-   * A transition, not a field write — demand may already be queued behind
-   * the holder it replaces. */
-  arts_db_grant_home_idle_transition(db);
-#endif
+   * possession, and no hold under it.  The directory already names it: the
+   * CREATOR_HOME init made it the holder where the home revokes, and this
+   * possession is the whole directory where grants come back unasked.  No
+   * request can be queued yet, so there is nothing to serve. */
+  db->cache.writer_count = ARTS_GRANT_SEED_IDLE;
 #endif
 }
 
@@ -221,21 +214,25 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   stub->db_type = (arts_db_types_t)p->db_type;
   if (no_acquire) {
     /* Home is the idle RW owner from creation — identical to a locally created
-     * DB that has already been released by its creator.  HOME_RECV (rw_holder =
-     * creator) would route the first GRANT_INVALIDATE to a creator that holds
-     * no cache — a phantom holder — and the acquire would stall forever.
+     * DB that has already been released by its creator.  HOME_RECV would
+     * leave the right with a creator that holds no cache — a phantom holder
+     * (where the home revokes, the first GRANT_INVALIDATE would go to it) —
+     * and the acquire would stall forever.
      *
-     * CREATOR_HOME sets writer_count = sentinel(1) + creator hold(1) = 2, but
-     * NO_ACQUIRE means no EDT will ever release the creator hold.  Decrement
-     * to 1 (sentinel only) so the first GRANT_REQUEST's INVALIDATE-to-self
-     * drives
-     * writer_count to 0, triggering advance_chain and the GRANT. */
+     * CREATOR_HOME seeds ownership plus the creator's hold, but NO_ACQUIRE
+     * means no EDT will ever release that hold, so it is collapsed to the
+     * idle owner below: where the home revokes, the first GRANT_REQUEST's
+     * INVALIDATE-to-self then drives writer_count to 0 and ships the GRANT;
+     * where grants come back unasked, the home serves it from its own
+     * possession. */
     arts_db_cache_init(&stub->cache, db_guid, db_size,
                        ARTS_DB_INIT_CREATOR_HOME, creator_rank);
-    /* Collapse the create-time creator hold to the idle/sentinel state:
-     * VAL drops writer_count 2 -> 1 (sentinel only); EXCL frees the
-     * lock+cache state so the first GRANT_REQUEST / EXCL_REQUEST is granted
-     * rather than blocked behind a hold no EDT will ever release. */
+    /* Collapse the create-time creator hold to the idle state: the
+     * grant-bearing arms drop writer_count to the idle seed (the sentinel
+     * alone where the home revokes, possession with no hold where grants come
+     * back unasked); EXCL frees the lock+cache state so the first
+     * GRANT_REQUEST / EXCL_REQUEST is granted rather than blocked behind a
+     * hold no EDT will ever release. */
     db_create_no_acquire_idle(stub, no_acquire);
     /* No buffer here: a create that acquires nothing has no first user to
      * place the payload for, so its storage is allocated by whoever first

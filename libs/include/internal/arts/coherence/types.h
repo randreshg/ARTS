@@ -112,7 +112,8 @@ static inline uint64_t arts_db_total_size(const struct arts_db_s *db) {
  * cached_ranks bitset).  The home rank allocates the full sizeof(struct
  * arts_db_s) instead.
  * The stub ends at the first home-directory field after home_initialized
- * (protocol-dependent: rw_holder for the ownership protocols). */
+ * (protocol-dependent: for VAL, rw_holder where the home revokes and
+ * pending_rw where it names no holder). */
 static inline uint64_t arts_db_cache_stub_size(void) {
 #if defined(ARTS_PROTOCOL_EXCL)
   return offsetof(struct arts_db_s, lock_state);
@@ -120,6 +121,8 @@ static inline uint64_t arts_db_cache_stub_size(void) {
   return offsetof(struct arts_db_s, dir_state);
 #elif defined(ARTS_PROTOCOL_FLUSH)
   return offsetof(struct arts_db_s, sharers);
+#elif defined(ARTS_PROTOCOL_VAL) && defined(ARTS_RELEASE_PURGE)
+  return offsetof(struct arts_db_s, pending_rw);
 #elif defined(ARTS_PROTOCOL_VAL)
   return offsetof(struct arts_db_s, rw_holder);
 #endif

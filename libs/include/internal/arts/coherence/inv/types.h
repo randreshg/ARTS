@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV protocol (write-invalidate) type layouts.  Two write-policy arms share this
- * header; the build selects exactly one.
+ * INV protocol (write-invalidate) type layouts.  Two write-policy arms share
+ * this header; the build selects exactly one.
  *
  * ── WT ──────────────────────────────────────────────────────────────
  * Cache side: ONE 64-bit word carries the whole per-rank protocol state,
@@ -25,15 +25,16 @@
  *
  * Home side: ONE 64-bit directory word
  *
-  *   [ round_open:1 (63) | acks:14 (62..49) | spare:49 (48..0) ]
+ *   [ round_open:1 (63) | acks:14 (62..49) | spare:49 (48..0) ]
  *
  *   round_open = at most one invalidation round open at a time.
  *   acks       = outstanding INVALIDATE_ACKs of the open round.
  *
  * The word carries the round and nothing else.  Write ownership is not here:
  * it lives in the shared migrating grant (the holder's writer_count plus the
- * home's rw_holder / pending_rw), which every grant-bearing arm shares, so
- * this directory has no owner field and no writer count of its own.
+ * home's pending_rw, and rw_holder where the home revokes), which every
+ * grant-bearing arm shares, so this directory has no owner field and no
+ * writer count of its own.
  *
  * The canonical home version is the installed buffer's version
  * (cache.buffer->version); there is no separate version field.
@@ -229,8 +230,9 @@ extern "C" {
  *   acks       = outstanding INVALIDATE_ACKs of the open round.
  *
  * Who holds the write grant, who is queued for it, and whether a transfer is
- * in flight are NOT here: they are the grant plane's rw_holder / pending_rw /
- * invalidate_in_flight, shared with every other migrating-grant arm.
+ * in flight are NOT here: they are the grant plane's pending_rw /
+ * invalidate_in_flight (and rw_holder where the home revokes), shared with
+ * every other migrating-grant arm.
  */
 #define INV_DIR_ACKS_BITS 14
 #define INV_DIR_FLAG_BITS 1
@@ -541,13 +543,15 @@ struct arts_db_cache_s {
  *
  *  The per-rank coherence cache is embedded by value as the FIRST member.
  *  Non-home ranks allocate a cache-only footprint
- *  (arts_db_cache_stub_size() = offsetof(rw_holder)) that includes
- *  home_initialized but omits every home-directory field.
+ *  (arts_db_cache_stub_size() = offsetof(dir_state)) that includes
+ *  home_initialized and the grant plane's home fields but omits the
+ *  invalidation round's.
  *
  *  The home directory is two independent planes that share no word:
- *    - the migrating write grant (rw_holder / pending_rw / invalidate_in_flight
- *      / pending_install_owner), identical to every other grant-bearing arm and
- *      driven by coherence/grant.c;
+ *    - the migrating write grant (pending_rw / invalidate_in_flight, plus
+ *      rw_holder / pending_install_owner where the home revokes and the return
+ *      latch where it does not), identical to every other grant-bearing arm
+ *      and driven by coherence/grant.c;
  *    - the invalidation round (dir_state / roster / pub_queue), which is what
  *      makes this arm INV.
  *  Both write policies carry exactly these fields; the write policy decides only
@@ -558,14 +562,20 @@ struct arts_db_s {
   bool home_initialized;
 
   /* ---- migrating write grant (home side; see coherence/grant.c) ---- */
+#ifndef ARTS_RELEASE_PURGE
+  /* The holder a revocation targets; a home whose grants come back unasked
+   * revokes no one, and its own possession is its whole directory. */
   arts_db_atomic_uint_t rw_holder;
+#endif
   struct arts_home_grantreq_queue_s pending_rw; /* Vyukov MPSC, pop-one */
   arts_db_atomic_uint_t invalidate_in_flight;  /* transfer-round baton */
+#ifndef ARTS_RELEASE_PURGE
   unsigned int pending_install_owner; /* baton-holder-written transfer target */
+#endif
 #ifdef ARTS_RELEASE_PURGE
   /* Single-slot return latch.  A voluntary return is never rejected: it is
-   * either accepted at once or parked here for the round close that is
-   * already inbound.  Both sides publish then check and consume by CAS, so
+   * either accepted at once or parked here for the thread already inside the
+   * home's serving tail.  Both sides publish then check and consume by CAS, so
    * exactly one of them accepts any given return.  Grants are serialized, so
    * at most one return can be outstanding and one slot suffices. */
   arts_db_atomic_uint_t pending_return_from;

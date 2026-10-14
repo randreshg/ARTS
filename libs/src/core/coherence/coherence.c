@@ -134,7 +134,7 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   /* Initialize the inlined home-directory fields only on the rank that owns
    * this DB's GUID home; non-home ranks leave db_self->home_initialized false
    * (and allocate only the cache-only stub, so the home fields don't exist).
-   * init_kind selects the initial rw_holder. */
+   * init_kind selects the initial holder. */
   unsigned int self = arts_global_rank_id;
   unsigned int n = arts_global_rank_count;
   if (n == 0) {
@@ -497,7 +497,6 @@ static arts_shared_ptr_t stub_install(arts_guid_t db_guid, uint64_t db_size,
   bool installed = installed_h != NULL;
   arts_shared_release(&installed_h);
   if (installed) {
-    arts_ooo_drain_guid(db_guid);
     /* Pin the just-installed db_s (one cb ref) for the caller. */
     return arts_route_table_lookup_db(db_guid);
   }
@@ -653,14 +652,14 @@ void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
   ro_combine_pump(cache);
 }
 void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
-  /* Ownership-arrival drain: called from the transfer-commit body inside the
-   * install's drain guard, which holds a count on the word across this walk.
-   * That is what stops ownership leaving under it, and it holds however the
-   * word is encoded: the guard is one hold, every waiter this commit wakes
-   * adds another, so no release reaching this word can be the one that gives
-   * ownership up — the count cannot fall to the edge while the guard is
-   * there.  It also means a releasing writer cannot take the whole-right
-   * claim, whose precondition is the word carrying exactly one hold.
+  /* Ownership-arrival drain: called from the transfer-commit body before the
+   * commit wakes its writers, so the install's own hold is on the word across
+   * this walk and nothing else can drop it.  That is what stops ownership
+   * leaving under it, and it holds however the word is encoded: no release
+   * reaching this word can be the one that gives ownership up — the count
+   * cannot fall to the edge while the install's hold is there.  It also means
+   * a releasing writer cannot take the whole-right claim, whose precondition
+   * is the word carrying exactly that writer's own hold.
    *
    * Every waiter here parked before this drain, and the buffer this rank now
    * holds contains every release completed before the transfer (the ownership
@@ -1388,14 +1387,42 @@ void arts_db_debug_quiescence_check(void) {
                      (unsigned long)c->db_guid);
           viol++;
         }
-        /* The home directory.  An open round (the baton), the requests
-         * queued behind one and a remote holder that has not yet handed the
-         * right back are each explained by a message still in flight when
-         * the network stopped, so none is reported by itself.  Home fields
-         * only — a cache-only stub does not carry them. */
+        /* The home directory.  A remote holder that has not yet handed the
+         * right back, the requests queued behind it and, where the home
+         * revokes, an open round (the baton) are each explained by a message
+         * still in flight when the network stopped, so none is reported by
+         * itself.  Home fields only — a cache-only stub does not carry
+         * them. */
         if (db->home_initialized) {
           bool baton = atomic_load_explicit(&db->invalidate_in_flight,
                                             memory_order_acquire) != 0;
+#ifdef ARTS_RELEASE_PURGE
+          unsigned int hw = arts_atomic_read(&c->writer_count);
+          /* The home names no holder: its own possession is the directory.
+           * The baton is held only by a thread inside the serving tail, and
+           * every way out of the tail puts it down, so once every thread has
+           * joined a held baton has lost its holder and every later entry to
+           * the tail is refused. */
+          if (baton) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home rests with its "
+                       "transfer baton held (word=%u)",
+                       (unsigned long)c->db_guid, hw);
+            viol++;
+          }
+          /* A hand-back parked in the latch is taken by its own arrival or by
+           * the thread inside the tail on its way out, so one still parked
+           * with the baton down has no consumer left, and the right it
+           * carries never comes home. */
+          bool named = ARTS_GRANT_OWN_OF(hw);
+          if (!baton && atomic_load_explicit(&db->pending_return_from,
+                                             memory_order_acquire) !=
+                            ARTS_GRANT_NO_RETURNER) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home has a hand-back "
+                       "parked with no tail to take it (word=%u)",
+                       (unsigned long)c->db_guid, hw);
+            viol++;
+          }
+#else
           bool named = atomic_load_explicit(&db->rw_holder,
                                             memory_order_acquire) ==
                        arts_global_rank_id;
@@ -1412,9 +1439,12 @@ void arts_db_debug_quiescence_check(void) {
                        (unsigned long)c->db_guid, hw);
             viol++;
           }
-          /* A request is served by the round its arrival or the previous
-           * round's close opens, and the home serves synchronously when it
-           * holds the right idle.  So a request queued with no round open
+#endif
+          /* A request is served by its own arrival or by whatever next puts
+           * the right in reach of the home's server — the previous round's
+           * close where the home revokes, the accepted hand-back where grants
+           * come back unasked — and the home serves synchronously when it
+           * holds the right idle.  So a request queued with the baton down
            * behind a home that holds the right with no hold under it is one
            * nothing will ever serve: stranded, whatever else the shutdown
            * abandoned. */

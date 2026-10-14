@@ -224,7 +224,7 @@ _Static_assert(sizeof(struct arts_msg_grant_cts_packet_s) == 32,
                "ownership_cts sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_cts_packet_s) == 64,
                "publish_cts sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 32,
+_Static_assert(sizeof(struct arts_msg_grant_confirm_packet_s) == 24,
                "ownership_confirm sizeof drifted");
 #ifdef ARTS_PROTOCOL_EXCL
 _Static_assert(sizeof(struct arts_msg_excl_request_packet_s) == 64,

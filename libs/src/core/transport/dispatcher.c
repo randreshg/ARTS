@@ -789,10 +789,11 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     break;
   }
 #endif /* WB-write-policy confirm gate */
-  /* GRANT_CONFIRM: both write policies (new owner C → home A flips rw_holder +
-   * advances the round).  WB additionally replies with CONFIRM_ACK; WT's
-   * home handler does not (the new owner already drained at
-   * GRANT_RESPONSE). EXCL has no ownership transfer and fatals. */
+  /* GRANT_CONFIRM: both write policies of the revoking release policy (new
+   * owner C → home A flips rw_holder + advances the round).  WB additionally
+   * replies with CONFIRM_ACK; WT's home handler does not (the new owner
+   * already drained at GRANT_RESPONSE).  EXCL has no ownership transfer and a
+   * voluntarily returned grant names no holder, so both fatal. */
 #if defined(ARTS_PROTOCOL_FLUSH)
 /* Refused in one place below: this arm has none of these rounds. */
 #elif defined(ARTS_PROTOCOL_EXCL)
@@ -802,26 +803,26 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                packet->rank);
     break;
   }
-#else /* VAL, INV */
+#elif defined(ARTS_RELEASE_PURGE)
+  case MSG_DB_GRANT_CONFIRM: {
+    ARTS_ERROR("voluntary-return build received GRANT_CONFIRM from rank %u — "
+               "under this release policy the hand-back is the only message "
+               "a holder sends the home; binary mode mismatch?",
+               packet->rank);
+    break;
+  }
+#else /* VAL, INV under the revoking release policy */
   case MSG_DB_GRANT_CONFIRM: {
     ARTS_DEBUG("Coh GRANT_CONFIRM Received");
     struct arts_msg_grant_confirm_packet_s *pack =
         (struct arts_msg_grant_confirm_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT advances the transfer round on the
-     * ref-pinned home db_s; MISS (DB destroyed) silently drops.  Neither write
-     * policy's handler reads args: the new owner is pending_install_owner. */
+     * ref-pinned home db_s; MISS (DB destroyed) silently drops.  The new owner
+     * is pending_install_owner, so the handler takes no args. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
-#ifdef ARTS_WRITE_POLICY_WB
-      struct arts_db_grant_response_ack_args_s args = {
-          .db_guid = pack->db_guid,
-          .version = pack->version,
-      };
-      arts_handler_db_grant_confirm(db, &args);
-#else
       arts_handler_db_grant_confirm(db, NULL);
-#endif
     }
     arts_shared_release(&h);
     break;

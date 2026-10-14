@@ -49,8 +49,7 @@ struct owner_response_landed_ctx_s {
   uint64_t version;
   uint64_t data_size;
 };
-static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
-                                 uint64_t version);
+static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid);
 static void owner_response_landed_cb(void *arg);
 
 /* ===== start the transfer round =======================================
@@ -87,7 +86,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   arts_guid_t db_guid = hdr->db_guid;
 
   /* Pin the db_s for the whole handler body (map deserialize + buffer install +
-   * snapshot/OoO drains + writer_count RMW): the embedded cache is its FIRST
+   * snapshot drains + writer_count RMW): the embedded cache is its FIRST
    * member (offset 0), so one cb ref keeps it alive against a concurrent
    * DESTROY on another progress thread.  Released on every return path. */
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
@@ -181,14 +180,13 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       cache->db_size = data_size;
     }
   }
-  owner_response_commit(db_h, db_guid, hdr->version); /* releases db_h */
+  owner_response_commit(db_h, db_guid); /* releases db_h */
 }
 
 /* Post-install tail of the GRANT_RESPONSE handler — everything that must
  * run only once the transferred bytes are in place.  db_h is the caller's pin
  * on the db_s; consumed (released) here. */
-static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
-                                 uint64_t version) {
+static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   struct arts_db_cache_s *cache = &db->cache;
 
@@ -215,17 +213,14 @@ static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
   arts_atomic_add(&cache->writer_count, 2u + ARTS_GRANT_UNCONFIRMED);
 
   /* RW drain is DEFERRED to the CONFIRM_ACK handler (home has not flipped
-   * rw_holder to us yet). The snapshot + OoO drains stay: a parked RO waiter
-   * served here gets the transferred (pre-write) version, which is correct, and
-   * a reordered INVALIDATE deferred on a previously-missing cache replays now.
-   */
+   * rw_holder to us yet).  The snapshot drain stays: a parked RO waiter served
+   * here gets the transferred (pre-write) version, which is correct. */
   arts_db_drain_pending_snapshot(cache);
 #ifdef ARTS_RO_COMBINING_LIVE
   /* Read waiters batched while this rank had no local copy resume here
    * against the transferred buffer instead of re-fetching remotely. */
   arts_db_ro_combine_grant_drain(cache);
 #endif
-  arts_ooo_drain_guid(db_guid);
 
   /* No racing INVALIDATE can have reached us yet: home targets this rank as an
    * INVALIDATE recipient only after the rw_holder flip, which needs this
@@ -233,7 +228,7 @@ static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
    * unconditionally. grant_req_in_flight stays 1 until CONFIRM_ACK so fresh
    * RW acquires in the gate window park without issuing a duplicate request. */
   unsigned int home_rank = arts_guid_get_rank(db_guid);
-  arts_send_db_grant_confirm(home_rank, db_guid, version);
+  arts_send_db_grant_confirm(home_rank, db_guid);
 
   arts_shared_release(&db_h);
 }
@@ -247,7 +242,7 @@ static void owner_response_landed_cb(void *arg) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
   arts_db_buf_install_landed(&db->cache, ctx->version, ctx->landing,
                              ctx->data_size);
-  owner_response_commit(ctx->db_h, ctx->db_guid, ctx->version); /* releases */
+  owner_response_commit(ctx->db_h, ctx->db_guid); /* releases */
   arts_free(ctx);
 }
 

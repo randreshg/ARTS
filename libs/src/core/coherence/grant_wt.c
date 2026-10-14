@@ -1,14 +1,18 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * The WT write policy's half of the migrating sentinel grant.
+ * The WT write policy's half of the migrating grant.
  *
- * coherence/grant.c holds what every grant-bearing arm shares (the sentinel,
- * the home FIFO, the transfer baton, the owner->owner ship).  This TU holds
+ * coherence/grant.c holds what every grant-bearing arm shares (the local fast
+ * path, the home FIFO, the transfer baton, the grant's ship).  This TU holds
  * what the WT write policy decides on top of it: a new owner installs, drains,
  * and RUNS immediately — there is no confirm gate, because the home serves
  * reads, so no reader can be sent to a stale copy while the directory catches
  * up.  (The WB write policy gates on CONFIRM_ACK for exactly that reason; see
- * its own TU.)
+ * its own TU.)  Where the home revokes (RETAIN), the new owner then CONFIRMs
+ * its install so the home can name it as the holder a later revocation
+ * targets; where the holder hands the right back unasked (PURGE), the home
+ * revokes no one and names no holder, and the hand-back is the only message
+ * the new owner owes it.
  *
  * Nothing here is protocol-specific — VAL and INV link this same TU.  What a
  * transfer means for the ex-holder's copy is the protocol's business, and
@@ -36,7 +40,7 @@
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/runtime_types.h"
-#include "arts/system/print.h" /* ARTS_ERROR (unreachable-revocation guard) */
+#include "arts/system/print.h"
 #include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
@@ -47,8 +51,10 @@
 
 /* ===== Ownership-round seams (called from coherence/grant.c) ==
  * family→protocol: the ownership-family GRANT_REQUEST handler
- * delegates the WT/WB-divergent steps here. */
+ * delegates the WT/WB-divergent steps here.  Only the revoking release policy
+ * opens a round. */
 
+#ifndef ARTS_RELEASE_PURGE
 void arts_db_start_grant_round(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester) {
@@ -94,44 +100,56 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
   arts_send_db_grant_invalidate(current_owner, cache->db_guid, next_owner,
                                     &next_rdzv, ARTS_GRANT_VERSION_NONE);
 }
+#endif /* !ARTS_RELEASE_PURGE */
 
 /* ===== WT GRANT_RESPONSE handler (new owner C) ================ */
 
 /* WT converged onto the WB owner→owner transfer, with the CRITICAL
  * divergence: WT drains pending_rw + runs its RW EDTs IMMEDIATELY here (no
  * CONFIRM_ACK gate — home serves RO, so there is no stale-RO window to close),
- * then sends CONFIRM to home (flips rw_holder + advances the next round). */
+ * then, where the home revokes, sends CONFIRM to home (flips rw_holder +
+ * advances the next round). */
 /* Post-install tail of the GRANT_RESPONSE (GRANT) handler — everything
  * that must run only once the transferred bytes are in place.  db_h is the
  * caller's pin on the db_s; consumed (released) here. */
-static void home_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
-                                  uint64_t version) {
+static void home_response_commit(arts_shared_ptr_t db_h) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   struct arts_db_cache_s *cache = &db->cache;
 
   /* Possession + drain guard in one transition: the guard keeps a hold on the
-   * word across the per-waiter +1 drain so nothing can reach the zero edge
-   * mid-drain and hand the grant on prematurely.  The 0-crossing is deferred
-   * to the guard removal below. */
+   * word across the drains below so nothing can reach the zero edge mid-drain
+   * and hand the grant on prematurely.  Where the home revokes, the guard is
+   * removed at the commit's close; where the right goes back unasked, the
+   * writer drain turns it into the woken writers' holds. */
   arts_db_grant_install(cache);
 
-  /* WT drains + runs NOW (no confirm-ack gate): home serves RO so there is
-   * no stale-RO window.  Then tell home we installed (CONFIRM), which flips
-   * rw_holder + advances the next round. */
-  unsigned int drained = arts_db_grant_commit_drain(cache);
+  /* Readers parked before this grant resume against the bytes it installed,
+   * and must do so while the install's own hold is still on the word: that
+   * hold keeps the right on this rank, so no write elsewhere can be ordered
+   * before a reader resumed here.  The writer drain below may turn the hold
+   * into the woken writers' holds, and where a holder hands the right back
+   * unasked the last of them can give it away while this thread is still
+   * running — so the reader drains come first. */
   arts_db_drain_pending_snapshot(cache);
 #ifdef ARTS_RO_COMBINING_LIVE
   /* Read waiters batched while this rank had no local copy resume here
    * against the buffer it now holds instead of re-fetching remotely — the
    * bytes that arrived with the grant, or the ones already here that a
-   * permission-only grant certified as current.  Inside the guard bracket on
-   * purpose: see the drain's own account of what the guard buys it. */
+   * permission-only grant certified as current. */
   arts_db_ro_combine_grant_drain(cache);
 #endif
-  arts_ooo_drain_guid(db_guid);
 
-  unsigned int home_rank = arts_guid_get_rank(db_guid);
-  arts_send_db_grant_confirm(home_rank, db_guid, version);
+  /* WT drains + runs NOW (no confirm-ack gate): home serves RO so there is
+   * no stale-RO window. */
+  unsigned int drained = arts_db_grant_commit_drain(cache);
+
+#ifndef ARTS_RELEASE_PURGE
+  /* Tell the home we installed: it names this rank as the holder only now,
+   * so a revocation never reaches a rank that has not installed, and the
+   * round it advances may revoke this rank at once. */
+  arts_send_db_grant_confirm(arts_guid_get_rank(cache->db_guid),
+                             cache->db_guid);
+#endif
 
   /* Close the commit.  Whether that means dropping a hold the commit kept for
    * itself, or nothing at all because the hold already became the waiters',
@@ -150,7 +168,6 @@ static void home_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
  * thread. */
 struct home_response_landed_ctx_s {
   arts_shared_ptr_t db_h; /* pin transferred from the handler */
-  arts_guid_t db_guid;
   struct arts_db_buffer_s *landing;
   uint64_t version;
   uint64_t data_size;
@@ -162,7 +179,7 @@ static void home_response_landed_cb(void *arg) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(ctx->db_h);
   arts_db_buf_install_landed(&db->cache, ctx->version, ctx->landing,
                              ctx->data_size);
-  home_response_commit(ctx->db_h, ctx->db_guid, ctx->version); /* releases */
+  home_response_commit(ctx->db_h); /* releases */
   arts_free(ctx);
 }
 
@@ -224,7 +241,6 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     struct home_response_landed_ctx_s *ctx =
         (struct home_response_landed_ctx_s *)arts_malloc(sizeof(*ctx));
     ctx->db_h = db_h;
-    ctx->db_guid = db_guid;
     ctx->landing =
         (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie;
     ctx->version = hdr->version;
@@ -259,11 +275,12 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
       cache->db_size = data_size;
     }
   }
-  home_response_commit(db_h, db_guid, hdr->version); /* releases db_h */
+  home_response_commit(db_h); /* releases db_h */
 }
 
 /* ===== WT CONFIRM handler (home A) =============================== */
 
+#ifndef ARTS_RELEASE_PURGE
 /* Cat-C pure body (CONFIRM, home side).  The wire dispatcher / self-send
  * shortcut has already looked the home db_s up with a held ref and passes it as
  * item_v (cache is its FIRST member).  args_v is unused — the new owner is read
@@ -278,9 +295,8 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   unsigned int new_owner = db->pending_install_owner;
   atomic_store_explicit(&db->rw_holder, new_owner, memory_order_release);
 
-  /* What the home does once the directory names the new owner — advance the
-   * queue by revoking it again, or wait for it to hand the grant back — is
-   * the release policy's. */
+  /* Advance the queue by revoking the new owner again, or put the baton
+   * down. */
   arts_db_grant_round_close(cache, db);
 }
 
@@ -296,18 +312,6 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
  * guard (+2) keeps writer_count non-negative even if the next round's
  * INVALIDATE lands mid-install on another progress thread. */
 void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
-#ifdef ARTS_RELEASE_PURGE
-  /* Revocation is not this release policy's mechanism: the holder gives the
-   * grant back at its own idle edge and the home hands it out from there, so
-   * the home sends the holder nothing.  Linked (the TU is shared) but
-   * unreachable — reaching it would mean a second decrementer of a word whose
-   * every transition is single-CAS committed. */
-  (void)item_v;
-  (void)args_v;
-  ARTS_ERROR("grant: a revocation notice reached a rank whose grants are "
-             "returned voluntarily — the home issues none under this release "
-             "policy");
-#else
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_grant_invalidate_s *a =
       (struct arts_ooo_args_db_grant_invalidate_s *)args_v;
@@ -341,8 +345,8 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
      * above, before the sentinel withdrawal). */
     arts_db_grant_ship_pending(cache);
   }
-#endif /* ARTS_RELEASE_PURGE */
 }
+#endif /* !ARTS_RELEASE_PURGE */
 
 /* Case-D leaf: the WT write policy defers the home-buffer install to the
  * creator's first release_rw (PUBLISH / GRANT path); nothing to do at

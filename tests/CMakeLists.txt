@@ -863,6 +863,22 @@ register_pure_unit_test(grant_purge_word_model TIMEOUT 30)
 set_tests_properties(grant_purge_word_model PROPERTIES
     PASS_REGULAR_EXPRESSION "PASS grant_purge_word_model")
 endif()
+# The PURGE home's return-latch hand-off, driven on one thread through the
+# real serving tail (the test TU #includes coherence/grant_purge.c and stubs
+# its callees, so it links no runtime).
+if(ARTS_RELEASE_POLICY STREQUAL "PURGE" AND NOT ARTS_COHERENCE_ARM STREQUAL "EXCL")
+    add_executable(grant_purge_latch_handoff unit/grant_purge_latch_handoff.c)
+    target_include_directories(grant_purge_latch_handoff PRIVATE
+        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
+        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/libs/src/core)
+    arts_apply_protocol(grant_purge_latch_handoff ${ARTS_COHERENCE_ARM}
+                        ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
+    target_link_libraries(grant_purge_latch_handoff PRIVATE Threads::Threads)
+    register_pure_unit_test(grant_purge_latch_handoff TIMEOUT 30)
+    set_tests_properties(grant_purge_latch_handoff PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS grant_purge_latch_handoff")
+endif()
 
 # --- OoO defer/replay engine (ooo.c) ---
 # Standalone like the SYNC_*/deque tests: each test TU #includes the runtime's
@@ -1400,6 +1416,23 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(grant_purge_handback_regrant TIMEOUT 60)
 register_multinode_test(grant_purge_handback_regrant TIMEOUT 120)
+endif()
+# Where the right is handed back unasked, a hand-back can reach the home while
+# another thread still holds its serving baton, and only that thread's re-check
+# of the return latch accepts it.  The schedule fuzz can delay a serve between
+# its grant and its baton release, so the two-progress-thread shape meets that
+# window in most runs.
+if(ARTS_DEBUG_INJECTION AND ARTS_COHERENCE_ARM MATCHES "^(VAL|INV)$" AND
+   ARTS_RELEASE_POLICY STREQUAL "PURGE")
+    arts_test_cfg(_cfg 2n_8w_2p)
+    arts_add_test(grant_purge_handback_regrant_2n_8w_2p_fuzz
+                  COMMAND grant_purge_handback_regrant)
+    set_tests_properties(grant_purge_handback_regrant_2n_8w_2p_fuzz PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 120
+        RESOURCE_LOCK "arts_runtime"
+        FAIL_REGULAR_EXPRESSION "FAIL"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
 endif()
 register_multinode_test(coherence_rwro_phase TIMEOUT 30)
 foreach(_t coherence_rwro_phase coherence_rwro_phase_2n_9w_1p

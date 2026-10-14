@@ -186,8 +186,9 @@ uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
  * — so every releaser of this word goes into the roster through *keep,
  * whether or not the snapshot found it: a creator's seeded copy was never
  * served, so nothing else ever registered it.  That is where the next
- * owner's first round finds the ex-holder however that owner's CONFIRM is
- * timed.  Targets are appended after `ntargets`; the return is the new
+ * owner's first round finds the ex-holder, whether or not the home has
+ * recorded that owner yet (a revoking home records it only at its CONFIRM).
+ * Targets are appended after `ntargets`; the return is the new
  * count, or UINT_MAX when a target did not fit below `cap` (the caller
  * fails loudly).
  */

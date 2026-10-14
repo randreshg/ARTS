@@ -663,9 +663,9 @@ static struct arts_db_s *db_creator_descriptor(arts_guid_t guid, uint64_t len,
  * side holds a cache-only descriptor carrying the creator's seeded hold,
  * whose buffer the creator writes, published by its release.  The home
  * learns of the block from the announce this rank sends once that descriptor
- * is installed here, so everything the home sends back for the block (its
- * first GRANT_INVALIDATE to rw_holder = creator, the write-through credit)
- * finds it. */
+ * is installed here, so everything the home sends back for the block (the
+ * write-through credit, and where the home revokes its first GRANT_INVALIDATE
+ * to rw_holder = creator) finds it. */
 static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
                                      unsigned int home, bool labeled,
                                      void **addr) {

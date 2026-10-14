@@ -170,13 +170,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  if (arts_get_total_ranks() != 1) {
-    printf("SKIP grant_sticky: single-rank only (a second rank could revoke "
-           "the grant, which is exactly what this test must exclude)\n");
-    arts_shutdown();
-    return;
-  }
-
   void *ptr = NULL;
   g_db = arts_db_create(&ptr, sizeof(int), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   ((int *)ptr)[0] = 0;

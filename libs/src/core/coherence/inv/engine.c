@@ -505,10 +505,11 @@ void inv_home_round_try_open(struct arts_db_s *db) {
        * the roster: a releaser's copy is a sharer's copy from its release on,
        * durable until a later round retires it, so the snapshot registers
        * every releaser, found in it or not (inv_round_snapshot_word; a
-       * creator's seeded copy was never served).  That is what lets the next owner's
-       * first release find the ex-holder however that owner's CONFIRM is
-       * timed; a snapshot that dropped the writer left its copy live and
-       * uninvalidated whenever that round beat the CONFIRM.  The home rank is
+       * creator's seeded copy was never served).  That is what lets the next
+       * owner's first release find the ex-holder however that owner's CONFIRM
+       * is timed where the home revokes; a snapshot that dropped the writer
+       * left its copy live and uninvalidated whenever that round beat the
+       * CONFIRM.  The home rank is
        * excluded outright ONLY where the home's own buffer is the canonical
        * copy: under WT it is, and this round just installed into it; under WB
        * the home holds no canonical bytes, so a reader copy that happens to
@@ -517,12 +518,13 @@ void inv_home_round_try_open(struct arts_db_s *db) {
       /* Self-exclusion names the ranks that actually WROTE this round — the
        * batch's releasers — not whatever the directory currently points at.
        * The justification for skipping a rank is "its copy is the newest by
-       * definition", and that is true of a releaser; `rw_holder` may still
-       * name the previous generation, because the home flips it only at the
-       * CONFIRM, well after the new owner has installed and (under WT, which
-       * has no confirm gate) already run and released.  Excluding by
-       * `rw_holder` therefore skipped exactly the ex-holder that this round
-       * exists to retire. */
+       * definition", and that is true of a releaser.  Where the home
+       * revokes, `rw_holder` may still name the previous generation, because
+       * the home flips it only at the CONFIRM, well after the new owner has
+       * installed and (under WT, which has no confirm gate) already run and
+       * released, so excluding by `rw_holder` would skip exactly the
+       * ex-holder that this round exists to retire; where grants come back
+       * unasked, the home names no holder at all. */
       unsigned int writers[8];
       unsigned int nwriters = 0;
       for (struct arts_db_inv_pub_s *e = entries; e != NULL;

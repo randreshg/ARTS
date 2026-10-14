@@ -202,13 +202,14 @@ extern "C" {
   X(NUM_GRANT_BATON_RECLAIM)                                                   \
   X(NUM_GRANT_HOME_DATALESS)                                                   \
   /* Num: the voluntary-return release policy.  RETURN = write rights handed \
-   * back at a holder's own idle edge; ACCEPT = returns the home took, so     \
-   * RETURN minus ACCEPT across the cluster is what is still in flight;       \
-   * LATCHED = returns parked for an inbound round close rather than accepted \
-   * on arrival, the contended hand-off the single-slot latch exists for;     \
-   * FLAG = hand-backs that rode a release's own publish instead.  RETURN and \
-   * FLAG are the two vehicles and do not overlap: their sum is every         \
-   * hand-back, and RETURN alone is what the fallback still costs.            \
+   * back at a holder's own idle edge in a message of their own; FLAG =       \
+   * hand-backs that rode a release's own publish instead.  RETURN and FLAG   \
+   * are the two vehicles and do not overlap: their sum is every hand-back,   \
+   * and RETURN alone is what the fallback still costs.  ACCEPT = hand-backs  \
+   * the home took, so RETURN plus FLAG minus ACCEPT across the cluster is    \
+   * what is still in flight; LATCHED = hand-backs parked because another     \
+   * thread was inside the home's serving tail, the contended hand-off the    \
+   * single-slot latch exists for.                                            \
    * REGRANT_DEDUP = grants served with the permission alone because the      \
    * requester's own copy was already the current one — the payload a         \
    * re-acquisition would otherwise have re-sent to its last writer. */       \

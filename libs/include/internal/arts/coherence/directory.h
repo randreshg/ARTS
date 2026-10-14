@@ -9,9 +9,9 @@
  *   - cached_version map: per-slot atomic.  Each rank slot is an independent
  *     _Atomic(uint64_t) accessed via atomic load/store and CAS-loop
  * monotonic-max for advance.  No cross-slot invariant.
- *   - rw_holder, invalidate_in_flight: _Atomic.  rw_holder uses
- *     acquire/release; the invalidate_in_flight gate uses acq_rel CAS for the
- *     baton.
+ *   - rw_holder (where the home revokes), invalidate_in_flight: _Atomic.
+ *     rw_holder uses acquire/release; the invalidate_in_flight gate uses
+ *     acq_rel CAS for the baton.
  */
 
 #ifndef ARTS_MEMORY_COHERENCE_DIRECTORY_H
@@ -120,8 +120,9 @@ void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
 /*--- home-directory lifecycle (inlined in arts_db_s) --------------------*/
 
 /* Initialize the home-directory fields inlined in struct arts_db_s (no separate
- * allocation).  rw_holder is set by the caller (typically creator_rank under
- * PROP_NONE, or self_rank under NO_ACQUIRE). */
+ * allocation).  rw_holder is the block's initial holder, chosen by the caller
+ * (typically creator_rank under PROP_NONE, or self_rank under NO_ACQUIRE); a
+ * revoking home names it in its rw_holder field. */
 void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
                        unsigned int nranks);
 /* Release the home-directory owned sub-resources (queues / maps) in place.

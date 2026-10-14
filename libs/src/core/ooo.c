@@ -129,9 +129,11 @@
  *   - GRANT_REQUEST: VAL and INV only (grant.c).
  *   - PUBLISH: the arms that publish at a release (VAL WT, INV under both
  *     write policies); VAL WB's enum omits it (VAL WB fatals on the wire).
- *   - GRANT_INVALIDATE: no arm defers it.  The home names a rank as the
- *     invalidate target (rw_holder) only after that rank's cache install,
- *     so the dispatcher and the self-send call the body directly. */
+ *   - GRANT_RETURN: VAL and INV where grants are handed back unasked.
+ *   - GRANT_INVALIDATE: no arm defers it.  A revoking home names a rank as
+ *     the invalidate target (rw_holder) only after that rank's cache install,
+ *     so the dispatcher and the self-send call the body directly; a home
+ *     whose grants come back unasked sends none. */
 
 /* Event/EDT destroy replay bodies are the wire handlers themselves
  * (arts_handler_event_destroy / arts_handler_edt_destroy) — pure (item, args)

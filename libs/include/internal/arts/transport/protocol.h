@@ -76,9 +76,11 @@ enum arts_msg_type {
   /* VAL WB only: the home points a snapshot request at the current owner.
    * Sequential append, no gaps. */
   MSG_DB_SNAPSHOT_REDIRECT,
-  /* VAL and INV, both write policies: new owner C → home A, "I have installed
-   * the transferred DB."  Home reacts by flipping rw_holder to C and, under
-   * WB, replying with CONFIRM_ACK.  Sequential append, no gaps. */
+  /* VAL and INV, both write policies, where the home revokes: new owner C →
+   * home A, "I have installed the transferred DB."  Home reacts by flipping
+   * rw_holder to C and, under WB, replying with CONFIRM_ACK.  A home whose
+   * grants come back unasked names no holder and receives none.  Sequential
+   * append, no gaps. */
   MSG_DB_GRANT_CONFIRM,
   /* WB-write-policy-only: home A → new owner C, "the directory now names you; you
    * may run your RW EDT." Acknowledges that home has flipped rw_holder to C (in
@@ -523,13 +525,12 @@ struct ARTS_PACKED arts_msg_rank_version_pair_s {
   uint64_t version;
 };
 
-/* GRANT_CONFIRM — VAL and INV, both write policies: new owner C confirms
- * installation of the transferred DB to home A.  The home takes the new owner
- * from pending_install_owner; neither write policy's handler reads version. */
+/* GRANT_CONFIRM — VAL and INV, both write policies, where the home revokes:
+ * new owner C confirms installation of the transferred DB to home A.  The home
+ * takes the new owner from pending_install_owner. */
 struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  uint64_t version;
 };
 
 /* CREATE_RETURN — see the enum comment; sent by VAL and INV under WT and by

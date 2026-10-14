@@ -96,8 +96,8 @@ struct arts_home_grantreq_queue_s {
  * buffer, parked waiters, and destroy lifecycle.
  *
  *   writer_count   ownership counter AND confirmation state in one word.
- *                  > 0 ⇒ this rank holds RW ownership the home already names;
- *                  0 ⇒ invalidated; < 0 (ARTS_GRANT_UNCONFIRMED set) ⇒ held
+ *                  > 0 ⇒ this rank holds RW ownership; 0 ⇒ it holds none;
+ *                  < 0 (ARTS_GRANT_UNCONFIRMED set, write-back only) ⇒ held
  *                  but the directory flip is not yet published, so the data is
  *                  here and readable while no RW EDT may run.  Reading the
  *                  sign is what makes the turn-taking CAS a complete test.
@@ -106,7 +106,7 @@ struct arts_home_grantreq_queue_s {
  *   pending_snapshot  Treiber stack of snapshot-response reorder-buffer
  *                  waiters (case-3 push only; drained whole on next install).
  *
- * The home-directory fields (rw_holder, pending_rw, invalidate_in_flight,
+ * The home-directory fields (pending_rw, invalidate_in_flight, rw_holder,
  * cached_ranks, cached_version, ...) are NOT here — they are inlined
  * directly in the wrapping struct arts_db_s, after this cache + db_type, and
  * reached via arts_db_of_cache(cache).  Non-home ranks allocate a cache-only
@@ -268,7 +268,8 @@ struct arts_db_s {
   /* Home-directory metadata — present only on the rank that is the GUID home
    * for this DB.  Non-home / WB / creator-remote ranks allocate a cache-only
    * footprint of arts_db_cache_stub_size() bytes: it ends at the first home-arm
-   * field below (rw_holder), so it INCLUDES home_initialized but omits every
+   * field below (rw_holder, or pending_rw where there is none), so it
+   * INCLUDES home_initialized but omits every
    * home-arm field.  home_initialized MUST stay in bounds: the cache destructor
    * reads it on every free to decide whether to tear the home directory down —
    * on a stub it reads zeroed false and skips teardown.  The home-arm fields
@@ -283,7 +284,11 @@ struct arts_db_s {
   struct arts_rank_bitset_s cached_ranks;
   unsigned int pending_install_owner; /* baton-holder-written transfer target */
 #else                                 /* WT */
+#ifndef ARTS_RELEASE_PURGE
+  /* The holder a revocation targets.  A home whose grants come back unasked
+   * revokes no one, and its own possession is its whole directory. */
   arts_db_atomic_uint_t rw_holder;
+#endif
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
   arts_db_atomic_uint_t invalidate_in_flight;
   /* The RO dedup watermark (SNAPSHOT_REQUEST reply).  Not the destroy
@@ -291,14 +296,16 @@ struct arts_db_s {
    * reply, a holder with no buffer). */
   struct arts_rank_to_u64_map_s *cached_version;
   struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
+#ifndef ARTS_RELEASE_PURGE
   /* Baton-holder-written transfer target (CONFIRM-driven advance, same as
    * WB). */
   unsigned int pending_install_owner;
 #endif
+#endif
 #ifdef ARTS_RELEASE_PURGE
   /* Single-slot return latch.  A voluntary return is never rejected: it is
-   * either accepted at once or parked here for the round close that is
-   * already inbound.  Both sides publish then check and consume by CAS, so
+   * either accepted at once or parked here for the thread already inside the
+   * home's serving tail.  Both sides publish then check and consume by CAS, so
    * exactly one of them accepts any given return.  Grants are serialized, so
    * at most one return can be outstanding and one slot suffices. */
   arts_db_atomic_uint_t pending_return_from;

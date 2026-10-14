@@ -290,6 +290,26 @@ register_single_node_test(grant_sticky TIMEOUT 60)
 set_tests_properties(grant_sticky PROPERTIES PASS_REGULAR_EXPRESSION "PASS grant_sticky")
 endif()
 
+# grant_purge_possession: where the holder hands the write right back at its
+# idle edge, the home's own possession is its whole directory — nothing
+# possessed, no round open and nothing parked at the home while another rank
+# holds the right, and the right back at the home, idle, after every turn.
+# Only VAL and INV under PURGE hand a migrating grant back.  2n_8w_2p is the
+# one shape with two progress threads per rank, so the home's handlers for one
+# transfer run on either.  The shutdown waits on a finish scope that covers
+# every task, so the teardown walk must stay silent.
+if((ARTS_COHERENCE_ARM STREQUAL "VAL" OR ARTS_COHERENCE_ARM STREQUAL "INV")
+   AND ARTS_RELEASE_POLICY STREQUAL "PURGE")
+add_arts_test(grant_purge_possession)
+register_multinode_test(grant_purge_possession TIMEOUT 120
+                        VARIANTS 2n_9w_1p 2n_8w_2p)
+foreach(_v 2n_9w_1p 2n_8w_2p)
+    set_tests_properties(grant_purge_possession_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS grant_purge_possession"
+        FAIL_REGULAR_EXPRESSION "FAIL;QUIESCENCE-DEBUG:")
+endforeach()
+endif()
+
 # A GRANT_RESPONSE shorter than its header, or declaring a version map longer
 # than the bytes that follow the header, is fatal on the receiving rank.  The
 # migrating grant exists on VAL and INV, with one handler per write policy.
