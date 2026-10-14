@@ -213,10 +213,9 @@ static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid) {
   arts_atomic_add(&cache->writer_count, 2u + ARTS_GRANT_UNCONFIRMED);
 
   /* RW drain is DEFERRED to the CONFIRM_ACK handler (home has not flipped
-   * rw_holder to us yet).  The snapshot drain stays: a parked RO waiter served
-   * here gets the transferred (pre-write) version, which is correct. */
-  arts_db_drain_pending_snapshot(cache);
-#ifdef ARTS_RO_COMBINING_LIVE
+   * rw_holder to us yet).  Reads are not: a read waiter resumed here gets
+   * the transferred (pre-write) version, which is correct. */
+#ifdef ARTS_PROTOCOL_VAL
   /* Read waiters batched while this rank had no local copy resume here
    * against the transferred buffer instead of re-fetching remotely. */
   arts_db_ro_combine_grant_drain(cache);

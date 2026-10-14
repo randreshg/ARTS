@@ -24,7 +24,7 @@
  *   5. The buffer's payload member lands at offset 64 (cache-line
  *      boundary), whether it is the inline bytes or a pointer to storage
  *      the descriptor does not own.
- *   6. snapshot_waiter.link is FIRST (offset 0) — required by arts_lf_stack_t.
+ *   6. read_waiter.link is FIRST (offset 0) — required by arts_lf_stack_t.
  *   7. arts_db_total_size(db) spans the descriptor allocation: sizeof(arts_db_s)
  *      alone for a coherent DB (whose payload is its coherence buffer), and
  *      sizeof(arts_db_s) + db->cache.db_size for a subtype whose payload is
@@ -65,9 +65,9 @@ _Static_assert(offsetof(struct arts_db_buffer_s, data) == 64,
                "the buffer's payload member must land at offset 64 "
                "(cache-line boundary)");
 
-/* (6) snapshot waiter link first (Treiber/arts_lf_stack_t contract). */
-_Static_assert(offsetof(struct arts_db_snapshot_waiter_s, link) == 0,
-               "snapshot_waiter.link must be the FIRST member");
+/* (6) read waiter link first (Treiber/arts_lf_stack_t contract). */
+_Static_assert(offsetof(struct arts_db_read_waiter_s, link) == 0,
+               "read_waiter.link must be the FIRST member");
 
 /* (4) cache first, then db_type, then home_initialized. */
 _Static_assert(offsetof(struct arts_db_s, cache) == 0,

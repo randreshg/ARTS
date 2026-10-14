@@ -470,7 +470,7 @@ bool arts_db_acquire_is_serialized(arts_db_access_mode_t mode) {
  * Initialize the per-rank cache for the EXCL protocol.  For EXCL, the home-rank
  * lock_state and the per-cache cache_state single word are the coherence state;
  * arts_db_cache_common_init handles the shared fields (db_guid, db_size,
- * pending_snapshot, home-directory init).
+ * home-directory init).
  *
  * Creator hold: arts_db_create defaults to an RW acquire (OCR contract; only
  * ARTS_DB_PROP_NO_ACQUIRE skips it), so the creator EDT must hold the lock RW

@@ -349,8 +349,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .slot = pack->slot,
         .data_present = pack->data_present,
         .version = pack->version,
-        .data = NULL,
-        .data_size = 0,
         .db_size = pack->db_size,
         .rdzv_txid = pack->rdzv_txid,
         .rdzv_cookie = pack->rdzv_cookie,

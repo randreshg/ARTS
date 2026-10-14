@@ -86,17 +86,16 @@ void arts_handler_db_acquire(void *item, void *args) {
          * installs home metadata only — no buffer exists until the creator's
          * release publishes one.  A dependence satisfied before that release
          * (add-dependence satisfies immediately) may legally race here; the
-         * RELEASE is the publication point, so PARK on the snapshot reorder
-         * buffer — the first publish install drains us and the resume
+         * RELEASE is the publication point, so PARK among the publication
+         * waiters — the first publish install drains us and the resume
          * re-derives dep->ptr from the installed buffer.  (db_size == 0 is
          * the sentinel DB: NULL is its defined value.) */
-        struct arts_db_snapshot_waiter_s *w =
-            (struct arts_db_snapshot_waiter_s *)arts_malloc(sizeof(*w));
+        struct arts_db_read_waiter_s *w =
+            (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
         w->edt_guid = edt->guid;
         w->slot = slot;
-        w->target_version = 1;
         w->serve = NULL;
-        arts_lf_stack_push(&cache->pending_snapshot, &w->link);
+        arts_lf_stack_push(&cache->publication_waiters, &w->link);
         /* Race recovery: an install may have landed between the NULL read
          * and the push — drain (our own node included) so nobody parks
          * forever.  The atomic_exchange drain is single-actor safe. */
@@ -108,7 +107,7 @@ void arts_handler_db_acquire(void *item, void *args) {
              __atomic_load_n(&rb->version, __ATOMIC_ACQUIRE) > 0);
         arts_db_buf_release(&rh);
         if (published) {
-          arts_db_drain_pending_snapshot(cache);
+          arts_db_drain_publication_waiters(cache);
         }
         return;
       }
@@ -300,7 +299,7 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
                                    cache->db_size, rdzv, NULL);
     return;
   }
-  if (rdzv->txid == 0 && arts_global_rank_count > 1) {
+  if (rdzv->txid == 0) {
     /* Data must move but the requester advertised no landing (first touch —
      * db_size unknown there).  Size-only CTS; the re-request carries a
      * landing.  The watermark does NOT advance on this leg. */
@@ -317,35 +316,21 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
                                  master_h);
 }
 
-/* Deferred SNAPSHOT_REQUEST serve (snapshot-waiter `serve` arm): the request arrived
- * at home before the creator's first PUBLISH installed a buffer, and the
- * install's drain now re-issues it.  Runs the same serve tail as the request
- * handler.  The waiter is freed by the drain after this returns. */
-static void home_serve_parked_snapshot(struct arts_db_cache_s *cache,
-                                        struct arts_db_snapshot_waiter_s *w) {
+/* Deferred SNAPSHOT_REQUEST serve (a read waiter's `serve` arm): the request
+ * arrived at home before the creator's first PUBLISH, and a drain re-issues it
+ * once the copy is published (every drain that serves runs at version >= 1;
+ * teardown frees a waiter without serving it).  Runs the same serve tail as
+ * the request handler.  The waiter is freed by the drain after this returns. */
+static void home_serve_deferred_read(struct arts_db_cache_s *cache,
+                                     struct arts_db_read_waiter_s *w) {
   arts_shared_ptr_t master_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *master =
       (struct arts_db_buffer_s *)arts_shared_get(master_h);
-  if (master != NULL &&
-      __atomic_load_n(&master->version, __ATOMIC_ACQUIRE) == 0) {
-    /* v0 = still unpublished (drain paths fire only on a positive bump, so
-     * this is teardown-adjacent defensiveness, not a live path). */
-    arts_db_buf_release(&master_h);
-    master = NULL;
-    master_h = NULL;
-  }
-  if (master == NULL) {
-    /* Only reachable when the drain runs from cache teardown with the serve
-     * still parked (destroy-during-pending-acquire is app UB): fall back to
-     * the no-data reply so the requester is never stranded. */
-    arts_send_db_snapshot_response(w->requester, cache->db_guid, /*version=*/0,
-                                   w->edt_guid, w->slot, /*kind=*/0,
-                                   cache->db_size, &w->rdzv, NULL);
-    return;
-  }
   /* Acquire pairs with the publish commit's release-store version stamp: a
    * serve must never stamp a version whose bytes it cannot yet see. */
-  uint64_t master_v = __atomic_load_n(&master->version, __ATOMIC_ACQUIRE);
+  uint64_t master_v =
+      master != NULL ? __atomic_load_n(&master->version, __ATOMIC_ACQUIRE) : 0u;
+  assert(master_v >= 1 && "a deferred read is served only once published");
   /* master_h transfers into the reply path (consumed there). */
   update_cached_version_max(cache, w->requester, master_v, master_h, w->edt_guid,
                        w->slot, &w->rdzv);
@@ -396,21 +381,20 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
      *   (b) HOME_RECV pre-PUBLISH (db_size>0): cross-rank create has
      *       happened but the creator's first PUBLISH has not landed.  The
      *       creator's RELEASE is the publication point a satisfied consumer
-     *       is entitled to observe, so PARK the serve on the snapshot
-     *       reorder buffer; the first publish install drains it and
+     *       is entitled to observe, so PARK the serve among the
+     *       publication waiters; the first publish install drains it and
      *       re-issues the serve with the original requester/landing.
      * NOT a destroy condition -- the precheck above (destroy_state) is
      * authoritative for that. */
     if (cache->db_size > 0) {
-      struct arts_db_snapshot_waiter_s *w =
-          (struct arts_db_snapshot_waiter_s *)arts_malloc(sizeof(*w));
+      struct arts_db_read_waiter_s *w =
+          (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
       w->edt_guid = edt_guid;
       w->slot = slot;
-      w->target_version = 1;
-      w->serve = home_serve_parked_snapshot;
+      w->serve = home_serve_deferred_read;
       w->requester = requester;
       w->rdzv = a->rdzv;
-      arts_lf_stack_push(&cache->pending_snapshot, &w->link);
+      arts_lf_stack_push(&cache->publication_waiters, &w->link);
       /* Race recovery: a publish may have landed between the version read
        * and the push — drain (our own node included) so no serve parks
        * forever. */
@@ -421,7 +405,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
           (rb != NULL && __atomic_load_n(&rb->version, __ATOMIC_ACQUIRE) > 0);
       arts_db_buf_release(&rh);
       if (published) {
-        arts_db_drain_pending_snapshot(cache);
+        arts_db_drain_publication_waiters(cache);
       }
       return;
     }
@@ -477,7 +461,7 @@ static void pub_landed_cb(void *arg) {
     arts_rank_u64_map_advance(db->cached_version, ctx->releaser, ctx->version);
     /* First-publish publication (bump from version 0): wake home-parked RO
      * acquires and re-issue home-parked SNAPSHOT_REQUEST serves. */
-    arts_db_drain_pending_snapshot(&db->cache);
+    arts_db_drain_publication_waiters(&db->cache);
   }
   if (ctx->returns_grant && db != NULL) {
     /* The releaser handed the write right back with these bytes.  Accepting

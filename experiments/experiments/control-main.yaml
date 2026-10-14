@@ -14,13 +14,11 @@
 # derives its population from the runtime's own rank count, so one argument
 # vector in the catalog serves every geometry.
 #
-# Requester-side RO combining is the VAL family's default, not an add-on --
-# every other message class in the plane suppresses duplicates structurally
-# (parked acquires, batched invalidation rounds, publish flights), so VAL's
-# window is part of its definition. This suite deliberately carries no
-# combining column: the off-plane `_nocomb` twins that ablate it live outside
-# this experiment, and VAL's numbers here are numbers for the combining
-# implementation, not for the validation philosophy on its own.
+# Requester-side RO combining is part of the VAL family's definition, not an
+# add-on -- every other message class in the plane suppresses duplicates
+# structurally (parked acquires, batched invalidation rounds, publish flights)
+# -- so VAL's numbers here are numbers for the combining implementation, not
+# for the validation philosophy on its own.
 
 name: control-main
 description: the adversarial columns of the protocol suite with the grain dial, and the HPX-origin rows

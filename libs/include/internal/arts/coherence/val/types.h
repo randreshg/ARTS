@@ -103,8 +103,9 @@ struct arts_home_grantreq_queue_s {
  *                  sign is what makes the turn-taking CAS a complete test.
  *   buffer         currently-installed buffer, an atomic shared_ptr slot;
  *                  readers acquire via acquire_buf's acquire-and-validate load.
- *   pending_snapshot  Treiber stack of snapshot-response reorder-buffer
- *                  waiters (case-3 push only; drained whole on next install).
+ *   publication_waiters
+ *                  (WT) Treiber stack of reads the home parked before the
+ *                  block's first publication; drained whole once published.
  *
  * The home-directory fields (pending_rw, invalidate_in_flight, rw_holder,
  * cached_ranks, cached_version, ...) are NOT here — they are inlined
@@ -123,7 +124,6 @@ struct arts_db_cache_s {
    * another popper may still be reading, so they wait here for the storage
    * release, which frees them with the list. */
   arts_lf_stack_t buf_retired;
-  arts_lf_stack_t pending_snapshot;
   /* db_guid stored here for symmetry with the protocol pseudocode —
    * acquire_remote_* needs it for the route_table_return_db pairing on
    * ARTS_DB_DESTROYED early-returns, where the cache is in scope but the
@@ -190,6 +190,7 @@ struct arts_db_cache_s {
   struct arts_rank_to_u64_map_s *cached_version;
   /* Treiber stack of RW waiters parked on this rank (order-free drain-all). */
   arts_lf_stack_t pending_rw;
+  arts_lf_stack_t publication_waiters;
 
   /* WT publish write-combining — the write-side twin of the RO combining
    * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
@@ -230,10 +231,6 @@ struct arts_db_cache_s {
    * one it belongs to. */
   volatile uint64_t grant_generation;
 #endif
-  /* Kept at the tail so either setting of the combining knob leaves the
-   * offsets of the fields (and the inlined home directory beyond them) that
-   * every acquire path touches unchanged. */
-#ifndef ARTS_NO_RO_COMBINING
   /* Remote-read request-combining window (see coherence/coherence.c).
    * snapshot_req_in_flight admits ONE outstanding snapshot request per cache
    * (0->1 CAS claims the window).  ro_combine accumulates waiters that arrive
@@ -245,7 +242,6 @@ struct arts_db_cache_s {
   volatile unsigned int snapshot_req_in_flight;
   arts_lf_stack_t ro_combine;
   arts_lf_link_t *ro_combine_group;
-#endif
 };
 
 /** Internal DataBlock descriptor.

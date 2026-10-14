@@ -25,7 +25,7 @@ RESULT_COLUMNS = [
 # Display metadata for runtime series, carried into the report so a later
 # figure tool inherits one naming and colour convention instead of inventing
 # its own.  Keyed by the SELECTION-ENTRY form (what every live caller passes);
-# rt_key() below folds build suffixes and pre-promotion comb keys onto it.
+# rt_key() below folds build suffixes onto it.
 # Every label spells all three axes {family} x {write policy} x {release
 # policy} — an elided axis reads as "no such axis" to anyone outside the
 # build system (EXCL's WB and INV/VAL's RETAIN are requirements, but the
@@ -41,11 +41,6 @@ RT_LABEL = {
     "arts_val_wt": "VAL·WT·RETAIN",
     "arts_val_wb": "VAL·WB·RETAIN",
     "arts_val_wt_purge": "VAL·WT·PURGE",
-    # The non-combining ablation twins are build variants, not plane entries;
-    # an experiment selects one directly by naming it as an entry.
-    "arts_val_wt_nocomb": "VAL·WT·RETAIN nocomb",
-    "arts_val_wb_nocomb": "VAL·WB·RETAIN nocomb",
-    "arts_val_wt_purge_nocomb": "VAL·WT·PURGE nocomb",
     "xsocr": "XSOCR",
     # OCR-vx ships three runtime families; the one built here is the
     # distributed-memory one, which is what the label should name.
@@ -68,11 +63,6 @@ RT_COLOR = {
     "arts_val_wt": "#55A868",
     "arts_val_wb": "#8CCB9B",
     "arts_val_wt_purge": "#3D794B",
-    # Ablation twins stay on the VAL hue, desaturated: same family, with the
-    # combining window compiled out.
-    "arts_val_wt_nocomb": "#7E9E87",
-    "arts_val_wb_nocomb": "#A9C4B0",
-    "arts_val_wt_purge_nocomb": "#5C7A64",
     "xsocr": "#8172B3",
     "ocrvx": "#937860",
     "hpx": "#C44E52",
@@ -90,18 +80,16 @@ WRF_ELIGIBLE_STYLE = "bold cyan"
 def rt_key(key: str) -> str:
     """Fold any spelling of a runtime series onto the display key.
 
-    Callers hold either a selection-entry key (arts_*/xsocr/ocrvx — possibly a
-    pre-promotion comb spelling from an old run) or a raw build suffix
-    (ocr_val_wt or wrf_flush, from a sweep that addresses arms directly).
+    Callers hold either a selection-entry key (arts_*/xsocr/ocrvx) or a raw
+    build suffix (ocr_val_wt or wrf_flush, from a sweep that addresses arms
+    directly).
     """
-    from artsrun.model.plane import modern_entry_key
-
     if key.startswith("ocr_"):
         alt = "arts_" + key.removeprefix("ocr_")
         return alt if alt in RT_LABEL else key
     if key.startswith("wrf_"):
         return "arts_" + key
-    return modern_entry_key(key)
+    return key
 
 
 # What a completed cell's time is when the runtime printed no end-to-end

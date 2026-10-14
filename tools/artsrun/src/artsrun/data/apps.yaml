@@ -3079,8 +3079,8 @@ apps:
     # hop carries the whole image.  Measured at 2000 a side: 13.2s / 1.4GB at
     # one ferrari node against 78.7s / 110.5GB at two -- the anti-scaling is a
     # memory blow-up as much as a time one, so declare the per-geometry RSS
-    # before running and read a 4- or 8-rank death on the uncombined VAL arm as
-    # a result about that arm.
+    # before running and read a 4- or 8-rank death as a result about the arm it
+    # happens on.
     #
     # Hinted was tried and no map beats the base: a placement layer here either
     # collapses the pipeline onto one rank (measured: 97% of the useful work on
@@ -3873,10 +3873,6 @@ apps:
     # window, binds.  The offered window is not the realized frontier: one
     # spawner emits a chain every ~4 us, so the in-flight count is single-
     # to double-digit — this row is never described as filling the machine.
-    # At these args the off-plane val_*_nocomb ablation twins are expected to
-    # censor at every multinode geometry on both profiles.  That is the
-    # sizing rule working as written (the twins are measured, never the
-    # sizing reference), not a mask.
     # -l and -b are ORCHESTRATOR-SIZED placeholders; the values below are the
     # current calibration.  -l <L>: 2,764,800.  -b <W>: 6912 = 2x the 32x108
     # campaign width, an exact integer multiple that divides L evenly with no
@@ -4032,7 +4028,7 @@ apps:
     # -- so the pin is checkable in seconds on one node:
     #     -s small -g 5 -l 4000 -t 4 -p 4      (N_i=68, U=340, G=1)
     # The same number must come back at -p 8, at 1/2/4 nodes, on all eight
-    # arms, on nocomb, on xsocr and on ocr-vx.  A difference between node
+    # arms, on xsocr and on ocr-vx.  A difference between node
     # counts is a coherence or placement defect; a difference between runs at
     # one geometry is a race.  `Lookups:` still echoes -l and must NOT equal
     # the checksum.

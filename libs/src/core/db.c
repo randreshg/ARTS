@@ -1053,7 +1053,7 @@ static void resume_enqueue(struct arts_edt_s *edt);
 
 /* OOO_DB_ACQUIRE replay table entry — see db.h.  Re-attempts the single
  * deferred dep through acquire_one_dep's subtype-aware 3-way: for an ARTS_DB
- * this lands in arts_handler_db_acquire (coherent), for a PIN/GPU/CXL DB in the
+ * this lands in arts_handler_db_acquire (coherent), for a PIN/GPU DB in the
  * pinned ptr path, and a still-absent DB re-defers.  Mapping OOO_DB_ACQUIRE
  * straight to arts_handler_db_acquire would mishandle non-coherent subtypes
  * (their embedded cache is zeroed — its pending_rw queue is uninitialised, so

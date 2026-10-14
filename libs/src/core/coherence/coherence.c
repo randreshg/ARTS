@@ -97,9 +97,8 @@ bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
  * transfer target, VAL WB's dedup ledger, INV's reader word, EXCL's cache
  * word and waiter stacks — and then calls this.
  *
- * The arms that share this shape are the ones whose cache carries a snapshot
- * reorder buffer and a home directory; an arm with neither builds its cache
- * itself. */
+ * The arms that share this shape are the ones whose cache carries a home
+ * directory; an arm without one builds its cache itself. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
 void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
@@ -117,11 +116,11 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   c->cxl_addr = 0;
 #endif
   arts_db_cache_kind_seed(c, kind);
-  /* Snapshot reorder-buffer: a Treiber stack (zero-initializable, but init
-   * explicitly for clarity).  Nodes are heap-allocated on the case-3 push path
-   * and freed when drained by the next install. */
-  arts_lf_stack_init(&c->pending_snapshot);
-#ifdef ARTS_RO_COMBINING_LIVE
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    defined(ARTS_WRITE_POLICY_WT)
+  arts_lf_stack_init(&c->publication_waiters);
+#endif
+#ifdef ARTS_PROTOCOL_VAL
   arts_lf_stack_init(&c->ro_combine);
   c->ro_combine_group = NULL;
   c->snapshot_req_in_flight = 0;
@@ -296,9 +295,8 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
    * the slot and dropped on every path out. */
   arts_shared_ptr_t alias_pin = arts_shared_copy(db_h);
   if (data != NULL) {
-    /* Idempotent slot claim.  Two delivery paths can wake the SAME
-     * (edt, slot) — e.g. a snapshot_response case-2 drain racing a direct
-     * response.  The slot resolves exactly once: CAS depv[slot].ptr
+    /* Idempotent slot claim: whichever paths wake the same (edt, slot), the
+     * slot resolves exactly once.  CAS depv[slot].ptr
      * NULL->data so only the first wake keeps its buffer ref (the EDT's hold)
      * and accounts; a loser leaves the ref with its caller and returns
      * WITHOUT accounting — no double-decrement of acquire_remaining, no
@@ -544,18 +542,17 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
 
 /* ===== Case 7: remote-RO / remote-snapshot path =================== */
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-#ifdef ARTS_RO_COMBINING_LIVE
+#if defined(ARTS_PROTOCOL_VAL)
 /* ===== Remote-read request combining ===============================
  *
- * One snapshot request per cache may be in flight ("the window").  The 0->1
- * CAS winner on snapshot_req_in_flight owns it: it isolates the accumulated
- * waiter stack in one exchange, sends ONE wire request naming an arbitrary
- * member (the leader — the response resumes it through the unchanged 1:1
- * path), and parks the rest as ro_combine_group.  The response terminal
- * resumes the whole group against the buffer the response made current, then
- * re-arms: isolate whatever accumulated meanwhile and send again, or release
- * the window.
+ * Every remote read-only acquire rides its cache's one window: at most one
+ * snapshot request per cache is in flight.  The 0->1 CAS winner on
+ * snapshot_req_in_flight owns it: it isolates the accumulated waiter stack in
+ * one exchange, sends ONE wire request naming an arbitrary member (the leader
+ * — the response resumes it by name), and parks the rest as ro_combine_group.
+ * The response terminal resumes the whole group against the buffer the
+ * response left current, then re-arms: isolate whatever accumulated meanwhile
+ * and send again, or release the window.
  *
  * Correctness boundary: a waiter may only ride a request sent AFTER its
  * park.  Any release the waiter is event-ordered after published before its
@@ -566,10 +563,12 @@ void *arts_db_acquire_local(struct arts_db_cache_s *cache) {
  * window.  Pull semantics stay intact: currency is established per-request
  * at serve time, the server tracks no readers, writers pay nothing.
  *
- * Single-rank runs bypass combining: the self-send serve chain is fully
- * synchronous, so window chaining would recurse through the inline response
- * handler — and there is no wire cost to amortize.  On multi-rank runs the
- * re-arm can inline-recurse only while a request resolves back onto this
+ * The window is released only by the terminal, which runs after the
+ * response's bytes are installed, so no request from this cache can be served
+ * while bytes credited to it are still in flight — the reason a reply that
+ * moves no bytes never names a version this cache does not hold.
+ *
+ * The re-arm can inline-recurse only while a request resolves back onto this
  * rank (owner-is-self serve); that recursion is finite and small, because
  * once ownership is local, new read acquires resolve locally and stop
  * feeding the stack. */
@@ -581,18 +580,13 @@ static bool ro_combine_launch_owned(struct arts_db_cache_s *cache) {
   if (batch == NULL) {
     return false;
   }
-  struct arts_db_snapshot_waiter_s *leader =
-      (struct arts_db_snapshot_waiter_s *)batch;
+  struct arts_db_read_waiter_s *leader = (struct arts_db_read_waiter_s *)batch;
   cache->ro_combine_group =
       atomic_load_explicit(&batch->next, memory_order_relaxed);
   arts_guid_t leader_guid = leader->edt_guid;
   unsigned int leader_slot = leader->slot;
   arts_free(leader);
-#ifdef ARTS_PROTOCOL_INV
-  arts_send_db_inv_request(cache, DB_MODE_RO);
-#else
   arts_send_db_snapshot_request(cache, leader_guid, leader_slot);
-#endif
   return true;
 }
 
@@ -616,31 +610,20 @@ static void ro_combine_pump(struct arts_db_cache_s *cache) {
   }
 }
 
-void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
-                                    bool buffer_live, uint64_t version) {
+void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache) {
   arts_lf_link_t *node = cache->ro_combine_group;
   cache->ro_combine_group = NULL;
   while (node != NULL) {
-    struct arts_db_snapshot_waiter_s *w =
-        (struct arts_db_snapshot_waiter_s *)node;
+    struct arts_db_read_waiter_s *w = (struct arts_db_read_waiter_s *)node;
     arts_lf_link_t *next =
         atomic_load_explicit(&node->next, memory_order_relaxed);
-    if (buffer_live) {
-      /* The buffer the response made current is at least as new as anything
-       * a batch member is ordered after — resume against it (the resume
-       * re-derives dep->ptr from the installed buffer). */
-      arts_guid_t edt_local = w->edt_guid;
-      unsigned int slot_local = w->slot;
-      arts_free(w);
-      mark_edt_ready_by_guid(edt_local, slot_local);
-    } else {
-      /* Reorder case: the publish satisfying this response is still in
-       * flight.  Park the member on the reorder buffer (its need is <=
-       * `version`); the coming install drains it. */
-      w->target_version = version;
-      w->serve = NULL;
-      arts_lf_stack_push(&cache->pending_snapshot, &w->link);
-    }
+    /* The buffer the response left current is at least as new as anything a
+     * batch member is ordered after — resume against it (the resume
+     * re-derives dep->ptr from the installed buffer). */
+    arts_guid_t edt_local = w->edt_guid;
+    unsigned int slot_local = w->slot;
+    arts_free(w);
+    mark_edt_ready_by_guid(edt_local, slot_local);
     node = next;
   }
   /* Re-arm: whatever accumulated during this window rides the next request;
@@ -676,8 +659,7 @@ void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
    * response path). */
   arts_lf_link_t *node = arts_lf_stack_drain(&cache->ro_combine);
   while (node != NULL) {
-    struct arts_db_snapshot_waiter_s *w =
-        (struct arts_db_snapshot_waiter_s *)node;
+    struct arts_db_read_waiter_s *w = (struct arts_db_read_waiter_s *)node;
     arts_lf_link_t *next =
         atomic_load_explicit(&node->next, memory_order_relaxed);
     arts_guid_t edt_local = w->edt_guid;
@@ -687,38 +669,28 @@ void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
     node = next;
   }
 }
-#endif /* ARTS_RO_COMBINING_LIVE */
 
 arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
                           unsigned int slot) {
-  /* No list registration.  Fire SNAPSHOT_REQUEST carrying edt_guid + slot and
-   * PARK; the matching SNAPSHOT_RESPONSE at this rank resumes the EDT directly
-   * (case 1/2), or — only under transport reorder — case 3 pushes a
-   * reorder-buffer node onto pending_snapshot.  A concurrent destroy is handled
-   * by the caller's lookup-miss + OoO defer. */
+  /* Park on the cache's combining window; the response that ends the window
+   * this waiter rides resumes it.  A concurrent destroy is handled by the
+   * caller's lookup-miss + OoO defer. */
+  assert(arts_global_rank_count > 1 &&
+         "a rank alone homes every block and reads it locally");
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
-#ifdef ARTS_RO_COMBINING_LIVE
-  if (arts_global_rank_count > 1) {
-    struct arts_db_snapshot_waiter_s *w =
-        (struct arts_db_snapshot_waiter_s *)arts_malloc(sizeof(*w));
-    w->edt_guid = edt_guid;
-    w->slot = slot;
-    w->target_version = 0;
-    w->serve = NULL;
-    arts_lf_stack_push(&cache->ro_combine, &w->link);
-    ro_combine_pump(cache);
-    return ARTS_DB_ACQUIRE_PARK;
-  }
-#endif
-#ifdef ARTS_PROTOCOL_INV
-  arts_send_db_inv_request(cache, DB_MODE_RO);
-#else
-  arts_send_db_snapshot_request(cache, edt_guid, slot);
-#endif
+  struct arts_db_read_waiter_s *w =
+      (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
+  w->edt_guid = edt_guid;
+  w->slot = slot;
+  w->serve = NULL;
+  w->requester = 0;
+  w->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
+  arts_lf_stack_push(&cache->ro_combine, &w->link);
+  ro_combine_pump(cache);
   return ARTS_DB_ACQUIRE_PARK;
 }
-#endif /* arms with a pulled reader copy */
+#endif /* the versioned-snapshot read path */
 
 /* The 8-case acquire dispatcher arts_handler_db_acquire is protocol-specific:
  * WT and WB define it in coherence/grant.c-backed
@@ -728,17 +700,20 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
  * (arts_db_acquire_local) above are reused by both.
  */
 
-/* Drain the snapshot reorder buffer in one atomic_exchange.  Monotonic version
- * guarantees every parked node's target_version <= the buffer version that
- * triggers the drain, so a full drain (no partial pop) is always correct
- * (plan: "install 시 전체 drain").  Called from the case-2 install path, the
- * GRANT install, the WB GRANT_RESPONSE install, and destroy fan-out. */
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache) {
-  arts_lf_link_t *node = arts_lf_stack_drain(&cache->pending_snapshot);
+/* Wake every publication waiter, taken in one exchange.  A waiter is a read
+ * that found its write-through home's copy unpublished — the
+ * create-time image at version 0 — and parked: a local read hold, or a remote
+ * read whose serve was deferred.  A write-through release stamps its version
+ * on the home's copy before it completes, so a read that saw version 0 is
+ * ordered after no release, and any published copy (version >= 1) is a value
+ * it may be given.  Every drain runs once the slot holds one, and the slot's
+ * version never decreases, so waking every waiter taken is exact. */
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    defined(ARTS_WRITE_POLICY_WT)
+void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
+  arts_lf_link_t *node = arts_lf_stack_drain(&cache->publication_waiters);
   while (node != NULL) {
-    struct arts_db_snapshot_waiter_s *w =
-        (struct arts_db_snapshot_waiter_s *)node;
+    struct arts_db_read_waiter_s *w = (struct arts_db_read_waiter_s *)node;
     arts_lf_link_t *next =
         atomic_load_explicit(&node->next, memory_order_relaxed);
     if (w->serve != NULL) {
@@ -758,7 +733,7 @@ void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache) {
     node = next;
   }
 }
-#endif /* arms with a snapshot reorder buffer */
+#endif /* write-through homes that hold reads until the first publication */
 
 /* ================================================================== */
 /* ===== Release path =============================================== */
@@ -1377,6 +1352,38 @@ void arts_db_debug_quiescence_check(void) {
           viol++;
         }
 #endif
+#ifdef ARTS_PROTOCOL_VAL
+        if (quiescent && (!arts_lf_stack_empty(&c->ro_combine) ||
+                          c->ro_combine_group != NULL ||
+                          arts_atomic_read(&c->snapshot_req_in_flight) != 0u)) {
+          ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a parked read or an open "
+                     "read window after a quiescent shutdown",
+                     (unsigned long)c->db_guid);
+          viol++;
+        }
+#endif
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    defined(ARTS_WRITE_POLICY_WT)
+        if (quiescent) {
+          /* Only a read of this rank's own: a deferred serve belongs to an
+           * EDT on the requesting rank, whose shutdown judges it. */
+          unsigned int local = 0;
+          for (arts_lf_link_t *n = atomic_load_explicit(
+                   &c->publication_waiters.head, memory_order_acquire);
+               n != NULL;
+               n = atomic_load_explicit(&n->next, memory_order_relaxed)) {
+            if (((struct arts_db_read_waiter_s *)n)->serve == NULL) {
+              local++;
+            }
+          }
+          if (local != 0) {
+            ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has %u publication "
+                       "waiter(s) after a quiescent shutdown",
+                       (unsigned long)c->db_guid, local);
+            viol++;
+          }
+        }
+#endif
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
         if (quiescent && !arts_lf_stack_empty(&c->pending_rw)) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has parked RW waiters after "
@@ -1700,8 +1707,8 @@ void arts_db_debug_quiescence_check(void) {
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
-/* Drain and free the snapshot reorder buffer (a Treiber stack), then tear
- * down the inlined home-directory sub-resources.  Runs AFTER the protocol
+/* Free the read waiters a destroy found still parked, then tear down the
+ * inlined home-directory sub-resources.  Runs AFTER the protocol
  * field-destroy. */
 void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
@@ -1712,8 +1719,10 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
   /* Teardown backstop; the destroy handlers already abandoned the flight. */
   arts_db_pub_flight_abandon(cache);
 #endif
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    defined(ARTS_WRITE_POLICY_WT)
   {
-    arts_lf_link_t *n = arts_lf_stack_drain(&cache->pending_snapshot);
+    arts_lf_link_t *n = arts_lf_stack_drain(&cache->publication_waiters);
     while (n != NULL) {
       arts_lf_link_t *next =
           atomic_load_explicit(&n->next, memory_order_relaxed);
@@ -1721,11 +1730,12 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache) {
       n = next;
     }
   }
-#ifdef ARTS_RO_COMBINING_LIVE
+#endif
+#ifdef ARTS_PROTOCOL_VAL
   {
     /* Combining waiters still parked at destroy are freed, not woken —
      * destroying a DB with a pending acquire is undefined per the programming
-     * model, same contract as the reorder-buffer drain above. */
+     * model, same contract as the publication waiters' drain above. */
     arts_lf_link_t *n = arts_lf_stack_drain(&cache->ro_combine);
     while (n != NULL) {
       arts_lf_link_t *next =

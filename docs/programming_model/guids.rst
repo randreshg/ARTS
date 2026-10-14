@@ -236,12 +236,14 @@ a rank other than its creator and its home still caches the previous
 generation.  A consumer on that rank whose acquire of generation ``k+1``
 runs before the home's teardown notice for generation ``k`` arrives finds
 generation ``k``'s cache present and, being a non-create message, runs
-against it: it reads generation ``k``.  Ordering the acquire after the
-destroy does not by itself exclude it: the destroy and the notice reach that
-rank by different paths, and no program can observe the notice's arrival
-without an acknowledged destroy.  On the CXL store a grant naming a slot
-other than the one the cache names is refused loudly instead of reading
-generation ``k``.
+against it: it reads generation ``k``.  Under VAL a later read of generation
+``k+1`` on that rank can also fail outright when a snapshot reply crosses the
+generations: a Debug build stops at an assertion, and a Release build resumes
+the read with a null data pointer.  Ordering the acquire after the destroy does
+not by itself exclude it: the destroy and the notice reach that rank by
+different paths, and no program can observe the notice's arrival without an
+acknowledged destroy.  On the CXL store a grant naming a slot other than the one
+the cache names is refused loudly instead of reading generation ``k``.
 
 **A key-addressed teardown notice.**  The notice a home sends to each rank
 that caches a block names the GUID, not the generation, and retires whatever

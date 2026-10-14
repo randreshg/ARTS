@@ -130,8 +130,8 @@ static void home_response_commit(arts_shared_ptr_t db_h) {
    * into the woken writers' holds, and where a holder hands the right back
    * unasked the last of them can give it away while this thread is still
    * running — so the reader drains come first. */
-  arts_db_drain_pending_snapshot(cache);
-#ifdef ARTS_RO_COMBINING_LIVE
+  arts_db_drain_publication_waiters(cache);
+#ifdef ARTS_PROTOCOL_VAL
   /* Read waiters batched while this rank had no local copy resume here
    * against the buffer it now holds instead of re-fetching remotely — the
    * bytes that arrived with the grant, or the ones already here that a

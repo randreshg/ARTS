@@ -440,10 +440,10 @@ struct ARTS_PACKED arts_msg_snapshot_request_packet_s {
   struct arts_msg_rdzv_landing_s rdzv;
 };
 
-/* SNAPSHOT_RESPONSE — the snapshot payload does NOT ride the wire; it is PUT into
- * the landing the requester advertised.  Echoes the parked EDT (edt_guid +
+/* SNAPSHOT_RESPONSE — the snapshot payload does NOT ride the wire; it is PUT
+ * into the landing the requester advertised.  Echoes the parked EDT (edt_guid +
  * slot) back so the requester's response handler resumes it directly — no
- * acquire-time list registration (the reorder-buffer design).
+ * acquire-time list registration.
  * data_present values:
  *   0 = no payload moved (requester's version is current, or nothing
  *       published yet).  A nonzero rdzv_cookie echoes the unused landing for

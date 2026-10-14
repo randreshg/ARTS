@@ -435,7 +435,6 @@ struct arts_db_cache_s {
    * self-pointers stay valid.  Under RETAIN, data stays with the owner; the
    * home-rank cache.buffer is unused by the coherence path. */
   arts_atomic_shared_ptr_t buffer;
-  arts_lf_stack_t pending_snapshot; /* unused by EXCL; kept for common_init */
   arts_lf_stack_t ro_pending;       /* parked RO EDT waiters on this rank */
   arts_lf_stack_t rw_pending;       /* parked RW EDT waiters on this rank */
 #ifdef ARTS_RELEASE_RETAIN
@@ -485,7 +484,6 @@ struct arts_db_cache_s {
 struct arts_db_cache_s {
   _Atomic uint64_t cache_state;
   arts_atomic_shared_ptr_t buffer;
-  arts_lf_stack_t pending_snapshot;
   arts_lf_stack_t ro_pending;
   arts_lf_stack_t rw_pending;
 #ifdef ARTS_RELEASE_RETAIN

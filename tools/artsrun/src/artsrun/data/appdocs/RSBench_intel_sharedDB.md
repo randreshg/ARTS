@@ -353,19 +353,17 @@ in them transfers. base (there was no hinted flavour then), e2e seconds:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb_nocomb | 121.6 | 76.1 | 46.2 | 22.2 |
 | val_wb | 124.8 | 62.7 | 34.2 | 16.9 |
 | inv_wb | 116.4 | 63.0 | 33.6 | 17.1 |
 | excl_retain | 116.2 | 65.8 | 33.5 | 16.3 |
 
 A Dane-geometry single node (108w+4p) ran it in 74.6 s. Unlike its
 `XSBench_intel_sharedDB` sibling (arm-indifferent to <1%), the arms separate
-mildly here at 2–4n (val_wb_nocomb trails the pack by up to ~1.2×): the
-`SINGLE_RUN_ACROSS_PD` lane spread makes every instance's lanes remote-acquire
-its arrays machine-wide, so the read path is exercised cross-node even though
-the datasets are block-homed. All four arms scaled 5.5–7.1× from 1n to 8n.
-Part of that ratio was the shared-`rand()` serialisation unwinding as
-instances landed in separate processes, which is gone; the row's `init_s`
-extra scalar is what separates generation from lookups now. The banner's
-`Runtime:` line is not used for any of this (see Overview); the numbers above
-are the runtime's `[E2E]` stamp.
+by up to ~5% at 2–8n (~7% at 1n), and the `SINGLE_RUN_ACROSS_PD` lane spread
+makes every instance's lanes remote-acquire its arrays machine-wide, so the
+read path is exercised cross-node even though the datasets are block-homed. All
+three arms scaled 6.8–7.4× from 1n to 8n. Part of that ratio was the
+shared-`rand()` serialisation unwinding as instances landed in separate
+processes, which is gone; the row's `init_s` extra scalar is what separates
+generation from lookups now. The banner's `Runtime:` line is not used for any
+of this (see Overview); the numbers above are the runtime's `[E2E]` stamp.

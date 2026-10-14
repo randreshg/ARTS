@@ -362,12 +362,11 @@ cell. Absolute seconds and efficiencies do **not** transfer; the shape does.
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb_nocomb | 119.5 | 66.2 | 35.2 | 17.5 |
 | val_wb | 119.7 | 66.5 | 35.2 | 17.5 |
 | inv_wb | 119.9 | 66.2 | 35.4 | 17.6 |
 | excl_retain | 119.4 | 66.2* | 35.2 | 17.6 |
 
-Speedup 1.81 / 3.40 / 6.83 at 2/4/8 nodes, arms indistinguishable within 0.5%
+Speedup 1.80 / 3.40 / 6.84 at 2/4/8 nodes, arms indistinguishable within 0.5%
 — the decomposition shares nothing across instances, so no coherence arm has
 anything to do, which is what makes this row the plane's negative control. The
 catalog separately recorded 11.0 → 6.2 → 3.3 → 2.2 s over the same 1..8

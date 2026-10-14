@@ -255,7 +255,7 @@ whole-image block RW, exclusive per node, so write concurrency across nodes is
 parallelism.  The anti-scaling is a memory blow-up as much as a time one:
 measured at 2000 a side, 13.2 s / 1.4 GB at one node against 78.7 s / 110.5 GB
 at two.  Declare the expected per-geometry RSS before running; a 4- or 8-rank
-death on the uncombined VAL arm is a result about that arm, not a sizing error.
+death is a result about the arm it happens on, not a sizing error.
 
 Both tiers need `datasets/sar-huge/` staged (268.8 MB, checksum-gated)
 regardless of rung, and every rank must see the three input paths.

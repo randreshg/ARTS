@@ -157,6 +157,19 @@ def catalog():
     return load_catalog()
 
 
+@pytest.mark.parametrize("kw, refused", [
+    (dict(entries=["arts_val_wb", "arts_val_wb"]),
+     "plane entries named more than once: arts_val_wb"),
+    (dict(node_counts=[1, 1]), "node counts named more than once: 1"),
+    (dict(apps={"nqueens": [Version.BASE, Version.BASE]}),
+     "nqueens versions named more than once: base"),
+])
+def test_a_selection_naming_anything_twice_is_refused(plane, catalog, kw,
+                                                      refused):
+    with pytest.raises(ValueError, match=refused):
+        _selection(**kw).validate_against(plane, catalog, _profile())
+
+
 def test_reference_selection_requires_pin(plane, catalog):
     with pytest.raises(ValueError, match="pin"):
         _selection().validate_against(plane, catalog, _profile(pin=False))

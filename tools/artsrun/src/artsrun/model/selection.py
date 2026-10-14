@@ -11,11 +11,11 @@ import re
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from artsrun.model.experiment import Experiment
 from artsrun.model.catalog import AppClass, Catalog, Version
-from artsrun.model.plane import Plane, modern_entry_key
+from artsrun.model.plane import Plane
 from artsrun.model.profile import Launcher, Profile
 
 
@@ -93,18 +93,6 @@ class Selection(BaseModel):
     default_entries: list[str] | None = None
     entries: list[str] = Field(min_length=1)
     apps: dict[str, list[Version]] = Field(min_length=1)
-
-    @field_validator("entries")
-    @classmethod
-    def _modern_entries(cls, entries: list[str]) -> list[str]:
-        """Replayed selections may carry pre-promotion comb-suffixed keys;
-        map them to today's names.  Deduplicated in order, because an old
-        selection could name a val entry under both spellings."""
-        out: list[str] = []
-        for key in (modern_entry_key(k) for k in entries):
-            if key not in out:
-                out.append(key)
-        return out
     node_counts: list[int] = Field(min_length=1)
     repeats: int = 1
     build_dir: str | None = None
@@ -148,6 +136,18 @@ class Selection(BaseModel):
         unknown = [k for k in self.entries if k not in plane.entry_keys]
         if unknown:
             raise ValueError(f"unknown plane entries: {', '.join(unknown)}")
+        # A repeat would schedule its cells twice, so it is refused like an
+        # unknown key rather than folded.
+        for what, items in (
+            ("plane entries", self.entries),
+            ("node counts", self.node_counts),
+            *((f"{name} versions", vs) for name, vs in self.apps.items()),
+        ):
+            repeated = list(dict.fromkeys(
+                str(i) for i in items if items.count(i) > 1))
+            if repeated:
+                raise ValueError(
+                    f"{what} named more than once: {', '.join(repeated)}")
         profile.check_cxl(self.cxl_entries(plane))
         for name, versions in self.apps.items():
             if name not in catalog.apps:

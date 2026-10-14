@@ -413,9 +413,8 @@ Size-Only CTS Fallbacks / RO Combining
 Size-only CTS fallbacks on the other planes: with the GUID size hint
 these count only sentinel GUIDs (pre-reserved ranges, oversize), so a
 nonzero steady rate is the hint NOT covering a workload.  The RO combine
-counters are live in every VAL-family build except an
-``ARTS_NO_RO_COMBINING`` ablation build (combining is the family's
-default), and are inert under EXCL/INV.
+counters count the VAL family's combining window and are inert under the
+other protocols.
 
 .. list-table::
    :header-rows: 1

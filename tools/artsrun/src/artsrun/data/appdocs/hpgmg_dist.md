@@ -201,20 +201,18 @@ per-operator timers and the restored `vec_temp` store:
 
 | arm | 1 n | 2 n | 4 n | 8 n |
 |-----|-----|-----|-----|-----|
-| val_wb_nocomb | 22.3 / 6.1 | 21.3 / 12.1 | 17.3 / 11.7 | 17.5 / 13.8 |
 | val_wb | 22.2 / 6.1 | 12.9 / 4.3 | 7.5 / 2.9 | **5.1 / 2.5** |
 | inv_wb | 21.9 / 6.2 | 12.7 / 4.6 | 7.7 / 3.2 | **5.1 / 2.5** |
 | excl_retain | 22.4 / 6.3 | 12.5 / 4.6 | 7.7 / 3.2 | 5.3 / 2.8 |
 
 That was the application's first positive scaling: 4.3× from 1 n to 8 n on the
 VAL/INV arms, against a hinted base that *degraded* over the same geometries.
-Bare `val_wb_nocomb` is the outlier (12.1 s solve at 2 n): without request
-combining the slice fan-outs' per-task RO acquires of the level datablock and
-slabs each pay a validation round, so combining is this decomposition's natural
-partner; INV needs no ledger at all (a slab read is a covering load) and matches
-it.  There is no spine: the phases run as one chain per rank, gated
-point-to-point, so no per-phase cost grows with the rank count — the term that
-would have dominated the 32-node campaign is structurally absent.
+The slice fan-outs' per-task RO acquires of the level datablock and slabs ride
+one request per rank at a time under VAL's read combining, and INV needs no
+ledger at all (a slab read is a covering load), so the two arms match.  There
+is no spine: the phases run as one chain per rank, gated point-to-point, so no
+per-phase cost grows with the rank count — the term that would have dominated
+the 32-node campaign is structurally absent.
 
 **The table above has to be re-taken.**  Two of the changes move it in opposite
 directions: the base row's serial preamble is gone, so the comparison it was

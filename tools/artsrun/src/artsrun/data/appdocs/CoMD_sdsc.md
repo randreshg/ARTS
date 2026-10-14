@@ -437,30 +437,24 @@ hinted, e2e seconds.  The energy pin held in every cell:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb_nocomb | 11.5 | 192.0 | 298.9 | 377.0 |
 | val_wb | 11.5 | 139.2 | 191.7 | 250.3 |
 | inv_wb | 11.9 | 150.2 | 222.1 | 267.2 |
 | excl_retain | 13.2 | 150.3 | 235.0 | 312.2 |
 
-base val_wb_nocomb, same ladder, on the application's own `total` timer:
-11.69 / 263.21 / 269.66 / 318.83.  Against hinted's 11.51 / 191.82 / 298.64 /
-376.75 the band map was worth **1.37× at 2n and 1.11-1.18× WORSE at 4n and
-8n** — the earlier ">=2x at 4-8n" reading compared a completing hinted E2E
-against a base cell that had finished its workload and was then killed at the
-590 s ceiling inside runtime shutdown, so it compared shutdown behaviour, not
-the timed window.  Two consequences: the base 4n/8n shutdown stall is a
-standing risk for Dane (it is rank-count driven, not size driven), and **the
-whole table above predates the band→block map change** — it is the baseline the
-new map has to beat, not evidence for it.  Every arm anti-scales monotonically:
-the per-step wall is the wiring plane (the arm-invariant DAG re-wiring census
-established on the sibling cell-grain port), with VAL's re-validation adding
-~1.4-1.5x over the combining arm on top.  The structural answer to this wall is
-a rewrite of *this* program's decomposition — a spawn tree in place of the single
-per-phase issuer, a per-cell publish/arrive migration in place of the whole-grid
-redistribute EDT, and reduction trees in place of the `B+1`-dependence joins —
-which is the restructured row's brief; `CoMD_intel_chandra_tiled` is a different
-program, not this instance restructured.  (Parallel initialization is *not* on
-that list: it is an R9 conformance adaptation and is present identically in all
+**The whole table above predates the band→block map change** — it is the
+baseline the new map has to beat, not evidence for it — and no base row was
+measured on any of these arms.  A base cell measured at 4n and 8n finished its
+workload and was then killed at the 590 s ceiling inside runtime shutdown; that
+rank-count-driven shutdown stall is an open question, unmeasured on these arms.
+Every arm anti-scales monotonically: the per-step wall is the wiring plane (the
+arm-invariant DAG re-wiring census established on the sibling cell-grain port).
+The structural answer to this wall is a rewrite of *this* program's
+decomposition — a spawn tree in place of the single per-phase issuer, a
+per-cell publish/arrive migration in place of the whole-grid redistribute EDT,
+and reduction trees in place of the `B+1`-dependence joins — which is the
+restructured row's brief; `CoMD_intel_chandra_tiled` is a different program,
+not this instance restructured.  (Parallel initialization is *not* on that
+list: it is an R9 conformance adaptation and is present identically in all
 three tiers.)
 
 The table above also predates the parallel-init change and the redistribute repair,

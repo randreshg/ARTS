@@ -311,15 +311,8 @@ replays under its experiment (`main-gate` → `paper-gate`, `paper-controls` →
 
 ## The cluster selection
 
-`val_*_nocomb` is not part of it. The non-combining twins are an ablation of
-one family's read path rather than a position on the plane — benchmark build
-variants (`<app>_arts_ocr_val_*_nocomb`), not plane entries, so no experiment
-or `-e` can select them; what a run selects is the plane's fourteen entries
-(`artsrun plane`) — and the question they
-answer, what the requester-side combining window buys, is why they stay on
-a single-host profile (`-p alia`) where both settings of one knob fit
-in a campaign. A cluster campaign runs the eight plane arms and the
-references.
+A run selects from the plane's fourteen entries (`artsrun plane`). A cluster
+campaign runs the eight plane arms and the references.
 
 The adversarial plan is the adversarial half of the `control-main` experiment
 under the `dane` profile. Every attack row carries one argument vector that

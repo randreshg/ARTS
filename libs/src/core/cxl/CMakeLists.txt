@@ -10,8 +10,7 @@ if(ARTS_CXL_NEEDED)
         add_library(arts_cxl OBJECT ${ARTS_CXL_SOURCES})
         target_link_libraries(arts_cxl PRIVATE arts_interface)
         arts_apply_protocol(arts_cxl ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY}
-                            ${ARTS_RELEASE_POLICY} ${ARTS_NO_RO_COMBINING}
-                            ${ARTS_CXL_TREE_RESIDENCY})
+                            ${ARTS_RELEASE_POLICY} ${ARTS_CXL_TREE_RESIDENCY})
     endif()
     # The seam again, recording every flush it performs: linked only by the
     # test that reads the record, through arts_static_cxl_flush_recorder.
@@ -20,7 +19,7 @@ if(ARTS_CXL_NEEDED)
         target_link_libraries(arts_cxl_flush_recorder PRIVATE arts_interface)
         arts_apply_protocol(arts_cxl_flush_recorder ${ARTS_COHERENCE_ARM}
                             ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY}
-                            ${ARTS_NO_RO_COMBINING} ${ARTS_CXL_TREE_RESIDENCY})
+                            ${ARTS_CXL_TREE_RESIDENCY})
         target_compile_definitions(arts_cxl_flush_recorder PRIVATE ARTS_CXL_FLUSH_RECORDER=1)
     endif()
 endif()

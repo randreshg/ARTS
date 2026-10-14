@@ -426,9 +426,13 @@ def test_source_revision_names_the_commit_and_what_differs_from_it(tmp_path):
     assert edited["dirty"] is True and edited["dirty_paths"] == ["tracked"]
 
 
-def test_source_revision_outside_a_checkout_answers_nothing(tmp_path):
+def test_source_revision_outside_a_checkout_answers_nothing(tmp_path,
+                                                         monkeypatch):
     from artsrun.run.manifest import source_revision
 
+    # git's discovery stops at the ceiling, so the answer holds wherever
+    # pytest's basetemp lives, a checkout included.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     assert source_revision(tmp_path) == {
         "commit": None, "dirty": None, "dirty_paths": None,
         "submodules": None,

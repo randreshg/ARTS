@@ -296,11 +296,10 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
                         db_size);
   }
 #else
-  /* Metadata-only home until the creator's first publish: the write-back
-   * home holds routing and permission, never payload.  Pre-publication read
-   * serves hold on pending_snapshot and the first install drains them.
-   * (The NO_ACQUIRE create path installs a first image in the shared create
-   * flow instead: with no creator hold, creation itself is the publication.) */
+  /* The write-back home holds routing and permission, never payload: a read
+   * is redirected to the grant's holder (served here when the home holds the
+   * grant), which serves it from its own copy; a create that acquires nothing
+   * leaves its storage to its first use. */
   (void)cache;
   (void)db_size;
 #endif
@@ -485,6 +484,7 @@ void inv_home_round_try_open(struct arts_db_s *db) {
       if (maxv > atomic_load_explicit(&db->hver, memory_order_acquire)) {
         atomic_store_explicit(&db->hver, maxv, memory_order_release);
       }
+#ifdef ARTS_WRITE_POLICY_WT
       /* First publication wakes the pre-publication read holds (readers
        * event-ordered after the creator's writes must see released bytes,
        * never the never-published version-0 state).  Published = an installed
@@ -497,9 +497,10 @@ void inv_home_round_try_open(struct arts_db_s *db) {
                     __atomic_load_n(&pb->version, __ATOMIC_ACQUIRE) > 0);
         arts_db_buf_release(&pub_h);
         if (pub) {
-          arts_db_drain_pending_snapshot(cache);
+          arts_db_drain_publication_waiters(cache);
         }
       }
+#endif
       /* Roster snapshot (per-word XCHG) with the writers excluded from the
        * TARGETS — their copies are the newest by definition — but not from
        * the roster: a releaser's copy is a sharer's copy from its release on,

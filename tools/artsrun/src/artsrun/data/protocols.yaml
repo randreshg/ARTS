@@ -11,8 +11,7 @@
 # engines at a fixed design point.
 
 # Read combining is part of the VAL family's definition (every message class
-# suppresses duplicate concurrent requests; the *_nocomb build variants are the
-# off-plane ablation twins), so it is not a family here.
+# suppresses duplicate concurrent requests), so it is not a family here.
 families: [EXCL, INV, VAL]
 releases: [PURGE, RETAIN]
 writes: [WT, WB]

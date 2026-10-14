@@ -216,7 +216,6 @@ numbers are stale; only the shape survives. Re-trend before quoting.
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb_nocomb | 4.29 | 5.76 | 6.75 | 7.99 |
 | val_wb | 4.29 | 5.75 | 6.79 | 7.95 |
 | inv_wb | 4.29 | 5.76 | 6.85 | 8.14 |
 | excl_retain | 4.31 | 5.84 | 6.93 | 8.09 |

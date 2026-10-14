@@ -228,7 +228,7 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
    * still names the OLD owner, which retains its buffer + cached_version
    * permanently and serves the REDIRECT from its own copy.  Client-side
    * monotonic version compare keeps stale snapshots safe.  No defer queue. */
-  if (a->rdzv.txid == 0 && cache->db_size > 0 && arts_global_rank_count > 1) {
+  if (a->rdzv.txid == 0 && cache->db_size > 0) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Home is the size authority even though the data lives with
      * the owner — answer a size-only CTS directly; the re-request carries a
@@ -367,7 +367,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
     arts_db_buf_release(&buf_h);
     arts_send_db_snapshot_response(requester, a->db_guid, cur_v, edt_guid, slot,
                                    /*kind=*/0, cache->db_size, &a->rdzv, NULL);
-  } else if (a->rdzv.txid == 0 && arts_global_rank_count > 1) {
+  } else if (a->rdzv.txid == 0) {
     /* Data must move but no landing was forwarded (a first-touch request that
      * slipped past home's CTS gate can only mean home learned the size after
      * forwarding — defensive).  Size-only CTS; the re-request (via home)

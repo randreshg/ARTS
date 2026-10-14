@@ -33,8 +33,8 @@ extern "C" {
  *
  * The protocol-specific cache/db ownership layout lives in the per-protocol
  * coherence/<proto>/types.h, selected by arts/coherence/types.h.  Anything
- * here is identical across all protocols: the buffer, the RO snapshot
- * reorder-buffer node, the shared defines/typedefs, and container_of.
+ * here is identical across all protocols: the buffer, the parked-read node,
+ * the shared defines/typedefs, and container_of.
  *
  * @note Internal header.  User code should include @c arts.h.
  */
@@ -275,31 +275,23 @@ struct arts_db_buffer_s {
 
 struct arts_db_cache_s;
 
-/* Snapshot reorder-buffer node, three parkers share it:
- *   1. requester-side case 3 of arts_handler_db_snapshot_response (a NO_DATA
- *      reply arrived with version > buf->version — transport reordered the
- *      with-data reply behind it);
- *   2. a home-local RO acquire that found no buffer installed yet (cross-rank
- *      create installs home metadata only; the creator's first PUBLISH is
- *      the publication point that installs the first buffer);
- *   3. a home-side remote GET_DATA serve deferred for the same reason —
- *      `serve` is non-NULL and the drain re-issues the serve with the
- *      original requester/rdzv instead of resuming a local EDT.
- * Drained in full by the next install via a single atomic_exchange on the
- * Treiber stack — monotonic version guarantees every parked node's
- * target_version <= the just-installed version.  RO path; present in every
- * protocol. */
-struct arts_db_snapshot_waiter_s {
+/* A parked read, on one of two stacks:
+ *   1. a VAL requester's combining window (cache.ro_combine), resumed by the
+ *      response that ends the window it rides;
+ *   2. a write-through home's publication waiters
+ *      (cache.publication_waiters): a home-local RO acquire, or a remote read
+ *      whose serve was deferred — `serve` is non-NULL — because the home's
+ *      copy was not yet published; drained whole once it is
+ *      (arts_db_drain_publication_waiters). */
+struct arts_db_read_waiter_s {
   arts_lf_link_t link; /* FIRST — required by arts_lf_stack_t */
   arts_guid_t edt_guid;
   unsigned int slot;
-  uint64_t target_version;
   /* Deferred-serve arm: NULL = local waiter (drain resumes the parked EDT;
    * the resume re-derives dep->ptr from the installed buffer).  Non-NULL =
    * deferred remote serve; the drain invokes serve(cache, w) BEFORE freeing
    * w, and requester/rdzv carry the original request. */
-  void (*serve)(struct arts_db_cache_s *cache,
-                struct arts_db_snapshot_waiter_s *w);
+  void (*serve)(struct arts_db_cache_s *cache, struct arts_db_read_waiter_s *w);
   unsigned int requester;
   struct arts_rdzv_landing_s rdzv;
 };

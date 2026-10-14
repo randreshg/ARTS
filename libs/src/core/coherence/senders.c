@@ -233,7 +233,7 @@ void arts_send_db_create_return(unsigned int creator_rank,
 /* The versioned-snapshot read path: VAL only.  INV's readers hold
  * durable copies and fetch with INV_REQUEST instead. */
 #if defined(ARTS_PROTOCOL_VAL)
-/* One request on the wire per parked reader (or per combining window). */
+/* One request on the wire per combining window. */
 void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
                                    arts_guid_t edt_guid, uint32_t slot) {
   INCREMENT_NUM_SNAPSHOT_REQUEST_BY(1);
@@ -242,11 +242,10 @@ void arts_send_db_snapshot_request(struct arts_db_cache_s *cache,
   /* Advertise a fresh snapshot landing sized by the exact size when known,
    * else by the GUID's szhint bound — so even a first touch usually carries
    * a landing and the size-only CTS round survives only as the sentinel
-   * fallback (whose handler re-enters this sender).  The rendezvous plane
-   * exists only when a peer could PUT (multi-rank run). */
+   * fallback (whose handler re-enters this sender). */
   struct arts_rdzv_landing_s rdzv = {0, 0, 0, 0};
   uint64_t fetch_size = arts_db_first_fetch_size(cache);
-  if (fetch_size > 0 && arts_global_rank_count > 1) {
+  if (fetch_size > 0) {
     (void)arts_db_buf_landing_alloc(cache, fetch_size, &rdzv);
   }
   struct arts_msg_snapshot_request_packet_s p;
@@ -301,17 +300,15 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
   p.rdzv_cookie = (landing != NULL) ? landing->cookie : 0;
   if (requester_rank == arts_global_rank_id) {
     /* Self-serve (a write-back REDIRECT round-trip can land back on the
-     * requester rank): no RDMA — the bytes ride inline through the args while
-     * src_h pins the buffer; the handler returns our own unused landing
-     * (cookie), or adopts it as storage when the reply says nothing is held.
-     * Mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop. */
+     * requester rank): the version served is this rank's own copy's, so no
+     * bytes move; the handler returns our own unused landing (cookie), or
+     * adopts it as storage when the reply says nothing is held.  Mirror the
+     * wire RX dispatcher's Cat-C lookup-acquire-or-drop. */
     struct arts_db_snapshot_response_args_s args = {
         .edt_guid = edt_guid,
         .slot = slot,
         .data_present = kind,
         .version = version,
-        .data = (kind == 1 && src != NULL) ? src->data : NULL,
-        .data_size = (kind == 1 && src != NULL) ? db_size : 0,
         .db_size = db_size,
         .rdzv_txid = 0,
         .rdzv_cookie = (landing != NULL) ? landing->cookie : 0,

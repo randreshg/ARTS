@@ -16,23 +16,6 @@ class Family(StrEnum):
     VAL = "VAL"
 
 
-# Selections recorded before the combining promotion name the comb-suffixed
-# entries; those keys now denote what is the VAL family's plain configuration.
-# Plain val keys recorded before the promotion meant the non-combining build
-# and are NOT remapped — silently rewriting them would claim a measurement
-# that was never made.  (The nocomb ablation twins are build variants, not
-# plane entries.)
-LEGACY_ENTRY_ALIASES = {
-    "arts_val_wt_comb": "arts_val_wt",
-    "arts_val_wb_comb": "arts_val_wb",
-    "arts_val_wt_purge_comb": "arts_val_wt_purge",
-}
-
-
-def modern_entry_key(key: str) -> str:
-    return LEGACY_ENTRY_ALIASES.get(key, key)
-
-
 class Release(StrEnum):
     PURGE = "PURGE"
     RETAIN = "RETAIN"
@@ -194,7 +177,6 @@ class Plane(BaseModel):
         raise KeyError(f"{family}/{release}/{write}")
 
     def entry(self, key: str) -> SelectionEntry:
-        key = modern_entry_key(key)
         for e in self.entries:
             if e.key == key:
                 return e
@@ -212,12 +194,11 @@ class Plane(BaseModel):
         does not have is refused rather than dropped — a list that silently
         shrank would leave a study running less than it states.  `owner` is
         what named them, for the message."""
-        wanted = [modern_entry_key(k) for k in named]
-        unknown = [k for k in wanted if k not in self.entry_keys]
+        unknown = [k for k in named if k not in self.entry_keys]
         if unknown:
             raise ValueError(
                 f"{owner} names unknown plane entries: {', '.join(unknown)}")
-        return [k for k in self.entry_keys if k in wanted]
+        return [k for k in self.entry_keys if k in named]
 
     @property
     def standard_entries(self) -> list[str]:

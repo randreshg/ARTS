@@ -341,7 +341,6 @@ nothing; the shape does:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb_nocomb | 7.33 | 3.94 | 2.05 | 1.14 |
 | val_wb | 7.29 | 3.90 | 1.98 | 1.13 |
 | inv_wb | 7.33 | 3.97 | 2.06 | 1.27 |
 | excl_retain | 7.31 | 3.97 | 2.03 | 1.24 |
@@ -356,13 +355,13 @@ Every arm strong-scales and the arms are indistinguishable: the block
 placement confines halo traffic to tile-block edges, each halo buffer has one
 producer and one consumer per round, and **in the steady state** no hot
 globally-shared RO DB exists — so VAL has nothing to re-validate en
-masse (combining changes nothing) and INV/EXCL pay only boundary-edge
-rounds. This is the coherence-friendly pole of the application set, the
-structural opposite of the one-hot-DB fan-in programs. Setup is the one
-exception, and it is one-time: `forkSpmdEdts_Cart2D` hands *both* of its two
-rank-0-homed blocks — the runtime's argv block and `globalParamH` — `RO` to
-every one of the `NR` `initEdt`s, so a per-arm difference at setup is a real
-`NR`-way RO fan-in on two blocks and should not be read as noise.
+masse and INV/EXCL pay only boundary-edge rounds. This is the
+coherence-friendly pole of the application set, the structural opposite of the
+one-hot-DB fan-in programs. Setup is the one exception, and it is one-time:
+`forkSpmdEdts_Cart2D` hands *both* of its two rank-0-homed blocks — the
+runtime's argv block and `globalParamH` — `RO` to every one of the `NR`
+`initEdt`s, so a per-arm difference at setup is a real `NR`-way RO fan-in on
+two blocks and should not be read as noise.
 
 The scaling verdict is measured to 8 ranks only; the 16- and 32-node cells
 are what test it. The term to watch there is the node-count-invariant setup

@@ -82,7 +82,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     (void)arts_db_buf_ensure(cache, cache->db_size);
     /* The home's installed buffer is the canonical copy — serve it.  Before
      * the creator's first publish there is nothing to serve, so hold on the
-     * snapshot reorder buffer and let the install's drain resume us. */
+     * publication waiters and let the install's drain resume us. */
     if (cache->db_size != 0) {
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
       struct arts_db_buffer_s *pb =
@@ -93,15 +93,14 @@ void arts_handler_db_acquire(void *item, void *args) {
           (pb != NULL && __atomic_load_n(&pb->version, __ATOMIC_ACQUIRE) > 0);
       arts_db_buf_release(&buf_h);
       if (!published) {
-        struct arts_db_snapshot_waiter_s *w =
-            (struct arts_db_snapshot_waiter_s *)arts_malloc(sizeof(*w));
+        struct arts_db_read_waiter_s *w =
+            (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
         w->edt_guid = edt->guid;
         w->slot = slot;
-        w->target_version = 0;
         w->serve = NULL; /* local waiter: the drain resumes the EDT */
         w->requester = arts_global_rank_id;
         w->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-        arts_lf_stack_push(&cache->pending_snapshot, &w->link);
+        arts_lf_stack_push(&cache->publication_waiters, &w->link);
         /* Race recovery: a publication may have landed between the read and
          * the push — drain (our own node included) so nobody parks forever. */
         buf_h = arts_db_buf_acquire(cache);
@@ -110,7 +109,7 @@ void arts_handler_db_acquire(void *item, void *args) {
                      __atomic_load_n(&pb->version, __ATOMIC_ACQUIRE) > 0);
         arts_db_buf_release(&buf_h);
         if (published) {
-          arts_db_drain_pending_snapshot(cache);
+          arts_db_drain_publication_waiters(cache);
         }
         return;
       }
@@ -259,11 +258,11 @@ uint64_t arts_db_grant_serve_version(struct arts_db_s *db) {
  * OOO_DB_DESTROY Cat-B body.  Fan-out CACHE_DESTROY to every rank in
  * cached_ranks, then detach the route-table slot. */
 
-/* Deferred pre-publication read serve: re-issued by the pending_snapshot
+/* Deferred pre-publication read serve: re-issued by the publication waiters'
  * drain once the first install lands.  Same 3-step as the direct serve
  * (roster bit before the send). */
-static void inv_pending_ro_serve(struct arts_db_cache_s *cache,
-                                 struct arts_db_snapshot_waiter_s *w) {
+static void home_serve_deferred_read(struct arts_db_cache_s *cache,
+                                     struct arts_db_read_waiter_s *w) {
   struct arts_db_s *db = (struct arts_db_s *)cache; /* cache is FIRST member */
   (void)arts_rank_bitset_set(&db->roster, w->requester);
   arts_send_db_inv_deliver(w->requester, db, &w->rdzv);
@@ -303,22 +302,21 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
          * the release-published bytes — serving now would hand out
          * never-published state.  Push-then-recheck: a concurrent first
          * install either sees our node in its drain or we drain ourselves. */
-        struct arts_db_snapshot_waiter_s *w =
-            (struct arts_db_snapshot_waiter_s *)arts_malloc(sizeof(*w));
+        struct arts_db_read_waiter_s *w =
+            (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
         w->edt_guid = NULL_GUID;
         w->slot = 0;
-        w->target_version = 0;
-        w->serve = inv_pending_ro_serve;
+        w->serve = home_serve_deferred_read;
         w->requester = a->requester;
         w->rdzv = a->rdzv;
-        arts_lf_stack_push(&cache->pending_snapshot, &w->link);
+        arts_lf_stack_push(&cache->publication_waiters, &w->link);
         buf_h = arts_db_buf_acquire(cache);
         pb = (struct arts_db_buffer_s *)arts_shared_get(buf_h);
         published = (pb != NULL &&
                      __atomic_load_n(&pb->version, __ATOMIC_ACQUIRE) > 0);
         arts_db_buf_release(&buf_h);
         if (published) {
-          arts_db_drain_pending_snapshot(cache);
+          arts_db_drain_publication_waiters(cache);
         }
         return;
       }

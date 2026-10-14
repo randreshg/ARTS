@@ -202,12 +202,12 @@ void arts_handler_db_create(void *item_v, void *args_v) {
    * installs none on any arm — it has no first user to place the payload
    * for, so the first use allocates it.  Either way a read that arrives
    * before the block has been published does NOT resolve to a NULL pointer —
-   * the arm holds it (on the snapshot reorder buffer, until the first publish
-   * drains it), routes it to the rank that does hold the bytes, or, where no
-   * publish is ever coming because nobody took a write hold, materializes the
-   * block's first image on the spot.  What is undefined before the first
-   * publish is the block's CONTENTS (OCR ch2: "value of the created data
-   * block is undefined"), never whether it has storage. */
+   * the arm holds it (among the home's publication waiters, until the first
+   * publish drains them), routes it to the rank that does hold the bytes, or,
+   * where no publish is ever coming because nobody took a write hold,
+   * materializes the block's first image on the spot.  What is undefined before
+   * the first publish is the block's CONTENTS (OCR ch2: "value of the created
+   * data block is undefined"), never whether it has storage. */
   struct arts_db_s *stub = (struct arts_db_s *)arts_malloc_aligned(
       sizeof(struct arts_db_s), ARTS_CACHE_LINE_SIZE);
   memset(stub, 0, sizeof(struct arts_db_s));
@@ -304,23 +304,18 @@ void arts_handler_db_create(void *item_v, void *args_v) {
  * coherence/grant_wt.c; WB's overload lives in
  * coherence/grant_wb.c. */
 
-/* Cat-C pure body (SNAPSHOT_RESPONSE).  The wire dispatcher / self-send shortcut
- * has already looked the home db_s up with a held ref and passes it as item_v
- * (cache is its FIRST member, offset 0, so item_v IS the cache).  No
+/* Cat-C pure body (SNAPSHOT_RESPONSE).  The wire dispatcher / self-send
+ * shortcut has already looked the home db_s up with a held ref and passes it as
+ * item_v (cache is its FIRST member, offset 0, so item_v IS the cache).  No
  * lookup/NULL-check here — the dispatcher's MISS branch resumes nothing and
  * only ends the landing (this 1:1 response resumes a parked EDT; a missing
  * cache means it was torn down).
  *
- * No acquire-time list registration: this 1:1 response resumes the parked EDT
- * (a->edt_guid, a->slot) directly.  Three cases over a monotonic version:
- *   1. a->version <= buf->version : nothing newer to install — resume self
- *      against the live buffer.
- *   2. data + a->version > buf->version : install + drain-all the reorder
- *      buffer + resume self.
- *   3. NO_DATA + a->version > buf->version : the with-data reply was
- *      reordered behind us — push self onto pending_snapshot (a future
- *      case-2 install drains us) + re-check (race recovery).
- * Shared verbatim by WT/WB. */
+ * The response ends the requester's combining window: it resumes the leader
+ * it names (a->edt_guid, a->slot), then the rest of the window's batch.  Bytes
+ * that travel one-sided are installed first (version-conditional); a reply
+ * that moves none names a version this cache already holds, and resumes
+ * against the live buffer.  Shared verbatim by WT/WB. */
 /* Consume an in-flight rendezvous whose receiver-side object is gone: the
  * metadata packet arrived for a destroyed target, so nobody will ever expect
  * the txid — register a discard continuation that returns the landing once
@@ -354,7 +349,7 @@ void arts_db_rdzv_discard_landing(uint64_t txid, uint64_t cookie) {
 /* Rendezvous continuation for a data-bearing SNAPSHOT_RESPONSE: the snapshot
  * payload has fully landed in our advertised landing ("imm seen => landing
  * valid").  Install it without a copy (version-conditional; a stale landing
- * recycles), drain the reorder buffer, and resume the parked EDT.  Fires on
+ * recycles), then resume the parked EDT and its window's batch.  Fires on
  * {packet, write-completion} pairing, either arrival order, on a
  * dispatch-path progress thread. */
 struct snapshot_landed_ctx_s {
@@ -381,11 +376,8 @@ static void snapshot_landed_cb(void *arg) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_buf_install_landed(cache, ctx->version, ctx->landing,
                              ctx->data_size);
-  arts_db_drain_pending_snapshot(cache);
   mark_edt_ready_by_guid(ctx->edt_guid, ctx->slot);
-#ifdef ARTS_RO_COMBINING_LIVE
-  arts_db_ro_combine_on_terminal(cache, true, ctx->version);
-#endif
+  arts_db_ro_combine_on_terminal(cache);
   arts_shared_release(&ctx->db_h);
   arts_free(ctx);
 }
@@ -440,12 +432,8 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
    *     contents — adopt the landing it already allocated, stamped 1 rather
    *     than the 0 that means "nothing";
    *   - any other version is the server's dedup verdict (known_v >= cur_v)
-   *     or a same-rank inline serve: bytes at that version reached this rank
-   *     (the ledger credits a rank only where a serve PUT them or it
-   *     published them itself) — recycle.  Never adopt here: the credited
-   *     install may still be in flight behind this reply (the reorder case
-   *     parked below), and an invented image stamped with its version would
-   *     make that install retreat as stale and stand in for the data. */
+   *     or a same-rank serve: this cache already holds bytes at that version
+   *     (below) — recycle. */
   if (a->rdzv_cookie != 0) {
     struct arts_db_buffer_s *landing =
         (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
@@ -456,63 +444,25 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     }
   }
 
-  arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-  struct arts_db_buffer_s *buf =
-      (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-  uint64_t buf_v = buf ? buf->version : 0;
-  if (buf != NULL) {
+  /* A server credits this rank with a version only where bytes at it reached
+   * this cache: a PUT it served here, installed before the window that asked
+   * for it closed, or a release made here.  The window keeps every later
+   * request behind that install, so a reply that moves no bytes never names a
+   * version above the one installed here. */
+#ifndef NDEBUG
+  {
+    arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
+    struct arts_db_buffer_s *buf =
+        (struct arts_db_buffer_s *)arts_shared_get(buf_h);
+    uint64_t held =
+        buf != NULL ? __atomic_load_n(&buf->version, __ATOMIC_ACQUIRE) : 0u;
     arts_db_buf_release(&buf_h);
+    assert(a->version <= held &&
+           "a reply that moves no bytes named a version this cache lacks");
   }
-
-  if (a->version <= buf_v) {
-    /* Case 1: nothing newer to install — resume self. */
-    mark_edt_ready_by_guid(edt_guid, slot);
-#ifdef ARTS_RO_COMBINING_LIVE
-    arts_db_ro_combine_on_terminal(cache, true, a->version);
 #endif
-    return;
-  }
-  if (a->data_present) {
-    /* Case 2: install (version-conditional publish inside install_buffer;
-     * stale installs retreat) + drain-all + resume self. */
-    arts_db_buf_install(cache, a->version, a->data, a->data_size);
-    arts_db_drain_pending_snapshot(cache);
-    mark_edt_ready_by_guid(edt_guid, slot);
-#ifdef ARTS_RO_COMBINING_LIVE
-    arts_db_ro_combine_on_terminal(cache, true, a->version);
-#endif
-    return;
-  }
-  /* Case 3: NO_DATA arrived ahead of the with-data reply.  Park a
-   * reorder-buffer node; a later case-2 install drains it. */
-#ifdef ARTS_RO_COMBINING_LIVE
-  /* The in-flight batch shares the leader's fate.  Park it on the reorder
-   * buffer BEFORE the leader's own park so the recovery recheck below covers
-   * the whole batch. */
-  arts_db_ro_combine_on_terminal(cache, false, a->version);
-#endif
-  struct arts_db_snapshot_waiter_s *w =
-      (struct arts_db_snapshot_waiter_s *)arts_malloc(sizeof(*w));
-  w->edt_guid = edt_guid;
-  w->slot = slot;
-  w->target_version = a->version;
-  w->serve = NULL; /* local waiter: drain resumes the parked EDT */
-  arts_lf_stack_push(&cache->pending_snapshot, &w->link);
-  /* Race recovery: a concurrent case-2 install may have published the buffer
-   * between our version read and the push.  If so, drain (our own node
-   * included) so we don't park forever.  The atomic_exchange drain is the
-   * single-actor primitive — a concurrent installer's drain and ours cannot
-   * both claim the same node. */
-  arts_shared_ptr_t rch = arts_db_buf_acquire(cache);
-  struct arts_db_buffer_s *rbuf =
-      (struct arts_db_buffer_s *)arts_shared_get(rch);
-  uint64_t rv = rbuf ? rbuf->version : 0;
-  if (rbuf != NULL) {
-    arts_db_buf_release(&rch);
-  }
-  if (rv >= a->version) {
-    arts_db_drain_pending_snapshot(cache);
-  }
+  mark_edt_ready_by_guid(edt_guid, slot);
+  arts_db_ro_combine_on_terminal(cache);
 }
 #endif /* the versioned-snapshot read path */
 

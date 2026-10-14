@@ -51,21 +51,18 @@ struct arts_db_cache_s;
  * reply, or sem-post — see each handler's contract).  These args structs are
  * stack-built by the dispatcher from the decoded wire packet and passed by
  * pointer to the body; unlike the OoO Cat-B args they are never copied into a
- * heap payload, so a trailing data pointer (snapshot_response) stays valid for
- * the handler's duration (it points into the live receive buffer). */
+ * heap payload. */
 
 /* arts_handler_db_snapshot_response body args.  data_present mirrors the wire
- * packet's tri-state (0 = no data moved, 1 = data, 2 = size-only CTS).  For
- * data_present == 1 the payload either landed one-sided (rdzv_txid != 0; the
- * landing is named by rdzv_cookie and install pairs by txid) or — same-rank
- * self-serve only — rides inline via `data`/`data_size`. */
+ * packet's tri-state (0 = no data moved, 1 = data, 2 = size-only CTS).  A
+ * data_present == 1 reply that moved bytes landed them one-sided
+ * (rdzv_txid != 0; the landing is named by rdzv_cookie and install pairs by
+ * txid); a same-rank serve moves none. */
 struct arts_db_snapshot_response_args_s {
   arts_guid_t edt_guid;
   uint32_t slot;
   uint32_t data_present;
   uint64_t version;
-  const void *data;
-  uint64_t data_size;
   uint64_t db_size;     /* CTS: allocation size; data: landed byte count */
   uint64_t rdzv_txid;   /* != 0: payload PUT into our landing; pair by txid */
   uint64_t rdzv_cookie; /* our landing handle, echoed back */

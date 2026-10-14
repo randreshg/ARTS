@@ -370,7 +370,9 @@ struct arts_db_cache_s {
   arts_atomic_shared_ptr_t buffer;
   arts_lockfree_pool_t buf_freelist;
   arts_lf_stack_t buf_retired;
-  arts_lf_stack_t pending_snapshot;
+#ifdef ARTS_WRITE_POLICY_WT
+  arts_lf_stack_t publication_waiters;
+#endif
   arts_lf_stack_t pending_rw;
   struct arts_db_inv_waiter_pool_s waiters;
   unsigned int grant_req_in_flight;
@@ -400,8 +402,8 @@ struct arts_db_cache_s {
    * (arts_db_create_claims_stub); nothing else writes it after init. */
   uint8_t init_kind;
 
-  /* WT publish write-combining — the write-side twin of the RO combining
-   * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
+  /* Publish write-combining — the write-side twin of VAL's RO combining
+   * window.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
    * claim and join are each one CAS); pub_waiters holds heap {sem, version}
    * nodes for every releaser blocked until a covering publish is ACKed
    * (heap for the same reason the publish rendezvous is — a shutdown-
@@ -455,7 +457,9 @@ struct arts_db_cache_s {
    * another popper may still be reading, so they wait here for the storage
    * release, which frees them with the list. */
   arts_lf_stack_t buf_retired;
-  arts_lf_stack_t pending_snapshot; /* pre-publication read holds */
+#ifdef ARTS_WRITE_POLICY_WT
+  arts_lf_stack_t publication_waiters; /* pre-publication read holds */
+#endif
   /* RW waiters parked on this rank (Treiber, order-free drain-all): every
    * waiter is woken regardless of order, so a LIFO stack suffices. */
   arts_lf_stack_t pending_rw;
@@ -498,8 +502,8 @@ struct arts_db_cache_s {
    * (arts_db_create_claims_stub); nothing else writes it after init. */
   uint8_t init_kind;
 
-  /* WT publish write-combining — the write-side twin of the RO combining
-   * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
+  /* Publish write-combining — the write-side twin of VAL's RO combining
+   * window.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
    * claim and join are each one CAS); pub_waiters holds heap {sem, version}
    * nodes for every releaser blocked until a covering publish is ACKed
    * (heap for the same reason the publish rendezvous is — a shutdown-

@@ -320,17 +320,14 @@ and out of a hint's reach; the second-order map that would spread the `L` level
 DBs (home level `l` at rank `l mod P` and pin that level's spine task there) is
 legal under R1 and was judged not worth the churn.
 
-Measured (ferrari trend sweep, 15w+1p, `['5','4096']`, val_wb_nocomb / best-of-arm
-range, **before** the distributed initialization): base 111 s → 348 / 330 / 350 s
-at 2/4/8 n — the whole-box exchange saturates immediately and flattens; hinted
-112 s → 160 / 175 / 184 s (range across the four arms ≤ 8 %, `val_wb`
-consistently best).  Those numbers were dominated by the serial preamble that no
-longer exists, so **the hinted-vs-base materiality gate (R3) has to be re-run**;
-the only base-vs-hinted cell in `logs/exp` is 1 node, where hinted is 12 % slower
+The ferrari trend sweep (15w+1p, `['5','4096']`) predates the distributed
+initialization and was dominated by the serial preamble that no longer exists,
+so **the hinted-vs-base materiality gate (R3) has to be re-run**; the only
+base-vs-hinted cell in `logs/exp` is 1 node, where hinted is 12 % slower
 because at one rank every hint resolves to rank 0 and only the query cost
 remains.  What the layer is expected to change is unaltered in kind: the
-exchange's neighbour reads and the inter-level transfer edges become rank-local,
-and the level datablock stops migrating per phase.
+exchange's neighbour reads and the inter-level transfer edges become
+rank-local, and the level datablock stops migrating per phase.
 
 ## Sizing
 

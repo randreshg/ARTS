@@ -143,9 +143,9 @@ into its parent's `sumCountsTask`. `sumCountsTask` waits on all `nlegal`
 `childDone` events (RO), sums, destroys the children's count DBs and the
 node's board, and forwards the total via `returnCount`. `pmovesDb` is therefore
 the single dominant fan-in/contention point — small, hot, globally shared,
-read-only — the structural reason a per-DB RO-request-combining mitigation has an
-outsized effect on this app specifically. No placement hint can replicate a
-DB, so that cost belongs to the coherence family, not to the hint layer.
+read-only — the structural reason this app leans on VAL's per-DB read
+combining. No placement hint can replicate a DB, so that cost belongs to the
+coherence family, not to the hint layer.
 
 ## Flow
 
@@ -177,8 +177,7 @@ per tree edge, 21.35 M of them at the calibrated size; the same is true of
 `pmovesDb` (homed wherever `launch_round` ran, effectively rank 0) against a
 tree scattered across every rank. Locality the puzzle's tree structure would
 allow (keeping a subtree together) is never expressed in base — why the app is
-a strong RO-fan-in coherence stress case, and why read combining measurably
-helps it.
+a strong RO-fan-in coherence stress case.
 
 ## Placement (hinted)
 
@@ -243,27 +242,25 @@ nothing per edge.
 Measured on ferrari, 15w+1p × 1/2/4/8 nodes, at `7 1 7` — a reduced-geometry
 trend probe, NOT the calibration, and taken with the fixed scatter depth of 3.
 
-hinted, e2e seconds — VAL alone anti-scales (the whole tree re-validates
-the one move-table DB homed at rank 0 on every acquire, the family's
-defining read cost), request combining erases exactly that, and INV/EXCL
-are structurally immune (covering read / retained copy):
+hinted, e2e seconds — the whole tree re-validates the one move-table DB
+homed at rank 0 on every acquire, the VAL family's defining read cost, which
+request combining keeps to one request per rank at a time; INV/EXCL are
+structurally immune (covering read / retained copy):
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb_nocomb | 0.4 | 4.9 | 6.7 | 9.4 |
 | val_wb | 0.4 | 0.5 | 0.3 | 0.1 |
 | inv_wb | 0.5 | 0.3 | 0.2 | 0.1 |
 | excl_retain | 0.6 | 0.3 | 0.2 | 0.1 |
 
-base anti-scales on EVERY arm (2n: val_nocomb 24.5 / val 30.3 / inv 73.4 /
-excl 39.1) — each tree node's board is a fresh remote datablock, a cold-read
-storm no coherence family can serve locally, and INV pays its directory on
-top. Base past 2n is unmeasured here; the 2n figure alone bounds the cell.
-At the calibrated size the base multinode cells are therefore
-reported as censored points (TIMEOUT, or the OOM kill an unbounded in-flight
-backlog produces under VAL), never shrunk to fit. These numbers predate the
-derived scatter depth, so hinted must be re-trended rather than compared
-against them point by point.
+base anti-scales on EVERY arm (2n: val 30.3 / inv 73.4 / excl 39.1) — each tree
+node's board is a fresh remote datablock, a cold-read storm no coherence family
+can serve locally, and INV pays its directory on top. Base past 2n is
+unmeasured here; the 2n figure alone bounds the cell. At the calibrated size
+the base multinode cells are therefore reported as censored points (TIMEOUT, or
+the OOM kill an unbounded in-flight backlog produces under VAL), never shrunk
+to fit. These numbers predate the derived scatter depth, so hinted must be
+re-trended rather than compared against them point by point.
 
 ## Sizing
 

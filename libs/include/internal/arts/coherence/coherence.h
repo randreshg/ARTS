@@ -30,7 +30,7 @@ extern "C" {
 #include <stdint.h>
 
 /* The DB coherence layout structs (arts_db_buffer_s, arts_db_rw_waiter_s,
- * arts_db_snapshot_waiter_s, arts_home_grantreq_queue_s + node,
+ * arts_db_read_waiter_s, arts_home_grantreq_queue_s + node,
  * arts_db_cache_s, arts_db_s) and the arts_db_atomic_uint_t typedef live in
  * coherence_types.h (pulled in via runtime_types.h), because struct arts_db_s
  * embeds arts_db_cache_s by value as its first member and inlines the
@@ -270,8 +270,9 @@ void arts_db_debug_quiescence_check(void);
  * installed).  Used by the per-protocol acquire bodies. */
 void *arts_db_acquire_local(struct arts_db_cache_s *cache);
 
-/* Fire SNAPSHOT_REQUEST (edt_guid + slot) to home and PARK.  Used by the
- * VAL acquire body (not EXCL, which uses EXCL_REQUEST). */
+/* PARK the (edt_guid, slot) read on the cache's combining window, which
+ * sends at most one SNAPSHOT_REQUEST per cache at a time.  Used by the VAL
+ * acquire bodies. */
 #if defined(ARTS_PROTOCOL_VAL)
 arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
@@ -310,32 +311,20 @@ bool arts_db_resume_parked(arts_guid_t edt_guid, unsigned int slot,
 void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot);
 #endif
 
-#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-/* Drain the snapshot reorder buffer in one atomic_exchange (monotonic version
- * guarantees a full drain is always correct).  Called from the install paths
- * (GRANT / GRANT_RESPONSE / SNAPSHOT_RESPONSE case 2). */
-void arts_db_drain_pending_snapshot(struct arts_db_cache_s *cache);
+#if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
+    defined(ARTS_WRITE_POLICY_WT)
+/* Wake every read parked on a write-through home before the block's first
+ * publication (see the definition).  Called at the publication edges and at a
+ * grant's install. */
+void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache);
 #endif
 
-/* RO request combining rides the validation family's snapshot pull path and
- * is part of that family's definition (every other message class suppresses
- * duplicates structurally — parked acquires, batched invalidation rounds,
- * publish flights); the exclusion and invalidation families' caches carry no
- * combining window, so it is inert for them regardless of the knob.  The
- * disable knob exists for the ablation build only.  Every combining site
- * gates on this derived macro, never on the raw option. */
-#if !defined(ARTS_NO_RO_COMBINING) && defined(ARTS_PROTOCOL_VAL)
-#define ARTS_RO_COMBINING_LIVE 1
-#endif
-
-#ifdef ARTS_RO_COMBINING_LIVE
+#ifdef ARTS_PROTOCOL_VAL
 /* Response-terminal hook of the remote-read combining window: resume the
- * in-flight batch against the now-current buffer (buffer_live), or park it on
- * the reorder buffer with target `version` (reorder case), then re-arm the
- * window with whatever accumulated meanwhile or release it.  Call at every
- * point the response path resumes the on-wire requester. */
-void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache,
-                                    bool buffer_live, uint64_t version);
+ * in-flight batch against the now-current buffer, then re-arm the window with
+ * whatever accumulated meanwhile or release it.  Call at every point the
+ * response path resumes the on-wire requester. */
+void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache);
 
 /* Ownership-arrival hook of the combining window: resume every read waiter
  * still accumulating (not the in-flight group) against the just-transferred

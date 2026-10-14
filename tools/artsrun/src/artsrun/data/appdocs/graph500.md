@@ -158,8 +158,8 @@ This two-hop row-then-column pattern is O(`W·(R+C)`) fan-out per level, not
 the O(`W²`) of a full all-to-all. **The row broadcast is this row's coherence
 exhibit**: one frontier DB per (worker, level) is acquired RO by `C` searches
 that, under the placement below, span every rank — several of them on the same
-remote rank concurrently, which is exactly the requester-side combining window
-the `ocr_val_*_nocomb` ablation twins remove. `applyEdt` folds its column's `R`
+remote rank concurrently, which VAL's requester-side combining window serves
+with one request per rank at a time. `applyEdt` folds its column's `R`
 inputs into a new frontier (`toRunDBK`) and either spawns level `L+1`'s
 distribute/search/apply triple (already pre-created — just wires slots) or,
 once its frontier is empty, wires its per-worker result summary and

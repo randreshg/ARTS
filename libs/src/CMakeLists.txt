@@ -110,30 +110,19 @@ function(arts_apply_protocol target arm write_policy release_policy)
     # pointer or a bool return.  Compilers that still default this to a warning
     # let it accumulate unseen; the ones that do not simply refuse to build.
     target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:C>:-Werror=implicit-function-declaration>)
-    # An optional 5th argument pins read combining OFF for this target (the
-    # ablation twins); without it the target follows the directory-wide
-    # disable option (default off, so combining is compiled in).  Targets that
-    # name it are self-describing: nothing outside their own definition
-    # decides what they compile, which is what lets several configurations
-    # coexist in one build.
-    if(ARGC GREATER 4)
-        set(nocomb "${ARGV4}")
-    else()
-        set(nocomb "${ARTS_NO_RO_COMBINING}")
-    endif()
-    if(nocomb)
-        target_compile_definitions(${target} PRIVATE ARTS_NO_RO_COMBINING=1)
-    endif()
     target_compile_definitions(${target} PRIVATE ARTS_PROTOCOL_${arm}=1)
     # The CXL definitions travel with the protocol ones, by the same route:
     # the runtime is assembled from object libraries that each receive their
     # own definitions, and two TUs of one binary that disagree about
-    # ARTS_USE_CXL disagree about a packet layout.  An optional 6th argument
+    # ARTS_USE_CXL disagree about a packet layout.  An optional 5th argument
     # names this target's residency; OFF means no CXL store for this target,
     # and no argument means "whatever this tree's own library uses".  A
-    # variant always names one, so it can never inherit the tree's.
-    if(ARGC GREATER 5)
-        set(cxl_residency "${ARGV5}")
+    # variant always names one, so it can never inherit the tree's.  Targets
+    # that name it are self-describing: nothing outside their own definition
+    # decides what they compile, which is what lets several configurations
+    # coexist in one build.
+    if(ARGC GREATER 4)
+        set(cxl_residency "${ARGV4}")
     else()
         set(cxl_residency "${ARTS_CXL_TREE_RESIDENCY}")
     endif()
@@ -588,15 +577,15 @@ if(ARTS_BUILD_BENCHMARKS)
         arts_apply_protocol(${target} ${cell})
     endfunction()
 
-    function(arts_variant suffix arm write_policy release_policy nocomb)
-        # Optional 6th argument: the residency this variant's store uses.  A
+    function(arts_variant suffix arm write_policy release_policy)
+        # Optional 5th argument: the residency this variant's store uses.  A
         # variant that names one compiles the cxl module; every other variant
         # passes OFF and never sees it -- including in a CXL tree,
         # where the tree's own residency must not leak into wrf_flush or any
         # other arm.  (ARGC counts the declared parameters too.)
         set(cxl_residency "OFF")
-        if(ARGC GREATER 5)
-            set(cxl_residency "${ARGV5}")
+        if(ARGC GREATER 4)
+            set(cxl_residency "${ARGV4}")
         endif()
         # Gather all protocol-independent sources (absolute paths) from the
         # object libs, dropping any coherence MODEL TU (path contains
@@ -661,7 +650,7 @@ if(ARTS_BUILD_BENCHMARKS)
         target_link_libraries(arts_static_${suffix} PRIVATE arts::libfabric)
         set_property(GLOBAL APPEND PROPERTY ARTS_VARIANTS ${suffix})
         set_property(GLOBAL PROPERTY ARTS_VARIANT_CELL_${suffix}
-                     "${arm}" "${write_policy}" "${release_policy}" "${nocomb}"
+                     "${arm}" "${write_policy}" "${release_policy}"
                      "${cxl_residency}")
         arts_apply_variant_protocol(arts_static_${suffix} ${suffix})
         if(NOT cxl_residency STREQUAL "OFF")
@@ -672,32 +661,24 @@ if(ARTS_BUILD_BENCHMARKS)
     # Suffix = <memory model>_<family>_<live second axis>; the second argument
     # is the protocol ARM (the TU family): VAL/INV/EXCL live under the OCR
     # model.  The dead axis sits at its required value (WB for EXCL, RETAIN
-    # for INV/VAL).  The last argument DISABLES read combining: OFF for every
-    # plane configuration (combining is part of the validation family's
-    # definition — every other message class already suppresses duplicates
-    # structurally), ON only for the *_nocomb ablation twins that measure what
-    # the combining window buys.  FLUSH is the DB-WRF model's one protocol and
-    # carries no axis token.
-    arts_variant(ocr_val_wt        VAL     WT RETAIN OFF)
-    arts_variant(ocr_val_wb        VAL     WB RETAIN OFF)
-    arts_variant(ocr_val_wt_purge  VAL     WT PURGE  OFF)
-    arts_variant(ocr_val_wt_nocomb VAL     WT RETAIN ON)
-    arts_variant(ocr_val_wb_nocomb VAL     WB RETAIN ON)
-    arts_variant(ocr_val_wt_purge_nocomb VAL WT PURGE ON)
-    arts_variant(ocr_excl_purge    EXCL    WB PURGE  OFF)
-    arts_variant(ocr_excl_retain   EXCL    WB RETAIN OFF)
-    arts_variant(ocr_inv_wt        INV     WT RETAIN OFF)
-    arts_variant(ocr_inv_wb        INV     WB RETAIN OFF)
-    arts_variant(ocr_inv_wt_purge  INV     WT PURGE  OFF)
-    arts_variant(wrf_flush         FLUSH   WB RETAIN OFF)
+    # for INV/VAL).  FLUSH is the DB-WRF model's one protocol and carries no
+    # axis token.
+    arts_variant(ocr_val_wt        VAL     WT RETAIN)
+    arts_variant(ocr_val_wb        VAL     WB RETAIN)
+    arts_variant(ocr_val_wt_purge  VAL     WT PURGE)
+    arts_variant(ocr_excl_purge    EXCL    WB PURGE)
+    arts_variant(ocr_excl_retain   EXCL    WB RETAIN)
+    arts_variant(ocr_inv_wt        INV     WT RETAIN)
+    arts_variant(ocr_inv_wb        INV     WB RETAIN)
+    arts_variant(ocr_inv_wt_purge  INV     WT PURGE)
+    arts_variant(wrf_flush         FLUSH   WB RETAIN)
 
     # The two CXL entries of the EXCL x PURGE x WB cell: one variable changes
     # against ocr_excl_purge -- where a block's bytes rest -- so arm, write
-    # policy, release policy and combining are shared with it.  Always built:
-    # the library they link is the vendored fake unless ARTS_CXL_REAL names
-    # the device's.
-    arts_variant(ocr_excl_purge_cxl_staged EXCL WB PURGE OFF STAGED)
-    arts_variant(ocr_excl_purge_cxl_direct EXCL WB PURGE OFF DIRECT)
+    # policy and release policy are shared with it.  Always built: the library
+    # they link is the vendored fake unless ARTS_CXL_REAL names the device's.
+    arts_variant(ocr_excl_purge_cxl_staged EXCL WB PURGE STAGED)
+    arts_variant(ocr_excl_purge_cxl_direct EXCL WB PURGE DIRECT)
 endif()
 
 # Link mimalloc-static when selected.  The OBJECT library arts_utils needs

@@ -347,9 +347,8 @@ serving load, but clustered).
 
 Earlier measured effect of the *previous* map (creator-pinned chain, low-index
 handles) at 2 nodes, `-s large -g 192 -l 65536`: inv_wb compute 28.4→4.66 s
-(6.1×), val_wb_nocomb 50.0→37.6 s (1.33×) — compute-phase timer, different
-arguments, and superseded by the map above. It is not evidence for the
-current layer.
+(6.1×) — compute-phase timer, different arguments, and superseded by the map
+above. It is not evidence for the current layer.
 
 ## Sizing (measured)
 
@@ -416,30 +415,22 @@ every cell:
 
 | arm | 1n | 2n | 4n | 8n |
 |---|---|---|---|---|
-| val_wb_nocomb | 3.0 (1.1) | 349.7 (186.0) | 360.2 (199.1) | 398.7 (238.4) |
 | val_wb | 3.0 (1.1) | 172.6 (26.7) | 176.8 (33.1) | 205.5 (45.0) |
 | inv_wb | 4.0 (1.3) | 87.2 (18.8) | 132.5 (26.0) | 169.3 (32.9) |
 | excl_retain | 5.8 (1.8) | 103.4 (26.9) | 136.8 (31.6) | 171.5 (39.0) |
 
-base val_wb_nocomb: 376.7 (229.7) / 390.0 (241.4) / 420.7 (274.6) at 2/4/8n.
-Against the old map the hinted layer won 1.15-1.24× on the app's **compute
-timer** but only 1.06-1.08× on **[E2E]**, which is what the campaign votes
-on — a single-digit-percent e2e gain, i.e. below the materiality threshold
-that retired other hinted rows. That is precisely why the map was rebuilt;
-the new map's verdict is `calibration pending` (base vs hinted, calibrated
+The current map's verdict is `calibration pending` (base vs hinted, calibrated
 argv, ≥2 geometries, all three families, judged on [E2E], with the app's
 compute timer recorded so the init/compute split is visible).
 
 Init is the majority of every multinode cell at this older `-l`: 78.1% /
-80.6% / 77.3% of the 8n val_wb / inv_wb / excl_retain cells, but only 40.2%
-of val_wb_nocomb. At the calibrated `-l 2764800` the compute term grows 9.22×
-against a flat ~135-160 s init, so the share falls to roughly a quarter — and
-the row's arm-separation claim must be stated on both quantities: **7.2× on
-the lookup phase, 2.35× on the measured [E2E]** at the older `-l`. A
-Dane-geometry single node (108w+4p) ran the older instance in 3.9 s (compute
-1.9 s). Every arm is mildly anti-scaling — the wiring plane, not the data,
-sets the wall. Width-ladder evidence (1024/3456/8192/13824 all measured):
-every cell moves within ~7%, the window is never the binder. At the
-calibrated `-l` the `val_*_nocomb` ablation twins are expected to censor at
-every multinode geometry on both profiles — a consequence of the sizing rule
-(the twins are measured, never the sizing reference), not of a mask.
+80.6% / 77.3% of the 8n val_wb / inv_wb / excl_retain cells. At the
+calibrated `-l 2764800` the compute term grows 9.22× against a flat
+~135-160 s init, so the share falls to roughly a quarter — and the row's
+arm-separation claim must be stated on both quantities: at 8n the widest
+pair, val_wb against inv_wb, is **1.37× on the lookup phase, 1.21× on the
+measured [E2E]** at the older `-l`. A Dane-geometry single node (108w+4p) ran
+the older instance in 3.9 s (compute 1.9 s). Every arm is mildly anti-scaling —
+the wiring plane, not the data, sets the wall. Width-ladder evidence
+(1024/3456/8192/13824 all measured): every cell moves within ~7%, the window is
+never the binder.
