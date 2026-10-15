@@ -8,9 +8,9 @@
 ///        idempotent stops, with clean cluster teardown.
 ///
 /// When more than one rank calls arts_shutdown at the same time, each rank's
-/// arts_enter_shutdown_state(true) gates on arts_atomic_cswap(shutdown_state,
-/// 0, 1).  Locally exactly one caller wins and performs broadcast +
-/// stop_workers; concurrently a peer's broadcast may arrive and run
+/// arts_enter_shutdown_state(true) gates on a compare-exchange of
+/// shutdown_state from 0 to 1.  Locally exactly one caller wins and performs
+/// broadcast + stop_workers; concurrently a peer's broadcast may arrive and run
 /// arts_handler_shutdown -> arts_enter_shutdown_state(false), which the same
 /// CAS gate makes idempotent (no rebroadcast, no double stop).  The required
 /// property: with multiple ranks initiating at once, the cluster tears down

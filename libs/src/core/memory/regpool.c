@@ -97,8 +97,8 @@
 
 #include "arts/memory/regpool.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <errno.h> /* mmap failure diagnostics */
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

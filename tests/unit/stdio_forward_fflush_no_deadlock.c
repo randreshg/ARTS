@@ -26,9 +26,9 @@
 #define ARTS_WARN(...) ((void)0)
 #include "../../libs/src/core/transport/stdio_forward.c"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
 #include <signal.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

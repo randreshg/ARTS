@@ -44,10 +44,10 @@
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -119,7 +119,7 @@ static struct arts_db_s *new_db(void) {
 /* What freeing a descriptor does to the buffer plane: the destructor drops
  * the slot's reference, then the storage is released. */
 static void destroy(struct arts_db_s *db) {
-  arts_atomic_shared_store(&db->cache.buffer, NULL);
+  arts_shared_slot_store(&db->cache.buffer, NULL);
   atomic_store(&g_released, 1);
   arts_db_buf_storage_release(&db->cache);
 }

@@ -31,8 +31,8 @@
 
 #include "../test_failure_status.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <sched.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

@@ -50,7 +50,7 @@
 #include "arts/system/print.h"
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/net.h" /* arts_net_drain_outstanding */
-#include "arts/utils/atomics.h"
+#include "arts/utils/stdatomic_compat.h"
 
 /*
  * arts_shutdown — Initiate global shutdown of the ARTS runtime.
@@ -120,7 +120,13 @@ _Noreturn void arts_abort(uint8_t error_code) {
  * stop-workers step.
  */
 void arts_enter_shutdown_state(bool initiator) {
-  if (arts_atomic_cswap(&arts_node_info.shutdown_state, 0U, 1U) != 0U) {
+  /* seq_cst: this CAS and the stop walk's loads of local_spin are one side
+   * of the stop-registration store->load pair; arts_runtime_private_init's
+   * store of local_spin and load of shutdown_state are the other. */
+  unsigned int running = 0U;
+  if (!atomic_compare_exchange_strong_explicit(
+          &arts_node_info.shutdown_state, &running, 1U, memory_order_seq_cst,
+          memory_order_relaxed)) {
     return; /* another thread / handler already started shutdown */
   }
   /* End-to-end marker (rank 0): this CAS is the single idempotent point where
@@ -139,14 +145,16 @@ void arts_enter_shutdown_state(bool initiator) {
     arts_transport_broadcast_shutdown();
     /* Phase A.2: wait (bounded) for those fabric sends to complete so the
      * SHUTDOWN frames leave this node before teardown.  The progress threads
-     * are still running and reap completions; this assists and polls the
-     * outstanding-TX count. */
+     * are still running and dispatch what arrives; the drain only reaps
+     * completions and polls the outstanding-TX count, since a handler it
+     * dispatched could ready an EDT on a thread that owns no deque. */
     arts_net_drain_outstanding(500U /* SHUTDOWN_DRAIN_MS */);
   }
   /* Phase A.3: stop worker threads.  Progress threads remain alive so they
    * can flush any in-flight traffic and deliver any inbound MSG_SHUTDOWN. */
   arts_runtime_stop_workers();
-  __atomic_store_n(&arts_node_info.shutdown_entry_done, 1U, __ATOMIC_RELEASE);
+  atomic_store_explicit(&arts_node_info.shutdown_entry_done, 1U,
+                        memory_order_release);
 }
 
 /*

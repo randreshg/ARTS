@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "arts/cxl/store.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdint.h>
 
 #include "arts.h"
@@ -21,7 +21,9 @@ static unsigned cxl_store_arena_index(void) {
     n = arts_node_info.cxl_arenas->db_arena_count;
   }
   if (n > 1u) {
-    return arts_atomic_fetch_add(&arts_node_info.cxl_db_rr_idx, 1U) % n;
+    return atomic_fetch_add_explicit(&arts_node_info.cxl_db_rr_idx, 1U,
+                                     memory_order_relaxed) %
+           n;
   }
   return 0u;
 }

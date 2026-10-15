@@ -78,6 +78,7 @@ set(TEST_PROGRAMS
     event_channel_fifo
     # --- EDT and DB API ---
     edt_create_basic
+    edt_dep_slot_handoff
     db_null_control
     db_no_acquire_lazy
     db_no_acquire_wb_first_writer
@@ -108,6 +109,7 @@ set(ARTS_REFERENCE_TREE_PROGRAMS
     term_shutdown
     term_abort
     edt_satisfy_out_of_range
+    edt_satisfy_over_count
     term_sigfpe
     term_sigsegv
     config_ports_contract
@@ -433,22 +435,25 @@ function(register_single_node_test test_name)
     )
 endfunction()
 
+# The three local multinode flavours.  A variant name is the cfg's file name in
+# configs/local/test/ (<nodes>n_<workers>w[_<progress>p]); each test's
+# ARTS_CONFIG env points straight at the source cfg (no copy), so ctest runs
+# standalone.
+#   2n_9w_1p — 2 nodes, 9 workers + 1 progress thread per node
+#   4n_4w_1p — 4 nodes, 4 workers + 1 progress thread per node
+#   2n_8w_2p — 2 nodes, 8 workers + 2 progress threads per node
+#              (multiple progress threads break per-peer message FIFO,
+#              exercising concurrent cross-rank handler dispatch)
+set(ARTS_TEST_MULTINODE_VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p
+    CACHE INTERNAL "the multinode variants a test registers unless it names its own" FORCE)
+
 function(register_multinode_test test_name)
     cmake_parse_arguments(ARG "" "TIMEOUT;STATUS" "ARGS;VARIANTS" ${ARGN})
     if(NOT ARG_TIMEOUT)
         set(ARG_TIMEOUT 60)
     endif()
     if(NOT ARG_VARIANTS)
-        # The three local multinode flavours.  A variant name is the cfg's
-        # file name in configs/local/test/ (<nodes>n_<workers>w[_<progress>p]);
-        # each test's ARTS_CONFIG env points straight at the source cfg (no
-        # copy), so ctest runs standalone.
-        #   2n_9w_1p — 2 nodes, 9 workers + 1 progress thread per node
-        #   4n_4w_1p — 4 nodes, 4 workers + 1 progress thread per node
-        #   2n_8w_2p — 2 nodes, 8 workers + 2 progress threads per node
-        #              (multiple progress threads break per-peer message FIFO,
-        #              exercising concurrent cross-rank handler dispatch)
-        set(ARG_VARIANTS 2n_9w_1p 4n_4w_1p 2n_8w_2p)
+        set(ARG_VARIANTS ${ARTS_TEST_MULTINODE_VARIANTS})
     endif()
     if(NOT DEFINED ARG_STATUS)
         set(ARG_STATUS 0)
@@ -520,6 +525,111 @@ function(arts_lsan_test_env)
                  "LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/tests/lsan_suppressions.txt")
 endfunction()
 
+# A ThreadSanitizer tree runs the multinode variants of each audited test of
+# tests/tsan/residue_tests.cmake, in the cells whose arm reaches that test's
+# residue shapes, with the suppressions of those shapes: residue_send.supp when
+# every shape is a send-side copy of the provider (R1, R2, R4), and
+# residue_send_land.supp, which adds its receive-side copies, when a shape is a
+# landing (R3, R5).  An exclusion arm has no residue.  Every other test keeps
+# the provider's frames visible.  The suppressions are appended to the
+# caller's TSAN_OPTIONS, and the launcher's ranks inherit the test's
+# environment.
+#
+# The arm of a cell, and the shapes it can reach: write-back serves a read
+# from the owner (R1); write-through also publishes from a writer's rank (R2)
+# and lands in the home's buffer (R3); FLUSH fetches the home's line (R4) and
+# writes it back in place (R5).
+function(arts_tsan_residue_arm out_arm out_shapes cell)
+    if(cell MATCHES "^(VAL|INV)/WB/RETAIN$")
+        set(${out_arm} WB PARENT_SCOPE)
+        set(${out_shapes} R1 PARENT_SCOPE)
+    elseif(cell MATCHES "^(VAL|INV)/WT/(RETAIN|PURGE)$")
+        set(${out_arm} WT PARENT_SCOPE)
+        set(${out_shapes} R1 R2 R3 PARENT_SCOPE)
+    elseif(cell STREQUAL "FLUSH")
+        set(${out_arm} FLUSH PARENT_SCOPE)
+        set(${out_shapes} R4 R5 PARENT_SCOPE)
+    else()
+        set(${out_arm} "" PARENT_SCOPE)
+        set(${out_shapes} "" PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(arts_tsan_residue test_name)
+    cmake_parse_arguments(ARG "" "" "CELLS;SHAPES;VARIANTS" ${ARGN})
+    if(ARG_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "arts_tsan_residue(${test_name}): unexpected arguments "
+                "'${ARG_UNPARSED_ARGUMENTS}'")
+    endif()
+    if(NOT ARG_CELLS OR NOT ARG_SHAPES)
+        message(FATAL_ERROR "arts_tsan_residue(${test_name}): give its CELLS and SHAPES")
+    endif()
+    foreach(_c IN LISTS ARG_CELLS)
+        arts_tsan_residue_arm(_arm _reachable "${_c}")
+        if(NOT _arm)
+            message(FATAL_ERROR "arts_tsan_residue(${test_name}): '${_c}' is not a cell "
+                    "whose arm has a residue")
+        endif()
+        foreach(_s IN LISTS ARG_SHAPES)
+            if(NOT _s IN_LIST _reachable)
+                message(FATAL_ERROR "arts_tsan_residue(${test_name}): shape '${_s}' cannot "
+                        "occur in ${_c} (its arm reaches ${_reachable})")
+            endif()
+        endforeach()
+    endforeach()
+    if(NOT ARG_VARIANTS)
+        set(ARG_VARIANTS ${ARTS_TEST_MULTINODE_VARIANTS})
+    endif()
+    foreach(_v IN LISTS ARG_VARIANTS)
+        if(NOT _v IN_LIST ARTS_TEST_MULTINODE_VARIANTS)
+            message(FATAL_ERROR "arts_tsan_residue(${test_name}): '${_v}' is not a multinode "
+                    "variant (${ARTS_TEST_MULTINODE_VARIANTS})")
+        endif()
+    endforeach()
+    list(JOIN ARG_CELLS "," _cells)
+    list(JOIN ARG_SHAPES "," _shapes)
+    list(JOIN ARG_VARIANTS "|" _variants)
+    set_property(GLOBAL APPEND PROPERTY ARTS_TSAN_RESIDUE_ENTRIES
+                 "${test_name}:${_cells}:${_shapes}:${_variants}")
+endfunction()
+include(${CMAKE_CURRENT_SOURCE_DIR}/tsan/residue_tests.cmake)
+
+function(arts_tsan_residue_test_env)
+    if(NOT ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
+        return()
+    endif()
+    if(ARTS_COHERENCE_ARM STREQUAL "FLUSH")
+        set(_cell FLUSH)
+    else()
+        set(_cell "${ARTS_COHERENCE_ARM}/${ARTS_WRITE_POLICY}/${ARTS_RELEASE_POLICY}")
+    endif()
+    get_property(_tests DIRECTORY PROPERTY TESTS)
+    get_property(_entries GLOBAL PROPERTY ARTS_TSAN_RESIDUE_ENTRIES)
+    foreach(_e IN LISTS _entries)
+        string(REPLACE ":" ";" _f "${_e}")
+        list(GET _f 0 _name)
+        list(GET _f 1 _cells)
+        list(GET _f 2 _shapes)
+        list(GET _f 3 _variants)
+        string(REPLACE "," ";" _cells "${_cells}")
+        string(REPLACE "," ";" _shapes "${_shapes}")
+        if(NOT _cell IN_LIST _cells)
+            continue()
+        endif()
+        if("R3" IN_LIST _shapes OR "R5" IN_LIST _shapes)
+            set(_supp "${CMAKE_SOURCE_DIR}/tests/tsan/residue_send_land.supp")
+        else()
+            set(_supp "${CMAKE_SOURCE_DIR}/tests/tsan/residue_send.supp")
+        endif()
+        foreach(_t IN LISTS _tests)
+            if(_t MATCHES "^${_name}_(${_variants})(_fuzz)?$")
+                set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT_MODIFICATION
+                             "TSAN_OPTIONS=string_append::suppressions=${_supp}")
+            endif()
+        endforeach()
+    endforeach()
+endfunction()
+
 # Run at the end of each directory that registers tests (arts_add_test
 # schedules it).  A test the runner judges has its pass regex moved into the
 # runner, since CTest would otherwise ignore its exit status; one without a
@@ -538,11 +648,13 @@ endfunction()
 # shutdown (each escape re-checks once a second) has only a few seconds of
 # that period to spare.  WILL_FAIL is refused: CTest would invert the
 # verdict, a late failure's included; an expected exit status is the test's
-# STATUS.  A CXL tree's tests get the store's environment too, and an
-# ADDRESS sanitizer tree's the leak suppression.
+# STATUS.  A CXL tree's tests get the store's environment too, an ADDRESS
+# sanitizer tree's the leak suppression, and a THREAD tree's audited tests
+# their arm's residue suppressions.
 function(arts_test_finalize)
     arts_cxl_test_env()
     arts_lsan_test_env()
+    arts_tsan_residue_test_env()
     get_property(_tests DIRECTORY PROPERTY TESTS)
     foreach(_t IN LISTS _tests)
         get_test_property(${_t} WILL_FAIL _will_fail)
@@ -701,6 +813,19 @@ endif()
 register_single_node_test(coherence_rwro_phase)
 register_single_node_test(db_pin)
 set_tests_properties(db_pin PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_pin")
+# edt_dep_slot_handoff: the slots an EDT's acquire phase resolves reach its
+# body with their payload, and a slot it does not acquire keeps its satisfy's
+# value; on two ranks the read resolves on a wake, and two progress threads
+# let that wake run beside the walk.
+register_single_node_test(edt_dep_slot_handoff TIMEOUT 30)
+register_multinode_test(edt_dep_slot_handoff TIMEOUT 60
+                        VARIANTS 2n_9w_1p 2n_8w_2p)
+foreach(_t edt_dep_slot_handoff edt_dep_slot_handoff_2n_9w_1p
+        edt_dep_slot_handoff_2n_8w_2p)
+    set_tests_properties(${_t} PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: edt_dep_slot_handoff"
+        FAIL_REGULAR_EXPRESSION "FAIL:")
+endforeach()
 
 if(ARTS_TEST_REFERENCE_TREE)
 register_single_node_test(stress_edt TIMEOUT 30)
@@ -812,6 +937,16 @@ register_multinode_test(edt_satisfy_out_of_range TIMEOUT 30 STATUS 1
                         VARIANTS 2n_9w_1p)
 set_tests_properties(edt_satisfy_out_of_range_2n_9w_1p PROPERTIES
     PASS_REGULAR_EXPRESSION "names slot 5, but the EDT has 2 dependence slot"
+    ARTS_EXPECTS_RANK_FAILURE 1)
+# A satisfy of an in-range slot once every dependence is satisfied: fatal on
+# the rank that holds the EDT, the same way.
+register_single_node_test(edt_satisfy_over_count TIMEOUT 30 STATUS 1)
+set_tests_properties(edt_satisfy_over_count PROPERTIES
+    PASS_REGULAR_EXPRESSION "slot 1 exceeds its 2 dependence")
+register_multinode_test(edt_satisfy_over_count TIMEOUT 30 STATUS 1
+                        VARIANTS 2n_9w_1p)
+set_tests_properties(edt_satisfy_over_count_2n_9w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "slot 1 exceeds its 2 dependence"
     ARTS_EXPECTS_RANK_FAILURE 1)
 
 # Debug-only (see the program list's guard above): rank 1's fatal error ends
@@ -1155,14 +1290,16 @@ set_tests_properties(route_table_dup_reserve PROPERTIES
 
 # --- Work-stealing deque (deque.c) + array_list (array_list.c) ---
 # Standalone like the SYNC_* tests above: each compiles the target source TU
-# directly and provides its own libc-backed arts_calloc_align/arts_free
-# (deque) or arts_malloc/arts_free (array_list) + an arts_atomic_cswap_u64
-# shim (deque), so no ARTS library link is needed.  The deque RACE tests
-# (chaselev/tiebreak/grow) validate the exactly-once Chase-Lev contract;
-# they are functionally green under ASan but DELIBERATELY trip ThreadSanitizer
-# because deque.c uses the volatile + __sync_synchronize idiom rather than C11
-# atomics — that TSan report is a true property of the runtime, not a test
-# defect.
+# directly and provides its own libc-backed arts_calloc_aligned/arts_free
+# (deque) or arts_malloc/arts_free (array_list), so no ARTS library link is
+# needed.  deque_single_thread pins the owner-side contract (LIFO at the
+# owner's end, FIFO at the steal end, growth and index wrap); the race tests
+# check that the owner and its stealers take every pushed item exactly once:
+# deque_chaselev_race under concurrent steals and growth,
+# deque_last_element_tiebreak on the single remaining element, and
+# deque_grow_during_steal that a stealer never reads a slot the grow has not
+# copied.  Each hand-off from the owner to a stealer is a happens-before edge
+# ThreadSanitizer sees, so a report there is a defect.
 set(DEQUE_UNIT_TESTS
     deque_single_thread deque_chaselev_race deque_last_element_tiebreak
     deque_grow_during_steal)
@@ -1720,6 +1857,33 @@ foreach(_t edt_destroy_pending_scope edt_destroy_pending_scope_2n_9w_1p
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
+# edt_create_destroy_proxy: a destroy on another thread of an EDT's home,
+# while the create body that installed the EDT is held right after the
+# install by the runtime's injection hook, finds the remote finish scope's
+# proxy already in place and the proxy fires.  The hook exists only where the
+# injection hooks are compiled; one variant also runs under the scheduler
+# fuzz.
+if(ARTS_DEBUG_INJECTION AND ARTS_TEST_REFERENCE_TREE)
+    add_arts_test(edt_create_destroy_proxy)
+    register_multinode_test(edt_create_destroy_proxy TIMEOUT 90
+                            VARIANTS 2n_9w_1p 2n_8w_2p)
+    arts_test_cfg(_cfg 2n_8w_2p)
+    arts_add_test(edt_create_destroy_proxy_2n_8w_2p_fuzz
+                  COMMAND edt_create_destroy_proxy)
+    set_tests_properties(edt_create_destroy_proxy_2n_8w_2p_fuzz PROPERTIES
+        LABELS "multinode"
+        TIMEOUT 90
+        RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_cfg};ARTS_SCHED_FUZZ=25")
+    foreach(_t edt_create_destroy_proxy_2n_9w_1p
+            edt_create_destroy_proxy_2n_8w_2p
+            edt_create_destroy_proxy_2n_8w_2p_fuzz)
+        set_tests_properties(${_t} PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: edt_create_destroy_proxy"
+            FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
+    endforeach()
+endif()
+
 # finish_scope_creator_token: a finish scope whose creator hands its token back
 # (arts_event_release_creator_token) fires when its members, a remote worker
 # and that worker's child, finish, while the creator is still running.
@@ -2100,85 +2264,58 @@ if(ARTS_CXL_TREE_RESIDENCY STREQUAL "STAGED")
         PASS_REGULAR_EXPRESSION "PASS config_cxl_alloc_strategy: round_robin / static\\+dev3 / NULL->static,0")
 endif()
 
-# runtime_types.h has separate C11-atomic and C++/nvcc declarations for the
-# event descriptor.  runtime_edt_event_layout is the C probe; compile the exact
-# same source through a C++ wrapper and compare their complete fingerprints.
-# The descriptor has no protocol-conditional member.
-if(ARTS_TEST_REFERENCE_TREE)
-add_executable(runtime_edt_event_layout_cpp
-    unit/runtime_edt_event_layout_cpp.cpp)
-target_include_directories(runtime_edt_event_layout_cpp PRIVATE
-    ${ARTS_PUBLIC_INCLUDE_DIR}
-    ${ARTS_INTERNAL_INCLUDE_DIR}
-    ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-arts_apply_protocol(runtime_edt_event_layout_cpp
-    ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
-set_property(TARGET runtime_edt_event_layout_cpp
-    PROPERTY POSITION_INDEPENDENT_CODE OFF)
-target_compile_options(runtime_edt_event_layout_cpp PRIVATE
-    ${ARTS_NON_PIE_COMPILE_OPTIONS})
-target_link_options(runtime_edt_event_layout_cpp PRIVATE
-    ${ARTS_NON_PIE_LINK_OPTIONS})
-target_link_libraries(runtime_edt_event_layout_cpp PRIVATE Threads::Threads)
-
-register_pure_unit_test(runtime_edt_event_layout_cpp TIMEOUT 60)
-set_tests_properties(runtime_edt_event_layout_cpp PROPERTIES
-    PASS_REGULAR_EXPRESSION "PASS runtime_edt_event_layout \\[cpp\\]")
-
-add_test(
-    NAME runtime_edt_event_layout_compare
-    COMMAND ${CMAKE_COMMAND}
-        "-DC_EXECUTABLE=$<TARGET_FILE:runtime_edt_event_layout>"
-        "-DCPP_EXECUTABLE=$<TARGET_FILE:runtime_edt_event_layout_cpp>"
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_runtime_edt_event_layout.cmake)
-set_tests_properties(runtime_edt_event_layout_compare PROPERTIES
-    LABELS "single_node"
-    TIMEOUT 60
-    RESOURCE_LOCK "pure_unit_test"
-    PASS_REGULAR_EXPRESSION
-        "PASS runtime_edt_event_layout_compare: C/C\\+\\+ fingerprints match")
-endif()
-
-# excl/types.h maintains two hand-written views of arts_db_cache_s; the CXL
-# slot field is the one this arm adds to both.  Registered only where this
-# tree's own library keeps payloads in the store -- the fingerprint is
-# meaningless with no cxl_addr member to compare.
-if(ARTS_CXL_TREE_RESIDENCY)
-    add_pure_unit_src(cxl_cache_fields PASS_REGEX "PASS cxl_cache_fields \\[c\\]"
-                      TIMEOUT 30)
-
-    add_executable(cxl_cache_fields_cpp
-        unit/cxl_cache_fields_cpp.cpp)
-    target_include_directories(cxl_cache_fields_cpp PRIVATE
+# Layout probes.  A C++ translation unit (the CUDA sources, and the C sources
+# a GPU build compiles as CUDA) shares the runtime's structs with the C
+# runtime, and sees each _Atomic(T) member as std::atomic<T>.  A probe source
+# prints one fingerprint line of sizes and member offsets; it is built once as
+# C (registered with the tests above) and once as C++ through
+# unit/<probe>_cpp.cpp, and <probe>_compare requires the two lines to match.
+function(arts_layout_probe_cpp probe tag)
+    add_executable(${probe}_cpp unit/${probe}_cpp.cpp)
+    target_include_directories(${probe}_cpp PRIVATE
         ${ARTS_PUBLIC_INCLUDE_DIR}
         ${ARTS_INTERNAL_INCLUDE_DIR}
         ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    arts_apply_protocol(cxl_cache_fields_cpp
+    arts_apply_protocol(${probe}_cpp
         ${ARTS_COHERENCE_ARM} ${ARTS_WRITE_POLICY} ${ARTS_RELEASE_POLICY})
-    set_property(TARGET cxl_cache_fields_cpp
-        PROPERTY POSITION_INDEPENDENT_CODE OFF)
-    target_compile_options(cxl_cache_fields_cpp PRIVATE
-        ${ARTS_NON_PIE_COMPILE_OPTIONS})
-    target_link_options(cxl_cache_fields_cpp PRIVATE
-        ${ARTS_NON_PIE_LINK_OPTIONS})
-    target_link_libraries(cxl_cache_fields_cpp PRIVATE Threads::Threads)
-
-    register_pure_unit_test(cxl_cache_fields_cpp TIMEOUT 60)
-    set_tests_properties(cxl_cache_fields_cpp PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS cxl_cache_fields \\[cpp\\]")
-
+    set_property(TARGET ${probe}_cpp PROPERTY POSITION_INDEPENDENT_CODE OFF)
+    target_compile_options(${probe}_cpp PRIVATE ${ARTS_NON_PIE_COMPILE_OPTIONS})
+    target_link_options(${probe}_cpp PRIVATE ${ARTS_NON_PIE_LINK_OPTIONS})
+    target_link_libraries(${probe}_cpp PRIVATE Threads::Threads)
+    register_pure_unit_test(${probe}_cpp TIMEOUT 60)
+    set_tests_properties(${probe}_cpp PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS ${probe} \\[cpp\\]")
     add_test(
-        NAME cxl_cache_fields_compare
+        NAME ${probe}_compare
         COMMAND ${CMAKE_COMMAND}
-            "-DC_EXECUTABLE=$<TARGET_FILE:cxl_cache_fields>"
-            "-DCPP_EXECUTABLE=$<TARGET_FILE:cxl_cache_fields_cpp>"
-            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_cxl_cache_fields.cmake)
-    set_tests_properties(cxl_cache_fields_compare PROPERTIES
+            "-DC_EXECUTABLE=$<TARGET_FILE:${probe}>"
+            "-DCPP_EXECUTABLE=$<TARGET_FILE:${probe}_cpp>"
+            "-DTAG=${tag}" "-DNAME=${probe}_compare"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compare_layout_probes.cmake)
+    set_tests_properties(${probe}_compare PROPERTIES
         LABELS "single_node"
         TIMEOUT 60
         RESOURCE_LOCK "pure_unit_test"
         PASS_REGULAR_EXPRESSION
-            "PASS cxl_cache_fields_compare: C/C\\+\\+ fingerprints match")
+            "PASS ${probe}_compare: C/C\\+\\+ fingerprints match")
+endfunction()
+
+# The cell's DB descriptors: every tree.
+arts_layout_probe_cpp(db_cache_layout DB_LAYOUT)
+
+# The protocol-independent runtime structs, so the reference tree alone.  The
+# ARTS_USE_CXL member of the runtime state is therefore not fingerprinted.
+if(ARTS_TEST_REFERENCE_TREE)
+    arts_layout_probe_cpp(runtime_edt_event_layout EDT_EVENT_LAYOUT)
+endif()
+
+# The CXL slot field of the EXCL cache.  Registered only where this tree's
+# own library keeps payloads in the store -- the fingerprint is meaningless
+# with no cxl_addr member to compare.
+if(ARTS_CXL_TREE_RESIDENCY)
+    add_pure_unit_src(cxl_cache_fields PASS_REGEX "PASS cxl_cache_fields \\[c\\]"
+                      TIMEOUT 30)
+    arts_layout_probe_cpp(cxl_cache_fields CXL_LAYOUT)
 
     # Grades this tree's OWN objects, so it is registered only where the
     # library is store-backed: it asserts that the payload plane is compiled

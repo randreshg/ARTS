@@ -580,6 +580,9 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
   set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
   set(MI_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
   set(MI_OVERRIDE     OFF CACHE BOOL "" FORCE)  # we call mi_* explicitly, no malloc override
+  # No architecture flag of its own: on arm64 it would add -march=armv8.1-a,
+  # whose inline LSE atomics fault on an ARMv8.0 host.
+  set(MI_NO_OPT_ARCH  ON  CACHE BOOL "" FORCE)
   add_subdirectory(mimalloc EXCLUDE_FROM_ALL)
   list(APPEND ARTS_VENDORED_ARCHIVES "$<TARGET_FILE:mimalloc-static>")
 endif()

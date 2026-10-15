@@ -31,9 +31,9 @@
  * arts_route_table_reserve_or_lookup plus libc malloc shims.  No ARTS runtime.
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -112,15 +112,16 @@ static arts_route_item_t g_slots[NSLOTS];
 void arts_route_table_reserve_or_lookup(arts_guid_t key,
                                         arts_route_item_t **out) {
   for (int i = 0; i < NSLOTS; i++) {
-    if (__atomic_load_n(&g_slots[i].key, __ATOMIC_ACQUIRE) == key) {
+    if (atomic_load_explicit(&g_slots[i].key, memory_order_acquire) == key) {
       *out = &g_slots[i];
       return;
     }
   }
   for (int i = 0; i < NSLOTS; i++) {
     arts_guid_t expect = 0;
-    if (__atomic_compare_exchange_n(&g_slots[i].key, &expect, key, false,
-                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) ||
+    if (atomic_compare_exchange_strong_explicit(&g_slots[i].key, &expect, key,
+                                                memory_order_acq_rel,
+                                                memory_order_acquire) ||
         expect == key) {
       *out = &g_slots[i];
       return;
@@ -156,7 +157,8 @@ enum hook_mode {
   HOOK_NC_MOVED,
   HOOK_NC_TEARDOWN
 };
-static enum hook_mode g_hook;
+/* Taken by whichever thread parks next; carries only its own value. */
+static _Atomic(enum hook_mode) g_hook;
 static void after_park_hook(arts_route_item_t *slot);
 #define OOO_AFTER_PARK(slot) after_park_hook(slot)
 
@@ -168,6 +170,8 @@ void arts_free(void *p) { free(p); }
 /* Pull in the engine under test (compiles g_ooo_table + the bodies). */
 #include "../../libs/src/core/ooo.c"
 
+#include "counter_stubs.h"
+
 /* A dummy object the installer publishes into the slot. */
 static int g_obj = 0xABCD;
 static void noop_deleter(void *o) { (void)o; }
@@ -176,8 +180,8 @@ static void noop_deleter(void *o) { (void)o; }
 #define G_OTHER ((arts_guid_t)0x5002u)
 
 static void after_park_hook(arts_route_item_t *slot) {
-  enum hook_mode m = g_hook;
-  g_hook = HOOK_OFF;
+  enum hook_mode m =
+      atomic_exchange_explicit(&g_hook, HOOK_OFF, memory_order_relaxed);
   if (m == HOOK_OFF) {
     return;
   }
@@ -186,14 +190,15 @@ static void after_park_hook(arts_route_item_t *slot) {
      * is returned and the GUID's object installs in slot 1.  MOVED: the slot
      * is re-claimed by another GUID with no re-drive, so the parker must move
      * its own node.  TEARDOWN: the teardown's re-drive takes the node. */
-    __atomic_store_n(&slot->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&slot->key, (arts_guid_t)0, memory_order_release);
+    /* The retire's fence in arts_route_table_set_destroyed_if, mirrored. */
     atomic_thread_fence(memory_order_seq_cst);
-    __atomic_store_n(&g_slots[1].key, G_CREATE, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_slots[1].key, G_CREATE, memory_order_release);
     arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
     arts_shared_set_tag(cb, (uint64_t)G_CREATE);
-    arts_atomic_shared_store(&g_slots[1].value, cb);
+    arts_shared_slot_store(&g_slots[1].value, cb);
     if (m == HOOK_NC_MOVED) {
-      __atomic_store_n(&slot->key, G_OTHER, __ATOMIC_RELEASE);
+      atomic_store_explicit(&slot->key, G_OTHER, memory_order_release);
     } else {
       arts_ooo_redrive_all(slot);
     }
@@ -201,17 +206,18 @@ static void after_park_hook(arts_route_item_t *slot) {
   }
   /* Every shape starts as a destroy does: the value leaves the slot. */
   arts_shared_ptr_t old =
-      arts_atomic_shared_exchange(&slot->value, (arts_shared_ptr_t)NULL);
+      arts_shared_slot_exchange(&slot->value, (arts_shared_ptr_t)NULL);
   arts_shared_release(&old);
   if (m == HOOK_EMPTY_NO_REDRIVE) {
-    __atomic_store_n(&slot->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&slot->key, (arts_guid_t)0, memory_order_release);
   } else if (m == HOOK_TEARDOWN) {
-    __atomic_store_n(&slot->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&slot->key, (arts_guid_t)0, memory_order_release);
+    /* The retire's fence in arts_route_table_set_destroyed_if, mirrored. */
     atomic_thread_fence(memory_order_seq_cst);
     arts_ooo_redrive_all(slot);
   } else { /* HOOK_RECLAIM: the returned slot is claimed by another GUID,
               which parks a message of its own there. */
-    __atomic_store_n(&slot->key, G_OTHER, __ATOMIC_RELEASE);
+    atomic_store_explicit(&slot->key, G_OTHER, memory_order_release);
     uint64_t a = 0;
     struct arts_ooo_payload_s *p = arts_ooo_payload_alloc(
         OOO_EVENT_SATISFY_SLOT, G_OTHER, &a, sizeof(a));
@@ -222,10 +228,11 @@ static void after_park_hook(arts_route_item_t *slot) {
 static void reset_slots(void) {
   for (int i = 0; i < NSLOTS; i++) {
     arts_ooo_free_all(&g_slots[i]);
-    arts_shared_ptr_t old = arts_atomic_shared_exchange(
-        &g_slots[i].value, (arts_shared_ptr_t)NULL);
+    arts_shared_ptr_t old =
+        arts_shared_slot_exchange(&g_slots[i].value, (arts_shared_ptr_t)NULL);
     arts_shared_release(&old);
-    __atomic_store_n(&g_slots[i].key, (arts_guid_t)0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_slots[i].key, (arts_guid_t)0,
+                          memory_order_relaxed);
   }
   atomic_store_explicit(&g_creates, 0, memory_order_relaxed);
   atomic_store_explicit(&g_dispatched, 0, memory_order_relaxed);
@@ -252,8 +259,8 @@ static unsigned int chain_len(arts_route_item_t *slot, arts_guid_t *guid) {
  * message must follow its GUID to slot 1 and be dispatched exactly once. */
 static int noncreate_case(enum hook_mode mode, const char *name) {
   reset_slots();
-  __atomic_store_n(&g_slot.key, G_CREATE, __ATOMIC_RELAXED);
-  g_hook = mode;
+  atomic_store_explicit(&g_slot.key, G_CREATE, memory_order_relaxed);
+  atomic_store_explicit(&g_hook, mode, memory_order_relaxed);
   uint64_t args = 0;
   arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_SATISFY_SLOT, G_CREATE,
                              &args, sizeof(args));
@@ -275,11 +282,11 @@ static int noncreate_case(enum hook_mode mode, const char *name) {
 
 static int create_case(enum hook_mode mode, const char *name) {
   reset_slots();
-  __atomic_store_n(&g_slot.key, G_CREATE, __ATOMIC_RELAXED);
+  atomic_store_explicit(&g_slot.key, G_CREATE, memory_order_relaxed);
   arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
   arts_shared_set_tag(cb, (uint64_t)G_CREATE);
-  arts_atomic_shared_store(&g_slot.value, cb);
-  g_hook = mode;
+  arts_shared_slot_store(&g_slot.value, cb);
+  atomic_store_explicit(&g_hook, mode, memory_order_relaxed);
   uint64_t args = 0;
   arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_CREATE, G_CREATE, &args,
                              sizeof(args));
@@ -334,8 +341,10 @@ static void *producer_fn(void *vp) {
   /* Fresh-entry dispatch_or_defer: HIT dispatches inline, MISS pushes +
    * post-push rescue.  Either way the op must be dispatched exactly once. */
   uint64_t dummy_args = 0;
-  arts_ooo_dispatch_or_defer(&g_slot, NULL, c->kind, g_slot.key, &dummy_args,
-                             sizeof(dummy_args));
+  arts_ooo_dispatch_or_defer(
+      &g_slot, NULL, c->kind,
+      atomic_load_explicit(&g_slot.key, memory_order_acquire), &dummy_args,
+      sizeof(dummy_args));
   return NULL;
 }
 
@@ -353,7 +362,7 @@ static void *installer_fn(void *vp) {
    * tag, so an unstamped cb is treated as a stranger's and never dispatched. */
   arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
   arts_shared_set_tag(cb, 0x1234u);
-  arts_atomic_shared_store(&g_slot.value, cb);
+  arts_shared_slot_store(&g_slot.value, cb);
   arts_ooo_drain(&g_slot);
   return NULL;
 }
@@ -369,7 +378,8 @@ int main(void) {
     arts_lf_stack_init(&g_slot.ooo_list);
     /* The slot must carry the key the payloads are deferred for: the dispatch
      * compares them, since a returned slot may belong to another GUID. */
-    __atomic_store_n(&g_slot.key, (arts_guid_t)0x1234u, __ATOMIC_RELAXED);
+    atomic_store_explicit(&g_slot.key, (arts_guid_t)0x1234u,
+                          memory_order_relaxed);
     atomic_store_explicit(&g_dispatched, 0, memory_order_relaxed);
 
     atomic_int gate;
@@ -421,7 +431,7 @@ int main(void) {
     }
     /* Release the slot's install ref so the cb pool is balanced. */
     arts_shared_ptr_t old =
-        arts_atomic_shared_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
+        arts_shared_slot_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
     if (old) {
       arts_shared_release(&old);
     }

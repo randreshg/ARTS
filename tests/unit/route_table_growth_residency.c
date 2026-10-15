@@ -30,9 +30,9 @@
  * shared.c #include'd.
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <fcntl.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,16 +60,6 @@ void arts_free(void *p) { free(p); }
 struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
-
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
 
 #include "../../libs/src/core/gas/guid.c"
 #include "../../libs/src/core/gas/route_table.c"
@@ -236,7 +226,7 @@ typedef struct {
 static void *claim_by_search_for_empty(void *vp) {
   claimer_t *c = (claimer_t *)vp;
   pthread_barrier_wait(c->start);
-  c->slot = arts_route_table_search_for_empty(c->table, c->key, false);
+  c->slot = arts_route_table_search_for_empty(c->table, c->key);
   return NULL;
 }
 
@@ -250,7 +240,8 @@ static void *claim_by_reserve(void *vp) {
 /* Common checks once the claimers are joined. */
 static void check_growth(const char *phase, arts_route_table_t *root,
                          const arts_guid_t *keys, claimer_t *c) {
-  arts_route_table_t *seg = root->next;
+  arts_route_table_t *seg =
+      atomic_load_explicit(&root->next, memory_order_acquire);
   unsigned builds = atomic_load(&g_builds);
   (void)fprintf(stderr, "%s: constructor calls %u\n", phase, builds);
   CHECK(builds == 1, "%s: the segment was built %u times\n", phase, builds);
@@ -258,7 +249,8 @@ static void check_growth(const char *phase, arts_route_table_t *root,
     CHECK(0, "%s: the chain did not grow\n", phase);
     return;
   }
-  CHECK(seg->next == NULL, "%s: the chain grew past one segment\n", phase);
+  CHECK(atomic_load_explicit(&seg->next, memory_order_acquire) == NULL,
+        "%s: the chain grew past one segment\n", phase);
   CHECK(seg->size == 2 * root->size && seg->shift == root->shift + 1,
         "%s: grown segment is size %u shift %u\n", phase, seg->size,
         seg->shift);
@@ -267,7 +259,8 @@ static void check_growth(const char *phase, arts_route_table_t *root,
     CHECK(s != NULL && s >= seg->data &&
               s < seg->data + (size_t)seg->size * COLLISION_RESOLVES,
           "%s: thread %d's slot is not in the grown segment\n", phase, t);
-    CHECK(s != NULL && __atomic_load_n(&s->key, __ATOMIC_ACQUIRE) == c[t].key,
+    CHECK(s != NULL &&
+              atomic_load_explicit(&s->key, memory_order_acquire) == c[t].key,
           "%s: thread %d's slot does not hold its key\n", phase, t);
     CHECK(arts_route_table_search_for_key(root, c[t].key) == s,
           "%s: thread %d's key resolves elsewhere\n", phase, t);
@@ -293,7 +286,7 @@ static void reset_counts(int released) {
 }
 
 static int link_is_growing(arts_route_table_t *t) {
-  return __atomic_load_n(&t->next, __ATOMIC_ACQUIRE) ==
+  return atomic_load_explicit(&t->next, memory_order_acquire) ==
          ARTS_ROUTE_TABLE_GROWING;
 }
 
@@ -308,7 +301,7 @@ static void phase_a(void) {
   arts_route_table_t *root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
   root->newFunc = held_new_route_table;
   for (int i = 0; i < COLLISION_RESOLVES; i++) {
-    arts_route_table_search_for_empty(root, keys[i], false);
+    arts_route_table_search_for_empty(root, keys[i]);
   }
 
   reset_counts(1);
@@ -506,7 +499,7 @@ static void phase_c(void) {
   }
   /* A retire returns one slot of the window while A builds. */
   arts_route_item_t *returned = arts_route_table_search_for_key(root, fill[3]);
-  __atomic_store_n(&returned->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+  atomic_store_explicit(&returned->key, (arts_guid_t)0, memory_order_release);
   CHECK(link_is_growing(root), "C: the link is not GROWING before B\n");
   /* B claims the returned slot; its settle walk ends at the unfinished link. */
   reserver_t b = {key, NULL};
@@ -520,9 +513,11 @@ static void phase_c(void) {
   CHECK(b.slot == returned, "C: B did not publish in the returned slot\n");
   CHECK(a.slot == b.slot, "C: A and B resolved the key to different slots\n");
   unsigned keyed = 0, marked = 0;
-  for (arts_route_table_t *t = root; t != NULL; t = t->next) {
+  for (arts_route_table_t *t = root; t != NULL;
+       t = atomic_load_explicit(&t->next, memory_order_acquire)) {
     for (uint64_t i = 0; i < (uint64_t)t->size * COLLISION_RESOLVES; i++) {
-      arts_guid_t k = __atomic_load_n(&t->data[i].key, __ATOMIC_ACQUIRE);
+      arts_guid_t k =
+          atomic_load_explicit(&t->data[i].key, memory_order_acquire);
       keyed += k == key;
       marked += k == route_key_claiming(key);
     }

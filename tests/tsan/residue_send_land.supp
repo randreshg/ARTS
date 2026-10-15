@@ -1,0 +1,12 @@
+# ThreadSanitizer suppressions for an audited test with a landing shape
+# (tests/tsan/residue_tests.cmake): besides reading the source of a PUT while
+# an unordered writer may be writing it (R1, R2, R4), the fabric provider
+# writes a release's payload into a home's buffer in place while an unordered
+# reader may be reading it (R3, R5).  The first four are the provider's
+# send-side copy routines, the last two its receive-side ones.
+race:^ofi_sockapi_sendv_socket$
+race:^ofi_sockapi_send_socket$
+race:^ofi_bsock_send$
+race:^ofi_byteq_writev$
+race:^ofi_bsock_recv$
+race:^ofi_sockapi_recv_socket$

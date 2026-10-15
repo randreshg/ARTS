@@ -76,15 +76,11 @@ void *arts_thread_loop(void *data) {
 
   // Save final counter values to saved_counters before thread exits
   // This must happen after cleanup but before thread terminates
-  unsigned int thread_id = thread->id;
-  arts_counter_t *saved = arts_node_info.saved_counters[thread_id];
+  uint64_t *saved = arts_node_info.saved_counters[thread->id];
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-    saved[i].count = arts_thread_local_counters[i].count;
-    saved[i].start = 0;
+    saved[i] = atomic_load_explicit(&arts_thread_local_counters[i].count,
+                                    memory_order_relaxed);
   }
-  // Mark thread as closed by clearing live_counters pointer
-  // Capture thread will skip threads with NULL live_counters
-  arts_node_info.live_counters[thread_id] = NULL;
 
   return NULL;
   // pthread_exit(NULL);
@@ -127,16 +123,20 @@ void arts_thread_main_join() {
    * to wake them. */
   arts_runtime_stop_network();
 
+  /* The capture thread reads every runtime thread's counters in that
+   * thread's own storage.  No thread leaves the runtime before it passes the
+   * teardown barrier, and none passes it before this thread arrives, so
+   * joining the capture thread first keeps every thread it reads alive and
+   * orders its last access before each thread saves its counts. */
+  arts_counter_capture_stop();
   arts_runtime_private_cleanup();
 
   // Save main thread's final counter values before joining other threads
-  arts_counter_t *saved = arts_node_info.saved_counters[0];
+  uint64_t *saved = arts_node_info.saved_counters[0];
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
-    saved[i].count = arts_thread_local_counters[i].count;
-    saved[i].start = 0;
+    saved[i] = atomic_load_explicit(&arts_thread_local_counters[i].count,
+                                    memory_order_relaxed);
   }
-  // Mark main thread as closed
-  arts_node_info.live_counters[0] = NULL;
 
   // File-based counter aggregation: no socket synchronization needed
   // Each node writes its own JSON file independently, master polls filesystem
@@ -179,8 +179,8 @@ void arts_thread_main_join() {
         ARTS_WARN("arts_thread_main_join: thread %u did not join after "
                   "cancel (rc=%d); leaking and continuing",
                   i, rc);
-        __atomic_fetch_add(&arts_shutdown_abandon.unjoined_threads, 1u,
-                           __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&arts_shutdown_abandon.unjoined_threads, 1u,
+                                  memory_order_relaxed);
       }
     }
   }

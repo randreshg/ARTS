@@ -47,6 +47,7 @@ extern "C" {
 
 #include "arts/counter/Preamble.h"
 #include "arts/defs.h"
+#include "arts/utils/stdatomic_compat.h"
 
 // X-macro: Define all counter types in one place.
 // Format: X(counterName)
@@ -259,9 +260,13 @@ typedef enum arts_counter_level_t {
   ARTS_COUNTER_LEVEL_CLUSTER = 2, // Cluster output (reduce across all nodes)
 } arts_counter_level_t;
 
+/* A thread's counter.  The owning thread updates it, and the periodic
+ * capture thread reads it and folds a running timer's elapsed time into
+ * `count` (moving `start` forward); both are statistics, so every access is
+ * relaxed and carries only its own value. */
 typedef struct {
-  uint64_t count;
-  uint64_t start;
+  _Atomic(uint64_t) count;
+  _Atomic(uint64_t) start; /* 0 = timer stopped, else its start stamp */
 } arts_counter_t;
 
 // Captured counter value with epoch information for PERIODIC mode.
@@ -279,7 +284,7 @@ extern ARTS_THREAD_LOCAL arts_counter_t
     arts_thread_local_counters[NUM_COUNTER_TYPES];
 
 // Note: Saved counter data is stored directly in arts_node_info:
-// - saved_counters[thread_id][counter_index]: final counter values
+// - saved_counters[thread_id][counter_index]: final counts
 // - capture_arrays[thread_id][counter_index]: capture history (PERIODIC)
 
 // We do not implement system-wide counters due to the overhead of

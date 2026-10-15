@@ -24,9 +24,9 @@
 
 #include "arts/utils/atomics.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

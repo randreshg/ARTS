@@ -31,9 +31,9 @@
  * Standalone: #includes ooo.c, links shared.c, single fixed slot, libc shims.
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -128,6 +128,8 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
 
 #include "../../libs/src/core/ooo.c"
 
+#include "counter_stubs.h"
+
 static int g_obj = 0x1234;
 static void noop_deleter(void *o) { (void)o; }
 
@@ -154,9 +156,10 @@ static int part1_save_next(void) {
 
   /* Defer M payloads (all MISS — value NULL — so they push, no dispatch). */
   for (uint32_t id = 0; id < (uint32_t)M; id++) {
-    arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_SATISFY_SLOT, g_slot.key,
-                             &id,
-                               sizeof(id));
+    arts_ooo_dispatch_or_defer(
+        &g_slot, NULL, OOO_EVENT_SATISFY_SLOT,
+        atomic_load_explicit(&g_slot.key, memory_order_acquire), &id,
+        sizeof(id));
   }
   if (atomic_load_explicit(&g_dispatched, memory_order_relaxed) != 0) {
     (void)fprintf(stderr, "FAIL part1: pre-install defer dispatched early\n");
@@ -196,7 +199,7 @@ static int part1_save_next(void) {
 
   /* Publish value and drain: every node HITs and dispatches once. */
   arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
-  arts_atomic_shared_store(&g_slot.value, cb);
+  arts_shared_slot_store(&g_slot.value, cb);
   arts_ooo_drain(&g_slot);
 
   uint64_t got = atomic_load_explicit(&g_dispatched, memory_order_relaxed);
@@ -218,7 +221,7 @@ static int part1_save_next(void) {
     }
   }
   arts_shared_ptr_t old =
-      arts_atomic_shared_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
+      arts_shared_slot_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
   if (old) {
     arts_shared_release(&old);
   }
@@ -256,9 +259,10 @@ static void *p2_producer_fn(void *vp) {
   }
   for (int k = 0; k < c->count; k++) {
     uint32_t id = c->base + (uint32_t)k;
-    arts_ooo_dispatch_or_defer(&g_slot, NULL, OOO_EVENT_SATISFY_SLOT, g_slot.key,
-                             &id,
-                               sizeof(id));
+    arts_ooo_dispatch_or_defer(
+        &g_slot, NULL, OOO_EVENT_SATISFY_SLOT,
+        atomic_load_explicit(&g_slot.key, memory_order_acquire), &id,
+        sizeof(id));
   }
   atomic_fetch_add_explicit(&g_p2_producers_done, 1, memory_order_release);
   return NULL;
@@ -333,7 +337,7 @@ static int part2_concurrent_repush(void) {
    * A few final drains in case a node was re-pushed onto a fresh chain by the
    * last MISS-drain. */
   arts_shared_ptr_t cb = arts_shared_make(&g_obj, noop_deleter);
-  arts_atomic_shared_store(&g_slot.value, cb);
+  arts_shared_slot_store(&g_slot.value, cb);
   for (int i = 0; i < 4; i++) {
     arts_ooo_drain(&g_slot);
   }
@@ -365,7 +369,7 @@ static int part2_concurrent_repush(void) {
     return 1;
   }
   arts_shared_ptr_t old =
-      arts_atomic_shared_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
+      arts_shared_slot_exchange(&g_slot.value, (arts_shared_ptr_t)NULL);
   if (old) {
     arts_shared_release(&old);
   }

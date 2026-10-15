@@ -16,7 +16,7 @@
  *
  * Three primitives manage every buffer during a DB's lifetime:
  *
- *   arts_db_buf_acquire  — race-safe acquire.  arts_atomic_shared_load returns
+ *   arts_db_buf_acquire  — race-safe acquire.  arts_shared_slot_load returns
  *                          a caller-owned strong ref (keeping the buffer alive
  *                          against a concurrent destroy) or NULL if none is
  *                          installed.

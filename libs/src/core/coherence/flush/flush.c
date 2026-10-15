@@ -103,7 +103,7 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
     return;
   }
-  arts_atomic_shared_store(&cache->buffer, NULL);
+  arts_shared_slot_store(&cache->buffer, NULL);
   __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
   struct arts_db_s *db = arts_db_of_cache(cache);
   if (db->home_initialized) {
@@ -168,7 +168,6 @@ void arts_handler_db_acquire(void *item, void *args) {
   struct arts_edt_s *edt = a->edt;
   unsigned int slot = a->slot;
   struct arts_db_cache_s *cache = &db->cache;
-  arts_edt_dep_t *dep = &((arts_edt_dep_t *)arts_get_depv(edt))[slot];
   /* Every slot the engine hands an arm owns its block's single acquisition:
    * the engine classifies the EDT's whole dependence vector before anything
    * fires and resolves the aliases itself, from this acquisition's payload. */
@@ -176,7 +175,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     /* The line is materialized at its first use when the create took no
      * hold; every later use finds it. */
     (void)arts_db_buf_ensure(cache, cache->db_size);
-    dep->ptr = arts_db_acquire_local(cache);
+    arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
     arts_db_acquire_resolved(edt, slot);
     return;
   }
@@ -369,7 +368,8 @@ static void send_flush_commit(unsigned int home, arts_guid_t db_guid,
 }
 
 static bool shutting_down(void) {
-  return arts_atomic_read(&arts_node_info.shutdown_state) != 0;
+  return atomic_load_explicit(&arts_node_info.shutdown_state,
+                              memory_order_acquire) != 0;
 }
 
 /* The write-back round every non-home RW release runs: the bytes at `payload`
@@ -400,7 +400,8 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
       /* The reply came, but the write-back it credits is dropped: its own
        * wait is the one left unawaited.  Nothing posts the wait state after
        * its reply, so it is freed. */
-      __atomic_fetch_add(&arts_shutdown_abandon.waits, 1u, __ATOMIC_RELAXED);
+      atomic_fetch_add_explicit(&arts_shutdown_abandon.waits, 1u,
+                                memory_order_relaxed);
       sem_destroy(&w->sem);
       arts_free(w);
       return false;
@@ -448,7 +449,7 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
     arts_db_buf_release(&slot_h);
     return;
   }
-  arts_atomic_shared_store(&cache->buffer, NULL);
+  arts_shared_slot_store(&cache->buffer, NULL);
   __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
   arts_db_buf_release(&slot_h);
 }

@@ -46,6 +46,10 @@ extern "C" {
 void arts_install_signal_handlers(void);
 void arts_configure_core_dumps(bool enabled);
 
+/* The rank the crash and termination handlers print; call once the rank is
+ * final.  Until then they print rank 0. */
+void arts_signal_handlers_set_rank(unsigned int rank);
+
 /* Block termination signals on the calling thread + start a dedicated
  * sigwait watcher thread that drives graceful shutdown. Must be called
  * from the main thread BEFORE any worker or progress thread is spawned, so

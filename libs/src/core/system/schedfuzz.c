@@ -9,9 +9,12 @@
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/utils/random.h"
+#include "arts/utils/stdatomic_compat.h"
 
-/* -1 = unread, 0 = disabled, 1-100 = per-point probability (percent). */
-static int g_fuzz_pct = -1;
+/* -1 = unread, 0 = disabled, 1-100 = per-point probability (percent).  Every
+ * reader derives it from the same environment, so it carries only its own
+ * value. */
+static _Atomic(int) g_fuzz_pct = -1;
 
 void arts_sched_fuzz_init(void) {
   const char *env = getenv("ARTS_SCHED_FUZZ");
@@ -24,15 +27,15 @@ void arts_sched_fuzz_init(void) {
     }
     pct = (int)v;
   }
-  __atomic_store_n(&g_fuzz_pct, pct, __ATOMIC_RELAXED);
+  atomic_store_explicit(&g_fuzz_pct, pct, memory_order_relaxed);
 }
 
 void arts_sched_fuzz_point(void) {
-  int pct = __atomic_load_n(&g_fuzz_pct, __ATOMIC_RELAXED);
+  int pct = atomic_load_explicit(&g_fuzz_pct, memory_order_relaxed);
   if (pct < 0) {
     /* A program that reaches a fuzz point without a rank's initialization. */
     arts_sched_fuzz_init();
-    pct = __atomic_load_n(&g_fuzz_pct, __ATOMIC_RELAXED);
+    pct = atomic_load_explicit(&g_fuzz_pct, memory_order_relaxed);
   }
   if (pct == 0) {
     return;

@@ -7,8 +7,8 @@
 ///        arts_shutdown) and verifies the shutdown_state CAS gate keeps exactly
 ///        one broadcast/stop, with no deadlock and a clean return.
 ///
-/// arts_shutdown -> arts_enter_shutdown_state(true) gates on
-/// arts_atomic_cswap(shutdown_state, 0, 1): exactly one caller wins the 0->1
+/// arts_shutdown -> arts_enter_shutdown_state(true) gates on a compare-exchange
+/// of shutdown_state from 0 to 1: exactly one caller wins the 0->1
 /// transition and performs broadcast (MN) + stop_workers; all others observe a
 /// non-zero state and no-op.  That CAS is the word's only writer.  Here we
 /// stress N worker EDTs racing into arts_shutdown simultaneously: the runtime
@@ -26,7 +26,7 @@
 #include "arts.h"
 #include "arts/runtime_state.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 
 #define N_INITIATORS 8
 
@@ -77,8 +77,10 @@ int main(int argc, char **argv) {
     return 1;
   }
   /* After arts_rt returns, the runtime has stopped cleanly.  Exactly one CAS
-   * must have driven shutdown_state to 1 and nothing torn it back to 0. */
-  unsigned int s = arts_node_info.shutdown_state;
+   * must have driven shutdown_state to 1 and nothing torn it back to 0.
+   * Relaxed: every runtime thread has been joined. */
+  unsigned int s = atomic_load_explicit(&arts_node_info.shutdown_state,
+                                        memory_order_relaxed);
   if (s != 1u) {
     arts_printf("FAIL runtime_concurrent_shutdown: shutdown_state=%u "
                 "(expected 1)\n",

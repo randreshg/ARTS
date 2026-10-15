@@ -50,6 +50,8 @@ reported, not replaced. Under a Slurm profile, every piece of build work —
 the first configure, a counter reconfigure, the ninja pass — runs inside a
 small job of its own rather than on the login node: one task, a few cpus,
 nothing exclusive, so it slots into whatever gap the queue has.
+A campaign on a tree configured for a processor other than x86-64 is refused
+before anything is configured, because the benchmark tree is not built there.
 
 ## Use
 

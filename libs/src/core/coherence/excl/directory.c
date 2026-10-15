@@ -27,7 +27,7 @@
  * arts_db_s). */
 #include "arts/coherence/excl/types.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>

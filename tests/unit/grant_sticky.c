@@ -37,7 +37,7 @@
  * a writer, so the property is vacuous there and the test is not built.
  */
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 
 #include "arts.h"
 

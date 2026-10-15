@@ -309,7 +309,7 @@ void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
 
   for (unsigned int i = 0; i < depc; i++) {
     if (depv[i].ptr) {
-      if (depv[i].subtype == ARTS_DB_GPU_PIN) {
+      if (arts_dep_subtype(&edt->wrapper_edt, i) == ARTS_DB_GPU_PIN) {
         arts_gpu_invalidate_route_tables(depv[i].guid, gc->gpu_id);
       }
       // The return is not implemented (arts_gpu_route_table_return_db does
@@ -413,7 +413,8 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
   for (unsigned int i = 0; i < depc; ++i) {
     if (depv[i].ptr) {
       arts_shared_ptr_t db_hold = NULL;
-      struct arts_db_s *db = arts_gpu_dep_db(&depv[i], &db_hold);
+      struct arts_db_s *db =
+          arts_gpu_dep_db((struct arts_edt_s *)edt_ptr, i, &db_hold);
       if (db == NULL) {
         /* The descriptor is no longer installed (a destroy raced the launch):
          * there is nothing to stage and no pointer to hand the kernel. */
@@ -531,7 +532,8 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
 
   // Move data back
   for (unsigned int i = 0; i < depc; i++) {
-    if (depv[i].ptr && depv[i].subtype == ARTS_DB_GPU_PIN &&
+    if (depv[i].ptr &&
+        arts_dep_subtype((struct arts_edt_s *)edt_ptr, i) == ARTS_DB_GPU_PIN &&
         (depv[i].mode == DB_MODE_RW || depv[i].mode == DB_MODE_MEMSET)) {
       /* This subtype keeps its payload inline, so its descriptor is the bytes
        * before the slot pointer. */
@@ -558,7 +560,9 @@ void arts_schedule_to_gpu(arts_edt_t fn_ptr, uint32_t paramc,
 }
 
 void free_gpu_item(arts_route_item_t *item) {
-  arts_guid_kind_t type = arts_guid_get_kind(item->key);
+  /* Relaxed: called at teardown, after the runtime threads have joined. */
+  arts_guid_t key = atomic_load_explicit(&item->key, memory_order_relaxed);
+  arts_guid_kind_t type = arts_guid_get_kind(key);
   arts_shared_ptr_t h = arts_route_item_acquire(item);
   arts_item_wrapper_t *wrapper = (arts_item_wrapper_t *)arts_shared_get(h);
   if (!wrapper) {
@@ -573,7 +577,7 @@ void free_gpu_item(arts_route_item_t *item) {
     ARTS_DEBUG("FREEING HOST PTR: %p\n", host_gc_ptr);
     arts_cuda_free_host(host_gc_ptr);
   } else if (type == ARTS_GUID_DB) {
-    arts_shared_ptr_t db_h = arts_route_table_lookup_db(item->key);
+    arts_shared_ptr_t db_h = arts_route_table_lookup_db(key);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db && db->db_type == ARTS_DB_GPU) {
       unsigned int size = arts_db_total_size(db);
@@ -581,7 +585,7 @@ void free_gpu_item(arts_route_item_t *item) {
           (struct arts_db_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
 
       arts_lc_meta_t host;
-      host.guid = item->key;
+      host.guid = key;
       host.data = (void *)(db + 1);
       host.data_size = db->cache.db_size;
       host.host_version = &db->version;
@@ -615,7 +619,7 @@ void free_gpu_item(arts_route_item_t *item) {
 
   wrapper->real_data = NULL;
   wrapper->time_stamp = 0;
-  item->key = 0;
+  atomic_store_explicit(&item->key, (arts_guid_t)0, memory_order_relaxed);
   /* item->lock and item->touched fields removed in new route_item model. */
   arts_shared_release(&h);
 }
@@ -805,7 +809,7 @@ void arts_run_gpu(void *edt_packet, arts_gpu_t *arts_gpu) {
 
   arts_atomic_add(&arts_gpu->running_edts, 1U);
 
-  prep_dbs(depc, depv, true);
+  prep_dbs(&edt->wrapper_edt, true);
   arts_schedule_to_gpu(func, paramc, paramv, depc, depv, edt_packet, arts_gpu);
 
   arts_cuda_restore_device();
@@ -819,7 +823,7 @@ void arts_gpu_host_wrap_up(void *edt_packet, arts_guid_t to_signal,
   const uint64_t *paramv = (uint64_t *)(edt + 1);
   arts_edt_dep_t *depv = (arts_edt_dep_t *)(paramv + paramc);
 
-  release_dbs(depc, depv, true);
+  release_dbs(&edt->wrapper_edt, true);
   arts_release_created_dbs();
 
   if (edt->lib) {

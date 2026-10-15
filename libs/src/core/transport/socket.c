@@ -38,9 +38,9 @@
 ******************************************************************************/
 #include "arts/transport/socket.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <errno.h>
 #include <inttypes.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -506,7 +506,8 @@ bool arts_socket_sentinel_check(void) {
    * orderly teardown can reach this probe first too; both enter the same
    * shutdown, so the probe need not tell them apart. */
   if (!arts_global_message_table || poll_incoming == NULL ||
-      __atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE)) {
+      atomic_load_explicit(&arts_node_info.shutdown_state,
+                           memory_order_acquire)) {
     return false;
   }
   int n = (int)(arts_global_message_table->table_length - 1) * (int)ports;
@@ -640,7 +641,8 @@ static inline bool arts_transport_connect(int rank, unsigned int port) {
                      sizeof(struct sockaddr_in)) < 0) {
         /* Stop retrying once this rank's shutdown has begun.  During startup
          * only the signal watcher begins one, and it reports the signal. */
-        if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE)) {
+        if (atomic_load_explicit(&arts_node_info.shutdown_state,
+                                 memory_order_acquire)) {
           return false;
         }
         if (++retry_count >= max_retries) {
@@ -725,7 +727,8 @@ bool arts_transport_setup_incoming() {
       if (errno != EADDRINUSE) {
         break; /* a non-contention error — fail fast */
       }
-      if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE)) {
+      if (atomic_load_explicit(&arts_node_info.shutdown_state,
+                               memory_order_acquire)) {
         return false;
       }
       if (++bind_retries >= max_bind_retries) {

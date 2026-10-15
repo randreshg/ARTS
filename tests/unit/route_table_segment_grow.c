@@ -35,8 +35,8 @@
  * No runtime: route_table.c + guid.c + shared.c #include'd; OoO drain no-op.
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,18 +63,6 @@ struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
-
-/* Wait-free counter primitives for the DB seq allocator (libc-free unit
- * pattern: mirror the atomics.c definitions verbatim). */
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
 
 #include "../../libs/src/core/gas/guid.c"
 #include "../../libs/src/core/gas/route_table.c"
@@ -120,7 +108,8 @@ static int collect_colliding_keys(void) {
 
 static unsigned chain_len(arts_route_table_t *t) {
   unsigned n = 0;
-  for (arts_route_table_t *c = t; c; c = c->next) {
+  for (arts_route_table_t *c = t; c;
+       c = atomic_load_explicit(&c->next, memory_order_acquire)) {
     n++;
   }
   return n;
@@ -141,7 +130,7 @@ static void *grow_worker(void *vp) {
   for (int rep = 0; rep < 200; rep++) {
     for (int i = 0; i < NCOLLIDE; i++) {
       arts_route_item_t *item =
-          arts_route_table_search_for_empty(g_root, g_keys[i], false);
+          arts_route_table_search_for_empty(g_root, g_keys[i]);
       if (!item) {
         return (void *)1; /* never NULL */
       }
@@ -181,7 +170,7 @@ static const char *largest_segment_refuses_growth(char *out, size_t cap) {
     for (uint64_t k = 1; claimed <= COLLISION_RESOLVES; k++) {
       arts_guid_t g = ARTS_GUID_MAKE(ARTS_GUID_DB, 0, k);
       if (get_route_table_key((uint64_t)g, last->shift) == 0) {
-        (void)arts_route_table_search_for_empty(last, g, false);
+        (void)arts_route_table_search_for_empty(last, g);
         claimed++;
       }
     }
@@ -222,11 +211,12 @@ int main(void) {
   g_root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
   arts_route_item_t *slots[NCOLLIDE];
   for (int i = 0; i < NCOLLIDE; i++) {
-    slots[i] = arts_route_table_search_for_empty(g_root, g_keys[i], false);
+    slots[i] = arts_route_table_search_for_empty(g_root, g_keys[i]);
     if (!slots[i]) {
       FAIL("1: search_for_empty returned NULL for key %d\n", i);
     }
-    if (slots[i]->key != g_keys[i]) {
+    if (atomic_load_explicit(&slots[i]->key, memory_order_acquire) !=
+        g_keys[i]) {
       FAIL("1: slot %d claimed wrong key\n", i);
     }
   }

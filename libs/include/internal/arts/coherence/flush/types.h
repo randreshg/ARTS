@@ -34,7 +34,7 @@ struct arts_db_cache_s {
   /* The home's line.  On a non-home stub the slot is empty except while the
    * rank is the block's creator: the creator's own copy sits here until its
    * release writes it back and clears the slot. */
-  arts_atomic_shared_ptr_t buffer;
+  _Atomic(arts_shared_slot_t) buffer;
   arts_guid_t db_guid;
   uint64_t db_size;
   uint8_t payload_pending; /* see the VAL layout: 1 until a line is installed */

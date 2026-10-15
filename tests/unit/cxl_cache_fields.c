@@ -1,10 +1,10 @@
-/* excl/types.h maintains two hand-written views of arts_db_cache_s — one for
- * C11 atomics, one for C++/nvcc.  A field added to one and misplaced in the
- * other is a layout the two languages disagree about, which no runtime test
- * can see.  This probe prints its view's fingerprint; the C++ wrapper prints
- * the other; the comparison is a ctest of its own.  The slot field exists
- * only where the library keeps payloads in the store, the only trees that
- * build the probe. */
+/* excl/types.h defines arts_db_cache_s once for C and C++, where each
+ * _Atomic(T) member is std::atomic<T>.  A member whose two spellings differ
+ * in size or alignment is a layout the two languages disagree about, which
+ * no runtime test can see.  This probe prints the C compilation's
+ * fingerprint; the C++ wrapper prints the other; the comparison is a ctest
+ * of its own.  The slot field exists only where the library keeps payloads
+ * in the store, the only trees that build the probe. */
 #include "arts/coherence/excl/types.h"
 
 #include <stddef.h>

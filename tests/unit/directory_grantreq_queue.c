@@ -29,8 +29,8 @@
 #include "arts/coherence/directory.h"
 #include "arts/transport/protocol.h" /* ARTS_GRANT_VERSION_NONE */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -256,6 +256,7 @@ int main(void) {
  * queue nodes; the bitset uses arts_calloc/arts_free, pulled in by the same
  * directory.c TU).  Provided only in the standalone build. */
 #ifdef ARTS_UNIT_STANDALONE_SHIMS
+#include "counter_stubs.h"
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }

@@ -64,7 +64,6 @@ extern ARTS_THREAD_LOCAL struct arts_edt_s *current_edt;
 /* Snapshot of the per-worker EDT context, used to save and restore the
  * thread-locals around a nested execution. */
 typedef struct {
-  arts_guid_t current_edt_guid;
   struct arts_edt_s *current_edt;
   /* Both lists saved by value — each vector owns its block. */
   arts_vector_t created_db_list;

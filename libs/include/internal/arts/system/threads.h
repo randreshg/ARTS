@@ -82,8 +82,9 @@ _Noreturn
 void arts_exit_now(uint8_t status);
 
 /* Architectural spin-wait hint for idle poll loops (x86 `pause` / arm `yield`;
- * compiler barrier elsewhere).  Cuts the pipeline/power cost of a busy-poll
- * and forces re-reads of polled memory each iteration. */
+ * an empty asm statement elsewhere).  Cuts the pipeline/power cost of a
+ * busy-poll.  It synchronizes nothing: a polled word is an atomic object read
+ * with its own load. */
 static inline void arts_runtime_idle_pause(void) {
 #if defined(__x86_64__) || defined(__i386__)
   __asm__ __volatile__("pause" ::: "memory");

@@ -34,9 +34,9 @@
  * #include'ing edt.c.)
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>

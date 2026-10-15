@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * arts_atomic_shared_compare_exchange + load forward-progress
+ * arts_shared_slot_compare_exchange + load forward-progress
  * (shared.c), including the load livelock guard.
  *
  * compare_exchange contract:
@@ -28,10 +28,10 @@
 
 #include "arts/utils/shared.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,14 +62,14 @@ static int deterministic(void) {
   atomic_store(&g_made, 0);
   atomic_store(&g_deleted, 0);
 
-  arts_atomic_shared_ptr_t slot;
+  _Atomic(arts_shared_slot_t) slot;
   atomic_store(&slot, (arts_shared_slot_t){0});
 
   /* Install A into the slot; keep our own pinning ref on A. */
   arts_shared_ptr_t A = arts_shared_make(make_obj(), del_obj); /* strong=1 */
   arts_shared_ptr_t A_pin = arts_shared_copy(A);               /* strong=2 */
-  arts_atomic_shared_store(&slot, A); /* slot owns one ref; A handle nulled? no:
-                                         store does not null the handle */
+  arts_shared_slot_store(&slot, A); /* the slot takes A's ref; store does not
+                                       null the handle */
   /* After store: slot holds a ref to A's cb (the one `A` carried).  A_pin is
    * our pinning ref.  No deleter yet. */
   assert(atomic_load(&g_deleted) == 0);
@@ -77,7 +77,7 @@ static int deterministic(void) {
   /* SUCCESS: slot still holds A_pin's cb; swap to B.  Slot drops its ref on A
    * (so A's cb goes 2->1, still alive via A_pin); slot now owns B. */
   arts_shared_ptr_t B = arts_shared_make(make_obj(), del_obj); /* strong=1 */
-  bool ok = arts_atomic_shared_compare_exchange(&slot, A_pin, B);
+  bool ok = arts_shared_slot_compare_exchange(&slot, A_pin, B);
   if (!ok) {
     (void)fprintf(stderr, "FAIL shared_compare_exchange: success CAS failed\n");
     return 1;
@@ -92,7 +92,7 @@ static int deterministic(void) {
   /* MISMATCH: slot now holds B, not A_pin.  compare_exchange(expected=A_pin)
    * must fail and touch nothing. */
   arts_shared_ptr_t C = arts_shared_make(make_obj(), del_obj); /* strong=1 */
-  bool bad = arts_atomic_shared_compare_exchange(&slot, A_pin, C);
+  bool bad = arts_shared_slot_compare_exchange(&slot, A_pin, C);
   if (bad) {
     (void)fprintf(stderr,
                   "FAIL shared_compare_exchange: mismatch returned true\n");
@@ -128,7 +128,7 @@ static int deterministic(void) {
   }
 
   /* Clear the slot -> releases B -> deleter for B (deleted: 2->3). */
-  arts_atomic_shared_store(&slot, (arts_shared_ptr_t)NULL);
+  arts_shared_slot_store(&slot, (arts_shared_ptr_t)NULL);
   if (atomic_load(&g_deleted) != 3) {
     (void)fprintf(
         stderr, "FAIL shared_compare_exchange: B not deleted on slot clear\n");
@@ -146,7 +146,7 @@ static int deterministic(void) {
 }
 
 /* ---- Part 2: concurrent compare_exchange + load forward-progress ---- */
-static arts_atomic_shared_ptr_t g_slot;
+static _Atomic(arts_shared_slot_t) g_slot;
 static atomic_int g_start;
 static _Atomic int g_stop;
 static _Atomic uint64_t g_cas_wins;
@@ -163,9 +163,9 @@ static void *installer(void *arg) {
   }
   for (int i = 0; i < INSTALLS_PER; i++) {
     /* Pin the current occupant (load gives us a fresh ref). */
-    arts_shared_ptr_t expected = arts_atomic_shared_load(&g_slot);
+    arts_shared_ptr_t expected = arts_shared_slot_load(&g_slot);
     arts_shared_ptr_t fresh = arts_shared_make(make_obj(), del_obj);
-    if (arts_atomic_shared_compare_exchange(&g_slot, expected, fresh)) {
+    if (arts_shared_slot_compare_exchange(&g_slot, expected, fresh)) {
       atomic_fetch_add_explicit(&g_cas_wins, 1, memory_order_relaxed);
       /* Won: slot took `fresh`, dropped its ref on `expected`. */
     } else {
@@ -189,7 +189,7 @@ static void *reader(void *arg) {
   }
   uint64_t reads = 0;
   while (!atomic_load_explicit(&g_stop, memory_order_acquire)) {
-    arts_shared_ptr_t r = arts_atomic_shared_load(&g_slot);
+    arts_shared_ptr_t r = arts_shared_slot_load(&g_slot);
     if (r) {
       obj_t *o = (obj_t *)arts_shared_get(r);
       if (o->magic != OBJ_MAGIC) {
@@ -218,7 +218,7 @@ static int concurrent(void) {
   atomic_store(&g_slot, (arts_shared_slot_t){0});
 
   /* Seed the slot. */
-  arts_atomic_shared_store(&g_slot, arts_shared_make(make_obj(), del_obj));
+  arts_shared_slot_store(&g_slot, arts_shared_make(make_obj(), del_obj));
 
   pthread_t inst[INSTALLERS];
   pthread_t rd;
@@ -234,7 +234,7 @@ static int concurrent(void) {
   pthread_join(rd, NULL);
 
   /* Clear the slot -> releases the final occupant. */
-  arts_atomic_shared_store(&g_slot, (arts_shared_ptr_t)NULL);
+  arts_shared_slot_store(&g_slot, (arts_shared_ptr_t)NULL);
 
   /* Refcount conservation: every object ever made was deleted exactly once. */
   uint64_t made = atomic_load(&g_made);

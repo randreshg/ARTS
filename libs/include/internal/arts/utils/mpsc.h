@@ -10,12 +10,25 @@
  * is, is the owning structure's discipline, not the queue's.
  *
  * Node type: the queue rides the common intrusive link `arts_lf_link_t`
- * (a single `{ _Atomic next }` cell, also used by arts_lf_stack_t).  Embed
+ * (a single atomic `next` cell, also used by arts_lf_stack_t).  Embed
  * it as the first member of any payload and recover the payload by casting
- * the popped node.  A node belongs to at most one queue (mpsc OR lf_stack)
- * at a time; after a node is popped it must be freed or pushed onto a
- * *different* queue before being reused — the same invariant arts_lf_stack_t
- * documents.
+ * the popped node.  A node is on at most one list (queue, stack or pool) at
+ * a time, since it has one link cell; once popped it may be pushed again onto
+ * any list, this queue included — pop itself re-pushes the queue's stub.
+ * Neither operation compares a node identity it read earlier, so reuse
+ * exposes the queue to no ABA.
+ *
+ * Orders:
+ *   head     producers exchange it acq_rel.  The release publishes the node's
+ *            own NULL link; the acquire orders that previous node's NULL
+ *            link before this producer's store into it, so the link cannot
+ *            be overwritten back to NULL and the node lost.  The consumer
+ *            reads it with acquire to tell an empty queue from a producer
+ *            between its exchange and its link store.
+ *   next     a producer's release store of prev->next publishes its node and
+ *            what was written into it before the push; the consumer's
+ *            acquire load of tail->next takes it.
+ *   tail     the single consumer's own; plain.
  */
 
 #ifndef ARTS_UTILS_MPSC_H
@@ -25,21 +38,11 @@ extern "C" {
 #endif
 
 #include "arts/utils/lockfree_lifo.h" /* arts_lf_link_t */
+#include "arts/utils/stdatomic_compat.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-/* Layout-mirror: the C++/nvcc TU drops _Atomic on head so the struct layout
- * stays visible without C11 atomics, exactly the same pattern arts_lf_stack_t
- * uses.  The inline producer/consumer helpers below only compile in C. */
-#ifdef __cplusplus
-typedef struct {
-  arts_lf_link_t *head;
-  arts_lf_link_t *tail;
-  arts_lf_link_t stub;
-} arts_mpsc_t;
-#else
-#include <stdatomic.h>
 
 typedef struct {
   _Atomic(arts_lf_link_t *) head; /* producers tail-append via xchg */
@@ -124,7 +127,6 @@ static inline arts_lf_link_t *arts_mpsc_drain_remaining(arts_mpsc_t *q) {
   }
   return chain;
 }
-#endif /* !__cplusplus */
 
 #ifdef __cplusplus
 }

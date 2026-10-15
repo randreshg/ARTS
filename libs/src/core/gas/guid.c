@@ -42,8 +42,8 @@
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
+#include "arts/utils/stdatomic_compat.h"
 
 uint64_t num_tables = 0;
 uint64_t keys_per_thread = 0;
@@ -51,22 +51,31 @@ uint64_t global_guid_on = 0;
 uint64_t min_global_guid_thread = 0;
 uint64_t max_global_guid_thread = 0;
 
+/* The pre-parallel countdown serves every kind from one counter descending
+ * from 2^ARTS_GUID_KEY_BITS and never leaves the top STARTUP_RESERVE values,
+ * which no rank partitions after the parallel-start flip: they lie above every
+ * thread's flat-kind block, and (2^48 being a multiple of the seq space) in the
+ * top STARTUP_RESERVE seqs of every home's DB seq space. */
+#define ARTS_GUID_STARTUP_RESERVE ((uint64_t)1 << 26)
+
 /* ── DB-kind seq allocator ──────────────────────────────────────────────────
  * DB keys are [szhint:10 | seq:38] (see guid.h).  seq is unique per
  * (home rank, creating rank) with zero communication: every home's seq space
- * is statically sliced by creating rank (arts_db_seq_budget wide), and within
- * this rank's slice a SHARED per-home counter hands out chunks that threads
- * consume through a private cursor — the fast path is a plain thread-local
- * increment, the shared counter is touched once per chunk.  The top
- * STARTUP_RESERVE seqs of every home's space are never sliced: the
- * pre-parallel countdown allocator mints there, so those keys classify as
- * "no creator" on every rank, before and after the parallel-start flip. */
-#define ARTS_GUID_DB_STARTUP_RESERVE ((uint64_t)1 << 26)
+ * below the startup reserve is statically sliced by creating rank
+ * (arts_db_seq_budget wide), and within this rank's slice a SHARED per-home
+ * counter hands out chunks that threads consume through a private cursor —
+ * the fast path is a plain thread-local increment, the shared counter is
+ * touched once per chunk.  Countdown keys in the reserve classify as "no
+ * creator" on every rank, before and after the parallel-start flip. */
 #define ARTS_GUID_DB_CHUNK ((uint64_t)1 << ARTS_GUID_DB_CHUNK_BITS)
 
 uint64_t arts_db_seq_budget = 0; /* single-writer at parallel start */
 static uint64_t db_seq_creator_base = 0;
-static volatile uint64_t *db_seq_next = NULL; /* [nrank] shared, chunk-leased */
+/* [nrank] per-home counters, shared by this rank's minters.  The array is
+ * allocated by thread 0 before the parallel-start barrier, which publishes the
+ * pointer.  Each counter is an ID counter: its accesses carry only its own
+ * value, since disjointness comes from its RMWs alone. */
+static _Atomic(uint64_t) *db_seq_next = NULL;
 
 struct db_seq_cursor_s {
   uint64_t cur;
@@ -89,7 +98,8 @@ static uint64_t db_seq_claim(unsigned int home, uint64_t count) {
      * recoverable state. */
     ARTS_ERROR("GUID generation: DB seq counters not initialized");
   }
-  uint64_t base = arts_atomic_fetch_add_u64(&db_seq_next[home], count);
+  uint64_t base = atomic_fetch_add_explicit(&db_seq_next[home], count,
+                                            memory_order_relaxed);
   if (base + count > db_seq_creator_base + arts_db_seq_budget) {
     ARTS_ERROR("GUID generation failed: DB seq slice exhausted "
                "(home %u, budget %lu)",
@@ -145,24 +155,19 @@ arts_guid_t arts_guid_create_for_rank_internal(unsigned int rank,
   }
   uint64_t key = 0;
   if (global_guid_on) {
-    /* Pre-parallel countdown: single-threaded window, all kinds served from
-     * one counter descending from 2^48.  For DB kinds those keys must stay
-     * inside the STARTUP_RESERVE at the top of the seq space — there they
-     * carry the all-ones szhint for free and classify as "no creator" on
-     * every rank, so the route-table decision for them is identical before
-     * and after the parallel-start flip. */
-    if (global_guid_on > guid_count) {
-      key = global_guid_on - guid_count;
-      global_guid_on -= guid_count;
-      if (type == ARTS_GUID_DB &&
-          (key & ARTS_GUID_DB_SEQ_MASK) <
-              (ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_DB_STARTUP_RESERVE) {
-        ARTS_ERROR("GUID generation failed: startup DB keys exhausted the "
-                   "reserved seq region");
-      }
-    } else {
-      ARTS_ERROR("GUID generation failed: parallel start out of keys");
+    /* Pre-parallel countdown: a single-threaded window, inside the startup
+     * reserve.  DB keys there carry the all-ones szhint for free, and every
+     * key there resolves to a remote shard before and after the
+     * parallel-start flip, so its route-table decision never changes. */
+    uint64_t reserve_floor =
+        ((uint64_t)1 << ARTS_GUID_KEY_BITS) - ARTS_GUID_STARTUP_RESERVE;
+    if (guid_count > global_guid_on - reserve_floor) {
+      ARTS_ERROR("GUID generation failed: GUIDs minted before parallel start "
+                 "exhausted the startup reserve (%lu keys)",
+                 (unsigned long)ARTS_GUID_STARTUP_RESERVE);
     }
+    global_guid_on -= guid_count;
+    key = global_guid_on;
   } else if (type == ARTS_GUID_DB) {
     /* Chunked fast path for single mints; a multi-GUID reservation needs
      * CONSECUTIVE seqs, which no chunk cursor can promise — it claims its
@@ -190,20 +195,14 @@ arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type) {
 }
 
 void set_guid_generator_after_parallel_start() {
-  /* One GUID key partition PER THREAD (workers + progress threads).  Any
-   * thread that may mint GUIDs concurrently needs a DISJOINT key block.  In
-   * particular, with progress_threads > 1 several progress threads run
-   * arts_handler_edt_create (and create finish-event proxy LATCHes) at the same
-   * time; collapsing every non-worker thread onto a single shared slot made
-   * those threads emit IDENTICAL GUID sequences (same offset, both counters
-   * starting at 0), so two unrelated objects could receive the same GUID. */
-  unsigned int num_of_tables = arts_node_info.total_thread_count;
+  /* One flat-kind key block per global thread slot, below the startup
+   * reserve.  The block width depends only on values every rank shares (the
+   * key width, the reserve, the per-rank thread count and the rank count), so
+   * every rank draws the same blocks and two threads' blocks never overlap,
+   * whatever each rank's countdown minted. */
   keys_per_thread =
-      global_guid_on / ((uint64_t)num_of_tables * arts_global_rank_count);
-  /* Single-writer home of num_tables: it divides the DB route-table shard,
-   * so it must not be a many-writers same-value race.  Published to every
-   * other thread by the parallel-start barrier below. */
-  num_tables = num_of_tables;
+      (((uint64_t)1 << ARTS_GUID_KEY_BITS) - ARTS_GUID_STARTUP_RESERVE) /
+      (num_tables * arts_global_rank_count);
 
   /* DB seq allocator: slice every home's seq space (minus the startup
    * reserve at the top) by creating rank, and open this rank's shared
@@ -213,16 +212,16 @@ void set_guid_generator_after_parallel_start() {
    * fast path relies on. */
   uint64_t nrank = arts_global_rank_count ? arts_global_rank_count : 1;
   arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_DB_STARTUP_RESERVE) / nrank;
+      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) / nrank;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
   db_seq_next =
-      (volatile uint64_t *)arts_malloc(sizeof(uint64_t) * (size_t)nrank);
+      (_Atomic(uint64_t) *)arts_malloc(sizeof(*db_seq_next) * (size_t)nrank);
   for (uint64_t r = 0; r < nrank; r++) {
     /* Seq 0 stays unused on rank 0 (counter convention: first value is 1). */
-    db_seq_next[r] = db_seq_creator_base + 1;
+    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   db_cursor_registry = (struct db_seq_cursor_s **)arts_calloc(
-      num_of_tables, sizeof(struct db_seq_cursor_s *));
+      num_tables, sizeof(struct db_seq_cursor_s *));
 
   global_guid_on = 0;
 }
@@ -239,37 +238,26 @@ void arts_guid_generator_cleanup() {
   db_seq_next = NULL;
 }
 
-void arts_guid_key_generator_init() {
-  /* Per-thread key partition: num_tables slots per rank, one per thread,
-   * indexed by the thread's globally-unique id so concurrent minters never
-   * overlap. Must agree with set_guid_generator_after_parallel_start's
-   * num_of_tables. */
-  /* num_tables itself is single-writer (set at parallel start on thread 0 —
-   * it divides the DB route-table shard); here only this thread's view of
-   * the partition geometry is derived. */
-  uint64_t nt = arts_node_info.total_thread_count;
-  uint64_t local_id = arts_thread_info.thread_id;
-  min_global_guid_thread = nt * arts_global_rank_id;
-  /* Exclusive upper bound: every local thread slot [0, nt) now owns a
-   * route table (allocated for all roles in arts_runtime_thread_init), so local
-   * GUIDs from any thread resolve to route_table[global_thread - min] rather
-   * than falling through to the shared remote table. */
-  max_global_guid_thread = min_global_guid_thread + nt;
-  //    global_guid_thread_id  = min_global_guid_thread + local_id;
-  arts_node_info.global_guid_thread_id[arts_thread_info.thread_id] =
-      min_global_guid_thread + local_id;
+void arts_guid_node_geometry_init(void) {
+  /* One key partition and one route table per local thread (workers and
+   * progress threads alike: any of them mints).  The rank's threads own the
+   * global thread slots [min, max), so a local GUID from any thread resolves
+   * to route_table[global_thread - min] rather than to a remote shard. */
+  num_tables = arts_node_info.total_thread_count;
+  min_global_guid_thread = num_tables * arts_global_rank_id;
+  max_global_guid_thread = min_global_guid_thread + num_tables;
+}
 
-  //    ARTS_INFO("num_tables: %lu local_id: %lu min_global_guid_thread: %lu
-  //    max_global_guid_thread: %lu global_guid_thread_id: %lu", num_tables,
-  //    local_id, min_global_guid_thread, max_global_guid_thread,
-  //    global_guid_thread_id); keys = arts_malloc(sizeof(uint64_t) *
-  //    ARTS_GUID_LAST * arts_global_rank_count);
+void arts_guid_key_generator_init() {
+  /* This thread's key partition: the global thread slot its keys are encoded
+   * under, and one counter per (rank, kind), owned by this thread alone. */
+  arts_node_info.global_guid_thread_id[arts_thread_info.thread_id] =
+      min_global_guid_thread + arts_thread_info.thread_id;
   arts_node_info.keys[arts_thread_info.thread_id] = (uint64_t *)arts_malloc(
       sizeof(uint64_t) * ARTS_GUID_LAST * arts_global_rank_count);
   for (unsigned int i = 0; i < ARTS_GUID_LAST * arts_global_rank_count; i++) {
     arts_node_info.keys[arts_thread_info.thread_id][i] = 1;
   }
-  //        keys[i] = 1;
 }
 
 arts_guid_kind_t arts_guid_get_kind(arts_guid_t guid) {
@@ -339,19 +327,23 @@ arts_guid_t arts_guid_reserve_range(arts_guid_kind_t kind, unsigned int size,
        * restart strands at most stride per counter. */
       uint64_t base = 0;
       for (unsigned int r = 0; r < nrank; r++) {
-        uint64_t v = arts_atomic_read_u64(&db_seq_next[r]);
+        uint64_t v =
+            atomic_load_explicit(&db_seq_next[r], memory_order_relaxed);
         if (v > base) {
           base = v;
         }
       }
       for (unsigned int r = 0; r < nrank;) {
-        uint64_t v = arts_atomic_read_u64(&db_seq_next[r]);
+        uint64_t v =
+            atomic_load_explicit(&db_seq_next[r], memory_order_relaxed);
         if (v > base) {
           base = v; /* someone claimed under us — re-raise every counter */
           r = 0;
           continue;
         }
-        if (arts_atomic_cswap_u64(&db_seq_next[r], v, base + stride) == v) {
+        if (atomic_compare_exchange_strong_explicit(
+                &db_seq_next[r], &v, base + stride, memory_order_relaxed,
+                memory_order_relaxed)) {
           r++;
         }
       }

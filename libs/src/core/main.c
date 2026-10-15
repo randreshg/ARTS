@@ -51,10 +51,15 @@
 #include "arts/transport/socket.h"
 #include "arts/transport/stdio_forward.h"
 
+#include <stdlib.h>
+
 int arts_rt(int argc, char **argv) {
   struct arts_config_s config;
   arts_config_load(&config);
 
+  /* Read before any other thread exists: the shutdown entry that reads it
+   * can run on the signal watcher. */
+  arts_node_info.e2e_marker_enabled = (getenv("ARTS_E2E_MARKER") != NULL);
   arts_install_signal_handlers();
   /* Start the dedicated SIGTERM/SIGINT/SIGHUP/SIGALRM watcher thread BEFORE
    * any worker or progress thread is spawned, so the SIG_BLOCK mask is
@@ -79,6 +84,7 @@ int arts_rt(int argc, char **argv) {
   if (config.table_length > 1) {
     arts_transport_setup(&config);
   }
+  arts_signal_handlers_set_rank(arts_global_rank_id);
   arts_global_master_rank_id = config.master_rank;
   if (arts_global_rank_id == config.master_rank && config.master_boot) {
     /* Settle the port block before the peers exist: they are spawned with the

@@ -35,9 +35,9 @@
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,7 +66,7 @@ static void *owner(void *arg) {
     arts_db_buf_install(&g_cache, v, payload, DB_SIZE);
     /* destroy_pre: drop the cache-hold (store NULL).  An in-flight reader's
      * own ref must keep the bytes alive. */
-    arts_atomic_shared_store(&g_cache.buffer, NULL);
+    arts_shared_slot_store(&g_cache.buffer, NULL);
   }
   return NULL;
 }
@@ -130,7 +130,7 @@ int main(void) {
 
   /* Final teardown: ensure the slot is NULL so the last buffer (if any) is
    * freed; ASan then accounts every buffer. */
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_shared_slot_store(&g_cache.buffer, NULL);
 
   if (atomic_load_explicit(&g_fail, memory_order_acquire) != 0) {
     return 1;

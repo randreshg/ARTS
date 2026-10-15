@@ -67,11 +67,11 @@
 /* ===== Case 2/6: RW local fast path ================================
  * Shared by every grant-bearing arm's arts_handler_db_acquire body
  * (coherence/val/, coherence/inv/).  CAS-increments writer_count "if
- * runnable"; on success writes dep->ptr (acquire_local) and returns true;
+ * runnable"; on success resolves the slot (acquire_local) and returns true;
  * returns false when this rank may not take a write turn, so the caller falls
  * through to arts_db_acquire_remote_rw. */
 bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
-                                   arts_edt_dep_t *dep) {
+                                   struct arts_edt_s *edt, unsigned int slot) {
   /* The CAS below is the WHOLE test, not a commit behind one.  writer_count
    * carries both facts a fresh write turn needs — a positive count IS "this
    * rank holds the grant", and ARTS_GRANT_UNCONFIRMED makes an install whose
@@ -106,7 +106,7 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
       /* A write turn taken on a grant this rank already held: the round trip
        * the sticky grant removed. */
       INCREMENT_NUM_GRANT_LOCAL_REUSE_BY(1);
-      dep->ptr = arts_db_acquire_local(cache);
+      arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
       return true;
     }
   }

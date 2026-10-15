@@ -53,18 +53,6 @@ void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 
-/* Wait-free counter primitives for the DB seq allocator (libc-free unit
- * pattern: mirror the atomics.c definitions verbatim). */
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
-
 #include "../../libs/src/core/gas/guid.c"
 static void test_after_miss(arts_guid_t key);
 static void test_after_claim(arts_guid_t key);
@@ -102,16 +90,16 @@ static void rt_init(void) {
 
   /* DB seq allocator (mirrors set_guid_generator_after_parallel_start). */
   arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_DB_STARTUP_RESERVE) /
+      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
       arts_global_rank_count;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
   if (db_seq_next) {
     free((void *)db_seq_next);
   }
-  db_seq_next = (volatile uint64_t *)malloc(sizeof(uint64_t) *
+  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
                                             arts_global_rank_count);
   for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    db_seq_next[r] = db_seq_creator_base + 1;
+    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   free(t_db_cursor);
   t_db_cursor = NULL;
@@ -143,9 +131,10 @@ static void test_after_miss(arts_guid_t key) {
   }
   g_miss_armed = 0;
   /* A: passes E (K's), claims L, installs the object there. */
-  g_cb = arts_route_table_install_if_absent(&g_obj, key, 0, false);
+  g_cb = arts_route_table_install_if_absent(&g_obj, key);
   /* K dies: E is returned. */
-  __atomic_store_n(&g_first_probe->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+  atomic_store_explicit(&g_first_probe->key, (arts_guid_t)0,
+                        memory_order_release);
   g_claim_armed = g_claim_after_miss;
   g_claim_after_miss = 0;
 }
@@ -154,7 +143,7 @@ static void *settle_retire(void *arg) {
   arts_guid_t to = (arts_guid_t)(uintptr_t)arg;
   struct timespec pause = {0, 100000000};
   nanosleep(&pause, NULL);
-  __atomic_store_n(&g_retiring_slot->key, to, __ATOMIC_RELEASE);
+  atomic_store_explicit(&g_retiring_slot->key, to, memory_order_release);
   return NULL;
 }
 
@@ -167,7 +156,7 @@ static void test_after_claim(arts_guid_t key) {
   g_claim_ran = what;
   if (what == 1) {
     /* The next generation's create, issued once A's object is installed. */
-    g_early_cb = arts_route_table_install_if_absent(&g_next_obj, key, 0, false);
+    g_early_cb = arts_route_table_install_if_absent(&g_next_obj, key);
     return;
   }
   /* A retire holds the slot; it settles 100 ms into the reserver's scan. */
@@ -184,17 +173,19 @@ static arts_route_table_t *fresh_key(void) {
   arts_route_table_t *rt = arts_get_route_table(g_key);
   uint64_t p0 = get_route_table_key((uint64_t)g_key, rt->shift);
   g_first_probe = &rt->data[p0];
-  __atomic_store_n(&g_first_probe->key, g_key ^ (arts_guid_t)0x40,
-                   __ATOMIC_RELEASE);
+  atomic_store_explicit(&g_first_probe->key, g_key ^ (arts_guid_t)0x40,
+                        memory_order_release);
   return rt;
 }
 
 static unsigned int slots_keyed(arts_route_table_t *rt) {
   unsigned int keyed = 0;
-  for (arts_route_table_t *t = rt; t != NULL; t = t->next) {
+  for (arts_route_table_t *t = rt; t != NULL;
+       t = atomic_load_explicit(&t->next, memory_order_acquire)) {
     uint64_t pos = get_route_table_key((uint64_t)g_key, t->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++) {
-      if (__atomic_load_n(&t->data[pos + i].key, __ATOMIC_ACQUIRE) == g_key) {
+      if (atomic_load_explicit(&t->data[pos + i].key, memory_order_acquire) ==
+          g_key) {
         keyed++;
       }
     }
@@ -227,10 +218,10 @@ int main(void) {
   if (b != second) {
     FAIL("1: the reservation did not resolve to the slot holding the object\n");
   }
-  if (__atomic_load_n(&g_first_probe->key, __ATOMIC_ACQUIRE) != 0) {
+  if (atomic_load_explicit(&g_first_probe->key, memory_order_acquire) != 0) {
     FAIL("1: the given-up claim was not returned\n");
   }
-  if (!lookup_is(&g_obj) || !arts_atomic_shared_holds(&second->value, g_cb)) {
+  if (!lookup_is(&g_obj) || !arts_shared_slot_holds(&second->value, g_cb)) {
     FAIL("1: the object is not where it was installed\n");
   }
   if (!arts_route_table_set_destroyed_item(g_key, g_cb)) {
@@ -264,7 +255,7 @@ int main(void) {
     FAIL("2: the live generation's destroy did not land\n");
   }
   arts_shared_release(&g_cb);
-  g_early_cb = arts_route_table_install_if_absent(&g_next_obj, g_key, 0, false);
+  g_early_cb = arts_route_table_install_if_absent(&g_next_obj, g_key);
   if (g_early_cb == NULL || !lookup_is(&g_next_obj)) {
     FAIL("2: the next generation did not install after the destroy\n");
   }
@@ -277,15 +268,17 @@ int main(void) {
   for (int what = 2; what <= 3; what++) {
     rt = fresh_key();
     /* G is published on L with an object; a retire holds L. */
-    g_cb = arts_route_table_install_if_absent(&g_obj, g_key, 0, false);
+    g_cb = arts_route_table_install_if_absent(&g_obj, g_key);
     g_retiring_slot = g_first_probe + 1;
     if (g_cb == NULL || slots_keyed(rt) != 1u ||
-        __atomic_load_n(&g_retiring_slot->key, __ATOMIC_ACQUIRE) != g_key) {
+        atomic_load_explicit(&g_retiring_slot->key, memory_order_acquire) !=
+            g_key) {
       FAIL("3: setup did not publish the key on the second probe slot\n");
     }
-    __atomic_store_n(&g_retiring_slot->key, ARTS_ROUTE_KEY_RETIRING,
-                     __ATOMIC_RELEASE);
-    __atomic_store_n(&g_first_probe->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_retiring_slot->key, ARTS_ROUTE_KEY_RETIRING,
+                          memory_order_release);
+    atomic_store_explicit(&g_first_probe->key, (arts_guid_t)0,
+                          memory_order_release);
     g_claim_armed = what;
     arts_route_table_reserve_or_lookup(g_key, &b);
     pthread_join(g_settler, NULL);
@@ -307,8 +300,8 @@ int main(void) {
         FAIL("3: after a return the claim was not published\n");
       }
       /* The retire that returned L took the object in this simulation. */
-      arts_shared_ptr_t out = arts_atomic_shared_exchange(
-          &g_retiring_slot->value, NULL);
+      arts_shared_ptr_t out =
+          arts_shared_slot_exchange(&g_retiring_slot->value, NULL);
       if (out == NULL) {
         FAIL("3: the retiring slot held no object\n");
       }

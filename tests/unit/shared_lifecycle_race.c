@@ -27,10 +27,10 @@
 
 #include "arts/utils/shared.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,7 +127,7 @@ static int part_a(void) {
 }
 
 /* ---- Part B+C: mixed-API churn + abandon-vs-make ---- */
-static arts_atomic_shared_ptr_t g_slot;
+static _Atomic(arts_shared_slot_t) g_slot;
 static atomic_int g_start;
 static _Atomic int g_stop;
 
@@ -152,11 +152,11 @@ static void *mix_worker(void *arg) {
     switch (r & 7) {
     case 0:
     case 1: { /* store a fresh cb (releases prior occupant) */
-      arts_atomic_shared_store(&g_slot, arts_shared_make(make_obj(), del_obj));
+      arts_shared_slot_store(&g_slot, arts_shared_make(make_obj(), del_obj));
       break;
     }
     case 2: { /* exchange a fresh cb, release the returned old */
-      arts_shared_ptr_t old = arts_atomic_shared_exchange(
+      arts_shared_ptr_t old = arts_shared_slot_exchange(
           &g_slot, arts_shared_make(make_obj(), del_obj));
       if (old) {
         arts_shared_release(&old);
@@ -164,9 +164,9 @@ static void *mix_worker(void *arg) {
       break;
     }
     case 3: { /* compare_exchange against a pinned load (abandon loser) */
-      arts_shared_ptr_t exp = arts_atomic_shared_load(&g_slot);
+      arts_shared_ptr_t exp = arts_shared_slot_load(&g_slot);
       arts_shared_ptr_t fresh = arts_shared_make(make_obj(), del_obj);
-      if (!arts_atomic_shared_compare_exchange(&g_slot, exp, fresh)) {
+      if (!arts_shared_slot_compare_exchange(&g_slot, exp, fresh)) {
         void *obj = arts_shared_get(fresh);
         arts_shared_abandon(&fresh); /* loser: object stays ours, free it */
         del_obj(obj);
@@ -184,7 +184,7 @@ static void *mix_worker(void *arg) {
       break;
     }
     default: { /* load + get + (maybe copy) + release */
-      arts_shared_ptr_t l = arts_atomic_shared_load(&g_slot);
+      arts_shared_ptr_t l = arts_shared_slot_load(&g_slot);
       if (l) {
         obj_t *o = (obj_t *)arts_shared_get(l);
         if (o->magic != OBJ_MAGIC ||
@@ -212,7 +212,7 @@ static int part_bc(void) {
   atomic_init(&g_start, 0);
   atomic_init(&g_stop, 0);
   atomic_store(&g_slot, (arts_shared_slot_t){0});
-  arts_atomic_shared_store(&g_slot, arts_shared_make(make_obj(), del_obj));
+  arts_shared_slot_store(&g_slot, arts_shared_make(make_obj(), del_obj));
 
   pthread_t th[MIX_THREADS];
   for (int i = 0; i < MIX_THREADS; i++) {
@@ -222,7 +222,7 @@ static int part_bc(void) {
   for (int i = 0; i < MIX_THREADS; i++) {
     pthread_join(th[i], NULL);
   }
-  arts_atomic_shared_store(&g_slot, (arts_shared_ptr_t)NULL); /* drop final */
+  arts_shared_slot_store(&g_slot, (arts_shared_ptr_t)NULL); /* drop final */
 
   uint64_t made = atomic_load(&g_made);
   uint64_t del = atomic_load(&g_deleted);

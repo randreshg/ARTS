@@ -43,6 +43,7 @@ extern "C" {
 #endif
 #include "arts/runtime_types.h"
 #include "arts/utils/lockfree_lifo.h" /* arts_lf_link_t */
+#include <assert.h>                   /* static_assert */
 #include <stddef.h>                   /* offsetof */
 
 /** Dep node — one per registered EDT or chained event waiting on this
@@ -54,16 +55,8 @@ struct arts_event_dep_s {
   uint32_t slot;              /* destination slot */
   arts_db_access_mode_t mode; /* dep mode (preserved across signal) */
 };
-/* event.h is included from C (.c) and, via edt.c's #include into edt_gpu.cu,
- * from CUDA C++ (nvcc).  C++ spells the static assertion `static_assert`; C
- * uses `_Static_assert`.  Guard so both front-ends accept this header. */
-#ifdef __cplusplus
 static_assert(offsetof(struct arts_event_dep_s, link) == 0,
               "link must be first for arts_lf_link_t round-tripping");
-#else
-_Static_assert(offsetof(struct arts_event_dep_s, link) == 0,
-               "link must be first for arts_lf_link_t round-tripping");
-#endif
 
 /* arts_event_add_dependence (event-source branch of arts_add_dependence) is
  * declared once in the public header (arts.h); callers include that.  Not

@@ -31,7 +31,6 @@
 
 #include "arts/coherence/types.h" /* struct arts_db_s */
 #include "arts/edt_context.h"     /* current_edt, arts_get_created_db_list */
-#include "arts/runtime_state.h"   /* arts_thread_info.current_edt_guid */
 
 #include <stdint.h>
 
@@ -73,8 +72,7 @@ void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depv;
 
   struct arts_edt_s *outer_edt = current_edt;
-  arts_guid_t outer_guid = arts_thread_info.current_edt_guid;
-  if (outer_edt == NULL || outer_guid == NULL_GUID) {
+  if (outer_edt == NULL) {
     fail("no running EDT context");
     return;
   }
@@ -108,8 +106,7 @@ void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     arts_event_wait(fe);
 
-    if (current_edt != outer_edt ||
-        arts_thread_info.current_edt_guid != outer_guid) {
+    if (current_edt != outer_edt) {
       arts_printf("  after wait %d: current_edt=%p want %p\n", w,
                   (void *)current_edt, (void *)outer_edt);
       fail("the outer EDT's identity was not restored");

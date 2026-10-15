@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
-/* Compile the same layout probe as C++ so runtime_types.h selects its
- * qualifier-free C++/nvcc declarations. */
+/* The same layout probe compiled as C++, where each _Atomic(T) member is the
+ * std::atomic<T> of arts/utils/stdatomic_compat.h. */
 #include "runtime_edt_event_layout.c"

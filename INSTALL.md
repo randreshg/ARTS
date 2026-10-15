@@ -39,9 +39,18 @@ Environment Requirements
 
 **Languages:** C17 (runtime core), C++17, and optionally CUDA (GPU support).
 
-**Operating System:** Linux (x86-64 or ARMv8.1+). The runtime relies on a
-double-width compare-and-swap (`cmpxchg16b` on x86-64, `casp` on ARMv8.1+);
-on x86-64 it is built with `-mcx16` and linked against `libatomic`.
+**Operating System:** Linux on x86-64 or AArch64 (any ARMv8-A host). The
+runtime relies on a double-width compare-and-swap: `cmpxchg16b` on x86-64,
+where it is built with `-mcx16`. On AArch64 no `-march` is forced: where the
+compiler outlines atomics by default (recent GCC and Clang), the
+read-modify-writes are outlined and pick LSE or LL/SC from the host; an older
+compiler emits inline LL/SC loops instead, which run on every ARMv8-A host,
+with or without LSE. The 16-byte compare-and-swap is libatomic's under GCC
+and, under Clang with outlining, libgcc's `__aarch64_cas16_acq_rel`, each
+choosing `casp` or an LL/SC loop.
+The runtime is linked against `libatomic`, which GCC calls for every 16-byte
+atomic. The benchmark tree is x86-64 only: on another target the configure
+skips it.
 
 **Compiler:** GCC >= 7 or Clang >= 5 (strict `-std=c17`, no GNU extensions).
 Other compilers are not supported.
@@ -133,7 +142,7 @@ with defaults lives in [README.md](README.md#build-options); the most common are
 | `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with a grant when its last local user finishes — `PURGE` (hand it back to the home, with the payload when it is an EXCL write grant) or `RETAIN` (default; keep it until another node asks). Live in EXCL (read and write grants) and in WT × {VAL, INV} (the write grant); WB requires RETAIN. |
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the ctest suite. |
-| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (the reference runtimes need a host MPI; the ARTS variants do not). |
+| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (the reference runtimes need a host MPI; the ARTS variants do not). Skipped, with a configure message, on a target other than x86-64. |
 | `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan). |
 | `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_WRITE_COMPLETION_DELAY_MS`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`), each inert until its environment variable is set. |
 | `ARTS_DEBUG_DB_QUARANTINE` | `OFF` | Debug builds only: hold every freed coherent data-block descriptor back, filled, and report a write through a reference that outlived it. |

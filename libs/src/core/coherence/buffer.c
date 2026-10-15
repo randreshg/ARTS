@@ -195,7 +195,7 @@ arts_shared_ptr_t arts_db_buf_acquire(struct arts_db_cache_s *cache) {
   /* Acquire-and-validate load: returns a caller-owned strong ref (keeps the
    * buffer alive) or NULL if no buffer is installed.  Caller releases via
    * arts_db_buf_release. */
-  return arts_atomic_shared_load(&cache->buffer);
+  return arts_shared_slot_load(&cache->buffer);
 }
 
 void arts_db_buf_release(arts_shared_ptr_t *h) { arts_shared_release(h); }
@@ -220,7 +220,7 @@ static inline void buf_note_present(struct arts_db_cache_s *cache) {
  * an empty slot, and every later materialization would then stand down
  * forever.  The slot cannot say that: it is the thing being decided. */
 static inline bool buf_slot_filled(struct arts_db_cache_s *cache) {
-  return !arts_atomic_shared_empty(&cache->buffer);
+  return !arts_shared_slot_empty(&cache->buffer);
 }
 
 bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
@@ -242,7 +242,7 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
   nb->data = (char *)payload;
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
-  if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
+  if (!arts_shared_slot_compare_exchange(&cache->buffer, NULL, cb)) {
     arts_shared_release(&cb); /* last ref: the deleter ends nb */
     /* One descriptor serves a block for its whole life: the store does not
      * move, so a second descriptor would be two names for one range and
@@ -334,7 +334,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
    * may only ever fill a hole.  Two first users therefore agree by
    * construction — one installs, the other adopts the installed image, and
    * neither image holds a value anyone wrote. */
-  if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
+  if (!arts_shared_slot_compare_exchange(&cache->buffer, NULL, cb)) {
     arts_shared_release(&cb); /* last ref: the deleter ends nb */
     buf_note_present(cache);
     return false;
@@ -358,7 +358,7 @@ bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
   if (b != NULL && (const void *)b->data == payload) {
     /* The load ref pins the descriptor against reuse, so the slot's own
      * identity cannot have drifted and returned under the compare. */
-    withdrawn = arts_atomic_shared_compare_exchange(&cache->buffer, h, NULL);
+    withdrawn = arts_shared_slot_compare_exchange(&cache->buffer, h, NULL);
     if (withdrawn) {
       /* The slot is empty again, so the block needs materializing again.  The
        * flag is a hint with one safe direction: a 1 over a descriptor another
@@ -389,7 +389,7 @@ static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
   new_buf->cb = new_cb;
 
   for (;;) {
-    arts_shared_ptr_t old_h = arts_atomic_shared_load(&cache->buffer);
+    arts_shared_ptr_t old_h = arts_shared_slot_load(&cache->buffer);
     struct arts_db_buffer_s *old =
         (struct arts_db_buffer_s *)arts_shared_get(old_h);
     /* The publish decision reads a version another rank's release may be
@@ -418,7 +418,7 @@ static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
     /* Conditional publish: install new_cb only while the slot still holds
      * old_h.  old_h pins old's cb (strong >= 1) so the raw-pointer compare
      * cannot ABA.  On success the slot drops its ref on the old value. */
-    if (arts_atomic_shared_compare_exchange(&cache->buffer, old_h, new_cb)) {
+    if (arts_shared_slot_compare_exchange(&cache->buffer, old_h, new_cb)) {
       if (old_h != NULL) {
         arts_shared_release(&old_h); /* our load ref on old */
       }
@@ -577,7 +577,7 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
    * carries no data, so it may only ever fill a hole.  A buffer already in the
    * slot holds real bytes at some version — replacing it, at any version,
    * would destroy them. */
-  if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
+  if (!arts_shared_slot_compare_exchange(&cache->buffer, NULL, cb)) {
     arts_shared_release(&cb); /* last ref: the deleter ends the landing */
     buf_note_present(cache);
     return false;
@@ -657,7 +657,7 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
   nb->version = 0;
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
-  if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
+  if (!arts_shared_slot_compare_exchange(&cache->buffer, NULL, cb)) {
     /* Lost the install race: adopt the winner (the fetch overwrites
      * either). */
     arts_shared_release(&cb);
@@ -716,7 +716,7 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
   }
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
-  if (!arts_atomic_shared_compare_exchange(&cache->buffer, NULL, cb)) {
+  if (!arts_shared_slot_compare_exchange(&cache->buffer, NULL, cb)) {
     /* Lost the install race.  A first touch without data holds no value
      * anyone wrote, so adopting the winner loses nothing; a data-carrying
      * caller (whose write the coherence protocol serializes

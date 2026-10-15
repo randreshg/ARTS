@@ -128,7 +128,7 @@ int main(void) {
   /* Drop the cache-hold ref: the deleter ends the installed descriptor.  The
    * external bytes are not its to touch. */
   mark = g_nfreed;
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_shared_slot_store(&g_cache.buffer, NULL);
   if (!freed_since(mark, b)) {
     printf("FAIL: the last drop did not free exactly the installed "
            "descriptor\n");

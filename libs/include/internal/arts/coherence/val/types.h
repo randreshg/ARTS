@@ -48,7 +48,6 @@ extern "C" {
 /** @addtogroup internal_db_structs
  *  @{ */
 
-
 /*--- Per-DB home metadata ------------------------------------------------
  * Lives only on the rank that hosts a given DB (GUID home decides).  Holds
  * the directory state needed for ownership transfer and dedup.  The MPSC
@@ -59,21 +58,6 @@ extern "C" {
  * it). Producers are foreign-rank GRANT_REQUEST handlers; the single
  * consumer is the home-side dispatcher holding the invalidate_in_flight baton.
  */
-#ifdef __cplusplus
-struct arts_home_grantreq_node_s {
-  struct arts_home_grantreq_node_s *next;
-  unsigned int rank;
-  uint64_t have_version; /* version the requester already holds */
-  struct arts_rdzv_landing_s rdzv; /* requester's transfer landing */
-};
-
-struct arts_home_grantreq_queue_s {
-  struct arts_home_grantreq_node_s
-      *tail; /* producer end (push exchanges here) */
-  struct arts_home_grantreq_node_s *head; /* consumer end (pop advances here) */
-  struct arts_home_grantreq_node_s stub;
-};
-#else
 struct arts_home_grantreq_node_s {
   _Atomic(struct arts_home_grantreq_node_s *) next;
   unsigned int rank;
@@ -88,7 +72,6 @@ struct arts_home_grantreq_queue_s {
       head;                             /* consumer end (pop advances here) */
   struct arts_home_grantreq_node_s stub; /* permanent sentinel */
 };
-#endif
 
 /*--- Per-rank DB cache ---------------------------------------------------
  * Every rank that has acquired or hosts a given DB has one of these.  The
@@ -117,8 +100,8 @@ struct arts_db_cache_s {
   /* Buffers drawn from this cache and not parked back, plus the flag the
    * storage release sets once the destructor has run (encoding in buffer.c,
    * lifetime rule in types_common.h). */
-  arts_db_atomic_uint_t buf_holds;
-  arts_atomic_shared_ptr_t buffer;
+  _Atomic(unsigned int) buf_holds;
+  _Atomic(arts_shared_slot_t) buffer;
   arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
   /* Parked buffers a draw found too small: a popper must not free a node
    * another popper may still be reading, so they wait here for the storage
@@ -133,13 +116,11 @@ struct arts_db_cache_s {
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
    * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.  Accessed
-   * with the atomic builtins rather than an _Atomic qualifier so the layout
-   * is identical in the C and C++ views of this struct.  Correctness never
-   * rests on it: a reader that sees 0 still reads the pointer from the slot
-   * itself, and a stale 1 costs one materialize attempt that then clears
-   * it.  The slot is monotone for a live cache — only the destructor puts
-   * NULL back — so a 0 can never go stale. */
+   * use must find that out without touching the slot's refcount.
+   * Correctness never rests on it: a reader that sees 0 still reads the
+   * pointer from the slot itself, and a stale 1 costs one materialize
+   * attempt that then clears it.  The slot is monotone for a live cache —
+   * only the destructor puts NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
    * the home's directory, or a dependence's first touch.  A create that
@@ -273,9 +254,9 @@ struct arts_db_s {
   bool home_initialized; /**< one-shot init sentinel (set by arts_db_home_init).
                           */
 #ifdef ARTS_WRITE_POLICY_WB
-  arts_db_atomic_uint_t rw_holder;
+  _Atomic(unsigned int) rw_holder;
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
-  arts_db_atomic_uint_t invalidate_in_flight;
+  _Atomic(unsigned int) invalidate_in_flight;
   /* destroy fan-out roster: creator, readers, writers */
   struct arts_rank_bitset_s cached_ranks;
   unsigned int pending_install_owner; /* baton-holder-written transfer target */
@@ -283,10 +264,10 @@ struct arts_db_s {
 #ifndef ARTS_RELEASE_PURGE
   /* The holder a revocation targets.  A home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory. */
-  arts_db_atomic_uint_t rw_holder;
+  _Atomic(unsigned int) rw_holder;
 #endif
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
-  arts_db_atomic_uint_t invalidate_in_flight;
+  _Atomic(unsigned int) invalidate_in_flight;
   /* The RO dedup watermark (SNAPSHOT_REQUEST reply).  Not the destroy
    * roster: a rank can hold a cache the ledger never credits (a version-0
    * reply, a holder with no buffer). */
@@ -304,7 +285,7 @@ struct arts_db_s {
    * home's serving tail.  Both sides publish then check and consume by CAS, so
    * exactly one of them accepts any given return.  Grants are serialized, so
    * at most one return can be outstanding and one slot suffices. */
-  arts_db_atomic_uint_t pending_return_from;
+  _Atomic(unsigned int) pending_return_from;
   /* The reply the returner waits on, owned by the latched return: written
    * before the latch CAS publishes the slot, read by the latch's one
    * consumer after its consuming CAS. */

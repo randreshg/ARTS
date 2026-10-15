@@ -8,9 +8,10 @@
  * and a serialized walk takes blocks in one global order) with the strongest
  * mode first inside a block and ties keeping slot order, then names the first
  * slot of each block's group the OWNER of that block's single acquisition and
- * every later slot naming it an ALIAS.  Slots that acquire nothing — a NULL
- * GUID, a value slot (DB_MODE_NULL), a non-DB kind — are neither, and must come
- * back exactly as they went in.
+ * every later slot naming it an ALIAS, in the slot's acquire record.  Slots
+ * that acquire nothing — a NULL GUID, a value slot (DB_MODE_NULL), a non-DB
+ * kind, a slot already carrying a pointer — are neither, and must come back
+ * exactly as they went in.
  *
  * The function is pure: no runtime state, no allocation, no dispatch.  So this
  * test links the real symbol out of the per-config static libarts and calls it
@@ -19,17 +20,13 @@
  */
 
 #include "arts.h" /* arts_edt_dep_t, DB_MODE_*, NULL_GUID */
+#include "arts/db.h" /* arts_dep_sort_and_classify, struct arts_dep_acq_s */
 #include "arts/gas/guid.h" /* ARTS_GUID_MAKE */
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-
-/* Defined in db.c, declared in the internal db.h; re-declared here to keep the
- * test header-light (the internal header drags the runtime's type graph in). */
-void arts_dep_sort_and_classify(arts_edt_dep_t *depv, uint32_t depc,
-                                uint32_t *sorted);
 
 #define MAX_DEPS 8u
 
@@ -46,15 +43,17 @@ static arts_guid_t event_guid(uint64_t key) {
 /* Run one case and compare both answers: the visit order and, per slot, the
  * owner/alias verdict.  `want_alias` uses -1 for "the classifier must not touch
  * this slot" — the slot goes in pre-set to the opposite of what a classified
- * slot would get, so a stray write shows up. */
-static void check(const char *name, arts_edt_dep_t *depv, uint32_t depc,
+ * slot would get (`preset`), so a stray write shows up. */
+static void check(const char *name, const arts_edt_dep_t *depv,
+                  const bool *preset, uint32_t depc,
                   const uint32_t *want_sorted, const int *want_alias) {
   uint32_t got[MAX_DEPS];
-  bool before[MAX_DEPS];
+  struct arts_dep_acq_s acq[MAX_DEPS];
+  memset(acq, 0, sizeof(acq));
   for (uint32_t i = 0; i < depc; i++) {
-    before[i] = depv[i].alias;
+    acq[i].alias = preset != NULL && preset[i];
   }
-  arts_dep_sort_and_classify(depv, depc, got);
+  arts_dep_sort_and_classify(depv, acq, depc, got);
   for (uint32_t k = 0; k < depc; k++) {
     if (got[k] != want_sorted[k]) {
       (void)fprintf(stderr,
@@ -64,11 +63,12 @@ static void check(const char *name, arts_edt_dep_t *depv, uint32_t depc,
     }
   }
   for (uint32_t i = 0; i < depc; i++) {
-    bool want = (want_alias[i] < 0) ? before[i] : (want_alias[i] != 0);
-    if (depv[i].alias != want) {
+    bool before = preset != NULL && preset[i];
+    bool want = (want_alias[i] < 0) ? before : (want_alias[i] != 0);
+    if (acq[i].alias != want) {
       (void)fprintf(stderr,
                     "FAIL dep_alias_classify[%s]: slot %u alias=%d want %d%s\n",
-                    name, i, (int)depv[i].alias, (int)want,
+                    name, i, (int)acq[i].alias, (int)want,
                     want_alias[i] < 0 ? " (must be untouched)" : "");
       failures++;
     }
@@ -90,7 +90,7 @@ int main(void) {
     d[1].mode = DB_MODE_RW;
     const uint32_t order[2] = {0u, 1u};
     const int alias[2] = {0, 1};
-    check("rw+rw", d, 2u, order, alias);
+    check("rw+rw", d, NULL, 2u, order, alias);
   }
 
   /* Declared read first, written second.  The WRITE must own the acquisition
@@ -105,7 +105,7 @@ int main(void) {
     d[1].mode = DB_MODE_RW;
     const uint32_t order[2] = {1u, 0u};
     const int alias[2] = {1, 0};
-    check("ro+rw", d, 2u, order, alias);
+    check("ro+rw", d, NULL, 2u, order, alias);
   }
 
   /* Read, write, read: one owner in the middle, two aliases, and the two reads
@@ -121,7 +121,7 @@ int main(void) {
     d[2].mode = DB_MODE_RO;
     const uint32_t order[3] = {1u, 0u, 2u};
     const int alias[3] = {1, 0, 1};
-    check("ro+rw+ro", d, 3u, order, alias);
+    check("ro+rw+ro", d, NULL, 3u, order, alias);
   }
 
   /* Two blocks interleaved: the sort gathers each block's slots, and each block
@@ -139,7 +139,7 @@ int main(void) {
     d[3].mode = DB_MODE_RO;
     const uint32_t order[4] = {2u, 0u, 1u, 3u};
     const int alias[4] = {1, 0, 0, 1};
-    check("two blocks", d, 4u, order, alias);
+    check("two blocks", d, NULL, 4u, order, alias);
   }
 
   /* A NULL GUID, a value slot naming a block, and an event slot acquire
@@ -156,26 +156,23 @@ int main(void) {
     memset(d, 0, sizeof(d));
     d[0].guid = NULL_GUID;
     d[0].mode = DB_MODE_RO;
-    d[0].alias = true;
     d[1].guid = g1;
     d[1].mode = DB_MODE_NULL;
-    d[1].alias = true;
     d[2].guid = event_guid(0x33u);
     d[2].mode = DB_MODE_RO;
-    d[2].alias = true;
     d[3].guid = g1;
     d[3].mode = DB_MODE_RW;
-    d[3].alias = true;
     d[4].guid = g1;
     d[4].mode = DB_MODE_RO;
+    const bool preset[5] = {true, true, true, true, false};
     const uint32_t order[5] = {2u, 0u, 3u, 4u, 1u};
     const int alias[5] = {-1, -1, -1, 0, 1};
-    check("unacquired slots", d, 5u, order, alias);
+    check("unacquired slots", d, preset, 5u, order, alias);
   }
 
-  /* A slot already carrying a payload is resolved, so it is not part of the
-   * acquisition the engine is about to make — and the next slot naming the
-   * block is that acquisition's owner, not an alias of a resolved slot. */
+  /* A slot already carrying a pointer is not part of the acquisition the
+   * engine is about to make — and the next slot naming the block is that
+   * acquisition's owner, not an alias of a slot that acquires nothing. */
   {
     arts_edt_dep_t d[2];
     unsigned int storage = 0u;
@@ -183,12 +180,12 @@ int main(void) {
     d[0].guid = g1;
     d[0].mode = DB_MODE_RO;
     d[0].ptr = &storage;
-    d[0].alias = true;
     d[1].guid = g1;
     d[1].mode = DB_MODE_RO;
+    const bool preset[2] = {true, false};
     const uint32_t order[2] = {0u, 1u};
     const int alias[2] = {-1, 0};
-    check("pre-filled slot", d, 2u, order, alias);
+    check("pre-filled slot", d, preset, 2u, order, alias);
   }
 
   if (failures != 0) {

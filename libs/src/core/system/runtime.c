@@ -64,8 +64,8 @@
 #include "arts/transport/protocol.h"
 #include "arts/transport/socket.h"
 #include "arts/utils/array_list.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/deque.h"
+#include "arts/utils/stdatomic_compat.h"
 
 #ifdef ARTS_USE_GPU
 #include "arts/gpu/gpu_internal.h"
@@ -75,8 +75,6 @@
 #ifdef ARTS_USE_CXL
 #include "arts/cxl/arena.h"
 #endif
-
-#define PACKET_SIZE 4096
 
 static int arts_runtime_argc = 0;
 static char **arts_runtime_argv = NULL;
@@ -222,7 +220,8 @@ void arts_runtime_node_init(struct arts_config_s *config) {
           arts_new_route_table(shard_entries, shard_shift);
     }
   }
-  arts_node_info.local_spin = (bool **)arts_calloc(tc, sizeof(bool *));
+  arts_node_info.local_spin = (_Atomic(_Atomic(bool) *) *)arts_calloc(
+      tc, sizeof(_Atomic(_Atomic(bool) *)));
   arts_node_info.thread_roles =
       (unsigned int *)arts_calloc(tc, sizeof(unsigned int));
 
@@ -231,24 +230,17 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.progress_thread_count = config->progress_thread_count;
   arts_node_info.total_thread_count = tc;
 
-  /* Synchronization barriers */
-  arts_node_info.ready_to_push = tc;
-  arts_node_info.ready_to_parallel_start = tc;
-  arts_node_info.ready_to_inspect = tc;
-  arts_node_info.ready_to_execute = tc;
-  arts_node_info.ready_to_clean = tc;
+  /* Synchronization barriers.  No runtime thread exists yet. */
+  atomic_init(&arts_node_info.ready_to_push, tc);
+  atomic_init(&arts_node_info.ready_to_parallel_start, tc);
+  atomic_init(&arts_node_info.ready_to_inspect, tc);
+  atomic_init(&arts_node_info.ready_to_clean, tc);
 
-  /* Locks and shutdown coordination */
-  arts_node_info.steal_request_lock = 1U;
   /* Seed at our own rank so different ranks pick different first targets;
    * across ranks the round-robin then walks the cluster evenly instead of
    * hammering rank 0. */
-  arts_node_info.db_rr_route = arts_global_rank_id;
-  arts_node_info.edt_rr_route = arts_global_rank_id;
-
-  /* Network buffer */
-  arts_node_info.buf = (char *)arts_malloc(PACKET_SIZE);
-  arts_node_info.packet_size = PACKET_SIZE;
+  atomic_init(&arts_node_info.db_rr_route, arts_global_rank_id);
+  atomic_init(&arts_node_info.edt_rr_route, arts_global_rank_id);
 
   /* GPU config */
   arts_node_info.gpu = config->gpu;
@@ -312,7 +304,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
             (unsigned long)GET_CXL_DEV_ID(arts_node_info.cxl_arenas),
             (unsigned long)GET_CXL_REGION_DEV_ID());
   pthread_mutex_init(&arts_node_info.cxl_arena_lock, NULL);
-  arts_node_info.cxl_db_rr_idx = 0;
+  atomic_init(&arts_node_info.cxl_db_rr_idx, 0U);
   if (!arts_cxl_arena_table_ready(arts_node_info.cxl_arenas)) {
     ARTS_ERROR("CXL DB arena is missing or uninitialized");
   }
@@ -322,6 +314,7 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_node_info.keys = (uint64_t **)arts_calloc(tc, sizeof(uint64_t *));
   arts_node_info.global_guid_thread_id =
       (uint64_t *)arts_calloc(tc, sizeof(uint64_t));
+  arts_guid_node_geometry_init();
 
   /* Performance counters */
   arts_node_info.counter_folder = config->counter_folder;
@@ -331,10 +324,10 @@ void arts_runtime_node_init(struct arts_config_s *config) {
       (arts_counter_t **)arts_calloc(tc, sizeof(arts_counter_t *));
 
   arts_node_info.saved_counters =
-      (arts_counter_t **)arts_calloc(tc, sizeof(arts_counter_t *));
+      (uint64_t **)arts_calloc(tc, sizeof(uint64_t *));
   for (unsigned int t = 0; t < tc; t++) {
-    arts_node_info.saved_counters[t] = (arts_counter_t *)arts_calloc(
-        NUM_COUNTER_TYPES, sizeof(arts_counter_t));
+    arts_node_info.saved_counters[t] =
+        (uint64_t *)arts_calloc(NUM_COUNTER_TYPES, sizeof(uint64_t));
   }
 
   arts_node_info.capture_arrays =
@@ -367,13 +360,12 @@ struct arts_shutdown_abandon_s arts_shutdown_abandon;
  * count is updated atomically. */
 static void arts_count_abandoned_edts(struct arts_deque_s *dq) {
   while (arts_deque_pop_front(dq) != NULL) {
-    __atomic_fetch_add(&arts_shutdown_abandon.queued_edts, 1u,
-                       __ATOMIC_RELAXED);
+    atomic_fetch_add_explicit(&arts_shutdown_abandon.queued_edts, 1u,
+                              memory_order_relaxed);
   }
 }
 
 void arts_runtime_global_cleanup() {
-  arts_counter_capture_stop();
   // Write all counter outputs (thread, node, and cluster levels)
   unsigned int tc = arts_node_info.total_thread_count;
   for (unsigned int t = 0; t < tc; t++) {
@@ -399,8 +391,8 @@ void arts_runtime_global_cleanup() {
    * are neither swept nor freed, and the process exit reclaims them. */
   uint64_t abandoned_edts = 0;
   bool tables_reachable =
-      __atomic_load_n(&arts_shutdown_abandon.unjoined_threads,
-                      __ATOMIC_RELAXED) != 0;
+      atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
+                           memory_order_relaxed) != 0;
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
@@ -461,7 +453,6 @@ void arts_runtime_global_cleanup() {
   arts_free(arts_node_info.gpu_route_table);
   arts_free((void *)arts_node_info.local_spin);
   arts_free(arts_node_info.thread_roles);
-  arts_free(arts_node_info.buf);
   for (unsigned int i = 0; i < tc; i++) {
     arts_free(arts_node_info.keys[i]);
   }
@@ -496,6 +487,27 @@ void arts_runtime_global_cleanup() {
   }
 }
 
+/* Arrive at a barrier counted down from the thread count and wait for every
+ * other thread's arrival.  The decrement releases what this thread wrote
+ * before it, and the acquire load after the polls, which reads the same zero
+ * (nothing writes the counter after the last arrival), takes every arrival's.
+ * The polls carry nothing and give up the processor after a few rounds: a
+ * waiter must not starve the arrivals it waits for, of a processor when
+ * threads outnumber the processors that run them, or of the word itself where
+ * a race detector serializes the synchronizing accesses to one word. */
+static void arts_runtime_barrier(_Atomic(unsigned int) *remaining) {
+  atomic_fetch_sub_explicit(remaining, 1U, memory_order_acq_rel);
+  unsigned int polls = 0;
+  while (atomic_load_explicit(remaining, memory_order_relaxed) != 0U) {
+    if (++polls < 64U) {
+      arts_runtime_idle_pause();
+    } else {
+      sched_yield();
+    }
+  }
+  (void)atomic_load_explicit(remaining, memory_order_acquire);
+}
+
 /*
  * arts_thread_zero_node_start — Thread 0 (master) startup sequence.
  *
@@ -519,10 +531,8 @@ void arts_thread_zero_node_start(int argc, char **argv) {
   // init_per_worker, then the main EDT), so the whole application span is
   // bracketed.  This is a self-contained, env-gated wall-clock marker that
   // matches the reference runtimes' span definition for a fair comparison.
-  if (!arts_global_rank_id) {
-    arts_node_info.e2e_marker_enabled = (getenv("ARTS_E2E_MARKER") != NULL);
-    if (arts_node_info.e2e_marker_enabled)
-      arts_node_info.e2e_start_stamp = arts_get_time_stamp();
+  if (!arts_global_rank_id && arts_node_info.e2e_marker_enabled) {
+    arts_node_info.e2e_start_stamp = arts_get_time_stamp();
   }
 
   init_per_node(arts_global_rank_id, argc, argv);
@@ -532,9 +542,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
 #endif
   set_guid_generator_after_parallel_start();
 
-  arts_atomic_sub(&arts_node_info.ready_to_parallel_start, 1U);
-  while (arts_node_info.ready_to_parallel_start) {
-  }
+  arts_runtime_barrier(&arts_node_info.ready_to_parallel_start);
   if (arts_thread_info.role == ARTS_ROLE_WORKER) {
     init_per_worker(arts_global_rank_id, arts_thread_info.group_pos, argc,
                     argv);
@@ -548,12 +556,7 @@ void arts_thread_zero_node_start(int argc, char **argv) {
 
   arts_owned_finish_cleanup();
 
-  arts_atomic_sub(&arts_node_info.ready_to_inspect, 1U);
-  while (arts_node_info.ready_to_inspect) {
-  }
-  arts_atomic_sub(&arts_node_info.ready_to_execute, 1U);
-  while (arts_node_info.ready_to_execute) {
-  }
+  arts_runtime_barrier(&arts_node_info.ready_to_inspect);
 
   // Start counter capture AFTER all barriers, when progress threads are in
   // their runtime loops. This ensures time sync requests can be processed.
@@ -592,37 +595,35 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
         arts_node_info.deque[thread->id];
   }
   arts_node_info.thread_roles[thread->id] = (unsigned int)thread->role;
-  __atomic_store_n(&arts_thread_info.alive, true, __ATOMIC_RELAXED);
+  atomic_store_explicit(&arts_thread_info.alive, true, memory_order_relaxed);
   /* Published last: a stopper that finds the pointer reads the role above and
    * stores its false after this thread's true.  A stop that began before the
-   * stopper could find the pointer is claimed here instead: the publication
-   * and the stopper's CAS on shutdown_state are seq_cst, as are the two loads
-   * after them, so at least one side sees the other. */
-  __atomic_store_n(&arts_node_info.local_spin[thread->id],
-                   &arts_thread_info.alive, __ATOMIC_SEQ_CST);
+   * stopper could find the pointer is claimed here instead.  seq_cst: this
+   * store and the load of shutdown_state below are one side of a
+   * store->load pair whose other side is arts_enter_shutdown_state's CAS of
+   * shutdown_state and its stop walk's load of the pointer
+   * (arts_runtime_stop_by_role), so at least one side sees the other. */
+  atomic_store_explicit(&arts_node_info.local_spin[thread->id],
+                        &arts_thread_info.alive, memory_order_seq_cst);
   if (thread->role == ARTS_ROLE_WORKER &&
-      __atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_SEQ_CST) != 0U) {
-    __atomic_store_n(&arts_thread_info.alive, false, __ATOMIC_RELAXED);
+      atomic_load_explicit(&arts_node_info.shutdown_state,
+                           memory_order_seq_cst) != 0U) {
+    atomic_store_explicit(&arts_thread_info.alive, false, memory_order_relaxed);
   }
   arts_thread_info.pu_id = thread->pu_id;
   arts_thread_info.thread_id = thread->id;
   arts_thread_info.group_pos = thread->group_pos;
   arts_thread_info.numa_domain_id = thread->numa_domain_id;
   arts_thread_info.role = thread->role;
-  arts_thread_info.current_edt_guid = 0;
 
   // Register thread-local counter storage with nodeInfo
   arts_node_info.live_counters[thread->id] = arts_thread_local_counters;
 
   arts_guid_key_generator_init();
 
-  arts_atomic_sub(&arts_node_info.ready_to_push, 1U);
-  while (arts_node_info.ready_to_push) {
-  };
+  arts_runtime_barrier(&arts_node_info.ready_to_push);
   if (thread->id) {
-    arts_atomic_sub(&arts_node_info.ready_to_parallel_start, 1U);
-    while (arts_node_info.ready_to_parallel_start) {
-    };
+    arts_runtime_barrier(&arts_node_info.ready_to_parallel_start);
 
     if (arts_thread_info.role == ARTS_ROLE_WORKER) {
       init_per_worker(arts_global_rank_id, arts_thread_info.group_pos,
@@ -630,12 +631,7 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
       arts_owned_finish_cleanup();
     }
 
-    arts_atomic_sub(&arts_node_info.ready_to_inspect, 1U);
-    while (arts_node_info.ready_to_inspect) {
-    };
-    arts_atomic_sub(&arts_node_info.ready_to_execute, 1U);
-    while (arts_node_info.ready_to_execute) {
-    };
+    arts_runtime_barrier(&arts_node_info.ready_to_inspect);
   }
   arts_thread_random_init(arts_global_rank_id, thread->id);
 }
@@ -644,8 +640,8 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
  * follows the CAS of an entry whose winner never waits on teardown, so the
  * wait ends. */
 void arts_runtime_wait_shutdown_entry(void) {
-  while (__atomic_load_n(&arts_node_info.shutdown_entry_done,
-                         __ATOMIC_ACQUIRE) == 0U) {
+  while (atomic_load_explicit(&arts_node_info.shutdown_entry_done,
+                              memory_order_acquire) == 0U) {
     sched_yield();
   }
 }
@@ -654,20 +650,22 @@ void arts_runtime_private_cleanup() {
   /* Teardown ends what the shutdown entry's stop walk and drain use: every
    * thread's TLS stop flag, the stop arrays and the network. */
   arts_runtime_wait_shutdown_entry();
-  arts_atomic_sub(&arts_node_info.ready_to_clean, 1U);
-  while (arts_node_info.ready_to_clean) {
-  };
+  arts_runtime_barrier(&arts_node_info.ready_to_clean);
   /* The ready_to_clean barrier above guarantees every thread has left its
-   * scheduler loop, so no concurrent push/steal touches these deques.  An EDT
-   * still in one stays installed, so the deque holds no reference of its own
-   * that freeing it would lose. */
+   * scheduler loop, so no concurrent push/steal touches these deques, and
+   * orders every thief's last access before the delete.  An EDT still in one
+   * stays installed, so the deque holds no reference of its own that freeing
+   * it would lose.  The pointers are cleared so that the thread owns no deque
+   * from here on. */
   if (arts_thread_info.my_deque) {
     arts_count_abandoned_edts(arts_thread_info.my_deque);
     arts_deque_delete(arts_thread_info.my_deque);
+    arts_thread_info.my_deque = NULL;
   }
   if (arts_thread_info.my_gpu_deque) {
     arts_count_abandoned_edts(arts_thread_info.my_gpu_deque);
     arts_deque_delete(arts_thread_info.my_gpu_deque);
+    arts_thread_info.my_gpu_deque = NULL;
   }
   arts_cleanup_edt_tls();
 }
@@ -686,10 +684,12 @@ static void arts_runtime_stop_by_role(unsigned int role_mask,
   const unsigned int max_spin = 10000000; /* ~sub-second upper bound */
   unsigned int i;
   for (i = 0; i < arts_node_info.total_thread_count; i++) {
-    bool *flag;
+    _Atomic(bool) *flag;
     unsigned int spin = 0;
-    while ((flag = __atomic_load_n(&arts_node_info.local_spin[i],
-                                   __ATOMIC_SEQ_CST)) == NULL) {
+    /* seq_cst: the other half of this side of the stop-registration pair
+     * (see arts_runtime_private_init), after the shutdown CAS. */
+    while ((flag = atomic_load_explicit(&arts_node_info.local_spin[i],
+                                        memory_order_seq_cst)) == NULL) {
       if (++spin >= max_spin) {
         ARTS_WARN("arts_runtime_stop_%s: thread %u has not registered its "
                   "stop flag; a worker that registers later stops itself, "
@@ -700,7 +700,7 @@ static void arts_runtime_stop_by_role(unsigned int role_mask,
     }
     if ((1U << arts_node_info.thread_roles[i]) & role_mask) {
       /* Release: a thread that sees the stop sees what preceded it here. */
-      __atomic_store_n(flag, false, __ATOMIC_RELEASE);
+      atomic_store_explicit(flag, false, memory_order_release);
       ARTS_DEBUG("arts_runtime_stop_%s: thread %u signaled to stop", role_label,
                  i);
     }
@@ -775,7 +775,8 @@ int arts_runtime_loop() {
   switch (arts_thread_info.role) {
   case ARTS_ROLE_PROGRESS: {
     unsigned int sentinel_spin = 0;
-    while (__atomic_load_n(&arts_thread_info.alive, __ATOMIC_ACQUIRE)) {
+    while (
+        atomic_load_explicit(&arts_thread_info.alive, memory_order_acquire)) {
       /* Busy-poll by design: the thread budget dedicates a PU to every
        * progress thread (startup aborts on PU oversubscription when the
        * topology mask is built), so idle waiting spins with the architectural
@@ -799,7 +800,8 @@ int arts_runtime_loop() {
     break;
   }
   case ARTS_ROLE_WORKER:
-    while (__atomic_load_n(&arts_thread_info.alive, __ATOMIC_ACQUIRE)) {
+    while (
+        atomic_load_explicit(&arts_thread_info.alive, memory_order_acquire)) {
       arts_node_info.scheduler();
     }
     break;

@@ -49,10 +49,10 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 |--------|---------|---------|
 | `ARTS_BUILD_SHARED` | `ON` | Build the shared library `libarts.so` alongside `libarts.a`. The static library is unconditional — it is the substrate the benchmark variants, the OCR shim and the installed archive derive from. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the test programs and register them with ctest. Off by default: tests statically link the runtime (hermetic), so a full test tree costs real disk/link time — turn it on for validation builds. |
-| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the benchmark apps (ARTS and the enabled reference runtimes). |
+| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the benchmark apps (ARTS and the enabled reference runtimes). The benchmark tree is x86-64 only: on another target the configure skips it, with `ARTS_BUILD_HPX`, and says so. |
 | `ARTS_BUILD_XSOCR` | `ON` | Build the XSOCR reference runtime and its `*_xsocr` app variants (needs a host MPI). |
 | `ARTS_BUILD_OCRVX` | `ON` | Build the ocr-vx reference runtime and its `*_ocrvx` app variants (needs a host MPI). |
-| `ARTS_BUILD_HPX` | `ON` | Source-build HPX v1.11.0 with its MPI parcelport and build the standalone HPX benchmark apps (needs a host MPI). |
+| `ARTS_BUILD_HPX` | `ON` | Source-build HPX v1.11.0 with its MPI parcelport and build the standalone HPX benchmark apps (needs a host MPI; x86-64 only, like the rest of the benchmark tree). |
 | `ARTS_BUILD_DOCS` | `OFF` | Build the Doxygen + Sphinx documentation. |
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support (builds `libarts_cuda`). |
 | `ARTS_USE_LOCAL_CUDA_ARCHITECTURES` | `ON` | When GPU is on, auto-detect the local GPU's CUDA architecture via `nvidia-smi`. Only meaningful with `ARTS_USE_GPU=ON`; pair with the stock `CMAKE_CUDA_ARCHITECTURES` (e.g. `-DCMAKE_CUDA_ARCHITECTURES="80;86"`) to set SM targets by hand. |

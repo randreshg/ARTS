@@ -145,7 +145,9 @@
 #error "inv/types.h is the INV layout; this translation unit's cell is another"
 #endif
 #include "arts/rank_bitset.h"
+#include "arts/utils/stdatomic_compat.h"
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -251,25 +253,23 @@ extern "C" {
   ((((uint64_t)(open) & INV_DIR_FLAG_MASK) << INV_DIR_ROUND_SHIFT) |           \
    (((uint64_t)(acks) & INV_DIR_ACKS_MASK) << INV_DIR_ACKS_SHIFT))
 
-#ifndef __cplusplus
-_Static_assert(INV_CACHE_RO_SHIFT + INV_CACHE_ST_BITS == 64,
-               "cache word must pack to exactly 64 bits");
-_Static_assert(INV_DIR_ROUND_SHIFT + INV_DIR_FLAG_BITS == 64,
-               "directory word must pack to exactly 64 bits");
-_Static_assert(INV_RO_VALID <= INV_CACHE_ST_MASK,
-               "reader state encodings must fit the 2-bit field");
+static_assert(INV_CACHE_RO_SHIFT + INV_CACHE_ST_BITS == 64,
+              "cache word must pack to exactly 64 bits");
+static_assert(INV_DIR_ROUND_SHIFT + INV_DIR_FLAG_BITS == 64,
+              "directory word must pack to exactly 64 bits");
+static_assert(INV_RO_VALID <= INV_CACHE_ST_MASK,
+              "reader state encodings must fit the 2-bit field");
 #define INV_CACHE_PIN_ INV_CACHE_MAKE(INV_RO_REQ_KILL, 1u, 0x1ABCDu)
-_Static_assert(INV_CACHE_RO(INV_CACHE_PIN_) == INV_RO_REQ_KILL &&
-                   INV_CACHE_INFLIGHT(INV_CACHE_PIN_) == 1u &&
-                   INV_CACHE_HEAD_RO(INV_CACHE_PIN_) == 0x1ABCDu,
-               "cache word field round-trip");
+static_assert(INV_CACHE_RO(INV_CACHE_PIN_) == INV_RO_REQ_KILL &&
+                  INV_CACHE_INFLIGHT(INV_CACHE_PIN_) == 1u &&
+                  INV_CACHE_HEAD_RO(INV_CACHE_PIN_) == 0x1ABCDu,
+              "cache word field round-trip");
 #undef INV_CACHE_PIN_
 #define INV_DIR_PIN_ INV_DIR_MAKE(1u, 0x2AAAu)
-_Static_assert(INV_DIR_ROUND_OPEN(INV_DIR_PIN_) == 1u &&
-                   INV_DIR_ACKS(INV_DIR_PIN_) == 0x2AAAu,
-               "directory word field round-trip");
+static_assert(INV_DIR_ROUND_OPEN(INV_DIR_PIN_) == 1u &&
+                  INV_DIR_ACKS(INV_DIR_PIN_) == 0x2AAAu,
+              "directory word field round-trip");
 #undef INV_DIR_PIN_
-#endif /* __cplusplus */
 
 /* ── parked waiter (chain node, index-addressed) ────────────────────────── */
 /* Nodes live in a per-DB grow-only pool; the chain link and the free list
@@ -287,15 +287,9 @@ struct arts_db_inv_waiter_s {
 #define INV_WAITER_IDX_MAX INV_CACHE_HEAD_MASK
 
 struct arts_db_inv_waiter_pool_s {
-#ifdef __cplusplus
-  void *chunks;
-  uint32_t next_fresh;
-  uint32_t free_head;
-#else
   _Atomic(uintptr_t) chunks;   /* chunk directory (grow-only) */
-  _Atomic uint32_t next_fresh; /* bump allocator over chunk capacity */
-  _Atomic uint32_t free_head;  /* Treiber free list by index (0 = empty) */
-#endif
+  _Atomic(uint32_t) next_fresh; /* bump allocator over chunk capacity */
+  _Atomic(uint32_t) free_head;  /* Treiber free list by index (0 = empty) */
 };
 
 /* ── publish-queue entry (Treiber, whole-chain drain) ───────────────────── */
@@ -322,19 +316,6 @@ struct arts_db_inv_pub_s {
 /* Home request queue: same Vyukov MPSC shape as the other arms so the shared
  * home.h declarations apply (producers = request handlers, single consumer =
  * the grant-claim holder). */
-#ifdef __cplusplus
-struct arts_home_grantreq_node_s {
-  struct arts_home_grantreq_node_s *next;
-  unsigned int rank;
-  uint64_t have_version; /* version the requester already holds */
-  struct arts_rdzv_landing_s rdzv;
-};
-struct arts_home_grantreq_queue_s {
-  struct arts_home_grantreq_node_s *tail;
-  struct arts_home_grantreq_node_s *head;
-  struct arts_home_grantreq_node_s stub;
-};
-#else
 struct arts_home_grantreq_node_s {
   _Atomic(struct arts_home_grantreq_node_s *) next;
   unsigned int rank;
@@ -346,7 +327,6 @@ struct arts_home_grantreq_queue_s {
   _Atomic(struct arts_home_grantreq_node_s *) head;
   struct arts_home_grantreq_node_s stub;
 };
-#endif
 
 /* ── per-rank DB cache ──────────────────────────────────────────────────── */
 /* The reader plane lives in cache_state (durable copies, one in-flight fetch,
@@ -362,96 +342,16 @@ struct arts_home_grantreq_queue_s {
  * The version axis is the buffer's own version field, bumped by each release.
  * A second, publication-numbering counter would be redundant: no home-issued
  * grant sequence exists for a local install count to race against. */
-#ifdef __cplusplus
 struct arts_db_cache_s {
-  uint64_t cache_state;
-  unsigned int writer_count;
-  arts_db_atomic_uint_t buf_holds;
-  arts_atomic_shared_ptr_t buffer;
-  arts_lockfree_pool_t buf_freelist;
-  arts_lf_stack_t buf_retired;
-#ifdef ARTS_WRITE_POLICY_WT
-  arts_lf_stack_t publication_waiters;
-#endif
-  arts_lf_stack_t pending_rw;
-  struct arts_db_inv_waiter_pool_s waiters;
-  unsigned int grant_req_in_flight;
-  unsigned int incoming_new_owner;
-  struct arts_rdzv_landing_s incoming_new_owner_rdzv;
-  /* The version the pending new owner reported holding (its request's
-   * have_version), published with the two fields above; the 0-edge actor
-   * ships no payload when the canonical bytes are at that very version. */
-  uint64_t incoming_new_owner_have;
-  struct arts_rank_to_u64_map_s *cached_version;
-  arts_guid_t db_guid;
-  uint64_t db_size;
-  /* Does this cache's payload slot still need materializing?  1 until a
-   * buffer has been installed, 0 after — the first entitled use of a block
-   * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.  Accessed
-   * with the atomic builtins rather than an _Atomic qualifier so the layout
-   * is identical in the C and C++ views of this struct.  Correctness never
-   * rests on it: a reader that sees 0 still reads the pointer from the slot
-   * itself, and a stale 1 costs one materialize attempt that then clears
-   * it.  The slot is monotone for a live cache — only the destructor puts
-   * NULL back — so a 0 can never go stale. */
-  uint8_t payload_pending;
-  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
-   * the home's directory, or a dependence's first touch.  A create that
-   * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init. */
-  uint8_t init_kind;
-
-  /* Publish write-combining — the write-side twin of VAL's RO combining
-   * window.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
-   * claim and join are each one CAS); pub_waiters holds heap {sem, version}
-   * nodes for every releaser blocked until a covering publish is ACKed
-   * (heap for the same reason the publish rendezvous is — a shutdown-
-   * escaped waiter leaks its node and a late drain may still post into
-   * it).  home_pub_* is the durable publish credit: the home's stable
-   * buffer plus a receiver-minted txid, refilled by a payload flight's ACK;
-   * txid is the presence flag (0 = none), written last with release
-   * order so a reader that sees it sees the whole triple. */
-  volatile unsigned int pub_flight;
-  arts_lf_stack_t pub_waiters;
-  /* Waiters drained by a completing flight but not covered by its version:
-   * held here (plain field — touched only by the flight owner, and only one
-   * flight is in flight) until the trailing flight's ACK re-examines them.
-   * Non-NULL implies the flight word is FLYING. */
-  void *pub_parked;
-  uint64_t home_pub_addr;
-  uint64_t home_pub_rkey;
-  volatile uint64_t home_pub_txid;
-  /* A remote creator's name for this descriptor, carried by its announce and
-   * echoed by the home's CREATE_RETURN: the create's credit is applied only
-   * where the two match, never to a later descriptor of the same GUID.  0 on
-   * every other cache. */
-  uint64_t create_token;
-#ifdef ARTS_RELEASE_PURGE
-  /* The hand-back obligation: (grant_generation << 1) | armed, or zero.
-   * Armed by a release that gave the write right up while its payload was
-   * still in flight; discharged by whichever of the publish sender and the
-   * release itself CASes it back to zero, so exactly one return goes out.
-   * The generation is what makes the release's discharge its own: a settle
-   * that wakes after the right has come back and been re-granted here finds
-   * a token of a later generation and must not touch it. */
-  volatile uint64_t pending_grant_return;
-  /* Count of write rights installed on this rank; the token above names the
-   * one it belongs to. */
-  volatile uint64_t grant_generation;
-#endif
-};
-#else
-struct arts_db_cache_s {
-  _Atomic uint64_t cache_state; /* reader plane — see INV_CACHE_* */
+  _Atomic(uint64_t) cache_state; /* reader plane — see INV_CACHE_* */
   /* Local writers + the ownership sentinel.  A CAS-loop "increment if > 0"
    * is the whole RW fast path: > 0 means this rank holds the grant. */
   volatile unsigned int writer_count;
   /* Buffers drawn from this cache and not parked back, plus the flag the
    * storage release sets once the destructor has run (encoding in buffer.c,
    * lifetime rule in types_common.h). */
-  arts_db_atomic_uint_t buf_holds;
-  arts_atomic_shared_ptr_t buffer;
+  _Atomic(unsigned int) buf_holds;
+  _Atomic(arts_shared_slot_t) buffer;
   arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
   /* Parked buffers a draw found too small: a popper must not free a node
    * another popper may still be reading, so they wait here for the storage
@@ -488,13 +388,11 @@ struct arts_db_cache_s {
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
    * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.  Accessed
-   * with the atomic builtins rather than an _Atomic qualifier so the layout
-   * is identical in the C and C++ views of this struct.  Correctness never
-   * rests on it: a reader that sees 0 still reads the pointer from the slot
-   * itself, and a stale 1 costs one materialize attempt that then clears
-   * it.  The slot is monotone for a live cache — only the destructor puts
-   * NULL back — so a 0 can never go stale. */
+   * use must find that out without touching the slot's refcount.
+   * Correctness never rests on it: a reader that sees 0 still reads the
+   * pointer from the slot itself, and a stale 1 costs one materialize
+   * attempt that then clears it.  The slot is monotone for a live cache —
+   * only the destructor puts NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
    * the home's directory, or a dependence's first touch.  A create that
@@ -541,7 +439,6 @@ struct arts_db_cache_s {
   volatile uint64_t grant_generation;
 #endif
 };
-#endif
 
 /** Internal DataBlock descriptor (INV protocol).
  *
@@ -569,10 +466,10 @@ struct arts_db_s {
 #ifndef ARTS_RELEASE_PURGE
   /* The holder a revocation targets; a home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory. */
-  arts_db_atomic_uint_t rw_holder;
+  _Atomic(unsigned int) rw_holder;
 #endif
   struct arts_home_grantreq_queue_s pending_rw; /* Vyukov MPSC, pop-one */
-  arts_db_atomic_uint_t invalidate_in_flight;  /* transfer-round baton */
+  _Atomic(unsigned int) invalidate_in_flight;   /* transfer-round baton */
 #ifndef ARTS_RELEASE_PURGE
   unsigned int pending_install_owner; /* baton-holder-written transfer target */
 #endif
@@ -582,7 +479,7 @@ struct arts_db_s {
    * home's serving tail.  Both sides publish then check and consume by CAS, so
    * exactly one of them accepts any given return.  Grants are serialized, so
    * at most one return can be outstanding and one slot suffices. */
-  arts_db_atomic_uint_t pending_return_from;
+  _Atomic(unsigned int) pending_return_from;
   /* The reply the returner waits on, owned by the latched return: written
    * before the latch CAS publishes the slot, read by the latch's one
    * consumer after its consuming CAS. */
@@ -593,13 +490,8 @@ struct arts_db_s {
 #endif
 
   /* ---- invalidation round (home side; INV's own) ---- */
-#ifdef __cplusplus
-  uint64_t dir_state;
-  bool opening_pending;
-#else
-  _Atomic uint64_t dir_state;   /* round_open + acks — see INV_DIR_* */
-  _Atomic bool opening_pending; /* round re-arm latch (XCHG carry) */
-#endif
+  _Atomic(uint64_t) dir_state;   /* round_open + acks — see INV_DIR_* */
+  _Atomic(bool) opening_pending; /* round re-arm latch (XCHG carry) */
   /* The home's canonical publication axis, advanced to each round's highest
    * published version.  It is NOT the installed buffer's version, and must not
    * be: a home-resident owner writes THROUGH the home buffer in place, so its
@@ -612,11 +504,7 @@ struct arts_db_s {
    * serve path at any time.  (Under WB the home holds no bytes and the
    * field idles — there the owner's own buffer version IS the axis, because
    * ownership migration carries it.) */
-#ifdef __cplusplus
-  uint64_t hver;
-#else
-  _Atomic uint64_t hver;
-#endif
+  _Atomic(uint64_t) hver;
   arts_lf_stack_t pub_queue;              /* releases awaiting a round */
   struct arts_db_inv_pub_s *round_entries; /* the open round's drained batch */
   struct arts_rank_bitset_s roster;        /* copy roster (INV targets) */

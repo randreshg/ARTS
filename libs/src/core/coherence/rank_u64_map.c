@@ -15,7 +15,7 @@
 #include "arts/coherence/directory.h"
 #include "arts/transport/protocol.h" /* arts_msg_rank_version_pair_s */
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>

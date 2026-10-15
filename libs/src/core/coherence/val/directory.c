@@ -13,8 +13,8 @@
 
 #include "arts/coherence/directory.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <sched.h>
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
 

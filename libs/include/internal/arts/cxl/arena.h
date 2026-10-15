@@ -56,13 +56,8 @@ typedef union {
 } arts_cxl_arena_table_t;
 
 /* A flush covers whole cache lines, so the table must span exactly its own. */
-#ifdef __cplusplus
 static_assert(sizeof(arts_cxl_arena_table_t) % CACHELINE_SIZE == 0,
               "arts_cxl_arena_table_t must span whole cache lines");
-#else
-_Static_assert(sizeof(arts_cxl_arena_table_t) % CACHELINE_SIZE == 0,
-               "arts_cxl_arena_table_t must span whole cache lines");
-#endif
 
 /* ── Arena operations ───────────────────────────────────────────────────────
  */

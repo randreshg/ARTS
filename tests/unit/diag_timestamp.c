@@ -27,9 +27,9 @@
  * stub arts_global_rank_id, then #include the diag.c TU directly.
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

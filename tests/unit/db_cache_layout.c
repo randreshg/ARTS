@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * DB cache / db_s static layout invariants (stub_size / home_initialized
- * layout, which keeps a stub's teardown from reading past its allocation).
+ * DB cache / db_s layout: the static invariants every protocol's descriptor
+ * keeps, and C-vs-C++ parity of the cell's DB structs.
  *
  * A non-home / stub-installed / creator-remote DB is allocated as a
  * *cache-only stub* of arts_db_cache_stub_size() bytes instead of the full
@@ -30,15 +30,24 @@
  *      sizeof(arts_db_s) + db->cache.db_size for a subtype whose payload is
  *      inline after the struct.
  *
+ * The descriptors have ONE definition per cell.  Their atomic members are
+ * spelled _Atomic(T), which a C++ translation unit (the CUDA sources, and
+ * the C sources a GPU build compiles as CUDA) sees as std::atomic<T>, and
+ * such a unit shares the descriptors with the C runtime.  This source is
+ * compiled both as C and as C++; each compilation prints one line of the
+ * cell's DB struct sizes and member offsets, and a ctest of its own compares
+ * the two lines.
+ *
  * This is a pure static-layout test: it starts no runtime and links nothing.
- * Most checks are _Static_assert (compile-time); a couple that need a live
- * db_size (total_size) run at main().  Built per protocol; the first home-arm
- * field is protocol-dependent and selected by the same #if ladder the runtime
- * header (coherence/types.h) uses.
+ * Built per protocol; the first home-arm field and the member set are
+ * protocol-dependent and selected by the same #if ladder the runtime header
+ * (coherence/types.h) uses.
  */
 
 #include "arts/coherence/types.h"
 
+#include <assert.h>
+#include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -61,23 +70,212 @@
 /* --- Compile-time invariants (the load-bearing ones) ------------------- */
 
 /* (5) the buffer's payload member at offset 64. */
-_Static_assert(offsetof(struct arts_db_buffer_s, data) == 64,
-               "the buffer's payload member must land at offset 64 "
-               "(cache-line boundary)");
+static_assert(offsetof(struct arts_db_buffer_s, data) == 64,
+              "the buffer's payload member must land at offset 64 "
+              "(cache-line boundary)");
 
 /* (6) read waiter link first (Treiber/arts_lf_stack_t contract). */
-_Static_assert(offsetof(struct arts_db_read_waiter_s, link) == 0,
-               "read_waiter.link must be the FIRST member");
+static_assert(offsetof(struct arts_db_read_waiter_s, link) == 0,
+              "read_waiter.link must be the FIRST member");
 
 /* (4) cache first, then db_type, then home_initialized. */
-_Static_assert(offsetof(struct arts_db_s, cache) == 0,
-               "cache must be the FIRST member of arts_db_s");
-_Static_assert(offsetof(struct arts_db_s, db_type) >
-                   offsetof(struct arts_db_s, cache),
-               "db_type must follow the cache");
-_Static_assert(offsetof(struct arts_db_s, home_initialized) >
-                   offsetof(struct arts_db_s, db_type),
-               "home_initialized must follow db_type");
+static_assert(offsetof(struct arts_db_s, cache) == 0,
+              "cache must be the FIRST member of arts_db_s");
+static_assert(offsetof(struct arts_db_s, db_type) >
+                  offsetof(struct arts_db_s, cache),
+              "db_type must follow the cache");
+static_assert(offsetof(struct arts_db_s, home_initialized) >
+                  offsetof(struct arts_db_s, db_type),
+              "home_initialized must follow db_type");
+
+#ifdef __cplusplus
+#define LAYOUT_LANG "cpp"
+#else
+#define LAYOUT_LANG "c"
+#endif
+
+/* One struct's size and alignment, then one member's offset and size. */
+#define TYPE(t) printf(" " #t "=%zu/%zu", sizeof(t), (size_t)alignof(t))
+#define MEMBER(t, m)                                                           \
+  printf(" " #t "." #m "=%zu/%zu", offsetof(t, m), sizeof(((t *)0)->m))
+/* A member whose size is not the struct's to state (a flexible array). */
+#define OFFSET(t, m) printf(" " #t "." #m "=%zu", offsetof(t, m))
+
+typedef struct arts_db_cache_s cache_t;
+typedef struct arts_db_s db_t;
+typedef struct arts_db_buffer_s buffer_t;
+typedef struct arts_db_read_waiter_s read_waiter_t;
+typedef struct arts_db_rw_waiter_s rw_waiter_t;
+#ifndef ARTS_PROTOCOL_FLUSH
+typedef struct arts_home_grantreq_node_s grantreq_node_t;
+typedef struct arts_home_grantreq_queue_s grantreq_queue_t;
+#endif
+#ifdef ARTS_PROTOCOL_INV
+typedef struct arts_db_inv_waiter_pool_s inv_waiter_pool_t;
+#endif
+
+/* Every member of the cell's DB structs, so the sibling compilation can be
+ * compared byte for byte: size and alignment alone cannot detect two members
+ * moving within unchanged padding. */
+static void print_fingerprint(void) {
+  printf("DB_LAYOUT %s", LAYOUT_LANG);
+
+  TYPE(buffer_t);
+#ifdef ARTS_DB_BUF_POOL
+  MEMBER(buffer_t, pool_link);
+#endif
+  MEMBER(buffer_t, version);
+  MEMBER(buffer_t, cb);
+#ifdef ARTS_DB_BUF_POOL
+  MEMBER(buffer_t, owner_cache);
+  MEMBER(buffer_t, capacity);
+  MEMBER(buffer_t, park_state);
+#endif
+  OFFSET(buffer_t, data);
+  TYPE(read_waiter_t);
+  MEMBER(read_waiter_t, link);
+  MEMBER(read_waiter_t, edt_guid);
+  MEMBER(read_waiter_t, slot);
+  MEMBER(read_waiter_t, serve);
+  MEMBER(read_waiter_t, requester);
+  MEMBER(read_waiter_t, rdzv);
+  TYPE(rw_waiter_t);
+  MEMBER(rw_waiter_t, link);
+  MEMBER(rw_waiter_t, edt_guid);
+  MEMBER(rw_waiter_t, slot);
+#ifndef ARTS_PROTOCOL_FLUSH
+  TYPE(grantreq_node_t);
+  MEMBER(grantreq_node_t, next);
+  MEMBER(grantreq_node_t, rank);
+  MEMBER(grantreq_node_t, have_version);
+  MEMBER(grantreq_node_t, rdzv);
+  TYPE(grantreq_queue_t);
+  MEMBER(grantreq_queue_t, tail);
+  MEMBER(grantreq_queue_t, head);
+  MEMBER(grantreq_queue_t, stub);
+#endif
+
+  TYPE(cache_t);
+#if defined(ARTS_PROTOCOL_INV) || defined(ARTS_PROTOCOL_EXCL)
+  MEMBER(cache_t, cache_state);
+#endif
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  MEMBER(cache_t, writer_count);
+  MEMBER(cache_t, buf_holds);
+#endif
+  MEMBER(cache_t, buffer);
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+  MEMBER(cache_t, buf_freelist);
+  MEMBER(cache_t, buf_retired);
+  MEMBER(cache_t, pending_rw);
+  MEMBER(cache_t, grant_req_in_flight);
+  MEMBER(cache_t, incoming_new_owner);
+  MEMBER(cache_t, incoming_new_owner_rdzv);
+  MEMBER(cache_t, incoming_new_owner_have);
+  MEMBER(cache_t, cached_version);
+#if defined(ARTS_WRITE_POLICY_WT)
+  MEMBER(cache_t, publication_waiters);
+#endif
+#if defined(ARTS_PROTOCOL_INV) || defined(ARTS_WRITE_POLICY_WT)
+  MEMBER(cache_t, pub_flight);
+  MEMBER(cache_t, pub_waiters);
+  MEMBER(cache_t, pub_parked);
+  MEMBER(cache_t, home_pub_addr);
+  MEMBER(cache_t, home_pub_rkey);
+  MEMBER(cache_t, home_pub_txid);
+  MEMBER(cache_t, create_token);
+#endif
+#ifdef ARTS_RELEASE_PURGE
+  MEMBER(cache_t, pending_grant_return);
+  MEMBER(cache_t, grant_generation);
+#endif
+#endif
+#ifdef ARTS_PROTOCOL_VAL
+  MEMBER(cache_t, snapshot_req_in_flight);
+  MEMBER(cache_t, ro_combine);
+  MEMBER(cache_t, ro_combine_group);
+#endif
+#ifdef ARTS_PROTOCOL_INV
+  MEMBER(cache_t, waiters);
+  TYPE(inv_waiter_pool_t);
+  MEMBER(inv_waiter_pool_t, chunks);
+  MEMBER(inv_waiter_pool_t, next_fresh);
+  MEMBER(inv_waiter_pool_t, free_head);
+#endif
+#ifdef ARTS_PROTOCOL_EXCL
+  MEMBER(cache_t, ro_pending);
+  MEMBER(cache_t, rw_pending);
+#if defined(ARTS_RELEASE_RETAIN)
+  MEMBER(cache_t, ro_serve);
+  MEMBER(cache_t, migrate_rdzv);
+#elif !defined(ARTS_USE_CXL)
+  MEMBER(cache_t, home_pub_rdzv);
+#endif
+#ifdef ARTS_USE_CXL
+  MEMBER(cache_t, cxl_addr);
+#endif
+#endif
+#ifdef ARTS_PROTOCOL_FLUSH
+  MEMBER(cache_t, home_line_addr);
+  MEMBER(cache_t, home_line_rkey);
+  MEMBER(cache_t, flush_txid);
+  MEMBER(cache_t, create_token);
+#endif
+  MEMBER(cache_t, db_guid);
+  MEMBER(cache_t, db_size);
+  MEMBER(cache_t, payload_pending);
+  MEMBER(cache_t, init_kind);
+
+  TYPE(db_t);
+  MEMBER(db_t, cache);
+  MEMBER(db_t, db_type);
+  MEMBER(db_t, home_initialized);
+#if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
+#ifndef ARTS_RELEASE_PURGE
+  MEMBER(db_t, rw_holder);
+  MEMBER(db_t, pending_install_owner);
+#else
+  MEMBER(db_t, pending_return_from);
+  MEMBER(db_t, pending_return_cv);
+  MEMBER(db_t, pending_return_version);
+  MEMBER(db_t, pending_return_ack);
+  MEMBER(db_t, pending_return_credit);
+#endif
+  MEMBER(db_t, pending_rw);
+  MEMBER(db_t, invalidate_in_flight);
+  MEMBER(db_t, cached_ranks);
+#endif
+#if defined(ARTS_PROTOCOL_VAL) && defined(ARTS_WRITE_POLICY_WT)
+  MEMBER(db_t, cached_version);
+#endif
+#ifdef ARTS_PROTOCOL_INV
+  MEMBER(db_t, dir_state);
+  MEMBER(db_t, opening_pending);
+  MEMBER(db_t, hver);
+  MEMBER(db_t, pub_queue);
+  MEMBER(db_t, round_entries);
+  MEMBER(db_t, roster);
+#endif
+#ifdef ARTS_PROTOCOL_EXCL
+  MEMBER(db_t, lock_state);
+  MEMBER(db_t, rw_waiters);
+  MEMBER(db_t, ro_waiters);
+  MEMBER(db_t, cached_ranks);
+#ifdef ARTS_RELEASE_RETAIN
+  MEMBER(db_t, ro_retainers);
+#endif
+#endif
+#ifdef ARTS_PROTOCOL_FLUSH
+  MEMBER(db_t, sharers);
+  MEMBER(db_t, sharer_words);
+#endif
+  MEMBER(db_t, reader);
+  MEMBER(db_t, writer);
+  MEMBER(db_t, version);
+  MEMBER(db_t, time_stamp);
+
+  printf("\n");
+}
 
 int main(void) {
   int rc = 0;
@@ -134,7 +332,7 @@ int main(void) {
    * the struct alone when the payload lives in the coherence buffer, struct +
    * payload when it is inline. */
   struct arts_db_s db;
-  memset(&db, 0, sizeof(db));
+  memset((void *)&db, 0, sizeof(db));
   uint64_t sizes[] = {0, 1, 64, 4096};
   for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
     db.cache.db_size = sizes[i];
@@ -175,8 +373,10 @@ int main(void) {
   if (rc != 0) {
     return 1;
   }
-  printf("PASS db_cache_layout: stub=%llu db_type=%zu home_init=%zu "
+  print_fingerprint();
+  printf("PASS db_cache_layout [%s]: stub=%llu db_type=%zu home_init=%zu "
          "first_home_arm=%zu data=64 link=0\n",
-         (unsigned long long)stub, off_db_type, off_home_init, off_first_home);
+         LAYOUT_LANG, (unsigned long long)stub, off_db_type, off_home_init,
+         off_first_home);
   return 0;
 }

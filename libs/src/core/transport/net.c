@@ -41,9 +41,9 @@
 #include <stdio.h>
 #include "arts/runtime_state.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <netinet/in.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -213,9 +213,12 @@ static struct {
    * unsigned suffices. */
   unsigned rx_repost_pending;
 
-  _Atomic uint64_t tx_outstanding; /* posted-not-yet-completed fi_sends        */
-  _Atomic uint64_t eagain_count;   /* observability for the retry path         */
-  _Atomic bool quiescing;          /* teardown began: refuse new submissions   */
+  /* Posts not yet completed, counted before each post and uncounted at its
+   * completion or failure, so it never reads 0 while a post is outstanding:
+   * only its own value. */
+  _Atomic uint64_t tx_outstanding;
+  _Atomic uint64_t eagain_count; /* observability for the retry path         */
+  _Atomic bool quiescing;        /* teardown began: refuse new submissions   */
 } g_net;
 
 /* Global registry of per-thread rings so progress can drain rings owned by
@@ -370,6 +373,9 @@ static struct net_txn_s *net_txn_new(fi_addr_t addr, void *buf, size_t len,
 /* Post a txn once (fi_send or fi_writedata by op).  0 = accepted (now
  * outstanding), -FI_EAGAIN = provider busy, other = fatal. */
 static inline ssize_t net_try_post(struct net_txn_s *txn) {
+  /* Counted before the post: once posted, any thread may reap its completion
+   * and uncount it. */
+  atomic_fetch_add_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
   ssize_t rc;
   if (txn->op == NET_TXN_SEND) {
     rc = fi_send(g_net.ep, txn->buf, txn->len, txn->desc, txn->addr, txn);
@@ -391,9 +397,10 @@ static inline ssize_t net_try_post(struct net_txn_s *txn) {
                     txn->raddr, txn->rkey, txn);
     }
   }
-  if (rc == 0) {
-    atomic_fetch_add_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
-  } else if (rc != -FI_EAGAIN) {
+  if (rc != 0) {
+    atomic_fetch_sub_explicit(&g_net.tx_outstanding, 1, memory_order_relaxed);
+  }
+  if (rc != 0 && rc != -FI_EAGAIN) {
     ARTS_ERROR("arts_net: %s failed: %s",
                txn->op == NET_TXN_SEND    ? "fi_send"
                : txn->op == NET_TXN_WRITE ? "fi_writedata"
@@ -955,7 +962,8 @@ static inline void net_live_cq_err_check(void) {
   if (t == 0) {
     return;
   }
-  if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE) != 0 ||
+  if (atomic_load_explicit(&arts_node_info.shutdown_state,
+                           memory_order_acquire) != 0 ||
       atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
     return;
   }
@@ -1003,7 +1011,8 @@ static void net_reap_cq_err(void) {
      * endpoints down in no agreed order, and a transfer flushed by that is
      * the expected residue — and a peer can be that far ahead of this rank,
      * so the first live error only starts the clock (net_live_cq_err_check). */
-    if (__atomic_load_n(&arts_node_info.shutdown_state, __ATOMIC_ACQUIRE) == 0 &&
+    if (atomic_load_explicit(&arts_node_info.shutdown_state,
+                             memory_order_acquire) == 0 &&
         !atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
       uint64_t none = 0;
       if (atomic_compare_exchange_strong_explicit(
@@ -1129,8 +1138,8 @@ static void net_quiesce_held_writes(void) {
   if (g_write_delay_ns == 0) {
     return;
   }
-  if (__atomic_load_n(&arts_shutdown_abandon.unjoined_threads,
-                      __ATOMIC_RELAXED) != 0) {
+  if (atomic_load_explicit(&arts_shutdown_abandon.unjoined_threads,
+                           memory_order_relaxed) != 0) {
     ARTS_WARN("arts_net: held write completions left unrun: a thread never "
               "joined");
     return;
@@ -1993,8 +2002,11 @@ void arts_net_teardown(void) {
 void arts_net_drain_outstanding(unsigned int deadline_ms) {
   /* Bounded wait for accepted fabric sends to complete, so the shutdown
    * broadcast's frames leave this node before teardown.  The progress threads
-   * are still running and reap completions; we assist by reaping too and poll
-   * the outstanding count.  Single-node never brought the fabric up. */
+   * are still running: they reap completions and dispatch what arrives.  This
+   * assists with the transmit side only -- it posts queued sends, reaps the
+   * completion queue without dispatching and polls the outstanding count --
+   * since a handler run here could ready an EDT on a thread that owns no
+   * deque.  Single-node never brought the fabric up. */
   if (arts_global_rank_count <= 1) {
     return;
   }
@@ -2004,9 +2016,11 @@ void arts_net_drain_outstanding(unsigned int deadline_ms) {
   (void)clock_gettime(CLOCK_MONOTONIC, &start);
   for (;;) {
     if (atomic_load_explicit(&g_net.tx_outstanding, memory_order_acquire) == 0) {
+      ARTS_INFO("arts_net: shutdown TX drain complete");
       return;
     }
-    arts_net_progress();
+    net_drain_all_rings();
+    net_reap_no_dispatch();
     struct timespec now;
     (void)clock_gettime(CLOCK_MONOTONIC, &now);
     uint64_t elapsed = (uint64_t)(now.tv_sec - start.tv_sec) * 1000000000ULL +

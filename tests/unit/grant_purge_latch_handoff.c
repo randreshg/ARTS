@@ -27,6 +27,8 @@
 unsigned int arts_global_rank_id = 0u;
 unsigned int arts_global_rank_count = 2u;
 
+#include "counter_stubs.h"
+
 unsigned int arts_atomic_add(volatile unsigned int *d, unsigned int v) {
   return __atomic_add_fetch(d, v, __ATOMIC_SEQ_CST);
 }

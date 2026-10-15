@@ -74,14 +74,17 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
    * - ``ARTS_BUILD_BENCHMARKS``
      - ON
      - Build the benchmark apps (ARTS and the enabled reference runtimes).
-       Requires ``ARTS_BUILD_SHIM``.
+       Requires ``ARTS_BUILD_SHIM``.  The benchmark tree is x86-64 only: on
+       another target the configure skips it, with ``ARTS_BUILD_HPX``, and
+       says so.
    * - ``ARTS_BUILD_SHIM``
      - ON
      - Build the OCR-to-ARTS compatibility shim against this tree's runtime
        and the vendored OCR headers.  With ``ARTS_BUILD_TESTS`` its tests
-       are registered with ctest in every configuration.  Turning it off
-       while ``ARTS_BUILD_BENCHMARKS`` is on is a configure error, since
-       every ARTS variant of a benchmark app links the shim.
+       are registered with ctest in every configuration.  On a target where
+       the benchmark tree is built, turning it off while
+       ``ARTS_BUILD_BENCHMARKS`` is on is a configure error, since every ARTS
+       variant of a benchmark app links the shim.
    * - ``ARTS_BUILD_XSOCR``
      - ON
      - Build the XSOCR reference runtime and its ``*_xsocr`` app variants
@@ -93,7 +96,8 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
    * - ``ARTS_BUILD_HPX``
      - ON
      - Source-build HPX v1.11.0 with its MPI parcelport and build the
-       standalone HPX benchmark apps (needs a host MPI).
+       standalone HPX benchmark apps (needs a host MPI; x86-64 only, like the
+       rest of the benchmark tree).
    * - ``ARTS_BUILD_DOCS``
      - OFF
      - Build the Doxygen + Sphinx documentation.
@@ -202,7 +206,14 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        runs with one LeakSanitizer suppression,
        ``tests/lsan_suppressions.txt`` (a leak inside the vendored
        libfabric's tcp provider); the work a non-quiescent shutdown
-       abandons stays reachable at exit and is not reported.
+       abandons stays reachable at exit and is not reported.  Under
+       ``THREAD`` the audited tests listed in
+       ``tests/tsan/residue_tests.cmake`` run, in the cells and variants
+       each entry names, with one of two suppression files
+       (``tests/tsan/residue_send.supp``, ``residue_send_land.supp``),
+       chosen by the race shapes the test's program leaves unordered in
+       that cell; they name only the fabric provider's payload copy
+       routines, and every other test keeps those frames visible.
    * - ``ARTS_DEBUG_INJECTION``
      - OFF
      - Debug builds only: compile the run-time injection hooks, each inert

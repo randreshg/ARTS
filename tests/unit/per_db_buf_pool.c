@@ -40,13 +40,13 @@ int main(void) {
   struct arts_db_buffer_s *b1 = arts_db_buf_install(&c, 1, payload, sz);
   assert(b1 != NULL);
   void *a1 = (void *)b1;
-  arts_atomic_shared_store(&c.buffer, NULL);
+  arts_shared_slot_store(&c.buffer, NULL);
 
   /* The next install draws the parked buffer back. */
   struct arts_db_buffer_s *b2 = arts_db_buf_install(&c, 2, payload, sz);
   assert(b2 != NULL);
   assert((void *)b2 == a1 && "v2 must reuse the parked v1 buffer");
-  arts_atomic_shared_store(&c.buffer, NULL);
+  arts_shared_slot_store(&c.buffer, NULL);
   /* A descriptor's storage release frees what its list holds; this cache is
    * in no descriptor, so the test empties the list itself. */
   arts_lf_pool_destroy_with(&c.buf_freelist, arts_regpool_free);

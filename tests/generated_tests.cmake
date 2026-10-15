@@ -146,6 +146,12 @@ add_pure_unit_src(runtime_edt_event_layout PASS_REGEX "PASS runtime_edt_event_la
 add_pure_unit_src(topology_thread_mask SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/system/placement.c LIBS arts::hwloc PASS_REGEX "PASS topology_thread_mask" TIMEOUT 60)
 add_pure_unit_src(threads_worker_underflow PASS_REGEX "PASS threads_worker_underflow" TIMEOUT 60)
 add_pure_unit_src(signals_formatters PASS_REGEX "PASS signals_formatters" TIMEOUT 60)
+# The handlers' backtrace() must not load the unwinder in signal context: the
+# install loads it first.  A sanitizer runtime loads the unwinder itself before
+# the program starts, so the property is observable only without one.
+if(NOT ARTS_DEBUG_SANITIZER)
+add_pure_unit_src(signals_unwinder_preload PASS_REGEX "PASS signals_unwinder_preload" TIMEOUT 30)
+endif()
 # Well-formed output and escaping, and a document that stays well formed when
 # its nesting passes the writer's depth bound.
 add_pure_unit_src(json_writer SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/counter/json.c PASS_REGEX "PASS json_writer" TIMEOUT 60)
@@ -629,6 +635,23 @@ register_multinode_test(shutdown_idempotent_concurrent_init TIMEOUT 120
                         VARIANTS 2n_9w_1p 4n_4w_1p)
 foreach(_v 2n_9w_1p 4n_4w_1p)
     set_tests_properties(shutdown_idempotent_concurrent_init_${_v} PROPERTIES PASS_REGULAR_EXPRESSION "IDEMPOTENT_INIT_EXIT")
+endforeach()
+
+# A SIGTERM to rank 0 while every other rank keeps satisfies in flight to it:
+# the signal watcher initiates the shutdown and waits for its broadcast's sends
+# to complete while those satisfies arrive, and the run ends gracefully.  Where
+# the build prints INFO, the wait's own completion line is part of the oracle.
+add_arts_test(shutdown_sigterm_inflight_drain)
+register_multinode_test(shutdown_sigterm_inflight_drain TIMEOUT 120)
+if(ARTS_LOG_LEVEL GREATER_EQUAL 2)
+    set(_drain_pass "shutdown TX drain complete.*\\[rank 0\\] SIGTERM_DRAIN_EXIT")
+else()
+    set(_drain_pass "\\[rank 0\\] SIGTERM_DRAIN_EXIT")
+endif()
+foreach(_v 2n_9w_1p 4n_4w_1p 2n_8w_2p)
+    set_tests_properties(shutdown_sigterm_inflight_drain_${_v} PROPERTIES
+        PASS_REGULAR_EXPRESSION "${_drain_pass}"
+        FAIL_REGULAR_EXPRESSION "shutdown TX drain timeout")
 endforeach()
 
 # --- random ---

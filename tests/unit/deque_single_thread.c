@@ -187,9 +187,3 @@ void *arts_calloc_aligned(size_t nmemb, size_t size, size_t align) {
   return p;
 }
 void arts_free(void *ptr) { free(ptr); }
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *destination, uint64_t old_val,
-                               uint64_t swap_in) {
-  __atomic_compare_exchange_n(destination, &old_val, swap_in, false,
-                              __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-  return old_val; /* updated to the observed value on failure */
-}

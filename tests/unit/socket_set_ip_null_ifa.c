@@ -46,17 +46,14 @@
 #include "arts/system/config.h"
 #include "arts/transport/protocol.h"
 
+#include "counter_stubs.h"
+
 /* ----- extern stubs the included socket.c needs ----- */
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
-ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
 unsigned int arts_global_rank_id;
 unsigned int arts_global_rank_count;
 
-void arts_counter_increment_by(arts_counter_t *c, uint64_t n) {
-  (void)c;
-  (void)n;
-}
 void arts_abort(uint8_t code) { _exit(70 + code); }
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }

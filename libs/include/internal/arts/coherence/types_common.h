@@ -79,14 +79,11 @@ extern "C" {
 #include "arts/defs.h"
 #include "arts/utils/lockfree_lifo.h"  /* arts_lf_stack_t / arts_lf_link_t */
 #include "arts/utils/lockfree_pool.h"  /* arts_lockfree_pool_t (buf_freelist) */
-#include "arts/utils/mpsc.h"           /* arts_mpsc_t */
 #include "arts/utils/shared.h"         /* arts_shared_ptr_t (buffer cb) */
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 #include <stddef.h> /* offsetof — container_of(cache, arts_db_s, cache) */
 #include <stdint.h>
-#ifndef __cplusplus
-#include <stdatomic.h>
-#endif
 /* The home metadata embeds its destroy roster, a per-rank bit-set, by
  * value. */
 #include "arts/rank_bitset.h"
@@ -202,15 +199,6 @@ struct arts_rdzv_landing_s {
   uint64_t cookie;
 };
 
-/* Portable atomic unsigned-int for struct fields visible to both C and the
- * C++/nvcc layout-only TUs (which cannot parse C11 _Atomic).  C accesses these
- * via arts_atomic_* on the underlying uint; nvcc only needs the layout. */
-#ifdef __cplusplus
-typedef unsigned int arts_db_atomic_uint_t;
-#else
-typedef _Atomic(unsigned int) arts_db_atomic_uint_t;
-#endif
-
 /* Arms that install a fresh buffer for every version a rank fetches (VAL's
  * snapshots, INV's reader copies) keep a per-DB free-list of buffers to draw
  * the next one from.  Every other arm draws too rarely for a list to pay: one
@@ -261,7 +249,7 @@ struct arts_db_buffer_s {
   /* Out or parked, written by a debug build only, which refuses to end a
    * drawn buffer that is not out; a re-draw marks it out again, so a second
    * end after one is caught, if at all, only at a later end. */
-  arts_db_atomic_uint_t park_state;
+  _Atomic(unsigned int) park_state;
   char _pad[20]; /* the payload member lands at offset 64 */
 #else
   char _pad[48]; /* the payload member lands at offset 64 */
@@ -288,9 +276,9 @@ struct arts_db_read_waiter_s {
   arts_guid_t edt_guid;
   unsigned int slot;
   /* Deferred-serve arm: NULL = local waiter (drain resumes the parked EDT;
-   * the resume re-derives dep->ptr from the installed buffer).  Non-NULL =
-   * deferred remote serve; the drain invokes serve(cache, w) BEFORE freeing
-   * w, and requester/rdzv carry the original request. */
+   * the resume claims the slot's acquire record with the installed buffer).
+   * Non-NULL = deferred remote serve; the drain invokes serve(cache, w)
+   * BEFORE freeing w, and requester/rdzv carry the original request. */
   void (*serve)(struct arts_db_cache_s *cache, struct arts_db_read_waiter_s *w);
   unsigned int requester;
   struct arts_rdzv_landing_s rdzv;

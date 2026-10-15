@@ -3,12 +3,11 @@
  * Grow-during-steal value-correctness + segment-reclamation safety
  * (libs/src/core/utils/deque.c).  push_front grows the array
  * (grow_circular_array copies the live window [t,b) into a 2x segment) and
- * publishes `deque->activeArray = a` with NO store-store fence before the
- * publish.  A stealer's pop_back reads activeArray, then reads
- * segment[t]; if it observes the new activeArray before the copied element
- * stores (weak-mem), it reads a stale/garbage slot.  Also: the old segment is
- * deliberately never freed until arts_deque_delete, so a stealer that captured
- * a stale activeArray must still read VALID memory (no UAF).
+ * publishes the new segment.  A stealer's pop_back loads the segment, then
+ * reads segment[t], and must never observe the new segment without the
+ * copied elements.  Also: the old segment is deliberately never freed until
+ * arts_deque_delete, so a stealer that captured a stale segment must still
+ * read VALID memory (no UAF).
  *
  * The value-identity check is the teeth here: each item's value encodes the
  * logical index at which it was pushed (value == index).  pop_back returns
@@ -25,9 +24,9 @@
 
 #include "arts/utils/deque.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,9 +180,3 @@ void *arts_calloc_aligned(size_t nmemb, size_t size, size_t align) {
   return p;
 }
 void arts_free(void *ptr) { free(ptr); }
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *destination, uint64_t old_val,
-                               uint64_t swap_in) {
-  __atomic_compare_exchange_n(destination, &old_val, swap_in, false,
-                              __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-  return old_val;
-}

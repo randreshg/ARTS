@@ -38,9 +38,9 @@
 ******************************************************************************/
 #include "arts/counter/counter.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <errno.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -52,9 +52,8 @@
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
-#include "arts/transport/net.h"   /* outbound send helpers */
+#include "arts/transport/net.h"      /* outbound send helpers */
 #include "arts/transport/protocol.h" /* wire packet structs */
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 
 // Arrays are defined as static const in Preamble.h (included via arts.h)
@@ -66,37 +65,54 @@ ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
 
 // Capture thread state - only used for periodic counter capture
 static pthread_t capture_thread;
-static _Atomic bool capture_thread_running = false;
+/* Stored true (release) before the thread is created, false by the stop or
+ * by a failed start; the capture loop and the start's check load it with
+ * acquire. */
+static _Atomic(bool) capture_thread_running = false;
 
-// Time synchronization variables (exported for RemoteFunctions.c)
-// timeOffset = workerTime - masterTime (positive if worker is ahead)
-// To get synchronized time: local_time - timeOffset = masterTime
-volatile int64_t arts_counter_time_offset = 0;
-volatile bool arts_counter_time_sync_received = false;
+// Time synchronization: offset = workerTime - masterTime (positive if the
+// worker is ahead), so local_time - offset = masterTime.
+//
+// A non-master rank's capture start sends one request and waits, bounded, for
+// the response.  The word below decides the offset once: the response handler
+// claims it WAITING -> RECEIVING, stores the offset and publishes RECEIVED
+// (release); the waiter, at its timeout, moves it WAITING -> TIMED_OUT and the
+// offset stays 0.  A response that finds the word anything but WAITING writes
+// nothing, so once the waiter has decided the offset never changes.  The
+// waiter reads RECEIVED with acquire before it starts the capture thread, the
+// only other reader of the offset.
+enum {
+  TIME_SYNC_WAITING = 0,
+  TIME_SYNC_RECEIVING,
+  TIME_SYNC_RECEIVED,
+  TIME_SYNC_TIMED_OUT,
+};
+static _Atomic(unsigned int) time_sync_state = TIME_SYNC_WAITING;
+/* Written once, by the response that claims time_sync_state. */
+static _Atomic(int64_t) time_sync_offset = 0;
 
-// Get synchronized timestamp (adjusted to master node's clock)
-// Call this function only after time synchronization is complete
-// arts_counter_time_sync_received == true
+// Timestamp on the master node's clock; called only once the time sync has
+// decided.
 static inline uint64_t arts_get_synced_time_stamp(void) {
-  return (uint64_t)((int64_t)arts_get_time_stamp() - arts_counter_time_offset);
+  int64_t offset =
+      atomic_load_explicit(&time_sync_offset, memory_order_relaxed);
+  return (uint64_t)((int64_t)arts_get_time_stamp() - offset);
 }
 
 static uint64_t arts_counter_capture_counter(arts_counter_t *counter) {
-  /* start/count are mutated by the owning worker via arts_atomic_cswap_u64 /
-   * arts_atomic_swap_u64 / arts_atomic_fetch_add_u64 with no happens-before to
-   * this capture thread, so every read here MUST be an atomic load — a plain
-   * read would be a data race. */
-  uint64_t expected = arts_atomic_read_u64(&counter->start);
+  uint64_t expected =
+      atomic_load_explicit(&counter->start, memory_order_relaxed);
   while (expected) {
     uint64_t start = arts_get_time_stamp();
-    if (arts_atomic_cswap_u64(&counter->start, expected, start) != expected) {
-      expected = arts_atomic_read_u64(&counter->start);
-    } else {
-      arts_atomic_fetch_add_u64(&counter->count, start - expected);
+    if (atomic_compare_exchange_strong_explicit(&counter->start, &expected,
+                                                start, memory_order_relaxed,
+                                                memory_order_relaxed)) {
+      atomic_fetch_add_explicit(&counter->count, start - expected,
+                                memory_order_relaxed);
       expected = 0;
     }
   }
-  return arts_atomic_read_u64(&counter->count);
+  return atomic_load_explicit(&counter->count, memory_order_relaxed);
 }
 
 static void *arts_counter_capture_thread(void *args) {
@@ -170,18 +186,13 @@ static void *arts_counter_capture_thread(void *args) {
       next_capture_time += intervals_behind * interval_ns;
     }
 
-    // Capture counters from all threads - store in nodeInfo.capture_arrays
-    // Skip threads with NULL live_counters (not registered or already closed)
+    // Capture counters from all threads - store in nodeInfo.capture_arrays.
+    // Every thread registered before this thread started, and none leaves
+    // the runtime before this thread is joined (see live_counters).
     for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
       if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_PERIODIC) {
         for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
-          // Read counter value from thread's ARTS_THREAD_LOCAL storage via
-          // live_counters pointer NULL means thread hasn't registered yet or
-          // has already closed
           arts_counter_t *thread_counters = arts_node_info.live_counters[t];
-          if (!thread_counters) {
-            continue;
-          }
           arts_counter_capture_t capture;
           capture.epoch = current_epoch;
           capture.value = arts_counter_capture_counter(&thread_counters[i]);
@@ -217,24 +228,30 @@ void arts_counter_capture_start() {
     // This provides better accuracy than one-way broadcast.
 
     if (arts_global_rank_id == arts_global_master_rank_id) {
-      // Master node: no offset needed, just set ready
-      arts_counter_time_offset = 0;
-      arts_counter_time_sync_received = true;
+      // Master node: the offset is 0 and no response comes.
       ARTS_INFO("Time sync: Master node (rank %u), offset=0",
                 arts_global_master_rank_id);
     } else {
       // Worker nodes: send sync request and wait for response
       arts_send_time_sync_request();
       uint64_t timeout = arts_get_time_stamp() + 500000000ULL; // 500ms
-      while (!arts_counter_time_sync_received &&
+      while (atomic_load_explicit(&time_sync_state, memory_order_acquire) !=
+                 TIME_SYNC_RECEIVED &&
              arts_get_time_stamp() < timeout) {
         usleep(1000); // Wait 1ms
       }
-      if (!arts_counter_time_sync_received) {
+      unsigned int state = TIME_SYNC_WAITING;
+      if (atomic_compare_exchange_strong_explicit(
+              &time_sync_state, &state, TIME_SYNC_TIMED_OUT,
+              memory_order_acquire, memory_order_acquire)) {
         ARTS_WARN("Time sync: Timeout waiting for master response, "
                   "using local time (offset=0)");
-        arts_counter_time_offset = 0;
-        arts_counter_time_sync_received = true;
+      } else {
+        /* A response claimed the word: it publishes RECEIVED next. */
+        while (state != TIME_SYNC_RECEIVED) {
+          arts_runtime_idle_pause();
+          state = atomic_load_explicit(&time_sync_state, memory_order_acquire);
+        }
       }
     }
 
@@ -265,26 +282,30 @@ void arts_counter_capture_stop() {
 }
 
 void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
-  arts_atomic_fetch_add_u64(&counter->count, num);
+  atomic_fetch_add_explicit(&counter->count, num, memory_order_relaxed);
 }
 
 void arts_counter_decrement_by(arts_counter_t *counter, uint64_t num) {
-  arts_atomic_fetch_sub_u64(&counter->count, num);
+  atomic_fetch_sub_explicit(&counter->count, num, memory_order_relaxed);
 }
 
 void arts_counter_timer_start(arts_counter_t *counter) {
-  if (arts_atomic_cswap_u64(&counter->start, 0, arts_get_time_stamp())) {
+  uint64_t stopped = 0;
+  if (!atomic_compare_exchange_strong_explicit(
+          &counter->start, &stopped, arts_get_time_stamp(),
+          memory_order_relaxed, memory_order_relaxed)) {
     ARTS_ERROR("Counter timer already started");
   }
 }
 
 void arts_counter_timer_end(arts_counter_t *counter) {
   uint64_t end = arts_get_time_stamp();
-  uint64_t start = arts_atomic_swap_u64(&counter->start, 0);
+  uint64_t start =
+      atomic_exchange_explicit(&counter->start, 0, memory_order_relaxed);
   if (!start) {
     ARTS_ERROR("Counter timer not started");
   }
-  arts_atomic_fetch_add_u64(&counter->count, end - start);
+  atomic_fetch_add_explicit(&counter->count, end - start, memory_order_relaxed);
 }
 
 // Helper: apply one reduction step
@@ -444,12 +465,12 @@ static uint64_t arts_compute_node_reduced_value(unsigned int index) {
   uint64_t node_value =
       (reduce_method == ARTS_COUNTER_REDUCE_MIN) ? UINT64_MAX : 0;
   for (unsigned int t = 0; t < arts_node_info.total_thread_count; t++) {
-    arts_counter_t *saved = arts_node_info.saved_counters[t];
+    uint64_t *saved = arts_node_info.saved_counters[t];
     if (!saved) {
       continue; // Thread never registered or data not available
     }
     node_value =
-        arts_apply_reduction(node_value, saved[index].count, reduce_method, t);
+        arts_apply_reduction(node_value, saved[index], reduce_method, t);
   }
   return node_value;
 }
@@ -583,7 +604,7 @@ static void arts_counter_write_thread(const char *output_folder,
 
   // Counters
   arts_json_writer_begin_object(&writer, "counters");
-  arts_counter_t *saved = arts_node_info.saved_counters[thread_id];
+  uint64_t *saved = arts_node_info.saved_counters[thread_id];
   for (unsigned int i = 0; i < NUM_COUNTER_TYPES; i++) {
     if (arts_counter_mode_array[i] == ARTS_COUNTER_MODE_OFF ||
         arts_counter_level_array[i] != ARTS_COUNTER_LEVEL_THREAD) {
@@ -597,7 +618,7 @@ static void arts_counter_write_thread(const char *output_folder,
     arts_json_writer_write_string(&writer, "captureLevel", "THREAD");
 
     // Always write final value
-    uint64_t final_value = saved[i].count;
+    uint64_t final_value = saved[i];
     arts_json_writer_write_u_int64(&writer, "value", final_value);
     if (arts_counter_is_time_counter(arts_counter_names[i])) {
       arts_json_writer_write_double(&writer, "value_ms",
@@ -1253,8 +1274,18 @@ void arts_handler_time_sync_response(void *pack) {
   // offset = workerTime - masterTime = (T1 + RTT/2) - T2 = (T1 + T3)/2 - T2
   int64_t offset = (int64_t)((ntp_t1 + ntp_t3) / 2) - (int64_t)ntp_t2;
 
-  __atomic_store_n(&arts_counter_time_offset, offset, __ATOMIC_RELAXED);
-  __atomic_store_n(&arts_counter_time_sync_received, true, __ATOMIC_RELEASE);
+  unsigned int waiting = TIME_SYNC_WAITING;
+  if (!atomic_compare_exchange_strong_explicit(
+          &time_sync_state, &waiting, TIME_SYNC_RECEIVING, memory_order_relaxed,
+          memory_order_relaxed)) {
+    ARTS_INFO("Time sync: Worker %u ignores a response that arrived after "
+              "the wait ended",
+              arts_global_rank_id);
+    return;
+  }
+  atomic_store_explicit(&time_sync_offset, offset, memory_order_relaxed);
+  atomic_store_explicit(&time_sync_state, TIME_SYNC_RECEIVED,
+                        memory_order_release);
 
   uint64_t rtt = ntp_t3 - ntp_t1;
   ARTS_INFO("Time sync: Worker %u received response, T1=%lu, T2=%lu, T3=%lu, "

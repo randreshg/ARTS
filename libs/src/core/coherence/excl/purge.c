@@ -25,9 +25,9 @@
  * declare functions that take these types by pointer). */
 #include "arts/coherence/excl/types.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
 #include <semaphore.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -685,9 +685,10 @@ static void lock_drain_pending(arts_lf_stack_t *q, uint32_t expected) {
           atomic_load_explicit(&node->next, memory_order_relaxed);
       struct arts_db_excl_waiter_s *w =
           ARTS_CONTAINER_OF(node, struct arts_db_excl_waiter_s, link);
-      /* Re-derive dep->ptr from the installed buffer, let the serialized walk
-       * past this slot, and account (which may schedule the EDT when
-       * acquire_remaining reaches 0). */
+      /* Claim the slot's acquire record with the installed buffer, let the
+       * serialized walk past this slot, and account (which may hand the
+       * payload to depv and schedule the EDT when acquire_remaining reaches
+       * 0). */
       mark_edt_ready_by_guid(w->edt_guid, w->slot);
       arts_free(w);
       served++;

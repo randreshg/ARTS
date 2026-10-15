@@ -23,7 +23,7 @@
  * their parameters, read from the EDT the route slot holds.
  */
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdint.h>
 
 #include "../test_failure_status.h"

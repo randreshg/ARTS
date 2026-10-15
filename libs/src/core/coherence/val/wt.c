@@ -67,7 +67,8 @@ void arts_handler_db_acquire(void *item, void *args) {
         is_owner) { /* WT RO predicate (home holds current data) */
       /* Pre-check the publication signal so an unpublished (v0, installed
        * at create) stable buffer parks WITHOUT taking the EDT's acquire
-       * hold — the resume re-derives dep->ptr from the published buffer. */
+       * hold — the resume re-derives the slot's pointer from the published
+       * buffer. */
       bool unpublished = false;
       {
         arts_shared_ptr_t ph = arts_db_buf_acquire(cache);
@@ -78,18 +79,18 @@ void arts_handler_db_acquire(void *item, void *args) {
              __atomic_load_n(&pb->version, __ATOMIC_ACQUIRE) == 0);
         arts_db_buf_release(&ph);
       }
-      dep->ptr = (unpublished && cache->db_size > 0)
-                     ? NULL
-                     : arts_db_acquire_local(cache);
-      if (dep->ptr == NULL && cache->db_size > 0) {
+      void *payload = (unpublished && cache->db_size > 0)
+                          ? NULL
+                          : arts_db_acquire_local(cache);
+      if (payload == NULL && cache->db_size > 0) {
         /* Home before the creator's first PUBLISH: a cross-rank create
          * installs home metadata only — no buffer exists until the creator's
          * release publishes one.  A dependence satisfied before that release
          * (add-dependence satisfies immediately) may legally race here; the
          * RELEASE is the publication point, so PARK among the publication
          * waiters — the first publish install drains us and the resume
-         * re-derives dep->ptr from the installed buffer.  (db_size == 0 is
-         * the sentinel DB: NULL is its defined value.) */
+         * re-derives the slot's pointer from the installed buffer.
+         * (db_size == 0 is the sentinel DB: NULL is its defined value.) */
         struct arts_db_read_waiter_s *w =
             (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
         w->edt_guid = edt->guid;
@@ -111,6 +112,7 @@ void arts_handler_db_acquire(void *item, void *args) {
         }
         return;
       }
+      arts_db_acquire_local_hit(edt, slot, payload);
       arts_db_acquire_resolved(edt, slot);
       return;
     }
@@ -118,7 +120,7 @@ void arts_handler_db_acquire(void *item, void *args) {
     return;
   }
   /* RW */
-  if (is_owner && arts_db_acquire_rw_local_fast(cache, dep)) {
+  if (is_owner && arts_db_acquire_rw_local_fast(cache, edt, slot)) {
     arts_db_acquire_resolved(edt, slot); /* data here, writer_count bumped */
     return;
   }

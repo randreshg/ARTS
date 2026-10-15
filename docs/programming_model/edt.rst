@@ -81,6 +81,11 @@ above ``depc`` is a program error that only the EDT's rank can detect, and the
 caller (possibly on another rank) cannot be told, so that rank ends the
 process with a fatal error naming the EDT, the slot and ``depc``.
 
+An EDT takes exactly ``depc`` satisfies, control dependences included.  A
+satisfy that reaches the EDT, while it is still installed, after all of them
+is the same kind of program error: that rank ends the process with a fatal
+error naming the EDT and its dependence count.
+
 For a value computed after the consumer is created, connect an event to its
 slot with ``DB_MODE_NULL`` and later satisfy that event with the value.
 ``arts_add_dependence`` interprets its source as an object; direct value

@@ -44,9 +44,9 @@ extern "C" {
 
 #include <stdbool.h>
 
-#define STEALSIZE 1024
-
-/* Opaque Chase-Lev work-stealing deque. */
+/* Opaque Chase-Lev work-stealing deque: one owner pushes and pops at the
+ * front; any thread pops at the back.  An element popped on another thread
+ * comes with everything its pusher wrote before the push. */
 struct arts_deque_s;
 
 struct arts_deque_s *arts_deque_new(unsigned int size);

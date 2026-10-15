@@ -8,6 +8,7 @@ already current costs nothing to ask for again.
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -46,6 +47,47 @@ def _cache_value(build_dir: Path, key: str) -> str | None:
         if m:
             return m.group(1).strip()
     return None
+
+
+# The expression the top-level CMakeLists.txt's architecture block applies to
+# CMAKE_SYSTEM_PROCESSOR to set ARTS_TARGET_AMD64, the one condition under
+# which a tree builds its benchmark variants.  The two must stay the same.
+AMD64_PROCESSOR = re.compile(r"x86_64|amd64|AMD64")
+
+
+def tree_processor(build_dir: Path) -> str:
+    """The processor a tree targets: CMAKE_SYSTEM_PROCESSOR from the tree's
+    cache, where a cross configure names it; else as CMake recorded it for
+    the tree's system when the tree was configured; else this host's, for a
+    build directory not configured yet (a first run configures it here)."""
+    named = _cache_value(build_dir, "CMAKE_SYSTEM_PROCESSOR")
+    if named:
+        return named
+    pattern = re.compile(r'^set\(CMAKE_SYSTEM_PROCESSOR "([^"]*)"\)',
+                         re.MULTILINE)
+    # One directory per CMake version that configured the tree, newest last.
+    systems = sorted((build_dir / "CMakeFiles").glob("*/CMakeSystem.cmake"),
+                     key=lambda p: p.stat().st_mtime)
+    for system in reversed(systems):
+        m = pattern.search(system.read_text(errors="ignore"))
+        if m and m.group(1):
+            return m.group(1)
+    return platform.machine()
+
+
+def require_amd64(build_dir: Path, selection: Selection) -> None:
+    """Stop a campaign before it configures or builds anything when the tree
+    targets a processor the benchmark tree is not built for: off AMD64 the
+    configure skips the whole benchmark tree, so no entry, a CXL one
+    included, has a variant there."""
+    processor = tree_processor(build_dir)
+    if AMD64_PROCESSOR.search(processor):
+        return
+    raise BuildError(
+        f"{build_dir} targets {processor}, and the benchmark tree is built "
+        f"only for AMD64 (x86-64): this tree has no benchmark variant, so "
+        f"none of the selected entries can run "
+        f"({', '.join(selection.entries)})")
 
 
 def _cxl_paths(profile: Profile) -> tuple[tuple[str, str | None], ...]:

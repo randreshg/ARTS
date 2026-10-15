@@ -21,7 +21,7 @@
  */
 #include "arts/coherence/inv/types.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -84,7 +84,7 @@ void arts_handler_db_acquire(void *item, void *args) {
      * CAS, so a grant lost and re-granted between them reads exactly like one
      * never lost.  A rank that may not run parks instead, and the CONFIRM_ACK
      * drains whatever accumulated behind it. */
-    if (arts_db_acquire_rw_local_fast(cache, dep)) {
+    if (arts_db_acquire_rw_local_fast(cache, edt, slot)) {
       arts_db_acquire_resolved(edt, slot);
       return;
     }

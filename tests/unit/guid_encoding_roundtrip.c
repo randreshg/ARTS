@@ -26,6 +26,12 @@
  *      advance, two reserves of DIFFERENT types never alias keys.
  *   5. Exhaustion is a HARD ERROR (no wraparound) — verified in a forked child
  *      so the abort doesn't take the test process down.
+ *   6. szhint encode/decode.
+ *   7. The flat-kind block width set at the parallel-start flip does not
+ *      depend on how many keys the startup countdown minted, so ranks whose
+ *      countdowns differ draw identical, disjoint blocks below the reserve.
+ *   8. The startup countdown never leaves its reserve: a mint past it is a
+ *      HARD ERROR (forked child).
  */
 
 #include <stdint.h>
@@ -57,18 +63,6 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
   return p;
 }
 void arts_free(void *p) { free(p); }
-
-/* Wait-free counter primitives for the DB seq allocator (libc-free unit
- * pattern: mirror the atomics.c definitions verbatim). */
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
 
 #include "../../libs/src/core/gas/guid.c"
 
@@ -112,16 +106,16 @@ static void generator_reset(uint64_t key_budget) {
 
   /* DB seq allocator (mirrors set_guid_generator_after_parallel_start). */
   arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_DB_STARTUP_RESERVE) /
+      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
       arts_global_rank_count;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
   if (db_seq_next) {
     free((void *)db_seq_next);
   }
-  db_seq_next = (volatile uint64_t *)malloc(sizeof(uint64_t) *
+  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
                                             arts_global_rank_count);
   for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    db_seq_next[r] = db_seq_creator_base + 1;
+    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   free(t_db_cursor);
   t_db_cursor = NULL;
@@ -338,6 +332,57 @@ int main(void) {
     }
   }
 
+  /* ---- Test 7: the flat-kind partition is the same whatever the countdown
+   * minted (two ranks' countdowns differ by what each init minted). ---- */
+  {
+    const uint64_t space = (uint64_t)1 << ARTS_GUID_KEY_BITS;
+    const uint64_t minted[2] = {1, ARTS_GUID_STARTUP_RESERVE - 3};
+    uint64_t width[2];
+    for (int i = 0; i < 2; i++) {
+      generator_reset(0);
+      free((void *)db_seq_next);
+      db_seq_next = NULL;
+      num_tables = 3;
+      set_global_guid_on();
+      arts_guid_t g = arts_guid_create_for_rank_internal(0, ARTS_GUID_EVENT,
+                                                         (unsigned)minted[i]);
+      if (ARTS_GUID_GET_KEY(g) < space - ARTS_GUID_STARTUP_RESERVE) {
+        FAIL("a startup key left the reserve\n");
+      }
+      set_guid_generator_after_parallel_start();
+      width[i] = keys_per_thread;
+      arts_guid_generator_cleanup();
+    }
+    if (width[0] != width[1]) {
+      FAIL("flat-kind block width depends on the countdown: %lu vs %lu\n",
+           (unsigned long)width[0], (unsigned long)width[1]);
+    }
+    if (width[0] * num_tables * arts_global_rank_count >
+        space - ARTS_GUID_STARTUP_RESERVE) {
+      FAIL("flat-kind blocks reach into the startup reserve\n");
+    }
+  }
+
+  /* ---- Test 8: a startup mint past the reserve is a HARD ERROR. ---- */
+  pid = fork();
+  if (pid == 0) {
+    generator_reset(0);
+    set_global_guid_on();
+    (void)arts_guid_create_for_rank_internal(
+        0, ARTS_GUID_EVENT, (unsigned)ARTS_GUID_STARTUP_RESERVE);
+    (void)arts_guid_create_for_rank(0, ARTS_GUID_EVENT);
+    _exit(0);
+  } else if (pid > 0) {
+    int st = 0;
+    (void)waitpid(pid, &st, 0);
+    if (!WIFEXITED(st) || WEXITSTATUS(st) == 0) {
+      FAIL("a startup mint past the reserve did not hard-error (status %d)\n",
+           st);
+    }
+  } else {
+    FAIL("fork failed\n");
+  }
+
   /* free the final reset's allocations so LSan sees a clean exit */
   if (arts_node_info.keys) {
     free(arts_node_info.keys[0]);
@@ -346,6 +391,7 @@ int main(void) {
   free(arts_node_info.global_guid_thread_id);
 
   printf("PASS guid_encoding_roundtrip: field round-trip, range inverse, "
-         "counter disjoint, exhaustion hard-errors, szhint bound-covers\n");
+         "counter disjoint, exhaustion hard-errors, szhint bound-covers, "
+         "countdown-independent flat partition, startup reserve bound\n");
   return 0;
 }

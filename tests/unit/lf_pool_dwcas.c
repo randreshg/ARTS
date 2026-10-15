@@ -30,7 +30,7 @@
 
 #include "arts/utils/lockfree_pool.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>

@@ -39,11 +39,11 @@
 
 #include "arts/gas/route_table.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
 #include <errno.h>
 #include <limits.h>
 #include <sched.h>
-#include <stdatomic.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -115,10 +115,6 @@ static inline uint64_t get_route_table_key(uint64_t x, unsigned int shift) {
 
   return (HASH64(x, hash) >> (64 - shift)) * COLLISION_RESOLVES;
 }
-extern uint64_t num_tables;
-extern uint64_t keys_per_thread;
-extern uint64_t min_global_guid_thread;
-extern uint64_t max_global_guid_thread;
 
 static inline arts_route_table_t *arts_get_route_table(arts_guid_t guid) {
   uint64_t key = ARTS_GUID_GET_KEY(guid);
@@ -272,7 +268,8 @@ static void route_wait_tick(route_wait_t *w, arts_guid_t key, const char *what,
  * is the end: its segment holds no key and no claim until it is published. */
 static inline arts_route_table_t *
 route_table_next(const arts_route_table_t *t) {
-  arts_route_table_t *next = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE);
+  arts_route_table_t *next =
+      atomic_load_explicit(&t->next, memory_order_acquire);
   return next == ARTS_ROUTE_TABLE_GROWING ? NULL : next;
 }
 
@@ -282,7 +279,8 @@ route_table_next(const arts_route_table_t *t) {
  * The release store pairs with every walker's acquire load of the link. */
 static arts_route_table_t *route_table_next_or_grow(arts_route_table_t *t,
                                                     arts_guid_t key) {
-  arts_route_table_t *next = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE);
+  arts_route_table_t *next =
+      atomic_load_explicit(&t->next, memory_order_acquire);
   if (next == NULL) {
     if (t->size > UINT_MAX / 2) {
       ARTS_ERROR("GUID %lu: its probe window is full in every segment, and "
@@ -291,18 +289,18 @@ static arts_route_table_t *route_table_next_or_grow(arts_route_table_t *t,
                  "segment, each growth doubles it)",
                  (unsigned long)key, t->size);
     }
-    if (__atomic_compare_exchange_n(&t->next, &next, ARTS_ROUTE_TABLE_GROWING,
-                                    false, __ATOMIC_ACQ_REL,
-                                    __ATOMIC_ACQUIRE)) {
+    if (atomic_compare_exchange_strong_explicit(
+            &t->next, &next, ARTS_ROUTE_TABLE_GROWING, memory_order_acq_rel,
+            memory_order_acquire)) {
       next = t->newFunc(2 * t->size, t->shift + 1);
-      __atomic_store_n(&t->next, next, __ATOMIC_RELEASE);
+      atomic_store_explicit(&t->next, next, memory_order_release);
       return next;
     }
   }
   route_wait_t w = {0};
   while (next == ARTS_ROUTE_TABLE_GROWING) {
     route_wait_tick(&w, key, "the next segment was never published", 0);
-    next = __atomic_load_n(&t->next, __ATOMIC_ACQUIRE);
+    next = atomic_load_explicit(&t->next, memory_order_acquire);
   }
   return next;
 }
@@ -317,8 +315,8 @@ arts_route_table_search_for_key(arts_route_table_t *route_table,
   while (current) {
     key_val = get_route_table_key((uint64_t)key, current->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++) {
-      arts_guid_t slot_key =
-          __atomic_load_n(&current->data[key_val].key, __ATOMIC_ACQUIRE);
+      arts_guid_t slot_key = atomic_load_explicit(&current->data[key_val].key,
+                                                  memory_order_acquire);
       if (slot_key == key) {
         return &current->data[key_val];
       }
@@ -336,17 +334,16 @@ arts_route_table_search_for_key(arts_route_table_t *route_table,
  * on the same canonical slot (no orphan-slot leak on the common path). */
 arts_route_item_t *
 arts_route_table_search_for_empty(arts_route_table_t *route_table,
-                                  arts_guid_t key, bool mark_used) {
-  (void)mark_used;
+                                  arts_guid_t key) {
   arts_route_table_t *current = route_table;
   uint64_t key_val;
   while (current != NULL) {
     key_val = get_route_table_key((uint64_t)key, current->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++) {
       arts_guid_t expected = (arts_guid_t)0;
-      if (__atomic_compare_exchange_n(&current->data[key_val].key, &expected,
-                                      key, false, __ATOMIC_ACQ_REL,
-                                      __ATOMIC_ACQUIRE)) {
+      if (atomic_compare_exchange_strong_explicit(
+              &current->data[key_val].key, &expected, key, memory_order_acq_rel,
+              memory_order_acquire)) {
         return &current->data[key_val];
       }
       if (expected == key) {
@@ -396,9 +393,9 @@ static arts_route_item_t *route_table_claim(arts_route_table_t *route_table,
     uint64_t pos = get_route_table_key((uint64_t)key, current->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
       arts_guid_t expected = (arts_guid_t)0;
-      if (__atomic_compare_exchange_n(&current->data[pos].key, &expected,
-                                      marker, false, __ATOMIC_ACQ_REL,
-                                      __ATOMIC_ACQUIRE)) {
+      if (atomic_compare_exchange_strong_explicit(
+              &current->data[pos].key, &expected, marker, memory_order_acq_rel,
+              memory_order_acquire)) {
         return &current->data[pos];
       }
       if (expected == key) {
@@ -436,9 +433,10 @@ static bool route_table_claim_settle(arts_route_table_t *route_table,
       }
       route_wait_t w = {0};
       for (;;) {
-        arts_guid_t k = __atomic_load_n(&slot->key, __ATOMIC_ACQUIRE);
+        arts_guid_t k = atomic_load_explicit(&slot->key, memory_order_acquire);
         if (k == key) {
-          __atomic_store_n(&mine->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+          atomic_store_explicit(&mine->key, (arts_guid_t)0,
+                                memory_order_release);
           return false;
         }
         if (k == ARTS_ROUTE_KEY_RETIRING) {
@@ -448,8 +446,10 @@ static bool route_table_claim_settle(arts_route_table_t *route_table,
         }
         if (k == marker) {
           if (before_mine) {
-            __atomic_store_n(&mine->key, (arts_guid_t)0, __ATOMIC_RELEASE);
-            while (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) == marker) {
+            atomic_store_explicit(&mine->key, (arts_guid_t)0,
+                                  memory_order_release);
+            while (atomic_load_explicit(&slot->key, memory_order_acquire) ==
+                   marker) {
               route_wait_tick(
                   &w, key, "an earlier claim never settled", marker);
             }
@@ -462,7 +462,7 @@ static bool route_table_claim_settle(arts_route_table_t *route_table,
       }
     }
   }
-  __atomic_store_n(&mine->key, key, __ATOMIC_RELEASE);
+  atomic_store_explicit(&mine->key, key, memory_order_release);
   return true;
 }
 
@@ -501,6 +501,9 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
     if (mine == NULL) {
       continue;
     }
+    /* Orders the claim before the settle scan's loads of the window; pairs
+     * with the same fence in a concurrent arts_route_table_reserve_or_lookup
+     * of the key, so of two claims at least one scan sees the other. */
     atomic_thread_fence(memory_order_seq_cst);
     ROUTE_TABLE_AFTER_CLAIM(key);
     if (route_table_claim_settle(route_table, key, marker, mine)) {
@@ -512,27 +515,23 @@ void arts_route_table_reserve_or_lookup(arts_guid_t key,
 
 /* ── cb-based lifecycle ─────────────────────────────────────────────────── */
 
-int arts_route_table_lookup_rank(arts_guid_t key) {
-  return (int)arts_guid_get_rank(key);
-}
-
 /* Unbracketed on purpose: this takes a slot the CALLER located, in a mirror
  * table (the GPU per-device tables) that no destroy returns.  Its slots are
  * bound to their key for the table's life, so there is no identity to lose.  Do
  * not point it at the global table, whose slots are reclaimed. */
 arts_shared_ptr_t arts_route_item_acquire(arts_route_item_t *item) {
-  return item ? arts_atomic_shared_load(&item->value) : NULL;
+  return item ? arts_shared_slot_load(&item->value) : NULL;
 }
 
 bool arts_route_item_install_data(arts_route_item_t *item, void *obj,
                                   void (*deleter)(void *)) {
-  arts_shared_ptr_t cur = arts_atomic_shared_load(&item->value);
+  arts_shared_ptr_t cur = arts_shared_slot_load(&item->value);
   if (cur) {
     arts_shared_release(&cur);
     return false;
   }
   arts_shared_ptr_t cb = arts_shared_make(obj, deleter);
-  if (arts_atomic_shared_compare_exchange(&item->value, NULL, cb)) {
+  if (arts_shared_slot_compare_exchange(&item->value, NULL, cb)) {
     return true;
   }
   /* Lost the install race — abandon our cb (object stays the caller's). */
@@ -551,11 +550,7 @@ bool arts_route_item_install_data(arts_route_item_t *item, void *obj,
  * its CAS fails and it resolves the key again.  An object therefore only ever
  * sits in a slot that named its key when it was installed. */
 arts_shared_ptr_t arts_route_table_install_if_absent(void *obj,
-                                                     arts_guid_t key,
-                                                     unsigned int rank,
-                                                     bool used) {
-  (void)rank;
-  (void)used;
+                                                     arts_guid_t key) {
   arts_shared_ptr_t cb = arts_route_table_make_handle(obj, key);
   /* The caller's ref, taken before the cb can be published and retired. */
   arts_shared_ptr_t mine = arts_shared_copy(cb);
@@ -582,19 +577,18 @@ bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
     arts_route_item_t *item;
     arts_route_table_reserve_or_lookup(key, &item);
     uint64_t ext = 0;
-    bool empty = arts_atomic_shared_peek_empty(&item->value, &ext);
-    if (__atomic_load_n(&item->key, __ATOMIC_ACQUIRE) != key) {
+    bool empty = arts_shared_slot_peek_empty(&item->value, &ext);
+    if (atomic_load_explicit(&item->key, memory_order_acquire) != key) {
       continue;
     }
     if (!empty) {
       return false;
     }
-    if (arts_atomic_shared_install_empty(&item->value, ext, cb)) {
-      /* Install side of the park/install Dekker pair: the installer publishes
-       * the value and then detaches the chain, a parker pushes its node and
-       * then re-reads the value.  A full fence on each side, between its store
-       * and its load, guarantees one of them sees the other: the drain takes
-       * the node, or the parker sees the value and drains itself. */
+    if (arts_shared_slot_install_empty(&item->value, ext, cb)) {
+      /* Orders the install before the drain's detach of the OoO list; pairs
+       * with the fence in arts_ooo_dispatch_or_defer between a parker's push
+       * and its re-read of the value, so either this drain takes the node or
+       * the parker sees the value and drains itself. */
       atomic_thread_fence(memory_order_seq_cst);
       arts_ooo_drain(item);
       return true;
@@ -628,13 +622,13 @@ static arts_shared_ptr_t route_table_pin_published(arts_guid_t key) {
     uint64_t pos = get_route_table_key((uint64_t)key, t->shift);
     for (int i = 0; i < COLLISION_RESOLVES; i++, pos++) {
       arts_route_item_t *slot = &t->data[pos];
-      if (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) !=
+      if (atomic_load_explicit(&slot->key, memory_order_acquire) !=
           ARTS_ROUTE_KEY_RETIRING) {
         continue;
       }
-      h = arts_atomic_shared_load(&slot->value);
+      h = arts_shared_slot_load(&slot->value);
       if (h != NULL && arts_shared_tag(h) == (uint64_t)key &&
-          __atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) ==
+          atomic_load_explicit(&slot->key, memory_order_acquire) ==
               ARTS_ROUTE_KEY_RETIRING) {
         return h;
       }
@@ -652,28 +646,34 @@ bool arts_route_table_set_destroyed_if(arts_guid_t key, arts_shared_ptr_t cb) {
   }
   /* The caller's ref keeps `cb` from being recycled, so these compares are
    * identity. */
-  if (!arts_atomic_shared_holds(&item->value, cb)) {
+  if (!arts_shared_slot_holds(&item->value, cb)) {
     return false;
   }
   ROUTE_TABLE_BEFORE_RETIRE_CLAIM(key);
   arts_guid_t expect = key;
-  if (!__atomic_compare_exchange_n(&item->key, &expect,
-                                   ARTS_ROUTE_KEY_RETIRING, false,
-                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+  if (!atomic_compare_exchange_strong_explicit(
+          &item->key, &expect, ARTS_ROUTE_KEY_RETIRING, memory_order_acq_rel,
+          memory_order_acquire)) {
     return false;
   }
   ROUTE_TABLE_AFTER_RETIRE_CLAIM(key);
-  if (!arts_atomic_shared_compare_exchange(&item->value, cb, NULL)) {
+  if (!arts_shared_slot_compare_exchange(&item->value, cb, NULL)) {
     /* Between the peek and the claim another retire took `cb` and the key's
      * next generation was installed in this slot.  Nothing was taken: the
      * slot stays the key's.  Reservers wait out RETIRING, so none of them
      * publishes a second slot meanwhile, and a retire of the next generation
      * that arrives meanwhile finds it through route_table_pin_published. */
-    __atomic_store_n(&item->key, key, __ATOMIC_RELEASE);
+    atomic_store_explicit(&item->key, key, memory_order_release);
     return false;
   }
   arts_shared_set_tag(cb, 0);
-  __atomic_store_n(&item->key, (arts_guid_t)0, __ATOMIC_RELEASE);
+  atomic_store_explicit(&item->key, (arts_guid_t)0, memory_order_release);
+  /* Orders the value's removal and the key's return before the re-drive's
+   * detach of the OoO list; pairs with the fences in
+   * arts_ooo_dispatch_or_defer and ooo_dispatch_create between a parker's
+   * push and its re-read of the value and the key, so either this re-drive
+   * takes the node or the parker sees the slot emptied or returned and drains
+   * it itself. */
   atomic_thread_fence(memory_order_seq_cst);
   arts_ooo_redrive_all(item);
   return true;
@@ -700,14 +700,14 @@ bool arts_route_table_set_destroyed_item(arts_guid_t key,
         arts_route_table_search_for_key(arts_get_route_table(key), key);
     const char *why =
         slot == NULL ? "retire: no slot publishes the GUID"
-        : arts_atomic_shared_holds(&slot->value, cb)
+        : arts_shared_slot_holds(&slot->value, cb)
             ? "retire: its slot holds the object"
-        : arts_atomic_shared_empty(&slot->value)
+        : arts_shared_slot_empty(&slot->value)
             ? "retire: its slot is empty"
             : "retire: its slot holds another object";
     arts_guid_t seen =
         slot == NULL ? (arts_guid_t)0
-                     : __atomic_load_n(&slot->key, __ATOMIC_ACQUIRE);
+                     : atomic_load_explicit(&slot->key, memory_order_acquire);
     route_wait_tick(&w, key, why, seen);
   }
 }
@@ -740,7 +740,7 @@ bool arts_route_table_set_destroyed_object(arts_guid_t key, const void *obj) {
  * of the object in hand, not of a word that may have changed twice since. */
 static inline arts_shared_ptr_t
 route_item_acquire_checked(arts_route_item_t *item, arts_guid_t key) {
-  arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
+  arts_shared_ptr_t h = arts_shared_slot_load(&item->value);
   if (h != NULL && arts_shared_tag(h) != (uint64_t)key) {
     arts_shared_release(&h);
     return NULL;
@@ -796,7 +796,7 @@ arts_route_item_t *arts_route_table_iterate(arts_route_table_iterator_t *iter) {
     for (uint64_t i = iter->index;
          i < (uint64_t)current->size * COLLISION_RESOLVES; i++) {
       arts_guid_t slot_key =
-          __atomic_load_n(&current->data[i].key, __ATOMIC_ACQUIRE);
+          atomic_load_explicit(&current->data[i].key, memory_order_acquire);
       if (slot_key != 0) {
         iter->index = i + 1;
         iter->table = current;
@@ -819,7 +819,7 @@ uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
   while (item) {
     bool stays = false;
     if (keep != NULL) {
-      arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
+      arts_shared_ptr_t h = arts_shared_slot_load(&item->value);
       stays = h != NULL && keep(h);
       arts_shared_release(&h);
     }
@@ -829,7 +829,7 @@ uint64_t arts_clean_up_route_table(arts_route_table_t *route_table,
       /* Detach + release the install ref; the cb's per-kind deleter performs
        * the single teardown once the last ref drops.  No per-type special
        * casing — the deleter is the sole owner. */
-      arts_shared_ptr_t old = arts_atomic_shared_exchange(&item->value, NULL);
+      arts_shared_ptr_t old = arts_shared_slot_exchange(&item->value, NULL);
       if (old) {
         arts_shared_release(&old);
       }
@@ -845,8 +845,9 @@ unsigned int arts_route_table_parked_count(arts_route_table_t *route_table) {
   for (arts_route_table_t *t = route_table; t != NULL;
        t = route_table_next(t)) {
     for (uint64_t i = 0; i < (uint64_t)t->size * COLLISION_RESOLVES; i++) {
-      arts_lf_link_t *l = atomic_load_explicit(&t->data[i].ooo_list.head,
-                                               memory_order_acquire);
+      /* Relaxed: read after every thread that pushes or drains has joined. */
+      arts_lf_link_t *l =
+          atomic_load_explicit(&t->data[i].ooo_list.head, memory_order_relaxed);
       for (; l != NULL;
            l = atomic_load_explicit(&l->next, memory_order_relaxed)) {
         n++;

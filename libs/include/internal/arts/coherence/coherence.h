@@ -6,11 +6,13 @@
  * header captures only the struct layouts the runtime needs to
  * manipulate.
  *
- * Atomic discipline: ARTS uses GCC __sync_* builtins (full memory
- * fences) wrapped in arts_atomic_* helpers — no <stdatomic.h>.  All
- * fields the runtime reads/writes concurrently are declared `volatile`
- * and accessed exclusively through arts_atomic_*; the volatile keeps
- * the compiler from caching reloads inside CAS loops.
+ * Atomic discipline: this header declares no shared word itself; the words
+ * the runtime reads and writes concurrently live in the layouts it pulls in.
+ * A word declared `_Atomic(T)` is accessed only through atomic_*_explicit
+ * (arts/utils/stdatomic_compat.h).  A word not yet converted is plain or
+ * `volatile`: some are reached through the arts_atomic_* helpers
+ * (arts/utils/atomics.h) or GCC's __atomic builtins, each with the order its
+ * helper or builtin gives it, and some are still accessed plainly.
  *
  * Routing pointer convention: 48-bit virtual address space.  Tagged-
  * pointer encodings (lock-free stack `top`, marked-list `next`) live
@@ -24,18 +26,19 @@
 extern "C" {
 #endif
 
+#include "arts/utils/stdatomic_compat.h"
+
 #include <semaphore.h> /* sem_t — arts_db_await_ack signature */
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
 /* The DB coherence layout structs (arts_db_buffer_s, arts_db_rw_waiter_s,
  * arts_db_read_waiter_s, arts_home_grantreq_queue_s + node,
- * arts_db_cache_s, arts_db_s) and the arts_db_atomic_uint_t typedef live in
- * coherence_types.h (pulled in via runtime_types.h), because struct arts_db_s
- * embeds arts_db_cache_s by value as its first member and inlines the
- * home-directory fields, so it needs the complete cache type.  This header
- * keeps only the protocol function declarations. */
+ * arts_db_cache_s, arts_db_s) live in coherence/types.h (pulled in via
+ * runtime_types.h), because struct arts_db_s embeds arts_db_cache_s by value
+ * as its first member and inlines the home-directory fields, so it needs the
+ * complete cache type.  This header keeps only the protocol function
+ * declarations. */
 #include "arts/runtime_types.h"
 #include "arts/utils/shared.h" /* arts_shared_ptr_t — stub_install return type */
 
@@ -110,7 +113,7 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache);
  *
  * Result enum, returned by the remote acquire helpers
  * (arts_db_acquire_remote_ro / arts_db_acquire_remote_rw): OK means data was
- * resolved synchronously into dep->ptr; PARK means the EDT was parked on the
+ * resolved synchronously into the slot; PARK means the EDT was parked on the
  * coherence protocol and a later wake (SNAPSHOT_RESPONSE / GRANT / TRANSFER) will
  * deliver it.  The acquire handler itself (arts_handler_db_acquire, below) is a
  * void self-accounting body: a synchronous resolve calls
@@ -147,8 +150,8 @@ void arts_handler_db_acquire(void *item, void *args);
  * not touch the EDT afterward (it may have been scheduled + run). */
 void arts_db_acquire_account(struct arts_edt_s *edt);
 
-/* A dep resolved locally (data now in dep->ptr): if it is the serialized dep
- * at the cursor, advance the cursor (the acquire loop, not this call, fires
+/* A dep resolved locally (its acquire record claimed): if it is the serialized
+ * dep at the cursor, advance the cursor (the acquire loop, not this call, fires
  * the next one); hand the payload to the slots that alias it; then count the
  * dep down, which may schedule the EDT. */
 void arts_db_acquire_resolved(struct arts_edt_s *edt, unsigned int slot);
@@ -287,7 +290,7 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
  * either, nothing arbitrates.
  *
  * db_h is a pinned handle on the block's descriptor and is CONSUMED by the
- * call: a winning slot claim MOVES it into depv[slot].db_pin (released last in
+ * call: a winning slot claim MOVES it into the slot's pin (released last in
  * release_one_dep), a slot that already carries a pin releases it, and every
  * other path — lost claim, NULL data, EDT gone — releases it before
  * returning.  The caller must take it together with buf_h, from the same
@@ -598,17 +601,17 @@ void arts_db_grant_install(struct arts_db_cache_s *cache);
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* arts_db_acquire_rw_local_fast: the case-2/6 RW local fast path.
- * CAS-increments writer_count "if positive"; on success writes dep->ptr
- * (acquire_local) and returns true.  The CAS is the whole admission test, not
- * a commit behind one: writer_count carries both "this rank holds the grant"
- * (positive) and "the home has published the directory flip"
+ * CAS-increments writer_count "if positive"; on success resolves slot `slot`
+ * of `edt` (acquire_local) and returns true.  The CAS is the whole admission
+ * test, not a commit behind one: writer_count carries both "this rank holds
+ * the grant" (positive) and "the home has published the directory flip"
  * (ARTS_GRANT_UNCONFIRMED clear), so callers must NOT pre-test either fact —
  * a separate load cannot be atomic with the take, and a grant lost and
  * re-granted in between would read like one never lost.  Returns false for a
  * count of 0 (no grant) and for an unconfirmed hold alike, so the caller falls
  * through to arts_db_acquire_remote_rw, which parks. */
 bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
-                                   arts_edt_dep_t *dep);
+                                   struct arts_edt_s *edt, unsigned int slot);
 
 #endif /* shared grant plane */
 

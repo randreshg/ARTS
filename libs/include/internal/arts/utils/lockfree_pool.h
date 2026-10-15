@@ -2,12 +2,18 @@
  *
  * arts_lockfree_pool_t — DWCAS tagged-head Treiber-stack object pool.
  *
- * Layout: 16-byte head = (arts_lf_link_t *ptr, uintptr_t tag).  Each push
- * increments the tag, so even if a popped node is re-pushed (ABA), the
- * DWCAS observes the tag mismatch and retries.  Lifetime invariant: no node
- * is freed while another thread can pop it — fetch/release transfer
- * ownership only, and only destroy, which no other thread may overlap, frees.
- * This makes the batch_fetch chain-walk safe (no use-after-free on `next`).
+ * Layout: 16-byte head = (arts_lf_link_t *ptr, uintptr_t tag).  Every push
+ * and every fetch increments the tag, so a fetch whose CAS compares a head
+ * that was popped and pushed back since its load (ABA) sees the tag differ
+ * and retries.  Lifetime invariant: no node is freed while another thread
+ * can pop it — fetch/release transfer ownership only, and only destroy,
+ * which no other thread may overlap, frees.  This makes the batch_fetch
+ * chain-walk safe (no use-after-free on `next`).
+ *
+ * Orders: a release CASes the head with release, publishing the node and
+ * what its owner wrote into it; a fetch loads and CASes the head with
+ * acquire, taking them.  The node links are relaxed: the head's pair
+ * carries them.
  *
  * Header-only inline — no separate .c file.  All callers compile with
  * -mcx16 on x86_64 (set globally in the top-level CMakeLists.txt).
@@ -17,21 +23,20 @@
 #define ARTS_UTILS_LOCKFREE_POOL_H
 
 #include "arts/utils/lockfree_lifo.h" /* arts_lf_link_t */
+#include "arts/utils/stdatomic_compat.h"
 
+#include <assert.h>
+#include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
-#ifndef __cplusplus
-#include <stdalign.h>
-#include <stdatomic.h>
-#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/** 16-byte DWCAS head (ptr + tag).  Must be 16-byte aligned for cmpxchg16b
- *  / ldaxp+stxp.  GCC and Clang issue lock-free 128-bit atomics for this
- *  layout when -mcx16 is set.
+/** 16-byte DWCAS head (ptr + tag), 16-byte aligned as a 16-byte atomic
+ *  requires (cmpxchg16b on x86-64; casp, or an ldaxp/stlxp loop, on
+ *  AArch64).
  *
  *  Note: GCC C rejects `typedef struct alignas(16) {...}` (placement of
  *  the alignment specifier between the `struct` keyword and `{` is not
@@ -40,27 +45,17 @@ typedef struct {
   arts_lf_link_t *ptr;
   uintptr_t tag;
 } __attribute__((aligned(16))) arts_lf_pool_head_t;
-#ifdef __cplusplus
 static_assert(sizeof(arts_lf_pool_head_t) == 16, "DWCAS layout");
 static_assert(alignof(arts_lf_pool_head_t) == 16, "DWCAS alignment");
-#else
-_Static_assert(sizeof(arts_lf_pool_head_t) == 16, "DWCAS layout");
-_Static_assert(alignof(arts_lf_pool_head_t) == 16, "DWCAS alignment");
-#endif
 
 typedef struct {
-#ifdef __cplusplus
-  arts_lf_pool_head_t head; /* layout view — the real field is _Atomic in C */
-#else
   _Atomic(arts_lf_pool_head_t) head;
-#endif
 } arts_lockfree_pool_t;
 
-#ifndef __cplusplus
 /* ── Initialization / teardown ─────────────────────────────────────────── */
 
 static inline void arts_lf_pool_init(arts_lockfree_pool_t *p) {
-  arts_lf_pool_head_t empty = {.ptr = NULL, .tag = 0};
+  arts_lf_pool_head_t empty = {NULL, 0};
   atomic_store_explicit(&p->head, empty, memory_order_relaxed);
 }
 
@@ -80,7 +75,7 @@ static inline void arts_lf_pool_destroy_with(arts_lockfree_pool_t *p,
     free_fn(node);
     node = next;
   }
-  arts_lf_pool_head_t empty = {.ptr = NULL, .tag = cur.tag};
+  arts_lf_pool_head_t empty = {NULL, cur.tag};
   atomic_store_explicit(&p->head, empty, memory_order_relaxed);
 }
 
@@ -94,7 +89,7 @@ static inline void arts_lf_pool_release(arts_lockfree_pool_t *p, void *node) {
       atomic_load_explicit(&p->head, memory_order_relaxed);
   for (;;) {
     atomic_store_explicit(&n->next, cur.ptr, memory_order_relaxed);
-    arts_lf_pool_head_t newh = {.ptr = n, .tag = cur.tag + 1};
+    arts_lf_pool_head_t newh = {n, cur.tag + 1};
     if (atomic_compare_exchange_weak_explicit(
             &p->head, &cur, newh, memory_order_release, memory_order_relaxed)) {
       return;
@@ -142,7 +137,7 @@ static inline arts_lf_link_t *arts_lf_pool_batch_fetch(arts_lockfree_pool_t *p,
       next_after = atomic_load_explicit(&tail->next, memory_order_relaxed);
       taken++;
     }
-    arts_lf_pool_head_t newh = {.ptr = next_after, .tag = cur.tag + 1};
+    arts_lf_pool_head_t newh = {next_after, cur.tag + 1};
     if (atomic_compare_exchange_weak_explicit(
             &p->head, &cur, newh, memory_order_acquire, memory_order_acquire)) {
       /* Detach the chain (so caller doesn't accidentally walk into the
@@ -165,8 +160,6 @@ arts_lf_pool_pop_or_null(arts_lockfree_pool_t *p) {
   uint32_t got = 0;
   return arts_lf_pool_batch_fetch(p, 1, &got);
 }
-
-#endif /* !__cplusplus */
 
 #ifdef __cplusplus
 }

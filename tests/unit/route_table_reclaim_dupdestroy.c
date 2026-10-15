@@ -17,8 +17,8 @@
  *      object                          -> "stale key=0 orphaned a live install"
  *  O3  lookup(g) must never return another GUID's object.
  */
+#include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,16 +44,6 @@ struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
-
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
 
 #include "../../libs/src/core/gas/guid.c"
 #include "../../libs/src/core/gas/route_table.c"
@@ -98,13 +88,14 @@ static void rt_init(unsigned size, unsigned shift) {
   keys_per_thread = 1u << 20;
   global_guid_on = 0;
   arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_DB_STARTUP_RESERVE) /
+      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
       arts_global_rank_count;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
   if (db_seq_next) { free((void *)db_seq_next); }
-  db_seq_next = (volatile uint64_t *)malloc(sizeof(uint64_t) * arts_global_rank_count);
+  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
+                                            arts_global_rank_count);
   for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    db_seq_next[r] = db_seq_creator_base + 1;
+    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   free(t_db_cursor); t_db_cursor = NULL;
   arts_node_info.route_table = (arts_route_table_t **)calloc(1, sizeof(arts_route_table_t *));
@@ -206,7 +197,7 @@ static void *churn(void *vp) {
       obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
       o->guid = g;
       atomic_store_explicit(&o->destroy_requested, 0, memory_order_release);
-      arts_shared_ptr_t ih = arts_route_table_install_if_absent(o, g, 0, false);
+      arts_shared_ptr_t ih = arts_route_table_install_if_absent(o, g);
       if (ih == NULL) {
         free(o);
         continue;
@@ -252,7 +243,7 @@ int main(void) {
     obj_t *o = (obj_t *)calloc(1, sizeof(obj_t));
     o->guid = g;
     atomic_store_explicit(&o->destroy_requested, 1, memory_order_release);
-    arts_shared_ptr_t h = arts_route_table_install_if_absent(o, g, 0, false);
+    arts_shared_ptr_t h = arts_route_table_install_if_absent(o, g);
     arts_shared_release(&h);
     atomic_store_explicit(&g_victim, g, memory_order_release);
     /* Into the ring BEFORE it dies: the sweep then re-reserves this GUID the

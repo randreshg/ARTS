@@ -153,11 +153,11 @@ static void event_init(struct arts_event_s *e, const arts_event_hint_t *h) {
   e->is_channel = h->channel ? 1 : 0;
 
   if (e->is_channel) {
-    atomic_store_explicit(&e->channel.nb_sat, 0u, memory_order_relaxed);
-    atomic_store_explicit(&e->channel.nb_deps, 0u, memory_order_relaxed);
+    atomic_init(&e->channel.nb_sat, 0u);
+    atomic_init(&e->channel.nb_deps, 0u);
     arts_mpsc_init(&e->channel.data_queue);
     arts_mpsc_init(&e->channel.dep_queue);
-    atomic_store_explicit(&e->channel.draining, 0, memory_order_relaxed);
+    atomic_init(&e->channel.draining, (uint8_t)0);
   } else {
     /* auto_destroy promises every consumer bound before the fire; counted
      * promises exactly nb_deps of them will.  They are contradictory, so a
@@ -175,10 +175,9 @@ static void event_init(struct arts_event_s *e, const arts_event_hint_t *h) {
                  "most %u",
                  h->nb_deps, (uint32_t)EV_NBDEPS_MAX);
     }
-    atomic_store_explicit(&e->simple.state,
-                          EV_MAKE(0u, EV_FIRE_IDLE, ct ? h->nb_deps : 0u,
-                                  h->finish ? 1 : h->latch),
-                          memory_order_relaxed);
+    atomic_init(&e->simple.state,
+                EV_MAKE(0u, EV_FIRE_IDLE, ct ? h->nb_deps : 0u,
+                        h->finish ? 1 : h->latch));
     e->simple.counted = ct ? 1u : 0u;
     e->simple.auto_destroy = ad ? 1u : 0u;
     e->simple.discard_data = h->discard_data ? 1u : 0u;
@@ -338,6 +337,9 @@ static void drain_simple_chain(struct arts_event_s *e, arts_guid_t event_guid) {
   (void)event_guid; /* unused: the drain only serves, never reclaims */
   arts_guid_t data = e->simple.data;
   for (;;) {
+    /* The acq_rel exchange of deps_stack pairs with a binder's acq_rel push
+     * (arts_handler_event_add_dependence): a push it misses is later on the
+     * head and its binder's re-check sees this event published. */
     arts_lf_link_t *fifo = arts_lf_stack_reverse_drain(&e->simple.deps_stack);
     if (!fifo) {
       return; /* drain complete */
@@ -361,6 +363,14 @@ static void try_drain_channel(struct arts_event_s *e, arts_guid_t event_guid) {
    * `draining` because a concurrent push may have arrived in the
    * window between our last queue-pop and the sentinel-clear. */
   for (;;) {
+    /* Every caller's store meets the gate's loads here: a producer's counter
+     * increment (arts_handler_event_satisfy_slot, the CHANNEL arm of
+     * arts_handler_event_add_dependence) on entry, and a drainer's clear of
+     * `draining` on each later pass.  Each side stores and then loads what
+     * the other stores, so with a seq_cst fence between the two on every
+     * side at least one sees the other: a committed node is never left with
+     * nobody draining it. */
+    atomic_thread_fence(memory_order_seq_cst);
     uint32_t nb_sat =
         atomic_load_explicit(&e->channel.nb_sat, memory_order_acquire);
     uint32_t nb_deps =
@@ -406,13 +416,8 @@ static void try_drain_channel(struct arts_event_s *e, arts_guid_t event_guid) {
       atomic_fetch_sub_explicit(&e->channel.nb_deps, 1u, memory_order_acq_rel);
     }
     atomic_store_explicit(&e->channel.draining, 0, memory_order_release);
-    /* Dekker publication: the token-release store must be globally visible
-     * BEFORE the outer-while's fire-condition re-loads, or a satisfier that
-     * pushed and then saw draining==1 is missed by both sides — a plain
-     * release-store followed by loads permits exactly that StoreLoad
-     * reordering. */
-    atomic_thread_fence(memory_order_seq_cst);
-    /* Outer-while will re-check the fire condition for missed pushes. */
+    /* The loop head's fence orders this clear before the re-check of the
+     * fire condition, which catches a push the clear raced. */
   }
 }
 
@@ -595,6 +600,10 @@ void arts_handler_event_add_dependence(void *item, void *vargs) {
      * who wrote simple.data, may publish. */
     struct arts_event_dep_s *dep =
         event_node_alloc(dest_type, destination, slot, access_mode);
+    /* Push then re-check, against the publisher's PUBLISH CAS then drain
+     * (event_simple_step, drain_simple_chain): both sides RMW deps_stack
+     * with acq_rel, so whichever is later on the stack's head sees the other
+     * — the drain takes this node, or the re-check below reads FIRED. */
     arts_lf_stack_push(&event->simple.deps_stack, &dep->link);
     if (event_simple_published(event)) {
       drain_simple_chain(event, source);
@@ -688,12 +697,13 @@ void arts_send_event_add_dependence(arts_guid_t source, arts_guid_t destination,
 
 /* g_ooo_table[OOO_EVENT_CREATE]: the engine runs it while the GUID's slot is
  * empty (`item_v` is NULL).  A local create hands over the event it built,
- * which is installed as is.  A received blob is copied into a fresh object;
- * its queue and stack words hold the building rank's addresses, so they are
- * re-initialized, while the state word and the flags travel as built.  A lost
- * install CAS means another create filled the slot after the engine saw it
- * empty, so this one re-enters the engine and parks behind it — with the same
- * object when it was handed over. */
+ * which is installed as is.  A received blob is copied into a fresh object
+ * whose atomic members are initialized here rather than inherited: its queue
+ * and stack words hold the building rank's addresses, so they start empty,
+ * while the state word takes the image's value and the flags travel as built.
+ * A lost install CAS means another create filled the slot after the engine
+ * saw it empty, so this one re-enters the engine and parks behind it — with
+ * the same object when it was handed over. */
 void arts_handler_event_create(void *item_v, void *args_v) {
   (void)item_v;
   const struct arts_ooo_args_create_blob_s *a =
@@ -702,8 +712,8 @@ void arts_handler_event_create(void *item_v, void *args_v) {
     const struct arts_ooo_args_create_local_s *l =
         (const struct arts_ooo_args_create_local_s *)args_v;
     arts_sched_fuzz_point(); /* widen the empty-seen<->install window */
-    arts_shared_ptr_t h = arts_route_table_install_if_absent(
-        l->descriptor, l->guid, arts_global_rank_id, false);
+    arts_shared_ptr_t h =
+        arts_route_table_install_if_absent(l->descriptor, l->guid);
     if (h == NULL) {
       arts_ooo_dispatch_or_defer_guid(l->guid, OOO_EVENT_CREATE, args_v,
                                       (uint32_t)sizeof(*l));
@@ -717,24 +727,29 @@ void arts_handler_event_create(void *item_v, void *args_v) {
          sizeof(guid));
   size_t size = a->size - sizeof(struct arts_msg_object_blob_packet_s);
 
+  const unsigned char *image =
+      packet + sizeof(struct arts_msg_object_blob_packet_s);
   struct arts_event_s *e =
       (struct arts_event_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
-  memcpy(e, packet + sizeof(struct arts_msg_object_blob_packet_s), size);
+  memcpy(e, image, size);
   if (e->is_channel) {
     arts_mpsc_init(&e->channel.data_queue);
     arts_mpsc_init(&e->channel.dep_queue);
-    atomic_store_explicit(&e->channel.nb_sat, 0u, memory_order_relaxed);
-    atomic_store_explicit(&e->channel.nb_deps, 0u, memory_order_relaxed);
-    atomic_store_explicit(&e->channel.draining, 0, memory_order_relaxed);
+    atomic_init(&e->channel.nb_sat, 0u);
+    atomic_init(&e->channel.nb_deps, 0u);
+    atomic_init(&e->channel.draining, (uint8_t)0);
   } else {
+    uint64_t state;
+    memcpy(&state, image + offsetof(struct arts_event_s, simple.state),
+           sizeof(state));
+    atomic_init(&e->simple.state, state);
     arts_lf_stack_init(&e->simple.deps_stack);
   }
 
   arts_sched_fuzz_point(); /* widen the empty-seen<->install window */
   /* A successful install drains the slot, which may already retire the event;
    * the handle is released without another read of it. */
-  arts_shared_ptr_t h =
-      arts_route_table_install_if_absent(e, guid, arts_global_rank_id, false);
+  arts_shared_ptr_t h = arts_route_table_install_if_absent(e, guid);
   if (h != NULL) {
     arts_shared_release(&h);
     return;
@@ -797,7 +812,7 @@ bool arts_event_wait(arts_guid_t event_guid) {
   arts_edt_ctx_t tl;
   arts_edt_ctx_save(&tl);
   TIME_YIELD_START();
-  while (__atomic_load_n(&arts_thread_info.alive, __ATOMIC_ACQUIRE)) {
+  while (atomic_load_explicit(&arts_thread_info.alive, memory_order_acquire)) {
     /* Fire -> auto_destroy -> mark_delete detaches the slot; lookup returns
      * NULL and we exit.  Use the lookup/release pair so we never read freed
      * memory after the deleter runs. */

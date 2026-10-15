@@ -14,9 +14,9 @@
 
 #include "arts/utils/shared.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +30,7 @@ typedef struct {
   uint32_t magic;
 } obj_t;
 
-static arts_atomic_shared_ptr_t g_slot;
+static _Atomic(arts_shared_slot_t) g_slot;
 static _Atomic(uint64_t) g_makes;
 static _Atomic(uint64_t) g_deletes;
 static _Atomic(uint64_t) g_hits;
@@ -51,11 +51,11 @@ static void *churner(void *arg) {
     o->magic = OBJ_MAGIC;
     atomic_fetch_add_explicit(&g_makes, 1, memory_order_relaxed);
     arts_shared_ptr_t cb = arts_shared_make(o, obj_deleter);
-    arts_atomic_shared_store(&g_slot, cb);
+    arts_shared_slot_store(&g_slot, cb);
     /* Immediately tear it down so the cb recycles into the pool while
      * readers may still be mid-load on the same slot/pointer. */
     arts_shared_ptr_t old =
-        arts_atomic_shared_exchange(&g_slot, (arts_shared_ptr_t)NULL);
+        arts_shared_slot_exchange(&g_slot, (arts_shared_ptr_t)NULL);
     if (old) {
       arts_shared_release(&old);
     }
@@ -67,7 +67,7 @@ static void *churner(void *arg) {
 static void *reader(void *arg) {
   (void)arg;
   for (int i = 0; i < READ_ITERS; ++i) {
-    arts_shared_ptr_t local = arts_atomic_shared_load(&g_slot);
+    arts_shared_ptr_t local = arts_shared_slot_load(&g_slot);
     if (local) {
       obj_t *o = (obj_t *)arts_shared_get(local);
       assert(o->magic == OBJ_MAGIC); /* recycled-but-stale would trip here */
@@ -97,8 +97,8 @@ int main(void) {
     pthread_join(rd[i], NULL);
   }
 
-  arts_atomic_shared_store(&g_slot, (arts_shared_ptr_t)NULL);
-  assert(arts_atomic_shared_load(&g_slot) == NULL);
+  arts_shared_slot_store(&g_slot, (arts_shared_ptr_t)NULL);
+  assert(arts_shared_slot_load(&g_slot) == NULL);
 
   uint64_t makes = atomic_load(&g_makes);
   uint64_t deletes = atomic_load(&g_deletes);

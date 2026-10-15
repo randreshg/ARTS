@@ -77,6 +77,7 @@
 extern "C" {
 #endif
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -118,7 +119,9 @@ void arts_transport_send_payload_async_free(int rank, char *message,
 #define ARTS_NET_MSG_MAX ARTS_NET_MIN_MULTI_RECV
 
 /* Bounded wait for accepted fabric sends to complete, so the shutdown-broadcast
- * frames leave this node before teardown.  No-op single-node. */
+ * frames leave this node before teardown.  It reaps completions but dispatches
+ * nothing, so any thread may call it: the progress threads dispatch what
+ * arrives meanwhile.  No-op single-node. */
 void arts_net_drain_outstanding(unsigned int deadline_ms);
 
 /* ==========================================================================
@@ -193,11 +196,9 @@ struct arts_net_addr_frame_s {
   uint32_t len;
   uint8_t addr[ARTS_NET_ADDR_MAX];
 };
-#ifndef __cplusplus
-_Static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 8u,
-               "the address frame's blob must start at 8: both ranks compute "
-               "the header transfer's size from this offset");
-#endif
+static_assert(offsetof(struct arts_net_addr_frame_s, addr) == 8u,
+              "the address frame's blob must start at 8: both ranks compute "
+              "the header transfer's size from this offset");
 
 /* Accept a bootstrap address frame iff the embedded rank is in range AND the
  * blob length exactly equals this run's fixed provider address length.  Strict

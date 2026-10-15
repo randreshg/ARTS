@@ -8,8 +8,8 @@
 
 #include "arts/utils/shared.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -50,16 +50,16 @@ int main(void) {
   arts_shared_release(&n); /* must not crash */
 
   /* Atomic slot: store transfers the make ref into the slot. */
-  arts_atomic_shared_ptr_t slot;
+  _Atomic(arts_shared_slot_t) slot;
   atomic_store(&slot, (arts_shared_slot_t){0});   /* empty slot {NULL, ext=0} */
-  assert(arts_atomic_shared_load(&slot) == NULL); /* empty slot */
+  assert(arts_shared_slot_load(&slot) == NULL);   /* empty slot */
 
   arts_shared_ptr_t b = arts_shared_make(&obj_b, counting_deleter);
-  arts_atomic_shared_store(&slot, b); /* slot owns b's ref */
+  arts_shared_slot_store(&slot, b); /* slot owns b's ref */
 
   /* load yields a fresh caller-owned ref; releasing it must NOT destroy
    * the object (the slot still holds a ref). */
-  arts_shared_ptr_t local = arts_atomic_shared_load(&slot);
+  arts_shared_ptr_t local = arts_shared_slot_load(&slot);
   assert(local == b);
   assert(arts_shared_get(local) == &obj_b);
   arts_shared_release(&local);
@@ -68,7 +68,7 @@ int main(void) {
   /* exchange to NULL hands the slot's ref back to us; releasing it now
    * destroys obj_b. */
   arts_shared_ptr_t old =
-      arts_atomic_shared_exchange(&slot, (arts_shared_ptr_t)NULL);
+      arts_shared_slot_exchange(&slot, (arts_shared_ptr_t)NULL);
   assert(old == b);
   arts_shared_release(&old);
   assert(atomic_load(&g_deleted) == 2);
@@ -77,10 +77,10 @@ int main(void) {
   /* store over an occupied slot releases the previous occupant. */
   arts_shared_ptr_t c1 = arts_shared_make(&obj_a, counting_deleter);
   arts_shared_ptr_t c2 = arts_shared_make(&obj_b, counting_deleter);
-  arts_atomic_shared_store(&slot, c1);
-  arts_atomic_shared_store(&slot, c2); /* c1 released here */
+  arts_shared_slot_store(&slot, c1);
+  arts_shared_slot_store(&slot, c2); /* c1 released here */
   assert(atomic_load(&g_deleted) == 3);
-  arts_atomic_shared_store(&slot, (arts_shared_ptr_t)NULL); /* c2 released */
+  arts_shared_slot_store(&slot, (arts_shared_ptr_t)NULL); /* c2 released */
   assert(atomic_load(&g_deleted) == 4);
 
   /* abandon: cancel an unpublished cb WITHOUT running the deleter — an

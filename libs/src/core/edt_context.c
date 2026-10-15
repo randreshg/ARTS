@@ -40,7 +40,6 @@
 
 #include "arts.h"
 #include "arts/counter/Preamble.h" /* TIME_CONTEXT_SWITCH_START/STOP */
-#include "arts/runtime_state.h"    /* arts_thread_info */
 #include "arts/system/print.h"
 #include "arts/utils/shared.h"
 #include "arts/utils/vector.h"
@@ -122,18 +121,15 @@ void arts_set_thread_local_edt_info(struct arts_edt_s *edt) {
                (unsigned long)arts_vector_count(&created_db_list));
   }
 #endif
-  arts_thread_info.current_edt_guid = edt->guid;
   current_edt = edt;
 }
 
 void arts_edt_ctx_save(arts_edt_ctx_t *tl) {
   TIME_CONTEXT_SWITCH_START();
-  tl->current_edt_guid = arts_thread_info.current_edt_guid;
   tl->current_edt = current_edt;
   tl->created_db_list = created_db_list; /* struct copy: ownership moves */
   tl->owned_finish_list = owned_finish_list;
 
-  arts_thread_info.current_edt_guid = NULL_GUID;
   current_edt = NULL;
   created_db_list = (arts_vector_t){0};
   owned_finish_list = (arts_vector_t){0};
@@ -142,7 +138,6 @@ void arts_edt_ctx_save(arts_edt_ctx_t *tl) {
 
 void arts_edt_ctx_restore(arts_edt_ctx_t *tl) {
   TIME_CONTEXT_SWITCH_START();
-  arts_thread_info.current_edt_guid = tl->current_edt_guid;
   current_edt = tl->current_edt;
   created_db_list_free(&created_db_list);
   created_db_list = tl->created_db_list;
@@ -168,6 +163,5 @@ void arts_unset_thread_local_edt_info(bool decr_finish) {
   }
   arts_owned_finish_cleanup(); /* DECR creator-token of un-waited finish events
                                 */
-  arts_thread_info.current_edt_guid = NULL_GUID;
   current_edt = NULL;
 }

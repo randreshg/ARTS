@@ -12,12 +12,12 @@
  *
  *   2. Acquire path (the routines every arm's arts_handler_db_acquire body
  *      shares).  Inline comments highlight the trickier race resolutions.
- *      Wake mechanism: a wake looks up the parked EDT, claims its slot by
- *      writing the buffer data pointer into depv[slot].ptr, and counts the
- *      dep down through arts_db_acquire_account (acquire_remaining); the
- *      decrement that reaches 0 hands the EDT to the scheduler.  A serialized
- *      slot handed to the resume worklist is counted down by the drain, after
- *      the walk.
+ *      Wake mechanism: a wake looks up the parked EDT, claims the slot's
+ *      acquire record with the buffer data pointer, and counts the dep down
+ *      through arts_db_acquire_account (acquire_remaining); the decrement that
+ *      reaches 0 hands the payload to depv and the EDT to the scheduler.  A
+ *      serialized slot handed to the resume worklist is counted down by the
+ *      drain, after the walk.
  *
  *   3. Release path and the PUBLISH_ACK rendezvous.  Wait/wake mechanism: a
  *      releaser registers a heap {sem, version} waiter on the cache and waits
@@ -280,7 +280,8 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
 static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
                           arts_shared_ptr_t buf_h, arts_shared_ptr_t db_h) {
   arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
-  bool secured = !depv[slot].alias && arts_dep_is_serialized(depv, slot);
+  struct arts_dep_acq_s *rec = &edt->dep_acq[slot];
+  bool secured = !rec->alias && arts_dep_is_serialized(depv, slot);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   /* A resolved acquire owes the EDT storage of the DB's declared size.
@@ -296,32 +297,31 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
   arts_shared_ptr_t alias_pin = arts_shared_copy(db_h);
   if (data != NULL) {
     /* Idempotent slot claim: whichever paths wake the same (edt, slot), the
-     * slot resolves exactly once.  CAS depv[slot].ptr
-     * NULL->data so only the first wake keeps its buffer ref (the EDT's hold)
-     * and accounts; a loser leaves the ref with its caller and returns
-     * WITHOUT accounting — no double-decrement of acquire_remaining, no
-     * buffer-ref leak. */
+     * slot resolves exactly once.  CAS the record's ptr NULL->data so only
+     * the first wake keeps its buffer ref (the EDT's hold) and accounts; a
+     * loser leaves the ref with its caller and returns WITHOUT accounting —
+     * no double-decrement of acquire_remaining, no buffer-ref leak.  The
+     * claim carries no data: what this wake secured reaches the EDT through
+     * its own account. */
     void *expected = NULL;
-    if (!atomic_compare_exchange_strong((_Atomic(void *) *)&depv[slot].ptr,
-                                        &expected, data)) {
+    if (!atomic_compare_exchange_strong_explicit(&rec->ptr, &expected, data,
+                                                 memory_order_relaxed,
+                                                 memory_order_relaxed)) {
       arts_shared_release(&alias_pin);
       arts_shared_release(&db_h);
       return false;
     }
-    /* Won: MOVE the pin into the dep slot (released in release_one_dep)
-     * rather than dropping it here: the release resolves the descriptor
-     * through it, which a lookup cannot do once a destroy has retired the
-     * GUID. */
+    rec->claimed = true;
+    /* Won: MOVE the pin into the slot (released in release_one_dep) rather
+     * than dropping it here: the release resolves the descriptor through it,
+     * which a lookup cannot do once a destroy has retired the GUID. */
     if (db_h != NULL) {
       /* Claimed by CAS, as the acquiring walk's tail claims it: the two can
-       * both see the slot resolved, and only one handle may be kept.  Publish
-       * with release so the run/release thread (reached via the
-       * work-stealing deque handoff) observes db_pin like the sibling ptr
-       * field's atomic CAS. */
+       * both see the slot resolved, and only one handle may be kept. */
       void *pin_expected = NULL;
-      if (__atomic_compare_exchange_n(&depv[slot].db_pin, &pin_expected,
-                                      (void *)db_h, false, __ATOMIC_RELEASE,
-                                      __ATOMIC_RELAXED)) {
+      if (atomic_compare_exchange_strong_explicit(
+              &rec->pin, &pin_expected, (void *)db_h, memory_order_release,
+              memory_order_relaxed)) {
         db_h = NULL;
       }
     }
@@ -333,16 +333,16 @@ static bool resume_parked(struct arts_edt_s *edt, unsigned int slot,
      * and there is nothing to arbitrate on; a destroyed block woken twice is
      * outside the programming model.) */
     void *pin_expected = NULL;
-    if (!__atomic_compare_exchange_n(&depv[slot].db_pin, &pin_expected,
-                                     (void *)db_h, false, __ATOMIC_RELEASE,
-                                     __ATOMIC_RELAXED)) {
+    if (!atomic_compare_exchange_strong_explicit(
+            &rec->pin, &pin_expected, (void *)db_h, memory_order_release,
+            memory_order_relaxed)) {
       arts_shared_release(&alias_pin);
       arts_shared_release(&db_h);
       return false;
     }
     db_h = NULL; /* the slot owns it now */
   }
-  arts_shared_release(&db_h); /* no-op when moved into db_pin above */
+  arts_shared_release(&db_h); /* no-op when moved into the pin above */
   /* The block's payload is final for this EDT now: every other slot naming it
    * shares these bytes.  Run after the claim published them, and before this
    * slot's own account, which may be the one that schedules the EDT. */
@@ -490,8 +490,8 @@ static arts_shared_ptr_t stub_install(arts_guid_t db_guid, uint64_t db_size,
    * STUB, so a cache an answer made is never one a create can take. */
   arts_db_cache_kind_seed(&stub->cache, kind);
 
-  arts_shared_ptr_t installed_h = arts_route_table_install_if_absent(
-      stub, db_guid, arts_global_rank_id, /*used=*/true);
+  arts_shared_ptr_t installed_h =
+      arts_route_table_install_if_absent(stub, db_guid);
   bool installed = installed_h != NULL;
   arts_shared_release(&installed_h);
   if (installed) {
@@ -618,8 +618,8 @@ void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache) {
     arts_lf_link_t *next =
         atomic_load_explicit(&node->next, memory_order_relaxed);
     /* The buffer the response left current is at least as new as anything a
-     * batch member is ordered after — resume against it (the resume
-     * re-derives dep->ptr from the installed buffer). */
+     * batch member is ordered after — resume against it (the resume claims
+     * the slot's acquire record with the installed buffer). */
     arts_guid_t edt_local = w->edt_guid;
     unsigned int slot_local = w->slot;
     arts_free(w);
@@ -726,8 +726,9 @@ void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
       arts_guid_t edt_local = w->edt_guid;
       unsigned int slot_local = w->slot;
       arts_free(w);
-      /* Wake after free: mark_edt_ready_by_guid re-derives dep->ptr from the
-       * (now-installed) cache buffer and resumes the acquire walk. */
+      /* Wake after free: mark_edt_ready_by_guid claims the slot's acquire
+       * record with the (now-installed) cache buffer and resumes the acquire
+       * walk. */
       mark_edt_ready_by_guid(edt_local, slot_local);
     }
     node = next;
@@ -760,9 +761,11 @@ bool arts_db_await_ack(sem_t *cv) {
       return true; /* the reply arrived */
     }
     if (errno == ETIMEDOUT &&
-        arts_atomic_read(&arts_node_info.shutdown_state) != 0) {
+        atomic_load_explicit(&arts_node_info.shutdown_state,
+                             memory_order_acquire) != 0) {
       /* teardown: ACK will never come */
-      __atomic_fetch_add(&arts_shutdown_abandon.waits, 1u, __ATOMIC_RELAXED);
+      atomic_fetch_add_explicit(&arts_shutdown_abandon.waits, 1u,
+                                memory_order_relaxed);
       return false;
     }
     /* ETIMEDOUT (not shutting down) or EINTR: re-arm the blocking wait. */
@@ -1041,7 +1044,8 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
         sem_destroy(&gate->sem);
         arts_free(gate);
       } else {
-        __atomic_fetch_add(&arts_shutdown_abandon.waits, 1u, __ATOMIC_RELAXED);
+        atomic_fetch_add_explicit(&arts_shutdown_abandon.waits, 1u,
+                                  memory_order_relaxed);
       }
     }
     return;
@@ -1208,7 +1212,7 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
     return;
   }
-  arts_atomic_shared_store(&cache->buffer, NULL);
+  arts_shared_slot_store(&cache->buffer, NULL);
   /* The slot is empty again, so the "has this block storage" byte goes back
    * with it: the two are one fact, and leaving a stale 0 would tell a use of
    * a resurrected cache that its payload is already there. */
@@ -1236,8 +1240,6 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
  * is compiled out — its cost (a full route-table scan at teardown) never
  * lands in a measurement build. */
 #if ARTS_LOG_LEVEL >= 3
-extern uint64_t num_tables;
-
 /* The rank's route tables in one index space: one per thread, then the
  * remote shards. */
 static arts_route_table_t *quiescence_table(unsigned int t) {
@@ -1252,8 +1254,8 @@ void arts_db_debug_quiescence_check(void) {
   /* Every read below assumes the runtime's threads are gone.  A thread the
    * shutdown gave up joining may still be mid transition, so the walk cannot
    * judge and says so instead. */
-  unsigned int unjoined = __atomic_load_n(
-      &arts_shutdown_abandon.unjoined_threads, __ATOMIC_RELAXED);
+  unsigned int unjoined = atomic_load_explicit(
+      &arts_shutdown_abandon.unjoined_threads, memory_order_relaxed);
   if (unjoined != 0) {
     ARTS_DEBUG("quiescence check skipped: %u thread(s) never joined",
                unjoined);
@@ -1276,10 +1278,10 @@ void arts_db_debug_quiescence_check(void) {
    * message from another rank still undelivered is not one: a release in
    * flight to a home strands no waiter, and a grant still owed to a requester
    * leaves that requester's EDT admitted and unfinished. */
-  unsigned int ab_queued = __atomic_load_n(&arts_shutdown_abandon.queued_edts,
-                                           __ATOMIC_RELAXED);
-  unsigned int ab_waits =
-      __atomic_load_n(&arts_shutdown_abandon.waits, __ATOMIC_RELAXED);
+  unsigned int ab_queued = atomic_load_explicit(
+      &arts_shutdown_abandon.queued_edts, memory_order_relaxed);
+  unsigned int ab_waits = atomic_load_explicit(&arts_shutdown_abandon.waits,
+                                               memory_order_relaxed);
   unsigned int ab_ooo = 0;
   for (unsigned int t = 0; t < nt; t++) {
     arts_route_table_t *table = quiescence_table(t);
@@ -1297,10 +1299,11 @@ void arts_db_debug_quiescence_check(void) {
     arts_reset_route_table_iterator(&iter, table);
     for (arts_route_item_t *item = arts_route_table_iterate(&iter);
          item != NULL; item = arts_route_table_iterate(&iter)) {
-      if (ARTS_GUID_GET_TYPE(item->key) != ARTS_GUID_EDT) {
+      if (ARTS_GUID_GET_TYPE(atomic_load_explicit(
+              &item->key, memory_order_relaxed)) != ARTS_GUID_EDT) {
         continue;
       }
-      arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
+      arts_shared_ptr_t h = arts_shared_slot_load(&item->value);
       if (arts_edt_admitted(h)) {
         ab_admitted++;
       }
@@ -1317,10 +1320,11 @@ void arts_db_debug_quiescence_check(void) {
     arts_reset_route_table_iterator(&iter, table);
     for (arts_route_item_t *item = arts_route_table_iterate(&iter);
          item != NULL; item = arts_route_table_iterate(&iter)) {
-      if (ARTS_GUID_GET_TYPE(item->key) != ARTS_GUID_DB) {
+      if (ARTS_GUID_GET_TYPE(atomic_load_explicit(
+              &item->key, memory_order_relaxed)) != ARTS_GUID_DB) {
         continue;
       }
-      arts_shared_ptr_t h = arts_atomic_shared_load(&item->value);
+      arts_shared_ptr_t h = arts_shared_slot_load(&item->value);
       struct arts_db_s *db = (struct arts_db_s *)(h ? arts_shared_get(h)
                                                     : NULL);
       if (db != NULL && db->db_type == ARTS_DB) {

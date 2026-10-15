@@ -33,7 +33,7 @@
 #include "arts/runtime_state.h"
 #include "arts/system/config.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 
 #if !defined(__APPLE__)

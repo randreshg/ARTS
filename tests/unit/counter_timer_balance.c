@@ -69,7 +69,7 @@ static bool check_timer_contract(void) {
    */
   arts_counter_t c = {0, 0};
   arts_counter_timer_start(&c);
-  if (c.start == 0) {
+  if (atomic_load_explicit(&c.start, memory_order_relaxed) == 0) {
     arts_printf(
         "FAIL counter_timer_balance: start not armed after timer_start\n");
     return false;
@@ -78,19 +78,21 @@ static bool check_timer_contract(void) {
   for (volatile uint64_t spin = 0; spin < 100000; spin++) {
   }
   arts_counter_timer_end(&c);
-  if (c.start != 0) {
+  if (atomic_load_explicit(&c.start, memory_order_relaxed) != 0) {
     arts_printf(
         "FAIL counter_timer_balance: start not cleared after timer_end\n");
     return false;
   }
   /* A second balanced cycle must accumulate, not reset. */
-  uint64_t after_first = c.count;
+  uint64_t after_first = atomic_load_explicit(&c.count, memory_order_relaxed);
   arts_counter_timer_start(&c);
   arts_counter_timer_end(&c);
-  if (c.count < after_first) {
+  uint64_t after_second = atomic_load_explicit(&c.count, memory_order_relaxed);
+  if (after_second < after_first) {
     arts_printf("FAIL counter_timer_balance: count went backwards across "
                 "balanced cycles (%llu -> %llu)\n",
-                (unsigned long long)after_first, (unsigned long long)c.count);
+                (unsigned long long)after_first,
+                (unsigned long long)after_second);
     return false;
   }
 

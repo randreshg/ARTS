@@ -24,6 +24,7 @@ extern "C" {
     "excl/types.h is the EXCL layout; this translation unit's cell is another"
 #endif
 #include "arts/rank_bitset.h"
+#include "arts/utils/stdatomic_compat.h"
 #include <stdint.h>
 
 /* ── PURGE cache_state ────────────────────────────────────────────────────
@@ -394,20 +395,6 @@ struct arts_db_excl_waiter_s {
  * The EXCL build defines its own arts_home_grantreq_queue_s here, matching
  * the Vyukov MPSC shape used by coherence/val/types.h so the same
  * directory.h declarations apply. */
-#ifdef __cplusplus
-struct arts_home_grantreq_node_s {
-  struct arts_home_grantreq_node_s *next;
-  unsigned int rank;
-  uint64_t have_version; /* version the requester already holds */
-  struct arts_rdzv_landing_s rdzv; /* requester's grant/deliver landing */
-};
-
-struct arts_home_grantreq_queue_s {
-  struct arts_home_grantreq_node_s *tail;
-  struct arts_home_grantreq_node_s *head;
-  struct arts_home_grantreq_node_s stub;
-};
-#else
 struct arts_home_grantreq_node_s {
   _Atomic(struct arts_home_grantreq_node_s *) next;
   unsigned int rank;
@@ -420,23 +407,21 @@ struct arts_home_grantreq_queue_s {
   _Atomic(struct arts_home_grantreq_node_s *) head; /* consumer end */
   struct arts_home_grantreq_node_s stub;            /* permanent sentinel */
 };
-#endif
 
 /* Per-rank DB cache for the EXCL protocol.
  * The layout is shared between PURGE and RETAIN; RETAIN adds ro_serve (the list
  * of reader ranks the owner must serve during the RO phase).  PURGE omits it
  * so sizeof(arts_db_cache_s) is unchanged in PURGE builds. */
-#ifdef __cplusplus
 struct arts_db_cache_s {
-  uint64_t cache_state; /* single coherence word — see CACHE_* */
+  _Atomic(uint64_t) cache_state; /* single coherence word — see CACHE_* */
   /* Single stable backing store: allocated once (first grant/create), written
    * in place by arts_db_buf_write_inplace on every later grant/publish, freed
    * only at destroy.  The address never moves, so DBs holding internal
    * self-pointers stay valid.  Under RETAIN, data stays with the owner; the
    * home-rank cache.buffer is unused by the coherence path. */
-  arts_atomic_shared_ptr_t buffer;
-  arts_lf_stack_t ro_pending;       /* parked RO EDT waiters on this rank */
-  arts_lf_stack_t rw_pending;       /* parked RW EDT waiters on this rank */
+  _Atomic(arts_shared_slot_t) buffer;
+  arts_lf_stack_t ro_pending; /* parked RO EDT waiters on this rank */
+  arts_lf_stack_t rw_pending; /* parked RW EDT waiters on this rank */
 #ifdef ARTS_RELEASE_RETAIN
   /* Reader ranks the owner must serve during the RO phase.  Home pushes via
    * FORWARD; the owner drains (DELIVER copy to each reader) when wc reaches 0.
@@ -459,20 +444,17 @@ struct arts_db_cache_s {
   /* The block's slot in the CXL store between turns.  Written once per block
    * per rank — by the create that made it, or by the first grant that names
    * it — and read by both funnels.  A plain integer accessed with the atomic
-   * builtins, like payload_pending, so the C and C++ views of this struct stay
-   * identical. */
+   * builtins, like payload_pending. */
   uint64_t cxl_addr;
 #endif
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
    * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.  Accessed
-   * with the atomic builtins rather than an _Atomic qualifier so the layout
-   * is identical in the C and C++ views of this struct.  Correctness never
-   * rests on it: a reader that sees 0 still reads the pointer from the slot
-   * itself, and a stale 1 costs one materialize attempt that then clears
-   * it.  The slot is monotone for a live cache — only the destructor puts
-   * NULL back — so a 0 can never go stale. */
+   * use must find that out without touching the slot's refcount.
+   * Correctness never rests on it: a reader that sees 0 still reads the
+   * pointer from the slot itself, and a stale 1 costs one materialize
+   * attempt that then clears it.  The slot is monotone for a live cache —
+   * only the destructor puts NULL back — so a 0 can never go stale. */
   uint8_t payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
    * the home's directory, or a dependence's first touch.  A create that
@@ -480,54 +462,13 @@ struct arts_db_cache_s {
    * (arts_db_create_claims_stub); nothing else writes it after init. */
   uint8_t init_kind;
 };
-#else
-struct arts_db_cache_s {
-  _Atomic uint64_t cache_state;
-  arts_atomic_shared_ptr_t buffer;
-  arts_lf_stack_t ro_pending;
-  arts_lf_stack_t rw_pending;
-#ifdef ARTS_RELEASE_RETAIN
-  arts_lf_stack_t ro_serve; /* RO-phase serve list (owner only; RETAIN only) */
-  struct arts_rdzv_landing_s migrate_rdzv; /* pending migrate target landing */
-#elif !defined(ARTS_USE_CXL)
-  struct arts_rdzv_landing_s home_pub_rdzv; /* grant's publish landing */
-#endif
-  arts_guid_t db_guid;
-  uint64_t db_size;
-#ifdef ARTS_USE_CXL
-  /* The block's slot in the CXL store between turns.  Written once per block
-   * per rank — by the create that made it, or by the first grant that names
-   * it — and read by both funnels.  A plain integer accessed with the atomic
-   * builtins, like payload_pending, so the C and C++ views of this struct stay
-   * identical. */
-  uint64_t cxl_addr;
-#endif
-  /* Does this cache's payload slot still need materializing?  1 until a
-   * buffer has been installed, 0 after — the first entitled use of a block
-   * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.  Accessed
-   * with the atomic builtins rather than an _Atomic qualifier so the layout
-   * is identical in the C and C++ views of this struct.  Correctness never
-   * rests on it: a reader that sees 0 still reads the pointer from the slot
-   * itself, and a stale 1 costs one materialize attempt that then clears
-   * it.  The slot is monotone for a live cache — only the destructor puts
-   * NULL back — so a 0 can never go stale. */
-  uint8_t payload_pending;
-  /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
-   * the home's directory, or a dependence's first touch.  A create that
-   * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init. */
-  uint8_t init_kind;
-};
-#endif
 
 #ifdef ARTS_USE_CXL
 /* The arm's own observables: one read of the block's slot and one write back
  * per turn.  Plain integers accessed with the atomic builtins, like the
- * cache's field, so the C and C++ views of this header stay identical.  Read
- * only by tests — the counter subsystem is compiled out by the tree's
- * counters-off default, and a counter-based oracle would change what the
- * whole suite runs under. */
+ * cache's field.  Read only by tests — the counter subsystem is compiled out
+ * by the tree's counters-off default, and a counter-based oracle would change
+ * what the whole suite runs under. */
 extern uint64_t arts_cxl_fetches;
 extern uint64_t arts_cxl_purges;
 #endif
@@ -547,11 +488,7 @@ struct arts_db_s {
    * stubs (arts_db_cache_stub_size()) end at lock_state (the first home field),
    * so they include home_initialized but omit every home-arm field. */
   bool home_initialized; /**< One-shot init sentinel (arts_db_home_init). */
-#ifdef __cplusplus
-  uint64_t lock_state;
-#else
-  _Atomic uint64_t lock_state;
-#endif
+  _Atomic(uint64_t) lock_state;
   struct arts_home_grantreq_queue_s rw_waiters; /* Vyukov MPSC, pop-one */
   arts_lf_stack_t ro_waiters;                  /* Treiber, XCHG drain */
   struct arts_rank_bitset_s cached_ranks;      /* destroy fan-out roster */

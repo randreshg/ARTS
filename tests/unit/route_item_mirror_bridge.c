@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * route_item_mirror_bridge — arts_route_item_install_data / _acquire, the
- * C-linkage bridge for non-global mirror tables (GPU per-device route tables).
+ * slot operations of non-global mirror tables (GPU per-device route tables).
  *
  * Unlike the global installs, these operate on a CALLER-LOCATED slot:
  *   - arts_route_item_install_data(item, obj, deleter): install-or-fail CAS.
@@ -24,8 +24,8 @@
  * No runtime: route_table.c + guid.c + shared.c #include'd; OoO drain no-op.
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,18 +51,6 @@ struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
-
-/* Wait-free counter primitives for the DB seq allocator (libc-free unit
- * pattern: mirror the atomics.c definitions verbatim). */
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
 
 #include "../../libs/src/core/gas/guid.c"
 #include "../../libs/src/core/gas/route_table.c"
@@ -119,8 +107,7 @@ int main(void) {
   /* ---- 1. Serial install-or-fail. ---- */
   {
     arts_guid_t g = ARTS_GUID_MAKE(ARTS_GUID_DB, 0, 12345);
-    arts_route_item_t *item =
-        arts_route_table_search_for_empty(g_mirror, g, false);
+    arts_route_item_t *item = arts_route_table_search_for_empty(g_mirror, g);
     if (!item) {
       FAIL("1: search_for_empty NULL\n");
     }
@@ -157,7 +144,7 @@ int main(void) {
     free(B); /* caller still owns B (loser keeps obj) */
 
     /* tear down the slot: detach + release the cb → A freed once. */
-    arts_shared_ptr_t old = arts_atomic_shared_exchange(&item->value, NULL);
+    arts_shared_ptr_t old = arts_shared_slot_exchange(&item->value, NULL);
     arts_shared_release(&old);
     if (atomic_load(&g_deletes) != 1) {
       FAIL("1: A not freed exactly once on detach (%d)\n",
@@ -173,15 +160,14 @@ int main(void) {
   /* ---- 1b. NULL-deleter cb never frees. ---- */
   {
     arts_guid_t g = ARTS_GUID_MAKE(ARTS_GUID_DB, 0, 22222);
-    arts_route_item_t *item =
-        arts_route_table_search_for_empty(g_mirror, g, false);
+    arts_route_item_t *item = arts_route_table_search_for_empty(g_mirror, g);
     int *C = (int *)malloc(sizeof(int));
     *C = 0xC;
     atomic_store(&g_deletes, 0);
     if (!arts_route_item_install_data(item, C, NULL)) {
       FAIL("1b: NULL-deleter install returned false\n");
     }
-    arts_shared_ptr_t old = arts_atomic_shared_exchange(&item->value, NULL);
+    arts_shared_ptr_t old = arts_shared_slot_exchange(&item->value, NULL);
     arts_shared_release(&old); /* cb gone, but NULL deleter → C not freed */
     if (atomic_load(&g_deletes) != 0) {
       FAIL("1b: NULL-deleter cb wrongly freed obj\n");
@@ -192,8 +178,7 @@ int main(void) {
   /* ---- 2. Concurrent install_data storm (one winner). ---- */
   {
     arts_guid_t g = ARTS_GUID_MAKE(ARTS_GUID_DB, 0, 33333);
-    arts_route_item_t *item =
-        arts_route_table_search_for_empty(g_mirror, g, false);
+    arts_route_item_t *item = arts_route_table_search_for_empty(g_mirror, g);
     pthread_t tids[S_THREADS];
     s_ctx_t ctx[S_THREADS];
     atomic_int gate;

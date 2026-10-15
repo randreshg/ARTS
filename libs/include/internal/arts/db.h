@@ -93,25 +93,78 @@ extern const char *const db_mode_internal_name[];
 
 extern const char *const arts_db_type_name[];
 
+/* The acquire phase's per-slot state, one record per dependence slot.  The
+ * frames of one EDT's acquire phase (its walk, the wakes that resolve a parked
+ * slot, an alias fill, an out-of-order replay) meet here and never in the
+ * public dependence vector, which no frame writes until the phase ends: the
+ * frame whose decrement of acquire_remaining reaches zero copies `ptr` into
+ * depv[i].ptr for every claimed slot before it schedules the EDT.  A slot the
+ * acquire phase does not resolve keeps what its satisfy wrote (guid, mode,
+ * NULL ptr).  No word is reset while the EDT lives, so a resolution that
+ * arrives after the zero edge finds its slot claimed and changes nothing.
+ *
+ * Zero-filled storage is the unresolved state of every member. */
+struct arts_dep_acq_s {
+  /* The slot's payload, claimed NULL -> payload by exactly one frame.  No data
+   * rides it: what a frame secured reaches the copy through that frame's own
+   * decrement of acquire_remaining. */
+  _Atomic(void *) ptr;
+  /* The descriptor pin (an arts_shared_ptr_t) the slot holds from its
+   * resolution to its release; claimed NULL -> handle, which also arbitrates
+   * a slot whose payload is NULL.  The release consumes it. */
+  _Atomic(void *) pin;
+  /* The storage kind the slot resolved to, written by the frame that
+   * resolves it; the release routes on it. */
+  arts_db_types_t subtype;
+  /* An alias on another slot's acquisition (arts_dep_sort_and_classify),
+   * decided before anything fires. */
+  bool alias;
+  /* Set by the frame whose claim of `ptr` won, before its decrement of
+   * acquire_remaining, which publishes it to the frame that reaches zero. */
+  bool claimed;
+};
+
+/* The storage kind slot `slot` of `edt` resolved to. */
+static inline arts_db_types_t arts_dep_subtype(const struct arts_edt_s *edt,
+                                               uint32_t slot) {
+  return edt->dep_acq[slot].subtype;
+}
+
+/* A dependence that the frame which fired it resolved on the spot (a local
+ * hit).  Such a slot never parked, so no other frame resolves it and the
+ * store is its claim. */
+static inline void arts_db_acquire_local_hit(struct arts_edt_s *edt,
+                                             uint32_t slot, void *ptr) {
+  struct arts_dep_acq_s *rec = &edt->dep_acq[slot];
+  atomic_store_explicit(&rec->ptr, ptr, memory_order_relaxed);
+  rec->claimed = true;
+}
+
+/* Begin one EDT's acquire phase: allocate its acquire record and visit order
+ * and classify its dependence vector (arts_dep_sort_and_classify), once.  A
+ * no-op for an EDT whose phase has begun or that has no dependence. */
+void arts_db_acquire_prepare(struct arts_edt_s *edt);
+
 void arts_db_acquire_all(struct arts_edt_s *edt);
 
 /* Whether a dep's acquisition is ordered by the EDT's serialized (RW-cursor)
  * walk: the arm's answer for its mode, with the non-coherent subtypes that
  * bypass the walk excluded.  A pure function of the slot. */
-bool arts_dep_is_serialized(arts_edt_dep_t *depv, uint32_t i);
+bool arts_dep_is_serialized(const arts_edt_dep_t *depv, uint32_t i);
 
 /* Order one EDT's dependence vector and classify it, once, before any of it
  * fires.  `sorted` receives the visit order: by GUID (same-block deps adjacent,
  * so a serialized walk takes blocks in one global order), strongest mode first
- * within a block, ties keeping slot order.  `depv[].alias` receives the
+ * within a block, ties keeping slot order.  `acq[].alias` receives the
  * classification: the first slot of each block's group owns that block's single
  * acquisition, every later slot naming it is an alias on that acquisition.
- * Slots that acquire nothing — NULL GUID, DB_MODE_NULL, a non-DB kind, an
- * already-resolved slot — are neither, and are left untouched.
+ * Slots that acquire nothing — NULL GUID, DB_MODE_NULL, a non-DB kind, a slot
+ * already carrying a pointer — are neither, and are left untouched.
  *
  * A pure function of depv, with no runtime state behind it: the classification
  * every later frame reads is decided here and nowhere else. */
-void arts_dep_sort_and_classify(arts_edt_dep_t *depv, uint32_t depc,
+void arts_dep_sort_and_classify(const arts_edt_dep_t *depv,
+                                struct arts_dep_acq_s *acq, uint32_t depc,
                                 uint32_t *sorted);
 
 /* Advance one EDT's serialized-acquire cursor past `slot`.  It is
@@ -142,14 +195,14 @@ void arts_db_drain_resume_list(void);
 
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep
  * through the per-dep 3-way (subtype-aware — ARTS_DB → arts_handler_db_acquire,
- * PIN/GPU/CXL → pinned ptr path, still-absent → re-defer).  item = the
+ * PIN/GPU → pinned ptr path, still-absent → re-defer).  item = the
  * just-installed db_s (ignored; the 3-way re-looks-it-up under the drain's
  * pinned ref); args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the
  * coherent handler directly — that would mishandle non-coherent subtypes. */
 void arts_db_acquire_replay_dep(void *item, void *args);
-void release_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu);
+void release_dbs(struct arts_edt_s *edt, bool gpu);
 void arts_release_created_dbs(void);
-void prep_dbs(unsigned int depc, arts_edt_dep_t *depv, bool gpu);
+void prep_dbs(struct arts_edt_s *edt, bool gpu);
 
 void arts_db_free(void *ptr);
 

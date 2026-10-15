@@ -81,6 +81,12 @@ void arts_send_object_blob(unsigned int rank, arts_guid_t guid, void *ptr,
  * received blob packet and EDT image and enters the engine on the EDT's
  * GUID. */
 void arts_handler_edt_create(void *item, void *args);
+#ifdef ARTS_DEBUG_INJECTION
+/* Called by the create body right after it installs an EDT, before it lets
+ * the EDT become ready; NULL unless a test sets it, before the runtime
+ * starts, to act on an installed EDT from another thread in that window. */
+extern void (*arts_edt_installed_hook)(struct arts_edt_s *edt);
+#endif
 void arts_edt_create_enter(const struct arts_msg_object_blob_packet_s *packet,
                            const void *edt, uint32_t edt_size);
 /* Cross-rank EDT destroy forwarder: forward to the EDT's home rank.  The

@@ -4,9 +4,8 @@
  * THE core contract: one OWNER thread that push_front/pop_front, and N
  * STEALER threads that pop_back, must between them observe every pushed item
  * exactly once — no loss, no duplicate, no corruption — while the array grows
- * under concurrent steals.  (Nothing orders push_front's copy of the live
- * window before its activeArray publish: masked on x86 TSO, it surfaces here
- * under TSan and on weak-memory hardware.)
+ * under concurrent steals.  Under ThreadSanitizer every hand-off from the
+ * owner to a stealer must also be a happens-before edge the tool can see.
  *
  * Design (single-producer, multi-consumer = the exact Chase-Lev pattern):
  *   - Owner pushes items 0..NITEMS-1 (each encoded as a unique non-NULL ptr),
@@ -18,7 +17,8 @@
  *     atomic "seen" counter.  At the end EVERY item must have been seen
  *     EXACTLY once.  Total pop count must equal NITEMS.
  *   - The initial deque capacity is tiny so push_front grows it many times
- *     while stealers are actively reading activeArray/top (grow-under-steal).
+ *     while stealers are actively reading the active array and top
+ *     (grow-under-steal).
  *
  * Why exactly-once is the right invariant: pop_front and pop_back race only on
  * the single remaining element, resolved by the CAS on `top`; a correct
@@ -28,9 +28,9 @@
 
 #include "arts/utils/deque.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -200,9 +200,3 @@ void *arts_calloc_aligned(size_t nmemb, size_t size, size_t align) {
   return p;
 }
 void arts_free(void *ptr) { free(ptr); }
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *destination, uint64_t old_val,
-                               uint64_t swap_in) {
-  __atomic_compare_exchange_n(destination, &old_val, swap_in, false,
-                              __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-  return old_val;
-}

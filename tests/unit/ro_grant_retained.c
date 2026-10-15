@@ -22,7 +22,7 @@
  * retain.  Built only where a retained read grant exists.
  */
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 
 #include "arts.h"
 

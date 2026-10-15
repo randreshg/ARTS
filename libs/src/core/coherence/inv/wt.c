@@ -15,7 +15,7 @@
  */
 #include "arts/coherence/inv/types.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -65,7 +65,7 @@ void arts_handler_db_acquire(void *item, void *args) {
 
   if (mode != DB_MODE_RO) {
     /* RW: the shared grant.  writer_count > 0 IS "this rank holds it". */
-    if (arts_db_acquire_rw_local_fast(cache, dep)) {
+    if (arts_db_acquire_rw_local_fast(cache, edt, slot)) {
       arts_db_acquire_resolved(edt, slot);
       return;
     }

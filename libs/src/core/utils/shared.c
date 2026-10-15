@@ -37,8 +37,8 @@
 #include "arts/utils/shared.h"
 
 #include "arts/utils/malloc.h" /* arts_calloc / arts_free */
+#include "arts/utils/stdatomic_compat.h"
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -48,9 +48,13 @@
 #define SHARED_REF 2
 
 struct arts_shared_s {
-  _Atomic(int64_t) count; /* (refs << 1) | in_slot.  Signed: refs may dip
-                             negative transiently mid-reconcile; only the exact
-                             0 (both fields zero) frees. */
+  /* (refs << 1) | in_slot.  Signed: refs may dip negative transiently
+   * mid-reconcile; only the exact 0 (both fields zero) frees.  Increments are
+   * relaxed (the caller already holds or has pinned the cb); a change that
+   * can reach zero is acq_rel, so the freer sees every holder's last use.
+   * Moving a ref into or out of the slot hold never reaches zero and rides
+   * the slot CAS it accompanies. */
+  _Atomic(int64_t) count;
   void *object;
   void (*deleter)(void *);
   _Atomic(uint64_t) tag; /* identity stamp — see shared.h */
@@ -143,7 +147,7 @@ uint64_t arts_shared_tag(arts_shared_ptr_t p) {
 
 /* ── Atomic slot API (multi-thread shared) ─────────────────────────────── */
 
-arts_shared_ptr_t arts_atomic_shared_load(arts_atomic_shared_ptr_t *slot) {
+arts_shared_ptr_t arts_shared_slot_load(_Atomic(arts_shared_slot_t) *slot) {
   arts_shared_slot_t cur = atomic_load_explicit(slot, memory_order_acquire);
   /* Claim: DWCAS claims++ (pure slot CAS, no cb dereference). */
   for (;;) {
@@ -185,7 +189,7 @@ arts_shared_ptr_t arts_atomic_shared_load(arts_atomic_shared_ptr_t *slot) {
 /* Install new_val into the slot (one of new_val's refs becomes the slot hold,
  * bumping the generation) and return the displaced value.  Caller has already
  * set new_val's in_slot bit (or new_val is NULL).  Shared by store/exchange. */
-static arts_shared_slot_t shared_slot_install(arts_atomic_shared_ptr_t *slot,
+static arts_shared_slot_t shared_slot_install(_Atomic(arts_shared_slot_t) *slot,
                                               arts_shared_ptr_t new_val) {
   arts_shared_slot_t cur = atomic_load_explicit(slot, memory_order_acquire);
   for (;;) {
@@ -198,8 +202,8 @@ static arts_shared_slot_t shared_slot_install(arts_atomic_shared_ptr_t *slot,
   }
 }
 
-void arts_atomic_shared_store(arts_atomic_shared_ptr_t *slot,
-                              arts_shared_ptr_t new_val) {
+void arts_shared_slot_store(_Atomic(arts_shared_slot_t) *slot,
+                            arts_shared_ptr_t new_val) {
   if (new_val != NULL) {
     /* One of new_val's refs becomes the slot hold (refs-- , in_slot=1). */
     atomic_fetch_add_explicit(&new_val->count, -1, memory_order_relaxed);
@@ -212,8 +216,8 @@ void arts_atomic_shared_store(arts_atomic_shared_ptr_t *slot,
   }
 }
 
-arts_shared_ptr_t arts_atomic_shared_exchange(arts_atomic_shared_ptr_t *slot,
-                                              arts_shared_ptr_t new_val) {
+arts_shared_ptr_t arts_shared_slot_exchange(_Atomic(arts_shared_slot_t) *slot,
+                                            arts_shared_ptr_t new_val) {
   if (new_val != NULL) {
     atomic_fetch_add_explicit(&new_val->count, -1, memory_order_relaxed);
   }
@@ -229,9 +233,9 @@ arts_shared_ptr_t arts_atomic_shared_exchange(arts_atomic_shared_ptr_t *slot,
   return old.cb;
 }
 
-bool arts_atomic_shared_compare_exchange(arts_atomic_shared_ptr_t *slot,
-                                         arts_shared_ptr_t expected,
-                                         arts_shared_ptr_t new_val) {
+bool arts_shared_slot_compare_exchange(_Atomic(arts_shared_slot_t) *slot,
+                                       arts_shared_ptr_t expected,
+                                       arts_shared_ptr_t new_val) {
   arts_shared_slot_t cur = atomic_load_explicit(slot, memory_order_acquire);
   bool hold_set = false;
   for (;;) {
@@ -265,8 +269,8 @@ bool arts_atomic_shared_compare_exchange(arts_atomic_shared_ptr_t *slot,
   }
 }
 
-bool arts_atomic_shared_peek_empty(arts_atomic_shared_ptr_t *slot,
-                                   uint64_t *ext) {
+bool arts_shared_slot_peek_empty(_Atomic(arts_shared_slot_t) *slot,
+                                 uint64_t *ext) {
   arts_shared_slot_t cur = atomic_load_explicit(slot, memory_order_acquire);
   if (cur.cb != NULL) {
     return false;
@@ -275,8 +279,8 @@ bool arts_atomic_shared_peek_empty(arts_atomic_shared_ptr_t *slot,
   return true;
 }
 
-bool arts_atomic_shared_install_empty(arts_atomic_shared_ptr_t *slot,
-                                      uint64_t ext, arts_shared_ptr_t new_val) {
+bool arts_shared_slot_install_empty(_Atomic(arts_shared_slot_t) *slot,
+                                    uint64_t ext, arts_shared_ptr_t new_val) {
   /* An empty slot carries no claims (a load never claims NULL), so its word
    * changes only by a store or an exchange; one strong CAS decides. */
   arts_shared_slot_t expected = {NULL, ext};

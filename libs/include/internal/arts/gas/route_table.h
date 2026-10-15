@@ -45,7 +45,8 @@ extern "C" {
 #include "arts.h"
 #include "arts/defs.h"
 #include "arts/utils/lockfree_lifo.h" /* arts_lf_stack_t (per-slot OoO chain) + arts_lf_link_t */
-#include "arts/utils/shared.h" /* arts_shared_ptr_t, arts_atomic_shared_ptr_t */
+#include "arts/utils/shared.h" /* arts_shared_ptr_t, arts_shared_slot_t */
+#include "arts/utils/stdatomic_compat.h"
 
 /* Convention: all shared-object access is via caller-owned cb handles
  * (lookup_* / _acquire → handle; release required). No raw no-ref peeks. */
@@ -82,11 +83,19 @@ extern "C" {
  * carries the strong refcount, the per-object deleter and the object pointer;
  * absence is value == NULL, and a retire exchanges the value to NULL.  No
  * generation is kept: a lookup acquires a caller-owned ref via
- * arts_atomic_shared_load and accepts the object only while the pinned cb's
+ * arts_shared_slot_load and accepts the object only while the pinned cb's
  * tag names the key looked up, and a retire clears that tag.  A retire
  * returns the slot and re-drives its OoO chain by each payload's own GUID. */
 struct arts_route_item_s {
-  arts_guid_t key;
+  /* Written by a reservation (acq_rel claim CAS 0 -> marker, then a release
+   * store of the key or 0), by a retire (acq_rel CAS key -> RETIRING, then a
+   * release store of 0 or of the key handed back), by a mirror table's claim
+   * (arts_route_table_search_for_empty: acq_rel CAS 0 -> key) and by a mirror
+   * slot's teardown (free_gpu_item: relaxed store of 0 after the join).  Every
+   * load that decides on it is acquire, so what a writer did to the slot's
+   * value before its write is visible to a reader that sees the write; loads
+   * after the runtime threads have joined are relaxed. */
+  _Atomic(arts_guid_t) key;
   /* value == NULL means "absent" — deliberately NOT distinguishing
    * "never created" from "destroyed".  The OoO engine treats both
    * uniformly and resolves by kind: a create parks while the slot is
@@ -98,7 +107,7 @@ struct arts_route_item_s {
    * the key, so occupancy tracks live objects rather than every object the
    * run ever made, and a returned slot is claimed exactly like a never-used
    * one. */
-  arts_atomic_shared_ptr_t value; /* cb: event/db/edt (NULL = absent) */
+  _Atomic(arts_shared_slot_t) value; /* cb: event/db/edt (NULL = absent) */
   arts_lf_stack_t ooo_list; /* OoO defer chain (Treiber) */
 } ARTS_ALIGNED_MAX;
 
@@ -127,8 +136,9 @@ struct arts_route_table_s {
    * that reaches the end of the chain waits for that store, so one growth
    * builds one segment.  A walker takes GROWING for the end of the chain,
    * since an unpublished segment holds no key and no claim.  A published
-   * segment is never unlinked before teardown, so the link is monotonic. */
-  struct arts_route_table_s *next;
+   * segment is never unlinked before teardown, so the link is monotonic.
+   * Every load of the link is acquire: it publishes the segment's fields. */
+  _Atomic(struct arts_route_table_s *) next;
   new_route_table_t newFunc;
 };
 
@@ -181,9 +191,7 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj);
  * returns NULL, abandons its cb without running the deleter, and `obj` stays
  * the caller's. */
 arts_shared_ptr_t arts_route_table_install_if_absent(void *obj,
-                                                     arts_guid_t key,
-                                                     unsigned int rank,
-                                                     bool used);
+                                                     arts_guid_t key);
 
 /* The control block install_if_absent would wrap `obj` in: the GUID kind's
  * deleter, tagged with `key`.  One ref, the caller's.  For an object that must
@@ -197,8 +205,6 @@ arts_shared_ptr_t arts_route_table_make_handle(void *obj, arts_guid_t key);
  * nothing changes and the passed ref stays the caller's. */
 bool arts_route_table_install_handle_if_absent(arts_shared_ptr_t cb,
                                                arts_guid_t key);
-
-int arts_route_table_lookup_rank(arts_guid_t key);
 
 /* Retires, one teardown.  Each detaches an object, drops the install ref, and
  * RETURNS the slot: the key is zeroed and the slot's parked payloads are
@@ -255,25 +261,24 @@ arts_route_table_search_for_key(arts_route_table_t *route_table,
 /* Linearly scan for an empty slot and CAS-claim it for `key` (or return the
  * already-claimed slot for `key`).  Operates on the GIVEN table, and is only
  * sound for a table no retire returns slots of (the GPU mirror tables): the
- * global table reserves through arts_route_table_reserve_or_lookup.
- * `mark_used` is ignored. */
+ * global table reserves through arts_route_table_reserve_or_lookup. */
 arts_route_item_t *
 arts_route_table_search_for_empty(arts_route_table_t *route_table,
-                                  arts_guid_t key, bool mark_used);
+                                  arts_guid_t key);
 
-/* Safe C-linkage acquire of a slot's published object; returns a caller-owned
- * handle (NULL if empty); release via arts_shared_release.  The C++/.cu bridge
- * for the otherwise C-only atomic-slot API. */
+/* Acquire of a caller-located slot's published object; returns a
+ * caller-owned handle (NULL if empty); release via arts_shared_release.  It
+ * takes no key bracket, so it is for a mirror table's slots, which stay bound
+ * to their key for the table's life, never for the global table. */
 arts_shared_ptr_t arts_route_item_acquire(arts_route_item_t *item);
 
 /* Publish `obj` into THIS slot's cb with an explicit deleter (CAS into an
  * empty value).  It installs into a caller-located slot of a non-global mirror
  * table (the GPU per-device route tables), whose slots stay bound to their key
- * for the table's life; never point it at the global table.
- * C-linkage bridge (slot CAS is otherwise C11-only) so C++/nvcc translation
- * units can publish a persistent mirror payload (pass NULL deleter for a cb
- * that never frees the object).  Returns true iff this caller won the install;
- * on loss the slot's existing cb is kept and `obj` is left untouched. */
+ * for the table's life; never point it at the global table.  Pass a NULL
+ * deleter for a persistent payload the cb never frees.  Returns true iff this
+ * caller won the install; on loss the slot's existing cb is kept and `obj` is
+ * left untouched. */
 bool arts_route_item_install_data(arts_route_item_t *item, void *obj,
                                   void (*deleter)(void *));
 

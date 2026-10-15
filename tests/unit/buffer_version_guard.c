@@ -41,7 +41,7 @@ static void cache_init(void) {
   g_cache.db_size = DB_SIZE;
 }
 static void cache_teardown(void) {
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_shared_slot_store(&g_cache.buffer, NULL);
 }
 
 static uint64_t slot_version(void) {

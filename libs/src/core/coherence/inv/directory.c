@@ -26,7 +26,7 @@
  * arts_home_grantreq_queue_s for the INV build. */
 #include "arts/coherence/inv/types.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>

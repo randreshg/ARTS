@@ -56,19 +56,16 @@ extern "C" {
 #include "arts.h"
 
 #include "arts/defs.h"
-/* DB-coherence layout types (arts_db_s / arts_db_cache_s / buffer / home,
- * plus the arts_db_atomic_uint_t typedef) live in the coherence module's own
- * header; pulled in here so existing includers of runtime_types.h still see
- * the DB types unchanged. */
+/* DB-coherence layout types (arts_db_s / arts_db_cache_s / buffer / home)
+ * live in the coherence module's own header; pulled in here so every
+ * includer of runtime_types.h sees the DB types. */
 #include "arts/coherence/types.h"
 #include "arts/utils/lockfree_lifo.h" /* arts_lf_stack_t (event simple deps) */
 #include "arts/utils/mpsc.h"          /* arts_mpsc_t (event channel) */
 #include "arts/utils/shared.h"        /* arts_shared_ptr_t (EDT runnable ref) */
+#include "arts/utils/stdatomic_compat.h"
 #include <stdbool.h>
 #include <stdint.h>
-#ifndef __cplusplus
-#include <stdatomic.h>
-#endif
 
 /* ========================================================================= */
 /** @defgroup internal_structs Internal Runtime Structures
@@ -88,7 +85,10 @@ struct arts_edt_s {
    * load-bearing identity carrier, NOT a redundant self-GUID: do not remove. */
   arts_guid_t guid;
   arts_guid_t finish_event;          /**< LATCH event for finish-scope tracking.
-                                          NULL_GUID = no finish scope. */
+                                          NULL_GUID = no finish scope.  Final
+                                          before the EDT is installed: a
+                                          destroy on another thread reads it
+                                          from then on. */
   arts_guid_t output_event;          /**< Per-EDT result channel (OCR-style).
                                           NULL_GUID = none.  The run path
                                           satisfies this event with output_data
@@ -98,9 +98,12 @@ struct arts_edt_s {
                                           arts_edt_set_result (NULL_GUID if
                                           none); payload of output_event. */
   arts_edt_types_t edt_type;         /**< EDT subtype (DEFAULT=CPU, GPU). */
-  volatile unsigned int depc_needed; /**< Remaining unsatisfied deps (satisfy
-                                          phase — driven to 0 by event/signal
-                                          delivery before DB acquisition). */
+  /** Dependences not yet satisfied, plus one while the create body that
+   * installs the EDT runs.  Every satisfier writes its slot, then decrements
+   * acq_rel: the release publishes the slot (and the create body's writes),
+   * the decrement that reaches 0 acquires all of them before the acquire
+   * phase.  Other reads carry only the value. */
+  _Atomic(unsigned int) depc_needed;
   uint32_t rw_cursor;  /**< Index into rw_sorted up to which the EDT's
                             serialized deps have been *secured*: resolved
                             locally, or woken by the grant or reply that
@@ -113,26 +116,35 @@ struct arts_edt_s {
                             read one, so the strongest mode owns it) and every
                             later slot naming it is marked an alias on that
                             acquisition — the order and the classification are
-                            decided together, ONCE, at arts_db_acquire_all entry
-                            (arts_dep_sort_and_classify), before anything fires.
+                            decided together, ONCE, when the acquire phase
+                            begins (arts_dep_sort_and_classify), before
+                            anything fires.
                             Which modes are serialized is the protocol's answer
                             (arts_db_acquire_is_serialized): RW on the arms that
                             make a write wait, RO only on an arm that says so;
                             aliases are on no walk at all. Consumed by
                             rw_fire_from_cursor / arts_db_rw_secure /
                             arts_db_acquire_resolved (never re-derived per dep).
-                            NULL until the acquire phase begins; freed with the
-                            EDT (arts_edt_free). Both are pure functions of depv
-                            (fixed once ready), so the single pass is
-                            identity-preserving. */
-  volatile unsigned int acquire_remaining; /**< Count of real DB deps (RO+RW)
-                           whose data is not yet resolved at this rank;
-                           decremented on each data arrival, the actor driving
-                           it to 0 schedules the EDT.  Also counts one hold per
-                           frame still touching the acquire state (the initial
-                           fire's bias, a resume entry, a replay). */
-  volatile unsigned int
-      invalidate_count; /**< Outstanding cache invalidations. */
+                            NULL until the acquire phase begins; it shares the
+                            acquire record's allocation (dep_acq) and goes with
+                            it. Both are pure functions of depv (fixed once
+                            ready), so the single pass is identity-preserving.
+                            */
+  /** The acquire phase's per-slot record (struct arts_dep_acq_s, one per
+   * dependence slot), allocated zero-filled when the phase begins and freed
+   * with the EDT; NULL before. */
+  struct arts_dep_acq_s *dep_acq;
+  /** Dependences whose data is not yet resolved at this rank, plus one per
+   * frame still touching the acquire state (the walk's bias, a resume entry,
+   * a replay).  Every frame decrements acq_rel after its slot work (the
+   * record, buffer refs, pins, the cursor): the decrement that reaches 0
+   * acquires all of it, hands the resolved slots to depv and schedules the
+   * EDT.  Increments are taken while the count is above zero. */
+  _Atomic(unsigned int) acquire_remaining;
+  unsigned int invalidate_count; /**< Outstanding cache invalidations of a GPU
+                                      wrapper EDT: set while it is private,
+                                      cleared after its host function, which
+                                      the stream orders after every read. */
   /* Non-owning alias to this EDT's own route-table control block, armed once
    * the EDT is installed (before it can become runnable).  An EDT is dispatched
    * by raw pointer through the lock-free deques and is held by raw pointer
@@ -170,34 +182,7 @@ struct arts_event_dep_s;
  *  CHANNEL semantics (`is_channel == 1`):
  *    - `nb_sat` increments per satisfy; `nb_deps` increments per add_dep.
  *    - Drainer pops one from each queue, decrements both counters, signals.
- *    - No auto-destroy; only explicit `arts_event_destroy`.
- *
- *  Two declarations: the C path uses C11 `_Atomic`; the C++/nvcc path
- *  drops the qualifier so the layout is visible without requiring C11
- *  atomics — same approach as memory/coherence.h. */
-#ifdef __cplusplus
-struct arts_event_s {
-  uint8_t is_channel; /* discriminator: 0=simple, 1=channel */
-
-  union {
-    struct {
-      uint64_t state; /* [destroyed:1|fire_st:2|nb_deps:29|latch:32] */
-      uint8_t counted;      /* immutable: nb_deps is a declared consumer count */
-      uint8_t auto_destroy; /* immutable: destroy on fire, consumers ignored */
-      uint8_t discard_data; /* immutable: publish no payload */
-      arts_guid_t data;
-      arts_lf_stack_t deps_stack;
-    } simple;
-    struct {
-      uint32_t nb_sat;
-      uint32_t nb_deps;
-      arts_mpsc_t data_queue;
-      arts_mpsc_t dep_queue;
-      uint8_t draining;
-    } channel;
-  };
-} ARTS_ALIGNED_MAX;
-#else
+ *    - No auto-destroy; only explicit `arts_event_destroy`. */
 struct arts_event_s {
   uint8_t is_channel; /* discriminator: 0=simple, 1=channel */
 
@@ -209,7 +194,11 @@ struct arts_event_s {
        * each other and the event is never reclaimed.  Packed, one CAS moves an
        * axis and observes the rest, and the decision is bound to the atom that
        * causes it. */
-      _Atomic(uint64_t) state; /* [destroyed:1|fire_st:2|nb_deps:29|latch:32] */
+      /* [destroyed:1|fire_st:2|nb_deps:29|latch:32].  Committed only by a CAS
+       * (acq_rel, from an acquire load) through event_compute_next.  The
+       * FIRING->FIRED CAS releases `data`, which the IDLE->FIRING winner
+       * writes in between; an acquire load that reads FIRED takes it. */
+      _Atomic(uint64_t) state;
       /* Immutable after creation, so they race with nothing and enter the
        * decider as arguments rather than living in the word. */
       uint8_t counted;      /* nb_deps is a declared consumer count */
@@ -219,15 +208,21 @@ struct arts_event_s {
       arts_lf_stack_t deps_stack; /* Treiber stack of pending consumers */
     } simple;
     struct {
+      /* nb_sat / nb_deps: a producer increments one (acq_rel) after pushing
+       * its node on the matching queue; the drainer decrements both (acq_rel)
+       * after popping a pair.  The gate's loads are acquire, and the seq_cst
+       * fence at the head of the drain loop closes the pair between a
+       * producer's increment and a drainer's clear of `draining`. */
       _Atomic(uint32_t) nb_sat;  /* incremented per satisfy */
       _Atomic(uint32_t) nb_deps; /* incremented per add_dep */
       arts_mpsc_t data_queue;    /* satisfy FIFO */
       arts_mpsc_t dep_queue;     /* dep FIFO */
-      _Atomic(uint8_t) draining; /* single-flight drainer gate */
+      /* Single-flight drainer gate: taken by CAS 0->1 (acq_rel / acquire),
+       * returned by a release store. */
+      _Atomic(uint8_t) draining;
     } channel;
   };
 } ARTS_ALIGNED_MAX;
-#endif
 
 /** @} */ /* end internal_structs */
 

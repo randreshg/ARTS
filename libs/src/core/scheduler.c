@@ -58,7 +58,6 @@
 #include "arts/transport/protocol.h"
 #include "arts/transport/socket.h"
 #include "arts/utils/array_list.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/random.h"
 #include "arts/utils/deque.h"
 
@@ -66,8 +65,6 @@
 #include "arts/gpu/gpu_internal.h"
 #include "arts/gpu/gpu_stream.h"
 #endif
-
-extern unsigned int num_numa_domains;
 
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
@@ -88,13 +85,14 @@ scheduler_t scheduler_loop[] = {
 const unsigned int scheduler_loop_count =
     sizeof(scheduler_loop) / sizeof(scheduler_loop[0]);
 
-/* Schedule a fully DB-acquired EDT onto a work-stealing deque.  Reached when
- * the strict sequential acquire walk in arts_db_acquire_all completes
- * (rw_cursor == depc) — either synchronously (initial arts_handle_ready_edt on
- * a worker) or asynchronously (a coherence wake / OoO drain resumes the walk on
- * the thread that dispatches the waking message: a progress thread, or for a
- * self-send the sending thread itself).  The deque[0] fallback covers a
- * completing thread that owns no deque. */
+/* Schedule a fully DB-acquired EDT onto the calling thread's own
+ * work-stealing deque.  Reached when the strict sequential acquire walk in
+ * arts_db_acquire_all completes (rw_cursor == depc) — either synchronously
+ * (initial arts_handle_ready_edt on a worker) or asynchronously (a coherence
+ * wake / OoO drain resumes the walk on the progress thread that dispatches the
+ * waking message).  A deque has one owner, the only thread that pushes onto
+ * it, so only a thread that owns a deque may get here: every thread that
+ * dispatches a message owns one. */
 void arts_schedule_ready_edt(struct arts_edt_s *edt) {
   INCREMENT_NUM_EDT_ACQUIRE_BY(1);
 #ifdef ARTS_USE_GPU
@@ -105,15 +103,13 @@ void arts_schedule_ready_edt(struct arts_edt_s *edt) {
   } else
 #endif
       if (edt->edt_type == ARTS_EDT_GPU) {
-    struct arts_deque_s *q = arts_thread_info.my_gpu_deque
-                                 ? arts_thread_info.my_gpu_deque
-                                 : arts_node_info.gpu_deque[0];
+    struct arts_deque_s *q = arts_thread_info.my_gpu_deque;
+    assert(q != NULL && "only the owner of a GPU deque pushes onto it");
     ARTS_INFO("EDT[Guid:%lu] pushed to GPU deque", edt->guid);
     arts_deque_push_front(q, edt, 0);
   } else {
-    struct arts_deque_s *q = arts_thread_info.my_deque
-                                 ? arts_thread_info.my_deque
-                                 : arts_node_info.deque[0];
+    struct arts_deque_s *q = arts_thread_info.my_deque;
+    assert(q != NULL && "only the owner of a deque pushes onto it");
     ARTS_INFO("EDT[Guid:%lu] pushed to worker deque", edt->guid);
     arts_deque_push_front(q, edt, 0);
   }
@@ -145,8 +141,9 @@ void arts_handle_ready_edt(struct arts_edt_s *edt) {
    * arts_shared_copy(NULL) is a safe no-op for any unarmed path. */
   arts_shared_copy(edt->self_cb);
   edt->rw_cursor = 0;
-  edt->acquire_remaining =
-      1; /* +1 bias; arts_db_acquire_all adds the dep count */
+  /* +1 bias; arts_db_acquire_all adds the dep count.  Nothing has fired, so
+   * no other frame reads it yet. */
+  atomic_store_explicit(&edt->acquire_remaining, 1u, memory_order_relaxed);
   arts_db_acquire_all(edt);
 }
 
@@ -161,7 +158,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
 
   ARTS_INFO("Running EDT[Guid:%lu, Deps: %u, Params: %u, DepvPtr: %p]",
             edt->guid, depc, paramc, depv);
-  prep_dbs(depc, depv, false);
+  prep_dbs(edt, false);
 
   arts_set_thread_local_edt_info(edt);
 
@@ -187,7 +184,7 @@ void arts_run_edt(struct arts_edt_s *edt) {
    * home grants nobody else until it has paired the release with its payload;
    * and where the payload rests in CXL memory the release is sent only after
    * the bytes are back in the store. */
-  release_dbs(depc, depv, false);
+  release_dbs(edt, false);
   arts_release_created_dbs();
 
   /* Retire the GUID before any completion signal leaves: whoever observes the

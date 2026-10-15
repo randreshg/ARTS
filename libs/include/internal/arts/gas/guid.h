@@ -141,8 +141,8 @@ extern "C" {
  * (zero wire traffic), intra-node agreement is rank-local atomics.  The top
  * of every seq space above @c nrank*budget belongs to the pre-parallel
  * startup allocator and classifies as "no creator" on every rank.  (That
- * startup countdown serves EVERY kind from one counter, so its DB reserve
- * is consumed by the pre-parallel mint total, not by DB mints alone.)
+ * startup countdown serves EVERY kind from one counter, so its reserve
+ * bounds the pre-parallel mint total of all kinds, not DB mints alone.)
  */
 
 #define ARTS_GUID_DB_SEQ_BITS 38
@@ -217,7 +217,23 @@ arts_guid_t arts_db_guid_stamp_szhint(arts_guid_t guid, uint64_t size_bytes);
  */
 arts_guid_t arts_guid_create_for_rank(unsigned int rank, unsigned int type);
 
-/** Initialize the per-node GUID key generator. */
+/* The GUID-to-route-table geometry.  num_tables (one route table per local
+ * thread) and this rank's global thread slots [min_global_guid_thread,
+ * max_global_guid_thread) are written once by arts_guid_node_geometry_init,
+ * before the runtime threads are created; keys_per_thread is written by
+ * thread 0 before the parallel-start barrier.  Every other thread only reads
+ * them, after the thread creation or the barrier that publishes them. */
+extern uint64_t num_tables;
+extern uint64_t keys_per_thread;
+extern uint64_t min_global_guid_thread;
+extern uint64_t max_global_guid_thread;
+
+/** Set num_tables and this rank's global thread-slot range, once, before the
+ *  runtime threads are created. */
+void arts_guid_node_geometry_init(void);
+
+/** Initialize the calling thread's GUID key generator: its global thread id
+ *  and its key counters. */
 void arts_guid_key_generator_init();
 
 /** Free the DB seq allocator's shared counters and every thread's parked

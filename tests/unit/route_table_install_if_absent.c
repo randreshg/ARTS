@@ -60,8 +60,8 @@
  * no-op (no OoO payloads pushed).
  */
 
+#include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,18 +87,6 @@ struct arts_route_item_s;
 void arts_ooo_drain(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_redrive_all(struct arts_route_item_s *s) { (void)s; }
 void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
-
-/* Wait-free counter primitives for the DB seq allocator (libc-free unit
- * pattern: mirror the atomics.c definitions verbatim). */
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
 
 #include "../../libs/src/core/gas/guid.c"
 /* Retire-claim hooks: a thread with a hook armed runs it in its identity
@@ -160,16 +148,16 @@ static void rt_init(void) {
 
   /* DB seq allocator (mirrors set_guid_generator_after_parallel_start). */
   arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_DB_STARTUP_RESERVE) /
+      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
       arts_global_rank_count;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
   if (db_seq_next) {
     free((void *)db_seq_next);
   }
-  db_seq_next = (volatile uint64_t *)malloc(sizeof(uint64_t) *
+  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
                                             arts_global_rank_count);
   for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    db_seq_next[r] = db_seq_creator_base + 1;
+    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   free(t_db_cursor);
   t_db_cursor = NULL;
@@ -195,8 +183,7 @@ static void *a_worker(void *vp) {
   a_ctx_t *c = (a_ctx_t *)vp;
   while (atomic_load_explicit(c->gate, memory_order_acquire) == 0) {
   }
-  arts_shared_ptr_t h =
-      arts_route_table_install_if_absent(c->obj, c->guid, 0, false);
+  arts_shared_ptr_t h = arts_route_table_install_if_absent(c->obj, c->guid);
   c->won = h != NULL ? 1 : 0;
   arts_shared_release(&h);
   return NULL;
@@ -242,8 +229,8 @@ static unsigned h_count_sentinels(arts_route_table_t *table) {
   arts_reset_route_table_iterator(&iter, table);
   for (arts_route_item_t *item = arts_route_table_iterate(&iter); item != NULL;
        item = arts_route_table_iterate(&iter)) {
-    arts_shared_ptr_t h =
-        arts_route_table_lookup(__atomic_load_n(&item->key, __ATOMIC_ACQUIRE));
+    arts_shared_ptr_t h = arts_route_table_lookup(
+        atomic_load_explicit(&item->key, memory_order_acquire));
     void *obj = h ? arts_shared_get(h) : NULL;
     if (obj >= (void *)&g_h_obj[0] && obj < (void *)&g_h_obj[H_SLOTS]) {
       n++;
@@ -322,10 +309,11 @@ static unsigned i_census(arts_guid_t g) {
             ? arts_node_info.route_table[i]
             : arts_node_info
                   .remote_route_table[i - arts_node_info.total_thread_count];
-    for (; rt != NULL; rt = rt->next) {
+    for (; rt != NULL;
+         rt = atomic_load_explicit(&rt->next, memory_order_acquire)) {
       uint64_t total = (uint64_t)rt->size * COLLISION_RESOLVES;
       for (uint64_t j = 0; j < total; j++) {
-        if (__atomic_load_n(&rt->data[j].key, __ATOMIC_ACQUIRE) == g) {
+        if (atomic_load_explicit(&rt->data[j].key, memory_order_acquire) == g) {
           hits++;
         }
       }
@@ -384,7 +372,7 @@ static atomic_int g_fg_release; /* let it go on */
 static void fg_install_gen2(void) {
   g_fg_obj2 = (int *)malloc(sizeof(int));
   arts_shared_ptr_t h =
-      arts_route_table_install_if_absent(g_fg_obj2, g_fg_guid, 0, false);
+      arts_route_table_install_if_absent(g_fg_obj2, g_fg_guid);
   if (h == NULL) {
     (void)fprintf(stderr, "FAIL route_table_install_if_absent: F/G "
                           "generation 2 install lost\n");
@@ -436,8 +424,7 @@ static int run_fg(bool hand_back) {
   atomic_store(&g_fg_release, 0);
   atomic_store(&g_deletes, 0);
   int *o1 = (int *)malloc(sizeof(int));
-  arts_shared_ptr_t h =
-      arts_route_table_install_if_absent(o1, g_fg_guid, 0, false);
+  arts_shared_ptr_t h = arts_route_table_install_if_absent(o1, g_fg_guid);
   arts_shared_release(&h);
   g_fg_gen1 = arts_route_table_lookup(g_fg_guid);
 
@@ -567,7 +554,7 @@ int main(void) {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     int *obj = (int *)malloc(sizeof(int));
     *obj = 0x77;
-    arts_shared_ptr_t h = arts_route_table_install_if_absent(obj, g, 0, false);
+    arts_shared_ptr_t h = arts_route_table_install_if_absent(obj, g);
     arts_shared_release(&h);
     /* Hold the slot pointer: after the destroy the key is zeroed, so a fresh
      * lookup would reserve a new slot rather than find this one.  Slots are
@@ -602,7 +589,7 @@ int main(void) {
       FAIL("B: object freed %d times, want exactly 1\n",
            atomic_load(&g_deletes));
     }
-    if (__atomic_load_n(&b_item->key, __ATOMIC_ACQUIRE) != 0) {
+    if (atomic_load_explicit(&b_item->key, memory_order_acquire) != 0) {
       FAIL("B: destroy did not return the slot (key still claimed)\n");
     }
   }
@@ -617,7 +604,7 @@ int main(void) {
     for (int r = 0; r < ROUNDS; r++) {
       int *obj = (int *)malloc(sizeof(int));
       *obj = r;
-      arts_shared_ptr_t h = arts_route_table_install_if_absent(obj, g, 0, false);
+      arts_shared_ptr_t h = arts_route_table_install_if_absent(obj, g);
       bool won = h != NULL;
       arts_shared_release(&h);
       if (!won) {
@@ -630,7 +617,7 @@ int main(void) {
       }
       /* The slot must come back every round; churn that leaked a slot per
        * round is exactly the growth this reclamation exists to stop. */
-      if (__atomic_load_n(&c_item->key, __ATOMIC_ACQUIRE) != 0) {
+      if (atomic_load_explicit(&c_item->key, memory_order_acquire) != 0) {
         FAIL("C round %d: slot still claimed after destroy\n", r);
       }
     }
@@ -645,7 +632,7 @@ int main(void) {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     atomic_store(&g_deletes, 0);
     int *o1 = (int *)malloc(sizeof(int));
-    arts_shared_ptr_t h1 = arts_route_table_install_if_absent(o1, g, 0, false);
+    arts_shared_ptr_t h1 = arts_route_table_install_if_absent(o1, g);
     if (h1 == NULL) {
       FAIL("D: first install lost\n");
     }
@@ -659,7 +646,7 @@ int main(void) {
       FAIL("D: retire of generation 1 failed\n");
     }
     int *o2 = (int *)malloc(sizeof(int));
-    arts_shared_ptr_t h2 = arts_route_table_install_if_absent(o2, g, 0, false);
+    arts_shared_ptr_t h2 = arts_route_table_install_if_absent(o2, g);
     if (h2 == NULL) {
       FAIL("D: generation 2 install lost\n");
     }
@@ -690,14 +677,14 @@ int main(void) {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     atomic_store(&g_deletes, 0);
     int *o1 = (int *)malloc(sizeof(int));
-    arts_shared_ptr_t h = arts_route_table_install_if_absent(o1, g, 0, false);
+    arts_shared_ptr_t h = arts_route_table_install_if_absent(o1, g);
     arts_shared_release(&h);
     arts_shared_ptr_t pinned = arts_route_table_lookup(g);
     if (!arts_route_table_set_destroyed_object(g, o1)) {
       FAIL("E: retire of generation 1 failed\n");
     }
     int *o2 = (int *)malloc(sizeof(int));
-    h = arts_route_table_install_if_absent(o2, g, 0, false);
+    h = arts_route_table_install_if_absent(o2, g);
     if (h == NULL) {
       FAIL("E: generation 2 install lost\n");
     }

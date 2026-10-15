@@ -40,7 +40,7 @@ static void cache_init(uint64_t db_size) {
   g_cache.db_size = db_size;
 }
 static void cache_teardown(void) {
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_shared_slot_store(&g_cache.buffer, NULL);
 }
 
 /* Install `payload` at version v, then acquire and assert byte-exact + version.

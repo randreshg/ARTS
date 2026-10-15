@@ -110,10 +110,11 @@ void arts_runtime_global_cleanup(void) {}
 void arts_runtime_stop(void) {}
 void arts_runtime_stop_network(void) {}
 void arts_counter_timer_end(arts_counter_t *counter) { (void)counter; }
+void arts_counter_capture_stop(void) {}
 
 /* arts_thread_loop is DEFINED in threads.c (real); it will run the counter-save
- * path which touches arts_node_info.saved_counters / live_counters.  Provide a
- * single-thread sized counter storage so it does not deref NULL. */
+ * path which touches arts_node_info.saved_counters.  Provide a single-thread
+ * sized counter storage so it does not deref NULL. */
 
 /* ------------------------------------------------------------------------- */
 
@@ -125,17 +126,13 @@ static unsigned int run_derivation(unsigned int rank_count,
   arts_global_rank_count = rank_count;
 
   /* Provide counter storage sized to thread_count so arts_thread_loop's
-   * save-path (live_counters/saved_counters[tid]) is valid for any spawned
-   * worker. */
+   * save-path (saved_counters[tid]) is valid for any spawned worker. */
   arts_node_info.total_thread_count = thread_count;
-  arts_node_info.live_counters =
-      calloc(thread_count, sizeof(*arts_node_info.live_counters));
   arts_node_info.saved_counters =
       calloc(thread_count, sizeof(*arts_node_info.saved_counters));
   for (unsigned int i = 0; i < thread_count; i++) {
     arts_node_info.saved_counters[i] =
-        calloc(NUM_COUNTER_TYPES, sizeof(arts_counter_t));
-    arts_node_info.live_counters[i] = arts_thread_local_counters;
+        calloc(NUM_COUNTER_TYPES, sizeof(**arts_node_info.saved_counters));
   }
 
   struct arts_config_s c;
@@ -171,9 +168,7 @@ static unsigned int run_derivation(unsigned int rank_count,
     free(arts_node_info.saved_counters[i]);
   }
   free(arts_node_info.saved_counters);
-  free(arts_node_info.live_counters);
   arts_node_info.saved_counters = NULL;
-  arts_node_info.live_counters = NULL;
 
   return worker;
 }

@@ -18,8 +18,8 @@
 ///        exactly once.
 ///
 /// White-box runtime test.  `mark_edt_ready_by_guid(edt_guid, slot)`
-/// (coherence.c) resolves one parked dep slot: it stamps depv[slot].ptr from
-/// the buffer this rank's cache holds and accounts the slot through
+/// (coherence.c) resolves one parked dep slot: it claims the slot's acquire
+/// record with the buffer this rank's cache holds and accounts the slot through
 /// `arts_db_acquire_account(edt)`, which decrements `acquire_remaining`.  Two
 /// distinct delivery paths can wake the SAME (edt, slot) — e.g. a drain of the
 /// rank's parked readers racing a direct response.  If every wake accounted,
@@ -34,7 +34,7 @@
 ///
 /// CORRECTNESS CONTRACT (what this test asserts): a duplicate wake of one
 /// logical slot must decrement `acquire_remaining` by exactly 1, because the
-/// slot resolves once.  The resume claims the slot by CAS on depv[slot].ptr
+/// slot resolves once.  The resume claims the slot by CAS on the record's ptr
 /// (NULL->data): only the wake that wins keeps its buffer ref as the EDT's
 /// hold and accounts; a wake that loses the claim drops its extra ref and
 /// skips the account.  The assertion must NOT be weakened to accept
@@ -55,10 +55,9 @@
 #include "arts/edt.h"
 #include "arts/gas/route_table.h"
 #include "arts/runtime_types.h"
-#include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdint.h>
 #include <stdio.h>
 
@@ -103,8 +102,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    *
    * NOTE: the DB dep at slot 0 immediately satisfies (passive DB model) and
    * decrements depc_needed 2->1; the gate event holds it at 1.  Because the EDT
-   * never becomes ready, the runtime leaves depv[0].ptr / acquire_remaining for
-   * us to control. */
+   * never becomes ready, the runtime leaves slot 0 / acquire_remaining for us
+   * to control. */
   arts_guid_t gate = arts_event_create(NULL);
   arts_guid_t eg = arts_edt_create(never_runs, 0, NULL, 2, NULL);
   arts_add_dependence(db, eg, 0, DB_MODE_RO);
@@ -125,23 +124,22 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   dv[0].guid = db;
   dv[0].mode = DB_MODE_RO;
   /* A wake only ever follows an acquisition the EDT's own walk issued, and the
-   * walk's first act is to order and classify the dependence vector; a
-   * hand-parked EDT is given that state before it is woken. */
-  edt->rw_sorted = (uint32_t *)arts_malloc(edt->depc * sizeof(uint32_t));
-  arts_dep_sort_and_classify(dv, edt->depc, edt->rw_sorted);
+   * walk's first act is to begin the acquire phase: the slot record, the visit
+   * order and the classification.  A hand-parked EDT is given that state
+   * before it is woken. */
+  arts_db_acquire_prepare(edt);
 
-  atomic_store_explicit((_Atomic unsigned int *)&edt->acquire_remaining, BIAS,
-                        memory_order_release);
+  atomic_store_explicit(&edt->acquire_remaining, BIAS, memory_order_release);
 
-  unsigned int before = atomic_load_explicit(
-      (_Atomic unsigned int *)&edt->acquire_remaining, memory_order_acquire);
+  unsigned int before =
+      atomic_load_explicit(&edt->acquire_remaining, memory_order_acquire);
 
   /* Two wakes of the SAME (edt, slot) — a duplicate delivery of one slot. */
   mark_edt_ready_by_guid(eg, 0);
   mark_edt_ready_by_guid(eg, 0);
 
-  unsigned int after = atomic_load_explicit(
-      (_Atomic unsigned int *)&edt->acquire_remaining, memory_order_acquire);
+  unsigned int after =
+      atomic_load_explicit(&edt->acquire_remaining, memory_order_acquire);
 
   unsigned int delta = before - after;
   arts_printf("acquire_remaining: before=%u after=%u delta=%u (want 1)\n",
@@ -167,14 +165,16 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
    * pin), while `eh` still holds the EDT, then destroy the DB + gate so the
    * observation leaks nothing.  The idempotency contract is already asserted
    * above; this is pure cleanup. */
-  struct arts_db_buffer_s *b = arts_db_buf_from_data(dv[0].ptr);
+  struct arts_dep_acq_s *rec = &edt->dep_acq[0];
+  struct arts_db_buffer_s *b = arts_db_buf_from_data(
+      atomic_load_explicit(&rec->ptr, memory_order_relaxed));
   if (b != NULL) {
     arts_shared_ptr_t cb = b->cb;
     arts_db_buf_release(&cb);
   }
-  dv[0].ptr = NULL;
-  arts_shared_ptr_t pin = (arts_shared_ptr_t)dv[0].db_pin;
-  dv[0].db_pin = NULL;
+  atomic_store_explicit(&rec->ptr, NULL, memory_order_relaxed);
+  arts_shared_ptr_t pin = (arts_shared_ptr_t)atomic_exchange_explicit(
+      &rec->pin, NULL, memory_order_relaxed);
   arts_shared_release(&pin);
   arts_shared_release(&eh);
   arts_db_destroy(db);

@@ -43,18 +43,6 @@ void *arts_calloc_aligned(size_t n, size_t s, size_t a) {
 }
 void arts_free(void *p) { free(p); }
 
-/* Wait-free counter primitives for the DB seq allocator (libc-free unit
- * pattern: mirror the atomics.c definitions verbatim). */
-uint64_t arts_atomic_fetch_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __sync_fetch_and_add(d, v);
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  return __sync_val_compare_and_swap(d, o, n);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_ACQUIRE);
-}
-
 #include "../../libs/src/core/gas/guid.c"
 
 struct arts_runtime_shared_s arts_node_info;
@@ -92,16 +80,16 @@ static void generator_reset(uint64_t key_budget) {
 
   /* DB seq allocator (mirrors set_guid_generator_after_parallel_start). */
   arts_db_seq_budget =
-      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_DB_STARTUP_RESERVE) /
+      ((ARTS_GUID_DB_SEQ_MASK + 1) - ARTS_GUID_STARTUP_RESERVE) /
       arts_global_rank_count;
   db_seq_creator_base = arts_db_seq_budget * arts_global_rank_id;
   if (db_seq_next) {
     free((void *)db_seq_next);
   }
-  db_seq_next = (volatile uint64_t *)malloc(sizeof(uint64_t) *
+  db_seq_next = (_Atomic(uint64_t) *)malloc(sizeof(*db_seq_next) *
                                             arts_global_rank_count);
   for (unsigned r = 0; r < arts_global_rank_count; r++) {
-    db_seq_next[r] = db_seq_creator_base + 1;
+    atomic_init(&db_seq_next[r], db_seq_creator_base + 1);
   }
   free(t_db_cursor);
   t_db_cursor = NULL;

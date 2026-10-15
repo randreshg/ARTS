@@ -303,34 +303,6 @@ typedef struct {
   arts_guid_t guid;           /**< GUID of the DataBlock (or encoded value). */
   void *ptr;                  /**< Pointer to the DataBlock payload. */
   arts_db_access_mode_t mode; /**< Access mode for this dependency slot. */
-  /** Runtime-internal: DB storage class recorded at acquire time so release can
-   *  route a coherent @c ARTS_DB (where @c ptr is the buffer payload) versus a
-   *  pinned subtype (where @c ptr is the inline @c db+1) without recovering the
-   *  subtype by pointer arithmetic — which is invalid for the buffer pointer
-   *  and crashes once a concurrent destroy has removed the route entry.  User
-   *  EDTs ignore this field. */
-  arts_db_types_t subtype;
-  /** Runtime-internal: an EDT acquires each distinct DB ONCE, and this marks
-   *  every slot that is not that acquisition.  The slots naming one DB are
-   *  classified before any of them fires: the strongest mode owns the single
-   *  acquire/release, and each later slot is an alias on it — the owner's
-   *  payload pointer, a per-slot buffer ref and descriptor pin, but NO
-   *  coherence hold.  Release drops an alias's buffer ref and skips the
-   *  coherence release, so the hold is dropped exactly once per distinct DB.
-   *  Recorded here (not re-derived by GUID scan at release) so a mid-EDT
-   *  release that nulls the owning slot cannot make an alias masquerade as the
-   *  owner.  User EDTs ignore this field. */
-  bool alias;
-  /** Runtime-internal: for a coherent @c ARTS_DB slot, the ref-counted handle
-   *  on the owning DB descriptor (@c arts_db_s), taken once when this slot's
-   *  buffer ref is secured at acquire and dropped LAST in @c release_one_dep
-   *  (after the buffer-ref drop and the RW/RO coherence release).  Pinning the
-   *  descriptor for the slot's whole acquire→release span lets the release
-   *  reach it after a concurrent destroy has retired its GUID.  NULL when unset
-   *  (non-coherent slot).  Typed @c void* here to avoid leaking the internal
-   *  @c arts_shared_ptr_t into the public header; the runtime casts it.  User
-   *  EDTs ignore this field. */
-  void *db_pin;
 } arts_edt_dep_t;
 
 /**
@@ -371,6 +343,9 @@ extern void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
  * When defined by the application, ARTS calls this once per node on thread 0
  * after basic runtime initialization and before the parallel-start barrier.
  * CARTS uses this hook for distributed DB GUID reservation.
+ *
+ * Before parallel start a rank mints every GUID from one startup reserve of
+ * 2^26 keys, all kinds together; minting more there is a fatal error.
  *
  * @param node_id Rank of the current node.
  * @param argc    Original process argument count.
@@ -783,6 +758,10 @@ void arts_event_satisfy_slot(arts_guid_t event_guid, arts_guid_t data_guid,
  * that holds the EDT ends the process with a fatal error naming the EDT, the
  * slot and the count, since the caller, possibly on another rank, cannot be
  * told.
+ * An EDT takes exactly @c depc satisfies, control dependences included.  A
+ * satisfy that reaches the EDT, while it is still installed, after all of them
+ * is the same kind of program error: that rank ends the process with a fatal
+ * error naming the EDT and its dependence count.
  */
 void arts_edt_satisfy_slot(arts_guid_t edt_guid, uint32_t slot,
                            arts_guid_t data_guid, arts_db_access_mode_t mode);

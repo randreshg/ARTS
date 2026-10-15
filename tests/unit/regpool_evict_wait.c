@@ -52,10 +52,10 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include "arts/utils/stdatomic_compat.h"
 #include <errno.h>
 #include <pthread.h>
 #include <semaphore.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

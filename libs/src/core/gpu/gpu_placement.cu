@@ -197,12 +197,14 @@ int worst_fit(uint64_t mask, uint64_t size, unsigned int total_threads) {
   return selected_gpu;
 }
 
-uint64_t get_db_size_needed(uint32_t depc, arts_edt_dep_t *depv) {
+uint64_t get_db_size_needed(struct arts_edt_s *edt) {
+  uint32_t depc = edt->depc;
+  arts_edt_dep_t *depv = (arts_edt_dep_t *)arts_get_depv(edt);
   uint64_t size = 0;
   for (unsigned int i = 0; i < depc; i++) {
     if (depv[i].ptr) {
       arts_shared_ptr_t hold = NULL;
-      struct arts_db_s *db = arts_gpu_dep_db(&depv[i], &hold);
+      struct arts_db_s *db = arts_gpu_dep_db(edt, i, &hold);
       if (db != NULL) {
         uint64_t image = arts_gpu_db_image_size(db);
         size += image;
@@ -222,8 +224,6 @@ int random(void *edt_packet) {
   arts_gpu_edt_t *edt = (arts_gpu_edt_t *)edt_packet;
   uint32_t paramc = edt->wrapper_edt.paramc;
   uint32_t depc = edt->wrapper_edt.depc;
-  const uint64_t *paramv = (uint64_t *)(edt + 1);
-  arts_edt_dep_t *depv = (arts_edt_dep_t *)(paramv + paramc);
   unsigned int total_threads = (edt->grid.x * edt->block.x) +
                                (edt->grid.y * edt->block.y) +
                                (edt->grid.z * edt->block.z);
@@ -231,7 +231,7 @@ int random(void *edt_packet) {
   // Size to be allocated on the GPU
   uint64_t size = (sizeof(uint64_t) * paramc) +
                   (sizeof(arts_edt_dep_t) * depc) +
-                  get_db_size_needed(depc, depv);
+                  get_db_size_needed(&edt->wrapper_edt);
   uint64_t mask = ~0;
   return fit(mask, size, total_threads);
 }
@@ -249,7 +249,7 @@ int all_or_nothing(void *edt_packet) {
   // Size to be allocated on the GPU
   uint64_t size = (sizeof(uint64_t) * paramc) +
                   (sizeof(arts_edt_dep_t) * depc) +
-                  get_db_size_needed(depc, depv);
+                  get_db_size_needed(&edt->wrapper_edt);
   // Intersection of every dependency's GPU-presence set: a candidate GPU must
   // hold ALL dependencies.  The identity element for intersection is the full
   // set (all ones), so seed with ~0 and AND each lookup in; an empty depc keeps
@@ -281,7 +281,7 @@ int atleast_one(void *edt_packet) {
   // Size to be allocated on the GPU
   uint64_t size = (sizeof(uint64_t) * paramc) +
                   (sizeof(arts_edt_dep_t) * depc) +
-                  get_db_size_needed(depc, depv);
+                  get_db_size_needed(&edt->wrapper_edt);
   uint64_t mask = 0;
   for (unsigned int i = 0; i < depc; ++i) {
     mask |= arts_gpu_lookup_db(depv[i].guid);
@@ -308,7 +308,7 @@ int hash_on_db_zero(void *edt_packet) {
   // Size to be allocated on the GPU
   uint64_t size = (sizeof(uint64_t) * paramc) +
                   (sizeof(arts_edt_dep_t) * depc) +
-                  get_db_size_needed(depc, depv);
+                  get_db_size_needed(&edt->wrapper_edt);
   uint64_t key = (depv[0].guid) ? arts_guid_get_key(depv[0].guid) : 0;
   int index = (int)(key % (uint64_t)arts_node_info.gpu);
   if ((unsigned int)index >= arts_node_info.gpu) {
@@ -335,7 +335,7 @@ int hash_largest(void *edt_packet) {
   // Size to be allocated on the GPU
   uint64_t size = (sizeof(uint64_t) * paramc) +
                   (sizeof(arts_edt_dep_t) * depc) +
-                  get_db_size_needed(depc, depv);
+                  get_db_size_needed(&edt->wrapper_edt);
   // uint64_t mask = 0;
   uint64_t largest = 0;
   for (unsigned int i = 0; i < depc; ++i) {
@@ -357,8 +357,6 @@ int arts_reserve_edt_required_gpu(int *gpu, void *edt_packet) {
   arts_gpu_edt_t *edt = (arts_gpu_edt_t *)edt_packet;
   uint32_t paramc = edt->wrapper_edt.paramc;
   uint32_t depc = edt->wrapper_edt.depc;
-  const uint64_t *paramv = (uint64_t *)(edt + 1);
-  arts_edt_dep_t *depv = (arts_edt_dep_t *)(paramv + paramc);
   unsigned int total_threads = (edt->grid.x * edt->block.x) +
                                (edt->grid.y * edt->block.y) +
                                (edt->grid.z * edt->block.z);
@@ -367,7 +365,7 @@ int arts_reserve_edt_required_gpu(int *gpu, void *edt_packet) {
     // Size to be allocated on the GPU
     uint64_t size = (sizeof(uint64_t) * paramc) +
                     (sizeof(arts_edt_dep_t) * depc) +
-                    get_db_size_needed(depc, depv);
+                    get_db_size_needed(&edt->wrapper_edt);
     if (try_reserve(edt->gpu_to_run_on, size, total_threads)) {
       *gpu = edt->gpu_to_run_on;
       ret = true;

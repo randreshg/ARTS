@@ -266,8 +266,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
     arts_db_create_install_home_buffer(&stub->cache, db_size);
   }
 
-  arts_shared_ptr_t installed_h = arts_route_table_install_if_absent(
-      stub, db_guid, arts_global_rank_id, /*used=*/true);
+  arts_shared_ptr_t installed_h =
+      arts_route_table_install_if_absent(stub, db_guid);
   if (installed_h == NULL) {
     /* The descriptor was never published; the store stays the creator's,
      * named again by the replay. */

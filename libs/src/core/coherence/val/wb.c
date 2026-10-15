@@ -59,7 +59,7 @@ void arts_handler_db_acquire(void *item, void *args) {
        * thread's node.  A no-op for every other block: a grant install
        * always brings storage with it. */
       (void)arts_db_buf_ensure(cache, cache->db_size);
-      dep->ptr = arts_db_acquire_local(cache);
+      arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
       arts_db_acquire_resolved(edt, slot);
       return;
     }
@@ -73,7 +73,7 @@ void arts_handler_db_acquire(void *item, void *args) {
    * names the previous owner (the stale-RO window).  Everything else parks;
    * grant_req_in_flight is held by the in-flight round, so acquire_remote_rw
    * parks without issuing a duplicate request, and CONFIRM_ACK drains it. */
-  if (arts_db_acquire_rw_local_fast(cache, dep)) {
+  if (arts_db_acquire_rw_local_fast(cache, edt, slot)) {
     arts_db_acquire_resolved(edt, slot); /* data here, writer_count bumped */
     return;
   }

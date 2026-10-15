@@ -38,10 +38,11 @@
 ******************************************************************************/
 #include "arts/system/signals.h"
 
+#include "arts/utils/stdatomic_compat.h"
+#include <assert.h>
 #include <execinfo.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,17 @@
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
+
+/* The rank the handlers print: a handler may touch only lock-free atomic
+ * objects, never arts_global_rank_id.  Stored once the rank is final; until
+ * then it reads 0.  Only its own value. */
+static_assert(ATOMIC_INT_LOCK_FREE == 2,
+              "a signal handler reads an atomic unsigned int");
+static _Atomic(unsigned int) handler_rank;
+
+void arts_signal_handlers_set_rank(unsigned int rank) {
+  atomic_store_explicit(&handler_rank, rank, memory_order_relaxed);
+}
 
 // Async-signal-safe signal name lookup (strsignal() is NOT safe).
 static const char *signal_name(int sig) {
@@ -122,7 +134,8 @@ static void write_backtrace(void) {
 
 // Crash signals (SIGSEGV, SIGBUS, SIGFPE) — unrecoverable, re-raise for core.
 static void arts_crash_signal_handler(int sig) {
-  write_signal_line("\n[ARTS] Crashed: ", signal_name(sig), arts_global_rank_id,
+  write_signal_line("\n[ARTS] Crashed: ", signal_name(sig),
+                    atomic_load_explicit(&handler_rank, memory_order_relaxed),
                     ") — stack trace:\n");
 
   write_backtrace();
@@ -142,7 +155,8 @@ static void arts_crash_signal_handler(int sig) {
 // holding those locks, leaving the process hung instead of dying.
 static void arts_term_signal_handler(int sig) {
   write_signal_line("\n[ARTS] Killed by ", signal_name(sig),
-                    arts_global_rank_id, ")\n");
+                    atomic_load_explicit(&handler_rank, memory_order_relaxed),
+                    ")\n");
 
   write_backtrace();
 
@@ -205,11 +219,14 @@ void arts_install_signal_handlers(void) {
  * arts_enter_shutdown_state(true), which broadcasts the cluster-wide
  * MSG_SHUTDOWN and clears their alive flags.
  *
- * Wake-on-stop: arts_stop_signal_watcher_thread sets stop_flag and
+ * Wake-on-stop: arts_stop_signal_watcher_thread sets the stop flag and
  * sends SIGRTMIN to break out of sigwait. */
 static pthread_t arts_signal_watcher;
-static atomic_bool arts_signal_watcher_started = false;
-static atomic_bool arts_signal_watcher_stop = false;
+/* Install and stop both run on the main thread. */
+static bool arts_signal_watcher_started = false;
+/* Stored true (release) by arts_stop_signal_watcher_thread before it wakes
+ * the watcher, which reads it (acquire) after every wake. */
+static _Atomic(bool) arts_signal_watcher_stop = false;
 
 static void *arts_signal_watcher_main(void *arg) {
   (void)arg;
@@ -231,7 +248,7 @@ static void *arts_signal_watcher_main(void *arg) {
       ARTS_WARN("signal watcher: sigwait failed (rc=%d), exiting", rc);
       break;
     }
-    if (atomic_load(&arts_signal_watcher_stop)) {
+    if (atomic_load_explicit(&arts_signal_watcher_stop, memory_order_acquire)) {
       break; /* normal shutdown poke */
     }
     if (sig == SIGRTMIN) {
@@ -259,9 +276,12 @@ static void *arts_signal_watcher_main(void *arg) {
 }
 
 void arts_install_signal_watcher_thread(void) {
-  if (atomic_exchange(&arts_signal_watcher_started, true)) {
+  if (arts_signal_watcher_started) {
     return; /* already installed */
   }
+  arts_signal_watcher_started = true;
+  /* No watcher runs: the one a previous stop ended has been joined. */
+  atomic_store_explicit(&arts_signal_watcher_stop, false, memory_order_relaxed);
 
   /* Block the term signals on the calling (main) thread so that every
    * subsequently spawned thread inherits the block.  Only the watcher
@@ -280,23 +300,21 @@ void arts_install_signal_watcher_thread(void) {
               "falling back to sigaction handlers");
     /* Unblock so the sigaction handler can still fire. */
     pthread_sigmask(SIG_UNBLOCK, &block_set, NULL);
-    atomic_store(&arts_signal_watcher_started, false);
+    arts_signal_watcher_started = false;
   }
 }
 
 void arts_stop_signal_watcher_thread(void) {
-  if (!atomic_load(&arts_signal_watcher_started)) {
+  if (!arts_signal_watcher_started) {
     return;
   }
-  if (atomic_exchange(&arts_signal_watcher_stop, true)) {
-    return; /* already stopping */
-  }
+  atomic_store_explicit(&arts_signal_watcher_stop, true, memory_order_release);
   /* Wake watcher out of sigwait.  pthread_kill targets only the watcher
    * thread, so other threads' masks (which also block SIGRTMIN) are
    * irrelevant. */
   pthread_kill(arts_signal_watcher, SIGRTMIN);
   pthread_join(arts_signal_watcher, NULL);
-  atomic_store(&arts_signal_watcher_started, false);
+  arts_signal_watcher_started = false;
 }
 
 #ifndef __APPLE__

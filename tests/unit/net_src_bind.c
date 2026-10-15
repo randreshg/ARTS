@@ -22,9 +22,9 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include "arts/utils/stdatomic_compat.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -61,13 +61,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 /* Compile the module under test (its statics). */
 #include "../../libs/src/core/transport/net.c"
 
-/* counter stubs: net.c's introspection increments resolve here (this harness
- * links no counter TU). */
-ARTS_THREAD_LOCAL arts_counter_t arts_thread_local_counters[NUM_COUNTER_TYPES];
-void arts_counter_increment_by(arts_counter_t *counter, uint64_t num) {
-  (void)counter;
-  (void)num;
-}
+#include "counter_stubs.h"
 
 static uint64_t now_ns(void) {
   struct timespec ts;

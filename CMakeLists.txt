@@ -65,30 +65,38 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # while CMAKE_C_EXTENSIONS=OFF keeps the C17 *language* strict.
 add_compile_definitions(_DEFAULT_SOURCE _GNU_SOURCE)
 
-# 128-bit compare-and-swap, per architecture:
-#  - x86-64: cmpxchg16b, enabled by -mcx16.
-#  - ARM64 (AArch64): ARMv8.1-a LSE gives an inline lock-free `casp`.  Without
-#    it, 16-byte atomics fall back to a libatomic lock (NOT lock-free), which
-#    would silently break the DWCAS contract.  (-moutline-atomics is the
-#    alternative if an ARMv8.0 baseline must be supported.)
+# Target processor, and what its 16-byte atomics need.  The supported targets
+# are AMD64 and ARM64.
+#  - x86-64: -mcx16 enables cmpxchg16b.  Clang inlines `lock cmpxchg16b` for a
+#    16-byte load, store or CAS; GCC calls libatomic (__atomic_*_16), which is
+#    lock-free on every cx16 host.  That is why libatomic is linked below, and
+#    linked dynamically.
+#  - AArch64: no -march is forced, so the build runs on every ARMv8-A host.
+#    A toolchain that outlines by default (-moutline-atomics) turns the RMWs
+#    into helpers that pick LSE or LL/SC from the run host's hwcaps; an older
+#    one emits inline LL/SC loops.  Without LSE a 16-byte atomic is still
+#    lock-free, not a lock: under GCC every 16-byte access is a call into the
+#    run host's libatomic, and under Clang loads and stores are inline
+#    (ldaxp/stxp) and the CAS is libgcc's __aarch64_cas16_acq_rel when it
+#    outlines.
+# artsrun's AMD64_PROCESSOR applies the same expression to a tree's processor
+# to tell whether the tree has benchmark variants; the two must stay the same.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    set(ARTS_TARGET_AMD64 ON)
     add_compile_options($<$<COMPILE_LANGUAGE:C>:-mcx16>)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-mcx16>)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
-    add_compile_options($<$<COMPILE_LANGUAGE:C>:-march=armv8.1-a>)
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-march=armv8.1-a>)
+else()
+    set(ARTS_TARGET_AMD64 OFF)
 endif()
 
-# DWCAS feature detection (cmpxchg16b on x86_64, casp on ARMv8.1+).
-# Required by lockfree_pool.h for DWCAS.  GCC and Clang
-# emit a libcall (`__atomic_compare_exchange_16`) for 16-byte atomics
-# even when -mcx16 is set, so we link against libatomic.  Detection
-# probes the linker pipeline (compile + link) by running CheckCSourceCompiles
-# with -latomic in CMAKE_REQUIRED_LIBRARIES.
+# The 16-byte CAS of lockfree_pool.h and the shared-pointer slot must compile
+# and link: cmpxchg16b (-mcx16) on AMD64; libatomic, or inline LL/SC or LSE,
+# on ARM64.  The check proves that much, not that the CAS is lock-free.  It
+# links libatomic because GCC calls it for every 16-byte atomic.
 include(CheckCSourceCompiles)
 set(_arts_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
 set(_arts_saved_required_libs  "${CMAKE_REQUIRED_LIBRARIES}")
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+if(ARTS_TARGET_AMD64)
     set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -mcx16")
 endif()
 # ARTS_ATOMIC_LINK is the single link item every consumer must use; the
@@ -116,9 +124,10 @@ unset(_arts_saved_required_flags)
 unset(_arts_saved_required_libs)
 if(NOT ARTS_DWCAS_LINKS)
     message(FATAL_ERROR
-        "ARTS requires a LOCK-FREE 128-bit CAS (cmpxchg16b on x86-64, casp on "
-        "ARMv8.1+).  Build with -mcx16 (AMD64) or -march=armv8.1-a / +lse / "
-        "-moutline-atomics (ARM64).")
+        "ARTS requires a 128-bit compare-and-swap that compiles and links: "
+        "cmpxchg16b with -mcx16 on AMD64; libatomic "
+        "(__atomic_compare_exchange_16), or the compiler's inline LL/SC or LSE "
+        "sequence, on ARM64.")
 endif()
 # Make libatomic available to all targets that may emit 16-byte atomic
 # libcalls (lockfree_pool.h users).  The keyword-less form is transitive, so
@@ -183,15 +192,31 @@ option(ARTS_BUILD_BENCHMARKS "Build benchmark apps (ARTS + reference runtimes)" 
 # vendored OCR headers.  The benchmark apps link it, and a validation tree
 # builds it on its own so the shim's tests run against every configuration.
 option(ARTS_BUILD_SHIM       "Build the OCR-to-ARTS compatibility shim"        ON)
+# The reference runtimes are individually optional under ARTS_BUILD_BENCHMARKS.
+option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime" ON)
+option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime" ON)
+option(ARTS_BUILD_HPX        "Build HPX and the HPX benchmark apps" ON)
+# The benchmark tree is AMD64-only: the vendored FFTW is built for x86-64-v3
+# with x86 SIMD codelets, the pinned fftw-reloc artifact is x86 assembly, and
+# HPX is built with -mcx16.  On another target it is skipped for this
+# configure, the way the reference runtimes are skipped when no MPI is found,
+# and the runtime, the shim and the tests configure and build as usual.
+if(NOT ARTS_TARGET_AMD64)
+    # HPX is reachable only through the benchmark tree.
+    if(ARTS_BUILD_BENCHMARKS)
+        message(STATUS
+            "Benchmark tree skipped: it is AMD64-only (FFTW's x86-64-v3 and x86 "
+            "SIMD build, the x86 fftw-reloc artifact, HPX's -mcx16), and the "
+            "target processor is ${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    set(ARTS_BUILD_BENCHMARKS OFF)
+    set(ARTS_BUILD_HPX OFF)
+endif()
 if(ARTS_BUILD_BENCHMARKS AND NOT ARTS_BUILD_SHIM)
     message(FATAL_ERROR
         "ARTS_BUILD_BENCHMARKS=ON requires ARTS_BUILD_SHIM=ON: every ARTS "
         "variant of a benchmark app links the OCR shim.")
 endif()
-# The reference runtimes are individually optional under ARTS_BUILD_BENCHMARKS.
-option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime" ON)
-option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime" ON)
-option(ARTS_BUILD_HPX        "Build HPX and the HPX benchmark apps" ON)
 option(ARTS_BUILD_DOCS       "Build documentation (requires Doxygen + Sphinx)" OFF)
 
 # ── GPU / CUDA ─────────────────────────────────────────────────────────────

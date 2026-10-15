@@ -47,6 +47,10 @@ Checks: >
 # Treat all warnings as errors in CI to ensure code quality.
 WarningsAsErrors: '*'
 
+# Every access to an _Atomic object names its memory order: an operator-syntax
+# access (an implicit seq_cst one) is reported where it is written.
+ExtraArgs: ['-Watomic-implicit-seq-cst']
+
 CheckOptions:
   # ----------------------------------------------------------------------------
   # Naming Convention: The "Modern C System" Style

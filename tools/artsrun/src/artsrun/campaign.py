@@ -22,7 +22,7 @@ from artsrun.build import (
     DEFAULT_COUNTER_CONFIG, BuildError, BuildPlan, build, configure_counters,
     configure_cxl, counter_config_of, counter_mismatch, cxl_configure_command,
     cxl_mismatch, cxl_options, ensure_build_dir, missing_counter_config,
-    plan_targets, require_default_counters, tree_counter_config,
+    plan_targets, require_amd64, require_default_counters, tree_counter_config,
     write_tree_counter_config,
 )
 from artsrun.model.experiment import Experiment
@@ -112,6 +112,7 @@ class Campaign:
 
     # -- phases ------------------------------------------------------------
     def build_plan(self, *, on_line=None, bootstrap: bool = False) -> BuildPlan:
+        require_amd64(self.build_dir, self.selection)
         prefix = self._build_prefix()
         # A CXL entry's binaries are the tree's, so the tree is made to link
         # the library the profile names before anything is planned from it;

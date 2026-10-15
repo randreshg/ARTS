@@ -26,9 +26,9 @@
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <inttypes.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,7 +45,7 @@ static _Atomic int g_start;
  * for a draw, is drained too, since the next reset would otherwise forget
  * them. */
 static void cache_teardown(void) {
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_shared_slot_store(&g_cache.buffer, NULL);
 #ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
   for (arts_lf_link_t *n = arts_lf_stack_drain(&g_cache.buf_retired);

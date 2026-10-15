@@ -108,7 +108,7 @@ bool arts_edt_admitted(arts_shared_ptr_t h) {
     return false;
   }
   const struct arts_edt_s *edt = (const struct arts_edt_s *)arts_shared_get(h);
-  return edt->depc_needed == 0u;
+  return atomic_load_explicit(&edt->depc_needed, memory_order_relaxed) == 0u;
 }
 
 /* The engine's create args for an EDT received off the wire: the args header,
@@ -172,7 +172,7 @@ bool arts_edt_create_core(struct arts_edt_s *edt, arts_guid_kind_t guid_kind,
   edt->func_ptr = func_ptr;
   edt->depc = depc;
   edt->paramc = paramc;
-  edt->depc_needed = depc;
+  atomic_store_explicit(&edt->depc_needed, depc, memory_order_relaxed);
 
   /* Determine finish-scope for this EDT.
    *
@@ -302,7 +302,8 @@ arts_guid_t arts_edt_create(arts_edt_t func_ptr, uint32_t paramc,
      * rank.  Both arms resolve to a concrete rank — the sentinel never
      * reaches guid encoding. */
 #if ARTS_NOHINT_EDT_ROUNDROBIN
-    rank = arts_atomic_fetch_add(&arts_node_info.edt_rr_route, 1U) %
+    rank = atomic_fetch_add_explicit(&arts_node_info.edt_rr_route, 1U,
+                                     memory_order_relaxed) %
            arts_global_rank_count;
 #else
     rank = arts_global_rank_id;
@@ -334,14 +335,13 @@ void arts_edt_set_result(arts_guid_t result_guid) {
 }
 
 static void arts_edt_free(struct arts_edt_s *edt) {
-  /* rw_sorted is the GUID-sorted serialized-dep order, allocated once at
-   * arts_db_acquire_all entry (NULL if the EDT never reached the acquire
-   * phase).  Freeing here — the single canonical struct-free — covers every
-   * lifetime end (run completion, cancel, destroy) with no double-free. */
-  arts_free(edt->rw_sorted);
-  arts_thread_info.edt_free = 1;
+  /* The acquire record and the visit order that shares its allocation,
+   * allocated once when the acquire phase begins (NULL if the EDT never
+   * reached it).  Freeing here — the single canonical struct-free — covers
+   * every lifetime end (run completion, cancel, destroy) with no double
+   * free. */
+  arts_free(edt->dep_acq);
   arts_free(edt);
-  arts_thread_info.edt_free = 0;
 }
 
 /* Retire a completed EDT's GUID by identity: only this EDT's own cb, since
@@ -354,7 +354,9 @@ static void arts_edt_free(struct arts_edt_s *edt) {
  * caller holds its own reference (the run path's runnable-phase ref). */
 void arts_edt_delete(struct arts_edt_s *edt) {
   ARTS_INFO("EDT delete [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
-            edt->guid, edt->depc, edt->depc_needed, arts_global_rank_id);
+            edt->guid, edt->depc,
+            atomic_load_explicit(&edt->depc_needed, memory_order_relaxed),
+            arts_global_rank_id);
   arts_route_table_set_destroyed_item(edt->guid, edt->self_cb);
 }
 
@@ -372,13 +374,15 @@ void arts_handler_edt_destroy(void *item_v, void *args_v) {
   struct arts_edt_s *edt = (struct arts_edt_s *)item_v;
   struct arts_ooo_args_edt_destroy_s *a =
       (struct arts_ooo_args_edt_destroy_s *)args_v;
-  if (edt->depc_needed == 0) {
+  unsigned int needed =
+      atomic_load_explicit(&edt->depc_needed, memory_order_relaxed);
+  if (needed == 0) {
     ARTS_INFO("EDT destroy on runnable/queued EDT [Guid:%lu] — UB; ignoring",
               a->guid);
     return;
   }
   ARTS_INFO("EDT destroy [Guid:%lu, Depc:%u, DepcNeeded:%u] on rank %u",
-            edt->guid, edt->depc, edt->depc_needed, arts_global_rank_id);
+            edt->guid, edt->depc, needed, arts_global_rank_id);
   arts_guid_t finish_event = edt->finish_event;
   if (arts_ooo_retire_item(a->guid, item_v) && finish_event != NULL_GUID) {
     arts_event_satisfy_slot(finish_event, NULL_GUID,
@@ -457,6 +461,18 @@ static void edt_defer_satisfy(arts_guid_t edt_guid, arts_guid_t data_guid,
                                   sizeof(a));
 }
 
+/* A satisfy that finds every dependence of the EDT already satisfied. */
+static void edt_over_satisfied(const struct arts_edt_s *edt, uint32_t slot) {
+  if (slot == (uint32_t)-1) {
+    ARTS_ERROR("control satisfy of EDT[Guid:%lu] exceeds its %u "
+               "dependence(s): every dependence is already satisfied",
+               (unsigned long)edt->guid, edt->depc);
+  }
+  ARTS_ERROR("satisfy of EDT[Guid:%lu] slot %u exceeds its %u dependence(s): "
+             "every dependence is already satisfied",
+             (unsigned long)edt->guid, slot, edt->depc);
+}
+
 /* Pure core — apply a satisfy to an already-acquired, valid EDT.  No lookup /
  * acquire / defer: the caller (arts_handler_edt_satisfy_slot via
  * dispatch_or_defer) guarantees `edt` is live.  Writes depv[slot], decrements
@@ -478,6 +494,13 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
                "dependence slot(s)",
                (unsigned long)edt->guid, slot, edt->depc);
   }
+  /* A satisfy beyond the EDT's dependence count is the same kind of program
+   * error, seen only here.  Checked before the slot is written, where a
+   * satisfy that follows the last one is caught, and again by the decrement,
+   * which catches one that raced it. */
+  if (atomic_load_explicit(&edt->depc_needed, memory_order_relaxed) == 0u) {
+    edt_over_satisfied(edt, slot);
+  }
   if (writes_slot) {
     edt_dep[slot].guid = data_guid;
     /* A satisfy says which block the slot names, not that the EDT may touch
@@ -485,10 +508,14 @@ static void edt_apply_satisfy(struct arts_edt_s *edt, uint32_t slot,
     edt_dep[slot].ptr = NULL;
     edt_dep[slot].mode = mode;
   }
-  unsigned int res = arts_atomic_sub(&edt->depc_needed, 1U);
+  unsigned int old =
+      atomic_fetch_sub_explicit(&edt->depc_needed, 1u, memory_order_acq_rel);
+  if (old == 0u) {
+    edt_over_satisfied(edt, slot);
+  }
   ARTS_INFO("Signal EDT[Guid:%lu, Slot:%u] DB[Guid:%lu] depc_needed=%u→%u",
-            edt->guid, slot, data_guid, res + 1, res);
-  if (res == 0) {
+            edt->guid, slot, data_guid, old, old - 1u);
+  if (old == 1u) {
     ARTS_INFO("EDT[Guid:%lu] all deps satisfied — firing", edt->guid);
     arts_handle_ready_edt(edt);
   }
@@ -567,38 +594,34 @@ void arts_send_object_blob(unsigned int rank, arts_guid_t guid, void *ptr,
   TIME_REMOTE_MOVE_STOP();
 }
 
+#ifdef ARTS_DEBUG_INJECTION
+void (*arts_edt_installed_hook)(struct arts_edt_s *edt) = NULL;
+#endif
+
 /* g_ooo_table[OOO_EDT_CREATE]: the engine runs it while the GUID's slot is
  * empty (`item_v` is NULL).  A local create hands over the EDT it built, which
- * is installed as is; a received blob is copied into a fresh object.  The
- * sentinel (+1 on depc_needed) holds the EDT unrunnable from the install until
- * it is removed below, so the satisfies the install's drain replays, and any
- * that land concurrently, cannot fire it before its finish-scope field is
- * final; exactly one party then observes the 0 transition.  A lost install CAS
- * means another create filled the slot after the engine saw it empty, so this
- * one re-enters the engine and parks behind it — with the same object when it
- * was handed over.  A parked create keeps open the finish-scope INCR its
- * creating rank emitted until it installs. */
+ * is installed as is; a received blob is copied into a fresh object.  Every
+ * field another thread may read once the EDT is installed is final before
+ * the install: a destroy dispatched on another thread can act on the EDT from
+ * that point on.  The sentinel (+1 on depc_needed) holds the EDT unrunnable
+ * from the install until it is removed below, so the satisfies the install's
+ * drain replays, and any that land concurrently, cannot fire it before the
+ * create body is done with it; exactly one party then observes the 0
+ * transition.  A lost install CAS means another create filled the slot after
+ * the engine saw it empty, so this one re-enters the engine and parks behind
+ * it with the object it built, ready as it is.  A parked create keeps open the
+ * finish-scope INCR its creating rank emitted until it installs. */
 void arts_handler_edt_create(void *item_v, void *args_v) {
   (void)item_v;
   const struct arts_ooo_args_create_blob_s *a =
       (const struct arts_ooo_args_create_blob_s *)args_v;
   struct arts_edt_s *edt;
   arts_guid_t guid;
-  arts_shared_ptr_t pin;
   if (a->size == ARTS_OOO_CREATE_ADOPT) {
     const struct arts_ooo_args_create_local_s *l =
         (const struct arts_ooo_args_create_local_s *)args_v;
     edt = (struct arts_edt_s *)l->descriptor;
     guid = l->guid;
-    edt->depc_needed += 1;
-    pin = arts_route_table_install_if_absent(edt, guid, arts_global_rank_id,
-                                             false);
-    if (pin == NULL) {
-      edt->depc_needed -= 1;
-      arts_ooo_dispatch_or_defer_guid(guid, OOO_EDT_CREATE, args_v,
-                                      (uint32_t)sizeof(*l));
-      return;
-    }
   } else {
     const unsigned char *packet = (const unsigned char *)(a + 1);
     memcpy(&guid,
@@ -607,29 +630,22 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
     size_t size = a->size - sizeof(struct arts_msg_object_blob_packet_s);
     edt = (struct arts_edt_s *)arts_malloc_aligned(size, ARTS_CACHE_LINE_SIZE);
     memcpy(edt, packet + sizeof(struct arts_msg_object_blob_packet_s), size);
-    edt->depc_needed += 1;
-    pin = arts_route_table_install_if_absent(edt, guid, arts_global_rank_id,
-                                             false);
-    if (pin == NULL) {
-      arts_edt_deleter(edt);
-      arts_ooo_dispatch_or_defer_guid(guid, OOO_EDT_CREATE, args_v,
-                                      (uint32_t)(sizeof(*a) + a->size));
-      return;
-    }
+    /* A fresh object built from an image: its atomic members are initialized
+     * here, not inherited.  An image is never satisfied before it ships (its
+     * satisfies go to this home), so every dependence is still owed. */
+    atomic_store_explicit(&edt->depc_needed, edt->depc, memory_order_relaxed);
+    atomic_store_explicit(&edt->acquire_remaining, 0u, memory_order_relaxed);
+    /* Address-carrying words of the building rank start empty here. */
+    edt->dep_acq = NULL;
+    edt->rw_sorted = NULL;
+    edt->self_cb = NULL;
   }
-  /* `pin` keeps the EDT alive from the install to the end of this body, even
-   * when the install's drain replays a destroy that retires it.  self_cb is a
-   * non-owning alias of the installed cb, armed from the handle itself (a
-   * lookup could return a later generation's cb). */
-  edt->self_cb = pin;
   /* A finish scope homed on another rank is joined through a local LATCH
    * proxy whose fire carries the DECR to it; one homed here is decremented
-   * directly by the EDT's completion.  A retire clears the cb's tag, so an EDT
-   * the install's drain already destroyed gets no proxy (it never
-   * completes). */
+   * directly by the EDT's completion, or by a destroy in its place.  Made
+   * once, while the EDT is private: a re-parked create keeps it. */
   if (edt->finish_event != NULL_GUID &&
-      arts_guid_get_rank(edt->finish_event) != arts_global_rank_id &&
-      arts_shared_tag(pin) == (uint64_t)guid) {
+      arts_guid_get_rank(edt->finish_event) != arts_global_rank_id) {
     arts_event_hint_t proxy_hint = ARTS_EVENT_HINT_LATCH(1);
     proxy_hint.auto_destroy = true;
     arts_guid_t proxy = arts_event_create(&proxy_hint);
@@ -637,10 +653,37 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
                         DB_MODE_NULL);
     edt->finish_event = proxy;
   }
+  atomic_fetch_add_explicit(&edt->depc_needed, 1u, memory_order_relaxed);
+  arts_shared_ptr_t pin = arts_route_table_install_if_absent(edt, guid);
+  if (pin == NULL) {
+    atomic_fetch_sub_explicit(&edt->depc_needed, 1u, memory_order_relaxed);
+    struct arts_ooo_args_create_local_s l = {
+        .size = ARTS_OOO_CREATE_ADOPT, .guid = guid, .descriptor = edt};
+    arts_ooo_dispatch_or_defer_guid(guid, OOO_EDT_CREATE, &l, sizeof(l));
+    return;
+  }
+#ifdef ARTS_DEBUG_INJECTION
+  if (arts_edt_installed_hook != NULL) {
+    arts_edt_installed_hook(edt);
+  }
+#endif
+  /* `pin` keeps the EDT alive from the install to the end of this body, even
+   * when the install's drain replays a destroy that retires it.  self_cb is a
+   * non-owning alias of the installed cb, armed from the handle itself (a
+   * lookup could return a later generation's cb); it is read only once the
+   * sentinel's removal below has let the EDT become ready. */
+  edt->self_cb = pin;
   /* arts_handle_ready_edt takes the runnable-phase ref from self_cb, which is
    * sound only while `pin` is held; nothing touches the EDT after the
    * release. */
-  if (arts_atomic_sub(&edt->depc_needed, 1U) == 0) {
+  unsigned int old =
+      atomic_fetch_sub_explicit(&edt->depc_needed, 1u, memory_order_acq_rel);
+  if (old == 0u) {
+    ARTS_ERROR("satisfies beyond its %u dependence(s) reached EDT[Guid:%lu] "
+               "before its create completed",
+               edt->depc, (unsigned long)edt->guid);
+  }
+  if (old == 1u) {
     arts_handle_ready_edt(edt);
   }
   arts_shared_release(&pin);
@@ -649,11 +692,6 @@ void arts_handler_edt_create(void *item_v, void *args_v) {
 void arts_send_edt_satisfy_slot(arts_guid_t edt, arts_guid_t db, uint32_t slot,
                                 arts_db_access_mode_t mode) {
   unsigned int rank = arts_guid_get_rank(edt);
-  if (rank == arts_global_rank_id) {
-    /* EDT GUID claims a local home but may have migrated — resolve the
-     * true owning rank through the route table. */
-    rank = arts_route_table_lookup_rank(edt);
-  }
   ARTS_INFO(
       "Remote Signal from DB[Guid:%lu] to EDT[Guid:%lu, Slot:%d, Rank:%u]", db,
       edt, slot, rank);

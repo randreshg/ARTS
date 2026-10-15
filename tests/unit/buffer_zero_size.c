@@ -45,7 +45,7 @@ static void cache_init(uint64_t db_size) {
  * where the arm keeps one, so the list is drained too; the next cache_init
  * would otherwise forget it. */
 static void cache_teardown(void) {
-  arts_atomic_shared_store(&g_cache.buffer, NULL);
+  arts_shared_slot_store(&g_cache.buffer, NULL);
 #ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_destroy_with(&g_cache.buf_freelist, arts_regpool_free);
 #endif

@@ -39,7 +39,7 @@
 
 #include "arts/ooo.h"
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdlib.h>
 #include <string.h> /* memcpy (OoO payload alloc) */
 
@@ -248,11 +248,11 @@ static void ooo_dispatch_create(struct arts_route_item_s *slot,
   for (;;) {
     /* A returned slot answers for another GUID now (or none); the create
      * follows its own GUID to the slot that names it. */
-    if (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+    if (atomic_load_explicit(&slot->key, memory_order_acquire) != guid) {
       arts_route_table_reserve_or_lookup(guid, &slot);
       continue;
     }
-    arts_shared_ptr_t h = arts_atomic_shared_load(&slot->value);
+    arts_shared_ptr_t h = arts_shared_slot_load(&slot->value);
     if (h == NULL) {
       g_ooo_table[kind](NULL, (void *)args);
       if (payload != NULL) {
@@ -281,21 +281,22 @@ static void ooo_dispatch_create(struct arts_route_item_s *slot,
   arts_lf_stack_push(&slot->ooo_list, &payload->link);
   OOO_AFTER_PARK(slot);
 
-  /* TOCTOU rescue, the non-create one inverted.  The occupant's teardown
-   * clears the value, returns the key, then (behind a full fence) re-drives
-   * the chain; we push, then (behind a full fence) re-read the value and the
-   * key.  Each stores before it loads the other's word, so at least one of us
-   * sees the other: either the teardown's re-drive carries our node, or we see
-   * the slot emptied or returned and drain it ourselves.  Draining — never
-   * re-entering with a copy — keeps the node single-owner: whichever side
-   * detaches it from the chain dispatches it, and the other finds it gone. */
+  /* TOCTOU rescue, the non-create one inverted.  The fence orders the push
+   * before the re-read of the value and the key; it pairs with the fence in
+   * arts_route_table_set_destroyed_if between the occupant's retire (value
+   * cleared, key returned) and its re-drive of the chain.  So either that
+   * re-drive carries our node, or we see the slot emptied or returned and
+   * drain it ourselves.  Draining — never re-entering with a copy — keeps the
+   * node single-owner: whichever side detaches it from the chain dispatches
+   * it, and the other finds it gone. */
   atomic_thread_fence(memory_order_seq_cst);
-  arts_shared_ptr_t h = arts_atomic_shared_load(&slot->value);
+  arts_shared_ptr_t h = arts_shared_slot_load(&slot->value);
   bool occupied = (h != NULL) && arts_shared_tag(h) == (uint64_t)guid;
   if (h != NULL) {
     arts_shared_release(&h);
   }
-  if (!occupied || __atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+  if (!occupied ||
+      atomic_load_explicit(&slot->key, memory_order_acquire) != guid) {
     arts_ooo_drain(slot);
   }
 }
@@ -315,13 +316,13 @@ void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
      * would run the handler against the wrong object, and parking would put
      * the payload on a stranger's list.  A GUID comes back when it is created
      * again, so the payload follows its GUID to the slot that names it now. */
-    if (__atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+    if (atomic_load_explicit(&slot->key, memory_order_acquire) != guid) {
       arts_route_table_reserve_or_lookup(guid, &slot);
       continue;
     }
     /* Per-call acquire: (re)load the slot value every entry so a destroy that
      * NULLed it earlier in the same drain walk is observed here. */
-    h = arts_atomic_shared_load(&slot->value);
+    h = arts_shared_slot_load(&slot->value);
     /* Verify the VALUE, not the slot.  The check above only proves the slot
      * was ours BEFORE the load; a reclaim between the two would hand us the
      * next owner's object, and dispatching this payload against it would run
@@ -373,25 +374,25 @@ void arts_ooo_dispatch_or_defer(struct arts_route_item_s *slot,
   arts_lf_stack_push(&slot->ooo_list, &payload->link);
   OOO_AFTER_PARK(slot);
 
-  /* TOCTOU rescue, against an install and against a teardown.  An installer
-   * publishes the value and then, behind a full fence, detaches the chain; a
-   * teardown clears the value, returns the key and then, behind a full fence,
-   * detaches the chain.
-   * We push and then, behind a full fence, re-read the value and the key.
-   * Each side stores before it loads the other's word, so at least one sees
-   * the other: either the installer's drain or the teardown's re-drive carries
-   * our node, or we see the value published or the key moved and drain the
-   * slot ourselves.  Draining — never re-entering with a copy — keeps the node
-   * single-owner: whichever side detaches it dispatches it (to the installed
-   * object, or on to the slot its GUID names now), and the other finds it
-   * gone. */
+  /* TOCTOU rescue, against an install and against a teardown.  The fence
+   * orders the push before the re-read of the value and the key; it pairs
+   * with the fence in arts_route_table_install_handle_if_absent between an
+   * install and its drain, and with the fence in
+   * arts_route_table_set_destroyed_if between a retire (value cleared, key
+   * returned) and its re-drive.  So either the installer's drain or the
+   * retire's re-drive carries our node, or we see the value published or the
+   * key moved and drain the slot ourselves.  Draining — never re-entering
+   * with a copy — keeps the node single-owner: whichever side detaches it
+   * dispatches it (to the installed object, or on to the slot its GUID names
+   * now), and the other finds it gone. */
   atomic_thread_fence(memory_order_seq_cst);
-  h = arts_atomic_shared_load(&slot->value);
+  h = arts_shared_slot_load(&slot->value);
   bool installed = (h != NULL);
   if (h) {
     arts_shared_release(&h);
   }
-  if (installed || __atomic_load_n(&slot->key, __ATOMIC_ACQUIRE) != guid) {
+  if (installed ||
+      atomic_load_explicit(&slot->key, memory_order_acquire) != guid) {
     arts_ooo_drain(slot);
   }
 }

@@ -33,7 +33,7 @@
  * program.
  */
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

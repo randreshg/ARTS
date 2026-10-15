@@ -26,8 +26,8 @@
  * prototypes, and arts_db_excl_waiter_s for the EXCL build. */
 #include "arts/coherence/excl/types.h"
 
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -348,12 +348,12 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 /* ===== lock_drain_pending ==============================================
  * Serve every waiter currently in `q`: a single atomic-exchange drain claims
  * the whole stack, so each node is taken by exactly one drainer (any node a
- * drainer "misses" is taken by another).  Serving = re-derive dep->ptr from
- * the installed buffer + position-idempotent cursor advance (which is what
- * fires the next serialized dep) + account (may schedule the EDT when
- * acquire_remaining reaches 0).  It does NOT touch the count (the count was
- * bumped at the waiter's acquire cas1, before it was pushed — "queued ⟹
- * counted"). */
+ * drainer "misses" is taken by another).  Serving = claim the slot's acquire
+ * record with the installed buffer + position-idempotent cursor advance (which
+ * is what fires the next serialized dep) + account (may hand the payload to
+ * depv and schedule the EDT when acquire_remaining reaches 0).  It does NOT
+ * touch the count (the count was bumped at the waiter's acquire cas1, before
+ * it was pushed — "queued ⟹ counted"). */
 static void lock_drain_pending(arts_lf_stack_t *q) {
   arts_lf_link_t *node = arts_lf_stack_drain(q);
   while (node != NULL) {

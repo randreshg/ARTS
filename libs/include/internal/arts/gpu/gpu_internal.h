@@ -50,6 +50,8 @@
 extern "C" {
 #endif
 
+#include "arts/db.h"  /* arts_dep_subtype */
+#include "arts/edt.h" /* arts_get_depv */
 #include "arts/gas/route_table.h"
 #include "arts/gpu/gpu_stream.h"
 #include "arts/runtime_types.h"
@@ -107,14 +109,18 @@ static inline uint64_t arts_gpu_db_image_size(const struct arts_db_s *db) {
   return sizeof(struct arts_db_s) + db->cache.db_size;
 }
 
-/* The descriptor behind a dependency slot.  A subtype that keeps its payload
- * inline has its descriptor immediately before the slot pointer; a payload
- * that lives in a coherence buffer does not, so that descriptor is reachable
- * only by name and comes back under a reference `hold` the caller must release
- * (NULL when none was taken, which arts_shared_release accepts). */
-static inline struct arts_db_s *arts_gpu_dep_db(const arts_edt_dep_t *dep,
+/* The descriptor behind slot `slot` of `edt`.  A subtype that keeps its
+ * payload inline has its descriptor immediately before the slot pointer; a
+ * payload that lives in a coherence buffer does not, so that descriptor is
+ * reachable only by name and comes back under a reference `hold` the caller
+ * must release (NULL when none was taken, which arts_shared_release
+ * accepts). */
+static inline struct arts_db_s *arts_gpu_dep_db(const struct arts_edt_s *edt,
+                                                uint32_t slot,
                                                 arts_shared_ptr_t *hold) {
-  if (dep->subtype != ARTS_DB) {
+  const arts_edt_dep_t *dep = &((const arts_edt_dep_t *)arts_get_depv(
+      (void *)edt))[slot];
+  if (arts_dep_subtype(edt, slot) != ARTS_DB) {
     *hold = NULL;
     return (struct arts_db_s *)dep->ptr - 1;
   }

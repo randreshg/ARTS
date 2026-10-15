@@ -1,56 +1,49 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * 8-byte head CAS Treiber LIFO (header-only, inline).
+ * Treiber LIFO with an 8-byte CAS head (header-only, inline).
  *
- * ABA-freedom comes from the caller upholding the "no re-entry into the same
- * stack" invariant documented below, not from a packed tag counter — which is
- * why the head is a plain pointer and the whole structure is inlineable.
+ * Push needs only head equality and links behind whatever the head is, and
+ * drain takes the whole chain in one exchange, so neither is exposed to ABA
+ * however nodes are reused, and the head needs no tag.  Two rules keep it so:
+ * a node is on at most one list at a time (it has one link cell), and the
+ * stack has no single-node pop, whose CAS would compare a head that may have
+ * been popped, reused and pushed back in between.
  */
 
 #ifndef ARTS_UTILS_LOCKFREE_LIFO_H
 #define ARTS_UTILS_LOCKFREE_LIFO_H
 
+#include "arts/utils/stdatomic_compat.h"
+
+#include <assert.h>
+#include <stdalign.h>
+#include <stdbool.h>
 #include <stddef.h>
 
-/* runtime_types.h pulls this header transitively into .cu translation
- * units (via arts_event_s).  C11 _Atomic isn't available in C++/nvcc, so
- * fall back to plain pointers for layout-only visibility there.  The
- * inline producer/consumer helpers below only compile in C. */
-#ifdef __cplusplus
-
 /** Common intrusive link node.  Embed as the first member of any
- *  caller struct that participates in lock-free stacks/pools. */
-typedef struct arts_lf_link_s {
-  struct arts_lf_link_s *next;
-} arts_lf_link_t;
-
-/** 8-byte head CAS Treiber stack.
+ *  caller struct that participates in lock-free stacks/pools/queues.
  *
- * INVARIANT: a node may belong to at most one arts_lf_stack_t at a
- * time.  After pop/drain, the node must EITHER be freed OR pushed onto a
- * DIFFERENT stack (e.g., an arts_lockfree_pool_t).  Pushing the
- * same node back onto the same stack invalidates the ABA-free guarantee. */
-typedef struct {
-  arts_lf_link_t *head;
-} arts_lf_stack_t;
-
-#else /* C path with _Atomic + inline helpers */
-
-#include <stdatomic.h>
-#include <stdbool.h>
-
-/** Common intrusive link node.  Embed as the first member of any
- *  caller struct that participates in lock-free stacks/pools. */
+ *  `next` belongs to whichever list holds the node.  On a stack or a pool it
+ *  is written by the node's owner before the RMW that publishes the node and
+ *  read by the owner of the chain an RMW took out, so that RMW pair carries
+ *  it and its own accesses are relaxed; the MPSC queue publishes through it
+ *  (see mpsc.h). */
 typedef struct arts_lf_link_s {
   _Atomic(struct arts_lf_link_s *) next;
 } arts_lf_link_t;
 
 /** 8-byte head CAS Treiber stack.
  *
- * INVARIANT: a node may belong to at most one arts_lf_stack_t at a
- * time.  After pop/drain, the node must EITHER be freed OR pushed onto a
- * DIFFERENT stack (e.g., an arts_lockfree_pool_t).  Pushing the
- * same node back onto the same stack invalidates the ABA-free guarantee. */
+ *  `head`: pushers CAS a node in, drainers exchange the whole chain out.
+ *  Both RMWs are acq_rel, and every write of `head` after init is one of
+ *  them, so of a push and a drain the later in head's modification order
+ *  reads from the earlier or from an RMW after it, and synchronizes with the
+ *  earlier: a drain sees each node pushed since the last drain, with what
+ *  its pusher wrote before the push, and a push after a drain sees what the
+ *  drainer wrote before the drain.  So a caller that pushes and then loads
+ *  another word, against one that stores that word and then drains the same
+ *  stack, needs no fence.  The emptiness probe is a relaxed load that
+ *  carries only its value. */
 typedef struct {
   _Atomic(arts_lf_link_t *) head;
 } arts_lf_stack_t;
@@ -64,24 +57,26 @@ static inline void arts_lf_stack_init(arts_lf_stack_t *s) {
  *  poll-before-consume loops (a failed CAS would still take the line
  *  exclusive and ping-pong it between pollers).  Relaxed: a poller that
  *  observes a stale NULL simply retries on its next poll; the consumer that
- *  proceeds re-synchronizes on its own acquire. */
+ *  proceeds re-synchronizes on its own drain. */
 static inline bool arts_lf_stack_empty(arts_lf_stack_t *s) {
   return atomic_load_explicit(&s->head, memory_order_relaxed) == NULL;
 }
 
+/* A failed CAS only re-reads the head to relink behind it; it consumes
+ * nothing, so its order is relaxed. */
 static inline void arts_lf_stack_push(arts_lf_stack_t *s,
                                       arts_lf_link_t *node) {
   arts_lf_link_t *old = atomic_load_explicit(&s->head, memory_order_relaxed);
   do {
     atomic_store_explicit(&node->next, old, memory_order_relaxed);
   } while (!atomic_compare_exchange_weak_explicit(
-      &s->head, &old, node, memory_order_release, memory_order_relaxed));
+      &s->head, &old, node, memory_order_acq_rel, memory_order_relaxed));
 }
 
 /** Atomically detach the entire chain.  Returns LIFO order (top of stack
  *  first). */
 static inline arts_lf_link_t *arts_lf_stack_drain(arts_lf_stack_t *s) {
-  return atomic_exchange_explicit(&s->head, NULL, memory_order_acquire);
+  return atomic_exchange_explicit(&s->head, NULL, memory_order_acq_rel);
 }
 
 /** Drain + reverse — returns FIFO order (oldest push first). */
@@ -98,32 +93,19 @@ static inline arts_lf_link_t *arts_lf_stack_reverse_drain(arts_lf_stack_t *s) {
   return fifo;
 }
 
-#endif /* __cplusplus */
-
-/* Both definitions are one pointer-width cell at offset 0, aligned as a
- * pointer, so a structure that embeds them has one layout in C and in C++. */
-#ifdef __cplusplus
-#define ARTS_LF_LAYOUT_ASSERT(c, m) static_assert((c), m)
-#define ARTS_LF_ALIGNOF(t) alignof(t)
-#else
-#define ARTS_LF_LAYOUT_ASSERT(c, m) _Static_assert((c), m)
-#define ARTS_LF_ALIGNOF(t) _Alignof(t)
-#endif
-ARTS_LF_LAYOUT_ASSERT(sizeof(arts_lf_link_t) == sizeof(void *),
-                      "arts_lf_link_t must be one pointer wide");
-ARTS_LF_LAYOUT_ASSERT(offsetof(arts_lf_link_t, next) == 0,
-                      "arts_lf_link_t.next must be at offset 0");
-ARTS_LF_LAYOUT_ASSERT(ARTS_LF_ALIGNOF(arts_lf_link_t) ==
-                          ARTS_LF_ALIGNOF(void *),
-                      "arts_lf_link_t must be aligned as a pointer");
-ARTS_LF_LAYOUT_ASSERT(sizeof(arts_lf_stack_t) == sizeof(void *),
-                      "arts_lf_stack_t must be one pointer wide");
-ARTS_LF_LAYOUT_ASSERT(offsetof(arts_lf_stack_t, head) == 0,
-                      "arts_lf_stack_t.head must be at offset 0");
-ARTS_LF_LAYOUT_ASSERT(ARTS_LF_ALIGNOF(arts_lf_stack_t) ==
-                          ARTS_LF_ALIGNOF(void *),
-                      "arts_lf_stack_t must be aligned as a pointer");
-#undef ARTS_LF_LAYOUT_ASSERT
-#undef ARTS_LF_ALIGNOF
+/* One pointer-width cell at offset 0, aligned as a pointer, so a structure
+ * that embeds either has one layout in C and in C++. */
+static_assert(sizeof(arts_lf_link_t) == sizeof(void *),
+              "arts_lf_link_t must be one pointer wide");
+static_assert(offsetof(arts_lf_link_t, next) == 0,
+              "arts_lf_link_t.next must be at offset 0");
+static_assert(alignof(arts_lf_link_t) == alignof(void *),
+              "arts_lf_link_t must be aligned as a pointer");
+static_assert(sizeof(arts_lf_stack_t) == sizeof(void *),
+              "arts_lf_stack_t must be one pointer wide");
+static_assert(offsetof(arts_lf_stack_t, head) == 0,
+              "arts_lf_stack_t.head must be at offset 0");
+static_assert(alignof(arts_lf_stack_t) == alignof(void *),
+              "arts_lf_stack_t must be aligned as a pointer");
 
 #endif /* ARTS_UTILS_LOCKFREE_LIFO_H */

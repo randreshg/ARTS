@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions for an audited test whose residue shapes are
+# all send-side (tests/tsan/residue_tests.cmake): the fabric provider reads the
+# source of a PUT that serves, publishes or fetches a block while a writer
+# that is not ordered with it may be writing it (R1, R2, R4).  These are the
+# provider's send-side copy routines.
+race:^ofi_sockapi_sendv_socket$
+race:^ofi_sockapi_send_socket$
+race:^ofi_bsock_send$
+race:^ofi_byteq_writev$

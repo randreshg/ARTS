@@ -52,8 +52,8 @@ volatile unsigned int gpu_node_order = 0;
 // Must be thread local
 ARTS_THREAD_LOCAL uint64_t gpu_item_size_bypass = 0;
 
-/* Acquire the persistent wrapper published in a GPU-mirror slot's cb via the
- * safe C-linkage bridge (arts_route_item_acquire + arts_shared_get/release).
+/* Acquire the persistent wrapper published in a GPU-mirror slot's cb
+ * (arts_route_item_acquire + arts_shared_get/release).
  * The GPU table's wrappers live in the persistent wrappers[] array and are
  * installed with a NULL-deleter cb, so releasing the handle immediately is
  * safe — the wrapper is never freed by the cb. */
@@ -72,7 +72,7 @@ static arts_item_wrapper_t *gpu_install_wrapper(arts_route_table_t *route_table,
                                                 arts_guid_t key,
                                                 bool *installed) {
   arts_route_item_t *entry =
-      arts_route_table_search_for_empty(route_table, key, false);
+      arts_route_table_search_for_empty(route_table, key);
   size_t idx = (size_t)(entry - route_table->data);
   arts_gpu_route_table_t *gpu_route_table =
       (arts_gpu_route_table_t *)((char *)route_table -

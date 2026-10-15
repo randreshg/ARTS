@@ -43,13 +43,16 @@
 ///        slot the per-thread key blocks would overlap and produce DUPLICATE
 ///        GUIDs.  Regression for that past bug.
 ///
+/// arts_guid_node_geometry_init sets num_tables = total_thread_count and the
+/// rank's global thread-slot range, and at parallel start
 /// set_guid_generator_after_parallel_start sets
-///   keys_per_thread = global_guid_on / (total_thread_count * rank_count)
+///   keys_per_thread =
+///       (2^ARTS_GUID_KEY_BITS - ARTS_GUID_STARTUP_RESERVE) /
+///       (num_tables * rank_count)
 /// and the per-thread key encoding is value + keys_per_thread *
-/// global_guid_thread_id[thread].  arts_guid_key_generator_init sets
-/// num_tables = total_thread_count and global_guid_thread_id per thread.  The
-/// two must use the SAME total_thread_count divisor; otherwise two threads'
-/// key blocks alias and emit identical GUIDs.
+/// global_guid_thread_id[thread], which arts_guid_key_generator_init sets per
+/// thread from that range.  The divisor must count every thread that mints;
+/// otherwise two threads' key blocks alias and emit identical GUIDs.
 ///
 /// The test spawns many reserver EDTs per rank (more than workers, so the
 /// scheduler spreads them across every worker thread) that each reserve a batch

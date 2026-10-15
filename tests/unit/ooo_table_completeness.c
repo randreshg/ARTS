@@ -115,6 +115,8 @@ void arts_route_table_delete_unpublished(arts_guid_t key, void *obj) {
 /* Expose the file-static g_ooo_table by compiling ooo.c into this TU. */
 #include "../../libs/src/core/ooo.c"
 
+#include "counter_stubs.h"
+
 /* A small reflection table: each ENTRY pins kind -> expected handler symbol. */
 struct expect_s {
   ooo_kind_t kind;

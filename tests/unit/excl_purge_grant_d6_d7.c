@@ -31,7 +31,7 @@
  * Built and registered only in an EXCL tree.
  */
 
-#include <stdatomic.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

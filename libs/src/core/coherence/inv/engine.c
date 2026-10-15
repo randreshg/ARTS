@@ -22,10 +22,10 @@
  */
 #include "arts/coherence/inv/types.h"
 
-#include <semaphore.h>
+#include "arts/utils/stdatomic_compat.h"
 #include <assert.h>
 #include <limits.h>
-#include <stdatomic.h>
+#include <semaphore.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
