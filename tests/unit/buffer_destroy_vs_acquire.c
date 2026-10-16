@@ -79,7 +79,7 @@ static void *reader(void *arg) {
     if (b == NULL) {
       continue; /* slot momentarily NULL (between install and re-install). */
     }
-    uint64_t v = b->version;
+    uint64_t v = atomic_load_explicit(&b->version, memory_order_acquire);
     /* Verify the buffer is whole + alive: every byte equals (version & 0xFF).
      * A UAF / torn read would show a mismatching byte. */
     unsigned char expect = (unsigned char)(v & 0xFF);
@@ -106,7 +106,7 @@ static void *reader(void *arg) {
 
 int main(void) {
   memset(&g_cache, 0, sizeof(g_cache));
-  g_cache.db_size = DB_SIZE;
+  atomic_store_explicit(&g_cache.db_size, DB_SIZE, memory_order_relaxed);
   atomic_store_explicit(&g_stop, 0, memory_order_release);
   atomic_store_explicit(&g_fail, 0, memory_order_release);
 

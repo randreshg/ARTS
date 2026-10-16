@@ -1,141 +1,33 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * INV protocol (write-invalidate) type layouts.  Two write-policy arms share
- * this header; the build selects exactly one.
+ * INV protocol (write-invalidate) type layouts.  Both write policies share
+ * them; the build selects exactly one.
  *
- * ── WT ──────────────────────────────────────────────────────────────
- * Cache side: ONE 64-bit word carries the whole per-rank protocol state,
- * INCLUDING the parked-waiter chain heads:
+ * A rank's cache carries two planes that share no word.  The reader plane is
+ * one 64-bit word (cache_state, INV_CACHE_*): durable read copies, at most
+ * one fetch in flight, and the chain of acquires parked on it.  The writer
+ * plane is the migrating write grant every grant-bearing arm shares
+ * (writer_count and the grant fields below; coherence/grant.c).
  *
- *   [ rw_st:2 (63..62) | ro_st:2 (61..60) | wc:24 (59..36) |
- *     head_rw:18 (35..18) | head_ro:18 (17..0) ]
+ * The home adds the invalidation round, which is what makes this arm INV:
+ * one directory word (dir_state, INV_DIR_*) that admits one round at a time
+ * and counts its outstanding acks, the queue of releases awaiting a round,
+ * and the copy roster a round snapshots.  A release returns only after the
+ * round that covers it has an ack from every copy it retired.
  *
- *   rw_st ∈ {IDLE, REQ, GRANT}; ro_st ∈ {IDLE, REQ, REQ_KILL, VALID}.
- *   wc      = local writer-EDT count (acquired, not yet released).
- *   head_*  = parked-waiter chain heads, as indices into the per-DB waiter
- *             pool (0 = empty; pool indices start at 1).
+ * The write policy decides only where the canonical bytes live.  Under WT a
+ * release's publish carries its payload into the home's stable buffer and
+ * the home serves reads from it; under WB the bytes stay with the grant's
+ * holder, the publish carries control only, and the home redirects reads to
+ * the holder.  The round is the same under both.
  *
- * The heads live IN the word so that (a) parking is the acquire's own
- * decision CAS — a parked node can never miss the fetch it joined — and
- * (b) the install-publishing CAS grabs the whole chain in the same atom —
- * the committer owns exactly its fetch's cohort and serves it as the
- * continuation of its own transition, however late that runs.  There is no
- * reader count in the word: a valid copy persists across reader release
- * (no read-return wire), so readers on a valid copy are pure loads.
- *
- * Home side: ONE 64-bit directory word
- *
- *   [ round_open:1 (63) | acks:14 (62..49) | spare:49 (48..0) ]
- *
- *   round_open = at most one invalidation round open at a time.
- *   acks       = outstanding INVALIDATE_ACKs of the open round.
- *
- * The word carries the round and nothing else.  Write ownership is not here:
- * it lives in the shared migrating grant (the holder's writer_count plus the
- * home's pending_rw, and rw_holder where the home revokes), which every
- * grant-bearing arm shares, so this directory has no owner field and no
- * writer count of its own.
- *
- * The canonical home version is the installed buffer's version
- * (cache.buffer->version); there is no separate version field.
- *
- * ── WB ───────────────────────────────────────────────────────────────
- * The canonical copy lives at the owner and moves owner → owner by
- * migration only; the home is a pure directory that never holds bytes.
- * A release's publish therefore carries no payload — that is the only thing
- * this write policy drops.  The publish itself stays, control only, as the
- * request for the release's invalidation round, and so does its ack: the
- * home snapshots the copy roster, multicasts, collects EVERY invalidation
- * ack, and only then acks the publish and lets the release return.
- *
- * A reader never waits anywhere — not at the home, not at the owner, not
- * behind a remote writer, and not behind its own rank's ownership request.
- * The home registers the requester in the roster and redirects
- * unconditionally; the redirect target serves immediately and the requester
- * ALWAYS installs a durable valid copy; every later read on that rank is a
- * pure load with no message and no CAS.  A copy dies exactly one way: an
- * INVALIDATE arrived — the validity axis carries no version at all, and no
- * read path anywhere compares one (see the install-lane stamp below, whose
- * job is disjoint from validity).
- *
- * A rank holding no bytes bounces the redirect back through the home — a
- * retry, not a park: nothing is queued and nothing sleeps, and each pass
- * re-resolves against a later ownership generation.
- *
- * Cache word:
- *
- *   [ reserved:3 (63..61) | rw:2 (60..59) | ro:2 (58..57) | unc:1 (56) |
- *     mtp:1 (55) | inflight:1 (54) | wc:13 (53..41) | wq:13 (40..28) |
- *     head_ro:14 (27..14) | head_rw:14 (13..0) ]
- *
- *   rw   ∈ {IDLE, REQ, GRANT}.  GRANT doubles as the ownership bit and
- *          outlives any individual writer: only the migrate CAS clears it.
- *   ro   ∈ {IDLE, REQ, REQ_KILL, VALID} — same reader plane as WT.
- *   unc  = ownership is installed but the directory flip has not been
- *          confirmed.  While it is set no local writer may run and NO store
- *          may happen; ownership may not migrate on.  Without it a new owner
- *          could publish writes while the directory still names the previous
- *          one, and a reader registered afterwards would be redirected to
- *          that rank's retained (older) copy and install it durably.
- *   mtp  = a migration target is published off-word and awaits the 0-edge.
- *          It also closes the door: a local acquire may not join the current
- *          writers while it is set, or a stream of local writers starves the
- *          migration.  (Fairness, not safety.)
- *   inflight = a read reply is on the wire to this rank.  Set by the CAS that
- *          issues a fetch, cleared by the CAS the reply lands in, and no new
- *          fetch may open while it is set — so at most one read reply is ever
- *          in flight per rank and a landing reply always belongs to the
- *          unique open fetch.  The GRANT request lane is independent of
- *          this bit: reader and writer requests never wait on each other.
- *   wc / wq = local writers holding the DB / queued behind a closed door or
- *          an unconfirmed install.  A counter owns its own chain: wq owns
- *          head_rw, and no transition moves one without the other.
- *
- * Parking is the in-word chain idiom, and there are exactly two chains (one
- * per plane), so both heads fit the word: parking IS the acquire's decision
- * CAS (a parked node can never miss what it joined) and the publishing CAS
- * grabs the whole chain in the same atom (the committer owns exactly the
- * waiters its own transition closed and serves them as its continuation).
- *
- * Field widths are contract limits the caller asserts, not errors this layout
- * can report: 8,191 concurrent local writers and 16,383 parked nodes per DB
- * per rank.  A shape that needs more has two escapes — a 128-bit
- * compare-exchange, or moving a head behind a claim bit.
- *
- * The install-lane arbitration stamp is NOT in this word: it is the buffer's
- * own version field.  Two asynchronous installs can target one rank's buffer
- * slot (a read reply and an ownership migration), neither can put the pointer
- * swap inside its own decision CAS, so the swap is stamp-conditional (larger
- * wins, a stale one retreats and recycles) and always ordered BEFORE the
- * publishing CAS.  That is its only use: nothing reads it to decide whether a
- * copy is still valid — only the arrival of an INVALIDATE decides that.
- *
- * Directory word:
- *
- *   [ round_open:1 (63) | moving:1 (62) | acks:14 (61..48) |
- *     owner:14 (47..34) | w:24 (33..10) | reserved:10 (9..0) ]
- *
- *   owner  = the rank the directory believes holds the canonical copy;
- *            written only by a CONFIRM.
- *   moving = one migration is unconfirmed; its claimant is the sole
- *            forwarder, so exactly one migration is ever in flight.
- *   w      = RW-requesting ranks not yet granted ownership.  The count and
- *            the claim decision move in ONE CAS: split, a claim can be
- *            decided on a population that does not include the requester
- *            that triggered it, and the same waiter gets forwarded twice.
- *   round_open / acks = mutual exclusion and outstanding-ack count of the
- *            one open invalidation round.
- *
- * Runtime invariants (assert targets; the word packing depends on them):
- *   W1 rw==GRANT ⟹ ro==VALID
- *   W2 unc ⟹ rw==GRANT ∧ wc==0 (nobody holds it while the gate is shut)
- *   W3 |RW chain| == wq
- *   W4 ro∈{REQ,REQ_KILL} ⟹ inflight (an open fetch always has a reply coming)
- *   W5 ro==VALID ⟹ the RO chain is empty (a valid copy is a blind hit)
- *   W6 a second INVALIDATE on a kill-marked fetch is unreachable: the ack it
- *      owes keeps the round that marked it open, and rounds serialize
- *   W7 at most one read reply in flight per rank
- *   W8 an ownership install's base is >= the slot's current stamp
+ * Invariants of the reader word (the arbiters keep them):
+ *   - a fetch is open (inflight) exactly while ro is REQ or REQ_KILL, so at
+ *     most one read reply is in flight per rank;
+ *   - a chain is parked only on an open fetch, so a VALID copy has an empty
+ *     chain and a covering acquire is a pure load;
+ *   - a second INVALIDATE on a kill-marked fetch is unreachable: the ack it
+ *     owes keeps the round that marked it open, and rounds serialize.
  */
 #ifndef ARTS_COHERENCE_INV_TYPES_H
 #define ARTS_COHERENCE_INV_TYPES_H
@@ -274,11 +166,19 @@ static_assert(INV_DIR_ROUND_OPEN(INV_DIR_PIN_) == 1u &&
 /* ── parked waiter (chain node, index-addressed) ────────────────────────── */
 /* Nodes live in a per-DB grow-only pool; the chain link and the free list
  * both use pool indices (0 = none), so a head fits the word's head field.
- * A node is written (guid/slot/next) before the CAS that links it and is
- * read only by the committer that grabbed the chain — single-owner after
- * the grab, freed back to the pool after its serve. */
+ * A node's fields are written by its owner before the CAS that links it and
+ * read by whoever a later CAS hands it to: the committer that grabbed the
+ * chain, which serves it and frees it back to the pool, or the allocator
+ * that pops it. */
 struct arts_db_inv_waiter_s {
-  uint32_t next;         /* pool index of the next node; 0 = end */
+  /* Pool index of the next node, 0 = end.  Written by the node's owner
+   * before the CAS that links it (onto a chain or the free list), and a
+   * reader that acts on it is ordered after that CAS by its own acquire
+   * (the chain's grab, the pop's head load).  A pop can also read it while
+   * the node's next owner rewrites it; its tagged head CAS then fails
+   * (barring 2^14 head updates inside that window) and the value is
+   * discarded: relaxed. */
+  _Atomic(uint32_t) next;
   unsigned int slot;     /* dep slot of the parked acquire */
   arts_guid_t edt_guid;  /* parked EDT (guid-addressed idempotent serve) */
 };
@@ -287,9 +187,14 @@ struct arts_db_inv_waiter_s {
 #define INV_WAITER_IDX_MAX INV_CACHE_HEAD_MASK
 
 struct arts_db_inv_waiter_pool_s {
-  _Atomic(uintptr_t) chunks;   /* chunk directory (grow-only) */
-  _Atomic(uint32_t) next_fresh; /* bump allocator over chunk capacity */
-  _Atomic(uint32_t) free_head;  /* Treiber free list by index (0 = empty) */
+  /* Chunk directory (grow-only), installed once by a CAS whose release
+   * carries the zeroed directory to every acquire load of it. */
+  _Atomic(uintptr_t) chunks;
+  /* Bump allocator over chunk capacity: only its own value. */
+  _Atomic(uint32_t) next_fresh;
+  /* Free list by index (0 = empty), tagged against ABA.  A free's CAS
+   * releases the node's link to the pop that acquires the head naming it. */
+  _Atomic(uint32_t) free_head;
 };
 
 /* ── publish-queue entry (Treiber, whole-chain drain) ───────────────────── */
@@ -331,7 +236,7 @@ struct arts_home_grantreq_queue_s {
 /* ── per-rank DB cache ──────────────────────────────────────────────────── */
 /* The reader plane lives in cache_state (durable copies, one in-flight fetch,
  * one parked chain).  The writer plane is the migrating sentinel grant, held in
- * plain fields shared with every other grant-bearing arm: writer_count carries
+ * the fields shared with every other grant-bearing arm: writer_count carries
  * local writers plus a +1 sentinel while this rank holds the grant, so
  * writer_count > 0 IS "this rank may write".  Nothing withdraws the sentinel
  * except an INVALIDATE, which is what makes the grant sticky.  Under WB the
@@ -343,10 +248,18 @@ struct arts_home_grantreq_queue_s {
  * A second, publication-numbering counter would be redundant: no home-issued
  * grant sequence exists for a local install count to race against. */
 struct arts_db_cache_s {
-  _Atomic(uint64_t) cache_state; /* reader plane — see INV_CACHE_* */
+  /* Reader plane (INV_CACHE_*).  Every modification is an acq_rel CAS from
+   * an acquire load: a parker's CAS carries its node's fields to the
+   * DELIVER that grabs the chain, and DELIVER's carries the install it
+   * follows to every acquire that then finds the copy VALID. */
+  _Atomic(uint64_t) cache_state;
   /* Local writers + the ownership sentinel.  A CAS-loop "increment if > 0"
-   * is the whole RW fast path: > 0 means this rank holds the grant. */
-  volatile unsigned int writer_count;
+   * is the whole RW fast path: > 0 means this rank holds the grant.  Every
+   * write after the cache is published is a read-modify-write: an install's
+   * release carries the buffer and the learned size to the admission that
+   * sees the right held, and a writer's acq_rel decrement carries its bytes
+   * and version bump to whichever decrement reaches the transfer edge. */
+  _Atomic(unsigned int) writer_count;
   /* Buffers drawn from this cache and not parked back, plus the flag the
    * storage release sets once the destructor has run (encoding in buffer.c,
    * lifetime rule in types_common.h). */
@@ -366,77 +279,72 @@ struct arts_db_cache_s {
   struct arts_db_inv_waiter_pool_s waiters; /* reader chain-node pool */
   /* Ownership-request coalescing: only the actor that CASes 0->1 sends
    * GRANT_REQUEST; same-node RW acquires piggyback and are picked up by
-   * the transfer's drain. */
-  volatile unsigned int grant_req_in_flight;
+   * the transfer's drain.  A grant's take clears it with release after
+   * taking the waiters, and a claim (acq_rel) sees that take.  The claim and
+   * the clear each pair with the pending_rw stack through a seq_cst fence
+   * (arts_db_acquire_remote_rw, arts_db_grant_take_waiters). */
+  _Atomic(unsigned int) grant_req_in_flight;
+#ifndef ARTS_RELEASE_PURGE
   /* Next transfer target, published by the INVALIDATE handler BEFORE it
    * withdraws the sentinel.  ARTS_NO_PENDING_OWNER = none pending.  Publishing
    * before the withdrawal is what makes a separate flag redundant: whichever
-   * actor drives writer_count to exactly 0 reads this field and ships. */
+   * actor drives writer_count to exactly 0 reads this field and ships, and
+   * that decrement reads the withdrawal's release sequence, so the field is
+   * plain. */
   unsigned int incoming_new_owner;
   struct arts_rdzv_landing_s incoming_new_owner_rdzv;
   /* The version the pending new owner reported holding (its request's
    * have_version), published with the two fields above; the 0-edge actor
    * ships no payload when the canonical bytes are at that very version. */
   uint64_t incoming_new_owner_have;
+#endif
   /* Always NULL in this arm.  INV's sharer plane deliberately carries no
    * version ledger — a dedup watermark on it would stop the plane being
    * write-driven — but the shared transfer helper reads this field to decide
    * whether a map travels with ownership, and NULL selects its empty branch. */
   struct arts_rank_to_u64_map_s *cached_version;
   arts_guid_t db_guid;
-  uint64_t db_size;
-  /* Does this cache's payload slot still need materializing?  1 until a
-   * buffer has been installed, 0 after — the first entitled use of a block
-   * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.
-   * Correctness never rests on it: a reader that sees 0 still reads the
-   * pointer from the slot itself, and a stale 1 costs one materialize
-   * attempt that then clears it.  The slot is monotone for a live cache —
-   * only the destructor puts NULL back — so a 0 can never go stale. */
-  uint8_t payload_pending;
+  /* The block's exact size once learned, 0 until then; relaxed throughout
+   * (see the VAL layout and arts_db_cache_learn_size). */
+  _Atomic(uint64_t) db_size;
+  /* 1 until a buffer has been installed, 0 after: stored 0 with release
+   * after the slot's install and read with acquire at the fast exit (see the
+   * VAL layout). */
+  _Atomic(uint8_t) payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
    * the home's directory, or a dependence's first touch.  A create that
    * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init. */
-  uint8_t init_kind;
+   * (arts_db_create_claims_stub); nothing else writes it after init.  Only
+   * its own value: one CAS decides between a claim and an answer. */
+  _Atomic(uint8_t) init_kind;
 
   /* Publish write-combining — the write-side twin of VAL's RO combining
-   * window.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
-   * claim and join are each one CAS); pub_waiters holds heap {sem, version}
-   * nodes for every releaser blocked until a covering publish is ACKed
-   * (heap for the same reason the publish rendezvous is — a shutdown-
-   * escaped waiter leaks its node and a late drain may still post into
-   * it).  home_pub_* is the durable publish credit: the home's stable
-   * buffer plus a receiver-minted txid, refilled by a payload flight's ACK;
-   * txid is the presence flag (0 = none), written last with release
-   * order so a reader that sees it sees the whole triple. */
-  volatile unsigned int pub_flight;
+   * window.  The flight word, its waiter stack, the parked uncovered
+   * waiters and the publish credit follow the VAL write-through layout's
+   * protocol exactly (see coherence/val/types.h). */
+  _Atomic(unsigned int) pub_flight;
   arts_lf_stack_t pub_waiters;
-  /* Waiters drained by a completing flight but not covered by its version:
-   * held here (plain field — touched only by the flight owner, and only one
-   * flight is in flight) until the trailing flight's ACK re-examines them.
-   * Non-NULL implies the flight word is FLYING. */
-  void *pub_parked;
-  uint64_t home_pub_addr;
-  uint64_t home_pub_rkey;
-  volatile uint64_t home_pub_txid;
+  _Atomic(arts_lf_link_t *) pub_parked;
+  _Atomic(uint64_t) home_pub_addr;
+  _Atomic(uint64_t) home_pub_rkey;
+  _Atomic(uint64_t) home_pub_txid;
+#ifdef ARTS_WRITE_POLICY_WT
   /* A remote creator's name for this descriptor, carried by its announce and
    * echoed by the home's CREATE_RETURN: the create's credit is applied only
    * where the two match, never to a later descriptor of the same GUID.  0 on
-   * every other cache. */
-  uint64_t create_token;
+   * every other cache.  Write-through only: a write-back create carries no
+   * credit, so nothing names it there.
+   * Minted by the creator with a release store before its announce
+   * leaves (the home's stub takes the announced value at init); the
+   * credit handler's acquire compare is the only reader that decides
+   * anything.  It carries nothing beyond its own value. */
+  _Atomic(uint64_t) create_token;
+#endif
 #ifdef ARTS_RELEASE_PURGE
-  /* The hand-back obligation: (grant_generation << 1) | armed, or zero.
-   * Armed by a release that gave the write right up while its payload was
-   * still in flight; discharged by whichever of the publish sender and the
-   * release itself CASes it back to zero, so exactly one return goes out.
-   * The generation is what makes the release's discharge its own: a settle
-   * that wakes after the right has come back and been re-granted here finds
-   * a token of a later generation and must not touch it. */
-  volatile uint64_t pending_grant_return;
-  /* Count of write rights installed on this rank; the token above names the
-   * one it belongs to. */
-  volatile uint64_t grant_generation;
+  /* The hand-back obligation and the install count it names, as in the VAL
+   * write-through layout (see coherence/val/types.h). */
+  _Atomic(uint64_t) pending_grant_return;
+  _Atomic(uint64_t) grant_generation;
 #endif
 };
 
@@ -490,8 +398,14 @@ struct arts_db_s {
 #endif
 
   /* ---- invalidation round (home side; INV's own) ---- */
-  _Atomic(uint64_t) dir_state;   /* round_open + acks — see INV_DIR_* */
-  _Atomic(bool) opening_pending; /* round re-arm latch (XCHG carry) */
+  /* round_open + acks (INV_DIR_*).  Every modification is an acq_rel CAS
+   * from an acquire load, so each one reads the whole chain before it: the
+   * ARM carries round_entries and the claim holder's round to the ack that
+   * closes it, and the CLOSE carries the closer's clearing of round_entries
+   * to the next CLAIM.  A producer's queue push and the closer's CLOSE are
+   * each followed by a seq_cst fence before the other's word is read
+   * (inv_home_round_try_open, inv_home_round_close). */
+  _Atomic(uint64_t) dir_state;
   /* The home's canonical publication axis, advanced to each round's highest
    * published version.  It is NOT the installed buffer's version, and must not
    * be: a home-resident owner writes THROUGH the home buffer in place, so its
@@ -500,21 +414,34 @@ struct arts_db_s {
    * lane hands two different rounds the same stamp, and the receiver's
    * version-conditional install then rejects the newer copy while its state
    * machine still marks it valid: a reader left on bytes from a write window
-   * that has already closed.  Advanced only under the round claim; read by the
-   * serve path at any time.  (Under WB the home holds no bytes and the
-   * field idles — there the owner's own buffer version IS the axis, because
+   * that has already closed.  Advanced only under the round claim, with a
+   * release store made after the batch's bytes are in place; a serve loads
+   * it with acquire at any time, so the bytes it then sends are at least the
+   * ones the stamp names.  (Under WB the home holds no bytes and the field
+   * idles — there the owner's own buffer version IS the axis, because
    * ownership migration carries it.) */
   _Atomic(uint64_t) hver;
-  arts_lf_stack_t pub_queue;              /* releases awaiting a round */
-  struct arts_db_inv_pub_s *round_entries; /* the open round's drained batch */
-  struct arts_rank_bitset_s roster;        /* copy roster (INV targets) */
-  struct arts_rank_bitset_s cached_ranks;  /* destroy fan-out roster */
+  arts_lf_stack_t pub_queue; /* releases awaiting a round */
+  /* The open round's drained batch.  Written by the claim holder before its
+   * ARM and by whichever actor closes the round (the ack whose ACK_DEC
+   * reached zero, or the claim holder itself when the round has no target),
+   * so every access is ordered by the dir_state chain or by program order:
+   * plain. */
+  struct arts_db_inv_pub_s *round_entries;
+  /* Copy roster (the round's targets).  A read serve's fetch_or and the
+   * round's snapshot exchange pair on the word itself: the later of the two
+   * reads the other, so either the round names the reader or the serve is
+   * ordered after the snapshot and the stamp made before it. */
+  struct arts_rank_bitset_s roster;
+  struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
 
+#ifdef ARTS_USE_GPU
   /* GPU staging fields (full arts_db_s alloc; unused on the CPU INV path). */
   volatile unsigned int reader;
   volatile unsigned int writer;
   volatile unsigned int version;
   unsigned int time_stamp;
+#endif
 } ARTS_ALIGNED_MAX;
 
 /* ── pure arbiters (CAS-retry loop bodies; see arbiters.c) ──────────────── */
@@ -566,9 +493,8 @@ unsigned int inv_round_snapshot_word(uint64_t snap, unsigned int base,
                                      unsigned int *targets, unsigned int cap,
                                      unsigned int ntargets, uint64_t *keep);
 
-/* ── shared machinery the write-policy TUs call (inv/directory.c) ──────────── */
-/* Reader chain-node pool: a node is written before the word CAS that links it
- * and read only by the committer that grabbed the chain. */
+/* ── shared machinery the write-policy TUs call (inv/engine.c) ───────────── */
+/* Reader chain-node pool (see struct arts_db_inv_waiter_s). */
 uint32_t inv_waiter_alloc(struct arts_db_cache_s *c);
 void inv_waiter_free(struct arts_db_cache_s *c, uint32_t idx);
 struct arts_db_inv_waiter_s *inv_waiter_ptr(struct arts_db_cache_s *c,

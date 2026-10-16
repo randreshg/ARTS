@@ -42,15 +42,16 @@ static void sharers_mark(struct arts_db_s *db, unsigned int rank) {
       rank / SHARER_BITS >= db->sharer_words) {
     return;
   }
-  __atomic_fetch_or(&db->sharers[rank / SHARER_BITS], 1UL << (rank % SHARER_BITS),
-                    __ATOMIC_RELAXED);
+  atomic_fetch_or_explicit(&db->sharers[rank / SHARER_BITS],
+                           1UL << (rank % SHARER_BITS), memory_order_relaxed);
 }
 
 static bool sharers_test(const struct arts_db_s *db, unsigned int rank) {
   if (db->sharers == NULL || rank / SHARER_BITS >= db->sharer_words) {
     return false;
   }
-  return (__atomic_load_n(&db->sharers[rank / SHARER_BITS], __ATOMIC_RELAXED) &
+  return (atomic_load_explicit(&db->sharers[rank / SHARER_BITS],
+                               memory_order_relaxed) &
           (1UL << (rank % SHARER_BITS))) != 0;
 }
 
@@ -59,7 +60,8 @@ static bool sharers_test(const struct arts_db_s *db, unsigned int rank) {
 void arts_db_home_init(struct arts_db_s *db, unsigned int creator_rank,
                        unsigned int nranks) {
   db->sharer_words = (nranks + SHARER_BITS - 1) / SHARER_BITS;
-  db->sharers = (unsigned long *)arts_calloc(db->sharer_words, sizeof(unsigned long));
+  db->sharers = (_Atomic(unsigned long) *)arts_calloc(
+      db->sharer_words, sizeof(_Atomic(unsigned long)));
   /* A remote creator holds a stub from the moment it made the block. */
   if (creator_rank < nranks) {
     sharers_mark(db, creator_rank);
@@ -81,12 +83,12 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank) {
   c->db_guid = db_guid;
-  c->db_size = db_size;
-  __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
+  atomic_init(&c->db_size, db_size);
+  atomic_init(&c->payload_pending, (uint8_t)1);
   arts_db_cache_kind_seed(c, kind);
-  c->home_line_addr = 0;
-  c->home_line_rkey = 0;
-  c->flush_txid = 0;
+  atomic_init(&c->home_line_addr, (uint64_t)0);
+  atomic_init(&c->home_line_rkey, (uint64_t)0);
+  atomic_init(&c->flush_txid, (uint64_t)0);
   unsigned int n = arts_global_rank_count ? arts_global_rank_count : 1;
   struct arts_db_s *db = arts_db_of_cache(c);
   if (kind == ARTS_DB_INIT_HOME_RECV) {
@@ -104,7 +106,8 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
     return;
   }
   arts_shared_slot_store(&cache->buffer, NULL);
-  __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
+  atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
+                        memory_order_release);
   struct arts_db_s *db = arts_db_of_cache(cache);
   if (db->home_initialized) {
     arts_db_home_teardown(db);
@@ -174,7 +177,8 @@ void arts_handler_db_acquire(void *item, void *args) {
   if (is_home(cache)) {
     /* The line is materialized at its first use when the create took no
      * hold; every later use finds it. */
-    (void)arts_db_buf_ensure(cache, cache->db_size);
+    (void)arts_db_buf_ensure(
+        cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
     arts_db_acquire_resolved(edt, slot);
     return;
@@ -198,17 +202,19 @@ void arts_handler_db_fetch_request(void *item_v, void *args_v) {
   p.db_guid = cache->db_guid;
   p.edt_guid = a->edt_guid;
   p.slot = a->slot;
-  p.db_size = cache->db_size;
+  p.db_size = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   p.rdzv_txid = 0;
   p.rdzv_cookie = a->rdzv.cookie;
   p.line_addr = 0;
   p.line_rkey = 0;
   p.flush_txid = 0;
   sharers_mark(db, a->requester);
-  (void)arts_db_buf_ensure(cache, cache->db_size);
+  (void)arts_db_buf_ensure(
+      cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   arts_shared_ptr_t line_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *line = (struct arts_db_buffer_s *)arts_shared_get(line_h);
-  if (cache->db_size == 0 || line == NULL) {
+  if (atomic_load_explicit(&cache->db_size, memory_order_relaxed) == 0 ||
+      line == NULL) {
     p.kind = 0; /* a zero-size block: NULL is its value */
     arts_db_buf_release(&line_h);
   } else if (a->rdzv.txid == 0) {
@@ -217,7 +223,10 @@ void arts_handler_db_fetch_request(void *item_v, void *args_v) {
   } else {
     p.kind = 1;
     uint64_t addr = 0, rkey = 0;
-    if (!arts_net_rdzv_local(line->data, cache->db_size, &addr, &rkey)) {
+    if (!arts_net_rdzv_local(
+            line->data,
+            atomic_load_explicit(&cache->db_size, memory_order_relaxed), &addr,
+            &rkey)) {
       /* The line lies in no fabric-registered slab, so it can neither be read
        * by a peer nor named in a credit; answering anyway would advertise a
        * zero address and drop every write-back aimed at it. */
@@ -232,9 +241,10 @@ void arts_handler_db_fetch_request(void *item_v, void *args_v) {
     p.line_rkey = rkey;
     p.rdzv_txid = a->rdzv.txid;
     /* The line ref transfers to the PUT's local completion. */
-    arts_net_put_payload((int)a->requester, a->rdzv.addr, a->rdzv.key,
-                         a->rdzv.txid, line->data, cache->db_size,
-                         arts_db_buf_ref_release_cb, (void *)line_h);
+    arts_net_put_payload(
+        (int)a->requester, a->rdzv.addr, a->rdzv.key, a->rdzv.txid, line->data,
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed),
+        arts_db_buf_ref_release_cb, (void *)line_h);
   }
   arts_transport_send_async((int)a->requester, (char *)&p, sizeof(p));
 }
@@ -296,12 +306,12 @@ static void learn_line(struct arts_db_cache_s *cache, uint64_t addr,
   if (addr == 0) {
     return;
   }
-  __atomic_store_n(&cache->home_line_addr, addr, __ATOMIC_RELAXED);
-  __atomic_store_n(&cache->home_line_rkey, rkey, __ATOMIC_RELAXED);
+  atomic_store_explicit(&cache->home_line_addr, addr, memory_order_relaxed);
+  atomic_store_explicit(&cache->home_line_rkey, rkey, memory_order_relaxed);
   if (txid != 0) {
     /* Published last, with release order: a release that takes the credit
      * sees the address it belongs with. */
-    __atomic_store_n(&cache->flush_txid, txid, __ATOMIC_RELEASE);
+    atomic_store_explicit(&cache->flush_txid, txid, memory_order_release);
   }
 }
 
@@ -310,9 +320,7 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
   struct arts_db_fetch_response_args_s *a =
       (struct arts_db_fetch_response_args_s *)args_v;
   arts_db_cache_note_answered(cache); /* before the answer takes effect */
-  if (cache->db_size == 0 && a->db_size > 0) {
-    cache->db_size = a->db_size;
-  }
+  arts_db_cache_learn_size(cache, a->db_size);
   learn_line(cache, a->line_addr, a->line_rkey, a->flush_txid);
   struct arts_db_buffer_s *copy = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
   if (a->kind == 2) {
@@ -387,10 +395,13 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
    * late ACK may still post into it. */
   struct flush_wait_s *w = (struct flush_wait_s *)arts_malloc(sizeof(*w));
   sem_init(&w->sem, 0, 0);
-  w->txid = __atomic_exchange_n(&cache->flush_txid, 0, __ATOMIC_ACQ_REL);
+  w->txid = atomic_exchange_explicit(&cache->flush_txid, (uint64_t)0,
+                                     memory_order_acquire);
   if (w->txid != 0) {
-    w->line_addr = __atomic_load_n(&cache->home_line_addr, __ATOMIC_RELAXED);
-    w->line_rkey = __atomic_load_n(&cache->home_line_rkey, __ATOMIC_RELAXED);
+    w->line_addr =
+        atomic_load_explicit(&cache->home_line_addr, memory_order_relaxed);
+    w->line_rkey =
+        atomic_load_explicit(&cache->home_line_rkey, memory_order_relaxed);
   } else {
     send_flush_announce(home, cache->db_guid, w);
     if (!arts_db_await_ack(&w->sem)) {
@@ -413,8 +424,9 @@ static bool flush_write_back(struct arts_db_cache_s *cache, void *payload) {
       return true;
     }
   }
-  arts_net_put_payload((int)home, w->line_addr, w->line_rkey, w->txid, payload,
-                       cache->db_size, NULL, NULL);
+  arts_net_put_payload(
+      (int)home, w->line_addr, w->line_rkey, w->txid, payload,
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed), NULL, NULL);
   send_flush_commit(home, cache->db_guid, w->txid, w);
   if (!arts_db_await_ack(&w->sem)) {
     return false;
@@ -428,7 +440,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   if (payload == NULL) {
     return; /* a dependence that resolved NULL holds no bytes */
   }
-  if (is_home(cache) || cache->db_size == 0) {
+  if (is_home(cache) ||
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) == 0) {
     return; /* the line was written in place, or there are no bytes */
   }
   (void)flush_write_back(cache, payload);
@@ -443,14 +456,17 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
   }
   arts_shared_ptr_t slot_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(slot_h);
-  if (b != NULL && cache->db_size > 0 && !flush_write_back(cache, b->data)) {
+  if (b != NULL &&
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0 &&
+      !flush_write_back(cache, b->data)) {
     /* Shutdown escape: the copy stays in the slot under the hold that still
      * names it, because the round that would have retired it never ended. */
     arts_db_buf_release(&slot_h);
     return;
   }
   arts_shared_slot_store(&cache->buffer, NULL);
-  __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
+  atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
+                        memory_order_release);
   arts_db_buf_release(&slot_h);
 }
 
@@ -470,11 +486,16 @@ static void send_flush_ack(unsigned int releaser, arts_guid_t db_guid,
 /* The line's wire address, or false when the block has no line yet. */
 static bool line_credential(struct arts_db_cache_s *cache, uint64_t *addr,
                             uint64_t *rkey) {
-  (void)arts_db_buf_ensure(cache, cache->db_size);
+  (void)arts_db_buf_ensure(
+      cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *line = (struct arts_db_buffer_s *)arts_shared_get(h);
-  bool ok = line != NULL && cache->db_size > 0 &&
-            arts_net_rdzv_local(line->data, cache->db_size, addr, rkey);
+  bool ok = line != NULL &&
+            atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0 &&
+            arts_net_rdzv_local(
+                line->data,
+                atomic_load_explicit(&cache->db_size, memory_order_relaxed),
+                addr, rkey);
   arts_db_buf_release(&h);
   return ok;
 }
@@ -519,8 +540,8 @@ void arts_handler_db_flush_commit(void *item_v, void *args_v) {
 void arts_handler_db_flush_ack(void *item_v, void *args_v) {
   struct arts_db_flush_ack_args_s *a = (struct arts_db_flush_ack_args_s *)args_v;
   if (item_v != NULL && a->next_txid != 0) {
-    __atomic_store_n(&((struct arts_db_s *)item_v)->cache.flush_txid, a->next_txid,
-                     __ATOMIC_RELEASE);
+    atomic_store_explicit(&((struct arts_db_s *)item_v)->cache.flush_txid,
+                          a->next_txid, memory_order_release);
   }
   sem_post(&((struct flush_wait_s *)(uintptr_t)a->sem)->sem);
 }

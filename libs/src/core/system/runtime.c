@@ -668,6 +668,7 @@ void arts_runtime_private_cleanup() {
     arts_thread_info.my_gpu_deque = NULL;
   }
   arts_cleanup_edt_tls();
+  arts_db_resume_list_free();
 }
 
 /*

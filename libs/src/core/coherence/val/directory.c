@@ -133,18 +133,16 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
    * its link store and the front exists but is not yet reachable.  Returning
    * "no front" there would contradict the deref-free pending probe, which
    * counts that producer, and leave a caller alternating between the two.
-   * Cast away const for the atomic loads — the queue is not mutated (no head
-   * advance, no node free); single consumer (the baton holder). */
+   * The queue is not mutated (no head advance, no node free); single
+   * consumer (the baton holder). */
   for (;;) {
-    struct arts_home_grantreq_node_s *head = atomic_load_explicit(
-        (_Atomic(struct arts_home_grantreq_node_s *) *)&q->head,
-        memory_order_acquire);
+    struct arts_home_grantreq_node_s *head =
+        atomic_load_explicit(&q->head, memory_order_acquire);
     struct arts_home_grantreq_node_s *next =
         atomic_load_explicit(&head->next, memory_order_acquire);
     if (next == NULL) {
-      struct arts_home_grantreq_node_s *tail = atomic_load_explicit(
-          (_Atomic(struct arts_home_grantreq_node_s *) *)&q->tail,
-          memory_order_acquire);
+      struct arts_home_grantreq_node_s *tail =
+          atomic_load_explicit(&q->tail, memory_order_acquire);
       if (head == tail) {
         return false; /* truly empty */
       }
@@ -162,18 +160,15 @@ bool arts_home_grantreq_queue_peek(const struct arts_home_grantreq_queue_s *q,
 }
 
 bool arts_home_grantreq_queue_empty(const struct arts_home_grantreq_queue_s *q) {
-  /* Cast away const for atomic load — the value isn't modified. */
-  struct arts_home_grantreq_node_s *head = atomic_load_explicit(
-      (_Atomic(struct arts_home_grantreq_node_s *) *)&q->head,
-      memory_order_acquire);
+  struct arts_home_grantreq_node_s *head =
+      atomic_load_explicit(&q->head, memory_order_acquire);
   struct arts_home_grantreq_node_s *next =
       atomic_load_explicit(&head->next, memory_order_acquire);
   if (next != NULL) {
     return false;
   }
-  struct arts_home_grantreq_node_s *tail = atomic_load_explicit(
-      (_Atomic(struct arts_home_grantreq_node_s *) *)&q->tail,
-      memory_order_acquire);
+  struct arts_home_grantreq_node_s *tail =
+      atomic_load_explicit(&q->tail, memory_order_acquire);
   return head == tail;
 }
 
@@ -187,12 +182,10 @@ bool arts_home_grantreq_queue_pending(
    * nodes; that is harmless because baton RELEASES order them — the last
    * release's probe can have no pop between its two loads, since any such pop
    * belongs to a later holder who must release again. */
-  struct arts_home_grantreq_node_s *head = atomic_load_explicit(
-      (_Atomic(struct arts_home_grantreq_node_s *) *)&q->head,
-      memory_order_acquire);
-  struct arts_home_grantreq_node_s *tail = atomic_load_explicit(
-      (_Atomic(struct arts_home_grantreq_node_s *) *)&q->tail,
-      memory_order_acquire);
+  struct arts_home_grantreq_node_s *head =
+      atomic_load_explicit(&q->head, memory_order_acquire);
+  struct arts_home_grantreq_node_s *tail =
+      atomic_load_explicit(&q->tail, memory_order_acquire);
   return head != tail;
 }
 

@@ -14,9 +14,10 @@
  *    - K threads each perform the *first* install on a freshly-zeroed cache,
  *      all carrying the SAME db_size N.  After the join: cache->db_size == N,
  *      exactly one buffer survives in the slot, version == max, no torn write.
- *    The learn is a plain store, so concurrent first installs race on its
- *    bytes; every writer here carries the same size, so the value they leave
- *    is that size.
+ *    The learn is a relaxed atomic test-then-store
+ *    (arts_db_cache_learn_size), so concurrent first installs may each store;
+ *    every writer here carries the same size, so the value they leave is that
+ *    size.
  *
  * Standalone: links buffer.c + shared.c with libc-backed alloc shims.
  */
@@ -65,11 +66,12 @@ static int part1_single(void) {
   /* First install learns N. */
   struct arts_db_buffer_s *first =
       arts_db_buf_install(&g_cache, 1, payload, DB_SIZE);
-  if (g_cache.db_size != DB_SIZE) {
+  if (atomic_load_explicit(&g_cache.db_size, memory_order_relaxed) != DB_SIZE) {
     (void)fprintf(stderr,
                   "FAIL buffer_stub_db_size_learn: first install did not learn "
                   "size (db_size=%llu)\n",
-                  (unsigned long long)g_cache.db_size);
+                  (unsigned long long)atomic_load_explicit(
+                      &g_cache.db_size, memory_order_relaxed));
     return 1;
   }
   /* Second install with a DIFFERENT db_size must NOT re-learn (still N). The
@@ -78,11 +80,13 @@ static int part1_single(void) {
   unsigned char payload2[DB_SIZE * 2];
   memset(payload2, 0x22, sizeof(payload2));
   arts_db_buf_install(&g_cache, 2, payload2, DB_SIZE * 2);
-  if (g_cache.db_size != DB_SIZE) {
+  if (atomic_load_explicit(&g_cache.db_size, memory_order_relaxed) != DB_SIZE) {
     (void)fprintf(stderr,
                   "FAIL buffer_stub_db_size_learn: second install re-learned "
                   "size (db_size=%llu, expected %d)\n",
-                  (unsigned long long)g_cache.db_size, DB_SIZE);
+                  (unsigned long long)atomic_load_explicit(
+                      &g_cache.db_size, memory_order_relaxed),
+                  DB_SIZE);
     return 1;
   }
   /* Where the arm keeps a list, the first buffer is parked now and is smaller
@@ -131,11 +135,13 @@ static int part2_race(void) {
     pthread_join(th[i], NULL);
   }
 
-  if (g_cache.db_size != DB_SIZE) {
+  if (atomic_load_explicit(&g_cache.db_size, memory_order_relaxed) != DB_SIZE) {
     (void)fprintf(stderr,
                   "FAIL buffer_stub_db_size_learn: concurrent learn yielded "
                   "db_size=%llu (expected %d) — torn write?\n",
-                  (unsigned long long)g_cache.db_size, DB_SIZE);
+                  (unsigned long long)atomic_load_explicit(
+                      &g_cache.db_size, memory_order_relaxed),
+                  DB_SIZE);
     return 1;
   }
   /* Slot holds the global max version, exactly one live buffer. */
@@ -145,12 +151,16 @@ static int part2_race(void) {
    * is therefore LEARNERS (the version guard publishes strictly increasing
    * versions, so the slot ends at the global max). */
   uint64_t expected_max = (uint64_t)LEARNERS;
-  int rc = (cur == NULL || cur->version != expected_max);
+  int rc = (cur == NULL ||
+            atomic_load_explicit(&cur->version, memory_order_relaxed) !=
+                expected_max);
   if (rc) {
-    (void)fprintf(stderr,
-                  "FAIL buffer_stub_db_size_learn: final version %" PRIu64
-                  " != %" PRIu64 "\n",
-                  cur ? cur->version : 0, expected_max);
+    (void)fprintf(
+        stderr,
+        "FAIL buffer_stub_db_size_learn: final version %" PRIu64 " != %" PRIu64
+        "\n",
+        cur ? atomic_load_explicit(&cur->version, memory_order_relaxed) : 0,
+        expected_max);
   }
   arts_db_buf_release(&h);
   cache_teardown();

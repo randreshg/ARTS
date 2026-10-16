@@ -111,8 +111,15 @@ What a create returns does not depend on whether it waited:
 - :c:func:`arts_db_create` returns at once, and ``*addr`` names this
   create's own image of the block (``NULL`` under
   ``ARTS_DB_PROP_NO_ACQUIRE``), which becomes the block's content when the
-  create installs.  The creator's hold is on that image, and the
-  creator's release goes to it, not to whatever the slot holds meanwhile.
+  create installs.  The creator's hold is on that image, and the creator's
+  own operations name it.  A release that reaches the block's home as a
+  message, one the home rank sends itself included, is looked up by GUID
+  there and so meets whatever the slot holds meanwhile, in three cases:
+  under exclusion with the purging release policy when the creator is not
+  the home rank (see "A deferred teardown" below); under invalidation,
+  whatever rank creates (see "A creator's publish" below); and under
+  validation with write-through or FLUSH when the creator is not the home
+  rank (see the same entry).
 
 The OCR standard's two checked properties have no native counterpart, and
 the OCR shim accepts and ignores both:
@@ -222,14 +229,15 @@ a route slot, and a destroy is fire-and-forget — the home tears the block
 down and notifies the ranks that cache it, and no message tells anyone when
 every rank has done so.  The following are weaknesses of the runtime, not of
 the programs that meet them, and they are left open.  The first three would
-need an acknowledged destroy to close, and the fourth coherence messages
-that name their round on the wire.  The dispatch-order shape is closed only
-by the orderings the program provides, listed at the end: per-peer FIFO
-dispatch in the transport (each peer's messages dispatched in arrival order
-by one progress thread) would close it for two messages sent by one rank,
-never for two messages the program orders through a third rank.  ARTS
-provides none of the three: no acknowledged destroy, no per-peer FIFO
-dispatch, and no round named on the wire.
+need an acknowledged destroy to close, the fourth coherence messages that
+name their round on the wire, and the fifth and sixth messages that name
+their generation.  The dispatch-order shape is closed only by the orderings
+the program provides, listed at the end: per-peer FIFO dispatch in the
+transport (each peer's messages dispatched in arrival order by one progress
+thread) would close it for two messages sent by one rank, never for two
+messages the program orders through a third rank.  ARTS provides none of
+these: no acknowledged destroy, no per-peer FIFO dispatch, and no round or
+generation named on the wire.
 
 **A third rank's stale cache.**  Exposed by a data-block label reused while
 a rank other than its creator and its home still caches the previous
@@ -263,7 +271,9 @@ generation ``k``: a read sees generation ``k``, and a write request the home
 counts for generation ``k+1`` loses its waiter when generation ``k`` is torn
 down.  A request whose waiter is lost that way is never answered, so the
 task that made it hangs, whether it reads or writes.  The creator's own
-operations name its descriptor and are unaffected.
+operations name its descriptor and are unaffected, except a release the home
+looks up by GUID (see "A deferred teardown" and "A creator's publish"
+below).
 
 **A late round message.**  On the arms that keep a write grant past its
 writers (validation and invalidation with write-through and the retaining
@@ -285,6 +295,61 @@ arrives after generation ``k+1`` has granted a read is counted against that
 grant, and a writer of generation ``k+1`` can then be admitted while its
 reader still reads.  The program orders that return only as it orders its
 own messages to the home.
+
+**A deferred teardown.**  Under exclusion with the purging release policy a
+home that receives the destroy of generation ``k`` while a release is still
+owed to it — a reader's return of its read grant or a writer's release, sent
+when that task ended and still in flight — only marks the block, and tears
+it down when the last owed release arrives.  Until then generation ``k``
+occupies the slot.  A create of generation ``k+1`` waits behind it, as the
+rule says, but every other message of generation ``k+1`` that reaches the
+home meanwhile is applied to generation ``k`` — among them the release, from
+a creator on another rank, of the hold its create took, which the program
+does not send and cannot order.  When the release owed is a reader's, a
+write release applied there ends a turn generation ``k`` never granted: the
+block's writer count wraps, generation ``k`` never reaches the release that
+would tear it down, generation ``k+1`` never installs, and the run hangs; a
+Debug build stops at an assertion instead.  When it is a writer's, the
+creator's release ends that writer's turn instead and, with no reader
+counted on generation ``k``, tears generation ``k`` down at once, with no
+wrap and no assertion; generation ``k+1`` then installs, and the owed
+release, still in flight, is applied to generation ``k+1``.  A creator on
+the home rank applies its release to its own descriptor and is not affected.
+For any other creator no ordering a program provides excludes it: the owed
+release leaves when the task that held the block ends, the program cannot
+observe its arrival, and a destroy issued from the home before the next
+generation's create, as the orderings below ask, does not wait for it.
+Under exclusion with the retaining release policy the home tears the block
+down when the destroy arrives, so no message of generation ``k+1`` that the
+destroy precedes can meet generation ``k`` there; that policy's late
+read-grant return is the weakness above.
+
+**A creator's publish.**  Under invalidation every write release runs a
+round at the home, a release made on the home rank included: the creator's
+release sends its publish to the home by GUID, and the home's
+acknowledgement completes it by GUID.  When the home dispatches the signal
+that readies generation ``k+1``'s creator on the home rank before it
+dispatches the destroy of generation ``k`` (several progress threads per
+rank can do this even to one rank's two messages), the create parks behind
+generation ``k``, the creator's release publishes on generation ``k``,
+generation ``k`` absorbs the acknowledgement too, and the destroy then
+installs generation ``k+1`` with its publish still in flight and nothing
+left to complete it: the creating task blocks in its release and the run
+hangs.  A creator on another rank is reached by GUID too, under
+invalidation, under validation with write-through, and under FLUSH (its
+write-back's announce and commit).  Its release does not hang, but it is
+applied to generation ``k``: under write-through and FLUSH its bytes land in
+generation ``k``'s buffer or line, and the address or credit the reply
+teaches it names that buffer or line, so generation ``k+1`` installs without
+them.  Under write-through with the purging release policy the publish also
+carries the creator's hand-back of the write right; when generation ``k``'s
+home already holds the right it refuses the hand-back, and a Debug build
+stops at an assertion there.  Under validation with write-back a release
+publishes nothing, and under exclusion with the purging release policy the
+same reordering is the deferred teardown above.  A program avoids it by
+ordering the destroy of generation ``k`` before the create of generation
+``k+1`` through the home, so that the create never parks and the creator's
+release meets its own generation.
 
 **Dispatch order.**  The home applies a GUID's messages in the order it
 dispatches them, which need not be the order the program issued them in.
@@ -330,7 +395,9 @@ A program that reuses a label therefore provides these orderings:
   has reached the creator — and before generation ``k`` ends.  Two creates
   of one GUID both in flight can be dispatched in either order, and the
   wrong order installs generation ``k+1`` first and parks generation ``k``
-  behind it.
+  behind it.  A creator that releases while its create is still parked meets
+  generation ``k`` on the arms named in "A deferred teardown" and "A
+  creator's publish".
 
 These orderings close the dispatch-order shape; they do not close the other
-four weaknesses.
+six weaknesses.

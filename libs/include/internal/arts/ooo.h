@@ -354,17 +354,14 @@ struct arts_ooo_args_db_destroy_s {
 };
 
 /* DB publish.  The shapes that share this args struct (see the PUBLISH wire
- * doc in protocol.h):
- *   data_inline != 0                : same-rank publish — the payload
- *       (data_size bytes) trails this header in the args blob.  No caller
- *       passes a payload, and both publish handlers refuse one;
- *   data_inline == 0, rdzv_txid == 0: announce leg — home advertises its
+ * doc in protocol.h); no shape carries payload bytes:
+ *   rdzv_txid == 0, data_size != 0: announce leg — home advertises its
  *       stable buffer as the landing and replies PUBLISH_CTS (nothing is
  *       published yet);
- *   data_inline == 0, rdzv_txid != 0: commit leg — the payload was PUT in
- *       place into home's stable buffer; home pairs {args, write completion},
- *       either order, before the version is stamped;
- *   data_size == 0                  : data-less round — install nothing, ACK. */
+ *   rdzv_txid != 0: commit leg — the payload was PUT in place into home's
+ *       stable buffer; home pairs {args, write completion}, either order,
+ *       before the version is stamped;
+ *   data_size == 0: data-less round — install nothing, ACK. */
 struct arts_ooo_args_db_publish_s {
   unsigned int releaser;
   arts_guid_t db_guid;
@@ -374,7 +371,6 @@ struct arts_ooo_args_db_publish_s {
   uint64_t data_size;
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
-  uint32_t data_inline;
   /* The releaser gave the write right back with this publish; the home
    * owes it the same acceptance a standalone hand-back would ask for. */
   uint32_t returns_grant;
@@ -445,12 +441,11 @@ struct arts_ooo_args_db_excl_release_s {
   uint64_t data_size;         /* 0 for RO; >0 for RW publish */
   uint64_t cv;                /* RW announce: rendezvous address; else 0 */
   uint64_t version;           /* always 0 */
-  /* RW dirty payload delivery: data_inline != 0 = payload trails this header
-   * (same-rank release); else the payload was PUT into the grant's pub landing
-   * — {rdzv_txid, rdzv_cookie} echo it and install pairs by txid. */
+  /* An RW release's payload was PUT into its landing (the grant's pub, or the
+   * one a PUBLISH_CTS named); {rdzv_txid, rdzv_cookie} echo it and the home
+   * pairs the packet with the write completion by txid. */
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;
-  uint32_t data_inline;
 };
 
 /* g_ooo_table handler, both polarities.  A non-create handler operates on an

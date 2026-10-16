@@ -24,7 +24,6 @@
 #include "arts/system/threads.h"   /* arts_global_rank_id */
 #include "arts/transport/net.h" /* arts_transport_send_async */
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h" /* arts_atomic_* */
 #include "arts/utils/malloc.h"  /* arts_malloc / arts_free (transfer sender) */
 
 /* ===== 8-case acquire dispatch (WB arm) ==========================
@@ -48,7 +47,8 @@ void arts_handler_db_acquire(void *item, void *args) {
    * that window is safe precisely because no RW EDT can have run here: the
    * bytes are exactly the ones the transfer delivered.  A zero count is the
    * only state in which this rank's copy may be stale. */
-  bool has_canonical_copy = (arts_atomic_read(&cache->writer_count) != 0u);
+  bool has_canonical_copy =
+      (atomic_load_explicit(&cache->writer_count, memory_order_acquire) != 0u);
 
   if (mode == DB_MODE_RO) {
     if (has_canonical_copy) { /* WB RO predicate (only a grant holder has the
@@ -58,7 +58,8 @@ void arts_handler_db_acquire(void *item, void *args) {
        * entitles this rank to be it — so allocate here, on the acquiring
        * thread's node.  A no-op for every other block: a grant install
        * always brings storage with it. */
-      (void)arts_db_buf_ensure(cache, cache->db_size);
+      (void)arts_db_buf_ensure(
+          cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
       arts_db_acquire_local_hit(edt, slot, arts_db_acquire_local(cache));
       arts_db_acquire_resolved(edt, slot);
       return;
@@ -102,9 +103,9 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
 
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   (void)payload;
-  /* Defensive: writer_count==0 means our acquire never bumped ownership;
-   * decrementing would underflow.  Atomic acquire-load avoids a TSan race. */
-  if (arts_atomic_read(&cache->writer_count) == 0) {
+  /* Defensive: no local hold to drop means our acquire never bumped ownership;
+   * decrementing would underflow. */
+  if (arts_db_grant_release_skip(cache)) {
     return;
   }
   /* Version bump on the current buffer (local ref scoped to release_rw). */
@@ -112,14 +113,15 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   if (buf != NULL) {
-    arts_atomic_add_u64(&buf->version, 1);
+    uint64_t new_version =
+        atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel) + 1u;
     /* Self-credit: this rank now holds the bumped version.  Keeps the
      * owner-side ledger's invariant ("floor of what each rank's cache holds")
      * true for the producer itself; the ship path re-credits before the map
      * migrates. */
     if (cache->cached_version != NULL) {
       arts_rank_u64_map_advance(cache->cached_version, arts_global_rank_id,
-                                arts_atomic_read_u64(&buf->version));
+                                new_version);
     }
   }
   /* Drop the buffer ref BEFORE the writer_count decrement (close the
@@ -128,20 +130,10 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     arts_db_buf_release(&buf_h);
   }
 
-  /* writer_count is non-negative (post-install flip + install guard absorb any
-   * INVALIDATE that lands during install).  A true 1->0 release reads 0 and
-   * ships the transfer; the (int) cast is defensive. */
-  int rest = (int)arts_atomic_sub(&cache->writer_count, 1); /* post value */
-  if (rest == 0) {
-    /* If a GRANT_INVALIDATE already published a transfer target while writers
-     * were live, this (last) releaser is the unique actor that ships
-     * GRANT_RESPONSE — sentinel invariant, no flag.  Identical for home and
-     * non-home owners.  Otherwise no transfer is pending: home retains
-     * ownership until a future GRANT_REQUEST; a non-home owner quiesces. */
-    if (cache->incoming_new_owner != ARTS_NO_PENDING_OWNER) {
-      arts_db_grant_ship_pending(cache);
-    }
-  }
+  /* The count-dropping edge: the last releaser ships the grant onward when a
+   * GRANT_INVALIDATE has already named a target; otherwise the home keeps
+   * ownership until a GRANT_REQUEST and a non-home owner quiesces. */
+  arts_db_grant_release_commit(cache);
 }
 
 /* ===== cache_s lifecycle (WB) ======================================
@@ -228,13 +220,15 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
    * still names the OLD owner, which retains its buffer + cached_version
    * permanently and serves the REDIRECT from its own copy.  Client-side
    * monotonic version compare keeps stale snapshots safe.  No defer queue. */
-  if (a->rdzv.txid == 0 && cache->db_size > 0) {
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
+  if (a->rdzv.txid == 0 && db_size > 0) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Home is the size authority even though the data lives with
      * the owner — answer a size-only CTS directly; the re-request carries a
      * landing and is then redirected for real. */
     arts_send_db_snapshot_response(requester, cache->db_guid, /*version=*/0,
-                                   edt_guid, slot, /*kind=*/2, cache->db_size,
+                                   edt_guid, slot, /*kind=*/2, db_size,
                                    &a->rdzv, NULL);
     return;
   }
@@ -309,8 +303,10 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
 /* The hold is possession plus this create's own writer, from a word that
  * holds nothing. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
-  return arts_atomic_cswap(&cache->writer_count, 0u,
-                           ARTS_GRANT_SEED_HOLDING) == 0u;
+  unsigned int none = 0u;
+  return atomic_compare_exchange_strong_explicit(
+      &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
+      memory_order_acq_rel, memory_order_relaxed);
 }
 
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
@@ -337,8 +333,14 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
    * second version 1 in the world, which the new holder's first release then
    * collides with.  A holder that no longer holds answers with the
    * holds-nothing reply below, and the requester adopts its own landing. */
-  if (arts_atomic_read(&cache->writer_count) != 0u) {
-    (void)arts_db_buf_ensure(cache, cache->db_size);
+  bool holds =
+      atomic_load_explicit(&cache->writer_count, memory_order_acquire) != 0u;
+  /* Read after the acquire on writer_count, which makes the size the holder
+   * learned before its install visible. */
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
+  if (holds) {
+    (void)arts_db_buf_ensure(cache, db_size);
   }
 
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
@@ -353,11 +355,14 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * reads that as "nobody has written the block", adopting its own
      * advertised landing as the storage it is owed. */
     arts_send_db_snapshot_response(requester, a->db_guid, /*version=*/0,
-                                   edt_guid, slot, /*kind=*/0, cache->db_size,
+                                   edt_guid, slot, /*kind=*/0, db_size,
                                    &a->rdzv, NULL);
     return;
   }
-  uint64_t cur_v = buf->version;
+  /* Acquire: the version names the bytes served below, so every write of
+   * the release that set it (its acq_rel bump in arts_db_release_rw) must be
+   * visible to the serve. */
+  uint64_t cur_v = atomic_load_explicit(&buf->version, memory_order_acquire);
   uint64_t known_v =
       arts_rank_u64_map_get(cache->cached_version, requester);
 
@@ -366,7 +371,7 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * unused landing for recycling. */
     arts_db_buf_release(&buf_h);
     arts_send_db_snapshot_response(requester, a->db_guid, cur_v, edt_guid, slot,
-                                   /*kind=*/0, cache->db_size, &a->rdzv, NULL);
+                                   /*kind=*/0, db_size, &a->rdzv, NULL);
   } else if (a->rdzv.txid == 0) {
     /* Data must move but no landing was forwarded (a first-touch request that
      * slipped past home's CTS gate can only mean home learned the size after
@@ -374,14 +379,13 @@ void arts_handler_db_snapshot_redirect(void *item_v, void *args_v) {
      * carries a landing.  The watermark does NOT advance. */
     arts_db_buf_release(&buf_h);
     arts_send_db_snapshot_response(requester, a->db_guid, cur_v, edt_guid, slot,
-                                   /*kind=*/2, cache->db_size, &a->rdzv, NULL);
+                                   /*kind=*/2, db_size, &a->rdzv, NULL);
   } else {
     /* Advance dedup watermark (monotonic max), then PUT the payload into the
      * forwarded landing (buf_h transfers into the sender). */
     arts_rank_u64_map_advance(cache->cached_version, requester, cur_v);
     arts_send_db_snapshot_response(requester, a->db_guid, cur_v, edt_guid, slot,
-                                   /*kind=*/1, cache->db_size, &a->rdzv,
-                                   buf_h);
+                                   /*kind=*/1, db_size, &a->rdzv, buf_h);
   }
 }
 

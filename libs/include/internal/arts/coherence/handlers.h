@@ -7,7 +7,8 @@
  * handler runs inline on the sending thread, a worker included, so no thread
  * is any field's sole writer by role.  A field a handler shares with a worker
  * or with another handler is accessed atomically, or written plainly before
- * an atomic RMW on a count or state word that its reader observes first.
+ * a release read-modify-write on a count or state word that its reader
+ * acquires first.
  *
  * Drop discipline — two categories:
  *   Cat-B (deferrable bodies, each an OOO_* kind in ooo.h, run at the home
@@ -180,10 +181,10 @@ void arts_handler_db_grant_return(void *item_v, void *args_v);
 void arts_handler_db_snapshot_request(void *item_v, void *args_v);
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_PUBLISH]): item_v is the home db_s
  * the engine acquired (cache is its first member); args_v is an
- * arts_ooo_args_db_publish_s followed by data_size payload bytes.  The wire
- * dispatcher copies the trailing wire payload into the args blob (after the
- * struct) and routes through arts_ooo_dispatch_or_defer_guid; this body reads
- * the payload from (char *)args_v + sizeof(arts_ooo_args_db_publish_s). */
+ * arts_ooo_args_db_publish_s and nothing trails it: a payload lands one-sided
+ * in the home's stable buffer (arts_send_db_publish).  The wire dispatcher
+ * decodes the packet into those args and routes through
+ * arts_ooo_dispatch_or_defer_guid. */
 void arts_handler_db_publish(void *item_v, void *args_v);
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): item_v is the home db_s
  * the engine acquired (cache is its first member); args_v is an
@@ -292,17 +293,17 @@ void arts_send_db_grant_cts(unsigned int requester_rank,
  * rendezvous (arts_db_pub_rendezvous_s; sem first) as uint64_t, forwarded
  * verbatim and echoed back in the PUBLISH_CTS for pointer-identity wakeup; a
  * commit and a data-less publish carry 0, and their ACK completes the
- * releaser's publish flight.  A same-rank send carries `data`, when given,
- * inline through the OoO args (no caller gives any); remote sends are
- * control-only (announce txid==0 / commit txid!=0 — the payload travels
- * one-sided between them, see arts_db_publish_sync). */
+ * releaser's publish flight.  Every send is control-only: a same-rank send is
+ * the ordering round of a releaser whose buffer is the canonical copy, and a
+ * remote one is an announce (txid==0) or a commit (txid!=0) — the payload
+ * travels one-sided between them, see arts_db_publish_sync. */
 /* return_grant rides a PAYLOAD COMMIT leg only: it tells the home that the
  * releaser has given the write right back, and the home may act on that no
  * earlier than the moment these bytes have landed. */
 void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
-                            uint64_t version, uint64_t cv, const void *data,
-                            uint64_t data_size, uint64_t rdzv_txid,
-                            uint64_t rdzv_cookie, bool return_grant);
+                          uint64_t version, uint64_t cv, uint64_t data_size,
+                          uint64_t rdzv_txid, uint64_t rdzv_cookie,
+                          bool return_grant);
 /* PUBLISH_CTS: home → releaser, advertising the home's stable buffer, in
  * place, as the landing for an announced dirty publish or a landing-less EXCL
  * PURGE release (cv echoed verbatim). */
@@ -409,11 +410,13 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
                                  unsigned int new_owner,
                                  const struct arts_rdzv_landing_s *new_rdzv,
                                  bool data_less);
+#ifndef ARTS_RELEASE_PURGE
 /* Ship to the target published on this cache by a revocation round, re-arming
  * the field to the sentinel before the send.  Called on the 0-edge of
  * release_rw / the INVALIDATE handler (both write policies) and the WB
  * CONFIRM_ACK / WT GRANT_RESPONSE drain-guard removal. */
 void arts_db_grant_ship_pending(struct arts_db_cache_s *cache);
+#endif
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 /* The version a serve from the home may claim for the bytes it sends — the
@@ -475,21 +478,23 @@ void arts_send_db_inv_invalidate_ack(unsigned int home_rank,
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_EXCL_REQUEST]) @home: item_v is the
  * home db_s the engine acquired (cache is its first member); args_v is an
- * arts_ooo_args_db_excl_request_s.  push-before-CAS on rw_waiters/ro_waiters,
- * then a single lock_state CAS, then grant-send per the transition case. */
+ * arts_ooo_args_db_excl_request_s.  A write request queues on rw_waiters and
+ * then counts with one lock_state CAS; a read request counts first and then
+ * queues on ro_waiters.  Grants follow the transition. */
 void arts_handler_db_excl_request(void *item_v, void *args_v);
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_EXCL_RELEASE]) @home: same item_v
- * shape; args_v is an arts_ooo_args_db_excl_release_s.  An RW release's
- * bytes trail it only on a same-rank release; a remote one PUT them into the
- * home's stable buffer, and in a CXL build they are already in the store.
- * The bytes are in place before it transitions lock_state, then grant-sends
- * the next holder(s). */
+ * shape; args_v is an arts_ooo_args_db_excl_release_s.  No bytes trail it: a
+ * remote RW release PUT them into the home's stable buffer, the home's own
+ * release wrote them in place, and in a CXL build they are already in the
+ * store.  The bytes are in place before it transitions lock_state, then
+ * grant-sends the next holder(s). */
 void arts_handler_db_excl_release(void *item_v, void *args_v);
 
-/* Cat-C pure body @requester: payload = full contiguous wire buffer
- * (header + data); size is total bytes.  Buffer install + cache_state CAS
- * (REQ→GRANT, or phantom RO release) + drain of the cache pending stacks. */
+/* Cat-C pure body @requester: payload = the wire packet alone (a payload
+ * travels one-sided); size is its byte count.  cache_state CAS (REQ→GRANT,
+ * or phantom RO release) + drain of the cache pending stacks, after any
+ * one-sided payload has landed. */
 void arts_handler_db_excl_grant(void *payload, size_t size);
 
 /* NOTE: arts_handler_db_acquire is NOT re-declared here.  It is already
@@ -518,8 +523,8 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v);
  * echoed mode). */
 void arts_send_db_excl_cts(unsigned int requester_rank, arts_guid_t db_guid,
                            uint64_t db_size, uint32_t mode);
-/* arts_send_db_excl_grant: version is the home buffer's version (0 in a CXL
- * build), which no grant handler reads.  The grant payload PUTs into
+/* arts_send_db_excl_grant: version is always 0, and no grant handler reads
+ * it.  The grant payload PUTs into
  * req_rdzv (the requester's advertised landing; src_h — a strong ref on the
  * home buffer — is CONSUMED); `pub`, for RW grants, is home's publish landing
  * for this grant's release (NULL/zero for RO). */
@@ -534,12 +539,11 @@ void arts_send_db_excl_grant(unsigned int requester_rank, arts_guid_t db_guid,
  * acknowledges a release.  version is always 0, and no handler reads it.  A
  * remote RW release PUTs the dirty bytes into its landing (the grant's `pub`,
  * or the one the PUBLISH_CTS named) first and echoes {rdzv_txid,
- * rdzv_cookie} here; `data` rides inline only same-rank. */
+ * rdzv_cookie} here; a release to this rank's own home carries no bytes. */
 void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
                                arts_db_access_mode_t mode, uint64_t version,
-                               uint64_t cv, const void *data,
-                               uint64_t data_size, uint64_t rdzv_txid,
-                               uint64_t rdzv_cookie);
+                               uint64_t cv, uint64_t data_size,
+                               uint64_t rdzv_txid, uint64_t rdzv_cookie);
 
 #ifdef ARTS_RELEASE_RETAIN
 /* ===== EXCL RETAIN handlers (Cat-C direct dispatch) = */

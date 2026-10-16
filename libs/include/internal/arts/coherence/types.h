@@ -99,7 +99,21 @@ static inline struct arts_db_s *arts_db_of_cache(struct arts_db_cache_s *c) {
  * it. */
 static inline uint64_t arts_db_total_size(const struct arts_db_s *db) {
   return sizeof(struct arts_db_s) +
-         ((db->db_type == ARTS_DB) ? 0 : db->cache.db_size);
+         ((db->db_type == ARTS_DB)
+              ? 0
+              : atomic_load_explicit(&db->cache.db_size, memory_order_relaxed));
+}
+
+/* Record the block's exact size in a cache that has not learned it.  Every
+ * caller passes the size the block was created with (its create's length, or
+ * a wire copy of a descriptor's), so two learns race only to store the same
+ * value, and a reader sees 0 or that size; 0 itself is never stored. */
+static inline void arts_db_cache_learn_size(struct arts_db_cache_s *c,
+                                            uint64_t db_size) {
+  if (db_size != 0 &&
+      atomic_load_explicit(&c->db_size, memory_order_relaxed) == 0) {
+    atomic_store_explicit(&c->db_size, db_size, memory_order_relaxed);
+  }
 }
 
 /* Footprint of a non-home / WB / creator-remote DB stub: the cache prefix +

@@ -21,7 +21,7 @@
  *
  * Concurrency model:
  *   Producers — foreign-rank acquire_remote_rw, multi-threaded; push prepends
- *               to the head via release-CAS.
+ *               to the head with an acq_rel CAS.
  *   Consumers — the grant's drains take the whole chain out with one atomic
  *               exchange (arts_db_grant_take_waiters):
  *               arts_db_drain_pending_rw_after_grant wakes it, and under
@@ -49,8 +49,14 @@ arts_lf_link_t *arts_pending_rw_queue_take(arts_lf_stack_t *q) {
   return arts_lf_stack_drain(q);
 }
 
+/* A snapshot that is never dereferenced, so relaxed: what orders it is the
+ * caller's.  The first check after a won claim sees the last take because the
+ * claim CAS acquires the release of the clear that followed it; the re-checks
+ * after the coalescing flag's give-back and take (arts_db_acquire_remote_rw,
+ * arts_db_grant_take_waiters) follow a seq_cst fence that pairs with the
+ * pusher's. */
 bool arts_pending_rw_queue_pending(arts_lf_stack_t *q) {
-  return atomic_load_explicit(&q->head, memory_order_seq_cst) != NULL;
+  return atomic_load_explicit(&q->head, memory_order_relaxed) != NULL;
 }
 
 unsigned int arts_pending_rw_chain_count(arts_lf_link_t *chain) {

@@ -96,12 +96,11 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
 
 /*--- rank bit-set ----------------------------------------------------
  *
- * Bit-packed atomic rank bit-set, sized to the cluster's rank count.  Used
- * only in WB builds — the WT write policy reuses the per-rank version map
- * for the same purpose (set membership = nonzero entry).  The struct
- * arts_rank_bitset_s definition lives in rank_bitset.h (included
- * directly by coherence_types.h, which embeds it by value in
- * arts_db_s). */
+ * Bit-packed atomic rank bit-set, sized to the cluster's rank count: the
+ * destroy roster of every home directory (cached_ranks), under both write
+ * policies, and the arms' other per-rank rosters.  The struct
+ * arts_rank_bitset_s definition lives in rank_bitset.h (included directly by
+ * the coherence layouts, which embed it by value in arts_db_s). */
 
 void arts_rank_bitset_init(struct arts_rank_bitset_s *r, unsigned int nranks);
 void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r);
@@ -147,9 +146,11 @@ void arts_db_home_teardown(struct arts_db_s *db);
  *   sizeof(uint32_t) * 2 + nranks * sizeof(arts_msg_rank_version_pair_s)
  * bytes for the output buffer.
  *
- * NOT thread-safe with concurrent arts_rank_u64_map_advance calls on the
- * same map.  Caller must establish exclusion (writer_count == 0 + handler
- * serialization) before invoking. */
+ * Each slot is read with its own atomic load, so an advance concurrent with
+ * the serialize (a redirect served while the ledger migrates) is either in
+ * the image or not.  An advance the image misses only under-credits its
+ * rank: the next owner then re-sends bytes that rank already holds, which is
+ * always legal; no slot is ever credited above what was sent. */
 size_t arts_rank_u64_map_serialize(const struct arts_rank_to_u64_map_s *m,
                                    void *out);
 

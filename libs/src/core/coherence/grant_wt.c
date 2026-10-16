@@ -45,7 +45,6 @@
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
@@ -77,11 +76,11 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
      * queued forever with no baton holder to serve it. */
     arts_sched_fuzz_point(); /* widen the pop-empty<->release window */
     atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* Dekker-style publication: the baton-release store must be globally
-     * visible BEFORE the emptiness re-check loads, or a requester that
-     * pushed and lost its baton CAS inside the window is missed — a plain
-     * release-store followed by loads permits exactly that StoreLoad
-     * reordering. */
+    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
+     * which pushes onto this FIFO and passes a fence before its baton
+     * check.  Of the two fences in S the later one's side sees the other's
+     * store: either the probe below finds that request, or that handler's
+     * baton CAS reads this release. */
     atomic_thread_fence(memory_order_seq_cst);
     if (!arts_home_grantreq_queue_pending(&db->pending_rw)) {
       return;
@@ -217,9 +216,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   /* A hinted first touch may reach its first grant with the size still
    * unlearned (no CTS leg ran); the response's data_size is the sender's
    * descriptor size, valid payload or not. */
-  if (cache->db_size == 0 && hdr->data_size > 0) {
-    cache->db_size = hdr->data_size;
-  }
+  arts_db_cache_learn_size(cache, hdr->data_size);
 
   /* Wire layout: header | map (count pairs, inline).  WT ignores the map
    * (it dedups RO via home->cached_version), but parses past it. */
@@ -265,15 +262,13 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     (void)arts_db_buf_adopt_landing(
         cache, hdr->version ? hdr->version : 1u,
         (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie,
-        cache->db_size);
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   }
   char *data_start = map_start + map_size;
   size_t data_size = size - sizeof(*hdr) - map_size;
   if (data_size > 0) {
     arts_db_buf_install(cache, hdr->version, data_start, data_size);
-    if (cache->db_size == 0) {
-      cache->db_size = data_size;
-    }
+    arts_db_cache_learn_size(cache, data_size);
   }
   home_response_commit(db_h); /* releases db_h */
 }
@@ -338,7 +333,9 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
    * bottoms out at exactly 0, so the (int) cast is defensive — only the
    * decrement that drives writer_count from a positive value to exactly 0 owns
    * the transfer. */
-  int rest = (int)arts_atomic_sub(&cache->writer_count, 1);
+  int rest = (int)(atomic_fetch_sub_explicit(&cache->writer_count, 1u,
+                                             memory_order_acq_rel) -
+                   1u);
   if (rest == 0) {
     /* The decrement that drives writer_count to exactly 0 is the unique actor
      * that ships the owner→owner transfer to incoming_new_owner (published
@@ -347,7 +344,3 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   }
 }
 #endif /* !ARTS_RELEASE_PURGE */
-
-/* Case-D leaf: the WT write policy defers the home-buffer install to the
- * creator's first release_rw (PUBLISH / GRANT path); nothing to do at
- * create. */

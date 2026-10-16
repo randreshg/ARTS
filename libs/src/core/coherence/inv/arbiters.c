@@ -12,7 +12,7 @@
  *
  * Both are identical under either write policy.  Neither knows about ownership:
  * write ownership is the migrating sentinel grant (coherence/grant.c), which
- * lives in plain counters rather than a packed word, so neither arbiter
+ * lives in its own counter rather than in either word, so neither arbiter
  * carries rw state or a writer count.
  *
  * engine.c #includes this file to get its private copy; the whitebox
@@ -157,7 +157,8 @@ uint64_t inv_dir_compute_next(uint64_t cur, int op, unsigned int arg,
     break;
 
   case INV_DIR_OP_ACK_DEC:
-    /* Precondition (caller-asserted): acks > 0. */
+    /* Precondition, checked by the caller, which fails loudly otherwise: the
+     * round is open and acks > 0. */
     acks -= 1u;
     if (acks == 0u) {
       act = INV_DIR_ACT_CLOSE; /* this committer closes the round */

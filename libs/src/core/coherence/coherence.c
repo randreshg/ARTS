@@ -61,7 +61,6 @@
 #include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h" /* arts_net_put_payload */
-#include "arts/utils/atomics.h"
 #include "arts/utils/lockfree_lifo.h" /* publish flight waiter stack */
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
@@ -73,23 +72,21 @@
 
 void arts_db_cache_kind_seed(struct arts_db_cache_s *c,
                              arts_db_init_kind_t kind) {
-  __atomic_store_n(&c->init_kind, (uint8_t)kind, __ATOMIC_RELAXED);
+  atomic_init(&c->init_kind, (uint8_t)kind);
 }
 
 void arts_db_cache_note_answered(struct arts_db_cache_s *cache) {
   uint8_t expected = (uint8_t)ARTS_DB_INIT_STUB;
-  (void)__atomic_compare_exchange_n(&cache->init_kind, &expected,
-                                    (uint8_t)ARTS_DB_INIT_ANSWERED,
-                                    /*weak=*/false, __ATOMIC_ACQ_REL,
-                                    __ATOMIC_ACQUIRE);
+  (void)atomic_compare_exchange_strong_explicit(
+      &cache->init_kind, &expected, (uint8_t)ARTS_DB_INIT_ANSWERED,
+      memory_order_acq_rel, memory_order_acquire);
 }
 
 bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
   uint8_t expected = (uint8_t)ARTS_DB_INIT_STUB;
-  return __atomic_compare_exchange_n(&cache->init_kind, &expected,
-                                     (uint8_t)ARTS_DB_INIT_CREATOR_REMOTE,
-                                     /*weak=*/false, __ATOMIC_ACQ_REL,
-                                     __ATOMIC_ACQUIRE);
+  return atomic_compare_exchange_strong_explicit(
+      &cache->init_kind, &expected, (uint8_t)ARTS_DB_INIT_CREATOR_REMOTE,
+      memory_order_acq_rel, memory_order_acquire);
 }
 
 /* Protocol-agnostic cache_s field init.  Each arm's arts_db_cache_init sets
@@ -108,12 +105,12 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
    * memset by the stub path).  We do not zero it here — the embedding db_s
    * owns the storage. */
   c->db_guid = db_guid;
-  c->db_size = db_size;
+  atomic_init(&c->db_size, db_size);
   /* Every cache starts without a buffer; the install path clears this the
    * moment one is in the slot, whoever put it there. */
-  __atomic_store_n(&c->payload_pending, (uint8_t)1, __ATOMIC_RELAXED);
+  atomic_init(&c->payload_pending, (uint8_t)1);
 #ifdef ARTS_USE_CXL
-  c->cxl_addr = 0;
+  atomic_init(&c->cxl_addr, (uint64_t)0);
 #endif
   arts_db_cache_kind_seed(c, kind);
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
@@ -123,12 +120,12 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #ifdef ARTS_PROTOCOL_VAL
   arts_lf_stack_init(&c->ro_combine);
   c->ro_combine_group = NULL;
-  c->snapshot_req_in_flight = 0;
+  atomic_init(&c->snapshot_req_in_flight, 0u);
 #endif
 #ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_init(&c->buf_freelist);
   arts_lf_stack_init(&c->buf_retired);
-  atomic_store_explicit(&c->buf_holds, 0u, memory_order_relaxed);
+  atomic_init(&c->buf_holds, 0u);
 #endif
   /* Initialize the inlined home-directory fields only on the rank that owns
    * this DB's GUID home; non-home ranks leave db_self->home_initialized false
@@ -149,11 +146,11 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
     /* The creator boots holding the write right, with its own create-time
      * hold under it: possession, and one live writer. */
-    c->writer_count = ARTS_GRANT_SEED_HOLDING;
+    atomic_init(&c->writer_count, ARTS_GRANT_SEED_HOLDING);
 #endif
   } else if (kind == ARTS_DB_INIT_CREATOR_REMOTE) {
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
-    c->writer_count = ARTS_GRANT_SEED_HOLDING;
+    atomic_init(&c->writer_count, ARTS_GRANT_SEED_HOLDING);
 #endif
   }
 }
@@ -166,8 +163,9 @@ arts_cxl_slot_record_t arts_db_cxl_slot_record(struct arts_db_cache_s *cache,
     return ARTS_CXL_SLOT_KNOWN;
   }
   uint64_t expect = 0;
-  if (__atomic_compare_exchange_n(&cache->cxl_addr, &expect, addr, false,
-                                  __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+  if (atomic_compare_exchange_strong_explicit(&cache->cxl_addr, &expect, addr,
+                                              memory_order_release,
+                                              memory_order_acquire)) {
     return ARTS_CXL_SLOT_RECORDED;
   }
   return (expect == addr) ? ARTS_CXL_SLOT_KNOWN : ARTS_CXL_SLOT_CONFLICT;
@@ -181,11 +179,14 @@ uint64_t arts_db_cxl_slot_mint(uint64_t db_size) {
 }
 
 bool arts_db_cxl_slot_create(struct arts_db_cache_s *cache) {
-  if (cache == NULL || cache->db_size == 0 ||
-      __atomic_load_n(&cache->cxl_addr, __ATOMIC_ACQUIRE) != 0) {
+  uint64_t size = cache != NULL ? atomic_load_explicit(&cache->db_size,
+                                                       memory_order_relaxed)
+                                : 0u;
+  if (size == 0 ||
+      atomic_load_explicit(&cache->cxl_addr, memory_order_acquire) != 0) {
     return false;
   }
-  uint64_t addr = arts_db_cxl_slot_mint(cache->db_size);
+  uint64_t addr = arts_db_cxl_slot_mint(size);
   if (arts_db_cxl_slot_record(cache, addr) != ARTS_CXL_SLOT_RECORDED) {
     /* Another party named the slot first; the one minted here is left to
      * the arena, which reclaims nothing within a run. */
@@ -206,8 +207,8 @@ bool arts_db_cxl_slot_create(struct arts_db_cache_s *cache) {
  * whose object IS published never discards its slot: the slot belongs to the
  * block from the moment the cache names it. */
 void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache) {
-  uint64_t addr = __atomic_exchange_n(&cache->cxl_addr, (uint64_t)0,
-                                      __ATOMIC_ACQ_REL);
+  uint64_t addr = atomic_exchange_explicit(&cache->cxl_addr, (uint64_t)0,
+                                           memory_order_acq_rel);
   if (addr == 0) {
     return;
   }
@@ -590,13 +591,34 @@ static bool ro_combine_launch_owned(struct arts_db_cache_s *cache) {
   return true;
 }
 
-/* Claim the window if free and launch.  Push-then-claim on the acquire side
- * plus release-then-recheck here close the missed-wakeup race: a pusher that
- * loses the claim is guaranteed its node is seen either by the owner's next
- * isolation or by this loop after the owner releases. */
+/* Give the window up.  Release: the next claimer's request then follows
+ * everything this owner did while it held the window — on the terminal's
+ * path, the response's install — so no request is served while bytes
+ * credited to this cache are still unpublished here. */
+static void ro_combine_release(struct arts_db_cache_s *cache) {
+  atomic_store_explicit(&cache->snapshot_req_in_flight, 0u,
+                        memory_order_release);
+}
+
+/* Claim the window if free and launch.  Both callers have stored before
+ * they get here: a pusher its node, an owner its release of the window.  A
+ * pusher that loses the claim relies on the owner's re-probe to see its
+ * node, and an owner that finds the stack empty relies on any later pusher's
+ * claim to succeed, so each iteration's seq_cst fence orders the caller's
+ * store before its load: of two fences in S the later one's side sees the
+ * other side's store. */
 static void ro_combine_pump(struct arts_db_cache_s *cache) {
-  while (!arts_lf_stack_empty(&cache->ro_combine)) {
-    if (arts_atomic_cswap(&cache->snapshot_req_in_flight, 0, 1) != 0) {
+  for (;;) {
+    /* seq_cst fence: store->load pair with the other side's pass through
+     * this same fence (arts_db_acquire_remote_ro's push, a window release). */
+    atomic_thread_fence(memory_order_seq_cst);
+    if (arts_lf_stack_empty(&cache->ro_combine)) {
+      return;
+    }
+    unsigned int window_free = 0u;
+    if (!atomic_compare_exchange_strong_explicit(
+            &cache->snapshot_req_in_flight, &window_free, 1u,
+            memory_order_acq_rel, memory_order_relaxed)) {
       /* A reader that found a window already open: one request combining
        * kept off the wire. */
       INCREMENT_NUM_RO_COMBINE_JOINED_BY(1);
@@ -606,7 +628,7 @@ static void ro_combine_pump(struct arts_db_cache_s *cache) {
       INCREMENT_NUM_RO_COMBINE_WINDOW_BY(1);
       return; /* window stays owned until the response terminal */
     }
-    (void)arts_atomic_swap(&cache->snapshot_req_in_flight, 0);
+    ro_combine_release(cache);
   }
 }
 
@@ -631,7 +653,7 @@ void arts_db_ro_combine_on_terminal(struct arts_db_cache_s *cache) {
   if (ro_combine_launch_owned(cache)) {
     return;
   }
-  (void)arts_atomic_swap(&cache->snapshot_req_in_flight, 0);
+  ro_combine_release(cache);
   ro_combine_pump(cache);
 }
 void arts_db_ro_combine_grant_drain(struct arts_db_cache_s *cache) {
@@ -707,7 +729,10 @@ arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
  * on the home's copy before it completes, so a read that saw version 0 is
  * ordered after no release, and any published copy (version >= 1) is a value
  * it may be given.  Every drain runs once the slot holds one, and the slot's
- * version never decreases, so waking every waiter taken is exact. */
+ * version never decreases, so waking every waiter taken is exact.  The take
+ * is an acq_rel exchange paired with each parker's acq_rel push: a parker
+ * re-reads the version after its push, and a publisher drains after its
+ * stamp, so one of the two always sees the other. */
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&              \
     defined(ARTS_WRITE_POLICY_WT)
 void arts_db_drain_publication_waiters(struct arts_db_cache_s *cache) {
@@ -831,6 +856,8 @@ static bool pub_flight_carries_payload(struct arts_db_cache_s *cache) {
 #endif
 }
 
+static void pub_flight_abandon_land(struct arts_db_cache_s *cache);
+
 /* Drive ONE publish flight from the cache's current buffer state.  The caller
  * holds the FLYING claim.  may_block separates the two calling contexts: a
  * claiming releaser (worker thread — may run the credit-less announce/CTS
@@ -849,7 +876,10 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
    * before any payload existed) flies under the caller's version instead —
    * its waiters all registered at that same version source. */
   uint64_t version =
-      (buf != NULL) ? arts_atomic_read_u64(&buf->version) : fallback_version;
+      (buf != NULL) ? atomic_load_explicit(&buf->version, memory_order_acquire)
+                    : fallback_version;
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   unsigned int home_rank = arts_guid_get_rank(cache->db_guid);
   /* A claiming releaser gates on ITS OWN flight, not merely on a covering
    * ACK: a claim won after the claimer's registered waiter was already
@@ -875,8 +905,8 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
     }
     arts_db_buf_release(&buf_h);
     arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0,
-                           /*data=*/NULL, /*data_size=*/0, /*rdzv_txid=*/0,
-                           /*rdzv_cookie=*/0, /*return_grant=*/false);
+                         /*data_size=*/0, /*rdzv_txid=*/0, /*rdzv_cookie=*/0,
+                         /*return_grant=*/false);
     return gate;
   }
   /* Payload flight: consume the credit.  The acquire exchange pairs with the
@@ -885,19 +915,16 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
    * strong buffer ref transfers to the PUT's local completion — the source-
    * lifetime gate outlives even a shutdown-escaped waiter. */
   uint64_t txid =
-      __atomic_exchange_n(&cache->home_pub_txid, 0, __ATOMIC_ACQUIRE);
+      atomic_exchange_explicit(&cache->home_pub_txid, 0u, memory_order_acquire);
   if (txid != 0) {
-    arts_net_put_payload((int)home_rank,
-                         __atomic_load_n(&cache->home_pub_addr,
-                                         __ATOMIC_RELAXED),
-                         __atomic_load_n(&cache->home_pub_rkey,
-                                         __ATOMIC_RELAXED),
-                         txid, buf->data, cache->db_size,
-                         arts_db_buf_ref_release_cb, (void *)buf_h);
-    arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0,
-                           /*data=*/NULL, cache->db_size, txid,
-                           /*rdzv_cookie=*/0,
-                           pub_leg_takes_grant_return(cache));
+    arts_net_put_payload(
+        (int)home_rank,
+        atomic_load_explicit(&cache->home_pub_addr, memory_order_relaxed),
+        atomic_load_explicit(&cache->home_pub_rkey, memory_order_relaxed), txid,
+        buf->data, db_size, arts_db_buf_ref_release_cb, (void *)buf_h);
+    arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0, db_size,
+                         txid, /*rdzv_cookie=*/0,
+                         pub_leg_takes_grant_return(cache));
     return gate;
   }
   if (!may_block) {
@@ -906,8 +933,7 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
      * Abandon instead of aborting — the waiters wake unpublished, and the
      * destroy fan-out (or each waiter's own recheck) retires the cache. */
     arts_db_buf_release(&buf_h);
-    arts_db_pub_flight_abandon(cache);
-    __atomic_store_n(&cache->pub_flight, 0u, __ATOMIC_RELEASE);
+    pub_flight_abandon_land(cache);
     return NULL;
   }
   INCREMENT_NUM_PUB_CTS_FALLBACK_BY(1);
@@ -923,9 +949,8 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
   sem_init(&wr->sem, 0, 0);
   wr->landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   arts_send_db_publish(home_rank, cache->db_guid, version,
-                         (uint64_t)(uintptr_t)wr, /*data=*/NULL,
-                         cache->db_size, /*rdzv_txid=*/0, /*rdzv_cookie=*/0,
-                         /*return_grant=*/false);
+                       (uint64_t)(uintptr_t)wr, db_size, /*rdzv_txid=*/0,
+                       /*rdzv_cookie=*/0, /*return_grant=*/false);
   if (!arts_db_await_ack(&wr->sem)) {
     /* Shutdown escape: the flight is abandoned with the runtime.  A CTS
      * reply may still be writing the landing and posting through wr, so wr
@@ -938,17 +963,33 @@ pub_flight_drive(struct arts_db_cache_s *cache, bool may_block,
    * CTS reply always carries a landing. */
   assert(wr->landing.txid != 0);
   arts_net_put_payload((int)home_rank, wr->landing.addr, wr->landing.key,
-                       wr->landing.txid, buf->data, cache->db_size,
+                       wr->landing.txid, buf->data, db_size,
                        arts_db_buf_ref_release_cb, (void *)buf_h);
-  arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0,
-                         /*data=*/NULL, cache->db_size, wr->landing.txid,
-                         wr->landing.cookie,
-                         pub_leg_takes_grant_return(cache));
+  arts_send_db_publish(home_rank, cache->db_guid, version, /*cv=*/0, db_size,
+                       wr->landing.txid, wr->landing.cookie,
+                       pub_leg_takes_grant_return(cache));
   /* The commit carries cv 0 — the final ACK completes the FLIGHT, not this
    * rendezvous.  The CTS was the only writer through wr, so it dies here. */
   sem_destroy(&wr->sem);
   arts_free(wr);
   return gate;
+}
+
+/* No further leg can leave this flight: wake every waiter and land it.  A
+ * releaser may still join between the abandon's drain and the landing; its
+ * DIRTY fails the landing CAS, and the loop abandons the node it pushed. */
+static void pub_flight_abandon_land(struct arts_db_cache_s *cache) {
+  for (;;) {
+    arts_db_pub_flight_abandon(cache);
+    unsigned int expected = ARTS_PUB_FLYING;
+    if (atomic_compare_exchange_strong_explicit(&cache->pub_flight, &expected,
+                                                0u, memory_order_acq_rel,
+                                                memory_order_acquire)) {
+      return;
+    }
+    (void)atomic_exchange_explicit(&cache->pub_flight, ARTS_PUB_FLYING,
+                                   memory_order_acq_rel);
+  }
 }
 
 /* Abandon the cache's publish flight: wake EVERY parked waiter without a
@@ -968,8 +1009,7 @@ void arts_db_pub_flight_abandon(struct arts_db_cache_s *cache) {
   arts_db_grant_return_flight_abandoned(cache);
 #endif
   arts_lf_link_t *n =
-      (arts_lf_link_t *)__atomic_exchange_n(&cache->pub_parked, NULL,
-                                            __ATOMIC_ACQ_REL);
+      atomic_exchange_explicit(&cache->pub_parked, NULL, memory_order_acq_rel);
   arts_lf_link_t *fresh = arts_lf_stack_drain(&cache->pub_waiters);
   if (n == NULL) {
     n = fresh;
@@ -1001,19 +1041,19 @@ void arts_db_publish_sync(struct arts_db_cache_s *cache, uint64_t version) {
   arts_sched_fuzz_point(); /* widen the push<->flight-claim window */
   struct arts_db_pub_waiter_s *gate = NULL;
   for (;;) {
-    unsigned int f = __atomic_load_n(&cache->pub_flight, __ATOMIC_RELAXED);
+    unsigned int f =
+        atomic_load_explicit(&cache->pub_flight, memory_order_relaxed);
     if (f == 0u) {
       unsigned int expected = 0u;
-      if (__atomic_compare_exchange_n(&cache->pub_flight, &expected,
-                                      ARTS_PUB_FLYING, false, __ATOMIC_ACQ_REL,
-                                      __ATOMIC_RELAXED)) {
+      if (atomic_compare_exchange_strong_explicit(
+              &cache->pub_flight, &expected, ARTS_PUB_FLYING,
+              memory_order_acq_rel, memory_order_relaxed)) {
         gate = pub_flight_drive(cache, /*may_block=*/true, version);
         break;
       }
-    } else if (__atomic_compare_exchange_n(&cache->pub_flight, &f,
-                                           f | ARTS_PUB_DIRTY, false,
-                                           __ATOMIC_ACQ_REL,
-                                           __ATOMIC_RELAXED)) {
+    } else if (atomic_compare_exchange_strong_explicit(
+                   &cache->pub_flight, &f, f | ARTS_PUB_DIRTY,
+                   memory_order_acq_rel, memory_order_relaxed)) {
       INCREMENT_NUM_PUB_FLIGHT_JOIN_BY(1);
       break;
     }
@@ -1090,18 +1130,20 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
      * but every teacher writes the same {addr, rkey} — one DB has ONE stable
      * buffer — so the only ordering that matters is the txid release-store
      * publishing the triple to the consuming exchange. */
-    __atomic_store_n(&cache->home_pub_addr, a->credit_addr, __ATOMIC_RELAXED);
-    __atomic_store_n(&cache->home_pub_rkey, a->credit_rkey, __ATOMIC_RELAXED);
-    __atomic_store_n(&cache->home_pub_txid, a->credit_txid, __ATOMIC_RELEASE);
+    atomic_store_explicit(&cache->home_pub_addr, a->credit_addr,
+                          memory_order_relaxed);
+    atomic_store_explicit(&cache->home_pub_rkey, a->credit_rkey,
+                          memory_order_relaxed);
+    atomic_store_explicit(&cache->home_pub_txid, a->credit_txid,
+                          memory_order_release);
   }
   for (;;) {
     /* Waiters parked by the previous completion first, then everything that
-     * queued since.  Parked nodes are re-examined only here — under the
-     * FLYING claim exactly one completion runs at a time, so the parked
-     * field needs no synchronization. */
-    arts_lf_link_t *chain =
-        (arts_lf_link_t *)__atomic_exchange_n(&cache->pub_parked, NULL,
-                                              __ATOMIC_ACQ_REL);
+     * queued since.  Under the FLYING claim exactly one completion runs at a
+     * time; an abandon (a destroy, a shutdown) may take the parked nodes
+     * concurrently, which is why the take is an exchange. */
+    arts_lf_link_t *chain = atomic_exchange_explicit(&cache->pub_parked, NULL,
+                                                     memory_order_acq_rel);
     arts_lf_link_t *fresh = arts_lf_stack_drain(&cache->pub_waiters);
     if (chain == NULL) {
       chain = fresh;
@@ -1130,10 +1172,13 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
     if (uncovered != NULL) {
       /* Releases landed after the flight's stamp: keep the claim (dropping
        * any DIRTY — this drain subsumes it) and fly again; the buffer's
-       * current version now covers every parked waiter. */
-      __atomic_store_n(&cache->pub_parked, (void *)uncovered,
-                       __ATOMIC_RELEASE);
-      __atomic_store_n(&cache->pub_flight, ARTS_PUB_FLYING, __ATOMIC_RELEASE);
+       * current version now covers every parked waiter.  An exchange, not a
+       * store: a join it overwrites is read by it, so that joiner's node is
+       * seen by the next drain (arts_db_publish_sync pushes, then joins). */
+      atomic_store_explicit(&cache->pub_parked, uncovered,
+                            memory_order_release);
+      (void)atomic_exchange_explicit(&cache->pub_flight, ARTS_PUB_FLYING,
+                                     memory_order_acq_rel);
       INCREMENT_NUM_PUB_FLIGHT_TRAILING_BY(1);
       (void)pub_flight_drive(cache, /*may_block=*/false, a->version);
       /* Park-then-recheck against a concurrent destroy: once the route slot
@@ -1151,16 +1196,18 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
       return;
     }
     unsigned int expected = ARTS_PUB_FLYING;
-    if (__atomic_compare_exchange_n(&cache->pub_flight, &expected, 0u, false,
-                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    if (atomic_compare_exchange_strong_explicit(&cache->pub_flight, &expected,
+                                                0u, memory_order_acq_rel,
+                                                memory_order_acquire)) {
       return; /* flight landed */
     }
     /* DIRTY raced in after the drain: consume it and re-examine.  The word
      * stays in {FLYING, FLYING|DIRTY} for the whole completion (only a
-     * completion clears FLYING, and only one runs), so a plain store is
-     * enough — a DIRTY overwritten here is re-covered by the loop's next
-     * drain. */
-    __atomic_store_n(&cache->pub_flight, ARTS_PUB_FLYING, __ATOMIC_RELEASE);
+     * completion clears FLYING, and only one runs).  An exchange, not a
+     * store: a join it overwrites is read by it, so the joiner's push
+     * happens before the loop's next drain. */
+    (void)atomic_exchange_explicit(&cache->pub_flight, ARTS_PUB_FLYING,
+                                   memory_order_acq_rel);
   }
 }
 #endif /* publishing arms */
@@ -1216,7 +1263,8 @@ void arts_db_cache_common_destroy_pre(struct arts_db_cache_s *cache) {
   /* The slot is empty again, so the "has this block storage" byte goes back
    * with it: the two are one fact, and leaving a stale 0 would tell a use of
    * a resurrected cache that its payload is already there. */
-  __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
+  atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
+                        memory_order_release);
   /* Where the arm keeps a free-list it is not drained here: the storage
    * release that follows the destructor drains whatever is parked then, and
    * a buffer still out (a transfer's completion holding it) parks later,
@@ -1251,9 +1299,10 @@ static arts_route_table_t *quiescence_table(unsigned int t) {
 
 void arts_db_debug_quiescence_check(void) {
 #if ARTS_LOG_LEVEL >= 3
-  /* Every read below assumes the runtime's threads are gone.  A thread the
-   * shutdown gave up joining may still be mid transition, so the walk cannot
-   * judge and says so instead. */
+  /* Every read below assumes the runtime's threads are gone: the joins order
+   * every write before it, so each load is relaxed.  A thread the shutdown
+   * gave up joining may still be mid transition, so the walk cannot judge
+   * and says so instead. */
   unsigned int unjoined = atomic_load_explicit(
       &arts_shutdown_abandon.unjoined_threads, memory_order_relaxed);
   if (unjoined != 0) {
@@ -1348,8 +1397,8 @@ void arts_db_debug_quiescence_check(void) {
 #if (defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)) &&             \
     (!defined(ARTS_WRITE_POLICY_WB) || defined(ARTS_PROTOCOL_INV))
         if (quiescent && (!arts_lf_stack_empty(&c->pub_waiters) ||
-                          __atomic_load_n(&c->pub_parked, __ATOMIC_ACQUIRE) !=
-                              NULL)) {
+                          atomic_load_explicit(&c->pub_parked,
+                                               memory_order_relaxed) != NULL)) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has parked publish "
                      "waiters after a quiescent shutdown",
                      (unsigned long)c->db_guid);
@@ -1359,7 +1408,8 @@ void arts_db_debug_quiescence_check(void) {
 #ifdef ARTS_PROTOCOL_VAL
         if (quiescent && (!arts_lf_stack_empty(&c->ro_combine) ||
                           c->ro_combine_group != NULL ||
-                          arts_atomic_read(&c->snapshot_req_in_flight) != 0u)) {
+                          atomic_load_explicit(&c->snapshot_req_in_flight,
+                                               memory_order_relaxed) != 0u)) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a parked read or an open "
                      "read window after a quiescent shutdown",
                      (unsigned long)c->db_guid);
@@ -1373,7 +1423,7 @@ void arts_db_debug_quiescence_check(void) {
            * EDT on the requesting rank, whose shutdown judges it. */
           unsigned int local = 0;
           for (arts_lf_link_t *n = atomic_load_explicit(
-                   &c->publication_waiters.head, memory_order_acquire);
+                   &c->publication_waiters.head, memory_order_relaxed);
                n != NULL;
                n = atomic_load_explicit(&n->next, memory_order_relaxed)) {
             if (((struct arts_db_read_waiter_s *)n)->serve == NULL) {
@@ -1403,9 +1453,10 @@ void arts_db_debug_quiescence_check(void) {
          * them. */
         if (db->home_initialized) {
           bool baton = atomic_load_explicit(&db->invalidate_in_flight,
-                                            memory_order_acquire) != 0;
+                                            memory_order_relaxed) != 0;
 #ifdef ARTS_RELEASE_PURGE
-          unsigned int hw = arts_atomic_read(&c->writer_count);
+          unsigned int hw =
+              atomic_load_explicit(&c->writer_count, memory_order_relaxed);
           /* The home names no holder: its own possession is the directory.
            * The baton is held only by a thread inside the serving tail, and
            * every way out of the tail puts it down, so once every thread has
@@ -1423,7 +1474,7 @@ void arts_db_debug_quiescence_check(void) {
            * carries never comes home. */
           bool named = ARTS_GRANT_OWN_OF(hw);
           if (!baton && atomic_load_explicit(&db->pending_return_from,
-                                             memory_order_acquire) !=
+                                             memory_order_relaxed) !=
                             ARTS_GRANT_NO_RETURNER) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu home has a hand-back "
                        "parked with no tail to take it (word=%u)",
@@ -1431,10 +1482,11 @@ void arts_db_debug_quiescence_check(void) {
             viol++;
           }
 #else
-          bool named = atomic_load_explicit(&db->rw_holder,
-                                            memory_order_acquire) ==
-                       arts_global_rank_id;
-          unsigned int hw = arts_atomic_read(&c->writer_count);
+          bool named =
+              atomic_load_explicit(&db->rw_holder, memory_order_relaxed) ==
+              arts_global_rank_id;
+          unsigned int hw =
+              atomic_load_explicit(&c->writer_count, memory_order_relaxed);
           /* Directory and word must agree outside a round.  Inside one the
            * home has shipped the right and names the new holder only at its
            * confirmation, so the two legitimately disagree until the baton
@@ -1466,7 +1518,8 @@ void arts_db_debug_quiescence_check(void) {
           }
         }
         {
-          unsigned int w = arts_atomic_read(&c->writer_count);
+          unsigned int w =
+              atomic_load_explicit(&c->writer_count, memory_order_relaxed);
           /* Every hold has a named releaser, so after a quiescent shutdown
            * nothing may rest holding one. */
           if (quiescent && ARTS_GRANT_COUNT_OF(w) != 0u) {
@@ -1494,7 +1547,8 @@ void arts_db_debug_quiescence_check(void) {
            * state that edge cannot leave. */
           if (arts_guid_get_rank(c->db_guid) != arts_global_rank_id &&
               arts_global_rank_count > 1 && w == ARTS_GRANT_OWN &&
-              arts_atomic_read_u64(&c->pending_grant_return) == 0u) {
+              atomic_load_explicit(&c->pending_grant_return,
+                                   memory_order_relaxed) == 0u) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests holding the write "
                        "right with no hold under it and no return owed",
                        (unsigned long)c->db_guid);
@@ -1503,7 +1557,8 @@ void arts_db_debug_quiescence_check(void) {
 #endif
         }
 #ifdef ARTS_RELEASE_PURGE
-        if (arts_atomic_read_u64(&c->pending_grant_return) != 0u) {
+        if (atomic_load_explicit(&c->pending_grant_return,
+                                 memory_order_relaxed) != 0u) {
           ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests owing a return of the "
                      "write right",
                      (unsigned long)c->db_guid);
@@ -1519,8 +1574,8 @@ void arts_db_debug_quiescence_check(void) {
          * left to reach the edge again, and the directory waits on a return
          * no one will send. */
         {
-          uint64_t cw = atomic_load_explicit(&c->cache_state,
-                                             memory_order_acquire);
+          uint64_t cw =
+              atomic_load_explicit(&c->cache_state, memory_order_relaxed);
           if (CACHE_RO_ST(cw) == CACHE_ST_GRANT_PURGE &&
               CACHE_RO_CNT(cw) == 0u) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu rests owing a read-grant "
@@ -1541,18 +1596,19 @@ void arts_db_debug_quiescence_check(void) {
          * block of every non-home rank. */
         {
           uint64_t cw =
-              atomic_load_explicit(&c->cache_state, memory_order_acquire);
+              atomic_load_explicit(&c->cache_state, memory_order_relaxed);
           uint8_t pending =
-              __atomic_load_n(&c->payload_pending, __ATOMIC_ACQUIRE);
+              atomic_load_explicit(&c->payload_pending, memory_order_relaxed);
           uint64_t addr = arts_db_cxl_slot_addr(c);
+          uint64_t size =
+              atomic_load_explicit(&c->db_size, memory_order_relaxed);
           /* 1. No slot missing where a working copy exists.  A sentinel-
            * sized block has no slot on either residency and legitimately
            * rests at address 0. */
-          if (c->db_size != 0 && pending == 0u && addr == 0) {
+          if (size != 0 && pending == 0u && addr == 0) {
             ARTS_DEBUG("QUIESCENCE-DEBUG: guid %lu has a working copy but no "
                        "slot for it (size=%llu)",
-                       (unsigned long)c->db_guid,
-                       (unsigned long long)c->db_size);
+                       (unsigned long)c->db_guid, (unsigned long long)size);
             viol++;
           }
           /* 2. Each axis rests only where the single-CAS acquire / grant /
@@ -1573,8 +1629,8 @@ void arts_db_debug_quiescence_check(void) {
           {
             uint32_t teardown = 0u;
             if (db->home_initialized) {
-              teardown = EXCL_STATE_TEARDOWN(atomic_load_explicit(
-                  &db->lock_state, memory_order_acquire));
+              teardown = EXCL_STATE_TEARDOWN(
+                  atomic_load_explicit(&db->lock_state, memory_order_relaxed));
             }
             bool zero_zero =
                 (CACHE_RW_CNT(cw) == 0u && CACHE_RO_CNT(cw) == 0u);
@@ -1637,7 +1693,7 @@ void arts_db_debug_quiescence_check(void) {
            * found holders leaves the block undefined. */
           if (!(db->home_initialized &&
                 EXCL_STATE_TEARDOWN(atomic_load_explicit(
-                    &db->lock_state, memory_order_acquire)) != 0u)) {
+                    &db->lock_state, memory_order_relaxed)) != 0u)) {
             arts_shared_ptr_t bh = arts_db_buf_acquire(c);
             const struct arts_db_buffer_s *b =
                 (const struct arts_db_buffer_s *)(bh ? arts_shared_get(bh)
@@ -1661,7 +1717,7 @@ void arts_db_debug_quiescence_check(void) {
            * for someone who asked. */
           if (db->home_initialized) {
             uint64_t ls =
-                atomic_load_explicit(&db->lock_state, memory_order_acquire);
+                atomic_load_explicit(&db->lock_state, memory_order_relaxed);
             bool rwq = !arts_home_grantreq_queue_empty(&db->rw_waiters);
             bool roq = !arts_lf_stack_empty(&db->ro_waiters);
             if ((EXCL_STATE_W(ls) != 0u || EXCL_STATE_R(ls) != 0u) &&

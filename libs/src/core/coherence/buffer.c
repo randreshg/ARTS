@@ -184,7 +184,7 @@ arts_shared_ptr_t arts_db_buf_detached(uint64_t db_size,
 #ifdef ARTS_DB_BUF_POOL
   b->owner_cache = NULL;
 #endif
-  b->version = 0;
+  atomic_init(&b->version, 0);
   b->cb = arts_shared_make(b, buffer_deleter);
   *out = b;
   return b->cb;
@@ -204,11 +204,12 @@ void arts_db_buf_release(arts_shared_ptr_t *h) { arts_shared_release(h); }
  * per-acquire question "does this block still need materializing" is a byte
  * load instead of a refcounted look at the slot.  Called wherever a non-NULL
  * buffer ends up in the slot — including an install-if-absent that LOST,
- * since the winner's buffer is in there either way.  Release order pairs
- * with the relaxed load at the fast exit: the flag is a hint, and whoever
- * acts on it reads the pointer from the slot itself. */
+ * since the winner's buffer is in there either way.  Release: the install
+ * that put that buffer in the slot happens before the store, and the fast
+ * exit's acquire load hands it to a caller that reads the slot next. */
 static inline void buf_note_present(struct arts_db_cache_s *cache) {
-  __atomic_store_n(&cache->payload_pending, (uint8_t)0, __ATOMIC_RELEASE);
+  atomic_store_explicit(&cache->payload_pending, (uint8_t)0,
+                        memory_order_release);
 }
 
 #ifdef ARTS_CXL_DIRECT
@@ -238,7 +239,7 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
   if (nb == NULL) {
     return false; /* OOM — caller decides how to surface. */
   }
-  nb->version = version;
+  atomic_init(&nb->version, version);
   nb->data = (char *)payload;
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
@@ -267,9 +268,7 @@ bool arts_db_buf_adopt_external(struct arts_db_cache_s *cache, void *payload,
     buf_note_present(cache);
     return false;
   }
-  if (cache->db_size == 0) {
-    cache->db_size = db_size;
-  }
+  arts_db_cache_learn_size(cache, db_size);
   buf_note_present(cache);
   return true;
 }
@@ -297,11 +296,12 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
   /* A byte load answers the common case: once anything has installed a
    * buffer, no later use has to materialize one, and asking the slot itself
    * would cost every acquire a refcount round-trip on a shared line.
-   * Relaxed, because nothing rests on the answer — a caller that stops here
-   * goes on to read the pointer from the slot with its own acquire load, and
-   * a caller that reads a stale 1 simply tries an install that then fails
-   * and clears the flag. */
-  if (__atomic_load_n(&cache->payload_pending, __ATOMIC_RELAXED) == 0u) {
+   * Acquire: a caller that stops here reads the pointer from the slot next,
+   * and must find there the buffer whose install this 0 follows — a sized
+   * block's EDT would otherwise be handed NULL.  A caller that reads a stale
+   * 1 simply tries an install that then fails and clears the flag. */
+  if (atomic_load_explicit(&cache->payload_pending, memory_order_acquire) ==
+      0u) {
     return false;
   }
 #endif
@@ -327,7 +327,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
    * placeholder awaiting a publication.  An arm whose "has anyone published
    * yet" predicate is version > 0 must read this as published, or a reader
    * would hold for a writer that may never come. */
-  nb->version = 1;
+  atomic_init(&nb->version, 1);
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
   /* Install-if-absent, never the version-conditional publish: this buffer
@@ -339,9 +339,7 @@ bool arts_db_buf_ensure(struct arts_db_cache_s *cache, uint64_t db_size) {
     buf_note_present(cache);
     return false;
   }
-  if (cache->db_size == 0) {
-    cache->db_size = db_size;
-  }
+  arts_db_cache_learn_size(cache, db_size);
   buf_note_present(cache);
   return true;
 #endif
@@ -365,7 +363,8 @@ bool arts_db_buf_withdraw(struct arts_db_cache_s *cache, const void *payload) {
        * thread installs in between costs that descriptor's next materialize
        * one failed install and nothing else, whereas a 0 over an empty slot
        * is a claim no later call corrects -- so the restore is unconditional. */
-      __atomic_store_n(&cache->payload_pending, (uint8_t)1, __ATOMIC_RELEASE);
+      atomic_store_explicit(&cache->payload_pending, (uint8_t)1,
+                            memory_order_release);
     }
   }
   arts_db_buf_release(&h);
@@ -396,7 +395,8 @@ static struct arts_db_buffer_s *buf_publish(struct arts_db_cache_s *cache,
      * bumping in place; an acquire load pairs with that read-modify-write so
      * the comparison never observes a torn or reordered value. */
     if (old != NULL &&
-        __atomic_load_n(&old->version, __ATOMIC_ACQUIRE) >= new_version) {
+        atomic_load_explicit(&old->version, memory_order_acquire) >=
+            new_version) {
       /* Stale install: a newer (or equal) buffer is already published.
        * Drop our load ref, abandon the unpublished cb (keeps new_buf ours)
        * and end new_buf.  old stays alive via the slot's sentinel ref.
@@ -453,18 +453,14 @@ struct arts_db_buffer_s *arts_db_buf_install(struct arts_db_cache_s *cache,
   if (new_buf == NULL) {
     return NULL; /* OOM — caller decides how to surface. */
   }
-  new_buf->version = new_version;
+  atomic_init(&new_buf->version, new_version);
   /* Publish bytes into the buffer's payload (canonical user-visible storage). */
-  if (db_size > 0) {
-    if (data_payload != NULL) {
-      memcpy(new_buf->data, data_payload, (size_t)db_size);
-    }
-    /* Lazy-installed caches start with db_size==0; the first install learns
-     * the real size from the wire payload. */
-    if (cache->db_size == 0) {
-      cache->db_size = db_size;
-    }
+  if (db_size > 0 && data_payload != NULL) {
+    memcpy(new_buf->data, data_payload, (size_t)db_size);
   }
+  /* Lazy-installed caches start with db_size==0; the first install learns
+   * the real size from the wire payload. */
+  arts_db_cache_learn_size(cache, db_size);
   return buf_publish(cache, new_buf, new_version);
 #endif
 }
@@ -489,7 +485,7 @@ void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
   if (buf == NULL) {
     ARTS_ERROR("coherence: publish commit with no stable buffer installed");
   }
-  uint64_t cur = __atomic_load_n(&buf->version, __ATOMIC_ACQUIRE);
+  uint64_t cur = atomic_load_explicit(&buf->version, memory_order_acquire);
   if (version < cur) {
     /* Publishes to one home are serialized (one flight per rank, and the
      * write right migrates only between flights), so a version below the
@@ -501,7 +497,7 @@ void arts_db_buf_bump_inplace(struct arts_db_cache_s *cache,
     /* An equal version is an idempotent republish: a releaser whose waiter
      * was covered while it raced for the flight claim ships the same bytes
      * under the same stamp — the ACK matters, the stamp is a no-op. */
-    __atomic_store_n(&buf->version, version, __ATOMIC_RELEASE);
+    atomic_store_explicit(&buf->version, version, memory_order_release);
   }
   arts_db_buf_release(&h);
 #endif
@@ -570,7 +566,7 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
     arts_db_buf_landing_return(landing);
     return false;
   }
-  landing->version = version;
+  atomic_init(&landing->version, version);
   arts_shared_ptr_t cb = arts_shared_make(landing, buffer_deleter);
   landing->cb = cb;
   /* Install-if-absent, NOT the version-conditional publish: this landing
@@ -582,9 +578,7 @@ bool arts_db_buf_adopt_landing(struct arts_db_cache_s *cache, uint64_t version,
     buf_note_present(cache);
     return false;
   }
-  if (cache->db_size == 0) {
-    cache->db_size = db_size;
-  }
+  arts_db_cache_learn_size(cache, db_size);
   buf_note_present(cache);
   return true;
 #endif
@@ -603,10 +597,8 @@ arts_db_buf_install_landed(struct arts_db_cache_s *cache, uint64_t new_version,
              "is not this rank's");
   return NULL;
 #else
-  landing->version = new_version;
-  if (db_size > 0 && cache->db_size == 0) {
-    cache->db_size = db_size;
-  }
+  atomic_init(&landing->version, new_version);
+  arts_db_cache_learn_size(cache, db_size);
   return buf_publish(cache, landing, new_version);
 #endif
 }
@@ -622,8 +614,8 @@ uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache) {
    * a first-fetch landing, so the size-discovery round becomes the sentinel
    * fallback rather than every cold acquire's first leg.  0 = advertise no
    * landing (sentinel GUID or genuinely empty DB). */
-  return cache->db_size ? cache->db_size
-                        : arts_db_szhint_bound(cache->db_guid);
+  uint64_t size = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
+  return size ? size : arts_db_szhint_bound(cache->db_guid);
 }
 
 void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
@@ -634,7 +626,7 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
   (void)capacity;
   (void)arts_db_buf_adopt_external(
       cache, (void *)(uintptr_t)arts_db_cxl_slot_addr(cache), 0u,
-      cache->db_size);
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed));
 #else
   /* First-touch variant that sizes the ALLOCATION without declaring the
    * DB's size: `cache->db_size` only ever records a wire-derived exact
@@ -654,7 +646,7 @@ void arts_db_buf_prepare_inplace(struct arts_db_cache_s *cache,
   if (nb == NULL) {
     return; /* OOM — caller decides how to surface. */
   }
-  nb->version = 0;
+  atomic_init(&nb->version, 0);
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
   if (!arts_shared_slot_compare_exchange(&cache->buffer, NULL, cb)) {
@@ -685,9 +677,7 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
     if (db_size > 0 && data != NULL) {
       memcpy(buf->data, data, (size_t)db_size);
     }
-    if (cache->db_size == 0) {
-      cache->db_size = db_size;
-    }
+    arts_db_cache_learn_size(cache, db_size);
     arts_shared_release(&h);
     return;
   }
@@ -705,15 +695,11 @@ void arts_db_buf_write_inplace(struct arts_db_cache_s *cache, const void *data,
   if (nb == NULL) {
     return; /* OOM — caller decides how to surface. */
   }
-  nb->version = 0;
-  if (db_size > 0) {
-    if (data != NULL) {
-      memcpy(nb->data, data, (size_t)db_size);
-    }
-    if (cache->db_size == 0) {
-      cache->db_size = db_size;
-    }
+  atomic_init(&nb->version, 0);
+  if (db_size > 0 && data != NULL) {
+    memcpy(nb->data, data, (size_t)db_size);
   }
+  arts_db_cache_learn_size(cache, db_size);
   arts_shared_ptr_t cb = arts_shared_make(nb, buffer_deleter);
   nb->cb = cb;
   if (!arts_shared_slot_compare_exchange(&cache->buffer, NULL, cb)) {

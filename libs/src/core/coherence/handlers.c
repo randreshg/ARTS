@@ -27,15 +27,15 @@
  * (GRANT_RESPONSE, INV_DELIVER, EXCL_GRANT and the EXCL RETAIN messages)
  * looks its block up itself.
  *
- * Memory ordering: an ARTS atomic read-modify-write or compare-and-swap
- * (__sync_*) is a full fence; its swap (__sync_lock_test_and_set) is an acquire
- * barrier only, and its reads are acquire loads.  Handlers run concurrently on
- * every progress thread, and a self-send's handler runs inline on the sending
- * thread, a worker included, so no thread is any field's sole writer by role.
- * A field a handler shares with a worker or with another handler is accessed
- * atomically, or written plainly before an atomic RMW on a count or state word
- * that its reader observes first (incoming_new_owner is stored before the
- * writer_count decrement whose zero edge reads it).
+ * Memory ordering: handlers run concurrently on every progress thread, and a
+ * self-send's handler runs inline on the sending thread, a worker included,
+ * so no thread is any field's sole writer by role.  A field a handler shares
+ * with a worker or with another handler is accessed atomically (an
+ * `_Atomic(T)` word through atomic_*_explicit with the order its declaration
+ * names), or is written plainly before a release read-modify-write
+ * on a count or state word that its reader acquires first
+ * (incoming_new_owner is stored before the writer_count decrement whose zero
+ * edge reads it).
  */
 
 #include "arts/coherence/handlers.h"
@@ -56,7 +56,6 @@
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h" /* arts_net_rdzv_expect */
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h"
 
@@ -138,7 +137,7 @@ static inline void db_create_no_acquire_idle(struct arts_db_s *db,
    * CREATOR_HOME init made it the holder where the home revokes, and this
    * possession is the whole directory where grants come back unasked.  No
    * request can be queued yet, so there is nothing to serve. */
-  db->cache.writer_count = ARTS_GRANT_SEED_IDLE;
+  atomic_init(&db->cache.writer_count, ARTS_GRANT_SEED_IDLE);
 #endif
 }
 
@@ -246,7 +245,7 @@ void arts_handler_db_create(void *item_v, void *args_v) {
 #if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
     defined(ARTS_PROTOCOL_FLUSH)
   /* Kept for the return below, which echoes it to the creator. */
-  stub->cache.create_token = p->create_token;
+  atomic_init(&stub->cache.create_token, p->create_token);
 #endif
 #ifdef ARTS_USE_CXL
   /* The creator minted the block's store before sending this create; the home
@@ -272,7 +271,8 @@ void arts_handler_db_create(void *item_v, void *args_v) {
     /* The descriptor was never published; the store stays the creator's,
      * named again by the replay. */
 #ifdef ARTS_USE_CXL
-    __atomic_store_n(&stub->cache.cxl_addr, (uint64_t)0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&stub->cache.cxl_addr, (uint64_t)0,
+                          memory_order_relaxed);
 #endif
     arts_db_free(stub);
     arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_CREATE, p, sizeof(*p));
@@ -392,17 +392,12 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
 
   /* Every response kind carries the server's descriptor size; a hinted
    * first touch may reach any of them with the size still unlearned. */
-  if (cache->db_size == 0 && a->db_size > 0) {
-    cache->db_size = a->db_size;
-  }
+  arts_db_cache_learn_size(cache, a->db_size);
 
   if (a->data_present == 2) {
     /* Size-only CTS: the server holds data but our request carried no landing
-     * (first touch — db_size unknown).  Learn the size and re-issue the
-     * request; the re-request advertises a landing and is served for real. */
-    if (cache->db_size == 0) {
-      cache->db_size = a->db_size;
-    }
+     * (first touch — db_size unknown).  The size was learned above; re-issue
+     * the request, which now advertises a landing and is served for real. */
     arts_send_db_snapshot_request(cache, edt_guid, slot);
     return;
   }
@@ -438,7 +433,9 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     struct arts_db_buffer_s *landing =
         (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
     if (a->version == 0) {
-      (void)arts_db_buf_adopt_landing(cache, 1u, landing, cache->db_size);
+      (void)arts_db_buf_adopt_landing(
+          cache, 1u, landing,
+          atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     } else {
       arts_db_buf_landing_return(landing);
     }
@@ -455,7 +452,8 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
     struct arts_db_buffer_s *buf =
         (struct arts_db_buffer_s *)arts_shared_get(buf_h);
     uint64_t held =
-        buf != NULL ? __atomic_load_n(&buf->version, __ATOMIC_ACQUIRE) : 0u;
+        buf != NULL ? atomic_load_explicit(&buf->version, memory_order_acquire)
+                    : 0u;
     arts_db_buf_release(&buf_h);
     assert(a->version <= held &&
            "a reply that moves no bytes named a version this cache lacks");

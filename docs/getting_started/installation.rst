@@ -146,8 +146,9 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
      - OFF
      - This tree's own library keeps every data block's payload in CXL
        memory.  Requires ``ARTS_COHERENCE_PROTOCOL=EXCL``,
-       ``ARTS_RELEASE_POLICY=PURGE`` and ``ARTS_CXL_RESIDENCY``; anything
-       else is a configure error.
+       ``ARTS_RELEASE_POLICY=PURGE``, ``ARTS_CXL_RESIDENCY`` and an x86-64
+       target (the store orders the device with x86 flush and fence
+       instructions); anything else is a configure error.
    * - ``ARTS_CXL_RESIDENCY``
      - (empty)
      - ``STAGED`` (a rank-local copy staged from the block's slot at the

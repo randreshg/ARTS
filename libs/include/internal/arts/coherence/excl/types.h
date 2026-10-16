@@ -390,6 +390,15 @@ struct arts_db_excl_waiter_s {
   unsigned int slot;
 };
 
+/* A read request queued on the home's ro_waiters.  Written before the push
+ * that publishes it, read and freed by the frame whose drain took it (or by
+ * the home's teardown). */
+struct arts_lock_ro_node_s {
+  arts_lf_link_t link; /* FIRST */
+  unsigned int rank;
+  struct arts_rdzv_landing_s rdzv; /* the requester's grant/serve landing */
+};
+
 /* arts_home_grantreq_node_s and arts_home_grantreq_queue_s are declared in
  * coherence/types_common.h and defined in coherence/val/types.h for VAL.
  * The EXCL build defines its own arts_home_grantreq_queue_s here, matching
@@ -413,7 +422,15 @@ struct arts_home_grantreq_queue_s {
  * of reader ranks the owner must serve during the RO phase).  PURGE omits it
  * so sizeof(arts_db_cache_s) is unchanged in PURGE builds. */
 struct arts_db_cache_s {
-  _Atomic(uint64_t) cache_state; /* single coherence word — see CACHE_* */
+  /* This rank's coherence word (CACHE_* above), changed by CASes of the
+   * arbiter and, under RETAIN, by the acquire's count bump; every RMW is
+   * acq_rel.  An RMW releases what its thread wrote before it (installed or
+   * fetched bytes, home_pub_rdzv, migrate_rdzv, a holder's accesses to the
+   * block) to the thread whose later RMW or acquire load of the word reads
+   * it: an acquirer that serves itself on the word sees the bytes, and the
+   * zero-edge actor that ships, purges or returns them is ordered after
+   * every holder. */
+  _Atomic(uint64_t) cache_state;
   /* Single stable backing store: allocated once (first grant/create), written
    * in place by arts_db_buf_write_inplace on every later grant/publish, freed
    * only at destroy.  The address never moves, so DBs holding internal
@@ -439,38 +456,38 @@ struct arts_db_cache_s {
   struct arts_rdzv_landing_s home_pub_rdzv;
 #endif
   arts_guid_t db_guid;
-  uint64_t db_size;
+  /* The block's exact size once learned, 0 until then; relaxed throughout
+   * (see the VAL layout and arts_db_cache_learn_size). */
+  _Atomic(uint64_t) db_size;
 #ifdef ARTS_USE_CXL
-  /* The block's slot in the CXL store between turns.  Written once per block
-   * per rank — by the create that made it, or by the first grant that names
-   * it — and read by both funnels.  A plain integer accessed with the atomic
-   * builtins, like payload_pending. */
-  uint64_t cxl_addr;
+  /* The block's slot in the CXL store between turns.  Recorded by a CAS from
+   * 0, once per block per rank — by the create that made it, or by the first
+   * grant that names it — read by both funnels, and cleared only on a cache
+   * that was never published.  Only its own value: the slot's bytes move by
+   * the store's flushes at the ownership edges, which the cache word
+   * orders. */
+  _Atomic(uint64_t) cxl_addr;
 #endif
-  /* Does this cache's payload slot still need materializing?  1 until a
-   * buffer has been installed, 0 after — the first entitled use of a block
-   * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.
-   * Correctness never rests on it: a reader that sees 0 still reads the
-   * pointer from the slot itself, and a stale 1 costs one materialize
-   * attempt that then clears it.  The slot is monotone for a live cache —
-   * only the destructor puts NULL back — so a 0 can never go stale. */
-  uint8_t payload_pending;
+  /* 1 until a buffer has been installed, 0 after: stored 0 with release
+   * after the slot's install and read with acquire at the fast exit (see the
+   * VAL layout). */
+  _Atomic(uint8_t) payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
    * the home's directory, or a dependence's first touch.  A create that
    * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init. */
-  uint8_t init_kind;
+   * (arts_db_create_claims_stub); nothing else writes it after init.  Only
+   * its own value: one CAS decides between a claim and an answer. */
+  _Atomic(uint8_t) init_kind;
 };
 
 #ifdef ARTS_USE_CXL
 /* The arm's own observables: one read of the block's slot and one write back
- * per turn.  Plain integers accessed with the atomic builtins, like the
- * cache's field.  Read only by tests — the counter subsystem is compiled out
- * by the tree's counters-off default, and a counter-based oracle would change
- * what the whole suite runs under. */
-extern uint64_t arts_cxl_fetches;
-extern uint64_t arts_cxl_purges;
+ * per turn.  Statistics, relaxed throughout: only their own value.  Read only
+ * by tests — the counter subsystem is compiled out by the tree's counters-off
+ * default, and a counter-based oracle would change what the whole suite runs
+ * under. */
+extern _Atomic(uint64_t) arts_cxl_fetches;
+extern _Atomic(uint64_t) arts_cxl_purges;
 #endif
 
 /** Internal DataBlock descriptor (EXCL protocol).
@@ -488,6 +505,11 @@ struct arts_db_s {
    * stubs (arts_db_cache_stub_size()) end at lock_state (the first home field),
    * so they include home_initialized but omit every home-arm field. */
   bool home_initialized; /**< One-shot init sentinel (arts_db_home_init). */
+  /* The home's arbitration word (layouts above).  After its init every
+   * write is an acq_rel CAS of the arbiter, so each transition reads the one
+   * before it: the committer of a transition that pops, peeks or drains a
+   * waiter queue is ordered after every requester whose count it read, and
+   * sees what that requester queued before its own CAS. */
   _Atomic(uint64_t) lock_state;
   struct arts_home_grantreq_queue_s rw_waiters; /* Vyukov MPSC, pop-one */
   arts_lf_stack_t ro_waiters;                  /* Treiber, XCHG drain */
@@ -496,17 +518,20 @@ struct arts_db_s {
   /* Recall roster: ranks that have issued a RO request since the last drain.
    * Its OWN bitset — cached_ranks is the monotone destroy set and is written by
    * RW requesters too.  Set with fetch_or BEFORE the requester's lock_state CAS
-   * (the ordering that makes "untagged implies recalled" hold), drained by the
-   * CAS that takes w 0->1.  The set must stay a fetch_or and the read an atomic
-   * load: a test-then-store fast path would remove the claimer's RMW and reopen
-   * the store-load pair this ordering closes for free. */
+   * (the ordering that makes "untagged implies recalled" hold) and drained by
+   * an exchange after the CAS that takes w 0->1; the lock_state RMW chain
+   * between the two CASes carries the bit to the drain.  The set must stay a
+   * fetch_or: a test-then-store fast path could skip the store on a stale read
+   * of a bit a drain has already taken. */
   struct arts_rank_bitset_s ro_retainers;
 #endif
+#ifdef ARTS_USE_GPU
   /* GPU staging fields (full arts_db_s alloc; unused on the CPU EXCL path). */
   volatile unsigned int reader;
   volatile unsigned int writer;
   volatile unsigned int version;
   unsigned int time_stamp;
+#endif
 } ARTS_ALIGNED_MAX;
 
 #ifdef __cplusplus

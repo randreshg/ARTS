@@ -90,11 +90,14 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
    * a reader is redirected to that rank's retained, now stale copy).  Both go
    * remote-RW, which parks; the in-flight round's drain wakes them. */
   while (1) {
-    unsigned int wc = arts_atomic_read(&cache->writer_count);
+    unsigned int wc =
+        atomic_load_explicit(&cache->writer_count, memory_order_acquire);
     if ((int)wc <= 0) {
       return false; /* no grant, or one not yet confirmed — go remote-RW. */
     }
-    if (arts_atomic_cswap(&cache->writer_count, wc, wc + 1) == wc) {
+    if (atomic_compare_exchange_strong_explicit(&cache->writer_count, &wc,
+                                                wc + 1u, memory_order_acq_rel,
+                                                memory_order_relaxed)) {
       /* writer_count bumped; release_rw decrements the matching bump.
        * acquire_local may only come back NULL for a zero-sized (sentinel)
        * block: holding the grant on a SIZED block means holding its buffer,
@@ -102,7 +105,8 @@ bool arts_db_acquire_rw_local_fast(struct arts_db_cache_s *cache,
        * not absent.  The one exception is a block whose create took no hold:
        * its storage waits for a first user, and the CAS just proved this
        * rank is entitled to be it. */
-      (void)arts_db_buf_ensure(cache, cache->db_size);
+      (void)arts_db_buf_ensure(
+          cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
       /* A write turn taken on a grant this rank already held: the round trip
        * the sticky grant removed. */
       INCREMENT_NUM_GRANT_LOCAL_REUSE_BY(1);
@@ -133,17 +137,27 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
   arts_pending_rw_queue_push(&cache->pending_rw, w);
   arts_sched_fuzz_point(); /* widen the push<->coalescing-flag-CAS window */
+  /* seq_cst fence: store->load pair with arts_db_grant_take_waiters (and
+   * this function's own give-back below), whose clear of the flag is
+   * followed by a fence and a look at the stack.  Of the two fences in S,
+   * the later one's side sees the other's store: either this CAS reads the
+   * clear, or that look sees this push. */
+  atomic_thread_fence(memory_order_seq_cst);
 
   /* Open a request only for a waiter no grant covers.  Winning the flag
    * proves the last grant's take already ran (the consumer takes before it
-   * clears), so an empty stack means a grant served this waiter and nothing
-   * is owed; a non-empty one holds only waiters pushed after that take.  With
-   * nothing to ask for the flag goes back down, and the stack is looked at
-   * once more behind a full barrier: a waiter that pushed meanwhile and lost
-   * its CAS to this transient flag is then either seen here or wins the flag
-   * itself.  One request per grant, so this counts grants that had to move
-   * rather than waiters. */
-  if (arts_atomic_cswap(&cache->grant_req_in_flight, 0, 1) == 0) {
+   * clears, and the clear's release pairs with this claim), so an empty
+   * stack means a grant served this waiter and nothing is owed; a non-empty
+   * one holds only waiters pushed after that take.  With nothing to ask for
+   * the flag goes back down, and the stack is looked at once more behind a
+   * seq_cst fence: a waiter that pushed meanwhile and lost its CAS to this
+   * transient flag is then either seen here or wins the flag itself.  One
+   * request per grant, so this counts grants that had to move rather than
+   * waiters. */
+  unsigned int flag_free = 0u;
+  if (atomic_compare_exchange_strong_explicit(
+          &cache->grant_req_in_flight, &flag_free, 1u, memory_order_acq_rel,
+          memory_order_relaxed)) {
     for (;;) {
       arts_sched_fuzz_point(); /* widen the flag-win<->pending-check window */
       if (arts_pending_rw_queue_pending(&cache->pending_rw)) {
@@ -151,10 +165,16 @@ arts_db_acquire_remote_rw(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
         arts_send_db_grant_request(cache);
         break;
       }
-      __atomic_store_n(&cache->grant_req_in_flight, 0u, __ATOMIC_SEQ_CST);
+      atomic_store_explicit(&cache->grant_req_in_flight, 0u,
+                            memory_order_release);
+      /* seq_cst fence: the give-back's side of the pair whose other side is
+       * a pusher's fence above. */
       atomic_thread_fence(memory_order_seq_cst);
+      flag_free = 0u;
       if (!arts_pending_rw_queue_pending(&cache->pending_rw) ||
-          arts_atomic_cswap(&cache->grant_req_in_flight, 0, 1) != 0) {
+          !atomic_compare_exchange_strong_explicit(
+              &cache->grant_req_in_flight, &flag_free, 1u, memory_order_acq_rel,
+              memory_order_relaxed)) {
         break;
       }
     }
@@ -180,7 +200,8 @@ struct rw_drain_ctx_s {
 static void rw_drain_cb(arts_guid_t edt_guid, unsigned int slot, void *vctx) {
   struct rw_drain_ctx_s *ctx = (struct rw_drain_ctx_s *)vctx;
   /* Each woken waiter claims exactly one writer_count slot. */
-  arts_atomic_add(&ctx->cache->writer_count, 1);
+  atomic_fetch_add_explicit(&ctx->cache->writer_count, 1u,
+                            memory_order_acq_rel);
   /* A waiter woken here is being handed the write turn, so it must find
    * storage of the DB's declared size; the one buffer-less case is a
    * zero-sized (sentinel) block, whose defined value is the NULL pointer this
@@ -189,20 +210,25 @@ static void rw_drain_cb(arts_guid_t edt_guid, unsigned int slot, void *vctx) {
 }
 
 /* The coalescing flag's consumer half.  The chain is TAKEN before the flag
- * is cleared, so a producer that wins the flag afterwards finds every waiter
- * this grant serves already gone and requests nothing for them; what it does
- * find was pushed after the take, and no grant covers it.  The clear is then
- * followed, behind a full barrier, by one more look at the stack: a waiter
- * that pushed after the take while the flag was still up lost its CAS and
- * relies on this re-check to open its request.  Both halves are RMW or
- * seq_cst, so neither side's store can pass its own later load. */
+ * is cleared, and the clear is a release the next claim acquires, so a
+ * producer that wins the flag afterwards finds every waiter this grant
+ * serves already gone and requests nothing for them; what it does find was
+ * pushed after the take, and no grant covers it.  The clear is then
+ * followed by a seq_cst fence and one more look at the stack: a waiter that
+ * pushed after the take while the flag was still up lost its CAS and relies
+ * on this re-check to open its request.  The pusher passes a seq_cst fence
+ * between its push and its CAS (arts_db_acquire_remote_rw), so of the two
+ * fences in S the later one's side sees the other's store. */
 arts_lf_link_t *arts_db_grant_take_waiters(struct arts_db_cache_s *cache) {
   arts_lf_link_t *chain = arts_pending_rw_queue_take(&cache->pending_rw);
-  __atomic_store_n(&cache->grant_req_in_flight, 0u, __ATOMIC_SEQ_CST);
+  atomic_store_explicit(&cache->grant_req_in_flight, 0u, memory_order_release);
   atomic_thread_fence(memory_order_seq_cst);
   arts_sched_fuzz_point(); /* widen the clear<->re-check window */
+  unsigned int flag_free = 0u;
   if (arts_pending_rw_queue_pending(&cache->pending_rw) &&
-      arts_atomic_cswap(&cache->grant_req_in_flight, 0, 1) == 0) {
+      atomic_compare_exchange_strong_explicit(
+          &cache->grant_req_in_flight, &flag_free, 1u, memory_order_acq_rel,
+          memory_order_relaxed)) {
     INCREMENT_NUM_GRANT_MIGRATE_BY(1);
     arts_send_db_grant_request(cache);
   }
@@ -252,8 +278,9 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
    * ex-owner already holds on its next read.  The slot CAS is safe against the
    * redirect handler. */
   if (buf != NULL && cache->cached_version != NULL) {
-    arts_rank_u64_map_advance(cache->cached_version, arts_global_rank_id,
-                              buf->version);
+    arts_rank_u64_map_advance(
+        cache->cached_version, arts_global_rank_id,
+        atomic_load_explicit(&buf->version, memory_order_acquire));
   }
 #endif
   if (buf != NULL && cache->cached_version != NULL) {
@@ -265,14 +292,18 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
     map_size = sizeof(uint32_t) * 2;
   }
 
-  uint64_t version = (buf != NULL) ? buf->version : 0;
+  uint64_t version =
+      (buf != NULL) ? atomic_load_explicit(&buf->version, memory_order_acquire)
+                    : 0;
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   /* data_size carries the DB's size ALWAYS (descriptor state — known even
    * when no buffer exists yet): a hinted first-touch requester may have
    * skipped the size CTS, and a data-less grant is its only chance to learn
    * the exact size before its release publishes one.  Payload presence is
    * signaled by rdzv_txid (wire) / trailing bytes (self), never by
    * data_size. */
-  uint64_t payload_size = (buf != NULL) ? cache->db_size : 0;
+  uint64_t payload_size = (buf != NULL) ? db_size : 0;
   struct arts_msg_grant_response_packet_s hdr;
   arts_fill_packet_header(&hdr.header, sizeof(hdr) + map_size,
                           MSG_DB_GRANT_RESPONSE);
@@ -316,12 +347,12 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
          * invented first image elsewhere already carries, which makes a
          * genuine install retreat as stale. */
         (void)arts_db_buf_adopt_landing(cache, version ? version : 1u, landing,
-                                        cache->db_size);
+                                        db_size);
       }
     }
     uint64_t total = sizeof(hdr) + map_size + payload_size;
     hdr.header.size = total;
-    hdr.data_size = cache->db_size;
+    hdr.data_size = db_size;
     hdr.rdzv_txid = 0;
     hdr.rdzv_cookie = 0;
     char *pkt = (char *)arts_malloc((size_t)total);
@@ -354,7 +385,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
      * longer reads them (a revoking home additionally keeps this cache's
      * buffer slot untouched until the new owner CONFIRMs, but the ref makes
      * the lifetime explicit rather than assumed). */
-    hdr.data_size = cache->db_size;
+    hdr.data_size = db_size;
     hdr.rdzv_txid = rdzv.txid;
     hdr.rdzv_cookie = rdzv.cookie;
     arts_net_put_payload((int)new_owner, rdzv.addr, rdzv.key, rdzv.txid,
@@ -367,7 +398,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
      * block it is the new owner's only storage, and the receiving handler
      * adopts it rather than returning it to the pool; data_size tells that
      * handler the exact size either way. */
-    hdr.data_size = cache->db_size;
+    hdr.data_size = db_size;
     hdr.rdzv_txid = 0;
     hdr.rdzv_cookie = rdzv.cookie;
     if (buf != NULL) {
@@ -386,6 +417,7 @@ void arts_db_send_grant_response(struct arts_db_cache_s *cache,
  * the next round, and clearing it up front leaves that fresh publish intact.
  * The field is the channel only where the home revokes a holder; a policy
  * whose grants move through the home never writes it. */
+#ifndef ARTS_RELEASE_PURGE
 void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   unsigned int new_owner = cache->incoming_new_owner;
   struct arts_rdzv_landing_s rdzv = cache->incoming_new_owner_rdzv;
@@ -405,7 +437,8 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
   if (have != ARTS_GRANT_VERSION_NONE) {
     arts_shared_ptr_t h = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
-    data_less = (b != NULL && arts_atomic_read_u64(&b->version) == have);
+    data_less = (b != NULL && atomic_load_explicit(
+                                  &b->version, memory_order_acquire) == have);
     arts_db_buf_release(&h);
   }
 #else
@@ -413,6 +446,7 @@ void arts_db_grant_ship_pending(struct arts_db_cache_s *cache) {
 #endif
   arts_db_send_grant_response(cache, new_owner, &rdzv, data_less);
 }
+#endif /* !ARTS_RELEASE_PURGE */
 
 /* ===== Home-side ownership handlers (VAL, INV) =======================
  * GRANT_REQUEST exists only in the arms that link this TU.  The
@@ -443,6 +477,8 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   if (requester != arts_global_rank_id) {
     (void)arts_rank_bitset_set(&db->cached_ranks, requester);
   }
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
 #ifdef ARTS_WRITE_POLICY_WT
   /* The write-through home holds this block's canonical bytes for its whole
    * lifetime, and from here on it owes them to someone: the grant it is
@@ -450,27 +486,33 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
    * into them.  A block whose create took no hold has not been given storage
    * yet, and this request is its first use — so materialize it here, where
    * the home is provably entitled to the block's first image. */
-  (void)arts_db_buf_ensure(cache, cache->db_size);
+  (void)arts_db_buf_ensure(cache, db_size);
 #endif
-  if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
-      cache->db_size > 0 && arts_global_rank_count > 1) {
+  if (a->rdzv.txid == 0 && requester != arts_global_rank_id && db_size > 0 &&
+      arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — home only
      * queues requests that carry a landing (or target a sentinel DB, whose
      * transfers are data-less).  The requester re-issues with a landing.
      * The home's OWN landing-less request is not a size probe: it wants the
      * permission without payload and queues like any other. */
-    arts_send_db_grant_cts(requester, cache->db_guid, cache->db_size);
+    arts_send_db_grant_cts(requester, cache->db_guid, db_size);
     return;
   }
   arts_home_grantreq_queue_push(&db->pending_rw, requester, &a->rdzv,
                                 a->have_version);
   arts_sched_fuzz_point(); /* widen the push<->baton-CAS window */
+  /* seq_cst fence: store->load pair with every baton release (the round
+   * start's and the round close's under RETAIN, the serving tail's exits
+   * under PURGE), each a store of 0 followed by a fence and a probe of this
+   * FIFO or of the home's possession.  Of the two fences in S the later
+   * one's side sees the other's store: either the releaser's probe finds this
+   * request, or the release policy's check below (the baton CAS, or the
+   * home's possession) sees the release. */
+  atomic_thread_fence(memory_order_seq_cst);
 
   /* The requester is queued; what the home does about it is the release
-   * policy's answer (coherence/grant_retain.c / grant_purge.c).  The push
-   * above is the publication half of a publish-then-check pair in both: a
-   * server that decides "nothing queued" after this push must have seen it. */
+   * policy's answer (coherence/grant_retain.c / grant_purge.c). */
   arts_db_grant_request_arrived(cache, db, requester);
 }
 
@@ -526,7 +568,7 @@ void arts_send_db_grant_request(struct arts_db_cache_s *cache) {
     arts_shared_ptr_t hv = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *hb = (struct arts_db_buffer_s *)arts_shared_get(hv);
     if (hb != NULL) {
-      have_version = arts_atomic_read_u64(&hb->version);
+      have_version = atomic_load_explicit(&hb->version, memory_order_acquire);
     }
     arts_db_buf_release(&hv);
   }
@@ -578,9 +620,7 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v) {
   struct arts_msg_grant_cts_packet_s *p =
       (struct arts_msg_grant_cts_packet_s *)args_v;
   arts_db_cache_note_answered(cache); /* before the answer takes effect */
-  if (cache->db_size == 0) {
-    cache->db_size = p->db_size;
-  }
+  arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_grant_request(cache);
 }
 

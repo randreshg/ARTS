@@ -456,11 +456,15 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
              * assembled from both rather than copied from one span. */
             push_data_to_stream(arts_gpu->device, data_ptr, (void *)db,
                                 sizeof(struct arts_db_s), buffered);
-            if (db->cache.db_size > 0) {
+            if (atomic_load_explicit(&db->cache.db_size, memory_order_relaxed) >
+                0) {
               push_data_to_stream(
                   arts_gpu->device,
                   (void *)((char *)data_ptr + sizeof(struct arts_db_s)),
-                  depv[i].ptr, (size_t)db->cache.db_size, buffered);
+                  depv[i].ptr,
+                  (size_t)atomic_load_explicit(&db->cache.db_size,
+                                               memory_order_relaxed),
+                  buffered);
             }
           }
           // Must have already launched the memcpy before setting real_data or
@@ -538,7 +542,8 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
       /* This subtype keeps its payload inline, so its descriptor is the bytes
        * before the slot pointer. */
       struct arts_db_s *cb_db = (struct arts_db_s *)depv[i].ptr - 1;
-      size_t size = (size_t)(cb_db->cache.db_size);
+      size_t size = (size_t)(atomic_load_explicit(&cb_db->cache.db_size,
+                                                  memory_order_relaxed));
       get_data_from_stream(arts_gpu->device, depv[i].ptr, host_depv[i].ptr,
                            size, arts_node_info.gpu_buff_on && !gpu_edt->lib);
     }
@@ -587,7 +592,8 @@ void free_gpu_item(arts_route_item_t *item) {
       arts_lc_meta_t host;
       host.guid = key;
       host.data = (void *)(db + 1);
-      host.data_size = db->cache.db_size;
+      host.data_size =
+          atomic_load_explicit(&db->cache.db_size, memory_order_relaxed);
       host.host_version = &db->version;
       host.host_time_stamp = &db->time_stamp;
       host.gpu_version = 0;
@@ -819,7 +825,6 @@ void arts_gpu_host_wrap_up(void *edt_packet, arts_guid_t to_signal,
                            uint32_t slot, arts_guid_t data_guid) {
   arts_gpu_edt_t *edt = (arts_gpu_edt_t *)edt_packet;
   uint32_t paramc = edt->wrapper_edt.paramc;
-  uint32_t depc = edt->wrapper_edt.depc;
   const uint64_t *paramv = (uint64_t *)(edt + 1);
   arts_edt_dep_t *depv = (arts_edt_dep_t *)(paramv + paramc);
 
@@ -1102,7 +1107,8 @@ void internal_lc_sync_gpu(arts_guid_t acq_guid, struct arts_db_s *db) {
     arts_lc_meta_t dev;
     host.guid = acq_guid;
     host.data = (void *)(db + 1);
-    host.data_size = db->cache.db_size;
+    host.data_size =
+        atomic_load_explicit(&db->cache.db_size, memory_order_relaxed);
     host.host_version = &db->version;
     host.host_time_stamp = &db->time_stamp;
     host.gpu_version = 0;
@@ -1142,7 +1148,8 @@ void internal_lc_sync_gpu(arts_guid_t acq_guid, struct arts_db_s *db) {
 
           dev.guid = acq_guid;
           dev.data = (void *)(temp_space + 1);
-          dev.data_size = temp_space->cache.db_size;
+          dev.data_size = atomic_load_explicit(&temp_space->cache.db_size,
+                                               memory_order_relaxed);
           dev.host_version = &temp_space->version;
           dev.host_time_stamp = &temp_space->time_stamp;
           dev.gpu_version = gpu_version;

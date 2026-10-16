@@ -28,8 +28,7 @@
 #include "arts/system/threads.h"     /* arts_global_rank_id */
 #include "arts/transport/net.h"   /* arts_transport_send_async */
 #include "arts/transport/protocol.h" /* arts_fill_packet_header, MSG_* */
-#include "arts/utils/atomics.h"
-#include "arts/utils/malloc.h" /* pairing ctx */      /* arts_atomic_* */
+#include "arts/utils/malloc.h" /* pairing ctx */
 
 /* ===== 8-case acquire dispatch (WT) ================================
  * Whole arts_handler_db_acquire body for the WT build.  Diverges from WB only
@@ -51,7 +50,10 @@ void arts_handler_db_acquire(void *item, void *args) {
    * post-install rw_holder flip), so > 0 means owner and <= 0 means
    * not-owner; the (int) cast is defensive.
    * An owned read here is safe to serve RO from the local buffer. */
-  bool is_owner = ((int)arts_atomic_read(&cache->writer_count) > 0);
+  bool is_owner = ((int)atomic_load_explicit(&cache->writer_count,
+                                             memory_order_acquire) > 0);
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
 
   if (is_home) {
     /* First use of a block whose create took no hold: its storage was left
@@ -59,7 +61,7 @@ void arts_handler_db_acquire(void *item, void *args) {
      * canonical copy — so if the block has none, this acquiring thread
      * allocates it, on its own node.  A no-op for every other block (the
      * home's buffer exists from create, at version 0 until published). */
-    (void)arts_db_buf_ensure(cache, cache->db_size);
+    (void)arts_db_buf_ensure(cache, db_size);
   }
 
   if (mode == DB_MODE_RO) {
@@ -76,13 +78,12 @@ void arts_handler_db_acquire(void *item, void *args) {
             (struct arts_db_buffer_s *)arts_shared_get(ph);
         unpublished =
             (pb != NULL &&
-             __atomic_load_n(&pb->version, __ATOMIC_ACQUIRE) == 0);
+             atomic_load_explicit(&pb->version, memory_order_acquire) == 0);
         arts_db_buf_release(&ph);
       }
-      void *payload = (unpublished && cache->db_size > 0)
-                          ? NULL
-                          : arts_db_acquire_local(cache);
-      if (payload == NULL && cache->db_size > 0) {
+      void *payload =
+          (unpublished && db_size > 0) ? NULL : arts_db_acquire_local(cache);
+      if (payload == NULL && db_size > 0) {
         /* Home before the creator's first PUBLISH: a cross-rank create
          * installs home metadata only — no buffer exists until the creator's
          * release publishes one.  A dependence satisfied before that release
@@ -97,15 +98,20 @@ void arts_handler_db_acquire(void *item, void *args) {
         w->slot = slot;
         w->serve = NULL;
         arts_lf_stack_push(&cache->publication_waiters, &w->link);
-        /* Race recovery: an install may have landed between the NULL read
-         * and the push — drain (our own node included) so nobody parks
-         * forever.  The atomic_exchange drain is single-actor safe. */
+        /* Race recovery: a publication may have landed between the version
+         * read and the push — drain (our own node included) so nobody parks
+         * forever.  Same-word pairing on publication_waiters closes the
+         * store->load shape with every publisher, which stamps the version
+         * and then drains (arts_db_drain_publication_waiters): of this acq_rel
+         * push and that acq_rel drain, the later one in the stack's
+         * modification order reads the other, so either the drain takes this
+         * node or this re-read sees the stamp. */
         arts_shared_ptr_t rh = arts_db_buf_acquire(cache);
         struct arts_db_buffer_s *rb =
             (struct arts_db_buffer_s *)arts_shared_get(rh);
         bool published =
             (rb != NULL &&
-             __atomic_load_n(&rb->version, __ATOMIC_ACQUIRE) > 0);
+             atomic_load_explicit(&rb->version, memory_order_acquire) > 0);
         arts_db_buf_release(&rh);
         if (published) {
           arts_db_drain_publication_waiters(cache);
@@ -150,11 +156,10 @@ void arts_db_release_created(struct arts_db_cache_s *cache) {
 
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   (void)payload;
-  /* Defensive: no local hold to drop means our acquire never bumped ownership
-   * (e.g. a cache already torn down by a destroy fan-out); decrementing would
-   * underflow.  Which word states carry no hold is the release policy's —
-   * possession alone is one of them under a voluntary-return policy and not
-   * under a revoked one. */
+  /* Defensive: no local hold to drop means our acquire never bumped ownership;
+   * decrementing would underflow.  Which word states carry no hold is the
+   * release policy's — possession alone is one of them under a
+   * voluntary-return policy and not under a revoked one. */
   if (arts_db_grant_release_skip(cache)) {
     return;
   }
@@ -165,8 +170,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   uint64_t new_version = 0;
   if (buf != NULL) {
-    arts_atomic_add_u64(&buf->version, 1);
-    new_version = arts_atomic_read_u64(&buf->version);
+    new_version =
+        atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel) + 1u;
   }
   bool is_home = (arts_guid_get_rank(cache->db_guid) == arts_global_rank_id);
   /* WT keeps home's RO copy fresh: pure synchronous publish every release
@@ -212,20 +217,21 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
                         uint64_t db_size, arts_db_init_kind_t kind,
                         unsigned int creator_rank) {
   arts_pending_rw_queue_init(&c->pending_rw);
-  /* Target of the grant's next ship.  Under RETAIN each round's INVALIDATE
-   * publishes it before withdrawing the sentinel; under PURGE nothing writes
-   * it, since the holder hands the grant back to the home itself.  Starts at
-   * the sentinel: no transfer pending. */
+#ifndef ARTS_RELEASE_PURGE
+  /* Target of the grant's next ship, published by each round's INVALIDATE
+   * before it withdraws the sentinel.  Starts at the sentinel: no transfer
+   * pending. */
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
+#endif
   /* WT has no owner-side dedup map (home serves RO via SNAPSHOT_REQUEST): the
    * owner→owner transfer always ships an empty map.  NULL so the shared ship
    * helper's map-build gate takes its empty-map branch. */
   c->cached_version = NULL;
 #ifdef ARTS_RELEASE_PURGE
-  c->pending_grant_return = 0u;
-  c->grant_generation = 0u;
+  atomic_init(&c->pending_grant_return, 0u);
+  atomic_init(&c->grant_generation, 0u);
 #endif
   arts_db_cache_common_init(c, db_guid, db_size, kind, creator_rank);
 }
@@ -293,12 +299,14 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
    * (cur >= master_v), no payload moves: reply no-data, echoing the unused
    * landing for recycling.  The ledger is credited by serves AND by the
    * requester's own publishs, so a self-produced copy dedups too. */
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   uint64_t cur = arts_rank_u64_map_get(db->cached_version, requester);
   if (cur >= master_v) {
     arts_db_buf_release(&master_h);
     arts_send_db_snapshot_response(requester, cache->db_guid, master_v,
-                                   edt_guid, slot, /*kind=*/0,
-                                   cache->db_size, rdzv, NULL);
+                                   edt_guid, slot, /*kind=*/0, db_size, rdzv,
+                                   NULL);
     return;
   }
   if (rdzv->txid == 0) {
@@ -307,15 +315,14 @@ static void update_cached_version_max(struct arts_db_cache_s *cache,
      * landing.  The watermark does NOT advance on this leg. */
     arts_db_buf_release(&master_h);
     arts_send_db_snapshot_response(requester, cache->db_guid, master_v,
-                                   edt_guid, slot, /*kind=*/2,
-                                   cache->db_size, rdzv, NULL);
+                                   edt_guid, slot, /*kind=*/2, db_size, rdzv,
+                                   NULL);
     return;
   }
   arts_rank_u64_map_advance(db->cached_version, requester, master_v);
   /* master_h transfers into the sender (PUT source-lifetime pin). */
   arts_send_db_snapshot_response(requester, cache->db_guid, master_v, edt_guid,
-                                 slot, /*kind=*/1, cache->db_size, rdzv,
-                                 master_h);
+                                 slot, /*kind=*/1, db_size, rdzv, master_h);
 }
 
 /* Deferred SNAPSHOT_REQUEST serve (a read waiter's `serve` arm): the request
@@ -331,7 +338,9 @@ static void home_serve_deferred_read(struct arts_db_cache_s *cache,
   /* Acquire pairs with the publish commit's release-store version stamp: a
    * serve must never stamp a version whose bytes it cannot yet see. */
   uint64_t master_v =
-      master != NULL ? __atomic_load_n(&master->version, __ATOMIC_ACQUIRE) : 0u;
+      master != NULL
+          ? atomic_load_explicit(&master->version, memory_order_acquire)
+          : 0u;
   assert(master_v >= 1 && "a deferred read is served only once published");
   /* master_h transfers into the reply path (consumed there). */
   update_cached_version_max(cache, w->requester, master_v, master_h, w->edt_guid,
@@ -362,13 +371,15 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
    * canonical holder on this arm and the reply must carry the block's first
    * image, so it is materialized here — on a progress thread, hence on
    * whatever node that thread sits on rather than the requester's. */
-  (void)arts_db_buf_ensure(cache, cache->db_size);
+  uint64_t db_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
+  (void)arts_db_buf_ensure(cache, db_size);
 
   arts_shared_ptr_t master_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *master =
       (struct arts_db_buffer_s *)arts_shared_get(master_h);
   if (master != NULL &&
-      __atomic_load_n(&master->version, __ATOMIC_ACQUIRE) == 0) {
+      atomic_load_explicit(&master->version, memory_order_acquire) == 0) {
     /* Present-but-unpublished (v0, installed at create): park exactly as
      * if no buffer existed — the creator's first publish is the
      * publication point. */
@@ -386,9 +397,9 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
      *       is entitled to observe, so PARK the serve among the
      *       publication waiters; the first publish install drains it and
      *       re-issues the serve with the original requester/landing.
-     * NOT a destroy condition -- the precheck above (destroy_state) is
-     * authoritative for that. */
-    if (cache->db_size > 0) {
+     * NOT a destroy condition: a destroyed block's slot is withdrawn, so this
+     * body never runs for one. */
+    if (db_size > 0) {
       struct arts_db_read_waiter_s *w =
           (struct arts_db_read_waiter_s *)arts_malloc(sizeof(*w));
       w->edt_guid = edt_guid;
@@ -399,12 +410,14 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       arts_lf_stack_push(&cache->publication_waiters, &w->link);
       /* Race recovery: a publish may have landed between the version read
        * and the push — drain (our own node included) so no serve parks
-       * forever. */
+       * forever.  Same-word pairing on publication_waiters with the
+       * publisher's stamp-then-drain, as at the acquire's parker above. */
       arts_shared_ptr_t rh = arts_db_buf_acquire(cache);
       struct arts_db_buffer_s *rb =
           (struct arts_db_buffer_s *)arts_shared_get(rh);
       bool published =
-          (rb != NULL && __atomic_load_n(&rb->version, __ATOMIC_ACQUIRE) > 0);
+          (rb != NULL &&
+           atomic_load_explicit(&rb->version, memory_order_acquire) > 0);
       arts_db_buf_release(&rh);
       if (published) {
         arts_db_drain_publication_waiters(cache);
@@ -412,13 +425,14 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
       return;
     }
     arts_send_db_snapshot_response(requester, cache->db_guid, /*version=*/0,
-                                   edt_guid, slot, /*kind=*/0, cache->db_size,
+                                   edt_guid, slot, /*kind=*/0, db_size,
                                    &a->rdzv, NULL);
     return;
   }
   /* Acquire pairs with the publish commit's release-store version stamp: a
    * serve must never stamp a version whose bytes it cannot yet see. */
-  uint64_t master_v = __atomic_load_n(&master->version, __ATOMIC_ACQUIRE);
+  uint64_t master_v =
+      atomic_load_explicit(&master->version, memory_order_acquire);
   /* master_h transfers into the reply path (consumed there). */
   update_cached_version_max(cache, requester, master_v, master_h, edt_guid, slot,
                        &a->rdzv);
@@ -500,32 +514,25 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
                                cache);
     return;
   }
-  if (a->data_inline != 0) {
-    /* A home-resident writer mutates the stable buffer directly and its
-     * release publishes nothing over this plane — an inline publish reaching
-     * this arm means the release path regressed. */
-    ARTS_ERROR("coherence: inline same-rank publish is unreachable under a "
-               "home-canonical write-through release path");
-  }
   if (a->rdzv_txid == 0) {
     /* Announce: the releaser holds a->data_size dirty bytes and no home
      * address yet.  Advertise the STABLE buffer as the landing (the PUT lands
      * in place; a concurrent snapshot serve may ship a torn old/new word mix,
      * which the memory model already permits for unordered readers) and mint
      * the pairing txid.  Nothing is allocated; nothing installs at commit. */
-    if (a->data_size > cache->db_size) {
+    uint64_t db_size =
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed);
+    if (a->data_size > db_size) {
       ARTS_ERROR("coherence: publish announce of %llu bytes exceeds the "
                  "DB's %llu-byte stable buffer",
-                 (unsigned long long)a->data_size,
-                 (unsigned long long)cache->db_size);
+                 (unsigned long long)a->data_size, (unsigned long long)db_size);
     }
     struct arts_rdzv_landing_s landing = {0, 0, 0, 0};
     arts_shared_ptr_t mh = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);
-    if (master == NULL ||
-        !arts_net_rdzv_local(master->data, cache->db_size, &landing.addr,
-                             &landing.key)) {
+    if (master == NULL || !arts_net_rdzv_local(master->data, db_size,
+                                               &landing.addr, &landing.key)) {
       /* Unreachable: the releaser obtained its write right from this home,
        * and serving that request is one of the points that materializes the
        * home's buffer. */
@@ -598,8 +605,10 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
 /* The hold is possession plus this create's own writer, from a word that
  * holds nothing. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
-  return arts_atomic_cswap(&cache->writer_count, 0u,
-                           ARTS_GRANT_SEED_HOLDING) == 0u;
+  unsigned int none = 0u;
+  return atomic_compare_exchange_strong_explicit(
+      &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
+      memory_order_acq_rel, memory_order_relaxed);
 }
 
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) { (void)db; }
@@ -628,8 +637,9 @@ void arts_db_create_install_home_buffer(struct arts_db_cache_s *cache,
 uint64_t arts_db_grant_serve_version(struct arts_db_s *db) {
   arts_shared_ptr_t h = arts_db_buf_acquire(&db->cache);
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
-  uint64_t v = (b != NULL) ? arts_atomic_read_u64(&b->version)
-                           : ARTS_GRANT_VERSION_NONE;
+  uint64_t v = (b != NULL)
+                   ? atomic_load_explicit(&b->version, memory_order_acquire)
+                   : ARTS_GRANT_VERSION_NONE;
   arts_db_buf_release(&h);
   return v;
 }

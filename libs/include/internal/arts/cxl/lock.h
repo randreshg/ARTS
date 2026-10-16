@@ -8,23 +8,41 @@
 extern "C" {
 #endif
 
+#include <assert.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <unistd.h>
 
-#include "arts/cxl/shared_alloc.h"
 #include "arts/cxl/wrapper.h"
+#include "arts/utils/stdatomic_compat.h"
 
 /* ── Cache-line padded value ────────────────────────────────────────────────
  */
 
 typedef struct {
-  volatile int64_t value;
+  _Atomic(int64_t) value;
   char pad[56];
 } arts_cxl_cache_line_t;
 
+/* The lock's words are shared by processes that map the store at one
+ * address, which C11 orders only for lock-free, address-free atomics.  C names
+ * int64_t's type exactly; C++, which has no _Generic, checks its size. */
+#ifdef __cplusplus
+static_assert(ATOMIC_LONG_LOCK_FREE == 2 && sizeof(long) == sizeof(int64_t),
+              "the CXL lock words must be lock-free 64-bit atomics");
+#else
+static_assert(ATOMIC_LONG_LOCK_FREE == 2 &&
+                  _Generic((int64_t)0, long: 1, default: 0),
+              "the CXL lock words must be lock-free 64-bit atomics");
+#endif
+
 /* ── Peterson lock (2-process, CXL-safe) ────────────────────────────────────
- */
+ * flag[i] and turn carry Peterson's store->load pair between the two
+ * processes of a tree node: every store and load of them is seq_cst, except
+ * the holder's release of its flag, a release store that hands the critical
+ * section to the next holder, whose seq_cst load of that flag acquires it.
+ * owner is written and read only by the tree node's holder (relaxed).
+ * Initialized before the arena table is published. */
 
 typedef union {
   struct {
@@ -44,11 +62,10 @@ typedef union {
   struct {
     uint64_t num_procs;
     uint64_t k; /* ceil(log2(num_procs)) */
-    pthread_mutex_t local_lock;
     arts_cxl_peterson_lock_t *locks;
   } lock;
-  uint64_t pad[((sizeof(uint64_t) * 2 + sizeof(pthread_mutex_t) +
-                 sizeof(arts_cxl_peterson_lock_t *) + CACHELINE_SIZE - 1) /
+  uint64_t pad[((sizeof(uint64_t) * 2 + sizeof(arts_cxl_peterson_lock_t *) +
+                 CACHELINE_SIZE - 1) /
                 CACHELINE_SIZE) *
                (CACHELINE_SIZE / sizeof(uint64_t))];
 } arts_cxl_tournament_lock_t;
@@ -57,10 +74,10 @@ typedef union {
  */
 
 static inline void arts_cxl_peterson_lock_init(arts_cxl_peterson_lock_t *l) {
-  l->lock.flag[0].value = 0;
-  l->lock.flag[1].value = 0;
-  l->lock.turn.value = 0;
-  l->lock.owner.value = -1;
+  atomic_store_explicit(&l->lock.flag[0].value, 0, memory_order_relaxed);
+  atomic_store_explicit(&l->lock.flag[1].value, 0, memory_order_relaxed);
+  atomic_store_explicit(&l->lock.turn.value, 0, memory_order_relaxed);
+  atomic_store_explicit(&l->lock.owner.value, -1, memory_order_relaxed);
   FLUSH_FENCE_PRODUCER(l, sizeof(arts_cxl_peterson_lock_t));
 }
 
@@ -69,34 +86,40 @@ static inline void arts_cxl_peterson_lock_acquire(arts_cxl_peterson_lock_t *l,
   unsigned int delay = 1;
   unsigned int other = 1 - id;
 
-  l->lock.flag[id].value = 1;
+  /* seq_cst: Peterson's store->load pair against the other process's
+   * acquire of this node. */
+  atomic_store_explicit(&l->lock.flag[id].value, 1, memory_order_seq_cst);
   FLUSH_FENCE_PRODUCER(&l->lock.flag[id], sizeof(arts_cxl_cache_line_t));
 
-  COMPILER_DO_NOT_REORDER_WRITES();
-
-  l->lock.turn.value = other;
+  atomic_store_explicit(&l->lock.turn.value, other, memory_order_seq_cst);
   FLUSH_FENCE_PRODUCER(&l->lock.turn, sizeof(arts_cxl_cache_line_t));
 
-  HW_MEMORY_FENCE();
+  /* Device order, not a C11 fence: the write-backs the producer flushes
+   * above started must complete before this host's loads below, which a
+   * store fence does not order.  The C11 order between the two processes
+   * comes from the seq_cst accesses. */
+  __asm__ __volatile__("mfence" ::: "memory");
 
   FLUSH_FENCE_CONSUMER(l, sizeof(arts_cxl_peterson_lock_t));
 
-  while (l->lock.flag[other].value && l->lock.turn.value == other) {
+  while (
+      atomic_load_explicit(&l->lock.flag[other].value, memory_order_seq_cst) &&
+      atomic_load_explicit(&l->lock.turn.value, memory_order_seq_cst) ==
+          other) {
     usleep(delay);
     if (delay < 1000000) {
       delay *= 2;
     }
     FLUSH_FENCE_CONSUMER(l, sizeof(arts_cxl_peterson_lock_t));
   }
-  COMPILER_DO_NOT_REORDER_WRITES();
-  l->lock.owner.value = id;
+  atomic_store_explicit(&l->lock.owner.value, id, memory_order_relaxed);
   FLUSH_FENCE_PRODUCER(&l->lock.owner, sizeof(arts_cxl_cache_line_t));
 }
 
 static inline void arts_cxl_peterson_lock_release(arts_cxl_peterson_lock_t *l) {
-  int64_t id = l->lock.owner.value;
-  l->lock.owner.value = -1;
-  l->lock.flag[id].value = 0;
+  int64_t id = atomic_load_explicit(&l->lock.owner.value, memory_order_relaxed);
+  atomic_store_explicit(&l->lock.owner.value, -1, memory_order_relaxed);
+  atomic_store_explicit(&l->lock.flag[id].value, 0, memory_order_release);
   FLUSH_FENCE_PRODUCER(l, sizeof(arts_cxl_peterson_lock_t));
 }
 
@@ -117,7 +140,6 @@ arts_cxl_tournament_lock_new(unsigned int num_procs) {
   }
   tl->lock.num_procs = (1U << k);
   tl->lock.k = k;
-  pthread_mutex_init(&tl->lock.local_lock, NULL);
 
   unsigned int num_locks = tl->lock.num_procs - 1;
   tl->lock.locks = (arts_cxl_peterson_lock_t *)GLOBAL_MALLOC(
@@ -134,7 +156,6 @@ arts_cxl_tournament_lock_new(unsigned int num_procs) {
 
 static inline void
 arts_cxl_tournament_lock_delete(arts_cxl_tournament_lock_t *tl) {
-  pthread_mutex_destroy(&tl->lock.local_lock);
   GLOBAL_FREE(tl->lock.locks);
   GLOBAL_FREE(tl);
 }
@@ -157,7 +178,8 @@ arts_cxl_tournament_lock_release(arts_cxl_tournament_lock_t *tl,
   (void)id;
   unsigned int node_id = 0;
   for (unsigned int i = 0; i < tl->lock.k; i++) {
-    unsigned int pid = tl->lock.locks[node_id].lock.owner.value;
+    unsigned int pid = (unsigned int)atomic_load_explicit(
+        &tl->lock.locks[node_id].lock.owner.value, memory_order_relaxed);
     arts_cxl_peterson_lock_release(&tl->lock.locks[node_id]);
     node_id = (2 * node_id) + 1 + pid;
   }

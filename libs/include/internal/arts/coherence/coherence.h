@@ -9,10 +9,12 @@
  * Atomic discipline: this header declares no shared word itself; the words
  * the runtime reads and writes concurrently live in the layouts it pulls in.
  * A word declared `_Atomic(T)` is accessed only through atomic_*_explicit
- * (arts/utils/stdatomic_compat.h).  A word not yet converted is plain or
- * `volatile`: some are reached through the arts_atomic_* helpers
- * (arts/utils/atomics.h) or GCC's __atomic builtins, each with the order its
- * helper or builtin gives it, and some are still accessed plainly.
+ * (arts/utils/stdatomic_compat.h).  The GPU staging words of a descriptor
+ * (ARTS_USE_GPU builds) are `volatile` or plain and reached through the
+ * legacy helpers of arts/utils/atomics.h, each with the order its helper
+ * gives it.
+ * Every other field that is not `_Atomic` is plain, ordered by the atomic
+ * word its declaration names.
  *
  * Routing pointer convention: 48-bit virtual address space.  Tagged-
  * pointer encodings (lock-free stack `top`, marked-list `next`) live
@@ -396,7 +398,7 @@ void arts_db_cxl_slot_discard(struct arts_db_cache_s *cache);
 /* The slot this rank knows for the block, 0 when it knows none. */
 static inline uint64_t
 arts_db_cxl_slot_addr(const struct arts_db_cache_s *cache) {
-  return __atomic_load_n(&cache->cxl_addr, __ATOMIC_ACQUIRE);
+  return atomic_load_explicit(&cache->cxl_addr, memory_order_acquire);
 }
 #else
 /* Every create announces the address it knows, and a build with no CXL

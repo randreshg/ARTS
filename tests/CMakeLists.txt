@@ -1653,6 +1653,26 @@ if(ARTS_TEST_REFERENCE_TREE)
         PASS_REGULAR_EXPRESSION "PASS runtime_no_libc_alloc")
 endif()
 
+# ARTS_USE_CXL=ON on a target other than AMD64 is a configure error raised
+# before anything vendored is configured.  A nested configure of this source,
+# which every tree shares.
+if(ARTS_TEST_REFERENCE_TREE)
+    add_test(NAME cxl_arm64_refusal
+             COMMAND ${CMAKE_COMMAND}
+                     -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxl_arm64_refusal
+                     -DC_COMPILER=${CMAKE_C_COMPILER}
+                     -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+                     -DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+                     -P
+                     ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cxl_arm64_refusal.cmake)
+    set_tests_properties(cxl_arm64_refusal PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 300
+        PASS_REGULAR_EXPRESSION "PASS cxl_arm64_refusal"
+        FAIL_REGULAR_EXPRESSION "FAIL cxl_arm64_refusal")
+endif()
+
 # Blocks destroyed while the one-sided writes that moved their payloads may
 # still be awaiting their local completions.  It runs with those completions
 # held back (ARTS_WRITE_COMPLETION_DELAY_MS), so where payloads travel through

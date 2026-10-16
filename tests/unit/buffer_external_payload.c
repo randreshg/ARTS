@@ -56,8 +56,9 @@ static unsigned char g_other[DB_SIZE];
 int main(void) {
   int fail = 0;
   memset(&g_cache, 0, sizeof(g_cache));
-  g_cache.db_size = DB_SIZE;
-  g_cache.payload_pending = 1u;
+  atomic_store_explicit(&g_cache.db_size, DB_SIZE, memory_order_relaxed);
+  atomic_store_explicit(&g_cache.payload_pending, (uint8_t)1u,
+                        memory_order_relaxed);
   memset(g_external, 0x5a, sizeof(g_external));
   memset(g_other, 0x33, sizeof(g_other));
 
@@ -70,7 +71,8 @@ int main(void) {
     fail = 1;
   }
   struct arts_db_buffer_s *b = arts_db_buf_for_payload(&g_cache, g_external);
-  if (b == NULL || (void *)b->data != (void *)g_external || b->version != 1u) {
+  if (b == NULL || (void *)b->data != (void *)g_external ||
+      atomic_load_explicit(&b->version, memory_order_relaxed) != 1u) {
     printf("FAIL: descriptor does not name the external payload\n");
     fail = 1;
   }
@@ -83,7 +85,8 @@ int main(void) {
     printf("FAIL: a second adopt of the same store installed again\n");
     fail = 1;
   }
-  if (arts_db_buf_for_payload(&g_cache, g_external) != b || b->version != 1u) {
+  if (arts_db_buf_for_payload(&g_cache, g_external) != b ||
+      atomic_load_explicit(&b->version, memory_order_relaxed) != 1u) {
     printf("FAIL: the installed descriptor did not stand\n");
     fail = 1;
   }
@@ -114,8 +117,10 @@ int main(void) {
   }
   /* The hint at its worst: "nothing to do" over an empty slot.  Both entries
    * must still materialize the block. */
-  g_cache.payload_pending = 0u;
-  g_cache.cxl_addr = (uint64_t)(uintptr_t)g_external;
+  atomic_store_explicit(&g_cache.payload_pending, (uint8_t)0u,
+                        memory_order_relaxed);
+  atomic_store_explicit(&g_cache.cxl_addr, (uint64_t)(uintptr_t)g_external,
+                        memory_order_relaxed);
   if (!arts_db_buf_ensure(&g_cache, DB_SIZE)) {
     printf("FAIL: an emptied slot was not materialized again\n");
     fail = 1;

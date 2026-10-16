@@ -106,7 +106,8 @@ int arts_reserve_edt_required_gpu(int *gpu, void *edt_packet);
  * sized from the DB's own length rather than from any host allocation's span.
  */
 static inline uint64_t arts_gpu_db_image_size(const struct arts_db_s *db) {
-  return sizeof(struct arts_db_s) + db->cache.db_size;
+  return sizeof(struct arts_db_s) +
+         atomic_load_explicit(&db->cache.db_size, memory_order_relaxed);
 }
 
 /* The descriptor behind slot `slot` of `edt`.  A subtype that keeps its

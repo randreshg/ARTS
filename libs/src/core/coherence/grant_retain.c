@@ -24,7 +24,6 @@
 #include "arts/system/threads.h"
 #include "arts/runtime_types.h"
 #include "arts/system/schedfuzz.h"
-#include "arts/utils/atomics.h"
 #include "arts/counter/Preamble.h"
 
 /* ===== Home: a request arrived ========================================= */
@@ -75,11 +74,11 @@ void arts_db_grant_round_close(struct arts_db_cache_s *cache,
     }
     arts_sched_fuzz_point(); /* widen the pop-empty<->release window */
     atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* Dekker-style publication: the baton-release store must be globally
-     * visible BEFORE the emptiness re-check loads, or a requester that
-     * pushed and lost its baton CAS inside the window is missed — a plain
-     * release-store followed by loads permits exactly that StoreLoad
-     * reordering. */
+    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
+     * which pushes onto this FIFO and passes a fence before its baton
+     * check.  Of the two fences in S the later one's side sees the other's
+     * store: either the probe below finds that request, or that handler's
+     * baton CAS reads this release. */
     atomic_thread_fence(memory_order_seq_cst);
     if (!arts_home_grantreq_queue_pending(&db->pending_rw)) {
       return;
@@ -102,11 +101,11 @@ void arts_db_grant_round_close(struct arts_db_cache_s *cache,
   while (1) {
     /* Release the baton. */
     atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* Dekker-style publication: the baton-release store must be globally
-     * visible BEFORE the emptiness re-check loads, or a requester that
-     * pushed and lost its baton CAS inside the window is missed — a plain
-     * release-store followed by loads permits exactly that StoreLoad
-     * reordering. */
+    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
+     * which pushes onto this FIFO and passes a fence before its baton
+     * check.  Of the two fences in S the later one's side sees the other's
+     * store: either the probe below finds that request, or that handler's
+     * baton CAS reads this release. */
     atomic_thread_fence(memory_order_seq_cst);
     /* Re-check for a freshly-enqueued requester that raced the baton
      * release.  If the queue is still empty, we're done. */
@@ -182,22 +181,24 @@ void arts_db_grant_return_arrived(
 /* ===== Holder: the word's possession-setting and count-dropping edges ==== */
 
 void arts_db_grant_install(struct arts_db_cache_s *cache) {
-  /* Sentinel(+1) + drain guard(+1), single op (0->2). */
-  arts_atomic_add(&cache->writer_count, 2u);
+  /* Sentinel(+1) + drain guard(+1), single op (0->2).  Release: the
+   * installed buffer and the learned size go with the right. */
+  atomic_fetch_add_explicit(&cache->writer_count, 2u, memory_order_acq_rel);
 }
 
 bool arts_db_grant_release_skip(struct arts_db_cache_s *cache) {
   /* An all-zero word is the only state with nothing to drop: possession is a
-   * hold of its own here, so any positive word owes a decrement.  Atomic
-   * acquire-load avoids a TSan race against concurrent writes. */
-  return arts_atomic_read(&cache->writer_count) == 0;
+   * hold of its own here, so any positive word owes a decrement. */
+  return atomic_load_explicit(&cache->writer_count, memory_order_acquire) == 0;
 }
 
 void arts_db_grant_release_commit(struct arts_db_cache_s *cache) {
   /* writer_count is non-negative (post-install flip + install guard absorb any
    * INVALIDATE that lands during install).  A true 1->0 release reads 0 and
    * ships the transfer; the (int) cast is defensive. */
-  int rest = (int)arts_atomic_sub(&cache->writer_count, 1); /* post value */
+  int rest = (int)(atomic_fetch_sub_explicit(&cache->writer_count, 1u,
+                                             memory_order_acq_rel) -
+                   1u);
   if (rest == 0 && cache->incoming_new_owner != ARTS_NO_PENDING_OWNER) {
     /* An INVALIDATE published a transfer target while writers were live; this
      * (last) releaser is the unique actor that ships the owner→owner transfer.
@@ -221,7 +222,8 @@ void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
   /* Drop the commit's hold.  If a next-round INVALIDATE already withdrew the
    * sentinel and no local writer remains, we are the unique actor that ships
    * the next transfer. */
-  if ((int)arts_atomic_sub(&cache->writer_count, 1) == 0 &&
+  if (atomic_fetch_sub_explicit(&cache->writer_count, 1u,
+                                memory_order_acq_rel) == 1u &&
       cache->incoming_new_owner != ARTS_NO_PENDING_OWNER) {
     arts_db_grant_ship_pending(cache);
   }

@@ -35,7 +35,6 @@
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
@@ -109,9 +108,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   /* A hinted first touch may reach its first grant with the size still
    * unlearned (no CTS leg ran); the response's data_size is the sender's
    * descriptor size, valid payload or not. */
-  if (cache->db_size == 0 && hdr->data_size > 0) {
-    cache->db_size = hdr->data_size;
-  }
+  arts_db_cache_learn_size(cache, hdr->data_size);
 
   /* Wire layout: header | map (count pairs, inline).  The buffer payload does
    * not trail on the wire — it travels one-sided into our advertised landing
@@ -170,15 +167,13 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
     (void)arts_db_buf_adopt_landing(
         cache, hdr->version ? hdr->version : 1u,
         (struct arts_db_buffer_s *)(uintptr_t)hdr->rdzv_cookie,
-        cache->db_size);
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   }
   char *data_start = map_start + map_size;
   size_t data_size = size - sizeof(*hdr) - map_size;
   if (data_size > 0) {
     arts_db_buf_install(cache, hdr->version, data_start, data_size);
-    if (cache->db_size == 0) {
-      cache->db_size = data_size;
-    }
+    arts_db_cache_learn_size(cache, data_size);
   }
   owner_response_commit(db_h, db_guid); /* releases db_h */
 }
@@ -210,7 +205,8 @@ static void owner_response_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid) {
    * edge across the per-waiter +1 drain, so the transfer cannot ship before
    * this rank's parked writers are counted and scheduled.  An absolute swap
    * would clobber such a decrement and lose the transfer (distributed hang). */
-  arts_atomic_add(&cache->writer_count, 2u + ARTS_GRANT_UNCONFIRMED);
+  atomic_fetch_add_explicit(&cache->writer_count, 2u + ARTS_GRANT_UNCONFIRMED,
+                            memory_order_acq_rel);
 
   /* RW drain is DEFERRED to the CONFIRM_ACK handler (home has not flipped
    * rw_holder to us yet).  Reads are not: a read waiter resumed here gets
@@ -333,7 +329,8 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
    * a masking store: it is exact mod 2^32 whatever the low bits hold and it
    * commutes with any concurrent ±1, so the count underneath survives
    * untouched. */
-  arts_atomic_sub(&cache->writer_count, ARTS_GRANT_UNCONFIRMED);
+  atomic_fetch_sub_explicit(&cache->writer_count, ARTS_GRANT_UNCONFIRMED,
+                            memory_order_acq_rel);
 
   /* Drain the RW waiters that the GRANT_RESPONSE handler deferred (this is the
    * work moved out of arts_handler_db_grant_response); the drain takes them
@@ -354,7 +351,8 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
     cache->incoming_new_owner_rdzv.cookie = p->new_owner_rdzv.cookie;
     cache->incoming_new_owner_have = p->new_owner_have;
     cache->incoming_new_owner = p->new_owner_rank;
-    arts_atomic_sub(&cache->writer_count, 1); /* sentinel withdrawal */
+    /* sentinel withdrawal */
+    atomic_fetch_sub_explicit(&cache->writer_count, 1u, memory_order_acq_rel);
   }
 
   /* Remove the drain guard held across the CONFIRM→CONFIRM_ACK round trip. If
@@ -362,7 +360,8 @@ void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v) {
    * 0 with no local writer remaining, we are the unique actor that ships
    * GRANT_RESPONSE to the next owner.  Otherwise this rank retains
    * ownership and its drained EDTs ship on their own release 0-edge. */
-  if ((int)arts_atomic_sub(&cache->writer_count, 1) == 0 &&
+  if (atomic_fetch_sub_explicit(&cache->writer_count, 1u,
+                                memory_order_acq_rel) == 1u &&
       cache->incoming_new_owner != ARTS_NO_PENDING_OWNER) {
     arts_db_grant_ship_pending(cache);
   }
@@ -398,11 +397,11 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
      * pushed and lost the baton race while we held it would otherwise stay
      * queued forever with no baton holder to serve it. */
     atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-    /* Dekker-style publication: the baton-release store must be globally
-     * visible BEFORE the emptiness re-check loads, or a requester that
-     * pushed and lost its baton CAS inside the window is missed — a plain
-     * release-store followed by loads permits exactly that StoreLoad
-     * reordering. */
+    /* seq_cst fence: store->load pair with arts_handler_db_grant_request,
+     * which pushes onto this FIFO and passes a fence before its baton
+     * check.  Of the two fences in S the later one's side sees the other's
+     * store: either the probe below finds that request, or that handler's
+     * baton CAS reads this release. */
     atomic_thread_fence(memory_order_seq_cst);
     if (!arts_home_grantreq_queue_pending(&db->pending_rw)) {
       return;
@@ -465,7 +464,9 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
   cache->incoming_new_owner_have = a->new_owner_have;
   cache->incoming_new_owner = a->new_owner_rank;
   /* Ship ONLY on the exact 0 edge (see the handler header). */
-  int rest = (int)arts_atomic_sub(&cache->writer_count, 1);
+  int rest = (int)(atomic_fetch_sub_explicit(&cache->writer_count, 1u,
+                                             memory_order_acq_rel) -
+                   1u);
   if (rest != 0) {
     /* Local writers still active — the last release_rw, seeing rest==0 with
      * incoming_new_owner already published, ships instead. */

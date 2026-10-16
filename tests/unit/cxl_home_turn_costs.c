@@ -51,8 +51,10 @@ static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     (void)fprintf(stderr, "FAIL: the home's own turn lost its bytes\n");
     arts_test_fail();
   }
-  uint64_t f = __atomic_load_n(&arts_cxl_fetches, __ATOMIC_RELAXED) - g_fetch0;
-  uint64_t pu = __atomic_load_n(&arts_cxl_purges, __ATOMIC_RELAXED) - g_purge0;
+  uint64_t f =
+      atomic_load_explicit(&arts_cxl_fetches, memory_order_relaxed) - g_fetch0;
+  uint64_t pu =
+      atomic_load_explicit(&arts_cxl_purges, memory_order_relaxed) - g_purge0;
   if (f != 2u || pu != 1u) {
     (void)fprintf(stderr,
                   "FAIL: a home-local write turn plus a read turn cost %llu "
@@ -72,8 +74,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-  g_fetch0 = __atomic_load_n(&arts_cxl_fetches, __ATOMIC_RELAXED);
-  g_purge0 = __atomic_load_n(&arts_cxl_purges, __ATOMIC_RELAXED);
+  g_fetch0 = atomic_load_explicit(&arts_cxl_fetches, memory_order_relaxed);
+  g_purge0 = atomic_load_explicit(&arts_cxl_purges, memory_order_relaxed);
 
   /* Acquiring nothing, so the create itself takes no turn and the tallies
    * start where they were read. */

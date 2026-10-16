@@ -47,34 +47,18 @@
 #include "arts/system/print.h" /* ARTS_ERROR */
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
+#include "arts/counter/Preamble.h"
 
 /* ===== pure arbiters (private copy — see arbiters.c) ==================== */
 #include "arbiters.c"
-#include <semaphore.h>
-#include <stdio.h>
-#include <string.h>
-#include "arts/coherence/buffer.h"
-#include "arts/coherence/handlers.h"
-#include "arts/db.h"
-#include "arts/edt.h"
-#include "arts/gas/route_table.h"
-#include "arts/ooo.h"
-#include "arts/runtime_state.h"
-#include "arts/system/identity.h"
-#include "arts/transport/net.h"
-#include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
-#include "arts/counter/Preamble.h"
 
 /* ===== waiter pool (index-addressed chain nodes) ========================
  * Chain nodes live in per-DB chunked storage addressed by an 18-bit index
  * (0 = none) so a chain head fits the cache word.  Alloc = tagged free-list
  * pop (the tag defeats index ABA under concurrent alloc/free) with a
- * bump-allocator fallback; free = tagged push.  A node's fields are written
- * before the word CAS that links it and read only by the committer that
- * grabbed the chain. */
+ * bump-allocator fallback; free = tagged push.  Who writes and reads a
+ * node's fields, and under which CAS, is stated at arts_db_inv_waiter_s. */
 
 #define INV_WAITER_NCHUNKS                                                     \
   ((uint32_t)(((uint64_t)INV_WAITER_IDX_MAX + 1u) / INV_WAITER_CHUNK_CAP))
@@ -84,6 +68,8 @@
   ((uint32_t)((((tag) & 0x3FFFu) << INV_CACHE_HEAD_BITS) |                     \
               ((idx) & INV_CACHE_HEAD_MASK)))
 
+/* Each chunk is installed once by a CAS whose release carries the zeroed
+ * chunk to every acquire load of the slot. */
 struct inv_waiter_dir_s {
   _Atomic(struct arts_db_inv_waiter_s *) chunk[INV_WAITER_NCHUNKS];
 };
@@ -122,7 +108,8 @@ uint32_t inv_waiter_alloc(struct arts_db_cache_s *c) {
     if (idx == 0u) {
       break; /* free list empty: bump-allocate */
     }
-    uint32_t next = inv_waiter_ptr(c, idx)->next;
+    uint32_t next = atomic_load_explicit(&inv_waiter_ptr(c, idx)->next,
+                                         memory_order_relaxed);
     uint32_t nh = INV_FREE_MAKE(INV_FREE_TAG(h) + 1u, next);
     if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
                                               memory_order_acq_rel,
@@ -158,7 +145,7 @@ void inv_waiter_free(struct arts_db_cache_s *c, uint32_t idx) {
   for (;;) {
     uint32_t h =
         atomic_load_explicit(&c->waiters.free_head, memory_order_acquire);
-    node->next = INV_FREE_IDX(h);
+    atomic_store_explicit(&node->next, INV_FREE_IDX(h), memory_order_relaxed);
     uint32_t nh = INV_FREE_MAKE(INV_FREE_TAG(h) + 1u, idx);
     if (atomic_compare_exchange_weak_explicit(&c->waiters.free_head, &h, nh,
                                               memory_order_acq_rel,
@@ -177,7 +164,7 @@ void inv_waiter_free(struct arts_db_cache_s *c, uint32_t idx) {
 void inv_serve_chain(struct arts_db_cache_s *cache, uint32_t head) {
   while (head != 0u) {
     struct arts_db_inv_waiter_s *w = inv_waiter_ptr(cache, head);
-    uint32_t next = w->next;
+    uint32_t next = atomic_load_explicit(&w->next, memory_order_relaxed);
     arts_guid_t edt_guid = w->edt_guid;
     unsigned int slot = w->slot;
     inv_waiter_free(cache, head);
@@ -206,16 +193,18 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
   /* Grant plane.  A creator boots holding the write right with the
    * create-default RW acquire's own hold under it; everyone else starts at
    * the all-zero word, which IS "not the owner". */
-  c->writer_count = creator ? ARTS_GRANT_SEED_HOLDING : 0u;
+  atomic_init(&c->writer_count, creator ? ARTS_GRANT_SEED_HOLDING : 0u);
 #ifdef ARTS_RELEASE_PURGE
-  c->pending_grant_return = 0u;
-  c->grant_generation = 0u;
+  atomic_init(&c->pending_grant_return, 0u);
+  atomic_init(&c->grant_generation, 0u);
 #endif
   arts_pending_rw_queue_init(&c->pending_rw);
-  c->grant_req_in_flight = 0u;
+  atomic_init(&c->grant_req_in_flight, 0u);
+#ifndef ARTS_RELEASE_PURGE
   c->incoming_new_owner = ARTS_NO_PENDING_OWNER;
   c->incoming_new_owner_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
   c->incoming_new_owner_have = ARTS_GRANT_VERSION_NONE;
+#endif
   /* INV's sharer plane carries no version ledger by construction; NULL selects
    * the shared transfer helper's empty-map branch. */
   c->cached_version = NULL;
@@ -246,8 +235,10 @@ void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
 /* The hold is possession plus this create's own writer, from a word that
  * holds nothing. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
-  return arts_atomic_cswap(&cache->writer_count, 0u,
-                           ARTS_GRANT_SEED_HOLDING) == 0u;
+  unsigned int none = 0u;
+  return atomic_compare_exchange_strong_explicit(
+      &cache->writer_count, &none, ARTS_GRANT_SEED_HOLDING,
+      memory_order_acq_rel, memory_order_relaxed);
 }
 
 void arts_db_create_retract_creator_copy(struct arts_db_s *db) {
@@ -409,6 +400,15 @@ static void inv_home_round_close(struct arts_db_s *db,
   } while (!atomic_compare_exchange_weak_explicit(&db->dir_state, &cur, next,
                                                   memory_order_acq_rel,
                                                   memory_order_acquire));
+  /* seq_cst fence: store->load pair with a producer, which pushes onto
+   * pub_queue and passes the fence at the head of inv_home_round_try_open
+   * before it reads this word.  Of the two fences in S the later one's side
+   * sees the other's store: either the queue probe that follows every close
+   * reads the push or a later value of the head (a drain that already took
+   * the entry into a round), or the producer's claim reads this CLOSE or a
+   * later value (a later round, whose closer's probe this same argument
+   * covers). */
+  atomic_thread_fence(memory_order_seq_cst);
   if (returner != ARTS_GRANT_NO_RETURNER) {
     /* Accepted only now: the round it rode has retired every stale copy and
      * stamped the publication axis, so a block handed straight on from here
@@ -431,6 +431,13 @@ static void inv_home_round_close(struct arts_db_s *db,
 
 void inv_home_round_try_open(struct arts_db_s *db) {
   struct arts_db_cache_s *cache = &db->cache;
+  /* seq_cst fence: store->load pair with inv_home_round_close, which CASes
+   * the round closed and passes a fence before its queue probe.  A producer
+   * pushed onto pub_queue before calling here; either its claim below reads
+   * that CLOSE or a later value (a later round, whose closer's probe this
+   * same argument covers), or that closer's probe reads the push or a later
+   * value of the head (a drain that already took the entry into a round). */
+  atomic_thread_fence(memory_order_seq_cst);
   for (;;) {
     uint32_t act;
     uint64_t cur, next;
@@ -488,13 +495,15 @@ void inv_home_round_try_open(struct arts_db_s *db) {
       /* First publication wakes the pre-publication read holds (readers
        * event-ordered after the creator's writes must see released bytes,
        * never the never-published version-0 state).  Published = an installed
-       * buffer whose version has been bumped past the create-time zero. */
+       * buffer whose version has been bumped past the create-time zero.  The
+       * drain pairs with each parker's push on the stack itself (see
+       * arts_handler_db_acquire): stamp, then drain. */
       {
         arts_shared_ptr_t pub_h = arts_db_buf_acquire(cache);
         struct arts_db_buffer_s *pb =
             (struct arts_db_buffer_s *)arts_shared_get(pub_h);
-        bool pub = (pb != NULL &&
-                    __atomic_load_n(&pb->version, __ATOMIC_ACQUIRE) > 0);
+        bool pub = (pb != NULL && atomic_load_explicit(
+                                      &pb->version, memory_order_acquire) > 0);
         arts_db_buf_release(&pub_h);
         if (pub) {
           arts_db_drain_publication_waiters(cache);
@@ -552,6 +561,9 @@ void inv_home_round_try_open(struct arts_db_s *db) {
       unsigned int ntargets = 0;
       struct arts_rank_bitset_s *bs = &db->roster;
       for (unsigned int wi = 0; wi < bs->nwords; wi++) {
+        /* Same-word pairing with a read serve's fetch_or of this word
+         * (arts_handler_db_inv_request): the later of the two reads the
+         * other, so the serve is a target here or follows the stamp above. */
         uint64_t snap = atomic_exchange_explicit(&bs->words[wi], 0u,
                                                  memory_order_acq_rel);
         uint64_t keep = 0u;
@@ -573,6 +585,9 @@ void inv_home_round_try_open(struct arts_db_s *db) {
                                          memory_order_acq_rel);
         }
       }
+      /* The open round's batch, for the ack that closes it: stored before
+       * the ARM, whose release the closing ACK_DEC acquires. */
+      db->round_entries = entries;
       uint32_t aact;
       do {
         cur = atomic_load_explicit(&db->dir_state, memory_order_acquire);
@@ -580,9 +595,6 @@ void inv_home_round_try_open(struct arts_db_s *db) {
       } while (!atomic_compare_exchange_weak_explicit(
           &db->dir_state, &cur, next, memory_order_acq_rel,
           memory_order_acquire));
-      /* Publish the open round's batch for the closing ack committer BEFORE
-       * any INVALIDATE departs. */
-      db->round_entries = entries;
       for (unsigned int t = 0; t < ntargets; t++) {
         arts_send_db_inv_invalidate(targets[t], cache->db_guid);
       }
@@ -635,26 +647,30 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   struct arts_ooo_args_db_publish_s *a =
       (struct arts_ooo_args_db_publish_s *)args_v;
   struct arts_db_cache_s *cache = &db->cache;
-  if (a->data_size != 0 && a->data_inline == 0 && a->rdzv_txid == 0) {
+  if (a->data_size != 0 && a->rdzv_txid == 0) {
     /* Announce leg: advertise the STABLE buffer as the landing (the PUT
      * lands in place; bytes ahead of their round can only mix NEWER data
      * into unordered readers' copies, which the memory model permits — a
      * durable reader copy stays valid until its INVALIDATE regardless) and
      * mint the pairing txid.  Nothing is allocated; the round's install
      * point is a version stamp. */
-    if (a->data_size > cache->db_size) {
+    if (a->data_size >
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed)) {
       ARTS_ERROR("coherence: publish announce of %llu bytes exceeds the "
                  "DB's %llu-byte stable buffer",
                  (unsigned long long)a->data_size,
-                 (unsigned long long)cache->db_size);
+                 (unsigned long long)atomic_load_explicit(
+                     &cache->db_size, memory_order_relaxed));
     }
     struct arts_rdzv_landing_s landing = {0, 0, 0, 0};
     arts_shared_ptr_t mh = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);
     if (master == NULL ||
-        !arts_net_rdzv_local(master->data, cache->db_size, &landing.addr,
-                             &landing.key)) {
+        !arts_net_rdzv_local(
+            master->data,
+            atomic_load_explicit(&cache->db_size, memory_order_relaxed),
+            &landing.addr, &landing.key)) {
       /* Unreachable: the releaser obtained its write right from this home,
        * and serving that request is one of the points that materializes the
        * home's buffer. */
@@ -672,13 +688,6 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
   e->returns_grant = a->returns_grant;
   e->cv = a->cv;
   e->rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
-  if (a->data_inline != 0) {
-    /* A home-resident releaser's buffer IS the canonical copy — its publish
-     * is the data-less round request; an inline payload reaching this arm
-     * means the release path regressed. */
-    ARTS_ERROR("coherence: inline same-rank publish is unreachable under a "
-               "home-canonical write-through release path");
-  }
   if (a->rdzv_txid != 0) {
     /* Commit leg: the entry may only queue once the one-sided payload has
      * fully landed in place — pair {commit, PUT completion} (either arrival
@@ -704,9 +713,7 @@ void arts_handler_db_inv_cts(struct arts_db_s *db,
                              struct arts_msg_inv_cts_packet_s *p) {
   struct arts_db_cache_s *cache = &db->cache;
   arts_db_cache_note_answered(cache); /* before the answer takes effect */
-  if (cache->db_size == 0) {
-    cache->db_size = p->db_size;
-  }
+  arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_inv_request(cache, (arts_db_access_mode_t)p->mode);
 }
 
@@ -795,9 +802,7 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
   /* Before the answer takes effect. */
   arts_db_cache_note_answered(&db->cache);
   /* Hinted first touch: the size may still be unlearned here. */
-  if (db->cache.db_size == 0 && p->data_size > 0) {
-    db->cache.db_size = p->data_size;
-  }
+  arts_db_cache_learn_size(&db->cache, p->data_size);
   if (p->rdzv_txid != 0) {
     struct inv_landed_ctx_s *ctx =
         (struct inv_landed_ctx_s *)arts_malloc(sizeof(*ctx));
@@ -822,8 +827,9 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
     (void)arts_db_buf_adopt_landing(
         &db->cache, p->version ? p->version : 1u,
         (struct arts_db_buffer_s *)(uintptr_t)p->rdzv_cookie,
-        db->cache.db_size);
-  } else if (db->cache.db_size != 0) {
+        atomic_load_explicit(&db->cache.db_size, memory_order_relaxed));
+  } else if (atomic_load_explicit(&db->cache.db_size, memory_order_relaxed) !=
+             0) {
     arts_shared_ptr_t have_h = arts_db_buf_acquire(&db->cache);
     bool have = (arts_shared_get(have_h) != NULL);
     if (have) {
@@ -847,7 +853,8 @@ void arts_handler_db_inv_invalidate(struct arts_db_s *db) {
      * self-excludes it and rounds serialize.  Tested against the whole word,
      * so a hold still carrying ARTS_GRANT_UNCONFIRMED (negative, not zero)
      * counts as a holder here too. */
-    if (arts_atomic_read(&cache->writer_count) != 0u) {
+    if (atomic_load_explicit(&cache->writer_count, memory_order_acquire) !=
+        0u) {
       ARTS_ERROR("inv: invalidate hit the grant holder");
     }
     next = inv_cache_compute_next(cur, INV_CACHE_OP_INVALIDATE, 0u, &act);
@@ -869,6 +876,16 @@ void arts_handler_db_inv_invalidate_ack(struct arts_db_s *db,
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&db->dir_state, memory_order_acquire);
+    /* Every ack answers an INVALIDATE of the open round, which closes only on
+     * its last ack: an ack that finds no round open or no ack outstanding
+     * breaks the protocol, and decrementing would wrap the count and leave
+     * the round open forever. */
+    if (INV_DIR_ROUND_OPEN(cur) == 0u || INV_DIR_ACKS(cur) == 0u) {
+      ARTS_ERROR("inv: invalidate ack for DB[Guid:%lu] with no outstanding "
+                 "ack (round_open=%u acks=%u)",
+                 (unsigned long)db->cache.db_guid, INV_DIR_ROUND_OPEN(cur),
+                 INV_DIR_ACKS(cur));
+    }
     next = inv_dir_compute_next(cur, INV_DIR_OP_ACK_DEC, 0u, &act);
   } while (!atomic_compare_exchange_weak_explicit(&db->dir_state, &cur, next,
                                                   memory_order_acq_rel,
@@ -1008,7 +1025,7 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
   /* Always the DB's size (descriptor state): a hinted first touch skipped
    * the size CTS, so even a data-less reply must teach the exact size.
    * Payload presence is signaled by rdzv_txid alone. */
-  p.data_size = cache->db_size;
+  p.data_size = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   p.rdzv_txid = 0;
   p.rdzv_cookie = (rdzv != NULL) ? rdzv->cookie : 0;
   /* Serve from the CURRENT install; the ref pins the bytes across the PUT
@@ -1027,7 +1044,9 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
 #else
   /* Owner-canonical: the served buffer's own version IS the axis, because
    * ownership migration carries it from owner to owner as one chain. */
-  p.version = (src != NULL) ? arts_atomic_read_u64(&src->version) : 0u;
+  p.version = (src != NULL)
+                  ? atomic_load_explicit(&src->version, memory_order_acquire)
+                  : 0u;
 #endif
   if (requester_rank == arts_global_rank_id) {
     /* Self-serve: the requester's cache IS this cache, so no payload moves and
@@ -1048,8 +1067,9 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
         arts_db_buf_landing_return(landing);
       } else {
         /* Version 1, never 0 — see the wire-side adopt above. */
-        (void)arts_db_buf_adopt_landing(cache, p.version ? p.version : 1u,
-                                        landing, cache->db_size);
+        (void)arts_db_buf_adopt_landing(
+            cache, p.version ? p.version : 1u, landing,
+            atomic_load_explicit(&cache->db_size, memory_order_relaxed));
       }
       p.rdzv_cookie = 0;
     }
@@ -1063,11 +1083,12 @@ void arts_send_db_inv_deliver(unsigned int requester_rank,
     arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
     return;
   }
-  p.data_size = cache->db_size;
+  p.data_size = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   p.rdzv_txid = rdzv->txid;
-  arts_net_put_payload((int)requester_rank, rdzv->addr, rdzv->key, rdzv->txid,
-                       src->data, cache->db_size, arts_db_buf_ref_release_cb,
-                       (void *)src_h);
+  arts_net_put_payload(
+      (int)requester_rank, rdzv->addr, rdzv->key, rdzv->txid, src->data,
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed),
+      arts_db_buf_ref_release_cb, (void *)src_h);
   arts_transport_send_async((int)requester_rank, (char *)&p, sizeof(p));
 }
 

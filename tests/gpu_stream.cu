@@ -54,7 +54,7 @@ arts_guid_t local_db_create(void **addr, uint64_t size, arts_guid_kind_t mode,
     struct arts_db_s *db_res = (struct arts_db_s *)ptr;
     db_res->db_type = ARTS_DB_GPU_PIN; /* host-pinned, payload inline */
     db_res->cache.db_guid = guid;      /* guid + size live in the cache */
-    db_res->cache.db_size = size;
+    atomic_store_explicit(&db_res->cache.db_size, size, memory_order_relaxed);
     *addr = (void *)((struct arts_db_s *)ptr + 1);
   }
   return guid;

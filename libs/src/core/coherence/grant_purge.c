@@ -51,7 +51,6 @@
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
@@ -129,7 +128,8 @@ enum grant_tail_entry_e {
  * accepted hand-back, both under the baton, so a baton holder reads it
  * stable; anyone else reads a snapshot and re-checks behind a fence. */
 static bool grant_home_holds(struct arts_db_cache_s *cache) {
-  return ARTS_GRANT_OWN_OF(arts_atomic_read(&cache->writer_count));
+  return ARTS_GRANT_OWN_OF(
+      atomic_load_explicit(&cache->writer_count, memory_order_acquire));
 }
 
 /* Try to become the server.  Only a won baton may enter the tail: entering
@@ -192,8 +192,10 @@ serve: {
     /* Remote front: claim the right away from the home in ONE CAS.  It is
      * what separates "the home can grant" from "home writers are live", where
      * it fails and the home's own release inherits the duty. */
-    if (arts_atomic_cswap(&cache->writer_count, ARTS_GRANT_SEED_IDLE, 0u) ==
-        ARTS_GRANT_SEED_IDLE) {
+    unsigned int idle = ARTS_GRANT_SEED_IDLE;
+    if (atomic_compare_exchange_strong_explicit(&cache->writer_count, &idle, 0u,
+                                                memory_order_acq_rel,
+                                                memory_order_relaxed)) {
       unsigned int target;
       struct arts_rdzv_landing_s target_rdzv;
       uint64_t target_has = ARTS_GRANT_VERSION_NONE;
@@ -227,9 +229,13 @@ serve: {
      * window where the last of them reached its idle edge just before our
      * release made the baton available. */
     atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
+    /* seq_cst fence: store->load pair with grant_commit_count_edge, whose
+     * idle-edge commit is followed by a fence and a baton CAS: either this
+     * load reads that edge, or that CAS sees this release. */
     atomic_thread_fence(memory_order_seq_cst);
     arts_sched_fuzz_point(); /* widen the release<->re-check window */
-    if (arts_atomic_read(&cache->writer_count) == ARTS_GRANT_SEED_IDLE) {
+    if (atomic_load_explicit(&cache->writer_count, memory_order_acquire) ==
+        ARTS_GRANT_SEED_IDLE) {
       unsigned int expected = 0u;
       if (atomic_compare_exchange_strong_explicit(
               &db->invalidate_in_flight, &expected, 1u, memory_order_acq_rel,
@@ -243,10 +249,12 @@ serve: {
 
 release_recheck:
   atomic_store_explicit(&db->invalidate_in_flight, 0u, memory_order_release);
-  /* Dekker-style publication: the baton-release store must be globally
-   * visible BEFORE the loads below, or a requester that pushed and lost its
-   * baton CAS inside the window is missed — a plain release-store followed by
-   * loads permits exactly that StoreLoad reordering. */
+  /* seq_cst fence: store->load pair with arts_handler_db_grant_request
+   * (push, fence, possession check and baton CAS) and with
+   * arts_db_grant_return_arrived (latch CAS, fence, baton CAS).  Of two
+   * fences in S the later one's side sees the other's store: either the
+   * probes below find that request or that return, or the other side's
+   * baton CAS sees this release. */
   atomic_thread_fence(memory_order_seq_cst);
   arts_sched_fuzz_point(); /* widen the release<->re-check window */
   {
@@ -303,11 +311,13 @@ accept: {
    * held — is a create pattern the programming model no longer admits, so
    * this stays a strict precondition rather than a branch kept alive for a
    * case that cannot arise. */
-  unsigned int prev =
-      arts_atomic_cswap(&cache->writer_count, 0u, ARTS_GRANT_SEED_IDLE);
-  assert(prev == 0u &&
+  unsigned int prev = 0u;
+  bool accepted = atomic_compare_exchange_strong_explicit(
+      &cache->writer_count, &prev, ARTS_GRANT_SEED_IDLE, memory_order_acq_rel,
+      memory_order_relaxed);
+  assert(accepted &&
          "a returned write right lands on a home that holds nothing");
-  (void)prev;
+  (void)accepted;
   INCREMENT_NUM_GRANT_PURGE_ACCEPT_BY(1);
   /* A release that hands the right back completes only once the home has
    * APPLIED it — possession is back — so every message of that grant is
@@ -349,19 +359,22 @@ void arts_db_grant_return_arrived(
    * create contract narrowed there is no legitimate way to reach it.
    *
    * The reply rides the latch: plain stores here, ordered before the slot's
-   * publication by the seq_cst CAS, and read by whichever actor's consuming
-   * CAS takes the slot — that CAS reads the value this one wrote, so it
-   * synchronizes with it. */
+   * publication by the latch CAS's release, and read by whichever actor's
+   * consuming CAS takes the slot — that CAS reads the value this one wrote,
+   * so it synchronizes with it. */
   db->pending_return_cv = reply->cv;
   db->pending_return_version = reply->version;
   db->pending_return_ack = reply->ack ? 1u : 0u;
   db->pending_return_credit = reply->credit ? 1u : 0u;
   unsigned int slot_empty = ARTS_GRANT_NO_RETURNER;
   bool latched = atomic_compare_exchange_strong_explicit(
-      &db->pending_return_from, &slot_empty, returner, memory_order_seq_cst,
-      memory_order_seq_cst);
+      &db->pending_return_from, &slot_empty, returner, memory_order_release,
+      memory_order_relaxed);
   assert(latched && "one write right yields one outstanding hand-back");
   (void)latched;
+  /* seq_cst fence: store->load pair with every exit of grant_tail, which
+   * stores the baton 0, passes a fence and reads this latch.  Either that
+   * read finds this return, or the baton CAS below sees the release. */
   atomic_thread_fence(memory_order_seq_cst);
   unsigned int expected = 0u;
   if (atomic_compare_exchange_strong_explicit(
@@ -403,12 +416,11 @@ void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester) {
   (void)requester;
-  /* Publish-then-check: the requester is already on the FIFO, and the fence
-   * orders that push against this load, so a home that reads its possession
-   * clear is a home whose pending hand-back's acceptance will find the
-   * request.  There is no notice to the holder — it hands the right back on
-   * its own. */
-  atomic_thread_fence(memory_order_seq_cst);
+  /* Publish-then-check: the requester is already on the FIFO, and the
+   * caller's seq_cst fence (arts_handler_db_grant_request) orders that push
+   * against this load, so a home that reads its possession clear is a home
+   * whose pending hand-back's acceptance will find the request.  There is no
+   * notice to the holder — it hands the right back on its own. */
   if (!grant_home_holds(cache)) {
     return;
   }
@@ -419,7 +431,8 @@ bool arts_db_grant_release_skip(struct arts_db_cache_s *cache) {
   /* Possession is not a hold here, so the guard tests the count field alone:
    * the home's idle state carries possession with no writer under it, and
    * decrementing that word would borrow the possession bit. */
-  return ARTS_GRANT_COUNT_OF(arts_atomic_read(&cache->writer_count)) == 0u;
+  return ARTS_GRANT_COUNT_OF(atomic_load_explicit(&cache->writer_count,
+                                                  memory_order_acquire)) == 0u;
 }
 
 /* The two count-dropping edges share one committer: one CAS carries the
@@ -430,7 +443,8 @@ static void grant_commit_count_edge(struct arts_db_cache_s *cache) {
   bool purgeable = !is_home && arts_global_rank_count > 1;
   unsigned int act = ARTS_GRANT_ACT_NONE;
   for (;;) {
-    unsigned int cur = arts_atomic_read(&cache->writer_count);
+    unsigned int cur =
+        atomic_load_explicit(&cache->writer_count, memory_order_acquire);
     unsigned int next = arts_grant_purge_release_next(cur, purgeable, &act);
     if (act == ARTS_GRANT_ACT_ILLEGAL) {
       assert(false && "a count-dropping edge found possession with no hold");
@@ -439,7 +453,9 @@ static void grant_commit_count_edge(struct arts_db_cache_s *cache) {
     if (next == cur) {
       return; /* nothing to commit */
     }
-    if (arts_atomic_cswap(&cache->writer_count, cur, next) == cur) {
+    if (atomic_compare_exchange_strong_explicit(&cache->writer_count, &cur,
+                                                next, memory_order_acq_rel,
+                                                memory_order_relaxed)) {
       break;
     }
   }
@@ -448,6 +464,12 @@ static void grant_commit_count_edge(struct arts_db_cache_s *cache) {
     return;
   }
   if (act == ARTS_GRANT_ACT_TAIL) {
+    /* seq_cst fence: store->load pair with grant_tail's give-up path, which
+     * stores the baton 0, passes a fence and reads this word.  Of the two
+     * fences in S the later one's side sees the other's store: either the
+     * tail reads this idle edge and serves, or the baton CAS below sees the
+     * tail's release. */
+    atomic_thread_fence(memory_order_seq_cst);
     grant_tail_try_serve(arts_db_of_cache(cache));
   }
 }
@@ -474,8 +496,10 @@ uint64_t arts_db_grant_release_claim(struct arts_db_cache_s *cache,
    * other word means a concurrent writer, whose own release must take the
    * count-dropping edge, and committing an ordinary decrement here would then
    * be followed by a second one after the publish. */
-  if (arts_atomic_cswap(&cache->writer_count, ARTS_GRANT_SEED_HOLDING, 0u) !=
-      ARTS_GRANT_SEED_HOLDING) {
+  unsigned int holding = ARTS_GRANT_SEED_HOLDING;
+  if (!atomic_compare_exchange_strong_explicit(&cache->writer_count, &holding,
+                                               0u, memory_order_acq_rel,
+                                               memory_order_relaxed)) {
     return 0u;
   }
   /* Armed, and idle for as long as it stays armed: the local fast path
@@ -484,10 +508,15 @@ uint64_t arts_db_grant_release_claim(struct arts_db_cache_s *cache,
    * So nothing can raise the count under an armed obligation, and the
    * generation read here is the one the right was installed under: the next
    * install needs the home to have received this very hand-back first. */
-  assert(ARTS_GRANT_COUNT_OF(arts_atomic_read(&cache->writer_count)) == 0u &&
+  assert(ARTS_GRANT_COUNT_OF(atomic_load_explicit(
+             &cache->writer_count, memory_order_acquire)) == 0u &&
          "an armed hand-back rests on a word with no holds");
-  uint64_t token = (arts_atomic_read_u64(&cache->grant_generation) << 1) | 1u;
-  (void)arts_atomic_swap_u64(&cache->pending_grant_return, token);
+  uint64_t token =
+      (atomic_load_explicit(&cache->grant_generation, memory_order_acquire)
+       << 1) |
+      1u;
+  (void)atomic_exchange_explicit(&cache->pending_grant_return, token,
+                                 memory_order_acq_rel);
   return token;
 }
 
@@ -496,12 +525,15 @@ uint64_t arts_db_grant_release_claim(struct arts_db_cache_s *cache,
  * — a lost CAS means the token was discharged or re-armed meanwhile, and the
  * armer of what is there now has its own discharger. */
 bool arts_db_grant_return_claim_leg(struct arts_db_cache_s *cache) {
-  uint64_t armed = arts_atomic_read_u64(&cache->pending_grant_return);
-  if ((armed & 1u) == 0u ||
-      arts_atomic_cswap_u64(&cache->pending_grant_return, armed, 0u) != armed) {
+  uint64_t armed =
+      atomic_load_explicit(&cache->pending_grant_return, memory_order_acquire);
+  if ((armed & 1u) == 0u || !atomic_compare_exchange_strong_explicit(
+                                &cache->pending_grant_return, &armed, 0u,
+                                memory_order_acq_rel, memory_order_relaxed)) {
     return false;
   }
-  assert(ARTS_GRANT_COUNT_OF(arts_atomic_read(&cache->writer_count)) == 0u &&
+  assert(ARTS_GRANT_COUNT_OF(atomic_load_explicit(
+             &cache->writer_count, memory_order_acquire)) == 0u &&
          "a hand-back is discharged from a word with no holds");
   INCREMENT_NUM_GRANT_PURGE_FLAG_BY(1);
   return true;
@@ -517,24 +549,33 @@ void arts_db_grant_release_settle(struct arts_db_cache_s *cache,
    * re-granted here and armed again under a later generation — that token
    * belongs to the round that armed it and is discharged by that round. */
   arts_sched_fuzz_point(); /* widen the leg-take<->settle window */
-  if (arts_atomic_cswap_u64(&cache->pending_grant_return, token, 0u) != token) {
-    if ((arts_atomic_read_u64(&cache->pending_grant_return) & 1u) != 0u) {
+  uint64_t mine = token;
+  if (!atomic_compare_exchange_strong_explicit(&cache->pending_grant_return,
+                                               &mine, 0u, memory_order_acq_rel,
+                                               memory_order_relaxed)) {
+    if ((atomic_load_explicit(&cache->pending_grant_return,
+                              memory_order_acquire) &
+         1u) != 0u) {
       INCREMENT_NUM_GRANT_PURGE_STALE_SETTLE_BY(1);
     }
     return;
   }
-  assert(ARTS_GRANT_COUNT_OF(arts_atomic_read(&cache->writer_count)) == 0u &&
+  assert(ARTS_GRANT_COUNT_OF(atomic_load_explicit(
+             &cache->writer_count, memory_order_acquire)) == 0u &&
          "a hand-back is discharged from a word with no holds");
   send_grant_return(cache);
 }
 
 void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache) {
-  uint64_t armed = arts_atomic_read_u64(&cache->pending_grant_return);
+  uint64_t armed =
+      atomic_load_explicit(&cache->pending_grant_return, memory_order_acquire);
   /* Discharged, not sent: the directory died with the block or the run is
    * ending, and a return with no home to accept it would park on an empty
    * slot or reach the block's next generation. */
   if ((armed & 1u) != 0u) {
-    (void)arts_atomic_cswap_u64(&cache->pending_grant_return, armed, 0u);
+    (void)atomic_compare_exchange_strong_explicit(
+        &cache->pending_grant_return, &armed, 0u, memory_order_acq_rel,
+        memory_order_relaxed);
   }
 }
 
@@ -563,7 +604,8 @@ unsigned int arts_db_grant_commit_drain(struct arts_db_cache_s *cache) {
   arts_lf_link_t *chain = arts_db_grant_take_waiters(cache);
   unsigned int n = arts_pending_rw_chain_count(chain);
   if (n > 1u) {
-    arts_atomic_add(&cache->writer_count, n - 1u);
+    atomic_fetch_add_explicit(&cache->writer_count, n - 1u,
+                              memory_order_acq_rel);
   }
   arts_pending_rw_chain_wake(chain, commit_wake_cb, NULL);
   return n;
@@ -585,14 +627,16 @@ void arts_db_grant_commit_finish(struct arts_db_cache_s *cache,
 void arts_db_grant_install(struct arts_db_cache_s *cache) {
   /* A new generation before the possession it names becomes visible: anyone
    * who sees this right held reads the generation it was installed under. */
-  arts_atomic_add_u64(&cache->grant_generation, 1u);
+  atomic_fetch_add_explicit(&cache->grant_generation, 1u, memory_order_acq_rel);
   /* Possession plus the drain guard, in one transition from "holds nothing".
    * An add cannot state that precondition, and possession carried by an add
    * would leave the bit's meaning depending on what the word happened to
    * hold.  Grants are baton-serialized and the serve clears possession before
    * it ships, so the precondition is met by construction. */
-  unsigned int prev =
-      arts_atomic_cswap(&cache->writer_count, 0u, ARTS_GRANT_SEED_HOLDING);
-  assert(prev == 0u && "a grant installs only on a rank that holds nothing");
-  (void)prev;
+  unsigned int prev = 0u;
+  bool installed = atomic_compare_exchange_strong_explicit(
+      &cache->writer_count, &prev, ARTS_GRANT_SEED_HOLDING,
+      memory_order_acq_rel, memory_order_relaxed);
+  assert(installed && "a grant installs only on a rank that holds nothing");
+  (void)installed;
 }

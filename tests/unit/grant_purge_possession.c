@@ -72,7 +72,7 @@ static struct home_view read_home(arts_guid_t db) {
       }
       sleep_ms(1);
     }
-    v.word = arts_atomic_read(&d->cache.writer_count);
+    v.word = atomic_load_explicit(&d->cache.writer_count, memory_order_acquire);
     v.latch =
         atomic_load_explicit(&d->pending_return_from, memory_order_acquire);
   }
@@ -172,8 +172,9 @@ static void holder_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t turn = paramv[1];
   arts_shared_ptr_t h = arts_route_table_lookup_db(db);
   struct arts_db_s *d = (struct arts_db_s *)arts_shared_get(h);
-  unsigned int word =
-      (d != NULL) ? arts_atomic_read(&d->cache.writer_count) : 0u;
+  unsigned int word = (d != NULL) ? atomic_load_explicit(&d->cache.writer_count,
+                                                         memory_order_acquire)
+                                  : 0u;
   arts_shared_release(&h);
   if (d == NULL) {
     fail("the holder has no cache of the block", turn);

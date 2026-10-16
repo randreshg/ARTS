@@ -534,10 +534,9 @@ struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
 };
 
 /* CREATE_RETURN — see the enum comment; sent by VAL and INV under WT and by
- * FLUSH.  INV WB sends none but runs the same handler as the write-through
- * arms.  The credit triple mirrors the publish-ACK refill fields;
- * create_token echoes the announce's, and the creator applies the credit only
- * to the descriptor that carries it. */
+ * FLUSH; every other build refuses it.  The credit triple mirrors the
+ * publish-ACK refill fields; create_token echoes the announce's, and the
+ * creator applies the credit only to the descriptor that carries it. */
 struct ARTS_PACKED arts_msg_db_create_return_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
@@ -576,15 +575,15 @@ struct ARTS_PACKED arts_msg_excl_grant_packet_s {
   arts_guid_t db_guid;
   uint32_t mode;
   uint32_t pad;
-  uint64_t version; /* the home buffer's version (0 in a CXL build); no
-                     * handler reads it */
+  uint64_t version; /* always 0, and no handler reads it */
   /* Grant payload travels by PUT into the requester's landing:
    * rdzv_txid != 0 pairs this packet with the write completion, rdzv_cookie
    * echoes the requester's landing handle.  data_size is the DB's size
    * (descriptor state, ALWAYS set — a hinted first touch skips the size CTS
    * and learns the exact size from whichever reply completes it); payload
-   * presence is signaled by rdzv_txid / trailing bytes, never by data_size.
-   * txid == 0 = data-less grant (sentinel / nothing published). */
+   * presence is signaled by rdzv_txid, never by data_size, and no bytes
+   * trail the packet.  txid == 0 = data-less grant (sentinel / nothing
+   * published). */
   uint64_t data_size;
   uint64_t rdzv_txid;
   uint64_t rdzv_cookie;

@@ -216,7 +216,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
                                     &args, sizeof(args));
     break;
   }
-#endif /* ARTS_PROTOCOL_EXCL */
+#endif /* model dispatch for MSG_DB_GRANT_REQUEST */
   /* GRANT_RETURN — the voluntary hand-back of a migrating grant, which
    * exists only where VAL or INV run the PURGE release policy.  Under RETAIN
    * the home revokes the grant, and EXCL has no migrating grant, so receiving
@@ -366,7 +366,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     arts_shared_release(&h);
     break;
   }
-#endif /* ARTS_PROTOCOL_EXCL */
+#endif /* model dispatch for MSG_DB_SNAPSHOT_REQUEST and _RESPONSE */
   case MSG_DB_CREATE: {
     ARTS_DEBUG("Coh DB_CREATE_COHERENT Received");
     arts_db_create_announce_enter(
@@ -590,14 +590,15 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL && pack->credit_txid != 0 &&
-        __atomic_load_n(&db->cache.create_token, __ATOMIC_ACQUIRE) ==
+        atomic_load_explicit(&db->cache.create_token, memory_order_acquire) ==
             pack->create_token) {
       struct arts_db_cache_s *cache = &db->cache;
-      __atomic_store_n(&cache->home_line_addr, pack->credit_addr,
-                       __ATOMIC_RELAXED);
-      __atomic_store_n(&cache->home_line_rkey, pack->credit_rkey,
-                       __ATOMIC_RELAXED);
-      __atomic_store_n(&cache->flush_txid, pack->credit_txid, __ATOMIC_RELEASE);
+      atomic_store_explicit(&cache->home_line_addr, pack->credit_addr,
+                            memory_order_relaxed);
+      atomic_store_explicit(&cache->home_line_rkey, pack->credit_rkey,
+                            memory_order_relaxed);
+      atomic_store_explicit(&cache->flush_txid, pack->credit_txid,
+                            memory_order_release);
     }
     arts_shared_release(&h);
     break;
@@ -627,7 +628,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .data_size = pack->data_size,
         .rdzv_txid = pack->rdzv_txid,
         .rdzv_cookie = pack->rdzv_cookie,
-        .data_inline = 0,
         .returns_grant =
             (pack->flags & ARTS_PUBLISH_FLAG_GRANT_RETURN) ? 1u : 0u,
     };
@@ -657,6 +657,7 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     arts_shared_release(&h);
     break;
   }
+#ifdef ARTS_WRITE_POLICY_WT
   case MSG_DB_CREATE_RETURN: {
     ARTS_DEBUG("Coh CREATE_RETURN Received");
     struct arts_msg_db_create_return_packet_s *pack =
@@ -671,20 +672,28 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL && pack->credit_txid != 0 &&
-        __atomic_load_n(&db->cache.create_token, __ATOMIC_ACQUIRE) ==
+        atomic_load_explicit(&db->cache.create_token, memory_order_acquire) ==
             pack->create_token) {
       struct arts_db_cache_s *cache = &db->cache;
-      __atomic_store_n(&cache->home_pub_addr, pack->credit_addr,
-                       __ATOMIC_RELAXED);
-      __atomic_store_n(&cache->home_pub_rkey, pack->credit_rkey,
-                       __ATOMIC_RELAXED);
-      __atomic_store_n(&cache->home_pub_txid, pack->credit_txid,
-                       __ATOMIC_RELEASE);
+      atomic_store_explicit(&cache->home_pub_addr, pack->credit_addr,
+                            memory_order_relaxed);
+      atomic_store_explicit(&cache->home_pub_rkey, pack->credit_rkey,
+                            memory_order_relaxed);
+      atomic_store_explicit(&cache->home_pub_txid, pack->credit_txid,
+                            memory_order_release);
     }
     arts_shared_release(&h);
     break;
   }
-#endif /* ARTS_WRITE_POLICY_WB */
+#else  /* INV WB: its creates mint no credit */
+  case MSG_DB_CREATE_RETURN: {
+    ARTS_ERROR("this build received a create credit from rank %u — its "
+               "creates mint none; binary mode mismatch?",
+               packet->rank);
+    break;
+  }
+#endif /* ARTS_WRITE_POLICY_WT */
+#endif /* arm dispatch for MSG_DB_PUBLISH, _PUBLISH_ACK and _CREATE_RETURN */
   case MSG_EVENT_DESTROY: {
     ARTS_DEBUG("Event Destroy Received");
     /* Decode the GUID and route into the OoO engine.  A DESTROY that races
@@ -886,7 +895,6 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
         .version = pack->version,
         .rdzv_txid = pack->rdzv_txid,
         .rdzv_cookie = pack->rdzv_cookie,
-        .data_inline = 0,
     };
     /* An absent home slot means the create has not landed yet: a
      * creator-remote seeded RW hold releases via the announce leg, ordered

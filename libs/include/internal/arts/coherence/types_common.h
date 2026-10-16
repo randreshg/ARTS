@@ -222,7 +222,12 @@ struct arts_rdzv_landing_s {
  * IS the "cache-hold + per-acquirer" count, and the cb deleter ends the
  * buffer once the last holder releases — so a destroy concurrent with an
  * in-flight acquire can never free the bytes out from under a reader.
- *   version  monotonic per-buffer version stamp.
+ *   version  monotonic per-buffer version stamp.  A release bumps it with an
+ *            acq_rel fetch_add after writing the bytes, and the in-place
+ *            publish commit stores it with release after the bytes landed;
+ *            a load that names or serves those bytes is acquire, and a load
+ *            whose bytes another edge already orders is relaxed.  A buffer
+ *            not yet in a slot is stamped with atomic_init.
  *   cb       this buffer's own control block (== the slot's cb while
  *            installed).  A holder recovers it from its payload address, or,
  *            where the payload is external, from the descriptor its dep slot
@@ -238,7 +243,7 @@ struct arts_db_buffer_s {
 #ifdef ARTS_DB_BUF_POOL
   arts_lf_link_t pool_link; /* FIRST — free-list node while parked */
 #endif
-  uint64_t version;     /* monotonic per buffer (stale while parked) */
+  _Atomic(uint64_t) version; /* monotonic per buffer (stale while parked) */
   arts_shared_ptr_t cb; /* this buffer's control block */
 #ifdef ARTS_DB_BUF_POOL
   /* The cache it was drawn from, whichever cache it is installed in, whose

@@ -112,6 +112,10 @@ typedef struct arts_home_grantreq_queue_s grantreq_queue_t;
 #endif
 #ifdef ARTS_PROTOCOL_INV
 typedef struct arts_db_inv_waiter_pool_s inv_waiter_pool_t;
+typedef struct arts_db_inv_waiter_s inv_waiter_t;
+#endif
+#ifdef ARTS_PROTOCOL_EXCL
+typedef struct arts_lock_ro_node_s lock_ro_node_t;
 #endif
 
 /* Every member of the cell's DB structs, so the sibling compilation can be
@@ -169,9 +173,11 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, buf_retired);
   MEMBER(cache_t, pending_rw);
   MEMBER(cache_t, grant_req_in_flight);
+#ifndef ARTS_RELEASE_PURGE
   MEMBER(cache_t, incoming_new_owner);
   MEMBER(cache_t, incoming_new_owner_rdzv);
   MEMBER(cache_t, incoming_new_owner_have);
+#endif
   MEMBER(cache_t, cached_version);
 #if defined(ARTS_WRITE_POLICY_WT)
   MEMBER(cache_t, publication_waiters);
@@ -183,7 +189,9 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, home_pub_addr);
   MEMBER(cache_t, home_pub_rkey);
   MEMBER(cache_t, home_pub_txid);
+#ifdef ARTS_WRITE_POLICY_WT
   MEMBER(cache_t, create_token);
+#endif
 #endif
 #ifdef ARTS_RELEASE_PURGE
   MEMBER(cache_t, pending_grant_return);
@@ -201,8 +209,16 @@ static void print_fingerprint(void) {
   MEMBER(inv_waiter_pool_t, chunks);
   MEMBER(inv_waiter_pool_t, next_fresh);
   MEMBER(inv_waiter_pool_t, free_head);
+  TYPE(inv_waiter_t);
+  MEMBER(inv_waiter_t, next);
+  MEMBER(inv_waiter_t, slot);
+  MEMBER(inv_waiter_t, edt_guid);
 #endif
 #ifdef ARTS_PROTOCOL_EXCL
+  TYPE(lock_ro_node_t);
+  MEMBER(lock_ro_node_t, link);
+  MEMBER(lock_ro_node_t, rank);
+  MEMBER(lock_ro_node_t, rdzv);
   MEMBER(cache_t, ro_pending);
   MEMBER(cache_t, rw_pending);
 #if defined(ARTS_RELEASE_RETAIN)
@@ -250,7 +266,6 @@ static void print_fingerprint(void) {
 #endif
 #ifdef ARTS_PROTOCOL_INV
   MEMBER(db_t, dir_state);
-  MEMBER(db_t, opening_pending);
   MEMBER(db_t, hver);
   MEMBER(db_t, pub_queue);
   MEMBER(db_t, round_entries);
@@ -269,10 +284,12 @@ static void print_fingerprint(void) {
   MEMBER(db_t, sharers);
   MEMBER(db_t, sharer_words);
 #endif
+#ifdef ARTS_USE_GPU
   MEMBER(db_t, reader);
   MEMBER(db_t, writer);
   MEMBER(db_t, version);
   MEMBER(db_t, time_stamp);
+#endif
 
   printf("\n");
 }
@@ -335,7 +352,7 @@ int main(void) {
   memset((void *)&db, 0, sizeof(db));
   uint64_t sizes[] = {0, 1, 64, 4096};
   for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
-    db.cache.db_size = sizes[i];
+    atomic_store_explicit(&db.cache.db_size, sizes[i], memory_order_relaxed);
     db.db_type = ARTS_DB;
     uint64_t got = arts_db_total_size(&db);
     if (got != (uint64_t)sizeof(struct arts_db_s)) {

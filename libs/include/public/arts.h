@@ -129,7 +129,8 @@ typedef enum {
  *   ARTS_DB         — regular DRAM; contract/protocol selected at build time
  *   ARTS_DB_PIN     — regular DRAM, node-pinned, no DB-level coherence
  *   ARTS_DB_GPU     — GPU staging; concurrent per-device replicas merged by
- *                     reduction at release (app-ordered)
+ *                     reduction at release (app-ordered); needs a runtime
+ *                     built with ARTS_USE_GPU, else arts_db_create aborts
  *   ARTS_DB_GPU_PIN — GPU staging, no DB-level coherence
  */
 typedef enum {
@@ -867,7 +868,8 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
  *                     @c ARTS_DB_PROP_NO_ACQUIRE.
  * @param      len     Length in bytes.
  * @param      db_type Storage/coherence class (ARTS_DB, ARTS_DB_PIN,
- *                     ARTS_DB_GPU_PIN, ARTS_DB_GPU).
+ *                     ARTS_DB_GPU_PIN, ARTS_DB_GPU).  ARTS_DB_GPU aborts
+ *                     the run in a runtime built without ARTS_USE_GPU.
  * @param      flags   Property bits (@c ARTS_DB_PROP_NONE / @c
  *                     ARTS_DB_PROP_NO_ACQUIRE).
  * @param      hint    Advisory metadata.  @c hint->rank selects the home

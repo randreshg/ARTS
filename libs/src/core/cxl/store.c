@@ -1,4 +1,10 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-License-Identifier: Apache-2.0
+ *
+ * The sfence and mfence below order this host's cache-line write-backs and
+ * invalidations against its own later stores and loads, which is how bytes
+ * reach a device that other hosts read without coherence; they order no
+ * thread's view of another's memory, so they are device instructions, not C11
+ * fences, and the store exists for AMD64 only. */
 #include "arts/cxl/store.h"
 
 #include "arts/utils/stdatomic_compat.h"
@@ -9,7 +15,6 @@
 #include "arts/cxl/arena.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
-#include "arts/utils/atomics.h"
 
 /* One arena per device under round_robin, rotated per allocation, bounded by
  * the arena count the published table carries; one arena, at index 0, under
@@ -57,9 +62,9 @@ bool arts_cxl_store_contains(const void *p) {
  * record, so a reader that sees the stamp sees the whole record. */
 static struct {
   struct arts_cxl_flush_record_s rec;
-  _Atomic uint64_t stamp;
+  _Atomic(uint64_t) stamp;
 } g_flush_ring[ARTS_CXL_FLUSH_RECORD_CAP];
-static _Atomic uint64_t g_flush_next;
+static _Atomic(uint64_t) g_flush_next;
 
 static void cxl_flush_record(const void *p, size_t bytes, bool producer) {
   uint64_t seq = atomic_fetch_add_explicit(&g_flush_next, 1u, memory_order_relaxed);

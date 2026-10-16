@@ -46,9 +46,9 @@
 
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV)
 void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
-                            uint64_t version, uint64_t cv, const void *data,
-                            uint64_t data_size, uint64_t rdzv_txid,
-                            uint64_t rdzv_cookie, bool return_grant) {
+                          uint64_t version, uint64_t cv, uint64_t data_size,
+                          uint64_t rdzv_txid, uint64_t rdzv_cookie,
+                          bool return_grant) {
   struct arts_msg_publish_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_PUBLISH);
   p.header.rank = arts_global_rank_id;
@@ -69,32 +69,20 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
    * the engine here would lose the before-create reorder handling that the
    * remote path gets for free. */
   if (home_rank == arts_global_rank_id) {
-    /* Route through the OoO engine exactly as the wire RX dispatcher does —
-     * HIT runs the publish body inline, MISS defers the args (trailing data
-     * preserved) and replays once the home db_s is installed + drained.  A
-     * same-rank publish would carry `data` inline after the args struct
-     * (data_inline=1), but a home-resident release's flight is data-less, so
-     * no caller passes any; no rendezvous round exists for it. */
-    uint64_t inline_size = (data != NULL) ? data_size : 0;
-    uint32_t asz =
-        (uint32_t)(sizeof(struct arts_ooo_args_db_publish_s) + inline_size);
-    char *abuf = (char *)arts_malloc(asz);
-    struct arts_ooo_args_db_publish_s *args =
-        (struct arts_ooo_args_db_publish_s *)abuf;
-    args->releaser = p.header.rank;
-    args->db_guid = db_guid;
-    args->version = version;
-    args->cv = cv;
-    args->data_size = data_size;
-    args->rdzv_txid = 0;
-    args->rdzv_cookie = 0;
-    args->data_inline = (inline_size > 0) ? 1u : 0u;
-    args->returns_grant = return_grant ? 1u : 0u;
-    if (inline_size > 0) {
-      memcpy(abuf + sizeof(*args), data, inline_size);
-    }
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_PUBLISH, abuf, asz);
-    arts_free(abuf);
+    /* A home-resident releaser's buffer is the canonical copy, so its flight
+     * moves no bytes: the args carry the ordering round alone. */
+    struct arts_ooo_args_db_publish_s args = {
+        .releaser = p.header.rank,
+        .db_guid = db_guid,
+        .version = version,
+        .cv = cv,
+        .data_size = data_size,
+        .rdzv_txid = 0,
+        .rdzv_cookie = 0,
+        .returns_grant = return_grant ? 1u : 0u,
+    };
+    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_PUBLISH, &args,
+                                    sizeof(args));
     return;
   }
 #endif
@@ -102,7 +90,6 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
    * (data_size>0, txid 0), commit (txid set), or a data-less ordering round
    * (data_size 0).  The dirty payload itself travels one-sided
    * (arts_db_publish_sync PUTs it between announce and commit). */
-  (void)data;
   arts_transport_send_async((int)home_rank, (char *)&p, sizeof(p));
 }
 
@@ -111,8 +98,8 @@ void arts_send_db_publish(unsigned int home_rank, arts_guid_t db_guid,
 /* PUBLISH_CTS — home → releaser: the home's stable buffer, advertised in
  * place, as the landing for an announced dirty publish (a WT payload publish
  * under VAL or INV) or for EXCL PURGE's landing-less release.
- * Never a self-send (a same-rank publish is inline).  Compiled for every
- * protocol with a synchronous publish leg. */
+ * Never a self-send (a same-rank publish is an ordering round alone).
+ * Compiled for every protocol with a synchronous publish leg. */
 #if defined(ARTS_PROTOCOL_VAL) || defined(ARTS_PROTOCOL_INV) ||               \
     defined(ARTS_PROTOCOL_EXCL)
 void arts_send_db_publish_cts(unsigned int releaser_rank, arts_guid_t db_guid,
@@ -158,14 +145,18 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
    * A self-rank releaser never PUTs to itself: no credit.  A home with no
    * buffer yet simply teaches no credit, and the releaser's next flight
    * takes the announce leg — this path never has to materialize one. */
-  if (home_cache != NULL && home_cache->db_size > 0 &&
-      releaser_rank != arts_global_rank_id && arts_global_rank_count > 1) {
+  uint64_t home_size =
+      home_cache != NULL
+          ? atomic_load_explicit(&home_cache->db_size, memory_order_relaxed)
+          : 0u;
+  if (home_size > 0 && releaser_rank != arts_global_rank_id &&
+      arts_global_rank_count > 1) {
     arts_shared_ptr_t mh = arts_db_buf_acquire(home_cache);
     struct arts_db_buffer_s *master =
         (struct arts_db_buffer_s *)arts_shared_get(mh);
     uint64_t addr = 0, rkey = 0;
     if (master != NULL &&
-        arts_net_rdzv_local(master->data, home_cache->db_size, &addr, &rkey)) {
+        arts_net_rdzv_local(master->data, home_size, &addr, &rkey)) {
       p.credit_addr = addr;
       p.credit_rkey = rkey;
       p.credit_txid = arts_net_rdzv_txid_next();
@@ -197,15 +188,18 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
     defined(ARTS_PROTOCOL_FLUSH)
 void arts_send_db_create_return(unsigned int creator_rank,
                                 struct arts_db_cache_s *home_cache) {
+  uint64_t home_size =
+      atomic_load_explicit(&home_cache->db_size, memory_order_relaxed);
   if (creator_rank == arts_global_rank_id || arts_global_rank_count <= 1 ||
-      home_cache->db_size == 0) {
+      home_size == 0) {
     return;
   }
   struct arts_msg_db_create_return_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE_RETURN);
   p.header.rank = arts_global_rank_id;
   p.db_guid = home_cache->db_guid;
-  p.create_token = home_cache->create_token;
+  p.create_token =
+      atomic_load_explicit(&home_cache->create_token, memory_order_relaxed);
   p.credit_addr = 0;
   p.credit_rkey = 0;
   p.credit_txid = 0;
@@ -213,9 +207,8 @@ void arts_send_db_create_return(unsigned int creator_rank,
   struct arts_db_buffer_s *master =
       (struct arts_db_buffer_s *)arts_shared_get(mh);
   uint64_t addr = 0, rkey = 0;
-  bool ok = (master != NULL && arts_net_rdzv_local(master->data,
-                                                   home_cache->db_size, &addr,
-                                                   &rkey));
+  bool ok = (master != NULL &&
+             arts_net_rdzv_local(master->data, home_size, &addr, &rkey));
   arts_db_buf_release(&mh);
   if (!ok) {
     return;

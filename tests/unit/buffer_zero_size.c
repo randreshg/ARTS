@@ -39,7 +39,7 @@ static struct arts_db_cache_s g_cache;
 
 static void cache_init(uint64_t db_size) {
   memset(&g_cache, 0, sizeof(g_cache));
-  g_cache.db_size = db_size;
+  atomic_store_explicit(&g_cache.db_size, db_size, memory_order_relaxed);
 }
 /* Emptying the slot ends its buffer, which parks on the cache's free-list
  * where the arm keeps one, so the list is drained too; the next cache_init
@@ -59,9 +59,12 @@ static int check_zero_install(uint64_t v, const void *payload,
                   label);
     return 1;
   }
-  if (b->version != v) {
+  if (atomic_load_explicit(&b->version, memory_order_relaxed) != v) {
     (void)fprintf(stderr, "FAIL buffer_zero_size: %s version %llu != %llu\n",
-                  label, (unsigned long long)b->version, (unsigned long long)v);
+                  label,
+                  (unsigned long long)atomic_load_explicit(
+                      &b->version, memory_order_relaxed),
+                  (unsigned long long)v);
     return 1;
   }
   arts_shared_ptr_t h = arts_db_buf_acquire(&g_cache);
@@ -86,11 +89,12 @@ int main(void) {
   if (check_zero_install(1, NULL, "NULL-payload") != 0) {
     return 1;
   }
-  if (g_cache.db_size != 0) {
+  if (atomic_load_explicit(&g_cache.db_size, memory_order_relaxed) != 0) {
     (void)fprintf(stderr,
                   "FAIL buffer_zero_size: zero install spuriously learned "
                   "db_size=%llu (expected 0)\n",
-                  (unsigned long long)g_cache.db_size);
+                  (unsigned long long)atomic_load_explicit(
+                      &g_cache.db_size, memory_order_relaxed));
     return 1;
   }
   cache_teardown();
@@ -115,10 +119,13 @@ int main(void) {
   }
   arts_shared_ptr_t h = arts_db_buf_acquire(&g_cache);
   struct arts_db_buffer_s *cur = (struct arts_db_buffer_s *)arts_shared_get(h);
-  int rc = (cur == NULL || cur->version != 5);
+  int rc = (cur == NULL ||
+            atomic_load_explicit(&cur->version, memory_order_relaxed) != 5);
   if (rc) {
     (void)fprintf(stderr, "FAIL buffer_zero_size: seq final version %llu\n",
-                  cur ? (unsigned long long)cur->version : 0ULL);
+                  cur ? (unsigned long long)atomic_load_explicit(
+                            &cur->version, memory_order_relaxed)
+                      : 0ULL);
   }
   arts_db_buf_release(&h);
   cache_teardown();

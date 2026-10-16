@@ -193,6 +193,10 @@ bool arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot);
  * first. */
 void arts_db_drain_resume_list(void);
 
+/* Free the calling thread's resume worklist.  Called once the thread has left
+ * its scheduler loop, when nothing can append to the list any more. */
+void arts_db_resume_list_free(void);
+
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep
  * through the per-dep 3-way (subtype-aware — ARTS_DB → arts_handler_db_acquire,
  * PIN/GPU → pinned ptr path, still-absent → re-defer).  item = the

@@ -37,7 +37,7 @@ static struct arts_db_cache_s g_cache;
 
 static void cache_init(uint64_t db_size) {
   memset(&g_cache, 0, sizeof(g_cache));
-  g_cache.db_size = db_size;
+  atomic_store_explicit(&g_cache.db_size, db_size, memory_order_relaxed);
 }
 static void cache_teardown(void) {
   arts_shared_slot_store(&g_cache.buffer, NULL);
@@ -54,10 +54,12 @@ static int install_check(uint64_t v, const unsigned char *payload) {
                   (unsigned long long)v);
     return 1;
   }
-  if (b->version != v) {
+  if (atomic_load_explicit(&b->version, memory_order_relaxed) != v) {
     (void)fprintf(stderr,
                   "FAIL buffer_payload_roundtrip: version %llu != %llu\n",
-                  (unsigned long long)b->version, (unsigned long long)v);
+                  (unsigned long long)atomic_load_explicit(
+                      &b->version, memory_order_relaxed),
+                  (unsigned long long)v);
     return 1;
   }
   arts_shared_ptr_t h = arts_db_buf_acquire(&g_cache);
@@ -117,12 +119,13 @@ int main(void) {
   arts_shared_ptr_t h = arts_db_buf_acquire(&g_cache);
   struct arts_db_buffer_s *cur = (struct arts_db_buffer_s *)arts_shared_get(h);
   int rc = 0;
-  if (cur->version != 100 || memcmp(cur->data, pat[3], DB_SIZE) != 0 ||
-      retreat != cur) {
+  if (atomic_load_explicit(&cur->version, memory_order_relaxed) != 100 ||
+      memcmp(cur->data, pat[3], DB_SIZE) != 0 || retreat != cur) {
     (void)fprintf(stderr,
                   "FAIL buffer_payload_roundtrip: stale install corrupted "
                   "bytes/version (v=%llu)\n",
-                  (unsigned long long)cur->version);
+                  (unsigned long long)atomic_load_explicit(
+                      &cur->version, memory_order_relaxed));
     rc = 1;
   }
   arts_db_buf_release(&h);

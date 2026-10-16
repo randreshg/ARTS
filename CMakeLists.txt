@@ -542,8 +542,21 @@ if(ARTS_USE_CXL OR ARTS_BUILD_BENCHMARKS)
     set(ARTS_CXL_NEEDED ON)
 endif()
 
+# The store orders a device's view of memory with AMD64 instructions
+# (clflushopt, sfence, mfence), so it exists for AMD64 only.  This predicate
+# gates the refusal below and nothing else: a benchmark tree, which builds the
+# two CXL variants, is already skipped on any other target.
+set(ARTS_CXL_SUPPORTED ${ARTS_TARGET_AMD64})
+
 set(ARTS_CXL_TREE_RESIDENCY "")
 if(ARTS_USE_CXL)
+    if(NOT ARTS_CXL_SUPPORTED)
+        message(FATAL_ERROR
+            "ARTS_USE_CXL=ON is refused on target processor "
+            "${CMAKE_SYSTEM_PROCESSOR}: the CXL store orders the device's view "
+            "of memory with AMD64 cache-flush and fence instructions, so it "
+            "exists for AMD64 only")
+    endif()
     if(NOT ARTS_COHERENCE_PROTOCOL STREQUAL "EXCL" OR NOT ARTS_RELEASE_POLICY STREQUAL "PURGE")
         message(FATAL_ERROR
             "ARTS_USE_CXL=ON requires ARTS_COHERENCE_PROTOCOL=EXCL and "
@@ -622,7 +635,9 @@ if(ARTS_CXL_NEEDED)
 elseif(ARTS_CXL_REAL OR ARTS_CXL_RAPID_INCLUDE_DIR OR ARTS_CXL_RAPID_LIB_DIR OR ARTS_CXL_LIB_INCLUDE_DIR OR ARTS_CXL_LIB)
     message(FATAL_ERROR
         "ARTS_CXL_REAL / ARTS_CXL_RAPID_INCLUDE_DIR / ARTS_CXL_RAPID_LIB_DIR / ARTS_CXL_LIB_INCLUDE_DIR / ARTS_CXL_LIB were given, but this "
-        "tree builds nothing that links a CXL library (ARTS_USE_CXL=OFF, ARTS_BUILD_BENCHMARKS=OFF)")
+        "tree builds nothing that links a CXL library (ARTS_USE_CXL=OFF, and "
+        "no benchmark tree: ARTS_BUILD_BENCHMARKS=OFF, or a target processor "
+        "other than AMD64, where the benchmark tree is skipped)")
 endif()
 
 # Compiler-specific settings

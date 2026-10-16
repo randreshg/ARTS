@@ -174,7 +174,7 @@ void arts_send_db_publish_ack(unsigned int r, arts_guid_t g, uint64_t cv,
 static int scenario(int in_send) {
   g_db = calloc(1, sizeof(*g_db));
   g_db->home_initialized = true;
-  g_db->cache.writer_count = ARTS_GRANT_SEED_IDLE;
+  atomic_init(&g_db->cache.writer_count, ARTS_GRANT_SEED_IDLE);
   atomic_store(&g_db->invalidate_in_flight, 0u);
   atomic_store(&g_db->pending_return_from, ARTS_GRANT_NO_RETURNER);
   g_grants = g_acks = 0;
@@ -186,7 +186,8 @@ static int scenario(int in_send) {
   if (!in_send) {
     hand_back(1u);
   }
-  unsigned int w = arts_atomic_read(&g_db->cache.writer_count);
+  unsigned int w =
+      atomic_load_explicit(&g_db->cache.writer_count, memory_order_acquire);
   unsigned int baton = atomic_load(&g_db->invalidate_in_flight);
   unsigned int latch = atomic_load(&g_db->pending_return_from);
   int ok = (w == ARTS_GRANT_SEED_IDLE && baton == 0u &&

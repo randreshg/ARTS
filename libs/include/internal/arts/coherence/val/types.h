@@ -96,7 +96,15 @@ struct arts_home_grantreq_queue_s {
  * reached via arts_db_of_cache(cache).  Non-home ranks allocate a cache-only
  * footprint that stops before them. */
 struct arts_db_cache_s {
-  volatile unsigned int writer_count;
+  /* Every write after the cache is published is a read-modify-write, so a
+   * release RMW heads a release sequence the next acquire RMW or load reads:
+   * an install's release carries the buffer, the learned size and (PURGE) the
+   * grant generation to the admission that sees the right held; a writer's
+   * acq_rel decrement carries its bytes and version bump to whichever
+   * decrement reaches the transfer edge, which acquires them before it ships.
+   * Every load outside the post-join quiescence walk is acquire, a load
+   * whose value a following CAS re-validates included. */
+  _Atomic(unsigned int) writer_count;
   /* Buffers drawn from this cache and not parked back, plus the flag the
    * storage release sets once the destructor has run (encoding in buffer.c,
    * lifetime rule in types_common.h). */
@@ -112,21 +120,30 @@ struct arts_db_cache_s {
    * ARTS_DB_DESTROYED early-returns, where the cache is in scope but the
    * original guid argument has been lost in the call chain. */
   arts_guid_t db_guid;
-  uint64_t db_size;
+  /* The block's exact size once this rank has learned it, 0 until then.
+   * Every writer stores the one size the block was created with, so a
+   * reader sees 0 or that size and nothing else: relaxed throughout
+   * (arts_db_cache_learn_size).  A use that needs the exact size for an
+   * allocation or a transfer length is ordered after the learn by its own
+   * edge (the grant install, the route install, program order). */
+  _Atomic(uint64_t) db_size;
   /* Does this cache's payload slot still need materializing?  1 until a
    * buffer has been installed, 0 after — the first entitled use of a block
    * whose create left it no storage is what installs one, and every later
-   * use must find that out without touching the slot's refcount.
-   * Correctness never rests on it: a reader that sees 0 still reads the
-   * pointer from the slot itself, and a stale 1 costs one materialize
-   * attempt that then clears it.  The slot is monotone for a live cache —
-   * only the destructor puts NULL back — so a 0 can never go stale. */
-  uint8_t payload_pending;
+   * use must find that out without touching the slot's refcount.  The 0 is
+   * stored with release after the slot's install, and the fast exit that
+   * reads it acquires the installed buffer with it.  A stale 1 costs one
+   * materialize attempt that then clears it.  The slot is monotone for a
+   * live cache — only the destructor puts NULL back — so a 0 can never go
+   * stale. */
+  _Atomic(uint8_t) payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
    * the home's directory, or a dependence's first touch.  A create that
    * claims a first touch's cache turns it into its own
-   * (arts_db_create_claims_stub); nothing else writes it after init. */
-  uint8_t init_kind;
+   * (arts_db_create_claims_stub); nothing else writes it after init.  Only
+   * its own value: one CAS decides between a claim and an answer. */
+  _Atomic(uint8_t) init_kind;
+#ifndef ARTS_RELEASE_PURGE
   /* New owner rank for the next ownership transfer, published by this round's
    * GRANT_INVALIDATE handler BEFORE it withdraws the sentinel.  Sentinel
    * ARTS_NO_PENDING_OWNER == no transfer pending.  The publish-before-
@@ -135,7 +152,8 @@ struct arts_db_cache_s {
    * last release_rw) reads this field — a non-sentinel value names the target,
    * so that actor ships the grant to it (GRANT_RESPONSE under both write
    * policies, dispatched inline for a self-transfer).  Single writer per round
-   * (home baton gate), so no atomic needed.  Shared by both write policies:
+   * (home baton gate), and the decrement that reaches 0 reads the withdrawal's
+   * release sequence, so the field is plain.  Shared by both write policies:
    * the INVALIDATE carries new_owner under each. */
   unsigned int incoming_new_owner;
   /* The pending new owner's transfer landing, published together with (and
@@ -146,23 +164,22 @@ struct arts_db_cache_s {
    * have_version), published with the two fields above; the 0-edge actor
    * ships no payload when the canonical bytes are at that very version. */
   uint64_t incoming_new_owner_have;
+#endif
+  /* RW GRANT_REQUEST coalescing flag — only the actor that CASes 0->1 sends
+   * GRANT_REQUEST; same-node RW EDTs piggyback on the in-flight one and are
+   * picked up by GRANT's drain.  A grant's take clears it with release after
+   * taking the waiters, and a claim (acq_rel) sees that take, so it never
+   * requests for waiters a grant already took.  The claim and the clear each
+   * pair with the pending_rw stack through a seq_cst fence
+   * (arts_db_acquire_remote_rw, arts_db_grant_take_waiters). */
+  _Atomic(unsigned int) grant_req_in_flight;
 #ifdef ARTS_WRITE_POLICY_WB
   /* WB: owner-side dedup map.  Allocated with the cache and freed with it; its
    * content migrates with ownership (GRANT_RESPONSE serializes it). */
   struct arts_rank_to_u64_map_s *cached_version;
-  /* WB per-cache RW exclusivity machinery.  RW GRANT_REQUEST coalescing
-   * flag — only the actor that CASes false->true sends GRANT_REQUEST;
-   * same-node RW EDTs piggyback on the in-flight one and are picked up by
-   * GRANT's drain. */
-  volatile unsigned int grant_req_in_flight;
   /* Treiber stack of RW waiters parked on this rank (order-free drain-all). */
   arts_lf_stack_t pending_rw;
 #else
-  /* WT per-cache RW exclusivity machinery.  RW GRANT_REQUEST coalescing
-   * flag — only the actor that CASes false->true sends GRANT_REQUEST;
-   * same-node RW EDTs piggyback on the in-flight one and are picked up by
-   * GRANT's drain. */
-  volatile unsigned int grant_req_in_flight;
   /* Owner-side dedup map.  WT never creates it (always NULL): home serves RO
    * via SNAPSHOT_REQUEST with the home->cached_version watermark, so the WT
    * owner→owner transfer ships an EMPTY map.  The field exists so the shared
@@ -174,30 +191,41 @@ struct arts_db_cache_s {
   arts_lf_stack_t publication_waiters;
 
   /* WT publish write-combining — the write-side twin of the RO combining
-   * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}:
-   * claim and join are each one CAS); pub_waiters holds heap {sem, version}
-   * nodes for every releaser blocked until a covering publish is ACKed
-   * (heap for the same reason the publish rendezvous is — a shutdown-
-   * escaped waiter leaks its node and a late drain may still post into
-   * it).  home_pub_* is the durable publish credit: the home's stable
-   * buffer plus a receiver-minted txid, refilled by a payload flight's ACK;
-   * txid is the presence flag (0 = none), written last with release
-   * order so a reader that sees it sees the whole triple. */
-  volatile unsigned int pub_flight;
+   * window below.  pub_flight is the one-word flight state ({FLYING,DIRTY}):
+   * a claim (CAS 0->FLYING) or a join (CAS ->|DIRTY) follows the releaser's
+   * push onto pub_waiters, and every reset of the word by the flight owner
+   * is an exchange, so a join is either read by that reset (and its node
+   * re-drained) or lands after it (and fails the owner's landing CAS).
+   * pub_waiters holds heap {sem, version} nodes for every releaser blocked
+   * until a covering publish is ACKed (heap for the same reason the publish
+   * rendezvous is — a shutdown-escaped waiter leaks its node and a late
+   * drain may still post into it). */
+  _Atomic(unsigned int) pub_flight;
   arts_lf_stack_t pub_waiters;
-  /* Waiters drained by a completing flight but not covered by its version:
-   * held here (plain field — touched only by the flight owner, and only one
-   * flight is in flight) until the trailing flight's ACK re-examines them.
-   * Non-NULL implies the flight word is FLYING. */
-  void *pub_parked;
-  uint64_t home_pub_addr;
-  uint64_t home_pub_rkey;
-  volatile uint64_t home_pub_txid;
+  /* Waiters a completing flight drained but its version did not cover, held
+   * for the trailing flight's ACK.  Written by the flight owner (one
+   * completion at a time) with release, and taken by an exchange, either by
+   * that next completion or by an abandon (a destroy, a shutdown), which may
+   * run on another thread at any time.  Non-NULL only while the flight word
+   * is FLYING. */
+  _Atomic(arts_lf_link_t *) pub_parked;
+  /* The durable publish credit: the home's stable buffer plus a
+   * receiver-minted txid, refilled by a payload flight's ACK and by the
+   * create's return.  txid is the presence flag (0 = none): a teacher stores
+   * addr and rkey relaxed and then txid with release, and the flight's
+   * acquire exchange of txid sees the whole triple. */
+  _Atomic(uint64_t) home_pub_addr;
+  _Atomic(uint64_t) home_pub_rkey;
+  _Atomic(uint64_t) home_pub_txid;
   /* A remote creator's name for this descriptor, carried by its announce and
    * echoed by the home's CREATE_RETURN: the create's credit is applied only
    * where the two match, never to a later descriptor of the same GUID.  0 on
-   * every other cache. */
-  uint64_t create_token;
+   * every other cache.
+   * Minted by the creator with a release store before its announce
+   * leaves (the home's stub takes the announced value at init); the
+   * credit handler's acquire compare is the only reader that decides
+   * anything.  It carries nothing beyond its own value. */
+  _Atomic(uint64_t) create_token;
 #endif
 #ifdef ARTS_RELEASE_PURGE
   /* The hand-back obligation: (grant_generation << 1) | armed, or zero.
@@ -206,21 +234,29 @@ struct arts_db_cache_s {
    * release itself CASes it back to zero, so exactly one return goes out.
    * The generation is what makes the release's discharge its own: a settle
    * that wakes after the right has come back and been re-granted here finds
-   * a token of a later generation and must not touch it. */
-  volatile uint64_t pending_grant_return;
+   * a token of a later generation and must not touch it.  Every write is an
+   * acq_rel RMW; the token carries only its own value. */
+  _Atomic(uint64_t) pending_grant_return;
   /* Count of write rights installed on this rank; the token above names the
-   * one it belongs to. */
-  volatile uint64_t grant_generation;
+   * one it belongs to.  Bumped by the install before its possession CAS
+   * (release) publishes the right, and read by the releaser after its own
+   * claim CAS acquired that possession. */
+  _Atomic(uint64_t) grant_generation;
 #endif
   /* Remote-read request-combining window (see coherence/coherence.c).
-   * snapshot_req_in_flight admits ONE outstanding snapshot request per cache
-   * (0->1 CAS claims the window).  ro_combine accumulates waiters that arrive
-   * while a request is in flight; ro_combine_group is the batch the current
-   * request rides for — isolated from ro_combine in one exchange at send time,
+   * snapshot_req_in_flight admits ONE outstanding snapshot request per cache:
+   * the 0->1 CAS (acq_rel) claims the window, and the owner gives it back
+   * with a release store once its response is installed, so the next claimer
+   * sees every write the owner made while it held it.  A pusher's push and
+   * claim, and an owner's release and re-probe, each pass a seq_cst fence
+   * (ro_combine_pump).  ro_combine accumulates waiters that arrive while a
+   * request is in flight; ro_combine_group is the batch the current request
+   * rides for — isolated from ro_combine in one exchange at send time,
    * resumed wholesale by the response terminal.  ro_combine_group is
    * single-actor (written by the window owner before the send, consumed by
-   * the one response that ends that window), so it needs no atomics. */
-  volatile unsigned int snapshot_req_in_flight;
+   * the one response that ends that window), so the window's release and
+   * claim order it and it needs no atomics. */
+  _Atomic(unsigned int) snapshot_req_in_flight;
   arts_lf_stack_t ro_combine;
   arts_lf_link_t *ro_combine_group;
 };
@@ -294,11 +330,13 @@ struct arts_db_s {
   uint8_t pending_return_ack;
   uint8_t pending_return_credit;
 #endif
+#ifdef ARTS_USE_GPU
   /* GPU staging locks / version stamps (GPU DB path; full arts_db_s alloc). */
   volatile unsigned int reader;  /**< GPU staging reader lock. */
   volatile unsigned int writer;  /**< GPU staging writer lock. */
   volatile unsigned int version; /**< GPU LC version counter. */
   unsigned int time_stamp;       /**< GPU staging timestamp. */
+#endif
 } ARTS_ALIGNED_MAX;
 
 /** @} */ /* end internal_db_structs */

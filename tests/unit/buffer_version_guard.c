@@ -38,7 +38,7 @@ static struct arts_db_cache_s g_cache;
 
 static void cache_init(void) {
   memset(&g_cache, 0, sizeof(g_cache));
-  g_cache.db_size = DB_SIZE;
+  atomic_store_explicit(&g_cache.db_size, DB_SIZE, memory_order_relaxed);
 }
 static void cache_teardown(void) {
   arts_shared_slot_store(&g_cache.buffer, NULL);
@@ -47,7 +47,8 @@ static void cache_teardown(void) {
 static uint64_t slot_version(void) {
   arts_shared_ptr_t h = arts_db_buf_acquire(&g_cache);
   struct arts_db_buffer_s *b = (struct arts_db_buffer_s *)arts_shared_get(h);
-  uint64_t v = b ? b->version : (uint64_t)-1;
+  uint64_t v = b ? atomic_load_explicit(&b->version, memory_order_relaxed)
+                 : (uint64_t)-1;
   arts_db_buf_release(&h);
   return v;
 }
@@ -61,7 +62,8 @@ int main(void) {
 
   /* (1) Install v=5 bytes A. */
   struct arts_db_buffer_s *buf_a = arts_db_buf_install(&g_cache, 5, a, DB_SIZE);
-  if (buf_a == NULL || buf_a->version != 5) {
+  if (buf_a == NULL ||
+      atomic_load_explicit(&buf_a->version, memory_order_relaxed) != 5) {
     (void)fprintf(stderr, "FAIL buffer_version_guard: first install bad\n");
     return 1;
   }
@@ -80,7 +82,9 @@ int main(void) {
   arts_shared_ptr_t h = arts_db_buf_acquire(&g_cache);
   struct arts_db_buffer_s *cur = (struct arts_db_buffer_s *)arts_shared_get(h);
   int rc = 0;
-  if (cur != buf_a || cur->version != 5 || memcmp(cur->data, a, DB_SIZE) != 0) {
+  if (cur != buf_a ||
+      atomic_load_explicit(&cur->version, memory_order_relaxed) != 5 ||
+      memcmp(cur->data, a, DB_SIZE) != 0) {
     (void)fprintf(stderr,
                   "FAIL buffer_version_guard: equal-version retreat altered "
                   "slot/bytes\n");
@@ -105,7 +109,9 @@ int main(void) {
 
   /* A strictly higher version DOES publish and advances. */
   struct arts_db_buffer_s *buf6 = arts_db_buf_install(&g_cache, 6, c, DB_SIZE);
-  if (buf6 == buf_a || buf6->version != 6 || slot_version() != 6) {
+  if (buf6 == buf_a ||
+      atomic_load_explicit(&buf6->version, memory_order_relaxed) != 6 ||
+      slot_version() != 6) {
     (void)fprintf(
         stderr, "FAIL buffer_version_guard: higher version did not advance\n");
     return 1;

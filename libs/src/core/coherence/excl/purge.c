@@ -46,22 +46,11 @@
 #include "arts/runtime_types.h"
 #include "arts/system/identity.h"
 #include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
-
-/* ===== RO waiter node (rank-granular RO queue entry) ===================
- * Mirrors the definition in retain.c (both TUs include excl/types.h which does
- * not define this node — it is a file-local type used only by home-side grant
- * and teardown logic in this TU, and by arts_send_db_excl_grant here which
- * calls arts_handler_db_excl_grant as a local-hit self-send). */
-struct arts_lock_ro_node_s {
-  arts_lf_link_t link; /* FIRST */
-  unsigned int rank;
-  struct arts_rdzv_landing_s rdzv; /* requester's grant landing */
-};
 
 /* ===== Pure state-transition arbiters ==================================
  * excl_compute_next and cache_compute_next are pure functions (no external
@@ -72,6 +61,81 @@ struct arts_lock_ro_node_s {
 #include "arts/counter/Preamble.h"
 
 /* ===== Grant dispatcher (shared by request + release handlers) ========= */
+
+/* Whether lock_state admits readers: some are counted and no writer holds the
+ * block (no writer counted, or the counted writers all wait behind the read
+ * phase). */
+static bool lock_read_phase_open(uint64_t s) {
+  return EXCL_STATE_R(s) > 0u &&
+         (EXCL_STATE_W(s) == 0u || EXCL_STATE_BIT(s) == EXCL_PHASE_BIT_RO);
+}
+
+/* Grant every reader queued on ro_waiters, from the home's store (CXL) or
+ * from buf_h.  A node is queued only after its reader's count has committed,
+ * so a drained reader is always counted.  The drain takes the whole stack,
+ * including readers that a later write phase holds back, and the frame running
+ * it may have been preempted since the transition that sent it here.  So a
+ * batch is granted only against a load taken after its drain: the nodes'
+ * counts were committed before their pushes, which the drain reads, so the
+ * load is at least as new as every count, and an open read phase stays open
+ * until these readers release.  Any other phase means the nodes wait for the
+ * flip that ends it.  They are pushed back and the word is read once more,
+ * because that flip may have drained between this drain and the push-back.
+ * The push-back and the flip's drain are acq_rel RMWs of the one stack head:
+ * if the drain is the later one it takes the nodes; if not, the last
+ * push-back reads it and synchronizes with it, and the load sees the flip. */
+static void lock_home_serve_ro(struct arts_db_s *db,
+                               struct arts_db_cache_s *cache,
+                               arts_shared_ptr_t buf_h, uint64_t data_size) {
+#ifdef ARTS_USE_CXL
+  struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0, 0};
+  (void)buf_h;
+#endif
+  for (;;) {
+    arts_sched_fuzz_point();
+    arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);
+    if (node == NULL) {
+      return;
+    }
+    uint64_t fresh =
+        atomic_load_explicit(&db->lock_state, memory_order_acquire);
+    if (lock_read_phase_open(fresh)) {
+      while (node != NULL) {
+        arts_lf_link_t *nx =
+            atomic_load_explicit(&node->next, memory_order_relaxed);
+        struct arts_lock_ro_node_s *rn =
+            ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
+#ifdef ARTS_USE_CXL
+        arts_send_db_excl_grant(rn->rank, cache->db_guid, DB_MODE_RO,
+                                /*version=*/0u, &rn->rdzv, &pub,
+                                /*src_h=*/NULL, data_size);
+#else
+        /* Each fan-out PUT pins the source with its own strong ref. */
+        arts_send_db_excl_grant(rn->rank, cache->db_guid, DB_MODE_RO,
+                                /*version=*/0u, &rn->rdzv, NULL,
+                                (arts_shared_get(buf_h) != NULL)
+                                    ? arts_shared_copy(buf_h)
+                                    : NULL,
+                                data_size);
+#endif
+        arts_free(rn);
+        node = nx;
+      }
+      return;
+    }
+    arts_sched_fuzz_point();
+    while (node != NULL) {
+      arts_lf_link_t *nx =
+          atomic_load_explicit(&node->next, memory_order_relaxed);
+      arts_lf_stack_push(&db->ro_waiters, node);
+      node = nx;
+    }
+    fresh = atomic_load_explicit(&db->lock_state, memory_order_acquire);
+    if (!lock_read_phase_open(fresh)) {
+      return;
+    }
+  }
+}
 
 /* Acquire the home buffer's data for a grant payload and fan-out grants.
  * After pop (rw) / drain (ro), for each target rank: self → direct handler
@@ -93,7 +157,8 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
    * The landing's address field names it — the only thing that travels — and
    * txid 0 says nothing is in flight. */
   struct arts_rdzv_landing_s pub = {arts_db_cxl_slot_addr(cache), 0, 0, 0};
-  uint64_t data_size = cache->db_size;
+  uint64_t data_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   if (grant == LOCK_GRANT_ONE_RW) {
     unsigned int rank;
     struct arts_rdzv_landing_s rdzv;
@@ -102,34 +167,22 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
                               &rdzv, &pub, /*src_h=*/NULL, data_size);
     }
   } else { /* LOCK_GRANT_ALL_RO */
-    arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);
-    while (node != NULL) {
-      arts_lf_link_t *nx =
-          atomic_load_explicit(&node->next, memory_order_relaxed);
-      struct arts_lock_ro_node_s *rn =
-          ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
-      arts_send_db_excl_grant(rn->rank, cache->db_guid, DB_MODE_RO,
-                              /*version=*/0u, &rn->rdzv, &pub, /*src_h=*/NULL,
-                              data_size);
-      arts_free(rn);
-      node = nx;
-    }
+    lock_home_serve_ro(db, cache, /*buf_h=*/NULL, data_size);
   }
 #else
   /* A first use of a block whose create took no hold: the grant about to
    * leave carries the block's bytes, and under this release policy the home
    * is the one rank entitled to say what they are — so materialize them here
    * when the block has no storage yet.  A no-op for every other block. */
-  (void)arts_db_buf_ensure(cache, cache->db_size);
+  (void)arts_db_buf_ensure(
+      cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   /* The size is descriptor state — known even before any payload exists;
    * the grant carries it so a hinted (CTS-skipping) first touch learns it. */
-  uint64_t data_size = cache->db_size;
-  /* The grant carries the home buffer's own version, which no grant handler
-   * reads. */
-  uint64_t version = buf ? buf->version : 0;
+  uint64_t data_size =
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   if (grant == LOCK_GRANT_ONE_RW) {
     unsigned int rank;
     struct arts_rdzv_landing_s rdzv;
@@ -145,25 +198,12 @@ static void lock_home_grant(struct arts_db_s *db, struct arts_db_cache_s *cache,
         pub.txid = arts_net_rdzv_txid_next();
         pub.cookie = 0; /* in-place: home finds its buffer via the cache */
       }
-      arts_send_db_excl_grant(rank, cache->db_guid, DB_MODE_RW, version, &rdzv,
-                              &pub, buf_h, data_size);
+      arts_send_db_excl_grant(rank, cache->db_guid, DB_MODE_RW, /*version=*/0u,
+                              &rdzv, &pub, buf_h, data_size);
       buf_h = NULL; /* consumed by the grant sender */
     }
-  } else { /* LOCK_GRANT_ALL_RO: drain ro_waiters, fan-out to each rank. */
-    arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);
-    while (node != NULL) {
-      arts_lf_link_t *nx =
-          atomic_load_explicit(&node->next, memory_order_relaxed);
-      struct arts_lock_ro_node_s *rn =
-          ARTS_CONTAINER_OF(node, struct arts_lock_ro_node_s, link);
-      /* Each fan-out PUT pins the source with its own strong ref. */
-      arts_send_db_excl_grant(rn->rank, cache->db_guid, DB_MODE_RO, version,
-                              &rn->rdzv, NULL,
-                              (buf != NULL) ? arts_shared_copy(buf_h) : NULL,
-                              data_size);
-      arts_free(rn);
-      node = nx;
-    }
+  } else { /* LOCK_GRANT_ALL_RO */
+    lock_home_serve_ro(db, cache, buf_h, data_size);
   }
   if (buf_h != NULL) {
     arts_db_buf_release(&buf_h);
@@ -258,12 +298,15 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
 
 #ifndef ARTS_USE_CXL
   if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
-      cache->db_size > 0 && arts_global_rank_count > 1) {
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) > 0 &&
+      arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — the grant
      * plane requires a landing.  The requester re-issues with one. */
-    arts_send_db_excl_cts(requester, cache->db_guid, cache->db_size,
-                          (uint32_t)mode);
+    arts_send_db_excl_cts(
+        requester, cache->db_guid,
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed),
+        (uint32_t)mode);
     return;
   }
 #else
@@ -272,39 +315,66 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
    * travels in the grant, which the grantee records before it reads. */
 #endif
 
-  /* (1) push-before-CAS: enqueue this requester rank in its mode's queue
-   * BEFORE reading lock_state, so the CAS transition already sees this
-   * participant counted. */
-  if (mode == DB_MODE_RW) {
-    arts_home_grantreq_queue_push(&db->rw_waiters, requester, &a->rdzv,
-                                  ARTS_GRANT_VERSION_NONE);
-  } else {
-    struct arts_lock_ro_node_s *n =
-        (struct arts_lock_ro_node_s *)arts_malloc(sizeof(*n));
-    n->rank = requester;
-    n->rdzv = a->rdzv;
-    arts_lf_stack_push(&db->ro_waiters, &n->link);
-  }
   arts_rank_bitset_set(&db->cached_ranks,
                        requester); /* destroy fan-out roster */
 
-  /* (2) read -> compute next -> CAS retry on contention. */
-  int op = (mode == DB_MODE_RW) ? EXCL_OP_RW_ACQ : EXCL_OP_RO_ACQ;
   uint32_t grant;
   uint64_t cur, next;
+  if (mode == DB_MODE_RW) {
+    /* Queued before the count: a transition that counts this writer also
+     * finds its node, and a pop that meets the push half done waits for it.
+     * A writer popped before its own count lands takes the turn of the
+     * counted writer queued behind it, whose count stands in for it until
+     * its late transition counts it. */
+    arts_home_grantreq_queue_push(&db->rw_waiters, requester, &a->rdzv,
+                                  ARTS_GRANT_VERSION_NONE);
+    arts_sched_fuzz_point();
+    do {
+      cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
+      next = excl_compute_next(cur, EXCL_OP_RW_ACQ, &grant);
+    } while (!atomic_compare_exchange_weak_explicit(&db->lock_state, &cur,
+                                                    next, memory_order_acq_rel,
+                                                    memory_order_acquire));
+    lock_home_grant(db, cache, grant);
+    return;
+  }
+
+  /* A reader is queued only after its count has committed.  Every read grant
+   * is a drain of the whole stack, so a node queued first could be granted,
+   * served and released before its count lands: the release would take r down
+   * for a reader never counted, opening a write phase under a counted reader
+   * or wrapping r.  Counted first, the opposite gap is a flip that saw this
+   * count and drained before the push; the re-check below closes it. */
+  struct arts_lock_ro_node_s *n =
+      (struct arts_lock_ro_node_s *)arts_malloc(sizeof(*n));
+  n->rank = requester;
+  n->rdzv = a->rdzv;
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
-    next = excl_compute_next(cur, op, &grant);
-  } while (!atomic_compare_exchange_weak_explicit(
-      &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
-
-  /* (3) grant per the transition case. */
-  lock_home_grant(db, cache, grant);
+    next = excl_compute_next(cur, EXCL_OP_RO_ACQ, &grant);
+  } while (!atomic_compare_exchange_weak_explicit(&db->lock_state, &cur, next,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+  arts_sched_fuzz_point();
+  arts_lf_stack_push(&db->ro_waiters, &n->link);
+  if (grant == LOCK_GRANT_ALL_RO) {
+    lock_home_grant(db, cache, grant);
+    return;
+  }
+  /* Held behind a write phase.  The push and the flip's drain are acq_rel
+   * RMWs of the one stack head: either that drain takes this node, or the
+   * push reads the drain and synchronizes with it, and this load sees the
+   * read phase the flip opened (this reader's own count keeps it open). */
+  arts_sched_fuzz_point();
+  if (lock_read_phase_open(
+          atomic_load_explicit(&db->lock_state, memory_order_acquire))) {
+    lock_home_grant(db, cache, LOCK_GRANT_ALL_RO);
+  }
 }
 
 /* ===== arts_handler_db_excl_release ==================================== */
 
-/* Steps (2)+(3) of the release: the lock_state transition + next grant.
+/* The release's commit: the lock_state transition and the next grant.
  * Factored out so the rendezvous continuation (dirty bytes landed) runs the
  * identical commit. */
 static void lock_release_commit(struct arts_db_s *db,
@@ -313,11 +383,23 @@ static void lock_release_commit(struct arts_db_s *db,
   int op = (mode == DB_MODE_RW) ? EXCL_OP_RW_REL : EXCL_OP_RO_REL;
   uint32_t grant;
   uint64_t cur, next;
+  arts_sched_fuzz_point();
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
+    /* A write release returns a turn this home granted, so it never finds
+     * the writer count at zero.  Only a reused label breaks that: a release
+     * meant for the label's next generation, reaching the home while a
+     * destroy's teardown of the previous one waits for a release still owed
+     * to it, lands here.  The count would wrap and the block would never be
+     * torn down; a Debug build stops here instead of hanging. */
+    assert(op != EXCL_OP_RW_REL || EXCL_STATE_W(cur) != 0u);
+    /* A read release returns a grant to a reader whose count committed before
+     * its node could be drained, so it never finds the reader count at zero.
+     * A wrapped r would park writers behind readers that do not exist. */
+    assert(op != EXCL_OP_RO_REL || EXCL_STATE_R(cur) != 0u);
     next = excl_compute_next(cur, op, &grant);
   } while (!atomic_compare_exchange_weak_explicit(
-      &db->lock_state, &cur, next, memory_order_release, memory_order_acquire));
+      &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
   lock_home_grant(db, cache, grant);
 }
 
@@ -361,8 +443,7 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
                a->releaser);
   }
 #else
-  if (mode == DB_MODE_RW && a->data_size > 0 && a->data_inline == 0 &&
-      a->rdzv_txid == 0) {
+  if (mode == DB_MODE_RW && a->data_size > 0 && a->rdzv_txid == 0) {
     /* Announce: the releaser holds dirty bytes but its RW hold carried no
      * grant-provided publish landing (a creator-seeded hold never received
      * a grant).  Advertise home's stable buffer (fresh txid) and let the
@@ -393,8 +474,7 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
     arts_send_db_publish_cts(a->releaser, a->db_guid, &landing, a->cv);
     return;
   }
-  if (mode == DB_MODE_RW && a->data_size > 0 && a->data_inline == 0 &&
-      a->rdzv_txid != 0) {
+  if (mode == DB_MODE_RW && a->data_size > 0 && a->rdzv_txid != 0) {
     /* Remote dirty release: the publish PUT straight into home's stable
      * buffer (the landing advertised in this grant, or in the PUBLISH_CTS that
      * answered the announce).  Pair the release packet with the write
@@ -407,21 +487,10 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
     arts_net_rdzv_expect(a->rdzv_txid, lock_release_landed_cb, ctx);
     return;
   }
-
-  /* (1) RW same-rank: write the publish into home's stable buffer in place.
-   * Under exclusive-lock serialization the releaser held the sole RW grant
-   * and home grants the next holder only after this publish completes, so no
-   * reader is touching the buffer here — the in-place overwrite is safe and
-   * the buffer address stays fixed (preserving DBs with internal
-   * self-pointers).  No versioning: exclusion leaves at most one write turn
-   * of a block outstanding. */
-  if (mode == DB_MODE_RW && a->data_size > 0 && a->data_inline != 0) {
-    const void *data = (const char *)a + sizeof(*a);
-    arts_db_buf_write_inplace(cache, data, a->data_size);
-  }
+  /* Anything else carries no bytes: the home's own write release commits
+   * without a message, so a payload reaches the home only one-sided. */
 #endif /* ARTS_USE_CXL */
 
-  /* (2)+(3) transition + grant. */
   lock_release_commit(db, cache, mode);
 }
 
@@ -434,11 +503,13 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
  * teardown; marking and reading the counts commit in one CAS, so neither can
  * conclude the other will do it.
  *
- * The mark delays the slot's return, and no legitimate create can collide
- * with that window: an ordinary GUID is minted from a monotonic sequence and
- * never comes back, and re-creating a labeled GUID across a lifetime
- * boundary is the reuse case ARTS does not support
- * (docs/programming_model/guids.rst). */
+ * The mark delays the slot's return.  An ordinary GUID is minted from a
+ * monotonic sequence and never comes back, so only a reused label meets the
+ * delay: its next generation's create parks behind the marked generation as
+ * any create does, but the next generation's other messages that arrive
+ * meanwhile run against the marked one, the creator's release of its own
+ * hold included (a known weakness of label reuse,
+ * docs/programming_model/guids.rst). */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -659,9 +730,7 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
   struct arts_msg_excl_cts_packet_s *p =
       (struct arts_msg_excl_cts_packet_s *)args_v;
   arts_db_cache_note_answered(cache); /* before the answer takes effect */
-  if (cache->db_size == 0) {
-    cache->db_size = p->db_size;
-  }
+  arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_excl_request(cache, (arts_db_access_mode_t)p->mode);
 }
 
@@ -741,8 +810,8 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
  * of this block. */
 
 /* The arm's own observables. */
-uint64_t arts_cxl_fetches;
-uint64_t arts_cxl_purges;
+_Atomic(uint64_t) arts_cxl_fetches;
+_Atomic(uint64_t) arts_cxl_purges;
 
 /* The residency seam: declared once here, defined exactly once per residency,
  * and called only from the two shared funnels below — which have already
@@ -764,7 +833,8 @@ static void cxl_purge_body(struct arts_db_cache_s *cache,
  * has no store and a grant for it carries address 0 legitimately. */
 static void cxl_slot_required(const struct arts_db_cache_s *cache,
                               const char *edge) {
-  if (arts_db_cxl_slot_addr(cache) == 0 && cache->db_size != 0) {
+  if (arts_db_cxl_slot_addr(cache) == 0 &&
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0) {
     ARTS_ERROR("cxl: guid %lu has no slot at its %s edge",
                (unsigned long)cache->db_guid, edge);
   }
@@ -779,7 +849,7 @@ static void cxl_slot_required(const struct arts_db_cache_s *cache,
  * is missing here only when the ensure could not allocate one — and a grant
  * whose cohort cannot be served is a hang, never a soft drop. */
 static void cxl_fetch_working_copy(struct arts_db_cache_s *cache) {
-  uint64_t n = cache->db_size;
+  uint64_t n = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   cxl_slot_required(cache, "grant");
   if (n == 0) {
     return; /* a sentinel-sized block has no bytes and no store */
@@ -794,7 +864,7 @@ static void cxl_fetch_working_copy(struct arts_db_cache_s *cache) {
   }
   cxl_fetch_body(cache, buf);
   arts_db_buf_release(&h);
-  __atomic_fetch_add(&arts_cxl_fetches, 1u, __ATOMIC_RELAXED);
+  atomic_fetch_add_explicit(&arts_cxl_fetches, 1u, memory_order_relaxed);
 }
 
 /* Return this rank's turn's bytes to the block's slot.
@@ -810,7 +880,7 @@ static void cxl_fetch_working_copy(struct arts_db_cache_s *cache) {
  * naming a store other than the one this rank's cache names is refused where
  * it is recorded. */
 static void cxl_purge_working_copy(struct arts_db_cache_s *cache) {
-  uint64_t n = cache->db_size;
+  uint64_t n = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   cxl_slot_required(cache, "release");
   if (n == 0) {
     return;
@@ -825,7 +895,7 @@ static void cxl_purge_working_copy(struct arts_db_cache_s *cache) {
   }
   cxl_purge_body(cache, buf);
   arts_db_buf_release(&h);
-  __atomic_fetch_add(&arts_cxl_purges, 1u, __ATOMIC_RELAXED);
+  atomic_fetch_add_explicit(&arts_cxl_purges, 1u, memory_order_relaxed);
 }
 
 #ifdef ARTS_CXL_STAGED
@@ -834,7 +904,7 @@ static void cxl_purge_working_copy(struct arts_db_cache_s *cache) {
  * rank's private lines may be clean stale copies of the store. */
 static void cxl_fetch_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
-  uint64_t n = cache->db_size;
+  uint64_t n = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   const void *slot = (const void *)(uintptr_t)arts_db_cxl_slot_addr(cache);
   arts_cxl_flush_consumer(slot, (size_t)n);
   memcpy(buf->data, slot, (size_t)n);
@@ -844,7 +914,7 @@ static void cxl_fetch_body(struct arts_db_cache_s *cache,
  * and the producer flush follows the write. */
 static void cxl_purge_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
-  uint64_t n = cache->db_size;
+  uint64_t n = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   void *slot = (void *)(uintptr_t)arts_db_cxl_slot_addr(cache);
   memcpy(slot, buf->data, (size_t)n);
   arts_cxl_flush_producer(slot, (size_t)n);
@@ -858,7 +928,9 @@ static void cxl_purge_body(struct arts_db_cache_s *cache,
  * store's. */
 static void cxl_fetch_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
-  arts_cxl_flush_consumer(buf->data, (size_t)cache->db_size);
+  arts_cxl_flush_consumer(
+      buf->data,
+      (size_t)atomic_load_explicit(&cache->db_size, memory_order_relaxed));
 }
 
 /* A purge is the producer flush that publishes this turn's writes to the
@@ -866,7 +938,9 @@ static void cxl_fetch_body(struct arts_db_cache_s *cache,
  * it precede every onward admission. */
 static void cxl_purge_body(struct arts_db_cache_s *cache,
                            struct arts_db_buffer_s *buf) {
-  arts_cxl_flush_producer(buf->data, (size_t)cache->db_size);
+  arts_cxl_flush_producer(
+      buf->data,
+      (size_t)atomic_load_explicit(&cache->db_size, memory_order_relaxed));
 }
 #endif /* ARTS_CXL_DIRECT */
 #endif /* ARTS_USE_CXL */
@@ -908,7 +982,8 @@ void arts_handler_db_acquire(void *item, void *args) {
      * thread allocates it, on its own node.  A no-op for every other block:
      * the home's buffer exists from create and a requester materializes its
      * own before it asks. */
-    (void)arts_db_buf_ensure(cache, cache->db_size);
+    (void)arts_db_buf_ensure(
+        cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
   }
 #else
   /* The home materializes nothing here: it is an ordinary participant, and a
@@ -953,11 +1028,12 @@ void arts_handler_db_acquire(void *item, void *args) {
 }
 
 /* ===== arts_handler_db_excl_grant =======================================
- * Cat-C pure body — grant arrived at the requester rank.  payload is the full
- * contiguous wire buffer (header + db_size data bytes); size is the byte count.
+ * Cat-C pure body — grant arrived at the requester rank.  payload is the wire
+ * packet alone; size is its byte count.
  *
  *   (1) Cat-C route-table lookup (NULL ⇒ DB destroyed concurrently ⇒ drop).
- *   (2) Install the grant data BEFORE the CAS so drained waiters observe it.
+ *   (2) A payload sent one-sided must land BEFORE the CAS so drained waiters
+ *       observe it: the commit waits for the write completion.
  *   (3) CAS the single word: RW grant Q→GRANT (action DRAIN_BOTH); RO grant
  *       Q→GRANT (DRAIN_RO) or, when rc==0 (the RO waiters were already served
  *       by an RW grant — RW⊇RO), a phantom Q→IDLE that is returned to home at
@@ -1027,12 +1103,12 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
                  (unsigned long long)cur);
     }
     arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RW,
-                              /*version=*/0u, /*cv=*/0u, NULL, 0u,
+                              /*version=*/0u, /*cv=*/0u, /*data_size=*/0u,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;
   case CACHE_ACT_REL_RO: /* phantom RO grant: nothing to serve, return home */
     arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RO,
-                              /*version=*/0u, /*cv=*/0u, NULL, 0u,
+                              /*version=*/0u, /*cv=*/0u, /*data_size=*/0u,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;
   default:
@@ -1077,7 +1153,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
     break;
   case CACHE_ACT_REL_RO: /* phantom RO grant: nothing to serve, return home */
     arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RO,
-                              /*version=*/0u, /*cv=*/0u, NULL, 0u,
+                              /*version=*/0u, /*cv=*/0u, /*data_size=*/0u,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;
   case CACHE_ACT_REL_RW_EMPTY:
@@ -1087,7 +1163,7 @@ static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
      * home's release handler takes the same no-data path an RO release
      * takes. */
     arts_send_db_excl_release(arts_guid_get_rank(db_guid), db_guid, DB_MODE_RW,
-                              /*version=*/0u, /*cv=*/0u, NULL, 0u,
+                              /*version=*/0u, /*cv=*/0u, /*data_size=*/0u,
                               /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     break;
   default:
@@ -1141,9 +1217,7 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
   struct arts_db_cache_s *cache = &db->cache;
   /* Hinted first touch: the size may still be unlearned here, and the fetch
    * needs it. */
-  if (cache->db_size == 0 && p->data_size > 0) {
-    cache->db_size = p->data_size;
-  }
+  arts_db_cache_learn_size(cache, p->data_size);
   /* The grant names the block's slot in the landing's address field, and
    * nothing else: the landing's key, txid and the version are unread here.
    * A rank that created the block already knows the slot and records nothing.
@@ -1168,8 +1242,10 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
   struct arts_msg_excl_grant_packet_s *p =
       (struct arts_msg_excl_grant_packet_s *)payload;
   arts_db_access_mode_t mode = (arts_db_access_mode_t)p->mode;
-  const void *data = (const char *)p + sizeof(*p);
-  uint64_t data_size = (uint64_t)size - (uint64_t)sizeof(*p);
+  /* No bytes trail a grant: the self-grant names the home's own buffer and
+   * a remote grant's payload travels one-sided. */
+  assert(size == sizeof(*p));
+  (void)size;
 
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(p->db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
@@ -1184,9 +1260,7 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
   struct arts_db_cache_s *cache = &db->cache;
 
   /* Hinted first touch: the size may still be unlearned here. */
-  if (cache->db_size == 0 && p->data_size > 0) {
-    cache->db_size = p->data_size;
-  }
+  arts_db_cache_learn_size(cache, p->data_size);
 
   struct arts_rdzv_landing_s pub = {p->pub.addr, p->pub.key, p->pub.txid,
                                    p->pub.cookie};
@@ -1204,85 +1278,56 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
     return;
   }
 
-  /* Same-rank / data-less grant: install any inline bytes in place (exclusive-
-   * lock serialization — no local holder; duplicate bytes are identical), then
-   * commit. */
-  if (data_size > 0u) {
-    arts_db_buf_write_inplace(cache, data, data_size);
-  }
+  /* Same-rank or data-less grant: nothing to land; commit. */
   lock_grant_commit(db_h, p->db_guid, mode, &pub); /* consumes db_h */
 }
 #endif /* ARTS_USE_CXL */
 
 /* ===== arts_send_db_excl_release ========================================
  * Send EXCL_RELEASE to the home.  An RW release's bytes travel by PUT ahead
- * of this packet, which carries their size and the landing's {txid, cookie}
- * (a self-send carries them inline); cv is nonzero only on the landing-less
- * announce, where it is the address of the releaser's heap rendezvous and the
- * home echoes it in the PUBLISH_CTS.  Nothing acknowledges a release, and
- * version is always 0.  RO carries none of these.
+ * of this packet, which carries their size and the landing's {txid, cookie};
+ * cv is nonzero only on the landing-less announce, where it is the address of
+ * the releaser's heap rendezvous and the home echoes it in the PUBLISH_CTS.
+ * Nothing acknowledges a release, and version is always 0.  RO carries none
+ * of these.
  * Self-send (home == this rank) routes through the OoO engine so reordering
  * against DB_CREATE is handled identically to the wire path. */
 void arts_send_db_excl_release(unsigned int home_rank, arts_guid_t db_guid,
                                arts_db_access_mode_t mode, uint64_t version,
-                               uint64_t cv, const void *data,
-                               uint64_t data_size, uint64_t rdzv_txid,
-                               uint64_t rdzv_cookie) {
+                               uint64_t cv, uint64_t data_size,
+                               uint64_t rdzv_txid, uint64_t rdzv_cookie) {
   uint64_t ds = (mode == DB_MODE_RW) ? data_size : 0u;
 
   if (home_rank == arts_global_rank_id) {
     /* Self-send: route through the OoO engine exactly as the wire RX
      * dispatcher does — HIT runs arts_handler_db_excl_release inline; MISS
-     * defers the args until the home db_s is installed.  A
-     * data-less release (the common self case) carries stack args directly;
-     * only an inline-data release builds the contiguous args buffer. */
-    if (data == NULL || ds == 0u) {
-      struct arts_ooo_args_db_excl_release_s args = {
-          .releaser = arts_global_rank_id,
-          .db_guid = db_guid,
-          .mode = (uint32_t)mode,
-          .data_size = 0,
-          .cv = cv,
-          .version = version,
-          .rdzv_txid = 0,
-          .rdzv_cookie = 0,
-          .data_inline = 0,
-      };
-      arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_RELEASE, &args,
-                                      sizeof(args));
-      return;
+     * defers the args until the home db_s is installed.  It carries no
+     * bytes: the home's own write release commits in place
+     * (lock_send_release_rw), and every other self-sent release is the
+     * data-less return of a grant. */
+    if (ds != 0u) {
+      ARTS_ERROR("lock: a release of guid %lu to this rank's own home carries "
+                 "%lu payload bytes",
+                 (unsigned long)db_guid, (unsigned long)ds);
     }
-#ifdef ARTS_USE_CXL
-    /* Every release on this arm is data-less: the turn's bytes reached the
-     * block's store before this call, so the arm above is the only one. */
-    ARTS_ERROR("cxl: a release of guid %lu carries %lu payload bytes",
-               (unsigned long)db_guid, (unsigned long)ds);
-#else
-    uint32_t asz =
-        (uint32_t)(sizeof(struct arts_ooo_args_db_excl_release_s) + ds);
-    char *abuf = (char *)arts_malloc(asz);
-    struct arts_ooo_args_db_excl_release_s *args =
-        (struct arts_ooo_args_db_excl_release_s *)abuf;
-    args->releaser = arts_global_rank_id;
-    args->db_guid = db_guid;
-    args->mode = (uint32_t)mode;
-    args->data_size = ds;
-    args->cv = cv;
-    args->version = version;
-    args->rdzv_txid = 0;
-    args->rdzv_cookie = 0;
-    args->data_inline = 1u;
-    memcpy(abuf + sizeof(*args), data, (size_t)ds);
-    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_RELEASE, abuf, asz);
-    arts_free(abuf);
+    struct arts_ooo_args_db_excl_release_s args = {
+        .releaser = arts_global_rank_id,
+        .db_guid = db_guid,
+        .mode = (uint32_t)mode,
+        .data_size = 0,
+        .cv = cv,
+        .version = version,
+        .rdzv_txid = 0,
+        .rdzv_cookie = 0,
+    };
+    arts_ooo_dispatch_or_defer_guid(db_guid, OOO_DB_EXCL_RELEASE, &args,
+                                    sizeof(args));
     return;
-#endif /* ARTS_USE_CXL */
   }
 
   /* Remote send: control-only — a dirty RW release PUT its bytes into the
    * grant's home landing before this packet; {rdzv_txid, rdzv_cookie} echo it
    * for pairing. */
-  (void)data;
   struct arts_msg_excl_release_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_EXCL_RELEASE);
   p.header.rank = arts_global_rank_id;
@@ -1331,7 +1376,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
     return;
   }
   arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*version=*/0u,
-                            /*cv=*/0u, /*data=*/NULL, /*data_size=*/0u,
+                            /*cv=*/0u, /*data_size=*/0u,
                             /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
   return;
 #else
@@ -1354,7 +1399,9 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
   struct arts_db_buffer_s *buf =
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   const void *data = (buf != NULL) ? buf->data : NULL;
-  uint64_t ds = (buf != NULL) ? cache->db_size : 0u;
+  uint64_t ds = (buf != NULL) ? atomic_load_explicit(&cache->db_size,
+                                                     memory_order_relaxed)
+                              : 0u;
   /* Consume this grant's home publish landing (1:1 grant:release). */
   struct arts_rdzv_landing_s pub = cache->home_pub_rdzv;
   cache->home_pub_rdzv = (struct arts_rdzv_landing_s){0, 0, 0, 0};
@@ -1368,9 +1415,8 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
     sem_init(&wr->sem, 0, 0);
     wr->landing = (struct arts_rdzv_landing_s){0, 0, 0, 0};
     arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW,
-                              /*version=*/0u, (uint64_t)(uintptr_t)wr,
-                              /*data=*/NULL, ds, /*rdzv_txid=*/0u,
-                              /*rdzv_cookie=*/0u);
+                              /*version=*/0u, (uint64_t)(uintptr_t)wr, ds,
+                              /*rdzv_txid=*/0u, /*rdzv_cookie=*/0u);
     if (!arts_db_await_ack(&wr->sem)) {
       /* Shutdown escape: the round is abandoned with the runtime.  A CTS
        * reply may still be writing the landing and posting through wr, so wr
@@ -1390,8 +1436,7 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
                          wr->landing.txid, data, ds, arts_db_buf_ref_release_cb,
                          (void *)buf_h);
     arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW,
-                              /*version=*/0u, /*cv=*/0u,
-                              /*data=*/NULL, ds, wr->landing.txid,
+                              /*version=*/0u, /*cv=*/0u, ds, wr->landing.txid,
                               wr->landing.cookie);
     sem_destroy(&wr->sem);
     arts_free(wr);
@@ -1410,14 +1455,13 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
     arts_net_put_payload((int)home, pub.addr, pub.key, pub.txid, data, ds,
                          arts_db_buf_ref_release_cb, (void *)buf_h);
     arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*version=*/0u,
-                              /*cv=*/0u, /*data=*/NULL, ds, pub.txid,
-                              pub.cookie);
+                              /*cv=*/0u, ds, pub.txid, pub.cookie);
     return; /* buf_h transferred to the PUT */
   }
   /* Data-less release: nothing is in flight from this buffer, so the send
    * carries the whole release and the local ref drops here. */
   arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RW, /*version=*/0u,
-                            /*cv=*/0u, data, ds, /*rdzv_txid=*/0u,
+                            /*cv=*/0u, /*data_size=*/0u, /*rdzv_txid=*/0u,
                             /*rdzv_cookie=*/0u);
   arts_db_buf_release(&buf_h);
 #endif /* ARTS_USE_CXL */
@@ -1433,7 +1477,7 @@ static void lock_send_release_ro(struct arts_db_cache_s *cache) {
     return;
   }
   arts_send_db_excl_release(home, cache->db_guid, DB_MODE_RO, /*version=*/0u,
-                            /*cv=*/0u, NULL, 0u, /*rdzv_txid=*/0u,
+                            /*cv=*/0u, /*data_size=*/0u, /*rdzv_txid=*/0u,
                             /*rdzv_cookie=*/0u);
 }
 
@@ -1445,8 +1489,7 @@ static void lock_send_release_ro(struct arts_db_cache_s *cache) {
  *
  * Destroyed-guard: a dep NULL-woken at destroy never really held the lock; a
  * count of 0 means there is nothing to release — skip rather than underflow.
- * (Full destroy reconciliation under the acquire-time count is a separate
- * subtask.) */
+ */
 /* A create's hold is this arm's ordinary write hold, taken when the block was
  * made; the bytes under it are the cache's own, so the release needs no
  * pointer to them. */

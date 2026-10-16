@@ -341,9 +341,11 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
   struct arts_db_s *db_res = (struct arts_db_s *)addr;
   /* lifecycle/deleter handled by the route_table cb (deleter-by-kind) on
    * install — no per-object shared field to initialize. */
+#ifdef ARTS_USE_GPU
   db_res->version = 0;
   db_res->reader = 0;
   db_res->writer = 0;
+#endif
   db_res->db_type = db_type;
   /* ARTS_DB enters the coherence protocol at create time.  Initialize the
    * embedded cache (first member of db_s) with CREATOR_HOME init —
@@ -361,7 +363,7 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
   /* The allocation is not necessarily zeroed; zero the embedded cache before
    * in-place init. */
   memset(cache, 0, sizeof(*cache));
-  cache->db_size = len;
+  atomic_store_explicit(&cache->db_size, len, memory_order_relaxed);
   cache->db_guid = guid;
   if (db_type == ARTS_DB) {
     arts_db_cache_init(cache, guid, len, ARTS_DB_INIT_CREATOR_HOME,
@@ -398,6 +400,7 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
   /* Non-coherent subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU) are
    * pinned to the creator rank and have no DB-level coherence.  The embedded
    * cache stays zeroed and db_list stays NULL. */
+#ifdef ARTS_USE_GPU
   if (db_type == ARTS_DB_GPU) {
     /* The shadow descriptor: this subtype keeps no coherence state, so the
      * zero fill is every atomic member's initial value. */
@@ -405,9 +408,10 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
         (struct arts_db_s *)(((char *)addr) + sizeof(struct arts_db_s) + len);
     memset(shadow, 0, sizeof(*shadow));
     shadow->db_type = db_type;
-    shadow->cache.db_size = len;
+    atomic_store_explicit(&shadow->cache.db_size, len, memory_order_relaxed);
     shadow->cache.db_guid = guid;
   }
+#endif
   INCREMENT_NUM_DB_CREATE_BY(1);
   INCREMENT_BYTES_DB_CREATE_BY(len);
 }
@@ -450,7 +454,8 @@ static void db_create_no_acquire_local(struct arts_db_s *db) {
    * hold under it.  With no creator hold there is nothing to release, so the
    * first foreign request finds an idle grant rather than queueing behind a
    * hold nobody will ever drop. */
-  db->cache.writer_count = ARTS_GRANT_SEED_IDLE;
+  atomic_store_explicit(&db->cache.writer_count, ARTS_GRANT_SEED_IDLE,
+                        memory_order_relaxed);
 #endif
   /* The creator was given no storage, so any create-time claim to a reader
    * copy of it is false and goes with the write hold. */
@@ -566,7 +571,7 @@ static uint64_t db_create_token_mint(struct arts_db_cache_s *cache) {
     seq = 1u;
   }
   uint64_t token = ((uint64_t)arts_thread_info.thread_id << 48) | seq;
-  __atomic_store_n(&cache->create_token, token, __ATOMIC_RELEASE);
+  atomic_store_explicit(&cache->create_token, token, memory_order_release);
   return token;
 #else
   (void)cache;
@@ -591,10 +596,11 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb) {
     db_parked_remove(guid);
     /* The announce follows the install: whatever the home sends back for the
      * block finds this rank's descriptor. */
-    arts_send_db_create_coherent(home, guid, db->cache.db_size,
-                                 ARTS_DB_PROP_NONE, (uint16_t)ARTS_DB,
-                                 arts_db_cxl_slot_addr(&db->cache),
-                                 db_create_token_mint(&db->cache));
+    arts_send_db_create_coherent(
+        home, guid,
+        atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
+        ARTS_DB_PROP_NONE, (uint16_t)ARTS_DB, arts_db_cxl_slot_addr(&db->cache),
+        db_create_token_mint(&db->cache));
   }
   arts_shared_release(&pin);
   return true;
@@ -636,8 +642,9 @@ static bool db_create_claim_first_touch(struct arts_db_s *found,
    * before the image and before the hold — taking the hold admits the
    * waiters an earlier request from this rank parked, an admitted waiter's
    * pointer may BE the store, and the ensure below adopts the store on the
-   * residency that keeps no copy. */
-  cache->db_size = len;
+   * residency that keeps no copy.  Whatever the cache learned before the
+   * claim was this same size. */
+  atomic_store_explicit(&cache->db_size, len, memory_order_relaxed);
 #ifdef ARTS_USE_CXL
   (void)arts_db_cxl_slot_create(cache);
 #endif
@@ -775,6 +782,14 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
  */
 arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                            uint16_t flags, const arts_db_hint_t *hint) {
+#ifndef ARTS_USE_GPU
+  /* The GPU subtype's descriptor carries a shadow image only the GPU
+   * allocation path makes room for. */
+  if (db_type == ARTS_DB_GPU) {
+    ARTS_ERROR("arts_db_create: ARTS_DB_GPU needs a runtime built with the "
+               "GPU path (ARTS_USE_GPU)");
+  }
+#endif
   TIME_DB_CREATE_START();
   /* Route resolution:
    *   hint == NULL                          -> policy-selected home
@@ -1315,6 +1330,13 @@ void arts_db_drain_resume_list(void) {
     arts_db_acquire_account(e);
   }
   tl_in_drain = false;
+}
+
+void arts_db_resume_list_free(void) {
+  arts_free(tl_resume_buf);
+  tl_resume_buf = NULL;
+  tl_resume_len = 0;
+  tl_resume_cap = 0;
 }
 
 /* resume_k loop: walk the serialized deps from the cursor, firing each.  A dep
@@ -1899,12 +1921,17 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
   ARTS_DEBUG("Releasing DB[Guid:%lu] [AccessMode:%s, DbSubtype:%s]", dep->guid,
              GET_DB_MODE_NAME(access_mode), GET_DB_TYPE_NAME(db_subtype));
 
-  if (!gpu && db_subtype == ARTS_DB_GPU) {
+#ifdef ARTS_USE_GPU
+  /* The reader lock prep_dbs took, under exactly the condition it took it. */
+  if (!gpu && access_mode != DB_MODE_LC_SYNC && db_subtype == ARTS_DB_GPU) {
     if (dep->ptr) {
       struct arts_db_s *db = ((struct arts_db_s *)dep->ptr) - 1;
       arts_reader_unlock(&db->reader);
     }
   }
+#else
+  (void)gpu;
+#endif
   /* PIN / GPU_PIN / regular RW or RO on non-coherent subtypes: nothing to
    * release at the DB-coherence level.  Hardware coherence and
    * application-level event ordering handle the rest. */

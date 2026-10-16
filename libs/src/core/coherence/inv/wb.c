@@ -34,8 +34,6 @@
 #include "arts/ooo.h"
 #include "arts/runtime_state.h"
 #include "arts/system/identity.h"
-#include "arts/utils/atomics.h"
-#include "arts/ooo.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
 #include "arts/utils/malloc.h"
@@ -104,7 +102,8 @@ void arts_handler_db_acquire(void *item, void *args) {
    * materialization below: a second load of the same word could see the
    * grant withdrawn in between and skip the storage the first one entitled,
    * handing the EDT no pointer for a sized block. */
-  bool own = (int)arts_atomic_read(&cache->writer_count) > 0;
+  bool own =
+      (int)atomic_load_explicit(&cache->writer_count, memory_order_acquire) > 0;
   if (INV_CACHE_RO(peek) == INV_RO_VALID || own) {
     /* First use of a block whose create took no hold: its storage was left
      * for whoever uses it first, and holding the block's OWNERSHIP is what
@@ -115,7 +114,8 @@ void arts_handler_db_acquire(void *item, void *args) {
      * itself is false, and inventing a first image under it would answer
      * reads from a block this rank never held. */
     if (own) {
-      (void)arts_db_buf_ensure(cache, cache->db_size);
+      (void)arts_db_buf_ensure(
+          cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     }
     /* A durable copy answers with no message and no CAS — still an
      * acquire served locally, so it belongs in the same census the
@@ -136,7 +136,8 @@ void arts_handler_db_acquire(void *item, void *args) {
   uint64_t cur, next;
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
-    node->next = INV_CACHE_HEAD_RO(cur);
+    atomic_store_explicit(&node->next, INV_CACHE_HEAD_RO(cur),
+                          memory_order_relaxed);
     next = inv_cache_compute_next(cur, INV_CACHE_OP_ACQ_RO, idx, &act);
     if (next == cur) {
       break; /* copy turned valid mid-retry: no word write */
@@ -173,10 +174,9 @@ void arts_handler_db_acquire(void *item, void *args) {
  */
 void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   (void)payload;
-  /* Defensive: writer_count==0 means our acquire never bumped the grant (e.g.
-   * a cache already torn down by a destroy fan-out); decrementing would
-   * underflow. */
-  if (arts_atomic_read(&cache->writer_count) == 0) {
+  /* Defensive: no local hold to drop means our acquire never bumped the grant;
+   * decrementing would underflow. */
+  if (arts_db_grant_release_skip(cache)) {
     return;
   }
   arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
@@ -184,8 +184,8 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
       (struct arts_db_buffer_s *)arts_shared_get(buf_h);
   uint64_t new_version = 0;
   if (buf != NULL) {
-    arts_atomic_add_u64(&buf->version, 1);
-    new_version = arts_atomic_read_u64(&buf->version);
+    new_version =
+        atomic_fetch_add_explicit(&buf->version, 1u, memory_order_acq_rel) + 1u;
     arts_db_buf_release(&buf_h);
   }
   /* Control-only publish: ask the home for this release's invalidation round
@@ -194,13 +194,9 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   arts_db_publish_sync(cache, new_version);
   TIME_INVALIDATE_ROUND_STOP();
 
-  int rest = (int)arts_atomic_sub(&cache->writer_count, 1); /* post value */
-  if (rest == 0 && cache->incoming_new_owner != ARTS_NO_PENDING_OWNER) {
-    /* An INVALIDATE named a transfer target while writers were live; this
-     * (last) releaser is the unique actor that ships the owner->owner
-     * transfer. */
-    arts_db_grant_ship_pending(cache);
-  }
+  /* The count-dropping edge, sequenced after the round: the last releaser
+   * ships the grant onward when an INVALIDATE has already named a target. */
+  arts_db_grant_release_commit(cache);
 }
 
 /* ===== read request at the home =========================================
@@ -215,11 +211,14 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
       (struct arts_ooo_args_db_inv_request_s *)args_v;
   struct arts_db_cache_s *cache = &db->cache;
   (void)arts_rank_bitset_set(&db->cached_ranks, a->requester);
-  if (a->rdzv.txid == 0 && cache->db_size != 0 &&
+  if (a->rdzv.txid == 0 &&
+      atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0 &&
       a->requester != arts_global_rank_id) {
     /* First touch: the request carried no landing (db_size unknown at the
      * requester).  Answer the size and let it re-issue with one. */
-    arts_send_db_inv_cts(a->requester, cache->db_guid, cache->db_size, a->mode);
+    arts_send_db_inv_cts(
+        a->requester, cache->db_guid,
+        atomic_load_explicit(&cache->db_size, memory_order_relaxed), a->mode);
     return;
   }
   if (a->mode != DB_MODE_RO) {
@@ -227,7 +226,11 @@ void arts_handler_db_inv_request(void *item_v, void *args_v) {
      * GRANT_REQUEST.  This handler serves readers only. */
     return;
   }
-  /* Roster bit BEFORE the serve/redirect departs. */
+  /* Roster bit BEFORE the serve/redirect departs.  Same-word pairing with
+   * the round's snapshot exchange (inv_home_round_try_open): either that
+   * round names this reader, or this serve is ordered after the snapshot.
+   * A reader still sent to the previous holder is one unordered with that
+   * round's write, and may read the older version. */
   (void)arts_rank_bitset_set(&db->roster, a->requester);
   unsigned int holder =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
@@ -254,7 +257,7 @@ void arts_handler_db_inv_redirect(void *item_v, void *args_v) {
    * asked.  A sentinel DB (db_size == 0) never installs a buffer — NULL is its
    * defined value — so testing for one would bounce every read back to the
    * home forever.  Serve it unconditionally; the reply is header-only. */
-  if (cache->db_size != 0) {
+  if (atomic_load_explicit(&cache->db_size, memory_order_relaxed) != 0) {
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
     bool have = (arts_shared_get(buf_h) != NULL);
     arts_db_buf_release(&buf_h);

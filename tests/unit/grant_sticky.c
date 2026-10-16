@@ -74,7 +74,9 @@ static void excl_perm(arts_guid_t db, unsigned int *rw_st, unsigned int *wc) {
 static void grant_state(arts_guid_t db, bool *own, unsigned int *count) {
   arts_shared_ptr_t h = arts_route_table_lookup_db(db);
   struct arts_db_s *d = (struct arts_db_s *)arts_shared_get(h);
-  unsigned int w = (d != NULL) ? arts_atomic_read(&d->cache.writer_count) : 0u;
+  unsigned int w = (d != NULL) ? atomic_load_explicit(&d->cache.writer_count,
+                                                      memory_order_acquire)
+                               : 0u;
   arts_shared_release(&h);
   *own = ARTS_GRANT_OWN_OF(w);
   *count = ARTS_GRANT_COUNT_OF(w);

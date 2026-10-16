@@ -43,7 +43,9 @@ coherence for the DB:
        via events.
    * - ``ARTS_DB_GPU``
      - GPU staging.  Concurrent per-device replicas merged by reduction
-       at release (app-ordered).
+       at release (app-ordered).  Requires a runtime built with
+       ``ARTS_USE_GPU``; :c:func:`arts_db_create` with this subtype
+       aborts the run otherwise.
    * - ``ARTS_DB_GPU_PIN``
      - GPU staging (host pinned + per-device replica), no DB-level
        coherence.

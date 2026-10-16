@@ -484,7 +484,8 @@ static void credit_writer_edt(uint32_t paramc, const uint64_t *paramv,
     arts_test_fail();
     arts_printf("FAIL: wrf_flush spent-credit writer found no descriptor\n");
   } else {
-    __atomic_store_n(&d->cache.flush_txid, (uint64_t)0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&d->cache.flush_txid, (uint64_t)0,
+                          memory_order_release);
   }
   arts_shared_release(&h);
 }

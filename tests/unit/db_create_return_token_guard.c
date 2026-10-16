@@ -39,26 +39,26 @@ struct credit {
 static struct credit read_credit(struct arts_db_cache_s *c) {
 #if defined(ARTS_PROTOCOL_FLUSH)
   return (struct credit){
-      __atomic_load_n(&c->home_line_addr, __ATOMIC_RELAXED),
-      __atomic_load_n(&c->home_line_rkey, __ATOMIC_RELAXED),
-      __atomic_load_n(&c->flush_txid, __ATOMIC_ACQUIRE)};
+      atomic_load_explicit(&c->home_line_addr, memory_order_relaxed),
+      atomic_load_explicit(&c->home_line_rkey, memory_order_relaxed),
+      atomic_load_explicit(&c->flush_txid, memory_order_acquire)};
 #else
   return (struct credit){
-      __atomic_load_n(&c->home_pub_addr, __ATOMIC_RELAXED),
-      __atomic_load_n(&c->home_pub_rkey, __ATOMIC_RELAXED),
-      __atomic_load_n(&c->home_pub_txid, __ATOMIC_ACQUIRE)};
+      atomic_load_explicit(&c->home_pub_addr, memory_order_relaxed),
+      atomic_load_explicit(&c->home_pub_rkey, memory_order_relaxed),
+      atomic_load_explicit(&c->home_pub_txid, memory_order_acquire)};
 #endif
 }
 
 static void write_credit(struct arts_db_cache_s *c, struct credit v) {
 #if defined(ARTS_PROTOCOL_FLUSH)
-  __atomic_store_n(&c->home_line_addr, v.addr, __ATOMIC_RELAXED);
-  __atomic_store_n(&c->home_line_rkey, v.rkey, __ATOMIC_RELAXED);
-  __atomic_store_n(&c->flush_txid, v.txid, __ATOMIC_RELEASE);
+  atomic_store_explicit(&c->home_line_addr, v.addr, memory_order_relaxed);
+  atomic_store_explicit(&c->home_line_rkey, v.rkey, memory_order_relaxed);
+  atomic_store_explicit(&c->flush_txid, v.txid, memory_order_release);
 #else
-  __atomic_store_n(&c->home_pub_addr, v.addr, __ATOMIC_RELAXED);
-  __atomic_store_n(&c->home_pub_rkey, v.rkey, __ATOMIC_RELAXED);
-  __atomic_store_n(&c->home_pub_txid, v.txid, __ATOMIC_RELEASE);
+  atomic_store_explicit(&c->home_pub_addr, v.addr, memory_order_relaxed);
+  atomic_store_explicit(&c->home_pub_rkey, v.rkey, memory_order_relaxed);
+  atomic_store_explicit(&c->home_pub_txid, v.txid, memory_order_release);
 #endif
 }
 
@@ -107,12 +107,13 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     return;
   }
   struct arts_db_cache_s *c = &d->cache;
-  uint64_t token0 = __atomic_load_n(&c->create_token, __ATOMIC_RELAXED);
+  uint64_t token0 =
+      atomic_load_explicit(&c->create_token, memory_order_relaxed);
   struct credit orig = read_credit(c);
   struct credit zero = {0, 0, 0};
   struct credit sent = {ADDR, RKEY, TXID};
 
-  __atomic_store_n(&c->create_token, TOKEN, __ATOMIC_RELEASE);
+  atomic_store_explicit(&c->create_token, TOKEN, memory_order_release);
   write_credit(c, zero);
 
   deliver(db, OTHER, TXID);
@@ -134,7 +135,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   check(same(got, sent), "a matching name applies the credit as sent", got);
 
   write_credit(c, orig);
-  __atomic_store_n(&c->create_token, token0, __ATOMIC_RELEASE);
+  atomic_store_explicit(&c->create_token, token0, memory_order_release);
   arts_shared_release(&h);
 
   if (arts_test_status() == 0) {

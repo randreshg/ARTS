@@ -105,8 +105,8 @@ static struct arts_db_s *new_db(void) {
       (struct arts_db_s *)arts_malloc_aligned(sizeof(*db), 64);
   memset(db, 0, sizeof(*db));
   db->db_type = ARTS_DB;
-  db->cache.db_size = DB_SIZE;
-  db->cache.payload_pending = 1u;
+  atomic_init(&db->cache.db_size, DB_SIZE);
+  atomic_init(&db->cache.payload_pending, (uint8_t)1);
 #ifdef ARTS_DB_BUF_POOL
   arts_lf_pool_init(&db->cache.buf_freelist);
 #endif

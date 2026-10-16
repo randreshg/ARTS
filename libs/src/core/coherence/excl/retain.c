@@ -47,10 +47,10 @@
 #include "arts/runtime_types.h"
 #include "arts/system/identity.h"
 #include "arts/system/print.h"
+#include "arts/system/schedfuzz.h"
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 #include "arts/counter/Preamble.h"
 
@@ -402,14 +402,16 @@ bool arts_db_create_take_hold(struct arts_db_cache_s *cache) {
  * for the case where the FORWARD lands when there is no live holder left to
  * release, so nothing else would re-evaluate the pending action. */
 static void owner_try_execute(struct arts_db_cache_s *cache) {
-  /* Callers publish their work — a Treiber push onto ro_serve, or a cache_state
-   * CAS — before calling in, and this routine then acquire-loads cache_state to
-   * decide whether to drain.  A release-store followed by an acquire-load to a
-   * DIFFERENT location is unordered, so without a full fence the gate-load may
-   * hoist above the publishing store and the two parties miss each other: the
-   * pusher reads a stale live-writer state and skips the drain, while the
-   * releaser's drain runs before the pushed node is visible.  The reader strands
-   * and the read-only phase never completes. */
+  /* Store->load pair, closed by this one fence because both sides pass it.
+   * The FORWARD(serve) arm of arts_handler_db_excl_forward pushes onto
+   * ro_serve and then loads cache_state for the serve gate; the callers that
+   * move cache_state first (the zero-edge releases arts_db_release_rw and
+   * arts_db_release_ro, lock_deliver_commit, the forward's other arms) CAS
+   * it and then probe ro_serve.  Without a fence each side's load may be
+   * satisfied before its own store is visible to the other, and both miss:
+   * the reader strands and the read-only phase never completes.  It covers
+   * only the transitions made before the call, not this routine's own CASes
+   * below, which close the gate. */
   atomic_thread_fence(memory_order_seq_cst);
   /* (1) A pending migrate_target ships the buffer, in one of two shapes.
    *
@@ -461,7 +463,8 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
          * to its first user, and these writers are it — materialize before
          * the drain hands them a pointer.  A no-op for every other block:
          * residency arrived with a DELIVER that installed the copy. */
-        (void)arts_db_buf_ensure(cache, cache->db_size);
+        (void)arts_db_buf_ensure(
+            cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
         /* Only rw_pending: a reader never parks while this rank is resident
          * (the read acquire's owner-bit branch serves it immediately), so
          * ro_pending is empty whenever the owner-bit is already set.  A change
@@ -527,7 +530,7 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
        * image — but that owner must still learn the size, or every reader it
        * later serves would be handed an empty copy. */
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
-      uint64_t ds = cache->db_size;
+      uint64_t ds = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
       /* Consume the pending migrate target's landing (single in-flight
        * migration; the FORWARD handler wrote it before publishing the
        * target).  buf_h transfers into the deliver sender (PUT source pin). */
@@ -599,13 +602,14 @@ static void owner_try_execute(struct arts_db_cache_s *cache) {
      * data-less DELIVER would install nothing at the reader and hand its EDT
      * a NULL pointer for a sized block.  Install-if-absent, so even a stale
      * observation could at most fill a hole, never displace bytes. */
-    (void)arts_db_buf_ensure(cache, cache->db_size);
+    (void)arts_db_buf_ensure(
+        cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     arts_lf_link_t *node = arts_lf_stack_drain(&cache->ro_serve);
     if (node != NULL) {
       arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
       struct arts_db_buffer_s *buf =
           (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-      uint64_t ds = cache->db_size;
+      uint64_t ds = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
       while (node != NULL) {
         arts_lf_link_t *nx =
             atomic_load_explicit(&node->next, memory_order_relaxed);
@@ -737,9 +741,7 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
   struct arts_msg_excl_cts_packet_s *p =
       (struct arts_msg_excl_cts_packet_s *)args_v;
   arts_db_cache_note_answered(cache); /* before the answer takes effect */
-  if (cache->db_size == 0) {
-    cache->db_size = p->db_size;
-  }
+  arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_excl_request(cache, (arts_db_access_mode_t)p->mode);
 }
 
@@ -796,9 +798,15 @@ void arts_send_db_excl_deliver(unsigned int target_rank, arts_guid_t db_guid,
   p.rdzv_txid = 0;
   p.rdzv_cookie = (rdzv != NULL) ? rdzv->cookie : 0;
   if (target_rank == arts_global_rank_id) {
-    /* Self-serve: inline (header + data).  Any landing the target advertised
+    /* Unreachable: a serve FORWARD naming this rank takes the forward's
+     * own-request arm, a migration to this rank is owner_try_execute's
+     * self-grant, and a release reaching the migration edge holds the write
+     * permission, which a pending migration to this rank excludes.  Reached
+     * under a live writer, the copy below would read bytes being written.
+     * Self-serve: inline (header + data).  Any landing the target advertised
      * names its own stable buffer and goes unused; the handler's phantom arm
      * installs nothing, since the bytes are this rank's own. */
+    assert(target_rank != arts_global_rank_id);
     uint64_t ds = (src != NULL) ? data_size : 0; /* trailing bytes only */
     uint64_t total = sizeof(p) + ds;
     p.header.size = total;
@@ -1019,12 +1027,14 @@ void arts_handler_db_acquire(void *item, void *args) {
      * block whose create took no hold gets its storage: on the acquiring
      * thread's node, before the drain hands out a pointer. */
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    (void)arts_db_buf_ensure(cache, cache->db_size);
+    (void)arts_db_buf_ensure(
+        cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     lock_drain_pending(&cache->rw_pending);
     break;
   case CACHE_ACT_DRAIN_RO:
     INCREMENT_NUM_DB_ACQUIRE_LOCAL_HIT_BY(1);
-    (void)arts_db_buf_ensure(cache, cache->db_size);
+    (void)arts_db_buf_ensure(
+        cache, atomic_load_explicit(&cache->db_size, memory_order_relaxed));
     lock_drain_pending(&cache->ro_pending);
     break;
   default: /* NONE: parked; a DELIVER / another acquire's drain serves us. */
@@ -1193,9 +1203,7 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
   arts_db_cache_note_answered(&db->cache); /* before it takes effect */
 
   /* Hinted first touch: the size may still be unlearned here. */
-  if (db->cache.db_size == 0 && p->data_size > 0) {
-    db->cache.db_size = p->data_size;
-  }
+  arts_db_cache_learn_size(&db->cache, p->data_size);
 
   if (p->rdzv_txid != 0) {
     /* One-sided deliver: pair this packet with the write completion (either
@@ -1440,7 +1448,9 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
     arts_shared_ptr_t buf_h = arts_db_buf_acquire(cache);
     struct arts_db_buffer_s *buf =
         (struct arts_db_buffer_s *)arts_shared_get(buf_h);
-    uint64_t ds = (buf != NULL) ? cache->db_size : 0u;
+    uint64_t ds = (buf != NULL) ? atomic_load_explicit(&cache->db_size,
+                                                       memory_order_relaxed)
+                                : 0u;
     /* Consume the pending migrate target's landing; buf_h transfers into the
      * deliver sender (PUT source pin). */
     struct arts_rdzv_landing_s mt_rdzv = cache->migrate_rdzv;
@@ -1605,19 +1615,6 @@ uint64_t lock_owner_compute_next(uint64_t cur, int op, unsigned int new_owner,
  * the rank count, and the write flip is gated on r reaching zero rather than on
  * any arrival order. */
 
-/* ===== RO waiter node (home-side held-RO queue entry) ==================
- * Held-RO readers (an RO REQUEST that arrived during the RW phase) wait in
- * db->ro_waiters until the RW→RO flip drains them.  Same shape as the
- * file-local node in purge.c (ro_waiters is the Treiber db->ro_waiters
- * that TU also uses); the SERVE_ONE path drains it as well, so its producers
- * are the home REQUEST push and its consumers the REQUEST and CONFIRM
- * SERVE_ALL drains. */
-struct arts_lock_ro_node_s {
-  arts_lf_link_t link; /* FIRST */
-  unsigned int rank;
-  struct arts_rdzv_landing_s rdzv; /* reader's serve landing, forwarded */
-};
-
 /* The landing a FORWARD names for its target.  A target on another rank
  * advertised its own with its request.  A home target requested without one
  * but placed its stable buffer then, so the advertisement for it is drawn
@@ -1679,8 +1676,11 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
      * owner until these readers are served; any other phase means the nodes
      * are held readers that the next flip must serve — put them back and look
      * once more, since that flip may have drained between the drain and the
-     * push-back (its CAS precedes its drain, the push-back precedes the
-     * re-load, both RMW).
+     * push-back.  The push-back and the flip's drain are acq_rel RMWs of the
+     * one stack head: if the flip's drain is the later one it takes the nodes;
+     * if not, the last push-back reads its drain and synchronizes with it, so
+     * the re-load sees the flip's CAS (and the read phase, which the nodes'
+     * own counts hold open).
      *
      * FORWARD-serve each reader UNCONDITIONALLY (the fixed single-target
      * packet, same shape as SERVE_ONE).  No owner identity tracking here: a
@@ -1688,6 +1688,7 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
      * cache returns it immediately (RO_RETURN) when it already holds the data
      * — see arts_handler_db_excl_deliver's RO arm. */
     for (;;) {
+      arts_sched_fuzz_point();
       arts_lf_link_t *node = arts_lf_stack_drain(&db->ro_waiters);
       if (node == NULL) {
         break;
@@ -1712,13 +1713,17 @@ static void lock_owner_home_forward(struct arts_db_s *db, uint32_t action,
         }
         break;
       }
+      arts_sched_fuzz_point();
       while (node != NULL) {
         arts_lf_link_t *nx =
             atomic_load_explicit(&node->next, memory_order_relaxed);
         arts_lf_stack_push(&db->ro_waiters, node);
         node = nx;
       }
-      atomic_thread_fence(memory_order_seq_cst);
+      /* Same-word pairing with the flipping frame's drain of ro_waiters
+       * (this function, after the CAS that opens the read phase): either
+       * that drain takes these nodes or this load sees the read phase.  No
+       * fence. */
       fresh = atomic_load_explicit(&db->lock_state, memory_order_acquire);
       if (LOCK_PHASE(fresh) != EXCL_PHASE_RO) {
         break; /* still held: the flip that ends this write phase serves them */
@@ -1746,12 +1751,15 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
   arts_db_access_mode_t mode = (arts_db_access_mode_t)a->mode;
 
   if (a->rdzv.txid == 0 && requester != arts_global_rank_id &&
-      db->cache.db_size > 0 && arts_global_rank_count > 1) {
+      atomic_load_explicit(&db->cache.db_size, memory_order_relaxed) > 0 &&
+      arts_global_rank_count > 1) {
     /* First-touch request without a landing: the requester did not know
      * db_size.  Answer with the size (CTS) and do NOT enqueue — the deliver
      * plane requires a landing.  The requester re-issues with one. */
-    arts_send_db_excl_cts(requester, db->cache.db_guid, db->cache.db_size,
-                          (uint32_t)mode);
+    arts_send_db_excl_cts(
+        requester, db->cache.db_guid,
+        atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
+        (uint32_t)mode);
     return;
   }
 
@@ -1765,6 +1773,7 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
      * the transition reads w, so a concurrent CONFIRM/peek sees it. */
     arts_home_grantreq_queue_push(&db->rw_waiters, requester, &a->rdzv,
                                   ARTS_GRANT_VERSION_NONE);
+    arts_sched_fuzz_point();
     do {
       cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
       next = lock_owner_compute_next(cur, EXCL_OP_RW_ACQ, /*new_owner=*/0u,
@@ -1805,10 +1814,13 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
      * the home's r. */
     /* Roster the requester BEFORE the lock_state CAS.  That ordering is what
      * makes "served untagged implies eventually recalled" hold: the fetch_or
-     * precedes this rank's r++ CAS, which precedes any later writer's w:0->1
-     * CAS, whose drain therefore sees the bit.  Both sides' first access is a
-     * locked RMW, so the store-load pair is closed without a fence — keep the
-     * set a fetch_or and the read an atomic load. */
+     * is sequenced before this rank's r++ CAS, and a later writer's w:0->1
+     * CAS reads that CAS or a later RMW (every write of lock_state after its
+     * init is an acq_rel RMW) and synchronizes with it, so the writer's
+     * exchange of the roster, sequenced after its CAS, sees the bit.  The
+     * edge is the one word both sides RMW, not the RMWs themselves: an RMW
+     * is no fence.  Keep the set a fetch_or: a test-then-store could skip
+     * the store on a stale read of a bit a writer has already taken. */
     arts_rank_bitset_set(&db->ro_retainers, requester);
     struct arts_lock_ro_node_s *n =
         (struct arts_lock_ro_node_s *)arts_malloc(sizeof(*n));
@@ -1829,11 +1841,12 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
      * forwarded reader is always one the word pins the read phase on.
      *
      * The converse gap — a flip that observed this r++ and drained before the
-     * push — is closed by the re-check below: the push and the flip's CAS are
-     * both RMWs and a full fence separates the push from the load, so either
-     * the flip's drain finds this node or the load finds the phase already
-     * read-only (the read phase, never idle: this request's own count is
-     * unserved). */
+     * push — is closed by the re-check below: the push and the flip's drain
+     * are acq_rel RMWs of the one stack head, so either the flip's drain
+     * reads the push and finds this node, or the push reads the drain and
+     * synchronizes with it and the load finds the phase already read-only
+     * (the read phase, never idle: this request's own count is unserved). */
+    arts_sched_fuzz_point();
     arts_lf_stack_push(&db->ro_waiters, &n->link);
     /* RO/idle phase (SERVE_ONE): drain ro_waiters and FORWARD each reader to
      * the freshly-CAS'd owner — this serves the just-pushed node (plus any
@@ -1843,7 +1856,11 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
     if (action == EXCL_ACTION_FORWARD_SERVE_ONE) {
       lock_owner_home_forward(db, EXCL_ACTION_FORWARD_SERVE_ALL, next);
     } else {
-      atomic_thread_fence(memory_order_seq_cst);
+      /* Same-word pairing with the flipping frame's drain of ro_waiters
+       * (lock_owner_home_forward, after the CAS that opens the read phase):
+       * either that drain takes this node or this load sees the read phase.
+       * No fence. */
+      arts_sched_fuzz_point();
       uint64_t fresh =
           atomic_load_explicit(&db->lock_state, memory_order_acquire);
       if (LOCK_PHASE(fresh) == EXCL_PHASE_RO) {
@@ -1898,6 +1915,7 @@ void arts_handler_db_excl_confirm(void *item_v) {
 
   uint32_t action;
   uint64_t cur, next;
+  arts_sched_fuzz_point();
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     next = lock_owner_compute_next(cur, EXCL_OP_CONFIRM, new_owner, &action);
@@ -1927,6 +1945,7 @@ void arts_handler_db_excl_roret(void *item_v) {
 
   uint32_t action;
   uint64_t cur, next;
+  arts_sched_fuzz_point();
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     /* Stale cross-generation guard (symmetric to CONFIRM): a RO_RETURN from an
