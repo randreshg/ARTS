@@ -59,28 +59,12 @@ add_pure_unit_src(buffer_version_guard SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core
 add_pure_unit_src(buffer_stub_db_size_learn SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_stub_db_size_learn" TIMEOUT 60)
 add_pure_unit_src(buffer_destroy_vs_acquire SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/buffer.c ${CMAKE_SOURCE_DIR}/libs/src/core/utils/shared.c PASS_REGEX "PASS buffer_destroy_vs_acquire" TIMEOUT 60)
 endif()
-# rank_bitset: the arts_rank_bitset_* symbols live in each arm's own
-# directory.c, three copies of one body, so the test runs once per copy: in the
-# VAL x WB tree, in the INV x WB tree and in the EXCL x PURGE tree.  The
-# source/link selection is keyed on the arm:
-#   VAL, INV -> compile that arm's directory.c standalone
-#               (ARTS_UNIT_STANDALONE_SHIMS shims)
-#   EXCL     -> excl/directory.c pulls transport/edt deps, so link the full
-#               libarts (shims compiled out via the ARTS_UNIT_STANDALONE_SHIMS
-#               gate)
-if(ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_RELEASE_POLICY STREQUAL "PURGE"
-   AND NOT ARTS_USE_CXL)
-    add_arts_test(rank_bitset)
-    register_pure_unit_test(rank_bitset TIMEOUT 60)
-    set_tests_properties(rank_bitset PROPERTIES PASS_REGULAR_EXPRESSION "PASS rank_bitset")
-elseif(ARTS_COHERENCE_ARM STREQUAL "INV" AND ARTS_WRITE_POLICY STREQUAL "WB")
-    set(_rank_bitset_dir ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/inv/directory.c)
-    add_pure_unit_src(rank_bitset SOURCES ${_rank_bitset_dir}
-        DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
-elseif(ARTS_COHERENCE_ARM STREQUAL "VAL" AND ARTS_WRITE_POLICY STREQUAL "WB")
-    set(_rank_bitset_dir ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/val/directory.c)
-    add_pure_unit_src(rank_bitset SOURCES ${_rank_bitset_dir}
-        DEFINES ARTS_UNIT_STANDALONE_SHIMS=1 PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
+# rank_bitset: one definition, which no cell compiles differently, compiled
+# standalone.
+if(ARTS_TEST_REFERENCE_TREE)
+    add_pure_unit_src(rank_bitset
+        SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_bitset.c
+        PASS_REGEX "PASS rank_bitset" TIMEOUT 60)
 endif()
 # The wire's frozen message ordinals, packet headers and sizes, including the
 # CXL slot of the create packet where this tree's library keeps one.
@@ -810,7 +794,9 @@ endif()
 # directory_grantreq_queue: VAL/EXCL/INV (the .c #if-guards select the
 # protocol's directory.c); FLUSH has no home request queue.
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-add_pure_unit_src(directory_grantreq_queue DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS directory_grantreq_queue:" TIMEOUT 60)
+add_pure_unit_src(directory_grantreq_queue
+    SOURCES ${CMAKE_SOURCE_DIR}/libs/src/core/coherence/rank_bitset.c
+    DEFINES ARTS_UNIT_STANDALONE_SHIMS PASS_REGEX "PASS directory_grantreq_queue:" TIMEOUT 60)
 endif()
 
 # pending_rw_treiber: the grant's cache-side waiter queue, one body for the
@@ -853,8 +839,7 @@ set_tests_properties(acquire_is_serialized PROPERTIES PASS_REGULAR_EXPRESSION "P
 # gets the token.
 # ============================================================================
 set(_arts_pass_gate_fail_tests
-    array_list_basic atomics_locks atomics_rmw_contention
-    atomics_rmw_conventions coherence_owner_confirm_gate
+    array_list_basic coherence_owner_confirm_gate
     coherence_ro_acquire_stress coherence_stress_single_node db_pin
     deque_chaselev_race deque_grow_during_steal deque_last_element_tiebreak
     deque_single_thread diag_timestamp edt_create_basic event_chain

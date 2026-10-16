@@ -10,9 +10,10 @@
  * regardless), which is why a LIFO stack suffices vs the home grantreq Vyukov
  * FIFO.
  *
- * Defined in coherence/grant_queue.c, which this TU #includes standalone
- * (precedent: rank_bitset.c).  One body serves every arm that keeps the
- * grant's cache-side queue (VAL, INV), so the test runs in the reference tree.
+ * Defined in coherence/grant_queue.c, which this TU #includes standalone (as
+ * directory_grantreq_queue does with directory.c).  One body serves every arm
+ * that keeps the grant's cache-side queue (VAL, INV), so the test runs in the
+ * reference tree.
  *
  * Properties exercised:
  *   1. conservation: push K waiters; one take detaches a chain that counts K
@@ -146,10 +147,10 @@ static int part1_take_all(void) {
 #define TOTAL (NPROD * PER_PROD)
 
 static arts_lf_stack_t g_q;
-static _Atomic int g_start;
-static _Atomic int g_prod_done;
-static _Atomic int g_seen[TOTAL];
-static _Atomic long g_woken;
+static _Atomic(int) g_start;
+static _Atomic(int) g_prod_done;
+static _Atomic(int) g_seen[TOTAL];
+static _Atomic(long) g_woken;
 
 static void conc_cb(arts_guid_t edt_guid, unsigned int slot, void *ctxv) {
   (void)slot;

@@ -5,8 +5,8 @@
  * @note Internal header.  User code should include @c arts.h.
  */
 
-#ifndef ARTS_MEMORY_COHERENCE_FLUSH_TYPES_H
-#define ARTS_MEMORY_COHERENCE_FLUSH_TYPES_H
+#ifndef ARTS_COHERENCE_FLUSH_TYPES_H
+#define ARTS_COHERENCE_FLUSH_TYPES_H
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -80,15 +80,20 @@ struct arts_db_s {
    * relaxed: only their own value is relied on. */
   _Atomic(unsigned long) *sharers;
   unsigned int sharer_words;
-#ifdef ARTS_USE_GPU
-  volatile unsigned int reader;  /**< GPU staging reader lock. */
-  volatile unsigned int writer;  /**< GPU staging writer lock. */
-  volatile unsigned int version; /**< GPU LC version counter. */
-  unsigned int time_stamp;       /**< GPU staging timestamp. */
+#ifdef ARTS_GPU_LAYOUT
+  /* GPU staging state.  The lock exists only for an ARTS_DB_GPU block (NULL
+   * otherwise) and is set before the create publishes the descriptor.  A CPU
+   * EDT running with the block holds its read side for the whole body;
+   * staging and the LC merges hold its write side.  The lock orders every
+   * access to version and time_stamp; version is atomic only because
+   * concurrent read-side holders bump it. */
+  pthread_rwlock_t *gpu_lock;
+  _Atomic(unsigned int) version; /* LC version */
+  unsigned int time_stamp;       /* LC time stamp */
 #endif
 } ARTS_ALIGNED_MAX;
 
 #ifdef __cplusplus
 }
 #endif
-#endif /* ARTS_MEMORY_COHERENCE_FLUSH_TYPES_H */
+#endif /* ARTS_COHERENCE_FLUSH_TYPES_H */

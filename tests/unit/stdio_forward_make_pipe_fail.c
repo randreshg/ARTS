@@ -54,7 +54,7 @@ int main(void) {
   }
 
   forwarder_slot_t *head_before =
-      __atomic_load_n(&g_forwarders, __ATOMIC_ACQUIRE);
+      atomic_load_explicit(&g_forwarders, memory_order_acquire);
 
   /* Lower the soft fd limit so pipe() can open no new fd -> EMFILE. */
   struct rlimit rl;
@@ -93,7 +93,7 @@ int main(void) {
   int fds_after = count_open_fds();
 
   forwarder_slot_t *head_after =
-      __atomic_load_n(&g_forwarders, __ATOMIC_ACQUIRE);
+      atomic_load_explicit(&g_forwarders, memory_order_acquire);
 
   if (rc != -1) {
     (void)fprintf(

@@ -41,7 +41,7 @@
 /* The verdict is the exit status: the check that decides it must have RUN,
  * not merely not failed, or a shutdown that wins the race against it would
  * pass an empty run. */
-static _Atomic int g_check_ran;
+static _Atomic(int) g_check_ran;
 
 #define N 64
 /* Labels two ranks create at once.  One is enough to state the rule and far
@@ -180,7 +180,7 @@ static void race_check_edt(uint32_t paramc, const uint64_t *paramv,
 }
 
 static void pass_and_shut_down(void) {
-  __atomic_store_n(&g_check_ran, 1, __ATOMIC_RELEASE);
+  atomic_store_explicit(&g_check_ran, 1, memory_order_release);
   (void)fprintf(stderr, "PASS cxl_slot_rule: home checks ran\n");
   arts_shutdown();
 }
@@ -364,7 +364,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   check_slot(slot_of(b), "a create that acquires nothing allocated no slot at "
                         "its home");
   if (arts_get_total_ranks() < 2u) {
-    __atomic_store_n(&g_check_ran, 1, __ATOMIC_RELEASE);
+    atomic_store_explicit(&g_check_ran, 1, memory_order_release);
     (void)fprintf(stderr, "PASS cxl_slot_rule: one-rank check ran\n");
     arts_shutdown();
     return;
@@ -388,7 +388,7 @@ int main(int argc, char **argv) {
   /* The checks run on the home, rank 0, whose status is the one the launcher
    * reports; every other rank contributes only through arts_test_status. */
   if (arts_get_current_rank() == 0u &&
-      !__atomic_load_n(&g_check_ran, __ATOMIC_ACQUIRE)) {
+      !atomic_load_explicit(&g_check_ran, memory_order_acquire)) {
     (void)fprintf(stderr, "FAIL cxl_slot_rule: the deciding check never ran\n");
     return 1;
   }

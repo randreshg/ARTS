@@ -59,7 +59,7 @@ void arts_ooo_free_all(struct arts_route_item_s *s) { (void)s; }
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
-static _Atomic int g_deletes;
+static _Atomic(int) g_deletes;
 static void test_deleter(void *obj) {
   atomic_fetch_add_explicit(&g_deletes, 1, memory_order_relaxed);
   free(obj);
@@ -79,7 +79,7 @@ static arts_route_table_t *g_mirror;
 
 typedef struct {
   arts_route_item_t *item;
-  atomic_int *gate;
+  _Atomic(int) *gate;
   int *obj;
   int won;
 } s_ctx_t;
@@ -111,7 +111,7 @@ int main(void) {
     if (!item) {
       FAIL("1: search_for_empty NULL\n");
     }
-    atomic_store(&g_deletes, 0);
+    atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
 
     int *A = (int *)malloc(sizeof(int));
     *A = 0xA;
@@ -131,9 +131,9 @@ int main(void) {
     if (arts_route_item_install_data(item, B, test_deleter)) {
       FAIL("1: install into occupied slot returned true\n");
     }
-    if (atomic_load(&g_deletes) != 0) {
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 0) {
       FAIL("1: occupied-install freed something (deletes=%d)\n",
-           atomic_load(&g_deletes));
+           atomic_load_explicit(&g_deletes, memory_order_relaxed));
     }
     /* slot still holds A. */
     h = arts_route_item_acquire(item);
@@ -146,9 +146,9 @@ int main(void) {
     /* tear down the slot: detach + release the cb → A freed once. */
     arts_shared_ptr_t old = arts_shared_slot_exchange(&item->value, NULL);
     arts_shared_release(&old);
-    if (atomic_load(&g_deletes) != 1) {
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 1) {
       FAIL("1: A not freed exactly once on detach (%d)\n",
-           atomic_load(&g_deletes));
+           atomic_load_explicit(&g_deletes, memory_order_relaxed));
     }
 
     /* acquire(NULL) is NULL-safe. */
@@ -163,13 +163,13 @@ int main(void) {
     arts_route_item_t *item = arts_route_table_search_for_empty(g_mirror, g);
     int *C = (int *)malloc(sizeof(int));
     *C = 0xC;
-    atomic_store(&g_deletes, 0);
+    atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
     if (!arts_route_item_install_data(item, C, NULL)) {
       FAIL("1b: NULL-deleter install returned false\n");
     }
     arts_shared_ptr_t old = arts_shared_slot_exchange(&item->value, NULL);
     arts_shared_release(&old); /* cb gone, but NULL deleter → C not freed */
-    if (atomic_load(&g_deletes) != 0) {
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 0) {
       FAIL("1b: NULL-deleter cb wrongly freed obj\n");
     }
     free(C); /* the test owns C */
@@ -181,7 +181,7 @@ int main(void) {
     arts_route_item_t *item = arts_route_table_search_for_empty(g_mirror, g);
     pthread_t tids[S_THREADS];
     s_ctx_t ctx[S_THREADS];
-    atomic_int gate;
+    _Atomic(int) gate;
     atomic_init(&gate, 0);
     for (int i = 0; i < S_THREADS; i++) {
       ctx[i].item = item;

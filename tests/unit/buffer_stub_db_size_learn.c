@@ -39,7 +39,7 @@
 #define LEARNERS 8
 
 static struct arts_db_cache_s g_cache;
-static _Atomic int g_start;
+static _Atomic(int) g_start;
 
 /* Emptying the slot ends its buffer, which parks on the cache's free-list
  * where the arm keeps one; the list, and any buffer set aside as too small

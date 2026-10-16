@@ -37,10 +37,10 @@
 #define ROUNDS (100 * 1000)
 
 static struct arts_deque_s *g_deque;
-static atomic_int g_round_gate; /* bumped to round# to release racers */
-static atomic_int g_quit;
-static _Atomic int g_winners; /* winners for the current round's item */
-static _Atomic int g_done;    /* stealers that finished THIS round's pop_back */
+static _Atomic(int) g_round_gate; /* bumped to round# to release racers */
+static _Atomic(int) g_quit;
+static _Atomic(int) g_winners; /* winners for the current round's item */
+static _Atomic(int) g_done; /* stealers that finished THIS round's pop_back */
 
 static inline void *enc(uint64_t v) { return (void *)(uintptr_t)(v + 1); }
 

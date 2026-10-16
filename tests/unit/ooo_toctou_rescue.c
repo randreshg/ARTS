@@ -48,7 +48,7 @@
  * in this test (the model-agnostic OOO_EVENT_SATISFY_SLOT), but all table
  * entries point at the same recorder so the build's per-config table is
  * satisfied regardless of protocol. */
-static _Atomic uint64_t g_dispatched;
+static _Atomic(uint64_t) g_dispatched;
 
 static void recorder(void *item, void *args) {
   (void)item;
@@ -62,7 +62,7 @@ static void recorder(void *item, void *args) {
  * arts_ooo_handler_fn_t exactly. */
 void arts_handler_edt_create(void *i, void *a) { recorder(i, a); }
 /* The create polarity's body: counted apart from the non-create recorder. */
-static _Atomic uint64_t g_creates;
+static _Atomic(uint64_t) g_creates;
 void arts_handler_event_create(void *i, void *a) {
   (void)i;
   (void)a;
@@ -329,7 +329,7 @@ static int create_case(enum hook_mode mode, const char *name) {
 #define PRODUCERS 6
 
 typedef struct {
-  atomic_int *gate;
+  _Atomic(int) *gate;
   ooo_kind_t kind;
 } producer_ctx_t;
 
@@ -349,7 +349,7 @@ static void *producer_fn(void *vp) {
 }
 
 typedef struct {
-  atomic_int *gate;
+  _Atomic(int) *gate;
 } installer_ctx_t;
 
 static void *installer_fn(void *vp) {
@@ -382,7 +382,7 @@ int main(void) {
                           memory_order_relaxed);
     atomic_store_explicit(&g_dispatched, 0, memory_order_relaxed);
 
-    atomic_int gate;
+    _Atomic(int) gate;
     atomic_init(&gate, 0);
 
     pthread_t prod[PRODUCERS];

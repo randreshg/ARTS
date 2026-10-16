@@ -78,7 +78,7 @@ static void rw_worker_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic int *d = (_Atomic int *)depv[0].ptr;
+  _Atomic(int) *d = (_Atomic(int) *)depv[0].ptr;
   if (d == NULL) {
     arts_printf("FAIL: coherence_multi_writer_dist writer got no storage\n");
     arts_abort(1);
@@ -91,7 +91,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
   for (uint32_t i = 1; i < depc; i++) {
-    const _Atomic int *d = (const _Atomic int *)depv[i].ptr;
+    const _Atomic(int) *d = (const _Atomic(int) *)depv[i].ptr;
     int observed =
         (d != NULL) ? atomic_load_explicit(d, memory_order_relaxed) : -1;
     if (observed != WORKERS_PER_DB) {
@@ -149,7 +149,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     "pointer\n");
         arts_abort(1);
       }
-      *(int *)raw = 0;
+      atomic_init((_Atomic(int) *)raw, 0);
       if (i >= N_DBS / 2u) {
         arts_db_release(dbs[i], DB_MODE_RW);
       }

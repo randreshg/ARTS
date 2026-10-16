@@ -26,25 +26,32 @@
 #include "arts.h"
 #include "../test_failure_status.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #define ROUNDS 10u
 #define BURST 32u
 #define TOUCH_BYTES 64u
 
+/* A payload word is viewed as an atomic object, which needs a lock-free
+ * atomic of the plain type's size. */
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2 &&
+                   sizeof(_Atomic(unsigned int)) == sizeof(unsigned int),
+               "the payload view needs a lock-free unsigned int atomic");
+
 static void bump(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                  arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  /* Write holders on one rank share a turn, so the increment is atomic. */
-  unsigned int *d = (unsigned int *)depv[0].ptr;
+  /* Write holders on one rank share a turn, so the counter is atomic. */
+  _Atomic(unsigned int) *d = (_Atomic(unsigned int) *)depv[0].ptr;
   if (d == NULL) {
     arts_printf("FAIL: a write acquire yielded no storage\n");
     arts_test_fail();
     return;
   }
-  __atomic_fetch_add(&d[0], 1u, __ATOMIC_RELAXED);
+  atomic_fetch_add_explicit(&d[0], 1u, memory_order_relaxed);
 }
 
 static void check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -52,13 +59,14 @@ static void check(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   unsigned int want = (unsigned int)paramv[0];
-  const unsigned int *d = (const unsigned int *)depv[0].ptr;
-  if (d == NULL || d[0] != want) {
-    arts_printf("FAIL: counter %u, want %u\n", d ? d[0] : 0u, want);
+  const _Atomic(unsigned int) *d = (const _Atomic(unsigned int) *)depv[0].ptr;
+  unsigned int got = d ? atomic_load_explicit(&d[0], memory_order_relaxed) : 0u;
+  if (d == NULL || got != want) {
+    arts_printf("FAIL: counter %u, want %u\n", got, want);
     arts_test_fail();
     return;
   }
-  arts_printf("PASS: quiescent_shutdown_no_residue counter=%u\n", d[0]);
+  arts_printf("PASS: quiescent_shutdown_no_residue counter=%u\n", got);
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -78,7 +86,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     ctr[k] = arts_db_create(&p, sizeof(unsigned int), ARTS_DB,
                             ARTS_DB_PROP_NONE,
                             &(arts_db_hint_t){.rank = k ? last : 0u});
-    ((unsigned int *)p)[0] = 0u;
+    atomic_init((_Atomic(unsigned int) *)p, 0u);
     arts_db_release(ctr[k], DB_MODE_RW);
   }
 

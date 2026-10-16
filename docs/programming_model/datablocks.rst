@@ -107,6 +107,21 @@ other subtypes (``ARTS_DB_PIN``, ``ARTS_DB_GPU``,
 ``ARTS_DB_GPU_PIN``) carry no DB-level runtime coherence; the
 application orders conflicting accesses with events (full DRF for the non-coherent storage kinds).
 
+The runtime moves and replicates a DataBlock's payload with plain copies, and
+it may take such a copy while an EDT that is not ordered with the copy's
+reader is writing the block — a read served from a node where an unordered
+writer is still running, or a release's payload landing in the copy that an
+unordered reader on the block's home is reading.  A plain copy is atomic at
+no granularity, so a word written while it is copied may be observed partly
+old and partly new, as a value no EDT wrote.  A read of a word is stable when
+every write to the word is ordered with the read by happens-before; another
+EDT's write is ordered with it only through acquisitions and releases, by
+happening before the acquisition that reads or after that acquisition's
+release.  Any other read is a data race, whose value the memory model leaves
+unspecified.  A correct program makes only stable reads, or does not depend
+on the values its other reads return.  Ordered accesses are unaffected: an
+acquisition ordered after a write never receives a copy that raced that write.
+
 Creating a DataBlock
 --------------------
 

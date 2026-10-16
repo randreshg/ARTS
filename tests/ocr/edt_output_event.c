@@ -43,8 +43,8 @@
 #define RESULT_MAGIC 0x5151ACEDu
 
 typedef struct {
-  _Atomic unsigned int result_ok; /* consumer saw the producer's result+data */
-  _Atomic unsigned int null_ok;   /* null-consumer saw NULL_GUID */
+  _Atomic(unsigned int) result_ok; /* consumer saw the producer's result+data */
+  _Atomic(unsigned int) null_ok;   /* null-consumer saw NULL_GUID */
 } tally_t;
 
 /* paramv[0] = tally DB guid (for all bodies). */

@@ -63,29 +63,31 @@ endfunction()
 # (libs/src/core/CMakeLists.txt) and every benchmark variant select through it.
 # The dense per-rank version map is the ownership plane's ledger, so it is
 # linked by the arms that HAVE one; an arm with no versions carries no ledger
-# and must not compile the TU that keeps it.
+# and must not compile the TU that keeps it.  The rank bit-set is linked by
+# every arm whose rank sets are arts_rank_bitset_s (all but FLUSH, which keeps
+# its own sharers words).
 function(arts_coherence_model_tus out arm write_policy release_policy)
     if(arm STREQUAL "FLUSH")
         set(tus coherence/flush/flush.c)
     elseif(arm STREQUAL "INV")
         if(write_policy STREQUAL "WB")
-            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c coherence/rank_u64_map.c)
+            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/rank_u64_map.c)
+            set(tus coherence/inv/directory.c coherence/inv/engine.c coherence/inv/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         endif()
         arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
         list(APPEND tus ${rel})
     elseif(arm STREQUAL "EXCL")
         if(release_policy STREQUAL "RETAIN")
-            set(tus coherence/excl/directory.c coherence/excl/retain.c)
+            set(tus coherence/excl/directory.c coherence/excl/retain.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/excl/directory.c coherence/excl/purge.c)
+            set(tus coherence/excl/directory.c coherence/excl/purge.c coherence/rank_bitset.c)
         endif()
     elseif(arm STREQUAL "VAL")
         if(write_policy STREQUAL "WT")
-            set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/val/directory.c coherence/rank_u64_map.c)
+            set(tus coherence/val/wt.c coherence/grant.c coherence/grant_queue.c coherence/grant_wt.c coherence/val/directory.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         else()
-            set(tus coherence/val/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c coherence/val/directory.c coherence/rank_u64_map.c)
+            set(tus coherence/val/wb.c coherence/grant.c coherence/grant_queue.c coherence/grant_wb.c coherence/val/directory.c coherence/rank_u64_map.c coherence/rank_bitset.c)
         endif()
         arts_grant_release_tu(rel "${write_policy}" "${release_policy}")
         list(APPEND tus ${rel})
@@ -135,6 +137,13 @@ function(arts_apply_protocol target arm write_policy release_policy)
             ARTS_CXL_${cxl_residency}=1
             ARTS_CXL_DB_ARENA_SIZE_BYTES=${ARTS_CXL_DB_ARENA_SIZE_BYTES}ULL)
         target_include_directories(${target} SYSTEM PRIVATE ${ARTS_CXL_INCLUDE_DIR})
+    endif()
+    # The GPU library is assembled from the same CPU object libraries as the
+    # CPU one, beside the objects compiled with ARTS_USE_GPU, so the
+    # descriptor fields the GPU path adds are part of every target of a tree
+    # that builds it: one layout per tree, whichever objects a binary links.
+    if(BUILD_CUDA_LIBRARY)
+        target_compile_definitions(${target} PRIVATE ARTS_GPU_LAYOUT=1)
     endif()
     if(arm STREQUAL "FLUSH")
         # FLUSH has neither second axis: every remote acquire fetches and every
@@ -591,13 +600,14 @@ if(ARTS_BUILD_BENCHMARKS)
                     set(abs "${ldir}/${s}")
                 endif()
                 # Skip variant-specific coherence TUs: the per-arm subdirs, the
-                # grant plane (linked only by arms whose ownership migrates), and
-                # the version ledger (only by arms that keep versions).
+                # grant plane (linked only by arms whose ownership migrates), the
+                # version ledger (only by arms that keep versions) and the rank
+                # bit-set (only by arms whose rank sets are arts_rank_bitset_s).
                 if(abs MATCHES "/core/cxl/")
                     # The store is a per-variant choice like the protocol, so a
                     # variant that does not name it must not compile it.
                     list(APPEND cxl_srcs "${abs}")
-                elseif(NOT abs MATCHES "/coherence/(val|excl|inv|flush)/|/coherence/(grant(_wt|_wb|_queue|_purge|_retain)?|rank_u64_map)\\.c$")
+                elseif(NOT abs MATCHES "/coherence/(val|excl|inv|flush)/|/coherence/(grant(_wt|_wb|_queue|_purge|_retain)?|rank_u64_map|rank_bitset)\\.c$")
                     list(APPEND srcs "${abs}")
                 endif()
             endforeach()

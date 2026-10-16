@@ -11,7 +11,7 @@
 
 #define WAIT_NS (30ull * 1000000000ull)
 
-static atomic_uint fired;
+static _Atomic(unsigned int) fired;
 
 static u64 now_ns(void) {
   struct timespec t;

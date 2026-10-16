@@ -284,9 +284,8 @@ static void print_fingerprint(void) {
   MEMBER(db_t, sharers);
   MEMBER(db_t, sharer_words);
 #endif
-#ifdef ARTS_USE_GPU
-  MEMBER(db_t, reader);
-  MEMBER(db_t, writer);
+#ifdef ARTS_GPU_LAYOUT
+  MEMBER(db_t, gpu_lock);
   MEMBER(db_t, version);
   MEMBER(db_t, time_stamp);
 #endif

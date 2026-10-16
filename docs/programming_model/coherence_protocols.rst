@@ -35,8 +35,8 @@ release moves and when a grant goes back:
   ``VAL`` (*validation* — each read acquire checks its cached copy's version
   at the serving side and refetches only when stale; readers are never
   blocked, tracked, or invalidated), or ``EXCL`` (*exclusion* — queue-fair
-  distributed reader–writer lock per DB; readers and writers take turns, so
-  no stale copy ever exists). Under the ``DB-WRF`` model, the one protocol
+  distributed reader–writer lock per DB; nodes take turns, so no stale copy
+  ever exists). Under the ``DB-WRF`` model, the one protocol
   is ``FLUSH`` (fetch the whole payload at every remote acquire, write it
   back at every remote RW release; see :ref:`flush_protocol`).
 * ``ARTS_WRITE_POLICY`` selects the **write policy** of a node's DB cache at
@@ -69,8 +69,9 @@ reader on its own — and shipping the bytes home too is, by definition,
 write-through; at ``WT`` the same return costs no data motion, which is why
 PURGE is built there instead — see :ref:`orthogonal_dimensions`). DB-WRF
 pairs with no protocol but FLUSH: VAL, INV and EXCL each already order
-writers at runtime — a migrating grant for VAL/INV, admission for EXCL — so
-under them the program-side write-ordering obligation would be redundant.
+writers across nodes at runtime — a migrating grant for VAL/INV, admission
+for EXCL — so under them the program-side write-ordering obligation would be
+redundant.
 
 Every rank in a multinode run must use the same build.
 
@@ -99,7 +100,8 @@ Its skeleton:
 * *happens-before* is the transitive closure of the two, and defines when a
   write must be visible to a read of the same DB.
 
-Data races are **legal** under this contract, with defined semantics:
+Data races are **legal** under this contract. Racing writes have defined
+semantics; a racing read does not:
 
 * *Non-overlapping rule:* if two unordered EDTs write disjoint 8-byte-aligned
   ranges of one DB, both writes must appear in memory (no write may be masked
@@ -107,6 +109,9 @@ Data races are **legal** under this contract, with defined semantics:
 * *Overlapping rule:* unordered overlapping writes resolve to one legal
   interleaving at the platform's N-byte store-atomicity granularity (N = 8 on
   AMD64).
+* *Racing read:* a read of a word that a write unordered with it may change
+  returns an unspecified value, not necessarily one any EDT wrote, because the
+  runtime copies payloads plainly.
 
 Access modes are replication directives
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -192,9 +197,9 @@ already demands the release before the satisfy).
 Each coherence protocol requires a memory model: ``VAL``/``INV``/``EXCL``
 require only ``OCR`` (the runtime orders every conflict). ``FLUSH`` (see
 :ref:`flush_protocol`) requires ``DB-WRF``. ``EXCL`` and ``INV`` under
-DB-WRF would be redundant — both already order writers at runtime, which is
-exactly what DB-WRF asks of the program instead — which is why DB-WRF has
-exactly one protocol and CMake refuses the rest.
+DB-WRF would be redundant — both already order writers across nodes at
+runtime, which is exactly what DB-WRF asks of the program instead — which is
+why DB-WRF has exactly one protocol and CMake refuses the rest.
 
 .. warning::
 
@@ -276,8 +281,10 @@ snapshot buffers standing in for grace periods). Two mechanics deliberately
 diverge: updates are applied **in place** rather than copy-on-update —
 versions materialize at *serve* time, as reader-bound copies (copy-on-read) —
 and reads are consequently **not version-atomic**: a snapshot copied
-concurrently with an in-place write may carry mixed content, which the OCR
-RO contract legalizes at word granularity.
+concurrently with an in-place write may carry mixed content, down to a word
+read partly before and partly after the write; only a reader unordered with
+that write receives such a snapshot, and the value of its racing read is
+unspecified.
 
 Reader-side invalidation — in any form — is a **non-goal** of this protocol
 family: read-mostly cases where a lock or invalidation protocol wins are a
@@ -331,9 +338,12 @@ EXCL — queue-fair distributed reader–writer lock
 
 Each DB carries a distributed reader–writer lock whose authoritative state is
 a single 64-bit ``lock_state`` word on the home rank: shared read grants
-overlap and a write grant excludes everything, in the tradition of queue-based
-reader–writer synchronization (Mellor-Crummey & Scott). Priority between the
-two is decided at the phase boundary, not on arrival: a queued writer takes
+overlap and a write grant excludes every other node, in the tradition of
+queue-based reader–writer synchronization (Mellor-Crummey & Scott).  The lock
+is granted to nodes, not to EDTs: on the node that holds the write grant, its
+writers share the turn and its readers join it (a write grant covers reads),
+as on the node-exclusive arms. Priority between read and write grants
+is decided at the phase boundary, not on arrival: a queued writer takes
 the lock at the transition that ends a read phase, while a reader arriving
 during a live read phase is granted immediately rather than queued behind that
 writer. The read phase therefore ends only when its readers do, so a workload
@@ -342,9 +352,10 @@ keeps a read outstanding — the deliberate throughput bias of this arm, and the
 fairness exposure the adversarial suite measures. Data ships with the grant,
 in the style of entry consistency — the consistency actions are scoped to the
 DB whose lock is being acquired.
-EXCL trivially satisfies the OCR contract (it is strictly stronger:
-readers are isolated from writers by admission, not by promise) and serves as
-the lock-philosophy point of the design-space comparison.
+EXCL satisfies the OCR contract, and across nodes it is strictly stronger: a
+reader on a node that holds no write grant is isolated from writers by
+admission, not by promise.  It serves as the lock-philosophy point of the
+design-space comparison.
 
 Because no copy outlives a write turn, permission and payload are one token
 here, and the release policy decides when that token goes back. Under
@@ -417,8 +428,7 @@ Rejected arms
   overlap) buys no benchmark insight for its maintenance cost. A mirror of
   the VAL engine with that admission is kept in ``archive/coherence-mrsw/``.
 * **SRSW** (fully serialized single-reader/single-writer) — never built;
-  useful only as a debug lower bound, and EXCL already provides a strict,
-  deterministic baseline.
+  useful only as a debug lower bound, and EXCL already serializes nodes.
 
 .. _orthogonal_dimensions:
 
@@ -545,21 +555,23 @@ What version of the DB's contents does a reader observe?
 * **Durable-copy** (current INV) — a reader's copy stays legal until an
   invalidation retires it, so every re-read between two writes is
   message-free and observes the last completed release.
-* **Lock-isolated** (current EXCL) — readers are admitted only when no
-  writer holds the lock, so they always observe a quiescent DB.
+* **Lock-isolated** (current EXCL) — a reader on another node is admitted
+  only when no node holds the write grant, so it observes a quiescent DB; a
+  reader on the node that holds it joins that node's write turn and reads
+  the live buffer its writers write, as a co-located VAL reader does.
 
 .. note::
 
    The VAL position dependence gives racy programs *location-variable*
    semantics: a co-located racy reader sits on live hardware-coherent memory
    (effectively the machine's TSO floor), while a remote racy reader sees a
-   frozen snapshot whose guarantee is only per-word regularity — reading in
+   frozen snapshot that guarantees nothing for a word written while it was
+   copied, not even that the word holds a value some EDT wrote — reading in
    inverse write order no longer proves a publication prefix. Both behaviors
-   are within the contract (races promise no more than the word-granularity
-   floor), but a racy flag-then-payload idiom can appear to work single-node
-   and break distributed. This is a property of any snapshot-serving
-   conforming implementation, and one more reason racy idioms are
-   non-portable.
+   are within the contract (a racing read's value is unspecified), but a racy
+   flag-then-payload idiom can appear to work single-node and break
+   distributed. This is a property of any snapshot-serving conforming
+   implementation, and one more reason racy idioms are non-portable.
 
 Multi-writer resolution
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -571,8 +583,10 @@ reconciled?
   concurrent hardware-coherent writes to a shared buffer; inter-node: the
   single-owner grant serializes writers one node at a time. Preserves the
   OCR non-overlapping rule.
-* **Admission exclusion** (OCR×EXCL) — the lock never grants two writers
-  concurrently anywhere; the question is moot.
+* **Admission exclusion** (OCR×EXCL) — the lock never grants the write turn
+  to two nodes at once; within the node that holds it, writers share the
+  turn and their concurrent writes are hardware-coherent, as under
+  node-exclusive serialization.
 * **Lossy whole-DB write-back** (FLUSH) — each RW release PUTs the whole DB
   back into the home line. A DB-WRF-valid program never has two such
   releases overlapping, so nothing is ever actually lost; a program that
@@ -626,7 +640,6 @@ References
 * J. Dokulil, *Consistency model for runtime objects in the Open Community Runtime*, J. Supercomputing, 2018.
 * P. McKenney, J. Slingwine, *Read-Copy Update: Using Execution History to Solve Concurrency Problems*, PDCS 1998.
 * J. Mellor-Crummey, M. Scott, *Scalable Reader-Writer Synchronization for Shared-Memory Multiprocessors*, PPoPP 1991.
-* L. Lamport, *On Interprocess Communication, Part II: Algorithms*, Distributed Computing 1(2), 1986 (regular registers).
 * S. Adve, M. Hill, *Weak Ordering — A New Definition*, ISCA 1990 (DRF).
 * D. Hower et al., *Heterogeneous-race-free Memory Models*, ASPLOS 2014 (HRF).
 * T. Landwehr et al., *Designing Scalable Distributed Memory Models*, SC 2017 (Cache DAG Consistency).

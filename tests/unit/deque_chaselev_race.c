@@ -41,10 +41,10 @@
 #define INIT_CAP 2 /* force many grows under steal */
 
 static struct arts_deque_s *g_deque;
-static atomic_int g_start;            /* start gate */
-static atomic_int g_owner_done;       /* owner finished pushing+self-popping */
-static atomic_uint_least32_t *g_seen; /* per-item pop count */
-static _Atomic uint64_t g_total_popped;
+static _Atomic(int) g_start;      /* start gate */
+static _Atomic(int) g_owner_done; /* owner finished pushing+self-popping */
+static _Atomic(uint_least32_t) *g_seen; /* per-item pop count */
+static _Atomic(uint64_t) g_total_popped;
 
 static inline void *enc(uint64_t v) { return (void *)(uintptr_t)(v + 1); }
 static inline uint64_t dec(void *p) { return (uint64_t)(uintptr_t)p - 1; }

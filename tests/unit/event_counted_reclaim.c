@@ -61,7 +61,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc; (void)paramv; (void)depc; (void)depv;
 
   /* (1) COUNTED, every consumer bound BEFORE the satisfy. */
-  atomic_store(&g_ran, 0u);
+  atomic_store_explicit(&g_ran, 0u, memory_order_relaxed);
   arts_event_hint_t ch = ARTS_EVENT_HINT_COUNTED(NCONS);
   arts_guid_t ev = arts_event_create(&ch);
   for (uint32_t i = 0; i < NCONS; i++) {
@@ -70,9 +70,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   arts_event_satisfy(ev, NULL_GUID);
   wait_ran(NCONS);
-  if (atomic_load(&g_ran) != NCONS) {
+  if (atomic_load_explicit(&g_ran, memory_order_relaxed) != NCONS) {
     arts_printf("FAIL event_counted_reclaim: bound-before-satisfy delivered "
-                "%u of %u\n", atomic_load(&g_ran), NCONS);
+                "%u of %u\n",
+                atomic_load_explicit(&g_ran, memory_order_relaxed), NCONS);
     arts_test_fail();
   } else if (present(ev)) {
     arts_printf("FAIL event_counted_reclaim: COUNTED event survived after all "
@@ -82,14 +83,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* (2) COUNTED(1) whose only consumer binds AFTER the satisfy — the case that
    * fails silently if destroy replaces the delivery instead of following it. */
-  atomic_store(&g_ran, 0u);
+  atomic_store_explicit(&g_ran, 0u, memory_order_relaxed);
   arts_event_hint_t lh = ARTS_EVENT_HINT_COUNTED(1);
   arts_guid_t late = arts_event_create(&lh);
   arts_event_satisfy(late, NULL_GUID);
   arts_guid_t lc = arts_edt_create(consumer, 0, NULL, 1, NULL);
   arts_add_dependence(late, lc, 0, DB_MODE_NULL);
   wait_ran(1u);
-  if (atomic_load(&g_ran) != 1u) {
+  if (atomic_load_explicit(&g_ran, memory_order_relaxed) != 1u) {
     arts_printf("FAIL event_counted_reclaim: consumer binding after the "
                 "satisfy was never delivered to\n");
     arts_test_fail();
@@ -101,14 +102,14 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* (3) An undeclared single-fire event must still linger — reclaiming it is
    * exactly what ARTS cannot do without a count. */
-  atomic_store(&g_ran, 0u);
+  atomic_store_explicit(&g_ran, 0u, memory_order_relaxed);
   arts_event_hint_t oh = ARTS_EVENT_HINT_DEFAULTS;
   arts_guid_t once = arts_event_create(&oh);
   arts_guid_t oc = arts_edt_create(consumer, 0, NULL, 1, NULL);
   arts_add_dependence(once, oc, 0, DB_MODE_NULL);
   arts_event_satisfy(once, NULL_GUID);
   wait_ran(1u);
-  if (atomic_load(&g_ran) != 1u) {
+  if (atomic_load_explicit(&g_ran, memory_order_relaxed) != 1u) {
     arts_printf("FAIL event_counted_reclaim: ONCE consumer not delivered to\n");
     arts_test_fail();
   } else if (!present(once)) {

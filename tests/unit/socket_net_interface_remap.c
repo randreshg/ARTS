@@ -69,12 +69,6 @@ void arts_abort(uint8_t code) {
 void *arts_malloc(size_t s) { return malloc(s); }
 void *arts_calloc(size_t n, size_t s) { return calloc(n, s); }
 void arts_free(void *p) { free(p); }
-unsigned int arts_atomic_sub(volatile unsigned int *d, unsigned int v) {
-  return __atomic_sub_fetch(d, v, __ATOMIC_SEQ_CST);
-}
-unsigned int arts_atomic_add(volatile unsigned int *d, unsigned int v) {
-  return __atomic_add_fetch(d, v, __ATOMIC_SEQ_CST);
-}
 void arts_enter_shutdown_state(bool initiator) { (void)initiator; }
 void arts_runtime_stop(void) {}
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {

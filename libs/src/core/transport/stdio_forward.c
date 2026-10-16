@@ -13,6 +13,7 @@
 
 #include "arts/system/print.h"
 #include "arts/utils/malloc.h"
+#include "arts/utils/stdatomic_compat.h"
 
 /* Per-stream forwarder state, one heap node per forwarded stream, pushed onto
  * a lock-free Treiber stack.  A launcher forwards both stdout and stderr for
@@ -31,7 +32,9 @@ typedef struct forwarder_slot_s {
   FILE *sink;
 } forwarder_slot_t;
 
-static forwarder_slot_t *g_forwarders;
+/* Head of the stack.  A push's release CAS publishes the node it built; the
+ * teardown's acquire exchange takes every pushed node with its fields. */
+static _Atomic(forwarder_slot_t *) g_forwarders;
 
 static void *forwarder_thread_main(void *arg) {
   forwarder_slot_t *f = (forwarder_slot_t *)arg;
@@ -106,13 +109,12 @@ int arts_stdio_forwarder_make_pipe(unsigned int rank, const char *stream_label,
     return -1;
   }
 
-  /* Treiber push: publish the fully-built node with a release CAS so a
-   * concurrent drain that acquires it sees the node complete. */
-  forwarder_slot_t *head = __atomic_load_n(&g_forwarders, __ATOMIC_RELAXED);
+  forwarder_slot_t *head =
+      atomic_load_explicit(&g_forwarders, memory_order_relaxed);
   do {
     slot->next = head;
-  } while (!__atomic_compare_exchange_n(&g_forwarders, &head, slot, false,
-                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED));
+  } while (!atomic_compare_exchange_strong_explicit(
+      &g_forwarders, &head, slot, memory_order_release, memory_order_relaxed));
 
   return pipefd[1];
 }
@@ -124,7 +126,7 @@ void arts_stdio_forwarder_shutdown_all(void) {
    * its loop) before calling this.  Idempotent — a second call exchanges out
    * an already-NULL head and the drain loop runs zero times. */
   forwarder_slot_t *list =
-      __atomic_exchange_n(&g_forwarders, NULL, __ATOMIC_ACQUIRE);
+      atomic_exchange_explicit(&g_forwarders, NULL, memory_order_acquire);
 
   while (list) {
     forwarder_slot_t *next = list->next;

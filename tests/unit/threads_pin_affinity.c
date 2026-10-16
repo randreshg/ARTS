@@ -46,8 +46,8 @@
 /// The run's `pin` setting, read from its config before the runtime starts.
 static bool g_pin_requested;
 /// Workers whose hook ran, and those of them found bound to their own PU.
-static atomic_uint g_hooked;
-static atomic_uint g_bound;
+static _Atomic(unsigned int) g_hooked;
+static _Atomic(unsigned int) g_bound;
 
 /// Per-worker hook: runs on each worker thread after affinity is applied.
 /// Asserts the thread is bound to exactly its assigned pu_id when pinned.
@@ -69,14 +69,14 @@ void init_per_worker(unsigned int node_id, unsigned int worker_id, int argc,
     arts_test_fail();
     return;
   }
-  atomic_fetch_add(&g_hooked, 1u);
+  atomic_fetch_add_explicit(&g_hooked, 1u, memory_order_relaxed);
   int ncpus = CPU_COUNT(&set);
   if (!g_pin_requested) {
     arts_printf("  SKIP pin affinity: pin off in this config (worker "
                 "pu_id=%u, %d CPUs in affinity)\n",
                 my_pu, ncpus);
   } else if (ncpus == 1 && CPU_ISSET((int)my_pu, &set)) {
-    atomic_fetch_add(&g_bound, 1u);
+    atomic_fetch_add_explicit(&g_bound, 1u, memory_order_relaxed);
     arts_printf("  PASS pin affinity: worker bound to pu_id=%u\n", my_pu);
   } else {
     arts_printf("  FAIL pin affinity: pin on, but worker pu_id=%u is bound "
@@ -99,8 +99,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Every worker runs its hook before any EDT runs, so the counts are final
    * here: one check per worker of this rank, each bound when pin is on. */
   unsigned int workers = arts_get_workers_per_rank();
-  unsigned int hooked = atomic_load(&g_hooked);
-  unsigned int bound = atomic_load(&g_bound);
+  unsigned int hooked = atomic_load_explicit(&g_hooked, memory_order_relaxed);
+  unsigned int bound = atomic_load_explicit(&g_bound, memory_order_relaxed);
   if (workers == 0 || hooked != workers) {
     arts_printf("FAIL threads_pin_affinity: %u of %u workers checked\n", hooked,
                 workers);

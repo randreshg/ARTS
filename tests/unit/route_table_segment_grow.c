@@ -119,7 +119,7 @@ static unsigned chain_len(arts_route_table_t *t) {
 #define GROW_THREADS 8
 
 typedef struct {
-  atomic_int *gate;
+  _Atomic(int) *gate;
   arts_route_item_t **observed; /* [NCOLLIDE] per-thread slot view */
 } grow_ctx_t;
 
@@ -244,7 +244,7 @@ int main(void) {
   g_root = arts_new_route_table(ROOT_SIZE, ROOT_SHIFT);
   pthread_t tids[GROW_THREADS];
   grow_ctx_t ctx[GROW_THREADS];
-  atomic_int gate;
+  _Atomic(int) gate;
   atomic_init(&gate, 0);
   arts_route_item_t **storage = (arts_route_item_t **)calloc(
       (size_t)GROW_THREADS * NCOLLIDE, sizeof(arts_route_item_t *));

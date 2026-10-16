@@ -56,7 +56,7 @@ static void leaf_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                      arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  _Atomic int *c = (_Atomic int *)depv[0].ptr;
+  _Atomic(int) *c = (_Atomic(int) *)depv[0].ptr;
   if (c == NULL) {
     (void)fprintf(stderr, "FAIL: leaf NULL counter DB\n");
     arts_abort(1);
@@ -72,7 +72,7 @@ static void orchestrator(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   arts_guid_t cdb = depv[0].guid;
   uint64_t base = paramv[0];
-  _Atomic int *c = (_Atomic int *)depv[0].ptr;
+  _Atomic(int) *c = (_Atomic(int) *)depv[0].ptr;
   if (c == NULL) {
     (void)fprintf(stderr, "FAIL: orchestrator NULL counter DB\n");
     arts_abort(1);
@@ -104,8 +104,8 @@ static void successor(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic int *c = (_Atomic int *)depv[1].ptr;
-  _Atomic int *fire = (_Atomic int *)depv[2].ptr;
+  _Atomic(int) *c = (_Atomic(int) *)depv[1].ptr;
+  _Atomic(int) *fire = (_Atomic(int) *)depv[2].ptr;
   if (c == NULL || fire == NULL) {
     (void)fprintf(stderr, "FAIL: successor NULL DB\n");
     arts_abort(1);
@@ -140,17 +140,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  _Atomic int *c = NULL;
-  arts_guid_t cdb = arts_db_create((void **)&c, sizeof(_Atomic int) * N_SLOTS,
+  _Atomic(int) *c = NULL;
+  arts_guid_t cdb = arts_db_create((void **)&c, sizeof(_Atomic(int)) * N_SLOTS,
                                    ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   for (int i = 0; i < N_SLOTS; i++) {
     atomic_init(&c[i], 0);
   }
   arts_db_release(cdb, DB_MODE_RW);
 
-  _Atomic int *fire = NULL;
-  arts_guid_t fdb = arts_db_create((void **)&fire, sizeof(_Atomic int), ARTS_DB,
-                                   ARTS_DB_PROP_NONE, NULL);
+  _Atomic(int) *fire = NULL;
+  arts_guid_t fdb = arts_db_create((void **)&fire, sizeof(_Atomic(int)),
+                                   ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   atomic_init(fire, 0);
   arts_db_release(fdb, DB_MODE_RW);
 

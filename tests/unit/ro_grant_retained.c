@@ -35,7 +35,6 @@
 
 #include "arts/coherence/excl/types.h"
 #include "arts/gas/route_table.h"
-#include "arts/utils/atomics.h"
 
 #define READERS 4
 #define MAGIC 0x5AFE0000u

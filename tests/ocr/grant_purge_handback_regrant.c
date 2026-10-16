@@ -37,7 +37,7 @@ static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic uint64_t *p = depv[0].ptr;
+  _Atomic(uint64_t) *p = depv[0].ptr;
   if (p == NULL) {
     (void)fprintf(stderr, "FAIL: grant_purge_handback_regrant turn got no storage\n");
     arts_test_fail();
@@ -52,7 +52,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   uint64_t want = paramv[0];
-  const _Atomic uint64_t *p = depv[0].ptr;
+  const _Atomic(uint64_t) *p = depv[0].ptr;
   uint64_t got = (p != NULL) ? atomic_load_explicit(p, memory_order_relaxed) : 0u;
   if (got != want) {
     (void)fprintf(stderr,
@@ -77,9 +77,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   unsigned int nranks = arts_get_total_ranks();
   void *p = NULL;
-  arts_guid_t db = arts_db_create(&p, sizeof(_Atomic uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
-                        &(arts_db_hint_t){.rank = 0u});
-  atomic_init((_Atomic uint64_t *)p, 0u);
+  arts_guid_t db =
+      arts_db_create(&p, sizeof(_Atomic(uint64_t)), ARTS_DB, ARTS_DB_PROP_NONE,
+                     &(arts_db_hint_t){.rank = 0u});
+  atomic_init((_Atomic(uint64_t) *)p, 0u);
   arts_db_release(db, DB_MODE_RW);
 
   /* A single rank exercises the concurrent local writer case. */

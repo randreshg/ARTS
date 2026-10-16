@@ -65,9 +65,9 @@ static void counter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t *state = (uint64_t *)depv[1].ptr;
 
   atomic_store_explicit(
-      (_Atomic uint64_t *)&state[ST_CDATA + it * N_DEPS + idx],
+      (_Atomic(uint64_t) *)&state[ST_CDATA + it * N_DEPS + idx],
       (uint64_t)depv[0].guid, memory_order_release);
-  atomic_fetch_add_explicit((_Atomic uint64_t *)&state[ST_DELIVERED], 1u,
+  atomic_fetch_add_explicit((_Atomic(uint64_t) *)&state[ST_DELIVERED], 1u,
                             memory_order_acq_rel);
   arts_event_satisfy_slot(latch, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
@@ -102,7 +102,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   uint64_t *state = (uint64_t *)depv[1].ptr;
 
-  uint64_t got = atomic_load_explicit((_Atomic uint64_t *)&state[ST_DELIVERED],
+  uint64_t got = atomic_load_explicit((_Atomic(uint64_t) *)&state[ST_DELIVERED],
                                       memory_order_acquire);
   if (got != (uint64_t)TOTAL) {
     (void)fprintf(stderr, "FAIL: delivered=%llu want %d\n",
@@ -111,7 +111,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   for (int it = 0; it < M_ITERS; it++) {
     arts_guid_t first = (arts_guid_t)atomic_load_explicit(
-        (_Atomic uint64_t *)&state[ST_CDATA + it * N_DEPS + 0],
+        (_Atomic(uint64_t) *)&state[ST_CDATA + it * N_DEPS + 0],
         memory_order_acquire);
     int payload = -1;
     for (int s = 0; s < N_SATISFIERS; s++) {
@@ -128,7 +128,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
     for (int i = 1; i < N_DEPS; i++) {
       arts_guid_t ci = (arts_guid_t)atomic_load_explicit(
-          (_Atomic uint64_t *)&state[ST_CDATA + it * N_DEPS + i],
+          (_Atomic(uint64_t) *)&state[ST_CDATA + it * N_DEPS + i],
           memory_order_acquire);
       if (ci != first) {
         (void)fprintf(stderr,

@@ -803,6 +803,15 @@ message(STATUS "Log level: ${ARTS_LOG_LEVEL} (0=ERROR, 1=+WARN, 2=+INFO, 3=+DEBU
 
 set(COUNTER_CONFIG_FILE "${ARTS_COUNTER_CONFIG}")
 
+# Every access to an _Atomic object names its memory order.  Clang reports
+# one that does not (operator syntax, an implicit seq_cst access), and three
+# directories attach this option to every C unit they configure: the runtime
+# library, the tests and the OCR shim.  No other unit is judged: not the
+# vendored libraries, the reference OCR runtimes or the benchmark programs,
+# whether vendored or the project's own.  GCC has no such diagnostic.
+set(ARTS_WERROR_IMPLICIT_SEQ_CST
+    $<$<COMPILE_LANG_AND_ID:C,Clang>:-Werror=atomic-implicit-seq-cst>)
+
 # Create the ARTS library targets (core + extensions)
 add_subdirectory(libs)
 

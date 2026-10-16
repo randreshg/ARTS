@@ -100,18 +100,6 @@ void arts_transport_send_async(int rank, char *message, unsigned int length) {
   arts_net_send_core(rank, message, length, NULL, 0, 0, NULL);
 }
 
-void arts_transport_send_payload_async(int rank, char *message,
-                                       unsigned int length, char *payload,
-                                       uint64_t size) {
-  if (!net_target_ok(rank)) {
-    return;
-  }
-  size_send_check(length);
-  size_send_check(size);
-  arts_net_msg_census((uint64_t)length + size);
-  arts_net_send_core(rank, message, length, payload, 0, size, NULL);
-}
-
 void arts_transport_send_payload_async_free(int rank, char *message,
                                             unsigned int length, char *payload,
                                             unsigned int offset, uint64_t size,

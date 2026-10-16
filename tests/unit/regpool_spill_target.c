@@ -169,9 +169,11 @@ static void leg_peer_declines(void) {
         "%s: init: node 0 grew %u, node 1 grew %u, %u MiB kernel-placed; "
         "expected one %zu MiB kernel-placed slab, node 0's",
         leg, s.node[0].grows, s.node[1].grows, s.unplaced, SLAB_BYTES / MIB);
-  CHECK(regpool_sim_self_reads[1] >= 1,
+  CHECK(atomic_load_explicit(&regpool_sim_self_reads[1],
+                             memory_order_relaxed) >= 1,
         "%s: init never grew node 1 on node 0's behalf", leg);
-  unsigned self1 = regpool_sim_self_reads[1];
+  unsigned self1 =
+      atomic_load_explicit(&regpool_sim_self_reads[1], memory_order_relaxed);
 
   int where[BLOCKS];
   alloc_blocks(BLOCKS, where, leg);
@@ -184,11 +186,13 @@ static void leg_peer_declines(void) {
         "%s: cascade: node 0 grew %u, node 1 grew %u; expected node 0's "
         "second kernel-placed slab and nothing from node 1",
         leg, s.node[0].grows, s.node[1].grows);
-  CHECK(regpool_sim_self_reads[1] > self1,
+  CHECK(atomic_load_explicit(&regpool_sim_self_reads[1], memory_order_relaxed) >
+            self1,
         "%s: the cascade never grew node 1 on node 0's behalf", leg);
-  CHECK(regpool_sim_mbind_calls == 0,
+  CHECK(atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) ==
+            0,
         "%s: %u placement policies set where every slab is the kernel's", leg,
-        regpool_sim_mbind_calls);
+        atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed));
   finish(leg);
 }
 
@@ -245,11 +249,13 @@ static void leg_peer_placed(void) {
         leg, s0.node[0].arenas, s0.node[1].grows);
   regpool_sim_set_node_free(0, NO_ROOM);
   regpool_sim_set_node_free(1, BETWEEN);
-  unsigned maps0 = regpool_sim_mbind_calls;
+  unsigned maps0 =
+      atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed);
   bool grew = arts_regpool_grow(0);
   shape_t s = shape(2, leg);
   CHECK(!grew && s.node[0].grows == s0.node[0].grows && s.unplaced == 0 &&
-            regpool_sim_mbind_calls == maps0,
+            atomic_load_explicit(&regpool_sim_mbind_calls,
+                                 memory_order_relaxed) == maps0,
         "%s: node 0's grow returned %d, grew %u -> %u, %u MiB kernel-placed; "
         "expected nothing mapped",
         leg, grew, s0.node[0].grows, s.node[0].grows, s.unplaced);
@@ -325,7 +331,8 @@ static void leg_outside_set_before_kernel(void) {
     printf("FAIL regpool_spill_target: %s: init failed\n", leg);
     exit(1);
   }
-  CHECK(regpool_sim_self_reads[1] >= 1,
+  CHECK(atomic_load_explicit(&regpool_sim_self_reads[1],
+                             memory_order_relaxed) >= 1,
         "%s: node 1 was never asked before node 2", leg);
   int where[4];
   alloc_blocks(4, where, leg);

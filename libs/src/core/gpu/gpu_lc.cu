@@ -45,23 +45,22 @@
 #include "arts/gpu/gpu_stream.h"
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/random.h"
 
 // To use this lock the unlock must be an even number
 unsigned int version_lock(arts_lc_meta_t *meta) {
-  arts_writer_lock(meta->read_lock, meta->write_lock);
-  return *meta->host_version;
+  pthread_rwlock_wrlock(meta->lock);
+  return atomic_load_explicit(meta->host_version, memory_order_relaxed);
 }
 
 bool try_version_lock(arts_lc_meta_t *meta) {
-  return arts_writer_try_lock(meta->read_lock, meta->write_lock);
+  return pthread_rwlock_trywrlock(meta->lock) == 0;
 }
 
 void version_unlock(arts_lc_meta_t *meta) {
-  arts_atomic_add(meta->host_version, 2U);
-  arts_writer_unlock(meta->write_lock);
+  atomic_fetch_add_explicit(meta->host_version, 2u, memory_order_acq_rel);
+  pthread_rwlock_unlock(meta->lock);
 }
 
 void *make_lc_shadow_copy(struct arts_db_s *db) {
@@ -69,12 +68,15 @@ void *make_lc_shadow_copy(struct arts_db_s *db) {
   void *dest = (void *)(((char *)db) + size);
   struct arts_db_s *shadow_copy = (struct arts_db_s *)dest;
 
-  arts_writer_lock(&db->reader, &db->writer);
-  unsigned int host_version = db->version;
-  if (!shadow_copy->version || host_version != shadow_copy->version) {
+  pthread_rwlock_wrlock(db->gpu_lock);
+  unsigned int host_version =
+      atomic_load_explicit(&db->version, memory_order_relaxed);
+  unsigned int shadow_version =
+      atomic_load_explicit(&shadow_copy->version, memory_order_relaxed);
+  if (!shadow_version || host_version != shadow_version) {
     memcpy(dest, (void *)db, size);
   }
-  arts_writer_unlock(&db->writer);
+  pthread_rwlock_unlock(db->gpu_lock);
   return dest;
 }
 
@@ -437,7 +439,7 @@ unsigned int gpu_lc_reduce(arts_guid_t guid, struct arts_db_s *db,
   unsigned int size = arts_db_total_size(db);
   // struct arts_db_s *shadow_copy = (struct arts_db_s *)(((char *)db) + size);
 
-  arts_writer_lock(&db->reader, &db->writer);
+  pthread_rwlock_wrlock(db->gpu_lock);
   unsigned int mask = arts_gpu_lookup_db(guid);
   if (mask) {
     // RING IS NOT WORKING...
@@ -454,6 +456,6 @@ unsigned int gpu_lc_reduce(arts_guid_t guid, struct arts_db_s *db,
     }
   }
   rem_mask = mask;
-  arts_writer_unlock(&db->writer);
+  pthread_rwlock_unlock(db->gpu_lock);
   return rem_mask;
 }

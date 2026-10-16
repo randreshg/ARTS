@@ -62,7 +62,6 @@
 #include "arts/transport/dispatcher.h"
 #include "arts/transport/netif.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 
 /* Disable Nagle on a connected TCP data socket.  ARTS's cross-rank protocol is
@@ -79,18 +78,12 @@ struct arts_config_s *arts_global_message_table;
 unsigned int ports;
 // SOCKETS!
 int *remote_socket_send_list;
-volatile unsigned int *volatile remote_socket_send_lock_list;
 struct sockaddr_in *remote_server_send_list;
 bool *remote_connection_alive;
 
 int *local_socket_receive;
 int *remote_socket_receive_list;
-fd_set read_set;
-int max_fd;
-struct sockaddr_in *remote_server_receive_list;
 struct pollfd *poll_incoming;
-
-#define PACKET_SIZE 4194304
 
 char *ip_list;
 
@@ -490,8 +483,10 @@ void arts_socket_sentinel_arm(void) {
 }
 
 /* Single prober at a time: two progress threads polling the shared pollfd
- * array would race on its revents fields. */
-static _Atomic int g_sentinel_probing;
+ * array would race on its revents fields.  A try-lock: the winning CAS
+ * acquires and the return stores release, so each prober sees the entries
+ * the previous one retired; a loser returns, and the next pass probes. */
+static _Atomic(int) g_sentinel_probing;
 
 bool arts_socket_sentinel_check(void) {
   /* Probe the accept-side mesh for peer death (POLLHUP/POLLERR/EOF), with a
@@ -587,11 +582,9 @@ void arts_socket_cleanup() {
   }
   arts_free(ip_list);
   arts_free(remote_socket_send_list);
-  arts_free((void *)remote_socket_send_lock_list);
   arts_free(remote_server_send_list);
   arts_free(remote_connection_alive);
   arts_free(remote_socket_receive_list);
-  arts_free(remote_server_receive_list);
   arts_free(poll_incoming);
   arts_free(local_socket_receive);
 }
@@ -688,8 +681,6 @@ bool arts_transport_setup_incoming() {
 
   remote_socket_receive_list =
       (int *)arts_malloc(sizeof(int) * (size_t)(count + 1) * ports);
-  remote_server_receive_list = (struct sockaddr_in *)arts_calloc(
-      (size_t)(count + 1) * ports, sizeof(struct sockaddr_in));
   poll_incoming =
       (struct pollfd *)arts_malloc(sizeof(struct pollfd) * (count + 1) * ports);
 
@@ -758,7 +749,6 @@ bool arts_transport_setup_incoming() {
 
   arts_free(local_server_addr);
 
-  FD_ZERO(&read_set);
   for (i = 0; i < (int)arts_global_message_table->table_length; i++) {
     if (arts_global_message_table->my_rank ==
         arts_global_message_table->table[i].rank) {
@@ -815,8 +805,6 @@ void arts_transport_setup_outgoing() {
 
   remote_socket_send_list =
       (int *)arts_malloc(sizeof(int) * (size_t)count * ports);
-  remote_socket_send_lock_list =
-      (volatile unsigned int *)arts_calloc((size_t)count * ports, sizeof(int));
   remote_server_send_list = (struct sockaddr_in *)arts_calloc(
       (size_t)count * ports, sizeof(struct sockaddr_in));
   remote_connection_alive =

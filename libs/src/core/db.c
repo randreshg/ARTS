@@ -61,7 +61,6 @@
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/shared.h" /* arts_shared_ptr_t, get/release */
 
@@ -295,6 +294,10 @@ void arts_db_free(void *ptr) {
     return;
   }
 #ifdef ARTS_USE_GPU
+  if (db->db_type == ARTS_DB_GPU) {
+    pthread_rwlock_destroy(db->gpu_lock);
+    arts_free(db->gpu_lock);
+  }
   if (arts_node_info.gpu &&
       (db->db_type == ARTS_DB_GPU_PIN || db->db_type == ARTS_DB_GPU)) {
     arts_cuda_free_host(ptr);
@@ -324,11 +327,30 @@ __attribute__((constructor)) static void arts_db_register_cb_deleter(void) {
   arts_route_table_register_deleter(ARTS_GUID_DB, arts_db_deleter);
 }
 
+#ifdef ARTS_USE_GPU
+/* The staging lock of an ARTS_DB_GPU block.  Writer-preferring: staging and
+ * the LC merges must not starve behind CPU EDTs that keep the read side
+ * across their whole bodies. */
+static pthread_rwlock_t *db_gpu_lock_create(void) {
+  pthread_rwlock_t *lock =
+      (pthread_rwlock_t *)arts_malloc(sizeof(pthread_rwlock_t));
+  pthread_rwlockattr_t attr;
+  pthread_rwlockattr_init(&attr);
+  pthread_rwlockattr_setkind_np(&attr,
+                                PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+  if (pthread_rwlock_init(lock, &attr) != 0) {
+    ARTS_ERROR("db: the GPU staging lock could not be initialized");
+  }
+  pthread_rwlockattr_destroy(&attr);
+  return lock;
+}
+#endif
+
 /*
  * db_create_in_place — Initialize a DB header in pre-allocated memory.
  *
- * Sets up the arts_db_s header fields (type, size, version, reader/writer
- * counts, db_list) and records metrics.  The caller is responsible for
+ * Sets up the arts_db_s header fields (type, size, the GPU staging state,
+ * db_list) and records metrics.  The caller is responsible for
  * route-table registration.
  *
  * `acquires` says whether the create takes the creator's hold, which is also
@@ -341,10 +363,15 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
   struct arts_db_s *db_res = (struct arts_db_s *)addr;
   /* lifecycle/deleter handled by the route_table cb (deleter-by-kind) on
    * install — no per-object shared field to initialize. */
+#ifdef ARTS_GPU_LAYOUT
+  atomic_store_explicit(&db_res->version, 0u, memory_order_relaxed);
+  db_res->time_stamp = 0;
+  db_res->gpu_lock = NULL;
+#endif
 #ifdef ARTS_USE_GPU
-  db_res->version = 0;
-  db_res->reader = 0;
-  db_res->writer = 0;
+  if (db_type == ARTS_DB_GPU) {
+    db_res->gpu_lock = db_gpu_lock_create();
+  }
 #endif
   db_res->db_type = db_type;
   /* ARTS_DB enters the coherence protocol at create time.  Initialize the
@@ -1711,9 +1738,9 @@ void arts_db_acquire_all(struct arts_edt_s *edt) {
  * prep_dbs — Prepare DB dependencies just before EDT execution.
  *
  * A coherent block needs nothing here: its protocol did its work at acquire.
- * In GPU builds, for every LC (locally-coherent) DB (regardless of access
- * mode), acquires a reader lock and increments the DB version counter; for
- * DB_MODE_LC_SYNC deps specifically, syncs GPU shadow copies.
+ * In GPU builds, a CPU EDT takes the read side of every ARTS_DB_GPU block's
+ * staging lock for each slot not in DB_MODE_LC_SYNC and bumps the block's LC
+ * version; a DB_MODE_LC_SYNC slot syncs the GPU shadow copies instead.
  *
  * Called from arts_run_edt() after all DB pointers have been resolved.
  */
@@ -1742,8 +1769,8 @@ void prep_dbs(struct arts_edt_s *edt, bool gpu) {
     if (!gpu && access_mode != DB_MODE_LC_SYNC) {
       struct arts_db_s *db = ((struct arts_db_s *)depv[i].ptr) - 1;
       if (db->db_type == ARTS_DB_GPU) {
-        arts_reader_lock(&db->reader, &db->writer);
-        arts_atomic_add(&db->version, 1);
+        pthread_rwlock_rdlock(db->gpu_lock);
+        atomic_fetch_add_explicit(&db->version, 1u, memory_order_acq_rel);
       }
     }
 
@@ -1793,16 +1820,14 @@ static arts_shared_ptr_t dep_release_pin(const struct arts_edt_s *edt,
  * Used by:
  *   - release_dbs (EDT epilogue, all dep slots)
  *   - arts_db_release Path 2 (mid-EDT release of one depv slot)
- *   - arts_db_release Path 1 + arts_release_created_dbs (via a release
- *     descriptor built from a created_db_list entry)
  *
  * Per access mode:
  *   - DB_MODE_RO / DB_MODE_RW: only ARTS_DB needs DB-level coherence
  *     work; route through the coherent release entry points
  *     (arts_db_release_ro / arts_db_release_rw).  Non-coherent pinned
  *     subtypes have no DB-level coherence — release is a no-op.
- *   - ARTS_DB_GPU subtype (GPU build, non-LC_SYNC mode): release the GPU-LC
- *     reader lock — pure intra-rank multi-device coordination.
+ *   - ARTS_DB_GPU subtype (GPU build, a CPU EDT's non-LC_SYNC slot): drop
+ *     the staging lock's read side prep_dbs took.
  *
  * `db_pin` is the descriptor pin the slot holds (NULL for none) and is
  * consumed.  Does NOT nullify caller-visible state (guid/ptr/mode).  Callers
@@ -1905,29 +1930,22 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
     return;
   }
 
-  /* Get DB subtype from struct when ptr is available.  Guard with
-   * guid != NULL_GUID because arts_db_release may have already nulled
-   * the guid while leaving ptr non-NULL (caller responsibility).
-   *
-   * Reaching this point means the dep is for a non-coherent pinned subtype
+  /* Reaching this point means the dep is for a non-coherent pinned subtype
    * (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU) or a special access mode
-   * (LC_*, MEMSET) — none of which carry DB-level coherence. */
-  arts_db_types_t db_subtype = ARTS_DB;
-  if (dep->guid != NULL_GUID && dep->ptr) {
-    struct arts_db_s *db_hdr = ((struct arts_db_s *)dep->ptr) - 1;
-    db_subtype = db_hdr->db_type;
-  }
+   * (LC_*, MEMSET) — none of which carry DB-level coherence.  The subtype is
+   * the one the acquire recorded, as prep_dbs reads it: a coherent block's
+   * dep->ptr is buffer data, with no descriptor before it. */
+  arts_db_types_t db_subtype = dep->subtype;
 
   ARTS_DEBUG("Releasing DB[Guid:%lu] [AccessMode:%s, DbSubtype:%s]", dep->guid,
              GET_DB_MODE_NAME(access_mode), GET_DB_TYPE_NAME(db_subtype));
 
 #ifdef ARTS_USE_GPU
-  /* The reader lock prep_dbs took, under exactly the condition it took it. */
-  if (!gpu && access_mode != DB_MODE_LC_SYNC && db_subtype == ARTS_DB_GPU) {
-    if (dep->ptr) {
-      struct arts_db_s *db = ((struct arts_db_s *)dep->ptr) - 1;
-      arts_reader_unlock(&db->reader);
-    }
+  /* The read side prep_dbs took, under exactly the condition it took it. */
+  if (!gpu && access_mode != DB_MODE_LC_SYNC && db_subtype == ARTS_DB_GPU &&
+      dep->guid != NULL_GUID && dep->ptr != NULL) {
+    struct arts_db_s *db = ((struct arts_db_s *)dep->ptr) - 1;
+    pthread_rwlock_unlock(db->gpu_lock);
   }
 #else
   (void)gpu;
@@ -1968,34 +1986,21 @@ void release_dbs(struct arts_edt_s *edt, bool gpu) {
  * creator's hold
  * is the arm's own state, seeded at ARTS_DB_INIT_CREATOR_HOME /
  * ARTS_DB_INIT_CREATOR_REMOTE and released through the arm's own entry point
- * with NO buffer ref to drop (auto_acquire never called acquire_buf).  For
- * non-coherent pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU)
- * the creator EDT has no DB-level coherence hold to drop; a release descriptor
- * of the block dispatched through release_one_dep handles only the per-mode
- * non-coherence work (GPU-LC reader unlock).
+ * with NO buffer ref to drop (auto_acquire never called acquire_buf).  The
+ * creator of a non-coherent pinned subtype (ARTS_DB_PIN, ARTS_DB_GPU_PIN,
+ * ARTS_DB_GPU) holds nothing to release: no coherence hold, and no side of a
+ * GPU staging lock, which only prep_dbs takes.
  */
-static void release_one_created(arts_shared_ptr_t h,
-                                arts_db_access_mode_t mode) {
+static void release_one_created(arts_shared_ptr_t h) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
   if (db->db_type == ARTS_DB) {
     /* Coherent creator release.  No buffer ref to drop (the hold is the seed
      * arts_db_cache_init stamped on the cache).  The arm's create-hold entry
      * point runs it: the creating EDT's bytes are wherever that arm put them
      * when the block was made, which is not something a dependence's pointer
-     * could name.  The coherent creator hold is always RW, so `mode` only
-     * steers the pinned-subtype synthetic dep below. */
+     * could name.  The coherent creator hold is always RW. */
     arts_db_release_created(&db->cache);
-    arts_shared_release(&h);
-    return;
   }
-  struct arts_dep_release_s dep = {
-      .guid = db->cache.db_guid,
-      .ptr = (void *)(db + 1),
-      .mode = mode,
-      .subtype = db->db_type, /* pinned (coherent ARTS_DB returned above) */
-      .alias = false,
-  };
-  release_one_dep(&dep, NULL, false);
   arts_shared_release(&h);
 }
 
@@ -2012,6 +2017,8 @@ static void release_one_created(arts_shared_ptr_t h,
  * epilogue (release_dbs / arts_release_created_dbs) skips it cleanly.
  */
 void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
+  /* The block, not the mode, decides what either path releases. */
+  (void)mode;
   /* Path 1: created_db_list (DBs this EDT created).  Scanned from the back
    * because the common shape is create-then-release, and REMOVED on a match
    * rather than blanked: the list has to track what is still HELD, not what was
@@ -2023,7 +2030,7 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
     arts_shared_ptr_t h = *(arts_shared_ptr_t *)arts_vector_at(list, i - 1);
     if (((struct arts_db_s *)arts_shared_get(h))->cache.db_guid == guid) {
       arts_vector_swap_remove(list, i - 1);
-      release_one_created(h, mode);
+      release_one_created(h);
       return;
     }
   }
@@ -2077,8 +2084,10 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
   if (owner == depc) {
     return;
   }
+  /* The flag prep_dbs ran this EDT's slots with. */
+  bool gpu = edt->edt_type == ARTS_EDT_GPU;
   struct arts_dep_release_s dep = dep_release_of(edt, depv, owner);
-  release_one_dep(&dep, dep_release_pin(edt, owner), false);
+  release_one_dep(&dep, dep_release_pin(edt, owner), gpu);
   depv[owner].guid = NULL_GUID;
   depv[owner].ptr = NULL;
   depv[owner].mode = DB_MODE_NULL;
@@ -2089,7 +2098,7 @@ void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode) {
     }
     /* buffer ref + descriptor pin only */
     dep = dep_release_of(edt, depv, i);
-    release_one_dep(&dep, dep_release_pin(edt, i), false);
+    release_one_dep(&dep, dep_release_pin(edt, i), gpu);
     depv[i].guid = NULL_GUID;
     depv[i].ptr = NULL;
     depv[i].mode = DB_MODE_NULL;
@@ -2113,7 +2122,7 @@ void arts_release_created_dbs(void) {
     uint64_t last = arts_vector_count(list) - 1;
     arts_shared_ptr_t h = *(arts_shared_ptr_t *)arts_vector_at(list, last);
     arts_vector_swap_remove(list, last);
-    release_one_created(h, DB_MODE_RW);
+    release_one_created(h);
   }
 }
 

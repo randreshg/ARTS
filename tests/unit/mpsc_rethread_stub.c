@@ -40,8 +40,8 @@ typedef struct {
 } msg_t;
 
 static arts_mpsc_t g_q;
-static atomic_int g_start;
-static _Atomic int g_prod_done;
+static _Atomic(int) g_start;
+static _Atomic(int) g_prod_done;
 
 static void *producer(void *arg) {
   uint32_t id = (uint32_t)(uintptr_t)arg;

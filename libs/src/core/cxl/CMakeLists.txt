@@ -6,6 +6,11 @@ if(ARTS_CXL_NEEDED)
     set(ARTS_CXL_SOURCES store.c)
     if(ARTS_CXL_TREE_RESIDENCY STREQUAL "")
         add_library(arts_cxl OBJECT EXCLUDE_FROM_ALL ${ARTS_CXL_SOURCES})
+        # No build compiles these objects, and they carry no flags, so the
+        # compile database, which names only what the tree compiles, omits
+        # them.
+        set_target_properties(arts_cxl PROPERTIES
+                              EXPORT_COMPILE_COMMANDS OFF)
     else()
         add_library(arts_cxl OBJECT ${ARTS_CXL_SOURCES})
         target_link_libraries(arts_cxl PRIVATE arts_interface)

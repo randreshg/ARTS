@@ -33,10 +33,10 @@
 
 enum { K = 8, M = 64, TOTAL = K * M };
 
-static atomic_int g_start;
-static _Atomic int g_made;
+static _Atomic(int) g_start;
+static _Atomic(int) g_made;
 static int g_wfds[TOTAL];
-static _Atomic int g_wfd_idx;
+static _Atomic(int) g_wfd_idx;
 static FILE *g_sinks[K];
 
 static void *pusher(void *arg) {
@@ -95,7 +95,8 @@ int main(void) {
   /* Walk the stack: count nodes + check for duplicate addresses (ABA/cycle).
    * Bound the walk so an accidental cycle terminates instead of hanging. */
   int count = 0;
-  forwarder_slot_t *p = __atomic_load_n(&g_forwarders, __ATOMIC_ACQUIRE);
+  forwarder_slot_t *p =
+      atomic_load_explicit(&g_forwarders, memory_order_acquire);
   /* Collect addresses to detect a cycle/duplicate (O(n^2) is fine for 512). */
   forwarder_slot_t *seen[TOTAL + 8];
   while (p) {
@@ -134,7 +135,7 @@ int main(void) {
   }
   arts_stdio_forwarder_shutdown_all();
 
-  if (__atomic_load_n(&g_forwarders, __ATOMIC_ACQUIRE) != NULL) {
+  if (atomic_load_explicit(&g_forwarders, memory_order_acquire) != NULL) {
     (void)fprintf(stderr, "FAIL concurrent_push: head not NULL after "
                           "shutdown\n");
     return 1;

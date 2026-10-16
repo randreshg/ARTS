@@ -37,10 +37,10 @@
 #define INIT_CAP 1 /* grows on the first push */
 
 static struct arts_deque_s *g_deque;
-static atomic_int g_start;
-static atomic_int g_owner_done;
-static atomic_uint_least32_t *g_seen;
-static _Atomic uint64_t g_total;
+static _Atomic(int) g_start;
+static _Atomic(int) g_owner_done;
+static _Atomic(uint_least32_t) *g_seen;
+static _Atomic(uint64_t) g_total;
 
 static inline void *enc(uint64_t v) { return (void *)(uintptr_t)(v + 1); }
 static inline uint64_t dec(void *p) { return (uint64_t)(uintptr_t)p - 1; }

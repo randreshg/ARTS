@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_SYNC_EVENT_H
-#define ARTS_SYNC_EVENT_H
+#ifndef ARTS_EVENT_H
+#define ARTS_EVENT_H
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -97,4 +97,4 @@ void arts_send_event_destroy(arts_guid_t guid);
 }
 #endif
 
-#endif /* ARTS_SYNC_EVENT_H */
+#endif /* ARTS_EVENT_H */

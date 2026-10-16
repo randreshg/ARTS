@@ -14,8 +14,8 @@
  *     acq_rel CAS for the baton.
  */
 
-#ifndef ARTS_MEMORY_COHERENCE_DIRECTORY_H
-#define ARTS_MEMORY_COHERENCE_DIRECTORY_H
+#ifndef ARTS_COHERENCE_DIRECTORY_H
+#define ARTS_COHERENCE_DIRECTORY_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,10 +26,8 @@ extern "C" {
 #include <stdint.h>
 
 #include "arts/coherence/coherence.h"
-/* struct arts_rank_bitset_s definition (embedded by value in arts_db_s).
- * The rank-bitset FUNCTION declarations are folded into this header below;
- * the STRUCT lives in rank_bitset.h because coherence_types.h includes
- * it directly to lay out arts_db_s and must not depend on this header. */
+/* The rank bit-set and its functions, which the home-side callers of this
+ * header use. */
 #include "arts/rank_bitset.h"
 
 /* Declared, not defined, here: only the protocol arms that run a home request
@@ -94,28 +92,6 @@ void arts_rank_u64_map_set(struct arts_rank_to_u64_map_s *m, unsigned int rank,
 bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
                                unsigned int rank, uint64_t value);
 
-/*--- rank bit-set ----------------------------------------------------
- *
- * Bit-packed atomic rank bit-set, sized to the cluster's rank count: the
- * destroy roster of every home directory (cached_ranks), under both write
- * policies, and the arms' other per-rank rosters.  The struct
- * arts_rank_bitset_s definition lives in rank_bitset.h (included directly by
- * the coherence layouts, which embed it by value in arts_db_s). */
-
-void arts_rank_bitset_init(struct arts_rank_bitset_s *r, unsigned int nranks);
-void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r);
-/* Set bit for rank; returns true if the bit was previously clear (first-time
- * set), false if already set.  Safe for concurrent callers. */
-bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank);
-/* Iterate over all set bits, invoking cb(rank, ctx) for each.  The snapshot
- * is acquired per-word; callers must ensure no concurrent set() during
- * iteration.  The destroy fan-out satisfies this as the home-side single
- * actor: by the time it scans, the DB's route-table slot is already absent,
- * so no later acquire can register a new reader. */
-void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
-                               void (*cb)(unsigned int rank, void *ctx),
-                               void *ctx);
-
 /*--- home-directory lifecycle (inlined in arts_db_s) --------------------*/
 
 /* Initialize the home-directory fields inlined in struct arts_db_s (no separate
@@ -167,4 +143,4 @@ bool arts_rank_u64_map_load(struct arts_rank_to_u64_map_s *m, const void *in,
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_DIRECTORY_H */
+#endif /* ARTS_COHERENCE_DIRECTORY_H */

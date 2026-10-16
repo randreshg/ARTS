@@ -9,7 +9,6 @@
  * The iteration counter lives in paramv (passed through the EDT chain) —
  * no file-scope mutable state. */
 #include "arts.h"
-#include "arts/utils/atomics.h"
 
 #include "../test_failure_status.h"
 

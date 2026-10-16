@@ -38,7 +38,7 @@ void initiator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic unsigned int *ctr = (_Atomic unsigned int *)depv[0].ptr;
+  _Atomic(unsigned int) *ctr = (_Atomic(unsigned int) *)depv[0].ptr;
   if (ctr) {
     atomic_fetch_add_explicit(ctr, 1u, memory_order_relaxed);
   }
@@ -57,9 +57,9 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Shared counter DB acquired RW by every initiator (forces them to race on
    * the same DB while all also race into arts_shutdown). */
   void *ctr_ptr = NULL;
-  arts_guid_t ctr_db = arts_db_create(&ctr_ptr, sizeof(_Atomic unsigned int),
+  arts_guid_t ctr_db = arts_db_create(&ctr_ptr, sizeof(_Atomic(unsigned int)),
                                       ARTS_DB, ARTS_DB_PROP_NONE, NULL);
-  atomic_init((_Atomic unsigned int *)ctr_ptr, 0u);
+  atomic_init((_Atomic(unsigned int) *)ctr_ptr, 0u);
   arts_db_release(ctr_db, DB_MODE_RW);
 
   for (int i = 0; i < N_INITIATORS; i++) {

@@ -51,7 +51,7 @@ void *arts_malloc(size_t size) { return malloc(size); }
 void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
 void arts_free(void *ptr) { free(ptr); }
 
-static _Atomic int g_recv_count;
+static _Atomic(int) g_recv_count;
 
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
   (void)packet;

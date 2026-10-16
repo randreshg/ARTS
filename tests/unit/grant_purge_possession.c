@@ -30,7 +30,6 @@
 #include "arts.h"
 #include "arts/coherence/types.h"
 #include "arts/gas/route_table.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/shared.h"
 
 #include "../test_failure_status.h"

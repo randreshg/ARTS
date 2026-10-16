@@ -59,7 +59,6 @@
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/deque.h"
 #include "arts/utils/malloc.h"
 #include "arts/utils/random.h"
@@ -94,25 +93,29 @@ static bool push_kernel_to_stream(unsigned int gpu_id, uint32_t paramc,
                                   dim3 grid, dim3 block, bool buff);
 static bool push_wrap_up_to_stream(unsigned int gpu_id, void *host_closure,
                                    bool buff);
-static bool flush_mem_stream(unsigned int gpu_id, unsigned int *count,
+static bool flush_mem_stream(unsigned int gpu_id, _Atomic(unsigned int) *count,
                              arts_buffer_mem_move_t *buff,
                              enum cudaMemcpyKind kind);
 static bool flush_kernel_stream(unsigned int gpu_id);
 static bool flush_wrap_up_stream(unsigned int gpu_id);
 static bool flush_stream(unsigned int gpu_id);
 static bool check_streams(bool buff_on);
-static void copy_gputo_gpu(void *dst, unsigned int dst_gpu_id, void *src,
-                           unsigned int src_gpu_id, unsigned int size);
 static void get_data_from_stream_now(unsigned int gpu_id, void *dst, void *src,
                                      size_t count, bool buff);
 
-volatile unsigned int hits = 0;
-volatile unsigned int misses = 0;
-volatile uint64_t free_bytes = 0;
+#define MAXSTREAM 32
+/* Per-device stream submission buffers; defined with them below. */
+extern pthread_mutex_t buff_lock[MAXSTREAM];
+
+_Atomic(unsigned int) hits;
+_Atomic(unsigned int) misses;
+_Atomic(uint64_t) free_bytes;
 
 arts_gpu_t *arts_gpus;
 
-ARTS_THREAD_LOCAL volatile unsigned int *new_edt_lock = 0;
+/* This worker's completion list and its lock, which the CUDA host-function
+ * thread adopts from a launch's closure to hand finished EDTs back. */
+ARTS_THREAD_LOCAL pthread_mutex_t *new_edt_lock = NULL;
 ARTS_THREAD_LOCAL arts_array_list_t *new_edts = NULL;
 
 // These are for the library version of GPU EDTs
@@ -205,12 +208,16 @@ void arts_node_init_gpus() {
         cudaMemGetInfo((size_t *)&temp_free_mem, (size_t *)&temp_max_mem));
     CHECKCORRECT(
         cudaGetDeviceProperties(&arts_gpus[i].prop, arts_gpus[i].device));
-    arts_gpus[i].avail_global_mem = (uint64_t)temp_free_mem;
-    arts_gpus[i].total_global_mem = (uint64_t)temp_max_mem;
-    if (arts_gpus[i].avail_global_mem > arts_node_info.gpu_max_memory) {
-      arts_gpus[i].avail_global_mem = arts_node_info.gpu_max_memory;
+    uint64_t budget = (uint64_t)temp_free_mem;
+    if (budget > arts_node_info.gpu_max_memory) {
+      budget = arts_node_info.gpu_max_memory;
     }
-    ARTS_DEBUG("to Start: %lu\n", arts_gpus[i].avail_global_mem);
+    /* Unpublished: the runtime threads start after this. */
+    atomic_store_explicit(&arts_gpus[i].avail_global_mem, budget,
+                          memory_order_relaxed);
+    pthread_mutex_init(&arts_gpus[i].device_lock, NULL);
+    pthread_mutex_init(&buff_lock[i], NULL);
+    ARTS_DEBUG("to Start: %lu\n", budget);
   }
 
   arts_fully_connect_gpus(arts_node_info.gpu_p2p, false);
@@ -232,18 +239,19 @@ void arts_init_per_gpu_wrapper(int argc, char **argv) {
 }
 
 void arts_worker_init_gpus() {
-  new_edt_lock = (unsigned int *)arts_calloc(1, sizeof(unsigned int));
+  new_edt_lock = (pthread_mutex_t *)arts_malloc(sizeof(pthread_mutex_t));
+  pthread_mutex_init(new_edt_lock, NULL);
   new_edts = arts_new_array_list(sizeof(void *), 32);
 }
 
 void arts_store_new_edts(void *edt) {
-  arts_lock(new_edt_lock);
+  pthread_mutex_lock(new_edt_lock);
   arts_push_to_array_list(new_edts, &edt);
-  arts_unlock(new_edt_lock);
+  pthread_mutex_unlock(new_edt_lock);
 }
 
 void arts_handle_new_edts() {
-  arts_lock(new_edt_lock);
+  pthread_mutex_lock(new_edt_lock);
   uint64_t size = arts_length_array_list(new_edts);
   if (size) {
     for (uint64_t i = 0; i < size; i++) {
@@ -257,7 +265,7 @@ void arts_handle_new_edts() {
     }
     arts_reset_array_list(new_edts);
   }
-  arts_unlock(new_edt_lock);
+  pthread_mutex_unlock(new_edt_lock);
 }
 
 void arts_cleanup_gpus() {
@@ -274,15 +282,21 @@ void arts_cleanup_gpus() {
     freed_size += arts_gpu_free_all((unsigned int)arts_gpus[i].device);
     CHECKCORRECT(cudaStreamSynchronize(arts_gpus[i].stream));
     CHECKCORRECT(cudaStreamDestroy(arts_gpus[i].stream));
+    pthread_mutex_destroy(&arts_gpus[i].device_lock);
+    pthread_mutex_destroy(&buff_lock[i]);
   }
   arts_cuda_restore_device();
   ARTS_INFO("Occupancy :\n");
   for (int i = 0; i < (int)arts_get_num_gpus(); ++i) {
     ARTS_INFO("\tGPU[%d] = %f\n", i, arts_gpus[i].occupancy);
   }
-  ARTS_INFO("HITS: %u MISSES: %u FREED BYTES: %u BYTES FREED ON EXIT %lu\n",
-            hits, misses, free_bytes, freed_size);
-  ARTS_INFO("HIT RATIO: %lf\n", (double)hits / (double)(hits + misses));
+  unsigned int n_hits = atomic_load_explicit(&hits, memory_order_relaxed);
+  unsigned int n_misses = atomic_load_explicit(&misses, memory_order_relaxed);
+  ARTS_INFO("HITS: %u MISSES: %u FREED BYTES: %lu BYTES FREED ON EXIT %lu\n",
+            n_hits, n_misses,
+            atomic_load_explicit(&free_bytes, memory_order_relaxed),
+            freed_size);
+  ARTS_INFO("HIT RATIO: %lf\n", (double)n_hits / (double)(n_hits + n_misses));
 }
 
 void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
@@ -292,8 +306,8 @@ void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
   arts_gpu_clean_up_t *gc = (arts_gpu_clean_up_t *)data;
 
   arts_gpu_t *arts_gpu = &arts_gpus[gc->gpu_id];
-  arts_atomic_sub(&arts_gpu->available_edt_slots, 1U);
-  arts_atomic_sub(&arts_gpu->running_edts, 1U);
+  atomic_fetch_sub_explicit(&arts_gpu->available_edt_slots, 1u,
+                            memory_order_acq_rel);
 
   // Shouldn't have to touch newly ready edts regardless of streams and devices
   arts_gpu_edt_t *edt = (arts_gpu_edt_t *)gc->edt;
@@ -301,11 +315,6 @@ void arts_wrap_up(cudaStream_t stream, cudaError_t status, void *data) {
   uint32_t depc = edt->wrapper_edt.depc;
   const uint64_t *paramv = (uint64_t *)(edt + 1);
   arts_edt_dep_t *depv = (arts_edt_dep_t *)(paramv + paramc);
-
-  unsigned int total_threads = (edt->grid.x * edt->block.x) +
-                               (edt->grid.y * edt->block.y) +
-                               (edt->grid.z * edt->block.z);
-  arts_atomic_sub(&arts_gpu->available_threads, total_threads);
 
   for (unsigned int i = 0; i < depc; i++) {
     if (depv[i].ptr) {
@@ -345,8 +354,6 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
   //    3. Copy data from device to host
   //    4. Call host callback_t function arts_gpu_host_wrap_up
 
-  static volatile unsigned int gpu_lock;
-
   void *dev_closure = NULL;
   void *host_closure = NULL;
 
@@ -365,7 +372,7 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
   uint64_t dev_closure_size =
       (sizeof(uint64_t) * (paramc + 1)) + (sizeof(arts_edt_dep_t) * depc);
   uint64_t host_closure_size = dev_closure_size + sizeof(arts_gpu_clean_up_t);
-  ARTS_DEBUG("dev_closure_size: %u host_closure_size: %u\n", dev_closure_size,
+  ARTS_DEBUG("dev_closure_size: %lu host_closure_size: %lu\n", dev_closure_size,
              host_closure_size);
 
   // Allocate Closure for GPU
@@ -403,7 +410,7 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
     // edt_guid, arts_gpu->device);
     arts_gpu_route_table_add_item(host_gc_ptr, dev_closure_size, edt_guid,
                                   arts_gpu->device);
-    ARTS_DEBUG("Added edt_guid: %lu size: %u to gpu: %d routing table\n",
+    ARTS_DEBUG("Added edt_guid: %lu size: %lu to gpu: %d routing table\n",
                edt_guid, host_closure_size, arts_gpu->device);
   }
 
@@ -438,8 +445,9 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
 
         if (successful_add) // We won, so allocate and move data
         {
-          ARTS_DEBUG("Adding %lu %u id: %d mode: %s\n", depv[i].guid,
-                     alloc_size, arts_gpu->device, GET_DB_MODE_NAME(depv[i].mode));
+          ARTS_DEBUG("Adding %lu %lu id: %d mode: %s\n", depv[i].guid,
+                     alloc_size, arts_gpu->device,
+                     GET_DB_MODE_NAME(depv[i].mode));
           data_ptr = arts_cuda_malloc(alloc_size);
           bool buffered = arts_node_info.gpu_buff_on && !gpu_edt->lib;
           if (depv[i].mode == DB_MODE_LC_NO_COPY ||
@@ -469,26 +477,29 @@ void arts_schedule_to_gpu_internal(arts_edt_t fn_ptr, uint32_t paramc,
           }
           // Must have already launched the memcpy before setting real_data or
           // races will ensue
-          wrapper->real_data = data_ptr;
+          atomic_store_explicit(&wrapper->real_data, data_ptr,
+                                memory_order_release);
           ARTS_DEBUG("Malloc[%d]: %p %p\n", arts_gpu->device, wrapper,
                      data_ptr);
-          arts_atomic_add(&misses, 1U);
+          atomic_fetch_add_explicit(&misses, 1u, memory_order_relaxed);
         } else // Someone beat us to creating the data... So we must free
         {
-          while (
-              !arts_atomic_fetch_add_u64((uint64_t *)&wrapper->real_data, 0)) {
-          } // Spin till the data memcpy is launched
-          data_ptr = (void *)wrapper->real_data;
+          // Spin till the data memcpy is launched
+          while (!(data_ptr = atomic_load_explicit(&wrapper->real_data,
+                                                   memory_order_acquire))) {
+          }
           if (db_subtype == ARTS_DB_GPU_PIN && depv[i].mode == DB_MODE_MEMSET) {
             push_data_to_stream(arts_gpu->device, data_ptr, NULL, size,
                                 arts_node_info.gpu_buff_on && !gpu_edt->lib);
           }
-          arts_atomic_add_u64(&arts_gpu->avail_global_mem, alloc_size);
-          arts_atomic_add(&hits, 1U);
+          atomic_fetch_add_explicit(&arts_gpu->avail_global_mem, alloc_size,
+                                    memory_order_acq_rel);
+          atomic_fetch_add_explicit(&hits, 1u, memory_order_relaxed);
         }
       } else {
-        arts_atomic_add_u64(&arts_gpu->avail_global_mem, alloc_size);
-        arts_atomic_add(&hits, 1U);
+        atomic_fetch_add_explicit(&arts_gpu->avail_global_mem, alloc_size,
+                                  memory_order_acq_rel);
+        atomic_fetch_add_explicit(&hits, 1u, memory_order_relaxed);
       }
       arts_shared_release(&db_hold);
       /* The device image is header + payload in one object, so the kernel's
@@ -574,9 +585,10 @@ void free_gpu_item(arts_route_item_t *item) {
     arts_shared_release(&h);
     return;
   }
+  void *real_data =
+      atomic_load_explicit(&wrapper->real_data, memory_order_relaxed);
   if (type == ARTS_GUID_EDT) {
-    arts_gpu_clean_up_t *host_gc_ptr =
-        (arts_gpu_clean_up_t *)wrapper->real_data;
+    arts_gpu_clean_up_t *host_gc_ptr = (arts_gpu_clean_up_t *)real_data;
     ARTS_DEBUG("FREEING DEV PTR: %p\n", host_gc_ptr->dev_closure);
     arts_cuda_free(host_gc_ptr->dev_closure);
     ARTS_DEBUG("FREEING HOST PTR: %p\n", host_gc_ptr);
@@ -599,32 +611,29 @@ void free_gpu_item(arts_route_item_t *item) {
       host.gpu_version = 0;
       host.gpu_time_stamp = 0;
       host.gpu = -1;
-      host.read_lock = &db->reader;
-      host.write_lock = &db->writer;
+      host.lock = db->gpu_lock;
 
-      // arts_cuda_mem_cpy_from_dev(temp_space, (void*) wrapper->real_data,
-      // size);
-      get_data_from_stream_now(arts_get_current_gpu(), temp_space,
-                               (void *)wrapper->real_data, size, false);
+      get_data_from_stream_now(arts_get_current_gpu(), temp_space, real_data,
+                               size, false);
 
       /* GPU LC device-side sync is not yet wired to the new route_item model;
        * the host descriptor is populated above but not consumed here. */
       (void)host;
 
       arts_free(temp_space);
-      arts_cuda_free((void *)wrapper->real_data);
+      arts_cuda_free(real_data);
 
     } else {
       // Non-LC DB (DEFAULT/GPU) or LC DB not found — just free GPU memory
-      arts_cuda_free((void *)wrapper->real_data);
+      arts_cuda_free(real_data);
     }
     if (db) {
       arts_shared_release(&db_h);
     }
   }
 
-  wrapper->real_data = NULL;
-  wrapper->time_stamp = 0;
+  atomic_store_explicit(&wrapper->real_data, NULL, memory_order_relaxed);
+  atomic_store_explicit(&wrapper->time_stamp, 0u, memory_order_relaxed);
   atomic_store_explicit(&item->key, (arts_guid_t)0, memory_order_relaxed);
   /* item->lock and item->touched fields removed in new route_item model. */
   arts_shared_release(&h);
@@ -689,7 +698,9 @@ void *arts_cuda_malloc(unsigned int size) {
   CHECKCORRECT(cudaMalloc(&ptr, size));
   if (!ptr) {
     ARTS_ERROR("CUDA device malloc failed (%lu avail)",
-               arts_gpus[arts_current_device_id].avail_global_mem);
+               atomic_load_explicit(
+                   &arts_gpus[arts_current_device_id].avail_global_mem,
+                   memory_order_relaxed));
   }
   return ptr;
 }
@@ -809,11 +820,10 @@ void arts_run_gpu(void *edt_packet, arts_gpu_t *arts_gpu) {
     uint64_t free_mem_size = arts_gpu_clean_up_route_table(
         (unsigned int)-1, arts_node_info.delete_zeros_gpu_gc,
         (unsigned int)arts_gpu->device);
-    arts_atomic_add_u64(&arts_gpu->avail_global_mem, free_mem_size);
-    arts_atomic_add_u64(&free_bytes, free_mem_size);
+    atomic_fetch_add_explicit(&arts_gpu->avail_global_mem, free_mem_size,
+                              memory_order_acq_rel);
+    atomic_fetch_add_explicit(&free_bytes, free_mem_size, memory_order_relaxed);
   }
-
-  arts_atomic_add(&arts_gpu->running_edts, 1U);
 
   prep_dbs(&edt->wrapper_edt, true);
   arts_schedule_to_gpu(func, paramc, paramv, depc, depv, edt_packet, arts_gpu);
@@ -914,14 +924,15 @@ bool arts_gpu_scheduler_loop() {
   if (arts_node_info.run_gpu_gc_idle && !ran_gpu_edt && !ran_cpu_edt) {
     long unsigned int gpu_id = arts_thread_safe_random() % arts_node_info.gpu;
     arts_gpu = &arts_gpus[gpu_id];
-    ARTS_DEBUG("Running Idle GPU GC: %u\n", gpu_id);
+    ARTS_DEBUG("Running Idle GPU GC: %lu\n", gpu_id);
     arts_cuda_set_device(arts_gpu->device, true);
 
     uint64_t free_mem_size = arts_gpu_clean_up_route_table(
         (unsigned int)-1, arts_node_info.delete_zeros_gpu_gc,
         (unsigned int)arts_gpu->device);
-    arts_atomic_add_u64(&arts_gpu->avail_global_mem, free_mem_size);
-    arts_atomic_add_u64(&free_bytes, free_mem_size);
+    atomic_fetch_add_explicit(&arts_gpu->avail_global_mem, free_mem_size,
+                              memory_order_acq_rel);
+    atomic_fetch_add_explicit(&free_bytes, free_mem_size, memory_order_relaxed);
 
     arts_cuda_restore_device();
   }
@@ -970,14 +981,16 @@ bool arts_gpu_scheduler_backoff_loop() {
     if (arts_node_info.run_gpu_gc_idle && gc_counter % backoff == 0) {
       long unsigned int gpu_id = arts_thread_safe_random() % arts_node_info.gpu;
       arts_gpu = &arts_gpus[gpu_id];
-      ARTS_DEBUG("Running Idle GPU GC: %u\n", gpu_id);
+      ARTS_DEBUG("Running Idle GPU GC: %lu\n", gpu_id);
       arts_cuda_set_device(arts_gpu->device, true);
 
       uint64_t free_mem_size = arts_gpu_clean_up_route_table(
           (unsigned int)-1, arts_node_info.delete_zeros_gpu_gc,
           (unsigned int)arts_gpu->device);
-      arts_atomic_add_u64(&arts_gpu->avail_global_mem, free_mem_size);
-      arts_atomic_add_u64(&free_bytes, free_mem_size);
+      atomic_fetch_add_explicit(&arts_gpu->avail_global_mem, free_mem_size,
+                                memory_order_acq_rel);
+      atomic_fetch_add_explicit(&free_bytes, free_mem_size,
+                                memory_order_relaxed);
 
       arts_cuda_restore_device();
 
@@ -987,7 +1000,7 @@ bool arts_gpu_scheduler_backoff_loop() {
       if (!backoff) {
         backoff = 1;
       }
-      ARTS_DEBUG("Backoff: %u\n", backoff);
+      ARTS_DEBUG("Backoff: %lu\n", backoff);
     }
     gc_counter++;
   }
@@ -1030,14 +1043,16 @@ bool arts_gpu_scheduler_demand_loop() {
       run_gc_flag = 0;
 
       arts_gpu = &arts_gpus[gpu_id];
-      ARTS_DEBUG("Running Idle GPU GC: %u\n", gpu_id);
+      ARTS_DEBUG("Running Idle GPU GC: %lu\n", gpu_id);
       arts_cuda_set_device(arts_gpu->device, true);
 
       uint64_t free_mem_size = arts_gpu_clean_up_route_table(
           (unsigned int)-1, arts_node_info.delete_zeros_gpu_gc,
           (unsigned int)arts_gpu->device);
-      arts_atomic_add_u64(&arts_gpu->avail_global_mem, free_mem_size);
-      arts_atomic_add_u64(&free_bytes, free_mem_size);
+      atomic_fetch_add_explicit(&arts_gpu->avail_global_mem, free_mem_size,
+                                memory_order_acq_rel);
+      atomic_fetch_add_explicit(&free_bytes, free_mem_size,
+                                memory_order_relaxed);
 
       arts_cuda_restore_device();
     }
@@ -1114,8 +1129,7 @@ void internal_lc_sync_gpu(arts_guid_t acq_guid, struct arts_db_s *db) {
     host.gpu_version = 0;
     host.gpu_time_stamp = 0;
     host.gpu = -1;
-    host.read_lock = &db->reader;
-    host.write_lock = &db->writer;
+    host.lock = db->gpu_lock;
 
     arts_cuda_set_device(-1, true);
 
@@ -1155,8 +1169,7 @@ void internal_lc_sync_gpu(arts_guid_t acq_guid, struct arts_db_s *db) {
           dev.gpu_version = gpu_version;
           dev.gpu_time_stamp = time_stamp;
           dev.gpu = (int)i;
-          dev.read_lock = NULL;
-          dev.write_lock = NULL;
+          dev.lock = NULL;
           if (copy_only) {
             lc_sync_function[0](&host, &dev);
           } else {
@@ -1178,21 +1191,34 @@ void internal_lc_sync_gpu(arts_guid_t acq_guid, struct arts_db_s *db) {
 /* ======================================================================== */
 
 #define CHECKSTREAM 4096
-#define MAXSTREAM 32
 #define MAXBUFFER 128
 
-volatile unsigned int stream_check_count[MAXSTREAM] = {0};
+/* Per-device visits of the unlocked flush check, which throttle it. */
+_Atomic(unsigned int) stream_check_count[MAXSTREAM];
 
-volatile unsigned int buff_lock[MAXSTREAM] = {0};
-unsigned int host_to_dev_count[MAXSTREAM] = {0};
-unsigned int kernel_to_dev_count[MAXSTREAM] = {0};
-unsigned int dev_to_host_count[MAXSTREAM] = {0};
-unsigned int wrap_up_count[MAXSTREAM] = {0};
+/* buff_lock[gpu] guards the device's four buffers and their counts.  A count
+ * is written only under it, and read without it only as a hint that the
+ * flush re-reads under the lock, so every access to a count is relaxed. */
+pthread_mutex_t buff_lock[MAXSTREAM];
+_Atomic(unsigned int) host_to_dev_count[MAXSTREAM];
+_Atomic(unsigned int) kernel_to_dev_count[MAXSTREAM];
+_Atomic(unsigned int) dev_to_host_count[MAXSTREAM];
+_Atomic(unsigned int) wrap_up_count[MAXSTREAM];
 
 arts_buffer_mem_move_t host_to_dev_buff[MAXSTREAM][MAXBUFFER];
 arts_buffer_kernel_t kernel_to_dev_buff[MAXSTREAM][MAXBUFFER];
 arts_buffer_mem_move_t dev_to_host_buff[MAXSTREAM][MAXBUFFER];
 void *wrap_up_buff[MAXSTREAM][MAXBUFFER];
+
+static bool gpu_buffered(unsigned int gpu_id) {
+  return atomic_load_explicit(&host_to_dev_count[gpu_id],
+                              memory_order_relaxed) ||
+         atomic_load_explicit(&kernel_to_dev_count[gpu_id],
+                              memory_order_relaxed) ||
+         atomic_load_explicit(&dev_to_host_count[gpu_id],
+                              memory_order_relaxed) ||
+         atomic_load_explicit(&wrap_up_count[gpu_id], memory_order_relaxed);
+}
 
 static void check_occupancy(arts_edt_t fn_ptr, unsigned int gpu_id,
                             dim3 block) {
@@ -1207,28 +1233,31 @@ static void check_occupancy(arts_edt_t fn_ptr, unsigned int gpu_id,
       ((float)prop.maxThreadsPerMultiProcessor / (float)prop.warpSize);
 
   // Cumulative (running) average of occupancy
-  arts_lock(&arts_gpus[gpu_id].device_lock);
+  pthread_mutex_lock(&arts_gpus[gpu_id].device_lock);
+  unsigned int n = arts_gpus[gpu_id].total_edts + 1u;
   arts_gpus[gpu_id].occupancy =
-      (occupancy + ((float)(arts_gpus[gpu_id].total_edts - 1) *
-                    arts_gpus[gpu_id].occupancy)) /
-      (float)(++arts_gpus[gpu_id].total_edts);
-  arts_unlock(&arts_gpus[gpu_id].device_lock);
+      (occupancy + ((float)(n - 1u) * arts_gpus[gpu_id].occupancy)) / (float)n;
+  arts_gpus[gpu_id].total_edts = n;
+  pthread_mutex_unlock(&arts_gpus[gpu_id].device_lock);
 }
 
 static bool push_data_to_stream(unsigned int gpu_id, void *dst, void *src,
                                 size_t count, bool buff) {
   if (buff) {
-    arts_lock(&buff_lock[gpu_id]);
-    host_to_dev_buff[gpu_id][host_to_dev_count[gpu_id]].dst = dst;
-    host_to_dev_buff[gpu_id][host_to_dev_count[gpu_id]].src = src;
-    host_to_dev_buff[gpu_id][host_to_dev_count[gpu_id]].count = count;
-    host_to_dev_count[gpu_id]++;
+    pthread_mutex_lock(&buff_lock[gpu_id]);
+    unsigned int n =
+        atomic_load_explicit(&host_to_dev_count[gpu_id], memory_order_relaxed);
+    host_to_dev_buff[gpu_id][n].dst = dst;
+    host_to_dev_buff[gpu_id][n].src = src;
+    host_to_dev_buff[gpu_id][n].count = count;
+    atomic_store_explicit(&host_to_dev_count[gpu_id], n + 1u,
+                          memory_order_relaxed);
 
     bool ret = false;
-    if (host_to_dev_count[gpu_id] == MAXBUFFER) {
+    if (n + 1u == MAXBUFFER) {
       ret = flush_stream(gpu_id);
     }
-    arts_unlock(&buff_lock[gpu_id]);
+    pthread_mutex_unlock(&buff_lock[gpu_id]);
     return ret;
   }
 
@@ -1244,17 +1273,20 @@ static bool push_data_to_stream(unsigned int gpu_id, void *dst, void *src,
 static bool get_data_from_stream(unsigned int gpu_id, void *dst, void *src,
                                  size_t count, bool buff) {
   if (buff) {
-    arts_lock(&buff_lock[gpu_id]);
-    dev_to_host_buff[gpu_id][dev_to_host_count[gpu_id]].dst = dst;
-    dev_to_host_buff[gpu_id][dev_to_host_count[gpu_id]].src = src;
-    dev_to_host_buff[gpu_id][dev_to_host_count[gpu_id]].count = count;
-    dev_to_host_count[gpu_id]++;
+    pthread_mutex_lock(&buff_lock[gpu_id]);
+    unsigned int n =
+        atomic_load_explicit(&dev_to_host_count[gpu_id], memory_order_relaxed);
+    dev_to_host_buff[gpu_id][n].dst = dst;
+    dev_to_host_buff[gpu_id][n].src = src;
+    dev_to_host_buff[gpu_id][n].count = count;
+    atomic_store_explicit(&dev_to_host_count[gpu_id], n + 1u,
+                          memory_order_relaxed);
 
     bool ret = false;
-    if (dev_to_host_count[gpu_id] == MAXBUFFER) {
+    if (n + 1u == MAXBUFFER) {
       ret = flush_stream(gpu_id);
     }
-    arts_unlock(&buff_lock[gpu_id]);
+    pthread_mutex_unlock(&buff_lock[gpu_id]);
     return ret;
   }
   CHECKCORRECT(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToHost,
@@ -1267,25 +1299,29 @@ static bool push_kernel_to_stream(unsigned int gpu_id, uint32_t paramc,
                                   arts_edt_dep_t *depv, arts_edt_t fn_ptr,
                                   dim3 grid, dim3 block, bool buff) {
   if (buff) {
-    arts_lock(&buff_lock[gpu_id]);
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].paramc = paramc;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].paramv = paramv;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].depc = depc;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].depv = depv;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].fn_ptr = fn_ptr;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].grid[0] = grid.x;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].grid[1] = grid.y;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].grid[2] = grid.z;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].block[0] = block.x;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].block[1] = block.y;
-    kernel_to_dev_buff[gpu_id][kernel_to_dev_count[gpu_id]].block[2] = block.z;
-    kernel_to_dev_count[gpu_id]++;
+    pthread_mutex_lock(&buff_lock[gpu_id]);
+    unsigned int n = atomic_load_explicit(&kernel_to_dev_count[gpu_id],
+                                          memory_order_relaxed);
+    arts_buffer_kernel_t *k = &kernel_to_dev_buff[gpu_id][n];
+    k->paramc = paramc;
+    k->paramv = paramv;
+    k->depc = depc;
+    k->depv = depv;
+    k->fn_ptr = fn_ptr;
+    k->grid[0] = grid.x;
+    k->grid[1] = grid.y;
+    k->grid[2] = grid.z;
+    k->block[0] = block.x;
+    k->block[1] = block.y;
+    k->block[2] = block.z;
+    atomic_store_explicit(&kernel_to_dev_count[gpu_id], n + 1u,
+                          memory_order_relaxed);
 
     bool ret = false;
-    if (kernel_to_dev_count[gpu_id] == MAXBUFFER) {
+    if (n + 1u == MAXBUFFER) {
       ret = flush_stream(gpu_id);
     }
-    arts_unlock(&buff_lock[gpu_id]);
+    pthread_mutex_unlock(&buff_lock[gpu_id]);
     return ret;
   }
 
@@ -1300,15 +1336,17 @@ static bool push_kernel_to_stream(unsigned int gpu_id, uint32_t paramc,
 static bool push_wrap_up_to_stream(unsigned int gpu_id, void *host_closure,
                                    bool buff) {
   if (buff) {
-    arts_lock(&buff_lock[gpu_id]);
-    wrap_up_buff[gpu_id][wrap_up_count[gpu_id]] = host_closure;
-    wrap_up_count[gpu_id]++;
+    pthread_mutex_lock(&buff_lock[gpu_id]);
+    unsigned int n =
+        atomic_load_explicit(&wrap_up_count[gpu_id], memory_order_relaxed);
+    wrap_up_buff[gpu_id][n] = host_closure;
+    atomic_store_explicit(&wrap_up_count[gpu_id], n + 1u, memory_order_relaxed);
 
     bool ret = false;
-    if (wrap_up_count[gpu_id] == MAXBUFFER) {
+    if (n + 1u == MAXBUFFER) {
       ret = flush_stream(gpu_id);
     }
-    arts_unlock(&buff_lock[gpu_id]);
+    pthread_mutex_unlock(&buff_lock[gpu_id]);
     return ret;
   }
 
@@ -1322,10 +1360,10 @@ static bool push_wrap_up_to_stream(unsigned int gpu_id, void *host_closure,
   return true;
 }
 
-static bool flush_mem_stream(unsigned int gpu_id, unsigned int *count,
+static bool flush_mem_stream(unsigned int gpu_id, _Atomic(unsigned int) *count,
                              arts_buffer_mem_move_t *buff,
                              enum cudaMemcpyKind kind) {
-  unsigned int max = *count;
+  unsigned int max = atomic_load_explicit(count, memory_order_relaxed);
   if (max > 0) {
     uint64_t data_size = 0;
     for (unsigned int i = 0; i < max; i++) {
@@ -1340,16 +1378,18 @@ static bool flush_mem_stream(unsigned int gpu_id, unsigned int *count,
                                      arts_gpus[gpu_id].stream));
       }
     }
-    *count = 0;
+    atomic_store_explicit(count, 0u, memory_order_relaxed);
     return true;
   }
   return false;
 }
 
 static bool flush_kernel_stream(unsigned int gpu_id) {
-  bool ret = (kernel_to_dev_count[gpu_id] > 0);
+  unsigned int n =
+      atomic_load_explicit(&kernel_to_dev_count[gpu_id], memory_order_relaxed);
+  bool ret = (n > 0);
   if (ret) {
-    for (unsigned int i = 0; i < kernel_to_dev_count[gpu_id]; i++) {
+    for (unsigned int i = 0; i < n; i++) {
       void *kernel_args[] = {&kernel_to_dev_buff[gpu_id][i].paramc,
                              &kernel_to_dev_buff[gpu_id][i].paramv,
                              &kernel_to_dev_buff[gpu_id][i].depc,
@@ -1365,14 +1405,17 @@ static bool flush_kernel_stream(unsigned int gpu_id) {
           (void **)kernel_args, (size_t)0, arts_gpus[gpu_id].stream));
       check_occupancy(kernel_to_dev_buff[gpu_id][i].fn_ptr, gpu_id, block);
     }
-    kernel_to_dev_count[gpu_id] = 0;
+    atomic_store_explicit(&kernel_to_dev_count[gpu_id], 0u,
+                          memory_order_relaxed);
   }
   return ret;
 }
 
 static bool flush_wrap_up_stream(unsigned int gpu_id) {
-  bool ret = (wrap_up_count[gpu_id] > 0);
-  for (unsigned int i = 0; i < wrap_up_count[gpu_id]; i++) {
+  unsigned int n =
+      atomic_load_explicit(&wrap_up_count[gpu_id], memory_order_relaxed);
+  bool ret = (n > 0);
+  for (unsigned int i = 0; i < n; i++) {
 #if CUDART_VERSION >= 10000
     CHECKCORRECT(cudaLaunchHostFunc(arts_gpus[gpu_id].stream,
                                     arts_wrap_up_host_func,
@@ -1382,16 +1425,12 @@ static bool flush_wrap_up_stream(unsigned int gpu_id) {
                                        wrap_up_buff[gpu_id][i], 0));
 #endif
   }
-  wrap_up_count[gpu_id] = 0;
+  atomic_store_explicit(&wrap_up_count[gpu_id], 0u, memory_order_relaxed);
   return ret;
 }
 
 static bool flush_stream(unsigned int gpu_id) {
-  ARTS_DEBUG("%u %u %u %u\n", host_to_dev_count[gpu_id],
-             kernel_to_dev_count[gpu_id], dev_to_host_count[gpu_id],
-             wrap_up_count[gpu_id]);
-  if (host_to_dev_count[gpu_id] || kernel_to_dev_count[gpu_id] ||
-      dev_to_host_count[gpu_id] || wrap_up_count[gpu_id]) {
+  if (gpu_buffered(gpu_id)) {
     arts_cuda_set_device((int)gpu_id, true);
 
     flush_mem_stream(gpu_id, &host_to_dev_count[gpu_id],
@@ -1407,40 +1446,16 @@ static bool flush_stream(unsigned int gpu_id) {
   return false;
 }
 
-static void copy_gputo_gpu(void *dst, unsigned int dst_gpu_id, void *src,
-                           unsigned int src_gpu_id, unsigned int size) {
-  // We need to lock in a fixed order, so smallest first
-  unsigned int first = (dst_gpu_id < src_gpu_id) ? dst_gpu_id : src_gpu_id;
-  unsigned int second = (dst_gpu_id == first) ? src_gpu_id : dst_gpu_id;
-  arts_lock(&buff_lock[first]);
-  arts_lock(&buff_lock[second]);
-
-  // Flush the streams to make sure everything is done
-  flush_stream(dst_gpu_id);
-  flush_stream(src_gpu_id);
-  CHECKCORRECT(cudaStreamSynchronize(arts_gpus[src_gpu_id].stream));
-
-  // Next lets move the data
-  CHECKCORRECT(cudaMemcpyPeerAsync(dst, dst_gpu_id, src, src_gpu_id, size,
-                                   arts_gpus[dst_gpu_id].stream));
-
-  arts_cuda_restore_device();
-
-  // Unlock in the correct order
-  arts_unlock(&buff_lock[second]);
-  arts_unlock(&buff_lock[first]);
-}
-
 void reduce_datafrom_gpus(void *dst, unsigned int dst_gpu_id, void *src,
                           unsigned int src_gpu_id, unsigned int size,
                           arts_lc_sync_function_gpu_t fn_ptr,
                           unsigned int element_size, void *db_data) {
-  ARTS_DEBUG("ELEMENT SIZE: %lu\n", element_size);
+  ARTS_DEBUG("ELEMENT SIZE: %u\n", element_size);
   // We need to lock in a fixed order, so smallest first
   unsigned int first = (dst_gpu_id < src_gpu_id) ? dst_gpu_id : src_gpu_id;
   unsigned int second = (dst_gpu_id == first) ? src_gpu_id : dst_gpu_id;
-  arts_lock(&buff_lock[first]);
-  arts_lock(&buff_lock[second]);
+  pthread_mutex_lock(&buff_lock[first]);
+  pthread_mutex_lock(&buff_lock[second]);
 
   // Flush the streams to make sure everything is done
   flush_stream(dst_gpu_id);
@@ -1485,18 +1500,18 @@ void reduce_datafrom_gpus(void *dst, unsigned int dst_gpu_id, void *src,
   arts_cuda_restore_device();
 
   // Unlock in the correct order
-  arts_unlock(&buff_lock[second]);
-  arts_unlock(&buff_lock[first]);
+  pthread_mutex_unlock(&buff_lock[second]);
+  pthread_mutex_unlock(&buff_lock[first]);
 }
 
 static void get_data_from_stream_now(unsigned int gpu_id, void *dst, void *src,
                                      size_t count, bool buff) {
   if (buff) {
-    arts_lock(&buff_lock[gpu_id]);
+    pthread_mutex_lock(&buff_lock[gpu_id]);
     flush_stream(gpu_id);
-    arts_unlock(&buff_lock[gpu_id]);
+    pthread_mutex_unlock(&buff_lock[gpu_id]);
   }
-  ARTS_DEBUG("GETTING[%u]: %p %p size: %u\n", gpu_id, dst, src, count);
+  ARTS_DEBUG("GETTING[%u]: %p %p size: %zu\n", gpu_id, dst, src, count);
   CHECKCORRECT(cudaMemcpyAsync(dst, src, count, cudaMemcpyDeviceToHost,
                                arts_gpus[gpu_id].stream));
   CHECKCORRECT(cudaStreamSynchronize(arts_gpus[gpu_id].stream));
@@ -1506,13 +1521,15 @@ static bool check_streams(bool buff_on) {
   if (buff_on) {
     bool ret = false;
     for (unsigned int i = 0; i < arts_node_info.gpu; i++) {
-      if (host_to_dev_count[i] || kernel_to_dev_count[i] ||
-          dev_to_host_count[i] || wrap_up_count[i]) {
-        arts_atomic_fetch_add(&stream_check_count[i], 1U);
-        if (stream_check_count[i] % CHECKSTREAM == 0) {
-          arts_lock(&buff_lock[i]);
+      if (gpu_buffered(i)) {
+        unsigned int visits =
+            atomic_fetch_add_explicit(&stream_check_count[i], 1u,
+                                      memory_order_relaxed) +
+            1u;
+        if (visits % CHECKSTREAM == 0) {
+          pthread_mutex_lock(&buff_lock[i]);
           ret |= flush_stream(i);
-          arts_unlock(&buff_lock[i]);
+          pthread_mutex_unlock(&buff_lock[i]);
         }
       }
     }

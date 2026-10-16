@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_MEMORY_COHERENCE_TYPES_H
-#define ARTS_MEMORY_COHERENCE_TYPES_H
+#ifndef ARTS_COHERENCE_TYPES_H
+#define ARTS_COHERENCE_TYPES_H
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -149,4 +149,4 @@ static inline uint64_t arts_db_cache_stub_size(void) {
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_TYPES_H */
+#endif /* ARTS_COHERENCE_TYPES_H */

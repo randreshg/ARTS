@@ -66,13 +66,13 @@ static void rw_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic uint64_t *cell = (_Atomic uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *cell = (_Atomic(uint64_t) *)depv[0].ptr;
   if (cell != NULL) {
     atomic_fetch_add_explicit(cell, 1u, memory_order_acq_rel);
   }
   uint64_t *state = (uint64_t *)depv[1].ptr;
   if (state != NULL) {
-    atomic_fetch_add_explicit((_Atomic uint64_t *)&state[STATE_RWWRITES], 1u,
+    atomic_fetch_add_explicit((_Atomic(uint64_t) *)&state[STATE_RWWRITES], 1u,
                               memory_order_acq_rel);
   }
 }
@@ -87,7 +87,7 @@ static void ro_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   const void *cell = depv[0].ptr;
   uint64_t *state = (uint64_t *)depv[1].ptr;
   if (cell != NULL && state != NULL) {
-    atomic_fetch_add_explicit((_Atomic uint64_t *)&state[STATE_ROSEEN], 1u,
+    atomic_fetch_add_explicit((_Atomic(uint64_t) *)&state[STATE_ROSEEN], 1u,
                               memory_order_acq_rel);
   }
 }
@@ -100,8 +100,8 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   uint64_t *state = (uint64_t *)depv[1].ptr;
   uint64_t rww = atomic_load_explicit(
-      (_Atomic uint64_t *)&state[STATE_RWWRITES], memory_order_acquire);
-  uint64_t ros = atomic_load_explicit((_Atomic uint64_t *)&state[STATE_ROSEEN],
+      (_Atomic(uint64_t) *)&state[STATE_RWWRITES], memory_order_acquire);
+  uint64_t ros = atomic_load_explicit((_Atomic(uint64_t) *)&state[STATE_ROSEEN],
                                       memory_order_acquire);
   if (rww != (uint64_t)(M_ITERS * N_RW)) {
     (void)fprintf(stderr, "FAIL: RW writes=%llu (want %d) — RW REQUEST lost\n",
@@ -157,7 +157,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       (void)fprintf(stderr, "FAIL [iter=%d]: db create NULL_GUID\n", it);
       arts_abort(1);
     }
-    *(uint64_t *)dbp = 0u;
+    atomic_init((_Atomic(uint64_t) *)dbp, 0u);
     arts_db_release(db, DB_MODE_RW);
 
     /* Interleave RW and RO issuance so that, on the same rank, an RO REQUEST is

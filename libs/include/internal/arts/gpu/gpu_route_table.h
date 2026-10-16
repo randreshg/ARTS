@@ -42,18 +42,29 @@
 extern "C" {
 #endif
 
+#include <pthread.h>
+
 #include "arts/gas/route_table.h"
+#include "arts/utils/stdatomic_compat.h"
 
 typedef struct {
+  /* Written by the slot's installer before real_data is published; read
+   * only at teardown. */
   uint64_t size;
-  volatile unsigned int time_stamp;
-  volatile void *real_data;
+  /* Logical clock of the slot's last touch: the maximum of the tickets its
+   * users drew.  It carries only its own value. */
+  _Atomic(unsigned int) time_stamp;
+  /* The mirrored item, written once per slot lifetime by its installer with
+   * a release store after everything a user must see is submitted (for a
+   * staged block, its host-to-device copy, enqueued on the device's stream or
+   * placed in its submission buffer); every user loads it with acquire. */
+  _Atomic(void *) real_data;
 } arts_item_wrapper_t;
 
 typedef struct {
   arts_route_table_t routingTable;
   arts_item_wrapper_t *wrappers;
-  volatile unsigned int gcLock;
+  pthread_mutex_t gc_lock; /* one GC sweep of this table at a time */
 } arts_gpu_route_table_t;
 
 arts_route_table_t *arts_gpu_new_route_table(unsigned int route_table_size,

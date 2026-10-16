@@ -244,25 +244,32 @@ typedef struct regpool_slab_s {
                            * two together are the three placements a mapping
                            * can have (a node, a set, or the kernel's
                            * choice)                                        */
-  bool is_direct;         /* true = oversize single-allocation direct slab.
-                           * Never changes across a slot's generations: an
-                           * arena slab is never retired, and a free slot is
-                           * only ever rewritten as a direct one — which is
-                           * what lets the arena sweep read it after the
-                           * state check alone                              */
+  /* is_direct, arena and owner are written once, when the entry is
+   * appended, and never again: an arena slab is never retired, and a free
+   * slot is only ever rewritten as a direct one.  That is what lets the arena
+   * sweep read them after the state check alone. */
+  bool is_direct;         /* true = oversize single-allocation direct slab   */
   mi_arena_id_t arena;    /* backing arena (arena slabs only; NULL if direct) */
   int owner;              /* node whose grow made this arena slab — its
                            * placement, or the node it was made for when the
                            * kernel placed it; -1 for a direct slab        */
   size_t align;           /* alignment the mapping was created with           */
-  _Atomic uint8_t state;  /* REGPOOL_SLOT_*; every transition is a
-                           * release-store under g_lock, and only a FREE
-                           * slot's fields are ever rewritten                */
-  _Atomic uint32_t gen;   /* generation of this entry's fields, odd while a
-                           * rewrite is in flux.  Bumped ONLY by the
-                           * FREE -> LIVE rewrite: it is what lets a reader
-                           * tell that the range it read belongs to the
-                           * generation whose state it observed             */
+  /* REGPOOL_SLOT_*.  Every transition is a release store under g_lock; the
+   * store of LIVE publishes the entry's fields, which a lock-free reader
+   * acquires.  Only a FREE slot's fields are ever rewritten. */
+  _Atomic(uint8_t) state;
+  /* Sequence word over the range mirrors below, odd while a rewrite is in
+   * flux; bumped ONLY by a rewrite, under g_lock.  Stored even with release
+   * once the rewrite is done, and acquired by a lock-free reader, which
+   * re-reads it after the mirrors: a change means the range it read may be
+   * torn. */
+  _Atomic(uint32_t) gen;
+  /* mr.base and mr.len as the lock-free range check reads them.  Stored with
+   * release after the odd generation, so a reader that loads one from a later
+   * rewrite (acquire) also sees that rewrite's generation bump when it
+   * re-reads `gen`. */
+  _Atomic(uintptr_t) range_base;
+  _Atomic(size_t) range_len;
 } regpool_slab_t;
 
 /* --- module state (guarded by g_lock except where marked atomic) --------- */
@@ -312,15 +319,18 @@ static uint64_t g_req_node_set;
 static unsigned g_req_node_count;
 
 static regpool_slab_t g_slabs[REGPOOL_MAX_SLABS];
-static atomic_size_t g_slab_count; /* release on append, acquire on read */
+/* Published length of g_slabs.  An append, under g_lock, stores it with
+ * release after writing the entry; a lock-free lookup or sweep acquires it
+ * before reading the entries below it. */
+static _Atomic(size_t) g_slab_count;
 
 /* Monotonic memory-registration key source.  When the provider does NOT
  * negotiate FI_MR_PROV_KEY the application must supply a UNIQUE requested_key
  * per fi_mr_reg — registering a second slab with a duplicate key (e.g. 0)
  * fails with FI_ENOKEY.  A unique key is also harmless when the provider DOES
  * assign keys itself (it then ignores requested_key), so a monotone counter is
- * correct for either negotiation. */
-static atomic_uint_least64_t g_mr_key_next;
+ * correct for either negotiation.  A ticket: only its own value. */
+static _Atomic(uint_least64_t) g_mr_key_next;
 
 /* Current arena a node's allocations draw from.  A grow publishes a fresh
  * arena here; per-thread heaps notice the change and re-bind.  A node that
@@ -328,7 +338,9 @@ static atomic_uint_least64_t g_mr_key_next;
  * its threads stay on the fast path until that arena fails them; the node's
  * own arenas take it back as soon as one serves it again.  Every value ever
  * stored names a live exclusive arena of this pool: arenas are never
- * unloaded. */
+ * unloaded.  A grow's release store publishes the arena it built, and a
+ * reader that binds a heap to it acquires; a fallback CAS re-publishes, with
+ * release, an arena its caller acquired. */
 static _Atomic(mi_arena_id_t) g_node_arena[REGPOOL_MAX_NODES];
 
 /* Per-node grow count, for the report (guarded by g_lock). */
@@ -356,18 +368,22 @@ static uint64_t regpool_now_ns(void) {
 static size_t g_node_last_slab[REGPOOL_MAX_NODES];
 
 /* Times a node's allocations were moved onto another node's arena because
- * the node could not grow.  Diagnostic only, for the report. */
-static _Atomic unsigned g_node_spills[REGPOOL_MAX_NODES];
+ * the node could not grow.  Diagnostic only, for the report: only its own
+ * value. */
+static _Atomic(unsigned) g_node_spills[REGPOOL_MAX_NODES];
 
 /* Whether a node's memory has been carved yet.  A node is carved when a
  * thread on it first allocates (or another node's demand grows it), so an
  * UNTRIED node is memory that exists and has simply not been asked for; a
  * node the pool tried and could not carve is REFUSED, and its threads are
- * served from memory elsewhere until a later grow succeeds. */
+ * served from memory elsewhere until a later grow succeeds.  Written under
+ * g_lock; a lock-free reader only decides whether to try a carve, which the
+ * grow decides again under the lock, and the arena itself rides
+ * g_node_arena: only its own value. */
 #define REGPOOL_NODE_UNTRIED 0u
 #define REGPOOL_NODE_CARVED 1u
 #define REGPOOL_NODE_REFUSED 2u
-static _Atomic uint8_t g_node_state[REGPOOL_MAX_NODES];
+static _Atomic(uint8_t) g_node_state[REGPOOL_MAX_NODES];
 
 /* A grow in flight for this node (guarded by g_lock).  One at a time per
  * node: the mapping runs outside the lock, so the flag plus g_grow_cv is
@@ -404,8 +420,9 @@ static uint8_t g_node_full_warned[REGPOOL_MAX_NODES];
  * so the refusal, fallover and eviction paths are exercisable
  * deterministically without starving a machine.  Written under g_lock (by
  * the init-time parse of ARTS_REGPOOL_FORCE_FULL_NODES and by
- * arts_regpool_set_forced_full), read relaxed by the placement screens. */
-static _Atomic uint64_t g_forced_full;
+ * arts_regpool_set_forced_full), read relaxed by the placement screens: only
+ * its own value. */
+static _Atomic(uint64_t) g_forced_full;
 
 /* Publish a force-full mask.  Caller holds g_lock. */
 static void regpool_store_forced_full_locked(uint64_t mask) {
@@ -418,8 +435,9 @@ static bool g_report_enabled;
 
 /* Kernels predating the populate advice report EINVAL; there a slab is
  * populated by a write per page instead, for the process lifetime.  Latched
- * on first sight, by mapping code that runs outside g_lock. */
-static _Atomic bool g_populate_unsupported;
+ * on first sight, by mapping code that runs outside g_lock; the CAS winner
+ * warns.  Only its own value. */
+static _Atomic(bool) g_populate_unsupported;
 
 /* Set once the allocator's arena table refuses a slab.  The table never
  * gives a slot back and a slab the pool hands it can be refused for no other
@@ -784,9 +802,9 @@ static bool regpool_slot_live_range(const regpool_slab_t *s,
     if (atomic_load_explicit(&s->state, memory_order_acquire) !=
         REGPOOL_SLOT_LIVE)
       return false;
-    const char *base = (const char *)s->mr.base;
-    size_t len = s->mr.len;
-    atomic_thread_fence(memory_order_acquire);
+    const char *base = (const char *)atomic_load_explicit(
+        &s->range_base, memory_order_acquire);
+    size_t len = atomic_load_explicit(&s->range_len, memory_order_acquire);
     if (atomic_load_explicit(&s->gen, memory_order_relaxed) != g1)
       continue; /* rewritten under us: the pair above may be torn */
     *out_base = base;
@@ -795,27 +813,24 @@ static bool regpool_slot_live_range(const regpool_slab_t *s,
   }
 }
 
-/* Write an entry's fields and publish it live.  Caller holds g_lock and the
- * slot must be unreachable to readers — either past the published count, or
- * REGPOOL_SLOT_FREE.  The generation bump around the fields is what a
- * lock-free reader validates its range against. */
+/* Write an entry's per-mapping fields and publish it live.  Caller holds
+ * g_lock and the slot must be unreachable to readers — either past the
+ * published count, or REGPOOL_SLOT_FREE.  The generation bump around the
+ * range is what a lock-free reader validates it against. */
 static void regpool_write_slot_locked(regpool_slab_t *s, void *base, size_t len,
                                       struct fid_mr *mr, uint64_t rkey,
                                       int node, bool interleaved,
-                                      bool is_direct, mi_arena_id_t arena,
-                                      int owner, size_t align) {
+                                      size_t align) {
   uint32_t g = atomic_load_explicit(&s->gen, memory_order_relaxed);
   atomic_store_explicit(&s->gen, g + 1, memory_order_relaxed);
-  atomic_thread_fence(memory_order_release);
+  atomic_store_explicit(&s->range_base, (uintptr_t)base, memory_order_release);
+  atomic_store_explicit(&s->range_len, len, memory_order_release);
   s->mr.base = base;
   s->mr.len = len;
   s->mr.mr = mr;
   s->mr.rkey = rkey;
   s->mr.numa_node = node;
   s->interleaved = interleaved;
-  s->is_direct = is_direct;
-  s->arena = arena;
-  s->owner = owner;
   s->align = align;
   atomic_store_explicit(&s->gen, g + 2, memory_order_release);
   atomic_store_explicit(&s->state, REGPOOL_SLOT_LIVE, memory_order_release);
@@ -832,8 +847,10 @@ static regpool_slab_t *regpool_append(void *base, size_t len, struct fid_mr *mr,
     return NULL;
   regpool_slab_t *s = &g_slabs[idx];
   atomic_store_explicit(&s->gen, 0, memory_order_relaxed);
-  regpool_write_slot_locked(s, base, len, mr, rkey, node, interleaved,
-                            is_direct, arena, owner, align);
+  s->is_direct = is_direct;
+  s->arena = arena;
+  s->owner = owner;
+  regpool_write_slot_locked(s, base, len, mr, rkey, node, interleaved, align);
   /* Release: the fully-written record must be visible before the count that
    * exposes it to lock-free readers. */
   atomic_store_explicit(&g_slab_count, idx + 1, memory_order_release);
@@ -843,12 +860,12 @@ static regpool_slab_t *regpool_append(void *base, size_t len, struct fid_mr *mr,
 /* Publish a fully-formed direct-slab record, preferring an already-published
  * free slot over growing the table.  Caller holds g_lock.  Only the
  * direct-slab path calls this: arena slabs are never retired, so every free
- * entry in the table is, and will again be, a direct slab. */
+ * entry in the table is, and will again be, a direct slab, and a reused one
+ * keeps the is_direct, arena and owner it was appended with. */
 static regpool_slab_t *regpool_publish_direct_locked(void *base, size_t len,
                                                      struct fid_mr *mr,
                                                      uint64_t rkey, int node,
                                                      bool interleaved,
-                                                     mi_arena_id_t arena,
                                                      size_t align) {
   size_t n = atomic_load_explicit(&g_slab_count, memory_order_relaxed);
   for (size_t i = 0; i < n; i++) {
@@ -857,11 +874,12 @@ static regpool_slab_t *regpool_publish_direct_locked(void *base, size_t len,
         REGPOOL_SLOT_FREE)
       continue;
     regpool_write_slot_locked(s, base, len, mr, rkey, node, interleaved,
-                              /*is_direct=*/true, arena, /*owner=*/-1, align);
+                              align);
     return s;
   }
-  return regpool_append(base, len, mr, rkey, node, interleaved, true, arena,
-                        /*owner=*/-1, align);
+  return regpool_append(base, len, mr, rkey, node, interleaved,
+                        /*is_direct=*/true, /*arena=*/NULL, /*owner=*/-1,
+                        align);
 }
 
 /* Claim a retired mapping that satisfies (len, align), preferring one placed
@@ -1534,14 +1552,14 @@ static void *regpool_alloc_direct(size_t size, size_t align, int node) {
     used_node = -1;
 
   pthread_mutex_lock(&g_lock);
-  regpool_slab_t *s = regpool_publish_direct_locked(
-      base, len, mr, rkey, used_node, interleaved, NULL, a);
+  regpool_slab_t *s = regpool_publish_direct_locked(base, len, mr, rkey,
+                                                    used_node, interleaved, a);
   if (s == NULL) {
     /* The table is full, and every retired entry is holding a slot no
      * allocation owns. */
     regpool_evict_retired_locked(SIZE_MAX);
     s = regpool_publish_direct_locked(base, len, mr, rkey, used_node,
-                                      interleaved, NULL, a);
+                                      interleaved, a);
   }
   pthread_mutex_unlock(&g_lock);
   if (s == NULL) {

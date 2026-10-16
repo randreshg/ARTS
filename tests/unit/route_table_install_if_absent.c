@@ -116,7 +116,7 @@ static void hook_after_claim(void) {
 struct arts_runtime_shared_s arts_node_info;
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
-static _Atomic int g_deletes;
+static _Atomic(int) g_deletes;
 static void test_deleter(void *obj) {
   atomic_fetch_add_explicit(&g_deletes, 1, memory_order_relaxed);
   free(obj);
@@ -174,7 +174,7 @@ static void rt_init(void) {
 
 typedef struct {
   arts_guid_t guid;
-  atomic_int *gate;
+  _Atomic(int) *gate;
   int *obj; /* this thread's candidate object */
   int won;  /* did this thread win the CAS? */
 } a_ctx_t;
@@ -195,7 +195,7 @@ static void *a_worker(void *vp) {
 typedef struct {
   arts_guid_t guid;
   void *obj;
-  atomic_int *gate;
+  _Atomic(int) *gate;
   int won;
 } b_ctx_t;
 
@@ -284,7 +284,7 @@ static arts_route_item_t *g_i_seen[I_THREADS][I_KEYS];
 
 typedef struct {
   unsigned id;
-  atomic_int *gate;
+  _Atomic(int) *gate;
 } i_ctx_t;
 
 static void *i_worker(void *vp) {
@@ -326,7 +326,7 @@ static int run_i(void) {
   for (unsigned k = 0; k < I_KEYS; k++) {
     g_i_keys[k] = arts_guid_reserve(ARTS_GUID_DB, 0);
   }
-  atomic_int gate;
+  _Atomic(int) gate;
   atomic_init(&gate, 0);
   pthread_t tid[I_THREADS];
   i_ctx_t ctx[I_THREADS];
@@ -366,8 +366,9 @@ static int run_i(void) {
 static arts_guid_t g_fg_guid;
 static arts_shared_ptr_t g_fg_gen1;
 static int *g_fg_obj2;
-static atomic_int g_fg_parked;  /* the identity retire holds RETIRING */
-static atomic_int g_fg_release; /* let it go on */
+/* The identity retire holds RETIRING; its release publishes g_fg_obj2. */
+static _Atomic(int) g_fg_parked;
+static _Atomic(int) g_fg_release; /* let it go on; carries no data */
 
 static void fg_install_gen2(void) {
   g_fg_obj2 = (int *)malloc(sizeof(int));
@@ -397,8 +398,8 @@ static void f_before(void) {
 }
 
 static void park_after_claim(void) {
-  atomic_store(&g_fg_parked, 1);
-  while (atomic_load(&g_fg_release) == 0) {
+  atomic_store_explicit(&g_fg_parked, 1, memory_order_release);
+  while (atomic_load_explicit(&g_fg_release, memory_order_relaxed) == 0) {
     sched_yield();
   }
 }
@@ -420,9 +421,9 @@ static void *fg_key_worker(void *vp) {
 static int run_fg(bool hand_back) {
   const char *name = hand_back ? "F" : "G";
   g_fg_guid = arts_guid_reserve(ARTS_GUID_DB, 0);
-  atomic_store(&g_fg_parked, 0);
-  atomic_store(&g_fg_release, 0);
-  atomic_store(&g_deletes, 0);
+  atomic_store_explicit(&g_fg_parked, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_fg_release, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
   int *o1 = (int *)malloc(sizeof(int));
   arts_shared_ptr_t h = arts_route_table_install_if_absent(o1, g_fg_guid);
   arts_shared_release(&h);
@@ -433,7 +434,8 @@ static int run_fg(bool hand_back) {
                      hand_back ? (void *)1 : NULL) != 0) {
     FAIL("%s: pthread_create\n", name);
   }
-  for (int i = 0; atomic_load(&g_fg_parked) == 0; i++) {
+  for (int i = 0; atomic_load_explicit(&g_fg_parked, memory_order_acquire) == 0;
+       i++) {
     if (i > 5000) {
       FAIL("%s: the identity retire never held the slot RETIRING\n", name);
     }
@@ -449,7 +451,7 @@ static int run_fg(bool hand_back) {
     FAIL("%s: pthread_create\n", name);
   }
   usleep(100000);
-  atomic_store(&g_fg_release, 1);
+  atomic_store_explicit(&g_fg_release, 1, memory_order_relaxed);
   void *rv = NULL;
   pthread_join(retire_tid, &rv);
   bool retire_won = rv != NULL;
@@ -482,9 +484,9 @@ static int run_fg(bool hand_back) {
       FAIL("G: retire of generation 2 failed\n");
     }
   }
-  if (atomic_load(&g_deletes) != 2) {
+  if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 2) {
     FAIL("%s: %d frees for two generations\n", name,
-         atomic_load(&g_deletes));
+         atomic_load_explicit(&g_deletes, memory_order_relaxed));
   }
   return 0;
 }
@@ -498,9 +500,9 @@ int main(void) {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     pthread_t tids[A_THREADS];
     a_ctx_t ctx[A_THREADS];
-    atomic_int gate;
+    _Atomic(int) gate;
     atomic_init(&gate, 0);
-    atomic_store(&g_deletes, 0);
+    atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
     for (int i = 0; i < A_THREADS; i++) {
       ctx[i].guid = g;
       ctx[i].gate = &gate;
@@ -524,9 +526,9 @@ int main(void) {
       FAIL("A: %d winners, want 1\n", winners);
     }
     /* loser objects must NOT have been freed (abandon != delete). */
-    if (atomic_load(&g_deletes) != 0) {
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 0) {
       FAIL("A: %d deletes after CAS race — abandon ran a deleter\n",
-           atomic_load(&g_deletes));
+           atomic_load_explicit(&g_deletes, memory_order_relaxed));
     }
     /* slot holds the winner's object. */
     arts_shared_ptr_t h = arts_route_table_lookup(g);
@@ -544,8 +546,9 @@ int main(void) {
     if (!arts_route_table_set_destroyed_object(g, ctx[win_idx].obj)) {
       FAIL("A: set_destroyed on winner returned false\n");
     }
-    if (atomic_load(&g_deletes) != 1) {
-      FAIL("A: winner deleter ran %d times, want 1\n", atomic_load(&g_deletes));
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 1) {
+      FAIL("A: winner deleter ran %d times, want 1\n",
+           atomic_load_explicit(&g_deletes, memory_order_relaxed));
     }
   }
 
@@ -561,11 +564,11 @@ int main(void) {
      * never freed, only re-keyed, so the pointer stays valid. */
     arts_route_item_t *b_item = NULL;
     arts_route_table_reserve_or_lookup(g, &b_item);
-    atomic_store(&g_deletes, 0);
+    atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
 
     pthread_t tids[B_THREADS];
     b_ctx_t ctx[B_THREADS];
-    atomic_int gate;
+    _Atomic(int) gate;
     atomic_init(&gate, 0);
     for (int i = 0; i < B_THREADS; i++) {
       ctx[i].guid = g;
@@ -585,9 +588,9 @@ int main(void) {
     if (winners != 1) {
       FAIL("B: %d set_destroyed winners, want 1 (single-flight)\n", winners);
     }
-    if (atomic_load(&g_deletes) != 1) {
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 1) {
       FAIL("B: object freed %d times, want exactly 1\n",
-           atomic_load(&g_deletes));
+           atomic_load_explicit(&g_deletes, memory_order_relaxed));
     }
     if (atomic_load_explicit(&b_item->key, memory_order_acquire) != 0) {
       FAIL("B: destroy did not return the slot (key still claimed)\n");
@@ -599,7 +602,7 @@ int main(void) {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
     arts_route_item_t *c_item = NULL;
     arts_route_table_reserve_or_lookup(g, &c_item);
-    atomic_store(&g_deletes, 0);
+    atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
     const int ROUNDS = 2000;
     for (int r = 0; r < ROUNDS; r++) {
       int *obj = (int *)malloc(sizeof(int));
@@ -621,16 +624,16 @@ int main(void) {
         FAIL("C round %d: slot still claimed after destroy\n", r);
       }
     }
-    if (atomic_load(&g_deletes) != ROUNDS) {
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != ROUNDS) {
       FAIL("C: %d frees over %d rounds (double-free or leak)\n",
-           atomic_load(&g_deletes), ROUNDS);
+           atomic_load_explicit(&g_deletes, memory_order_relaxed), ROUNDS);
     }
   }
 
   /* ---- Scenario D: a retire by identity takes only its own generation ---- */
   {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
-    atomic_store(&g_deletes, 0);
+    atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
     int *o1 = (int *)malloc(sizeof(int));
     arts_shared_ptr_t h1 = arts_route_table_install_if_absent(o1, g);
     if (h1 == NULL) {
@@ -667,15 +670,16 @@ int main(void) {
     }
     arts_shared_release(&h1);
     arts_shared_release(&h2);
-    if (atomic_load(&g_deletes) != 2) {
-      FAIL("D: %d frees for two generations\n", atomic_load(&g_deletes));
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 2) {
+      FAIL("D: %d frees for two generations\n",
+           atomic_load_explicit(&g_deletes, memory_order_relaxed));
     }
   }
 
   /* ---- Scenario E: a pinned retire never takes a later generation ---- */
   {
     arts_guid_t g = arts_guid_reserve(ARTS_GUID_DB, 0);
-    atomic_store(&g_deletes, 0);
+    atomic_store_explicit(&g_deletes, 0, memory_order_relaxed);
     int *o1 = (int *)malloc(sizeof(int));
     arts_shared_ptr_t h = arts_route_table_install_if_absent(o1, g);
     arts_shared_release(&h);
@@ -701,8 +705,9 @@ int main(void) {
     if (!arts_route_table_set_destroyed_object(g, o2)) {
       FAIL("E: retire of generation 2 failed\n");
     }
-    if (atomic_load(&g_deletes) != 2) {
-      FAIL("E: %d frees for two generations\n", atomic_load(&g_deletes));
+    if (atomic_load_explicit(&g_deletes, memory_order_relaxed) != 2) {
+      FAIL("E: %d frees for two generations\n",
+           atomic_load_explicit(&g_deletes, memory_order_relaxed));
     }
   }
 

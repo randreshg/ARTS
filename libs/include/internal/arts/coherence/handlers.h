@@ -31,8 +31,8 @@
  *   INV_DELIVER, EXCL_GRANT and the EXCL RETAIN messages) looks its block up
  *   itself. */
 
-#ifndef ARTS_MEMORY_COHERENCE_HANDLERS_H
-#define ARTS_MEMORY_COHERENCE_HANDLERS_H
+#ifndef ARTS_COHERENCE_HANDLERS_H
+#define ARTS_COHERENCE_HANDLERS_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -609,7 +609,7 @@ void arts_send_db_excl_roret(unsigned int home_rank, arts_guid_t db_guid);
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_HANDLERS_H */
+#endif /* ARTS_COHERENCE_HANDLERS_H */
 
 /* Protocol seam invoked where a release policy has a point of its own between
  * an ex-holder's last release round and the next owner's first — WB's gated

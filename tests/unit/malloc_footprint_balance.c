@@ -43,7 +43,7 @@
 #include <stdlib.h>
 
 /* ---- test-local footprint counter the included malloc.c will drive ---- */
-static atomic_uint_least64_t g_footprint;
+static _Atomic(uint_least64_t) g_footprint;
 
 /* ---- stub the runtime macros malloc.c expects, and block the heavy headers
  *      by pre-asserting their include guards. ---- */
@@ -75,7 +75,7 @@ static uint64_t footprint(void) {
 /* ---- concurrent balance ---- */
 #define C_THREADS 10
 #define C_ITERS 20000
-static atomic_int g_gate;
+static _Atomic(int) g_gate;
 
 static void *churn(void *arg) {
   (void)arg;

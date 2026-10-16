@@ -52,7 +52,8 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
  * so a process that dies on it can still be checked for maps it made. */
 void arts_abort(uint8_t code) {
   (void)code;
-  fprintf(stderr, "SIM-MBIND-CALLS=%u\n", regpool_sim_mbind_calls);
+  fprintf(stderr, "SIM-MBIND-CALLS=%u\n",
+          atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed));
   fflush(stdout);
   fflush(stderr);
   _exit(FATAL_STATUS);
@@ -214,10 +215,12 @@ int main(void) {
   /* Every slab mapped here is placed on a declared node, so every map sets a
    * policy: the policy count is the map count.  The refused grow maps one
    * slab (the table is what refuses it); after it, nothing may be mapped. */
-  unsigned maps0 = regpool_sim_mbind_calls;
+  unsigned maps0 =
+      atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed);
   bool grew = arts_regpool_grow(b);
   CHECK(!grew, "a grow succeeded against a full table");
-  unsigned maps_latched = regpool_sim_mbind_calls;
+  unsigned maps_latched =
+      atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed);
   CHECK(maps_latched == maps0 + 1,
         "the refused grow mapped %u slabs, expected the one the table "
         "refused",
@@ -236,9 +239,11 @@ int main(void) {
   snapshot(a, b, &na, &nb, &t);
   CHECK(t.refusals == 1, "a grow mapped again after the refusal (%u refusals)",
         t.refusals);
-  CHECK(regpool_sim_mbind_calls == maps_latched,
+  CHECK(atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) ==
+            maps_latched,
         "%u slabs mapped by grows after the refusal",
-        regpool_sim_mbind_calls - maps_latched);
+        atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) -
+            maps_latched);
 
   /* (iii) Node a, its room back, allocates: its own grow is the table's to
    * refuse, so an unlatched pool would map again on its behalf.  40 blocks
@@ -257,9 +262,11 @@ int main(void) {
         "node %d spilled %u times for 40 blocks over two arenas, expected "
         "once",
         a, na.spills - spills0);
-  CHECK(regpool_sim_mbind_calls == maps_latched,
+  CHECK(atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) ==
+            maps_latched,
         "%u slabs mapped by allocations after the refusal",
-        regpool_sim_mbind_calls - maps_latched);
+        atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) -
+            maps_latched);
 
   /* An oversize block, freed: oversize requests still map after the
    * refusal, and its retired mapping must survive the arena path's last
@@ -271,7 +278,8 @@ int main(void) {
   arts_regpool_free(big);
   total_line_t tr;
   snapshot(a, b, &na, &nb, &tr);
-  unsigned maps_retired = regpool_sim_mbind_calls;
+  unsigned maps_retired =
+      atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed);
 
   /* (iv) Demand past every arena: the pool's fatal error, promptly and with
    * nothing mapped on the way.  The child's report precedes the error. */

@@ -44,6 +44,7 @@ extern "C" {
 #endif
 
 #include <cuda_runtime_api.h>
+#include <pthread.h>
 
 #include "arts/defs.h"
 #include "arts/gas/route_table.h"
@@ -52,6 +53,7 @@ extern "C" {
 #include "arts/runtime_types.h"
 #include "arts/system/print.h"
 #include "arts/utils/array_list.h"
+#include "arts/utils/stdatomic_compat.h"
 
 #define CHECKCORRECT(x)                                                        \
   do {                                                                         \
@@ -64,7 +66,7 @@ extern "C" {
 
 typedef struct {
   unsigned int gpu_id;
-  volatile unsigned int *new_edt_lock;
+  pthread_mutex_t *new_edt_lock;
   arts_array_list_t *new_edts;
   void *dev_closure;
   struct arts_edt_s *edt;
@@ -72,15 +74,17 @@ typedef struct {
 
 typedef struct {
   int device;
-  volatile uint64_t avail_global_mem;
-  volatile uint64_t total_global_mem;
+  /* Bytes the device may still be given: reserved by placement, refunded by
+   * staging hits and GC.  Each update is decided by its own RMW; no other
+   * data rides the word. */
+  _Atomic(uint64_t) avail_global_mem;
   struct cudaDeviceProp prop;
-  volatile float occupancy;
-  volatile unsigned int device_lock;
-  volatile unsigned int total_edts;
-  volatile unsigned int available_edt_slots;
-  volatile unsigned int running_edts;
-  volatile unsigned int available_threads;
+  pthread_mutex_t device_lock; /* guards occupancy and total_edts */
+  float occupancy;
+  unsigned int total_edts;
+  /* EDTs reserved or running on the device: a count only, taken by
+   * placement and given back on failure or at completion. */
+  _Atomic(unsigned int) available_edt_slots;
   cudaStream_t stream;
 } arts_gpu_t;
 
@@ -120,9 +124,10 @@ extern ARTS_THREAD_LOCAL arts_dim3_t *arts_local_block;
 extern ARTS_THREAD_LOCAL cudaStream_t *arts_local_stream;
 extern ARTS_THREAD_LOCAL int arts_local_gpu_id;
 
-extern volatile unsigned int hits;
-extern volatile unsigned int misses;
-extern volatile uint64_t free_bytes;
+/* Staging statistics, read once at teardown. */
+extern _Atomic(unsigned int) hits;
+extern _Atomic(unsigned int) misses;
+extern _Atomic(uint64_t) free_bytes;
 
 #ifdef __cplusplus
 }

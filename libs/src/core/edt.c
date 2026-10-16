@@ -40,6 +40,7 @@
 #include "arts/db.h"
 #include "arts/utils/malloc.h"
 
+#include <stdalign.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -54,7 +55,6 @@
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"   /* outbound send helpers */
 #include "arts/transport/protocol.h" /* wire packet structs */
-#include "arts/utils/atomics.h"
 #include "arts/utils/shared.h" /* arts_shared_ptr_t, get/release */
 
 /* No-hint EDT placement policy: ROUNDROBIN (default) distributes execution
@@ -121,7 +121,9 @@ void arts_edt_create_enter(const struct arts_msg_object_blob_packet_s *packet,
   struct arts_ooo_args_create_blob_s a = {
       .size = (uint32_t)sizeof(*packet) + edt_size};
   uint32_t args_size = (uint32_t)sizeof(a) + a.size;
-  _Alignas(uint64_t) unsigned char inline_args[EDT_CREATE_ARGS_INLINE];
+  /* alignas: the spelling C11 (<stdalign.h>) and C++ share, as this file is
+   * also compiled as C++. */
+  alignas(uint64_t) unsigned char inline_args[EDT_CREATE_ARGS_INLINE];
   unsigned char *args = args_size <= sizeof(inline_args)
                             ? inline_args
                             : (unsigned char *)arts_malloc(args_size);

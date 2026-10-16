@@ -55,7 +55,7 @@ static void consumer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* depv[0] = per-iteration DB (RW): bump its own embedded counter so a lost
    * grant is observable both as a stuck LATCH and as a short per-iter count. */
-  _Atomic uint64_t *cell = (_Atomic uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *cell = (_Atomic(uint64_t) *)depv[0].ptr;
   if (cell != NULL) {
     atomic_fetch_add_explicit(cell, 1u, memory_order_acq_rel);
   }
@@ -63,9 +63,10 @@ static void consumer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* depv[1] = state DB (RW): record per-iteration + global delivery counts. */
   uint64_t *state = (uint64_t *)depv[1].ptr;
   if (state != NULL && it < M_ITERS) {
-    _Atomic uint64_t *peri = (_Atomic uint64_t *)&state[STATE_PERITER_OFF + it];
+    _Atomic(uint64_t) *peri =
+        (_Atomic(uint64_t) *)&state[STATE_PERITER_OFF + it];
     atomic_fetch_add_explicit(peri, 1u, memory_order_acq_rel);
-    _Atomic uint64_t *gc = (_Atomic uint64_t *)&state[STATE_COUNT_OFF];
+    _Atomic(uint64_t) *gc = (_Atomic(uint64_t) *)&state[STATE_COUNT_OFF];
     atomic_fetch_add_explicit(gc, 1u, memory_order_acq_rel);
   }
 
@@ -84,7 +85,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   uint64_t *state = (uint64_t *)depv[1].ptr;
 
-  _Atomic uint64_t *gc = (_Atomic uint64_t *)&state[STATE_COUNT_OFF];
+  _Atomic(uint64_t) *gc = (_Atomic(uint64_t) *)&state[STATE_COUNT_OFF];
   uint64_t got = atomic_load_explicit(gc, memory_order_acquire);
   if (got != (uint64_t)TOTAL_DELIVERIES) {
     (void)fprintf(stderr, "FAIL: delivery count=%llu (want %d)\n",
@@ -92,7 +93,8 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   for (int it = 0; it < M_ITERS; it++) {
-    _Atomic uint64_t *peri = (_Atomic uint64_t *)&state[STATE_PERITER_OFF + it];
+    _Atomic(uint64_t) *peri =
+        (_Atomic(uint64_t) *)&state[STATE_PERITER_OFF + it];
     uint64_t v = atomic_load_explicit(peri, memory_order_acquire);
     if (v != (uint64_t)N_CONSUMERS) {
       (void)fprintf(stderr, "FAIL [iter=%d]: visited=%llu (want %d)\n", it,
@@ -142,7 +144,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       (void)fprintf(stderr, "FAIL [iter=%d]: db create NULL_GUID\n", it);
       arts_abort(1);
     }
-    *(uint64_t *)dbp = 0u;
+    atomic_init((_Atomic(uint64_t) *)dbp, 0u);
     /* Drop the creator's RW hold so the consumer cohort can be granted. */
     arts_db_release(db, DB_MODE_RW);
 

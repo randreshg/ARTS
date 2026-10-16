@@ -26,15 +26,11 @@
  *      boundaries) → every set returns true once, for_each (after join) visits
  *      every rank exactly once.
  *
- * Linked per arm (generated_tests.cmake): VAL and INV compile their own
- * coherence directory.c (which carries the bitset functions) standalone with
- * the libc-backed alloc shims below; EXCL links the full libarts.  FLUSH
- * keeps its destroy roster inline and has no bitset, so it does not build
- * this test.
+ * Compiled with the one definition (coherence/rank_bitset.c) and the
+ * libc-backed alloc shims below, without the runtime.
  */
 
 #include "arts/rank_bitset.h"
-#include "arts/coherence/directory.h"
 
 #include "arts/utils/stdatomic_compat.h"
 #include <pthread.h>
@@ -162,8 +158,8 @@ static int part4_oob(void) {
 
 /* --- Concurrency: same rank → exactly one true. --- */
 static struct arts_rank_bitset_s g_r;
-static _Atomic int g_start;
-static _Atomic int g_true_count;
+static _Atomic(int) g_start;
+static _Atomic(int) g_true_count;
 static unsigned int g_target_rank;
 
 static void *same_setter(void *arg) {
@@ -211,7 +207,7 @@ static int part5_same_rank(void) {
 }
 
 /* --- Concurrency: distinct ranks → all set, for_each visits each once. --- */
-static _Atomic int g_distinct_true;
+static _Atomic(int) g_distinct_true;
 static void *distinct_setter(void *arg) {
   unsigned int rank = (unsigned int)(uintptr_t)arg;
   while (!atomic_load_explicit(&g_start, memory_order_acquire)) {
@@ -290,14 +286,6 @@ int main(void) {
   return 0;
 }
 
-/* ── libc-backed alloc shims so the test links standalone against just the
- * arm's directory.c (VAL, INV).  When linked against the full ARTS library
- * (EXCL, whose directory.c pulls in transport and EDT dependencies), libarts
- * already provides these, so the shims are compiled out to avoid
- * multiple-definition.
- */
-#ifdef ARTS_UNIT_STANDALONE_SHIMS
+/* libc-backed alloc shims: the test links the bit-set alone. */
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
-void *arts_malloc(size_t size) { return malloc(size); }
-#endif

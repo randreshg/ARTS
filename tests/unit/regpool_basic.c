@@ -84,7 +84,8 @@ int main(void) {
 
   assert(regpool_sim_consulted() &&
          "the pool must take its machine facts from the declared machine");
-  assert(regpool_sim_mbind_calls == 0 &&
+  assert(atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) ==
+             0 &&
          "a placement policy on a machine of one node places nothing");
   arts_regpool_cleanup();
   printf("REGPOOL_BASIC_OK allocs=%d slab=%zuMiB\n", N_ALLOC,

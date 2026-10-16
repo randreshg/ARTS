@@ -45,9 +45,9 @@
 
 /* ── Dispatch accounting: record id, flag duplicates ────────────────────── */
 #define MAX_IDS 200000
-static _Atomic unsigned char g_seen[MAX_IDS];
-static _Atomic uint64_t g_dispatched;
-static _Atomic uint64_t g_dup;
+static _Atomic(unsigned char) g_seen[MAX_IDS];
+static _Atomic(uint64_t) g_dispatched;
+static _Atomic(uint64_t) g_dup;
 
 static void recorder(void *item, void *args) {
   (void)item;
@@ -244,9 +244,9 @@ static int part1_save_next(void) {
 #define P2_PRODUCERS 6
 #define P2_PER_PRODUCER 20000
 
-static atomic_int g_p2_gate;
-static _Atomic int g_p2_producers_done;
-static _Atomic int g_drainer_stop;
+static _Atomic(int) g_p2_gate;
+static _Atomic(int) g_p2_producers_done;
+static _Atomic(int) g_drainer_stop;
 
 typedef struct {
   uint32_t base; /* first id this producer emits */

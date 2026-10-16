@@ -97,9 +97,6 @@ extern "C" {
  * warn-and-drop and the fabric is never touched.
  * ========================================================================== */
 void arts_transport_send_async(int rank, char *message, unsigned int length);
-void arts_transport_send_payload_async(int rank, char *message,
-                                       unsigned int length, char *payload,
-                                       uint64_t size);
 void arts_transport_send_payload_async_free(int rank, char *message,
                                             unsigned int length, char *payload,
                                             unsigned int offset, uint64_t size,

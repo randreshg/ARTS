@@ -9,20 +9,17 @@
  * Atomic discipline: this header declares no shared word itself; the words
  * the runtime reads and writes concurrently live in the layouts it pulls in.
  * A word declared `_Atomic(T)` is accessed only through atomic_*_explicit
- * (arts/utils/stdatomic_compat.h).  The GPU staging words of a descriptor
- * (ARTS_USE_GPU builds) are `volatile` or plain and reached through the
- * legacy helpers of arts/utils/atomics.h, each with the order its helper
- * gives it.
- * Every other field that is not `_Atomic` is plain, ordered by the atomic
- * word its declaration names.
+ * (arts/utils/stdatomic_compat.h).  Every field that is not `_Atomic` is
+ * plain, ordered by the atomic word or the lock its declaration names
+ * (`time_stamp` by the block's staging rwlock).
  *
  * Routing pointer convention: 48-bit virtual address space.  Tagged-
  * pointer encodings (lock-free stack `top`, marked-list `next`) live
  * at the primitive layer; this header just embeds those primitives.
  */
 
-#ifndef ARTS_MEMORY_COHERENCE_H
-#define ARTS_MEMORY_COHERENCE_H
+#ifndef ARTS_COHERENCE_COHERENCE_H
+#define ARTS_COHERENCE_COHERENCE_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -629,4 +626,4 @@ void arts_db_drain_pending_rw_after_grant(struct arts_db_cache_s *cache);
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_H */
+#endif /* ARTS_COHERENCE_COHERENCE_H */

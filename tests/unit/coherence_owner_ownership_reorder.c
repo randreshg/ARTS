@@ -66,6 +66,7 @@
 
 #include "arts.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -75,31 +76,40 @@
 #define INCS_PER_BATCH 64
 #define STEPS 80u
 
+/* A payload word is viewed as an atomic object, which needs a lock-free
+ * atomic of the plain type's size. */
+_Static_assert(ATOMIC_LONG_LOCK_FREE == 2 &&
+                   sizeof(_Atomic(uint64_t)) == sizeof(uint64_t),
+               "the payload view needs a lock-free 64-bit atomic");
+
 static void inc_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                     arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  uint64_t *data = (uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *data = (_Atomic(uint64_t) *)depv[0].ptr;
   if (data == NULL) {
     arts_printf("FAIL: coherence_owner_ownership_reorder incrementer got a "
                 "NULL block\n");
     arts_test_fail();
     return;
   }
-  __atomic_fetch_add(&data[0], (uint64_t)1, __ATOMIC_RELAXED);
+  atomic_fetch_add_explicit(&data[0], (uint64_t)1, memory_order_relaxed);
 }
 
 static void check_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  const uint64_t *data = (const uint64_t *)depv[0].ptr;
+  const _Atomic(uint64_t) *data = (const _Atomic(uint64_t) *)depv[0].ptr;
   uint64_t expected = paramv[0];
-  if (data == NULL || data[0] != expected) {
+  long long got =
+      data ? (long long)atomic_load_explicit(&data[0], memory_order_relaxed)
+           : -1LL;
+  if (data == NULL || (uint64_t)got != expected) {
     arts_printf("FAIL: coherence_owner_ownership_reorder sum %lld != %llu "
                 "(a hand-over shipped stale bytes or a write was lost)\n",
-                data ? (long long)data[0] : -1LL, (unsigned long long)expected);
+                got, (unsigned long long)expected);
     arts_test_fail();
     return;
   }
@@ -136,7 +146,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0});
-  ((uint64_t *)ptr)[0] = 0;
+  atomic_init((_Atomic(uint64_t) *)ptr, (uint64_t)0);
   arts_db_release(db, DB_MODE_RW);
 
   uint64_t total = 0;

@@ -103,11 +103,16 @@ int main(void) {
         n1.state);
   /* Node 1 was grown on node 0's behalf and found itself full; node 0 then
    * sized its own slab. */
-  CHECK(regpool_sim_self_reads[1] >= 1 && regpool_sim_self_reads[0] >= 1,
+  CHECK(atomic_load_explicit(&regpool_sim_self_reads[1],
+                             memory_order_relaxed) >= 1 &&
+            atomic_load_explicit(&regpool_sim_self_reads[0],
+                                 memory_order_relaxed) >= 1,
         "init: the declared machine was not consulted as intended (node 1 "
         "self %u, node 0 self %u)",
-        regpool_sim_self_reads[1], regpool_sim_self_reads[0]);
-  unsigned self0 = regpool_sim_self_reads[0];
+        atomic_load_explicit(&regpool_sim_self_reads[1], memory_order_relaxed),
+        atomic_load_explicit(&regpool_sim_self_reads[0], memory_order_relaxed));
+  unsigned self0 =
+      atomic_load_explicit(&regpool_sim_self_reads[0], memory_order_relaxed);
 
   /* Allocation past the first slab: the cascade's own grow maps nothing and
    * the other node finds itself full, and the cascade must grow anyway. */
@@ -126,11 +131,13 @@ int main(void) {
         "after %u blocks: slabs %u (node 0 placed %u, node 1 placed %u), "
         "refusals %u; expected kernel-placed slabs only",
         BLOCKS, slabs, n0.arenas, n1.arenas, refusals);
-  CHECK(regpool_sim_self_reads[0] > self0,
+  CHECK(atomic_load_explicit(&regpool_sim_self_reads[0], memory_order_relaxed) >
+            self0,
         "the cascade never sized a slab for node 0 again");
-  CHECK(regpool_sim_mbind_calls == 0,
+  CHECK(atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) ==
+            0,
         "%u placement policies set where every slab is the kernel's to place",
-        regpool_sim_mbind_calls);
+        atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed));
   CHECK(regpool_sim_consulted(), "the declared machine was not consulted");
 
   arts_regpool_cleanup();

@@ -58,7 +58,7 @@
 
 #include <stdatomic.h>
 
-static atomic_uint arts_test_failures;
+static _Atomic(unsigned int) arts_test_failures;
 
 static inline void arts_test_fail(void) {
   atomic_fetch_add_explicit(&arts_test_failures, 1u, memory_order_relaxed);

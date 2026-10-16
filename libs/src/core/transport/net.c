@@ -152,9 +152,16 @@ static inline void net_put_retired(uint64_t posted_ns) {
 /* ------------------------------------------------------------------------- */
 
 struct net_ring_s {
-  _Atomic uint32_t head; /* consumer cursor (monotone)                        */
-  _Atomic uint32_t tail; /* producer cursor (monotone)                        */
-  _Atomic int draining;  /* single-drainer token                              */
+  /* Consumer cursor (monotone), written by the drain-token holder: its
+   * release store says the slot was read and its txn posted, and the owner's
+   * acquire load orders a slot reuse, or a direct post, after that post. */
+  _Atomic(uint32_t) head;
+  /* Producer cursor (monotone), written by the owner alone: its release store
+   * publishes the slot, which a drainer's acquire load consumes. */
+  _Atomic(uint32_t) tail;
+  /* Single-drainer token: the winning CAS acquires what the previous holder
+   * stored to `head`, and the holder returns it with a release store. */
+  _Atomic(int) draining;
   struct net_txn_s *slots[ARTS_NET_RING_CAP];
 };
 
@@ -192,8 +199,11 @@ static struct {
    * monotonic stamp (0 = none) and the provider's text.  A lost transfer is
    * fatal on a live run, but a peer already shutting down flushes this rank's
    * transfers before this rank hears of the shutdown, so the verdict waits a
-   * grace period for shutdown recognition before it is fatal. */
-  _Atomic uint64_t live_cq_err_ns;
+   * grace period for shutdown recognition before it is fatal.  The recorder
+   * that moves the stamp from 0 to NET_CQ_ERR_RECORDING alone writes the
+   * text, then stores the time stamp with release; a reader acquires the
+   * stamp and reads the text only when it holds a time stamp. */
+  _Atomic(uint64_t) live_cq_err_ns;
   char live_cq_err_what[160];
 
   fi_addr_t *peers;     /* rank-indexed AV handles (fi_addr_t rank == rank)    */
@@ -209,23 +219,33 @@ static struct {
    * (provider queues momentarily full — a legal transient, NOT an error).  The
    * repost is retried at the top of every CQ reap pass: reaping is exactly
    * what frees provider queue slots, so retry-after-reap converges.  Only
-   * touched under the CQ consumer token (or pre-thread init), so a plain
+   * touched under the CQ consumer token, before any runtime thread exists, or
+   * by the teardown reap after every runtime thread has joined, so a plain
    * unsigned suffices. */
   unsigned rx_repost_pending;
 
   /* Posts not yet completed, counted before each post and uncounted at its
    * completion or failure, so it never reads 0 while a post is outstanding:
    * only its own value. */
-  _Atomic uint64_t tx_outstanding;
-  _Atomic uint64_t eagain_count; /* observability for the retry path         */
-  _Atomic bool quiescing;        /* teardown began: refuse new submissions   */
+  _Atomic(uint64_t) tx_outstanding;
+  /* Posts the provider refused with EAGAIN: only its own value. */
+  _Atomic(uint64_t) eagain_count;
+  /* Teardown began: refuse new submissions.  Set once every runtime thread
+   * has joined; a sender or reaper that reads it set stands down and reads
+   * nothing the store published. */
+  _Atomic(bool) quiescing;
 } g_net;
 
+/* The stamp's value while its election winner writes the text: a monotonic
+ * time stamp is never 0 and never this. */
+#define NET_CQ_ERR_RECORDING UINT64_MAX
+
 /* Global registry of per-thread rings so progress can drain rings owned by
- * threads that are not currently sending.  Grow-only, published like the
- * regpool slab table (release on append, acquire on scan). */
+ * threads that are not currently sending.  Grow-only: an append, under
+ * g_ring_reg_lock, publishes the ring and its g_rings entry with a release
+ * store of the count, which a lock-free scan acquires. */
 static struct net_ring_s *g_rings[ARTS_NET_MAX_RINGS];
-static _Atomic uint32_t g_ring_count;
+static _Atomic(uint32_t) g_ring_count;
 static pthread_mutex_t g_ring_reg_lock = PTHREAD_MUTEX_INITIALIZER;
 static ARTS_THREAD_LOCAL struct net_ring_s *t_ring;
 
@@ -654,8 +674,10 @@ static void net_post_recv(unsigned idx) {
  * under backpressure must not race a progress thread on the CQ — a
  * concurrent FI_MULTI_RECV repost could hand a landing buffer back to the
  * provider while another thread is still copying a just-received message out of
- * it.  Ring draining stays lock-free (each ring is token-serialized). */
-static _Atomic int g_net_cq_busy;
+ * it.  Ring draining stays lock-free (each ring is token-serialized).  A
+ * try-lock: the winning CAS acquires what the previous holder wrote under it,
+ * and the holder releases it with a release store. */
+static _Atomic(int) g_net_cq_busy;
 
 static inline bool net_cq_trylock(void) {
   int expected = 0;
@@ -731,10 +753,12 @@ struct net_rdzv_ent_s {
 static struct net_rdzv_ent_s *g_rdzv_tab[ARTS_NET_RDZV_BUCKETS];
 static pthread_mutex_t g_rdzv_lock = PTHREAD_MUTEX_INITIALIZER;
 /* txid counter — starts at 1 so a full txid is never 0 (0 is the wire
- * sentinel for "no landing advertised / no payload moved"). */
-static _Atomic uint64_t g_rdzv_txid_ctr = 1;
-/* Observability + whitebox-test hook: remote-write completions processed. */
-static _Atomic uint64_t g_rdzv_arrived_count;
+ * sentinel for "no landing advertised / no payload moved").  A ticket: only
+ * its own value. */
+static _Atomic(uint64_t) g_rdzv_txid_ctr = 1;
+/* Observability + whitebox-test hook: remote-write completions processed.
+ * Bumped before the pairing it counts runs: only its own value. */
+static _Atomic(uint64_t) g_rdzv_arrived_count;
 
 static inline unsigned net_rdzv_bucket(uint64_t txid) {
   /* The low bits are a local counter, already uniform across buckets. */
@@ -848,9 +872,11 @@ bool arts_net_rdzv_local(const void *p, uint64_t len, uint64_t *raddr,
 
 /* The pieces of one payload that the provider's ceiling cut apart.  Pieces
  * complete on whichever thread reaps the CQ, so the count is atomic; the
- * caller's hook runs on the thread that retires the last piece. */
+ * caller's hook runs on the thread that retires the last piece.  Each
+ * completion's decrement is acq_rel, so the last one runs the hook and frees
+ * the group after every other piece's completion. */
 struct net_put_group_s {
-  _Atomic uint64_t remaining;
+  _Atomic(uint64_t) remaining;
   uint64_t posted_ns; /* the whole payload's post time; 0 = not timed */
   void (*on_local_done)(void *);
   void *arg;
@@ -959,7 +985,7 @@ static inline uint64_t net_now_ns(void) {
  * becomes fatal once the grace period passes with no shutdown recognized. */
 static inline void net_live_cq_err_check(void) {
   uint64_t t = atomic_load_explicit(&g_net.live_cq_err_ns, memory_order_acquire);
-  if (t == 0) {
+  if (t == 0 || t == NET_CQ_ERR_RECORDING) {
     return;
   }
   if (atomic_load_explicit(&arts_node_info.shutdown_state,
@@ -1016,11 +1042,13 @@ static void net_reap_cq_err(void) {
         !atomic_load_explicit(&g_net.quiescing, memory_order_acquire)) {
       uint64_t none = 0;
       if (atomic_compare_exchange_strong_explicit(
-              &g_net.live_cq_err_ns, &none, net_now_ns(),
+              &g_net.live_cq_err_ns, &none, NET_CQ_ERR_RECORDING,
               memory_order_acq_rel, memory_order_relaxed)) {
         snprintf(g_net.live_cq_err_what, sizeof(g_net.live_cq_err_what),
                  "%s (flags=0x%llx err=%d prov_errno=%d)", what,
                  (unsigned long long)err.flags, err.err, err.prov_errno);
+        atomic_store_explicit(&g_net.live_cq_err_ns, net_now_ns(),
+                              memory_order_release);
       }
     }
     if ((err.flags & (FI_SEND | FI_WRITE)) && err.op_context != NULL) {
@@ -1371,9 +1399,7 @@ static bool net_pending_take_rdzv(uint64_t txid) {
   return found;
 }
 
-static void net_selfcheck_arrived(void *arg) {
-  atomic_store_explicit((_Atomic bool *)arg, true, memory_order_release);
-}
+static void net_selfcheck_arrived(void *arg) { *(bool *)arg = true; }
 
 void arts_net_selfcheck(void) {
   if (!g_net.is_cxi) {
@@ -1403,13 +1429,15 @@ void arts_net_selfcheck(void) {
     ARTS_ERROR("arts_net: selfcheck landing is not fabric-registered");
   }
   uint64_t txid = arts_net_rdzv_txid_next();
-  _Atomic bool done = false;
+  /* Set by the expectation's callback on this thread: the selfcheck runs
+   * before any other thread can reap or pair. */
+  bool done = false;
   arts_net_rdzv_expect(txid, net_selfcheck_arrived, &done);
   arts_net_put_payload((int)arts_global_rank_id, raddr, rkey, txid, src,
                        SELFCHECK_LEN, NULL, NULL);
   struct timespec start;
   (void)clock_gettime(CLOCK_MONOTONIC, &start);
-  while (!atomic_load_explicit(&done, memory_order_acquire)) {
+  while (!done) {
     net_reap_no_dispatch();
     if (net_pending_take_rdzv(txid)) {
       net_rdzv_data_arrived(txid); /* fires the expectation on this stack */

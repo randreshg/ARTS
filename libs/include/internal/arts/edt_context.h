@@ -36,8 +36,8 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_SYNC_EDT_CONTEXT_H
-#define ARTS_SYNC_EDT_CONTEXT_H
+#ifndef ARTS_EDT_CONTEXT_H
+#define ARTS_EDT_CONTEXT_H
 #ifdef __cplusplus
 extern "C" {
 #endif

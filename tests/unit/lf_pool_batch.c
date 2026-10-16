@@ -31,12 +31,12 @@
 typedef struct {
   arts_lf_link_t link; /* first member */
   uint32_t id;
-  _Atomic int owner; /* -1 = in pool, else owning thread index */
+  _Atomic(int) owner; /* -1 = in pool, else owning thread index */
 } node_t;
 
 static arts_lockfree_pool_t g_pool;
 static node_t *g_nodes[UNIVERSE];
-static atomic_int g_start;
+static _Atomic(int) g_start;
 
 static inline node_t *as_node(arts_lf_link_t *l) { return (node_t *)l; }
 

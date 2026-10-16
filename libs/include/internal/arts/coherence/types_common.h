@@ -20,8 +20,8 @@
 ** Licensed under the Apache License, Version 2.0 (the "License");           **
 ** you may not use this file except in compliance with the License.          **
 ******************************************************************************/
-#ifndef ARTS_MEMORY_COHERENCE_TYPES_COMMON_H
-#define ARTS_MEMORY_COHERENCE_TYPES_COMMON_H
+#ifndef ARTS_COHERENCE_TYPES_COMMON_H
+#define ARTS_COHERENCE_TYPES_COMMON_H
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -73,6 +73,13 @@ extern "C" {
 #elif defined(ARTS_CXL_STAGED) || defined(ARTS_CXL_DIRECT)
 #error "a CXL residency (ARTS_CXL_STAGED, ARTS_CXL_DIRECT) needs ARTS_USE_CXL"
 #endif
+/* The GPU library links the CPU-compiled object libraries beside the units
+ * that compile the GPU code paths (ARTS_USE_GPU), so the descriptor's GPU
+ * staging fields belong to every unit of a tree that builds that library
+ * (ARTS_GPU_LAYOUT), never to the GPU units alone. */
+#if defined(ARTS_USE_GPU) && !defined(ARTS_GPU_LAYOUT)
+#error "ARTS_USE_GPU needs ARTS_GPU_LAYOUT"
+#endif
 
 #include "arts.h"
 
@@ -81,6 +88,9 @@ extern "C" {
 #include "arts/utils/lockfree_pool.h"  /* arts_lockfree_pool_t (buf_freelist) */
 #include "arts/utils/shared.h"         /* arts_shared_ptr_t (buffer cb) */
 #include "arts/utils/stdatomic_compat.h"
+#ifdef ARTS_GPU_LAYOUT
+#include <pthread.h> /* pthread_rwlock_t (GPU staging lock) */
+#endif
 #include <stdbool.h>
 #include <stddef.h> /* offsetof — container_of(cache, arts_db_s, cache) */
 #include <stdint.h>
@@ -318,4 +328,4 @@ struct arts_rank_to_u64_map_s;
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_TYPES_COMMON_H */
+#endif /* ARTS_COHERENCE_TYPES_COMMON_H */

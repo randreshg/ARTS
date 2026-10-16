@@ -30,11 +30,11 @@
 
 /* Process-global observation flags written by the startup callbacks (which run
  * on runtime threads before any EDT) and read by main_edt. */
-static _Atomic unsigned int g_node_calls = 0;
-static _Atomic unsigned int g_worker_calls = 0;
-static _Atomic int g_node_id_seen = -1; /* node_id passed to per_node */
-static _Atomic int g_node_id_bad = 0;   /* per_node node_id mismatch */
-static _Atomic int g_worker_id_bad = 0; /* per_worker node_id mismatch */
+static _Atomic(unsigned int) g_node_calls = 0;
+static _Atomic(unsigned int) g_worker_calls = 0;
+static _Atomic(int) g_node_id_seen = -1; /* node_id passed to per_node */
+static _Atomic(int) g_node_id_bad = 0;   /* per_node node_id mismatch */
+static _Atomic(int) g_worker_id_bad = 0; /* per_worker node_id mismatch */
 
 static int g_failed = 0;
 

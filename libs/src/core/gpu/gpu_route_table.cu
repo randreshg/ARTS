@@ -43,14 +43,11 @@
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 
-// Use to keep ordering for LC accesses
-volatile unsigned int gpu_node_order = 0;
-
-// Must be thread local
-ARTS_THREAD_LOCAL uint64_t gpu_item_size_bypass = 0;
+/* Ticket source of the slots' logical clocks, which order LC accesses; it
+ * carries only its own value. */
+static _Atomic(unsigned int) gpu_node_order;
 
 /* Acquire the persistent wrapper published in a GPU-mirror slot's cb
  * (arts_route_item_acquire + arts_shared_get/release).
@@ -90,15 +87,17 @@ static arts_item_wrapper_t *gpu_install_wrapper(arts_route_table_t *route_table,
   return wrapper;
 }
 
-unsigned int set_gpu_timestamp(volatile unsigned int *time_stamp) {
-  unsigned int new_time_stamp = arts_atomic_add(&gpu_node_order, 1);
-  unsigned int old_time_stamp = *time_stamp;
+unsigned int set_gpu_timestamp(_Atomic(unsigned int) *time_stamp) {
+  unsigned int new_time_stamp =
+      atomic_fetch_add_explicit(&gpu_node_order, 1u, memory_order_relaxed) + 1u;
+  unsigned int old_time_stamp =
+      atomic_load_explicit(time_stamp, memory_order_relaxed);
   while (old_time_stamp < new_time_stamp) {
-    if (arts_atomic_cswap(time_stamp, old_time_stamp, new_time_stamp) ==
-        old_time_stamp) {
+    if (atomic_compare_exchange_weak_explicit(
+            time_stamp, &old_time_stamp, new_time_stamp, memory_order_acq_rel,
+            memory_order_acquire)) {
       return new_time_stamp;
     }
-    old_time_stamp = *time_stamp;
   }
   return old_time_stamp;
 }
@@ -119,6 +118,7 @@ arts_route_table_t *arts_gpu_new_route_table(unsigned int route_table_size,
    * lives in this persistent array). */
   gpu_route_table->wrappers = (arts_item_wrapper_t *)arts_calloc(
       total_elems, sizeof(arts_item_wrapper_t));
+  pthread_mutex_init(&gpu_route_table->gc_lock, NULL);
 
   return &gpu_route_table->routingTable;
 }
@@ -138,26 +138,21 @@ uint64_t arts_gpu_lookup_db(arts_guid_t key) {
 
 void *arts_gpu_route_table_add_item(void *item, uint64_t size, arts_guid_t key,
                                     unsigned int gpu_id) {
-  // This is a bypass thread local variable to make the api nice...
-  gpu_item_size_bypass = size;
   arts_route_table_t *route_table = arts_node_info.gpu_route_table[gpu_id];
   bool added;
   arts_item_wrapper_t *wrapper = gpu_install_wrapper(route_table, key, &added);
   if (added) {
-    wrapper->real_data = item;
     wrapper->size = size;
+    atomic_store_explicit(&wrapper->real_data, item, memory_order_release);
   }
-  gpu_item_size_bypass = 0;
   set_gpu_timestamp(&wrapper->time_stamp);
-  return (void *)wrapper->real_data;
+  return atomic_load_explicit(&wrapper->real_data, memory_order_acquire);
 }
 
 arts_item_wrapper_t *
 arts_gpu_route_table_reserve_item(bool *added, uint64_t size, arts_guid_t key,
                                   unsigned int gpu_id, bool add_to_use) {
-  // This is a bypass thread local variable to make the api nice...
   (void)add_to_use;
-  gpu_item_size_bypass = size;
   arts_route_table_t *route_table = arts_node_info.gpu_route_table[gpu_id];
   bool installed = false;
   arts_item_wrapper_t *wrapper =
@@ -165,7 +160,6 @@ arts_gpu_route_table_reserve_item(bool *added, uint64_t size, arts_guid_t key,
   if (installed) {
     wrapper->size = size;
   }
-  gpu_item_size_bypass = 0;
   if (added) {
     *added = installed;
   }
@@ -176,19 +170,16 @@ arts_gpu_route_table_reserve_item(bool *added, uint64_t size, arts_guid_t key,
 void *arts_gpu_route_table_add_item_to_delete(void *item, uint64_t size,
                                               arts_guid_t key,
                                               unsigned int gpu_id) {
-  // This is a bypass thread local variable to make the api nice...
-  gpu_item_size_bypass = size;
   arts_route_table_t *route_table = arts_node_info.gpu_route_table[gpu_id];
   bool installed = false;
   arts_item_wrapper_t *wrapper =
       gpu_install_wrapper(route_table, key, &installed);
   if (installed) {
-    wrapper->real_data = item;
     wrapper->size = size;
+    atomic_store_explicit(&wrapper->real_data, item, memory_order_release);
   }
-  gpu_item_size_bypass = 0;
   set_gpu_timestamp(&wrapper->time_stamp);
-  return (void *)wrapper->real_data;
+  return atomic_load_explicit(&wrapper->real_data, memory_order_acquire);
 }
 
 void *arts_gpu_route_table_lookup_db_res(arts_guid_t key, int gpu_id,
@@ -209,8 +200,8 @@ void *arts_gpu_route_table_lookup_db_res(arts_guid_t key, int gpu_id,
       /* The route item carries no per-item version, so `touched` is unused. */
       (void)touched;
     }
-    ret = (void *)wrapper->real_data;
-    ARTS_DEBUG("Wrapper: %p %p", wrapper, wrapper->real_data);
+    ret = atomic_load_explicit(&wrapper->real_data, memory_order_acquire);
+    ARTS_DEBUG("Wrapper: %p %p", wrapper, ret);
   }
   arts_shared_release(&h);
   return ret;
@@ -248,31 +239,18 @@ bool arts_gpu_invalidate_on_route_table(arts_guid_t key, unsigned int gpu_id) {
   return false;
 }
 
-volatile unsigned int gpu_reader = 0;
-volatile unsigned int gpu_writer = 0;
+/* GC sweeps share it; an LC sync, which must keep its device copies, holds
+ * it exclusively.  Writer-preferring, so a sync is not starved by sweeps. */
+static pthread_rwlock_t gpu_gc_lock =
+    PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP;
 
-void gpu_gc_read_lock() {
-  while (1) {
-    while (gpu_writer) {
-    }
-    arts_atomic_fetch_add(&gpu_reader, 1U);
-    if (gpu_writer == 0) {
-      break;
-    }
-    arts_atomic_sub(&gpu_reader, 1U);
-  }
-}
+void gpu_gc_read_lock() { pthread_rwlock_rdlock(&gpu_gc_lock); }
 
-void gpu_gc_read_unlock() { arts_atomic_sub(&gpu_reader, 1U); }
+void gpu_gc_read_unlock() { pthread_rwlock_unlock(&gpu_gc_lock); }
 
-void gpu_gc_write_lock() {
-  while (arts_atomic_cswap(&gpu_writer, 0U, 1U) != 0U) {
-  }
-  while (gpu_reader) {
-  }
-}
+void gpu_gc_write_lock() { pthread_rwlock_wrlock(&gpu_gc_lock); }
 
-void gpu_gc_write_unlock() { arts_atomic_swap(&gpu_writer, 0U); }
+void gpu_gc_write_unlock() { pthread_rwlock_unlock(&gpu_gc_lock); }
 
 /*This takes three parameters to regulate what is deleted.  This will only clean
 up DBs!
@@ -293,7 +271,7 @@ uint64_t arts_gpu_clean_up_route_table(unsigned int size_to_clean,
   // This is a lock to make sure LC sync works
   gpu_gc_read_lock();
   // Only one person can be running the gc at a time...
-  if (arts_try_lock(&gpu_route_table->gcLock)) {
+  if (pthread_mutex_trylock(&gpu_route_table->gc_lock) == 0) {
     arts_route_table_iterator_t iter;
     arts_reset_route_table_iterator(&iter, route_table);
 
@@ -307,7 +285,7 @@ uint64_t arts_gpu_clean_up_route_table(unsigned int size_to_clean,
       (void)wrapper;
       item = arts_route_table_iterate(&iter);
     }
-    arts_unlock(&gpu_route_table->gcLock);
+    pthread_mutex_unlock(&gpu_route_table->gc_lock);
   }
   gpu_gc_read_unlock();
   return freed_size;

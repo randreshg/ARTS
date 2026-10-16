@@ -49,7 +49,6 @@
 #include "arts/runtime_state.h"
 #include "arts/system/print.h"
 #include "arts/system/threads.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/random.h"
 
 int random(void *edt_packet);
@@ -79,30 +78,31 @@ ARTS_THREAD_LOCAL unsigned int run_gc_flag = 0;
 bool try_reserve(int gpu, uint64_t size, unsigned int threads) {
   (void)threads;
   arts_gpu_t *arts_gpu = &arts_gpus[gpu];
-  ARTS_DEBUG("Trying to reserve %lu of available %lu on GPU[%d]\n", size,
-             arts_gpu->avail_global_mem, arts_gpu->device);
-  // if(arts_atomic_fetch_add(&arts_gpu->available_threads, threads) < 1024)
-  {
-    if (arts_atomic_fetch_add(&arts_gpu->available_edt_slots, 1U) <
-        arts_node_info.gpu_max_edts) {
-      volatile uint64_t avail_size = arts_gpu->avail_global_mem;
-      while (avail_size >= size) {
-        if (arts_atomic_cswap_u64(&arts_gpu->avail_global_mem, avail_size,
-                                  avail_size - size)) {
-          run_gc_flag = 0;
-          return true;
-        }
-        avail_size = arts_gpu->avail_global_mem;
+  ARTS_DEBUG(
+      "Trying to reserve %lu of available %lu on GPU[%d]\n", size,
+      atomic_load_explicit(&arts_gpu->avail_global_mem, memory_order_relaxed),
+      arts_gpu->device);
+  if (atomic_fetch_add_explicit(&arts_gpu->available_edt_slots, 1u,
+                                memory_order_acq_rel) <
+      arts_node_info.gpu_max_edts) {
+    uint64_t avail_size =
+        atomic_load_explicit(&arts_gpu->avail_global_mem, memory_order_relaxed);
+    while (avail_size >= size) {
+      if (atomic_compare_exchange_weak_explicit(
+              &arts_gpu->avail_global_mem, &avail_size, avail_size - size,
+              memory_order_acq_rel, memory_order_acquire)) {
+        run_gc_flag = 0;
+        return true;
       }
-      run_gc_flag = gpu + 1;
     }
-    arts_atomic_sub(&arts_gpu->available_edt_slots, 1U);
+    run_gc_flag = gpu + 1;
   }
-  // arts_atomic_sub(&arts_gpu->available_threads, threads);
-  ARTS_DEBUG("Failed Avail threads: %u + %u\n", arts_gpu->available_threads,
-             threads);
-  ARTS_DEBUG("Failed to reserve %lu of available %lu on GPU[%d]\n", size,
-             arts_gpu->avail_global_mem, arts_gpu->device);
+  atomic_fetch_sub_explicit(&arts_gpu->available_edt_slots, 1u,
+                            memory_order_acq_rel);
+  ARTS_DEBUG(
+      "Failed to reserve %lu of available %lu on GPU[%d]\n", size,
+      atomic_load_explicit(&arts_gpu->avail_global_mem, memory_order_relaxed),
+      arts_gpu->device);
   return false;
 }
 
@@ -124,8 +124,9 @@ int first_fit(uint64_t mask, uint64_t size, unsigned int total_threads) {
 }
 
 int round_robin_fit(uint64_t mask, uint64_t size, unsigned int total_threads) {
-  static volatile unsigned int next = 0;
-  unsigned int start = arts_atomic_fetch_add(&next, 1U);
+  static _Atomic(unsigned int) next; /* round-robin start, value only */
+  unsigned int start =
+      atomic_fetch_add_explicit(&next, 1u, memory_order_relaxed);
   for (unsigned int i = 0; i < arts_node_info.gpu; i++) {
     int index = (int)((i + start) % arts_node_info.gpu);
     uint64_t check_mask = (uint64_t)1 << index;
@@ -150,7 +151,9 @@ int best_fit(uint64_t mask, uint64_t size, unsigned int total_threads) {
     uint64_t check_mask = (uint64_t)1 << index;
     if (mask & check_mask) {
       if (selected_gpu != -1) {
-        if (arts_gpus[index].avail_global_mem - size >
+        if (atomic_load_explicit(&arts_gpus[index].avail_global_mem,
+                                 memory_order_relaxed) -
+                size >
             selected_gpu_avail_size) {
           continue;
         }
@@ -158,10 +161,12 @@ int best_fit(uint64_t mask, uint64_t size, unsigned int total_threads) {
       if (try_reserve(index, size, total_threads)) {
         // If successful relinquish previous allocation (if any).
         if (selected_gpu != -1) {
-          arts_atomic_add_u64(&arts_gpus[selected_gpu].avail_global_mem, size);
+          atomic_fetch_add_explicit(&arts_gpus[selected_gpu].avail_global_mem,
+                                    size, memory_order_acq_rel);
         }
         selected_gpu = index;
-        selected_gpu_avail_size = arts_gpus[index].avail_global_mem;
+        selected_gpu_avail_size = atomic_load_explicit(
+            &arts_gpus[index].avail_global_mem, memory_order_relaxed);
       }
     }
   }
@@ -179,7 +184,9 @@ int worst_fit(uint64_t mask, uint64_t size, unsigned int total_threads) {
     uint64_t check_mask = (uint64_t)1 << index;
     if (mask & check_mask) {
       if (selected_gpu != -1) {
-        if (arts_gpus[index].avail_global_mem - size <
+        if (atomic_load_explicit(&arts_gpus[index].avail_global_mem,
+                                 memory_order_relaxed) -
+                size <
             selected_gpu_avail_size) {
           continue;
         }
@@ -187,10 +194,12 @@ int worst_fit(uint64_t mask, uint64_t size, unsigned int total_threads) {
       if (try_reserve(index, size, total_threads)) {
         // If successful relinquish previous allocation (if any).
         if (selected_gpu != -1) {
-          arts_atomic_add_u64(&arts_gpus[selected_gpu].avail_global_mem, size);
+          atomic_fetch_add_explicit(&arts_gpus[selected_gpu].avail_global_mem,
+                                    size, memory_order_acq_rel);
         }
         selected_gpu = index;
-        selected_gpu_avail_size = arts_gpus[index].avail_global_mem;
+        selected_gpu_avail_size = atomic_load_explicit(
+            &arts_gpus[index].avail_global_mem, memory_order_relaxed);
       }
     }
   }
@@ -259,7 +268,7 @@ int all_or_nothing(void *edt_packet) {
     mask &= arts_gpu_lookup_db(depv[i].guid);
   }
 
-  ARTS_DEBUG("Mask: %p\n", mask);
+  ARTS_DEBUG("Mask: %lx\n", mask);
 
   if (mask) { // All DBs in GPU
     return fit(mask, size,
@@ -287,7 +296,7 @@ int atleast_one(void *edt_packet) {
     mask |= arts_gpu_lookup_db(depv[i].guid);
   }
 
-  ARTS_DEBUG("Mask: %p\n", mask);
+  ARTS_DEBUG("Mask: %lx\n", mask);
 
   if (mask) { // At least one DB in GPU
     return fit(mask, size, total_threads);

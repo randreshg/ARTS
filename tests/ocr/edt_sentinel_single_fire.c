@@ -39,14 +39,14 @@
 
 /* Counter DB: one atomic per scenario fire-count. */
 typedef struct {
-  _Atomic unsigned int fired_a;
-  _Atomic unsigned int fired_b;
-  _Atomic unsigned int fired_c;
+  _Atomic(unsigned int) fired_a;
+  _Atomic(unsigned int) fired_b;
+  _Atomic(unsigned int) fired_c;
 } counters_t;
 
 #define PV_CTR 0 /* paramv[0] = counters DB guid */
 
-static void bump(arts_guid_t ctr_guid, _Atomic unsigned int *which) {
+static void bump(arts_guid_t ctr_guid, _Atomic(unsigned int) *which) {
   (void)ctr_guid;
   atomic_fetch_add_explicit(which, 1u, memory_order_relaxed);
 }

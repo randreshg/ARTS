@@ -36,14 +36,13 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-#ifndef ARTS_COMPUTE_EDT_H
-#define ARTS_COMPUTE_EDT_H
+#ifndef ARTS_EDT_H
+#define ARTS_EDT_H
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #include "arts/runtime_types.h"
-#include "arts/utils/atomics.h"
 
 struct arts_msg_object_blob_packet_s;
 

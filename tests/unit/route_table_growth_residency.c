@@ -70,9 +70,9 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
 /* As the engine's: freeing a slot's parked payloads detaches its list, a
  * write to the slot. */
-static atomic_uint g_frees;
+static _Atomic(unsigned int) g_frees;
 void arts_ooo_free_all(struct arts_route_item_s *s) {
-  atomic_fetch_add(&g_frees, 1);
+  atomic_fetch_add_explicit(&g_frees, 1, memory_order_relaxed);
   (void)arts_lf_stack_drain(&s->ooo_list);
 }
 
@@ -101,17 +101,17 @@ static size_t seg_bytes(unsigned int size) {
 
 /* ── the table's constructor, counted and held ─────────────────────────── */
 
-static atomic_uint g_builds;
-static atomic_int g_building;
-static atomic_int g_release;
+static _Atomic(unsigned int) g_builds;
+static _Atomic(int) g_building;
+static _Atomic(int) g_release;
 
 static arts_route_table_t *held_new_route_table(unsigned int size,
                                                 unsigned int shift) {
-  atomic_fetch_add(&g_builds, 1);
-  atomic_store(&g_building, 1);
+  atomic_fetch_add_explicit(&g_builds, 1, memory_order_relaxed);
+  atomic_store_explicit(&g_building, 1, memory_order_release);
   struct timespec ts = {0, BUILD_HOLD_MS * 1000000L};
   nanosleep(&ts, NULL);
-  while (!atomic_load(&g_release)) {
+  while (!atomic_load_explicit(&g_release, memory_order_acquire)) {
     sched_yield();
   }
   return arts_new_route_table(size, shift);
@@ -242,7 +242,7 @@ static void check_growth(const char *phase, arts_route_table_t *root,
                          const arts_guid_t *keys, claimer_t *c) {
   arts_route_table_t *seg =
       atomic_load_explicit(&root->next, memory_order_acquire);
-  unsigned builds = atomic_load(&g_builds);
+  unsigned builds = atomic_load_explicit(&g_builds, memory_order_relaxed);
   (void)fprintf(stderr, "%s: constructor calls %u\n", phase, builds);
   CHECK(builds == 1, "%s: the segment was built %u times\n", phase, builds);
   if (seg == NULL) {
@@ -280,9 +280,9 @@ static void check_growth(const char *phase, arts_route_table_t *root,
 }
 
 static void reset_counts(int released) {
-  atomic_store(&g_builds, 0);
-  atomic_store(&g_building, 0);
-  atomic_store(&g_release, released);
+  atomic_store_explicit(&g_builds, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_building, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_release, released, memory_order_relaxed);
 }
 
 static int link_is_growing(arts_route_table_t *t) {
@@ -346,9 +346,9 @@ static void phase_a(void) {
    * that holds none, so it populates no page the run never wrote. */
   static arts_lf_link_t parked;
   arts_lf_stack_push(&root->data[0].ooo_list, &parked);
-  atomic_store(&g_frees, 0);
+  atomic_store_explicit(&g_frees, 0, memory_order_relaxed);
   arts_delete_route_table(root);
-  unsigned frees = atomic_load(&g_frees);
+  unsigned frees = atomic_load_explicit(&g_frees, memory_order_relaxed);
   (void)fprintf(stderr, "A: delete drained %u slot(s)\n", frees);
   CHECK(frees == 1,
         "A: delete drained %u slots; one slot holds a parked payload\n", frees);
@@ -431,13 +431,13 @@ static void phase_b(void) {
     pthread_create(&tid[t], NULL, claim_by_reserve, &c[t]);
   }
   pthread_barrier_wait(&start);
-  while (atomic_load(&g_building) == 0) {
+  while (atomic_load_explicit(&g_building, memory_order_acquire) == 0) {
     sched_yield();
   }
   CHECK(link_is_growing(root), "B: the link is not GROWING while building\n");
   walk_while_building(keys);
   CHECK(link_is_growing(root), "B: the link left GROWING during the walk\n");
-  atomic_store(&g_release, 1);
+  atomic_store_explicit(&g_release, 1, memory_order_release);
   for (int t = 0; t < THREADS; t++) {
     pthread_join(tid[t], NULL);
   }
@@ -494,7 +494,7 @@ static void phase_c(void) {
   reserver_t a = {key, NULL};
   pthread_t ta;
   pthread_create(&ta, NULL, reserve_one, &a);
-  while (atomic_load(&g_building) == 0) {
+  while (atomic_load_explicit(&g_building, memory_order_acquire) == 0) {
     sched_yield();
   }
   /* A retire returns one slot of the window while A builds. */
@@ -507,7 +507,7 @@ static void phase_c(void) {
   pthread_create(&tb, NULL, reserve_one, &b);
   pthread_join(tb, NULL);
   CHECK(link_is_growing(root), "C: the link left GROWING before B finished\n");
-  atomic_store(&g_release, 1);
+  atomic_store_explicit(&g_release, 1, memory_order_release);
   pthread_join(ta, NULL);
 
   CHECK(b.slot == returned, "C: B did not publish in the returned slot\n");

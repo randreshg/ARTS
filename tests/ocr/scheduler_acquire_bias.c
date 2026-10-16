@@ -51,12 +51,12 @@
 
 static void mark_run(uint64_t *state, unsigned idx) {
   uint64_t prev = atomic_fetch_add_explicit(
-      (_Atomic uint64_t *)&state[ST_BITS + idx], 1u, memory_order_acq_rel);
+      (_Atomic(uint64_t) *)&state[ST_BITS + idx], 1u, memory_order_acq_rel);
   if (prev != 0u) {
-    atomic_fetch_add_explicit((_Atomic uint64_t *)&state[ST_DOUBLE], 1u,
+    atomic_fetch_add_explicit((_Atomic(uint64_t) *)&state[ST_DOUBLE], 1u,
                               memory_order_acq_rel);
   }
-  atomic_fetch_add_explicit((_Atomic uint64_t *)&state[ST_RUNS], 1u,
+  atomic_fetch_add_explicit((_Atomic(uint64_t) *)&state[ST_RUNS], 1u,
                             memory_order_acq_rel);
 }
 
@@ -113,9 +113,9 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   uint64_t *state = (uint64_t *)depv[1].ptr;
-  uint64_t runs = atomic_load_explicit((_Atomic uint64_t *)&state[ST_RUNS],
+  uint64_t runs = atomic_load_explicit((_Atomic(uint64_t) *)&state[ST_RUNS],
                                        memory_order_acquire);
-  uint64_t dbl = atomic_load_explicit((_Atomic uint64_t *)&state[ST_DOUBLE],
+  uint64_t dbl = atomic_load_explicit((_Atomic(uint64_t) *)&state[ST_DOUBLE],
                                       memory_order_acquire);
   if (dbl != 0u) {
     (void)fprintf(stderr,
@@ -129,7 +129,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   for (unsigned i = 0; i < TOTAL_EDTS; i++) {
-    uint64_t c = atomic_load_explicit((_Atomic uint64_t *)&state[ST_BITS + i],
+    uint64_t c = atomic_load_explicit((_Atomic(uint64_t) *)&state[ST_BITS + i],
                                       memory_order_acquire);
     if (c != 1u) {
       (void)fprintf(stderr, "FAIL: EDT %u ran %llu times (want 1)\n", i,

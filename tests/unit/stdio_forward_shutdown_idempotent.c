@@ -59,7 +59,7 @@ int main(void) {
   /* Third for good measure. */
   arts_stdio_forwarder_shutdown_all();
 
-  if (__atomic_load_n(&g_forwarders, __ATOMIC_ACQUIRE) != NULL) {
+  if (atomic_load_explicit(&g_forwarders, memory_order_acquire) != NULL) {
     (void)fprintf(stderr, "FAIL idempotent: g_forwarders not NULL after "
                           "shutdown\n");
     return 1;

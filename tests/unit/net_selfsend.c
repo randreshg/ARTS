@@ -51,8 +51,8 @@ void *arts_calloc(size_t n, size_t size) { return calloc(n, size); }
 void arts_free(void *ptr) { free(ptr); }
 
 /* ---- dispatch capture (the stubbed RX sink) ------------------------------ */
-static _Atomic int g_recv_count;
-static _Atomic unsigned g_last_len;
+static _Atomic(int) g_recv_count;
+static _Atomic(unsigned) g_last_len;
 static unsigned char g_last[8192];
 
 void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {

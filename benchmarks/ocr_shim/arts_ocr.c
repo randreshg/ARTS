@@ -73,6 +73,7 @@
 #include "arts/gas/route_table.h"
 #include "arts/system/threads.h"
 #include "arts/utils/malloc.h"
+#include "arts/utils/stdatomic_compat.h"
 
 /* Clean up the redirects */
 #undef DB_MODE_NULL
@@ -461,12 +462,17 @@ typedef struct {
   CollectiveContribState contrib[]; /* nbContribs entries (flexible array) */
 } CollectiveMetadata;
 
+/* `key` is written once, by CAS(NULL -> key), and binds the slot to its key
+ * for the process lifetime.  `metaDbGuid` goes EMPTY -> live guid ->
+ * TOMBSTONE, and from TOMBSTONE to a live guid again, by CAS only; the
+ * registrant's release CAS publishes the metadata behind the guid, and every
+ * load of it acquires. */
 typedef struct {
-  arts_guid_t key;        /* write-once via CAS(NULL->key) */
-  arts_guid_t metaDbGuid; /* EMPTY -> live guid -> TOMBSTONE, CAS-only */
+  _Atomic(arts_guid_t) key;
+  _Atomic(arts_guid_t) metaDbGuid;
 } CollectiveMapEntry;
 
-static CollectiveMapEntry collectiveMetaMap[COLLECTIVE_HASH_SIZE] = {{0, 0}};
+static CollectiveMapEntry collectiveMetaMap[COLLECTIVE_HASH_SIZE];
 
 enum collective_register_result {
   COLLECTIVE_REGISTER_OK = 0,
@@ -488,11 +494,12 @@ tryRegisterCollectiveMeta(arts_guid_t key, arts_guid_t metaDbGuid) {
   u32 idx = collectiveHash(key);
   for (u32 i = 0; i < COLLECTIVE_HASH_SIZE; i++) {
     CollectiveMapEntry *e = &collectiveMetaMap[(idx + i) % COLLECTIVE_HASH_SIZE];
-    arts_guid_t curKey = __atomic_load_n(&e->key, __ATOMIC_ACQUIRE);
+    arts_guid_t curKey = atomic_load_explicit(&e->key, memory_order_acquire);
     if (curKey == NULL_GUID) {
       arts_guid_t expectKey = NULL_GUID;
-      if (__atomic_compare_exchange_n(&e->key, &expectKey, key, false,
-                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      if (atomic_compare_exchange_strong_explicit(&e->key, &expectKey, key,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire)) {
         curKey = key;
       } else {
         curKey = expectKey; /* concurrently claimed; re-evaluate */
@@ -502,11 +509,12 @@ tryRegisterCollectiveMeta(arts_guid_t key, arts_guid_t metaDbGuid) {
       continue; /* slot permanently bound to another key */
     }
     /* this key's slot; registration = one CAS on the value word */
-    arts_guid_t curVal = __atomic_load_n(&e->metaDbGuid, __ATOMIC_ACQUIRE);
+    arts_guid_t curVal =
+        atomic_load_explicit(&e->metaDbGuid, memory_order_acquire);
     while (curVal == NULL_GUID || curVal == COLLECTIVE_TOMBSTONE) {
-      if (__atomic_compare_exchange_n(&e->metaDbGuid, &curVal, metaDbGuid,
-                                      false, __ATOMIC_RELEASE,
-                                      __ATOMIC_ACQUIRE)) {
+      if (atomic_compare_exchange_strong_explicit(
+              &e->metaDbGuid, &curVal, metaDbGuid, memory_order_release,
+              memory_order_acquire)) {
         return COLLECTIVE_REGISTER_OK;
       }
       /* curVal reloaded by the failed CAS */
@@ -520,9 +528,10 @@ static arts_guid_t lookupCollectiveMeta(arts_guid_t key) {
   u32 idx = collectiveHash(key);
   for (u32 i = 0; i < COLLECTIVE_HASH_SIZE; i++) {
     CollectiveMapEntry *e = &collectiveMetaMap[(idx + i) % COLLECTIVE_HASH_SIZE];
-    arts_guid_t curKey = __atomic_load_n(&e->key, __ATOMIC_ACQUIRE);
+    arts_guid_t curKey = atomic_load_explicit(&e->key, memory_order_acquire);
     if (curKey == key) {
-      arts_guid_t v = __atomic_load_n(&e->metaDbGuid, __ATOMIC_ACQUIRE);
+      arts_guid_t v =
+          atomic_load_explicit(&e->metaDbGuid, memory_order_acquire);
       return (v == COLLECTIVE_TOMBSTONE) ? NULL_GUID : v;
     }
     if (curKey == NULL_GUID) {
@@ -541,18 +550,19 @@ static arts_guid_t unregisterCollectiveMeta(arts_guid_t key) {
   u32 idx = collectiveHash(key);
   for (u32 i = 0; i < COLLECTIVE_HASH_SIZE; i++) {
     CollectiveMapEntry *e = &collectiveMetaMap[(idx + i) % COLLECTIVE_HASH_SIZE];
-    arts_guid_t curKey = __atomic_load_n(&e->key, __ATOMIC_ACQUIRE);
+    arts_guid_t curKey = atomic_load_explicit(&e->key, memory_order_acquire);
     if (curKey == NULL_GUID) {
       return NULL_GUID;
     }
     if (curKey != key) {
       continue;
     }
-    arts_guid_t curVal = __atomic_load_n(&e->metaDbGuid, __ATOMIC_ACQUIRE);
+    arts_guid_t curVal =
+        atomic_load_explicit(&e->metaDbGuid, memory_order_acquire);
     while (curVal != NULL_GUID && curVal != COLLECTIVE_TOMBSTONE) {
-      if (__atomic_compare_exchange_n(&e->metaDbGuid, &curVal,
-                                      COLLECTIVE_TOMBSTONE, false,
-                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      if (atomic_compare_exchange_strong_explicit(
+              &e->metaDbGuid, &curVal, COLLECTIVE_TOMBSTONE,
+              memory_order_acq_rel, memory_order_acquire)) {
         return curVal;
       }
       /* curVal reloaded by the failed CAS */
@@ -980,8 +990,11 @@ static void ocr_edt_trampoline(uint32_t paramc, const uint64_t *paramv,
  * wrap can mask app affinity bugs (a typo'd hint silently maps to a
  * different rank).  Warn once globally so the developer notices. */
 static void warn_oversized_affinity_once(const char *what, u64 val) {
-  static volatile u32 warned = 0;
-  if (__sync_bool_compare_and_swap(&warned, 0, 1)) {
+  /* The CAS winner warns: only its own value. */
+  static _Atomic(u32) warned;
+  u32 expected = 0;
+  if (atomic_compare_exchange_strong_explicit(
+          &warned, &expected, 1, memory_order_acq_rel, memory_order_relaxed)) {
     (void)fprintf(
         stderr,
         "[ocr_shim] %s affinity hint %lu exceeds rank count %u, "
@@ -1458,8 +1471,9 @@ u8 ocrEventCollectiveSatisfySlot(ocrGuid_t eventGuid, void *dataPtr,
   /* contributor `islot`'s k-th satisfy is global generation k.  Pair it with
    * the dependent registered by the preceding ocrAddDependenceSlot for this
    * contributor (recorded as "pending" for the upcoming generation), then
-   * launch this generation's tree EDTs.  __sync barriers serialize multiple
-   * worker threads contributing different islots on the same node. */
+   * launch this generation's tree EDTs.  Contributors of different islots
+   * touch disjoint contrib[] entries, and one islot's satisfies are ordered
+   * by the program. */
   CollectiveContribState *cs = &meta->contrib[islot];
   arts_guid_t dep = NULL_GUID;
   u32 depSlot = 0;
@@ -1851,12 +1865,9 @@ u8 ocrGuidRangeCreate(ocrGuid_t *rangeGuid, u64 numberGuid,
 
 /*
  * ocrGuidMapDestroy: OCR releases a previously-reserved GUID range/map.
- * ARTS exposes arts_guid_reserve_range but no matching unreserve API,
- * so this is a no-op.  Long-running apps that repeatedly create+destroy
- * GUID ranges will leak ARTS GUID space.  See plan finding L3.
- *
- * TODO: implement arts_guid_unreserve_range in core ARTS, then plumb
- * it through here.
+ * ARTS can reserve a range (arts_guid_reserve_range) but has no call that
+ * returns one, so this is a no-op, and a program that repeatedly creates and
+ * destroys GUID ranges consumes GUID space it never gets back.
  */
 u8 ocrGuidMapDestroy(ocrGuid_t mapGuid) {
   (void)mapGuid;
@@ -2122,15 +2133,10 @@ u8 ocrGetHintValue(ocrHint_t *hint, ocrHintProp_t hintProp, u64 *value) {
 
 /*
  * ocrSetHint / ocrGetHint apply hints to existing GUIDs (post-creation).
- * ARTS treats EDTs as immutable after creation: the route/hint passed at
- * arts_edt_create time is final.  DBs in principle could be relocated via
- * arts_db_move, but the current shim doesn't translate ocrSetHint to it.
- *
- * Returning 0 means "success" — apps that depend on dynamic hint changes
- * will silently get suboptimal placement.  See plan finding I3.
- *
- * TODO: implement DB hint changes via arts_db_move when an OCR app
- * actually exercises this path.
+ * ARTS fixes an object's placement when it is created: the hint passed to
+ * arts_edt_create or arts_db_create is final, and no call moves an EDT or a
+ * DB afterwards.  So both are no-ops that report success: ocrSetHint changes
+ * no placement, and ocrGetHint leaves the caller's hint as it was.
  */
 u8 ocrSetHint(ocrGuid_t guid, ocrHint_t *hint) {
   (void)guid;

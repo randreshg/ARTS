@@ -55,13 +55,13 @@ ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 /* ---- oracles ---------------------------------------------------------- */
 typedef struct {
   arts_guid_t guid;
-  _Atomic int destroy_requested; /* owner armed a destroy for this object */
+  _Atomic(int) destroy_requested; /* owner armed a destroy for this object */
 } obj_t;
 
-static _Atomic long v_premature_free;  /* O1 */
-static _Atomic long v_orphaned;        /* O2 */
-static _Atomic long v_crossguid;       /* O3 */
-static _Atomic long n_installs;
+static _Atomic(long) v_premature_free; /* O1 */
+static _Atomic(long) v_orphaned;       /* O2 */
+static _Atomic(long) v_crossguid;      /* O3 */
+static _Atomic(long) n_installs;
 
 static void test_deleter(void *p) {
   obj_t *o = (obj_t *)p;
@@ -111,14 +111,14 @@ static void rt_init(unsigned size, unsigned shift) {
 #define DEAD_RING 64
 
 static pthread_barrier_t bar;
-static _Atomic arts_guid_t g_victim;   /* the GUID both destroyers tear down */
-static _Atomic int g_done;
+static _Atomic(arts_guid_t) g_victim; /* the GUID both destroyers tear down */
+static _Atomic(int) g_done;
 
 /* Ring of recently destroyed GUIDs, fed by main (victims) and churn (a
  * sample); the late-messenger re-reserves them so dead keys keep re-entering
  * freed slots — the state a slot-word identity check cannot tell apart. */
-static _Atomic arts_guid_t g_dead[DEAD_RING];
-static _Atomic unsigned g_dead_w;
+static _Atomic(arts_guid_t) g_dead[DEAD_RING];
+static _Atomic(unsigned) g_dead_w;
 
 static void dead_push(arts_guid_t g) {
   unsigned w = atomic_fetch_add_explicit(&g_dead_w, 1, memory_order_relaxed);
@@ -259,11 +259,12 @@ int main(void) {
   pthread_join(lm, NULL);
   for (int i = 0; i < 2; i++) { pthread_join(rd[i], NULL); }
 
-  long p = atomic_load(&v_premature_free);
-  long o2 = atomic_load(&v_orphaned);
-  long x = atomic_load(&v_crossguid);
+  long p = atomic_load_explicit(&v_premature_free, memory_order_relaxed);
+  long o2 = atomic_load_explicit(&v_orphaned, memory_order_relaxed);
+  long x = atomic_load_explicit(&v_crossguid, memory_order_relaxed);
   printf("installs=%ld  O1 premature_free=%ld  O2 orphaned_install=%ld  "
-         "O3 crossguid=%ld\n", atomic_load(&n_installs), p, o2, x);
+         "O3 crossguid=%ld\n",
+         atomic_load_explicit(&n_installs, memory_order_relaxed), p, o2, x);
   if (p || o2 || x) {
     printf("FAIL rt_reclaim_dupdestroy\n");
     return 1;

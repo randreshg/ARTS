@@ -81,6 +81,7 @@
 
 #include "arts.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -89,14 +90,21 @@
 #define WARMUP 100u
 #define BURST 64u
 
+/* A payload word is viewed as an atomic object, which needs a lock-free
+ * atomic of the plain type's size. */
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2 &&
+                   sizeof(_Atomic(unsigned int)) == sizeof(unsigned int),
+               "the payload view needs a lock-free unsigned int atomic");
+
 static void rw_bump_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                         arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)paramv;
   (void)depc;
-  unsigned int *d = (unsigned int *)depv[0].ptr;
+  /* The contended form's writers of one rank overlap. */
+  _Atomic(unsigned int) *d = (_Atomic(unsigned int) *)depv[0].ptr;
   if (d != NULL) {
-    d[0] = d[0] + 1u;
+    atomic_fetch_add_explicit(d, 1u, memory_order_relaxed);
   }
 }
 
@@ -112,7 +120,7 @@ static void away_creator_edt(uint32_t paramc, const uint64_t *paramv,
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0});
-  ((unsigned int *)ptr)[0] = 1u;
+  atomic_init((_Atomic(unsigned int) *)ptr, 1u);
   arts_db_release(db, DB_MODE_RW);
 }
 
@@ -133,7 +141,7 @@ static arts_guid_t create_counter(void) {
   arts_guid_t db =
       arts_db_create(&ptr, sizeof(unsigned int), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = 0});
-  ((unsigned int *)ptr)[0] = 0u;
+  atomic_init((_Atomic(unsigned int) *)ptr, 0u);
   arts_db_release(db, DB_MODE_RW);
   return db;
 }

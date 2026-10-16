@@ -35,12 +35,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static _Atomic uint64_t g_made;
-static _Atomic uint64_t g_deleted;
+static _Atomic(uint64_t) g_made;
+static _Atomic(uint64_t) g_deleted;
 
 typedef struct {
   uint32_t magic;
-  _Atomic int live; /* identity stamp: 1 while owned, 0 when freed */
+  _Atomic(int) live; /* identity stamp: 1 while owned, 0 when freed */
 } obj_t;
 #define OBJ_MAGIC 0x600D600Du
 
@@ -72,7 +72,7 @@ static void del_obj(void *p) {
 #define A_ROUNDS 4000
 
 static arts_shared_ptr_t g_a_cb;
-static _Atomic int g_a_gate;
+static _Atomic(int) g_a_gate;
 static pthread_barrier_t g_a_barrier;
 
 static void *a_worker(void *arg) {
@@ -84,8 +84,8 @@ static void *a_worker(void *arg) {
 }
 
 static int part_a(void) {
-  atomic_store(&g_made, 0);
-  atomic_store(&g_deleted, 0);
+  atomic_store_explicit(&g_made, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_deleted, 0, memory_order_relaxed);
   for (int r = 0; r < A_ROUNDS; r++) {
     g_a_cb = arts_shared_make(make_obj(), del_obj); /* strong=1 */
     arts_shared_ptr_t copies[A_THREADS];
@@ -102,15 +102,16 @@ static int part_a(void) {
     }
     pthread_barrier_destroy(&g_a_barrier);
     /* Owner's ref still held -> deleter must NOT have run yet. */
-    if (atomic_load(&g_deleted) != (uint64_t)r) {
+    if (atomic_load_explicit(&g_deleted, memory_order_relaxed) != (uint64_t)r) {
       (void)fprintf(stderr,
                     "FAIL shared_lifecycle_race[A]: premature delete round %d "
                     "(deleted=%" PRIu64 ")\n",
-                    r, atomic_load(&g_deleted));
+                    r, atomic_load_explicit(&g_deleted, memory_order_relaxed));
       return 1;
     }
     arts_shared_release(&g_a_cb); /* last drop -> deleter once */
-    if (atomic_load(&g_deleted) != (uint64_t)(r + 1)) {
+    if (atomic_load_explicit(&g_deleted, memory_order_relaxed) !=
+        (uint64_t)(r + 1)) {
       (void)fprintf(stderr,
                     "FAIL shared_lifecycle_race[A]: deleter not exactly once "
                     "round %d\n",
@@ -118,7 +119,8 @@ static int part_a(void) {
       return 1;
     }
   }
-  if (atomic_load(&g_made) != A_ROUNDS || atomic_load(&g_deleted) != A_ROUNDS) {
+  if (atomic_load_explicit(&g_made, memory_order_relaxed) != A_ROUNDS ||
+      atomic_load_explicit(&g_deleted, memory_order_relaxed) != A_ROUNDS) {
     (void)fprintf(stderr,
                   "FAIL shared_lifecycle_race[A]: made/deleted mismatch\n");
     return 1;
@@ -128,8 +130,8 @@ static int part_a(void) {
 
 /* ---- Part B+C: mixed-API churn + abandon-vs-make ---- */
 static _Atomic(arts_shared_slot_t) g_slot;
-static atomic_int g_start;
-static _Atomic int g_stop;
+static _Atomic(int) g_start;
+static _Atomic(int) g_stop;
 
 #define MIX_THREADS 8
 #define MIX_OPS 100000
@@ -207,11 +209,11 @@ static void *mix_worker(void *arg) {
 }
 
 static int part_bc(void) {
-  atomic_store(&g_made, 0);
-  atomic_store(&g_deleted, 0);
+  atomic_store_explicit(&g_made, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_deleted, 0, memory_order_relaxed);
   atomic_init(&g_start, 0);
   atomic_init(&g_stop, 0);
-  atomic_store(&g_slot, (arts_shared_slot_t){0});
+  atomic_store_explicit(&g_slot, (arts_shared_slot_t){0}, memory_order_relaxed);
   arts_shared_slot_store(&g_slot, arts_shared_make(make_obj(), del_obj));
 
   pthread_t th[MIX_THREADS];
@@ -224,8 +226,8 @@ static int part_bc(void) {
   }
   arts_shared_slot_store(&g_slot, (arts_shared_ptr_t)NULL); /* drop final */
 
-  uint64_t made = atomic_load(&g_made);
-  uint64_t del = atomic_load(&g_deleted);
+  uint64_t made = atomic_load_explicit(&g_made, memory_order_relaxed);
+  uint64_t del = atomic_load_explicit(&g_deleted, memory_order_relaxed);
   if (made != del) {
     (void)fprintf(stderr,
                   "FAIL shared_lifecycle_race[B/C]: made=%" PRIu64
@@ -238,8 +240,8 @@ static int part_bc(void) {
 
 /* ---- Part D: make/use/release cycles ---- */
 static int part_d(void) {
-  atomic_store(&g_made, 0);
-  atomic_store(&g_deleted, 0);
+  atomic_store_explicit(&g_made, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_deleted, 0, memory_order_relaxed);
   /* Tight reuse: make -> get -> release N times; each release frees the cb
    * and its object, and the next make allocates afresh. */
   for (int i = 0; i < 200000; i++) {
@@ -251,7 +253,8 @@ static int part_d(void) {
     }
     arts_shared_release(&s);
   }
-  if (atomic_load(&g_made) != atomic_load(&g_deleted)) {
+  if (atomic_load_explicit(&g_made, memory_order_relaxed) !=
+      atomic_load_explicit(&g_deleted, memory_order_relaxed)) {
     (void)fprintf(stderr, "FAIL shared_lifecycle_race[D]: reuse imbalance\n");
     return 1;
   }

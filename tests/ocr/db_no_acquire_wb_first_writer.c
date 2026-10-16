@@ -32,11 +32,15 @@
  * exercises the same shape with the read served locally.  GUIDs travel in
  * paramv: an EDT body runs on whichever rank the hint named, and a file-scope
  * variable assigned by the creating EDT exists only in that rank's image.
+ *
+ * The unordered readers race the writer on every element, so the program
+ * accesses the elements only atomically, the ordered reader included.
  */
 
 #include "arts.h"
 #include "../test_failure_status.h"
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #define DB_ELEMS 256u
@@ -50,6 +54,12 @@
  * rank are combined into a single request by design, so spreading them over
  * the eligible ranks is what puts more than one arrival in the window. */
 #define RACERS 6u
+
+/* A payload word is viewed as an atomic object, which needs a lock-free
+ * atomic of the plain type's size. */
+_Static_assert(ATOMIC_LONG_LOCK_FREE == 2 &&
+                   sizeof(_Atomic(uint64_t)) == sizeof(uint64_t),
+               "the payload view needs a lock-free 64-bit atomic");
 
 static void fail(const char *what) {
   arts_printf("FAIL: %s (rank %u)\n", what, arts_get_current_rank());
@@ -79,10 +89,11 @@ void wb_unordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
          "returned no storage");
     return;
   }
-  const volatile uint64_t *p = (const volatile uint64_t *)depv[0].ptr;
+  const _Atomic(uint64_t) *p = (const _Atomic(uint64_t) *)depv[0].ptr;
   uint64_t sink = 0;
   for (unsigned i = 0; i < DB_ELEMS; i++) {
-    sink += p[i]; /* either value is legal; the read must be addressable */
+    /* Either value is legal; the read must be addressable. */
+    sink += atomic_load_explicit(&p[i], memory_order_relaxed);
   }
   (void)sink;
   arts_event_satisfy(done, NULL_GUID);
@@ -100,12 +111,13 @@ void wb_ordered_reader_edt(uint32_t paramc, const uint64_t *paramv,
     fail("an RO acquire ordered after the writer returned no storage");
     return;
   }
-  const uint64_t *p = (const uint64_t *)depv[1].ptr;
+  const _Atomic(uint64_t) *p = (const _Atomic(uint64_t) *)depv[1].ptr;
   for (unsigned i = 0; i < DB_ELEMS; i++) {
-    if (p[i] != STAMP(i)) {
+    uint64_t got = atomic_load_explicit(&p[i], memory_order_relaxed);
+    if (got != STAMP(i)) {
       arts_printf("FAIL: element %u reads %llu, expected the writer's %llu "
                   "(rank %u)\n",
-                  i, (unsigned long long)p[i], (unsigned long long)STAMP(i),
+                  i, (unsigned long long)got, (unsigned long long)STAMP(i),
                   arts_get_current_rank());
       arts_test_fail();
       arts_shutdown();
@@ -141,9 +153,9 @@ void wb_writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t u = arts_edt_create(wb_unordered_reader_edt, 1, upv, 1, &uh);
   arts_add_dependence(db, u, 0, DB_MODE_RO);
 
-  uint64_t *p = (uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *p = (_Atomic(uint64_t) *)depv[0].ptr;
   for (unsigned i = 0; i < DB_ELEMS; i++) {
-    p[i] = STAMP(i);
+    atomic_store_explicit(&p[i], STAMP(i), memory_order_relaxed);
   }
 }
 

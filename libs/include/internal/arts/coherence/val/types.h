@@ -20,8 +20,8 @@
 ** Licensed under the Apache License, Version 2.0 (the "License");           **
 ** you may not use this file except in compliance with the License.          **
 ******************************************************************************/
-#ifndef ARTS_MEMORY_COHERENCE_VAL_TYPES_H
-#define ARTS_MEMORY_COHERENCE_VAL_TYPES_H
+#ifndef ARTS_COHERENCE_VAL_TYPES_H
+#define ARTS_COHERENCE_VAL_TYPES_H
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -330,12 +330,16 @@ struct arts_db_s {
   uint8_t pending_return_ack;
   uint8_t pending_return_credit;
 #endif
-#ifdef ARTS_USE_GPU
-  /* GPU staging locks / version stamps (GPU DB path; full arts_db_s alloc). */
-  volatile unsigned int reader;  /**< GPU staging reader lock. */
-  volatile unsigned int writer;  /**< GPU staging writer lock. */
-  volatile unsigned int version; /**< GPU LC version counter. */
-  unsigned int time_stamp;       /**< GPU staging timestamp. */
+#ifdef ARTS_GPU_LAYOUT
+  /* GPU staging state.  The lock exists only for an ARTS_DB_GPU block (NULL
+   * otherwise) and is set before the create publishes the descriptor.  A CPU
+   * EDT running with the block holds its read side for the whole body;
+   * staging and the LC merges hold its write side.  The lock orders every
+   * access to version and time_stamp; version is atomic only because
+   * concurrent read-side holders bump it. */
+  pthread_rwlock_t *gpu_lock;
+  _Atomic(unsigned int) version; /* LC version */
+  unsigned int time_stamp;       /* LC time stamp */
 #endif
 } ARTS_ALIGNED_MAX;
 
@@ -345,4 +349,4 @@ struct arts_db_s {
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_VAL_TYPES_H */
+#endif /* ARTS_COHERENCE_VAL_TYPES_H */

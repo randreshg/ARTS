@@ -103,7 +103,8 @@ static void scenario(int nodes) {
   /* Every node full: no placement can succeed, and what is mapped from here
    * on carries no placement policy at all. */
   arts_regpool_set_forced_full(all);
-  unsigned policies = regpool_sim_mbind_calls;
+  unsigned policies =
+      atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed);
 
   unsigned char *unplaced =
       (unsigned char *)arts_regpool_alloc_aligned(SECOND_SIZE, 64);
@@ -143,7 +144,8 @@ static void scenario(int nodes) {
   assert(live == 0 && retired == 0 &&
          "the arena path gives retired mappings back before it maps where "
          "the kernel chooses");
-  assert(regpool_sim_mbind_calls == policies &&
+  assert(atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) ==
+             policies &&
          "a mapping no node can place is left to the kernel, unbound");
   assert(regpool_sim_all_policies_ok());
   assert(regpool_sim_consulted());

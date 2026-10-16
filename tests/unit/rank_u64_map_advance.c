@@ -42,9 +42,9 @@
 #define ADV_ITERS 5000
 
 static struct arts_rank_to_u64_map_s *g_map;
-static _Atomic int g_start;
-static _Atomic uint64_t g_true_count;     /* total advance()==true returns */
-static _Atomic uint64_t g_max_true_value; /* highest value that won a CAS */
+static _Atomic(int) g_start;
+static _Atomic(uint64_t) g_true_count;     /* total advance()==true returns */
+static _Atomic(uint64_t) g_max_true_value; /* highest value that won a CAS */
 
 static int part1_contract(void) {
   struct arts_rank_to_u64_map_s *m = arts_rank_u64_map_create(NRANKS);
@@ -173,9 +173,9 @@ static int part2_stress(void) {
 }
 
 /* Exactly-once: many threads advance the SAME value on a fresh slot. */
-static _Atomic uint64_t g_same_true;
+static _Atomic(uint64_t) g_same_true;
 static struct arts_rank_to_u64_map_s *g_same_map;
-static _Atomic int g_same_start;
+static _Atomic(int) g_same_start;
 static void *same_advancer(void *arg) {
   (void)arg;
   while (!atomic_load_explicit(&g_same_start, memory_order_acquire)) {

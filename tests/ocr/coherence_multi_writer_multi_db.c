@@ -77,7 +77,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   for (uint32_t i = 0; i < depc; i++) {
-    _Atomic int *data = (_Atomic int *)depv[i].ptr;
+    _Atomic(int) *data = (_Atomic(int) *)depv[i].ptr;
     if (data == NULL) {
       (void)fprintf(stderr, "FAIL: writer_edt got NULL ptr on slot %u\n", i);
       arts_abort(1);
@@ -95,7 +95,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   for (uint32_t i = 0; i < M_DBS; i++) {
-    _Atomic int *data = (_Atomic int *)depv[i].ptr;
+    _Atomic(int) *data = (_Atomic(int) *)depv[i].ptr;
     if (data == NULL) {
       (void)fprintf(stderr, "FAIL: verify_edt got NULL ptr on slot %u\n", i);
       arts_abort(1);
@@ -125,10 +125,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   arts_guid_t dbs[M_DBS];
   for (int j = 0; j < M_DBS; j++) {
-    int *data;
+    _Atomic(int) *data;
     dbs[j] = arts_db_create((void **)&data, sizeof(int), ARTS_DB,
                             ARTS_DB_PROP_NONE, NULL);
-    *data = 0;
+    atomic_init(data, 0);
   }
 
   arts_event_hint_t latch_hint = ARTS_EVENT_HINT_LATCH(N_WRITERS);

@@ -67,20 +67,20 @@ static void counter_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t *state = (uint64_t *)depv[1].ptr;
   arts_guid_t received = depv[0].guid;
 
+  /* The GUID slots are written before the block is published and only read
+   * after it, so they are plain; the two counters are atomic. */
   int found = 0;
   for (uint64_t g = 0; g < len; g++) {
-    _Atomic uint64_t *s = (_Atomic uint64_t *)&state[off + g];
-    if ((arts_guid_t)atomic_load_explicit(s, memory_order_acquire) ==
-        received) {
+    if ((arts_guid_t)state[off + g] == received) {
       found = 1;
       break;
     }
   }
   if (!found) {
-    atomic_fetch_add_explicit((_Atomic uint64_t *)&state[ST_BAD], 1u,
+    atomic_fetch_add_explicit((_Atomic(uint64_t) *)&state[ST_BAD], 1u,
                               memory_order_acq_rel);
   }
-  atomic_fetch_add_explicit((_Atomic uint64_t *)&state[ST_DELIVERED], 1u,
+  atomic_fetch_add_explicit((_Atomic(uint64_t) *)&state[ST_DELIVERED], 1u,
                             memory_order_acq_rel);
 }
 
@@ -126,9 +126,9 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-  uint64_t got = atomic_load_explicit((_Atomic uint64_t *)&state[ST_DELIVERED],
+  uint64_t got = atomic_load_explicit((_Atomic(uint64_t) *)&state[ST_DELIVERED],
                                       memory_order_acquire);
-  uint64_t bad = atomic_load_explicit((_Atomic uint64_t *)&state[ST_BAD],
+  uint64_t bad = atomic_load_explicit((_Atomic(uint64_t) *)&state[ST_BAD],
                                       memory_order_acquire);
   if (got != (uint64_t)TOTAL) {
     arts_printf("FAIL: event_channel_transient_null delivered=%llu want %d\n",

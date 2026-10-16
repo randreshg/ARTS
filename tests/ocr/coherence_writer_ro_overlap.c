@@ -72,7 +72,7 @@
 ///     EVERY round must observe it verbatim.  Both readers and writers assert
 ///     it, which catches a serve of the wrong buffer, of uninitialised memory,
 ///     or at the wrong offset, on any of the paths above.
-///   * Churn — every round-r writer memsets the WHOLE churn region to the
+///   * Churn — every round-r writer fills the WHOLE churn region with the
 ///     single byte STAMP(r).  All writers of a round therefore write identical
 ///     bytes, so their mutual races are value-idempotent and the round's
 ///     outcome does not depend on which writer lands last.  A round-r acquirer
@@ -81,14 +81,16 @@
 ///     (the write window has not reached this byte) and STAMP(r) (it has).
 ///     Every acquirer asserts exactly that, byte by byte.
 ///
-/// Byte granularity is deliberate: a reader served concurrently with an open
-/// write window may legally observe a mix of the two stamps — that is the racy
-/// read the OCR model permits — but it may never observe a byte from an older
-/// round (a copy that survived a write window it should not have), nor a byte
-/// outside the stamp alphabet (0x00 from an unwritten buffer, junk from a
-/// foreign slab). The assertion is therefore free of any atomicity assumption
-/// about how a snapshot is produced, while still being a true oracle rather
-/// than a smoke test.
+/// The writers and readers of a round race on the churn words by design, so
+/// the program accesses them only as atomic 64-bit words.  A reader served a
+/// copy taken while a writer stores may still see a word torn by that copy,
+/// which is why the check is per byte: a mix of the two stamps is the racy
+/// read the OCR model permits, but a byte from an older round (a copy that
+/// survived a write window it should not have) or outside the stamp alphabet
+/// (0x00 from an unwritten buffer, junk from a foreign slab) never is.  The
+/// assertion is therefore free of any atomicity assumption about how a
+/// snapshot is produced, while still being a true oracle rather than a smoke
+/// test.
 ///
 /// A round's writers of one block are unordered, which DB-WRF does not admit,
 /// so it runs on every arm of the OCR model and not under FLUSH.
@@ -99,6 +101,8 @@
 
 #include "arts.h"
 
+#include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -116,6 +120,8 @@
 #define PAYLOAD_BYTES 4096u
 #define HDR_BYTES 32u
 #define CHURN_BYTES (PAYLOAD_BYTES - HDR_BYTES)
+#define HDR_WORDS (HDR_BYTES / sizeof(uint64_t))
+#define CHURN_WORDS (CHURN_BYTES / sizeof(uint64_t))
 
 #define HDR_MAGIC 0x5457455255524554ull
 #define HDR_MIX 0x9E3779B97F4A7C15ull
@@ -125,23 +131,35 @@
  * legality test needs no assumption about copy atomicity. */
 #define STAMP_BASE 0xA1u
 #define STAMP(round) ((uint8_t)(STAMP_BASE + (unsigned)(round)))
+/* A churn word every byte of which is STAMP(round). */
+#define STAMP_WORD(round) ((uint64_t)STAMP(round) * 0x0101010101010101ull)
 
-static void header_write(uint8_t *p, uint64_t db_idx) {
-  uint64_t *h = (uint64_t *)(void *)p;
-  h[0] = HDR_MAGIC;
-  h[1] = db_idx;
-  h[2] = (uint64_t)CHURN_BYTES;
-  h[3] = HDR_MAGIC ^ (db_idx * HDR_MIX);
+/* The block as the program sees it: the header is written once, before any
+ * EDT that reads it, and the churn words are only ever accessed atomically. */
+typedef struct {
+  uint64_t hdr[HDR_WORDS];
+  _Atomic(uint64_t) churn[CHURN_WORDS];
+} block_t;
+_Static_assert(offsetof(block_t, churn) == HDR_BYTES &&
+                   sizeof(block_t) == PAYLOAD_BYTES,
+               "the view lays the header and the churn over the payload");
+_Static_assert(ATOMIC_LONG_LOCK_FREE == 2,
+               "the churn view needs a lock-free 64-bit atomic");
+
+static void header_write(block_t *b, uint64_t db_idx) {
+  b->hdr[0] = HDR_MAGIC;
+  b->hdr[1] = db_idx;
+  b->hdr[2] = (uint64_t)CHURN_BYTES;
+  b->hdr[3] = HDR_MAGIC ^ (db_idx * HDR_MIX);
 }
 
 /* Returns the index of the first header word that differs, or -1 when the
  * header is intact. */
-static int header_bad_word(const uint8_t *p, uint64_t db_idx) {
-  const uint64_t *h = (const uint64_t *)(const void *)p;
-  const uint64_t want[4] = {HDR_MAGIC, db_idx, (uint64_t)CHURN_BYTES,
-                            HDR_MAGIC ^ (db_idx * HDR_MIX)};
-  for (int i = 0; i < 4; i++) {
-    if (h[i] != want[i]) {
+static int header_bad_word(const block_t *b, uint64_t db_idx) {
+  const uint64_t want[HDR_WORDS] = {HDR_MAGIC, db_idx, (uint64_t)CHURN_BYTES,
+                                    HDR_MAGIC ^ (db_idx * HDR_MIX)};
+  for (int i = 0; i < (int)HDR_WORDS; i++) {
+    if (b->hdr[i] != want[i]) {
       return i;
     }
   }
@@ -149,14 +167,20 @@ static int header_bad_word(const uint8_t *p, uint64_t db_idx) {
 }
 
 /* Returns the offset of the first churn byte outside {STAMP(round-1),
- * STAMP(round)}, or -1 when every byte is legal. */
-static long churn_bad_offset(const uint8_t *p, unsigned round) {
+ * STAMP(round)} and stores that byte in *bad, or returns -1 when every byte
+ * is legal. */
+static long churn_bad_offset(const block_t *b, unsigned round, uint8_t *bad) {
   const uint8_t prev = STAMP(round - 1u);
   const uint8_t curr = STAMP(round);
-  const uint8_t *c = p + HDR_BYTES;
-  for (uint32_t i = 0; i < CHURN_BYTES; i++) {
-    if (c[i] != prev && c[i] != curr) {
-      return (long)i;
+  for (uint32_t i = 0; i < CHURN_WORDS; i++) {
+    uint64_t w = atomic_load_explicit(&b->churn[i], memory_order_relaxed);
+    uint8_t c[sizeof(w)];
+    memcpy(c, &w, sizeof(w));
+    for (uint32_t k = 0; k < sizeof(w); k++) {
+      if (c[k] != prev && c[k] != curr) {
+        *bad = c[k];
+        return (long)(i * sizeof(w) + k);
+      }
     }
   }
   return -1;
@@ -165,23 +189,23 @@ static long churn_bad_offset(const uint8_t *p, unsigned round) {
 /* Shared assertion for both access modes: an acquire of any kind must deliver
  * the invariant header and a churn region drawn from this round's two-stamp
  * alphabet. */
-static void verify_view(const uint8_t *p, unsigned round, uint64_t db_idx,
+static void verify_view(const block_t *b, unsigned round, uint64_t db_idx,
                         const char *who) {
-  int bw = header_bad_word(p, db_idx);
+  int bw = header_bad_word(b, db_idx);
   if (bw >= 0) {
-    const uint64_t *h = (const uint64_t *)(const void *)p;
-    arts_printf("FAIL: %s rank=%u db=%llu round=%u header word %d = %llx\n", who,
-                arts_get_current_rank(), (unsigned long long)db_idx, round, bw,
-                (unsigned long long)h[bw]);
+    arts_printf("FAIL: %s rank=%u db=%llu round=%u header word %d = %llx\n",
+                who, arts_get_current_rank(), (unsigned long long)db_idx, round,
+                bw, (unsigned long long)b->hdr[bw]);
     arts_abort(1);
   }
-  long bo = churn_bad_offset(p, round);
+  uint8_t bad = 0;
+  long bo = churn_bad_offset(b, round, &bad);
   if (bo >= 0) {
     arts_printf("FAIL: %s rank=%u db=%llu round=%u churn[%ld]=%02x not in "
                 "{%02x,%02x}\n",
                 who, arts_get_current_rank(), (unsigned long long)db_idx, round,
-                bo, (unsigned)p[HDR_BYTES + (uint32_t)bo],
-                (unsigned)STAMP(round - 1u), (unsigned)STAMP(round));
+                bo, (unsigned)bad, (unsigned)STAMP(round - 1u),
+                (unsigned)STAMP(round));
     arts_abort(1);
   }
 }
@@ -195,14 +219,17 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   unsigned round = (unsigned)paramv[0];
   uint64_t db_idx = paramv[1];
-  uint8_t *p = (uint8_t *)depv[0].ptr;
-  if (p == NULL) {
+  block_t *b = (block_t *)depv[0].ptr;
+  if (b == NULL) {
     arts_printf("FAIL: writer rank=%u db=%llu round=%u got NULL ptr\n",
                 arts_get_current_rank(), (unsigned long long)db_idx, round);
     arts_abort(1);
   }
-  verify_view(p, round, db_idx, "writer");
-  memset(p + HDR_BYTES, (int)STAMP(round), CHURN_BYTES);
+  verify_view(b, round, db_idx, "writer");
+  for (uint32_t i = 0; i < CHURN_WORDS; i++) {
+    atomic_store_explicit(&b->churn[i], STAMP_WORD(round),
+                          memory_order_relaxed);
+  }
 }
 
 static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -214,13 +241,13 @@ static void reader_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   }
   unsigned round = (unsigned)paramv[0];
   uint64_t db_idx = paramv[1];
-  const uint8_t *p = (const uint8_t *)depv[0].ptr;
-  if (p == NULL) {
+  const block_t *b = (const block_t *)depv[0].ptr;
+  if (b == NULL) {
     arts_printf("FAIL: reader rank=%u db=%llu round=%u got NULL ptr\n",
                 arts_get_current_rank(), (unsigned long long)db_idx, round);
     arts_abort(1);
   }
-  verify_view(p, round, db_idx, "reader");
+  verify_view(b, round, db_idx, "reader");
 }
 
 void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -244,9 +271,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     dbs[d] = arts_db_create(&raw, PAYLOAD_BYTES, ARTS_DB, ARTS_DB_PROP_NONE,
                             &(arts_db_hint_t){.rank =
                                                   (unsigned int)d % nranks});
-    uint8_t *p = (uint8_t *)raw;
-    header_write(p, (uint64_t)d);
-    memset(p + HDR_BYTES, (int)STAMP(0), CHURN_BYTES);
+    block_t *b = (block_t *)raw;
+    header_write(b, (uint64_t)d);
+    for (uint32_t i = 0; i < CHURN_WORDS; i++) {
+      atomic_init(&b->churn[i], STAMP_WORD(0));
+    }
     arts_db_release(dbs[d], DB_MODE_RW);
   }
 

@@ -40,13 +40,13 @@
  * it, so it is the oversize request's to give back.
  *
  * Threads: each declares its own node (thread-local in the sim) and reads the
- * sim through its own streams.  The sim's read counters and policy log are
- * plain variables that several threads write once they run, so the only
- * assertion over them after that point is that the declared machine was
- * consulted, which a lost increment cannot falsify; the placement policies
- * are checked over the single-threaded setup.  A bounded wait only limits how
- * long a request is observed NOT to complete, or how long the test waits for
- * work that must finish; no assertion depends on how fast anything runs.
+ * sim through its own streams.  Which thread consults the sim once several
+ * run is the scheduler's choice, so the only assertion over its counters
+ * after that point is that the declared machine was consulted; the placement
+ * policies are checked over the single-threaded setup.  A bounded wait only
+ * limits how long a request is observed NOT to complete, or how long the test
+ * waits for work that must finish; no assertion depends on how fast anything
+ * runs.
  *
  * Whitebox unit test: no ARTS runtime, no ports, no config. */
 #ifndef _GNU_SOURCE
@@ -101,18 +101,26 @@ static int g_failed;
 /* ---- the teardown of R, held ------------------------------------------- */
 static void *g_r_base;
 static size_t g_r_len;
-static atomic_bool g_r_armed;
+static _Atomic(bool) g_r_armed;
 static sem_t g_in_teardown, g_release;
 /* The witnesses: D's and D2's teardowns, seen after their real munmap. */
 static void *g_d_base, *g_d2_base;
-static atomic_bool g_d_gone, g_d2_gone;
+static _Atomic(bool) g_d_gone, g_d2_gone;
 
 int munmap(void *addr, size_t len) {
-  static int (*real)(void *, size_t);
-  if (real == NULL)
-    real = (int (*)(void *, size_t))dlsym(RTLD_NEXT, "munmap");
-  bool held =
-      addr == g_r_base && len == g_r_len && atomic_exchange(&g_r_armed, false);
+  /* Resolved at the first call: initialisation order across shared objects,
+   * and among equal-priority constructors, is outside the test's control, so
+   * no constructor is sure to run first.  Every resolution stores the same
+   * address, so the pointer publishes nothing and relaxed suffices. */
+  typedef int (*munmap_fn)(void *, size_t);
+  static _Atomic(munmap_fn) real_munmap;
+  munmap_fn real = atomic_load_explicit(&real_munmap, memory_order_relaxed);
+  if (real == NULL) {
+    real = (munmap_fn)dlsym(RTLD_NEXT, "munmap");
+    atomic_store_explicit(&real_munmap, real, memory_order_relaxed);
+  }
+  bool held = addr == g_r_base && len == g_r_len &&
+              atomic_exchange_explicit(&g_r_armed, false, memory_order_acquire);
   if (held) {
     sem_post(&g_in_teardown);
     while (sem_wait(&g_release) != 0 && errno == EINTR)
@@ -122,9 +130,9 @@ int munmap(void *addr, size_t len) {
   if (held)
     arts_regpool_set_forced_full(0x1); /* node 1 has R's room back */
   if (addr != NULL && addr == g_d_base && len == D_BYTES)
-    atomic_store(&g_d_gone, true);
+    atomic_store_explicit(&g_d_gone, true, memory_order_release);
   if (addr != NULL && addr == g_d2_base && len == D2_BYTES)
-    atomic_store(&g_d2_gone, true);
+    atomic_store_explicit(&g_d2_gone, true, memory_order_release);
   return rc;
 }
 
@@ -191,14 +199,14 @@ typedef struct {
   int node;
   size_t size;
   void *p;
-  atomic_bool done;
+  _Atomic(bool) done; /* release once p is set; acquire before reading it */
 } req_t;
 
 static void *requester(void *arg) {
   req_t *r = arg;
   regpool_sim_set_thread_node(r->node);
   r->p = arts_regpool_alloc_aligned(r->size, 64);
-  atomic_store(&r->done, true);
+  atomic_store_explicit(&r->done, true, memory_order_release);
   return NULL;
 }
 
@@ -207,7 +215,7 @@ typedef struct {
   void *d;
   void *small;
   const arts_regpool_mr_t *in_r;
-  atomic_bool done;
+  _Atomic(bool) done; /* as req_t's, over small and in_r */
 } during_t;
 
 static void *during_teardown(void *arg) {
@@ -216,13 +224,13 @@ static void *during_teardown(void *arg) {
   w->small = arts_regpool_alloc_aligned(MIB, 64);
   arts_regpool_free(w->d);
   w->in_r = arts_regpool_lookup((const char *)g_r_base + 4096);
-  atomic_store(&w->done, true);
+  atomic_store_explicit(&w->done, true, memory_order_release);
   return NULL;
 }
 
-static bool wait_done(atomic_bool *flag, unsigned ms) {
+static bool wait_done(_Atomic(bool) *flag, unsigned ms) {
   uint64_t end = now_ms() + ms;
-  while (!atomic_load(flag)) {
+  while (!atomic_load_explicit(flag, memory_order_acquire)) {
     if (now_ms() >= end)
       return false;
     usleep(1000);
@@ -262,7 +270,7 @@ int main(void) {
   g_r_len = R_BYTES;
   g_d_base = d;
   g_d2_base = d2;
-  atomic_store(&g_r_armed, true);
+  atomic_store_explicit(&g_r_armed, true, memory_order_release);
 
   /* E reaches the cascade's eviction gate and tears R down. */
   req_t e = {.node = 0, .size = REQ};
@@ -271,7 +279,9 @@ int main(void) {
   if (!sem_wait_ms(&g_in_teardown, BOUND_MS))
     ABANDON("the request never reached the teardown of the retired mapping "
             "(served %s)",
-            atomic_load(&e.done) ? "without it" : "nowhere yet");
+            atomic_load_explicit(&e.done, memory_order_acquire)
+                ? "without it"
+                : "nowhere yet");
 
   /* (b) */
   during_t w = {.d = d};
@@ -308,14 +318,16 @@ int main(void) {
     ABANDON("(c) the oversize request never gave a retired mapping back");
   }
   uint64_t end = now_ms() + OBSERVE_MS;
-  while (now_ms() < end && !(atomic_load(&a.done) && atomic_load(&c.done)))
+  while (now_ms() < end &&
+         !(atomic_load_explicit(&a.done, memory_order_acquire) &&
+           atomic_load_explicit(&c.done, memory_order_acquire)))
     usleep(1000);
   kernel_t k1 = kernel_placed();
-  CHECK(!atomic_load(&a.done),
+  CHECK(!atomic_load_explicit(&a.done, memory_order_acquire),
         "(a) an arena request completed (on node %d) while a retired "
         "mapping's teardown was in flight",
         node_of(a.p));
-  CHECK(!atomic_load(&c.done),
+  CHECK(!atomic_load_explicit(&c.done, memory_order_acquire),
         "(c) an oversize request completed (on node %d) while a retired "
         "mapping's teardown was in flight",
         node_of(c.p));

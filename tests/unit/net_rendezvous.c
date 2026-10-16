@@ -75,13 +75,13 @@ static uint64_t now_ns(void) {
   return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
-static _Atomic int g_local_done;
+static _Atomic(int) g_local_done;
 static void on_local_done(void *arg) {
   (void)arg;
   atomic_fetch_add_explicit(&g_local_done, 1, memory_order_acq_rel);
 }
 
-static _Atomic int g_paired;
+static _Atomic(int) g_paired;
 static void on_data(void *arg) {
   atomic_fetch_add_explicit(&g_paired, 1, memory_order_acq_rel);
   if (arg != NULL) {
@@ -90,7 +90,7 @@ static void on_data(void *arg) {
 }
 
 /* Spin progress until `*ctr` reaches `want` or 5 s. */
-static bool wait_ctr(_Atomic int *ctr, int want) {
+static bool wait_ctr(_Atomic(int) *ctr, int want) {
   uint64_t deadline = now_ns() + 5000000000ULL;
   while (atomic_load_explicit(ctr, memory_order_acquire) < want) {
     arts_net_progress();

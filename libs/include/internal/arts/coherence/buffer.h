@@ -44,8 +44,8 @@
  * (lookup_* / _acquire → handle; release required). No raw no-ref peeks.
  */
 
-#ifndef ARTS_MEMORY_COHERENCE_BUFFER_H
-#define ARTS_MEMORY_COHERENCE_BUFFER_H
+#ifndef ARTS_COHERENCE_BUFFER_H
+#define ARTS_COHERENCE_BUFFER_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -309,4 +309,4 @@ uint64_t arts_db_first_fetch_size(const struct arts_db_cache_s *cache);
 }
 #endif
 
-#endif /* ARTS_MEMORY_COHERENCE_BUFFER_H */
+#endif /* ARTS_COHERENCE_BUFFER_H */

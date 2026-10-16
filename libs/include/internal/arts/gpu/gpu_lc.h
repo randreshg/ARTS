@@ -42,19 +42,21 @@
 extern "C" {
 #endif
 
+#include <pthread.h>
+
 #include "arts/runtime_types.h"
+#include "arts/utils/stdatomic_compat.h"
 
 typedef struct {
   uint64_t guid;
   void *data;
   uint64_t data_size;
-  volatile unsigned int *host_version;
+  _Atomic(unsigned int) *host_version;
   unsigned int *host_time_stamp;
   unsigned int gpu_version;
   unsigned int gpu_time_stamp;
   int gpu;
-  volatile unsigned int *read_lock;
-  volatile unsigned int *write_lock;
+  pthread_rwlock_t *lock; /* the host block's gpu_lock; NULL on a copy */
 } arts_lc_meta_t;
 
 typedef void (*arts_lc_sync_function_t)(arts_lc_meta_t *host,

@@ -40,7 +40,7 @@ typedef struct {
 
 static arts_mpsc_t g_q;
 static node_t *g_nodes;
-static atomic_int g_start;
+static _Atomic(int) g_start;
 
 static void *producer(void *arg) {
   uint32_t base = (uint32_t)(uintptr_t)arg * PER_PRODUCER;

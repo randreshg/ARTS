@@ -42,6 +42,8 @@
 # nothing checked.
 add_compile_options(-UNDEBUG)
 
+add_compile_options(${ARTS_WERROR_IMPLICIT_SEQ_CST})
+
 # The reference tree: the protocol cell of the build defaults, with payloads in
 # rank memory.  A test whose outcome no coherence protocol, write or release
 # policy or payload store can change is built and registered there only;
@@ -137,7 +139,8 @@ endif()
 # arts_regpool_set_forced_full), which only ARTS_DEBUG_INJECTION compiles.
 # regpool_direct_oversize compiles its full-node legs only there and runs the
 # rest in every mimalloc reference tree.
-set(ARTS_REGPOOL_INJECTION_TESTS regpool_evict_retired regpool_evict_wait)
+set(ARTS_REGPOOL_INJECTION_TESTS regpool_evict_retired regpool_evict_wait
+    regpool_lookup_vs_rewrite)
 if(ARTS_DEBUG_INJECTION)
     list(APPEND ARTS_REFERENCE_TREE_PROGRAMS ${ARTS_REGPOOL_INJECTION_TESTS})
 endif()
@@ -1139,6 +1142,13 @@ if(ARTS_MALLOC STREQUAL "mimalloc")
         register_pure_unit_test(regpool_evict_wait TIMEOUT 60)
         set_tests_properties(regpool_evict_wait PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS regpool_evict_wait")
+        # Lock-free lookups and arena sweeps while oversize requests rewrite
+        # a freed table entry under them: a live block always resolves to its
+        # own record, and under ThreadSanitizer neither reader races the
+        # rewrite.
+        register_pure_unit_test(regpool_lookup_vs_rewrite TIMEOUT 60)
+        set_tests_properties(regpool_lookup_vs_rewrite PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS regpool_lookup_vs_rewrite")
         # A full node's demand served from the other node, and the pool's end
         # at the allocator's arena table: it fills the table itself, so it
         # links the pool's object and the allocator directly (one table
@@ -1323,32 +1333,6 @@ target_include_directories(array_list_basic PRIVATE
     ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
 target_link_libraries(array_list_basic PRIVATE Threads::Threads)
 register_pure_unit_test(array_list_basic)
-
-# --- atomics.c primitives + spin locks ---
-# Standalone like the SYNC_*/deque tests: link the runtime's atomics.c TU
-# directly (libc-only dependency), no ARTS library.  atomics_rmw_conventions
-# pins the per-function pre/post return conventions; atomics_rmw_contention
-# proves the fetch_add tickets form a gap-free partition (linearizability);
-# atomics_locks proves mutual-exclusion (no lost updates), the try_lock state
-# machine, the reader/writer no-overlap invariant, and that writer_try_lock
-# fails rather than wait for a reader.  atomics_locks is functionally
-# green under ASan but DELIBERATELY trips ThreadSanitizer: atomics.c's RW lock
-# uses plain `volatile` spin-hint reads of *write_lock/*read_lock racing with
-# the barrier'd atomic RMWs on the same word — a true C-UB data race property
-# of the runtime (benign on x86 TSO), not a test defect.
-set(ATOMICS_UNIT_TESTS
-    atomics_rmw_conventions atomics_rmw_contention atomics_locks)
-foreach(t ${ATOMICS_UNIT_TESTS})
-    add_executable(${t} unit/${t}.c
-        ${CMAKE_SOURCE_DIR}/libs/src/core/utils/atomics.c)
-    target_include_directories(${t} PRIVATE
-        ${ARTS_PUBLIC_INCLUDE_DIR} ${ARTS_INTERNAL_INCLUDE_DIR}
-        ${ARTS_BUILD_INTERNAL_INCLUDE_DIR})
-    target_link_libraries(${t} PRIVATE Threads::Threads)
-endforeach()
-register_pure_unit_test(atomics_rmw_conventions)
-register_pure_unit_test(atomics_rmw_contention TIMEOUT 60)
-register_pure_unit_test(atomics_locks TIMEOUT 60)
 
 # --- malloc.c allocator + footprint, diag.c timestamp/printf ---
 # Each test #includes the target runtime .c TU directly (with the heavy header
@@ -1671,6 +1655,29 @@ if(ARTS_TEST_REFERENCE_TREE)
         TIMEOUT 300
         PASS_REGULAR_EXPRESSION "PASS cxl_arm64_refusal"
         FAIL_REGULAR_EXPRESSION "FAIL cxl_arm64_refusal")
+endif()
+
+# Every access to an _Atomic object names its memory order.  clang-tidy judges
+# every C unit of this tree's runtime, shim and tests with the tree's own
+# compile commands, so each cell's conditional code is judged in the tree that
+# compiles it.  Registered where clang-tidy is found.
+find_program(ARTS_CLANG_TIDY clang-tidy)
+if(ARTS_CLANG_TIDY)
+    set(_script
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/atomics_implicit_seq_cst.cmake)
+    add_test(NAME atomics_implicit_seq_cst
+             COMMAND ${CMAKE_COMMAND}
+                     -DCLANG_TIDY=${ARTS_CLANG_TIDY}
+                     -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+                     -DBUILD_DIR=${CMAKE_BINARY_DIR}
+                     -P ${_script})
+    set_tests_properties(atomics_implicit_seq_cst PROPERTIES
+        LABELS "single_node"
+        TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "PASS atomics_implicit_seq_cst"
+        FAIL_REGULAR_EXPRESSION "FAIL atomics_implicit_seq_cst")
+else()
+    message(STATUS "atomics_implicit_seq_cst not registered: no clang-tidy")
 endif()
 
 # Blocks destroyed while the one-sided writes that moved their payloads may
@@ -2115,6 +2122,16 @@ endif()
 if(NOT ARTS_COHERENCE_ARM STREQUAL "FLUSH")
 register_single_node_test(coherence_writer_ro_overlap TIMEOUT 120)
 register_multinode_test(coherence_writer_ro_overlap TIMEOUT 180)
+# Under ThreadSanitizer a multinode run's time goes to the reports its racing
+# words raise against the provider's copies, each built and then suppressed,
+# not to the protocol, so a THREAD tree budgets for that cost; the other trees
+# keep the budget that detects a hang.
+if(ARTS_DEBUG_SANITIZER STREQUAL "THREAD")
+    foreach(_v IN LISTS ARTS_TEST_MULTINODE_VARIANTS)
+        set_tests_properties(coherence_writer_ro_overlap_${_v} PROPERTIES
+            TIMEOUT 330)
+    endforeach()
+endif()
 set(_writer_ro_cases
     coherence_writer_ro_overlap
     coherence_writer_ro_overlap_2n_9w_1p

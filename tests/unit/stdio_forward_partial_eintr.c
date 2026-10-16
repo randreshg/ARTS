@@ -45,9 +45,8 @@ static void alarm_handler(int sig) {
 }
 
 static int g_sink_read_fd; /* read-end of the sink pipe, drained slowly */
-static _Atomic int g_drain_done;
 static unsigned char g_drained[PAYLOAD + 32];
-static _Atomic size_t g_drained_n;
+static _Atomic(size_t) g_drained_n;
 
 static void *drainer(void *arg) {
   (void)arg;
@@ -63,17 +62,17 @@ static void *drainer(void *arg) {
     if (r == 0) {
       break; /* EOF: forwarder closed its write-end (sink fd) -> done */
     }
-    size_t cur = atomic_load(&g_drained_n);
+    size_t cur = atomic_load_explicit(&g_drained_n, memory_order_relaxed);
     if (cur + (size_t)r <= sizeof(g_drained)) {
       memcpy(g_drained + cur, tmp, (size_t)r);
-      atomic_store(&g_drained_n, cur + (size_t)r);
+      atomic_store_explicit(&g_drained_n, cur + (size_t)r,
+                            memory_order_relaxed);
     }
     /* Slow the drain to keep the pipe full and force partial writes upstream.
      */
     struct timespec ts = {0, 200000}; /* 0.2 ms */
     nanosleep(&ts, NULL);
   }
-  atomic_store(&g_drain_done, 1);
   return NULL;
 }
 
@@ -164,7 +163,7 @@ int main(void) {
 
   pthread_join(dth, NULL);
 
-  size_t got = atomic_load(&g_drained_n);
+  size_t got = atomic_load_explicit(&g_drained_n, memory_order_relaxed);
   if (got != PAYLOAD) {
     (void)fprintf(stderr,
                   "FAIL partial_eintr: drained %zu bytes, expected %d "

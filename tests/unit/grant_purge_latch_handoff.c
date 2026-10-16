@@ -29,32 +29,6 @@ unsigned int arts_global_rank_count = 2u;
 
 #include "counter_stubs.h"
 
-unsigned int arts_atomic_add(volatile unsigned int *d, unsigned int v) {
-  return __atomic_add_fetch(d, v, __ATOMIC_SEQ_CST);
-}
-uint64_t arts_atomic_add_u64(volatile uint64_t *d, uint64_t v) {
-  return __atomic_add_fetch(d, v, __ATOMIC_SEQ_CST);
-}
-unsigned int arts_atomic_cswap(volatile unsigned int *d, unsigned int o,
-                               unsigned int n) {
-  __atomic_compare_exchange_n(d, &o, n, false, __ATOMIC_SEQ_CST,
-                              __ATOMIC_SEQ_CST);
-  return o;
-}
-uint64_t arts_atomic_cswap_u64(volatile uint64_t *d, uint64_t o, uint64_t n) {
-  __atomic_compare_exchange_n(d, &o, n, false, __ATOMIC_SEQ_CST,
-                              __ATOMIC_SEQ_CST);
-  return o;
-}
-unsigned int arts_atomic_read(const volatile unsigned int *d) {
-  return __atomic_load_n(d, __ATOMIC_SEQ_CST);
-}
-uint64_t arts_atomic_read_u64(const volatile uint64_t *d) {
-  return __atomic_load_n(d, __ATOMIC_SEQ_CST);
-}
-uint64_t arts_atomic_swap_u64(volatile uint64_t *d, uint64_t v) {
-  return __atomic_exchange_n(d, v, __ATOMIC_SEQ_CST);
-}
 void *arts_malloc(size_t n) { return malloc(n); }
 void arts_free(void *p) { free(p); }
 unsigned int arts_guid_get_rank(arts_guid_t g) {
@@ -175,8 +149,8 @@ static int scenario(int in_send) {
   g_db = calloc(1, sizeof(*g_db));
   g_db->home_initialized = true;
   atomic_init(&g_db->cache.writer_count, ARTS_GRANT_SEED_IDLE);
-  atomic_store(&g_db->invalidate_in_flight, 0u);
-  atomic_store(&g_db->pending_return_from, ARTS_GRANT_NO_RETURNER);
+  atomic_init(&g_db->invalidate_in_flight, 0u);
+  atomic_init(&g_db->pending_return_from, ARTS_GRANT_NO_RETURNER);
   g_grants = g_acks = 0;
   g_ack_to = ~0u;
   g_handback_in_send = in_send;
@@ -188,8 +162,10 @@ static int scenario(int in_send) {
   }
   unsigned int w =
       atomic_load_explicit(&g_db->cache.writer_count, memory_order_acquire);
-  unsigned int baton = atomic_load(&g_db->invalidate_in_flight);
-  unsigned int latch = atomic_load(&g_db->pending_return_from);
+  unsigned int baton =
+      atomic_load_explicit(&g_db->invalidate_in_flight, memory_order_relaxed);
+  unsigned int latch =
+      atomic_load_explicit(&g_db->pending_return_from, memory_order_relaxed);
   int ok = (w == ARTS_GRANT_SEED_IDLE && baton == 0u &&
             latch == ARTS_GRANT_NO_RETURNER && g_grants == 1 && g_acks == 1 &&
             g_ack_to == 1u);

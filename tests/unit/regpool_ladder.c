@@ -69,7 +69,8 @@ int main(void) {
   assert(mapped == LADDER_MIB);
   assert(grows == 4);
   assert(regpool_sim_consulted());
-  assert(regpool_sim_mbind_calls == 0 &&
+  assert(atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed) ==
+             0 &&
          "a placement policy on a machine of one node places nothing");
 
   arts_regpool_cleanup();

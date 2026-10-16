@@ -36,7 +36,7 @@
 
 enum { FLUSH_ITERS = 200000 };
 
-static _Atomic int g_flusher_done;
+static _Atomic(int) g_flusher_done;
 
 static void watchdog(int sig) {
   (void)sig;
@@ -66,7 +66,7 @@ static void *flusher(void *arg) {
   }
   fclose(mem);
   free(backing);
-  atomic_store(&g_flusher_done, 1);
+  atomic_store_explicit(&g_flusher_done, 1, memory_order_release);
   return NULL;
 }
 
@@ -109,7 +109,7 @@ int main(void) {
 
   pthread_join(fth, NULL);
 
-  if (!atomic_load(&g_flusher_done)) {
+  if (!atomic_load_explicit(&g_flusher_done, memory_order_acquire)) {
     (void)fprintf(stderr, "FAIL fflush_no_deadlock: flusher did not finish\n");
     return 1;
   }

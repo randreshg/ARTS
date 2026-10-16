@@ -50,7 +50,7 @@ static void chain_writer_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)depc;
   arts_guid_t latch = (arts_guid_t)paramv[0];
-  _Atomic uint64_t *acc = (_Atomic uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *acc = (_Atomic(uint64_t) *)depv[0].ptr;
   if (acc != NULL) {
     atomic_fetch_add_explicit(acc, 1u, memory_order_acq_rel);
   }
@@ -64,7 +64,7 @@ static void chain_verify_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)depc;
   arts_guid_t shutdown_latch = (arts_guid_t)paramv[0];
-  _Atomic uint64_t *acc = (_Atomic uint64_t *)depv[1].ptr;
+  _Atomic(uint64_t) *acc = (_Atomic(uint64_t) *)depv[1].ptr;
   uint64_t got = atomic_load_explicit(acc, memory_order_acquire);
   if (got != (uint64_t)N_CHAIN_WRITERS) {
     (void)fprintf(stderr, "FAIL D6: chain acc=%llu (want %d)\n",
@@ -159,7 +159,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_guid_t d6 =
       arts_db_create(&d6p, sizeof(uint64_t), ARTS_DB, ARTS_DB_PROP_NONE,
                      &(arts_db_hint_t){.rank = home});
-  *(uint64_t *)d6p = 0u;
+  atomic_init((_Atomic(uint64_t) *)d6p, 0u);
   arts_db_release(d6, DB_MODE_RW);
 
   arts_event_hint_t d6_latch_hint = ARTS_EVENT_HINT_LATCH(N_CHAIN_WRITERS);

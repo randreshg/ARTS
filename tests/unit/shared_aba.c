@@ -83,7 +83,7 @@ static void *reader(void *arg) {
 }
 
 int main(void) {
-  atomic_store(&g_slot, (arts_shared_slot_t){0}); /* empty slot {NULL, ext=0} */
+  atomic_init(&g_slot, (arts_shared_slot_t){0}); /* empty slot {NULL, ext=0} */
 
   pthread_t ch;
   pthread_t rd[READERS];
@@ -100,11 +100,12 @@ int main(void) {
   arts_shared_slot_store(&g_slot, (arts_shared_ptr_t)NULL);
   assert(arts_shared_slot_load(&g_slot) == NULL);
 
-  uint64_t makes = atomic_load(&g_makes);
-  uint64_t deletes = atomic_load(&g_deletes);
-  printf("shared_aba: makes=%llu deletes=%llu reader_hits=%llu\n",
-         (unsigned long long)makes, (unsigned long long)deletes,
-         (unsigned long long)atomic_load(&g_hits));
+  uint64_t makes = atomic_load_explicit(&g_makes, memory_order_relaxed);
+  uint64_t deletes = atomic_load_explicit(&g_deletes, memory_order_relaxed);
+  printf(
+      "shared_aba: makes=%llu deletes=%llu reader_hits=%llu\n",
+      (unsigned long long)makes, (unsigned long long)deletes,
+      (unsigned long long)atomic_load_explicit(&g_hits, memory_order_relaxed));
   assert(makes == (uint64_t)CHURN_ITERS);
   assert(deletes == makes); /* exactly one destroy per object */
   printf("shared_aba: OK\n");

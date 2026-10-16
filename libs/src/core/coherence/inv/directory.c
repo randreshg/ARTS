@@ -2,22 +2,20 @@
  *
  * INV protocol shared home-side infrastructure.
  *
- * Defines: arts_home_grantreq_queue_{init,push,pop,peek,empty,destroy},
- *          arts_rank_bitset_{init,set,for_each,destroy},
+ * Defines: arts_home_grantreq_queue_{init,push,pop,peek,empty,pending,destroy},
  *          arts_db_home_init, arts_db_home_teardown.
  *
  * arts_handler_db_destroy lives in engine.c: it fans out over
- * the wire, and this TU must stay linkable standalone (pure queue/bitset/
- * lifecycle) for the whitebox unit tests.
+ * the wire, and this TU must stay linkable standalone (pure queue/lifecycle)
+ * for the whitebox unit tests.
  *
  * This TU carries the pieces shared by both write-policy variants: the home
- * request FIFO, the rank bitset, and the home-directory lifecycle.  The
+ * request FIFO and the home-directory lifecycle.  The
  * arbiters live in arbiters.c, and the handler/sender bodies live in the
  * write-policy TU (wt.c or wb.c) plus the shared engine.c.
  *
- * The grantreq queue and rank_bitset bodies are verbatim from val/directory.c
- * (same Vyukov MPSC + bit-packed bitset shapes; INV reuses the same struct
- * shapes from inv/types.h).
+ * The grantreq queue is this arm's own copy of the home's Vyukov MPSC request
+ * FIFO, over the struct inv/types.h defines.
  *
  * Compiled only for ARTS_COHERENCE_PROTOCOL=INV.
  */
@@ -177,45 +175,6 @@ void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q) {
                         memory_order_relaxed);
   atomic_store_explicit(&q->head, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
-}
-
-/* ===== rank bit-set ===================================================== */
-
-void arts_rank_bitset_init(struct arts_rank_bitset_s *r, unsigned int nranks) {
-  r->nranks = nranks;
-  r->nwords = (nranks + 63) / 64;
-  r->words =
-      (_Atomic(uint64_t) *)arts_calloc(r->nwords, sizeof(_Atomic(uint64_t)));
-}
-
-void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r) {
-  arts_free(r->words);
-  r->words = NULL;
-  r->nwords = 0;
-}
-
-bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank) {
-  if (rank >= r->nranks) {
-    return false;
-  }
-  unsigned int word_idx = rank / 64;
-  uint64_t bit = (uint64_t)1 << (rank % 64);
-  uint64_t prev =
-      atomic_fetch_or_explicit(&r->words[word_idx], bit, memory_order_acq_rel);
-  return (prev & bit) == 0;
-}
-
-void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
-                               void (*cb)(unsigned int rank, void *ctx),
-                               void *ctx) {
-  for (unsigned int w = 0; w < r->nwords; w++) {
-    uint64_t snap = atomic_load_explicit(&r->words[w], memory_order_acquire);
-    while (snap) {
-      unsigned int b = (unsigned int)__builtin_ctzll(snap);
-      cb(w * 64 + b, ctx);
-      snap &= snap - 1;
-    }
-  }
 }
 
 /* ===== Home-directory lifecycle ========================================= */

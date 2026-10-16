@@ -29,19 +29,20 @@ int main(void) {
   arts_shared_ptr_t a = arts_shared_make(&obj_a, counting_deleter);
   assert(a != NULL);
   assert(arts_shared_get(a) == &obj_a);
-  assert(atomic_load(&g_deleted) == 0);
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 0);
 
   /* copy: strong 1->2; releasing one ref does NOT run the deleter. */
   arts_shared_ptr_t a2 = arts_shared_copy(a);
   assert(a2 == a);
   arts_shared_release(&a);
   assert(a == NULL);                    /* release nulls the handle */
-  assert(atomic_load(&g_deleted) == 0); /* still one ref alive */
+  /* Still one ref alive. */
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 0);
 
   /* last release runs the deleter exactly once with the right object. */
   arts_shared_release(&a2);
   assert(a2 == NULL);
-  assert(atomic_load(&g_deleted) == 1);
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 1);
   assert(g_last_deleted == &obj_a);
 
   /* copy/release of NULL are no-ops. */
@@ -51,7 +52,7 @@ int main(void) {
 
   /* Atomic slot: store transfers the make ref into the slot. */
   _Atomic(arts_shared_slot_t) slot;
-  atomic_store(&slot, (arts_shared_slot_t){0});   /* empty slot {NULL, ext=0} */
+  atomic_init(&slot, (arts_shared_slot_t){0});    /* empty slot {NULL, ext=0} */
   assert(arts_shared_slot_load(&slot) == NULL);   /* empty slot */
 
   arts_shared_ptr_t b = arts_shared_make(&obj_b, counting_deleter);
@@ -63,7 +64,8 @@ int main(void) {
   assert(local == b);
   assert(arts_shared_get(local) == &obj_b);
   arts_shared_release(&local);
-  assert(atomic_load(&g_deleted) == 1); /* obj_b still alive in the slot */
+  /* obj_b is still alive in the slot. */
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 1);
 
   /* exchange to NULL hands the slot's ref back to us; releasing it now
    * destroys obj_b. */
@@ -71,7 +73,7 @@ int main(void) {
       arts_shared_slot_exchange(&slot, (arts_shared_ptr_t)NULL);
   assert(old == b);
   arts_shared_release(&old);
-  assert(atomic_load(&g_deleted) == 2);
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 2);
   assert(g_last_deleted == &obj_b);
 
   /* store over an occupied slot releases the previous occupant. */
@@ -79,9 +81,9 @@ int main(void) {
   arts_shared_ptr_t c2 = arts_shared_make(&obj_b, counting_deleter);
   arts_shared_slot_store(&slot, c1);
   arts_shared_slot_store(&slot, c2); /* c1 released here */
-  assert(atomic_load(&g_deleted) == 3);
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 3);
   arts_shared_slot_store(&slot, (arts_shared_ptr_t)NULL); /* c2 released */
-  assert(atomic_load(&g_deleted) == 4);
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 4);
 
   /* abandon: cancel an unpublished cb WITHOUT running the deleter — an
    * install that loses keeps its object, so the caller still owns it. */
@@ -89,12 +91,13 @@ int main(void) {
   arts_shared_ptr_t aborted = arts_shared_make(&obj_c, counting_deleter);
   arts_shared_abandon(&aborted);
   assert(aborted == NULL);
-  assert(atomic_load(&g_deleted) == 4); /* deleter NOT run for obj_c */
+  /* The deleter did not run for obj_c. */
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 4);
   /* The cb must have recycled cleanly: make + fully release another object
    * (would corrupt / miscount on a broken abandon). */
   arts_shared_ptr_t reuse = arts_shared_make(&obj_c, counting_deleter);
   arts_shared_release(&reuse);
-  assert(atomic_load(&g_deleted) == 5);
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 5);
   assert(g_last_deleted == &obj_c);
   arts_shared_ptr_t an = NULL;
   arts_shared_abandon(&an); /* NULL no-op must not crash */

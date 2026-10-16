@@ -54,7 +54,7 @@
  * still to be admitted.  Each writer occupies a worker while it waits, so a
  * rank with one worker runs the turn with one writer, and there the check
  * after the handshake pins nothing beyond the one before it. */
-static _Atomic unsigned g_writers_in;
+static _Atomic(unsigned) g_writers_in;
 
 static unsigned writers(void) {
   return arts_get_workers_per_rank() >= MAX_WRITERS ? MAX_WRITERS : 1u;

@@ -50,10 +50,10 @@
 /// Number of sub-tests.
 #define NUM_SUBTESTS 5
 
-/// Counter DB layout: [passed, failed] as two consecutive _Atomic unsigned int.
+/// Counter DB layout: [passed, failed], each an _Atomic(unsigned int).
 typedef struct {
-  _Atomic unsigned int passed;
-  _Atomic unsigned int failed;
+  _Atomic(unsigned int) passed;
+  _Atomic(unsigned int) failed;
 } counter_db_t;
 
 /// paramv layout shared by all subtest EDTs:

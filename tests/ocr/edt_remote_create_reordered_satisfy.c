@@ -39,7 +39,7 @@
 #include <stdio.h>
 
 typedef struct {
-  _Atomic unsigned int fired; /* member fire count; must be exactly 1 */
+  _Atomic(unsigned int) fired; /* member fire count; must be exactly 1 */
 } ctr_t;
 
 /* The migrated member EDT.  depv[0] = VAL (reordered-ahead satisfy),

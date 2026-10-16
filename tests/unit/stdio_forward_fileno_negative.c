@@ -74,7 +74,8 @@ int main(void) {
   /* The just-pushed node is the stack head.  We only dereference its `thread`
    * (set before publish, never written by the reader) before joining; the
    * reader's read_fd store is read ONLY after the join happens-before edge. */
-  forwarder_slot_t *node = __atomic_load_n(&g_forwarders, __ATOMIC_ACQUIRE);
+  forwarder_slot_t *node =
+      atomic_load_explicit(&g_forwarders, memory_order_acquire);
   if (!node) {
     (void)fprintf(stderr, "FAIL fileno_negative: no node published\n");
     return 1;
@@ -96,7 +97,7 @@ int main(void) {
 
   /* Tear down the single node ourselves (thread already joined; mirror
    * shutdown_all's free, skipping the now-illegal second join). */
-  __atomic_store_n(&g_forwarders, NULL, __ATOMIC_RELEASE);
+  atomic_store_explicit(&g_forwarders, NULL, memory_order_release);
   if (node->read_fd >= 0) {
     close(node->read_fd);
   }

@@ -46,5 +46,7 @@ set(ARTS_INTERNAL_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include/internal" PAR
 set(ARTS_BUILD_INTERNAL_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include/internal")
 set(ARTS_BUILD_INTERNAL_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include/internal" PARENT_SCOPE)
 
+add_compile_options(${ARTS_WERROR_IMPLICIT_SEQ_CST})
+
 add_subdirectory(src)
 add_subdirectory(include/internal/arts/counter)

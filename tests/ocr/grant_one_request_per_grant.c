@@ -19,6 +19,7 @@
  * least one waiter").  The final count, WRITERS * ROUNDS, checks that every
  * turn ran exactly once.
  */
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include "arts.h"
@@ -27,24 +28,31 @@
 #define WRITERS 8u
 #define ROUNDS 40u
 
+/* A payload word is viewed as an atomic object, which needs a lock-free
+ * atomic of the plain type's size. */
+_Static_assert(ATOMIC_LONG_LOCK_FREE == 2 &&
+                   sizeof(_Atomic(uint64_t)) == sizeof(uint64_t),
+               "the payload view needs a lock-free 64-bit atomic");
+
 static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc; (void)paramv; (void)depc;
-  uint64_t *v = (uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
     arts_printf("FAIL: grant_one_request_per_grant writer got NULL\n");
     return;
   }
   /* Write holders on one rank may overlap, so each adds atomically. */
-  __atomic_fetch_add(v, (uint64_t)1, __ATOMIC_RELAXED);
+  atomic_fetch_add_explicit(v, (uint64_t)1, memory_order_relaxed);
 }
 
 static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc; (void)paramv; (void)depc;
-  uint64_t *v = (uint64_t *)depv[0].ptr;
-  uint64_t got = v ? __atomic_load_n(v, __ATOMIC_RELAXED) : (uint64_t)-1;
+  const _Atomic(uint64_t) *v = (const _Atomic(uint64_t) *)depv[0].ptr;
+  uint64_t got =
+      v ? atomic_load_explicit(v, memory_order_relaxed) : (uint64_t)-1;
   if (got == (uint64_t)WRITERS * ROUNDS) {
     arts_printf("PASS: grant_one_request_per_grant count=%llu\n",
                 (unsigned long long)got);
@@ -103,7 +111,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   void *addr = NULL;
   arts_guid_t db = arts_db_create(&addr, 64, ARTS_DB, ARTS_DB_PROP_NONE,
                                   &(arts_db_hint_t){.rank = 0});
-  *(uint64_t *)addr = 0;
+  atomic_init((_Atomic(uint64_t) *)addr, (uint64_t)0);
   arts_db_release(db, DB_MODE_RW);
 
   arts_guid_t all = arts_event_create(&ARTS_EVENT_HINT_FINISH);

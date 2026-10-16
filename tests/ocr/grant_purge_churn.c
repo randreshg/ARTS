@@ -62,7 +62,7 @@ static void turn_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   unsigned int slot =
       (unsigned int)paramv[0] * TURNS_PER_ROUND + (unsigned int)paramv[1];
   p[slot] = 1u;
-  atomic_fetch_add_explicit((_Atomic uint64_t *)&p[SLOTS], 1u,
+  atomic_fetch_add_explicit((_Atomic(uint64_t) *)&p[SLOTS], 1u,
                             memory_order_relaxed);
 }
 
@@ -103,8 +103,8 @@ static void round_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         missing++;
       }
     }
-    uint64_t counter = atomic_load_explicit((const _Atomic uint64_t *)&p[SLOTS],
-                                            memory_order_relaxed);
+    uint64_t counter = atomic_load_explicit(
+        (const _Atomic(uint64_t) *)&p[SLOTS], memory_order_relaxed);
     if (counter != (uint64_t)SLOTS) {
       (void)fprintf(stderr,
                     "FAIL: grant_purge_churn counter=%llu want %u\n",
@@ -151,9 +151,10 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   void *p = NULL;
   g_db = arts_db_create(&p, DB_WORDS * sizeof(uint64_t), ARTS_DB,
                         ARTS_DB_PROP_NONE, &(arts_db_hint_t){.rank = 0u});
-  for (unsigned int s = 0; s < DB_WORDS; s++) {
+  for (unsigned int s = 0; s < SLOTS; s++) {
     ((uint64_t *)p)[s] = 0u;
   }
+  atomic_init((_Atomic(uint64_t) *)&((uint64_t *)p)[SLOTS], 0u);
   arts_db_release(g_db, DB_MODE_RW);
 
   uint64_t rp[2] = {0u, (uint64_t)nranks};

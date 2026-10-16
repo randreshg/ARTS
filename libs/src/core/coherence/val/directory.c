@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
- * Home-side coherence state implementations.  See directory.h.
+ * VAL home grant-request queue.  See directory.h.
  *
- * Consolidates the ownership-protocol home-side state (VAL):
- *   - home GRANT_REQUEST FIFO (grantreq Vyukov MPSC queue) + home-directory
- *     init/teardown
- *   - the per-cache pending_rw Treiber stack (cache-side RW waiter chain)
- *   - the bit-packed atomic rank bit-set (WB destroy fan-out roster)
- * The protocol-agnostic cached_version dense map moved to rank_u64_map.c
- * (linked into every build).
+ * Defines: arts_home_grantreq_queue_{init,push,pop,peek,empty,pending,destroy}.
+ *
+ * The grantreq queue is this arm's own copy of the home's Vyukov MPSC request
+ * FIFO, over the struct val/types.h defines.  The home-directory lifecycle
+ * lives in the write-policy TU (wt.c or wb.c), the cached_version dense map in
+ * rank_u64_map.c and the rank bit-set in rank_bitset.c.
+ *
+ * Compiled only for ARTS_COHERENCE_PROTOCOL=VAL.
  */
 
 #include "arts/coherence/directory.h"
@@ -24,10 +25,10 @@
 /*--- pending_rw home FIFO (Vyukov MPSC) ---------------------------------
  *
  * Standard Vyukov MPSC FIFO storing an unsigned int requester rank.  The
- * cache-side RW waiter chain (arts_pending_rw_queue_* below) is a separate
- * Treiber stack; this home queue stays Vyukov because the baton holder pops
- * exactly one requester at a time (the next ownership target) — an ordering a
- * LIFO stack cannot provide.  The embedded stub sentinel in
+ * cache-side RW waiter chain (arts_pending_rw_queue_*, in grant_queue.c) is
+ * a separate Treiber stack; this home queue stays Vyukov because the baton
+ * holder pops exactly one requester at a time (the next ownership target) —
+ * an ordering a LIFO stack cannot provide.  The embedded stub sentinel in
  * arts_home_grantreq_queue_s is the permanent queue sentinel; it is never
  * malloc'd or free'd separately.
  *
@@ -207,48 +208,5 @@ void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q) {
                         memory_order_relaxed);
   atomic_store_explicit(&q->head, (struct arts_home_grantreq_node_s *)NULL,
                         memory_order_relaxed);
-}
-
-/*--- rank bit-set ----------------------------------------------------
- *
- * Bit-packed atomic rank bit-set.  See directory.h / rank_bitset.h.
- * Used only in WB builds — the WT write policy reuses the per-rank version
- * map for the same purpose (set membership = nonzero entry). */
-
-void arts_rank_bitset_init(struct arts_rank_bitset_s *r, unsigned int nranks) {
-  r->nranks = nranks;
-  r->nwords = (nranks + 63) / 64;
-  r->words =
-      (_Atomic(uint64_t) *)arts_calloc(r->nwords, sizeof(_Atomic(uint64_t)));
-}
-
-void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r) {
-  arts_free(r->words);
-  r->words = NULL;
-  r->nwords = 0;
-}
-
-bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank) {
-  if (rank >= r->nranks) {
-    return false;
-  }
-  unsigned int word_idx = rank / 64;
-  uint64_t bit = (uint64_t)1 << (rank % 64);
-  uint64_t prev =
-      atomic_fetch_or_explicit(&r->words[word_idx], bit, memory_order_acq_rel);
-  return (prev & bit) == 0;
-}
-
-void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
-                               void (*cb)(unsigned int rank, void *ctx),
-                               void *ctx) {
-  for (unsigned int w = 0; w < r->nwords; w++) {
-    uint64_t snap = atomic_load_explicit((&r->words[w]), memory_order_acquire);
-    while (snap) {
-      unsigned int b = (unsigned int)__builtin_ctzll(snap);
-      cb((w * 64) + b, ctx);
-      snap &= snap - 1;
-    }
-  }
 }
 

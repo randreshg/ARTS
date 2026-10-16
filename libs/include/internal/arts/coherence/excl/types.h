@@ -525,12 +525,16 @@ struct arts_db_s {
    * of a bit a drain has already taken. */
   struct arts_rank_bitset_s ro_retainers;
 #endif
-#ifdef ARTS_USE_GPU
-  /* GPU staging fields (full arts_db_s alloc; unused on the CPU EXCL path). */
-  volatile unsigned int reader;
-  volatile unsigned int writer;
-  volatile unsigned int version;
-  unsigned int time_stamp;
+#ifdef ARTS_GPU_LAYOUT
+  /* GPU staging state.  The lock exists only for an ARTS_DB_GPU block (NULL
+   * otherwise) and is set before the create publishes the descriptor.  A CPU
+   * EDT running with the block holds its read side for the whole body;
+   * staging and the LC merges hold its write side.  The lock orders every
+   * access to version and time_stamp; version is atomic only because
+   * concurrent read-side holders bump it. */
+  pthread_rwlock_t *gpu_lock;
+  _Atomic(unsigned int) version; /* LC version */
+  unsigned int time_stamp;       /* LC time stamp */
 #endif
 } ARTS_ALIGNED_MAX;
 

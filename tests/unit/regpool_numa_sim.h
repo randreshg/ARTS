@@ -66,19 +66,21 @@
  * Threads: the calling thread's node and each kind of stream (machine,
  * node) are per thread — a stream has one buffer per thread, which that
  * thread's next open of the same kind overwrites, and the pool reads and
- * closes each stream before it opens the next.  The declared values, the
- * counters and the policy log are plain variables: declare the values before
- * a second thread runs, and once several do, the counters can lose updates
- * and the log can lose or tear entries, so only a "consulted at all" check
- * over them stays valid. */
+ * closes each stream before it opens the next.  The declared values are plain
+ * variables: declare them before a second thread runs.  The counters are
+ * atomic and count every call whatever thread makes it, and the policy log is
+ * appended under a lock; read the log once the threads that use the pool are
+ * done. */
 #ifndef REGPOOL_NUMA_SIM_H
 #define REGPOOL_NUMA_SIM_H
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include "arts/utils/stdatomic_compat.h"
 #include <dlfcn.h>
 #include <errno.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -119,16 +121,20 @@ static size_t regpool_sim_machine_avail;
 static size_t regpool_sim_node_free[REGPOOL_SIM_MAX_NODES];
 static __thread int regpool_sim_thread_node = -1;
 static __thread bool regpool_sim_after_machine_read;
+/* The policy log and its length: appended under the lock. */
+static pthread_mutex_t regpool_sim_mbind_lock = PTHREAD_MUTEX_INITIALIZER;
 static regpool_sim_mbind_t regpool_sim_mbinds[REGPOOL_SIM_MAX_MBINDS];
 static unsigned regpool_sim_nmbinds; /* logged, at most the log's size */
-static unsigned regpool_sim_mbind_calls;
-static unsigned regpool_sim_getcpu_calls;
-static unsigned regpool_sim_machine_reads;
-static unsigned regpool_sim_node_reads; /* meminfo of a declared node */
+/* Call counters, bumped by whichever thread calls: only their own values. */
+static _Atomic(unsigned) regpool_sim_mbind_calls;
+static _Atomic(unsigned) regpool_sim_getcpu_calls;
+static _Atomic(unsigned) regpool_sim_machine_reads;
+/* Meminfo reads of a declared node. */
+static _Atomic(unsigned) regpool_sim_node_reads;
 /* SELF_FULL reads: a node read as empty by its own grow, and as having room
  * by anyone else. */
-static unsigned regpool_sim_self_reads[REGPOOL_SIM_MAX_NODES];
-static unsigned regpool_sim_other_reads[REGPOOL_SIM_MAX_NODES];
+static _Atomic(unsigned) regpool_sim_self_reads[REGPOOL_SIM_MAX_NODES];
+static _Atomic(unsigned) regpool_sim_other_reads[REGPOOL_SIM_MAX_NODES];
 
 static inline void regpool_sim_declare(int nodes, regpool_sim_avail_t avail) {
   if (nodes < 1 || nodes > REGPOOL_SIM_MAX_NODES)
@@ -142,12 +148,14 @@ static inline void regpool_sim_declare(int nodes, regpool_sim_avail_t avail) {
   regpool_sim_machine_avail = REGPOOL_SIM_MACHINE_DEFAULT;
   memset(regpool_sim_node_free, 0, sizeof regpool_sim_node_free);
   regpool_sim_nmbinds = 0;
-  regpool_sim_mbind_calls = 0;
-  regpool_sim_getcpu_calls = 0;
-  regpool_sim_machine_reads = 0;
-  regpool_sim_node_reads = 0;
-  memset(regpool_sim_self_reads, 0, sizeof regpool_sim_self_reads);
-  memset(regpool_sim_other_reads, 0, sizeof regpool_sim_other_reads);
+  atomic_store_explicit(&regpool_sim_mbind_calls, 0, memory_order_relaxed);
+  atomic_store_explicit(&regpool_sim_getcpu_calls, 0, memory_order_relaxed);
+  atomic_store_explicit(&regpool_sim_machine_reads, 0, memory_order_relaxed);
+  atomic_store_explicit(&regpool_sim_node_reads, 0, memory_order_relaxed);
+  for (int i = 0; i < REGPOOL_SIM_MAX_NODES; i++) {
+    atomic_store_explicit(&regpool_sim_self_reads[i], 0, memory_order_relaxed);
+    atomic_store_explicit(&regpool_sim_other_reads[i], 0, memory_order_relaxed);
+  }
 }
 
 static inline void regpool_sim_set_thread_node(int node) {
@@ -203,15 +211,21 @@ static inline bool regpool_sim_all_policies_ok(void) {
     if (!regpool_sim_policy_ok(&regpool_sim_mbinds[i]))
       return false;
   }
-  return regpool_sim_nmbinds == regpool_sim_mbind_calls;
+  return regpool_sim_nmbinds ==
+         atomic_load_explicit(&regpool_sim_mbind_calls, memory_order_relaxed);
 }
 
 /* Whether the pool asked the declared machine for each kind of fact it
  * decides on: the calling thread's node, the machine's availability and a
  * node's. */
 static inline bool regpool_sim_consulted(void) {
-  return regpool_sim_getcpu_calls > 0 && regpool_sim_machine_reads > 0 &&
-         regpool_sim_node_reads > 0;
+  unsigned getcpu =
+      atomic_load_explicit(&regpool_sim_getcpu_calls, memory_order_relaxed);
+  unsigned machine =
+      atomic_load_explicit(&regpool_sim_machine_reads, memory_order_relaxed);
+  unsigned node =
+      atomic_load_explicit(&regpool_sim_node_reads, memory_order_relaxed);
+  return getcpu > 0 && machine > 0 && node > 0;
 }
 
 /* Record, for [base, base + len), whether every page is mapped and whether
@@ -244,7 +258,8 @@ long syscall(long nr, ...) {
   va_end(ap);
   if (regpool_sim_nodes > 0) {
     if (nr == SYS_getcpu) {
-      regpool_sim_getcpu_calls++;
+      atomic_fetch_add_explicit(&regpool_sim_getcpu_calls, 1u,
+                                memory_order_relaxed);
       unsigned *cpu = (unsigned *)a0, *node = (unsigned *)a1;
       if (cpu != NULL)
         *cpu = 0;
@@ -255,7 +270,9 @@ long syscall(long nr, ...) {
       return 0;
     }
     if (nr == SYS_mbind) {
-      regpool_sim_mbind_calls++;
+      pthread_mutex_lock(&regpool_sim_mbind_lock);
+      atomic_fetch_add_explicit(&regpool_sim_mbind_calls, 1u,
+                                memory_order_relaxed);
       if (regpool_sim_nmbinds < REGPOOL_SIM_MAX_MBINDS) {
         regpool_sim_mbind_t *r = &regpool_sim_mbinds[regpool_sim_nmbinds++];
         r->base = (uintptr_t)a0;
@@ -266,13 +283,20 @@ long syscall(long nr, ...) {
         r->flags = (unsigned long)a5;
         regpool_sim_probe_range(r->base, r->len, r);
       }
+      pthread_mutex_unlock(&regpool_sim_mbind_lock);
       return 0;
     }
   }
-  static long (*real)(long, ...);
-  if (real == NULL)
-    real = (long (*)(long, ...))dlsym(RTLD_NEXT, "syscall");
-  return real(nr, a0, a1, a2, a3, a4, a5);
+  /* Resolved by whichever thread first needs it; every resolution stores the
+   * same address, so the pointer carries only its own value. */
+  typedef long (*syscall_fn)(long, ...);
+  static _Atomic(syscall_fn) real;
+  syscall_fn fn = atomic_load_explicit(&real, memory_order_relaxed);
+  if (fn == NULL) {
+    fn = (syscall_fn)dlsym(RTLD_NEXT, "syscall");
+    atomic_store_explicit(&real, fn, memory_order_relaxed);
+  }
+  return fn(nr, a0, a1, a2, a3, a4, a5);
 }
 
 /* A read-only stream over `text`, which must outlive the stream. */
@@ -281,15 +305,21 @@ static inline FILE *regpool_sim_stream(const char *text) {
 }
 
 FILE *fopen(const char *path, const char *mode) {
-  static FILE *(*real)(const char *, const char *);
-  if (real == NULL)
-    real = (FILE * (*)(const char *, const char *)) dlsym(RTLD_NEXT, "fopen");
+  /* Resolved as in syscall above. */
+  typedef FILE *(*fopen_fn)(const char *, const char *);
+  static _Atomic(fopen_fn) real_fopen;
+  fopen_fn real = atomic_load_explicit(&real_fopen, memory_order_relaxed);
+  if (real == NULL) {
+    real = (fopen_fn)dlsym(RTLD_NEXT, "fopen");
+    atomic_store_explicit(&real_fopen, real, memory_order_relaxed);
+  }
   if (regpool_sim_nodes <= 0 || path == NULL)
     return real(path, mode);
   bool own = regpool_sim_after_machine_read;
   regpool_sim_after_machine_read = false;
   if (strcmp(path, "/proc/meminfo") == 0) {
-    regpool_sim_machine_reads++;
+    atomic_fetch_add_explicit(&regpool_sim_machine_reads, 1u,
+                              memory_order_relaxed);
     static __thread char machine[64];
     snprintf(machine, sizeof machine, "MemAvailable:   %zu kB\n",
              regpool_sim_machine_avail >> 10);
@@ -306,7 +336,8 @@ FILE *fopen(const char *path, const char *mode) {
   file++;
   bool meminfo = strcmp(file, "meminfo") == 0;
   if (meminfo && n >= 0 && n < regpool_sim_nodes)
-    regpool_sim_node_reads++;
+    atomic_fetch_add_explicit(&regpool_sim_node_reads, 1u,
+                              memory_order_relaxed);
   if (n < 0 || n >= regpool_sim_nodes || !meminfo ||
       regpool_sim_avail[n] == REGPOOL_SIM_UNKNOWN) {
     errno = ENOENT;
@@ -318,9 +349,11 @@ FILE *fopen(const char *path, const char *mode) {
   } else {
     bytes = own ? 0 : REGPOOL_SIM_SELF_FULL_OTHER;
     if (own)
-      regpool_sim_self_reads[n]++;
+      atomic_fetch_add_explicit(&regpool_sim_self_reads[n], 1u,
+                                memory_order_relaxed);
     else
-      regpool_sim_other_reads[n]++;
+      atomic_fetch_add_explicit(&regpool_sim_other_reads[n], 1u,
+                                memory_order_relaxed);
   }
   static __thread char node[96];
   snprintf(node, sizeof node, "Node %ld MemFree: %zu kB\n", n, bytes >> 10);

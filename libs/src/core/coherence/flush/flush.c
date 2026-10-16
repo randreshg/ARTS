@@ -30,7 +30,6 @@
 #include "arts/system/threads.h"
 #include "arts/transport/net.h"
 #include "arts/transport/protocol.h"
-#include "arts/utils/atomics.h"
 #include "arts/utils/malloc.h"
 
 #define SHARER_BITS (8u * (unsigned)sizeof(unsigned long))

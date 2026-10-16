@@ -148,8 +148,8 @@ static int part2_stub_reuse(void) {
  * checks per-producer monotonicity (FIFO) + counts every value exactly once. */
 
 static struct arts_home_grantreq_queue_s g_q;
-static _Atomic int g_start;
-static _Atomic int g_produced;
+static _Atomic(int) g_start;
+static _Atomic(int) g_produced;
 
 static void *producer(void *arg) {
   unsigned int prod = (unsigned int)(uintptr_t)arg;
@@ -253,15 +253,15 @@ int main(void) {
 }
 
 /* libc-backed alloc shims (the directory.c bodies only use bare malloc/free for the
- * queue nodes; the bitset uses arts_calloc/arts_free, pulled in by the same
- * directory.c TU).  Provided only in the standalone build. */
+ * queue nodes; the rank bit-set the home lifecycle sizes, linked beside, uses
+ * arts_calloc/arts_free).  Provided only in the standalone build. */
 #ifdef ARTS_UNIT_STANDALONE_SHIMS
 #include "counter_stubs.h"
 void *arts_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
 void arts_free(void *ptr) { free(ptr); }
 void *arts_malloc(size_t size) { return malloc(size); }
 
-/* EXCL's directory.c is monolithic: the same TU that defines the queue/bitset bodies
+/* EXCL's directory.c is monolithic: the same TU that defines the queue bodies
  * we test also defines the EXCL request/release/destroy HANDLERS, which
  * reference the broader runtime (transport, route table, buffer cb, identity).
  * The test never invokes any of those — it only drives the queue API — so

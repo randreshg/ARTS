@@ -5,6 +5,8 @@
 
 set(OCR_ROOT "${CMAKE_SOURCE_DIR}/third_party/ocr/ocr")
 
+add_compile_options(${ARTS_WERROR_IMPLICIT_SEQ_CST})
+
 # Added from the top level, so this directory states its own compile setting.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(SHIM_C_OPT -O0 -g)
@@ -25,10 +27,8 @@ set(SHIM_OCR_OPTIONS_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 function(arts_ocr_shim_objects target)
     add_library(${target} OBJECT arts_ocr.c)
 
-    # C_EXTENSIONS ON because the shim uses VLAs, __sync builtins, typeof, etc.
     set_target_properties(${target} PROPERTIES
         C_STANDARD 11
-        C_EXTENSIONS ON
     )
 
     target_compile_options(${target} PRIVATE

@@ -30,8 +30,8 @@ static int g_failed = 0;
 enum { SEEN_INCR, SEEN_LINGER, SEEN_NO_INCR, SEEN_COUNT };
 
 typedef struct {
-  _Atomic unsigned int fires;
-  _Atomic uint64_t seen[SEEN_COUNT];
+  _Atomic(unsigned int) fires;
+  _Atomic(uint64_t) seen[SEEN_COUNT];
 } record_t;
 
 #define DECR_DATA(i) ((arts_guid_t)(0x100 + (i)))

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  *
  * Async-signal-safe formatters in signals.c (write_signal_line, signal_name)
- * plus arts_atomic_print truncation (print.h).  write_signal_line and
+ * plus arts_print_line truncation (print.h).  write_signal_line and
  * signal_name are file-static in signals.c, so this TU #includes signals.c to
  * pull them in; the runtime symbols signals.c references (arts_global_rank_id,
  * arts_enter_shutdown_state, arts_exit_now) are stubbed so the unit links
@@ -25,7 +25,7 @@
  *   HUP}); any other -> "UNKNOWN".  We assert each installed signal maps to its
  *   literal and a sampling of un-installed signals map to "UNKNOWN".
  *
- * arts_atomic_print(fmt,...): vsnprintf into a 4096 stack buffer + single
+ * arts_print_line(fmt,...): vsnprintf into a 4096 stack buffer + single
  *   write(STDERR).  A formatted length >= 4096 must TRUNCATE to size-1 bytes in
  *   ONE write (no overflow, no second write).  We feed an oversized format and
  *   assert the captured output length is exactly 4095 and the tail is the
@@ -61,7 +61,7 @@ _Noreturn void arts_exit_now(uint8_t status) { _exit(status); }
  * standalone storage so the TU links without the full runtime. */
 ARTS_THREAD_LOCAL struct arts_runtime_private_s arts_thread_info;
 
-/* print.h (arts_atomic_print) is reachable via signals.c's includes. */
+/* print.h (arts_print_line) is reachable via signals.c's includes. */
 #include "arts/system/print.h"
 
 /* ------------------------------------------------------------------------- */
@@ -152,9 +152,9 @@ struct print_arg {
   const char *fmt;
   const char *blob;
 };
-static void call_atomic_print(void *a) {
+static void call_print_line(void *a) {
   struct print_arg *p = (struct print_arg *)a;
-  arts_atomic_print(p->fmt, p->blob);
+  arts_print_line(p->fmt, p->blob);
 }
 
 int main(void) {
@@ -204,7 +204,7 @@ int main(void) {
     }
   }
 
-  /* ---- arts_atomic_print truncation: >=4096 formatted -> single 4095 write -
+  /* ---- arts_print_line truncation: >=4096 formatted -> single 4095 write -
    */
   {
     /* Build a blob longer than the 4096 buffer so vsnprintf truncates. */
@@ -221,18 +221,18 @@ int main(void) {
     if (!got) {
       fail("malloc got");
     }
-    size_t n = capture_stderr(call_atomic_print, &pa, got, 8192);
+    size_t n = capture_stderr(call_print_line, &pa, got, 8192);
     /* Single write of exactly size-1 == 4095 bytes (the truncated content),
      * no embedded NUL written. */
     if (n != 4095) {
       char msg[128];
       snprintf(msg, sizeof(msg),
-               "arts_atomic_print truncation wrote %zu bytes, want 4095", n);
+               "arts_print_line truncation wrote %zu bytes, want 4095", n);
       fail(msg);
     }
     for (size_t i = 0; i < n; i++) {
       if (got[i] != 'X') {
-        fail("arts_atomic_print truncated output corrupted");
+        fail("arts_print_line truncated output corrupted");
       }
     }
     free(blob);
@@ -243,13 +243,13 @@ int main(void) {
   {
     struct print_arg pa = {"%s", "hello-short"};
     char got[64];
-    size_t n = capture_stderr(call_atomic_print, &pa, got, sizeof(got));
+    size_t n = capture_stderr(call_print_line, &pa, got, sizeof(got));
     if (n != strlen("hello-short") || memcmp(got, "hello-short", n) != 0) {
-      fail("arts_atomic_print short string altered");
+      fail("arts_print_line short string altered");
     }
   }
 
   printf("PASS signals_formatters: write_signal_line + signal_name table + "
-         "arts_atomic_print truncation verified\n");
+         "arts_print_line truncation verified\n");
   return 0;
 }

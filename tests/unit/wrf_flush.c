@@ -33,8 +33,11 @@
  *   - spent credit: a write-back whose landing credit is gone asks the home for
  *     one and still delivers the bytes; the credit is spent by hand from inside
  *     the write acquisition, through the block's descriptor (whitebox).
- * The last four need a rank that is not the block's home.
+ * The last four need a rank that is not the block's home.  A racing reader
+ * reads a word a writer writes, so every counter word is accessed only
+ * atomically, in the ordered cases too.
  */
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
@@ -51,13 +54,19 @@ static void fail_value(const char *what, uint64_t got, uint64_t want) {
               (unsigned long long)got, (unsigned long long)want);
 }
 
+/* A payload word is viewed as an atomic object, which needs a lock-free
+ * atomic of the plain type's size. */
+_Static_assert(ATOMIC_LONG_LOCK_FREE == 2 &&
+                   sizeof(_Atomic(uint64_t)) == sizeof(uint64_t),
+               "the payload view needs a lock-free 64-bit atomic");
+
 static arts_guid_t make_block(uint64_t bytes, unsigned int home,
                               uint64_t seed) {
   void *addr = NULL;
   arts_guid_t db = arts_db_create(&addr, bytes, ARTS_DB, ARTS_DB_PROP_NONE,
                                   &(arts_db_hint_t){.rank = home});
   if (bytes >= sizeof(uint64_t)) {
-    *(uint64_t *)addr = seed;
+    atomic_init((_Atomic(uint64_t) *)addr, seed);
   }
   arts_db_release(db, DB_MODE_RW);
   return db;
@@ -73,8 +82,9 @@ static void expect_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                        arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  const uint64_t *v = (const uint64_t *)depv[0].ptr;
-  uint64_t got = v ? *v : (uint64_t)-1;
+  const _Atomic(uint64_t) *v = (const _Atomic(uint64_t) *)depv[0].ptr;
+  uint64_t got =
+      v ? atomic_load_explicit(v, memory_order_relaxed) : (uint64_t)-1;
   if (got != paramv[0]) {
     fail_value(g_case[paramv[1]], got, paramv[0]);
   }
@@ -100,13 +110,15 @@ static void link_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  uint64_t *v = (uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
     arts_printf("FAIL: wrf_flush chain link got NULL\n");
     return;
   }
-  *v = *v + 1u;
+  /* The links are ordered, so one link at a time writes the word. */
+  uint64_t c = atomic_load_explicit(v, memory_order_relaxed);
+  atomic_store_explicit(v, c + 1u, memory_order_relaxed);
 }
 
 static void case_chain(unsigned int away, arts_guid_t scope) {
@@ -140,9 +152,9 @@ static void race_reader_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  const volatile uint64_t *v = (const volatile uint64_t *)depv[0].ptr;
+  const _Atomic(uint64_t) *v = (const _Atomic(uint64_t) *)depv[0].ptr;
   if (v != NULL) {
-    (void)*v;
+    (void)atomic_load_explicit(v, memory_order_relaxed);
   }
 }
 
@@ -211,17 +223,18 @@ static void step_writer_edt(uint32_t paramc, const uint64_t *paramv,
                             uint32_t depc, arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-  uint64_t *v = (uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
     arts_printf("FAIL: wrf_flush step writer got NULL\n");
     return;
   }
-  if (*v != paramv[0]) {
-    fail_value("creator away from the home: a writer", *v, paramv[0]);
+  uint64_t got = atomic_load_explicit(v, memory_order_relaxed);
+  if (got != paramv[0]) {
+    fail_value("creator away from the home: a writer", got, paramv[0]);
     return;
   }
-  *v = paramv[1];
+  atomic_store_explicit(v, paramv[1], memory_order_relaxed);
 }
 
 static void case_creator_away(unsigned int home, arts_guid_t scope) {
@@ -282,14 +295,14 @@ static void overlap_writer_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)depc;
   arts_guid_t go = (arts_guid_t)paramv[0];
-  uint64_t *v = (uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
     arts_printf("FAIL: wrf_flush private copy writer got NULL\n");
     arts_event_satisfy(go, NULL_GUID);
     return;
   }
-  *v = PRIVATE_WRITTEN;
+  atomic_store_explicit(v, PRIVATE_WRITTEN, memory_order_relaxed);
   arts_event_satisfy(go, NULL_GUID);
   spin_ns(OVERLAP_NS);
 }
@@ -301,9 +314,9 @@ static void overlap_reader_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  const volatile uint64_t *v = (const volatile uint64_t *)depv[0].ptr;
+  const _Atomic(uint64_t) *v = (const _Atomic(uint64_t) *)depv[0].ptr;
   if (v != NULL) {
-    (void)*v;
+    (void)atomic_load_explicit(v, memory_order_relaxed);
   }
 }
 
@@ -470,13 +483,13 @@ static void credit_writer_edt(uint32_t paramc, const uint64_t *paramv,
   (void)paramc;
   (void)depc;
   arts_guid_t db = (arts_guid_t)paramv[0];
-  uint64_t *v = (uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *v = (_Atomic(uint64_t) *)depv[0].ptr;
   if (v == NULL) {
     arts_test_fail();
     arts_printf("FAIL: wrf_flush spent-credit writer got NULL\n");
     return;
   }
-  *v = CREDIT_WRITTEN;
+  atomic_store_explicit(v, CREDIT_WRITTEN, memory_order_relaxed);
 
   arts_shared_ptr_t h = arts_route_table_lookup_db(db);
   struct arts_db_s *d = (struct arts_db_s *)arts_shared_get(h);

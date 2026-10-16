@@ -52,10 +52,10 @@ unsigned int arts_global_rank_id = 0;
 #define MONO_THREADS 8
 #define MONO_SAMPLES 200000
 
-static atomic_int g_gate;
-static atomic_uint_least64_t
-    g_backward_steps;           /* observed REALTIME regressions */
-static atomic_int g_hard_break; /* gross failure flag */
+static _Atomic(int) g_gate;
+static _Atomic(uint_least64_t)
+    g_backward_steps;             /* observed REALTIME regressions */
+static _Atomic(int) g_hard_break; /* gross failure flag */
 
 static void *mono_worker(void *arg) {
   (void)arg;
@@ -85,7 +85,7 @@ static void *mono_worker(void *arg) {
 #define PRINTF_THREADS 6
 #define PRINTF_LINES 300
 
-static atomic_int g_pgate;
+static _Atomic(int) g_pgate;
 
 static void *printf_worker(void *arg) {
   long id = (long)arg;

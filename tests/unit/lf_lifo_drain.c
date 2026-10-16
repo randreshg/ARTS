@@ -112,13 +112,13 @@ static int ordering_check(void) {
 /* ---- Part 2/3: concurrent disjoint partitions + happens-before ---- */
 static arts_lf_stack_t g_s;
 static node_t *g_nodes;
-static atomic_int g_start;
-static _Atomic uint64_t g_prod_done;
+static _Atomic(int) g_start;
+static _Atomic(uint64_t) g_prod_done;
 
 /* Per-node "seen" tally accumulated by drainers; atomic to detect any
  * double-detach across drainers. */
-static _Atomic uint8_t *g_seen;
-static _Atomic uint64_t g_total_seen;
+static _Atomic(uint8_t) *g_seen;
+static _Atomic(uint64_t) g_total_seen;
 
 static void *producer(void *arg) {
   uint32_t base = (uint32_t)(uintptr_t)arg * PER_PRODUCER;
@@ -178,7 +178,7 @@ static int concurrent_check(void) {
   atomic_init(&g_prod_done, 0);
   atomic_init(&g_total_seen, 0);
   g_nodes = (node_t *)calloc(TOTAL, sizeof(node_t));
-  g_seen = (_Atomic uint8_t *)calloc(TOTAL, sizeof(_Atomic uint8_t));
+  g_seen = (_Atomic(uint8_t) *)calloc(TOTAL, sizeof(_Atomic(uint8_t)));
   if (!g_nodes || !g_seen) {
     return 1;
   }

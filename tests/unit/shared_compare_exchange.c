@@ -59,11 +59,11 @@ static void del_obj(void *p) {
 
 /* ---- Part 1: deterministic refcount accounting ---- */
 static int deterministic(void) {
-  atomic_store(&g_made, 0);
-  atomic_store(&g_deleted, 0);
+  atomic_store_explicit(&g_made, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_deleted, 0, memory_order_relaxed);
 
   _Atomic(arts_shared_slot_t) slot;
-  atomic_store(&slot, (arts_shared_slot_t){0});
+  atomic_init(&slot, (arts_shared_slot_t){0});
 
   /* Install A into the slot; keep our own pinning ref on A. */
   arts_shared_ptr_t A = arts_shared_make(make_obj(), del_obj); /* strong=1 */
@@ -72,7 +72,7 @@ static int deterministic(void) {
                                        null the handle */
   /* After store: slot holds a ref to A's cb (the one `A` carried).  A_pin is
    * our pinning ref.  No deleter yet. */
-  assert(atomic_load(&g_deleted) == 0);
+  assert(atomic_load_explicit(&g_deleted, memory_order_relaxed) == 0);
 
   /* SUCCESS: slot still holds A_pin's cb; swap to B.  Slot drops its ref on A
    * (so A's cb goes 2->1, still alive via A_pin); slot now owns B. */
@@ -83,7 +83,7 @@ static int deterministic(void) {
     return 1;
   }
   /* A dropped slot ref (2->1) — A still alive via A_pin, no delete yet. */
-  if (atomic_load(&g_deleted) != 0) {
+  if (atomic_load_explicit(&g_deleted, memory_order_relaxed) != 0) {
     (void)fprintf(stderr,
                   "FAIL shared_compare_exchange: success deleted too early\n");
     return 1;
@@ -100,7 +100,7 @@ static int deterministic(void) {
   }
   /* Mismatch dropped no refs; C is still ours (its make ref), B still in slot,
    * A still alive via A_pin. */
-  if (atomic_load(&g_deleted) != 0) {
+  if (atomic_load_explicit(&g_deleted, memory_order_relaxed) != 0) {
     (void)fprintf(stderr,
                   "FAIL shared_compare_exchange: mismatch dropped a ref\n");
     return 1;
@@ -108,11 +108,11 @@ static int deterministic(void) {
 
   /* Drop our pin on A -> A's cb 1->0 -> deleter runs for A (deleted: 0->1). */
   arts_shared_release(&A_pin);
-  if (atomic_load(&g_deleted) != 1) {
+  if (atomic_load_explicit(&g_deleted, memory_order_relaxed) != 1) {
     (void)fprintf(stderr,
                   "FAIL shared_compare_exchange: A not deleted on last drop "
                   "(deleted=%" PRIu64 ")\n",
-                  atomic_load(&g_deleted));
+                  atomic_load_explicit(&g_deleted, memory_order_relaxed));
     return 1;
   }
 
@@ -121,7 +121,7 @@ static int deterministic(void) {
   void *c_obj = arts_shared_get(C);
   arts_shared_abandon(&C);
   del_obj(c_obj);
-  if (atomic_load(&g_deleted) != 2) {
+  if (atomic_load_explicit(&g_deleted, memory_order_relaxed) != 2) {
     (void)fprintf(stderr,
                   "FAIL shared_compare_exchange: C cleanup count wrong\n");
     return 1;
@@ -129,17 +129,19 @@ static int deterministic(void) {
 
   /* Clear the slot -> releases B -> deleter for B (deleted: 2->3). */
   arts_shared_slot_store(&slot, (arts_shared_ptr_t)NULL);
-  if (atomic_load(&g_deleted) != 3) {
+  if (atomic_load_explicit(&g_deleted, memory_order_relaxed) != 3) {
     (void)fprintf(
         stderr, "FAIL shared_compare_exchange: B not deleted on slot clear\n");
     return 1;
   }
   /* made == 3 (A,B,C), deleted == 3 (A via pin, C by us, B via slot-clear). */
-  if (atomic_load(&g_made) != 3 || atomic_load(&g_deleted) != 3) {
+  if (atomic_load_explicit(&g_made, memory_order_relaxed) != 3 ||
+      atomic_load_explicit(&g_deleted, memory_order_relaxed) != 3) {
     (void)fprintf(stderr,
                   "FAIL shared_compare_exchange: made=%" PRIu64
                   " deleted=%" PRIu64 " (want 3/3)\n",
-                  atomic_load(&g_made), atomic_load(&g_deleted));
+                  atomic_load_explicit(&g_made, memory_order_relaxed),
+                  atomic_load_explicit(&g_deleted, memory_order_relaxed));
     return 1;
   }
   return 0;
@@ -147,9 +149,9 @@ static int deterministic(void) {
 
 /* ---- Part 2: concurrent compare_exchange + load forward-progress ---- */
 static _Atomic(arts_shared_slot_t) g_slot;
-static atomic_int g_start;
-static _Atomic int g_stop;
-static _Atomic uint64_t g_cas_wins;
+static _Atomic(int) g_start;
+static _Atomic(int) g_stop;
+static _Atomic(uint64_t) g_cas_wins;
 
 #define INSTALLERS 6
 /* Sized so a single run completes well under the suite timeout even when TSan
@@ -210,12 +212,12 @@ static void *reader(void *arg) {
 }
 
 static int concurrent(void) {
-  atomic_store(&g_made, 0);
-  atomic_store(&g_deleted, 0);
+  atomic_store_explicit(&g_made, 0, memory_order_relaxed);
+  atomic_store_explicit(&g_deleted, 0, memory_order_relaxed);
   atomic_init(&g_start, 0);
   atomic_init(&g_stop, 0);
   atomic_init(&g_cas_wins, 0);
-  atomic_store(&g_slot, (arts_shared_slot_t){0});
+  atomic_store_explicit(&g_slot, (arts_shared_slot_t){0}, memory_order_relaxed);
 
   /* Seed the slot. */
   arts_shared_slot_store(&g_slot, arts_shared_make(make_obj(), del_obj));
@@ -237,8 +239,8 @@ static int concurrent(void) {
   arts_shared_slot_store(&g_slot, (arts_shared_ptr_t)NULL);
 
   /* Refcount conservation: every object ever made was deleted exactly once. */
-  uint64_t made = atomic_load(&g_made);
-  uint64_t del = atomic_load(&g_deleted);
+  uint64_t made = atomic_load_explicit(&g_made, memory_order_relaxed);
+  uint64_t del = atomic_load_explicit(&g_deleted, memory_order_relaxed);
   if (made != del) {
     (void)fprintf(stderr,
                   "FAIL shared_compare_exchange: made=%" PRIu64

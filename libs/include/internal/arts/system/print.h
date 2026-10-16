@@ -50,13 +50,13 @@
 extern "C" {
 #endif
 
-/*--- Atomic stderr output (used by all logging macros) ------------------------
+/*--- One-line stderr output (used by all logging macros) ----------------------
  *
  * Formats into a stack buffer and writes with a single write() syscall so that
  * output from concurrent threads does not interleave.
  *---------------------------------------------------------------------------*/
 
-static inline void arts_atomic_print(const char *format, ...) {
+static inline void arts_print_line(const char *format, ...) {
   char buffer[4096];
   va_list args;
   va_start(args, format);
@@ -96,7 +96,7 @@ static inline void arts_atomic_print(const char *format, ...) {
 #if ARTS_LOG_LEVEL >= 0
 #define ARTS_ERROR(format, ...)                                                \
   do {                                                                         \
-    arts_atomic_print(                                                         \
+    arts_print_line(                                                           \
         ARTS_CLR_RED "[%u:%u] [ERROR] " format ARTS_CLR_RESET "\n",            \
         arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__);       \
     arts_abort(1);                                                             \
@@ -111,7 +111,7 @@ static inline void arts_atomic_print(const char *format, ...) {
 /* Level 1: WARN */
 #if ARTS_LOG_LEVEL >= 1
 #define ARTS_WARN(format, ...)                                                 \
-  arts_atomic_print(                                                           \
+  arts_print_line(                                                             \
       ARTS_CLR_YELLOW "[%u:%u] [WARN] " format ARTS_CLR_RESET "\n",            \
       arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__)
 #else
@@ -121,9 +121,9 @@ static inline void arts_atomic_print(const char *format, ...) {
 /* Level 2: INFO */
 #if ARTS_LOG_LEVEL >= 2
 #define ARTS_INFO(format, ...)                                                 \
-  arts_atomic_print(                                                           \
-      ARTS_CLR_CYAN "[%u:%u] [INFO] " format ARTS_CLR_RESET "\n",              \
-      arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__)
+  arts_print_line(ARTS_CLR_CYAN "[%u:%u] [INFO] " format ARTS_CLR_RESET "\n",  \
+                  arts_global_rank_id, arts_thread_info.group_pos,             \
+                  ##__VA_ARGS__)
 #else
 #define ARTS_INFO(...) ((void)0)
 #endif
@@ -131,9 +131,9 @@ static inline void arts_atomic_print(const char *format, ...) {
 /* Level 3: DEBUG */
 #if ARTS_LOG_LEVEL >= 3
 #define ARTS_DEBUG(format, ...)                                                \
-  arts_atomic_print(                                                           \
-      ARTS_CLR_DIM "[%u:%u] [DEBUG] " format ARTS_CLR_RESET "\n",              \
-      arts_global_rank_id, arts_thread_info.group_pos, ##__VA_ARGS__)
+  arts_print_line(ARTS_CLR_DIM "[%u:%u] [DEBUG] " format ARTS_CLR_RESET "\n",  \
+                  arts_global_rank_id, arts_thread_info.group_pos,             \
+                  ##__VA_ARGS__)
 #else
 #define ARTS_DEBUG(...) ((void)0)
 #endif

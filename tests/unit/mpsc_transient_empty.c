@@ -49,9 +49,9 @@ typedef struct {
 } node_t;
 
 static arts_mpsc_t g_q;
-static atomic_int g_start;
-static _Atomic int g_prod_done;
-static _Atomic uint64_t g_pushed; /* total pushed so far */
+static _Atomic(int) g_start;
+static _Atomic(int) g_prod_done;
+static _Atomic(uint64_t) g_pushed; /* total pushed so far */
 
 #define PAYLOAD_OF(i) (0xA5A5000000000000ull ^ (uint64_t)(i))
 

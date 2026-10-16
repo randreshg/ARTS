@@ -2,21 +2,20 @@
  *
  * EXCL protocol shared home-side infrastructure.
  *
- * Defines: arts_home_grantreq_queue_{init,push,pop,peek,empty,destroy},
- *          arts_rank_bitset_{init,set,for_each,destroy},
+ * Defines: arts_home_grantreq_queue_{init,push,pop,peek,empty,pending,destroy},
  *          arts_db_home_init, arts_db_home_teardown,
- *          arts_handler_db_destroy.
+ *          arts_excl_home_teardown.
  *
  * This TU contains only the shared pieces that both the PURGE and RETAIN release-policy
- * variants need: the home ownership-request FIFO, the rank bitset, the
- * home-directory lifecycle, and the DB-destroy fan-out handler.  Timing-
+ * variants need: the home ownership-request FIFO, the home-directory
+ * lifecycle, and the DB-destroy fan-out.  Timing-
  * specific arbiters (excl_compute_next, cache_compute_next) and all
  * acquire/release handler/sender bodies live in the per-release-policy TU (purge.c
  * or retain.c).
  *
- * The grantreq queue and rank_bitset bodies are verbatim from val/directory.c
- * (same Vyukov MPSC + bit-packed bitset shapes; EXCL reuses the same struct
- * definitions from excl/types.h).
+ * The grantreq queue is this arm's own copy of the home's Vyukov MPSC request
+ * FIFO, over the struct excl/types.h defines; its push also counts the requests
+ * that could not be granted on arrival.
  *
  * Compiled only for ARTS_COHERENCE_PROTOCOL=EXCL.
  */
@@ -193,49 +192,6 @@ void arts_home_grantreq_queue_destroy(struct arts_home_grantreq_queue_s *q) {
                         memory_order_relaxed);
 }
 
-/* ===== rank bit-set ===================================================== */
-
-void arts_rank_bitset_init(struct arts_rank_bitset_s *r, unsigned int nranks) {
-  r->nranks = nranks;
-  r->nwords = (nranks + 63) / 64;
-  r->words =
-      (_Atomic(uint64_t) *)arts_calloc(r->nwords, sizeof(_Atomic(uint64_t)));
-}
-
-void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r) {
-  arts_free(r->words);
-  r->words = NULL;
-  r->nwords = 0;
-}
-
-bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank) {
-  if (rank >= r->nranks) {
-    return false;
-  }
-  unsigned int word_idx = rank / 64;
-  uint64_t bit = (uint64_t)1 << (rank % 64);
-  uint64_t prev =
-      atomic_fetch_or_explicit(&r->words[word_idx], bit, memory_order_acq_rel);
-  return (prev & bit) == 0;
-}
-
-void arts_rank_bitset_for_each(const struct arts_rank_bitset_s *r,
-                               void (*cb)(unsigned int rank, void *ctx),
-                               void *ctx) {
-  for (unsigned int w = 0; w < r->nwords; w++) {
-    uint64_t snap = atomic_load_explicit(&r->words[w], memory_order_acquire);
-    while (snap) {
-      unsigned int b = (unsigned int)__builtin_ctzll(snap);
-      cb(w * 64 + b, ctx);
-      snap &= snap - 1;
-    }
-  }
-}
-
-/* ===== RO waiter node (rank-granular RO queue entry) ===================
- * struct arts_lock_ro_node_s is the EXCL layout's (excl/types.h); the home's
- * teardown below frees the nodes a destroy finds on ro_waiters. */
-
 /* ===== Home-directory lifecycle ========================================= */
 
 void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
@@ -298,10 +254,6 @@ void arts_db_home_teardown(struct arts_db_s *db) {
 #endif
 }
 
-/* ===== arts_handler_db_destroy =========================================
- * OOO_DB_DESTROY Cat-B body for the EXCL protocol.  Fan-out CACHE_DESTROY
- * to every rank in cached_ranks (the destroy roster), wake parked waiters,
- * then detach the route-table slot. */
 /* Tear the home down: notify every rank that ever cached this DB, then return
  * the route slot.  The fan-out sits INSIDE the retire's single flight rather
  * than before it: duplicate destroys are produced by the protocol on purpose,

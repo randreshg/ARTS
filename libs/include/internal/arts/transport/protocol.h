@@ -231,7 +231,7 @@ struct ARTS_PACKED arts_msg_time_sync_resp_packet_s {
 
 /* ===== coherence wire packets =======================
  * Pad-fields exist to keep the trailing payload (when present) on an
- * 8-byte boundary; senders call arts_transport_send_payload_async right
+ * 8-byte boundary; senders call arts_transport_send_payload_async_free right
  * after sizeof(packet_struct) bytes, so the payload
  * starts at sizeof() — that offset must be 8-aligned.  Header is packed
  * (44 bytes), so each struct's body fields determine the pad. */

@@ -53,7 +53,7 @@ static void writer_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic uint64_t *acc = (_Atomic uint64_t *)depv[0].ptr;
+  _Atomic(uint64_t) *acc = (_Atomic(uint64_t) *)depv[0].ptr;
   if (acc != NULL) {
     atomic_fetch_add_explicit(acc, 1u, memory_order_acq_rel);
   }
@@ -77,7 +77,7 @@ static void verify_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)paramv;
   (void)depc;
-  _Atomic uint64_t *acc = (_Atomic uint64_t *)depv[1].ptr;
+  _Atomic(uint64_t) *acc = (_Atomic(uint64_t) *)depv[1].ptr;
   uint64_t got = atomic_load_explicit(acc, memory_order_acquire);
   if (got != (uint64_t)N_WRITERS) {
     (void)fprintf(stderr,
@@ -112,7 +112,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_abort(1);
   }
   if (dbp != NULL) {
-    *(uint64_t *)dbp = 0u;
+    atomic_init((_Atomic(uint64_t) *)dbp, 0u);
   }
   arts_db_release(db, DB_MODE_RW);
 

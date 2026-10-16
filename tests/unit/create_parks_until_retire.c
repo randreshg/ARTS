@@ -35,7 +35,7 @@
 #define VALUE(tag) ((arts_guid_t)(0x900u + (tag)))
 #define NO_EDT UINT64_MAX
 
-static _Atomic uint64_t g_ran[2];
+static _Atomic(uint64_t) g_ran[2];
 
 static void expect(bool ok, const char *lane, const char *what) {
   if (!ok) {

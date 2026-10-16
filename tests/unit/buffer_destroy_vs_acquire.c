@@ -48,8 +48,8 @@
 #define OWNER_ITERS 60000
 
 static struct arts_db_cache_s g_cache;
-static _Atomic int g_stop;
-static _Atomic int g_fail;
+static _Atomic(int) g_stop;
+static _Atomic(int) g_fail;
 
 /* Each buffer's bytes are all (version & 0xFF) so a reader can verify it saw a
  * whole, live buffer rather than freed/torn storage. */
