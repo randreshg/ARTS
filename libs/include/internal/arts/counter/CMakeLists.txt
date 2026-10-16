@@ -155,9 +155,10 @@ message(STATUS "Counter configuration: ${ENABLED_COUNT} enabled, ${DISABLED_COUN
 
 # Generate counter header file
 set(GENERATED_HEADER "${CMAKE_CURRENT_BINARY_DIR}/Preamble.h")
+set(STAGED_HEADER "${GENERATED_HEADER}.tmp")
 
 # Start writing the header
-file(WRITE ${GENERATED_HEADER}
+file(WRITE ${STAGED_HEADER}
     "/* counter.h - AUTOMATICALLY GENERATED - DO NOT EDIT */
 
 #ifndef ARTS_COUNTER_PREAMBLE_H
@@ -188,43 +189,43 @@ extern \"C\" {
     ")
 
 # Generate enable flags for counters
-file(APPEND ${GENERATED_HEADER} "/* Counter Flags */\n")
+file(APPEND ${STAGED_HEADER} "/* Counter Flags */\n")
 foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED ENABLE_${COUNTER})
         set(ENABLE_${COUNTER} 0)
     endif()
-    file(APPEND ${GENERATED_HEADER} "#define ENABLE_${COUNTER} ${ENABLE_${COUNTER}}\n")
+    file(APPEND ${STAGED_HEADER} "#define ENABLE_${COUNTER} ${ENABLE_${COUNTER}}\n")
 endforeach()
 
 # Generate counter mode flags for counters
-file(APPEND ${GENERATED_HEADER} "\n/* Counter Mode Flags (0=OFF, 1=ONCE, 2=PERIODIC) */\n")
+file(APPEND ${STAGED_HEADER} "\n/* Counter Mode Flags (0=OFF, 1=ONCE, 2=PERIODIC) */\n")
 foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED COUNTER_MODE_${COUNTER})
         set(COUNTER_MODE_${COUNTER} 0)
     endif()
-    file(APPEND ${GENERATED_HEADER} "#define COUNTER_MODE_${COUNTER} ${COUNTER_MODE_${COUNTER}}\n")
+    file(APPEND ${STAGED_HEADER} "#define COUNTER_MODE_${COUNTER} ${COUNTER_MODE_${COUNTER}}\n")
 endforeach()
 
 # Generate counter level flags for counters
-file(APPEND ${GENERATED_HEADER} "\n/* Counter Level Flags (0=THREAD, 1=NODE, 2=CLUSTER) */\n")
+file(APPEND ${STAGED_HEADER} "\n/* Counter Level Flags (0=THREAD, 1=NODE, 2=CLUSTER) */\n")
 foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED COUNTER_LEVEL_${COUNTER})
         set(COUNTER_LEVEL_${COUNTER} 1) # Default to NODE
     endif()
-    file(APPEND ${GENERATED_HEADER} "#define COUNTER_LEVEL_${COUNTER} ${COUNTER_LEVEL_${COUNTER}}\n")
+    file(APPEND ${STAGED_HEADER} "#define COUNTER_LEVEL_${COUNTER} ${COUNTER_LEVEL_${COUNTER}}\n")
 endforeach()
 
 # Generate reduce method flags for counters
-file(APPEND ${GENERATED_HEADER} "\n/* Counter Reduce Method Flags (0=SUM, 1=MAX, 2=MIN, 3=MASTER) */\n")
+file(APPEND ${STAGED_HEADER} "\n/* Counter Reduce Method Flags (0=SUM, 1=MAX, 2=MIN, 3=MASTER) */\n")
 foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED REDUCE_METHOD_${COUNTER})
         set(REDUCE_METHOD_${COUNTER} 0) # Default to SUM
     endif()
-    file(APPEND ${GENERATED_HEADER} "#define REDUCE_METHOD_${COUNTER} ${REDUCE_METHOD_${COUNTER}}\n")
+    file(APPEND ${STAGED_HEADER} "#define REDUCE_METHOD_${COUNTER} ${REDUCE_METHOD_${COUNTER}}\n")
 endforeach()
 
 # Generate counter macros automatically
-file(APPEND ${GENERATED_HEADER} "
+file(APPEND ${STAGED_HEADER} "
 /* ============================================================================
  * Counter Macros - Automatically Generated
  * ============================================================================ */
@@ -241,7 +242,7 @@ foreach(COUNTER ${COUNTER_TYPES})
     set(INCREMENT "INCREMENT_${MACRO_NAME}_BY")
     set(DECREMENT "DECREMENT_${MACRO_NAME}_BY")
 
-    file(APPEND ${GENERATED_HEADER}
+    file(APPEND ${STAGED_HEADER}
         "#if ENABLE_${COUNTER}
     #define ${TIMER_START}() arts_counter_timer_start(&arts_thread_local_counters[${COUNTER_INDEX}])
     #define ${TIMER_STOP}() arts_counter_timer_end(&arts_thread_local_counters[${COUNTER_INDEX}])
@@ -259,7 +260,7 @@ foreach(COUNTER ${COUNTER_TYPES})
 endforeach()
 
 # Generate counter enabled array
-file(APPEND ${GENERATED_HEADER} "
+file(APPEND ${STAGED_HEADER} "
 /* ============================================================================
  * Counter Enabled Array - Automatically Generated
  * ============================================================================ */
@@ -267,7 +268,7 @@ file(APPEND ${GENERATED_HEADER} "
 ")
 
 # Generate counter mode array
-file(APPEND ${GENERATED_HEADER} "
+file(APPEND ${STAGED_HEADER} "
 /* Counter mode array (0=OFF, 1=ONCE, 2=PERIODIC) */
 static const unsigned int arts_counter_mode_array[] = {
 ")
@@ -276,13 +277,13 @@ foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED COUNTER_MODE_${COUNTER})
         set(COUNTER_MODE_${COUNTER} 0)
     endif()
-    file(APPEND ${GENERATED_HEADER} "    ${COUNTER_MODE_${COUNTER}},  /* ${COUNTER} */\n")
+    file(APPEND ${STAGED_HEADER} "    ${COUNTER_MODE_${COUNTER}},  /* ${COUNTER} */\n")
 endforeach()
 
-file(APPEND ${GENERATED_HEADER} "};\n\n")
+file(APPEND ${STAGED_HEADER} "};\n\n")
 
 # Generate counter level array
-file(APPEND ${GENERATED_HEADER} "
+file(APPEND ${STAGED_HEADER} "
 /* Counter level array (0=THREAD, 1=NODE, 2=CLUSTER) */
 static const unsigned int arts_counter_level_array[] = {
 ")
@@ -291,12 +292,12 @@ foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED COUNTER_LEVEL_${COUNTER})
         set(COUNTER_LEVEL_${COUNTER} 1) # Default to NODE
     endif()
-    file(APPEND ${GENERATED_HEADER} "    ${COUNTER_LEVEL_${COUNTER}},  /* ${COUNTER} */\n")
+    file(APPEND ${STAGED_HEADER} "    ${COUNTER_LEVEL_${COUNTER}},  /* ${COUNTER} */\n")
 endforeach()
 
-file(APPEND ${GENERATED_HEADER} "};\n\n")
+file(APPEND ${STAGED_HEADER} "};\n\n")
 # Generate counter reduce method array
-file(APPEND ${GENERATED_HEADER} "
+file(APPEND ${STAGED_HEADER} "
 /* Counter reduce method array (0=SUM, 1=MAX, 2=MIN, 3=MASTER) */
 static const unsigned int arts_counter_reduce_method_array[] = {
 ")
@@ -305,18 +306,20 @@ foreach(COUNTER ${COUNTER_TYPES})
     if(NOT DEFINED REDUCE_METHOD_${COUNTER})
         set(REDUCE_METHOD_${COUNTER} 0) # Default to SUM
     endif()
-    file(APPEND ${GENERATED_HEADER} "    ${REDUCE_METHOD_${COUNTER}},  /* ${COUNTER} */\n")
+    file(APPEND ${STAGED_HEADER} "    ${REDUCE_METHOD_${COUNTER}},  /* ${COUNTER} */\n")
 endforeach()
 
-file(APPEND ${GENERATED_HEADER} "};\n\n")
+file(APPEND ${STAGED_HEADER} "};\n\n")
 # Function declarations
-file(APPEND ${GENERATED_HEADER} "
+file(APPEND ${STAGED_HEADER} "
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */
 
 #endif /* ARTS_COUNTER_PREAMBLE_H */
 ")
+
+arts_publish_if_changed(${STAGED_HEADER} ${GENERATED_HEADER})
 
 message(STATUS "Generated: ${GENERATED_HEADER}")
 message(STATUS "  Counters: ${ENABLED_COUNT} enabled, ${DISABLED_COUNT} disabled")

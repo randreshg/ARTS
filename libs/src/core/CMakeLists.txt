@@ -131,7 +131,8 @@ if(BUILD_CUDA_LIBRARY)
 
     # GPU variant of compute: recompile edt.c as .cu under NVCC with ARTS_USE_GPU.
     set(EDT_WRAPPER ${CMAKE_CURRENT_BINARY_DIR}/edt_gpu.cu)
-    file(WRITE ${EDT_WRAPPER} "#include \"${CMAKE_CURRENT_SOURCE_DIR}/edt.c\"\n")
+    arts_write_if_changed(${EDT_WRAPPER}
+        "#include \"${CMAKE_CURRENT_SOURCE_DIR}/edt.c\"\n")
     add_library(arts_compute_gpu OBJECT ${EDT_WRAPPER})
     target_link_libraries(arts_compute_gpu PRIVATE arts_interface)
     if(HWLOC_INCLUDE_DIRS)
@@ -144,7 +145,8 @@ if(BUILD_CUDA_LIBRARY)
     # GPU variant of memory: recompile db.c as .cu, coherence TUs as .c, all with
     # ARTS_USE_GPU.
     set(DB_WRAPPER ${CMAKE_CURRENT_BINARY_DIR}/db_gpu.cu)
-    file(WRITE ${DB_WRAPPER} "#include \"${CMAKE_CURRENT_SOURCE_DIR}/db.c\"\n")
+    arts_write_if_changed(${DB_WRAPPER}
+        "#include \"${CMAKE_CURRENT_SOURCE_DIR}/db.c\"\n")
     set(ARTS_MEMORY_GPU_SOURCES ${ARTS_MEMORY_SOURCES})
     list(REMOVE_ITEM ARTS_MEMORY_GPU_SOURCES db.c)
     list(APPEND ARTS_MEMORY_GPU_SOURCES ${DB_WRAPPER})
@@ -159,7 +161,7 @@ if(BUILD_CUDA_LIBRARY)
     # GPU variant of scheduler (wraps scheduler.c as .cu for NVCC)
     set(SCHED_PATH "${CMAKE_CURRENT_SOURCE_DIR}/scheduler.c")
     set(SCHED_WRAPPER ${CMAKE_CURRENT_BINARY_DIR}/scheduler_gpu.cu)
-    file(WRITE ${SCHED_WRAPPER} "#include \"${SCHED_PATH}\"\n")
+    arts_write_if_changed(${SCHED_WRAPPER} "#include \"${SCHED_PATH}\"\n")
     add_library(arts_scheduler_gpu OBJECT ${SCHED_WRAPPER})
     target_link_libraries(arts_scheduler_gpu PRIVATE arts_interface)
     if(HWLOC_INCLUDE_DIRS)

@@ -623,7 +623,7 @@ function(build_rdma_core)
   set(RDMA_CORE_BUILD_DIR "${CMAKE_BINARY_DIR}/third_party/rdma-core")
   set(RDMA_CORE_NO_PKGCONFIG "${CMAKE_BINARY_DIR}/third_party/pkg-config-none")
   file(MAKE_DIRECTORY ${RDMA_CORE_BUILD_DIR})
-  file(WRITE "${RDMA_CORE_NO_PKGCONFIG}"
+  arts_write_if_changed("${RDMA_CORE_NO_PKGCONFIG}"
        "#!/bin/sh\ncase \"$1\" in --version) echo 0.29.2; exit 0;; esac\nexit 1\n")
   file(CHMOD "${RDMA_CORE_NO_PKGCONFIG}" PERMISSIONS
        OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
@@ -875,7 +875,7 @@ if(NOT EXISTS "${LIBCXI_LIB_A}")
   file(MAKE_DIRECTORY "${LIBCXI_BUILD_DIR}")
   # The one config.h fact the sources consult: the vendored rdma-core's
   # rdma_netlink.h does declare RDMA_NLDEV_SYS_ATTR_COPY_ON_FORK.
-  file(WRITE "${LIBCXI_BUILD_DIR}/config.h"
+  arts_write_if_changed("${LIBCXI_BUILD_DIR}/config.h"
       "#define HAVE_DECL_RDMA_NLDEV_SYS_ATTR_COPY_ON_FORK 1\n")
   set(_libcxi_objs "")
   foreach(_src libcxi devinfo memory)
@@ -1066,7 +1066,7 @@ if(NOT _ofi_nodes)
   message(FATAL_ERROR
       "No symbol-version nodes found in ${OFI_SRC_DIR}/libfabric.map.in")
 endif()
-file(WRITE "${OFI_VERSION_NODES_MAP}" "${_ofi_nodes}")
+arts_write_if_changed("${OFI_VERSION_NODES_MAP}" "${_ofi_nodes}")
 
 include(ExternalProject)
 set(OFI_PREFIX "${CMAKE_BINARY_DIR}/libfabric")

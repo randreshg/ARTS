@@ -55,10 +55,8 @@ target_include_directories(ocr_xsocr_objects PUBLIC
 
 # The XSOCR source expects #include "ocr-config.h" but our file is
 # named ocr_config_x86.h.  Map it via a thin wrapper.
-if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/ocr-config.h")
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ocr-config.h"
-         "#include \"${CMAKE_CURRENT_SOURCE_DIR}/ocr_config_x86.h\"\n")
-endif()
+arts_write_if_changed("${CMAKE_CURRENT_BINARY_DIR}/ocr-config.h"
+    "#include \"${CMAKE_CURRENT_SOURCE_DIR}/ocr_config_x86.h\"\n")
 target_include_directories(ocr_xsocr_objects PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}     # generated ocr-config.h wrapper
 )

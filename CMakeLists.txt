@@ -104,6 +104,7 @@ endif()
 # name once the linker has accepted it) so a host that carries libatomic only
 # as a runtime object still links.
 include(cmake/ArtsAtomicLink.cmake)
+include(cmake/ArtsWriteIfChanged.cmake)
 arts_resolve_atomic_link(C)
 if(ARTS_ATOMIC_LINK)
     set(CMAKE_REQUIRED_LIBRARIES "${ARTS_ATOMIC_LINK}" ${CMAKE_REQUIRED_LIBRARIES})

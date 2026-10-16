@@ -15,7 +15,7 @@ else()
 endif()
 # Defining OCR_TYPE_H makes ocr.h include "ocr-options_<value>.h"; the one it
 # names here is a generated no-op, which silences ocr.h's pragma note.
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ocr-options_arts.h"
+arts_write_if_changed("${CMAKE_CURRENT_BINARY_DIR}/ocr-options_arts.h"
      "/* No-op OCR options for ARTS builds. */\n")
 set(SHIM_OCR_TYPE_DEFINE "OCR_TYPE_H=arts.h")
 set(SHIM_OCR_OPTIONS_DIR "${CMAKE_CURRENT_BINARY_DIR}")
