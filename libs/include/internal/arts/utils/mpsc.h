@@ -45,7 +45,7 @@ extern "C" {
 #include <stdint.h>
 
 typedef struct {
-  _Atomic(arts_lf_link_t *) head; /* producers tail-append via xchg */
+  _Atomic(arts_lf_link_t *) head; /* producers append; Orders above */
   arts_lf_link_t *tail;           /* single consumer reads/advances */
   arts_lf_link_t stub;            /* embedded sentinel */
 } arts_mpsc_t;

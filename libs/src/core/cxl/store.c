@@ -64,6 +64,8 @@ static struct {
   struct arts_cxl_flush_record_s rec;
   _Atomic(uint64_t) stamp;
 } g_flush_ring[ARTS_CXL_FLUSH_RECORD_CAP];
+/* The next record's ticket, taken by a relaxed fetch_add.  Only its own
+ * value: each record is published by its own stamp. */
 static _Atomic(uint64_t) g_flush_next;
 
 static void cxl_flush_record(const void *p, size_t bytes, bool producer) {

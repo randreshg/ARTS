@@ -73,7 +73,8 @@ extern "C" {
  * needs no split-decrement or separate flag.
  *
  * Note: under RETAIN the home does NOT hold canonical data — the current owner
- * (owner-bit set) does.  home.cache.buffer is unused by the EXCL RETAIN path. */
+ * (owner-bit set) does.  home.cache.buffer is unused by the EXCL RETAIN
+ * path. */
 #ifdef ARTS_RELEASE_RETAIN
 #define CACHE_ST_IDLE 0u
 #define CACHE_ST_REQ 1u
@@ -342,14 +343,15 @@ uint64_t cache_compute_next(uint64_t cur, int op, uint32_t *out_action);
 #endif /* ARTS_RELEASE_PURGE */
 
 /* ── cache_state transition ops + actions (RETAIN) ─────────────────────────
- * cache_owner_compute_next(cur, op, &action) is the RETAIN owner-cache arbiter. */
+ * cache_owner_compute_next(cur, op, &action) is the RETAIN owner-cache
+ * arbiter. */
 #ifdef ARTS_RELEASE_RETAIN
 #define CACHE_OP_ACQ_RW 0
 #define CACHE_OP_ACQ_RO 1
 /* No FORWARD ops: FORWARD-migrate / FORWARD-serve do not transit
- * cache_owner_compute_next — arts_handler_db_excl_forward CASes migrate_target /
- * pushes ro_serve directly (the target/reader is not a pure-function output).
- */
+ * cache_owner_compute_next — arts_handler_db_excl_forward CASes
+ * migrate_target / pushes ro_serve directly (the target/reader is not a
+ * pure-function output). */
 #define CACHE_OP_REL_RW 4 /* local RW release: wc-- + 0-edge → migrate/noop */
 #define CACHE_OP_REL_RO 5 /* local RO release: rc-- */
 /* A create recording its own hold in a cache this rank already made for the
@@ -399,11 +401,12 @@ struct arts_lock_ro_node_s {
   struct arts_rdzv_landing_s rdzv; /* the requester's grant/serve landing */
 };
 
-/* arts_home_grantreq_node_s and arts_home_grantreq_queue_s are declared in
- * coherence/types_common.h and defined in coherence/val/types.h for VAL.
- * The EXCL build defines its own arts_home_grantreq_queue_s here, matching
- * the Vyukov MPSC shape used by coherence/val/types.h so the same
- * directory.h declarations apply. */
+/* Each arm that runs a home request queue defines its own
+ * arts_home_grantreq_node_s and arts_home_grantreq_queue_s; this is EXCL's,
+ * in the same Vyukov MPSC shape, so the same directory.h declarations apply.
+ * Producers are the request handlers; the single consumer is the committer
+ * of the lock_state transition that pops or peeks it.  Orders: the queue's
+ * declaration in coherence/directory.h. */
 struct arts_home_grantreq_node_s {
   _Atomic(struct arts_home_grantreq_node_s *) next;
   unsigned int rank;
@@ -435,7 +438,8 @@ struct arts_db_cache_s {
    * in place by arts_db_buf_write_inplace on every later grant/publish, freed
    * only at destroy.  The address never moves, so DBs holding internal
    * self-pointers stay valid.  Under RETAIN, data stays with the owner; the
-   * home-rank cache.buffer is unused by the coherence path. */
+   * home-rank cache.buffer is unused by the coherence path.  Orders: a
+   * slot's (arts_shared_slot_t, shared.h). */
   _Atomic(arts_shared_slot_t) buffer;
   arts_lf_stack_t ro_pending; /* parked RO EDT waiters on this rank */
   arts_lf_stack_t rw_pending; /* parked RW EDT waiters on this rank */

@@ -1193,7 +1193,8 @@ void internal_lc_sync_gpu(arts_guid_t acq_guid, struct arts_db_s *db) {
 #define CHECKSTREAM 4096
 #define MAXBUFFER 128
 
-/* Per-device visits of the unlocked flush check, which throttle it. */
+/* Per-device visits of the unlocked flush check, which throttle it.
+ * Relaxed: only its own value. */
 _Atomic(unsigned int) stream_check_count[MAXSTREAM];
 
 /* buff_lock[gpu] guards the device's four buffers and their counts.  A count

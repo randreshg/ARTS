@@ -49,7 +49,7 @@ static_assert(sizeof(arts_lf_pool_head_t) == 16, "DWCAS layout");
 static_assert(alignof(arts_lf_pool_head_t) == 16, "DWCAS alignment");
 
 typedef struct {
-  _Atomic(arts_lf_pool_head_t) head;
+  _Atomic(arts_lf_pool_head_t) head; /* orders: the Orders block above */
 } arts_lockfree_pool_t;
 
 /* ── Initialization / teardown ─────────────────────────────────────────── */

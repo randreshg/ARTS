@@ -91,6 +91,7 @@ static inline void arts_cxl_peterson_lock_acquire(arts_cxl_peterson_lock_t *l,
   atomic_store_explicit(&l->lock.flag[id].value, 1, memory_order_seq_cst);
   FLUSH_FENCE_PRODUCER(&l->lock.flag[id], sizeof(arts_cxl_cache_line_t));
 
+  /* seq_cst: the second store of the same pair. */
   atomic_store_explicit(&l->lock.turn.value, other, memory_order_seq_cst);
   FLUSH_FENCE_PRODUCER(&l->lock.turn, sizeof(arts_cxl_cache_line_t));
 
@@ -102,6 +103,8 @@ static inline void arts_cxl_peterson_lock_acquire(arts_cxl_peterson_lock_t *l,
 
   FLUSH_FENCE_CONSUMER(l, sizeof(arts_cxl_peterson_lock_t));
 
+  /* seq_cst: the loads of the same pair, after this side's two stores; the
+   * flag load also acquires the other holder's release of its flag. */
   while (
       atomic_load_explicit(&l->lock.flag[other].value, memory_order_seq_cst) &&
       atomic_load_explicit(&l->lock.turn.value, memory_order_seq_cst) ==

@@ -111,7 +111,10 @@ struct arts_dep_acq_s {
   _Atomic(void *) ptr;
   /* The descriptor pin (an arts_shared_ptr_t) the slot holds from its
    * resolution to its release; claimed NULL -> handle, which also arbitrates
-   * a slot whose payload is NULL.  The release consumes it. */
+   * a slot whose payload is NULL.  The release consumes it.  The claims are
+   * release CASes and the release's load is acquire, but they carry only
+   * the handle: the release is ordered after the claim by the zero edge of
+   * acquire_remaining. */
   _Atomic(void *) pin;
   /* The storage kind the slot resolved to, written by the frame that
    * resolves it; the release routes on it. */

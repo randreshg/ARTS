@@ -328,10 +328,11 @@ static struct arts_event_dep_s *event_node_alloc(arts_guid_kind_t kind,
  *       reverse_drain finished).
  *
  * Concurrent callers self-serialise inside arts_lf_stack_reverse_drain's
- * `atomic_exchange(&head, NULL)` — only one caller per chain, others see
- * NULL and exit.  The outer loop catches pushes that landed during a
- * caller's iteration.  The drain itself never destroys: every reclaim edge
- * is committed by the state word's own transitions, never by a drainer.
+ * acq_rel exchange of the head with NULL — only one caller per chain,
+ * others see NULL and exit.  The outer loop catches pushes that landed
+ * during a caller's iteration.  The drain itself never destroys: every
+ * reclaim edge is committed by the state word's own transitions, never by a
+ * drainer.
  */
 static void drain_simple_chain(struct arts_event_s *e, arts_guid_t event_guid) {
   (void)event_guid; /* unused: the drain only serves, never reclaims */

@@ -51,6 +51,9 @@ typedef struct {
   uint64_t guid;
   void *data;
   uint64_t data_size;
+  /* The block's LC version, ordered by the block's gpu_lock (see that
+   * lock's declaration) and atomic only for concurrent read-side bumps; on
+   * a copy (lock NULL) the copy's own, private to the thread that made it. */
   _Atomic(unsigned int) *host_version;
   unsigned int *host_time_stamp;
   unsigned int gpu_version;

@@ -219,8 +219,9 @@ struct arts_db_inv_pub_s {
 };
 
 /* Home request queue: same Vyukov MPSC shape as the other arms so the shared
- * home.h declarations apply (producers = request handlers, single consumer =
- * the grant-claim holder). */
+ * directory.h declarations apply (producers = request handlers, single
+ * consumer = the grant-claim holder).  Orders: the queue's declaration in
+ * coherence/directory.h. */
 struct arts_home_grantreq_node_s {
   _Atomic(struct arts_home_grantreq_node_s *) next;
   unsigned int rank;
@@ -262,8 +263,12 @@ struct arts_db_cache_s {
   _Atomic(unsigned int) writer_count;
   /* Buffers drawn from this cache and not parked back, plus the flag the
    * storage release sets once the destructor has run (encoding in buffer.c,
-   * lifetime rule in types_common.h). */
+   * lifetime rule in types_common.h).  A draw adds 1 relaxed, under the
+   * drawer's hold on the descriptor; a park's decrement and the flag's add
+   * are acq_rel, so every park is ordered before the storage free. */
   _Atomic(unsigned int) buf_holds;
+  /* The installed buffer.  Orders: a slot's (arts_shared_slot_t,
+   * shared.h). */
   _Atomic(arts_shared_slot_t) buffer;
   arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
   /* Parked buffers a draw found too small: a popper must not free a node
@@ -363,8 +368,8 @@ struct arts_db_cache_s {
  *      and driven by coherence/grant.c;
  *    - the invalidation round (dir_state / roster / pub_queue), which is what
  *      makes this arm INV.
- *  Both write policies carry exactly these fields; the write policy decides only
- *  whether a release's publish entry carries payload. */
+ *  Both write policies carry exactly these fields; the write policy decides
+ *  only whether a release's publish entry carries payload. */
 struct arts_db_s {
   struct arts_db_cache_s cache; /**< FIRST — coherence state. */
   arts_db_types_t db_type;
@@ -373,11 +378,14 @@ struct arts_db_s {
   /* ---- migrating write grant (home side; see coherence/grant.c) ---- */
 #ifndef ARTS_RELEASE_PURGE
   /* The holder a revocation targets; a home whose grants come back unasked
-   * revokes no one, and its own possession is its whole directory. */
+   * revokes no one, and its own possession is its whole directory.  Stored
+   * release and loaded acquire under the baton (directory.h). */
   _Atomic(unsigned int) rw_holder;
 #endif
   struct arts_home_grantreq_queue_s pending_rw; /* Vyukov MPSC, pop-one */
-  _Atomic(unsigned int) invalidate_in_flight;   /* transfer-round baton */
+  /* The transfer-round baton: claimed by an acq_rel CAS, given up by a
+   * release store, a seq_cst fence and a re-probe (directory.h). */
+  _Atomic(unsigned int) invalidate_in_flight;
 #ifndef ARTS_RELEASE_PURGE
   unsigned int pending_install_owner; /* baton-holder-written transfer target */
 #endif

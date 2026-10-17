@@ -5,13 +5,13 @@
  * Concurrency model:
  *   - pending_rw queue: Vyukov MPSC.  Multi-producer (any handler thread
  * enqueues on GRANT_REQUEST); single-consumer in time (the unique actor
- * holding the invalidate_in_flight = 1 baton).  Lock-free queue ops.
+ * holding the invalidate_in_flight = 1 baton).  Lock-free queue ops; the
+ * orders are stated at the queue's declaration below.
  *   - cached_version map: per-slot atomic.  Each rank slot is an independent
  *     _Atomic(uint64_t) accessed via atomic load/store and CAS-loop
  * monotonic-max for advance.  No cross-slot invariant.
  *   - rw_holder (where the home revokes), invalidate_in_flight: _Atomic.
- *     rw_holder uses acquire/release; the invalidate_in_flight gate uses
- *     acq_rel CAS for the baton.
+ *     Their protocols are stated below, with the grant plane's home words.
  */
 
 #ifndef ARTS_COHERENCE_DIRECTORY_H
@@ -34,7 +34,23 @@ extern "C" {
  * queue define the struct (arts_db_s embeds it) before including this header,
  * and only they call these entry points.  Without the declaration the tag
  * would be scoped to each parameter list below, never matching the real
- * definition. */
+ * definition.
+ *
+ * Orders (every arm's definition has these members and refers here):
+ *   tail  producers exchange it acq_rel: the release publishes the node's
+ *         own NULL link, and the acquire orders the previous node's NULL
+ *         link before this producer's store into it.  The consumer and the
+ *         pending probe load it with acquire: head != tail names a queued
+ *         requester even before its link store.
+ *   next  a producer's release store of prev->next publishes its node and
+ *         the rank, landing and version written into it; the consumer's
+ *         acquire load of head->next takes them.
+ *   head  written only by the one consumer, the holder of the arm's serving
+ *         turn, with a release store after it has copied the popped node
+ *         out; every load is acquire.  The turn's hand-off already orders
+ *         successive consumers; the pair repeats that order, so a consumer
+ *         frees a node only after the previous one's reads of it.
+ * Init and teardown run with no other user and are relaxed. */
 struct arts_home_grantreq_queue_s;
 
 void arts_home_grantreq_queue_init(struct arts_home_grantreq_queue_s *q);
@@ -74,8 +90,10 @@ bool arts_home_grantreq_queue_pending(
 /*--- cached_version dense map ----------------------------------------*/
 
 struct arts_rank_to_u64_map_s {
-  _Atomic(uint64_t)
-      *slots; /* sized to nranks; each slot is independent atomic */
+  /* Sized to nranks; each slot is an independent atomic: the newest version
+   * its rank was sent.  Only its own value: a dedup decision reads it, and
+   * no data is read on the strength of a slot. */
+  _Atomic(uint64_t) *slots;
   unsigned int nranks;
 };
 
@@ -93,6 +111,22 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
                                unsigned int rank, uint64_t value);
 
 /*--- home-directory lifecycle (inlined in arts_db_s) --------------------*/
+
+/* The grant plane's home words, declared by each arm that has them:
+ *   invalidate_in_flight  the home's serving baton.  Claimed 0 -> 1 by an
+ *     acq_rel CAS.  Released by a release store, then a seq_cst fence and a
+ *     re-probe of what a claimant may have left: the request FIFO, and
+ *     where grants come back unasked also the home's possession and the
+ *     return latch.  The fence pairs with the one each claimant passes
+ *     between its publication (a FIFO push, a latched return, a home
+ *     writer's idle edge) and its baton CAS.  The release carries the
+ *     holder's directory writes (pending_install_owner, rw_holder) to the
+ *     next claimant.  Loads outside the baton (the destroy, the quiescence
+ *     walk) carry only its value.
+ *   rw_holder  the write holder a revocation targets.  Stored with release
+ *     under the baton, by the confirm that flips it; loaded with acquire
+ *     under the baton.  Loads outside it (a read redirect, the destroy, the
+ *     quiescence walk) carry only its value. */
 
 /* Initialize the home-directory fields inlined in struct arts_db_s (no separate
  * allocation).  rw_holder is the block's initial holder, chosen by the caller

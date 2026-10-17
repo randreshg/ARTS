@@ -608,6 +608,7 @@ void arts_runtime_private_init(struct thread_mask_s *thread,
   if (thread->role == ARTS_ROLE_WORKER &&
       atomic_load_explicit(&arts_node_info.shutdown_state,
                            memory_order_seq_cst) != 0U) {
+    /* Relaxed: this thread is the only reader of its own store. */
     atomic_store_explicit(&arts_thread_info.alive, false, memory_order_relaxed);
   }
   arts_thread_info.pu_id = thread->pu_id;

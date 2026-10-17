@@ -263,7 +263,8 @@ struct arts_db_buffer_s {
   uint64_t capacity; /* payload bytes the allocation holds */
   /* Out or parked, written by a debug build only, which refuses to end a
    * drawn buffer that is not out; a re-draw marks it out again, so a second
-   * end after one is caught, if at all, only at a later end. */
+   * end after one is caught, if at all, only at a later end.  Relaxed: only
+   * its own value. */
   _Atomic(unsigned int) park_state;
   char _pad[20]; /* the payload member lands at offset 64 */
 #else

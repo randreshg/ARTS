@@ -161,7 +161,9 @@ struct arts_runtime_private_s {
   unsigned int group_pos;
   unsigned int numa_domain_id;
   /* Cleared (release) by a stopper on another thread; the thread's loops
-   * read it with acquire, so a stopped thread sees what preceded the stop. */
+   * read it with acquire, so a stopped thread sees what preceded the stop.
+   * The owner's own stores are relaxed: only it reads them, and the seq_cst
+   * publication of local_spin orders its first store before any stop. */
   _Atomic(bool) alive;
   enum arts_thread_role role;
   /* This thread's pseudo-random stream: a private counter, and a key that

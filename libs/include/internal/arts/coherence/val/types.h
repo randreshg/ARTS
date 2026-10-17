@@ -31,10 +31,11 @@ extern "C" {
  * @brief VAL (Multi-Reader, Node-Exclusive-Writer) cache/db layout.
  *
  * Selected by arts/coherence/types.h when ARTS_PROTOCOL_VAL is defined.
- * The WT vs WB write-policy variant is chosen here by ARTS_WRITE_POLICY_WB.  The
- * protocol-agnostic pieces (buffer, snapshot waiter, defines, container_of)
- * come from types_common.h; the of_cache/total_size/stub_size helpers live in
- * the dispatcher (types.h), after this header defines cache + db_s.
+ * The WT vs WB write-policy variant is chosen here by ARTS_WRITE_POLICY_WB.
+ * The protocol-agnostic pieces (buffer, snapshot waiter, defines,
+ * container_of) come from types_common.h; the of_cache/total_size/stub_size
+ * helpers live in the dispatcher (types.h), after this header defines cache +
+ * db_s.
  *
  * @note Internal header.  User code should include @c arts.h.
  */
@@ -57,6 +58,7 @@ extern "C" {
  * queue). The embedded `next` pointer is owned by the queue (push/pop manage
  * it). Producers are foreign-rank GRANT_REQUEST handlers; the single
  * consumer is the home-side dispatcher holding the invalidate_in_flight baton.
+ * Orders: the queue's declaration in coherence/directory.h.
  */
 struct arts_home_grantreq_node_s {
   _Atomic(struct arts_home_grantreq_node_s *) next;
@@ -107,7 +109,9 @@ struct arts_db_cache_s {
   _Atomic(unsigned int) writer_count;
   /* Buffers drawn from this cache and not parked back, plus the flag the
    * storage release sets once the destructor has run (encoding in buffer.c,
-   * lifetime rule in types_common.h). */
+   * lifetime rule in types_common.h).  A draw adds 1 relaxed, under the
+   * drawer's hold on the descriptor; a park's decrement and the flag's add
+   * are acq_rel, so every park is ordered before the storage free. */
   _Atomic(unsigned int) buf_holds;
   _Atomic(arts_shared_slot_t) buffer;
   arts_lockfree_pool_t buf_freelist; /* parked buffers, drawn first */
@@ -290,8 +294,12 @@ struct arts_db_s {
   bool home_initialized; /**< one-shot init sentinel (set by arts_db_home_init).
                           */
 #ifdef ARTS_WRITE_POLICY_WB
+  /* The write holder a revocation targets and a read is redirected to:
+   * stored release and loaded acquire under the baton (directory.h). */
   _Atomic(unsigned int) rw_holder;
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
+  /* The serving baton: claimed by an acq_rel CAS, given up by a release
+   * store, a seq_cst fence and a re-probe (directory.h). */
   _Atomic(unsigned int) invalidate_in_flight;
   /* destroy fan-out roster: creator, readers, writers */
   struct arts_rank_bitset_s cached_ranks;
@@ -299,10 +307,13 @@ struct arts_db_s {
 #else                                 /* WT */
 #ifndef ARTS_RELEASE_PURGE
   /* The holder a revocation targets.  A home whose grants come back unasked
-   * revokes no one, and its own possession is its whole directory. */
+   * revokes no one, and its own possession is its whole directory.  Stored
+   * release and loaded acquire under the baton (directory.h). */
   _Atomic(unsigned int) rw_holder;
 #endif
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
+  /* The serving baton: claimed by an acq_rel CAS, given up by a release
+   * store, a seq_cst fence and a re-probe (directory.h). */
   _Atomic(unsigned int) invalidate_in_flight;
   /* The RO dedup watermark (SNAPSHOT_REQUEST reply).  Not the destroy
    * roster: a rank can hold a cache the ledger never credits (a version-0

@@ -107,7 +107,9 @@ struct arts_route_item_s {
    * the key, so occupancy tracks live objects rather than every object the
    * run ever made, and a returned slot is claimed exactly like a never-used
    * one. */
-  _Atomic(arts_shared_slot_t) value; /* cb: event/db/edt (NULL = absent) */
+  /* cb: event/db/edt (NULL = absent).  Orders: a slot's
+   * (arts_shared_slot_t, shared.h). */
+  _Atomic(arts_shared_slot_t) value;
   arts_lf_stack_t ooo_list; /* OoO defer chain (Treiber) */
 } ARTS_ALIGNED_MAX;
 

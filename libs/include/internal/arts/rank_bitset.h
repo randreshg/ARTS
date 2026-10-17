@@ -27,8 +27,14 @@ extern "C" {
 /* `words` is allocated before the descriptor is published and freed after
  * its last user, so the pointer itself is plain.  Its elements are accessed
  * only atomically: by the functions below and directly by the arms that set,
- * drain or walk a roster themselves.  A bit carries only its own value: no
- * caller reads data on the strength of a bit, it sends to the ranks named. */
+ * drain or walk a roster themselves.  arts_rank_bitset_set is an acq_rel
+ * fetch_or, and arts_rank_bitset_for_each loads each word with acquire.  In
+ * a destroy roster and in EXCL's recall roster a bit carries only its own
+ * value: the caller sends to the ranks named.  INV's copy roster needs the
+ * set's acquire half: a read serve's set and the round's snapshot exchange
+ * RMW the same word, so either the round names the reader, or the set reads
+ * the exchange and the serve is ordered after the round's stamp (see that
+ * roster's declaration). */
 struct arts_rank_bitset_s {
   _Atomic(uint64_t) *words;
   unsigned int nranks;
@@ -39,9 +45,9 @@ struct arts_rank_bitset_s {
 void arts_rank_bitset_init(struct arts_rank_bitset_s *r, unsigned int nranks);
 /* Free the words once the set has no other user. */
 void arts_rank_bitset_destroy(struct arts_rank_bitset_s *r);
-/* Set `rank`'s bit.  True when this call set it, false when it was already
- * set or `rank` is out of range: of concurrent callers on one bit, exactly
- * one sees true. */
+/* Set `rank`'s bit with an acq_rel fetch_or.  True when this call set it,
+ * false when it was already set or `rank` is out of range: of concurrent
+ * callers on one bit, exactly one sees true. */
 bool arts_rank_bitset_set(struct arts_rank_bitset_s *r, unsigned int rank);
 /* Call cb(rank, ctx) once for every bit set, reading each word once.  A bit
  * set during the walk may be missed, so a caller that needs every member

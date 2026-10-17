@@ -33,13 +33,19 @@ extern "C" {
 struct arts_db_cache_s {
   /* The home's line.  On a non-home stub the slot is empty except while the
    * rank is the block's creator: the creator's own copy sits here until its
-   * release writes it back and clears the slot. */
+   * release writes it back and clears the slot.  Orders: a slot's
+   * (arts_shared_slot_t, shared.h). */
   _Atomic(arts_shared_slot_t) buffer;
   arts_guid_t db_guid;
   /* The block's exact size once learned, 0 until then; relaxed throughout
    * (see the VAL layout and arts_db_cache_learn_size). */
   _Atomic(uint64_t) db_size;
-  /* 1 until a line is installed, 0 after (see the VAL layout). */
+  /* 1 until a line is installed, 0 after; stored and loaded as in the VAL
+   * layout, and as there only the destructor empties the home's slot.  A
+   * non-home slot holds only the creator's copy: the create installs it, and
+   * the creator's release empties the slot and then stores 1 with release.
+   * No other acquire on that rank reads the slot: each lands a private
+   * copy. */
   _Atomic(uint8_t) payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
    * the home's directory, or a dependence's first touch.  A create that
@@ -55,7 +61,9 @@ struct arts_db_cache_s {
    * learns the line (a fetch response, the create's return) stores addr and
    * rkey relaxed and then txid with release; a release takes txid with an
    * acquire exchange, which orders the address and rkey it then loads
-   * relaxed.  The ACK's refill of txid is a release store too. */
+   * relaxed.  The ACK's refill of txid is a release store too.  The 0 the
+   * exchange leaves publishes nothing: no reader acquires it, and the refill
+   * follows the exchange through the round trip it answers. */
   _Atomic(uint64_t) home_line_addr;
   _Atomic(uint64_t) home_line_rkey;
   _Atomic(uint64_t) flush_txid;

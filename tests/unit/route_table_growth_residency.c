@@ -12,17 +12,17 @@
  *   - every key ends in exactly one slot, and the chain grew by one segment;
  *   - the grown segment's resident pages (mincore) are only pages holding a
  *     probe window some key touched, not the segment.
- * Phase A also bounds the root segment's resident pages the same way and the
- * peak resident set (VmHWM) while the chain grows to well under one segment,
- * and its delete drains the one slot holding a payload and writes no other
- * slot.  While the builder sits in the constructor, phase B runs every chain
- * walker against the table (key search, iteration, parked count, the
- * retire-time pin), each of which must take the unfinished link for the end
- * of the chain.  Phase C returns a slot of a full window while the next
- * segment is being built: a reserver that claims that slot ends its settle
- * walk at the unfinished link and publishes there, and a reserver of the same
- * key that claims in the new segment after publication must resolve to that
- * one slot.
+ * Phase A also bounds the root segment's resident pages the same way and,
+ * outside ThreadSanitizer, the peak resident set (VmHWM) while the chain
+ * grows to well under one segment, and its delete drains the one slot
+ * holding a payload and writes no other slot.  While the builder sits in the
+ * constructor, phase B runs every chain walker against the table (key
+ * search, iteration, parked count, the retire-time pin), each of which must
+ * take the unfinished link for the end of the chain.  Phase C returns a slot
+ * of a full window while the next segment is being built: a reserver that
+ * claims that slot ends its settle walk at the unfinished link and publishes
+ * there, and a reserver of the same key that claims in the new segment after
+ * publication must resolve to that one slot.
  *
  * The constructor is the table's own newFunc, wrapped to count calls and to
  * hold the builder until the test releases it, after the other threads have
@@ -134,6 +134,17 @@ static int collect_keys(arts_guid_kind_t kind, uint64_t limit,
 
 /* ── residency ─────────────────────────────────────────────────────────── */
 
+/* ThreadSanitizer allocates per-thread trace memory in proportion to the
+ * traced work, so under it the peak resident set measures the sanitizer. */
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_THREAD__) || __has_feature(thread_sanitizer)
+#define PEAK_RSS_BOUND 0
+#else
+#define PEAK_RSS_BOUND 1
+#endif
+
 static size_t g_page;
 
 /* Transparent huge pages of every size are off for this process, so a fault
@@ -186,6 +197,7 @@ static size_t window_page_bound(const arts_route_table_t *t,
   return distinct;
 }
 
+#if PEAK_RSS_BOUND
 static long status_kb(const char *field) {
   FILE *f = fopen("/proc/self/status", "r");
   if (f == NULL) {
@@ -213,6 +225,7 @@ static int reset_peak_rss(void) {
   close(fd);
   return ok ? 0 : -1;
 }
+#endif
 
 /* ── racing claimers ───────────────────────────────────────────────────── */
 
@@ -313,13 +326,17 @@ static void phase_a(void) {
     c[t] = (claimer_t){&start, root, keys[COLLISION_RESOLVES + t], NULL};
     pthread_create(&tid[t], NULL, claim_by_search_for_empty, &c[t]);
   }
+#if PEAK_RSS_BOUND
   int peak_ok = reset_peak_rss() == 0;
   long rss0 = status_kb("VmRSS:");
+#endif
   pthread_barrier_wait(&start);
   for (int t = 0; t < THREADS; t++) {
     pthread_join(tid[t], NULL);
   }
+#if PEAK_RSS_BOUND
   long hwm = status_kb("VmHWM:");
+#endif
   pthread_barrier_destroy(&start);
 
   check_growth("A", root, keys, c);
@@ -330,6 +347,7 @@ static void phase_a(void) {
                 seg_bytes(root->size) / g_page, bound);
   CHECK(res <= bound, "A: root segment has %zu resident pages, bound %zu\n",
         res, bound);
+#if PEAK_RSS_BOUND
   if (peak_ok && rss0 > 0 && hwm > 0) {
     long grew_kb = hwm - rss0;
     (void)fprintf(stderr, "A: peak resident set grew %ld KiB during growth\n",
@@ -341,6 +359,7 @@ static void phase_a(void) {
   } else {
     (void)fprintf(stderr, "A: peak resident set not measurable, skipped\n");
   }
+#endif
 
   /* Deleting the chain frees the payloads parked on it and writes no slot
    * that holds none, so it populates no page the run never wrote. */

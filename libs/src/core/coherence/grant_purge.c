@@ -372,9 +372,12 @@ void arts_db_grant_return_arrived(
       memory_order_relaxed);
   assert(latched && "one write right yields one outstanding hand-back");
   (void)latched;
-  /* seq_cst fence: store->load pair with every exit of grant_tail, which
-   * stores the baton 0, passes a fence and reads this latch.  Either that
-   * read finds this return, or the baton CAS below sees the release. */
+  /* seq_cst fence: store->load pair with grant_tail's release-recheck exit,
+   * which stores the baton 0, passes a fence and reads this latch.  Either
+   * that read finds this return, or the baton CAS below sees the release.
+   * Its give-up exit (home writers live) reads no latch and needs none: it
+   * runs only while the home holds possession, and a hand-back lands only
+   * on a home that holds nothing. */
   atomic_thread_fence(memory_order_seq_cst);
   unsigned int expected = 0u;
   if (atomic_compare_exchange_strong_explicit(
