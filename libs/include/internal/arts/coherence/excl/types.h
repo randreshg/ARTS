@@ -404,9 +404,10 @@ struct arts_lock_ro_node_s {
 /* Each arm that runs a home request queue defines its own
  * arts_home_grantreq_node_s and arts_home_grantreq_queue_s; this is EXCL's,
  * in the same Vyukov MPSC shape, so the same directory.h declarations apply.
- * Producers are the request handlers; the single consumer is the committer
- * of the lock_state transition that pops or peeks it.  Orders: the queue's
- * declaration in coherence/directory.h. */
+ * Producers are the request handlers; the single consumer is the holder of
+ * the queue's turn: the committer of the lock_state transition whose action
+ * pops or peeks it, or, under RETAIN, the CONFIRM that ends a forwarded
+ * migrate.  Orders: the queue's declaration in coherence/directory.h. */
 struct arts_home_grantreq_node_s {
   _Atomic(struct arts_home_grantreq_node_s *) next;
   unsigned int rank;

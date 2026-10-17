@@ -46,8 +46,8 @@ void arts_db_grant_request_arrived(struct arts_db_cache_s *cache,
     return; /* another round is in flight; requester stays queued */
   }
   /* Baton won: the WT write policy INVALIDATEs the current rw_holder; the WB
-   * write policy pops the FIFO transfer target, publishes pending_install_owner,
-   * and starts the invalidate round. */
+   * write policy pops the FIFO transfer target, records it in
+   * pending_install_owner, and starts the invalidate round. */
   arts_db_start_grant_round(cache, db, requester);
 }
 
@@ -65,7 +65,8 @@ void arts_db_grant_round_close(struct arts_db_cache_s *cache,
     uint64_t next_have = ARTS_GRANT_VERSION_NONE;
     if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner, &next_rdzv,
                                     &next_have)) {
-      db->pending_install_owner = next_owner;
+      atomic_store_explicit(&db->pending_install_owner, next_owner,
+                            memory_order_relaxed);
       unsigned int current =
           atomic_load_explicit(&db->rw_holder, memory_order_acquire);
       arts_send_db_grant_invalidate(current, cache->db_guid, next_owner,
@@ -131,7 +132,8 @@ void arts_db_grant_round_close(struct arts_db_cache_s *cache,
     uint64_t next_have = ARTS_GRANT_VERSION_NONE;
     if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
                                     &next_rdzv, &next_have)) {
-      db->pending_install_owner = next_owner;
+      atomic_store_explicit(&db->pending_install_owner, next_owner,
+                            memory_order_relaxed);
       arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv,
                                            next_have);
       return;

@@ -183,7 +183,7 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
     arts_rank_bitset_set(&db->cached_ranks, rw_holder);
   }
-  db->pending_install_owner = 0;
+  atomic_store_explicit(&db->pending_install_owner, 0u, memory_order_relaxed);
 }
 
 void arts_db_home_teardown(struct arts_db_s *db) {
@@ -284,14 +284,15 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
                        atomic_load_explicit(&db->rw_holder,
                                             memory_order_acquire));
   arts_rank_bitset_for_each(&db->cached_ranks, owner_destroy_fanout_cb, &fan);
-  /* In-flight ownership transfer: the new owner C lives only in
-   * pending_install_owner during [pop at round-start .. rw_holder flip] and is
-   * in none of the rosters above. With the confirm gate it parks its RW waiter
-   * until CONFIRM_ACK, so a destroy that races the transfer must wake it here
-   * or it hangs. Notify it. */
+  /* In-flight ownership transfer: from its pop at round start to the
+   * rw_holder flip, the new owner is named by pending_install_owner, not by
+   * rw_holder, and its rank holds a cache of the block, which a destroy must
+   * retire.  A remote requester also joined the bit-set at its request; the
+   * told set sends it one notice either way. */
   if (atomic_load_explicit(&db->invalidate_in_flight, memory_order_acquire) !=
       0u) {
-    owner_destroy_notify(&fan, db->pending_install_owner);
+    owner_destroy_notify(&fan, atomic_load_explicit(&db->pending_install_owner,
+                                                    memory_order_relaxed));
   }
   arts_rank_bitset_destroy(&fan.told);
   (void)arts_ooo_retire_item(a->db_guid, item_v);

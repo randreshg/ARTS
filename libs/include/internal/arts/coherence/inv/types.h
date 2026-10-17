@@ -379,7 +379,8 @@ struct arts_db_s {
 #ifndef ARTS_RELEASE_PURGE
   /* The holder a revocation targets; a home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory.  Stored
-   * release and loaded acquire under the baton (directory.h). */
+   * release and loaded acquire under the baton; under write-back the read
+   * serve's load is outside it (directory.h). */
   _Atomic(unsigned int) rw_holder;
 #endif
   struct arts_home_grantreq_queue_s pending_rw; /* Vyukov MPSC, pop-one */
@@ -387,7 +388,9 @@ struct arts_db_s {
    * release store, a seq_cst fence and a re-probe (directory.h). */
   _Atomic(unsigned int) invalidate_in_flight;
 #ifndef ARTS_RELEASE_PURGE
-  unsigned int pending_install_owner; /* baton-holder-written transfer target */
+  /* The requester the round in flight transfers the grant to: relaxed,
+   * ordered by the baton (directory.h). */
+  _Atomic(unsigned int) pending_install_owner;
 #endif
 #ifdef ARTS_RELEASE_PURGE
   /* Single-slot return latch.  A voluntary return is never rejected: it is

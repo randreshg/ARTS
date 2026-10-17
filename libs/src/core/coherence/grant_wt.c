@@ -58,13 +58,11 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
                                    struct arts_db_s *db,
                                    unsigned int requester) {
   (void)requester;
-  /* Pop the OLDEST requester (FIFO) to be the transfer target, publish it as
+  /* Pop the OLDEST requester (FIFO) to be the transfer target, record it in
    * pending_install_owner, and INVALIDATE the current holder carrying the new
    * owner so the holder ships the owner→owner GRANT_RESPONSE directly.
-   * pending_install_owner is written only by the baton holder (single writer),
-   * so no atomic.  Structurally identical to the WB start round; the WT /
-   * WB divergence is only the drain point in the response/confirm handlers.
-   */
+   * Structurally identical to the WB start round; the WT / WB divergence is
+   * only the drain point in the response/confirm handlers. */
   unsigned int next_owner;
   struct arts_rdzv_landing_s next_rdzv;
   while (!arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
@@ -93,7 +91,8 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
     }
     INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
   }
-  db->pending_install_owner = next_owner;
+  atomic_store_explicit(&db->pending_install_owner, next_owner,
+                        memory_order_relaxed);
   unsigned int current_owner =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
   arts_send_db_grant_invalidate(current_owner, cache->db_guid, next_owner,
@@ -279,7 +278,7 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
 /* Cat-C pure body (CONFIRM, home side).  The wire dispatcher / self-send
  * shortcut has already looked the home db_s up with a held ref and passes it as
  * item_v (cache is its FIRST member).  args_v is unused — the new owner is read
- * from db->pending_install_owner (published by the baton holder).  WT does
+ * from db->pending_install_owner (stored by the baton holder).  WT does
  * NOT send CONFIRM_ACK (the new owner already drained + ran at
  * GRANT_RESPONSE); it only flips rw_holder + advances the next round. */
 void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
@@ -287,7 +286,8 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_db_s *db = arts_db_of_cache(cache);
 
-  unsigned int new_owner = db->pending_install_owner;
+  unsigned int new_owner =
+      atomic_load_explicit(&db->pending_install_owner, memory_order_relaxed);
   atomic_store_explicit(&db->rw_holder, new_owner, memory_order_release);
 
   /* Advance the queue by revoking the new owner again, or put the baton

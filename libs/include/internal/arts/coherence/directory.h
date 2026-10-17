@@ -10,7 +10,8 @@
  *   - cached_version map: per-slot atomic.  Each rank slot is an independent
  *     _Atomic(uint64_t) accessed via atomic load/store and CAS-loop
  * monotonic-max for advance.  No cross-slot invariant.
- *   - rw_holder (where the home revokes), invalidate_in_flight: _Atomic.
+ *   - rw_holder and pending_install_owner (where the home revokes),
+ *     invalidate_in_flight: _Atomic.
  *     Their protocols are stated below, with the grant plane's home words.
  */
 
@@ -91,8 +92,8 @@ bool arts_home_grantreq_queue_pending(
 
 struct arts_rank_to_u64_map_s {
   /* Sized to nranks; each slot is an independent atomic: the newest version
-   * its rank was sent.  Only its own value: a dedup decision reads it, and
-   * no data is read on the strength of a slot. */
+   * its rank is known to hold.  Only its own value: a dedup decision reads
+   * it, and no data is read on the strength of a slot. */
   _Atomic(uint64_t) *slots;
   unsigned int nranks;
 };
@@ -126,7 +127,14 @@ bool arts_rank_u64_map_advance(struct arts_rank_to_u64_map_s *m,
  *   rw_holder  the write holder a revocation targets.  Stored with release
  *     under the baton, by the confirm that flips it; loaded with acquire
  *     under the baton.  Loads outside it (a read redirect, the destroy, the
- *     quiescence walk) carry only its value. */
+ *     quiescence walk) carry only its value.
+ *   pending_install_owner  the requester the round in flight transfers the
+ *     grant to.  Stored by the baton holder when it pops that requester,
+ *     loaded by the confirm that ends the round.  Both relaxed, ordered by
+ *     the baton: within a round its messages carry the store to the
+ *     confirm, and the baton's release and claim order one round's accesses
+ *     before the next round's.  The destroy's load outside the baton
+ *     carries only its value: it names one more rank to tell. */
 
 /* Initialize the home-directory fields inlined in struct arts_db_s (no separate
  * allocation).  rw_holder is the block's initial holder, chosen by the caller

@@ -247,7 +247,7 @@ static void owner_response_landed_cb(void *arg) {
  * shortcut has already looked the home db_s up with a held ref and passes it as
  * item_v (cache is its FIRST member, offset 0).  No lookup/NULL-check here —
  * the dispatcher's MISS branch SILENTLY DROPS (DB destroyed).  args_v is unused
- * (the new owner is read from db->pending_install_owner, published by the baton
+ * (the new owner is read from db->pending_install_owner, stored by the baton
  * holder; CONFIRM only confirms the install completed). */
 void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   (void)args_v;
@@ -255,7 +255,8 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
   struct arts_db_s *db = arts_db_of_cache(cache);
 
   /* Publish the new rw_holder (visible to the read redirect path). */
-  unsigned int new_owner = db->pending_install_owner;
+  unsigned int new_owner =
+      atomic_load_explicit(&db->pending_install_owner, memory_order_relaxed);
   unsigned int prev_holder =
       atomic_load_explicit(&db->rw_holder, memory_order_acquire);
   atomic_store_explicit(&db->rw_holder, new_owner, memory_order_release);
@@ -279,7 +280,8 @@ void arts_handler_db_grant_confirm(void *item_v, void *args_v) {
     unsigned int next_owner;
     if (arts_home_grantreq_queue_pop(&db->pending_rw, &next_owner,
                                     &piggyback_rdzv, &piggyback_have)) {
-      db->pending_install_owner = next_owner;
+      atomic_store_explicit(&db->pending_install_owner, next_owner,
+                            memory_order_relaxed);
       piggyback = next_owner;
       /* The next owner's waiters are not woken here: they wake when the grant
        * reaches it — the current owner ships it at its writer_count 0-edge
@@ -383,9 +385,7 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
   (void)requester;
   /* WB: pop the OLDEST requester (FIFO) to be the transfer target and
    * embed its rank in the GRANT_INVALIDATE so the current holder ships
-   * GRANT_RESPONSE directly, without a home round-trip.
-   * pending_install_owner is only written by the baton holder (single
-   * writer invariant), so no atomic needed. */
+   * GRANT_RESPONSE directly, without a home round-trip. */
   unsigned int next_owner;
   struct arts_rdzv_landing_s next_rdzv;
   uint64_t next_have = ARTS_GRANT_VERSION_NONE;
@@ -414,7 +414,8 @@ void arts_db_start_grant_round(struct arts_db_cache_s *cache,
     }
     INCREMENT_NUM_GRANT_BATON_RECLAIM_BY(1);
   }
-  db->pending_install_owner = next_owner;
+  atomic_store_explicit(&db->pending_install_owner, next_owner,
+                        memory_order_relaxed);
   arts_db_owner_start_invalidate_round(cache, next_owner, &next_rdzv,
                                        next_have);
   /* The next owner's waiters are not woken at round start: they wake at that

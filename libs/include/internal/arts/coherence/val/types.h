@@ -295,7 +295,8 @@ struct arts_db_s {
                           */
 #ifdef ARTS_WRITE_POLICY_WB
   /* The write holder a revocation targets and a read is redirected to:
-   * stored release and loaded acquire under the baton (directory.h). */
+   * stored release and loaded acquire under the baton; loads outside it (the
+   * redirect, the destroy, the walk) carry only its value (directory.h). */
   _Atomic(unsigned int) rw_holder;
   struct arts_home_grantreq_queue_s pending_rw; /* embedded Vyukov MPSC */
   /* The serving baton: claimed by an acq_rel CAS, given up by a release
@@ -303,8 +304,10 @@ struct arts_db_s {
   _Atomic(unsigned int) invalidate_in_flight;
   /* destroy fan-out roster: creator, readers, writers */
   struct arts_rank_bitset_s cached_ranks;
-  unsigned int pending_install_owner; /* baton-holder-written transfer target */
-#else                                 /* WT */
+  /* The requester the round in flight transfers the grant to: relaxed,
+   * ordered by the baton (directory.h). */
+  _Atomic(unsigned int) pending_install_owner;
+#else /* WT */
 #ifndef ARTS_RELEASE_PURGE
   /* The holder a revocation targets.  A home whose grants come back unasked
    * revokes no one, and its own possession is its whole directory.  Stored
@@ -321,9 +324,9 @@ struct arts_db_s {
   struct arts_rank_to_u64_map_s *cached_version;
   struct arts_rank_bitset_s cached_ranks; /* destroy fan-out roster */
 #ifndef ARTS_RELEASE_PURGE
-  /* Baton-holder-written transfer target (CONFIRM-driven advance, same as
-   * WB). */
-  unsigned int pending_install_owner;
+  /* The requester the round in flight transfers the grant to: relaxed,
+   * ordered by the baton (directory.h). */
+  _Atomic(unsigned int) pending_install_owner;
 #endif
 #endif
 #ifdef ARTS_RELEASE_PURGE

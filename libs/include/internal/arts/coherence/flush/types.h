@@ -44,7 +44,7 @@ struct arts_db_cache_s {
    * layout, and as there only the destructor empties the home's slot.  A
    * non-home slot holds only the creator's copy: the create installs it, and
    * the creator's release empties the slot and then stores 1 with release.
-   * No other acquire on that rank reads the slot: each lands a private
+   * No other acquisition on that rank reads the slot: each lands a private
    * copy. */
   _Atomic(uint8_t) payload_pending;
   /* What made this cache (arts_db_init_kind_t): a create's own descriptor,
