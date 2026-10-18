@@ -176,7 +176,7 @@ more than one iteration ahead of its neighbours, nor ahead of the root at all.
 ## Placement (base)
 
 This application carries an `OCR_APP_OPTIMIZED_PLACEMENT` layer (built as
-`nekbone_hinted`, `HINTED_PLACEMENT` in `benchmarks/apps/CMakeLists.txt`;
+`nekbone_hinted`, `HINTED_PLACEMENT` in `benchmarks/apps/ocr_apps.cmake`;
 catalog `hinted: true`), described in the next section. Outside that guard the
 affinity hints it carries are genuinely base:
 `ENABLE_EXTENSION_AFFINITY` is defined for the benchmark build, so

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from artsrun.model.experiment import Experiment
-from artsrun.model.catalog import Catalog
+from artsrun.model.catalog import Catalog, Section
 from artsrun.model.plane import Plane, RuntimeKind
 from artsrun.model.profile import CxlLibrary, Profile
 from artsrun.model.selection import Selection
@@ -31,6 +31,9 @@ class BuildPlan:
     build_dir: Path
     targets: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    # Targets of a section the tree builds nothing of yet: a real run turns
+    # the section on, then they exist.
+    pending: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -111,9 +114,20 @@ def cxl_options(profile: Profile) -> list[str]:
             *(f"-D{key}=" for key, _ in _cxl_paths(profile))]
 
 
+# The spellings CMake reads as a true boolean.
+_TRUE = ("ON", "TRUE", "1", "YES", "Y")
+
+
+def _and(items) -> str:
+    """"a", "a and b", "a, b and c"."""
+    items = list(items)
+    return (items[0] if len(items) == 1
+            else f"{', '.join(items[:-1])} and {items[-1]}")
+
+
 def _cxl_real_of(build_dir: Path) -> str:
     value = _cache_value(build_dir, "ARTS_CXL_REAL") or "OFF"
-    return "ON" if value.upper() in ("ON", "TRUE", "1", "YES", "Y") else "OFF"
+    return "ON" if value.upper() in _TRUE else "OFF"
 
 
 def cxl_mismatch(build_dir: Path, profile: Profile) -> list[str]:
@@ -388,28 +402,95 @@ def configure_counters(build_dir: Path, wanted: Path, *, on_line=None,
         )
 
 
-def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
+def section_options(sections: list[Section]) -> list[str]:
+    """The section options a new tree is configured with: exactly the
+    selected sections on, so a tree made for one section initialises and
+    builds nothing the others need."""
+    return [f"-D{s.spec.option}={'ON' if s in sections else 'OFF'}"
+            for s in Section]
+
+
+def section_mismatch(build_dir: Path, sections: list[Section]) -> list[Section]:
+    """The selected sections this tree does not build.  An option absent
+    from the cache is one the tree's next configure creates at its default,
+    which builds the section."""
+    out = []
+    for section in sections:
+        value = _cache_value(build_dir, section.spec.option)
+        if value is not None and value.upper() not in _TRUE:
+            out.append(section)
+    return out
+
+
+def sections_configure_command(build_dir: Path, sections: list[Section], *,
+                               prefix: list[str] | None = None) -> list[str]:
+    from artsrun.paths import repo_root
+
+    return [*(prefix or []), "cmake", "-S", str(repo_root()), "-B",
+            str(build_dir), *(f"-D{s.spec.option}=ON" for s in sections)]
+
+
+def configure_sections(build_dir: Path, sections: list[Section], *,
+                       on_line=None, prefix: list[str] | None = None) -> None:
+    """Turn the given sections on in an existing tree, or die.
+
+    Selecting an application is asking for the tree that carries its
+    section, as selecting a counter set is; only those options are passed,
+    every other value stays in the cache, and no section is ever turned off.
+    The first build after it compiles the section's programs and whatever
+    they depend on.
+    """
+    import shlex
+
+    say = on_line or (lambda _msg: None)
+    if shutil.which("cmake") is None:
+        raise BuildError("cmake not found on PATH")
+    cmd = sections_configure_command(build_dir, sections, prefix=prefix)
+    say(f"{build_dir} builds no {_and(s.label for s in sections)}, "
+        "which the campaign selects — turning "
+        f"{_and(s.spec.option for s in sections)} on (the next build "
+        "compiles those programs and what they depend on):")
+    say(f"  $ {shlex.join(cmd)}")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise BuildError(
+            f"could not turn on {', '.join(s.spec.option for s in sections)} "
+            f"in {build_dir}; cmake reported:\n"
+            + _cmake_error((proc.stdout or "") + "\n" + (proc.stderr or "")))
+    left = section_mismatch(build_dir, sections)
+    if left:
+        raise BuildError(
+            f"{build_dir} was reconfigured but still builds no "
+            f"{_and(s.label for s in left)}")
+
+
+def ensure_build_dir(build_dir: Path, *, sections: list[Section],
+                     bootstrap: bool = False,
                      on_line=None, prefix: list[str] | None = None,
                      cxl_options: list[str] | None = None) -> None:
     """Configure a tree that never was; verify one that already is.
 
-    The experiment tree is fully determined — Release, benchmarks on — so a
-    missing one is a first run rather than an error, and the configure is
-    simply run.  A tree that EXISTS is only verified, never reconfigured
-    behind its owner's back: a Debug or no-benchmark tree is somebody's
-    deliberate configuration, and the counter and CXL-library reconfigures
-    elsewhere change only the options they own for the same reason.  A dry run configures nothing —
-    dry means dry — and reports what a real run would do instead.
+    The experiment tree is fully determined — Release, benchmarks on, the
+    campaign's sections and no other — so a missing one is a first run
+    rather than an error, and the configure is simply run.  A tree that
+    EXISTS is only verified, never reconfigured behind its owner's back: a
+    Debug or no-benchmark tree is somebody's deliberate configuration, and
+    the section, counter and CXL-library reconfigures elsewhere change only
+    the options they own for the same reason — each because the campaign
+    selected what the option builds.  A dry run configures nothing — dry
+    means dry — and reports what a real run would do instead.
 
-    `cxl_options` are the library values a campaign that runs the CXL
-    entries needs; a new tree is configured with them.
+    `sections` are the catalog sections the campaign selects; a new tree is
+    configured with exactly those on.  `cxl_options` are the library values
+    a campaign that runs the CXL entries needs; a new tree is configured
+    with them.
     """
     from artsrun.paths import repo_root
 
     fresh = False
     configure = [*(prefix or []), "cmake", "-S", str(repo_root()), "-GNinja",
                  f"-B{build_dir}", "-DCMAKE_BUILD_TYPE=Release",
-                 *(cxl_options or [])]
+                 *section_options(sections), *(cxl_options or [])]
     if not (build_dir / "build.ninja").is_file():
         if not bootstrap:
             import shlex
@@ -438,7 +519,8 @@ def ensure_build_dir(build_dir: Path, *, bootstrap: bool = False,
             say(line)
         if proc.wait() != 0:
             raise BuildError("configure failed:\n" + _cmake_error("\n".join(output)))
-    if (_cache_value(build_dir, "ARTS_BUILD_BENCHMARKS") or "ON") == "OFF":
+    if (_cache_value(build_dir, "ARTS_BUILD_BENCHMARKS") or "ON").upper() \
+            not in _TRUE:
         raise BuildError(
             f"{build_dir} was configured with ARTS_BUILD_BENCHMARKS=OFF; the "
             f"application targets do not exist there"
@@ -519,15 +601,18 @@ def plan_targets(
     experiment: Experiment,
     build_dir: Path,
     profile: Profile | None = None,
+    pending: list[Section] | None = None,
 ) -> BuildPlan:
     """Every executable this campaign will run, deduplicated.
 
     The same rows and the same eligibility the expansion applies: a name the
-    experiment does not enable runs no cell, so it needs nothing built, and a
-    row's own exclusions (ARTS-only, no ocr-vx, outside DB-WRF) hold for the
-    build exactly as they hold for the run — as does a reference this host
-    cannot place, reported with its reason rather than as a target that is
-    missing.
+    experiment does not enable runs no cell, so it needs nothing built; an
+    entry whose runtime kind has no program for a row's section builds
+    nothing for it; and a row's own exclusions (ARTS-only, no ocr-vx,
+    outside DB-WRF) hold for the build exactly as they hold for the run — as
+    does a reference this host cannot place, reported with its reason rather
+    than as a target that is missing.  A target of a `pending` section is
+    one the tree has yet to configure, so it is neither built nor missing.
     """
     from artsrun.run.plan import reference_ineligible
 
@@ -535,19 +620,24 @@ def plan_targets(
     resolved = {a.key: a for a in experiment.resolve(catalog)}
 
     wanted: list[str] = []
+    later: set[str] = set()
+    pending = pending or []
     for name, versions in selection.apps.items():
         for version in versions:
             app = resolved.get(f"{name}:{version.value}")
             if app is None:
                 continue
             for entry in entries:
+                if not app.section.runs(entry.kind):
+                    continue
                 if profile is not None and reference_ineligible(entry, profile):
                     continue
                 if entry.kind is RuntimeKind.HPX:
                     # The HPX program is the row's _hpx target; nothing is
                     # derived from a version stem.
-                    if app.hpx_binary:
-                        wanted.append(app.hpx_binary)
+                    wanted.append(app.hpx_binary)
+                    if app.section in pending:
+                        later.add(app.hpx_binary)
                     continue
                 if entry.kind.value == "ocrvx" and app.ocrvx_skip:
                     continue
@@ -556,12 +646,17 @@ def plan_targets(
                 if entry.kind.value != "arts" and app.arts_only:
                     continue
                 # The hint layer is already folded into the resolved stem.
-                wanted.append(entry.binary(app.binary, hinted=False))
+                binary = entry.binary(app.binary, hinted=False)
+                wanted.append(binary)
+                if app.section in pending:
+                    later.add(binary)
 
     targets = sorted(set(wanted))
     have = available_targets(build_dir)
-    missing = [t for t in targets if t not in have] if have else []
-    return BuildPlan(build_dir=build_dir, targets=targets, missing=missing)
+    missing = ([t for t in targets if t not in have and t not in later]
+               if have else [])
+    return BuildPlan(build_dir=build_dir, targets=targets, missing=missing,
+                     pending=sorted(later))
 
 
 def build(plan: BuildPlan, *, jobs: int | None = None, on_line=None,
@@ -575,7 +670,7 @@ def build(plan: BuildPlan, *, jobs: int | None = None, on_line=None,
             "is not registered in CMake, its sources are not in this checkout "
             "-- the configure creates no target for such a registration -- or "
             "the tree skipped its runtime: the xsocr/ocrvx references and the "
-            "HPX-origin programs are skipped on a host without an MPI compiler "
+            "HPX originals are skipped on a host without an MPI compiler "
             "and under -DARTS_BUILD_HPX=OFF; the configure output's 'Skipping' "
             "and References/HPX lines say which)"
         )

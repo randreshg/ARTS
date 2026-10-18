@@ -1,13 +1,14 @@
-# The HPX-origin section of the catalog: programs whose original is an HPX
-# program, mirrored in OCR.  A row here is one program on four runtimes.
-# Its name ends in `_hpx` and is the binary stem; the runtime tag is the
-# last token, as everywhere: the HPX program is `<name>_hpx` (built by the
-# HPX app project into build/benchmarks/hpx/), the OCR mirrors are
+# The HPX-applications section of the catalog: programs whose original is
+# an HPX program, mirrored in OCR.  A row here is one program on four
+# runtimes.  Its name ends in `_hpx` and is the binary stem; the runtime tag
+# is the last token, as everywhere: the HPX program is `<name>_hpx` (built
+# by the HPX app project into build/benchmarks/hpx/), the OCR mirrors are
 # `<name>_arts_<variant>`, `<name>_xsocr`, `<name>_ocrvx` (built by the app
-# factory into build/benchmarks/apps/).  One tier, no hint layer, no rewrite: the
+# factory into build/benchmarks/apps/), both by a benchmark tree with
+# ARTS_BUILD_HPX_APPS on.  One tier, no hint layer, no rewrite: the
 # placement an HPX program states is carried by the mirror as hints, so
 # there is nothing a hint layer could add.  Every other field means what it
-# means in apps.yaml; a name here may not appear there.
+# means in ocr_apps.yaml; a name here may not appear there.
 #
 # `kind` is the same classification: an app is cited by name outside this
 # catalog, a toy is named after an operation.

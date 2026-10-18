@@ -9,6 +9,7 @@ import pytest
 
 from artsrun.build import (BuildError, arena_bytes, configure_cxl, cxl_mismatch,
                            cxl_options, ensure_build_dir, fake_region_bytes)
+from artsrun.model.catalog import Section
 from artsrun.model.plane import RuntimeKind, load_plane
 from artsrun.model.profile import CxlLibrary, Profile
 from artsrun.model.selection import Selection
@@ -303,7 +304,8 @@ def test_a_new_tree_is_configured_on_the_profile_library(tmp_path, monkeypatch):
             return 0
 
     monkeypatch.setattr("artsrun.build.subprocess.Popen", Configure)
-    ensure_build_dir(tree, bootstrap=True, cxl_options=cxl_options(profile(**REAL)))
+    ensure_build_dir(tree, sections=[Section.OCR], bootstrap=True,
+                     cxl_options=cxl_options(profile(**REAL)))
     cmd = commands[0]
     for opt in cxl_options(profile(**REAL)):
         assert opt in cmd
@@ -313,7 +315,8 @@ def test_a_new_tree_is_configured_on_the_profile_library(tmp_path, monkeypatch):
 
 def test_a_dry_run_on_a_missing_tree_names_the_configure(tmp_path):
     with pytest.raises(BuildError) as exc:
-        ensure_build_dir(tmp_path / "none", cxl_options=cxl_options(profile()))
+        ensure_build_dir(tmp_path / "none", sections=[Section.OCR],
+                         cxl_options=cxl_options(profile()))
     assert "-DARTS_CXL_REAL=OFF" in str(exc.value)
 
 
@@ -334,7 +337,6 @@ def test_expansion_stamps_the_profile_library_on_cxl_cells_only(tmp_path):
     for prof, want, size in ((profile(), CxlLibrary.FAKE, region),
                              (profile(**REAL), CxlLibrary.REAL, None)):
         cells, skipped = expand(sel, load_plane(), load_catalog(), bs, prof,
-                                tmp_path / "apps",
                                 {1: {"arts": tmp_path / "arts_1.cfg"}},
                                 build_dir=tree)
         assert not skipped
@@ -378,7 +380,8 @@ def test_ssh_manifest_shows_the_wrapped_command(tmp_path):
 def test_the_manifest_records_each_cell_library(tmp_path):
     cells = [cxl_cell(1, CxlLibrary.FAKE, region=12345),
              replace(_cell(RuntimeKind.ARTS, 1), repeat=2)]
-    write_manifest(tmp_path, cells, [], profile(), tmp_path / "build")
+    write_manifest(tmp_path, cells, [], profile(), tmp_path / "build",
+                   not_applicable=[])
     back = Manifest.load(tmp_path)
     assert [(c.cxl, c.cxl_region_bytes) for c in back.cells] == [
         (CxlLibrary.FAKE, 12345), (None, None)]

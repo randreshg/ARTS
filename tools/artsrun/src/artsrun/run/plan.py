@@ -3,7 +3,9 @@
 A cell that is dropped is dropped for a structural reason — the application
 cannot run multinode, or a reference runtime cannot run it at all.  The reason
 is carried through to the report; nothing is dropped silently, and nothing is
-dropped because a run once failed.
+dropped because a run once failed.  An entry whose runtime kind has no
+program for an application's section is not paired with it at all: that is a
+fact about the section, recorded once per section, not a dropped cell.
 """
 
 from __future__ import annotations
@@ -13,11 +15,11 @@ from dataclasses import replace
 from pathlib import Path
 
 from artsrun.model.experiment import Experiment, ResolvedApp
-from artsrun.model.catalog import Catalog
+from artsrun.model.catalog import Catalog, Section
 from artsrun.model.plane import Plane, RuntimeKind, SelectionEntry
 from artsrun.model.profile import CxlLibrary, Launcher, Profile
 from artsrun.model.selection import Selection
-from artsrun.run.types import Cell, Skipped
+from artsrun.run.types import Cell, NotApplicable, Skipped
 
 
 def _missing_inputs(app: ResolvedApp) -> list[str]:
@@ -65,10 +67,23 @@ def reference_ineligible(entry: SelectionEntry, profile: Profile) -> str | None:
             "every core's first thread first")
 
 
+def no_program(entry: SelectionEntry, app: ResolvedApp) -> str | None:
+    """Why the entry's runtime kind runs nothing of the application's
+    section, or None when it has a program for it."""
+    if app.section.runs(entry.kind):
+        return None
+    return f"no program for this runtime: {app.section.reach}"
+
+
 def _ineligible(
     entry: SelectionEntry, app: ResolvedApp, nodes: int,
     profile: Profile | None = None,
 ) -> str | None:
+    # The section first: a row's own exceptions describe a program, and the
+    # pair has none.
+    why = no_program(entry, app)
+    if why:
+        return why
     # Belt over the selection surfaces' braces: a replayed selection.yaml can
     # predate the catalog marking an application unsupported.
     if app.unsupported:
@@ -81,9 +96,6 @@ def _ineligible(
         return "probe is built for the ARTS variants alone"
     if entry.model == "DB_WRF" and app.unordered_writes:
         return f"program is outside DB-WRF: {app.unordered_writes}"
-    if entry.kind is RuntimeKind.HPX and app.hpx_binary is None:
-        return ("no HPX program: an OCR-origin row (the HPX entry runs the "
-                "HPX-origin section)")
     if profile is not None:
         why = reference_ineligible(entry, profile)
         if why:
@@ -100,7 +112,6 @@ def expand(
     catalog: Catalog,
     experiment: Experiment,
     profile: Profile,
-    apps_dir: Path,
     configs: dict[int, dict[str, Path]],
     cell_cfg: Callable[[Cell], Path] | None = None,
     *,
@@ -113,8 +124,9 @@ def expand(
     is a configuration key, so cells sharing a configuration would write over
     each other's counters.
 
-    `build_dir` is the tree the cells' binaries come from; a cell on the
-    vendored fake CXL library sizes its region from that tree's arena.
+    `build_dir` is the tree the cells' binaries come from, each from the
+    directory its section builds that runtime kind's binaries in; a cell on
+    the vendored fake CXL library sizes its region from that tree's arena.
     """
     from artsrun.build import fake_region_bytes
     from artsrun.render import config_for
@@ -140,17 +152,18 @@ def expand(
             for nodes in selection.node_counts:
                 runnable: list[tuple] = []
                 for entry in entries:
+                    if no_program(entry, app):
+                        continue
                     why = _ineligible(entry, app, nodes, profile)
                     if why:
                         skipped.append(Skipped(entry.key, app.key, nodes, why))
                         continue
-                    if entry.kind is RuntimeKind.HPX:
-                        # The HPX apps are a standalone project beside the
-                        # OCR apps in the build tree, one target per program.
-                        binary = apps_dir.parent / "hpx" / app.hpx_binary
-                    else:
-                        binary = apps_dir / entry.binary(app.binary,
-                                                         hinted=False)
+                    # An HPX program is one target named by the catalog;
+                    # every other binary is the entry's build of the stem.
+                    target = (app.hpx_binary if entry.kind is RuntimeKind.HPX
+                              else entry.binary(app.binary, hinted=False))
+                    binary = (build_dir / app.section.binary_dir(entry.kind)
+                              / target)
                     runnable.append((entry, binary))
                 for repeat in range(1, selection.repeats + 1):
                     for entry, binary in runnable:
@@ -171,3 +184,32 @@ def expand(
                             cell = replace(cell, cfg=cell_cfg(cell))
                         cells.append(cell)
     return cells, skipped
+
+
+def not_applicable(
+    selection: Selection,
+    plane: Plane,
+    catalog: Catalog,
+    experiment: Experiment,
+) -> list[NotApplicable]:
+    """Per section, the selected entries with no program for its selected
+    applications, in the catalog's section order."""
+    resolved = {a.key: a for a in experiment.resolve(catalog)}
+    entries = [plane.entry(k) for k in selection.entries]
+    apps: dict[Section, list[str]] = {}
+    for name, versions in selection.apps.items():
+        for version in versions:
+            app = resolved.get(f"{name}:{version.value}")
+            if app is not None:
+                apps.setdefault(app.section, []).append(app.key)
+    out = []
+    for section in Section:
+        if section not in apps:
+            continue
+        absent = [e.key for e in entries if not section.runs(e.kind)]
+        if absent:
+            out.append(NotApplicable(
+                section=section.value, label=section.label,
+                entries=tuple(absent), apps=tuple(apps[section]),
+                reason=section.reach))
+    return out

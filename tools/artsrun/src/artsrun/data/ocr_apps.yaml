@@ -1,4 +1,7 @@
-# Application catalog: what each benchmark structurally is.
+# The OCR-applications section of the catalog: what each OCR program
+# structurally is.  The ARTS entries, xsocr and ocrvx all run the OCR
+# program, built into build/benchmarks/apps/ by a benchmark tree with
+# ARTS_BUILD_OCR_APPS on.
 #
 # Committed values are the ones that describe the application itself —
 # its binary, how a completed run announces itself, how its result scalar
@@ -1686,7 +1689,7 @@ apps:
     # target asks for -- the base row cannot, its target being the
     # anti-scaler's.  Two disclosures.
     # (1) The binary is compiled with OCR_APP_OPTIMIZED_PLACEMENT forced on
-    # (benchmarks/apps/CMakeLists.txt), so it carries the hinted tier's
+    # (benchmarks/apps/ocr_apps.cmake), so it carries the hinted tier's
     # contiguous-box placement map: restructured = hinted placement + the
     # two-level tree, and it is read against the hinted curve as much as
     # against base.  (2) The tree reassociates the sum -- and its shape keys on
@@ -3159,9 +3162,10 @@ apps:
     # restructured tier's 120 s target rather than the base's 20 s -- hence
     # its own rung of the shipped ladder (Ix = 400*(n+1), so 18400 is
     # Parameter45).  MEMORY is cumulative,
-    # not a frontier: nothing under dist/ is ever destroyed (the *_free macros
-    # are empty and there is no ocrDbDestroy), so every phase's tiles, band
-    # slabs and scratch live to shutdown.  App-side live set
+    # not a frontier: the dist/ sources other than cfar.c define spad_free
+    # empty, so every phase's tiles, band slabs and stripe sets live to
+    # shutdown; only cfar.c's local, correlation, scratch and detection blocks
+    # and back_proj.c's FFT work buffers are destroyed.  App-side live set
     #   ~= [8*(2 projections' tiles + 2 band slabs + 3 stripe sets
     #          + resample blocks + resample band slabs)
     #       + 12 (detection lists) + 4*(1+(Ncfar-1)/blk_cfar)^2 (correlation)]

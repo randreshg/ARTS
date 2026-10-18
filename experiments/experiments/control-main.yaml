@@ -3,7 +3,7 @@
 # purpose.  paper-main answers "what do real applications cost on each arm";
 # the two halves here answer "what is each arm's best and worst case, by
 # construction" (the adversarial columns) and "what does the same program
-# cost on a runtime of another programming model" (the HPX-origin rows).
+# cost on a runtime of another programming model" (the HPX applications).
 # Different claims, run separately, at the profile's own geometry.  It runs
 # the ARTS entries and HPX by default; any other plane entry is turned on for
 # one run with -e.
@@ -21,7 +21,7 @@
 # for the validation philosophy on its own.
 
 name: control-main
-description: the adversarial columns of the protocol suite with the grain dial, and the HPX-origin rows
+description: the adversarial columns of the protocol suite with the grain dial, and the HPX applications
 # The coherence entries this experiment runs unless -e names others.
 entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
           arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
@@ -115,7 +115,7 @@ apps:
     enabled: true
     versions: [base]
 
-  # --- HPX-origin section (hpx_apps.yaml): one program on four runtimes ---
+  # --- HPX applications (hpx_apps.yaml): one program on four runtimes ---
   # Every row runs the catalog's calibrated arguments, like every other row
   # here; the one-node anchor window and the width floor that chose them are in
   # each row's appdoc.  The section admits an origin only if it never suspends

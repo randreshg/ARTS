@@ -70,8 +70,8 @@ def test_a_non_amd64_tree_stops_the_campaign_before_any_build(
     tree = tmp_path / "build"
     source(tree, monkeypatch)
     assert tree_processor(tree) == "aarch64"
-    for name in ("ensure_build_dir", "configure_cxl", "configure_counters",
-                 "plan_targets"):
+    for name in ("ensure_build_dir", "configure_sections", "configure_cxl",
+                 "configure_counters", "plan_targets"):
         monkeypatch.setattr(f"artsrun.campaign.{name}",
                             lambda *a, _n=name, **k: pytest.fail(
                                 f"{_n} ran on a tree with no benchmark variant"))

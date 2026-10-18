@@ -1,14 +1,16 @@
 """Structural documents: what one application is, as a page.
 
-The document itself is a per-entry markdown file shipped with the tool
-(`data/appdocs/<name>.md`); an entry without one still renders as the
+The document itself is a per-entry markdown file: shipped with the tool
+(`data/appdocs/<name>.md`), or for a section whose programs live in the
+checkout, beside their documentation there (an ARTS example's
+`docs/examples/<stem>.md`).  An entry without one still renders as the
 catalog's own facts, so every entry can be opened.
 """
 
 from __future__ import annotations
 
 from artsrun.data import load_doc
-from artsrun.model.catalog import AppEntry, Kind, Origin
+from artsrun.model.catalog import AppEntry, Kind
 
 
 def facts_markdown(entry: AppEntry) -> str:
@@ -26,9 +28,8 @@ def facts_markdown(entry: AppEntry) -> str:
         + (f" (tolerance {entry.tolerance})" if entry.tolerance else ""),
         f"- **calibrated args**: `{' '.join(entry.args) or '(none)'}`",
     ]
-    if entry.origin is Origin.HPX:
-        lines.append("- **origin**: an HPX program (the HPX entry runs it); "
-                     "the ARTS, XSOCR and OCR-vx binaries are its OCR mirror")
+    lines.append(f"- **section**: {entry.section.label} — "
+                 f"{entry.section.reach}")
     if entry.multinode_skip:
         lines.append(f"- **multinode**: skipped — {entry.multinode_skip}")
     if entry.ocrvx_skip:

@@ -1,0 +1,30 @@
+# The ARTS-examples section of the catalog: the native programs of
+# examples/, written against the public arts.h alone.  The ARTS entries run
+# them and nothing else does — no reference runtime runs the ARTS API, so a
+# row here paired with xsocr, ocrvx or hpx is not a cell.  A row's name ends
+# in `_example` and is the binary stem: the program is
+# `<name>_arts_<variant>`, built for every variant into build/examples/ by a
+# benchmark tree with ARTS_BUILD_EXAMPLES on.  One tier: no hint layer, no
+# rewrite.  A row's structural document is docs/examples/<stem>.md, titled
+# `# <name>`, the same page the Sphinx documentation renders.  Every other
+# field means what it means in ocr_apps.yaml; a name here may not appear
+# there.
+#
+# A row reads what its program already prints.  `expect` pins a value only
+# where the printed answer does not depend on the node count, at the row's
+# own arguments; a roster that overrides them has left the pin behind.
+
+apps:
+  fib_example:
+    binary: fib_example
+    class: task
+    kind: toy
+    provenance: 'ARTS example: recursive Fibonacci, one EDT per call, each result carried up as a slot value'
+    marker: 'Fib \d+: \d+ time:'
+    scalar_re: 'Fib \d+: (\d+) time:'
+    scalar_kind: int
+    # fib(20); the answer is the recursion's, whatever rank each call ran on.
+    expect: '6765'
+    expect_args: ['20']
+    args: ['20']
+    default_enabled: false

@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import sys
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from artsrun.model.catalog import (AppClass, AppEntry, Catalog, ScalarKind,
-                                   Version, expand_repo)
+                                   Section, Version, expand_repo)
 from artsrun.paths import repo_root
 
 
@@ -51,11 +51,24 @@ class ResolvedApp(BaseModel):
     timeout: int = 0
     multinode_timeout: int = 0
     args_overridden: bool = False
-    # The HPX program of an HPX-origin row (`<row>_hpx`), or None on an
-    # OCR-origin row; `hpx_versions` is `[base]` for the HPX-origin section
-    # and empty otherwise.
+    # Recorded with the pair rather than looked up by name, so a run read
+    # back later keeps the section it ran under whatever the catalog holds
+    # by then.
+    section: Section
+    # The HPX program of a row the HPX entry runs (`<row>_hpx`), or None;
+    # `hpx_versions` is `[base]` for such a row and empty otherwise.
     hpx_binary: str | None = None
     hpx_versions: list[Version] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_section(cls, data):
+        """A pair recorded before sections existed names none, and then only
+        the HPX applications had an HPX program."""
+        if isinstance(data, dict) and data.get("section") is None:
+            data = {**data, "section": (Section.HPX if data.get("hpx_binary")
+                                        else Section.OCR)}
+        return data
 
     @property
     def key(self) -> str:
@@ -207,6 +220,7 @@ class Experiment(BaseModel):
                         timeout=source.timeout,
                         multinode_timeout=source.multinode_timeout,
                         args_overridden=overridden,
+                        section=app.section,
                         hpx_binary=app.hpx_target(version),
                         hpx_versions=app.hpx_versions,
                     )

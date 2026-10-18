@@ -20,7 +20,7 @@ from artsrun.model.profile import CxlLibrary, Launcher, Profile
 from artsrun.paths import repo_root, scratch_dir
 from artsrun.run.command import (build_command, build_env, cxl_wrap, render,
                                  with_post_verify, with_timeout)
-from artsrun.run.types import Cell, Skipped
+from artsrun.run.types import Cell, NotApplicable, Skipped
 
 VERSION = 1
 
@@ -116,6 +116,7 @@ def write_manifest(
     build_dir: Path,
     *,
     counters_cfg: Path | None = None,
+    not_applicable: list[NotApplicable],
 ) -> Path:
     entries: dict[str, dict] = {}
     apps: dict[str, dict] = {}
@@ -178,6 +179,11 @@ def write_manifest(
              "reason": s.reason}
             for s in skipped
         ],
+        "not_applicable": [
+            {"section": n.section, "label": n.label, "entries": list(n.entries),
+             "apps": list(n.apps), "reason": n.reason}
+            for n in not_applicable
+        ],
     }
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / FILE_NAME
@@ -233,6 +239,13 @@ class Manifest:
         self.skipped = [
             Skipped(s["entry"], s["app"], int(s["nodes"]), s["reason"])
             for s in payload.get("skipped", [])
+        ]
+        # A manifest written before sections existed records its pairs with
+        # no program among the skips, one per cell, and none here.
+        self.not_applicable = [
+            NotApplicable(n["section"], n["label"], tuple(n["entries"]),
+                          tuple(n["apps"]), n["reason"])
+            for n in payload.get("not_applicable", [])
         ]
 
     @classmethod

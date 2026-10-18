@@ -151,7 +151,7 @@ migration — the app never expresses the locality that exists in principle
 ## Placement (hinted)
 
 **A `hinted` target IS built** (`fft_hinted`, `HINTED_PLACEMENT` in
-`benchmarks/apps/CMakeLists.txt`; catalog `hinted: true`). The layer was
+`benchmarks/apps/ocr_apps.cmake`; catalog `hinted: true`). The layer was
 withheld on 2026-08-19 on the argument that containing a single
 per-node-exclusive RW block can only reproduce the one-node number; the
 measurement below reversed that: containment is not a horizontal line, because

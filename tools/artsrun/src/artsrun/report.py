@@ -12,9 +12,10 @@ from rich.console import Console
 from rich.table import Table
 
 from artsrun.check import Group, Verdict, minority_report
+from artsrun.model.catalog import Section
 from artsrun.model.plane import Plane
 from artsrun.model.selection import Selection
-from artsrun.run.types import CellResult, Skipped, Status
+from artsrun.run.types import CellResult, NotApplicable, Skipped, Status
 
 RESULT_COLUMNS = [
     "app", "version", "nodes", "entry", "kind", "repeat",
@@ -174,6 +175,8 @@ def write_report_json(
     skipped: list[Skipped],
     selection: Selection,
     path: Path,
+    *,
+    not_applicable: list[NotApplicable],
 ) -> None:
     payload = {
         "selection": selection.model_dump(mode="json"),
@@ -186,6 +189,7 @@ def write_report_json(
         "consensus": [
             {
                 "app": g.app_key,
+                "section": g.section.value,
                 "nodes": g.nodes,
                 "value": g.consensus,
                 "verdicts": {k: v.value for k, v in g.verdicts.items()},
@@ -194,13 +198,34 @@ def write_report_json(
             for g in groups
         ],
         "skipped": [asdict(s) for s in skipped],
+        "not_applicable": [asdict(n) for n in not_applicable],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
 
 
-def consensus_table(groups: list[Group], plane: Plane, entries: list[str]) -> Table:
-    table = Table(title="Consensus by application and node count", expand=False)
+def consensus_tables(groups: list[Group], plane: Plane,
+                     entries: list[str]) -> list[Table]:
+    """One consensus table per section that has a group, each with only the
+    columns of the entries that run that section: an entry with no program
+    for a section has no verdict to show there."""
+    known = {e.key: e.kind for e in plane.entries}
+    tables = []
+    for section in Section:
+        mine = [g for g in groups if g.section is section]
+        if not mine:
+            continue
+        columns = [k for k in entries
+                   if k not in known or section.runs(known[k])]
+        tables.append(consensus_table(
+            mine, columns,
+            title=f"Consensus — {section.label}, by application and node count"))
+    return tables
+
+
+def consensus_table(groups: list[Group], entries: list[str], *,
+                    title: str) -> Table:
+    table = Table(title=title, expand=False)
     table.add_column("app", style="bold")
     table.add_column("n", justify="right")
     table.add_column("value")
@@ -279,9 +304,15 @@ def write_summary(
     selection: Selection,
     plane: Plane,
     path: Path,
+    *,
+    not_applicable: list[NotApplicable],
 ) -> str:
     console = Console(record=True, width=200, file=open("/dev/null", "w"))
-    console.print(consensus_table(groups, plane, selection.entries))
+    for i, table in enumerate(consensus_tables(groups, plane,
+                                               selection.entries)):
+        if i:
+            console.print()
+        console.print(table)
     if any(any(g.teardown_hang.values()) for g in groups):
         console.print(
             "[dim]† on a verdict: reaped after a completed, measured run "
@@ -316,6 +347,11 @@ def write_summary(
                 continue
             seen.add(s.reason)
             console.print(f"  {s.app_key}: {s.reason}")
+    if not_applicable:
+        console.print()
+        console.print("[bold]Not cells (no program for the entry)[/bold]")
+        for n in not_applicable:
+            console.print(f"  {n.line}")
 
     text = console.export_text()
     path.parent.mkdir(parents=True, exist_ok=True)

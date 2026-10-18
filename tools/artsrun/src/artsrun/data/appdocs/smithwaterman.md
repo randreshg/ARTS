@@ -140,7 +140,7 @@ is the thing to *break* rather than to display, the restructured row
 
 The source carries an `OCR_APP_OPTIMIZED_PLACEMENT` guard around two
 helpers, `swBandEdtHint` and `swBandDbHint` (built as `smithwaterman_hinted`,
-`HINTED_PLACEMENT` in `benchmarks/apps/CMakeLists.txt`; catalog
+`HINTED_PLACEMENT` in `benchmarks/apps/ocr_apps.cmake`; catalog
 `hinted: true`) — see the next section. Outside that guard every
 `ocrEdtCreate`/`ocrDbCreate` call passes `NULL_HINT`, and base is the guard
 off. Effective policy:

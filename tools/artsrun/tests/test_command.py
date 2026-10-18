@@ -443,7 +443,7 @@ def test_e_replaces_the_experiment_s_entries_and_may_name_any_of_them():
     assert result.exit_code == 0, result.output
     assert ("entries (chosen for this run): arts_excl_purge_cxl_staged, "
             "arts_wrf_flush") in result.output
-    assert "= 2 entries" in result.output
+    assert "= OCR applications: 2 entries x 2 app-versions" in result.output
     bad = _cli("run", "-p", "local-cxl", "-x", "paper-gate", "-e", "nope",
                "--dry-run")
     assert bad.exit_code != 0

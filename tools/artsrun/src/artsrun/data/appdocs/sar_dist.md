@@ -67,7 +67,7 @@ that is checked loudly at start-up naming both numbers: the detection task's
 window buffer (`2·(C+64)²` complex samples) and the resample block's source
 window (`(A+64)²`) are automatic storage sized from the compiled maxima, so a
 larger run-time value would walk off a task's stack.  Raising the ceiling needs
-an `EXTRA_DEFINES` change in `benchmarks/apps/CMakeLists.txt`.
+an `EXTRA_DEFINES` change in `benchmarks/apps/ocr_apps.cmake`.
 
 `Ix != Iy` is refused loudly: the stripe layer cuts one axis and every phase
 indexes both from it.

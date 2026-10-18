@@ -9,7 +9,7 @@ import asyncio
 
 from artsrun.data import load_doc
 from artsrun.docs import document, facts_markdown
-from artsrun.model.catalog import Kind, load_catalog
+from artsrun.model.catalog import Kind, Section, load_catalog
 from artsrun.tui.app import ArtsRunApp
 from artsrun.tui.docview import AppDocScreen
 
@@ -44,13 +44,49 @@ def test_every_application_row_has_a_document():
     """A result is claimed about an application; every application row the
     roster offers must open to a real structural document, not the fallback.
 
-    Every HPX-origin row owes one whatever its kind: there the document is
+    Every HPX application owes one whatever its kind: there the document is
     also where the mirror's correspondence to the origin program is stated,
-    which a toy needs as much as an application."""
+    which a toy needs as much as an application.  So does every ARTS
+    example: its document is the example's own page in the documentation."""
     catalog = load_catalog()
-    missing = [a.name for a in [*catalog.rows_of(Kind.APP), *catalog.hpx_rows]
+    missing = [a.name for a in [*catalog.rows_of(Kind.APP),
+                                *catalog.rows_in(Section.HPX),
+                                *catalog.rows_in(Section.EXAMPLES)]
                if load_doc(a.name) is None]
     assert not missing, f"rows without a document: {missing}"
+
+
+def test_every_document_names_a_catalog_row():
+    """The inverse: a document whose row is gone describes nothing a
+    campaign can run, and is deleted with the row."""
+    from importlib.resources import files
+
+    from artsrun.paths import repo_root
+
+    catalog = load_catalog()
+    packaged = [p.name.removesuffix(".md")
+                for p in files("artsrun.data").joinpath("appdocs").iterdir()
+                if p.name.endswith(".md")]
+    orphans = [n for n in packaged if n not in catalog.apps]
+    for section in Section:
+        if section.spec.docs is None:
+            continue
+        for page in (repo_root() / section.spec.docs).glob("*.md"):
+            name = f"{page.stem}{section.spec.suffix}"
+            if catalog.apps.get(name) is None or \
+                    catalog.apps[name].section is not section:
+                orphans.append(str(page.relative_to(repo_root())))
+    assert not orphans, f"documents naming no catalog row: {orphans}"
+
+
+def test_an_example_row_reads_its_page_from_the_documentation():
+    from artsrun.paths import repo_root
+
+    catalog = load_catalog()
+    for row in catalog.rows_in(Section.EXAMPLES):
+        stem = Section.EXAMPLES.stem(row.name)
+        page = repo_root() / "docs" / "examples" / f"{stem}.md"
+        assert load_doc(row.name) == page.read_text(encoding="utf-8")
 
 
 def test_every_written_document_tells_the_whole_story():

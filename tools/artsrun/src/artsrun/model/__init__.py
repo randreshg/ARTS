@@ -2,7 +2,7 @@
 
 from artsrun.model.experiment import Experiment, ExperimentApp, ResolvedApp
 from artsrun.model.catalog import (
-    AppClass, AppEntry, Catalog, Kind, Version, load_catalog,
+    AppClass, AppEntry, Catalog, Kind, Section, Version, load_catalog,
 )
 from artsrun.model.plane import (
     Family,
@@ -39,6 +39,7 @@ __all__ = [
     "Release",
     "ResolvedApp",
     "RuntimeKind",
+    "Section",
     "Selection",
     "SelectionEntry",
     "SlurmSettings",

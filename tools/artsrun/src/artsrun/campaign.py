@@ -20,13 +20,14 @@ from pathlib import Path
 from artsrun import check, report
 from artsrun.build import (
     DEFAULT_COUNTER_CONFIG, BuildError, BuildPlan, build, configure_counters,
-    configure_cxl, counter_config_of, counter_mismatch, cxl_configure_command,
-    cxl_mismatch, cxl_options, ensure_build_dir, missing_counter_config,
-    plan_targets, require_amd64, require_default_counters, tree_counter_config,
-    write_tree_counter_config,
+    configure_cxl, configure_sections, counter_config_of, counter_mismatch,
+    cxl_configure_command, cxl_mismatch, cxl_options, ensure_build_dir,
+    _and, missing_counter_config, plan_targets, require_amd64,
+    require_default_counters, section_mismatch, sections_configure_command,
+    tree_counter_config, write_tree_counter_config,
 )
 from artsrun.model.experiment import Experiment
-from artsrun.model.catalog import Catalog
+from artsrun.model.catalog import Catalog, Section
 from artsrun.model.counters import Counterset
 from artsrun.model.plane import Plane
 from artsrun.model.profile import CxlLibrary, Launcher, Profile
@@ -34,9 +35,9 @@ from artsrun.model.selection import Selection
 from artsrun.paths import default_build_dir, logs_root, wall_cache_path
 from artsrun.render import write_configs, write_counter_config
 from artsrun.run.manifest import write_manifest
-from artsrun.run.plan import expand
+from artsrun.run.plan import expand, not_applicable
 from artsrun.run.scheduler import Scheduler, WallCache
-from artsrun.run.types import CellResult, Skipped, Status
+from artsrun.run.types import CellResult, NotApplicable, Skipped, Status
 
 
 @dataclass
@@ -114,13 +115,17 @@ class Campaign:
     def build_plan(self, *, on_line=None, bootstrap: bool = False) -> BuildPlan:
         require_amd64(self.build_dir, self.selection)
         prefix = self._build_prefix()
-        # A CXL entry's binaries are the tree's, so the tree is made to link
-        # the library the profile names before anything is planned from it;
-        # when that cannot be done the campaign ends here.
+        # A selected section's programs and a CXL entry's binaries are the
+        # tree's, so the tree is made to build that section and to link the
+        # library the profile names before anything is planned from it; when
+        # that cannot be done the campaign ends here.
+        sections = self.selection.sections(self.catalog, self.experiment)
         cxl = bool(self.selection.cxl_entries(self.plane))
-        ensure_build_dir(self.build_dir, bootstrap=bootstrap, on_line=on_line,
-                         prefix=prefix,
+        ensure_build_dir(self.build_dir, sections=sections,
+                         bootstrap=bootstrap, on_line=on_line, prefix=prefix,
                          cxl_options=cxl_options(self.profile) if cxl else None)
+        pending = self._match_sections(sections, on_line, prefix,
+                                       dry=not bootstrap)
         if cxl:
             self._match_cxl(on_line, prefix, dry=not bootstrap)
         self.counters_cfg = None
@@ -181,8 +186,30 @@ class Campaign:
                                        why=f"counter file {gone} is gone")
         return plan_targets(
             self.selection, self.plane, self.catalog, self.experiment,
-            self.build_dir, self.profile,
+            self.build_dir, self.profile, pending=pending,
         )
+
+    def _match_sections(self, sections, on_line, prefix: list[str], *,
+                        dry: bool) -> list[Section]:
+        """Turn the selected sections the tree lacks on, or say what a real
+        run would; returns the sections a dry run left off."""
+        import shlex
+
+        off = section_mismatch(self.build_dir, sections)
+        if not off:
+            return []
+        if dry:
+            say = on_line or (lambda _msg: None)
+            say(f"{self.build_dir} builds no "
+                f"{_and(s.label for s in off)}, which the campaign "
+                f"selects; a real run turns {'it' if len(off) == 1 else 'them'}"
+                " on first:\n  $ "
+                + shlex.join(sections_configure_command(
+                    self.build_dir, off, prefix=prefix)))
+            return off
+        configure_sections(self.build_dir, off, on_line=on_line,
+                           prefix=prefix)
+        return []
 
     def _match_cxl(self, on_line, prefix: list[str], *, dry: bool) -> None:
         import shlex
@@ -209,9 +236,6 @@ class Campaign:
             return
         configure_cxl(self.build_dir, self.profile, on_line=on_line,
                       prefix=prefix)
-
-    def apps_dir(self) -> Path:
-        return self.build_dir / "benchmarks" / "apps"
 
     def counters_dir(self, cell) -> Path:
         return self.run_dir / "counters" / cell.slug
@@ -244,9 +268,13 @@ class Campaign:
 
         return expand(
             self.selection, self.plane, self.catalog, self.experiment,
-            self.profile, self.apps_dir(), configs, cell_cfg=cell_cfg,
+            self.profile, configs, cell_cfg=cell_cfg,
             build_dir=self.build_dir,
         )
+
+    def not_applicable(self) -> list[NotApplicable]:
+        return not_applicable(self.selection, self.plane, self.catalog,
+                              self.experiment)
 
     def backend(self):
         log_dir = self.run_dir / "cells"
@@ -283,12 +311,14 @@ class Campaign:
         build(plan, on_line=lambda line: say(line), prefix=prefix, jobs=jobs)
 
         cells, skipped = self.cells()
+        absent = self.not_applicable()
         # Written before anything runs, and over the whole campaign even on a
         # continuation: the manifest describes what was asked, and what a
         # watcher shows as pending is exactly what has no track event yet.
         write_manifest(self.run_dir, cells, skipped, self.profile,
                        self.build_dir,
-                       counters_cfg=getattr(self, "counters_cfg", None))
+                       counters_cfg=getattr(self, "counters_cfg", None),
+                       not_applicable=absent)
         # A continuation keeps what the interrupted run measured and runs the
         # rest into the same directory, so one report describes both halves.
         carried: list[CellResult] = []
@@ -320,6 +350,8 @@ class Campaign:
                 + (f", {again} being retried" if again else ""))
 
         say(f"{len(cells)} cells to run, {len(skipped)} structurally ineligible")
+        for record in absent:
+            say(f"  not cells: {record.line}")
 
         track = (self.run_dir / "track.jsonl").open("a", encoding="utf-8")
 
@@ -380,17 +412,19 @@ class Campaign:
 
         report.write_results_csv(results, self.run_dir / "results.csv")
         report.write_report_json(
-            results, groups, skipped, self.selection, self.run_dir / "report.json"
+            results, groups, skipped, self.selection, self.run_dir / "report.json",
+            not_applicable=absent,
         )
         summary = report.write_summary(
             results, groups, skipped, self.selection, self.plane,
-            self.run_dir / "summary.txt",
+            self.run_dir / "summary.txt", not_applicable=absent,
         )
         return {
             "run_dir": self.run_dir,
             "results": results,
             "groups": groups,
             "skipped": skipped,
+            "not_applicable": absent,
             "summary": summary,
         }
 
@@ -539,15 +573,18 @@ def reconcile(run_dir: Path) -> dict | None:
     groups = check.vote([r for r in results if r.status is not Status.SKIPPED])
     report.write_results_csv(results, run_dir / "results.csv")
     report.write_report_json(results, groups, manifest.skipped, selection,
-                             run_dir / "report.json")
+                             run_dir / "report.json",
+                             not_applicable=manifest.not_applicable)
     summary = report.write_summary(results, groups, manifest.skipped,
                                    selection, load_plane(),
-                                   run_dir / "summary.txt")
+                                   run_dir / "summary.txt",
+                                   not_applicable=manifest.not_applicable)
     return {
         "run_dir": run_dir,
         "results": results,
         "groups": groups,
         "skipped": manifest.skipped,
+        "not_applicable": manifest.not_applicable,
         "summary": summary,
     }
 
@@ -592,9 +629,13 @@ def past_runs(limit: int = 40) -> list[PastRun]:
     the end -- so a run that was stopped, or whose session died, is described
     as accurately as one that finished.
     """
+    from artsrun.model.catalog import load_catalog
+    from artsrun.model.plane import load_plane
+
     root = logs_root()
     if not root.is_dir():
         return []
+    catalog, plane = load_catalog(), load_plane()
     out: list[PastRun] = []
     for d in sorted((p for p in root.iterdir() if p.is_dir()), reverse=True):
         saved = d / "selection.yaml"
@@ -617,7 +658,8 @@ def past_runs(limit: int = 40) -> list[PastRun]:
                     seen[row.get("cell", "")] = row.get("status", "")
             measured = len(seen)
             ok = sum(1 for v in seen.values() if v == Status.OK.value)
-        out.append(PastRun(d.name, d, measured, ok, selection.cell_count))
+        out.append(PastRun(d.name, d, measured, ok,
+                           selection.cell_count(catalog, plane)))
         if len(out) >= limit:
             break
     return out

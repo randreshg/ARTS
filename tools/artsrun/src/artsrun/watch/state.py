@@ -145,6 +145,7 @@ class RunState:
         self.order: list[str] = []
         self.groups: list[Group] = []
         self.skipped = []
+        self.not_applicable = []
         self.launcher = ""
         self.cwd = ""
         self.counters_cfg: Path | None = None
@@ -175,6 +176,7 @@ class RunState:
         self.cwd = manifest.cwd
         self.counters_cfg = manifest.counters_cfg
         self.skipped = manifest.skipped
+        self.not_applicable = manifest.not_applicable
         for cell in manifest.cells:
             if cell.key not in self.views:
                 self.views[cell.key] = _from_manifest(manifest, cell)

@@ -112,7 +112,7 @@ assertion idiom is a deliberate SIGSEGV, not a clean exit.
 | `--plot_freq` | plot every N timesteps (0 = none) | 0 | ✓ — file output, off by default |
 | `--report_perf` | perf report level | 4 | ⚠ parsed, stored, never read — `profile.c` is not in the target's SOURCES and every read is behind `//PROFILE:` or `#if 0` |
 | `--max_blocks --target_active --target_max --target_min --inbalance --lb_hinted --reorder --init_x/y/z --blocking_send` | present in the reference miniAMR | — | ✗ not parsed here; an unknown flag is a hard error |
-| `MAX_NUM_UNREFINED_BLOCKS` | cap on `npx·npy·npz` | 1000 | ✓ **build knob**: `#ifndef` in `root.h:38`, set per target with `EXTRA_DEFINES` in `benchmarks/apps/CMakeLists.txt`. Exceeding it prints advice and SIGSEGVs |
+| `MAX_NUM_UNREFINED_BLOCKS` | cap on `npx·npy·npz` | 1000 | ✓ **build knob**: `#ifndef` in `root.h:38`, set per target with `EXTRA_DEFINES` in `benchmarks/apps/ocr_apps.cmake`. Exceeding it prints advice and SIGSEGVs |
 | `SIZEOFSTACK` | per-block continuation stack | 1024 B | ✗ `#define` in `clone.h:45` |
 
 The pre-scan's `--num_objects` default and the full parse's must match — the
@@ -367,7 +367,7 @@ Scaling numbers: see the anchor at the end of Sizing; the catalog runs a
   coverage argument — the frontier is.
 - **`npx·npy·npz` is the width knob**, capped by `MAX_NUM_UNREFINED_BLOCKS`,
   which is a build define set per target (`EXTRA_DEFINES` in
-  `benchmarks/apps/CMakeLists.txt`); its only cost is `RootMeta_t.dbSize[]`, one
+  `benchmarks/apps/ocr_apps.cmake`); its only cost is `RootMeta_t.dbSize[]`, one
   `int` per dependence slot. Do not rely on refinement to reach a width floor:
   the multiplier is data-dependent. `24 × 12 × 12 = 3456` divides exactly by
   every policy-domain grid the hinted map produces over 1..32 ranks.

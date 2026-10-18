@@ -225,12 +225,25 @@ def test_an_eligible_name_is_drawn_in_the_eligible_colour():
 def test_the_selection_becomes_a_campaign_of_the_expected_size():
     async def check(app, pilot):
         selection = app.build_selection()
-        return selection.cell_count, selection.entries, selection.node_counts
+        return (selection.cell_count(app.catalog, app.plane), selection,
+                str(app.query_one("#run-size").render()))
 
-    cells, entries, nodes = drive(check)
-    assert cells == len(entries) * 4 * (cells // (len(entries) * 4))
-    assert len(entries) == 10
-    assert nodes == [1, 2, 4, 8]
+    cells, selection, label = drive(check)
+    from artsrun.model.catalog import load_catalog
+    from artsrun.model.plane import load_plane
+
+    plane, catalog = load_plane(), load_catalog()
+    assert len(selection.entries) == 10
+    assert selection.node_counts == [1, 2, 4, 8]
+    # Each selected application version counts once per checked entry its
+    # section has a program for.
+    pairs = sum(
+        len(versions) * sum(
+            1 for k in selection.entries
+            if catalog.apps[name].section.runs(plane.entry(k).kind))
+        for name, versions in selection.apps.items())
+    assert cells == pairs * 4 * selection.repeats
+    assert label.startswith(f"{cells} cells = ")
 
 
 def test_an_empty_surface_blocks_the_campaign():
@@ -1085,12 +1098,42 @@ def test_the_application_screen_hides_the_attack_suite_unless_named():
         return headings, idents
 
     headings, idents = drive(check)
-    assert len(headings) == 3
+    assert len(headings) == 2
     assert headings[0].startswith("Applications")
-    assert headings[1].startswith("HPX-origin applications")
-    assert headings[2].startswith("Toys")
+    assert headings[1].startswith("Toys")
     assert not any(i.startswith("own_reread") or i.startswith("freerun_mix")
                    for i in idents)
+
+
+def test_the_application_screen_groups_rows_by_section():
+    # One heading per catalog section, each saying where it runs and, live,
+    # which checked entries run it and how many cells it contributes.
+    async def check(app, pilot):
+        from textual.widgets import Static
+
+        bench = app.query_one("#exp", ExperimentPanel)
+        def headings():
+            return [str(g.render())
+                    for g in bench.query(".bench-section").results(Static)]
+        before = headings()
+        app.query_one(PlanePanel).toggle_all()      # clear the plane
+        app._refresh_size()
+        await pilot.pause()
+        return before, headings()
+
+    before, cleared = drive(check)
+    from artsrun.model.catalog import Section
+
+    assert [h.split("  ")[0] for h in before] == [s.label for s in Section]
+    ocr, hpx, examples = before
+    assert Section.OCR.reach in ocr and Section.EXAMPLES.reach in examples
+    assert "runs on the checked 8 ARTS entries, xsocr, ocrvx" in ocr
+    # The HPX entry is not among paper-main's entries, and no example is on
+    # its roster.
+    assert "runs on the checked 8 ARTS entries, xsocr, ocrvx" in hpx
+    assert "runs on the checked 8 ARTS entries · 0 cells" in examples
+    assert all("runs on none of the checked entries · 0 cells" in h
+               for h in cleared)
 
 
 # --- counters -------------------------------------------------------------
@@ -1444,3 +1487,26 @@ def test_loading_another_experiment_checks_its_own_entries():
 
     from artsrun import store
     assert drive(check) == store.load_experiment("control-gate").entries
+
+
+def test_saving_the_screen_keeps_the_rows_of_every_section_enabled():
+    from artsrun.model.catalog import Section
+
+    for name, section in (("examples", Section.EXAMPLES),
+                          ("control-main", Section.HPX)):
+        async def check(app, pilot):
+            bench = app.query_one("#exp", ExperimentPanel)
+            edited = bench.edited_experiment("scratch")
+            before = {a.name for a in app.experiment.resolve(app.catalog)
+                      if a.section is section}
+            after = {a.name for a in edited.resolve(app.catalog)
+                     if a.section is section}
+            return before, after
+
+        async def main():
+            app = ArtsRunApp(profile="fixture-local", experiment=name)
+            async with app.run_test() as pilot:
+                return await check(app, pilot)
+
+        before, after = asyncio.run(main())
+        assert before and after == before

@@ -65,7 +65,7 @@ silently.
 | `--refine_freq` | refinement interval | 5 | ⚠ parsed into `params[17]`, never read; the interval is the literal `timestep % 50` at `mainOCR.c:104` |
 | `--num_objects` / `--object …` | refinement-driving objects | 0 | ⚠ `--num_objects` is parsed; `--object` is **not** a recognized flag in this port, and nothing reads the object count — refinement is a `rand()` coin flip |
 | `--max_blocks --target_* --uniform_refine --block_change --num_vars --comm_vars --init_x/y/z --reorder --inbalance --lb_hinted --report_diffusion --error_tol --stages_per_ts --checksum_freq --stencil --permute --report_perf --plot_freq --code --blocking_send --refine_ghost` | reference knobs | `param.h` | ⚠ all parsed and packed, none read |
-| `FORKBOMB_MAX_TIMESTEPS` | passed as `-DFORKBOMB_MAX_TIMESTEPS=3` by `benchmarks/apps/CMakeLists.txt` | 3 | ⚠ **no source file references it** — a dead build define; `--num_tsteps` is the real cap |
+| `FORKBOMB_MAX_TIMESTEPS` | passed as `-DFORKBOMB_MAX_TIMESTEPS=3` by `benchmarks/apps/ocr_apps.cmake` | 3 | ⚠ **no source file references it** — a dead build define; `--num_tsteps` is the real cap |
 | `MAX_REF` | — | — | ✗ not used in this port (unlike `miniAMR_intel_bryan`); the cap is `--num_refine` |
 
 ## Structure

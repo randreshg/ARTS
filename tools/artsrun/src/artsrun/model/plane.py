@@ -97,6 +97,15 @@ class SelectionEntry(BaseModel):
         return f"{stem}_{self.kind.value}"
 
 
+def summarize_entries(entries: list[SelectionEntry]) -> str:
+    """Entries in a few words: the ARTS entries counted, every other one
+    named, in the order given."""
+    arts = sum(1 for e in entries if e.kind is RuntimeKind.ARTS)
+    words = [f"{arts} ARTS entr{'y' if arts == 1 else 'ies'}"] if arts else []
+    words += [e.key for e in entries if e.kind is not RuntimeKind.ARTS]
+    return ", ".join(words) or "none"
+
+
 class PlaneCell(BaseModel):
     family: Family
     release: Release

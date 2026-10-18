@@ -200,56 +200,58 @@ def show_apps(
         console.print(Markdown(document(catalog.apps[name])))
         return
     xp = _load_experiment(experiment)
-    table = Table(title="Applications", expand=False)
-    table.add_column("app", no_wrap=True)
-    table.add_column("kind")
-    table.add_column("class")
-    # The binary usually repeats the name; showing it only when it differs
-    # keeps the version columns from being squeezed out of the table.
-    table.add_column("binary", no_wrap=True)
-    for column in ("base", "hinted", "restructured"):
-        table.add_column(column, justify="center", no_wrap=True)
-    table.add_column("args", max_width=36, overflow="ellipsis")
 
-    from artsrun.model.catalog import Kind
-    from artsrun.report import WRF_ELIGIBLE_STYLE as wrf
-    first = True
+    from artsrun.model.catalog import Kind, Section
+    plane = load_plane()
     labels = {
         Kind.APP: "app",
         Kind.ATTACK: "[red]attack[/red]",
         Kind.TOY: "[dim]toy[/dim]",
     }
-    # Same group order as the TUI roster: applications, then the HPX-origin
-    # section (one program on four runtimes, drawn from its own catalog file
-    # rather than by kind), then attacks, then toys.
-    groups = [
-        (None, catalog.rows_of(Kind.APP)),
-        ("HPX-origin applications", catalog.hpx_rows),
-        (None, catalog.rows_of(Kind.ATTACK)),
-        (None, catalog.rows_of(Kind.TOY)),
-    ]
-    for heading, group in groups:
-        rows = [a for a in group
-                if not enabled_only or xp.is_enabled(a)]
-        if not rows:
+    # Same grouping as the TUI roster: one table per catalog section, headed
+    # by where it runs, the OCR applications split by kind — applications,
+    # then attacks, then toys.
+    for section in Section:
+        if section is Section.OCR:
+            groups = [catalog.rows_of(k)
+                      for k in (Kind.APP, Kind.ATTACK, Kind.TOY)]
+        else:
+            groups = [catalog.rows_in(section)]
+        groups = [g for g in ([a for a in g
+                               if not enabled_only or xp.is_enabled(a)]
+                              for g in groups) if g]
+        if not groups:
             continue
-        if not first:
-            table.add_section()
-        first = False
-        if heading:
-            table.add_row(f"[b]{heading}[/b]")
-        for entry in rows:
-            on = xp.is_enabled(entry)
-            name = entry.name if on else f"[dim]{entry.name}[/dim]"
-            binary = entry.binary if entry.binary != entry.name else "[dim]·[/dim]"
-            table.add_row(
-                name, labels[entry.kind], entry.cls.value, binary,
-                _tier_mark(catalog, entry, Version.BASE),
-                _tier_mark(catalog, entry, Version.HINTED),
-                _tier_mark(catalog, entry, Version.RESTRUCTURED),
-                " ".join(entry.args) or "[dim]none[/dim]",
-            )
-    console.print(table)
+        table = Table(
+            title=f"[b]{section.label}[/b]\n"
+                  f"[dim]{_runs_on(section, plane, xp)}[/dim]",
+            expand=False)
+        table.add_column("app", no_wrap=True)
+        table.add_column("kind")
+        table.add_column("class")
+        # The binary usually repeats the name; showing it only when it
+        # differs keeps the version columns from being squeezed out.
+        table.add_column("binary", no_wrap=True)
+        for column in ("base", "hinted", "restructured"):
+            table.add_column(column, justify="center", no_wrap=True)
+        table.add_column("args", max_width=36, overflow="ellipsis")
+        for i, group in enumerate(groups):
+            if i:
+                table.add_section()
+            for entry in group:
+                on = xp.is_enabled(entry)
+                name = entry.name if on else f"[dim]{entry.name}[/dim]"
+                binary = (entry.binary if entry.binary != entry.name
+                          else "[dim]·[/dim]")
+                table.add_row(
+                    name, labels[entry.kind], entry.cls.value, binary,
+                    _tier_mark(catalog, entry, Version.BASE),
+                    _tier_mark(catalog, entry, Version.HINTED),
+                    _tier_mark(catalog, entry, Version.RESTRUCTURED),
+                    " ".join(entry.args) or "[dim]none[/dim]",
+                )
+        console.print(table)
+    from artsrun.report import WRF_ELIGIBLE_STYLE as wrf
     console.print(
         "[dim]base = the application as published, its own hints included "
         "· hinted = structure untouched, EDT/DB placement hints added or "
@@ -289,9 +291,10 @@ def run_cmd(
         help="comma-separated plane entries: the whole set this run measures, "
              "any plane entry allowed (default: the experiment's `entries`)"),
     apps: str = typer.Option(None, "--apps", "-a",
-                             help="app[:version[+version]] list: the whole "
-                                  "roster this run measures (default: the "
-                                  "experiment's)"),
+                             help="app[:version[+version]] list: narrows the "
+                                  "run to these rows the experiment enables; "
+                                  "a name it does not enable runs nothing "
+                                  "(default: the experiment's roster)"),
     nodes: str = typer.Option(None, "--nodes", "-n",
                               help="comma-separated node counts (default: profile)"),
     repeats: int = typer.Option(None, "--repeats"),
@@ -438,6 +441,16 @@ def run_cmd(
     console.print(f"run directory: {campaign.run_dir}")
 
 
+def _runs_on(section, plane, experiment) -> str:
+    """Where a section runs, and which of the experiment's entries that is."""
+    from artsrun.model.plane import summarize_entries
+
+    mine = [plane.entry(k) for k in experiment.entries
+            if section.runs(plane.entry(k).kind)]
+    return (f"runs on: {section.reach} · of {experiment.name}'s "
+            f"{len(experiment.entries)} entries: {summarize_entries(mine)}")
+
+
 def _tier_mark(catalog, entry, version: Version) -> str:
     """The glyph for one tier of a row in the apps table.
 
@@ -462,16 +475,18 @@ def _dry_run(campaign, selection: Selection) -> None:
               else "chosen for this run")
     console.print(f"experiment {selection.experiment} · entries ({chosen}): "
                   f"{', '.join(selection.entries)}", highlight=False)
-    console.print(f"[bold]{selection.cell_count} cells[/bold] "
-                  f"= {len(selection.entries)} entries "
-                  f"x {sum(len(v) for v in selection.apps.values())} app-versions "
-                  f"x {len(selection.node_counts)} node counts "
-                  f"x {selection.repeats} repeats")
+    catalog, plane = campaign.catalog, campaign.plane
+    console.print(f"[bold]{selection.cell_count(catalog, plane, campaign.experiment)} cells[/bold] "
+                  f"= {selection.cell_formula(catalog, plane, campaign.experiment)}",
+                  highlight=False)
     try:
         plan = campaign.build_plan(
             on_line=lambda line: console.print(line, highlight=False,
                                                markup=False))
         console.print(f"build: {len(plan.targets)} targets in {campaign.build_dir}")
+        if plan.pending:
+            console.print(f"{len(plan.pending)} targets are built once the "
+                          "section is on")
         if plan.missing:
             console.print(f"[red]missing targets:[/red] {', '.join(plan.missing[:10])}")
     except Exception as exc:  # build tree may not exist yet
@@ -525,6 +540,8 @@ def _dry_run(campaign, selection: Selection) -> None:
         for reason, count in sorted(summarize_skips(skipped).items(),
                                     key=lambda kv: -kv[1]):
             console.print(f"  [dim]{count:4d}[/dim] {reason}")
+    for record in campaign.not_applicable():
+        console.print(f"  [dim]not cells[/dim] {record.line}", highlight=False)
 
 
 def _detach(argv: list[str]) -> None:

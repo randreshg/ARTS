@@ -13,6 +13,7 @@ from artsrun.model import (
     Profile,
     Release,
     RuntimeKind,
+    Section,
     Selection,
     Version,
     Write,
@@ -101,6 +102,7 @@ SHIPPED_ENTRIES = {
     "paper-rerun-a": ARTS8,
     "paper-rerun-32n": ARTS8,
     "paper-rerun-fib": ARTS8 + ["xsocr", "ocrvx"],
+    "examples": ARTS8,
 }
 
 
@@ -309,17 +311,23 @@ def test_a_real_run_configures_a_missing_build_tree(tmp_path, monkeypatch):
 
     monkeypatch.setattr(build_mod.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(build_mod.shutil, "which", lambda _n: "/usr/bin/cmake")
-    build_mod.ensure_build_dir(tree, bootstrap=True)
+    build_mod.ensure_build_dir(tree, sections=[Section.OCR], bootstrap=True)
     assert "-GNinja" in calls["cmd"]
     assert f"-B{tree}" in calls["cmd"]
     assert "-DCMAKE_BUILD_TYPE=Release" in calls["cmd"]
+    # Exactly the campaign's sections: a tree made for one section builds
+    # nothing the others need.
+    assert "-DARTS_BUILD_OCR_APPS=ON" in calls["cmd"]
+    assert "-DARTS_BUILD_HPX_APPS=OFF" in calls["cmd"]
+    assert "-DARTS_BUILD_EXAMPLES=OFF" in calls["cmd"]
 
 
 def test_a_dry_run_configures_nothing(tmp_path):
     from artsrun import build as build_mod
 
     with pytest.raises(build_mod.BuildError, match="real run configures"):
-        build_mod.ensure_build_dir(tmp_path / "bt", bootstrap=False)
+        build_mod.ensure_build_dir(tmp_path / "bt", sections=[Section.OCR],
+                                   bootstrap=False)
     assert not (tmp_path / "bt").exists()
 
 
@@ -675,7 +683,39 @@ def test_cell_count_is_the_product_of_the_three_surfaces():
         apps={"nqueens": [Version.BASE, Version.HINTED]},
         node_counts=[1, 2], repeats=3,
     )
-    assert sel.cell_count == 2 * 2 * 2 * 3
+    assert sel.cell_count(load_catalog(), load_plane()) == 2 * 2 * 2 * 3
+
+
+def test_cell_count_sums_each_section_over_the_entries_it_runs():
+    # A pair with no program is not a cell: the HPX entry runs only the HPX
+    # applications, the references nothing of the ARTS examples.
+    sel = Selection(
+        profile="t", experiment="b", default_entries=[],
+        entries=["arts_val_wb", "xsocr", "hpx"],
+        apps={"nqueens": [Version.BASE, Version.HINTED],
+              "fib_hpx": [Version.BASE], "fib_example": [Version.BASE]},
+        node_counts=[1, 2], repeats=3,
+    )
+    catalog, plane = load_catalog(), load_plane()
+    assert sel.cell_count(catalog, plane) == (2 * 2 + 3 * 1 + 1 * 1) * 2 * 3
+    formula = sel.cell_formula(catalog, plane)
+    assert formula == ("(OCR applications: 2 entries x 2 app-versions + "
+                       "HPX applications: 3 entries x 1 app-versions + "
+                       "ARTS examples: 1 entries x 1 app-versions) "
+                       "x 2 node counts x 3 repeats")
+
+
+def test_a_saved_selection_naming_what_is_gone_is_still_counted():
+    # A past run's selection can name an application the catalog dropped or
+    # an entry the plane dropped; neither says what it lacks, so it counts
+    # everywhere it could be.
+    sel = Selection(
+        profile="t", experiment="b", default_entries=[],
+        entries=["arts_val_wb", "arts_gone"],
+        apps={"nqueens": [Version.BASE], "dropped_row": [Version.BASE]},
+        node_counts=[1], repeats=1,
+    )
+    assert sel.cell_count(load_catalog(), load_plane()) == 2 + 2
 
 
 def test_an_experiment_that_names_applications_defines_the_roster():
@@ -769,11 +809,33 @@ def test_the_catalog_separates_apps_probes_and_toys():
     apps = catalog.rows_of(Kind.APP)
     attacks = catalog.rows_of(Kind.ATTACK)
     toys = catalog.rows_of(Kind.TOY)
-    hpx = catalog.hpx_rows
-    assert apps and attacks and toys and hpx
-    grouped = {a.name for a in (*apps, *attacks, *toys, *hpx)}
-    assert grouped == {a.name for a in catalog.rows}
-    assert len(apps) + len(attacks) + len(toys) + len(hpx) == len(catalog.rows)
+    hpx = catalog.rows_in(Section.HPX)
+    examples = catalog.rows_in(Section.EXAMPLES)
+    assert apps and attacks and toys and hpx and examples
+    grouped = [a.name for a in (*apps, *attacks, *toys, *hpx, *examples)]
+    assert sorted(grouped) == sorted(a.name for a in catalog.rows)
+
+
+def test_every_section_is_declared_once_with_its_own_file():
+    # One catalog file per section; a row's section is the file it came from.
+    from artsrun.data import load_data
+    from artsrun.model.catalog import SECTIONS
+
+    assert list(SECTIONS) == list(Section)
+    files = [s.spec.file for s in Section]
+    assert len(set(files)) == len(files)
+    assert [s.spec.option for s in Section] == [
+        "ARTS_BUILD_OCR_APPS", "ARTS_BUILD_HPX_APPS", "ARTS_BUILD_EXAMPLES"]
+    catalog = load_catalog()
+    for section in Section:
+        names = set(load_data(section.spec.file)["apps"])
+        assert names == {a.name for a in catalog.apps.values()
+                         if a.section is section}, section
+        assert section.runs(RuntimeKind.ARTS), section
+    assert not Section.OCR.runs(RuntimeKind.HPX)
+    assert Section.HPX.runs(RuntimeKind.HPX)
+    assert [k for k in RuntimeKind if Section.EXAMPLES.runs(k)] == [
+        RuntimeKind.ARTS]
 
 
 def test_no_probe_or_toy_is_enabled_by_default():
@@ -1038,6 +1100,7 @@ def test_arts_only_probe_excludes_every_reference():
             return self.kind is not RuntimeKind.ARTS
 
     class _App:
+        section = Section.OCR
         unsupported = None
         multinode_skip = None
         ocrvx_skip = False
@@ -1096,16 +1159,16 @@ def test_the_two_section_loader_rejects_a_name_in_both_sections():
     """A row is addressed by name alone downstream, so the merge that builds
     the catalog refuses a name two sections both claim rather than letting
     section order decide which one a roster gets."""
-    from artsrun.model.catalog import Origin, merge_sections
+    from artsrun.model.catalog import merge_sections
 
     ocr = {"twin": {"class": "task", "provenance": "p", "kind": "toy",
                     "marker": "x", "args": []}}
     hpx = {"twin": {"class": "task", "provenance": "p", "kind": "toy",
                     "marker": "x", "args": []}}
     # Either section alone is accepted.
-    assert set(merge_sections([(ocr, Origin.OCR)], "/repo")) == {"twin"}
+    assert set(merge_sections([(ocr, Section.OCR)], "/repo")) == {"twin"}
     with pytest.raises(ValueError, match="named in two catalog sections"):
-        merge_sections([(ocr, Origin.OCR), (hpx, Origin.HPX)], "/repo")
+        merge_sections([(ocr, Section.OCR), (hpx, Section.HPX)], "/repo")
 
 
 # --- reference envelopes of absolute cpu ids vs the host's SMT numbering ----

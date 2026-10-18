@@ -440,6 +440,12 @@ Checkbox:focus > .toggle--button {
     text-style: bold;
 }
 
+.bench-section {
+    padding: 0 1;
+    margin-top: 1;
+    background: $panel-lighten-1;
+}
+
 .bench-group {
     padding: 0 1;
     margin-top: 1;

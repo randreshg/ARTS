@@ -4,14 +4,17 @@ and a row whose workload changes along the node sweep."""
 from __future__ import annotations
 
 import csv
+import json
 import os
 from pathlib import Path
+
+import pytest
 
 from rich.console import Console
 
 from artsrun.check import vote
 from artsrun.model.experiment import ResolvedApp
-from artsrun.model.catalog import AppClass, ScalarKind, Version
+from artsrun.model.catalog import AppClass, ScalarKind, Section, Version
 from artsrun.model.plane import RuntimeKind, SelectionEntry
 from artsrun.model.selection import Selection
 from artsrun.report import scaling_table, write_results_csv, write_summary
@@ -113,11 +116,11 @@ def test_the_summary_explains_the_mark_only_when_one_appears(tmp_path):
     plane = load_plane()
     walled = [_result("a", wall_s=9.0, e2e_s=None)]
     text = write_summary(walled, vote(walled), [], selection, plane,
-                         tmp_path / "w.txt")
+                         tmp_path / "w.txt", not_applicable=[])
     assert "w after a time" in text
     stamped = [_result("a", wall_s=9.0, e2e_s=1.5)]
     text = write_summary(stamped, vote(stamped), [], selection, plane,
-                         tmp_path / "s.txt")
+                         tmp_path / "s.txt", not_applicable=[])
     assert "w after a time" not in text
 
 
@@ -194,11 +197,11 @@ def test_the_summary_explains_the_ladder_mark_only_when_one_appears(tmp_path):
     laddered = [_result("a", wall_s=9.0, e2e_s=1.0, nodes=n, app=app)
                 for n in (1, 4)]
     text = write_summary(laddered, vote(laddered), [], selection, plane,
-                         tmp_path / "l.txt")
+                         tmp_path / "l.txt", not_applicable=[])
     assert "~ after an application" in text
     fixed = [_result("a", wall_s=9.0, e2e_s=1.0, nodes=n) for n in (1, 4)]
     text = write_summary(fixed, vote(fixed), [], selection, plane,
-                         tmp_path / "f.txt")
+                         tmp_path / "f.txt", not_applicable=[])
     assert "~ after an application" not in text
 
 
@@ -226,3 +229,85 @@ def test_the_apps_table_marks_each_tier_by_the_row_that_supplies_it():
     assert outside == "[green]✓[/green]"
     assert _tier_mark(catalog, row, Version.HINTED) in (base, "[dim]·[/dim]")
 
+
+
+def _sectioned(entry_key: str, kind: RuntimeKind, section: Section,
+               name: str) -> CellResult:
+    app = ResolvedApp(
+        name=name, version=Version.BASE, binary=name, cls=AppClass.TASK,
+        marker=r"RESULT", scalar_re=r"RESULT\s*=\s*([\d.]+)",
+        scalar_kind=ScalarKind.FLOAT, args=["1"], section=section,
+    )
+    entry = SelectionEntry(key=entry_key, label=entry_key, kind=kind)
+    cell = Cell(entry=entry, app=app, nodes=1, repeat=1,
+                binary=Path("/nonexistent"), args=app.args, timeout_s=10,
+                cpu_width=16)
+    r = CellResult(cell=cell, status=Status.OK, wall_s=1.0)
+    r.e2e_s, r.scalar = 1.0, "1.0"
+    return r
+
+
+def _two_sections():
+    from artsrun.model.plane import load_plane
+    from artsrun.run.types import NotApplicable
+
+    results = [
+        _sectioned("arts_val_wb", RuntimeKind.ARTS, Section.OCR, "ocr_row"),
+        _sectioned("xsocr", RuntimeKind.XSOCR, Section.OCR, "ocr_row"),
+        _sectioned("arts_val_wb", RuntimeKind.ARTS, Section.EXAMPLES,
+                   "x_example"),
+    ]
+    selection = Selection(
+        profile="t", experiment="b", default_entries=[],
+        entries=["arts_val_wb", "xsocr"],
+        apps={"ocr_row": [Version.BASE], "x_example": [Version.BASE]},
+        node_counts=[1],
+    )
+    absent = [NotApplicable("examples", Section.EXAMPLES.label, ("xsocr",),
+                            ("x_example:base",), Section.EXAMPLES.reach)]
+    return results, selection, load_plane(), absent
+
+
+def test_each_section_gets_a_consensus_table_with_its_own_columns(tmp_path):
+    results, selection, plane, absent = _two_sections()
+    text = write_summary(results, vote(results), [], selection, plane,
+                         tmp_path / "s.txt", not_applicable=absent)
+    ocr = text.index(f"Consensus — {Section.OCR.label}")
+    examples = text.index(f"Consensus — {Section.EXAMPLES.label}")
+    assert ocr < examples
+    # The XSOCR column belongs to the OCR table alone: it has no program
+    # for the examples, so no verdict to show there.
+    assert "XSOCR" in text[ocr:examples]
+    assert "XSOCR" not in text[examples:text.index("Strong scaling")]
+
+
+def test_the_section_record_is_one_line_in_the_summary_and_in_the_json(tmp_path):
+    from artsrun.report import write_report_json
+
+    results, selection, plane, absent = _two_sections()
+    groups = vote(results)
+    text = write_summary(results, groups, [], selection, plane,
+                         tmp_path / "s.txt", not_applicable=absent)
+    assert "Not cells" in text
+    assert text.count(absent[0].line) == 1
+    write_report_json(results, groups, [], selection, tmp_path / "r.json",
+                      not_applicable=absent)
+    payload = json.loads((tmp_path / "r.json").read_text())
+    assert payload["not_applicable"] == [{
+        "section": "examples", "label": Section.EXAMPLES.label,
+        "entries": ["xsocr"], "apps": ["x_example:base"],
+        "reason": Section.EXAMPLES.reach}]
+    assert {(c["app"], c["section"]) for c in payload["consensus"]} == {
+        ("ocr_row:base", "ocr"), ("x_example:base", "examples")}
+
+
+def test_a_pair_recorded_before_sections_existed_derives_its_section():
+    # An old manifest's application carries no section: the HPX
+    # applications were then the only rows with an HPX program.
+    old = {"name": "a", "version": "base", "binary": "a", "cls": "task",
+           "marker": "M", "scalar_re": "M"}
+    assert ResolvedApp.model_validate(old).section is Section.OCR
+    assert ResolvedApp.model_validate(
+        {**old, "hpx_binary": "a_hpx"}).section is Section.HPX
+    assert ResolvedApp.model_validate(
+        {**old, "section": "examples"}).section is Section.EXAMPLES

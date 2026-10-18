@@ -11,7 +11,7 @@ random undirected edges, partitions vertices/edges across an `R×C` logical
 worker grid, then runs a single level-synchronized BFS from a fixed root,
 timing the search phase and printing `[kernel1 time]`, `[kernel2 time]`,
 `nodes`/`edges`, `BFS_DIGEST` and `MTEPS`. The harness build (`EXTRA_DEFINES
-NO_FILES NO_MAP` in `benchmarks/apps/CMakeLists.txt`'s `graph500` target) compiles the *in-EDT,
+NO_FILES NO_MAP` in `benchmarks/apps/ocr_apps.cmake`'s `graph500` target) compiles the *in-EDT,
 PRNG-generated* graph path and the *pre-created EDT lattice* addressing path —
 the file-I/O graph generator (the only `srand`/`rand` site in the file) and the
 labeled-GUID addressing scheme both exist in the source but are dead code in
@@ -36,7 +36,7 @@ compute is light (array scans, a handful of comparisons).
 | `NUMBER_OF_SEARCH` | # of BFS searches (Kernel‑2 repeats) | `1` | ✗ hardcoded (`graph500.c:1830`); the `NO_MAP` build additionally `assert(0)`s if a second search is ever chained — the multi-search wiring (`startMap`, per-search finish slots) is unreachable dead code in this build |
 | `SEED` (graph PRNG seed) | fixed | `123456789` | ✗ hardcoded (`graph500.c:1978`); a pure function of (seed, edge index), so the graph is identical at every node count and in every runtime |
 | `MAX_LEVEL` (BFS depth capacity) | fixed | `10` | ✗ compile-time (`graph500.c:118`); a **capacity, not a tuning knob** — it sizes the pre-created lattice (`3·MAX_LEVEL·W` EDTs, and the `constguidDBK` that indexes them), and a graph whose BFS reaches it aborts with a message naming the cap (`checkLevel`, `graph500.c:510-516`) |
-| `NO_MAP`, `NO_FILES` | addressing scheme / graph-source switches | both defined | build-fixed by `benchmarks/apps/CMakeLists.txt`'s `graph500` target, not app CLI |
+| `NO_MAP`, `NO_FILES` | addressing scheme / graph-source switches | both defined | build-fixed by `benchmarks/apps/ocr_apps.cmake`'s `graph500` target, not app CLI |
 | `NO_AFFINITIES` | disables the app's own EDT affinity hints | not defined (hints ON) | compile-time only |
 | `VALIDATION_MODE` (0–3) | depth of result checking | `0` (lightweight per-worker visited sum + digest, no full-graph reconstruction) | compile-time only — see Correctness |
 

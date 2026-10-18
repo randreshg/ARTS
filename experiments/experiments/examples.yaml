@@ -1,0 +1,22 @@
+# Experiment examples: every native ARTS example on the eight OCR-model ARTS
+# entries, each at its catalog arguments.  The ARTS entries are the only
+# runtimes with a program for the ARTS-examples section, so the consensus is
+# the plane's arms voting against each other, and a row whose answer does
+# not depend on the node count also meets its pinned answer.
+#
+#   artsrun run -p <profile> -x examples -n 1,2 --repeats 1
+#
+# The CXL and DB-WRF entries are turned on for one run with -e.  Every row
+# keeps the catalog's own arguments: an override would leave its pin behind.
+# A benchmark tree that does not build the examples turns ARTS_BUILD_EXAMPLES
+# on at the campaign's first build; a new tree is configured with this
+# section alone.
+name: examples
+description: every native ARTS example on the eight OCR-model ARTS entries
+# The coherence entries this experiment runs unless -e names others.
+entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
+          arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb]
+apps:
+  fib_example:
+    enabled: true
+    versions: [base]

@@ -102,3 +102,22 @@ class Skipped:
     app_key: str
     nodes: int
     reason: str
+
+
+@dataclass(frozen=True)
+class NotApplicable:
+    """One section's selected applications paired with the selected entries
+    that have no program for any of them: never cells, so recorded once for
+    the section rather than once per pair."""
+
+    section: str
+    label: str
+    entries: tuple[str, ...]
+    apps: tuple[str, ...]
+    reason: str
+
+    @property
+    def line(self) -> str:
+        n = len(self.apps)
+        return (f"{self.label} ({n} app-version{'' if n == 1 else 's'}) x "
+                f"{', '.join(self.entries)}: no program — {self.reason}")

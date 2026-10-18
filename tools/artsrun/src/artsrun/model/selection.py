@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from artsrun.model.experiment import Experiment
-from artsrun.model.catalog import AppClass, Catalog, Version
+from artsrun.model.catalog import AppClass, Catalog, Section, Version
 from artsrun.model.plane import Plane
 from artsrun.model.profile import Launcher, Profile
 
@@ -68,6 +69,22 @@ def _first_sibling_cpu_count() -> int | None:
     """
     firsts = first_sibling_cpus()
     return len(firsts) if firsts else None
+
+
+@dataclass(frozen=True)
+class SectionShare:
+    """One section's part of a campaign: the selected entries it has a
+    program for, times its selected application versions, is its cells per
+    node count and repeat.  `section` is None for names the catalog no
+    longer has, counted on every selected entry."""
+
+    section: Section | None
+    entries: int
+    app_versions: int
+
+    @property
+    def pairs(self) -> int:
+        return self.entries * self.app_versions
 
 
 class Selection(BaseModel):
@@ -126,7 +143,12 @@ class Selection(BaseModel):
                 f"'{profile.name}' sweep {profile.nodes}"
             )
         self._check_width(catalog, profile, experiment)
-        if any(plane.entry(k).is_reference for k in self.entries):
+        # Only a reference that runs some selected application is a reference
+        # this campaign places.
+        sections = self.sections(catalog, experiment)
+        if any(plane.entry(k).is_reference
+               and any(s.runs(plane.entry(k).kind) for s in sections)
+               for k in self.entries):
             self._check_reference_geometry(profile)
 
     def _check_width(
@@ -283,7 +305,67 @@ class Selection(BaseModel):
     def cxl_entries(self, plane: Plane) -> list[str]:
         return [k for k in self.entries if plane.entry(k).is_cxl]
 
-    @property
-    def cell_count(self) -> int:
-        versions = sum(len(v) for v in self.apps.values())
-        return len(self.entries) * versions * len(self.node_counts) * self.repeats
+    def _runs(self, catalog: Catalog,
+              experiment: Experiment | None) -> dict[str, list[Version]]:
+        """The selected applications that can run a cell.  A name the
+        experiment does not enable runs none, so it is left out once the
+        experiment is known."""
+        if experiment is None:
+            return self.apps
+        enabled = {a.name for a in experiment.resolve(catalog)}
+        return {n: vs for n, vs in self.apps.items() if n in enabled}
+
+    def sections(self, catalog: Catalog,
+                 experiment: Experiment | None = None) -> list[Section]:
+        """The sections of the selected applications that run, in the
+        catalog's order."""
+        present = {catalog.apps[n].section
+                   for n in self._runs(catalog, experiment)
+                   if n in catalog.apps}
+        return [s for s in Section if s in present]
+
+    def shares(self, catalog: Catalog, plane: Plane,
+               experiment: Experiment | None = None) -> list[SectionShare]:
+        """Each section's part of the campaign, in the catalog's order.
+
+        A saved selection can outlive what it names: an application the
+        catalog no longer has, or an entry the plane no longer has, cannot
+        say what it lacks, so it is counted everywhere it could be."""
+        known = {e.key: e.kind for e in plane.entries}
+        versions: dict[Section | None, int] = {}
+        for name, vs in self._runs(catalog, experiment).items():
+            app = catalog.apps.get(name)
+            key = app.section if app is not None else None
+            versions[key] = versions.get(key, 0) + len(vs)
+        out = []
+        for section in [*Section, None]:
+            if section not in versions:
+                continue
+            entries = sum(1 for k in self.entries
+                          if section is None or k not in known
+                          or section.runs(known[k]))
+            out.append(SectionShare(section, entries, versions[section]))
+        return out
+
+    def cell_count(self, catalog: Catalog, plane: Plane,
+                   experiment: Experiment | None = None) -> int:
+        """The cells this selection expands to before any row's own
+        exception: every selected application version on every selected
+        entry its section has a program for, at every node count and
+        repeat."""
+        pairs = sum(s.pairs for s in self.shares(catalog, plane, experiment))
+        return pairs * len(self.node_counts) * self.repeats
+
+    def cell_formula(self, catalog: Catalog, plane: Plane,
+                     experiment: Experiment | None = None) -> str:
+        """`cell_count` written out: a sum over the sections, each its
+        entries times its application versions, then the node counts and
+        repeats."""
+        terms = [f"{s.section.label if s.section else 'not in the catalog'}: "
+                 f"{s.entries} entries x {s.app_versions} app-versions"
+                 for s in self.shares(catalog, plane, experiment)]
+        total = " + ".join(terms)
+        if len(terms) > 1:
+            total = f"({total})"
+        return (f"{total} x {len(self.node_counts)} node counts "
+                f"x {self.repeats} repeats")

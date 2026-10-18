@@ -1,9 +1,11 @@
-"""The cross-model HPX entry: it runs the HPX-origin section of the catalog.
+"""The cross-model HPX entry: it runs the HPX-applications section of the
+catalog alone.
 
-An HPX-origin row is one program on four runtimes: the HPX original is the
-row's `_hpx` target and the OCR mirrors of it are the row's ARTS, XSOCR and
-OCR-vx targets — one stem, the runtime tag appended uniformly.  The row lives in its own catalog file, is named with
-the `_hpx` suffix, has one tier, and shares no name with an OCR-origin row.
+A row of that section is one program on four runtimes: the HPX original is
+the row's `_hpx` target and the OCR mirrors of it are the row's ARTS, XSOCR
+and OCR-vx targets — one stem, the runtime tag appended uniformly.  The row
+lives in its own catalog file, is named with the `_hpx` suffix, has one tier,
+and shares no name with a row of another section.
 """
 
 from __future__ import annotations
@@ -15,12 +17,12 @@ from pydantic import ValidationError
 
 from artsrun.build import plan_targets
 from artsrun.model.experiment import Experiment, ExperimentApp
-from artsrun.model.catalog import AppEntry, Kind, Origin, Version, load_catalog
+from artsrun.model.catalog import AppEntry, Kind, Section, Version, load_catalog
 from artsrun.model.plane import RuntimeKind, load_plane
 from artsrun.model.profile import Profile
 from artsrun.model.selection import Selection
 from artsrun.run.command import build_command
-from artsrun.run.plan import expand
+from artsrun.run.plan import expand, not_applicable
 
 ROW = "fib_hpx"
 
@@ -74,36 +76,39 @@ def _entry(**over) -> AppEntry:
 
 
 # --- the section ---------------------------------------------------------------
-def test_the_section_is_its_own_file_and_origin():
+def test_the_section_is_its_own_file():
     catalog = load_catalog()
-    names = {a.name for a in catalog.hpx_rows}
+    names = {a.name for a in catalog.rows_in(Section.HPX)}
     assert names and all(n.endswith("_hpx") for n in names)
-    assert all(catalog.apps[n].origin is Origin.HPX for n in names)
+    assert all(catalog.apps[n].section is Section.HPX for n in names)
     for kind in Kind:
-        assert not any(a.origin is Origin.HPX for a in catalog.rows_of(kind))
+        assert not any(a.section is Section.HPX for a in catalog.rows_of(kind))
 
 
-def test_an_hpx_origin_row_names_its_hpx_program_by_the_runtime_tag():
-    e = _entry(name="x_hpx", binary="x_hpx", origin="hpx")
+def test_an_hpx_row_names_its_hpx_program_by_the_runtime_tag():
+    e = _entry(name="x_hpx", binary="x_hpx", section="hpx")
     assert e.hpx_target(Version.BASE) == "x_hpx_hpx"
     assert e.hpx_target(Version.HINTED) is None
     assert e.hpx_versions == [Version.BASE]
 
 
-def test_an_ocr_origin_row_has_no_hpx_program():
+def test_an_ocr_row_has_no_hpx_program():
     e = _entry()
-    assert e.origin is Origin.OCR
+    assert e.section is Section.OCR
     assert e.hpx_target(Version.BASE) is None
     assert e.hpx_versions == []
 
 
-def test_an_hpx_origin_row_is_one_tier_named_with_the_suffix():
+def test_an_hpx_row_is_one_tier_named_with_the_suffix():
     with pytest.raises(ValidationError, match="_hpx"):
-        _entry(name="x", binary="x", origin="hpx")
+        _entry(name="x", binary="x", section="hpx")
     with pytest.raises(ValidationError, match="one tier"):
-        _entry(name="x_hpx", binary="x_hpx", origin="hpx", hinted=True)
+        _entry(name="x_hpx", binary="x_hpx", section="hpx", hinted=True)
     with pytest.raises(ValidationError, match="one tier"):
-        _entry(name="x_hpx", binary="x_hpx", origin="hpx", restructured_as="y")
+        _entry(name="x_hpx", binary="x_hpx", section="hpx", restructured_as="y")
+    # The suffix names the section: no other section's row carries it.
+    with pytest.raises(ValidationError, match="_hpx"):
+        _entry(name="x_hpx", binary="x_hpx")
 
 
 # --- resolution ----------------------------------------------------------------
@@ -121,38 +126,54 @@ def test_the_row_binds_the_hpx_program_and_the_mirror_stems():
 def test_hpx_cells_exist_for_the_row_and_skip_nothing(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
+    configs = {n: {"arts": tmp_path / f"arts_{n}.cfg"} for n in (1, 2)}
     cells, skipped = expand(
-        _selection(["hpx"]), plane, catalog, _roster(), _profile(),
-        tmp_path / "apps", {1: {}, 2: {}}, build_dir=tmp_path,
+        _selection(["hpx", "arts_val_wb"]), plane, catalog, _roster(),
+        _profile(), configs, build_dir=tmp_path,
     )
-    assert {(c.app.key, c.nodes) for c in cells} == {(f"{ROW}:base", 1), (f"{ROW}:base", 2)}
+    assert {(c.app.key, c.entry.key, c.nodes) for c in cells} == {
+        (f"{ROW}:base", e, n) for e in ("hpx", "arts_val_wb") for n in (1, 2)}
     assert not skipped
     for c in cells:
-        assert c.binary == tmp_path / "hpx" / f"{ROW}_hpx"
-        assert c.cfg is None
+        if c.entry.key == "hpx":
+            assert c.binary == tmp_path / "benchmarks" / "hpx" / f"{ROW}_hpx"
+            assert c.cfg is None
+        else:
+            assert c.binary == (tmp_path / "benchmarks" / "apps"
+                                / f"{ROW}_arts_ocr_val_wb")
 
 
-def test_an_ocr_origin_row_is_ineligible_for_the_hpx_entry(tmp_path):
+def test_an_ocr_row_and_the_hpx_entry_are_not_a_cell(tmp_path):
+    # The HPX entry has no program for the OCR applications: no cell, no
+    # skip per cell, one record for the section.
     plane = load_plane()
     catalog = load_catalog()
     sel = _selection(["hpx"], {"fft": [Version.BASE]})
     cells, skipped = expand(sel, plane, catalog, _roster("fft"),
-                            _profile(), tmp_path / "apps", {1: {}},
-                            build_dir=tmp_path)
-    assert not cells
-    assert {s.reason for s in skipped} == {
-        "no HPX program: an OCR-origin row (the HPX entry runs the HPX-origin section)"}
+                            _profile(), {1: {}, 2: {}}, build_dir=tmp_path)
+    assert not cells and not skipped
+    record, = not_applicable(sel, plane, catalog, _roster("fft"))
+    assert (record.section, record.entries, record.apps) == (
+        "ocr", ("hpx",), ("fft:base",))
+    assert record.reason == Section.OCR.reach
 
 
-def test_expansion_records_a_skip_once_however_many_repeats(tmp_path):
+def test_the_section_record_is_one_whatever_the_cells(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
-    sel = Selection(profile="t", experiment="paper-main", default_entries=[], entries=["hpx"],
-                    apps={"fft": [Version.BASE]}, node_counts=[1], repeats=3)
-    cells, skipped = expand(sel, plane, catalog, _roster("fft"),
-                            _profile(), tmp_path / "apps", {1: {}},
-                            build_dir=tmp_path)
-    assert not cells and len(skipped) == 1
+    sel = Selection(profile="t", experiment="paper-main", default_entries=[],
+                    entries=["arts_val_wb", "hpx"],
+                    apps={"fft": [Version.BASE], "nqueens": [Version.BASE]},
+                    node_counts=[1, 2], repeats=3)
+    roster = _roster("fft", "nqueens")
+    records = not_applicable(sel, plane, catalog, roster)
+    assert len(records) == 1
+    assert records[0].apps == ("fft:base", "nqueens:base")
+    configs = {n: {"arts": tmp_path / f"arts_{n}.cfg"} for n in (1, 2)}
+    cells, skipped = expand(sel, plane, catalog, roster, _profile(),
+                            configs, build_dir=tmp_path)
+    assert not skipped
+    assert {c.entry.key for c in cells} == {"arts_val_wb"}
 
 
 def test_the_build_plan_wants_the_program_and_the_mirrors(tmp_path):
@@ -173,7 +194,7 @@ def test_an_hpx_cell_launches_like_a_reference(monkeypatch, tmp_path):
     catalog = load_catalog()
     cells, _ = expand(
         _selection(["hpx"]), plane, catalog,
-        _roster(), _profile(), tmp_path / "apps", {1: {}, 2: {}},
+        _roster(), _profile(), {1: {}, 2: {}},
         build_dir=tmp_path,
     )
     by_nodes = {c.nodes: c for c in cells}
@@ -198,7 +219,7 @@ def test_cells_carry_the_cpu_block_they_were_granted(tmp_path):
     configs = {n: {"arts": tmp_path / f"arts_{n}.cfg", "ocr": tmp_path / f"ocr_{n}.cfg"}
                for n in (1, 2)}
     cells, _ = expand(_selection(["hpx", "arts_val_wb"]), plane, catalog,
-                      _roster(), _profile(), tmp_path / "apps",
+                      _roster(), _profile(),
                       configs, build_dir=tmp_path)
     assert cells and all(c.cpu_width == 16 for c in cells)
 
@@ -207,7 +228,7 @@ def _hpx_cell(tmp_path):
     plane = load_plane()
     catalog = load_catalog()
     cells, _ = expand(_selection(["hpx"]), plane, catalog,
-                      _roster(), _profile(), tmp_path / "apps",
+                      _roster(), _profile(),
                       {1: {}, 2: {}}, build_dir=tmp_path)
     return cells[0]
 
@@ -246,7 +267,7 @@ def test_an_arts_cell_never_carries_the_transport_override(tmp_path):
     configs = {n: {"arts": tmp_path / f"arts_{n}.cfg"} for n in (1, 2)}
     cells, _ = expand(_selection(["arts_val_wb"]), plane,
                       catalog, _roster(), _profile(),
-                      tmp_path / "apps", configs, build_dir=tmp_path)
+                      configs, build_dir=tmp_path)
     env = build_env(cells[0], _profile())
     assert "UCX_TLS" not in env and "UCX_NET_DEVICES" not in env
 
@@ -256,7 +277,7 @@ def test_the_struct_marker_is_forwarded_only_when_set(monkeypatch):
     plane = load_plane()
     catalog = load_catalog()
     cells, _ = expand(_selection(["hpx"]), plane, catalog,
-                      _roster(), _profile(), Path("/apps"), {1: {}, 2: {}},
+                      _roster(), _profile(), {1: {}, 2: {}},
                       build_dir=Path("/build"))
     monkeypatch.delenv("ARTS_STRUCT_MARKER", raising=False)
     assert "ARTS_STRUCT_MARKER" not in build_env(cells[0], _profile())
@@ -265,10 +286,9 @@ def test_the_struct_marker_is_forwarded_only_when_set(monkeypatch):
 
 
 # --- cli -----------------------------------------------------------------------
-def test_the_apps_listing_shows_the_hpx_origin_section_as_its_own_group(monkeypatch):
-    """No test in this suite drives the CLI through typer's CliRunner (no such
-    pattern exists anywhere under tests/), so this calls the listing command's
-    underlying function directly and captures what it prints."""
+def test_the_apps_listing_shows_the_hpx_section_as_its_own_group(monkeypatch):
+    """Calls the listing command's underlying function directly and captures
+    what it prints."""
     import io
 
     from rich.console import Console
@@ -279,10 +299,11 @@ def test_the_apps_listing_shows_the_hpx_origin_section_as_its_own_group(monkeypa
     monkeypatch.setattr(cli, "console", Console(file=buf, width=200))
     cli.show_apps(name=None, experiment=None, enabled_only=False)
     out = buf.getvalue()
-    heading = out.find("HPX-origin applications")
+    heading = out.find("HPX applications")
     row = out.find(ROW)
     assert heading != -1 and row != -1
     assert heading < row
+    assert out.find(Section.HPX.reach) > heading
 
 
 def test_the_section_is_the_four_compared_rows():
@@ -293,7 +314,8 @@ def test_the_section_is_the_four_compared_rows():
     # the comparison and has its HPX program.
     catalog = load_catalog()
     compared = {"stencil1d_hpx", "fib_hpx", "network_storage_hpx", "fft_hpx"}
-    hpx_rows = {name for name, app in catalog.apps.items() if app.origin is Origin.HPX}
+    hpx_rows = {name for name, app in catalog.apps.items()
+                if app.section is Section.HPX}
     assert hpx_rows == compared
     for name in compared:
         assert catalog.apps[name].hpx_target(Version.BASE) is not None

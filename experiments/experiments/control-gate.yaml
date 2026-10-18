@@ -1,5 +1,5 @@
 # Experiment control-gate: the consensus gate for control-main -- its
-# adversarial columns and its HPX-origin rows at arguments small enough that
+# adversarial columns and its HPX applications at arguments small enough that
 # the whole experiment runs in minutes on a development host.  Timing from it
 # is never reported; the catalog's calibrated arguments remain the
 # measurement.  The cross-runtime consensus vote is the gate:
@@ -8,7 +8,7 @@
 #
 # A control experiment runs the ARTS entries and HPX by default: the
 # adversarial rows are ARTS-only by design (they compare the plane's own arms
-# against each other), and the HPX-origin rows are what HPX runs.  Any other
+# against each other), and the HPX applications are what HPX runs.  Any other
 # plane entry is turned on for one run with -e.
 #
 # Every adversarial row's op count is the catalog vector's cut to a tenth (a
@@ -19,7 +19,7 @@
 # catalog's own.  Population is the program's, derived from the rank count,
 # not a roster concern.
 name: control-gate
-description: small-size consensus gate for the adversarial columns and the HPX-origin rows
+description: small-size consensus gate for the adversarial columns and the HPX applications
 # The coherence entries this experiment runs unless -e names others.
 entries: [arts_excl_purge, arts_excl_retain, arts_inv_wt_purge, arts_inv_wt,
           arts_inv_wb, arts_val_wt_purge, arts_val_wt, arts_val_wb, hpx]
@@ -109,7 +109,7 @@ apps:
     versions: [base]
     args: ['65536', '1', '1', '3', '11500', '8', '8']
 
-  # --- HPX-origin rows: the origin's own program beside the mirror ---
+  # --- HPX applications: the origin's own program beside the mirror ---
   fib_hpx:
     enabled: true
     versions: [base]

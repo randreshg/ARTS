@@ -7,12 +7,14 @@ which apps run, with which arguments — lives in an experiment instead.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
 
 from pydantic import BaseModel, Field, model_validator
 
 from artsrun.data import load_data
+from artsrun.model.plane import RuntimeKind
 from artsrun.paths import repo_root
 
 
@@ -48,15 +50,115 @@ class Kind(StrEnum):
     ATTACK = "attack"
 
 
-class Origin(StrEnum):
-    """Which programming model the row's program was written in.
+class Section(StrEnum):
+    """Which catalog file a row comes from, and so which program each runtime
+    kind runs for it.  A runtime kind the section names no program for is
+    never paired with its rows: such a pair is not a cell, and a campaign
+    records it once per section rather than once per cell."""
 
-    OCR: the program is an OCR program (apps.yaml); the ARTS variants and
-    the OCR reference runtimes run it.  HPX: the program is an HPX program
-    (hpx_apps.yaml); the HPX entry runs it, and the row's ARTS/XSOCR/OCR-vx
-    binaries are its OCR mirror."""
     OCR = "ocr"
     HPX = "hpx"
+    EXAMPLES = "examples"
+
+    @property
+    def spec(self) -> "SectionSpec":
+        return SECTIONS[self]
+
+    @property
+    def label(self) -> str:
+        return self.spec.label
+
+    def runs(self, kind: RuntimeKind) -> bool:
+        return kind in self.spec.programs
+
+    def binary_dir(self, kind: RuntimeKind) -> str:
+        """Where, under the build root, this runtime kind's binary of a row
+        is built."""
+        return self.spec.programs[kind].directory
+
+    @property
+    def reach(self) -> str:
+        """Which runtime kinds run the section and what each runs, as one
+        clause; kinds running the same program share a phrase."""
+        groups: dict[str, list[RuntimeKind]] = {}
+        for kind, program in self.spec.programs.items():
+            groups.setdefault(program.what, []).append(kind)
+        phrases = []
+        for what, kinds in groups.items():
+            names = ["the ARTS entries" if k is RuntimeKind.ARTS else k.value
+                     for k in kinds]
+            who = (names[0] if len(names) == 1
+                   else f"{', '.join(names[:-1])} and {names[-1]}")
+            plural = len(kinds) > 1 or kinds[0] is RuntimeKind.ARTS
+            phrases.append(f"{who} {'run' if plural else 'runs'} {what}")
+        return "; ".join(phrases)
+
+    def stem(self, name: str) -> str | None:
+        """The name without the section's row suffix, or None when the
+        section has none or the name does not carry it."""
+        suffix = self.spec.suffix
+        if suffix and name.endswith(suffix) and len(name) > len(suffix):
+            return name[: -len(suffix)]
+        return None
+
+
+@dataclass(frozen=True)
+class Program:
+    """What one runtime kind runs of a section's row, and the directory under
+    the build root its binary is built in."""
+
+    what: str
+    directory: str
+
+
+@dataclass(frozen=True)
+class SectionSpec:
+    label: str
+    file: str
+    # The build option whose ON makes a benchmark tree build the section.
+    option: str
+    programs: dict[RuntimeKind, Program]
+    # Every row of a suffixed section is named `<stem><suffix>`, its binary
+    # is its name, and it has one tier; no row of another section carries
+    # the suffix.
+    suffix: str | None = None
+    # The section's structural documents, relative to the checkout, as
+    # `<docs>/<stem>.md`; None for the documents packaged with the tool.
+    docs: str | None = None
+
+
+_OCR_PROGRAM = Program("the OCR program", "benchmarks/apps")
+_OCR_MIRROR = Program("the OCR mirror", "benchmarks/apps")
+
+SECTIONS: dict[Section, SectionSpec] = {
+    Section.OCR: SectionSpec(
+        label="OCR applications",
+        file="ocr_apps.yaml",
+        option="ARTS_BUILD_OCR_APPS",
+        programs={RuntimeKind.ARTS: _OCR_PROGRAM,
+                  RuntimeKind.XSOCR: _OCR_PROGRAM,
+                  RuntimeKind.OCRVX: _OCR_PROGRAM},
+    ),
+    Section.HPX: SectionSpec(
+        label="HPX applications",
+        file="hpx_apps.yaml",
+        option="ARTS_BUILD_HPX_APPS",
+        programs={RuntimeKind.ARTS: _OCR_MIRROR,
+                  RuntimeKind.XSOCR: _OCR_MIRROR,
+                  RuntimeKind.OCRVX: _OCR_MIRROR,
+                  RuntimeKind.HPX: Program("the HPX original",
+                                           "benchmarks/hpx")},
+        suffix="_hpx",
+    ),
+    Section.EXAMPLES: SectionSpec(
+        label="ARTS examples",
+        file="examples.yaml",
+        option="ARTS_BUILD_EXAMPLES",
+        programs={RuntimeKind.ARTS: Program("the native program", "examples")},
+        suffix="_example",
+        docs="docs/examples",
+    ),
+}
 
 
 class Version(StrEnum):
@@ -124,7 +226,7 @@ class AppEntry(BaseModel):
     restructured_as: str | None = None
     restructured_from: str | None = None
 
-    origin: Origin = Origin.OCR
+    section: Section = Section.OCR
 
     # Optional post-run verifier: a shell command run in the cell's working
     # directory after the binary exits 0 (chained with &&, so its exit status
@@ -185,29 +287,42 @@ class AppEntry(BaseModel):
 
     @property
     def hpx_versions(self) -> list[Version]:
-        return [Version.BASE] if self.origin is Origin.HPX else []
+        return [Version.BASE] if self.section.runs(RuntimeKind.HPX) else []
 
     def hpx_target(self, version: Version) -> str | None:
-        """The HPX program's build target, base tier only, on an HPX-origin
-        row: the runtime tag is the last token, as for every reference
-        binary (`<stem>_xsocr`, `<stem>_ocrvx`).  An OCR-origin row has none."""
-        if self.origin is Origin.HPX and version is Version.BASE:
+        """The HPX program's build target, base tier only, on a row of a
+        section the HPX entry runs: the runtime tag is the last token, as for
+        every reference binary (`<stem>_xsocr`, `<stem>_ocrvx`).  A row of
+        any other section has none."""
+        if self.section.runs(RuntimeKind.HPX) and version is Version.BASE:
             return f"{self.binary}_hpx"
         return None
 
     @model_validator(mode="after")
-    def _check_origin(self) -> "AppEntry":
-        if self.origin is Origin.HPX:
-            if not self.name.endswith("_hpx") or self.binary != self.name:
+    def _check_section(self) -> "AppEntry":
+        spec = self.section.spec
+        if spec.suffix:
+            if self.section.stem(self.name) is None or self.binary != self.name:
                 raise ValueError(
-                    f"{self.name}: an HPX-origin row is named `<stem>_hpx` and"
-                    " its binary is that stem (the HPX program is the stem's"
-                    " _hpx target, the OCR mirrors its ARTS/XSOCR/OCR-vx targets)")
+                    f"{self.name}: a row of the {spec.label} is named"
+                    f" `<stem>{spec.suffix}` and its binary is that name"
+                    f" ({self.section.reach})")
             if self.hinted or self.restructured_as or self.restructured_from:
                 raise ValueError(
-                    f"{self.name}: an HPX-origin row has one tier — the"
-                    " placement it states is carried as hints, so no hint"
-                    " layer or rewrite exists")
+                    f"{self.name}: a row of the {spec.label} has one tier —"
+                    " no hint layer or rewrite exists for it")
+        for other in Section:
+            if other is not self.section and other.stem(self.name) is not None:
+                raise ValueError(
+                    f"{self.name}: the suffix `{other.spec.suffix}` names a row"
+                    f" of the {other.spec.label}; this row is in the"
+                    f" {spec.label}")
+        if self.arts_only and not any(
+                self.section.runs(kind) for kind in RuntimeKind
+                if kind is not RuntimeKind.ARTS):
+            raise ValueError(
+                f"{self.name}: the {spec.label} run on the ARTS entries alone,"
+                " so `arts_only` restates the section")
         return self
 
 
@@ -230,15 +345,16 @@ class Catalog(BaseModel):
         """Apps that head a row: every app that is not another app's rewrite."""
         return [a for a in self.apps.values() if a.restructured_from is None]
 
-    def rows_of(self, kind: Kind) -> list[AppEntry]:
-        return sorted((a for a in self.rows if a.kind is kind and a.origin is Origin.OCR),
+    def rows_in(self, section: Section) -> list[AppEntry]:
+        """One section's rows, in name order."""
+        return sorted((a for a in self.rows if a.section is section),
                       key=lambda a: a.name.lower())
 
-    @property
-    def hpx_rows(self) -> list[AppEntry]:
-        """The HPX-origin section, in name order."""
-        return sorted((a for a in self.rows if a.origin is Origin.HPX),
-                      key=lambda a: a.name.lower())
+    def rows_of(self, kind: Kind) -> list[AppEntry]:
+        """The OCR applications section's rows of one kind, in name order:
+        that section is the one whose kinds are drawn as groups of their
+        own."""
+        return [a for a in self.rows_in(Section.OCR) if a.kind is kind]
 
     def resolve(self, name: str, version: Version) -> tuple[AppEntry, str]:
         """The catalog entry that supplies the arguments, and the binary stem.
@@ -285,16 +401,16 @@ def merge_sections(sections, root: str) -> dict[str, AppEntry]:
     section order.
     """
     apps: dict[str, AppEntry] = {}
-    for entries, origin in sections:
+    for entries, section in sections:
         for name, spec in entries.items():
             if name in apps:
                 raise ValueError(
                     f"{name}: named in two catalog sections "
-                    f"({apps[name].origin.value} and {origin.value})")
+                    f"({apps[name].section.value} and {section.value})")
             spec = dict(spec)
             spec.setdefault("name", name)
             spec.setdefault("binary", name)
-            spec["origin"] = origin.value
+            spec["section"] = section.value
             apps[name] = AppEntry.model_validate(expand_repo(spec, root))
     return apps
 
@@ -303,7 +419,6 @@ def merge_sections(sections, root: str) -> dict[str, AppEntry]:
 def load_catalog() -> Catalog:
     root = str(repo_root())
     return Catalog(apps=merge_sections(
-        ((load_data(file)["apps"], origin)
-         for file, origin in (("apps.yaml", Origin.OCR),
-                              ("hpx_apps.yaml", Origin.HPX))),
+        ((load_data(section.spec.file)["apps"], section)
+         for section in Section),
         root))

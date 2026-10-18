@@ -42,11 +42,15 @@ artsrun profile new <machine>     # single-node local defaults, opens $EDITOR
 ```
 
 The build tree bootstraps the same way: a first real run configures the
-experiment build (Release, benchmarks on — its first build also compiles
-the vendored dependencies, so it is long) and every later run reuses it.
+experiment build (Release, benchmarks on, exactly the catalog sections the
+campaign selects — its first build also compiles the vendored dependencies
+those sections need, so it is long) and every later run reuses it.
 Dry runs configure nothing, and an existing tree is only verified — a
 Debug or no-benchmark tree is somebody's deliberate configuration and is
-reported, not replaced. Under a Slurm profile, every piece of build work —
+reported, not replaced. Selecting an application is asking for a tree that
+builds its section, as selecting a counter set is: a real run turns a
+selected section's option on in a tree where it is off (a dry run prints
+the `-DARTS_BUILD_<SECTION>=ON` it would pass) and never turns one off. Under a Slurm profile, every piece of build work —
 the first configure, a counter reconfigure, the ninja pass — runs inside a
 small job of its own rather than on the login node: one task, a few cpus,
 nothing exclusive, so it slots into whatever gap the queue has.
@@ -160,22 +164,46 @@ overwrite the same file.
 Any key a profile or saved selection carries that no field takes is refused
 when it loads.
 
+## Sections
+
+The catalog is three sections, one file each, and a section says which
+program each runtime kind runs of its rows. A runtime kind with no program
+for a section is never paired with its rows: such a pair is not a cell and
+not a skip, and a campaign records it once per section (`not_applicable` in
+`manifest.json` and `report.json`, one line in the summary and the dry run).
+
+| section | file | row names | build option | ARTS entries run | xsocr / ocrvx run | hpx runs | binaries under the tree |
+|---|---|---|---|---|---|---|---|
+| OCR applications | `ocr_apps.yaml` | any | `ARTS_BUILD_OCR_APPS` | the OCR program | the OCR program | — | `benchmarks/apps` |
+| HPX applications | `hpx_apps.yaml` | `<stem>_hpx`, one tier | `ARTS_BUILD_HPX_APPS` | the OCR mirror | the OCR mirror | the original | `benchmarks/apps`; hpx: `benchmarks/hpx` |
+| ARTS examples | `examples.yaml` | `<stem>_example`, one tier | `ARTS_BUILD_EXAMPLES` | the native program | — | — | `examples` |
+
+A section's suffix is its own: no row of another section carries it. An
+ARTS example's structural document is its page in the documentation,
+`docs/examples/<stem>.md`, titled with the row name; every other row's ships
+with the tool (`src/artsrun/data/appdocs/<name>.md`). The summary prints one
+consensus table per section, with only the columns of the entries that run
+it, and every `report.json` consensus row names its section. `artsrun apps`
+and the Experiments screen group the rows by section, each headed by where
+it runs (on the screen, live: the checked entries that run it and the cells
+it contributes).
+
 ## External runtimes
 
 Besides the thirteen-entry coherence plane, `hpx` is an off-plane entry: the
 STE||AR HPX runtime (MPI parcelport, static-linked like the other
 references), a cross-programming-model reference tied to no coherence
 position. It multiplies by nothing, and its scalar joins the ordinary
-consensus vote only in the version rows the HPX-origin section defines;
-every other catalog row reports the HPX cell as structurally ineligible.
+consensus vote only in the version rows the HPX-applications section
+defines; it has no program for any other section.
 
-The rows it runs are the HPX-origin section (`hpx_apps.yaml`, names ending
-in `_hpx`): each is an HPX program, `<row>_hpx`, and the row's
+The rows it runs are the HPX-applications section (`hpx_apps.yaml`, names
+ending in `_hpx`): each is an HPX program, `<row>_hpx`, and the row's
 ARTS/xsocr/ocr-vx binaries are its OCR mirror; `benchmarks/hpx/apps.cmake`
 is the build list. The rows sit in the `control-main` experiment, and the
 `control-gate` experiment runs them at small arguments as the gate (the main
 experiment's gate is `paper-gate`). Under `ARTS_STRUCT_MARKER`
-each HPX-origin program prints `[PARCELS] sent=… bytes=… wire=…` from
+each HPX original prints `[PARCELS] sent=… bytes=… wire=…` from
 locality 0 immediately after its end stamp, so a timing cell never executes
 it. The ARTS arms beside it are built with the
 `configs/counters_off.cfg` default, which a `-c`-less campaign checks and
@@ -268,7 +296,7 @@ roster — applications, versions, `args` / `args_by_nodes`, `enabled` flags —
 plus `entries`, the coherence plane entries it runs by default. Every key
 must be a plane entry. The list is the default check-set, not a restriction:
 `-e` names the whole entry set for one run (any plane entries, run in the
-plane's order), and `-a` does the same for applications. The saved
+plane's order), and `-a` narrows the run to the named rows the experiment enables (a name it does not enable runs nothing). The saved
 `selection.yaml` records the experiment, its default entries and the entries
 actually run. A run that names no experiment takes the catalog's own roster
 on the plane's standard entries (every OCR-model entry that is not a CXL
@@ -280,13 +308,17 @@ entry).
 | `paper-gate` | paper-main at small arguments: the consensus gate | as paper-main |
 | `paper-main-base` | paper-main's roster at the base tier only, for submitting the campaign in halves | as paper-main |
 | `paper-main-hinted` | paper-main's roster at the hinted tier only (the rows that offer one) | as paper-main |
-| `control-main` | the adversarial columns and the HPX-origin rows | the eight ARTS entries, `hpx` |
+| `paper-main-restructured` | the rewrites of the paper-main rows that offer one | as paper-main |
+| `paper-grain` | the paper rows at one node with the `grain` counter set | `arts_inv_wb` |
+| `control-main` | the adversarial columns and the HPX applications | the eight ARTS entries, `hpx` |
 | `control-gate` | control-main at small arguments: the consensus gate | as control-main |
-| `trend` | every paper-main and HPX-origin row at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_wrf_flush` and the two CXL entries |
+| `control-fft` | the HPX FFT row alone, re-measured on its own | as control-main |
+| `trend` | every paper-main row and HPX application at small saturating arguments, for scaling-shape verdicts | every plane entry but `arts_wrf_flush` and the two CXL entries |
 | `smoke` | paper-gate at arguments shrunk again to finish in seconds on a two-worker laptop: a correctness smoke, never a timing number | as paper-gate |
 | `paper-rerun-a` | the base-tier rows a fabric truncation defect emptied at every multinode count (rerun of campaign 20260925-082512, `-n 2,4,8,16,32`) | the eight ARTS entries |
 | `paper-rerun-32n` | the base-tier rows short of three valid repeats at 32 nodes only (`-n 32`) | the eight ARTS entries |
 | `paper-rerun-fib` | the fibonacci base row at its lowered rung, every node count; the changed argument invalidates the references' cells too | as paper-main |
+| `examples` | every ARTS example at its catalog arguments, its pinned answers included | the eight ARTS entries |
 
 No shipped experiment lists the DB-WRF entry or a CXL entry; they are turned
 on for a run with `-e` or on the screen. The per-entry eligibility rules hold
@@ -299,9 +331,12 @@ as new, revert), the whole plane with every entry's toggle — the
 experiment's defaults pre-checked, any entry (CXL and DB-WRF included)
 toggleable for this run — and the application rows. Save writes the checked
 entries as the experiment's defaults and the checked rows as its roster.
-Applications come first — benchmarks with a provenance, the ones a result is
-claimed about — then the HPX-origin section, the attack rows (drawn only
-when the loaded experiment names them), and the toys and fixtures.
+The rows are grouped by section, each heading saying what runs it and, as
+entries and rows are checked, which checked entries run it and how many
+cells it contributes. The OCR applications come first, split by kind —
+benchmarks with a provenance, the ones a result is claimed about, then the
+attack rows (drawn only when the loaded experiment names them), then the
+toys and fixtures — then the HPX applications and the ARTS examples.
 
 Arguments are edited inline. An empty box means the catalog's own calibration,
 shown as the placeholder; type into it and the experiment records an
@@ -344,7 +379,8 @@ column, held fixed across the sweep -- not a machine-filling frontier.
 
 | | |
 |---|---|
-| Application structure and calibration | `src/artsrun/data/apps.yaml` (committed) |
+| Application structure and calibration | `src/artsrun/data/{ocr_apps,hpx_apps,examples}.yaml`, one per section (committed) |
+| Structural documents | `src/artsrun/data/appdocs/<name>.md`; an ARTS example's is `docs/examples/<stem>.md` (committed) |
 | Configuration plane | `src/artsrun/data/protocols.yaml` (committed) |
 | Configuration templates | `configs/templates/*.j2` (committed) |
 | Machine and node settings | `experiments/profiles/*.yaml` (committed) |

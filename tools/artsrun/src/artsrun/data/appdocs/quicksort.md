@@ -155,7 +155,7 @@ in-place sort.
 ## Placement (hinted)
 
 **A `hinted` target IS built** (`quicksort_hinted`, `HINTED_PLACEMENT` in
-`benchmarks/apps/CMakeLists.txt`; catalog `hinted: true`).
+`benchmarks/apps/ocr_apps.cmake`; catalog `hinted: true`).
 
 The base program combines the two worst placements this program can have: execution
 scatters round-robin while the single array block homes on rank 0, so most RW

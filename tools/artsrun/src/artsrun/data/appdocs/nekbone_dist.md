@@ -7,7 +7,7 @@ around that numbering.*
 Source: `third_party/ocr-apps/apps/nekbone/refactored/ocr_src/` with
 `../ocr_dist/neko_reduction.c` substituted for `neko_reduction.c`, and the
 `reductionTwoLevel` library in place of `reduction`
-(`benchmarks/apps/CMakeLists.txt`).
+(`benchmarks/apps/ocr_apps.cmake`).
 
 ## Overview
 
@@ -107,7 +107,7 @@ crossing ones.
 ## Placement (hinted)
 
 **This row is built with `OCR_APP_OPTIMIZED_PLACEMENT` forced on**
-(`EXTRA_DEFINES` in `benchmarks/apps/CMakeLists.txt`), so it carries the hinted
+(`EXTRA_DEFINES` in `benchmarks/apps/ocr_apps.cmake`), so it carries the hinted
 tier's contiguous-box rank→place map, not the base `r % P` map. The restructure
 is therefore *hinted placement + the two-level tree*, and it is measured
 against the hinted tier as much as against base. The reuse is deliberate: the

@@ -189,7 +189,7 @@ samples.
 ## Placement (hinted)
 
 `stream_hinted` is built (`HINTED_PLACEMENT` in
-`benchmarks/apps/CMakeLists.txt`; catalog `hinted: true`), from the same source
+`benchmarks/apps/ocr_apps.cmake`; catalog `hinted: true`), from the same source
 under `-DOCR_APP_OPTIMIZED_PLACEMENT`. The guard encloses exactly three
 static helpers and their `#else` macro forms; every create site is textually
 identical in the two builds and differs only in its `hint` argument. No control

@@ -179,6 +179,11 @@ class ArtsRunApp(App):
 
     def _refresh_size(self) -> None:
         try:
+            profile_panel = self.query_one("#profile", ProfilePanel)
+            self.query_one("#exp", ExperimentPanel).show_reach(
+                self.query_one("#plane", PlanePanel).selected(),
+                len(profile_panel.node_counts()),
+                profile_panel.profile.repeats)
             selection = self.build_selection()
         except Exception:
             return
@@ -187,10 +192,9 @@ class ArtsRunApp(App):
             label.update(f"[yellow]select {', '.join(self._missing())}[/yellow]")
             return
         label.update(
-            f"{selection.cell_count} cells = {len(selection.entries)} configurations "
-            f"x {sum(len(v) for v in selection.apps.values())} app-versions "
-            f"x {len(selection.node_counts)} node counts "
-            f"x {selection.repeats} repeats"
+            f"{selection.cell_count(self.catalog, self.plane, self.experiment)}"
+            " cells = "
+            f"{selection.cell_formula(self.catalog, self.plane, self.experiment)}"
         )
 
     # -- events ------------------------------------------------------------
@@ -450,8 +454,11 @@ class ArtsRunApp(App):
             counterset=counters,
         )
         try:
-            plan = campaign.build_plan()
+            plan = campaign.build_plan(on_line=self._log)
             self._log(f"build: {len(plan.targets)} targets in {campaign.build_dir}")
+            if plan.pending:
+                self._log(f"{len(plan.pending)} targets are built once the "
+                          "section is on")
             if plan.missing:
                 self._log(f"MISSING TARGETS: {', '.join(plan.missing[:8])}")
         except Exception as exc:
@@ -460,6 +467,8 @@ class ArtsRunApp(App):
         ordered = order(cells, WallCache(wall_cache_path()),
                         capacity=campaign.backend().capacity)
         self._log(f"{len(cells)} cells, {len(skipped)} structurally ineligible")
+        for record in campaign.not_applicable():
+            self._log(f"  not cells: {record.line}")
         for cell in ordered[:20]:
             self._log(f"  {cell.nodes:>3}n  {cell.app.key:<28} {cell.entry.key}")
         if len(ordered) > 20:

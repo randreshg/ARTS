@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from artsrun.model.catalog import ScalarKind
+from artsrun.model.catalog import ScalarKind, Section
 from artsrun.model.plane import RuntimeKind
 from artsrun.run.types import CellResult, Status
 
@@ -244,6 +244,10 @@ class Group:
     @property
     def unanimous(self) -> bool:
         return all(v is not Verdict.DISAGREE for v in self.verdicts.values())
+
+    @property
+    def section(self) -> Section:
+        return self.results[0].cell.app.section
 
 
 def vote(results: list[CellResult]) -> list[Group]:

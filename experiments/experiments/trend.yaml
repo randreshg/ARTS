@@ -1,5 +1,5 @@
 # Experiment trend: the scalability SHAPE of every paper-main row and of the
-# HPX-origin rows on a development host (1/2/4/8 ranks x 15 workers + 1
+# HPX applications on a development host (1/2/4/8 ranks x 15 workers + 1
 # progress thread), at arguments small enough to finish in seconds and wide
 # enough to saturate the 120 workers of the widest local geometry.  Nothing
 # measured here is a paper number: paper-main carries the timing, this
@@ -238,7 +238,7 @@ apps:
     # -l = the port's published default; 8 instances x 30 chains = 240.
     args: ['-s', 'large', '-g', '96', '-l', '15000000', '-t', '30', '-p', '8']
 
-  # --- HPX-origin section: the same shape reading for the four compared rows,
+  # --- HPX applications: the same shape reading for the four compared rows,
   # against the HPX program itself.  Calibration arguments never run here --
   # a local multinode cell is a shared-memory simulation, and the large
   # vectors only add a memory bottleneck to a question about shape.

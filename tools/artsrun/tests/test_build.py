@@ -22,7 +22,7 @@ import pytest
 
 from artsrun.build import BuildError, available_targets, ensure_build_dir, plan_targets
 from artsrun.model.experiment import Experiment, ExperimentApp
-from artsrun.model.catalog import Version, load_catalog
+from artsrun.model.catalog import Section, Version, load_catalog
 from artsrun.model.plane import load_plane
 from artsrun.model.profile import Launcher, Profile, SlurmSettings
 from artsrun.model.selection import Selection
@@ -123,7 +123,8 @@ def _sources_move_on(tmp_path: Path, extra: str) -> None:
 def test_a_current_tree_is_left_alone(tmp_path):
     build = _configured(tmp_path)
     lines: list[str] = []
-    ensure_build_dir(build, bootstrap=True, on_line=lines.append)
+    ensure_build_dir(build, sections=list(Section), bootstrap=True,
+                     on_line=lines.append)
     assert lines == []
     assert "old_app" in available_targets(build)
 
@@ -132,7 +133,7 @@ def test_a_current_tree_is_left_alone(tmp_path):
 def test_a_source_update_reaches_the_target_list_before_it_is_read(tmp_path):
     build = _configured(tmp_path)
     _sources_move_on(tmp_path, "add_executable(new_app a.c)\n")
-    ensure_build_dir(build, bootstrap=True)
+    ensure_build_dir(build, sections=list(Section), bootstrap=True)
     assert "new_app" in available_targets(build)
 
 
@@ -142,7 +143,7 @@ def test_a_configure_that_now_fails_is_reported_as_the_reason(tmp_path):
     _sources_move_on(tmp_path, "add_executable(new_app a.c)\n"
                      "find_program(NEEDED NAMES no-such-tool-anywhere REQUIRED)\n")
     with pytest.raises(BuildError, match="no-such-tool-anywhere"):
-        ensure_build_dir(build, bootstrap=True)
+        ensure_build_dir(build, sections=list(Section), bootstrap=True)
 
 
 @needs_cmake
@@ -150,7 +151,8 @@ def test_a_dry_run_regenerates_nothing_and_says_the_sources_moved(tmp_path):
     build = _configured(tmp_path)
     _sources_move_on(tmp_path, "add_executable(new_app a.c)\n")
     lines: list[str] = []
-    ensure_build_dir(build, bootstrap=False, on_line=lines.append)
+    ensure_build_dir(build, sections=list(Section), bootstrap=False,
+                     on_line=lines.append)
     assert any("changed since it was generated" in line for line in lines)
     # Dry means dry: the previous generation is what the tree still holds.
     assert "new_app" not in available_targets(build)

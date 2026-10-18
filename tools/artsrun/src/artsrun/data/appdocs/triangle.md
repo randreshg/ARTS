@@ -46,7 +46,7 @@ decomposition):
    `3ffd7a07` added `rows` with its generator and the generator-vs-author
    oracle, plus the unconditional board/count destroys (without which the
    author's own puzzle dies at ~125 GB) and the `OCR_APP_COUNTED_EVENTS`
-   gate, which `benchmarks/apps/CMakeLists.txt` sets for every backend.
+   gate, which `benchmarks/apps/ocr_apps.cmake` sets for every backend.
 4. The round's `oldboardDb` and `pmovesDb` are **knowingly retained**: one
    pair per round (288 B + 3,024 B at rows 8, so 3.3 KB at the default
    `rounds` = 1) is never destroyed. The only event that says the round is
@@ -76,7 +76,7 @@ decomposition):
 | `argv[3]` = `rows` | board rows: absent = the author's 5-row board driven by the author's hand table; given (5 included) = the jump-table generator drives, holes = rows(rows+1)/2, full solve = holes-2 moves; the generator is checked against the author's table whenever the board is the 5-row one | absent (author mode); a value outside `[3, 10]` **aborts** (the placement key is a `u64` hole bitmask, so holes ≤ 64) | ✓ parsed in `mainEdt`, geometry carried via paramv (`holes`, `nmoves`) to every task — multinode-safe |
 | `BOARDSIZE` / `MOVESIZE` / `BOTTOM` | the author's-board instances of the geometry (15 holes, 36 jumps, 13-move full solve) | 15 / 36 / 13 | derived from `rows` when one is given; the `#define`s remain the author-mode values and the generator's oracle |
 | scatter depth | hinted-placement-only: how many top levels of the tree are scattered by a hash of the board bitmask | **derived, no knob** — `triScatterLevels(nranks)` = `4 + ceil(log10(nranks))`, i.e. 4 at one rank, 5 at 2-10, 6 at 11-100 | ✗ not an argument and not a `#define`: it is a function of `ocrAffinityCount(AFFINITY_PD)`, so base and hinted keep byte-identical argv and the map follows the machine |
-| `OCR_APP_COUNTED_EVENTS` | completion events carry their true consumer count | on, every backend | compile-time (`benchmarks/apps/CMakeLists.txt`) |
+| `OCR_APP_COUNTED_EVENTS` | completion events carry their true consumer count | on, every backend | compile-time (`benchmarks/apps/ocr_apps.cmake`) |
 
 Each of the three arguments is parsed whole-token (`strtol`, trailing
 characters and out-of-range literals rejected, never truncated), and a fourth

@@ -12,15 +12,23 @@ from textual.widgets import Button, Input, Label, Select, Static, Switch
 
 from artsrun import store
 from artsrun.model.experiment import Experiment, ExperimentApp
-from artsrun.model.catalog import Catalog, Kind, Version
+from artsrun.model.catalog import Catalog, Kind, Section, Version
 from artsrun.model.counters import (
     Counterset, CounterSetting, Level, Mode, Reduce,
     load_counter_catalog,
 )
-from artsrun.model.plane import Plane, RuntimeKind
+from artsrun.model.plane import Plane, summarize_entries
 from artsrun.model.profile import Profile
 from artsrun.tui import form
 from artsrun.tui.widgets import NodeDelete, Toggle, toggle_all
+
+
+def _sections_of(entry) -> list[Section]:
+    return [s for s in Section if s.runs(entry.kind)]
+
+
+def _labels(sections: list[Section]) -> str:
+    return " and the ".join(s.label for s in sections) or "no section"
 
 
 class NodeListChanged(Message):
@@ -145,25 +153,30 @@ class PlanePanel(Vertical):
                                         classes="entry-toggle")
                         toggle.tooltip = entry.note
                         yield toggle
-            if any(e.kind is RuntimeKind.HPX for e in external):
-                from artsrun.model.catalog import load_catalog
+            from artsrun.model.catalog import load_catalog
 
-                rows = load_catalog().hpx_rows
-                names = ", ".join(a.name for a in rows) or "none yet"
+            catalog = load_catalog()
+            for entry in external:
+                sections = _sections_of(entry)
+                names = ", ".join(a.name for s in sections
+                                  for a in catalog.rows_in(s)) or "none yet"
                 with Horizontal(classes="plane-row"):
                     yield Label("", classes="plane-gutter")
                     yield Static(
-                        "[dim]not an OCR runtime — runs the HPX-origin "
-                        f"section: {names}[/dim]",
+                        f"[dim]{entry.label}: not an OCR runtime — runs the "
+                        f"{_labels(sections)}: {names}[/dim]",
                         classes="external-note")
 
     def _entry_toggle(self, cell, entry) -> Toggle:
         base = not entry.is_reference and entry.variant == cell.variant
-        return Toggle(
+        toggle = Toggle(
             "ARTS" if base else entry.label,
             entry.key,
             classes="entry-toggle",
         )
+        if entry.is_reference:
+            toggle.tooltip = f"runs the {_labels(_sections_of(entry))}"
+        return toggle
 
     @property
     def toggles(self) -> list[Toggle]:
@@ -543,27 +556,75 @@ class ExperimentPanel(VerticalScroll):
                 yield Label(column, classes="bench-col-head")
             yield Label("arguments", classes="bench-args-head")
 
-        # Applications first: a result is claimed about an application; an
-        # HPX-origin row is one program run on four runtimes, kept apart
-        # from the OCR-origin catalog it mirrors into; an attack is an
+        # One group per catalog section, each headed by the runtimes it
+        # runs on.  Within the OCR applications, applications come first: a
+        # result is claimed about an application; an attack is an
         # adversarial probe with a roster of its own; a toy exercises one
         # mechanism and belongs in a regression suite rather than in any
-        # measurement.
-        groups = [
-            ("Applications", self._rendered_rows(Kind.APP)),
-            ("HPX-origin applications", self.catalog.hpx_rows),
-            ("Adversarial attacks (coherence probes)", self._rendered_rows(Kind.ATTACK)),
-            ("Toys and fixtures", self._rendered_rows(Kind.TOY)),
-        ]
-        for title, rows in groups:
-            if not rows:
+        # measurement.  An HPX application is one program run on four
+        # runtimes and an ARTS example a native program the ARTS entries
+        # alone run, each kept apart in a section of its own.
+        for section, groups in self._rendered_groups():
+            yield Static(self._section_heading(section, None),
+                         id=f"section-{section.value}",
+                         classes="bench-section")
+            for title, rows in groups:
+                if title:
+                    yield Static(f"[b]{title}[/b]  [dim]{len(rows)}[/dim]",
+                                 classes="bench-group")
+                yield from self._app_rows(rows)
+
+    def _rendered_groups(self) -> list[tuple[Section, list[tuple[str | None, list]]]]:
+        """The sections this surface draws, each with its titled groups."""
+        out = []
+        for section in Section:
+            if section is Section.OCR:
+                groups = [
+                    ("Applications", self._rendered_rows(Kind.APP)),
+                    ("Adversarial attacks (coherence probes)",
+                     self._rendered_rows(Kind.ATTACK)),
+                    ("Toys and fixtures", self._rendered_rows(Kind.TOY)),
+                ]
+            else:
+                groups = [(None, self.catalog.rows_in(section))]
+            groups = [(title, rows) for title, rows in groups if rows]
+            if groups:
+                out.append((section, groups))
+        return out
+
+    def _section_heading(self, section: Section,
+                         reach: tuple[list, int] | None) -> str:
+        """A section's heading: what runs it, and — once the screen knows
+        the checked entries, versions and node counts — which of the checked
+        entries run it and how many cells it contributes."""
+        head = f"[b]{section.label}[/b]  [dim]{section.reach}"
+        if reach is None:
+            return head + "[/dim]"
+        runs, cells = reach
+        where = (f"runs on the checked {summarize_entries(runs)}" if runs
+                 else "runs on none of the checked entries")
+        return head + f" · {where} · {cells} cells[/dim]"
+
+    def show_reach(self, entries: list[str], node_counts: int,
+                   repeats: int) -> None:
+        """Bring every section heading up to date with the checked entries
+        and applications."""
+        picked = self.selected()
+        for section, _ in self._rendered_groups():
+            heading = self.query(f"#section-{section.value}").results(Static)
+            heading = next(iter(heading), None)
+            if heading is None:
                 continue
-            yield Static(f"[b]{title}[/b]  [dim]{len(rows)}[/dim]",
-                         classes="bench-group")
-            yield from self._app_rows(rows)
+            runs = [self.plane.entry(k) for k in entries
+                    if section.runs(self.plane.entry(k).kind)]
+            versions = sum(len(vs) for name, vs in picked.items()
+                           if self.catalog.apps[name].section is section)
+            cells = len(runs) * versions * node_counts * repeats
+            heading.update(self._section_heading(section, (runs, cells)))
 
     def _rendered_rows(self, kind: Kind) -> list:
-        """The rows this surface draws for one group.
+        """The rows this surface draws for one group of the OCR
+        applications.
 
         The attack suite belongs to its own roster; on a general application
         surface its rows only invite checking probes into an application
@@ -576,10 +637,8 @@ class ExperimentPanel(VerticalScroll):
         return rows
 
     def _rendered_names(self) -> set[str]:
-        return {a.name
-                for kind in (Kind.APP, Kind.ATTACK, Kind.TOY)
-                for a in self._rendered_rows(kind)} | {
-                    a.name for a in self.catalog.hpx_rows}
+        return {a.name for _, groups in self._rendered_groups()
+                for _, rows in groups for a in rows}
 
     def _app_rows(self, rows) -> ComposeResult:
         for app in rows:

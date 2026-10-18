@@ -51,7 +51,8 @@ def _write(run_dir: Path, cells: list[Cell], *, launcher: str = "local",
            skipped: list[Skipped] | None = None,
            counters_cfg: Path | None = None) -> None:
     write_manifest(run_dir, cells, skipped or [], _profile(launcher),
-                   Path("/opt/build"), counters_cfg=counters_cfg)
+                   Path("/opt/build"), counters_cfg=counters_cfg,
+                   not_applicable=[])
 
 
 def _track(run_dir: Path, rows: list[dict]) -> None:

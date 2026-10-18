@@ -15,7 +15,7 @@ every `fibonacci_future(n)` with `n >= threshold` spawns an async call for
 its `n-1` branch and a synchronous call for its `n-2` branch, then joins
 both with `hpx::when_all(f, r).then(when_all_wrapper())`; below `threshold`
 the call falls back to a serial C++ recursion, and `n < 2` returns
-immediately. This is an HPX-origin catalog row: one program on four
+immediately. This is a row of the HPX applications: one program on four
 runtimes — `fib_hpx_hpx` is the HPX program, `fib_hpx_arts_<variant>`,
 `fib_hpx_xsocr` and `fib_hpx_ocrvx` are the OCR mirror
 (`benchmarks/apps/hpx_origin/fib_hpx.c`), one row in `hpx_apps.yaml`. HPX
