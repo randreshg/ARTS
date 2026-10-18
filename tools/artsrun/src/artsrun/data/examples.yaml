@@ -90,6 +90,62 @@ apps:
     args: ['--ds', '1000', '--ts', '50']
     default_enabled: false
 
+  stream_example:
+    binary: stream_example
+    class: spmd
+    kind: app
+    provenance: 'ARTS example: STREAM copy/scale/add/triad (McCalpin), one kernel EDT per rank per phase joined by a latch'
+    # The program prints timings and a closed-form check that reads no array,
+    # so the row is completion only: the marker is its final line.
+    marker: 'Solution Validates \(mathematical check\)'
+    scalar_kind: bool
+    # Sized at compile time (STREAM_ARRAY_SIZE 10,000,000, NTIMES 10).
+    args: []
+    default_enabled: false
+
+  random_access_example:
+    binary: random_access_example
+    class: mw
+    kind: app
+    provenance: 'ARTS example: HPCC RandomAccess (GUPS), a rank-0 driver chain of update steps over a tiled table, checked against a sequential replay'
+    # "Verified!" is printed only when every word matches the replay; a
+    # mismatch prints "<n> errors of <m>!" instead, which this misses.
+    marker: 'Verified!'
+    scalar_kind: bool
+    # The default tile size (64 tiles); the table and update count are
+    # compile-time (TABLESIZE 2,621,440, NUPDATE 16 x TABLESIZE).
+    args: ['40960']
+    default_enabled: false
+
+  lulesh_example:
+    binary: lulesh_example
+    class: task
+    kind: app
+    provenance: 'ARTS example: LULESH 2.0 Sedov blast, six blocks per tile, four per-tile phases per iteration wired by neighbour latches'
+    marker: 'Final Origin Energy = '
+    scalar_re: 'Final Origin Energy = +([-+]?[0-9][-+0-9.eE]*)'
+    scalar_kind: float
+    # Printed with seven significant digits.
+    tolerance: 1.0e-6
+    # The reference LULESH 2.0.3's answer at -s 30 (932 iterations), at the
+    # tilings tried and any node count.
+    expect: '2.025075e+05'
+    expect_args: ['-s', '30']
+    args: ['-s', '30']
+    default_enabled: false
+
+  smithwaterman_example:
+    binary: smithwaterman_example
+    class: task
+    kind: app
+    provenance: 'ARTS example: Smith-Waterman alignment score as a wavefront of tiles passing halo blocks through events'
+    # PASS only when the score equals the score file's.
+    marker: 'SW-ARTS final score = -?\d+ \(expected -?\d+\) PASS'
+    scalar_re: 'SW-ARTS final score = (-?\d+)'
+    scalar_kind: int
+    args: ['1000', '1000', '{repo}/examples/proxy/smithwaterman/datasets/string1-large.txt', '{repo}/examples/proxy/smithwaterman/datasets/string2-large.txt', '{repo}/examples/proxy/smithwaterman/datasets/score-large.txt']
+    default_enabled: false
+
   bfs_example:
     binary: bfs_example
     class: task

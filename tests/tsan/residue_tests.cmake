@@ -101,3 +101,22 @@ endforeach()
 arts_tsan_residue(db_create_after_dep_asked
     CELLS VAL/WT/RETAIN VAL/WT/PURGE INV/WT/RETAIN INV/WT/PURGE
     SHAPES R2)
+
+# The frontier's one writer per step, on its home, against the RO instances on
+# other ranks, which never read it.
+arts_tsan_residue(random_access_example_smoke
+    CELLS VAL/WB/RETAIN INV/WB/RETAIN VAL/WT/RETAIN VAL/WT/PURGE
+          INV/WT/RETAIN INV/WT/PURGE
+    SHAPES R1)
+arts_tsan_residue(random_access_example_smoke
+    CELLS FLUSH SHAPES R4)
+
+# The tile's home writes the force caches and the gradient blocks' quantities
+# while the vertex-corner reduction and the face neighbours read other words
+# of those blocks, unordered with the write.
+arts_tsan_residue(lulesh_example
+    CELLS VAL/WB/RETAIN INV/WB/RETAIN VAL/WT/RETAIN VAL/WT/PURGE
+          INV/WT/RETAIN INV/WT/PURGE
+    SHAPES R1)
+arts_tsan_residue(lulesh_example
+    CELLS FLUSH SHAPES R4)

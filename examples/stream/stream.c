@@ -42,7 +42,7 @@
  *
  * Based on the STREAM benchmark by John D. McCalpin.
  * Adapted for the ARTS event-driven task runtime with explicit
- * node routing via arts_hint_t for multi-node execution.
+ * node routing via arts_edt_hint_t for multi-node execution.
  *
  * Data distribution model (same as MPI STREAM):
  *   - Total array (STREAM_ARRAY_SIZE) divided across nodes
@@ -176,6 +176,9 @@ void stream_kernel(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     break;
   }
 
+  arts_db_release(depv[0].guid, DB_MODE_RW);
+  arts_db_release(depv[1].guid, DB_MODE_RW);
+  arts_db_release(depv[2].guid, DB_MODE_RW);
   arts_event_satisfy_slot(latch_guid, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
 }
 
@@ -188,8 +191,9 @@ void stream_kernel(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
  * paramv[0] = iter
  * paramv[1] = kernel
  * paramv[2] = start_time bits (double reinterpreted as uint64_t)
+ * paramv[3] = latch GUID (destroyed here, its only dependent)
  * depv[0] = latch event (fires when all kernel EDTs complete)
- * depv[1] = metadata DB
+ * depv[1] = metadata DB (RW: the timing is stored in it)
  * ===================================================================== */
 
 void finalize_benchmark(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -205,6 +209,7 @@ void phase_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t kernel = paramv[1];
   double start_time;
   memcpy(&start_time, &paramv[2], sizeof(double));
+  arts_guid_t latch = (arts_guid_t)paramv[3];
 
   /* depv[1] = metadata DB */
   stream_meta_t *meta = (stream_meta_t *)depv[1].ptr;
@@ -214,6 +219,8 @@ void phase_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   /* Store timing in metadata DB */
   meta->times[kernel][iter] = end_time - start_time;
+  arts_event_destroy(latch);
+  arts_db_release(meta_guid, DB_MODE_RW);
 
   /* Chain to next phase */
   uint64_t next_kernel = kernel + 1;
@@ -226,11 +233,11 @@ void phase_done(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   if (next_iter < NTIMES) {
     uint64_t args[2] = {next_iter, next_kernel};
     arts_guid_t edt =
-        arts_edt_create(run_phase, 2, args, 1, &(arts_hint_t){.route = 0});
+        arts_edt_create(run_phase, 2, args, 1, &(arts_edt_hint_t){.rank = 0});
     arts_add_dependence(meta_guid, edt, 0, DB_MODE_RO);
   } else {
     arts_guid_t edt = arts_edt_create(finalize_benchmark, 0, NULL, 1,
-                                      &(arts_hint_t){.route = 0});
+                                      &(arts_edt_hint_t){.rank = 0});
     arts_add_dependence(meta_guid, edt, 0, DB_MODE_RO);
   }
 }
@@ -260,8 +267,8 @@ void run_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   double start_time = mysecond();
 
   /* Create LATCH event: fires when all num_nodes kernel EDTs complete */
-  arts_guid_t latch = arts_event_create(0, ARTS_EVENT_LATCH,
-                                        (unsigned int)num_nodes, NULL_GUID);
+  arts_guid_t latch =
+      arts_event_create(&ARTS_EVENT_HINT_LATCH((int32_t)num_nodes));
 
   /* Encode scalar as uint64_t for paramv */
   double scalar_val = SCALAR;
@@ -271,21 +278,22 @@ void run_phase(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Launch kernel EDT on each node */
   for (unsigned int n = 0; n < num_nodes; n++) {
     uint64_t args[4] = {kernel, array_elements, scalar_bits, (uint64_t)latch};
-    arts_guid_t edt =
-        arts_edt_create(stream_kernel, 4, args, 3, &(arts_hint_t){.route = n});
-    arts_add_dependence(meta->a_guids[n], edt, 0, DB_MODE_EW);
-    arts_add_dependence(meta->b_guids[n], edt, 1, DB_MODE_EW);
-    arts_add_dependence(meta->c_guids[n], edt, 2, DB_MODE_EW);
+    arts_guid_t edt = arts_edt_create(stream_kernel, 4, args, 3,
+                                      &(arts_edt_hint_t){.rank = n});
+    arts_add_dependence(meta->a_guids[n], edt, 0, DB_MODE_RW);
+    arts_add_dependence(meta->b_guids[n], edt, 1, DB_MODE_RW);
+    arts_add_dependence(meta->c_guids[n], edt, 2, DB_MODE_RW);
   }
+  arts_db_release(meta_guid, DB_MODE_RO);
 
   /* Create phase_done EDT: dep[0]=latch, dep[1]=metadata DB */
   uint64_t start_bits;
   memcpy(&start_bits, &start_time, sizeof(double));
-  uint64_t done_args[3] = {iter, kernel, start_bits};
-  arts_guid_t done_edt =
-      arts_edt_create(phase_done, 3, done_args, 2, &(arts_hint_t){.route = 0});
+  uint64_t done_args[4] = {iter, kernel, start_bits, (uint64_t)latch};
+  arts_guid_t done_edt = arts_edt_create(phase_done, 4, done_args, 2,
+                                         &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(latch, done_edt, 0, DB_MODE_NULL);
-  arts_add_dependence(meta_guid, done_edt, 1, DB_MODE_RO);
+  arts_add_dependence(meta_guid, done_edt, 1, DB_MODE_RW);
 }
 
 /* =====================================================================
@@ -346,6 +354,13 @@ void finalize_benchmark(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("Solution Validates (mathematical check)\n");
   arts_printf(HLINE);
 
+  for (uint64_t n = 0; n < meta->num_nodes; n++) {
+    arts_db_destroy(meta->a_guids[n]);
+    arts_db_destroy(meta->b_guids[n]);
+    arts_db_destroy(meta->c_guids[n]);
+  }
+  arts_db_destroy(depv[0].guid);
+
   arts_shutdown();
 }
 
@@ -370,7 +385,7 @@ void start_benchmark(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   /* Create metadata DB */
   stream_meta_t *meta = NULL;
   arts_guid_t meta_guid = arts_db_create((void **)&meta, sizeof(stream_meta_t),
-                                         ARTS_DB_DEFAULT, NULL);
+                                         ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   memset(meta, 0, sizeof(stream_meta_t));
   meta->num_nodes = num_nodes;
   meta->array_elements = array_elements;
@@ -380,6 +395,9 @@ void start_benchmark(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     meta->a_guids[n] = depv[(3 * n) + 0].guid;
     meta->b_guids[n] = depv[(3 * n) + 1].guid;
     meta->c_guids[n] = depv[(3 * n) + 2].guid;
+  }
+  for (unsigned int n = 0; n < 3 * num_nodes; n++) {
+    arts_db_release(depv[n].guid, DB_MODE_RO);
   }
 
   /* Print preamble */
@@ -415,10 +433,12 @@ void start_benchmark(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   arts_printf("The SCALAR value used for this run is %f\n", (double)SCALAR);
   arts_printf(HLINE);
 
+  arts_db_release(meta_guid, DB_MODE_RW);
+
   /* Start first phase */
   uint64_t args[2] = {0, 0}; /* iter=0, kernel=0 */
   arts_guid_t edt =
-      arts_edt_create(run_phase, 2, args, 1, &(arts_hint_t){.route = 0});
+      arts_edt_create(run_phase, 2, args, 1, &(arts_edt_hint_t){.rank = 0});
   arts_add_dependence(meta_guid, edt, 0, DB_MODE_RO);
 }
 
@@ -444,16 +464,17 @@ void init_node(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 
   uint64_t bytes = array_elements * sizeof(double);
 
-  /* Create local DBs (NULL hint = current node) */
+  /* Create local DBs (NULL hint: the no-hint home, the creating node by
+   * default) */
   double *a;
   double *b;
   double *c;
   arts_guid_t a_guid =
-      arts_db_create((void **)&a, bytes, ARTS_DB_DEFAULT, NULL);
+      arts_db_create((void **)&a, bytes, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   arts_guid_t b_guid =
-      arts_db_create((void **)&b, bytes, ARTS_DB_DEFAULT, NULL);
+      arts_db_create((void **)&b, bytes, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
   arts_guid_t c_guid =
-      arts_db_create((void **)&c, bytes, ARTS_DB_DEFAULT, NULL);
+      arts_db_create((void **)&c, bytes, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
 
   /* Initialize arrays (MPI STREAM convention) */
   for (uint64_t j = 0; j < array_elements; j++) {
@@ -465,6 +486,10 @@ void init_node(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   for (uint64_t j = 0; j < array_elements; j++) {
     a[j] = 2.0 * a[j];
   }
+
+  arts_db_release(a_guid, DB_MODE_RW);
+  arts_db_release(b_guid, DB_MODE_RW);
+  arts_db_release(c_guid, DB_MODE_RW);
 
   /* Register DB dependencies on the collector EDT */
   arts_add_dependence(a_guid, collector, (3 * n) + 0, DB_MODE_RO);
@@ -486,7 +511,7 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)depc;
   (void)depv;
 
-  unsigned int num_nodes = arts_get_total_nodes();
+  unsigned int num_nodes = arts_get_total_ranks();
   if (num_nodes > MAX_NODES) {
     arts_printf("ERROR: num_nodes (%u) exceeds MAX_NODES (%d)\n", num_nodes,
                 MAX_NODES);
@@ -506,18 +531,15 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   uint64_t collector_args[2] = {num_nodes, array_elements};
   arts_guid_t collector =
       arts_edt_create(start_benchmark, 2, collector_args, 3 * num_nodes,
-                      &(arts_hint_t){.route = 0});
+                      &(arts_edt_hint_t){.rank = 0});
 
   /* Spawn init EDT on each node */
   for (unsigned int n = 0; n < num_nodes; n++) {
     uint64_t args[3] = {n, array_elements, (uint64_t)collector};
-    arts_edt_create(init_node, 3, args, 0, &(arts_hint_t){.route = n});
+    arts_edt_create(init_node, 3, args, 0, &(arts_edt_hint_t){.rank = n});
   }
 }
 
 /* ===================================================================== */
 
-int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return 0;
-}
+int main(int argc, char **argv) { return arts_rt(argc, argv); }

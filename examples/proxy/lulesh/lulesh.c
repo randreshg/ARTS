@@ -51,15 +51,13 @@
  * constraints Reduction: reduce_dt_edt        REDUCE   -- global dt computation
  *
  * All synchronization via explicit LATCH(N)+DECR-only events
- * (distributed-safe). CDAG is NOT used for ordering -- it is a safety net only.
- * g_init is global but used ONLY by launch_iteration (rank 0).
- * EDT bodies access data exclusively through depv[].
+ * (distributed-safe).
+ * g_init's GUIDs and g_iter are rank-0 state shared by launch_iteration and
+ * reduce_dt_edt, ordered by the iteration chain.  Every other EDT body
+ * accesses data exclusively through depv[].
  */
 
 #include "arts.h"
-#include "arts/db.h"
-#include "arts/gas/guid.h"
-#include "arts/runtime_types.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,24 +143,6 @@ typedef struct {
   double dt_hydro;
   double origin_energy; /* tile 0 only: energy[0] for final output */
 } dt_result_db_t;
-
-#if ARTS_USE_CXL
-/* Registry slot: one per tile.  6 GUIDs (48 bytes) + padding to one
- * cacheline so concurrent writes by different tile owners hit disjoint
- * cachelines (no false sharing). */
-typedef struct {
-  arts_guid_t const_guid;
-  arts_guid_t pos_vel_guid;
-  arts_guid_t elem_state_guid;
-  arts_guid_t grad_guid;
-  arts_guid_t force_guid;
-  arts_guid_t dt_result_guid;
-  uint8_t _pad[16];
-} __attribute__((aligned(64))) lulesh_tile_guids_t;
-
-_Static_assert(sizeof(lulesh_tile_guids_t) == 64,
-               "lulesh_tile_guids_t must be exactly one cacheline");
-#endif
 
 /* ========================================================================= */
 /*  Offset setup                                                             */
@@ -297,7 +277,16 @@ static struct {
   arts_guid_t force_guids[MAX_TILES];
   arts_guid_t grad_guids[MAX_TILES];
   arts_guid_t dt_result_guids[MAX_TILES];
+  arts_guid_t init_done;
 } g_init;
+
+/* The current iteration's events: created by launch_iteration and destroyed
+ * by the same iteration's reduce_dt_edt, both on rank 0. */
+static struct {
+  arts_guid_t fd[MAX_TILES], rd[MAX_TILES], ed[MAX_TILES], vd[MAX_TILES];
+  arts_guid_t rr[MAX_TILES], er[MAX_TILES], vr[MAX_TILES];
+  arts_guid_t setup_done, dr;
+} g_iter;
 
 /* ========================================================================= */
 /*  LULESH v2.0 physics kernels                                              */
@@ -483,8 +472,8 @@ static void volu_der(double x0, double x1, double x2, double x3, double x4,
        (x3 + x4) * (z0 + z4) + (x2 + x5) * (z3 + z5) - (x3 + x5) * (z2 + z5)) *
       t;
   *dvdz =
-      (-(x1 + x2) * (y0 + y1) + (x0 + x1) * (y1 + y2) - (x0 + x4) * (y3 + y4) +
-       (x3 + x4) * (y0 + y4) + (x2 + x5) * (y3 + y5) - (x3 + x5) * (y2 + y5)) *
+      (-(y1 + y2) * (x0 + x1) + (y0 + y1) * (x1 + x2) - (y0 + y4) * (x3 + x4) +
+       (y3 + y4) * (x0 + x4) + (y2 + y5) * (x3 + x5) - (y3 + y5) * (x2 + x5)) *
       t;
 }
 
@@ -1078,43 +1067,6 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramc;
   (void)depc;
   (void)depv;
-#if ARTS_USE_CXL
-  int tid = (int)paramv[0], N = (int)paramv[1], T = (int)paramv[2],
-      tpd = (int)paramv[3], max_iter = (int)paramv[4];
-  arts_guid_t registry_guid = (arts_guid_t)paramv[5];
-  arts_guid_t init_done = (arts_guid_t)paramv[6];
-
-  size_t csz = compute_const_db_size(T), pvsz = compute_pos_vel_db_size(T);
-  size_t essz = compute_elem_state_db_size(T), gsz = compute_grad_db_size(T),
-         fsz = compute_force_db_size(T);
-
-  /* Allocate 6 CXL DBs and capture their CXL-encoded GUIDs. */
-  const_db_header_t *ch;
-  arts_guid_t cg =
-      arts_db_create((void **)&ch, (uint64_t)csz, ARTS_DB_CXL, 0, NULL);
-  memset(ch, 0, csz);
-  pos_vel_db_header_t *pvh;
-  arts_guid_t pg =
-      arts_db_create((void **)&pvh, (uint64_t)pvsz, ARTS_DB_CXL, 0, NULL);
-  memset(pvh, 0, pvsz);
-  elem_state_db_header_t *esh;
-  arts_guid_t es_guid =
-      arts_db_create((void **)&esh, (uint64_t)essz, ARTS_DB_CXL, 0, NULL);
-  memset(esh, 0, essz);
-  grad_db_header_t *gh;
-  arts_guid_t gg =
-      arts_db_create((void **)&gh, (uint64_t)gsz, ARTS_DB_CXL, 0, NULL);
-  memset(gh, 0, gsz);
-  force_db_header_t *fh;
-  arts_guid_t fg =
-      arts_db_create((void **)&fh, (uint64_t)fsz, ARTS_DB_CXL, 0, NULL);
-  memset(fh, 0, fsz);
-  dt_result_db_t *dr;
-  arts_guid_t dt_guid = arts_db_create(
-      (void **)&dr, (uint64_t)sizeof(dt_result_db_t), ARTS_DB_CXL, 0, NULL);
-  dr->dt_courant = 1.e20;
-  dr->dt_hydro = 1.e20;
-#else
   int tid = (int)paramv[0], N = (int)paramv[1], T = (int)paramv[2],
       tpd = (int)paramv[3], max_iter = (int)paramv[4];
   arts_guid_t cg = (arts_guid_t)paramv[5];
@@ -1131,25 +1083,24 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
          fsz = compute_force_db_size(T);
 
   const_db_header_t *ch =
-      arts_db_create_with_guid(cg, (uint64_t)csz, ARTS_DB_DEFAULT, 0, NULL);
+      arts_db_create_with_guid(cg, (uint64_t)csz, ARTS_DB, 0, NULL);
   memset(ch, 0, csz);
   pos_vel_db_header_t *pvh =
-      arts_db_create_with_guid(pg, (uint64_t)pvsz, ARTS_DB_DEFAULT, 0, NULL);
+      arts_db_create_with_guid(pg, (uint64_t)pvsz, ARTS_DB, 0, NULL);
   memset(pvh, 0, pvsz);
   elem_state_db_header_t *esh = arts_db_create_with_guid(
-      es_guid, (uint64_t)essz, ARTS_DB_DEFAULT, 0, NULL);
+      es_guid, (uint64_t)essz, ARTS_DB, 0, NULL);
   memset(esh, 0, essz);
   grad_db_header_t *gh =
-      arts_db_create_with_guid(gg, (uint64_t)gsz, ARTS_DB_DEFAULT, 0, NULL);
+      arts_db_create_with_guid(gg, (uint64_t)gsz, ARTS_DB, 0, NULL);
   memset(gh, 0, gsz);
   force_db_header_t *fh =
-      arts_db_create_with_guid(fg, (uint64_t)fsz, ARTS_DB_DEFAULT, 0, NULL);
+      arts_db_create_with_guid(fg, (uint64_t)fsz, ARTS_DB, 0, NULL);
   memset(fh, 0, fsz);
   dt_result_db_t *dr = arts_db_create_with_guid(
-      dt_guid, (uint64_t)sizeof(dt_result_db_t), ARTS_DB_DEFAULT, 0, NULL);
+      dt_guid, (uint64_t)sizeof(dt_result_db_t), ARTS_DB, 0, NULL);
   dr->dt_courant = 1.e20;
   dr->dt_hydro = 1.e20;
-#endif
 
   set_const_offsets(ch, T);
   set_pos_vel_offsets(pvh, T);
@@ -1252,8 +1203,32 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         eivol[ei] = v;
         emass[ei] = v;
         pr[ei] = eg[ei] = vi[ei] = ss[ei] = 0;
-        for (int c = 0; c < 8; c++)
-          nm[en[ei * 8 + c]] += v / 8.0;
+      }
+  /* A node's mass is an eighth of every element of the whole mesh around it,
+   * the neighbouring tiles' included, summed in global element order so that
+   * every tile holding the node computes the same value. */
+  static const int cx[8] = {0, 1, 1, 0, 0, 1, 1, 0},
+                   cy[8] = {0, 0, 1, 1, 0, 0, 1, 1},
+                   cz[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+  for (int lz = 0; lz <= T; lz++)
+    for (int ly = 0; ly <= T; ly++)
+      for (int lx = 0; lx <= T; lx++) {
+        int gx = tx * T + lx, gy = ty * T + ly, gz = tz * T + lz;
+        double m = 0;
+        for (int ez = gz - 1; ez <= gz; ez++)
+          for (int ey = gy - 1; ey <= gy; ey++)
+            for (int ex = gx - 1; ex <= gx; ex++) {
+              if (ex < 0 || ex >= N || ey < 0 || ey >= N || ez < 0 || ez >= N)
+                continue;
+              double xc[8], yc[8], zc[8];
+              for (int c = 0; c < 8; c++) {
+                xc[c] = delta * (ex + cx[c]);
+                yc[c] = delta * (ey + cy[c]);
+                zc[c] = delta * (ez + cz[c]);
+              }
+              m += calc_elem_volume(xc, yc, zc) / 8.0;
+            }
+        nm[nidx(T, lx, ly, lz)] = m;
       }
   if (tx == 0 && ty == 0 && tz == 0) {
     double einit = 3.948746e+7 * pow((double)N / 45.0, 3.0);
@@ -1319,43 +1294,14 @@ void init_tile_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
         if (tz * T + lz == 0)
           szf[ni] = 1;
       }
-#if ARTS_USE_CXL
-  /* Publish this tile's 6 CXL GUIDs into the registry slot.  Slots are
-   * cacheline-aligned so writes from different tile owners hit
-   * different cachelines — no false sharing, no lock needed. */
-
-  // lulesh_tile_guids_t *registry =
-      // (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
-                                  // registry_guid) +
-                              // 1);
-  
-  // With padding
-  static const size_t reg_leading_pad =
-      (64u - (sizeof(struct arts_db_s) % 64u)) % 64u;
-  lulesh_tile_guids_t *registry =
-      (lulesh_tile_guids_t *)((char *)((struct arts_db_s *)arts_cxl_get_ptr(
-                                  registry_guid) + 1) + reg_leading_pad);
-  registry[tid].const_guid = cg;
-  registry[tid].pos_vel_guid = pg;
-  registry[tid].elem_state_guid = es_guid;
-  registry[tid].grad_guid = gg;
-  registry[tid].force_guid = fg;
-  registry[tid].dt_result_guid = dt_guid;
-#endif
-
-  /* Pattern A: release all 6 created DBs so CXL producer_flush fires
-   * before the LATCH decrement that dispatches downstream consumers. */
+  /* Pattern A: release all 6 created DBs before the LATCH decrement that
+   * dispatches downstream consumers. */
   arts_db_release(cg, DB_MODE_RW);
   arts_db_release(pg, DB_MODE_RW);
   arts_db_release(es_guid, DB_MODE_RW);
   arts_db_release(gg, DB_MODE_RW);
   arts_db_release(fg, DB_MODE_RW);
   arts_db_release(dt_guid, DB_MODE_RW);
-
-#if ARTS_USE_CXL
-  /* Flush this tile's registry slot so post_init sees it. */
-  arts_cxl_producer_flush(registry_guid);
-#endif
 
   /* Signal init_done latch */
   arts_event_satisfy_slot(init_done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
@@ -1371,56 +1317,20 @@ void post_init_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                    arts_edt_dep_t depv[]) {
   (void)paramc;
   (void)depc;
-#if ARTS_USE_CXL
-  (void)depv;
-  /* Read the registry DB to populate g_init with the CXL GUIDs produced
-   * by init_tile_edts.  Rank 0 is the only place this struct is used
-   * (launch_iteration runs on rank 0), so local population suffices. */
-  arts_guid_t registry_guid = (arts_guid_t)paramv[0];
-  arts_cxl_consumer_flush(registry_guid);
-
-  // lulesh_tile_guids_t *registry =
-  //     (lulesh_tile_guids_t *)((struct arts_db_s *)arts_cxl_get_ptr(
-  //                                 registry_guid) +
-  //                             1);
-  
-  // With padding
-  static const size_t reg_leading_pad =
-      (64u - (sizeof(struct arts_db_s) % 64u)) % 64u;
-  lulesh_tile_guids_t *registry =
-      (lulesh_tile_guids_t *)((char *)((struct arts_db_s *)arts_cxl_get_ptr(
-                                  registry_guid) + 1) + reg_leading_pad);
-
-  int nt = g_init.num_tiles;
-  for (int t = 0; t < nt; t++) {
-    g_init.const_guids[t] = registry[t].const_guid;
-    g_init.pos_vel_guids[t] = registry[t].pos_vel_guid;
-    g_init.elem_state_guids[t] = registry[t].elem_state_guid;
-    g_init.grad_guids[t] = registry[t].grad_guid;
-    g_init.force_guids[t] = registry[t].force_guid;
-    g_init.dt_result_guids[t] = registry[t].dt_result_guid;
-  }
-
-  /* Read tile 0's const + elem_state DBs to compute initial dt. */
-  arts_cxl_consumer_flush(g_init.const_guids[0]);
-  arts_cxl_consumer_flush(g_init.elem_state_guids[0]);
-  const_db_header_t *ch =
-      (const_db_header_t *)((struct arts_db_s *)arts_cxl_get_ptr(
-                                g_init.const_guids[0]) +
-                            1);
-  elem_state_db_header_t *esh =
-      (elem_state_db_header_t *)((struct arts_db_s *)arts_cxl_get_ptr(
-                                     g_init.elem_state_guids[0]) +
-                                 1);
-#else
   (void)paramv;
   const_db_header_t *ch = depv[1].ptr;
   elem_state_db_header_t *esh = depv[2].ptr;
-#endif
 
   double *eivol = TILE_PTR(ch, ch->off_elem_init_vol, double);
   double *eg = TILE_PTR(esh, esh->off_energy, double);
   double dt = 0.5 * cbrt(eivol[0]) / sqrt(2.0 * eg[0]);
+  double target = ch->stop_time;
+  arts_db_release(depv[1].guid, DB_MODE_RO);
+  arts_db_release(depv[2].guid, DB_MODE_RO);
+  if (target > dt && target < 4.0 * dt / 3.0)
+    target = 2.0 * dt / 3.0;
+  if (target < dt)
+    dt = target;
   arts_printf("  Initial delta_time: %12.6e\n", dt);
   uint64_t p[3] = {0, 0, 0};
   memcpy(&p[1], &dt, sizeof(double));
@@ -1448,19 +1358,19 @@ void post_init_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 /*                                                                           */
 /*  Phase 1 forces_edt(t):                                                   */
 /*    depv: [0]=setup_done(NULL), [1]=const(RO), [2]=posvel(RO),             */
-/*          [3]=force(EW)                                                    */
+/*          [3]=force(RW)                                                    */
 /*                                                                           */
 /*  Phase 2 reduce_kin_edt(t):                                               */
 /*    depv: [0]=rr(NULL), [1]=force[t](RO), [2..2+na-1]=force[nbrs](RO),    */
-/*          [2+na]=const(RO), [3+na]=posvel(EW)                              */
+/*          [2+na]=const(RO), [3+na]=posvel(RW)                              */
 /*                                                                           */
 /*  Phase 3 elem_props_edt(t):                                               */
-/*    depv: [0]=er(NULL), [1]=const(RO), [2]=posvel(RO), [3]=grad(EW)       */
+/*    depv: [0]=er(NULL), [1]=const(RO), [2]=posvel(RO), [3]=grad(RW)       */
 /*                                                                           */
 /*  Phase 4 visc_eos_time_edt(t):                                            */
-/*    depv: [0]=vr(NULL), [1]=grad[t](RO), [2..2+nf-1]=grad[face_nbrs](RO), */
-/*          [2+nf]=const(RO), [3+nf]=estate(EW), [4+nf]=dt_result(EW),      */
-/*          [5+nf]=force(EW)                                                 */
+/*    depv: [0]=vr(NULL), [1]=grad[t](RW), [2..2+nf-1]=grad[face_nbrs](RO), */
+/*          [2+nf]=const(RO), [3+nf]=estate(RW), [4+nf]=dt_result(RW),      */
+/*          [5+nf]=force(RW)                                                 */
 /*                                                                           */
 /*  Phase 5 reduce_dt_edt:                                                   */
 /*    depv: [0]=dr(NULL), [1..nt]=dt_result[0..nt-1](RO),                    */
@@ -1480,15 +1390,16 @@ static void launch_iteration(int iter, double dt, double elapsed) {
 
   /* Step 1: Create 7*nt events on rank 0.
    * ARTS events are location-independent. */
-  arts_guid_t fd_guids[MAX_TILES], rd_guids[MAX_TILES], ed_guids[MAX_TILES],
-      vd_guids[MAX_TILES];
-  arts_guid_t rr_guids[MAX_TILES], er_guids[MAX_TILES], vr_guids[MAX_TILES];
+  arts_guid_t *fd_guids = g_iter.fd, *rd_guids = g_iter.rd,
+              *ed_guids = g_iter.ed, *vd_guids = g_iter.vd;
+  arts_guid_t *rr_guids = g_iter.rr, *er_guids = g_iter.er,
+              *vr_guids = g_iter.vr;
   for (int t = 0; t < nt; t++) {
     int na = g_init.num_all_nbrs[t], nf = g_init.num_face_nbrs[t];
-    fd_guids[t] = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-    rd_guids[t] = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-    ed_guids[t] = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-    vd_guids[t] = arts_event_create(&ARTS_EVENT_HINT_ONCE);
+    fd_guids[t] = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+    rd_guids[t] = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+    ed_guids[t] = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+    vd_guids[t] = arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
     rr_guids[t] =
         arts_event_create(&ARTS_EVENT_HINT_LATCH(1 + na));
     er_guids[t] =
@@ -1521,32 +1432,18 @@ static void launch_iteration(int iter, double dt, double elapsed) {
   }
 
   /* Step 3: Create setup_done + dr latch */
-  arts_guid_t setup_done = arts_event_create(&ARTS_EVENT_HINT_ONCE);
-  arts_guid_t dr =
-      arts_event_create(&ARTS_EVENT_HINT_LATCH(nt));
+  arts_guid_t setup_done = g_iter.setup_done =
+      arts_event_create(&ARTS_EVENT_HINT_DEFAULTS);
+  arts_guid_t dr = g_iter.dr = arts_event_create(&ARTS_EVENT_HINT_LATCH(nt));
 
   /* Step 4: Wire vd -> dr deps */
   for (int t = 0; t < nt; t++)
     arts_add_dependence(vd_guids[t], dr, 0, DB_MODE_NULL);
 
-  /* Step 5: reduce_dt_edt will be created AFTER phase EDTs in Step 7.
-   * This ensures phase EDTs register their DB EW entries in the frontier
-   * before reduce_dt's EW entries, which preserves the EW→EW→EW chain
-   * order and lets phase EDTs run before the iteration barrier. */
+  /* Step 5: reduce_dt_edt is created after the phase EDTs, below. */
 
-  /* Step 6: Create 4*nt phase EDTs with DB + event deps */
-  /* Wire EDT DB deps in PHASE ORDER to ensure CDAG frontier registration
-   * matches event execution order.  With tile-order wiring, a cross-tile
-   * neighbor dep (reduce_kin_edt[A] RO on force_db[B]) could be registered
-   * AFTER visc_eos_time_edt[B] EW on force_db[B], inverting the frontier:
-   *   EW(forces) → RO(reduce_own) → EW(visc_eos) → RO(reduce_nbr)
-   * Event ordering requires reduce_nbr BEFORE visc_eos → circular wait.
-   * Phase-order ensures: EW(forces) → RO(reduce_all) → EW(visc_eos). */
-
-  /* Phase EDTs use RO for reads and EW for writes. The runtime's RO→EW
-   * frontier progress (ARTS_DB_DEFAULT frontier) guarantees ordering:
-   * when the last reader releases and a writer is waiting in frontier->next,
-   * the frontier is progressed so the writer can proceed. */
+  /* Step 6: Create 4*nt phase EDTs with DB + event deps, phase by phase.
+   * Phase EDTs use RO for reads and RW for writes. */
 
   /* Phase 1: forces_edt */
   for (int t = 0; t < nt; t++) {
@@ -1600,7 +1497,7 @@ static void launch_iteration(int iter, double dt, double elapsed) {
     arts_guid_t e = arts_edt_create(visc_eos_time_edt, 2, p, depc2,
                                     &(arts_edt_hint_t){.rank = o});
     arts_add_dependence(vr_guids[t], e, 0, DB_MODE_NULL);
-    arts_add_dependence(g_init.grad_guids[t], e, 1, DB_MODE_RO);
+    arts_add_dependence(g_init.grad_guids[t], e, 1, DB_MODE_RW);
     for (int n = 0; n < nf; n++)
       arts_add_dependence(g_init.grad_guids[g_init.face_nbrs[t][n]], e,
                           (uint32_t)(2 + n), DB_MODE_RO);
@@ -1615,9 +1512,8 @@ static void launch_iteration(int iter, double dt, double elapsed) {
   }
 
   /* Reduction: reduce_dt_edt — reads all dt_result DBs (RO) + const[0] (RO).
-   * The dr latch ensures all visc_eos_time_edts have fired rd before this
-   * EDT starts.  Additional per-tile DB deps are not needed because the
-   * event chain (vd→dr) already guarantees ordering. */
+   * The dr latch ensures all visc_eos_time_edts have fired vd before this
+   * EDT starts; the per-tile dt_result deps carry the data. */
   {
     uint64_t p[3] = {(uint64_t)iter, dtb, elb};
     uint32_t depc = (uint32_t)(1 + nt + 1);
@@ -1643,7 +1539,7 @@ static void launch_iteration(int iter, double dt, double elapsed) {
 /*  forces_edt                                                               */
 /*  paramv: [tid, done_guid]                                                 */
 /*  depv: [0]=setup_done(NULL), [1]=const(RO), [2]=posvel(RO),              */
-/*        [3]=force(EW)                                                      */
+/*        [3]=force(RW)                                                      */
 /* ========================================================================= */
 
 void forces_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -1676,6 +1572,8 @@ void forces_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       efz[k * 8 + c] = fz[c];
     }
   }
+  arts_db_release(depv[1].guid, DB_MODE_RO);
+  arts_db_release(depv[2].guid, DB_MODE_RO);
   /* Pattern A: flush force_db before the LATCH-DECR dispatches consumers. */
   arts_db_release(depv[3].guid, DB_MODE_RW);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
@@ -1685,7 +1583,7 @@ void forces_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 /*  reduce_kin_edt                                                           */
 /*  paramv: [tid, dt_bits, done_guid]                                        */
 /*  depv: [0]=rr(NULL), [1]=force[t](RO), [2..2+na-1]=force[nbrs](RO),     */
-/*        [2+na]=const(RO), [3+na]=posvel(EW)                               */
+/*        [2+na]=const(RO), [3+na]=posvel(RW)                               */
 /*  na = depc - 4 (inferred from depv layout)                                */
 /* ========================================================================= */
 
@@ -1842,6 +1740,8 @@ void reduce_kin_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     py[ni] += vyp[ni] * dt;
     pz[ni] += vzp[ni] * dt;
   }
+  for (int s = 1; s <= 2 + na; s++)
+    arts_db_release(depv[s].guid, DB_MODE_RO);
   /* Pattern A: flush pos_vel_db before LATCH-DECR dispatches consumers. */
   arts_db_release(depv[3 + na].guid, DB_MODE_RW);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
@@ -1850,7 +1750,7 @@ void reduce_kin_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 /* ========================================================================= */
 /*  elem_props_edt                                                           */
 /*  paramv: [tid, dt_bits, done_guid]                                        */
-/*  depv: [0]=er(NULL), [1]=const(RO), [2]=posvel(RO), [3]=grad(EW)         */
+/*  depv: [0]=er(NULL), [1]=const(RO), [2]=posvel(RO), [3]=grad(RW)         */
 /* ========================================================================= */
 
 void elem_props_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
@@ -1907,6 +1807,8 @@ void elem_props_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     }
   }
   calc_monoq_gradients(ch, pvh, gh);
+  arts_db_release(depv[1].guid, DB_MODE_RO);
+  arts_db_release(depv[2].guid, DB_MODE_RO);
   /* Pattern A: flush grad_db before LATCH-DECR dispatches consumers. */
   arts_db_release(depv[3].guid, DB_MODE_RW);
   arts_event_satisfy_slot(done, NULL_GUID, ARTS_EVENT_LATCH_DECR_SLOT);
@@ -1915,9 +1817,9 @@ void elem_props_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
 /* ========================================================================= */
 /*  visc_eos_time_edt                                                        */
 /*  paramv: [tid, done_guid]                                                 */
-/*  depv: [0]=vr(NULL), [1]=grad[t](RO), [2..2+nf-1]=grad[face_nbrs](RO),  */
-/*        [2+nf]=const(RO), [3+nf]=estate(EW), [4+nf]=dt_result(EW),        */
-/*        [5+nf]=force(EW)                                                   */
+/*  depv: [0]=vr(NULL), [1]=grad[t](RW), [2..2+nf-1]=grad[face_nbrs](RO),  */
+/*        [2+nf]=const(RO), [3+nf]=estate(RW), [4+nf]=dt_result(RW),        */
+/*        [5+nf]=force(RW)                                                   */
 /*  nf = depc - 6 (inferred)                                                 */
 /* ========================================================================= */
 
@@ -1948,7 +1850,7 @@ void visc_eos_time_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
          *pvol = TILE_PTR(esh, esh->off_prev_volume, double);
   for (int k = 0; k < ne; k++) {
     pvol[k] = vol[k];
-    vol[k] = vnew[k];
+    vol[k] = fabs(vnew[k] - 1.0) < ch->v_cut ? 1.0 : vnew[k];
   }
 
   /* Compute per-tile dt constraints and store in dt_result_db */
@@ -1989,8 +1891,11 @@ void visc_eos_time_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     vol_cache[k] = vol[k];
   }
 
-  /* Pattern A: flush the three EW-modified DBs before LATCH-DECR
+  for (int s = 2; s <= 2 + nf; s++)
+    arts_db_release(depv[s].guid, DB_MODE_RO);
+  /* Pattern A: flush the four modified DBs before LATCH-DECR
    * dispatches downstream consumers. */
+  arts_db_release(depv[1].guid, DB_MODE_RW);      // grad_db
   arts_db_release(depv[3 + nf].guid, DB_MODE_RW); // elem_state_db
   arts_db_release(depv[4 + nf].guid, DB_MODE_RW); // dt_result_db
   arts_db_release(depv[5 + nf].guid, DB_MODE_RW); // force_db
@@ -2056,6 +1961,19 @@ void reduce_dt_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     targetdt = 2.0 * dt_new / 3.0;
   if (targetdt < dt_new)
     dt_new = targetdt;
+  /* Every event of this iteration has fired and delivered: dr follows every
+   * vd[t], which follows its tile's whole chain. */
+  for (int t = 0; t < nt; t++) {
+    arts_event_destroy(g_iter.fd[t]);
+    arts_event_destroy(g_iter.rd[t]);
+    arts_event_destroy(g_iter.ed[t]);
+    arts_event_destroy(g_iter.vd[t]);
+    arts_event_destroy(g_iter.rr[t]);
+    arts_event_destroy(g_iter.er[t]);
+    arts_event_destroy(g_iter.vr[t]);
+  }
+  arts_event_destroy(g_iter.setup_done);
+  arts_event_destroy(g_iter.dr);
   int finished = (new_elapsed >= stop) || (iter + 1 >= max_iter);
   if (finished) {
     arts_printf("Run completed:\n");
@@ -2072,12 +1990,21 @@ void reduce_dt_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                 (g_prof_launch_ns / 1e6) / (double)g_prof_launch_count,
                 total_ns / 1e6, 100.0 * g_prof_launch_ns / (double)total_ns);
 #endif
+    for (int t = 0; t < nt; t++) {
+      arts_db_destroy(g_init.const_guids[t]);
+      arts_db_destroy(g_init.pos_vel_guids[t]);
+      arts_db_destroy(g_init.elem_state_guids[t]);
+      arts_db_destroy(g_init.grad_guids[t]);
+      arts_db_destroy(g_init.force_guids[t]);
+      arts_db_destroy(g_init.dt_result_guids[t]);
+    }
+    arts_event_destroy(g_init.init_done);
     fflush(stdout);
     arts_shutdown();
   } else {
-    /* Create next_iter_edt(depc=0) as trampoline.
-     * This ensures reduce_dt_edt's DB deps are fully released
-     * before the next iteration starts. */
+    for (int s = 1; s <= nt + 1; s++)
+      arts_db_release(depv[s].guid, DB_MODE_RO);
+    /* Create next_iter_edt(depc=0) as trampoline. */
     uint64_t p[4] = {(uint64_t)(iter + 1), 0, 0, 0};
     memcpy(&p[1], &dt_new, sizeof(double));
     memcpy(&p[2], &new_elapsed, sizeof(double));
@@ -2144,6 +2071,11 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
       T = atoi(argv[++i]);
   }
   unsigned nn = arts_get_total_ranks();
+  if (N <= 0) {
+    printf("Error: edge size %d is not positive\n", N);
+    arts_shutdown();
+    return;
+  }
   if (T <= 0)
     T = compute_tile_elems(N, (int)nn);
   if (N % T) {
@@ -2151,78 +2083,33 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-  int tpd = N / T, nt = tpd * tpd * tpd;
-  if (nt > MAX_TILES) {
+  /* tpd is bounded before it is cubed, so the cube cannot overflow. */
+  int tpd = N / T;
+  if (tpd > MAX_TILES || tpd * tpd * tpd > MAX_TILES) {
     printf("Error: too many tiles\n");
     arts_shutdown();
     return;
   }
+  int nt = tpd * tpd * tpd;
   arts_printf("LULESH ARTS 6-DB-partition implementation\n");
   arts_printf("  Edge elements:  %d\n  Tile elements:  %d\n  Tiles:         "
               " %d\n  ARTS nodes:     %u\n",
               N, T, nt, nn);
   build_topo(N, T, (int)nn);
 
-#if ARTS_USE_CXL
-  /* CXL mode: do not reserve GUIDs — init_tile_edt receives CXL-encoded
-   * GUIDs from arts_db_create and publishes them via the registry DB. */
-  lulesh_tile_guids_t *registry = NULL;
-  
-  // arts_guid_t registry_guid = arts_db_create(
-  //     (void **)&registry, (uint64_t)nt * sizeof(lulesh_tile_guids_t),
-  // ARTS_DB_CXL, 0, NULL);
-  // if (registry_guid == NULL_GUID || registry == NULL) {
-  //   arts_printf("LULESH: failed to create CXL registry DB\n");
-  //   arts_shutdown();
-  //   return;
-  // }
-  // memset(registry, 0, (size_t)nt * sizeof(lulesh_tile_guids_t));
-  // arts_db_release(registry_guid, DB_MODE_RW); /* Pattern A: producer_flush before readers */
-  
-  // With padding
-  size_t reg_leading_pad =
-      (64u - (sizeof(struct arts_db_s) % 64u)) % 64u;
-  size_t reg_payload_sz =
-      reg_leading_pad + (size_t)nt * sizeof(lulesh_tile_guids_t);
-  arts_guid_t registry_guid = arts_db_create(
-      (void **)&registry, (uint64_t)reg_payload_sz, ARTS_DB_CXL, 0, NULL);
-  if (registry_guid == NULL_GUID || registry == NULL) {
-    arts_printf("LULESH: failed to create CXL registry DB\n");
-    arts_shutdown();
-    return;
-  }
-  memset(registry, 0, reg_payload_sz); 
-
-  arts_guid_t init_done =
-      arts_event_create(&ARTS_EVENT_HINT_LATCH(nt));
-
-  uint64_t pi_paramv[1] = {(uint64_t)registry_guid};
-  arts_guid_t post_init = arts_edt_create(post_init_edt, 1, pi_paramv, 1,
-                                          &(arts_edt_hint_t){.rank = 0});
-  arts_add_dependence(init_done, post_init, 0, DB_MODE_NULL);
-
-  for (int t = 0; t < nt; t++) {
-    unsigned o = g_init.tile_owner[t];
-    uint64_t p[7] = {(uint64_t)t,        (uint64_t)N,
-                     (uint64_t)T,        (uint64_t)tpd,
-                     (uint64_t)max_iter, (uint64_t)registry_guid,
-                     (uint64_t)init_done};
-    arts_edt_create(init_tile_edt, 7, p, 0, &(arts_edt_hint_t){.rank = o});
-  }
-#else
   /* Pre-reserve 6*nt DB GUIDs on tile owner nodes */
   for (int t = 0; t < nt; t++) {
     unsigned o = g_init.tile_owner[t];
-    g_init.const_guids[t] = arts_guid_reserve(ARTS_DB, o);
-    g_init.pos_vel_guids[t] = arts_guid_reserve(ARTS_DB, o);
-    g_init.elem_state_guids[t] = arts_guid_reserve(ARTS_DB, o);
-    g_init.grad_guids[t] = arts_guid_reserve(ARTS_DB, o);
-    g_init.force_guids[t] = arts_guid_reserve(ARTS_DB, o);
-    g_init.dt_result_guids[t] = arts_guid_reserve(ARTS_DB, o);
+    g_init.const_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
+    g_init.pos_vel_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
+    g_init.elem_state_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
+    g_init.grad_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
+    g_init.force_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
+    g_init.dt_result_guids[t] = arts_guid_reserve(ARTS_GUID_DB, o);
   }
 
   /* Create init_done latch (count=nt) and post_init_edt */
-  arts_guid_t init_done =
+  arts_guid_t init_done = g_init.init_done =
       arts_event_create(&ARTS_EVENT_HINT_LATCH(nt));
   arts_guid_t post_init =
       arts_edt_create(post_init_edt, 0, NULL, 3, &(arts_edt_hint_t){.rank = 0});
@@ -2247,7 +2134,6 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
                       (uint64_t)init_done};
     arts_edt_create(init_tile_edt, 12, p, 0, &(arts_edt_hint_t){.rank = o});
   }
-#endif
 }
 
 /* Called on EVERY node before main_edt -- ensures g_init is available
@@ -2262,6 +2148,8 @@ void init_per_node(unsigned int node_id, int argc, char **argv) {
       T = atoi(argv[++i]);
   }
   unsigned nn = arts_get_total_ranks();
+  if (N <= 0)
+    return;
   if (T <= 0)
     T = compute_tile_elems(N, (int)nn);
   if (N % T)
@@ -2269,10 +2157,10 @@ void init_per_node(unsigned int node_id, int argc, char **argv) {
       arts_printf("N is not divisible by T. Exiting...\n");
       return;
     }
+  int tpd = N / T;
+  if (tpd > MAX_TILES || tpd * tpd * tpd > MAX_TILES)
+    return;
   build_topo(N, T, (int)nn);
 }
 
-int main(int argc, char *argv[]) {
-  arts_rt(argc, argv);
-  return 0;
-}
+int main(int argc, char *argv[]) { return arts_rt(argc, argv); }

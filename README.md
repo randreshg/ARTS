@@ -158,7 +158,7 @@ by hand — see `tools/artsrun/README.md`.
 - `libs/src/` – Runtime sources: task scheduler, GUID tables, datablock manager, network transports, logging
 - `cmake/` – Build helpers
 - `configs/` – The ctest configurations (`local/test/`), the counter sets (`counters*.cfg`), the templates artsrun renders a node profile's configurations from (`templates/`), and the crete cluster's configurations (`crete/`)
-- `examples/` – Small standalone programs showing how to create EDTs/datablocks. They predate the current public API and are not part of the build
+- `examples/` – Native ARTS programs on the public API alone, built under `ARTS_BUILD_EXAMPLES` and smoke-tested in the test trees (`basics/`, `dense/`, `graph/`, `stream/`, `random_access/`, `proxy/`); `gpu/` holds GPU programs not yet ported, not part of the build
 - `benchmarks/` – The OCR benchmark applications (ARTS, XSOCR and ocr-vx backends), the OCR shim, and the HPX-origin section's HPX programs
 - `docs/` – Sphinx/Doxygen documentation sources (see Documentation below)
 
@@ -198,4 +198,4 @@ Then open <http://localhost:8000> in a browser.
 
 - `INSTALL.md` – Build instructions and optional components
 - `FULL_LICENSE.md` / `LICENSE.md` – Licensing information
-- Example programs under `examples/` (they predate the current public API and are not part of the build; `tests/ocr/` and `benchmarks/` are working usage references)
+- Example programs under `examples/` (`basics/`, `dense/`, `graph/`, `stream/`, `random_access/` and `proxy/` are built and smoke-tested; `gpu/` holds GPU programs not yet ported, not part of the build; `tests/ocr/` and `benchmarks/` are working usage references)

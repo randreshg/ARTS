@@ -36,66 +36,56 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
+#ifndef RANDOM_ACCESS_DEFS_H
+#define RANDOM_ACCESS_DEFS_H
 
-#include "arts.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-unsigned int num_dbs = 0;
-arts_guid_t reduction_guid = NULL_GUID;
+#define TURNON(...)
+// #define TURNON(...) __VA_ARGS__
 
-void reduction(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-               arts_edt_dep_t depv[]) {
-  (void)paramc;
-  uint64_t total = 0;
-  for (unsigned int i = 0; i < depc; i++) {
-    int *db_ptr = depv[i].ptr;
-    total += db_ptr[0];
-  }
-  arts_signal_edt_value((arts_guid_t)paramv[0], 0, total);
+// #define TABLESIZE 32UL * 2UL * 80UL * 1024UL * 32UL
+#ifndef TABLESIZE
+#define TABLESIZE 32UL * 1024UL * 80UL
+#endif
+// #define TABLESIZE 32UL * 2UL
+// #define TILESIZE 32UL * 2UL * 80UL * 1024UL
+// #define TILESIZE 32UL
+#define TILESIZE 40960UL
+#ifndef NUPDATE
+#define NUPDATE (16 * TABLESIZE)
+#endif
+// #define NUPDATE TABLESIZE
+
+#define VALIDATE 1
+
+// Configured for Volta
+#define MAXTHREADS 32
+#define MAXTHREADBLOCKSPERSM 2
+#define NUMBEROFSM 80
+#define MAXGRID MAXTHREADBLOCKSPERSM *NUMBEROFSM
+
+#define POLY2 0x0000000000000007UL
+#define PERIOD2 1317624576693539401L
+
+#define POLY 0x0000000000000007ULL
+#define PERIOD 1317624576693539401LL
+
+#define MAX_TOTAL_PENDING_UPDATES 1024 * 16
+#define MAX_TOTAL_PENDING_UPDATES_CU 1024ULL * 16ULL
+
+#define LOCAL_BUFFER_SIZE MAX_TOTAL_PENDING_UPDATES
+#define MAX_UPDATES_PER_GPU_STEP                                               \
+  MAXTHREADS *MAXTHREADBLOCKSPERSM *NUMBEROFSM *LOCAL_BUFFER_SIZE
+#define MAX_UPDATES_PER_CPU_STEP MAX_TOTAL_PENDING_UPDATES
+
+typedef unsigned long long int uint64_cu_t;
+typedef long long int int64_cu_t;
+
+#ifdef __cplusplus
 }
+#endif
 
-void shut_down(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-               arts_edt_dep_t depv[]) {
-  (void)depc;
-  (void)paramc;
-  (void)paramv;
-  arts_printf("Result %lu\n", depv[0].guid);
-  arts_shutdown();
-}
-
-void node_setup(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  unsigned int node_id = (unsigned int)paramv[0];
-  int *ptr;
-  arts_guid_t db_guid = arts_db_create((void **)&ptr, sizeof(unsigned int),
-                                       ARTS_DB_DEFAULT, NULL);
-  *ptr = (int)node_id;
-  arts_signal_edt(reduction_guid, node_id, db_guid, DB_MODE_EW);
-}
-
-void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-              arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)paramv;
-  (void)depc;
-  (void)depv;
-  num_dbs = arts_get_total_nodes();
-  reduction_guid = arts_guid_reserve(ARTS_EDT, 0);
-
-  arts_guid_t guid =
-      arts_edt_create(shut_down, 0, NULL, 1, &(arts_hint_t){.route = 0});
-  arts_edt_create_with_guid(reduction, reduction_guid, 1, (uint64_t *)&guid,
-                            num_dbs);
-
-  for (unsigned int n = 0; n < num_dbs; n++) {
-    uint64_t args = n;
-    arts_edt_create(node_setup, 1, &args, 0, &(arts_hint_t){.route = n});
-  }
-}
-
-int main(int argc, char **argv) {
-  arts_rt(argc, argv);
-  return 0;
-}
+#endif

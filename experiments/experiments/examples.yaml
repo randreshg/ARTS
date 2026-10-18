@@ -35,6 +35,18 @@ apps:
   cholesky_example:
     enabled: true
     versions: [base]
+  stream_example:
+    enabled: true
+    versions: [base]
+  random_access_example:
+    enabled: true
+    versions: [base]
+  lulesh_example:
+    enabled: true
+    versions: [base]
+  smithwaterman_example:
+    enabled: true
+    versions: [base]
   bfs_example:
     enabled: true
     versions: [base]

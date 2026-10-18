@@ -160,6 +160,9 @@ endfunction()
 add_subdirectory(basics)
 add_subdirectory(dense)
 add_subdirectory(graph)
+add_subdirectory(stream)
+add_subdirectory(random_access)
+add_subdirectory(proxy)
 
 # An example includes the public headers alone.  Linking the runtime cannot
 # show it, since the runtime's targets export the internal include
