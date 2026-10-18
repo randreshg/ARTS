@@ -158,6 +158,7 @@ function(arts_example)
 endfunction()
 
 add_subdirectory(basics)
+add_subdirectory(dense)
 
 # An example includes the public headers alone.  Linking the runtime cannot
 # show it, since the runtime's targets export the internal include

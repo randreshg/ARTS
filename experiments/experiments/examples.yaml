@@ -20,3 +20,18 @@ apps:
   fib_example:
     enabled: true
     versions: [base]
+  fib_db_example:
+    enabled: true
+    versions: [base]
+  reduction_example:
+    enabled: true
+    versions: [base]
+  nqueens_example:
+    enabled: true
+    versions: [base]
+  tiled_matmul_example:
+    enabled: true
+    versions: [base]
+  cholesky_example:
+    enabled: true
+    versions: [base]

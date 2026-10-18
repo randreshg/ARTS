@@ -44,3 +44,25 @@ arts_example(NAME fib
     ARGS_SMOKE 15
     PASS_REGEX "Fib 15: 610 time: "
     BLOCK_FREE)
+
+# fib(15) = 610 again, each value carried in a data block.
+arts_example(NAME fib_db
+    SOURCES fib_db.c
+    ARGS_SMOKE 15
+    PASS_REGEX "Fib 15: 610 time: ")
+
+# The sum of the rank ids, n(n-1)/2 on n ranks: 0 on one, 1 on two, 6 on four.
+arts_example(NAME reduction
+    SOURCES reduction.c
+    PASS_REGEX_SINGLE "Result 0[^0-9]"
+    PASS_REGEX "Result 1[^0-9]")
+if(TEST reduction_example_4n_4w_1p)
+    set_tests_properties(reduction_example_4n_4w_1p PROPERTIES
+        PASS_REGULAR_EXPRESSION "Result 6[^0-9]")
+endif()
+
+# 8-queens has 92 solutions; the program checks its count against its table.
+arts_example(NAME nqueens
+    SOURCES nqueens.c
+    ARGS_SMOKE 8
+    PASS_REGEX "Result verified!")

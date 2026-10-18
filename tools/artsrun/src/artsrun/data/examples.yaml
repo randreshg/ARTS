@@ -28,3 +28,64 @@ apps:
     expect_args: ['20']
     args: ['20']
     default_enabled: false
+
+  fib_db_example:
+    binary: fib_db_example
+    class: task
+    kind: toy
+    provenance: 'ARTS example: recursive Fibonacci, one EDT per call, each value carried in a data block its last reader destroys'
+    marker: 'Fib \d+: \d+ time:'
+    scalar_re: 'Fib \d+: (\d+) time:'
+    scalar_kind: int
+    # fib(20); the answer is the recursion's, whatever rank each call ran on.
+    expect: '6765'
+    expect_args: ['20']
+    args: ['20']
+    default_enabled: false
+
+  reduction_example:
+    binary: reduction_example
+    class: task
+    kind: toy
+    provenance: 'ARTS example: one block per rank gathered into a single summing task'
+    marker: 'Result \d+'
+    scalar_re: 'Result (\d+)'
+    scalar_kind: int
+    # The sum of the rank ids, n(n-1)/2: it depends on the node count, so no
+    # pin; the consensus compares entries at one node count.
+    default_enabled: false
+
+  nqueens_example:
+    binary: nqueens_example
+    class: task
+    provenance: 'ARTS example: N-Queens search, one EDT and one board block per partial placement'
+    marker: 'Number of solutions: \d+'
+    scalar_re: 'Number of solutions: (\d+)'
+    scalar_kind: int
+    # 10-queens; the count is the search's, whatever rank each board ran on.
+    expect: '724'
+    expect_args: ['10']
+    args: ['10']
+    default_enabled: false
+
+  tiled_matmul_example:
+    binary: tiled_matmul_example
+    class: task
+    kind: toy
+    provenance: 'ARTS example: blocked matrix product over tile blocks, sized at compile time'
+    # The program prints no result value: its completion line is the check.
+    marker: 'DONE \d+'
+    scalar_kind: bool
+    default_enabled: false
+
+  cholesky_example:
+    binary: cholesky_example
+    class: task
+    provenance: 'ARTS example: tiled Cholesky factorization, a native port of the OCR cholesky example'
+    # The program checks trace(L L^T) against trace(A); a FAIL line carries
+    # no marker.
+    marker: 'rel_err=\S+ PASS'
+    scalar_re: 'trace\(L L\^T\)=([0-9.eE+-]+)'
+    tolerance: 1e-06
+    args: ['--ds', '1000', '--ts', '50']
+    default_enabled: false
