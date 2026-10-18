@@ -87,7 +87,6 @@ set(TEST_PROGRAMS
     db_create_after_dep_asked
     db_create_after_first_touch
     db_first_touch_matrix
-    db_pin
 )
 
 # The PURGE release policy's grant word, which only a VAL/INV x PURGE build
@@ -814,8 +813,6 @@ register_single_node_test(event_channel_fifo TIMEOUT 60)
 endif()
 
 register_single_node_test(coherence_rwro_phase)
-register_single_node_test(db_pin)
-set_tests_properties(db_pin PROPERTIES PASS_REGULAR_EXPRESSION "PASS: db_pin")
 # edt_dep_slot_handoff: the slots an EDT's acquire phase resolves reach its
 # body with their payload, and a slot it does not acquire keeps its satisfy's
 # value; on two ranks the read resolves on a wake, and two progress threads
@@ -2405,9 +2402,9 @@ endif()
 # ============================================================================
 set(_arts_fail_token_tests
     cat_c_ref_balance coherence_rwro_phase
-    csr_graph csr_remote_null ctx_created_db_release_order
+    csr_graph ctx_created_db_release_order
     ctx_crossrank_proxy_finish ctx_owned_finish_cleanup db_acquire_all_bias
-    db_create_claims_first_touch_stub db_create_with_data_bytes db_pin
+    db_create_claims_first_touch_stub db_create_with_data_bytes
     dbcreate_matrix edt_create_basic edt_sentinel_single_fire event_chain
     event_channel_fifo event_channel_lifetime event_channel_transient_null
     event_destroy_before_create excl_multiconsumer_queue excl_purge_grant_d6_d7

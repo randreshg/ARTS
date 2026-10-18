@@ -601,13 +601,13 @@ reconciled?
 Per-DB-kind contracts
 ---------------------
 
-The global axes govern regular DRAM DBs (``ARTS_DB``). The other storage
+The global axes govern regular DRAM DBs (``ARTS_DB``). The GPU storage
 kinds carry their own fixed, documented semantics regardless of the global
-axes: ``ARTS_DB_PIN`` and ``ARTS_DB_GPU_PIN`` perform no DB-level coherence;
-``ARTS_DB_GPU`` allows concurrent per-device replicas merged by reduction at
-release. All of these are **app-ordered (full DRF) contracts**: the
-application must event-order *every* conflicting access pair — read-write
-included — because there is no snapshot or admission machinery underneath.
+axes: ``ARTS_DB_GPU_PIN`` performs no DB-level coherence; ``ARTS_DB_GPU``
+allows concurrent per-device replicas merged by reduction at release. Both
+are **app-ordered (full DRF) contracts**: the application must event-order
+*every* conflicting access pair — read-write included — because there is no
+snapshot or admission machinery underneath.
 
 .. _cdag_dropped:
 

@@ -362,7 +362,7 @@ int main(void) {
                     (unsigned long long)sizeof(struct arts_db_s));
       rc = 1;
     }
-    db.db_type = ARTS_DB_PIN;
+    db.db_type = ARTS_DB_GPU_PIN;
     uint64_t want = (uint64_t)sizeof(struct arts_db_s) + sizes[i];
     got = arts_db_total_size(&db);
     if (got != want) {

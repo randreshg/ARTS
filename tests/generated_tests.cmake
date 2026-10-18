@@ -661,18 +661,6 @@ add_arts_test(counter_timer_balance)
 register_single_node_test(counter_timer_balance TIMEOUT 30)
 set_tests_properties(counter_timer_balance PROPERTIES PASS_REGULAR_EXPRESSION "PASS counter_timer_balance")
 
-# --- graph library ---
-# One rank: block distribution, CSR build and lookup, both loaders and their
-# argument dispatch.
-add_arts_test(csr_graph)
-register_single_node_test(csr_graph TIMEOUT 30)
-set_tests_properties(csr_graph PROPERTIES PASS_REGULAR_EXPRESSION "PASS csr_graph")
-
-# A partition homed on another rank is not materialized here; four ranks hold
-# several remote partitions.
-add_arts_test(csr_remote_null)
-register_multinode_test(csr_remote_null TIMEOUT 60 VARIANTS 4n_4w_1p)
-
 # --- public-API surface ---
 add_arts_test(api_init_per_node_worker)
 register_single_node_test(api_init_per_node_worker TIMEOUT 10)
@@ -682,6 +670,18 @@ add_arts_test(api_current_finish_event_null)
 register_single_node_test(api_current_finish_event_null TIMEOUT 10)
 set_tests_properties(api_current_finish_event_null PROPERTIES PASS_REGULAR_EXPRESSION "PASS api_current_finish_event_null")
 endif()
+
+# --- graph library ---
+# The partitions are coherent blocks under startup-reserved GUIDs: each rank
+# loads its own, and every rank reads every partition through an RO slot, so a
+# multinode run reads partitions homed on other ranks besides its own.
+# Distribution, CSR build, both loaders and their argument dispatch.
+add_arts_test(csr_graph)
+register_single_node_test(csr_graph TIMEOUT 60)
+register_multinode_test(csr_graph TIMEOUT 120)
+foreach(_t csr_graph csr_graph_2n_9w_1p csr_graph_4n_4w_1p csr_graph_2n_8w_2p)
+    set_tests_properties(${_t} PROPERTIES PASS_REGULAR_EXPRESSION "PASS csr_graph")
+endforeach()
 
 # Many EDTs race into arts_shutdown: one wins the shutdown gate, the run ends,
 # and the state word reads as set.  Its initiators acquire one block RW with no
@@ -840,7 +840,7 @@ set_tests_properties(acquire_is_serialized PROPERTIES PASS_REGULAR_EXPRESSION "P
 # ============================================================================
 set(_arts_pass_gate_fail_tests
     array_list_basic coherence_owner_confirm_gate
-    coherence_ro_acquire_stress coherence_stress_single_node db_pin
+    coherence_ro_acquire_stress coherence_stress_single_node
     deque_chaselev_race deque_grow_during_steal deque_last_element_tiebreak
     deque_single_thread diag_timestamp edt_create_basic event_chain
     event_channel_fifo event_channel_lifetime multinode_edt ooo_drain_repush

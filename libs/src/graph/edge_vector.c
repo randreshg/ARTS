@@ -109,12 +109,18 @@ void arts_edge_vector_free(arts_edge_vector_t *v) {
   v->size = 0;
 }
 
+/* A vector of capacity 0 holds no array, and qsort's base must not be NULL
+ * even for an empty range. */
 void arts_edge_vector_sort_by_source(arts_edge_vector_t *v) {
-  qsort((void *)v->edge_array, v->used, sizeof(arts_edge_t),
-        arts_edge_compare_by_source);
+  if (v->used > 1) {
+    qsort((void *)v->edge_array, v->used, sizeof(arts_edge_t),
+          arts_edge_compare_by_source);
+  }
 }
 
 void arts_edge_vector_sort_by_source_and_target(arts_edge_vector_t *v) {
-  qsort((void *)v->edge_array, v->used, sizeof(arts_edge_t),
-        arts_edge_compare_by_source_and_target);
+  if (v->used > 1) {
+    qsort((void *)v->edge_array, v->used, sizeof(arts_edge_t),
+          arts_edge_compare_by_source_and_target);
+  }
 }

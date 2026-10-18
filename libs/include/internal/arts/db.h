@@ -84,10 +84,10 @@ extern const char *const db_mode_name[];
 extern const char *const db_mode_internal_name[];
 
 /* Order MUST match the arts_db_types_t enum in arts.h:
- * ARTS_DB(0), ARTS_DB_PIN(1), ARTS_DB_GPU(2), ARTS_DB_GPU_PIN(3). */
+ * ARTS_DB(0), ARTS_DB_GPU(1), ARTS_DB_GPU_PIN(2). */
 #define ARTS_DB_TYPE_NAME                                                      \
-  const char *const arts_db_type_name[] = {"ARTS_DB", "ARTS_DB_PIN",           \
-                                           "ARTS_DB_GPU", "ARTS_DB_GPU_PIN"}
+  const char *const arts_db_type_name[] = {"ARTS_DB", "ARTS_DB_GPU",           \
+                                           "ARTS_DB_GPU_PIN"}
 
 #define GET_DB_TYPE_NAME(x) arts_db_type_name[x]
 
@@ -202,7 +202,7 @@ void arts_db_resume_list_free(void);
 
 /* OOO_DB_ACQUIRE replay (table entry): re-dispatch the ONE deferred local dep
  * through the per-dep 3-way (subtype-aware — ARTS_DB → arts_handler_db_acquire,
- * PIN/GPU → pinned ptr path, still-absent → re-defer).  item = the
+ * a GPU kind → its inline ptr path, still-absent → re-defer).  item = the
  * just-installed db_s (ignored; the 3-way re-looks-it-up under the drain's
  * pinned ref); args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  NOT the
  * coherent handler directly — that would mishandle non-coherent subtypes. */

@@ -3,21 +3,16 @@
  * Pure-unit test for arts_csr_free's NULL handling.
  *
  * Contract under test:
- *   arts_csr_free(csr) tolerates a NULL csr.  Callers routinely receive NULL
- *   from arts_csr_init / arts_csr_from_guid / arts_csr_from_partition for a
- *   REMOTE partition (the block is not materialized locally), and a "free
- *   everything" teardown loop then calls arts_csr_free(NULL): it must neither
+ *   arts_csr_free(csr) tolerates a NULL csr.  arts_csr_init returns NULL for
+ *   a partition homed on another rank, and a "free everything" teardown loop
+ *   over its results then calls arts_csr_free(NULL): it must neither
  *   dereference the NULL nor destroy anything.  A non-NULL csr's free reaches
  *   arts_db_destroy(partGuid) (verified via a destroy-recording stub), which
  *   proves the test exercises the real arts_csr_free body, not a fake.
  *
  * The ARTS runtime is NOT started.  csr.c references the edge_vector and
- * block_distribution helpers and (in arts_csr_from_guid) the complete
- * struct arts_db_s layout, so all three graph TUs are compiled via #include
- * along with the coherence type header, under the protocol the build selects
- * (the graph code is protocol-independent; the layout only matters to the
- * pointer arithmetic in arts_csr_from_guid, which this test does not call).
- * Every other runtime symbol csr.c references is stubbed below; only
+ * block_distribution helpers, so all three graph TUs are compiled via
+ * #include.  Every other runtime symbol they reference is stubbed below; only
  * arts_db_destroy is actually reached.
  */
 
@@ -33,10 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "arts/coherence/types.h" /* complete struct arts_db_s */
-#include "arts/gas/route_table.h"
 #include "arts/graph.h"
-#include "arts/utils/shared.h" /* arts_shared_ptr_t (opaque) */
 
 /* --- allocator contract (mirrors libs/src/core/utils/malloc.c) -------------
  */
@@ -86,15 +78,6 @@ arts_guid_t arts_guid_reserve(arts_guid_kind_t kind, unsigned int rank) {
   (void)rank;
   return 0;
 }
-arts_shared_ptr_t arts_route_table_lookup_db(arts_guid_t guid) {
-  (void)guid;
-  return NULL;
-}
-void *arts_shared_get(arts_shared_ptr_t p) {
-  (void)p;
-  return NULL;
-}
-void arts_shared_release(arts_shared_ptr_t *p) { (void)p; }
 
 /* Compile the three graph TUs into this test (single TU so the stubs above
  * satisfy their references). */

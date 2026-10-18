@@ -78,7 +78,18 @@ void arts_edge_vector_free(arts_edge_vector_t *v);
 void arts_edge_vector_sort_by_source(arts_edge_vector_t *v);
 void arts_edge_vector_sort_by_source_and_target(arts_edge_vector_t *v);
 
-/* === Block distribution === */
+/* === Block distribution ===
+ *
+ * A distribution splits the vertex range [0, num_vertices) into num_blocks
+ * partitions of at most block_sz consecutive vertices and reserves one GUID
+ * of the given kind per partition (ARTS_GUID_DB for a CSR graph), homed on the
+ * rank that owns the partition.
+ * Every rank must hold the same GUIDs, so every rank builds the distribution
+ * identically in init_per_node, before parallel start: a GUID reserved after
+ * start differs per rank, and a distribution built then names partitions
+ * other ranks never create.  arts_block_dist_init_from_args reads
+ * --num-vertices and --num-edges from the rank's own argv and makes one
+ * partition per rank. */
 
 typedef struct {
   arts_graph_sz_t num_vertices;
@@ -111,7 +122,41 @@ arts_guid_t arts_block_dist_guid_for_vertex(arts_vertex_t v,
 arts_guid_t arts_block_dist_guid_for_partition(const arts_block_dist_t *dist,
                                                arts_partition_t index);
 
-/* === CSR graph === */
+/* === CSR graph ===
+ *
+ * Each partition is a coherent ARTS_DB block created under its distribution
+ * GUID on its home rank.  The block is self-contained: an arts_csr_graph_t
+ * header followed by num_local_vertices + 1 row offsets and num_local_edges
+ * target vertices; a loader sorts each row's targets in ascending order.
+ *
+ * Contract:
+ *   - Load from an EDT on each rank (arts_csr_load_*): the loader creates the
+ *     partitions homed on its rank, and that EDT holds each RW until it ends.
+ *   - Order every reader after every loader, e.g. loaders as members of one
+ *     finish scope and readers created by its continuation.
+ *   - Read a partition only through an acquisition: a dependence slot on its
+ *     GUID, normally RO, whose depv[i].ptr is the arts_csr_graph_t that
+ *     arts_csr_get_neighbors and arts_csr_get_local_index take.
+ *   - Destroy a partition (arts_db_destroy on its GUID, or arts_csr_free on
+ *     an acquired pointer) only after its last reader.
+ *   - Load a distribution once: a second load while its partitions live
+ *     creates live GUIDs again, two creates of one GUID with no destroy
+ *     between them, which is undefined.
+ *
+ * The loaders return 0, or -1 when the file cannot be read or does not parse
+ * (a missing or inconsistent adjacency header, a line that is not an edge, an
+ * endpoint at or above num_vertices); on -1 the calling rank creates no
+ * partition.  Edge list (arts_csr_load_no_weight): one "source target" pair
+ * per line, further fields ignored; blank and '#' lines are skipped; '%' lines
+ * before the first pair mark 1-based ids, and after a "%%MatrixMarket" banner
+ * the first data line is the size line; later '%' lines are comments.
+ * Adjacency (arts_csr_load_no_weight_csr): a "<vertices> <edges>" header,
+ * then line i lists the 1-based targets of vertex i; '%' and '#' lines and 0
+ * tokens are skipped.  flip adds the reverse
+ * of every edge; ignore_self_loops drops an edge whose ends are equal.
+ * arts_csr_load_from_args takes --file <path>, --flip, --keep-self-loops
+ * (self loops are dropped otherwise) and --csr-format (the adjacency
+ * format). */
 
 #define ARTS_GRAPH_MAXCHAR (1024 * 1024)
 
@@ -124,6 +169,9 @@ typedef struct {
   unsigned int num_blocks;
 } arts_csr_graph_t;
 
+/* Creates partition part_index under block_guid from edges whose sources
+ * all lie in it, sorting them by source unless sorted_by_src, and returns the
+ * creator's writable image; NULL when block_guid is homed on another rank. */
 arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
                                 arts_graph_sz_t localv, arts_graph_sz_t locale,
                                 arts_block_dist_t *dist,
@@ -139,9 +187,6 @@ void arts_csr_print(arts_csr_graph_t *csr);
 void arts_csr_get_neighbors(arts_csr_graph_t *csr, arts_vertex_t v,
                             arts_vertex_t **out,
                             arts_graph_sz_t *neighborcount);
-arts_csr_graph_t *arts_csr_from_guid(arts_guid_t guid);
-arts_csr_graph_t *arts_csr_from_partition(arts_partition_t part_index,
-                                          arts_block_dist_t *dist);
 arts_local_index_t arts_csr_get_local_index(arts_vertex_t v,
                                             const arts_csr_graph_t *part);
 

@@ -118,7 +118,7 @@
  * (db.c), not an arm's arts_handler_db_acquire: a serialized dep re-drives the
  * acquire loop from the cursor, and any other dep re-attempts its one slot
  * through the driver's subtype-aware path — a coherent block reaches its
- * arm's arts_handler_db_acquire, a pinned subtype takes its local pointer, a
+ * arm's arts_handler_db_acquire, a GPU kind takes its local pointer, a
  * block still absent defers again. */
 
 /* The coherence replay bodies are the wire handlers themselves

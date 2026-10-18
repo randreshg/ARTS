@@ -271,14 +271,13 @@ struct arts_db_cache_s {
  *  as the FIRST member: the cb object the route_table wraps is the db_s, and
  *  cache-to-db_s recovery is a zero-cost cast (cache == &db->cache, and since
  *  cache is first, (struct arts_db_s *)cache aliases the wrapping db_s).  Use
- *  arts_db_of_cache() for that recovery.  Non-coherent pinned subtypes
- *  (ARTS_DB_PIN/ARTS_DB_GPU_PIN/ARTS_DB_GPU) leave the cache
- *  zeroed (no DB-level coherence) and store their payload at (db + 1). */
+ *  arts_db_of_cache() for that recovery.  The GPU kinds
+ *  (ARTS_DB_GPU_PIN/ARTS_DB_GPU) leave the cache zeroed (no DB-level
+ *  coherence) and store their payload at (db + 1). */
 struct arts_db_s {
   struct arts_db_cache_s cache; /**< FIRST — coherence state (embedded by
-                                     value).  Zeroed for non-coherent pinned
-                                     subtypes. */
-  arts_db_types_t db_type;      /**< Storage subtype (DB/PIN/GPU/CXL).  Placed
+                                     value).  Zeroed for the GPU kinds. */
+  arts_db_types_t db_type;      /**< Storage subtype (DB/GPU/GPU_PIN).  Placed
                                      right after the cache so a cache-only stub
                                      (arts_db_cache_stub_size()) still covers it
                                      — every coherence lookup/free reads it. */

@@ -37,10 +37,6 @@ coherence for the DB:
        time (see :ref:`coherence_protocols`).  In a CXL build
        (``ARTS_USE_CXL``) an ``ARTS_DB``'s bytes rest in the CXL store;
        the kind does not change.
-   * - ``ARTS_DB_PIN``
-     - Regular DRAM, node-pinned, no DB-level coherence.  Only directly
-       accessible on the creating node; the application orders accesses
-       via events.
    * - ``ARTS_DB_GPU``
      - GPU staging.  Concurrent per-device replicas merged by reduction
        at release (app-ordered).  Requires a runtime built with
@@ -103,9 +99,9 @@ governed by the build-time protocol selection:
   INV} (``WB`` requires ``RETAIN``; FLUSH has no release-policy axis).
 
 See :ref:`coherence_protocols` for the normative definition of all axes.  The
-other subtypes (``ARTS_DB_PIN``, ``ARTS_DB_GPU``,
-``ARTS_DB_GPU_PIN``) carry no DB-level runtime coherence; the
-application orders conflicting accesses with events (full DRF for the non-coherent storage kinds).
+GPU subtypes (``ARTS_DB_GPU``, ``ARTS_DB_GPU_PIN``) carry no DB-level runtime
+coherence; the application orders conflicting accesses with events (full DRF
+for the non-coherent storage kinds).
 
 The runtime moves and replicates a DataBlock's payload with plain copies, and
 it may take such a copy while an EDT that is not ordered with the copy's
@@ -139,9 +135,9 @@ Creating a DataBlock
    arts_guid_t db_guid =
        arts_db_create(&addr, 1024, ARTS_DB, ARTS_DB_PROP_NONE, &h);
 
-   /* Create a node-pinned DB with a pre-reserved (local) GUID */
-   arts_guid_t guid = arts_guid_reserve(ARTS_GUID_DB, arts_get_current_rank());
-   arts_db_create_with_guid(guid, 1024, ARTS_DB_PIN, ARTS_DB_PROP_NONE, NULL);
+   /* Create a DB under a pre-reserved GUID: its rank is the DB's home */
+   arts_guid_t guid = arts_guid_reserve(ARTS_GUID_DB, target_node);
+   arts_db_create_with_guid(guid, 1024, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
 
    /* Create a DB with initial data: write through the returned pointer */
    int data[] = {1, 2, 3};

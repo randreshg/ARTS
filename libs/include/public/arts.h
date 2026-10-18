@@ -122,12 +122,12 @@ typedef enum {
  * Specifies the storage class of a DataBlock.  All subtypes share the same
  * @c ARTS_GUID_DB kind tag; the subtype is carried inside the DB descriptor.
  * Naming convention: ARTS_DB_<storage>.  For ARTS_DB, consistency is
- * governed by the build-time memory model and coherence protocol; other
+ * governed by the build-time memory model and coherence protocol; the GPU
  * subtypes carry no DB-level coherence (hardware coherence only).
- * See @c docs/programming_model/memory_model.rst for the full model taxonomy.
+ * See @c docs/programming_model/datablocks.rst and
+ * @c docs/programming_model/coherence_protocols.rst for the full model.
  *
  *   ARTS_DB         — regular DRAM; contract/protocol selected at build time
- *   ARTS_DB_PIN     — regular DRAM, node-pinned, no DB-level coherence
  *   ARTS_DB_GPU     — GPU staging; concurrent per-device replicas merged by
  *                     reduction at release (app-ordered); needs a runtime
  *                     built with ARTS_USE_GPU, else arts_db_create aborts
@@ -135,7 +135,6 @@ typedef enum {
  */
 typedef enum {
   ARTS_DB = 0, /**< Regular DRAM; contract/protocol selected at build time. */
-  ARTS_DB_PIN, /**< Node-pinned regular DRAM, no DB-level coherence. */
   ARTS_DB_GPU, /**< GPU staging; per-device replicas merged at release (app-ordered
                   style). */
   ARTS_DB_GPU_PIN, /**< GPU staging (host pinned + per-device replica). */
@@ -391,11 +390,15 @@ typedef enum {
  * Every ARTS event is one of two kinds, selected by `channel`:
  *
  *   - simple (latch) — `latch` is the initial trigger counter; each
- *     LATCH_DECR satisfy decrements it and the event fires when it reaches
- *     <= 0.  Default 1 (single satisfy fires).  Firing is a pure state
- *     transition: the event lingers (`fire ≠ destroy`), serving every later
- *     `add_dependence` from the stored fire data until an explicit
- *     `arts_event_destroy`.  A satisfy past the fire is silently absorbed.
+ *     LATCH_DECR satisfy decrements it, each LATCH_INCR satisfy increments
+ *     it, and the event fires when a decrement brings it to exactly 0 —
+ *     never at creation and never on an increment.  Default 1 (single
+ *     satisfy fires).  Firing is once per event: the event lingers,
+ *     serving every later `add_dependence` from the stored fire data until
+ *     it is reclaimed, by `arts_event_destroy`, at the fire when
+ *     `auto_destroy`, or when a declared `nb_deps` consumer count reaches
+ *     zero.  A satisfy past the fire is silently absorbed while the event
+ *     lingers.
  *   - channel — multi-fire FIFO; each satisfy is paired with one
  *     `add_dependence` in arrival order.  All fields except `rank` and
  *     `guid` are ignored.
@@ -403,8 +406,8 @@ typedef enum {
 typedef struct {
   /** Target node rank.  ARTS_HINT_CURRENT_RANK = current node (default). */
   unsigned int rank;
-  /** Initial latch counter.  Default 1.  Fires at <= 0 after LATCH_DECR
-   *  satisfies (one decrement per satisfy). */
+  /** Initial latch counter.  Default 1.  Fires when a LATCH_DECR satisfy
+   *  (one decrement per satisfy) brings it to exactly 0. */
   int32_t latch;
   /** If true, this is a CHANNEL event: multi-fire FIFO with paired
    *  satisfy/dep queues.  All other hint fields except `rank` and `guid`
@@ -446,7 +449,7 @@ typedef struct {
 } arts_event_hint_t;
 
 /** OCR LATCH_T — counter event.  Argument is the initial counter value;
- *  fires when curr_latch reaches <= 0 via DECR satisfies. */
+ *  fires when a DECR satisfy brings the counter to exactly 0. */
 #define ARTS_EVENT_HINT_LATCH(counter_init)                                    \
   ((arts_event_hint_t){.rank = ARTS_HINT_CURRENT_RANK,                         \
                        .latch = (counter_init),                                \
@@ -735,9 +738,10 @@ void arts_event_satisfy(arts_guid_t event_guid, arts_guid_t data_guid);
  * @brief Signal an event slot.
  *
  * Slots: ARTS_EVENT_LATCH_DECR_SLOT (decrement counter, optionally
- * carrying a data GUID), ARTS_EVENT_LATCH_INCR_SLOT (increment counter;
- * not allowed for events with @c multiple_fire=true).  Events fire when
- * curr_latch reaches 0.
+ * carrying a data GUID), ARTS_EVENT_LATCH_INCR_SLOT (increment counter; a
+ * fatal error for a @c channel event).  A simple event fires when a
+ * decrement brings its counter to exactly 0; after the fire both slots are
+ * absorbed.
  *
  * Cross-rank: the call is forwarded to the event's home rank via
  * MSG_EVENT_SATISFY_SLOT.  Callers MUST NOT attempt to
@@ -853,7 +857,8 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
 /* ========================================================================= */
 /** @defgroup db DataBlocks (DB)
  *  Fixed-size data objects shared between tasks under the build-time memory
- *  model (see docs/programming_model/memory_model.rst).
+ *  model (see docs/programming_model/datablocks.rst and
+ *  docs/programming_model/coherence_protocols.rst).
  *  @{ */
 
 /**
@@ -867,9 +872,9 @@ void arts_add_dependence(arts_guid_t source, arts_guid_t destination,
  *                     Set to @c NULL when @p flags includes
  *                     @c ARTS_DB_PROP_NO_ACQUIRE.
  * @param      len     Length in bytes.
- * @param      db_type Storage/coherence class (ARTS_DB, ARTS_DB_PIN,
- *                     ARTS_DB_GPU_PIN, ARTS_DB_GPU).  ARTS_DB_GPU aborts
- *                     the run in a runtime built without ARTS_USE_GPU.
+ * @param      db_type Storage/coherence class (ARTS_DB, ARTS_DB_GPU_PIN,
+ *                     ARTS_DB_GPU).  ARTS_DB_GPU aborts the run in a
+ *                     runtime built without ARTS_USE_GPU.
  * @param      flags   Property bits (@c ARTS_DB_PROP_NONE / @c
  *                     ARTS_DB_PROP_NO_ACQUIRE).
  * @param      hint    Advisory metadata.  @c hint->rank selects the home
@@ -909,18 +914,22 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
 }
 
 /**
- * @brief Release the auto-acquired WRITE access for a DataBlock.
+ * @brief Release the calling EDT's access to a DataBlock before it returns.
  *
  * When an EDT creates a local DB, the runtime automatically holds WRITE
- * access (OCR RW semantics).  Call this to release that access early —
- * before the EDT function returns — so that consumer EDTs waiting on
- * the DB can proceed.
+ * access (OCR RW semantics); a dependence slot holds the access its mode
+ * names.  Call this to release that access early — before the EDT function
+ * returns — so that consumer EDTs waiting on the DB can proceed.
  *
  * This is required when an EDT creates DBs and then blocks inside its
  * body (e.g. via arts_event_wait), because the automatic release
  * in the EDT epilogue cannot run until the function returns.
  *
- * Calling this on a DB that was not auto-acquired (or was already
+ * Releasing a dependence clears each @c depv slot that acquired the DB
+ * (guid @c NULL_GUID, ptr @c NULL, mode @c DB_MODE_NULL), so a caller that
+ * needs the GUID afterwards saves it first.
+ *
+ * Calling this on a DB the EDT neither created nor acquired (or already
  * released) is a no-op.
  *
  * @param guid GUID of the DataBlock to release.

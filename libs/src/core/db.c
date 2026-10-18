@@ -124,9 +124,9 @@ void *arts_db_user_ptr(struct arts_db_s *db) {
  * ARTS_DB_INIT_CREATOR_REMOTE, so that hold is already counted in the
  * coherence state machine and release_rw is what drops it.
  *
- * For pinned subtypes (PIN, GPU_PIN, GPU): there is no
- * DB-level coherence to track; the creator just owns the pointer
- * until it explicitly destroys or hands it off via events.
+ * For the GPU kinds (GPU_PIN, GPU): there is no DB-level coherence to
+ * track; the creator just owns the pointer until it explicitly destroys or
+ * hands it off via events.
  *
  * In both cases the descriptor's handle `h` (its ref moves in) is recorded on
  * the creating THREAD's created-DB list, and whoever drains that list drives
@@ -148,9 +148,9 @@ static inline uint64_t db_descriptor_span(arts_db_types_t db_type,
   return sizeof(struct arts_db_s) + ((db_type == ARTS_DB) ? 0 : len);
 }
 
-/* The descriptor allocation.  A subtype that carries its payload inline is
- * pinned to the rank that created it and names the memory that payload has to
- * come from, so the subtype also picks the allocator; a coherent descriptor is
+/* The descriptor allocation.  A GPU kind carries its payload inline, lives
+ * on the rank that created it and names the memory that payload has to come
+ * from, so the subtype also picks the allocator; a coherent descriptor is
  * plain shared storage. */
 static void *db_descriptor_alloc(arts_db_types_t db_type, uint64_t span) {
   (void)db_type;
@@ -383,7 +383,7 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
    * Note: db_create_in_place is called only on the local-create
    * branch of arts_db_create; the remote-create branch builds its own
    * stub directly and does NOT invoke this routine. */
-  /* Every DB — coherent or pinned — records its payload length in the cache.
+  /* Every DB — coherent or not — records its payload length in the cache.
    * Size lives here (cache->db_size), not in a separate per-object header: a
    * DB always carries its own length. */
   struct arts_db_cache_s *cache = &db_res->cache;
@@ -424,9 +424,9 @@ static void db_create_in_place(arts_guid_t guid, void *addr, uint64_t len,
                           /*data_payload=*/NULL, len);
     }
   }
-  /* Non-coherent subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU) are
-   * pinned to the creator rank and have no DB-level coherence.  The embedded
-   * cache stays zeroed and db_list stays NULL. */
+  /* The GPU kinds (ARTS_DB_GPU_PIN, ARTS_DB_GPU) live on the creator rank
+   * and have no DB-level coherence.  The embedded cache stays zeroed and
+   * db_list stays NULL. */
 #ifdef ARTS_USE_GPU
   if (db_type == ARTS_DB_GPU) {
     /* The shadow descriptor: this subtype keeps no coherence state, so the
@@ -795,10 +795,10 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
 /*
  * arts_db_create — Unified DataBlock creation.
  *
- * Handles all DB subtypes (ARTS_DB, ARTS_DB_PIN, ARTS_DB_GPU_PIN,
- * ARTS_DB_GPU).  When hint->rank targets a remote node, only ARTS_DB is
- * supported: the block is announced to its home via DB_CREATE_COHERENT.
- * Pinned subtypes return NULL_GUID with a warning.
+ * Handles all DB subtypes (ARTS_DB, ARTS_DB_GPU_PIN, ARTS_DB_GPU).  When
+ * hint->rank targets a remote node, only ARTS_DB is supported: the block is
+ * announced to its home via DB_CREATE_COHERENT.  A GPU kind returns
+ * NULL_GUID with a warning.
  *
  * Every create enters the OoO engine on this rank's slot for the GUID: it
  * installs while the slot is empty and parks while it holds another
@@ -899,13 +899,12 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                  "created remotely on rank %u via DB_CREATE_COHERENT",
                  guid, GET_DB_TYPE_NAME(db_type), len, rank);
     } else {
-      /* Non-coherent subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU) are
-       * pinned to the creator rank.  Creating one on a different rank is a
-       * programming error — return NULL_GUID.  Cross-rank distribution for
-       * these subtypes must use ARTS_DB instead. */
+      /* The GPU kinds (ARTS_DB_GPU_PIN, ARTS_DB_GPU) live on the creator
+       * rank.  Creating one on a different rank is a programming error —
+       * return NULL_GUID.  Cross-rank distribution must use ARTS_DB. */
       ARTS_WARN("arts_db_create: only ARTS_DB (coherent) DataBlocks support "
-                "remote create; %s on rank %u is pinned to the creator rank. "
-                "Returning NULL_GUID.",
+                "remote create; %s cannot be homed on rank %u: a GPU kind "
+                "lives on its creating rank. Returning NULL_GUID.",
                 GET_DB_TYPE_NAME(db_type), rank);
       *addr = NULL;
       guid = NULL_GUID;
@@ -921,7 +920,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
  * An acquire the calling EDT holds on the block (its own create's hold or a
  * dependence slot) is released first.  A coherent block's destroy is then a
  * message to the block's home, which tears the block down and notifies every
- * caching rank; a pinned kind is retired on the creating rank it lives on.
+ * caching rank; a GPU kind is retired on the creating rank it lives on.
  * Storage goes when the last outstanding reference drops.
  */
 void arts_db_destroy(arts_guid_t guid) {
@@ -944,8 +943,8 @@ void arts_db_destroy(arts_guid_t guid) {
 
   /* A coherent block's destroy goes to its home, which is derived from the
    * GUID and fans the teardown out to every caching rank, this one included.
-   * The lookup exists only to recognise a pinned kind, which the GUID does
-   * not encode: such a block lives on its creating rank alone and has no
+   * The lookup exists only to recognise a GPU kind, which the GUID does not
+   * encode: such a block lives on its creating rank alone and has no
    * home protocol, so its descriptor is retired here and, once outstanding
    * refs drop, the cb deleter (arts_db_deleter) runs. */
   if (db_res != NULL && db_res->db_type != ARTS_DB) {
@@ -1007,7 +1006,7 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
    *   - Remote DB never seen on this rank (db_temp == NULL, owner remote):
    *     stub-install a stub cache_s and dispatch through
    *     arts_handler_db_acquire.
-   * Other (pinned) subtypes bypass coherence and fall through below. */
+   * The GPU kinds bypass coherence and fall through below. */
   struct arts_db_cache_s *cache = NULL;
   /* When db_temp misses on a remote-owned DB we stub-install a stub and the
    * call returns a SEPARATE pinned handle (stub_h) to the just-installed db_s;
@@ -1086,18 +1085,17 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
    * destroyed before install — stub_h NULL then); release defensively. */
   arts_shared_release(&stub_h);
 
-  /* Non-coherent pinned subtypes (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU)
-   * live only on their creator rank, and a coherent DB reaches here only in a
-   * mode outside the coherence protocol (device-side sync modes): either way
-   * the local payload is handed back, wherever the subtype keeps it. */
+  /* The GPU kinds (ARTS_DB_GPU_PIN, ARTS_DB_GPU) live only on their creator
+   * rank, and a coherent DB reaches here only in a mode outside the
+   * coherence protocol (device-side sync modes): either way the local payload
+   * is handed back, wherever the subtype keeps it. */
   if (db_temp != NULL) {
     if (owner != arts_global_rank_id) {
-      ARTS_WARN(
-          "arts_db_acquire_all: pinned DB[Guid:%lu, Type:%s] referenced from "
-          "non-creator rank %u (owner=%u). Only ARTS_DB is internode "
-          "relocatable.",
-          depv[i].guid, GET_DB_TYPE_NAME(db_temp->db_type), arts_global_rank_id,
-          owner);
+      ARTS_WARN("arts_db_acquire_all: non-coherent DB[Guid:%lu, Type:%s] "
+                "referenced from non-creator rank %u (owner=%u). Only ARTS_DB "
+                "is internode relocatable.",
+                depv[i].guid, GET_DB_TYPE_NAME(db_temp->db_type),
+                arts_global_rank_id, owner);
     }
     rec->subtype = db_temp->db_type;
     arts_db_acquire_local_hit(edt, i, arts_db_user_ptr(db_temp));
@@ -1108,14 +1106,14 @@ static void acquire_one_dep(struct arts_edt_s *edt, arts_edt_dep_t *depv,
 
   /* DB absent locally.  OoO defer keyed on the DB GUID (park): when DB_CREATE
    * installs it (home==self case) the drain re-attempts this dep through
-   * arts_handler_db_acquire.  A remote non-coherent (pinned-subtype) reference
+   * arts_handler_db_acquire.  A remote non-coherent (GPU-kind) reference
    * can never resolve locally and waits here.  No resolved — the data and
    * cursor advance arrive on the drain replay. */
   if (arts_guid_is_local(depv[i].guid)) {
     ARTS_DEBUG("DB[Guid:%lu] out of order request slot %u", depv[i].guid, i);
   } else {
     ARTS_WARN("arts_db_acquire_all: cannot resolve remote DB[Guid:%lu] for "
-              "non-coherent (pinned) dep on rank %u — owner=%u. Deferring via "
+              "non-coherent dep on rank %u — owner=%u. Deferring via "
               "OoO.",
               depv[i].guid, arts_global_rank_id, owner);
   }
@@ -1132,8 +1130,8 @@ static void resume_enqueue(struct arts_edt_s *edt);
 
 /* OOO_DB_ACQUIRE replay table entry — see db.h.  Re-attempts the single
  * deferred dep through acquire_one_dep's subtype-aware 3-way: for an ARTS_DB
- * this lands in arts_handler_db_acquire (coherent), for a PIN/GPU DB in the
- * pinned ptr path, and a still-absent DB re-defers.  Mapping OOO_DB_ACQUIRE
+ * this lands in arts_handler_db_acquire (coherent), for a GPU-kind DB in its
+ * inline ptr path, and a still-absent DB re-defers.  Mapping OOO_DB_ACQUIRE
  * straight to arts_handler_db_acquire would mishandle non-coherent subtypes
  * (their embedded cache is zeroed — its pending_rw queue is uninitialised, so
  * the coherent RW path would push onto a NULL-headed queue and crash). */
@@ -1458,8 +1456,8 @@ bool arts_db_rw_secure(struct arts_edt_s *edt, unsigned int slot) {
  * descriptor pin.
  *
  * `subtype` is the owner's, because it is the acquisition's: for a coherent
- * block the payload is a buffer's data and carries a ref; for a non-coherent
- * (pinned) block it is the descriptor's inline storage and carries none.
+ * block the payload is a buffer's data and carries a ref; for a GPU-kind
+ * block it is the descriptor's inline storage and carries none.
  *
  * `pin_src` is a handle on the descriptor the payload belongs to, borrowed from
  * the caller.  INVARIANT: an alias never ends with a buffer ref and no
@@ -1758,10 +1756,9 @@ void prep_dbs(struct arts_edt_s *edt, bool gpu) {
      * at acquire — NOT a borrowed (non-refcounted) route pointer, which would
      * use-after-free if a concurrent destroy freed the arts_db_s while we read
      * db->db_type through it.  Coherent ARTS_DB drives invalidation inside
-     * the coherence layer; non-coherent pinned subtypes (ARTS_DB_PIN,
-     * ARTS_DB_GPU_PIN, ARTS_DB_GPU) have no DB-level coherence and fall
-     * through to their per-subtype prep (their dep->ptr is db+1, so the
-     * recovery below is valid for them). */
+     * the coherence layer; the GPU kinds (ARTS_DB_GPU_PIN, ARTS_DB_GPU) have
+     * no DB-level coherence and fall through to their per-subtype prep (their
+     * dep->ptr is db+1, so the recovery below is valid for them). */
     if (arts_dep_subtype(edt, i) == ARTS_DB) {
       continue;
     }
@@ -1824,8 +1821,8 @@ static arts_shared_ptr_t dep_release_pin(const struct arts_edt_s *edt,
  * Per access mode:
  *   - DB_MODE_RO / DB_MODE_RW: only ARTS_DB needs DB-level coherence
  *     work; route through the coherent release entry points
- *     (arts_db_release_ro / arts_db_release_rw).  Non-coherent pinned
- *     subtypes have no DB-level coherence — release is a no-op.
+ *     (arts_db_release_ro / arts_db_release_rw).  The GPU kinds have no
+ *     DB-level coherence — release is a no-op.
  *   - ARTS_DB_GPU subtype (GPU build, a CPU EDT's non-LC_SYNC slot): drop
  *     the staging lock's read side prep_dbs took.
  *
@@ -1844,7 +1841,7 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
 
   /* Coherent release path for ARTS_DB.  Routed by dep->subtype (recorded at
    * acquire), NOT by recovering the subtype from dep->ptr: for a coherent DB
-   * dep->ptr is cache->buffer->data (NOT (db+1)), so the pinned-subtype
+   * dep->ptr is cache->buffer->data (NOT (db+1)), so the GPU-kind
    * pointer arithmetic below would read a wild address — fatal once a
    * concurrent destroy has removed the route entry (cache lookup then misses).
    * The EDT's per-acquire buffer ref (taken at acquire time: acquire_local /
@@ -1930,9 +1927,9 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
     return;
   }
 
-  /* Reaching this point means the dep is for a non-coherent pinned subtype
-   * (ARTS_DB_PIN, ARTS_DB_GPU_PIN, ARTS_DB_GPU) or a special access mode
-   * (LC_*, MEMSET) — none of which carry DB-level coherence.  The subtype is
+  /* Reaching this point means the dep is for a GPU kind (ARTS_DB_GPU_PIN,
+   * ARTS_DB_GPU) or a special access mode (LC_*, MEMSET) — none of which
+   * carry DB-level coherence.  The subtype is
    * the one the acquire recorded, as prep_dbs reads it: a coherent block's
    * dep->ptr is buffer data, with no descriptor before it. */
   arts_db_types_t db_subtype = dep->subtype;
@@ -1950,8 +1947,8 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
 #else
   (void)gpu;
 #endif
-  /* PIN / GPU_PIN / regular RW or RO on non-coherent subtypes: nothing to
-   * release at the DB-coherence level.  Hardware coherence and
+  /* GPU_PIN, or RW / RO on a GPU kind: nothing to release at the
+   * DB-coherence level.  Hardware coherence and
    * application-level event ordering handle the rest. */
   arts_shared_release(&db_pin);
 }
@@ -1987,9 +1984,9 @@ void release_dbs(struct arts_edt_s *edt, bool gpu) {
  * is the arm's own state, seeded at ARTS_DB_INIT_CREATOR_HOME /
  * ARTS_DB_INIT_CREATOR_REMOTE and released through the arm's own entry point
  * with NO buffer ref to drop (auto_acquire never called acquire_buf).  The
- * creator of a non-coherent pinned subtype (ARTS_DB_PIN, ARTS_DB_GPU_PIN,
- * ARTS_DB_GPU) holds nothing to release: no coherence hold, and no side of a
- * GPU staging lock, which only prep_dbs takes.
+ * creator of a GPU kind (ARTS_DB_GPU_PIN, ARTS_DB_GPU) holds nothing to
+ * release: no coherence hold, and no side of a GPU staging lock, which only
+ * prep_dbs takes.
  */
 static void release_one_created(arts_shared_ptr_t h) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
@@ -2133,7 +2130,7 @@ void arts_release_created_dbs(void) {
  * No-op under the OCR model: multi-EDT same-rank concurrent acquire is
  * allowed (writer_count CAS-loop), so the creator's hold persists across the
  * yield and is dropped exactly once at EDT epilogue via
- * arts_release_created_dbs.  Pinned subtypes have no DB-level coherence to
+ * arts_release_created_dbs.  The GPU kinds have no DB-level coherence to
  * drop either.  Kept as stable hooks for future per-EDT release semantics.
  */
 void arts_wait_release_dbs(void) {}

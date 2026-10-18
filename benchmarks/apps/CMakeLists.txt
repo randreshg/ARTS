@@ -326,7 +326,7 @@ function(add_benchmark_app)
         # --- ARTS variants (one per coherence configuration) ---
         foreach(sfx ${ARTS_VARIANT_SUFFIXES})
             add_executable(${_app}_arts_${sfx} ${ABS_SOURCES} ${LIB_OBJECTS}
-                           $<TARGET_OBJECTS:ocr_arts_objects_${sfx}>)
+                           $<TARGET_OBJECTS:ocr_arts_objects>)
             target_include_directories(${_app}_arts_${sfx} PRIVATE
                 ${COMMON_INCLUDES} ${OCR_INC_DIR})
             target_compile_definitions(${_app}_arts_${sfx} PRIVATE

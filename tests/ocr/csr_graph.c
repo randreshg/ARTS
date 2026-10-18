@@ -36,44 +36,46 @@
 ** WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the  **
 ** License for the specific language governing permissions and limitations   **
 ******************************************************************************/
-
 /// @file csr_graph.c
-/// @brief The graph library on one rank: block distribution, CSR build and
-///        lookup, the two file loaders and their argument dispatch.
+/// @brief The graph library under its contract: every distribution built in
+///        init_per_node, partitions loaded by an EDT on each rank, read
+///        through RO dependences once every loader has finished, destroyed
+///        once every reader has.
 ///
-/// Each case checks its own oracle and reports a failure through
-/// arts_test_fail(), so one run states every property below:
+/// Each partition is read by one EDT on every rank, so on n ranks n - 1 of
+/// every n reads are of a block homed elsewhere, created under a GUID reserved
+/// before parallel start.  Each reader checks its own oracle and reports a
+/// failure through arts_test_fail(), so one run states every property below:
 ///   * a CSR built from edges is well formed: every local vertex's neighbour
 ///     range starts where the previous one ends, vertices with no out-edges
-///     included, the degrees sum to the local edge count, each range holds
-///     exactly the edges fed in, and a vertex's local index maps back to it
-///     through its partition's start;
-///   * a partition with no edges builds an empty CSR without touching the
-///     (empty) edge array;
-///   * a CSR is found by its GUID and by its partition, the same pointer on
-///     every one of many lookups (a lookup takes and drops a reference each
-///     time), and a GUID that names no CSR finds nothing;
+///     included, each range holds exactly that vertex's edges, the local edge
+///     count is their sum, and a vertex's local index maps back to it through
+///     its partition's start; a partition with no edges sorts and builds an
+///     empty CSR without touching the (absent) edge array; a build for a
+///     partition homed on another rank returns NULL;
+///   * both loaders sort each row's targets in ascending order;
 ///   * the edge-list loader reads a file that opens with '%' lines as 1-based,
 ///     skips one size line after them only when the first line is the
 ///     "%%MatrixMarket" banner (a KONECT-style header has none), takes a '%'
 ///     or '#' line after the first data line as a comment and nothing more,
 ///     skips blank lines, takes a line's first two fields as its edge (a
-///     value column is no endpoint), refuses a line with one field and then
-///     builds nothing, drops self loops when asked, and adds every reverse
-///     edge when flipping;
+///     value column is no endpoint), drops self loops when asked, adds every
+///     reverse edge when flipping, and refuses a line with one field or an
+///     endpoint at or above the vertex count (after the 1-based shift, self
+///     loops included);
 ///   * the 1-based adjacency loader decrements targets, separates them by any
-///     whitespace, the vertical tab included, refuses a header without an
-///     edge count or a header that disagrees with the line count and then
-///     builds nothing, and skips a 0 token, which has no 0-based vertex;
+///     whitespace, the vertical tab included, skips a 0 token, which has no
+///     0-based vertex, adds every reverse edge when flipping, and refuses a
+///     header without an edge count, a header that disagrees with the line
+///     count, and an endpoint at or above the vertex count;
+///   * a refused load returns -1 and creates no partition;
 ///   * argument dispatch selects the loader and its options, refuses a missing
 ///     path, and never reads a flag's value past the end of the argument
 ///     array, for the loaders and for the distribution constructor alike.
-///
-/// CSR blocks are pinned blocks, so no coherence protocol is involved.  One
-/// rank: the loaders and the lookups assert on the rank's own partitions.
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "arts.h"
@@ -81,8 +83,234 @@
 
 #include "../test_failure_status.h"
 
-static void fail(const char *what) {
-  arts_printf("FAIL: csr_graph %s\n", what);
+typedef struct {
+  arts_vertex_t s;
+  arts_vertex_t t;
+} edge_t;
+
+enum build { EDGE_LIST, ADJACENCY, ARGS, DIRECT, DIRECT_EMPTY };
+
+typedef struct {
+  const char *name;
+  enum build build;
+  /* The fixture each loader writes, or NULL for none; "@" in args names it. */
+  const char *file;
+  arts_graph_sz_t vertices;
+  bool flip;
+  bool ignore_self_loops;
+  const char *args[3];
+  int nargs;
+  int rc;
+  const edge_t *edges;
+  unsigned int nedges;
+} csr_case_t;
+
+#define EDGES(...)                                                             \
+  .edges = (const edge_t[]){__VA_ARGS__},                                      \
+  .nedges = sizeof((const edge_t[]){__VA_ARGS__}) / sizeof(edge_t)
+
+static const csr_case_t cases[] = {
+    /* Eight vertices; 2, 5 and 6 have no out-edges (interior gaps, one just
+     * before the last source).  Its distribution is the constructor's from
+     * arguments, one partition per rank. */
+    {.name = "direct",
+     .build = DIRECT,
+     .vertices = 8,
+     EDGES({0, 3}, {1, 0}, {1, 4}, {3, 2}, {3, 5}, {3, 7}, {4, 1}, {7, 0},
+           {7, 6})},
+    {.name = "direct empty", .build = DIRECT_EMPTY, .vertices = 8},
+    /* MatrixMarket coordinate data: a '%' banner, its size line, a '#'
+     * comment, then 1-based entries: after the shift the self loop 3->3 and
+     * the entry 4->5 with a value column. */
+    {.name = "edge list",
+     .build = EDGE_LIST,
+     .file = "%%MatrixMarket matrix coordinate real general\n"
+             "6 6 6\n"
+             "# a comment line\n"
+             "1 2\n"
+             "1 3\n"
+             "2 1\n"
+             "4 4\n"
+             "5 6 99\n"
+             "6 1\n",
+     .vertices = 6,
+     .ignore_self_loops = true,
+     EDGES({0, 1}, {0, 2}, {1, 0}, {4, 5}, {5, 0})},
+    {.name = "edge list flipped",
+     .build = EDGE_LIST,
+     .file = "%%MatrixMarket matrix coordinate real general\n"
+             "6 6 6\n"
+             "# a comment line\n"
+             "1 2\n"
+             "1 3\n"
+             "2 1\n"
+             "4 4\n"
+             "5 6 99\n"
+             "6 1\n",
+     .vertices = 6,
+     .flip = true,
+     .ignore_self_loops = true,
+     EDGES({0, 1}, {0, 2}, {1, 0}, {4, 5}, {5, 0}, {1, 0}, {2, 0}, {0, 1},
+           {5, 4}, {0, 5})},
+    /* Self loops kept: the blank line is no edge, so no 0->0 appears. */
+    {.name = "edge list blank line",
+     .build = EDGE_LIST,
+     .file = "0 1\n\n2 3\n",
+     .vertices = 6,
+     EDGES({0, 1}, {2, 3})},
+    /* A '%' line after the first data line is a comment and nothing more: the
+     * ids stay 0-based and the line after it is an edge. */
+    {.name = "edge list mid-file comment",
+     .build = EDGE_LIST,
+     .file = "0 1\n% a note\n2 3\n4 5\n",
+     .vertices = 6,
+     EDGES({0, 1}, {2, 3}, {4, 5})},
+    /* A KONECT-style header: '%' lines and no size line, 1-based ids, the
+     * largest naming the last vertex. */
+    {.name = "edge list KONECT",
+     .build = EDGE_LIST,
+     .file = "% sym unweighted\n% 3 3 3\n1 2\n2 3\n3 1\n",
+     .vertices = 3,
+     EDGES({0, 1}, {1, 2}, {2, 0})},
+    {.name = "edge list row order",
+     .build = EDGE_LIST,
+     .file = "2 3\n0 5\n0 1\n2 0\n0 3\n",
+     .vertices = 6,
+     EDGES({2, 3}, {0, 5}, {0, 1}, {2, 0}, {0, 3})},
+    {.name = "edge list one field",
+     .build = EDGE_LIST,
+     .file = "0 1\n4\n",
+     .vertices = 6,
+     .ignore_self_loops = true,
+     .rc = -1},
+    {.name = "edge list source out of range",
+     .build = EDGE_LIST,
+     .file = "0 1\n6 0\n",
+     .vertices = 6,
+     .rc = -1},
+    {.name = "edge list target out of range",
+     .build = EDGE_LIST,
+     .file = "0 1\n1 6\n",
+     .vertices = 6,
+     .rc = -1},
+    {.name = "edge list 1-based out of range",
+     .build = EDGE_LIST,
+     .file = "% 1-based\n1 2\n7 1\n",
+     .vertices = 6,
+     .rc = -1},
+    {.name = "edge list self loop out of range",
+     .build = EDGE_LIST,
+     .file = "0 1\n6 6\n",
+     .vertices = 6,
+     .ignore_self_loops = true,
+     .rc = -1},
+    /* src 0: {1, 2}, src 1: {0}, src 2: {3}, src 3: {0, 2}. */
+    {.name = "adjacency",
+     .build = ADJACENCY,
+     .file = "4 6\n2 3\n1\n4\n1 3\n",
+     .vertices = 4,
+     .ignore_self_loops = true,
+     EDGES({0, 1}, {0, 2}, {1, 0}, {2, 3}, {3, 0}, {3, 2})},
+    /* Vertex 0's line "2<VT>3": the vertical tab separates two targets. */
+    {.name = "adjacency vertical tab",
+     .build = ADJACENCY,
+     .file = "3 4\n2\v3\n1\n1\n",
+     .vertices = 3,
+     .ignore_self_loops = true,
+     EDGES({0, 1}, {0, 2}, {1, 0}, {2, 0})},
+    {.name = "adjacency zero token",
+     .build = ADJACENCY,
+     .file = "2 3\n0 2\n1\n",
+     .vertices = 2,
+     .ignore_self_loops = true,
+     EDGES({0, 1}, {1, 0})},
+    {.name = "adjacency flipped",
+     .build = ADJACENCY,
+     .file = "3 3\n2\n3\n1\n",
+     .vertices = 3,
+     .flip = true,
+     .ignore_self_loops = true,
+     EDGES({0, 1}, {1, 2}, {2, 0}, {1, 0}, {2, 1}, {0, 2})},
+    /* Targets listed in descending order; vertex 1's line is empty. */
+    {.name = "adjacency row order",
+     .build = ADJACENCY,
+     .file = "3 4\n3 2\n\n2 1\n",
+     .vertices = 3,
+     .ignore_self_loops = true,
+     EDGES({0, 2}, {0, 1}, {2, 1}, {2, 0})},
+    /* The header claims four lines and two follow. */
+    {.name = "adjacency short",
+     .build = ADJACENCY,
+     .file = "4 3\n2 3\n1\n",
+     .vertices = 4,
+     .ignore_self_loops = true,
+     .rc = -1},
+    {.name = "adjacency header without edge count",
+     .build = ADJACENCY,
+     .file = "4\n2\n",
+     .vertices = 4,
+     .ignore_self_loops = true,
+     .rc = -1},
+    {.name = "adjacency target out of range",
+     .build = ADJACENCY,
+     .file = "3 2\n2\n4\n1\n",
+     .vertices = 3,
+     .ignore_self_loops = true,
+     .rc = -1},
+    /* The file agrees with its own header but has more vertices than the
+     * distribution. */
+    {.name = "adjacency source out of range",
+     .build = ADJACENCY,
+     .file = "3 3\n2\n1\n1\n",
+     .vertices = 2,
+     .ignore_self_loops = true,
+     .rc = -1},
+    {.name = "args edge list",
+     .build = ARGS,
+     .file = "0 1\n1 2\n2 2\n3 0\n",
+     .vertices = 4,
+     .args = {"--file", "@"},
+     .nargs = 2,
+     EDGES({0, 1}, {1, 2}, {3, 0})},
+    {.name = "args keep self loops",
+     .build = ARGS,
+     .file = "0 1\n1 2\n2 2\n3 0\n",
+     .vertices = 4,
+     .args = {"--file", "@", "--keep-self-loops"},
+     .nargs = 3,
+     EDGES({0, 1}, {1, 2}, {2, 2}, {3, 0})},
+    {.name = "args flip",
+     .build = ARGS,
+     .file = "0 1\n1 2\n",
+     .vertices = 4,
+     .args = {"--file", "@", "--flip"},
+     .nargs = 3,
+     EDGES({0, 1}, {1, 2}, {1, 0}, {2, 1})},
+    {.name = "args adjacency",
+     .build = ARGS,
+     .file = "4 4\n2\n3\n3\n1\n",
+     .vertices = 4,
+     .args = {"--file", "@", "--csr-format"},
+     .nargs = 3,
+     EDGES({0, 1}, {1, 2}, {3, 0})},
+    {.name = "args no file", .build = ARGS, .vertices = 4, .rc = -1},
+    /* Sized exactly: a flag's value would be one past the end. */
+    {.name = "args trailing file flag",
+     .build = ARGS,
+     .vertices = 4,
+     .args = {"--file"},
+     .nargs = 1,
+     .rc = -1},
+};
+
+#define NCASES (sizeof(cases) / sizeof(cases[0]))
+#define MAX_DEGREE 16
+
+/* Built in init_per_node, before parallel start; read only by EDTs. */
+static arts_block_dist_t *g_dist[NCASES];
+
+static void fail(const csr_case_t *c, const char *what) {
+  arts_printf("FAIL: csr_graph %s: %s\n", c->name, what);
   arts_test_fail();
 }
 
@@ -90,6 +318,23 @@ static int vertex_cmp(const void *a, const void *b) {
   arts_vertex_t x = *(const arts_vertex_t *)a;
   arts_vertex_t y = *(const arts_vertex_t *)b;
   return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
+void init_per_node(unsigned int node_id, int argc, char **argv) {
+  (void)node_id;
+  (void)argc;
+  (void)argv;
+  unsigned int parts = 2 * arts_get_total_ranks();
+  for (unsigned int i = 0; i < NCASES; ++i) {
+    if (cases[i].build == DIRECT) {
+      char *counts[] = {(char *)"prog", (char *)"--num-vertices", (char *)"8",
+                        (char *)"--num-edges", (char *)"9"};
+      g_dist[i] = arts_block_dist_init_from_args(5, counts);
+    } else {
+      g_dist[i] = arts_block_dist_init(cases[i].vertices, cases[i].nedges,
+                                       parts, ARTS_GUID_DB);
+    }
+  }
 }
 
 static bool write_file(const char *path, const char *content) {
@@ -102,449 +347,228 @@ static bool write_file(const char *path, const char *content) {
   return true;
 }
 
-static bool has_neighbor(arts_block_dist_t *dist, arts_vertex_t v,
-                         arts_vertex_t target) {
-  arts_csr_graph_t *csr = arts_csr_from_partition(0, dist);
-  if (csr == NULL) {
-    return false;
-  }
-  arts_vertex_t *nbrs = NULL;
-  arts_graph_sz_t cnt = 0;
-  arts_csr_get_neighbors(csr, v, &nbrs, &cnt);
-  for (arts_graph_sz_t k = 0; k < cnt; ++k) {
-    if (nbrs[k] == target) {
-      return true;
+/* Each local partition of a direct case, built from the edges whose source it
+ * holds; a partition homed on another rank builds nothing. */
+static void build_direct(const csr_case_t *c, arts_block_dist_t *dist) {
+  for (arts_partition_t p = 0; p < dist->num_blocks; ++p) {
+    arts_guid_t g = arts_block_dist_guid_for_partition(dist, p);
+    arts_edge_vector_t vec;
+    /* A zero-capacity vector has no array at all, so a sort or a build that
+     * touched it would fault. */
+    arts_edge_vector_init(&vec, (c->build == DIRECT) ? 16 : 0);
+    if (!arts_guid_is_local(g)) {
+      if (arts_csr_init(p, arts_block_dist_block_size(p, dist), 0, dist, &vec,
+                        true, g) != NULL) {
+        fail(c, "a build for a remote partition returned a CSR");
+      }
+      arts_edge_vector_free(&vec);
+      continue;
+    }
+    for (unsigned int e = 0; e < c->nedges; ++e) {
+      if (arts_block_dist_get_owner(c->edges[e].s, dist) == p) {
+        arts_edge_vector_push_back(&vec, c->edges[e].s, c->edges[e].t, 0);
+      }
+    }
+    arts_edge_vector_sort_by_source_and_target(&vec);
+    arts_csr_graph_t *csr = arts_csr_init(
+        p, arts_block_dist_block_size(p, dist), vec.used, dist, &vec, true, g);
+    arts_edge_vector_free(&vec);
+    if (csr == NULL) {
+      fail(c, "a build for a local partition returned NULL");
     }
   }
-  return false;
 }
 
-/* Every edge partition 0 holds. */
-static arts_graph_sz_t total_degree(arts_block_dist_t *dist) {
-  arts_csr_graph_t *csr = arts_csr_from_partition(0, dist);
-  if (csr == NULL) {
-    return 0;
+static int load(const csr_case_t *c, arts_block_dist_t *dist,
+                const char *path) {
+  switch (c->build) {
+  case EDGE_LIST:
+    return arts_csr_load_no_weight(path, dist, c->flip, c->ignore_self_loops);
+  case ADJACENCY:
+    return arts_csr_load_no_weight_csr(path, dist, c->flip,
+                                       c->ignore_self_loops);
+  default: {
+    char *argv[4] = {(char *)"prog"};
+    for (int i = 0; i < c->nargs; ++i) {
+      argv[i + 1] =
+          (strcmp(c->args[i], "@") == 0) ? (char *)path : (char *)c->args[i];
+    }
+    return arts_csr_load_from_args(dist, c->nargs + 1, argv);
   }
-  arts_graph_sz_t total = 0;
-  for (arts_vertex_t v = 0; v < csr->num_local_vertices; ++v) {
-    arts_vertex_t *nbrs = NULL;
-    arts_graph_sz_t cnt = 0;
-    arts_csr_get_neighbors(csr, v, &nbrs, &cnt);
-    total += cnt;
-  }
-  return total;
-}
-
-static void free_partition0(arts_block_dist_t *dist) {
-  arts_csr_graph_t *csr = arts_csr_from_partition(0, dist);
-  if (csr != NULL) {
-    arts_csr_free(csr);
   }
 }
 
-/* Eight vertices; 2, 5 and 6 have no out-edges (interior gaps, one just before
- * the last source). */
-static void case_wellformed(void) {
-  static const arts_vertex_t src[] = {0, 1, 1, 3, 3, 3, 4, 7, 7};
-  static const arts_vertex_t tgt[] = {3, 0, 4, 2, 5, 7, 1, 0, 6};
-  static const arts_graph_sz_t degree[] = {1, 2, 0, 3, 1, 0, 0, 2};
-  const int nedges = (int)(sizeof(src) / sizeof(src[0]));
-  const arts_vertex_t nverts = 8;
-
-  arts_block_dist_t *dist =
-      arts_block_dist_init(nverts, (arts_graph_sz_t)nedges, 1, ARTS_GUID_DB);
-  arts_edge_vector_t vec;
-  arts_edge_vector_init(&vec, 64);
-  for (int i = 0; i < nedges; ++i) {
-    arts_edge_vector_push_back(&vec, src[i], tgt[i], 0);
+/* A partition a refused load did not create holds a stand-in whose header
+ * names the complement of its GUID, so its readers find a block either way
+ * and can tell which one they found. */
+static void create_stand_ins(arts_block_dist_t *dist) {
+  for (arts_partition_t p = 0; p < dist->num_blocks; ++p) {
+    arts_guid_t g = arts_block_dist_guid_for_partition(dist, p);
+    if (!arts_guid_is_local(g)) {
+      continue;
+    }
+    arts_csr_graph_t *stand_in = (arts_csr_graph_t *)arts_db_create_with_guid(
+        g, sizeof(arts_csr_graph_t), ARTS_DB, ARTS_DB_PROP_NONE, NULL);
+    memset(stand_in, 0, sizeof(*stand_in));
+    stand_in->partGuid = ~g;
   }
-  arts_edge_vector_sort_by_source(&vec);
-  arts_csr_graph_t *csr =
-      arts_csr_init(0, nverts, (arts_graph_sz_t)nedges, dist, &vec, true,
-                    arts_block_dist_guid_for_partition(dist, 0));
-  arts_edge_vector_free(&vec);
-  if (csr == NULL) {
-    fail("wellformed: init returned NULL");
-    arts_block_dist_free(dist);
+}
+
+/* The loader of one rank: every case's partitions homed here. */
+void load_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  for (unsigned int i = 0; i < NCASES; ++i) {
+    const csr_case_t *c = &cases[i];
+    if (c->build == DIRECT || c->build == DIRECT_EMPTY) {
+      build_direct(c, g_dist[i]);
+      continue;
+    }
+    char path[256];
+    snprintf(path, sizeof(path), "arts_csr_graph_%u_%d.txt", i, (int)getpid());
+    if (c->file != NULL && !write_file(path, c->file)) {
+      fail(c, "cannot write the fixture");
+      create_stand_ins(g_dist[i]);
+      continue;
+    }
+    int rc = load(c, g_dist[i], path);
+    if (c->file != NULL) {
+      remove(path);
+    }
+    if (rc != c->rc) {
+      fail(c, (c->rc == 0) ? "the load was refused" : "the load was accepted");
+    }
+    if (rc != 0) {
+      create_stand_ins(g_dist[i]);
+    }
+  }
+}
+
+static void check_csr(const csr_case_t *c, arts_block_dist_t *dist,
+                      arts_partition_t p, arts_csr_graph_t *csr) {
+  arts_graph_sz_t size = arts_block_dist_block_size(p, dist);
+  arts_vertex_t start = arts_block_dist_partition_start(p, dist);
+  arts_graph_sz_t local_edges = 0;
+  for (unsigned int e = 0; e < c->nedges; ++e) {
+    if (arts_block_dist_get_owner(c->edges[e].s, dist) == p) {
+      local_edges++;
+    }
+  }
+  if (csr->index != p || csr->num_blocks != dist->num_blocks ||
+      csr->num_local_vertices != size || csr->num_local_edges != local_edges) {
+    fail(c, "header counts");
     return;
   }
-  if (csr->num_local_vertices != nverts ||
-      csr->num_local_edges != (arts_graph_sz_t)nedges) {
-    fail("wellformed: header counts");
-  }
-
-  arts_vertex_t pstart = arts_block_dist_partition_start(0, dist);
   arts_vertex_t *prev = NULL;
   arts_graph_sz_t prev_cnt = 0;
-  arts_graph_sz_t total = 0;
-  for (arts_vertex_t v = 0; v < nverts; ++v) {
+  for (arts_vertex_t v = start; v < start + size; ++v) {
+    arts_vertex_t want[MAX_DEGREE];
+    arts_graph_sz_t n = 0;
+    for (unsigned int e = 0; e < c->nedges; ++e) {
+      if (c->edges[e].s == v && n < MAX_DEGREE) {
+        want[n++] = c->edges[e].t;
+      }
+    }
+    qsort(want, (size_t)n, sizeof(want[0]), vertex_cmp);
     arts_vertex_t *nbrs = NULL;
     arts_graph_sz_t cnt = (arts_graph_sz_t)-1;
     arts_csr_get_neighbors(csr, v, &nbrs, &cnt);
-    if (cnt != degree[v]) {
-      fail("wellformed: degree");
-      break;
+    if (v > start && nbrs != prev + prev_cnt) {
+      fail(c, "a neighbour range does not start where the previous one ends");
+      return;
     }
-    if (v > 0 && nbrs != prev + prev_cnt) {
-      fail("wellformed: a neighbour range does not start where the previous "
-           "one ends");
-      break;
+    if (cnt != n) {
+      fail(c, "degree");
+      return;
     }
-    if (cnt > 0) {
-      arts_vertex_t want[8];
-      arts_vertex_t got[8];
-      int n = 0;
-      for (int e = 0; e < nedges; ++e) {
-        if (src[e] == v) {
-          want[n++] = tgt[e];
-        }
-      }
-      for (arts_graph_sz_t k = 0; k < cnt; ++k) {
-        got[k] = nbrs[k];
-      }
-      qsort(want, (size_t)n, sizeof(want[0]), vertex_cmp);
-      qsort(got, (size_t)cnt, sizeof(got[0]), vertex_cmp);
-      for (arts_graph_sz_t k = 0; k < cnt; ++k) {
-        if (got[k] != want[k]) {
-          fail("wellformed: neighbour set");
-          break;
-        }
+    for (arts_graph_sz_t k = 0; k < cnt; ++k) {
+      if (nbrs[k] != want[k]) {
+        fail(c, "a row's targets are not the expected ascending sequence");
+        return;
       }
     }
-    if (pstart + (arts_vertex_t)arts_csr_get_local_index(v, csr) != v) {
-      fail("wellformed: local index does not map back to its vertex");
+    if (start + (arts_vertex_t)arts_csr_get_local_index(v, csr) != v) {
+      fail(c, "local index does not map back to its vertex");
+      return;
     }
     prev = nbrs;
     prev_cnt = cnt;
-    total += cnt;
   }
-  if (total != (arts_graph_sz_t)nedges) {
-    fail("wellformed: degrees do not sum to the local edge count");
-  }
-  arts_csr_free(csr);
-  arts_block_dist_free(dist);
 }
 
-/* A zero-capacity edge vector has no array at all, so a build that touched it
- * would fault. */
-static void case_empty_partition(void) {
-  arts_block_dist_t *dist = arts_block_dist_init(8, 0, 1, ARTS_GUID_DB);
-  arts_edge_vector_t vec;
-  arts_edge_vector_init(&vec, 0);
-  arts_csr_graph_t *csr = arts_csr_init(
-      0, 8, 0, dist, &vec, true, arts_block_dist_guid_for_partition(dist, 0));
-  arts_edge_vector_free(&vec);
+/* paramv: the case index and the partition.  Slot 0: the partition, RO. */
+void read_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+              arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)depc;
+  const csr_case_t *c = &cases[paramv[0]];
+  arts_block_dist_t *dist = g_dist[paramv[0]];
+  arts_partition_t p = (arts_partition_t)paramv[1];
+  arts_guid_t g = arts_block_dist_guid_for_partition(dist, p);
+  arts_csr_graph_t *csr = (arts_csr_graph_t *)depv[0].ptr;
   if (csr == NULL) {
-    fail("empty partition: init returned NULL");
-    arts_block_dist_free(dist);
-    return;
+    fail(c, "the partition's slot has no payload");
+  } else if (csr->partGuid == ~g) {
+    if (c->rc == 0) {
+      fail(c, "the partition was not built");
+    }
+  } else if (csr->partGuid != g) {
+    fail(c, "the partition's header names another GUID");
+  } else if (c->rc != 0) {
+    fail(c, "a refused load built a partition");
+  } else {
+    check_csr(c, dist, p, csr);
   }
-  if (csr->num_local_edges != 0 || csr->num_local_vertices != 8) {
-    fail("empty partition: header counts");
-  }
-  for (arts_vertex_t v = 0; v < 8; ++v) {
-    arts_vertex_t *nbrs = NULL;
-    arts_graph_sz_t cnt = (arts_graph_sz_t)-1;
-    arts_csr_get_neighbors(csr, v, &nbrs, &cnt);
-    if (cnt != 0) {
-      fail("empty partition: a vertex reports neighbours");
-      break;
+}
+
+void destroy_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                 arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  for (unsigned int i = 0; i < NCASES; ++i) {
+    for (arts_partition_t p = 0; p < g_dist[i]->num_blocks; ++p) {
+      arts_db_destroy(arts_block_dist_guid_for_partition(g_dist[i], p));
     }
   }
-  arts_csr_free(csr);
-  arts_block_dist_free(dist);
+  if (arts_test_status() == 0) {
+    arts_printf("PASS csr_graph\n");
+  }
+  arts_shutdown();
 }
 
-#define LOOKUPS 2048
-
-static void case_lookup(void) {
-  arts_block_dist_t *dist = arts_block_dist_init(64, 3, 1, ARTS_GUID_DB);
-  arts_edge_vector_t vec;
-  arts_edge_vector_init(&vec, 16);
-  arts_edge_vector_push_back(&vec, 0, 1, 0);
-  arts_edge_vector_push_back(&vec, 0, 2, 0);
-  arts_edge_vector_push_back(&vec, 1, 0, 0);
-  arts_edge_vector_sort_by_source(&vec);
-  arts_guid_t g0 = arts_block_dist_guid_for_partition(dist, 0);
-  arts_csr_graph_t *built = arts_csr_init(
-      0, arts_block_dist_block_size(0, dist), vec.used, dist, &vec, true, g0);
-  arts_edge_vector_free(&vec);
-  if (built == NULL) {
-    fail("lookup: init returned NULL");
-    arts_block_dist_free(dist);
-    return;
-  }
-  for (int i = 0; i < LOOKUPS; ++i) {
-    arts_csr_graph_t *got = arts_csr_from_guid(g0);
-    /* Reading a field of the descriptor faults under a sanitizer if a lookup
-     * dropped one reference too many. */
-    if (got != built || got->partGuid != g0) {
-      fail("lookup: a repeated lookup found another CSR");
-      break;
+/* Every rank reads every partition of every case. */
+void read_phase_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
+                    arts_edt_dep_t depv[]) {
+  (void)paramc;
+  (void)paramv;
+  (void)depc;
+  (void)depv;
+  arts_guid_t readers = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
+  h.finish_event = readers;
+  for (unsigned int i = 0; i < NCASES; ++i) {
+    for (arts_partition_t p = 0; p < g_dist[i]->num_blocks; ++p) {
+      uint64_t pv[2] = {i, p};
+      for (unsigned int r = 0; r < arts_get_total_ranks(); ++r) {
+        h.rank = r;
+        arts_guid_t reader = arts_edt_create(read_edt, 2, pv, 1, &h);
+        arts_add_dependence(arts_block_dist_guid_for_partition(g_dist[i], p),
+                            reader, 0, DB_MODE_RO);
+      }
     }
   }
-  if (arts_csr_from_partition(0, dist) != built) {
-    fail("lookup: the partition lookup disagrees with the GUID lookup");
-  }
-  arts_guid_t never = arts_guid_reserve(ARTS_GUID_DB, arts_get_current_rank());
-  if (arts_csr_from_guid(never) != NULL) {
-    fail("lookup: a GUID that names no CSR found one");
-  }
-  arts_csr_free(built);
-  arts_block_dist_free(dist);
+  arts_edt_hint_t here = ARTS_EDT_HINT_DEFAULTS;
+  arts_guid_t done = arts_edt_create(destroy_edt, 0, NULL, 1, &here);
+  arts_add_dependence(readers, done, 0, DB_MODE_NULL);
 }
 
-static void case_load_edgelist(void) {
-  char path[256];
-  snprintf(path, sizeof(path), "arts_csr_graph_edgelist_%d.txt", (int)getpid());
-  /* MatrixMarket coordinate data: a '%' banner, its size line, a '#'
-   * comment, then 1-based entries -- after the shift to 0-based the edges
-   * 0->1, 0->2, 1->0, the self loop 3->3, 4->5 (an entry with a value column)
-   * and 5->0. */
-  if (!write_file(path, "%%MatrixMarket matrix coordinate real general\n"
-                        "6 6 6\n"
-                        "# a comment line\n"
-                        "1 2\n"
-                        "1 3\n"
-                        "2 1\n"
-                        "4 4\n"
-                        "5 6 99\n"
-                        "6 1\n")) {
-    fail("edgelist: cannot write the fixture");
-    return;
-  }
-
-  arts_block_dist_t *dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight(path, dist, false, true) != 0) {
-    fail("edgelist: load failed");
-  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 0, 2) ||
-             !has_neighbor(dist, 1, 0) || !has_neighbor(dist, 4, 5) ||
-             !has_neighbor(dist, 5, 0)) {
-    fail("edgelist: an edge is missing");
-  } else if (has_neighbor(dist, 3, 3)) {
-    fail("edgelist: a self loop was kept");
-  } else if (total_degree(dist) != 5) {
-    fail("edgelist: a value column or a 1-based index made an edge");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-
-  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight(path, dist, true, true) != 0) {
-    fail("edgelist: flipped load failed");
-  } else if (!has_neighbor(dist, 2, 0)) {
-    fail("edgelist: the flipped load lacks the reverse edge 2->0");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-
-  /* A 0-based list with a blank line, self loops kept: the blank line is no
-   * edge, so no 0->0 appears. */
-  if (!write_file(path, "0 1\n\n2 3\n")) {
-    fail("edgelist: cannot write the blank-line fixture");
-    return;
-  }
-  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight(path, dist, false, false) != 0) {
-    fail("edgelist: the blank-line list did not load");
-  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 2, 3) ||
-             has_neighbor(dist, 0, 0) || total_degree(dist) != 2) {
-    fail("edgelist: a blank line made an edge");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-
-  /* A '%' line after the first data line is a comment and nothing more: the
-   * ids stay 0-based and the line after it is an edge. */
-  if (!write_file(path, "0 1\n% a note\n2 3\n4 5\n")) {
-    fail("edgelist: cannot write the mid-file comment fixture");
-    return;
-  }
-  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight(path, dist, false, false) != 0) {
-    fail("edgelist: the mid-file comment list did not load");
-  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 2, 3) ||
-             !has_neighbor(dist, 4, 5) || total_degree(dist) != 3) {
-    fail("edgelist: a mid-file '%' line changed the edges after it");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-
-  /* A KONECT-style header: '%' lines and no size line, 1-based ids. */
-  if (!write_file(path, "% sym unweighted\n% 3 3 3\n1 2\n2 3\n3 1\n")) {
-    fail("edgelist: cannot write the KONECT-style fixture");
-    return;
-  }
-  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight(path, dist, false, false) != 0) {
-    fail("edgelist: the KONECT-style list did not load");
-  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 1, 2) ||
-             !has_neighbor(dist, 2, 0) || total_degree(dist) != 3) {
-    fail("edgelist: a KONECT-style header lost or shifted an edge");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-
-  /* A line with one field is no edge: the load is refused and builds
-   * nothing. */
-  if (!write_file(path, "0 1\n4\n")) {
-    fail("edgelist: cannot write the one-field fixture");
-    return;
-  }
-  dist = arts_block_dist_init(6, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight(path, dist, false, true) != -1) {
-    fail("edgelist: a one-field line was not refused");
-  } else if (arts_csr_from_partition(0, dist) != NULL) {
-    fail("edgelist: a refused load built a CSR");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-  remove(path);
-}
-
-static void case_load_adjacency(void) {
-  char path[256];
-
-  /* src 0: {1, 2}, src 1: {0}, src 2: {3}, src 3: {0, 2}. */
-  snprintf(path, sizeof(path), "arts_csr_graph_adj_%d.txt", (int)getpid());
-  if (!write_file(path, "4 6\n2 3\n1\n4\n1 3\n")) {
-    fail("adjacency: cannot write the fixture");
-    return;
-  }
-  arts_block_dist_t *dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight_csr(path, dist, false, true) != 0) {
-    fail("adjacency: load failed");
-  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 0, 2) ||
-             !has_neighbor(dist, 1, 0) || !has_neighbor(dist, 2, 3) ||
-             !has_neighbor(dist, 3, 0) || !has_neighbor(dist, 3, 2)) {
-    fail("adjacency: neighbours are not the decremented targets");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-  remove(path);
-
-  /* The header claims four lines and two follow. */
-  snprintf(path, sizeof(path), "arts_csr_graph_short_%d.txt", (int)getpid());
-  if (!write_file(path, "4 3\n2 3\n1\n")) {
-    fail("adjacency: cannot write the short fixture");
-    return;
-  }
-  dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight_csr(path, dist, false, true) != -1) {
-    fail("adjacency: a short file was not refused");
-  } else if (arts_csr_from_partition(0, dist) != NULL) {
-    fail("adjacency: a short file built a CSR");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-  remove(path);
-
-  /* A header with no edge count. */
-  snprintf(path, sizeof(path), "arts_csr_graph_header_%d.txt", (int)getpid());
-  if (!write_file(path, "4\n2\n")) {
-    fail("adjacency: cannot write the one-field header fixture");
-    return;
-  }
-  dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight_csr(path, dist, false, true) != -1) {
-    fail("adjacency: a header without an edge count was not refused");
-  } else if (arts_csr_from_partition(0, dist) != NULL) {
-    fail("adjacency: a refused header built a CSR");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-  remove(path);
-
-  /* Vertex 0's line "2<VT>3": the vertical tab separates two targets. */
-  snprintf(path, sizeof(path), "arts_csr_graph_vt_%d.txt", (int)getpid());
-  if (!write_file(path, "3 4\n2\v3\n1\n1\n")) {
-    fail("adjacency: cannot write the vertical-tab fixture");
-    return;
-  }
-  dist = arts_block_dist_init(3, 0, 1, ARTS_GUID_DB);
-  if (arts_csr_load_no_weight_csr(path, dist, false, true) != 0) {
-    fail("adjacency: the vertical-tab file did not load");
-  } else if (!has_neighbor(dist, 0, 1) || !has_neighbor(dist, 0, 2)) {
-    fail("adjacency: a vertical tab did not separate two targets");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-  remove(path);
-
-  snprintf(path, sizeof(path), "arts_csr_graph_zero_%d.txt", (int)getpid());
-  if (!write_file(path, "2 3\n0 2\n1\n")) {
-    fail("adjacency: cannot write the zero-token fixture");
-    return;
-  }
-  dist = arts_block_dist_init(2, 0, 1, ARTS_GUID_DB);
-  (void)arts_csr_load_no_weight_csr(path, dist, false, true);
-  if (has_neighbor(dist, 0, (arts_vertex_t)-1)) {
-    fail("adjacency: a 0 token became a neighbour");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-  remove(path);
-}
-
-static void case_args(void) {
-  char el_path[256];
-  char adj_path[256];
-  snprintf(el_path, sizeof(el_path), "arts_csr_graph_args_el_%d.txt",
-           (int)getpid());
-  snprintf(adj_path, sizeof(adj_path), "arts_csr_graph_args_adj_%d.txt",
-           (int)getpid());
-  if (!write_file(el_path, "0 1\n1 2\n2 2\n3 0\n") ||
-      !write_file(adj_path, "4 4\n2\n3\n3\n1\n")) {
-    fail("args: cannot write the fixtures");
-    remove(el_path);
-    return;
-  }
-
-  arts_block_dist_t *dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  char *edgelist[] = {(char *)"prog", (char *)"--file", el_path};
-  if (arts_csr_load_from_args(dist, 3, edgelist) != 0 ||
-      !has_neighbor(dist, 0, 1)) {
-    fail("args: the edge-list loader was not selected");
-  } else if (has_neighbor(dist, 2, 2)) {
-    fail("args: a self loop was kept by default");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-
-  dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  char *keep[] = {(char *)"prog", (char *)"--file", el_path,
-                  (char *)"--keep-self-loops"};
-  if (arts_csr_load_from_args(dist, 4, keep) != 0 ||
-      !has_neighbor(dist, 2, 2)) {
-    fail("args: --keep-self-loops did not keep 2->2");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-
-  dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  char *adjacency[] = {(char *)"prog", (char *)"--file", adj_path,
-                       (char *)"--csr-format"};
-  if (arts_csr_load_from_args(dist, 4, adjacency) != 0 ||
-      !has_neighbor(dist, 0, 1)) {
-    fail("args: --csr-format did not select the adjacency loader");
-  }
-  free_partition0(dist);
-  arts_block_dist_free(dist);
-  remove(el_path);
-  remove(adj_path);
-
-  dist = arts_block_dist_init(4, 0, 1, ARTS_GUID_DB);
-  char *none[] = {(char *)"prog"};
-  if (arts_csr_load_from_args(dist, 1, none) != -1) {
-    fail("args: a load with no --file did not refuse");
-  }
-  /* Sized exactly: a flag's value would be one past the end. */
-  char *trailing[] = {(char *)"prog", (char *)"--file"};
-  if (arts_csr_load_from_args(dist, 2, trailing) != -1) {
-    fail("args: a trailing --file read a value past the arguments");
-  }
-  arts_block_dist_free(dist);
-
+static void check_dist_args(void) {
+  static const csr_case_t args_case = {.name = "distribution arguments"};
   char *no_counts[] = {(char *)"prog"};
   char *no_edges[] = {(char *)"prog", (char *)"--num-vertices", (char *)"16"};
   arts_block_dist_t *d = arts_block_dist_init_from_args(1, no_counts);
@@ -552,7 +576,7 @@ static void case_args(void) {
     d = arts_block_dist_init_from_args(3, no_edges);
   }
   if (d != NULL) {
-    fail("args: a distribution was built without both counts");
+    fail(&args_case, "a distribution was built without both counts");
     arts_block_dist_free(d);
   }
   /* The vertex count's flag is the last argument; the token after it lies
@@ -562,8 +586,14 @@ static void case_args(void) {
                       (char *)"--num-vertices", (char *)"7"};
   d = arts_block_dist_init_from_args(4, past_end);
   if (d != NULL) {
-    fail("args: a trailing --num-vertices read a value past the arguments");
+    fail(&args_case,
+         "a trailing --num-vertices read a value past the arguments");
     arts_block_dist_free(d);
+  }
+  arts_block_dist_t *built = g_dist[0];
+  if (built == NULL || built->num_vertices != 8 || built->num_edges != 9 ||
+      built->num_blocks != arts_get_total_ranks()) {
+    fail(&args_case, "the distribution from arguments has the wrong shape");
   }
 }
 
@@ -573,22 +603,17 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
   (void)paramv;
   (void)depc;
   (void)depv;
-
-  if (arts_get_total_ranks() != 1) {
-    fail("needs exactly one rank");
-    arts_shutdown();
-    return;
+  check_dist_args();
+  arts_guid_t loaders = arts_event_create(&ARTS_EVENT_HINT_FINISH);
+  arts_edt_hint_t h = ARTS_EDT_HINT_DEFAULTS;
+  h.finish_event = loaders;
+  for (unsigned int r = 0; r < arts_get_total_ranks(); ++r) {
+    h.rank = r;
+    arts_edt_create(load_edt, 0, NULL, 0, &h);
   }
-  case_wellformed();
-  case_empty_partition();
-  case_lookup();
-  case_load_edgelist();
-  case_load_adjacency();
-  case_args();
-  if (arts_test_status() == 0) {
-    arts_printf("PASS csr_graph\n");
-  }
-  arts_shutdown();
+  arts_edt_hint_t here = ARTS_EDT_HINT_DEFAULTS;
+  arts_guid_t next = arts_edt_create(read_phase_edt, 0, NULL, 1, &here);
+  arts_add_dependence(loaders, next, 0, DB_MODE_NULL);
 }
 
 int main(int argc, char **argv) {

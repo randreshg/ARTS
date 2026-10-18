@@ -173,11 +173,14 @@ struct arts_event_dep_s;
  *  The `is_channel` discriminator selects which union arm is active.
  *
  *  Non-CHANNEL semantics (`is_channel == 0`):
- *    - `latch` decrements per LATCH_DECR satisfy; fires at <= 0.
- *    - Fire is a pure state transition (sets `fired`, publishes `data`,
- *      drains `deps_stack`) and never destroys: the event lingers to serve
- *      late binders until an explicit `arts_event_destroy`.  Over-satisfy
- *      past the fire is silently absorbed.
+ *    - The latch decrements per LATCH_DECR satisfy and increments per
+ *      LATCH_INCR satisfy; the event fires when a decrement brings it to
+ *      exactly 0, never at creation and never on an increment.
+ *    - Fire is a state transition (moves `state` to FIRED, publishes `data`,
+ *      drains `deps_stack`): the event lingers to serve late binders until it
+ *      is reclaimed, by `arts_event_destroy`, at the fire when `auto_destroy`,
+ *      or when a `counted` `nb_deps` reaches zero.  Over-satisfy past the fire
+ *      is silently absorbed.
  *
  *  CHANNEL semantics (`is_channel == 1`):
  *    - `nb_sat` increments per satisfy; `nb_deps` increments per add_dep.

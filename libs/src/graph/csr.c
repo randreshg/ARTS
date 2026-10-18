@@ -44,7 +44,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "arts/gas/route_table.h"
 #include "arts/system/print.h"
 #include "arts/utils/malloc.h"
 
@@ -66,11 +65,11 @@ arts_csr_graph_t *arts_csr_init(arts_partition_t part_index,
   if (arts_guid_is_local(block_guid)) {
     // data is a single array that merges row_indices and columns
     arts_graph_sz_t totsz = (localv + 1) + locale;
-    unsigned int db_size =
+    uint64_t db_size =
         sizeof(arts_csr_graph_t) + (totsz * sizeof(arts_vertex_t));
 
     csr = (arts_csr_graph_t *)arts_db_create_with_guid(
-        block_guid, db_size, ARTS_DB_PIN, ARTS_DB_PROP_NONE, NULL);
+        block_guid, db_size, ARTS_DB, ARTS_DB_PROP_NONE, NULL);
     csr->partGuid = block_guid;
     csr->num_local_vertices = localv;
     csr->num_local_edges = locale;
@@ -255,7 +254,7 @@ int arts_csr_load_from_args(arts_block_dist_t *dist, int argc, char **argv) {
   }
 
   ARTS_INFO("[INFO] Initializing GraphDB with following parameters ...");
-  ARTS_INFO("[INFO] Graph file : %s", file);
+  ARTS_INFO("[INFO] Graph file : %s", file ? file : "(none)");
   ARTS_INFO("[INFO] Flip ? : %d", flip);
   ARTS_INFO("[INFO] Keep Self-loops ? : %d", keep_self_loops);
   ARTS_INFO("[INFO] Csr-format : %d", csr_format);
@@ -352,6 +351,13 @@ int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
       src--;
       target--;
     }
+    if (src >= dist->num_vertices || target >= dist->num_vertices) {
+      ARTS_WARN("csr: %s: the edge on the line starting '%s' names a vertex "
+                "at or above the vertex count %" PRIu64,
+                file_path, src_token, dist->num_vertices);
+      rc = -1;
+      break;
+    }
 
     if (ignore_self_loops && (src == target)) {
       continue;
@@ -391,7 +397,7 @@ int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
 
   for (unsigned int k = 0; k < num_local_parts; k++) {
     if (rc == 0) {
-      arts_edge_vector_sort_by_source(&vedges[k]);
+      arts_edge_vector_sort_by_source_and_target(&vedges[k]);
       arts_csr_init(part_index[k],
                     arts_block_dist_block_size(part_index[k], dist),
                     vedges[k].used, dist, &vedges[k], true,
@@ -406,7 +412,6 @@ int arts_csr_load_no_weight(const char *file_path, arts_block_dist_t *dist,
 
 int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
                                 bool flip, bool ignore_self_loops) {
-  (void)flip;
   if (file_path == NULL) {
     ARTS_WARN("csr: no file path given");
     return -1;
@@ -468,7 +473,8 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
   uint64_t local_edges = 0;
   uint64_t edge_count = 0;
   arts_graph_sz_t src = 0;
-  while (fgets(str, ARTS_GRAPH_MAXCHAR, file) != NULL) {
+  bool out_of_range = false;
+  while (!out_of_range && fgets(str, ARTS_GRAPH_MAXCHAR, file) != NULL) {
     if (str[0] == '%') {
       // ARTS_INFO("%%%%%%");
       continue;
@@ -491,6 +497,14 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
         continue;
       }
       arts_graph_sz_t target = raw - 1;
+      if (src >= dist->num_vertices || target >= dist->num_vertices) {
+        ARTS_WARN("csr: %s: the edge %" PRIu64 " -> %" PRIu64
+                  " (0-based) names a vertex at or above the vertex count "
+                  "%" PRIu64 "; no graph is built",
+                  file_path, src, target, dist->num_vertices);
+        out_of_range = true;
+        break;
+      }
 
       if (ignore_self_loops && (src == target)) {
         // ARTS_INFO("SELF LOOP");
@@ -506,15 +520,16 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
         }
       }
 
-      // if (flip) {
-      //     owner = arts_block_dist_get_owner(target, dist);
-      //     for(unsigned int k=0; k<num_local_parts; k++) {
-      //         if (owner == part_index[k]) {
-      //             arts_edge_vector_push_back(&vedges[k], target, src,
-      //             0/*weight zeor for the moment*/); local_edges++;
-      //         }
-      //     }
-      // }
+      if (flip) {
+        owner = arts_block_dist_get_owner(target, dist);
+        for (unsigned int k = 0; k < num_local_parts; k++) {
+          if (owner == part_index[k]) {
+            arts_edge_vector_push_back(&vedges[k], target, src,
+                                       0 /*weight zeor for the moment*/);
+            local_edges++;
+          }
+        }
+      }
 
       edge_count++;
     }
@@ -523,11 +538,9 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
   (void)fclose(file);
 
   int rc = 0;
-  if (src == num_verts) {
+  if (!out_of_range && src == num_verts) {
     for (unsigned int k = 0; k < num_local_parts; k++) {
-      // ARTS_INFO("Sorting edges %lu local %lu vert %lu", edge_count,
-      // local_edges, src); done loading edge -- sort them by source
-      arts_edge_vector_sort_by_source(&vedges[k]);
+      arts_edge_vector_sort_by_source_and_target(&vedges[k]);
 
       arts_csr_init(part_index[k],
                     arts_block_dist_block_size(part_index[k], dist),
@@ -536,11 +549,13 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
       arts_edge_vector_free(&vedges[k]);
     }
   } else {
-    ARTS_WARN("csr: %lu adjacency lines, but the header declares %lu vertices "
-              "(check the line length); no graph is built",
-              src, num_verts);
-    // No CSR is built on a header mismatch, but the per-partition edge buffers
-    // were still allocated during parsing and must be released.
+    if (!out_of_range) {
+      ARTS_WARN("csr: %lu adjacency lines, but the header declares %lu "
+                "vertices (check the line length); no graph is built",
+                src, num_verts);
+    }
+    // No CSR is built, but the per-partition edge buffers were still
+    // allocated during parsing and must be released.
     for (unsigned int k = 0; k < num_local_parts; k++) {
       arts_edge_vector_free(&vedges[k]);
     }
@@ -550,27 +565,4 @@ int arts_csr_load_no_weight_csr(const char *file_path, arts_block_dist_t *dist,
   arts_free(part_index);
   arts_free(vedges);
   return rc;
-}
-
-arts_csr_graph_t *arts_csr_from_guid(arts_guid_t guid) {
-  arts_shared_ptr_t h = arts_route_table_lookup_db(guid);
-  struct arts_db_s *db_res = (struct arts_db_s *)arts_shared_get(h);
-  if (arts_guid_is_local(guid) && db_res) {
-    /* Note: caller uses the returned pointer without holding the cb ref.
-     * Safe because graph DBs are never destroyed during computation and
-     * callers always access data within an EDT lifetime — the descriptor
-     * outlives this call, so we drop the ref immediately. */
-    arts_csr_graph_t *out = (arts_csr_graph_t *)(db_res + 1);
-    arts_shared_release(&h);
-    return out;
-  }
-  if (db_res != NULL) {
-    arts_shared_release(&h);
-  }
-  return NULL;
-}
-
-arts_csr_graph_t *arts_csr_from_partition(arts_partition_t part_index,
-                                          arts_block_dist_t *dist) {
-  return arts_csr_from_guid(dist->graphGuid[part_index]);
 }

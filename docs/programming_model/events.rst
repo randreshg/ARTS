@@ -60,15 +60,19 @@ Latch Events (Fire-and-Linger)
 
 A latch event maintains an integer counter.  Satisfies on the
 ``ARTS_EVENT_LATCH_DECR_SLOT`` decrement it; satisfies on the
-``ARTS_EVENT_LATCH_INCR_SLOT`` increment it.  When the counter reaches
-zero the event **fires**, delivering its data GUID to every registered
-dependent.
+``ARTS_EVENT_LATCH_INCR_SLOT`` increment it.  When a decrement brings the
+counter to exactly zero the event **fires**, delivering its data GUID to every
+registered dependent; it never fires at creation or on an increment, so a latch
+created at zero or below fires only once increments have lifted it above zero
+and a decrement brings it back.
 
-Firing is a pure state transition — *fire is not destroy*.  A fired
-event **lingers**: any :c:func:`arts_add_dependence` registered after
-the fire is satisfied immediately from the stored fire data, until the
-event is explicitly removed with :c:func:`arts_event_destroy`.  A
-satisfy arriving past the fire is silently absorbed.
+Firing is a state transition — *fire is not destroy*.  A fired event
+**lingers**: any :c:func:`arts_add_dependence` registered after the fire is
+satisfied immediately from the stored fire data, until the event is reclaimed:
+by :c:func:`arts_event_destroy`, at the fire for an ``auto_destroy`` event (a
+finish event), or once a declared consumer count has registered (COUNTED,
+below).  A satisfy arriving past the fire is silently absorbed while the event
+lingers.
 
 The lingering single-fire OCR event flavors (ONCE, IDEMPOTENT, STICKY) are
 all subsumed by this unified fire-and-linger + silent-over-satisfy model:
