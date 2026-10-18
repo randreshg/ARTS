@@ -63,7 +63,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Feature test macro: strict -std=c17 hides POSIX/BSD/XSI functions.
 # _DEFAULT_SOURCE enables glibc defaults (POSIX.1-2008 + XSI + BSD + extensions)
 # while CMAKE_C_EXTENSIONS=OFF keeps the C17 *language* strict.
-add_compile_definitions(_DEFAULT_SOURCE _GNU_SOURCE)
+set(ARTS_FEATURE_TEST_MACROS _DEFAULT_SOURCE _GNU_SOURCE)
+add_compile_definitions(${ARTS_FEATURE_TEST_MACROS})
 
 # Target processor, and what its 16-byte atomics need.  The supported targets
 # are AMD64 and ARM64.
@@ -188,20 +189,40 @@ option(ARTS_BUILD_SHARED "Build the shared library (libarts.so)" ON)
 # tests/CMakeLists.txt), so a full test tree costs real disk and link time
 # that a benchmark/experiment build never uses.  Validation builds opt in.
 option(ARTS_BUILD_TESTS      "Build test programs (enables ctest)"             OFF)
-option(ARTS_BUILD_BENCHMARKS "Build benchmark apps (ARTS + reference runtimes)" ON)
+# The benchmark tree builds one runtime variant per coherence cell and, for
+# every section turned on below, that section's programs for each variant and
+# each reference runtime it runs on.  A section's option means nothing outside
+# a benchmark tree, except the examples, which every tree builds for its own
+# cell.
+option(ARTS_BUILD_BENCHMARKS
+    "Build the benchmark tree: a runtime variant per coherence cell, and each enabled section's programs per variant and reference runtime (AMD64 only)"
+    ON)
+option(ARTS_BUILD_OCR_APPS
+    "Section: the ocr-apps corpus and the in-tree OCR programs, on every ARTS variant and reference OCR runtime (benchmark tree only)"
+    ON)
+option(ARTS_BUILD_HPX_APPS
+    "Section: the HPX originals on HPX and their OCR mirrors on every ARTS variant and reference OCR runtime; builds FFTW (benchmark tree only)"
+    ON)
+option(ARTS_BUILD_EXAMPLES
+    "Section: the native ARTS examples, built for this tree's cell (smoke-tested with ARTS_BUILD_TESTS) and, in a benchmark tree, on every ARTS variant"
+    ON)
 # The OCR shim is one translation unit against the tree's own runtime and the
-# vendored OCR headers.  The benchmark apps link it, and a validation tree
-# builds it on its own so the shim's tests run against every configuration.
+# vendored OCR headers.  The ARTS variants of the OCR-API programs link it, and
+# a validation tree builds it on its own so the shim's tests run against every
+# configuration.
 option(ARTS_BUILD_SHIM       "Build the OCR-to-ARTS compatibility shim"        ON)
-# The reference runtimes are individually optional under ARTS_BUILD_BENCHMARKS.
-option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime" ON)
-option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime" ON)
-option(ARTS_BUILD_HPX        "Build HPX and the HPX benchmark apps" ON)
+# The reference runtimes run the OCR-API programs (the OCR applications and
+# the HPX applications' OCR mirrors) and the HPX originals; each is optional
+# and each needs a host MPI.
+option(ARTS_BUILD_XSOCR      "Build the XSOCR reference runtime for the OCR-API programs (needs a host MPI)" ON)
+option(ARTS_BUILD_OCRVX      "Build the ocr-vx reference runtime for the OCR-API programs (needs a host MPI)" ON)
+option(ARTS_BUILD_HPX        "Build the HPX runtime for the HPX originals (needs an MPI C++ compiler)" ON)
 # The benchmark tree is AMD64-only: the vendored FFTW is built for x86-64-v3
 # with x86 SIMD codelets, the pinned fftw-reloc artifact is x86 assembly, and
 # HPX is built with -mcx16.  On another target it is skipped for this
 # configure, the way the reference runtimes are skipped when no MPI is found,
-# and the runtime, the shim and the tests configure and build as usual.
+# and the runtime, the shim, the examples and the tests configure and build as
+# usual.
 if(NOT ARTS_TARGET_AMD64)
     # HPX is reachable only through the benchmark tree.
     if(ARTS_BUILD_BENCHMARKS)
@@ -213,10 +234,27 @@ if(NOT ARTS_TARGET_AMD64)
     set(ARTS_BUILD_BENCHMARKS OFF)
     set(ARTS_BUILD_HPX OFF)
 endif()
-if(ARTS_BUILD_BENCHMARKS AND NOT ARTS_BUILD_SHIM)
+if(ARTS_BUILD_BENCHMARKS AND
+   NOT (ARTS_BUILD_OCR_APPS OR ARTS_BUILD_HPX_APPS OR ARTS_BUILD_EXAMPLES))
     message(FATAL_ERROR
-        "ARTS_BUILD_BENCHMARKS=ON requires ARTS_BUILD_SHIM=ON: every ARTS "
-        "variant of a benchmark app links the OCR shim.")
+        "ARTS_BUILD_BENCHMARKS=ON builds the programs of the sections turned "
+        "on, and every section is OFF: turn on ARTS_BUILD_OCR_APPS, "
+        "ARTS_BUILD_HPX_APPS or ARTS_BUILD_EXAMPLES, or pass "
+        "-DARTS_BUILD_BENCHMARKS=OFF.")
+endif()
+# The OCR-API programs of a benchmark tree: the OCR applications and the HPX
+# applications' OCR mirrors.  They are what needs the benchmarks/ directory,
+# the shim's per-variant objects and the reference OCR runtimes.
+if(ARTS_BUILD_BENCHMARKS AND (ARTS_BUILD_OCR_APPS OR ARTS_BUILD_HPX_APPS))
+    set(ARTS_BENCHMARK_OCR_PROGRAMS ON)
+else()
+    set(ARTS_BENCHMARK_OCR_PROGRAMS OFF)
+endif()
+if(ARTS_BENCHMARK_OCR_PROGRAMS AND NOT ARTS_BUILD_SHIM)
+    message(FATAL_ERROR
+        "ARTS_BUILD_OCR_APPS or ARTS_BUILD_HPX_APPS in a benchmark tree "
+        "requires ARTS_BUILD_SHIM=ON: every ARTS variant of an OCR-API program "
+        "links the OCR shim.")
 endif()
 option(ARTS_BUILD_DOCS       "Build documentation (requires Doxygen + Sphinx)" OFF)
 
@@ -536,8 +574,9 @@ else()
 endif()
 
 # ── CXL: which library, and whether this tree's own library is a CXL one ──
-# The two CXL benchmark variants exist in every benchmark tree, so a tree
-# needs the library whenever it builds benchmarks or its own library is CXL.
+# The two CXL variants exist in every benchmark tree, whichever sections it
+# builds, so a tree needs the library whenever it is a benchmark tree or its
+# own library is CXL.
 set(ARTS_CXL_NEEDED OFF)
 if(ARTS_USE_CXL OR ARTS_BUILD_BENCHMARKS)
     set(ARTS_CXL_NEEDED ON)
@@ -805,11 +844,11 @@ message(STATUS "Log level: ${ARTS_LOG_LEVEL} (0=ERROR, 1=+WARN, 2=+INFO, 3=+DEBU
 set(COUNTER_CONFIG_FILE "${ARTS_COUNTER_CONFIG}")
 
 # Every access to an _Atomic object names its memory order.  Clang reports
-# one that does not (operator syntax, an implicit seq_cst access), and three
+# one that does not (operator syntax, an implicit seq_cst access), and four
 # directories attach this option to every C unit they configure: the runtime
-# library, the tests and the OCR shim.  No other unit is judged: not the
-# vendored libraries, the reference OCR runtimes or the benchmark programs,
-# whether vendored or the project's own.  GCC has no such diagnostic.
+# library, the tests, the OCR shim and the examples.  No other unit is judged:
+# not the vendored libraries, the reference OCR runtimes or the benchmark
+# programs, whether vendored or the project's own.  GCC has no such diagnostic.
 set(ARTS_WERROR_IMPLICIT_SEQ_CST
     $<$<COMPILE_LANG_AND_ID:C,Clang>:-Werror=atomic-implicit-seq-cst>)
 
@@ -826,8 +865,14 @@ if(ARTS_BUILD_SHIM)
     add_subdirectory(benchmarks/ocr_shim)
 endif()
 
-if(ARTS_BUILD_BENCHMARKS)
+if(ARTS_BENCHMARK_OCR_PROGRAMS)
     add_subdirectory(benchmarks)
+endif()
+
+# After tests/: the examples register their smoke tests through its helpers
+# and by its reference-tree rule.
+if(ARTS_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()
 
 add_subdirectory(configs)
@@ -998,9 +1043,43 @@ if(BUILD_CUDA_LIBRARY)
     message(STATUS "                   libarts_cuda.a (CUDA-enabled)")
 endif()
 message(STATUS "  Tests:           ${ARTS_BUILD_TESTS}")
-message(STATUS "  Benchmarks:      ${ARTS_BUILD_BENCHMARKS}")
-message(STATUS "  OCR shim:        ${ARTS_BUILD_SHIM}")
 if(ARTS_BUILD_BENCHMARKS)
+    message(STATUS "  Benchmarks:      ON (a runtime variant per coherence cell)")
+else()
+    message(STATUS "  Benchmarks:      OFF")
+endif()
+# What each section builds in this tree.
+if(NOT ARTS_BUILD_OCR_APPS)
+    message(STATUS "  OCR apps:        OFF")
+elseif(ARTS_BUILD_BENCHMARKS)
+    message(STATUS "  OCR apps:        ON (every ARTS variant and each reference OCR runtime built)")
+else()
+    message(STATUS "  OCR apps:        none (not a benchmark tree)")
+endif()
+if(NOT ARTS_BUILD_HPX_APPS)
+    message(STATUS "  HPX apps:        OFF")
+elseif(NOT ARTS_BUILD_BENCHMARKS)
+    message(STATUS "  HPX apps:        none (not a benchmark tree)")
+elseif(TARGET hpx_apps_ep)
+    message(STATUS "  HPX apps:        ON (HPX originals; OCR mirrors on every ARTS variant and each reference OCR runtime built)")
+else()
+    message(STATUS "  HPX apps:        ON (OCR mirrors on every ARTS variant and each reference OCR runtime built; no HPX originals, HPX is not built)")
+endif()
+if(NOT ARTS_BUILD_EXAMPLES)
+    message(STATUS "  Examples:        OFF")
+else()
+    set(_arts_examples_built "this tree's cell")
+    if(ARTS_BUILD_BENCHMARKS)
+        string(APPEND _arts_examples_built " and every ARTS variant")
+    endif()
+    if(ARTS_BUILD_TESTS)
+        string(APPEND _arts_examples_built ", smoke-tested")
+    endif()
+    message(STATUS "  Examples:        ON (${_arts_examples_built})")
+    unset(_arts_examples_built)
+endif()
+message(STATUS "  OCR shim:        ${ARTS_BUILD_SHIM}")
+if(ARTS_BENCHMARK_OCR_PROGRAMS)
     set(_arts_ref_runtimes "")
     if(TARGET ocr_xsocr_static)
         list(APPEND _arts_ref_runtimes "xsocr")
@@ -1015,7 +1094,7 @@ if(ARTS_BUILD_BENCHMARKS)
         string(REPLACE ";" "+" _arts_ref_runtimes "${_arts_ref_runtimes}")
         message(STATUS "  References:      ${_arts_ref_runtimes}")
     else()
-        message(STATUS "  References:      skipped (no MPI)")
+        message(STATUS "  References:      none (no MPI, or every reference runtime OFF)")
     endif()
     unset(_arts_ref_runtimes)
 endif()

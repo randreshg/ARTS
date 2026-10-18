@@ -1,11 +1,17 @@
-# Benchmarks: OCR apps running on XSOCR (reference) and ARTS (via shim)
+# The benchmark tree's OCR-API sections: the OCR applications
+# (ARTS_BUILD_OCR_APPS) and the HPX applications (ARTS_BUILD_HPX_APPS: the HPX
+# originals on HPX and their OCR mirrors).  Added from the top level only when
+# one of the two is on; the examples section is examples/.
 #
 # Directory structure:
 #   xsocr/     - Native XSOCR library (reference OCR x86 implementation)
+#   ocrvx/     - ocr-vx library (reference distributed OCR implementation)
 #   ocr_shim/  - ARTS-backed OCR compatibility shim (added from the top level
-#                under ARTS_BUILD_SHIM, which a benchmark build requires)
-#   apps/      - OCR benchmark apps built against both backends
-#   hpx/       - Standalone HPX reference apps
+#                under ARTS_BUILD_SHIM, which these sections require)
+#   apps/      - The OCR-API programs on ARTS and the reference OCR runtimes:
+#                ocr_apps.cmake (OCR applications), hpx_mirrors.cmake (the
+#                HPX applications' OCR mirrors)
+#   hpx/       - The HPX originals, a standalone project built against HPX
 
 # Benchmark optimization flags — controlled by CMAKE_BUILD_TYPE
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -34,12 +40,14 @@ endif()
 # four lines: what then differs between the entries is the runtime, and
 # nothing a compiler did to the kernel.  Compiled as an executable's object,
 # which is what it is on every side.
-add_library(arts_fib_kernel STATIC apps/hpx_origin/fib_serial_kernel.c)
-set_target_properties(arts_fib_kernel PROPERTIES
-    POSITION_INDEPENDENT_CODE OFF
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-target_compile_options(arts_fib_kernel PRIVATE ${BENCH_C_OPT} -fPIE)
-set(ARTS_FIB_KERNEL_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/libarts_fib_kernel.a")
+if(ARTS_BUILD_HPX_APPS)
+    add_library(arts_fib_kernel STATIC apps/hpx_origin/fib_serial_kernel.c)
+    set_target_properties(arts_fib_kernel PROPERTIES
+        POSITION_INDEPENDENT_CODE OFF
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_options(arts_fib_kernel PRIVATE ${BENCH_C_OPT} -fPIE)
+    set(ARTS_FIB_KERNEL_ARCHIVE "${CMAKE_CURRENT_BINARY_DIR}/libarts_fib_kernel.a")
+endif()
 
 if(ARTS_BUILD_HPX AND ARTS_HPX_AVAILABLE)
     include(ExternalProject)

@@ -286,7 +286,7 @@ endif()
 # of the same on-demand step, and a tarball already staged next to this file
 # under the pinned hash is used as it is -- a host without network access
 # stages it by hand exactly as before.
-if(ARTS_BUILD_BENCHMARKS)
+if(ARTS_BENCHMARK_OCR_PROGRAMS)
     include(ExternalProject)
 
     set(NUMACTL_INSTALL_DIR "${CMAKE_BINARY_DIR}/third_party/numactl_install")
@@ -335,7 +335,7 @@ endif()
 # alter the ARTS build. Its installed package is consumed by a second,
 # standalone benchmark project under benchmarks/hpx.
 set(ARTS_HPX_AVAILABLE OFF PARENT_SCOPE)
-if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX)
+if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX_APPS AND ARTS_BUILD_HPX)
     find_package(MPI COMPONENTS CXX QUIET)
     if(MPI_CXX_FOUND)
         arts_init_submodule(third_party/hpx CMakeLists.txt)
@@ -484,8 +484,8 @@ endif()
 # the program's own, so the library needs neither its threading layer nor its
 # MPI layer -- only the per-rank one-dimensional transforms.  Both sides of
 # the row take it from here, and the OCR side needs nothing else, so it is
-# built with the benchmarks whether or not the HPX reference is.
-if(ARTS_BUILD_BENCHMARKS)
+# built with the HPX applications section whether or not the HPX reference is.
+if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_HPX_APPS)
     arts_fetch_dist_tarball(FFTW_TARBALL
         "fftw-${FFTW_DIST_VERSION}.tar.gz" "${FFTW_DIST_URL}" "${FFTW_DIST_SHA256}")
     set(FFTW_SRC_DIR "${CMAKE_BINARY_DIR}/third_party/fftw-${FFTW_DIST_VERSION}")
@@ -1191,14 +1191,14 @@ set(OFI_VERSION_NODES_MAP ${OFI_VERSION_NODES_MAP} PARENT_SCOPE)
 # Its one consumer is the tiled Cholesky whose kernels are CBLAS/LAPACKE
 # calls, so the external project stays out of the default target: building it
 # is a consequence of building that application, not of building the tree.
-# The OCR headers: the shim compiles against them, and so does every app, and
-# a benchmark build requires the shim.
+# The OCR headers: the shim compiles against them, and so does every OCR-API
+# program, and those programs require the shim.
 if(ARTS_BUILD_SHIM)
   arts_init_submodule(third_party/ocr ocr/inc/ocr.h)
 endif()
-if(ARTS_BUILD_BENCHMARKS)
-  # The benchmark sources every configuration of this tree consumes: the
-  # applications themselves and OpenBLAS.  Fetching a submodule costs network and disk and
+if(ARTS_BUILD_BENCHMARKS AND ARTS_BUILD_OCR_APPS)
+  # The OCR applications section's sources: the applications themselves and
+  # OpenBLAS.  Fetching a submodule costs network and disk and
   # fails outright where neither is available, so a submodule whose consumer
   # is conditional is ensured at that consumer instead -- ocr-vx and TBB are
   # fetched in benchmarks/ocrvx, which alone knows whether the host has the

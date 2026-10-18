@@ -73,31 +73,49 @@ All options are set with ``-D<NAME>=<VALUE>`` on the cmake line.
        validation builds.
    * - ``ARTS_BUILD_BENCHMARKS``
      - ON
-     - Build the benchmark apps (ARTS and the enabled reference runtimes).
-       Requires ``ARTS_BUILD_SHIM``.  The benchmark tree is x86-64 only: on
-       another target the configure skips it, with ``ARTS_BUILD_HPX``, and
-       says so.
+     - Build the benchmark tree: a runtime variant ``arts_static_<suffix>``
+       per coherence cell and, for each section below that is on, its
+       programs on every variant and on the reference runtimes it runs on.
+       On with every section off is a configure error.  The benchmark tree
+       is x86-64 only: on another target the configure skips it, with
+       ``ARTS_BUILD_HPX``, and says so.
+   * - ``ARTS_BUILD_OCR_APPS``
+     - ON
+     - Section: the ocr-apps corpus and the in-tree OCR programs
+       (``<app>_arts_<suffix>``, ``_xsocr``, ``_ocrvx``, ``_hinted``).  Takes
+       effect only in a benchmark tree.
+   * - ``ARTS_BUILD_HPX_APPS``
+     - ON
+     - Section: the HPX originals (``<row>_hpx`` on HPX) and their OCR
+       mirrors (``<row>_arts_<suffix>``, ``_xsocr``, ``_ocrvx``); builds
+       FFTW.  Takes effect only in a benchmark tree.
+   * - ``ARTS_BUILD_EXAMPLES``
+     - ON
+     - Section: the native ARTS examples under ``examples/``.  Every tree
+       builds them for its own cell (``<stem>_example``, in
+       ``build/examples``) and smoke-tests them with ``ARTS_BUILD_TESTS``; a
+       benchmark tree also builds ``<stem>_example_arts_<suffix>``.
    * - ``ARTS_BUILD_SHIM``
      - ON
      - Build the OCR-to-ARTS compatibility shim against this tree's runtime
        and the vendored OCR headers.  With ``ARTS_BUILD_TESTS`` its tests
-       are registered with ctest in every configuration.  On a target where
-       the benchmark tree is built, turning it off while
-       ``ARTS_BUILD_BENCHMARKS`` is on is a configure error, since every ARTS
-       variant of a benchmark app links the shim.
+       are registered with ctest in every configuration.  Turning it off in
+       a benchmark tree with ``ARTS_BUILD_OCR_APPS`` or
+       ``ARTS_BUILD_HPX_APPS`` on is a configure error, since every ARTS
+       variant of an OCR-API program links the shim.
    * - ``ARTS_BUILD_XSOCR``
      - ON
-     - Build the XSOCR reference runtime and its ``*_xsocr`` app variants
-       (needs a host MPI).
+     - Build the XSOCR reference runtime and the ``*_xsocr`` variants of the
+       OCR-API programs (needs a host MPI).
    * - ``ARTS_BUILD_OCRVX``
      - ON
-     - Build the ocr-vx reference runtime and its ``*_ocrvx`` app variants
-       (needs a host MPI).
+     - Build the ocr-vx reference runtime and the ``*_ocrvx`` variants of
+       the OCR-API programs (needs a host MPI).
    * - ``ARTS_BUILD_HPX``
      - ON
-     - Source-build HPX v1.11.0 with its MPI parcelport and build the
-       standalone HPX benchmark apps (needs a host MPI; x86-64 only, like the
-       rest of the benchmark tree).
+     - Source-build HPX v1.11.0 with its MPI parcelport for the HPX
+       originals of ``ARTS_BUILD_HPX_APPS`` (needs a host MPI; x86-64 only,
+       like the rest of the benchmark tree).
    * - ``ARTS_BUILD_DOCS``
      - OFF
      - Build the Doxygen + Sphinx documentation.
@@ -253,12 +271,15 @@ GPU Build
 Verifying the Build
 -------------------
 
-Configure with ``-DARTS_BUILD_TESTS=ON`` and run the single-node test
-suite as a smoke check:
+Configure a test tree and run the single-node test suite as a smoke check.
+``-DARTS_BUILD_BENCHMARKS=OFF`` keeps the tree from also building the
+benchmark tree, and ``-DARTS_BUILD_EXAMPLES=ON``, given explicitly, also
+turns the examples on in a tree whose cache still holds an earlier OFF:
 
 .. code-block:: bash
 
-   cmake .. -DARTS_BUILD_TESTS=ON && ninja
-   ctest -L single_node --output-on-failure
+   cmake -GNinja .. -DARTS_BUILD_TESTS=ON -DARTS_BUILD_BENCHMARKS=OFF -DARTS_BUILD_EXAMPLES=ON && ninja
+   ctest --test-dir . -L single_node --output-on-failure
+   ctest --test-dir . -L examples --output-on-failure
 
 Every test should report ``Passed``.

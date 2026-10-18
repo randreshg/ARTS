@@ -49,10 +49,14 @@ All options are set on the cmake line with `-D<NAME>=<VALUE>`, e.g.
 |--------|---------|---------|
 | `ARTS_BUILD_SHARED` | `ON` | Build the shared library `libarts.so` alongside `libarts.a`. The static library is unconditional — it is the substrate the benchmark variants, the OCR shim and the installed archive derive from. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the test programs and register them with ctest. Off by default: tests statically link the runtime (hermetic), so a full test tree costs real disk/link time — turn it on for validation builds. |
-| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the benchmark apps (ARTS and the enabled reference runtimes). The benchmark tree is x86-64 only: on another target the configure skips it, with `ARTS_BUILD_HPX`, and says so. |
-| `ARTS_BUILD_XSOCR` | `ON` | Build the XSOCR reference runtime and its `*_xsocr` app variants (needs a host MPI). |
-| `ARTS_BUILD_OCRVX` | `ON` | Build the ocr-vx reference runtime and its `*_ocrvx` app variants (needs a host MPI). |
-| `ARTS_BUILD_HPX` | `ON` | Source-build HPX v1.11.0 with its MPI parcelport and build the standalone HPX benchmark apps (needs a host MPI; x86-64 only, like the rest of the benchmark tree). |
+| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the benchmark tree: a runtime variant `arts_static_<suffix>` per coherence cell and, for each section below that is on, its programs on every variant and on the reference runtimes it runs on. ON with every section OFF is a configure error. The benchmark tree is x86-64 only: on another target the configure skips it, with `ARTS_BUILD_HPX`, and says so. |
+| `ARTS_BUILD_OCR_APPS` | `ON` | Section: the ocr-apps corpus and the in-tree OCR programs (`<app>_arts_<suffix>`, `_xsocr`, `_ocrvx`, `_hinted`). Takes effect only in a benchmark tree. |
+| `ARTS_BUILD_HPX_APPS` | `ON` | Section: the HPX originals (`<row>_hpx` on HPX) and their OCR mirrors (`<row>_arts_<suffix>`, `_xsocr`, `_ocrvx`); builds FFTW. Takes effect only in a benchmark tree. |
+| `ARTS_BUILD_EXAMPLES` | `ON` | Section: the native ARTS examples under `examples/`. Every tree builds them for its own cell (`<stem>_example`, in `build/examples`) and smoke-tests them with `ARTS_BUILD_TESTS`; a benchmark tree also builds `<stem>_example_arts_<suffix>`. |
+| `ARTS_BUILD_SHIM` | `ON` | Build the OCR-to-ARTS compatibility shim against this tree's runtime; with `ARTS_BUILD_TESTS` its tests run in every configuration. A benchmark tree with `ARTS_BUILD_OCR_APPS` or `ARTS_BUILD_HPX_APPS` on requires it. |
+| `ARTS_BUILD_XSOCR` | `ON` | Build the XSOCR reference runtime and the `*_xsocr` variants of the OCR-API programs (needs a host MPI). |
+| `ARTS_BUILD_OCRVX` | `ON` | Build the ocr-vx reference runtime and the `*_ocrvx` variants of the OCR-API programs (needs a host MPI). |
+| `ARTS_BUILD_HPX` | `ON` | Source-build HPX v1.11.0 with its MPI parcelport for the HPX originals of `ARTS_BUILD_HPX_APPS` (needs a host MPI; x86-64 only, like the rest of the benchmark tree). |
 | `ARTS_BUILD_DOCS` | `OFF` | Build the Doxygen + Sphinx documentation. |
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support (builds `libarts_cuda`). |
 | `ARTS_USE_LOCAL_CUDA_ARCHITECTURES` | `ON` | When GPU is on, auto-detect the local GPU's CUDA architecture via `nvidia-smi`. Only meaningful with `ARTS_USE_GPU=ON`; pair with the stock `CMAKE_CUDA_ARCHITECTURES` (e.g. `-DCMAKE_CUDA_ARCHITECTURES="80;86"`) to set SM targets by hand. |
@@ -111,6 +115,7 @@ submodule, builds it into the build tree, and links it:
 
 ```bash
 cmake -GNinja -Bbuild -DARTS_BUILD_TESTS=ON \
+  -DARTS_BUILD_BENCHMARKS=OFF -DARTS_BUILD_EXAMPLES=ON \
   -DARTS_COHERENCE_PROTOCOL=EXCL -DARTS_RELEASE_POLICY=PURGE \
   -DARTS_USE_CXL=ON -DARTS_CXL_RESIDENCY=STAGED
 ninja -C build

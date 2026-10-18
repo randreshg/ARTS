@@ -1,5 +1,6 @@
 # OCR-VX distributed MPI runtime (ocr_vdm_mpi)
-# Only built when ARTS_BUILD_BENCHMARKS=ON.
+# Built in a benchmark tree with the OCR applications or the HPX applications
+# section on: it runs their OCR-API programs.
 #
 # MPI is host infrastructure, like the compiler: never vendored, never
 # required for ARTS itself.  ocr-vx is a *reference* runtime that happens to

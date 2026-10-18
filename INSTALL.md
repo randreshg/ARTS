@@ -71,12 +71,13 @@ Dependencies
 | rdma-core | pinned submodule (`third_party/rdma-core`) | Bundled | Verbs (RDMA) userspace stack, built statically with CMake; makes the libfabric verbs provider available on every build. |
 | python3, make | system | Required | python3 runs rdma-core's build scripts; make drives the bundled autotools packages. No pkg-config, flex or bison is needed: the bundled stack neither consults the host's packages nor generates a scanner. |
 | CUDA Toolkit | >= 11 (tested) | Optional | Only when `ARTS_USE_GPU=ON`. |
-| MPI | any | Optional | Only needed by the OCR reference benchmarks (`ARTS_BUILD_BENCHMARKS=ON`). |
+| MPI | any | Optional | Only needed by the reference runtimes (XSOCR, ocr-vx, HPX) of a benchmark tree (`ARTS_BUILD_BENCHMARKS=ON`) with the OCR or HPX applications section on. |
 
 A plain `git clone` is enough: the first cmake run initializes every
-required submodule automatically (per enabled option — e.g. the benchmark
-runtimes only when `ARTS_BUILD_BENCHMARKS=ON`). Initializing them up front
-is equivalent:
+required submodule automatically (per enabled option — e.g. the OCR
+applications and OpenBLAS only when a benchmark tree has
+`ARTS_BUILD_OCR_APPS` on, HPX only with `ARTS_BUILD_HPX_APPS` and
+`ARTS_BUILD_HPX`). Initializing them up front is equivalent:
 
 ```bash
 git clone <repository-url> arts
@@ -142,7 +143,10 @@ with defaults lives in [README.md](README.md#build-options); the most common are
 | `ARTS_RELEASE_POLICY` | `RETAIN` | What a node does with a grant when its last local user finishes — `PURGE` (hand it back to the home, with the payload when it is an EXCL write grant) or `RETAIN` (default; keep it until another node asks). Live in EXCL (read and write grants) and in WT × {VAL, INV} (the write grant); WB requires RETAIN. |
 | `ARTS_USE_GPU` | `OFF` | Enable CUDA GPU support. |
 | `ARTS_BUILD_TESTS` | `OFF` | Build the ctest suite. |
-| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the OCR benchmark apps (the reference runtimes need a host MPI; the ARTS variants do not). Skipped, with a configure message, on a target other than x86-64. |
+| `ARTS_BUILD_BENCHMARKS` | `ON` | Build the benchmark tree: a runtime variant per coherence cell and the programs of each section that is on (the reference runtimes need a host MPI; the ARTS variants do not). ON with every section OFF is a configure error. Skipped, with a configure message, on a target other than x86-64. |
+| `ARTS_BUILD_OCR_APPS` | `ON` | Section: the OCR applications, on every ARTS variant and reference OCR runtime (benchmark tree only). |
+| `ARTS_BUILD_HPX_APPS` | `ON` | Section: the HPX originals on HPX and their OCR mirrors (benchmark tree only). |
+| `ARTS_BUILD_EXAMPLES` | `ON` | Section: the native ARTS examples (`examples/{basics,dense,graph,stream,random_access,proxy}`; `gpu/` is not ported and not built), built in every tree for its own cell and smoke-tested with `ARTS_BUILD_TESTS`; a benchmark tree also builds them on every ARTS variant. |
 | `ARTS_DEBUG_SANITIZER` | `OFF` | Debug builds only: `ADDRESS` (ASan + UBSan + LSan) or `THREAD` (TSan + UBSan). |
 | `ARTS_DEBUG_INJECTION` | `OFF` | Debug builds only: compile the run-time injection hooks (`ARTS_SCHED_FUZZ`, `ARTS_WRITE_COMPLETION_DELAY_MS`, `ARTS_NET_MAX_MSG`, `ARTS_REGPOOL_FORCE_FULL_NODES`), each inert until its environment variable is set. |
 | `ARTS_DEBUG_DB_QUARANTINE` | `OFF` | Debug builds only: hold every freed coherent data-block descriptor back, filled, and report a write through a reference that outlived it. |
@@ -178,9 +182,9 @@ and every rank in a multinode run must use the same build. Each
 configuration is its own build tree, for example:
 
 ```bash
-cmake -GNinja -Bbuild_ocr_val_wt  -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WT
-cmake -GNinja -Bbuild_ocr_val_wb  -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WB
-cmake -GNinja -Bbuild_wrf_flush   -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=FLUSH
+cmake -GNinja -Bbuild_ocr_val_wt  -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WT -DARTS_BUILD_BENCHMARKS=OFF
+cmake -GNinja -Bbuild_ocr_val_wb  -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=VAL -DARTS_WRITE_POLICY=WB -DARTS_BUILD_BENCHMARKS=OFF
+cmake -GNinja -Bbuild_wrf_flush   -DCMAKE_BUILD_TYPE=Debug -DARTS_COHERENCE_PROTOCOL=FLUSH -DARTS_BUILD_BENCHMARKS=OFF
 ninja -C build_ocr_val_wt && ninja -C build_ocr_val_wb && ninja -C build_wrf_flush
 ```
 
@@ -190,13 +194,19 @@ Running Tests
 CTest is the test runner. Tests are grouped by ctest labels:
 
 ```bash
-cmake -GNinja -Bbuild -DCMAKE_BUILD_TYPE=Debug -DARTS_BUILD_TESTS=ON
+cmake -GNinja -Bbuild -DCMAKE_BUILD_TYPE=Debug -DARTS_BUILD_TESTS=ON \
+  -DARTS_BUILD_BENCHMARKS=OFF -DARTS_BUILD_EXAMPLES=ON
 ninja -C build
 ctest --test-dir build -L single_node --output-on-failure   # single-node
 ctest --test-dir build -L multinode --output-on-failure     # 2n_9w_1p/4n_4w_1p/2n_8w_2p localhost
+ctest --test-dir build -L examples --output-on-failure      # the examples' smoke tests
 ctest --test-dir build -L gpu --output-on-failure           # GPU build only (runs on 1n_20w.cfg with gpu=1)
 ctest --test-dir build -R edt_create_basic                  # one test by name
 ```
+
+A test tree passes `-DARTS_BUILD_BENCHMARKS=OFF` so it does not also build
+the benchmark tree, and `-DARTS_BUILD_EXAMPLES=ON` explicitly, which also
+turns the examples on in a tree whose cache still holds an earlier OFF.
 
 Each test sets its own `ARTS_CONFIG` to point at the matching cfg under
 `configs/local/test/`, so no config files are copied into the build directory.

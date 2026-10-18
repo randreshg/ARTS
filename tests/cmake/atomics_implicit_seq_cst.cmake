@@ -1,9 +1,9 @@
 # Run by ctest, not compiled.  Every access to an _Atomic object names its
 # memory order.  clang-tidy reports one that does not (operator syntax, an
 # implicit seq_cst access) in every C unit of this tree's runtime library,
-# OCR shim and tests, compiled with the tree's own commands, so each cell's
-# conditional code is judged in the tree that compiles it.  A header under the
-# same directories is judged wherever a unit includes it.
+# OCR shim, tests and examples, compiled with the tree's own commands, so each
+# cell's conditional code is judged in the tree that compiles it.  A header
+# under the same directories is judged wherever a unit includes it.
 #
 # clang-tidy runs no analysis when its check list names only compiler
 # diagnostics, so the list also names one real check, a concurrency check the
@@ -19,7 +19,7 @@ if(NOT EXISTS "${_db}")
     message(FATAL_ERROR "FAIL atomics_implicit_seq_cst: no ${_db}")
 endif()
 file(READ "${_db}" _json)
-set(_dirs libs benchmarks/ocr_shim tests)
+set(_dirs libs benchmarks/ocr_shim tests examples)
 list(JOIN _dirs "|" _alt)
 string(REGEX REPLACE "([][.*+?^$(){}|\\])" "\\\\\\1" _root "${SOURCE_DIR}")
 

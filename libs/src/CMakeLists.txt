@@ -551,7 +551,7 @@ if(BUILD_CUDA_LIBRARY)
     endif()
 endif()
 
-# --- Per-protocol variant libraries (benchmarks/harness only) -----------------
+# --- Per-protocol variant libraries (benchmark tree only) ---------------------
 # Build a full arts static lib for one (arm, write policy, release policy).  The
 # protocol-independent sources are gathered from the CPU object-lib targets
 # (their compiled objects cannot be reused — each variant needs its own protocol

@@ -49,15 +49,18 @@ add_compile_options(${ARTS_WERROR_IMPLICIT_SEQ_CST})
 # policy or payload store can change is built and registered there only;
 # every other tree runs only what its cell can change.  The cell alone decides
 # it, so a sanitizer, injection or quarantine tree of this cell is a reference
-# tree too.
+# tree too.  CACHE INTERNAL, like the helpers' settings below: the examples
+# register their smoke tests by the same rule from their own directory.
+set(_reference_tree OFF)
 if(ARTS_COHERENCE_ARM STREQUAL _ARTS_DEFAULT_COHERENCE_PROTOCOL AND
    ARTS_WRITE_POLICY STREQUAL _ARTS_DEFAULT_WRITE_POLICY AND
    ARTS_RELEASE_POLICY STREQUAL _ARTS_DEFAULT_RELEASE_POLICY AND
    NOT ARTS_USE_CXL)
-    set(ARTS_TEST_REFERENCE_TREE ON)
-else()
-    set(ARTS_TEST_REFERENCE_TREE OFF)
+    set(_reference_tree ON)
 endif()
+set(ARTS_TEST_REFERENCE_TREE ${_reference_tree}
+    CACHE INTERNAL "whether this tree registers the tests no cell can change" FORCE)
+unset(_reference_tree)
 
 # Test programs whose outcome depends on the tree's protocol cell.
 set(TEST_PROGRAMS
@@ -1655,9 +1658,9 @@ if(ARTS_TEST_REFERENCE_TREE)
 endif()
 
 # Every access to an _Atomic object names its memory order.  clang-tidy judges
-# every C unit of this tree's runtime, shim and tests with the tree's own
-# compile commands, so each cell's conditional code is judged in the tree that
-# compiles it.  Registered where clang-tidy is found.
+# every C unit of this tree's runtime, shim, tests and examples with the tree's
+# own compile commands, so each cell's conditional code is judged in the tree
+# that compiles it.  Registered where clang-tidy is found.
 find_program(ARTS_CLANG_TIDY clang-tidy)
 if(ARTS_CLANG_TIDY)
     set(_script
