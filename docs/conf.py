@@ -21,6 +21,10 @@ extensions = [
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
+# The C domain does not parse the C11 function specifier; as an attribute it
+# renders verbatim.
+c_id_attributes = ["_Noreturn"]
+
 # -- Breathe (Doxygen XML bridge) --------------------------------------------
 # The XML directory is populated by the 'doxygen' CMake target.
 # When building via CMake: build/docs/doxygen/xml

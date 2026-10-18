@@ -70,6 +70,39 @@ and calls `arts_shutdown`. artsrun reads the value from that line (`Fib \d+:
 (\d+) time:`) and times the run by the runtime's `[E2E]` stamp, not by the
 printed elapsed time.
 
+### Entry point
+
+`main` hands the command line to `arts_rt`, which reads the configuration,
+starts the worker threads and returns when `arts_shutdown` has run. The start
+EDT receives `argc` and `argv` as `paramv[0]` and `paramv[1]`. `main_edt`
+creates `fib_done` with one parameter (`n`) and one dependence slot, then the
+root `fib_fork` with no dependence slot and the parameters (the GUID of
+`fib_done`, slot 0, `n`).
+
+### Fork and join
+
+A fork with `n < 2` satisfies its parent's slot with `n` in `DB_MODE_NULL`,
+which carries the 64-bit value as opaque bits. Any other fork creates its
+join on the current rank (the join takes the fork's own destination
+parameters, so its sum goes where the fork's would have) and two child forks
+on the next rank, the first for slot 0 and `n - 1`, the second for slot 1 and
+`n - 2`. A join reads its two values from `depv[0].guid` and `depv[1].guid`
+and satisfies its own destination.
+
+### Source
+
+```{literalinclude} ../../examples/basics/fib.c
+:language: c
+:linenos:
+:lines: 39-
+```
+
+### Running
+
+```bash
+ARTS_CONFIG=configs/local/test/1n_20w.cfg ./build/examples/fib_example 30
+```
+
 ## Placement
 
 `fib_done` and the root fork are placed on rank 0. A fork running on rank `r`

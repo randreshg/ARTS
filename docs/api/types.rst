@@ -94,17 +94,6 @@ here for reference only.
    :members:
 
 
-Internal DB / Coherence Structures
-----------------------------------
-
-Per-DB home directory metadata and per-rank cache state used by the
-coherence protocols; also managed entirely by the runtime.
-
-.. doxygengroup:: internal_db_structs
-   :content-only:
-   :members:
-
-
 GUID Layout (``guid.h``)
 ------------------------
 

@@ -76,9 +76,7 @@ extern "C" {
 #endif
 
 /* ========================================================================= */
-/** @addtogroup internal_db_structs
- *  Helpers below need the complete cache + db_s types from the protocol header.
- *  @{ */
+/* Helpers below need the complete cache + db_s types from the protocol header. */
 
 /* Recover the wrapping struct arts_db_s from a coherence cache pointer.  cache
  * is the FIRST member of arts_db_s; container_of degenerates to the cache
@@ -141,8 +139,6 @@ static inline uint64_t arts_db_cache_stub_size(void) {
   return offsetof(struct arts_db_s, rw_holder);
 #endif
 }
-
-/** @} */ /* end internal_db_structs */
 
 /* ========================================================================= */
 #ifdef __cplusplus

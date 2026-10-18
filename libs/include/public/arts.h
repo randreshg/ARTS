@@ -245,6 +245,8 @@ typedef struct {
   uint32_t flags;
 } arts_edt_hint_t;
 
+/* The hint macros below are C compound literals with designated initializers;
+ * C++ code value-initializes the hint struct and assigns its fields. */
 #define ARTS_EDT_HINT_DEFAULTS                                                 \
   ((arts_edt_hint_t){.rank = ARTS_HINT_CURRENT_RANK,                           \
                      .guid = NULL_GUID,                                        \

@@ -51,7 +51,6 @@ concepts.
    :caption: Examples
 
    examples/index
-   examples/fib
 
 .. toctree::
    :maxdepth: 2

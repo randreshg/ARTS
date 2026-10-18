@@ -46,8 +46,6 @@ extern "C" {
 #endif
 
 /* ========================================================================= */
-/** @addtogroup internal_db_structs
- *  @{ */
 
 /*--- Per-DB home metadata ------------------------------------------------
  * Lives only on the rank that hosts a given DB (GUID home decides).  Holds
@@ -355,8 +353,6 @@ struct arts_db_s {
   unsigned int time_stamp;       /* LC time stamp */
 #endif
 } ARTS_ALIGNED_MAX;
-
-/** @} */ /* end internal_db_structs */
 
 #ifdef __cplusplus
 }

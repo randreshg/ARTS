@@ -125,5 +125,6 @@ Next Steps
 
 - :doc:`/programming_model/edt` — learn about EDT creation and signaling.
 - :doc:`/programming_model/datablocks` — understand the DataBlock memory model.
-- :doc:`/examples/fib` — a complete Fibonacci walkthrough (reading reference
-  only: the ``examples/`` tree is not part of the build).
+- :doc:`/examples/index` — the example programs; the Fibonacci walkthrough
+  (``examples/basics/fib.c``, built as ``build/examples/fib_example`` under
+  ``ARTS_BUILD_EXAMPLES``) is :doc:`/examples/fib`.
