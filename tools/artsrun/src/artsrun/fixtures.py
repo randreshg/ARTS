@@ -31,6 +31,45 @@ def _acgt_pair(path: Path, which: int, lens, seed, names) -> None:
         tmp.replace(sibling)
 
 
+def _splitmix64(state: int):
+    mask = (1 << 64) - 1
+    while True:
+        state = (state + 0x9E3779B97F4A7C15) & mask
+        z = state
+        z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & mask
+        yield z ^ (z >> 31)
+
+
+def _graph_edge_list(path: Path, n: int, band: int, per_vertex: int,
+                     extra: int, seed: int) -> None:
+    # A simple undirected graph, each edge once on a 0-based line, for the
+    # graph examples, which read it with --flip.  Every vertex draws
+    # per_vertex partners among the next `band` vertices (wrapping), which
+    # closes triangles across every partition boundary, then `extra` edges
+    # join uniform pairs, which gives every rank remote neighbours; a self
+    # loop or a repeat is dropped.  splitmix64 rather than `random`, whose
+    # derived methods may change between Python releases: the catalog pins
+    # this file's answers.
+    rng = _splitmix64(seed)
+    seen: set[tuple[int, int]] = set()
+    lines: list[str] = []
+
+    def add(u: int, v: int) -> None:
+        key = (min(u, v), max(u, v))
+        if u != v and key not in seen:
+            seen.add(key)
+            lines.append(f"{u} {v}\n")
+
+    for v in range(n):
+        for _ in range(per_vertex):
+            add(v, (v + 1 + next(rng) % band) % n)
+    for _ in range(extra):
+        add(next(rng) % n, next(rng) % n)
+    path.write_text(f"# {n} vertices, {len(lines)} undirected edges, each "
+                    "once; read with --flip\n" + "".join(lines))
+
+
 def _counting_file(path: Path) -> None:
     # basicIO reads u64 values one per line; 0..9 gives a fixed checksum.
     path.write_text("\n".join(str(i) for i in range(10)) + "\n")
@@ -74,6 +113,16 @@ GENERATORS = {
     "string2-cmp.txt":   lambda p: _acgt_pair(p, 1, (200000, 200000), 20260828001, _SW_CMP),
     "score-cmp.txt":     lambda p: p.write_text("123196\n"),
     "basicIO_test.dat": _counting_file,
+    # The graph examples' edge lists.  The answers the catalog pins for the
+    # larger come from examples/inputs/graph_reference.py run on the
+    # generated file: 16668 edges, 2754 triangles, scan maximum 34 (at vertex
+    # 3874).  bfs reads the smaller (2074 edges): its label-correcting search
+    # messages every neighbour, printing a line each, whenever a vertex's
+    # level drops, and on these graphs the drops grow far faster than the
+    # vertex count (6e4 to 4e5 relaxations at 512 vertices, as the schedule
+    # orders them; of the order of 1e7 at 4096).
+    "graph-examples-4096.txt": lambda p: _graph_edge_list(p, 4096, 32, 4, 1024, 20261017),
+    "graph-examples-512.txt": lambda p: _graph_edge_list(p, 512, 32, 4, 128, 20261017),
 }
 
 

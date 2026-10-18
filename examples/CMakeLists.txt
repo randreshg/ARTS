@@ -159,6 +159,7 @@ endfunction()
 
 add_subdirectory(basics)
 add_subdirectory(dense)
+add_subdirectory(graph)
 
 # An example includes the public headers alone.  Linking the runtime cannot
 # show it, since the runtime's targets export the internal include

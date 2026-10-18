@@ -35,3 +35,12 @@ apps:
   cholesky_example:
     enabled: true
     versions: [base]
+  bfs_example:
+    enabled: true
+    versions: [base]
+  triangle_count_example:
+    enabled: true
+    versions: [base]
+  scan_statistics_example:
+    enabled: true
+    versions: [base]

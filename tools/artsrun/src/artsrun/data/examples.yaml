@@ -89,3 +89,51 @@ apps:
     tolerance: 1e-06
     args: ['--ds', '1000', '--ts', '50']
     default_enabled: false
+
+  bfs_example:
+    binary: bfs_example
+    class: task
+    provenance: 'ARTS example: asynchronous label-correcting BFS over a block-distributed CSR graph, one relax EDT per message, ended by a finish scope'
+    # The program prints the levels of rank 0's vertices only, a set that
+    # changes with the node count, so the row is completion only: the marker
+    # heads that list.
+    marker: 'Printing vertex levels'
+    scalar_kind: bool
+    # The smaller generated graph (fixtures.py): 512 vertices, 2074
+    # undirected edges read with --flip, searched from vertex 0.  The
+    # search prints two lines per message, and its messages grow far faster
+    # than the graph: the other graph rows' 4096 vertices make of the order
+    # of 1e7.
+    args: ['--file', '{repo}/datasets/graph_examples/graph-examples-512.txt', '--num-vertices', '512', '--num-edges', '2074', '--flip', '--source', '0']
+    fixtures: ['{repo}/datasets/graph_examples/graph-examples-512.txt']
+    default_enabled: false
+
+  triangle_count_example:
+    binary: triangle_count_example
+    class: task
+    provenance: 'ARTS example: triangle counting over a block-distributed CSR graph by sorted neighbour-list merges, a vertex''s list shipped to each other rank that owns a neighbour'
+    marker: 'Triangle Count: \d+ Time:'
+    scalar_re: 'Triangle Count: (\d+) Time:'
+    scalar_kind: int
+    # The generated graph's count, from examples/inputs/graph_reference.py,
+    # at any node count.
+    expect: '2754'
+    expect_args: ['--file', '{repo}/datasets/graph_examples/graph-examples-4096.txt', '--num-vertices', '4096', '--num-edges', '16668', '--flip']
+    args: ['--file', '{repo}/datasets/graph_examples/graph-examples-4096.txt', '--num-vertices', '4096', '--num-edges', '16668', '--flip']
+    fixtures: ['{repo}/datasets/graph_examples/graph-examples-4096.txt']
+    default_enabled: false
+
+  scan_statistics_example:
+    binary: scan_statistics_example
+    class: task
+    provenance: 'ARTS example: the maximum scan statistic of a block-distributed CSR graph, a vertex''s neighbourhood intersected on every rank and gathered per vertex, then globally'
+    marker: 'Max vertex_t: \d+ scan_stat: \d+'
+    scalar_re: 'Max vertex_t: \d+ scan_stat: (\d+)'
+    scalar_kind: int
+    # The generated graph's maximum (at vertex 3874), from
+    # examples/inputs/graph_reference.py, at any node count.
+    expect: '34'
+    expect_args: ['--file', '{repo}/datasets/graph_examples/graph-examples-4096.txt', '--num-vertices', '4096', '--num-edges', '16668', '--flip']
+    args: ['--file', '{repo}/datasets/graph_examples/graph-examples-4096.txt', '--num-vertices', '4096', '--num-edges', '16668', '--flip']
+    fixtures: ['{repo}/datasets/graph_examples/graph-examples-4096.txt']
+    default_enabled: false
