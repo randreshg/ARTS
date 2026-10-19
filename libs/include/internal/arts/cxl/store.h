@@ -3,8 +3,11 @@
  * The CXL store: where a data block's bytes rest in a CXL build.  Slots come
  * from the shared arena rank 0 creates and every rank attaches to; a slot is
  * minted once per block by its creator, named by its address alone, and never
- * reclaimed within a run (the arena is a bump allocator).  A flush's unit is
- * a cache line, so every slot is 64-byte aligned. */
+ * reclaimed within a run.  The arena is a bump allocator at two levels: each
+ * rank carves a pool (cxl_db_pool_bytes) off the shared head under the
+ * cross-node tournament lock, then bumps through it under a DRAM mutex; a
+ * slot larger than a pool is carved directly.  A flush's unit is a cache
+ * line, so every slot is 64-byte aligned. */
 #ifndef ARTS_CXL_STORE_H
 #define ARTS_CXL_STORE_H
 

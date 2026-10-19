@@ -868,6 +868,10 @@ static const struct arts_config_entry_s config_entries[] = {
     /* --- CXL DB allocation --- */
     {"cxl_db_allocation_strategy", CONFIG_CUSTOM, 0, NULL,
      handle_cxl_db_allocation_strategy},
+    /* A rank's DB pool: the bytes one refill carves off the shared arena
+     * under the tournament lock, handed out afterwards under a DRAM mutex. */
+    {"cxl_db_pool_bytes", CONFIG_UINT64, OFF(cxl_db_pool_bytes), "1073741824",
+     NULL},
 #endif /* ARTS_USE_CXL */
     /* sentinel */
     {NULL, 0, 0, NULL, NULL}};
@@ -1204,6 +1208,7 @@ static void config_compute_derived(struct arts_config_s *config) {
   config->route_table_entries = 1U << config->route_table_size;
   config->gpu_route_table_entries = 1U << config->gpu_route_table_size;
 
+
   /* Single-node: reclaim the progress thread as a worker (no peer to poll
    * the fabric for). */
   if (config->table_length <= 1) {
@@ -1376,6 +1381,25 @@ static void config_free_variables(struct arts_config_variable_s *vars) {
   }
 }
 
+/*--- Parsed-Value Validation -----------------------------------------------
+ *
+ * Values the table accepted syntactically but no run can use.  Separate from
+ * config_compute_derived, which the unit tests drive on a zeroed struct.
+ *---------------------------------------------------------------------------*/
+
+static void config_validate_values(const struct arts_config_s *config) {
+#ifdef ARTS_USE_CXL
+  /* A zero pool could serve no slot, so every allocation would fall to the
+   * oversized path and the pool would only hide that; say so instead. */
+  if (config->cxl_db_pool_bytes == 0) {
+    ARTS_ERROR("cxl_db_pool_bytes must be positive: it is the size of the "
+               "chunk a rank carves off the shared CXL arena per refill");
+  }
+#else
+  (void)config;
+#endif
+}
+
 /*--- Removed-Key Rejection --------------------------------------------------
  *
  * Keys that no longer name anything in the current config surface must fail
@@ -1404,7 +1428,8 @@ static void config_reject_removed_keys(struct arts_config_variable_s **vars) {
   if (config_lookup(vars, "fam_pool_mb") || config_lookup(vars, "fam_strict")) {
     ARTS_ERROR("fam_pool_mb and fam_strict no longer exist: the CXL store's "
                "arena is sized at build time (ARTS_CXL_DB_ARENA_SIZE_BYTES) and "
-               "placed by cxl_db_allocation_strategy / cxl_db_allocation_device");
+               "placed by cxl_db_allocation_strategy / cxl_db_allocation_device; "
+               "a rank's share of it is refilled cxl_db_pool_bytes at a time");
   }
 }
 
@@ -1435,6 +1460,7 @@ void arts_config_load(struct arts_config_s *config) {
 
   /* Table-driven parse. */
   config_parse_table(config, &vars);
+  config_validate_values(config);
 
   /* Launcher-specific setup (nodes, routing table, master). */
   config_setup_launcher(config, &vars);

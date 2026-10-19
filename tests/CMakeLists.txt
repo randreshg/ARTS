@@ -1648,6 +1648,15 @@ if(ARTS_CXL_TREE_RESIDENCY)
         LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
         ENVIRONMENT "ARTS_CONFIG=${_dev3_cfg}"
         PASS_REGULAR_EXPRESSION "PASS cxl_store_alloc" FAIL_REGULAR_EXPRESSION "FAIL")
+    # A 64 KiB pool: the run refills many times and serves oversized slots
+    # past the pool, where the default pool is the whole arena on one rank.
+    arts_test_cfg(_pool_small_cfg 1n_pool_small)
+    add_test(NAME cxl_store_alloc_pool_small COMMAND cxl_store_alloc
+             WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(cxl_store_alloc_pool_small PROPERTIES
+        LABELS "single_node" TIMEOUT 60 RESOURCE_LOCK "arts_runtime"
+        ENVIRONMENT "ARTS_CONFIG=${_pool_small_cfg}"
+        PASS_REGULAR_EXPRESSION "PASS cxl_store_alloc" FAIL_REGULAR_EXPRESSION "FAIL")
     # The slot rule holds on one rank and on every multinode flavour.  Every
     # verdict travels as printed output: a FAIL line from any rank fails it,
     # and the run's last act prints the line required here, so a run that shut
@@ -1686,6 +1695,11 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # One label names one block and therefore one slot.  The timeout covers
     # eighty create/destroy cycles with the creator rotating over the ranks.
     register_cxl_multinode_test(cxl_labeled_create TIMEOUT 180)
+    # The same two on four ranks with a 4 KiB pool: every few slots each rank
+    # refills, so refills race across ranks on the tournament lock throughout
+    # the run, and the slot rule must still find one slot per block.
+    register_cxl_multinode_test(cxl_slot_rule TIMEOUT 120 VARIANTS 4n_pool_small)
+    register_cxl_multinode_test(cxl_labeled_create TIMEOUT 300 VARIANTS 4n_pool_small)
     # One fetch and one purge per turn, on either residency.  One rank,
     # because that is where every turn is home-local.
     register_cxl_single_node_test(cxl_home_turn_costs TIMEOUT 30)

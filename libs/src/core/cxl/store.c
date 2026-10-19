@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "arts/cxl/store.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 
@@ -26,19 +27,61 @@ static unsigned cxl_store_arena_index(void) {
   return 0u;
 }
 
+/* One carve off the shared arena, the only step that takes the tournament
+ * lock; counted as a refill whether it fills a pool or serves one oversized
+ * slot.  NULL is fatal and names both sizes: the arena may still have room in
+ * other ranks' pools, which nothing returns. */
+static void *cxl_store_carve(size_t min_bytes, size_t want_bytes, unsigned idx,
+                             size_t *got) {
+  TIME_CXL_POOL_REFILL_START();
+  void *p = arts_cxl_deque_db_carve_dev(arts_node_info.cxl_deque,
+                                        &arts_node_info.cxl_local_lock,
+                                        min_bytes, want_bytes, idx, got);
+  TIME_CXL_POOL_REFILL_STOP();
+  if (p == NULL) {
+    ARTS_ERROR("cxl: the store cannot serve %zu bytes: the arena of "
+               "%llu bytes is exhausted (ARTS_CXL_DB_ARENA_SIZE_BYTES; refilled "
+               "%llu bytes per rank at a time, cxl_db_pool_bytes) - nothing is "
+               "reclaimed within a run, and other ranks' pools keep what they "
+               "have not handed out",
+               min_bytes, (unsigned long long)ARTS_CXL_DB_ARENA_SIZE_BYTES,
+               (unsigned long long)arts_node_info.cxl_db_pool_bytes);
+  }
+  INCREMENT_NUM_CXL_POOL_REFILL_BY(1);
+  INCREMENT_BYTES_CXL_POOL_REFILL_BY(*got);
+  return p;
+}
+
+/* Two levels.  A slot comes from this rank's pool for the arena, under the
+ * pool's DRAM mutex alone; only when the pool cannot hold the slot does the
+ * rank carve a fresh pool off the shared arena under the tournament lock.  The
+ * old pool's tail (smaller than the slot) is abandoned, as a discarded slot
+ * is.  A slot larger than a whole pool is carved on its own and leaves the
+ * pool as it was.  Lock order: pool mutex, then cxl_local_lock (taken by the
+ * tournament acquire); the CXL EDT deque takes cxl_local_lock alone, so the
+ * order cannot invert. */
 void *arts_cxl_store_alloc(size_t bytes) {
   size_t span = (bytes + ARTS_CXL_GRANULE - 1u) & ~(size_t)(ARTS_CXL_GRANULE - 1u);
   if (span == 0u) {
     span = ARTS_CXL_GRANULE;
   }
-  void *p = arts_cxl_deque_db_malloc_dev(arts_node_info.cxl_deque,
-                                         &arts_node_info.cxl_local_lock, span,
-                                         cxl_store_arena_index());
-  if (p == NULL) {
-    ARTS_ERROR("cxl: the store cannot serve %zu bytes: the arena of "
-               "%llu bytes is exhausted (ARTS_CXL_DB_ARENA_SIZE_BYTES) - "
-               "nothing is reclaimed within a run",
-               span, (unsigned long long)ARTS_CXL_DB_ARENA_SIZE_BYTES);
+  unsigned idx = cxl_store_arena_index();
+  size_t got = 0;
+  void *p;
+  if ((uint64_t)span > arts_node_info.cxl_db_pool_bytes) {
+    p = cxl_store_carve(span, span, idx, &got);
+  } else {
+    arts_cxl_db_pool_t *pool = &arts_node_info.cxl_db_pool[idx];
+    pthread_mutex_lock(&pool->lock);
+    if ((size_t)(pool->end - pool->cur) < span) {
+      char *base = (char *)cxl_store_carve(
+          span, (size_t)arts_node_info.cxl_db_pool_bytes, idx, &got);
+      pool->cur = base;
+      pool->end = base + got;
+    }
+    p = pool->cur;
+    pool->cur += span;
+    pthread_mutex_unlock(&pool->lock);
   }
   if (((uintptr_t)p & (ARTS_CXL_GRANULE - 1u)) != 0u) {
     ARTS_ERROR("cxl: the arena returned %p, not a cache-line boundary", p);

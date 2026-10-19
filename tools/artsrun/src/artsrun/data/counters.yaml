@@ -200,6 +200,21 @@ counters:
     unit: ns
     help: 'Time in consumer flushes, the cache-line sweep and its mfence'
 
+  NUM_CXL_POOL_REFILL:
+    group: 'CXL pool refill'
+    unit: count
+    help: 'Carves off a shared CXL DB arena under the tournament lock: pool refills and slots too large for a pool'
+
+  BYTES_CXL_POOL_REFILL:
+    group: 'CXL pool refill'
+    unit: bytes
+    help: 'Bytes carved off the shared CXL DB arenas'
+
+  TIME_CXL_POOL_REFILL:
+    group: 'CXL pool refill'
+    unit: ns
+    help: 'Time in arena carves, the tournament-lock climb included'
+
   TIME_EVENT_CREATE:
     group: 'Event time'
     unit: ns

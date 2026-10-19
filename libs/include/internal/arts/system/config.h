@@ -137,6 +137,8 @@ struct arts_config_s {
                                             round_robin). */
   unsigned int cxl_db_allocation_device; /**< Device index for static allocation
                                             (default: 0). */
+  uint64_t cxl_db_pool_bytes; /**< Per-rank DB pool refill size, bytes
+                                  (default: 1 GiB). */
 #endif                                   /* ARTS_USE_CXL */
 };
 

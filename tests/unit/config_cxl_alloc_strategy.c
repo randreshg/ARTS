@@ -5,6 +5,8 @@
  *   any other value                     -> STATIC, device read from
  *                                          cxl_db_allocation_device
  *   no value                            -> STATIC, device 0
+ * cxl_db_pool_bytes: unset is 1 GiB, a value is taken as written, and zero is
+ * rejected by config_validate_values (a pool that can serve no slot).
  * The handler and the config fields it sets exist only in a CXL tree.
  */
 
@@ -40,7 +42,55 @@ static struct arts_config_variable_s *dev_vars(const char *dev_str) {
   return v;
 }
 
+static const struct arts_config_entry_s *entry_named(const char *key) {
+  for (int i = 0; config_entries[i].key != NULL; i++) {
+    if (strcmp(config_entries[i].key, key) == 0) {
+      return &config_entries[i];
+    }
+  }
+  return NULL;
+}
+
+static void check_pool_bytes(void) {
+  const struct arts_config_entry_s *e = entry_named("cxl_db_pool_bytes");
+  if (e == NULL || e->type != CONFIG_UINT64 || e->default_value == NULL) {
+    fprintf(stderr, "FAIL cxl: cxl_db_pool_bytes is not a UINT64 key with a "
+                    "default\n");
+    fails++;
+    return;
+  }
+  struct arts_config_s c;
+  memset(&c, 0, sizeof(c));
+  config_auto_parse(&c, e, e->default_value);
+  if (c.cxl_db_pool_bytes != 1073741824ULL) {
+    fprintf(stderr, "FAIL cxl: cxl_db_pool_bytes default %llu (want 1 GiB)\n",
+            (unsigned long long)c.cxl_db_pool_bytes);
+    fails++;
+  }
+  config_auto_parse(&c, e, "65536");
+  if (c.cxl_db_pool_bytes != 65536ULL) {
+    fprintf(stderr, "FAIL cxl: cxl_db_pool_bytes=65536 -> %llu\n",
+            (unsigned long long)c.cxl_db_pool_bytes);
+    fails++;
+  }
+  /* Zero must die in config_validate_values. */
+  memset(&c, 0, sizeof(c));
+  c.cxl_db_pool_bytes = 0;
+  g_abort_fired = 0;
+  if (setjmp(g_abort_jmp) == 0) {
+    g_abort_armed = 1;
+    config_validate_values(&c);
+  }
+  g_abort_armed = 0;
+  if (!g_abort_fired) {
+    fprintf(stderr, "FAIL cxl: cxl_db_pool_bytes=0 was accepted\n");
+    fails++;
+  }
+}
+
 int main(void) {
+  check_pool_bytes();
+
   /* round_robin. */
   {
     struct arts_config_s c;

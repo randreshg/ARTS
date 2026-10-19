@@ -555,28 +555,71 @@ static inline int arts_cxl_deque_push(arts_cxl_deque_t *dq,
  */
 
 /**
- * arts_cxl_deque_db_malloc_dev — Allocate from a specific device's DB arena.
+ * arts_cxl_deque_db_carve_dev — Carve a chunk off a device's DB arena.
+ *
+ * The one place a DB arena's head moves, and so the one place the tournament
+ * lock guards it: the head is a CXL line every rank bumps, and the fabric has
+ * no atomic to bump it with.  A rank carves either a whole pool it then hands
+ * out under its own DRAM mutex (arts_cxl_store_alloc) or one slot too large
+ * for a pool.
  *
  * @param dq         The CXL deque.
- * @param local_lock Per-node pthread mutex for local serialization.
- * @param size       Allocation size in bytes.
+ * @param local_lock Per-node pthread mutex the tournament acquire takes; the
+ *                   caller must not already hold it.
+ * @param min_bytes  The least the caller can use.
+ * @param want_bytes What the caller asks for (>= min_bytes).
  * @param dev_idx    Index into dq->consts.db_arenas[] (0-based).
  *                   Must be < dq->consts.db_arena_count.
+ * @param got        Out: bytes carved, a multiple of CACHELINE_SIZE.
+ *
+ * Takes @p want_bytes when the arena still holds them, else whatever it still
+ * holds if that covers @p min_bytes -- the last pool of an arena is short, not
+ * missing -- else nothing: NULL, the head untouched.  Both sizes are rounded
+ * up to a cache line; the chunk starts on one.
+ */
+static inline void *arts_cxl_deque_db_carve_dev(arts_cxl_deque_t *dq,
+                                                pthread_mutex_t *local_lock,
+                                                size_t min_bytes,
+                                                size_t want_bytes,
+                                                unsigned int dev_idx,
+                                                size_t *got) {
+  assert(dev_idx < dq->consts.db_arena_count && "dev_idx out of range");
+  size_t min_span = ALIGN_UP(min_bytes, CACHELINE_SIZE);
+  size_t want_span = ALIGN_UP(want_bytes, CACHELINE_SIZE);
+  if (want_span < min_span) {
+    want_span = min_span;
+  }
+  void *ptr = NULL;
+  *got = 0;
+  arts_cxl_tournament_lock_acquire(dq->consts.lock, local_lock,
+                                   arts_global_rank_id);
+  arts_cxl_arena_t *arena = dq->consts.db_arenas[dev_idx];
+  FLUSH_FENCE_CONSUMER(arena, sizeof(arts_cxl_arena_t));
+  uintptr_t head = ALIGN_UP((uintptr_t)arena->head, CACHELINE_SIZE);
+  uintptr_t limit = (uintptr_t)arena->max_size;
+  size_t left = head < limit ? (size_t)(limit - head) & ~(size_t)(CACHELINE_SIZE - 1) : 0;
+  size_t span = left >= want_span ? want_span : (left >= min_span ? left : 0);
+  if (span != 0) {
+    arena->head = (char *)(head + span);
+    FLUSH_FENCE_PRODUCER(arena, sizeof(arts_cxl_arena_t));
+    ptr = (void *)head;
+    *got = span;
+  }
+  arts_cxl_tournament_lock_release(dq->consts.lock, local_lock,
+                                   arts_global_rank_id);
+  return ptr;
+}
+
+/**
+ * arts_cxl_deque_db_malloc_dev — Allocate one slot from a device's DB arena,
+ * straight under the tournament lock (no rank-local pool).
  */
 static inline void *arts_cxl_deque_db_malloc_dev(arts_cxl_deque_t *dq,
                                                  pthread_mutex_t *local_lock,
                                                  size_t size,
                                                  unsigned int dev_idx) {
-  assert(dev_idx < dq->consts.db_arena_count && "dev_idx out of range");
-  arts_cxl_tournament_lock_acquire(dq->consts.lock, local_lock,
-                                   arts_global_rank_id);
-  arts_cxl_arena_t *arena = dq->consts.db_arenas[dev_idx];
-  FLUSH_FENCE_CONSUMER(arena, sizeof(arts_cxl_arena_t));
-  void *ptr = arts_cxl_arena_malloc(arena, size);
-  FLUSH_FENCE_PRODUCER(arena, sizeof(arts_cxl_arena_t));
-  arts_cxl_tournament_lock_release(dq->consts.lock, local_lock,
-                                   arts_global_rank_id);
-  return ptr;
+  size_t got;
+  return arts_cxl_deque_db_carve_dev(dq, local_lock, size, size, dev_idx, &got);
 }
 
 /**

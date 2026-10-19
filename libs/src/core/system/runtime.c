@@ -294,6 +294,34 @@ void arts_runtime_node_init(struct arts_config_s *config) {
   arts_printf("CXL FAM region device ID: %lu\n", GET_CXL_REGION_DEV_ID());
   pthread_mutex_init(&arts_node_info.cxl_local_lock, NULL);
   arts_node_info.cxl_db_rr_idx = 0;
+  /* Every pool starts empty, so a rank's first slot on an arena refills it.
+   * The pool is clamped to a rank's even share of one arena: a pool larger
+   * than that lets the first rank to refill take the arena from its peers
+   * (the 1 GiB default against a 256 MiB test arena would leave every other
+   * rank nothing). */
+  {
+    uint64_t share = (uint64_t)ARTS_CXL_DB_ARENA_SIZE_BYTES /
+                     (arts_global_rank_count ? arts_global_rank_count : 1u);
+    uint64_t pool = config->cxl_db_pool_bytes;
+    if (pool > share) {
+      arts_printf("CXL DB pool: cxl_db_pool_bytes=%llu exceeds a rank's share "
+                  "of the arena; clamped to %llu\n",
+                  (unsigned long long)pool, (unsigned long long)share);
+      pool = share;
+    }
+    pool &= ~(uint64_t)(CACHELINE_SIZE - 1);
+    if (pool == 0) {
+      ARTS_ERROR("CXL DB pool: the arena (%llu bytes) has no cache line per "
+                 "rank to pool",
+                 (unsigned long long)ARTS_CXL_DB_ARENA_SIZE_BYTES);
+    }
+    arts_node_info.cxl_db_pool_bytes = pool;
+    for (unsigned int i = 0; i < ARTS_CXL_MAX_DEVICES; i++) {
+      pthread_mutex_init(&arts_node_info.cxl_db_pool[i].lock, NULL);
+      arts_node_info.cxl_db_pool[i].cur = NULL;
+      arts_node_info.cxl_db_pool[i].end = NULL;
+    }
+  }
   if (!arts_cxl_deque_get_db_arena_range(arts_node_info.cxl_deque,
                                          &arts_node_info.cxl_db_arena_start,
                                          &arts_node_info.cxl_db_arena_end)) {
@@ -504,6 +532,10 @@ void arts_runtime_global_cleanup() {
                       __atomic_load_n(&arts_shutdown_abandon.unjoined_threads,
                                       __ATOMIC_RELAXED) != 0u);
   pthread_mutex_destroy(&arts_node_info.cxl_local_lock);
+  /* A pool's unconsumed tail is arena bytes; it went with the arena. */
+  for (unsigned int i = 0; i < ARTS_CXL_MAX_DEVICES; i++) {
+    pthread_mutex_destroy(&arts_node_info.cxl_db_pool[i].lock);
+  }
 #endif
 }
 

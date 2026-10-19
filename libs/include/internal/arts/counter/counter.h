@@ -121,6 +121,13 @@ extern "C" {
   X(BYTES_CXL_FLUSH_CONSUMER)                                                  \
   X(TIME_CXL_FLUSH_PRODUCER)                                                   \
   X(TIME_CXL_FLUSH_CONSUMER)                                                   \
+  /* Num/Bytes/Time: carves off a shared CXL DB arena, the only DB-allocation \
+   * step that takes the tournament lock (arts_cxl_store_alloc): a pool       \
+   * refill, or one slot too large for a pool.  TIME spans the carve, the     \
+   * lock climb included.  Inert in a build without a CXL store. */           \
+  X(NUM_CXL_POOL_REFILL)                                                       \
+  X(BYTES_CXL_POOL_REFILL)                                                     \
+  X(TIME_CXL_POOL_REFILL)                                                      \
   /* Time: events */                                                           \
   X(TIME_EVENT_CREATE)                                                         \
   X(TIME_EVENT_SIGNAL)                                                         \

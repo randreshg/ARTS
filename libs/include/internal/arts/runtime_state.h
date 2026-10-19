@@ -50,6 +50,17 @@ extern "C" {
 #ifdef ARTS_USE_CXL
 #include "arts/cxl/deque.h"
 #include <pthread.h>
+
+/* A rank's private window onto one DB arena: [cur, end) was carved off the
+ * shared arena by one refill (under the tournament lock) and is handed out
+ * slot by slot under `lock` alone.  Both live in DRAM -- only this rank's
+ * threads ever reach them, so a plain mutex suffices where the shared head
+ * needs the cross-node lock.  See arts_cxl_store_alloc. */
+typedef struct {
+  pthread_mutex_t lock;
+  char *cur;
+  char *end;
+} arts_cxl_db_pool_t;
 #endif
 
 struct arts_runtime_shared_s {
@@ -67,6 +78,8 @@ struct arts_runtime_shared_s {
   unsigned int cxl_db_dev_count; /**< Number of CXL DB arenas (devices). */
   volatile unsigned int cxl_db_rr_idx; /**< Round-robin device index counter. */
   unsigned int cxl_db_static_device; /**< Device index for static allocation. */
+  arts_cxl_db_pool_t cxl_db_pool[ARTS_CXL_MAX_DEVICES]; /**< One per arena. */
+  uint64_t cxl_db_pool_bytes; /**< Refill size, after the per-rank clamp. */
 #endif
   struct arts_route_table_s **route_table;
   struct arts_route_table_s **gpu_route_table;
