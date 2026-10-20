@@ -289,8 +289,9 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 /* ===== arts_db_cache_destructor ========================================
  * Runs at refcount 0 as the SOLE owner of the object; no concurrent actor
  * remains, so it is the single safe drainer of the parked-waiter stacks.
- * Destroying an in-use DB is undefined (OCR) — no waiter wake.  Destroy itself
- * is just the route-slot detach (CAS value→NULL + drop the install ref). */
+ * No waiter is woken: one still parked is an acquire the destroy contract
+ * excludes.  Destroy itself is just the route-slot detach (CAS value→NULL +
+ * drop the install ref). */
 void arts_db_cache_destructor(struct arts_db_cache_s *cache) {
   if (cache == NULL) {
     return;
@@ -740,7 +741,6 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_msg_excl_cts_packet_s *p =
       (struct arts_msg_excl_cts_packet_s *)args_v;
-  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_excl_request(cache, (arts_db_access_mode_t)p->mode);
 }
@@ -1200,7 +1200,6 @@ void arts_handler_db_excl_deliver(void *payload, size_t size) {
     arts_shared_release(&db_h);
     return;
   }
-  arts_db_cache_note_answered(&db->cache); /* before it takes effect */
 
   /* Hinted first touch: the size may still be unlearned here. */
   arts_db_cache_learn_size(&db->cache, p->data_size);
@@ -1418,8 +1417,8 @@ static void lock_deliver_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
  *     readers are gone); else RORET to home (a remote RO copy holder
  *     returning its grant).
  *
- * Destroyed-guard: a dep NULL-woken at destroy never really held the lock; a
- * count of 0 means there is nothing to release — skip rather than underflow. */
+ * A count of 0 means this rank holds nothing to release — skip rather than
+ * underflow. */
 /* A create's hold is this arm's ordinary write hold, taken when the block was
  * made; the bytes under it are the cache's own, so the release needs no
  * pointer to them. */
@@ -1435,7 +1434,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     if (CACHE_RW_CNT(cur) == 0u) {
-      return; /* destroyed-guard / already released */
+      return; /* nothing held */
     }
     target = CACHE_MIGRATE_TARGET(cur); /* captured pre-CAS for the ship */
     next = cache_owner_compute_next(cur, CACHE_OP_REL_RW, &act);
@@ -1472,7 +1471,7 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     if (CACHE_RO_CNT(cur) == 0u) {
-      return; /* destroyed-guard / already released */
+      return; /* nothing held */
     }
     next = cache_owner_compute_next(cur, CACHE_OP_REL_RO, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
@@ -1502,15 +1501,13 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
   }
 }
 
-/* RETAIN tears the home down on arrival.  It needs no teardown mark: the only
- * message a release sends to the home is a data-less RO_RETURN, which finds no
- * home while the label stays destroyed and is dropped — the payload legs of
- * this policy move owner->owner, and a pending migration means a live acquire,
- * which the destroy contract already forbids.  Once the label's next
- * generation is installed, a late RO_RETURN is counted against that
- * generation's read grants when it has any outstanding, and dropped when it
- * has none (arts_handler_db_excl_roret); the program orders that return only
- * as it orders its own messages to the home. */
+/* RETAIN tears the home down on arrival.  It needs no teardown mark: no
+ * release moves payload to the home — the payload legs of this policy move
+ * owner->owner, and a pending migration means a live acquire, which the
+ * destroy contract excludes — so what can still reach the home after the
+ * destroy, a release's data-less RO_RETURN or a transfer's CONFIRM (both
+ * fire-and-forget), carries nothing the teardown must wait for: it finds no
+ * home and is dropped. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -1875,7 +1872,9 @@ void arts_handler_db_excl_request(void *item_v, void *args_v) {
  * (arts_msg_excl_confirm_packet_s *); the new owner is packet->header.rank (the
  * sender — both wire and self-send set it via arts_fill_packet_header).
  *
- * Cat-C route-table lookup: NULL ⇒ DB destroyed concurrently ⇒ drop.  pop the
+ * Cat-C route-table lookup: NULL ⇒ a CONFIRM that trailed the block's
+ * destroy (it is fire-and-forget, sent once the new owner's writers are
+ * ready) ⇒ drop, harmlessly.  pop the
  * RW waiter (assert front == src), then CAS lock_owner_compute_next(CONFIRM,
  * new_owner=src) — this sets owner=src + w-- + next phase + action in ONE CAS.
  * Dispatch: MIGRATE → next RW migrate; SERVE_ALL → RW→RO flip drain. */
@@ -1892,25 +1891,16 @@ void arts_handler_db_excl_confirm(void *item_v) {
 
   /* pop the confirming requester off the RW queue (it was the migrate target).
    * front must equal new_owner (the home FORWARDed migrate to the queue front,
-   * and CONFIRM comes only from that owner).
-   *
-   * Stale cross-generation guard: a labeled GUID can be destroyed and
-   * re-created (route slot re-promoted to a FRESH db_s with an empty rw_waiters
-   * / w==0); a CONFIRM from the OLD generation, delayed on the wire, can then
-   * land on the NEW generation's home.  Such a stale CONFIRM finds the RW queue
-   * empty (the legit migrate target was pushed BEFORE the FORWARD that triggers
-   * any real CONFIRM, so a real CONFIRM always pops successfully).  An empty
-   * pop therefore means a stale/duplicate CONFIRM — drop it WITHOUT the w--
-   * transition, else it underflows w (0 → 0xFFFFFF) and dispatches a spurious
-   * MIGRATE.  It does not cover a stale CONFIRM that lands while the new
-   * generation has a writer queued: the pop takes that writer, and the
-   * transition runs for a turn this generation never granted. */
+   * and CONFIRM comes only from that owner).  The target was pushed before the
+   * FORWARD that made it one, and only its own CONFIRM pops it, so the queue
+   * is never empty here; an empty one would wrap w below.  A reused label can
+   * reach it, since its generations are not told apart: a CONFIRM meant for
+   * the previous generation lands on the next one's home. */
   unsigned int front;
-  if (!arts_home_grantreq_queue_pop(&db->rw_waiters, &front, NULL, NULL)) {
-    arts_shared_release(&db_h);
-    return; /* stale / duplicate CONFIRM (empty RW queue) — drop */
-  }
-  /* front == new_owner under the protocol; the pop just dequeued it. */
+  bool popped =
+      arts_home_grantreq_queue_pop(&db->rw_waiters, &front, NULL, NULL);
+  assert(popped && "a CONFIRM found no migrate target queued");
+  (void)popped;
   (void)front;
 
   uint32_t action;
@@ -1918,6 +1908,8 @@ void arts_handler_db_excl_confirm(void *item_v) {
   arts_sched_fuzz_point();
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
+    /* A CONFIRM ends a migration this home counted in w. */
+    assert(LOCK_W(cur) != 0u);
     next = lock_owner_compute_next(cur, EXCL_OP_CONFIRM, new_owner, &action);
   } while (!atomic_compare_exchange_weak_explicit(
       &db->lock_state, &cur, next, memory_order_acq_rel, memory_order_acquire));
@@ -1948,19 +1940,10 @@ void arts_handler_db_excl_roret(void *item_v) {
   arts_sched_fuzz_point();
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
-    /* Stale cross-generation guard (symmetric to CONFIRM): a RO_RETURN from an
-     * OLD generation, delayed on the wire, can land on a re-created labeled
-     * GUID's fresh home (r==0).  r counts outstanding RO grants; a RO_RETURN
-     * can only follow its own grant, so r==0 means a stale/duplicate RO_RETURN
-     * — drop it, else r underflows (0 → 0xFFFFFF) and dispatches a spurious
-     * flip.  It does not cover a stale RO_RETURN that lands while the new
-     * generation has read grants outstanding (r > 0): that return is counted
-     * as one of them, so r can reach zero, and a queued writer's flip to the
-     * write phase can open, while a reader still holds its copy. */
-    if (LOCK_R(cur) == 0u) {
-      arts_shared_release(&db_h);
-      return;
-    }
+    /* r counts outstanding RO grants and a RO_RETURN follows its own grant,
+     * so it never finds r at zero; a zero r would wrap and open a spurious
+     * flip.  A reused label can reach it, as a CONFIRM can. */
+    assert(LOCK_R(cur) != 0u);
     next =
         lock_owner_compute_next(cur, EXCL_OP_RO_RET, /*new_owner=*/0u, &action);
   } while (!atomic_compare_exchange_weak_explicit(

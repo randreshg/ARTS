@@ -188,12 +188,26 @@ early — required when the EDT blocks inside its body (e.g. via
    arts_db_release(db_guid, DB_MODE_RW);  /* created/written DBs */
 
 :c:func:`arts_db_destroy` destroys all copies of a DB system-wide, from any
-rank, whether or not it holds a copy; any acquire held by the calling EDT is
-implicitly released first, and actual deallocation is deferred until
-outstanding references drain.  The destroy
-is not acknowledged: the home tears the block down and notifies every rank
-that caches it, and a rank's copy is retired when that notice lands.  A
-labeled GUID may be created again, before or after the destroy (see
+rank, whether or not it holds a copy.  The program orders the destroy after
+the release of every hold that any other EDT has on the block: every ``RO``
+and ``RW`` dependence hold and every creator hold, under every coherence
+protocol.  The destroying EDT's own hold is the one exception:
+:c:func:`arts_db_destroy` releases it first.  An EDT releases what it still
+holds before its output event fires and before it leaves its finish scope,
+so a destroy ordered after an EDT's completion is ordered after its
+releases.  An EDT that, in its body, hands the block onward or starts work
+that leads to its destroyer (by satisfying an event, creating an EDT or
+adding a dependence) calls :c:func:`arts_db_release` right after its last
+access to the block and before that hand-off.  A hold released after the
+destroy is a program error, and so is an acquisition still pending when the
+destroy is issued: the runtime need not serve it, and it may never complete.
+
+The destroy is not acknowledged: the home tears the block down and notifies
+every rank that caches it, and a rank's copy is retired when that notice
+lands.  A release message sent before the destroy may still reach the home
+after it, since nothing orders the delivery of the two messages; the runtime
+absorbs it, and storage is freed once the last outstanding reference drains.
+A labeled GUID may be created again, before or after the destroy (see
 :ref:`labeled-guid-reuse`):
 
 .. code-block:: c

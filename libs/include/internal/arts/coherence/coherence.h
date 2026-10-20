@@ -73,9 +73,6 @@ typedef enum {
   /* Stub install by a dependence's first touch on a rank that is not the
    * block's home: no buffer, writer_count = 0. */
   ARTS_DB_INIT_STUB,
-  /* Not an init: a first touch's cache after an answer to it has arrived.
-   * The block it caches exists, so no create may claim it. */
-  ARTS_DB_INIT_ANSWERED,
 } arts_db_init_kind_t;
 
 /* Initialize a coherence cache_s in place for db_guid.  The cache is
@@ -130,12 +127,6 @@ typedef enum {
  * the DB was destroyed before the install could be observed. */
 arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
                                              uint64_t db_size);
-/* The same install for an answer that finds no cache: the stub is published
- * already marked answered (ARTS_DB_INIT_ANSWERED), so no create can claim it
- * between the install and the answer taking effect.  A cache that was already
- * there is returned as it is; the caller still marks it. */
-arts_shared_ptr_t arts_db_cache_stub_install_answered(arts_guid_t db_guid,
-                                                      uint64_t db_size);
 
 /* The coherent acquire of one dep (per model).  item = the installed db_s;
  * args = arts_ooo_args_db_acquire_s {edt, db_guid, slot}.  Attempts the one
@@ -357,15 +348,9 @@ void arts_db_cache_common_destroy_post(struct arts_db_cache_s *cache);
 /* Record this block's slot in a cache that has none; a cache that already
  * names a slot keeps it.  Every slot has one origin: the block's creator mints
  * it from the arena before the create is sent, and every other rank learns
- * it from the create or a grant.  The result tells a repeat of the address the
- * cache already names (or no address at all) from a different one. */
-typedef enum {
-  ARTS_CXL_SLOT_RECORDED, /* this call installed addr */
-  ARTS_CXL_SLOT_KNOWN,    /* the cache already names addr, or addr is 0 */
-  ARTS_CXL_SLOT_CONFLICT, /* the cache already names a different slot */
-} arts_cxl_slot_record_t;
-arts_cxl_slot_record_t arts_db_cxl_slot_record(struct arts_db_cache_s *cache,
-                                               uint64_t addr);
+ * it from the create or a grant.  True when this call installed addr; false
+ * when the cache already named a slot or addr is 0. */
+bool arts_db_cxl_slot_record(struct arts_db_cache_s *cache, uint64_t addr);
 /* Allocate a slot of db_size bytes out of the arena for a create that
  * builds no descriptor here; 0 for a sentinel-sized block, which has none. */
 uint64_t arts_db_cxl_slot_mint(uint64_t db_size);
@@ -424,27 +409,24 @@ void arts_db_cache_kind_seed(struct arts_db_cache_s *c,
                              arts_db_init_kind_t kind);
 
 /* A create on a rank other than the block's home that finds this rank's slot
- * holding a cache a dependence made is not parked behind it: that cache is
- * the rank's view of the block the create is making, and the create makes it
- * its own.  Turns the kind from ARTS_DB_INIT_STUB into the creator's
- * (ARTS_DB_INIT_CREATOR_REMOTE) in one step, so exactly one create claims a
- * given cache and every later create of the label on this rank finds a
- * creator's cache and parks.  False when the cache was not a dependence's. */
+ * holding a cache a dependence made claims it rather than parking: that cache
+ * is the rank's view of the block the create is making, and the create makes
+ * it its own (a cache of an earlier lifetime that kept a right to the block
+ * then refuses the create's hold, and the create parks behind it).  Turns the
+ * kind from ARTS_DB_INIT_STUB into the creator's (ARTS_DB_INIT_CREATOR_REMOTE)
+ * in one step, so exactly one create claims a given cache and every later
+ * create of the label on this rank finds a creator's cache and parks.  False
+ * when the cache was not a dependence's. */
 bool arts_db_create_claims_stub(struct arts_db_cache_s *cache);
-
-/* Mark a first touch's cache answered (ARTS_DB_INIT_STUB ->
- * ARTS_DB_INIT_ANSWERED), before the answer takes effect.  The same word as
- * the create's claim, so of an answer and a claim exactly one succeeds on a
- * given cache.  A no-op on any other cache. */
-void arts_db_cache_note_answered(struct arts_db_cache_s *cache);
 
 /* Record the create's own hold in this rank's cache, each arm naming it in
  * its own state: the migrating-grant arms take possession plus one writer on
  * the grant word, the exclusion arm takes its cache word's RW grant, and an
  * arm that keeps no permission word takes nothing.  Runs only for a create
- * that claimed the cache, so this is the state step and not the arbitration;
- * it still reports whether it committed, because possession is never seeded
- * over a word that already carries a hold.  Defined once per protocol TU. */
+ * that claimed the cache; it reports whether it committed, because possession
+ * is never seeded over a word that already carries a hold (a cache of an
+ * earlier lifetime that kept a right to the block refuses it).  Defined once
+ * per protocol TU. */
 bool arts_db_create_take_hold(struct arts_db_cache_s *cache);
 
 /* The counterpart, for a create that gives the block its first image in a

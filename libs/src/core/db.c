@@ -584,28 +584,6 @@ static bool db_parked_here(arts_guid_t guid) {
   return false;
 }
 
-/* Name a creator descriptor for its announce: the home echoes the name with
- * the create's credit, and the credit is applied only to the descriptor that
- * still carries it.  Unique per rank without contention — a per-thread
- * counter under the thread's index — and never an address, which the
- * allocator can hand the next descriptor of the same GUID. */
-static uint64_t db_create_token_mint(struct arts_db_cache_s *cache) {
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
-    defined(ARTS_PROTOCOL_FLUSH)
-  static ARTS_THREAD_LOCAL uint64_t seq = 0;
-  seq = (seq + 1u) & ((UINT64_C(1) << 48) - 1u);
-  if (seq == 0u) {
-    seq = 1u;
-  }
-  uint64_t token = ((uint64_t)arts_thread_info.thread_id << 48) | seq;
-  atomic_store_explicit(&cache->create_token, token, memory_order_release);
-  return token;
-#else
-  (void)cache;
-  return 0u;
-#endif
-}
-
 bool arts_db_create_install_local(arts_shared_ptr_t cb) {
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(cb);
   arts_guid_t guid = db->cache.db_guid;
@@ -626,8 +604,8 @@ bool arts_db_create_install_local(arts_shared_ptr_t cb) {
     arts_send_db_create_coherent(
         home, guid,
         atomic_load_explicit(&db->cache.db_size, memory_order_relaxed),
-        ARTS_DB_PROP_NONE, (uint16_t)ARTS_DB, arts_db_cxl_slot_addr(&db->cache),
-        db_create_token_mint(&db->cache));
+        ARTS_DB_PROP_NONE, (uint16_t)ARTS_DB,
+        arts_db_cxl_slot_addr(&db->cache));
   }
   arts_shared_release(&pin);
   return true;
@@ -651,14 +629,10 @@ static void db_create_enter(struct arts_db_s *db, arts_guid_t guid,
 }
 
 /* A cache on this rank that a dependence made before the block's create
- * (ARTS_DB_INIT_STUB) and that no answer has reached is this rank's view of
- * the block being created, not an occupant: the create claims it, gives it
- * the block's first image and takes its hold in it.  The home cannot answer a
- * request for the block before this create's announce, so an answered cache
- * (ARTS_DB_INIT_ANSWERED) belongs to an earlier generation of the GUID whose
- * teardown notice has not landed here yet; the create parks behind it like
- * behind any occupant, and installs when that notice retires it.  The claim
- * and every answer transition the same word, so one of them wins. */
+ * (ARTS_DB_INIT_STUB) is this rank's view of the block being created, not an
+ * occupant: the create claims it, gives it the block's first image and takes
+ * its hold in it, unless a right an earlier lifetime kept there refuses the
+ * hold. */
 static bool db_create_claim_first_touch(struct arts_db_s *found,
                                         uint64_t len) {
   struct arts_db_cache_s *cache = &found->cache;
@@ -669,8 +643,9 @@ static bool db_create_claim_first_touch(struct arts_db_s *found,
    * before the image and before the hold — taking the hold admits the
    * waiters an earlier request from this rank parked, an admitted waiter's
    * pointer may BE the store, and the ensure below adopts the store on the
-   * residency that keeps no copy.  Whatever the cache learned before the
-   * claim was this same size. */
+   * residency that keeps no copy.  Within one lifetime whatever the cache
+   * learned before the claim was this same size; a cache an earlier lifetime
+   * left may carry that block's size, which this store replaces. */
   atomic_store_explicit(&cache->db_size, len, memory_order_relaxed);
 #ifdef ARTS_USE_CXL
   (void)arts_db_cxl_slot_create(cache);
@@ -682,8 +657,11 @@ static bool db_create_claim_first_touch(struct arts_db_s *found,
    * here is this rank's — recorded only from an idle reader word, because a
    * fetch already in flight brings the copy with it when it lands. */
   arts_db_create_claim_creator_copy(found);
-  /* An unanswered cache carries no hold, so the hold commits; a refusal here
-   * means another create of the label claimed it concurrently. */
+  /* Within one lifetime the home answers no request for the block before this
+   * create's announce, so the cache carries no hold and the hold commits; a
+   * cache of an earlier lifetime that kept a right to the block (the write
+   * right; under EXCL x RETAIN also its resident bytes or a retained read
+   * grant) refuses it. */
   return arts_db_create_take_hold(cache);
 }
 
@@ -763,8 +741,7 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
         }
         arts_send_db_create_coherent(home, guid, len, ARTS_DB_PROP_NONE,
                                      (uint16_t)ARTS_DB,
-                                     arts_db_cxl_slot_addr(&found->cache),
-                                     db_create_token_mint(&found->cache));
+                                     arts_db_cxl_slot_addr(&found->cache));
         *addr = arts_db_user_ptr(found);
         arts_db_auto_acquire(found_h);
         return;
@@ -781,7 +758,8 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
       return;
     }
   }
-  /* This rank's slot holds a block a create made: park behind it. */
+  /* This rank's slot holds a block a create made, or a dependence's cache that
+   * refused the create's hold: park behind it. */
   if (stub == NULL) {
     stub = db_creator_descriptor(guid, len, &cb, &mine);
   }
@@ -801,11 +779,13 @@ static void db_create_remote_creator(arts_guid_t guid, uint64_t len,
  * NULL_GUID with a warning.
  *
  * Every create enters the OoO engine on this rank's slot for the GUID: it
- * installs while the slot is empty and parks while it holds another
- * generation of the GUID, installing at that generation's destroy.  The
- * pointer handed out is the image in the descriptor this create built, in
- * either case; a creator on a rank other than the block's home that claims a
- * dependence's unanswered cache hands out the image in that cache.
+ * installs while the slot is empty and parks while it holds a create's
+ * descriptor of another generation or a cache that kept a right to the
+ * block, installing at that generation's destroy; a dependence's cache that
+ * kept no such right is claimed.  The pointer handed out is the image in the
+ * descriptor this create built, in either case; a creator on a rank other
+ * than the block's home that claims a dependence's cache hands out the image
+ * in that cache.
  */
 arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
                            uint16_t flags, const arts_db_hint_t *hint) {
@@ -888,8 +868,7 @@ arts_guid_t arts_db_create(void **addr, uint64_t len, arts_db_types_t db_type,
          * the announce. */
         arts_send_db_create_coherent(rank, guid, len, ARTS_DB_PROP_NO_ACQUIRE,
                                      (uint16_t)db_type,
-                                     arts_db_cxl_slot_mint(len),
-                                     /*create_token=*/0);
+                                     arts_db_cxl_slot_mint(len));
         *addr = NULL;
       } else {
         db_create_remote_creator(guid, len, rank, pre_guid != NULL_GUID,
@@ -1848,14 +1827,13 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
    * the parked-EDT resume each do arts_db_buf_acquire) is dropped at the tail
    * of this block via the buffer's own cb, on every path on which the block
    * still names that buffer: the EDT's ref kept the buffer (hence buf->cb)
-   * alive up to there, so the deref is never use-after-free even under a
-   * racing destroy.  Dispatch release_rw
-   * / release_ro only while the cache is still installed; once destroyed there
-   * is no publish / version work left to do (that ref drop is the only cleanup
-   * needed). */
+   * alive up to there, so the deref is never use-after-free.  The arm's
+   * release runs against the descriptor the slot's pin names, or, for a slot
+   * with no pin, the one a lookup finds; a destroy is ordered after this
+   * release, so the block is still installed here, and the pin keeps the
+   * descriptor valid even for a program that breaks that order. */
   if (dep->subtype == ARTS_DB &&
       (access_mode == DB_MODE_RO || access_mode == DB_MODE_RW)) {
-    /* The arm's release below runs against the descriptor the pin names. */
     /* The re-lookup handle of the no-pin path, released at the same tail and
      * under the same rule. */
     arts_shared_ptr_t db_fallback = NULL;
@@ -1901,10 +1879,10 @@ static void release_one_dep(const struct arts_dep_release_s *dep,
       /* Header-relative arithmetic on dep->ptr lands in the shared store, not
        * in a header, so the descriptor is the one this slot's own pin names:
        * every site that takes this ref installs that pin in the same frame, so
-       * the two name one object.  A cache whose descriptor slot has already
-       * been cleared answers NULL and this ref is then not dropped — one
-       * descriptor left behind until teardown, on the path where a block is
-       * destroyed under a live holder, which the model leaves undefined. */
+       * the two name one object.  The pin defers the descriptor's destructor,
+       * the only thing that empties a published cache's slot, and a block has
+       * one descriptor for its whole life on this residency, so the lookup
+       * answers the descriptor this ref was taken on. */
       if (db_pin == NULL) {
         ARTS_ERROR("db: a resolved dep carries a buffer ref with no "
                    "descriptor pin");

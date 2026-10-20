@@ -19,18 +19,15 @@
  * The destroying task's finish signal, which readies the second create,
  * leaves the last rank after its destroy did, so under one progress thread
  * the home handles the destroy first.  With two progress threads the home can
- * dispatch the signal first, and the second create then parks behind
- * generation 1.  Under invalidation, where the creator's release publishes to
- * the home by GUID, that publish lands on generation 1, which absorbs the
- * acknowledgement too; the destroy then installs generation 2 with the
- * publish still in flight, and the creating task blocks in its release, so
- * the run can hang there.  That is a recorded weakness of labeled-GUID reuse
- * (a creator's publish), left unmasked here.  The readers' acquires trail
- * the destroy by a chain of messages through both ranks, an order the runtime
- * does not guarantee either, which this shape leaves no practical window
- * against.  The last generation is destroyed at the home before the end, so
- * the shutdown is quiescent.  On one rank the destroying task runs on the
- * home, which holds the block, so the run passes without exercising the path.
+ * dispatch the signal first; the second create then parks behind generation
+ * 1 and, under invalidation, the creator's release of generation 2 meets
+ * generation 1, since generations of a reused label are not told apart, so
+ * the test is run with one progress thread.  The readers' acquires trail the
+ * destroy by a chain of messages through both ranks, an order the runtime does
+ * not guarantee either, which this shape leaves no practical window against.
+ * The last generation is destroyed at the home before the end, so the
+ * shutdown is quiescent.  On one rank the destroying task runs on the home,
+ * which holds the block, so the run passes without exercising the path.
  */
 
 #include <stdbool.h>

@@ -320,7 +320,7 @@ struct arts_db_cache_s {
    * the home's directory, or a dependence's first touch.  A create that
    * claims a first touch's cache turns it into its own
    * (arts_db_create_claims_stub); nothing else writes it after init.  Only
-   * its own value: one CAS decides between a claim and an answer. */
+   * its own value: the claim is one CAS, so one create claims a cache. */
   _Atomic(uint8_t) init_kind;
 
   /* Publish write-combining — the write-side twin of VAL's RO combining
@@ -333,18 +333,6 @@ struct arts_db_cache_s {
   _Atomic(uint64_t) home_pub_addr;
   _Atomic(uint64_t) home_pub_rkey;
   _Atomic(uint64_t) home_pub_txid;
-#ifdef ARTS_WRITE_POLICY_WT
-  /* A remote creator's name for this descriptor, carried by its announce and
-   * echoed by the home's CREATE_RETURN: the create's credit is applied only
-   * where the two match, never to a later descriptor of the same GUID.  0 on
-   * every other cache.  Write-through only: a write-back create carries no
-   * credit, so nothing names it there.
-   * Minted by the creator with a release store before its announce
-   * leaves (the home's stub takes the announced value at init); the
-   * credit handler's acquire compare is the only reader that decides
-   * anything.  It carries nothing beyond its own value. */
-  _Atomic(uint64_t) create_token;
-#endif
 #ifdef ARTS_RELEASE_PURGE
   /* The hand-back obligation and the install count it names, as in the VAL
    * write-through layout (see coherence/val/types.h). */

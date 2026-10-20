@@ -58,9 +58,8 @@
 ///   - SNAPSHOT_REDIRECT / GRANT_CONFIRM[_ACK] (ownership transfer) where
 ///   the protocol uses them.
 /// Each generation's DB is explicitly destroyed; if any Cat-C path leaked a
-/// ref, the cb would never reach refcount 0 and a parked waiter's
-/// destroy-fan-out wake would be dropped → the finish scope never drains →
-/// ctest TIMEOUT FAIL.  The HIT-path UAF would surface as an ASan
+/// ref, the cb would never reach refcount 0 and the finish scope would never
+/// drain → ctest TIMEOUT FAIL.  The HIT-path UAF would surface as an ASan
 /// use-after-free / SIGSEGV.
 ///
 /// Config-agnostic: every protocol has its own Cat-C set; the loop drives

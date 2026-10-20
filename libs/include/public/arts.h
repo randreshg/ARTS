@@ -272,11 +272,15 @@ typedef struct {
   /** Pre-reserved GUID.  NULL_GUID = auto-allocate (default).  When
    *  non-zero, the GUID's rank field is authoritative for routing and
    *  overrides @c rank above.  A create of a GUID whose block is live waits,
-   *  parked (on the creating rank behind its cache of the previous
-   *  generation, or at the home) until that block is destroyed, and then
-   *  installs as the GUID's next block (see @c arts_db_create for the
-   *  pointer it returns).  Two creates of one GUID with no destroy between
-   *  them are undefined: one of them stays parked. */
+   *  parked (at the home, or on a creating rank that still holds an earlier
+   *  create's descriptor of the GUID or a cache that kept a right to it: the
+   *  write right, and under EXCL x RETAIN also its resident bytes or a
+   *  retained read grant) until that block is destroyed, and then installs as
+   *  the GUID's next block (see @c arts_db_create for the pointer it
+   *  returns); a dependence's cache of the GUID on the creating rank that
+   *  kept no such right, of any generation, is claimed rather than waited on.
+   *  Two creates of one GUID with no destroy between them are undefined: one
+   *  of them stays parked. */
   arts_guid_t guid;
 } arts_db_hint_t;
 
@@ -925,7 +929,12 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
  *
  * This is required when an EDT creates DBs and then blocks inside its
  * body (e.g. via arts_event_wait), because the automatic release
- * in the EDT epilogue cannot run until the function returns.
+ * in the EDT epilogue cannot run until the function returns.  It is
+ * required too when the EDT, in its body, hands a DB it holds onward, or
+ * starts work that leads to the DB's destroyer: a destroy is ordered after
+ * the release of every hold on the block (see arts_db_destroy), so the
+ * release comes right after the EDT's last access to the DB and before that
+ * hand-off.
  *
  * Releasing a dependence clears each @c depv slot that acquired the DB
  * (guid @c NULL_GUID, ptr @c NULL, mode @c DB_MODE_NULL), so a caller that
@@ -941,12 +950,21 @@ static inline void *arts_db_create_with_guid(arts_guid_t guid, uint64_t len,
 void arts_db_release(arts_guid_t guid, arts_db_access_mode_t mode);
 
 /**
- * @brief Destroy all copies of a DataBlock system-wide.
+ * @brief Destroy all copies of a DataBlock system-wide, from any rank.
  *
- * If the calling EDT has acquired this DB (via creation auto-acquire or
- * dependency), the acquire is implicitly released first.  The route-table
- * entry is then marked for deletion; actual deallocation is deferred until
- * all outstanding route-table references are returned.
+ * The program orders the destroy after the release of every hold that any
+ * other EDT has on the block: RO and RW dependence holds and creator holds
+ * alike, under every coherence protocol.  The calling EDT's own hold (its
+ * create's auto-acquire or a dependence) is the exception: it is released
+ * first, as by arts_db_release.  A hold released after the destroy is a
+ * program error, and so is an acquire still pending when the destroy is
+ * issued: the runtime need not serve it, and it may never complete.
+ *
+ * The destroy is not acknowledged.  The block's home tears the block down and
+ * tells every rank that caches it.  A release message sent before the destroy
+ * may still reach the home after it, since nothing orders the delivery of the
+ * two messages; the runtime absorbs it.  Storage is freed when the last
+ * outstanding reference drops.
  *
  * @param guid DataBlock GUID.
  */

@@ -75,13 +75,6 @@ void arts_db_cache_kind_seed(struct arts_db_cache_s *c,
   atomic_init(&c->init_kind, (uint8_t)kind);
 }
 
-void arts_db_cache_note_answered(struct arts_db_cache_s *cache) {
-  uint8_t expected = (uint8_t)ARTS_DB_INIT_STUB;
-  (void)atomic_compare_exchange_strong_explicit(
-      &cache->init_kind, &expected, (uint8_t)ARTS_DB_INIT_ANSWERED,
-      memory_order_acq_rel, memory_order_acquire);
-}
-
 bool arts_db_create_claims_stub(struct arts_db_cache_s *cache) {
   uint8_t expected = (uint8_t)ARTS_DB_INIT_STUB;
   return atomic_compare_exchange_strong_explicit(
@@ -157,18 +150,14 @@ void arts_db_cache_common_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 #endif /* arms sharing the common cache shape */
 
 #ifdef ARTS_USE_CXL
-arts_cxl_slot_record_t arts_db_cxl_slot_record(struct arts_db_cache_s *cache,
-                                               uint64_t addr) {
+bool arts_db_cxl_slot_record(struct arts_db_cache_s *cache, uint64_t addr) {
   if (cache == NULL || addr == 0) {
-    return ARTS_CXL_SLOT_KNOWN;
+    return false;
   }
   uint64_t expect = 0;
-  if (atomic_compare_exchange_strong_explicit(&cache->cxl_addr, &expect, addr,
-                                              memory_order_release,
-                                              memory_order_acquire)) {
-    return ARTS_CXL_SLOT_RECORDED;
-  }
-  return (expect == addr) ? ARTS_CXL_SLOT_KNOWN : ARTS_CXL_SLOT_CONFLICT;
+  return atomic_compare_exchange_strong_explicit(&cache->cxl_addr, &expect,
+                                                 addr, memory_order_release,
+                                                 memory_order_acquire);
 }
 
 uint64_t arts_db_cxl_slot_mint(uint64_t db_size) {
@@ -187,7 +176,7 @@ bool arts_db_cxl_slot_create(struct arts_db_cache_s *cache) {
     return false;
   }
   uint64_t addr = arts_db_cxl_slot_mint(size);
-  if (arts_db_cxl_slot_record(cache, addr) != ARTS_CXL_SLOT_RECORDED) {
+  if (!arts_db_cxl_slot_record(cache, addr)) {
     /* Another party named the slot first; the one minted here is left to
      * the arena, which reclaims nothing within a run. */
     return false;
@@ -458,8 +447,8 @@ void mark_edt_ready_by_guid(arts_guid_t edt_guid, unsigned int slot) {
  * cache is no longer needed (on every control-flow path).  A NULL handle
  * means the DB was destroyed before the install could be observed (the
  * lost-race lookup found no live entry). */
-static arts_shared_ptr_t stub_install(arts_guid_t db_guid, uint64_t db_size,
-                                      arts_db_init_kind_t kind) {
+arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
+                                             uint64_t db_size) {
   assert(arts_guid_get_rank(db_guid) != arts_global_rank_id &&
          "a first-touch cache is never made on the block's home rank");
   /* First check if it already exists (someone else stub-installed or
@@ -487,9 +476,6 @@ static arts_shared_ptr_t stub_install(arts_guid_t db_guid, uint64_t db_size,
   arts_db_cache_init(&stub->cache, db_guid, /*db_size=*/db_size,
                      ARTS_DB_INIT_STUB,
                      /*creator_rank=*/0);
-  /* Before the install publishes it: a create on this rank claims only a
-   * STUB, so a cache an answer made is never one a create can take. */
-  arts_db_cache_kind_seed(&stub->cache, kind);
 
   arts_shared_ptr_t installed_h =
       arts_route_table_install_if_absent(stub, db_guid);
@@ -504,16 +490,6 @@ static arts_shared_ptr_t stub_install(arts_guid_t db_guid, uint64_t db_size,
    * stub and return a pinned handle to the established db_s. */
   arts_db_free(stub);
   return arts_route_table_lookup_db(db_guid);
-}
-
-arts_shared_ptr_t arts_db_cache_stub_install(arts_guid_t db_guid,
-                                             uint64_t db_size) {
-  return stub_install(db_guid, db_size, ARTS_DB_INIT_STUB);
-}
-
-arts_shared_ptr_t arts_db_cache_stub_install_answered(arts_guid_t db_guid,
-                                                      uint64_t db_size) {
-  return stub_install(db_guid, db_size, ARTS_DB_INIT_ANSWERED);
 }
 
 /* ===== Case 1/3/5: local-buffer acquire ============================= */
@@ -696,8 +672,8 @@ arts_db_acquire_result_t
 arts_db_acquire_remote_ro(struct arts_db_cache_s *cache, arts_guid_t edt_guid,
                           unsigned int slot) {
   /* Park on the cache's combining window; the response that ends the window
-   * this waiter rides resumes it.  A concurrent destroy is handled by the
-   * caller's lookup-miss + OoO defer. */
+   * this waiter rides resumes it.  No destroy is issued while this acquire is
+   * pending (the destroy contract), so none is checked for. */
   assert(arts_global_rank_count > 1 &&
          "a rank alone homes every block and reads it locally");
   INCREMENT_NUM_DB_ACQUIRE_REMOTE_BY(1);
@@ -1120,8 +1096,9 @@ void arts_handler_db_publish_ack(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
   if (db == NULL) {
     /* Destroyed while a flight was outstanding: the program failed to order
-     * the destroy after its releases (contract violation).  The waiters
-     * unblock through the shutdown escape. */
+     * the destroy after its releases (contract violation).  The retire that
+     * emptied this rank's slot abandons the flight, which wakes the waiters
+     * unpublished. */
     return;
   }
   struct arts_db_cache_s *cache = &db->cache;
@@ -1230,9 +1207,9 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
 /* ===== arts_db_destroy_remote public API ============================= */
 
 /* Public destroy: send MSG_DB_DESTROY to the home (a home on this rank runs
- * it through the OoO engine inline, as the wire dispatcher does).  Caller is
- * responsible for the OCR-spec contract: no concurrent acquires/uses in
- * flight. */
+ * it through the OoO engine inline, as the wire dispatcher does).  The caller
+ * has released its own hold, and the program orders this destroy after the
+ * release of every other hold on the block. */
 void arts_db_destroy_remote(arts_guid_t db_guid) {
   unsigned int home_rank = arts_guid_get_rank(db_guid);
   arts_send_db_destroy(home_rank, db_guid);

@@ -473,7 +473,7 @@ void arts_handler_db_grant_request(void *item_v, void *args_v) {
   struct arts_db_s *db = arts_db_of_cache(cache);
   /* A requester of the write right holds a cache of the block from here on,
    * so the destroy must reach it: its cache would otherwise outlive the
-   * block and hold its rank's slot for the GUID against the next create. */
+   * block, keeping its storage and its rank's route slot for the GUID. */
   if (requester != arts_global_rank_id) {
     (void)arts_rank_bitset_set(&db->cached_ranks, requester);
   }
@@ -619,7 +619,6 @@ void arts_handler_db_grant_cts(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_msg_grant_cts_packet_s *p =
       (struct arts_msg_grant_cts_packet_s *)args_v;
-  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_grant_request(cache);
 }

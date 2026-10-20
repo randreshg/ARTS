@@ -182,11 +182,8 @@ _Static_assert(sizeof(struct arts_msg_publish_packet_s) == 72,
                "publish sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_publish_ack_packet_s) == 64,
                "publish_ack sizeof drifted");
-_Static_assert(sizeof(struct arts_msg_db_create_return_packet_s) == 56,
+_Static_assert(sizeof(struct arts_msg_db_create_return_packet_s) == 48,
                "db_create_return sizeof drifted");
-_Static_assert(offsetof(struct arts_msg_db_create_return_packet_s,
-                        create_token) == 24,
-               "db_create_return's token must follow db_guid");
 _Static_assert(sizeof(struct arts_msg_grant_invalidate_packet_s) == 72,
                "ownership_invalidate sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_grant_confirm_ack_packet_s) == 72,
@@ -196,18 +193,15 @@ _Static_assert(sizeof(struct arts_msg_snapshot_request_packet_s) == 72,
 _Static_assert(sizeof(struct arts_msg_snapshot_response_packet_s) == 72,
                "snapshot_response sizeof drifted");
 #ifdef ARTS_USE_CXL
-_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 56,
+_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
                "db_create_coherent sizeof drifted (CXL build)");
 _Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s,
-                        cxl_addr) == 40,
-               "db_create_coherent's CXL slot must follow create_token");
+                        cxl_addr) == 32,
+               "db_create_coherent's CXL slot must follow db_size");
 #else
-_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 48,
+_Static_assert(sizeof(struct arts_msg_db_create_coherent_packet_s) == 40,
                "db_create_coherent sizeof drifted");
 #endif
-_Static_assert(offsetof(struct arts_msg_db_create_coherent_packet_s,
-                        create_token) == 32,
-               "db_create_coherent's token must follow db_size");
 _Static_assert(sizeof(struct arts_msg_destroy_packet_s) == 24,
                "destroy sizeof drifted");
 _Static_assert(sizeof(struct arts_msg_cache_destroy_packet_s) == 24,

@@ -318,7 +318,6 @@ void arts_handler_db_fetch_response(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_db_fetch_response_args_s *a =
       (struct arts_db_fetch_response_args_s *)args_v;
-  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   arts_db_cache_learn_size(cache, a->db_size);
   learn_line(cache, a->line_addr, a->line_rkey, a->flush_txid);
   struct arts_db_buffer_s *copy = (struct arts_db_buffer_s *)(uintptr_t)a->rdzv_cookie;
@@ -618,6 +617,9 @@ void arts_db_create_claim_creator_copy(struct arts_db_s *db) { (void)db; }
 
 /* ===== destroy =========================================================== */
 
+/* The teardown is immediate: a read release sends nothing and a write-back
+ * blocks until the home ACKs it, so under the destroy contract nothing a
+ * release sends can arrive after the destroy. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_s *db = (struct arts_db_s *)item_v;
   struct arts_ooo_args_db_destroy_s *a = (struct arts_ooo_args_db_destroy_s *)args_v;

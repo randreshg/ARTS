@@ -481,7 +481,7 @@ struct arts_db_cache_s {
    * the home's directory, or a dependence's first touch.  A create that
    * claims a first touch's cache turns it into its own
    * (arts_db_create_claims_stub); nothing else writes it after init.  Only
-   * its own value: one CAS decides between a claim and an answer. */
+   * its own value: the claim is one CAS, so one create claims a cache. */
   _Atomic(uint8_t) init_kind;
 };
 

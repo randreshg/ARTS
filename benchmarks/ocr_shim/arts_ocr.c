@@ -18,10 +18,11 @@
  * GUID_PROP_BLOCK are accepted and ignored.  Only the create waits: every
  * other message for the next generation (a satisfy, a dependence, including
  * the create-time dependences ocrEdtCreate issues for a labeled EDT) runs
- * against whatever object the label names when it lands, so it must be issued
- * from a point ordered after the previous generation's end through the
- * label's home, or from the home itself.  Two creates of one label with no
- * end of life between them leave one parked for good.
+ * against whatever object the label names when it lands.  A GUID carries no
+ * generation, so such a message can meet the previous generation; a program
+ * written to ARTS's model gives every lifetime a fresh GUID, and an OCR
+ * program that reuses a label is fixed in the program.  Two creates of one
+ * label with no end of life between them leave one parked for good.
  */
 
 #include <inttypes.h>
@@ -734,21 +735,18 @@ u8 ocrDbCreate(ocrGuid_t *db, void **addr, u64 len, u16 flags, ocrHint_t *hint,
 }
 
 u8 ocrDbDestroy(ocrGuid_t db) {
-  /* OCR ocrDbDestroy: mark the DB for destruction.  The OCR contract places
-   * the liveness guarantee on the caller: the block must no longer be in use
-   * (no EDT holds it and none will acquire or await a dependence on it after
-   * this point); a dependence resolved against a destroyed DB is undefined.
-   * If the calling EDT currently holds an acquire on the block, the destroy
-   * implicitly releases it first, matching "ocrDbDestroy releases the DB if the
-   * EDT has acquired it".
+  /* OCR ocrDbDestroy maps to arts_db_destroy, whose contract is stricter than
+   * OCR's deferred destruction: the program orders the destroy after the
+   * release of every other EDT's hold on the block, and no EDT acquires it
+   * afterwards; a hold released after it, or a dependence resolved against it,
+   * is a program error.  If the calling EDT currently holds an acquire on the
+   * block, the destroy implicitly releases it first, matching "ocrDbDestroy
+   * releases the DB if the EDT has acquired it".
    *
-   * The teardown is deferred: the route-table slot is detached and the storage
-   * is reclaimed only once the last outstanding reference drops, so a destroy
-   * concurrent with an in-flight lookup is a deferred free, never a
-   * use-after-free.  For a coherent block the destroy fans out to every rank
-   * that holds a replica or has a request queued, so a parked acquirer is woken
-   * to observe the destroyed state (a NULL data resolution) rather than
-   * hanging. */
+   * The storage is reclaimed only once the last outstanding reference drops,
+   * so a destroy concurrent with an in-flight lookup is a deferred free, never
+   * a use-after-free.  For a coherent block the destroy fans out to every rank
+   * that caches it; an acquirer still parked there is never resumed. */
   if (!ocrGuidIsNull(db)) {
     arts_db_destroy(db.guid);
   }
@@ -1008,12 +1006,10 @@ u8 ocrGuidRangeCreate(ocrGuid_t *rangeGuid, u64 numberGuid,
   }
   arts_guid_kind_t artsType = kindToArtsType(kind);
 
-  /* OCR semantics: any EDT calling this with the same input must end up with
-   * the same range GUID, and ocrGuidFromIndex(range, idx) must yield the same
-   * GUID on every rank.  Use ARTS's distributed-range mode so that (a) homes
-   * are spread across ranks (idx % nrank) and (b) ocrGuidFromIndex is
-   * deterministic across ranks once the range GUID is broadcast (the typical
-   * mainEdt-creates-and-distributes-via-DB pattern). */
+  /* Every call reserves a fresh range: a program that names one range on
+   * several ranks creates it once and passes the range GUID on.  The
+   * distributed-range mode spreads the homes over the ranks (idx % nrank), and
+   * ocrGuidFromIndex(range, idx) gives the same GUID on every rank. */
   arts_guid_t range = arts_guid_reserve_range(
       artsType, (unsigned int)numberGuid, ARTS_HINT_ROUND_ROBIN);
   rangeGuid->guid = range;

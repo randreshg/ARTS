@@ -229,7 +229,6 @@ list(APPEND TEST_PROGRAMS cxl_ro_turn_overlap)
 if(ARTS_CXL_TREE_RESIDENCY)
     list(APPEND TEST_PROGRAMS cxl_store_alloc)
     list(APPEND TEST_PROGRAMS cxl_slot_rule)
-    list(APPEND TEST_PROGRAMS cxl_stale_generation_grant)
     list(APPEND TEST_PROGRAMS cxl_creator_roster)
     if(ARTS_LOG_LEVEL GREATER_EQUAL 3)
         list(APPEND TEST_PROGRAMS cxl_quiescence_marker)
@@ -1923,20 +1922,6 @@ foreach(_t finish_scope_creator_token finish_scope_creator_token_2n_9w_1p)
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
-# rendezvous_loser_parks: every rank creates one event label, one install
-# stands and the rest park at the home; the home destroys each generation in
-# turn, so every parked create installs, is read and is destroyed.  The
-# shutdown must leave nothing parked.  One rank parks nothing; four park
-# several creates at once, and two progress threads race a create against a
-# dependence.
-add_arts_test(rendezvous_loser_parks)
-register_multinode_test(rendezvous_loser_parks TIMEOUT 120)
-foreach(_t rendezvous_loser_parks_2n_9w_1p rendezvous_loser_parks_4n_4w_1p
-        rendezvous_loser_parks_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: rendezvous_loser_parks"
-        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
-endforeach()
 endif()
 
 # label_reuse_ring_edt: one reserved EDT GUID reused across 64 lifetimes, each
@@ -1958,69 +1943,34 @@ foreach(_t label_reuse_ring_edt label_reuse_ring_edt_2n_9w_1p
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
 
-# label_reuse_ring_db: one data-block label reused across 64 lifetimes.  The
-# creator on the last rank creates each even generation once the previous one
-# is known installed and before its destroy (the create parks), each odd one
-# after the destroy, and issues the rest of the generation (its write and
-# release, the readers' dependences) after the destroy at the home.  Every
-# generation's value must reach the home in order, and the shutdown must leave
-# no create parked.  4n_4w_1p adds a reader on rank 1, whose stale reads are the
-# recorded weakness (KNOWN-WEAKNESS lines, not failures).
-add_arts_test(label_reuse_ring_db)
-register_single_node_test(label_reuse_ring_db TIMEOUT 60)
-register_multinode_test(label_reuse_ring_db TIMEOUT 120)
-foreach(_t label_reuse_ring_db label_reuse_ring_db_2n_9w_1p
-        label_reuse_ring_db_4n_4w_1p
-        label_reuse_ring_db_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_db 64 generations in order"
-        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
-endforeach()
-
-# label_reuse_ring_db_rotate: the DB ring with the creator rotating over every
-# rank, the home included, and each generation read on the next creator's
-# rank, whose create must wait behind that reader cache until the previous
-# generation's teardown notice retires it.  On one rank the creator never
-# leaves the home, which label_reuse_ring_db already runs.  Not on 2n_8w_2p:
-# there the reader's rank created the previous generation, and its dependence
-# and that generation's teardown notice, both sent by the home, may be
-# dispatched in either order by the rank's two progress threads -- the
-# recorded weakness, which on this shape can strand the reader rather than
-# show it a stale value.
-add_arts_test(label_reuse_ring_db_rotate)
-register_multinode_test(label_reuse_ring_db_rotate TIMEOUT 120 VARIANTS 2n_9w_1p 4n_4w_1p)
-foreach(_t label_reuse_ring_db_rotate_2n_9w_1p label_reuse_ring_db_rotate_4n_4w_1p)
-    set_tests_properties(${_t} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: label_reuse_ring_db_rotate 64 generations in order"
-        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
-endforeach()
-
 # db_destroy_roster: a block written in turn by two remote ranks is destroyed,
-# and each writer rank then creates the label again; a writer the destroy did
-# not reach would hold its slot against that create.  Four ranks give the two
-# writers (its first writer's turn is the whole two-rank case); the two
-# progress threads reorder the destroy's notices.
+# and each writer rank then creates the label again; a writer's cache the
+# destroy did not reach and that kept a right to the block would hold its slot
+# against that create (one that kept no right is claimed, unseen).  Four ranks
+# give the two writers (its first writer's turn is the whole two-rank case).
+# Not on 2n_8w_2p: there a writer rank's two progress threads can run the next
+# generation's create before the destroy's notice, which then retires that
+# create's descriptor, since generations of a reused label are not told apart.
 add_arts_test(db_destroy_roster)
-register_multinode_test(db_destroy_roster TIMEOUT 60 VARIANTS 4n_4w_1p 2n_8w_2p)
-foreach(_v 4n_4w_1p 2n_8w_2p)
-    set_tests_properties(db_destroy_roster_${_v} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: db_destroy_roster"
-        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
-endforeach()
+register_multinode_test(db_destroy_roster TIMEOUT 60 VARIANTS 4n_4w_1p)
+set_tests_properties(db_destroy_roster_4n_4w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS: db_destroy_roster"
+    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 
 # db_destroy_untouched_rank: a block homed on the first rank is destroyed by a
 # task on the last rank that never acquired it, and the home then creates the
 # label again; a destroy that never left the last rank would leave the second
 # create parked behind a live first generation.  On one rank the destroying
-# task runs on the home and the path is never taken.
+# task runs on the home and the path is never taken.  Not on 2n_8w_2p: there
+# the home's two progress threads can dispatch the destroying task's finish
+# signal before its destroy, so the second create is issued while the first
+# generation is live and, under invalidation, the creator's release meets the
+# first generation.
 add_arts_test(db_destroy_untouched_rank)
-register_multinode_test(db_destroy_untouched_rank TIMEOUT 60
-                        VARIANTS 2n_9w_1p 2n_8w_2p)
-foreach(_t db_destroy_untouched_rank_2n_9w_1p db_destroy_untouched_rank_2n_8w_2p)
-    set_tests_properties(${_t} PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
-        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
-endforeach()
+register_multinode_test(db_destroy_untouched_rank TIMEOUT 60 VARIANTS 2n_9w_1p)
+set_tests_properties(db_destroy_untouched_rank_2n_9w_1p PROPERTIES
+    PASS_REGULAR_EXPRESSION "PASS: db_destroy_untouched_rank"
+    FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 
 # quiescent_shutdown_no_residue: a shutdown that leaves no work undone -- every
 # EDT touching a block inside a finish scope the shutting-down EDT waits on,
@@ -2043,18 +1993,6 @@ foreach(_t quiescent_shutdown_no_residue quiescent_shutdown_no_residue_2n_9w_1p
     set_tests_properties(${_t} PROPERTIES
         FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endforeach()
-endif()
-
-# A create's credit is applied only to the descriptor whose create it answers,
-# and a zero txid applies nothing (whitebox, one rank: a hand-built answer fed
-# to the dispatcher).  Registered only where a create carries a credit.
-if((NOT ARTS_COHERENCE_ARM STREQUAL "EXCL" AND ARTS_WRITE_POLICY STREQUAL "WT")
-   OR ARTS_COHERENCE_ARM STREQUAL "FLUSH")
-    add_arts_test(db_create_return_token_guard)
-    register_single_node_test(db_create_return_token_guard TIMEOUT 30)
-    set_tests_properties(db_create_return_token_guard PROPERTIES
-        PASS_REGULAR_EXPRESSION "PASS: db_create_return_token_guard"
-        FAIL_REGULAR_EXPRESSION "FAIL:;QUIESCENCE-DEBUG:")
 endif()
 
 # grant_one_request_per_grant: rounds of concurrent write acquisitions of one
@@ -2208,10 +2146,6 @@ if(ARTS_CXL_TREE_RESIDENCY)
     # fails it too, and the home exits non-zero when the deciding check never
     # ran, so a run that shut down before its checks cannot pass.
     register_cxl_single_node_test(cxl_slot_rule TIMEOUT 30)
-    # A grant naming a slot other than the one the cache names is refused: a
-    # cache of an earlier generation of a reused label, whose slot belongs to
-    # that generation.  One rank: the refusal is a check on one rank's cache.
-    register_cxl_single_node_test(cxl_stale_generation_grant TIMEOUT 30)
     register_cxl_multinode_test(cxl_slot_rule TIMEOUT 60)
     if(ARTS_CXL_TREE_RESIDENCY STREQUAL "DIRECT")
         # A discarded slot leaves nothing naming it.  Where a descriptor

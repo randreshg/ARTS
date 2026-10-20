@@ -387,11 +387,11 @@ static void lock_release_commit(struct arts_db_s *db,
   do {
     cur = atomic_load_explicit(&db->lock_state, memory_order_acquire);
     /* A write release returns a turn this home granted, so it never finds
-     * the writer count at zero.  Only a reused label breaks that: a release
-     * meant for the label's next generation, reaching the home while a
-     * destroy's teardown of the previous one waits for a release still owed
-     * to it, lands here.  The count would wrap and the block would never be
-     * torn down; a Debug build stops here instead of hanging. */
+     * the writer count at zero; a zero count would wrap, and the block would
+     * never be torn down, so a Debug build stops here instead of hanging.
+     * A reused label can reach it, since its generations are not told apart:
+     * a release meant for the next generation lands here while the marked
+     * previous one still waits for a release owed to it. */
     assert(op != EXCL_OP_RW_REL || EXCL_STATE_W(cur) != 0u);
     /* A read release returns a grant to a reader whose count committed before
      * its node could be drained, so it never finds the reader count at zero.
@@ -494,22 +494,23 @@ void arts_handler_db_excl_release(void *item_v, void *args_v) {
   lock_release_commit(db, cache, mode);
 }
 
-/* A destroy does not tear the home down on arrival: under exclusion the home
- * may still hold the lock for a holder whose release is in flight, and that
- * release carries both a counter decrement and a payload PUT aimed at this
- * generation.  Tearing down first is what lets a stale release land on the
- * NEXT generation of a labeled GUID.  So the destroy MARKS the state word and
- * whichever of it and the last release reaches the zero edge performs the
- * teardown; marking and reading the counts commit in one CAS, so neither can
- * conclude the other will do it.
+/* A destroy does not tear the home down on arrival.  The program orders it
+ * after every hold's release, but a release is fire-and-forget, and nothing
+ * orders the delivery of the release and the destroy: the home may still
+ * hold the lock for a holder whose release is in flight, carrying a counter
+ * decrement and, outside the CXL store, a one-sided PUT into the home's
+ * buffer.  Tearing down first would free that buffer under the PUT and leave
+ * the release parked on an empty slot for good.  So the destroy MARKS the
+ * state word and whichever of it and the last release reaches the zero edge
+ * performs the teardown; marking and reading the counts commit in one CAS, so
+ * neither can conclude the other will do it.
  *
  * The mark delays the slot's return.  An ordinary GUID is minted from a
  * monotonic sequence and never comes back, so only a reused label meets the
  * delay: its next generation's create parks behind the marked generation as
  * any create does, but the next generation's other messages that arrive
  * meanwhile run against the marked one, the creator's release of its own
- * hold included (a known weakness of label reuse,
- * docs/programming_model/guids.rst). */
+ * hold included: a reused label's generations are not told apart. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -571,8 +572,8 @@ void arts_db_cache_init(struct arts_db_cache_s *c, arts_guid_t db_guid,
 }
 
 /* ===== arts_db_cache_destructor =========================================
- * free parked nodes only — destroying an in-use DB is undefined (OCR), no
- * wake.
+ * free parked nodes only, no wake: a waiter still parked is an acquire the
+ * destroy contract excludes.
  *
  * Destructor runs at refcount 0 as the SOLE owner of the object; no concurrent
  * actor remains, so it is the single safe drainer of the parked-waiter stacks.
@@ -729,7 +730,6 @@ void arts_handler_db_excl_cts(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_msg_excl_cts_packet_s *p =
       (struct arts_msg_excl_cts_packet_s *)args_v;
-  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_excl_request(cache, (arts_db_access_mode_t)p->mode);
 }
@@ -876,9 +876,7 @@ static void cxl_fetch_working_copy(struct arts_db_cache_s *cache) {
  *
  * PRECONDITION, enforced rather than assumed: the caller holds the turn whose
  * zero edge this is, and the store is the one this block's creator allocated.
- * One generation has one store because its creator mints it once, and a grant
- * naming a store other than the one this rank's cache names is refused where
- * it is recorded. */
+ * One block has one store because its creator mints it once. */
 static void cxl_purge_working_copy(struct arts_db_cache_s *cache) {
   uint64_t n = atomic_load_explicit(&cache->db_size, memory_order_relaxed);
   cxl_slot_required(cache, "release");
@@ -888,8 +886,9 @@ static void cxl_purge_working_copy(struct arts_db_cache_s *cache) {
   arts_shared_ptr_t h = arts_db_buf_acquire(cache);
   struct arts_db_buffer_s *buf = (struct arts_db_buffer_s *)arts_shared_get(h);
   if (buf == NULL) {
-    /* The route slot is gone under a holder that still owed its release: the
-     * documented boundary.  Nothing is written. */
+    /* A holder never gets here, a destroy notwithstanding: only the
+     * descriptor's destructor empties a published cache's slot, and the
+     * holder's pin defers it.  Nothing is written. */
     arts_db_buf_release(&h);
     return;
   }
@@ -1052,10 +1051,11 @@ void arts_handler_db_acquire(void *item, void *args) {
  * self-serves out of the working copy — and it is taken only for a grant the
  * CAS will admit under, decided on the word the CAS then compares.  A word
  * that moved meanwhile is re-decided, and a fetch already taken stands.  That
- * holds inside the labeled-GUID contract only: there the granted axis stays at
- * REQ until this CAS, so nothing admits a holder of the copy in between; a
- * create hold of the same GUID racing a grant of an earlier generation is
- * undefined, and may write the copy before a CAS that then re-decides.
+ * holds because the granted axis stays at REQ until this CAS, so nothing
+ * admits a holder of the copy in between.  Only a reused label breaks it,
+ * its generations not being told apart: a create hold of the label racing a
+ * grant meant for its previous block may write the copy before a CAS that
+ * then re-decides.
  * A grant that admits nobody goes back to the home with nothing fetched.
  * Consumes db_h. */
 static void lock_grant_commit(arts_shared_ptr_t db_h, arts_guid_t db_guid,
@@ -1213,28 +1213,16 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
     arts_shared_release(&db_h); /* destroyed mid-flight: drop, by design */
     return;
   }
-  arts_db_cache_note_answered(&db->cache); /* before it takes effect */
   struct arts_db_cache_s *cache = &db->cache;
   /* Hinted first touch: the size may still be unlearned here, and the fetch
    * needs it. */
   arts_db_cache_learn_size(cache, p->data_size);
   /* The grant names the block's slot in the landing's address field, and
    * nothing else: the landing's key, txid and the version are unread here.
-   * A rank that created the block already knows the slot and records nothing.
-   * A zero address is legal for a sentinel-sized block, which has none.
-   *
-   * A cache naming a DIFFERENT slot is a cache of an earlier generation of a
-   * reused label, reached by a later generation's grant before its teardown
-   * notice: its slot holds a block that no longer exists.  Dropping the grant
-   * would strand the home's count, and fetching would read or write bytes the
-   * block does not own, so the grant is refused. */
-  if (arts_db_cxl_slot_record(cache, p->pub.addr) == ARTS_CXL_SLOT_CONFLICT) {
-    ARTS_ERROR("cxl: guid %lu: a grant names slot %#llx but this rank's cache "
-               "names slot %#llx — a cache from before the block's teardown "
-               "notice received a later generation's grant",
-               (unsigned long)p->db_guid, (unsigned long long)p->pub.addr,
-               (unsigned long long)arts_db_cxl_slot_addr(cache));
-  }
+   * A rank that created the block, or learned it from an earlier grant,
+   * already knows the slot and records nothing.  A zero address is legal for
+   * a sentinel-sized block, which has none. */
+  (void)arts_db_cxl_slot_record(cache, p->pub.addr);
   lock_grant_commit(db_h, p->db_guid, mode); /* consumes db_h */
 }
 #else
@@ -1256,7 +1244,6 @@ void arts_handler_db_excl_grant(void *payload, size_t size) {
     arts_shared_release(&db_h);
     return;
   }
-  arts_db_cache_note_answered(&db->cache); /* before it takes effect */
   struct arts_db_cache_s *cache = &db->cache;
 
   /* Hinted first touch: the size may still be unlearned here. */
@@ -1385,13 +1372,10 @@ static void lock_send_release_rw(struct arts_db_cache_s *cache) {
      * home's authoritative buffer (its in-place writes have landed) and the
      * caller keeps the descriptor pinned across this call.  There is nothing to
      * ship and no ACK to await — apply the home lock_state commit + onward
-     * grant directly on the live cache.  Routing this through a GUID-keyed
-     * self-send would re-resolve the DB via its route slot, which a concurrent
-     * (legal) destroy may have already detached while this holder still owed
-     * its release; the self-send would then MISS and defer on the OoO list
-     * forever, losing the release outright.  A release provably follows a
-     * successful acquire, so it never needs the OoO before-create deferral
-     * that the request path relies on. */
+     * grant directly on the pinned cache, rather than through a GUID-keyed
+     * self-send that would re-resolve the DB via its route slot.  A release
+     * provably follows a successful acquire, so it never needs the OoO
+     * before-create deferral that the request path relies on. */
     lock_release_commit(arts_db_of_cache(cache), cache, DB_MODE_RW);
     return;
   }
@@ -1471,8 +1455,7 @@ static void lock_send_release_ro(struct arts_db_cache_s *cache) {
   unsigned int home = (unsigned int)arts_guid_get_rank(cache->db_guid);
   if (home == arts_global_rank_id) {
     /* Home-local RO release: commit the home lock_state transition + onward
-     * grant directly, for the same reason the RW path does — a destroy that
-     * detached the route slot must not be able to defer this release forever. */
+     * grant directly on the pinned cache, as the RW path does. */
     lock_release_commit(arts_db_of_cache(cache), cache, DB_MODE_RO);
     return;
   }
@@ -1487,8 +1470,8 @@ static void lock_send_release_ro(struct arts_db_cache_s *cache) {
  * returns.  CACHE_ACT_REL_RW → publish (the last holder of an RW grant, incl.
  * the last RO joiner under it); CACHE_ACT_REL_RO → notify (last RO holder).
  *
- * Destroyed-guard: a dep NULL-woken at destroy never really held the lock; a
- * count of 0 means there is nothing to release — skip rather than underflow.
+ * A count of 0 means this rank holds nothing to release — skip rather than
+ * underflow.
  */
 /* A create's hold is this arm's ordinary write hold, taken when the block was
  * made; the bytes under it are the cache's own, so the release needs no
@@ -1504,7 +1487,7 @@ void arts_db_release_rw(struct arts_db_cache_s *cache, void *payload) {
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     if (CACHE_RW_CNT(cur) == 0u) {
-      return; /* destroyed-guard / already released */
+      return; /* nothing held */
     }
     next = cache_compute_next(cur, CACHE_OP_REL_RW, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,
@@ -1521,7 +1504,7 @@ void arts_db_release_ro(struct arts_db_cache_s *cache) {
   do {
     cur = atomic_load_explicit(&cache->cache_state, memory_order_acquire);
     if (CACHE_RO_CNT(cur) == 0u) {
-      return; /* destroyed-guard / already released */
+      return; /* nothing held */
     }
     next = cache_compute_next(cur, CACHE_OP_REL_RO, &act);
   } while (!atomic_compare_exchange_weak_explicit(&cache->cache_state, &cur,

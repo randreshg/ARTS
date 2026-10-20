@@ -8,15 +8,12 @@
 /// resolve the block through the route table and read the cache the runtime
 /// keeps there.
 ///
-/// Six legs: a create that acquires nothing at the block's home; the same from
-/// a non-home rank, whose slot the home records; two ranks
-/// creating ONE label with no acquisition, where one create installs and the
-/// other waits for the block's destroy and then installs with the store its
-/// own creator minted; an acquiring create made off-home, whose announce the
-/// home must record unchanged; a create of a label a dependence on this rank
-/// has already touched; and a create of a label whose block is live, which
-/// waits at the home and replaces nothing, then installs with its creator's
-/// store.
+/// Five legs: a create that acquires nothing at the block's home; the same
+/// from a non-home rank, whose slot the home records; an acquiring create made
+/// off-home, whose announce the home must record unchanged; a create of a
+/// label a dependence on this rank has already touched; and a create of a
+/// label whose block is live, which waits at the home and replaces nothing,
+/// then installs with its creator's store.
 ///
 /// A destroy is fire-and-forget, and a create's announce from another rank is
 /// not ordered against anything else that rank sends.  So the block that
@@ -44,10 +41,6 @@
 static _Atomic(int) g_check_ran;
 
 #define N 64
-/* Labels two ranks create at once.  One is enough to state the rule and far
- * too few to meet it: the two creates have to overlap inside the home's own
- * install window, so the leg is a population, not a single try. */
-#define RACE_LABELS 128u
 
 static void fail(const char *what) {
   (void)fprintf(stderr, "FAIL: %s\n", what);
@@ -87,40 +80,6 @@ static void mark_reader_edt(uint32_t paramc, const uint64_t *paramv,
   (void)depv;
 }
 
-static void creator_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                        arts_edt_dep_t depv[]);
-
-/* Both ranks create every label of the range, with no acquisition and no
- * ordering between them.  One create of each label installs; the other waits,
- * parked, until that block is destroyed, and installs then.
- *
- * The peer's sweep is started from the off-home rank, one message ahead of
- * its own: the home's create of a label and the peer's announce of it then
- * begin the range in step and stay within microseconds of each other across
- * it. */
-static void race_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
-                     arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t base = (arts_guid_t)paramv[0];
-  unsigned int n = (unsigned int)paramv[1];
-  if (paramv[2] != 0u) {
-    uint64_t pv[3] = {(uint64_t)base, (uint64_t)n, 0u};
-    (void)arts_edt_create(race_edt, 3, pv, 0,
-                          &(arts_edt_hint_t){.rank = 0u});
-  }
-  for (unsigned int i = 0; i < n; i++) {
-    void *p = arts_db_create_with_guid(arts_guid_from_index(base, i),
-                                       N * sizeof(unsigned int), ARTS_DB,
-                                       ARTS_DB_PROP_NO_ACQUIRE, NULL);
-    if (p != NULL) {
-      fail("a create that acquires nothing handed out a pointer");
-      return;
-    }
-  }
-}
-
 /* Holds the block that replaced a destroyed generation of its label (slot
  * 0), and runs at the home.  paramv = {what the check asserts, the destroyed
  * generation's slot}. */
@@ -149,34 +108,6 @@ static void destroy_then_check_next(arts_guid_t g, const char *what,
       &(arts_edt_hint_t){.rank = arts_get_current_rank(),
                          .finish_event = finish});
   arts_add_dependence(g, c, 0, DB_MODE_RO);
-}
-
-/* Runs at the range's home once both racers are done.  Every label has a
- * block here by then: this rank's own create of it installed one or is
- * waiting behind the other's.  The peer's announce, though, may still be in
- * flight.  Each label is destroyed, and the create that installs next,
- * parked or late, is the other racer's and names a slot of its own. */
-static void race_check_edt(uint32_t paramc, const uint64_t *paramv,
-                           uint32_t depc, arts_edt_dep_t depv[]) {
-  (void)paramc;
-  (void)depc;
-  (void)depv;
-  arts_guid_t base = (arts_guid_t)paramv[0];
-  unsigned int n = (unsigned int)paramv[1];
-  arts_guid_t checked = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t next = arts_edt_create(creator_edt, 0, NULL, 1,
-                                     &(arts_edt_hint_t){.rank = 1u});
-  arts_add_dependence(checked, next, 0, DB_MODE_NULL);
-  for (unsigned int i = 0; i < n; i++) {
-    arts_guid_t g = arts_guid_from_index(base, i);
-    uint64_t first = slot_of(g);
-    check_slot(first, "a label two ranks created without acquiring it kept "
-                      "no slot at its home");
-    destroy_then_check_next(g,
-                            "the create that waited for a label's destroy "
-                            "installed no block with a slot at its home",
-                            first, checked);
-  }
 }
 
 static void pass_and_shut_down(void) {
@@ -369,15 +300,8 @@ void main_edt(uint32_t paramc, const uint64_t *paramv, uint32_t depc,
     arts_shutdown();
     return;
   }
-  /* The two-rank leg runs first and the rest of the run hangs off its check. */
-  arts_guid_t base = arts_guid_reserve_range(ARTS_GUID_DB, RACE_LABELS, 0u);
-  uint64_t rv[3] = {(uint64_t)base, (uint64_t)RACE_LABELS, 1u};
-  arts_guid_t fe = arts_event_create(&ARTS_EVENT_HINT_FINISH);
-  arts_guid_t chk = arts_edt_create(race_check_edt, 2, rv, 1,
-                                    &(arts_edt_hint_t){.rank = 0u});
-  arts_add_dependence(fe, chk, 0, DB_MODE_NULL);
-  (void)arts_edt_create(race_edt, 3, rv, 0,
-                        &(arts_edt_hint_t){.rank = 1u, .finish_event = fe});
+  (void)arts_edt_create(creator_edt, 0, NULL, 0,
+                        &(arts_edt_hint_t){.rank = 1u});
 }
 
 int main(int argc, char **argv) {

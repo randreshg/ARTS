@@ -162,9 +162,11 @@ created again, before or after the destroy lands: a create that finds the
 event still live waits for the destroy and then installs as the GUID's
 next generation.  A satisfy or dependence registration that reaches the
 home while no event is installed waits for the next install; one that
-arrives while an event is installed runs against it, so the next
-generation's satisfies are issued only once the destroy is known to have
-landed (see :ref:`labeled-guid-reuse`).
+arrives while an event is installed runs against it.  A GUID carries no
+generation, so a message meant for the next generation can meet this one; a
+program written to ARTS's model gives every lifetime a fresh GUID, and an
+OCR program that reuses a label is fixed in the program (see
+:ref:`labeled-guid-reuse`).
 Finish events auto-destroy when they fire and must not be destroyed
 manually.
 

@@ -198,8 +198,6 @@ void arts_send_db_create_return(unsigned int creator_rank,
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE_RETURN);
   p.header.rank = arts_global_rank_id;
   p.db_guid = home_cache->db_guid;
-  p.create_token =
-      atomic_load_explicit(&home_cache->create_token, memory_order_relaxed);
   p.credit_addr = 0;
   p.credit_rkey = 0;
   p.credit_txid = 0;
@@ -354,14 +352,12 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
 
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t cxl_addr,
-                                  uint64_t create_token) {
+                                  uint16_t db_type, uint64_t cxl_addr) {
   struct arts_msg_db_create_coherent_packet_s p;
   arts_fill_packet_header(&p.header, sizeof(p), MSG_DB_CREATE);
   p.header.rank = arts_global_rank_id;
   p.db_guid = db_guid;
   p.db_size = db_size;
-  p.create_token = create_token;
 #ifdef ARTS_USE_CXL
   p.cxl_addr = cxl_addr;
 #else
@@ -384,7 +380,6 @@ void arts_db_create_announce_enter(
       .creator = p->header.rank,
       .db_guid = p->db_guid,
       .db_size = p->db_size,
-      .create_token = p->create_token,
 #ifdef ARTS_USE_CXL
       .cxl_addr = p->cxl_addr,
 #endif
@@ -423,8 +418,8 @@ void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid) {
   p.db_guid = db_guid;
   if (sharer_rank == arts_global_rank_id) {
     /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop.
-     * HIT wakes parked waiters + detaches the cb; MISS (already torn down on
-     * this rank) silently drops (idempotent). */
+     * HIT retires this rank's cache (parked acquirers are freed with it, never
+     * resumed); MISS (already torn down on this rank) silently drops. */
     struct arts_db_cache_destroy_args_s args = {.db_guid = db_guid};
     arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);

@@ -291,11 +291,11 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     /* Pin the db_s for the handler's duration (the embedded cache is its FIRST
      * member, offset 0) so a concurrent DESTROY on another progress thread
      * cannot free it mid-handler.  The home publishes the rw_holder target only
-     * after that rank's cache install, so the db_s is normally present.  But a
-     * destroy may have NULLed the route slot between that publish and this
-     * INVALIDATE arriving (destroy-during-acquire); the destroy drains every
-     * waiter itself, so an orphaned INVALIDATE for a torn-down DB is simply
-     * dropped. */
+     * after that rank's cache install, so the db_s is present for every
+     * program within the destroy contract.  A destroy issued while the
+     * requester's acquire was pending may have NULLed the route slot first;
+     * the teardown frees the waiters, so an orphaned INVALIDATE for a
+     * torn-down DB is simply dropped. */
     arts_shared_ptr_t db_h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db != NULL) {
@@ -389,8 +389,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     ARTS_DEBUG("Coh CACHE_DESTROY Received");
     struct arts_msg_cache_destroy_packet_s *pack =
         (struct arts_msg_cache_destroy_packet_s *)(packet);
-    /* Cat-C lookup-acquire-or-drop: HIT wakes parked waiters + detaches the
-     * cb; MISS (already torn down on this rank) silently drops (idempotent). */
+    /* Cat-C lookup-acquire-or-drop: HIT retires this rank's cache (parked
+     * acquirers are freed with it, never resumed); MISS (already torn down on
+     * this rank) silently drops (idempotent). */
     struct arts_db_cache_destroy_args_s args = {.db_guid = pack->db_guid};
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
@@ -522,8 +523,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_grant_cts_packet_s *pack =
         (struct arts_msg_grant_cts_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT learns db_size + re-issues the
-     * in-flight request with a landing; MISS (DB destroyed) silently drops
-     * (the requester's parked waiters are woken by the destroy fan-out). */
+     * in-flight request with a landing; MISS (DB destroyed) silently drops:
+     * the requester's parked waiters are acquires the destroy contract
+     * excludes, freed with its cache and never resumed. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
@@ -583,15 +585,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     /* Cat-C lookup-or-drop: record the creator's first flush credit.  The
      * creator always installed its descriptor before sending the create this
      * answers, so a MISS means the DB is already destroyed — the credit dies
-     * with it (a credit is a hint, never a precondition).  A HIT on another
-     * descriptor of the GUID (a later create's) is dropped the same way: the
-     * credit names the line of the block this create made, which may already
-     * be released. */
+     * with it (a credit is a hint, never a precondition). */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL && pack->credit_txid != 0 &&
-        atomic_load_explicit(&db->cache.create_token, memory_order_acquire) ==
-            pack->create_token) {
+    if (db != NULL && pack->credit_txid != 0) {
       struct arts_db_cache_s *cache = &db->cache;
       atomic_store_explicit(&cache->home_line_addr, pack->credit_addr,
                             memory_order_relaxed);
@@ -665,15 +662,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     /* Cat-C lookup-or-drop: record the creator's first publish credit.  The
      * creator always installed its descriptor before sending the create this
      * answers, so a MISS means the DB is already destroyed — the credit dies
-     * with it (a credit is a hint, never a precondition).  A HIT on another
-     * descriptor of the GUID (a later create's) is dropped the same way: the
-     * credit names the home buffer of the block this create made, which may
-     * already be released. */
+     * with it (a credit is a hint, never a precondition). */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
-    if (db != NULL && pack->credit_txid != 0 &&
-        atomic_load_explicit(&db->cache.create_token, memory_order_acquire) ==
-            pack->create_token) {
+    if (db != NULL && pack->credit_txid != 0) {
       struct arts_db_cache_s *cache = &db->cache;
       atomic_store_explicit(&cache->home_pub_addr, pack->credit_addr,
                             memory_order_relaxed);
@@ -731,9 +723,10 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_snapshot_redirect_packet_s *pack =
         (struct arts_msg_snapshot_redirect_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-{CACHE_DESTROY}: HIT serves SNAPSHOT_RESPONSE from
-     * the ref-pinned owner-side db_s; MISS (DB destroyed / not yet installed on
-     * this rank) sends CACHE_DESTROY to the requester so its parked RO waiter
-     * wakes and observes DB_DESTROYED rather than hanging. */
+     * the ref-pinned owner-side db_s; MISS (a destroy issued while the read was
+     * pending, which the destroy contract excludes) sends CACHE_DESTROY to the
+     * requester, retiring its cache: the parked RO waiter is freed with it,
+     * never resumed. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = pack->db_guid,
         .edt_guid = pack->edt_guid,
@@ -774,8 +767,9 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
     struct arts_msg_grant_confirm_ack_packet_s *pack =
         (struct arts_msg_grant_confirm_ack_packet_s *)(packet);
     /* Cat-C lookup-acquire-or-drop: HIT runs the confirm_ack body on the
-     * ref-pinned db_s.  MISS (DB destroyed): the gated waiters are woken by the
-     * destroy fan-out, so a miss silently drops. */
+     * ref-pinned db_s.  MISS (DB destroyed) silently drops: the gated waiters
+     * are acquires the destroy contract excludes, freed with the cache and
+     * never resumed. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {
@@ -902,14 +896,13 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
      * the two can dispatch out of per-peer order.  Defer, and the
      * install-time drain replays it.
      *
-     * A release cannot legitimately outlive its DB: every release still owed
-     * is counted in the home's lock_state, and a destroy only MARKS that word
-     * — the teardown that detaches the slot runs at the zero edge, after the
-     * last owed release has landed and decremented.  A release that finds the
-     * slot absent therefore cannot be post-teardown unless the program
-     * destroyed before its ordering completed, and deferring is the right
-     * answer for that too: it stalls loudly, where the previous behaviour
-     * discarded the releaser's payload and ACKed success.
+     * A release cannot outlive its DB: every release still owed is counted in
+     * the home's lock_state, and a destroy only MARKS that word — the teardown
+     * that detaches the slot runs at the zero edge, after the last owed
+     * release has landed and decremented.  So a release message that arrives
+     * after the destroy (the program released first, but nothing orders the
+     * two deliveries) still finds the marked home, and a release that finds
+     * the slot absent is waiting for the create, never for a teardown.
      * When the slot is present, run the release inline on the pinned db_s. */
     arts_shared_ptr_t db_h = arts_route_table_lookup_db(pack->db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
@@ -927,9 +920,11 @@ void arts_transport_dispatch_packet(struct arts_msg_header_s *packet) {
 #endif /* ARTS_RELEASE_PURGE */
 #ifdef ARTS_RELEASE_RETAIN
   /* RETAIN-only: async migration/serve protocol.
-   * All four are Cat-C (direct): their target is always installed by the time
-   * the message arrives — FORWARD/DELIVER targets a cache built at acquire;
-   * CONFIRM/RORET reach home only after home sent FORWARD, so home db_s exists.
+   * All four are Cat-C (direct): their target was installed before the
+   * message was sent — FORWARD/DELIVER targets a cache built at acquire;
+   * CONFIRM/RORET reach home only after home sent FORWARD.  A CONFIRM or
+   * RORET is fire-and-forget, so one can arrive after the block's destroy has
+   * torn the home down; its handler then finds no home and drops it.
    */
   case MSG_DB_EXCL_FORWARD: {
     ARTS_DEBUG("Coh EXCL_FORWARD Received");

@@ -574,7 +574,7 @@ void arts_db_grant_return_flight_abandoned(struct arts_db_cache_s *cache) {
       atomic_load_explicit(&cache->pending_grant_return, memory_order_acquire);
   /* Discharged, not sent: the directory died with the block or the run is
    * ending, and a return with no home to accept it would park on an empty
-   * slot or reach the block's next generation. */
+   * slot. */
   if ((armed & 1u) != 0u) {
     (void)atomic_compare_exchange_strong_explicit(
         &cache->pending_grant_return, &armed, 0u, memory_order_acq_rel,

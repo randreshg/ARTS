@@ -178,8 +178,8 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_rank_bitset_init(&db->cached_ranks, nranks);
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
-   * otherwise outlive the block and hold the rank's slot for the GUID against
-   * the next create of it. */
+   * otherwise outlive the block, keeping its storage and the rank's route
+   * slot for the GUID (where a later create of the GUID would park). */
   if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
     arts_rank_bitset_set(&db->cached_ranks, rw_holder);
   }
@@ -238,34 +238,24 @@ void arts_handler_db_snapshot_request(void *item_v, void *args_v) {
                                  slot, &a->rdzv);
 }
 
-/* Fan-out callback for arts_rank_bitset_for_each during destroy.  ctx is the
- * fan-out's own record of the ranks already told. */
-struct owner_destroy_fanout_s {
-  arts_guid_t db_guid;
-  struct arts_rank_bitset_s told;
-};
-
-/* A rank is told once per destroy.  A CACHE_DESTROY retires whatever the
- * rank's slot holds for the GUID when it lands, so a second one for the same
- * generation would retire the next generation a create has installed there
- * after the first. */
-static void owner_destroy_notify(struct owner_destroy_fanout_s *f,
-                                 unsigned int rank) {
-  if (rank != arts_global_rank_id && arts_rank_bitset_set(&f->told, rank)) {
-    arts_send_db_cache_destroy(rank, f->db_guid);
-  }
-}
-
+/* Fan-out callback for arts_rank_bitset_for_each during destroy.  ctx carries
+ * the db_guid encoded as uintptr_t (the callback is synchronous). */
 static void owner_destroy_fanout_cb(unsigned int rank, void *ctx) {
-  owner_destroy_notify((struct owner_destroy_fanout_s *)ctx, rank);
+  if (rank != arts_global_rank_id) {
+    arts_send_db_cache_destroy(rank, (arts_guid_t)(uintptr_t)ctx);
+  }
 }
 
 /* Cat-B pure body (OoO g_ooo_table[OOO_DB_DESTROY]): the OoO engine has already
  * acquired the home db_s and pinned a ref across this call (cache is its FIRST
  * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (parked
  * waiter at destroy = UB, cleaned up by the refcount-0 destructor).  WB roster
- * source = rw_holder (current RW owner) + the cached-ranks bit-set, which
- * every requester joins when its request arrives. */
+ * source = the cached-ranks bit-set: the creator joins it at create and every
+ * requester when its request arrives, so it names rw_holder and, during a
+ * transfer, pending_install_owner too.  The teardown is immediate: no release
+ * on this arm sends the home anything, and a transfer's CONFIRM is answered
+ * before the new owner's writers run, so under the destroy contract nothing
+ * owed to the home can arrive after the destroy. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -274,27 +264,10 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
   if (db == NULL) {
     return;
   }
-  struct owner_destroy_fanout_s fan = {.db_guid = a->db_guid};
-  arts_rank_bitset_init(&fan.told, arts_global_rank_count);
-  /* WB: notify the current RW owner first (rw_holder, not the cached-ranks
-   * bit-set), then the cached-ranks bit-set.  The request FIFO is not read:
-   * its one consumer is the baton holder, and every queued requester is
-   * already on the bit-set. */
-  owner_destroy_notify(&fan,
-                       atomic_load_explicit(&db->rw_holder,
-                                            memory_order_acquire));
-  arts_rank_bitset_for_each(&db->cached_ranks, owner_destroy_fanout_cb, &fan);
-  /* In-flight ownership transfer: from its pop at round start to the
-   * rw_holder flip, the new owner is named by pending_install_owner, not by
-   * rw_holder, and its rank holds a cache of the block, which a destroy must
-   * retire.  A remote requester also joined the bit-set at its request; the
-   * told set sends it one notice either way. */
-  if (atomic_load_explicit(&db->invalidate_in_flight, memory_order_acquire) !=
-      0u) {
-    owner_destroy_notify(&fan, atomic_load_explicit(&db->pending_install_owner,
-                                                    memory_order_relaxed));
-  }
-  arts_rank_bitset_destroy(&fan.told);
+  /* The request FIFO is not read: its one consumer is the baton holder, and
+   * every queued requester is already on the bit-set. */
+  arts_rank_bitset_for_each(&db->cached_ranks, owner_destroy_fanout_cb,
+                            (void *)(uintptr_t)a->db_guid);
   (void)arts_ooo_retire_item(a->db_guid, item_v);
 }
 
@@ -410,9 +383,10 @@ void arts_send_db_snapshot_redirect(unsigned int owner_rank,
   p.rdzv.cookie = fwd.cookie;
   if (owner_rank == arts_global_rank_id) {
     /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire.  HIT
-     * serves SNAPSHOT_RESPONSE from the ref-pinned owner-side db_s; MISS (DB
-     * destroyed / not yet installed) sends CACHE_DESTROY to the requester so
-     * its parked RO waiter wakes and observes DB_DESTROYED. */
+     * serves SNAPSHOT_RESPONSE from the ref-pinned owner-side db_s; MISS (a
+     * destroy issued while the read was pending, which the destroy contract
+     * excludes) sends CACHE_DESTROY to the requester, retiring its cache: the
+     * parked RO waiter is freed with it, never resumed. */
     struct arts_db_snapshot_redirect_args_s args = {
         .db_guid = db_guid,
         .edt_guid = edt_guid,

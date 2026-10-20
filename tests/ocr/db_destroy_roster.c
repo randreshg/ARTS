@@ -10,9 +10,13 @@
  * 2 (rank 1 alone with two ranks), each through an RW dependence and nothing
  * else, then destroyed at the home.  Each writer rank then creates the label's
  * next generation itself, writes it, and the home reads it back and destroys
- * it.  A writer's cache the destroy did not reach would still hold the rank's
- * slot for the GUID, and that rank's create would wait behind it forever: the
- * ctest timeout is the verdict for that, the value check for the rest.
+ * it.  A writer's cache the destroy did not reach would outlive the block.
+ * Where it kept a right to the block (the write right; under EXCL x RETAIN
+ * also its resident bytes or a retained read grant), that rank's create waits
+ * behind it forever, and the ctest timeout is the verdict.  Where it kept no
+ * such right, the create takes it over as the next generation's first image,
+ * since a cache is not told apart from one of an earlier generation, and this
+ * test does not see it.  The value check covers the rest.
  *
  * The same is repeated with two zero-size labels, whose caches the home's
  * version bookkeeping never records: one read by those ranks, one written by

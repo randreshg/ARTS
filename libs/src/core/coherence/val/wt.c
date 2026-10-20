@@ -260,8 +260,8 @@ void arts_db_home_init(struct arts_db_s *db, unsigned int rw_holder,
   arts_rank_bitset_init(&db->cached_ranks, nranks);
   /* A creator on another rank holds a cache of the block from the moment it
    * made it, so the destroy must reach that rank too: its cache would
-   * otherwise outlive the block and hold the rank's slot for the GUID against
-   * the next create of it. */
+   * otherwise outlive the block, keeping its storage and the rank's route
+   * slot for the GUID (where a later create of the GUID would park). */
   if (rw_holder != arts_global_rank_id && rw_holder < nranks) {
     arts_rank_bitset_set(&db->cached_ranks, rw_holder);
   }
@@ -562,8 +562,12 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
  * member).  Order: roster fan-out, then arts_ooo_retire_item LAST (detach the
  * slot cb + drop the install ref); a waiter left parked at destroy (UB) is
  * freed by the refcount-0 destructor, and the cb deleter frees the cache once
- * outstanding lookup refs drain.  A second DESTROY_REQ finds the slot absent
- * and is a no-op.  WT roster source = home->cached_ranks. */
+ * outstanding lookup refs drain.  A second DESTROY_REQ parks on the empty
+ * slot (a second destroy is a program error).  WT roster source =
+ * home->cached_ranks.  The teardown is immediate: every release that sends
+ * the home anything (a publish, a hand-back) blocks until the home ACKs it,
+ * so under the destroy contract none arrives after the destroy; a transfer's
+ * CONFIRM that does finds no home and is dropped. */
 void arts_handler_db_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_s *cache = &((struct arts_db_s *)item_v)->cache;
   struct arts_ooo_args_db_destroy_s *a =
@@ -589,11 +593,9 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
   }
   /* The queued ownership requesters are NOT drained for the roster: the FIFO
    * has exactly one consumer — the rank holding the transfer baton — and a
-   * destroy popping it concurrently is a second one.  The roster is exact
+   * destroy popping it concurrently is a second one.  The roster is complete
    * without them: the creator is set at create, and every read or write
-   * requester at its request.  A notice is retired by key where it lands, so
-   * one to a rank caching nothing of this block would retire that rank's next
-   * generation of the GUID. */
+   * requester at its request, so every rank caching the block is told. */
   (void)arts_ooo_retire_item(a->db_guid, item_v);
   /* After the slot withdrawal — see arts_db_pub_flight_abandon. */
   arts_db_pub_flight_abandon(cache);

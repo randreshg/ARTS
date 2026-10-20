@@ -189,9 +189,6 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, home_pub_addr);
   MEMBER(cache_t, home_pub_rkey);
   MEMBER(cache_t, home_pub_txid);
-#ifdef ARTS_WRITE_POLICY_WT
-  MEMBER(cache_t, create_token);
-#endif
 #endif
 #ifdef ARTS_RELEASE_PURGE
   MEMBER(cache_t, pending_grant_return);
@@ -235,7 +232,6 @@ static void print_fingerprint(void) {
   MEMBER(cache_t, home_line_addr);
   MEMBER(cache_t, home_line_rkey);
   MEMBER(cache_t, flush_txid);
-  MEMBER(cache_t, create_token);
 #endif
   MEMBER(cache_t, db_guid);
   MEMBER(cache_t, db_size);

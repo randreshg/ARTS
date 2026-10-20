@@ -247,9 +247,10 @@ void arts_handler_db_cache_destroy(void *item_v, void *args_v);
 /* Cat-C pure body (SNAPSHOT_REDIRECT, owner side): item_v is the db_s the dispatcher
  * acquired (cache is its first member); args_v is an
  * arts_db_snapshot_redirect_args_s.  NOT OoO-deferrable — the dispatcher
- * looks the cache up with a held ref and, on a MISS (DB destroyed / not yet
- * installed on this rank), sends CACHE_DESTROY to the requester (so the
- * requester's parked RO waiter wakes and observes DB_DESTROYED). */
+ * looks the cache up with a held ref and, on a MISS, sends CACHE_DESTROY to
+ * the requester, retiring its cache: the parked RO waiter is freed with that
+ * cache, never resumed.  A MISS means a destroy was issued while the read was
+ * pending, which the destroy contract excludes. */
 void arts_handler_db_snapshot_redirect(void *item_v, void *args_v);
 #endif /* VAL x WB */
 
@@ -320,7 +321,7 @@ void arts_send_db_publish_ack(unsigned int releaser_rank, arts_guid_t db_guid,
  * creator's FIRST publish credit, so create -> write -> release needs no
  * announce round.  Fire-and-forget hint; minting nothing (self-rank,
  * single-rank, data-less DB) sends nothing and leaves the creator on the
- * announce leg.  Echoes home_cache->create_token, the announce's. */
+ * announce leg. */
 void arts_send_db_create_return(unsigned int creator_rank,
                                 struct arts_db_cache_s *home_cache);
 /* new_owner_rank: rank home selected as next owner; new_owner_rdzv: that
@@ -348,12 +349,9 @@ void arts_send_db_snapshot_response(unsigned int requester_rank,
                                     uint32_t kind, uint64_t db_size,
                                     const struct arts_rdzv_landing_s *landing,
                                     arts_shared_ptr_t src_h);
-/* create_token names the creator's descriptor (0 when it keeps none); the
- * home echoes it in CREATE_RETURN. */
 void arts_send_db_create_coherent(unsigned int home_rank, arts_guid_t db_guid,
                                   uint64_t db_size, uint16_t flags,
-                                  uint16_t db_type, uint64_t cxl_addr,
-                                  uint64_t create_token);
+                                  uint16_t db_type, uint64_t cxl_addr);
 void arts_send_db_destroy(unsigned int home_rank, arts_guid_t db_guid);
 void arts_send_db_cache_destroy(unsigned int sharer_rank, arts_guid_t db_guid);
 
@@ -388,8 +386,8 @@ void arts_send_db_grant_confirm_ack(
  * piggybacked invalidate effect (publish incoming_new_owner + withdraw the
  * sentinel), and removes the drain guard (the relocated 0-edge ship-check). NOT
  * OoO-deferrable — the dispatcher looks the cache up with a held ref and, on a
- * MISS (DB destroyed), SILENTLY DROPS (the gated waiters are woken by the
- * destroy fan-out instead). */
+ * MISS (DB destroyed), SILENTLY DROPS: the gated waiters are acquires the
+ * destroy contract excludes, freed with the cache and never resumed. */
 void arts_handler_db_grant_confirm_ack(void *item_v, void *args_v);
 
 /* Kick a new GRANT_INVALIDATE round: read rw_holder, send notice to

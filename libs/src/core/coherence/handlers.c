@@ -242,11 +242,6 @@ void arts_handler_db_create(void *item_v, void *args_v) {
     arts_db_cache_init(&stub->cache, db_guid, db_size, ARTS_DB_INIT_HOME_RECV,
                        creator_rank);
   }
-#if (!defined(ARTS_PROTOCOL_EXCL) && defined(ARTS_WRITE_POLICY_WT)) ||       \
-    defined(ARTS_PROTOCOL_FLUSH)
-  /* Kept for the return below, which echoes it to the creator. */
-  atomic_init(&stub->cache.create_token, p->create_token);
-#endif
 #ifdef ARTS_USE_CXL
   /* The creator minted the block's store before sending this create; the home
    * records it and allocates none.  Before the home's buffer install, which
@@ -283,10 +278,9 @@ void arts_handler_db_create(void *item_v, void *args_v) {
   /* Off the critical path: the credit flies while the creator EDT is still
    * writing, so a create -> write -> release sequence publishes with no
    * announce round.  A creator that took no right never publishes — no
-   * credit.  Only while this descriptor is still the one installed: the
-   * install's drain can run a deferred destroy of it, and a retired block
-   * must not advertise its buffer to the creator of whatever the slot holds
-   * next. */
+   * credit.  Only while this block is still installed: the install's drain
+   * can run a destroy deferred before the create, and a destroyed block's
+   * buffer is on its way back to the pool. */
   if (!no_acquire) {
     arts_shared_ptr_t live_h = arts_route_table_lookup_db(db_guid);
     if (arts_shared_get(live_h) == (void *)stub) {
@@ -388,7 +382,6 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
       (struct arts_db_snapshot_response_args_s *)args_v;
   arts_guid_t edt_guid = a->edt_guid;
   uint32_t slot = a->slot;
-  arts_db_cache_note_answered(cache); /* before the answer takes effect */
 
   /* Every response kind carries the server's descriptor size; a hinted
    * first touch may reach any of them with the size still unlearned. */
@@ -482,9 +475,9 @@ void arts_handler_db_snapshot_response(void *item_v, void *args_v) {
  * Destroy is just the route-slot detach of the object the message was
  * dispatched on (CAS value→NULL + drop the install ref); the cb deleter
  * (arts_db_cache_destructor) runs at refcount 0 and does the cleanup (free
- * the parked-waiter nodes).  Destroying a DB that an EDT
- * still has a pending dependence on is undefined per OCR (ocrDbDestroy: the
- * user ensures the DB is not in use), so no parked-EDT wake is attempted. */
+ * the parked-waiter nodes).  A parked EDT is an acquire the destroy contract
+ * excludes (a destroy follows the release of every hold), so no wake is
+ * attempted. */
 void arts_handler_db_cache_destroy(void *item_v, void *args_v) {
   struct arts_db_cache_destroy_args_s *a =
       (struct arts_db_cache_destroy_args_s *)args_v;

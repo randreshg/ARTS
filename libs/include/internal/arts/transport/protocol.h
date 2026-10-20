@@ -139,8 +139,7 @@ enum arts_msg_type {
   MSG_DB_CREATE_RETURN, /* home -> remote creator, after the home-side
                          * install: the DB's stable home buffer as a durable
                          * publish credit.  Pure hint (Cat-C lookup-or-drop
-                         * at the creator, applied only to the descriptor
-                         * whose create it answers). */
+                         * at the creator). */
   /* EXCL RETAIN-only: home -> retainer, "give the RO grant back".  Data-less;
    * shares arts_msg_excl_confirm_packet_s with CONFIRM/RORET.  Appended at the
    * end so no existing ordinal moves.  There is no ack: the completion signal
@@ -466,18 +465,15 @@ struct ARTS_PACKED arts_msg_snapshot_response_packet_s {
 };
 
 /* DB_CREATE_COHERENT — no trailing payload.  Body:
- *   db_guid(8) + db_size(8) + create_token(8) [+ cxl_addr(8) under ARTS_USE_CXL]
- *   + flags(2) + db_type(2) + pad[4]  =  32 bytes, or 40 under ARTS_USE_CXL,
- * 8-aligned either way.  create_token names the creator's descriptor (0 = the
- * creator keeps none) and is echoed in CREATE_RETURN.  The block's slot is
- * named by its address alone.  The one conditional member makes the layout
- * build-conditional, like the sequence-number header: every rank in a run
- * must be built alike. */
+ *   db_guid(8) + db_size(8) [+ cxl_addr(8) under ARTS_USE_CXL]
+ *   + flags(2) + db_type(2) + pad[4]  =  24 bytes, or 32 under ARTS_USE_CXL,
+ * 8-aligned either way.  The block's slot is named by its address alone.  The
+ * one conditional member makes the layout build-conditional: every rank in a
+ * run must be built alike. */
 struct ARTS_PACKED arts_msg_db_create_coherent_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
   uint64_t db_size;
-  uint64_t create_token;
 #ifdef ARTS_USE_CXL
   uint64_t cxl_addr; /* the block's slot, 0 when the creator allocated none */
 #endif
@@ -535,12 +531,10 @@ struct ARTS_PACKED arts_msg_grant_confirm_packet_s {
 
 /* CREATE_RETURN — see the enum comment; sent by VAL and INV under WT and by
  * FLUSH; every other build refuses it.  The credit triple mirrors the
- * publish-ACK refill fields; create_token echoes the announce's, and the
- * creator applies the credit only to the descriptor that carries it. */
+ * publish-ACK refill fields. */
 struct ARTS_PACKED arts_msg_db_create_return_packet_s {
   struct arts_msg_header_s header;
   arts_guid_t db_guid;
-  uint64_t create_token;
   uint64_t credit_addr;
   uint64_t credit_rkey;
   uint64_t credit_txid;

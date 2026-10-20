@@ -91,7 +91,13 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
-    db_h = arts_db_cache_stub_install_answered(db_guid, /*db_size=*/0);
+    /* Only a program outside the destroy contract gets here: the cache this
+     * rank installed when it requested was retired by a destroy while the
+     * acquire was pending.  The grant then goes into a fresh cache of the
+     * destroyed block, which nothing waits on and which outlives the block;
+     * it is dropped only when that install loses to an object already
+     * retired. */
+    db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0);
     db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db == NULL) {
       arts_shared_release(&db_h);
@@ -99,11 +105,10 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
        * leak-free; the landing ends when that payload arrives, or at once
        * when none was sent. */
       arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->rdzv_cookie);
-      return; /* DB destroyed before we became owner — drop. */
+      return; /* the install lost to an object already retired — drop. */
     }
   }
   struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_note_answered(cache); /* before it takes effect */
 
   /* A hinted first touch may reach its first grant with the size still
    * unlearned (no CTS leg ran); the response's data_size is the sender's
@@ -482,9 +487,10 @@ void arts_handler_db_grant_invalidate(void *item_v, void *args_v) {
 /* Cat-C pure body (SNAPSHOT_REDIRECT, owner side).  The wire dispatcher / self-send
  * shortcut has already looked the owner-side db_s up with a held ref and passes
  * it as item_v (cache is its FIRST member, offset 0).  No lookup/NULL-check
- * here — the dispatcher's MISS branch sends CACHE_DESTROY to the requester (DB
- * destroyed / not yet installed on this rank) so the requester's parked RO
- * waiter wakes and observes DB_DESTROYED rather than hanging. */
+ * here — the dispatcher's MISS branch (a destroy issued while the read was
+ * pending, which the destroy contract excludes) sends CACHE_DESTROY to the
+ * requester, retiring its cache: the parked RO waiter is freed with it, never
+ * resumed. */
 
 /* ===== WB wire senders =================================================
  * The GRANT_RESPONSE wire sender, the owner→owner ship and the CONFIRM
@@ -513,8 +519,8 @@ void arts_send_db_grant_confirm_ack(
     /* Self-send: mirror the wire RX dispatcher's Cat-C lookup-acquire-or-drop.
      * HIT runs the confirm_ack body on the ref-pinned db_s, passing the packet
      * so the piggybacked invalidate effect (if any) is applied; MISS (DB
-     * destroyed) silently drops (gated waiters are woken by the destroy
-     * fan-out). */
+     * destroyed) silently drops: the gated waiters are acquires the destroy
+     * contract excludes, freed with the cache and never resumed. */
     arts_shared_ptr_t h = arts_route_table_lookup_db(db_guid);
     struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(h);
     if (db != NULL) {

@@ -198,7 +198,13 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
   arts_shared_ptr_t db_h = arts_route_table_lookup_db(db_guid);
   struct arts_db_s *db = (struct arts_db_s *)arts_shared_get(db_h);
   if (db == NULL) {
-    db_h = arts_db_cache_stub_install_answered(db_guid, /*db_size=*/0);
+    /* Only a program outside the destroy contract gets here: the cache this
+     * rank installed when it requested was retired by a destroy while the
+     * acquire was pending.  The grant then goes into a fresh cache of the
+     * destroyed block, which nothing waits on and which outlives the block;
+     * it is dropped only when that install loses to an object already
+     * retired. */
+    db_h = arts_db_cache_stub_install(db_guid, /*db_size=*/0);
     db = (struct arts_db_s *)arts_shared_get(db_h);
     if (db == NULL) {
       arts_shared_release(&db_h);
@@ -206,11 +212,10 @@ void arts_handler_db_grant_response(void *payload, size_t size) {
        * leak-free; the landing ends when that payload arrives, or at once
        * when none was sent. */
       arts_db_rdzv_discard_landing(hdr->rdzv_txid, hdr->rdzv_cookie);
-      return; /* DB destroyed before we became owner — drop. */
+      return; /* the install lost to an object already retired — drop. */
     }
   }
   struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_note_answered(cache); /* before it takes effect */
 
   /* A hinted first touch may reach its first grant with the size still
    * unlearned (no CTS leg ran); the response's data_size is the sender's

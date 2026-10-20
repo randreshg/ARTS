@@ -319,15 +319,17 @@ void arts_handler_db_destroy(void *item_v, void *args_v) {
       }
     }
   }
-  /* The roster is exact: every rank holding a cache of the block (its
-   * creator, every read requester and every write requester) has one bit, so
-   * each is told once.  A notice is retired by key where it lands, so a
-   * second one, or one to a rank caching nothing of this block, would retire
-   * that rank's next generation of the GUID. */
+  /* The roster is complete: every rank holding a cache of the block (its
+   * creator, every read requester and every write requester) has a bit, so
+   * each is told. */
   /* No pending_rw drain: the grant request queue is single-consumer (the
    * transfer baton's holder), and a legitimately destroyed DB has no
    * outstanding acquires — draining here would be a second, unsynchronized
    * consumer. */
+  /* The teardown is immediate: every release that sends the home anything (a
+   * round, a hand-back) blocks until the home ACKs it, so under the destroy
+   * contract none arrives after the destroy; a transfer's CONFIRM that does
+   * finds no home and is dropped. */
   (void)arts_ooo_retire_item(a->db_guid, item_v);
   /* After the slot withdrawal — see arts_db_pub_flight_abandon. */
   arts_db_pub_flight_abandon(cache);
@@ -712,7 +714,6 @@ void arts_handler_db_publish(void *item_v, void *args_v) {
 void arts_handler_db_inv_cts(struct arts_db_s *db,
                              struct arts_msg_inv_cts_packet_s *p) {
   struct arts_db_cache_s *cache = &db->cache;
-  arts_db_cache_note_answered(cache); /* before the answer takes effect */
   arts_db_cache_learn_size(cache, p->db_size);
   arts_send_db_inv_request(cache, (arts_db_access_mode_t)p->mode);
 }
@@ -799,8 +800,6 @@ void arts_handler_db_inv_deliver(void *payload, size_t size) {
     arts_shared_release(&db_h);
     return;
   }
-  /* Before the answer takes effect. */
-  arts_db_cache_note_answered(&db->cache);
   /* Hinted first touch: the size may still be unlearned here. */
   arts_db_cache_learn_size(&db->cache, p->data_size);
   if (p->rdzv_txid != 0) {
